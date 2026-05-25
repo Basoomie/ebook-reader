@@ -56,7 +56,8 @@
   let storageSourceEncryptionDisabled = configuredEncryptionDisabled || false;
   let storageSourceTypes = [
     { key: StorageKey.GDRIVE, label: 'GDrive' },
-    { key: StorageKey.ONEDRIVE, label: 'OneDrive' }
+    { key: StorageKey.ONEDRIVE, label: 'OneDrive' },
+    { key: StorageKey.SELFHOST, label: 'Self-hosted' }
   ];
 
   $: if (browser && 'showDirectoryPicker' in window) {
@@ -151,6 +152,15 @@
         }
 
         storageSourceData = { directoryHandle, fsPath: handleFsPath };
+      } else if (storageSourceType === StorageKey.SELFHOST) {
+        credentialsChanged =
+          storageSourceClientId !== configuredRemoteData?.clientId ||
+          storageSourceClientSecret !== configuredRemoteData?.clientSecret;
+
+        storageSourceData = {
+          clientId: storageSourceClientId,
+          clientSecret: storageSourceClientSecret
+        };
       } else {
         credentialsChanged =
           storageSourceClientId !== configuredRemoteData?.clientId ||
@@ -283,6 +293,10 @@
           directoryHandle = undefined;
           handleFsPath = '';
         }
+        if (storageSourceType === StorageKey.SELFHOST) {
+          storageSourceStoredInManager = false;
+          storageSourceEncryptionDisabled = true;
+        }
       }}
     >
       {#each storageSourceTypes as sourceType (sourceType.key)}
@@ -297,6 +311,15 @@
         <Ripple />
       </button>
       <div class="my-4 text-center">{handleFsPath || 'Nothing selected'}</div>
+    {:else if storageSourceType === StorageKey.SELFHOST}
+      <input required type="text" placeholder="Server URL" bind:value={storageSourceClientId} />
+      <input
+        class="mt-4"
+        required
+        type="text"
+        placeholder="Auth Token"
+        bind:value={storageSourceClientSecret}
+      />
     {:else}
       <input required type="text" placeholder="Client ID" bind:value={storageSourceClientId} />
       <input
@@ -352,7 +375,7 @@
         <label for="cbx-disable-encryption" class="ml-2 mr-6">Disable Password Encryption</label>
       </div>
     {/if}
-    {#if storageSourceStoredInManager || storageSourceEncryptionDisabled}
+    {#if storageSourceType !== StorageKey.SELFHOST && (storageSourceStoredInManager || storageSourceEncryptionDisabled)}
       <div class="flex items-center my-4 max-w-xs">
         <Fa icon={faTriangleExclamation} />
         <span class="ml-2">

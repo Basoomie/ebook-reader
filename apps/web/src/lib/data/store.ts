@@ -232,6 +232,11 @@ export const oneDriveStorageSource$ = writableStringLocalStorageSubject()(
   StorageSourceDefault.ONEDRIVE_DEFAULT
 );
 
+export const selfHostStorageSource$ = writableStringLocalStorageSubject()(
+  'selfHostStorageSource',
+  StorageSourceDefault.SELFHOST_DEFAULT
+);
+
 export const fsStorageSource$ = writableStringLocalStorageSubject()('fsStorageSource', '');
 
 export const syncTarget$ = writableStringLocalStorageSubject()('syncTarget', '');
