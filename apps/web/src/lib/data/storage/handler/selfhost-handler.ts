@@ -237,7 +237,10 @@ export class SelfHostStorageHandler extends ApiStorageHandler {
     const uploadUrl = `${this.serverUrl}/file?path=${encodeURIComponent(filePath)}`;
     const res = await fetch(uploadUrl, {
       method: 'PUT',
-      headers: { Authorization: `Bearer ${this.authToken}` },
+      headers: {
+        Authorization: `Bearer ${this.authToken}`,
+        'Content-Type': 'application/octet-stream'
+      },
       body: body instanceof Blob ? body : new Blob([body])
     });
 
