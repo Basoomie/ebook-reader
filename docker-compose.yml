@@ -6,7 +6,7 @@ services:
     container_name: ttsu
     restart: unless-stopped
     ports:
-      - "3000:80"
+      - "3080:80"
 
   ttsu-storage:
     build:
@@ -15,7 +15,7 @@ services:
     container_name: ttsu-storage
     restart: unless-stopped
     ports:
-      - "3001:3001"
+      - "3081:3001"
     volumes:
       - ${TTSU_DATA_PATH:-./data}:/data
     environment:

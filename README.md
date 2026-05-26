@@ -545,7 +545,7 @@ docker run --name ebook-reader -d -p 8080:80 ebook-reader
 TTSU_AUTH_TOKEN=changeme docker compose up
 ```
 
-3. Visit [http://localhost:3000](http://localhost:3000) to use the app
+3. Visit [http://localhost:3080](http://localhost:3080) to use the app
 
 ### Using Docker Compose with Self-Hosted Storage
 
@@ -571,8 +571,8 @@ TTSU_AUTH_TOKEN=your-secret-token-here
 docker compose up -d
 ```
 
-- Reader: [http://localhost:3000](http://localhost:3000)
-- Storage API: `http://localhost:3001` (or your server's LAN/Tailscale IP)
+- Reader: [http://localhost:3080](http://localhost:3080)
+- Storage API: `http://localhost:3081` (or your server's LAN/Tailscale IP)
 
 **3. Add the storage source in the reader**
 
@@ -581,7 +581,7 @@ On each device that should share the library:
 1. Open the reader → **Settings** → **Data** → **Storage Sources** → **Add**
 2. Set **Name** to anything (e.g. `home-server`)
 3. Set **Type** to **Self-hosted**
-4. Set **Server URL** to `http://<your-server-ip>:3001`
+4. Set **Server URL** to `http://<your-server-ip>:3081`
 5. Set **Auth Token** to the value of `TTSU_AUTH_TOKEN`
 6. Click **Save**
 
