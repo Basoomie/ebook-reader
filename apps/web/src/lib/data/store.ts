@@ -232,6 +232,11 @@ export const oneDriveStorageSource$ = writableStringLocalStorageSubject()(
   StorageSourceDefault.ONEDRIVE_DEFAULT
 );
 
+export const selfHostStorageSource$ = writableStringLocalStorageSubject()(
+  'selfHostStorageSource',
+  StorageSourceDefault.SELFHOST_DEFAULT
+);
+
 export const fsStorageSource$ = writableStringLocalStorageSubject()('fsStorageSource', '');
 
 export const syncTarget$ = writableStringLocalStorageSubject()('syncTarget', '');
@@ -492,7 +497,8 @@ export const booklistSortOptions$ = writableObjectLocalStorageSubject<Record<str
     [StorageKey.BROWSER]: { property: 'lastBookOpen', direction: SortDirection.DESC },
     [StorageKey.GDRIVE]: { property: 'title', direction: SortDirection.ASC },
     [StorageKey.ONEDRIVE]: { property: 'title', direction: SortDirection.ASC },
-    [StorageKey.FS]: { property: 'title', direction: SortDirection.ASC }
+    [StorageKey.FS]: { property: 'title', direction: SortDirection.ASC },
+    [StorageKey.SELFHOST]: { property: 'title', direction: SortDirection.ASC }
   }
 );
 

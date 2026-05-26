@@ -59,6 +59,11 @@ export function isStorageSourceAvailable(
       hasValidEnvironment = !!storageSourceManager && 'showDirectoryPicker' in window;
       break;
 
+    case StorageKey.SELFHOST:
+      hasValidEnvironment =
+        !!storageSourceManager && storageSourceManager !== StorageSourceDefault.SELFHOST_DEFAULT;
+      break;
+
     default:
       break;
   }

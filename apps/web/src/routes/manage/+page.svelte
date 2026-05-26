@@ -62,7 +62,7 @@
     booklistSortOptions$
   ]).pipe(
     map(([dataList, bookmarks]) => {
-      const sortProp = $booklistSortOptions$[$storageSource$];
+      const sortProp = $booklistSortOptions$[$storageSource$] ?? { property: 'title' as const, direction: SortDirection.ASC };
       const isTitleSort = sortProp.property === 'title';
 
       if ($storageSource$ === StorageKey.BROWSER) {

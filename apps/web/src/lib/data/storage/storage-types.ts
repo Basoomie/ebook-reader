@@ -9,7 +9,8 @@ export enum StorageKey {
   BROWSER = 'browser',
   FS = 'fs',
   GDRIVE = 'gdrive',
-  ONEDRIVE = 'onedrive'
+  ONEDRIVE = 'onedrive',
+  SELFHOST = 'selfhost'
 }
 
 export enum StorageDataType {
@@ -23,7 +24,8 @@ export enum StorageDataType {
 
 export enum StorageSourceDefault {
   GDRIVE_DEFAULT = 'ttu-gdrive-default',
-  ONEDRIVE_DEFAULT = 'ttu-onedrive-default'
+  ONEDRIVE_DEFAULT = 'ttu-onedrive-default',
+  SELFHOST_DEFAULT = 'ttu-selfhost-default'
 }
 
 export enum InternalStorageSources {

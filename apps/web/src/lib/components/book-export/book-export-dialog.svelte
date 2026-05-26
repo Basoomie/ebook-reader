@@ -15,7 +15,8 @@
     gDriveStorageSource$,
     lastExportedTarget$,
     lastExportedTypes$,
-    oneDriveStorageSource$
+    oneDriveStorageSource$,
+    selfHostStorageSource$
   } from '$lib/data/store';
   import { executeReplicate$ } from '$lib/functions/replication/replication-progress';
   import { createEventDispatcher } from 'svelte';
@@ -46,6 +47,15 @@
         : []),
       ...(isStorageSourceAvailable(StorageKey.FS, $fsStorageSource$, window)
         ? [{ ...getStorageIconData(StorageKey.FS), source: StorageKey.FS, label: 'Filesystem' }]
+        : []),
+      ...(isStorageSourceAvailable(StorageKey.SELFHOST, $selfHostStorageSource$, window)
+        ? [
+            {
+              ...getStorageIconData(StorageKey.SELFHOST),
+              source: StorageKey.SELFHOST,
+              label: 'Self-hosted'
+            }
+          ]
         : [])
     ].filter((icon) => icon.source !== $storageSource$);
   }

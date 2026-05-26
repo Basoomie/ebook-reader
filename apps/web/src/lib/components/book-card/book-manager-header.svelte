@@ -28,7 +28,8 @@
     fsStorageSource$,
     gDriveStorageSource$,
     isOnline$,
-    oneDriveStorageSource$
+    oneDriveStorageSource$,
+    selfHostStorageSource$
   } from '$lib/data/store';
   import { inputAllowDirectory } from '$lib/functions/file-dom/input-allow-directory';
   import { inputFile } from '$lib/functions/file-dom/input-file';
@@ -137,6 +138,15 @@
               requiresConnectivity: false
             }
           ]
+        : []),
+      ...(isStorageSourceAvailable(StorageKey.SELFHOST, $selfHostStorageSource$, window)
+        ? [
+            {
+              label: 'Self-hosted',
+              key: StorageKey.SELFHOST,
+              requiresConnectivity: true
+            }
+          ]
         : [])
     );
   }
@@ -184,7 +194,7 @@
   }
 
   function changeSortOptions(clickedProperty: string, newDirection: SortDirection) {
-    const { property, direction } = $booklistSortOptions$[$storageSource$];
+    const { property, direction } = $booklistSortOptions$[$storageSource$] ?? { property: 'title', direction: SortDirection.ASC };
 
     if (property !== clickedProperty || direction !== newDirection) {
       booklistSortOptions$.next({
@@ -411,7 +421,7 @@
               bind:this={sortOptionsElm}
             >
               <div slot="icon" class={baseIconClasses} title="Select Sort Options">
-                {#if $booklistSortOptions$[$storageSource$].direction === SortDirection.ASC}
+                {#if ($booklistSortOptions$[$storageSource$]?.direction ?? SortDirection.ASC) === SortDirection.ASC}
                   <Fa icon={faArrowDownShortWide} />
                 {:else}
                   <Fa icon={faArrowDownWideShort} />
@@ -420,10 +430,10 @@
               <div class="w-44 bg-gray-700" slot="content">
                 {#each sortMenuItems as sortMenuItem (sortMenuItem.property)}
                   {@const isCurrentSort =
-                    $booklistSortOptions$[$storageSource$].property === sortMenuItem.property}
+                    $booklistSortOptions$[$storageSource$]?.property === sortMenuItem.property}
                   {@const isCurrentSortAsc =
                     isCurrentSort &&
-                    $booklistSortOptions$[$storageSource$].direction === SortDirection.ASC}
+                    $booklistSortOptions$[$storageSource$]?.direction === SortDirection.ASC}
                   <div
                     class="grid cursor-default grid-cols-[auto_auto_auto] text-sm hover:bg-white hover:text-gray-700"
                     class:bg-white={isCurrentSort}

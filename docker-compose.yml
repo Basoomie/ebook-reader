@@ -1,10 +1,25 @@
-version: "2.0"
-
 services:
-  ebook-reader:
+  ttsu:
     build:
-      context: ./
-      dockerfile: ./apps/web/Dockerfile
+      context: .
+      dockerfile: apps/web/Dockerfile
+    container_name: ttsu
+    restart: unless-stopped
     ports:
-      - 9010:80
-    restart: always
+      - "3080:80"
+
+  ttsu-storage:
+    build:
+      context: ./apps/storage-server
+      dockerfile: Dockerfile
+    container_name: ttsu-storage
+    restart: unless-stopped
+    ports:
+      - "3081:3001"
+    volumes:
+      - ${TTSU_DATA_PATH:-./data}:/data
+    environment:
+      - AUTH_TOKEN=${TTSU_AUTH_TOKEN:?AUTH_TOKEN required}
+      - DATA_DIR=/data
+      - PORT=3001
+      - CORS_ORIGIN=*

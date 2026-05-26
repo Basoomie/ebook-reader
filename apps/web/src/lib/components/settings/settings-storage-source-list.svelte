@@ -37,6 +37,7 @@
     gDriveStorageSource$,
     isOnline$,
     oneDriveStorageSource$,
+    selfHostStorageSource$,
     syncTarget$
   } from '$lib/data/store';
   import { AutoReplicationType } from '$lib/functions/replication/replication-options';
@@ -75,6 +76,9 @@
         break;
       case StorageKey.FS:
         configuredIsSourceDefault = name === $fsStorageSource$;
+        break;
+      case StorageKey.SELFHOST:
+        configuredIsSourceDefault = name === $selfHostStorageSource$;
         break;
       default:
         break;
@@ -258,7 +262,7 @@
           {@const storageSourceIsSourceDefault = isStorageSourceDefault(
             storageSource.name,
             storageSource.type,
-            [$gDriveStorageSource$, $oneDriveStorageSource$, $fsStorageSource$]
+            [$gDriveStorageSource$, $oneDriveStorageSource$, $fsStorageSource$, $selfHostStorageSource$]
           )}
           <div class="flex flex-col">
             <div class="flex">
