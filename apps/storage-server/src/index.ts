@@ -36,6 +36,23 @@ function requireAuth(req: Request, res: Response, next: NextFunction): void {
   next();
 }
 
+// GET /file only: also accepts ?token= as a fallback when no Authorization header is present.
+// This lets <img src> load cover images without custom headers.
+// Write endpoints always require the Authorization header.
+function requireAuthGetFile(req: Request, res: Response, next: NextFunction): void {
+  const header = req.headers.authorization;
+  if (header === `Bearer ${AUTH_TOKEN}`) {
+    next();
+    return;
+  }
+  const queryToken = req.query.token as string | undefined;
+  if (queryToken && queryToken === AUTH_TOKEN) {
+    next();
+    return;
+  }
+  res.status(401).json({ error: 'Unauthorized' });
+}
+
 /**
  * Resolve a client-supplied relative path to an absolute path inside DATA_ROOT.
  * Throws if the resolved path escapes DATA_ROOT.
@@ -106,7 +123,7 @@ app.get('/list', requireAuth, async (req: Request, res: Response): Promise<void>
 // GET /file?path=<file>
 // Returns file bytes with Last-Modified header, or 404.
 // ---------------------------------------------------------------------------
-app.get('/file', requireAuth, async (req: Request, res: Response): Promise<void> => {
+app.get('/file', requireAuthGetFile, async (req: Request, res: Response): Promise<void> => {
   let absPath: string;
   try {
     absPath = resolveSafe((req.query.path as string) ?? '');

@@ -790,6 +790,7 @@ export abstract class ApiStorageHandler extends BaseStorageHandler {
       const titleFiles = files.map((file) => {
         const updatedFile = file;
         if (file.name === remoteFile.name) {
+          updatedFile.id = id;
           updatedFile.name = name;
         }
 

@@ -376,6 +376,8 @@ export class SelfHostStorageHandler extends ApiStorageHandler {
 
         bookCard.progress = progress;
         bookCard.lastBookmarkModified = lastBookmarkModified;
+      } else if (file.name.startsWith('cover_')) {
+        bookCard.imagePath = `${this.serverUrl}/file?path=${encodeURIComponent(file.id)}&token=${encodeURIComponent(this.authToken)}`;
       }
     }
 
