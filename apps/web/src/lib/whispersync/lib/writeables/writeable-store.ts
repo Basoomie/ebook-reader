@@ -9,7 +9,9 @@ export function createWriteableStore<T>(mapFromString: (s: string) => T, mapToSt
 		const { subscribe, set } = writable(initValue);
 
 		function _set(value: T) {
-			window.localStorage.setItem(storageKey, mapToString(value));
+			if (typeof window !== 'undefined') {
+				window.localStorage.setItem(storageKey, mapToString(value));
+			}
 
 			set(value);
 		}
@@ -46,6 +48,7 @@ export function createWriteableStore<T>(mapFromString: (s: string) => T, mapToSt
 
 function getStoredOrDefault() {
 	return <T>(key: string, defaultVal: T, mapFn: (s: string) => T) => {
+		if (typeof window === 'undefined') return defaultVal;
 		const stored = window.localStorage.getItem(key);
 
 		return stored ? mapFn(stored) : defaultVal;

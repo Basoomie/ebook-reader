@@ -179,11 +179,19 @@
     getReferencePoints,
     pulseElement
   } from '$lib/functions/range-util';
+  import AudioBookMenu from '$lib/whispersync/components/AudioBookMenu.svelte';
+  import '$lib/whispersync/styles.css';
+  import type { IDBPDatabase } from 'idb';
 
   let showSpinner = true;
   let showHeader = false;
   let isBookmarkScreen = false;
   let showFooter = true;
+  let whisperContainerEl: HTMLDivElement;
+  let bookContentEl: HTMLDivElement | null = null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let readerDb: IDBPDatabase<any> | undefined;
+  database.db.then((db) => { readerDb = db; });
   let exploredCharCount = 0;
   let bookCharCount = 0;
   let autoScroller: AutoScroller | undefined;
@@ -534,6 +542,12 @@
   $: tapButtonTop = `${showHeader ? 3 : 2}rem`;
 
   $: footerChapterProgress = getCurrentChapterProgress($sectionData$);
+
+  $: if ($bookData$) {
+    tick().then(() => {
+      bookContentEl = document.querySelector<HTMLDivElement>('.book-content');
+    });
+  }
 
   $: upSyncEnabled =
     externalStorageHandler &&
@@ -1854,6 +1868,22 @@
         <Fa icon={faCloudBolt} />
       </div>
     {/if}
+    <div
+      bind:this={whisperContainerEl}
+      class="h-full"
+      on:click|stopPropagation
+      on:keyup={dummyFn}
+      role="none"
+    >
+      {#if $rawBookData$ && bookContentEl && readerDb}
+        <AudioBookMenu
+          componentContainerElement={whisperContainerEl}
+          bookContentElement={bookContentEl}
+          currentBookId={$rawBookData$.id}
+          readerDatabase={readerDb}
+        />
+      {/if}
+    </div>
   </div>
   {#if showFooter && bookCharCount}
     {@const currentProgress = [

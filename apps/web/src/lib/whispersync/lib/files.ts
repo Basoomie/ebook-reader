@@ -198,7 +198,6 @@ export function setSubtitleContext(
 
 export async function updateAudio(
 	file: File,
-	sandboxElement: HTMLIFrameElement | undefined,
 	updateContext = false,
 	metadataOnly = false,
 	oldCoverUrl = '',

@@ -56,7 +56,7 @@
 	import { get } from 'svelte/store';
 
 	const wakeLockSupported = 'wakeLock' in navigator;
-	const { supportsFileSystem, sandboxElement } = getContext<Context>('context');
+	const { supportsFileSystem } = getContext<Context>('context');
 	const clickActions = [
 		Action.NONE,
 		Action.RESTART_PLAYBACK,
@@ -325,7 +325,7 @@
 
 		if ($playerEnableCover$ && $currentAudioFile$) {
 			try {
-				const { coverUrl } = await updateAudio($currentAudioFile$, sandboxElement, false, true);
+				const { coverUrl } = await updateAudio($currentAudioFile$, false, true);
 
 				URL.revokeObjectURL($currentCoverUrl$);
 
@@ -358,7 +358,7 @@
 
 		if ($playerEnableChapters$ && $currentAudioFile$) {
 			try {
-				let { chapters } = await updateAudio($currentAudioFile$, sandboxElement, false, true);
+				let { chapters } = await updateAudio($currentAudioFile$, false, true);
 
 				if (!chapters.length && $exportAudioProcessor$ === AudioProcessor.FFMPEG) {
 					chapters = await getChapterData($currentAudioFile$);

@@ -107,7 +107,7 @@
 	}
 
 	const { subtitlesEnablePersist$, ankiSentenceField$, ankiSoundField$ } = settings$;
-	const { sandboxElement, isIOS } = getContext<Context>('context');
+	const { isIOS } = getContext<Context>('context');
 	const allowedSubtitleExtensions: FileExtension[] = ['.srt', '.vtt', '.txt'];
 	const allowedAudioExtensions: FileExtension[] = ['.m4a', '.m4b', '.mp3'];
 
@@ -372,7 +372,7 @@
 
 		if (audio) {
 			try {
-				const audioResult = await updateAudio(audio.file, sandboxElement);
+				const audioResult = await updateAudio(audio.file);
 
 				if (audio.handle) {
 					await storeFileHandle(audio.handle, 'lastAudio');
@@ -522,7 +522,7 @@
 				);
 
 				if (file) {
-					const audioResult = await updateAudio(file, sandboxElement);
+					const audioResult = await updateAudio(file);
 
 					await storeFileHandle(handle, 'lastAudio');
 					await setAudioContext($currentCoverUrl$, $currentAudioSourceUrl$, file, audioResult);
@@ -569,7 +569,7 @@
 				$isLoading$ = false;
 				addedSubtitleByDropzone = false;
 			} else {
-				await updateAudio(file, sandboxElement, true, false, $currentCoverUrl$, $currentAudioSourceUrl$);
+				await updateAudio(file, true, false, $currentCoverUrl$, $currentAudioSourceUrl$);
 
 				addedAudioByDropzone = false;
 			}

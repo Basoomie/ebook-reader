@@ -23,7 +23,6 @@ export interface Dialog {
 
 export interface Context {
 	bookContentElement: HTMLDivElement;
-	sandboxElement: HTMLIFrameElement | undefined;
 	isVertical: boolean;
 	isPaginated: boolean;
 	supportsFileSystem: boolean;

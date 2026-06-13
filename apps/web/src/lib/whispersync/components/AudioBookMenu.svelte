@@ -7,8 +7,9 @@
 	import Dialogs from './Dialogs.svelte';
 	import Icon from './Icon.svelte';
 	import { Action, executeAction } from '../lib/actions';
-	import { setBooksDB } from '../lib/db';
+	import type { BooksDB } from '../lib/db';
 	import { setAudioContext, setSubtitleContext, updateAudio, updateSubtitles, verifyPermissions } from '../lib/files';
+	import type { IDBPDatabase } from 'idb';
 	import { type Context, Tabs, type Subtitle, getDummySubtitle } from '../lib/general';
 	import { AudioProcessor, ReaderMenuOpenMode, ReaderMenuPauseMode } from '../lib/settings';
 	import {
@@ -85,8 +86,8 @@
 
 	export let componentContainerElement: HTMLDivElement;
 	export let bookContentElement: HTMLDivElement;
-	export let sandboxElement: HTMLIFrameElement | undefined;
 	export let currentBookId: number;
+	export let readerDatabase: IDBPDatabase<any>;
 
 	const sideMenuWidthKey = 'ttu-whispersync-side-menu-width';
 	const supportsFileSystem = 'showOpenFilePicker' in window;
@@ -279,7 +280,6 @@
 
 	setContext<Context>('context', {
 		bookContentElement,
-		sandboxElement,
 		isVertical,
 		isPaginated,
 		supportsFileSystem,
@@ -426,39 +426,8 @@
 		$isLoading$ = true;
 
 		try {
-			if (!$booksDB$) {
-				const dbVersion = await new Promise<number>((resolve, reject) => {
-					document.addEventListener(
-						'ttsu:db.version',
-						({ detail }: any) => {
-							if (detail > 5) {
-								return resolve(detail);
-							}
-
-							reject(new Error('Invalid ttu version'));
-						},
-						{
-							once: true,
-							capture: false,
-						},
-					);
-
-					document.dispatchEvent(new CustomEvent('ttu-action', { detail: { type: 'dbVersion' } }));
-
-					setTimeout(() => reject(new Error('Invalid ttu version')), 5000);
-				});
-
-				await setBooksDB(dbVersion);
-			}
-
-			await new Promise((resolve) => {
-				document.addEventListener('ttsu:synced', resolve, {
-					once: true,
-					capture: false,
-				});
-
-				document.dispatchEvent(new CustomEvent('ttu-action', { detail: { type: 'waitForSync' } }));
-			});
+			// Phase 1: set booksDB$ directly from the reader's database — no event bootstrap needed
+			booksDB$.set(readerDatabase as unknown as IDBPDatabase<BooksDB>);
 
 			const book = await $booksDB$.get('data', currentBookId);
 
@@ -595,7 +564,7 @@
 			try {
 				const audioFile = await lastAudio.getFile();
 
-				await updateAudio(audioFile, sandboxElement, true);
+				await updateAudio(audioFile, true);
 			} catch ({ message }: any) {
 				errors.push(`Failed to load audio file: ${message}`);
 
