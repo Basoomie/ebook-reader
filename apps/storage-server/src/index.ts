@@ -3,6 +3,7 @@ import express, { NextFunction, Request, Response } from 'express';
 import { existsSync, createReadStream, createWriteStream } from 'fs';
 import fs from 'fs/promises';
 import path from 'path';
+import { pipeline } from 'stream/promises';
 
 const DATA_DIR = process.env.DATA_DIR ?? '/data';
 const AUTH_TOKEN = process.env.AUTH_TOKEN;
@@ -48,7 +49,6 @@ app.put('/audio-file', requireAuth, async (req: Request, res: Response): Promise
   }
 
   const tmpPath = `${absPath}.tmp`;
-  let uploadComplete = false;
 
   try {
     await fs.mkdir(path.dirname(absPath), { recursive: true });
@@ -60,35 +60,19 @@ app.put('/audio-file', requireAuth, async (req: Request, res: Response): Promise
 
   const writeStream = createWriteStream(tmpPath);
 
-  function cleanup() {
-    if (!uploadComplete) {
-      writeStream.destroy();
-      fs.unlink(tmpPath).catch(() => {});
-    }
+  try {
+    // pipeline() atomically pipes req → writeStream, handles teardown on any error,
+    // and resolves only when the destination has fully flushed to disk.
+    await pipeline(req, writeStream);
+    await fs.rename(tmpPath, absPath);
+    const stat = await fs.stat(absPath);
+    console.log(`PUT /audio-file: ${absPath} (${stat.size} bytes)`);
+    res.json({ lastModified: stat.mtimeMs });
+  } catch (err) {
+    console.error('PUT /audio-file error:', err);
+    await fs.unlink(tmpPath).catch(() => {});
+    if (!res.headersSent) res.status(500).json({ error: 'Upload failed' });
   }
-
-  req.on('error', cleanup);
-  req.on('close', cleanup);
-  writeStream.on('error', (err) => {
-    console.error('PUT /audio-file write error:', err);
-    cleanup();
-    if (!res.headersSent) res.status(500).json({ error: 'Write stream error' });
-  });
-
-  writeStream.on('finish', async () => {
-    uploadComplete = true; // set before any await — prevents cleanup() on normal connection close
-    try {
-      await fs.rename(tmpPath, absPath);
-      const stat = await fs.stat(absPath);
-      console.log(`PUT /audio-file: ${absPath} (${stat.size} bytes)`);
-      res.json({ lastModified: stat.mtimeMs });
-    } catch (err) {
-      cleanup();
-      if (!res.headersSent) res.status(500).json({ error: 'Failed to finalize upload' });
-    }
-  });
-
-  req.pipe(writeStream);
 });
 
 // Parse body as raw Buffer for all content types (needed for binary file uploads)
