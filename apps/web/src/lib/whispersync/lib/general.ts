@@ -1,5 +1,6 @@
 // vendored from ttu-whispersync — MIT License — https://github.com/Renji-XD/ttu-whispersync
-import { writable } from 'svelte/store';
+import { writable, type Writable } from 'svelte/store';
+import type { NasAudioConfig } from './nas';
 
 export type EventWithElement<T> = Event & { currentTarget: T };
 
@@ -27,6 +28,7 @@ export interface Context {
 	isPaginated: boolean;
 	supportsFileSystem: boolean;
 	isIOS: boolean;
+	nasAudioConfig$: Writable<NasAudioConfig | undefined>;
 }
 
 export interface Subtitle {

@@ -1,6 +1,6 @@
 import cors from 'cors';
 import express, { NextFunction, Request, Response } from 'express';
-import { existsSync } from 'fs';
+import { existsSync, createReadStream, createWriteStream } from 'fs';
 import fs from 'fs/promises';
 import path from 'path';
 
@@ -24,6 +24,73 @@ if (!existsSync(DATA_ROOT)) {
 const app = express();
 
 app.use(cors({ origin: CORS_ORIGIN }));
+
+// ---------------------------------------------------------------------------
+// PUT /audio-file?path=<file>
+// Streams audio directly to disk (bypasses the 200 MB express.raw buffer).
+// Writes to a tmp file first, then renames atomically on success.
+// Only accepts filenames starting with "audio_".
+// Must be registered BEFORE app.use(express.raw(...)) so the body is not buffered.
+// ---------------------------------------------------------------------------
+app.put('/audio-file', requireAuth, async (req: Request, res: Response): Promise<void> => {
+  let absPath: string;
+  try {
+    absPath = resolveSafe((req.query.path as string) ?? '');
+  } catch {
+    res.status(400).json({ error: 'Invalid path' });
+    return;
+  }
+
+  const filename = path.basename(absPath);
+  if (!filename.startsWith('audio_')) {
+    res.status(400).json({ error: 'Filename must start with audio_' });
+    return;
+  }
+
+  const tmpPath = `${absPath}.tmp`;
+  let uploadComplete = false;
+
+  try {
+    await fs.mkdir(path.dirname(absPath), { recursive: true });
+  } catch (err) {
+    console.error('PUT /audio-file mkdir error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+    return;
+  }
+
+  const writeStream = createWriteStream(tmpPath);
+
+  function cleanup() {
+    if (!uploadComplete) {
+      writeStream.destroy();
+      fs.unlink(tmpPath).catch(() => {});
+    }
+  }
+
+  req.on('error', cleanup);
+  req.on('close', cleanup);
+  writeStream.on('error', (err) => {
+    console.error('PUT /audio-file write error:', err);
+    cleanup();
+    if (!res.headersSent) res.status(500).json({ error: 'Write stream error' });
+  });
+
+  writeStream.on('finish', async () => {
+    try {
+      await fs.rename(tmpPath, absPath);
+      uploadComplete = true;
+      const stat = await fs.stat(absPath);
+      console.log(`PUT /audio-file: ${absPath} (${stat.size} bytes)`);
+      res.json({ lastModified: stat.mtimeMs });
+    } catch (err) {
+      cleanup();
+      if (!res.headersSent) res.status(500).json({ error: 'Failed to finalize upload' });
+    }
+  });
+
+  req.pipe(writeStream);
+});
+
 // Parse body as raw Buffer for all content types (needed for binary file uploads)
 app.use(express.raw({ type: '*/*', limit: '200mb' }));
 
@@ -121,7 +188,8 @@ app.get('/list', requireAuth, async (req: Request, res: Response): Promise<void>
 
 // ---------------------------------------------------------------------------
 // GET /file?path=<file>
-// Returns file bytes with Last-Modified header, or 404.
+// Returns file bytes with Last-Modified / Content-Length headers, or 404.
+// Supports HTTP Range requests (required for audio seeking in browsers).
 // ---------------------------------------------------------------------------
 app.get('/file', requireAuthGetFile, async (req: Request, res: Response): Promise<void> => {
   let absPath: string;
@@ -134,10 +202,40 @@ app.get('/file', requireAuthGetFile, async (req: Request, res: Response): Promis
 
   try {
     const stat = await fs.stat(absPath);
-    const data = await fs.readFile(absPath);
+    const fileSize = stat.size;
+    const rangeHeader = req.headers.range;
+
+    res.setHeader('Accept-Ranges', 'bytes');
     res.setHeader('Last-Modified', stat.mtime.toUTCString());
-    res.setHeader('Content-Length', String(stat.size));
-    res.status(200).send(data);
+
+    if (rangeHeader) {
+      const [unit, rangeStr] = rangeHeader.split('=');
+      if (unit !== 'bytes' || !rangeStr) {
+        res.status(416).json({ error: 'Invalid Range header' });
+        return;
+      }
+      const [startStr, endStr] = rangeStr.split('-');
+      const start = parseInt(startStr, 10);
+      const end = endStr ? parseInt(endStr, 10) : fileSize - 1;
+
+      if (isNaN(start) || isNaN(end) || start > end || end >= fileSize) {
+        res.setHeader('Content-Range', `bytes */${fileSize}`);
+        res.status(416).json({ error: 'Range Not Satisfiable' });
+        return;
+      }
+
+      const chunkSize = end - start + 1;
+      res.status(206);
+      res.setHeader('Content-Range', `bytes ${start}-${end}/${fileSize}`);
+      res.setHeader('Content-Length', String(chunkSize));
+      res.setHeader('Content-Type', 'application/octet-stream');
+
+      createReadStream(absPath, { start, end }).pipe(res);
+    } else {
+      const data = await fs.readFile(absPath);
+      res.setHeader('Content-Length', String(fileSize));
+      res.status(200).send(data);
+    }
   } catch (err: any) {
     if (err.code === 'ENOENT') {
       res.status(404).json({ error: 'Not found' });

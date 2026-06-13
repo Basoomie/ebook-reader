@@ -182,6 +182,9 @@
   import AudioBookMenu from '$lib/whispersync/components/AudioBookMenu.svelte';
   import '$lib/whispersync/styles.css';
   import type { IDBPDatabase } from 'idb';
+  import type { NasServerConfig } from '$lib/whispersync/lib/nas';
+  import { selfHostStorageSource$ } from '$lib/data/store';
+  import { unlockStorageData } from '$lib/data/storage/storage-source-manager';
 
   let showSpinner = true;
   let showHeader = false;
@@ -191,7 +194,28 @@
   let bookContentEl: HTMLDivElement | null = null;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let readerDb: IDBPDatabase<any> | undefined;
-  database.db.then((db) => { readerDb = db; });
+  let nasServerConfig: NasServerConfig | undefined;
+  // Resolve NAS config first; then expose readerDb so AudioBookMenu mounts only
+  // after both are ready (nasServerConfig may be undefined if selfhost not configured).
+  database.db.then(async (db) => {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const sourceName = (selfHostStorageSource$ as any).getValue?.() ?? '';
+      if (sourceName) {
+        const source = await db.get('storageSource', sourceName);
+        const unlockResult = await unlockStorageData(source, '', undefined);
+        if (unlockResult) {
+          nasServerConfig = {
+            serverUrl: unlockResult.clientId.replace(/\/+$/, ''),
+            authToken: unlockResult.clientSecret,
+          };
+        }
+      }
+    } catch {
+      // NAS not configured or locked — audio works locally only
+    }
+    readerDb = db;
+  });
   let exploredCharCount = 0;
   let bookCharCount = 0;
   let autoScroller: AutoScroller | undefined;
@@ -1881,6 +1905,7 @@
           bookContentElement={bookContentEl}
           currentBookId={$rawBookData$.id}
           readerDatabase={readerDb}
+          {nasServerConfig}
         />
       {/if}
     </div>

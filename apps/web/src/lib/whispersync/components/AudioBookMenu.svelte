@@ -83,11 +83,17 @@
 	import ReaderMenu from './ReaderMenu.svelte';
 	import Settings from './Settings.svelte';
 	import { onDestroy, onMount, setContext } from 'svelte';
+	import { writable, get } from 'svelte/store';
+	import type { NasServerConfig } from '../lib/nas';
+	import { sanitizeTitleForNas, buildAudioNasUrl, findNasAudio } from '../lib/nas';
 
 	export let componentContainerElement: HTMLDivElement;
 	export let bookContentElement: HTMLDivElement;
 	export let currentBookId: number;
 	export let readerDatabase: IDBPDatabase<any>;
+	export let nasServerConfig: NasServerConfig | undefined = undefined;
+
+	const nasAudioConfig$ = writable<import('../lib/nas').NasAudioConfig | undefined>(undefined);
 
 	const sideMenuWidthKey = 'ttu-whispersync-side-menu-width';
 	const supportsFileSystem = 'showOpenFilePicker' in window;
@@ -286,6 +292,7 @@
 		isPaginated,
 		supportsFileSystem,
 		isIOS,
+		nasAudioConfig$,
 	});
 
 	onMount(initializeComponent);
@@ -471,6 +478,11 @@
 			};
 
 			$currentTime$ = audioBook?.playbackPosition || 0;
+
+			// Phase 2: wire up NAS config now that the book title is known
+			if (nasServerConfig) {
+				nasAudioConfig$.set({ ...nasServerConfig, titleFolder: sanitizeTitleForNas(book.title) });
+			}
 		} catch ({ message }: any) {
 			loadError = `Initialization failed: ${message}`;
 		}
@@ -510,7 +522,23 @@
 	async function initializeFiles(retry = true) {
 		const lastSubtitle =
 			!$currentSubtitleFile$ && $extensionData$.lastSubtitle ? $extensionData$.lastSubtitle : undefined;
-		const lastAudio = !$currentAudioSourceUrl$ && $extensionData$.lastAudio ? $extensionData$.lastAudio : undefined;
+		let lastAudio = !$currentAudioSourceUrl$ && $extensionData$.lastAudio ? $extensionData$.lastAudio : undefined;
+
+		// Phase 2: if the NAS has audio for this book, load it directly — no local
+		// file handle or user-gesture dialog needed for audio.
+		const currentNasConfig = get(nasAudioConfig$);
+		if (currentNasConfig && !$currentAudioSourceUrl$) {
+			try {
+				const nasFile = await findNasAudio(currentNasConfig);
+				if (nasFile) {
+					const nasUrl = buildAudioNasUrl(currentNasConfig, nasFile);
+					await setAudioContext('', '', undefined, { coverUrl: '', chapters: [], audioSourceUrl: nasUrl });
+					lastAudio = undefined; // local handle no longer needed
+				}
+			} catch {
+				// NAS unreachable — fall through to local file handle path
+			}
+		}
 
 		if (!$filesystemApiEnabled$ || (!lastSubtitle && !lastAudio)) {
 			return;

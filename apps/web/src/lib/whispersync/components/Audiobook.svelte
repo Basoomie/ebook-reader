@@ -94,7 +94,9 @@
 	import Progress from './Progress.svelte';
 	import Subtitles from './Subtitles.svelte';
 	import { getContext, tick } from 'svelte';
+	import { get } from 'svelte/store';
 	import TimeEditInput from './TimeEditInput.svelte';
+	import { findNasAudio, uploadAudioToNas, buildAudioNasUrl } from '../lib/nas';
 
 	export let showMenu: boolean;
 
@@ -107,7 +109,7 @@
 	}
 
 	const { subtitlesEnablePersist$, ankiSentenceField$, ankiSoundField$ } = settings$;
-	const { isIOS } = getContext<Context>('context');
+	const { isIOS, nasAudioConfig$ } = getContext<Context>('context');
 	const allowedSubtitleExtensions: FileExtension[] = ['.srt', '.vtt', '.txt'];
 	const allowedAudioExtensions: FileExtension[] = ['.m4a', '.m4b', '.mp3'];
 
@@ -120,6 +122,7 @@
 	let playerElement: Player;
 	let addedSubtitleByDropzone = false;
 	let addedAudioByDropzone = false;
+	let nasUploadState: { progress: number; error: string } | null = null;
 	let changeSubtitleTitle = '';
 	let resetBookTitle = '';
 	let changeAudioTitle = '';
@@ -381,6 +384,29 @@
 				await setAudioContext($currentCoverUrl$, $currentAudioSourceUrl$, audio.file, audioResult);
 
 				addedAudioByDropzone = true;
+
+				// Phase 2: stream-upload to NAS in the background; switch to NAS URL when done.
+				const nasConfig = get(nasAudioConfig$);
+				if (nasConfig) {
+					const capturedBlobUrl = audioResult.audioSourceUrl;
+					nasUploadState = { progress: 0, error: '' };
+					(async () => {
+						try {
+							let nasFileName = await findNasAudio(nasConfig);
+							if (!nasFileName) {
+								nasFileName = await uploadAudioToNas(nasConfig, audio.file, (loaded, total) => {
+									nasUploadState = { progress: loaded / total, error: '' };
+								});
+							}
+							const nasUrl = buildAudioNasUrl(nasConfig, nasFileName);
+							$currentAudioSourceUrl$ = nasUrl;
+							URL.revokeObjectURL(capturedBlobUrl);
+							nasUploadState = null;
+						} catch ({ message }: any) {
+							nasUploadState = { progress: 0, error: `NAS upload failed: ${message}` };
+						}
+					})();
+				}
 			} catch ({ message }: any) {
 				errors.push(`Failed to process audio: ${message}`);
 
@@ -1197,6 +1223,16 @@
 			/>
 		{/if}
 	</div>
+	{#if nasUploadState !== null}
+		<div class="m-y-xs">
+			{#if nasUploadState.error}
+				<span class="audio-time">{nasUploadState.error}</span>
+			{:else}
+				<span class="audio-time">Uploading to NAS… {Math.round(nasUploadState.progress * 100)}%</span>
+				<Progress currentProgress={nasUploadState.progress * 100} />
+			{/if}
+		</div>
+	{/if}
 	{#if $currentAudioSourceUrl$}
 		<Player
 			{imageLoaded}
