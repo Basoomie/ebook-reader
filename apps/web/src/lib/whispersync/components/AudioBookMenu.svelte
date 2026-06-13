@@ -519,9 +519,7 @@
 		try {
 			await verifyPermissions([lastSubtitle, lastAudio]);
 		} catch ({ message }: any) {
-			if (!message.includes('activation is required')) {
-				$lastError$ = `Failed to reload file(s): ${message}`;
-			} else if (retry) {
+			if (retry) {
 				const wasCanceled = await new Promise<boolean>((resolver) =>
 					dialogs$.add({
 						component: ConfirmDialog,
@@ -540,7 +538,7 @@
 
 				return;
 			} else {
-				$lastError$ = `Failed to acccess files: ${message}`;
+				$lastError$ = `Failed to reload file(s): ${message}`;
 			}
 		}
 
