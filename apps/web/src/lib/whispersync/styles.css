@@ -3,8 +3,8 @@
 .ttu-whispersync-container input:not([type='checkbox']),
 .ttu-whispersync-container select,
 .ttu-whispersync-container .player-progress-tooltip {
-	background-color: var(--ttu-whispersync-background-color);
-	color: var(--ttu-whispersync-color);
+	background-color: var(--ttu-whispersync-background-color, var(--background-color, #23272a));
+	color: var(--ttu-whispersync-color, var(--font-color, rgba(255, 255, 255, 0.87)));
 }
 
 .ttu-whispersync-container .tabs button:not(.tab-active),
@@ -167,8 +167,8 @@
 	border-radius: 4px;
 	word-break: break-word;
 	z-index: 50;
-	background-color: var(--ttu-whispersync-background-color);
-	color: var(--ttu-whispersync-color);
+	background-color: var(--ttu-whispersync-background-color, var(--background-color, #23272a));
+	color: var(--ttu-whispersync-color, var(--font-color, rgba(255, 255, 255, 0.87)));
 }
 
 .ttu-whispersync-container .getting-started {
@@ -255,16 +255,16 @@
 }
 
 .ttu-whispersync-container .bg-inverted {
-	background-color: var(--ttu-whispersync-color);
+	background-color: var(--ttu-whispersync-color, var(--font-color, rgba(255, 255, 255, 0.87)));
 }
 
 .ttu-whispersync-container .bg-inverted > div {
-	background-color: var(--ttu-whispersync-background-color);
+	background-color: var(--ttu-whispersync-background-color, var(--background-color, #23272a));
 }
 
 .ttu-whispersync-container .color-inverted,
 .ttu-whispersync-container .color-inverted-hover:hover {
-	background-color: var(--ttu-whispersync-color);
+	background-color: var(--ttu-whispersync-color, var(--font-color, rgba(255, 255, 255, 0.87)));
 	color: var(--ttu-whispersync-background-color);
 }
 
@@ -273,7 +273,7 @@
 }
 
 .ttu-whispersync-container .dropzone.on-drag {
-	border-color: var(--ttu-whispersync-color);
+	border-color: var(--ttu-whispersync-color, var(--font-color, rgba(255, 255, 255, 0.87)));
 }
 
 .ttu-whispersync-container .tabs button:not(.tab-active):not(:disabled):hover,
@@ -317,7 +317,7 @@
 }
 
 .ttu-whispersync-container .sub.active {
-	border-color: var(--ttu-whispersync-color);
+	border-color: var(--ttu-whispersync-color, var(--font-color, rgba(255, 255, 255, 0.87)));
 }
 
 .ttu-whispersync-container .player-progress-tooltip {

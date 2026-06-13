@@ -170,9 +170,11 @@
 
 	$: showFooterActions = enabledFooterActions.length && !$hideFooterActions$;
 
-	$: componentContainerElement.style.width = showFooterActions
-		? `${1.9 + 1.9 * enabledFooterActions.length + (showCancelFooterAction ? 1.9 : 0)}rem`
-		: '1.9rem';
+	$: if (componentContainerElement) {
+		componentContainerElement.style.width = showFooterActions
+			? `${1.9 + 1.9 * enabledFooterActions.length + (showCancelFooterAction ? 1.9 : 0)}rem`
+			: '1.9rem';
+	}
 
 	$: if (!$currentAudioLoaded$) {
 		$togglePlaybackTitle$ = 'Audio file required';
