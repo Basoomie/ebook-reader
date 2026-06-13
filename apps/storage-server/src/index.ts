@@ -1,6 +1,6 @@
 import cors from 'cors';
 import express, { NextFunction, Request, Response } from 'express';
-import { existsSync, createReadStream, createWriteStream } from 'fs';
+import { existsSync, createWriteStream } from 'fs';
 import fs from 'fs/promises';
 import path from 'path';
 import { pipeline } from 'stream/promises';
@@ -24,7 +24,13 @@ if (!existsSync(DATA_ROOT)) {
 
 const app = express();
 
-app.use(cors({ origin: CORS_ORIGIN }));
+app.use(
+  cors({
+    origin: CORS_ORIGIN,
+    // Expose range-related headers so cross-origin <audio> can seek.
+    exposedHeaders: ['Content-Range', 'Accept-Ranges', 'Content-Length', 'Last-Modified'],
+  }),
+);
 
 // ---------------------------------------------------------------------------
 // PUT /audio-file?path=<file>
@@ -175,7 +181,9 @@ app.get('/list', requireAuth, async (req: Request, res: Response): Promise<void>
 // Returns file bytes with Last-Modified / Content-Length headers, or 404.
 // Supports HTTP Range requests (required for audio seeking in browsers).
 // ---------------------------------------------------------------------------
-app.get('/file', requireAuthGetFile, async (req: Request, res: Response): Promise<void> => {
+// res.sendFile handles Content-Type (from extension), Range requests (206),
+// Accept-Ranges, ETag, Last-Modified, and streaming — no memory spike for large files.
+app.get('/file', requireAuthGetFile, (req: Request, res: Response): void => {
   let absPath: string;
   try {
     absPath = resolveSafe((req.query.path as string) ?? '');
@@ -184,50 +192,17 @@ app.get('/file', requireAuthGetFile, async (req: Request, res: Response): Promis
     return;
   }
 
-  try {
-    const stat = await fs.stat(absPath);
-    const fileSize = stat.size;
-    const rangeHeader = req.headers.range;
-
-    res.setHeader('Accept-Ranges', 'bytes');
-    res.setHeader('Last-Modified', stat.mtime.toUTCString());
-
-    if (rangeHeader) {
-      const [unit, rangeStr] = rangeHeader.split('=');
-      if (unit !== 'bytes' || !rangeStr) {
-        res.status(416).json({ error: 'Invalid Range header' });
-        return;
+  res.sendFile(absPath, (err) => {
+    if (err && !res.headersSent) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT') {
+        res.status(404).json({ error: 'Not found' });
+      } else {
+        console.error('GET /file error:', err);
+        res.status(500).json({ error: 'Internal server error' });
       }
-      const [startStr, endStr] = rangeStr.split('-');
-      const start = parseInt(startStr, 10);
-      const end = endStr ? parseInt(endStr, 10) : fileSize - 1;
-
-      if (isNaN(start) || isNaN(end) || start > end || end >= fileSize) {
-        res.setHeader('Content-Range', `bytes */${fileSize}`);
-        res.status(416).json({ error: 'Range Not Satisfiable' });
-        return;
-      }
-
-      const chunkSize = end - start + 1;
-      res.status(206);
-      res.setHeader('Content-Range', `bytes ${start}-${end}/${fileSize}`);
-      res.setHeader('Content-Length', String(chunkSize));
-      res.setHeader('Content-Type', 'application/octet-stream');
-
-      createReadStream(absPath, { start, end }).pipe(res);
-    } else {
-      const data = await fs.readFile(absPath);
-      res.setHeader('Content-Length', String(fileSize));
-      res.status(200).send(data);
     }
-  } catch (err: any) {
-    if (err.code === 'ENOENT') {
-      res.status(404).json({ error: 'Not found' });
-    } else {
-      console.error('GET /file error:', err);
-      res.status(500).json({ error: 'Internal server error' });
-    }
-  }
+  });
 });
 
 // ---------------------------------------------------------------------------
