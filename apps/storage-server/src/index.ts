@@ -76,9 +76,9 @@ app.put('/audio-file', requireAuth, async (req: Request, res: Response): Promise
   });
 
   writeStream.on('finish', async () => {
+    uploadComplete = true; // set before any await — prevents cleanup() on normal connection close
     try {
       await fs.rename(tmpPath, absPath);
-      uploadComplete = true;
       const stat = await fs.stat(absPath);
       console.log(`PUT /audio-file: ${absPath} (${stat.size} bytes)`);
       res.json({ lastModified: stat.mtimeMs });
