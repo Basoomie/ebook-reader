@@ -314,7 +314,6 @@
 		$lastError$ = '';
 
 		try {
-			// TODO(phase1): sandboxElement path removed; TODO(phase5): restore mediaInfo path
 			await setMediaInfoInstance($playerEnableCover$, true, '');
 		} catch ({ message }: any) {
 			$lastError$ = `MediaInfo failure: ${message}`;
@@ -347,7 +346,6 @@
 		$lastError$ = '';
 
 		try {
-			// TODO(phase1): sandboxElement path removed; TODO(phase5): restore mediaInfo path
 			await setMediaInfoInstance($playerEnableCover$, true, '');
 		} catch ({ message }: any) {
 			$lastError$ = `MediaInfo failure: ${message}`;

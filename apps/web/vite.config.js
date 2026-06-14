@@ -16,7 +16,9 @@ const config = {
   },
   experimental: {
     prebundleSvelteLibraries: true
-  }
+  },
+  // Allow Vite to serve WASM files as URL assets (used by mediainfo.js and @ffmpeg/core)
+  assetsInclude: ['**/*.wasm']
 };
 
 export default config;

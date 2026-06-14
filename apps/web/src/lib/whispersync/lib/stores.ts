@@ -1,6 +1,6 @@
 // vendored from ttu-whispersync — MIT License — https://github.com/Renji-XD/ttu-whispersync
 import type { BooksDB, BooksDBData, ExtensionData } from './db';
-// TODO(phase5): import { FFmpeg } from '@ffmpeg/ffmpeg';
+import type { FFmpeg } from '@ffmpeg/ffmpeg';
 import {
 	Tabs,
 	type Subtitle,
@@ -12,7 +12,7 @@ import {
 	type BookMatch,
 } from './general';
 import type { IDBPDatabase } from 'idb';
-// TODO(phase5): import type { MediaInfo } from 'mediainfo.js';
+import type { MediaInfo } from 'mediainfo.js';
 import type { ActionListItem, Settings } from './settings';
 import { writable, type Subscriber, type Invalidator, type Unsubscriber } from 'svelte/store';
 import { revertWriteable } from './writeables/writeable-revert-store';
@@ -45,11 +45,9 @@ export const skipKeyListener$ = revertWriteable<boolean>(false);
 
 export const booksDB$ = writable<IDBPDatabase<BooksDB>>();
 
-// TODO(phase5): export const ffmpeg$ = writable<FFmpeg | undefined>();
-export const ffmpeg$ = writable<undefined>();
+export const ffmpeg$ = writable<FFmpeg | undefined>();
 
-// TODO(phase5): export const mediaInfo$ = writable<MediaInfo | undefined>();
-export const mediaInfo$ = writable<undefined>();
+export const mediaInfo$ = writable<MediaInfo<'object'> | undefined>();
 
 export const bookData$ = revertWriteable<BooksDBData>({ id: 0, title: '', elementHtml: '', lastBookModified: 0 });
 

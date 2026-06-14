@@ -22,7 +22,7 @@ import { getAudioMetadata, getMediaInfoCover } from './mediaInfo';
 import { getChapterData, initializeFFMPEG, putAudioFileInFFMPEG } from './ffmpeg';
 
 import { AudioProcessor } from './settings';
-// TODO(phase5): import type { MediaInfoType } from 'mediainfo.js';
+import type { MediaInfoType } from 'mediainfo.js';
 import { get } from 'svelte/store';
 import srtParser2 from 'srt-parser-2';
 
@@ -212,8 +212,7 @@ export async function updateAudio(
 	let isMP3VBR = false;
 	let audioSourceUrl = '';
 	let chapters: AudioChapter[] = [];
-	// TODO(phase5): let metadata: MediaInfoType | undefined;
-	let metadata: any;
+	let metadata: MediaInfoType | undefined;
 
 	if (!metadataOnly) {
 		paused$.set(true);
@@ -225,8 +224,6 @@ export async function updateAudio(
 
 	if (enableCover || enableChapters) {
 		try {
-			// TODO(phase1): sandboxElement path removed (sandbox not used in native mount)
-			// TODO(phase5): restore full mediaInfo path (getAudioMetadata requires mediainfo.js)
 			metadata = await getAudioMetadata(file, enableCover);
 
 			if (!metadata?.media) {

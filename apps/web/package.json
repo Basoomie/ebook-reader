@@ -34,6 +34,9 @@
     "vite": "5.4.21"
   },
   "dependencies": {
+    "@breezystack/lamejs": "^1.2.7",
+    "@ffmpeg/ffmpeg": "^0.12.15",
+    "@ffmpeg/util": "^0.12.2",
     "@floating-ui/dom": "^1.7.6",
     "@fortawesome/fontawesome-svg-core": "7.2.0",
     "@fortawesome/free-regular-svg-icons": "7.2.0",
@@ -43,9 +46,12 @@
     "@tanstack/svelte-virtual": "^3.13.28",
     "@zip.js/zip.js": "2.4.26",
     "balanced-match": "3.0.1",
+    "extendable-media-recorder": "^9.2.37",
+    "extendable-media-recorder-wav-encoder": "^7.0.137",
     "fake-indexeddb": "6.2.5",
     "fast-xml-parser": "5.8.0",
     "idb": "8.0.3",
+    "mediainfo.js": "^0.2.2",
     "p-limit": "7.3.0",
     "path-browserify": "1.0.1",
     "rxjs": "7.8.2",
@@ -54,6 +60,7 @@
     "svelte-fa": "4.0.4",
     "svelte-gestures": "5.0.7",
     "svelte-meta-tags": "3.1.4",
-    "ua-parser-js": "2.0.9"
+    "ua-parser-js": "2.0.9",
+    "wavesurfer.js": "^7.12.8"
   }
 }
