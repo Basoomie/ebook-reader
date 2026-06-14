@@ -541,7 +541,9 @@
 
 			await $booksDB$.put('data', newData);
 
-			window.location.reload();
+			// Let the page upload the matched bookdata to NAS before reloading.
+			// Falls back to a plain reload if up-sync is not configured.
+			document.dispatchEvent(new CustomEvent('ttu-action', { detail: { type: 'syncAndReload' } }));
 		} catch ({ message }: any) {
 			$lastError$ = `Failed to save data: ${message}`;
 

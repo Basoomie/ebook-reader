@@ -122,7 +122,7 @@
 	let playerElement: Player;
 	let addedSubtitleByDropzone = false;
 	let addedAudioByDropzone = false;
-	let nasUploadState: { progress: number; error: string } | null = null;
+	let nasUploadState: { progress: number; error: string; done?: boolean } | null = null;
 	let changeSubtitleTitle = '';
 	let resetBookTitle = '';
 	let changeAudioTitle = '';
@@ -401,7 +401,8 @@
 							const nasUrl = buildAudioNasUrl(nasConfig, nasFileName);
 							$currentAudioSourceUrl$ = nasUrl;
 							URL.revokeObjectURL(capturedBlobUrl);
-							nasUploadState = null;
+							nasUploadState = { progress: 1, error: '', done: true };
+							setTimeout(() => { nasUploadState = null; }, 2000);
 						} catch ({ message }: any) {
 							nasUploadState = { progress: 0, error: `NAS upload failed: ${message}` };
 						}
@@ -1228,6 +1229,8 @@
 		<div class="m-y-xs">
 			{#if nasUploadState.error}
 				<span class="audio-time">{nasUploadState.error}</span>
+			{:else if nasUploadState.done}
+				<span class="audio-time">Audio synced to NAS</span>
 			{:else}
 				<span class="audio-time">Uploading to NAS… {Math.round(nasUploadState.progress * 100)}%</span>
 				<Progress currentProgress={nasUploadState.progress * 100} />

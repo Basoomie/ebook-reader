@@ -607,6 +607,16 @@
         detail.syncType === StorageDataType.SUBTITLE)
     ) {
       scheduleReplication(detail.syncType);
+    } else if (detail.type === 'syncAndReload') {
+      // Dispatched by onSaveMatch after writing matched HTML to local IDB.
+      // Upload the updated bookdata to the NAS before reloading so other
+      // devices pick up the highlight spans without re-matching.
+      if (upSyncEnabled) {
+        scheduleReplication(StorageDataType.DATA);
+        executeReplication(false).finally(() => window.location.reload());
+      } else {
+        window.location.reload();
+      }
     }
   }
   /** Experimental Code - May be removed any time without warning */

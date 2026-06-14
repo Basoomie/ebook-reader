@@ -27,4 +27,29 @@ The following references are isolated behind TODO comments so the project compil
 
 - SRT + playback position + matched book HTML sync via the reader's existing replication pipeline
 - Audio blob is NOT synced via replicator; it uploads/streams via the storage server `/file` endpoint
-- Last-write-wins semantics for re-match/reset are preserved verbatim (see `onSaveMatch` in Match.svelte)
+
+### What syncs and how
+
+| Data | Written by | IDB store | NAS file prefix | Sync trigger |
+|------|-----------|-----------|-----------------|--------------|
+| Playback position | `Player.svelte` | `audioBook` | `audioBook_` | `ttu-action` `syncType:'audioBook'` → `scheduleReplication` |
+| Subtitle data | `actions.ts` `persistSubtitles` | `subtitle` | `subtitles_` | `ttu-action` `syncType:'subtitle'` → `scheduleReplication` |
+| Matched book HTML | `Match.svelte` `onSaveMatch` | `data` | `bookdata_` | `ttu-action` `type:'syncAndReload'` → `executeReplication(DATA)` → reload |
+| Audio file | `Audiobook.svelte` | (NAS only) | `audio_` | Streaming PUT via XHR; never through replicator |
+
+### Last-write-wins semantics
+
+All data types use a `lastXxxModified` timestamp embedded in the NAS filename. The replicator compares source vs target filename; if they differ, the source wins (i.e., the device that most recently wrote that type wins).
+
+**Match/re-match on device A:**
+1. `onSaveMatch` writes `{ htmlBackup: oldElementHtml, elementHtml: wrappedHtml, lastBookModified: now }` to local IDB.
+2. A `syncAndReload` event triggers `executeReplication(DATA)` — the local bookdata (newer `lastBookModified`) is uploaded to the NAS.
+3. Page reloads. Device B, on next open, runs `syncDownData` which downloads the newer bookdata and renders highlights.
+
+**Reset on device A:**
+1. `onResetBook` / `onResetAll` writes `{ elementHtml: htmlBackup, lastBookModified: now }` (removes `htmlBackup`).
+2. The reset does `location.reload()` — no explicit sync dispatch (reset is local and immediate). The next auto-replication cycle or manual sync will upload the reset state.
+3. Device B downloads the reset state on its next open.
+
+**Re-match conflict (both devices match the same book independently):**
+- Whichever device syncs to the NAS last wins. The other device will download the winning state on next open. No merge; last-write-wins.
