@@ -15,8 +15,6 @@ export interface NasAudioConfig extends NasServerConfig {
 
 // Prefix shared with the server-side guard on PUT /audio-file.
 export const AUDIO_FILE_PREFIX = 'audio_';
-// Pointer file that stores a remote URL instead of uploading audio bytes.
-export const AUDIO_URL_FILENAME = 'audio_url.txt';
 
 // Mirrors BaseStorageHandler.sanitizeForFilename (protected static — cannot import externally).
 export function sanitizeTitleForNas(title: string): string {
@@ -45,30 +43,7 @@ export async function findNasAudio(config: NasAudioConfig): Promise<string | und
 	const res = await fetch(url, { headers: { Authorization: `Bearer ${config.authToken}` } });
 	if (!res.ok) return undefined;
 	const entries: { name: string; isDirectory: boolean }[] = await res.json();
-	return entries.find(
-		(e) => !e.isDirectory && e.name.startsWith(AUDIO_FILE_PREFIX) && e.name !== AUDIO_URL_FILENAME,
-	)?.name;
-}
-
-// Returns the URL stored in the audio_url.txt pointer file, or undefined.
-export async function findNasAudioUrl(config: NasAudioConfig): Promise<string | undefined> {
-	const filePath = `${config.titleFolder}/${AUDIO_URL_FILENAME}`;
-	const url = `${config.serverUrl}/file?path=${encodeURIComponent(filePath)}&token=${encodeURIComponent(config.authToken)}`;
-	const res = await fetch(url);
-	if (!res.ok) return undefined;
-	const text = (await res.text()).trim();
-	return text || undefined;
-}
-
-// Saves a remote URL as the audio pointer file in the book's NAS folder.
-export async function saveAudioUrl(config: NasAudioConfig, audioUrl: string): Promise<void> {
-	const filePath = `${config.titleFolder}/${AUDIO_URL_FILENAME}`;
-	const res = await fetch(`${config.serverUrl}/file?path=${encodeURIComponent(filePath)}`, {
-		method: 'PUT',
-		headers: { Authorization: `Bearer ${config.authToken}`, 'Content-Type': 'text/plain' },
-		body: audioUrl,
-	});
-	if (!res.ok) throw new Error(`HTTP ${res.status}`);
+	return entries.find((e) => !e.isDirectory && e.name.startsWith(AUDIO_FILE_PREFIX))?.name;
 }
 
 // Stream-uploads a File to the NAS /audio-file endpoint using XHR so upload

@@ -85,7 +85,7 @@
 	import { onDestroy, onMount, setContext } from 'svelte';
 	import { writable, get } from 'svelte/store';
 	import type { NasServerConfig } from '../lib/nas';
-	import { sanitizeTitleForNas, buildAudioNasUrl, findNasAudio, findNasAudioUrl } from '../lib/nas';
+	import { sanitizeTitleForNas, buildAudioNasUrl, findNasAudio } from '../lib/nas';
 
 	export let componentContainerElement: HTMLDivElement;
 	export let bookContentElement: HTMLDivElement;
@@ -524,22 +524,16 @@
 			!$currentSubtitleFile$ && $extensionData$.lastSubtitle ? $extensionData$.lastSubtitle : undefined;
 		let lastAudio = !$currentAudioSourceUrl$ && $extensionData$.lastAudio ? $extensionData$.lastAudio : undefined;
 
-		// Phase 2: if the NAS has audio (URL pointer or uploaded file) for this book,
-		// load it directly — no local file handle or user-gesture dialog needed.
+		// Phase 2: if the NAS has audio for this book, load it directly — no local
+		// file handle or user-gesture dialog needed for audio.
 		const currentNasConfig = get(nasAudioConfig$);
 		if (currentNasConfig && !$currentAudioSourceUrl$) {
 			try {
-				const nasAudioUrl = await findNasAudioUrl(currentNasConfig);
-				if (nasAudioUrl) {
-					await setAudioContext('', '', undefined, { coverUrl: '', chapters: [], audioSourceUrl: nasAudioUrl });
+				const nasFile = await findNasAudio(currentNasConfig);
+				if (nasFile) {
+					const nasUrl = buildAudioNasUrl(currentNasConfig, nasFile);
+					await setAudioContext('', '', undefined, { coverUrl: '', chapters: [], audioSourceUrl: nasUrl });
 					lastAudio = undefined;
-				} else {
-					const nasFile = await findNasAudio(currentNasConfig);
-					if (nasFile) {
-						const nasUrl = buildAudioNasUrl(currentNasConfig, nasFile);
-						await setAudioContext('', '', undefined, { coverUrl: '', chapters: [], audioSourceUrl: nasUrl });
-						lastAudio = undefined;
-					}
 				}
 			} catch {
 				// NAS unreachable — fall through to local file handle path

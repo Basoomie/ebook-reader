@@ -96,7 +96,7 @@
 	import { getContext, tick } from 'svelte';
 	import { get } from 'svelte/store';
 	import TimeEditInput from './TimeEditInput.svelte';
-	import { findNasAudio, uploadAudioToNas, buildAudioNasUrl, saveAudioUrl } from '../lib/nas';
+	import { findNasAudio, uploadAudioToNas, buildAudioNasUrl } from '../lib/nas';
 
 	export let showMenu: boolean;
 
@@ -123,9 +123,6 @@
 	let addedSubtitleByDropzone = false;
 	let addedAudioByDropzone = false;
 	let nasUploadState: { progress: number; error: string } | null = null;
-	let audioUrlInput = '';
-	let audioUrlLoading = false;
-	let audioUrlError = '';
 	let changeSubtitleTitle = '';
 	let resetBookTitle = '';
 	let changeAudioTitle = '';
@@ -893,26 +890,6 @@
 		subtitleListElement?.scrollToSubtitle(true);
 	}
 
-	async function onSetAudioUrl() {
-		const url = audioUrlInput.trim();
-		if (!url.startsWith('http://') && !url.startsWith('https://')) {
-			audioUrlError = 'URL must start with http:// or https://';
-			return;
-		}
-		audioUrlError = '';
-		audioUrlLoading = true;
-		try {
-			const nasConfig = get(nasAudioConfig$);
-			if (nasConfig) {
-				await saveAudioUrl(nasConfig, url);
-			}
-			$currentAudioSourceUrl$ = url;
-			audioUrlInput = '';
-		} catch ({ message }: any) {
-			audioUrlError = `Failed to save URL: ${message}`;
-		}
-		audioUrlLoading = false;
-	}
 </script>
 
 <div class="flex m-y-s">
@@ -1247,29 +1224,6 @@
 			/>
 		{/if}
 	</div>
-	{#if $nasAudioConfig$ && !$currentAudioSourceUrl$ && nasUploadState === null}
-		<div class="flex m-t-xs" style="gap: 4px; align-items: center;">
-			<input
-				type="url"
-				placeholder="Or paste audio URL (e.g. ABS stream URL)…"
-				class="flex-1"
-				style="height: 35px; padding: 0 8px;"
-				bind:value={audioUrlInput}
-				on:keydown={(e) => { if (e.key === 'Enter') onSetAudioUrl(); }}
-				disabled={audioUrlLoading}
-			/>
-			<button
-				title="Use this URL as audio source"
-				disabled={audioUrlLoading || !audioUrlInput.trim()}
-				on:click={onSetAudioUrl}
-			>
-				<Icon path={mdiCheck} />
-			</button>
-		</div>
-		{#if audioUrlError}
-			<span class="audio-time">{audioUrlError}</span>
-		{/if}
-	{/if}
 	{#if nasUploadState !== null}
 		<div class="m-y-xs">
 			{#if nasUploadState.error}
