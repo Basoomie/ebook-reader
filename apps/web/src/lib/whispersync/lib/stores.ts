@@ -15,11 +15,13 @@ import type { IDBPDatabase } from 'idb';
 // TODO(phase5): import type { MediaInfo } from 'mediainfo.js';
 import type { ActionListItem, Settings } from './settings';
 import { writable, type Subscriber, type Invalidator, type Unsubscriber } from 'svelte/store';
-import { writableBooleanStore } from './writeables/writeable-boolean-store';
-import { writableNumberStore } from './writeables/writeable-number-store';
-import { writeableArrayStore } from './writeables/writeable-object-store';
 import { revertWriteable } from './writeables/writeable-revert-store';
-import { writableStringStore } from './writeables/writeable-string-store';
+import {
+	writableBooleanStore,
+	writableNumberStore,
+	writeableArrayStore,
+	writableStringStore,
+} from './writeables/writeable-reader-store';
 
 export interface SettingsStore<T> {
 	subscribe: (this: void, run: Subscriber<T>, invalidate?: Invalidator<T> | undefined) => Unsubscriber;
