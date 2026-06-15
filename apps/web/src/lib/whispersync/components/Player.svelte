@@ -896,6 +896,7 @@
 	<audio
 		controls
 		class="hidden"
+		crossorigin="anonymous"
 		src={$currentAudioSourceUrl$}
 		bind:currentTime={$currentTime$}
 		bind:duration={$duration$}

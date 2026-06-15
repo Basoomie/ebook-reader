@@ -14,6 +14,7 @@ import { caluclatePercentage, throwIfAborted } from './util';
 import { cleanFiles, getAudio } from './ffmpeg';
 import {
 	currentAudioFile$,
+	currentAudioLoaded$,
 	currentCoverUrl$,
 	currentSubtitleFile$,
 	exportCancelController$,
@@ -398,6 +399,7 @@ export async function exportToAnki(subtitlesToExport: Subtitle[][], isUpdate: bo
 	exportCancelController$.set(abortController);
 
 	const currentAudioFile = get(currentAudioFile$);
+	const currentAudioLoaded = get(currentAudioLoaded$);
 	const currentCoverUrl = get(currentCoverUrl$);
 	const exportAudioFormat = get(settings$.exportAudioFormat$);
 	const exportAudioBitrate = get(settings$.exportAudioBitrate$);
@@ -547,10 +549,15 @@ export async function exportToAnki(subtitlesToExport: Subtitle[][], isUpdate: bo
 		let audioBuffer: ArrayBufferLike | undefined;
 
 		try {
-			if (ankiSoundField && currentAudioFile) {
+			// FFMPEG clips the source file directly, so it needs currentAudioFile$ (local File
+			// with real bytes). The recorder captures the live <audio> element output instead, so
+			// it only needs the element to have a loaded source (local file or NAS stream).
+			const canCaptureAudio = isFFMPEG ? !!currentAudioFile : currentAudioLoaded;
+
+			if (ankiSoundField && canCaptureAudio) {
 				if (isFFMPEG) {
 					audioBuffer = await getAudio(
-						currentAudioFile,
+						currentAudioFile!,
 						subtitles,
 						false,
 						abortController.signal,
