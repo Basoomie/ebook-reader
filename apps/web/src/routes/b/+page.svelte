@@ -1915,6 +1915,7 @@
           bookContentElement={bookContentEl}
           currentBookId={$rawBookData$.id}
           readerDatabase={readerDb}
+          externalElementHtml={$rawBookData$.elementHtml}
           {nasServerConfig}
         />
       {/if}

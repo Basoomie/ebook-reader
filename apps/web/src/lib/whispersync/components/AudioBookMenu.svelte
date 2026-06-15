@@ -95,6 +95,7 @@
 	export let currentBookId: number;
 	export let readerDatabase: IDBPDatabase<any>;
 	export let nasServerConfig: NasServerConfig | undefined = undefined;
+	export let externalElementHtml = '';
 
 	const nasAudioConfig$ = writable<import('../lib/nas').NasAudioConfig | undefined>(undefined);
 
@@ -443,12 +444,16 @@
 			// Phase 1: set booksDB$ directly from the reader's database — no event bootstrap needed
 			booksDB$.set(readerDatabase as unknown as IDBPDatabase<BooksDB>);
 
-			const book = await $booksDB$.get('data', currentBookId);
+			let book = await $booksDB$.get('data', currentBookId);
 
 			if (!book || !book.title || (!book.elementHtml && !book.storageSource)) {
 				throw new Error(`required data for id ${currentBookId} not found`);
 			} else if (!book.elementHtml && book.storageSource) {
-				throw new Error(`books from external storage sources are currently not supported`);
+				if (!externalElementHtml) {
+					throw new Error(`books from external storage sources are currently not supported`);
+				}
+
+				book = { ...book, elementHtml: externalElementHtml };
 			}
 
 			body = parseHTML(new DOMParser(), book.elementHtml);
