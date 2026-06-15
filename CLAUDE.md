@@ -1,5 +1,4 @@
-This repo is mid-integration. The authoritative spec is @whispersync-integration-plan.md.
-Before any work, read its Section A. Standing rules (Section C):
+This repo is mid-integration. Standing rules:
 - Never write into or near Calibre-managed ebook folders.
 - Preserve whispersync's match/re-match/reset semantics; do not "improve" them.
 - Keep audio out of the replicator.
