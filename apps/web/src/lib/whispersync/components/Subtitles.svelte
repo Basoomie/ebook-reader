@@ -13,9 +13,9 @@
 		lastError$,
 		settings$,
 	} from '../lib/stores';
-	import { onMount, tick } from 'svelte';
+	import { onDestroy, onMount, tick } from 'svelte';
 	import type { Readable } from 'svelte/store';
-	import { createVirtualizer, type SvelteVirtualizer } from '@tanstack/svelte-virtual';
+	import { createVirtualizer, type SvelteVirtualizer, type VirtualItem } from '@tanstack/svelte-virtual';
 
 	export let subtitles: Subtitle[];
 	export let skipUpdates = false;
@@ -36,6 +36,16 @@
 				estimateSize: () => 150,
 				getScrollElement: () => virtualListElement,
 				getItemKey: (index) => subtitles[index].id,
+			});
+
+			// Svelte's $virtualizer auto-subscription uses reference equality, and
+			// @tanstack/svelte-virtual's derived store re-emits the same mutated
+			// instance on every change, so $: blocks/template expressions that read
+			// $virtualizer never re-run after the first emission. Subscribe directly
+			// and copy what we render into plain locals, which DO trigger updates.
+			unsubscribeVirtualizer = virtualizer.subscribe((v) => {
+				displayedSubtitles = v.getVirtualItems();
+				totalSize = v.getTotalSize();
 			});
 		}
 
@@ -60,6 +70,10 @@
 			return;
 		}
 
+		if (!force && suppressAutoScroll) {
+			return;
+		}
+
 		const { previous, current, useTimeFallback } = $activeSubtitle$;
 		const currentTime = $currentTime$;
 
@@ -81,18 +95,26 @@
 			return;
 		}
 
-		//@ts-ignore
-		while (!$virtualizer.itemSizeCache.has(subtitles[subtitleIndex].id)) {
+		try {
+			isProgrammaticScroll = true;
+
+			//@ts-ignore
+			while (!$virtualizer.itemSizeCache.has(subtitles[subtitleIndex].id)) {
+				measureElements();
+
+				$virtualizer.scrollToIndex(subtitleIndex, { align: 'auto' });
+
+				await new Promise<void>((resolve) => setTimeout(resolve));
+			}
+
 			measureElements();
 
 			$virtualizer.scrollToIndex(subtitleIndex, { align: 'auto' });
-
+		} finally {
 			await new Promise<void>((resolve) => setTimeout(resolve));
+
+			isProgrammaticScroll = false;
 		}
-
-		measureElements();
-
-		$virtualizer.scrollToIndex(subtitleIndex, { align: 'auto' });
 	}
 
 	const {
@@ -125,8 +147,12 @@
 	let subtitleInteractionTimer: number | undefined;
 	let isPointerDown = false;
 	let containerHeight = 0;
-
-	$: displayedSubtitles = virtualizer ? $virtualizer.getVirtualItems() : [];
+	let suppressAutoScroll = false;
+	let suppressAutoScrollTimer: number | undefined;
+	let isProgrammaticScroll = false;
+	let displayedSubtitles: VirtualItem[] = [];
+	let totalSize = 0;
+	let unsubscribeVirtualizer: (() => void) | undefined;
 
 	$: onResetList($lastError$);
 
@@ -143,6 +169,22 @@
 	}
 
 	onMount(onResetList);
+
+	onDestroy(() => unsubscribeVirtualizer?.());
+
+	function onContainerScroll() {
+		if (isProgrammaticScroll) {
+			return;
+		}
+
+		clearTimeout(suppressAutoScrollTimer);
+
+		suppressAutoScroll = true;
+		suppressAutoScrollTimer = window.setTimeout(() => {
+			suppressAutoScroll = false;
+			suppressAutoScrollTimer = undefined;
+		}, 5000);
+	}
 
 	function onSubtitleClick(event: MouseEventWithElement<HTMLDivElement>) {
 		if (
@@ -241,9 +283,10 @@
 	bind:this={virtualListElement}
 	on:pointerdown={() => (isPointerDown = true)}
 	on:pointerup={() => (isPointerDown = false)}
+	on:scroll={onContainerScroll}
 >
 	{#if containerHeight > 0 && virtualizer}
-		<div class="relative w-full" style:height={`${$virtualizer.getTotalSize()}px`}>
+		<div class="relative w-full" style:height={`${totalSize}px`}>
 			<div
 				class="absolute top-0 left-0 w-full"
 				style={`transform: translateY(${
