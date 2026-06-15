@@ -313,26 +313,29 @@
 		$isLoading$ = true;
 		$lastError$ = '';
 
-		try {
-			await setMediaInfoInstance($playerEnableCover$, true, '');
-		} catch ({ message }: any) {
-			$lastError$ = `MediaInfo failure: ${message}`;
-			$isLoading$ = false;
-
-			return;
-		}
-
-		if ($playerEnableCover$ && $currentAudioFile$) {
+		if ($playerEnableCover$) {
 			try {
-				const { coverUrl } = await updateAudio($currentAudioFile$, false, true);
-
-				URL.revokeObjectURL($currentCoverUrl$);
-
-				$currentCoverUrl$ = coverUrl;
+				await setMediaInfoInstance(true, true, '');
 			} catch ({ message }: any) {
-				$lastError$ = `Failed to set cover: ${message}`;
+				$lastError$ = `MediaInfo failure: ${message}`;
+				$playerEnableCover$ = false;
+				$isLoading$ = false;
+
+				return;
 			}
-		} else if (!$playerEnableCover$) {
+
+			if ($currentAudioFile$) {
+				try {
+					const { coverUrl } = await updateAudio($currentAudioFile$, false, true);
+
+					URL.revokeObjectURL($currentCoverUrl$);
+
+					$currentCoverUrl$ = coverUrl;
+				} catch ({ message }: any) {
+					$lastError$ = `Failed to set cover: ${message}`;
+				}
+			}
+		} else {
 			URL.revokeObjectURL($currentCoverUrl$);
 
 			$currentCoverUrl$ = '';
@@ -345,28 +348,31 @@
 		$isLoading$ = true;
 		$lastError$ = '';
 
-		try {
-			await setMediaInfoInstance($playerEnableCover$, true, '');
-		} catch ({ message }: any) {
-			$lastError$ = `MediaInfo failure: ${message}`;
-			$isLoading$ = false;
-
-			return;
-		}
-
-		if ($playerEnableChapters$ && $currentAudioFile$) {
+		if ($playerEnableChapters$) {
 			try {
-				let { chapters } = await updateAudio($currentAudioFile$, false, true);
-
-				if (!chapters.length && $exportAudioProcessor$ === AudioProcessor.FFMPEG) {
-					chapters = await getChapterData($currentAudioFile$);
-				}
-
-				$currentAudioChapters$ = chapters;
+				await setMediaInfoInstance($playerEnableCover$, true, '');
 			} catch ({ message }: any) {
-				$lastError$ = `Failed to set chapters: ${message}`;
+				$lastError$ = `MediaInfo failure: ${message}`;
+				$playerEnableChapters$ = false;
+				$isLoading$ = false;
+
+				return;
 			}
-		} else if (!$playerEnableChapters$) {
+
+			if ($currentAudioFile$) {
+				try {
+					let { chapters } = await updateAudio($currentAudioFile$, false, true);
+
+					if (!chapters.length && $exportAudioProcessor$ === AudioProcessor.FFMPEG) {
+						chapters = await getChapterData($currentAudioFile$);
+					}
+
+					$currentAudioChapters$ = chapters;
+				} catch ({ message }: any) {
+					$lastError$ = `Failed to set chapters: ${message}`;
+				}
+			}
+		} else {
 			$currentAudioChapters$ = [];
 		}
 

@@ -15,7 +15,8 @@ const imageMagicNumbers: Map<string, string> = new Map([
 	['R0lGODlh', 'image/gif'],
 ]);
 
-let mediaInfoInstance: MediaInfo<'object'>;
+let mediaInfoInstance: MediaInfo<'object'> | undefined;
+let mediaInfoCoverData: boolean | undefined;
 
 function getImageMimeType(base64: string | undefined) {
 	if (!base64) {
@@ -35,7 +36,7 @@ export function setMediaInfoInstance(
 	_mediaInfoUrl: string | undefined,
 ): Promise<void> {
 	return new Promise((resolve, reject) => {
-		if (mediaInfoInstance && !resetInstance) {
+		if (mediaInfoInstance && (!resetInstance || mediaInfoCoverData === coverData)) {
 			return resolve();
 		}
 
@@ -55,11 +56,40 @@ export function setMediaInfoInstance(
 				}
 
 				mediaInfoInstance = mediainfo;
+				mediaInfoCoverData = coverData;
 
 				resolve();
 			},
 			({ message }: any) => reject(new Error(`Failed to create MediaInfo instance - ${message}`)),
 		);
+	});
+}
+
+export async function getAudioMetadataFromUrl(url: string, coverData: boolean): Promise<MediaInfoType> {
+	await setMediaInfoInstance(coverData, false, '');
+
+	const headResponse = await fetch(url, { method: 'HEAD' });
+	const fileSize = parseInt(headResponse.headers.get('content-length') ?? '0', 10);
+
+	if (!fileSize) {
+		throw new Error('Cannot determine file size for metadata extraction');
+	}
+
+	const getSize = () => fileSize;
+	const readChunk: ReadChunkFunc = (chunkSize, offset) =>
+		fetch(url, {
+			headers: { Range: `bytes=${offset}-${Math.min(offset + chunkSize, fileSize) - 1}` },
+		})
+			.then((r) => r.arrayBuffer())
+			.then((buf) => new Uint8Array(buf));
+
+	return new Promise<MediaInfoType>((resolve, reject) => {
+		mediaInfoInstance!
+			.analyzeData(getSize, readChunk)
+			.then(resolve)
+			.catch(({ message }: any) =>
+				reject(new Error(`Failed to get audio metadata from URL - ${message}`)),
+			);
 	});
 }
 
@@ -93,7 +123,7 @@ export async function getAudioMetadata(
 				fileReader.readAsArrayBuffer(file.slice(offset, offset + chunkSize));
 			});
 
-		mediaInfoInstance
+		mediaInfoInstance!
 			.analyzeData(getSize, readChunk)
 			.then((metadata) => resolve(metadata))
 			.catch(({ message }: any) =>

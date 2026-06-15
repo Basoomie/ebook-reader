@@ -9,6 +9,8 @@
 	import { Action, executeAction } from '../lib/actions';
 	import type { BooksDB } from '../lib/db';
 	import { setAudioContext, setSubtitleContext, updateAudio, updateSubtitles, verifyPermissions } from '../lib/files';
+	import { getAudioMetadataFromUrl, getMediaInfoCover } from '../lib/mediaInfo';
+	import type { AudioChapter } from '../lib/general';
 	import type { IDBPDatabase } from 'idb';
 	import { type Context, Tabs, type Subtitle, getDummySubtitle } from '../lib/general';
 	import { AudioProcessor, ReaderMenuOpenMode, ReaderMenuPauseMode } from '../lib/settings';
@@ -68,6 +70,7 @@
 		getSubtitleIdFromElement,
 		parseHTML,
 		toTimeStamp,
+		toTimeString,
 		between,
 	} from '../lib/util';
 	import Match from './Match.svelte';
@@ -127,6 +130,8 @@
 		playerRewindTime$,
 		playerFastForwardTime$,
 		playerAltFastForwardTime$,
+		playerEnableCover$,
+		playerEnableChapters$,
 		ankiUrl$,
 		ankiDeck$,
 		ankiModel$,
@@ -532,7 +537,64 @@
 				const nasFile = await findNasAudio(currentNasConfig);
 				if (nasFile) {
 					const nasUrl = buildAudioNasUrl(currentNasConfig, nasFile);
-					await setAudioContext('', '', undefined, { coverUrl: '', chapters: [], audioSourceUrl: nasUrl });
+					const enableCover = get(playerEnableCover$);
+					const enableChapters = get(playerEnableChapters$);
+
+					let coverUrl = '';
+					let chapters: AudioChapter[] = [];
+
+					if (enableCover || enableChapters) {
+						try {
+							const metadata = await getAudioMetadataFromUrl(nasUrl, enableCover);
+
+							if (metadata?.media) {
+								const generalTrack = metadata.media.track.find(
+									(t: any) => t['@type'] === 'General',
+								);
+
+								if (generalTrack) {
+									if (enableCover) {
+										coverUrl = getMediaInfoCover(generalTrack.Cover_Data);
+									}
+
+									if (enableChapters) {
+										for (const track of metadata.media.track) {
+											const extraKeys = Object.keys(track.extra || {});
+
+											if (
+												track['@type'] !== 'Menu' ||
+												!extraKeys.length ||
+												!extraKeys[0].match(/_(\d{2}_\d{2}_\d{2}_\d{3})/)
+											) {
+												continue;
+											}
+
+											for (const extraKey of extraKeys) {
+												const timeParts = extraKey.split('_');
+												const label = track.extra![extraKey] as string;
+												const startSeconds =
+													Number.parseInt(timeParts[1], 10) * 3600 +
+													Number.parseInt(timeParts[2], 10) * 60 +
+													Number.parseInt(timeParts[3], 10) +
+													Number.parseInt(timeParts[4], 10) / 1000;
+
+												chapters.push({
+													key: `${label}_${startSeconds}`,
+													label,
+													startSeconds,
+													startText: toTimeString(startSeconds),
+												});
+											}
+										}
+									}
+								}
+							}
+						} catch {
+							// ignore — load audio without cover/chapters
+						}
+					}
+
+					await setAudioContext('', '', undefined, { coverUrl, chapters, audioSourceUrl: nasUrl });
 					lastAudio = undefined;
 				}
 			} catch {
