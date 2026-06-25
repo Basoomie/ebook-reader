@@ -1916,6 +1916,7 @@
           currentBookId={$rawBookData$.id}
           readerDatabase={readerDb}
           externalElementHtml={$rawBookData$.elementHtml}
+          externalBlobs={$rawBookData$.blobs}
           {nasServerConfig}
         />
       {/if}
