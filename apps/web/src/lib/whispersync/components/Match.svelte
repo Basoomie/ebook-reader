@@ -539,14 +539,6 @@
 				lastBookModified: Date.now(),
 			};
 
-			// eslint-disable-next-line no-console
-			console.log(
-				'[ws-debug] onSaveMatch: bookData blobs keys:',
-				Object.keys($bookData$.blobs || {}).length,
-				'newData blobs keys:',
-				Object.keys(newData.blobs || {}).length,
-			);
-
 			await $booksDB$.put('data', newData);
 
 			// Let the page upload the matched bookdata to NAS before reloading.

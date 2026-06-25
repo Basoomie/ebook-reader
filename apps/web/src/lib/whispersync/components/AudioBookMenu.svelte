@@ -462,32 +462,18 @@
 
       let book = await $booksDB$.get('data', currentBookId);
 
-      // eslint-disable-next-line no-console
-      console.log(
-        '[ws-debug] local book fetch: elementHtml len:',
-        book?.elementHtml?.length || 0,
-        'blobs keys:',
-        Object.keys(book?.blobs || {}).length,
-        'storageSource:',
-        book?.storageSource,
-        'externalBlobs keys:',
-        Object.keys(externalBlobs || {}).length
-      );
-
       if (!book || !book.title || (!book.elementHtml && !book.storageSource)) {
         throw new Error(`required data for id ${currentBookId} not found`);
-      } else if (!book.elementHtml && book.storageSource) {
+      } else if (book.storageSource) {
         if (!externalElementHtml) {
           throw new Error(`books from external storage sources are currently not supported`);
         }
 
-        book = { ...book, elementHtml: externalElementHtml, blobs: externalBlobs || book.blobs };
-
-        // eslint-disable-next-line no-console
-        console.log(
-          '[ws-debug] after fallback merge: blobs keys:',
-          Object.keys(book.blobs || {}).length
-        );
+        // The local DB row for storage-source books may have elementHtml cached
+        // locally without its accompanying blobs, so the external (freshly
+        // fetched) data is always authoritative here, not just a fallback for
+        // an empty elementHtml.
+        book = { ...book, elementHtml: externalElementHtml, blobs: externalBlobs || {} };
       }
 
       body = parseHTML(new DOMParser(), book.elementHtml);

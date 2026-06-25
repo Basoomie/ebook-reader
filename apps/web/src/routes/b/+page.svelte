@@ -1910,8 +1910,6 @@
       role="none"
     >
       {#if $rawBookData$ && bookContentEl && readerDb}
-        <!-- eslint-disable-next-line no-console -->
-        {(console.log('[ws-debug] rawBookData blobs keys:', Object.keys($rawBookData$.blobs || {}).length, 'elementHtml len:', $rawBookData$.elementHtml?.length || 0, 'storageSource:', $rawBookData$.storageSource), '')}
         <AudioBookMenu
           componentContainerElement={whisperContainerEl}
           bookContentElement={bookContentEl}
