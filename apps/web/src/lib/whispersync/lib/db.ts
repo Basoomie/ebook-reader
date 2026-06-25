@@ -7,6 +7,7 @@ interface BooksDbData {
 	id: number;
 	title: string;
 	elementHtml: string;
+	blobs?: Record<string, Blob>;
 	lastBookModified: number;
 	storageSource?: string;
 	htmlBackup?: string;

@@ -102,6 +102,7 @@
   export let readerDatabase: IDBPDatabase<any>;
   export let nasServerConfig: NasServerConfig | undefined = undefined;
   export let externalElementHtml = '';
+  export let externalBlobs: Record<string, Blob> | undefined = undefined;
 
   const nasAudioConfig$ = writable<import('../lib/nas').NasAudioConfig | undefined>(undefined);
 
@@ -468,7 +469,7 @@
           throw new Error(`books from external storage sources are currently not supported`);
         }
 
-        book = { ...book, elementHtml: externalElementHtml };
+        book = { ...book, elementHtml: externalElementHtml, blobs: externalBlobs || book.blobs };
       }
 
       body = parseHTML(new DOMParser(), book.elementHtml);
