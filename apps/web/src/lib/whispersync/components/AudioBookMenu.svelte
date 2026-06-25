@@ -462,6 +462,18 @@
 
       let book = await $booksDB$.get('data', currentBookId);
 
+      // eslint-disable-next-line no-console
+      console.log(
+        '[ws-debug] local book fetch: elementHtml len:',
+        book?.elementHtml?.length || 0,
+        'blobs keys:',
+        Object.keys(book?.blobs || {}).length,
+        'storageSource:',
+        book?.storageSource,
+        'externalBlobs keys:',
+        Object.keys(externalBlobs || {}).length
+      );
+
       if (!book || !book.title || (!book.elementHtml && !book.storageSource)) {
         throw new Error(`required data for id ${currentBookId} not found`);
       } else if (!book.elementHtml && book.storageSource) {
@@ -470,6 +482,12 @@
         }
 
         book = { ...book, elementHtml: externalElementHtml, blobs: externalBlobs || book.blobs };
+
+        // eslint-disable-next-line no-console
+        console.log(
+          '[ws-debug] after fallback merge: blobs keys:',
+          Object.keys(book.blobs || {}).length
+        );
       }
 
       body = parseHTML(new DOMParser(), book.elementHtml);
