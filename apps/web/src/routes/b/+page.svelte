@@ -207,7 +207,7 @@
         if (unlockResult) {
           nasServerConfig = {
             serverUrl: unlockResult.clientId.replace(/\/+$/, ''),
-            authToken: unlockResult.clientSecret,
+            authToken: unlockResult.clientSecret
           };
         }
       }
@@ -1077,7 +1077,10 @@
           ...{
             id: localBookData.id,
             lastBookOpen: localBookData.lastBookOpen,
-            storageSource: localBookData.storageSource
+            storageSource: localBookData.storageSource,
+            sections: externalBookData.sections?.length
+              ? externalBookData.sections
+              : localBookData.sections
           }
         };
       }
@@ -1923,6 +1926,7 @@
     </div>
   </div>
   {#if showFooter && bookCharCount}
+    <!-- prettier-ignore -->
     {@const currentProgress = [
       $showCharacterCounter$ ? `${exploredCharCount} / ${bookCharCount}` : '',
       $showPercentage$ ? `${((exploredCharCount / bookCharCount) * 100).toFixed(2)}%` : '',
