@@ -7,7 +7,7 @@
   import Dialogs from './Dialogs.svelte';
   import Icon from './Icon.svelte';
   import { Action, executeAction } from '../lib/actions';
-  import type { BooksDB } from '../lib/db';
+  import type { BooksDB, BooksDBData } from '../lib/db';
   import {
     setAudioContext,
     setSubtitleContext,
@@ -103,6 +103,7 @@
   export let nasServerConfig: NasServerConfig | undefined = undefined;
   export let externalElementHtml = '';
   export let externalBlobs: Record<string, Blob> | undefined = undefined;
+  export let externalBookData: Partial<BooksDBData> | undefined = undefined;
 
   const nasAudioConfig$ = writable<import('../lib/nas').NasAudioConfig | undefined>(undefined);
 
@@ -469,11 +470,21 @@
           throw new Error(`books from external storage sources are currently not supported`);
         }
 
-        // The local DB row for storage-source books may have elementHtml cached
-        // locally without its accompanying blobs, so the external (freshly
-        // fetched) data is always authoritative here, not just a fallback for
-        // an empty elementHtml.
-        book = { ...book, elementHtml: externalElementHtml, blobs: externalBlobs || {} };
+        // The local DB row for storage-source books is a placeholder (see
+        // api-handler prepareBookForReading): elementHtml/blobs may be stale or
+        // empty and styleSheet/sections/characters are never filled in at all.
+        // The external (freshly fetched) data is always authoritative here, for
+        // every content field - anything taken from the local row instead gets
+        // written back on save and then replicated onto the external archive,
+        // permanently wiping it there.
+        book = {
+          ...book,
+          ...externalBookData,
+          id: book.id,
+          storageSource: book.storageSource,
+          elementHtml: externalElementHtml,
+          blobs: externalBlobs || {}
+        };
       }
 
       body = parseHTML(new DOMParser(), book.elementHtml);

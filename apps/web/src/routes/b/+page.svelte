@@ -1920,6 +1920,7 @@
           readerDatabase={readerDb}
           externalElementHtml={$rawBookData$.elementHtml}
           externalBlobs={$rawBookData$.blobs}
+          externalBookData={$rawBookData$}
           {nasServerConfig}
         />
       {/if}
