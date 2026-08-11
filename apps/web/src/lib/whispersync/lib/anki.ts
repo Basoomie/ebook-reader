@@ -518,6 +518,10 @@ export async function exportToAnki(
   const lastNoteId = await startExport(ankiUrl, isAnkiconnectAndroid, isOutdatedVersion);
   const baseSubtitleFileName = currentSubtitleFile.name.split(/\.(?=[^.]+$)/)[0];
   const baseAudioFileName = currentAudioFile ? currentAudioFile.name.split(/\.(?=[^.]+$)/)[0] : '';
+  // NAS streamed books never set currentAudioFile$, so baseAudioFileName is empty for every one of
+  // them. Fall back to the subtitle name to keep exported media names book specific - otherwise
+  // each book stores its media under identical names and overwrites the previous book's files.
+  const baseMediaFileName = baseAudioFileName || baseSubtitleFileName;
 
   let failures = 0;
   let audioFilePrefix = '';
@@ -529,10 +533,13 @@ export async function exportToAnki(
   try {
     const encoder = new TextEncoder();
 
-    audioFilePrefix = await createFileNameHash(encoder, baseAudioFileName);
-    coverFilePrefix = await createFileNameHash(encoder, `${baseAudioFileName}_cover`);
+    audioFilePrefix = await createFileNameHash(encoder, baseMediaFileName);
+    coverFilePrefix = await createFileNameHash(encoder, `${baseMediaFileName}_cover`);
   } catch (_) {
+    // window.crypto.subtle only exists in secure contexts, so hashing throws when the reader is
+    // opened over plain http on a lan ip. Both prefixes need a book specific fallback here.
     audioFilePrefix = baseSubtitleFileName;
+    coverFilePrefix = `${baseSubtitleFileName}_cover`;
   }
 
   try {
@@ -670,7 +677,11 @@ export async function exportToAnki(
               action: 'storeMediaFile',
               params: {
                 data: coverContent,
-                filename: `${coverFilePrefix}.${coverExtension}`
+                filename: `${coverFilePrefix}.${coverExtension}`,
+                // Never clobber an existing cover - on a name clash Anki keeps the old file and
+                // returns a non conflicting name for the new one, which is what lands in the field.
+                // Re-exporting the same cover dedupes by checksum, so this does not pile up copies.
+                deleteExisting: false
               }
             });
 
