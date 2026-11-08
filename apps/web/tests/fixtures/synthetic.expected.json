@@ -1,0 +1,381 @@
+{
+  "$comment": "Ground truth captured by running the unmodified browser import (loadEpub on main @ a51f774) in Chromium; do not hand-edit. readerCount = getParagraphNodes+getCharacterCount over the imported elementHtml.",
+  "capturedWith": {
+    "commit": "a51f774",
+    "date": "2026-11-08",
+    "browser": "Chrome/152.0.7977.167 (Claude desktop in-app browser)",
+    "pageUrl": "http://localhost:5173/manage"
+  },
+  "books": {
+    "synthetic-epub3.epub": {
+      "Off|restrictToAnchor=true": {
+        "title": "テスト用の本　その一",
+        "language": "ja",
+        "characters": 210,
+        "readerCount": 210,
+        "hasCover": true,
+        "sections": [
+          {
+            "reference": "ttu-cover",
+            "charactersWeight": 1,
+            "label": "Preface",
+            "startCharacter": 0,
+            "characters": 0
+          },
+          {
+            "reference": "ttu-ch1",
+            "charactersWeight": 115,
+            "label": "第一章　朝の駅",
+            "startCharacter": 0,
+            "characters": 164
+          },
+          {
+            "reference": "ttu-ch2",
+            "charactersWeight": 29,
+            "parentChapter": "ttu-ch1"
+          },
+          {
+            "reference": "ttu-ch2b",
+            "charactersWeight": 20,
+            "parentChapter": "ttu-ch1"
+          },
+          {
+            "reference": "ttu-ch3",
+            "charactersWeight": 21,
+            "label": "第三章　夜",
+            "startCharacter": 164,
+            "characters": 21
+          },
+          {
+            "reference": "ttu-ch4",
+            "charactersWeight": 25,
+            "label": "第四章　修正の章",
+            "startCharacter": 185,
+            "characters": 25
+          }
+        ]
+      },
+      "Standard|restrictToAnchor=true": {
+        "title": "テスト用の本　その一",
+        "language": "ja",
+        "characters": 210,
+        "readerCount": 210,
+        "hasCover": true,
+        "sections": [
+          {
+            "reference": "ttu-cover",
+            "charactersWeight": 1,
+            "label": "Preface",
+            "startCharacter": 0,
+            "characters": 0
+          },
+          {
+            "reference": "ttu-ch1",
+            "charactersWeight": 115,
+            "label": "第一章　朝の駅",
+            "startCharacter": 0,
+            "characters": 164
+          },
+          {
+            "reference": "ttu-ch2",
+            "charactersWeight": 29,
+            "parentChapter": "ttu-ch1"
+          },
+          {
+            "reference": "ttu-ch2b",
+            "charactersWeight": 20,
+            "parentChapter": "ttu-ch1"
+          },
+          {
+            "reference": "ttu-ch3",
+            "charactersWeight": 21,
+            "label": "第三章　夜",
+            "startCharacter": 164,
+            "characters": 21
+          },
+          {
+            "reference": "ttu-ch4",
+            "charactersWeight": 25,
+            "label": "第四章　修正の章",
+            "startCharacter": 185,
+            "characters": 25
+          }
+        ]
+      },
+      "Standard|restrictToAnchor=false": {
+        "title": "テスト用の本　その一",
+        "language": "ja",
+        "characters": 222,
+        "readerCount": 222,
+        "hasCover": true,
+        "sections": [
+          {
+            "reference": "ttu-cover",
+            "charactersWeight": 1,
+            "label": "Preface",
+            "startCharacter": 0,
+            "characters": 0
+          },
+          {
+            "reference": "ttu-ch1",
+            "charactersWeight": 115,
+            "label": "第一章　朝の駅",
+            "startCharacter": 0,
+            "characters": 164
+          },
+          {
+            "reference": "ttu-ch2",
+            "charactersWeight": 29,
+            "parentChapter": "ttu-ch1"
+          },
+          {
+            "reference": "ttu-ch2b",
+            "charactersWeight": 20,
+            "parentChapter": "ttu-ch1"
+          },
+          {
+            "reference": "ttu-ch3",
+            "charactersWeight": 33,
+            "label": "第三章　夜",
+            "startCharacter": 164,
+            "characters": 33
+          },
+          {
+            "reference": "ttu-ch4",
+            "charactersWeight": 25,
+            "label": "第四章　修正の章",
+            "startCharacter": 197,
+            "characters": 25
+          }
+        ]
+      },
+      "Extended|restrictToAnchor=true": {
+        "error": "Error: Unable to find valid body content while parsing EPUB"
+      },
+      "Extended|restrictToAnchor=false": {
+        "title": "テスト用の本　その一",
+        "language": "ja",
+        "characters": 222,
+        "readerCount": 222,
+        "hasCover": true,
+        "sections": [
+          {
+            "reference": "ttu-cover",
+            "charactersWeight": 1,
+            "label": "Preface",
+            "startCharacter": 0,
+            "characters": 0
+          },
+          {
+            "reference": "ttu-ch1",
+            "charactersWeight": 115,
+            "label": "第一章　朝の駅",
+            "startCharacter": 0,
+            "characters": 164
+          },
+          {
+            "reference": "ttu-ch2",
+            "charactersWeight": 29,
+            "parentChapter": "ttu-ch1"
+          },
+          {
+            "reference": "ttu-ch2b",
+            "charactersWeight": 20,
+            "parentChapter": "ttu-ch1"
+          },
+          {
+            "reference": "ttu-ch3",
+            "charactersWeight": 33,
+            "label": "第三章　夜",
+            "startCharacter": 164,
+            "characters": 33
+          },
+          {
+            "reference": "ttu-ch4",
+            "charactersWeight": 25,
+            "label": "第四章　修正の章",
+            "startCharacter": 197,
+            "characters": 25
+          }
+        ]
+      }
+    },
+    "synthetic-epub2-ncx.epub": {
+      "Off|restrictToAnchor=true": {
+        "title": "テスト用の本　その二",
+        "language": "ja",
+        "characters": 49,
+        "readerCount": 49,
+        "hasCover": true,
+        "sections": [
+          {
+            "reference": "ttu-p1",
+            "charactersWeight": 20,
+            "label": "はじめに",
+            "startCharacter": 0,
+            "characters": 20
+          },
+          {
+            "reference": "ttu-p2",
+            "charactersWeight": 18,
+            "label": "  小見出し  ",
+            "startCharacter": 20,
+            "characters": 18
+          },
+          {
+            "reference": "ttu-p3",
+            "charactersWeight": 1,
+            "parentChapter": "ttu-p2"
+          },
+          {
+            "reference": "ttu-p4",
+            "charactersWeight": 11,
+            "label": "本編",
+            "startCharacter": 38,
+            "characters": 11
+          }
+        ]
+      },
+      "Standard|restrictToAnchor=true": {
+        "title": "テスト用の本　その二",
+        "language": "ja",
+        "characters": 49,
+        "readerCount": 49,
+        "hasCover": true,
+        "sections": [
+          {
+            "reference": "ttu-p1",
+            "charactersWeight": 20,
+            "label": "はじめに",
+            "startCharacter": 0,
+            "characters": 20
+          },
+          {
+            "reference": "ttu-p2",
+            "charactersWeight": 18,
+            "label": "  小見出し  ",
+            "startCharacter": 20,
+            "characters": 18
+          },
+          {
+            "reference": "ttu-p3",
+            "charactersWeight": 1,
+            "parentChapter": "ttu-p2"
+          },
+          {
+            "reference": "ttu-p4",
+            "charactersWeight": 11,
+            "label": "本編",
+            "startCharacter": 38,
+            "characters": 11
+          }
+        ]
+      },
+      "Standard|restrictToAnchor=false": {
+        "title": "テスト用の本　その二",
+        "language": "ja",
+        "characters": 49,
+        "readerCount": 49,
+        "hasCover": true,
+        "sections": [
+          {
+            "reference": "ttu-p1",
+            "charactersWeight": 20,
+            "label": "はじめに",
+            "startCharacter": 0,
+            "characters": 20
+          },
+          {
+            "reference": "ttu-p2",
+            "charactersWeight": 18,
+            "label": "  小見出し  ",
+            "startCharacter": 20,
+            "characters": 18
+          },
+          {
+            "reference": "ttu-p3",
+            "charactersWeight": 1,
+            "parentChapter": "ttu-p2"
+          },
+          {
+            "reference": "ttu-p4",
+            "charactersWeight": 11,
+            "label": "本編",
+            "startCharacter": 38,
+            "characters": 11
+          }
+        ]
+      },
+      "Extended|restrictToAnchor=true": {
+        "title": "テスト用の本　その二",
+        "language": "ja",
+        "characters": 49,
+        "readerCount": 49,
+        "hasCover": true,
+        "sections": [
+          {
+            "reference": "ttu-p1",
+            "charactersWeight": 20,
+            "label": "はじめに",
+            "startCharacter": 0,
+            "characters": 20
+          },
+          {
+            "reference": "ttu-p2",
+            "charactersWeight": 18,
+            "label": "  小見出し  ",
+            "startCharacter": 20,
+            "characters": 18
+          },
+          {
+            "reference": "ttu-p3",
+            "charactersWeight": 1,
+            "parentChapter": "ttu-p2"
+          },
+          {
+            "reference": "ttu-p4",
+            "charactersWeight": 11,
+            "label": "本編",
+            "startCharacter": 38,
+            "characters": 11
+          }
+        ]
+      },
+      "Extended|restrictToAnchor=false": {
+        "title": "テスト用の本　その二",
+        "language": "ja",
+        "characters": 49,
+        "readerCount": 49,
+        "hasCover": true,
+        "sections": [
+          {
+            "reference": "ttu-p1",
+            "charactersWeight": 20,
+            "label": "はじめに",
+            "startCharacter": 0,
+            "characters": 20
+          },
+          {
+            "reference": "ttu-p2",
+            "charactersWeight": 18,
+            "label": "  小見出し  ",
+            "startCharacter": 20,
+            "characters": 18
+          },
+          {
+            "reference": "ttu-p3",
+            "charactersWeight": 1,
+            "parentChapter": "ttu-p2"
+          },
+          {
+            "reference": "ttu-p4",
+            "charactersWeight": 11,
+            "label": "本編",
+            "startCharacter": 38,
+            "characters": 11
+          }
+        ]
+      }
+    }
+  }
+}

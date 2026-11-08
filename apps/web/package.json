@@ -10,7 +10,9 @@
     "check:types": "tsc --noEmit",
     "check:watch": "svelte-check --tsconfig ./tsconfig.json --watch",
     "test": "vitest run",
-    "count-epub": "vite-node scripts/count-epub.ts --"
+    "count-epub": "vite-node scripts/count-epub.ts --",
+    "test:parity": "vitest run --mode parity tests/parity",
+    "parity:manifest": "node --experimental-sqlite node_modules/vite-node/vite-node.mjs tests/parity/build-manifest.ts --"
   },
   "devDependencies": {
     "@sveltejs/adapter-static": "3.0.10",
