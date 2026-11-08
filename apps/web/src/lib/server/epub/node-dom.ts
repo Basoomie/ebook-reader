@@ -5,6 +5,7 @@
  */
 
 import { JSDOM } from 'jsdom';
+import { installPrefixedAttributeSelectorFix } from './prefixed-attribute-selectors';
 
 /**
  * DOM globals that the shared EPUB loader and character counter reference directly
@@ -56,6 +57,9 @@ export function installNodeDom(): Document {
       }
     });
   }
+
+  // jsdom 28 cannot match `nav[epub\:type="toc"]`; see prefixed-attribute-selectors.ts.
+  installPrefixedAttributeSelectorFix(window as unknown as Window & typeof globalThis);
 
   nodeDocument = window.document;
 

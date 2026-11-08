@@ -215,6 +215,52 @@ async function buildEpub2() {
   await writeEpub('synthetic-epub2-ncx.epub', files);
 }
 
+/**
+ * EPUB 3 whose nav TOC is marked only with epub:type="toc" (no id="toc"), preceded by a
+ * landmarks nav. The loader must pick the TOC nav, not the first nav.
+ */
+async function buildEpub3NavOnly() {
+  const files: Record<string, string | Uint8Array> = {
+    'OEBPS/content.opf': `<?xml version="1.0" encoding="UTF-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="uid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="uid">ttu-fixture-epub3-navonly</dc:identifier>
+    <dc:title>テスト用の本　その三</dc:title>
+    <dc:language>ja</dc:language>
+  </metadata>
+  <manifest>
+    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+    <item id="t1" href="t1.xhtml" media-type="application/xhtml+xml"/>
+    <item id="t2" href="t2.xhtml" media-type="application/xhtml+xml"/>
+    <item id="t3" href="t3.xhtml" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine>
+    <itemref idref="t1"/>
+    <itemref idref="t2"/>
+    <itemref idref="t3"/>
+  </spine>
+</package>`,
+    'OEBPS/nav.xhtml': xhtml(
+      'nav',
+      `<nav epub:type="landmarks" hidden="">
+  <ol><li><a epub:type="bodymatter" href="t2.xhtml">本文</a></li></ol>
+</nav>
+<nav epub:type="toc">
+  <ol>
+    <li><a href="t1.xhtml">はじまり</a></li>
+    <li><a href="t2.xhtml">まんなか</a></li>
+    <li><a href="t3.xhtml">おわり</a></li>
+  </ol>
+</nav>`
+    ),
+    'OEBPS/t1.xhtml': xhtml('t1', `<h1>はじまり</h1>\n<p>朝の光が窓から差し込んだ。</p>`),
+    'OEBPS/t2.xhtml': xhtml('t2', `<h1>まんなか</h1>\n<p>昼の町は人であふれていた。</p>`),
+    'OEBPS/t3.xhtml': xhtml('t3', `<h1>おわり</h1>\n<p>夜、静かに本を閉じた。</p>`)
+  };
+
+  await writeEpub('synthetic-epub3-navonly.epub', files);
+}
+
 async function writeEpub(name: string, files: Record<string, string | Uint8Array>) {
   const writer = new ZipWriter(new BlobWriter('application/epub+zip'));
 
@@ -234,5 +280,16 @@ async function writeEpub(name: string, files: Record<string, string | Uint8Array
   console.log(`wrote ${name}`);
 }
 
-await buildEpub3();
-await buildEpub2();
+// Pass file names to rebuild only those; the default rebuilds all (zip timestamps change).
+const builders: Record<string, () => Promise<void>> = {
+  'synthetic-epub3.epub': buildEpub3,
+  'synthetic-epub2-ncx.epub': buildEpub2,
+  'synthetic-epub3-navonly.epub': buildEpub3NavOnly
+};
+const requested = process.argv.slice(2).filter((arg) => arg !== '--');
+
+for (const [name, build] of Object.entries(builders)) {
+  if (!requested.length || requested.includes(name)) {
+    await build();
+  }
+}

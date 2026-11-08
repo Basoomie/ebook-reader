@@ -376,6 +376,161 @@
           }
         ]
       }
+    },
+    "synthetic-epub3-navonly.epub": {
+      "Off|restrictToAnchor=true": {
+        "title": "テスト用の本　その三",
+        "language": "ja",
+        "characters": 44,
+        "readerCount": 44,
+        "hasCover": false,
+        "sections": [
+          {
+            "reference": "ttu-t1",
+            "charactersWeight": 16,
+            "label": "はじまり",
+            "startCharacter": 0,
+            "characters": 16
+          },
+          {
+            "reference": "ttu-t2",
+            "charactersWeight": 16,
+            "label": "まんなか",
+            "startCharacter": 16,
+            "characters": 16
+          },
+          {
+            "reference": "ttu-t3",
+            "charactersWeight": 12,
+            "label": "おわり",
+            "startCharacter": 32,
+            "characters": 12
+          }
+        ]
+      },
+      "Standard|restrictToAnchor=true": {
+        "title": "テスト用の本　その三",
+        "language": "ja",
+        "characters": 44,
+        "readerCount": 44,
+        "hasCover": false,
+        "sections": [
+          {
+            "reference": "ttu-t1",
+            "charactersWeight": 16,
+            "label": "はじまり",
+            "startCharacter": 0,
+            "characters": 16
+          },
+          {
+            "reference": "ttu-t2",
+            "charactersWeight": 16,
+            "label": "まんなか",
+            "startCharacter": 16,
+            "characters": 16
+          },
+          {
+            "reference": "ttu-t3",
+            "charactersWeight": 12,
+            "label": "おわり",
+            "startCharacter": 32,
+            "characters": 12
+          }
+        ]
+      },
+      "Standard|restrictToAnchor=false": {
+        "title": "テスト用の本　その三",
+        "language": "ja",
+        "characters": 44,
+        "readerCount": 44,
+        "hasCover": false,
+        "sections": [
+          {
+            "reference": "ttu-t1",
+            "charactersWeight": 16,
+            "label": "はじまり",
+            "startCharacter": 0,
+            "characters": 16
+          },
+          {
+            "reference": "ttu-t2",
+            "charactersWeight": 16,
+            "label": "まんなか",
+            "startCharacter": 16,
+            "characters": 16
+          },
+          {
+            "reference": "ttu-t3",
+            "charactersWeight": 12,
+            "label": "おわり",
+            "startCharacter": 32,
+            "characters": 12
+          }
+        ]
+      },
+      "Extended|restrictToAnchor=true": {
+        "title": "テスト用の本　その三",
+        "language": "ja",
+        "characters": 44,
+        "readerCount": 44,
+        "hasCover": false,
+        "sections": [
+          {
+            "reference": "ttu-t1",
+            "charactersWeight": 16,
+            "label": "はじまり",
+            "startCharacter": 0,
+            "characters": 16
+          },
+          {
+            "reference": "ttu-t2",
+            "charactersWeight": 16,
+            "label": "まんなか",
+            "startCharacter": 16,
+            "characters": 16
+          },
+          {
+            "reference": "ttu-t3",
+            "charactersWeight": 12,
+            "label": "おわり",
+            "startCharacter": 32,
+            "characters": 12
+          }
+        ]
+      },
+      "Extended|restrictToAnchor=false": {
+        "title": "テスト用の本　その三",
+        "language": "ja",
+        "characters": 44,
+        "readerCount": 44,
+        "hasCover": false,
+        "sections": [
+          {
+            "reference": "ttu-t1",
+            "charactersWeight": 16,
+            "label": "はじまり",
+            "startCharacter": 0,
+            "characters": 16
+          },
+          {
+            "reference": "ttu-t2",
+            "charactersWeight": 16,
+            "label": "まんなか",
+            "startCharacter": 16,
+            "characters": 16
+          },
+          {
+            "reference": "ttu-t3",
+            "charactersWeight": 12,
+            "label": "おわり",
+            "startCharacter": 32,
+            "characters": 12
+          }
+        ]
+      }
     }
+  },
+  "capturedWithNotes": {
+    "synthetic-epub3-navonly.epub": "Captured 2026-11-08 in the same Chromium from branch wp3a-shared-loader-counter @ d1dffc1, whose browser import was verified identical to main @ a51f774 on the other fixtures."
   }
 }
