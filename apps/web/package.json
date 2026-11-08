@@ -9,7 +9,8 @@
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "check:types": "tsc --noEmit",
     "check:watch": "svelte-check --tsconfig ./tsconfig.json --watch",
-    "test": "vitest run"
+    "test": "vitest run",
+    "count-epub": "vite-node scripts/count-epub.ts --"
   },
   "devDependencies": {
     "@sveltejs/adapter-static": "3.0.10",
