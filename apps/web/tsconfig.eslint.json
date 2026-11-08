@@ -8,6 +8,8 @@
     "playwright.config.js",
     "svelte.config.js",
     "vite.config.js",
-    "tailwind.config.cjs"
+    "tailwind.config.cjs",
+    "scripts/**/*.ts",
+    "vitest.config.ts"
   ]
 }
