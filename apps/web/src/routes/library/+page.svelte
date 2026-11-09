@@ -304,7 +304,11 @@
           bind:value={queryInput}
         />
       </label>
-      <button class="{buttonClasses} border border-current" type="submit" title="Search">
+      <button
+        class="flex h-10 items-center rounded border border-current px-5"
+        type="submit"
+        title="Search"
+      >
         <Fa icon={faMagnifyingGlass} />
       </button>
     </form>
