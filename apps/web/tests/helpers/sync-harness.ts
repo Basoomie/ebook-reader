@@ -58,6 +58,9 @@ export class TestServer {
   readonly dbDir = tempDir('db');
   port = 0;
 
+  /** Extra environment for the server (e.g. CALIBRE_DIR for the WP5 migration test). */
+  constructor(private readonly extraEnv: Record<string, string> = {}) {}
+
   get url() {
     return `http://127.0.0.1:${this.port}`;
   }
@@ -73,7 +76,8 @@ export class TestServer {
         DATA_DIR: this.dataDir,
         DB_DIR: this.dbDir,
         CORS_ORIGIN: '*',
-        SYNC_MAX_CLOCK_SKEW_SECONDS: '60'
+        SYNC_MAX_CLOCK_SKEW_SECONDS: '60',
+        ...this.extraEnv
       },
       stdio: ['ignore', 'pipe', 'pipe']
     });
