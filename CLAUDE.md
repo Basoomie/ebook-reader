@@ -13,11 +13,13 @@ If code and docs disagree, or a task needs a decision the docs don't cover, STOP
 
 ## Current phase
 
-**Phase 2** (Phase 0 and Phase 1, WP1, WP2, WP6 interim option and the minimal library list, are done and merged):
+**Phase 3** (Phases 0-2 are done and merged). The WP5 side-by-side week is running: do not touch the migration, the old-sync switch or the check page. WP7 and WP8 are split because they depend on each other (status chips; smart collections use the search parser). Agreed order:
 
-1. **WP4**: sync engine. Device records, local outbox, pull/push, local mirrors, global vs per-device settings. The legacy file sync stays the source of truth for reading data until WP5.
-2. **WP5**: migration of current books, position, bookmark, stats, goals and settings; retire the old file sync only after it is verified.
-3. **WP9**: "Continue from...?" position prompt.
+1. **WP3b**: server character-count job; counts in the catalog API and the library list.
+2. **WP8a**: book state. Status (Reading set on the first page turn), favorite, read-throughs and "Start over", manual completion, per-book blur value; sync kinds; minimal UI.
+3. **WP7a**: Library browse and search. Search language, browse tabs, grouped cards and collages, grid/list, info line, status and built-in filter chips, cover blur with tag rules, bulk status/favorite/blur.
+4. **WP8b**: collections. Manual, smart (WP7a's parser), built-ins, Collections page, "add to collection".
+5. **WP7b**: Home rows, navigation, upload with duplicate check.
 
 Stop condition: each work package is finished on its own branch, with a summary of what changed, how it was verified, and anything unexpected. Then stop for review. Do not start the next work package or phase without approval.
 
@@ -38,4 +40,5 @@ Stop condition: each work package is finished on its own branch, with a summary 
 
 - pnpm workspace. `apps/web` (SvelteKit 2, Svelte 4, Vite 5) and `apps/storage-server` (Express file server).
 - Root scripts: `pnpm dev`, `pnpm build`, `pnpm check` (eslint), `pnpm lint`, `pnpm format`. In `apps/web`: `pnpm check` (svelte-check).
-- No test framework is installed yet. WP3a needs one; propose the choice (e.g. Vitest) before adding it.
+- Tests: Vitest in both apps (`pnpm test` in `apps/web`, `npm test` in `apps/storage-server`). `pnpm test:parity` in `apps/web` is opt-in and needs the NAS shares.
+- The server counts characters with a bundle of the web app's EPUB import code (`apps/storage-server/vendor/epub-count.cjs`). After changing that code, run `pnpm build:server-counter` in `apps/web` (a test fails otherwise), and bump `EPUB_COUNT_VERSION` in `count-epub.ts` if counts can change.
