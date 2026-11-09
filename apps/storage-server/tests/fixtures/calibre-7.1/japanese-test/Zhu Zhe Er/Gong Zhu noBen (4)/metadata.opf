@@ -1,0 +1,19 @@
+<?xml version='1.0' encoding='utf-8'?>
+<package xmlns="http://www.idpf.org/2007/opf" unique-identifier="uuid_id" version="2.0">
+    <metadata xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:opf="http://www.idpf.org/2007/opf">
+        <dc:identifier opf:scheme="calibre" id="calibre_id">4</dc:identifier>
+        <dc:identifier opf:scheme="uuid" id="uuid_id">b708aaca-f724-411b-9d53-b82690474f11</dc:identifier>
+        <dc:title>共著の本</dc:title>
+        <dc:creator opf:file-as="著者二 &amp; 著者一" opf:role="aut">著者二</dc:creator>
+        <dc:creator opf:file-as="著者二 &amp; 著者一" opf:role="aut">著者一</dc:creator>
+        <dc:contributor opf:file-as="calibre" opf:role="bkp">calibre (7.1.0) [https://calibre-ebook.com]</dc:contributor>
+        <dc:date>0101-01-01T00:00:00+00:00</dc:date>
+        <dc:language>jpn</dc:language>
+        <dc:subject>アンソロジー</dc:subject>
+        <meta name="calibre:timestamp" content="2026-11-09T04:00:18.264394+00:00"/>
+        <meta name="calibre:title_sort" content="共著の本"/>
+    </metadata>
+    <guide>
+        <reference type="cover" title="Cover" href="cover.jpg"/>
+    </guide>
+</package>

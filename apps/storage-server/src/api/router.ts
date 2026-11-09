@@ -2,18 +2,26 @@ import express, { Router } from 'express';
 import type { DatabaseState } from '../db/database';
 import { getSchemaVersion } from '../db/migrations';
 import { getAuth, requireUser } from './auth';
+import { CatalogOptions, createCatalogRouter } from './catalog-routes';
 import { errorHandler, notFound, sendError } from './errors';
 
 export interface ApiOptions {
   database: DatabaseState;
   version: string;
+  /** Catalog routes (WP2). Without it they report the indexer as off. */
+  catalog?: CatalogOptions;
 }
+
+const NO_CATALOG: CatalogOptions = {
+  thumbnails: null,
+  indexer: { enabled: false, error: 'the Calibre indexer is not configured' },
+};
 
 /**
  * /api/v1: the new API. Later work packages add their routes here, behind
  * requireUser. Failures in here never affect the legacy endpoints.
  */
-export function createApiRouter({ database, version }: ApiOptions): Router {
+export function createApiRouter({ database, version, catalog = NO_CATALOG }: ApiOptions): Router {
   const router = express.Router();
   router.use(express.json());
 
@@ -33,6 +41,8 @@ export function createApiRouter({ database, version }: ApiOptions): Router {
       const { user, token } = getAuth(res);
       res.json({ user, token });
     });
+
+    router.use(createCatalogRouter(database.db, catalog));
 
     router.use(notFound);
   } else {
