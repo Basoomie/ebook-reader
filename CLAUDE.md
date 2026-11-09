@@ -13,10 +13,12 @@ If code and docs disagree, or a task needs a decision the docs don't cover, STOP
 
 ## Current phase
 
-**Phase 0**:
+**Phase 1** (Phase 0, WP3a and WP10 hands-free tracker, is done and merged):
 
-1. **WP3a**: shared loader and character counter, plus a parity test against existing books.
-2. **WP10 (hands-free tracker only)**: auto-start and idle-pause on by default, auto-resume after an automatic pause, one-tap toggle. All thresholds are per-device settings.
+1. **WP1**: server foundation. SQLite, schema, per-user token, CORS lock-down, API skeleton, nightly DB snapshot. Existing storage-server endpoints and today's sync keep working unchanged.
+2. **WP2**: Calibre indexer (library discovery, `metadata.db` snapshot ingest, books, sources, thumbnails).
+3. **WP6 (interim option)**: open Calibre books in the reader while reading data keeps using today's file sync; store each opened book's Calibre UUID locally.
+4. A minimal library list with search.
 
 Stop condition: each work package is finished on its own branch, with a summary of what changed, how it was verified, and anything unexpected. Then stop for review. Do not start the next work package or phase without approval.
 
