@@ -94,6 +94,20 @@ module.exports = (async () => {
       rules: {
         'headers/header-format': 'off'
       }
+    },
+    {
+      // The storage server is a separate Node project with its own tsconfig.
+      // It is this fork's own code, so the upstream ttu license header is not required.
+      files: ['apps/storage-server/**/*.ts'],
+      languageOptions: {
+        parserOptions: {
+          project: './tsconfig.eslint.json',
+          tsconfigRootDir: './apps/storage-server/'
+        }
+      },
+      rules: {
+        'headers/header-format': 'off'
+      }
     }
   );
 })();
