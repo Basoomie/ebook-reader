@@ -8,3 +8,6 @@ apps/web/tests/parity/.out/
 
 # Private design notes (contain server and share details); kept local only
 /docs/
+
+# Local Claude Code settings and launch configs
+/.claude/
