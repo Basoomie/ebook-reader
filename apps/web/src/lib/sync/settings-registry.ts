@@ -154,7 +154,9 @@ export const SETTINGS_REGISTRY: Record<string, SettingSpec> = {
   // --- lib/sync/settings.ts (per device) ---
   recordSyncEnabled: d('Boolean'),
   syncDebounceSeconds: d('Number'),
-  syncIntervalMinutes: d('Number')
+  syncIntervalMinutes: d('Number'),
+  positionPromptEnabled: d('Boolean'),
+  positionPromptMinChars: d('Number')
 };
 
 export function settingScope(key: string): SettingScope {

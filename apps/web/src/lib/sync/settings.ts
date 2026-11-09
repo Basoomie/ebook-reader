@@ -17,3 +17,15 @@ export const syncDebounceSeconds$ = writableNumberLocalStorageSubject()('syncDeb
 
 /** Sync this often while the app is visible, to pick up other devices' changes. 0 = only on changes. */
 export const syncIntervalMinutes$ = writableNumberLocalStorageSubject()('syncIntervalMinutes', 5);
+
+/** WP9: offer another device's place when it is further along in a Calibre book. */
+export const positionPromptEnabled$ = writableBooleanLocalStorageSubject()(
+  'positionPromptEnabled',
+  true
+);
+
+/** WP9: how many characters further along another device must be before it is offered (about a page on a phone). */
+export const positionPromptMinChars$ = writableNumberLocalStorageSubject()(
+  'positionPromptMinChars',
+  500
+);
