@@ -15,11 +15,15 @@
  *   docker exec ttsu-storage node dist/cli.js sync status
  *   docker exec ttsu-storage node dist/cli.js sync dump --kind position --book <id>
  *   docker exec ttsu-storage node dist/cli.js sync new-epoch
+ *   docker exec ttsu-storage node dist/cli.js migration status
+ *   docker exec ttsu-storage node dist/cli.js migration undo [--forget-decisions]
  *
  * Uses DB_DIR (default /db) and DATA_DIR (default /data) like the server, and
  * PAIR_CODE_MINUTES for how long a pairing code stays valid.
  * The CLI never touches the Calibre libraries: `index run` and `thumbs rebuild`
  * only leave a request in the database that the server picks up on its next poll.
+ * For the same reason the WP5 scan and import run in the server (from the
+ * migration page); the CLI only reports on them and can undo the import.
  */
 import type Database from 'better-sqlite3';
 import path from 'path';
@@ -39,6 +43,7 @@ import { createPairingCode, prunePairingCodes } from './db/pairing';
 import { rotateSecret, THUMBNAIL_URL_SECRET } from './db/secrets';
 import { createToken, listTokens, revokeToken } from './db/tokens';
 import { getUserByName, listUsers } from './db/users';
+import { MigrationService } from './migration/service';
 import { SyncStore } from './sync/store';
 import { forgetThumbnails, RebuildScope } from './thumbnails/thumbnails';
 
@@ -61,7 +66,11 @@ const USAGE = `Usage:
   cli sync dump [--kind <kind>] [--book <id>] [--limit <n>]
                                              Print synced records, newest change first
   cli sync new-epoch                         After restoring the database from a snapshot: every
-                                             device re-sends what it has on its next sync`;
+                                             device re-sends what it has on its next sync
+  cli migration status                       The old-sync migration: book folders per state, devices
+  cli migration undo [--forget-decisions]    Delete every record the migration import wrote (the old
+                                             sync's files are never touched); --forget-decisions also
+                                             clears the scan results and your link decisions`;
 
 function fail(message: string): never {
   console.error(message);
@@ -351,6 +360,66 @@ function syncCommand(
   }
 }
 
+function migrationCommand(
+  db: Database.Database,
+  command: string,
+  rest: string[],
+  env: Record<string, string | undefined>,
+  userName?: string,
+) {
+  const warnings: string[] = [];
+  const { maxClockSkewSeconds } = parseSyncConfig(env, warnings);
+  const store = new SyncStore(db, { maxClockSkewMs: maxClockSkewSeconds * 1000 });
+  const service = new MigrationService({
+    db,
+    store,
+    dataRoot: path.resolve(env.DATA_DIR ?? '/data'),
+    dbDir: path.resolve(env.DB_DIR ?? '/db'),
+    calibreDir: null,
+    indexerEnabled: () => false,
+  });
+  const user = pickUser(db, userName);
+  switch (command) {
+    case 'status': {
+      const o = service.overview(user.id);
+      console.log(
+        `last scan=${formatDate(o.lastScanAt)}  last import=${formatDate(o.lastImportAt)}  ` +
+          `pre-import snapshot=${o.lastSnapshot ?? '-'}  old sync=${o.legacySyncEnabled ? 'on' : 'OFF'}`,
+      );
+      const byState = new Map<string, number>();
+      for (const b of o.books) {
+        const key = b.state === 'linked' ? `linked (${b.method})` : `${b.state} (${b.reason})`;
+        byState.set(key, (byState.get(key) ?? 0) + 1);
+      }
+      if (!o.books.length) console.log('No scan results yet.');
+      for (const [k, n] of [...byState.entries()].sort()) console.log(`  ${k}: ${n}`);
+      for (const b of o.books.filter((b) => b.state !== 'linked')) {
+        console.log(`    ${b.state}  ${b.reason ?? ''}  ${b.title}`);
+      }
+      for (const d of o.devices) {
+        console.log(
+          `  device "${d.name}"  reported=${formatDate(d.reportedAt)}  calibre links=${d.calibreLinks}` +
+            (d.localOnlyTitles.length ? `  only on this device: ${d.localOnlyTitles.length}` : ''),
+        );
+      }
+      break;
+    }
+    case 'undo': {
+      const args = [...rest];
+      const forget = takeFlag(args, '--forget-decisions');
+      if (args.length) fail(`Unexpected arguments: ${args.join(' ')}`);
+      const n = service.undo(user.id, forget);
+      console.log(
+        `Deleted ${n} imported record(s)${forget ? ' and the scan results' : ''}. ` +
+          'Devices drop them on their next sync. The old sync files were not touched.',
+      );
+      break;
+    }
+    default:
+      fail(USAGE);
+  }
+}
+
 export function main(argv: string[], env: Record<string, string | undefined>): void {
   const args = [...argv];
   let userName: string | undefined;
@@ -362,7 +431,9 @@ export function main(argv: string[], env: Record<string, string | undefined>): v
   }
 
   const [group, command, ...rest] = args;
-  if (!['token', 'library', 'index', 'thumbs', 'sync'].includes(group) || !command) fail(USAGE);
+  if (!['token', 'library', 'index', 'thumbs', 'sync', 'migration'].includes(group) || !command) {
+    fail(USAGE);
+  }
 
   const state = initDatabase(
     path.resolve(env.DB_DIR ?? '/db'),
@@ -376,6 +447,7 @@ export function main(argv: string[], env: Record<string, string | undefined>): v
     else if (group === 'library') libraryCommand(db, command, rest);
     else if (group === 'index') indexCommand(db, command, rest);
     else if (group === 'sync') syncCommand(db, command, rest, env, userName);
+    else if (group === 'migration') migrationCommand(db, command, rest, env, userName);
     else thumbsCommand(db, command, rest);
   } finally {
     db.close();

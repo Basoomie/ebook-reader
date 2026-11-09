@@ -41,6 +41,7 @@ export function createApp({ config, database, version, catalog }: AppOptions): E
       catalog,
       pairing: { maxFailuresPerMinute: config.pairing.maxFailuresPerMinute },
       sync: { maxClockSkewSeconds: config.sync.maxClockSkewSeconds },
+      migration: { dataRoot: config.dataRoot, dbDir: config.dbDir },
     }),
   );
 

@@ -172,8 +172,187 @@ const positionKind: KindSpec = {
   },
 };
 
+// ---------------------------------------------------------------------------
+// WP5: migration off the old file sync
+// ---------------------------------------------------------------------------
+
+/** The pseudo-device the server writes migration records as ("Old sync (imported)"). */
+export function migrationDeviceId(ctx: KindContext): string | null {
+  const row = ctx.db
+    .prepare('SELECT import_device_id FROM migration_state WHERE user_id = ?')
+    .get(ctx.userId) as { import_device_id: string | null } | undefined;
+  return row?.import_device_id ?? null;
+}
+
+const LEGACY_BOOK_ID_RE = /^t:[0-9a-f]{64}$/;
+export const LINK_METHODS = ['calibre-link', 'fingerprint', 'user'] as const;
+
+/**
+ * kind "legacy-book": id t:<sha256(title)>, one old-sync book title -> its
+ * catalog book. Written only by the server (the migration pseudo-device);
+ * devices read it to find the book id of a manually imported book.
+ */
+const legacyBookKind: KindSpec = {
+  policy: () => 'lww',
+  deletable: true,
+  validate(id, data, deleted, ctx) {
+    if (!LEGACY_BOOK_ID_RE.test(id)) throw new RecordError('invalid_id', 'ids are t:<sha256>');
+    if (ctx.deviceId !== migrationDeviceId(ctx)) {
+      throw new RecordError('server_only', 'Only the server writes legacy-book records');
+    }
+    if (deleted) return { bookId: null, data: {} };
+    const { title, bookId, method } = requireObject(data);
+    if (typeof title !== 'string' || !title || title.length > 1000) {
+      throw new RecordError('invalid_data', 'title must be 1 to 1000 characters');
+    }
+    if (typeof bookId !== 'string' || !UUID_RE.test(bookId) || !bookExists(ctx, bookId)) {
+      throw new RecordError('unknown_book', `No book ${String(bookId)}`);
+    }
+    if (!LINK_METHODS.includes(method as (typeof LINK_METHODS)[number])) {
+      throw new RecordError('invalid_data', 'unknown method');
+    }
+    return { bookId, data: { title, bookId, method } };
+  },
+};
+
+const DATE_KEY_RE = /^\d{4}-\d{2}-\d{2}$/;
+const STAT_NUMBERS = [
+  'charactersRead',
+  'readingTime',
+  'minReadingSpeed',
+  'altMinReadingSpeed',
+  'lastReadingSpeed',
+  'maxReadingSpeed',
+] as const;
+
+function finiteNumber(value: unknown, field: string): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new RecordError('invalid_data', `${field} must be a number`);
+  }
+  return value;
+}
+
+/** completedData keeps the old shape: numbers plus its dateKey. */
+function completedData(value: unknown): Record<string, unknown> {
+  if (!isPlainObject(value))
+    throw new RecordError('invalid_data', 'completedData must be an object');
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(value)) {
+    if (k === 'dateKey' && typeof v === 'string' && DATE_KEY_RE.test(v)) out[k] = v;
+    else if (typeof v === 'number' && Number.isFinite(v)) out[k] = v;
+    else if (k !== 'title') throw new RecordError('invalid_data', `completedData.${k} is invalid`);
+  }
+  return out;
+}
+
+export function parseStatDayId(id: string): { bookId: string; dateKey: string } | null {
+  const parts = id.split(':');
+  if (parts.length !== 2 || !UUID_RE.test(parts[0]) || !DATE_KEY_RE.test(parts[1])) return null;
+  return { bookId: parts[0], dateKey: parts[1] };
+}
+
+/**
+ * kind "stat-day": id <bookId>:<YYYY-MM-DD>, one book's statistics for one
+ * day, exactly the old per-title daily row (minus title). lww, like the old
+ * sync's per-day "newest lastStatisticModified wins" (until WP12's sessions).
+ */
+const statDayKind: KindSpec = {
+  policy: () => 'lww',
+  deletable: true,
+  validate(id, data, deleted, ctx) {
+    const parsed = parseStatDayId(id);
+    if (!parsed) throw new RecordError('invalid_id', 'stat-day ids are <bookId>:<YYYY-MM-DD>');
+    if (!bookExists(ctx, parsed.bookId)) {
+      throw new RecordError('unknown_book', `No book ${parsed.bookId}`);
+    }
+    if (deleted) return { bookId: parsed.bookId, data: {} };
+    const obj = requireObject(data);
+    if (obj.dateKey !== parsed.dateKey) {
+      throw new RecordError('invalid_data', 'dateKey must match the id');
+    }
+    const out: Record<string, unknown> = { dateKey: parsed.dateKey };
+    for (const field of STAT_NUMBERS) out[field] = finiteNumber(obj[field], field);
+    const modified = finiteNumber(obj.lastStatisticModified, 'lastStatisticModified');
+    if (modified < 0) throw new RecordError('invalid_data', 'lastStatisticModified must be >= 0');
+    out.lastStatisticModified = modified;
+    if (obj.completedBook !== undefined) {
+      out.completedBook = finiteNumber(obj.completedBook, 'completedBook');
+    }
+    if (obj.completedData !== undefined) out.completedData = completedData(obj.completedData);
+    return { bookId: parsed.bookId, data: out };
+  },
+};
+
+/**
+ * kind "reading-goal": id = the goal's start date (YYYY-MM-DD), the old
+ * IndexedDB readingGoal row as is. lww.
+ */
+const readingGoalKind: KindSpec = {
+  policy: () => 'lww',
+  deletable: true,
+  validate(id, data, deleted) {
+    if (!DATE_KEY_RE.test(id))
+      throw new RecordError('invalid_id', 'reading-goal ids are YYYY-MM-DD');
+    if (deleted) return { bookId: null, data: {} };
+    const obj = requireObject(data);
+    if (obj.goalStartDate !== id) {
+      throw new RecordError('invalid_data', 'goalStartDate must match the id');
+    }
+    const dateOrEmpty = (v: unknown, field: string) => {
+      if (v === undefined || v === '') return '';
+      if (typeof v === 'string' && DATE_KEY_RE.test(v)) return v;
+      throw new RecordError('invalid_data', `${field} must be YYYY-MM-DD or empty`);
+    };
+    if (typeof obj.goalFrequency !== 'string' || obj.goalFrequency.length > 20) {
+      throw new RecordError('invalid_data', 'goalFrequency must be a short string');
+    }
+    return {
+      bookId: null,
+      data: {
+        timeGoal: finiteNumber(obj.timeGoal, 'timeGoal'),
+        characterGoal: finiteNumber(obj.characterGoal, 'characterGoal'),
+        goalFrequency: obj.goalFrequency,
+        goalStartDate: id,
+        goalEndDate: dateOrEmpty(obj.goalEndDate, 'goalEndDate'),
+        goalOriginalEndDate: dateOrEmpty(obj.goalOriginalEndDate, 'goalOriginalEndDate'),
+        lastGoalModified: finiteNumber(obj.lastGoalModified, 'lastGoalModified'),
+      },
+    };
+  },
+};
+
+/**
+ * kind "migration": switches every device obeys.
+ *   legacy-sync      { enabled }   the old file sync for reading data (no record = on)
+ *   settings-source  { deviceId }  the device whose global settings were published first
+ */
+const migrationKind: KindSpec = {
+  policy: () => 'lww',
+  deletable: false,
+  validate(id, data, _deleted, ctx) {
+    const obj = requireObject(data);
+    if (id === 'legacy-sync') {
+      if (typeof obj.enabled !== 'boolean') {
+        throw new RecordError('invalid_data', 'enabled must be true or false');
+      }
+      return { bookId: null, data: { enabled: obj.enabled } };
+    }
+    if (id === 'settings-source') {
+      if (typeof obj.deviceId !== 'string' || !deviceExists(ctx, obj.deviceId)) {
+        throw new RecordError('unknown_device', 'deviceId must be a device of this user');
+      }
+      return { bookId: null, data: { deviceId: obj.deviceId } };
+    }
+    throw new RecordError('invalid_id', 'migration ids are legacy-sync or settings-source');
+  },
+};
+
 export const DEFAULT_KINDS: KindRegistry = {
   device: deviceKind,
   setting: settingKind,
   position: positionKind,
+  'legacy-book': legacyBookKind,
+  'stat-day': statDayKind,
+  'reading-goal': readingGoalKind,
+  migration: migrationKind,
 };

@@ -63,17 +63,11 @@ export async function pruneSnapshots(dir: string, keep: number): Promise<string[
 }
 
 /**
- * Writes a verified snapshot of `db` into `dir` and prunes old ones.
- * The copy is written to a .tmp file, checked, then renamed into place.
+ * Writes a verified copy of `db` to `finalPath`: written to a .tmp file,
+ * checked with quick_check, then renamed into place.
  */
-export async function takeSnapshot(
-  db: Database.Database,
-  dir: string,
-  keep: number,
-  now = new Date(),
-): Promise<string> {
-  await fs.mkdir(dir, { recursive: true });
-  const finalPath = path.join(dir, snapshotFilename(now));
+export async function writeVerifiedCopy(db: Database.Database, finalPath: string): Promise<void> {
+  await fs.mkdir(path.dirname(finalPath), { recursive: true });
   const tmpPath = `${finalPath}.tmp`;
   try {
     await db.backup(tmpPath);
@@ -94,6 +88,17 @@ export async function takeSnapshot(
     }
     throw err;
   }
+}
+
+/** Writes a verified snapshot of `db` into `dir` and prunes old ones. */
+export async function takeSnapshot(
+  db: Database.Database,
+  dir: string,
+  keep: number,
+  now = new Date(),
+): Promise<string> {
+  const finalPath = path.join(dir, snapshotFilename(now));
+  await writeVerifiedCopy(db, finalPath);
   await pruneSnapshots(dir, keep);
   return finalPath;
 }

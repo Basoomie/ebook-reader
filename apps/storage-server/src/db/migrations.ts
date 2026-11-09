@@ -229,6 +229,48 @@ export const MIGRATIONS: { version: number; name: string; sql: string }[] = [
         WHERE book_id IS NOT NULL;
     `,
   },
+  {
+    version: 5,
+    name: 'migration off the old file sync',
+    // WP5. Server-only bookkeeping of the one-time migration; the results that
+    // devices need (links, positions, stats) are ordinary sync records.
+    sql: `
+      -- One row per book folder of the old sync (DATA_DIR/<folder>).
+      CREATE TABLE legacy_books (
+        user_id      TEXT NOT NULL REFERENCES users(id),
+        folder       TEXT NOT NULL,
+        title        TEXT NOT NULL,
+        state        TEXT NOT NULL CHECK (state IN ('linked', 'needs_user', 'deferred')),
+        reason       TEXT,
+        method       TEXT CHECK (method IN ('calibre-link', 'fingerprint', 'user')),
+        book_id      TEXT REFERENCES books(id),
+        candidates   TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(candidates)),
+        details      TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(details)),
+        scanned_at   INTEGER NOT NULL,
+        decided_at   INTEGER,
+        imported_at  INTEGER,
+        PRIMARY KEY (user_id, folder),
+        CHECK (state <> 'linked' OR (book_id IS NOT NULL AND method IS NOT NULL))
+      );
+
+      -- What each device holds locally (its Calibre links and titles with reading data).
+      CREATE TABLE legacy_device_reports (
+        user_id      TEXT NOT NULL REFERENCES users(id),
+        device_id    TEXT NOT NULL REFERENCES devices(id),
+        reported_at  INTEGER NOT NULL,
+        data         TEXT NOT NULL CHECK (json_valid(data)),
+        PRIMARY KEY (user_id, device_id)
+      );
+
+      CREATE TABLE migration_state (
+        user_id           TEXT PRIMARY KEY REFERENCES users(id),
+        import_device_id  TEXT REFERENCES devices(id),
+        last_scan_at      INTEGER,
+        last_import_at    INTEGER,
+        last_snapshot     TEXT
+      );
+    `,
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;
