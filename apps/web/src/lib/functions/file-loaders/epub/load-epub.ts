@@ -11,6 +11,7 @@ import generateEpubStyleSheet from './generate-epub-style-sheet';
 import getEpubCoverImageFilename from './get-epub-cover-image-filename';
 import { isOPFType } from './types';
 import reduceObjToBlobs from '../utils/reduce-obj-to-blobs';
+import { importHTMLFixMode$, restrictImportFixToAnchor$ } from '$lib/data/store';
 
 export default async function loadEpub(
   file: File,
@@ -18,7 +19,10 @@ export default async function loadEpub(
   lastBookModified: number
 ): Promise<LoadData> {
   const { contents, result: data, contentsDirectory } = await extractEpub(file);
-  const result = generateEpubHtml(data, contents, document, contentsDirectory);
+  const result = generateEpubHtml(data, contents, document, contentsDirectory, {
+    importHTMLFixMode: importHTMLFixMode$.getValue(),
+    restrictImportFixToAnchor: restrictImportFixToAnchor$.getValue()
+  });
 
   const displayData = {
     title: file.name,

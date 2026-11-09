@@ -1,3 +1,13 @@
 .DS_Store
 node_modules
 dist
+
+# WP3a parity test: local paths and book data, never commit
+apps/web/tests/parity/manifest.local.json
+apps/web/tests/parity/.out/
+
+# Private design notes (contain server and share details); kept local only
+/docs/
+
+# Local Claude Code settings and launch configs
+/.claude/

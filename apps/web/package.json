@@ -8,7 +8,11 @@
     "preview": "vite preview",
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "check:types": "tsc --noEmit",
-    "check:watch": "svelte-check --tsconfig ./tsconfig.json --watch"
+    "check:watch": "svelte-check --tsconfig ./tsconfig.json --watch",
+    "test": "vitest run",
+    "count-epub": "vite-node scripts/count-epub.ts --",
+    "test:parity": "vitest run --mode parity tests/parity",
+    "parity:manifest": "node --experimental-sqlite node_modules/vite-node/vite-node.mjs tests/parity/build-manifest.ts --"
   },
   "devDependencies": {
     "@sveltejs/adapter-static": "3.0.10",
@@ -17,12 +21,14 @@
     "@tailwindcss/aspect-ratio": "0.4.2",
     "@tailwindcss/forms": "0.5.11",
     "@types/balanced-match": "3.0.2",
+    "@types/jsdom": "28.0.0",
     "@types/path-browserify": "1.0.3",
     "@types/sortablejs": "^1.15.9",
     "@types/ua-parser-js": "0.7.39",
     "@types/webappsec-credential-management": "0.6.9",
     "@types/wicg-file-system-access": "2023.10.7",
     "autoprefixer": "10.5.0",
+    "jsdom": "28.1.0",
     "postcss": "8.5.15",
     "sass": "1.99.0",
     "svelte": "4.2.20",
@@ -31,7 +37,9 @@
     "tailwindcss": "3.4.19",
     "tslib": "2.8.1",
     "typescript": "5.9.3",
-    "vite": "5.4.21"
+    "vite": "5.4.21",
+    "vite-node": "3.2.4",
+    "vitest": "3.2.7"
   },
   "dependencies": {
     "@breezystack/lamejs": "^1.2.7",

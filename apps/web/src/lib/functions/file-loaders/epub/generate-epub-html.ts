@@ -9,7 +9,6 @@ import type { Section } from '../../../data/database/books-db/versions/v3/books-
 import buildDummyBookImage from '../utils/build-dummy-book-image';
 import clearAllBadImageRef from '../utils/clear-all-bad-image-ref';
 import fixXHtmlHref from '../utils/fix-xhtml-href';
-import { importHTMLFixMode$, restrictImportFixToAnchor$ } from '$lib/data/store';
 import { ImportHTMLFixMode } from '$lib/data/import-html-fix-mode';
 import { getCharacterCount } from '$lib/functions/get-character-count';
 import { getParagraphNodes } from '../../../components/book-reader/get-paragraph-nodes';
@@ -47,15 +46,23 @@ const selfClosingContentTags = [
   'title'
 ];
 
+/**
+ * HTML import fix settings. They change what gets parsed and therefore the character
+ * count, so callers must pass them explicitly (the browser reads them from the store).
+ */
+export interface EpubHtmlImportOptions {
+  importHTMLFixMode: ImportHTMLFixMode;
+  restrictImportFixToAnchor: boolean;
+}
+
 export default function generateEpubHtml(
   data: Record<string, string | Blob>,
   contents: EpubContent | EpubOPFContent,
   document: Document,
-  contentsDirectory: string
+  contentsDirectory: string,
+  { importHTMLFixMode, restrictImportFixToAnchor }: EpubHtmlImportOptions
 ) {
   const fallbackData = new Map<string, string>();
-  const importHTMLFixMode = importHTMLFixMode$.getValue();
-  const restrictImportFixToAnchor = restrictImportFixToAnchor$.getValue();
   const applyImportFixes = importHTMLFixMode !== ImportHTMLFixMode.OFF;
   const selfClosingContentTagsToFix =
     applyImportFixes && !restrictImportFixToAnchor ? selfClosingContentTags : [];
