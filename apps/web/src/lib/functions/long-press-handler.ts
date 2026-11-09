@@ -35,6 +35,7 @@ export function longPressHandler(node: HTMLElement, initialOptions: LongPressOpt
   let longPressFired = false;
   let cancelled = false;
   let suppressClick = false;
+  let lastPressEndAt = 0;
 
   const { style } = node;
 
@@ -136,12 +137,14 @@ export function longPressHandler(node: HTMLElement, initialOptions: LongPressOpt
 
   function onPointerUp() {
     pressActive = false;
+    lastPressEndAt = Date.now();
     clearPressTimer();
     scheduleStopSuppressing();
   }
 
   function onPointerCancel() {
     pressActive = false;
+    lastPressEndAt = Date.now();
     cancelled = true;
     clearPressTimer();
     scheduleStopSuppressing();
@@ -150,7 +153,11 @@ export function longPressHandler(node: HTMLElement, initialOptions: LongPressOpt
   function onClick(event: MouseEvent) {
     event.stopPropagation();
 
-    const skip = longPressFired || cancelled;
+    // Only the click that ends a long or cancelled press is skipped. The trailing click
+    // of a long press is usually swallowed before it reaches this node, so the flags can
+    // be stale; a later click without a fresh press (keyboard, assistive tech) is a tap.
+    const skip =
+      (longPressFired || cancelled) && Date.now() - lastPressEndAt < CLICK_SUPPRESS_WINDOW_MS;
 
     longPressFired = false;
     cancelled = false;

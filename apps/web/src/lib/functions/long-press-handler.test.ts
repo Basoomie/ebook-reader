@@ -104,6 +104,29 @@ describe('longPressHandler', () => {
     document.removeEventListener('click', outsideCapture, true);
   });
 
+  it('a click without a fresh press after a long press is still a tap', () => {
+    node.dispatchEvent(pointer('pointerdown'));
+    vi.advanceTimersByTime(500);
+    outside.dispatchEvent(pointer('pointerup'));
+    click(outside); // trailing click, swallowed before it reaches the node
+    vi.advanceTimersByTime(1000);
+
+    click(node); // e.g. keyboard activation
+
+    expect(onLongPress).toHaveBeenCalledTimes(1);
+    expect(onTap).toHaveBeenCalledTimes(1);
+  });
+
+  it('a click long after a cancelled press is still a tap', () => {
+    node.dispatchEvent(pointer('pointerdown'));
+    node.dispatchEvent(pointer('pointercancel'));
+    vi.advanceTimersByTime(1000);
+
+    click(node);
+
+    expect(onTap).toHaveBeenCalledTimes(1);
+  });
+
   it('stops swallowing clicks shortly after release even if no click follows', () => {
     const outsideCapture = vi.fn();
 
@@ -123,8 +146,9 @@ describe('longPressHandler', () => {
   it('pointercancel cancels both tap and long press', () => {
     node.dispatchEvent(pointer('pointerdown'));
     node.dispatchEvent(pointer('pointercancel'));
-    vi.advanceTimersByTime(1000);
+    vi.advanceTimersByTime(100);
     click(node);
+    vi.advanceTimersByTime(1000);
 
     expect(onLongPress).not.toHaveBeenCalled();
     expect(onTap).not.toHaveBeenCalled();
