@@ -123,6 +123,17 @@ export class SyncRunner {
     return this.run();
   }
 
+  /**
+   * A sync for a screen that wants fresh data now (the reader opening a book):
+   * runs at once, or joins the running cycle, unless sync is backing off after
+   * errors or stopped after an auth error. Resolves when done (never rejects).
+   */
+  syncSoon(): Promise<SyncReport | null> {
+    if (this.halted || this.failures > 0) return Promise.resolve(null);
+    this.clearTimer();
+    return this.run();
+  }
+
   private onLocalWrite(): void {
     void this.refreshStatus();
     if (this.halted || this.failures > 0) return; // the backoff timer runs next

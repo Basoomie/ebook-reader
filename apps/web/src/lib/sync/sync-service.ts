@@ -9,9 +9,23 @@ import { logger } from '$lib/data/logger';
 import { canUseWebLocks } from '$lib/functions/secure-context';
 import { getLibraryStore } from '$lib/library/library-db';
 import { libraryRequestTimeoutSeconds$ } from '$lib/library/settings';
+import {
+  findPositionPrompt,
+  markPositionPromptHandled,
+  onPositionsChanged,
+  promptBookId,
+  type PositionPromptDeps
+} from '$lib/sync/position-prompt-service';
+import type { PromptApi } from '$lib/sync/reader-position-prompt';
 import { recordPosition, type BookmarkLike } from '$lib/sync/record-position';
 import { applyGlobalSettingValue } from '$lib/sync/settings-apply';
-import { recordSyncEnabled$, syncDebounceSeconds$, syncIntervalMinutes$ } from '$lib/sync/settings';
+import {
+  positionPromptEnabled$,
+  positionPromptMinChars$,
+  recordSyncEnabled$,
+  syncDebounceSeconds$,
+  syncIntervalMinutes$
+} from '$lib/sync/settings';
 import { applyGlobalSettings, publishSettings } from '$lib/sync/settings-sync';
 import { SyncApi } from '$lib/sync/sync-api';
 import { SyncEngine } from '$lib/sync/sync-engine';
@@ -153,4 +167,36 @@ export function recordReaderPosition(localId: number, title: string, bookmark: B
   } catch (error) {
     warn(`Sync: could not record the position: ${(error as Error)?.message ?? error}`);
   }
+}
+
+const promptDeps: PositionPromptDeps = {
+  getEngine: getSyncEngine,
+  linksForLocalId: (id) => getLibraryStore().getLinksForLocalId(id),
+  isActive: async () =>
+    positionPromptEnabled$.getValue() &&
+    recordSyncEnabled$.getValue() &&
+    !!(await getLibraryStore().getConnection()),
+  minChars: () => positionPromptMinChars$.getValue(),
+  warn
+};
+
+/**
+ * "Continue from...?" (WP9) for the reader, which loads this module on demand.
+ * Every call is best effort and never rejects.
+ */
+export function positionPromptApi(): PromptApi {
+  return {
+    bookId: (localId, title) =>
+      browser ? promptBookId(localId, title, promptDeps).catch(() => null) : Promise.resolve(null),
+    find: (bookId, place) => findPositionPrompt(bookId, place, promptDeps),
+    markHandled: (bookId, answered) => markPositionPromptHandled(bookId, answered, promptDeps),
+    onChanged: (bookId, callback) => onPositionsChanged(bookId, callback, promptDeps),
+    syncSoon: async () => {
+      try {
+        return (await getSyncRunner()?.syncSoon()) ?? null;
+      } catch {
+        return null;
+      }
+    }
+  };
 }

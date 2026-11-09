@@ -67,6 +67,11 @@ export interface SyncMeta {
   lastError?: string;
   /** Raw localStorage values last published as device settings, by key. */
   publishedSettings?: Record<string, string | null>;
+  /**
+   * "Continue from...?" (WP9): position record id -> updatedAt of the version
+   * already answered on this device, so it isn't offered again.
+   */
+  positionPromptHandled?: Record<string, number>;
 }
 
 export interface SyncDbSchema extends DBSchema {

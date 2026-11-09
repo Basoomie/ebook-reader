@@ -216,4 +216,35 @@ describe('SyncRunner', () => {
     await settle();
     await expect(result).resolves.toBeNull();
   });
+
+  it('"sync soon" (opening a book) runs at once and reports what it pulled', async () => {
+    const t = await setup();
+    await t.runner.start();
+    await settle();
+    const result = t.runner.syncSoon();
+    await settle();
+    await expect(result).resolves.toMatchObject({ pulled: 0 });
+    expect(t.syncSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('"sync soon" respects the backoff and an auth stop', async () => {
+    const transport = okTransport();
+    let error: LibraryApiError | null = new LibraryApiError('unreachable', 'offline');
+    const pull = transport.pull.bind(transport);
+    transport.pull = async (cursor) => {
+      if (error) throw error;
+      return pull(cursor);
+    };
+    const t = await setup({ transport });
+    await t.runner.start();
+    await settle();
+    await expect(t.runner.syncSoon()).resolves.toBeNull();
+    expect(t.syncSpy).toHaveBeenCalledTimes(1);
+
+    error = new LibraryApiError('unauthorized', 'revoked', 401);
+    await settle(30_000); // the backoff retry hits the auth error
+    expect(t.syncSpy).toHaveBeenCalledTimes(2);
+    await expect(t.runner.syncSoon()).resolves.toBeNull();
+    expect(t.syncSpy).toHaveBeenCalledTimes(2);
+  });
 });
