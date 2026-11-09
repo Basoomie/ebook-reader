@@ -61,6 +61,7 @@
     trackerForwardSkipThreshold$,
     trackerAutostartTime$,
     trackerIdleTime$,
+    trackerLongPressTime$,
     trackerPopupDetection$,
     trackerSkipThresholdAction$,
     verticalTextOrientation$,
@@ -205,6 +206,7 @@
       bind:addCharactersOnCompletion={$addCharactersOnCompletion$}
       bind:trackerAutoStartTime={$trackerAutostartTime$}
       bind:trackerIdleTime={$trackerIdleTime$}
+      bind:trackerLongPressTime={$trackerLongPressTime$}
       bind:trackerForwardSkipThreshold={$trackerForwardSkipThreshold$}
       bind:trackerBackwardSkipThreshold={$trackerBackwardSkipThreshold$}
       bind:trackerSkipThresholdAction={$trackerSkipThresholdAction$}

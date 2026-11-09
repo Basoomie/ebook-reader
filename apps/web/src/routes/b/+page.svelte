@@ -2,6 +2,7 @@
   import {
     auditTime,
     debounceTime,
+    defer,
     EMPTY,
     filter,
     fromEvent,
@@ -61,6 +62,7 @@
     textMarginValue$,
     theme$,
     trackerAutostartTime$,
+    trackerLongPressTime$,
     verticalMode$,
     writingMode$,
     viewMode$,
@@ -104,8 +106,10 @@
   import {
     getDefaultStatistic,
     isTrackerMenuOpen$,
-    isTrackerPaused$
+    isTrackerPaused$,
+    isTrackerPausedByIdle$
   } from '$lib/components/book-reader/book-reading-tracker/book-reading-tracker';
+  import { AutoStartGate } from '$lib/components/book-reader/book-reading-tracker/tracker-auto';
   import BookReadingTracker from '$lib/components/book-reader/book-reading-tracker/book-reading-tracker.svelte';
   import {
     getChapterData,
@@ -155,7 +159,7 @@
   import { reduceToEmptyString } from '$lib/functions/rxjs/reduce-to-empty-string';
   import { takeWhenBrowser } from '$lib/functions/rxjs/take-when-browser';
   import { tapDom } from '$lib/functions/rxjs/tap-dom';
-  import { multiClickHandler } from '$lib/functions/multi-click-handler';
+  import { longPressHandler } from '$lib/functions/long-press-handler';
   import {
     executeReplicate$,
     type ReplicationContext
@@ -244,6 +248,7 @@
   let blockDataUpdates = false;
   let trackerElm: BookReadingTracker;
   let showTrackerIcon = false;
+  let autoStartGate: AutoStartGate | undefined;
   let wasTrackerPaused = true;
   let frozenPosition = -1;
   let skipFirstFreezeChange = false;
@@ -508,10 +513,19 @@
     reduceToEmptyString()
   );
 
+  // Auto-start on the first page turn. The first position report and page changes
+  // while the book settles (position restore, layout) only extend the settle period
+  // of trackerAutostartTime seconds (see AutoStartGate).
   const autoStartTracker$ = iffBrowser(() =>
-    $statisticsEnabled$ && $trackerAutostartTime$ > 0 ? fromEvent(document, PAGE_CHANGE) : NEVER
+    $statisticsEnabled$ && $trackerAutostartTime$ > 0
+      ? defer(() => {
+          autoStartGate = new AutoStartGate($trackerAutostartTime$ * 1000);
+
+          return fromEvent<CustomEvent>(document, PAGE_CHANGE);
+        })
+      : NEVER
   ).pipe(
-    debounceTime($trackerAutostartTime$ * 1000),
+    filter(isAutoStartPageTurn),
     take(1),
     tap(() => {
       wasTrackerPaused = false;
@@ -650,8 +664,22 @@
     return event;
   }
 
-  function trackerSingleClickHandler() {
-    if (!statisticsEnabled$) {
+  function isAutoStartPageTurn(event: CustomEvent) {
+    try {
+      if (typeof event.detail?.exploredCharCount !== 'number' || !autoStartGate) {
+        return false;
+      }
+
+      return autoStartGate.onPageChange(Date.now(), $isTrackerPaused$);
+    } catch ({ message }: any) {
+      logger.error(`Error in tracker autostart: ${message}`);
+
+      return false;
+    }
+  }
+
+  function openTrackerMenu() {
+    if (!$statisticsEnabled$) {
       return;
     }
 
@@ -660,11 +688,14 @@
     isTrackerMenuOpen$.next(true);
   }
 
-  function trackerDblClickHandler() {
-    if (!statisticsEnabled$) {
+  /** Manual pause/resume (bottom-bar tap, keyboard). A manual pause never auto-resumes. */
+  function toggleTrackerManually() {
+    if (!$statisticsEnabled$) {
       return;
     }
 
+    autoStartGate?.cancel();
+    isTrackerPausedByIdle$.next(false);
     dialogManager.dialogs$.next([]);
     wasTrackerPaused = !$isTrackerPaused$;
     isTrackerPaused$.next(wasTrackerPaused);
@@ -1166,7 +1197,7 @@
       $verticalMode$,
       changeChapter,
       handleSetCustomReadingPoint,
-      trackerDblClickHandler,
+      toggleTrackerManually,
       freezeTrackerPosition
     );
 
@@ -1872,11 +1903,15 @@
     {#if showTrackerIcon}
       <div
         role="button"
-        title="Click to open Tracker Menu or Double Click to toggle Tracker"
+        title="Tap to pause or resume the Tracker, long-press to open the Tracker Menu"
         class="flex h-full w-8 items-center justify-center text-sm sm:text-lg"
         class:text-red-500={$isTrackerPaused$}
         class:animate-pulse={frozenPosition > -1}
-        use:multiClickHandler={[trackerSingleClickHandler, trackerDblClickHandler]}
+        use:longPressHandler={{
+          onTap: toggleTrackerManually,
+          onLongPress: openTrackerMenu,
+          getDuration: () => $trackerLongPressTime$
+        }}
       >
         <Fa icon={$isTrackerPaused$ ? faPlay : faPause} />
       </div>

@@ -176,6 +176,8 @@
 
   export let trackerIdleTime: number;
 
+  export let trackerLongPressTime: number;
+
   export let trackerForwardSkipThreshold: number;
 
   export let trackerBackwardSkipThreshold: number;
@@ -1071,7 +1073,7 @@
       </SettingsItemGroup>
       <SettingsItemGroup
         title="Autostart tracker (sec)"
-        tooltip={'Time in seconds without a change to the character count after which the tracker will initially auto start (0 = disabled, higher value recommended to avoid racing conditions)'}
+        tooltip={'Starts the tracker on the first page turn after opening a book. Page changes during the first seconds (position restore, layout) are ignored until the character count has not changed for this many seconds (0 = disabled)'}
       >
         <input
           type="number"
@@ -1090,7 +1092,7 @@
       </SettingsItemGroup>
       <SettingsItemGroup
         title="Idle Time (min)"
-        tooltip={'Time in minutes after which the tracker will auto pause without page interaction (0 = disabled, max 12h)'}
+        tooltip={'Time in minutes after which the tracker will auto pause without page interaction. The next page turn or scroll resumes it (0 = disabled, max 12h)'}
       >
         <input
           type="number"
@@ -1105,6 +1107,25 @@
               trackerIdleTime = 900;
             } else {
               trackerIdleTime = Math.floor(trackerIdleTimeInMin * 60);
+            }
+          }}
+        />
+      </SettingsItemGroup>
+      <SettingsItemGroup
+        title="Tracker Long-press (ms)"
+        tooltip={'Tap the tracker icon to pause or resume. Holding it this long opens the tracker menu'}
+      >
+        <input
+          type="number"
+          class={inputClasses}
+          step="50"
+          min="200"
+          bind:value={trackerLongPressTime}
+          on:blur={() => {
+            const newValue = Number.parseFloat(`${trackerLongPressTime ?? 0}`);
+
+            if (isNaN(newValue) || newValue < 200) {
+              trackerLongPressTime = 500;
             }
           }}
         />
