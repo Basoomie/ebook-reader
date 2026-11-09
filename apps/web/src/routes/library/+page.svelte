@@ -366,7 +366,11 @@
       </div>
     {/if}
 
-    <details class="mt-10 text-sm">
+    <p class="mt-10 text-sm">
+      <a class="underline" href="{pagePath}/migration">Migration from the old sync</a>
+    </p>
+
+    <details class="mt-4 text-sm">
       <summary class="cursor-pointer">Connection</summary>
       <div class="py-3">
         <p>Server: {connection.serverUrl}</p>
