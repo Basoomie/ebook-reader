@@ -58,6 +58,11 @@ export function openSourceStream(file: string): Promise<ReadStream> {
   });
 }
 
+/** Opens a file for random-access reading (flag 'r'), e.g. an EPUB's ZIP directory (WP5). */
+export function openSourceFile(file: string): Promise<fs.FileHandle> {
+  return fs.open(file, 'r');
+}
+
 /** The first `bytes` bytes of a file (for the SQLite header check). */
 export async function readHeader(file: string, bytes = 100): Promise<Buffer> {
   const handle = await fs.open(file, 'r');

@@ -15,11 +15,10 @@ import { keysWithScope } from '$lib/sync/settings-registry';
  */
 
 /**
- * Global settings sync is built but switched off. WP5 turns it on after the
- * user picks which device's values become the global ones (design §12.4);
- * until then nothing pulled from the server changes this device's settings.
+ * Global settings sync is off until a device has been made the source of the
+ * global values (WP5: the desktop, see settings-source.ts). Callers pass
+ * whether it is on; the default is off.
  */
-export const GLOBAL_SETTINGS_SYNC_ENABLED = false;
 
 export interface RawStorage {
   getItem(key: string): string | null | undefined;
@@ -33,7 +32,7 @@ export interface RawStorage {
 export async function publishSettings(
   engine: SyncEngine,
   storage: RawStorage,
-  globalEnabled = GLOBAL_SETTINGS_SYNC_ENABLED
+  globalEnabled = false
 ): Promise<number> {
   const meta = await engine.getMeta();
   const published = { ...(meta.publishedSettings ?? {}) };
@@ -65,12 +64,16 @@ export async function publishSettings(
 /**
  * Applies pulled global settings to this device. Does nothing while global
  * sync is off. `apply` sets the value on the live setting (subject + storage).
+ * `readStored` (WP5) reads the value stored after applying; it is remembered
+ * as published, so a value this device keeps (the source never set the
+ * setting) is not pushed back as the global value.
  */
 export async function applyGlobalSettings(
   engine: SyncEngine,
   records: LocalRecord[],
   apply: (key: string, raw: string | null) => void,
-  globalEnabled = GLOBAL_SETTINGS_SYNC_ENABLED
+  globalEnabled = false,
+  readStored?: (key: string) => string | null
 ): Promise<string[]> {
   if (!globalEnabled) return [];
   const globals = new Set(keysWithScope('global'));
@@ -83,7 +86,7 @@ export async function applyGlobalSettings(
     const value = record.deletedAt === null ? record.data.value : null;
     const raw = typeof value === 'string' ? value : null;
     apply(key, raw);
-    applied.push({ id: record.id, key, raw });
+    applied.push({ id: record.id, key, raw: readStored ? readStored(key) : raw });
   }
   if (applied.length) {
     // Remember what we applied so the next publish doesn't echo it back.

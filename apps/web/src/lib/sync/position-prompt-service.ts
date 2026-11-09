@@ -23,6 +23,8 @@ import type { SyncEngine } from '$lib/sync/sync-engine';
 export interface PositionPromptDeps {
   getEngine(): Promise<SyncEngine>;
   linksForLocalId(localId: number): Promise<CalibreLink[]>;
+  /** WP5: the migrated link of a title without a Calibre link. */
+  legacyBookId?(title: string): Promise<string | null>;
   /** Prompt setting on, record sync on, and a server connection. */
   isActive(): Promise<boolean>;
   minChars(): number;
@@ -59,7 +61,7 @@ export async function promptBookId(
   deps: PositionPromptDeps
 ): Promise<string | null> {
   if (!(await deps.isActive())) return null;
-  return resolveLinkedBookId(localId, title, deps.linksForLocalId, deps.warn);
+  return resolveLinkedBookId(localId, title, deps.linksForLocalId, deps.warn, deps.legacyBookId);
 }
 
 function positions(records: LocalRecord[]): LocalRecord[] {

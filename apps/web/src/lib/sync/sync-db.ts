@@ -72,6 +72,11 @@ export interface SyncMeta {
    * already answered on this device, so it isn't offered again.
    */
   positionPromptHandled?: Record<string, number>;
+  /**
+   * WP5: the settings-source device whose global values this device adopted
+   * (or its own id on the source device). Global settings sync starts then.
+   */
+  globalSettingsAdoptedFrom?: string;
 }
 
 export interface SyncDbSchema extends DBSchema {

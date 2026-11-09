@@ -10,6 +10,8 @@ import {
   thumbnailHandler,
 } from './catalog-routes';
 import { ApiError, errorHandler, notFound, sendError } from './errors';
+import { createMigrationRouter } from '../migration/routes';
+import { MigrationService } from '../migration/service';
 import { createSyncRouter, SYNC_BODY_LIMIT } from '../sync/routes';
 import { DEFAULT_MAX_CLOCK_SKEW_SECONDS, SyncStore } from '../sync/store';
 
@@ -27,6 +29,13 @@ export interface SyncOptions {
 
 export const DEFAULT_SYNC: SyncOptions = { maxClockSkewSeconds: DEFAULT_MAX_CLOCK_SKEW_SECONDS };
 
+/** Where the WP5 migration reads the old sync and writes its pre-import snapshot. */
+export interface MigrationPaths {
+  /** The old sync's folder (DATA_DIR), read-only. */
+  dataRoot: string;
+  dbDir: string;
+}
+
 export interface ApiOptions {
   database: DatabaseState;
   version: string;
@@ -34,6 +43,8 @@ export interface ApiOptions {
   catalog?: CatalogOptions;
   pairing?: PairingOptions;
   sync?: SyncOptions;
+  /** WP5 migration routes. Without it they are not mounted. */
+  migration?: MigrationPaths;
 }
 
 const NO_CATALOG: CatalogOptions = {
@@ -51,6 +62,7 @@ export function createApiRouter({
   catalog = NO_CATALOG,
   pairing = DEFAULT_PAIRING,
   sync = DEFAULT_SYNC,
+  migration,
 }: ApiOptions): Router {
   const router = express.Router();
   // Pushes can carry many records; everything else keeps the small default limit.
@@ -100,6 +112,19 @@ export function createApiRouter({
 
     const syncStore = new SyncStore(db, { maxClockSkewMs: sync.maxClockSkewSeconds * 1000 });
     router.use(createSyncRouter(db, syncStore));
+
+    if (migration) {
+      const service = new MigrationService({
+        db,
+        store: syncStore,
+        dataRoot: migration.dataRoot,
+        dbDir: migration.dbDir,
+        calibreDir: catalog.calibreDir ?? null,
+        indexerEnabled: () => catalog.indexer.enabled,
+        log: (m) => console.log(m),
+      });
+      router.use(createMigrationRouter(service));
+    }
 
     router.use(notFound);
   } else {

@@ -152,6 +152,11 @@
   import { ViewMode } from '$lib/data/view-mode';
   import loadBookData from '$lib/functions/book-data-loader/load-book-data';
   import { formatPageTitle } from '$lib/functions/format-page-title';
+  import {
+    allowedLegacyTypes,
+    isLegacyReadingType,
+    legacyReadingSyncOff$
+  } from '$lib/sync/legacy-switch';
   import { iffBrowser } from '$lib/functions/rxjs/iff-browser';
   import {
     AutoReplicationType,
@@ -246,6 +251,11 @@
   let externalStorageHandler: BaseStorageHandler | undefined;
   let externalStorageErrors = 0;
   let isReplicating = false;
+  /** WP5: the user switched the old sync off (see readLegacySwitch). */
+  let legacyReadingOff = false;
+  const legacySwitchSubscription = legacyReadingSyncOff$.subscribe((off) => {
+    legacyReadingOff = off;
+  });
   let storedExploredCharacter = 0;
   let hasBookmarkData = false;
   let blockDataUpdates = false;
@@ -319,6 +329,7 @@
         bookData.lastBookOpen = new Date().getTime();
 
         await localStorageHandler.updateLastRead(bookData);
+        legacyReadingOff = await readLegacySwitch();
         await syncDownData(externalStorageHandler, currentContext);
 
         if (!$statisticsEnabled$) {
@@ -328,6 +339,7 @@
 
           if (wasNew) {
             scheduleReplication(StorageDataType.STATISTICS);
+            recordShadowStatistics(currentContext.title);
           }
         }
 
@@ -646,6 +658,7 @@
 
     readerImageGalleryPictures$.next([]);
 
+    legacySwitchSubscription.unsubscribe();
     stopPositionPrompt();
 
     if (dismissDialogs) {
@@ -870,6 +883,7 @@
         );
 
         scheduleReplication(StorageDataType.STATISTICS);
+        recordShadowStatistics($rawBookData$.title);
       }
 
       if (bookmarkManager) {
@@ -1128,6 +1142,11 @@
 
     const dataToReturn = { id, ...bookData };
 
+    // WP5: with the old sync switched off its files are not written.
+    if (legacyReadingOff) {
+      return dataToReturn;
+    }
+
     await storageHandler.updateLastRead(dataToReturn).catch((error: any) => {
       const message = `Failed to update last read on external storage: ${error.message}`;
 
@@ -1166,13 +1185,16 @@
         localStorageHandler,
         false,
         [context],
-        [
-          StorageDataType.PROGRESS,
-          StorageDataType.STATISTICS,
-          StorageDataType.READING_GOALS,
-          StorageDataType.AUDIOBOOK,
-          StorageDataType.SUBTITLE
-        ]
+        allowedLegacyTypes(
+          [
+            StorageDataType.PROGRESS,
+            StorageDataType.STATISTICS,
+            StorageDataType.READING_GOALS,
+            StorageDataType.AUDIOBOOK,
+            StorageDataType.SUBTITLE
+          ],
+          legacyReadingOff
+        )
       );
 
       if (error) {
@@ -1265,6 +1287,34 @@
     import('$lib/sync/sync-service')
       .then(({ recordReaderPosition }) => recordReaderPosition(localId, title, data))
       .catch(() => {});
+  }
+
+  /**
+   * WP5: statistics side by side with the old sync, the same way as the
+   * position above. Fire and forget; never touches the tracker.
+   */
+  function recordShadowStatistics(title: string | undefined) {
+    if (!title) {
+      return;
+    }
+
+    import('$lib/sync/sync-service')
+      .then(({ recordBookStatistics }) => recordBookStatistics(title))
+      .catch(() => {});
+  }
+
+  /**
+   * WP5: whether the user switched the old sync off (it then carries only
+   * whispersync's audiobook data). Waits at most 2 s; unknown means on.
+   */
+  async function readLegacySwitch() {
+    try {
+      const { isLegacyReadingSyncOff } = await import('$lib/sync/sync-service');
+
+      return await isLegacyReadingSyncOff();
+    } catch (_) {
+      return false;
+    }
   }
 
   /**
@@ -1787,6 +1837,11 @@
   }
 
   function scheduleReplication(dataType: StorageDataType) {
+    // WP5: the old sync's switch stops position, statistics and reading goals.
+    if (legacyReadingOff && isLegacyReadingType(dataType)) {
+      return;
+    }
+
     if (upSyncEnabled) {
       const toReplicate = isReplicating ? dataToReplicateQueue : dataToReplicate;
 
@@ -1907,6 +1962,8 @@
         if (!blockDataUpdates) {
           scheduleReplication(StorageDataType.STATISTICS);
         }
+
+        recordShadowStatistics($rawBookData$?.title);
       }}
       on:trackerAvailable={() => (showTrackerIcon = true)}
       on:trackerMenuClosed={() => {
