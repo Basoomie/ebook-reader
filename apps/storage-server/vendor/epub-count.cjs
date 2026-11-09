@@ -3,7 +3,7 @@
  * web app EPUB import and counting code (apps/web/src/lib/server/epub/server-counter.ts).
  * Rebuild with `pnpm build:server-counter` in apps/web after changing that code.
  * epub-count-version: 1
- * build: f1d7509e6dbcabf3
+ * build: 5e81d42b7a26c6e1
  */
 var __create = Object.create;
 var __defProp = Object.defineProperty;
@@ -14963,19 +14963,28 @@ function installPrefixedAttributeSelectorFix(window2) {
 // src/lib/server/epub/node-dom.ts
 var domGlobals = ["DOMParser", "Node", "Element", "HTMLElement", "HTMLImageElement"];
 var baseUrl = "http://localhost/manage";
-var nodeDocument;
+var nodeWindow;
 function installNodeDom() {
-  if (nodeDocument) {
-    return nodeDocument;
-  }
-  const { window: window2 } = new import_jsdom.JSDOM("<!DOCTYPE html><html><head></head><body></body></html>", {
+  return nodeWindow ? nodeWindow.document : createNodeWindow(void 0).document;
+}
+function renewNodeDom() {
+  const previous = nodeWindow;
+  const document2 = createNodeWindow(previous).document;
+  previous?.close();
+  return document2;
+}
+function createNodeWindow(previous) {
+  const window2 = new import_jsdom.JSDOM("<!DOCTYPE html><html><head></head><body></body></html>", {
     url: baseUrl
-  });
+  }).window;
   const target = globalThis;
   for (const key of domGlobals) {
-    if (target[key] !== void 0 && target[key] !== window2[key]) {
+    const current = target[key];
+    if (current !== void 0 && current !== window2[key] && current !== previous?.[key]) {
       throw new Error(`Refusing to replace an existing global DOM implementation (${key})`);
     }
+  }
+  for (const key of domGlobals) {
     target[key] = window2[key];
   }
   if (!("innerText" in window2.HTMLElement.prototype)) {
@@ -14987,8 +14996,8 @@ function installNodeDom() {
     });
   }
   installPrefixedAttributeSelectorFix(window2);
-  nodeDocument = window2.document;
-  return nodeDocument;
+  nodeWindow = window2;
+  return window2;
 }
 
 // src/lib/server/epub/count-epub-node.ts
@@ -14996,13 +15005,13 @@ var defaultEpubImportOptions = {
   importHTMLFixMode: "Off" /* OFF */,
   restrictImportFixToAnchor: true
 };
-function prepareNode() {
-  const document2 = installNodeDom();
+function prepareNode(fresh = false) {
+  const document2 = fresh ? renewNodeDom() : installNodeDom();
   configure({ useWebWorkers: false });
   return document2;
 }
 async function countEpubBlob(epub, options = defaultEpubImportOptions, extractOptions = {}) {
-  return countEpub(epub, prepareNode(), options, extractOptions);
+  return countEpub(epub, prepareNode(true), options, extractOptions);
 }
 
 // src/lib/server/epub/server-counter.ts

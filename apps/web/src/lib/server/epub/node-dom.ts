@@ -22,27 +22,51 @@ const domGlobals = ['DOMParser', 'Node', 'Element', 'HTMLElement', 'HTMLImageEle
  */
 const baseUrl = 'http://localhost/manage';
 
-let nodeDocument: Document | undefined;
+let nodeWindow: (Window & typeof globalThis) | undefined;
 
 /**
  * Installs a jsdom-backed DOM on `globalThis` (once per process) and returns its document.
  * For Node only: never import this from browser code.
  */
 export function installNodeDom(): Document {
-  if (nodeDocument) {
-    return nodeDocument;
-  }
+  return nodeWindow ? nodeWindow.document : createNodeWindow(undefined).document;
+}
 
-  const { window } = new JSDOM('<!DOCTYPE html><html><head></head><body></body></html>', {
+/**
+ * Replaces the installed DOM with a fresh jsdom window and returns its document.
+ *
+ * jsdom keeps every element with an `id` or `name` in any document of a window,
+ * including each DOMParser document, in the window's named-property tracker
+ * (lib/jsdom/living/window-properties.js), and never lets go of them while they stay
+ * in their document. Browsers only do that for the window's own document. So in one
+ * window every parsed chapter stays in memory (about 40 MB per light novel). A fresh
+ * window per book lets the previous one, and everything it tracked, be collected.
+ * Creating a window takes a few milliseconds.
+ */
+export function renewNodeDom(): Document {
+  const previous = nodeWindow;
+  const document = createNodeWindow(previous).document;
+
+  previous?.close();
+
+  return document;
+}
+
+function createNodeWindow(previous: (Window & typeof globalThis) | undefined) {
+  const window = new JSDOM('<!DOCTYPE html><html><head></head><body></body></html>', {
     url: baseUrl
-  });
+  }).window as unknown as Window & typeof globalThis;
   const target = globalThis as Record<string, unknown>;
 
   for (const key of domGlobals) {
-    if (target[key] !== undefined && target[key] !== window[key]) {
+    const current = target[key];
+
+    if (current !== undefined && current !== window[key] && current !== previous?.[key]) {
       throw new Error(`Refusing to replace an existing global DOM implementation (${key})`);
     }
+  }
 
+  for (const key of domGlobals) {
     target[key] = window[key];
   }
 
@@ -59,9 +83,9 @@ export function installNodeDom(): Document {
   }
 
   // jsdom 28 cannot match `nav[epub\:type="toc"]`; see prefixed-attribute-selectors.ts.
-  installPrefixedAttributeSelectorFix(window as unknown as Window & typeof globalThis);
+  installPrefixedAttributeSelectorFix(window);
 
-  nodeDocument = window.document;
+  nodeWindow = window;
 
-  return nodeDocument;
+  return window;
 }

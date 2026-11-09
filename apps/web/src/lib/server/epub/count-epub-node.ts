@@ -13,7 +13,7 @@ import type { EpubHtmlImportOptions } from '$lib/functions/file-loaders/epub/gen
 import type { ExtractEpubOptions } from '$lib/functions/file-loaders/epub/extract-epub';
 import { ImportHTMLFixMode } from '$lib/data/import-html-fix-mode';
 import { configure as zipConfigure } from '@zip.js/zip.js';
-import { installNodeDom } from './node-dom';
+import { installNodeDom, renewNodeDom } from './node-dom';
 import { readFile } from 'node:fs/promises';
 
 /** Same defaults as `importHTMLFixMode$` / `restrictImportFixToAnchor$` in the store. */
@@ -22,8 +22,8 @@ export const defaultEpubImportOptions: Readonly<EpubHtmlImportOptions> = {
   restrictImportFixToAnchor: true
 };
 
-function prepareNode() {
-  const document = installNodeDom();
+function prepareNode(fresh = false) {
+  const document = fresh ? renewNodeDom() : installNodeDom();
 
   // Node has no Web Workers; the shared init-zip-settings enables them when `window`
   // is missing. Inflating in the main thread gives identical output.
@@ -55,7 +55,8 @@ export async function countEpubBlob(
   options: EpubHtmlImportOptions = defaultEpubImportOptions,
   extractOptions: ExtractEpubOptions = {}
 ): Promise<EpubCountResult> {
-  return countEpub(epub, prepareNode(), options, extractOptions);
+  // A fresh window per book: jsdom would otherwise keep every parsed chapter (node-dom.ts).
+  return countEpub(epub, prepareNode(true), options, extractOptions);
 }
 
 /** The reader's in-book total for stored `elementHtml`, computed in Node. */
