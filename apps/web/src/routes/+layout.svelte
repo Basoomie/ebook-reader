@@ -8,6 +8,7 @@
   import { fontFamilyGroupOne$, isOnline$, userFonts$ } from '$lib/data/store';
   import { dummyFn, isMobile, isMobile$ } from '$lib/functions/utils';
   import { MetaTags } from 'svelte-meta-tags';
+  import { onMount } from 'svelte';
   import '../app.scss';
 
   let path = '';
@@ -19,6 +20,14 @@
     isMobile$.next(isMobile(window));
     addUserFonts($userFonts$);
   }
+
+  // Record sync (WP4) runs in the background. Loaded separately so that no
+  // problem in it can affect the rest of the app.
+  onMount(() => {
+    import('$lib/sync/sync-service')
+      .then(({ startSync }) => startSync())
+      .catch((error) => console.warn('Sync: not started', error));
+  });
 
   if (clearConsoleOnReload && import.meta.hot) {
     // eslint-disable-next-line no-console

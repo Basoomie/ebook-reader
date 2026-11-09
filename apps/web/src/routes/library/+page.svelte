@@ -5,6 +5,7 @@
   import LibraryBookRow from '$lib/components/library/library-book-row.svelte';
   import LibraryConnect from '$lib/components/library/library-connect.svelte';
   import LibraryOpenOverlay from '$lib/components/library/library-open-overlay.svelte';
+  import LibrarySyncStatus from '$lib/components/library/library-sync-status.svelte';
   import { mergeEntries } from '$lib/components/merged-header-icon/merged-entries';
   import MergedHeaderIcon from '$lib/components/merged-header-icon/merged-header-icon.svelte';
   import MessageDialog from '$lib/components/message-dialog.svelte';
@@ -24,6 +25,7 @@
   } from '$lib/library/open-calibre-book';
   import { libraryFilter$, libraryRequestTimeoutSeconds$ } from '$lib/library/settings';
   import type { CatalogBook, CatalogLibrary } from '$lib/library/types';
+  import { notifySyncConnectionChanged } from '$lib/sync/sync-service';
   import { faMagnifyingGlass } from '@fortawesome/free-solid-svg-icons';
   import { onDestroy, onMount } from 'svelte';
   import Fa from 'svelte-fa';
@@ -185,11 +187,13 @@
     await store.setConnection(conn);
     connection = conn;
     connectNotice = '';
+    notifySyncConnectionChanged();
     await startSession(conn);
   }
 
   async function disconnect() {
     await store.clearConnection();
+    notifySyncConnectionChanged();
     suggestedServerUrl = connection?.serverUrl || suggestedServerUrl;
     connection = null;
     api = undefined;
@@ -377,7 +381,8 @@
             bind:value={$libraryRequestTimeoutSeconds$}
           />
         </label>
-        <p class="mt-3">
+        <LibrarySyncStatus />
+        <p class="mt-6">
           Disconnecting forgets the token on this device. To block it on the server too, run
           <code>token revoke</code> there.
         </p>
