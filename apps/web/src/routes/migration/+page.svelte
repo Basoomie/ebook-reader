@@ -154,8 +154,8 @@
   {:else}
     <p class="py-3 text-sm">
       Moves your books, places and statistics from the old file sync to the new sync. The old sync
-      keeps running next to it until you switch it off at the end of this page. Its files on the NAS
-      are never changed.
+      keeps running next to it until you switch it off at the end of this page. The migration itself
+      only reads the old sync's files on the NAS; it never changes them.
     </p>
     {#if loadError}
       <p class="py-2 font-medium" role="alert">{loadError}</p>
