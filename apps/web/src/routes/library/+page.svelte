@@ -2,10 +2,12 @@
   import { afterNavigate, goto } from '$app/navigation';
   import { page } from '$app/stores';
   import ConfirmDialog from '$lib/components/confirm-dialog.svelte';
+  import BookStateDialog from '$lib/components/library/book-state-dialog.svelte';
   import LibraryBookRow from '$lib/components/library/library-book-row.svelte';
   import LibraryConnect from '$lib/components/library/library-connect.svelte';
   import LibraryOpenOverlay from '$lib/components/library/library-open-overlay.svelte';
   import LibrarySyncStatus from '$lib/components/library/library-sync-status.svelte';
+  import MarkCompletedDialog from '$lib/components/library/mark-completed-dialog.svelte';
   import { mergeEntries } from '$lib/components/merged-header-icon/merged-entries';
   import MergedHeaderIcon from '$lib/components/merged-header-icon/merged-header-icon.svelte';
   import MessageDialog from '$lib/components/message-dialog.svelte';
@@ -26,7 +28,8 @@
   } from '$lib/library/open-calibre-book';
   import { libraryFilter$, libraryRequestTimeoutSeconds$ } from '$lib/library/settings';
   import type { CatalogBook, CatalogLibrary } from '$lib/library/types';
-  import { notifySyncConnectionChanged } from '$lib/sync/sync-service';
+  import type { BookState } from '$lib/sync/book-state';
+  import { bookStateApi, notifySyncConnectionChanged } from '$lib/sync/sync-service';
   import { faMagnifyingGlass } from '@fortawesome/free-solid-svg-icons';
   import { onDestroy, onMount } from 'svelte';
   import Fa from 'svelte-fa';
@@ -60,6 +63,14 @@
   let opening: { book: CatalogBook; stage: OpenStage | null; controller: AbortController } | null =
     null;
 
+  // WP8a: book state from the local sync mirror (works offline, updates at once).
+  const bookState = bookStateApi();
+  let states = new Map<string, BookState>();
+  let stopStates: (() => void) | undefined;
+  let destroyed = false;
+  let selectMode = false;
+  let selected = new Set<string>();
+
   $: timeoutSeconds = Math.max(0, Number($libraryRequestTimeoutSeconds$) || 0);
   // A changed timeout setting applies to the next request.
   $: if (connection && api && api.timeoutSeconds !== timeoutSeconds) api = makeApi(connection);
@@ -68,12 +79,21 @@
   $: charCountSummary = summarizeCharCounts(enabledLibraries);
 
   onMount(async () => {
+    void loadStates();
+    void bookState
+      .onChanged(() => void loadStates())
+      .then((off) => {
+        if (destroyed) off();
+        else stopStates = off;
+      });
     suggestedServerUrl = await selfHostServerUrl();
     connection = (await store.getConnection()) ?? null;
     if (connection) await startSession(connection);
   });
 
   onDestroy(() => {
+    destroyed = true;
+    stopStates?.();
     listController?.abort();
     opening?.controller.abort();
   });
@@ -122,6 +142,72 @@
     } catch {
       // Keep the totals from the session start; the book list reports connection problems.
     }
+  }
+
+  async function loadStates() {
+    try {
+      states = await bookState.getAll();
+    } catch (error) {
+      logger.warn(`Library: could not read book states: ${(error as Error).message}`);
+    }
+  }
+
+  function openBookState(book: CatalogBook) {
+    dialogManager.dialogs$.next([
+      {
+        component: BookStateDialog,
+        disableCloseOnClick: true,
+        props: {
+          bookId: book.id,
+          title: book.title,
+          charCount: book.charCount,
+          api: bookState,
+          resolver: () => {}
+        }
+      }
+    ]);
+  }
+
+  function toggleSelectMode() {
+    selectMode = !selectMode;
+    selected = new Set();
+  }
+
+  function toggleSelected(book: CatalogBook) {
+    const next = new Set(selected);
+    if (next.has(book.id)) next.delete(book.id);
+    else next.add(book.id);
+    selected = next;
+  }
+
+  async function bulkMarkCompleted() {
+    const chosen = books.filter((b) => selected.has(b.id));
+    if (!chosen.length) return;
+    const finishedOn = await new Promise<string | null | undefined>((resolve) => {
+      dialogManager.dialogs$.next([
+        {
+          component: MarkCompletedDialog,
+          disableCloseOnClick: true,
+          props: { count: chosen.length, resolver: resolve }
+        }
+      ]);
+    });
+    if (finishedOn === undefined) return;
+    const failed = await bookState.markCompleted(
+      chosen.map((b) => ({ bookId: b.id, charCount: b.charCount })),
+      finishedOn
+    );
+    await loadStates();
+    if (failed.length) {
+      showMessage(
+        'Not all saved',
+        `${failed.length} of ${chosen.length} books could not be marked completed. Try again.`
+      );
+      selected = new Set(failed);
+      return;
+    }
+    selectMode = false;
+    selected = new Set();
   }
 
   async function refreshOnDevice() {
@@ -328,17 +414,29 @@
         <Fa icon={faMagnifyingGlass} />
       </button>
     </form>
-    {#if enabledLibraries.length > 1}
-      <label class="mb-2 block text-sm">
-        Library
-        <select class="ml-2 bg-transparent" value={appliedLibrary} on:change={pickLibrary}>
-          <option value="">All libraries</option>
-          {#each enabledLibraries as lib (lib.id)}
-            <option value={lib.id}>{lib.name}</option>
-          {/each}
-        </select>
-      </label>
-    {/if}
+    <div class="mb-2 flex flex-wrap items-center justify-between gap-2 text-sm">
+      {#if enabledLibraries.length > 1}
+        <label class="block">
+          Library
+          <select class="ml-2 bg-transparent" value={appliedLibrary} on:change={pickLibrary}>
+            <option value="">All libraries</option>
+            {#each enabledLibraries as lib (lib.id)}
+              <option value={lib.id}>{lib.name}</option>
+            {/each}
+          </select>
+        </label>
+      {:else}
+        <span />
+      {/if}
+      <button
+        class="min-h-[2.5rem] rounded border border-current px-4"
+        aria-pressed={selectMode}
+        data-testid="select-mode"
+        on:click={toggleSelectMode}
+      >
+        {selectMode ? 'Done' : 'Select'}
+      </button>
+    </div>
 
     {#if indexerError}
       <p class="py-2 font-medium">{indexerError}</p>
@@ -357,10 +455,15 @@
             {book}
             thumbnailUrl={book.thumbnail && api ? api.absolute(book.thumbnail) : ''}
             onDevice={onDevice.has(book.id)}
+            state={states.get(book.id)}
+            {selectMode}
+            selected={selected.has(book.id)}
             libraryName={enabledLibraries.length > 1
               ? (libraryNames.get(book.libraryId) ?? '')
               : ''}
             on:open={(ev) => open(ev.detail)}
+            on:toggle={(ev) => toggleSelected(ev.detail)}
+            on:state={(ev) => openBookState(ev.detail)}
           />
         {/each}
       </ul>
@@ -412,6 +515,33 @@
     </details>
   {/if}
 </div>
+
+{#if selectMode && connection}
+  <div
+    class="fixed inset-x-0 bottom-0 z-10 border-t-2 border-gray-700 bg-white"
+    data-testid="select-bar"
+  >
+    <div class="{pxScreen} flex flex-wrap items-center justify-between gap-2 py-2">
+      <span>{selected.size} selected</span>
+      <div class="flex flex-wrap gap-2">
+        <button
+          class="min-h-[3rem] rounded border-2 border-current px-4 font-medium disabled:opacity-50"
+          disabled={!selected.size}
+          data-testid="bulk-complete"
+          on:click={bulkMarkCompleted}
+        >
+          Mark completed…
+        </button>
+        <button
+          class="min-h-[3rem] rounded border-2 border-current px-4 font-medium"
+          on:click={toggleSelectMode}
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
 
 {#if opening}
   <LibraryOpenOverlay

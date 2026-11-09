@@ -74,7 +74,11 @@
   import { pagePath } from '$lib/data/env';
   import { storage } from '$lib/data/window/navigator/storage';
   import { formatPageTitle } from '$lib/functions/format-page-title';
-  import { positionPromptEnabled$, positionPromptMinChars$ } from '$lib/sync/settings';
+  import {
+    positionPromptEnabled$,
+    positionPromptMinChars$,
+    readingStatusSettleSeconds$
+  } from '$lib/sync/settings';
   import { writableSubject } from '$lib/functions/svelte/store';
   import { reduceToEmptyString } from '$lib/functions/rxjs/reduce-to-empty-string';
 
@@ -192,6 +196,7 @@
       bind:autoBookmarkTime={$autoBookmarkTime$}
       bind:positionPromptEnabled={$positionPromptEnabled$}
       bind:positionPromptMinChars={$positionPromptMinChars$}
+      bind:readingStatusSettleSeconds={$readingStatusSettleSeconds$}
       bind:importHTMLFixMode={$importHTMLFixMode$}
       bind:restrictImportFixToAnchor={$restrictImportFixToAnchor$}
       bind:cacheStorageData={$cacheStorageData$}

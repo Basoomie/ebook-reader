@@ -144,6 +144,8 @@
 
   export let positionPromptMinChars: number;
 
+  export let readingStatusSettleSeconds: number;
+
   export let activeSettings: string;
 
   export let importHTMLFixMode: string;
@@ -857,6 +859,23 @@
         />
       </SettingsItemGroup>
     {/if}
+    <SettingsItemGroup
+      title="Reading Status: Settle Time (sec)"
+      tooltip={'A library book becomes Reading on its first page turn. Page changes within this many seconds of the previous one while the book opens count as loading, not as a page turn'}
+    >
+      <input
+        type="number"
+        step="1"
+        min="0"
+        class={inputClasses}
+        bind:value={readingStatusSettleSeconds}
+        on:blur={() => {
+          if (readingStatusSettleSeconds < 0 || typeof readingStatusSettleSeconds !== 'number') {
+            readingStatusSettleSeconds = 3;
+          }
+        }}
+      />
+    </SettingsItemGroup>
     <SettingsItemGroup title="Blur image">
       <ButtonToggleGroup options={optionsForToggle} bind:selectedOptionId={blurImage} />
     </SettingsItemGroup>
