@@ -5,10 +5,18 @@
  */
 
 import type { Section } from '../../../data/database/books-db/versions/v3/books-db-v3';
-import extractEpub from './extract-epub';
+import extractEpub, { type ExtractEpubOptions } from './extract-epub';
 import generateEpubHtml, { type EpubHtmlImportOptions } from './generate-epub-html';
 import { getCharacterCount } from '$lib/functions/get-character-count';
 import { getParagraphNodes } from '$lib/components/book-reader/get-paragraph-nodes';
+
+/**
+ * Version of the counting rules. The server stores it with every count and recounts
+ * all books when it changes, so bump it whenever a change to the import or counting
+ * code (extract-epub, generate-epub-html, get-character-count, get-paragraph-nodes,
+ * node-dom) can change a book's character count.
+ */
+export const EPUB_COUNT_VERSION = 1;
 
 export interface EpubCountResult {
   /** Same value the browser import stores as `characters`. */
@@ -27,9 +35,10 @@ export interface EpubCountResult {
 export async function countEpub(
   epub: Blob,
   document: Document,
-  options: EpubHtmlImportOptions
+  options: EpubHtmlImportOptions,
+  extractOptions: ExtractEpubOptions = {}
 ): Promise<EpubCountResult> {
-  const { contents, result: data, contentsDirectory } = await extractEpub(epub);
+  const { contents, result: data, contentsDirectory } = await extractEpub(epub, extractOptions);
   const result = generateEpubHtml(data, contents, document, contentsDirectory, options);
 
   return {

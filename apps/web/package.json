@@ -11,6 +11,7 @@
     "check:watch": "svelte-check --tsconfig ./tsconfig.json --watch",
     "test": "vitest run",
     "count-epub": "vite-node scripts/count-epub.ts --",
+    "build:server-counter": "vite-node scripts/build-server-counter.ts --",
     "test:parity": "vitest run --mode parity tests/parity",
     "parity:manifest": "node --experimental-sqlite node_modules/vite-node/vite-node.mjs tests/parity/build-manifest.ts --"
   },
@@ -28,6 +29,7 @@
     "@types/webappsec-credential-management": "0.6.9",
     "@types/wicg-file-system-access": "2023.10.7",
     "autoprefixer": "10.5.0",
+    "esbuild": "0.21.5",
     "jsdom": "28.1.0",
     "postcss": "8.5.15",
     "sass": "1.99.0",

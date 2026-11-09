@@ -10,6 +10,7 @@ import {
   type EpubCountResult
 } from '$lib/functions/file-loaders/epub/count-epub';
 import type { EpubHtmlImportOptions } from '$lib/functions/file-loaders/epub/generate-epub-html';
+import type { ExtractEpubOptions } from '$lib/functions/file-loaders/epub/extract-epub';
 import { ImportHTMLFixMode } from '$lib/data/import-html-fix-mode';
 import { configure as zipConfigure } from '@zip.js/zip.js';
 import { installNodeDom } from './node-dom';
@@ -39,10 +40,22 @@ export async function countEpubFile(
   input: string | Uint8Array,
   options: EpubHtmlImportOptions = defaultEpubImportOptions
 ): Promise<EpubCountResult> {
-  const document = prepareNode();
   const bytes = Uint8Array.from(typeof input === 'string' ? await readFile(input) : input);
 
-  return countEpub(new Blob([bytes]), document, options);
+  return countEpubBlob(new Blob([bytes]), options);
+}
+
+/**
+ * Counts an EPUB given as a Blob. A file-backed Blob (`fs.openAsBlob`) is read lazily:
+ * zip.js reads only the central directory and the entries it extracts, so with
+ * `{ imageData: false }` the image bytes are never read.
+ */
+export async function countEpubBlob(
+  epub: Blob,
+  options: EpubHtmlImportOptions = defaultEpubImportOptions,
+  extractOptions: ExtractEpubOptions = {}
+): Promise<EpubCountResult> {
+  return countEpub(epub, prepareNode(), options, extractOptions);
 }
 
 /** The reader's in-book total for stored `elementHtml`, computed in Node. */
