@@ -385,7 +385,9 @@ describe('old-sync switch', () => {
       StorageDataType.SUBTITLE
     ];
     expect(allowedLegacyTypes(all, false)).toEqual(all);
+    // Book files stay: whispersync's "save match" uploads the matched HTML with them.
     expect(allowedLegacyTypes(all, true)).toEqual([
+      StorageDataType.DATA,
       StorageDataType.AUDIOBOOK,
       StorageDataType.SUBTITLE
     ]);

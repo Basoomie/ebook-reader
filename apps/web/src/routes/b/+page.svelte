@@ -1837,7 +1837,7 @@
   }
 
   function scheduleReplication(dataType: StorageDataType) {
-    // WP5: the old sync's switch stops book data, position, statistics and goals.
+    // WP5: the old sync's switch stops position, statistics and reading goals.
     if (legacyReadingOff && isLegacyReadingType(dataType)) {
       return;
     }

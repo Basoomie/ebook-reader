@@ -14,16 +14,19 @@ import type { LocalRecord } from '$lib/sync/sync-db';
  * No record means on. Only the user's tap on the migration page writes it;
  * the program never turns the old sync off by itself.
  *
- * Off stops the old sync for reading data: book files, position, statistics
- * and reading goals. Whispersync's audiobook position and subtitles keep
- * using the old sync until WP15 (decided with the user).
+ * Off stops the old sync for the data the new sync now carries: position,
+ * statistics and reading goals (plus the reader's automatic rename of the
+ * stored book file on open). Whispersync keeps using the old sync until WP15
+ * (decided with the user): audiobook position, subtitles, and book files,
+ * which carry whispersync's matched HTML (its "save match" uploads them, and
+ * a reset reaches other devices through a later manual book-data sync).
+ * Book files are only ever written to the old sync by such explicit actions.
  */
 
 export const LEGACY_SYNC_RECORD = { kind: 'migration', id: 'legacy-sync' } as const;
 
-/** Data the switch stops. AUDIOBOOK and SUBTITLE are not in it. */
+/** Data the switch stops. DATA (book files), AUDIOBOOK and SUBTITLE are not in it. */
 export const LEGACY_READING_TYPES: readonly StorageDataType[] = [
-  StorageDataType.DATA,
   StorageDataType.PROGRESS,
   StorageDataType.STATISTICS,
   StorageDataType.READING_GOALS

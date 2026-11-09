@@ -621,8 +621,8 @@
         )
       );
       const books = $bookCards$.filter((card) => selectedBookIds.has(card.id));
-      // WP5: with the old sync switched off, only whispersync's audio data is
-      // still written to it (its files stay as they were, for rollback).
+      // WP5: with the old sync switched off, positions, statistics and reading
+      // goals are no longer written to it; book files and whispersync's data are.
       const exportTypes =
         $lastExportedTarget$ === StorageKey.SELFHOST
           ? allowedLegacyTypes($lastExportedTypes$, $legacyReadingSyncOff$)
@@ -630,7 +630,7 @@
 
       if (!exportTypes.length) {
         const message =
-          'The old sync was switched off on the migration page, so book data, positions, statistics and reading goals are no longer written to it.';
+          'The old sync was switched off on the migration page, so positions, statistics and reading goals are no longer written to it.';
 
         resetProgress();
         showError('Old sync is off', message, message);

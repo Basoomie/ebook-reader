@@ -375,9 +375,10 @@
         <h2 class="text-lg font-medium">6. The old sync</h2>
         <p class="text-sm">
           The old sync is <span class="font-medium">{$legacyReadingSyncOff$ ? 'off' : 'on'}</span>.
-          Switching it off stops it for books, places, statistics and reading goals on every device
-          (each after its next sync). Whispersync's audiobook data keeps using it. Its files on the
-          NAS stay as they are, so you can switch it back on at any time.
+          Switching it off stops it for places, statistics and reading goals on every device (each
+          after its next sync). Whispersync keeps using it as today (audiobook position, subtitles
+          and the matched book files it uploads when you save a match). Its files on the NAS
+          otherwise stay as they are, so you can switch it back on at any time.
         </p>
         {#if !$legacyReadingSyncOff$}
           {#if confirmSwitch}
