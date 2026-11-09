@@ -27,7 +27,50 @@ export interface ServerConfig {
   pairing: PairingConfig;
   /** Record sync (WP4). */
   sync: SyncConfig;
+  /** Background character counts (WP3b). */
+  counts: CountsConfig;
 }
+
+/** The two reader import settings that change a book's character count. */
+export type CountFixMode = 'Off' | 'Standard' | 'Extended';
+
+export interface CountsConfig {
+  /** false = no background counting (counts stay pending). */
+  background: boolean;
+  /** Books counted at the same time (one counter process each). */
+  concurrency: number;
+  /** Background rate limit (books per minute); 0 = no limit. */
+  perMinute: number;
+  /** A book that takes longer is recorded as an error (timeout) and its counter restarted. */
+  timeoutSeconds: number;
+  /** A counter process that is not ready after this long pauses the pass (loading jsdom takes seconds). */
+  startTimeoutSeconds: number;
+  /** Heap limit of each counter process. */
+  maxMemoryMb: number;
+  /** A counter process is replaced after this many books (bounds memory growth). */
+  booksPerProcess: number;
+  /** Scheduling priority of the counter processes (0-19, higher = lower priority). */
+  nice: number;
+  /** The pass pauses after this many timeouts or crashes in a row (until the next wake). */
+  maxConsecutiveFailures: number;
+  /** Counted with these reader import settings (the reader's defaults: Off, anchor only). */
+  importFixMode: CountFixMode;
+  restrictFixToAnchor: boolean;
+}
+
+export const DEFAULT_COUNTS_CONFIG: CountsConfig = {
+  background: true,
+  concurrency: 1,
+  perMinute: 0,
+  timeoutSeconds: 120,
+  startTimeoutSeconds: 60,
+  maxMemoryMb: 768,
+  booksPerProcess: 500,
+  nice: 10,
+  maxConsecutiveFailures: 5,
+  importFixMode: 'Off',
+  restrictFixToAnchor: true,
+};
 
 export interface SyncConfig {
   /** A change stamped further ahead of the server clock than this gets the server time. */
@@ -121,6 +164,7 @@ export function loadConfig(env: Env): LoadedConfig {
       calibre: parseCalibreConfig(env, warnings),
       pairing: parsePairingConfig(env, warnings),
       sync: parseSyncConfig(env, warnings),
+      counts: parseCountsConfig(env, warnings),
     },
     warnings,
   };
@@ -254,6 +298,48 @@ export function parseSyncConfig(env: Env, warnings: string[]): SyncConfig {
       warnings,
     ),
   };
+}
+
+/** WP3b settings; bad values fall back to the defaults like the other WP1+ settings. */
+export function parseCountsConfig(env: Env, warnings: string[]): CountsConfig {
+  const d = DEFAULT_COUNTS_CONFIG;
+  const num = (name: string, fallback: number, min: number, max: number, integer = true) =>
+    parseNumber(name, env[name], fallback, min, max, integer, warnings);
+  const bool = (name: string, fallback: boolean) =>
+    parseBoolean(name, env[name], fallback, warnings);
+  return {
+    background: bool('COUNT_BACKGROUND', d.background),
+    concurrency: num('COUNT_CONCURRENCY', d.concurrency, 1, 4),
+    perMinute: num('COUNT_PER_MINUTE', d.perMinute, 0, 100_000, false),
+    timeoutSeconds: num('COUNT_TIMEOUT_SECONDS', d.timeoutSeconds, 5, 3600),
+    startTimeoutSeconds: num('COUNT_START_TIMEOUT_SECONDS', d.startTimeoutSeconds, 5, 3600),
+    maxMemoryMb: num('COUNT_MAX_MEMORY_MB', d.maxMemoryMb, 128, 16_384),
+    booksPerProcess: num('COUNT_BOOKS_PER_PROCESS', d.booksPerProcess, 1, 1_000_000),
+    nice: num('COUNT_NICE', d.nice, 0, 19),
+    maxConsecutiveFailures: num(
+      'COUNT_MAX_CONSECUTIVE_FAILURES',
+      d.maxConsecutiveFailures,
+      1,
+      1_000_000,
+    ),
+    importFixMode: parseFixMode(env.COUNT_IMPORT_FIX_MODE, d.importFixMode, warnings),
+    restrictFixToAnchor: bool('COUNT_RESTRICT_FIX_TO_ANCHOR', d.restrictFixToAnchor),
+  };
+}
+
+function parseFixMode(
+  value: string | undefined,
+  fallback: CountFixMode,
+  warnings: string[],
+): CountFixMode {
+  if (value === undefined || value.trim() === '') return fallback;
+  const modes: CountFixMode[] = ['Off', 'Standard', 'Extended'];
+  const mode = modes.find((m) => m.toLowerCase() === value.trim().toLowerCase());
+  if (mode) return mode;
+  warnings.push(
+    `COUNT_IMPORT_FIX_MODE: "${value}" is not one of ${modes.join(', ')}; using ${fallback}.`,
+  );
+  return fallback;
 }
 
 export function parseNumber(

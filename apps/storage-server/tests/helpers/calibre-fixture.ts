@@ -53,6 +53,8 @@ export interface FixtureBook {
   cover?: CoverKind;
   /** Hue of the generated cover (to make a "new" cover). */
   coverHue?: number;
+  /** Contents of the EPUB file (default: the single byte 'x'). */
+  epub?: Buffer;
 }
 
 /** Calibre timestamp text for a JS date. */
@@ -165,7 +167,12 @@ export class LibraryFixture {
         for (const format of book.formats ?? ['EPUB']) {
           db.prepare(
             'INSERT INTO data (book, format, uncompressed_size, name) VALUES (?, ?, ?, ?)',
-          ).run(bookId, format, 1234, `Book ${bookId} - Author ${bookId}`);
+          ).run(
+            bookId,
+            format,
+            format === 'EPUB' && book.epub ? book.epub.length : 1234,
+            `Book ${bookId} - Author ${bookId}`,
+          );
         }
         return bookId;
       })();
@@ -176,7 +183,11 @@ export class LibraryFixture {
     const folder = this.bookDir(id);
     fs.mkdirSync(folder, { recursive: true });
     for (const format of book.formats ?? ['EPUB']) {
-      fs.writeFileSync(path.join(folder, `Book ${id} - Author ${id}.${format.toLowerCase()}`), 'x');
+      const data = format === 'EPUB' && book.epub ? book.epub : 'x';
+      fs.writeFileSync(
+        path.join(folder, `Book ${id} - Author ${id}.${format.toLowerCase()}`),
+        data,
+      );
     }
     if (cover === 'jpeg') {
       fs.writeFileSync(path.join(folder, 'cover.jpg'), await makeJpeg(book.coverHue));
@@ -188,6 +199,25 @@ export class LibraryFixture {
 
   bookDir(calibreId: number): string {
     return path.join(this.dir, `Author ${calibreId}`, `Book ${calibreId} (${calibreId})`);
+  }
+
+  epubFile(calibreId: number): string {
+    return path.join(this.bookDir(calibreId), `Book ${calibreId} - Author ${calibreId}.epub`);
+  }
+
+  /** Replaces the EPUB like Calibre does: new file, new size, newer last_modified. */
+  replaceEpub(calibreId: number, epub: Buffer): void {
+    fs.writeFileSync(this.epubFile(calibreId), epub);
+    this.exec((db) => {
+      db.prepare("UPDATE data SET uncompressed_size = ? WHERE book = ? AND format = 'EPUB'").run(
+        epub.length,
+        calibreId,
+      );
+      db.prepare('UPDATE books SET last_modified = ? WHERE id = ?').run(
+        calibreDate(new Date(Date.now() + 1000)),
+        calibreId,
+      );
+    });
   }
 
   /** Runs SQL against metadata.db as Calibre would (tests only). */

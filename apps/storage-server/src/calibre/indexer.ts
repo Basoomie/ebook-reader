@@ -47,6 +47,8 @@ export interface IndexerOptions {
   dbDir: string;
   dataRoot: string;
   thumbnails?: ThumbnailService | null;
+  /** Background character counts (WP3b); woken after every poll like the thumbnails. */
+  counts?: { wake(): void } | null;
   log?: (message: string) => void;
   logError?: (message: string, err?: unknown) => void;
 }
@@ -165,6 +167,7 @@ export class CalibreIndexer {
       } finally {
         this.ticking = null;
         this.opts.thumbnails?.wake();
+        this.opts.counts?.wake();
       }
     })();
     return this.ticking;

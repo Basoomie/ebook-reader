@@ -1,7 +1,8 @@
 /**
  * The ONLY module that touches the Calibre libraries (CLAUDE.md: Calibre
  * libraries are read-only to this app). Everything here is read-only:
- * stat, one-level readdir, reading or streaming a file, reading a file header and opening
+ * stat, one-level readdir, reading or streaming a file, positioned reads through a
+ * Blob-like view (EPUB character counts, WP3b), reading a file header and opening
  * a SQLite database read-only for the snapshot copy. There is deliberately no
  * write, mkdir, rename or delete in this file; keep it that way.
  *
@@ -61,6 +62,77 @@ export function openSourceStream(file: string): Promise<ReadStream> {
 /** Opens a file for random-access reading (flag 'r'), e.g. an EPUB's ZIP directory (WP5). */
 export function openSourceFile(file: string): Promise<fs.FileHandle> {
   return fs.open(file, 'r');
+}
+
+/**
+ * The part of the Blob interface zip.js's BlobReader uses (size, slice, arrayBuffer).
+ * Read-only by construction: there is no way to write through it.
+ */
+export interface SourceBlobView {
+  readonly size: number;
+  readonly type: string;
+  slice(start?: number, end?: number): SourceBlobView;
+  arrayBuffer(): Promise<ArrayBuffer>;
+}
+
+export interface SourceBlob {
+  blob: SourceBlobView;
+  /** Bytes read through the view so far. */
+  bytesRead(): number;
+  close(): Promise<void>;
+}
+
+/**
+ * Opens a file (flag 'r') as a Blob-like view for the EPUB character counter (WP3b).
+ * One file handle serves every read; zip.js reads only the ZIP directory and the
+ * entries it extracts (about 200 small reads per book), so a counter that skips
+ * images reads a few hundred KB of a 10+ MB EPUB.
+ */
+export async function openSourceBlob(file: string): Promise<SourceBlob> {
+  const handle = await fs.open(file, 'r');
+  let size: number;
+  try {
+    size = (await handle.stat()).size;
+  } catch (err) {
+    await handle.close();
+    throw err;
+  }
+  let bytesRead = 0;
+  let closed = false;
+
+  const view = (start: number, end: number): SourceBlobView => ({
+    size: end - start,
+    type: '',
+    slice(from = 0, to = end - start) {
+      // Blob.slice semantics: negative positions count from the end; clamped to the view.
+      const length = end - start;
+      const clamp = (n: number) => (n < 0 ? Math.max(length + n, 0) : Math.min(n, length));
+      const s = clamp(from);
+      return view(start + s, start + Math.max(s, clamp(to)));
+    },
+    async arrayBuffer() {
+      const length = end - start;
+      const buffer = Buffer.alloc(length);
+      let offset = 0;
+      while (offset < length) {
+        const { bytesRead: n } = await handle.read(buffer, offset, length - offset, start + offset);
+        if (n === 0) throw new Error('Unexpected end of file');
+        offset += n;
+      }
+      bytesRead += length;
+      return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + length) as ArrayBuffer;
+    },
+  });
+
+  return {
+    blob: view(0, size),
+    bytesRead: () => bytesRead,
+    close: async () => {
+      if (closed) return;
+      closed = true;
+      await handle.close();
+    },
+  };
 }
 
 /** The first `bytes` bytes of a file (for the SQLite header check). */

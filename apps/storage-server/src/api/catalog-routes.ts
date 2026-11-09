@@ -19,12 +19,15 @@ import {
   listLibrariesFor,
   verifyThumbnailUrl,
 } from '../catalog/queries';
+import type { CharCountService } from '../counts/count-service';
 import { thumbnailVersion, type ThumbnailService } from '../thumbnails/thumbnails';
 import { getAuth, requireUser } from './auth';
 import { ApiError, asyncHandler } from './errors';
 
 export interface CatalogOptions {
   thumbnails: ThumbnailService | null;
+  /** Background character counts (WP3b); null when the counter is unavailable. */
+  counts?: CharCountService | null;
   indexer: IndexerStatus;
   /** Root of the Calibre libraries (read-only); null when the indexer is off. */
   calibreDir?: string | null;
@@ -49,10 +52,11 @@ function requireIndexer(catalog: CatalogOptions, what: string): void {
 
 export function createCatalogRouter(db: Database.Database, catalog: CatalogOptions): Router {
   const router = express.Router();
+  const countSpec = () => catalog.counts?.spec ?? null;
 
   router.get('/libraries', (_req, res) => {
     const { user } = getAuth(res);
-    res.json({ indexer: catalog.indexer, libraries: listLibrariesFor(db, user) });
+    res.json({ indexer: catalog.indexer, libraries: listLibrariesFor(db, user, countSpec()) });
   });
 
   router.get('/books', (req, res) => {
@@ -70,6 +74,7 @@ export function createCatalogRouter(db: Database.Database, catalog: CatalogOptio
           limit,
           cursor: queryString(req.query.cursor),
           includeMissing: queryBool(req.query.includeMissing),
+          countSpec: countSpec(),
         }),
       );
     } catch (err) {
@@ -80,7 +85,7 @@ export function createCatalogRouter(db: Database.Database, catalog: CatalogOptio
 
   router.get('/books/:id', (req, res) => {
     const { user } = getAuth(res);
-    const book = getBookFor(db, user, req.params.id);
+    const book = getBookFor(db, user, req.params.id, countSpec());
     if (!book) throw new ApiError(404, 'not_found', 'No such book');
     res.json(book);
   });

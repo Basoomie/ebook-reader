@@ -1,6 +1,7 @@
 import type { CatalogOptions } from './api/catalog-routes';
 import { createApp } from './app';
 import { CalibreIndexer } from './calibre/indexer';
+import { CharCountService } from './counts/count-service';
 import { ThumbnailService } from './thumbnails/thumbnails';
 import { FatalConfigError, formatTime, loadConfig, LoadedConfig } from './config';
 import { initDatabase } from './db/database';
@@ -44,8 +45,10 @@ if (database.ok) {
 // unusable, the catalog routes report it and everything else works.
 let indexer: CalibreIndexer | null = null;
 let thumbnails: ThumbnailService | null = null;
+let counts: CharCountService | null = null;
 const catalog: CatalogOptions = {
   thumbnails: null,
+  counts: null,
   indexer: { enabled: false, error: 'CALIBRE_DIR is not set' },
 };
 if (database.ok && config.calibre.dir) {
@@ -58,15 +61,32 @@ if (database.ok && config.calibre.dir) {
       perSecond: config.calibre.thumbPerSecond,
       background: config.calibre.thumbBackground,
     });
+    // Character counts (WP3b) are optional too: without the counter the library
+    // just shows counts as pending.
+    try {
+      counts = new CharCountService({
+        db: database.db,
+        calibreDir: config.calibre.dir,
+        config: config.counts,
+      });
+      console.log(
+        `Character counts: ${config.counts.background ? 'on' : 'off (COUNT_BACKGROUND=false)'}, ` +
+          `spec ${counts.spec}, counter build ${counts.counter.build}`,
+      );
+    } catch (err) {
+      console.error('Error: character counts are off, the counter is unavailable:', err);
+    }
     indexer = new CalibreIndexer({
       db: database.db,
       config: config.calibre,
       dbDir: config.dbDir,
       dataRoot: config.dataRoot,
       thumbnails,
+      counts,
     });
     catalog.indexer = indexer.status;
     catalog.thumbnails = thumbnails;
+    catalog.counts = counts;
     catalog.calibreDir = config.calibre.dir;
     indexer
       .start()
@@ -101,6 +121,7 @@ function shutdown(signal: string): void {
   snapshots?.stop();
   void indexer?.stop();
   void thumbnails?.stop();
+  void counts?.stop();
   if (database.ok) {
     try {
       database.db.close();

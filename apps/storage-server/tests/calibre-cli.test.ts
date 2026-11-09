@@ -82,6 +82,26 @@ describe('Calibre indexer end to end', () => {
       expect(thumb.status).toBe(200);
       expect(thumb.headers.get('content-type')).toBe('image/webp');
 
+      // Character counts (WP3b): the real counter in its own process, after the poll.
+      expect(server.output()).toContain('Character counts: on, spec v1|Off|anchor');
+      await waitForOutput(server, 'Character counts: counted 5 in', 1, 90_000);
+      const counted = (await (
+        await fetch(`${server.baseUrl}/api/v1/books`, { headers: auth })
+      ).json()) as { books: { id: string; charCount: number; charCountStatus: string }[] };
+      for (const book of counted.books) {
+        expect(book.charCountStatus).toBe('counted');
+        expect(book.charCount).toBeGreaterThan(0);
+      }
+      const countStatus = cli(['counts', 'status'], env);
+      expect(countStatus.code, countStatus.out).toBe(0);
+      expect(countStatus.out).toContain('spec=v1|Off|anchor');
+      expect(countStatus.out).toContain('counted=5  pending=0  failed=0');
+      expect(cli(['counts', 'rebuild'], env).code).toBe(1);
+      const recount = cli(['counts', 'rebuild', '--book', counted.books[0].id], env);
+      expect(recount.out).toContain('1 book(s) will be counted again');
+      await waitForOutput(server, 'Character counts: counted 1 in', 1, 90_000);
+      expect(cli(['counts', 'retry'], env).out).toContain('0 failed book(s)');
+
       const run = cli(['index', 'run', id!], env);
       expect(run.out).toContain('Reindex requested');
       await waitForOutput(server, 'Calibre: indexed library "日本語"', 2);
@@ -99,7 +119,7 @@ describe('Calibre indexer end to end', () => {
       await server.stop();
     }
     expect(fingerprint(root)).toEqual(before);
-  }, 90_000);
+  }, 240_000);
 
   it('stays off, with everything else working, when the Calibre folder is writable', async () => {
     const { root } = copyRealFixture();
