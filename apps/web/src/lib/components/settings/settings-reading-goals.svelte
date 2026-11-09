@@ -9,6 +9,8 @@
     faTrash
   } from '@fortawesome/free-solid-svg-icons';
   import { ReadingGoalFrequency } from '$lib/components/book-reader/book-reading-tracker/book-reading-tracker';
+  import { legacyReadingSyncOff$ } from '$lib/sync/legacy-switch';
+  import { shadowReadingGoals } from '$lib/sync/shadow';
   import ConfirmDialog from '$lib/components/confirm-dialog.svelte';
   import MessageDialog from '$lib/components/message-dialog.svelte';
   import SettingsReadingGoalsMerge from '$lib/components/settings/settings-reading-goals-merge.svelte';
@@ -87,6 +89,12 @@
   );
 
   $: hasNextHistoryPage = sortedReadingGoals.length > currentHistoryIndex + itemsPerPage;
+
+  // Labels computed here instead of {@const} (prettier-plugin-svelte 4.0.0 cannot print it).
+  $: historyRows = historyReadingGoals.map((goal) => ({
+    goal,
+    label: getDateRangeLabel(goal.goalStartDate, goal.goalEndDate)
+  }));
 
   $: if ($readingGoal$) {
     ({
@@ -183,6 +191,7 @@
       dispatch('spinner', true);
 
       await database.updateReadingGoals(readingGoalsToDelete, readingGoalsToInsert);
+      shadowReadingGoals();
     } catch (error: any) {
       tick().then(() =>
         dialogManager.dialogs$.next([
@@ -220,6 +229,20 @@
     });
 
     if (!source || !target) {
+      return;
+    }
+
+    if (target.type === StorageKey.SELFHOST && $legacyReadingSyncOff$) {
+      dialogManager.dialogs$.next([
+        {
+          component: MessageDialog,
+          props: {
+            title: 'Old sync is off',
+            message:
+              'The old sync was switched off on the migration page, so reading goals are no longer written to it. They sync through the server instead.'
+          }
+        }
+      ]);
       return;
     }
 
@@ -322,6 +345,7 @@
 
     try {
       await database.deleteReadingGoal(readingGoalToDelete?.goalStartDate);
+      shadowReadingGoals();
       await updateReadingGoalsData();
     } catch ({ message }: any) {
       dialogManager.dialogs$.next([
@@ -482,11 +506,7 @@
     <summary>Reading Goal History ({pluralize(readingGoals.length, 'Item')})</summary>
     {#if readingGoals.length}
       <div class="grid-cols-[repeat(4,1fr)_0.1fr] hidden sm:grid">
-        {#each historyReadingGoals as historyGoal (historyGoal.goalStartDate)}
-          {@const dateRangeLabel = getDateRangeLabel(
-            historyGoal.goalStartDate,
-            historyGoal.goalEndDate
-          )}
+        {#each historyRows as { goal: historyGoal, label: dateRangeLabel } (historyGoal.goalStartDate)}
           <div>{dateRangeLabel}</div>
           <div>{secondsToMinutes(historyGoal.timeGoal)} min</div>
           <div>{historyGoal.characterGoal} characters</div>
@@ -500,11 +520,7 @@
         {/each}
       </div>
       <div class="sm:hidden">
-        {#each historyReadingGoals as historyGoal (historyGoal.goalStartDate)}
-          {@const dateRangeLabel = getDateRangeLabel(
-            historyGoal.goalStartDate,
-            historyGoal.goalEndDate
-          )}
+        {#each historyRows as { goal: historyGoal, label: dateRangeLabel } (historyGoal.goalStartDate)}
           <div class="my-2">
             {dateRangeLabel} / {secondsToMinutes(historyGoal.timeGoal)} min / {historyGoal.characterGoal}
             characters / {historyGoal.goalFrequency}

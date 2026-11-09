@@ -6,9 +6,26 @@
 
 import { browser } from '$app/environment';
 import { logger } from '$lib/data/logger';
+import { MergeMode } from '$lib/data/merge-mode';
+import { database } from '$lib/data/store';
+import { ReplicationSaveBehavior } from '$lib/functions/replication/replication-options';
 import { canUseWebLocks } from '$lib/functions/secure-context';
 import { getLibraryStore } from '$lib/library/library-db';
 import { libraryRequestTimeoutSeconds$ } from '$lib/library/settings';
+import { MigrationApi } from '$lib/migration/api';
+import { localBookmarkForTitle, localTitleSummaries } from '$lib/migration/local-summary';
+import { applyReadingGoals, applyStatDays } from '$lib/sync/apply-records';
+import {
+  bookIdForTitle,
+  legacyBookIdForTitle,
+  titlesByBookId,
+  type BookIdDeps
+} from '$lib/sync/book-ids';
+import {
+  LEGACY_SYNC_RECORD,
+  legacyReadingSyncOff$,
+  legacySyncEnabledFrom
+} from '$lib/sync/legacy-switch';
 import {
   findPositionPrompt,
   markPositionPromptHandled,
@@ -17,7 +34,13 @@ import {
   type PositionPromptDeps
 } from '$lib/sync/position-prompt-service';
 import type { PromptApi } from '$lib/sync/reader-position-prompt';
+import {
+  mirroredReadingGoals,
+  publishReadingGoals,
+  READING_GOAL_KIND
+} from '$lib/sync/record-goals';
 import { recordPosition, type BookmarkLike } from '$lib/sync/record-position';
+import { recordStatistics, STAT_DAY_KIND } from '$lib/sync/record-statistics';
 import { applyGlobalSettingValue } from '$lib/sync/settings-apply';
 import {
   positionPromptEnabled$,
@@ -26,8 +49,15 @@ import {
   syncDebounceSeconds$,
   syncIntervalMinutes$
 } from '$lib/sync/settings';
-import { applyGlobalSettings, publishSettings } from '$lib/sync/settings-sync';
+import {
+  becomeSettingsSource,
+  onPulledSettings,
+  publishAllSettings,
+  settingsSourceDeviceId,
+  type GlobalSettingsDeps
+} from '$lib/sync/settings-source';
 import { SyncApi } from '$lib/sync/sync-api';
+import type { LocalRecord } from '$lib/sync/sync-db';
 import { SyncEngine } from '$lib/sync/sync-engine';
 import { SyncRunner, type RunnerEnv } from '$lib/sync/sync-runner';
 
@@ -107,7 +137,7 @@ export function getSyncRunner(): SyncRunner | null {
     getEngine: getSyncEngine,
     getTransport,
     beforeSync: async (engine) => {
-      await publishSettings(engine, window.localStorage);
+      await publishAllSettings(engine, window.localStorage, globalSettingsDeps());
     },
     settings: {
       enabled: () => recordSyncEnabled$.getValue(),
@@ -130,13 +160,16 @@ export function startSync(): void {
     const r = getSyncRunner();
     void r?.start();
     void getSyncEngine()
-      .then((engine) =>
+      .then((engine) => {
         engine.onRemoteChange((records) => {
-          void applyGlobalSettings(engine, records, applyGlobalSettingValue).catch((error) =>
+          void onPulledSettings(engine, records, globalSettingsDeps()).catch((error) =>
             warn(`Sync: applying settings failed: ${(error as Error)?.message ?? error}`)
           );
-        })
-      )
+          void onPulledMigrationRecords(engine, records);
+        });
+        void refreshLegacySwitch();
+        void reportDeviceSoon();
+      })
       .catch((error) => warn(`Sync: not started: ${(error as Error)?.message ?? error}`));
   } catch (error) {
     warn(`Sync: not started: ${(error as Error)?.message ?? error}`);
@@ -162,6 +195,7 @@ export function recordReaderPosition(localId: number, title: string, bookmark: B
     void recordPosition(localId, title, bookmark, {
       getEngine: getSyncEngine,
       linksForLocalId: (id) => getLibraryStore().getLinksForLocalId(id),
+      legacyBookId,
       warn
     });
   } catch (error) {
@@ -172,6 +206,7 @@ export function recordReaderPosition(localId: number, title: string, bookmark: B
 const promptDeps: PositionPromptDeps = {
   getEngine: getSyncEngine,
   linksForLocalId: (id) => getLibraryStore().getLinksForLocalId(id),
+  legacyBookId,
   isActive: async () =>
     positionPromptEnabled$.getValue() &&
     recordSyncEnabled$.getValue() &&
@@ -199,4 +234,252 @@ export function positionPromptApi(): PromptApi {
       }
     }
   };
+}
+
+// ---------------------------------------------------------------------------
+// WP5: migration off the old file sync
+// ---------------------------------------------------------------------------
+
+async function legacyBookId(title: string): Promise<string | null> {
+  return legacyBookIdForTitle(await getSyncEngine(), title);
+}
+
+const bookIdDeps: BookIdDeps = {
+  getEngine: getSyncEngine,
+  allLinks: () => getLibraryStore().getAllLinks(),
+  warn
+};
+
+function globalSettingsDeps(): GlobalSettingsDeps {
+  return {
+    apply: applyGlobalSettingValue,
+    readStored: (key) => window.localStorage.getItem(key)
+  };
+}
+
+/**
+ * Side by side with the old sync: after this device saved statistics for a
+ * title, write its changed days as records. Fire and forget; never throws.
+ * `pruneMissing` after the user deleted statistics on this device.
+ */
+export function recordBookStatistics(
+  title: string,
+  options: { pruneMissing?: boolean } = {}
+): void {
+  if (!browser || !title) return;
+  try {
+    void recordStatistics(
+      title,
+      {
+        getEngine: getSyncEngine,
+        bookIdForTitle: (t) => bookIdForTitle(t, bookIdDeps),
+        statisticsForTitle: (t) => database.getStatisticsForBook(t),
+        warn
+      },
+      options
+    );
+  } catch (error) {
+    warn(`Sync: could not record statistics: ${(error as Error)?.message ?? error}`);
+  }
+}
+
+/**
+ * After the user edited reading goals on this device. Before the old sync is
+ * switched off only the settings-source device publishes goals.
+ */
+export function recordReadingGoalEdits(): void {
+  if (!browser) return;
+  void (async () => {
+    try {
+      const engine = await getSyncEngine();
+      const source = await settingsSourceDeviceId(engine);
+      if (!source) return;
+      if (source !== engine.deviceId && !legacyReadingSyncOff$.getValue()) return;
+      await publishReadingGoals(engine, await database.getReadingGoals(), warn);
+    } catch (error) {
+      warn(`Sync: could not record reading goals: ${(error as Error)?.message ?? error}`);
+    }
+  })();
+}
+
+/** Reads the old-sync switch from the mirror. Unknown (no mirror) means on. */
+export async function refreshLegacySwitch(): Promise<boolean> {
+  try {
+    const engine = await getSyncEngine();
+    const off = !legacySyncEnabledFrom(
+      await engine.get(LEGACY_SYNC_RECORD.kind, LEGACY_SYNC_RECORD.id)
+    );
+    const wasOff = legacyReadingSyncOff$.getValue();
+    if (off !== wasOff) legacyReadingSyncOff$.next(off);
+    if (off && !wasOff) await applyAllFromMirror(engine);
+    return off;
+  } catch (error) {
+    warn(`Sync: could not read the old-sync switch: ${(error as Error)?.message ?? error}`);
+    return legacyReadingSyncOff$.getValue();
+  }
+}
+
+/**
+ * The reader asks before using the old sync. Waits at most `timeoutMs` for
+ * the mirror; when it can't tell, the old sync runs (it was on before WP5).
+ */
+export async function isLegacyReadingSyncOff(timeoutMs = 2000): Promise<boolean> {
+  if (!browser) return false;
+  return Promise.race([
+    refreshLegacySwitch(),
+    new Promise<boolean>((resolve) =>
+      setTimeout(() => resolve(legacyReadingSyncOff$.getValue()), timeoutMs)
+    )
+  ]);
+}
+
+/** The user's switch on the migration page. Throws when it can't be saved. */
+export async function setLegacySyncEnabled(enabled: boolean): Promise<void> {
+  const engine = await getSyncEngine();
+  await engine.write(LEGACY_SYNC_RECORD.kind, LEGACY_SYNC_RECORD.id, { enabled });
+  await refreshLegacySwitch();
+  await getSyncRunner()?.syncNow();
+}
+
+/** "Use this device's shared settings" (the desktop). Throws when it can't be saved. */
+export async function becomeSettingsSourceHere(): Promise<void> {
+  const engine = await getSyncEngine();
+  await becomeSettingsSource(engine, window.localStorage, await database.getReadingGoals(), warn);
+  await getSyncRunner()?.syncNow();
+}
+
+/** This device's id and whether it is the settings source (for the migration page). */
+export async function settingsSourceState(): Promise<{
+  deviceId: string;
+  sourceId: string | null;
+}> {
+  const engine = await getSyncEngine();
+  return { deviceId: engine.deviceId, sourceId: await settingsSourceDeviceId(engine) };
+}
+
+function applyDeps() {
+  return {
+    titlesByBookId: () => titlesByBookId(bookIdDeps),
+    statisticsForTitle: (title: string) => database.getStatisticsForBook(title),
+    putStatistics: (title: string, rows: Parameters<typeof database.storeStatistics>[1]) =>
+      database.storeStatistics(
+        title,
+        rows,
+        ReplicationSaveBehavior.Overwrite,
+        MergeMode.LOCAL,
+        Math.max(...rows.map((r) => r.lastStatisticModified))
+      ),
+    localGoals: () => database.getReadingGoals(),
+    replaceGoals: async (goals: Awaited<ReturnType<typeof database.getReadingGoals>>) => {
+      await database.storeReadingGoals(
+        goals,
+        ReplicationSaveBehavior.Overwrite,
+        MergeMode.REPLACE,
+        Math.max(0, ...goals.map((g) => g.lastGoalModified))
+      );
+    }
+  };
+}
+
+/** Catch-up when the old sync was just switched off: apply everything in the mirror. */
+async function applyAllFromMirror(engine: SyncEngine) {
+  try {
+    const deps = applyDeps();
+    await applyStatDays(await engine.getAll(STAT_DAY_KIND), deps);
+    await applyReadingGoals(await mirroredReadingGoals(engine), deps);
+  } catch (error) {
+    warn(`Sync: applying synced statistics failed: ${(error as Error)?.message ?? error}`);
+  }
+}
+
+/** After a pull: the switch, and (only while the old sync is off) statistics and goals. */
+async function onPulledMigrationRecords(engine: SyncEngine, records: LocalRecord[]) {
+  try {
+    if (records.some((r) => r.kind === LEGACY_SYNC_RECORD.kind)) {
+      const wasOff = legacyReadingSyncOff$.getValue();
+      const off = await refreshLegacySwitch();
+      if (!off || !wasOff) return; // just turned off: everything was applied already
+    }
+    if (!legacyReadingSyncOff$.getValue()) return;
+    const deps = applyDeps();
+    await applyStatDays(records, deps);
+    if (records.some((r) => r.kind === READING_GOAL_KIND)) {
+      await applyReadingGoals(await mirroredReadingGoals(engine), deps);
+    }
+  } catch (error) {
+    warn(`Sync: applying synced statistics failed: ${(error as Error)?.message ?? error}`);
+  }
+}
+
+/** The migration API for this connection, or null when not connected. */
+export async function getMigrationApi(): Promise<MigrationApi | null> {
+  const connection = await getLibraryStore().getConnection();
+  if (!connection) return null;
+  return new MigrationApi(
+    connection.serverUrl,
+    connection.token,
+    libraryRequestTimeoutSeconds$.getValue()
+  );
+}
+
+/**
+ * Tells the server what this device holds (its Calibre links and local titles
+ * with reading data), so the scan can use exact Calibre identities. Needs a
+ * registered device, so it syncs first. Throws on failure.
+ */
+export async function reportDevice(): Promise<void> {
+  const api = await getMigrationApi();
+  if (!api) throw new Error('Not connected to the server');
+  await getSyncRunner()?.syncNow();
+  const links = await getLibraryStore().getAllLinks();
+  await api.report({
+    calibreLinks: links.map((l) => ({
+      title: l.title,
+      bookId: l.bookId,
+      calibreUuid: l.calibreUuid
+    })),
+    localTitles: await localTitleSummaries(await database.db)
+  });
+}
+
+let reported = false;
+
+/** Once per app start, in the background, a little after the first sync. */
+async function reportDeviceSoon(): Promise<void> {
+  if (reported) return;
+  reported = true;
+  try {
+    if (!recordSyncEnabled$.getValue() || !(await getLibraryStore().getConnection())) return;
+    await new Promise((resolve) => setTimeout(resolve, 10_000));
+    await reportDevice();
+  } catch (error) {
+    warn(
+      `Sync: could not report this device to the migration: ${(error as Error)?.message ?? error}`
+    );
+  }
+}
+
+export interface BookmarkComparison {
+  local: { charPos: number; at: number } | null;
+  own: { charPos: number; at: number } | null;
+}
+
+/** Check page: this device's bookmark vs. its own position record, per book. */
+export async function compareThisDeviceBookmarks(
+  books: { bookId: string; title: string }[]
+): Promise<Map<string, BookmarkComparison>> {
+  const engine = await getSyncEngine();
+  const db = await database.db;
+  const out = new Map<string, BookmarkComparison>();
+  for (const { bookId, title } of books) {
+    const record = await engine.get('position', `${bookId}:${engine.deviceId}`);
+    out.set(bookId, {
+      local: await localBookmarkForTitle(db, title),
+      own:
+        record && record.deletedAt === null
+          ? { charPos: Number(record.data.charPos) || 0, at: record.updatedAt }
+          : null
+    });
+  }
+  return out;
 }

@@ -2,6 +2,7 @@
   import { onKeyUpStatisticsTab } from '../../../routes/b/on-keydown-reader';
   import { faSpinner } from '@fortawesome/free-solid-svg-icons';
   import { getDefaultStatistic } from '$lib/components/book-reader/book-reading-tracker/book-reading-tracker';
+  import { shadowStatistics } from '$lib/sync/shadow';
   import ConfirmDialog from '$lib/components/confirm-dialog.svelte';
   import MessageDialog from '$lib/components/message-dialog.svelte';
   import { HeatmapType } from '$lib/components/statistics/statistics-heatmap/statistics-heatmap';
@@ -386,6 +387,11 @@
       .deleteStatisticEntries([...titlesToDelete], false, startDate, endDate)
       .catch(({ message }) => message);
 
+    if (!error) {
+      // WP5: the deleted days are deleted from the record sync too.
+      [...titlesToDelete].forEach((title) => shadowStatistics(title, { pruneMissing: true }));
+    }
+
     if (error) {
       await new Promise((resolver) => {
         dialogManager.dialogs$.next([
@@ -544,6 +550,7 @@
 
     try {
       await database.updateStatistic(newStatistic);
+      shadowStatistics(newStatistic.title);
 
       statisticsData[statisticIndex] = { ...statistic, ...newStatistic };
       updateStatisticsData();

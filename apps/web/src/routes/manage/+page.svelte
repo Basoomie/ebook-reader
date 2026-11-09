@@ -18,6 +18,7 @@
   import { SortDirection, type SortOption } from '$lib/data/sort-types';
   import { getStorageHandler } from '$lib/data/storage/storage-handler-factory';
   import { StorageKey } from '$lib/data/storage/storage-types';
+  import { allowedLegacyTypes, legacyReadingSyncOff$ } from '$lib/sync/legacy-switch';
   import { storageSource$ } from '$lib/data/storage/storage-view';
   import {
     booklistSortOptions$,
@@ -62,7 +63,10 @@
     booklistSortOptions$
   ]).pipe(
     map(([dataList, bookmarks]) => {
-      const sortProp = $booklistSortOptions$[$storageSource$] ?? { property: 'title' as const, direction: SortDirection.ASC };
+      const sortProp = $booklistSortOptions$[$storageSource$] ?? {
+        property: 'title' as const,
+        direction: SortDirection.ASC
+      };
       const isTitleSort = sortProp.property === 'title';
 
       if ($storageSource$ === StorageKey.BROWSER) {
@@ -617,12 +621,28 @@
         )
       );
       const books = $bookCards$.filter((card) => selectedBookIds.has(card.id));
+      // WP5: with the old sync switched off, only whispersync's audio data is
+      // still written to it (its files stay as they were, for rollback).
+      const exportTypes =
+        $lastExportedTarget$ === StorageKey.SELFHOST
+          ? allowedLegacyTypes($lastExportedTypes$, $legacyReadingSyncOff$)
+          : $lastExportedTypes$;
+
+      if (!exportTypes.length) {
+        const message =
+          'The old sync was switched off on the migration page, so book data, positions, statistics and reading goals are no longer written to it.';
+
+        resetProgress();
+        showError('Old sync is off', message, message);
+        return;
+      }
+
       const error = await replicateData(
         handlers[0],
         handlers[1],
         false,
         books.map((book) => ({ title: book.title, imagePath: book.imagePath })),
-        $lastExportedTypes$,
+        exportTypes,
         cancelSignal
       ).catch((err) => err.message);
 
