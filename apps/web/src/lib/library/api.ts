@@ -49,7 +49,7 @@ export function normalizeServerUrl(input: string): string {
   return url.origin;
 }
 
-async function send(
+export async function send(
   fetchImpl: typeof fetch,
   url: string,
   init: RequestInit,
@@ -82,7 +82,7 @@ async function send(
   }
 }
 
-async function errorFrom(response: Response): Promise<LibraryApiError> {
+export async function errorFrom(response: Response): Promise<LibraryApiError> {
   let code: string | undefined;
   let message = `The library server answered ${response.status}`;
   try {
