@@ -12,16 +12,24 @@
  * B (hard): Node import of the paired Calibre EPUB == stored characters and sections
  *           (labels are reported, not failed).
  * C (info): if B fails with the default fix mode, which other fix mode matches.
+ * D (hard): the storage server's counter (WP3b) on the same EPUB == stored characters:
+ *           the committed bundle in a counter process, read through the server's
+ *           read-only file view with image bytes skipped. Also: sections with image
+ *           bytes skipped == stored sections, and how much of the file was read.
  *
  * Writes tests/parity/.out/parity-report.{json,md} (gitignored). Books are only read.
  */
 
 import { afterAll, describe, expect, it } from 'vitest';
 import {
+  countEpubBlob,
   countEpubFile,
   countStoredHtml,
   defaultEpubImportOptions
 } from '$lib/server/epub/count-epub-node';
+import { CountWorker } from '../../../storage-server/src/counts/count-worker';
+import { readCounterInfo } from '../../../storage-server/src/counts/counter-bundle';
+import { openAsBlob, statSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import type { EpubHtmlImportOptions } from '$lib/functions/file-loaders/epub/generate-epub-html';
 import { ImportHTMLFixMode } from '$lib/data/import-html-fix-mode';
@@ -61,6 +69,15 @@ interface BookReport {
     pass: boolean;
     error?: string;
   };
+  d?: {
+    serverCharacters?: number;
+    sectionsMatch?: boolean;
+    bytesRead?: number;
+    fileSize: number;
+    durationMs?: number;
+    pass: boolean;
+    error?: string;
+  };
   c?: Array<{
     options: EpubHtmlImportOptions;
     characters?: number;
@@ -70,6 +87,27 @@ interface BookReport {
 }
 
 const reports: BookReport[] = [];
+
+let serverWorker: CountWorker | undefined;
+
+/** The storage server's counter process (one for the whole run). */
+function getServerWorker() {
+  if (!serverWorker) {
+    const counter = readCounterInfo();
+
+    serverWorker = new CountWorker({
+      counterFile: counter.file,
+      expectedVersion: counter.version,
+      maxMemoryMb: 768,
+      nice: 0,
+      booksPerProcess: 500,
+      timeoutMs: 5 * 60_000,
+      startTimeoutMs: 5 * 60_000
+    });
+  }
+
+  return serverWorker;
+}
 
 /** Section fields that decide counts and navigation; labels are compared separately. */
 const structural = (section: Section) => ({
@@ -106,18 +144,27 @@ function compareSections(stored: Section[], node: Section[]) {
 
 describe.skipIf(!enabled)('parity with stored books', () => {
   afterAll(async () => {
+    serverWorker?.close();
+
     const outDir = path.join(parityDir, '.out');
-    const fail = (r: BookReport) => (r.a && !r.a.pass) || (r.b && !r.b.pass);
+    const fail = (r: BookReport) => (r.a && !r.a.pass) || (r.b && !r.b.pass) || (r.d && !r.d.pass);
+    const withD = reports.filter((r) => r.d?.bytesRead !== undefined);
+    const sum = (values: number[]) => values.reduce((acc, v) => acc + v, 0);
     const lines = [
       '# WP3a parity report',
       '',
       `Generated ${new Date().toISOString()} from ${manifestPath}`,
       '',
       `Books: ${reports.length}; check A run: ${reports.filter((r) => r.a).length}, failed: ${reports.filter((r) => r.a && !r.a.pass).length}; ` +
-        `check B run: ${reports.filter((r) => r.b).length}, failed: ${reports.filter((r) => r.b && !r.b.pass).length}`,
+        `check B run: ${reports.filter((r) => r.b).length}, failed: ${reports.filter((r) => r.b && !r.b.pass).length}; ` +
+        `check D run: ${reports.filter((r) => r.d).length}, failed: ${reports.filter((r) => r.d && !r.d.pass).length}`,
       '',
-      '| Book | Pairing | Stored | A: reader count (diff) | B: import count (diff) | B sections | Labels differ | C: matching mode |',
-      '|---|---|---:|---:|---:|---|---:|---|'
+      `Server counter (D): read ${(sum(withD.map((r) => r.d!.bytesRead!)) / 1e6).toFixed(1)} MB of ` +
+        `${(sum(withD.map((r) => r.d!.fileSize)) / 1e6).toFixed(1)} MB in ${withD.length} books; ` +
+        `median ${median(withD.map((r) => r.d!.durationMs!))} ms per book.`,
+      '',
+      '| Book | Pairing | Stored | A: reader count (diff) | B: import count (diff) | B sections | Labels differ | C: matching mode | D: server count | D sections | D read (KB of KB) | D ms |',
+      '|---|---|---:|---:|---:|---|---:|---|---:|---|---:|---:|'
     ];
 
     for (const r of reports) {
@@ -134,7 +181,11 @@ describe.skipIf(!enabled)('parity with stored books', () => {
           `${r.a ? `${r.a.nodeReaderCount} (${r.a.diff})` : '-'} | ` +
           `${r.b ? (r.b.error ? `error: ${r.b.error}` : `${r.b.nodeCharacters} (${r.b.diff})`) : '-'} | ` +
           `${r.b ? (r.b.sectionsMatch ? 'match' : `differ at #${r.b.firstSectionDiff?.index}`) : '-'} | ` +
-          `${r.b ? r.b.labelDiffs : '-'} | ${r.c ? c || 'none' : '-'} |`
+          `${r.b ? r.b.labelDiffs : '-'} | ${r.c ? c || 'none' : '-'} | ` +
+          `${r.d ? (r.d.error ? `error: ${r.d.error}` : r.d.serverCharacters) : '-'} | ` +
+          `${r.d?.sectionsMatch === undefined ? '-' : r.d.sectionsMatch ? 'match' : 'differ'} | ` +
+          `${r.d?.bytesRead === undefined ? '-' : `${Math.round(r.d.bytesRead / 1024)} of ${Math.round(r.d.fileSize / 1024)}`} | ` +
+          `${r.d?.durationMs ?? '-'} |`
       );
     }
 
@@ -215,6 +266,29 @@ describe.skipIf(!enabled)('parity with stored books', () => {
         }
       }
 
+      // D: the storage server's counter, exactly as the server runs it.
+      if (entry.epubPath && entry.match.startsWith('verified')) {
+        const fileSize = statSync(entry.epubPath).size;
+        const outcome = await getServerWorker().count(entry.epubPath, defaultEpubImportOptions);
+        const skipped = await countEpubBlob(
+          await openAsBlob(entry.epubPath),
+          defaultEpubImportOptions,
+          { imageData: false }
+        );
+        const sectionsMatch = compareSections(stored!.sections, skipped.sections).sectionsMatch;
+
+        report.d = outcome.ok
+          ? {
+              serverCharacters: outcome.characters,
+              sectionsMatch,
+              bytesRead: outcome.bytesRead,
+              fileSize,
+              durationMs: outcome.durationMs,
+              pass: outcome.characters === stored!.characters && sectionsMatch
+            }
+          : { fileSize, sectionsMatch, pass: false, error: `${outcome.code}: ${outcome.message}` };
+      }
+
       expect.soft(report.a.diff, 'A: reader count in Node vs stored characters').toBe(0);
 
       if (report.b) {
@@ -222,7 +296,23 @@ describe.skipIf(!enabled)('parity with stored books', () => {
         expect.soft(report.b.diff, 'B: import characters vs stored').toBe(0);
         expect.soft(report.b.firstSectionDiff, 'B: first differing section').toBeUndefined();
       }
+
+      if (report.d) {
+        expect.soft(report.d.error, 'D: server counter error').toBeUndefined();
+        expect
+          .soft(report.d.serverCharacters, 'D: server count vs stored')
+          .toBe(stored!.characters);
+        expect.soft(report.d.sectionsMatch, 'D: sections with image bytes skipped').toBe(true);
+      }
     },
     10 * 60_000
   );
 });
+
+function median(values: number[]) {
+  if (!values.length) return 0;
+
+  const sorted = [...values].sort((a, b) => a - b);
+
+  return sorted[Math.floor(sorted.length / 2)];
+}
