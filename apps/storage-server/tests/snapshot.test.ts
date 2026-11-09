@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
 import { describe, expect, it, vi } from 'vitest';
+import { LATEST_SCHEMA_VERSION } from '../src/db/migrations';
 import { openDatabase } from '../src/db/database';
 import { createToken } from '../src/db/tokens';
 import { listUsers } from '../src/db/users';
@@ -37,7 +38,7 @@ describe('takeSnapshot', () => {
     expect(fs.readdirSync(snapDir)).toEqual(['ttsu-20261108-030000Z.db']);
 
     const copy = new Database(file, { readonly: true });
-    expect(copy.pragma('user_version', { simple: true })).toBe(1);
+    expect(copy.pragma('user_version', { simple: true })).toBe(LATEST_SCHEMA_VERSION);
     expect((copy.prepare('SELECT label FROM api_tokens').get() as any).label).toBe('Phone');
     copy.close();
   });
