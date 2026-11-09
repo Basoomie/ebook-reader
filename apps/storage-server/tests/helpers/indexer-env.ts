@@ -1,7 +1,7 @@
 import type Database from 'better-sqlite3';
 import { createApp } from '../../src/app';
 import { CalibreIndexer } from '../../src/calibre/indexer';
-import { CalibreConfig } from '../../src/config';
+import { CalibreConfig, ServerConfig } from '../../src/config';
 import { initDatabase } from '../../src/db/database';
 import { createToken } from '../../src/db/tokens';
 import { listUsers } from '../../src/db/users';
@@ -23,9 +23,10 @@ export interface IndexerEnv {
 export function makeIndexerEnv(
   calibreDir: string,
   overrides: Partial<CalibreConfig> = {},
+  serverOverrides: Partial<ServerConfig> = {},
 ): IndexerEnv {
   const calibre = testCalibreConfig({ dir: calibreDir, thumbBackground: false, ...overrides });
-  const config = testConfig({ calibre });
+  const config = testConfig({ calibre, ...serverOverrides });
   const state = initDatabase(config.dbDir, config.dataRoot);
   if (!state.ok) throw new Error(state.error);
   const db = state.db;
@@ -56,7 +57,7 @@ export function makeIndexerEnv(
     config,
     database: state,
     version: '9.9.9-test',
-    catalog: { thumbnails, indexer: indexer.status },
+    catalog: { thumbnails, indexer: indexer.status, calibreDir },
   });
   return {
     app,

@@ -160,6 +160,30 @@ export const MIGRATIONS: { version: number; name: string; sql: string }[] = [
       );
     `,
   },
+  {
+    version: 3,
+    name: 'device pairing codes and server secrets',
+    sql: `
+      -- One-time codes a device trades for its own API token (WP6).
+      -- Only a hash of the code is stored.
+      CREATE TABLE pairing_codes (
+        code_hash   TEXT PRIMARY KEY,
+        user_id     TEXT NOT NULL REFERENCES users(id),
+        label       TEXT NOT NULL,
+        created_at  INTEGER NOT NULL,
+        expires_at  INTEGER NOT NULL,
+        used_at     INTEGER,
+        token_id    TEXT REFERENCES api_tokens(id)
+      );
+
+      -- Server-side keys, e.g. the HMAC key that signs thumbnail URLs.
+      CREATE TABLE server_secrets (
+        name        TEXT PRIMARY KEY,
+        value       BLOB NOT NULL,
+        created_at  INTEGER NOT NULL
+      );
+    `,
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

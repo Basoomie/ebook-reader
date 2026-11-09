@@ -32,7 +32,15 @@ export function createApp({ config, database, version, catalog }: AppOptions): E
   app.use(createLegacyAudioUploadRouter(legacy));
 
   // New API, with its own JSON body parser and error handling.
-  app.use('/api/v1', createApiRouter({ database, version, catalog }));
+  app.use(
+    '/api/v1',
+    createApiRouter({
+      database,
+      version,
+      catalog,
+      pairing: { maxFailuresPerMinute: config.pairing.maxFailuresPerMinute },
+    }),
+  );
 
   // Legacy file API (raw body parser for everything it handles).
   app.use(createLegacyFileRouter(legacy));

@@ -84,7 +84,9 @@ describe('catalog API', () => {
       charCount: null,
       missing: false,
     });
-    expect(first.thumbnail).toMatch(/^\/api\/v1\/books\/[0-9a-f-]+\/thumbnail\?v=[0-9a-f]{12}$/);
+    expect(first.thumbnail).toMatch(
+      /^\/api\/v1\/books\/[0-9a-f-]+\/thumbnail\?v=[0-9a-f]{12}&u=[0-9a-f-]+&s=[\w-]{22}$/,
+    );
   });
 
   it('rejects a bad cursor or limit', async () => {

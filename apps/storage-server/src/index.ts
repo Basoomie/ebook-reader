@@ -67,6 +67,7 @@ if (database.ok && config.calibre.dir) {
     });
     catalog.indexer = indexer.status;
     catalog.thumbnails = thumbnails;
+    catalog.calibreDir = config.calibre.dir;
     indexer
       .start()
       .catch((err) => console.error('Error: the Calibre indexer could not start:', err));

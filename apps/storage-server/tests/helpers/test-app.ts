@@ -1,6 +1,11 @@
 import path from 'path';
 import { createApp } from '../../src/app';
-import { CalibreConfig, DEFAULT_CALIBRE, ServerConfig } from '../../src/config';
+import {
+  CalibreConfig,
+  DEFAULT_CALIBRE,
+  DEFAULT_PAIRING_CONFIG,
+  ServerConfig,
+} from '../../src/config';
 import { DatabaseState, initDatabase } from '../../src/db/database';
 import { createToken } from '../../src/db/tokens';
 import { listUsers } from '../../src/db/users';
@@ -18,6 +23,7 @@ export function testConfig(overrides: Partial<ServerConfig> = {}): ServerConfig 
     snapshotTime: { hour: 3, minute: 0 },
     snapshotKeep: 7,
     calibre: testCalibreConfig(),
+    pairing: { ...DEFAULT_PAIRING_CONFIG },
     ...overrides,
   };
 }
