@@ -28,12 +28,13 @@ The legacy endpoints accept only `AUTH_TOKEN`, not the per-user tokens.
 | Method | Path                                                     | Auth           | Description                                                                                                                                                                 |
 | ------ | -------------------------------------------------------- | -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `GET`  | `/api/v1/health`                                         | none           | `{ ok, version, schemaVersion }`; 503 when the database is unavailable. Used by the Docker healthcheck.                                                                     |
-| `GET`  | `/api/v1/me`                                             | per-user token | `{ user: {id, name}, token: {id, label} }`                                                                                                                                  |
+| `GET`  | `/api/v1/me`                                             | per-user token | `{ user: {id, name}, token: {id, label, deviceId} }`                                                                                                                        |
 | `GET`  | `/api/v1/libraries`                                      | per-user token | `{ indexer: {enabled, error}, libraries: [...] }`: every discovered library with its settings and index state.                                                              |
 | `GET`  | `/api/v1/books?library=&limit=&cursor=&includeMissing=1` | per-user token | `{ books, nextCursor }`: books of enabled libraries, newest added first. `limit` 1-200 (default 50). Missing books only with `includeMissing=1`.                            |
 | `GET`  | `/api/v1/books/:id`                                      | per-user token | One book with `description` (Calibre's comments, raw HTML: sanitize before display) and `sources`.                                                                          |
 | `GET`  | `/api/v1/books/:id/thumbnail`                            | per-user token | Cover thumbnail (WebP). Use the `thumbnail` URL from the book list: its `?v=` makes it cacheable forever. 404 `no_cover` / `cover_unreadable`; 503 when the indexer is off. |
 
+- Record sync (`/api/v1/devices/*`, `/api/v1/sync`): see [Record sync](#record-sync).
 - Auth: `Authorization: Bearer ttsu_...` (a per-user token, see below). The legacy `AUTH_TOKEN` is not accepted here.
 - Errors: `{ "error": { "code": "...", "message": "..." } }`.
 - If the database can't be opened, the legacy endpoints keep working and every `/api/v1` route answers 503.
@@ -55,7 +56,35 @@ The database starts with a single user, `owner`.
 - File: `$DB_DIR/ttsu.db` (SQLite, WAL mode). Schema version is `PRAGMA user_version`; migrations run at startup.
 - `DB_DIR` must exist and must not be inside `DATA_DIR` (the file API would expose it). The server refuses to use it otherwise.
 - **Nightly snapshot**: at `SNAPSHOT_TIME` (container local time, set `TZ`), a consistent copy is written to `$DB_DIR/snapshots/ttsu-YYYYMMDD-HHMMSSZ.db` (timestamp in UTC) using SQLite's online backup API and checked with `quick_check`. The newest `SNAPSHOT_KEEP` are kept; other files in that folder are never touched. If the newest snapshot is older than 24 hours at startup (the container was down), one is taken right away.
-- **Restore**: stop the container, copy a snapshot over `ttsu.db` (delete `ttsu.db-wal` and `ttsu.db-shm` if present), start the container.
+- **Restore**: stop the container, copy a snapshot over `ttsu.db` (delete `ttsu.db-wal` and `ttsu.db-shm` if present), start the container, then run `docker exec ttsu-storage node dist/cli.js sync new-epoch`. The new epoch makes every device re-send the records it has, so changes made after the snapshot come back from the devices.
+- **Rolling back the server** to a build older than the database schema: the older server refuses the newer database, so restore a snapshot taken before the upgrade (schema 4 is WP4).
+
+## Record sync
+
+User data (WP4 onwards) syncs per record, not per file. Every record has a `kind`, an `id`, the device that last wrote it, `updatedAt`, `deletedAt` (deletion marker) and a server-assigned `rev`. The server decides which version wins:
+
+| Policy   | Rule                                                                           | Kinds (WP4)                                                     |
+| -------- | ------------------------------------------------------------------------------ | --------------------------------------------------------------- |
+| `lww`    | Higher `(updatedAt, deviceId)` wins. A newer edit revives a deleted record.    | `device` (name), `setting` `global:<key>`                       |
+| `owner`  | Only the device named in the id may write it; no conflicts possible.           | `position` `<bookId>:<deviceId>`, `setting` `device:<id>:<key>` |
+| `append` | Written once; later writes to the id change nothing (for stat sessions later). | (none yet)                                                      |
+
+`updatedAt` more than `SYNC_MAX_CLOCK_SKEW_SECONDS` ahead of the server clock is set to the server time.
+
+| Method | Path                          | Description                                                                                                                                                                           |
+| ------ | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST` | `/api/v1/devices/register`    | `{ deviceId? }` binds the calling token to a device (the id is kept across re-pairing). 409 `token_bound_to_other_device` if the token has another.                                   |
+| `GET`  | `/api/v1/devices`             | `{ devices: [{id, name, createdAt, lastSeenAt, current}] }`                                                                                                                           |
+| `POST` | `/api/v1/sync`                | `{ changes: [{kind, id, updatedAt, deletedAt?, data}] }` (at most 500) → one result per change: `applied`, `duplicate`, `stale` (with the server copy), `rejected` (with the reason). |
+| `GET`  | `/api/v1/sync?cursor=&limit=` | `{ records, cursor, more, serverTime }`: everything changed after the cursor, deletion markers included. 409 `cursor_reset` after a restore.                                          |
+
+`/sync` needs a registered device (409 `device_not_registered`).
+
+```sh
+docker exec ttsu-storage node dist/cli.js sync status                 # counts per kind, devices, last seen
+docker exec ttsu-storage node dist/cli.js sync dump --kind position --book <id>
+docker exec ttsu-storage node dist/cli.js sync new-epoch              # after restoring a snapshot
+```
 
 ## Calibre indexer
 
@@ -116,8 +145,9 @@ A library is identified by Calibre's library UUID, so renaming its folder keeps 
 | `THUMB_CONCURRENCY`                | `1`          | Covers the background pass works on at the same time (1-8).                                                                          |
 | `THUMB_PER_SECOND`                 | `8`          | Background pass rate limit; `0` = no limit. On-request thumbnails are not limited.                                                   |
 | `THUMB_BACKGROUND`                 | `true`       | `false` = thumbnails are only made when requested.                                                                                   |
+| `SYNC_MAX_CLOCK_SKEW_SECONDS`      | `300`        | A synced change stamped further ahead of the server clock gets the server time instead.                                              |
 
-Invalid values for the WP1 and WP2 settings are reported at startup and fall back to the default; they never stop the legacy endpoints.
+Invalid values for the WP1, WP2, WP6 and WP4 settings are reported at startup and fall back to the default; they never stop the legacy endpoints.
 
 ## Running with Docker
 
