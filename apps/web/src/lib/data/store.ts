@@ -256,7 +256,7 @@ export const startDayHoursForTracker$ = writableNumberLocalStorageSubject()(
   0
 );
 
-export const statisticsEnabled$ = writableBooleanLocalStorageSubject()('statisticsEnabled', false);
+export const statisticsEnabled$ = writableBooleanLocalStorageSubject()('statisticsEnabled', true);
 
 export const statisticsMergeMode$ = writableStringLocalStorageSubject<MergeMode>()(
   'statisticsMergeMode',
@@ -283,9 +283,14 @@ export const addCharactersOnCompletion$ = writableBooleanLocalStorageSubject()(
   false
 );
 
-export const trackerAutostartTime$ = writableNumberLocalStorageSubject()('trackerAutoStartTime', 0);
+export const trackerAutostartTime$ = writableNumberLocalStorageSubject()('trackerAutoStartTime', 3);
 
-export const trackerIdleTime$ = writableNumberLocalStorageSubject()('trackerIdleTime', 0);
+export const trackerIdleTime$ = writableNumberLocalStorageSubject()('trackerIdleTime', 180);
+
+export const trackerLongPressTime$ = writableNumberLocalStorageSubject()(
+  'trackerLongPressTime',
+  500
+);
 
 export const trackerForwardSkipThreshold$ = writableNumberLocalStorageSubject()(
   'trackerForwardSkipThreshold',

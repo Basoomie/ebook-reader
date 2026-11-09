@@ -11,6 +11,13 @@ export const isTrackerMenuOpen$ = writableSubject<boolean>(false);
 
 export const isTrackerPaused$ = writableSubject<boolean>(true);
 
+/**
+ * True while the current pause was triggered by the idle timeout. Such a pause is
+ * automatic: the next page turn or scroll resumes tracking. Cleared on any resume
+ * and on every manual toggle.
+ */
+export const isTrackerPausedByIdle$ = writableSubject<boolean>(false);
+
 export enum TrackerAutoPause {
   OFF = 'off',
   MODERATE = 'moderate',

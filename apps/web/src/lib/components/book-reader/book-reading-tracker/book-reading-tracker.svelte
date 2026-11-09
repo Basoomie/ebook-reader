@@ -2,11 +2,13 @@
   import {
     getDefaultStatistic,
     isTrackerPaused$,
+    isTrackerPausedByIdle$,
     type TrackingHistory,
     isTrackerMenuOpen$,
     TrackerSkipThresholdAction,
     TrackerAutoPause
   } from '$lib/components/book-reader/book-reading-tracker/book-reading-tracker';
+  import { shouldAutoResume } from '$lib/components/book-reader/book-reading-tracker/tracker-auto';
   import BookTimerMenu from '$lib/components/book-reader/book-reading-tracker/book-reading-tracker-menu.svelte';
   import type { SectionWithProgress } from '$lib/components/book-reader/book-toc/book-toc';
   import type { AutoScroller } from '$lib/components/book-reader/types';
@@ -277,6 +279,9 @@
   let lastTrackerTick = 0;
   let lastTrackerFlushTime = 0;
   let trackerIdleTime = 0;
+  let charCountAtIdlePause = 0;
+  let lastResizeAt = 0;
+  let wasTrackerPausedAtMenuOpen: boolean | undefined;
 
   const dispatch = createEventDispatcher<{
     trackerAvailable: void;
@@ -301,6 +306,10 @@
       lastTrackerFlushTime = now;
       lastTrackerTick = now;
 
+      if (isTrackerPausedByIdle$.getValue()) {
+        isTrackerPausedByIdle$.next(false);
+      }
+
       return interval(1000);
     }),
     tap(processTicks),
@@ -323,6 +332,16 @@
     ),
     reduceToEmptyString()
   );
+
+  const autoResumeAfterIdle$ = isTrackerPausedByIdle$.pipe(
+    switchMap((pausedByIdle) =>
+      pausedByIdle ? fromEvent<CustomEvent>(document, PAGE_CHANGE) : NEVER
+    ),
+    tap(handlePageChangeWhileIdle),
+    reduceToEmptyString()
+  );
+
+  $: clearIdlePauseOnMenuToggle($isTrackerMenuOpen$, wasTrackerPaused);
 
   $: hasReadingGoal = !!($readingGoal$.goalStartDate && todayKey >= $readingGoal$.goalStartDate);
 
@@ -391,7 +410,60 @@
   onDestroy(() => {
     yomiObserver.disconnect();
     dictionaryObserver.disconnect();
+    isTrackerPausedByIdle$.next(false);
   });
+
+  /** A pause/resume toggled inside the tracker menu is manual, so it ends the idle state. */
+  function clearIdlePauseOnMenuToggle(isMenuOpen: boolean, paused: boolean) {
+    try {
+      if (!isMenuOpen) {
+        wasTrackerPausedAtMenuOpen = undefined;
+        return;
+      }
+
+      if (wasTrackerPausedAtMenuOpen === undefined) {
+        wasTrackerPausedAtMenuOpen = paused;
+        return;
+      }
+
+      if (paused !== wasTrackerPausedAtMenuOpen && isTrackerPausedByIdle$.getValue()) {
+        isTrackerPausedByIdle$.next(false);
+      }
+    } catch ({ message }: any) {
+      logger.error(`Error updating tracker idle state: ${message}`);
+    }
+  }
+
+  function handlePageChangeWhileIdle(event: CustomEvent) {
+    try {
+      const currentCharCount = event.detail?.exploredCharCount;
+
+      if (typeof currentCharCount !== 'number' || currentCharCount === charCountAtIdlePause) {
+        return;
+      }
+
+      const resume = shouldAutoResume({
+        pausedByIdle: isTrackerPausedByIdle$.getValue(),
+        isTrackerPaused: $isTrackerPaused$,
+        charCountAtPause: charCountAtIdlePause,
+        currentCharCount,
+        now: Date.now(),
+        lastResizeAt
+      });
+
+      if (!resume) {
+        // Layout shift right after a resize: follow it so it doesn't count as a page turn later.
+        charCountAtIdlePause = currentCharCount;
+        return;
+      }
+
+      isTrackerPausedByIdle$.next(false);
+      wasTrackerPaused = false;
+      isTrackerPaused$.next(false);
+    } catch ({ message }: any) {
+      logger.error(`Error resuming tracker after idle: ${message}`);
+    }
+  }
 
   function handleYomiMutation() {
     yomiPopover = document.querySelector(
@@ -648,7 +720,11 @@
     lastTrackerTick = nowTick;
 
     if (trackerIdleTimeReached) {
+      // Automatic pause: the next page turn or scroll resumes (see handlePageChangeWhileIdle).
+      // wasTrackerPaused stays true so closing the menu or TOC does not resume it.
+      charCountAtIdlePause = exploredCharCount;
       wasTrackerPaused = true;
+      isTrackerPausedByIdle$.next(true);
       isTrackerPaused$.next(true);
 
       if (frozenPosition === -1) {
@@ -763,9 +839,14 @@
 
 {$readingTracker$ ?? ''}
 {$updateTrackerIdleTime$ ?? ''}
+{$autoResumeAfterIdle$ ?? ''}
 {$autoScrollerTimer$ ?? ''}
 
-<svelte:window on:blur={handleBlur} on:focus={handleFocus} />
+<svelte:window
+  on:blur={handleBlur}
+  on:focus={handleFocus}
+  on:resize={() => (lastResizeAt = Date.now())}
+/>
 <svelte:document bind:visibilityState />
 
 {#if $isTrackerMenuOpen$}
