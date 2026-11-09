@@ -184,6 +184,51 @@ export const MIGRATIONS: { version: number; name: string; sql: string }[] = [
       );
     `,
   },
+  {
+    version: 4,
+    name: 'sync engine: devices and user-data records',
+    // WP4. One generic store for every user-data kind: the sync columns are
+    // real columns, the payload is JSON validated per kind in src/sync/kinds.ts.
+    sql: `
+      -- A device keeps its id across re-pairing; each token is bound to one device.
+      CREATE TABLE devices (
+        id            TEXT PRIMARY KEY,
+        user_id       TEXT NOT NULL REFERENCES users(id),
+        created_at    INTEGER NOT NULL,
+        last_seen_at  INTEGER
+      );
+
+      CREATE INDEX devices_user ON devices(user_id);
+
+      ALTER TABLE api_tokens ADD COLUMN device_id TEXT REFERENCES devices(id);
+
+      -- Per-user change counter. The epoch changes after a database restore so
+      -- devices notice that their cursor no longer means anything.
+      CREATE TABLE sync_state (
+        user_id   TEXT PRIMARY KEY REFERENCES users(id),
+        epoch     TEXT NOT NULL,
+        last_rev  INTEGER NOT NULL
+      );
+
+      CREATE TABLE sync_records (
+        user_id      TEXT NOT NULL REFERENCES users(id),
+        kind         TEXT NOT NULL,
+        id           TEXT NOT NULL,
+        book_id      TEXT,
+        device_id    TEXT NOT NULL,
+        updated_at   INTEGER NOT NULL,
+        deleted_at   INTEGER,
+        rev          INTEGER NOT NULL,
+        data         TEXT NOT NULL CHECK (json_valid(data)),
+        received_at  INTEGER NOT NULL,
+        PRIMARY KEY (user_id, kind, id)
+      );
+
+      CREATE UNIQUE INDEX sync_records_rev ON sync_records(user_id, rev);
+      CREATE INDEX sync_records_book ON sync_records(user_id, book_id, kind)
+        WHERE book_id IS NOT NULL;
+    `,
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

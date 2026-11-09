@@ -16,7 +16,8 @@ export interface ApiToken {
 
 export interface AuthenticatedToken {
   user: Pick<User, 'id' | 'name'>;
-  token: Pick<ApiToken, 'id' | 'label'>;
+  /** deviceId: the device this token is bound to (WP4), null until it registers. */
+  token: Pick<ApiToken, 'id' | 'label'> & { deviceId: string | null };
 }
 
 interface TokenRow {
@@ -75,18 +76,18 @@ export function authenticateToken(
   if (!token.startsWith(TOKEN_PREFIX)) return null;
   const row = db
     .prepare(
-      `SELECT t.id AS token_id, t.label, u.id AS user_id, u.name
+      `SELECT t.id AS token_id, t.label, t.device_id, u.id AS user_id, u.name
          FROM api_tokens t JOIN users u ON u.id = t.user_id
         WHERE t.token_hash = ? AND t.revoked_at IS NULL`,
     )
     .get(hashToken(token)) as
-    | { token_id: string; label: string; user_id: string; name: string }
+    | { token_id: string; label: string; device_id: string | null; user_id: string; name: string }
     | undefined;
   if (!row) return null;
   db.prepare('UPDATE api_tokens SET last_used_at = ? WHERE id = ?').run(now, row.token_id);
   return {
     user: { id: row.user_id, name: row.name },
-    token: { id: row.token_id, label: row.label },
+    token: { id: row.token_id, label: row.label, deviceId: row.device_id },
   };
 }
 
