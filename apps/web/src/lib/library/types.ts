@@ -4,7 +4,14 @@
  * All rights reserved.
  */
 
-/** Shapes of the storage server's /api/v1 catalog responses (WP2, WP6). */
+/** Shapes of the storage server's /api/v1 catalog responses (WP2, WP6, WP3b). */
+
+/** Character counts of a library's books (servers before WP3b don't send them). */
+export interface CatalogCountTotals {
+  counted: number;
+  pending: number;
+  errors: number;
+}
 
 export interface CatalogLibrary {
   id: string;
@@ -14,7 +21,15 @@ export interface CatalogLibrary {
   language: string | null;
   enabled: boolean;
   available: boolean;
+  counts?: CatalogCountTotals;
 }
+
+/**
+ * The server's character count of a book's EPUB, for the library only (the reader
+ * uses its own in-book count). counted: charCount is current; pending: not counted
+ * yet or the EPUB changed; error: it could not be counted.
+ */
+export type CharCountStatus = 'counted' | 'pending' | 'error';
 
 export interface CatalogBook {
   id: string;
@@ -25,6 +40,8 @@ export interface CatalogBook {
   tags: string[];
   addedAt: number;
   charCount: number | null;
+  /** Missing from servers before WP3b. */
+  charCountStatus?: CharCountStatus;
   missing: boolean;
   /** Relative, signed thumbnail URL (works in a plain <img>), or null. */
   thumbnail: string | null;

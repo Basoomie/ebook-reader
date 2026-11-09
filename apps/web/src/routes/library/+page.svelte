@@ -18,6 +18,7 @@
   import { LibraryApi, LibraryApiError } from '$lib/library/api';
   import { browserOpenDeps, existingLocalIds } from '$lib/library/browser-open-deps';
   import { getLibraryStore, type LibraryConnection } from '$lib/library/library-db';
+  import { summarizeCharCounts } from '$lib/library/char-counts';
   import {
     openCalibreBook,
     type ExistingBookQuestion,
@@ -64,6 +65,7 @@
   $: if (connection && api && api.timeoutSeconds !== timeoutSeconds) api = makeApi(connection);
   $: libraryNames = new Map(libraries.map((l) => [l.id, l.name]));
   $: enabledLibraries = libraries.filter((l) => l.enabled);
+  $: charCountSummary = summarizeCharCounts(enabledLibraries);
 
   onMount(async () => {
     suggestedServerUrl = await selfHostServerUrl();
@@ -110,6 +112,16 @@
       // The list request below reports the problem.
     }
     await readUrlAndLoad();
+  }
+
+  /** Fresh character-count totals each time the Connection panel opens (no polling). */
+  async function onConnectionToggle(event: Event) {
+    if (!(event.currentTarget as HTMLDetailsElement).open || !api) return;
+    try {
+      libraries = (await api.libraries()).libraries;
+    } catch {
+      // Keep the totals from the session start; the book list reports connection problems.
+    }
   }
 
   async function refreshOnDevice() {
@@ -370,11 +382,14 @@
       <a class="underline" href="{pagePath}/migration">Migration from the old sync</a>
     </p>
 
-    <details class="mt-4 text-sm">
+    <details class="mt-4 text-sm" on:toggle={onConnectionToggle}>
       <summary class="cursor-pointer">Connection</summary>
       <div class="py-3">
         <p>Server: {connection.serverUrl}</p>
         <p>This device: {connection.label}</p>
+        {#if charCountSummary}
+          <p>{charCountSummary}</p>
+        {/if}
         <label class="mt-3 block max-w-xs">
           Request timeout (seconds, 0 = none)
           <input
