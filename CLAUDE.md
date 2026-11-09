@@ -13,12 +13,11 @@ If code and docs disagree, or a task needs a decision the docs don't cover, STOP
 
 ## Current phase
 
-**Phase 1** (Phase 0, WP3a and WP10 hands-free tracker, is done and merged):
+**Phase 2** (Phase 0 and Phase 1, WP1, WP2, WP6 interim option and the minimal library list, are done and merged):
 
-1. **WP1**: server foundation. SQLite, schema, per-user token, CORS lock-down, API skeleton, nightly DB snapshot. Existing storage-server endpoints and today's sync keep working unchanged.
-2. **WP2**: Calibre indexer (library discovery, `metadata.db` snapshot ingest, books, sources, thumbnails).
-3. **WP6 (interim option)**: open Calibre books in the reader while reading data keeps using today's file sync; store each opened book's Calibre UUID locally.
-4. A minimal library list with search.
+1. **WP4**: sync engine. Device records, local outbox, pull/push, local mirrors, global vs per-device settings. The legacy file sync stays the source of truth for reading data until WP5.
+2. **WP5**: migration of current books, position, bookmark, stats, goals and settings; retire the old file sync only after it is verified.
+3. **WP9**: "Continue from...?" position prompt.
 
 Stop condition: each work package is finished on its own branch, with a summary of what changed, how it was verified, and anything unexpected. Then stop for review. Do not start the next work package or phase without approval.
 
@@ -27,6 +26,7 @@ Stop condition: each work package is finished on its own branch, with a summary 
 - Never write into or near Calibre-managed ebook folders. Calibre libraries are read-only to this app.
 - Preserve whispersync's match/re-match/reset semantics; do not "improve" them.
 - Keep audio out of the replicator.
+- The app is served over plain http (HTTPS deferred). Feature-detect every secure-context API (service worker, `navigator.storage` persist/estimate, Web Locks, `crypto.randomUUID`, Clipboard API) and degrade gracefully; it must switch on automatically when `isSecureContext` is true.
 - If a component secretly depended on the removed sandbox/chrome.runtime, STOP and report.
 - Execute one phase (and one work package) at a time; honor each stop condition.
 - Keep the browser tab title format `<book title> | ッツ Ebook Reader` (`lib/functions/format-page-title.ts`). Yomitan copies it into the user's Anki Comment field.
