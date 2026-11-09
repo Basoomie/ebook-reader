@@ -3,6 +3,7 @@ import { createApp } from '../../src/app';
 import {
   CalibreConfig,
   DEFAULT_CALIBRE,
+  DEFAULT_COUNTS_CONFIG,
   DEFAULT_PAIRING_CONFIG,
   DEFAULT_SYNC_CONFIG,
   ServerConfig,
@@ -26,6 +27,7 @@ export function testConfig(overrides: Partial<ServerConfig> = {}): ServerConfig 
     calibre: testCalibreConfig(),
     pairing: { ...DEFAULT_PAIRING_CONFIG },
     sync: { ...DEFAULT_SYNC_CONFIG },
+    counts: { ...DEFAULT_COUNTS_CONFIG, background: false },
     ...overrides,
   };
 }

@@ -12,6 +12,8 @@
  *   docker exec ttsu-storage node dist/cli.js index run [<library-id>]
  *   docker exec ttsu-storage node dist/cli.js thumbs rebuild --library <id>
  *   docker exec ttsu-storage node dist/cli.js thumbs rotate-key
+ *   docker exec ttsu-storage node dist/cli.js counts status
+ *   docker exec ttsu-storage node dist/cli.js counts retry
  *   docker exec ttsu-storage node dist/cli.js sync status
  *   docker exec ttsu-storage node dist/cli.js sync dump --kind position --book <id>
  *   docker exec ttsu-storage node dist/cli.js sync new-epoch
@@ -20,8 +22,9 @@
  *
  * Uses DB_DIR (default /db) and DATA_DIR (default /data) like the server, and
  * PAIR_CODE_MINUTES for how long a pairing code stays valid.
- * The CLI never touches the Calibre libraries: `index run` and `thumbs rebuild`
- * only leave a request in the database that the server picks up on its next poll.
+ * The CLI never touches the Calibre libraries: `index run`, `thumbs rebuild` and
+ * `counts rebuild|retry` only leave a request in the database that the server picks
+ * up on its next poll.
  * For the same reason the WP5 scan and import run in the server (from the
  * migration page); the CLI only reports on them and can undo the import.
  */
@@ -36,7 +39,14 @@ import {
   requestReindex,
   updateLibrary,
 } from './calibre/libraries';
-import { parsePairingConfig, parseSyncConfig } from './config';
+import { parseCountsConfig, parsePairingConfig, parseSyncConfig } from './config';
+import { countSpec, readCounterInfo } from './counts/counter-bundle';
+import {
+  CountScope,
+  countTotalsByLibrary,
+  forgetCounts,
+  recentCountErrors,
+} from './counts/count-records';
 import { listDevices } from './db/devices';
 import { initDatabase } from './db/database';
 import { createPairingCode, prunePairingCodes } from './db/pairing';
@@ -62,6 +72,10 @@ const USAGE = `Usage:
   cli thumbs rebuild (--book <id> | --library <id> | --all)
                                              Make thumbnails again (in the background)
   cli thumbs rotate-key                      Invalidate every signed thumbnail URL already handed out
+  cli counts status                          Character counts per library and the latest failures
+  cli counts rebuild (--book <id> | --library <id> | --all)
+                                             Count again (in the background)
+  cli counts retry                           Count the books that failed again
   cli sync status [--user <name>]            Synced records per kind, devices and when they last synced
   cli sync dump [--kind <kind>] [--book <id>] [--limit <n>]
                                              Print synced records, newest change first
@@ -293,6 +307,74 @@ function thumbsCommand(db: Database.Database, command: string, rest: string[]) {
   console.log(`${n} thumbnail(s) will be made again by the server in the background.`);
 }
 
+function countsCommand(
+  db: Database.Database,
+  command: string,
+  rest: string[],
+  env: Record<string, string | undefined>,
+) {
+  const args = [...rest];
+  switch (command) {
+    case 'status': {
+      if (args.length) fail(`Unexpected arguments: ${args.join(' ')}`);
+      const config = parseCountsConfig(env, []);
+      let spec: string | null = null;
+      try {
+        const counter = readCounterInfo();
+        spec = countSpec(counter.version, config);
+        console.log(
+          `spec=${spec}  counter build=${counter.build}  ` +
+            `background=${config.background ? 'on' : 'off'}`,
+        );
+      } catch (err) {
+        console.log(`The counter is unavailable: ${(err as Error).message}`);
+      }
+      const totals = countTotalsByLibrary(db, spec);
+      const libs = listLibraries(db).filter((l) => l.enabled);
+      if (libs.length === 0) console.log('No enabled libraries.');
+      for (const lib of libs) {
+        const t = totals.get(lib.id) ?? { counted: 0, pending: 0, errors: 0 };
+        console.log(describeLibrary(lib));
+        console.log(`    counted=${t.counted}  pending=${t.pending}  failed=${t.errors}`);
+      }
+      const errors = recentCountErrors(db, 20);
+      if (errors.length) console.log('Latest failures (newest first):');
+      for (const e of errors) {
+        console.log(
+          `  ${formatDate(e.countedAt)}  ${e.errorCode}  "${e.title}" (${e.bookId}): ${e.error}`,
+        );
+      }
+      break;
+    }
+    case 'rebuild': {
+      const book = takeOption(args, '--book');
+      const library = takeOption(args, '--library');
+      const all = takeFlag(args, '--all');
+      const chosen = [book, library, all ? true : undefined].filter((v) => v !== undefined);
+      if (chosen.length !== 1) fail('Give exactly one of --book <id>, --library <id>, --all');
+      if (args.length) fail(`Unexpected arguments: ${args.join(' ')}`);
+      let scope: CountScope;
+      if (book) scope = { bookId: book };
+      else if (library) scope = { libraryId: requireLibrary(db, library).id };
+      else scope = { all: true };
+      const n = forgetCounts(db, scope);
+      console.log(
+        `${n} book(s) will be counted again by the server in the background ` +
+          '(the old counts are shown until then).',
+      );
+      break;
+    }
+    case 'retry': {
+      if (args.length) fail(`Unexpected arguments: ${args.join(' ')}`);
+      const n = forgetCounts(db, { errors: true });
+      console.log(`${n} failed book(s) will be counted again by the server in the background.`);
+      break;
+    }
+    default:
+      fail(USAGE);
+  }
+}
+
 function syncCommand(
   db: Database.Database,
   command: string,
@@ -431,7 +513,8 @@ export function main(argv: string[], env: Record<string, string | undefined>): v
   }
 
   const [group, command, ...rest] = args;
-  if (!['token', 'library', 'index', 'thumbs', 'sync', 'migration'].includes(group) || !command) {
+  const groups = ['token', 'library', 'index', 'thumbs', 'counts', 'sync', 'migration'];
+  if (!groups.includes(group) || !command) {
     fail(USAGE);
   }
 
@@ -446,6 +529,7 @@ export function main(argv: string[], env: Record<string, string | undefined>): v
     if (group === 'token') tokenCommand(db, command, rest, env, userName);
     else if (group === 'library') libraryCommand(db, command, rest);
     else if (group === 'index') indexCommand(db, command, rest);
+    else if (group === 'counts') countsCommand(db, command, rest, env);
     else if (group === 'sync') syncCommand(db, command, rest, env, userName);
     else if (group === 'migration') migrationCommand(db, command, rest, env, userName);
     else thumbsCommand(db, command, rest);

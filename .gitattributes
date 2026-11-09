@@ -1,0 +1,2 @@
+# Generated server counter bundle: LF everywhere so its build check is byte-stable.
+apps/storage-server/vendor/** text eol=lf

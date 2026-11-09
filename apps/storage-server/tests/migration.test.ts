@@ -216,7 +216,7 @@ describe('migration 5', () => {
     for (const m of MIGRATIONS.filter((m) => m.version <= 4)) db.exec(m.sql);
     db.pragma('user_version = 4');
     expect(migrate(db)).toBe(LATEST_SCHEMA_VERSION);
-    expect(LATEST_SCHEMA_VERSION).toBe(5);
+    expect(LATEST_SCHEMA_VERSION).toBeGreaterThanOrEqual(5);
     const tables = (
       db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as { name: string }[]
     ).map((t) => t.name);

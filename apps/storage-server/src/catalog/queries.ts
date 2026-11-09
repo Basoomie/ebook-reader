@@ -8,6 +8,7 @@
  */
 import type Database from 'better-sqlite3';
 import { getIndexState, Library, LibraryIndexState, listLibraries } from '../calibre/libraries';
+import { countTotalsByLibrary, CountTotals, SQL_COUNT_SOURCE_KEY } from '../counts/count-records';
 import { getOrCreateSecret, sign, THUMBNAIL_URL_SECRET, verify } from '../db/secrets';
 import { sourceKey, thumbnailVersion } from '../thumbnails/thumbnails';
 
@@ -17,7 +18,17 @@ export interface CatalogUser {
 
 export interface LibraryView extends Library {
   index: LibraryIndexState;
+  /** Character counts of the library's books (WP3b). */
+  counts: CountTotals;
 }
+
+/**
+ * - counted: charCount is the count of the book's current EPUB.
+ * - pending: not counted yet, or the EPUB changed since; charCount is null or the
+ *   previous count.
+ * - error: the current EPUB could not be counted; charCount is null.
+ */
+export type CharCountStatus = 'counted' | 'pending' | 'error';
 
 export interface BookSummary {
   id: string;
@@ -32,6 +43,7 @@ export interface BookSummary {
   publishedAt: number | null;
   addedAt: number;
   charCount: number | null;
+  charCountStatus: CharCountStatus;
   missing: boolean;
   /**
    * Relative API URL of the cover thumbnail, or null when the book has no cover.
@@ -58,8 +70,18 @@ export interface BookDetail extends BookSummary {
 export const DEFAULT_PAGE_SIZE = 50;
 export const MAX_PAGE_SIZE = 200;
 
-export function listLibrariesFor(db: Database.Database, _user: CatalogUser): LibraryView[] {
-  return listLibraries(db).map((lib) => ({ ...lib, index: getIndexState(db, lib.id) }));
+/** `countSpec`: the counter's current spec (null when counting is unavailable). */
+export function listLibrariesFor(
+  db: Database.Database,
+  _user: CatalogUser,
+  countSpec: string | null = null,
+): LibraryView[] {
+  const totals = countTotalsByLibrary(db, countSpec);
+  return listLibraries(db).map((lib) => ({
+    ...lib,
+    index: getIndexState(db, lib.id),
+    counts: totals.get(lib.id) ?? { counted: 0, pending: 0, errors: 0 },
+  }));
 }
 
 interface BookRow {
@@ -79,6 +101,9 @@ interface BookRow {
   has_cover: number;
   calibre_path: string;
   calibre_last_modified: number | null;
+  count_status: 'ok' | 'error' | null;
+  count_spec: string | null;
+  count_key_current: number | null;
 }
 
 // A book is shown through its Calibre source (the only kind in WP2).
@@ -89,11 +114,19 @@ const BOOK_SELECT = `
   SELECT b.id, b.library_id, b.title, b.title_sort, b.author_sort, se.name AS series_name,
          b.series_index, b.publisher, b.published_at, b.added_at, b.char_count, b.description,
          (s.missing_at IS NOT NULL) AS missing, s.has_cover, s.calibre_path,
-         s.calibre_last_modified
+         s.calibre_last_modified, c.status AS count_status, c.spec AS count_spec,
+         (c.source_key = ${SQL_COUNT_SOURCE_KEY}) AS count_key_current
   FROM books b
   CROSS JOIN book_sources s ON s.book_id = b.id AND s.kind = 'calibre'
   JOIN libraries l ON l.id = b.library_id AND l.enabled = 1
-  LEFT JOIN series se ON se.id = b.series_id`;
+  LEFT JOIN series se ON se.id = b.series_id
+  LEFT JOIN char_counts c ON c.book_id = b.id`;
+
+function charCountStatus(r: BookRow, countSpec: string | null): CharCountStatus {
+  if (!r.count_status || r.count_key_current !== 1) return 'pending';
+  if (countSpec !== null && r.count_spec !== countSpec) return 'pending';
+  return r.count_status === 'ok' ? 'counted' : 'error';
+}
 
 function thumbnailMessage(userId: string, bookId: string, version: string): string {
   return `${userId}:${bookId}:${version}`;
@@ -118,7 +151,12 @@ export function verifyThumbnailUrl(
     : null;
 }
 
-function attachLists(db: Database.Database, user: CatalogUser, rows: BookRow[]): BookSummary[] {
+function attachLists(
+  db: Database.Database,
+  user: CatalogUser,
+  rows: BookRow[],
+  countSpec: string | null,
+): BookSummary[] {
   if (rows.length === 0) return [];
   const ids = rows.map((r) => r.id);
   const inList = ids.map(() => '?').join(',');
@@ -158,6 +196,7 @@ function attachLists(db: Database.Database, user: CatalogUser, rows: BookRow[]):
     publishedAt: r.published_at,
     addedAt: r.added_at,
     charCount: r.char_count,
+    charCountStatus: charCountStatus(r, countSpec),
     missing: r.missing === 1,
     thumbnail: r.has_cover
       ? thumbnailUrl(
@@ -186,6 +225,8 @@ export interface ListBooksOptions {
   limit?: number;
   cursor?: string;
   includeMissing?: boolean;
+  /** The counter's current spec, for charCountStatus (null = any spec is current). */
+  countSpec?: string | null;
 }
 
 export interface BookPage {
@@ -269,7 +310,7 @@ export function listBooksFor(
   const page = rows.slice(0, limit);
   const last = page[page.length - 1];
   return {
-    books: attachLists(db, user, page),
+    books: attachLists(db, user, page, opts.countSpec ?? null),
     nextCursor: rows.length > limit && last ? encodeCursor(last.added_at, last.id) : null,
   };
 }
@@ -278,10 +319,11 @@ export function getBookFor(
   db: Database.Database,
   user: CatalogUser,
   bookId: string,
+  countSpec: string | null = null,
 ): BookDetail | null {
   const row = db.prepare(`${BOOK_SELECT} WHERE b.id = ?`).get(bookId) as BookRow | undefined;
   if (!row) return null;
-  const [summary] = attachLists(db, user, [row]);
+  const [summary] = attachLists(db, user, [row], countSpec);
   const sources = (
     db
       .prepare(

@@ -14,7 +14,17 @@ import path from 'path-browserify';
 
 initZipSettings();
 
-export default async function extractEpub(blob: Blob) {
+export interface ExtractEpubOptions {
+  /**
+   * `false` skips reading image entries: each image becomes an empty Blob of its media
+   * type. Only for counting characters, where images matter by key, never by content.
+   * The reader's import never sets this.
+   */
+  imageData?: boolean;
+}
+
+export default async function extractEpub(blob: Blob, options: ExtractEpubOptions = {}) {
+  const skipImageData = options.imageData === false;
   const reader = new ZipReader(new BlobReader(blob));
   // get all entries from the zip
   const entries = await reader.getEntries();
@@ -61,7 +71,9 @@ export default async function extractEpub(blob: Blob) {
           let value: string | Blob;
           const mediaType: string = item['@_media-type'];
           if (mediaType.startsWith('image/')) {
-            value = await entry.getData(new BlobWriter(mediaType));
+            value = skipImageData
+              ? new Blob([], { type: mediaType })
+              : await entry.getData(new BlobWriter(mediaType));
           } else {
             value = await entry.getData(new TextWriter());
           }

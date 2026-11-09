@@ -14,6 +14,8 @@ WORKDIR /app
 COPY package*.json ./
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
+# Character counter (WP3b): generated from the web app's import code, see apps/web/scripts/build-server-counter.ts.
+COPY vendor/ ./vendor/
 EXPOSE 3001
 # Unhealthy when the database is unavailable (the legacy endpoints still work then).
 HEALTHCHECK --interval=60s --timeout=5s --start-period=20s --retries=3 \

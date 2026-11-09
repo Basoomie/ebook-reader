@@ -271,6 +271,33 @@ export const MIGRATIONS: { version: number; name: string; sql: string }[] = [
       );
     `,
   },
+  {
+    version: 6,
+    name: 'character counts',
+    // WP3b. Per-book state of the background character count (like thumbnails).
+    // The count itself is served from books.char_count, written in the same
+    // transaction: the count when status = 'ok', NULL when status = 'error'.
+    sql: `
+      CREATE TABLE char_counts (
+        book_id      TEXT PRIMARY KEY REFERENCES books(id),
+        status       TEXT NOT NULL CHECK (status IN ('ok', 'error')),
+        -- Calibre last_modified | EPUB path | EPUB size when counted.
+        source_key   TEXT NOT NULL,
+        -- Counting rules and import settings, e.g. 'v1|Off|anchor'.
+        spec         TEXT NOT NULL,
+        characters   INTEGER CHECK (characters IS NULL OR characters >= 0),
+        -- Counter bundle build (for diagnostics only).
+        build        TEXT,
+        attempts     INTEGER NOT NULL DEFAULT 0,
+        error_code   TEXT,
+        error        TEXT,
+        duration_ms  INTEGER,
+        bytes_read   INTEGER,
+        counted_at   INTEGER NOT NULL,
+        CHECK ((status = 'ok') = (characters IS NOT NULL))
+      );
+    `,
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

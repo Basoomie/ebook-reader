@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { CatalogBook } from '$lib/library/types';
+  import { formatBookCharCount } from '$lib/library/char-counts';
   import { faCheck } from '@fortawesome/free-solid-svg-icons';
   import { createEventDispatcher } from 'svelte';
   import Fa from 'svelte-fa';
@@ -18,6 +19,8 @@
   $: series = book.series
     ? `${book.series.name}${book.series.index !== null ? ` ${formatIndex(book.series.index)}` : ''}`
     : '';
+  // The count comes before the library name so it survives truncation on a phone.
+  $: details = [series, formatBookCharCount(book), libraryName].filter(Boolean).join(' · ');
 
   function formatIndex(index: number) {
     return Number.isInteger(index) ? String(index) : index.toFixed(1);
@@ -48,10 +51,8 @@
       {#if authors}
         <div class="truncate text-sm">{authors}</div>
       {/if}
-      {#if series || libraryName}
-        <div class="truncate text-sm opacity-75">
-          {series}{series && libraryName ? ' · ' : ''}{libraryName}
-        </div>
+      {#if details}
+        <div class="truncate text-sm opacity-75">{details}</div>
       {/if}
     </div>
     {#if onDevice}
