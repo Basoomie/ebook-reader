@@ -25,7 +25,16 @@ export interface ServerConfig {
   calibre: CalibreConfig;
   /** Device pairing codes (WP6). */
   pairing: PairingConfig;
+  /** Record sync (WP4). */
+  sync: SyncConfig;
 }
+
+export interface SyncConfig {
+  /** A change stamped further ahead of the server clock than this gets the server time. */
+  maxClockSkewSeconds: number;
+}
+
+export const DEFAULT_SYNC_CONFIG: SyncConfig = { maxClockSkewSeconds: 300 };
 
 export interface PairingConfig {
   /** How long a code from `cli token pair` stays valid. */
@@ -111,6 +120,7 @@ export function loadConfig(env: Env): LoadedConfig {
       snapshotKeep: parseSnapshotKeep(env.SNAPSHOT_KEEP, warnings),
       calibre: parseCalibreConfig(env, warnings),
       pairing: parsePairingConfig(env, warnings),
+      sync: parseSyncConfig(env, warnings),
     },
     warnings,
   };
@@ -225,6 +235,21 @@ export function parsePairingConfig(env: Env, warnings: string[]): PairingConfig 
       d.maxFailuresPerMinute,
       1,
       1000,
+      true,
+      warnings,
+    ),
+  };
+}
+
+/** WP4 settings; bad values fall back to the defaults like the other WP1+ settings. */
+export function parseSyncConfig(env: Env, warnings: string[]): SyncConfig {
+  return {
+    maxClockSkewSeconds: parseNumber(
+      'SYNC_MAX_CLOCK_SKEW_SECONDS',
+      env.SYNC_MAX_CLOCK_SKEW_SECONDS,
+      DEFAULT_SYNC_CONFIG.maxClockSkewSeconds,
+      0,
+      86_400,
       true,
       warnings,
     ),

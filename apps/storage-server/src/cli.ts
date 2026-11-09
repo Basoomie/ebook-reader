@@ -12,6 +12,9 @@
  *   docker exec ttsu-storage node dist/cli.js index run [<library-id>]
  *   docker exec ttsu-storage node dist/cli.js thumbs rebuild --library <id>
  *   docker exec ttsu-storage node dist/cli.js thumbs rotate-key
+ *   docker exec ttsu-storage node dist/cli.js sync status
+ *   docker exec ttsu-storage node dist/cli.js sync dump --kind position --book <id>
+ *   docker exec ttsu-storage node dist/cli.js sync new-epoch
  *
  * Uses DB_DIR (default /db) and DATA_DIR (default /data) like the server, and
  * PAIR_CODE_MINUTES for how long a pairing code stays valid.
@@ -29,12 +32,14 @@ import {
   requestReindex,
   updateLibrary,
 } from './calibre/libraries';
-import { parsePairingConfig } from './config';
+import { parsePairingConfig, parseSyncConfig } from './config';
+import { listDevices } from './db/devices';
 import { initDatabase } from './db/database';
 import { createPairingCode, prunePairingCodes } from './db/pairing';
 import { rotateSecret, THUMBNAIL_URL_SECRET } from './db/secrets';
 import { createToken, listTokens, revokeToken } from './db/tokens';
 import { getUserByName, listUsers } from './db/users';
+import { SyncStore } from './sync/store';
 import { forgetThumbnails, RebuildScope } from './thumbnails/thumbnails';
 
 const USAGE = `Usage:
@@ -51,7 +56,12 @@ const USAGE = `Usage:
                                              Re-snapshot and re-index on the server's next poll
   cli thumbs rebuild (--book <id> | --library <id> | --all)
                                              Make thumbnails again (in the background)
-  cli thumbs rotate-key                      Invalidate every signed thumbnail URL already handed out`;
+  cli thumbs rotate-key                      Invalidate every signed thumbnail URL already handed out
+  cli sync status [--user <name>]            Synced records per kind, devices and when they last synced
+  cli sync dump [--kind <kind>] [--book <id>] [--limit <n>]
+                                             Print synced records, newest change first
+  cli sync new-epoch                         After restoring the database from a snapshot: every
+                                             device re-sends what it has on its next sync`;
 
 function fail(message: string): never {
   console.error(message);
@@ -274,6 +284,73 @@ function thumbsCommand(db: Database.Database, command: string, rest: string[]) {
   console.log(`${n} thumbnail(s) will be made again by the server in the background.`);
 }
 
+function syncCommand(
+  db: Database.Database,
+  command: string,
+  rest: string[],
+  env: Record<string, string | undefined>,
+  userName?: string,
+) {
+  const warnings: string[] = [];
+  const { maxClockSkewSeconds } = parseSyncConfig(env, warnings);
+  const store = new SyncStore(db, { maxClockSkewMs: maxClockSkewSeconds * 1000 });
+  switch (command) {
+    case 'status': {
+      const user = pickUser(db, userName);
+      const state = store.getState(user.id);
+      console.log(`user=${user.name}  epoch=${state.epoch}  last_rev=${state.lastRev}`);
+      const counts = store.counts(user.id);
+      if (counts.length === 0) console.log('No synced records.');
+      for (const c of counts) console.log(`  ${c.kind}: ${c.live} (+${c.deleted} deleted)`);
+      const devices = listDevices(db, store, user.id);
+      console.log(devices.length ? 'Devices:' : 'No devices registered.');
+      for (const d of devices) {
+        console.log(
+          `  ${d.id}  name="${d.name}"  created=${formatDate(d.createdAt)}  last_seen=${formatDate(d.lastSeenAt)}`,
+        );
+      }
+      break;
+    }
+    case 'dump': {
+      const args = [...rest];
+      const kind = takeOption(args, '--kind');
+      const bookId = takeOption(args, '--book');
+      const limitRaw = takeOption(args, '--limit');
+      const limit = limitRaw === undefined ? 100 : Number(limitRaw);
+      if (!Number.isInteger(limit) || limit < 1) fail('--limit needs a whole number >= 1');
+      if (args.length) fail(`Unexpected arguments: ${args.join(' ')}`);
+      const user = pickUser(db, userName);
+      const records = store.list(user.id, { kind, bookId }, limit);
+      if (records.length === 0) console.log('No matching records.');
+      for (const r of records) {
+        console.log(
+          [
+            `rev=${r.rev}`,
+            r.kind,
+            r.id,
+            `device=${r.deviceId}`,
+            `updated=${formatDate(r.updatedAt)}`,
+            r.deletedAt === null ? '' : `deleted=${formatDate(r.deletedAt)}`,
+            JSON.stringify(r.data),
+          ]
+            .filter(Boolean)
+            .join('  '),
+        );
+      }
+      break;
+    }
+    case 'new-epoch': {
+      const n = store.newEpoch();
+      console.log(
+        `New sync epoch for ${n} user(s). Each device pulls everything and re-sends its own records on its next sync.`,
+      );
+      break;
+    }
+    default:
+      fail(USAGE);
+  }
+}
+
 export function main(argv: string[], env: Record<string, string | undefined>): void {
   const args = [...argv];
   let userName: string | undefined;
@@ -285,7 +362,7 @@ export function main(argv: string[], env: Record<string, string | undefined>): v
   }
 
   const [group, command, ...rest] = args;
-  if (!['token', 'library', 'index', 'thumbs'].includes(group) || !command) fail(USAGE);
+  if (!['token', 'library', 'index', 'thumbs', 'sync'].includes(group) || !command) fail(USAGE);
 
   const state = initDatabase(
     path.resolve(env.DB_DIR ?? '/db'),
@@ -298,6 +375,7 @@ export function main(argv: string[], env: Record<string, string | undefined>): v
     if (group === 'token') tokenCommand(db, command, rest, env, userName);
     else if (group === 'library') libraryCommand(db, command, rest);
     else if (group === 'index') indexCommand(db, command, rest);
+    else if (group === 'sync') syncCommand(db, command, rest, env, userName);
     else thumbsCommand(db, command, rest);
   } finally {
     db.close();

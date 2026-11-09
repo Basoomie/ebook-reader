@@ -4,6 +4,7 @@ import {
   CalibreConfig,
   DEFAULT_CALIBRE,
   DEFAULT_PAIRING_CONFIG,
+  DEFAULT_SYNC_CONFIG,
   ServerConfig,
 } from '../../src/config';
 import { DatabaseState, initDatabase } from '../../src/db/database';
@@ -24,6 +25,7 @@ export function testConfig(overrides: Partial<ServerConfig> = {}): ServerConfig 
     snapshotKeep: 7,
     calibre: testCalibreConfig(),
     pairing: { ...DEFAULT_PAIRING_CONFIG },
+    sync: { ...DEFAULT_SYNC_CONFIG },
     ...overrides,
   };
 }

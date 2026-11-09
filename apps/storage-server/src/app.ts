@@ -40,6 +40,7 @@ export function createApp({ config, database, version, catalog }: AppOptions): E
       version,
       catalog,
       pairing: { maxFailuresPerMinute: config.pairing.maxFailuresPerMinute },
+      sync: { maxClockSkewSeconds: config.sync.maxClockSkewSeconds },
     }),
   );
 
