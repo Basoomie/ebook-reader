@@ -1,0 +1,2 @@
+# Test fixtures made by real Calibre: keep them byte-for-byte.
+tests/fixtures/** -text

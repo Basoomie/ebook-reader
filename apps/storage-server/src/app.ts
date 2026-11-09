@@ -1,5 +1,6 @@
 import cors from 'cors';
 import express, { Express } from 'express';
+import type { CatalogOptions } from './api/catalog-routes';
 import { createApiRouter } from './api/router';
 import type { ServerConfig } from './config';
 import type { DatabaseState } from './db/database';
@@ -9,9 +10,10 @@ export interface AppOptions {
   config: ServerConfig;
   database: DatabaseState;
   version: string;
+  catalog?: CatalogOptions;
 }
 
-export function createApp({ config, database, version }: AppOptions): Express {
+export function createApp({ config, database, version, catalog }: AppOptions): Express {
   const app = express();
 
   // Applies to the legacy and the new routes. With an explicit list, requests
@@ -30,7 +32,7 @@ export function createApp({ config, database, version }: AppOptions): Express {
   app.use(createLegacyAudioUploadRouter(legacy));
 
   // New API, with its own JSON body parser and error handling.
-  app.use('/api/v1', createApiRouter({ database, version }));
+  app.use('/api/v1', createApiRouter({ database, version, catalog }));
 
   // Legacy file API (raw body parser for everything it handles).
   app.use(createLegacyFileRouter(legacy));

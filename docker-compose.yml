@@ -21,6 +21,17 @@ services:
       - ${TTSU_DATA_PATH:-./data}:/data
       # SQLite database and its nightly snapshots. Must not be inside TTSU_DATA_PATH.
       - ${TTSU_DB_PATH:-./db}:/db
+      # Regenerable cache: metadata.db snapshots and cover thumbnails (~1 GB for 60k books).
+      # Safe to exclude from backups. Must not be inside the Calibre root or TTSU_DATA_PATH.
+      - ${TTSU_CACHE_PATH:-./cache}:/cache
+      # Calibre libraries root (each subfolder with a metadata.db is a library), READ-ONLY.
+      # Long syntax so Docker never creates a missing path near the libraries.
+      - type: bind
+        source: ${TTSU_CALIBRE_PATH:?TTSU_CALIBRE_PATH required (Calibre libraries root, e.g. /mnt/user/data/media/books)}
+        target: /calibre
+        read_only: true
+        bind:
+          create_host_path: false
     environment:
       - AUTH_TOKEN=${TTSU_AUTH_TOKEN:?AUTH_TOKEN required}
       - DATA_DIR=/data
@@ -33,3 +44,13 @@ services:
       - TZ=${TZ:-UTC}
       - SNAPSHOT_TIME=${TTSU_SNAPSHOT_TIME:-03:00}
       - SNAPSHOT_KEEP=${TTSU_SNAPSHOT_KEEP:-7}
+      # Calibre indexer. New libraries stay off until you set their language with the CLI.
+      - CALIBRE_DIR=/calibre
+      - CACHE_DIR=/cache
+      - CALIBRE_POLL_SECONDS=${TTSU_CALIBRE_POLL_SECONDS:-60}
+      - CALIBRE_SETTLE_SECONDS=${TTSU_CALIBRE_SETTLE_SECONDS:-30}
+      - CALIBRE_SNAPSHOT_TIMEOUT_SECONDS=${TTSU_CALIBRE_SNAPSHOT_TIMEOUT_SECONDS:-600}
+      - CALIBRE_MAX_MISSING_PERCENT=${TTSU_CALIBRE_MAX_MISSING_PERCENT:-20}
+      - THUMB_CONCURRENCY=${TTSU_THUMB_CONCURRENCY:-1}
+      - THUMB_PER_SECOND=${TTSU_THUMB_PER_SECOND:-8}
+      - THUMB_BACKGROUND=${TTSU_THUMB_BACKGROUND:-true}

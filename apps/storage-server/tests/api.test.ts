@@ -1,5 +1,6 @@
 import request from 'supertest';
 import { describe, expect, it } from 'vitest';
+import { LATEST_SCHEMA_VERSION } from '../src/db/migrations';
 import { listTokens, revokeToken } from '../src/db/tokens';
 import { LEGACY_TOKEN, makeTestApp, unavailableDatabase } from './helpers/test-app';
 
@@ -8,7 +9,11 @@ describe('GET /api/v1/health', () => {
     const { app } = makeTestApp();
     const res = await request(app).get('/api/v1/health');
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ ok: true, version: '9.9.9-test', schemaVersion: 1 });
+    expect(res.body).toEqual({
+      ok: true,
+      version: '9.9.9-test',
+      schemaVersion: LATEST_SCHEMA_VERSION,
+    });
   });
 
   it('answers 503 when the database is unavailable', async () => {

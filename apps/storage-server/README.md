@@ -5,7 +5,7 @@ Self-hosted REST storage backend for [ttsu Ebook Reader](https://github.com/ttu-
 It has two parts:
 
 - **Legacy file API** (`/list`, `/file`, `/audio-file`, `/mkdir`, `/rmdir`): the file store that today's sync (the `selfhost` storage handler) and whispersync use. Its behavior is frozen and pinned by `tests/legacy-endpoints.test.ts`.
-- **API v1** (`/api/v1/...`): the new API (design doc section 4.4), backed by a SQLite database. WP1 adds only the foundation: health, per-user tokens and `/me`.
+- **API v1** (`/api/v1/...`): the new API (design doc section 4.4), backed by a SQLite database: health, per-user tokens and `/me` (WP1), and the Calibre catalog with cover thumbnails (WP2).
 
 ## Legacy file API
 
@@ -25,10 +25,14 @@ The legacy endpoints accept only `AUTH_TOKEN`, not the per-user tokens.
 
 ## API v1
 
-| Method | Path             | Auth           | Description                                                                                             |
-| ------ | ---------------- | -------------- | ------------------------------------------------------------------------------------------------------- |
-| `GET`  | `/api/v1/health` | none           | `{ ok, version, schemaVersion }`; 503 when the database is unavailable. Used by the Docker healthcheck. |
-| `GET`  | `/api/v1/me`     | per-user token | `{ user: {id, name}, token: {id, label} }`                                                              |
+| Method | Path                                                     | Auth           | Description                                                                                                                                                                 |
+| ------ | -------------------------------------------------------- | -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET`  | `/api/v1/health`                                         | none           | `{ ok, version, schemaVersion }`; 503 when the database is unavailable. Used by the Docker healthcheck.                                                                     |
+| `GET`  | `/api/v1/me`                                             | per-user token | `{ user: {id, name}, token: {id, label} }`                                                                                                                                  |
+| `GET`  | `/api/v1/libraries`                                      | per-user token | `{ indexer: {enabled, error}, libraries: [...] }`: every discovered library with its settings and index state.                                                              |
+| `GET`  | `/api/v1/books?library=&limit=&cursor=&includeMissing=1` | per-user token | `{ books, nextCursor }`: books of enabled libraries, newest added first. `limit` 1-200 (default 50). Missing books only with `includeMissing=1`.                            |
+| `GET`  | `/api/v1/books/:id`                                      | per-user token | One book with `description` (Calibre's comments, raw HTML: sanitize before display) and `sources`.                                                                          |
+| `GET`  | `/api/v1/books/:id/thumbnail`                            | per-user token | Cover thumbnail (WebP). Use the `thumbnail` URL from the book list: its `?v=` makes it cacheable forever. 404 `no_cover` / `cover_unreadable`; 503 when the indexer is off. |
 
 - Auth: `Authorization: Bearer ttsu_...` (a per-user token, see below). The legacy `AUTH_TOKEN` is not accepted here.
 - Errors: `{ "error": { "code": "...", "message": "..." } }`.
@@ -53,20 +57,67 @@ The database starts with a single user, `owner`.
 - **Nightly snapshot**: at `SNAPSHOT_TIME` (container local time, set `TZ`), a consistent copy is written to `$DB_DIR/snapshots/ttsu-YYYYMMDD-HHMMSSZ.db` (timestamp in UTC) using SQLite's online backup API and checked with `quick_check`. The newest `SNAPSHOT_KEEP` are kept; other files in that folder are never touched. If the newest snapshot is older than 24 hours at startup (the container was down), one is taken right away.
 - **Restore**: stop the container, copy a snapshot over `ttsu.db` (delete `ttsu.db-wal` and `ttsu.db-shm` if present), start the container.
 
+## Calibre indexer
+
+The server indexes the Calibre libraries into its own database (design doc 4.1). Calibre is **read-only** to this server:
+
+- The libraries root is mounted read-only (`CALIBRE_DIR`, compose: `read_only: true`). The indexer refuses to run if the mount is writable.
+- The live `metadata.db` is only ever read as the source of a snapshot copy (SQLite online backup API) into `$CACHE_DIR/calibre/`. Everything is read from the copy.
+- Metadata (titles, authors, series, tags, ...) comes only from `metadata.db`, never from file or folder names. Only books with an EPUB are indexed.
+- Books removed from Calibre are flagged missing, never deleted (user data stays attached). They come back if Calibre gets them back with the same UUID.
+
+**Libraries.** Every folder directly under `CALIBRE_DIR` that holds a `metadata.db` (or `CALIBRE_DIR` itself) is a library. Nothing deeper is scanned. A new library is **off until you set its language**; the language is never guessed:
+
+```sh
+docker exec ttsu-storage node dist/cli.js library list
+docker exec ttsu-storage node dist/cli.js library set <id> --language ja --name "Japanese" --enable
+docker exec ttsu-storage node dist/cli.js index status
+```
+
+A library is identified by Calibre's library UUID, so renaming its folder keeps its books and IDs: enable the renamed folder once and the old record moves over. Two folders holding the same Calibre library (for example a copy) are refused.
+
+**Change detection.** Every `CALIBRE_POLL_SECONDS`, the server `stat`s each enabled library's `metadata.db`. When it changed, has not changed for `CALIBRE_SETTLE_SECONDS` and Calibre has no journal file next to it, the server snapshots and re-indexes it (unchanged books are skipped). A copy is thrown away and retried on the next poll if `metadata.db` changed while it was copied.
+
+**Thumbnails.** Made from each book's `cover.jpg`: fit inside 320x480, WebP quality 75 (about 15 KB each), stored in `$CACHE_DIR/thumbs/`. A background pass makes them newest first, one at a time and at most `THUMB_PER_SECOND`; a thumbnail requested before the pass reaches it is made on the spot. They are remade when Calibre changes the cover.
+
+**HDD load.** Discovery and polling are a few `stat`s. A changed `metadata.db` is read once, sequentially. The first thumbnail pass reads every cover once (about 55 GB for 60k books); after that only changed covers are read. No EPUB is read, hashed or walked.
+
+**CLI** (writes only to the database; the server acts on its next poll):
+
+| Command                                                                    | Description                                                                                                                         |
+| -------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `library list`                                                             | Discovered libraries with id, folder, name, language, enabled, available                                                            |
+| `library set <id> [--name <n>] [--language <tag>] [--enable \| --disable]` | Language is a BCP 47 tag (`ja`, `en`, `en-GB`); `--enable` needs one                                                                |
+| `index status`                                                             | State, counts and the last error or warning per library                                                                             |
+| `index run [<id>] [--allow-mass-missing]`                                  | Re-snapshot and re-index now. `--allow-mass-missing` lets one run flag more than `CALIBRE_MAX_MISSING_PERCENT` of a library missing |
+| `thumbs rebuild (--book <id> \| --library <id> \| --all)`                  | Make thumbnails again in the background                                                                                             |
+
+**Cache.** Everything in `CACHE_DIR` can be rebuilt (delete it with the container stopped; the next start re-snapshots and remakes the thumbnails), so it can be left out of backups.
+
 ## Environment variables
 
-| Variable        | Default      | Description                                                                                                                          |
-| --------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `AUTH_TOKEN`    | _(required)_ | Bearer token for the legacy endpoints. Server exits if unset.                                                                        |
-| `DATA_DIR`      | `/data`      | Root directory for the legacy file API. Server exits if missing.                                                                     |
-| `DB_DIR`        | `/db`        | Folder for the SQLite database and snapshots.                                                                                        |
-| `PORT`          | `3001`       | Listening port.                                                                                                                      |
-| `CORS_ORIGIN`   | `*`          | Comma-separated list of allowed origins (e.g. `http://tower:3080,http://100.64.0.1:3080`). `*` allows any origin and logs a warning. |
-| `TZ`            | _(UTC)_      | Time zone for the snapshot schedule.                                                                                                 |
-| `SNAPSHOT_TIME` | `03:00`      | Daily snapshot time, `HH:MM`.                                                                                                        |
-| `SNAPSHOT_KEEP` | `7`          | Number of snapshots to keep.                                                                                                         |
+| Variable                           | Default      | Description                                                                                                                          |
+| ---------------------------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `AUTH_TOKEN`                       | _(required)_ | Bearer token for the legacy endpoints. Server exits if unset.                                                                        |
+| `DATA_DIR`                         | `/data`      | Root directory for the legacy file API. Server exits if missing.                                                                     |
+| `DB_DIR`                           | `/db`        | Folder for the SQLite database and snapshots.                                                                                        |
+| `PORT`                             | `3001`       | Listening port.                                                                                                                      |
+| `CORS_ORIGIN`                      | `*`          | Comma-separated list of allowed origins (e.g. `http://tower:3080,http://100.64.0.1:3080`). `*` allows any origin and logs a warning. |
+| `TZ`                               | _(UTC)_      | Time zone for the snapshot schedule.                                                                                                 |
+| `SNAPSHOT_TIME`                    | `03:00`      | Daily snapshot time, `HH:MM`.                                                                                                        |
+| `SNAPSHOT_KEEP`                    | `7`          | Number of snapshots to keep.                                                                                                         |
+| `CALIBRE_DIR`                      | _(unset)_    | Calibre libraries root, mounted read-only. Unset: the indexer is off.                                                                |
+| `CACHE_DIR`                        | `/cache`     | Snapshots of `metadata.db` and thumbnails. Must exist; must not overlap `CALIBRE_DIR`, `DB_DIR` or `DATA_DIR`.                       |
+| `CALIBRE_POLL_SECONDS`             | `60`         | How often `metadata.db` is checked for changes (5 or more).                                                                          |
+| `CALIBRE_SETTLE_SECONDS`           | `30`         | `metadata.db` must be unchanged this long before it is copied.                                                                       |
+| `CALIBRE_SNAPSHOT_TIMEOUT_SECONDS` | `600`        | A snapshot copy that takes longer is abandoned and retried on a later poll.                                                          |
+| `CALIBRE_MAX_MISSING_PERCENT`      | `20`         | If one index would flag more than this share of a library missing, nothing is flagged and a warning is recorded.                     |
+| `CALIBRE_REQUIRE_READONLY`         | `true`       | Refuse to index a writable Calibre mount. Set `false` only for local development.                                                    |
+| `THUMB_CONCURRENCY`                | `1`          | Covers the background pass works on at the same time (1-8).                                                                          |
+| `THUMB_PER_SECOND`                 | `8`          | Background pass rate limit; `0` = no limit. On-request thumbnails are not limited.                                                   |
+| `THUMB_BACKGROUND`                 | `true`       | `false` = thumbnails are only made when requested.                                                                                   |
 
-Invalid values for the WP1 settings are reported at startup and fall back to the default; they never stop the legacy endpoints.
+Invalid values for the WP1 and WP2 settings are reported at startup and fall back to the default; they never stop the legacy endpoints.
 
 ## Running with Docker
 
@@ -76,8 +127,11 @@ docker run -d \
   -p 3001:3001 \
   -v /your/nas/data:/data \
   -v /your/nas/db:/db \
+  -v /your/nas/cache:/cache \
+  -v /your/nas/books:/calibre:ro \
   -e AUTH_TOKEN=changeme \
   -e CORS_ORIGIN=http://your-host:3080 \
+  -e CALIBRE_DIR=/calibre \
   -e TZ=Europe/Berlin \
   ttsu-storage
 ```
@@ -86,9 +140,14 @@ docker run -d \
 
 ```sh
 npm install
-npm test          # vitest: legacy characterization suite + API, DB, CORS, snapshot, CLI tests
+npm test          # vitest: legacy characterization suite + API, DB, CORS, snapshot, CLI, Calibre and thumbnail tests
 npm run build
+
+# Benchmark a first index of a large synthetic library (not part of npm test)
+node -r ts-node/register/transpile-only scripts/bench-index.ts --books 60000 --covers 500
 ```
+
+The Calibre tests use throwaway libraries in temp folders. `tests/fixtures/calibre-7.1/` is a tiny library made by real Calibre with `scripts/make-calibre-fixture.ts`, which only ever runs `calibredb` against a new, empty folder. The tests check the hand-built fixture schema against it.
 
 ## Quick smoke-test with curl
 

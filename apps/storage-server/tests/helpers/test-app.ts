@@ -1,6 +1,6 @@
 import path from 'path';
 import { createApp } from '../../src/app';
-import { ServerConfig } from '../../src/config';
+import { CalibreConfig, DEFAULT_CALIBRE, ServerConfig } from '../../src/config';
 import { DatabaseState, initDatabase } from '../../src/db/database';
 import { createToken } from '../../src/db/tokens';
 import { listUsers } from '../../src/db/users';
@@ -17,6 +17,20 @@ export function testConfig(overrides: Partial<ServerConfig> = {}): ServerConfig 
     dbDir: makeTempDir('db'),
     snapshotTime: { hour: 3, minute: 0 },
     snapshotKeep: 7,
+    calibre: testCalibreConfig(),
+    ...overrides,
+  };
+}
+
+/** Calibre settings for tests: no settle wait, no rate limit, writable fixtures allowed. */
+export function testCalibreConfig(overrides: Partial<CalibreConfig> = {}): CalibreConfig {
+  return {
+    ...DEFAULT_CALIBRE,
+    dir: null,
+    cacheDir: makeTempDir('cache'),
+    settleSeconds: 0,
+    requireReadonly: false,
+    thumbPerSecond: 0,
     ...overrides,
   };
 }

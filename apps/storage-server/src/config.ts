@@ -21,7 +21,41 @@ export interface ServerConfig {
   dbDir: string;
   snapshotTime: SnapshotTime;
   snapshotKeep: number;
+  /** Calibre indexer (WP2). */
+  calibre: CalibreConfig;
 }
+
+export interface CalibreConfig {
+  /** Root holding the Calibre libraries (mounted read-only). null = indexer off. */
+  dir: string | null;
+  /** Regenerable cache: metadata.db snapshots and cover thumbnails. */
+  cacheDir: string;
+  pollSeconds: number;
+  /** metadata.db must be unchanged this long before it is copied. */
+  settleSeconds: number;
+  /** A snapshot copy that takes longer than this is abandoned and retried on a later poll. */
+  snapshotTimeoutSeconds: number;
+  /** Skip missing-marking when one index would mark more than this share of a library missing. */
+  maxMissingPercent: number;
+  /** Refuse to index unless the Calibre root is mounted read-only. */
+  requireReadonly: boolean;
+  thumbConcurrency: number;
+  /** Background thumbnail rate limit (thumbnails per second); 0 = no limit. */
+  thumbPerSecond: number;
+  /** false = thumbnails are only made when requested. */
+  thumbBackground: boolean;
+}
+
+export const DEFAULT_CALIBRE: Omit<CalibreConfig, 'dir' | 'cacheDir'> = {
+  pollSeconds: 60,
+  settleSeconds: 30,
+  snapshotTimeoutSeconds: 600,
+  maxMissingPercent: 20,
+  requireReadonly: true,
+  thumbConcurrency: 1,
+  thumbPerSecond: 8,
+  thumbBackground: true,
+};
 
 export const DEFAULT_SNAPSHOT_TIME: SnapshotTime = { hour: 3, minute: 0 };
 export const DEFAULT_SNAPSHOT_KEEP = 7;
@@ -64,6 +98,7 @@ export function loadConfig(env: Env): LoadedConfig {
       dbDir: path.resolve(env.DB_DIR ?? '/db'),
       snapshotTime: parseSnapshotTime(env.SNAPSHOT_TIME, warnings),
       snapshotKeep: parseSnapshotKeep(env.SNAPSHOT_KEEP, warnings),
+      calibre: parseCalibreConfig(env, warnings),
     },
     warnings,
   };
@@ -127,6 +162,67 @@ export function parseSnapshotKeep(value: string | undefined, warnings: string[])
     `SNAPSHOT_KEEP: "${value}" is not a whole number >= 1; using ${DEFAULT_SNAPSHOT_KEEP}.`,
   );
   return DEFAULT_SNAPSHOT_KEEP;
+}
+
+/**
+ * WP2 settings. Like the other WP1+ settings, a bad value is reported and the
+ * default is used; nothing here can stop the server.
+ */
+export function parseCalibreConfig(env: Env, warnings: string[]): CalibreConfig {
+  const d = DEFAULT_CALIBRE;
+  const dirRaw = (env.CALIBRE_DIR ?? '').trim();
+  const num = (name: string, fallback: number, min: number, max: number, integer = false) =>
+    parseNumber(name, env[name], fallback, min, max, integer, warnings);
+  const bool = (name: string, fallback: boolean) =>
+    parseBoolean(name, env[name], fallback, warnings);
+  return {
+    dir: dirRaw ? path.resolve(dirRaw) : null,
+    cacheDir: path.resolve((env.CACHE_DIR ?? '').trim() || '/cache'),
+    pollSeconds: num('CALIBRE_POLL_SECONDS', d.pollSeconds, 5, 86_400),
+    settleSeconds: num('CALIBRE_SETTLE_SECONDS', d.settleSeconds, 0, 86_400),
+    snapshotTimeoutSeconds: num(
+      'CALIBRE_SNAPSHOT_TIMEOUT_SECONDS',
+      d.snapshotTimeoutSeconds,
+      10,
+      86_400,
+    ),
+    maxMissingPercent: num('CALIBRE_MAX_MISSING_PERCENT', d.maxMissingPercent, 0, 100),
+    requireReadonly: bool('CALIBRE_REQUIRE_READONLY', d.requireReadonly),
+    thumbConcurrency: num('THUMB_CONCURRENCY', d.thumbConcurrency, 1, 8, true),
+    thumbPerSecond: num('THUMB_PER_SECOND', d.thumbPerSecond, 0, 1000),
+    thumbBackground: bool('THUMB_BACKGROUND', d.thumbBackground),
+  };
+}
+
+export function parseNumber(
+  name: string,
+  value: string | undefined,
+  fallback: number,
+  min: number,
+  max: number,
+  integer: boolean,
+  warnings: string[],
+): number {
+  if (value === undefined || value.trim() === '') return fallback;
+  const n = Number(value.trim());
+  if (Number.isFinite(n) && n >= min && n <= max && (!integer || Number.isInteger(n))) return n;
+  const kind = integer ? 'a whole number' : 'a number';
+  warnings.push(`${name}: "${value}" is not ${kind} from ${min} to ${max}; using ${fallback}.`);
+  return fallback;
+}
+
+export function parseBoolean(
+  name: string,
+  value: string | undefined,
+  fallback: boolean,
+  warnings: string[],
+): boolean {
+  if (value === undefined || value.trim() === '') return fallback;
+  const v = value.trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(v)) return true;
+  if (['0', 'false', 'no', 'off'].includes(v)) return false;
+  warnings.push(`${name}: "${value}" is not true or false; using ${fallback}.`);
+  return fallback;
 }
 
 export function formatTime(t: SnapshotTime): string {

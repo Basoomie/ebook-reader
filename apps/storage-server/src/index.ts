@@ -1,4 +1,7 @@
+import type { CatalogOptions } from './api/catalog-routes';
 import { createApp } from './app';
+import { CalibreIndexer } from './calibre/indexer';
+import { ThumbnailService } from './thumbnails/thumbnails';
 import { FatalConfigError, formatTime, loadConfig, LoadedConfig } from './config';
 import { initDatabase } from './db/database';
 import { scheduleSnapshots, snapshotDir, SnapshotScheduler } from './snapshot';
@@ -37,7 +40,44 @@ if (database.ok) {
   }
 }
 
-const app = createApp({ config, database, version: SERVER_VERSION });
+// Calibre indexer and thumbnails (WP2). Optional: when CALIBRE_DIR is unset or
+// unusable, the catalog routes report it and everything else works.
+let indexer: CalibreIndexer | null = null;
+let thumbnails: ThumbnailService | null = null;
+const catalog: CatalogOptions = {
+  thumbnails: null,
+  indexer: { enabled: false, error: 'CALIBRE_DIR is not set' },
+};
+if (database.ok && config.calibre.dir) {
+  try {
+    thumbnails = new ThumbnailService({
+      db: database.db,
+      calibreDir: config.calibre.dir,
+      cacheDir: config.calibre.cacheDir,
+      concurrency: config.calibre.thumbConcurrency,
+      perSecond: config.calibre.thumbPerSecond,
+      background: config.calibre.thumbBackground,
+    });
+    indexer = new CalibreIndexer({
+      db: database.db,
+      config: config.calibre,
+      dbDir: config.dbDir,
+      dataRoot: config.dataRoot,
+      thumbnails,
+    });
+    catalog.indexer = indexer.status;
+    catalog.thumbnails = thumbnails;
+    indexer
+      .start()
+      .catch((err) => console.error('Error: the Calibre indexer could not start:', err));
+  } catch (err) {
+    console.error('Error: the Calibre indexer could not start:', err);
+  }
+} else if (!config.calibre.dir) {
+  console.log('Calibre indexer is off: CALIBRE_DIR is not set');
+}
+
+const app = createApp({ config, database, version: SERVER_VERSION, catalog });
 
 app.listen(config.port, () => {
   console.log(`ttsu storage server running on port ${config.port}`);
@@ -58,6 +98,8 @@ app.listen(config.port, () => {
 function shutdown(signal: string): void {
   console.log(`${signal} received, shutting down`);
   snapshots?.stop();
+  void indexer?.stop();
+  void thumbnails?.stop();
   if (database.ok) {
     try {
       database.db.close();

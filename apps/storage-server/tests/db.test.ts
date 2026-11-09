@@ -28,7 +28,20 @@ describe('migrations', () => {
       .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
       .all()
       .map((r: any) => r.name);
-    expect(tables).toEqual(['api_tokens', 'users']);
+    expect(tables).toEqual([
+      'api_tokens',
+      'authors',
+      'book_authors',
+      'book_sources',
+      'book_tags',
+      'books',
+      'libraries',
+      'library_index_state',
+      'series',
+      'tags',
+      'thumbnails',
+      'users',
+    ]);
   });
 
   it('is idempotent', () => {
