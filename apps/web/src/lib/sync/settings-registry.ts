@@ -156,7 +156,8 @@ export const SETTINGS_REGISTRY: Record<string, SettingSpec> = {
   syncDebounceSeconds: d('Number'),
   syncIntervalMinutes: d('Number'),
   positionPromptEnabled: d('Boolean'),
-  positionPromptMinChars: d('Number')
+  positionPromptMinChars: d('Number'),
+  readingStatusSettleSeconds: d('Number')
 };
 
 export function settingScope(key: string): SettingScope {
