@@ -21,8 +21,9 @@ export function createApp({ config, database, version, catalog }: AppOptions): E
   app.use(
     cors({
       origin: config.corsOrigins,
-      // Expose range-related headers so cross-origin <audio> can seek.
-      exposedHeaders: ['Content-Range', 'Accept-Ranges', 'Content-Length', 'Last-Modified'],
+      // Expose range-related headers so cross-origin <audio> can seek, and
+      // ETag so the Library page can store which version of an EPUB it saved.
+      exposedHeaders: ['Content-Range', 'Accept-Ranges', 'Content-Length', 'Last-Modified', 'ETag'],
     }),
   );
 
