@@ -576,7 +576,12 @@ describe('kinds', () => {
         data: {
           ...statRow('2026-10-08', 1, 1, now),
           completedBook: 1,
-          completedData: { dateKey: '2026-10-08', charactersRead: 9 },
+          completedData: {
+            dateKey: '2026-10-08',
+            charactersRead: 9,
+            averageReadingSpeed: null,
+            finishDate: 'na',
+          },
         },
       },
       {

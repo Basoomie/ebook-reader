@@ -232,15 +232,27 @@ function finiteNumber(value: unknown, field: string): number {
   return value;
 }
 
-/** completedData keeps the old shape: numbers plus its dateKey. */
+/**
+ * completedData keeps the old shape as is: a flat object of numbers, short
+ * strings (dateKey, finishDate 'na'), booleans and nulls (NaN becomes null in
+ * JSON). Nested values are refused; a title is dropped.
+ */
 function completedData(value: unknown): Record<string, unknown> {
   if (!isPlainObject(value))
     throw new RecordError('invalid_data', 'completedData must be an object');
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(value)) {
-    if (k === 'dateKey' && typeof v === 'string' && DATE_KEY_RE.test(v)) out[k] = v;
-    else if (typeof v === 'number' && Number.isFinite(v)) out[k] = v;
-    else if (k !== 'title') throw new RecordError('invalid_data', `completedData.${k} is invalid`);
+    if (k === 'title') continue;
+    if (
+      v === null ||
+      typeof v === 'boolean' ||
+      (typeof v === 'number' && Number.isFinite(v)) ||
+      (typeof v === 'string' && v.length <= 200)
+    ) {
+      out[k] = v;
+    } else {
+      throw new RecordError('invalid_data', `completedData.${k} is invalid`);
+    }
   }
   return out;
 }

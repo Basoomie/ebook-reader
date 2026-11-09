@@ -12,7 +12,7 @@
  */
 import { XMLParser } from 'fast-xml-parser';
 import path from 'path';
-import { ReadOnlyOpener, ZipFile } from './zip-read';
+import { type ReadOnlyOpener, ZipFile } from './zip-read';
 
 export interface BookFingerprint {
   /** dc:title as the browser import picks it (first string or #text). */
