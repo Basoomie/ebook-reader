@@ -130,6 +130,8 @@
     bookmark: void;
     contentChange: HTMLElement;
     trackerPause: void;
+    /** The saved place was restored after the book loaded (also when there was none). */
+    positionRestored: void;
   }>();
 
   let allowDisplay = false;
@@ -489,6 +491,8 @@
               takeUntil(destroy$)
             )
             .subscribe(updateSectionProgress);
+
+          dispatch('positionRestored');
         });
     }
     contentReadyEvent = {};

@@ -118,6 +118,8 @@
     bookmark: void;
     contentChange: HTMLElement;
     trackerPause: void;
+    /** The saved place was restored after the book loaded (also when there was none). */
+    positionRestored: void;
   }>();
 
   let scrollEl: HTMLElement | undefined;
@@ -548,11 +550,13 @@
 
     if (scrollWhenReady) {
       scrollWhenReady = false;
-      bookmarkData.then((data) => {
-        if (!data || !bookmarkManager) return;
-        exploredCharCount = data.exploredCharCount || 0;
-        bookmarkManager.scrollToBookmark(data);
-      });
+      bookmarkData
+        .then((data) => {
+          if (!data || !bookmarkManager) return;
+          exploredCharCount = data.exploredCharCount || 0;
+          bookmarkManager.scrollToBookmark(data);
+        })
+        .finally(() => dispatch('positionRestored'));
     } else {
       bookmarkData.then(updateBookmarkScreen);
     }

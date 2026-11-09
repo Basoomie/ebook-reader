@@ -69,6 +69,36 @@ describe('AutoStartGate', () => {
     expect(gate.onPageChange(layoutDone + 9000, true)).toBe(false);
   });
 
+  it('treats a programmatic jump as settling, however late it lands', () => {
+    const gate = new AutoStartGate(3000);
+
+    gate.onPageChange(layoutDone, true);
+    // The prompt is answered long after the book settled; the jump lands 5 s later.
+    gate.noteSettling(layoutDone + 20_000);
+    expect(gate.onPageChange(layoutDone + 25_000, true)).toBe(false);
+    // A page turn right after the jump only extends the settle period...
+    expect(gate.onPageChange(layoutDone + 26_000, true)).toBe(false);
+    // ...and the first turn after 3 s of quiet starts the tracker.
+    expect(gate.onPageChange(layoutDone + 30_000, true)).toBe(true);
+  });
+
+  it('a jump before the first position report still needs a quiet page turn', () => {
+    const gate = new AutoStartGate(3000);
+
+    gate.noteSettling(layoutDone);
+    expect(gate.onPageChange(layoutDone + 10_000, true)).toBe(false);
+    expect(gate.onPageChange(layoutDone + 14_000, true)).toBe(true);
+  });
+
+  it('ignores a jump once it has fired or been cancelled', () => {
+    const gate = new AutoStartGate(1000);
+
+    gate.cancel();
+    gate.noteSettling(layoutDone);
+    expect(gate.onPageChange(layoutDone + 5000, true)).toBe(false);
+    expect(gate.isDone).toBe(true);
+  });
+
   it('is off when the setting is 0', () => {
     const gate = new AutoStartGate(0);
 

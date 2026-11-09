@@ -320,6 +320,7 @@
       on:contentChange={(ev) => contentEl$.next(ev.detail)}
       on:bookmark
       on:trackerPause
+      on:positionRestored
     />
   {:else}
     <BookReaderPaginated
@@ -362,6 +363,7 @@
       on:contentChange={(ev) => contentEl$.next(ev.detail)}
       on:bookmark
       on:trackerPause
+      on:positionRestored
     />
   {/if}
 </div>

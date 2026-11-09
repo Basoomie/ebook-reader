@@ -140,6 +140,10 @@
 
   export let autoBookmarkTime: number;
 
+  export let positionPromptEnabled: boolean;
+
+  export let positionPromptMinChars: number;
+
   export let activeSettings: string;
 
   export let importHTMLFixMode: string;
@@ -828,6 +832,31 @@
     <SettingsItemGroup title="Auto Bookmark" tooltip={autoBookmarkTooltip}>
       <ButtonToggleGroup options={optionsForToggle} bind:selectedOptionId={autoBookmark} />
     </SettingsItemGroup>
+    <SettingsItemGroup
+      title="Continue From Other Devices"
+      tooltip={'For books opened from the library: asks whether to continue where another device is further along (needs record sync)'}
+    >
+      <ButtonToggleGroup options={optionsForToggle} bind:selectedOptionId={positionPromptEnabled} />
+    </SettingsItemGroup>
+    {#if positionPromptEnabled}
+      <SettingsItemGroup
+        title="Continue: Characters Ahead"
+        tooltip={'Ask only when the other device is at least this many characters further along (0 = any amount)'}
+      >
+        <input
+          type="number"
+          step="1"
+          min="0"
+          class={inputClasses}
+          bind:value={positionPromptMinChars}
+          on:blur={() => {
+            if (positionPromptMinChars < 0 || typeof positionPromptMinChars !== 'number') {
+              positionPromptMinChars = 500;
+            }
+          }}
+        />
+      </SettingsItemGroup>
+    {/if}
     <SettingsItemGroup title="Blur image">
       <ButtonToggleGroup options={optionsForToggle} bind:selectedOptionId={blurImage} />
     </SettingsItemGroup>

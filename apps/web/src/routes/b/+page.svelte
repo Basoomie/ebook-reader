@@ -122,6 +122,9 @@
   import BookToc from '$lib/components/book-reader/book-toc/book-toc.svelte';
   import ConfirmDialog from '$lib/components/confirm-dialog.svelte';
   import NumberDialog from '$lib/components/number-dialog.svelte';
+  import PositionPromptDialog from '$lib/components/book-reader/position-prompt-dialog.svelte';
+  import type { PositionPrompt, PromptRow } from '$lib/sync/position-prompt-service';
+  import type { ReaderPositionPrompt } from '$lib/sync/reader-position-prompt';
   import { mergeEntries } from '$lib/components/merged-header-icon/merged-entries';
   import { preFilteredTitlesForStatistics$ } from '$lib/components/statistics/statistics-types';
   import {
@@ -642,6 +645,8 @@
     }
 
     readerImageGalleryPictures$.next([]);
+
+    stopPositionPrompt();
 
     if (dismissDialogs) {
       dialogManager.dialogs$.next([]);
@@ -1262,6 +1267,137 @@
       .catch(() => {});
   }
 
+  /**
+   * "Continue from...?" (WP9): once the saved place is restored, offer another
+   * device's place when it is further along (Calibre books only). Loaded on
+   * demand and isolated: any failure is logged and reading goes on unchanged.
+   */
+  let positionPrompt: ReaderPositionPrompt | undefined;
+  let positionPromptStarted = false;
+  let positionPromptStopped = false;
+  let restorePromptKeys: (() => void) | undefined;
+
+  async function onPositionRestored() {
+    if (!browser || positionPromptStarted || !$rawBookData$) return;
+    positionPromptStarted = true;
+    try {
+      const { id: localId, title } = $rawBookData$;
+      const restoredPos = (await bookmarkData)?.exploredCharCount ?? 0;
+      const [{ positionPromptApi }, { ReaderPositionPrompt }] = await Promise.all([
+        import('$lib/sync/sync-service'),
+        import('$lib/sync/reader-position-prompt')
+      ]);
+      if (positionPromptStopped) return;
+
+      positionPrompt = new ReaderPositionPrompt(positionPromptApi(), {
+        livePos: () => exploredCharCount,
+        total: () => bookCharCount,
+        otherDialogOpen: () => dialogManager.dialogs$.getValue().length > 0,
+        onDialogsClosed: (callback) => {
+          const sub = dialogManager.dialogs$
+            .pipe(filter((dialogs) => !dialogs.length))
+            .subscribe(() => callback());
+          return () => sub.unsubscribe();
+        },
+        onVisible: (callback) => {
+          const listener = () => {
+            if (document.visibilityState === 'visible') callback();
+          };
+          document.addEventListener('visibilitychange', listener);
+          return () => document.removeEventListener('visibilitychange', listener);
+        },
+        ask: askPositionPrompt,
+        jump: jumpToPromptedPosition,
+        warn: (message) => logger.warn(message)
+      });
+      void positionPrompt.start(localId, title, restoredPos);
+    } catch (error) {
+      logger.warn(`Position prompt not started: ${(error as Error)?.message ?? error}`);
+    }
+  }
+
+  function stopPositionPrompt() {
+    positionPromptStopped = true;
+    try {
+      positionPrompt?.destroy();
+      restorePromptKeys?.();
+      const dialogs = dialogManager.dialogs$.getValue();
+      if (dialogs.some((d) => d.component === PositionPromptDialog)) {
+        dialogManager.dialogs$.next(dialogs.filter((d) => d.component !== PositionPromptDialog));
+      }
+    } catch {
+      // never disturb leaving the reader
+    }
+  }
+
+  function askPositionPrompt(prompt: PositionPrompt) {
+    return new Promise<PromptRow | null>((resolve) => {
+      const keysWereSkipped = $skipKeyDownListener$;
+      skipKeyDownListener$.next(true);
+      restorePromptKeys = () => {
+        restorePromptKeys = undefined;
+        skipKeyDownListener$.next(keysWereSkipped);
+      };
+      dialogManager.dialogs$.next([
+        {
+          component: PositionPromptDialog,
+          props: {
+            prompt,
+            livePos: exploredCharCount,
+            total: bookCharCount,
+            sections: sectionList$.getValue(),
+            resolver: (row: PromptRow | null) => {
+              restorePromptKeys?.();
+              resolve(row);
+            }
+          },
+          disableCloseOnClick: true
+        }
+      ]);
+    });
+  }
+
+  /** The prompt's one jump (jump history, when it exists, records it here). */
+  function jumpToPromptedPosition(row: PromptRow) {
+    const dataId = getBookIdSync();
+    if (!bookmarkManager || !dataId) return;
+
+    // The jump is not reading: before auto-start it only settles the book; a
+    // running tracker pauses and resumes from the new place (nothing counted).
+    autoStartGate?.noteSettling(Date.now());
+    if ($statisticsEnabled$ && !$isTrackerPaused$) {
+      pauseTracker();
+      restartTrackerAfterCharacterChangeOrTime(0);
+    }
+
+    const data: BooksDbBookmarkData = {
+      dataId,
+      exploredCharCount: row.target,
+      lastBookmarkModified: Date.now(),
+      progress: bookCharCount ? row.target / bookCharCount : 0
+    };
+    bookmarkManager.scrollToBookmark(data, customReadingPointScrollOffset);
+
+    // Keep the new place as the bookmark right away (the same steps as
+    // bookmarkPage, with the exact target, so a slow section load can't save
+    // a place on the way). Manual bookmarking leaves that to the user, as
+    // when leaving the reader.
+    if (!$manualBookmark$) {
+      void saveJumpBookmark(data);
+    }
+  }
+
+  async function saveJumpBookmark(data: BooksDbBookmarkData) {
+    try {
+      await database.putBookmark(data);
+      if ($rawBookData$) recordShadowPosition(data.dataId, $rawBookData$.title, data);
+      bookmarkData = Promise.resolve(data);
+      scheduleReplication(StorageDataType.PROGRESS);
+    } catch (error) {
+      logger.warn(`Could not save the bookmark: ${(error as Error)?.message ?? error}`);
+    }
+  }
+
   async function scrollToBookmark() {
     const data = await bookmarkData;
     if (!data || !bookmarkManager) return;
@@ -1832,6 +1968,7 @@
     bind:showCustomReadingPoint
     on:bookmark={bookmarkPage}
     on:trackerPause={() => pauseTracker(true)}
+    on:positionRestored={onPositionRestored}
   />
   {$initBookmarkData$ ?? ''}
   {$setBackgroundColor$ ?? ''}

@@ -33,6 +33,9 @@ export class AutoStartGate {
 
   private done: boolean;
 
+  /** The next page change is a programmatic jump, not a page turn. */
+  private holdNext = false;
+
   constructor(private readonly guardMs: number) {
     this.done = guardMs <= 0;
   }
@@ -46,9 +49,31 @@ export class AutoStartGate {
     this.done = true;
   }
 
+  /**
+   * A programmatic jump is about to happen (e.g. "Continue from...?"). Its page
+   * change is treated as settling, however long the jump takes to land (a
+   * paginated jump may first load another section), and the settle period
+   * restarts from it. If the jump causes no page change, the next page change
+   * is treated as settling instead, which only delays the auto-start by one turn.
+   */
+  noteSettling(now: number) {
+    if (this.done) {
+      return;
+    }
+
+    this.holdNext = true;
+    this.lastChangeAt = now;
+  }
+
   /** Returns true when this page change should start the tracker. */
   onPageChange(now: number, isTrackerPaused: boolean) {
     if (this.done) {
+      return false;
+    }
+
+    if (this.holdNext && isTrackerPaused) {
+      this.holdNext = false;
+      this.lastChangeAt = now;
       return false;
     }
 
