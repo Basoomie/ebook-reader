@@ -21,8 +21,9 @@ export function createApp({ config, database, version, catalog }: AppOptions): E
   app.use(
     cors({
       origin: config.corsOrigins,
-      // Expose range-related headers so cross-origin <audio> can seek.
-      exposedHeaders: ['Content-Range', 'Accept-Ranges', 'Content-Length', 'Last-Modified'],
+      // Expose range-related headers so cross-origin <audio> can seek, and
+      // ETag so the Library page can store which version of an EPUB it saved.
+      exposedHeaders: ['Content-Range', 'Accept-Ranges', 'Content-Length', 'Last-Modified', 'ETag'],
     }),
   );
 
@@ -32,7 +33,15 @@ export function createApp({ config, database, version, catalog }: AppOptions): E
   app.use(createLegacyAudioUploadRouter(legacy));
 
   // New API, with its own JSON body parser and error handling.
-  app.use('/api/v1', createApiRouter({ database, version, catalog }));
+  app.use(
+    '/api/v1',
+    createApiRouter({
+      database,
+      version,
+      catalog,
+      pairing: { maxFailuresPerMinute: config.pairing.maxFailuresPerMinute },
+    }),
+  );
 
   // Legacy file API (raw body parser for everything it handles).
   app.use(createLegacyFileRouter(legacy));

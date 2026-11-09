@@ -193,8 +193,25 @@
     }
   }
 
+  // Computed here instead of with {@const} in the template: prettier-plugin-svelte
+  // 4.0.0 cannot print {@const} (it crashed on this file before WP6), and the
+  // commit hook runs it on every staged file.
+  $: currentSort = $booklistSortOptions$[$storageSource$];
+  $: currentSortDirection = currentSort?.direction ?? SortDirection.ASC;
+  $: sortMenuRows = sortMenuItems.map((item) => {
+    const isCurrentSort = currentSort?.property === item.property;
+    return {
+      ...item,
+      isCurrentSort,
+      isCurrentSortAsc: isCurrentSort && currentSort?.direction === SortDirection.ASC
+    };
+  });
+
   function changeSortOptions(clickedProperty: string, newDirection: SortDirection) {
-    const { property, direction } = $booklistSortOptions$[$storageSource$] ?? { property: 'title', direction: SortDirection.ASC };
+    const { property, direction } = $booklistSortOptions$[$storageSource$] ?? {
+      property: 'title',
+      direction: SortDirection.ASC
+    };
 
     if (property !== clickedProperty || direction !== newDirection) {
       booklistSortOptions$.next({
@@ -421,19 +438,14 @@
               bind:this={sortOptionsElm}
             >
               <div slot="icon" class={baseIconClasses} title="Select Sort Options">
-                {#if ($booklistSortOptions$[$storageSource$]?.direction ?? SortDirection.ASC) === SortDirection.ASC}
+                {#if currentSortDirection === SortDirection.ASC}
                   <Fa icon={faArrowDownShortWide} />
                 {:else}
                   <Fa icon={faArrowDownWideShort} />
                 {/if}
               </div>
               <div class="w-44 bg-gray-700" slot="content">
-                {#each sortMenuItems as sortMenuItem (sortMenuItem.property)}
-                  {@const isCurrentSort =
-                    $booklistSortOptions$[$storageSource$]?.property === sortMenuItem.property}
-                  {@const isCurrentSortAsc =
-                    isCurrentSort &&
-                    $booklistSortOptions$[$storageSource$]?.direction === SortDirection.ASC}
+                {#each sortMenuRows as { isCurrentSort, isCurrentSortAsc, ...sortMenuItem } (sortMenuItem.property)}
                   <div
                     class="grid cursor-default grid-cols-[auto_auto_auto] text-sm hover:bg-white hover:text-gray-700"
                     class:bg-white={isCurrentSort}
@@ -491,6 +503,7 @@
                   ]
                 : [
                     mergeEntries.MANAGE,
+                    mergeEntries.LIBRARY,
                     mergeEntries.STATISTICS,
                     mergeEntries.SETTINGS,
                     mergeEntries.BUG_REPORT

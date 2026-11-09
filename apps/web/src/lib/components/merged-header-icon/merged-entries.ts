@@ -5,6 +5,7 @@
  */
 
 import {
+  faBookAtlas,
   faBug,
   faChartLine,
   faCog,
@@ -19,6 +20,12 @@ import {
 
 export const mergeEntries = {
   MANAGE: { routeId: '/manage', label: 'Manager', icon: faSignOutAlt, title: 'Go to Book Manager' },
+  LIBRARY: {
+    routeId: '/library',
+    label: 'Library',
+    icon: faBookAtlas,
+    title: 'Browse the Calibre library'
+  },
   SETTINGS: {
     routeId: '/settings',
     label: 'Settings',

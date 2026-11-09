@@ -8,6 +8,7 @@
  */
 import type Database from 'better-sqlite3';
 import { getIndexState, Library, LibraryIndexState, listLibraries } from '../calibre/libraries';
+import { getOrCreateSecret, sign, THUMBNAIL_URL_SECRET, verify } from '../db/secrets';
 import { sourceKey, thumbnailVersion } from '../thumbnails/thumbnails';
 
 export interface CatalogUser {
@@ -32,7 +33,10 @@ export interface BookSummary {
   addedAt: number;
   charCount: number | null;
   missing: boolean;
-  /** Relative API URL of the cover thumbnail, or null when the book has no cover. */
+  /**
+   * Relative API URL of the cover thumbnail, or null when the book has no cover.
+   * The URL is signed for this user, so a plain <img> can load it without the token.
+   */
   thumbnail: string | null;
 }
 
@@ -78,17 +82,43 @@ interface BookRow {
 }
 
 // A book is shown through its Calibre source (the only kind in WP2).
+// CROSS JOIN makes SQLite walk books first (books_added index, already in page
+// order) instead of every Calibre source followed by a sort: on 60k books the
+// first page drops from ~580 ms to ~1 ms (WP6 benchmark).
 const BOOK_SELECT = `
   SELECT b.id, b.library_id, b.title, b.title_sort, b.author_sort, se.name AS series_name,
          b.series_index, b.publisher, b.published_at, b.added_at, b.char_count, b.description,
          (s.missing_at IS NOT NULL) AS missing, s.has_cover, s.calibre_path,
          s.calibre_last_modified
   FROM books b
-  JOIN book_sources s ON s.book_id = b.id AND s.kind = 'calibre'
+  CROSS JOIN book_sources s ON s.book_id = b.id AND s.kind = 'calibre'
   JOIN libraries l ON l.id = b.library_id AND l.enabled = 1
   LEFT JOIN series se ON se.id = b.series_id`;
 
-function attachLists(db: Database.Database, rows: BookRow[]): BookSummary[] {
+function thumbnailMessage(userId: string, bookId: string, version: string): string {
+  return `${userId}:${bookId}:${version}`;
+}
+
+/** Signed thumbnail URL: the signature unlocks only this book's thumbnail at this version. */
+function thumbnailUrl(key: Buffer, user: CatalogUser, bookId: string, version: string): string {
+  const sig = sign(key, thumbnailMessage(user.id, bookId, version));
+  return `/api/v1/books/${bookId}/thumbnail?v=${version}&u=${encodeURIComponent(user.id)}&s=${sig}`;
+}
+
+/** Checks the u/v/s parameters of a thumbnail URL made by thumbnailUrl(). */
+export function verifyThumbnailUrl(
+  db: Database.Database,
+  bookId: string,
+  params: { u?: string; v?: string; s?: string },
+): CatalogUser | null {
+  if (!params.u || !params.v || !params.s) return null;
+  const key = getOrCreateSecret(db, THUMBNAIL_URL_SECRET);
+  return verify(key, thumbnailMessage(params.u, bookId, params.v), params.s)
+    ? { id: params.u }
+    : null;
+}
+
+function attachLists(db: Database.Database, user: CatalogUser, rows: BookRow[]): BookSummary[] {
   if (rows.length === 0) return [];
   const ids = rows.map((r) => r.id);
   const inList = ids.map(() => '?').join(',');
@@ -114,6 +144,7 @@ function attachLists(db: Database.Database, rows: BookRow[]): BookSummary[] {
     list.push(t.name);
     tags.set(t.book_id, list);
   }
+  const key = getOrCreateSecret(db, THUMBNAIL_URL_SECRET);
   return rows.map((r) => ({
     id: r.id,
     libraryId: r.library_id,
@@ -129,19 +160,29 @@ function attachLists(db: Database.Database, rows: BookRow[]): BookSummary[] {
     charCount: r.char_count,
     missing: r.missing === 1,
     thumbnail: r.has_cover
-      ? `/api/v1/books/${r.id}/thumbnail?v=${thumbnailVersion(
-          sourceKey({
-            lastModified: r.calibre_last_modified,
-            calibrePath: r.calibre_path,
-            hasCover: r.has_cover === 1,
-          }),
-        )}`
+      ? thumbnailUrl(
+          key,
+          user,
+          r.id,
+          thumbnailVersion(
+            sourceKey({
+              lastModified: r.calibre_last_modified,
+              calibrePath: r.calibre_path,
+              hasCover: r.has_cover === 1,
+            }),
+          ),
+        )
       : null,
   }));
 }
 
 export interface ListBooksOptions {
   libraryId?: string;
+  /**
+   * Search text. Each whitespace-separated term must appear (as a substring) in
+   * the title, an author name or the series name. Case-insensitive for ASCII only.
+   */
+  query?: string;
   limit?: number;
   cursor?: string;
   includeMissing?: boolean;
@@ -170,10 +211,35 @@ function decodeCursor(cursor: string): [number, string] {
   throw new InvalidCursorError('Invalid cursor');
 }
 
+/** At most this many search terms are used; the rest are ignored. */
+export const MAX_SEARCH_TERMS = 8;
+
+export function searchTerms(query: string | undefined): string[] {
+  return (query ?? '')
+    .split(/\s+/)
+    .filter((t) => t !== '')
+    .slice(0, MAX_SEARCH_TERMS);
+}
+
+/** A LIKE pattern (escape character "!") matching `term` anywhere, with %, _ and ! taken literally. */
+export function likePattern(term: string): string {
+  return `%${term.replace(/[!%_]/g, (c) => `!${c}`)}%`;
+}
+
+// The author and series matches are computed once per query (small tables),
+// not per book: a search that matches nothing scans 60k books in ~95 ms
+// instead of ~300 ms (WP6 benchmark).
+const TERM_MATCH = `(
+  b.title LIKE ? ESCAPE '!'
+  OR b.series_id IN (SELECT id FROM series WHERE name LIKE ? ESCAPE '!')
+  OR b.id IN (SELECT ba.book_id FROM book_authors ba
+              WHERE ba.author_id IN (SELECT id FROM authors WHERE name LIKE ? ESCAPE '!'))
+)`;
+
 /** Books newest-added first, keyset-paginated. Only enabled libraries. */
 export function listBooksFor(
   db: Database.Database,
-  _user: CatalogUser,
+  user: CatalogUser,
   opts: ListBooksOptions = {},
 ): BookPage {
   const limit = Math.min(Math.max(1, opts.limit ?? DEFAULT_PAGE_SIZE), MAX_PAGE_SIZE);
@@ -184,6 +250,11 @@ export function listBooksFor(
     params.push(opts.libraryId);
   }
   if (!opts.includeMissing) where.push('s.missing_at IS NULL');
+  for (const term of searchTerms(opts.query)) {
+    const pattern = likePattern(term);
+    where.push(TERM_MATCH);
+    params.push(pattern, pattern, pattern);
+  }
   if (opts.cursor) {
     const [addedAt, id] = decodeCursor(opts.cursor);
     where.push('(b.added_at < ? OR (b.added_at = ? AND b.id < ?))');
@@ -198,19 +269,19 @@ export function listBooksFor(
   const page = rows.slice(0, limit);
   const last = page[page.length - 1];
   return {
-    books: attachLists(db, page),
+    books: attachLists(db, user, page),
     nextCursor: rows.length > limit && last ? encodeCursor(last.added_at, last.id) : null,
   };
 }
 
 export function getBookFor(
   db: Database.Database,
-  _user: CatalogUser,
+  user: CatalogUser,
   bookId: string,
 ): BookDetail | null {
   const row = db.prepare(`${BOOK_SELECT} WHERE b.id = ?`).get(bookId) as BookRow | undefined;
   if (!row) return null;
-  const [summary] = attachLists(db, [row]);
+  const [summary] = attachLists(db, user, [row]);
   const sources = (
     db
       .prepare(
@@ -236,4 +307,48 @@ export function getBookFor(
     missingAt: s.missing_at,
   }));
   return { ...summary, description: row.description, sources };
+}
+
+export interface BookFileLocation {
+  /** Library folder relative to CALIBRE_DIR ('' = the root itself). */
+  libraryFolder: string;
+  /** EPUB path relative to the library folder, forward slashes. */
+  filePath: string;
+  fileSize: number | null;
+  calibreLastModified: number | null;
+  missing: boolean;
+}
+
+/** Where a visible book's EPUB lives, or null when the book is unknown or not visible. */
+export function getBookFileFor(
+  db: Database.Database,
+  _user: CatalogUser,
+  bookId: string,
+): BookFileLocation | null {
+  const row = db
+    .prepare(
+      `SELECT l.folder, s.file_path, s.file_size, s.calibre_last_modified,
+              (s.missing_at IS NOT NULL) AS missing
+         FROM books b
+         JOIN book_sources s ON s.book_id = b.id AND s.kind = 'calibre'
+         JOIN libraries l ON l.id = b.library_id AND l.enabled = 1
+        WHERE b.id = ?`,
+    )
+    .get(bookId) as
+    | {
+        folder: string;
+        file_path: string | null;
+        file_size: number | null;
+        calibre_last_modified: number | null;
+        missing: number;
+      }
+    | undefined;
+  if (!row || !row.file_path) return null;
+  return {
+    libraryFolder: row.folder,
+    filePath: row.file_path,
+    fileSize: row.file_size,
+    calibreLastModified: row.calibre_last_modified,
+    missing: row.missing === 1,
+  };
 }

@@ -124,6 +124,36 @@ describe('token CLI', () => {
     }
   });
 
+  it('makes a pairing code the running server trades for a token', async () => {
+    const dbDir = makeTempDir('db');
+    const dataDir = makeTempDir('data');
+    const env = { DB_DIR: dbDir, DATA_DIR: dataDir, PAIR_CODE_MINUTES: '5' };
+    const server = await spawnServer({ AUTH_TOKEN: TOKEN, ...env });
+    try {
+      const paired = cli(['token', 'pair', 'Boox'], env);
+      expect(paired.code, paired.out).toBe(0);
+      expect(paired.out).toContain('within 5 minute(s)');
+      const code = paired.out.match(/^[0-9A-Z]{4}-[0-9A-Z]{4}$/m)?.[0];
+      expect(code).toBeTruthy();
+
+      const res = await fetch(`${server.baseUrl}/api/v1/pair`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code }),
+      });
+      expect(res.status).toBe(200);
+      const { token } = (await res.json()) as { token: string };
+      const me = await fetch(`${server.baseUrl}/api/v1/me`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      expect(((await me.json()) as any).token.label).toBe('Boox');
+      expect(cli(['token', 'list'], env).out).toContain('label="Boox"');
+      expect(cli(['thumbs', 'rotate-key'], env).code).toBe(0);
+    } finally {
+      await server.stop();
+    }
+  });
+
   it('fails clearly on bad usage or a missing database folder', () => {
     const env = { DB_DIR: makeTempDir('db'), DATA_DIR: makeTempDir('data') };
     expect(cli([], env).code).toBe(1);

@@ -2,6 +2,7 @@
  * Admin CLI for the storage server. Runs inside the container against the same
  * database as the server (WAL mode makes that safe):
  *
+ *   docker exec ttsu-storage node dist/cli.js token pair "Boox"
  *   docker exec ttsu-storage node dist/cli.js token create "Phone"
  *   docker exec ttsu-storage node dist/cli.js token list
  *   docker exec ttsu-storage node dist/cli.js token revoke <token-id>
@@ -10,8 +11,10 @@
  *   docker exec ttsu-storage node dist/cli.js index status
  *   docker exec ttsu-storage node dist/cli.js index run [<library-id>]
  *   docker exec ttsu-storage node dist/cli.js thumbs rebuild --library <id>
+ *   docker exec ttsu-storage node dist/cli.js thumbs rotate-key
  *
- * Uses DB_DIR (default /db) and DATA_DIR (default /data) like the server.
+ * Uses DB_DIR (default /db) and DATA_DIR (default /data) like the server, and
+ * PAIR_CODE_MINUTES for how long a pairing code stays valid.
  * The CLI never touches the Calibre libraries: `index run` and `thumbs rebuild`
  * only leave a request in the database that the server picks up on its next poll.
  */
@@ -26,12 +29,16 @@ import {
   requestReindex,
   updateLibrary,
 } from './calibre/libraries';
+import { parsePairingConfig } from './config';
 import { initDatabase } from './db/database';
+import { createPairingCode, prunePairingCodes } from './db/pairing';
+import { rotateSecret, THUMBNAIL_URL_SECRET } from './db/secrets';
 import { createToken, listTokens, revokeToken } from './db/tokens';
 import { getUserByName, listUsers } from './db/users';
 import { forgetThumbnails, RebuildScope } from './thumbnails/thumbnails';
 
 const USAGE = `Usage:
+  cli token pair <label> [--user <name>]     Make a one-time code a device trades for its own token
   cli token create <label> [--user <name>]   Create a token (shown once)
   cli token list                             List tokens
   cli token revoke <token-id>                Revoke a token
@@ -43,7 +50,8 @@ const USAGE = `Usage:
   cli index run [<library-id>] [--allow-mass-missing]
                                              Re-snapshot and re-index on the server's next poll
   cli thumbs rebuild (--book <id> | --library <id> | --all)
-                                             Make thumbnails again (in the background)`;
+                                             Make thumbnails again (in the background)
+  cli thumbs rotate-key                      Invalidate every signed thumbnail URL already handed out`;
 
 function fail(message: string): never {
   console.error(message);
@@ -72,20 +80,45 @@ function takeFlag(args: string[], name: string): boolean {
   return true;
 }
 
-function tokenCommand(db: Database.Database, command: string, rest: string[], userName?: string) {
+function pickUser(db: Database.Database, userName?: string) {
+  if (userName) {
+    const user = getUserByName(db, userName);
+    if (!user) fail(`No user named "${userName}"`);
+    return user;
+  }
+  const users = listUsers(db);
+  if (users.length !== 1) fail('More than one user exists; pass --user <name>');
+  return users[0];
+}
+
+function tokenCommand(
+  db: Database.Database,
+  command: string,
+  rest: string[],
+  env: Record<string, string | undefined>,
+  userName?: string,
+) {
   switch (command) {
+    case 'pair': {
+      const label = rest.join(' ').trim();
+      if (!label) fail('token pair needs a label, e.g. token pair "Boox"');
+      const user = pickUser(db, userName);
+      const warnings: string[] = [];
+      const { codeMinutes } = parsePairingConfig(env, warnings);
+      for (const w of warnings) console.warn(`Warning: ${w}`);
+      prunePairingCodes(db);
+      const code = createPairingCode(db, user.id, label, codeMinutes);
+      console.log(`Pairing code for "${code.label}" (user "${user.name}"):`);
+      console.log(code.code);
+      console.log(
+        `Enter it on the device within ${codeMinutes} minute(s) (until ${formatDate(code.expiresAt)}). It works once.`,
+      );
+      break;
+    }
     case 'create': {
       const label = rest.join(' ').trim();
       if (!label) fail('token create needs a label, e.g. token create "Phone"');
-      let user;
-      if (userName) {
-        user = getUserByName(db, userName);
-        if (!user) fail(`No user named "${userName}"`);
-      } else {
-        const users = listUsers(db);
-        if (users.length !== 1) fail('More than one user exists; pass --user <name>');
-        user = users[0];
-      }
+      const user = pickUser(db, userName);
       const { token, record } = createToken(db, user.id, label);
       console.log(`Created token "${record.label}" for user "${user.name}" (id ${record.id}).`);
       console.log('Copy it now; it is not stored and cannot be shown again:');
@@ -219,6 +252,13 @@ function indexCommand(db: Database.Database, command: string, rest: string[]) {
 }
 
 function thumbsCommand(db: Database.Database, command: string, rest: string[]) {
+  if (command === 'rotate-key') {
+    rotateSecret(db, THUMBNAIL_URL_SECRET);
+    console.log(
+      'New thumbnail signing key. Devices get new thumbnail URLs on their next list request.',
+    );
+    return;
+  }
   if (command !== 'rebuild') fail(USAGE);
   const args = [...rest];
   const book = takeOption(args, '--book');
@@ -255,7 +295,7 @@ export function main(argv: string[], env: Record<string, string | undefined>): v
   const db = state.db;
 
   try {
-    if (group === 'token') tokenCommand(db, command, rest, userName);
+    if (group === 'token') tokenCommand(db, command, rest, env, userName);
     else if (group === 'library') libraryCommand(db, command, rest);
     else if (group === 'index') indexCommand(db, command, rest);
     else thumbsCommand(db, command, rest);

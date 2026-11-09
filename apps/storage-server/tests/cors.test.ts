@@ -60,6 +60,7 @@ describe('CORS with an explicit origin list', () => {
       expect(res.headers['access-control-allow-origin']).toBe(APP_ORIGIN);
       expect(res.headers['vary']).toContain('Origin');
       expect(res.headers['access-control-expose-headers']).toContain('Content-Range');
+      expect(res.headers['access-control-expose-headers']).toContain('ETag');
     });
 
     it(`${route.name}: gives other origins no Access-Control-Allow-Origin`, async () => {

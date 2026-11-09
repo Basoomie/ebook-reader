@@ -1,7 +1,7 @@
 /**
  * Benchmark for the first index of a large library (not part of npm test).
  *
- *   node -r ts-node/register/transpile-only scripts/bench-index.ts [--books 60000] [--covers 500]
+ *   node -r ts-node/register/transpile-only scripts/bench-index.ts [--books 60000] [--covers 500] [--keep]
  *
  * Builds a synthetic Calibre library in a temp folder (metadata.db with
  * realistic field sizes, plus `--covers` realistic ~1 MB 1000x1500 JPEG
@@ -16,6 +16,7 @@ import os from 'os';
 import path from 'path';
 import sharp from 'sharp';
 import { CalibreIndexer } from '../src/calibre/indexer';
+import { listBooksFor } from '../src/catalog/queries';
 import { DEFAULT_CALIBRE } from '../src/config';
 import { openDatabase } from '../src/db/database';
 import { ThumbnailService } from '../src/thumbnails/thumbnails';
@@ -204,8 +205,32 @@ async function main(): Promise<void> {
     );
     console.log('  On the NAS add HDD seek + read per cover (~10-25 ms for a 1 MB file).');
   }
+
+  // Search (WP6): one page of 50, median of 5 runs. A broad match fills the page
+  // early; a rare or missing match scans every book (the worst case).
+  const owner = { id: 'bench' };
+  console.log('Search, first page of 50 (median of 5 runs, SSD/database in page cache):');
+  for (const [label, q] of [
+    ['broad (every title)', '本の'],
+    ['rare title', `タイトル ${BOOKS - 7} 巻`],
+    ['author', `著者${Math.floor(authors / 2)}`],
+    ['series', `シリーズ${Math.floor(series / 3) + 1}`],
+    ['no match', '存在しない言葉'],
+    ['two terms', `タイトル 著者${Math.floor(authors / 2)}`],
+  ] as const) {
+    const runs: number[] = [];
+    let found = 0;
+    for (let i = 0; i < 5; i++) {
+      const s = process.hrtime.bigint();
+      found = listBooksFor(db, owner, { query: q }).books.length;
+      runs.push(ms(s));
+    }
+    runs.sort((a, b) => a - b);
+    console.log(`  ${label.padEnd(20)} ${runs[2].toFixed(1).padStart(7)} ms  (${found} on page)`);
+  }
   db.close();
-  fs.rmSync(base, { recursive: true, force: true });
+  if (process.argv.includes('--keep')) console.log(`Kept ${base}`);
+  else fs.rmSync(base, { recursive: true, force: true });
 }
 
 main().catch((err) => {

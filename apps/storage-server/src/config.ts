@@ -23,7 +23,18 @@ export interface ServerConfig {
   snapshotKeep: number;
   /** Calibre indexer (WP2). */
   calibre: CalibreConfig;
+  /** Device pairing codes (WP6). */
+  pairing: PairingConfig;
 }
+
+export interface PairingConfig {
+  /** How long a code from `cli token pair` stays valid. */
+  codeMinutes: number;
+  /** Failed pairing attempts allowed per minute, all clients together. */
+  maxFailuresPerMinute: number;
+}
+
+export const DEFAULT_PAIRING_CONFIG: PairingConfig = { codeMinutes: 10, maxFailuresPerMinute: 10 };
 
 export interface CalibreConfig {
   /** Root holding the Calibre libraries (mounted read-only). null = indexer off. */
@@ -99,6 +110,7 @@ export function loadConfig(env: Env): LoadedConfig {
       snapshotTime: parseSnapshotTime(env.SNAPSHOT_TIME, warnings),
       snapshotKeep: parseSnapshotKeep(env.SNAPSHOT_KEEP, warnings),
       calibre: parseCalibreConfig(env, warnings),
+      pairing: parsePairingConfig(env, warnings),
     },
     warnings,
   };
@@ -191,6 +203,31 @@ export function parseCalibreConfig(env: Env, warnings: string[]): CalibreConfig 
     thumbConcurrency: num('THUMB_CONCURRENCY', d.thumbConcurrency, 1, 8, true),
     thumbPerSecond: num('THUMB_PER_SECOND', d.thumbPerSecond, 0, 1000),
     thumbBackground: bool('THUMB_BACKGROUND', d.thumbBackground),
+  };
+}
+
+/** WP6 settings; bad values fall back to the defaults like the other WP1+ settings. */
+export function parsePairingConfig(env: Env, warnings: string[]): PairingConfig {
+  const d = DEFAULT_PAIRING_CONFIG;
+  return {
+    codeMinutes: parseNumber(
+      'PAIR_CODE_MINUTES',
+      env.PAIR_CODE_MINUTES,
+      d.codeMinutes,
+      1,
+      1440,
+      false,
+      warnings,
+    ),
+    maxFailuresPerMinute: parseNumber(
+      'PAIR_MAX_FAILURES_PER_MINUTE',
+      env.PAIR_MAX_FAILURES_PER_MINUTE,
+      d.maxFailuresPerMinute,
+      1,
+      1000,
+      true,
+      warnings,
+    ),
   };
 }
 

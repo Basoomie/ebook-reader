@@ -1,7 +1,7 @@
 /**
  * The ONLY module that touches the Calibre libraries (CLAUDE.md: Calibre
  * libraries are read-only to this app). Everything here is read-only:
- * stat, one-level readdir, reading a file, reading a file header and opening
+ * stat, one-level readdir, reading or streaming a file, reading a file header and opening
  * a SQLite database read-only for the snapshot copy. There is deliberately no
  * write, mkdir, rename or delete in this file; keep it that way.
  *
@@ -9,7 +9,7 @@
  * to run when the mount is writable (see isWritable).
  */
 import Database from 'better-sqlite3';
-import { constants } from 'fs';
+import { constants, createReadStream, ReadStream } from 'fs';
 import fs from 'fs/promises';
 import path from 'path';
 import { isInside } from '../db/database';
@@ -44,6 +44,18 @@ export async function listSubfolders(dir: string): Promise<string[]> {
 
 export async function readSourceFile(file: string): Promise<Buffer> {
   return fs.readFile(file, { flag: 'r' });
+}
+
+/**
+ * Opens a file for streaming (read-only, flag 'r'). Resolves once the file is
+ * open, so a missing file is reported before any response is sent.
+ */
+export function openSourceStream(file: string): Promise<ReadStream> {
+  return new Promise((resolve, reject) => {
+    const stream = createReadStream(file, { flags: 'r' });
+    stream.once('open', () => resolve(stream));
+    stream.once('error', reject);
+  });
 }
 
 /** The first `bytes` bytes of a file (for the SQLite header check). */
