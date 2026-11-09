@@ -10,6 +10,8 @@ import {
   thumbnailHandler,
 } from './catalog-routes';
 import { ApiError, errorHandler, notFound, sendError } from './errors';
+import { createSyncRouter, SYNC_BODY_LIMIT } from '../sync/routes';
+import { DEFAULT_MAX_CLOCK_SKEW_SECONDS, SyncStore } from '../sync/store';
 
 export interface PairingOptions {
   /** Failed pairing attempts allowed per minute (all clients together). */
@@ -18,12 +20,20 @@ export interface PairingOptions {
 
 export const DEFAULT_PAIRING: PairingOptions = { maxFailuresPerMinute: 10 };
 
+export interface SyncOptions {
+  /** updatedAt further ahead of the server clock than this is set to the server time. */
+  maxClockSkewSeconds: number;
+}
+
+export const DEFAULT_SYNC: SyncOptions = { maxClockSkewSeconds: DEFAULT_MAX_CLOCK_SKEW_SECONDS };
+
 export interface ApiOptions {
   database: DatabaseState;
   version: string;
   /** Catalog routes (WP2). Without it they report the indexer as off. */
   catalog?: CatalogOptions;
   pairing?: PairingOptions;
+  sync?: SyncOptions;
 }
 
 const NO_CATALOG: CatalogOptions = {
@@ -40,9 +50,13 @@ export function createApiRouter({
   version,
   catalog = NO_CATALOG,
   pairing = DEFAULT_PAIRING,
+  sync = DEFAULT_SYNC,
 }: ApiOptions): Router {
   const router = express.Router();
-  router.use(express.json());
+  // Pushes can carry many records; everything else keeps the small default limit.
+  const smallJson = express.json();
+  const syncJson = express.json({ limit: SYNC_BODY_LIMIT });
+  router.use((req, res, next) => (req.path === '/sync' ? syncJson : smallJson)(req, res, next));
 
   // Unauthenticated, for the Docker healthcheck. Reports only status.
   router.get('/health', (_req, res) => {
@@ -83,6 +97,9 @@ export function createApiRouter({
     });
 
     router.use(createCatalogRouter(db, catalog));
+
+    const syncStore = new SyncStore(db, { maxClockSkewMs: sync.maxClockSkewSeconds * 1000 });
+    router.use(createSyncRouter(db, syncStore));
 
     router.use(notFound);
   } else {

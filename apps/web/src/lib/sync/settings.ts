@@ -1,0 +1,19 @@
+/**
+ * @license BSD-3-Clause
+ * Copyright (c) 2026, ッツ Reader Authors
+ * All rights reserved.
+ */
+
+import { writableBooleanLocalStorageSubject } from '$lib/data/internal/writable-boolean-local-storage-subject';
+import { writableNumberLocalStorageSubject } from '$lib/data/internal/writable-number-local-storage-subject';
+
+/** Per-device record sync settings (WP4). */
+
+/** Off = this device keeps writing locally but never talks to /sync. */
+export const recordSyncEnabled$ = writableBooleanLocalStorageSubject()('recordSyncEnabled', true);
+
+/** Wait this long after a local change before syncing (more changes in that time join the same sync). */
+export const syncDebounceSeconds$ = writableNumberLocalStorageSubject()('syncDebounceSeconds', 5);
+
+/** Sync this often while the app is visible, to pick up other devices' changes. 0 = only on changes. */
+export const syncIntervalMinutes$ = writableNumberLocalStorageSubject()('syncIntervalMinutes', 5);

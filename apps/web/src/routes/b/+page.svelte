@@ -876,6 +876,8 @@
 
         await database.putBookmark(data);
 
+        recordShadowPosition($rawBookData$.id, $rawBookData$.title, data);
+
         bookmarkData = Promise.resolve(data);
 
         scheduleReplication(StorageDataType.PROGRESS);
@@ -1242,9 +1244,22 @@
 
     await database.putBookmark(data);
 
+    if ($rawBookData$) recordShadowPosition(bookId, $rawBookData$.title, data);
+
     bookmarkData = Promise.resolve(data);
 
     scheduleReplication(StorageDataType.PROGRESS);
+  }
+
+  /**
+   * Record sync (WP4): also note this device's position for Calibre books.
+   * Fire and forget; loaded on demand so the reader never depends on it.
+   * The bookmark above (and the file sync) stay the source of truth.
+   */
+  function recordShadowPosition(localId: number, title: string, data: BooksDbBookmarkData) {
+    import('$lib/sync/sync-service')
+      .then(({ recordReaderPosition }) => recordReaderPosition(localId, title, data))
+      .catch(() => {});
   }
 
   async function scrollToBookmark() {

@@ -8,7 +8,7 @@ import request from 'supertest';
 import { afterEach, describe, expect, it } from 'vitest';
 import { likePattern, searchTerms } from '../src/catalog/queries';
 import type { CalibreConfig } from '../src/config';
-import { MIGRATIONS, migrate } from '../src/db/migrations';
+import { LATEST_SCHEMA_VERSION, MIGRATIONS, migrate } from '../src/db/migrations';
 import { createPairingCode, normalizePairingCode, redeemPairingCode } from '../src/db/pairing';
 import { rotateSecret, THUMBNAIL_URL_SECRET } from '../src/db/secrets';
 import { listUsers } from '../src/db/users';
@@ -339,7 +339,7 @@ describe('device pairing', () => {
     db.prepare(
       "INSERT INTO api_tokens (id, user_id, label, token_hash, created_at) VALUES ('t1', 'u1', 'Phone', 'h', 1)",
     ).run();
-    expect(migrate(db)).toBe(3);
+    expect(migrate(db)).toBe(LATEST_SCHEMA_VERSION);
     expect(db.prepare('SELECT label FROM api_tokens').all()).toEqual([{ label: 'Phone' }]);
     db.close();
   });

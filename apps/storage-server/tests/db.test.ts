@@ -35,11 +35,14 @@ describe('migrations', () => {
       'book_sources',
       'book_tags',
       'books',
+      'devices',
       'libraries',
       'library_index_state',
       'pairing_codes',
       'series',
       'server_secrets',
+      'sync_records',
+      'sync_state',
       'tags',
       'thumbnails',
       'users',
@@ -158,7 +161,7 @@ describe('tokens', () => {
     const auth = authenticateToken(db, token, 5000);
     expect(auth).toEqual({
       user: { id: owner.id, name: OWNER_NAME },
-      token: { id: record.id, label: 'Boox' },
+      token: { id: record.id, label: 'Boox', deviceId: null },
     });
     expect(listTokens(db)[0].lastUsedAt).toBe(5000);
   });
