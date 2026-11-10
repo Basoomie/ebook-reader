@@ -9,13 +9,21 @@ export class ApiError extends Error {
     readonly status: number,
     readonly code: string,
     message: string,
+    /** Extra fields of the error object (e.g. the span of a search error). */
+    readonly details?: Record<string, unknown>,
   ) {
     super(message);
   }
 }
 
-export function sendError(res: Response, status: number, code: string, message: string): void {
-  res.status(status).json({ error: { code, message } });
+export function sendError(
+  res: Response,
+  status: number,
+  code: string,
+  message: string,
+  details?: Record<string, unknown>,
+): void {
+  res.status(status).json({ error: { ...details, code, message } });
 }
 
 /** Express 4 does not catch rejected promises; route async handlers through this. */
@@ -38,7 +46,7 @@ export function errorHandler(err: unknown, _req: Request, res: Response, next: N
     return;
   }
   if (err instanceof ApiError) {
-    sendError(res, err.status, err.code, err.message);
+    sendError(res, err.status, err.code, err.message, err.details);
     return;
   }
   const type = (err as { type?: string } | null)?.type;

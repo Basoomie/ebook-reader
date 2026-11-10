@@ -1,6 +1,7 @@
 import type Database from 'better-sqlite3';
 import { createApp } from '../../src/app';
 import { CalibreIndexer } from '../../src/calibre/indexer';
+import { SearchRunner } from '../../src/catalog/search-runner';
 import { CalibreConfig, CountsConfig, ServerConfig } from '../../src/config';
 import { CharCountService } from '../../src/counts/count-service';
 import { initDatabase } from '../../src/db/database';
@@ -15,6 +16,7 @@ export interface IndexerEnv {
   indexer: CalibreIndexer;
   thumbnails: ThumbnailService;
   counts: CharCountService;
+  search: SearchRunner;
   calibre: CalibreConfig;
   logs: string[];
   token: () => string;
@@ -66,11 +68,17 @@ export function makeIndexerEnv(
     log,
     logError,
   });
+  const search = new SearchRunner({
+    db,
+    file: state.file,
+    timeoutSeconds: config.search.regexTimeoutSeconds,
+    logError,
+  });
   const app = createApp({
     config,
     database: state,
     version: '9.9.9-test',
-    catalog: { thumbnails, counts, indexer: indexer.status, calibreDir },
+    catalog: { thumbnails, counts, indexer: indexer.status, calibreDir, search },
   });
   return {
     app,
@@ -78,6 +86,7 @@ export function makeIndexerEnv(
     indexer,
     thumbnails,
     counts,
+    search,
     calibre,
     logs,
     token: () => createToken(db, listUsers(db)[0].id, 'test').token,
@@ -85,6 +94,7 @@ export function makeIndexerEnv(
       await indexer.stop();
       await thumbnails.stop();
       await counts.stop();
+      await search.close();
       db.close();
     },
   };

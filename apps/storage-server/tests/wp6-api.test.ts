@@ -6,7 +6,7 @@ import fs from 'fs';
 import path from 'path';
 import request from 'supertest';
 import { afterEach, describe, expect, it } from 'vitest';
-import { likePattern, searchTerms } from '../src/catalog/queries';
+import { likePattern } from '../src/catalog/queries';
 import type { CalibreConfig } from '../src/config';
 import { LATEST_SCHEMA_VERSION, MIGRATIONS, migrate } from '../src/db/migrations';
 import { createPairingCode, normalizePairingCode, redeemPairingCode } from '../src/db/pairing';
@@ -127,10 +127,8 @@ describe('search (GET /api/v1/books?q=)', () => {
     expect(src).toContain("CROSS JOIN book_sources s ON s.book_id = b.id AND s.kind = 'calibre'");
   });
 
-  it('splits terms on any whitespace and escapes patterns', () => {
-    expect(searchTerms('  a  b　c ')).toEqual(['a', 'b', 'c']);
-    expect(searchTerms('1 2 3 4 5 6 7 8 9 10')).toHaveLength(8);
-    expect(searchTerms(undefined)).toEqual([]);
+  it('escapes LIKE patterns', () => {
+    // Term splitting moved to the shared parser (WP7a, wp7a-search.test.ts).
     expect(likePattern('5%_!')).toBe('%5!%!_!!%');
   });
 });

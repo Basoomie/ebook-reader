@@ -2,7 +2,7 @@
  * GENERATED FILE, DO NOT EDIT. The storage server library search parser, bundled from
  * the web app (apps/web/src/lib/library/query/server-entry.ts).
  * Rebuild with `pnpm build:server-query` in apps/web after changing that code.
- * build: 1134949617c07f52
+ * build: d017d844b982467e
  */
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
@@ -121,7 +121,6 @@ var Scanner = class {
         i += 2;
         continue;
       }
-      if (isSpace(ch) && !inClass) return null;
       if (ch === "[") inClass = true;
       else if (ch === "]") inClass = false;
       else if (ch === "/" && !inClass) break;
@@ -205,15 +204,12 @@ function parseField(s, field, negated, start) {
   if (field === "chars" || field === "status" || field === "favorite") {
     const raw = s.readBare(false);
     const end = s.pos;
-    if (field === "chars") return { type: "chars", negated, start, end, ...parseChars(raw, start, end) };
+    if (field === "chars")
+      return { type: "chars", negated, start, end, ...parseChars(raw, start, end) };
     const words = parseWordList(raw);
     if (field === "status") {
       if (words.length === 0) {
-        throw new QueryError(
-          `status: needs a value: ${QUERY_STATUSES.join(", ")}.`,
-          start,
-          end
-        );
+        throw new QueryError(`status: needs a value: ${QUERY_STATUSES.join(", ")}.`, start, end);
       }
       const values = [];
       for (const w of words) {
@@ -261,7 +257,11 @@ function parseField(s, field, negated, start) {
     if (value !== "") matchers.push({ kind: "text", value, exact });
   }
   if (matchers.length === 0) {
-    throw new QueryError(`${field}: needs a value, e.g. ${field}:"name".`, start, Math.max(s.pos, valueStart));
+    throw new QueryError(
+      `${field}: needs a value, e.g. ${field}:"name".`,
+      start,
+      Math.max(s.pos, valueStart)
+    );
   }
   return { type: "field", field, negated, start, end: s.pos, matchers };
 }
@@ -281,7 +281,13 @@ function parseTerm(s) {
   if (s.peek() === '"') {
     const value2 = s.readQuoted();
     if (value2 === "") return null;
-    return { type: "any", negated, start, end: s.pos, matcher: { kind: "text", value: value2, exact: false } };
+    return {
+      type: "any",
+      negated,
+      start,
+      end: s.pos,
+      matcher: { kind: "text", value: value2, exact: false }
+    };
   }
   if (s.peek() === "/") {
     const regex = s.tryReadRegex(false);
@@ -292,7 +298,13 @@ function parseTerm(s) {
   }
   const value = s.readBare(false);
   if (value === "") return null;
-  return { type: "any", negated, start, end: s.pos, matcher: { kind: "text", value, exact: false } };
+  return {
+    type: "any",
+    negated,
+    start,
+    end: s.pos,
+    matcher: { kind: "text", value, exact: false }
+  };
 }
 function parseQuery(text) {
   try {

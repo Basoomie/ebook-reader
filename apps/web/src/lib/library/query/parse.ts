@@ -20,7 +20,8 @@
  *   chars   := [<|<=|>|>=|=] N  |  N-N       N: digits, "," or "_" separators, "k" = 1000
  *   status  := unread|reading|completed|dropped ("," = any of)
  *   favorite:= yes|no
- *   regex   := /body/ or /body/i             JavaScript syntax, Unicode mode
+ *   regex   := /body/ or /body/i             JavaScript syntax, Unicode mode; the body may
+ *                                            contain spaces ("/" is a literal slash)
  *
  * Unknown field names and slashes inside a word are plain text ("Re:ゼロ", "1/2").
  */
@@ -165,7 +166,6 @@ class Scanner {
         i += 2;
         continue;
       }
-      if (isSpace(ch) && !inClass) return null;
       if (ch === '[') inClass = true;
       else if (ch === ']') inClass = false;
       else if (ch === '/' && !inClass) break;

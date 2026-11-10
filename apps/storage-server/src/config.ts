@@ -29,7 +29,16 @@ export interface ServerConfig {
   sync: SyncConfig;
   /** Background character counts (WP3b). */
   counts: CountsConfig;
+  /** Library search (WP7a). */
+  search: SearchConfig;
 }
+
+export interface SearchConfig {
+  /** A search with a /regex/ that runs longer is stopped (SEARCH_REGEX_TIMEOUT_SECONDS). */
+  regexTimeoutSeconds: number;
+}
+
+export const DEFAULT_SEARCH_CONFIG: SearchConfig = { regexTimeoutSeconds: 5 };
 
 /** The two reader import settings that change a book's character count. */
 export type CountFixMode = 'Off' | 'Standard' | 'Extended';
@@ -165,6 +174,7 @@ export function loadConfig(env: Env): LoadedConfig {
       pairing: parsePairingConfig(env, warnings),
       sync: parseSyncConfig(env, warnings),
       counts: parseCountsConfig(env, warnings),
+      search: parseSearchConfig(env, warnings),
     },
     warnings,
   };
@@ -295,6 +305,21 @@ export function parseSyncConfig(env: Env, warnings: string[]): SyncConfig {
       0,
       86_400,
       true,
+      warnings,
+    ),
+  };
+}
+
+/** WP7a settings; bad values fall back to the defaults. */
+export function parseSearchConfig(env: Env, warnings: string[]): SearchConfig {
+  return {
+    regexTimeoutSeconds: parseNumber(
+      'SEARCH_REGEX_TIMEOUT_SECONDS',
+      env.SEARCH_REGEX_TIMEOUT_SECONDS,
+      DEFAULT_SEARCH_CONFIG.regexTimeoutSeconds,
+      0.1,
+      600,
+      false,
       warnings,
     ),
   };

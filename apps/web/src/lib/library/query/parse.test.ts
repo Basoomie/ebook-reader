@@ -243,6 +243,17 @@ describe('parseQuery: regex', () => {
     ]);
   });
 
+  it('allows spaces inside a pattern', () => {
+    expect(shapes('/ごと [0-9]$/ x')).toEqual([
+      {
+        type: 'any',
+        negated: false,
+        matcher: { kind: 'regex', source: 'ごと [0-9]$', ignoreCase: false }
+      },
+      { type: 'any', negated: false, matcher: text('x') }
+    ]);
+  });
+
   it('allows escaped slashes and slashes in classes', () => {
     expect(shapes('/a\\/b/ /[/]x/')).toEqual([
       {
