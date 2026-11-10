@@ -6,6 +6,7 @@
 
 import {
   faBookAtlas,
+  faBookmark,
   faBug,
   faCircleHalfStroke,
   faChartLine,
@@ -80,6 +81,12 @@ export const mergeEntries = {
     label: 'Shortcuts',
     icon: faKeyboard,
     title: 'Keys and gestures (?)'
+  },
+  ADD_BOOKMARK: {
+    routeId: '',
+    label: 'Add bookmark',
+    icon: faBookmark,
+    title: 'Keep this page under a name; your saved place stays where it is (K)'
   },
   READER_IMAGE_GALLERY: {
     routeId: '',

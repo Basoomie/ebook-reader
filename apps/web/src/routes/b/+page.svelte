@@ -106,12 +106,20 @@
     einkMode$,
     highlightLastColor$,
     highlightRefindChars$,
-    highlightBarAnySelection$
+    highlightBarAnySelection$,
+    showReturnMarker$
   } from '$lib/data/store';
   import HighlightBar from '$lib/components/book-reader/highlight-bar.svelte';
   import NotesPanel from '$lib/components/book-reader/notes-panel.svelte';
   import NoteEditorDialog from '$lib/components/book-reader/note-editor-dialog.svelte';
-  import { ReaderHighlights, type BarState } from '$lib/components/book-reader/reader-highlights';
+  import {
+    ReaderHighlights,
+    type BarState,
+    type NotesPanelAnswer
+  } from '$lib/components/book-reader/reader-highlights';
+  import BookmarkNameDialog from '$lib/components/book-reader/bookmark-name-dialog.svelte';
+  import { ReturnMarker } from '$lib/components/book-reader/return-marker';
+  import { bookmarkPlaceAt, defaultBookmarkName } from '$lib/notes/bookmarks';
   import {
     isHighlightColor,
     quoteOf,
@@ -776,6 +784,8 @@
       searchIndex = undefined;
       clearSearchMark?.();
       stopHighlights();
+      returnMarker.clear();
+      refreshReturnMarker();
     });
 
     return () => {
@@ -943,8 +953,128 @@
     try {
       jumpHistory.push(from);
       refreshJumpHistory();
+      // WP11b: the first jump of an excursion keeps where you were reading.
+      returnMarker.noteJump(from);
+      refreshReturnMarker();
     } catch (error) {
       logger.warn(`Jump history: ${(error as Error)?.message ?? error}`);
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // WP11b: the return marker, "where you were reading" before the first jump. In memory for
+  // the open book; cleared by returning there (the marker, or Back/Forward landing on it)
+  // or by closing it. Shown in the notes panel and the reader menu, and in the bottom bar
+  // when "Show Return Marker" is on (per device) while that place is not on screen.
+
+  const returnMarker = new ReturnMarker();
+
+  let returnMarkerPos: number | undefined;
+
+  let returnMarkerOnScreen = false;
+
+  function refreshReturnMarker() {
+    returnMarkerPos = returnMarker.position;
+    returnMarkerOnScreen =
+      returnMarkerPos !== undefined &&
+      readerHighlights?.isPositionOnScreen(returnMarkerPos) === true;
+  }
+
+  function returnToMarker() {
+    showHeader = false;
+    const target = returnMarker.position;
+
+    if (target === undefined || !bookmarkManager || !getBookIdSync()) {
+      return;
+    }
+
+    // Like Back after "Continue there": a jump that saves the place (unless Manual Save Place).
+    jumpToPosition(target, { save: !$manualBookmark$, record: true });
+    returnMarker.clear();
+    refreshReturnMarker();
+  }
+
+  function clearReturnMarker() {
+    returnMarker.clear();
+    refreshReturnMarker();
+  }
+
+  onMount(() => {
+    const pageChanges = fromEvent(document, PAGE_CHANGE)
+      .pipe(debounceTime(300))
+      .subscribe(() => {
+        if (returnMarker.position !== undefined) refreshReturnMarker();
+      });
+
+    return () => pageChanges.unsubscribe();
+  });
+
+  // -------------------------------------------------------------------------
+  // WP11b: named bookmarks. A bookmark keeps the page you are on under a name; making one
+  // never saves the place or writes a position record.
+
+  async function addBookmarkHere() {
+    showHeader = false;
+    const controller = readerHighlights;
+
+    if (dialogManager.dialogs$.getValue().length || !controller || !$bookData$) {
+      return;
+    }
+
+    if (!controller.bookId) {
+      void openNotes('bookmarks');
+      return;
+    }
+
+    const bookId = controller.bookId;
+    const position = exploredCharCount;
+    let place: ReturnType<typeof bookmarkPlaceAt>;
+    let name = '';
+
+    try {
+      const index = getSearchIndex();
+      place = bookmarkPlaceAt(index, position);
+      name = defaultBookmarkName(index, position);
+    } catch (error) {
+      logger.warn(`Bookmarks: ${(error as Error)?.message ?? error}`);
+      place = { pos: position, text: '', before: '', after: '' };
+    }
+
+    const chapter = chapterLabelAt(sectionList$.getValue(), position) ?? null;
+    const placeLabel = [
+      chapter ? `「${chapter}」` : '',
+      bookCharCount ? `${((position / bookCharCount) * 100).toFixed(1)}%` : ''
+    ]
+      .filter(Boolean)
+      .join(' · ');
+    const wasPaused = $statisticsEnabled$ ? $isTrackerPaused$ : true;
+    pauseTracker();
+    const keysWereSkipped = $skipKeyDownListener$;
+    skipKeyDownListener$.next(true);
+
+    const answer = await new Promise<string | null>((resolver) => {
+      dialogManager.dialogs$.next([
+        {
+          component: BookmarkNameDialog,
+          disableCloseOnClick: true,
+          props: { place: placeLabel, name: name || chapter || 'Bookmark', resolver }
+        }
+      ]);
+    });
+
+    skipKeyDownListener$.next(keysWereSkipped);
+
+    if (answer) {
+      try {
+        const { notesApi } = await import('$lib/sync/sync-service');
+        await notesApi().addBookmark(bookId, place, answer, chapter);
+      } catch (error) {
+        logger.warn(`Bookmarks: ${(error as Error)?.message ?? error}`);
+      }
+    }
+
+    if ($statisticsEnabled$ && !wasPaused) {
+      restartTrackerAfterCharacterChangeOrTime(1);
     }
   }
 
@@ -964,6 +1094,8 @@
 
     if (target !== undefined) {
       jumpToPosition(target, { save: !$manualBookmark$, record: false });
+      returnMarker.noteArrived(target);
+      refreshReturnMarker();
     }
   }
 
@@ -1475,7 +1607,7 @@
     }
   }
 
-  async function openNotes() {
+  async function openNotes(initialTab: 'notes' | 'bookmarks' = 'notes') {
     showHeader = false;
     const controller = readerHighlights;
 
@@ -1491,35 +1623,47 @@
     try {
       const { notesApi } = await import('$lib/sync/sync-service');
       const api = notesApi();
-      const answer = await new Promise<{ position: number; highlightId: string | null } | null>(
-        (resolver) => {
-          dialogManager.dialogs$.next([
-            {
-              component: NotesPanel,
-              disableCloseOnClick: true,
-              props: {
-                view: controller.view,
-                bookId: controller.bookId,
-                total: bookCharCount,
-                sections: sectionList$.getValue(),
-                canPaint: controller.supported,
-                eink: $einkMode$,
-                actions: {
-                  setColor: api.setColor,
-                  saveNote: api.saveNote,
-                  removeHighlight: api.removeHighlight,
-                  removeNote: api.removeNote
-                },
-                resolver
-              }
+      const answer = await new Promise<NotesPanelAnswer>((resolver) => {
+        dialogManager.dialogs$.next([
+          {
+            component: NotesPanel,
+            disableCloseOnClick: true,
+            props: {
+              view: controller.view,
+              bookId: controller.bookId,
+              total: bookCharCount,
+              sections: sectionList$.getValue(),
+              canPaint: controller.supported,
+              eink: $einkMode$,
+              returnMarker: returnMarker.position ?? null,
+              initialTab,
+              actions: {
+                setColor: api.setColor,
+                saveNote: api.saveNote,
+                removeHighlight: api.removeHighlight,
+                removeNote: api.removeNote,
+                renameBookmark: api.renameBookmark,
+                removeBookmark: api.removeBookmark,
+                clearReturnMarker
+              },
+              resolver
             }
-          ]);
-        }
-      );
+          }
+        ]);
+      });
 
       skipKeyDownListener$.next(keysWereSkipped);
 
-      if (answer) {
+      if (answer?.kind === 'return') {
+        returnToMarker();
+      } else if (answer?.kind === 'add-bookmark') {
+        if ($statisticsEnabled$ && !wasPaused) {
+          restartTrackerAfterCharacterChangeOrTime(1);
+        }
+
+        void addBookmarkHere();
+        return;
+      } else if (answer?.kind === 'jump') {
         // Like search: recorded in the jump history, saved by the next page turn.
         jumpToPosition(answer.position, { save: false, record: true });
 
@@ -1577,6 +1721,12 @@
 
     if (key === 'l' && !map.KeyL && !map.l) {
       void openNotes();
+      return true;
+    }
+
+    // WP11b: K adds a bookmark at the page you are on.
+    if (key === 'k' && !map.KeyK && !map.k) {
+      void addBookmarkHere();
       return true;
     }
 
@@ -3175,6 +3325,7 @@
       {hasBookmarkData}
       {canJumpBack}
       {canJumpForward}
+      canReturnToMarker={returnMarkerPos !== undefined}
       hasBookState={!!stateBookId}
       canSearch={!!bookCharCount}
       canNote={!!bookCharCount}
@@ -3238,10 +3389,12 @@
       on:libraryClick={() => leaveReader(mergeEntries.LIBRARY.routeId)}
       on:zenClick={toggleZen}
       on:searchClick={openSearch}
-      on:notesClick={openNotes}
+      on:notesClick={() => openNotes()}
       on:appearanceClick={openAppearance}
       on:jumpBackClick={() => goJumpHistory('back')}
       on:jumpForwardClick={() => goJumpHistory('forward')}
+      on:returnMarkerClick={returnToMarker}
+      on:addBookmarkClick={addBookmarkHere}
       on:shortcutsClick={openShortcuts}
     />
   </div>
@@ -3462,6 +3615,20 @@
         }}
       >
         <Fa icon={$isTrackerPaused$ ? faPlay : faPause} />
+      </div>
+    {/if}
+    {#if $showReturnMarker$ && returnMarkerPos !== undefined && !returnMarkerOnScreen && bookCharCount}
+      <!-- WP11b: where you were reading before jumping (opt-in per device). -->
+      <div
+        tabindex="0"
+        role="button"
+        title="Back to where you were reading"
+        class="flex h-full items-center px-2 text-xs sm:text-sm"
+        data-testid="footer-return-marker"
+        on:click|stopPropagation={returnToMarker}
+        on:keyup={dummyFn}
+      >
+        ↩ {((returnMarkerPos / bookCharCount) * 100).toFixed(1)}%
       </div>
     {/if}
     {#if dataToReplicate.length}

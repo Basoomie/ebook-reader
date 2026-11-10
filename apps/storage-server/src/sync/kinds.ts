@@ -762,6 +762,48 @@ const noteKind: KindSpec = {
   },
 };
 
+// ---------------------------------------------------------------------------
+// WP11b: named bookmarks
+// ---------------------------------------------------------------------------
+
+export const MAX_BOOKMARK_NAME = 200;
+
+/**
+ * kind "bookmark": id <bookId>:<uuid>, lww, deletable. data { pos, text, before, after,
+ * name, chapter, createdAt }: a named place in a book, separate from the reading position
+ * (a bookmark never moves it). `text` is the start of the text at `pos` and, with its
+ * context, finds the place again in a changed copy of the book. Belongs to the book.
+ */
+const bookmarkKind: KindSpec = {
+  policy: () => 'lww',
+  deletable: true,
+  validate(id, data, deleted, ctx) {
+    const parsed = parseBookItemId(id);
+    if (!parsed) throw new RecordError('invalid_id', 'bookmark ids are <bookId>:<uuid>');
+    if (!bookExists(ctx, parsed.bookId)) {
+      throw new RecordError('unknown_book', `No book ${parsed.bookId}`);
+    }
+    if (deleted) return { bookId: parsed.bookId, data: {} };
+    const obj = requireObject(data);
+    const name = typeof obj.name === 'string' ? obj.name.trim() : '';
+    if (!name || charLength(name) > MAX_BOOKMARK_NAME) {
+      throw new RecordError('invalid_data', `name must be 1 to ${MAX_BOOKMARK_NAME} characters`);
+    }
+    return {
+      bookId: parsed.bookId,
+      data: {
+        pos: wholeNumber(obj.pos, 'pos'),
+        text: boundedString(obj.text ?? '', 'text', MAX_ANCHOR_CONTEXT, true),
+        before: boundedString(obj.before ?? '', 'before', MAX_ANCHOR_CONTEXT, true),
+        after: boundedString(obj.after ?? '', 'after', MAX_ANCHOR_CONTEXT, true),
+        name,
+        chapter: optionalString(obj.chapter, 'chapter', MAX_CHAPTER_NAME),
+        createdAt: createdAt(obj.createdAt),
+      },
+    };
+  },
+};
+
 /** Smart-collection queries are checked with the search box's own parser. */
 const parserCheck: QueryCheck = (query) => {
   const result = parseQuery(query);
@@ -785,4 +827,5 @@ export const DEFAULT_KINDS: KindRegistry = {
   'collection-item': collectionItemKind,
   highlight: highlightKind,
   note: noteKind,
+  bookmark: bookmarkKind,
 };

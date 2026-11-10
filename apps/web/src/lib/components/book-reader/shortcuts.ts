@@ -35,8 +35,8 @@ const READER_ACTIONS: [BookReaderAvailableKeybind, string][] = [
   [BookReaderAvailableKeybind.PREV_PAGE, 'Previous page'],
   [BookReaderAvailableKeybind.NEXT_CHAPTER, 'Next chapter'],
   [BookReaderAvailableKeybind.PREV_CHAPTER, 'Previous chapter'],
-  [BookReaderAvailableKeybind.BOOKMARK, 'Bookmark this page'],
-  [BookReaderAvailableKeybind.JUMP_TO_BOOKMARK, 'Go to bookmark'],
+  [BookReaderAvailableKeybind.BOOKMARK, 'Save my place'],
+  [BookReaderAvailableKeybind.JUMP_TO_BOOKMARK, 'Return to saved place'],
   [BookReaderAvailableKeybind.TOGGLE_ZEN, 'Zen mode (hide the bottom bar)'],
   [BookReaderAvailableKeybind.SET_READING_POINT, 'Set reading point'],
   [BookReaderAvailableKeybind.AUTO_SCROLL_TOGGLE, 'Auto-scroll on or off'],
@@ -177,7 +177,7 @@ export function readerShortcutGroups(context: ShortcutContext): ShortcutGroup[] 
   }
 
   // WP10b: jump history (matched by the typed character in the reader, not the keybind map).
-  const afterBookmark = reading.findIndex((row) => row.action === 'Go to bookmark') + 1;
+  const afterBookmark = reading.findIndex((row) => row.action === 'Return to saved place') + 1;
   reading.splice(
     afterBookmark || reading.length,
     0,
@@ -188,7 +188,9 @@ export function readerShortcutGroups(context: ShortcutContext): ShortcutGroup[] 
     // WP11a
     { keys: ['H'], action: 'Highlight the selected text (last color used)' },
     { keys: ['1', '2', '3', '4', '5'], action: 'Pick a color while the highlight bar is open' },
-    { keys: ['L'], action: 'Highlights and notes in this book' }
+    { keys: ['L'], action: 'Highlights and notes in this book' },
+    // WP11b
+    { keys: ['K'], action: 'Add a bookmark (keeps this page; your saved place stays)' }
   );
 
   reading.push({ keys: ['?'], action: 'Show this list' });

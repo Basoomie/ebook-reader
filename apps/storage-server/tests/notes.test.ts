@@ -236,3 +236,75 @@ describe('note kind', () => {
     expect(deleted.bookId).toBe(book);
   });
 });
+
+describe('bookmark kind (WP11b)', () => {
+  const bookmark = (extra: Record<string, unknown> = {}) => ({
+    pos: 1200,
+    text: '吾輩は猫である。名前は',
+    before: '一章',
+    after: 'まだ無い',
+    name: '  猫の名前  ',
+    chapter: '一',
+    createdAt: 1_700_000_000_000,
+    ...extra,
+  });
+
+  it('validates ids and payloads, trims the name, keeps the book on deletion', async () => {
+    const t = await setup();
+    const book = insertBook(t.db);
+    const at = Date.now();
+    const id = `${book}:${randomUUID()}`;
+    const results = await t.push([
+      { kind: 'bookmark', id, updatedAt: at, data: bookmark() },
+      {
+        kind: 'bookmark',
+        id: `${book}:${randomUUID()}`,
+        updatedAt: at,
+        data: bookmark({ text: '' }),
+      },
+      { kind: 'bookmark', id: randomUUID(), updatedAt: at, data: bookmark() },
+      { kind: 'bookmark', id: `${randomUUID()}:${randomUUID()}`, updatedAt: at, data: bookmark() },
+      {
+        kind: 'bookmark',
+        id: `${book}:${randomUUID()}`,
+        updatedAt: at,
+        data: bookmark({ name: ' ' }),
+      },
+      {
+        kind: 'bookmark',
+        id: `${book}:${randomUUID()}`,
+        updatedAt: at,
+        data: bookmark({ name: 'あ'.repeat(201) }),
+      },
+      {
+        kind: 'bookmark',
+        id: `${book}:${randomUUID()}`,
+        updatedAt: at,
+        data: bookmark({ pos: -3 }),
+      },
+      {
+        kind: 'bookmark',
+        id: `${book}:${randomUUID()}`,
+        updatedAt: at,
+        data: bookmark({ text: 'あ'.repeat(33) }),
+      },
+    ]);
+    expect(codes(results)).toEqual([
+      'applied',
+      'applied',
+      'invalid_id',
+      'unknown_book',
+      'invalid_data',
+      'invalid_data',
+      'invalid_data',
+      'invalid_data',
+    ]);
+    const stored = (await t.pull()).find((r) => r.id === id);
+    expect(stored.data.name).toBe('猫の名前');
+    expect(stored.bookId).toBe(book);
+    expect(
+      codes(await t.push([{ kind: 'bookmark', id, updatedAt: at + 10, deletedAt: at + 10 }])),
+    ).toEqual(['applied']);
+    expect((await t.pull()).find((r) => r.id === id).bookId).toBe(book);
+  });
+});

@@ -83,6 +83,14 @@ import {
   type NotesDeps
 } from '$lib/notes/notes-service';
 import {
+  addBookmark,
+  getBookmarks,
+  removeBookmark,
+  renameBookmark,
+  type BookmarkItem,
+  type BookmarkPlace
+} from '$lib/notes/bookmarks';
+import {
   positionPromptEnabled$,
   positionPromptMinChars$,
   recordSyncEnabled$,
@@ -797,7 +805,24 @@ export function notesApi() {
     setUnplaced: (bookId: string, ids: readonly string[]) =>
       setUnplacedHighlights(bookId, ids, notesDeps),
     onChanged: (callback: (bookIds: Set<string>) => void, options?: { remoteOnly?: boolean }) =>
-      onNotesChanged(callback, notesDeps, options)
+      onNotesChanged(callback, notesDeps, options),
+    // WP11b: named bookmarks
+    async bookmarksOf(bookId: string): Promise<BookmarkItem[]> {
+      try {
+        return await getBookmarks(bookId, notesDeps);
+      } catch (error) {
+        warn(`Bookmarks: ${(error as Error)?.message ?? error}`);
+        return [];
+      }
+    },
+    addBookmark: (
+      bookId: string,
+      place: BookmarkPlace,
+      name: string,
+      chapter: string | null | undefined
+    ) => addBookmark(bookId, place, name, chapter, notesDeps),
+    renameBookmark: (id: string, name: string) => renameBookmark(id, name, notesDeps),
+    removeBookmark: (id: string) => removeBookmark(id, notesDeps)
   };
 }
 
