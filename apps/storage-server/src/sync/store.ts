@@ -201,7 +201,10 @@ export class SyncStore {
   ): ChangeResult {
     const kind = typeof change?.kind === 'string' ? change.kind : '';
     const id = typeof change?.id === 'string' ? change.id : '';
-    const reject = (code: string, message: string): ChangeResult => ({
+    const reject = (
+      code: string,
+      message: string,
+    ): Extract<ChangeResult, { status: 'rejected' }> => ({
       kind,
       id,
       status: 'rejected',
