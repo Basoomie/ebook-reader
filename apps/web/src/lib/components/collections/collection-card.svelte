@@ -1,7 +1,7 @@
 <script lang="ts">
   /**
    * A collection on the Collections page (WP8b): 2x2 cover collage, name and a line or
-   * two (book count, "Saved search"). A link to the collection; when a cover in it is
+   * two (book count, "Manual" or "Smart"). A link to the collection; when a cover in it is
    * hidden, the first tap shows it instead (as group cards, WP7a).
    */
   import CoverCollage from '$lib/components/library/cover-collage.svelte';

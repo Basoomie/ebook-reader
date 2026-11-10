@@ -2,7 +2,7 @@
   /**
    * The lists one book is in (WP8b), as toggle buttons, plus "New collection…". Used in
    * the Book status dialog and the reader's "Add to collection". Saved at once to the
-   * local sync mirror (works offline). Saved searches are not listed: their books
+   * local sync mirror (works offline). Smart collections are not listed: their books
    * follow the search.
    */
   import type { Collection } from '$lib/collections/collections';
@@ -99,7 +99,7 @@
         {/each}
       </div>
     {:else}
-      <p class="text-sm">You have no collections yet.</p>
+      <p class="text-sm">You have no manual collections yet.</p>
     {/if}
     {#if creating}
       <form class="mt-3 flex flex-wrap items-end gap-2" on:submit|preventDefault={create}>

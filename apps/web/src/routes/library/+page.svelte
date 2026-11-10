@@ -615,7 +615,7 @@
     }
   }
 
-  /** "Save as collection": the applied search becomes a saved search. */
+  /** "Save as smart collection": the applied search becomes a smart collection. */
   async function saveSearch() {
     const id = await newCollection(collections, {
       type: 'smart',
@@ -1058,7 +1058,7 @@
             data-testid="save-search"
             on:click={saveSearch}
           >
-            Save as collection
+            Save as smart collection
           </button>
         {/if}
         <button class="min-h-[2.75rem] underline" type="button" on:click={showSearchHelp}>
@@ -1198,9 +1198,9 @@
             {#if builtin}
               Built-in · {builtin.query}
             {:else if userCollection?.type === 'smart'}
-              Saved search · {userCollection.query}
+              Smart · {userCollection.query}
             {:else if isList}
-              {plural(listIds.length, 'book', 'books')}
+              Manual · {plural(listIds.length, 'book', 'books')}
             {/if}
           </p>
           {#if userCollection}

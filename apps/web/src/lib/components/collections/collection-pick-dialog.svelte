@@ -74,7 +74,7 @@
       {/each}
     </div>
   {:else}
-    <p>You have no collections yet.</p>
+    <p>You have no manual collections yet.</p>
   {/if}
   {#if action === 'add'}
     <form class="mt-5 flex flex-wrap items-end gap-2" on:submit|preventDefault={createNew}>

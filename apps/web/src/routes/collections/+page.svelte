@@ -269,7 +269,7 @@
           href={hrefFor(c.id)}
           details={[
             countLine(c.id, cards, c.type === 'manual' ? (items.get(c.id) ?? []) : undefined),
-            c.type === 'smart' ? 'Saved search' : ''
+            c.type === 'smart' ? 'Smart' : 'Manual'
           ].filter(Boolean)}
           tiles={tilesOf(c.id, cards, states, tagRules, revealed)}
           layout={grid ? 'grid' : 'list'}
@@ -280,6 +280,8 @@
       {/each}
     </ul>
   {:else}
-    <p class="py-2">None yet. Make one with "New collection", or save a search from the Library.</p>
+    <p class="py-2">
+      None yet. Make one with "New collection", or save a Library search as a smart collection.
+    </p>
   {/if}
 </div>

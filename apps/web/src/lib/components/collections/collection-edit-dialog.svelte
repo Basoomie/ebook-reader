@@ -103,7 +103,7 @@
           data-testid="collection-type-manual"
           on:click={() => (type = 'manual')}
         >
-          Books I pick
+          Manual
         </button>
         <button
           type="button"
@@ -112,13 +112,13 @@
           data-testid="collection-type-smart"
           on:click={() => (type = 'smart')}
         >
-          Books matching a search
+          Smart
         </button>
       </div>
       <p class="pt-2 text-sm">
         {type === 'manual'
-          ? 'A list in your own order, like a reading queue. Add books from the Library or the reader.'
-          : 'Always shows the books that match the search right now.'}
+          ? 'Books you add yourself, in your own order, like a reading queue. Add them from the Library or the reader.'
+          : 'Always shows the books that match a search right now.'}
       </p>
     {/if}
     {#if type === 'smart' && mode !== 'rename'}

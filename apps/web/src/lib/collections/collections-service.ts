@@ -160,7 +160,7 @@ export function setCollectionQuery(id: string, query: string, deps: CollectionsD
   return updateCollection(
     id,
     (d) => {
-      if (d.type !== 'smart') throw new CollectionError('Only a saved search has a search.');
+      if (d.type !== 'smart') throw new CollectionError('Only a smart collection has a search.');
       d.query = query.trim();
     },
     deps
@@ -185,7 +185,7 @@ export async function deleteCollection(id: string, deps: CollectionsDeps): Promi
 async function manual(engine: SyncEngine, id: string): Promise<void> {
   const record = await liveCollection(engine, id);
   if (record.data?.type !== 'manual') {
-    throw new CollectionError('Books are added to a list, not to a saved search.');
+    throw new CollectionError('Books can only be added to a manual collection.');
   }
 }
 

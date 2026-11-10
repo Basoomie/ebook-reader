@@ -13,7 +13,7 @@ import { evenKeys, isOrderKey, keyBetween, REBALANCE_LENGTH, type Random } from 
  * - "collection": id = a UUID, data { name, type: 'manual' | 'smart', query? }.
  * - "collection-item": id = <collectionId>:<bookId>, data { key }: one per book of a
  *   manual collection, ordered by `key` (order-key.ts), then by book id.
- * A smart collection ("Saved search" on screen) is a search, evaluated by the server
+ * A smart collection is a search, evaluated by the server
  * each time. Built-in collections are not records (builtins.ts).
  */
 export const COLLECTION_KIND = 'collection';
@@ -26,7 +26,7 @@ export interface Collection {
   id: string;
   name: string;
   type: CollectionType;
-  /** Saved searches only. */
+  /** Smart collections only. */
   query: string | null;
   updatedAt: number;
 }

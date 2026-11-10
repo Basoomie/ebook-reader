@@ -537,7 +537,7 @@ function collectionKind(checkQuery: QueryCheck): KindSpec {
       const type = oneOf(obj.type, COLLECTION_TYPES, 'type');
       if (type === 'manual') {
         if (obj.query !== undefined && obj.query !== null) {
-          throw new RecordError('invalid_data', 'only a saved search has a query');
+          throw new RecordError('invalid_data', 'only a smart collection has a query');
         }
         return { bookId: null, data: { name, type } };
       }
