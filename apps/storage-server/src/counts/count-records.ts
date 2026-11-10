@@ -8,6 +8,8 @@ import type { CountErrorCode } from './count-worker';
 
 export interface CountSource {
   bookId: string;
+  /** 'upload' (WP7b): filePath is relative to DATA_DIR/.uploads. */
+  kind: 'calibre' | 'upload';
   libraryFolder: string;
   /** EPUB path relative to the library folder, forward slashes. */
   filePath: string;
@@ -121,7 +123,7 @@ export interface CountTotals {
 }
 
 /**
- * Per library: books (present in Calibre) with a current count, waiting for one,
+ * Per library: books (present in Calibre, or uploaded: WP7b) with a current count, waiting for one,
  * and whose count failed. `spec` null = any spec counts as current (the counter is
  * off or its bundle is unreadable).
  */
@@ -137,7 +139,7 @@ export function countTotalsByLibrary(
               COUNT(*) AS total
          FROM books b
          JOIN book_sources s
-           ON s.book_id = b.id AND s.kind = 'calibre' AND s.missing_at IS NULL
+           ON s.book_id = b.id AND s.kind IN ('calibre', 'upload') AND s.missing_at IS NULL
          LEFT JOIN char_counts c ON c.book_id = b.id
         GROUP BY b.library_id`,
     )

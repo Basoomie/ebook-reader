@@ -31,6 +31,8 @@ export interface ServerConfig {
   counts: CountsConfig;
   /** Library search (WP7a). */
   search: SearchConfig;
+  /** Uploads (WP7b). */
+  uploads: UploadConfig;
 }
 
 export interface SearchConfig {
@@ -175,6 +177,7 @@ export function loadConfig(env: Env): LoadedConfig {
       sync: parseSyncConfig(env, warnings),
       counts: parseCountsConfig(env, warnings),
       search: parseSearchConfig(env, warnings),
+      uploads: parseUploadConfig(env, warnings),
     },
     warnings,
   };
@@ -320,6 +323,32 @@ export function parseSearchConfig(env: Env, warnings: string[]): SearchConfig {
       0.1,
       600,
       false,
+      warnings,
+    ),
+  };
+}
+
+export interface UploadConfig {
+  /** Largest accepted EPUB (UPLOAD_MAX_MB). */
+  maxMb: number;
+  /** Staged files older than this are deleted (UPLOAD_STAGED_HOURS). */
+  stagedHours: number;
+}
+
+export const DEFAULT_UPLOAD_CONFIG: UploadConfig = { maxMb: 200, stagedHours: 24 };
+
+/** WP7b settings; bad values fall back to the defaults. */
+export function parseUploadConfig(env: Env, warnings: string[]): UploadConfig {
+  const d = DEFAULT_UPLOAD_CONFIG;
+  return {
+    maxMb: parseNumber('UPLOAD_MAX_MB', env.UPLOAD_MAX_MB, d.maxMb, 1, 4000, true, warnings),
+    stagedHours: parseNumber(
+      'UPLOAD_STAGED_HOURS',
+      env.UPLOAD_STAGED_HOURS,
+      d.stagedHours,
+      1,
+      24 * 365,
+      true,
       warnings,
     ),
   };

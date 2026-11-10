@@ -96,6 +96,15 @@
         <div class="truncate text-sm opacity-75" data-testid="row-details">{details}</div>
       {/if}
     </div>
+    {#if book.source === 'upload'}
+      <div
+        class="shrink-0 rounded border border-current px-1 text-xs font-medium"
+        title="Uploaded (not in Calibre)"
+        data-testid="uploaded-badge"
+      >
+        Uploaded
+      </div>
+    {/if}
     {#if onDevice}
       <div class="flex shrink-0 items-center gap-1 text-sm" title="Saved on this device">
         <Fa icon={faCheck} />

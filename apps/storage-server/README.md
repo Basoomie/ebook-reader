@@ -39,6 +39,7 @@ The legacy endpoints accept only `AUTH_TOKEN`, not the per-user tokens.
 - Auth: `Authorization: Bearer ttsu_...` (a per-user token, see below). The legacy `AUTH_TOKEN` is not accepted here.
 - Errors: `{ "error": { "code": "...", "message": "..." } }`.
 - Library search (WP7a): plain text matches the title, an author or the series; `author:` `series:` `tag:` (substring; `=` exact; `,` = any of), `chars:<N` / `>=N` / `N-M` (books without a count never match), `status:unread,reading,completed,dropped`, `favorite:yes|no` (the caller's own book state), `/regex/` and `/regex/i` (JavaScript, Unicode), `-` to leave a term out. The parser is the web app's (`vendor/library-query.cjs`, rebuilt with `pnpm build:server-query` in apps/web). Searches with a pattern run in a worker thread that is stopped after `SEARCH_REGEX_TIMEOUT_SECONDS`.
+- Uploads (WP7b): `POST /api/v1/uploads?library=<id>&name=<file>` with the EPUB as the body stages it and answers `{ uploadId, title, authors, series, duplicates: [{ match: same-file|fingerprint|title-author, book }] }`; `POST /api/v1/uploads/<uploadId>/add` adds it as its own book (`source: "upload"` in book lists), `DELETE /api/v1/uploads/<uploadId>` discards it. Nothing is merged automatically. Files live in `DATA_DIR/.uploads/` (created by the first upload; `books/<bookId>/book.epub`, `staging/`), never near the Calibre libraries. Uploads are on when the Calibre indexer is; `GET /api/v1/libraries` reports `uploads: { enabled, maxBytes }`. `cli uploads list` lists them.
 - If the database can't be opened, the legacy endpoints keep working and every `/api/v1` route answers 503.
 
 ### Per-user tokens
@@ -171,8 +172,10 @@ A library is identified by Calibre's library UUID, so renaming its folder keeps 
 | `COUNT_RESTRICT_FIX_TO_ANCHOR`     | `true`       | Reader import setting the counts use (import fix only on anchors). A change recounts every book.                                     |
 | `SYNC_MAX_CLOCK_SKEW_SECONDS`      | `300`        | A synced change stamped further ahead of the server clock gets the server time instead.                                              |
 | `SEARCH_REGEX_TIMEOUT_SECONDS`     | `5`          | A library search with a `/pattern/` that runs longer is stopped (its worker thread is replaced) and answered with `regex_timeout`.   |
+| `UPLOAD_MAX_MB`                    | `200`        | Largest EPUB the Library's Upload accepts (`413 too_large` above it).                                                                |
+| `UPLOAD_STAGED_HOURS`              | `24`         | An uploaded file waiting for "Use the library copy / Add as a separate book" is deleted after this long.                             |
 
-Invalid values for the WP1, WP2, WP6, WP4, WP3b and WP7a settings are reported at startup and fall back to the default; they never stop the legacy endpoints.
+Invalid values for the WP1, WP2, WP6, WP4, WP3b, WP7a and WP7b settings are reported at startup and fall back to the default; they never stop the legacy endpoints.
 
 ## Running with Docker
 

@@ -14,6 +14,7 @@ import {
   faFileZipper,
   faFolderPlus,
   faHashtag,
+  faHouse,
   faImages,
   faLayerGroup,
   faListUl,
@@ -23,6 +24,7 @@ import {
 
 export const mergeEntries = {
   MANAGE: { routeId: '/manage', label: 'Manager', icon: faSignOutAlt, title: 'Go to Book Manager' },
+  HOME: { routeId: '/home', label: 'Home', icon: faHouse, title: 'Go to Home' },
   LIBRARY: {
     routeId: '/library',
     label: 'Library',

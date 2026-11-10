@@ -8,6 +8,7 @@
     preFilteredTitlesForStatistics$,
     statisticsActionInProgress$
   } from '$lib/components/statistics/statistics-types';
+  import AppBottomBar from '$lib/components/app-nav/app-bottom-bar.svelte';
   import { pxScreen } from '$lib/css-classes';
   import {
     database,
@@ -129,6 +130,7 @@
 
 <div class="{pxScreen} flex flex-col pt-16 h-full xl:pt-14">
   <StatisticsContent />
+  <AppBottomBar />
 </div>
 
 {#if showStatisticsSettings}

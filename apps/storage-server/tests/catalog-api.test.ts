@@ -190,6 +190,7 @@ describe('catalog API', () => {
     expect(libs.body).toEqual({
       indexer: { enabled: false, error: 'the Calibre indexer is not configured' },
       libraries: [],
+      uploads: { enabled: false, maxBytes: 0 },
     });
     expect((await request(app).get('/api/v1/books').set(auth)).body).toEqual({
       books: [],

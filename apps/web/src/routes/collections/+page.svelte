@@ -1,12 +1,12 @@
 <script lang="ts">
   import { BUILTIN_COLLECTIONS } from '$lib/collections/builtins';
-  import { collectionMenu, newCollection } from '$lib/collections/collection-dialogs';
+  import { builtinMenu, collectionMenu, newCollection } from '$lib/collections/collection-dialogs';
   import type { Collection, CollectionItem } from '$lib/collections/collections';
   import CollectionCard from '$lib/components/collections/collection-card.svelte';
-  import { mergeEntries } from '$lib/components/merged-header-icon/merged-entries';
-  import MergedHeaderIcon from '$lib/components/merged-header-icon/merged-header-icon.svelte';
+  import AppBottomBar from '$lib/components/app-nav/app-bottom-bar.svelte';
+  import AppHeader from '$lib/components/app-nav/app-header.svelte';
   import MessageDialog from '$lib/components/message-dialog.svelte';
-  import { baseHeaderClasses, pxScreen } from '$lib/css-classes';
+  import { pxScreen } from '$lib/css-classes';
   import { dialogManager } from '$lib/data/dialog-manager';
   import { pagePath } from '$lib/data/env';
   import { formatPageTitle } from '$lib/functions/format-page-title';
@@ -189,16 +189,7 @@
   <title>{formatPageTitle('Collections')}</title>
 </svelte:head>
 
-<div class="elevation-4 fixed inset-x-0 top-0 z-10">
-  <div class={baseHeaderClasses}>
-    <div class="{pxScreen} flex h-full items-center justify-between">
-      <h1 class="text-lg font-medium">Collections</h1>
-      <MergedHeaderIcon
-        items={[mergeEntries.MANAGE, mergeEntries.LIBRARY, mergeEntries.COLLECTIONS]}
-      />
-    </div>
-  </div>
-</div>
+<AppHeader title="Collections" />
 
 <div class="{pxScreen} pb-24 pt-16 xl:pt-14" data-testid="collections-page">
   <div class="flex flex-wrap items-center gap-2 pb-3 pt-3">
@@ -254,7 +245,9 @@
         details={[countLine(b.id, cards)].filter(Boolean)}
         tiles={tilesOf(b.id, cards, states, tagRules, revealed)}
         layout={grid ? 'grid' : 'list'}
+        menu
         on:reveal={(ev) => reveal(ev.detail)}
+        on:menu={() => builtinMenu(b)}
       />
     {/each}
   </ul>
@@ -285,3 +278,5 @@
     </p>
   {/if}
 </div>
+
+<AppBottomBar />

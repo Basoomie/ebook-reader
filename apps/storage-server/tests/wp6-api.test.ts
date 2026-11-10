@@ -6,7 +6,7 @@ import fs from 'fs';
 import path from 'path';
 import request from 'supertest';
 import { afterEach, describe, expect, it } from 'vitest';
-import { likePattern } from '../src/catalog/queries';
+import { likePattern, SQL_CATALOG_SOURCE } from '../src/catalog/queries';
 import type { CalibreConfig } from '../src/config';
 import { LATEST_SCHEMA_VERSION, MIGRATIONS, migrate } from '../src/db/migrations';
 import { createPairingCode, normalizePairingCode, redeemPairingCode } from '../src/db/pairing';
@@ -113,7 +113,7 @@ describe('search (GET /api/v1/books?q=)', () => {
       e.db
         .prepare(
           `EXPLAIN QUERY PLAN SELECT b.id FROM books b
-             CROSS JOIN book_sources s ON s.book_id = b.id AND s.kind = 'calibre'
+             CROSS JOIN book_sources s ON s.book_id = b.id AND ${SQL_CATALOG_SOURCE}
              JOIN libraries l ON l.id = b.library_id AND l.enabled = 1
              LEFT JOIN series se ON se.id = b.series_id
             ORDER BY b.added_at DESC, b.id DESC LIMIT 51`,
@@ -122,9 +122,12 @@ describe('search (GET /api/v1/books?q=)', () => {
     ).map((r) => r.detail);
     expect(plan[0]).toBe('SCAN b USING INDEX books_added');
     expect(plan.join('\n')).not.toContain('TEMP B-TREE');
-    // The query module uses the same join.
+    // The query module uses the same join (Calibre and uploaded books since WP7b).
     const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'catalog', 'queries.ts'), 'utf8');
-    expect(src).toContain("CROSS JOIN book_sources s ON s.book_id = b.id AND s.kind = 'calibre'");
+    expect(src).toContain(
+      'CROSS JOIN book_sources s ON s.book_id = b.id AND ${SQL_CATALOG_SOURCE}',
+    );
+    expect(SQL_CATALOG_SOURCE).toBe("s.kind IN ('calibre', 'upload')");
   });
 
   it('escapes LIKE patterns', () => {

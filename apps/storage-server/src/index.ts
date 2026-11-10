@@ -7,6 +7,8 @@ import { ThumbnailService } from './thumbnails/thumbnails';
 import { FatalConfigError, formatTime, loadConfig, LoadedConfig } from './config';
 import { initDatabase } from './db/database';
 import { scheduleSnapshots, snapshotDir, SnapshotScheduler } from './snapshot';
+import { UploadService } from './uploads/service';
+import { UploadStore } from './uploads/upload-store';
 import { SERVER_VERSION } from './version';
 
 let loaded: LoadedConfig;
@@ -52,6 +54,18 @@ const catalog: CatalogOptions = {
   counts: null,
   indexer: { enabled: false, error: 'CALIBRE_DIR is not set' },
 };
+// Uploads (WP7b): files in DATA_DIR/.uploads, books in an indexed library.
+let uploadStore: UploadStore | null = null;
+if (database.ok && config.calibre.dir) {
+  const store = new UploadStore(config.dataRoot);
+  try {
+    store.init();
+    uploadStore = store;
+  } catch (err) {
+    console.error('Error: uploads are off, the upload folder is unusable:', err);
+  }
+}
+
 if (database.ok && config.calibre.dir) {
   try {
     thumbnails = new ThumbnailService({
@@ -61,6 +75,7 @@ if (database.ok && config.calibre.dir) {
       concurrency: config.calibre.thumbConcurrency,
       perSecond: config.calibre.thumbPerSecond,
       background: config.calibre.thumbBackground,
+      uploads: uploadStore,
     });
     // Character counts (WP3b) are optional too: without the counter the library
     // just shows counts as pending.
@@ -69,6 +84,7 @@ if (database.ok && config.calibre.dir) {
         db: database.db,
         calibreDir: config.calibre.dir,
         config: config.counts,
+        uploads: uploadStore,
       });
       console.log(
         `Character counts: ${config.counts.background ? 'on' : 'off (COUNT_BACKGROUND=false)'}, ` +
@@ -89,6 +105,21 @@ if (database.ok && config.calibre.dir) {
     catalog.thumbnails = thumbnails;
     catalog.counts = counts;
     catalog.calibreDir = config.calibre.dir;
+    if (uploadStore) {
+      const uploads = new UploadService({
+        db: database.db,
+        store: uploadStore,
+        config: config.uploads,
+        calibreDir: config.calibre.dir,
+        onAdded: () => {
+          thumbnails?.wake();
+          counts?.wake();
+        },
+      });
+      uploads.start();
+      catalog.uploads = uploads;
+      console.log(`Uploads: on, up to ${config.uploads.maxMb} MB, in ${uploadStore.root}`);
+    }
     indexer
       .start()
       .catch((err) => console.error('Error: the Calibre indexer could not start:', err));

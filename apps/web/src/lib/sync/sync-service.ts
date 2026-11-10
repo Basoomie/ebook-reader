@@ -475,11 +475,10 @@ export async function reportDevice(): Promise<void> {
   await getSyncRunner()?.syncNow();
   const links = await getLibraryStore().getAllLinks();
   await api.report({
-    calibreLinks: links.map((l) => ({
-      title: l.title,
-      bookId: l.bookId,
-      calibreUuid: l.calibreUuid
-    })),
+    // Uploaded books (WP7b) have no Calibre identity; the server ignored them anyway.
+    calibreLinks: links.flatMap((l) =>
+      l.calibreUuid ? [{ title: l.title, bookId: l.bookId, calibreUuid: l.calibreUuid }] : []
+    ),
     localTitles: await localTitleSummaries(await database.db)
   });
 }

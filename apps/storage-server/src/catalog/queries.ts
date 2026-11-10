@@ -48,6 +48,8 @@ export interface BookSummary {
   charCount: number | null;
   charCountStatus: CharCountStatus;
   missing: boolean;
+  /** Where the book comes from: a Calibre library, or an upload (WP7b, "Uploaded" badge). */
+  source: 'calibre' | 'upload';
   /**
    * Relative API URL of the cover thumbnail, or null when the book has no cover.
    * The URL is signed for this user, so a plain <img> can load it without the token.
@@ -102,25 +104,34 @@ interface BookRow {
   description: string | null;
   missing: number;
   has_cover: number;
-  calibre_path: string;
+  source_kind: 'calibre' | 'upload';
+  calibre_path: string | null;
+  content_hash: string | null;
   calibre_last_modified: number | null;
   count_status: 'ok' | 'error' | null;
   count_spec: string | null;
   count_key_current: number | null;
 }
 
-// A book is shown through its Calibre source (the only kind in WP2).
+/**
+ * The sources a catalog book is shown through: Calibre (WP2) and uploads (WP7b). A
+ * book has exactly one source ("Use the library copy" never adds an upload to an
+ * existing book), so joining on it never repeats a book.
+ */
+export const SQL_CATALOG_SOURCE = "s.kind IN ('calibre', 'upload')";
+
+// A book is shown through its one source.
 // CROSS JOIN makes SQLite walk books first (books_added index, already in page
 // order) instead of every Calibre source followed by a sort: on 60k books the
 // first page drops from ~580 ms to ~1 ms (WP6 benchmark).
 const BOOK_SELECT = `
   SELECT b.id, b.library_id, b.title, b.title_sort, b.author_sort, se.name AS series_name,
          b.series_index, b.publisher, b.published_at, b.added_at, b.char_count, b.description,
-         (s.missing_at IS NOT NULL) AS missing, s.has_cover, s.calibre_path,
-         s.calibre_last_modified, c.status AS count_status, c.spec AS count_spec,
+         (s.missing_at IS NOT NULL) AS missing, s.has_cover, s.kind AS source_kind,
+         s.calibre_path, s.content_hash, s.calibre_last_modified, c.status AS count_status, c.spec AS count_spec,
          (c.source_key = ${SQL_COUNT_SOURCE_KEY}) AS count_key_current
   FROM books b
-  CROSS JOIN book_sources s ON s.book_id = b.id AND s.kind = 'calibre'
+  CROSS JOIN book_sources s ON s.book_id = b.id AND ${SQL_CATALOG_SOURCE}
   JOIN libraries l ON l.id = b.library_id AND l.enabled = 1
   LEFT JOIN series se ON se.id = b.series_id
   LEFT JOIN char_counts c ON c.book_id = b.id`;
@@ -201,6 +212,7 @@ function attachLists(
     charCount: r.char_count,
     charCountStatus: charCountStatus(r, countSpec),
     missing: r.missing === 1,
+    source: r.source_kind,
     thumbnail: r.has_cover
       ? thumbnailUrl(
           key,
@@ -210,6 +222,7 @@ function attachLists(
             sourceKey({
               lastModified: r.calibre_last_modified,
               calibrePath: r.calibre_path,
+              contentHash: r.content_hash,
               hasCover: r.has_cover === 1,
             }),
           ),
@@ -440,7 +453,7 @@ export function summariesByIds(
 
 export const SQL_BOOK_FROM = `
   FROM books b
-  CROSS JOIN book_sources s ON s.book_id = b.id AND s.kind = 'calibre'
+  CROSS JOIN book_sources s ON s.book_id = b.id AND ${SQL_CATALOG_SOURCE}
   JOIN libraries l ON l.id = b.library_id AND l.enabled = 1`;
 
 export function getBookFor(
@@ -480,6 +493,9 @@ export function getBookFor(
 }
 
 export interface BookFileLocation {
+  /** 'upload': filePath is relative to DATA_DIR/.uploads (WP7b). */
+  kind: 'calibre' | 'upload';
+  contentHash: string | null;
   /** Library folder relative to CALIBRE_DIR ('' = the root itself). */
   libraryFolder: string;
   /** EPUB path relative to the library folder, forward slashes. */
@@ -497,15 +513,17 @@ export function getBookFileFor(
 ): BookFileLocation | null {
   const row = db
     .prepare(
-      `SELECT l.folder, s.file_path, s.file_size, s.calibre_last_modified,
-              (s.missing_at IS NOT NULL) AS missing
+      `SELECT s.kind, s.content_hash, l.folder, s.file_path, s.file_size,
+              s.calibre_last_modified, (s.missing_at IS NOT NULL) AS missing
          FROM books b
-         JOIN book_sources s ON s.book_id = b.id AND s.kind = 'calibre'
+         JOIN book_sources s ON s.book_id = b.id AND ${SQL_CATALOG_SOURCE}
          JOIN libraries l ON l.id = b.library_id AND l.enabled = 1
         WHERE b.id = ?`,
     )
     .get(bookId) as
     | {
+        kind: 'calibre' | 'upload';
+        content_hash: string | null;
         folder: string;
         file_path: string | null;
         file_size: number | null;
@@ -515,6 +533,8 @@ export function getBookFileFor(
     | undefined;
   if (!row || !row.file_path) return null;
   return {
+    kind: row.kind,
+    contentHash: row.content_hash,
     libraryFolder: row.folder,
     filePath: row.file_path,
     fileSize: row.file_size,

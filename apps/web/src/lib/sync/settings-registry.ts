@@ -159,7 +159,12 @@ export const SETTINGS_REGISTRY: Record<string, SettingSpec> = {
   syncIntervalMinutes: d('Number'),
   positionPromptEnabled: d('Boolean'),
   positionPromptMinChars: d('Number'),
-  readingStatusSettleSeconds: d('Number')
+  readingStatusSettleSeconds: d('Number'),
+
+  // --- lib/home/settings.ts (per device, WP7b) ---
+  appOpenTarget: d('String'),
+  homeRows: d('Array'),
+  homeRowLength: d('Number')
 };
 
 export function settingScope(key: string): SettingScope {

@@ -2,6 +2,7 @@
   import { faBookOpenReader, faClock, faDatabase } from '@fortawesome/free-solid-svg-icons';
   import Fa from 'svelte-fa';
   import MergedHeaderIcon from '$lib/components/merged-header-icon/merged-header-icon.svelte';
+  import AppNavLinks from '$lib/components/app-nav/app-nav-links.svelte';
   import Ripple from '$lib/components/ripple.svelte';
   import { baseHeaderClasses, pxScreen } from '$lib/css-classes';
 
@@ -41,5 +42,6 @@
       {/each}
     </div>
     <MergedHeaderIcon {leavePageLink} />
+    <AppNavLinks />
   </div>
 </div>

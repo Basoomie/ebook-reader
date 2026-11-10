@@ -11,7 +11,9 @@ import type {
   CatalogBook,
   CatalogPage,
   CollectionCardData,
-  GroupBy
+  GroupBy,
+  StagedUpload,
+  UploadInfo
 } from '$lib/library/types';
 
 /** Client for the storage server's /api/v1 catalog (WP6). */
@@ -135,13 +137,90 @@ export async function pairDevice(
   return response.json();
 }
 
+/** The parts of XMLHttpRequest an upload uses (tests pass a stand-in). */
+export type UploadXhr = Pick<
+  XMLHttpRequest,
+  'open' | 'setRequestHeader' | 'send' | 'abort' | 'status' | 'responseText' | 'upload'
+> & {
+  onload: ((ev: unknown) => void) | null;
+  onerror: ((ev: unknown) => void) | null;
+  onabort: ((ev: unknown) => void) | null;
+};
+
+export interface UploadOptions {
+  signal?: AbortSignal;
+  onProgress?: (loaded: number, total: number) => void;
+}
+
 export class LibraryApi {
   constructor(
     readonly serverUrl: string,
     private readonly token: string,
     readonly timeoutSeconds = 0,
-    private readonly fetchImpl: typeof fetch = (...args) => fetch(...args)
+    private readonly fetchImpl: typeof fetch = (...args) => fetch(...args),
+    private readonly xhrFactory: () => UploadXhr = () => new XMLHttpRequest() as UploadXhr
   ) {}
+
+  /**
+   * Sends an EPUB to the server for the chosen library (WP7b). XMLHttpRequest, because
+   * fetch reports no upload progress. No timeout (a big file on a slow link takes time);
+   * the caller can cancel with `signal`. Resolves to the staged upload and its duplicates.
+   */
+  uploadEpub(
+    file: Blob,
+    fileName: string,
+    libraryId: string,
+    { signal, onProgress }: UploadOptions = {}
+  ): Promise<StagedUpload> {
+    return new Promise((resolve, reject) => {
+      const xhr = this.xhrFactory();
+      const qs = new URLSearchParams({ library: libraryId, name: fileName });
+      const onAbort = () => xhr.abort();
+      const done = () => signal?.removeEventListener('abort', onAbort);
+      xhr.open('POST', `${this.serverUrl}/api/v1/uploads?${qs}`);
+      xhr.setRequestHeader('Authorization', `Bearer ${this.token}`);
+      xhr.setRequestHeader('Content-Type', 'application/epub+zip');
+      if (xhr.upload && onProgress) {
+        xhr.upload.onprogress = (ev: ProgressEvent) => onProgress(ev.loaded, ev.total);
+      }
+      xhr.onload = async () => {
+        done();
+        const response = new Response(xhr.responseText || null, { status: xhr.status });
+        if (xhr.status >= 200 && xhr.status < 300) resolve(await response.json());
+        else reject(await errorFrom(response));
+      };
+      xhr.onerror = () => {
+        done();
+        reject(new LibraryApiError('unreachable', 'Could not reach the library server'));
+      };
+      xhr.onabort = () => {
+        done();
+        reject(new LibraryApiError('aborted', 'Cancelled'));
+      };
+      if (signal?.aborted) {
+        reject(new LibraryApiError('aborted', 'Cancelled'));
+        return;
+      }
+      signal?.addEventListener('abort', onAbort);
+      xhr.send(file);
+    });
+  }
+
+  /** Adds a staged upload as its own book ("Add as a separate book", or no duplicate). */
+  async addUpload(uploadId: string, options?: RequestOptions): Promise<{ book: CatalogBook }> {
+    return (await this.post(`/uploads/${encodeURIComponent(uploadId)}/add`, {}, options)).json();
+  }
+
+  /** Drops a staged upload ("Use the library copy", "Cancel"). */
+  async discardUpload(uploadId: string, options: RequestOptions = {}): Promise<void> {
+    const response = await send(
+      this.fetchImpl,
+      `${this.serverUrl}/api/v1/uploads/${encodeURIComponent(uploadId)}`,
+      { method: 'DELETE', headers: { Authorization: `Bearer ${this.token}` } },
+      { timeoutSeconds: this.timeoutSeconds, ...options }
+    );
+    if (!response.ok) throw await errorFrom(response);
+  }
 
   private async post(path: string, body: unknown, options: RequestOptions = {}): Promise<Response> {
     const response = await send(
@@ -174,9 +253,12 @@ export class LibraryApi {
     return (await this.get('/me', options)).json();
   }
 
-  async libraries(
-    options?: RequestOptions
-  ): Promise<{ indexer: { enabled: boolean; error: string | null }; libraries: CatalogLibrary[] }> {
+  async libraries(options?: RequestOptions): Promise<{
+    indexer: { enabled: boolean; error: string | null };
+    libraries: CatalogLibrary[];
+    /** WP7b; missing from older servers (no uploads). */
+    uploads?: UploadInfo;
+  }> {
     return (await this.get('/libraries', options)).json();
   }
 

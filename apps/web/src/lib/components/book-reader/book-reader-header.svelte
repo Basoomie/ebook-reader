@@ -52,7 +52,8 @@
     readerImageGalleryClick: void;
     settingsClick: void;
     domainHintClick: void;
-    bookManagerClick: void;
+    homeClick: void;
+    libraryClick: void;
   }>();
 
   const customReadingPointMenuItems: {
@@ -97,7 +98,8 @@
       items.push(mergeEntries.READER_IMAGE_GALLERY);
     }
 
-    items.push(mergeEntries.SETTINGS, mergeEntries.MANAGE);
+    // WP7b: back to Home or the Library (the Manager is reached from Settings).
+    items.push(mergeEntries.SETTINGS, mergeEntries.HOME, mergeEntries.LIBRARY);
 
     menuItems = items;
   }
@@ -222,8 +224,10 @@
           dispatch('settingsClick');
         } else if (detail === mergeEntries.DOMAIN_HINT.label) {
           dispatch('domainHintClick');
-        } else if (detail === mergeEntries.MANAGE.label) {
-          dispatch('bookManagerClick');
+        } else if (detail === mergeEntries.HOME.label) {
+          dispatch('homeClick');
+        } else if (detail === mergeEntries.LIBRARY.label) {
+          dispatch('libraryClick');
         }
       }}
     />

@@ -45,6 +45,28 @@ export interface CatalogBook {
   missing: boolean;
   /** Relative, signed thumbnail URL (works in a plain <img>), or null. */
   thumbnail: string | null;
+  /** WP7b: 'upload' shows the "Uploaded" badge. Missing from servers before WP7b. */
+  source?: 'calibre' | 'upload';
+}
+
+/** Whether the server takes uploads (WP7b), and their size limit in bytes. */
+export interface UploadInfo {
+  enabled: boolean;
+  maxBytes: number;
+}
+
+/** Why an upload looks like a book that is already in the library (WP7b). */
+export type DuplicateMatch = 'same-file' | 'fingerprint' | 'title-author';
+
+/** An upload waiting for the user's decision (POST /uploads). */
+export interface StagedUpload {
+  uploadId: string;
+  libraryId: string;
+  title: string;
+  authors: string[];
+  series: { name: string; index: number | null } | null;
+  size: number;
+  duplicates: { match: DuplicateMatch; book: CatalogBook }[];
 }
 
 export interface CatalogBookSource {

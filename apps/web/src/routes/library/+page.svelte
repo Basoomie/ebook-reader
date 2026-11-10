@@ -11,7 +11,6 @@
     type CollectionPick
   } from '$lib/components/collections/collection-pick-dialog.svelte';
   import CollectionReorderList from '$lib/components/collections/collection-reorder-list.svelte';
-  import ConfirmDialog from '$lib/components/confirm-dialog.svelte';
   import BookStateDialog from '$lib/components/library/book-state-dialog.svelte';
   import BulkEditDialog, { type BulkChange } from '$lib/components/library/bulk-edit-dialog.svelte';
   import LibraryBookCard from '$lib/components/library/library-book-card.svelte';
@@ -23,26 +22,31 @@
   import MarkCompletedDialog from '$lib/components/library/mark-completed-dialog.svelte';
   import SearchHelpDialog from '$lib/components/library/search-help-dialog.svelte';
   import TagCoverDialog from '$lib/components/library/tag-cover-dialog.svelte';
-  import { mergeEntries } from '$lib/components/merged-header-icon/merged-entries';
-  import MergedHeaderIcon from '$lib/components/merged-header-icon/merged-header-icon.svelte';
+  import UploadDuplicateDialog from '$lib/components/library/upload-duplicate-dialog.svelte';
+  import UploadLibraryDialog from '$lib/components/library/upload-library-dialog.svelte';
+  import UploadProgressOverlay from '$lib/components/library/upload-progress-overlay.svelte';
+  import UploadSummaryDialog from '$lib/components/library/upload-summary-dialog.svelte';
+  import { uploadFiles, type UploadDecision, type UploadResult } from '$lib/library/upload-flow';
+  import AppBottomBar from '$lib/components/app-nav/app-bottom-bar.svelte';
+  import AppHeader from '$lib/components/app-nav/app-header.svelte';
   import MessageDialog from '$lib/components/message-dialog.svelte';
-  import { baseHeaderClasses, buttonClasses, inputClasses, pxScreen } from '$lib/css-classes';
+  import { buttonClasses, inputClasses, pxScreen } from '$lib/css-classes';
   import { dialogManager, type Dialog } from '$lib/data/dialog-manager';
   import { pagePath } from '$lib/data/env';
   import { logger } from '$lib/data/logger';
   import { database, selfHostStorageSource$ } from '$lib/data/store';
   import { formatPageTitle } from '$lib/functions/format-page-title';
   import { LibraryApi, LibraryApiError } from '$lib/library/api';
-  import { browserOpenDeps, existingLocalIds } from '$lib/library/browser-open-deps';
+  import { existingLocalIds } from '$lib/library/browser-open-deps';
   import { summarizeCharCounts } from '$lib/library/char-counts';
   import { isCoverBlurred } from '$lib/library/cover-blur';
   import { formatGroupChars, groupCount, groupTitle, plural } from '$lib/library/format';
   import { getLibraryStore, type LibraryConnection } from '$lib/library/library-db';
-  import {
-    openCalibreBook,
-    type ExistingBookQuestion,
-    type OpenStage
-  } from '$lib/library/open-calibre-book';
+  import type { OpenStage } from '$lib/library/open-calibre-book';
+  import { openCatalogBook } from '$lib/library/open-from-catalog';
+  import { isPinnedToHome, setPinnedToHome } from '$lib/home/pins';
+  import type { PinTarget } from '$lib/home/rows';
+  import { homeRows$ } from '$lib/home/settings';
   import { bookProgressLabel, positionsByBook, seriesReadCount } from '$lib/library/progress';
   import { activeChips, CHIPS, toggleChip, type ChipId } from '$lib/library/query/chips';
   import { parseQuery, usesBookState } from '$lib/library/query/parse';
@@ -65,7 +69,8 @@
     CatalogGroup,
     CatalogLibrary,
     GroupBy,
-    GroupTile
+    GroupTile,
+    UploadInfo
   } from '$lib/library/types';
   import type { BookState } from '$lib/sync/book-state';
   import type { LocalRecord } from '$lib/sync/sync-db';
@@ -146,6 +151,17 @@
 
   let opening: { book: CatalogBook; stage: OpenStage | null; controller: AbortController } | null =
     null;
+  // WP7b: uploads (shown when the server takes them).
+  let uploadInfo: UploadInfo | null = null;
+  let uploadInput: HTMLInputElement | undefined;
+  let uploading: {
+    index: number;
+    count: number;
+    name: string;
+    loaded: number;
+    total: number;
+    controller: AbortController;
+  } | null = null;
 
   // WP8a/WP7a: book state, tag rules and positions from the local sync mirror.
   const bookState = bookStateApi();
@@ -201,6 +217,25 @@
     .reduce((n, l) => n + (l.counts ? l.counts.pending + l.counts.errors : 0), 0);
   $: bookIds = books.map((b) => b.id);
   $: headerTag = group?.by === 'tag' ? group.name : null;
+  // WP7b: "Pin to Home" for an open collection, series, author or tag ("No series" can't be).
+  let pinTarget: PinTarget | null = null;
+  $: pinTarget =
+    collectionId !== null
+      ? collectionGone
+        ? null
+        : builtin
+          ? { type: 'builtin', ref: builtin.id }
+          : userCollection
+            ? { type: 'collection', ref: userCollection.id }
+            : null
+      : group && group.name !== null
+        ? { type: group.by, ref: group.name }
+        : null;
+  $: pinnedHere = pinTarget ? isPinnedToHome($homeRows$, pinTarget) : false;
+
+  function togglePin() {
+    if (pinTarget) setPinnedToHome(pinTarget, !pinnedHere);
+  }
 
   onMount(async () => {
     void loadMirror();
@@ -260,6 +295,7 @@
       const result = await api.libraries();
       libraries = result.libraries;
       indexerError = result.indexer.enabled ? '' : result.indexer.error || 'The indexer is off';
+      uploadInfo = result.uploads ?? null;
     } catch (error) {
       if (handleAuthError(error)) return;
       // The list request below reports the problem.
@@ -920,25 +956,49 @@
 
   // ---- opening books ------------------------------------------------------
 
-  function askExisting(question: ExistingBookQuestion): Promise<boolean> {
-    return new Promise((resolve) => {
-      dialogManager.dialogs$.next([
-        {
-          component: ConfirmDialog,
-          disableCloseOnClick: true,
-          props: {
-            dialogHeader: 'Already on this device',
-            dialogMessage:
-              `You already have "${question.title}" on this device ` +
-              `(${question.localCharacters.toLocaleString()} characters). The Calibre copy has ` +
-              `${question.calibreCharacters.toLocaleString()} characters, so it may be a different ` +
-              'edition. Confirm opens your copy and remembers it as this Calibre book; your copy ' +
-              'and its progress are not changed.',
-            resolver: (canceled: boolean) => resolve(!canceled)
-          }
-        }
-      ]);
+  // ---- upload (WP7b) ---------------------------------------------------------
+
+  async function onUploadFiles(ev: Event) {
+    const input = ev.currentTarget as HTMLInputElement;
+    const files = [...(input.files ?? [])];
+    input.value = '';
+    if (!files.length || !api || uploading) return;
+    // Asked on every upload; nothing preselected or remembered (decided with the user).
+    const libraryId = await ask<string | undefined>(UploadLibraryDialog, {
+      libraries: enabledLibraries.map((l) => ({ id: l.id, name: l.name })),
+      fileCount: files.length
     });
+    if (!libraryId || !api) return;
+    const uploadApi = api;
+    const controller = new AbortController();
+    uploading = { index: 0, count: files.length, name: '', loaded: 0, total: 0, controller };
+    let results: UploadResult[];
+    try {
+      results = await uploadFiles(files, libraryId, {
+        api: uploadApi,
+        maxBytes: uploadInfo?.maxBytes ?? 0,
+        signal: controller.signal,
+        onProgress: (index, name, loaded, total) => {
+          if (uploading) uploading = { ...uploading, index, name, loaded, total };
+        },
+        askDuplicate: async (staged) => {
+          const before = uploading;
+          uploading = null;
+          const decision = await ask<UploadDecision | undefined>(UploadDuplicateDialog, {
+            staged,
+            thumbnailUrl: (t: string | null) => (t ? uploadApi.absolute(t) : ''),
+            libraryName: (id: string) => libraryNames.get(id) ?? ''
+          });
+          uploading = before;
+          return decision ?? 'cancel';
+        }
+      });
+    } finally {
+      uploading = null;
+    }
+    if (results.some((r) => r.status === 'added')) void loadPage(true);
+    const chosen = await ask<CatalogBook | undefined>(UploadSummaryDialog, { results });
+    if (chosen) void open(chosen);
   }
 
   function showMessage(title: string, message: string) {
@@ -950,15 +1010,16 @@
     const controller = new AbortController();
     opening = { book, stage: null, controller };
     try {
-      const deps = browserOpenDeps(
+      const outcome = await openCatalogBook(
+        book,
         api,
         store,
-        async (libraryId) => libraries.find((l) => l.id === libraryId)?.calibreLibraryUuid ?? null,
-        askExisting
+        libraries,
+        controller.signal,
+        (stage) => {
+          if (opening) opening = { ...opening, stage };
+        }
       );
-      const outcome = await openCalibreBook(book, deps, controller.signal, (stage) => {
-        if (opening) opening = { ...opening, stage };
-      });
       if (outcome.status === 'opened') {
         await goto(`${pagePath}/b?id=${outcome.localId}`);
         return;
@@ -996,16 +1057,7 @@
   on:keydown={onWindowKeydown}
 />
 
-<div class="elevation-4 fixed inset-x-0 top-0 z-10">
-  <div class={baseHeaderClasses}>
-    <div class="{pxScreen} flex h-full items-center justify-between">
-      <h1 class="text-lg font-medium">Library</h1>
-      <MergedHeaderIcon
-        items={[mergeEntries.MANAGE, mergeEntries.LIBRARY, mergeEntries.COLLECTIONS]}
-      />
-    </div>
-  </div>
-</div>
+<AppHeader title="Library" />
 
 <div class="{pxScreen} pb-24 pt-16 xl:pt-14" data-testid="library-page">
   {#if connection === undefined}
@@ -1138,6 +1190,24 @@
             {selectMode ? 'Done' : 'Select'}
           </button>
         {/if}
+        {#if uploadInfo?.enabled && collectionId === null && !selectMode}
+          <button
+            class="min-h-[3rem] rounded border-2 border-current px-3"
+            data-testid="upload-button"
+            on:click={() => uploadInput?.click()}
+          >
+            Upload
+          </button>
+          <input
+            class="hidden"
+            type="file"
+            accept=".epub,application/epub+zip"
+            multiple
+            data-testid="upload-input"
+            bind:this={uploadInput}
+            on:change={onUploadFiles}
+          />
+        {/if}
       </div>
     </div>
 
@@ -1203,6 +1273,15 @@
               Manual · {plural(listIds.length, 'book', 'books')}
             {/if}
           </p>
+          {#if pinTarget}
+            <button
+              class="mt-2 min-h-[3rem] rounded border-2 border-current px-4 font-medium"
+              data-testid="pin-home"
+              on:click={togglePin}
+            >
+              {pinnedHere ? 'Unpin from Home' : 'Pin to Home'}
+            </button>
+          {/if}
           {#if userCollection}
             <div class="mt-2 flex flex-wrap gap-2">
               {#if isList}
@@ -1254,6 +1333,15 @@
           </p>
         {:else if group.name === null}
           <p class="text-sm">Books that are not part of a series.</p>
+        {/if}
+        {#if pinTarget}
+          <button
+            class="mt-2 min-h-[3rem] rounded border-2 border-current px-4 font-medium"
+            data-testid="pin-home"
+            on:click={togglePin}
+          >
+            {pinnedHere ? 'Unpin from Home' : 'Pin to Home'}
+          </button>
         {/if}
         {#if headerTag !== null}
           <button
@@ -1477,6 +1565,19 @@
       </div>
     </div>
   </div>
+{/if}
+
+<AppBottomBar hidden={selectMode && !!connection && !showingGroups} />
+
+{#if uploading}
+  <UploadProgressOverlay
+    index={uploading.index}
+    count={uploading.count}
+    name={uploading.name}
+    loaded={uploading.loaded}
+    total={uploading.total}
+    on:cancel={() => uploading?.controller.abort()}
+  />
 {/if}
 
 {#if opening}
