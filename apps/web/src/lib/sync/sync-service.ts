@@ -26,6 +26,7 @@ import {
   noteReaderCompletion,
   onBookStatesChanged,
   pendingStartOver,
+  registerBookStateSync,
   removeReadThrough,
   setBookBlur,
   setBookFavorite,
@@ -111,7 +112,10 @@ let enginePromise: Promise<SyncEngine> | null = null;
 
 export function getSyncEngine(): Promise<SyncEngine> {
   if (!enginePromise) {
-    enginePromise = SyncEngine.open({ warn });
+    enginePromise = SyncEngine.open({ warn }).then((engine) => {
+      registerBookStateSync(engine);
+      return engine;
+    });
     enginePromise.catch(() => {
       enginePromise = null; // try again next time
     });

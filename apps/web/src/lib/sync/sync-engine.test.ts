@@ -15,7 +15,7 @@ import type {
   SyncTransport
 } from './sync-api';
 import { openSyncDb, type Change } from './sync-db';
-import { SyncEngine } from './sync-engine';
+import { SyncEngine, type RefusalHandler } from './sync-engine';
 
 let run = 0;
 const DEVICE = '11111111-1111-4111-8111-111111111111';
@@ -364,5 +364,157 @@ describe('registration', () => {
     const spy = vi.spyOn(transport, 'pull');
     await Promise.all([engine.sync(transport), engine.sync(transport)]);
     expect(spy).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('refusals settled by a handler', () => {
+  const refuseWith = (code: string, record?: ServerRecord) => (changes: Change[]) =>
+    changes.map(
+      (c): ChangeResult => ({
+        kind: c.kind,
+        id: c.id,
+        status: 'rejected',
+        error: { code, message: 'refused' },
+        ...(record ? { record } : {})
+      })
+    );
+
+  /** Re-plans "x:1" as "x:<highest seen + 1>" and notes it in the meta. */
+  function handler(calls: string[][]): RefusalHandler {
+    return {
+      code: 'taken',
+      kind: 'thing',
+      bookIdOf: () => 'b1',
+      resolve(entry, records) {
+        calls.push(records.map((r) => r.id).sort());
+        const highest = Math.max(...records.map((r) => Number(r.id.split(':')[1])));
+        const id = `x:${highest + 1}`;
+        return {
+          writes: [{ kind: 'thing', id, data: { from: entry.change.id }, bookId: 'b1' }],
+          meta: (meta) => {
+            meta.startOverMoves = { b1: { from: [entry.change.id], to: id } };
+          }
+        };
+      }
+    };
+  }
+
+  it("adopts the server's copy that comes with a refusal", async () => {
+    const { engine } = await makeEngine();
+    await engine.put('thing', 'x:1', { mine: true }, { bookId: 'b1' });
+    const transport = new FakeTransport();
+    const server = serverRecord({
+      kind: 'thing',
+      id: 'x:1',
+      bookId: 'b1',
+      rev: 4,
+      data: { theirs: true }
+    });
+    transport.pushHandler = refuseWith('taken', server);
+    const adopted: string[] = [];
+    engine.onRemoteChange((records) => adopted.push(...records.map((r) => r.id)));
+    await engine.sync(transport);
+    expect(await engine.get('thing', 'x:1')).toMatchObject({ rev: 4, data: { theirs: true } });
+    expect(adopted).toEqual(['x:1']);
+    // Without a handler it is kept for the bug report, as before.
+    expect(await engine.status()).toMatchObject({ pending: 0, rejected: 1 });
+  });
+
+  it('settles after the pull, in one step with its bookkeeping, and pushes the result next', async () => {
+    const { engine } = await makeEngine();
+    const calls: string[][] = [];
+    engine.handleRefusals(handler(calls));
+    await engine.put('thing', 'x:1', {}, { bookId: 'b1' });
+    const transport = new FakeTransport();
+    transport.pushHandler = refuseWith(
+      'taken',
+      serverRecord({ kind: 'thing', id: 'x:1', bookId: 'b1', data: { done: true } })
+    );
+    // The pull brings a record the stale mirror didn't have.
+    transport.pullPages.push({
+      records: [serverRecord({ kind: 'thing', id: 'x:2', bookId: 'b1', rev: 2 })],
+      cursor: 'c1',
+      more: false,
+      serverTime: 0
+    });
+    const written: string[] = [];
+    engine.onLocalWrite((r) => written.push(r.id));
+    await engine.sync(transport);
+
+    expect(calls).toEqual([['x:1', 'x:2']]);
+    expect(written).toEqual(['x:3']);
+    expect(await engine.get('thing', 'x:3')).toMatchObject({
+      deviceId: DEVICE,
+      data: { from: 'x:1' }
+    });
+    expect((await engine.getMeta()).startOverMoves).toEqual({ b1: { from: ['x:1'], to: 'x:3' } });
+    expect(await engine.status()).toMatchObject({ pending: 1, rejected: 0 });
+
+    transport.pushHandler = (changes) =>
+      changes.map((c) => ({ kind: c.kind, id: c.id, status: 'applied', rev: 9 }));
+    await engine.sync(transport);
+    expect(transport.pushes[1].map((c) => c.id)).toEqual(['x:3']);
+    expect(calls).toHaveLength(1);
+  });
+
+  it('keeps a refusal whose handler fails, writing nothing, and settles it on a later sync', async () => {
+    const { engine, warnings } = await makeEngine();
+    const calls: string[][] = [];
+    let fail = true;
+    const inner = handler(calls);
+    engine.handleRefusals({
+      ...inner,
+      resolve(entry, records, deviceId) {
+        if (fail) throw new Error('not now');
+        return inner.resolve(entry, records, deviceId);
+      }
+    });
+    await engine.put('thing', 'x:1', {}, { bookId: 'b1' });
+    const transport = new FakeTransport();
+    transport.pushHandler = refuseWith('taken');
+    await engine.sync(transport);
+    expect(warnings.join()).toContain('not now');
+    expect(await engine.status()).toMatchObject({ pending: 0, rejected: 1 });
+    expect(await engine.get('thing', 'x:2')).toBeUndefined();
+    expect((await engine.getMeta()).startOverMoves).toBeUndefined();
+
+    fail = false;
+    await engine.sync(transport);
+    expect(await engine.status()).toMatchObject({ pending: 1, rejected: 0 });
+    expect(await engine.get('thing', 'x:2')).toBeDefined();
+  });
+
+  it('settles a refusal left from before a reload, once', async () => {
+    const first = await makeEngine();
+    await first.engine.put('thing', 'x:1', {}, { bookId: 'b1' });
+    const transport = new FakeTransport();
+    transport.pushHandler = refuseWith('taken');
+    await first.engine.sync(transport); // no handler yet: kept
+    first.engine.close();
+
+    const engine = await SyncEngine.open({
+      openDb: () => openSyncDb(first.name),
+      newId: () => DEVICE
+    });
+    const calls: string[][] = [];
+    engine.handleRefusals(handler(calls));
+    await Promise.all([engine.sync(transport), engine.sync(transport)]);
+    transport.pushHandler = (changes) =>
+      changes.map((c) => ({ kind: c.kind, id: c.id, status: 'applied', rev: 9 }));
+    await engine.sync(transport);
+    expect(calls).toHaveLength(1);
+    expect(await engine.status()).toMatchObject({ rejected: 0 });
+  });
+
+  it('leaves refusals with other codes alone', async () => {
+    const { engine } = await makeEngine();
+    const calls: string[][] = [];
+    engine.handleRefusals(handler(calls));
+    await engine.put('thing', 'x:1', {}, { bookId: 'b1' });
+    const transport = new FakeTransport();
+    transport.pushHandler = refuseWith('unknown_book');
+    await engine.sync(transport);
+    expect(calls).toHaveLength(0);
+    expect(await engine.status()).toMatchObject({ rejected: 1 });
   });
 });

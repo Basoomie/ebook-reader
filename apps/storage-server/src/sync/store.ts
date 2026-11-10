@@ -27,7 +27,14 @@ export interface SyncChange {
 export type ChangeResult =
   | { kind: string; id: string; status: 'applied' | 'duplicate'; rev: number }
   | { kind: string; id: string; status: 'stale'; record: SyncRecord }
-  | { kind: string; id: string; status: 'rejected'; error: { code: string; message: string } };
+  | {
+      kind: string;
+      id: string;
+      status: 'rejected';
+      error: { code: string; message: string };
+      /** The server's copy, when the change was refused because of it (checkReplace). */
+      record?: SyncRecord;
+    };
 
 export interface PullResult {
   records: SyncRecord[];
@@ -248,6 +255,14 @@ export class SyncStore {
       const order = compareVersions({ updatedAt, deviceId }, existing);
       if (order === 0) return { kind, id, status: 'duplicate', rev: existing.rev };
       if (order < 0) return { kind, id, status: 'stale', record: existing };
+      if (spec.checkReplace) {
+        try {
+          spec.checkReplace(validated, deleted, existing);
+        } catch (err) {
+          if (!(err instanceof RecordError)) throw err;
+          return { ...reject(err.code, err.message), record: existing };
+        }
+      }
     }
 
     const rev = this.nextRev(userId);

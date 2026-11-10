@@ -214,4 +214,77 @@ describe('read-through', () => {
     const records = (await t.pull(a.auth)).filter((r) => r.kind === 'read-through');
     expect(records).toHaveLength(1);
   });
+
+  it('never lets an open read-through replace a finished one (stale-mirror Start over)', async () => {
+    const t = setup();
+    const a = await t.device('A');
+    const b = await t.device('B');
+    const book = insertBook(t.db);
+    const at = Date.now() - 60_000;
+    const rt = (n: number) => `${book}:${n}`;
+    const finished = (n: number) =>
+      readThrough(n, { finished: true, finishedOn: '2026-11-09', origin: 'start-over' });
+    const status = (results: any[]) => results.map((r) => r.error?.code ?? r.status);
+
+    // B finished #2; A (mirror behind) starts over as #2 later.
+    expect(
+      status(
+        await t.push(b.auth, [
+          { kind: 'read-through', id: rt(2), updatedAt: at, data: finished(2) },
+        ]),
+      ),
+    ).toEqual(['applied']);
+    const refused = await t.push(a.auth, [
+      { kind: 'read-through', id: rt(2), updatedAt: at + 10, data: readThrough(2) },
+    ]);
+    expect(status(refused)).toEqual(['read_through_finished']);
+    // The refusal carries the server's copy, unchanged.
+    expect(refused[0].record).toMatchObject({
+      id: rt(2),
+      deviceId: b.id,
+      updatedAt: at,
+      deletedAt: null,
+      data: { finished: true, finishedOn: '2026-11-09' },
+    });
+    // An older open change is just stale (e.g. a re-sent push), not refused.
+    expect(
+      status(
+        await t.push(a.auth, [
+          { kind: 'read-through', id: rt(2), updatedAt: at - 5, data: readThrough(2) },
+        ]),
+      ),
+    ).toEqual(['stale']);
+
+    // Everything else still follows lww.
+    expect(
+      status(
+        await t.push(a.auth, [
+          // finished replacing finished (date edit)
+          {
+            kind: 'read-through',
+            id: rt(2),
+            updatedAt: at + 20,
+            data: readThrough(2, { finished: true, finishedOn: '2026-11-08' }),
+          },
+          // open replacing open (offline Start overs merging), then finished replacing open
+          { kind: 'read-through', id: rt(3), updatedAt: at, data: readThrough(3) },
+          { kind: 'read-through', id: rt(3), updatedAt: at + 1, data: readThrough(3) },
+          { kind: 'read-through', id: rt(3), updatedAt: at + 2, data: finished(3) },
+          // deleting a finished one (undo a completion), then reviving it as open
+          { kind: 'read-through', id: rt(3), updatedAt: at + 3, deletedAt: at + 3 },
+          { kind: 'read-through', id: rt(3), updatedAt: at + 4, data: readThrough(3) },
+        ]),
+      ),
+    ).toEqual(['applied', 'applied', 'applied', 'applied', 'applied', 'applied']);
+
+    const records = (await t.pull(b.auth)).filter((r) => r.kind === 'read-through');
+    expect(records.find((r) => r.id === rt(2))?.data).toMatchObject({
+      finished: true,
+      finishedOn: '2026-11-08',
+    });
+    expect(records.find((r) => r.id === rt(3))).toMatchObject({
+      deletedAt: null,
+      data: { finished: false },
+    });
+  });
 });

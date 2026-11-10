@@ -39,6 +39,18 @@ export interface KindSpec {
    * Throws RecordError when the change must be rejected.
    */
   validate(id: string, data: unknown, deleted: boolean, ctx: KindContext): ValidatedRecord;
+  /**
+   * Optional: checks a validated change that would win against the record the
+   * server holds (never called for stale or duplicate changes). Throws
+   * RecordError to refuse it; the refusal then carries the server's copy.
+   */
+  checkReplace?(next: ValidatedRecord, deleted: boolean, existing: ExistingRecord): void;
+}
+
+/** The server's current version of a record, as checkReplace sees it. */
+export interface ExistingRecord {
+  deletedAt: number | null;
+  data: Record<string, unknown>;
 }
 
 export type KindRegistry = Record<string, KindSpec>;
@@ -474,6 +486,21 @@ const readThroughKind: KindSpec = {
         charCount,
       },
     };
+  },
+  /**
+   * An open read-through never replaces a finished one (decided 2026-11-10): a device
+   * whose mirror is behind plans Start over as a number that may already exist
+   * elsewhere as a finished read-through, and lww would wipe its finish. The device
+   * re-plans with the next free number after adopting the server's copy.
+   */
+  checkReplace(next, deleted, existing) {
+    if (deleted || existing.deletedAt !== null) return;
+    if (next.data.finished === false && existing.data.finished === true) {
+      throw new RecordError(
+        'read_through_finished',
+        'This read-through is already finished; start over as the next number',
+      );
+    }
   },
 };
 
