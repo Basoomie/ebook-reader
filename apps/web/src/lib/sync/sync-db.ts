@@ -77,6 +77,13 @@ export interface SyncMeta {
    * (or its own id on the source device). Global settings sync starts then.
    */
   globalSettingsAdoptedFrom?: string;
+  /**
+   * A Start over the server refused because that number was already finished
+   * elsewhere, re-planned as the next free number: bookId -> the refused
+   * read-through ids and the new one. Only this device's own position record is
+   * read through it (it may carry a refused id); no record is rewritten.
+   */
+  startOverMoves?: Record<string, { from: string[]; to: string }>;
 }
 
 export interface SyncDbSchema extends DBSchema {

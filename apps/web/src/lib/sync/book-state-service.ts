@@ -5,8 +5,13 @@
  */
 
 import {
+  addStartOverMove,
   BOOK_STATE_KINDS,
   bookStateFrom,
+  parseReadThroughRecordId,
+  planRefusedStartOver,
+  READ_THROUGH_FINISHED,
+  READ_THROUGH_KIND,
   bookStatesFrom,
   planEditFinishDate,
   planFirstPageTurn,
@@ -24,8 +29,8 @@ import {
   BOOK_FAVORITE_KIND
 } from '$lib/sync/book-state';
 import { positionRecordId } from '$lib/sync/record-position';
-import type { LocalRecord } from '$lib/sync/sync-db';
-import type { SyncEngine } from '$lib/sync/sync-engine';
+import type { LocalRecord, SyncMeta } from '$lib/sync/sync-db';
+import type { RefusalHandler, SyncEngine } from '$lib/sync/sync-engine';
 
 /**
  * Book state (WP8a) on top of the sync engine: reads come from the local
@@ -45,16 +50,59 @@ export class BookStateError extends Error {}
 
 const STATE_KINDS = new Set<string>(BOOK_STATE_KINDS);
 
+/** Adds this device's re-planned Start over (if any) to a book's state. */
+function withOwnMove(state: BookState, meta: SyncMeta, deviceId: string): BookState {
+  const move = meta.startOverMoves?.[state.bookId];
+  if (move) state.ownMove = { positionId: positionRecordId(state.bookId, deviceId), ...move };
+  return state;
+}
+
 export async function getBookState(bookId: string, deps: BookStateDeps): Promise<BookState> {
   const engine = await deps.getEngine();
-  return bookStateFrom(bookId, await engine.getForBook(bookId));
+  const [records, meta] = await Promise.all([engine.getForBook(bookId), engine.getMeta()]);
+  return withOwnMove(bookStateFrom(bookId, records), meta, engine.deviceId);
 }
 
 /** Every book with a state record (books without one are Unread with defaults). */
 export async function getAllBookStates(deps: BookStateDeps): Promise<Map<string, BookState>> {
   const engine = await deps.getEngine();
   const lists = await Promise.all(BOOK_STATE_KINDS.map((kind) => engine.getAll(kind)));
-  return bookStatesFrom(lists.flat());
+  const meta = await engine.getMeta();
+  const states = bookStatesFrom(lists.flat());
+  for (const state of states.values()) withOwnMove(state, meta, engine.deviceId);
+  return states;
+}
+
+/**
+ * Re-plans a Start over the server refused because that number is already finished
+ * elsewhere (a device whose mirror was behind). Runs after the sync's pull, in the
+ * same local transaction that clears the refusal; the new read-through syncs next.
+ */
+export const startOverRefusalHandler: RefusalHandler = {
+  code: READ_THROUGH_FINISHED,
+  kind: READ_THROUGH_KIND,
+  bookIdOf: (change) => parseReadThroughRecordId(change.id)?.bookId ?? null,
+  resolve(entry, records, deviceId) {
+    const bookId = parseReadThroughRecordId(entry.change.id)?.bookId;
+    const write = bookId && planRefusedStartOver(bookId, entry.change, records, deviceId);
+    if (!bookId || !write || 'deleted' in write) return { writes: [] };
+    return {
+      writes: [{ kind: write.kind, id: write.id, data: write.data, bookId }],
+      meta: (meta) => {
+        meta.startOverMoves = addStartOverMove(
+          meta.startOverMoves,
+          bookId,
+          entry.change.id,
+          write.id
+        );
+      }
+    };
+  }
+};
+
+/** Book-state hooks on the sync engine (call once per engine). */
+export function registerBookStateSync(engine: SyncEngine): () => void {
+  return engine.handleRefusals(startOverRefusalHandler);
 }
 
 /** Writes in order; throws BookStateError when one could not be saved. */
@@ -212,11 +260,12 @@ export async function pendingStartOver(
 ): Promise<ReadThrough | null> {
   try {
     const engine = await deps.getEngine();
-    const records = await engine.getForBook(bookId);
+    const [records, meta] = await Promise.all([engine.getForBook(bookId), engine.getMeta()]);
     const own = records.find(
       (r) => r.kind === 'position' && r.id === positionRecordId(bookId, engine.deviceId)
     );
-    return startOverToApply(bookStateFrom(bookId, records), own, restoredPos);
+    const state = withOwnMove(bookStateFrom(bookId, records), meta, engine.deviceId);
+    return startOverToApply(state, own, restoredPos);
   } catch (error) {
     deps.warn(`Book state: ${(error as Error)?.message ?? error}`);
     return null;

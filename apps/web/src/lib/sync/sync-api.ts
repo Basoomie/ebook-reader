@@ -14,7 +14,14 @@ export type ServerRecord = LocalRecord & { rev: number };
 export type ChangeResult =
   | { kind: string; id: string; status: 'applied' | 'duplicate'; rev: number }
   | { kind: string; id: string; status: 'stale'; record: ServerRecord }
-  | { kind: string; id: string; status: 'rejected'; error: { code: string; message: string } };
+  | {
+      kind: string;
+      id: string;
+      status: 'rejected';
+      error: { code: string; message: string };
+      /** The server's copy, when the change was refused because of it. */
+      record?: ServerRecord;
+    };
 
 export interface PushResponse {
   results: ChangeResult[];

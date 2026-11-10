@@ -75,6 +75,20 @@ export interface BookState {
   blur: BookBlur;
   /** Live read-throughs, by number. */
   readThroughs: ReadThrough[];
+  /**
+   * This device's re-planned Start over (see planRefusedStartOver), if any: its own
+   * position record may still carry a refused read-through id and is read as `to`.
+   */
+  ownMove?: OwnPositionMove;
+}
+
+export interface OwnPositionMove {
+  /** This device's position record id for the book. */
+  positionId: string;
+  /** Refused read-through ids... */
+  from: string[];
+  /** ...and the read-through they became. */
+  to: string;
 }
 
 /** One record write the service carries out. */
@@ -90,6 +104,20 @@ export function isDateKey(value: unknown): value is string {
 
 export function readThroughRecordId(bookId: string, number: number): string {
   return `${bookId}:${number}`;
+}
+
+/** The server's code for an open read-through that would replace a finished one. */
+export const READ_THROUGH_FINISHED = 'read_through_finished';
+/** Highest read-through number the server accepts. */
+export const MAX_READ_THROUGH_NUMBER = 9999;
+
+/** The book and number of a read-through record id (<bookId>:<n>), or null. */
+export function parseReadThroughRecordId(id: string): { bookId: string; number: number } | null {
+  const at = id.lastIndexOf(':');
+  if (at <= 0) return null;
+  const number = Number(id.slice(at + 1));
+  if (!Number.isInteger(number) || number < 1 || number > MAX_READ_THROUGH_NUMBER) return null;
+  return { bookId: id.slice(0, at), number };
 }
 
 /** A position's read-through id with null meaning the first read-through. */
@@ -328,17 +356,71 @@ export function startOverToApply(
   if (!current || current.origin !== 'start-over' || current.finished) return null;
   if (!(restoredPos > 0)) return null;
   if (ownPosition && ownPosition.deletedAt === null) {
-    const own = normalizeReadThroughId(state.bookId, ownPosition.data?.readThroughId);
-    if (own === current.id) return null;
+    if (positionReadThroughOf(state, ownPosition) === current.id) return null;
   }
   return current;
+}
+
+/**
+ * The read-through a position record belongs to (null = #1). This device's own
+ * record is read through state.ownMove, so a re-planned Start over keeps it.
+ */
+export function positionReadThroughOf(state: BookState, position: LocalRecord): string {
+  const id = normalizeReadThroughId(state.bookId, position.data?.readThroughId);
+  const move = state.ownMove;
+  return move && position.id === move.positionId && move.from.includes(id) ? move.to : id;
+}
+
+/**
+ * Re-plans a Start over the server refused (READ_THROUGH_FINISHED, decided
+ * 2026-11-10): this device's mirror was behind and planned a number that is
+ * already finished elsewhere. With the mirror now up to date (the server's copy
+ * was adopted), it becomes the next free number with the same start date. Null
+ * when there is nothing to re-plan: not a Start over, or this device has changed
+ * that read-through since (that edit stands).
+ */
+export function planRefusedStartOver(
+  bookId: string,
+  refused: { id: string; updatedAt: number; data: Record<string, unknown> },
+  records: LocalRecord[],
+  deviceId: string
+): BookStateWrite | null {
+  const parsed = parseReadThroughRecordId(refused.id);
+  if (!parsed || parsed.bookId !== bookId) return null;
+  if (refused.data?.origin !== 'start-over' || refused.data?.finished !== false) return null;
+  const local = records.find((r) => r.kind === READ_THROUGH_KIND && r.id === refused.id);
+  if (local && local.deviceId === deviceId && local.updatedAt > refused.updatedAt) return null;
+  const highest = currentReadThrough(bookStateFrom(bookId, records))?.number ?? 1;
+  const number = Math.max(parsed.number, highest) + 1;
+  if (number > MAX_READ_THROUGH_NUMBER) return null;
+  return readThroughWrite(bookId, {
+    number,
+    origin: 'start-over',
+    startedOn: isDateKey(refused.data.startedOn) ? refused.data.startedOn : null,
+    finished: false,
+    finishedOn: null,
+    manual: false,
+    charCount: null
+  });
+}
+
+/** Records a re-planned Start over; chains a re-plan of a re-plan. */
+export function addStartOverMove(
+  moves: Record<string, { from: string[]; to: string }> | undefined,
+  bookId: string,
+  fromId: string,
+  toId: string
+): Record<string, { from: string[]; to: string }> {
+  const prev = moves?.[bookId];
+  const from = prev && prev.to === fromId ? [...prev.from, fromId] : [fromId];
+  return { ...moves, [bookId]: { from, to: toId } };
 }
 
 /** Whether a position record belongs to the book's current read-through. */
 export function isCurrentReadThroughPosition(state: BookState, position: LocalRecord): boolean {
   const current = currentReadThrough(state);
   return (
-    normalizeReadThroughId(state.bookId, position.data?.readThroughId) ===
+    positionReadThroughOf(state, position) ===
     normalizeReadThroughId(state.bookId, current?.id ?? null)
   );
 }

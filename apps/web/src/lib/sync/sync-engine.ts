@@ -12,9 +12,12 @@ import {
   type Change,
   type LocalRecord,
   type OutboxEntry,
+  type RejectedEntry,
   type SyncDb,
+  type SyncDbSchema,
   type SyncMeta
 } from '$lib/sync/sync-db';
+import type { IDBPTransaction } from 'idb';
 
 /**
  * Client side of the record sync (WP4).
@@ -54,6 +57,41 @@ export interface SyncStatus {
 
 type Listener<T> = (value: T) => void;
 
+/** A local write made while settling a refusal. */
+export interface RefusalWrite {
+  kind: string;
+  id: string;
+  data: Record<string, unknown>;
+  bookId: string | null;
+}
+
+/**
+ * Settles refused changes with one error code (e.g. re-plans them). resolve()
+ * runs inside the IndexedDB transaction that also removes the refusal, so it
+ * must be synchronous: it gets the mirror's records of the change's book.
+ */
+export interface RefusalHandler {
+  code: string;
+  kind: string;
+  /** The book whose records resolve() needs (null = none). */
+  bookIdOf(change: Change): string | null;
+  /**
+   * The writes that settle the refusal, plus an optional change to local
+   * bookkeeping. Throwing keeps the refusal for the next sync.
+   */
+  resolve(
+    entry: RejectedEntry,
+    records: LocalRecord[],
+    deviceId: string
+  ): { writes: RefusalWrite[]; meta?: (meta: SyncMeta) => void };
+}
+
+type WriteTx = IDBPTransaction<
+  SyncDbSchema,
+  Array<'records' | 'outbox' | 'meta' | 'rejected'>,
+  'readwrite'
+>;
+
 /** Error codes from the server the engine reacts to. */
 function errorCode(error: unknown): string | undefined {
   return (error as { code?: string } | null)?.code;
@@ -67,6 +105,7 @@ export class SyncEngine {
   private registeredWith = new WeakSet<SyncTransport>();
   private readonly localListeners = new Set<Listener<LocalRecord>>();
   private readonly remoteListeners = new Set<Listener<LocalRecord[]>>();
+  private readonly refusalHandlers = new Map<string, RefusalHandler>();
   private readonly now: () => number;
   private readonly pushBatchSize: number;
   private readonly pullLimit: number;
@@ -114,9 +153,24 @@ export class SyncEngine {
     options: { bookId?: string | null; deleted?: boolean } = {}
   ): Promise<LocalRecord> {
     const tx = this.db.transaction(['records', 'outbox', 'meta'], 'readwrite');
-    const records = tx.objectStore('records');
     const metaStore = tx.objectStore('meta');
     const meta = (await metaStore.get(META_KEY)) as SyncMeta;
+    const record = await this.writeIn(tx, meta, kind, id, data, options);
+    await Promise.all([metaStore.put(meta, META_KEY), tx.done]);
+    this.emit(this.localListeners, record);
+    return record;
+  }
+
+  /** One local write inside a transaction; the caller stores `meta` (seq) and commits. */
+  private async writeIn(
+    tx: WriteTx,
+    meta: SyncMeta,
+    kind: string,
+    id: string,
+    data: Record<string, unknown>,
+    options: { bookId?: string | null; deleted?: boolean }
+  ): Promise<LocalRecord> {
+    const records = tx.objectStore('records');
     const existing = await records.get([kind, id]);
 
     let updatedAt = Math.round(this.now() + meta.clockOffsetMs);
@@ -140,13 +194,7 @@ export class SyncEngine {
       seq: meta.seq,
       change: { kind, id, updatedAt, deletedAt: record.deletedAt, data: record.data }
     };
-    await Promise.all([
-      records.put(record),
-      tx.objectStore('outbox').put(entry),
-      metaStore.put(meta, META_KEY),
-      tx.done
-    ]);
-    this.emit(this.localListeners, record);
+    await Promise.all([records.put(record), tx.objectStore('outbox').put(entry)]);
     return record;
   }
 
@@ -228,6 +276,19 @@ export class SyncEngine {
     return () => this.localListeners.delete(listener);
   }
 
+  /**
+   * Settles refused changes with handler.code after every sync cycle (push and
+   * pull) instead of keeping them for the bug report. One handler per code.
+   */
+  handleRefusals(handler: RefusalHandler): () => void {
+    this.refusalHandlers.set(handler.code, handler);
+    return () => {
+      if (this.refusalHandlers.get(handler.code) === handler) {
+        this.refusalHandlers.delete(handler.code);
+      }
+    };
+  }
+
   /** Called with the records a pull changed locally. */
   onRemoteChange(listener: Listener<LocalRecord[]>): () => void {
     this.remoteListeners.add(listener);
@@ -265,6 +326,7 @@ export class SyncEngine {
         await this.pushAll(transport, report);
         await this.pullAll(transport, report);
       }
+      await this.settleRefusals();
       await this.updateMeta((meta) => {
         meta.lastSyncAt = this.now();
         delete meta.lastError;
@@ -384,7 +446,15 @@ export class SyncEngine {
         }
       } else {
         report.rejected += 1;
-        if (unchanged) await outbox.delete(key);
+        if (unchanged) {
+          await outbox.delete(key);
+          // Refused because of the server's copy: adopt it, as for stale.
+          if (result.record) {
+            const record = { ...result.record };
+            await records.put(record);
+            adopted.push(record);
+          }
+        }
         await tx.objectStore('rejected').add({
           change: entry.change,
           error: result.error,
@@ -434,6 +504,66 @@ export class SyncEngine {
       report.pulled += response.records.length;
       if (changed.length) this.emit(this.remoteListeners, changed);
       if (!response.more) return;
+    }
+  }
+
+  /**
+   * Runs the refusal handlers. Each refusal is settled in one transaction (the
+   * handler's writes, its bookkeeping and removing the refusal), so a reload
+   * never loses it or settles it twice. Never throws: a failing handler keeps
+   * the refusal for the next sync.
+   */
+  private async settleRefusals(): Promise<void> {
+    if (!this.refusalHandlers.size) return;
+    let keys: number[];
+    try {
+      keys = await this.db.getAllKeys('rejected');
+    } catch (error) {
+      this.warn(`Sync: could not read refused changes: ${(error as Error)?.message ?? error}`);
+      return;
+    }
+    for (const key of keys) {
+      try {
+        const written = await this.settleRefusal(key);
+        for (const record of written) this.emit(this.localListeners, record);
+      } catch (error) {
+        this.warn(`Sync: could not settle a refused change: ${(error as Error)?.message ?? error}`);
+      }
+    }
+  }
+
+  private async settleRefusal(key: number): Promise<LocalRecord[]> {
+    const tx = this.db.transaction(['records', 'outbox', 'meta', 'rejected'], 'readwrite');
+    const done = tx.done;
+    try {
+      const rejected = tx.objectStore('rejected');
+      const entry = await rejected.get(key);
+      const handler = entry ? this.refusalHandlers.get(entry.error?.code) : undefined;
+      if (!entry || !handler || handler.kind !== entry.change.kind) {
+        await done;
+        return [];
+      }
+      const bookId = handler.bookIdOf(entry.change);
+      const records = bookId ? await tx.objectStore('records').index('bookId').getAll(bookId) : [];
+      const resolution = handler.resolve(entry, records, this.currentDeviceId);
+      const metaStore = tx.objectStore('meta');
+      const meta = (await metaStore.get(META_KEY)) as SyncMeta;
+      const written: LocalRecord[] = [];
+      for (const w of resolution.writes) {
+        written.push(await this.writeIn(tx, meta, w.kind, w.id, w.data, { bookId: w.bookId }));
+      }
+      resolution.meta?.(meta);
+      await Promise.all([metaStore.put(meta, META_KEY), rejected.delete(key)]);
+      await done;
+      return written;
+    } catch (error) {
+      try {
+        tx.abort();
+      } catch {
+        // the transaction already finished
+      }
+      await done.catch(() => {});
+      throw error;
     }
   }
 

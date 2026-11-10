@@ -6,6 +6,7 @@
 
 import { describe, expect, it } from 'vitest';
 import {
+  addStartOverMove,
   bookStateFrom,
   bookStatesFrom,
   characterTotals,
@@ -16,10 +17,12 @@ import {
   planEditFinishDate,
   planFirstPageTurn,
   planMarkCompleted,
+  planRefusedStartOver,
   planRemoveReadThrough,
   planSetStatus,
   planStartOver,
   positionReadThroughId,
+  positionReadThroughOf,
   readThroughOfDay,
   startOverToApply,
   type BookState,
@@ -443,5 +446,97 @@ describe('stat days and character totals', () => {
   it('an unfinished manual flag never counts', () => {
     const totals = characterTotals([rt(2, { manual: true, finished: false, charCount: 5 })], [], 9);
     expect(totals.characters).toBe(0);
+  });
+});
+
+describe('Start over refused for a stale mirror (re-plan)', () => {
+  const refused = (number: number, extra: Record<string, unknown> = {}) => ({
+    id: `${BOOK}:${number}`,
+    updatedAt: 10,
+    data: { ...rtRecord(number, { startedOn: '2026-11-05' }).data, ...extra }
+  });
+
+  it('becomes the next free number with the same start date', () => {
+    // The server's finished #2 was adopted; nothing else is known.
+    const records = [rtRecord(2, { finished: true, finishedOn: '2026-11-04' })];
+    const write = planRefusedStartOver(BOOK, refused(2), records, DEVICE);
+    expect(write).toEqual({
+      kind: 'read-through',
+      id: `${BOOK}:3`,
+      bookId: BOOK,
+      data: {
+        number: 3,
+        origin: 'start-over',
+        startedOn: '2026-11-05',
+        finished: false,
+        finishedOn: null,
+        manual: false,
+        charCount: null
+      }
+    });
+    // The finished #2 is not written.
+    const after = state(apply(records, [write!]));
+    expect(after.readThroughs.map((r) => [r.number, r.finished])).toEqual([
+      [2, true],
+      [3, false]
+    ]);
+  });
+
+  it('goes past every number the fresh mirror knows', () => {
+    const records = [rtRecord(2, { finished: true }), rtRecord(4)];
+    expect(planRefusedStartOver(BOOK, refused(2), records, DEVICE)?.id).toBe(`${BOOK}:5`);
+    // A mirror that still knows nothing (copy not adopted) still moves on.
+    expect(planRefusedStartOver(BOOK, refused(2), [], DEVICE)?.id).toBe(`${BOOK}:3`);
+  });
+
+  it('re-plans nothing when there is nothing to re-plan', () => {
+    const records = [rtRecord(2, { finished: true })];
+    expect(
+      planRefusedStartOver(BOOK, refused(2, { origin: 'completion' }), records, DEVICE)
+    ).toBeNull();
+    expect(planRefusedStartOver(BOOK, refused(2, { finished: true }), records, DEVICE)).toBeNull();
+    expect(planRefusedStartOver(OTHER, refused(2), records, DEVICE)).toBeNull();
+    // Changed on this device since (e.g. marked completed): that edit stands.
+    const mine = { ...rtRecord(2, { finished: true }), updatedAt: 11 };
+    expect(planRefusedStartOver(BOOK, refused(2), [mine], DEVICE)).toBeNull();
+    // The same record from another device does not count as a change of ours.
+    expect(planRefusedStartOver(BOOK, refused(2), [{ ...mine, deviceId: OTHER }], DEVICE)?.id).toBe(
+      `${BOOK}:3`
+    );
+    expect(planRefusedStartOver(BOOK, refused(9999), [], DEVICE)).toBeNull();
+  });
+
+  it('records the move and chains a re-plan of a re-plan', () => {
+    const one = addStartOverMove(undefined, BOOK, `${BOOK}:2`, `${BOOK}:3`);
+    expect(one).toEqual({ [BOOK]: { from: [`${BOOK}:2`], to: `${BOOK}:3` } });
+    const two = addStartOverMove(one, BOOK, `${BOOK}:3`, `${BOOK}:4`);
+    expect(two[BOOK]).toEqual({ from: [`${BOOK}:2`, `${BOOK}:3`], to: `${BOOK}:4` });
+    const other = addStartOverMove(two, OTHER, `${OTHER}:2`, `${OTHER}:3`);
+    expect(Object.keys(other)).toEqual([BOOK, OTHER]);
+    // A later unrelated re-plan replaces the old one.
+    expect(addStartOverMove(one, BOOK, `${BOOK}:5`, `${BOOK}:6`)[BOOK].from).toEqual([`${BOOK}:5`]);
+  });
+
+  it("reads only this device's own position through the move", () => {
+    const own = rec('position', `${BOOK}:${DEVICE}`, { charPos: 500, readThroughId: `${BOOK}:2` });
+    const theirs = rec('position', `${BOOK}:${OTHER}`, {
+      charPos: 900,
+      readThroughId: `${BOOK}:2`
+    });
+    const s: BookState = {
+      ...state([rtRecord(2, { finished: true }), rtRecord(3)]),
+      ownMove: { positionId: `${BOOK}:${DEVICE}`, from: [`${BOOK}:2`], to: `${BOOK}:3` }
+    };
+    expect(positionReadThroughOf(s, own)).toBe(`${BOOK}:3`);
+    expect(positionReadThroughOf(s, theirs)).toBe(`${BOOK}:2`);
+    expect(isCurrentReadThroughPosition(s, own)).toBe(true);
+    expect(isCurrentReadThroughPosition(s, theirs)).toBe(false);
+    // So the Start-over jump doesn't take this device's offline reading away...
+    expect(startOverToApply(s, own, 500)).toBeNull();
+    // ...but an older place of this device still moves to the start.
+    const older = { ...own, data: { charPos: 500, readThroughId: null } };
+    expect(startOverToApply(s, older, 500)?.number).toBe(3);
+    const noMove = { ...s, ownMove: undefined };
+    expect(startOverToApply(noMove, own, 500)?.number).toBe(3);
   });
 });
