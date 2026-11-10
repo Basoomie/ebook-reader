@@ -103,8 +103,23 @@
     mouseDragThreshold$,
     swipeThreshold$,
     jumpHistoryLimit$,
-    einkMode$
+    einkMode$,
+    highlightLastColor$,
+    highlightRefindChars$,
+    highlightBarAnySelection$
   } from '$lib/data/store';
+  import HighlightBar from '$lib/components/book-reader/highlight-bar.svelte';
+  import NotesPanel from '$lib/components/book-reader/notes-panel.svelte';
+  import NoteEditorDialog from '$lib/components/book-reader/note-editor-dialog.svelte';
+  import { ReaderHighlights, type BarState } from '$lib/components/book-reader/reader-highlights';
+  import {
+    isHighlightColor,
+    quoteOf,
+    type HighlightColor,
+    type HighlightItem
+  } from '$lib/notes/highlights';
+  import { chapterLabelAt } from '$lib/sync/position-prompt';
+  import { readable, type Readable } from 'svelte/store';
   import { JumpHistory } from '$lib/components/book-reader/jump-history';
   import AppearancePanel from '$lib/components/book-reader/appearance-panel.svelte';
   import BookSearchDialog from '$lib/components/book-reader/book-search-dialog.svelte';
@@ -760,6 +775,7 @@
       searchState = { query: '', results: [], more: false, searched: false };
       searchIndex = undefined;
       clearSearchMark?.();
+      stopHighlights();
     });
 
     return () => {
@@ -767,6 +783,7 @@
       tocJump.unsubscribe();
       bookChange.unsubscribe();
       clearSearchMark?.();
+      stopHighlights();
     };
   });
 
@@ -1277,7 +1294,43 @@
     clearSearchMark?.();
     await pageSettled();
 
-    let visible = liveMatches(query).filter((m) => isOnScreen(m.range));
+    const visible = await bringOnScreen(
+      () => liveMatches(query).map((m) => m.range),
+      () => liveMatches(query).find((m) => m.match.position === position)?.range
+    );
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const highlights = (globalThis as any).CSS?.highlights as Map<string, unknown> | undefined;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const HighlightCtor = (globalThis as any).Highlight as
+      | (new (...r: Range[]) => unknown)
+      | undefined;
+
+    if (!highlights || !HighlightCtor || !visible.length) {
+      return;
+    }
+
+    highlights.set('ttu-search', new HighlightCtor(...visible));
+    const nextTurn = fromEvent(document, PAGE_CHANGE)
+      .pipe(take(1))
+      .subscribe(() => clearSearchMark?.());
+    clearSearchMark = () => {
+      nextTurn.unsubscribe();
+      highlights.delete('ttu-search');
+      clearSearchMark = undefined;
+    };
+  }
+
+  /**
+   * After a jump to a place found in the text (search, highlight), makes sure it is on
+   * screen. The reader places a position by text node, so a place inside a long paragraph
+   * can land one page off: paginated mode then turns at most one page each way (noted as
+   * settling, so it never starts the tracker or sets Reading); continuous mode scrolls the
+   * exact range (the whole book is on the page there) into view. Returns the ranges of
+   * `find` that are on screen.
+   */
+  async function bringOnScreen(find: () => Range[], exact: () => Range | undefined) {
+    let visible = find().filter(isOnScreen);
 
     if (!visible.length && isPaginated && pageManager) {
       const manager = pageManager;
@@ -1292,10 +1345,10 @@
         }
 
         await pageSettled();
-        return liveMatches(query).filter((m) => isOnScreen(m.range));
+        return find().filter(isOnScreen);
       };
 
-      // Most often the match starts on the page before the one the position lands on.
+      // Most often the place starts on the page before the one the position lands on.
       visible = await turn('prev');
 
       if (!visible.length) {
@@ -1307,36 +1360,227 @@
         }
       }
     } else if (!visible.length && !isPaginated) {
-      const exact = liveMatches(query).find((m) => m.match.position === position);
-      const target = exact?.range.startContainer.parentElement;
+      const target = exact()?.startContainer.parentElement;
 
       if (target) {
         target.scrollIntoView({ block: 'center', inline: 'center' });
         await pageSettled();
-        visible = liveMatches(query).filter((m) => isOnScreen(m.range));
+        visible = find().filter(isOnScreen);
       }
     }
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const highlights = (globalThis as any).CSS?.highlights as Map<string, unknown> | undefined;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const HighlightCtor = (globalThis as any).Highlight as
-      | (new (...r: Range[]) => unknown)
-      | undefined;
+    return visible;
+  }
 
-    if (!highlights || !HighlightCtor || !visible.length) {
+  // -------------------------------------------------------------------------
+  // WP11a: highlights and notes. Isolated in ReaderHighlights: painted with the CSS Custom
+  // Highlight API (no DOM changes), shown only for selections the user made (long-press,
+  // mouse drag), and never in the way of taps, Yomitan or page turns. Failures are logged.
+
+  let readerHighlights: ReaderHighlights | undefined;
+
+  let highlightBarState: Readable<BarState> = readable<BarState>({
+    mode: 'hidden',
+    colors: [],
+    message: ''
+  });
+
+  $: readerHighlights?.attach(bookContentEl);
+
+  function highlightLastColor(): HighlightColor {
+    const color = Number($highlightLastColor$);
+    return isHighlightColor(color) ? color : 1;
+  }
+
+  function startHighlights(localId: number, title: string) {
+    if (readerHighlights || !browser) {
       return;
     }
 
-    highlights.set('ttu-search', new HighlightCtor(...visible.map((m) => m.range)));
-    const nextTurn = fromEvent(document, PAGE_CHANGE)
-      .pipe(take(1))
-      .subscribe(() => clearSearchMark?.());
-    clearSearchMark = () => {
-      nextTurn.unsubscribe();
-      highlights.delete('ttu-search');
-      clearSearchMark = undefined;
-    };
+    try {
+      const controller = new ReaderHighlights({
+        root: () => document.querySelector('.book-content'),
+        base: () => bookmarkManager?.sectionStartCount?.() ?? 0,
+        wholeIndex: getSearchIndex,
+        chapterAt: (position) => chapterLabelAt(sectionList$.getValue(), position) ?? null,
+        resolveBookId: async () =>
+          (await import('$lib/sync/sync-service')).bookIdForLocalBook(localId, title),
+        api: async () => (await import('$lib/sync/sync-service')).notesApi(),
+        refindChars: () => $highlightRefindChars$,
+        anySelection: () => $highlightBarAnySelection$,
+        lastColor: highlightLastColor,
+        setLastColor: (color) => highlightLastColor$.next(color),
+        editNote: (item) => void openNoteEditor(item),
+        warn: (message) => logger.warn(message)
+      });
+      readerHighlights = controller;
+      highlightBarState = controller.bar;
+      controller.attach(bookContentEl);
+      void controller.start();
+    } catch (error) {
+      logger.warn(`Highlights: ${(error as Error)?.message ?? error}`);
+    }
+  }
+
+  function stopHighlights() {
+    readerHighlights?.destroy();
+    readerHighlights = undefined;
+    highlightBarState = readable<BarState>({ mode: 'hidden', colors: [], message: '' });
+  }
+
+  async function openNoteEditor(item: HighlightItem) {
+    if (dialogManager.dialogs$.getValue().length) {
+      return;
+    }
+
+    const wasPaused = $statisticsEnabled$ ? $isTrackerPaused$ : true;
+    pauseTracker();
+    const keysWereSkipped = $skipKeyDownListener$;
+    skipKeyDownListener$.next(true);
+
+    const answer = await new Promise<
+      { action: 'save'; body: string } | { action: 'remove' } | null
+    >((resolver) => {
+      dialogManager.dialogs$.next([
+        {
+          component: NoteEditorDialog,
+          disableCloseOnClick: true,
+          props: {
+            heading: item.note ? 'Edit note' : 'Note',
+            quote: quoteOf(item.text),
+            body: item.note?.body ?? '',
+            canRemove: !!item.note,
+            resolver
+          }
+        }
+      ]);
+    });
+
+    skipKeyDownListener$.next(keysWereSkipped);
+
+    if (answer) {
+      try {
+        const { notesApi } = await import('$lib/sync/sync-service');
+        await notesApi().saveNote(
+          { bookId: item.bookId, highlight: item, noteId: item.note?.id },
+          answer.action === 'save' ? answer.body : ''
+        );
+      } catch (error) {
+        logger.warn(`Highlights: ${(error as Error)?.message ?? error}`);
+      }
+    }
+
+    if ($statisticsEnabled$ && !wasPaused) {
+      restartTrackerAfterCharacterChangeOrTime(1);
+    }
+  }
+
+  async function openNotes() {
+    showHeader = false;
+    const controller = readerHighlights;
+
+    if (dialogManager.dialogs$.getValue().length || !controller || !$bookData$) {
+      return;
+    }
+
+    const wasPaused = $statisticsEnabled$ ? $isTrackerPaused$ : true;
+    pauseTracker();
+    const keysWereSkipped = $skipKeyDownListener$;
+    skipKeyDownListener$.next(true);
+
+    try {
+      const { notesApi } = await import('$lib/sync/sync-service');
+      const api = notesApi();
+      const answer = await new Promise<{ position: number; highlightId: string | null } | null>(
+        (resolver) => {
+          dialogManager.dialogs$.next([
+            {
+              component: NotesPanel,
+              disableCloseOnClick: true,
+              props: {
+                view: controller.view,
+                bookId: controller.bookId,
+                total: bookCharCount,
+                sections: sectionList$.getValue(),
+                canPaint: controller.supported,
+                eink: $einkMode$,
+                actions: {
+                  setColor: api.setColor,
+                  saveNote: api.saveNote,
+                  removeHighlight: api.removeHighlight,
+                  removeNote: api.removeNote
+                },
+                resolver
+              }
+            }
+          ]);
+        }
+      );
+
+      skipKeyDownListener$.next(keysWereSkipped);
+
+      if (answer) {
+        // Like search: recorded in the jump history, saved by the next page turn.
+        jumpToPosition(answer.position, { save: false, record: true });
+
+        if (answer.highlightId) {
+          const id = answer.highlightId;
+          await pageSettled();
+          await bringOnScreen(
+            () => {
+              const range = readerHighlights?.rangeOf(id);
+              return range ? [range] : [];
+            },
+            () => readerHighlights?.rangeOf(id)
+          );
+        }
+      }
+    } catch (error) {
+      skipKeyDownListener$.next(keysWereSkipped);
+      logger.warn(`Highlights: ${(error as Error)?.message ?? error}`);
+    }
+
+    if ($statisticsEnabled$ && !wasPaused) {
+      restartTrackerAfterCharacterChangeOrTime(1);
+    }
+  }
+
+  /** Keys for highlights; true when the key was used. */
+  function onHighlightKey(ev: KeyboardEvent) {
+    const controller = readerHighlights;
+
+    if (!controller || isTypingTarget(ev.target)) {
+      return false;
+    }
+
+    if (controller.barOpen) {
+      if (ev.key === 'Escape') {
+        controller.close();
+        return true;
+      }
+
+      const digit = Number(ev.key);
+
+      if (isHighlightColor(digit)) {
+        void controller.chooseColor(digit);
+        return true;
+      }
+    }
+
+    const map = bookReaderKeybindMap$.getValue();
+    const key = ev.key.toLowerCase();
+
+    if (key === 'h' && !map.KeyH && !map.h) {
+      void controller.highlightSelection();
+      return true;
+    }
+
+    if (key === 'l' && !map.KeyL && !map.l) {
+      void openNotes();
+      return true;
+    }
+
+    return false;
   }
 
   // -------------------------------------------------------------------------
@@ -2051,6 +2295,12 @@
       return;
     }
 
+    // WP11a: H highlights the selection, L opens the notes, 1-5 / Esc while the bar is open.
+    if (onHighlightKey(ev)) {
+      ev.preventDefault();
+      return;
+    }
+
     const result = onKeydownReader(
       ev,
       bookReaderKeybindMap$.getValue(),
@@ -2181,6 +2431,11 @@
       }
 
       return;
+    }
+
+    // WP11a: highlights start once the book is on the page.
+    if (browser && $rawBookData$ && !readerHighlights) {
+      startHighlights($rawBookData$.id, $rawBookData$.title);
     }
 
     if (!browser || positionPromptStarted || !$rawBookData$) return;
@@ -2922,6 +3177,7 @@
       {canJumpForward}
       hasBookState={!!stateBookId}
       canSearch={!!bookCharCount}
+      canNote={!!bookCharCount}
       bind:isBookmarkScreen
       on:tocClick={() => {
         pauseTracker();
@@ -2982,6 +3238,7 @@
       on:libraryClick={() => leaveReader(mergeEntries.LIBRARY.routeId)}
       on:zenClick={toggleZen}
       on:searchClick={openSearch}
+      on:notesClick={openNotes}
       on:appearanceClick={openAppearance}
       on:jumpBackClick={() => goJumpHistory('back')}
       on:jumpForwardClick={() => goJumpHistory('forward')}
@@ -3090,6 +3347,19 @@
 
 {#if showAppearance}
   <AppearancePanel on:close={closeAppearance} />
+{/if}
+
+{#if readerHighlights}
+  <HighlightBar
+    state={$highlightBarState}
+    lastColor={highlightLastColor()}
+    eink={$einkMode$}
+    on:color={({ detail }) => readerHighlights?.chooseColor(detail)}
+    on:note={() => readerHighlights?.chooseNote()}
+    on:remove={() => readerHighlights?.chooseRemove()}
+    on:undo={() => readerHighlights?.chooseUndo()}
+    on:close={() => readerHighlights?.close()}
+  />
 {/if}
 
 {#if startOverNotice}

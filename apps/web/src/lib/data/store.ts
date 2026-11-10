@@ -206,6 +206,27 @@ export const mouseDragThreshold$ = writableNumberLocalStorageSubject()('mouseDra
 /** WP10b: how many places the jump history keeps on each side (back and forward). */
 export const jumpHistoryLimit$ = writableNumberLocalStorageSubject()('jumpHistoryLimit', 50);
 
+/** WP11a: the highlight color used by `H` and the bar's Note button (1-5). */
+export const highlightLastColor$ = writableNumberLocalStorageSubject()('highlightLastColor', 1);
+
+/**
+ * WP11a: when a book's file changed, a highlight whose text is still in the book but whose
+ * surroundings changed is placed again only within this many characters of its old place.
+ */
+export const highlightRefindChars$ = writableNumberLocalStorageSubject()(
+  'highlightRefindChars',
+  2000
+);
+
+/**
+ * WP11a: show the highlight bar for any text selection in the book, not only after a
+ * long-press or a mouse drag (for browsers that don't report a long-press).
+ */
+export const highlightBarAnySelection$ = writableBooleanLocalStorageSubject()(
+  'highlightBarAnySelection',
+  false
+);
+
 export const confirmClose$ = writableBooleanLocalStorageSubject()('confirmClose', false);
 
 export const manualBookmark$ = writableBooleanLocalStorageSubject()('manualBookmark', false);

@@ -9,6 +9,7 @@
     faExpand,
     faFlag,
     faFont,
+    faHighlighter,
     faList,
     faMagnifyingGlass,
     faRotateLeft,
@@ -44,6 +45,8 @@
   export let canSearch = false;
   /** WP8a: the book is in the library catalog, so it has a status. */
   export let hasBookState = false;
+  /** WP11a: the book has text, so it can have highlights and notes. */
+  export let canNote = false;
 
   const dispatch = createEventDispatcher<{
     tocClick: void;
@@ -67,6 +70,7 @@
     shortcutsClick: void;
     searchClick: void;
     appearanceClick: void;
+    notesClick: void;
     jumpBackClick: void;
     jumpForwardClick: void;
   }>();
@@ -162,6 +166,19 @@
         on:keyup={dummyFn}
       >
         <Fa icon={faMagnifyingGlass} />
+      </div>
+    {/if}
+    {#if canNote}
+      <div
+        tabindex="0"
+        role="button"
+        title="Highlights and notes in this book (L)"
+        class={baseIconClasses}
+        data-testid="reader-notes-button"
+        on:click={() => dispatch('notesClick')}
+        on:keyup={dummyFn}
+      >
+        <Fa icon={faHighlighter} />
       </div>
     {/if}
     <div

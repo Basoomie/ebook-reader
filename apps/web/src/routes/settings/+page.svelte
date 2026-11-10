@@ -56,6 +56,8 @@
     mouseDragPageTurn$,
     mouseDragThreshold$,
     jumpHistoryLimit$,
+    highlightRefindChars$,
+    highlightBarAnySelection$,
     textIndentation$,
     textMarginMode$,
     textMarginValue$,
@@ -182,6 +184,8 @@
       bind:mouseDragPageTurn={$mouseDragPageTurn$}
       bind:mouseDragThreshold={$mouseDragThreshold$}
       bind:jumpHistoryLimit={$jumpHistoryLimit$}
+      bind:highlightRefindChars={$highlightRefindChars$}
+      bind:highlightBarAnySelection={$highlightBarAnySelection$}
       bind:disableWheelNavigation={$disableWheelNavigation$}
       bind:autoPositionOnResize={$autoPositionOnResize$}
       bind:avoidPageBreak={$avoidPageBreak$}

@@ -46,6 +46,11 @@ export class BookmarkManagerPaginated implements BookmarkManager {
     this.sectionIndex$.next(index);
   }
 
+  /** WP11a: counted characters before the section on the page. */
+  sectionStartCount() {
+    return this.calculator.getSectionStartCount();
+  }
+
   formatBookmarkData(bookId: number): BooksDbBookmarkData {
     return this.formatBookmarkDataByRange(bookId, undefined);
   }

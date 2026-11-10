@@ -84,6 +84,12 @@ export interface SyncMeta {
    * read through it (it may carry a refused id); no record is rewritten.
    */
   startOverMoves?: Record<string, { from: string[]; to: string }>;
+  /**
+   * WP11a: highlights this device could not place in its copy of the book (the text was
+   * not found again after the file changed): highlight id -> its book and when it was
+   * checked. Per device, never synced; the highlight records are not changed.
+   */
+  highlightPlacement?: Record<string, { bookId: string; checkedAt: number }>;
 }
 
 export interface SyncDbSchema extends DBSchema {

@@ -28,6 +28,12 @@ export interface BookmarkManager {
     bookmarkData: BooksDbBookmarkData,
     customReadingPointScrollOffset?: number
   ) => void;
+
+  /**
+   * WP11a: counted characters before the part of the book on the page (paginated mode
+   * shows one section at a time); absent = the whole book is on the page.
+   */
+  sectionStartCount?: () => number;
 }
 
 export interface PageManager {

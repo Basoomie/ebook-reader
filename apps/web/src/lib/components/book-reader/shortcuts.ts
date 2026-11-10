@@ -184,7 +184,11 @@ export function readerShortcutGroups(context: ShortcutContext): ShortcutGroup[] 
     { keys: ['['], action: 'Back to where you were before a jump' },
     { keys: [']'], action: 'Forward again' },
     // WP10c
-    { keys: ['/'], action: 'Search in this book' }
+    { keys: ['/'], action: 'Search in this book' },
+    // WP11a
+    { keys: ['H'], action: 'Highlight the selected text (last color used)' },
+    { keys: ['1', '2', '3', '4', '5'], action: 'Pick a color while the highlight bar is open' },
+    { keys: ['L'], action: 'Highlights and notes in this book' }
   );
 
   reading.push({ keys: ['?'], action: 'Show this list' });
@@ -224,7 +228,13 @@ export function readerShortcutGroups(context: ShortcutContext): ShortcutGroup[] 
     );
   }
 
-  touch.push({ keys: ['Tap the bottom bar'], action: 'Show or hide the progress' });
+  touch.push(
+    { keys: ['Tap the bottom bar'], action: 'Show or hide the progress' },
+    {
+      keys: ['Long-press text', 'select it with the mouse'],
+      action: 'Show the highlight bar (colors, note)'
+    }
+  );
 
   if (context.mouseDragPageTurn) {
     touch.push({
