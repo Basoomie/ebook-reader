@@ -1511,7 +1511,7 @@
       jumpToStart();
       startOverNotice = `Started over${
         readThrough.startedOn ? ` on ${readThrough.startedOn}` : ''
-      }: this read-through begins at the start.`;
+      }: reading again from the beginning.`;
       return true;
     } catch (error) {
       logger.warn(`Book state: ${(error as Error)?.message ?? error}`);

@@ -39,7 +39,7 @@
   </h2>
   <div class="max-w-xl">
     <p class="mb-3">
-      Each book gets a completed read-through. Its character count joins your character totals; no
+      Each book is counted as read once more. Its character count joins your character totals; no
       reading time is added.
     </p>
     <label class="block max-w-xs">

@@ -140,14 +140,22 @@
     });
   }
 
+  function ordinal(n: number): string {
+    const tens = n % 100;
+    const suffixes: Record<number, string> = { 1: 'st', 2: 'nd', 3: 'rd' };
+    const suffix = tens >= 11 && tens <= 13 ? 'th' : (suffixes[n % 10] ?? 'th');
+    return `${n}${suffix}`;
+  }
+
+  /** One reading of the book in plain words, e.g. "1st read · finished 2026-11-01". */
   function describe(rt: ReadThrough): string {
-    const parts: string[] = [`#${rt.number}`];
+    const parts: string[] = [`${ordinal(rt.number)} read`];
     if (rt.startedOn) parts.push(`started ${rt.startedOn}`);
     if (rt.finished) {
       parts.push(rt.finishedOn ? `finished ${rt.finishedOn}` : 'finished (no date)');
-      parts.push(rt.manual ? 'marked manually' : 'tracked');
+      parts.push(rt.manual ? 'marked as read by you' : 'read in the app');
     } else {
-      parts.push('in progress');
+      parts.push('reading now');
     }
     return parts.join(' · ');
   }
@@ -250,7 +258,7 @@
       <p class="pt-1 text-sm">The cover setting takes effect with the new library view.</p>
 
       <h3 class="mt-5 font-medium">
-        Read-throughs{readCount > 1 ? ` · Read ${readCount}x` : ''}
+        Times read: {readCount}
       </h3>
       {#if state.readThroughs.length}
         <ul>
@@ -289,14 +297,14 @@
           {/each}
         </ul>
       {:else}
-        <p class="text-sm">None recorded yet. Marking the book completed adds one.</p>
+        <p class="text-sm">Not finished yet. Marking the book completed counts it as read.</p>
       {/if}
 
       <div class="mt-4 border-t border-gray-400 pt-3">
         {#if confirmStartOver}
           <p class="mb-2">
-            Start over? A new read-through begins and the book opens at the beginning on every
-            device. Earlier read-throughs and their stats are kept.
+            Start over? You read the book again from the beginning, on every device. Your earlier
+            reads and their stats are kept.
           </p>
           <div class="flex flex-wrap gap-2">
             <button
