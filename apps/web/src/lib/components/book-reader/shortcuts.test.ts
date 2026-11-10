@@ -67,6 +67,7 @@ describe('readerShortcutGroups', () => {
       action: 'Back to where you were before a jump'
     });
     expect(reading[index + 2]).toEqual({ keys: [']'], action: 'Forward again' });
+    expect(reading[index + 3]).toEqual({ keys: ['/'], action: 'Search in this book' });
   });
 
   it('follows a changed keybind map', () => {

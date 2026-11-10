@@ -101,6 +101,17 @@
     jumpHistoryLimit$
   } from '$lib/data/store';
   import { JumpHistory } from '$lib/components/book-reader/jump-history';
+  import BookSearchDialog from '$lib/components/book-reader/book-search-dialog.svelte';
+  import {
+    buildBookTextIndex,
+    findMatches,
+    matchRange,
+    parseBookHtml,
+    searchBook,
+    type BookTextIndex,
+    type SearchResult,
+    type SearchState
+  } from '$lib/components/book-reader/book-search';
   import ShortcutsDialog from '$lib/components/book-reader/shortcuts-dialog.svelte';
   import { readerShortcutGroups } from '$lib/components/book-reader/shortcuts';
   import { decideMouseDrag, isPointOverText } from '$lib/components/book-reader/mouse-drag';
@@ -685,12 +696,16 @@
     const bookChange = bookId$.subscribe(() => {
       jumpHistory.clear();
       refreshJumpHistory();
+      searchState = { query: '', results: [], more: false, searched: false };
+      searchIndex = undefined;
+      clearSearchMark?.();
     });
 
     return () => {
       tocOpen.unsubscribe();
       tocJump.unsubscribe();
       bookChange.unsubscribe();
+      clearSearchMark?.();
     };
   });
 
@@ -872,6 +887,191 @@
     if (target !== undefined) {
       jumpToPosition(target, { save: !$manualBookmark$, record: false });
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // WP10c: in-book search. The index is built from the reader's own HTML with the reader's
+  // own character positions, so a result jumps to exactly the place the reader counts.
+
+  const SEARCH_LIMIT = 500;
+
+  let searchState: SearchState = { query: '', results: [], more: false, searched: false };
+
+  let searchIndex: { html: string; index: BookTextIndex } | undefined;
+
+  let clearSearchMark: (() => void) | undefined;
+
+  function getSearchIndex() {
+    const html = $bookData$?.htmlContent ?? '';
+
+    if (searchIndex?.html !== html) {
+      const index = buildBookTextIndex(parseBookHtml(html));
+      searchIndex = { html, index };
+
+      if (bookCharCount && index.total !== bookCharCount) {
+        logger.warn(`Search: counted ${index.total} characters, the reader ${bookCharCount}`);
+      }
+    }
+
+    return searchIndex.index;
+  }
+
+  async function openSearch() {
+    showHeader = false;
+
+    if (dialogManager.dialogs$.getValue().length || !$bookData$) {
+      return;
+    }
+
+    const wasPaused = $statisticsEnabled$ ? $isTrackerPaused$ : true;
+    pauseTracker();
+    const keysWereSkipped = $skipKeyDownListener$;
+    skipKeyDownListener$.next(true);
+
+    const answer = await new Promise<{ state: SearchState; result: SearchResult | null }>(
+      (resolver) => {
+        dialogManager.dialogs$.next([
+          {
+            component: BookSearchDialog,
+            disableCloseOnClick: true,
+            props: {
+              state: searchState,
+              total: bookCharCount,
+              sections: sectionList$.getValue(),
+              limit: SEARCH_LIMIT,
+              search: (query: string) => searchBook(getSearchIndex(), query, SEARCH_LIMIT),
+              resolver
+            }
+          }
+        ]);
+      }
+    );
+
+    skipKeyDownListener$.next(keysWereSkipped);
+    searchState = answer.state;
+
+    if (answer.result) {
+      // Like Jump to Position: recorded in the jump history, saved by the next page turn.
+      jumpToPosition(answer.result.position, { save: false, record: true });
+
+      try {
+        await revealSearchMatch(searchState.query, answer.result.position);
+      } catch (error) {
+        logger.warn(`Search: ${(error as Error)?.message ?? error}`);
+      }
+    }
+
+    // The tracker stays paused through the jump and any page turn that reveals the match.
+    if ($statisticsEnabled$ && !wasPaused) {
+      restartTrackerAfterCharacterChangeOrTime(1);
+    }
+  }
+
+  function isOnScreen(range: Range) {
+    return Array.from(range.getClientRects()).some(
+      (r) =>
+        r.width > 0 &&
+        r.right > 0 &&
+        r.bottom > 0 &&
+        r.left < window.innerWidth &&
+        r.top < window.innerHeight
+    );
+  }
+
+  /** Resolves once the page has stopped changing (or right away if it doesn't change). */
+  function pageSettled() {
+    return new Promise<void>((resolve) => {
+      merge(fromEvent(document, PAGE_CHANGE), timer(300))
+        .pipe(debounceTime(450), take(1))
+        .subscribe(() => resolve());
+    });
+  }
+
+  function liveMatches(query: string) {
+    const root = document.querySelector('.book-content');
+
+    if (!root) {
+      return [];
+    }
+
+    const index = buildBookTextIndex(root, true);
+
+    return findMatches(index, query, 5000)
+      .matches.map((match) => ({ match, range: matchRange(index, match, document) }))
+      .filter((m): m is { match: typeof m.match; range: Range } => !!m.range);
+  }
+
+  /**
+   * After a search jump, makes sure the match is on screen and marks it until the next page
+   * change. The reader places a position by text node, so a match inside a long paragraph can
+   * land one page off: paginated mode then turns at most one page each way (noted as
+   * settling, so it never starts the tracker or sets Reading); continuous mode scrolls the
+   * exact occurrence (the whole book is on the page there) into view.
+   */
+  async function revealSearchMatch(query: string, position: number) {
+    clearSearchMark?.();
+    await pageSettled();
+
+    let visible = liveMatches(query).filter((m) => isOnScreen(m.range));
+
+    if (!visible.length && isPaginated && pageManager) {
+      const manager = pageManager;
+      const turn = async (step: 'prev' | 'next') => {
+        autoStartGate?.noteSettling(Date.now());
+        statusGate?.noteSettling(Date.now());
+
+        if (step === 'prev') {
+          manager.prevPage();
+        } else {
+          manager.nextPage();
+        }
+
+        await pageSettled();
+        return liveMatches(query).filter((m) => isOnScreen(m.range));
+      };
+
+      // Most often the match starts on the page before the one the position lands on.
+      visible = await turn('prev');
+
+      if (!visible.length) {
+        await turn('next');
+        visible = await turn('next');
+
+        if (!visible.length) {
+          await turn('prev');
+        }
+      }
+    } else if (!visible.length && !isPaginated) {
+      const exact = liveMatches(query).find((m) => m.match.position === position);
+      const target = exact?.range.startContainer.parentElement;
+
+      if (target) {
+        target.scrollIntoView({ block: 'center', inline: 'center' });
+        await pageSettled();
+        visible = liveMatches(query).filter((m) => isOnScreen(m.range));
+      }
+    }
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const highlights = (globalThis as any).CSS?.highlights as Map<string, unknown> | undefined;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const HighlightCtor = (globalThis as any).Highlight as
+      | (new (...r: Range[]) => unknown)
+      | undefined;
+
+    if (!highlights || !HighlightCtor || !visible.length) {
+      return;
+    }
+
+    highlights.set('ttu-search', new HighlightCtor(...visible.map((m) => m.range)));
+    const nextTurn = fromEvent(document, PAGE_CHANGE)
+      .pipe(take(1))
+      .subscribe(() => clearSearchMark?.());
+    clearSearchMark = () => {
+      nextTurn.unsubscribe();
+      highlights.delete('ttu-search');
+      clearSearchMark = undefined;
+    };
   }
 
   // -------------------------------------------------------------------------
@@ -1576,6 +1776,13 @@
     if ((ev.key === '[' || ev.key === ']') && !isTypingTarget(ev.target)) {
       ev.preventDefault();
       goJumpHistory(ev.key === '[' ? 'back' : 'forward');
+      return;
+    }
+
+    // WP10c: `/` opens the search (by the typed character, like `[` and `]`).
+    if (ev.key === '/' && !isTypingTarget(ev.target)) {
+      ev.preventDefault();
+      openSearch();
       return;
     }
 
@@ -2438,6 +2645,7 @@
       {canJumpBack}
       {canJumpForward}
       hasBookState={!!stateBookId}
+      canSearch={!!bookCharCount}
       bind:isBookmarkScreen
       on:tocClick={() => {
         pauseTracker();
@@ -2497,6 +2705,7 @@
       on:homeClick={() => leaveReader(mergeEntries.HOME.routeId)}
       on:libraryClick={() => leaveReader(mergeEntries.LIBRARY.routeId)}
       on:zenClick={toggleZen}
+      on:searchClick={openSearch}
       on:jumpBackClick={() => goJumpHistory('back')}
       on:jumpForwardClick={() => goJumpHistory('forward')}
       on:shortcutsClick={openShortcuts}
