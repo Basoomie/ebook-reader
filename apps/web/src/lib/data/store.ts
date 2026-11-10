@@ -179,6 +179,15 @@ export const enableTapEdgeToFlip$ = writableBooleanLocalStorageSubject()(
   false
 );
 
+/** WP10a: Zen mode hides the reader's bottom bar (per device, remembered across books). */
+export const zenMode$ = writableBooleanLocalStorageSubject()('zenMode', false);
+
+/** WP10a: a horizontal mouse drag that selected no text turns the page. */
+export const mouseDragPageTurn$ = writableBooleanLocalStorageSubject()('mouseDragPageTurn', true);
+
+/** WP10a: how far (px) a mouse drag must move sideways to turn the page. */
+export const mouseDragThreshold$ = writableNumberLocalStorageSubject()('mouseDragThreshold', 80);
+
 export const confirmClose$ = writableBooleanLocalStorageSubject()('confirmClose', false);
 
 export const manualBookmark$ = writableBooleanLocalStorageSubject()('manualBookmark', false);
@@ -463,7 +472,9 @@ export const bookReaderKeybindMap$ = writableSubject<BookReaderKeybindMap>({
   KeyP: BookReaderAvailableKeybind.TOGGLE_TRACKING,
   p: BookReaderAvailableKeybind.TOGGLE_TRACKING,
   KeyF: BookReaderAvailableKeybind.TOGGLE_TRACKING_FREEZE,
-  f: BookReaderAvailableKeybind.TOGGLE_TRACKING_FREEZE
+  f: BookReaderAvailableKeybind.TOGGLE_TRACKING_FREEZE,
+  KeyZ: BookReaderAvailableKeybind.TOGGLE_ZEN,
+  z: BookReaderAvailableKeybind.TOGGLE_ZEN
 });
 
 export const statisticsTabKeybindMap$ = writableSubject<StatisticsTabKeybindMap>({

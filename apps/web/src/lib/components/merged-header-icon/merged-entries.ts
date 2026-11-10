@@ -10,6 +10,8 @@ import {
   faCircleHalfStroke,
   faChartLine,
   faCog,
+  faEyeSlash,
+  faKeyboard,
   faFileArrowUp,
   faFileZipper,
   faFolderPlus,
@@ -66,6 +68,18 @@ export const mergeEntries = {
     label: 'Jump',
     icon: faHashtag,
     title: 'Jump to Position'
+  },
+  ZEN_MODE: {
+    routeId: '',
+    label: 'Zen mode',
+    icon: faEyeSlash,
+    title: 'Hide or show the bottom bar (Z, or a two-finger tap)'
+  },
+  SHORTCUTS: {
+    routeId: '',
+    label: 'Shortcuts',
+    icon: faKeyboard,
+    title: 'Keys and gestures (?)'
   },
   READER_IMAGE_GALLERY: {
     routeId: '',
