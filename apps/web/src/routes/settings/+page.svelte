@@ -55,6 +55,7 @@
     swipeThreshold$,
     mouseDragPageTurn$,
     mouseDragThreshold$,
+    jumpHistoryLimit$,
     textIndentation$,
     textMarginMode$,
     textMarginValue$,
@@ -186,6 +187,7 @@
       bind:swipeThreshold={$swipeThreshold$}
       bind:mouseDragPageTurn={$mouseDragPageTurn$}
       bind:mouseDragThreshold={$mouseDragThreshold$}
+      bind:jumpHistoryLimit={$jumpHistoryLimit$}
       bind:disableWheelNavigation={$disableWheelNavigation$}
       bind:autoPositionOnResize={$autoPositionOnResize$}
       bind:avoidPageBreak={$avoidPageBreak$}

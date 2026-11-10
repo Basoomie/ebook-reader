@@ -188,6 +188,9 @@ export const mouseDragPageTurn$ = writableBooleanLocalStorageSubject()('mouseDra
 /** WP10a: how far (px) a mouse drag must move sideways to turn the page. */
 export const mouseDragThreshold$ = writableNumberLocalStorageSubject()('mouseDragThreshold', 80);
 
+/** WP10b: how many places the jump history keeps on each side (back and forward). */
+export const jumpHistoryLimit$ = writableNumberLocalStorageSubject()('jumpHistoryLimit', 50);
+
 export const confirmClose$ = writableBooleanLocalStorageSubject()('confirmClose', false);
 
 export const manualBookmark$ = writableBooleanLocalStorageSubject()('manualBookmark', false);

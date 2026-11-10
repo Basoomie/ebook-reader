@@ -79,6 +79,7 @@ export const SETTINGS_REGISTRY: Record<string, SettingSpec> = {
   zenMode: d('Boolean'),
   mouseDragPageTurn: d('Boolean'),
   mouseDragThreshold: d('Number'),
+  jumpHistoryLimit: d('Number'),
   confirmClose: d('Boolean'),
   manualBookmark: d('Boolean'),
   autoBookmark: d('Boolean'),

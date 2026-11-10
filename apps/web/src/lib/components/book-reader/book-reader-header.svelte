@@ -3,6 +3,8 @@
   import { faBookmark as farBookmark } from '@fortawesome/free-regular-svg-icons';
   import {
     faBookmark as fasBookmark,
+    faArrowLeft,
+    faArrowRight,
     faCrosshairs,
     faExpand,
     faFlag,
@@ -33,6 +35,9 @@
   export let showFullscreenButton: boolean;
   export let isBookmarkScreen: boolean;
   export let hasBookmarkData: boolean;
+  /** WP10b: the jump history has a place to go back / forward to. */
+  export let canJumpBack = false;
+  export let canJumpForward = false;
   /** WP8a: the book is in the library catalog, so it has a status. */
   export let hasBookState = false;
 
@@ -56,6 +61,8 @@
     libraryClick: void;
     zenClick: void;
     shortcutsClick: void;
+    jumpBackClick: void;
+    jumpForwardClick: void;
   }>();
 
   const customReadingPointMenuItems: {
@@ -149,6 +156,30 @@
         on:keyup={dummyFn}
       >
         <Fa icon={faRotateLeft} />
+      </div>
+    {/if}
+    {#if canJumpBack}
+      <div
+        tabindex="0"
+        role="button"
+        title="Back to where you were before the jump ([)"
+        class={baseIconClasses}
+        on:click={() => dispatch('jumpBackClick')}
+        on:keyup={dummyFn}
+      >
+        <Fa icon={faArrowLeft} />
+      </div>
+    {/if}
+    {#if canJumpForward}
+      <div
+        tabindex="0"
+        role="button"
+        title="Forward again (])"
+        class={baseIconClasses}
+        on:click={() => dispatch('jumpForwardClick')}
+        on:keyup={dummyFn}
+      >
+        <Fa icon={faArrowRight} />
       </div>
     {/if}
     {#if $viewMode$ === ViewMode.Continuous && !$isMobile$}

@@ -97,8 +97,10 @@
     zenMode$,
     mouseDragPageTurn$,
     mouseDragThreshold$,
-    swipeThreshold$
+    swipeThreshold$,
+    jumpHistoryLimit$
   } from '$lib/data/store';
+  import { JumpHistory } from '$lib/components/book-reader/jump-history';
   import ShortcutsDialog from '$lib/components/book-reader/shortcuts-dialog.svelte';
   import { readerShortcutGroups } from '$lib/components/book-reader/shortcuts';
   import { decideMouseDrag, isPointOverText } from '$lib/components/book-reader/mouse-drag';
@@ -667,6 +669,32 @@
   onMount(() => document.addEventListener('ttu-action', handleAction, false));
 
   onMount(() => {
+    // WP10b: a TOC visit is one jump, from the place where the TOC was opened.
+    let isTocOpen = false;
+    const tocOpen = tocIsOpen$.subscribe((open) => {
+      isTocOpen = open;
+      tocOrigin = open ? exploredCharCount : undefined;
+    });
+    const tocJump = nextChapter$.subscribe(() => {
+      // N/M chapter keys also use nextChapter$, but only while the TOC is closed.
+      if (isTocOpen && tocOrigin !== undefined) {
+        recordJump(tocOrigin);
+        tocOrigin = undefined;
+      }
+    });
+    const bookChange = bookId$.subscribe(() => {
+      jumpHistory.clear();
+      refreshJumpHistory();
+    });
+
+    return () => {
+      tocOpen.unsubscribe();
+      tocJump.unsubscribe();
+      bookChange.unsubscribe();
+    };
+  });
+
+  onMount(() => {
     // WP10a: two-finger tap (Zen mode) and mouse-drag page turns. Document level, so both
     // reader modes get them; capture phase and passive, so nothing else is held up.
     const options = { capture: true, passive: true };
@@ -798,6 +826,52 @@
     dialogManager.dialogs$.next([]);
     wasTrackerPaused = !$isTrackerPaused$;
     isTrackerPaused$.next(wasTrackerPaused);
+  }
+
+  // -------------------------------------------------------------------------
+  // WP10b: jump history. Search, TOC, bookmark, Jump to Position and "Continue there"
+  // record where they leave from; back/forward return there (in memory, per open book).
+
+  const jumpHistory = new JumpHistory(() => jumpHistoryLimit$.getValue());
+
+  let canJumpBack = false;
+
+  let canJumpForward = false;
+
+  /** Where the TOC was opened, until its first chapter jump is recorded. */
+  let tocOrigin: number | undefined;
+
+  function refreshJumpHistory() {
+    canJumpBack = jumpHistory.canGoBack;
+    canJumpForward = jumpHistory.canGoForward;
+  }
+
+  function recordJump(from = exploredCharCount) {
+    try {
+      jumpHistory.push(from);
+      refreshJumpHistory();
+    } catch (error) {
+      logger.warn(`Jump history: ${(error as Error)?.message ?? error}`);
+    }
+  }
+
+  /** Back or forward: the same jump as "Continue there" (saves the place, tracker untouched). */
+  function goJumpHistory(direction: 'back' | 'forward') {
+    showHeader = false;
+
+    if (!bookmarkManager || !getBookIdSync()) {
+      return;
+    }
+
+    const target =
+      direction === 'back'
+        ? jumpHistory.back(exploredCharCount)
+        : jumpHistory.forward(exploredCharCount);
+    refreshJumpHistory();
+
+    if (target !== undefined) {
+      jumpToPosition(target, { save: !$manualBookmark$, record: false });
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -1015,6 +1089,7 @@
 
     restartTrackerAfterCharacterChangeOrTime(1000);
 
+    recordJump();
     bookmarkManager.scrollToBookmark(
       {
         dataId: dataId,
@@ -1497,6 +1572,13 @@
       return;
     }
 
+    // WP10b: matched by the typed character, so `[` and `]` work on any keyboard layout.
+    if ((ev.key === '[' || ev.key === ']') && !isTypingTarget(ev.target)) {
+      ev.preventDefault();
+      goJumpHistory(ev.key === '[' ? 'back' : 'forward');
+      return;
+    }
+
     const result = onKeydownReader(
       ev,
       bookReaderKeybindMap$.getValue(),
@@ -1855,10 +1937,23 @@
     }
   }
 
-  /** The prompt's one jump (jump history, when it exists, records it here). */
+  /** The prompt's one jump ("Back" in the jump history undoes it). */
   function jumpToPromptedPosition(row: PromptRow) {
+    jumpToPosition(row.target, { save: !$manualBookmark$, record: true });
+  }
+
+  /**
+   * WP9's jump, shared by "Continue there", jump-history back/forward and (WP10c) search.
+   * `save` keeps the target as the bookmark at once; `record` adds the place it leaves from
+   * to the jump history.
+   */
+  function jumpToPosition(target: number, { save, record }: { save: boolean; record: boolean }) {
     const dataId = getBookIdSync();
     if (!bookmarkManager || !dataId) return;
+
+    if (record) {
+      recordJump();
+    }
 
     // The jump is not reading: before auto-start it only settles the book; a
     // running tracker pauses and resumes from the new place (nothing counted).
@@ -1871,17 +1966,21 @@
 
     const data: BooksDbBookmarkData = {
       dataId,
-      exploredCharCount: row.target,
+      exploredCharCount: target,
       lastBookmarkModified: Date.now(),
-      progress: bookCharCount ? row.target / bookCharCount : 0
+      progress: bookCharCount ? target / bookCharCount : 0
     };
-    bookmarkManager.scrollToBookmark(data, customReadingPointScrollOffset);
+    // Character 0 means "no bookmark" to the managers; 1 is the first page (as jumpToStart).
+    bookmarkManager.scrollToBookmark(
+      target < 1 ? { ...data, exploredCharCount: 1 } : data,
+      customReadingPointScrollOffset
+    );
 
     // Keep the new place as the bookmark right away (the same steps as
     // bookmarkPage, with the exact target, so a slow section load can't save
     // a place on the way). Manual bookmarking leaves that to the user, as
     // when leaving the reader.
-    if (!$manualBookmark$) {
+    if (save) {
       void saveJumpBookmark(data);
     }
   }
@@ -1903,6 +2002,7 @@
 
     if (data.exploredCharCount !== exploredCharCount) {
       pauseTracker(true);
+      recordJump();
     }
 
     bookmarkManager.scrollToBookmark(data, customReadingPointScrollOffset);
@@ -2335,6 +2435,8 @@
       showFullscreenButton={fullscreenManager.fullscreenEnabled}
       autoScrollMultiplier={$multiplier$}
       {hasBookmarkData}
+      {canJumpBack}
+      {canJumpForward}
       hasBookState={!!stateBookId}
       bind:isBookmarkScreen
       on:tocClick={() => {
@@ -2395,6 +2497,8 @@
       on:homeClick={() => leaveReader(mergeEntries.HOME.routeId)}
       on:libraryClick={() => leaveReader(mergeEntries.LIBRARY.routeId)}
       on:zenClick={toggleZen}
+      on:jumpBackClick={() => goJumpHistory('back')}
+      on:jumpForwardClick={() => goJumpHistory('forward')}
       on:shortcutsClick={openShortcuts}
     />
   </div>
