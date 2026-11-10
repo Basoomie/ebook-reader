@@ -20,6 +20,36 @@
   background-color: rgba(255, 196, 0, 0.55);
 }
 
+/* WP11a: the five highlight colors (no fixed meanings; same tints as highlight-colors.ts)
+   and a dotted underline on highlights that have a note (horizontal text only: Chromium
+   draws no ::highlight underline while the root element is vertical). Browsers without
+   the API show none of them; the highlights are still saved and listed. */
+::highlight(ttu-hl-1) {
+  background-color: rgba(255, 214, 0, 0.55);
+}
+
+::highlight(ttu-hl-2) {
+  background-color: rgba(60, 200, 110, 0.45);
+}
+
+::highlight(ttu-hl-3) {
+  background-color: rgba(70, 150, 255, 0.45);
+}
+
+::highlight(ttu-hl-4) {
+  background-color: rgba(255, 100, 170, 0.45);
+}
+
+::highlight(ttu-hl-5) {
+  background-color: rgba(255, 140, 40, 0.5);
+}
+
+::highlight(ttu-hl-note) {
+  text-decoration-line: underline;
+  text-decoration-style: dotted;
+  text-decoration-thickness: 2px;
+}
+
 /*
  * WP10d E-ink mode (`html.eink`, per device): pure black on white. No grays, shadows,
  * tinted backgrounds, transitions or animations. Dark fills become black (their white text
@@ -170,6 +200,53 @@ html.eink {
   ::highlight(ttu-search) {
     background-color: #000;
     color: #fff;
+  }
+
+  /* WP11a: highlights lose their tints and are drawn bold (black text-shadow), plus black
+     underlines of five styles. Chromium draws no ::highlight underline while the root
+     element has a vertical writing mode (the reader sets it for vertical books; verified
+     in Edge 157), so in vertical text only the bold shows. The note underline is dropped. */
+  .book-content {
+    text-underline-position: under right;
+  }
+
+  ::highlight(ttu-hl-1),
+  ::highlight(ttu-hl-2),
+  ::highlight(ttu-hl-3),
+  ::highlight(ttu-hl-4),
+  ::highlight(ttu-hl-5) {
+    background-color: transparent;
+    color: #000;
+    text-shadow:
+      0.6px 0 0 #000,
+      -0.6px 0 0 #000;
+    text-decoration-line: underline;
+    text-decoration-color: #000;
+    text-decoration-thickness: 3px;
+  }
+
+  ::highlight(ttu-hl-1) {
+    text-decoration-style: solid;
+  }
+
+  ::highlight(ttu-hl-2) {
+    text-decoration-style: double;
+  }
+
+  ::highlight(ttu-hl-3) {
+    text-decoration-style: dotted;
+  }
+
+  ::highlight(ttu-hl-4) {
+    text-decoration-style: dashed;
+  }
+
+  ::highlight(ttu-hl-5) {
+    text-decoration-style: wavy;
+  }
+
+  ::highlight(ttu-hl-note) {
+    text-decoration: none;
   }
 }
 

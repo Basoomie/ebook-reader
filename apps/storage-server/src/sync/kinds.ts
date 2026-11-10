@@ -611,6 +611,157 @@ const collectionItemKind: KindSpec = {
   },
 };
 
+// ---------------------------------------------------------------------------
+// WP11a: highlights and notes
+// ---------------------------------------------------------------------------
+
+export const HIGHLIGHT_COLORS = [1, 2, 3, 4, 5] as const;
+/** Longest highlighted text, in characters (code points). */
+export const MAX_HIGHLIGHT_TEXT = 10_000;
+/** Context kept on each side of a highlight, to find it again in a changed file. */
+export const MAX_ANCHOR_CONTEXT = 32;
+export const MAX_CHAPTER_NAME = 200;
+export const MAX_NOTE_BODY = 20_000;
+/** A note keeps the start of its highlight's text, so it stays readable on its own. */
+export const MAX_NOTE_QUOTE = 300;
+
+function charLength(value: string): number {
+  return Array.from(value).length;
+}
+
+function wholeNumber(value: unknown, field: string): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+    throw new RecordError('invalid_data', `${field} must be a whole number >= 0`);
+  }
+  return value;
+}
+
+function boundedString(value: unknown, field: string, max: number, allowEmpty: boolean): string {
+  if (typeof value !== 'string' || charLength(value) > max || (!allowEmpty && !value.trim())) {
+    throw new RecordError(
+      'invalid_data',
+      `${field} must be ${allowEmpty ? 'at most' : '1 to'} ${max} characters`,
+    );
+  }
+  return value;
+}
+
+function optionalString(value: unknown, field: string, max: number): string | null {
+  if (value === undefined || value === null) return null;
+  return boundedString(value, field, max, true);
+}
+
+function createdAt(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    throw new RecordError('invalid_data', 'createdAt must be a timestamp');
+  }
+  return value;
+}
+
+/**
+ * Ids of book-owned records: `<bookId>:<uuid>`. The book is part of the id so a
+ * deletion marker (which carries no data) still names its book.
+ */
+export function parseBookItemId(id: string): { bookId: string; itemId: string } | null {
+  const parts = id.split(':');
+  if (parts.length !== 2 || !UUID_RE.test(parts[0]) || !UUID_RE.test(parts[1])) return null;
+  return { bookId: parts[0], itemId: parts[1] };
+}
+
+/**
+ * kind "highlight": id <bookId>:<uuid>, lww, deletable. data { start, end, text,
+ * before, after, color 1-5, chapter, createdAt }. start/end are the reader's
+ * character positions; text and its context let each device find the highlight again
+ * when its copy of the book differs. Only `color` changes after creation. Highlights
+ * belong to the book, not to a read-through.
+ */
+const highlightKind: KindSpec = {
+  policy: () => 'lww',
+  deletable: true,
+  validate(id, data, deleted, ctx) {
+    const parsed = parseBookItemId(id);
+    if (!parsed) throw new RecordError('invalid_id', 'highlight ids are <bookId>:<uuid>');
+    if (!bookExists(ctx, parsed.bookId)) {
+      throw new RecordError('unknown_book', `No book ${parsed.bookId}`);
+    }
+    if (deleted) return { bookId: parsed.bookId, data: {} };
+    const obj = requireObject(data);
+    const start = wholeNumber(obj.start, 'start');
+    const end = wholeNumber(obj.end, 'end');
+    if (end < start) throw new RecordError('invalid_data', 'end must not be before start');
+    const color = obj.color;
+    if (!HIGHLIGHT_COLORS.includes(color as (typeof HIGHLIGHT_COLORS)[number])) {
+      throw new RecordError('invalid_data', 'color must be 1 to 5');
+    }
+    return {
+      bookId: parsed.bookId,
+      data: {
+        start,
+        end,
+        text: boundedString(obj.text, 'text', MAX_HIGHLIGHT_TEXT, false),
+        before: boundedString(obj.before ?? '', 'before', MAX_ANCHOR_CONTEXT, true),
+        after: boundedString(obj.after ?? '', 'after', MAX_ANCHOR_CONTEXT, true),
+        color,
+        chapter: optionalString(obj.chapter, 'chapter', MAX_CHAPTER_NAME),
+        createdAt: createdAt(obj.createdAt),
+      },
+    };
+  },
+};
+
+/**
+ * Note ids: `<bookId>:<uuid>` for a free note about the book, `<bookId>:h:<uuid>` for
+ * the note on the highlight `<bookId>:<uuid>` (one per highlight, so two devices
+ * writing it offline edit the same record).
+ */
+export function parseNoteId(
+  id: string,
+): { bookId: string; highlightId: string | null; itemId: string } | null {
+  const parts = id.split(':');
+  if (parts.length === 2 && UUID_RE.test(parts[0]) && UUID_RE.test(parts[1])) {
+    return { bookId: parts[0], highlightId: null, itemId: parts[1] };
+  }
+  if (parts.length === 3 && UUID_RE.test(parts[0]) && parts[1] === 'h' && UUID_RE.test(parts[2])) {
+    return { bookId: parts[0], highlightId: `${parts[0]}:${parts[2]}`, itemId: parts[2] };
+  }
+  return null;
+}
+
+/**
+ * kind "note": lww, deletable. data { body, highlightId, quote, createdAt }. A separate
+ * record from its highlight, so a color change and a note edit made on two devices both
+ * survive. `highlightId` must agree with the id. The highlight need not exist (records
+ * of one push arrive in any order; a note whose highlight was deleted elsewhere is
+ * shown as a book note with its quote).
+ */
+const noteKind: KindSpec = {
+  policy: () => 'lww',
+  deletable: true,
+  validate(id, data, deleted, ctx) {
+    const parsed = parseNoteId(id);
+    if (!parsed) {
+      throw new RecordError('invalid_id', 'note ids are <bookId>:<uuid> or <bookId>:h:<uuid>');
+    }
+    if (!bookExists(ctx, parsed.bookId)) {
+      throw new RecordError('unknown_book', `No book ${parsed.bookId}`);
+    }
+    if (deleted) return { bookId: parsed.bookId, data: {} };
+    const obj = requireObject(data);
+    if ((obj.highlightId ?? null) !== parsed.highlightId) {
+      throw new RecordError('invalid_data', 'highlightId must match the id');
+    }
+    return {
+      bookId: parsed.bookId,
+      data: {
+        body: boundedString(obj.body, 'body', MAX_NOTE_BODY, false),
+        highlightId: parsed.highlightId,
+        quote: optionalString(obj.quote, 'quote', MAX_NOTE_QUOTE),
+        createdAt: createdAt(obj.createdAt),
+      },
+    };
+  },
+};
+
 /** Smart-collection queries are checked with the search box's own parser. */
 const parserCheck: QueryCheck = (query) => {
   const result = parseQuery(query);
@@ -632,4 +783,6 @@ export const DEFAULT_KINDS: KindRegistry = {
   'tag-blur': tagBlurKind,
   collection: collectionKind(parserCheck),
   'collection-item': collectionItemKind,
+  highlight: highlightKind,
+  note: noteKind,
 };

@@ -66,6 +66,22 @@ import { recordPosition, resolveLinkedBookId, type BookmarkLike } from '$lib/syn
 import { recordStatistics, STAT_DAY_KIND } from '$lib/sync/record-statistics';
 import { applyGlobalSettingValue } from '$lib/sync/settings-apply';
 import { otherDevicesAppearance, type DeviceAppearance } from '$lib/sync/copy-device-settings';
+import type { TextAnchor } from '$lib/notes/anchor';
+import type { BookNotes, HighlightColor } from '$lib/notes/highlights';
+import {
+  addHighlight,
+  getAllNotes,
+  getBookNotes,
+  getUnplacedHighlights,
+  onNotesChanged,
+  removeHighlight,
+  removeNote,
+  saveNote,
+  setHighlightColor,
+  setUnplacedHighlights,
+  type NoteTarget,
+  type NotesDeps
+} from '$lib/notes/notes-service';
 import {
   positionPromptEnabled$,
   positionPromptMinChars$,
@@ -740,6 +756,52 @@ export function collectionsApi() {
 }
 
 export type CollectionsApi = ReturnType<typeof collectionsApi>;
+
+const notesDeps: NotesDeps = { getEngine: getSyncEngine, warn };
+
+/**
+ * WP11a: highlights and notes for the reader (and the Notes page in WP11c). Reads never
+ * reject (empty on failure); user actions reject with a message when they can't be
+ * saved; remove actions resolve to an undo.
+ */
+export function notesApi() {
+  const empty = (): BookNotes => ({ highlights: [], notes: [] });
+  return {
+    async ofBook(bookId: string): Promise<BookNotes> {
+      try {
+        return await getBookNotes(bookId, notesDeps);
+      } catch (error) {
+        warn(`Notes: ${(error as Error)?.message ?? error}`);
+        return empty();
+      }
+    },
+    async all(): Promise<Map<string, BookNotes>> {
+      try {
+        return await getAllNotes(notesDeps);
+      } catch (error) {
+        warn(`Notes: ${(error as Error)?.message ?? error}`);
+        return new Map();
+      }
+    },
+    addHighlight: (
+      bookId: string,
+      anchor: TextAnchor,
+      color: HighlightColor,
+      chapter: string | null | undefined
+    ) => addHighlight(bookId, anchor, color, chapter, notesDeps),
+    setColor: (id: string, color: HighlightColor) => setHighlightColor(id, color, notesDeps),
+    removeHighlight: (id: string) => removeHighlight(id, notesDeps),
+    saveNote: (target: NoteTarget, body: string) => saveNote(target, body, notesDeps),
+    removeNote: (id: string) => removeNote(id, notesDeps),
+    unplaced: () => getUnplacedHighlights(notesDeps),
+    setUnplaced: (bookId: string, ids: readonly string[]) =>
+      setUnplacedHighlights(bookId, ids, notesDeps),
+    onChanged: (callback: (bookIds: Set<string>) => void, options?: { remoteOnly?: boolean }) =>
+      onNotesChanged(callback, notesDeps, options)
+  };
+}
+
+export type NotesApi = ReturnType<typeof notesApi>;
 
 /**
  * WP10e: other devices' appearance settings from the local mirror (works offline), for

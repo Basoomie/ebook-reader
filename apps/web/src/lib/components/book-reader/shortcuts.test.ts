@@ -70,6 +70,15 @@ describe('readerShortcutGroups', () => {
     expect(reading[index + 3]).toEqual({ keys: ['/'], action: 'Search in this book' });
   });
 
+  it('lists the highlight keys and the long-press', () => {
+    const groups = readerShortcutGroups(context());
+    const reading = find(groups, 'Reading');
+    expect(reading.map((r) => r.keys[0])).toEqual(expect.arrayContaining(['H', '1', 'L']));
+    expect(find(groups, 'Touch and mouse').map((r) => r.action)).toContain(
+      'Show the highlight bar (colors, note)'
+    );
+  });
+
   it('follows a changed keybind map', () => {
     const map = {
       ...bookReaderKeybindMap$.getValue(),

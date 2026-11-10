@@ -140,6 +140,8 @@
   export let mouseDragThreshold: number;
 
   export let jumpHistoryLimit: number;
+  export let highlightRefindChars: number;
+  export let highlightBarAnySelection: boolean;
 
   export let positionPromptMinChars: number;
 
@@ -747,6 +749,32 @@
         on:blur={() => {
           if (jumpHistoryLimit < 1 || typeof jumpHistoryLimit !== 'number') {
             jumpHistoryLimit = 50;
+          }
+        }}
+      />
+    </SettingsItemGroup>
+    <SettingsItemGroup
+      title="Highlight Bar for Any Selection"
+      tooltip="Normally the highlight bar appears after you long-press text or select it with the mouse. Turn this on if it never appears on this device: then any text selection in the book shows it."
+    >
+      <ButtonToggleGroup
+        options={optionsForToggle}
+        bind:selectedOptionId={highlightBarAnySelection}
+      />
+    </SettingsItemGroup>
+    <SettingsItemGroup
+      title="Find Moved Highlights Within"
+      tooltip="When a book's file changed, a highlight whose text is still in the book but whose surrounding text changed is placed again only within this many characters of its old place. Otherwise it is listed as 'couldn't place in the current file' and kept."
+    >
+      <input
+        type="number"
+        step="100"
+        min="0"
+        class={inputClasses}
+        bind:value={highlightRefindChars}
+        on:blur={() => {
+          if (highlightRefindChars < 0 || typeof highlightRefindChars !== 'number') {
+            highlightRefindChars = 2000;
           }
         }}
       />

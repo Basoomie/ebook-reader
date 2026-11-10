@@ -166,7 +166,8 @@ export class SectionCharacterStatsCalculator {
     return totalProgress / 100;
   }
 
-  private getSectionStartCount() {
+  /** Counted characters before the section on the page (WP11a: highlight positions). */
+  getSectionStartCount() {
     return this.sectionAccCharCounts[this.sectionIndex - 1] || 0;
   }
 
