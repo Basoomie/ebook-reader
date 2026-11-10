@@ -11,6 +11,9 @@ import CollectionDeleteDialog from '$lib/components/collections/collection-delet
 import CollectionEditDialog from '$lib/components/collections/collection-edit-dialog.svelte';
 import { dialogManager, type Dialog } from '$lib/data/dialog-manager';
 import type { CollectionsApi } from '$lib/sync/sync-service';
+import { isPinnedToHome, setPinnedToHome } from '$lib/home/pins';
+import { homeRows$ } from '$lib/home/settings';
+import type { BuiltinCollection } from './builtins';
 import type { Collection, CollectionType } from './collections';
 
 /**
@@ -41,16 +44,31 @@ export function newCollection(
   });
 }
 
+/** The "⋯" of a built-in list (WP7b): only "Pin to Home" / "Unpin from Home". */
+export async function builtinMenu(builtin: BuiltinCollection): Promise<void> {
+  const pin = { type: 'builtin', ref: builtin.id } as const;
+  const action = await ask<CollectionAction | undefined>(CollectionActionsDialog, {
+    name: builtin.name,
+    type: 'builtin',
+    pinned: isPinnedToHome(homeRows$.getValue(), pin)
+  });
+  if (action === 'pin' || action === 'unpin') setPinnedToHome(pin, action === 'pin');
+}
+
 /** The "⋯" of a collection. Resolves to 'deleted' when it was deleted. */
 export async function collectionMenu(
   api: CollectionsApi,
   collection: Collection
 ): Promise<CollectionAction | 'deleted' | undefined> {
+  const pin = { type: 'collection', ref: collection.id } as const;
   const action = await ask<CollectionAction | undefined>(CollectionActionsDialog, {
     name: collection.name,
-    type: collection.type
+    type: collection.type,
+    pinned: isPinnedToHome(homeRows$.getValue(), pin)
   });
-  if (action === 'rename') {
+  if (action === 'pin' || action === 'unpin') {
+    setPinnedToHome(pin, action === 'pin');
+  } else if (action === 'rename') {
     await ask(CollectionEditDialog, {
       mode: 'rename',
       name: collection.name,

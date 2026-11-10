@@ -1,0 +1,62 @@
+/**
+ * @license BSD-3-Clause
+ * Copyright (c) 2026, ッツ Reader Authors
+ * All rights reserved.
+ */
+
+import ConfirmDialog from '$lib/components/confirm-dialog.svelte';
+import { dialogManager } from '$lib/data/dialog-manager';
+import type { LibraryApi } from './api';
+import { browserOpenDeps } from './browser-open-deps';
+import type { LibraryStore } from './library-db';
+import {
+  openCalibreBook,
+  type ExistingBookQuestion,
+  type OpenOutcome,
+  type OpenStage
+} from './open-calibre-book';
+import type { CatalogBook, CatalogLibrary } from './types';
+
+/**
+ * Opening a catalog book from a page (Library, Home: WP7b), with the browser's
+ * dependencies and the "Already on this device" question. The rules are WP6's
+ * (open-calibre-book.ts, decide-open.ts), unchanged.
+ */
+
+export function askExistingBook(question: ExistingBookQuestion): Promise<boolean> {
+  return new Promise((resolve) => {
+    dialogManager.dialogs$.next([
+      {
+        component: ConfirmDialog,
+        disableCloseOnClick: true,
+        props: {
+          dialogHeader: 'Already on this device',
+          dialogMessage:
+            `You already have "${question.title}" on this device ` +
+            `(${question.localCharacters.toLocaleString()} characters). The library copy has ` +
+            `${question.calibreCharacters.toLocaleString()} characters, so it may be a different ` +
+            'edition. Confirm opens your copy and remembers it as this library book; your copy ' +
+            'and its progress are not changed.',
+          resolver: (canceled: boolean) => resolve(!canceled)
+        }
+      }
+    ]);
+  });
+}
+
+export function openCatalogBook(
+  book: CatalogBook,
+  api: LibraryApi,
+  store: LibraryStore,
+  libraries: readonly CatalogLibrary[],
+  signal: AbortSignal,
+  onStage: (stage: OpenStage) => void
+): Promise<OpenOutcome> {
+  const deps = browserOpenDeps(
+    api,
+    store,
+    async (libraryId) => libraries.find((l) => l.id === libraryId)?.calibreLibraryUuid ?? null,
+    askExistingBook
+  );
+  return openCalibreBook(book, deps, signal, onStage);
+}

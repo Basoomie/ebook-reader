@@ -29,6 +29,7 @@ const SETTINGS_FILES = [
   'lib/data/store.ts',
   'lib/data/storage/storage-view.ts',
   'lib/library/settings.ts',
+  'lib/home/settings.ts',
   'lib/sync/settings.ts'
 ];
 

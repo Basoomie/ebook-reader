@@ -3,17 +3,23 @@
   import { pagePath } from '$lib/data/env';
   import { database } from '$lib/data/store';
   import { formatPageTitle } from '$lib/functions/format-page-title';
-  import { observe } from '$lib/functions/rxjs/use-observable';
-  import { map, tap } from 'rxjs';
+  import { appOpenPath } from '$lib/home/open-target';
+  import { appOpenTarget$ } from '$lib/home/settings';
+  import { firstValueFrom } from 'rxjs';
+  import { onMount } from 'svelte';
 
-  const autoNavigate$ = database.lastItem$.pipe(
-    map((lastItem) => (lastItem ? `${pagePath}/b?id=${lastItem.dataId}` : 'manage')),
-    tap(goto)
-  );
+  // Opening the app (WP7b): the last book (default) or Home, per device.
+  onMount(async () => {
+    let lastBookId: number | undefined;
+    try {
+      lastBookId = (await firstValueFrom(database.lastItem$))?.dataId;
+    } catch {
+      lastBookId = undefined;
+    }
+    goto(appOpenPath($appOpenTarget$, lastBookId, pagePath), { replaceState: true });
+  });
 </script>
 
 <svelte:head>
   <title>{formatPageTitle('Home')}</title>
 </svelte:head>
-
-<div use:observe={autoNavigate$} />

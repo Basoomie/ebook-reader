@@ -6,6 +6,8 @@
     TrackerSkipThresholdAction
   } from '$lib/components/book-reader/book-reading-tracker/book-reading-tracker';
   import ButtonToggleGroup from '$lib/components/button-toggle-group/button-toggle-group.svelte';
+  import { pagePath } from '$lib/data/env';
+  import { appOpenTarget$, type AppOpenTarget } from '$lib/home/settings';
   import {
     optionsForToggle,
     type ToggleOption
@@ -215,6 +217,11 @@
   }));
 
   onDestroy(() => dialogManager.dialogs$.next([]));
+
+  const optionsForAppOpen: ToggleOption<AppOpenTarget>[] = [
+    { id: 'last-book', text: 'Last book' },
+    { id: 'home', text: 'Home' }
+  ];
 
   const optionsForFuriganaStyle: ToggleOption<FuriganaStyle>[] = [
     {
@@ -835,6 +842,12 @@
       <ButtonToggleGroup options={optionsForToggle} bind:selectedOptionId={autoBookmark} />
     </SettingsItemGroup>
     <SettingsItemGroup
+      title="When the App Opens"
+      tooltip={'Last book: go straight back into the book you were reading. Home: show the Home page.'}
+    >
+      <ButtonToggleGroup options={optionsForAppOpen} bind:selectedOptionId={$appOpenTarget$} />
+    </SettingsItemGroup>
+    <SettingsItemGroup
       title="Continue From Other Devices"
       tooltip={'For books opened from the library: asks whether to continue where another device is further along (needs record sync)'}
     >
@@ -967,6 +980,18 @@
       {/if}
     {/if}
   {:else if activeSettings === 'Data'}
+    <SettingsItemGroup
+      title="Old sync manager"
+      tooltip={'The book manager of the old sync: import into this browser, storage sources, export and delete. Stays here until the old sync is retired.'}
+    >
+      <a
+        class="inline-flex min-h-[3rem] items-center rounded border-2 border-current px-4 font-medium"
+        href="{pagePath}/manage"
+        data-testid="old-sync-manager"
+      >
+        Open the old sync manager
+      </a>
+    </SettingsItemGroup>
     <SettingsItemGroup title="Persistent storage" tooltip={persistentStorageTooltip}>
       <div class="flex items-center">
         <ButtonToggleGroup options={optionsForToggle} bind:selectedOptionId={persistentStorage} />

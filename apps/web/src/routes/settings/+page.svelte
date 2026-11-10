@@ -4,6 +4,7 @@
   import { afterNavigate } from '$app/navigation';
   import SettingsContent from '$lib/components/settings/settings-content.svelte';
   import SettingsHeader from '$lib/components/settings/settings-header.svelte';
+  import AppBottomBar from '$lib/components/app-nav/app-bottom-bar.svelte';
   import { pxScreen } from '$lib/css-classes';
   import {
     addCharactersOnCompletion$,
@@ -91,7 +92,7 @@
     setStorageQuota();
   });
 
-  let prevPage = `${pagePath}${mergeEntries.MANAGE.routeId}`;
+  let prevPage = `${pagePath}${mergeEntries.HOME.routeId}`;
 
   let activeSettings = 'Reader';
 
@@ -222,5 +223,6 @@
       bind:adjustStatisticsAfterIdleTime={$adjustStatisticsAfterIdleTime$}
     />
   </div>
+  <AppBottomBar />
 </div>
 {$setPersistentStorage$ ?? ''}

@@ -7,8 +7,7 @@
     faMap,
     faSliders
   } from '@fortawesome/free-solid-svg-icons';
-  import { mergeEntries } from '$lib/components/merged-header-icon/merged-entries';
-  import MergedHeaderIcon from '$lib/components/merged-header-icon/merged-header-icon.svelte';
+  import AppNavLinks from '$lib/components/app-nav/app-nav-links.svelte';
   import Popover from '$lib/components/popover/popover.svelte';
   import {
     StatisticsTab,
@@ -131,7 +130,7 @@
           />
         </svg>
       {/if}
-      <MergedHeaderIcon items={[mergeEntries.SETTINGS, mergeEntries.MANAGE]} />
+      <AppNavLinks />
     </div>
   </div>
 </div>

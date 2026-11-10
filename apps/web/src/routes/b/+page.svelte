@@ -199,6 +199,7 @@
   import type { IDBPDatabase } from 'idb';
   import type { NasServerConfig } from '$lib/whispersync/lib/nas';
   import { selfHostStorageSource$ } from '$lib/data/store';
+  import { leavingForgetsLastBook } from '$lib/home/open-target';
   import { unlockStorageData } from '$lib/data/storage/storage-source-manager';
 
   let showSpinner = true;
@@ -338,6 +339,8 @@
         bookData.lastBookOpen = new Date().getTime();
 
         await localStorageHandler.updateLastRead(bookData);
+        // WP7b: remember the book for "Opening the app: Last book", whatever page opened it.
+        database.putLastItem(bookData.id).catch(() => {});
         legacyReadingOff = await readLegacySwitch();
         await syncDownData(externalStorageHandler, currentContext);
 
@@ -1831,7 +1834,9 @@
     ]);
   }
 
-  async function leaveReader(routeId: string, deleteLastItem = true) {
+  // Leaving for Home, Library or Collections forgets the last book; Settings and
+  // Statistics keep it (WP7b, opening the app).
+  async function leaveReader(routeId: string, deleteLastItem = leavingForgetsLastBook(routeId)) {
     let message;
 
     try {
@@ -2150,7 +2155,8 @@
       }}
       on:settingsClick={() => leaveReader(mergeEntries.SETTINGS.routeId, false)}
       on:domainHintClick={onDomainHintClick}
-      on:bookManagerClick={() => leaveReader(mergeEntries.MANAGE.routeId)}
+      on:homeClick={() => leaveReader(mergeEntries.HOME.routeId)}
+      on:libraryClick={() => leaveReader(mergeEntries.LIBRARY.routeId)}
     />
   </div>
 {/if}
