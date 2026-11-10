@@ -54,6 +54,8 @@
     domainHintClick: void;
     homeClick: void;
     libraryClick: void;
+    zenClick: void;
+    shortcutsClick: void;
   }>();
 
   const customReadingPointMenuItems: {
@@ -97,6 +99,9 @@
     if ($readerImageGalleryPictures$.length) {
       items.push(mergeEntries.READER_IMAGE_GALLERY);
     }
+
+    // WP10a: the touch fallback for Zen mode, and the cheat sheet.
+    items.push(mergeEntries.ZEN_MODE, mergeEntries.SHORTCUTS);
 
     // WP7b: back to Home or the Library (the Manager is reached from Settings).
     items.push(mergeEntries.SETTINGS, mergeEntries.HOME, mergeEntries.LIBRARY);
@@ -228,6 +233,10 @@
           dispatch('homeClick');
         } else if (detail === mergeEntries.LIBRARY.label) {
           dispatch('libraryClick');
+        } else if (detail === mergeEntries.ZEN_MODE.label) {
+          dispatch('zenClick');
+        } else if (detail === mergeEntries.SHORTCUTS.label) {
+          dispatch('shortcutsClick');
         }
       }}
     />

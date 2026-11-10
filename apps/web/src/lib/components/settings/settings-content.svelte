@@ -144,6 +144,10 @@
 
   export let positionPromptEnabled: boolean;
 
+  export let mouseDragPageTurn: boolean;
+
+  export let mouseDragThreshold: number;
+
   export let positionPromptMinChars: number;
 
   export let readingStatusSettleSeconds: number;
@@ -719,6 +723,31 @@
         }}
       />
     </SettingsItemGroup>
+    <SettingsItemGroup
+      title="Mouse Drag to Turn Pages"
+      tooltip="Drag sideways with the mouse to turn the page. A drag that selects text only selects it."
+    >
+      <ButtonToggleGroup options={optionsForToggle} bind:selectedOptionId={mouseDragPageTurn} />
+    </SettingsItemGroup>
+    {#if mouseDragPageTurn}
+      <SettingsItemGroup
+        title="Mouse Drag Distance"
+        tooltip="How far (in pixels) the mouse must move sideways to turn the page"
+      >
+        <input
+          type="number"
+          step="1"
+          min="10"
+          class={inputClasses}
+          bind:value={mouseDragThreshold}
+          on:blur={() => {
+            if (mouseDragThreshold < 10 || typeof mouseDragThreshold !== 'number') {
+              mouseDragThreshold = 80;
+            }
+          }}
+        />
+      </SettingsItemGroup>
+    {/if}
     {#if autoBookmark}
       <SettingsItemGroup title="Auto Bookmark Time" tooltip={'Time in s for Auto Bookmark'}>
         <input

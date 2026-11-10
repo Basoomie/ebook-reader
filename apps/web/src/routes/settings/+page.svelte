@@ -53,6 +53,8 @@
     statisticsEnabled$,
     statisticsMergeMode$,
     swipeThreshold$,
+    mouseDragPageTurn$,
+    mouseDragThreshold$,
     textIndentation$,
     textMarginMode$,
     textMarginValue$,
@@ -182,6 +184,8 @@
       bind:secondDimensionMaxValue={$secondDimensionMaxValue$}
       bind:firstDimensionMargin={$firstDimensionMargin$}
       bind:swipeThreshold={$swipeThreshold$}
+      bind:mouseDragPageTurn={$mouseDragPageTurn$}
+      bind:mouseDragThreshold={$mouseDragThreshold$}
       bind:disableWheelNavigation={$disableWheelNavigation$}
       bind:autoPositionOnResize={$autoPositionOnResize$}
       bind:avoidPageBreak={$avoidPageBreak$}

@@ -93,8 +93,19 @@
     showPercentage$,
     enableVerticalFontKerning$,
     enableFontVPAL$,
-    verticalTextOrientation$
+    verticalTextOrientation$,
+    zenMode$,
+    mouseDragPageTurn$,
+    mouseDragThreshold$,
+    swipeThreshold$
   } from '$lib/data/store';
+  import ShortcutsDialog from '$lib/components/book-reader/shortcuts-dialog.svelte';
+  import { readerShortcutGroups } from '$lib/components/book-reader/shortcuts';
+  import { decideMouseDrag, isPointOverText } from '$lib/components/book-reader/mouse-drag';
+  import {
+    DEFAULT_TWO_FINGER_TAP_OPTIONS,
+    TwoFingerTapDetector
+  } from '$lib/functions/two-finger-tap';
   import BookCompletionConfetti from '$lib/components/book-reader/book-completion-confetti/book-completion-confetti.svelte';
   import BookReaderHeader from '$lib/components/book-reader/book-reader-header.svelte';
   import {
@@ -655,6 +666,27 @@
 
   onMount(() => document.addEventListener('ttu-action', handleAction, false));
 
+  onMount(() => {
+    // WP10a: two-finger tap (Zen mode) and mouse-drag page turns. Document level, so both
+    // reader modes get them; capture phase and passive, so nothing else is held up.
+    const options = { capture: true, passive: true };
+    document.addEventListener('pointerdown', onReaderPointerDown, options);
+    document.addEventListener('pointermove', onReaderPointerMove, options);
+    document.addEventListener('pointerup', onReaderPointerUp, options);
+    document.addEventListener('pointercancel', onReaderPointerCancel, options);
+    window.addEventListener('click', swallowGestureClick, true);
+    document.addEventListener('selectstart', blockOffTextSelection, true);
+
+    return () => {
+      document.removeEventListener('selectstart', blockOffTextSelection, true);
+      document.removeEventListener('pointerdown', onReaderPointerDown, options);
+      document.removeEventListener('pointermove', onReaderPointerMove, options);
+      document.removeEventListener('pointerup', onReaderPointerUp, options);
+      document.removeEventListener('pointercancel', onReaderPointerCancel, options);
+      window.removeEventListener('click', swallowGestureClick, true);
+    };
+  });
+
   function handleAction({ detail }: any) {
     if (!detail.type) {
       return;
@@ -766,6 +798,188 @@
     dialogManager.dialogs$.next([]);
     wasTrackerPaused = !$isTrackerPaused$;
     isTrackerPaused$.next(wasTrackerPaused);
+  }
+
+  // -------------------------------------------------------------------------
+  // WP10a: Zen mode, the `?` cheat sheet, two-finger tap and mouse-drag page turns.
+
+  /** Zen mode hides the bottom bar only; the tracker, audio and every key keep working. */
+  function toggleZen() {
+    showHeader = false;
+    zenMode$.next(!zenMode$.getValue());
+  }
+
+  async function openShortcuts() {
+    showHeader = false;
+
+    if (dialogManager.dialogs$.getValue().length) {
+      return;
+    }
+
+    const wasPaused = $statisticsEnabled$ ? $isTrackerPaused$ : true;
+    pauseTracker();
+    const keysWereSkipped = $skipKeyDownListener$;
+    skipKeyDownListener$.next(true);
+
+    await new Promise<void>((resolver) => {
+      dialogManager.dialogs$.next([
+        {
+          component: ShortcutsDialog,
+          disableCloseOnClick: true,
+          props: {
+            groups: readerShortcutGroups({
+              keybindMap: bookReaderKeybindMap$.getValue(),
+              paginated: isPaginated,
+              verticalMode: $verticalMode$,
+              tapEdgeToFlip: $enableTapEdgeToFlip$,
+              mouseDragPageTurn: $mouseDragPageTurn$,
+              statisticsEnabled: $statisticsEnabled$
+            }),
+            resolver
+          }
+        }
+      ]);
+    });
+
+    skipKeyDownListener$.next(keysWereSkipped);
+
+    if ($statisticsEnabled$ && !wasPaused) {
+      restartTrackerAfterCharacterChangeOrTime(1);
+    }
+  }
+
+  const twoFingerTap = new TwoFingerTapDetector({
+    ...DEFAULT_TWO_FINGER_TAP_OPTIONS,
+    // No more movement than a swipe needs, so a two-finger tap never turns the page.
+    getMaxMove: () => swipeThreshold$.getValue()
+  });
+
+  /** Clicks that end a two-finger tap or a mouse-drag page turn are swallowed until then. */
+  let swallowClicksUntil = 0;
+
+  /** `offText`: the drag started on blank space, so it must not start a text selection. */
+  let mouseDrag: { x: number; y: number; at: number; offText: boolean } | undefined;
+
+  /** The page itself (text or blank space around it), not a bar, menu or dialog. */
+  function isReaderSurface(target: EventTarget | null) {
+    if (!(target instanceof Element)) {
+      return false;
+    }
+
+    if (target === document.body || target === document.documentElement) {
+      return true;
+    }
+
+    return !!target.closest('.book-content');
+  }
+
+  function onReaderPointerDown(ev: PointerEvent) {
+    if (ev.pointerType === 'touch') {
+      twoFingerTap.down(ev.pointerId, ev.clientX, ev.clientY, performance.now());
+      return;
+    }
+
+    mouseDrag = undefined;
+
+    if (
+      ev.pointerType !== 'mouse' ||
+      ev.button !== 0 ||
+      ev.altKey ||
+      ev.ctrlKey ||
+      ev.metaKey ||
+      ev.shiftKey ||
+      !$mouseDragPageTurn$ ||
+      $skipKeyDownListener$ ||
+      isSelectingCustomReadingPoint ||
+      !isReaderSurface(ev.target)
+    ) {
+      return;
+    }
+
+    mouseDrag = {
+      x: ev.clientX,
+      y: ev.clientY,
+      at: performance.now(),
+      offText: !isPointOverText(document, ev.clientX, ev.clientY)
+    };
+  }
+
+  /** A drag that started on blank space turns pages instead of selecting text. */
+  function blockOffTextSelection(ev: Event) {
+    if (mouseDrag?.offText) {
+      ev.preventDefault();
+    }
+  }
+
+  function onReaderPointerMove(ev: PointerEvent) {
+    if (ev.pointerType === 'touch') {
+      twoFingerTap.move(ev.pointerId, ev.clientX, ev.clientY, performance.now());
+    }
+  }
+
+  function onReaderPointerUp(ev: PointerEvent) {
+    const now = performance.now();
+
+    if (ev.pointerType === 'touch') {
+      if (twoFingerTap.up(ev.pointerId, ev.clientX, ev.clientY, now)) {
+        swallowClicksUntil = now + 500;
+
+        // Not while a dialog, the tracker menu or another overlay has the keys.
+        if (!$skipKeyDownListener$) {
+          toggleZen();
+        }
+      }
+
+      return;
+    }
+
+    const drag = mouseDrag;
+    mouseDrag = undefined;
+
+    if (!drag || ev.pointerType !== 'mouse' || $skipKeyDownListener$ || !pageManager) {
+      return;
+    }
+
+    const selection = window.getSelection();
+    const decision = decideMouseDrag({
+      dx: ev.clientX - drag.x,
+      dy: ev.clientY - drag.y,
+      durationMs: now - drag.at,
+      selectionCollapsed: !selection || selection.isCollapsed,
+      threshold: $mouseDragThreshold$,
+      paginated: isPaginated,
+      swipeThreshold: $swipeThreshold$,
+      verticalMode: $verticalMode$
+    });
+
+    if (!decision) {
+      return;
+    }
+
+    swallowClicksUntil = now + 400;
+
+    if (decision === 'next') {
+      pageManager.nextPage();
+    } else {
+      pageManager.prevPage();
+    }
+  }
+
+  function onReaderPointerCancel(ev: PointerEvent) {
+    if (ev.pointerType === 'touch') {
+      twoFingerTap.cancel(ev.pointerId, performance.now());
+    } else {
+      mouseDrag = undefined;
+    }
+  }
+
+  function swallowGestureClick(ev: MouseEvent) {
+    const now = performance.now();
+
+    if (now < swallowClicksUntil || now - twoFingerTap.lastMultiTouchAt < 500) {
+      ev.preventDefault();
+      ev.stopPropagation();
+    }
   }
 
   async function handleJump() {
@@ -1257,6 +1471,21 @@
   }
 
   function onKeydown(ev: KeyboardEvent) {
+    // WP10a: `?` is Shift+/ on most layouts, so it is checked before the modifier guard.
+    if (
+      ev.key === '?' &&
+      !$skipKeyDownListener$ &&
+      !ev.altKey &&
+      !ev.ctrlKey &&
+      !ev.metaKey &&
+      !ev.repeat &&
+      !isTypingTarget(ev.target)
+    ) {
+      ev.preventDefault();
+      openShortcuts();
+      return;
+    }
+
     if (
       $skipKeyDownListener$ ||
       ev.altKey ||
@@ -1280,7 +1509,8 @@
       changeChapter,
       handleSetCustomReadingPoint,
       toggleTrackerManually,
-      freezeTrackerPosition
+      freezeTrackerPosition,
+      toggleZen
     );
 
     if (!result) return;
@@ -1289,6 +1519,13 @@
       document.activeElement.blur();
     }
     ev.preventDefault();
+  }
+
+  function isTypingTarget(target: EventTarget | null) {
+    return (
+      target instanceof HTMLElement &&
+      (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName))
+    );
   }
 
   function getBookIdSync() {
@@ -2157,6 +2394,8 @@
       on:domainHintClick={onDomainHintClick}
       on:homeClick={() => leaveReader(mergeEntries.HOME.routeId)}
       on:libraryClick={() => leaveReader(mergeEntries.LIBRARY.routeId)}
+      on:zenClick={toggleZen}
+      on:shortcutsClick={openShortcuts}
     />
   </div>
 {/if}
@@ -2335,6 +2574,8 @@
   tabindex="0"
   role="button"
   class="writing-horizontal-tb fixed bottom-0 left-0 z-10 flex h-8 w-full items-center justify-between text-xs leading-none"
+  class:ttu-zen={$zenMode$}
+  data-testid="reader-footer"
   style:color={$themeOption$?.tooltipTextFontColor}
   on:click={() => (showFooter = !showFooter)}
   on:keyup={dummyFn}
@@ -2458,3 +2699,19 @@
     }
   }}
 />
+
+<style>
+  /*
+   * WP10a Zen mode: the bottom bar is hidden but keeps its space, so the page layout (and
+   * the reading position) does not change. Whispersync renders its side menu, dialogs and
+   * line menu inside the bar, so those stay visible.
+   */
+  :global(#ttu-page-footer.ttu-zen) {
+    visibility: hidden;
+  }
+
+  :global(#ttu-page-footer.ttu-zen .ttu-whispersync-container),
+  :global(#ttu-page-footer.ttu-zen .ttu-whispersync-dialog) {
+    visibility: visible;
+  }
+</style>

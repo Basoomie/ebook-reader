@@ -30,7 +30,8 @@ export function onKeydownReader(
   changeChapter: (offset: number) => void,
   handleSetCustomReadingPoint: () => void,
   toggleTracker: () => void,
-  freezeTrackerPosition: () => void
+  freezeTrackerPosition: () => void,
+  toggleZen: () => void = () => {}
 ) {
   const action = bookReaderKeybindMap[ev.code || ev.key?.toLowerCase()];
 
@@ -71,6 +72,9 @@ export function onKeydownReader(
       return true;
     case BookReaderAvailableKeybind.TOGGLE_TRACKING_FREEZE:
       freezeTrackerPosition();
+      return true;
+    case BookReaderAvailableKeybind.TOGGLE_ZEN:
+      toggleZen();
       return true;
     default:
       return false;
