@@ -124,6 +124,7 @@
   import NumberDialog from '$lib/components/number-dialog.svelte';
   import PositionPromptDialog from '$lib/components/book-reader/position-prompt-dialog.svelte';
   import BookStateDialog from '$lib/components/library/book-state-dialog.svelte';
+  import AddToCollectionDialog from '$lib/components/collections/add-to-collection-dialog.svelte';
   import { readingStatusSettleSeconds$ } from '$lib/sync/settings';
   import type { PositionPrompt, PromptRow } from '$lib/sync/position-prompt-service';
   import type { ReaderPositionPrompt } from '$lib/sync/reader-position-prompt';
@@ -1545,6 +1546,38 @@
     void saveJumpBookmark({ dataId, exploredCharCount: 0, lastBookmarkModified: now, progress: 0 });
   }
 
+  /** WP8b: the lists this catalog book is in, like Book status (tracker paused, keys off). */
+  async function openAddToCollection() {
+    const bookId = stateBookId;
+    if (!bookId || !$rawBookData$) return;
+    showHeader = false;
+    try {
+      const { collectionsApi } = await import('$lib/sync/sync-service');
+      const wasPaused = $statisticsEnabled$ ? $isTrackerPaused$ : true;
+      pauseTracker();
+      const keysWereSkipped = $skipKeyDownListener$;
+      skipKeyDownListener$.next(true);
+      await new Promise<void>((resolver) => {
+        dialogManager.dialogs$.next([
+          {
+            component: AddToCollectionDialog,
+            disableCloseOnClick: true,
+            props: {
+              bookId,
+              title: $rawBookData$?.title ?? '',
+              api: collectionsApi(),
+              resolver
+            }
+          }
+        ]);
+      });
+      skipKeyDownListener$.next(keysWereSkipped);
+      if ($statisticsEnabled$ && !wasPaused) restartTrackerAfterCharacterChangeOrTime(1);
+    } catch (error) {
+      logger.warn(`Collections: ${(error as Error)?.message ?? error}`);
+    }
+  }
+
   async function openBookState() {
     const bookId = stateBookId;
     if (!bookId || !$rawBookData$) return;
@@ -2070,6 +2103,7 @@
       }}
       on:jumpClick={handleJump}
       on:bookStateClick={openBookState}
+      on:addToCollectionClick={openAddToCollection}
       on:completeBook={completeBook}
       on:setCustomReadingPoint={handleSetCustomReadingPoint}
       on:showCustomReadingPoint={() => {

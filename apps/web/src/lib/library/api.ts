@@ -8,7 +8,9 @@ import type {
   CatalogBookDetail,
   CatalogGroupPage,
   CatalogLibrary,
+  CatalogBook,
   CatalogPage,
+  CollectionCardData,
   GroupBy
 } from '$lib/library/types';
 
@@ -141,6 +143,21 @@ export class LibraryApi {
     private readonly fetchImpl: typeof fetch = (...args) => fetch(...args)
   ) {}
 
+  private async post(path: string, body: unknown, options: RequestOptions = {}): Promise<Response> {
+    const response = await send(
+      this.fetchImpl,
+      `${this.serverUrl}/api/v1${path}`,
+      {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${this.token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      },
+      { timeoutSeconds: this.timeoutSeconds, ...options }
+    );
+    if (!response.ok) throw await errorFrom(response);
+    return response;
+  }
+
   private async get(path: string, options: RequestOptions = {}): Promise<Response> {
     const response = await send(
       this.fetchImpl,
@@ -170,6 +187,8 @@ export class LibraryApi {
   async books(
     query: {
       q?: string;
+      /** A second search that must also match (a saved search or built-in collection). */
+      scope?: string;
       library?: string;
       cursor?: string;
       limit?: number;
@@ -179,6 +198,7 @@ export class LibraryApi {
   ): Promise<CatalogPage> {
     const params = new URLSearchParams();
     if (query.q) params.set('q', query.q);
+    if (query.scope) params.set('scope', query.scope);
     if (query.library) params.set('library', query.library);
     if (query.group) {
       params.set('by', query.group.by);
@@ -202,6 +222,23 @@ export class LibraryApi {
     if (query.cursor) params.set('cursor', query.cursor);
     if (query.limit) params.set('limit', String(query.limit));
     return (await this.get(`/groups?${params.toString()}`, options)).json();
+  }
+
+  /**
+   * The given books in the given order (at most 200), without hidden ones and the ones
+   * that don't match `q` (WP8b: a list collection, in its own order).
+   */
+  async lookup(
+    ids: readonly string[],
+    q?: string,
+    options?: RequestOptions
+  ): Promise<{ books: CatalogBook[] }> {
+    return (await this.post('/books/lookup', { ids, ...(q ? { q } : {}) }, options)).json();
+  }
+
+  /** Count and collage tiles of every collection (WP8b). */
+  async collectionCards(options?: RequestOptions): Promise<{ cards: CollectionCardData[] }> {
+    return (await this.get('/collections/cards', options)).json();
   }
 
   async book(id: string, options?: RequestOptions): Promise<CatalogBookDetail> {

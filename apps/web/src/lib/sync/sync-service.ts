@@ -83,6 +83,21 @@ import type { LocalRecord } from '$lib/sync/sync-db';
 import { SyncEngine } from '$lib/sync/sync-engine';
 import { SyncRunner, type RunnerEnv } from '$lib/sync/sync-runner';
 import { getTagBlurRules, setTagBlur, TAG_BLUR_KIND } from '$lib/sync/tag-blur';
+import {
+  addBooks,
+  collectionsOfBook,
+  createCollection,
+  deleteCollection,
+  getCollectionsView,
+  moveBookBy,
+  moveBooks,
+  onCollectionsChanged,
+  removeBooks,
+  renameCollection,
+  setCollectionQuery,
+  type CollectionsDeps
+} from '$lib/collections/collections-service';
+import type { CollectionType } from '$lib/collections/collections';
 
 /**
  * The app's record sync (WP4): one engine and one background runner per tab.
@@ -638,6 +653,17 @@ export function libraryViewApi() {
       }
     },
     /**
+     * Asks for a sync now, so places saved on other devices show (WP8b). Respects the
+     * runner's backoff and the per-device switch. Never rejects; resolves when done.
+     */
+    async syncSoon(): Promise<void> {
+      try {
+        await getSyncRunner()?.syncSoon();
+      } catch {
+        // Shown in the Connection panel.
+      }
+    },
+    /**
      * Before a search that filters by status or favorite: the server only knows changes
      * that reached it, so unsent ones are sent first (at most `timeoutSeconds`).
      * Resolves to true when changes are still unsent (offline). Never rejects.
@@ -663,3 +689,50 @@ export function libraryViewApi() {
 }
 
 export type LibraryViewApi = ReturnType<typeof libraryViewApi>;
+
+// ---------------------------------------------------------------------------
+// WP8b: collections
+// ---------------------------------------------------------------------------
+
+const collectionsDeps: CollectionsDeps = { getEngine: getSyncEngine, warn };
+
+/**
+ * Collections for the Collections page, the Library page, the book dialog and the
+ * reader. Reads never reject (empty on failure); user actions reject with a message
+ * when they can't be saved; bulk actions resolve to the ids that failed.
+ */
+export function collectionsApi() {
+  return {
+    async view() {
+      try {
+        return await getCollectionsView(collectionsDeps);
+      } catch (error) {
+        warn(`Collections: ${(error as Error)?.message ?? error}`);
+        return { collections: [], items: new Map() };
+      }
+    },
+    async ofBook(bookId: string): Promise<Set<string>> {
+      try {
+        return await collectionsOfBook(bookId, collectionsDeps);
+      } catch (error) {
+        warn(`Collections: ${(error as Error)?.message ?? error}`);
+        return new Set();
+      }
+    },
+    create: (input: { name: string; type: CollectionType; query?: string | null }) =>
+      createCollection(input, collectionsDeps),
+    rename: (id: string, name: string) => renameCollection(id, name, collectionsDeps),
+    setQuery: (id: string, query: string) => setCollectionQuery(id, query, collectionsDeps),
+    remove: (id: string) => deleteCollection(id, collectionsDeps),
+    addBooks: (id: string, bookIds: readonly string[]) => addBooks(id, bookIds, collectionsDeps),
+    removeBooks: (id: string, bookIds: readonly string[]) =>
+      removeBooks(id, bookIds, collectionsDeps),
+    moveBooks: (id: string, bookIds: readonly string[], index: number) =>
+      moveBooks(id, bookIds, index, collectionsDeps),
+    moveBookBy: (id: string, bookId: string, delta: -1 | 1) =>
+      moveBookBy(id, bookId, delta, collectionsDeps),
+    onChanged: (callback: () => void) => onCollectionsChanged(callback, collectionsDeps)
+  };
+}
+
+export type CollectionsApi = ReturnType<typeof collectionsApi>;

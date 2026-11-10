@@ -504,6 +504,7 @@
                 : [
                     mergeEntries.MANAGE,
                     mergeEntries.LIBRARY,
+                    mergeEntries.COLLECTIONS,
                     mergeEntries.STATISTICS,
                     mergeEntries.SETTINGS,
                     mergeEntries.BUG_REPORT
