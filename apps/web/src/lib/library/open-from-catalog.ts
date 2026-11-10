@@ -44,6 +44,27 @@ export function askExistingBook(question: ExistingBookQuestion): Promise<boolean
   });
 }
 
+/** WP7b: before a migrated placeholder becomes the library copy with another count. */
+export function askPlaceholderBook(question: ExistingBookQuestion): Promise<boolean> {
+  return new Promise((resolve) => {
+    dialogManager.dialogs$.next([
+      {
+        component: ConfirmDialog,
+        disableCloseOnClick: true,
+        props: {
+          dialogHeader: 'Open the library copy?',
+          dialogMessage:
+            `Your old copy of "${question.title}" had ${question.localCharacters.toLocaleString()} ` +
+            `characters; the library copy has ${question.calibreCharacters.toLocaleString()}, so ` +
+            'your place may move a little. Confirm opens the library copy from now on; your ' +
+            'reading place, bookmark and stats are kept.',
+          resolver: (canceled: boolean) => resolve(!canceled)
+        }
+      }
+    ]);
+  });
+}
+
 export function openCatalogBook(
   book: CatalogBook,
   api: LibraryApi,
@@ -56,7 +77,8 @@ export function openCatalogBook(
     api,
     store,
     async (libraryId) => libraries.find((l) => l.id === libraryId)?.calibreLibraryUuid ?? null,
-    askExistingBook
+    askExistingBook,
+    askPlaceholderBook
   );
   return openCalibreBook(book, deps, signal, onStage);
 }

@@ -221,14 +221,65 @@ describe('openCalibreBook', () => {
     expect(await store.getLink('b')).toBeUndefined();
   });
 
-  it('never fills or replaces a placeholder', async () => {
+  it('never fills a placeholder the migration did not link to this book', async () => {
     const manual = await manualImport(EPUB);
     const db = await books.db;
     await db.put('data', { ...manual, elementHtml: '', storageSource: 'NAS' });
-    const { d } = deps({ a: EPUB });
+    const { d } = deps({ a: EPUB }, { migratedBookId: async () => 'another-book' });
     const result = await openCalibreBook({ id: 'a', title: 'A' }, d, signal());
     expect(result.status).toBe('refused');
-    expect((result as { message: string }).message).toContain('placeholder from "NAS"');
+    expect((result as { message: string }).message).toContain('Old sync manager');
+    expect((await allBooks())[0].elementHtml).toBe('');
+  });
+
+  it('fills a migrated placeholder with the library copy, keeping its id (WP7b)', async () => {
+    const manual = await manualImport(EPUB);
+    const db = await books.db;
+    await db.put('data', { ...manual, elementHtml: '', storageSource: 'NAS' });
+    const fill = vi.fn(
+      async (content: Parameters<OpenDeps['saveNewBook']>[0]) =>
+        (await books.upsertData(content, ReplicationSaveBehavior.Overwrite, false, true)).id
+    );
+    const { d } = deps({ a: EPUB }, { migratedBookId: async () => 'a', fillPlaceholder: fill });
+    const result = await openCalibreBook({ id: 'a', title: 'A' }, d, signal());
+    expect(result).toEqual({ status: 'opened', localId: manual.id, how: 'imported' });
+    const [stored] = await allBooks();
+    expect(stored.id).toBe(manual.id);
+    expect(stored.elementHtml).not.toBe('');
+    expect(stored.storageSource).toBeUndefined();
+    expect(await store.getLink('a')).toMatchObject({ localId: manual.id, how: 'imported' });
+    // Next time it opens straight from the device.
+    expect(await openCalibreBook({ id: 'a', title: 'A' }, d, signal())).toEqual({
+      status: 'opened',
+      localId: manual.id,
+      how: 'cached'
+    });
+  });
+
+  it('asks before filling a migrated placeholder with another character count', async () => {
+    const manual = await manualImport(EPUB);
+    const db = await books.db;
+    await db.put('data', {
+      ...manual,
+      elementHtml: '',
+      storageSource: 'NAS',
+      characters: manual.characters + 10
+    });
+    const fill = vi.fn(async () => manual.id);
+    const confirmPlaceholder = vi.fn(async () => false);
+    const { d } = deps(
+      { a: EPUB },
+      { migratedBookId: async () => 'a', fillPlaceholder: fill, confirmPlaceholder }
+    );
+    expect(await openCalibreBook({ id: 'a', title: 'A' }, d, signal())).toEqual({
+      status: 'cancelled'
+    });
+    expect(confirmPlaceholder).toHaveBeenCalledWith({
+      title: manual.title,
+      localCharacters: manual.characters + 10,
+      calibreCharacters: manual.characters
+    });
+    expect(fill).not.toHaveBeenCalled();
     expect((await allBooks())[0].elementHtml).toBe('');
   });
 
