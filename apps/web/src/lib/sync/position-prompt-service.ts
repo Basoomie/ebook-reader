@@ -5,6 +5,7 @@
  */
 
 import type { CalibreLink } from '$lib/library/library-db';
+import { bookStateFrom, isCurrentReadThroughPosition } from '$lib/sync/book-state';
 import {
   findPromptCandidates,
   updateHandled,
@@ -64,8 +65,13 @@ export async function promptBookId(
   return resolveLinkedBookId(localId, title, deps.linksForLocalId, deps.warn, deps.legacyBookId);
 }
 
-function positions(records: LocalRecord[]): LocalRecord[] {
-  return records.filter((r) => r.kind === 'position');
+/**
+ * Position records of the book's current read-through (WP8a): after a Start
+ * over, places from an earlier read-through are never offered.
+ */
+function positions(bookId: string, records: LocalRecord[]): LocalRecord[] {
+  const state = bookStateFrom(bookId, records);
+  return records.filter((r) => r.kind === 'position' && isCurrentReadThroughPosition(state, r));
 }
 
 /** What to offer for this book now, or null. Never throws. */
@@ -80,7 +86,7 @@ export async function findPositionPrompt(
     const [records, meta] = await Promise.all([engine.getForBook(bookId), engine.getMeta()]);
 
     const deviceNames: Record<string, string | undefined> = {};
-    for (const record of positions(records)) {
+    for (const record of positions(bookId, records)) {
       const deviceId = record.id.split(':')[1];
       if (!deviceId || deviceId in deviceNames) continue;
       const device = await engine.get('device', deviceId);
@@ -89,7 +95,7 @@ export async function findPositionPrompt(
     }
 
     const candidates = findPromptCandidates({
-      records: positions(records),
+      records: positions(bookId, records),
       ownDeviceId: engine.deviceId,
       localPos: place.localPos,
       localTotal: place.localTotal,

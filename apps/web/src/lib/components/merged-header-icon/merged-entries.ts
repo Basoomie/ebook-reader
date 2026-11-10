@@ -7,6 +7,7 @@
 import {
   faBookAtlas,
   faBug,
+  faCircleHalfStroke,
   faChartLine,
   faCog,
   faFileArrowUp,
@@ -37,6 +38,12 @@ export const mergeEntries = {
     label: 'Statistics',
     icon: faChartLine,
     title: 'Go to Statistics'
+  },
+  BOOK_STATUS: {
+    routeId: '',
+    label: 'Book status',
+    icon: faCircleHalfStroke,
+    title: 'Status, favorite and Start over'
   },
   JUMP_TO_POSITION: {
     routeId: '',

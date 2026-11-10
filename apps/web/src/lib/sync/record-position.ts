@@ -5,6 +5,7 @@
  */
 
 import type { CalibreLink } from '$lib/library/library-db';
+import { bookStateFrom, positionReadThroughId } from '$lib/sync/book-state';
 import type { SyncEngine } from '$lib/sync/sync-engine';
 
 /**
@@ -87,7 +88,8 @@ export async function recordPosition(
       {
         charPos: Math.max(0, Math.round(bookmark.exploredCharCount ?? 0)),
         progress: toProgress(bookmark.progress),
-        readThroughId: null
+        // WP8a: the book's current read-through (null while it has none = the first).
+        readThroughId: positionReadThroughId(bookStateFrom(bookId, await engine.getForBook(bookId)))
       },
       { bookId }
     );

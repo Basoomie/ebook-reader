@@ -123,6 +123,8 @@
   import ConfirmDialog from '$lib/components/confirm-dialog.svelte';
   import NumberDialog from '$lib/components/number-dialog.svelte';
   import PositionPromptDialog from '$lib/components/book-reader/position-prompt-dialog.svelte';
+  import BookStateDialog from '$lib/components/library/book-state-dialog.svelte';
+  import { readingStatusSettleSeconds$ } from '$lib/sync/settings';
   import type { PositionPrompt, PromptRow } from '$lib/sync/position-prompt-service';
   import type { ReaderPositionPrompt } from '$lib/sync/reader-position-prompt';
   import { mergeEntries } from '$lib/components/merged-header-icon/merged-entries';
@@ -262,6 +264,12 @@
   let trackerElm: BookReadingTracker;
   let showTrackerIcon = false;
   let autoStartGate: AutoStartGate | undefined;
+  /** WP8a: detects the first real page turn for the book's status (independent of the tracker). */
+  let statusGate: AutoStartGate | undefined;
+  /** WP8a: the open book's catalog id (only catalog books have a status), once known. */
+  let stateBookId: string | null = null;
+  let startOverNotice = '';
+  let stopStartOverWatch: (() => void) | undefined;
   let wasTrackerPaused = true;
   let frozenPosition = -1;
   let skipFirstFreezeChange = false;
@@ -549,6 +557,30 @@
     reduceToEmptyString()
   );
 
+  // WP8a: Unread becomes Reading on the first real page turn. Same settling rule
+  // as the tracker's auto-start (position restore and layout are not page
+  // turns), with its own per-device settle time; works with statistics off.
+  const firstPageTurnStatus$ = iffBrowser(() =>
+    defer(() => {
+      statusGate = new AutoStartGate(
+        Math.max(1, (Number($readingStatusSettleSeconds$) || 0) * 1000)
+      );
+
+      return fromEvent<CustomEvent>(document, PAGE_CHANGE);
+    })
+  ).pipe(
+    filter(isFirstStatusPageTurn),
+    take(1),
+    tap(() => {
+      if (!$rawBookData$) return;
+      const { id, title } = $rawBookData$;
+      import('$lib/sync/sync-service')
+        .then(({ noteReaderFirstPageTurn }) => noteReaderFirstPageTurn(id, title))
+        .catch(() => {});
+    }),
+    reduceToEmptyString()
+  );
+
   $: if ($tocIsOpen$) {
     autoScroller?.off();
   }
@@ -660,6 +692,7 @@
 
     legacySwitchSubscription.unsubscribe();
     stopPositionPrompt();
+    stopStartOverWatch?.();
 
     if (dismissDialogs) {
       dialogManager.dialogs$.next([]);
@@ -680,6 +713,18 @@
     }
 
     return event;
+  }
+
+  function isFirstStatusPageTurn(event: CustomEvent) {
+    try {
+      return (
+        typeof event.detail?.exploredCharCount === 'number' &&
+        !!statusGate?.onPageChange(Date.now(), true)
+      );
+    } catch (error) {
+      logger.warn(`Book state: ${(error as Error)?.message ?? error}`);
+      return false;
+    }
   }
 
   function isAutoStartPageTurn(event: CustomEvent) {
@@ -901,6 +946,10 @@
 
         scheduleReplication(StorageDataType.PROGRESS);
       }
+
+      // WP8a: also Completed, finishing the read-through as a tracked one. Fire
+      // and forget; the stat and bookmark writes above are unchanged.
+      noteBookCompletedForStatus($rawBookData$.id, $rawBookData$.title);
 
       if ($statisticsEnabled$ && $openTrackerOnCompletion$) {
         confettiWidthModifier = 36;
@@ -1332,11 +1381,16 @@
     positionPromptStarted = true;
     try {
       const { id: localId, title } = $rawBookData$;
-      const restoredPos = (await bookmarkData)?.exploredCharCount ?? 0;
+      let restoredPos = (await bookmarkData)?.exploredCharCount ?? 0;
       const [{ positionPromptApi }, { ReaderPositionPrompt }] = await Promise.all([
         import('$lib/sync/sync-service'),
         import('$lib/sync/reader-position-prompt')
       ]);
+      if (positionPromptStopped) return;
+
+      // WP8a: a Start over not applied on this device yet opens the book at the
+      // start, before "Continue from...?" looks at other devices' places.
+      if (await startOverOnOpen(localId, title, restoredPos)) restoredPos = 0;
       if (positionPromptStopped) return;
 
       positionPrompt = new ReaderPositionPrompt(positionPromptApi(), {
@@ -1407,6 +1461,127 @@
     });
   }
 
+  // -------------------------------------------------------------------------
+  // WP8a: book state (status, read-throughs, Start over). Isolated like the
+  // prompt: every failure is logged and reading goes on unchanged.
+  // -------------------------------------------------------------------------
+
+  function noteBookCompletedForStatus(localId: number, title: string) {
+    import('$lib/sync/sync-service')
+      .then(({ noteReaderBookCompleted }) => noteReaderBookCompleted(localId, title))
+      .catch(() => {});
+  }
+
+  /** Resolves the catalog id, applies a pending Start over, and watches for new ones. */
+  async function startOverOnOpen(localId: number, title: string, restoredPos: number) {
+    try {
+      const sync = await import('$lib/sync/sync-service');
+      stateBookId = await sync.bookIdForLocalBook(localId, title);
+      if (!stateBookId || positionPromptStopped) return false;
+      const bookId = stateBookId;
+
+      const off = await sync.bookStateApi().onChanged(
+        (ids) => {
+          if (ids.has(bookId)) void applyStartOverNow(bookId);
+        },
+        { remoteOnly: true }
+      );
+      if (positionPromptStopped) off();
+      else stopStartOverWatch = off;
+
+      return await applyPendingStartOver(bookId, restoredPos);
+    } catch (error) {
+      logger.warn(`Book state: ${(error as Error)?.message ?? error}`);
+      return false;
+    }
+  }
+
+  /** A sync brought a Start over for the open book (made on another device). */
+  async function applyStartOverNow(bookId: string) {
+    if (await applyPendingStartOver(bookId, exploredCharCount)) {
+      void positionPrompt?.check(false);
+    }
+  }
+
+  async function applyPendingStartOver(bookId: string, place: number) {
+    try {
+      const { readerPendingStartOver } = await import('$lib/sync/sync-service');
+      const readThrough = await readerPendingStartOver(bookId, place);
+      if (!readThrough || positionPromptStopped) return false;
+      jumpToStart();
+      startOverNotice = `Started over${
+        readThrough.startedOn ? ` on ${readThrough.startedOn}` : ''
+      }: this read-through begins at the start.`;
+      return true;
+    } catch (error) {
+      logger.warn(`Book state: ${(error as Error)?.message ?? error}`);
+      return false;
+    }
+  }
+
+  /**
+   * Start over: to the first character, saved as the bookmark with the same
+   * steps as the prompt's jump (local bookmark, position record carrying the
+   * new read-through, old-sync upload), so old and new data agree. Saved also
+   * with Manual Bookmark on: Start over is an explicit action.
+   */
+  function jumpToStart() {
+    const dataId = getBookIdSync();
+    if (!bookmarkManager || !dataId) return;
+
+    const now = Date.now();
+    autoStartGate?.noteSettling(now);
+    statusGate?.noteSettling(now);
+    if ($statisticsEnabled$ && !$isTrackerPaused$) {
+      pauseTracker();
+      restartTrackerAfterCharacterChangeOrTime(0);
+    }
+
+    // Character 1 is the first page in both modes (0 means "no bookmark" to the managers).
+    bookmarkManager.scrollToBookmark(
+      { dataId, exploredCharCount: 1, lastBookmarkModified: now, progress: 0 },
+      customReadingPointScrollOffset
+    );
+    void saveJumpBookmark({ dataId, exploredCharCount: 0, lastBookmarkModified: now, progress: 0 });
+  }
+
+  async function openBookState() {
+    const bookId = stateBookId;
+    if (!bookId || !$rawBookData$) return;
+    showHeader = false;
+    try {
+      const { bookStateApi } = await import('$lib/sync/sync-service');
+      const wasPaused = $statisticsEnabled$ ? $isTrackerPaused$ : true;
+      pauseTracker();
+      const keysWereSkipped = $skipKeyDownListener$;
+      skipKeyDownListener$.next(true);
+      const result = await new Promise<'start-over' | null>((resolver) => {
+        dialogManager.dialogs$.next([
+          {
+            component: BookStateDialog,
+            disableCloseOnClick: true,
+            props: {
+              bookId,
+              title: $rawBookData$?.title ?? '',
+              charCount: bookCharCount || null,
+              api: bookStateApi(),
+              inReader: true,
+              resolver
+            }
+          }
+        ]);
+      });
+      skipKeyDownListener$.next(keysWereSkipped);
+      if (result === 'start-over') {
+        jumpToStart();
+      } else if ($statisticsEnabled$ && !wasPaused) {
+        restartTrackerAfterCharacterChangeOrTime(1);
+      }
+    } catch (error) {
+      logger.warn(`Book state: ${(error as Error)?.message ?? error}`);
+    }
+  }
+
   /** The prompt's one jump (jump history, when it exists, records it here). */
   function jumpToPromptedPosition(row: PromptRow) {
     const dataId = getBookIdSync();
@@ -1415,6 +1590,7 @@
     // The jump is not reading: before auto-start it only settles the book; a
     // running tracker pauses and resumes from the new place (nothing counted).
     autoStartGate?.noteSettling(Date.now());
+    statusGate?.noteSettling(Date.now());
     if ($statisticsEnabled$ && !$isTrackerPaused$) {
       pauseTracker();
       restartTrackerAfterCharacterChangeOrTime(0);
@@ -1884,6 +2060,7 @@
       showFullscreenButton={fullscreenManager.fullscreenEnabled}
       autoScrollMultiplier={$multiplier$}
       {hasBookmarkData}
+      hasBookState={!!stateBookId}
       bind:isBookmarkScreen
       on:tocClick={() => {
         pauseTracker();
@@ -1892,6 +2069,7 @@
         tocIsOpen$.next(true);
       }}
       on:jumpClick={handleJump}
+      on:bookStateClick={openBookState}
       on:completeBook={completeBook}
       on:setCustomReadingPoint={handleSetCustomReadingPoint}
       on:showCustomReadingPoint={() => {
@@ -2033,8 +2211,21 @@
   {$textSelector$ ?? ''}
   {$replicator$ ?? ''}
   {$autoStartTracker$ ?? ''}
+  {$firstPageTurnStatus$ ?? ''}
 {:else}
   {$leaveIfBookMissing$ ?? ''}
+{/if}
+
+{#if startOverNotice}
+  <!-- WP8a: one line after a Start over moved the book to the start (tap to close). -->
+  <button
+    class="writing-horizontal-tb fixed inset-x-4 top-4 z-20 mx-auto max-w-md rounded border-2 border-gray-700 bg-white p-3 text-left text-black"
+    role="status"
+    data-testid="start-over-notice"
+    on:click={() => (startOverNotice = '')}
+  >
+    {startOverNotice} <span class="underline">OK</span>
+  </button>
 {/if}
 
 {#if $tocIsOpen$ && $sectionData$}

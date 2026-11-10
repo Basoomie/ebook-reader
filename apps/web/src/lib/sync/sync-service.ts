@@ -7,7 +7,8 @@
 import { browser } from '$app/environment';
 import { logger } from '$lib/data/logger';
 import { MergeMode } from '$lib/data/merge-mode';
-import { database } from '$lib/data/store';
+import { database, startDayHoursForTracker$ } from '$lib/data/store';
+import { getDateKey } from '$lib/functions/statistic-util';
 import { ReplicationSaveBehavior } from '$lib/functions/replication/replication-options';
 import { canUseWebLocks } from '$lib/functions/secure-context';
 import { getLibraryStore } from '$lib/library/library-db';
@@ -15,6 +16,24 @@ import { libraryRequestTimeoutSeconds$ } from '$lib/library/settings';
 import { MigrationApi } from '$lib/migration/api';
 import { localBookmarkForTitle, localTitleSummaries } from '$lib/migration/local-summary';
 import { applyReadingGoals, applyStatDays } from '$lib/sync/apply-records';
+import type { BookBlur, BookStatus, ReadThrough } from '$lib/sync/book-state';
+import {
+  editReadThroughFinish,
+  getAllBookStates,
+  getBookState,
+  markBooksCompleted,
+  noteFirstPageTurn,
+  noteReaderCompletion,
+  onBookStatesChanged,
+  pendingStartOver,
+  removeReadThrough,
+  setBookBlur,
+  setBookFavorite,
+  setBookStatus,
+  startBookOver,
+  type BookStateDeps,
+  type MarkCompletedBook
+} from '$lib/sync/book-state-service';
 import {
   bookIdForTitle,
   legacyBookIdForTitle,
@@ -39,7 +58,7 @@ import {
   publishReadingGoals,
   READING_GOAL_KIND
 } from '$lib/sync/record-goals';
-import { recordPosition, type BookmarkLike } from '$lib/sync/record-position';
+import { recordPosition, resolveLinkedBookId, type BookmarkLike } from '$lib/sync/record-position';
 import { recordStatistics, STAT_DAY_KIND } from '$lib/sync/record-statistics';
 import { applyGlobalSettingValue } from '$lib/sync/settings-apply';
 import {
@@ -483,3 +502,79 @@ export async function compareThisDeviceBookmarks(
   }
   return out;
 }
+
+// ---------------------------------------------------------------------------
+// WP8a: book state (status, favorite, blur, read-throughs)
+// ---------------------------------------------------------------------------
+
+const bookStateDeps: BookStateDeps = {
+  getEngine: getSyncEngine,
+  today: () => getDateKey(startDayHoursForTracker$.getValue()),
+  warn
+};
+
+/**
+ * The server book id of a local book (Calibre link or migrated link), or null.
+ * Book state applies only to catalog books. Never rejects.
+ */
+export async function bookIdForLocalBook(localId: number, title: string): Promise<string | null> {
+  if (!browser) return null;
+  try {
+    return await resolveLinkedBookId(
+      localId,
+      title,
+      (id) => getLibraryStore().getLinksForLocalId(id),
+      warn,
+      legacyBookId
+    );
+  } catch (error) {
+    warn(`Book state: ${(error as Error)?.message ?? error}`);
+    return null;
+  }
+}
+
+/** The reader's first real page turn of a book load. Fire and forget. */
+export function noteReaderFirstPageTurn(localId: number, title: string): void {
+  void bookIdForLocalBook(localId, title).then((bookId) =>
+    bookId ? noteFirstPageTurn(bookId, bookStateDeps) : undefined
+  );
+}
+
+/** The reader's Complete Book. Fire and forget. */
+export function noteReaderBookCompleted(localId: number, title: string): void {
+  void bookIdForLocalBook(localId, title).then((bookId) =>
+    bookId ? noteReaderCompletion(bookId, bookStateDeps) : undefined
+  );
+}
+
+/** A Start over this device still has to apply for the open book, or null. Never rejects. */
+export async function readerPendingStartOver(
+  bookId: string,
+  restoredPos: number
+): Promise<ReadThrough | null> {
+  return pendingStartOver(bookId, restoredPos, bookStateDeps);
+}
+
+/** The Book state dialog and the library page. User actions reject when they can't be saved. */
+export function bookStateApi() {
+  return {
+    get: (bookId: string) => getBookState(bookId, bookStateDeps),
+    getAll: () => getAllBookStates(bookStateDeps),
+    setStatus: (bookId: string, status: BookStatus) => setBookStatus(bookId, status, bookStateDeps),
+    setFavorite: (bookId: string, favorite: boolean) =>
+      setBookFavorite(bookId, favorite, bookStateDeps),
+    setBlur: (bookId: string, blur: BookBlur) => setBookBlur(bookId, blur, bookStateDeps),
+    markCompleted: (books: MarkCompletedBook[], finishedOn: string | null) =>
+      markBooksCompleted(books, finishedOn, bookStateDeps),
+    startOver: (bookId: string) => startBookOver(bookId, bookStateDeps),
+    editFinish: (bookId: string, readThroughId: string, finishedOn: string | null) =>
+      editReadThroughFinish(bookId, readThroughId, finishedOn, bookStateDeps),
+    removeReadThrough: (bookId: string, readThroughId: string) =>
+      removeReadThrough(bookId, readThroughId, bookStateDeps),
+    onChanged: (callback: (bookIds: Set<string>) => void, options?: { remoteOnly?: boolean }) =>
+      onBookStatesChanged(callback, bookStateDeps, options),
+    today: () => bookStateDeps.today()
+  };
+}
+
+export type BookStateApi = ReturnType<typeof bookStateApi>;

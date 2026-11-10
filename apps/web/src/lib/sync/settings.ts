@@ -29,3 +29,13 @@ export const positionPromptMinChars$ = writableNumberLocalStorageSubject()(
   'positionPromptMinChars',
   500
 );
+
+/**
+ * WP8a: a book becomes "Reading" on its first real page turn. Page changes
+ * within this many seconds of the previous one while the book loads (position
+ * restore, layout) are treated as settling, not as a page turn.
+ */
+export const readingStatusSettleSeconds$ = writableNumberLocalStorageSubject()(
+  'readingStatusSettleSeconds',
+  3
+);

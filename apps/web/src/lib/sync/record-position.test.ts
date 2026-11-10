@@ -64,6 +64,31 @@ describe('recordPosition', () => {
     });
   });
 
+  it("carries the book's current read-through after a Start over (WP8a)", async () => {
+    const d = await deps([link()]);
+    const engine = await d.getEngine();
+    await engine.put(
+      'read-through',
+      `${BOOK}:2`,
+      {
+        number: 2,
+        origin: 'start-over',
+        startedOn: '2026-11-09',
+        finished: false,
+        finishedOn: null,
+        manual: false,
+        charCount: null
+      },
+      { bookId: BOOK }
+    );
+    await recordPosition(7, '薬屋のひとりごと 1', { exploredCharCount: 0, progress: 0 }, d);
+    expect((await engine.get('position', `${BOOK}:${DEVICE}`))?.data).toEqual({
+      charPos: 0,
+      progress: 0,
+      readThroughId: `${BOOK}:2`
+    });
+  });
+
   it('does nothing for books without a Calibre link or with a stale link', async () => {
     const d = await deps([link()]);
     expect(await recordPosition(8, 'Other', { exploredCharCount: 1, progress: 0 }, d)).toBe(false);

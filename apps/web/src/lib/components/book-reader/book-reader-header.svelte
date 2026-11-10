@@ -33,6 +33,8 @@
   export let showFullscreenButton: boolean;
   export let isBookmarkScreen: boolean;
   export let hasBookmarkData: boolean;
+  /** WP8a: the book is in the library catalog, so it has a status. */
+  export let hasBookState = false;
 
   const dispatch = createEventDispatcher<{
     tocClick: void;
@@ -40,6 +42,7 @@
     scrollToBookmarkClick: void;
     jumpClick: void;
     completeBook: void;
+    bookStateClick: void;
     fullscreenClick: void;
     showCustomReadingPoint: void;
     setCustomReadingPoint: void;
@@ -82,6 +85,10 @@
 
     if (hasText) {
       items.push(mergeEntries.JUMP_TO_POSITION);
+    }
+
+    if (hasBookState) {
+      items.push(mergeEntries.BOOK_STATUS);
     }
 
     if ($readerImageGalleryPictures$.length) {
@@ -203,6 +210,8 @@
           dispatch('statisticsClick');
         } else if (detail === mergeEntries.JUMP_TO_POSITION.label) {
           dispatch('jumpClick');
+        } else if (detail === mergeEntries.BOOK_STATUS.label) {
+          dispatch('bookStateClick');
         } else if (detail === mergeEntries.READER_IMAGE_GALLERY.label) {
           dispatch('readerImageGalleryClick');
         } else if (detail === mergeEntries.SETTINGS.label) {

@@ -359,6 +359,123 @@ const migrationKind: KindSpec = {
   },
 };
 
+// ---------------------------------------------------------------------------
+// WP8a: book state (status, favorite, cover blur, read-throughs)
+// ---------------------------------------------------------------------------
+
+export const BOOK_STATUSES = ['unread', 'reading', 'completed', 'dropped'] as const;
+export const BOOK_BLURS = ['inherit', 'always', 'never'] as const;
+export const READ_THROUGH_ORIGINS = ['start-over', 'completion'] as const;
+const MAX_READ_THROUGH_NUMBER = 9999;
+
+function oneOf<T extends string>(value: unknown, allowed: readonly T[], field: string): T {
+  if (typeof value !== 'string' || !allowed.includes(value as T)) {
+    throw new RecordError('invalid_data', `${field} must be one of ${allowed.join(', ')}`);
+  }
+  return value as T;
+}
+
+function bool(value: unknown, field: string): boolean {
+  if (typeof value !== 'boolean')
+    throw new RecordError('invalid_data', `${field} must be true or false`);
+  return value;
+}
+
+function dateOrNull(value: unknown, field: string): string | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'string' && DATE_KEY_RE.test(value)) return value;
+  throw new RecordError('invalid_data', `${field} must be YYYY-MM-DD or null`);
+}
+
+/**
+ * One value per book (status, favorite, blur): id = the book id, lww. Kept as
+ * separate records so an edit of one field never overwrites another field
+ * edited on another device. No deletion: "no record" means the default.
+ */
+function perBookKind(field: string, check: (value: unknown) => unknown): KindSpec {
+  return {
+    policy: () => 'lww',
+    deletable: false,
+    validate(id, data, _deleted, ctx) {
+      if (!UUID_RE.test(id)) throw new RecordError('invalid_id', 'ids are the book id');
+      if (!bookExists(ctx, id)) throw new RecordError('unknown_book', `No book ${id}`);
+      const obj = requireObject(data);
+      return { bookId: id, data: { [field]: check(obj[field]) } };
+    },
+  };
+}
+
+/** kind "book-status": data { status, auto }. No record = unread. */
+const bookStatusKind: KindSpec = {
+  policy: () => 'lww',
+  deletable: false,
+  validate(id, data, _deleted, ctx) {
+    if (!UUID_RE.test(id)) throw new RecordError('invalid_id', 'ids are the book id');
+    if (!bookExists(ctx, id)) throw new RecordError('unknown_book', `No book ${id}`);
+    const obj = requireObject(data);
+    return {
+      bookId: id,
+      data: { status: oneOf(obj.status, BOOK_STATUSES, 'status'), auto: bool(obj.auto, 'auto') },
+    };
+  },
+};
+
+export function parseReadThroughId(id: string): { bookId: string; number: number } | null {
+  const parts = id.split(':');
+  if (parts.length !== 2 || !UUID_RE.test(parts[0]) || !/^[1-9]\d{0,3}$/.test(parts[1])) {
+    return null;
+  }
+  const number = Number(parts[1]);
+  return number <= MAX_READ_THROUGH_NUMBER ? { bookId: parts[0], number } : null;
+}
+
+/**
+ * kind "read-through": id <bookId>:<n>, one reading of a book. Numbered ids
+ * are deterministic, so two devices starting over offline make the same
+ * record. Stats are not copied into it: stat days belong to a read-through by
+ * date (client-side rule).
+ */
+const readThroughKind: KindSpec = {
+  policy: () => 'lww',
+  deletable: true,
+  validate(id, data, deleted, ctx) {
+    const parsed = parseReadThroughId(id);
+    if (!parsed) throw new RecordError('invalid_id', 'read-through ids are <bookId>:<1-9999>');
+    if (!bookExists(ctx, parsed.bookId)) {
+      throw new RecordError('unknown_book', `No book ${parsed.bookId}`);
+    }
+    if (deleted) return { bookId: parsed.bookId, data: {} };
+    const obj = requireObject(data);
+    if (obj.number !== parsed.number) {
+      throw new RecordError('invalid_data', 'number must match the id');
+    }
+    const finished = bool(obj.finished, 'finished');
+    const finishedOn = dateOrNull(obj.finishedOn, 'finishedOn');
+    if (!finished && finishedOn !== null) {
+      throw new RecordError('invalid_data', 'finishedOn needs finished');
+    }
+    const charCount = obj.charCount ?? null;
+    if (
+      charCount !== null &&
+      (typeof charCount !== 'number' || !Number.isInteger(charCount) || charCount < 0)
+    ) {
+      throw new RecordError('invalid_data', 'charCount must be null or a whole number >= 0');
+    }
+    return {
+      bookId: parsed.bookId,
+      data: {
+        number: parsed.number,
+        origin: oneOf(obj.origin, READ_THROUGH_ORIGINS, 'origin'),
+        startedOn: dateOrNull(obj.startedOn, 'startedOn'),
+        finished,
+        finishedOn,
+        manual: bool(obj.manual, 'manual'),
+        charCount,
+      },
+    };
+  },
+};
+
 export const DEFAULT_KINDS: KindRegistry = {
   device: deviceKind,
   setting: settingKind,
@@ -367,4 +484,8 @@ export const DEFAULT_KINDS: KindRegistry = {
   'stat-day': statDayKind,
   'reading-goal': readingGoalKind,
   migration: migrationKind,
+  'book-status': bookStatusKind,
+  'book-favorite': perBookKind('favorite', (v) => bool(v, 'favorite')),
+  'book-blur': perBookKind('blur', (v) => oneOf(v, BOOK_BLURS, 'blur')),
+  'read-through': readThroughKind,
 };
