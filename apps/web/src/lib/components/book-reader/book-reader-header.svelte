@@ -9,6 +9,7 @@
     faExpand,
     faFlag,
     faList,
+    faMagnifyingGlass,
     faRotateLeft,
     type IconDefinition
   } from '@fortawesome/free-solid-svg-icons';
@@ -38,6 +39,8 @@
   /** WP10b: the jump history has a place to go back / forward to. */
   export let canJumpBack = false;
   export let canJumpForward = false;
+  /** WP10c: the book has text to search. */
+  export let canSearch = false;
   /** WP8a: the book is in the library catalog, so it has a status. */
   export let hasBookState = false;
 
@@ -61,6 +64,7 @@
     libraryClick: void;
     zenClick: void;
     shortcutsClick: void;
+    searchClick: void;
     jumpBackClick: void;
     jumpForwardClick: void;
   }>();
@@ -134,6 +138,18 @@
         on:keyup={dummyFn}
       >
         <Fa icon={faList} />
+      </div>
+    {/if}
+    {#if canSearch}
+      <div
+        tabindex="0"
+        role="button"
+        title="Search in this book (/)"
+        class={baseIconClasses}
+        on:click={() => dispatch('searchClick')}
+        on:keyup={dummyFn}
+      >
+        <Fa icon={faMagnifyingGlass} />
       </div>
     {/if}
     <div

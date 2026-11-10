@@ -182,7 +182,9 @@ export function readerShortcutGroups(context: ShortcutContext): ShortcutGroup[] 
     afterBookmark || reading.length,
     0,
     { keys: ['['], action: 'Back to where you were before a jump' },
-    { keys: [']'], action: 'Forward again' }
+    { keys: [']'], action: 'Forward again' },
+    // WP10c
+    { keys: ['/'], action: 'Search in this book' }
   );
 
   reading.push({ keys: ['?'], action: 'Show this list' });
