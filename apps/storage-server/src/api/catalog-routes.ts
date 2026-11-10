@@ -11,6 +11,7 @@ import { pipeline } from 'stream/promises';
 import type { IndexerStatus } from '../calibre/indexer';
 import { openSourceStream, resolveInside, statFile } from '../calibre/source-fs';
 import { planGroups } from '../catalog/groups';
+import { collectionCards } from '../collections/cards';
 import {
   CatalogUser,
   getBookFileFor,
@@ -19,12 +20,15 @@ import {
   GroupRef,
   InvalidCursorError,
   listLibrariesFor,
+  MAX_LOOKUP_IDS,
   planBooks,
+  planLookup,
   PlannedQuery,
   verifyThumbnailUrl,
 } from '../catalog/queries';
 import { InvalidQueryError } from '../catalog/query-parser';
 import { RegexTimeoutError, SearchRunner } from '../catalog/search-runner';
+import { UUID_RE } from '../sync/kinds';
 import type { CharCountService } from '../counts/count-service';
 import { thumbnailVersion, type ThumbnailService } from '../thumbnails/thumbnails';
 import { getAuth, requireUser } from './auth';
@@ -125,6 +129,7 @@ export function createCatalogRouter(db: Database.Database, catalog: CatalogOptio
             planBooks(db, user, {
               libraryId: queryString(req.query.library),
               query: queryString(req.query.q),
+              scope: queryString(req.query.scope),
               group,
               limit,
               cursor: queryString(req.query.cursor),
@@ -162,6 +167,60 @@ export function createCatalogRouter(db: Database.Database, catalog: CatalogOptio
       } catch (err) {
         searchErrors(err);
       }
+    }),
+  );
+
+  // A manual collection's books in its own order (WP8b); the order comes from the device.
+  router.post(
+    '/books/lookup',
+    asyncHandler(async (req, res) => {
+      const { user } = getAuth(res);
+      const body = (req.body ?? {}) as { ids?: unknown; q?: unknown };
+      const ids = body.ids;
+      if (
+        !Array.isArray(ids) ||
+        ids.length > MAX_LOOKUP_IDS ||
+        !ids.every((id) => typeof id === 'string' && UUID_RE.test(id))
+      ) {
+        throw new ApiError(
+          400,
+          'invalid_ids',
+          `ids must be a list of at most ${MAX_LOOKUP_IDS} book ids`,
+        );
+      }
+      if (body.q !== undefined && typeof body.q !== 'string') {
+        throw new ApiError(400, 'invalid_query', 'q must be text', { start: 0, end: 0 });
+      }
+      try {
+        res.json(
+          await run(
+            planLookup(db, user, ids as string[], {
+              query: body.q === '' ? undefined : (body.q as string | undefined),
+              countSpec: countSpec(),
+            }),
+          ),
+        );
+      } catch (err) {
+        searchErrors(err);
+      }
+    }),
+  );
+
+  // Collections page (WP8b): count and collage tiles of every collection.
+  router.get(
+    '/collections/cards',
+    asyncHandler(async (_req, res) => {
+      const { user } = getAuth(res);
+      const runner = catalog.search ?? fallbackRunner;
+      const cards = await collectionCards(
+        db,
+        user,
+        (sql, params, regex) =>
+          regex ? runner.all(sql, params) : Promise.resolve(db.prepare(sql).all(...params)),
+        countSpec(),
+        (m, err) => console.error(m, err),
+      );
+      res.json({ cards });
     }),
   );
 

@@ -15,6 +15,8 @@ import {
   faFolderPlus,
   faHashtag,
   faImages,
+  faLayerGroup,
+  faListUl,
   faSignOutAlt,
   faTriangleExclamation
 } from '@fortawesome/free-solid-svg-icons';
@@ -26,6 +28,12 @@ export const mergeEntries = {
     label: 'Library',
     icon: faBookAtlas,
     title: 'Browse the Calibre library'
+  },
+  COLLECTIONS: {
+    routeId: '/collections',
+    label: 'Collections',
+    icon: faLayerGroup,
+    title: 'Your collections'
   },
   SETTINGS: {
     routeId: '/settings',
@@ -44,6 +52,12 @@ export const mergeEntries = {
     label: 'Book status',
     icon: faCircleHalfStroke,
     title: 'Status, favorite and Start over'
+  },
+  ADD_TO_COLLECTION: {
+    routeId: '',
+    label: 'Add to collection',
+    icon: faListUl,
+    title: 'Add this book to a collection'
   },
   JUMP_TO_POSITION: {
     routeId: '',

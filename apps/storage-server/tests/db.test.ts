@@ -49,6 +49,7 @@ describe('migrations', () => {
       'sync_state',
       'tags',
       'thumbnails',
+      'user_seeds',
       'users',
     ]);
   });

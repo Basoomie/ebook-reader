@@ -100,6 +100,17 @@ export interface CatalogGroup {
   tiles?: GroupTile[];
 }
 
+/** A card of the Collections page (WP8b, GET /collections/cards). */
+export interface CollectionCardData {
+  /** A built-in id ("reading", ...) or a collection id. */
+  id: string;
+  builtin: boolean;
+  query?: string;
+  bookCount: number;
+  tiles: GroupTile[];
+  error?: { code: string; message: string };
+}
+
 export interface CatalogGroupPage {
   groups: CatalogGroup[];
   nextCursor: string | null;

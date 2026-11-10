@@ -11,9 +11,17 @@ export interface AppOptions {
   database: DatabaseState;
   version: string;
   catalog?: CatalogOptions;
+  /** See ApiOptions.seedDefaults (tests turn it off). */
+  seedDefaults?: boolean;
 }
 
-export function createApp({ config, database, version, catalog }: AppOptions): Express {
+export function createApp({
+  config,
+  database,
+  version,
+  catalog,
+  seedDefaults,
+}: AppOptions): Express {
   const app = express();
 
   // Applies to the legacy and the new routes. With an explicit list, requests
@@ -42,6 +50,7 @@ export function createApp({ config, database, version, catalog }: AppOptions): E
       pairing: { maxFailuresPerMinute: config.pairing.maxFailuresPerMinute },
       sync: { maxClockSkewSeconds: config.sync.maxClockSkewSeconds },
       migration: { dataRoot: config.dataRoot, dbDir: config.dbDir },
+      seedDefaults,
     }),
   );
 

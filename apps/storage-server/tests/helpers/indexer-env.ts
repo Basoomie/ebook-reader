@@ -29,6 +29,7 @@ export function makeIndexerEnv(
   overrides: Partial<CalibreConfig> = {},
   serverOverrides: Partial<ServerConfig> = {},
   countOptions: { config?: Partial<CountsConfig>; counterFile?: string } = {},
+  { seedDefaults = false }: { seedDefaults?: boolean } = {},
 ): IndexerEnv {
   const calibre = testCalibreConfig({ dir: calibreDir, thumbBackground: false, ...overrides });
   const config = testConfig({ calibre, ...serverOverrides });
@@ -79,6 +80,7 @@ export function makeIndexerEnv(
     database: state,
     version: '9.9.9-test',
     catalog: { thumbnails, counts, indexer: indexer.status, calibreDir, search },
+    seedDefaults,
   });
   return {
     app,

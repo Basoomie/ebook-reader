@@ -8,7 +8,7 @@ import 'fake-indexeddb/auto';
 import { describe, expect, it } from 'vitest';
 import { LibraryApi, LibraryApiError } from './api';
 import { isCoverBlurred } from './cover-blur';
-import { bookProgressLabel, positionsByBook, seriesReadCount } from './progress';
+import { bookProgressLabel, furthestPosition, positionsByBook, seriesReadCount } from './progress';
 import { bookStateFrom, type BookState } from '$lib/sync/book-state';
 import {
   getAllBookStates,
@@ -60,12 +60,62 @@ function position(
 }
 
 describe('progress label', () => {
-  it('shows the newest place of the current read as a whole percent', () => {
+  it('shows the place of the current read as a whole percent', () => {
     const positions = [
       position(A, 'phone', 10, { charPos: 10, progress: 0.25, readThroughId: null }),
       position(A, 'boox', 20, { charPos: 50, progress: 0.426, readThroughId: null })
     ];
     expect(bookProgressLabel(A, undefined, positions, 100)).toBe('42%');
+  });
+
+  it('takes the furthest place of any device, not the newest (WP8b)', () => {
+    const positions = [
+      position(A, 'boox', 10, { charPos: 600, progress: 0.6, readThroughId: null }),
+      // Saved later on a device that was behind (e.g. opened at an old place).
+      position(A, 'phone', 20, { charPos: 300, progress: 0.3, readThroughId: null })
+    ];
+    expect(bookProgressLabel(A, undefined, positions, 1000)).toBe('60%');
+    expect(furthestPosition(A, undefined, positions, 1000)?.record.deviceId).toBe('boox');
+  });
+
+  it('prefers the newest record on a tie and compares copies by fraction', () => {
+    const positions = [
+      position(A, 'a', 10, { charPos: 500, progress: 0.5, readThroughId: null }),
+      position(A, 'b', 30, { charPos: 500, progress: 0.5, readThroughId: null }),
+      // Another copy with more characters: a higher charPos but a lower fraction.
+      position(A, 'c', 40, { charPos: 520, progress: 0.4, readThroughId: null })
+    ];
+    expect(furthestPosition(A, undefined, positions, 1000)?.record.deviceId).toBe('b');
+    expect(bookProgressLabel(A, undefined, positions, 1000)).toBe('50%');
+  });
+
+  it('starts again from the new read after Start over', () => {
+    const state: BookState = {
+      ...bookStateFrom(A, []),
+      status: 'unread',
+      readThroughs: [
+        {
+          id: `${A}:2`,
+          number: 2,
+          origin: 'start-over',
+          startedOn: '2026-11-09',
+          finished: false,
+          finishedOn: null,
+          manual: false,
+          charCount: null
+        }
+      ]
+    };
+    const old = position(A, 'boox', 5, { charPos: 900, progress: 0.9, readThroughId: null });
+    expect(bookProgressLabel(A, state, [old], 1000)).toBeNull();
+    const start = position(A, 'phone', 9, { charPos: 0, progress: 0, readThroughId: `${A}:2` });
+    expect(bookProgressLabel(A, state, [old, start], 1000)).toBe('0%');
+    const later = position(A, 'boox', 12, {
+      charPos: 150,
+      progress: 0.15,
+      readThroughId: `${A}:2`
+    });
+    expect(bookProgressLabel(A, state, [later, start], 1000)).toBe('15%');
   });
 
   it('falls back to the character position and the catalog count', () => {

@@ -43,6 +43,7 @@
     jumpClick: void;
     completeBook: void;
     bookStateClick: void;
+    addToCollectionClick: void;
     fullscreenClick: void;
     showCustomReadingPoint: void;
     setCustomReadingPoint: void;
@@ -89,6 +90,7 @@
 
     if (hasBookState) {
       items.push(mergeEntries.BOOK_STATUS);
+      items.push(mergeEntries.ADD_TO_COLLECTION);
     }
 
     if ($readerImageGalleryPictures$.length) {
@@ -212,6 +214,8 @@
           dispatch('jumpClick');
         } else if (detail === mergeEntries.BOOK_STATUS.label) {
           dispatch('bookStateClick');
+        } else if (detail === mergeEntries.ADD_TO_COLLECTION.label) {
+          dispatch('addToCollectionClick');
         } else if (detail === mergeEntries.READER_IMAGE_GALLERY.label) {
           dispatch('readerImageGalleryClick');
         } else if (detail === mergeEntries.SETTINGS.label) {

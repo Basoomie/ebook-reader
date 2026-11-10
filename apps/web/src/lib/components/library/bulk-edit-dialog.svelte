@@ -4,12 +4,14 @@
   export type BulkChange =
     | { kind: 'status'; status: BookStatus }
     | { kind: 'favorite'; favorite: boolean }
-    | { kind: 'blur'; blur: BookBlur };
+    | { kind: 'blur'; blur: BookBlur }
+    | { kind: 'collection'; action: 'add' | 'remove' };
 </script>
 
 <script lang="ts">
   /**
-   * Bulk changes for the selected books (WP7a): status, favorite and cover. One choice
+   * Bulk changes for the selected books (WP7a): status, favorite, cover and (WP8b) adding
+   * to or removing from a collection, which continues to the collection picker. One choice
    * closes the dialog; "Completed…" continues to the finish-date step. Plain for e-ink
    * (WP8a dialogs): 48 px bordered buttons, inert backdrop, Esc cancels.
    */
@@ -94,6 +96,24 @@
       on:click={() => answer({ kind: 'favorite', favorite: false })}
     >
       Remove from favorites
+    </button>
+  </div>
+
+  <h3 class="mb-2 font-medium">Collection</h3>
+  <div class="mb-5 grid grid-cols-2 gap-2">
+    <button
+      class={buttonClass}
+      data-testid="bulk-collection-add"
+      on:click={() => answer({ kind: 'collection', action: 'add' })}
+    >
+      Add to…
+    </button>
+    <button
+      class={buttonClass}
+      data-testid="bulk-collection-remove"
+      on:click={() => answer({ kind: 'collection', action: 'remove' })}
+    >
+      Remove from…
     </button>
   </div>
 

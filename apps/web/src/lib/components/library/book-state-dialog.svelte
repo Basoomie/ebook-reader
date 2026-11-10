@@ -16,7 +16,8 @@
     type BookStatus,
     type ReadThrough
   } from '$lib/sync/book-state';
-  import type { BookStateApi } from '$lib/sync/sync-service';
+  import CollectionToggles from '$lib/components/collections/collection-toggles.svelte';
+  import type { BookStateApi, CollectionsApi } from '$lib/sync/sync-service';
   import { createEventDispatcher, onDestroy, onMount } from 'svelte';
 
   export let bookId: string;
@@ -24,6 +25,8 @@
   /** The catalog's character count, kept with a manual completion. */
   export let charCount: number | null = null;
   export let api: BookStateApi;
+  /** WP8b: the lists this book is in (omitted = no Collections section). */
+  export let collections: CollectionsApi | null = null;
   /** Opened from the reader: Start over moves the open book to the start at once. */
   export let inReader = false;
   /** 'start-over' after a Start over, else null. */
@@ -297,6 +300,11 @@
         </ul>
       {:else}
         <p class="text-sm">Not finished yet. Marking the book completed counts it as read.</p>
+      {/if}
+
+      {#if collections}
+        <h3 class="mb-2 mt-5 font-medium">Collections</h3>
+        <CollectionToggles {bookId} api={collections} />
       {/if}
 
       <div class="mt-4 border-t border-gray-400 pt-3">

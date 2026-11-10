@@ -12,7 +12,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { readCounterInfo } from '../src/counts/counter-bundle';
 import { CharCountService } from '../src/counts/count-service';
 import { forgetCounts, getCountRecord } from '../src/counts/count-records';
-import { MIGRATIONS, migrate } from '../src/db/migrations';
+import { LATEST_SCHEMA_VERSION, MIGRATIONS, migrate } from '../src/db/migrations';
 import { CalibreRoot, fingerprint, FixtureBook, LibraryFixture } from './helpers/calibre-fixture';
 import { enableLibrary, IndexerEnv, makeIndexerEnv } from './helpers/indexer-env';
 import { makeTempDir } from './helpers/spawn-server';
@@ -331,7 +331,7 @@ describe('migration 6', () => {
     db.prepare(
       "INSERT INTO books (id, library_id, title, added_at, created_at, updated_at) VALUES ('b', 'l', 'T', 1, 1, 1)",
     ).run();
-    expect(migrate(db)).toBe(6);
+    expect(migrate(db)).toBe(LATEST_SCHEMA_VERSION);
     expect(db.prepare('SELECT id, char_count FROM books').all()).toEqual([
       { id: 'b', char_count: null },
     ]);

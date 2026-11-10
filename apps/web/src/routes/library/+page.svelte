@@ -1,6 +1,16 @@
 <script lang="ts">
   import { afterNavigate, goto } from '$app/navigation';
   import { page } from '$app/stores';
+  import { builtinCollection } from '$lib/collections/builtins';
+  import { collectionMenu, newCollection } from '$lib/collections/collection-dialogs';
+  import type { Collection, CollectionItem } from '$lib/collections/collections';
+  import CollectionBookActionsDialog, {
+    type CollectionBookAction
+  } from '$lib/components/collections/collection-book-actions-dialog.svelte';
+  import CollectionPickDialog, {
+    type CollectionPick
+  } from '$lib/components/collections/collection-pick-dialog.svelte';
+  import CollectionReorderList from '$lib/components/collections/collection-reorder-list.svelte';
   import ConfirmDialog from '$lib/components/confirm-dialog.svelte';
   import BookStateDialog from '$lib/components/library/book-state-dialog.svelte';
   import BulkEditDialog, { type BulkChange } from '$lib/components/library/bulk-edit-dialog.svelte';
@@ -61,6 +71,7 @@
   import type { LocalRecord } from '$lib/sync/sync-db';
   import {
     bookStateApi,
+    collectionsApi,
     libraryViewApi,
     notifySyncConnectionChanged
   } from '$lib/sync/sync-service';
@@ -73,6 +84,10 @@
    * the existing import pipeline. Every view is a URL
    * (?tab=all|series|authors|tags&group=<name>|none=1&q=&lib=), so going back from the
    * reader or a group restores it. Plain for e-ink: "Load more" paging, no animations.
+   *
+   * WP8b: ?collection=<id> shows one collection (a built-in, a saved search or a list)
+   * across all libraries; the search box filters inside it. A list shows its own order
+   * (from the local mirror, so moves show at once) and can be reordered.
    */
 
   type Tab = 'all' | 'series' | 'authors' | 'tags';
@@ -91,6 +106,10 @@
   // The search box without the shared input's transition (e-ink).
   const searchInputClasses = inputClasses.replace(/\s*\btransition\b/, '');
   const solid = 'border-gray-800 bg-gray-800 text-white';
+  /** Book ids looked up per request for a list (server limit 200). */
+  const LOOKUP_CHUNK = 100;
+  /** A list page shows at least this many matching books when there are more. */
+  const LIST_PAGE = 50;
 
   const store = getLibraryStore();
 
@@ -116,6 +135,12 @@
   let group: { by: GroupBy; name: string | null } | null = null;
   /** The open group's card (totals, read count), when the server has one. */
   let groupInfo: CatalogGroup | null = null;
+  /** WP8b: the open collection (?collection=). */
+  let collectionId: string | null = null;
+  /** Lists: how many of its book ids have been looked up so far. */
+  let listConsumed = 0;
+  let reorderMode = false;
+  let savingOrder = false;
   let staleNote = false;
   let listController: AbortController | undefined;
 
@@ -125,6 +150,11 @@
   // WP8a/WP7a: book state, tag rules and positions from the local sync mirror.
   const bookState = bookStateApi();
   const view = libraryViewApi();
+  const collections = collectionsApi();
+  let collectionList: Collection[] = [];
+  let collectionItems = new Map<string, CollectionItem[]>();
+  let collectionsLoaded = false;
+  let collectionsTimer: ReturnType<typeof setTimeout> | undefined;
   let states = new Map<string, BookState>();
   let tagRules = new Set<string>();
   let positions = new Map<string, LocalRecord[]>();
@@ -148,7 +178,18 @@
   $: enabledLibraries = libraries.filter((l) => l.enabled);
   $: charCountSummary = summarizeCharCounts(enabledLibraries);
   $: tabInfo = TABS.find((t) => t.id === tab) ?? TABS[0];
-  $: showingGroups = tabInfo.by !== null && group === null;
+  $: builtin = collectionId ? builtinCollection(collectionId) : null;
+  $: userCollection = collectionId
+    ? (collectionList.find((c) => c.id === collectionId) ?? null)
+    : null;
+  $: isList = userCollection?.type === 'manual';
+  $: listIds =
+    isList && collectionId ? (collectionItems.get(collectionId) ?? []).map((i) => i.bookId) : [];
+  $: collectionName = builtin?.name ?? userCollection?.name ?? null;
+  $: collectionGone = collectionId !== null && collectionsLoaded && !builtin && !userCollection;
+  $: canReorder = isList && !appliedQuery && books.length > 1;
+  $: if (!canReorder && reorderMode && !savingOrder) reorderMode = false;
+  $: showingGroups = collectionId === null && tabInfo.by !== null && group === null;
   $: chips = activeChips(queryInput);
   $: chipsDisabled = !parseQuery(queryInput).ok;
   $: grid = $libraryView$ !== 'list';
@@ -163,9 +204,13 @@
 
   onMount(async () => {
     void loadMirror();
+    // Places saved on other devices (and their collections) show without waiting for
+    // the next timed sync.
+    void view.syncSoon();
     const subscriptions = [
       bookState.onChanged(() => void loadStates()),
-      view.onChanged(() => void loadViewData())
+      view.onChanged(() => void loadViewData()),
+      collections.onChanged(onCollectionsChanged)
     ];
     for (const sub of subscriptions) {
       void sub.then((off) => {
@@ -180,6 +225,7 @@
 
   onDestroy(() => {
     destroyed = true;
+    clearTimeout(collectionsTimer);
     stopListeners.forEach((off) => off());
     listController?.abort();
     opening?.controller.abort();
@@ -232,7 +278,39 @@
   }
 
   function loadMirror() {
-    return Promise.all([loadStates(), loadViewData()]);
+    return Promise.all([loadStates(), loadViewData(), loadCollections()]);
+  }
+
+  async function loadCollections() {
+    const result = await collections.view();
+    collectionList = result.collections;
+    collectionItems = result.items;
+    collectionsLoaded = true;
+  }
+
+  /** Many records can change at once (a deleted collection): settle first. */
+  function onCollectionsChanged() {
+    clearTimeout(collectionsTimer);
+    collectionsTimer = setTimeout(async () => {
+      if (destroyed) return;
+      const wasList = isList;
+      await loadCollections();
+      if (collectionId === null) return;
+      if (wasList || isList) refreshList();
+      else if (!userCollection && !builtin) books = [];
+    }, 50);
+  }
+
+  /**
+   * A list changed (a move, an add, a removal, here or on another device): show the
+   * new order of what is loaded at once, then look the books up again for additions.
+   */
+  function refreshList() {
+    const pos = new Map(listIds.map((id, i) => [id, i]));
+    books = books
+      .filter((b) => pos.has(b.id))
+      .sort((a, b) => (pos.get(a.id) ?? 0) - (pos.get(b.id) ?? 0));
+    void loadPage(true, Math.max(books.length, LIST_PAGE));
   }
 
   async function loadStates() {
@@ -259,6 +337,7 @@
           title: book.title,
           charCount: book.charCount,
           api: bookState,
+          collections,
           resolver: () => {}
         }
       }
@@ -414,7 +493,25 @@
     if (!change) return;
     const ids = chosen.map((b) => b.id);
     let failed: string[];
-    if (change.kind === 'status' && change.status === 'completed') {
+    if (change.kind === 'collection') {
+      const pick = await ask<CollectionPick | undefined>(CollectionPickDialog, {
+        action: change.action,
+        count: chosen.length,
+        collections: collectionList.filter((c) => c.type === 'manual')
+      });
+      if (!pick) return;
+      try {
+        const target =
+          'id' in pick ? pick.id : await collections.create({ name: pick.newName, type: 'manual' });
+        failed =
+          change.action === 'add'
+            ? await collections.addBooks(target, ids)
+            : await collections.removeBooks(target, ids);
+      } catch (error) {
+        showMessage('Not saved', (error as Error).message);
+        return;
+      }
+    } else if (change.kind === 'status' && change.status === 'completed') {
       const finishedOn = await ask<string | null | undefined>(MarkCompletedDialog, {
         count: chosen.length
       });
@@ -443,6 +540,93 @@
     selected = new Set();
   }
 
+  /** Select mode in a list: take the selected books out of it, or move them to the top. */
+  async function listBulk(action: 'remove' | 'top') {
+    if (!collectionId || !isList) return;
+    // In the list's own order, so "Move to top" keeps their order.
+    const ids = listIds.filter((id) => selected.has(id));
+    if (!ids.length) return;
+    const failed =
+      action === 'remove'
+        ? await collections.removeBooks(collectionId, ids)
+        : await collections.moveBooks(collectionId, ids, 0);
+    if (failed.length) {
+      showMessage('Not all saved', `${failed.length} of ${ids.length} books could not be changed.`);
+      selected = new Set(failed);
+      return;
+    }
+    selectMode = false;
+    selected = new Set();
+  }
+
+  // ---- reordering a list ---------------------------------------------------
+
+  async function saveOrder(action: () => Promise<string[]>) {
+    if (savingOrder) return;
+    savingOrder = true;
+    try {
+      const failed = await action();
+      if (failed.length) showMessage('Not saved', 'The new place could not be saved. Try again.');
+    } catch (error) {
+      showMessage('Not saved', (error as Error).message);
+    } finally {
+      savingOrder = false;
+    }
+  }
+
+  function moveInList(book: CatalogBook, delta: -1 | 1) {
+    if (!collectionId) return;
+    const id = collectionId;
+    void saveOrder(() => collections.moveBookBy(id, book.id, delta));
+  }
+
+  function dropInList(book: CatalogBook, index: number) {
+    if (!collectionId) return;
+    const id = collectionId;
+    void saveOrder(() => collections.moveBooks(id, [book.id], index));
+  }
+
+  async function listBookMenu(book: CatalogBook) {
+    if (!collectionId) return;
+    const id = collectionId;
+    const action = await ask<CollectionBookAction | undefined>(CollectionBookActionsDialog, {
+      title: book.title
+    });
+    if (action === 'top') void saveOrder(() => collections.moveBooks(id, [book.id], 0));
+    else if (action === 'bottom') {
+      void saveOrder(() => collections.moveBooks(id, [book.id], Number.MAX_SAFE_INTEGER));
+    } else if (action === 'remove') void saveOrder(() => collections.removeBooks(id, [book.id]));
+  }
+
+  // ---- collection header ----------------------------------------------------
+
+  async function editCollection() {
+    if (!userCollection) return;
+    try {
+      const result = await collectionMenu(collections, userCollection);
+      if (result === 'deleted') {
+        await goto(`${pagePath}/collections`);
+        return;
+      }
+      await loadCollections();
+      if (result === 'search') void loadPage(true);
+    } catch (error) {
+      showMessage('Not saved', (error as Error).message);
+    }
+  }
+
+  /** "Save as smart collection": the applied search becomes a smart collection. */
+  async function saveSearch() {
+    const id = await newCollection(collections, {
+      type: 'smart',
+      query: appliedQuery,
+      chooseType: false
+    });
+    if (!id) return;
+    await loadCollections();
+    await goto(urlFor({ tab: 'all', q: '', lib: '', collection: id }));
+  }
+
   // ---- loading ------------------------------------------------------------
 
   async function refreshOnDevice() {
@@ -454,14 +638,19 @@
     }
   }
 
-  function readUrlAndLoad() {
+  async function readUrlAndLoad() {
     const params = $page.url.searchParams;
     appliedQuery = params.get('q') ?? '';
     appliedLibrary = params.has('lib') ? (params.get('lib') ?? '') : $libraryFilter$;
     const requested = TABS.find((t) => t.id === params.get('tab')) ?? TABS[0];
-    tab = requested.id;
+    const nextCollection = params.get('collection') || null;
+    if (nextCollection !== collectionId) reorderMode = false;
+    collectionId = nextCollection;
+    tab = collectionId ? 'all' : requested.id;
     group = null;
-    if (requested.by) {
+    // A collection's definition comes from the local mirror.
+    if (collectionId && !collectionsLoaded) await loadCollections();
+    if (!collectionId && requested.by) {
       if (requested.by === 'series' && params.get('none') === '1')
         group = { by: 'series', name: null };
       else if (params.get('group'))
@@ -473,7 +662,7 @@
     return loadPage(true);
   }
 
-  async function loadPage(reset: boolean) {
+  async function loadPage(reset: boolean, minBooks = LIST_PAGE) {
     if (!api) return;
     listController?.abort();
     const controller = new AbortController();
@@ -491,9 +680,15 @@
     try {
       // The server only knows book-state changes that reached it.
       if (reset) staleNote = false;
-      if (usesBookState(parsed.query)) {
+      const scope = builtinCollection(collectionId ?? '')?.query ?? smartQuery();
+      const parsedScope = scope ? parseQuery(scope) : null;
+      if (usesBookState(parsed.query) || (parsedScope?.ok && usesBookState(parsedScope.query))) {
         staleNote = await view.sendPendingChanges(timeoutSeconds);
         if (controller.signal.aborted) return;
+      }
+      if (collectionId !== null) {
+        await loadCollectionPage(reset, scope, minBooks, controller.signal);
+        return;
       }
       const common = {
         q: appliedQuery || undefined,
@@ -536,6 +731,60 @@
     } finally {
       if (listController === controller) loading = false;
     }
+  }
+
+  /** The open collection's saved search, if it is one. */
+  function smartQuery(): string | null {
+    const c = collectionList.find((x) => x.id === collectionId);
+    return c?.type === 'smart' ? c.query : null;
+  }
+
+  /**
+   * A collection's books: a built-in or saved search is a search across all libraries
+   * (with the search box inside it); a list is looked up in its own order, a chunk of
+   * ids at a time, until a page is full.
+   */
+  async function loadCollectionPage(
+    reset: boolean,
+    scope: string | null,
+    minBooks: number,
+    signal: AbortSignal
+  ) {
+    if (!api || collectionId === null) return;
+    const c = collectionList.find((x) => x.id === collectionId);
+    if (scope) {
+      const result = await api.books(
+        {
+          q: appliedQuery || undefined,
+          scope,
+          cursor: reset ? undefined : (nextCursor ?? undefined)
+        },
+        { signal }
+      );
+      books = reset ? result.books : [...books, ...result.books];
+      groups = [];
+      nextCursor = result.nextCursor;
+      return;
+    }
+    if (c?.type !== 'manual') {
+      books = [];
+      groups = [];
+      nextCursor = null;
+      return;
+    }
+    const ids = (collectionItems.get(c.id) ?? []).map((i) => i.bookId);
+    let consumed = reset ? 0 : listConsumed;
+    const found: CatalogBook[] = [];
+    while (consumed < ids.length && found.length < minBooks) {
+      const chunk = ids.slice(consumed, consumed + LOOKUP_CHUNK);
+      const result = await api.lookup(chunk, appliedQuery || undefined, { signal });
+      found.push(...result.books);
+      consumed += chunk.length;
+    }
+    listConsumed = consumed;
+    books = reset ? found : [...books, ...found];
+    groups = [];
+    nextCursor = consumed < ids.length ? 'more' : null;
   }
 
   /** Totals and the read count for the open group's header. */
@@ -607,8 +856,14 @@
     group?: { by: GroupBy; name: string | null } | null;
     q: string;
     lib: string;
+    collection?: string | null;
   }) {
     const params = new URLSearchParams();
+    if (target.collection) {
+      params.set('collection', target.collection);
+      if (target.q) params.set('q', target.q);
+      return `${pagePath}/library?${params.toString()}`;
+    }
     if (target.tab !== 'all') params.set('tab', target.tab);
     if (target.group) {
       if (target.group.name === null) params.set('none', '1');
@@ -621,7 +876,10 @@
   }
 
   function go(q: string) {
-    goto(urlFor({ tab, group, q, lib: appliedLibrary }), { keepFocus: true, noScroll: true });
+    goto(urlFor({ tab, group, q, lib: appliedLibrary, collection: collectionId }), {
+      keepFocus: true,
+      noScroll: true
+    });
   }
 
   function search() {
@@ -718,13 +976,17 @@
 
   $: emptyText = appliedQuery
     ? `Nothing matches "${appliedQuery}".`
-    : showingGroups
-      ? `No ${tabInfo.label.toLowerCase()} yet.`
-      : 'No books yet.';
+    : isList
+      ? 'Nothing in this collection yet. Add books with ⋯ on a book, or with Select.'
+      : collectionId !== null
+        ? 'No books match.'
+        : showingGroups
+          ? `No ${tabInfo.label.toLowerCase()} yet.`
+          : 'No books yet.';
 </script>
 
 <svelte:head>
-  <title>{formatPageTitle('Library')}</title>
+  <title>{formatPageTitle(collectionName ?? 'Library')}</title>
 </svelte:head>
 
 <svelte:window
@@ -738,7 +1000,9 @@
   <div class={baseHeaderClasses}>
     <div class="{pxScreen} flex h-full items-center justify-between">
       <h1 class="text-lg font-medium">Library</h1>
-      <MergedHeaderIcon items={[mergeEntries.MANAGE, mergeEntries.LIBRARY]} />
+      <MergedHeaderIcon
+        items={[mergeEntries.MANAGE, mergeEntries.LIBRARY, mergeEntries.COLLECTIONS]}
+      />
     </div>
   </div>
 </div>
@@ -786,28 +1050,44 @@
       {:else}
         <span />
       {/if}
-      <button class="underline" type="button" on:click={showSearchHelp}>Search help</button>
+      <div class="flex flex-wrap items-center gap-x-4">
+        {#if appliedQuery && collectionId === null && !queryError}
+          <button
+            class="min-h-[2.75rem] underline"
+            type="button"
+            data-testid="save-search"
+            on:click={saveSearch}
+          >
+            Save as smart collection
+          </button>
+        {/if}
+        <button class="min-h-[2.75rem] underline" type="button" on:click={showSearchHelp}>
+          Search help
+        </button>
+      </div>
     </div>
 
     <div class="flex flex-wrap items-center gap-2 pb-2 lg:flex-nowrap">
-      <nav class="grid grow grid-cols-4 gap-1 lg:max-w-md" aria-label="Browse by">
-        {#each TABS as t (t.id)}
-          <a
-            class="flex min-h-[3rem] items-center justify-center rounded border-2 px-2 font-medium {t.id ===
-            tab
-              ? solid
-              : 'border-current'}"
-            href={urlFor({ tab: t.id, q: appliedQuery, lib: appliedLibrary })}
-            aria-current={t.id === tab ? 'page' : undefined}
-            data-testid="tab-{t.id}"
-            data-sveltekit-noscroll
-          >
-            {t.label}
-          </a>
-        {/each}
-      </nav>
+      {#if collectionId === null}
+        <nav class="grid grow grid-cols-4 gap-1 lg:max-w-md" aria-label="Browse by">
+          {#each TABS as t (t.id)}
+            <a
+              class="flex min-h-[3rem] items-center justify-center rounded border-2 px-2 font-medium {t.id ===
+              tab
+                ? solid
+                : 'border-current'}"
+              href={urlFor({ tab: t.id, q: appliedQuery, lib: appliedLibrary })}
+              aria-current={t.id === tab ? 'page' : undefined}
+              data-testid="tab-{t.id}"
+              data-sveltekit-noscroll
+            >
+              {t.label}
+            </a>
+          {/each}
+        </nav>
+      {/if}
       <div class="flex flex-wrap items-center gap-2 text-sm">
-        {#if enabledLibraries.length > 1}
+        {#if enabledLibraries.length > 1 && collectionId === null}
           <label class="flex items-center">
             Library
             <select
@@ -848,7 +1128,7 @@
         >
           Details
         </button>
-        {#if !showingGroups}
+        {#if !showingGroups && !reorderMode}
           <button
             class="min-h-[3rem] rounded border-2 px-3 {selectMode ? solid : 'border-current'}"
             aria-pressed={selectMode}
@@ -901,7 +1181,56 @@
       </p>
     {/if}
 
-    {#if group}
+    {#if collectionId !== null}
+      <div class="mb-3 border-b-2 border-gray-400/60 pb-3" data-testid="collection-header">
+        <a class="inline-flex min-h-[3rem] items-center underline" href="{pagePath}/collections">
+          Back to Collections
+        </a>
+        {#if collectionGone}
+          <p class="py-2 font-medium" data-testid="collection-gone">
+            This collection doesn't exist any more (it may have been deleted on another device).
+          </p>
+        {:else}
+          <h2 class="break-words text-xl font-medium" data-testid="collection-title">
+            {collectionName ?? ''}
+          </h2>
+          <p class="break-words text-sm" data-testid="collection-header-info">
+            {#if builtin}
+              Built-in · {builtin.query}
+            {:else if userCollection?.type === 'smart'}
+              Smart · {userCollection.query}
+            {:else if isList}
+              Manual · {plural(listIds.length, 'book', 'books')}
+            {/if}
+          </p>
+          {#if userCollection}
+            <div class="mt-2 flex flex-wrap gap-2">
+              {#if isList}
+                <button
+                  class="min-h-[3rem] rounded border-2 px-4 font-medium disabled:opacity-50 {reorderMode
+                    ? solid
+                    : 'border-current'}"
+                  aria-pressed={reorderMode}
+                  disabled={!canReorder || selectMode}
+                  title={appliedQuery ? 'Clear the search to reorder' : undefined}
+                  data-testid="reorder-mode"
+                  on:click={() => (reorderMode = !reorderMode)}
+                >
+                  {reorderMode ? 'Done' : 'Reorder'}
+                </button>
+              {/if}
+              <button
+                class="min-h-[3rem] rounded border-2 border-current px-4 font-medium"
+                data-testid="collection-header-menu"
+                on:click={editCollection}
+              >
+                {userCollection.type === 'smart' ? 'Rename, change search…' : 'Rename, delete…'}
+              </button>
+            </div>
+          {/if}
+        {/if}
+      </div>
+    {:else if group}
       <div class="mb-3 border-b-2 border-gray-400/60 pb-3" data-testid="group-header">
         <a
           class="inline-flex min-h-[3rem] items-center underline"
@@ -966,6 +1295,16 @@
       {:else if !loading && !loadError}
         <p class="py-8">{emptyText}</p>
       {/if}
+    {:else if reorderMode && books.length}
+      <CollectionReorderList
+        {books}
+        busy={savingOrder}
+        thumbnailUrl={(book) => (book.thumbnail && api ? api.absolute(book.thumbnail) : '')}
+        blurred={(book) => bookBlurred(book, states, tagRules, revealed)}
+        on:move={(ev) => moveInList(ev.detail.book, ev.detail.delta)}
+        on:drop={(ev) => dropInList(ev.detail.book, ev.detail.index)}
+        on:more={(ev) => listBookMenu(ev.detail)}
+      />
     {:else if books.length}
       <!-- svelte-ignore a11y-no-static-element-interactions -->
       <ul
@@ -1103,6 +1442,24 @@
         >
           All shown
         </button>
+        {#if isList}
+          <button
+            class="min-h-[3rem] rounded border-2 border-current px-4 font-medium disabled:opacity-50"
+            disabled={!selected.size}
+            data-testid="list-move-top"
+            on:click={() => listBulk('top')}
+          >
+            Move to top
+          </button>
+          <button
+            class="min-h-[3rem] rounded border-2 border-current px-4 font-medium disabled:opacity-50"
+            disabled={!selected.size}
+            data-testid="list-remove"
+            on:click={() => listBulk('remove')}
+          >
+            Remove from collection
+          </button>
+        {/if}
         <button
           class="min-h-[3rem] rounded border-2 border-current px-4 font-medium disabled:opacity-50"
           disabled={!selected.size}

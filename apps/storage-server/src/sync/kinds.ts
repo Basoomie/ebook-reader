@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3';
+import { parseQuery } from '../catalog/query-parser';
 
 /**
  * Record kinds the sync engine accepts, with their conflict policy and
@@ -500,6 +501,95 @@ const tagBlurKind: KindSpec = {
   },
 };
 
+// ---------------------------------------------------------------------------
+// WP8b: collections
+// ---------------------------------------------------------------------------
+
+export const COLLECTION_TYPES = ['manual', 'smart'] as const;
+export const MAX_COLLECTION_NAME = 200;
+/** Same as the search box (QUERY_LIMITS.maxLength in the parser). */
+export const MAX_COLLECTION_QUERY = 500;
+export const MAX_ORDER_KEY = 200;
+/** Base-62 order keys (apps/web/src/lib/collections/order-key.ts). */
+const ORDER_KEY_RE = /^[0-9A-Za-z]+$/;
+
+/** Smart collections store a search (WP7a language); returns the problem or null. */
+export type QueryCheck = (query: string) => string | null;
+
+/**
+ * kind "collection": id = a UUID, data { name, type, query? }, lww, deletable.
+ * Manual collections keep their books as "collection-item" records (one per book), so
+ * adding, removing and moving books on two devices merge per book. Built-in
+ * collections (Reading, Completed, ...) are not records.
+ */
+function collectionKind(checkQuery: QueryCheck): KindSpec {
+  return {
+    policy: () => 'lww',
+    deletable: true,
+    validate(id, data, deleted) {
+      if (!UUID_RE.test(id)) throw new RecordError('invalid_id', 'collection ids are UUIDs');
+      if (deleted) return { bookId: null, data: {} };
+      const obj = requireObject(data);
+      const name = typeof obj.name === 'string' ? obj.name.trim() : '';
+      if (name === '' || name.length > MAX_COLLECTION_NAME) {
+        throw new RecordError('invalid_data', `name must be 1-${MAX_COLLECTION_NAME} characters`);
+      }
+      const type = oneOf(obj.type, COLLECTION_TYPES, 'type');
+      if (type === 'manual') {
+        if (obj.query !== undefined && obj.query !== null) {
+          throw new RecordError('invalid_data', 'only a smart collection has a query');
+        }
+        return { bookId: null, data: { name, type } };
+      }
+      const query = typeof obj.query === 'string' ? obj.query.trim() : '';
+      if (query === '' || query.length > MAX_COLLECTION_QUERY) {
+        throw new RecordError('invalid_data', `query must be 1-${MAX_COLLECTION_QUERY} characters`);
+      }
+      const problem = checkQuery(query);
+      if (problem !== null) throw new RecordError('invalid_data', `query: ${problem}`);
+      return { bookId: null, data: { name, type, query } };
+    },
+  };
+}
+
+export function parseCollectionItemId(id: string): { collectionId: string; bookId: string } | null {
+  const parts = id.split(':');
+  if (parts.length !== 2 || !UUID_RE.test(parts[0]) || !UUID_RE.test(parts[1])) return null;
+  return { collectionId: parts[0], bookId: parts[1] };
+}
+
+/**
+ * kind "collection-item": id <collectionId>:<bookId>, data { key }, lww, deletable
+ * (delete = removed from the collection). `key` orders the books: a fractional key
+ * between its neighbours' keys, so moving a book rewrites only that book's record and
+ * two devices reordering offline keep each other's moves. The collection need not be
+ * known yet (records of one push arrive in any order).
+ */
+const collectionItemKind: KindSpec = {
+  policy: () => 'lww',
+  deletable: true,
+  validate(id, data, deleted, ctx) {
+    const parsed = parseCollectionItemId(id);
+    if (!parsed) throw new RecordError('invalid_id', 'ids are <collectionId>:<bookId>');
+    if (!bookExists(ctx, parsed.bookId)) {
+      throw new RecordError('unknown_book', `No book ${parsed.bookId}`);
+    }
+    if (deleted) return { bookId: parsed.bookId, data: {} };
+    const obj = requireObject(data);
+    const key = obj.key;
+    if (typeof key !== 'string' || key.length > MAX_ORDER_KEY || !ORDER_KEY_RE.test(key)) {
+      throw new RecordError('invalid_data', `key must be 1-${MAX_ORDER_KEY} letters or digits`);
+    }
+    return { bookId: parsed.bookId, data: { key } };
+  },
+};
+
+/** Smart-collection queries are checked with the search box's own parser. */
+const parserCheck: QueryCheck = (query) => {
+  const result = parseQuery(query);
+  return result.ok ? null : result.error.message;
+};
+
 export const DEFAULT_KINDS: KindRegistry = {
   device: deviceKind,
   setting: settingKind,
@@ -513,4 +603,6 @@ export const DEFAULT_KINDS: KindRegistry = {
   'book-blur': perBookKind('blur', (v) => oneOf(v, BOOK_BLURS, 'blur')),
   'read-through': readThroughKind,
   'tag-blur': tagBlurKind,
+  collection: collectionKind(parserCheck),
+  'collection-item': collectionItemKind,
 };
