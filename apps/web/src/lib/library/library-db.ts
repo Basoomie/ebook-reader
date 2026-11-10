@@ -36,7 +36,10 @@ export interface CalibreLink {
   /** Server library ID. */
   libraryId: string;
   calibreLibraryUuid: string | null;
-  calibreUuid: string;
+  /** Calibre's book UUID; null for an uploaded book (WP7b). */
+  calibreUuid: string | null;
+  /** Where the file came from (WP7b); missing on links made before WP7b (all Calibre). */
+  sourceKind?: 'calibre' | 'upload';
   calibreId: number | null;
   /** Key of the book in the local `books.data` store. */
   localId: number;

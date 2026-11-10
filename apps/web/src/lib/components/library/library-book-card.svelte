@@ -64,6 +64,15 @@
           {#if selected}<Fa icon={faCheck} />{/if}
         </span>
       {/if}
+      {#if book.source === 'upload'}
+        <span
+          class="absolute left-1 bottom-1 rounded border border-gray-800 bg-white px-1 text-xs font-medium text-black"
+          title="Uploaded (not in Calibre)"
+          data-testid="uploaded-badge"
+        >
+          Uploaded
+        </span>
+      {/if}
       {#if onDevice}
         <span
           class="absolute bottom-1 right-1 rounded bg-white px-1 text-xs text-black"

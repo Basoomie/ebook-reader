@@ -156,6 +156,7 @@ describe('openCalibreBook', () => {
       calibreLibraryUuid: 'calibre-library-uuid',
       calibreUuid: 'uuid-a',
       calibreId: 42,
+      sourceKind: 'calibre',
       localId,
       title: stored[0].title,
       calibreTitle: 'Calibre a',
@@ -286,5 +287,34 @@ describe('openCalibreBook', () => {
       }
     );
     await expect(openCalibreBook({ id: 'a', title: 'A' }, d, signal())).rejects.toThrow('down');
+  });
+
+  it('opens an uploaded book (WP7b) and links it without a Calibre identity', async () => {
+    const uploaded = (id: string): CatalogBookDetail => ({
+      ...detail(id, ''),
+      sources: [
+        {
+          kind: 'upload',
+          libraryId: 'lib-1',
+          calibreUuid: null,
+          calibreId: null,
+          filePath: `books/${id}/book.epub`,
+          fileSize: EPUB.length,
+          missingAt: null
+        }
+      ]
+    });
+    const { d, downloads } = deps({ u: EPUB });
+    d.api = { ...d.api, book: async (id) => uploaded(id) };
+    const outcome = await openCalibreBook({ id: 'u', title: 'U' }, d, signal());
+    expect(outcome).toMatchObject({ status: 'opened', how: 'imported' });
+    expect(downloads).toEqual(['u']);
+    expect(await store.getLink('u')).toMatchObject({
+      bookId: 'u',
+      calibreUuid: null,
+      calibreId: null,
+      sourceKind: 'upload'
+    });
+    expect(await allBooks()).toHaveLength(1);
   });
 });

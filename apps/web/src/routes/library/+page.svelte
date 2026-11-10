@@ -22,6 +22,11 @@
   import MarkCompletedDialog from '$lib/components/library/mark-completed-dialog.svelte';
   import SearchHelpDialog from '$lib/components/library/search-help-dialog.svelte';
   import TagCoverDialog from '$lib/components/library/tag-cover-dialog.svelte';
+  import UploadDuplicateDialog from '$lib/components/library/upload-duplicate-dialog.svelte';
+  import UploadLibraryDialog from '$lib/components/library/upload-library-dialog.svelte';
+  import UploadProgressOverlay from '$lib/components/library/upload-progress-overlay.svelte';
+  import UploadSummaryDialog from '$lib/components/library/upload-summary-dialog.svelte';
+  import { uploadFiles, type UploadDecision, type UploadResult } from '$lib/library/upload-flow';
   import AppBottomBar from '$lib/components/app-nav/app-bottom-bar.svelte';
   import AppHeader from '$lib/components/app-nav/app-header.svelte';
   import MessageDialog from '$lib/components/message-dialog.svelte';
@@ -64,7 +69,8 @@
     CatalogGroup,
     CatalogLibrary,
     GroupBy,
-    GroupTile
+    GroupTile,
+    UploadInfo
   } from '$lib/library/types';
   import type { BookState } from '$lib/sync/book-state';
   import type { LocalRecord } from '$lib/sync/sync-db';
@@ -145,6 +151,17 @@
 
   let opening: { book: CatalogBook; stage: OpenStage | null; controller: AbortController } | null =
     null;
+  // WP7b: uploads (shown when the server takes them).
+  let uploadInfo: UploadInfo | null = null;
+  let uploadInput: HTMLInputElement | undefined;
+  let uploading: {
+    index: number;
+    count: number;
+    name: string;
+    loaded: number;
+    total: number;
+    controller: AbortController;
+  } | null = null;
 
   // WP8a/WP7a: book state, tag rules and positions from the local sync mirror.
   const bookState = bookStateApi();
@@ -278,6 +295,7 @@
       const result = await api.libraries();
       libraries = result.libraries;
       indexerError = result.indexer.enabled ? '' : result.indexer.error || 'The indexer is off';
+      uploadInfo = result.uploads ?? null;
     } catch (error) {
       if (handleAuthError(error)) return;
       // The list request below reports the problem.
@@ -938,6 +956,51 @@
 
   // ---- opening books ------------------------------------------------------
 
+  // ---- upload (WP7b) ---------------------------------------------------------
+
+  async function onUploadFiles(ev: Event) {
+    const input = ev.currentTarget as HTMLInputElement;
+    const files = [...(input.files ?? [])];
+    input.value = '';
+    if (!files.length || !api || uploading) return;
+    // Asked on every upload; nothing preselected or remembered (decided with the user).
+    const libraryId = await ask<string | undefined>(UploadLibraryDialog, {
+      libraries: enabledLibraries.map((l) => ({ id: l.id, name: l.name })),
+      fileCount: files.length
+    });
+    if (!libraryId || !api) return;
+    const uploadApi = api;
+    const controller = new AbortController();
+    uploading = { index: 0, count: files.length, name: '', loaded: 0, total: 0, controller };
+    let results: UploadResult[];
+    try {
+      results = await uploadFiles(files, libraryId, {
+        api: uploadApi,
+        maxBytes: uploadInfo?.maxBytes ?? 0,
+        signal: controller.signal,
+        onProgress: (index, name, loaded, total) => {
+          if (uploading) uploading = { ...uploading, index, name, loaded, total };
+        },
+        askDuplicate: async (staged) => {
+          const before = uploading;
+          uploading = null;
+          const decision = await ask<UploadDecision | undefined>(UploadDuplicateDialog, {
+            staged,
+            thumbnailUrl: (t: string | null) => (t ? uploadApi.absolute(t) : ''),
+            libraryName: (id: string) => libraryNames.get(id) ?? ''
+          });
+          uploading = before;
+          return decision ?? 'cancel';
+        }
+      });
+    } finally {
+      uploading = null;
+    }
+    if (results.some((r) => r.status === 'added')) void loadPage(true);
+    const chosen = await ask<CatalogBook | undefined>(UploadSummaryDialog, { results });
+    if (chosen) void open(chosen);
+  }
+
   function showMessage(title: string, message: string) {
     dialogManager.dialogs$.next([{ component: MessageDialog, props: { title, message } }]);
   }
@@ -1126,6 +1189,24 @@
           >
             {selectMode ? 'Done' : 'Select'}
           </button>
+        {/if}
+        {#if uploadInfo?.enabled && collectionId === null && !selectMode}
+          <button
+            class="min-h-[3rem] rounded border-2 border-current px-3"
+            data-testid="upload-button"
+            on:click={() => uploadInput?.click()}
+          >
+            Upload
+          </button>
+          <input
+            class="hidden"
+            type="file"
+            accept=".epub,application/epub+zip"
+            multiple
+            data-testid="upload-input"
+            bind:this={uploadInput}
+            on:change={onUploadFiles}
+          />
         {/if}
       </div>
     </div>
@@ -1487,6 +1568,17 @@
 {/if}
 
 <AppBottomBar hidden={selectMode && !!connection && !showingGroups} />
+
+{#if uploading}
+  <UploadProgressOverlay
+    index={uploading.index}
+    count={uploading.count}
+    name={uploading.name}
+    loaded={uploading.loaded}
+    total={uploading.total}
+    on:cancel={() => uploading?.controller.abort()}
+  />
+{/if}
 
 {#if opening}
   <LibraryOpenOverlay

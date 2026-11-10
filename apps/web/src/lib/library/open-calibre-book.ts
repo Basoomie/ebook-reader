@@ -76,9 +76,12 @@ export async function openCalibreBook(
 
     // 2. Download and run the import pipeline.
     const detail = await deps.api.book(book.id, { signal });
-    const source = detail.sources.find((s) => s.kind === 'calibre' && s.calibreUuid);
-    if (!source?.calibreUuid) {
-      return { status: 'refused', message: 'This book has no Calibre file to open.' };
+    // A Calibre file, or (WP7b) an uploaded one; a book has one source.
+    const source = detail.sources.find(
+      (s) => (s.kind === 'calibre' && s.calibreUuid) || s.kind === 'upload'
+    );
+    if (!source) {
+      return { status: 'refused', message: 'This book has no file to open.' };
     }
     onStage({ stage: 'download', loaded: 0, total: source.fileSize });
     const { blob, etag } = await deps.api.downloadFile(book.id, signal, (loaded, total) =>
@@ -142,8 +145,9 @@ export async function openCalibreBook(
       bookId: book.id,
       libraryId: detail.libraryId,
       calibreLibraryUuid: await deps.calibreLibraryUuid(detail.libraryId),
-      calibreUuid: source.calibreUuid,
+      calibreUuid: source.kind === 'calibre' ? source.calibreUuid : null,
       calibreId: source.calibreId,
+      sourceKind: source.kind,
       localId,
       title: content.title,
       calibreTitle: detail.title,
