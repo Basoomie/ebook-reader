@@ -4,8 +4,22 @@
   import Ripple from '$lib/components/ripple.svelte';
   import SettingsCustomThemeInput from '$lib/components/settings/settings-custom-theme-input.svelte';
   import { buttonClasses } from '$lib/css-classes';
-  import { customThemes$, theme$ } from '$lib/data/store';
-  import { availableThemes, type CustomThemeValue, type ThemeOption } from '$lib/data/theme-option';
+  import {
+    customThemes$,
+    fontFamilyGroupOne$,
+    fontFamilyGroupTwo$,
+    fontSize$,
+    theme$,
+    userFonts$
+  } from '$lib/data/store';
+  import { LocalFont } from '$lib/data/fonts';
+  import {
+    availableThemes,
+    THEME_COLOR_KEYS,
+    type CustomTheme,
+    type CustomThemeValue,
+    type ThemeOption
+  } from '$lib/data/theme-option';
   import { createEventDispatcher, onMount } from 'svelte';
 
   export let selectedTheme: string;
@@ -53,6 +67,34 @@
   let themeName = '';
   let themeNameElm: HTMLInputElement;
 
+  // WP10d: a theme may carry a font and a size, applied when it becomes the active theme.
+  let includeFont = false;
+  let fontOne = $fontFamilyGroupOne$;
+  let fontTwo = $fontFamilyGroupTwo$;
+  let includeSize = false;
+  let size = $fontSize$;
+
+  const userFontNames = $userFonts$.map((font) => font.name);
+  const fontsOne = [
+    LocalFont.NOTOSERIFJP,
+    LocalFont.KZUDMINCHO,
+    LocalFont.GENEI,
+    LocalFont.SHIPPORIMINCHO,
+    LocalFont.KLEEONE,
+    LocalFont.KLEEONESEMIBOLD,
+    LocalFont.SERIF,
+    ...userFontNames
+  ];
+  const fontsTwo = [
+    LocalFont.NOTOSANSJP,
+    LocalFont.KZUDGOTHIC,
+    LocalFont.SANSSERIF,
+    ...userFontNames
+  ];
+
+  $: fontChoicesOne = fontsOne.includes(fontOne) ? fontsOne : [fontOne, ...fontsOne];
+  $: fontChoicesTwo = fontsTwo.includes(fontTwo) ? fontsTwo : [fontTwo, ...fontsTwo];
+
   $: themeStyle = `color: ${customTheme.fontColor.rgbaExpression}; background-color: ${customTheme.backgroundColor.rgbaExpression}`;
 
   onMount(() => {
@@ -64,11 +106,23 @@
 
     customTheme = getThemeData(existingThemeObject);
     themeName = selectedTheme;
+
+    if (existingThemeObject.fontFamilyGroupOne || existingThemeObject.fontFamilyGroupTwo) {
+      includeFont = true;
+      fontOne = existingThemeObject.fontFamilyGroupOne || fontOne;
+      fontTwo = existingThemeObject.fontFamilyGroupTwo || fontTwo;
+    }
+
+    if (typeof existingThemeObject.fontSize === 'number') {
+      includeSize = true;
+      size = existingThemeObject.fontSize;
+    }
   });
 
   function getThemeData(referenceObject: ThemeOption): Record<keyof ThemeOption, CustomThemeValue> {
     const result: any = {};
-    const entries = [...Object.entries(referenceObject)];
+    // Colours only: a WP10d theme can also hold a font and a size.
+    const entries = THEME_COLOR_KEYS.map((key) => [key, referenceObject[key]] as const);
 
     for (let index = 0, { length } = entries; index < length; index += 1) {
       const [key, value] = entries[index];
@@ -152,12 +206,36 @@
       newTheme[key] = value.rgbaExpression;
     }
 
+    if (includeFont) {
+      newTheme.fontFamilyGroupOne = fontOne;
+      newTheme.fontFamilyGroupTwo = fontTwo;
+    }
+
+    if (includeSize && Number(size) > 0) {
+      newTheme.fontSize = Number(size);
+    }
+
     if (selectedTheme && selectedTheme !== themeName) {
       delete $customThemes$[selectedTheme];
     }
 
-    $customThemes$ = { ...$customThemes$, ...{ [themeName]: newTheme } };
+    const wasActive = $theme$ === themeName;
+
+    $customThemes$ = { ...$customThemes$, ...{ [themeName]: newTheme as CustomTheme } };
     $theme$ = themeName;
+
+    // Switching applies a theme's font and size (appearance-effects.ts); the theme that is
+    // already active is not switched to, so apply them here.
+    if (wasActive) {
+      if (includeFont) {
+        $fontFamilyGroupOne$ = fontOne;
+        $fontFamilyGroupTwo$ = fontTwo;
+      }
+
+      if (includeSize && Number(size) > 0) {
+        $fontSize$ = Number(size);
+      }
+    }
     dispatch('close');
   }
 
@@ -242,6 +320,39 @@
         on:color={handleColorValueChange}
         on:alpha={handleAlphaValueChange}
       />
+      <label class="flex items-center gap-2 sm:col-span-3" data-testid="theme-include-font">
+        <input type="checkbox" bind:checked={includeFont} />
+        Include font (applied when you switch to this theme)
+      </label>
+      {#if includeFont}
+        <span>Font (Group 1)</span>
+        <select class="sm:col-span-2" bind:value={fontOne} data-testid="theme-font-one">
+          {#each fontChoicesOne as font (font)}
+            <option value={font}>{font}</option>
+          {/each}
+        </select>
+        <span>Font (Group 2)</span>
+        <select class="sm:col-span-2" bind:value={fontTwo} data-testid="theme-font-two">
+          {#each fontChoicesTwo as font (font)}
+            <option value={font}>{font}</option>
+          {/each}
+        </select>
+      {/if}
+      <label class="flex items-center gap-2 sm:col-span-3" data-testid="theme-include-size">
+        <input type="checkbox" bind:checked={includeSize} />
+        Include font size
+      </label>
+      {#if includeSize}
+        <span>Font size</span>
+        <input
+          class="sm:col-span-2"
+          type="number"
+          min="1"
+          step="1"
+          bind:value={size}
+          data-testid="theme-font-size"
+        />
+      {/if}
       <input
         class="sm:col-span-2"
         type="text"

@@ -54,7 +54,7 @@ import {
   writableObjectLocalStorageSubject
 } from './internal/writable-object-local-storage-subject';
 import type { TextMarginMode } from './text-margin-mode';
-import type { ThemeOption } from './theme-option';
+import type { CustomTheme } from './theme-option';
 import type { VerticalTextOrientation } from './vertical-text-orientation';
 import { ViewMode } from './view-mode';
 import type { WritingMode } from './writing-mode';
@@ -62,10 +62,25 @@ import { writableSetLocalStorageSubject } from './internal/writable-set-local-st
 import { writableStringLocalStorageSubject } from './internal/writable-string-local-storage-subject';
 
 export const theme$ = writableStringLocalStorageSubject()('theme', 'light-theme');
-export const customThemes$ = writableObjectLocalStorageSubject<Record<string, ThemeOption>>()(
+export const customThemes$ = writableObjectLocalStorageSubject<Record<string, CustomTheme>>()(
   'customThemes',
   {}
 );
+
+/** WP10d: switch the reader theme with the system's light/dark setting (per device). */
+export const followSystemTheme$ = writableBooleanLocalStorageSubject()('followSystemTheme', false);
+
+/** WP10d: theme used while the system is light ('' = the theme in use when following started). */
+export const lightTheme$ = writableStringLocalStorageSubject()('lightTheme', '');
+
+/** WP10d: theme used while the system is dark ('' = the built-in dark theme). */
+export const darkTheme$ = writableStringLocalStorageSubject()('darkTheme', '');
+
+/**
+ * WP10d: E-ink mode (per device): pure black on white everywhere, no grays, shadows,
+ * tinted backgrounds, transitions or animations. The reader ignores its theme while on.
+ */
+export const einkMode$ = writableBooleanLocalStorageSubject()('einkMode', false);
 export const multiplier$ = writableNumberLocalStorageSubject()('autoScrollMultiplier', 20);
 export const fontFamilyGroupOne$ = writableStringLocalStorageSubject()(
   'fontFamilyGroupOne',

@@ -21,6 +21,51 @@ export interface ThemeOption {
   tooltipTextFontColor: string;
 }
 
+/**
+ * WP10d: a custom theme may also carry a font and a size. They are applied to the device's
+ * own settings when the theme becomes the active one (by hand or by the system); after that
+ * the settings can be changed freely. Built-in themes are colours only.
+ */
+export interface ThemeTypography {
+  fontFamilyGroupOne?: string;
+  fontFamilyGroupTwo?: string;
+  fontSize?: number;
+}
+
+export type CustomTheme = ThemeOption & ThemeTypography;
+
+export const THEME_COLOR_KEYS: (keyof ThemeOption)[] = [
+  'fontColor',
+  'backgroundColor',
+  'selectionFontColor',
+  'selectionBackgroundColor',
+  'hintFuriganaShadowColor',
+  'hintFuriganaFontColor',
+  'tooltipTextFontColor'
+];
+
+/** The colours of a custom theme, without its font and size. */
+export function themeColors(theme: CustomTheme): ThemeOption {
+  const colors = {} as ThemeOption;
+
+  for (const key of THEME_COLOR_KEYS) {
+    colors[key] = theme[key];
+  }
+
+  return colors;
+}
+
+/** WP10d: what the reader uses while E-ink mode is on (pure black on white). */
+export const EINK_THEME_OPTION: ThemeOption = {
+  fontColor: 'rgba(0, 0, 0, 1)',
+  backgroundColor: 'rgba(255, 255, 255, 1)',
+  selectionFontColor: 'rgba(255, 255, 255, 1)',
+  selectionBackgroundColor: 'rgba(0, 0, 0, 1)',
+  hintFuriganaShadowColor: 'rgba(0, 0, 0, 1)',
+  hintFuriganaFontColor: 'rgba(0, 0, 0, 1)',
+  tooltipTextFontColor: 'rgba(0, 0, 0, 1)'
+};
+
 export interface CustomThemeValue {
   hexExpression: string;
   alphaValue: number;

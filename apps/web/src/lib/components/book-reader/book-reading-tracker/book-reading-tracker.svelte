@@ -31,7 +31,8 @@
     trackerForwardSkipThreshold$,
     trackerIdleTime$,
     trackerPopupDetection$,
-    trackerSkipThresholdAction$
+    trackerSkipThresholdAction$,
+    einkMode$
   } from '$lib/data/store';
   import { ReplicationSaveBehavior } from '$lib/functions/replication/replication-options';
   import { reduceToEmptyString } from '$lib/functions/rxjs/reduce-to-empty-string';
@@ -854,7 +855,7 @@
     class="writing-horizontal-tb fixed top-0 left-0 z-[60] flex h-full w-full max-w-xl flex-col justify-between"
     style:color={fontColor}
     style:background-color={backgroundColor}
-    in:fly|local={{ x: -100, duration: 100, easing: quintInOut }}
+    in:fly|local={{ x: -100, duration: $einkMode$ ? 0 : 100, easing: quintInOut }}
     use:clickOutside={() => {
       if (!actionInProgress) {
         dialogManager.dialogs$.next([]);

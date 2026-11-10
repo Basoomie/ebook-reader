@@ -34,7 +34,11 @@
   import { isStorageSourceAvailable } from '$lib/data/storage/storage-view';
   import {
     customThemes$,
+    darkTheme$,
     database,
+    einkMode$,
+    followSystemTheme$,
+    lightTheme$,
     fontFamilyGroupOne$,
     fontFamilyGroupTwo$,
     horizontalCustomReadingPosition$,
@@ -223,6 +227,33 @@
   }));
 
   onDestroy(() => dialogManager.dialogs$.next([]));
+
+  function openThemeEditor(selected?: string) {
+    dialogManager.dialogs$.next([
+      {
+        component: SettingsCustomTheme,
+        props: selected
+          ? { selectedTheme: selected, existingThemes: optionsForTheme }
+          : { existingThemes: optionsForTheme }
+      }
+    ]);
+  }
+
+  function deleteTheme(themeId: string) {
+    $theme$ = optionsForTheme[optionsForTheme.length - 2]?.id || 'light-theme';
+
+    // WP10d: a deleted theme can't stay the light or dark choice.
+    if ($lightTheme$ === themeId) {
+      $lightTheme$ = '';
+    }
+
+    if ($darkTheme$ === themeId) {
+      $darkTheme$ = '';
+    }
+
+    delete $customThemes$[themeId];
+    $customThemes$ = { ...$customThemes$ };
+  }
 
   const optionsForAppOpen: ToggleOption<AppOpenTarget>[] = [
     { id: 'last-book', text: 'Last book' },
@@ -514,41 +545,75 @@
 <div class="grid grid-cols-1 items-center sm:grid-cols-2 sm:gap-6 lg:md:gap-8 lg:grid-cols-3">
   {#if activeSettings === 'Reader'}
     <div class="lg:col-span-2">
-      <SettingsItemGroup title="Theme">
-        <ButtonToggleGroup
-          options={optionsForTheme}
-          bind:selectedOptionId={selectedTheme}
-          on:edit={({ detail }) =>
-            dialogManager.dialogs$.next([
-              {
-                component: SettingsCustomTheme,
-                props: { selectedTheme: detail, existingThemes: optionsForTheme }
-              }
-            ])}
-          on:delete={({ detail }) => {
-            $theme$ = optionsForTheme[optionsForTheme.length - 2]?.id || 'light-theme';
-            delete $customThemes$[detail];
-            $customThemes$ = { ...$customThemes$ };
-          }}
+      {#if $followSystemTheme$}
+        <!-- WP10d: while following the system, pick a theme for each mode. -->
+        <SettingsItemGroup
+          title="Light Theme"
+          tooltip="Used while your device is set to light. Choosing a theme here also switches the reader right away when the device is light."
         >
-          {#if browser}
-            <button
-              class="m-1 rounded-md border-2 border-gray-400 p-2 text-lg"
-              on:click={() =>
-                dialogManager.dialogs$.next([
-                  {
-                    component: SettingsCustomTheme,
-                    props: { existingThemes: optionsForTheme }
-                  }
-                ])}
-            >
-              <Fa icon={faPlus} class="mx-2" />
-              <Ripple />
-            </button>
-          {/if}
-        </ButtonToggleGroup>
-      </SettingsItemGroup>
+          <ButtonToggleGroup
+            options={optionsForTheme}
+            bind:selectedOptionId={$lightTheme$}
+            on:edit={({ detail }) => openThemeEditor(detail)}
+            on:delete={({ detail }) => deleteTheme(detail)}
+          >
+            {#if browser}
+              <button
+                class="m-1 rounded-md border-2 border-gray-400 p-2 text-lg"
+                on:click={() => openThemeEditor()}
+              >
+                <Fa icon={faPlus} class="mx-2" />
+                <Ripple />
+              </button>
+            {/if}
+          </ButtonToggleGroup>
+        </SettingsItemGroup>
+        <SettingsItemGroup title="Dark Theme" tooltip="Used while your device is set to dark.">
+          <ButtonToggleGroup
+            options={optionsForTheme}
+            bind:selectedOptionId={$darkTheme$}
+            on:edit={({ detail }) => openThemeEditor(detail)}
+            on:delete={({ detail }) => deleteTheme(detail)}
+          />
+        </SettingsItemGroup>
+      {:else}
+        <SettingsItemGroup title="Theme">
+          <ButtonToggleGroup
+            options={optionsForTheme}
+            bind:selectedOptionId={selectedTheme}
+            on:edit={({ detail }) => openThemeEditor(detail)}
+            on:delete={({ detail }) => deleteTheme(detail)}
+          >
+            {#if browser}
+              <button
+                class="m-1 rounded-md border-2 border-gray-400 p-2 text-lg"
+                on:click={() => openThemeEditor()}
+              >
+                <Fa icon={faPlus} class="mx-2" />
+                <Ripple />
+              </button>
+            {/if}
+          </ButtonToggleGroup>
+        </SettingsItemGroup>
+      {/if}
+      {#if $einkMode$}
+        <p class="px-1 text-sm">
+          E-ink is on: the book is shown black on white whatever the theme.
+        </p>
+      {/if}
     </div>
+    <SettingsItemGroup
+      title="Follow System Light/Dark"
+      tooltip="Switch between a light and a dark theme with your device's light/dark setting"
+    >
+      <ButtonToggleGroup options={optionsForToggle} bind:selectedOptionId={$followSystemTheme$} />
+    </SettingsItemGroup>
+    <SettingsItemGroup
+      title="E-ink"
+      tooltip="This device only: pure black on white everywhere, no grays, shadows or animations. The book ignores the theme while it is on."
+    >
+      <ButtonToggleGroup options={optionsForToggle} bind:selectedOptionId={$einkMode$} />
+    </SettingsItemGroup>
     <div class="h-full">
       <SettingsItemGroup title="View mode">
         <ButtonToggleGroup options={optionsForViewMode} bind:selectedOptionId={viewMode} />

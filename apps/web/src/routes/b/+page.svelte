@@ -1,6 +1,7 @@
 <script lang="ts">
   import {
     auditTime,
+    combineLatest,
     debounceTime,
     defer,
     EMPTY,
@@ -98,7 +99,8 @@
     mouseDragPageTurn$,
     mouseDragThreshold$,
     swipeThreshold$,
-    jumpHistoryLimit$
+    jumpHistoryLimit$,
+    einkMode$
   } from '$lib/data/store';
   import { JumpHistory } from '$lib/components/book-reader/jump-history';
   import BookSearchDialog from '$lib/components/book-reader/book-search-dialog.svelte';
@@ -175,7 +177,7 @@
     StorageKey
   } from '$lib/data/storage/storage-types';
   import { storageSource$ } from '$lib/data/storage/storage-view';
-  import { availableThemes } from '$lib/data/theme-option';
+  import { availableThemes, EINK_THEME_OPTION, themeColors } from '$lib/data/theme-option';
   import { ViewMode } from '$lib/data/view-mode';
   import loadBookData from '$lib/functions/book-data-loader/load-book-data';
   import { formatPageTitle } from '$lib/functions/format-page-title';
@@ -473,11 +475,21 @@
     takeWhenBrowser()
   );
 
-  const themeOption$ = theme$.pipe(
-    map(
-      (theme) =>
-        availableThemes.get(theme) || $customThemes$[theme] || availableThemes.get('light-theme')
-    ),
+  // WP10d: E-ink mode shows the book in pure black on white, whatever the theme.
+  const themeOption$ = combineLatest([theme$, einkMode$]).pipe(
+    map(([theme, eink]) => {
+      if (eink) {
+        return EINK_THEME_OPTION;
+      }
+
+      const custom = $customThemes$[theme];
+
+      return (
+        availableThemes.get(theme) ||
+        (custom ? themeColors(custom) : undefined) ||
+        availableThemes.get('light-theme')
+      );
+    }),
     filter((o): o is NonNullable<typeof o> => !!o),
     takeWhenBrowser()
   );
@@ -2628,7 +2640,7 @@
 {#if showHeader}
   <div
     class="elevation-4 writing-horizontal-tb fixed inset-x-0 top-0 z-10 w-full"
-    transition:fly|local={{ y: -300, easing: quintInOut }}
+    transition:fly|local={{ y: -300, easing: quintInOut, duration: $einkMode$ ? 0 : 400 }}
     use:clickOutside={() => (showHeader = false)}
   >
     <BookReaderHeader
@@ -2825,7 +2837,7 @@
     class="writing-horizontal-tb fixed top-0 left-0 z-[60] flex h-full w-full max-w-xl flex-col justify-between"
     style:color={$themeOption$?.fontColor}
     style:background-color={$backgroundColor$}
-    in:fly|local={{ x: -100, duration: 100, easing: quintInOut }}
+    in:fly|local={{ x: -100, duration: $einkMode$ ? 0 : 100, easing: quintInOut }}
     use:clickOutside={() => {
       if ($statisticsEnabled$ && !wasTrackerPaused) {
         isTrackerPaused$.next(false);
@@ -2993,7 +3005,7 @@
   {/if}
 </div>
 
-{#if bookCompleted}
+{#if bookCompleted && !$einkMode$}
   <BookCompletionConfetti {confettiWidthModifier} {confettiMaxRuns} {window} />
 {/if}
 

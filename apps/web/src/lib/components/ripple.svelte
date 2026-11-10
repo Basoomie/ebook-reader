@@ -105,7 +105,7 @@
   }
 </script>
 
-<span bind:this={containerEl} class="absolute inset-0 h-full w-full">
+<span bind:this={containerEl} class="ttu-ripple absolute inset-0 h-full w-full">
   {#each ripples as _ (_.id)}
     <span
       class="absolute rounded-full bg-gray-400/50"
