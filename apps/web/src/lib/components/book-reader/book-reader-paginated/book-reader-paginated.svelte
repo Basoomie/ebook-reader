@@ -41,6 +41,7 @@
   import { PageManagerPaginated } from './page-manager-paginated';
   import { SectionCharacterStatsCalculator } from './section-character-stats-calculator';
   import { createEventDispatcher, onDestroy, onMount } from 'svelte';
+  import { layoutSettled } from '../relayout';
 
   export let htmlContent: string;
 
@@ -561,6 +562,33 @@
       bookmarkData.then(updateBookmarkScreen);
     }
     allowDisplay = true;
+  }
+
+  /**
+   * WP10e: re-measures the current section after a style change (font, size, line height,
+   * indentation) and returns to the intended character, like a window resize does.
+   */
+  export async function relayout() {
+    if (!calculator || !concretePageManager) return;
+
+    const target = previousIntendedCount || exploredCharCount;
+    await layoutSettled();
+
+    if (!calculator || !concretePageManager) return;
+
+    isResizing = true;
+    concretePageManager.scrollTo(0, false);
+    calculator.updateParagraphPos();
+
+    const scrollPos = calculator.getScrollPosByCharCount(target);
+
+    if (scrollPos >= 0) {
+      concretePageManager.scrollTo(scrollPos, false);
+    }
+
+    previousIntendedCount = target;
+    isResizing = false;
+    bookmarkData.then(updateBookmarkScreen);
   }
 
   function updateBookmarkScreen(data: BooksDbBookmarkData | undefined) {

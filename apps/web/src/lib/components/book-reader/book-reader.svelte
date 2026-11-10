@@ -31,6 +31,14 @@
   import { enableReaderWakeLock$, enableTapEdgeToFlip$ } from '$lib/data/store';
   import { onDestroy } from 'svelte';
 
+  /** WP10e: the mounted mode (paginated or continuous), for relayout(). */
+  let modeReader: { relayout?: () => Promise<void> } | undefined;
+
+  /** WP10e: re-measures the page after a style change and keeps the reading position. */
+  export function relayout() {
+    return modeReader?.relayout?.() ?? Promise.resolve();
+  }
+
   export let htmlContent: string;
 
   export let width: number;
@@ -278,6 +286,7 @@
 <div bind:this={$containerEl$} class="{pxReader} py-8">
   {#if viewMode === ViewMode.Continuous}
     <BookReaderContinuous
+      bind:this={modeReader}
       {htmlContent}
       width={$contentViewportWidth$ ?? 0}
       height={$contentViewportHeight$ ?? 0}
@@ -324,6 +333,7 @@
     />
   {:else}
     <BookReaderPaginated
+      bind:this={modeReader}
       {htmlContent}
       width={$contentViewportWidth$ ?? 0}
       height={$contentViewportHeight$ ?? 0}

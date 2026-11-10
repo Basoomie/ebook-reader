@@ -160,13 +160,9 @@
       bind:selectedTheme={$theme$}
       bind:fontFamilyGroupOne={$fontFamilyGroupOne$}
       bind:fontFamilyGroupTwo={$fontFamilyGroupTwo$}
-      bind:fontSize={$fontSize$}
-      bind:lineHeight={$lineHeight$}
-      bind:textIndentation={$textIndentation$}
       bind:textMarginValue={$textMarginValue$}
       bind:blurImage={$hideSpoilerImage$}
       bind:blurImageMode={$hideSpoilerImageMode$}
-      bind:hideFurigana={$hideFurigana$}
       bind:furiganaStyle={$furiganaStyle$}
       bind:writingMode={$writingMode$}
       bind:enableFontKerning={$enableVerticalFontKerning$}
@@ -182,8 +178,6 @@
       bind:showFooterChapterCharacterCounter={$showFooterChapterCharacterCounter$}
       bind:showFooterChapterPercentage={$showFooterChapterPercentage$}
       bind:viewMode={$viewMode$}
-      bind:secondDimensionMaxValue={$secondDimensionMaxValue$}
-      bind:firstDimensionMargin={$firstDimensionMargin$}
       bind:swipeThreshold={$swipeThreshold$}
       bind:mouseDragPageTurn={$mouseDragPageTurn$}
       bind:mouseDragThreshold={$mouseDragThreshold$}

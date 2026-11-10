@@ -65,6 +65,7 @@ import {
 import { recordPosition, resolveLinkedBookId, type BookmarkLike } from '$lib/sync/record-position';
 import { recordStatistics, STAT_DAY_KIND } from '$lib/sync/record-statistics';
 import { applyGlobalSettingValue } from '$lib/sync/settings-apply';
+import { otherDevicesAppearance, type DeviceAppearance } from '$lib/sync/copy-device-settings';
 import {
   positionPromptEnabled$,
   positionPromptMinChars$,
@@ -739,3 +740,26 @@ export function collectionsApi() {
 }
 
 export type CollectionsApi = ReturnType<typeof collectionsApi>;
+
+/**
+ * WP10e: other devices' appearance settings from the local mirror (works offline), for
+ * "Copy from another device". Never throws: an unavailable mirror is an empty list.
+ */
+export async function listOtherDevicesAppearance(): Promise<DeviceAppearance[]> {
+  try {
+    const engine = await getSyncEngine();
+    const records = await engine.getAll('setting');
+    const names: Record<string, string | undefined> = {};
+    for (const record of records) {
+      const deviceId = /^device:([^:]+):/.exec(record.id)?.[1];
+      if (!deviceId || deviceId === engine.deviceId || deviceId in names) continue;
+      const device = await engine.get('device', deviceId);
+      const name = device && device.deletedAt === null ? device.data?.name : undefined;
+      names[deviceId] = typeof name === 'string' ? name : undefined;
+    }
+    return otherDevicesAppearance(records, engine.deviceId, names);
+  } catch (error) {
+    warn(`Copy settings: ${(error as Error)?.message ?? error}`);
+    return [];
+  }
+}
