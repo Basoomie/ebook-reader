@@ -36,6 +36,10 @@ export const SETTINGS_REGISTRY: Record<string, SettingSpec> = {
   // --- lib/data/store.ts: appearance (per device) ---
   theme: d('String'),
   customThemes: g('Object'),
+  followSystemTheme: d('Boolean'),
+  lightTheme: d('String'),
+  darkTheme: d('String'),
+  einkMode: d('Boolean'),
   autoScrollMultiplier: d('Number'),
   fontFamilyGroupOne: d('String'),
   fontFamilyGroupTwo: d('String'),

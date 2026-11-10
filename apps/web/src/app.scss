@@ -20,6 +20,159 @@
   background-color: rgba(255, 196, 0, 0.55);
 }
 
+/*
+ * WP10d E-ink mode (`html.eink`, per device): pure black on white. No grays, shadows,
+ * tinted backgrounds, transitions or animations. Dark fills become black (their white text
+ * stays), light tints become white, coloured or gray text and borders become black. The
+ * reader's own colours come from EINK_THEME_OPTION (theme-option.ts).
+ */
+html.eink {
+  --font-color: #000;
+  --background-color: #fff;
+  scrollbar-color: #000 #fff;
+
+  *,
+  *::before,
+  *::after {
+    transition: none !important;
+    animation: none !important;
+    box-shadow: none !important;
+    text-shadow: none !important;
+  }
+
+  .ttu-ripple {
+    display: none !important;
+  }
+
+  /* Light tints and overlays (including the dialog backdrop): none. Elements with their
+     own inline background (the theme swatches in Settings) keep it. */
+  :is(
+    [class*='bg-gray-'],
+    [class*='bg-slate-'],
+    [class*='bg-blue-'],
+    [class*='bg-red-'],
+    [class*='bg-black/']
+  ):not([style*='background-color']) {
+    background-color: transparent !important;
+  }
+
+  [class*='from-'][class*='to-'] {
+    background-image: none !important;
+  }
+
+  /* Dark fills (bars, current-page cells, buttons): black. */
+  [class*='bg-gray-6'],
+  [class*='bg-gray-7'],
+  [class*='bg-gray-8'],
+  [class*='bg-gray-9'],
+  [class*='bg-slate-6'],
+  [class*='bg-slate-7'],
+  [class*='bg-slate-8'],
+  [class*='bg-slate-9'],
+  [class*='bg-blue-6'],
+  [class*='bg-blue-7'],
+  [class*='bg-blue-8'],
+  [class*='bg-red-6'],
+  [class*='bg-red-7'] {
+    &:not([style*='background-color']) {
+      background-color: #000 !important;
+    }
+  }
+
+  /* Gray and coloured text: black, or white on a black fill. */
+  [class*='text-gray-'],
+  [class*='text-slate-'],
+  [class*='text-red-'],
+  [class*='text-blue-'],
+  [class*='text-green-'],
+  [class*='text-cyan-'],
+  [class*='text-amber-'] {
+    color: #000 !important;
+  }
+
+  :is(
+      [class*='bg-gray-6'],
+      [class*='bg-gray-7'],
+      [class*='bg-gray-8'],
+      [class*='bg-gray-9'],
+      [class*='bg-slate-7'],
+      [class*='bg-blue-7']
+    )
+    :is(
+      [class*='text-gray-'],
+      [class*='text-red-'],
+      [class*='text-blue-'],
+      [class*='text-green-']
+    ) {
+    color: #fff !important;
+  }
+
+  /* White cells inside a black bar (e.g. the current page in the navigation): black text. */
+  :is(
+      [class*='bg-gray-6'],
+      [class*='bg-gray-7'],
+      [class*='bg-gray-8'],
+      [class*='bg-gray-9'],
+      [class*='bg-slate-7'],
+      [class*='bg-blue-7']
+    )
+    :is(.bg-white, .bg-white *) {
+    color: #000 !important;
+  }
+
+  /* Menu items that turn white on hover inside a black menu. */
+  [class*='hover:bg-white']:hover,
+  [class*='hover:bg-white']:hover * {
+    color: #000 !important;
+  }
+
+  [class*='border-gray-'],
+  [class*='border-slate-'],
+  [class*='border-red-'],
+  [class*='border-blue-'],
+  [class*='border-amber-'] {
+    border-color: #000 !important;
+  }
+
+  /* Faded icons and markers: full strength. */
+  .opacity-25,
+  .opacity-50,
+  .opacity-60,
+  .opacity-70,
+  .opacity-75 {
+    opacity: 1 !important;
+  }
+
+  /* Checkboxes, radios and ranges: black instead of the browser's blue. */
+  input,
+  select,
+  progress {
+    accent-color: #000;
+  }
+
+  input[type='checkbox']:checked,
+  input[type='radio']:checked {
+    background-color: #000 !important;
+    border-color: #000 !important;
+  }
+
+  /* Covers (and books without one) keep a thin frame instead of a gray box. */
+  [data-blurred] {
+    outline: 1px solid #000;
+    outline-offset: -1px;
+  }
+
+  /* Dialogs keep a frame now that they have no shadow. */
+  .mdc-elevation--z24 {
+    border: 2px solid #000;
+  }
+
+  ::highlight(ttu-search) {
+    background-color: #000;
+    color: #fff;
+  }
+}
+
 @layer base {
   body {
     color: var(--font-color);

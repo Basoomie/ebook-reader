@@ -5,7 +5,20 @@
   import { basePath, clearConsoleOnReload } from '$lib/data/env';
   import { dialogManager, type Dialog } from '$lib/data/dialog-manager';
   import { userFontsCacheName, type UserFont } from '$lib/data/fonts';
-  import { fontFamilyGroupOne$, isOnline$, userFonts$ } from '$lib/data/store';
+  import {
+    customThemes$,
+    darkTheme$,
+    einkMode$,
+    followSystemTheme$,
+    fontFamilyGroupOne$,
+    fontFamilyGroupTwo$,
+    fontSize$,
+    isOnline$,
+    lightTheme$,
+    theme$,
+    userFonts$
+  } from '$lib/data/store';
+  import { startAppearanceEffects } from '$lib/data/appearance-effects';
   import { dummyFn, isMobile, isMobile$ } from '$lib/functions/utils';
   import { MetaTags } from 'svelte-meta-tags';
   import { onMount } from 'svelte';
@@ -20,6 +33,31 @@
     isMobile$.next(isMobile(window));
     addUserFonts($userFonts$);
   }
+
+  // WP10d: follow the system light/dark setting, theme fonts, E-ink mode. App-wide.
+  onMount(() => {
+    try {
+      return startAppearanceEffects(
+        {
+          theme: theme$,
+          customThemes: customThemes$,
+          followSystemTheme: followSystemTheme$,
+          lightTheme: lightTheme$,
+          darkTheme: darkTheme$,
+          einkMode: einkMode$,
+          fontFamilyGroupOne: fontFamilyGroupOne$,
+          fontFamilyGroupTwo: fontFamilyGroupTwo$,
+          fontSize: fontSize$
+        },
+        window.matchMedia?.('(prefers-color-scheme: dark)'),
+        document.documentElement,
+        (message) => console.warn(message)
+      );
+    } catch (error) {
+      console.warn('Appearance: not started', error);
+      return undefined;
+    }
+  });
 
   // Record sync (WP4) runs in the background. Loaded separately so that no
   // problem in it can affect the rest of the app.
