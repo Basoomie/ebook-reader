@@ -72,22 +72,22 @@
     null;
 
   $: rows = normalizeRows($homeRows$);
-  $: shownRows = rows.filter((r) => !r.hidden && !(r.type === 'collection' && collectionGone(r)));
+  // A pinned collection deleted (here or on another device) is skipped; Edit names it.
+  // The lists are passed in so the rows update when the collections arrive or change.
+  $: shownRows = rows.filter(
+    (r) => !r.hidden && !collectionGone(r, collectionList, collectionsLoaded)
+  );
   $: rowLength = Math.min(200, Math.max(1, Math.floor(Number($homeRowLength$) || 20)));
   $: timeoutSeconds = Math.max(0, Number($libraryRequestTimeoutSeconds$) || 0);
   $: infoLine = $libraryInfoLine$;
 
-  function collectionGone(row: HomeRowEntry): boolean {
-    return (
-      row.type === 'collection' &&
-      collectionsLoaded &&
-      !collectionList.some((c) => c.id === row.ref)
-    );
+  function collectionGone(row: HomeRowEntry, list: Collection[], loaded: boolean): boolean {
+    return row.type === 'collection' && loaded && !list.some((c) => c.id === row.ref);
   }
 
-  function collectionName(id: string): string | null {
-    return collectionList.find((c) => c.id === id)?.name ?? null;
-  }
+  // Reactive, so row titles follow a rename on any device.
+  $: collectionName = (id: string): string | null =>
+    collectionList.find((c) => c.id === id)?.name ?? null;
 
   onMount(async () => {
     await loadMirror();
