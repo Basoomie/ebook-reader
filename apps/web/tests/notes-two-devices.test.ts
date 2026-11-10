@@ -28,6 +28,7 @@ import {
   type NotesDeps
 } from '$lib/notes/notes-service';
 import { startBookOver, type BookStateDeps } from '$lib/sync/book-state-service';
+import { addBookmark, getBookmarks, removeBookmark, renameBookmark } from '$lib/notes/bookmarks';
 import { Device, TestServer, seedServer } from './helpers/sync-harness';
 
 function deps(device: Device): NotesDeps {
@@ -151,6 +152,32 @@ describe('highlights and notes between devices (real server)', () => {
     await startBookOver(book, stateDeps(a));
     await syncAll(a, b);
     expect((await getBookNotes(book, deps(b))).highlights.map((h) => h.id)).toEqual(before);
+  });
+
+  it('WP11b: bookmarks sync; an offline rename and a removal elsewhere resolve by time', async () => {
+    const place = { pos: 120, text: '吾輩は猫である', before: '一章', after: '名前' };
+    const first = await addBookmark(book, place, '猫の場所', '一', deps(a));
+    const second = await addBookmark(book, { ...place, pos: 300 }, '二つ目', '一', deps(a));
+    await syncAll(a, b);
+    expect((await getBookmarks(book, deps(b))).map((x) => [x.name, x.pos])).toEqual([
+      ['猫の場所', 120],
+      ['二つ目', 300]
+    ]);
+
+    a.online = false;
+    b.online = false;
+    await removeBookmark(second.id, deps(a));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await renameBookmark(first.id, '猫の名前の場所', deps(b));
+    a.online = true;
+    b.online = true;
+    await syncAll(a, b);
+
+    for (const device of [a, b]) {
+      expect((await getBookmarks(book, deps(device))).map((x) => x.name)).toEqual([
+        '猫の名前の場所'
+      ]);
+    }
   });
 
   it('wrote no stat-day or position records and nothing was refused', async () => {

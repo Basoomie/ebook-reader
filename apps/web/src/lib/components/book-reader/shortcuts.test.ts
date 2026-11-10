@@ -59,9 +59,9 @@ describe('readerShortcutGroups', () => {
     });
   });
 
-  it('lists the jump history keys right after "Go to bookmark"', () => {
+  it('lists the jump history keys right after "Return to saved place"', () => {
     const reading = find(readerShortcutGroups(context()), 'Reading');
-    const index = reading.findIndex((r) => r.action === 'Go to bookmark');
+    const index = reading.findIndex((r) => r.action === 'Return to saved place');
     expect(reading[index + 1]).toEqual({
       keys: ['['],
       action: 'Back to where you were before a jump'
@@ -73,7 +73,7 @@ describe('readerShortcutGroups', () => {
   it('lists the highlight keys and the long-press', () => {
     const groups = readerShortcutGroups(context());
     const reading = find(groups, 'Reading');
-    expect(reading.map((r) => r.keys[0])).toEqual(expect.arrayContaining(['H', '1', 'L']));
+    expect(reading.map((r) => r.keys[0])).toEqual(expect.arrayContaining(['H', '1', 'L', 'K']));
     expect(find(groups, 'Touch and mouse').map((r) => r.action)).toContain(
       'Show the highlight bar (colors, note)'
     );

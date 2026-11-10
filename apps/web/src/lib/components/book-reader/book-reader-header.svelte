@@ -9,6 +9,7 @@
     faExpand,
     faFlag,
     faFont,
+    faReply,
     faHighlighter,
     faList,
     faMagnifyingGlass,
@@ -47,6 +48,8 @@
   export let hasBookState = false;
   /** WP11a: the book has text, so it can have highlights and notes. */
   export let canNote = false;
+  /** WP11b: a return marker (where you were reading before jumping) is set. */
+  export let canReturnToMarker = false;
 
   const dispatch = createEventDispatcher<{
     tocClick: void;
@@ -71,6 +74,8 @@
     searchClick: void;
     appearanceClick: void;
     notesClick: void;
+    returnMarkerClick: void;
+    addBookmarkClick: void;
     jumpBackClick: void;
     jumpForwardClick: void;
   }>();
@@ -106,6 +111,8 @@
 
     if (hasText) {
       items.push(mergeEntries.JUMP_TO_POSITION);
+      // WP11b
+      items.push(mergeEntries.ADD_BOOKMARK);
     }
 
     if (hasBookState) {
@@ -184,7 +191,7 @@
     <div
       tabindex="0"
       role="button"
-      title="Create Bookmark"
+      title="Save my place (B)"
       class={baseIconClasses}
       on:click={() => dispatch('bookmarkClick')}
       on:keyup={dummyFn}
@@ -195,7 +202,7 @@
       <div
         tabindex="0"
         role="button"
-        title="Return to Bookmark"
+        title="Return to saved place (R)"
         class={baseIconClasses}
         on:click={() => dispatch('scrollToBookmarkClick')}
         on:keyup={dummyFn}
@@ -225,6 +232,19 @@
         on:keyup={dummyFn}
       >
         <Fa icon={faArrowRight} />
+      </div>
+    {/if}
+    {#if canReturnToMarker}
+      <div
+        tabindex="0"
+        role="button"
+        title="Back to where you were reading"
+        class={baseIconClasses}
+        data-testid="reader-return-marker"
+        on:click={() => dispatch('returnMarkerClick')}
+        on:keyup={dummyFn}
+      >
+        <Fa icon={faReply} />
       </div>
     {/if}
     {#if $viewMode$ === ViewMode.Continuous && !$isMobile$}
@@ -313,6 +333,8 @@
           dispatch('zenClick');
         } else if (detail === mergeEntries.SHORTCUTS.label) {
           dispatch('shortcutsClick');
+        } else if (detail === mergeEntries.ADD_BOOKMARK.label) {
+          dispatch('addBookmarkClick');
         }
       }}
     />

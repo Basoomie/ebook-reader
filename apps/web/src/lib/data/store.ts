@@ -227,6 +227,9 @@ export const highlightBarAnySelection$ = writableBooleanLocalStorageSubject()(
   false
 );
 
+/** WP11b: the bottom bar shows where you were reading before a jump (opt-in per device). */
+export const showReturnMarker$ = writableBooleanLocalStorageSubject()('showReturnMarker', false);
+
 export const confirmClose$ = writableBooleanLocalStorageSubject()('confirmClose', false);
 
 export const manualBookmark$ = writableBooleanLocalStorageSubject()('manualBookmark', false);

@@ -142,6 +142,7 @@
   export let jumpHistoryLimit: number;
   export let highlightRefindChars: number;
   export let highlightBarAnySelection: boolean;
+  export let showReturnMarker: boolean;
 
   export let positionPromptMinChars: number;
 
@@ -437,7 +438,7 @@
     verticalTextOrientation === 'mixed'
       ? 'Rotates the characters of horizontal scripts 90° clockwise'
       : 'Lays out the characters of horizontal scripts naturally (upright), as well as the glyphs for vertical scripts.';
-  $: autoBookmarkTooltip = `If enabled sets a bookmark after ${autoBookmarkTime} seconds without scrolling/page change`;
+  $: autoBookmarkTooltip = `If enabled saves your place after ${autoBookmarkTime} seconds without scrolling/page change`;
   $: wakeLockSupported = browser && 'wakeLock' in navigator;
   $: verticalMode = writingMode === 'vertical-rl';
   $: fontCacheSupported = browser && 'caches' in window;
@@ -738,7 +739,7 @@
     {/if}
     <SettingsItemGroup
       title="Jump History Length"
-      tooltip="How many places Back ([) and Forward (]) remember after jumps (search, contents, bookmark, Jump, Continue there)"
+      tooltip="How many places Back ([) and Forward (]) remember after jumps (search, contents, saved place, bookmarks, highlights, Jump, Continue there)"
     >
       <input
         type="number"
@@ -780,7 +781,7 @@
       />
     </SettingsItemGroup>
     {#if autoBookmark}
-      <SettingsItemGroup title="Auto Bookmark Time" tooltip={'Time in s for Auto Bookmark'}>
+      <SettingsItemGroup title="Auto Save Place Time" tooltip={'Time in s for Auto Save Place'}>
         <input
           type="number"
           step="1"
@@ -871,6 +872,12 @@
         bind:selectedOptionId={showFooterChapterCharacterCounter}
       />
     </SettingsItemGroup>
+    <SettingsItemGroup
+      title="Show Return Marker"
+      tooltip="After a jump (search, contents, a highlight or bookmark), the bottom bar shows where you were reading; tap it to go back there"
+    >
+      <ButtonToggleGroup options={optionsForToggle} bind:selectedOptionId={showReturnMarker} />
+    </SettingsItemGroup>
     <SettingsItemGroup title="Show Footer Chapter Percentage">
       <ButtonToggleGroup
         options={optionsForToggle}
@@ -890,12 +897,12 @@
       <ButtonToggleGroup options={optionsForToggle} bind:selectedOptionId={confirmClose} />
     </SettingsItemGroup>
     <SettingsItemGroup
-      title="Manual Bookmark"
-      tooltip={'If enabled current position will not be bookmarked when leaving the reader via menu elements'}
+      title="Manual Save Place"
+      tooltip={'If enabled your place is not saved when leaving the reader via menu elements'}
     >
       <ButtonToggleGroup options={optionsForToggle} bind:selectedOptionId={manualBookmark} />
     </SettingsItemGroup>
-    <SettingsItemGroup title="Auto Bookmark" tooltip={autoBookmarkTooltip}>
+    <SettingsItemGroup title="Auto Save Place" tooltip={autoBookmarkTooltip}>
       <ButtonToggleGroup options={optionsForToggle} bind:selectedOptionId={autoBookmark} />
     </SettingsItemGroup>
     <SettingsItemGroup
@@ -1005,8 +1012,8 @@
         <ButtonToggleGroup options={optionsForToggle} bind:selectedOptionId={avoidPageBreak} />
       </SettingsItemGroup>
       <SettingsItemGroup
-        title="Selection to Bookmark"
-        tooltip={'When enabled bookmarks will be placed to a near paragraph of current/previous selected text instead of page start'}
+        title="Selection to Saved Place"
+        tooltip={'When enabled Save my place (B) saves the paragraph near the current/previous selected text instead of the page start'}
       >
         <ButtonToggleGroup
           options={optionsForToggle}

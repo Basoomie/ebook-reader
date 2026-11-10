@@ -46,6 +46,9 @@ export type Undo = () => Promise<void>;
 
 const isNotesRecord = (r: LocalRecord) => r.kind === HIGHLIGHT_KIND || r.kind === NOTE_KIND;
 
+/** Changes worth telling the reader and the Notes page about (WP11b: bookmarks too). */
+const isWatchedRecord = (r: LocalRecord) => isNotesRecord(r) || r.kind === 'bookmark';
+
 export async function getBookNotes(bookId: string, deps: NotesDeps): Promise<BookNotes> {
   const engine = await deps.getEngine();
   const records = (await engine.getForBook(bookId)).filter(isNotesRecord);
@@ -262,7 +265,7 @@ export async function removeNote(id: string, deps: NotesDeps): Promise<Undo> {
 }
 
 /**
- * Calls back with the books whose highlights or notes changed (local writes and pulls;
+ * Calls back with the books whose highlights, notes or bookmarks changed (local writes and pulls;
  * `remoteOnly` for pulls only).
  */
 export async function onNotesChanged(
@@ -274,13 +277,13 @@ export async function onNotesChanged(
     const engine = await deps.getEngine();
     const bookOf = (r: LocalRecord) => r.bookId ?? r.id.split(':')[0];
     const offRemote = engine.onRemoteChange((records) => {
-      const books = new Set(records.filter(isNotesRecord).map(bookOf));
+      const books = new Set(records.filter(isWatchedRecord).map(bookOf));
       if (books.size) callback(books);
     });
     const offLocal = options.remoteOnly
       ? () => {}
       : engine.onLocalWrite((r) => {
-          if (isNotesRecord(r)) callback(new Set([bookOf(r)]));
+          if (isWatchedRecord(r)) callback(new Set([bookOf(r)]));
         });
     return () => {
       offRemote();

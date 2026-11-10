@@ -58,6 +58,7 @@
     jumpHistoryLimit$,
     highlightRefindChars$,
     highlightBarAnySelection$,
+    showReturnMarker$,
     textIndentation$,
     textMarginMode$,
     textMarginValue$,
@@ -186,6 +187,7 @@
       bind:jumpHistoryLimit={$jumpHistoryLimit$}
       bind:highlightRefindChars={$highlightRefindChars$}
       bind:highlightBarAnySelection={$highlightBarAnySelection$}
+      bind:showReturnMarker={$showReturnMarker$}
       bind:disableWheelNavigation={$disableWheelNavigation$}
       bind:autoPositionOnResize={$autoPositionOnResize$}
       bind:avoidPageBreak={$avoidPageBreak$}

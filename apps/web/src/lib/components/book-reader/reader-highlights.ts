@@ -25,6 +25,7 @@ import {
   type HighlightItem
 } from '$lib/notes/highlights';
 import type { Undo } from '$lib/notes/notes-service';
+import { placeBookmark, type BookmarkItem } from '$lib/notes/bookmarks';
 import { PAGE_CHANGE } from '$lib/data/events';
 import type { NotesApi } from '$lib/sync/sync-service';
 import { HighlightGesture } from './highlight-gesture';
@@ -51,7 +52,16 @@ export interface HighlightsView {
   notes: BookNotes;
   /** Where each highlight sits in this device's copy; null = couldn't place it. */
   places: Map<string, number | null>;
+  /** WP11b: the book's bookmarks with their place on this device (null = couldn't place). */
+  bookmarks: { item: BookmarkItem; place: number | null }[];
 }
+
+/** What the notes panel asks the reader to do when it closes. */
+export type NotesPanelAnswer =
+  | { kind: 'jump'; position: number; highlightId: string | null }
+  | { kind: 'return' }
+  | { kind: 'add-bookmark' }
+  | null;
 
 export interface ReaderHighlightsHost {
   /** The page's `.book-content` element. */
@@ -97,7 +107,11 @@ export function canPaintHighlights(win: Window) {
 export class ReaderHighlights {
   readonly bar = writable<BarState>(HIDDEN);
 
-  readonly view = writable<HighlightsView>({ notes: emptyBookNotes(), places: new Map() });
+  readonly view = writable<HighlightsView>({
+    notes: emptyBookNotes(),
+    places: new Map(),
+    bookmarks: []
+  });
 
   readonly supported: boolean;
 
@@ -239,7 +253,8 @@ export class ReaderHighlights {
       const api = await this.host.api();
       this.notes = await api.ofBook(this.bookId);
       this.placeAll();
-      this.view.set({ notes: this.notes, places: new Map(this.places) });
+      const bookmarks = this.placeBookmarks(await api.bookmarksOf(this.bookId));
+      this.view.set({ notes: this.notes, places: new Map(this.places), bookmarks });
       this.scheduleRepaint(0);
 
       if (this.barMode === 'new' || this.barMode === 'existing') {
@@ -288,6 +303,88 @@ export class ReaderHighlights {
     if (this.bookId) {
       const bookId = this.bookId;
       void this.host.api().then((api) => api.setUnplaced(bookId, unplaced));
+    }
+  }
+
+  /** WP11b: bookmarks placed in this device's copy, in place order. */
+  private placeBookmarks(items: BookmarkItem[]) {
+    if (!items.length) {
+      return [];
+    }
+
+    const index = this.host.wholeIndex();
+    const maxDistance = Math.max(0, Number(this.host.refindChars()) || 0);
+    return items
+      .map((item) => ({ item, place: placeBookmark(index, item, maxDistance) }))
+      .sort((a, b) => (a.place ?? a.item.pos) - (b.place ?? b.item.pos));
+  }
+
+  /**
+   * WP11b: whether the text at a reader position is on screen (the page's DOM; paginated
+   * mode holds one section). Undefined when it can't tell.
+   */
+  isPositionOnScreen(position: number): boolean | undefined {
+    try {
+      const live = this.liveIndex();
+
+      if (!live) {
+        return undefined;
+      }
+
+      const target = position - this.host.base();
+      const { index } = live;
+
+      if (target < 0 || target > index.total) {
+        return false;
+      }
+
+      let i = 0;
+      let hi = index.countBefore.length;
+
+      while (i < hi) {
+        const mid = (i + hi) >> 1;
+
+        if (index.countBefore[mid] < target) {
+          i = mid + 1;
+        } else {
+          hi = mid;
+        }
+      }
+
+      // The position is shared by the uncounted characters before it (the 。 ending the
+      // previous page's paragraph): look at the first counted character.
+      const counted = (k: number) =>
+        (k + 1 < index.countBefore.length ? index.countBefore[k + 1] : index.total) >
+        index.countBefore[k];
+
+      while (i < index.display.length && (!index.nodeAt[i] || !counted(i))) {
+        i += 1;
+      }
+
+      if (i >= index.display.length) {
+        return false;
+      }
+
+      const range = matchRange(
+        index,
+        { position, displayStart: i, displayEnd: i + 1 },
+        live.root.ownerDocument
+      );
+      const win = this.win;
+      return (
+        !!range &&
+        Array.from(range.getClientRects()).some(
+          (r) =>
+            r.width > 0 &&
+            r.right > 0 &&
+            r.bottom > 0 &&
+            r.left < win.innerWidth &&
+            r.top < win.innerHeight
+        )
+      );
+    } catch (error) {
+      this.warn(error);
+      return undefined;
     }
   }
 

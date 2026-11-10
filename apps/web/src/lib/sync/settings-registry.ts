@@ -87,6 +87,7 @@ export const SETTINGS_REGISTRY: Record<string, SettingSpec> = {
   highlightLastColor: d('Number'),
   highlightRefindChars: d('Number'),
   highlightBarAnySelection: d('Boolean'),
+  showReturnMarker: d('Boolean'),
   confirmClose: d('Boolean'),
   manualBookmark: d('Boolean'),
   autoBookmark: d('Boolean'),

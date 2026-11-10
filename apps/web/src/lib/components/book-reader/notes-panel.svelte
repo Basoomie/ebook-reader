@@ -4,6 +4,9 @@
    * transitions, 48 px bordered controls, inert backdrop, Esc closes. Choosing an item
    * closes the panel and jumps there (recorded in the jump history, not saved). Notes are
    * written inline; removing offers Undo until the next action.
+   *
+   * WP11b: a Bookmarks tab (jump, rename, remove, add) and, while set, the return marker
+   * ("Where you were reading") above both tabs.
    */
   import { createEventDispatcher } from 'svelte';
   import type { Readable } from 'svelte/store';
@@ -18,7 +21,8 @@
   } from '$lib/notes/highlights';
   import type { NoteTarget, Undo } from '$lib/notes/notes-service';
   import { EINK_UNDERLINES, HIGHLIGHT_SWATCHES } from './highlight-colors';
-  import type { HighlightsView } from './reader-highlights';
+  import type { HighlightsView, NotesPanelAnswer } from './reader-highlights';
+  import { MAX_BOOKMARK_NAME, type BookmarkItem } from '$lib/notes/bookmarks';
 
   export let view: Readable<HighlightsView>;
   export let bookId: string | null;
@@ -31,8 +35,14 @@
     saveNote(target: NoteTarget, body: string): Promise<string | null>;
     removeHighlight(id: string): Promise<Undo>;
     removeNote(id: string): Promise<Undo>;
+    renameBookmark(id: string, name: string): Promise<void>;
+    removeBookmark(id: string): Promise<Undo>;
+    clearReturnMarker(): void;
   };
-  export let resolver: (answer: { position: number; highlightId: string | null } | null) => void;
+  /** WP11b: where you were reading before jumping (reader position), if set. */
+  export let returnMarker: number | null = null;
+  export let initialTab: 'notes' | 'bookmarks' = 'notes';
+  export let resolver: (answer: NotesPanelAnswer) => void;
 
   const dispatch = createEventDispatcher<{ close: void }>();
   const buttonClass =
@@ -40,6 +50,8 @@
   const smallButton =
     'flex min-h-[2.75rem] min-w-[2.75rem] items-center justify-center rounded border-2 border-current px-3 text-sm';
 
+  let tab = initialTab;
+  let marker = returnMarker;
   let colors = new Set<HighlightColor>();
   let editing: { key: string; target: NoteTarget; text: string } | undefined;
   let undo: { message: string; run: Undo } | undefined;
@@ -53,6 +65,7 @@
     .sort((a, b) => (a.place ?? a.item.start) - (b.place ?? b.item.start));
   $: bookNotes = $view.notes.notes;
   $: empty = !$view.notes.highlights.length && !bookNotes.length;
+  $: bookmarks = $view.bookmarks;
 
   function close(answer: Parameters<typeof resolver>[0]) {
     if (done) return;
@@ -146,6 +159,48 @@
     undo = undefined;
     act(() => actions.setColor(item.id, color));
   }
+
+  function startRename(item: BookmarkItem) {
+    undo = undefined;
+    editing = { key: item.id, target: { bookId: item.bookId }, text: item.name };
+  }
+
+  function saveRename(item: BookmarkItem) {
+    const current = editing;
+    if (!current) return;
+    const name = current.text.trim();
+    if (!name) {
+      error = 'A bookmark needs a name.';
+      return;
+    }
+    if (Array.from(name).length > MAX_BOOKMARK_NAME) {
+      error = `A bookmark name can be at most ${MAX_BOOKMARK_NAME} characters.`;
+      return;
+    }
+    act(async () => {
+      await actions.renameBookmark(item.id, name);
+      editing = undefined;
+    });
+  }
+
+  function removeBookmark(item: BookmarkItem) {
+    act(async () => {
+      const run = await actions.removeBookmark(item.id);
+      undo = { message: 'Bookmark removed.', run };
+    });
+  }
+
+  function clearMarker() {
+    actions.clearReturnMarker();
+    marker = null;
+  }
+
+  function showTab(next: 'notes' | 'bookmarks') {
+    tab = next;
+    editing = undefined;
+    undo = undefined;
+    error = '';
+  }
 </script>
 
 <svelte:window on:keydown={onKeydown} />
@@ -156,9 +211,144 @@
 >
   <h2 class="weight-medium mb-3 text-xl">Notes in this book</h2>
 
+  {#if marker !== null}
+    <div
+      class="mb-3 flex flex-wrap items-center gap-2 border-b border-gray-400 pb-3"
+      data-testid="notes-return-marker"
+    >
+      <span class="flex-1">Where you were reading: {place(marker)}</span>
+      <button
+        class={smallButton}
+        data-testid="notes-return"
+        on:click={() => close({ kind: 'return' })}
+      >
+        Return
+      </button>
+      <button
+        class={smallButton}
+        aria-label="Forget where you were reading"
+        title="Forget where you were reading"
+        data-testid="notes-return-clear"
+        on:click={clearMarker}
+      >
+        ✕
+      </button>
+    </div>
+  {/if}
+
   {#if !bookId}
-    <p class="mb-3">Highlights and notes need this book in the library.</p>
+    <p class="mb-3">Highlights, notes and bookmarks need this book in the library.</p>
   {:else}
+    <div class="mb-3 flex gap-2" role="tablist">
+      <button
+        class={smallButton}
+        role="tab"
+        aria-selected={tab === 'notes'}
+        class:outline={tab === 'notes'}
+        class:outline-4={tab === 'notes'}
+        data-testid="notes-tab-notes"
+        on:click={() => showTab('notes')}
+      >
+        Highlights and notes
+      </button>
+      <button
+        class={smallButton}
+        role="tab"
+        aria-selected={tab === 'bookmarks'}
+        class:outline={tab === 'bookmarks'}
+        class:outline-4={tab === 'bookmarks'}
+        data-testid="notes-tab-bookmarks"
+        on:click={() => showTab('bookmarks')}
+      >
+        Bookmarks ({bookmarks.length})
+      </button>
+    </div>
+
+    {#if undo}
+      <p class="mb-2 flex items-center gap-3" role="status">
+        {undo.message}
+        <button class={smallButton} data-testid="notes-undo" on:click={runUndo}>Undo</button>
+      </p>
+    {/if}
+    {#if error}
+      <p class="mb-2 text-sm" role="alert">{error}</p>
+    {/if}
+  {/if}
+
+  {#if bookId && tab === 'bookmarks'}
+    <div class="flex">
+      <button
+        class="{smallButton} ml-auto"
+        disabled={busy}
+        data-testid="notes-add-bookmark"
+        on:click={() => close({ kind: 'add-bookmark' })}
+      >
+        Add bookmark here
+      </button>
+    </div>
+    <div class="mt-3 min-h-0 overflow-y-auto" data-testid="bookmarks-list">
+      {#if !bookmarks.length}
+        <p>
+          No bookmarks yet. "Add bookmark here" (or K) keeps the page you are on under a name; it
+          never moves your saved place.
+        </p>
+      {/if}
+      {#each bookmarks as { item, place: at } (item.id)}
+        <article class="border-t border-gray-400 py-2" data-testid="notes-bookmark">
+          {#if editing?.key === item.id}
+            <input
+              bind:value={editing.text}
+              aria-label="Bookmark name"
+              class="min-h-[2.75rem] w-full rounded border-2 border-current px-2"
+              data-testid="bookmark-rename-input"
+            />
+            <div class="mt-2 flex justify-end gap-2">
+              <button class={smallButton} on:click={() => (editing = undefined)}>Cancel</button>
+              <button
+                class={smallButton}
+                data-testid="bookmark-rename-save"
+                on:click={() => saveRename(item)}
+              >
+                Save
+              </button>
+            </div>
+          {:else}
+            <button
+              class="block min-h-[3rem] w-full text-left"
+              data-testid="notes-bookmark-jump"
+              on:click={() => close({ kind: 'jump', position: at ?? item.pos, highlightId: null })}
+            >
+              <span class="block font-medium">{item.name}</span>
+              <span class="block text-sm">
+                {place(at ?? item.pos)}
+                {#if at === null}
+                  · <b data-testid="bookmark-unplaced">Couldn't place in the current file</b>
+                {/if}
+              </span>
+            </button>
+          {/if}
+          <div class="mt-2 flex gap-2">
+            <button
+              class={smallButton}
+              disabled={busy}
+              data-testid="bookmark-rename"
+              on:click={() => startRename(item)}
+            >
+              Rename
+            </button>
+            <button
+              class={smallButton}
+              disabled={busy}
+              data-testid="bookmark-remove"
+              on:click={() => removeBookmark(item)}
+            >
+              Remove
+            </button>
+          </div>
+        </article>
+      {/each}
+    </div>
+  {:else if bookId}
     <div class="flex flex-wrap items-center gap-2" role="group" aria-label="Show colors">
       {#each HIGHLIGHT_COLORS as color}
         <button
@@ -186,15 +376,6 @@
 
     {#if !canPaint}
       <p class="mt-2 text-sm">This browser can't show highlight colors on the page.</p>
-    {/if}
-    {#if undo}
-      <p class="mt-2 flex items-center gap-3" role="status">
-        {undo.message}
-        <button class={smallButton} data-testid="notes-undo" on:click={runUndo}>Undo</button>
-      </p>
-    {/if}
-    {#if error}
-      <p class="mt-2 text-sm" role="alert">{error}</p>
     {/if}
 
     {#if editing?.key === 'new'}
@@ -225,7 +406,8 @@
           <button
             class="block min-h-[3rem] w-full text-left"
             data-testid="notes-highlight-jump"
-            on:click={() => close({ position: at ?? item.start, highlightId: item.id })}
+            on:click={() =>
+              close({ kind: 'jump', position: at ?? item.start, highlightId: item.id })}
           >
             <span class="block text-sm">
               {place(at ?? item.start)}
