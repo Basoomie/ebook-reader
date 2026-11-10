@@ -11,6 +11,7 @@
  */
 import Database from 'better-sqlite3';
 import { createHash, randomUUID } from 'crypto';
+import { noteCatalogWrite } from '../catalog/catalog-version';
 
 export const INGEST_BATCH_SIZE = 500;
 
@@ -397,6 +398,7 @@ export async function ingestSnapshot(
           writeBook(book);
         }
       })();
+      noteCatalogWrite(db);
       result.total += batch.length;
       afterId = batch[batch.length - 1].calibreId;
       await yieldToEventLoop();
@@ -426,6 +428,7 @@ export async function ingestSnapshot(
     db.transaction(() => {
       for (const s of gone) markMissing.run(now, now, s.id);
     })();
+    noteCatalogWrite(db);
     result.missingMarked = gone.length;
   }
 
@@ -437,6 +440,7 @@ export async function ingestSnapshot(
       'DELETE FROM series WHERE id NOT IN (SELECT series_id FROM books WHERE series_id IS NOT NULL)',
     ).run();
   })();
+  noteCatalogWrite(db);
 
   const counts = db
     .prepare(

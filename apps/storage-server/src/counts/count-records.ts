@@ -3,6 +3,7 @@
  * the CLI need. No counting happens here (see count-service).
  */
 import type Database from 'better-sqlite3';
+import { noteCatalogWrite } from '../catalog/catalog-version';
 import type { CountErrorCode } from './count-worker';
 
 export interface CountSource {
@@ -100,6 +101,7 @@ export type CountScope =
  * the old value until then (shown as pending).
  */
 export function forgetCounts(db: Database.Database, scope: CountScope): number {
+  noteCatalogWrite(db);
   if ('all' in scope) return db.prepare('DELETE FROM char_counts').run().changes;
   if ('errors' in scope) {
     return db.prepare("DELETE FROM char_counts WHERE status = 'error'").run().changes;

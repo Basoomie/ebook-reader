@@ -13,7 +13,7 @@ import { getOrCreateSecret, sign, THUMBNAIL_URL_SECRET, verify } from '../db/sec
 import { sourceKey, thumbnailVersion } from '../thumbnails/thumbnails';
 import { parseOrThrow, usesRegex } from './query-parser';
 import { registerRegexp } from './regexp';
-import { querySql, type SqlCondition } from './search-sql';
+import { querySql, setPrefix, type SqlCondition } from './search-sql';
 
 export interface CatalogUser {
   id: string;
@@ -279,21 +279,26 @@ export interface PlannedQuery<T> {
 }
 
 /** Membership of a book in a group, as a condition on `b`. */
-export function groupMemberSql(group: GroupRef): SqlCondition {
+export function groupMemberSql(group: GroupRef, db?: Database.Database): SqlCondition {
+  // A big author or tag walks books in date order; a small one starts from its books
+  // (search-sql.ts, SMALL_SET).
+  const size = (sql: string) =>
+    db ? (db.prepare(sql).get(group.name) as { n: number }).n : Infinity;
   switch (group.by) {
     case 'series':
       return group.name === null
-        ? { sql: 'b.series_id IS NULL', params: [] }
+        ? // "+" keeps SQLite walking books in date order (not ~20k NULL index entries + a sort).
+          { sql: '+b.series_id IS NULL', params: [] }
         : { sql: 'b.series_id = (SELECT id FROM series WHERE name = ?)', params: [group.name] };
     case 'author':
       return {
-        sql: `b.id IN (SELECT book_id FROM book_authors
+        sql: `${setPrefix(size('SELECT COUNT(*) AS n FROM book_authors WHERE author_id = (SELECT id FROM authors WHERE name = ?)'))}b.id IN (SELECT book_id FROM book_authors
                        WHERE author_id = (SELECT id FROM authors WHERE name = ?))`,
         params: [group.name],
       };
     case 'tag':
       return {
-        sql: `b.id IN (SELECT book_id FROM book_tags WHERE tag_id = (SELECT id FROM tags WHERE name = ?))`,
+        sql: `${setPrefix(size('SELECT COUNT(*) AS n FROM book_tags WHERE tag_id = (SELECT id FROM tags WHERE name = ?)'))}b.id IN (SELECT book_id FROM book_tags WHERE tag_id = (SELECT id FROM tags WHERE name = ?))`,
         params: [group.name],
       };
   }
@@ -322,8 +327,8 @@ export function planBooks(
   const limit = Math.min(Math.max(1, opts.limit ?? DEFAULT_PAGE_SIZE), MAX_PAGE_SIZE);
   const parsed = parseOrThrow(opts.query);
   const conds: SqlCondition[] = [...visibilitySql(opts)];
-  if (opts.group) conds.push(groupMemberSql(opts.group));
-  conds.push(...querySql(parsed, user.id));
+  if (opts.group) conds.push(groupMemberSql(opts.group, db));
+  conds.push(...querySql(parsed, user.id, db));
   const bySeriesIndex = opts.group?.by === 'series' && opts.group.name !== null;
   const order = bySeriesIndex
     ? 'ORDER BY IFNULL(b.series_index, -1), b.added_at, b.id'

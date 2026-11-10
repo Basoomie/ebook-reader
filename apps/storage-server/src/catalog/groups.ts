@@ -17,6 +17,7 @@
  */
 import type Database from 'better-sqlite3';
 import { SQL_COUNT_SOURCE_KEY } from '../counts/count-records';
+import { catalogVersion } from './catalog-version';
 import { parseOrThrow, usesRegex } from './query-parser';
 import {
   BookSummary,
@@ -81,7 +82,7 @@ export interface ListGroupsOptions {
   countSpec?: string | null;
 }
 
-interface GroupRow {
+export interface GroupRow {
   gid: number | null;
   name: string | null;
   n: number;
@@ -115,6 +116,112 @@ function joinConds(conds: SqlCondition[]): { sql: string; params: unknown[] } {
   };
 }
 
+/**
+ * Whole-group numbers for every group, in page order ("No series" last). Computing them
+ * reads every book (~0.15-0.4 s on 65k books on the PC), so they are cached until the
+ * catalog changes (catalog-version.ts: the indexer, library records, counts, or another
+ * connection such as the CLI). Reading on another device doesn't clear them.
+ */
+const aggregateCache = new WeakMap<
+  Database.Database,
+  Map<string, { changes: string; rows: GroupRow[] }>
+>();
+
+/** Collage picks per group, cached the same way (they also depend on your opened books). */
+const tileCache = new WeakMap<Database.Database, Map<string, { changes: string; ids: string[] }>>();
+
+/** Collages also change with your own records (opened books). */
+function userVersion(db: Database.Database, userId: string): string {
+  const { rev } = db
+    .prepare('SELECT MAX(rev) AS rev FROM sync_records WHERE user_id = ?')
+    .get(userId) as { rev: number | null };
+  return `${catalogVersion(db)}:${rev ?? 0}`;
+}
+
+/** Forgets cached group numbers and collages (benchmarks). */
+export function clearGroupCaches(db: Database.Database): void {
+  aggregateCache.delete(db);
+  tileCache.delete(db);
+}
+
+function compareGroups(a: GroupRow, b: GroupRow): number {
+  if ((a.gid === null) !== (b.gid === null)) return a.gid === null ? 1 : -1;
+  if (a.newest !== b.newest) return b.newest - a.newest;
+  const an = a.name ?? '';
+  const bn = b.name ?? '';
+  return an < bn ? -1 : an > bn ? 1 : 0;
+}
+
+export function aggregateGroups(
+  db: Database.Database,
+  opts: Pick<ListGroupsOptions, 'by' | 'libraryId' | 'includeMissing' | 'countSpec'>,
+): GroupRow[] {
+  const spec = opts.countSpec ?? null;
+  const key = JSON.stringify([opts.by, opts.libraryId ?? '', !!opts.includeMissing, spec]);
+  const changes = catalogVersion(db);
+  let cache = aggregateCache.get(db);
+  if (!cache) {
+    cache = new Map();
+    aggregateCache.set(db, cache);
+  }
+  const hit = cache.get(key);
+  if (hit && hit.changes === changes) return hit.rows;
+  // One pass over the visible books and one over the membership table, summed here:
+  // GROUP BY over the joined rows (227k tag links on 65k books) sorts them all and
+  // took ~0.9 s for tags on the PC; this takes a fraction of that (WP7a benchmark).
+  const base = joinConds(visibilitySql(opts));
+  const books = new Map<string, [number | null, number, number | null, string]>();
+  for (const [id, seriesId, addedAt, chars, cs] of db
+    .prepare(
+      `SELECT b.id, b.series_id, b.added_at, b.char_count, ${COUNT_STATE} AS cs
+         ${SQL_BOOK_FROM}
+         LEFT JOIN char_counts c ON c.book_id = b.id
+         ${base.sql}`,
+    )
+    .raw()
+    .iterate(spec, spec, ...base.params) as IterableIterator<
+    [string, number | null, number, number | null, string]
+  >) {
+    books.set(id, [seriesId, addedAt, chars, cs]);
+  }
+  const byGroup = new Map<number | null, GroupRow>();
+  const addTo = (gid: number | null, book: [number | null, number, number | null, string]) => {
+    let row = byGroup.get(gid);
+    if (!row) {
+      row = { gid, name: null, n: 0, newest: 0, total: 0, counted: 0, pending: 0, failed: 0 };
+      byGroup.set(gid, row);
+    }
+    row.n += 1;
+    if (book[1] > row.newest) row.newest = book[1];
+    row.total = (row.total ?? 0) + (book[2] ?? 0);
+    if (book[3] === 'c') row.counted += 1;
+    else if (book[3] === 'p') row.pending += 1;
+    else row.failed += 1;
+  };
+  if (opts.by === 'series') {
+    for (const book of books.values()) addTo(book[0], book);
+  } else {
+    const link =
+      opts.by === 'author'
+        ? 'SELECT book_id, author_id FROM book_authors'
+        : 'SELECT book_id, tag_id FROM book_tags';
+    for (const [bookId, gid] of db.prepare(link).raw().iterate() as IterableIterator<
+      [string, number]
+    >) {
+      const book = books.get(bookId);
+      if (book) addTo(gid, book);
+    }
+  }
+  const names = new Map(
+    db.prepare(`SELECT id, name FROM ${GROUPING[opts.by].table}`).raw().all() as [number, string][],
+  );
+  const rows = [...byGroup.values()];
+  for (const row of rows) row.name = row.gid === null ? null : (names.get(row.gid) ?? null);
+  rows.sort(compareGroups);
+  cache.set(key, { changes, rows });
+  return rows;
+}
+
 export function planGroups(
   db: Database.Database,
   user: CatalogUser,
@@ -124,64 +231,45 @@ export function planGroups(
   const parsed = parseOrThrow(opts.query);
   const g = GROUPING[opts.by];
   const spec = opts.countSpec ?? null;
-  const visible = visibilitySql(opts);
+  const cursor = opts.cursor ? decodeCursor(opts.cursor, ['number', 'string']) : null;
 
-  // All groups with their whole-group numbers.
-  const base = joinConds(visible);
-  const agg = `SELECT ${g.gid} AS gid, COUNT(*) AS n, MAX(b.added_at) AS newest,
-                      SUM(b.char_count) AS total, SUM(cs = 'c') AS counted,
-                      SUM(cs = 'p') AS pending, SUM(cs = 'e') AS failed
-                 FROM (SELECT b.*, ${COUNT_STATE} AS cs, s.missing_at
-                         ${SQL_BOOK_FROM}
-                         LEFT JOIN char_counts c ON c.book_id = b.id
-                         ${base.sql}) b
-                 ${g.join}
-                GROUP BY ${g.gid}`;
-  const params: unknown[] = [spec, spec, ...base.params];
-
-  const outer: SqlCondition[] = [];
-  // Only "No series" has no group row; authors and tags always have one.
-  if (opts.by !== 'series') outer.push({ sql: 'agg.gid IS NOT NULL', params: [] });
-  if (parsed.terms.length > 0) {
-    const hits = joinConds([...visible, ...querySql(parsed, user.id)]);
-    const hitIds = `SELECT ${g.gid} ${SQL_BOOK_FROM} ${g.join} ${hits.sql}`;
-    outer.push(
-      opts.by === 'series'
-        ? {
-            // "No series" is listed when a matching book has no series.
-            sql: `(agg.gid IN (${hitIds}) OR (agg.gid IS NULL AND EXISTS (${hitIds}
-                     ${hits.sql ? 'AND' : 'WHERE'} b.series_id IS NULL)))`,
-            params: [...hits.params, ...hits.params],
-          }
-        : { sql: `agg.gid IN (${hitIds})`, params: hits.params },
-    );
-    outer.push(...groupNameSql(parsed, opts.by, 'gn.name'));
+  // The groups with a matching book (only this part can contain a pattern).
+  let sql = 'SELECT NULL AS gid WHERE 0';
+  let params: unknown[] = [];
+  const filtered = parsed.terms.length > 0;
+  if (filtered) {
+    const names = joinConds(groupNameSql(parsed, opts.by, 'gn.name'));
+    const conds: SqlCondition[] = [...visibilitySql(opts), ...querySql(parsed, user.id)];
+    if (names.sql) {
+      conds.push({
+        sql: `(${g.gid} IS NULL OR ${g.gid} IN (SELECT gn.id FROM ${g.table} gn ${names.sql}))`,
+        params: names.params,
+      });
+    }
+    const where = joinConds(conds);
+    sql = `SELECT DISTINCT ${g.gid} AS gid ${SQL_BOOK_FROM} ${g.join} ${where.sql}`;
+    params = where.params;
   }
-  if (opts.cursor) {
-    const [newest, name] = decodeCursor(opts.cursor, ['number', 'string']);
-    // "No series" comes after every named group, so it is always past a cursor.
-    outer.push({
-      sql: '(agg.gid IS NULL OR agg.newest < ? OR (agg.newest = ? AND gn.name > ?))',
-      params: [newest, newest, name],
-    });
-  }
-  const where = joinConds(outer);
-  const sql = `SELECT agg.*, gn.name AS name
-                 FROM (${agg}) agg
-                 LEFT JOIN ${g.table} gn ON gn.id = agg.gid
-                 ${where.sql}
-                ORDER BY agg.gid IS NULL, agg.newest DESC, gn.name
-                LIMIT ?`;
   return {
     sql,
-    params: [...params, ...where.params, limit + 1],
+    params,
     regex: usesRegex(parsed),
     finish(raw) {
-      const rows = raw as GroupRow[];
-      const page = rows.slice(0, limit);
+      const hits = new Set((raw as { gid: number | null }[]).map((r) => r.gid));
+      const all = aggregateGroups(db, opts).filter(
+        (r) => (opts.by === 'series' || r.gid !== null) && (!filtered || hits.has(r.gid)),
+      );
+      let start = 0;
+      if (cursor) {
+        const [newest, name] = cursor as [number, string];
+        const probe = { gid: 0, name, newest } as GroupRow;
+        start = all.findIndex((r) => compareGroups(r, probe) > 0);
+        if (start === -1) start = all.length;
+      }
+      const page = all.slice(start, start + limit);
       const last = page[page.length - 1];
       const nextCursor =
-        rows.length > limit && last && last.name !== null
+        start + limit < all.length && last && last.name !== null
           ? encodeCursor([last.newest, last.name])
           : null;
       return { groups: describeGroups(db, user, opts, page, spec), nextCursor };
@@ -195,7 +283,7 @@ function tileOf(summary: BookSummary | undefined): GroupTile | null {
 
 const TILE_COUNT = 4;
 /** Newest books looked at for the "one volume per series" step of a collage. */
-const TILE_SCAN = 200;
+const TILE_SCAN = 60;
 
 function describeGroups(
   db: Database.Database,
@@ -260,8 +348,35 @@ function describeGroups(
   return cards;
 }
 
-/** Up to four book ids in the decided collage order. */
+/** Up to four book ids in the decided collage order (cached until the next write). */
 function collageIds(
+  db: Database.Database,
+  user: CatalogUser,
+  opts: ListGroupsOptions,
+  row: GroupRow,
+): string[] {
+  const key = JSON.stringify([
+    user.id,
+    opts.by,
+    row.gid,
+    opts.libraryId ?? '',
+    !!opts.includeMissing,
+  ]);
+  const changes = userVersion(db, user.id);
+  let cache = tileCache.get(db);
+  if (!cache) {
+    cache = new Map();
+    tileCache.set(db, cache);
+  }
+  const hit = cache.get(key);
+  if (hit && hit.changes === changes) return hit.ids;
+  if (cache.size > 5000) cache.clear();
+  const ids = pickCollage(db, user, opts, row);
+  cache.set(key, { changes, ids });
+  return ids;
+}
+
+function pickCollage(
   db: Database.Database,
   user: CatalogUser,
   opts: ListGroupsOptions,

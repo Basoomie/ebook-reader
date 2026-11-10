@@ -6,7 +6,9 @@ import Database from 'better-sqlite3';
 import { randomUUID } from 'crypto';
 import request from 'supertest';
 import { afterEach, describe, expect, it } from 'vitest';
+import { catalogVersion, noteCatalogWrite } from '../src/catalog/catalog-version';
 import { planBooks } from '../src/catalog/queries';
+import { SMALL_SET } from '../src/catalog/search-sql';
 import { SearchRunner, RegexTimeoutError } from '../src/catalog/search-runner';
 import { SQL_COUNT_SOURCE_KEY } from '../src/counts/count-records';
 import { createToken } from '../src/db/tokens';
@@ -430,6 +432,45 @@ describe('browse groups (GET /api/v1/groups)', () => {
     // shown), B2 (B1 doesn't have the tag); then the newest book, A3.
     expect(t.tiles?.map((x) => x.bookId)).toEqual([c.id('A2'), c.id('C1'), c.id('B2'), c.id('A3')]);
     expect(t.bookCount).toBe(7);
+  });
+
+  it('refreshes cached group numbers when counts or the catalog change, not on sync writes', async () => {
+    const c = await catalogEnv(SAMPLE);
+    const series = async () =>
+      (await groups(c, { by: 'series' })).groups.find((g) => g.name === '薬屋のひとりごと')!;
+    expect((await series()).chars.pending).toBe(3);
+    // A count written by the server (the counter's write path) is seen at once.
+    noteCatalogWrite(c.e.db);
+    c.setCount('薬屋のひとりごと 1', 1000);
+    noteCatalogWrite(c.e.db);
+    expect((await series()).chars).toMatchObject({ total: 1000, counted: 1, pending: 2 });
+    // A write from another connection (the CLI) is seen too.
+    const other = new Database(c.e.db.name);
+    other.prepare('DELETE FROM char_counts').run();
+    other.close();
+    expect((await series()).chars).toMatchObject({ counted: 0, pending: 3 });
+    // Sync writes (reading on another device) keep the cache.
+    const version = catalogVersion(c.e.db);
+    c.opened('共著の本');
+    expect(catalogVersion(c.e.db)).toBe(version);
+  });
+
+  it('refreshes collages when you open a book', async () => {
+    const c = await catalogEnv(SAMPLE);
+    const none = async () =>
+      (await groups(c, { by: 'series' })).groups.find((g) => g.name === null)!;
+    expect((await none()).tiles?.[0].bookId).toBe(c.id('100% Pure'));
+    c.opened('共著の本');
+    expect((await none()).tiles?.[0].bookId).toBe(c.id('共著の本'));
+  });
+
+  it('picks a plan by the size of an author or tag filter', async () => {
+    const c = await catalogEnv(SAMPLE);
+    const plan = (query: string) => planBooks(c.e.db, c.user, { query }).sql;
+    expect(plan('author:日向')).toContain('b.id IN (SELECT ba.book_id');
+    expect(plan('author:日向')).not.toContain('+b.id IN (SELECT ba.book_id');
+    expect(plan('author:/日向/')).toContain('+b.id IN (SELECT ba.book_id');
+    expect(SMALL_SET).toBeGreaterThan(100);
   });
 
   it('rejects an unknown grouping', async () => {

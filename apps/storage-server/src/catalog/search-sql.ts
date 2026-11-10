@@ -10,7 +10,41 @@
  *   user_id, kind, id = book id). No record = unread / not a favorite.
  * - /regex/: ttu_regexp() (regexp.ts). Queries that use it run in the search worker.
  */
+import type Database from 'better-sqlite3';
 import type { Matcher, ParsedQuery, QueryStatus, QueryTerm, TextField } from './query-parser';
+
+/**
+ * Up to this many books, an author: or tag: filter lets SQLite start from those books
+ * (and sort them); above it SQLite walks all books in date order and stops at the page.
+ * Measured on the real library (WP7a): starting from the ~20k "Unknown" books took
+ * ~225 ms, walking takes ~30 ms; for a handful of books starting from them takes ~1 ms
+ * against ~50 ms for a walk that finds nothing early.
+ */
+export const SMALL_SET = 2000;
+
+/**
+ * How many books an author/tag filter names, counted through the index (cheap), or
+ * Infinity when unknown (no database, or a pattern: never run a user pattern on the main
+ * thread).
+ */
+function linkCount(
+  db: Database.Database | undefined,
+  field: 'author' | 'tag',
+  matchers: Matcher[],
+): number {
+  if (!db || matchers.some((m) => m.kind === 'regex')) return Infinity;
+  const name = anyMatcherSql('name', matchers);
+  const sql =
+    field === 'author'
+      ? `SELECT COUNT(*) AS n FROM book_authors WHERE author_id IN (SELECT id FROM authors WHERE ${name.sql})`
+      : `SELECT COUNT(*) AS n FROM book_tags WHERE tag_id IN (SELECT id FROM tags WHERE ${name.sql})`;
+  return (db.prepare(sql).get(...name.params) as { n: number }).n;
+}
+
+/** "" to let SQLite start from a small set of books, "+" to keep the date-order walk. */
+export function setPrefix(count: number): '' | '+' {
+  return count <= SMALL_SET ? '' : '+';
+}
 
 export interface SqlCondition {
   sql: string;
@@ -40,12 +74,12 @@ export function anyMatcherSql(column: string, matchers: Matcher[]): SqlCondition
   };
 }
 
-function fieldSql(field: TextField, matchers: Matcher[]): SqlCondition {
+function fieldSql(field: TextField, matchers: Matcher[], db?: Database.Database): SqlCondition {
   const name = anyMatcherSql('name', matchers);
   switch (field) {
     case 'author':
       return {
-        sql: `b.id IN (SELECT ba.book_id FROM book_authors ba
+        sql: `${setPrefix(linkCount(db, 'author', matchers))}b.id IN (SELECT ba.book_id FROM book_authors ba
                         WHERE ba.author_id IN (SELECT id FROM authors WHERE ${name.sql}))`,
         params: name.params,
       };
@@ -56,7 +90,7 @@ function fieldSql(field: TextField, matchers: Matcher[]): SqlCondition {
       };
     case 'tag':
       return {
-        sql: `b.id IN (SELECT bt.book_id FROM book_tags bt
+        sql: `${setPrefix(linkCount(db, 'tag', matchers))}b.id IN (SELECT bt.book_id FROM book_tags bt
                         WHERE bt.tag_id IN (SELECT id FROM tags WHERE ${name.sql}))`,
         params: name.params,
       };
@@ -120,7 +154,11 @@ function charsSql(min: number | null, max: number | null): SqlCondition {
   return { sql: `(${parts.join(' AND ')})`, params };
 }
 
-export function termSql(term: QueryTerm, userId: string): SqlCondition {
+/**
+ * One term as SQL. With `db`, author:/tag: filters pick their plan by size (SMALL_SET);
+ * without it they always walk books in date order.
+ */
+export function termSql(term: QueryTerm, userId: string, db?: Database.Database): SqlCondition {
   if (term.type === 'chars') {
     const range = charsSql(term.min, term.max);
     // A book without a count is never included, negated or not.
@@ -134,7 +172,7 @@ export function termSql(term: QueryTerm, userId: string): SqlCondition {
       cond = anySql(term.matcher);
       break;
     case 'field':
-      cond = fieldSql(term.field, term.matchers);
+      cond = fieldSql(term.field, term.matchers, term.negated ? undefined : db);
       break;
     case 'status':
       cond = statusSql(userId, term.values);
@@ -147,8 +185,12 @@ export function termSql(term: QueryTerm, userId: string): SqlCondition {
 }
 
 /** All terms, ANDed. */
-export function querySql(query: ParsedQuery, userId: string): SqlCondition[] {
-  return query.terms.map((t) => termSql(t, userId));
+export function querySql(
+  query: ParsedQuery,
+  userId: string,
+  db?: Database.Database,
+): SqlCondition[] {
+  return query.terms.map((t) => termSql(t, userId, db));
 }
 
 /**
