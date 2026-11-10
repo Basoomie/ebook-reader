@@ -18,6 +18,7 @@
 import type Database from 'better-sqlite3';
 import path from 'path';
 import { resolveInside } from '../calibre/source-fs';
+import { noteCatalogWrite } from '../catalog/catalog-version';
 import type { CountsConfig } from '../config';
 import {
   COUNTER_BUNDLE,
@@ -317,6 +318,7 @@ export class CharCountService {
         });
       this.db.prepare('UPDATE books SET char_count = ? WHERE id = ?').run(characters, src.bookId);
     })();
+    noteCatalogWrite(this.db);
   }
 }
 

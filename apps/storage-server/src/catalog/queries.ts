@@ -11,6 +11,9 @@ import { getIndexState, Library, LibraryIndexState, listLibraries } from '../cal
 import { countTotalsByLibrary, CountTotals, SQL_COUNT_SOURCE_KEY } from '../counts/count-records';
 import { getOrCreateSecret, sign, THUMBNAIL_URL_SECRET, verify } from '../db/secrets';
 import { sourceKey, thumbnailVersion } from '../thumbnails/thumbnails';
+import { parseOrThrow, usesRegex } from './query-parser';
+import { registerRegexp } from './regexp';
+import { querySql, setPrefix, type SqlCondition } from './search-sql';
 
 export interface CatalogUser {
   id: string;
@@ -215,13 +218,20 @@ function attachLists(
   }));
 }
 
+export type GroupBy = 'series' | 'author' | 'tag';
+
+/** One group of a browse tab: a series, author or tag by name; series null = "No series". */
+export interface GroupRef {
+  by: GroupBy;
+  name: string | null;
+}
+
 export interface ListBooksOptions {
   libraryId?: string;
-  /**
-   * Search text. Each whitespace-separated term must appear (as a substring) in
-   * the title, an author name or the series name. Case-insensitive for ASCII only.
-   */
+  /** Library search (WP7a, query-parser.ts). Plain text keeps the WP6 meaning. */
   query?: string;
+  /** Only the books of one group; a series is ordered by series index. */
+  group?: GroupRef;
   limit?: number;
   cursor?: string;
   includeMissing?: boolean;
@@ -236,15 +246,20 @@ export interface BookPage {
 
 export class InvalidCursorError extends Error {}
 
-function encodeCursor(addedAt: number, id: string): string {
-  return Buffer.from(JSON.stringify([addedAt, id])).toString('base64url');
+export function encodeCursor(values: (number | string)[]): string {
+  return Buffer.from(JSON.stringify(values)).toString('base64url');
 }
 
-function decodeCursor(cursor: string): [number, string] {
+/** Decodes a cursor made by encodeCursor with the given element types. */
+export function decodeCursor(cursor: string, shape: ('number' | 'string')[]): (number | string)[] {
   try {
     const value = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'));
-    if (Array.isArray(value) && typeof value[0] === 'number' && typeof value[1] === 'string') {
-      return [value[0], value[1]];
+    if (
+      Array.isArray(value) &&
+      value.length === shape.length &&
+      value.every((v, i) => typeof v === shape[i])
+    ) {
+      return value;
     }
   } catch {
     // fall through
@@ -252,68 +267,137 @@ function decodeCursor(cursor: string): [number, string] {
   throw new InvalidCursorError('Invalid cursor');
 }
 
-/** At most this many search terms are used; the rest are ignored. */
-export const MAX_SEARCH_TERMS = 8;
+export { likePattern } from './search-sql';
 
-export function searchTerms(query: string | undefined): string[] {
-  return (query ?? '')
-    .split(/\s+/)
-    .filter((t) => t !== '')
-    .slice(0, MAX_SEARCH_TERMS);
+/** A query to run (on the main connection, or in the search worker when `regex`). */
+export interface PlannedQuery<T> {
+  sql: string;
+  params: unknown[];
+  /** Uses ttu_regexp(): run it through SearchRunner. */
+  regex: boolean;
+  finish(rows: unknown[]): T;
 }
 
-/** A LIKE pattern (escape character "!") matching `term` anywhere, with %, _ and ! taken literally. */
-export function likePattern(term: string): string {
-  return `%${term.replace(/[!%_]/g, (c) => `!${c}`)}%`;
+/** Membership of a book in a group, as a condition on `b`. */
+export function groupMemberSql(group: GroupRef, db?: Database.Database): SqlCondition {
+  // A big author or tag walks books in date order; a small one starts from its books
+  // (search-sql.ts, SMALL_SET).
+  const size = (sql: string) =>
+    db ? (db.prepare(sql).get(group.name) as { n: number }).n : Infinity;
+  switch (group.by) {
+    case 'series':
+      return group.name === null
+        ? // "+" keeps SQLite walking books in date order (not ~20k NULL index entries + a sort).
+          { sql: '+b.series_id IS NULL', params: [] }
+        : { sql: 'b.series_id = (SELECT id FROM series WHERE name = ?)', params: [group.name] };
+    case 'author':
+      return {
+        sql: `${setPrefix(size('SELECT COUNT(*) AS n FROM book_authors WHERE author_id = (SELECT id FROM authors WHERE name = ?)'))}b.id IN (SELECT book_id FROM book_authors
+                       WHERE author_id = (SELECT id FROM authors WHERE name = ?))`,
+        params: [group.name],
+      };
+    case 'tag':
+      return {
+        sql: `${setPrefix(size('SELECT COUNT(*) AS n FROM book_tags WHERE tag_id = (SELECT id FROM tags WHERE name = ?)'))}b.id IN (SELECT book_id FROM book_tags WHERE tag_id = (SELECT id FROM tags WHERE name = ?))`,
+        params: [group.name],
+      };
+  }
 }
 
-// The author and series matches are computed once per query (small tables),
-// not per book: a search that matches nothing scans 60k books in ~95 ms
-// instead of ~300 ms (WP6 benchmark).
-const TERM_MATCH = `(
-  b.title LIKE ? ESCAPE '!'
-  OR b.series_id IN (SELECT id FROM series WHERE name LIKE ? ESCAPE '!')
-  OR b.id IN (SELECT ba.book_id FROM book_authors ba
-              WHERE ba.author_id IN (SELECT id FROM authors WHERE name LIKE ? ESCAPE '!'))
-)`;
+/** The library and missing-book conditions every catalog list shares. */
+export function visibilitySql(opts: {
+  libraryId?: string;
+  includeMissing?: boolean;
+}): SqlCondition[] {
+  const out: SqlCondition[] = [];
+  if (opts.libraryId) out.push({ sql: 'b.library_id = ?', params: [opts.libraryId] });
+  if (!opts.includeMissing) out.push({ sql: 's.missing_at IS NULL', params: [] });
+  return out;
+}
 
-/** Books newest-added first, keyset-paginated. Only enabled libraries. */
+/**
+ * Books newest-added first (inside a series: by series index), keyset-paginated.
+ * Only enabled libraries. Throws InvalidQueryError / InvalidCursorError.
+ */
+export function planBooks(
+  db: Database.Database,
+  user: CatalogUser,
+  opts: ListBooksOptions = {},
+): PlannedQuery<BookPage> {
+  const limit = Math.min(Math.max(1, opts.limit ?? DEFAULT_PAGE_SIZE), MAX_PAGE_SIZE);
+  const parsed = parseOrThrow(opts.query);
+  const conds: SqlCondition[] = [...visibilitySql(opts)];
+  if (opts.group) conds.push(groupMemberSql(opts.group, db));
+  conds.push(...querySql(parsed, user.id, db));
+  const bySeriesIndex = opts.group?.by === 'series' && opts.group.name !== null;
+  const order = bySeriesIndex
+    ? 'ORDER BY IFNULL(b.series_index, -1), b.added_at, b.id'
+    : 'ORDER BY b.added_at DESC, b.id DESC';
+  if (opts.cursor) {
+    if (bySeriesIndex) {
+      const [index, addedAt, id] = decodeCursor(opts.cursor, ['number', 'number', 'string']);
+      conds.push({
+        sql: `(IFNULL(b.series_index, -1) > ? OR (IFNULL(b.series_index, -1) = ?
+                AND (b.added_at > ? OR (b.added_at = ? AND b.id > ?))))`,
+        params: [index, index, addedAt, addedAt, id],
+      });
+    } else {
+      const [addedAt, id] = decodeCursor(opts.cursor, ['number', 'string']);
+      conds.push({
+        sql: '(b.added_at < ? OR (b.added_at = ? AND b.id < ?))',
+        params: [addedAt, addedAt, id],
+      });
+    }
+  }
+  const where = conds.length ? `WHERE ${conds.map((c) => c.sql).join(' AND ')}` : '';
+  return {
+    sql: `${BOOK_SELECT} ${where} ${order} LIMIT ?`,
+    params: [...conds.flatMap((c) => c.params), limit + 1],
+    regex: usesRegex(parsed),
+    finish(raw) {
+      const rows = raw as BookRow[];
+      const page = rows.slice(0, limit);
+      const last = page[page.length - 1];
+      let nextCursor: string | null = null;
+      if (rows.length > limit && last) {
+        nextCursor = bySeriesIndex
+          ? encodeCursor([last.series_index ?? -1, last.added_at, last.id])
+          : encodeCursor([last.added_at, last.id]);
+      }
+      return { books: attachLists(db, user, page, opts.countSpec ?? null), nextCursor };
+    },
+  };
+}
+
+/** planBooks run on this connection (regexes unprotected; the API uses SearchRunner). */
 export function listBooksFor(
   db: Database.Database,
   user: CatalogUser,
   opts: ListBooksOptions = {},
 ): BookPage {
-  const limit = Math.min(Math.max(1, opts.limit ?? DEFAULT_PAGE_SIZE), MAX_PAGE_SIZE);
-  const where: string[] = [];
-  const params: unknown[] = [];
-  if (opts.libraryId) {
-    where.push('b.library_id = ?');
-    params.push(opts.libraryId);
-  }
-  if (!opts.includeMissing) where.push('s.missing_at IS NULL');
-  for (const term of searchTerms(opts.query)) {
-    const pattern = likePattern(term);
-    where.push(TERM_MATCH);
-    params.push(pattern, pattern, pattern);
-  }
-  if (opts.cursor) {
-    const [addedAt, id] = decodeCursor(opts.cursor);
-    where.push('(b.added_at < ? OR (b.added_at = ? AND b.id < ?))');
-    params.push(addedAt, addedAt, id);
-  }
-  const rows = db
-    .prepare(
-      `${BOOK_SELECT} ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
-       ORDER BY b.added_at DESC, b.id DESC LIMIT ?`,
-    )
-    .all(...params, limit + 1) as BookRow[];
-  const page = rows.slice(0, limit);
-  const last = page[page.length - 1];
-  return {
-    books: attachLists(db, user, page, opts.countSpec ?? null),
-    nextCursor: rows.length > limit && last ? encodeCursor(last.added_at, last.id) : null,
-  };
+  const plan = planBooks(db, user, opts);
+  if (plan.regex) registerRegexp(db);
+  return plan.finish(db.prepare(plan.sql).all(...plan.params));
 }
+
+/** Summaries of the given visible books, by id (for collage tiles and covers). */
+export function summariesByIds(
+  db: Database.Database,
+  user: CatalogUser,
+  ids: string[],
+  countSpec: string | null,
+): Map<string, BookSummary> {
+  if (ids.length === 0) return new Map();
+  const rows = db
+    .prepare(`${BOOK_SELECT} WHERE b.id IN (${ids.map(() => '?').join(',')})`)
+    .all(...ids) as BookRow[];
+  return new Map(attachLists(db, user, rows, countSpec).map((b) => [b.id, b]));
+}
+
+export const SQL_BOOK_FROM = `
+  FROM books b
+  CROSS JOIN book_sources s ON s.book_id = b.id AND s.kind = 'calibre'
+  JOIN libraries l ON l.id = b.library_id AND l.enabled = 1`;
 
 export function getBookFor(
   db: Database.Database,

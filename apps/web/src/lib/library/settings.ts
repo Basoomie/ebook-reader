@@ -4,6 +4,7 @@
  * All rights reserved.
  */
 
+import { writableBooleanLocalStorageSubject } from '$lib/data/internal/writable-boolean-local-storage-subject';
 import { writableNumberLocalStorageSubject } from '$lib/data/internal/writable-number-local-storage-subject';
 import { writableStringLocalStorageSubject } from '$lib/data/internal/writable-string-local-storage-subject';
 
@@ -17,3 +18,12 @@ export const libraryRequestTimeoutSeconds$ = writableNumberLocalStorageSubject()
 
 /** Library picked in the Library page ('' = all libraries). */
 export const libraryFilter$ = writableStringLocalStorageSubject()('libraryFilter', '');
+
+/** Library view (WP7a): 'grid' (covers) or 'list' (rows). */
+export const libraryView$ = writableStringLocalStorageSubject<'grid' | 'list'>()(
+  'libraryView',
+  'grid'
+);
+
+/** Show author, series number, character count and progress under covers. */
+export const libraryInfoLine$ = writableBooleanLocalStorageSubject()('libraryInfoLine', true);

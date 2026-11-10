@@ -5,6 +5,7 @@
  */
 import type Database from 'better-sqlite3';
 import { randomUUID } from 'crypto';
+import { noteCatalogWrite } from '../catalog/catalog-version';
 
 export type IndexStatus = 'idle' | 'settling' | 'snapshotting' | 'ingesting' | 'error';
 
@@ -166,6 +167,7 @@ export function syncDiscoveredLibraries(
       added.push(getLibrary(db, id)!);
     }
   })();
+  noteCatalogWrite(db);
   return added;
 }
 
@@ -219,6 +221,7 @@ export function updateLibrary(
   db.prepare(
     'UPDATE libraries SET name = ?, language = ?, enabled = ?, updated_at = ? WHERE id = ?',
   ).run(name, language, enabled ? 1 : 0, now, id);
+  noteCatalogWrite(db);
   return getLibrary(db, id)!;
 }
 
@@ -241,6 +244,7 @@ export function adoptLibraryUuid(
   uuid: string,
   now = Date.now(),
 ): Library {
+  noteCatalogWrite(db);
   return db.transaction(() => {
     const lib = getLibrary(db, libraryId);
     if (!lib) throw new Error(`No library with id ${libraryId}`);

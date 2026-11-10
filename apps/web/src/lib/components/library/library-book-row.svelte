@@ -5,6 +5,7 @@
   import { faCheck, faEllipsisVertical, faStar } from '@fortawesome/free-solid-svg-icons';
   import { createEventDispatcher } from 'svelte';
   import Fa from 'svelte-fa';
+  import CoverImage from './cover-image.svelte';
 
   export let book: CatalogBook;
   /** Absolute thumbnail URL, or '' for none. */
@@ -16,14 +17,25 @@
   /** Multi-select: a tap selects instead of opening. */
   export let selectMode = false;
   export let selected = false;
+  /** WP7a: the cover is hidden (blur rules) and not revealed yet. */
+  export let blurred = false;
+  /** WP7a: "42%", "Finished" or null. */
+  export let progress: string | null = null;
+  /** WP7a: show the details lines (per-device setting). */
+  export let infoLine = true;
 
   const dispatch = createEventDispatcher<{
     open: CatalogBook;
-    toggle: CatalogBook;
+    reveal: CatalogBook;
+    toggle: { book: CatalogBook; shift: boolean };
     state: CatalogBook;
   }>();
 
-  let thumbFailed = false;
+  function onClick(ev: MouseEvent) {
+    if (selectMode) dispatch('toggle', { book, shift: ev.shiftKey });
+    else if (blurred) dispatch('reveal', book);
+    else dispatch('open', book);
+  }
 
   $: authors = book.authors.map((a) => a.name).join(', ');
   $: series = book.series
@@ -37,7 +49,7 @@
     .filter(Boolean)
     .join(' · ');
   // Status first and the count before the library name, so both survive truncation on a phone.
-  $: details = [stateLabel, series, formatBookCharCount(book), libraryName]
+  $: details = [stateLabel, series, formatBookCharCount(book), progress ?? '', libraryName]
     .filter(Boolean)
     .join(' · ');
 
@@ -46,11 +58,16 @@
   }
 </script>
 
-<li class="flex items-center border-b border-gray-400/40" data-testid="library-row">
+<li
+  class="flex items-center border-b border-gray-400/40"
+  data-testid="library-row"
+  data-book-id={book.id}
+>
   <button
     class="flex min-w-0 grow items-center gap-4 py-3 text-left"
     aria-pressed={selectMode ? selected : undefined}
-    on:click={() => dispatch(selectMode ? 'toggle' : 'open', book)}
+    aria-label={blurred && !selectMode ? `Show cover: ${book.title}` : undefined}
+    on:click={onClick}
   >
     {#if selectMode}
       <input
@@ -61,19 +78,8 @@
         aria-hidden="true"
       />
     {/if}
-    <div class="flex h-[72px] w-12 shrink-0 items-center justify-center bg-gray-400/20">
-      {#if thumbnailUrl && !thumbFailed}
-        <img
-          class="h-[72px] w-12 object-cover"
-          src={thumbnailUrl}
-          alt=""
-          width="48"
-          height="72"
-          loading="lazy"
-          decoding="async"
-          on:error={() => (thumbFailed = true)}
-        />
-      {/if}
+    <div class="h-[72px] w-12 shrink-0">
+      <CoverImage src={thumbnailUrl} {blurred} compact />
     </div>
     <div class="min-w-0 grow">
       <div class="line-clamp-2 font-medium">
@@ -83,10 +89,10 @@
           </span>
         {/if}{book.title}
       </div>
-      {#if authors}
+      {#if authors && infoLine}
         <div class="truncate text-sm">{authors}</div>
       {/if}
-      {#if details}
+      {#if details && infoLine}
         <div class="truncate text-sm opacity-75" data-testid="row-details">{details}</div>
       {/if}
     </div>

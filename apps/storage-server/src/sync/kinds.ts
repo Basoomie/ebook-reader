@@ -476,6 +476,30 @@ const readThroughKind: KindSpec = {
   },
 };
 
+// ---------------------------------------------------------------------------
+// WP7a: cover blur rules per tag
+// ---------------------------------------------------------------------------
+
+/**
+ * kind "tag-blur": id = the tag name (as Calibre spells it), data { blur: true }, lww.
+ * A rule blurs the covers of books with that tag unless the book's own "book-blur"
+ * says otherwise. Deleting the record removes the rule. The tag need not exist (a rule
+ * survives re-indexing and tags that come back).
+ */
+const tagBlurKind: KindSpec = {
+  policy: () => 'lww',
+  deletable: true,
+  validate(id, data, deleted) {
+    if (id.trim() === '' || id !== id.trim()) {
+      throw new RecordError('invalid_id', 'tag-blur ids are the tag name');
+    }
+    if (deleted) return { bookId: null, data: {} };
+    const obj = requireObject(data);
+    if (obj.blur !== true) throw new RecordError('invalid_data', 'blur must be true');
+    return { bookId: null, data: { blur: true } };
+  },
+};
+
 export const DEFAULT_KINDS: KindRegistry = {
   device: deviceKind,
   setting: settingKind,
@@ -488,4 +512,5 @@ export const DEFAULT_KINDS: KindRegistry = {
   'book-favorite': perBookKind('favorite', (v) => bool(v, 'favorite')),
   'book-blur': perBookKind('blur', (v) => oneOf(v, BOOK_BLURS, 'blur')),
   'read-through': readThroughKind,
+  'tag-blur': tagBlurKind,
 };

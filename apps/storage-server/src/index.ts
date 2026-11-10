@@ -1,6 +1,7 @@
 import type { CatalogOptions } from './api/catalog-routes';
 import { createApp } from './app';
 import { CalibreIndexer } from './calibre/indexer';
+import { SearchRunner } from './catalog/search-runner';
 import { CharCountService } from './counts/count-service';
 import { ThumbnailService } from './thumbnails/thumbnails';
 import { FatalConfigError, formatTime, loadConfig, LoadedConfig } from './config';
@@ -98,6 +99,17 @@ if (database.ok && config.calibre.dir) {
   console.log('Calibre indexer is off: CALIBRE_DIR is not set');
 }
 
+// Searches with a /regex/ run in a worker thread that can be stopped (WP7a).
+const search = database.ok
+  ? new SearchRunner({
+      db: database.db,
+      file: database.file,
+      timeoutSeconds: config.search.regexTimeoutSeconds,
+      logError: (m, err) => console.error(`Error: ${m}:`, err),
+    })
+  : null;
+catalog.search = search;
+
 const app = createApp({ config, database, version: SERVER_VERSION, catalog });
 
 app.listen(config.port, () => {
@@ -122,6 +134,7 @@ function shutdown(signal: string): void {
   void indexer?.stop();
   void thumbnails?.stop();
   void counts?.stop();
+  void search?.close();
   if (database.ok) {
     try {
       database.db.close();

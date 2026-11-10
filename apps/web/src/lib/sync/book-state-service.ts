@@ -94,6 +94,48 @@ export async function setBookBlur(bookId: string, blur: BookBlur, deps: BookStat
   await applyWrites(engine, [{ kind: BOOK_BLUR_KIND, id: bookId, bookId, data: { blur } }]);
 }
 
+/**
+ * The same change for many books (library bulk actions, WP7a). Each book is saved on its
+ * own; returns the ids that failed (the others are saved).
+ */
+async function forEachBook(
+  bookIds: readonly string[],
+  deps: BookStateDeps,
+  save: (bookId: string) => Promise<void>
+): Promise<string[]> {
+  const failed: string[] = [];
+  for (const bookId of bookIds) {
+    try {
+      await save(bookId);
+    } catch (error) {
+      deps.warn(`Book state: ${(error as Error)?.message ?? error}`);
+      failed.push(bookId);
+    }
+  }
+  return failed;
+}
+
+/** Unread, Reading or Dropped for many books (Completed goes through markBooksCompleted). */
+export function setBooksStatus(
+  bookIds: readonly string[],
+  status: BookStatus,
+  deps: BookStateDeps
+) {
+  return forEachBook(bookIds, deps, (id) => setBookStatus(id, status, deps));
+}
+
+export function setBooksFavorite(
+  bookIds: readonly string[],
+  favorite: boolean,
+  deps: BookStateDeps
+) {
+  return forEachBook(bookIds, deps, (id) => setBookFavorite(id, favorite, deps));
+}
+
+export function setBooksBlur(bookIds: readonly string[], blur: BookBlur, deps: BookStateDeps) {
+  return forEachBook(bookIds, deps, (id) => setBookBlur(id, blur, deps));
+}
+
 export interface MarkCompletedBook {
   bookId: string;
   /** The catalog's character count (null while not counted). */

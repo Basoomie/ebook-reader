@@ -25,18 +25,20 @@ The legacy endpoints accept only `AUTH_TOKEN`, not the per-user tokens.
 
 ## API v1
 
-| Method | Path                                                     | Auth           | Description                                                                                                                                                                 |
-| ------ | -------------------------------------------------------- | -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET`  | `/api/v1/health`                                         | none           | `{ ok, version, schemaVersion }`; 503 when the database is unavailable. Used by the Docker healthcheck.                                                                     |
-| `GET`  | `/api/v1/me`                                             | per-user token | `{ user: {id, name}, token: {id, label, deviceId} }`                                                                                                                        |
-| `GET`  | `/api/v1/libraries`                                      | per-user token | `{ indexer: {enabled, error}, libraries: [...] }`: every discovered library with its settings and index state.                                                              |
-| `GET`  | `/api/v1/books?library=&limit=&cursor=&includeMissing=1` | per-user token | `{ books, nextCursor }`: books of enabled libraries, newest added first. `limit` 1-200 (default 50). Missing books only with `includeMissing=1`.                            |
-| `GET`  | `/api/v1/books/:id`                                      | per-user token | One book with `description` (Calibre's comments, raw HTML: sanitize before display) and `sources`.                                                                          |
-| `GET`  | `/api/v1/books/:id/thumbnail`                            | per-user token | Cover thumbnail (WebP). Use the `thumbnail` URL from the book list: its `?v=` makes it cacheable forever. 404 `no_cover` / `cover_unreadable`; 503 when the indexer is off. |
+| Method | Path                                                                          | Auth           | Description                                                                                                                                                                 |
+| ------ | ----------------------------------------------------------------------------- | -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `GET`  | `/api/v1/health`                                                              | none           | `{ ok, version, schemaVersion }`; 503 when the database is unavailable. Used by the Docker healthcheck.                                                                     |
+| `GET`  | `/api/v1/me`                                                                  | per-user token | `{ user: {id, name}, token: {id, label, deviceId} }`                                                                                                                        |
+| `GET`  | `/api/v1/libraries`                                                           | per-user token | `{ indexer: {enabled, error}, libraries: [...] }`: every discovered library with its settings and index state.                                                              |
+| `GET`  | `/api/v1/books?q=&library=&by=&group=&none=1&limit=&cursor=&includeMissing=1` | per-user token | `{ books, nextCursor }`: books of enabled libraries, newest added first. `q`: the library search (below). `by=series                                                        | author         | tag&group=<name>`lists one group (a series in series order;`by=series&none=1`= "No series").`limit`1-200 (default 50). Missing books only with`includeMissing=1`. 400 `invalid_query`(with`start`/`end`of the problem), 422`regex_timeout`.                                                                  |
+| `GET`  | `/api/v1/groups?by=series                                                     | author         | tag&q=&library=&limit=&cursor=`                                                                                                                                             | per-user token | `{ groups, nextCursor }`: one card per series, author or tag with a book matching `q`, newest book first, "No series" (`name: null`) last. Each has `bookCount` and `chars {total, counted, pending, failed}` for the whole group; series have `cover` and `bookIds`, the others up to four collage `tiles`. |
+| `GET`  | `/api/v1/books/:id`                                                           | per-user token | One book with `description` (Calibre's comments, raw HTML: sanitize before display) and `sources`.                                                                          |
+| `GET`  | `/api/v1/books/:id/thumbnail`                                                 | per-user token | Cover thumbnail (WebP). Use the `thumbnail` URL from the book list: its `?v=` makes it cacheable forever. 404 `no_cover` / `cover_unreadable`; 503 when the indexer is off. |
 
 - Record sync (`/api/v1/devices/*`, `/api/v1/sync`): see [Record sync](#record-sync).
 - Auth: `Authorization: Bearer ttsu_...` (a per-user token, see below). The legacy `AUTH_TOKEN` is not accepted here.
 - Errors: `{ "error": { "code": "...", "message": "..." } }`.
+- Library search (WP7a): plain text matches the title, an author or the series; `author:` `series:` `tag:` (substring; `=` exact; `,` = any of), `chars:<N` / `>=N` / `N-M` (books without a count never match), `status:unread,reading,completed,dropped`, `favorite:yes|no` (the caller's own book state), `/regex/` and `/regex/i` (JavaScript, Unicode), `-` to leave a term out. The parser is the web app's (`vendor/library-query.cjs`, rebuilt with `pnpm build:server-query` in apps/web). Searches with a pattern run in a worker thread that is stopped after `SEARCH_REGEX_TIMEOUT_SECONDS`.
 - If the database can't be opened, the legacy endpoints keep working and every `/api/v1` route answers 503.
 
 ### Per-user tokens
@@ -168,8 +170,9 @@ A library is identified by Calibre's library UUID, so renaming its folder keeps 
 | `COUNT_IMPORT_FIX_MODE`            | `Off`        | Reader import setting the counts use: `Off`, `Standard` or `Extended`. A change recounts every book.                                 |
 | `COUNT_RESTRICT_FIX_TO_ANCHOR`     | `true`       | Reader import setting the counts use (import fix only on anchors). A change recounts every book.                                     |
 | `SYNC_MAX_CLOCK_SKEW_SECONDS`      | `300`        | A synced change stamped further ahead of the server clock gets the server time instead.                                              |
+| `SEARCH_REGEX_TIMEOUT_SECONDS`     | `5`          | A library search with a `/pattern/` that runs longer is stopped (its worker thread is replaced) and answered with `regex_timeout`.   |
 
-Invalid values for the WP1, WP2, WP6, WP4 and WP3b settings are reported at startup and fall back to the default; they never stop the legacy endpoints.
+Invalid values for the WP1, WP2, WP6, WP4, WP3b and WP7a settings are reported at startup and fall back to the default; they never stop the legacy endpoints.
 
 ## Running with Docker
 
@@ -197,6 +200,9 @@ npm run build
 
 # Benchmark a first index of a large synthetic library (not part of npm test)
 node -r ts-node/register/transpile-only scripts/bench-index.ts --books 60000 --covers 500
+
+# Benchmark library search and browse (synthetic 65k books, or a COPY of a real ttsu.db, opened read-only)
+node -r ts-node/register/transpile-only scripts/bench-search.ts [--books 65000 | --db <copy of ttsu.db>]
 ```
 
 The Calibre tests use throwaway libraries in temp folders. `tests/fixtures/calibre-7.1/` is a tiny library made by real Calibre with `scripts/make-calibre-fixture.ts`, which only ever runs `calibredb` against a new, empty folder. The tests check the hand-built fixture schema against it.
