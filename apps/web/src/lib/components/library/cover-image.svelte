@@ -20,6 +20,7 @@
       class:cover-hidden={blurred}
       {src}
       alt=""
+      draggable="false"
       loading="lazy"
       decoding="async"
       on:error={() => (failed = true)}

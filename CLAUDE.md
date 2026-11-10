@@ -42,3 +42,4 @@ Stop condition: each work package is finished on its own branch, with a summary 
 - Root scripts: `pnpm dev`, `pnpm build`, `pnpm check` (eslint), `pnpm lint`, `pnpm format`. In `apps/web`: `pnpm check` (svelte-check).
 - Tests: Vitest in both apps (`pnpm test` in `apps/web`, `npm test` in `apps/storage-server`). `pnpm test:parity` in `apps/web` is opt-in and needs the NAS shares.
 - The server counts characters with a bundle of the web app's EPUB import code (`apps/storage-server/vendor/epub-count.cjs`). After changing that code, run `pnpm build:server-counter` in `apps/web` (a test fails otherwise), and bump `EPUB_COUNT_VERSION` in `count-epub.ts` if counts can change.
+- The server parses library searches with a bundle of the web app's parser (`apps/storage-server/vendor/library-query.cjs`, from `apps/web/src/lib/library/query/`). After changing it, run `pnpm build:server-query` in `apps/web` (a test fails otherwise).

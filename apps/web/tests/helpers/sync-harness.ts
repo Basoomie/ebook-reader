@@ -178,15 +178,20 @@ export class Device {
   }
 }
 
-/** Seeds the server's database with one catalog book and `count` device tokens. */
+/**
+ * Seeds the server's database with one catalog book and `count` device tokens. With
+ * `catalog`, the book is visible in catalog lists and searches (WP7a).
+ */
 export function seedServer(
   server: TestServer,
-  count: number
+  count: number,
+  options: { catalog?: boolean } = {}
 ): { bookId: string; tokens: string[] } {
   const output = runServerScript([
     path.join('tests', 'helpers', 'seed-sync-fixture.ts'),
     server.dbDir,
-    String(count)
+    String(count),
+    ...(options.catalog ? ['catalog'] : [])
   ]);
   const seedLine = output.split(/\r?\n/).find((line) => line.startsWith('SEED '));
   if (!seedLine) throw new Error(`seed script printed no result:\n${output}`);

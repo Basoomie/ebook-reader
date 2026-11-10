@@ -3,10 +3,12 @@
  * (apps/web/tests/sync-two-devices.test.ts), which runs the real server as a
  * separate process:
  *
- *   node -r ts-node/register/transpile-only tests/helpers/seed-sync-fixture.ts <dbDir> <tokens>
+ *   node -r ts-node/register/transpile-only tests/helpers/seed-sync-fixture.ts <dbDir> <tokens> [catalog]
  *
  * Creates (and migrates) the database, adds one catalog book and <tokens>
  * device tokens, and prints "SEED " + { bookId, tokens } as JSON on its own line.
+ * With "catalog" the book is also visible in catalog lists and searches (a Calibre
+ * source, an enabled library), for the WP7a library test.
  */
 import { randomUUID } from 'crypto';
 import path from 'path';
@@ -14,7 +16,7 @@ import { openDatabase } from '../../src/db/database';
 import { createToken } from '../../src/db/tokens';
 import { listUsers } from '../../src/db/users';
 
-const [dbDir, countRaw] = process.argv.slice(2);
+const [dbDir, countRaw, mode] = process.argv.slice(2);
 const count = Number(countRaw ?? '2');
 if (!dbDir || !Number.isInteger(count) || count < 1) {
   console.error('usage: seed-sync-fixture.ts <dbDir> <tokens>');
@@ -33,6 +35,15 @@ try {
     `INSERT INTO books (id, library_id, title, added_at, created_at, updated_at)
      VALUES (?, 'lib1', 'Book', ?, ?, ?)`,
   ).run(bookId, now, now, now);
+  if (mode === 'catalog') {
+    db.prepare("UPDATE libraries SET language = 'ja', enabled = 1 WHERE id = 'lib1'").run();
+    db.prepare(
+      `INSERT INTO book_sources (id, book_id, kind, library_id, calibre_uuid, calibre_id, calibre_path,
+                                 file_path, has_cover, created_at, updated_at)
+       VALUES (?, ?, 'calibre', 'lib1', ?, 1, 'a/b', 'a/b/book.epub', 0, ?, ?)`,
+    ).run(randomUUID(), bookId, randomUUID(), now, now);
+    db.prepare(`UPDATE books SET title = ? WHERE id = ?`).run(`Book ${bookId.slice(0, 8)}`, bookId);
+  }
   const [owner] = listUsers(db);
   const tokens = Array.from(
     { length: count },

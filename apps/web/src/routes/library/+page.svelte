@@ -345,6 +345,11 @@
     drag = { x: ev.clientX, y: ev.clientY, active: false, base: selected };
   }
 
+  function onListDragStart(ev: DragEvent) {
+    // No native image or link dragging while selecting (it would cancel the box).
+    if (selectMode) ev.preventDefault();
+  }
+
   function onWindowPointerMove(ev: PointerEvent) {
     if (!drag || !listElement) return;
     if (!drag.active && Math.hypot(ev.clientX - drag.x, ev.clientY - drag.y) < DRAG_THRESHOLD) {
@@ -367,7 +372,13 @@
   }
 
   function onWindowPointerUp() {
-    if (drag?.active) suppressClick = true;
+    if (drag?.active) {
+      // The click that follows this pointerup (if any) ends the drag, it isn't a tap. When
+      // the drag ends over another card the browser clicks the list itself instead, so
+      // the flag is cleared right after either way.
+      suppressClick = true;
+      setTimeout(() => (suppressClick = false), 0);
+    }
     drag = null;
     dragBox = null;
   }
@@ -490,8 +501,11 @@
         cursor: reset ? undefined : (nextCursor ?? undefined)
       };
       const options = { signal: controller.signal };
-      if (showingGroups && tabInfo.by) {
-        const result = await api.groups({ by: tabInfo.by, ...common }, options);
+      // From the URL state itself: reactive values ($:) are not updated yet when the URL
+      // changed in this tick.
+      const by = TABS.find((t) => t.id === tab)?.by ?? null;
+      if (by && group === null) {
+        const result = await api.groups({ by, ...common }, options);
         groups = reset ? result.groups : [...groups, ...result.groups];
         books = [];
         nextCursor = result.nextCursor;
@@ -716,6 +730,7 @@
 <svelte:window
   on:pointermove={onWindowPointerMove}
   on:pointerup={onWindowPointerUp}
+  on:pointercancel={onWindowPointerUp}
   on:keydown={onWindowKeydown}
 />
 
@@ -961,6 +976,7 @@
         class:select-none={selectMode}
         data-testid="book-list"
         on:pointerdown={onListPointerDown}
+        on:dragstart={onListDragStart}
       >
         {#each books as book (book.id)}
           {#if grid}
