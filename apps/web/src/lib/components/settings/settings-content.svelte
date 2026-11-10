@@ -15,7 +15,6 @@
   import MessageDialog from '$lib/components/message-dialog.svelte';
   import Ripple from '$lib/components/ripple.svelte';
   import SettingsCustomTheme from '$lib/components/settings/settings-custom-theme.svelte';
-  import SettingsDimensionPopover from '$lib/components/settings/settings-dimension-popover.svelte';
   import SettingsFontSelector from '$lib/components/settings/settings-font-selector.svelte';
   import SettingsReadingGoals from '$lib/components/settings/settings-reading-goals.svelte';
   import SettingsItemGroup from '$lib/components/settings/settings-item-group.svelte';
@@ -70,19 +69,11 @@
 
   export let fontFamilyGroupTwo: string;
 
-  export let fontSize: number;
-
-  export let lineHeight: number;
-
-  export let textIndentation: number;
-
   export let textMarginValue: number;
 
   export let blurImage: boolean;
 
   export let blurImageMode: string;
-
-  export let hideFurigana: boolean;
 
   export let furiganaStyle: FuriganaStyle;
 
@@ -111,10 +102,6 @@
   export let showFooterChapterCharacterCounter: boolean;
 
   export let showFooterChapterPercentage: boolean;
-
-  export let secondDimensionMaxValue: number;
-
-  export let firstDimensionMargin: number;
 
   export let swipeThreshold: number;
 
@@ -544,6 +531,10 @@
 
 <div class="grid grid-cols-1 items-center sm:grid-cols-2 sm:gap-6 lg:md:gap-8 lg:grid-cols-3">
   {#if activeSettings === 'Reader'}
+    <p class="pb-6 sm:col-span-2 lg:col-span-3" data-testid="settings-appearance-note">
+      Font size, line height, page margins, writing direction, pages or scrolling and furigana are
+      set inside a book: open the menu at the top and tap Aa. They apply at once.
+    </p>
     <div class="lg:col-span-2">
       {#if $followSystemTheme$}
         <!-- WP10d: while following the system, pick a theme for each mode. -->
@@ -614,11 +605,6 @@
     >
       <ButtonToggleGroup options={optionsForToggle} bind:selectedOptionId={$einkMode$} />
     </SettingsItemGroup>
-    <div class="h-full">
-      <SettingsItemGroup title="View mode">
-        <ButtonToggleGroup options={optionsForViewMode} bind:selectedOptionId={viewMode} />
-      </SettingsItemGroup>
-    </div>
     <SettingsItemGroup title="Font family (Group 1)">
       <div slot="header" class="flex items-center">
         <SettingsFontSelector
@@ -688,42 +674,6 @@
         bind:value={fontFamilyGroupTwo}
       />
     </SettingsItemGroup>
-    <SettingsItemGroup title="Font size">
-      <input type="number" class={inputClasses} step="1" min="1" bind:value={fontSize} />
-    </SettingsItemGroup>
-    <SettingsItemGroup title="Line Height">
-      <input
-        type="number"
-        class={inputClasses}
-        step="0.05"
-        min="1"
-        bind:value={lineHeight}
-        on:change={() => {
-          if (!lineHeight || lineHeight < 1) {
-            lineHeight = 1.65;
-          }
-        }}
-      />
-    </SettingsItemGroup>
-    <SettingsItemGroup
-      title="Paragraph Indentation"
-      tooltip="# of rem added as text indentation of new paragraphs"
-    >
-      <input
-        type="number"
-        class={inputClasses}
-        step=".5"
-        min="0"
-        bind:value={textIndentation}
-        on:blur={() => {
-          const newValue = Number.parseFloat(`${textIndentation ?? 0}`);
-
-          if (isNaN(newValue) || newValue < 1) {
-            textIndentation = 0;
-          }
-        }}
-      />
-    </SettingsItemGroup>
     {#if textMarginMode === 'manual'}
       <SettingsItemGroup title="Paragraph Margins" tooltip="# of rem added as margin to paragraphs">
         <input
@@ -742,37 +692,6 @@
         />
       </SettingsItemGroup>
     {/if}
-    <SettingsItemGroup
-      title={verticalMode ? 'Reader Left/right margin' : 'Reader Top/bottom margin'}
-    >
-      <SettingsDimensionPopover
-        slot="header"
-        isFirstDimension
-        isVertical={verticalMode}
-        bind:dimensionValue={firstDimensionMargin}
-      />
-      <input
-        type="number"
-        class={inputClasses}
-        step="1"
-        min="0"
-        bind:value={firstDimensionMargin}
-      />
-    </SettingsItemGroup>
-    <SettingsItemGroup title={verticalMode ? 'Reader Max height' : 'Reader Max width'}>
-      <SettingsDimensionPopover
-        slot="header"
-        isVertical={verticalMode}
-        bind:dimensionValue={secondDimensionMaxValue}
-      />
-      <input
-        type="number"
-        class={inputClasses}
-        step="1"
-        min="0"
-        bind:value={secondDimensionMaxValue}
-      />
-    </SettingsItemGroup>
     <SettingsItemGroup
       title="Swipe Threshold"
       tooltip={'Distance which you need to swipe in order trigger a navigation'}
@@ -848,9 +767,6 @@
         />
       </SettingsItemGroup>
     {/if}
-    <SettingsItemGroup title="Writing mode">
-      <ButtonToggleGroup options={optionsForWritingMode} bind:selectedOptionId={writingMode} />
-    </SettingsItemGroup>
     {#if verticalMode}
       <SettingsItemGroup
         title="Enable Font Kerning"
@@ -1011,17 +927,6 @@
         tooltip="Determines if all or only images after the table of contents will be blurred"
       >
         <ButtonToggleGroup options={optionsForBlurMode} bind:selectedOptionId={blurImageMode} />
-      </SettingsItemGroup>
-    {/if}
-    <SettingsItemGroup title="Hide furigana">
-      <ButtonToggleGroup options={optionsForToggle} bind:selectedOptionId={hideFurigana} />
-    </SettingsItemGroup>
-    {#if hideFurigana}
-      <SettingsItemGroup title="Hide furigana style" tooltip={furiganaStyleTooltip}>
-        <ButtonToggleGroup
-          options={optionsForFuriganaStyle}
-          bind:selectedOptionId={furiganaStyle}
-        />
       </SettingsItemGroup>
     {/if}
     {#if statisticsEnabled}

@@ -1,8 +1,10 @@
 <script lang="ts">
   import {
     auditTime,
+    BehaviorSubject,
     combineLatest,
     debounceTime,
+    distinctUntilChanged,
     defer,
     EMPTY,
     filter,
@@ -19,7 +21,8 @@
     take,
     takeWhile,
     tap,
-    timer
+    timer,
+    type Observable
   } from 'rxjs';
   import { quintInOut } from 'svelte/easing';
   import { fly } from 'svelte/transition';
@@ -103,6 +106,7 @@
     einkMode$
   } from '$lib/data/store';
   import { JumpHistory } from '$lib/components/book-reader/jump-history';
+  import AppearancePanel from '$lib/components/book-reader/appearance-panel.svelte';
   import BookSearchDialog from '$lib/components/book-reader/book-search-dialog.svelte';
   import {
     buildBookTextIndex,
@@ -312,13 +316,51 @@
     syncedResolver = resolver;
   });
   const queuedReaderImageGalleryPictures = new Map<string, boolean>();
-  const fontFeatureSettings = [
-    $enableVerticalFontKerning$ && '"vkrn"',
-    $enableFontVPAL$ && '"vpal"'
-  ]
-    .filter((f) => !!f && $verticalMode$)
+  /**
+   * WP10e: the layout settings the reader is mounted with. They change only together with a
+   * remount (remountReader), after the current place has been taken, so the reader never
+   * re-lays itself out at a different place first.
+   */
+  interface ReaderLayout {
+    viewMode: ViewMode;
+    writingMode: string;
+    firstDimensionMargin: number;
+    secondDimensionMaxValue: number;
+    pageColumns: number;
+    hideFurigana: boolean;
+    furiganaStyle: ReturnType<typeof furiganaStyle$.getValue>;
+    verticalTextOrientation: string;
+    kerning: boolean;
+    vpal: boolean;
+  }
+
+  function currentLayout(): ReaderLayout {
+    return {
+      viewMode: viewMode$.getValue(),
+      writingMode: writingMode$.getValue(),
+      firstDimensionMargin: firstDimensionMargin$.getValue(),
+      secondDimensionMaxValue: secondDimensionMaxValue$.getValue(),
+      pageColumns: pageColumns$.getValue(),
+      hideFurigana: hideFurigana$.getValue(),
+      furiganaStyle: furiganaStyle$.getValue(),
+      verticalTextOrientation: verticalTextOrientation$.getValue(),
+      kerning: enableVerticalFontKerning$.getValue(),
+      vpal: enableFontVPAL$.getValue()
+    };
+  }
+
+  let readerLayout = currentLayout();
+
+  /** The writing mode of the mounted reader (also set on the root element). */
+  const readerWritingMode$ = new BehaviorSubject(readerLayout.writingMode);
+
+  $: readerVertical = readerLayout.writingMode === 'vertical-rl';
+
+  $: fontFeatureSettings = [readerLayout.kerning && '"vkrn"', readerLayout.vpal && '"vpal"']
+    .filter((f) => !!f && readerVertical)
     .join(', ');
-  const verticalTextOrientation = $verticalMode$ ? $verticalTextOrientation$ : '';
+
+  $: verticalTextOrientation = readerVertical ? readerLayout.verticalTextOrientation : '';
 
   const bookId$ = iffBrowser(() => readableToObservable(page)).pipe(
     map((pageObj) => Number(pageObj.url.searchParams.get('id'))),
@@ -442,8 +484,11 @@
     reduceToEmptyString()
   );
 
-  const bookData$ = rawBookData$.pipe(
-    switchMap((rawBookData) => {
+  /** WP10e: the view mode the book is formatted for (paginated and continuous differ). */
+  const formatViewMode$ = new BehaviorSubject<ViewMode>(readerLayout.viewMode);
+
+  const bookData$ = combineLatest([rawBookData$, formatViewMode$]).pipe(
+    switchMap(([rawBookData, formatViewMode]) => {
       if (!rawBookData) return EMPTY;
 
       sectionList$.next(rawBookData.sections || []);
@@ -452,7 +497,7 @@
         rawBookData,
         '.book-content',
         document,
-        $viewMode$ === ViewMode.Paginated,
+        formatViewMode === ViewMode.Paginated,
         $hideSpoilerImageMode$
       );
     }),
@@ -538,7 +583,7 @@
   );
 
   const writingModeStyleName = 'writing-mode';
-  const setWritingMode$ = writingMode$.pipe(
+  const setWritingMode$ = readerWritingMode$.pipe(
     tapDom(
       () => document.documentElement,
       (writingMode, documentElement) =>
@@ -655,12 +700,16 @@
     }
   }
 
-  $: isPaginated = $viewMode$ === ViewMode.Paginated;
+  $: isPaginated = readerLayout.viewMode === ViewMode.Paginated;
 
   $: firstDimensionMargin =
-    browser && $enableTapEdgeToFlip$ && isPaginated && $verticalMode$
-      ? limitToRange(convertRemToPixels(window, 0.5), window.innerWidth, $firstDimensionMargin$)
-      : ($firstDimensionMargin$ ?? 0);
+    browser && $enableTapEdgeToFlip$ && isPaginated && readerVertical
+      ? limitToRange(
+          convertRemToPixels(window, 0.5),
+          window.innerWidth,
+          readerLayout.firstDimensionMargin
+        )
+      : (readerLayout.firstDimensionMargin ?? 0);
 
   $: tapButtonHeight = `calc(100% - ${showHeader ? 5 : 4}rem)`;
 
@@ -900,6 +949,210 @@
       jumpToPosition(target, { save: !$manualBookmark$, record: false });
     }
   }
+
+  // -------------------------------------------------------------------------
+  // WP10e: the appearance panel and live changes. Style changes (font, size, line height,
+  // indentation, paragraph spacing, font features) re-measure the page in place; changes of
+  // layout (view mode, writing, page margins, columns, furigana) reopen the reader in place
+  // at the same character. Neither saves the place, prompts, or counts as reading.
+
+  let showAppearance = false;
+
+  let bookReaderRef: { relayout(): Promise<void> } | undefined;
+
+  /** Changes to remount the reader for; the view mode also formats the book again. */
+  let readerKey = 0;
+
+  let remountTarget: number | undefined;
+
+  let remountTrackerWasRunning = false;
+
+  /** The old reader's bookmark manager, to know when the new one has arrived. */
+  let remountStaleManager: BookmarkManager | undefined;
+
+  /** A view mode change waits for the book formatted for the new mode before reopening. */
+  let awaitingBookHtml = false;
+
+  let restoreAppearanceKeys: (() => void) | undefined;
+
+  function openAppearance() {
+    showHeader = false;
+
+    if (showAppearance || dialogManager.dialogs$.getValue().length) {
+      return;
+    }
+
+    const keysWereSkipped = $skipKeyDownListener$;
+    skipKeyDownListener$.next(true);
+    restoreAppearanceKeys = () => {
+      restoreAppearanceKeys = undefined;
+      skipKeyDownListener$.next(keysWereSkipped);
+    };
+    showAppearance = true;
+  }
+
+  function closeAppearance() {
+    showAppearance = false;
+    restoreAppearanceKeys?.();
+  }
+
+  function noteLayoutSettling() {
+    const now = Date.now();
+    autoStartGate?.noteSettling(now);
+    statusGate?.noteSettling(now);
+  }
+
+  async function relayoutInPlace() {
+    if (!bookReaderRef || remountTarget !== undefined) {
+      return;
+    }
+
+    const wasRunning = $statisticsEnabled$ && !$isTrackerPaused$;
+
+    try {
+      if (wasRunning) {
+        pauseTracker();
+      }
+
+      noteLayoutSettling();
+      clearSearchMark?.();
+      await bookReaderRef.relayout();
+      noteLayoutSettling();
+    } catch (error) {
+      logger.warn(`Appearance: ${(error as Error)?.message ?? error}`);
+    } finally {
+      if (wasRunning) {
+        restartTrackerAfterCharacterChangeOrTime(500);
+      }
+    }
+  }
+
+  function remountReader() {
+    const next = currentLayout();
+
+    if (
+      !$bookData$ ||
+      !bookmarkManager ||
+      remountTarget !== undefined ||
+      JSON.stringify(next) === JSON.stringify(readerLayout)
+    ) {
+      return;
+    }
+
+    remountTarget = exploredCharCount;
+    remountStaleManager = bookmarkManager;
+    remountTrackerWasRunning = $statisticsEnabled$ && !$isTrackerPaused$;
+
+    if (remountTrackerWasRunning) {
+      pauseTracker();
+    }
+
+    noteLayoutSettling();
+    clearSearchMark?.();
+    // Whispersync holds the page element and its writing mode: it starts again with the new
+    // page (as after coming back from Settings).
+    bookContentEl = null;
+
+    const applyLayout = () => {
+      readerLayout = next;
+      readerWritingMode$.next(next.writingMode);
+      readerKey += 1;
+    };
+
+    if (next.viewMode !== readerLayout.viewMode) {
+      awaitingBookHtml = true;
+      bookData$.pipe(skip(1), take(1)).subscribe({
+        next: () => {
+          awaitingBookHtml = false;
+          applyLayout();
+        },
+        error: (error) => {
+          awaitingBookHtml = false;
+          remountTarget = undefined;
+          logger.warn(`Appearance: ${(error as Error)?.message ?? error}`);
+
+          if (remountTrackerWasRunning) {
+            restartTrackerAfterCharacterChangeOrTime(1);
+          }
+        }
+      });
+      formatViewMode$.next(next.viewMode);
+      return;
+    }
+
+    applyLayout();
+  }
+
+  async function finishRemount() {
+    const target = remountTarget ?? 0;
+
+    try {
+      // The new reader's bookmark manager reaches this page through a binding, sometimes a
+      // few frames after the reader reports its restore: wait for it (at most ~1 s).
+      await tick();
+      for (let i = 0; i < 60 && bookmarkManager === remountStaleManager; i++) {
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+      }
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      remountTarget = undefined;
+      remountStaleManager = undefined;
+      bookContentEl = document.querySelector<HTMLDivElement>('.book-content');
+      jumpToPosition(target, { save: false, record: false });
+
+      // Safety net: if something moved the reader away again (a late restore), go back once.
+      await pageSettled();
+      if (Math.abs(exploredCharCount - target) > 3000) {
+        jumpToPosition(target, { save: false, record: false });
+      }
+    } catch (error) {
+      remountTarget = undefined;
+      logger.warn(`Appearance: ${(error as Error)?.message ?? error}`);
+    }
+
+    if (remountTrackerWasRunning) {
+      restartTrackerAfterCharacterChangeOrTime(1000);
+    }
+
+    // Changed again while reopening: reopen once more for the latest settings.
+    if (JSON.stringify(currentLayout()) !== JSON.stringify(readerLayout)) {
+      setTimeout(remountReader, 500);
+    }
+  }
+
+  onMount(() => {
+    const changes = (...subjects: Observable<unknown>[]) =>
+      merge(...subjects.map((s) => s.pipe(distinctUntilChanged(), skip(1)))).pipe(
+        debounceTime(350)
+      );
+
+    const inPlace = changes(
+      fontSize$,
+      lineHeight$,
+      fontFamilyGroupOne$,
+      fontFamilyGroupTwo$,
+      textIndentation$,
+      textMarginValue$
+    ).subscribe(() => relayoutInPlace());
+
+    const reopen = changes(
+      viewMode$,
+      writingMode$,
+      firstDimensionMargin$,
+      secondDimensionMaxValue$,
+      pageColumns$,
+      hideFurigana$,
+      furiganaStyle$,
+      verticalTextOrientation$,
+      enableVerticalFontKerning$,
+      enableFontVPAL$
+    ).subscribe(() => remountReader());
+
+    return () => {
+      inPlace.unsubscribe();
+      reopen.unsubscribe();
+      restoreAppearanceKeys?.();
+    };
+  });
 
   // -------------------------------------------------------------------------
   // WP10c: in-book search. The index is built from the reader's own HTML with the reader's
@@ -1919,6 +2172,17 @@
   let restorePromptKeys: (() => void) | undefined;
 
   async function onPositionRestored() {
+    // WP10e: the reader was reopened in place for a layout change; return to where it was.
+    if (remountTarget !== undefined) {
+      // A view mode change shows the new mode before the book is formatted for it; only the
+      // restore after the reformatted book counts.
+      if (!awaitingBookHtml) {
+        finishRemount();
+      }
+
+      return;
+    }
+
     if (!browser || positionPromptStarted || !$rawBookData$) return;
     positionPromptStarted = true;
     try {
@@ -2718,6 +2982,7 @@
       on:libraryClick={() => leaveReader(mergeEntries.LIBRARY.routeId)}
       on:zenClick={toggleZen}
       on:searchClick={openSearch}
+      on:appearanceClick={openAppearance}
       on:jumpBackClick={() => goJumpHistory('back')}
       on:jumpForwardClick={() => goJumpHistory('forward')}
       on:shortcutsClick={openShortcuts}
@@ -2760,55 +3025,58 @@
     />
   {/if}
   <StyleSheetRenderer styleSheet={$bookData$.styleSheet} />
-  <BookReader
-    htmlContent={$bookData$.htmlContent}
-    width={$containerViewportWidth$ ?? 0}
-    height={$containerViewportHeight$ ?? 0}
-    {fontFeatureSettings}
-    {verticalTextOrientation}
-    prioritizeReaderStyles={$prioritizeReaderStyles$}
-    enableTextJustification={$enableTextJustification$}
-    enableTextWrapPretty={$enableTextWrapPretty$}
-    verticalMode={$verticalMode$}
-    fontColor={$themeOption$?.fontColor}
-    backgroundColor={$backgroundColor$}
-    hintFuriganaFontColor={$themeOption$?.hintFuriganaFontColor}
-    hintFuriganaShadowColor={$themeOption$?.hintFuriganaShadowColor}
-    fontFamilyGroupOne={$fontFamilyGroupOne$}
-    fontFamilyGroupTwo={$fontFamilyGroupTwo$}
-    fontSize={$fontSize$}
-    lineHeight={$lineHeight$}
-    textIndentation={$textIndentation$}
-    textMarginValue={$textMarginValue$}
-    hideSpoilerImage={$hideSpoilerImage$}
-    hideFurigana={$hideFurigana$}
-    furiganaStyle={$furiganaStyle$}
-    viewMode={$viewMode$}
-    secondDimensionMaxValue={$secondDimensionMaxValue$}
-    {firstDimensionMargin}
-    autoPositionOnResize={$autoPositionOnResize$}
-    avoidPageBreak={$avoidPageBreak$}
-    pageColumns={$pageColumns$}
-    autoBookmark={$autoBookmark$}
-    autoBookmarkTime={$autoBookmarkTime$}
-    multiplier={$multiplier$}
-    bind:exploredCharCount
-    bind:bookCharCount
-    bind:isBookmarkScreen
-    bind:bookmarkData
-    bind:autoScroller
-    bind:bookmarkManager
-    bind:pageManager
-    bind:customReadingPoint
-    bind:customReadingPointTop
-    bind:customReadingPointLeft
-    bind:customReadingPointScrollOffset
-    bind:customReadingPointRange
-    bind:showCustomReadingPoint
-    on:bookmark={bookmarkPage}
-    on:trackerPause={() => pauseTracker(true)}
-    on:positionRestored={onPositionRestored}
-  />
+  {#key readerKey}
+    <BookReader
+      bind:this={bookReaderRef}
+      htmlContent={$bookData$.htmlContent}
+      width={$containerViewportWidth$ ?? 0}
+      height={$containerViewportHeight$ ?? 0}
+      {fontFeatureSettings}
+      {verticalTextOrientation}
+      prioritizeReaderStyles={$prioritizeReaderStyles$}
+      enableTextJustification={$enableTextJustification$}
+      enableTextWrapPretty={$enableTextWrapPretty$}
+      verticalMode={readerVertical}
+      fontColor={$themeOption$?.fontColor}
+      backgroundColor={$backgroundColor$}
+      hintFuriganaFontColor={$themeOption$?.hintFuriganaFontColor}
+      hintFuriganaShadowColor={$themeOption$?.hintFuriganaShadowColor}
+      fontFamilyGroupOne={$fontFamilyGroupOne$}
+      fontFamilyGroupTwo={$fontFamilyGroupTwo$}
+      fontSize={$fontSize$}
+      lineHeight={$lineHeight$}
+      textIndentation={$textIndentation$}
+      textMarginValue={$textMarginValue$}
+      hideSpoilerImage={$hideSpoilerImage$}
+      hideFurigana={readerLayout.hideFurigana}
+      furiganaStyle={readerLayout.furiganaStyle}
+      viewMode={readerLayout.viewMode}
+      secondDimensionMaxValue={readerLayout.secondDimensionMaxValue}
+      {firstDimensionMargin}
+      autoPositionOnResize={$autoPositionOnResize$}
+      avoidPageBreak={$avoidPageBreak$}
+      pageColumns={readerLayout.pageColumns}
+      autoBookmark={$autoBookmark$}
+      autoBookmarkTime={$autoBookmarkTime$}
+      multiplier={$multiplier$}
+      bind:exploredCharCount
+      bind:bookCharCount
+      bind:isBookmarkScreen
+      bind:bookmarkData
+      bind:autoScroller
+      bind:bookmarkManager
+      bind:pageManager
+      bind:customReadingPoint
+      bind:customReadingPointTop
+      bind:customReadingPointLeft
+      bind:customReadingPointScrollOffset
+      bind:customReadingPointRange
+      bind:showCustomReadingPoint
+      on:bookmark={bookmarkPage}
+      on:trackerPause={() => pauseTracker(true)}
+      on:positionRestored={onPositionRestored}
+    />
+  {/key}
   {$initBookmarkData$ ?? ''}
   {$setBackgroundColor$ ?? ''}
   {$setWritingMode$ ?? ''}
@@ -2818,6 +3086,10 @@
   {$firstPageTurnStatus$ ?? ''}
 {:else}
   {$leaveIfBookMissing$ ?? ''}
+{/if}
+
+{#if showAppearance}
+  <AppearancePanel on:close={closeAppearance} />
 {/if}
 
 {#if startOverNotice}

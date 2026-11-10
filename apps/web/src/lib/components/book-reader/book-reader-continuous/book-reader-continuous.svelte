@@ -40,6 +40,7 @@
     timer
   } from 'rxjs';
   import { createEventDispatcher, onDestroy, onMount } from 'svelte';
+  import { layoutSettled } from '../relayout';
   import Fa from 'svelte-fa';
   import type { AutoScroller, BookmarkManager, PageManager } from '../types';
   import { AutoScrollerContinuous } from './auto-scroller-continuous';
@@ -544,6 +545,30 @@
     if (verticalMode && !$disableWheelNavigation$ && !$skipKeyDownListener$) {
       scrollFn(ev, fontSize, window.innerWidth);
     }
+  }
+
+  /**
+   * WP10e: re-measures the book after a style change (font, size, line height, indentation)
+   * and returns to the intended character, like a window resize does.
+   */
+  export async function relayout() {
+    if (!calculator || !pageManagerConcrete) return;
+
+    const target = prevIntendedCharCount || exploredCharCount;
+    await layoutSettled();
+
+    if (!calculator || !pageManagerConcrete) return;
+
+    calculator.updateParagraphPos();
+    updateCustomReadingPointPosition();
+
+    const scrollPos =
+      calculator.getScrollPosByCharCount(target) +
+      (verticalMode ? customReadingPointScrollOffset : -customReadingPointScrollOffset);
+    isResizeScroll = true;
+    pageManagerConcrete.scrollTo(scrollPos);
+    prevIntendedCharCount = target;
+    contentReadyEvent = {};
   }
 
   function onScroll() {

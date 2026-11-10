@@ -8,6 +8,7 @@
     faCrosshairs,
     faExpand,
     faFlag,
+    faFont,
     faList,
     faMagnifyingGlass,
     faRotateLeft,
@@ -65,6 +66,7 @@
     zenClick: void;
     shortcutsClick: void;
     searchClick: void;
+    appearanceClick: void;
     jumpBackClick: void;
     jumpForwardClick: void;
   }>();
@@ -140,6 +142,16 @@
         <Fa icon={faList} />
       </div>
     {/if}
+    <div
+      tabindex="0"
+      role="button"
+      title="Appearance: theme, font, size, page"
+      class={baseIconClasses}
+      on:click={() => dispatch('appearanceClick')}
+      on:keyup={dummyFn}
+    >
+      <Fa icon={faFont} />
+    </div>
     {#if canSearch}
       <div
         tabindex="0"
