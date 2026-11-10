@@ -47,9 +47,14 @@ export function testCalibreConfig(overrides: Partial<CalibreConfig> = {}): Calib
   };
 }
 
+/**
+ * `seedDefaults`: the server's once-per-user records ("Planned"); off by default so
+ * tests see only the records they write.
+ */
 export function makeTestApp(
   overrides: Partial<ServerConfig> = {},
   database?: DatabaseState,
+  { seedDefaults = false }: { seedDefaults?: boolean } = {},
 ): {
   app: ReturnType<typeof createApp>;
   config: ServerConfig;
@@ -58,7 +63,7 @@ export function makeTestApp(
 } {
   const config = testConfig(overrides);
   const state = database ?? initDatabase(config.dbDir, config.dataRoot);
-  const app = createApp({ config, database: state, version: '9.9.9-test' });
+  const app = createApp({ config, database: state, version: '9.9.9-test', seedDefaults });
   return {
     app,
     config,

@@ -298,6 +298,22 @@ export const MIGRATIONS: { version: number; name: string; sql: string }[] = [
       );
     `,
   },
+  {
+    version: 7,
+    name: 'user seeds',
+    // WP8b. Records the server writes once per user (the empty "Planned" collection).
+    // A row means it was done; the record itself may since have been renamed or deleted
+    // by the user, and is never written again.
+    sql: `
+      CREATE TABLE user_seeds (
+        user_id    TEXT NOT NULL REFERENCES users(id),
+        name       TEXT NOT NULL,
+        device_id  TEXT REFERENCES devices(id),
+        done_at    INTEGER NOT NULL,
+        PRIMARY KEY (user_id, name)
+      );
+    `,
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

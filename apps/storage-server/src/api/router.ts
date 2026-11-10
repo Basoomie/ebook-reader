@@ -10,6 +10,7 @@ import {
   thumbnailHandler,
 } from './catalog-routes';
 import { ApiError, errorHandler, notFound, sendError } from './errors';
+import { seedPlannedCollections } from '../collections/seed';
 import { createMigrationRouter } from '../migration/routes';
 import { MigrationService } from '../migration/service';
 import { createSyncRouter, SYNC_BODY_LIMIT } from '../sync/routes';
@@ -45,6 +46,8 @@ export interface ApiOptions {
   sync?: SyncOptions;
   /** WP5 migration routes. Without it they are not mounted. */
   migration?: MigrationPaths;
+  /** Write the records the server creates once per user ("Planned", WP8b). Default on. */
+  seedDefaults?: boolean;
 }
 
 const NO_CATALOG: CatalogOptions = {
@@ -63,6 +66,7 @@ export function createApiRouter({
   pairing = DEFAULT_PAIRING,
   sync = DEFAULT_SYNC,
   migration,
+  seedDefaults = true,
 }: ApiOptions): Router {
   const router = express.Router();
   // Pushes can carry many records; everything else keeps the small default limit.
@@ -111,6 +115,16 @@ export function createApiRouter({
     router.use(createCatalogRouter(db, catalog));
 
     const syncStore = new SyncStore(db, { maxClockSkewMs: sync.maxClockSkewSeconds * 1000 });
+    if (seedDefaults) {
+      try {
+        for (const userId of seedPlannedCollections(db, syncStore)) {
+          console.log(`Collections: created "Planned" for user ${userId}`);
+        }
+      } catch (err) {
+        // Never stops the API; tried again on the next start.
+        console.error('Collections: could not create "Planned"', err);
+      }
+    }
     router.use(createSyncRouter(db, syncStore));
 
     if (migration) {

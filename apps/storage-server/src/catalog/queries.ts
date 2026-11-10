@@ -230,6 +230,11 @@ export interface ListBooksOptions {
   libraryId?: string;
   /** Library search (WP7a, query-parser.ts). Plain text keeps the WP6 meaning. */
   query?: string;
+  /**
+   * A second search that must also match, parsed on its own (WP8b: a saved search or
+   * built-in collection, with the search box applied inside it).
+   */
+  scope?: string;
   /** Only the books of one group; a series is ordered by series index. */
   group?: GroupRef;
   limit?: number;
@@ -326,8 +331,10 @@ export function planBooks(
 ): PlannedQuery<BookPage> {
   const limit = Math.min(Math.max(1, opts.limit ?? DEFAULT_PAGE_SIZE), MAX_PAGE_SIZE);
   const parsed = parseOrThrow(opts.query);
+  const scoped = opts.scope ? parseOrThrow(opts.scope) : null;
   const conds: SqlCondition[] = [...visibilitySql(opts)];
   if (opts.group) conds.push(groupMemberSql(opts.group, db));
+  if (scoped) conds.push(...querySql(scoped, user.id, db));
   conds.push(...querySql(parsed, user.id, db));
   const bySeriesIndex = opts.group?.by === 'series' && opts.group.name !== null;
   const order = bySeriesIndex
@@ -353,7 +360,7 @@ export function planBooks(
   return {
     sql: `${BOOK_SELECT} ${where} ${order} LIMIT ?`,
     params: [...conds.flatMap((c) => c.params), limit + 1],
-    regex: usesRegex(parsed),
+    regex: usesRegex(parsed) || (scoped !== null && usesRegex(scoped)),
     finish(raw) {
       const rows = raw as BookRow[];
       const page = rows.slice(0, limit);
@@ -378,6 +385,43 @@ export function listBooksFor(
   const plan = planBooks(db, user, opts);
   if (plan.regex) registerRegexp(db);
   return plan.finish(db.prepare(plan.sql).all(...plan.params));
+}
+
+/** Most ids one lookup takes (WP8b: a manual collection's books, a page at a time). */
+export const MAX_LOOKUP_IDS = 200;
+
+/**
+ * The given books in the given order, leaving out the ones that are hidden (missing,
+ * disabled library, unknown id) or don't match `query`. Throws InvalidQueryError.
+ */
+export function planLookup(
+  db: Database.Database,
+  user: CatalogUser,
+  ids: string[],
+  opts: { query?: string; countSpec?: string | null } = {},
+): PlannedQuery<{ books: BookSummary[] }> {
+  const parsed = parseOrThrow(opts.query);
+  const unique = [...new Set(ids)].slice(0, MAX_LOOKUP_IDS);
+  const conds: SqlCondition[] = [
+    ...visibilitySql({}),
+    {
+      sql: unique.length ? `b.id IN (${unique.map(() => '?').join(',')})` : '0',
+      params: unique,
+    },
+    ...querySql(parsed, user.id, db),
+  ];
+  return {
+    sql: `${BOOK_SELECT} WHERE ${conds.map((c) => c.sql).join(' AND ')}`,
+    params: conds.flatMap((c) => c.params),
+    regex: usesRegex(parsed),
+    finish(raw) {
+      const order = new Map(unique.map((id, i) => [id, i]));
+      const rows = (raw as BookRow[]).sort(
+        (a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0),
+      );
+      return { books: attachLists(db, user, rows, opts.countSpec ?? null) };
+    },
+  };
 }
 
 /** Summaries of the given visible books, by id (for collage tiles and covers). */
