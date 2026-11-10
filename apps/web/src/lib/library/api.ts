@@ -4,7 +4,13 @@
  * All rights reserved.
  */
 
-import type { CatalogBookDetail, CatalogLibrary, CatalogPage } from '$lib/library/types';
+import type {
+  CatalogBookDetail,
+  CatalogGroupPage,
+  CatalogLibrary,
+  CatalogPage,
+  GroupBy
+} from '$lib/library/types';
 
 /** Client for the storage server's /api/v1 catalog (WP6). */
 
@@ -23,7 +29,9 @@ export class LibraryApiError extends Error {
     readonly kind: LibraryApiErrorKind,
     message: string,
     readonly status?: number,
-    readonly code?: string
+    readonly code?: string,
+    /** invalid_query: the character span of the problem in the search text. */
+    readonly span?: { start: number; end: number }
   ) {
     super(message);
   }
@@ -85,17 +93,23 @@ export async function send(
 export async function errorFrom(response: Response): Promise<LibraryApiError> {
   let code: string | undefined;
   let message = `The library server answered ${response.status}`;
+  let span: { start: number; end: number } | undefined;
   try {
-    const body = (await response.json()) as { error?: { code?: string; message?: string } };
+    const body = (await response.json()) as {
+      error?: { code?: string; message?: string; start?: unknown; end?: unknown };
+    };
     code = body.error?.code;
     if (body.error?.message) message = body.error.message;
+    if (typeof body.error?.start === 'number' && typeof body.error?.end === 'number') {
+      span = { start: body.error.start, end: body.error.end };
+    }
   } catch {
     // not JSON
   }
   if (response.status === 401 && code !== 'invalid_code') {
     return new LibraryApiError('unauthorized', message, 401, code);
   }
-  return new LibraryApiError('server', message, response.status, code);
+  return new LibraryApiError('server', message, response.status, code, span);
 }
 
 /** Trades a pairing code (from `cli token pair`) for this device's token. */
@@ -149,17 +163,45 @@ export class LibraryApi {
     return (await this.get('/libraries', options)).json();
   }
 
+  /**
+   * Books newest first, or one group's books (`group`: a series in series order; a
+   * series name of null is "No series").
+   */
   async books(
-    query: { q?: string; library?: string; cursor?: string; limit?: number },
+    query: {
+      q?: string;
+      library?: string;
+      cursor?: string;
+      limit?: number;
+      group?: { by: GroupBy; name: string | null };
+    },
     options?: RequestOptions
   ): Promise<CatalogPage> {
     const params = new URLSearchParams();
     if (query.q) params.set('q', query.q);
     if (query.library) params.set('library', query.library);
+    if (query.group) {
+      params.set('by', query.group.by);
+      if (query.group.name === null) params.set('none', '1');
+      else params.set('group', query.group.name);
+    }
     if (query.cursor) params.set('cursor', query.cursor);
     if (query.limit) params.set('limit', String(query.limit));
     const qs = params.toString();
     return (await this.get(`/books${qs ? `?${qs}` : ''}`, options)).json();
+  }
+
+  /** Browse tabs (WP7a): one card per series, author or tag with a matching book. */
+  async groups(
+    query: { by: GroupBy; q?: string; library?: string; cursor?: string; limit?: number },
+    options?: RequestOptions
+  ): Promise<CatalogGroupPage> {
+    const params = new URLSearchParams({ by: query.by });
+    if (query.q) params.set('q', query.q);
+    if (query.library) params.set('library', query.library);
+    if (query.cursor) params.set('cursor', query.cursor);
+    if (query.limit) params.set('limit', String(query.limit));
+    return (await this.get(`/groups?${params.toString()}`, options)).json();
   }
 
   async book(id: string, options?: RequestOptions): Promise<CatalogBookDetail> {

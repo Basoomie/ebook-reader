@@ -1,6 +1,6 @@
 <script lang="ts">
   /**
-   * Book state (WP8a, minimal until WP7a): status, favorite, cover blur and
+   * Book state (WP8a): status, favorite, cover blur (shown by the library, WP7a) and
    * read-throughs of one catalog book. Plain on purpose for e-ink (like the
    * WP9 prompt): no transitions, full-size bordered buttons, inert backdrop;
    * closes with its Close button or Esc. Every change is saved at once to the
@@ -255,7 +255,6 @@
           </select>
         </label>
       </div>
-      <p class="pt-1 text-sm">The cover setting takes effect with the new library view.</p>
 
       <h3 class="mt-5 font-medium">
         Times read: {readCount}

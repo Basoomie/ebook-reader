@@ -30,6 +30,9 @@ import {
   setBookBlur,
   setBookFavorite,
   setBookStatus,
+  setBooksBlur,
+  setBooksFavorite,
+  setBooksStatus,
   startBookOver,
   type BookStateDeps,
   type MarkCompletedBook
@@ -79,6 +82,7 @@ import { SyncApi } from '$lib/sync/sync-api';
 import type { LocalRecord } from '$lib/sync/sync-db';
 import { SyncEngine } from '$lib/sync/sync-engine';
 import { SyncRunner, type RunnerEnv } from '$lib/sync/sync-runner';
+import { getTagBlurRules, setTagBlur, TAG_BLUR_KIND } from '$lib/sync/tag-blur';
 
 /**
  * The app's record sync (WP4): one engine and one background runner per tab.
@@ -566,6 +570,12 @@ export function bookStateApi() {
     setBlur: (bookId: string, blur: BookBlur) => setBookBlur(bookId, blur, bookStateDeps),
     markCompleted: (books: MarkCompletedBook[], finishedOn: string | null) =>
       markBooksCompleted(books, finishedOn, bookStateDeps),
+    setStatusMany: (bookIds: readonly string[], status: BookStatus) =>
+      setBooksStatus(bookIds, status, bookStateDeps),
+    setFavoriteMany: (bookIds: readonly string[], favorite: boolean) =>
+      setBooksFavorite(bookIds, favorite, bookStateDeps),
+    setBlurMany: (bookIds: readonly string[], blur: BookBlur) =>
+      setBooksBlur(bookIds, blur, bookStateDeps),
     startOver: (bookId: string) => startBookOver(bookId, bookStateDeps),
     editFinish: (bookId: string, readThroughId: string, finishedOn: string | null) =>
       editReadThroughFinish(bookId, readThroughId, finishedOn, bookStateDeps),
@@ -578,3 +588,78 @@ export function bookStateApi() {
 }
 
 export type BookStateApi = ReturnType<typeof bookStateApi>;
+
+// ---------------------------------------------------------------------------
+// WP7a: library view data (cover blur rules, progress, freshness of state filters)
+// ---------------------------------------------------------------------------
+
+/** What the library page reads from the local mirror besides book state. */
+export function libraryViewApi() {
+  return {
+    /** Tags whose covers are blurred. Never rejects (empty on failure). */
+    async tagBlurRules(): Promise<Set<string>> {
+      try {
+        return await getTagBlurRules(await getSyncEngine());
+      } catch (error) {
+        warn(`Library: ${(error as Error)?.message ?? error}`);
+        return new Set();
+      }
+    },
+    /** Rejects when the rule could not be saved. */
+    async setTagBlur(tag: string, blur: boolean): Promise<void> {
+      await setTagBlur(await getSyncEngine(), tag, blur);
+    },
+    /** Every position record (all devices), for progress. Never rejects. */
+    async positions(): Promise<LocalRecord[]> {
+      try {
+        return await (await getSyncEngine()).getAll('position');
+      } catch (error) {
+        warn(`Library: ${(error as Error)?.message ?? error}`);
+        return [];
+      }
+    },
+    /** Called after local writes or pulls of tag rules or positions. */
+    async onChanged(callback: () => void): Promise<() => void> {
+      try {
+        const engine = await getSyncEngine();
+        const relevant = (r: LocalRecord) => r.kind === TAG_BLUR_KIND || r.kind === 'position';
+        const offRemote = engine.onRemoteChange((records) => {
+          if (records.some(relevant)) callback();
+        });
+        const offLocal = engine.onLocalWrite((r) => {
+          if (relevant(r)) callback();
+        });
+        return () => {
+          offRemote();
+          offLocal();
+        };
+      } catch {
+        return () => {};
+      }
+    },
+    /**
+     * Before a search that filters by status or favorite: the server only knows changes
+     * that reached it, so unsent ones are sent first (at most `timeoutSeconds`).
+     * Resolves to true when changes are still unsent (offline). Never rejects.
+     */
+    async sendPendingChanges(timeoutSeconds: number): Promise<boolean> {
+      try {
+        const engine = await getSyncEngine();
+        if ((await engine.status()).pending === 0) return false;
+        const runner = getSyncRunner();
+        if (runner && recordSyncEnabled$.getValue()) {
+          const limit = Math.max(1, timeoutSeconds || 20) * 1000;
+          await Promise.race([
+            runner.syncNow(),
+            new Promise((resolve) => setTimeout(resolve, limit))
+          ]);
+        }
+        return (await engine.status()).pending > 0;
+      } catch {
+        return false;
+      }
+    }
+  };
+}
+
+export type LibraryViewApi = ReturnType<typeof libraryViewApi>;

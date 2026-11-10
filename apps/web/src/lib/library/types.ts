@@ -65,3 +65,42 @@ export interface CatalogPage {
   books: CatalogBook[];
   nextCursor: string | null;
 }
+
+/** Browse tabs (WP7a): groups are addressed by name; series null = "No series". */
+export type GroupBy = 'series' | 'author' | 'tag';
+
+export interface GroupTile {
+  bookId: string;
+  thumbnail: string | null;
+  /** For tag blur rules. */
+  tags: string[];
+}
+
+export interface GroupChars {
+  /** Sum of the counts the group's books have. */
+  total: number;
+  counted: number;
+  /** Not counted yet, or waiting for a recount. */
+  pending: number;
+  /** Could not be counted. */
+  failed: number;
+}
+
+export interface CatalogGroup {
+  by: GroupBy;
+  name: string | null;
+  bookCount: number;
+  newestAddedAt: number;
+  chars: GroupChars;
+  /** Series: the lowest-index volume. */
+  cover?: GroupTile | null;
+  /** Series: every book, in series order (for "3/12 read"). */
+  bookIds?: string[];
+  /** Authors, tags and "No series": up to four collage tiles. */
+  tiles?: GroupTile[];
+}
+
+export interface CatalogGroupPage {
+  groups: CatalogGroup[];
+  nextCursor: string | null;
+}
