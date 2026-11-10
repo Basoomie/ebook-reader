@@ -40,6 +40,12 @@ export interface OpenDeps {
   calibreLibraryUuid(libraryId: string): Promise<string | null>;
   /** Asked when a book with the same title but a different character count exists. */
   confirmExisting(question: ExistingBookQuestion): Promise<boolean>;
+  /** WP7b: the book the migration linked a local title to (null = none). */
+  migratedBookId?(title: string): Promise<string | null>;
+  /** WP7b: fills a migrated placeholder with the library copy; returns its local id. */
+  fillPlaceholder?(content: LoadData, signal: AbortSignal): Promise<number>;
+  /** WP7b: asked before filling a migrated placeholder whose character count differs. */
+  confirmPlaceholder?(question: ExistingBookQuestion): Promise<boolean>;
   now?: () => number;
 }
 
@@ -95,7 +101,11 @@ export async function openCalibreBook(
     // 3. Decide against what is already stored under that title.
     const existing = await deps.getLocalBookByTitle(content.title);
     const existingLinks = existing ? await deps.store.getLinksForLocalId(existing.id) : [];
-    const after = decideAfterLoad(book.id, content, existing, existingLinks);
+    const migrated =
+      existing?.isPlaceholder && deps.migratedBookId
+        ? await deps.migratedBookId(content.title)
+        : null;
+    const after = decideAfterLoad(book.id, content, existing, existingLinks, migrated);
 
     let localId: number;
     let how: CalibreLink['how'];
@@ -122,13 +132,32 @@ export async function openCalibreBook(
         characters = after.localCharacters;
         break;
       }
+      case 'ask-placeholder':
+      case 'fill-placeholder': {
+        if (after.kind === 'ask-placeholder') {
+          const ok = await deps.confirmPlaceholder?.({
+            title: content.title,
+            localCharacters: after.localCharacters,
+            calibreCharacters: after.calibreCharacters
+          });
+          if (!ok) return { status: 'cancelled' };
+        }
+        if (!deps.fillPlaceholder) {
+          return { status: 'refused', message: "This book can't be opened here." };
+        }
+        onStage({ stage: 'save' });
+        localId = await deps.fillPlaceholder(content, signal);
+        how = 'imported';
+        break;
+      }
       case 'placeholder':
         return {
           status: 'refused',
           message:
-            `"${content.title}" is already in the Manager as a placeholder` +
-            (after.storageSource ? ` from "${after.storageSource}"` : '') +
-            '. Open it from there, or delete the placeholder in the Manager and try again.'
+            `"${content.title}" is on this device only as a copy kept in the old sync` +
+            (after.storageSource ? ` ("${after.storageSource}")` : '') +
+            ", and the migration didn't link it to this library book, so it isn't replaced. " +
+            'Open it from Settings > Data > Old sync manager.'
         };
       case 'title-taken':
         return {

@@ -84,10 +84,40 @@ describe('decideAfterLoad', () => {
     });
   });
 
-  it('never touches a placeholder', () => {
+  it('never touches a placeholder the migration did not link to this book', () => {
     expect(
       decideAfterLoad('book-a', loaded, local({ isPlaceholder: true, storageSource: 'nas' }), [])
     ).toEqual({ kind: 'placeholder', localId: 7, storageSource: 'nas' });
+    expect(
+      decideAfterLoad(
+        'book-a',
+        loaded,
+        local({ isPlaceholder: true, storageSource: 'nas' }),
+        [],
+        'book-other'
+      )
+    ).toEqual({ kind: 'placeholder', localId: 7, storageSource: 'nas' });
+  });
+
+  it('fills a migrated placeholder with the library copy (WP7b), asking when counts differ', () => {
+    const placeholder = (characters: number) =>
+      local({ isPlaceholder: true, storageSource: 'nas', characters });
+    expect(decideAfterLoad('book-a', loaded, placeholder(loaded.characters), [], 'book-a')).toEqual(
+      { kind: 'fill-placeholder', localId: 7 }
+    );
+    // An unknown count (0) is not a difference.
+    expect(decideAfterLoad('book-a', loaded, placeholder(0), [], 'book-a')).toEqual({
+      kind: 'fill-placeholder',
+      localId: 7
+    });
+    expect(
+      decideAfterLoad('book-a', loaded, placeholder(loaded.characters + 5), [], 'book-a')
+    ).toEqual({
+      kind: 'ask-placeholder',
+      localId: 7,
+      localCharacters: loaded.characters + 5,
+      calibreCharacters: loaded.characters
+    });
   });
 
   it('refuses a title that belongs to another Calibre book', () => {

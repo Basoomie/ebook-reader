@@ -17,11 +17,13 @@ import {
 } from '$lib/data/store';
 import { storage } from '$lib/data/window/navigator/storage';
 import loadEpub from '$lib/functions/file-loaders/epub/load-epub';
+import { ReplicationSaveBehavior } from '$lib/functions/replication/replication-options';
 import type { LoadData } from '$lib/functions/file-loaders/types';
 import type { LibraryApi } from '$lib/library/api';
 import type { LocalBookInfo } from '$lib/library/decide-open';
 import type { LibraryStore } from '$lib/library/library-db';
 import type { ExistingBookQuestion, OpenDeps } from '$lib/library/open-calibre-book';
+import { legacyBookIdForTitle } from '$lib/sync/book-ids';
 
 function toInfo(book: BooksDbBookData | undefined): LocalBookInfo | undefined {
   if (!book) return undefined;
@@ -40,7 +42,11 @@ function toInfo(book: BooksDbBookData | undefined): LocalBookInfo | undefined {
  * startContext / saveBook / saveCover, then a Manager list refresh.
  * importData itself is left untouched.
  */
-async function saveLikeManualImport(content: LoadData, signal: AbortSignal): Promise<number> {
+async function saveLikeManualImport(
+  content: LoadData,
+  signal: AbortSignal,
+  saveBehavior = replicationSaveBehavior$.getValue()
+): Promise<number> {
   if (requestPersistentStorage$.getValue()) {
     try {
       await storage.persist();
@@ -54,7 +60,7 @@ async function saveLikeManualImport(content: LoadData, signal: AbortSignal): Pro
     '',
     true,
     cacheStorageData$.getValue(),
-    replicationSaveBehavior$.getValue(),
+    saveBehavior,
     statisticsMergeMode$.getValue(),
     readingGoalsMergeMode$.getValue()
   );
@@ -69,7 +75,8 @@ export function browserOpenDeps(
   api: LibraryApi,
   store: LibraryStore,
   calibreLibraryUuid: (libraryId: string) => Promise<string | null>,
-  confirmExisting: (question: ExistingBookQuestion) => Promise<boolean>
+  confirmExisting: (question: ExistingBookQuestion) => Promise<boolean>,
+  confirmPlaceholder: (question: ExistingBookQuestion) => Promise<boolean> = async () => false
 ): OpenDeps {
   return {
     api,
@@ -77,9 +84,23 @@ export function browserOpenDeps(
     getLocalBook: async (id) => toInfo(await database.getData(id)),
     getLocalBookByTitle: async (title) => toInfo(await database.getDataByTitle(title)),
     loadEpub: (file) => loadEpub(file, document, Date.now()),
-    saveNewBook: saveLikeManualImport,
+    saveNewBook: (content, signal) => saveLikeManualImport(content, signal),
     calibreLibraryUuid,
-    confirmExisting
+    confirmExisting,
+    // WP7b: a placeholder of a migrated book becomes the library copy. The title is the
+    // same, so the record (and its id, bookmark and stats) is kept; Overwrite so an old
+    // placeholder timestamp never keeps the empty record.
+    migratedBookId: async (title) => {
+      try {
+        const { getSyncEngine } = await import('$lib/sync/sync-service');
+        return await legacyBookIdForTitle(await getSyncEngine(), title);
+      } catch {
+        return null;
+      }
+    },
+    fillPlaceholder: (content, signal) =>
+      saveLikeManualImport(content, signal, ReplicationSaveBehavior.Overwrite),
+    confirmPlaceholder
   };
 }
 

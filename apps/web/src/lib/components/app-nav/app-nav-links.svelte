@@ -9,7 +9,8 @@
   $: items = APP_NAV.map((entry) => ({ ...entry, current: isCurrentRoute($page.route.id, entry) }));
 </script>
 
-<nav class="hidden h-full items-stretch sm:flex" aria-label="App">
+<!-- The header's own height (h-12, xl:h-10): some headers size their row from their icons. -->
+<nav class="hidden h-12 shrink-0 items-stretch sm:flex xl:h-10" aria-label="App">
   {#each items as entry (entry.routeId)}
     <a
       class="flex min-w-[3rem] items-center justify-center gap-2 px-3 text-sm font-medium {entry.current

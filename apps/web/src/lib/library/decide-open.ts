@@ -52,6 +52,18 @@ export type AfterLoad =
   | { kind: 'ask-existing'; localId: number; localCharacters: number; calibreCharacters: number }
   /** A placeholder holds the title; its text is elsewhere, so nothing is changed. */
   | { kind: 'placeholder'; localId: number; storageSource?: string }
+  /**
+   * WP7b fix (decided with the user): a placeholder the migration linked to this very
+   * book is filled with the library copy (same local id, so its bookmark and stats stay).
+   */
+  | { kind: 'fill-placeholder'; localId: number }
+  /** The same, but the character counts differ: asked first (the place may shift). */
+  | {
+      kind: 'ask-placeholder';
+      localId: number;
+      localCharacters: number;
+      calibreCharacters: number;
+    }
   /** The title already belongs to another Calibre book; both can't be kept until Phase 2. */
   | { kind: 'title-taken'; localId: number; otherBookId: string; otherCalibreTitle: string };
 
@@ -64,7 +76,9 @@ export function decideAfterLoad(
   bookId: string,
   loaded: { title: string; characters: number },
   existing: LocalBookInfo | undefined,
-  existingLinks: CalibreLink[]
+  existingLinks: CalibreLink[],
+  /** The book the migration linked the local title to (legacy-book record), if any. */
+  migratedBookId: string | null = null
 ): AfterLoad {
   if (!existing) return { kind: 'save-new' };
 
@@ -79,6 +93,17 @@ export function decideAfterLoad(
   }
 
   if (existing.isPlaceholder) {
+    if (migratedBookId === bookId) {
+      if (existing.characters > 0 && existing.characters !== loaded.characters) {
+        return {
+          kind: 'ask-placeholder',
+          localId: existing.id,
+          localCharacters: existing.characters,
+          calibreCharacters: loaded.characters
+        };
+      }
+      return { kind: 'fill-placeholder', localId: existing.id };
+    }
     return { kind: 'placeholder', localId: existing.id, storageSource: existing.storageSource };
   }
 
