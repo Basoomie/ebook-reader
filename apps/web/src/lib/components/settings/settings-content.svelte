@@ -148,6 +148,8 @@
 
   export let mouseDragThreshold: number;
 
+  export let jumpHistoryLimit: number;
+
   export let positionPromptMinChars: number;
 
   export let readingStatusSettleSeconds: number;
@@ -748,6 +750,23 @@
         />
       </SettingsItemGroup>
     {/if}
+    <SettingsItemGroup
+      title="Jump History Length"
+      tooltip="How many places Back ([) and Forward (]) remember after jumps (search, contents, bookmark, Jump, Continue there)"
+    >
+      <input
+        type="number"
+        step="1"
+        min="1"
+        class={inputClasses}
+        bind:value={jumpHistoryLimit}
+        on:blur={() => {
+          if (jumpHistoryLimit < 1 || typeof jumpHistoryLimit !== 'number') {
+            jumpHistoryLimit = 50;
+          }
+        }}
+      />
+    </SettingsItemGroup>
     {#if autoBookmark}
       <SettingsItemGroup title="Auto Bookmark Time" tooltip={'Time in s for Auto Bookmark'}>
         <input

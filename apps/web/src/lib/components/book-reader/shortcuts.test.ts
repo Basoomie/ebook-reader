@@ -59,6 +59,16 @@ describe('readerShortcutGroups', () => {
     });
   });
 
+  it('lists the jump history keys right after "Go to bookmark"', () => {
+    const reading = find(readerShortcutGroups(context()), 'Reading');
+    const index = reading.findIndex((r) => r.action === 'Go to bookmark');
+    expect(reading[index + 1]).toEqual({
+      keys: ['['],
+      action: 'Back to where you were before a jump'
+    });
+    expect(reading[index + 2]).toEqual({ keys: [']'], action: 'Forward again' });
+  });
+
   it('follows a changed keybind map', () => {
     const map = {
       ...bookReaderKeybindMap$.getValue(),

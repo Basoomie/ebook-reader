@@ -176,6 +176,15 @@ export function readerShortcutGroups(context: ShortcutContext): ShortcutGroup[] 
     );
   }
 
+  // WP10b: jump history (matched by the typed character in the reader, not the keybind map).
+  const afterBookmark = reading.findIndex((row) => row.action === 'Go to bookmark') + 1;
+  reading.splice(
+    afterBookmark || reading.length,
+    0,
+    { keys: ['['], action: 'Back to where you were before a jump' },
+    { keys: [']'], action: 'Forward again' }
+  );
+
   reading.push({ keys: ['?'], action: 'Show this list' });
 
   const groups: ShortcutGroup[] = [{ title: 'Reading', rows: reading }];
