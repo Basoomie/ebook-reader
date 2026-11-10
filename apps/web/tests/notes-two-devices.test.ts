@@ -116,6 +116,9 @@ describe('highlights and notes between devices (real server)', () => {
     a.online = false;
     b.online = false;
     await removeHighlight(h.id, deps(a));
+    // B's edit must be later than A's removal: within the same millisecond lww breaks the
+    // tie by device id, and A's removal of the note may win (the intended rule).
+    await new Promise((resolve) => setTimeout(resolve, 20));
     const [onB] = (await getBookNotes(book, deps(b))).highlights.filter((x) => x.id === h.id);
     await saveNote({ bookId: book, highlight: onB, noteId: onB.note?.id }, '残したいメモ', deps(b));
     a.online = true;
