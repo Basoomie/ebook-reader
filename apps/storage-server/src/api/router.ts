@@ -14,6 +14,7 @@ import { seedPlannedCollections } from '../collections/seed';
 import { createMigrationRouter } from '../migration/routes';
 import { MigrationService } from '../migration/service';
 import { createSyncRouter, SYNC_BODY_LIMIT } from '../sync/routes';
+import { createUploadRouter } from '../uploads/routes';
 import { DEFAULT_MAX_CLOCK_SKEW_SECONDS, SyncStore } from '../sync/store';
 
 export interface PairingOptions {
@@ -72,7 +73,11 @@ export function createApiRouter({
   // Pushes can carry many records; everything else keeps the small default limit.
   const smallJson = express.json();
   const syncJson = express.json({ limit: SYNC_BODY_LIMIT });
-  router.use((req, res, next) => (req.path === '/sync' ? syncJson : smallJson)(req, res, next));
+  router.use((req, res, next) => {
+    // An upload's body is the EPUB itself, streamed by the upload route (WP7b).
+    if (req.path === '/uploads') return next();
+    (req.path === '/sync' ? syncJson : smallJson)(req, res, next);
+  });
 
   // Unauthenticated, for the Docker healthcheck. Reports only status.
   router.get('/health', (_req, res) => {
@@ -113,6 +118,12 @@ export function createApiRouter({
     });
 
     router.use(createCatalogRouter(db, catalog));
+    // Uploads (WP7b): a separate source adapter, mounted only when it is on.
+    if (catalog.uploads) {
+      router.use(
+        createUploadRouter(db, catalog.uploads, { countSpec: () => catalog.counts?.spec ?? null }),
+      );
+    }
 
     const syncStore = new SyncStore(db, { maxClockSkewMs: sync.maxClockSkewSeconds * 1000 });
     if (seedDefaults) {

@@ -19,6 +19,7 @@
  *   docker exec ttsu-storage node dist/cli.js sync new-epoch
  *   docker exec ttsu-storage node dist/cli.js migration status
  *   docker exec ttsu-storage node dist/cli.js migration undo [--forget-decisions]
+ *   docker exec ttsu-storage node dist/cli.js uploads list
  *
  * Uses DB_DIR (default /db) and DATA_DIR (default /data) like the server, and
  * PAIR_CODE_MINUTES for how long a pairing code stays valid.
@@ -29,7 +30,9 @@
  * migration page); the CLI only reports on them and can undo the import.
  */
 import type Database from 'better-sqlite3';
+import { readdirSync } from 'fs';
 import path from 'path';
+import { UPLOADS_DIRNAME } from './uploads/upload-store';
 import {
   getIndexState,
   getLibrary,
@@ -84,7 +87,8 @@ const USAGE = `Usage:
   cli migration status                       The old-sync migration: book folders per state, devices
   cli migration undo [--forget-decisions]    Delete every record the migration import wrote (the old
                                              sync's files are never touched); --forget-decisions also
-                                             clears the scan results and your link decisions`;
+                                             clears the scan results and your link decisions
+  cli uploads list                           Uploaded books and files still waiting for a decision`;
 
 function fail(message: string): never {
   console.error(message);
@@ -502,6 +506,45 @@ function migrationCommand(
   }
 }
 
+/** Read-only: uploaded books (WP7b) and staged files nobody decided on yet. */
+function uploadsCommand(
+  db: Database.Database,
+  command: string,
+  env: Record<string, string | undefined>,
+) {
+  if (command !== 'list') fail(USAGE);
+  const rows = db
+    .prepare(
+      `SELECT b.id, b.title, l.name AS library, s.file_size, s.created_at, s.missing_at
+         FROM book_sources s JOIN books b ON b.id = s.book_id
+         JOIN libraries l ON l.id = b.library_id
+        WHERE s.kind = 'upload' ORDER BY s.created_at DESC`,
+    )
+    .all() as {
+    id: string;
+    title: string;
+    library: string;
+    file_size: number | null;
+    created_at: number;
+    missing_at: number | null;
+  }[];
+  if (!rows.length) console.log('No uploaded books.');
+  for (const r of rows) {
+    console.log(
+      `${r.id}  ${formatDate(r.created_at)}  ${r.library}  ${r.file_size ?? '?'} bytes  ${r.title}` +
+        (r.missing_at ? '  (missing)' : ''),
+    );
+  }
+  const staging = path.join(path.resolve(env.DATA_DIR ?? '/data'), UPLOADS_DIRNAME, 'staging');
+  let staged: string[] = [];
+  try {
+    staged = readdirSync(staging).filter((n) => n.endsWith('.epub'));
+  } catch {
+    // No upload folder yet.
+  }
+  console.log(`Waiting for a decision: ${staged.length} file(s)`);
+}
+
 export function main(argv: string[], env: Record<string, string | undefined>): void {
   const args = [...argv];
   let userName: string | undefined;
@@ -513,7 +556,7 @@ export function main(argv: string[], env: Record<string, string | undefined>): v
   }
 
   const [group, command, ...rest] = args;
-  const groups = ['token', 'library', 'index', 'thumbs', 'counts', 'sync', 'migration'];
+  const groups = ['token', 'library', 'index', 'thumbs', 'counts', 'sync', 'migration', 'uploads'];
   if (!groups.includes(group) || !command) {
     fail(USAGE);
   }
@@ -532,6 +575,7 @@ export function main(argv: string[], env: Record<string, string | undefined>): v
     else if (group === 'counts') countsCommand(db, command, rest, env);
     else if (group === 'sync') syncCommand(db, command, rest, env, userName);
     else if (group === 'migration') migrationCommand(db, command, rest, env, userName);
+    else if (group === 'uploads') uploadsCommand(db, command, env);
     else thumbsCommand(db, command, rest);
   } finally {
     db.close();

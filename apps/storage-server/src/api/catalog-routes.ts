@@ -13,6 +13,7 @@ import { openSourceStream, resolveInside, statFile } from '../calibre/source-fs'
 import { planGroups } from '../catalog/groups';
 import { collectionCards } from '../collections/cards';
 import {
+  type BookFileLocation,
   CatalogUser,
   getBookFileFor,
   getBookFor,
@@ -31,6 +32,7 @@ import { RegexTimeoutError, SearchRunner } from '../catalog/search-runner';
 import { UUID_RE } from '../sync/kinds';
 import type { CharCountService } from '../counts/count-service';
 import { thumbnailVersion, type ThumbnailService } from '../thumbnails/thumbnails';
+import type { UploadService } from '../uploads/service';
 import { getAuth, requireUser } from './auth';
 import { ApiError, asyncHandler } from './errors';
 
@@ -43,6 +45,8 @@ export interface CatalogOptions {
   calibreDir?: string | null;
   /** Runs searches that contain a /regex/ (WP7a); without it they run in-process. */
   search?: SearchRunner | null;
+  /** Uploads (WP7b); null or absent = the upload adapter is off. */
+  uploads?: UploadService | null;
 }
 
 const GROUP_BYS: GroupBy[] = ['series', 'author', 'tag'];
@@ -67,7 +71,14 @@ export function createCatalogRouter(db: Database.Database, catalog: CatalogOptio
 
   router.get('/libraries', (_req, res) => {
     const { user } = getAuth(res);
-    res.json({ indexer: catalog.indexer, libraries: listLibrariesFor(db, user, countSpec()) });
+    res.json({
+      indexer: catalog.indexer,
+      libraries: listLibrariesFor(db, user, countSpec()),
+      // WP7b: whether this server takes uploads, and their size limit.
+      uploads: catalog.uploads
+        ? { enabled: true, maxBytes: catalog.uploads.maxBytes }
+        : { enabled: false, maxBytes: 0 },
+    });
   });
 
   // Searches with a /regex/ run in the search worker; everything else right here.
@@ -231,16 +242,21 @@ export function createCatalogRouter(db: Database.Database, catalog: CatalogOptio
     res.json(book);
   });
 
-  // The EPUB itself, streamed read-only from the Calibre library (WP6).
+  // The EPUB itself, streamed read-only from the Calibre library (WP6), or an
+  // uploaded book's file from DATA_DIR/.uploads (WP7b).
   router.get(
     '/books/:id/file',
     asyncHandler(async (req, res) => {
       const { user } = getAuth(res);
+      const location = getBookFileFor(db, user, req.params.id);
+      if (location?.kind === 'upload') {
+        await sendUploadedFile(location, res);
+        return;
+      }
       requireIndexer(catalog, 'Book files');
       if (!catalog.calibreDir) {
         throw new ApiError(503, 'indexer_off', 'Book files unavailable: no Calibre folder');
       }
-      const location = getBookFileFor(db, user, req.params.id);
       if (!location) throw new ApiError(404, 'not_found', 'No such book');
       if (location.missing) {
         throw new ApiError(410, 'missing', 'This book is no longer in the Calibre library');
@@ -279,6 +295,30 @@ export function createCatalogRouter(db: Database.Database, catalog: CatalogOptio
       }
     }),
   );
+
+  async function sendUploadedFile(location: BookFileLocation, res: express.Response) {
+    const store = catalog.uploads?.store;
+    if (!store) throw new ApiError(503, 'uploads_off', 'Uploaded books are unavailable');
+    const fileMissing = () => new ApiError(404, 'file_missing', 'The uploaded file was not found');
+    const stat = await store.stat(location.filePath).catch(() => null);
+    if (!stat) throw fileMissing();
+    let stream;
+    try {
+      stream = await store.openStream(location.filePath);
+    } catch {
+      throw fileMissing();
+    }
+    res.set('Content-Type', 'application/epub+zip');
+    res.set('Content-Length', String(stat.size));
+    res.set('ETag', `"upload-${location.contentHash ?? stat.size}"`);
+    res.set('Cache-Control', 'private, no-cache');
+    try {
+      await pipeline(stream, res);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ERR_STREAM_PREMATURE_CLOSE') return;
+      throw err;
+    }
+  }
 
   return router;
 }

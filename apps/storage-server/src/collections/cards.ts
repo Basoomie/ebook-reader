@@ -18,7 +18,13 @@
 import type Database from 'better-sqlite3';
 import { catalogVersion } from '../catalog/catalog-version';
 import type { GroupTile } from '../catalog/groups';
-import { type CatalogUser, SQL_BOOK_FROM, summariesByIds, visibilitySql } from '../catalog/queries';
+import {
+  type CatalogUser,
+  SQL_BOOK_FROM,
+  SQL_CATALOG_SOURCE,
+  summariesByIds,
+  visibilitySql,
+} from '../catalog/queries';
 import { InvalidQueryError, parseOrThrow, usesRegex } from '../catalog/query-parser';
 import { RegexTimeoutError } from '../catalog/search-runner';
 import { querySql } from '../catalog/search-sql';
@@ -101,7 +107,7 @@ export function manualMembers(
     .prepare(
       `SELECT ${MEMBER_COLUMNS} FROM sync_records ci
          CROSS JOIN books b ON b.id = ci.book_id
-         CROSS JOIN book_sources s ON s.book_id = b.id AND s.kind = 'calibre'
+         CROSS JOIN book_sources s ON s.book_id = b.id AND ${SQL_CATALOG_SOURCE}
          JOIN libraries l ON l.id = b.library_id AND l.enabled = 1
         WHERE ci.user_id = ? AND ci.kind = 'collection-item' AND ci.id >= ? AND ci.id < ?
           AND ci.deleted_at IS NULL AND s.missing_at IS NULL

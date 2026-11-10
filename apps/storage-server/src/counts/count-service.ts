@@ -18,6 +18,7 @@
 import type Database from 'better-sqlite3';
 import path from 'path';
 import { resolveInside } from '../calibre/source-fs';
+import type { UploadStore } from '../uploads/upload-store';
 import { noteCatalogWrite } from '../catalog/catalog-version';
 import type { CountsConfig } from '../config';
 import {
@@ -42,6 +43,8 @@ export interface CharCountServiceOptions {
   config: CountsConfig;
   /** The counter bundle; tests pass a stand-in. */
   counterFile?: string;
+  /** Uploaded EPUBs (WP7b); without it, uploads are recorded as file_missing. */
+  uploads?: UploadStore | null;
   log?: (message: string) => void;
   logError?: (message: string, err?: unknown) => void;
 }
@@ -87,11 +90,11 @@ export class CharCountService {
     return (
       this.db
         .prepare(
-          `SELECT b.id AS book_id, b.added_at, l.folder, s.file_path, s.file_size,
+          `SELECT b.id AS book_id, b.added_at, s.kind, l.folder, s.file_path, s.file_size,
                   s.calibre_last_modified
              FROM books b INDEXED BY books_added
              CROSS JOIN book_sources s
-               ON s.book_id = b.id AND s.kind = 'calibre' AND s.missing_at IS NULL
+               ON s.book_id = b.id AND s.kind IN ('calibre', 'upload') AND s.missing_at IS NULL
              JOIN libraries l ON l.id = s.library_id AND l.enabled = 1 AND l.available = 1
              LEFT JOIN char_counts c ON c.book_id = b.id
             WHERE s.file_path IS NOT NULL
@@ -102,6 +105,7 @@ export class CharCountService {
         .all({ ...cursor, spec: this.spec, limit }) as {
         book_id: string;
         added_at: number;
+        kind: 'calibre' | 'upload';
         folder: string;
         file_path: string;
         file_size: number | null;
@@ -110,6 +114,7 @@ export class CharCountService {
     ).map((r) => ({
       bookId: r.book_id,
       addedAt: r.added_at,
+      kind: r.kind,
       libraryFolder: r.folder,
       filePath: r.file_path,
       fileSize: r.file_size,
@@ -265,7 +270,12 @@ export class CharCountService {
   ): Promise<CountOutcome> {
     let file: string;
     try {
-      file = resolveInside(path.join(this.opts.calibreDir, src.libraryFolder), src.filePath);
+      if (src.kind === 'upload') {
+        if (!this.opts.uploads) throw new Error('uploads are not available');
+        file = this.opts.uploads.resolve(src.filePath);
+      } else {
+        file = resolveInside(path.join(this.opts.calibreDir, src.libraryFolder), src.filePath);
+      }
     } catch (err) {
       // A stored path that would leave the library folder: never opened.
       return Promise.resolve({

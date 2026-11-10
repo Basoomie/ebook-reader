@@ -12,7 +12,8 @@
  *   THUMB_SPEC changes.
  *
  * Never writes anywhere but CACHE_DIR/thumbs. Covers are read through
- * calibre/source-fs (read-only).
+ * calibre/source-fs (read-only). Uploaded books (WP7b) take their cover image from
+ * the EPUB itself, read through the upload store (read-only).
  */
 import type Database from 'better-sqlite3';
 import { createHash, randomBytes } from 'crypto';
@@ -20,6 +21,8 @@ import fs from 'fs/promises';
 import path from 'path';
 import sharp from 'sharp';
 import { readSourceFile, resolveInside } from '../calibre/source-fs';
+import { readEpubCover } from '../uploads/epub-meta';
+import type { UploadStore } from '../uploads/upload-store';
 
 // Keep libvips light on the NAS: one worker thread, no operation cache.
 sharp.concurrency(1);
@@ -40,14 +43,29 @@ export function thumbnailFile(cacheDir: string, bookId: string): string {
 
 export interface CoverSource {
   bookId: string;
+  kind: 'calibre' | 'upload';
   libraryFolder: string;
-  calibrePath: string;
+  /** Calibre's book folder; null for an upload. */
+  calibrePath: string | null;
+  /** An upload's SHA-256 (WP7b); null for Calibre books. */
+  contentHash: string | null;
+  /** An upload's stored path (relative to DATA_DIR/.uploads). */
+  filePath: string | null;
   hasCover: boolean;
   lastModified: number | null;
 }
 
-export function sourceKey(src: Pick<CoverSource, 'lastModified' | 'calibrePath' | 'hasCover'>) {
-  return `${src.lastModified ?? ''}|${src.calibrePath}|${src.hasCover ? 1 : 0}`;
+/**
+ * Calibre books: last_modified | book folder | has_cover. Uploads (no folder, never
+ * change): | upload:<sha256> | has_cover. Calibre keys are the same as before WP7b.
+ */
+export function sourceKey(
+  src: Pick<CoverSource, 'lastModified' | 'calibrePath' | 'hasCover'> & {
+    contentHash?: string | null;
+  },
+) {
+  const where = src.calibrePath ?? `upload:${src.contentHash ?? ''}`;
+  return `${src.lastModified ?? ''}|${where}|${src.hasCover ? 1 : 0}`;
 }
 
 /** Short version tag for thumbnail URLs (?v=): changes whenever the thumbnail would. */
@@ -57,18 +75,24 @@ export function thumbnailVersion(key: string, spec: number = THUMB_SPEC.version)
 
 /** Same as sourceKey(), in SQL, over book_sources aliased as `s`. */
 const SQL_SOURCE_KEY =
-  "(COALESCE(s.calibre_last_modified, '') || '|' || s.calibre_path || '|' || s.has_cover)";
+  "(COALESCE(s.calibre_last_modified, '') || '|' || " +
+  "COALESCE(s.calibre_path, 'upload:' || COALESCE(s.content_hash, '')) || '|' || s.has_cover)";
 
 const SQL_COVER_SOURCES = `
-  SELECT b.id AS book_id, l.folder, s.calibre_path, s.has_cover, s.calibre_last_modified
+  SELECT b.id AS book_id, s.kind, l.folder, s.calibre_path, s.content_hash, s.file_path,
+         s.has_cover, s.calibre_last_modified
   FROM books b
-  JOIN book_sources s ON s.book_id = b.id AND s.kind = 'calibre' AND s.missing_at IS NULL
+  JOIN book_sources s
+    ON s.book_id = b.id AND s.kind IN ('calibre', 'upload') AND s.missing_at IS NULL
   JOIN libraries l ON l.id = s.library_id AND l.enabled = 1 AND l.available = 1`;
 
 interface CoverSourceRow {
   book_id: string;
+  kind: 'calibre' | 'upload';
   folder: string;
-  calibre_path: string;
+  calibre_path: string | null;
+  content_hash: string | null;
+  file_path: string | null;
   has_cover: number;
   calibre_last_modified: number | null;
 }
@@ -76,8 +100,11 @@ interface CoverSourceRow {
 function toCoverSource(r: CoverSourceRow): CoverSource {
   return {
     bookId: r.book_id,
+    kind: r.kind,
     libraryFolder: r.folder,
     calibrePath: r.calibre_path,
+    contentHash: r.content_hash,
+    filePath: r.file_path,
     hasCover: r.has_cover === 1,
     lastModified: r.calibre_last_modified,
   };
@@ -154,6 +181,8 @@ export interface ThumbnailServiceOptions {
   /** Background rate limit; 0 = none. On-demand requests are not rate-limited. */
   perSecond: number;
   background: boolean;
+  /** Uploaded EPUBs (WP7b); without it, uploads get no thumbnail (recorded as an error). */
+  uploads?: UploadStore | null;
   log?: (message: string) => void;
   logError?: (message: string, err: unknown) => void;
 }
@@ -206,11 +235,11 @@ export class ThumbnailService {
     return (
       this.db
         .prepare(
-          `SELECT b.id AS book_id, b.added_at, l.folder, s.calibre_path, s.has_cover,
-                  s.calibre_last_modified
+          `SELECT b.id AS book_id, b.added_at, s.kind, l.folder, s.calibre_path, s.content_hash,
+                  s.file_path, s.has_cover, s.calibre_last_modified
            FROM books b INDEXED BY books_added
            CROSS JOIN book_sources s
-             ON s.book_id = b.id AND s.kind = 'calibre' AND s.missing_at IS NULL
+             ON s.book_id = b.id AND s.kind IN ('calibre', 'upload') AND s.missing_at IS NULL
            JOIN libraries l ON l.id = s.library_id AND l.enabled = 1 AND l.available = 1
            LEFT JOIN thumbnails t ON t.book_id = b.id
            WHERE s.has_cover = 1
@@ -272,9 +301,7 @@ export class ThumbnailService {
       record = this.save(src.bookId, { status: 'none', key, now, attempts: 0 });
     } else {
       try {
-        const libraryDir = path.join(this.opts.calibreDir, src.libraryFolder);
-        const cover = resolveInside(libraryDir, `${src.calibrePath}/cover.jpg`);
-        const input = await readSourceFile(cover);
+        const input = await this.readCover(src);
         const { data, info } = await sharp(input, { failOn: 'error' })
           .rotate()
           .resize({
@@ -299,7 +326,9 @@ export class ThumbnailService {
       } catch (err) {
         const message =
           (err as NodeJS.ErrnoException).code === 'ENOENT'
-            ? 'cover.jpg is missing although Calibre lists a cover'
+            ? src.kind === 'upload'
+              ? 'the uploaded file is missing'
+              : 'cover.jpg is missing although Calibre lists a cover'
             : `cover could not be read: ${(err as Error).message}`;
         record = this.save(src.bookId, {
           status: 'error',
@@ -312,6 +341,19 @@ export class ThumbnailService {
       }
     }
     return { record, file };
+  }
+
+  /** The cover image's bytes: Calibre's cover.jpg, or the image inside an uploaded EPUB. */
+  private async readCover(src: CoverSource): Promise<Buffer> {
+    if (src.kind === 'upload') {
+      const store = this.opts.uploads;
+      if (!store || !src.filePath) throw new Error('uploads are not available');
+      const cover = await readEpubCover(store.resolve(src.filePath), store.openFile);
+      if (!cover) throw new Error('the EPUB has no cover image');
+      return cover;
+    }
+    const libraryDir = path.join(this.opts.calibreDir, src.libraryFolder);
+    return readSourceFile(resolveInside(libraryDir, `${src.calibrePath}/cover.jpg`));
   }
 
   private save(

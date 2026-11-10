@@ -30,6 +30,7 @@ import {
   MAX_PAGE_SIZE,
   PlannedQuery,
   SQL_BOOK_FROM,
+  SQL_CATALOG_SOURCE,
   summariesByIds,
   visibilitySql,
 } from './queries';
@@ -413,7 +414,7 @@ function pickCollage(
     .prepare(
       `SELECT b.id, b.series_id FROM sync_records p
          CROSS JOIN books b ON b.id = p.book_id
-         CROSS JOIN book_sources s ON s.book_id = b.id AND s.kind = 'calibre'
+         CROSS JOIN book_sources s ON s.book_id = b.id AND ${SQL_CATALOG_SOURCE}
          JOIN libraries l ON l.id = b.library_id AND l.enabled = 1
          ${opened.sql}
         GROUP BY b.id ORDER BY MAX(p.updated_at) DESC LIMIT ${TILE_COUNT}`,
@@ -439,7 +440,7 @@ function pickCollage(
   const newest = db
     .prepare(
       `SELECT b.id, b.series_id ${memberDriven}
-         CROSS JOIN book_sources s ON s.book_id = b.id AND s.kind = 'calibre'
+         CROSS JOIN book_sources s ON s.book_id = b.id AND ${SQL_CATALOG_SOURCE}
          JOIN libraries l ON l.id = b.library_id AND l.enabled = 1
          ${newestCond.sql}
         ORDER BY b.added_at DESC, b.id DESC LIMIT ${TILE_SCAN}`,
