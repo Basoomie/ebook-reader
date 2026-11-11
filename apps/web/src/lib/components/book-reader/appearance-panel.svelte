@@ -35,6 +35,8 @@
   import { applyAppearanceValues } from './appearance-settings';
   import { planAppearanceCopy, type DeviceAppearance } from '$lib/sync/copy-device-settings';
   import { formatAge } from '$lib/sync/position-prompt';
+  import InlineConfirm from '$lib/components/confirm/inline-confirm.svelte';
+  import { copyLookCopy } from '$lib/confirm/confirm-copy';
 
   const dispatch = createEventDispatcher<{ close: void }>();
 
@@ -356,19 +358,14 @@
     </ul>
   {/if}
   {#if confirming}
-    <div
-      class="mt-2 border-2 border-black p-3"
-      role="alertdialog"
-      data-testid="appearance-copy-confirm"
-    >
-      <p class="mb-2">
-        Use the theme, fonts, sizes and page layout of {deviceLabel(confirming)} on this device? E-ink
-        and Zen mode stay as they are.
-      </p>
-      <div class="flex justify-end gap-2">
-        <button class={button} on:click={() => (confirming = undefined)}>Cancel</button>
-        <button class={button} on:click={() => confirming && copyFrom(confirming)}>Copy</button>
-      </div>
+    <div class="mt-2">
+      <InlineConfirm
+        {...copyLookCopy(deviceLabel(confirming))}
+        testid="appearance-copy-confirm"
+        confirmTestid="appearance-copy-confirm-button"
+        on:confirm={() => confirming && copyFrom(confirming)}
+        on:cancel={() => (confirming = undefined)}
+      />
     </div>
   {/if}
   {#if copyMessage}

@@ -20,6 +20,8 @@ If code and docs disagree, or a task needs a decision the docs don't cover, STOP
 3. **WP19c**: book details page.
 4. **WP19d**: highlights and notes refresh (decisions: "WP19d: highlights and notes refresh, plan"), three branches: `wp19d-notes-page` (Notes page redesign, CSV export), `wp19d-quote-image` (quote images), `wp19d-reader-bar` (the reader's highlight bar). The reader bar branch is the one approved exception to "never the reader": restyle and a Quote image button only; the bar stays docked and its behaviour is unchanged.
 
+Confirmations before destructive actions (`wp19-confirm-destructive`; decisions: "WP19: confirmations before destructive actions") are a second approved exception: a confirm step (or Undo) in front of existing actions, also in the reader, whispersync and the Book Manager; never the migration pages. New destructive actions use `confirmDestructive` / `inline-confirm.svelte` with their text in `lib/confirm/confirm-copy.ts`.
+
 Phase 5 (WP14-WP17) comes after WP19. The old sync is off (whispersync still uses it for matches until WP15). Still don't change the migration pages or the old-sync switch. Existing `stat-day` rows stay frozen as "before device tracking": never delete or rewrite them. Don't rewrite existing position records.
 
 Stop condition: each work package is finished on its own branch, with a summary of what changed, how it was verified, and anything unexpected. Then stop for review. Do not start the next work package or phase without approval.

@@ -17,6 +17,7 @@ import {
   normalizeRows,
   pinRow,
   rowHref,
+  restoreRow,
   rowTitle,
   setRowHidden,
   unpinRow,
@@ -88,6 +89,17 @@ describe('Home rows', () => {
     expect(moveRow(rows, 0, -1)).toEqual(rows);
     rows = unpinRow(rows, fav);
     expect(rows.map((r) => r.type)).toEqual(['series', 'continue', 'recent']);
+  });
+
+  it('puts a removed row back at its place, or last, and only once (Undo)', () => {
+    const series: HomeRow = { type: 'series', ref: 'シリーズ', hidden: false };
+    const start: HomeRow[] = [...normalizeRows([]), series];
+    const index = start.indexOf(series);
+    const removed = unpinRow(start, series);
+    expect(restoreRow(removed, series, index)).toEqual(start);
+    expect(restoreRow(restoreRow(removed, series, index), series, index)).toEqual(start);
+    expect(restoreRow(removed, series, 99).at(-1)).toEqual(series);
+    expect(restoreRow(removed, series, -1)[0]).toEqual(series);
   });
 
   it('names rows and links them to their full view', () => {

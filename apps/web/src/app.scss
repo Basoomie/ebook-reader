@@ -58,6 +58,28 @@
   --c-cover-hover-shadow: 0 14px 28px rgba(26, 34, 51, 0.22);
   --c-pop-shadow: 0 16px 40px rgba(26, 34, 51, 0.18);
   --c-border-width: 1px;
+  /* The action button of a "Delete …?" confirmation (c-btn-danger). Light values outside
+     the catalogue too: the reader's and the Manager's dialogs are white. */
+  --c-danger: #b8361f;
+  --c-danger-ink: #ffffff;
+  --c-danger-hover: #9e2c18;
+  --c-danger-active: #84230f;
+}
+
+/* Dark only where dialogs take the dark look (catalogue pages); navy text, since white on
+   the lighter red is under 4.5:1. */
+html.catalogue.catalogue-dark:not(.eink) {
+  --c-danger: #e07a63;
+  --c-danger-ink: #0e1524;
+  --c-danger-hover: #ea957f;
+  --c-danger-active: #c9604a;
+}
+
+html.eink {
+  --c-danger: #000;
+  --c-danger-ink: #fff;
+  --c-danger-hover: #000;
+  --c-danger-active: #fff;
 }
 
 html.catalogue-dark {
@@ -320,6 +342,31 @@ html.catalogue.eink .mdc-elevation--z24 button.border-current:not(:disabled):act
   }
 
   html.eink .c-btn-primary:not(:disabled):active {
+    color: #000;
+    border-color: #000;
+  }
+
+  /* The action of a destructive confirmation ("Delete 3 books"): red fill (light), a
+     lighter red with navy text (dark catalogue), black (E-ink; pressing turns it white). */
+  .c-btn-danger {
+    background-color: var(--c-danger);
+    border-color: var(--c-danger);
+    color: var(--c-danger-ink);
+  }
+
+  @media (hover: hover) {
+    html:not(.eink) .c-btn-danger:not(:disabled):hover {
+      background-color: var(--c-danger-hover);
+      border-color: var(--c-danger-hover);
+    }
+  }
+
+  .c-btn-danger:not(:disabled):active {
+    background-color: var(--c-danger-active);
+    border-color: var(--c-danger-active);
+  }
+
+  html.eink .c-btn-danger:not(:disabled):active {
     color: #000;
     border-color: #000;
   }

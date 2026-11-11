@@ -33,6 +33,8 @@
   import { customFontNames$ } from '$lib/fonts/server-fonts-browser';
   import { BlurMode } from '$lib/data/blur-mode';
   import { dialogManager } from '$lib/data/dialog-manager';
+  import { confirmDestructive } from '$lib/confirm/confirm';
+  import { deleteThemeCopy } from '$lib/confirm/confirm-copy';
   import { LocalFont } from '$lib/data/fonts';
   import { FuriganaStyle } from '$lib/data/furigana-style';
   import { ImportHTMLFixMode } from '$lib/data/import-html-fix-mode';
@@ -241,7 +243,15 @@
     ]);
   }
 
-  function deleteTheme(themeId: string) {
+  async function deleteTheme(themeId: string) {
+    // WP19: custom themes are shared settings, so deleting one reaches every device.
+    const confirmed = await confirmDestructive({
+      ...deleteThemeCopy(themeId),
+      testid: 'theme-delete-confirm',
+      confirmTestid: 'theme-delete-confirm-button'
+    });
+    if (!confirmed) return;
+
     $theme$ = optionsForTheme[optionsForTheme.length - 2]?.id || 'light-theme';
 
     // WP10d: a deleted theme can't stay the light or dark choice.

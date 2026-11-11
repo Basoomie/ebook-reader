@@ -3,7 +3,8 @@
    * WP11a: this book's highlights and notes. Plain for e-ink like the search dialog: no
    * transitions, 48 px bordered controls, inert backdrop, Esc closes. Choosing an item
    * closes the panel and jumps there (recorded in the jump history, not saved). Notes are
-   * written inline; removing offers Undo until the next action.
+   * written inline; removing offers Undo (WP19: until it is dismissed, the next removal or
+   * the panel closing; other actions no longer clear it).
    *
    * WP11b: a Bookmarks tab (jump, rename, remove, add) and, while set, the return marker
    * ("Where you were reading") above both tabs.
@@ -23,6 +24,7 @@
   import { EINK_UNDERLINES, HIGHLIGHT_SWATCHES } from './highlight-colors';
   import type { HighlightsView, NotesPanelAnswer } from './reader-highlights';
   import { MAX_BOOKMARK_NAME, type BookmarkItem } from '$lib/notes/bookmarks';
+  import UndoNotice from '$lib/components/confirm/undo-notice.svelte';
 
   export let view: Readable<HighlightsView>;
   export let bookId: string | null;
@@ -118,7 +120,6 @@
   }
 
   function startNote(key: string, target: NoteTarget, text: string) {
-    undo = undefined;
     editing = { key, target, text };
   }
 
@@ -156,12 +157,10 @@
   }
 
   function setColor(item: HighlightItem, color: HighlightColor) {
-    undo = undefined;
     act(() => actions.setColor(item.id, color));
   }
 
   function startRename(item: BookmarkItem) {
-    undo = undefined;
     editing = { key: item.id, target: { bookId: item.bookId }, text: item.name };
   }
 
@@ -198,7 +197,6 @@
   function showTab(next: 'notes' | 'bookmarks') {
     tab = next;
     editing = undefined;
-    undo = undefined;
     error = '';
   }
 </script>
@@ -265,10 +263,16 @@
     </div>
 
     {#if undo}
-      <p class="mb-2 flex items-center gap-3" role="status">
-        {undo.message}
-        <button class={smallButton} data-testid="notes-undo" on:click={runUndo}>Undo</button>
-      </p>
+      <div class="mb-2">
+        <UndoNotice
+          message={undo.message}
+          buttonClass={smallButton}
+          testid="notes-undo-notice"
+          undoTestid="notes-undo"
+          on:undo={runUndo}
+          on:dismiss={() => (undo = undefined)}
+        />
+      </div>
     {/if}
     {#if error}
       <p class="mb-2 text-sm" role="alert">{error}</p>

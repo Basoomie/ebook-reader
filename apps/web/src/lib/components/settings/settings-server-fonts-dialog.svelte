@@ -11,6 +11,8 @@
   import { customFontNames$, fontApi, serverFonts } from '$lib/fonts/server-fonts-browser';
   import { FONT_KIND, type FontStatus, type ServerFontState } from '$lib/fonts/server-fonts';
   import { LibraryApiError } from '$lib/library/api';
+  import InlineConfirm from '$lib/components/confirm/inline-confirm.svelte';
+  import { deleteFontCopy } from '$lib/confirm/confirm-copy';
 
   const dispatch = createEventDispatcher<{ close: void }>();
 
@@ -224,18 +226,27 @@
                 <span data-testid="server-font-status">{statusText[font.status]}</span>
               </div>
             </div>
-            {#if confirmDelete?.id === font.id}
-              <div class="flex flex-col items-end gap-2">
-                <span class="text-sm">Delete "{font.name}" from every device?</span>
-                <div class="flex gap-2">
-                  <button class={button} on:click={() => deleteFont(font)}>Delete</button>
-                  <button class={button} on:click={() => (confirmDelete = null)}>Keep</button>
-                </div>
-              </div>
-            {:else}
-              <button class={button} on:click={() => (confirmDelete = font)}>Delete</button>
+            {#if confirmDelete?.id !== font.id}
+              <button
+                class={button}
+                data-testid="server-font-delete"
+                on:click={() => (confirmDelete = font)}
+              >
+                Delete…
+              </button>
             {/if}
           </li>
+          {#if confirmDelete?.id === font.id}
+            <li class="pb-3">
+              <InlineConfirm
+                {...deleteFontCopy(font.name)}
+                testid="server-font-delete-confirm"
+                confirmTestid="server-font-delete-confirm-button"
+                on:confirm={() => deleteFont(font)}
+                on:cancel={() => (confirmDelete = null)}
+              />
+            </li>
+          {/if}
         {/each}
       </ul>
     {:else}

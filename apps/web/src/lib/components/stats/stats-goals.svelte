@@ -22,6 +22,8 @@
   import type { StatsBookInfo } from '$lib/stats/stats-view';
   import type { ReadThrough } from '$lib/sync/book-state';
   import type { StatsApi } from '$lib/sync/sync-service';
+  import { confirmDestructive } from '$lib/confirm/confirm';
+  import { endGoalCopy } from '$lib/confirm/confirm-copy';
 
   /**
    * WP12c: reading goals on the Stats page. Several goals can be active; each shows the
@@ -139,7 +141,18 @@
 
   async function end(goal: StatGoal) {
     saveError = '';
-    if (!(await stats.applyGoalWrites(planGoalEnd(goal, todayKey, weekStart)))) {
+    const writes = planGoalEnd(goal, todayKey, weekStart);
+    // WP19: ask first (a goal that began in this period is removed outright).
+    const confirmed = await confirmDestructive({
+      ...endGoalCopy(
+        goalTitle(goal),
+        writes.some((w) => w.op === 'remove')
+      ),
+      testid: 'goal-end-confirm',
+      confirmTestid: 'goal-end-confirm-button'
+    });
+    if (!confirmed) return;
+    if (!(await stats.applyGoalWrites(writes))) {
       saveError = 'The goal could not be ended.';
     }
   }
