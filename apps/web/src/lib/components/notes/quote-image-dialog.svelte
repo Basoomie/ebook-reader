@@ -271,41 +271,48 @@
         </div>
       </fieldset>
 
-      <fieldset class="flex flex-col gap-1">
-        <legend class="mb-1 font-medium text-c-muted">Show</legend>
-        <label class="flex min-h-[2.75rem] items-center gap-3">
-          <input
-            type="checkbox"
-            class="h-5 w-5"
-            checked={options.showTitle}
-            data-testid="quote-show-title"
-            on:change={(ev) => set('showTitle', ev.currentTarget.checked)}
-          />
-          Title
-        </label>
-        <label class="flex min-h-[2.75rem] items-center gap-3">
-          <input
-            type="checkbox"
-            class="h-5 w-5"
-            checked={options.showAuthor}
-            data-testid="quote-show-author"
-            on:change={(ev) => set('showAuthor', ev.currentTarget.checked)}
-          />
-          Author
-        </label>
-        {#if hasNote}
-          <label class="flex min-h-[2.75rem] items-center gap-3">
-            <input
-              type="checkbox"
-              class="h-5 w-5"
-              checked={options.showNote}
-              data-testid="quote-show-note"
-              on:change={(ev) => set('showNote', ev.currentTarget.checked)}
-            />
-            Note
-          </label>
-        {/if}
-      </fieldset>
+      {#if content.title.trim() || content.author.trim() || hasNote}
+        <fieldset class="flex flex-col gap-1">
+          <legend class="mb-1 font-medium text-c-muted">Show</legend>
+          {#if content.title.trim()}
+            <label class="flex min-h-[2.75rem] items-center gap-3">
+              <input
+                type="checkbox"
+                class="h-5 w-5"
+                checked={options.showTitle}
+                data-testid="quote-show-title"
+                on:change={(ev) => set('showTitle', ev.currentTarget.checked)}
+              />
+              Title
+            </label>
+          {/if}
+          <!-- The reader has no author for its books (only the library server does). -->
+          {#if content.author.trim()}
+            <label class="flex min-h-[2.75rem] items-center gap-3">
+              <input
+                type="checkbox"
+                class="h-5 w-5"
+                checked={options.showAuthor}
+                data-testid="quote-show-author"
+                on:change={(ev) => set('showAuthor', ev.currentTarget.checked)}
+              />
+              Author
+            </label>
+          {/if}
+          {#if hasNote}
+            <label class="flex min-h-[2.75rem] items-center gap-3">
+              <input
+                type="checkbox"
+                class="h-5 w-5"
+                checked={options.showNote}
+                data-testid="quote-show-note"
+                on:change={(ev) => set('showNote', ev.currentTarget.checked)}
+              />
+              Note
+            </label>
+          {/if}
+        </fieldset>
+      {/if}
     </div>
   </div>
 

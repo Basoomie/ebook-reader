@@ -741,6 +741,24 @@ export class ReaderHighlights {
     }
   }
 
+  /**
+   * WP19d "Quote image": what to draw, then the bar closes. The one highlight under the
+   * selection (its whole text, colour and note), else the selected text in the last
+   * colour. Reads only: nothing is highlighted or saved.
+   */
+  chooseQuote(): { text: string; color: HighlightColor; note: string | null } | undefined {
+    if (this.barMode !== 'new' && this.barMode !== 'existing') {
+      return undefined;
+    }
+
+    const item = this.barMode === 'existing' && this.under.length === 1 ? this.under[0] : undefined;
+    const text = item?.text ?? this.anchor?.text ?? '';
+    const color = item?.color ?? this.under[0]?.color ?? this.host.lastColor();
+    const note = item?.note?.body ?? null;
+    this.finish();
+    return text.trim() ? { text, color, note } : undefined;
+  }
+
   /** "Remove": removes the highlights under the selection; the bar then offers Undo. */
   async chooseRemove() {
     if (this.barMode !== 'existing') {
