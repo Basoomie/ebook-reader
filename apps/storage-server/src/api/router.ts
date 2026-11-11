@@ -14,6 +14,9 @@ import { seedPlannedCollections } from '../collections/seed';
 import { createMigrationRouter } from '../migration/routes';
 import { MigrationService } from '../migration/service';
 import { createSyncRouter, SYNC_BODY_LIMIT } from '../sync/routes';
+import { createExportRouter } from '../export/routes';
+import { createLogsRouter } from '../logs/routes';
+import { serverLogs, type RecentLogs } from '../logs/recent-logs';
 import { createUploadRouter } from '../uploads/routes';
 import { FontStore } from '../fonts/font-store';
 import { createFontRouter } from '../fonts/routes';
@@ -54,6 +57,8 @@ export interface ApiOptions {
   seedDefaults?: boolean;
   /** Custom fonts (WP13): stored in DATA_DIR/.uploads/fonts. Without it they are off. */
   fonts?: FontOptions;
+  /** Recent log lines for the bug report (WP18). Default: the process-wide buffer. */
+  logs?: RecentLogs;
 }
 
 export interface FontOptions {
@@ -79,6 +84,7 @@ export function createApiRouter({
   migration,
   seedDefaults = true,
   fonts,
+  logs = serverLogs,
 }: ApiOptions): Router {
   const router = express.Router();
   // Pushes can carry many records; everything else keeps the small default limit.
@@ -116,6 +122,8 @@ export function createApiRouter({
         limiter.recordFailure();
         throw new ApiError(401, 'invalid_code', 'Unknown, used or expired pairing code');
       }
+      // Never the code or the token (WP18: the bug report includes these lines).
+      console.log(`Pairing: a device paired as "${result.record.label}"`);
       res.json({ token: result.token, label: result.record.label });
     });
 
@@ -128,6 +136,9 @@ export function createApiRouter({
       const { user, token } = getAuth(res);
       res.json({ user, token });
     });
+
+    // The server's recent log lines for the bug report (WP18), secrets removed.
+    router.use(createLogsRouter(logs));
 
     router.use(createCatalogRouter(db, catalog));
     // Uploads (WP7b): a separate source adapter, mounted only when it is on.
@@ -149,6 +160,8 @@ export function createApiRouter({
       }
     }
     router.use(createSyncRouter(db, syncStore));
+    // Export my data (WP18): read-only.
+    router.use(createExportRouter(db, syncStore));
 
     // Custom fonts (WP13). Independent of Calibre; off only when the folder is unusable.
     if (fonts) {

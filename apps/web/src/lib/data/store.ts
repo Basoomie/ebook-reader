@@ -22,7 +22,6 @@ import {
   StatisticsReadingDataAggregationMode
 } from '$lib/components/statistics/statistics-types';
 import { BlurMode } from '$lib/data/blur-mode';
-import type { UserFont } from '$lib/data/fonts';
 import { MergeMode } from '$lib/data/merge-mode';
 import type { ReadingGoal } from '$lib/data/reading-goal';
 import { SortDirection, type SortOption } from '$lib/data/sort-types';
@@ -573,5 +572,3 @@ export const horizontalCustomReadingPosition$ = writableNumberLocalStorageSubjec
 export const isOnline$ = writableSubject<boolean>(true);
 
 export const skipKeyDownListener$ = writableSubject<boolean>(false);
-
-export const userFonts$ = writableArrayLocalStorageSubject<UserFont>()('userfonts', []);

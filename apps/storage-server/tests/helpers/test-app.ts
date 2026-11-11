@@ -9,6 +9,7 @@ import {
   DEFAULT_SYNC_CONFIG,
   DEFAULT_UPLOAD_CONFIG,
   DEFAULT_FONT_CONFIG,
+  DEFAULT_LOG_CONFIG,
   ServerConfig,
 } from '../../src/config';
 import { DatabaseState, initDatabase } from '../../src/db/database';
@@ -34,6 +35,7 @@ export function testConfig(overrides: Partial<ServerConfig> = {}): ServerConfig 
     search: { ...DEFAULT_SEARCH_CONFIG },
     uploads: { ...DEFAULT_UPLOAD_CONFIG },
     fonts: { ...DEFAULT_FONT_CONFIG },
+    logs: { ...DEFAULT_LOG_CONFIG },
     ...overrides,
   };
 }

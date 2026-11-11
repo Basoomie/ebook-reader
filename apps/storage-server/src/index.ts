@@ -10,6 +10,10 @@ import { scheduleSnapshots, snapshotDir, SnapshotScheduler } from './snapshot';
 import { UploadService } from './uploads/service';
 import { UploadStore } from './uploads/upload-store';
 import { SERVER_VERSION } from './version';
+import { captureConsole, serverLogs } from './logs/recent-logs';
+
+// Every console line is also kept (secrets removed) for the bug report (WP18).
+captureConsole(serverLogs);
 
 let loaded: LoadedConfig;
 try {
@@ -23,6 +27,7 @@ try {
 }
 
 const { config, warnings } = loaded;
+serverLogs.configure({ maxLines: config.logs.bufferLines, secrets: [config.authToken] });
 for (const warning of warnings) console.warn(`Warning: ${warning}`);
 
 // The database is optional for the legacy endpoints: if it can't be opened,

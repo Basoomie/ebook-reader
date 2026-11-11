@@ -99,8 +99,9 @@ export interface CopyPlan {
 }
 
 /**
- * What a copy changes. A font the other device uses but this device doesn't have (a font
- * added in that browser only, until WP13) is not copied; the current font is kept.
+ * What a copy changes. A font the other device uses but this device doesn't have (one
+ * no longer on the server, or one installed only on that computer) is not copied; the
+ * current font is kept.
  */
 export function planAppearanceCopy(
   values: Partial<Record<AppearanceKey, string | null>>,

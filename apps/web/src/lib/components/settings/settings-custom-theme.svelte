@@ -74,7 +74,7 @@
   let includeSize = false;
   let size = $fontSize$;
 
-  // Custom fonts: server-synced ones (WP13) and this browser's own.
+  // Custom fonts: the server-synced ones (WP13).
   $: userFontNames = $customFontNames$;
   $: fontsOne = [
     LocalFont.NOTOSERIFJP,

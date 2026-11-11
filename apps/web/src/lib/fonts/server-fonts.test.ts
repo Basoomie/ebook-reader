@@ -8,6 +8,7 @@ import 'fake-indexeddb/auto';
 import { describe, expect, it } from 'vitest';
 import { IdbFontCache, openFontCacheDb, type CachedFont, type FontCache } from './font-cache-db';
 import { customFontNames, fontNameProblem, formatFontSize, isFontFileName } from './font-names';
+import { oldFontNames, planOldFontCleanup } from './old-browser-fonts';
 import {
   FONT_KIND,
   ServerFonts,
@@ -116,16 +117,28 @@ describe('font names', () => {
     expect(fontNameProblem('mine', ['Mine'])).toMatch(/already a font/);
   });
 
-  it('merges server and browser fonts for the pickers', () => {
+  it('lists the server fonts for the pickers once each', () => {
+    expect(customFontNames(['A', 'B', 'A'])).toEqual(['A', 'B']);
+  });
+
+  it('plans the removal of the per-browser fonts (WP18)', () => {
+    const raw = JSON.stringify([
+      { name: 'Old', path: '/userfonts/Old', fileName: 'old.ttf' },
+      { name: 'Both', path: '/userfonts/Both', fileName: 'both.ttf' }
+    ]);
+    const defaults = { groupOne: 'Noto Serif JP', groupTwo: 'Noto Sans JP' };
     expect(
-      customFontNames(
-        ['A', 'B'],
-        [
-          { name: 'B', path: '/userfonts/b', fileName: 'b.ttf' },
-          { name: 'C', path: '/userfonts/c', fileName: 'c.ttf' }
-        ]
-      )
-    ).toEqual(['A', 'B', 'C']);
+      planOldFontCleanup(raw, { groupOne: 'Old', groupTwo: 'Both' }, defaults, ['Both'])
+    ).toEqual({ groupOne: 'Noto Serif JP', removed: ['Old'] });
+    expect(
+      planOldFontCleanup(raw, { groupOne: 'Klee One', groupTwo: 'Old' }, defaults, [])
+    ).toEqual({ groupTwo: 'Noto Sans JP', removed: ['Old', 'Both'] });
+    expect(planOldFontCleanup(null, { groupOne: 'Old', groupTwo: 'Old' }, defaults, [])).toEqual({
+      removed: []
+    });
+    expect(oldFontNames('not json')).toEqual([]);
+    expect(oldFontNames('{"name":"x"}')).toEqual([]);
+    expect(oldFontNames('[{"name":1},null,{"name":"A"}]')).toEqual(['A']);
   });
 
   it('knows font files and formats sizes', () => {

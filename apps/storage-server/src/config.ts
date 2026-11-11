@@ -35,6 +35,8 @@ export interface ServerConfig {
   uploads: UploadConfig;
   /** Custom fonts (WP13). */
   fonts: FontConfig;
+  /** Recent log lines kept for the bug report (WP18). */
+  logs: LogConfig;
 }
 
 export interface SearchConfig {
@@ -181,6 +183,7 @@ export function loadConfig(env: Env): LoadedConfig {
       search: parseSearchConfig(env, warnings),
       uploads: parseUploadConfig(env, warnings),
       fonts: parseFontConfig(env, warnings),
+      logs: parseLogConfig(env, warnings),
     },
     warnings,
   };
@@ -363,6 +366,28 @@ export interface FontConfig {
 }
 
 export const DEFAULT_FONT_CONFIG: FontConfig = { maxMb: 64 };
+
+export interface LogConfig {
+  /** Log lines kept in memory for the bug report (LOG_BUFFER_LINES). */
+  bufferLines: number;
+}
+
+export const DEFAULT_LOG_CONFIG: LogConfig = { bufferLines: 2000 };
+
+/** WP18 settings; bad values fall back to the defaults. */
+export function parseLogConfig(env: Env, warnings: string[]): LogConfig {
+  return {
+    bufferLines: parseNumber(
+      'LOG_BUFFER_LINES',
+      env.LOG_BUFFER_LINES,
+      DEFAULT_LOG_CONFIG.bufferLines,
+      100,
+      100_000,
+      true,
+      warnings,
+    ),
+  };
+}
 
 /** WP13 settings; bad values fall back to the defaults. */
 export function parseFontConfig(env: Env, warnings: string[]): FontConfig {
