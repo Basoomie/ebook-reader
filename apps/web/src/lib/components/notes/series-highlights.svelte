@@ -50,7 +50,15 @@
       return [
         id,
         book
-          ? { id, title: book.title, series: book.series, charCount: book.charCount }
+          ? {
+              id,
+              title: book.title,
+              series: book.series,
+              charCount: book.charCount,
+              authors: book.authors.map((a) => a.name),
+              // A book the server didn't return (unknownCatalogBook): no details page.
+              unknown: book.libraryId ? undefined : true
+            }
           : unknownBookInfo(id)
       ];
     })
