@@ -20,7 +20,8 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { clearGroupCaches, planGroups } from '../src/catalog/groups';
-import { planBooks, PlannedQuery } from '../src/catalog/queries';
+import { planBooks, planCount, PlannedQuery } from '../src/catalog/queries';
+import { BOOK_SORT_KEYS, SORT_DIRS } from '../src/catalog/sort';
 import { registerRegexp } from '../src/catalog/regexp';
 import { SearchRunner } from '../src/catalog/search-runner';
 import { openDatabase } from '../src/db/database';
@@ -68,8 +69,9 @@ function buildSynthetic(file: string, books: number): string {
     const t = db.prepare('INSERT INTO tags (id, name) VALUES (?, ?)');
     for (let i = 1; i <= 300; i++) t.run(i, i === 1 ? 'ライトノベル' : `タグ${i}`);
     const b = db.prepare(
-      `INSERT INTO books (id, library_id, title, series_id, series_index, added_at, char_count, created_at, updated_at)
-       VALUES (?, 'lib', ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO books (id, library_id, title, title_sort, author_sort, series_id, series_index,
+                          added_at, published_at, char_count, created_at, updated_at)
+       VALUES (?, 'lib', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     const src = db.prepare(
       `INSERT INTO book_sources (id, book_id, kind, library_id, calibre_uuid, calibre_id, calibre_path,
@@ -101,9 +103,13 @@ function buildSynthetic(file: string, books: number): string {
       b.run(
         id,
         title,
+        title,
+        // WP19a: a few uploads without an author sort, a fifth without a publication date.
+        i % 50 === 0 ? null : `著者${(i % authors) + 1}`,
         seriesId,
         inSeries ? Math.floor(i / series) + 1 : null,
         now - i * 60_000,
+        i % 5 === 0 ? null : now - ((i * 104729) % 40) * 365 * 86_400_000,
         counted ? chars : null,
         now,
         now,
@@ -252,6 +258,54 @@ async function main(): Promise<void> {
     console.log(
       `  ${label.padEnd(22)} ${median.toFixed(1).padStart(8)} ms  (${result.books.length} on page)`,
     );
+  }
+
+  console.log('\nSorted lists (WP19a), first page and page 20 of 50 (median of 5):');
+  const sortQueries: [string, string][] = [
+    ['all', ''],
+    ['broad text', '物語'],
+    ['no-match text', '存在しない言葉'],
+    ['tag (biggest)', `tag:=${q(sample.bigTag)}`],
+    ['author (small)', `author:=${q(sample.someAuthor)}`],
+    ['status:reading', 'status:reading'],
+  ];
+  for (const key of BOOK_SORT_KEYS) {
+    for (const dir of SORT_DIRS) {
+      for (const [label, query] of sortQueries) {
+        const sort = { key, dir };
+        const first = time(() => planBooks(db, user, { query, sort }));
+        let cursor = first.result.nextCursor;
+        for (let page = 2; page < 20 && cursor; page++) {
+          const p = planBooks(db, user, { query, sort, cursor });
+          cursor = p.finish(db.prepare(p.sql).all(...p.params)).nextCursor;
+        }
+        const later = cursor
+          ? time(() => planBooks(db, user, { query, sort, cursor: cursor ?? undefined })).median
+          : null;
+        console.log(
+          `  ${`${key} ${dir} ${label}`.padEnd(34)} ${first.median.toFixed(1).padStart(8)} ms first, ${
+            later === null ? '     -' : later.toFixed(1).padStart(6)
+          } ms page 20  (${first.result.books.length} on page)`,
+        );
+      }
+    }
+  }
+
+  console.log('\nCounts (WP19a, uncached, median of 5):');
+  for (const [label, query] of [
+    ['all (no search)', ''],
+    ['broad text', '物語'],
+    ['no-match text', '存在しない言葉'],
+    ['author (biggest)', `author:=${q(sample.bigAuthor)}`],
+    ['tag (biggest)', `tag:=${q(sample.bigTag)}`],
+    ['chars:<100k', 'chars:<100k'],
+    ['status:reading', 'status:reading'],
+    ['-status:completed', '-status:completed'],
+    ['regex no match', '/^存在しない/'],
+    ['mixed', `物語 -tag:=${q(sample.bigTag)} chars:>100k -status:completed`],
+  ] as const) {
+    const { median, result } = time(() => planCount(db, user, { query }));
+    console.log(`  ${label.padEnd(22)} ${median.toFixed(1).padStart(8)} ms  (${result.count})`);
   }
 
   console.log('\nThrough the search worker (one run each, after a warm-up):');

@@ -35,6 +35,7 @@ import {
   visibilitySql,
 } from './queries';
 import { groupNameSql, querySql, type SqlCondition } from './search-sql';
+import { DEFAULT_GROUP_SORT, type GroupSort } from './sort';
 
 export interface GroupChars {
   /** Sum of the counts the group's books have (a book waiting for a recount adds its old count). */
@@ -71,12 +72,16 @@ export interface GroupCard {
 export interface GroupPage {
   groups: GroupCard[];
   nextCursor: string | null;
+  /** How many groups the whole list has (WP19a: "312 series"). */
+  total: number;
 }
 
 export interface ListGroupsOptions {
   by: GroupBy;
   libraryId?: string;
   query?: string;
+  /** WP19a. Absent: newest group first. "No series" is always last. */
+  sort?: GroupSort;
   limit?: number;
   cursor?: string;
   includeMissing?: boolean;
@@ -145,12 +150,30 @@ export function clearGroupCaches(db: Database.Database): void {
   tileCache.delete(db);
 }
 
-function compareGroups(a: GroupRow, b: GroupRow): number {
-  if ((a.gid === null) !== (b.gid === null)) return a.gid === null ? 1 : -1;
-  if (a.newest !== b.newest) return b.newest - a.newest;
+function compareNames(a: GroupRow, b: GroupRow): number {
   const an = a.name ?? '';
   const bn = b.name ?? '';
   return an < bn ? -1 : an > bn ? 1 : 0;
+}
+
+/** The default order (and the cache's): newest group first, then by name. */
+function compareGroups(a: GroupRow, b: GroupRow): number {
+  return groupComparator(DEFAULT_GROUP_SORT)(a, b);
+}
+
+/**
+ * Group order for a sort (WP19a). "No series" is always last; ties go by name (A→Z),
+ * so the order is total and a cursor (newest, count, name) finds its place.
+ */
+export function groupComparator(sort: GroupSort): (a: GroupRow, b: GroupRow) => number {
+  const sign = sort.dir === 'asc' ? 1 : -1;
+  return (a, b) => {
+    if ((a.gid === null) !== (b.gid === null)) return a.gid === null ? 1 : -1;
+    if (sort.key === 'name') return sign * compareNames(a, b);
+    const diff = sort.key === 'count' ? a.n - b.n : a.newest - b.newest;
+    if (diff !== 0) return sign * diff;
+    return compareNames(a, b);
+  };
 }
 
 export function aggregateGroups(
@@ -232,7 +255,9 @@ export function planGroups(
   const parsed = parseOrThrow(opts.query);
   const g = GROUPING[opts.by];
   const spec = opts.countSpec ?? null;
-  const cursor = opts.cursor ? decodeCursor(opts.cursor, ['number', 'string']) : null;
+  const sort = opts.sort ?? DEFAULT_GROUP_SORT;
+  const compare = groupComparator(sort);
+  const cursor = opts.cursor ? decodeGroupCursor(opts.cursor) : null;
 
   // The groups with a matching book (only this part can contain a pattern).
   let sql = 'SELECT NULL AS gid WHERE 0';
@@ -257,25 +282,43 @@ export function planGroups(
     regex: usesRegex(parsed),
     finish(raw) {
       const hits = new Set((raw as { gid: number | null }[]).map((r) => r.gid));
-      const all = aggregateGroups(db, opts).filter(
+      let all = aggregateGroups(db, opts).filter(
         (r) => (opts.by === 'series' || r.gid !== null) && (!filtered || hits.has(r.gid)),
       );
+      // The cached rows are in the default order; other sorts sort a copy.
+      if (sort.key !== DEFAULT_GROUP_SORT.key || sort.dir !== DEFAULT_GROUP_SORT.dir) {
+        all = [...all].sort(compare);
+      }
       let start = 0;
       if (cursor) {
-        const [newest, name] = cursor as [number, string];
-        const probe = { gid: 0, name, newest } as GroupRow;
-        start = all.findIndex((r) => compareGroups(r, probe) > 0);
+        const probe = { gid: 0, name: cursor.name, newest: cursor.newest, n: cursor.n } as GroupRow;
+        start = all.findIndex((r) => compare(r, probe) > 0);
         if (start === -1) start = all.length;
       }
       const page = all.slice(start, start + limit);
       const last = page[page.length - 1];
       const nextCursor =
         start + limit < all.length && last && last.name !== null
-          ? encodeCursor([last.newest, last.name])
+          ? encodeCursor([last.newest, last.n, last.name])
           : null;
-      return { groups: describeGroups(db, user, opts, page, spec), nextCursor };
+      return {
+        groups: describeGroups(db, user, opts, page, spec),
+        nextCursor,
+        total: all.length,
+      };
     },
   };
+}
+
+/** [newest, count, name]; the pre-WP19 [newest, name] still works (newest-first order). */
+function decodeGroupCursor(cursor: string): { newest: number; n: number; name: string } {
+  try {
+    const [newest, n, name] = decodeCursor(cursor, ['number', 'number', 'string']);
+    return { newest: newest as number, n: n as number, name: name as string };
+  } catch {
+    const [newest, name] = decodeCursor(cursor, ['number', 'string']);
+    return { newest: newest as number, n: 0, name: name as string };
+  }
 }
 
 function tileOf(summary: BookSummary | undefined): GroupTile | null {
