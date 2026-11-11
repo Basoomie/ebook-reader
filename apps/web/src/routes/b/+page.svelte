@@ -114,6 +114,7 @@
   import HighlightBar from '$lib/components/book-reader/highlight-bar.svelte';
   import NotesPanel from '$lib/components/book-reader/notes-panel.svelte';
   import NoteEditorDialog from '$lib/components/book-reader/note-editor-dialog.svelte';
+  import QuoteImageDialog from '$lib/components/notes/quote-image-dialog.svelte';
   import {
     ReaderHighlights,
     type BarState,
@@ -849,6 +850,10 @@
     }
 
     readerImageGalleryPictures$.next([]);
+
+    if (quoteCoverUrl?.startsWith('blob:')) {
+      URL.revokeObjectURL(quoteCoverUrl);
+    }
 
     legacySwitchSubscription.unsubscribe();
     stopPositionPrompt();
@@ -1657,6 +1662,73 @@
 
     if ($statisticsEnabled$ && !wasPaused) {
       restartTrackerAfterCharacterChangeOrTime(1);
+    }
+  }
+
+  /** WP19d: the book's cover for quote images (an object URL, revoked when the reader closes). */
+  let quoteCoverUrl: string | null | undefined;
+
+  function quoteCover(): string | null {
+    if (quoteCoverUrl !== undefined) {
+      return quoteCoverUrl;
+    }
+
+    const cover = $rawBookData$?.coverImage;
+    quoteCoverUrl =
+      cover instanceof Blob ? URL.createObjectURL(cover) : typeof cover === 'string' ? cover : null;
+    return quoteCoverUrl;
+  }
+
+  /**
+   * WP19d: "Quote image" in the highlight bar. Like the note editor: the tracker pauses and
+   * keys don't turn pages while the dialog is open. Any failure is logged, never thrown, so
+   * it can't get in the way of reading.
+   */
+  function openQuoteImage() {
+    try {
+      if (dialogManager.dialogs$.getValue().length) {
+        return;
+      }
+
+      const quote = readerHighlights?.chooseQuote();
+
+      if (!quote) {
+        return;
+      }
+
+      const wasPaused = $statisticsEnabled$ ? $isTrackerPaused$ : true;
+      pauseTracker();
+      const keysWereSkipped = $skipKeyDownListener$;
+      skipKeyDownListener$.next(true);
+      dialogManager.dialogs$.next([
+        {
+          component: QuoteImageDialog,
+          props: {
+            content: {
+              text: quote.text,
+              note: quote.note,
+              title: $rawBookData$?.title ?? '',
+              author: '',
+              color: quote.color,
+              coverUrl: quoteCover()
+            }
+          }
+        }
+      ]);
+      const subscription = dialogManager.dialogs$.subscribe((dialogs) => {
+        if (dialogs.length) {
+          return;
+        }
+
+        queueMicrotask(() => subscription.unsubscribe());
+        skipKeyDownListener$.next(keysWereSkipped);
+
+        if ($statisticsEnabled$ && !wasPaused) {
+          restartTrackerAfterCharacterChangeOrTime(1);
+        }
+      });
+    } catch (error) {
+      logger.warn(`Quote image: ${(error as Error)?.message ?? error}`);
     }
   }
 
@@ -3541,6 +3613,7 @@
     eink={$einkMode$}
     on:color={({ detail }) => readerHighlights?.chooseColor(detail)}
     on:note={() => readerHighlights?.chooseNote()}
+    on:quote={openQuoteImage}
     on:remove={() => readerHighlights?.chooseRemove()}
     on:undo={() => readerHighlights?.chooseUndo()}
     on:close={() => readerHighlights?.close()}
