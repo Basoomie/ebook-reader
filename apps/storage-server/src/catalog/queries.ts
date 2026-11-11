@@ -14,6 +14,13 @@ import { sourceKey, thumbnailVersion } from '../thumbnails/thumbnails';
 import { parseOrThrow, usesRegex } from './query-parser';
 import { registerRegexp } from './regexp';
 import { querySql, setPrefix, type SqlCondition } from './search-sql';
+import {
+  type BookSort,
+  DEFAULT_BOOK_SORT,
+  encodeSortCursor,
+  sortCursorSql,
+  sortOrderSql,
+} from './sort';
 
 export interface CatalogUser {
   id: string;
@@ -248,8 +255,12 @@ export interface ListBooksOptions {
    * built-in collection, with the search box applied inside it).
    */
   scope?: string;
-  /** Only the books of one group; a series is ordered by series index. */
+  /** Only the books of one group; a series is ordered by series index (unless `sort` is set). */
   group?: GroupRef;
+  /** Only the books of one of the user's manual collections (WP19a: sorted lists). */
+  collection?: string;
+  /** WP19a. Absent: newest added first (inside a series group: series order). */
+  sort?: BookSort;
   limit?: number;
   cursor?: string;
   includeMissing?: boolean;
@@ -333,9 +344,41 @@ export function visibilitySql(opts: {
   return out;
 }
 
+/** Membership of a book in one of the user's manual collections (live collection-item records). */
+export function collectionMemberSql(userId: string, collectionId: string): SqlCondition {
+  return {
+    sql: `b.id IN (SELECT book_id FROM sync_records
+                    WHERE user_id = ? AND kind = 'collection-item' AND id >= ? AND id < ?
+                      AND deleted_at IS NULL AND book_id IS NOT NULL)`,
+    params: [userId, `${collectionId}:`, `${collectionId};`],
+  };
+}
+
+type ListFilter = Pick<
+  ListBooksOptions,
+  'libraryId' | 'query' | 'scope' | 'group' | 'collection' | 'includeMissing'
+>;
+
+/** The conditions of a list (everything but the cursor). Throws InvalidQueryError. */
+function listConditions(
+  db: Database.Database,
+  user: CatalogUser,
+  opts: ListFilter,
+): { conds: SqlCondition[]; regex: boolean } {
+  const parsed = parseOrThrow(opts.query);
+  const scoped = opts.scope ? parseOrThrow(opts.scope) : null;
+  const conds: SqlCondition[] = [...visibilitySql(opts)];
+  if (opts.group) conds.push(groupMemberSql(opts.group, db));
+  if (opts.collection) conds.push(collectionMemberSql(user.id, opts.collection));
+  if (scoped) conds.push(...querySql(scoped, user.id, db));
+  conds.push(...querySql(parsed, user.id, db));
+  return { conds, regex: usesRegex(parsed) || (scoped !== null && usesRegex(scoped)) };
+}
+
 /**
- * Books newest-added first (inside a series: by series index), keyset-paginated.
- * Only enabled libraries. Throws InvalidQueryError / InvalidCursorError.
+ * Books newest-added first (inside a series: by series index), or in the given sort
+ * (sort.ts), keyset-paginated. Only enabled libraries. Throws InvalidQueryError /
+ * InvalidCursorError.
  */
 export function planBooks(
   db: Database.Database,
@@ -343,16 +386,12 @@ export function planBooks(
   opts: ListBooksOptions = {},
 ): PlannedQuery<BookPage> {
   const limit = Math.min(Math.max(1, opts.limit ?? DEFAULT_PAGE_SIZE), MAX_PAGE_SIZE);
-  const parsed = parseOrThrow(opts.query);
-  const scoped = opts.scope ? parseOrThrow(opts.scope) : null;
-  const conds: SqlCondition[] = [...visibilitySql(opts)];
-  if (opts.group) conds.push(groupMemberSql(opts.group, db));
-  if (scoped) conds.push(...querySql(scoped, user.id, db));
-  conds.push(...querySql(parsed, user.id, db));
-  const bySeriesIndex = opts.group?.by === 'series' && opts.group.name !== null;
+  const { conds, regex } = listConditions(db, user, opts);
+  const bySeriesIndex = !opts.sort && opts.group?.by === 'series' && opts.group.name !== null;
+  const sort = opts.sort ?? DEFAULT_BOOK_SORT;
   const order = bySeriesIndex
     ? 'ORDER BY IFNULL(b.series_index, -1), b.added_at, b.id'
-    : 'ORDER BY b.added_at DESC, b.id DESC';
+    : sortOrderSql(sort);
   if (opts.cursor) {
     if (bySeriesIndex) {
       const [index, addedAt, id] = decodeCursor(opts.cursor, ['number', 'number', 'string']);
@@ -362,18 +401,14 @@ export function planBooks(
         params: [index, index, addedAt, addedAt, id],
       });
     } else {
-      const [addedAt, id] = decodeCursor(opts.cursor, ['number', 'string']);
-      conds.push({
-        sql: '(b.added_at < ? OR (b.added_at = ? AND b.id < ?))',
-        params: [addedAt, addedAt, id],
-      });
+      conds.push(sortCursorSql(sort, opts.cursor));
     }
   }
   const where = conds.length ? `WHERE ${conds.map((c) => c.sql).join(' AND ')}` : '';
   return {
     sql: `${BOOK_SELECT} ${where} ${order} LIMIT ?`,
     params: [...conds.flatMap((c) => c.params), limit + 1],
-    regex: usesRegex(parsed) || (scoped !== null && usesRegex(scoped)),
+    regex,
     finish(raw) {
       const rows = raw as BookRow[];
       const page = rows.slice(0, limit);
@@ -382,9 +417,31 @@ export function planBooks(
       if (rows.length > limit && last) {
         nextCursor = bySeriesIndex
           ? encodeCursor([last.series_index ?? -1, last.added_at, last.id])
-          : encodeCursor([last.added_at, last.id]);
+          : encodeSortCursor(sort, last);
       }
       return { books: attachLists(db, user, page, opts.countSpec ?? null), nextCursor };
+    },
+  };
+}
+
+/**
+ * How many books a list has (WP19a: "1,234 books"). It visits every match, so the API
+ * caches it (catalog-routes.ts); a pattern search runs in the search worker like the list.
+ */
+export function planCount(
+  db: Database.Database,
+  user: CatalogUser,
+  opts: ListFilter = {},
+): PlannedQuery<{ count: number }> {
+  const { conds, regex } = listConditions(db, user, opts);
+  const where = conds.length ? `WHERE ${conds.map((c) => c.sql).join(' AND ')}` : '';
+  return {
+    sql: `SELECT COUNT(*) AS n ${SQL_BOOK_FROM} ${where}`,
+    params: conds.flatMap((c) => c.params),
+    regex,
+    finish(raw) {
+      const [row] = raw as { n: number }[];
+      return { count: row?.n ?? 0 };
     },
   };
 }

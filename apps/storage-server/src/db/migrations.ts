@@ -336,6 +336,23 @@ export const MIGRATIONS: { version: number; name: string; sql: string }[] = [
       CREATE INDEX fonts_user ON fonts (user_id);
     `,
   },
+  {
+    version: 9,
+    name: 'library sort indexes',
+    // WP19a. One index per sort expression in catalog/sort.ts (they must match exactly).
+    // Books without a value sort last in both directions, so author, length and
+    // publication date have one expression (and index) per direction; title has no
+    // NULLs and one index, walked backwards for Z→A. Date added uses books_added.
+    sql: `
+      CREATE INDEX books_sort_title ON books (COALESCE(title_sort, title), id);
+      CREATE INDEX books_sort_author_asc ON books (IFNULL(author_sort, char(1114111)), id);
+      CREATE INDEX books_sort_author_desc ON books (IFNULL(author_sort, ''), id);
+      CREATE INDEX books_sort_chars_asc ON books (IFNULL(char_count, 9000000000000000), id);
+      CREATE INDEX books_sort_chars_desc ON books (IFNULL(char_count, -1), id);
+      CREATE INDEX books_sort_published_asc ON books (IFNULL(published_at, 9000000000000000), id);
+      CREATE INDEX books_sort_published_desc ON books (IFNULL(published_at, -9000000000000000), id);
+    `,
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

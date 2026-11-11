@@ -23,10 +23,13 @@ import {
   listLibrariesFor,
   MAX_LOOKUP_IDS,
   planBooks,
+  planCount,
   planLookup,
   PlannedQuery,
   verifyThumbnailUrl,
 } from '../catalog/queries';
+import { catalogVersion } from '../catalog/catalog-version';
+import { BOOK_SORT_KEYS, GROUP_SORT_KEYS, parseBookSort, parseGroupSort } from '../catalog/sort';
 import { InvalidQueryError } from '../catalog/query-parser';
 import { RegexTimeoutError, SearchRunner } from '../catalog/search-runner';
 import { UUID_RE } from '../sync/kinds';
@@ -65,9 +68,21 @@ function requireIndexer(catalog: CatalogOptions, what: string): void {
   }
 }
 
+/** Cached list counts per router (oldest dropped first). */
+const COUNT_CACHE_SIZE = 500;
+
+/** The user's newest record revision: counts with status:/favorite:/collection depend on it. */
+function userRevision(db: Database.Database, userId: string): number {
+  const row = db
+    .prepare('SELECT MAX(rev) AS rev FROM sync_records WHERE user_id = ?')
+    .get(userId) as { rev: number | null } | undefined;
+  return row?.rev ?? 0;
+}
+
 export function createCatalogRouter(db: Database.Database, catalog: CatalogOptions): Router {
   const router = express.Router();
   const countSpec = () => catalog.counts?.spec ?? null;
+  const countCache = new Map<string, { version: string; count: number }>();
 
   router.get('/libraries', (_req, res) => {
     const { user } = getAuth(res);
@@ -128,27 +143,81 @@ export function createCatalogRouter(db: Database.Database, catalog: CatalogOptio
     throw err;
   }
 
+  /** ?collection=<id>: one of the user's manual collections (WP19a). */
+  function collectionId(req: express.Request): string | undefined {
+    const id = queryString(req.query.collection);
+    if (id !== undefined && !UUID_RE.test(id)) {
+      throw new ApiError(400, 'invalid_collection', 'collection must be a collection id');
+    }
+    return id;
+  }
+
+  /** The filters shared by /books and /books/count. */
+  function listFilter(req: express.Request) {
+    return {
+      libraryId: queryString(req.query.library),
+      query: queryString(req.query.q),
+      scope: queryString(req.query.scope),
+      group: groupRef(req),
+      collection: collectionId(req),
+      includeMissing: queryBool(req.query.includeMissing),
+    };
+  }
+
   router.get(
     '/books',
     asyncHandler(async (req, res) => {
       const { user } = getAuth(res);
       const limit = listLimit(req);
-      const group = groupRef(req);
+      const filter = listFilter(req);
+      const sort = parseBookSort(queryString(req.query.sort), queryString(req.query.dir));
+      if (sort === null) {
+        throw new ApiError(
+          400,
+          'invalid_sort',
+          `sort must be one of ${BOOK_SORT_KEYS.join(', ')}; dir asc or desc`,
+        );
+      }
       try {
         res.json(
           await run(
             planBooks(db, user, {
-              libraryId: queryString(req.query.library),
-              query: queryString(req.query.q),
-              scope: queryString(req.query.scope),
-              group,
+              ...filter,
+              sort,
               limit,
               cursor: queryString(req.query.cursor),
-              includeMissing: queryBool(req.query.includeMissing),
               countSpec: countSpec(),
             }),
           ),
         );
+      } catch (err) {
+        searchErrors(err);
+      }
+    }),
+  );
+
+  // How many books a list has (WP19a). Counting visits every match, so answers are
+  // cached until the catalog or one of the user's records changes.
+  router.get(
+    '/books/count',
+    asyncHandler(async (req, res) => {
+      const { user } = getAuth(res);
+      const filter = listFilter(req);
+      const version = `${catalogVersion(db)}:${userRevision(db, user.id)}`;
+      const key = JSON.stringify([user.id, filter]);
+      const hit = countCache.get(key);
+      if (hit && hit.version === version) {
+        res.json({ count: hit.count });
+        return;
+      }
+      try {
+        const { count } = await run(planCount(db, user, filter));
+        countCache.delete(key);
+        countCache.set(key, { version, count });
+        if (countCache.size > COUNT_CACHE_SIZE) {
+          countCache.delete(countCache.keys().next().value as string);
+        }
+        res.json({ count });
       } catch (err) {
         searchErrors(err);
       }
@@ -161,6 +230,14 @@ export function createCatalogRouter(db: Database.Database, catalog: CatalogOptio
       const { user } = getAuth(res);
       const limit = listLimit(req);
       const by = groupBy(req.query.by);
+      const sort = parseGroupSort(queryString(req.query.sort), queryString(req.query.dir));
+      if (sort === null) {
+        throw new ApiError(
+          400,
+          'invalid_sort',
+          `sort must be one of ${GROUP_SORT_KEYS.join(', ')}; dir asc or desc`,
+        );
+      }
       try {
         res.json(
           await run(
@@ -168,6 +245,7 @@ export function createCatalogRouter(db: Database.Database, catalog: CatalogOptio
               by,
               libraryId: queryString(req.query.library),
               query: queryString(req.query.q),
+              sort,
               limit,
               cursor: queryString(req.query.cursor),
               includeMissing: queryBool(req.query.includeMissing),

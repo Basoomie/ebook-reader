@@ -4,6 +4,8 @@
   import { page } from '$app/stores';
   import AppBottomBar from '$lib/components/app-nav/app-bottom-bar.svelte';
   import AppHeader from '$lib/components/app-nav/app-header.svelte';
+  import { canLoadWhenVisible, loadWhenVisible } from '$lib/components/load-when-visible';
+  import { libraryAutoLoad$ } from '$lib/library/settings';
   import { HeatmapType } from '$lib/components/statistics/statistics-heatmap/statistics-heatmap';
   import StatisticsHeatmap from '$lib/components/statistics/statistics-heatmap/statistics-heatmap.svelte';
   import StatsGoals from '$lib/components/stats/stats-goals.svelte';
@@ -83,6 +85,8 @@
   let infoError = '';
   let loaded = false;
   let shownDays = DAYS_PER_PAGE;
+  // WP19a: more days load near the end ("Load more while scrolling", per device).
+  $: autoLoad = browser && $libraryAutoLoad$ && canLoadWhenVisible();
   let customFrom = '';
   let customTo = '';
   let showCustom = false;
@@ -802,7 +806,15 @@
         {:else}
           <p class="text-sm">No reading in this period.</p>
         {/each}
-        {#if view.days.length > shownDays}
+        <!-- WP19a: more days near the end (the Library's "Load more while scrolling"). -->
+        <div
+          use:loadWhenVisible={{
+            enabled: autoLoad && view.days.length > shownDays,
+            onVisible: () => (shownDays += DAYS_PER_PAGE)
+          }}
+          data-testid="stats-days-sentinel"
+        />
+        {#if view.days.length > shownDays && !autoLoad}
           <button
             class="{control} mt-2 w-full"
             data-testid="stats-days-more"

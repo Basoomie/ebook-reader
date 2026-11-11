@@ -4,6 +4,8 @@
   import { page } from '$app/stores';
   import AppBottomBar from '$lib/components/app-nav/app-bottom-bar.svelte';
   import AppHeader from '$lib/components/app-nav/app-header.svelte';
+  import { canLoadWhenVisible, loadWhenVisible } from '$lib/components/load-when-visible';
+  import { libraryAutoLoad$ } from '$lib/library/settings';
   import {
     EINK_UNDERLINES,
     HIGHLIGHT_SWATCHES
@@ -86,6 +88,7 @@
   $: info = mergedInfo(all, catalog, titles);
   $: groups = buildNotesView(all, info, unplaced, filter);
   $: visible = groups.slice(0, shown);
+  $: autoLoad = browser && $libraryAutoLoad$ && canLoadWhenVisible();
   $: books = bookChoices(all, info);
   $: series = seriesChoices(all, info);
   $: highlightTotal = groups.reduce((sum, g) => sum + g.highlights.length, 0);
@@ -351,7 +354,15 @@
         }}
         on:open={(ev) => open(ev.detail.book, ev.detail.highlight)}
       />
-      {#if groups.length > shown}
+      <!-- WP19a: more books near the end (the Library's "Load more while scrolling"). -->
+      <div
+        use:loadWhenVisible={{
+          enabled: autoLoad && groups.length > shown,
+          onVisible: () => (shown += PAGE_BOOKS)
+        }}
+        data-testid="notes-load-sentinel"
+      />
+      {#if groups.length > shown && !autoLoad}
         <button
           class="mt-3 min-h-[3rem] w-full rounded border-2 border-current px-4 font-medium"
           data-testid="notes-load-more"

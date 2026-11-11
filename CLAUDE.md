@@ -13,13 +13,13 @@ If code and docs disagree, or a task needs a decision the docs don't cover, STOP
 
 ## Current phase
 
-**Phase 3** (Phases 0-2 are done and merged). The WP5 side-by-side week is running: do not touch the migration, the old-sync switch or the check page. WP7 and WP8 are split because they depend on each other (status chips; smart collections use the search parser). Agreed order:
+**WP19: catalogue refresh**, before Phase 5 (Phases 0-4 are done and merged). Decisions: `docs/design/decisions.md`, "WP19: plan". Only the catalogue pages (Home, Library, Collections, Notes, Stats, book details); never the reader. Agreed order, one branch each:
 
-1. **WP3b**: server character-count job; counts in the catalog API and the library list.
-2. **WP8a**: book state. Status (Reading set on the first page turn), favorite, read-throughs and "Start over", manual completion, per-book blur value; sync kinds; minimal UI.
-3. **WP7a**: Library browse and search. Search language, browse tabs, grouped cards and collages, grid/list, info line, status and built-in filter chips, cover blur with tag rules, bulk status/favorite/blur.
-4. **WP8b**: collections. Manual, smart (WP7a's parser), built-ins, Collections page, "add to collection".
-5. **WP7b**: Home rows, navigation, upload with duplicate check.
+1. **WP19a**: Library behaviour: sorts, result counts, loading on scroll, cover size, author links, Connection and Migration moved to Settings.
+2. **WP19b**: the new look (draft A "蔵書 Archive", navy and cream; light, dark and E-ink), hover states, card ⋮ menu.
+3. **WP19c**: book details page.
+
+Phase 5 (WP14-WP17) comes after WP19. The old sync is off (whispersync still uses it for matches until WP15). Still don't change the migration pages or the old-sync switch. Existing `stat-day` rows stay frozen as "before device tracking": never delete or rewrite them. Don't rewrite existing position records.
 
 Stop condition: each work package is finished on its own branch, with a summary of what changed, how it was verified, and anything unexpected. Then stop for review. Do not start the next work package or phase without approval.
 
@@ -35,6 +35,7 @@ Stop condition: each work package is finished on its own branch, with a summary 
 - Stats and tracking code must never block or break reading: isolate it and catch its errors.
 - Behavior thresholds (timeouts, counts) are user settings, not hardcoded values.
 - Work on a branch per work package; never commit directly to the main branch. Commits follow Conventional Commits (commitlint is configured).
+- Before merging anything to `main`, run the full builds, not only the tests: `pnpm build` for the web app and `npm run build` (tsc, as used by the Docker image) for the storage server. Tests run transpile-only and miss type errors (this broke the Docker build once, fixed in `96a16b2`).
 
 ## Repo facts
 

@@ -27,3 +27,21 @@ export const libraryView$ = writableStringLocalStorageSubject<'grid' | 'list'>()
 
 /** Show author, series number, character count and progress under covers. */
 export const libraryInfoLine$ = writableBooleanLocalStorageSubject()('libraryInfoLine', true);
+
+/**
+ * WP19a: the last book sort picked outside a series or a manual collection ("title-asc";
+ * '' = date added, newest first). See lib/library/sort.ts.
+ */
+export const librarySort$ = writableStringLocalStorageSubject()('librarySort', '');
+
+/** WP19a: the last sort picked in the Series, Authors or Tags tab ('' = recently added). */
+export const libraryGroupSort$ = writableStringLocalStorageSubject()('libraryGroupSort', '');
+
+/**
+ * WP19a: cover width in the grids, in px (Library, collections, the Collections page, Home
+ * rows). 0 = automatic (columns by screen width, as before WP19a).
+ */
+export const libraryCoverSize$ = writableNumberLocalStorageSubject()('libraryCoverSize', 0);
+
+/** WP19a: load the next page when the end of a list comes near (else a "Load more" button). */
+export const libraryAutoLoad$ = writableBooleanLocalStorageSubject()('libraryAutoLoad', true);

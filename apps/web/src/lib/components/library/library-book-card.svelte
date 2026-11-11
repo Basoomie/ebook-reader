@@ -6,7 +6,8 @@
    */
   import type { CatalogBook } from '$lib/library/types';
   import { formatBookCharCount } from '$lib/library/char-counts';
-  import { authorNames, seriesNumber } from '$lib/library/format';
+  import { pagePath } from '$lib/data/env';
+  import { authorHref, authorNames, seriesNumber } from '$lib/library/format';
   import { STATUS_LABELS, type BookState } from '$lib/sync/book-state';
   import { faCheck, faEllipsisVertical, faStar } from '@fortawesome/free-solid-svg-icons';
   import { createEventDispatcher } from 'svelte';
@@ -31,10 +32,15 @@
     state: CatalogBook;
   }>();
 
+  /** WP19a: where an author name leads (default: that author in the Library). */
+  export let authorLink: (name: string) => string = (name) => authorHref(pagePath, name);
+
   $: status = state && state.status !== 'unread' ? STATUS_LABELS[state.status] : '';
-  $: info = [authorNames(book), seriesNumber(book), formatBookCharCount(book), progress ?? status]
+  // Author names are links (WP19a); the rest of the line is text.
+  $: rest = [seriesNumber(book), formatBookCharCount(book), progress ?? status]
     .filter(Boolean)
     .join(' · ');
+  $: info = [authorNames(book), rest].filter(Boolean).join(' · ');
 
   function onClick(ev: MouseEvent) {
     if (selectMode) dispatch('toggle', { book, shift: ev.shiftKey });
@@ -92,7 +98,17 @@
   </button>
   <div class="flex items-start">
     {#if infoLine && info}
-      <div class="line-clamp-2 min-w-0 grow text-xs opacity-75" data-testid="card-info">{info}</div>
+      <div class="line-clamp-2 min-w-0 grow text-xs opacity-75" data-testid="card-info">
+        {#each book.authors as author, i (i)}<a
+            class="underline-offset-2 hover:underline"
+            class:pointer-events-none={selectMode}
+            href={authorLink(author.name)}
+            tabindex={selectMode ? -1 : undefined}
+            data-testid="author-link">{author.name}</a
+          >{i < book.authors.length - 1 ? ', ' : ''}{/each}{book.authors.length && rest
+          ? ' · '
+          : ''}{rest}
+      </div>
     {:else}
       <div class="grow" />
     {/if}
