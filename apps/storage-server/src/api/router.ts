@@ -33,9 +33,14 @@ export const DEFAULT_PAIRING: PairingOptions = { maxFailuresPerMinute: 10 };
 export interface SyncOptions {
   /** updatedAt further ahead of the server clock than this is set to the server time. */
   maxClockSkewSeconds: number;
+  /** Kinds devices may no longer change (WP12: `stat-day`); the server's own writes still can. */
+  frozenKinds?: string[];
 }
 
-export const DEFAULT_SYNC: SyncOptions = { maxClockSkewSeconds: DEFAULT_MAX_CLOCK_SKEW_SECONDS };
+export const DEFAULT_SYNC: SyncOptions = {
+  maxClockSkewSeconds: DEFAULT_MAX_CLOCK_SKEW_SECONDS,
+  frozenKinds: ['stat-day'],
+};
 
 /** Where the WP5 migration reads the old sync and writes its pre-import snapshot. */
 export interface MigrationPaths {
@@ -159,7 +164,11 @@ export function createApiRouter({
         console.error('Collections: could not create "Planned"', err);
       }
     }
-    router.use(createSyncRouter(db, syncStore));
+    router.use(
+      createSyncRouter(db, syncStore, {
+        frozenKinds: sync.frozenKinds ?? DEFAULT_SYNC.frozenKinds ?? [],
+      }),
+    );
     // Export my data (WP18): read-only.
     router.use(createExportRouter(db, syncStore));
 

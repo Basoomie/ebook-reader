@@ -52,7 +52,10 @@ export function createApp({
       version,
       catalog,
       pairing: { maxFailuresPerMinute: config.pairing.maxFailuresPerMinute },
-      sync: { maxClockSkewSeconds: config.sync.maxClockSkewSeconds },
+      sync: {
+        maxClockSkewSeconds: config.sync.maxClockSkewSeconds,
+        frozenKinds: config.sync.frozenKinds,
+      },
       migration: { dataRoot: config.dataRoot, dbDir: config.dbDir },
       fonts: { dataRoot: config.dataRoot, maxMb: config.fonts.maxMb },
       seedDefaults,

@@ -11,6 +11,7 @@ import request from 'supertest';
 import { afterEach, describe, expect, it } from 'vitest';
 import { crc32 } from 'zlib';
 import { LATEST_SCHEMA_VERSION, MIGRATIONS, migrate } from '../src/db/migrations';
+import { DEFAULT_SYNC_CONFIG } from '../src/config';
 import { listUsers } from '../src/db/users';
 import { fingerprintEpub, fingerprintStoredZip } from '../src/migration/fingerprint';
 import { desanitizeFolderName } from '../src/migration/legacy-fs';
@@ -75,7 +76,13 @@ async function setup() {
 
   const dataRoot = makeTempDir('data');
   const dbDir = makeTempDir('db');
-  const e = makeIndexerEnv(root.dir, {}, { dataRoot, dbDir });
+  // These tests replay the WP5 side-by-side week, when devices still wrote stat days
+  // (frozen for devices since WP12; tests/stat-sessions.test.ts covers the freeze).
+  const e = makeIndexerEnv(
+    root.dir,
+    {},
+    { dataRoot, dbDir, sync: { ...DEFAULT_SYNC_CONFIG, frozenKinds: [] } },
+  );
   envs.push(e);
   await e.indexer.start({ timer: false });
   enableLibrary(e.db, 'lib');
@@ -555,7 +562,8 @@ describe('kinds', () => {
         error?: { code: string };
       }[];
     const now = Date.now();
-    const results = await push([
+    // The migration writes stat days through the store (devices may not since WP12).
+    const statResults = t.store.push(t.userId, d.id, [
       {
         kind: 'stat-day',
         id: `${bookId}:2026-10-05`,
@@ -584,6 +592,14 @@ describe('kinds', () => {
           },
         },
       },
+    ]);
+    expect(statResults.map((r) => r.status)).toEqual([
+      'applied',
+      'rejected',
+      'rejected',
+      'applied',
+    ]);
+    const results = await push([
       {
         kind: 'reading-goal',
         id: '2026-10-01',
@@ -610,10 +626,6 @@ describe('kinds', () => {
       { kind: 'migration', id: 'other', updatedAt: now, data: {} },
     ]);
     expect(results.map((r) => r.status)).toEqual([
-      'applied',
-      'rejected',
-      'rejected',
-      'applied',
       'applied',
       'rejected',
       'applied',

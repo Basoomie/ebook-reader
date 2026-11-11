@@ -94,7 +94,8 @@ async function untouchable(device: Device, bookId: string) {
 }
 
 describe('book state between two devices (real server)', () => {
-  const server = new TestServer();
+  // stat-day is frozen for devices since WP12; this test writes days as the WP5 import did.
+  const server = new TestServer({ SYNC_FROZEN_KINDS: 'none' });
   const books: string[] = [];
   let tokens: string[] = [];
   let a: Device;

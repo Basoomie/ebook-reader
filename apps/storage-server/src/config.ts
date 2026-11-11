@@ -90,9 +90,43 @@ export const DEFAULT_COUNTS_CONFIG: CountsConfig = {
 export interface SyncConfig {
   /** A change stamped further ahead of the server clock than this gets the server time. */
   maxClockSkewSeconds: number;
+  /**
+   * Record kinds devices may no longer change (WP12: `stat-day` is frozen as
+   * "before device tracking"). The server's own writes (the WP5 migration) are
+   * not affected. `SYNC_FROZEN_KINDS=none` lifts it.
+   */
+  frozenKinds: string[];
 }
 
-export const DEFAULT_SYNC_CONFIG: SyncConfig = { maxClockSkewSeconds: 300 };
+export const DEFAULT_SYNC_CONFIG: SyncConfig = {
+  maxClockSkewSeconds: 300,
+  frozenKinds: ['stat-day'],
+};
+
+/** Kind names as the sync engine spells them. */
+const KIND_NAME_RE = /^[a-z][a-z0-9-]{0,49}$/;
+
+/** A comma-separated list of kind names; empty = the default, `none` = no kind. */
+export function parseKindList(
+  name: string,
+  value: string | undefined,
+  fallback: string[],
+  warnings: string[],
+): string[] {
+  if (value === undefined || value.trim() === '') return [...fallback];
+  if (value.trim().toLowerCase() === 'none') return [];
+  const out: string[] = [];
+  for (const part of value.split(',')) {
+    const kind = part.trim();
+    if (!kind) continue;
+    if (!KIND_NAME_RE.test(kind)) {
+      warnings.push(`${name}: "${kind}" is not a record kind name; ignored.`);
+      continue;
+    }
+    if (!out.includes(kind)) out.push(kind);
+  }
+  return out;
+}
 
 export interface PairingConfig {
   /** How long a code from `cli token pair` stays valid. */
@@ -314,6 +348,12 @@ export function parseSyncConfig(env: Env, warnings: string[]): SyncConfig {
       0,
       86_400,
       true,
+      warnings,
+    ),
+    frozenKinds: parseKindList(
+      'SYNC_FROZEN_KINDS',
+      env.SYNC_FROZEN_KINDS,
+      DEFAULT_SYNC_CONFIG.frozenKinds,
       warnings,
     ),
   };

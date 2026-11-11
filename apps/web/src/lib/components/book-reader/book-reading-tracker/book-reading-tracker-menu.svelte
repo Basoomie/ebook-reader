@@ -53,6 +53,8 @@
     | undefined;
   export let autoScrollerStatistics: BooksDbStatistic | undefined;
   export let bookStartDate: string;
+  /** WP12: the book has no library id, so its reading isn't saved. */
+  export let statsUnavailable = false;
 
   const dispatch = createEventDispatcher<{
     trackerMenuClosed: void;
@@ -92,6 +94,14 @@
           ? [{ id: 'Book Completion', ...bookCompletionStatistics }]
           : [])
       ];
+
+  $: timeGoalPercentage = currentReadingGoal?.timeGoal
+    ? caluclatePercentage(currentTimeGoal, currentReadingGoal.timeGoal)
+    : 0;
+
+  $: characterGoalPercentage = currentReadingGoal?.characterGoal
+    ? caluclatePercentage(currentCharacterGoal, currentReadingGoal.characterGoal)
+    : 0;
 
   $: currentTrackingHistoryIndex = Math.max(0, trackingHistoryIndex * trackingItemsPerPage);
 
@@ -195,13 +205,14 @@
   </div>
 </div>
 <div class="flex flex-1 flex-col overflow-auto p-4">
+  {#if statsUnavailable}
+    <p class="mb-6" data-testid="tracker-stats-unavailable">
+      Stats need this book in the library: the tracker counts here, but this reading isn't saved.
+    </p>
+  {/if}
   {#if currentReadingGoal}
     <div class="mb-6">
       {#if currentReadingGoal.timeGoal}
-        {@const timeGoalPercentage = caluclatePercentage(
-          currentTimeGoal,
-          currentReadingGoal.timeGoal
-        )}
         <div>
           {secondsToMinutes(currentTimeGoal)} / {secondsToMinutes(currentReadingGoal.timeGoal)} Min ({timeGoalPercentage}%)
         </div>
@@ -215,10 +226,6 @@
         </div>
       {/if}
       {#if currentReadingGoal.characterGoal}
-        {@const characterGoalPercentage = caluclatePercentage(
-          currentCharacterGoal,
-          currentReadingGoal.characterGoal
-        )}
         <div class="mt-4">
           {currentCharacterGoal} / {currentReadingGoal.characterGoal} Characters ({characterGoalPercentage}%)
         </div>

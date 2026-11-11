@@ -23,8 +23,15 @@ function deviceErrorToApi(err: unknown): never {
  *   POST /sync              push changes
  *   GET  /sync?cursor=      pull changes since the cursor
  */
-export function createSyncRouter(db: Database.Database, store: SyncStore): Router {
+export function createSyncRouter(
+  db: Database.Database,
+  store: SyncStore,
+  { frozenKinds = [] }: { frozenKinds?: string[] } = {},
+): Router {
   const router = express.Router();
+  // WP12: kinds devices may no longer change. Only device pushes are refused here;
+  // the server's own writes (the WP5 migration import) call the store directly.
+  const frozen = new Set(frozenKinds);
 
   router.post('/devices/register', (req, res) => {
     const auth = getAuth(res);
@@ -73,7 +80,7 @@ export function createSyncRouter(db: Database.Database, store: SyncStore): Route
       throw new ApiError(400, 'too_many_changes', `Push at most ${MAX_PUSH_CHANGES} changes`);
     }
     const now = Date.now();
-    const results = store.push(user.id, deviceId, changes as SyncChange[], now);
+    const results = store.push(user.id, deviceId, changes as SyncChange[], now, { frozen });
     touchDevice(db, deviceId, now);
     res.json({ results, serverTime: Date.now() });
   });

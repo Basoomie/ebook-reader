@@ -10,13 +10,30 @@ import { MergeMode } from '$lib/data/merge-mode';
 import { database, startDayHoursForTracker$ } from '$lib/data/store';
 import { getDateKey } from '$lib/functions/statistic-util';
 import { ReplicationSaveBehavior } from '$lib/functions/replication/replication-options';
-import { canUseWebLocks } from '$lib/functions/secure-context';
+import { canUseWebLocks, randomId } from '$lib/functions/secure-context';
 import { getLibraryStore } from '$lib/library/library-db';
 import { libraryRequestTimeoutSeconds$ } from '$lib/library/settings';
 import { MigrationApi } from '$lib/migration/api';
 import { localBookmarkForTitle, localTitleSummaries } from '$lib/migration/local-summary';
 import { applyReadingGoals, applyStatDays } from '$lib/sync/apply-records';
-import type { BookBlur, BookStatus, ReadThrough } from '$lib/sync/book-state';
+import {
+  bookStateFrom,
+  positionReadThroughId,
+  type BookBlur,
+  type BookStatus,
+  type ReadThrough
+} from '$lib/sync/book-state';
+import {
+  readingSpeed,
+  statEntriesFromRecords,
+  totalsByDay,
+  totalsOf,
+  type StatEntry
+} from '$lib/stats/aggregate';
+import type { BooksDbStatistic } from '$lib/data/database/books-db/versions/books-db';
+import { LibraryApi } from '$lib/library/api';
+import { SessionRecorder, type RecordSideDeps } from '$lib/stats/session-recorder';
+import { STAT_SESSION_FIX_KIND, STAT_SESSION_KIND } from '$lib/stats/stat-records';
 import {
   editReadThroughFinish,
   getAllBookStates,
@@ -587,11 +604,11 @@ export function noteReaderFirstPageTurn(localId: number, title: string): void {
   );
 }
 
-/** The reader's Complete Book. Fire and forget. */
-export function noteReaderBookCompleted(localId: number, title: string): void {
-  void bookIdForLocalBook(localId, title).then((bookId) =>
-    bookId ? noteReaderCompletion(bookId, bookStateDeps) : undefined
-  );
+/** The reader's Complete Book. Never rejects; resolves once the read-through is saved. */
+export function noteReaderBookCompleted(localId: number, title: string): Promise<void> {
+  return bookIdForLocalBook(localId, title)
+    .then((bookId) => (bookId ? noteReaderCompletion(bookId, bookStateDeps) : undefined))
+    .catch((error) => warn(`Book state: ${(error as Error)?.message ?? error}`));
 }
 
 /** A Start over this device still has to apply for the open book, or null. Never rejects. */
@@ -866,4 +883,128 @@ export async function listOtherDevicesAppearance(): Promise<DeviceAppearance[]> 
     warn(`Copy settings: ${(error as Error)?.message ?? error}`);
     return [];
   }
+}
+
+// ---------------------------------------------------------------------------
+// WP12: reading sessions (the only source of reading time and characters)
+// ---------------------------------------------------------------------------
+
+const STAT_KINDS = [STAT_SESSION_KIND, STAT_SESSION_FIX_KIND, STAT_DAY_KIND];
+
+/** Where a reader's session recorder writes (see lazyRecorderDeps). */
+export function statsRecorderDeps(localId: number, title: string): RecordSideDeps {
+  return {
+    resolveTarget: async () => {
+      if (!browser) return null;
+      const bookId = await bookIdForLocalBook(localId, title);
+      if (!bookId) return null;
+      return { bookId, deviceId: (await getSyncEngine()).deviceId };
+    },
+    readThroughId: async (bookId) => {
+      const engine = await getSyncEngine();
+      return positionReadThroughId(bookStateFrom(bookId, await engine.getForBook(bookId)));
+    },
+    put: async (kind, id, data, bookId) => (await getSyncEngine()).put(kind, id, data, { bookId })
+  };
+}
+
+/** Statistics from the local mirror (works offline). Never throws. */
+export function statsApi() {
+  return {
+    /** The recorder for a book the reader opened (one per visit). */
+    recorder(localId: number, title: string): SessionRecorder {
+      return new SessionRecorder({ ...statsRecorderDeps(localId, title), newId: randomId, warn });
+    },
+    /** One book's statistics entries (sessions with fixes, frozen days) and read-throughs. */
+    async bookStats(
+      bookId: string
+    ): Promise<{ entries: StatEntry[]; readThroughs: ReadThrough[] }> {
+      try {
+        const records = await (await getSyncEngine()).getForBook(bookId);
+        return {
+          entries: statEntriesFromRecords(
+            records.filter((r) => STAT_KINDS.includes(r.kind) && r.bookId === bookId)
+          ),
+          readThroughs: bookStateFrom(bookId, records).readThroughs
+        };
+      } catch (error) {
+        warn(`Stats: ${(error as Error)?.message ?? error}`);
+        return { entries: [], readThroughs: [] };
+      }
+    },
+    /** Every statistics entry of every book. */
+    async allEntries(): Promise<StatEntry[]> {
+      try {
+        const engine = await getSyncEngine();
+        const records: LocalRecord[] = [];
+        for (const kind of STAT_KINDS) records.push(...(await engine.getAll(kind)));
+        return statEntriesFromRecords(records);
+      } catch (error) {
+        warn(`Stats: ${(error as Error)?.message ?? error}`);
+        return [];
+      }
+    },
+    /**
+     * Until the new Stats page (WP12b): day totals per book as the old page's rows,
+     * titled by this device, else the catalog, else "Unknown book".
+     */
+    async dayRowsForOldPage(): Promise<BooksDbStatistic[]> {
+      const entries = await this.allEntries();
+      const byBook = new Map<string, StatEntry[]>();
+      for (const e of entries) byBook.set(e.bookId, [...(byBook.get(e.bookId) ?? []), e]);
+      const titles = await statsTitles([...byBook.keys()]);
+      const rows: BooksDbStatistic[] = [];
+      for (const [bookId, list] of byBook) {
+        const title = titles.get(bookId) ?? `Unknown book (${bookId.slice(0, 8)})`;
+        for (const [dateKey, totals] of totalsByDay(list)) {
+          const speed = readingSpeed(totals);
+          rows.push({
+            title,
+            dateKey,
+            charactersRead: totals.chars,
+            readingTime: totals.seconds,
+            minReadingSpeed: speed,
+            altMinReadingSpeed: speed,
+            lastReadingSpeed: speed,
+            maxReadingSpeed: speed,
+            lastStatisticModified: 0
+          });
+        }
+      }
+      return rows.sort((a, b) => (a.dateKey < b.dateKey ? -1 : a.dateKey > b.dateKey ? 1 : 0));
+    },
+    /** Reading time and characters of all books from `from` to `to` (day keys, inclusive). */
+    async totalsBetween(from: string, to: string) {
+      const entries = await this.allEntries();
+      return totalsOf(entries, (e) => e.day >= from && e.day <= to);
+    }
+  };
+}
+
+export type StatsApi = ReturnType<typeof statsApi>;
+
+/** Titles for book ids: this device's, then the catalog's (best effort). Never throws. */
+async function statsTitles(bookIds: string[]): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  try {
+    for (const [id, set] of await titlesByBookId(bookIdDeps)) {
+      const title = [...set][0];
+      if (title) out.set(id, title);
+    }
+    const missing = bookIds.filter((id) => !out.has(id));
+    const connection = missing.length ? await getLibraryStore().getConnection() : undefined;
+    if (!connection) return out;
+    const api = new LibraryApi(
+      connection.serverUrl,
+      connection.token,
+      libraryRequestTimeoutSeconds$.getValue()
+    );
+    for (let i = 0; i < missing.length; i += 100) {
+      const { books } = await api.lookup(missing.slice(i, i + 100));
+      for (const book of books) out.set(book.id, book.title);
+    }
+  } catch (error) {
+    warn(`Stats: some titles are missing: ${(error as Error)?.message ?? error}`);
+  }
+  return out;
 }
