@@ -1,4 +1,6 @@
 <script lang="ts">
+  import SeriesHighlights from '$lib/components/notes/series-highlights.svelte';
+  import { setPendingJump, type PendingJump } from '$lib/notes/pending-jump';
   import { afterNavigate, goto } from '$app/navigation';
   import { page } from '$app/stores';
   import { builtinCollection } from '$lib/collections/builtins';
@@ -34,7 +36,7 @@
   import { dialogManager, type Dialog } from '$lib/data/dialog-manager';
   import { pagePath } from '$lib/data/env';
   import { logger } from '$lib/data/logger';
-  import { database, selfHostStorageSource$ } from '$lib/data/store';
+  import { database, einkMode$, selfHostStorageSource$ } from '$lib/data/store';
   import { formatPageTitle } from '$lib/functions/format-page-title';
   import { LibraryApi, LibraryApiError } from '$lib/library/api';
   import { existingLocalIds } from '$lib/library/browser-open-deps';
@@ -1005,7 +1007,8 @@
     dialogManager.dialogs$.next([{ component: MessageDialog, props: { title, message } }]);
   }
 
-  async function open(book: CatalogBook) {
+  /** WP11c: `jump` (Highlights section) is left for the reader once the book opened. */
+  async function open(book: CatalogBook, jump?: PendingJump) {
     if (!api || opening) return;
     const controller = new AbortController();
     opening = { book, stage: null, controller };
@@ -1021,6 +1024,7 @@
         }
       );
       if (outcome.status === 'opened') {
+        if (jump) setPendingJump(jump);
         await goto(`${pagePath}/b?id=${outcome.localId}`);
         return;
       }
@@ -1354,6 +1358,28 @@
           >
             Blur covers with this tag
           </button>
+        {/if}
+        {#if group.by === 'series' && group.name !== null && groupInfo?.bookIds}
+          <!-- Keyed: another series starts collapsed. -->
+          {#key group.name}
+            <SeriesHighlights
+              {api}
+              seriesName={group.name}
+              bookIds={groupInfo.bookIds}
+              eink={$einkMode$}
+              on:open={(ev) =>
+                open(
+                  ev.detail.book,
+                  ev.detail.highlight
+                    ? {
+                        bookId: ev.detail.book.id,
+                        highlightId: ev.detail.highlight.id,
+                        position: ev.detail.highlight.start
+                      }
+                    : undefined
+                )}
+            />
+          {/key}
         {/if}
       </div>
     {/if}

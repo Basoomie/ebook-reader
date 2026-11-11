@@ -120,6 +120,7 @@
   import BookmarkNameDialog from '$lib/components/book-reader/bookmark-name-dialog.svelte';
   import { ReturnMarker } from '$lib/components/book-reader/return-marker';
   import { bookmarkPlaceAt, defaultBookmarkName } from '$lib/notes/bookmarks';
+  import { takePendingJump } from '$lib/notes/pending-jump';
   import {
     isHighlightColor,
     quoteOf,
@@ -324,6 +325,8 @@
   /** WP8a: the open book's catalog id (only catalog books have a status), once known. */
   let stateBookId: string | null = null;
   let startOverNotice = '';
+  /** WP11c: one line after opening at a highlight that couldn't be placed (tap to close). */
+  let openNotice = '';
   let stopStartOverWatch: (() => void) | undefined;
   let wasTrackerPaused = true;
   let frozenPosition = -1;
@@ -1549,6 +1552,52 @@
       highlightBarState = controller.bar;
       controller.attach(bookContentEl);
       void controller.start();
+      void consumePendingJump(controller);
+    } catch (error) {
+      logger.warn(`Highlights: ${(error as Error)?.message ?? error}`);
+    }
+  }
+
+  /**
+   * WP11c: "Open in book" on the Notes page or in the Library left a jump to a highlight.
+   * Like a jump from the panel: recorded (the return marker leads back), not saved. A
+   * highlight this device can't place opens at its stored position, with a notice.
+   */
+  async function consumePendingJump(controller: ReaderHighlights) {
+    try {
+      await controller.loaded;
+
+      if (readerHighlights !== controller) {
+        return;
+      }
+
+      const jump = takePendingJump(controller.bookId);
+
+      if (!jump) {
+        return;
+      }
+
+      const id = jump.highlightId;
+      const place = id ? controller.placeOf(id) : undefined;
+
+      if (id && place === null) {
+        openNotice = "Couldn't place this highlight in the current file; opened at its old place.";
+      } else if (id && place === undefined) {
+        openNotice = 'This highlight was removed; opened at its old place.';
+      }
+
+      jumpToPosition(place ?? jump.position, { save: false, record: true });
+
+      if (id && typeof place === 'number') {
+        await pageSettled();
+        await bringOnScreen(
+          () => {
+            const range = readerHighlights?.rangeOf(id);
+            return range ? [range] : [];
+          },
+          () => readerHighlights?.rangeOf(id)
+        );
+      }
     } catch (error) {
       logger.warn(`Highlights: ${(error as Error)?.message ?? error}`);
     }
@@ -3525,6 +3574,18 @@
   >
     {startOverNotice} <span class="underline">OK</span>
   </button>
+{/if}
+
+{#if openNotice}
+  <div
+    class="writing-horizontal-tb fixed inset-x-4 top-4 z-20 mx-auto max-w-md rounded border-2 border-gray-700 bg-white text-black"
+    role="status"
+    data-testid="open-notice"
+  >
+    <button class="w-full p-3 text-left" on:click={() => (openNotice = '')}>
+      {openNotice} <span class="underline">OK</span>
+    </button>
+  </div>
 {/if}
 
 {#if $tocIsOpen$ && $sectionData$}

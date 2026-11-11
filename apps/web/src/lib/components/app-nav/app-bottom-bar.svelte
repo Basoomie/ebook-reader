@@ -17,7 +17,7 @@
   <!-- Phones only: room for the bar at the end of the page, then the bar. E-ink plain. -->
   <div class="h-16 sm:hidden" aria-hidden="true" />
   <nav
-    class="fixed inset-x-0 bottom-0 z-20 grid grid-cols-5 border-t-2 border-gray-800 bg-white text-gray-900 sm:hidden"
+    class="fixed inset-x-0 bottom-0 z-20 grid grid-cols-6 border-t-2 border-gray-800 bg-white text-gray-900 sm:hidden"
     aria-label="App"
     data-testid="app-bottom-bar"
   >
