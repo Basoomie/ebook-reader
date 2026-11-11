@@ -66,13 +66,15 @@ The database starts with a single user, `owner`.
 
 User data (WP4 onwards) syncs per record, not per file. Every record has a `kind`, an `id`, the device that last wrote it, `updatedAt`, `deletedAt` (deletion marker) and a server-assigned `rev`. The server decides which version wins:
 
-| Policy   | Rule                                                                           | Kinds (WP4)                                                     |
-| -------- | ------------------------------------------------------------------------------ | --------------------------------------------------------------- |
-| `lww`    | Higher `(updatedAt, deviceId)` wins. A newer edit revives a deleted record.    | `device` (name), `setting` `global:<key>`                       |
-| `owner`  | Only the device named in the id may write it; no conflicts possible.           | `position` `<bookId>:<deviceId>`, `setting` `device:<id>:<key>` |
-| `append` | Written once; later writes to the id change nothing (for stat sessions later). | (none yet)                                                      |
+| Policy   | Rule                                                                        | Kinds (WP4)                                                                                                                         |
+| -------- | --------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `lww`    | Higher `(updatedAt, deviceId)` wins. A newer edit revives a deleted record. | `device` (name), `setting` `global:<key>`                                                                                           |
+| `owner`  | Only the device named in the id may write it; no conflicts possible.        | `position` `<bookId>:<deviceId>`, `setting` `device:<id>:<key>`, `stat-session` `<bookId>:<deviceId>:<uuid>` (sealed once `closed`) |
+| `append` | Written once; later writes to the id change nothing.                        | (none)                                                                                                                              |
 
 `updatedAt` more than `SYNC_MAX_CLOCK_SKEW_SECONDS` ahead of the server clock is set to the server time.
+
+Kinds listed in `SYNC_FROZEN_KINDS` (default `stat-day`, WP12) are refused when a device pushes them (`<kind>_frozen`); the server's own writes, such as the WP5 migration import, are not affected. `SYNC_FROZEN_KINDS=none` lifts it.
 
 | Method | Path                          | Description                                                                                                                                                                           |
 | ------ | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -171,6 +173,7 @@ A library is identified by Calibre's library UUID, so renaming its folder keeps 
 | `COUNT_IMPORT_FIX_MODE`            | `Off`        | Reader import setting the counts use: `Off`, `Standard` or `Extended`. A change recounts every book.                                 |
 | `COUNT_RESTRICT_FIX_TO_ANCHOR`     | `true`       | Reader import setting the counts use (import fix only on anchors). A change recounts every book.                                     |
 | `SYNC_MAX_CLOCK_SKEW_SECONDS`      | `300`        | A synced change stamped further ahead of the server clock gets the server time instead.                                              |
+| `SYNC_FROZEN_KINDS`                | `stat-day`   | Record kinds devices may no longer change (comma-separated; `none` = no kind). Statistics days are frozen since WP12's sessions.     |
 | `SEARCH_REGEX_TIMEOUT_SECONDS`     | `5`          | A library search with a `/pattern/` that runs longer is stopped (its worker thread is replaced) and answered with `regex_timeout`.   |
 | `UPLOAD_MAX_MB`                    | `200`        | Largest EPUB the Library's Upload accepts (`413 too_large` above it).                                                                |
 | `UPLOAD_STAGED_HOURS`              | `24`         | An uploaded file waiting for "Use the library copy / Add as a separate book" is deleted after this long.                             |

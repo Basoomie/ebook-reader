@@ -120,11 +120,21 @@ export class SyncStore {
     return { epoch: row.epoch, lastRev: row.last_rev };
   }
 
-  /** Applies a device's changes. Returns one result per change, in order. */
-  push(userId: string, deviceId: string, changes: SyncChange[], now = Date.now()): ChangeResult[] {
+  /**
+   * Applies a device's changes. Returns one result per change, in order.
+   * `frozen`: kinds refused with `<kind>_frozen` (the sync route passes the
+   * frozen kinds; the server's own writes pass none).
+   */
+  push(
+    userId: string,
+    deviceId: string,
+    changes: SyncChange[],
+    now = Date.now(),
+    { frozen }: { frozen?: ReadonlySet<string> } = {},
+  ): ChangeResult[] {
     return this.db.transaction(() => {
       this.getState(userId);
-      return changes.map((change) => this.applyOne(userId, deviceId, change, now));
+      return changes.map((change) => this.applyOne(userId, deviceId, change, now, frozen));
     })();
   }
 
@@ -198,6 +208,7 @@ export class SyncStore {
     deviceId: string,
     change: SyncChange,
     now: number,
+    frozen?: ReadonlySet<string>,
   ): ChangeResult {
     const kind = typeof change?.kind === 'string' ? change.kind : '';
     const id = typeof change?.id === 'string' ? change.id : '';
@@ -216,6 +227,12 @@ export class SyncStore {
       ? this.kinds[kind]
       : undefined;
     if (!spec) return reject('unknown_kind', `Unknown kind "${kind}"`);
+    if (frozen?.has(kind)) {
+      return reject(
+        `${kind.replace(/-/g, '_')}_frozen`,
+        `${kind} records are kept as they are and can no longer be changed by devices`,
+      );
+    }
     if (!id || id.length > MAX_ID_LENGTH) return reject('invalid_id', 'Missing or too long id');
     if (!isTimestamp(change.updatedAt)) {
       return reject('invalid_change', 'updatedAt must be a timestamp in ms');

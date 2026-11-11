@@ -859,6 +859,143 @@ const fontKind: KindSpec = {
   },
 };
 
+// ---------------------------------------------------------------------------
+// WP12: reading sessions, the only source of reading time and characters
+// ---------------------------------------------------------------------------
+
+export const STAT_SESSION_SOURCES = ['tracker', 'completion'] as const;
+/** Longest session one record may claim (two days; the tracker splits at every day change). */
+const MAX_SESSION_SECONDS = 2 * 86_400;
+const MAX_SESSION_CHARS = 10_000_000;
+const MAX_SESSION_LOOKUPS = 1_000_000;
+
+/** id <bookId>:<deviceId>:<sessionUuid> (the book is in the id, like highlights). */
+export function parseStatSessionId(
+  id: string,
+): { bookId: string; deviceId: string; sessionId: string } | null {
+  const parts = id.split(':');
+  if (parts.length !== 3 || !parts.every((p) => UUID_RE.test(p))) return null;
+  return { bookId: parts[0], deviceId: parts[1], sessionId: parts[2] };
+}
+
+function boundedWhole(value: unknown, field: string, max: number): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0 || value > max) {
+    throw new RecordError('invalid_data', `${field} must be a whole number from 0 to ${max}`);
+  }
+  return value;
+}
+
+function timestamp(value: unknown, field: string): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    throw new RecordError('invalid_data', `${field} must be a timestamp in ms`);
+  }
+  return value;
+}
+
+/**
+ * kind "stat-session": one stretch of reading of one book on one device (decided
+ * 2026-11-10, fix option 1 for the same-day loss). Only the device in the id writes
+ * it (owner), so no other device can overwrite its reading. The device updates it
+ * while the session is open and finally writes it with `closed: true`; after that
+ * the server refuses every change (sealed). Never deleted: mistakes are corrected
+ * with "stat-session-fix". Day totals are sums of sessions.
+ *   day            the day key (YYYY-MM-DD) under the day boundary in effect when written
+ *   seconds, chars tracked time and characters; lookups = dictionary popups opened
+ *   readThroughId  the book's current read-through when it started (null = the first)
+ *   source         tracker | completion ("Complete Book" adding the characters left:
+ *                  characters only, never time or speed)
+ */
+const statSessionKind: KindSpec = {
+  policy: () => 'owner',
+  ownerOf: (id) => parseStatSessionId(id)?.deviceId ?? null,
+  deletable: false,
+  validate(id, data, _deleted, ctx) {
+    const parsed = parseStatSessionId(id);
+    if (!parsed) {
+      throw new RecordError('invalid_id', 'stat-session ids are <bookId>:<deviceId>:<uuid>');
+    }
+    if (!bookExists(ctx, parsed.bookId)) {
+      throw new RecordError('unknown_book', `No book ${parsed.bookId}`);
+    }
+    const obj = requireObject(data);
+    if (typeof obj.day !== 'string' || !DATE_KEY_RE.test(obj.day)) {
+      throw new RecordError('invalid_data', 'day must be YYYY-MM-DD');
+    }
+    const startedAt = timestamp(obj.startedAt, 'startedAt');
+    const endedAt = timestamp(obj.endedAt, 'endedAt');
+    if (endedAt < startedAt) throw new RecordError('invalid_data', 'endedAt is before startedAt');
+    const source = oneOf(obj.source, STAT_SESSION_SOURCES, 'source');
+    const seconds = boundedWhole(obj.seconds, 'seconds', MAX_SESSION_SECONDS);
+    const chars = boundedWhole(obj.chars, 'chars', MAX_SESSION_CHARS);
+    const lookups = boundedWhole(obj.lookups, 'lookups', MAX_SESSION_LOOKUPS);
+    if (source === 'completion' && (seconds !== 0 || lookups !== 0)) {
+      throw new RecordError('invalid_data', 'a completion session has characters only');
+    }
+    const readThroughId = obj.readThroughId ?? null;
+    if (readThroughId !== null) {
+      const rt = typeof readThroughId === 'string' ? parseReadThroughId(readThroughId) : null;
+      if (!rt || rt.bookId !== parsed.bookId) {
+        throw new RecordError('invalid_data', "readThroughId must be null or this book's");
+      }
+    }
+    return {
+      bookId: parsed.bookId,
+      data: {
+        day: obj.day,
+        startedAt,
+        endedAt,
+        seconds,
+        chars,
+        lookups,
+        readThroughId,
+        source,
+        closed: bool(obj.closed, 'closed'),
+      },
+    };
+  },
+  checkReplace(_next, _deleted, existing) {
+    if (existing.data.closed === true) {
+      throw new RecordError('session_sealed', 'This session is closed and can no longer change');
+    }
+  },
+};
+
+/**
+ * kind "stat-session-fix": id = the session's id, a correction any device may make
+ * (decided with the user, WP12 plan): `{excluded: true}` leaves the session out of
+ * every total; `seconds` / `chars` replace its numbers. The session itself is never
+ * changed. Deleting the record undoes the correction. The session need not have
+ * arrived yet (records of one push come in any order).
+ */
+const statSessionFixKind: KindSpec = {
+  policy: () => 'lww',
+  deletable: true,
+  validate(id, data, deleted, ctx) {
+    const parsed = parseStatSessionId(id);
+    if (!parsed) {
+      throw new RecordError('invalid_id', 'stat-session-fix ids are the session id');
+    }
+    if (!bookExists(ctx, parsed.bookId)) {
+      throw new RecordError('unknown_book', `No book ${parsed.bookId}`);
+    }
+    if (deleted) return { bookId: parsed.bookId, data: {} };
+    const obj = requireObject(data);
+    const out: Record<string, unknown> = {};
+    if (obj.excluded !== undefined) {
+      if (obj.excluded !== true) throw new RecordError('invalid_data', 'excluded must be true');
+      out.excluded = true;
+    }
+    if (obj.seconds !== undefined) {
+      out.seconds = boundedWhole(obj.seconds, 'seconds', MAX_SESSION_SECONDS);
+    }
+    if (obj.chars !== undefined) out.chars = boundedWhole(obj.chars, 'chars', MAX_SESSION_CHARS);
+    if (!Object.keys(out).length) {
+      throw new RecordError('invalid_data', 'a fix needs excluded, seconds or chars');
+    }
+    return { bookId: parsed.bookId, data: out };
+  },
+};
+
 /** Smart-collection queries are checked with the search box's own parser. */
 const parserCheck: QueryCheck = (query) => {
   const result = parseQuery(query);
@@ -884,4 +1021,6 @@ export const DEFAULT_KINDS: KindRegistry = {
   note: noteKind,
   bookmark: bookmarkKind,
   font: fontKind,
+  'stat-session': statSessionKind,
+  'stat-session-fix': statSessionFixKind,
 };

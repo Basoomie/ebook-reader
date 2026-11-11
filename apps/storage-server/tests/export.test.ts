@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest';
 import { createToken, hashToken } from '../src/db/tokens';
 import { createPairingCode } from '../src/db/pairing';
 import { EXPORT_FORMAT, EXPORT_FORMAT_VERSION } from '../src/export/build-export';
+import { DEFAULT_SYNC_CONFIG } from '../src/config';
 import { makeTestApp } from './helpers/test-app';
 
 function insertBook(db: Database.Database, title: string): string {
@@ -33,7 +34,8 @@ function insertBook(db: Database.Database, title: string): string {
 }
 
 async function setup() {
-  const t = makeTestApp();
+  // stat-day is frozen for devices since WP12; this test writes one as the import did.
+  const t = makeTestApp({ sync: { ...DEFAULT_SYNC_CONFIG, frozenKinds: [] } });
   if (!t.database.ok) throw new Error('no database');
   const db = t.database.db;
   async function device(token: string, deviceId: string = randomUUID()) {
