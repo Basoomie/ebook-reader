@@ -14,6 +14,7 @@ import { seedPlannedCollections } from '../collections/seed';
 import { createMigrationRouter } from '../migration/routes';
 import { MigrationService } from '../migration/service';
 import { createSyncRouter, SYNC_BODY_LIMIT } from '../sync/routes';
+import { createExportRouter } from '../export/routes';
 import { createUploadRouter } from '../uploads/routes';
 import { FontStore } from '../fonts/font-store';
 import { createFontRouter } from '../fonts/routes';
@@ -149,6 +150,8 @@ export function createApiRouter({
       }
     }
     router.use(createSyncRouter(db, syncStore));
+    // Export my data (WP18): read-only.
+    router.use(createExportRouter(db, syncStore));
 
     // Custom fonts (WP13). Independent of Calibre; off only when the folder is unusable.
     if (fonts) {

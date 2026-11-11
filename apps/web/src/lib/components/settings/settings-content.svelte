@@ -20,6 +20,7 @@
   import SettingsItemGroup from '$lib/components/settings/settings-item-group.svelte';
   import SettingsStorageSourceList from '$lib/components/settings/settings-storage-source-list.svelte';
   import SettingsServerFontsDialog from '$lib/components/settings/settings-server-fonts-dialog.svelte';
+  import SettingsExportData from '$lib/components/settings/settings-export-data.svelte';
   import { customFontNames$ } from '$lib/fonts/server-fonts-browser';
   import { inputClasses } from '$lib/css-classes';
   import { BlurMode } from '$lib/data/blur-mode';
@@ -1029,6 +1030,14 @@
       >
         Open the old sync manager
       </a>
+    </SettingsItemGroup>
+    <SettingsItemGroup
+      title="Export my data"
+      tooltip="One readable file (JSON) with everything synced for you: reading places, statuses and times read, highlights, notes, bookmarks, collections, statistics and the settings of every device. Book and font files are not in it."
+    >
+      {#if browser}
+        <SettingsExportData />
+      {/if}
     </SettingsItemGroup>
     <SettingsItemGroup title="Persistent storage" tooltip={persistentStorageTooltip}>
       <div class="flex items-center">

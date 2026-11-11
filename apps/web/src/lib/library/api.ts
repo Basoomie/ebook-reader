@@ -158,6 +158,15 @@ export interface ServerFontInfo {
   createdAt: number;
 }
 
+/** GET /logs/recent (WP18): lines since the server started, oldest first. */
+export interface RecentServerLogs {
+  serverVersion: string;
+  startedAt: number;
+  maxLines: number;
+  dropped: number;
+  lines: { time: number; level: 'log' | 'info' | 'warn' | 'error'; text: string }[];
+}
+
 export interface UploadOptions {
   signal?: AbortSignal;
   onProgress?: (loaded: number, total: number) => void;
@@ -219,6 +228,20 @@ export class LibraryApi {
       ...options
     });
     return response.blob();
+  }
+
+  /**
+   * "Export my data" (WP18): everything synced for this user, as the server's JSON text.
+   * No timeout by default (a large account takes a while); the caller can cancel.
+   */
+  async exportMyData(options: RequestOptions = {}): Promise<string> {
+    const response = await this.get('/export', { timeoutSeconds: 0, ...options });
+    return response.text();
+  }
+
+  /** The server's recent log lines for the bug report (WP18), secrets already removed. */
+  async recentServerLogs(options?: RequestOptions): Promise<RecentServerLogs> {
+    return (await this.get('/logs/recent', options)).json();
   }
 
   /**
