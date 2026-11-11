@@ -19,8 +19,13 @@
   import { dialogManager } from '$lib/data/dialog-manager';
   import { PAGE_CHANGE } from '$lib/data/events';
   import { logger } from '$lib/data/logger';
-  import { MergeMode } from '$lib/data/merge-mode';
   import { getReadingGoalWindow, type ReadingGoal } from '$lib/data/reading-goal';
+  import { lastCompletion, readingSpeed, totalsByDay, type StatTotals } from '$lib/stats/aggregate';
+  import { DICTIONARY_POPUP_SELECTOR, LookupCounter } from '$lib/stats/lookup-counter';
+  import { lazyRecorderDeps, SessionRecorder } from '$lib/stats/session-recorder';
+  import { randomId } from '$lib/functions/secure-context';
+  import { parseStatSessionId } from '$lib/stats/stat-records';
+  import type { StatsApi } from '$lib/sync/sync-service';
   import {
     adjustStatisticsAfterIdleTime$,
     database,
@@ -34,7 +39,6 @@
     trackerSkipThresholdAction$,
     einkMode$
   } from '$lib/data/store';
-  import { ReplicationSaveBehavior } from '$lib/functions/replication/replication-options';
   import { reduceToEmptyString } from '$lib/functions/rxjs/reduce-to-empty-string';
   import {
     getDate,
@@ -45,7 +49,6 @@
     toTimeString
   } from '$lib/functions/statistic-util';
   import { clickOutside } from '$lib/functions/use-click-outside';
-  import { filterNotNullAndNotUndefined } from '$lib/functions/utils';
   import {
     fromEvent,
     interval,
@@ -64,6 +67,8 @@
   export let fontColor: string;
   export let backgroundColor: string;
   export let bookTitle: string;
+  /** The local book id (WP12: finds the catalog book its sessions belong to). */
+  export let bookLocalId: number;
   export let wasTrackerPaused: boolean;
   export let exploredCharCount: number;
   export let bookCharCount: number;
@@ -100,6 +105,25 @@
     ];
 
     todayKey = getDateKey($startDayHoursForTracker$, todayDate);
+
+    // WP12: the session recorder gets the same split (the earlier day's part first).
+    if (recorder) {
+      if (overlappedDay) {
+        recorder.add(
+          getPreviousDayKey($startDayHoursForTracker$, referenceDate),
+          isNegativeTimeDiff ? -(absoluteTimeDiff - secondsOnDay) : absoluteTimeDiff - secondsOnDay,
+          0,
+          referenceTick
+        );
+      }
+
+      recorder.add(
+        referenceDateKey,
+        isNegativeTimeDiff ? -timeDiffForToday : timeDiffForToday,
+        characterDiff,
+        referenceTick
+      );
+    }
 
     if (overlappedDay || referenceDateKey !== todayKey) {
       let otherDayTimeDiff = 0;
@@ -185,19 +209,14 @@
     hadError = false;
 
     const toUpdate: string[] = JSON.parse(JSON.stringify([...statisticsToStore]));
-    const itemsToStore = toUpdate
-      .map((statisticToStore) => statistics.get(statisticToStore))
-      .filter(filterNotNullAndNotUndefined);
 
     statisticsToStore.clear();
 
     try {
-      await database.storeStatistics(
-        bookTitle,
-        itemsToStore,
-        ReplicationSaveBehavior.Overwrite,
-        MergeMode.LOCAL
-      );
+      // WP12: the open session is the record; local statistic rows are no longer written.
+      if (recorder && !(await recorder.flush())) {
+        throw new Error('the session could not be saved (retried with the next save)');
+      }
 
       trackingHistory = trackingHistory.map((item) => {
         const oldItem = item;
@@ -210,8 +229,7 @@
       dispatch('statisticsSaved');
     } catch (error: any) {
       hadError = true;
-      statisticsToStore = new Set([...statisticsToStore, ...toUpdate]);
-      logger.error(`Error updating statistics: ${error.message}`);
+      logger.warn(`Stats: ${error.message}`);
     } finally {
       actionInProgress = false;
       lastTrackerFlushTime = Date.now();
@@ -222,29 +240,6 @@
     }
 
     return [hadError, toUpdate.length];
-  }
-
-  export function updateCompletedBook(
-    completedBookStatistics: BooksDbStatistic,
-    oldCompletedBookStatistics?: BooksDbStatistic
-  ) {
-    bookCompletionStatistics = completedBookStatistics.completedData;
-
-    let statistic = statistics.get(completedBookStatistics.dateKey);
-
-    if (statistic) {
-      statistic = {
-        ...statistic,
-        ...{ completedBook: 1, completedData: bookCompletionStatistics }
-      };
-      statistics.set(completedBookStatistics.dateKey, statistic);
-    } else {
-      statistics.set(completedBookStatistics.dateKey, completedBookStatistics);
-    }
-
-    if (oldCompletedBookStatistics) {
-      statistics.set(oldCompletedBookStatistics.dateKey, oldCompletedBookStatistics);
-    }
   }
 
   let yomiPopover: HTMLElement | null;
@@ -283,6 +278,11 @@
   let charCountAtIdlePause = 0;
   let lastResizeAt = 0;
   let wasTrackerPausedAtMenuOpen: boolean | undefined;
+  /** WP12: sessions are the only record of reading. Exists at once; loads sync on first write. */
+  let recorder: SessionRecorder | null = createRecorder();
+  let statsApi: StatsApi | null = null;
+  let statsUnavailable = false;
+  let lookupCounter: LookupCounter | null = null;
 
   const dispatch = createEventDispatcher<{
     trackerAvailable: void;
@@ -348,6 +348,8 @@
 
   $: handleVisibilityChange(visibilityState);
 
+  $: sealSessionWhenHidden(visibilityState);
+
   $: updateReadingGoalWindowForPausedState($isTrackerMenuOpen$);
 
   $: if (!$isTrackerPaused$) {
@@ -383,9 +385,7 @@
   }
 
   $: if ($trackerAutoPause$ !== TrackerAutoPause.OFF && !yomiPopover) {
-    yomiPopover = document.querySelector(
-      '.yomichan-popup,.yomichan-float,.yomitan-popup,.yomitan-float'
-    );
+    yomiPopover = document.querySelector(DICTIONARY_POPUP_SELECTOR);
 
     if (!yomiPopover) {
       yomiObserver.observe(document.body, { childList: true, subtree: false });
@@ -412,7 +412,104 @@
     yomiObserver.disconnect();
     dictionaryObserver.disconnect();
     isTrackerPausedByIdle$.next(false);
+    lookupCounter?.stop();
+    void sealSession();
   });
+
+  function createRecorder(): SessionRecorder | null {
+    try {
+      const localId = bookLocalId;
+      const title = bookTitle;
+
+      return new SessionRecorder(
+        lazyRecorderDeps(
+          async () => (await import('$lib/sync/sync-service')).statsRecorderDeps(localId, title),
+          randomId,
+          (message) => logger.warn(message)
+        )
+      );
+    } catch ({ message }: any) {
+      logger.warn(`Stats: the session recorder could not start: ${message}`);
+      return null;
+    }
+  }
+
+  /**
+   * WP12: ends the open session (leaving the book, page hidden or closed, idle).
+   * Never throws; resolves false when the write failed (it is retried later).
+   */
+  export async function sealSession(): Promise<boolean> {
+    try {
+      return recorder ? await recorder.seal() : true;
+    } catch ({ message }: any) {
+      logger.warn(`Stats: could not end the session: ${message}`);
+      return false;
+    }
+  }
+
+  function sealSessionWhenHidden(state: DocumentVisibilityState) {
+    if (state === 'hidden') void sealSession();
+  }
+
+  /**
+   * WP12: "Complete Book" adding the characters left. They count as characters
+   * read today, never as time or speed (a completion session).
+   */
+  export async function recordCompletion(characters: number): Promise<boolean> {
+    try {
+      const day = getDateKey($startDayHoursForTracker$);
+      const at = Date.now();
+      const row = statistics.get(day) || getDefaultStatistic(bookTitle, day);
+
+      updateStatistic(row, 0, characters, at);
+      statistics.set(day, row);
+      if (day === todaysStatistics.dateKey) todaysStatistics = row;
+      updateStatistic(allTimeStatistics, 0, characters, at);
+      allTimeStatistics = { ...allTimeStatistics };
+
+      return recorder ? await recorder.addCompletion(day, characters, at) : true;
+    } catch ({ message }: any) {
+      logger.warn(`Stats: could not record the completion: ${message}`);
+      return false;
+    }
+  }
+
+  /** WP12: reads the book's newest completion again (after Complete Book). */
+  export async function refreshCompletion() {
+    try {
+      const bookId = await recorderBookId();
+      if (!statsApi || !bookId) return;
+      const { entries, readThroughs } = await statsApi.bookStats(bookId);
+      const done = lastCompletion(readThroughs, entries);
+      bookCompletionStatistics = done
+        ? completionRow(done.readThrough.finishedOn, done.totals)
+        : undefined;
+    } catch ({ message }: any) {
+      logger.warn(`Stats: could not read the completion: ${message}`);
+    }
+  }
+
+  async function recorderBookId(): Promise<string | null> {
+    if (!statsApi) return null;
+    const sync = await import('$lib/sync/sync-service');
+    return sync.bookIdForLocalBook(bookLocalId, bookTitle);
+  }
+
+  function completionRow(
+    finishedOn: string | null,
+    totals: StatTotals
+  ): Omit<BooksDbStatistic, 'title' | 'lastStatisticModified'> {
+    const speed = readingSpeed(totals);
+    return {
+      dateKey: finishedOn ?? '',
+      charactersRead: totals.chars,
+      readingTime: totals.seconds,
+      minReadingSpeed: speed,
+      altMinReadingSpeed: speed,
+      lastReadingSpeed: speed,
+      maxReadingSpeed: speed
+    };
+  }
 
   /** A pause/resume toggled inside the tracker menu is manual, so it ends the idle state. */
   function clearIdlePauseOnMenuToggle(isMenuOpen: boolean, paused: boolean) {
@@ -467,9 +564,7 @@
   }
 
   function handleYomiMutation() {
-    yomiPopover = document.querySelector(
-      '.yomichan-popup,.yomichan-float,.yomitan-popup,.yomitan-float'
-    );
+    yomiPopover = document.querySelector(DICTIONARY_POPUP_SELECTOR);
 
     if (yomiPopover) {
       yomiObserver.disconnect();
@@ -569,6 +664,12 @@
 
     statistics.set(entry.dateKey, entry);
     statisticsToStore.add(entry.dateKey);
+    recorder?.revert(
+      historyItem.dateKey,
+      -historyItem.timeDiff,
+      -historyItem.characterDiff,
+      lastStatisticModified
+    );
 
     trackingHistory = trackingHistory.map((item) =>
       item.id === historyItem.id
@@ -624,39 +725,77 @@
       todayKey = getDateKey($startDayHoursForTracker$);
       jpdbPopover = document.getElementById('jpdb-popup');
 
-      const statisticsForTitle = await database.getStatisticsForBook(bookTitle);
-      const setFirstBookReadResult = await database.setFirstBookRead(
-        bookTitle,
-        $startDayHoursForTracker$,
-        statisticsForTitle[0]
+      // WP12: reading is recorded as sessions; the book's earlier reading comes from
+      // the synced records (every device), never from this browser's old rows.
+      statsApi = (await import('$lib/sync/sync-service')).statsApi();
+      lookupCounter = new LookupCounter(
+        document,
+        () => recorder?.addLookup(),
+        (message) => logger.warn(message)
       );
+      lookupCounter.start();
+      statsUnavailable = !recorder || !(await recorder.available());
 
-      bookStartDate = setFirstBookReadResult[0] as string;
-
-      if (setFirstBookReadResult[1]) {
-        dispatch('statisticsSaved');
+      if (!statsUnavailable) {
+        await loadRecordedStatistics();
       }
-
-      for (let index = 0, { length } = statisticsForTitle; index < length; index += 1) {
-        const statisticEntry = statisticsForTitle[index];
-
-        statistics.set(statisticEntry.dateKey, statisticEntry);
-
-        addToStatistic(allTimeStatistics, statisticEntry);
-
-        if (todayKey === statisticEntry.dateKey) {
-          addToStatistic(todaysStatistics, statisticEntry);
-        }
-
-        if (statisticEntry.completedBook && statisticEntry.completedData) {
-          bookCompletionStatistics = statisticEntry.completedData;
-        }
-      }
-
-      dispatch('trackerAvailable');
     } catch ({ message }: any) {
       logger.error(`Error initializing timer: ${message}`);
+    } finally {
+      dispatch('trackerAvailable');
     }
+  }
+
+  /** Today, all time, the start date and the newest completion of this book, from records. */
+  async function loadRecordedStatistics() {
+    const bookId = await recorderBookId();
+
+    if (!statsApi || !bookId) return;
+
+    const { entries, readThroughs } = await statsApi.bookStats(bookId);
+    // Sessions this visit already wrote are counted in memory.
+    const own = (id: string) => {
+      const sessionId = parseStatSessionId(id)?.sessionId;
+      return !!sessionId && !!recorder?.ownsSession(sessionId);
+    };
+    const days = totalsByDay(entries, (entry) => !own(entry.id));
+
+    for (const [dateKey, totals] of days) {
+      const loaded = getDefaultStatistic(bookTitle, dateKey);
+
+      loaded.readingTime = totals.seconds;
+      loaded.charactersRead = totals.chars;
+      loaded.lastReadingSpeed = readingSpeed(totals);
+      loaded.minReadingSpeed = loaded.lastReadingSpeed;
+      loaded.altMinReadingSpeed = loaded.lastReadingSpeed;
+      loaded.maxReadingSpeed = loaded.lastReadingSpeed;
+      loaded.lastStatisticModified = 0;
+
+      const current = statistics.get(dateKey);
+
+      if (current) {
+        addToStatistic(current, loaded);
+      } else {
+        statistics.set(dateKey, loaded);
+      }
+
+      addToStatistic(allTimeStatistics, loaded);
+
+      if (dateKey === todayKey) {
+        todaysStatistics = statistics.get(dateKey) || todaysStatistics;
+      }
+    }
+
+    const firstDay = [...days.keys()].sort()[0];
+
+    bookStartDate = firstDay && firstDay < todayKey ? firstDay : todayKey;
+    allTimeStatistics = { ...allTimeStatistics };
+
+    const done = lastCompletion(readThroughs, entries);
+
+    bookCompletionStatistics = done
+      ? completionRow(done.readThrough.finishedOn, done.totals)
+      : undefined;
   }
 
   async function updateReadingGoalWindow() {
@@ -693,20 +832,13 @@
         );
       }
 
-      const statisticsForTimeWindow = await database.getStatisticsForTimeWindow(
-        currentReadingGoalStart,
-        currentReadingGoalEnd
-      );
+      // WP12: every device's sessions (and frozen days) in the window.
+      const totals = statsApi
+        ? await statsApi.totalsBetween(currentReadingGoalStart, currentReadingGoalEnd)
+        : null;
 
-      currentTimeGoal = 0;
-      currentCharacterGoal = 0;
-
-      for (let index = 0, { length } = statisticsForTimeWindow; index < length; index += 1) {
-        const statistic = statisticsForTimeWindow[index];
-
-        currentTimeGoal += statistic.readingTime;
-        currentCharacterGoal += statistic.charactersRead;
-      }
+      currentTimeGoal = totals?.seconds ?? 0;
+      currentCharacterGoal = totals?.chars ?? 0;
     } catch ({ message }: any) {
       logger.error(`Error updating Goal Data: ${message}`);
     }
@@ -735,6 +867,8 @@
           processStatistics(0, elapsed, lastTrackerTick, true);
         }
       }
+
+      void sealSession();
 
       return;
     }
@@ -846,6 +980,7 @@
 <svelte:window
   on:blur={handleBlur}
   on:focus={handleFocus}
+  on:pagehide={() => void sealSession()}
   on:resize={() => (lastResizeAt = Date.now())}
 />
 <svelte:document bind:visibilityState />
@@ -887,6 +1022,7 @@
       {autoScrollerStatistics}
       {bookStartDate}
       {sectionData}
+      {statsUnavailable}
       canSaveStatistics={statisticsToStore.size > 0}
       bind:wasTrackerPaused
       on:trackerMenuClosed

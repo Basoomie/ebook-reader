@@ -80,7 +80,9 @@ function writeProgress(dir: string, charPos: number, progress: number, at: numbe
 
 const calibreRoot = tempDir('calibre');
 fs.cpSync(FIXTURE, calibreRoot, { recursive: true });
+// The WP5 side-by-side week, when devices still wrote stat days (frozen for devices since WP12).
 const server = new TestServer({
+  SYNC_FROZEN_KINDS: 'none',
   CALIBRE_DIR: calibreRoot,
   CACHE_DIR: tempDir('cache'),
   CALIBRE_REQUIRE_READONLY: 'false',

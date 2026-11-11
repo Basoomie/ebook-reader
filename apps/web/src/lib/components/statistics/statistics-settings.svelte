@@ -16,9 +16,6 @@
     charactersDataSources,
     readingSpeedDataSources,
     statisticsDataAggregrationModes,
-    exportStatisticsData$,
-    statisticsActionInProgress$,
-    deleteStatisticsData$,
     setStatisticsDatesToAllTime$
   } from '$lib/components/statistics/statistics-types';
   import { daysOfWeek } from '$lib/components/statistics/statistics-heatmap/statistics-heatmap';
@@ -58,36 +55,18 @@
 
     return () => dialogManager.dialogs$.next([]);
   });
-
-  async function exportStatisticsData(exportAllStatisticsData = true) {
-    $statisticsActionInProgress$ = true;
-
-    exportStatisticsData$.next(exportAllStatisticsData);
-  }
-
-  async function deleteStatisticsData(deleteAllStatisticsData = true) {
-    $statisticsActionInProgress$ = true;
-
-    deleteStatisticsData$.next(deleteAllStatisticsData);
-  }
 </script>
 
 <div class="flex items-center p-4">
   <button class="flex items-end md:items-center" on:click={() => dispatch('close')}>
     <Fa icon={faXmark} />
   </button>
-  <div class="flex flex-1 justify-end">
-    <button class="mr-2 sm:mr-4 hover:text-red-500" on:click={() => exportStatisticsData(false)}>
-      Export Selection
-    </button>
-    <button class="mr-2 sm:mr-4 hover:text-red-500" on:click={() => deleteStatisticsData(false)}>
-      Delete Selection
-    </button>
-    <button class="mr-2 sm:mr-4 hover:text-red-500" on:click={() => exportStatisticsData()}>
-      Export All
-    </button>
-    <button class="hover:text-red-500" on:click={() => deleteStatisticsData()}>Delete All</button>
-  </div>
+  <!-- WP12: read-only until the new Stats page (sessions are never rewritten). -->
+  <p class="ml-4 flex-1 text-sm" data-testid="statistics-read-only">
+    Statistics now come from reading sessions on every device. Changing or deleting them here, and
+    this export, come back with the new Stats page; "Export my data" in Settings > Data has
+    everything.
+  </p>
 </div>
 <div class="flex-1 p-4 overflow-auto">
   <div class="flex flex-col mb-6">

@@ -89,8 +89,6 @@
     isOnline$,
     manualBookmark$,
     customThemes$,
-    overwriteBookCompletion$,
-    startDayHoursForTracker$,
     readingGoalsMergeMode$,
     pauseTrackerOnCustomPointChange$,
     hideSpoilerImageMode$,
@@ -159,7 +157,6 @@
   } from '$lib/components/book-reader/book-reader-image-gallery/book-reader-image-gallery';
   import BookReaderImageGallery from '$lib/components/book-reader/book-reader-image-gallery/book-reader-image-gallery.svelte';
   import {
-    getDefaultStatistic,
     isTrackerMenuOpen$,
     isTrackerPaused$,
     isTrackerPausedByIdle$
@@ -188,15 +185,13 @@
   import {
     currentDbVersion,
     type BooksDbBookData,
-    type BooksDbBookmarkData,
-    type BooksDbStatistic
+    type BooksDbBookmarkData
   } from '$lib/data/database/books-db/versions/books-db';
   import { dialogManager } from '$lib/data/dialog-manager';
   import { pagePath } from '$lib/data/env';
   import { DB_VERSION, PAGE_CHANGE, SKIPKEYLISTENER, SYNCED } from '$lib/data/events';
   import { fullscreenManager } from '$lib/data/fullscreen-manager';
   import { logger } from '$lib/data/logger';
-  import { MergeMode } from '$lib/data/merge-mode';
   import { getStorageHandler } from '$lib/data/storage/storage-handler-factory';
   import { BaseStorageHandler } from '$lib/data/storage/handler/base-handler';
   import type { BrowserStorageHandler } from '$lib/data/storage/handler/browser-handler';
@@ -216,10 +211,7 @@
     legacyReadingSyncOff$
   } from '$lib/sync/legacy-switch';
   import { iffBrowser } from '$lib/functions/rxjs/iff-browser';
-  import {
-    AutoReplicationType,
-    ReplicationSaveBehavior
-  } from '$lib/functions/replication/replication-options';
+  import { AutoReplicationType } from '$lib/functions/replication/replication-options';
   import { replicateData } from '$lib/functions/replication/replicator';
   import { readableToObservable } from '$lib/functions/rxjs/readable-to-observable';
   import { reduceToEmptyString } from '$lib/functions/rxjs/reduce-to-empty-string';
@@ -230,7 +222,6 @@
     executeReplicate$,
     type ReplicationContext
   } from '$lib/functions/replication/replication-progress';
-  import { getDateKey } from '$lib/functions/statistic-util';
   import { clickOutside } from '$lib/functions/use-click-outside';
   import {
     convertRemToPixels,
@@ -438,17 +429,6 @@
         database.putLastItem(bookData.id).catch(() => {});
         legacyReadingOff = await readLegacySwitch();
         await syncDownData(externalStorageHandler, currentContext);
-
-        if (!$statisticsEnabled$) {
-          const wasNew = (
-            await database.setFirstBookRead(currentContext.title, $startDayHoursForTracker$)
-          )[1];
-
-          if (wasNew) {
-            scheduleReplication(StorageDataType.STATISTICS);
-            recordShadowStatistics(currentContext.title);
-          }
-        }
 
         bookData = await saveExternalLastRead(externalStorageHandler, bookData);
 
@@ -2080,71 +2060,10 @@
     ]);
 
     try {
-      if (diffToComplete) {
-        const [hadError] = await trackerElm.processStatistics(diffToComplete);
-
-        if (hadError) {
-          throw new Error('Character Update failed');
-        }
-      }
-
-      const finishedStatistic = await database.getStatisticForCompletedBook($rawBookData$.title);
-      const todayKey = getDateKey($startDayHoursForTracker$);
-      const statisticsUntilToday = await database.getStatisticsUntilDate(
-        $rawBookData$.title,
-        todayKey
-      );
-      const todayStatistic =
-        statisticsUntilToday.find((statistic) => statistic.dateKey === todayKey) ||
-        getDefaultStatistic($rawBookData$.title, todayKey);
-      const statisticsToStore: BooksDbStatistic[] = [];
-      const lastStatisticModified = Date.now();
-
-      todayStatistic.lastStatisticModified = lastStatisticModified;
-      todayStatistic.completedBook = 1;
-      todayStatistic.completedData = {
-        ...{ dateKey: todayKey },
-        ...BaseStorageHandler.getStatisticsMetadata(
-          BaseStorageHandler.getStatisticsFileName(
-            statisticsUntilToday,
-            todayStatistic.lastStatisticModified
-          )
-        )
-      };
-
-      let updateFinishedStatistic = false;
-
-      if (!finishedStatistic) {
-        statisticsToStore.push(todayStatistic);
-      } else if (
-        $overwriteBookCompletion$ &&
-        finishedStatistic.dateKey !== todayStatistic.dateKey
-      ) {
-        delete finishedStatistic.completedBook;
-        delete finishedStatistic.completedData;
-        finishedStatistic.lastStatisticModified = lastStatisticModified;
-        statisticsToStore.push(todayStatistic, finishedStatistic);
-        updateFinishedStatistic = true;
-      } else if ($overwriteBookCompletion$) {
-        statisticsToStore.push(todayStatistic);
-      }
-
-      if (statisticsToStore.length) {
-        await database.storeStatistics(
-          $rawBookData$.title,
-          statisticsToStore,
-          ReplicationSaveBehavior.Overwrite,
-          MergeMode.LOCAL,
-          lastStatisticModified
-        );
-
-        trackerElm?.updateCompletedBook(
-          todayStatistic,
-          updateFinishedStatistic ? finishedStatistic : undefined
-        );
-
-        scheduleReplication(StorageDataType.STATISTICS);
-        recordShadowStatistics($rawBookData$.title);
+      // WP12: the read-through (below) is the only completion record; no stat row is
+      // marked. The characters left count as read today, never as time or speed.
+      if (diffToComplete && trackerElm && !(await trackerElm.recordCompletion(diffToComplete))) {
+        logger.warn('Stats: the completion characters will be saved on the next try');
       }
 
       if (bookmarkManager) {
@@ -2164,8 +2083,10 @@
       }
 
       // WP8a: also Completed, finishing the read-through as a tracked one. Fire
-      // and forget; the stat and bookmark writes above are unchanged.
-      noteBookCompletedForStatus($rawBookData$.id, $rawBookData$.title);
+      // and forget; the tracker then shows the new completion (WP12).
+      noteBookCompletedForStatus($rawBookData$.id, $rawBookData$.title).then(() =>
+        trackerElm?.refreshCompletion()
+      );
 
       if ($statisticsEnabled$ && $openTrackerOnCompletion$) {
         confettiWidthModifier = 36;
@@ -2598,20 +2519,6 @@
   }
 
   /**
-   * WP5: statistics side by side with the old sync, the same way as the
-   * position above. Fire and forget; never touches the tracker.
-   */
-  function recordShadowStatistics(title: string | undefined) {
-    if (!title) {
-      return;
-    }
-
-    import('$lib/sync/sync-service')
-      .then(({ recordBookStatistics }) => recordBookStatistics(title))
-      .catch(() => {});
-  }
-
-  /**
    * WP5: whether the user switched the old sync off (it then carries only
    * whispersync's audiobook data). Waits at most 2 s; unknown means on.
    */
@@ -2746,8 +2653,8 @@
   // prompt: every failure is logged and reading goes on unchanged.
   // -------------------------------------------------------------------------
 
-  function noteBookCompletedForStatus(localId: number, title: string) {
-    import('$lib/sync/sync-service')
+  function noteBookCompletedForStatus(localId: number, title: string): Promise<void> {
+    return import('$lib/sync/sync-service')
       .then(({ noteReaderBookCompleted }) => noteReaderBookCompleted(localId, title))
       .catch(() => {});
   }
@@ -3177,14 +3084,12 @@
       }
 
       if ($statisticsEnabled$ && trackerElm) {
-        const [hadError, updated] = await trackerElm.flushUpdates(true);
+        const [hadError] = await trackerElm.flushUpdates(true);
+        const sealed = await trackerElm.sealSession();
 
-        if (hadError) {
-          throw new Error('Error updating Statistics');
-        }
-
-        if (updated) {
-          scheduleReplication(StorageDataType.STATISTICS);
+        // WP12: stats never block reading or leaving; the session is retried later.
+        if (hadError || !sealed) {
+          logger.warn('Stats: the reading session will be saved on the next try');
         }
       }
 
@@ -3475,6 +3380,7 @@
       fontColor={$themeOption$.fontColor}
       backgroundColor={$backgroundColor$}
       bookTitle={$rawBookData$.title}
+      bookLocalId={$rawBookData$.id}
       sectionData={$sectionData$}
       {frozenPosition}
       {exploredCharCount}
@@ -3484,13 +3390,6 @@
       bind:wasTrackerPaused
       bind:this={trackerElm}
       on:freezeCurrentLocation={freezeTrackerPosition}
-      on:statisticsSaved={() => {
-        if (!blockDataUpdates) {
-          scheduleReplication(StorageDataType.STATISTICS);
-        }
-
-        recordShadowStatistics($rawBookData$?.title);
-      }}
       on:trackerAvailable={() => (showTrackerIcon = true)}
       on:trackerMenuClosed={() => {
         if (!wasTrackerPaused) {

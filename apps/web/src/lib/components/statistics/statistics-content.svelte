@@ -70,6 +70,11 @@
   import { quintInOut } from 'svelte/easing';
   import { fly } from 'svelte/transition';
 
+  /** WP12: the rows are sums of sessions; corrections come with the new Stats page. */
+  const statisticsReadOnly = true;
+  const READ_ONLY_NOTE =
+    'Statistics now come from reading sessions on every device. Changing or deleting them here, and this export, come back with the new Stats page; "Export my data" in Settings > Data has everything.';
+
   const copyStatisticsDataHandler$ = copyStatisticsData$.pipe(
     tap((dataKeyToCopy) => {
       const statistics =
@@ -325,9 +330,25 @@
     ev.preventDefault();
   }
 
+  /** WP12: until the new Stats page, statistics here are read-only. */
+  function showReadOnlyNote() {
+    $statisticsActionInProgress$ = false;
+    dialogManager.dialogs$.next([
+      {
+        component: MessageDialog,
+        props: { title: 'Statistics', message: READ_ONLY_NOTE }
+      }
+    ]);
+  }
+
   async function handleDeleteRequest({
     detail: { startDate, endDate, titlesToCheck, takeAsIs }
   }: CustomEvent<StatisticsDeleteRequest>) {
+    if (statisticsReadOnly) {
+      showReadOnlyNote();
+      return;
+    }
+
     let titlesToDelete = new Set<string>();
 
     $statisticsActionInProgress$ = true;
@@ -481,6 +502,11 @@
   async function handleEditRequest({
     detail: { dateKey, title, newReadingTime, newCharactersRead, resetMinMaxValues }
   }: CustomEvent<StatisticsEditRequest>) {
+    if (statisticsReadOnly) {
+      showReadOnlyNote();
+      return;
+    }
+
     $statisticsActionInProgress$ = true;
 
     const statisticIndex = statisticsData.findIndex(
@@ -634,11 +660,14 @@
 
   async function init() {
     try {
-      const db = await database.db;
       const hasPrefilteredTitlesForStatistics = !!$preFilteredTitlesForStatistics$.size;
 
+      // WP12: day totals from reading sessions (every device) and the frozen days
+      // from before device tracking; this browser's old rows are no longer read.
+      const { statsApi } = await import('$lib/sync/sync-service');
+
       [statisticsData, readingGoals] = await Promise.all([
-        db.getAllFromIndex('statistic', 'dateKey'),
+        statsApi().dayRowsForOldPage(),
         database.getReadingGoals()
       ]).then(([statistics, readingGoalData]) => [
         statistics.map((statistic) => {
