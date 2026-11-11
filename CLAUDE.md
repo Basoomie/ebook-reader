@@ -18,6 +18,7 @@ If code and docs disagree, or a task needs a decision the docs don't cover, STOP
 1. **WP19a**: Library behaviour: sorts, result counts, loading on scroll, cover size, author links, Connection and Migration moved to Settings.
 2. **WP19b**: the new look (draft A "蔵書 Archive", navy and cream; light, dark and E-ink), hover states, card ⋮ menu.
 3. **WP19c**: book details page.
+4. **WP19d**: highlights and notes refresh (decisions: "WP19d: highlights and notes refresh, plan"), three branches: `wp19d-notes-page` (Notes page redesign, CSV export), `wp19d-quote-image` (quote images), `wp19d-reader-bar` (the reader's highlight bar). The reader bar branch is the one approved exception to "never the reader": restyle and a Quote image button only; the bar stays docked and its behaviour is unchanged.
 
 Phase 5 (WP14-WP17) comes after WP19. The old sync is off (whispersync still uses it for matches until WP15). Still don't change the migration pages or the old-sync switch. Existing `stat-day` rows stay frozen as "before device tracking": never delete or rewrite them. Don't rewrite existing position records.
 

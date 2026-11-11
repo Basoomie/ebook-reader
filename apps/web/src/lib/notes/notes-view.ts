@@ -28,6 +28,10 @@ export interface NotesBookInfo {
   charCount: number | null;
   /** True when the catalog doesn't know the book (offline, hidden, removed). */
   unknown?: boolean;
+  /** WP19d: author names (empty or missing when unknown). */
+  authors?: string[];
+  /** WP19d: absolute cover thumbnail URL, or null/missing for none. */
+  thumbnail?: string | null;
 }
 
 export interface NotesFilter {

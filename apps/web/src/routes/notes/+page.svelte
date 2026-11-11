@@ -7,13 +7,15 @@
   import CataloguePageHeader from '$lib/components/catalogue-page-header.svelte';
   import { canLoadWhenVisible, loadWhenVisible } from '$lib/components/load-when-visible';
   import { libraryAutoLoad$ } from '$lib/library/settings';
-  import {
-    EINK_UNDERLINES,
-    HIGHLIGHT_SWATCHES
-  } from '$lib/components/book-reader/highlight-colors';
   import LibraryOpenOverlay from '$lib/components/library/library-open-overlay.svelte';
   import MessageDialog from '$lib/components/message-dialog.svelte';
+  import ColorDot from '$lib/components/notes/color-dot.svelte';
   import NotesList from '$lib/components/notes/notes-list.svelte';
+  import { downloadBlob } from '$lib/functions/download-blob';
+  import { notesCsvBlob, notesCsvFileName } from '$lib/notes/notes-csv';
+  import { loadOpenBooks, saveOpenBooks } from '$lib/notes/notes-open';
+  import { faFileCsv } from '@fortawesome/free-solid-svg-icons';
+  import Fa from 'svelte-fa';
   import { pxScreen } from '$lib/css-classes';
   import { dialogManager } from '$lib/data/dialog-manager';
   import { pagePath } from '$lib/data/env';
@@ -42,6 +44,7 @@
     parseNotesFilter,
     seriesChoices,
     unknownBookInfo,
+    type NotesBookGroup,
     type NotesBookInfo,
     type NotesFilter
   } from '$lib/notes/notes-view';
@@ -55,6 +58,10 @@
    * series and lengths from the library server, or the titles this device knows. Filters
    * live in the address (?book=&series=&color=&unplaced=1) so a series view can be linked
    * from the Library. Plain for e-ink: no animations, 48 px bordered controls, Load more.
+   *
+   * WP19d: books start as one row each and open on a tap (remembered on this device; a
+   * book or series filter, or a single book, opens them); compact color dots; Export CSV
+   * of everything the filters show.
    */
 
   const PAGE_BOOKS = 20;
@@ -82,6 +89,9 @@
   let stop: (() => void) | undefined;
   let destroyed = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let openBooks = browser ? loadOpenBooks() : new Set<string>();
+  /** The filter and books the automatic opening last ran for. */
+  let autoOpenedFor = '';
 
   $: timeoutSeconds = Math.max(0, Number($libraryRequestTimeoutSeconds$) || 0);
   // Prerendered without an address: filters exist only in the browser.
@@ -93,6 +103,12 @@
   $: books = bookChoices(all, info);
   $: series = seriesChoices(all, info);
   $: highlightTotal = groups.reduce((sum, g) => sum + g.highlights.length, 0);
+  $: noteTotal = groups.reduce(
+    (sum, g) => sum + g.notes.length + g.highlights.filter((r) => r.item.note).length,
+    0
+  );
+  $: allOpen = groups.length > 0 && groups.every((g) => openBooks.has(g.info.id));
+  $: if (loaded) autoOpen(filter, groups);
 
   onMount(async () => {
     void notes.syncSoon();
@@ -151,7 +167,9 @@
             id: book.id,
             title: book.title,
             series: book.series,
-            charCount: book.charCount
+            charCount: book.charCount,
+            authors: book.authors.map((a) => a.name),
+            thumbnail: book.thumbnail && api ? api.absolute(book.thumbnail) : null
           });
         }
       }
@@ -192,10 +210,38 @@
     setFilter({ ...filter, colors });
   }
 
-  function swatch(color: HighlightColor) {
-    return $einkMode$
-      ? `text-decoration: underline ${EINK_UNDERLINES[color]} #000; text-decoration-thickness: 2px; text-underline-offset: 4px;`
-      : `background-color: ${HIGHLIGHT_SWATCHES[color]};`;
+  function setOpen(ids: readonly string[], open: boolean) {
+    const next = new Set(openBooks);
+    for (const id of ids) {
+      if (open) next.add(id);
+      else next.delete(id);
+    }
+    openBooks = next;
+    saveOpenBooks(next);
+  }
+
+  function toggleBook(id: string) {
+    setOpen([id], !openBooks.has(id));
+  }
+
+  /**
+   * A book or series filter (from a link: the details page, a series) opens what it shows;
+   * so does a page with a single book. Runs again when the filter or the books change, so
+   * books that arrive later (titles looked up) open too. Never closes anything.
+   */
+  function autoOpen(f: NotesFilter, shownGroups: NotesBookGroup[]) {
+    const ids = shownGroups.map((g) => g.info.id);
+    const key = `${f.book ?? ''}|${f.series ?? ''}|${ids.join(',')}`;
+    if (key === autoOpenedFor) return;
+    autoOpenedFor = key;
+    if (f.book || f.series || ids.length === 1) {
+      const closed = ids.filter((id) => !openBooks.has(id));
+      if (closed.length) setOpen(closed, true);
+    }
+  }
+
+  function exportCsv() {
+    downloadBlob(notesCsvBlob(groups), notesCsvFileName(new Date()));
   }
 
   function showMessage(title: string, message: string) {
@@ -252,17 +298,23 @@
 <AppHeader title="Notes" />
 
 <div class="{pxScreen} pb-24 pt-16 xl:pt-14" data-testid="notes-page">
+  <!-- WP19d: the counts are in the line above the list (with notes and Expand all). -->
   <CataloguePageHeader jp="抜き書き" title="Notes">
-    <span slot="meta" class="text-sm text-c-muted">
-      {#if loaded && groups.length}
-        {groups.length}
-        {groups.length === 1 ? 'book' : 'books'} · {highlightTotal}
-        {highlightTotal === 1 ? 'highlight' : 'highlights'}
-      {/if}
-    </span>
+    {#if loaded && groups.length}
+      <button
+        type="button"
+        class="c-btn c-btn-secondary px-4 text-sm"
+        title="Download what the filters show as a spreadsheet (CSV)"
+        data-testid="notes-export-csv"
+        on:click={exportCsv}
+      >
+        <Fa icon={faFileCsv} />
+        Export CSV
+      </button>
+    {/if}
   </CataloguePageHeader>
-  <div class="flex flex-wrap items-end gap-3 pb-2 pt-2">
-    <label class="flex w-full flex-col gap-1 text-sm text-c-muted sm:w-auto">
+  <div class="grid grid-cols-2 items-end gap-3 pb-2 pt-2 sm:flex sm:flex-wrap">
+    <label class="flex min-w-0 flex-col gap-1 text-sm text-c-muted">
       Book
       <select
         class="{control} max-w-full sm:max-w-[18rem]"
@@ -276,7 +328,7 @@
         {/each}
       </select>
     </label>
-    <label class="flex w-full flex-col gap-1 text-sm text-c-muted sm:w-auto">
+    <label class="flex min-w-0 flex-col gap-1 text-sm text-c-muted">
       Series
       <select
         class="{control} max-w-full sm:max-w-[18rem]"
@@ -293,23 +345,25 @@
       </select>
     </label>
   </div>
-  <div class="flex flex-wrap items-center gap-2 pb-3" role="group" aria-label="Show colors">
-    {#each HIGHLIGHT_COLORS as color}
-      <button
-        class="c-btn c-btn-secondary w-12 px-0"
-        aria-pressed={filter.colors.has(color)}
-        class:outline={filter.colors.has(color)}
-        class:outline-4={filter.colors.has(color)}
-        title="Only {HIGHLIGHT_COLOR_NAMES[color]}"
-        aria-label="Only {HIGHLIGHT_COLOR_NAMES[color]}"
-        data-testid="notes-page-filter-{color}"
-        on:click={() => toggleColor(color)}
-      >
-        <span class="block h-5 w-5 rounded-sm" style={swatch(color)}>{$einkMode$ ? 'あ' : ''}</span>
-      </button>
-    {/each}
+  <div class="flex flex-wrap items-center gap-x-3 gap-y-1 pb-3">
+    <div class="flex items-center" role="group" aria-label="Show colors">
+      <span class="pr-2 text-xs font-medium uppercase tracking-wider text-c-muted">Colour</span>
+      {#each HIGHLIGHT_COLORS as color}
+        <button
+          type="button"
+          class="c-dot-btn flex h-11 w-11 items-center justify-center rounded-full"
+          aria-pressed={filter.colors.has(color)}
+          title="Only {HIGHLIGHT_COLOR_NAMES[color]}"
+          aria-label="Only {HIGHLIGHT_COLOR_NAMES[color]}"
+          data-testid="notes-page-filter-{color}"
+          on:click={() => toggleColor(color)}
+        >
+          <ColorDot {color} eink={$einkMode$} picked={filter.colors.has(color)} />
+        </button>
+      {/each}
+    </div>
     <button
-      class="c-btn c-btn-secondary px-3 text-sm"
+      class="c-btn c-btn-secondary min-h-[2.75rem] rounded-full px-4 text-sm"
       aria-pressed={filter.unplacedOnly}
       data-testid="notes-filter-unplaced"
       on:click={() => setFilter({ ...filter, unplacedOnly: !filter.unplacedOnly })}
@@ -318,7 +372,7 @@
     </button>
     {#if isFiltered(filter)}
       <button
-        class="c-link min-h-[3rem] px-2 text-sm"
+        class="c-link min-h-[2.75rem] px-2 text-sm"
         data-testid="notes-filter-clear"
         on:click={() =>
           setFilter({ book: null, series: null, colors: new Set(), unplacedOnly: false })}
@@ -346,13 +400,31 @@
 
   {#if loaded}
     {#if groups.length}
-      <p class="pb-2 pt-1 text-sm text-c-muted" data-testid="notes-summary">
-        {groups.length}
-        {groups.length === 1 ? 'book' : 'books'} · {highlightTotal}
-        {highlightTotal === 1 ? 'highlight' : 'highlights'}
-      </p>
+      <div class="flex flex-wrap items-center justify-between gap-2 pb-2 pt-1">
+        <p class="text-sm text-c-muted" data-testid="notes-summary">
+          {groups.length}
+          {groups.length === 1 ? 'book' : 'books'} · {highlightTotal}
+          {highlightTotal === 1 ? 'highlight' : 'highlights'} · {noteTotal}
+          {noteTotal === 1 ? 'note' : 'notes'}
+        </p>
+        <button
+          type="button"
+          class="c-link min-h-[2.75rem] px-2 text-sm"
+          data-testid="notes-expand-all"
+          on:click={() =>
+            setOpen(
+              groups.map((g) => g.info.id),
+              !allOpen
+            )}
+        >
+          {allOpen ? 'Collapse all' : 'Expand all'}
+        </button>
+      </div>
       <NotesList
         groups={visible}
+        collapsible
+        {openBooks}
+        on:toggle={(ev) => toggleBook(ev.detail.id)}
         eink={$einkMode$}
         actions={{
           setColor: notes.setColor,
@@ -399,3 +471,16 @@
     on:cancel={() => opening?.controller.abort()}
   />
 {/if}
+
+<style>
+  .c-dot-btn:focus-visible {
+    outline: 2px solid var(--c-link);
+    outline-offset: -2px;
+  }
+
+  @media (hover: hover) {
+    :global(html:not(.eink)) .c-dot-btn:hover {
+      background-color: var(--c-tint);
+    }
+  }
+</style>
