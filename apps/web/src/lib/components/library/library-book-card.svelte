@@ -10,7 +10,13 @@
   import type { CatalogBook } from '$lib/library/types';
   import { formatBookCharCount } from '$lib/library/char-counts';
   import { pagePath } from '$lib/data/env';
-  import { authorHref, authorNames, formatSeriesIndex, seriesNumber } from '$lib/library/format';
+  import {
+    authorHref,
+    authorNames,
+    bookDetailsHref,
+    formatSeriesIndex,
+    seriesNumber
+  } from '$lib/library/format';
   import { STATUS_LABELS, type BookState } from '$lib/sync/book-state';
   import { faCheck, faStar } from '@fortawesome/free-solid-svg-icons';
   import { createEventDispatcher } from 'svelte';
@@ -41,6 +47,8 @@
 
   /** WP19a: where an author name leads (default: that author in the Library). */
   export let authorLink: (name: string) => string = (name) => authorHref(pagePath, name);
+  /** WP19c: the book's details page (title link and the ⋮ menu's Details). */
+  export let detailsHref = bookDetailsHref(pagePath, book.id);
 
   let menuOpen = false;
 
@@ -55,6 +63,11 @@
       ? formatSeriesIndex(book.series.index)
       : '';
   $: readLabel = progressFraction !== null ? 'Continue reading' : 'Read';
+
+  /** The title: a link to the details, except in select mode (then it selects). */
+  function onTitleClick(ev: MouseEvent) {
+    if (selectMode) onClick(ev);
+  }
 
   function onClick(ev: MouseEvent) {
     if (selectMode) dispatch('toggle', { book, shift: ev.shiftKey });
@@ -124,6 +137,7 @@
       <LibraryBookMenu
         title={book.title}
         {readLabel}
+        {detailsHref}
         bind:open={menuOpen}
         on:read={() => dispatch('open', book)}
         on:state={() => dispatch('state', book)}
@@ -131,10 +145,15 @@
       />
     </div>
   {/if}
-  <button
-    class="c-focus mt-2 line-clamp-2 block w-full text-left font-mincho text-[15px] font-bold leading-snug hover:underline"
-    tabindex="-1"
-    on:click={onClick}
+  <!-- WP19c: the title opens the book's details (in select mode it selects, as the cover). -->
+  <svelte:element
+    this={selectMode ? 'button' : 'a'}
+    class="c-focus mt-1.5 line-clamp-2 block min-h-[2.75rem] w-full py-0.5 text-left font-mincho text-[15px] font-bold leading-snug hover:underline"
+    href={selectMode ? undefined : detailsHref}
+    tabindex={selectMode ? -1 : undefined}
+    role={selectMode ? 'button' : undefined}
+    data-testid="card-title"
+    on:click={onTitleClick}
   >
     {#if state?.favorite}
       <span
@@ -145,7 +164,7 @@
         <Fa icon={faStar} size="xs" />
       </span>
     {/if}{book.title}
-  </button>
+  </svelte:element>
   {#if infoLine && info}
     <div class="mt-0.5 line-clamp-2 text-xs leading-relaxed text-c-muted" data-testid="card-info">
       {#each book.authors as author, i (i)}<a

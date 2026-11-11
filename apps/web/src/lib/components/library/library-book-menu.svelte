@@ -22,6 +22,8 @@
   export let variant: 'cover' | 'row' = 'cover';
   /** Bound up: the menu is open (keeps the corner button visible). */
   export let open = false;
+  /** WP19c: the book's details page ('' = no Details item, e.g. on that page itself). */
+  export let detailsHref = '';
 
   const dispatch = createEventDispatcher<{ read: void; state: void; collect: void }>();
 
@@ -56,6 +58,11 @@
     >
       {readLabel}
     </button>
+    {#if detailsHref}
+      <a class={item} href={detailsHref} data-testid="book-menu-details" on:click={close}>
+        Details
+      </a>
+    {/if}
     <div class="my-1 border-t" style="border-color: var(--c-line)" />
     <button
       type="button"

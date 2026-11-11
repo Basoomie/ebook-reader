@@ -2,7 +2,7 @@
   import type { CatalogBook } from '$lib/library/types';
   import { pagePath } from '$lib/data/env';
   import { formatBookCharCount } from '$lib/library/char-counts';
-  import { authorHref } from '$lib/library/format';
+  import { authorHref, bookDetailsHref } from '$lib/library/format';
   import { STATUS_LABELS, finishedReadThroughs, type BookState } from '$lib/sync/book-state';
   import { faCheck, faStar } from '@fortawesome/free-solid-svg-icons';
   import { createEventDispatcher } from 'svelte';
@@ -149,6 +149,7 @@
         title={book.title}
         readLabel={progressFraction !== null ? 'Continue reading' : 'Read'}
         variant="row"
+        detailsHref={bookDetailsHref(pagePath, book.id)}
         on:read={() => dispatch('open', book)}
         on:state={() => dispatch('state', book)}
         on:collect={() => dispatch('collect', book)}
