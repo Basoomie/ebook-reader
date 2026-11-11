@@ -117,12 +117,15 @@ export function rowTitle(row: HomeRow, collectionName?: (id: string) => string |
   }
 }
 
-/** Where a row's "See all" goes (null for Continue Reading, which has no full view). */
+/**
+ * Where a row's "See all" goes. Continue reading goes to the Reading collection: books
+ * get that status when they are opened, so it holds the same books, all of them.
+ */
 export function rowHref(row: HomeRow, base: string): string | null {
   const q = (params: Record<string, string>) => `${base}/library?${new URLSearchParams(params)}`;
   switch (row.type) {
     case 'continue':
-      return null;
+      return q({ collection: 'reading' });
     case 'recent':
       return `${base}/library`;
     case 'builtin':

@@ -26,7 +26,8 @@
   import LibraryBookCard from '$lib/components/library/library-book-card.svelte';
   import { pagePath } from '$lib/data/env';
   import { coverSize } from '$lib/library/cover-size';
-  import { authorHref } from '$lib/library/format';
+  import { formatBookCharCount } from '$lib/library/char-counts';
+  import { authorHref, bookDetailsHref, seriesNumber } from '$lib/library/format';
   import { libraryCoverSize$ } from '$lib/library/settings';
   import type { BookState } from '$lib/sync/book-state';
   import { createEventDispatcher } from 'svelte';
@@ -45,6 +46,10 @@
   export let infoLine = true;
   /** WP19b: show the first book large (Continue reading). */
   export let hero = false;
+  /** The hero's progress (100% included) and time left, or null when nothing is known. */
+  export let heroProgressOf: (
+    book: CatalogBook
+  ) => { fraction: number; timeLeft: string | null } | null = () => null;
 
   const dispatch = createEventDispatcher<{
     open: CatalogBook;
@@ -59,7 +64,12 @@
   $: books = view.status === 'ok' ? view.books : [];
   $: heroBook = hero && books.length ? books[0] : null;
   $: strip = heroBook ? books.slice(1) : books;
-  $: heroFraction = heroBook ? fractionOf(heroBook) : null;
+  $: heroProgress = heroBook ? heroProgressOf(heroBook) : null;
+  $: heroInfo = heroBook
+    ? [heroBook.series?.name ?? '', seriesNumber(heroBook), formatBookCharCount(heroBook)]
+        .filter(Boolean)
+        .join(' · ')
+    : '';
 
   function openHero() {
     if (!heroBook) return;
@@ -115,26 +125,34 @@
           <CoverImage src={thumbnailUrl(heroBook)} blurred={blurredOf(heroBook)} />
         </button>
         <div class="flex min-w-0 grow flex-col gap-1.5">
-          <button
-            class="c-focus line-clamp-2 text-left font-mincho text-lg font-bold leading-snug hover:underline"
-            tabindex="-1"
-            on:click={openHero}
+          <a
+            class="c-focus line-clamp-2 font-mincho text-lg font-bold leading-snug hover:underline"
+            href={bookDetailsHref(pagePath, heroBook.id)}
+            data-testid="home-hero-title"
           >
             {heroBook.title}
-          </button>
+          </a>
           <div class="truncate text-sm">
             {#each heroBook.authors as author, i (i)}<a
                 class="c-link"
                 href={authorHref(pagePath, author.name)}>{author.name}</a
               >{i < heroBook.authors.length - 1 ? ', ' : ''}{/each}
           </div>
-          {#if heroFraction !== null}
-            <div class="flex items-center gap-3">
-              <div class="c-progress h-1.5 max-w-xs grow overflow-hidden rounded-full bg-c-track">
-                <div class="h-full bg-c-fill" style="width: {Math.round(heroFraction * 100)}%" />
-              </div>
-              <span class="text-xs text-c-muted">{Math.floor(heroFraction * 100)}%</span>
+          {#if heroInfo}
+            <p class="truncate text-sm text-c-muted" data-testid="home-hero-info">{heroInfo}</p>
+          {/if}
+          {#if heroProgress}
+            <div class="c-progress mt-1 h-1.5 max-w-xs overflow-hidden rounded-full bg-c-track">
+              <div
+                class="h-full bg-c-fill"
+                style="width: {Math.round(heroProgress.fraction * 100)}%"
+              />
             </div>
+            <p class="text-xs text-c-muted" data-testid="home-hero-progress">
+              {Math.floor(heroProgress.fraction * 100)}%{heroProgress.timeLeft
+                ? ` · ${heroProgress.timeLeft} left`
+                : ''}
+            </p>
           {/if}
           <div class="mt-auto pt-1">
             <button

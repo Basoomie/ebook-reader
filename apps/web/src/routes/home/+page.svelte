@@ -42,12 +42,20 @@
   import { getLibraryStore, type LibraryConnection } from '$lib/library/library-db';
   import type { OpenStage } from '$lib/library/open-calibre-book';
   import { openCatalogBook } from '$lib/library/open-from-catalog';
-  import { bookProgressFraction, bookProgressLabel, positionsByBook } from '$lib/library/progress';
+  import {
+    bookProgressFraction,
+    bookProgressLabel,
+    furthestPosition,
+    positionsByBook
+  } from '$lib/library/progress';
+  import { timeLeftMinMinutes$, timeLeftRecentMinutes$ } from '$lib/data/store';
+  import type { StatEntry } from '$lib/stats/aggregate';
+  import { formatTimeLeft, secondsLeft, speedEstimate } from '$lib/stats/time-left';
   import { libraryInfoLine$, libraryRequestTimeoutSeconds$ } from '$lib/library/settings';
   import type { CatalogBook, CatalogLibrary } from '$lib/library/types';
   import type { BookState } from '$lib/sync/book-state';
   import type { LocalRecord } from '$lib/sync/sync-db';
-  import { bookStateApi, collectionsApi, libraryViewApi } from '$lib/sync/sync-service';
+  import { bookStateApi, collectionsApi, libraryViewApi, statsApi } from '$lib/sync/sync-service';
   import { onDestroy, onMount } from 'svelte';
 
   const store = getLibraryStore();
@@ -66,6 +74,8 @@
   let collectionsLoaded = false;
   let onDevice = new Set<string>();
   let revealed = new Set<string>();
+  /** Reading statistics for the hero's time left (null until read, or if they can't be). */
+  let statEntries: StatEntry[] | null = null;
   let views = new Map<string, HomeRowView>();
   let editing = false;
   let ready = false;
@@ -95,6 +105,7 @@
 
   onMount(async () => {
     await loadMirror();
+    void loadStatEntries();
     void view.syncSoon();
     const subscriptions = [
       bookState.onChanged(onMirrorChanged),
@@ -264,6 +275,40 @@
       positions.get(book.id) ?? [],
       book.charCount
     );
+  /**
+   * The Continue reading hero: how far into the current read (the furthest place, as
+   * the cards; 100% included) and the time left at the reader's speed estimate.
+   */
+  $: heroProgressOf = (book: CatalogBook) => {
+    const state = states.get(book.id);
+    if (state?.status === 'completed') return null;
+    const best = furthestPosition(book.id, state, positions.get(book.id) ?? [], book.charCount);
+    if (!best) return null;
+    let timeLeft: string | null = null;
+    if (statEntries && book.charCount && best.fraction < 1) {
+      const estimate = speedEstimate(
+        book.id,
+        statEntries,
+        Math.max(1, Number($timeLeftRecentMinutes$) || 60) * 60,
+        Math.max(0, Number($timeLeftMinMinutes$) || 0) * 60
+      );
+      const seconds = secondsLeft(Math.round(book.charCount * (1 - best.fraction)), estimate);
+      timeLeft = seconds === null ? null : formatTimeLeft(seconds);
+    }
+    return { fraction: best.fraction, timeLeft };
+  };
+
+  /** Statistics never block Home: without them the hero has no time left. */
+  async function loadStatEntries() {
+    try {
+      statEntries = await statsApi().allEntries();
+    } catch (error) {
+      logger.warn(
+        `Home: could not read statistics for time left: ${(error as Error)?.message ?? error}`
+      );
+    }
+  }
+
   $: blurredOf = (book: CatalogBook) =>
     !revealed.has(book.id) && isCoverBlurred(states.get(book.id)?.blur, book.tags, tagRules);
 
@@ -471,6 +516,7 @@
           {stateOf}
           {progressOf}
           {fractionOf}
+          {heroProgressOf}
           {blurredOf}
           hero={row.type === 'continue'}
           {onDevice}
