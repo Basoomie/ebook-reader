@@ -59,6 +59,14 @@
     }
   });
 
+  // Server-synced custom fonts (WP13): registers the fonts saved on this device, then
+  // downloads new ones. Loaded separately; a failure only leaves the bundled fonts.
+  onMount(() => {
+    import('$lib/fonts/server-fonts-browser')
+      .then(({ startServerFonts }) => startServerFonts())
+      .catch((error) => console.warn('Fonts: not started', error));
+  });
+
   // Record sync (WP4) runs in the background. Loaded separately so that no
   // problem in it can affect the rest of the app.
   onMount(() => {

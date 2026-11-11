@@ -147,6 +147,17 @@ export type UploadXhr = Pick<
   onabort: ((ev: unknown) => void) | null;
 };
 
+/** A custom font on the server (WP13); the same data as its "font" sync record. */
+export interface ServerFontInfo {
+  id: string;
+  name: string;
+  fileName: string;
+  format: 'woff2' | 'woff' | 'ttf' | 'otf';
+  size: number;
+  sha256: string;
+  createdAt: number;
+}
+
 export interface UploadOptions {
   signal?: AbortSignal;
   onProgress?: (loaded: number, total: number) => void;
@@ -162,24 +173,71 @@ export class LibraryApi {
   ) {}
 
   /**
-   * Sends an EPUB to the server for the chosen library (WP7b). XMLHttpRequest, because
-   * fetch reports no upload progress. No timeout (a big file on a slow link takes time);
-   * the caller can cancel with `signal`. Resolves to the staged upload and its duplicates.
+   * Sends an EPUB to the server for the chosen library (WP7b). Resolves to the staged
+   * upload and its duplicates.
    */
   uploadEpub(
     file: Blob,
     fileName: string,
     libraryId: string,
-    { signal, onProgress }: UploadOptions = {}
+    options: UploadOptions = {}
   ): Promise<StagedUpload> {
+    const qs = new URLSearchParams({ library: libraryId, name: fileName });
+    return this.sendWithProgress(`/uploads?${qs}`, file, 'application/epub+zip', options);
+  }
+
+  /**
+   * Sends a font file to the server (WP13). Resolves to the stored font; `existing` when
+   * the server already had the same file (under its first name).
+   */
+  uploadFont(
+    file: Blob,
+    name: string,
+    fileName: string,
+    options: UploadOptions = {}
+  ): Promise<{ font: ServerFontInfo; existing: boolean }> {
+    const qs = new URLSearchParams({ name, fileName });
+    return this.sendWithProgress(`/fonts?${qs}`, file, 'application/octet-stream', options);
+  }
+
+  /** The server's font size limit and its fonts; null when the server takes no fonts. */
+  async fontInfo(
+    options?: RequestOptions
+  ): Promise<{ maxBytes: number; fonts: ServerFontInfo[] } | null> {
+    try {
+      return await (await this.get('/fonts', options)).json();
+    } catch (error) {
+      if (error instanceof LibraryApiError && error.status === 404) return null;
+      throw error;
+    }
+  }
+
+  /** A font file (WP13). */
+  async downloadFont(id: string, options: RequestOptions = {}): Promise<Blob> {
+    const response = await this.get(`/fonts/${encodeURIComponent(id)}/file`, {
+      timeoutSeconds: 0,
+      ...options
+    });
+    return response.blob();
+  }
+
+  /**
+   * POSTs a file with XMLHttpRequest, because fetch reports no upload progress. No
+   * timeout (a big file on a slow link takes time); the caller can cancel with `signal`.
+   */
+  private sendWithProgress<T>(
+    path: string,
+    file: Blob,
+    contentType: string,
+    { signal, onProgress }: UploadOptions
+  ): Promise<T> {
     return new Promise((resolve, reject) => {
       const xhr = this.xhrFactory();
-      const qs = new URLSearchParams({ library: libraryId, name: fileName });
       const onAbort = () => xhr.abort();
       const done = () => signal?.removeEventListener('abort', onAbort);
-      xhr.open('POST', `${this.serverUrl}/api/v1/uploads?${qs}`);
+      xhr.open('POST', `${this.serverUrl}/api/v1${path}`);
       xhr.setRequestHeader('Authorization', `Bearer ${this.token}`);
-      xhr.setRequestHeader('Content-Type', 'application/epub+zip');
+      xhr.setRequestHeader('Content-Type', contentType);
       if (xhr.upload && onProgress) {
         xhr.upload.onprogress = (ev: ProgressEvent) => onProgress(ev.loaded, ev.total);
       }

@@ -31,6 +31,7 @@
   import { goto } from '$app/navigation';
   import { faCloudBolt, faPause, faPlay, faSpinner } from '@fortawesome/free-solid-svg-icons';
   import BookReader from '$lib/components/book-reader/book-reader.svelte';
+  import { serverFonts } from '$lib/fonts/server-fonts-browser';
   import type {
     AutoScroller,
     BookmarkManager,
@@ -1286,6 +1287,19 @@
       textMarginValue$
     ).subscribe(() => relayoutInPlace());
 
+    // WP13: a server font this book uses arrived after the page was laid out (its first
+    // download on this device): lay out again in place, like a font change.
+    const fontArrived = serverFonts.arrived$
+      .pipe(
+        filter(
+          (name) =>
+            firstPositionRestored &&
+            (name === fontFamilyGroupOne$.getValue() || name === fontFamilyGroupTwo$.getValue())
+        ),
+        debounceTime(350)
+      )
+      .subscribe(() => relayoutInPlace());
+
     const reopen = changes(
       viewMode$,
       writingMode$,
@@ -1301,6 +1315,7 @@
 
     return () => {
       inPlace.unsubscribe();
+      fontArrived.unsubscribe();
       reopen.unsubscribe();
       restoreAppearanceKeys?.();
     };
@@ -2620,7 +2635,12 @@
   let positionPromptStopped = false;
   let restorePromptKeys: (() => void) | undefined;
 
+  /** WP13: the book has been placed on the page once (a late font then lays out again). */
+  let firstPositionRestored = false;
+
   async function onPositionRestored() {
+    firstPositionRestored = true;
+
     // WP10e: the reader was reopened in place for a layout change; return to where it was.
     if (remountTarget !== undefined) {
       // A view mode change shows the new mode before the book is formatted for it; only the

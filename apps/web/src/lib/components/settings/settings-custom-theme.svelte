@@ -9,9 +9,9 @@
     fontFamilyGroupOne$,
     fontFamilyGroupTwo$,
     fontSize$,
-    theme$,
-    userFonts$
+    theme$
   } from '$lib/data/store';
+  import { customFontNames$ } from '$lib/fonts/server-fonts-browser';
   import { LocalFont } from '$lib/data/fonts';
   import {
     availableThemes,
@@ -74,8 +74,9 @@
   let includeSize = false;
   let size = $fontSize$;
 
-  const userFontNames = $userFonts$.map((font) => font.name);
-  const fontsOne = [
+  // Custom fonts: server-synced ones (WP13) and this browser's own.
+  $: userFontNames = $customFontNames$;
+  $: fontsOne = [
     LocalFont.NOTOSERIFJP,
     LocalFont.KZUDMINCHO,
     LocalFont.GENEI,
@@ -85,12 +86,7 @@
     LocalFont.SERIF,
     ...userFontNames
   ];
-  const fontsTwo = [
-    LocalFont.NOTOSANSJP,
-    LocalFont.KZUDGOTHIC,
-    LocalFont.SANSSERIF,
-    ...userFontNames
-  ];
+  $: fontsTwo = [LocalFont.NOTOSANSJP, LocalFont.KZUDGOTHIC, LocalFont.SANSSERIF, ...userFontNames];
 
   $: fontChoicesOne = fontsOne.includes(fontOne) ? fontsOne : [fontOne, ...fontsOne];
   $: fontChoicesTwo = fontsTwo.includes(fontTwo) ? fontsTwo : [fontTwo, ...fontsTwo];

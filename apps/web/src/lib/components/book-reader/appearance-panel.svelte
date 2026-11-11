@@ -26,10 +26,10 @@
     secondDimensionMaxValue$,
     textIndentation$,
     theme$,
-    userFonts$,
     viewMode$,
     writingMode$
   } from '$lib/data/store';
+  import { customFontNames$ } from '$lib/fonts/server-fonts-browser';
   import { availableThemes } from '$lib/data/theme-option';
   import { ViewMode } from '$lib/data/view-mode';
   import { applyAppearanceValues } from './appearance-settings';
@@ -62,8 +62,8 @@
     thickBorders: true
   }));
 
-  const userFontNames = $userFonts$.map((font) => font.name);
-  const fontsOne: string[] = [
+  // Custom fonts: server-synced ones (WP13) and this browser's own.
+  $: fontsOne = [
     LocalFont.NOTOSERIFJP,
     LocalFont.KZUDMINCHO,
     LocalFont.GENEI,
@@ -71,15 +71,15 @@
     LocalFont.KLEEONE,
     LocalFont.KLEEONESEMIBOLD,
     LocalFont.SERIF,
-    ...userFontNames
-  ];
-  const fontsTwo: string[] = [
+    ...$customFontNames$
+  ] as string[];
+  $: fontsTwo = [
     LocalFont.NOTOSANSJP,
     LocalFont.KZUDGOTHIC,
     LocalFont.SANSSERIF,
-    ...userFontNames
-  ];
-  const allFonts = [...new Set([...fontsOne, ...fontsTwo])];
+    ...$customFontNames$
+  ] as string[];
+  $: allFonts = [...new Set([...fontsOne, ...fontsTwo])];
 
   $: fontChoicesOne = fontsOne.includes($fontFamilyGroupOne$)
     ? fontsOne

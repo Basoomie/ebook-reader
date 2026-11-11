@@ -20,6 +20,8 @@
   import SettingsItemGroup from '$lib/components/settings/settings-item-group.svelte';
   import SettingsStorageSourceList from '$lib/components/settings/settings-storage-source-list.svelte';
   import SettingsUserFontDialog from '$lib/components/settings/settings-user-font-dialog.svelte';
+  import SettingsServerFontsDialog from '$lib/components/settings/settings-server-fonts-dialog.svelte';
+  import { customFontNames$ } from '$lib/fonts/server-fonts-browser';
   import { inputClasses } from '$lib/css-classes';
   import { BlurMode } from '$lib/data/blur-mode';
   import { dialogManager } from '$lib/data/dialog-manager';
@@ -618,7 +620,8 @@
             LocalFont.SHIPPORIMINCHO,
             LocalFont.KLEEONE,
             LocalFont.KLEEONESEMIBOLD,
-            LocalFont.SERIF
+            LocalFont.SERIF,
+            ...$customFontNames$
           ]}
           bind:fontValue={fontFamilyGroupOne}
         />
@@ -650,7 +653,12 @@
     <SettingsItemGroup title="Font family (Group 2)">
       <div slot="header" class="flex items-center">
         <SettingsFontSelector
-          availableFonts={[LocalFont.NOTOSANSJP, LocalFont.KZUDGOTHIC, LocalFont.SANSSERIF]}
+          availableFonts={[
+            LocalFont.NOTOSANSJP,
+            LocalFont.KZUDGOTHIC,
+            LocalFont.SANSSERIF,
+            ...$customFontNames$
+          ]}
           bind:fontValue={fontFamilyGroupTwo}
         />
         {#if fontCacheSupported}
@@ -676,6 +684,20 @@
         placeholder="Noto Sans JP"
         bind:value={fontFamilyGroupTwo}
       />
+    </SettingsItemGroup>
+    <SettingsItemGroup
+      title="Custom Fonts"
+      tooltip="Add a font once on the library server; every device gets it and keeps it for reading offline. Each device chooses its own font above."
+    >
+      {#if browser}
+        <button
+          class="m-1 min-h-[3rem] rounded-md border-2 border-gray-400 px-4 font-medium"
+          data-testid="open-server-fonts"
+          on:click={() => dialogManager.dialogs$.next([{ component: SettingsServerFontsDialog }])}
+        >
+          Manage fonts
+        </button>
+      {/if}
     </SettingsItemGroup>
     {#if textMarginMode === 'manual'}
       <SettingsItemGroup title="Paragraph Margins" tooltip="# of rem added as margin to paragraphs">

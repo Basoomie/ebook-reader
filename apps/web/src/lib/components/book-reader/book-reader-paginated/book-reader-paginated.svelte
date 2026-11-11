@@ -5,6 +5,7 @@
   import type { BooksDbBookmarkData } from '$lib/data/database/books-db/versions/books-db';
   import { SECTION_CHANGE } from '$lib/data/events';
   import { isStoredFont } from '$lib/data/fonts';
+  import { isServerFontPending, whenServerFontReady } from '$lib/fonts/server-fonts-browser';
   import { FuriganaStyle } from '$lib/data/furigana-style';
   import { logger } from '$lib/data/logger';
   import {
@@ -156,6 +157,11 @@
   let bookmarkRightAdjustment: string | undefined;
 
   let fontLoadingAdded = false;
+
+  /** WP13: waiting for a server font to be registered (see onHtmlLoad). */
+  let serverFontWait = false;
+
+  let stopServerFontWait: (() => void) | undefined;
 
   let currentSectionId = '';
 
@@ -369,6 +375,7 @@
   /** Experimental Code - May be removed or changed any time without warning */
 
   onDestroy(() => {
+    stopServerFontWait?.();
     document.removeEventListener('ttu-action', handleAction, false);
 
     document.body.classList.remove(cssClassOverflowHidden);
@@ -514,6 +521,9 @@
 
     try {
       fontLoaded = document.fonts.check(`${fontSize}px ${fontFamilyGroupOne || 'Noto Serif JP'}`);
+      // WP13: a server font not registered yet looks "loaded" to fonts.check.
+      serverFontWait = isServerFontPending(fontFamilyGroupOne);
+      fontLoaded = fontLoaded && !serverFontWait;
     } catch (error: any) {
       logger.error(`Error checking Font Load: ${error.message}`);
       fontLoaded = true;
@@ -524,7 +534,8 @@
     } else if (!fontLoadingAdded) {
       fontLoadingAdded = true;
 
-      const timeout = isStoredFont(fontFamilyGroupOne, $userFonts$) ? 30000 : 10000;
+      const timeout =
+        isStoredFont(fontFamilyGroupOne, $userFonts$) || serverFontWait ? 30000 : 10000;
       const fontLoadTimer = setTimeout(() => {
         logger.error(`Error loading primary Font: ${fontFamilyGroupOne}`);
         triggerContentChange();
@@ -534,6 +545,14 @@
         clearTimeout(fontLoadTimer);
         triggerContentChange();
       });
+
+      if (serverFontWait) {
+        stopServerFontWait?.();
+        stopServerFontWait = whenServerFontReady(fontFamilyGroupOne, () => {
+          clearTimeout(fontLoadTimer);
+          triggerContentChange();
+        });
+      }
     }
   }
 

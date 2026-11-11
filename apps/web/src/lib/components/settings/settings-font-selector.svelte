@@ -5,7 +5,8 @@
   import { dummyFn } from '$lib/functions/utils';
   import Fa from 'svelte-fa';
 
-  export let availableFonts: LocalFont[] = [LocalFont.NOTOSANSJP];
+  /** Bundled fonts, then custom ones (server-synced, WP13, and this browser's own). */
+  export let availableFonts: string[] = [LocalFont.NOTOSANSJP];
   export let fontValue: string;
 
   let element: Popover;

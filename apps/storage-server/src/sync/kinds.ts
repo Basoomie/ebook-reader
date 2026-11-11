@@ -804,6 +804,61 @@ const bookmarkKind: KindSpec = {
   },
 };
 
+// ---------------------------------------------------------------------------
+// WP13: custom fonts
+// ---------------------------------------------------------------------------
+
+interface FontRow {
+  name: string;
+  file_name: string;
+  format: string;
+  size: number;
+  sha256: string;
+  created_at: number;
+}
+
+/** What a font's record holds: exactly its `fonts` row. */
+export function fontRecordData(row: FontRow): Record<string, unknown> {
+  return {
+    name: row.name,
+    fileName: row.file_name,
+    format: row.format,
+    size: row.size,
+    sha256: row.sha256,
+    createdAt: row.created_at,
+  };
+}
+
+/**
+ * kind "font": id = the font id, lww, deletable. data { name, fileName, format, size,
+ * sha256, createdAt }. Written by the server when a font is uploaded
+ * (POST /api/v1/fonts, as the uploading device). Devices may delete it (gone from
+ * every device) or restore it, but the data must be exactly the stored font's: a
+ * record without an uploaded file, or with another name or file, is refused.
+ */
+const fontKind: KindSpec = {
+  policy: () => 'lww',
+  deletable: true,
+  validate(id, data, deleted, ctx) {
+    if (!UUID_RE.test(id)) throw new RecordError('invalid_id', 'font ids are UUIDs');
+    const row = ctx.db
+      .prepare(
+        'SELECT name, file_name, format, size, sha256, created_at FROM fonts WHERE id = ? AND user_id = ?',
+      )
+      .get(id, ctx.userId) as FontRow | undefined;
+    if (!row) throw new RecordError('unknown_font', `No uploaded font ${id}`);
+    if (deleted) return { bookId: null, data: {} };
+    const obj = requireObject(data);
+    const expected = fontRecordData(row);
+    for (const [key, value] of Object.entries(expected)) {
+      if (obj[key] !== value) {
+        throw new RecordError('invalid_data', `${key} must be the uploaded font's`);
+      }
+    }
+    return { bookId: null, data: expected };
+  },
+};
+
 /** Smart-collection queries are checked with the search box's own parser. */
 const parserCheck: QueryCheck = (query) => {
   const result = parseQuery(query);
@@ -828,4 +883,5 @@ export const DEFAULT_KINDS: KindRegistry = {
   highlight: highlightKind,
   note: noteKind,
   bookmark: bookmarkKind,
+  font: fontKind,
 };
