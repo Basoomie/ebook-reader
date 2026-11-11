@@ -186,7 +186,7 @@ export function createCatalogRouter(db: Database.Database, catalog: CatalogOptio
     '/books/lookup',
     asyncHandler(async (req, res) => {
       const { user } = getAuth(res);
-      const body = (req.body ?? {}) as { ids?: unknown; q?: unknown };
+      const body = (req.body ?? {}) as { ids?: unknown; q?: unknown; includeMissing?: unknown };
       const ids = body.ids;
       if (
         !Array.isArray(ids) ||
@@ -199,6 +199,9 @@ export function createCatalogRouter(db: Database.Database, catalog: CatalogOptio
           `ids must be a list of at most ${MAX_LOOKUP_IDS} book ids`,
         );
       }
+      if (body.includeMissing !== undefined && typeof body.includeMissing !== 'boolean') {
+        throw new ApiError(400, 'invalid_body', 'includeMissing must be true or false');
+      }
       if (body.q !== undefined && typeof body.q !== 'string') {
         throw new ApiError(400, 'invalid_query', 'q must be text', { start: 0, end: 0 });
       }
@@ -208,6 +211,7 @@ export function createCatalogRouter(db: Database.Database, catalog: CatalogOptio
             planLookup(db, user, ids as string[], {
               query: body.q === '' ? undefined : (body.q as string | undefined),
               countSpec: countSpec(),
+              includeMissing: body.includeMissing === true,
             }),
           ),
         );

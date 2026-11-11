@@ -57,6 +57,7 @@ const ABOUT = [
   '"stat-session" records are the reading statistics: one per stretch of reading of a ' +
     'book on one device (day, seconds, characters, dictionary lookups). Day totals are ' +
     'their sums. "stat-session-fix" records correct or exclude one session (same id).',
+  '"stat-goal" records are reading goals (metric, period, target, the days they apply to).',
   '"stat-day" records are the reading statistics per book and day from before device ' +
     'tracking (frozen; no device changes them).',
   '"books" only helps reading this file: titles of the books the records name.',

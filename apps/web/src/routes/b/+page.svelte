@@ -93,6 +93,9 @@
     pauseTrackerOnCustomPointChange$,
     hideSpoilerImageMode$,
     showCharacterCounter$,
+    bottomBarTimeLeft$,
+    timeLeftMinMinutes$,
+    timeLeftRecentMinutes$,
     showPercentage$,
     enableVerticalFontKerning$,
     enableFontVPAL$,
@@ -181,7 +184,6 @@
   import type { PositionPrompt, PromptRow } from '$lib/sync/position-prompt-service';
   import type { ReaderPositionPrompt } from '$lib/sync/reader-position-prompt';
   import { mergeEntries } from '$lib/components/merged-header-icon/merged-entries';
-  import { preFilteredTitlesForStatistics$ } from '$lib/components/statistics/statistics-types';
   import {
     currentDbVersion,
     type BooksDbBookData,
@@ -246,6 +248,7 @@
   import type { NasServerConfig } from '$lib/whispersync/lib/nas';
   import { selfHostStorageSource$ } from '$lib/data/store';
   import { leavingForgetsLastBook } from '$lib/home/open-target';
+  import { formatTimeLeft, secondsLeft, speedEstimate } from '$lib/stats/time-left';
   import { unlockStorageData } from '$lib/data/storage/storage-source-manager';
 
   let showSpinner = true;
@@ -723,6 +726,12 @@
   $: tapButtonTop = `${showHeader ? 3 : 2}rem`;
 
   $: footerChapterProgress = getCurrentChapterProgress($sectionData$);
+
+  // WP12c: time left in the bottom bar (opt-in per device), redone after page changes only.
+  let timeLeftText = '';
+  let timeLeftTimer: ReturnType<typeof setTimeout> | undefined;
+
+  $: scheduleTimeLeft($bottomBarTimeLeft$, exploredCharCount, bookCharCount);
 
   $: if ($bookData$) {
     tick().then(() => {
@@ -2118,6 +2127,62 @@
     }
   }
 
+  function scheduleTimeLeft(mode: string, _position: number, _total: number) {
+    clearTimeout(timeLeftTimer);
+
+    if (!browser || mode === 'off') {
+      timeLeftText = '';
+      return;
+    }
+
+    timeLeftTimer = setTimeout(() => updateTimeLeft(mode), 600);
+  }
+
+  /** Recent speed in this book (every device), else overall; never blocks reading. */
+  async function updateTimeLeft(mode: string) {
+    try {
+      if (!$rawBookData$ || !bookCharCount) return;
+
+      const sync = await import('$lib/sync/sync-service');
+      const bookId =
+        stateBookId ?? (await sync.bookIdForLocalBook($rawBookData$.id, $rawBookData$.title));
+      const entries = await sync.statsApi().allEntries();
+      const estimate = speedEstimate(
+        bookId ?? '',
+        entries,
+        Math.max(1, Number($timeLeftRecentMinutes$) || 60) * 60,
+        Math.max(0, Number($timeLeftMinMinutes$) || 0) * 60
+      );
+      const book = formatTimeLeft(secondsLeft(bookCharCount - exploredCharCount, estimate));
+      let chapter = '–';
+
+      if ($sectionData$?.length) {
+        const [mainChapters, chapterIndex] = getChapterData($sectionData$);
+        const current = mainChapters[chapterIndex];
+
+        if (current) {
+          chapter = formatTimeLeft(
+            secondsLeft(
+              (current.startCharacter ?? 0) + (current.characters ?? 0) - exploredCharCount,
+              estimate
+            )
+          );
+        }
+      }
+
+      if ($bottomBarTimeLeft$ !== mode) return;
+
+      timeLeftText =
+        mode === 'chapter'
+          ? `Chapter ${chapter}`
+          : mode === 'book'
+            ? `Book ${book}`
+            : `Chapter ${chapter} · Book ${book}`;
+    } catch (error: any) {
+      logger.warn(`Stats: time left: ${error?.message ?? error}`);
+    }
+  }
+
   function getCurrentChapterProgress(sectionData: SectionWithProgress[]) {
     if (
       (!$showFooterChapterCharacterCounter$ && !$showFooterChapterPercentage$) ||
@@ -3347,11 +3412,10 @@
         scrollToBookmark();
       }}
       on:statisticsClick={() => {
-        if ($rawBookData$) {
-          $preFilteredTitlesForStatistics$ = new Set([$rawBookData$.title]);
-        }
+        // WP12b: the Stats page opens on this book when it has a library id.
+        const query = stateBookId ? `?book=${encodeURIComponent(stateBookId)}` : '';
 
-        leaveReader(mergeEntries.STATISTICS.routeId, false);
+        leaveReader(`${mergeEntries.STATISTICS.routeId}${query}`, false);
       }}
       on:readerImageGalleryClick={() => {
         showHeader = false;
@@ -3673,7 +3737,8 @@
       class:invisible={!$showCharacterCounter$ &&
         !$showPercentage$ &&
         !$showFooterChapterCharacterCounter$ &&
-        !$showFooterChapterPercentage$}
+        !$showFooterChapterPercentage$ &&
+        !timeLeftText}
       style:color={$themeOption$?.tooltipTextFontColor}
       on:click|stopPropagation={({ target }) => {
         if (!$showCharacterCounter$ && !$showPercentage$) {
@@ -3688,6 +3753,9 @@
       }}
       on:keyup={dummyFn}
     >
+      {#if timeLeftText}
+        <span class="mr-4" data-testid="footer-time-left">{timeLeftText}</span>
+      {/if}
       <span class="mr-4" class:invisible={!footerChapterProgress}>{footerChapterProgress}</span>
       <span class:invisible={!$showCharacterCounter$ && !$showPercentage$}>{currentProgress}</span>
     </div>

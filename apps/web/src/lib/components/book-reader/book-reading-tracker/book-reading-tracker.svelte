@@ -12,14 +12,24 @@
   import BookTimerMenu from '$lib/components/book-reader/book-reading-tracker/book-reading-tracker-menu.svelte';
   import type { SectionWithProgress } from '$lib/components/book-reader/book-toc/book-toc';
   import type { AutoScroller } from '$lib/components/book-reader/types';
-  import type {
-    BooksDbReadingGoal,
-    BooksDbStatistic
-  } from '$lib/data/database/books-db/versions/books-db';
+  import type { BooksDbStatistic } from '$lib/data/database/books-db/versions/books-db';
   import { dialogManager } from '$lib/data/dialog-manager';
   import { PAGE_CHANGE } from '$lib/data/events';
   import { logger } from '$lib/data/logger';
-  import { getReadingGoalWindow, type ReadingGoal } from '$lib/data/reading-goal';
+  import {
+    activeGoals,
+    currentPeriod,
+    goalProgress,
+    type GoalProgress,
+    type StatGoal
+  } from '$lib/stats/goals';
+  import type { StatsPeriod } from '$lib/stats/periods';
+  import {
+    formatTimeLeft,
+    secondsLeft,
+    speedEstimate,
+    type SpeedEstimate
+  } from '$lib/stats/time-left';
   import { lastCompletion, readingSpeed, totalsByDay, type StatTotals } from '$lib/stats/aggregate';
   import { DICTIONARY_POPUP_SELECTOR, LookupCounter } from '$lib/stats/lookup-counter';
   import { lazyRecorderDeps, SessionRecorder } from '$lib/stats/session-recorder';
@@ -28,8 +38,10 @@
   import type { StatsApi } from '$lib/sync/sync-service';
   import {
     adjustStatisticsAfterIdleTime$,
-    database,
-    readingGoal$,
+    speedGoalMinMinutes$,
+    statsWeekStart$,
+    timeLeftMinMinutes$,
+    timeLeftRecentMinutes$,
     startDayHoursForTracker$,
     trackerAutoPause$,
     trackerBackwardSkipThreshold$,
@@ -41,12 +53,10 @@
   } from '$lib/data/store';
   import { reduceToEmptyString } from '$lib/functions/rxjs/reduce-to-empty-string';
   import {
-    getDate,
     getDateKey,
     getDateTimeString,
     getPreviousDayKey,
-    getSecondsToDate,
-    toTimeString
+    getSecondsToDate
   } from '$lib/functions/statistic-util';
   import { clickOutside } from '$lib/functions/use-click-outside';
   import {
@@ -235,7 +245,7 @@
       lastTrackerFlushTime = Date.now();
 
       if ($isTrackerMenuOpen$) {
-        updateReadingGoalWindow();
+        updateMenuStats();
       }
     }
 
@@ -248,12 +258,10 @@
   let hadError = false;
   let pausedByAutoPause = false;
   let visibilityState: DocumentVisibilityState;
-  let currentReadingGoalStart = '';
-  let currentReadingGoalEnd = '';
-  let remainingTimeInReadingGoalWindow = '';
-  let currentReadingGoal: ReadingGoal | undefined;
-  let currentTimeGoal = 0;
-  let currentCharacterGoal = 0;
+  /** WP12c: the active goals' current periods, for the menu. */
+  let goalRows: { goal: StatGoal; period: StatsPeriod; progress: GoalProgress }[] = [];
+  /** WP12c: recent speed in this book (else overall), for time left. */
+  let bookSpeedEstimate: SpeedEstimate | null = null;
   let statistics = new Map<string, BooksDbStatistic>();
   let todayKey = getDateKey($startDayHoursForTracker$);
   let sessionStatistics = getDefaultStatistic(bookTitle, todayKey);
@@ -344,13 +352,11 @@
 
   $: clearIdlePauseOnMenuToggle($isTrackerMenuOpen$, wasTrackerPaused);
 
-  $: hasReadingGoal = !!($readingGoal$.goalStartDate && todayKey >= $readingGoal$.goalStartDate);
-
   $: handleVisibilityChange(visibilityState);
 
   $: sealSessionWhenHidden(visibilityState);
 
-  $: updateReadingGoalWindowForPausedState($isTrackerMenuOpen$);
+  $: updateMenuStatsForPausedState($isTrackerMenuOpen$);
 
   $: if (!$isTrackerPaused$) {
     updateLastExploredCharCount();
@@ -714,9 +720,9 @@
     }
   }
 
-  function updateReadingGoalWindowForPausedState(isTrackerMenuOpen: boolean) {
+  function updateMenuStatsForPausedState(isTrackerMenuOpen: boolean) {
     if (isTrackerMenuOpen && wasTrackerPaused) {
-      updateReadingGoalWindow();
+      updateMenuStats();
     }
   }
 
@@ -798,49 +804,46 @@
       : undefined;
   }
 
-  async function updateReadingGoalWindow() {
+  /**
+   * WP12c: the menu's goals (current period, every device and book) and the speed for
+   * time left (recent speed in this book, else overall). Read from records when the menu
+   * opens and after saves while it is open.
+   */
+  async function updateMenuStats() {
     todayKey = getDateKey($startDayHoursForTracker$);
     todaysStatistics = statistics.get(todayKey) || getDefaultStatistic(bookTitle, todayKey);
 
     try {
       await tick();
 
-      let currentClosedReadingGoal: BooksDbReadingGoal | undefined;
+      if (!statsApi) return;
 
-      if (!hasReadingGoal) {
-        currentClosedReadingGoal = await database.getCurrentClosedReadingGoal(todayKey);
+      const [data, goals, bookId] = await Promise.all([
+        statsApi.pageData(),
+        statsApi.goals(),
+        recorderBookId()
+      ]);
+      const input = {
+        entries: data.entries,
+        readThroughs: data.readThroughs,
+        books: new Map(),
+        speedMinSeconds: Math.max(0, Number($speedGoalMinMinutes$) || 0) * 60
+      };
 
-        if (!currentClosedReadingGoal) {
-          return;
-        }
-      }
+      goalRows = activeGoals(goals, todayKey).map((goal) => {
+        const period = currentPeriod(goal, todayKey, $statsWeekStart$);
 
-      currentReadingGoal = currentClosedReadingGoal || $readingGoal$;
-      [currentReadingGoalStart, currentReadingGoalEnd, remainingTimeInReadingGoalWindow] =
-        getReadingGoalWindow(todayKey, $startDayHoursForTracker$, currentReadingGoal);
-
-      if (
-        currentClosedReadingGoal?.goalEndDate &&
-        currentClosedReadingGoal.goalEndDate < currentReadingGoalEnd
-      ) {
-        currentReadingGoalEnd = currentClosedReadingGoal.goalEndDate;
-
-        const adjustedEndDate = getDate(currentReadingGoalEnd, $startDayHoursForTracker$);
-
-        remainingTimeInReadingGoalWindow = toTimeString(
-          (adjustedEndDate.getTime() + 8.64e7 - Date.now()) / 1000
-        );
-      }
-
-      // WP12: every device's sessions (and frozen days) in the window.
-      const totals = statsApi
-        ? await statsApi.totalsBetween(currentReadingGoalStart, currentReadingGoalEnd)
-        : null;
-
-      currentTimeGoal = totals?.seconds ?? 0;
-      currentCharacterGoal = totals?.chars ?? 0;
+        return { goal, period, progress: goalProgress(goal, period, input) };
+      });
+      bookSpeedEstimate = speedEstimate(
+        bookId ?? '',
+        data.entries,
+        Math.max(1, Number($timeLeftRecentMinutes$) || 60) * 60,
+        Math.max(0, Number($timeLeftMinMinutes$) || 0) * 60
+      );
+      updateTimeToFinishBook();
     } catch ({ message }: any) {
-      logger.error(`Error updating Goal Data: ${message}`);
+      logger.warn(`Stats: could not read goals and time left: ${message}`);
     }
   }
 
@@ -959,16 +962,9 @@
   }
 
   function updateTimeToFinishBook() {
-    timeToFinishBook = sessionStatistics.lastReadingSpeed
-      ? toTimeString(
-          Math.max(
-            0,
-            Math.floor(
-              (bookCharCount - exploredCharCount) / (sessionStatistics.lastReadingSpeed / 3600)
-            )
-          )
-        )
-      : 'N/A';
+    timeToFinishBook = formatTimeLeft(
+      secondsLeft(bookCharCount - exploredCharCount, bookSpeedEstimate)
+    );
   }
 </script>
 
@@ -1003,12 +999,9 @@
       {backgroundColor}
       {actionInProgress}
       {hadError}
-      {currentReadingGoal}
-      {currentTimeGoal}
-      {currentCharacterGoal}
-      {currentReadingGoalStart}
-      {currentReadingGoalEnd}
-      {remainingTimeInReadingGoalWindow}
+      {goalRows}
+      speedMinMinutes={$speedGoalMinMinutes$}
+      speedEstimate={bookSpeedEstimate}
       {timeToFinishBook}
       {exploredCharCount}
       {lastExploredCharCount}

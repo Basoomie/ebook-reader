@@ -18,7 +18,9 @@ import { localBookmarkForTitle, localTitleSummaries } from '$lib/migration/local
 import { applyReadingGoals, applyStatDays } from '$lib/sync/apply-records';
 import {
   bookStateFrom,
+  bookStatesFrom,
   positionReadThroughId,
+  READ_THROUGH_KIND,
   type BookBlur,
   type BookStatus,
   type ReadThrough
@@ -31,9 +33,16 @@ import {
   type StatEntry
 } from '$lib/stats/aggregate';
 import type { BooksDbStatistic } from '$lib/data/database/books-db/versions/books-db';
-import { LibraryApi } from '$lib/library/api';
+import { LibraryApi, LibraryApiError } from '$lib/library/api';
+import type { CatalogLibrary } from '$lib/library/types';
+import { unknownBookTitle, type StatsBookInfo } from '$lib/stats/stats-view';
+import { goalsFromRecords, STAT_GOAL_KIND, type GoalWrite, type StatGoal } from '$lib/stats/goals';
 import { SessionRecorder, type RecordSideDeps } from '$lib/stats/session-recorder';
-import { STAT_SESSION_FIX_KIND, STAT_SESSION_KIND } from '$lib/stats/stat-records';
+import {
+  parseStatSessionId,
+  STAT_SESSION_FIX_KIND,
+  STAT_SESSION_KIND
+} from '$lib/stats/stat-records';
 import {
   editReadThroughFinish,
   getAllBookStates,
@@ -973,6 +982,178 @@ export function statsApi() {
       }
       return rows.sort((a, b) => (a.dateKey < b.dateKey ? -1 : a.dateKey > b.dateKey ? 1 : 0));
     },
+    /**
+     * WP12b: everything the Stats page needs from the mirror (works offline): every
+     * entry, every book's read-throughs, device names and this device's id.
+     */
+    async pageData(): Promise<{
+      entries: StatEntry[];
+      readThroughs: Map<string, ReadThrough[]>;
+      deviceNames: Map<string, string>;
+      thisDeviceId: string | null;
+    }> {
+      const entries = await this.allEntries();
+      try {
+        const engine = await getSyncEngine();
+        const states = bookStatesFrom(await engine.getAll(READ_THROUGH_KIND));
+        const readThroughs = new Map(
+          [...states].map(([bookId, state]) => [bookId, state.readThroughs])
+        );
+        const deviceNames = new Map<string, string>();
+        for (const r of await engine.getAll('device')) {
+          if (r.deletedAt === null && typeof r.data?.name === 'string') {
+            deviceNames.set(r.id, r.data.name);
+          }
+        }
+        return { entries, readThroughs, deviceNames, thisDeviceId: engine.deviceId };
+      } catch (error) {
+        warn(`Stats: ${(error as Error)?.message ?? error}`);
+        return { entries, readThroughs: new Map(), deviceNames: new Map(), thisDeviceId: null };
+      }
+    },
+    /**
+     * Title, library and character count of books with statistics: the catalog first
+     * (books removed from Calibre included), then this device's own titles and links.
+     * `error` says why some details are missing (offline, server unreachable).
+     */
+    async bookInfo(
+      bookIds: string[]
+    ): Promise<{ books: Map<string, StatsBookInfo>; error: string }> {
+      const books = new Map<string, StatsBookInfo>();
+      let error = '';
+      try {
+        const links = await getLibraryStore().getAllLinks();
+        const localTitles = await statsTitles([]);
+        for (const id of bookIds) {
+          const link = links.find((l) => l.bookId === id);
+          const title = localTitles.get(id) ?? link?.calibreTitle ?? link?.title;
+          if (title || link) {
+            books.set(id, {
+              title: title ?? unknownBookTitle(id),
+              libraryId: link?.libraryId ?? null,
+              missing: false,
+              charCount: link?.characters ?? null
+            });
+          }
+        }
+        const connection = await getLibraryStore().getConnection();
+        if (!connection) return { books, error: 'Not connected to the library server.' };
+        const api = new LibraryApi(
+          connection.serverUrl,
+          connection.token,
+          libraryRequestTimeoutSeconds$.getValue()
+        );
+        for (let i = 0; i < bookIds.length; i += 200) {
+          const { books: found } = await api.lookupIncludingMissing(bookIds.slice(i, i + 200));
+          for (const b of found) {
+            books.set(b.id, {
+              title: b.title,
+              libraryId: b.libraryId,
+              missing: b.missing,
+              charCount: b.charCount,
+              thumbnail: b.thumbnail ? api.absolute(b.thumbnail) : null
+            });
+          }
+        }
+      } catch (e) {
+        error =
+          e instanceof LibraryApiError && (e.kind === 'unreachable' || e.kind === 'timeout')
+            ? "The library server can't be reached, so some titles and libraries are missing."
+            : `Book details could not be loaded: ${(e as Error)?.message ?? e}`;
+      }
+      return { books, error };
+    },
+    /** The server's libraries (for the library filter), or null when unavailable. */
+    async libraries(): Promise<CatalogLibrary[] | null> {
+      try {
+        const connection = await getLibraryStore().getConnection();
+        if (!connection) return null;
+        const api = new LibraryApi(
+          connection.serverUrl,
+          connection.token,
+          libraryRequestTimeoutSeconds$.getValue()
+        );
+        return (await api.libraries()).libraries;
+      } catch {
+        return null;
+      }
+    },
+    /** WP12c: every reading goal (ended ones too), from the mirror. */
+    async goals(): Promise<StatGoal[]> {
+      try {
+        return goalsFromRecords(await (await getSyncEngine()).getAll(STAT_GOAL_KIND));
+      } catch (error) {
+        warn(`Stats: ${(error as Error)?.message ?? error}`);
+        return [];
+      }
+    },
+    /** WP12c: saves planned goal changes (planGoalSave / planGoalEnd). */
+    async applyGoalWrites(writes: GoalWrite[]): Promise<boolean> {
+      try {
+        const engine = await getSyncEngine();
+        let ok = true;
+        for (const w of writes) {
+          const done =
+            w.op === 'remove'
+              ? await engine.remove(STAT_GOAL_KIND, w.id)
+              : await engine.put(STAT_GOAL_KIND, w.id, { ...w.data }, { bookId: null });
+          ok = ok && done;
+        }
+        return ok;
+      } catch {
+        return false;
+      }
+    },
+    /** Leaves a session out of every total (undo: clearFix). */
+    excludeSession(sessionId: string): Promise<boolean> {
+      return putFix(sessionId, { excluded: true });
+    },
+    /** Replaces a session's numbers (undo: clearFix). */
+    correctSession(sessionId: string, numbers: { seconds: number; chars: number }) {
+      return putFix(sessionId, {
+        seconds: Math.max(0, Math.round(numbers.seconds)),
+        chars: Math.max(0, Math.round(numbers.chars))
+      });
+    },
+    /** Removes a session's correction or exclusion. */
+    async clearFix(sessionId: string): Promise<boolean> {
+      try {
+        return await (await getSyncEngine()).remove(STAT_SESSION_FIX_KIND, sessionId);
+      } catch {
+        return false;
+      }
+    },
+    /** Called after local writes or pulls of statistics, read-throughs or device names. */
+    async onChanged(callback: () => void): Promise<() => void> {
+      try {
+        const engine = await getSyncEngine();
+        const relevant = (r: LocalRecord) =>
+          STAT_KINDS.includes(r.kind) ||
+          r.kind === READ_THROUGH_KIND ||
+          r.kind === 'device' ||
+          r.kind === STAT_GOAL_KIND;
+        const offRemote = engine.onRemoteChange((records) => {
+          if (records.some(relevant)) callback();
+        });
+        const offLocal = engine.onLocalWrite((r) => {
+          if (relevant(r)) callback();
+        });
+        return () => {
+          offRemote();
+          offLocal();
+        };
+      } catch {
+        return () => {};
+      }
+    },
+    /** Asks for a sync now (the page opened). Never rejects. */
+    async syncSoon(): Promise<void> {
+      try {
+        await getSyncRunner()?.syncSoon();
+      } catch {
+        // Shown in the Connection panel.
+      }
+    },
     /** Reading time and characters of all books from `from` to `to` (day keys, inclusive). */
     async totalsBetween(from: string, to: string) {
       const entries = await this.allEntries();
@@ -982,6 +1163,18 @@ export function statsApi() {
 }
 
 export type StatsApi = ReturnType<typeof statsApi>;
+
+async function putFix(sessionId: string, data: Record<string, unknown>): Promise<boolean> {
+  const parsed = parseStatSessionId(sessionId);
+  if (!parsed) return false;
+  try {
+    return await (
+      await getSyncEngine()
+    ).put(STAT_SESSION_FIX_KIND, sessionId, data, { bookId: parsed.bookId });
+  } catch {
+    return false;
+  }
+}
 
 /** Titles for book ids: this device's, then the catalog's (best effort). Never throws. */
 async function statsTitles(bookIds: string[]): Promise<Map<string, string>> {

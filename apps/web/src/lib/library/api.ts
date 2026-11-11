@@ -399,6 +399,17 @@ export class LibraryApi {
     return (await this.post('/books/lookup', { ids, ...(q ? { q } : {}) }, options)).json();
   }
 
+  /**
+   * WP12 stats: the given books including ones removed from Calibre (`missing: true`),
+   * for titles and libraries of books that still have reading statistics.
+   */
+  async lookupIncludingMissing(
+    ids: readonly string[],
+    options?: RequestOptions
+  ): Promise<{ books: CatalogBook[] }> {
+    return (await this.post('/books/lookup', { ids, includeMissing: true }, options)).json();
+  }
+
   /** Count and collage tiles of every collection (WP8b). */
   async collectionCards(options?: RequestOptions): Promise<{ cards: CollectionCardData[] }> {
     return (await this.get('/collections/cards', options)).json();

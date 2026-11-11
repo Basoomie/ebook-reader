@@ -19,10 +19,12 @@
   } from '$lib/components/book-reader/book-toc/book-toc';
   import { dialogManager } from '$lib/data/dialog-manager';
   import type { BooksDbStatistic } from '$lib/data/database/books-db/versions/books-db';
-  import type { ReadingGoal } from '$lib/data/reading-goal';
+  import { goalProgressText, goalTitle, type GoalProgress, type StatGoal } from '$lib/stats/goals';
+  import { periodLabel, type StatsPeriod } from '$lib/stats/periods';
+  import { formatTimeLeft, secondsLeft, type SpeedEstimate } from '$lib/stats/time-left';
   import { lastBlurredTrackerItems$, skipKeyDownListener$ } from '$lib/data/store';
-  import { secondsToMinutes, toTimeString } from '$lib/functions/statistic-util';
-  import { caluclatePercentage, dummyFn } from '$lib/functions/utils';
+  import { toTimeString } from '$lib/functions/statistic-util';
+  import { dummyFn } from '$lib/functions/utils';
   import { createEventDispatcher, onMount } from 'svelte';
   import Fa from 'svelte-fa';
 
@@ -30,12 +32,11 @@
   export let backgroundColor: string;
   export let actionInProgress: boolean;
   export let hadError: boolean;
-  export let currentReadingGoal: ReadingGoal | undefined;
-  export let currentTimeGoal: number;
-  export let currentCharacterGoal: number;
-  export let currentReadingGoalStart: string;
-  export let currentReadingGoalEnd: string;
-  export let remainingTimeInReadingGoalWindow: string;
+  /** WP12c: the active goals' current periods. */
+  export let goalRows: { goal: StatGoal; period: StatsPeriod; progress: GoalProgress }[] = [];
+  export let speedMinMinutes = 15;
+  /** WP12c: recent speed in this book, else overall (null = not enough reading yet). */
+  export let speedEstimate: SpeedEstimate | null = null;
   export let wasTrackerPaused: boolean;
   export let canSaveStatistics: boolean;
   export let timeToFinishBook: string;
@@ -95,14 +96,6 @@
           : [])
       ];
 
-  $: timeGoalPercentage = currentReadingGoal?.timeGoal
-    ? caluclatePercentage(currentTimeGoal, currentReadingGoal.timeGoal)
-    : 0;
-
-  $: characterGoalPercentage = currentReadingGoal?.characterGoal
-    ? caluclatePercentage(currentCharacterGoal, currentReadingGoal.characterGoal)
-    : 0;
-
   $: currentTrackingHistoryIndex = Math.max(0, trackingHistoryIndex * trackingItemsPerPage);
 
   $: trackingHistoryItems = trackingHistory.slice(
@@ -129,14 +122,7 @@
         (currentChapter.characters ?? 0) -
         (exploredCharCount ?? 0);
 
-      timeToFinishChapter = sessionStatistics.lastReadingSpeed
-        ? toTimeString(
-            Math.max(
-              0,
-              Math.floor(remainingCharacters / (sessionStatistics.lastReadingSpeed / 3600))
-            )
-          )
-        : 'N/A';
+      timeToFinishChapter = formatTimeLeft(secondsLeft(remainingCharacters, speedEstimate));
     }
 
     return () => {
@@ -210,50 +196,24 @@
       Stats need this book in the library: the tracker counts here, but this reading isn't saved.
     </p>
   {/if}
-  {#if currentReadingGoal}
-    <div class="mb-6">
-      {#if currentReadingGoal.timeGoal}
-        <div>
-          {secondsToMinutes(currentTimeGoal)} / {secondsToMinutes(currentReadingGoal.timeGoal)} Min ({timeGoalPercentage}%)
+  {#if goalRows.length}
+    <div class="mb-6" data-testid="tracker-goals">
+      {#each goalRows as row (row.goal.id)}
+        <div class="mb-4 last:mb-0">
+          <div>{goalTitle(row.goal)}</div>
+          <div class="text-sm">
+            {periodLabel(row.period)}: {goalProgressText(row.goal, row.progress, speedMinMinutes)}
+          </div>
+          <!-- eslint-disable-next-line svelte/no-unknown-style-directive-property -->
+          <div class="w-full rounded-full h-2.5" style:background-Color={fontColor}>
+            <div
+              class="h-2.5 rounded-full opacity-70"
+              style:width={`${Math.min(100, Math.round(row.progress.ratio * 100))}%`}
+              style:background-color={backgroundColor}
+            ></div>
+          </div>
         </div>
-        <!-- eslint-disable-next-line svelte/no-unknown-style-directive-property -->
-        <div class="w-full rounded-full h-2.5" style:background-Color={fontColor}>
-          <div
-            class="h-2.5 rounded-full opacity-70"
-            style:width={`${Math.min(100, timeGoalPercentage)}%`}
-            style:background-color={backgroundColor}
-          ></div>
-        </div>
-      {/if}
-      {#if currentReadingGoal.characterGoal}
-        <div class="mt-4">
-          {currentCharacterGoal} / {currentReadingGoal.characterGoal} Characters ({characterGoalPercentage}%)
-        </div>
-        <!-- eslint-disable-next-line svelte/no-unknown-style-directive-property -->
-        <div class="w-full rounded-full h-2.5" style:background-Color={fontColor}>
-          <!-- eslint-disable svelte/no-unknown-style-directive-property -->
-          <div
-            class="h-2.5 rounded-full opacity-70"
-            style:width={`${Math.min(100, characterGoalPercentage)}%`}
-            style:background-Color={backgroundColor}
-          ></div>
-          <!-- eslint-enable svelte/no-unknown-style-directive-property -->
-        </div>
-      {/if}
-      <div class="grid grid-cols-[max-content,auto] gap-x-4 gap-y-2 mt-4">
-        <div>Current Reading Goal:</div>
-        <div class="flex flex-col sm:block">
-          <span>{currentReadingGoalStart}</span>
-          {#if currentReadingGoalEnd && currentReadingGoalStart !== currentReadingGoalEnd}
-            <span>-</span>
-            <span>{currentReadingGoalEnd}</span>
-          {/if}
-        </div>
-        <div>Remaining Time left:</div>
-        <div>
-          {remainingTimeInReadingGoalWindow}
-        </div>
-      </div>
+      {/each}
     </div>
   {/if}
   {#each allStatistics as statistic (statistic.id)}
@@ -343,6 +303,14 @@
           >
             {timeToFinishBook}
           </div>
+          {#if speedEstimate}
+            <div class="text-xs">Time left uses:</div>
+            <div class="text-xs" data-testid="tracker-time-left-source">
+              {speedEstimate.source === 'book'
+                ? 'your recent speed in this book'
+                : 'your overall speed (too little reading in this book yet)'}
+            </div>
+          {/if}
           {#if timeToFinishChapter}
             <button class="text-left" on:click={() => handleBlurredKey('finishChapterETA')}>
               Time to Finish Chapter:

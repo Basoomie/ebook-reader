@@ -215,6 +215,63 @@ describe('stat-session-fix kind', () => {
   });
 });
 
+describe('stat-goal kind (WP12c)', () => {
+  const goal = (extra: Record<string, unknown> = {}) => ({
+    metric: 'time',
+    period: 'day',
+    target: 3600,
+    startedOn: '2026-11-09',
+    endedOn: null,
+    createdAt: 1_790_000_000_000,
+    ...extra,
+  });
+
+  it('accepts goals, edits, ends and deletes them', async () => {
+    const t = await setup();
+    const a = await t.device('A');
+    const id = randomUUID();
+    expect(
+      codes(
+        await a.push([
+          { kind: 'stat-goal', id, updatedAt: 1, data: goal() },
+          { kind: 'stat-goal', id, updatedAt: 2, data: goal({ endedOn: '2026-11-15' }) },
+          {
+            kind: 'stat-goal',
+            id: randomUUID(),
+            updatedAt: 1,
+            data: goal({ metric: 'speed', period: 'month', target: 30000 }),
+          },
+          { kind: 'stat-goal', id, updatedAt: 3, deletedAt: 3 },
+        ]),
+      ),
+    ).toEqual(['applied', 'applied', 'applied', 'applied']);
+  });
+
+  it('validates ids and payloads', async () => {
+    const t = await setup();
+    const a = await t.device('A');
+    const bad = [
+      goal({ metric: 'pages' }),
+      goal({ period: 'year' }),
+      goal({ target: 0 }),
+      goal({ target: 1.5 }),
+      goal({ startedOn: null }),
+      goal({ endedOn: '2026-11-01' }),
+      goal({ createdAt: 'now' }),
+    ];
+    expect(
+      codes(
+        await a.push(
+          bad.map((data) => ({ kind: 'stat-goal', id: randomUUID(), updatedAt: 1, data })),
+        ),
+      ),
+    ).toEqual(bad.map(() => 'invalid_data'));
+    expect(
+      codes(await a.push([{ kind: 'stat-goal', id: 'x', updatedAt: 1, data: goal() }])),
+    ).toEqual(['invalid_id']);
+  });
+});
+
 describe('stat-day freeze', () => {
   const statDay = (dateKey: string) => ({
     dateKey,

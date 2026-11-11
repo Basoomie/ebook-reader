@@ -34,9 +34,7 @@
     importHTMLFixMode$,
     lineHeight$,
     manualBookmark$,
-    keepLocalStatisticsOnDeletion$,
     openTrackerOnCompletion$,
-    overwriteBookCompletion$,
     pageColumns$,
     pauseTrackerOnCustomPointChange$,
     prioritizeReaderStyles$,
@@ -50,6 +48,7 @@
     showFooterChapterPercentage$,
     showExternalPlaceholder$,
     startDayHoursForTracker$,
+    statsWeekStart$,
     statisticsEnabled$,
     statisticsMergeMode$,
     swipeThreshold$,
@@ -210,9 +209,8 @@
       bind:replicationSaveBehavior={$replicationSaveBehavior$}
       bind:autoReplication={$autoReplication$}
       bind:showExternalPlaceholder={$showExternalPlaceholder$}
-      bind:keepLocalStatisticsOnDeletion={$keepLocalStatisticsOnDeletion$}
-      bind:overwriteBookCompletion={$overwriteBookCompletion$}
       bind:startDayHoursForTracker={$startDayHoursForTracker$}
+      bind:statsWeekStart={$statsWeekStart$}
       bind:statisticsMergeMode={$statisticsMergeMode$}
       bind:readingGoalsMergeMode={$readingGoalsMergeMode$}
       bind:statisticsEnabled={$statisticsEnabled$}
