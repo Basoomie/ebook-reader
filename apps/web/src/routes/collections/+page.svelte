@@ -14,7 +14,13 @@
   import { isCoverBlurred } from '$lib/library/cover-blur';
   import { plural } from '$lib/library/format';
   import { getLibraryStore, type LibraryConnection } from '$lib/library/library-db';
-  import { libraryRequestTimeoutSeconds$, libraryView$ } from '$lib/library/settings';
+  import LibraryDisplayMenu from '$lib/components/library/library-display-menu.svelte';
+  import { coverGrid } from '$lib/library/cover-size';
+  import {
+    libraryCoverSize$,
+    libraryRequestTimeoutSeconds$,
+    libraryView$
+  } from '$lib/library/settings';
   import type { CollectionCardData } from '$lib/library/types';
   import type { BookState } from '$lib/sync/book-state';
   import { bookStateApi, collectionsApi, libraryViewApi } from '$lib/sync/sync-service';
@@ -180,9 +186,10 @@
     revealed = new Set([...revealed, id]);
   }
 
-  $: listClass = grid
-    ? 'grid grid-cols-3 gap-x-3 gap-y-4 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-8'
-    : '';
+  // WP19a: the cover size of the Display menu (shared with the Library).
+  $: gridLayout = coverGrid($libraryCoverSize$);
+  $: listClass = grid ? gridLayout.classes : '';
+  $: listStyle = grid && gridLayout.style ? gridLayout.style : undefined;
 </script>
 
 <svelte:head>
@@ -200,23 +207,8 @@
     >
       New collection
     </button>
-    <div class="flex text-sm" role="group" aria-label="View">
-      <button
-        class="min-h-[3rem] rounded-l border-2 px-3 {grid ? solid : 'border-current'}"
-        aria-pressed={grid}
-        data-testid="view-grid"
-        on:click={() => ($libraryView$ = 'grid')}
-      >
-        Grid
-      </button>
-      <button
-        class="-ml-0.5 min-h-[3rem] rounded-r border-2 px-3 {!grid ? solid : 'border-current'}"
-        aria-pressed={!grid}
-        data-testid="view-list"
-        on:click={() => ($libraryView$ = 'list')}
-      >
-        List
-      </button>
+    <div class="text-sm">
+      <LibraryDisplayMenu details={false} autoLoad={false} />
     </div>
   </div>
 
@@ -236,7 +228,7 @@
   {/if}
 
   <h2 class="pb-2 pt-3 text-lg font-medium">Built-in</h2>
-  <ul class={listClass} data-testid="builtin-collections">
+  <ul class={listClass} style={listStyle} data-testid="builtin-collections">
     {#each BUILTIN_COLLECTIONS as b (b.id)}
       <CollectionCard
         id={b.id}
@@ -254,7 +246,7 @@
 
   <h2 class="pb-2 pt-6 text-lg font-medium">Your collections</h2>
   {#if mine.length}
-    <ul class={listClass} data-testid="my-collections">
+    <ul class={listClass} style={listStyle} data-testid="my-collections">
       {#each mine as c (c.id)}
         <CollectionCard
           id={c.id}

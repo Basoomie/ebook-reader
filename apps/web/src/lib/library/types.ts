@@ -136,4 +136,6 @@ export interface CollectionCardData {
 export interface CatalogGroupPage {
   groups: CatalogGroup[];
   nextCursor: string | null;
+  /** WP19a: how many groups the whole list has (missing from older servers). */
+  total?: number;
 }

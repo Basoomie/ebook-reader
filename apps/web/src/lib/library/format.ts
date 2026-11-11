@@ -47,6 +47,16 @@ export function authorNames(book: Pick<CatalogBook, 'authors'>): string {
   return book.authors.map((a) => a.name).join(', ');
 }
 
+/**
+ * WP19a: the Library page of an author (the Authors tab, opened on that author), keeping
+ * the picked library when there is one. `pagePath` is the app's base path.
+ */
+export function authorHref(pagePath: string, name: string, library = ''): string {
+  const params = new URLSearchParams({ tab: 'authors', group: name });
+  if (library) params.set('lib', library);
+  return `${pagePath}/library?${params.toString()}`;
+}
+
 /** "#3" when the book has a series number. */
 export function seriesNumber(book: Pick<CatalogBook, 'series'>): string {
   return book.series?.index !== null && book.series?.index !== undefined

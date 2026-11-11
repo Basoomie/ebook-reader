@@ -10,8 +10,8 @@
   import { onDestroy } from 'svelte';
 
   /**
-   * Record sync status and per-device settings (WP4), shown in the Library
-   * page's Connection panel. In this phase sync only carries device names,
+   * Record sync status and per-device settings (WP4), shown under Settings > Data >
+   * Library server (WP19a; before, the Library page's Connection panel). In this phase sync only carries device names,
    * published device settings and positions for Calibre books; reading data
    * still uses the existing file sync.
    */

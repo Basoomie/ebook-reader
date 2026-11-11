@@ -15,6 +15,7 @@ import type {
   StagedUpload,
   UploadInfo
 } from '$lib/library/types';
+import type { ServerSort } from '$lib/library/sort';
 
 /** Client for the storage server's /api/v1 catalog (WP6). */
 
@@ -165,6 +166,31 @@ export interface RecentServerLogs {
   maxLines: number;
   dropped: number;
   lines: { time: number; level: 'log' | 'info' | 'warn' | 'error'; text: string }[];
+}
+
+/** The filters of a book list (books() and count()). */
+export interface BookListQuery {
+  q?: string;
+  /** A second search that must also match (a saved search or built-in collection). */
+  scope?: string;
+  library?: string;
+  group?: { by: GroupBy; name: string | null };
+  /** WP19a: one of your manual collections (for sorts other than its own order). */
+  collection?: string;
+}
+
+function listParams(query: BookListQuery): URLSearchParams {
+  const params = new URLSearchParams();
+  if (query.q) params.set('q', query.q);
+  if (query.scope) params.set('scope', query.scope);
+  if (query.library) params.set('library', query.library);
+  if (query.collection) params.set('collection', query.collection);
+  if (query.group) {
+    params.set('by', query.group.by);
+    if (query.group.name === null) params.set('none', '1');
+    else params.set('group', query.group.name);
+  }
+  return params;
 }
 
 export interface UploadOptions {
@@ -348,25 +374,18 @@ export class LibraryApi {
    * series name of null is "No series").
    */
   async books(
-    query: {
-      q?: string;
-      /** A second search that must also match (a saved search or built-in collection). */
-      scope?: string;
-      library?: string;
+    query: BookListQuery & {
       cursor?: string;
       limit?: number;
-      group?: { by: GroupBy; name: string | null };
+      /** WP19a; absent = newest first (in a series: series order). */
+      sort?: ServerSort<string>;
     },
     options?: RequestOptions
   ): Promise<CatalogPage> {
-    const params = new URLSearchParams();
-    if (query.q) params.set('q', query.q);
-    if (query.scope) params.set('scope', query.scope);
-    if (query.library) params.set('library', query.library);
-    if (query.group) {
-      params.set('by', query.group.by);
-      if (query.group.name === null) params.set('none', '1');
-      else params.set('group', query.group.name);
+    const params = listParams(query);
+    if (query.sort) {
+      params.set('sort', query.sort.key);
+      params.set('dir', query.sort.dir);
     }
     if (query.cursor) params.set('cursor', query.cursor);
     if (query.limit) params.set('limit', String(query.limit));
@@ -374,14 +393,35 @@ export class LibraryApi {
     return (await this.get(`/books${qs ? `?${qs}` : ''}`, options)).json();
   }
 
+  /** How many books a list has (WP19a, the same filters as books()). */
+  async count(query: BookListQuery, options?: RequestOptions): Promise<number> {
+    const qs = listParams(query).toString();
+    const body = (await (await this.get(`/books/count${qs ? `?${qs}` : ''}`, options)).json()) as {
+      count: number;
+    };
+    return body.count;
+  }
+
   /** Browse tabs (WP7a): one card per series, author or tag with a matching book. */
   async groups(
-    query: { by: GroupBy; q?: string; library?: string; cursor?: string; limit?: number },
+    query: {
+      by: GroupBy;
+      q?: string;
+      library?: string;
+      cursor?: string;
+      limit?: number;
+      /** WP19a; absent = recently added first. */
+      sort?: ServerSort<string>;
+    },
     options?: RequestOptions
   ): Promise<CatalogGroupPage> {
     const params = new URLSearchParams({ by: query.by });
     if (query.q) params.set('q', query.q);
     if (query.library) params.set('library', query.library);
+    if (query.sort) {
+      params.set('sort', query.sort.key);
+      params.set('dir', query.sort.dir);
+    }
     if (query.cursor) params.set('cursor', query.cursor);
     if (query.limit) params.set('limit', String(query.limit));
     return (await this.get(`/groups?${params.toString()}`, options)).json();

@@ -21,6 +21,8 @@
    * scroll snapping, animation or transitions; 48 px controls.
    */
   import LibraryBookCard from '$lib/components/library/library-book-card.svelte';
+  import { coverSize } from '$lib/library/cover-size';
+  import { libraryCoverSize$ } from '$lib/library/settings';
   import type { BookState } from '$lib/sync/book-state';
   import { createEventDispatcher } from 'svelte';
 
@@ -42,6 +44,8 @@
     retry: void;
     openLocal: number;
   }>();
+
+  $: size = coverSize($libraryCoverSize$);
 </script>
 
 <section class="pb-4" data-testid="home-row" data-row-title={title}>
@@ -90,8 +94,12 @@
   {:else if view.books.length === 0}
     <p class="py-2 text-sm">{emptyText}</p>
   {:else}
+    <!-- WP19a: the Library's cover size, else the automatic widths. -->
     <ul
-      class="grid auto-cols-[7rem] grid-flow-col gap-3 overflow-x-auto pb-2 sm:auto-cols-[8.5rem]"
+      class="grid grid-flow-col gap-3 overflow-x-auto pb-2 {size
+        ? ''
+        : 'auto-cols-[7rem] sm:auto-cols-[8.5rem]'}"
+      style={size ? `grid-auto-columns: ${size}px` : undefined}
       data-testid="home-row-books"
     >
       {#each view.books as book (book.id)}

@@ -154,6 +154,10 @@ export const SETTINGS_REGISTRY: Record<string, SettingSpec> = {
   libraryFilter: d('String'),
   libraryView: d('String'),
   libraryInfoLine: d('Boolean'),
+  librarySort: d('String'),
+  libraryGroupSort: d('String'),
+  libraryCoverSize: d('Number'),
+  libraryAutoLoad: d('Boolean'),
 
   // --- lib/sync/settings.ts (per device) ---
   recordSyncEnabled: d('Boolean'),

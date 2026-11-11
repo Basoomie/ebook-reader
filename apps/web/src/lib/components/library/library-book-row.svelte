@@ -1,6 +1,8 @@
 <script lang="ts">
   import type { CatalogBook } from '$lib/library/types';
+  import { pagePath } from '$lib/data/env';
   import { formatBookCharCount } from '$lib/library/char-counts';
+  import { authorHref } from '$lib/library/format';
   import { STATUS_LABELS, finishedReadThroughs, type BookState } from '$lib/sync/book-state';
   import { faCheck, faEllipsisVertical, faStar } from '@fortawesome/free-solid-svg-icons';
   import { createEventDispatcher } from 'svelte';
@@ -37,7 +39,9 @@
     else dispatch('open', book);
   }
 
-  $: authors = book.authors.map((a) => a.name).join(', ');
+  /** WP19a: where an author name leads (default: that author in the Library). */
+  export let authorLink: (name: string) => string = (name) => authorHref(pagePath, name);
+
   $: series = book.series
     ? `${book.series.name}${book.series.index !== null ? ` ${formatIndex(book.series.index)}` : ''}`
     : '';
@@ -58,17 +62,21 @@
   }
 </script>
 
+<!-- WP19a: the row's button covers the whole row ("stretched"), so the author links can sit
+     above it (a link can't be inside a button). -->
 <li
-  class="flex items-center border-b border-gray-400/40"
+  class="relative flex items-center border-b border-gray-400/40"
   data-testid="library-row"
   data-book-id={book.id}
 >
   <button
-    class="flex min-w-0 grow items-center gap-4 py-3 text-left"
+    class="absolute inset-0 h-full w-full text-left"
     aria-pressed={selectMode ? selected : undefined}
-    aria-label={blurred && !selectMode ? `Show cover: ${book.title}` : undefined}
+    aria-label={blurred && !selectMode ? `Show cover: ${book.title}` : book.title}
+    data-testid="row-open"
     on:click={onClick}
-  >
+  />
+  <div class="flex min-w-0 grow items-center gap-4 py-3 text-left">
     {#if selectMode}
       <input
         type="checkbox"
@@ -89,8 +97,16 @@
           </span>
         {/if}{book.title}
       </div>
-      {#if authors && infoLine}
-        <div class="truncate text-sm">{authors}</div>
+      {#if book.authors.length && infoLine}
+        <div class="truncate text-sm">
+          {#each book.authors as author, i (i)}<a
+              class="relative z-10 underline-offset-2 hover:underline"
+              class:pointer-events-none={selectMode}
+              href={authorLink(author.name)}
+              tabindex={selectMode ? -1 : undefined}
+              data-testid="author-link">{author.name}</a
+            >{i < book.authors.length - 1 ? ', ' : ''}{/each}
+        </div>
       {/if}
       {#if details && infoLine}
         <div class="truncate text-sm opacity-75" data-testid="row-details">{details}</div>
@@ -111,10 +127,10 @@
         <span class="hidden sm:inline">On this device</span>
       </div>
     {/if}
-  </button>
+  </div>
   {#if !selectMode}
     <button
-      class="flex h-12 w-12 shrink-0 items-center justify-center"
+      class="relative z-10 flex h-12 w-12 shrink-0 items-center justify-center"
       title="Book status"
       aria-label="Book status: {book.title}"
       data-testid="row-state"

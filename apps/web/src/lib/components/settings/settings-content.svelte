@@ -27,6 +27,7 @@
   import SettingsStorageSourceList from '$lib/components/settings/settings-storage-source-list.svelte';
   import SettingsServerFontsDialog from '$lib/components/settings/settings-server-fonts-dialog.svelte';
   import SettingsExportData from '$lib/components/settings/settings-export-data.svelte';
+  import LibraryConnectionSettings from '$lib/components/library/library-connection-settings.svelte';
   import { customFontNames$ } from '$lib/fonts/server-fonts-browser';
   import { inputClasses } from '$lib/css-classes';
   import { BlurMode } from '$lib/data/blur-mode';
@@ -1031,6 +1032,26 @@
       {/if}
     {/if}
   {:else if activeSettings === 'Data'}
+    <SettingsItemGroup
+      title="Library server"
+      tooltip="The server this device reads the library from and syncs with: its address, this device's name, record sync and Disconnect."
+    >
+      {#if browser}
+        <LibraryConnectionSettings />
+      {/if}
+    </SettingsItemGroup>
+    <SettingsItemGroup
+      title="Migration from the old sync"
+      tooltip="The one-time move of books, places and statistics from the old file sync to the library server, and its check page."
+    >
+      <a
+        class="inline-flex min-h-[3rem] items-center rounded border-2 border-current px-4 font-medium"
+        href="{pagePath}/migration"
+        data-testid="migration-link"
+      >
+        Open the migration page
+      </a>
+    </SettingsItemGroup>
     <SettingsItemGroup
       title="Old sync manager"
       tooltip={'The book manager of the old sync: import into this browser, storage sources, export and delete. Stays here until the old sync is retired.'}

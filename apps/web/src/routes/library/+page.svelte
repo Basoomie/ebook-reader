@@ -19,8 +19,10 @@
   import LibraryBookRow from '$lib/components/library/library-book-row.svelte';
   import LibraryConnect from '$lib/components/library/library-connect.svelte';
   import LibraryGroupCard from '$lib/components/library/library-group-card.svelte';
+  import LibraryDisplayMenu from '$lib/components/library/library-display-menu.svelte';
   import LibraryOpenOverlay from '$lib/components/library/library-open-overlay.svelte';
-  import LibrarySyncStatus from '$lib/components/library/library-sync-status.svelte';
+  import LibrarySortMenu from '$lib/components/library/library-sort-menu.svelte';
+  import { canLoadWhenVisible, loadWhenVisible } from '$lib/components/load-when-visible';
   import MarkCompletedDialog from '$lib/components/library/mark-completed-dialog.svelte';
   import SearchHelpDialog from '$lib/components/library/search-help-dialog.svelte';
   import TagCoverDialog from '$lib/components/library/tag-cover-dialog.svelte';
@@ -32,7 +34,8 @@
   import AppBottomBar from '$lib/components/app-nav/app-bottom-bar.svelte';
   import AppHeader from '$lib/components/app-nav/app-header.svelte';
   import MessageDialog from '$lib/components/message-dialog.svelte';
-  import { buttonClasses, inputClasses, pxScreen } from '$lib/css-classes';
+  import { browser } from '$app/environment';
+  import { inputClasses, pxScreen } from '$lib/css-classes';
   import { dialogManager, type Dialog } from '$lib/data/dialog-manager';
   import { pagePath } from '$lib/data/env';
   import { logger } from '$lib/data/logger';
@@ -40,9 +43,17 @@
   import { formatPageTitle } from '$lib/functions/format-page-title';
   import { LibraryApi, LibraryApiError } from '$lib/library/api';
   import { existingLocalIds } from '$lib/library/browser-open-deps';
-  import { summarizeCharCounts } from '$lib/library/char-counts';
   import { isCoverBlurred } from '$lib/library/cover-blur';
-  import { formatGroupChars, groupCount, groupTitle, plural } from '$lib/library/format';
+  import { coverGrid } from '$lib/library/cover-size';
+  import { authorHref, formatGroupChars, groupCount, plural } from '$lib/library/format';
+  import {
+    defaultSort,
+    formatSort,
+    parseSort,
+    serverSort,
+    type SortContext,
+    type SortValue
+  } from '$lib/library/sort';
   import { getLibraryStore, type LibraryConnection } from '$lib/library/library-db';
   import type { OpenStage } from '$lib/library/open-calibre-book';
   import { openCatalogBook } from '$lib/library/open-from-catalog';
@@ -61,9 +72,13 @@
     withAll
   } from '$lib/library/selection';
   import {
+    libraryAutoLoad$,
+    libraryCoverSize$,
     libraryFilter$,
+    libraryGroupSort$,
     libraryInfoLine$,
     libraryRequestTimeoutSeconds$,
+    librarySort$,
     libraryView$
   } from '$lib/library/settings';
   import type {
@@ -90,7 +105,11 @@
    * Library (WP6, WP7a): browse and search the Calibre catalog and open a book through
    * the existing import pipeline. Every view is a URL
    * (?tab=all|series|authors|tags&group=<name>|none=1&q=&lib=), so going back from the
-   * reader or a group restores it. Plain for e-ink: "Load more" paging, no animations.
+   * reader or a group restores it. Plain for e-ink: no animations.
+   *
+   * WP19a: &sort= (lib/library/sort.ts), a count of the list, the next page loading near
+   * the end (a "Load more" button when that is off), cover size and author links. The
+   * Connection panel and the migration link moved to Settings > Data.
    *
    * WP8b: ?collection=<id> shows one collection (a built-in, a saved search or a list)
    * across all libraries; the search box filters inside it. A list shows its own order
@@ -132,6 +151,15 @@
   let nextCursor: string | null = null;
   let loading = false;
   let loadError = '';
+  /** WP19a: loading the next page failed ("Couldn't load more · Retry"). */
+  let moreError = '';
+  /** WP19a: the list's sort and what the Sort menu offers here. */
+  let sortContext: SortContext = 'books';
+  let sortValue: SortValue = defaultSort('books', { books: '', groups: '' });
+  /** WP19a: how many books (or groups) the list has; null = unknown or still counting. */
+  let resultCount: number | null = null;
+  let counting = false;
+  let countController: AbortController | undefined;
   let onDevice = new Set<string>();
 
   let queryInput = '';
@@ -194,7 +222,6 @@
   $: if (connection && api && api.timeoutSeconds !== timeoutSeconds) api = makeApi(connection);
   $: libraryNames = new Map(libraries.map((l) => [l.id, l.name]));
   $: enabledLibraries = libraries.filter((l) => l.enabled);
-  $: charCountSummary = summarizeCharCounts(enabledLibraries);
   $: tabInfo = TABS.find((t) => t.id === tab) ?? TABS[0];
   $: builtin = collectionId ? builtinCollection(collectionId) : null;
   $: userCollection = collectionId
@@ -205,13 +232,17 @@
     isList && collectionId ? (collectionItems.get(collectionId) ?? []).map((i) => i.bookId) : [];
   $: collectionName = builtin?.name ?? userCollection?.name ?? null;
   $: collectionGone = collectionId !== null && collectionsLoaded && !builtin && !userCollection;
-  $: canReorder = isList && !appliedQuery && books.length > 1;
+  $: canReorder = isList && !appliedQuery && books.length > 1 && sortValue.key === 'list';
   $: if (!canReorder && reorderMode && !savingOrder) reorderMode = false;
   $: showingGroups = collectionId === null && tabInfo.by !== null && group === null;
   $: chips = activeChips(queryInput);
   $: chipsDisabled = !parseQuery(queryInput).ok;
   $: grid = $libraryView$ !== 'list';
   $: infoLine = $libraryInfoLine$;
+  $: gridLayout = coverGrid($libraryCoverSize$);
+  // WP19a: load the next page near the end of the list (else a "Load more" button).
+  $: autoLoad = browser && $libraryAutoLoad$ && canLoadWhenVisible();
+  $: countLabel = resultCount === null ? '' : formatResultCount(resultCount);
   $: parsedApplied = parseQuery(appliedQuery);
   $: usesChars = parsedApplied.ok && parsedApplied.query.terms.some((t) => t.type === 'chars');
   $: uncounted = enabledLibraries
@@ -305,16 +336,6 @@
     await readUrlAndLoad();
   }
 
-  /** Fresh character-count totals each time the Connection panel opens (no polling). */
-  async function onConnectionToggle(event: Event) {
-    if (!(event.currentTarget as HTMLDetailsElement).open || !api) return;
-    try {
-      libraries = (await api.libraries()).libraries;
-    } catch {
-      // Keep the totals from the session start; the book list reports connection problems.
-    }
-  }
-
   function loadMirror() {
     return Promise.all([loadStates(), loadViewData(), loadCollections()]);
   }
@@ -334,6 +355,17 @@
       const wasList = isList;
       await loadCollections();
       if (collectionId === null) return;
+      // WP19a: a collection that arrived after the page opened (pulled from another
+      // device) only now says whether it is a list, which decides its sorts.
+      const context = contextNow();
+      if (context !== sortContext) {
+        sortContext = context;
+        sortValue =
+          parseSort(addressSort(), context) ??
+          defaultSort(context, { books: $librarySort$, groups: $libraryGroupSort$ });
+        void loadPage(true);
+        return;
+      }
       if (wasList || isList) refreshList();
       else if (!userCollection && !builtin) books = [];
     }, 50);
@@ -344,6 +376,11 @@
    * new order of what is loaded at once, then look the books up again for additions.
    */
   function refreshList() {
+    // Sorted another way: the server has the order.
+    if (serverSort(sortValue, 'list')) {
+      void loadPage(true, Math.max(books.length, LIST_PAGE));
+      return;
+    }
     const pos = new Map(listIds.map((id, i) => [id, i]));
     books = books
       .filter((b) => pos.has(b.id))
@@ -694,10 +731,89 @@
       else if (params.get('group'))
         group = { by: requested.by, name: params.get('group') as string };
     }
+    sortContext = contextNow();
+    sortValue =
+      parseSort(params.get('sort'), sortContext) ??
+      defaultSort(sortContext, { books: $librarySort$, groups: $libraryGroupSort$ });
     queryInput = appliedQuery;
     queryError = '';
     selected = new Set();
     return loadPage(true);
+  }
+
+  /**
+   * Which sorts apply to what is shown (from the URL state itself: reactive values are not
+   * updated yet in the tick the URL changed).
+   */
+  function contextNow(): SortContext {
+    if (collectionId !== null) {
+      const c = collectionList.find((x) => x.id === collectionId);
+      return c?.type === 'manual' ? 'list' : 'books';
+    }
+    const by = TABS.find((t) => t.id === tab)?.by ?? null;
+    if (by && group === null) return 'groups';
+    if (group?.by === 'series' && group.name !== null) return 'series';
+    return 'books';
+  }
+
+  /** WP19a: a new sort from the Sort menu (remembered per device outside a series or list). */
+  function onSort(value: SortValue) {
+    if (sortContext === 'groups') $libraryGroupSort$ = formatSort(value, 'groups');
+    else if (sortContext === 'books') $librarySort$ = formatSort(value, 'books');
+    goto(
+      urlFor({
+        tab,
+        group,
+        q: appliedQuery,
+        lib: appliedLibrary,
+        collection: collectionId,
+        sort: formatSort(value, sortContext)
+      }),
+      { keepFocus: true, noScroll: true }
+    );
+  }
+
+  function formatResultCount(n: number): string {
+    const text = n.toLocaleString('en');
+    if (sortContext !== 'groups') return `${text} ${n === 1 ? 'book' : 'books'}`;
+    const by = TABS.find((t) => t.id === tab)?.by;
+    if (by === 'series') return `${text} series`;
+    if (by === 'author') return `${text} ${n === 1 ? 'author' : 'authors'}`;
+    return `${text} ${n === 1 ? 'tag' : 'tags'}`;
+  }
+
+  /**
+   * WP19a: "1,234 books" for a list of books. Counting can take a moment on a big library,
+   * so the list never waits for it; on a failure (or an older server) nothing is shown.
+   */
+  async function loadCount(scope: string | null) {
+    countController?.abort();
+    resultCount = null;
+    if (!api || sortContext === 'groups') return;
+    const controller = new AbortController();
+    countController = controller;
+    counting = true;
+    try {
+      const n = await api.count(
+        collectionId !== null
+          ? {
+              q: appliedQuery || undefined,
+              scope: scope ?? undefined,
+              collection: scope ? undefined : collectionId
+            }
+          : {
+              q: appliedQuery || undefined,
+              library: appliedLibrary || undefined,
+              group: group ?? undefined
+            },
+        { signal: controller.signal }
+      );
+      if (countController === controller) resultCount = n;
+    } catch {
+      // No count shown.
+    } finally {
+      if (countController === controller) counting = false;
+    }
   }
 
   async function loadPage(reset: boolean, minBooks = LIST_PAGE) {
@@ -715,15 +831,23 @@
     }
     loading = true;
     loadError = '';
+    moreError = '';
     try {
       // The server only knows book-state changes that reached it.
       if (reset) staleNote = false;
       const scope = builtinCollection(collectionId ?? '')?.query ?? smartQuery();
       const parsedScope = scope ? parseQuery(scope) : null;
-      if (usesBookState(parsed.query) || (parsedScope?.ok && usesBookState(parsedScope.query))) {
+      // A manual collection in another order is sorted by the server from its records.
+      const sortsOnServer = collectionId !== null && !scope && serverSort(sortValue, 'list');
+      if (
+        usesBookState(parsed.query) ||
+        (parsedScope?.ok && usesBookState(parsedScope.query)) ||
+        sortsOnServer
+      ) {
         staleNote = await view.sendPendingChanges(timeoutSeconds);
         if (controller.signal.aborted) return;
       }
+      if (reset) void loadCount(scope);
       if (collectionId !== null) {
         await loadCollectionPage(reset, scope, minBooks, controller.signal);
         return;
@@ -738,13 +862,20 @@
       // changed in this tick.
       const by = TABS.find((t) => t.id === tab)?.by ?? null;
       if (by && group === null) {
-        const result = await api.groups({ by, ...common }, options);
+        const result = await api.groups(
+          { by, ...common, sort: serverSort(sortValue, 'groups') },
+          options
+        );
         groups = reset ? result.groups : [...groups, ...result.groups];
         books = [];
         nextCursor = result.nextCursor;
+        if (reset) resultCount = result.total ?? null;
       } else {
         if (reset) void loadGroupInfo(controller.signal);
-        const result = await api.books({ ...common, group: group ?? undefined }, options);
+        const result = await api.books(
+          { ...common, group: group ?? undefined, sort: serverSort(sortValue, sortContext) },
+          options
+        );
         books = reset ? result.books : [...books, ...result.books];
         groups = [];
         nextCursor = result.nextCursor;
@@ -760,12 +891,15 @@
         queryError = error.message;
         return;
       }
-      loadError = describe(error);
-      if (reset) {
-        books = [];
-        groups = [];
-        nextCursor = null;
+      if (!reset) {
+        // Keep what is shown; the end of the list offers Retry.
+        moreError = describe(error);
+        return;
       }
+      loadError = describe(error);
+      books = [];
+      groups = [];
+      nextCursor = null;
     } finally {
       if (listController === controller) loading = false;
     }
@@ -795,6 +929,7 @@
         {
           q: appliedQuery || undefined,
           scope,
+          sort: serverSort(sortValue, 'books'),
           cursor: reset ? undefined : (nextCursor ?? undefined)
         },
         { signal }
@@ -808,6 +943,23 @@
       books = [];
       groups = [];
       nextCursor = null;
+      return;
+    }
+    const sort = serverSort(sortValue, 'list');
+    if (sort) {
+      // WP19a: another order than the collection's own: the server sorts its items.
+      const result = await api.books(
+        {
+          q: appliedQuery || undefined,
+          collection: c.id,
+          sort,
+          cursor: reset ? undefined : (nextCursor ?? undefined)
+        },
+        { signal }
+      );
+      books = reset ? result.books : [...books, ...result.books];
+      groups = [];
+      nextCursor = result.nextCursor;
       return;
     }
     const ids = (collectionItems.get(c.id) ?? []).map((i) => i.bookId);
@@ -877,16 +1029,6 @@
     await startSession(conn);
   }
 
-  async function disconnect() {
-    await store.clearConnection();
-    notifySyncConnectionChanged();
-    suggestedServerUrl = connection?.serverUrl || suggestedServerUrl;
-    connection = null;
-    api = undefined;
-    books = [];
-    groups = [];
-  }
-
   // ---- navigation ---------------------------------------------------------
 
   function urlFor(target: {
@@ -895,11 +1037,14 @@
     q: string;
     lib: string;
     collection?: string | null;
+    /** WP19a: "title-asc" (absent: the remembered or the list's own order). */
+    sort?: string | null;
   }) {
     const params = new URLSearchParams();
     if (target.collection) {
       params.set('collection', target.collection);
       if (target.q) params.set('q', target.q);
+      if (target.sort) params.set('sort', target.sort);
       return `${pagePath}/library?${params.toString()}`;
     }
     if (target.tab !== 'all') params.set('tab', target.tab);
@@ -909,15 +1054,28 @@
     }
     if (target.q) params.set('q', target.q);
     if (target.lib) params.set('lib', target.lib);
+    if (target.sort) params.set('sort', target.sort);
     const qs = params.toString();
     return `${pagePath}/library${qs ? `?${qs}` : ''}`;
   }
 
+  /** The sort as it is in the address now (a search keeps it). */
+  function addressSort(): string | null {
+    return $page.url.searchParams.get('sort');
+  }
+
   function go(q: string) {
-    goto(urlFor({ tab, group, q, lib: appliedLibrary, collection: collectionId }), {
-      keepFocus: true,
-      noScroll: true
-    });
+    goto(
+      urlFor({
+        tab,
+        group,
+        q,
+        lib: appliedLibrary,
+        collection: collectionId,
+        sort: addressSort()
+      }),
+      { keepFocus: true, noScroll: true }
+    );
   }
 
   function search() {
@@ -945,11 +1103,19 @@
   function pickLibrary(event: Event) {
     const value = (event.target as HTMLSelectElement).value;
     $libraryFilter$ = value;
-    goto(urlFor({ tab, group, q: appliedQuery, lib: value }), { keepFocus: true, noScroll: true });
+    goto(urlFor({ tab, group, q: appliedQuery, lib: value, sort: addressSort() }), {
+      keepFocus: true,
+      noScroll: true
+    });
   }
 
   function groupHref(g: CatalogGroup) {
     return urlFor({ tab, group: { by: g.by, name: g.name }, q: appliedQuery, lib: appliedLibrary });
+  }
+
+  /** WP19a: an author's name on a card leads to that author (in the picked library). */
+  function authorLink(name: string) {
+    return authorHref(pagePath, name, appliedLibrary);
   }
 
   function showSearchHelp() {
@@ -1158,32 +1324,14 @@
             </select>
           </label>
         {/if}
-        <div class="flex" role="group" aria-label="View">
-          <button
-            class="min-h-[3rem] rounded-l border-2 px-3 {grid ? solid : 'border-current'}"
-            aria-pressed={grid}
-            data-testid="view-grid"
-            on:click={() => ($libraryView$ = 'grid')}
-          >
-            Grid
-          </button>
-          <button
-            class="-ml-0.5 min-h-[3rem] rounded-r border-2 px-3 {!grid ? solid : 'border-current'}"
-            aria-pressed={!grid}
-            data-testid="view-list"
-            on:click={() => ($libraryView$ = 'list')}
-          >
-            List
-          </button>
-        </div>
-        <button
-          class="min-h-[3rem] rounded border-2 px-3 {infoLine ? solid : 'border-current'}"
-          aria-pressed={infoLine}
-          data-testid="view-details"
-          on:click={() => ($libraryInfoLine$ = !infoLine)}
-        >
-          Details
-        </button>
+        {#if !reorderMode}
+          <LibrarySortMenu
+            context={sortContext}
+            value={sortValue}
+            on:change={(ev) => onSort(ev.detail)}
+          />
+        {/if}
+        <LibraryDisplayMenu />
         {#if !showingGroups && !reorderMode}
           <button
             class="min-h-[3rem] rounded border-2 px-3 {selectMode ? solid : 'border-current'}"
@@ -1235,6 +1383,11 @@
 
     {#if indexerError}
       <p class="py-2 font-medium">{indexerError}</p>
+    {/if}
+    {#if !loadError && (countLabel || counting)}
+      <p class="pb-2 text-sm font-medium" aria-live="polite" data-testid="result-count">
+        {countLabel || 'Counting…'}
+      </p>
     {/if}
     {#if staleNote}
       <p class="py-1 text-sm" data-testid="stale-note">
@@ -1387,9 +1540,8 @@
     {#if showingGroups}
       {#if groups.length}
         <ul
-          class={grid
-            ? 'grid grid-cols-3 gap-x-3 gap-y-4 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-8'
-            : ''}
+          class={grid ? gridLayout.classes : ''}
+          style={grid && gridLayout.style ? gridLayout.style : undefined}
           data-testid="group-list"
         >
           {#each groups as g (groupKey(g))}
@@ -1423,9 +1575,8 @@
       <!-- svelte-ignore a11y-no-static-element-interactions -->
       <ul
         bind:this={listElement}
-        class={grid
-          ? 'grid grid-cols-3 gap-x-3 gap-y-4 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-8'
-          : ''}
+        class={grid ? gridLayout.classes : ''}
+        style={grid && gridLayout.style ? gridLayout.style : undefined}
         class:select-none={selectMode}
         data-testid="book-list"
         on:pointerdown={onListPointerDown}
@@ -1448,6 +1599,7 @@
               onDevice={onDevice.has(book.id)}
               {selectMode}
               selected={selected.has(book.id)}
+              {authorLink}
               on:open={(ev) => open(ev.detail)}
               on:reveal={(ev) => reveal(ev.detail.id)}
               on:toggle={(ev) => onToggle(ev.detail.book, ev.detail.shift)}
@@ -1472,6 +1624,7 @@
               libraryName={enabledLibraries.length > 1
                 ? (libraryNames.get(book.libraryId) ?? '')
                 : ''}
+              {authorLink}
               on:open={(ev) => open(ev.detail)}
               on:reveal={(ev) => reveal(ev.detail.id)}
               on:toggle={(ev) => onToggle(ev.detail.book, ev.detail.shift)}
@@ -1484,9 +1637,31 @@
       <p class="py-8">{emptyText}</p>
     {/if}
 
+    <!-- WP19a: the next page loads when the end comes near; the button is the fallback
+         (setting off, no IntersectionObserver) and Retry after a failed page. -->
+    <div
+      use:loadWhenVisible={{
+        enabled: autoLoad && !!nextCursor && !loading && !moreError && !loadError,
+        onVisible: () => {
+          if (!loading && nextCursor) void loadPage(false);
+        }
+      }}
+      data-testid="load-sentinel"
+    />
     {#if loading}
-      <p class="py-4">Loading…</p>
-    {:else if nextCursor}
+      <p class="py-4" data-testid="loading-more">Loading…</p>
+    {:else if moreError}
+      <div class="flex flex-wrap items-center justify-center gap-3 py-6" role="alert">
+        <span class="font-medium" data-testid="load-more-error">Couldn't load more.</span>
+        <button
+          class="min-h-[3rem] rounded border-2 border-current px-6 font-medium"
+          data-testid="load-more-retry"
+          on:click={() => loadPage(false)}
+        >
+          Retry
+        </button>
+      </div>
+    {:else if nextCursor && !autoLoad}
       <div class="flex justify-center py-6">
         <button
           class="min-h-[3rem] rounded border-2 border-current px-6 font-medium"
@@ -1497,39 +1672,6 @@
         </button>
       </div>
     {/if}
-
-    <p class="mt-10 text-sm">
-      <a class="underline" href="{pagePath}/migration">Migration from the old sync</a>
-    </p>
-
-    <details class="mt-4 text-sm" on:toggle={onConnectionToggle}>
-      <summary class="cursor-pointer">Connection</summary>
-      <div class="py-3">
-        <p>Server: {connection.serverUrl}</p>
-        <p>This device: {connection.label}</p>
-        {#if charCountSummary}
-          <p>{charCountSummary}</p>
-        {/if}
-        <label class="mt-3 block max-w-xs">
-          Request timeout (seconds, 0 = none)
-          <input
-            class={searchInputClasses}
-            type="number"
-            min="0"
-            step="1"
-            bind:value={$libraryRequestTimeoutSeconds$}
-          />
-        </label>
-        <LibrarySyncStatus />
-        <p class="mt-6">
-          Disconnecting forgets the token on this device. To block it on the server too, run
-          <code>token revoke</code> there.
-        </p>
-        <button class="{buttonClasses} mt-2 border border-current" on:click={disconnect}>
-          Disconnect
-        </button>
-      </div>
-    </details>
   {/if}
 </div>
 
