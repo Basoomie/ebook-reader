@@ -176,6 +176,8 @@
   } from '$lib/components/book-reader/book-toc/book-toc';
   import BookToc from '$lib/components/book-reader/book-toc/book-toc.svelte';
   import ConfirmDialog from '$lib/components/confirm-dialog.svelte';
+  import { confirmDestructive } from '$lib/confirm/confirm';
+  import { completeBookCopy } from '$lib/confirm/confirm-copy';
   import NumberDialog from '$lib/components/number-dialog.svelte';
   import PositionPromptDialog from '$lib/components/book-reader/position-prompt-dialog.svelte';
   import BookStateDialog from '$lib/components/library/book-state-dialog.svelte';
@@ -2033,22 +2035,11 @@
       $statisticsEnabled$ && $addCharactersOnCompletion$
         ? Math.max(0, bookCharCount - exploredCharCount)
         : 0;
-    const wasCanceled = await new Promise((resolver) => {
-      dialogManager.dialogs$.next([
-        {
-          component: ConfirmDialog,
-          props: {
-            dialogHeader: 'Complete Book',
-            dialogMessage: `Would you like to complete this Book${
-              diffToComplete ? ` and capture ${diffToComplete} characters read` : ''
-            }?`,
-            resolver
-          }
-        }
-      ]);
-    });
+    // WP19: closing the dialog any other way (backdrop, Esc) is Cancel too, so the tracker
+    // and auto scroll always come back.
+    const confirmed = await confirmDestructive(completeBookCopy(diffToComplete));
 
-    if (wasCanceled) {
+    if (!confirmed) {
       if ($statisticsEnabled$ && !wasTrackerPausedBefore) {
         wasTrackerPaused = false;
         $isTrackerPaused$ = false;

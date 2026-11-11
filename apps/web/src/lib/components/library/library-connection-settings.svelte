@@ -13,6 +13,8 @@
   import { getLibraryStore, type LibraryConnection } from '$lib/library/library-db';
   import { libraryRequestTimeoutSeconds$ } from '$lib/library/settings';
   import { notifySyncConnectionChanged } from '$lib/sync/sync-service';
+  import { confirmDestructive } from '$lib/confirm/confirm';
+  import { disconnectCopy } from '$lib/confirm/confirm-copy';
   import { onMount } from 'svelte';
 
   /**
@@ -42,6 +44,13 @@
   });
 
   async function disconnect() {
+    // WP19: ask first; reconnecting needs a new pairing code.
+    const confirmed = await confirmDestructive({
+      ...disconnectCopy(),
+      testid: 'disconnect-confirm',
+      confirmTestid: 'disconnect-confirm-button'
+    });
+    if (!confirmed) return;
     await store.clearConnection();
     notifySyncConnectionChanged();
     connection = null;

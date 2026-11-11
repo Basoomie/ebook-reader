@@ -5,7 +5,14 @@
   import type { BookCardProps } from '$lib/components/book-card/book-card-props';
   import BookManagerHeader from '$lib/components/book-card/book-manager-header.svelte';
   import BookExportDialog from '$lib/components/book-export/book-export-dialog.svelte';
-  import ConfirmDialog from '$lib/components/confirm-dialog.svelte';
+  import { confirmDestructive } from '$lib/confirm/confirm';
+  import {
+    deleteBooksCopy,
+    deleteStatisticsCopy,
+    importBackupCopy
+  } from '$lib/confirm/confirm-copy';
+  import { MergeMode } from '$lib/data/merge-mode';
+  import { ReplicationSaveBehavior } from '$lib/functions/replication/replication-options';
   import LogReportDialog from '$lib/components/log-report-dialog.svelte';
   import { mergeEntries } from '$lib/components/merged-header-icon/merged-entries';
   import MessageDialog from '$lib/components/message-dialog.svelte';
@@ -371,6 +378,30 @@
       return;
     }
 
+    // WP19: deleting books asks first (it removes them with their audiobook data).
+    const titlesToDelete = ($bookCards$ ?? [])
+      .filter((card) => bookIds.includes(card.id))
+      .map((card) => card.title);
+
+    if (!titlesToDelete.length) {
+      return;
+    }
+
+    const confirmed = await confirmDestructive({
+      ...deleteBooksCopy({
+        count: titlesToDelete.length,
+        title: titlesToDelete[0],
+        source: $storageSource$,
+        keepStatistics: $keepLocalStatisticsOnDeletion$
+      }),
+      testid: 'manager-delete-confirm',
+      confirmTestid: 'manager-delete-confirm-button'
+    });
+
+    if (!confirmed || !operationAllowed()) {
+      return;
+    }
+
     cancelTooltip = `Cancels the Deletion\nAlready deleted data will not be restored`;
 
     initializeReplicationProgressData();
@@ -407,6 +438,25 @@
 
   async function onImportBackup(file: File) {
     if (!operationAllowed()) {
+      return;
+    }
+
+    // WP19: ask first when the settings let the backup replace data on this device.
+    const replaces = {
+      books: $replicationSaveBehavior$ === ReplicationSaveBehavior.Overwrite,
+      statistics: $statisticsMergeMode$ === MergeMode.REPLACE,
+      goals: $readingGoalsMergeMode$ === MergeMode.REPLACE
+    };
+
+    if (
+      file.name.endsWith('.zip') &&
+      (replaces.books || replaces.statistics || replaces.goals) &&
+      !(await confirmDestructive({
+        ...importBackupCopy(replaces),
+        testid: 'manager-import-confirm',
+        confirmTestid: 'manager-import-confirm-button'
+      }))
+    ) {
       return;
     }
 
@@ -490,29 +540,15 @@
       .filter((card) => selectedBookIds.has(card.id))
       .map((book) => book.title);
 
-    let wasCanceled = false;
-
-    if ($confirmStatisticsDeletion$) {
-      wasCanceled = await new Promise((resolver) => {
-        dialogManager.dialogs$.next([
-          {
-            component: ConfirmDialog,
-            props: {
-              dialogHeader: 'Delete Data',
-              dialogMessage: `This will delete all Statistics for the selected ${pluralize(
-                titles.length,
-                'Title',
-                false
-              )} (which may include start and/or completion Data)\n\nExecute a one time Sync with an export behavior of "replace" and/or statistics merge mode of "replace" to apply deletions to other devices`,
-              contentStyles: 'white-space: pre-line;',
-              resolver
-            }
-          }
-        ]);
-      });
-    }
-
-    if (wasCanceled) {
+    // WP19: the shared confirmation; still only while "confirm statistics deletion" is on.
+    if (
+      $confirmStatisticsDeletion$ &&
+      !(await confirmDestructive({
+        ...deleteStatisticsCopy(titles.length),
+        testid: 'manager-delete-stats-confirm',
+        confirmTestid: 'manager-delete-stats-confirm-button'
+      }))
+    ) {
       return;
     }
 

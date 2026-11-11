@@ -42,6 +42,8 @@
   } from '$lib/data/store';
   import { AutoReplicationType } from '$lib/functions/replication/replication-options';
   import { dummyFn } from '$lib/functions/utils';
+  import { confirmDestructive } from '$lib/confirm/confirm';
+  import { deleteStorageSourceCopy } from '$lib/confirm/confirm-copy';
   import Fa from 'svelte-fa';
 
   export let storageSources: BooksDbStorageSource[];
@@ -86,6 +88,21 @@
 
     return configuredIsSourceDefault;
   }
+
+  // Per source: its icon and flags. These were {@const} in the markup, which the commit
+  // hook's prettier can't format (WP19). Naming the stores here keeps the rows reactive.
+  $: rows = (storageSources ?? []).map((storageSource) => ({
+    storageSource,
+    icon: getStorageIconData(storageSource.type),
+    isDefault: isAppDefault(storageSource.name),
+    storageSourceIsSyncTarget: isSyncTarget(storageSource.name, $syncTarget$),
+    storageSourceIsSourceDefault: isStorageSourceDefault(storageSource.name, storageSource.type, [
+      $gDriveStorageSource$,
+      $oneDriveStorageSource$,
+      $fsStorageSource$,
+      $selfHostStorageSource$
+    ])
+  }));
 
   async function modifyStorageSource(storageSource?: BooksDbStorageSource) {
     let configuredRemoteData: StorageUnlockAction | undefined;
@@ -168,6 +185,19 @@
     wasSyncTarget: boolean,
     wasSourceDefault: boolean
   ) {
+    // WP19: remote sources with saved sign-in data were deleted without a word; ask first.
+    // A folder source already asks in its unlock step ("Please confirm…").
+    if (
+      storageSource.type !== StorageKey.FS &&
+      !(await confirmDestructive({
+        ...deleteStorageSourceCopy(storageSource.name),
+        testid: 'storage-source-delete-confirm',
+        confirmTestid: 'storage-source-delete-confirm-button'
+      }))
+    ) {
+      return;
+    }
+
     const unlockResult = await unlockStorageData(
       storageSource,
       storageSource.type === StorageKey.FS
@@ -255,15 +285,7 @@
   <div class="mt-6">
     {#if !listLoading && storageSources}
       <div class="grid grid-cols-1 gap-x-8 gap-y-12 sm:grid-cols-2 lg:grid-cols-3">
-        {#each storageSources as storageSource (storageSource.name)}
-          {@const icon = getStorageIconData(storageSource.type)}
-          {@const isDefault = isAppDefault(storageSource.name)}
-          {@const storageSourceIsSyncTarget = isSyncTarget(storageSource.name, $syncTarget$)}
-          {@const storageSourceIsSourceDefault = isStorageSourceDefault(
-            storageSource.name,
-            storageSource.type,
-            [$gDriveStorageSource$, $oneDriveStorageSource$, $fsStorageSource$, $selfHostStorageSource$]
-          )}
+        {#each rows as { storageSource, icon, isDefault, storageSourceIsSyncTarget, storageSourceIsSourceDefault } (storageSource.name)}
           <div class="flex flex-col">
             <div class="flex">
               <svg

@@ -7,9 +7,10 @@
 import CollectionActionsDialog, {
   type CollectionAction
 } from '$lib/components/collections/collection-actions-dialog.svelte';
-import CollectionDeleteDialog from '$lib/components/collections/collection-delete-dialog.svelte';
 import CollectionEditDialog from '$lib/components/collections/collection-edit-dialog.svelte';
 import { dialogManager, type Dialog } from '$lib/data/dialog-manager';
+import { confirmDestructive } from '$lib/confirm/confirm';
+import { deleteCollectionCopy } from '$lib/confirm/confirm-copy';
 import type { CollectionsApi } from '$lib/sync/sync-service';
 import { isPinnedToHome, setPinnedToHome } from '$lib/home/pins';
 import { homeRows$ } from '$lib/home/settings';
@@ -90,7 +91,12 @@ export async function collectionMenu(
       }
     });
   } else if (action === 'delete') {
-    const confirmed = await ask<boolean>(CollectionDeleteDialog, { name: collection.name });
+    // WP19: the shared confirmation (same test ids as the old dialog).
+    const confirmed = await confirmDestructive({
+      ...deleteCollectionCopy(collection.name),
+      testid: 'collection-delete-dialog',
+      confirmTestid: 'collection-delete-confirm'
+    });
     if (!confirmed) return undefined;
     await api.remove(collection.id);
     return 'deleted';

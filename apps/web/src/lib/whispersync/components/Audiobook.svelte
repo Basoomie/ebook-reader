@@ -97,8 +97,23 @@
 	import { get } from 'svelte/store';
 	import TimeEditInput from './TimeEditInput.svelte';
 	import { findNasAudio, uploadAudioToNas, buildAudioNasUrl } from '../lib/nas';
+	import { confirmDestructiveInWhispersync } from '$lib/confirm/confirm-whispersync';
+	import {
+		dropFileCopy,
+		dropSavedSubtitlesCopy,
+		resetAllCopy,
+		resetMatchCopy,
+		resetPlaybackCopy,
+		restoreSubtitlesCopy,
+	} from '$lib/confirm/confirm-copy';
+	import type { ConfirmOptions } from '$lib/confirm/confirm-state';
 
 	export let showMenu: boolean;
+
+	/** ttsu WP19: the reset and drop buttons ask first; the actions themselves are unchanged. */
+	async function askFirst(copy: ConfirmOptions, action: () => unknown) {
+		if (await confirmDestructiveInWhispersync(copy)) await action();
+	}
 
 	export function resetSubtitleContainerHeight() {
 		subtitleListElement?.onResetList();
@@ -946,7 +961,7 @@
 						class="m-l-s"
 						title={$exportCancelController$ ? 'Export in progress' : 'Drop subtitle file'}
 						disabled={!!$exportCancelController$}
-						on:click={() => onDropFile('lastSubtitle')}
+						on:click={() => askFirst(dropFileCopy('subtitle'), () => onDropFile('lastSubtitle'))}
 					>
 						<Icon path={mdiTrashCanOutline} />
 					</button>
@@ -956,7 +971,7 @@
 						class="m-l-s"
 						title={$exportCancelController$ ? 'Export in progress' : 'Drop persisted subtitles'}
 						disabled={!!$exportCancelController$}
-						on:click={onDropPersistedSubtitles}
+						on:click={() => askFirst(dropSavedSubtitlesCopy(), onDropPersistedSubtitles)}
 					>
 						<Icon path={mdiDatabaseRemove} />
 					</button>
@@ -979,7 +994,7 @@
 			<button
 				title={resetBookTitle}
 				disabled={!!$exportCancelController$ || !$bookData$.htmlBackup}
-				on:click={onResetBook}
+				on:click={() => askFirst(resetMatchCopy(), onResetBook)}
 			>
 				<Icon path={mdiDeleteSweep} />
 			</button>
@@ -996,7 +1011,7 @@
 						class="m-l-s"
 						title={$exportCancelController$ ? 'Export in progress' : 'Drop audio file'}
 						disabled={!!$exportCancelController$}
-						on:click={() => onDropFile('lastAudio')}
+						on:click={() => askFirst(dropFileCopy('audio'), () => onDropFile('lastAudio'))}
 					>
 						<Icon path={mdiTrashCanOutline} />
 					</button>
@@ -1005,7 +1020,7 @@
 			<button
 				title={$exportCancelController$ ? 'Export in progress' : 'Reset all & reload page'}
 				disabled={!!$exportCancelController$}
-				on:click={onResetAll}
+				on:click={() => askFirst(resetAllCopy(), onResetAll)}
 			>
 				<Icon path={mdiTrashCan} />
 			</button>
@@ -1014,7 +1029,7 @@
 			<button
 				title={resetPlaybackPositionTitle}
 				disabled={resetPlaybackPositionTitle !== 'Reset playback position'}
-				on:click={onResetPlaybackPosition}
+				on:click={() => askFirst(resetPlaybackCopy(), onResetPlaybackPosition)}
 			>
 				<Icon path={mdiDeleteClock} />
 			</button>
@@ -1034,13 +1049,14 @@
 			<button
 				title={restoreSubtitlesTitle}
 				disabled={$isRecording$ || !hasListItems}
-				on:click={async () => {
-					$isLoading$ = true;
+				on:click={() =>
+					askFirst(restoreSubtitlesCopy(restoreSubtitlesTitle.includes(' selected ')), async () => {
+						$isLoading$ = true;
 
-					await executeAction(Action.RESTORE_SUBTITLE, subtitles);
+						await executeAction(Action.RESTORE_SUBTITLE, subtitles);
 
-					$isLoading$ = false;
-				}}
+						$isLoading$ = false;
+					})}
 			>
 				<Icon path={mdiRestore} />
 			</button>

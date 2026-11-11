@@ -88,6 +88,15 @@ export function unpinRow(rows: readonly HomeRow[], target: PinTarget): HomeRow[]
   return rows.filter((r) => rowKey(r) !== key);
 }
 
+/** Undo of a removal (WP19): the row goes back to its old place, or last; once only. */
+export function restoreRow(rows: readonly HomeRow[], row: HomeRow, index: number): HomeRow[] {
+  const key = rowKey(row);
+  if (rows.some((r) => rowKey(r) === key)) return [...rows];
+  const out = [...rows];
+  out.splice(Math.min(Math.max(0, index), out.length), 0, row);
+  return out;
+}
+
 export function moveRow(rows: readonly HomeRow[], index: number, delta: number): HomeRow[] {
   const to = index + delta;
   if (index < 0 || index >= rows.length || to < 0 || to >= rows.length) return [...rows];

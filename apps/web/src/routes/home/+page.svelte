@@ -28,13 +28,16 @@
     isPinnedRow,
     moveRow,
     normalizeRows,
+    restoreRow,
     rowHref,
     rowKey,
     rowTitle,
     setRowHidden,
     unpinRow,
-    type HomeRow as HomeRowEntry
+    type HomeRow as HomeRowEntry,
+    type PinTarget
   } from '$lib/home/rows';
+  import UndoNotice from '$lib/components/confirm/undo-notice.svelte';
   import { homeRowLength$, homeRows$ } from '$lib/home/settings';
   import { LibraryApi, LibraryApiError } from '$lib/library/api';
   import { existingLocalIds } from '$lib/library/browser-open-deps';
@@ -402,6 +405,19 @@
     save(setRowHidden(rows, index, hidden));
   }
 
+  /** WP19: the last removed row, for Undo (until dismissed, the next removal or Done). */
+  let removedRow: { row: HomeRowEntry; index: number; name: string } | null = null;
+
+  function removeRow(row: PinTarget & { hidden: boolean }, index: number) {
+    removedRow = { row, index, name: rowTitle(row, collectionName) };
+    save(unpinRow(rows, row));
+  }
+
+  function undoRemoveRow() {
+    if (removedRow) save(restoreRow(rows, removedRow.row, removedRow.index));
+    removedRow = null;
+  }
+
   function emptyTextFor(row: HomeRowEntry): string {
     if (row.type === 'continue') return 'Nothing in progress. Open a book from the Library.';
     return 'No books here yet.';
@@ -432,6 +448,7 @@
         data-testid="home-edit"
         on:click={() => {
           editing = !editing;
+          removedRow = null;
           if (!editing && api && ready) void loadAllRows(true);
         }}
       >
@@ -455,6 +472,18 @@
         Pin more rows with "Pin to Home" on a collection (Collections page) or on a series, author
         or tag (Library). Rows are kept on this device only.
       </p>
+      {#if removedRow}
+        <div class="c-notice mb-3">
+          <UndoNotice
+            message={`Removed “${removedRow.name}” from Home.`}
+            buttonClass="c-btn c-btn-secondary px-3"
+            testid="home-row-undo-notice"
+            undoTestid="home-row-undo"
+            on:undo={undoRemoveRow}
+            on:dismiss={() => (removedRow = null)}
+          />
+        </div>
+      {/if}
       <ul class="flex flex-col gap-2">
         {#each rows as row, i (rowKey(row))}
           <li
@@ -495,7 +524,7 @@
               <button
                 class="c-btn c-btn-secondary px-3"
                 data-testid="home-row-remove"
-                on:click={() => save(unpinRow(rows, row))}
+                on:click={() => removeRow(row, i)}
               >
                 Remove
               </button>

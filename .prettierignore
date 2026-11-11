@@ -2,3 +2,5 @@ pnpm-lock.yaml
 build/
 .svelte-kit/
 apps/storage-server/vendor/
+# Vendored ttu-whispersync keeps its upstream style (WP19).
+apps/web/src/lib/whispersync/

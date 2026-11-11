@@ -39,6 +39,8 @@
   import CataloguePageHeader from '$lib/components/catalogue-page-header.svelte';
   import { pxScreen } from '$lib/css-classes';
   import { dialogManager, type Dialog } from '$lib/data/dialog-manager';
+  import { confirmDestructive } from '$lib/confirm/confirm';
+  import { removeFavoritesCopy, removeFromCollectionCopy } from '$lib/confirm/confirm-copy';
   import { pagePath } from '$lib/data/env';
   import { logger } from '$lib/data/logger';
   import { database, einkMode$, selfHostStorageSource$ } from '$lib/data/store';
@@ -639,6 +641,17 @@
         collections: collectionList.filter((c) => c.type === 'manual')
       });
       if (!pick) return;
+      // WP19: taking books out of a collection asks first.
+      if (
+        change.action === 'remove' &&
+        'id' in pick &&
+        !(await confirmRemoveFromCollection(
+          chosen,
+          collectionList.find((c) => c.id === pick.id)?.name ?? 'the collection'
+        ))
+      ) {
+        return;
+      }
       try {
         const target =
           'id' in pick ? pick.id : await collections.create({ name: pick.newName, type: 'manual' });
@@ -662,6 +675,16 @@
     } else if (change.kind === 'status') {
       failed = await bookState.setStatusMany(ids, change.status);
     } else if (change.kind === 'favorite') {
+      if (
+        !change.favorite &&
+        !(await confirmDestructive({
+          ...removeFavoritesCopy(chosen.length),
+          testid: 'remove-favorites-confirm',
+          confirmTestid: 'remove-favorites-confirm-button'
+        }))
+      ) {
+        return;
+      }
       failed = await bookState.setFavoriteMany(ids, change.favorite);
     } else {
       failed = await bookState.setBlurMany(ids, change.blur);
@@ -685,6 +708,16 @@
     // In the list's own order, so "Move to top" keeps their order.
     const ids = listIds.filter((id) => selected.has(id));
     if (!ids.length) return;
+    if (
+      action === 'remove' &&
+      !(await confirmRemoveFromCollection(
+        books.filter((b) => ids.includes(b.id)),
+        userCollection?.name ?? 'the collection',
+        ids.length
+      ))
+    ) {
+      return;
+    }
     const failed =
       action === 'remove'
         ? await collections.removeBooks(collectionId, ids)
@@ -734,7 +767,25 @@
     if (action === 'top') void saveOrder(() => collections.moveBooks(id, [book.id], 0));
     else if (action === 'bottom') {
       void saveOrder(() => collections.moveBooks(id, [book.id], Number.MAX_SAFE_INTEGER));
-    } else if (action === 'remove') void saveOrder(() => collections.removeBooks(id, [book.id]));
+    } else if (
+      action === 'remove' &&
+      (await confirmRemoveFromCollection([book], userCollection?.name ?? 'the collection'))
+    ) {
+      void saveOrder(() => collections.removeBooks(id, [book.id]));
+    }
+  }
+
+  /** WP19: "Remove 3 books from “Name”?"; true when confirmed. */
+  function confirmRemoveFromCollection(
+    chosen: CatalogBook[],
+    name: string,
+    count = chosen.length
+  ): Promise<boolean> {
+    return confirmDestructive({
+      ...removeFromCollectionCopy({ count, title: chosen[0]?.title, collection: name }),
+      testid: 'remove-from-collection-confirm',
+      confirmTestid: 'remove-from-collection-confirm-button'
+    });
   }
 
   // ---- collection header ----------------------------------------------------

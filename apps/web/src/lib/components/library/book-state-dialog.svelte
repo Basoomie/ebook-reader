@@ -17,6 +17,8 @@
     type ReadThrough
   } from '$lib/sync/book-state';
   import CollectionToggles from '$lib/components/collections/collection-toggles.svelte';
+  import InlineConfirm from '$lib/components/confirm/inline-confirm.svelte';
+  import { removeReadCopy, startOverCopy } from '$lib/confirm/confirm-copy';
   import type { BookStateApi, CollectionsApi } from '$lib/sync/sync-service';
   import { createEventDispatcher, onDestroy, onMount } from 'svelte';
 
@@ -51,6 +53,8 @@
   let completing = false;
   let finishDate = '';
   let confirmStartOver = false;
+  /** WP19: the read-through waiting for "Remove the 2nd read?". */
+  let confirmRemoveId = '';
   /** Read-through whose finish date is being edited, and the edited value. */
   let editingId = '';
   let editDate = '';
@@ -130,7 +134,15 @@
     });
   }
 
+  function removeRead(id: string) {
+    void run(async () => {
+      await api.removeReadThrough(bookId, id);
+      confirmRemoveId = '';
+    });
+  }
+
   function beginEdit(rt: ReadThrough) {
+    confirmRemoveId = '';
     editingId = rt.id;
     editDate = rt.finishedOn ?? '';
   }
@@ -277,6 +289,17 @@
                   <button class={buttonClass} disabled={busy} on:click={saveEdit}>Save</button>
                   <button class={buttonClass} on:click={() => (editingId = '')}>Cancel</button>
                 </div>
+              {:else if confirmRemoveId === rt.id}
+                <div class="mt-2">
+                  <InlineConfirm
+                    {...removeReadCopy(ordinal(rt.number))}
+                    {busy}
+                    testid="remove-read-confirm"
+                    confirmTestid="confirm-remove-read"
+                    on:confirm={() => removeRead(rt.id)}
+                    on:cancel={() => (confirmRemoveId = '')}
+                  />
+                </div>
               {:else if rt.finished || canRemoveReadThrough(rt)}
                 <div class="mt-2 flex flex-wrap gap-2">
                   {#if rt.finished}
@@ -288,9 +311,13 @@
                     <button
                       class={buttonClass}
                       disabled={busy}
-                      on:click={() => run(() => api.removeReadThrough(bookId, rt.id))}
+                      data-testid="remove-read"
+                      on:click={() => {
+                        editingId = '';
+                        confirmRemoveId = rt.id;
+                      }}
                     >
-                      Remove
+                      Remove…
                     </button>
                   {/if}
                 </div>
@@ -309,21 +336,14 @@
 
       <div class="mt-4 border-t border-gray-400 pt-3">
         {#if confirmStartOver}
-          <p class="mb-2">
-            Start over? You read the book again from the beginning, on every device. Your earlier
-            reads and their stats are kept.
-          </p>
-          <div class="flex flex-wrap gap-2">
-            <button
-              class={buttonClass}
-              disabled={busy}
-              data-testid="confirm-start-over"
-              on:click={startOver}
-            >
-              Start over
-            </button>
-            <button class={buttonClass} on:click={() => (confirmStartOver = false)}>Cancel</button>
-          </div>
+          <InlineConfirm
+            {...startOverCopy()}
+            {busy}
+            testid="start-over-confirm"
+            confirmTestid="confirm-start-over"
+            on:confirm={startOver}
+            on:cancel={() => (confirmStartOver = false)}
+          />
         {:else}
           <button
             class={buttonClass}

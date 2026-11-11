@@ -5,6 +5,9 @@
 	import { mdiCheckAll, mdiDeleteOutline, mdiRestore } from '@mdi/js';
 	import Sortable, { Swap } from 'sortablejs';
 	import { onMount } from 'svelte';
+	// ttsu WP19: "Remove all" and "Restore defaults" ask first.
+	import { confirmDestructiveInWhispersync } from '$lib/confirm/confirm-whispersync';
+	import { clearActionListCopy, restoreActionListCopy } from '$lib/confirm/confirm-copy';
 
 	export let actionList: ActionListItem[];
 	export let defaultActions: Map<Action, boolean>;
@@ -98,10 +101,20 @@
 		<Icon path={mdiCheckAll} />
 	</button>
 	<button title="Remove all" class="m-r-s">
-		<Icon path={mdiDeleteOutline} on:click={() => onToggle(false)} />
+		<Icon
+			path={mdiDeleteOutline}
+			on:click={async () => {
+				if (await confirmDestructiveInWhispersync(clearActionListCopy())) onToggle(false);
+			}}
+		/>
 	</button>
 	<button title="Restore defaults">
-		<Icon path={mdiRestore} on:click={onRestoreDefaults} />
+		<Icon
+			path={mdiRestore}
+			on:click={async () => {
+				if (await confirmDestructiveInWhispersync(restoreActionListCopy())) onRestoreDefaults();
+			}}
+		/>
 	</button>
 </div>
 <div class="sortable-list-container" bind:this={listContainer}>
