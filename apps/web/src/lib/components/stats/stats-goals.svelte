@@ -39,9 +39,10 @@
   export let weekStart: number;
   export let speedMinMinutes: number;
 
-  const control = 'min-h-[3rem] rounded border-2 border-current bg-white px-3';
+  // WP19b: the catalogue look (app.scss).
+  const control = 'c-ctl';
   /** A filled button: its own classes, never combined with `control` (bg-white would win). */
-  const primary = 'min-h-[3rem] rounded border-2 border-gray-800 bg-gray-800 px-3 text-white';
+  const primary = 'c-btn c-btn-primary px-3';
 
   let editing: {
     goal: StatGoal | null;
@@ -154,7 +155,7 @@
 
 <section class="pt-4" data-testid="stats-goals">
   <div class="flex flex-wrap items-center justify-between gap-2 pb-2">
-    <h2 class="text-lg font-medium">Goals</h2>
+    <h2 class="font-mincho text-2xl font-bold">Goals</h2>
     {#if !editing}
       <button class={control} data-testid="stats-goal-add" on:click={startAdd}>Add goal</button>
     {/if}
@@ -226,9 +227,9 @@
     </p>
   {/if}
   {#each rows as row (row.goal.id)}
-    <div class="border-t-2 border-current py-3" data-testid="stats-goal" data-goal-id={row.goal.id}>
+    <div class="border-t border-c-line py-3" data-testid="stats-goal" data-goal-id={row.goal.id}>
       <div class="flex flex-wrap items-center justify-between gap-2">
-        <h3 class="font-medium" data-testid="stats-goal-title">{goalTitle(row.goal)}</h3>
+        <h3 class="font-mincho font-bold" data-testid="stats-goal-title">{goalTitle(row.goal)}</h3>
         <div class="flex gap-2">
           <button
             class={control}
@@ -246,13 +247,13 @@
         {periodLabel(current(row).period)}: {currentText(row, speedMinMinutes)}
       </p>
       <div
-        class="mt-1 h-4 w-full rounded border-2 border-current"
+        class="c-progress mt-1 h-3 w-full overflow-hidden rounded-full bg-c-track"
         role="progressbar"
         aria-valuemin="0"
         aria-valuemax="100"
         aria-valuenow={percent(row)}
       >
-        <div class="h-full bg-gray-800" style:width="{percent(row)}%" />
+        <div class="h-full bg-c-fill" style:width="{percent(row)}%" />
       </div>
       <ol
         class="flex flex-wrap gap-1 pt-2"

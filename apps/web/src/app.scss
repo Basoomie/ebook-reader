@@ -14,6 +14,461 @@
   overflow-clip-margin: unset;
 }
 
+/*
+ * WP19b: the catalogue pages' look (draft A "蔵書 Archive": ink navy and washi cream).
+ * Tokens for light (default), dark (`html.catalogue-dark`, per device "Library Look") and
+ * E-ink (`html.eink`: pure black on white, wins over dark). Tailwind names them `c-*`
+ * (tailwind.config.cjs). The reader never uses them.
+ */
+:root {
+  --c-bg: #f3ede0;
+  --c-raised: #fcf9f2;
+  --c-ink: #1a2233;
+  --c-muted: #545c6b;
+  --c-line: #d6c9ae;
+  --c-line-strong: #c9ba9a;
+  --c-link: #2b4c9b;
+  --c-label: #2b4c9b;
+  --c-seal: #b8361f;
+  --c-gold: #b89766;
+  --c-header-bg: #1a2233;
+  --c-header-ink: #ffffff;
+  --c-header-muted: #c9cfdb;
+  --c-header-border: transparent;
+  --c-bar-bg: #1a2233;
+  --c-bar-border: transparent;
+  --c-btn-bg: #1a2233;
+  --c-btn-ink: #f3ede0;
+  --c-btn-hover: #2e3c59;
+  --c-btn-active: #0f1624;
+  --c-sec-bg: #fcf9f2;
+  --c-sec-ink: #1a2233;
+  --c-sec-border: #c9ba9a;
+  --c-sec-hover: #efe5d0;
+  --c-sec-hover-border: #b89766;
+  --c-sec-active: #e4d8be;
+  --c-sel-bg: #1a2233;
+  --c-sel-ink: #f3ede0;
+  --c-tint: #efe5d0;
+  --c-track: #dcd0b6;
+  --c-fill: #2b4c9b;
+  --c-count-bg: #e7dec9;
+  --c-count-ink: #3b4354;
+  --c-cover-shadow: 0 1px 3px rgba(26, 34, 51, 0.18);
+  --c-cover-hover-shadow: 0 14px 28px rgba(26, 34, 51, 0.22);
+  --c-pop-shadow: 0 16px 40px rgba(26, 34, 51, 0.18);
+  --c-border-width: 1px;
+}
+
+html.catalogue-dark {
+  --c-bg: #0e1524;
+  --c-raised: #1a2740;
+  --c-ink: #ede6d6;
+  --c-muted: #a9b2c4;
+  --c-line: #2e3d5c;
+  --c-line-strong: #3a4a6b;
+  --c-link: #b9cbf5;
+  --c-label: #d9be8c;
+  --c-seal: #d25a3f;
+  --c-gold: #8c7550;
+  --c-header-bg: #0a1020;
+  --c-header-ink: #ede6d6;
+  --c-header-muted: #a9b2c4;
+  --c-header-border: #8c7550;
+  --c-bar-bg: #1c2a46;
+  --c-bar-border: #8c7550;
+  --c-btn-bg: #d9be8c;
+  --c-btn-ink: #0e1524;
+  --c-btn-hover: #ead6ae;
+  --c-btn-active: #c9ac76;
+  --c-sec-bg: transparent;
+  --c-sec-ink: #ede6d6;
+  --c-sec-border: #8c7550;
+  --c-sec-hover: #22314f;
+  --c-sec-hover-border: #d9be8c;
+  --c-sec-active: #2a3b5e;
+  --c-sel-bg: #d9be8c;
+  --c-sel-ink: #0e1524;
+  --c-tint: #22314f;
+  --c-track: #2e3d5c;
+  --c-fill: #d9be8c;
+  --c-count-bg: #1a2740;
+  --c-count-ink: #d9be8c;
+  --c-cover-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+  --c-cover-hover-shadow: 0 14px 30px rgba(0, 0, 0, 0.6);
+  --c-pop-shadow: 0 16px 40px rgba(0, 0, 0, 0.55);
+}
+
+/* Listed after dark, so E-ink wins when both are on. */
+html.eink {
+  --c-bg: #fff;
+  --c-raised: #fff;
+  --c-ink: #000;
+  --c-muted: #000;
+  --c-line: #000;
+  --c-line-strong: #000;
+  --c-link: #000;
+  --c-label: #000;
+  --c-seal: #000;
+  --c-gold: #000;
+  --c-header-bg: #fff;
+  --c-header-ink: #000;
+  --c-header-muted: #000;
+  --c-header-border: #000;
+  --c-bar-bg: #fff;
+  --c-bar-border: #000;
+  --c-btn-bg: #000;
+  --c-btn-ink: #fff;
+  --c-btn-hover: #000;
+  --c-btn-active: #fff;
+  --c-sec-bg: #fff;
+  --c-sec-ink: #000;
+  --c-sec-border: #000;
+  --c-sec-hover: #fff;
+  --c-sec-hover-border: #000;
+  --c-sec-active: #000;
+  --c-sel-bg: #000;
+  --c-sel-ink: #fff;
+  --c-tint: #fff;
+  --c-track: #fff;
+  --c-fill: #000;
+  --c-count-bg: #fff;
+  --c-count-ink: #000;
+  --c-cover-shadow: none;
+  --c-cover-hover-shadow: none;
+  --c-pop-shadow: none;
+  --c-border-width: 2px;
+}
+
+/* The catalogue pages set `html.catalogue` (AppHeader) so the page behind them takes the
+   look too (below the content, overscroll). */
+html.catalogue body {
+  background-color: var(--c-bg);
+  color: var(--c-ink);
+}
+
+/* Native controls (date pickers, select lists, scrollbars) in the dark look. */
+html.catalogue.catalogue-dark:not(.eink) {
+  color-scheme: dark;
+}
+
+html.catalogue [type='checkbox'] {
+  background-color: var(--c-raised);
+  border-color: var(--c-line-strong);
+  color: var(--c-btn-bg);
+}
+
+html.catalogue select {
+  background-color: var(--c-raised);
+  color: var(--c-ink);
+}
+
+/* Room for the select's arrow (the forms plugin draws it at the right). */
+html.catalogue select.c-input,
+html.catalogue select.c-ctl {
+  padding-right: 2.5rem;
+}
+
+/* A light arrow on the dark look. */
+html.catalogue.catalogue-dark:not(.eink) select {
+  background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%23a9b2c4' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e");
+}
+
+/* Dialogs over a catalogue page (Book status, Add to collection, collections…) take its
+   colours; their bordered buttons use currentColor. */
+html.catalogue .mdc-elevation--z24 {
+  background-color: var(--c-raised) !important;
+  color: var(--c-ink);
+}
+
+@layer components {
+  /* Buttons: filled (primary), outlined (secondary) and plain rows (ghost). 48 px. */
+  .c-btn {
+    @apply inline-flex min-h-[3rem] items-center justify-center gap-2 rounded px-4 font-medium;
+    border-width: var(--c-border-width);
+    border-style: solid;
+    transition:
+      background-color 0.12s ease,
+      border-color 0.12s ease,
+      color 0.12s ease;
+  }
+
+  .c-btn:focus-visible,
+  .c-focus:focus-visible {
+    outline: 2px solid var(--c-link);
+    outline-offset: 2px;
+  }
+
+  .c-btn:disabled {
+    @apply cursor-default opacity-50;
+  }
+
+  .c-btn-primary {
+    background-color: var(--c-btn-bg);
+    border-color: var(--c-btn-bg);
+    color: var(--c-btn-ink);
+  }
+
+  .c-btn-secondary {
+    background-color: var(--c-sec-bg);
+    border-color: var(--c-sec-border);
+    color: var(--c-sec-ink);
+  }
+
+  .c-btn-ghost {
+    background-color: transparent;
+    border-color: transparent;
+    color: var(--c-ink);
+  }
+
+  /* A pressed toggle (aria-pressed) or the picked option looks filled. */
+  .c-btn[aria-pressed='true'],
+  .c-btn.c-selected {
+    background-color: var(--c-sel-bg);
+    border-color: var(--c-sel-bg);
+    color: var(--c-sel-ink);
+  }
+
+  @media (hover: hover) {
+    .c-btn-primary:not(:disabled):hover {
+      background-color: var(--c-btn-hover);
+      border-color: var(--c-btn-hover);
+    }
+
+    .c-btn-secondary:not(:disabled):not([aria-pressed='true']):hover {
+      background-color: var(--c-sec-hover);
+      border-color: var(--c-sec-hover-border);
+    }
+
+    .c-btn-ghost:not(:disabled):not([aria-pressed='true']):not(.c-selected):hover {
+      background-color: var(--c-tint);
+    }
+  }
+
+  .c-btn-primary:not(:disabled):active {
+    background-color: var(--c-btn-active);
+    border-color: var(--c-btn-active);
+  }
+
+  .c-btn-secondary:not(:disabled):not([aria-pressed='true']):active,
+  .c-btn-ghost:not(:disabled):not([aria-pressed='true']):not(.c-selected):active {
+    background-color: var(--c-sec-active);
+  }
+
+  /* E-ink has no hover; pressing fills a button solid (the filled one turns white). */
+  html.eink .c-btn-secondary:not(:disabled):active,
+  html.eink .c-btn-ghost:not(:disabled):active {
+    color: #fff;
+  }
+
+  html.eink .c-btn-primary:not(:disabled):active {
+    color: #000;
+    border-color: #000;
+  }
+
+  /* Underlined only on hover (author names, "See all"). */
+  .c-link {
+    color: var(--c-link);
+    text-underline-offset: 3px;
+  }
+
+  .c-link:hover {
+    text-decoration: underline;
+  }
+
+  /* Book covers: a slight lift with a shadow on hover (fine pointers, not E-ink); the ⋮
+     in the corner shows on hover or focus, and always on touch screens and E-ink. */
+  .c-cover {
+    box-shadow: var(--c-cover-shadow);
+    transition:
+      transform 0.18s ease,
+      box-shadow 0.18s ease;
+  }
+
+  .c-card-dots {
+    opacity: 0;
+    transition: opacity 0.15s ease;
+  }
+
+  .c-card:focus-within .c-card-dots,
+  .c-card-dots.c-open {
+    opacity: 1;
+  }
+
+  @media (hover: hover) and (pointer: fine) {
+    .c-card:hover .c-cover {
+      transform: translateY(-4px);
+      box-shadow: var(--c-cover-hover-shadow);
+    }
+
+    .c-card:hover .c-card-dots {
+      opacity: 1;
+    }
+  }
+
+  @media (hover: none) {
+    .c-card-dots {
+      opacity: 1;
+    }
+  }
+
+  html.eink .c-card-dots {
+    opacity: 1;
+  }
+
+  html.eink .c-card:hover .c-cover {
+    transform: none;
+  }
+
+  /* Small Japanese labels above headings (蔵書一覧). */
+  .c-jp-label {
+    @apply font-mincho text-[13px] font-bold;
+    letter-spacing: 0.4em;
+    color: var(--c-label);
+  }
+
+  /* One style for the Stats page's buttons, fields and selects (`control`). */
+  .c-ctl {
+    @apply min-h-[3rem] rounded px-3;
+    background-color: var(--c-sec-bg);
+    border: var(--c-border-width) solid var(--c-sec-border);
+    color: var(--c-sec-ink);
+  }
+
+  button.c-ctl {
+    @apply inline-flex items-center justify-center gap-2 font-medium;
+  }
+
+  button.c-ctl[aria-pressed='true'] {
+    background-color: var(--c-sel-bg);
+    border-color: var(--c-sel-bg);
+    color: var(--c-sel-ink);
+  }
+
+  button.c-ctl:disabled {
+    @apply cursor-default opacity-50;
+  }
+
+  @media (hover: hover) {
+    button.c-ctl:not(:disabled):not([aria-pressed='true']):hover {
+      background-color: var(--c-sec-hover);
+      border-color: var(--c-sec-hover-border);
+    }
+  }
+
+  button.c-ctl:not(:disabled):not([aria-pressed='true']):active {
+    background-color: var(--c-sec-active);
+  }
+
+  html.eink button.c-ctl:not(:disabled):active {
+    color: #fff;
+  }
+
+  /* Summary tiles (Stats). */
+  .c-tile {
+    background-color: var(--c-raised);
+    border: var(--c-border-width) solid var(--c-line);
+  }
+
+  /* Text fields and selects of the catalogue pages. */
+  .c-input {
+    @apply min-h-[3rem] rounded px-3;
+    background-color: var(--c-raised);
+    border: var(--c-border-width) solid var(--c-line-strong);
+    color: var(--c-ink);
+  }
+
+  .c-input:focus,
+  .c-input:focus-within {
+    outline: 2px solid var(--c-link);
+    outline-offset: 0;
+    border-color: var(--c-line-strong);
+    box-shadow: none;
+  }
+
+  .c-input::placeholder {
+    color: var(--c-muted);
+    opacity: 0.85;
+  }
+
+  .c-range {
+    accent-color: var(--c-fill);
+  }
+
+  /* Progress bars: a frame on E-ink, where the track is white. */
+  html.eink .c-progress {
+    outline: 1px solid #000;
+  }
+
+  /* Counts on tabs ("All 1,284"). */
+  .c-count {
+    @apply rounded-full px-2 text-[11px] font-medium leading-5;
+    background-color: var(--c-count-bg);
+    color: var(--c-count-ink);
+    border: var(--c-border-width) solid transparent;
+  }
+
+  .c-count-current {
+    background-color: var(--c-sel-bg);
+    color: var(--c-sel-ink);
+  }
+
+  html.eink .c-count {
+    border-color: #000;
+  }
+
+  /* Notes above a list (stale data, uncounted books, errors). */
+  .c-notice {
+    @apply my-2 rounded px-3 py-2 text-sm;
+    background-color: var(--c-raised);
+    border: var(--c-border-width) solid var(--c-line);
+  }
+
+  /* Text between two short gold rules ("Loading…"). */
+  .c-rule-text {
+    @apply flex items-center justify-center gap-3;
+  }
+
+  .c-rule-text::before,
+  .c-rule-text::after {
+    content: '';
+    width: 2.5rem;
+    height: 1px;
+    background-color: var(--c-gold);
+  }
+
+  /* The Library's select bar (replaces the phone navigation while selecting). */
+  .c-select-bar {
+    background-color: var(--c-raised);
+    border-top: var(--c-border-width) solid var(--c-line-strong);
+    box-shadow: var(--c-pop-shadow);
+  }
+
+  /* A row that scrolls sideways instead of wrapping (tabs and filters on a phone). */
+  .c-strip {
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .c-strip::-webkit-scrollbar {
+    display: none;
+  }
+
+  /* Section headings with a gold rule to the right ("Series 同じシリーズ ───"). */
+  .c-section-rule {
+    @apply h-px grow;
+    background-color: var(--c-gold);
+  }
+
+  /* A popover panel (menus). */
+  .c-panel {
+    background-color: var(--c-raised);
+    border: var(--c-border-width) solid var(--c-line-strong);
+    box-shadow: var(--c-pop-shadow);
+    color: var(--c-ink);
+  }
+}
+
 /* WP10c: matches of the last in-book search on the page you jumped to (CSS Custom
    Highlight API; browsers without it show no mark). */
 ::highlight(ttu-search) {

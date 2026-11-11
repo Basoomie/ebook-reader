@@ -39,16 +39,18 @@
 </script>
 
 {#if layout === 'grid'}
-  <li class="min-w-0" data-testid="group-card" data-group={group.name ?? ''}>
-    <a class="block" {href} on:click={onClick} data-sveltekit-noscroll>
-      <div class="aspect-[2/3] w-full">
+  <li class="c-card min-w-0" data-testid="group-card" data-group={group.name ?? ''}>
+    <a class="c-focus block rounded-sm" {href} on:click={onClick} data-sveltekit-noscroll>
+      <div class="c-cover aspect-[2/3] w-full overflow-hidden rounded-sm">
         <CoverCollage {tiles} />
       </div>
-      <div class="mt-1 line-clamp-2 text-sm font-medium leading-snug">{groupTitle(group)}</div>
+      <div class="mt-2 line-clamp-2 font-mincho text-[15px] font-bold leading-snug">
+        {groupTitle(group)}
+      </div>
     </a>
     <div class="flex items-start">
       {#if infoLine}
-        <div class="min-w-0 grow text-xs opacity-75" data-testid="group-info">
+        <div class="min-w-0 grow text-xs leading-relaxed text-c-muted" data-testid="group-info">
           {#each details as line}<div class="truncate">{line}</div>{/each}
         </div>
       {:else}
@@ -56,7 +58,7 @@
       {/if}
       {#if menu}
         <button
-          class="-mr-2 -mt-1 flex h-10 w-10 shrink-0 items-center justify-center"
+          class="c-btn c-btn-ghost -mr-2 h-10 min-h-0 w-10 shrink-0 p-0"
           title="Cover settings for this tag"
           aria-label="Cover settings: {groupTitle(group)}"
           data-testid="group-menu"
@@ -69,23 +71,24 @@
   </li>
 {:else}
   <li
-    class="flex items-center border-b border-gray-400/40"
+    class="c-group-row flex items-center border-b"
+    style="border-color: var(--c-line)"
     data-testid="group-card"
     data-group={group.name ?? ''}
   >
     <a
-      class="flex min-w-0 grow items-center gap-4 py-3"
+      class="c-focus flex min-w-0 grow items-center gap-4 px-1 py-3"
       {href}
       on:click={onClick}
       data-sveltekit-noscroll
     >
-      <div class="h-[72px] w-12 shrink-0">
+      <div class="c-cover h-[72px] w-12 shrink-0 overflow-hidden rounded-sm">
         <CoverCollage {tiles} compact />
       </div>
       <div class="min-w-0 grow">
-        <div class="line-clamp-2 font-medium">{groupTitle(group)}</div>
+        <div class="line-clamp-2 font-mincho font-bold">{groupTitle(group)}</div>
         {#if infoLine}
-          <div class="truncate text-sm opacity-75" data-testid="group-info">
+          <div class="truncate text-sm text-c-muted" data-testid="group-info">
             {details.join(' · ')}
           </div>
         {/if}
@@ -93,7 +96,7 @@
     </a>
     {#if menu}
       <button
-        class="flex h-12 w-12 shrink-0 items-center justify-center"
+        class="c-btn c-btn-ghost h-12 w-12 shrink-0 p-0"
         title="Cover settings for this tag"
         aria-label="Cover settings: {groupTitle(group)}"
         data-testid="group-menu"
@@ -104,3 +107,11 @@
     {/if}
   </li>
 {/if}
+
+<style>
+  @media (hover: hover) {
+    .c-group-row:hover {
+      background-color: var(--c-tint);
+    }
+  }
+</style>

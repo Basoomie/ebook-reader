@@ -1,11 +1,14 @@
 <script lang="ts">
-  import Fa from 'svelte-fa';
   import { page } from '$app/stores';
   import { pagePath } from '$lib/data/env';
   import AppMenu from './app-menu.svelte';
   import { APP_NAV, isCurrentRoute } from './app-nav';
 
-  /** The app navigation inside a page's gray header, for wider screens (phones use the bottom bar). */
+  /**
+   * The app navigation inside a page's header, for wider screens (phones use the bottom
+   * bar). WP19b: text links; the current page is underlined in vermilion; small widths
+   * show the one-character marks.
+   */
   $: items = APP_NAV.map((entry) => ({ ...entry, current: isCurrentRoute($page.route.id, entry) }));
 </script>
 
@@ -13,20 +16,21 @@
 <nav class="hidden h-12 shrink-0 items-stretch sm:flex xl:h-10" aria-label="App">
   {#each items as entry (entry.routeId)}
     <a
-      class="flex min-w-[3rem] items-center justify-center gap-2 px-3 text-sm font-medium {entry.current
-        ? 'bg-white text-gray-900'
-        : ''}"
+      class="c-focus flex min-w-[3rem] items-center justify-center gap-2 border-b-2 px-3 text-sm font-medium transition-colors {entry.current
+        ? 'border-c-seal text-c-header-ink'
+        : 'border-transparent text-c-header-muted hover:text-c-header-ink'}"
       href="{pagePath}{entry.routeId}"
       aria-current={entry.current ? 'page' : undefined}
       title={entry.label}
       data-testid="nav-{entry.label.toLowerCase()}"
     >
-      <Fa icon={entry.icon} />
+      <span class="font-mincho text-base font-bold md:hidden" aria-hidden="true">{entry.glyph}</span
+      >
       <span class="hidden md:inline">{entry.label}</span>
     </a>
   {/each}
   <AppMenu
-    buttonClass="flex h-full min-w-[3rem] items-center justify-center gap-2 px-3 text-sm font-medium"
+    buttonClass="c-focus flex h-full min-w-[3rem] items-center justify-center gap-2 px-3 text-sm font-medium text-c-header-muted hover:text-c-header-ink"
     placement="below"
   />
 </nav>

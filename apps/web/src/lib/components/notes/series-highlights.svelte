@@ -131,7 +131,7 @@
 {#if count > 0 || mine.size > 0}
   <div class="mt-3" data-testid="series-highlights">
     <button
-      class="min-h-[3rem] rounded border-2 border-current px-4 font-medium"
+      class="c-btn c-btn-secondary"
       aria-expanded={expanded}
       data-testid="series-highlights-toggle"
       on:click={() => (expanded = !expanded)}
@@ -141,14 +141,14 @@
     {#if expanded}
       <div class="mt-2" data-testid="series-highlights-list">
         <a
-          class="inline-flex min-h-[3rem] items-center underline"
+          class="c-link inline-flex min-h-[3rem] items-center"
           href={notesHref}
           data-testid="series-highlights-notes-link"
         >
           Open on the Notes page
         </a>
         {#if loadError}
-          <p class="py-1 text-sm" role="alert">{loadError}</p>
+          <p class="c-notice" role="alert">{loadError}</p>
         {/if}
         <NotesList
           {groups}

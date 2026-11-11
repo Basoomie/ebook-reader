@@ -30,20 +30,22 @@
 </script>
 
 {#if layout === 'grid'}
-  <li class="min-w-0" data-testid="collection-card" data-collection={id}>
-    <a class="block" {href} on:click={onClick}>
-      <div class="aspect-[2/3] w-full">
+  <li class="c-card min-w-0" data-testid="collection-card" data-collection={id}>
+    <a class="c-focus block rounded-sm" {href} on:click={onClick}>
+      <div class="c-cover aspect-[2/3] w-full overflow-hidden rounded-sm">
         <CoverCollage {tiles} />
       </div>
-      <div class="mt-1 line-clamp-2 break-words text-sm font-medium leading-snug">{name}</div>
+      <div class="mt-2 line-clamp-2 break-words font-mincho text-[15px] font-bold leading-snug">
+        {name}
+      </div>
     </a>
     <div class="flex items-start">
-      <div class="min-w-0 grow text-xs opacity-75" data-testid="collection-info">
+      <div class="min-w-0 grow text-xs leading-relaxed text-c-muted" data-testid="collection-info">
         {#each details as line}<div class="truncate">{line}</div>{/each}
       </div>
       {#if menu}
         <button
-          class="-mr-2 -mt-1 flex h-12 w-12 shrink-0 items-center justify-center"
+          class="c-btn c-btn-ghost -mr-2 h-12 w-12 shrink-0 p-0"
           title="Rename or delete"
           aria-label="More: {name}"
           data-testid="collection-menu"
@@ -56,24 +58,25 @@
   </li>
 {:else}
   <li
-    class="flex items-center border-b border-gray-400/40"
+    class="c-collection-row flex items-center border-b"
+    style="border-color: var(--c-line)"
     data-testid="collection-card"
     data-collection={id}
   >
-    <a class="flex min-w-0 grow items-center gap-4 py-3" {href} on:click={onClick}>
-      <div class="h-[72px] w-12 shrink-0">
+    <a class="c-focus flex min-w-0 grow items-center gap-4 px-1 py-3" {href} on:click={onClick}>
+      <div class="c-cover h-[72px] w-12 shrink-0 overflow-hidden rounded-sm">
         <CoverCollage {tiles} compact />
       </div>
       <div class="min-w-0 grow">
-        <div class="line-clamp-2 break-words font-medium">{name}</div>
-        <div class="truncate text-sm opacity-75" data-testid="collection-info">
+        <div class="line-clamp-2 break-words font-mincho font-bold">{name}</div>
+        <div class="truncate text-sm text-c-muted" data-testid="collection-info">
           {details.join(' · ')}
         </div>
       </div>
     </a>
     {#if menu}
       <button
-        class="flex h-12 w-12 shrink-0 items-center justify-center"
+        class="c-btn c-btn-ghost h-12 w-12 shrink-0 p-0"
         title="Rename or delete"
         aria-label="More: {name}"
         data-testid="collection-menu"
@@ -84,3 +87,11 @@
     {/if}
   </li>
 {/if}
+
+<style>
+  @media (hover: hover) {
+    .c-collection-row:hover {
+      background-color: var(--c-tint);
+    }
+  }
+</style>

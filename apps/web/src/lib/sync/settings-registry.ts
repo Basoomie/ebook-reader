@@ -158,6 +158,7 @@ export const SETTINGS_REGISTRY: Record<string, SettingSpec> = {
   libraryGroupSort: d('String'),
   libraryCoverSize: d('Number'),
   libraryAutoLoad: d('Boolean'),
+  libraryLook: d('String'),
 
   // --- lib/sync/settings.ts (per device) ---
   recordSyncEnabled: d('Boolean'),

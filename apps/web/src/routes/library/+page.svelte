@@ -35,7 +35,8 @@
   import AppHeader from '$lib/components/app-nav/app-header.svelte';
   import MessageDialog from '$lib/components/message-dialog.svelte';
   import { browser } from '$app/environment';
-  import { inputClasses, pxScreen } from '$lib/css-classes';
+  import CataloguePageHeader from '$lib/components/catalogue-page-header.svelte';
+  import { pxScreen } from '$lib/css-classes';
   import { dialogManager, type Dialog } from '$lib/data/dialog-manager';
   import { pagePath } from '$lib/data/env';
   import { logger } from '$lib/data/logger';
@@ -60,7 +61,13 @@
   import { isPinnedToHome, setPinnedToHome } from '$lib/home/pins';
   import type { PinTarget } from '$lib/home/rows';
   import { homeRows$ } from '$lib/home/settings';
-  import { bookProgressLabel, positionsByBook, seriesReadCount } from '$lib/library/progress';
+  import {
+    bookProgressFraction,
+    bookProgressLabel,
+    positionsByBook,
+    seriesReadCount
+  } from '$lib/library/progress';
+  import AddToCollectionDialog from '$lib/components/collections/add-to-collection-dialog.svelte';
   import { activeChips, CHIPS, toggleChip, type ChipId } from '$lib/library/query/chips';
   import { parseQuery, usesBookState } from '$lib/library/query/parse';
   import {
@@ -130,8 +137,6 @@
   };
   const FIELD_OF: Record<GroupBy, string> = { series: 'series', author: 'author', tag: 'tag' };
   // The search box without the shared input's transition (e-ink).
-  const searchInputClasses = inputClasses.replace(/\s*\btransition\b/, '');
-  const solid = 'border-gray-800 bg-gray-800 text-white';
   /** Book ids looked up per request for a list (server limit 200). */
   const LOOKUP_CHUNK = 100;
   /** A list page shows at least this many matching books when there are more. */
@@ -160,6 +165,12 @@
   let resultCount: number | null = null;
   let counting = false;
   let countController: AbortController | undefined;
+  /** WP19b: counts on the tabs and chips, for the picked library. */
+  let tabCounts: Partial<Record<Tab, number>> = {};
+  let chipCounts = new Map<ChipId, number>();
+  let sideCountsKey: string | null = null;
+  let sideCountsTimer: ReturnType<typeof setTimeout> | undefined;
+  let searchInput: HTMLInputElement | undefined;
   let onDevice = new Set<string>();
 
   let queryInput = '';
@@ -242,7 +253,21 @@
   $: gridLayout = coverGrid($libraryCoverSize$);
   // WP19a: load the next page near the end of the list (else a "Load more" button).
   $: autoLoad = browser && $libraryAutoLoad$ && canLoadWhenVisible();
-  $: countLabel = resultCount === null ? '' : formatResultCount(resultCount);
+  // WP19b: the page header's label and title.
+  $: headerJp =
+    collectionId !== null
+      ? '書架'
+      : group
+        ? { series: '叢書', author: '著者', tag: '分類' }[group.by]
+        : '蔵書一覧';
+  $: headerTitle =
+    collectionId !== null
+      ? collectionGone
+        ? 'Collection'
+        : (collectionName ?? '')
+      : group
+        ? (group.name ?? 'No series')
+        : 'Library';
   $: parsedApplied = parseQuery(appliedQuery);
   $: usesChars = parsedApplied.ok && parsedApplied.query.terms.some((t) => t.type === 'chars');
   $: uncounted = enabledLibraries
@@ -276,7 +301,10 @@
     // the next timed sync.
     void view.syncSoon();
     const subscriptions = [
-      bookState.onChanged(() => void loadStates()),
+      bookState.onChanged(() => {
+        void loadStates();
+        onStatesChangedForCounts();
+      }),
       view.onChanged(() => void loadViewData()),
       collections.onChanged(onCollectionsChanged)
     ];
@@ -294,6 +322,7 @@
   onDestroy(() => {
     destroyed = true;
     clearTimeout(collectionsTimer);
+    clearTimeout(sideCountsTimer);
     stopListeners.forEach((off) => off());
     listController?.abort();
     opening?.controller.abort();
@@ -415,6 +444,17 @@
           collections,
           resolver: () => {}
         }
+      }
+    ]);
+  }
+
+  /** WP19b: "Add to collection…" from a book's ⋮ menu. */
+  function openAddToCollection(book: CatalogBook) {
+    dialogManager.dialogs$.next([
+      {
+        component: AddToCollectionDialog,
+        disableCloseOnClick: true,
+        props: { bookId: book.id, title: book.title, api: collections, resolver: () => {} }
       }
     ]);
   }
@@ -738,6 +778,9 @@
     queryInput = appliedQuery;
     queryError = '';
     selected = new Set();
+    void loadSideCounts();
+    // WP19b: Home's search button opens the Library with the search box focused.
+    if (params.get('search') === '1') setTimeout(() => searchInput?.focus(), 0);
     return loadPage(true);
   }
 
@@ -773,13 +816,59 @@
     );
   }
 
-  function formatResultCount(n: number): string {
-    const text = n.toLocaleString('en');
-    if (sortContext !== 'groups') return `${text} ${n === 1 ? 'book' : 'books'}`;
+  /** The word after the count: "books", "series", "authors", "tags". */
+  function countNoun(n: number): string {
+    if (sortContext !== 'groups') return n === 1 ? 'book' : 'books';
     const by = TABS.find((t) => t.id === tab)?.by;
-    if (by === 'series') return `${text} series`;
-    if (by === 'author') return `${text} ${n === 1 ? 'author' : 'authors'}`;
-    return `${text} ${n === 1 ? 'tag' : 'tags'}`;
+    if (by === 'series') return 'series';
+    if (by === 'author') return n === 1 ? 'author' : 'authors';
+    return n === 1 ? 'tag' : 'tags';
+  }
+
+  /**
+   * WP19b: the counts on the tabs (books, series, authors, tags) and the filter chips, for
+   * the picked library (not the search). Cached by the server; asked again when the
+   * library changes or (a few seconds later) when a book's status or favorite changes.
+   */
+  async function loadSideCounts() {
+    if (!api || collectionId !== null) return;
+    const key = appliedLibrary;
+    if (key === sideCountsKey) return;
+    sideCountsKey = key;
+    const a = api;
+    const library = appliedLibrary || undefined;
+    try {
+      const [all, series, authors, tags] = await Promise.all([
+        a.count({ library }),
+        ...(['series', 'author', 'tag'] as GroupBy[]).map((by) =>
+          a.groups({ by, library, limit: 1 }).then((r) => r.total)
+        )
+      ]);
+      if (sideCountsKey !== key) return;
+      tabCounts = { all, series, authors, tags };
+    } catch {
+      tabCounts = {};
+    }
+    try {
+      const entries = await Promise.all(
+        CHIPS.map(
+          async (c) => [c.id, await a.count({ q: toggleChip('', c.id) ?? '', library })] as const
+        )
+      );
+      if (sideCountsKey !== key) return;
+      chipCounts = new Map(entries);
+    } catch {
+      chipCounts = new Map();
+    }
+  }
+
+  function onStatesChangedForCounts() {
+    clearTimeout(sideCountsTimer);
+    // After the sync has had a moment to send the change.
+    sideCountsTimer = setTimeout(() => {
+      sideCountsKey = null;
+      void loadSideCounts();
+    }, 4000);
   }
 
   /**
@@ -1240,33 +1329,58 @@
       on:connected={(ev) => onConnected(ev.detail)}
     />
   {:else}
-    <form class="flex items-end gap-3 pt-3" on:submit|preventDefault={search}>
-      <label class="min-w-0 grow">
-        <span class="sr-only">Search the library</span>
-        <input
-          class={searchInputClasses}
-          type="search"
-          enterkeyhint="search"
-          autocapitalize="off"
-          spellcheck="false"
-          placeholder="Title, author or series — or author: tag: chars:<100000 …"
-          aria-invalid={queryError ? 'true' : undefined}
-          aria-describedby={queryError ? 'library-query-error' : undefined}
-          data-testid="library-search"
-          bind:value={queryInput}
-        />
-      </label>
-      <button
-        class="flex h-10 items-center rounded border border-current px-5"
-        type="submit"
-        title="Search"
+    <CataloguePageHeader
+      jp={headerJp}
+      title={headerTitle}
+      titleTestid={collectionId !== null && !collectionGone ? 'collection-title' : ''}
+    >
+      <span slot="meta" class="flex items-baseline gap-2" aria-live="polite">
+        {#if !loadError && resultCount !== null}
+          <span data-testid="result-count"
+            ><span class="font-mincho text-[22px] font-bold"
+              >{resultCount.toLocaleString('en')}</span
+            > <span class="text-sm text-c-muted">{countNoun(resultCount)}</span></span
+          >
+        {:else if !loadError && counting}
+          <span class="text-sm text-c-muted" data-testid="result-count">Counting…</span>
+        {/if}
+      </span>
+      <form
+        class="flex w-full min-w-0 items-stretch gap-2 sm:w-auto sm:min-w-[22rem] lg:min-w-[26rem]"
+        role="search"
+        on:submit|preventDefault={search}
       >
-        <Fa icon={faMagnifyingGlass} />
-      </button>
-    </form>
-    <div class="flex flex-wrap items-center justify-between gap-x-4 pb-2 pt-1 text-sm">
+        <label class="c-input flex min-w-0 grow items-center gap-2">
+          <span class="text-c-muted" aria-hidden="true"><Fa icon={faMagnifyingGlass} /></span>
+          <span class="sr-only">Search the library</span>
+          <input
+            class="w-full min-w-0 border-0 bg-transparent p-0 text-sm focus:ring-0"
+            type="search"
+            enterkeyhint="search"
+            autocapitalize="off"
+            spellcheck="false"
+            placeholder="Title, author or series — or author: tag: chars:<100000 …"
+            aria-invalid={queryError ? 'true' : undefined}
+            aria-describedby={queryError ? 'library-query-error' : undefined}
+            data-testid="library-search"
+            bind:value={queryInput}
+            bind:this={searchInput}
+          />
+        </label>
+        <button class="c-btn c-btn-secondary px-4" type="submit" title="Search">
+          <Fa icon={faMagnifyingGlass} />
+          <span class="sr-only">Search</span>
+        </button>
+      </form>
+    </CataloguePageHeader>
+    <div class="flex flex-wrap items-center justify-between gap-x-4 pb-1 text-sm">
       {#if queryError}
-        <p id="library-query-error" class="font-medium" role="alert" data-testid="query-error">
+        <p
+          id="library-query-error"
+          class="font-medium text-c-seal"
+          role="alert"
+          data-testid="query-error"
+        >
           {queryError}
         </p>
       {:else}
@@ -1275,7 +1389,7 @@
       <div class="flex flex-wrap items-center gap-x-4">
         {#if appliedQuery && collectionId === null && !queryError}
           <button
-            class="min-h-[2.75rem] underline"
+            class="c-link min-h-[2.75rem]"
             type="button"
             data-testid="save-search"
             on:click={saveSearch}
@@ -1283,145 +1397,23 @@
             Save as smart collection
           </button>
         {/if}
-        <button class="min-h-[2.75rem] underline" type="button" on:click={showSearchHelp}>
+        <button class="c-link min-h-[2.75rem]" type="button" on:click={showSearchHelp}>
           Search help
         </button>
       </div>
     </div>
 
-    <div class="flex flex-wrap items-center gap-2 pb-2 lg:flex-nowrap">
-      {#if collectionId === null}
-        <nav class="grid grow grid-cols-4 gap-1 lg:max-w-md" aria-label="Browse by">
-          {#each TABS as t (t.id)}
-            <a
-              class="flex min-h-[3rem] items-center justify-center rounded border-2 px-2 font-medium {t.id ===
-              tab
-                ? solid
-                : 'border-current'}"
-              href={urlFor({ tab: t.id, q: appliedQuery, lib: appliedLibrary })}
-              aria-current={t.id === tab ? 'page' : undefined}
-              data-testid="tab-{t.id}"
-              data-sveltekit-noscroll
-            >
-              {t.label}
-            </a>
-          {/each}
-        </nav>
-      {/if}
-      <div class="flex flex-wrap items-center gap-2 text-sm">
-        {#if enabledLibraries.length > 1 && collectionId === null}
-          <label class="flex items-center">
-            Library
-            <select
-              class="ml-2 min-h-[3rem] border-2 border-current bg-transparent"
-              value={appliedLibrary}
-              on:change={pickLibrary}
-            >
-              <option value="">All libraries</option>
-              {#each enabledLibraries as lib (lib.id)}
-                <option value={lib.id}>{lib.name}</option>
-              {/each}
-            </select>
-          </label>
-        {/if}
-        {#if !reorderMode}
-          <LibrarySortMenu
-            context={sortContext}
-            value={sortValue}
-            on:change={(ev) => onSort(ev.detail)}
-          />
-        {/if}
-        <LibraryDisplayMenu />
-        {#if !showingGroups && !reorderMode}
-          <button
-            class="min-h-[3rem] rounded border-2 px-3 {selectMode ? solid : 'border-current'}"
-            aria-pressed={selectMode}
-            data-testid="select-mode"
-            on:click={toggleSelectMode}
-          >
-            {selectMode ? 'Done' : 'Select'}
-          </button>
-        {/if}
-        {#if uploadInfo?.enabled && collectionId === null && !selectMode}
-          <button
-            class="min-h-[3rem] rounded border-2 border-current px-3"
-            data-testid="upload-button"
-            on:click={() => uploadInput?.click()}
-          >
-            Upload
-          </button>
-          <input
-            class="hidden"
-            type="file"
-            accept=".epub,application/epub+zip"
-            multiple
-            data-testid="upload-input"
-            bind:this={uploadInput}
-            on:change={onUploadFiles}
-          />
-        {/if}
-      </div>
-    </div>
-
-    <div class="flex flex-wrap gap-2 pb-3" role="group" aria-label="Filters">
-      {#each CHIPS as chip (chip.id)}
-        <button
-          class="min-h-[2.75rem] rounded-full border-2 px-4 text-sm font-medium disabled:opacity-50 {chips.has(
-            chip.id
-          )
-            ? solid
-            : 'border-current'}"
-          aria-pressed={chips.has(chip.id)}
-          disabled={chipsDisabled}
-          data-testid="chip-{chip.id}"
-          on:click={() => onChip(chip.id)}
-        >
-          {chip.label}
-        </button>
-      {/each}
-    </div>
-
-    {#if indexerError}
-      <p class="py-2 font-medium">{indexerError}</p>
-    {/if}
-    {#if !loadError && (countLabel || counting)}
-      <p class="pb-2 text-sm font-medium" aria-live="polite" data-testid="result-count">
-        {countLabel || 'Counting…'}
-      </p>
-    {/if}
-    {#if staleNote}
-      <p class="py-1 text-sm" data-testid="stale-note">
-        Some of your recent changes haven't reached the server yet; this list may be out of date.
-      </p>
-    {/if}
-    {#if usesChars && uncounted > 0}
-      <p class="py-1 text-sm" data-testid="uncounted-note">
-        {plural(uncounted, "book isn't", "books aren't")} counted yet and {uncounted === 1
-          ? 'is'
-          : 'are'} left out.
-      </p>
-    {/if}
-    {#if loadError}
-      <p class="py-4 font-medium" role="alert">
-        {loadError}
-        <a class="underline" href="{pagePath}/manage">Go to the Manager</a>
-      </p>
-    {/if}
-
     {#if collectionId !== null}
-      <div class="mb-3 border-b-2 border-gray-400/60 pb-3" data-testid="collection-header">
-        <a class="inline-flex min-h-[3rem] items-center underline" href="{pagePath}/collections">
-          Back to Collections
+      <div class="pb-3" data-testid="collection-header">
+        <a class="c-link inline-flex min-h-[3rem] items-center gap-2" href="{pagePath}/collections">
+          ← Collections
         </a>
         {#if collectionGone}
           <p class="py-2 font-medium" data-testid="collection-gone">
             This collection doesn't exist any more (it may have been deleted on another device).
           </p>
         {:else}
-          <h2 class="break-words text-xl font-medium" data-testid="collection-title">
-            {collectionName ?? ''}
-          </h2>
-          <p class="break-words text-sm" data-testid="collection-header-info">
+          <p class="break-words text-sm text-c-muted" data-testid="collection-header-info">
             {#if builtin}
               Built-in · {builtin.query}
             {:else if userCollection?.type === 'smart'}
@@ -1430,22 +1422,16 @@
               Manual · {plural(listIds.length, 'book', 'books')}
             {/if}
           </p>
-          {#if pinTarget}
-            <button
-              class="mt-2 min-h-[3rem] rounded border-2 border-current px-4 font-medium"
-              data-testid="pin-home"
-              on:click={togglePin}
-            >
-              {pinnedHere ? 'Unpin from Home' : 'Pin to Home'}
-            </button>
-          {/if}
-          {#if userCollection}
-            <div class="mt-2 flex flex-wrap gap-2">
+          <div class="mt-2 flex flex-wrap gap-2">
+            {#if pinTarget}
+              <button class="c-btn c-btn-secondary" data-testid="pin-home" on:click={togglePin}>
+                {pinnedHere ? 'Unpin from Home' : 'Pin to Home'}
+              </button>
+            {/if}
+            {#if userCollection}
               {#if isList}
                 <button
-                  class="min-h-[3rem] rounded border-2 px-4 font-medium disabled:opacity-50 {reorderMode
-                    ? solid
-                    : 'border-current'}"
+                  class="c-btn c-btn-secondary"
                   aria-pressed={reorderMode}
                   disabled={!canReorder || selectMode}
                   title={appliedQuery ? 'Clear the search to reorder' : undefined}
@@ -1456,28 +1442,28 @@
                 </button>
               {/if}
               <button
-                class="min-h-[3rem] rounded border-2 border-current px-4 font-medium"
+                class="c-btn c-btn-secondary"
                 data-testid="collection-header-menu"
                 on:click={editCollection}
               >
                 {userCollection.type === 'smart' ? 'Rename, change search…' : 'Rename, delete…'}
               </button>
-            </div>
-          {/if}
+            {/if}
+          </div>
         {/if}
       </div>
     {:else if group}
-      <div class="mb-3 border-b-2 border-gray-400/60 pb-3" data-testid="group-header">
+      <div class="pb-3" data-testid="group-header">
         <a
-          class="inline-flex min-h-[3rem] items-center underline"
+          class="c-link inline-flex min-h-[3rem] items-center gap-2"
           href={urlFor({ tab, q: appliedQuery, lib: appliedLibrary })}
           data-sveltekit-noscroll
         >
-          {BACK_LABEL[group.by]}
+          ← {BACK_LABEL[group.by].replace(/^Back to /, '')}
         </a>
-        <h2 class="text-xl font-medium">{group.name ?? 'No series'}</h2>
+        <span class="sr-only">{BACK_LABEL[group.by]}</span>
         {#if groupInfo}
-          <p class="text-sm" data-testid="group-header-info">
+          <p class="text-sm text-c-muted" data-testid="group-header-info">
             {[
               groupCount(groupInfo),
               groupInfo.bookIds
@@ -1489,29 +1475,25 @@
               .join(' · ')}
           </p>
         {:else if group.name === null}
-          <p class="text-sm">Books that are not part of a series.</p>
+          <p class="text-sm text-c-muted">Books that are not part of a series.</p>
         {/if}
-        {#if pinTarget}
-          <button
-            class="mt-2 min-h-[3rem] rounded border-2 border-current px-4 font-medium"
-            data-testid="pin-home"
-            on:click={togglePin}
-          >
-            {pinnedHere ? 'Unpin from Home' : 'Pin to Home'}
-          </button>
-        {/if}
-        {#if headerTag !== null}
-          <button
-            class="mt-2 min-h-[3rem] rounded border-2 px-4 font-medium {tagRules.has(headerTag)
-              ? solid
-              : 'border-current'}"
-            aria-pressed={tagRules.has(headerTag)}
-            data-testid="tag-blur-header"
-            on:click={() => headerTag !== null && editTagCover(headerTag)}
-          >
-            Blur covers with this tag
-          </button>
-        {/if}
+        <div class="mt-2 flex flex-wrap gap-2">
+          {#if pinTarget}
+            <button class="c-btn c-btn-secondary" data-testid="pin-home" on:click={togglePin}>
+              {pinnedHere ? 'Unpin from Home' : 'Pin to Home'}
+            </button>
+          {/if}
+          {#if headerTag !== null}
+            <button
+              class="c-btn c-btn-secondary"
+              aria-pressed={tagRules.has(headerTag)}
+              data-testid="tag-blur-header"
+              on:click={() => headerTag !== null && editTagCover(headerTag)}
+            >
+              Blur covers with this tag
+            </button>
+          {/if}
+        </div>
         {#if group.by === 'series' && group.name !== null && groupInfo?.bookIds}
           <!-- Keyed: another series starts collapsed. -->
           {#key group.name}
@@ -1537,6 +1519,133 @@
       </div>
     {/if}
 
+    <div
+      class="flex flex-wrap items-end justify-between gap-3 border-b pb-3 pt-2"
+      style="border-color: var(--c-gold)"
+    >
+      {#if collectionId === null}
+        <nav class="c-strip -mx-1 flex max-w-full gap-1 px-1" aria-label="Browse by">
+          {#each TABS as t (t.id)}
+            <a
+              class="c-focus flex min-h-[3rem] shrink-0 items-center gap-2 border-b-2 px-3 text-sm {t.id ===
+              tab
+                ? 'border-c-seal font-bold text-c-ink'
+                : 'border-transparent text-c-muted hover:text-c-ink'}"
+              href={urlFor({ tab: t.id, q: appliedQuery, lib: appliedLibrary })}
+              aria-current={t.id === tab ? 'page' : undefined}
+              data-testid="tab-{t.id}"
+              data-sveltekit-noscroll
+            >
+              {t.label}
+              {#if tabCounts[t.id] !== undefined}
+                <span
+                  class="c-count"
+                  class:c-count-current={t.id === tab}
+                  data-testid="tab-count-{t.id}">{tabCounts[t.id]?.toLocaleString('en')}</span
+                >
+              {/if}
+            </a>
+          {/each}
+        </nav>
+      {:else}
+        <span />
+      {/if}
+      <div class="flex flex-wrap items-center gap-2 text-sm">
+        {#if enabledLibraries.length > 1 && collectionId === null}
+          <label class="flex items-center gap-2">
+            <span class="text-c-muted">Library</span>
+            <select class="c-input text-sm" value={appliedLibrary} on:change={pickLibrary}>
+              <option value="">All libraries</option>
+              {#each enabledLibraries as lib (lib.id)}
+                <option value={lib.id}>{lib.name}</option>
+              {/each}
+            </select>
+          </label>
+        {/if}
+        {#if !reorderMode}
+          <LibrarySortMenu
+            context={sortContext}
+            value={sortValue}
+            on:change={(ev) => onSort(ev.detail)}
+          />
+        {/if}
+        <LibraryDisplayMenu />
+        {#if !showingGroups && !reorderMode}
+          <button
+            class="c-btn c-btn-secondary px-3"
+            aria-pressed={selectMode}
+            data-testid="select-mode"
+            on:click={toggleSelectMode}
+          >
+            {selectMode ? 'Done' : 'Select'}
+          </button>
+        {/if}
+        {#if uploadInfo?.enabled && collectionId === null && !selectMode}
+          <button
+            class="c-btn c-btn-primary px-4"
+            data-testid="upload-button"
+            on:click={() => uploadInput?.click()}
+          >
+            Upload
+          </button>
+          <input
+            class="hidden"
+            type="file"
+            accept=".epub,application/epub+zip"
+            multiple
+            data-testid="upload-input"
+            bind:this={uploadInput}
+            on:change={onUploadFiles}
+          />
+        {/if}
+      </div>
+    </div>
+
+    <div
+      class="c-strip -mx-1 flex gap-2 px-1 pb-3 pt-3 sm:flex-wrap"
+      role="group"
+      aria-label="Filters"
+    >
+      {#each CHIPS as chip (chip.id)}
+        <button
+          class="c-btn c-btn-secondary min-h-[2.75rem] shrink-0 rounded-full px-4 text-sm"
+          aria-pressed={chips.has(chip.id)}
+          disabled={chipsDisabled}
+          data-testid="chip-{chip.id}"
+          on:click={() => onChip(chip.id)}
+        >
+          {chip.label}
+          {#if chipCounts.has(chip.id) && collectionId === null}
+            <span class="text-xs opacity-80" data-testid="chip-count-{chip.id}"
+              >{chipCounts.get(chip.id)?.toLocaleString('en')}</span
+            >
+          {/if}
+        </button>
+      {/each}
+    </div>
+
+    {#if indexerError}
+      <p class="c-notice" role="status">{indexerError}</p>
+    {/if}
+    {#if staleNote}
+      <p class="c-notice" data-testid="stale-note">
+        Some of your recent changes haven't reached the server yet; this list may be out of date.
+      </p>
+    {/if}
+    {#if usesChars && uncounted > 0}
+      <p class="c-notice" data-testid="uncounted-note">
+        {plural(uncounted, "book isn't", "books aren't")} counted yet and {uncounted === 1
+          ? 'is'
+          : 'are'} left out.
+      </p>
+    {/if}
+    {#if loadError}
+      <p class="c-notice font-medium" role="alert">
+        {loadError}
+        <a class="c-link" href="{pagePath}/manage">Go to the Manager</a>
+      </p>
+    {/if}
+
     {#if showingGroups}
       {#if groups.length}
         <ul
@@ -1559,7 +1668,7 @@
           {/each}
         </ul>
       {:else if !loading && !loadError}
-        <p class="py-8">{emptyText}</p>
+        <p class="py-8 text-c-muted">{emptyText}</p>
       {/if}
     {:else if reorderMode && books.length}
       <CollectionReorderList
@@ -1600,10 +1709,17 @@
               {selectMode}
               selected={selected.has(book.id)}
               {authorLink}
+              progressFraction={bookProgressFraction(
+                book.id,
+                states.get(book.id),
+                positions.get(book.id) ?? [],
+                book.charCount
+              )}
               on:open={(ev) => open(ev.detail)}
               on:reveal={(ev) => reveal(ev.detail.id)}
               on:toggle={(ev) => onToggle(ev.detail.book, ev.detail.shift)}
               on:state={(ev) => openBookState(ev.detail)}
+              on:collect={(ev) => openAddToCollection(ev.detail)}
             />
           {:else}
             <LibraryBookRow
@@ -1625,16 +1741,23 @@
                 ? (libraryNames.get(book.libraryId) ?? '')
                 : ''}
               {authorLink}
+              progressFraction={bookProgressFraction(
+                book.id,
+                states.get(book.id),
+                positions.get(book.id) ?? [],
+                book.charCount
+              )}
               on:open={(ev) => open(ev.detail)}
               on:reveal={(ev) => reveal(ev.detail.id)}
               on:toggle={(ev) => onToggle(ev.detail.book, ev.detail.shift)}
               on:state={(ev) => openBookState(ev.detail)}
+              on:collect={(ev) => openAddToCollection(ev.detail)}
             />
           {/if}
         {/each}
       </ul>
     {:else if !loading && !loadError && !queryError}
-      <p class="py-8">{emptyText}</p>
+      <p class="py-8 text-c-muted">{emptyText}</p>
     {/if}
 
     <!-- WP19a: the next page loads when the end comes near; the button is the fallback
@@ -1649,12 +1772,12 @@
       data-testid="load-sentinel"
     />
     {#if loading}
-      <p class="py-4" data-testid="loading-more">Loading…</p>
+      <p class="c-rule-text py-8 text-sm text-c-muted" data-testid="loading-more">Loading…</p>
     {:else if moreError}
       <div class="flex flex-wrap items-center justify-center gap-3 py-6" role="alert">
         <span class="font-medium" data-testid="load-more-error">Couldn't load more.</span>
         <button
-          class="min-h-[3rem] rounded border-2 border-current px-6 font-medium"
+          class="c-btn c-btn-secondary px-6"
           data-testid="load-more-retry"
           on:click={() => loadPage(false)}
         >
@@ -1664,7 +1787,7 @@
     {:else if nextCursor && !autoLoad}
       <div class="flex justify-center py-6">
         <button
-          class="min-h-[3rem] rounded border-2 border-current px-6 font-medium"
+          class="c-btn c-btn-secondary px-6"
           data-testid="load-more"
           on:click={() => loadPage(false)}
         >
@@ -1677,30 +1800,24 @@
 
 {#if dragBox}
   <div
-    class="pointer-events-none fixed z-20 border-2 border-dashed border-gray-800"
+    class="pointer-events-none fixed z-20 border-2 border-dashed"
+    style:border-color="var(--c-link)"
     style="left: {dragBox.left}px; top: {dragBox.top}px; width: {dragBox.width}px; height: {dragBox.height}px"
     data-testid="drag-box"
   />
 {/if}
 
 {#if selectMode && connection && !showingGroups}
-  <div
-    class="fixed inset-x-0 bottom-0 z-10 border-t-2 border-gray-700 bg-white"
-    data-testid="select-bar"
-  >
+  <div class="c-select-bar fixed inset-x-0 bottom-0 z-10" data-testid="select-bar">
     <div class="{pxScreen} flex flex-wrap items-center justify-between gap-2 py-2">
-      <span data-testid="selected-count">{selected.size} selected</span>
+      <span class="font-medium" data-testid="selected-count">{selected.size} selected</span>
       <div class="flex flex-wrap gap-2">
-        <button
-          class="min-h-[3rem] rounded border-2 border-current px-4 font-medium"
-          data-testid="select-all"
-          on:click={selectAllShown}
-        >
+        <button class="c-btn c-btn-secondary" data-testid="select-all" on:click={selectAllShown}>
           All shown
         </button>
         {#if isList}
           <button
-            class="min-h-[3rem] rounded border-2 border-current px-4 font-medium disabled:opacity-50"
+            class="c-btn c-btn-secondary"
             disabled={!selected.size}
             data-testid="list-move-top"
             on:click={() => listBulk('top')}
@@ -1708,7 +1825,7 @@
             Move to top
           </button>
           <button
-            class="min-h-[3rem] rounded border-2 border-current px-4 font-medium disabled:opacity-50"
+            class="c-btn c-btn-secondary"
             disabled={!selected.size}
             data-testid="list-remove"
             on:click={() => listBulk('remove')}
@@ -1717,19 +1834,14 @@
           </button>
         {/if}
         <button
-          class="min-h-[3rem] rounded border-2 border-current px-4 font-medium disabled:opacity-50"
+          class="c-btn c-btn-secondary"
           disabled={!selected.size}
           data-testid="bulk-change"
           on:click={bulkChange}
         >
           Change…
         </button>
-        <button
-          class="min-h-[3rem] rounded border-2 border-current px-4 font-medium"
-          on:click={toggleSelectMode}
-        >
-          Done
-        </button>
+        <button class="c-btn c-btn-secondary" on:click={toggleSelectMode}> Done </button>
       </div>
     </div>
   </div>

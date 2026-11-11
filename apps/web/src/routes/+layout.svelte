@@ -17,6 +17,7 @@
     theme$
   } from '$lib/data/store';
   import { startAppearanceEffects } from '$lib/data/appearance-effects';
+  import { libraryLook$ } from '$lib/library/settings';
   import { dummyFn, isMobile, isMobile$ } from '$lib/functions/utils';
   import { MetaTags } from 'svelte-meta-tags';
   import { onMount } from 'svelte';
@@ -44,7 +45,8 @@
           einkMode: einkMode$,
           fontFamilyGroupOne: fontFamilyGroupOne$,
           fontFamilyGroupTwo: fontFamilyGroupTwo$,
-          fontSize: fontSize$
+          fontSize: fontSize$,
+          libraryLook: libraryLook$
         },
         window.matchMedia?.('(prefers-color-scheme: dark)'),
         document.documentElement,

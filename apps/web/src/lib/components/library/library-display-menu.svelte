@@ -19,6 +19,8 @@
     libraryInfoLine$,
     libraryView$
   } from '$lib/library/settings';
+  import { faTableCellsLarge } from '@fortawesome/free-solid-svg-icons';
+  import Fa from 'svelte-fa';
 
   /**
    * WP19a: the Display button of the Library and the Collections page. Every choice is a
@@ -30,8 +32,6 @@
   /** Show "Load more while scrolling". */
   export let autoLoad = true;
 
-  const solid = 'border-gray-800 bg-gray-800 text-white';
-
   $: grid = $libraryView$ !== 'list';
   $: size = coverSize($libraryCoverSize$);
 
@@ -41,17 +41,18 @@
 </script>
 
 <DropdownMenu
-  buttonClass="min-h-[3rem] rounded border-2 border-current px-3"
+  buttonClass="c-btn c-btn-secondary px-3"
   align="right"
   label="Display"
   testid="display-menu"
+  panelWidth="w-80"
 >
-  <span slot="button">Display</span>
+  <span slot="button" class="flex items-center gap-2"><Fa icon={faTableCellsLarge} />Display</span>
   <div class="flex flex-col gap-3 p-1">
-    <div class="grid grid-cols-2" role="group" aria-label="View">
+    <div class="grid grid-cols-2 gap-1" role="group" aria-label="View">
       <button
         type="button"
-        class="min-h-[3rem] rounded-l border-2 px-3 {grid ? solid : 'border-current'}"
+        class="c-btn c-btn-secondary px-3"
         aria-pressed={grid}
         data-testid="view-grid"
         on:click={() => ($libraryView$ = 'grid')}
@@ -60,7 +61,7 @@
       </button>
       <button
         type="button"
-        class="-ml-0.5 min-h-[3rem] rounded-r border-2 px-3 {!grid ? solid : 'border-current'}"
+        class="c-btn c-btn-secondary px-3"
         aria-pressed={!grid}
         data-testid="view-list"
         on:click={() => ($libraryView$ = 'list')}
@@ -70,14 +71,16 @@
     </div>
     <div>
       <label class="flex flex-col gap-1" for="library-cover-size">
-        <span class="flex justify-between">
+        <span class="flex justify-between text-sm">
           <span class="font-medium">Cover size</span>
-          <span data-testid="cover-size-value">{size ? `${size} px` : 'Automatic'}</span>
+          <span class="text-c-muted" data-testid="cover-size-value"
+            >{size ? `${size} px` : 'Automatic'}</span
+          >
         </span>
       </label>
       <input
         id="library-cover-size"
-        class="h-12 w-full"
+        class="c-range h-12 w-full"
         type="range"
         min={COVER_SIZE_MIN}
         max={COVER_SIZE_MAX}
@@ -87,13 +90,11 @@
         data-testid="cover-size"
         on:input={onSlider}
       />
-      <div class="flex items-center justify-between text-sm">
+      <div class="flex items-center justify-between text-xs text-c-muted">
         <span>Small</span>
         <button
           type="button"
-          class="min-h-[3rem] rounded border-2 px-3 disabled:opacity-50 {size === 0
-            ? solid
-            : 'border-current'}"
+          class="c-btn c-btn-secondary min-h-[2.75rem] px-3 text-sm"
           aria-pressed={size === 0}
           disabled={!grid}
           data-testid="cover-size-auto"
@@ -105,9 +106,9 @@
       </div>
     </div>
     {#if details}
-      <label class="flex min-h-[3rem] items-center gap-3">
+      <label class="flex min-h-[3rem] items-center gap-3 text-sm">
         <input
-          class="h-5 w-5"
+          class="h-5 w-5 rounded"
           type="checkbox"
           data-testid="view-details"
           bind:checked={$libraryInfoLine$}
@@ -116,9 +117,9 @@
       </label>
     {/if}
     {#if autoLoad}
-      <label class="flex min-h-[3rem] items-center gap-3">
+      <label class="flex min-h-[3rem] items-center gap-3 text-sm">
         <input
-          class="h-5 w-5"
+          class="h-5 w-5 rounded"
           type="checkbox"
           data-testid="auto-load"
           bind:checked={$libraryAutoLoad$}

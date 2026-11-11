@@ -14,6 +14,7 @@
   import { isCoverBlurred } from '$lib/library/cover-blur';
   import { plural } from '$lib/library/format';
   import { getLibraryStore, type LibraryConnection } from '$lib/library/library-db';
+  import CataloguePageHeader from '$lib/components/catalogue-page-header.svelte';
   import LibraryDisplayMenu from '$lib/components/library/library-display-menu.svelte';
   import { coverGrid } from '$lib/library/cover-size';
   import {
@@ -34,7 +35,6 @@
    * animations, 48 px bordered controls, everything on one page.
    */
 
-  const solid = 'border-gray-800 bg-gray-800 text-white';
   const store = getLibraryStore();
   const collections = collectionsApi();
   const bookState = bookStateApi();
@@ -199,35 +199,39 @@
 <AppHeader title="Collections" />
 
 <div class="{pxScreen} pb-24 pt-16 xl:pt-14" data-testid="collections-page">
-  <div class="flex flex-wrap items-center gap-2 pb-3 pt-3">
-    <button
-      class="min-h-[3rem] w-full rounded border-2 border-current px-4 font-medium sm:w-auto"
-      data-testid="new-collection-page"
-      on:click={create}
-    >
-      New collection
-    </button>
-    <div class="text-sm">
+  <CataloguePageHeader jp="書架" title="Collections">
+    <span slot="meta" class="text-sm text-c-muted" data-testid="collections-count">
+      {plural(BUILTIN_COLLECTIONS.length + mine.length, 'collection', 'collections')}
+    </span>
+    <div class="flex flex-wrap items-center gap-2 text-sm">
       <LibraryDisplayMenu details={false} autoLoad={false} />
+      <button class="c-btn c-btn-primary" data-testid="new-collection-page" on:click={create}>
+        New collection
+      </button>
     </div>
-  </div>
+  </CataloguePageHeader>
 
   {#if connection === null}
-    <p class="py-2" data-testid="not-connected">
+    <p class="c-notice" data-testid="not-connected">
       This device isn't connected to the library server yet.
-      <a class="underline" href="{pagePath}/library">Connect on the Library page</a>.
+      <a class="c-link" href="{pagePath}/library">Connect on the Library page</a>.
     </p>
   {/if}
   {#if cardsError}
-    <p class="py-1 text-sm" role="alert" data-testid="cards-error">{cardsError}</p>
+    <p class="c-notice" role="alert" data-testid="cards-error">{cardsError}</p>
   {/if}
   {#if staleNote}
-    <p class="py-1 text-sm" data-testid="stale-note">
+    <p class="c-notice" data-testid="stale-note">
       Some of your recent changes haven't reached the server yet; the counts may be out of date.
     </p>
   {/if}
 
-  <h2 class="pb-2 pt-3 text-lg font-medium">Built-in</h2>
+  <div class="flex items-center gap-4 pb-4 pt-4">
+    <h2 class="flex items-baseline gap-3 font-mincho text-2xl font-bold">
+      Built-in <span class="c-jp-label text-xs" aria-hidden="true">既定</span>
+    </h2>
+    <span class="c-section-rule" />
+  </div>
   <ul class={listClass} style={listStyle} data-testid="builtin-collections">
     {#each BUILTIN_COLLECTIONS as b (b.id)}
       <CollectionCard
@@ -244,7 +248,12 @@
     {/each}
   </ul>
 
-  <h2 class="pb-2 pt-6 text-lg font-medium">Your collections</h2>
+  <div class="flex items-center gap-4 pb-4 pt-10">
+    <h2 class="flex items-baseline gap-3 font-mincho text-2xl font-bold">
+      Your collections <span class="c-jp-label text-xs" aria-hidden="true">自分の書架</span>
+    </h2>
+    <span class="c-section-rule" />
+  </div>
   {#if mine.length}
     <ul class={listClass} style={listStyle} data-testid="my-collections">
       {#each mine as c (c.id)}
@@ -265,7 +274,7 @@
       {/each}
     </ul>
   {:else}
-    <p class="py-2">
+    <p class="py-2 text-c-muted">
       None yet. Make one with "New collection", or save a Library search as a smart collection.
     </p>
   {/if}

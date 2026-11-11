@@ -17,11 +17,16 @@
 <script lang="ts">
   /**
    * One Home row (WP7b): a title, "See all" and a horizontally scrolling strip of book
-   * cards (the Library's cards: blur, status, progress, "Uploaded"). E-ink plain: no
-   * scroll snapping, animation or transitions; 48 px controls.
+   * cards (the Library's cards: blur, status, progress, "Uploaded"). WP19b: a mincho
+   * heading with a gold rule; Continue reading shows its first book large ("hero") with a
+   * Continue button. E-ink plain: no scroll snapping, animation or transitions; 48 px
+   * controls.
    */
+  import CoverImage from '$lib/components/library/cover-image.svelte';
   import LibraryBookCard from '$lib/components/library/library-book-card.svelte';
+  import { pagePath } from '$lib/data/env';
   import { coverSize } from '$lib/library/cover-size';
+  import { authorHref } from '$lib/library/format';
   import { libraryCoverSize$ } from '$lib/library/settings';
   import type { BookState } from '$lib/sync/book-state';
   import { createEventDispatcher } from 'svelte';
@@ -33,56 +38,62 @@
   export let thumbnailUrl: (book: CatalogBook) => string;
   export let stateOf: (book: CatalogBook) => BookState | undefined;
   export let progressOf: (book: CatalogBook) => string | null;
+  /** WP19b: 0-1 while part-read (the bar under a cover). */
+  export let fractionOf: (book: CatalogBook) => number | null = () => null;
   export let blurredOf: (book: CatalogBook) => boolean;
   export let onDevice: Set<string>;
   export let infoLine = true;
+  /** WP19b: show the first book large (Continue reading). */
+  export let hero = false;
 
   const dispatch = createEventDispatcher<{
     open: CatalogBook;
     reveal: CatalogBook;
     state: CatalogBook;
+    collect: CatalogBook;
     retry: void;
     openLocal: number;
   }>();
 
   $: size = coverSize($libraryCoverSize$);
+  $: books = view.status === 'ok' ? view.books : [];
+  $: heroBook = hero && books.length ? books[0] : null;
+  $: strip = heroBook ? books.slice(1) : books;
+  $: heroFraction = heroBook ? fractionOf(heroBook) : null;
+
+  function openHero() {
+    if (!heroBook) return;
+    if (blurredOf(heroBook)) dispatch('reveal', heroBook);
+    else dispatch('open', heroBook);
+  }
 </script>
 
-<section class="pb-4" data-testid="home-row" data-row-title={title}>
-  <div class="flex items-center justify-between gap-2 pb-2">
-    <h2 class="truncate text-lg font-medium">{title}</h2>
+<section class="pb-6" data-testid="home-row" data-row-title={title}>
+  <div class="flex items-center gap-4 pb-3">
+    <h2 class="min-w-0 truncate font-mincho text-xl font-bold sm:text-2xl">{title}</h2>
+    <span class="c-section-rule" />
     {#if href}
-      <a class="flex min-h-[3rem] shrink-0 items-center underline" {href}>See all</a>
+      <a class="c-link flex min-h-[3rem] shrink-0 items-center text-sm" {href}>See all</a>
     {/if}
   </div>
   {#if view.status === 'loading'}
-    <p class="py-4 text-sm">Loading…</p>
+    <p class="py-4 text-sm text-c-muted">Loading…</p>
   {:else if view.status === 'error'}
     <div class="flex flex-wrap items-center gap-3 py-2 text-sm" role="alert">
       <span>{view.message}</span>
-      <button
-        class="min-h-[3rem] rounded border-2 border-current px-4 font-medium"
-        on:click={() => dispatch('retry')}
-      >
-        Retry
-      </button>
+      <button class="c-btn c-btn-secondary" on:click={() => dispatch('retry')}>Retry</button>
     </div>
   {:else if view.status === 'offline'}
     <div class="flex flex-wrap items-center gap-3 py-2 text-sm" role="alert">
       <span>{view.message}</span>
-      <button
-        class="min-h-[3rem] rounded border-2 border-current px-4 font-medium"
-        on:click={() => dispatch('retry')}
-      >
-        Retry
-      </button>
+      <button class="c-btn c-btn-secondary" on:click={() => dispatch('retry')}>Retry</button>
     </div>
     {#if view.local.length}
       <ul class="flex flex-col gap-2" data-testid="home-offline-list">
         {#each view.local as b (b.bookId)}
           <li>
             <button
-              class="min-h-[3rem] w-full rounded border-2 border-current px-4 text-left font-medium"
+              class="c-btn c-btn-secondary w-full justify-start text-left"
               on:click={() => dispatch('openLocal', b.localId)}
             >
               {b.title}
@@ -92,30 +103,89 @@
       </ul>
     {/if}
   {:else if view.books.length === 0}
-    <p class="py-2 text-sm">{emptyText}</p>
+    <p class="py-2 text-sm text-c-muted">{emptyText}</p>
   {:else}
-    <!-- WP19a: the Library's cover size, else the automatic widths. -->
-    <ul
-      class="grid grid-flow-col gap-3 overflow-x-auto pb-2 {size
-        ? ''
-        : 'auto-cols-[7rem] sm:auto-cols-[8.5rem]'}"
-      style={size ? `grid-auto-columns: ${size}px` : undefined}
-      data-testid="home-row-books"
-    >
-      {#each view.books as book (book.id)}
-        <LibraryBookCard
-          {book}
-          thumbnailUrl={thumbnailUrl(book)}
-          state={stateOf(book)}
-          progress={progressOf(book)}
-          blurred={blurredOf(book)}
-          onDevice={onDevice.has(book.id)}
-          {infoLine}
-          on:open={(ev) => dispatch('open', ev.detail)}
-          on:reveal={(ev) => dispatch('reveal', ev.detail)}
-          on:state={(ev) => dispatch('state', ev.detail)}
-        />
-      {/each}
-    </ul>
+    {#if heroBook}
+      <div class="c-hero mb-4 flex max-w-2xl gap-4 rounded p-4" data-testid="home-hero">
+        <button
+          class="c-cover c-focus aspect-[2/3] w-24 shrink-0 overflow-hidden rounded-sm sm:w-28"
+          aria-label={heroBook.title}
+          on:click={openHero}
+        >
+          <CoverImage src={thumbnailUrl(heroBook)} blurred={blurredOf(heroBook)} />
+        </button>
+        <div class="flex min-w-0 grow flex-col gap-1.5">
+          <button
+            class="c-focus line-clamp-2 text-left font-mincho text-lg font-bold leading-snug hover:underline"
+            tabindex="-1"
+            on:click={openHero}
+          >
+            {heroBook.title}
+          </button>
+          <div class="truncate text-sm">
+            {#each heroBook.authors as author, i (i)}<a
+                class="c-link"
+                href={authorHref(pagePath, author.name)}>{author.name}</a
+              >{i < heroBook.authors.length - 1 ? ', ' : ''}{/each}
+          </div>
+          {#if heroFraction !== null}
+            <div class="flex items-center gap-3">
+              <div class="c-progress h-1.5 max-w-xs grow overflow-hidden rounded-full bg-c-track">
+                <div class="h-full bg-c-fill" style="width: {Math.round(heroFraction * 100)}%" />
+              </div>
+              <span class="text-xs text-c-muted">{Math.floor(heroFraction * 100)}%</span>
+            </div>
+          {/if}
+          <div class="mt-auto pt-1">
+            <button
+              class="c-btn c-btn-primary"
+              data-testid="home-hero-continue"
+              on:click={openHero}
+            >
+              Continue reading
+            </button>
+          </div>
+        </div>
+      </div>
+    {/if}
+    {#if strip.length}
+      <!-- WP19a: the Library's cover size, else the automatic widths. -->
+      <ul
+        class="c-strip grid grid-flow-col gap-4 pb-2 {size
+          ? ''
+          : 'auto-cols-[7rem] sm:auto-cols-[8.5rem]'}"
+        style={size ? `grid-auto-columns: ${size}px` : undefined}
+        data-testid="home-row-books"
+      >
+        {#each strip as book (book.id)}
+          <LibraryBookCard
+            {book}
+            thumbnailUrl={thumbnailUrl(book)}
+            state={stateOf(book)}
+            progress={progressOf(book)}
+            progressFraction={fractionOf(book)}
+            blurred={blurredOf(book)}
+            onDevice={onDevice.has(book.id)}
+            {infoLine}
+            on:open={(ev) => dispatch('open', ev.detail)}
+            on:reveal={(ev) => dispatch('reveal', ev.detail)}
+            on:state={(ev) => dispatch('state', ev.detail)}
+            on:collect={(ev) => dispatch('collect', ev.detail)}
+          />
+        {/each}
+      </ul>
+    {/if}
   {/if}
 </section>
+
+<style>
+  .c-hero {
+    background-color: var(--c-raised);
+    border: var(--c-border-width) solid var(--c-line);
+  }
+
+  /* Room for the covers' hover lift inside the scrolling strip. */
+  .c-strip {
+    padding-top: 6px;
+  }
+</style>

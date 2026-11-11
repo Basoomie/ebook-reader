@@ -8,6 +8,8 @@
   export let placement: 'below' | 'above' = 'below';
   /** Classes of the Menu button (the header and the bottom bar style it differently). */
   export let buttonClass = '';
+  /** WP19b: a one-character mark instead of the icon (the phone bar). */
+  export let glyph = '';
 
   let open = false;
   let root: HTMLElement;
@@ -24,11 +26,14 @@
     open = false;
     openBugReport();
   }
+
+  const item =
+    'c-btn c-btn-ghost w-full justify-start gap-3 rounded-none border-0 px-4 text-left font-medium';
 </script>
 
 <svelte:window on:pointerdown={onWindowPointerDown} on:keydown={onWindowKeydown} />
 
-<!-- E-ink plain: no transitions; 48 px items with borders. -->
+<!-- 48 px items; E-ink plain (no transitions, black frame). -->
 <div class="relative h-full" bind:this={root}>
   <button
     type="button"
@@ -38,33 +43,28 @@
     data-testid="app-menu-button"
     on:click={() => (open = !open)}
   >
-    <Fa icon={faBars} />
-    <span>Menu</span>
+    {#if glyph}
+      <span class="c-bar-mark" aria-hidden="true" />
+      <span class="font-mincho text-base font-bold leading-none" aria-hidden="true">{glyph}</span>
+      <span>Menu</span>
+    {:else}
+      <Fa icon={faBars} />
+      <span class="hidden md:inline">Menu</span>
+    {/if}
   </button>
   {#if open}
     <div
-      class="absolute right-0 z-30 w-48 border-2 border-gray-800 bg-white text-gray-900 {placement ===
-      'above'
+      class="c-panel absolute right-0 z-30 w-52 rounded py-1 {placement === 'above'
         ? 'bottom-full mb-1'
         : 'top-full mt-1'}"
       role="menu"
       data-testid="app-menu"
     >
-      <a
-        class="flex min-h-[3rem] items-center gap-3 px-4 font-medium"
-        role="menuitem"
-        href="{pagePath}/settings"
-        on:click={() => (open = false)}
-      >
+      <a class={item} role="menuitem" href="{pagePath}/settings" on:click={() => (open = false)}>
         <Fa icon={faCog} />
         Settings
       </a>
-      <button
-        type="button"
-        class="flex min-h-[3rem] w-full items-center gap-3 border-t-2 border-gray-800 px-4 text-left font-medium"
-        role="menuitem"
-        on:click={bugReport}
-      >
+      <button type="button" class={item} role="menuitem" on:click={bugReport}>
         <Fa icon={faBug} />
         Bug report
       </button>

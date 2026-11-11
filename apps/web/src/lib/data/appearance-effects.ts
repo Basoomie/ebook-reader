@@ -5,6 +5,7 @@
  */
 
 import { distinctUntilChanged, skip, type Subscription } from 'rxjs';
+import { isCatalogueDark } from './catalogue-look';
 import type { CustomTheme } from './theme-option';
 
 /** The parts of a settings subject this module uses (a BehaviorSubject fits). */
@@ -25,6 +26,8 @@ export interface AppearanceSettings {
   fontFamilyGroupOne: SettingSubject<string>;
   fontFamilyGroupTwo: SettingSubject<string>;
   fontSize: SettingSubject<number>;
+  /** WP19b: "Library Look" (catalogue-look.ts); absent = no catalogue light/dark class. */
+  libraryLook?: SettingSubject<string>;
 }
 
 /** The part of `MediaQueryList` used here. */
@@ -170,6 +173,21 @@ export function startAppearanceEffects(
     subscriptions.push(
       s.einkMode.subscribe((on) => guard('e-ink', () => root.classList.toggle('eink', !!on)))
     );
+
+    // WP19b: the catalogue pages' dark look, from "Library Look" or the reader theme.
+    const look = s.libraryLook;
+    if (look) {
+      const applyLook = () =>
+        guard('library look', () =>
+          root.classList.toggle(
+            'catalogue-dark',
+            isCatalogueDark(look.getValue(), s.theme.getValue(), s.customThemes.getValue())
+          )
+        );
+      subscriptions.push(look.subscribe(applyLook));
+      subscriptions.push(s.theme.subscribe(applyLook));
+      subscriptions.push(s.customThemes.subscribe(applyLook));
+    }
   }
 
   return () => {
