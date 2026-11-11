@@ -15,7 +15,7 @@ import { DEFAULT_KINDS, type KindRegistry } from '../sync/kinds';
 import type { SyncStore, SyncRecord } from '../sync/store';
 import { SERVER_VERSION } from '../version';
 
-export const EXPORT_FORMAT = 'ttsu-reader-export';
+export const EXPORT_FORMAT = 'ttsu-reader-export' as const;
 export const EXPORT_FORMAT_VERSION = 1;
 
 export interface ExportedRecord extends SyncRecord {
