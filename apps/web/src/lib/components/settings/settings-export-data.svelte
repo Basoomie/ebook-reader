@@ -26,12 +26,7 @@
 </script>
 
 <div class="flex flex-col items-start gap-2">
-  <button
-    class="min-h-[3rem] rounded-md border-2 border-gray-400 px-4 font-medium disabled:opacity-60"
-    disabled={busy}
-    data-testid="export-my-data"
-    on:click={run}
-  >
+  <button class="c-btn c-btn-secondary" disabled={busy} data-testid="export-my-data" on:click={run}>
     {busy ? 'Preparing your data…' : 'Download my data'}
   </button>
   {#if result?.ok}

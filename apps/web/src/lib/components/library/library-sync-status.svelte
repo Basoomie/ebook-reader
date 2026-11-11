@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { buttonClasses, inputClasses } from '$lib/css-classes';
   import {
     recordSyncEnabled$,
     syncDebounceSeconds$,
@@ -15,6 +14,9 @@
    * published device settings and positions for Calibre books; reading data
    * still uses the existing file sync.
    */
+
+  // The catalogue's field (Settings page, "Archive" look).
+  const fieldClasses = 'c-input mt-1 block w-full max-w-[15rem] text-base';
 
   const runner = getSyncRunner();
   let status: RunnerStatus | null = null;
@@ -46,8 +48,8 @@
   }
 </script>
 
-<div class="mt-6">
-  <p class="font-medium">Record sync</p>
+<div>
+  <h3 class="mb-1 font-mincho text-lg font-bold">Record sync</h3>
   {#if status}
     <p>
       {stateText[status.state]}{#if status.pending}, {status.pending} change(s) waiting{/if}
@@ -59,27 +61,25 @@
     {#if status.rejected}
       <p>{status.rejected} change(s) refused by the server (kept for the bug report).</p>
     {/if}
-    {#if status.deviceId}
-      <p class="opacity-75">Device id: {status.deviceId}</p>
-    {/if}
   {/if}
-  <button
-    class="{buttonClasses} mt-2 border border-current"
-    disabled={syncing || !runner}
-    on:click={syncNow}
-  >
-    Sync now
-  </button>
-  <label class="mt-3 flex items-center gap-2">
-    <input type="checkbox" bind:checked={$recordSyncEnabled$} />
-    Sync records on this device
-  </label>
-  <label class="mt-3 block max-w-xs">
+  <div class="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1">
+    <button class="c-btn c-btn-secondary" disabled={syncing || !runner} on:click={syncNow}>
+      Sync now
+    </button>
+    <label class="flex min-h-[3rem] items-center gap-2">
+      <input type="checkbox" bind:checked={$recordSyncEnabled$} />
+      Sync records on this device
+    </label>
+  </div>
+  <label class="mt-3 block text-sm text-c-muted">
     Wait after a change before syncing (seconds)
-    <input class={inputClasses} type="number" min="0" step="1" bind:value={$syncDebounceSeconds$} />
+    <input class={fieldClasses} type="number" min="0" step="1" bind:value={$syncDebounceSeconds$} />
   </label>
-  <label class="mt-3 block max-w-xs">
+  <label class="mt-3 block text-sm text-c-muted">
     Check for other devices' changes every (minutes, 0 = only on changes)
-    <input class={inputClasses} type="number" min="0" step="1" bind:value={$syncIntervalMinutes$} />
+    <input class={fieldClasses} type="number" min="0" step="1" bind:value={$syncIntervalMinutes$} />
   </label>
+  {#if status?.deviceId}
+    <p class="mt-3 break-all text-xs text-c-muted">Device id: {status.deviceId}</p>
+  {/if}
 </div>

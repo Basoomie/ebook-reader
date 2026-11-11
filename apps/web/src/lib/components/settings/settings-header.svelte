@@ -1,47 +1,34 @@
 <script lang="ts">
-  import { faBookOpenReader, faClock, faDatabase } from '@fortawesome/free-solid-svg-icons';
-  import Fa from 'svelte-fa';
-  import MergedHeaderIcon from '$lib/components/merged-header-icon/merged-header-icon.svelte';
-  import AppNavLinks from '$lib/components/app-nav/app-nav-links.svelte';
-  import Ripple from '$lib/components/ripple.svelte';
-  import { baseHeaderClasses, pxScreen } from '$lib/css-classes';
-
-  export let leavePageLink: string;
+  /**
+   * The Settings page's tabs (Reader, Data, Statistics), under the page title in the
+   * catalogue's "Archive" look (like the Library's tabs): the current tab underlined in
+   * vermilion, a gold rule below. The app navigation and Back live elsewhere (AppHeader,
+   * the page title row), so the header bar holds only the navigation.
+   */
   export let activeSettings: string;
 
-  const settingItems = [
-    {
-      label: 'Reader',
-      icon: faBookOpenReader
-    },
-    {
-      label: 'Data',
-      icon: faDatabase
-    },
-    {
-      label: 'Statistics',
-      icon: faClock
-    }
-  ];
+  const settingItems = ['Reader', 'Data', 'Statistics'];
 </script>
 
-<div class={baseHeaderClasses}>
-  <div class="{pxScreen} flex px-0 md:px-5">
-    <div class="h12 flex grow justify-evenly xl:h-10">
-      {#each settingItems as settingItem (settingItem.label)}
-        <button
-          class="flex grow flex-col items-center justify-center text-xs"
-          class:bg-gray-900={activeSettings === settingItem.label}
-          class:hover:bg-gray-900={activeSettings !== settingItem.label}
-          on:click={() => (activeSettings = settingItem.label)}
-        >
-          <Fa class="mb-1" icon={settingItem.icon} />
-          {settingItem.label}
-          <Ripple />
-        </button>
-      {/each}
-    </div>
-    <MergedHeaderIcon {leavePageLink} />
-    <AppNavLinks />
-  </div>
+<div
+  class="c-strip -mx-1 flex max-w-full gap-1 border-b px-1"
+  style="border-color: var(--c-gold)"
+  role="tablist"
+  aria-label="Settings"
+>
+  {#each settingItems as label (label)}
+    <button
+      type="button"
+      class="c-focus flex min-h-[3rem] shrink-0 items-center border-b-2 px-3 text-sm {activeSettings ===
+      label
+        ? 'border-c-seal font-bold text-c-ink'
+        : 'border-transparent text-c-muted hover:text-c-ink'}"
+      role="tab"
+      aria-selected={activeSettings === label}
+      data-testid="settings-tab-{label.toLowerCase()}"
+      on:click={() => (activeSettings = label)}
+    >
+      {label}
+    </button>
+  {/each}
 </div>

@@ -5,6 +5,8 @@
   import SettingsContent from '$lib/components/settings/settings-content.svelte';
   import SettingsHeader from '$lib/components/settings/settings-header.svelte';
   import AppBottomBar from '$lib/components/app-nav/app-bottom-bar.svelte';
+  import AppHeader from '$lib/components/app-nav/app-header.svelte';
+  import CataloguePageHeader from '$lib/components/catalogue-page-header.svelte';
   import { pxScreen } from '$lib/css-classes';
   import {
     addCharactersOnCompletion$,
@@ -150,12 +152,22 @@
   <title>{formatPageTitle('Settings')}</title>
 </svelte:head>
 
-<div class="elevation-4 fixed inset-x-0 top-0 z-10">
-  <SettingsHeader leavePageLink={prevPage} bind:activeSettings />
-</div>
+<!-- The catalogue's navy header (navigation only); Back and the tabs sit under the title. -->
+<AppHeader title="Settings" />
 
-<div class="{pxScreen} h-full pt-16 xl:pt-14">
-  <div class="max-w-5xl">
+<div class="{pxScreen} pb-24 pt-16 xl:pt-14" data-testid="settings-page">
+  <CataloguePageHeader jp="設定" title="Settings">
+    <a
+      slot="back"
+      class="c-link inline-flex min-h-[3rem] items-center gap-2 text-sm"
+      href={prevPage}
+      data-testid="settings-back"
+    >
+      ← Back
+    </a>
+  </CataloguePageHeader>
+  <SettingsHeader bind:activeSettings />
+  <div class="pt-7">
     <SettingsContent
       {activeSettings}
       {storageQuota}

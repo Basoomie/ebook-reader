@@ -6,7 +6,6 @@
    */
 
   import LibrarySyncStatus from '$lib/components/library/library-sync-status.svelte';
-  import { buttonClasses, inputClasses } from '$lib/css-classes';
   import { pagePath } from '$lib/data/env';
   import { LibraryApi } from '$lib/library/api';
   import { summarizeCharCounts } from '$lib/library/char-counts';
@@ -22,8 +21,8 @@
    */
 
   const store = getLibraryStore();
-  // The shared input without its transition (e-ink).
-  const numberInputClasses = inputClasses.replace(/\s*\btransition\b/, '');
+  // The catalogue's field (no transition, so E-ink stays plain).
+  const fieldClasses = 'c-input mt-1 block w-full max-w-[15rem] text-base';
 
   let connection: LibraryConnection | null | undefined;
   let charCounts = '';
@@ -49,42 +48,46 @@
   }
 </script>
 
-<div class="text-sm" data-testid="connection-settings">
+<!-- Settings page, "Archive" look: a panel, two columns on wide screens (the connection |
+     record sync), stacked on narrower ones. -->
+<div class="c-tile rounded-lg p-4 sm:px-7 sm:py-6" data-testid="connection-settings">
   {#if connection === undefined}
     <p>Loading…</p>
   {:else if connection === null}
     <p>
       This device isn't connected to a library server.
-      <a class="underline" href="{pagePath}/library">Connect on the Library page</a>.
+      <a class="c-link underline" href="{pagePath}/library">Connect on the Library page</a>.
     </p>
   {:else}
-    <p>Server: {connection.serverUrl}</p>
-    <p>This device: {connection.label}</p>
-    {#if charCounts}
-      <p data-testid="connection-char-counts">{charCounts}</p>
-    {/if}
-    <label class="mt-3 block max-w-xs">
-      Request timeout (seconds, 0 = none)
-      <input
-        class={numberInputClasses}
-        type="number"
-        min="0"
-        step="1"
-        data-testid="request-timeout"
-        bind:value={$libraryRequestTimeoutSeconds$}
-      />
-    </label>
-    <LibrarySyncStatus />
-    <p class="mt-6">
-      Disconnecting forgets the token on this device. To block it on the server too, run
-      <code>token revoke</code> there.
-    </p>
-    <button
-      class="{buttonClasses} mt-2 border border-current"
-      data-testid="disconnect"
-      on:click={disconnect}
-    >
-      Disconnect
-    </button>
+    <div class="grid grid-cols-1 gap-y-6 lg:grid-cols-2 lg:gap-x-12">
+      <div>
+        <p>Server: {connection.serverUrl}</p>
+        <p>This device: {connection.label}</p>
+        {#if charCounts}
+          <p data-testid="connection-char-counts">{charCounts}</p>
+        {/if}
+        <label class="mt-4 block text-sm text-c-muted">
+          Request timeout (seconds, 0 = none)
+          <input
+            class={fieldClasses}
+            type="number"
+            min="0"
+            step="1"
+            data-testid="request-timeout"
+            bind:value={$libraryRequestTimeoutSeconds$}
+          />
+        </label>
+        <p class="mt-6 text-sm text-c-muted">
+          Disconnecting forgets the token on this device. To block it on the server too, run
+          <code>token revoke</code> there.
+        </p>
+        <button class="c-btn c-btn-secondary mt-2" data-testid="disconnect" on:click={disconnect}>
+          Disconnect
+        </button>
+      </div>
+      <div class="border-c-line border-t pt-6 lg:border-l lg:border-t-0 lg:pl-10 lg:pt-0">
+        <LibrarySyncStatus />
+      </div>
+    </div>
   {/if}
 </div>

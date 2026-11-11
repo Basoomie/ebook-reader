@@ -24,13 +24,13 @@
     timeLeftRecentMinutes$
   } from '$lib/data/store';
   import SettingsItemGroup from '$lib/components/settings/settings-item-group.svelte';
+  import SettingsSection from '$lib/components/settings/settings-section.svelte';
   import SettingsStorageSourceList from '$lib/components/settings/settings-storage-source-list.svelte';
   import SettingsServerFontsDialog from '$lib/components/settings/settings-server-fonts-dialog.svelte';
   import SettingsExportData from '$lib/components/settings/settings-export-data.svelte';
   import LibraryConnectionSettings from '$lib/components/library/library-connection-settings.svelte';
   import { libraryLook$ } from '$lib/library/settings';
   import { customFontNames$ } from '$lib/fonts/server-fonts-browser';
-  import { inputClasses } from '$lib/css-classes';
   import { BlurMode } from '$lib/data/blur-mode';
   import { dialogManager } from '$lib/data/dialog-manager';
   import { LocalFont } from '$lib/data/fonts';
@@ -68,6 +68,11 @@
   import { map } from 'rxjs';
   import Fa from 'svelte-fa';
   import { onDestroy } from 'svelte';
+
+  // The catalogue's "Archive" fields (the Settings page uses the catalogue look).
+  const fieldClasses = 'c-input mt-1 block w-full max-w-xs';
+  // 48 px tall: the slider's touch area (the track itself stays thin).
+  const rangeClasses = 'c-range mt-1 block h-12 w-full max-w-xs';
 
   export let selectedTheme: string;
 
@@ -552,7 +557,9 @@
   }
 </script>
 
-<div class="grid grid-cols-1 items-center sm:grid-cols-2 sm:gap-6 lg:md:gap-8 lg:grid-cols-3">
+<!-- Top-aligned: a tall setting (Library server) no longer floats its row's neighbours
+     to the middle of the row. -->
+<div class="grid grid-cols-1 items-start sm:grid-cols-2 sm:gap-x-8 sm:gap-y-6 lg:grid-cols-3">
   {#if activeSettings === 'Reader'}
     <p class="pb-6 sm:col-span-2 lg:col-span-3" data-testid="settings-appearance-note">
       Font size, line height, page margins, writing direction, pages or scrolling and furigana are
@@ -566,6 +573,7 @@
           tooltip="Used while your device is set to light. Choosing a theme here also switches the reader right away when the device is light."
         >
           <ButtonToggleGroup
+            archive
             options={optionsForTheme}
             bind:selectedOptionId={$lightTheme$}
             on:edit={({ detail }) => openThemeEditor(detail)}
@@ -573,7 +581,8 @@
           >
             {#if browser}
               <button
-                class="m-1 rounded-md border-2 border-gray-400 p-2 text-lg"
+                class="c-btn c-btn-secondary m-1"
+                title="New theme"
                 on:click={() => openThemeEditor()}
               >
                 <Fa icon={faPlus} class="mx-2" />
@@ -584,6 +593,7 @@
         </SettingsItemGroup>
         <SettingsItemGroup title="Dark Theme" tooltip="Used while your device is set to dark.">
           <ButtonToggleGroup
+            archive
             options={optionsForTheme}
             bind:selectedOptionId={$darkTheme$}
             on:edit={({ detail }) => openThemeEditor(detail)}
@@ -593,6 +603,7 @@
       {:else}
         <SettingsItemGroup title="Theme">
           <ButtonToggleGroup
+            archive
             options={optionsForTheme}
             bind:selectedOptionId={selectedTheme}
             on:edit={({ detail }) => openThemeEditor(detail)}
@@ -600,7 +611,8 @@
           >
             {#if browser}
               <button
-                class="m-1 rounded-md border-2 border-gray-400 p-2 text-lg"
+                class="c-btn c-btn-secondary m-1"
+                title="New theme"
                 on:click={() => openThemeEditor()}
               >
                 <Fa icon={faPlus} class="mx-2" />
@@ -620,19 +632,27 @@
       title="Follow System Light/Dark"
       tooltip="Switch between a light and a dark theme with your device's light/dark setting"
     >
-      <ButtonToggleGroup options={optionsForToggle} bind:selectedOptionId={$followSystemTheme$} />
+      <ButtonToggleGroup
+        archive
+        options={optionsForToggle}
+        bind:selectedOptionId={$followSystemTheme$}
+      />
     </SettingsItemGroup>
     <SettingsItemGroup
       title="E-ink"
       tooltip="This device only: pure black on white everywhere, no grays, shadows or animations. The book ignores the theme while it is on."
     >
-      <ButtonToggleGroup options={optionsForToggle} bind:selectedOptionId={$einkMode$} />
+      <ButtonToggleGroup archive options={optionsForToggle} bind:selectedOptionId={$einkMode$} />
     </SettingsItemGroup>
     <SettingsItemGroup
       title="Library Look"
       tooltip="This device only: light or dark for Home, Library, Collections, Notes and Stats. 'Like the book' turns dark when the reader's theme is dark (also when it follows the system). E-ink always wins."
     >
-      <ButtonToggleGroup options={optionsForLibraryLook} bind:selectedOptionId={$libraryLook$} />
+      <ButtonToggleGroup
+        archive
+        options={optionsForLibraryLook}
+        bind:selectedOptionId={$libraryLook$}
+      />
     </SettingsItemGroup>
     <SettingsItemGroup title="Font family (Group 1)">
       <div slot="header" class="flex items-center">
@@ -652,7 +672,7 @@
       </div>
       <input
         type="text"
-        class={inputClasses}
+        class={fieldClasses}
         placeholder="Noto Serif JP"
         bind:value={fontFamilyGroupOne}
       />
@@ -671,7 +691,7 @@
       </div>
       <input
         type="text"
-        class={inputClasses}
+        class={fieldClasses}
         placeholder="Noto Sans JP"
         bind:value={fontFamilyGroupTwo}
       />
@@ -682,7 +702,7 @@
     >
       {#if browser}
         <button
-          class="m-1 min-h-[3rem] rounded-md border-2 border-gray-400 px-4 font-medium"
+          class="c-btn c-btn-secondary"
           data-testid="open-server-fonts"
           on:click={() => dialogManager.dialogs$.next([{ component: SettingsServerFontsDialog }])}
         >
@@ -694,7 +714,7 @@
       <SettingsItemGroup title="Paragraph Margins" tooltip="# of rem added as margin to paragraphs">
         <input
           type="number"
-          class={inputClasses}
+          class={fieldClasses}
           step=".5"
           min="0"
           bind:value={textMarginValue}
@@ -716,7 +736,7 @@
         type="number"
         step="1"
         min="10"
-        class={inputClasses}
+        class={fieldClasses}
         bind:value={swipeThreshold}
         on:blur={() => {
           if (swipeThreshold < 10 || typeof swipeThreshold !== 'number') {
@@ -729,7 +749,11 @@
       title="Mouse Drag to Turn Pages"
       tooltip="Drag sideways with the mouse to turn the page. A drag that selects text only selects it."
     >
-      <ButtonToggleGroup options={optionsForToggle} bind:selectedOptionId={mouseDragPageTurn} />
+      <ButtonToggleGroup
+        archive
+        options={optionsForToggle}
+        bind:selectedOptionId={mouseDragPageTurn}
+      />
     </SettingsItemGroup>
     {#if mouseDragPageTurn}
       <SettingsItemGroup
@@ -740,7 +764,7 @@
           type="number"
           step="1"
           min="10"
-          class={inputClasses}
+          class={fieldClasses}
           bind:value={mouseDragThreshold}
           on:blur={() => {
             if (mouseDragThreshold < 10 || typeof mouseDragThreshold !== 'number') {
@@ -758,7 +782,7 @@
         type="number"
         step="1"
         min="1"
-        class={inputClasses}
+        class={fieldClasses}
         bind:value={jumpHistoryLimit}
         on:blur={() => {
           if (jumpHistoryLimit < 1 || typeof jumpHistoryLimit !== 'number') {
@@ -772,6 +796,7 @@
       tooltip="Normally the highlight bar appears after you long-press text or select it with the mouse. Turn this on if it never appears on this device: then any text selection in the book shows it."
     >
       <ButtonToggleGroup
+        archive
         options={optionsForToggle}
         bind:selectedOptionId={highlightBarAnySelection}
       />
@@ -784,7 +809,7 @@
         type="number"
         step="100"
         min="0"
-        class={inputClasses}
+        class={fieldClasses}
         bind:value={highlightRefindChars}
         on:blur={() => {
           if (highlightRefindChars < 0 || typeof highlightRefindChars !== 'number') {
@@ -799,7 +824,7 @@
           type="number"
           step="1"
           min="1"
-          class={inputClasses}
+          class={fieldClasses}
           bind:value={autoBookmarkTime}
           on:blur={() => {
             if (autoBookmarkTime < 1 || typeof autoBookmarkTime !== 'number') {
@@ -814,16 +839,25 @@
         title="Enable Font Kerning"
         tooltip={'Can lead to better visual balance for vertical spacing of text if font and browser supports it'}
       >
-        <ButtonToggleGroup options={optionsForToggle} bind:selectedOptionId={enableFontKerning} />
+        <ButtonToggleGroup
+          archive
+          options={optionsForToggle}
+          bind:selectedOptionId={enableFontKerning}
+        />
       </SettingsItemGroup>
       <SettingsItemGroup
         title="Enable VPAL"
         tooltip={'Can lead to more natural spacing for vertically laid-out text if font and browser supports it'}
       >
-        <ButtonToggleGroup options={optionsForToggle} bind:selectedOptionId={enableFontVPAL} />
+        <ButtonToggleGroup
+          archive
+          options={optionsForToggle}
+          bind:selectedOptionId={enableFontVPAL}
+        />
       </SettingsItemGroup>
       <SettingsItemGroup title="Text Orientation" tooltip={verticalTextOrientationTooltip}>
         <ButtonToggleGroup
+          archive
           options={optionsForVerticalTextOrientation}
           bind:selectedOptionId={verticalTextOrientation}
         />
@@ -834,6 +868,7 @@
       tooltip={'When enabled the "important" declaration is added to certain rules like margins or justification which makes it more likely to be applied in case of conflicting book styles'}
     >
       <ButtonToggleGroup
+        archive
         options={optionsForToggle}
         bind:selectedOptionId={prioritizeReaderStyles}
       />
@@ -843,6 +878,7 @@
       tooltip={'When enabled the reader adds styles to justify text content of paragraphs'}
     >
       <ButtonToggleGroup
+        archive
         options={optionsForToggle}
         bind:selectedOptionId={enableTextJustification}
       />
@@ -851,13 +887,18 @@
       title="Enable Pretty Text Wrap"
       tooltip={'When enabled the reader adds the pretty text wrap style to supported browsers'}
     >
-      <ButtonToggleGroup options={optionsForToggle} bind:selectedOptionId={enableTextWrapPretty} />
+      <ButtonToggleGroup
+        archive
+        options={optionsForToggle}
+        bind:selectedOptionId={enableTextWrapPretty}
+      />
     </SettingsItemGroup>
     <SettingsItemGroup
       title="Paragraph Margin Mode"
       tooltip={'When set to manual it allows to specify a margin value which should be applied to paragraphs'}
     >
       <ButtonToggleGroup
+        archive
         options={optionsForTextMarginMode}
         bind:selectedOptionId={textMarginMode}
       />
@@ -868,19 +909,29 @@
         tooltip={'When enabled the reader site attempts to request a WakeLock that prevents device screens from dimming or locking'}
       >
         <ButtonToggleGroup
+          archive
           options={optionsForToggle}
           bind:selectedOptionId={enableReaderWakeLock}
         />
       </SettingsItemGroup>
     {/if}
     <SettingsItemGroup title="Show Character Counter">
-      <ButtonToggleGroup options={optionsForToggle} bind:selectedOptionId={showCharacterCounter} />
+      <ButtonToggleGroup
+        archive
+        options={optionsForToggle}
+        bind:selectedOptionId={showCharacterCounter}
+      />
     </SettingsItemGroup>
     <SettingsItemGroup title="Show Percentage">
-      <ButtonToggleGroup options={optionsForToggle} bind:selectedOptionId={showPercentage} />
+      <ButtonToggleGroup
+        archive
+        options={optionsForToggle}
+        bind:selectedOptionId={showPercentage}
+      />
     </SettingsItemGroup>
     <SettingsItemGroup title="Show Footer Chapter Characters">
       <ButtonToggleGroup
+        archive
         options={optionsForToggle}
         bind:selectedOptionId={showFooterChapterCharacterCounter}
       />
@@ -889,16 +940,22 @@
       title="Show Return Marker"
       tooltip="After a jump (search, contents, a highlight or bookmark), the bottom bar shows where you were reading; tap it to go back there"
     >
-      <ButtonToggleGroup options={optionsForToggle} bind:selectedOptionId={showReturnMarker} />
+      <ButtonToggleGroup
+        archive
+        options={optionsForToggle}
+        bind:selectedOptionId={showReturnMarker}
+      />
     </SettingsItemGroup>
     <SettingsItemGroup title="Show Footer Chapter Percentage">
       <ButtonToggleGroup
+        archive
         options={optionsForToggle}
         bind:selectedOptionId={showFooterChapterPercentage}
       />
     </SettingsItemGroup>
     <SettingsItemGroup title="Disable Wheel Navigation">
       <ButtonToggleGroup
+        archive
         options={optionsForToggle}
         bind:selectedOptionId={disableWheelNavigation}
       />
@@ -907,28 +964,40 @@
       title="Close Confirmation"
       tooltip={`When enabled asks for confirmation on closing/reloading a reader tab and unsaved changes were detected`}
     >
-      <ButtonToggleGroup options={optionsForToggle} bind:selectedOptionId={confirmClose} />
+      <ButtonToggleGroup archive options={optionsForToggle} bind:selectedOptionId={confirmClose} />
     </SettingsItemGroup>
     <SettingsItemGroup
       title="Manual Save Place"
       tooltip={'If enabled your place is not saved when leaving the reader via menu elements'}
     >
-      <ButtonToggleGroup options={optionsForToggle} bind:selectedOptionId={manualBookmark} />
+      <ButtonToggleGroup
+        archive
+        options={optionsForToggle}
+        bind:selectedOptionId={manualBookmark}
+      />
     </SettingsItemGroup>
     <SettingsItemGroup title="Auto Save Place" tooltip={autoBookmarkTooltip}>
-      <ButtonToggleGroup options={optionsForToggle} bind:selectedOptionId={autoBookmark} />
+      <ButtonToggleGroup archive options={optionsForToggle} bind:selectedOptionId={autoBookmark} />
     </SettingsItemGroup>
     <SettingsItemGroup
       title="When the App Opens"
       tooltip={'Last book: go straight back into the book you were reading. Home: show the Home page.'}
     >
-      <ButtonToggleGroup options={optionsForAppOpen} bind:selectedOptionId={$appOpenTarget$} />
+      <ButtonToggleGroup
+        archive
+        options={optionsForAppOpen}
+        bind:selectedOptionId={$appOpenTarget$}
+      />
     </SettingsItemGroup>
     <SettingsItemGroup
       title="Continue From Other Devices"
       tooltip={'For books opened from the library: asks whether to continue where another device is further along (needs record sync)'}
     >
-      <ButtonToggleGroup options={optionsForToggle} bind:selectedOptionId={positionPromptEnabled} />
+      <ButtonToggleGroup
+        archive
+        options={optionsForToggle}
+        bind:selectedOptionId={positionPromptEnabled}
+      />
     </SettingsItemGroup>
     {#if positionPromptEnabled}
       <SettingsItemGroup
@@ -939,7 +1008,7 @@
           type="number"
           step="1"
           min="0"
-          class={inputClasses}
+          class={fieldClasses}
           bind:value={positionPromptMinChars}
           on:blur={() => {
             if (positionPromptMinChars < 0 || typeof positionPromptMinChars !== 'number') {
@@ -957,7 +1026,7 @@
         type="number"
         step="1"
         min="0"
-        class={inputClasses}
+        class={fieldClasses}
         bind:value={readingStatusSettleSeconds}
         on:blur={() => {
           if (readingStatusSettleSeconds < 0 || typeof readingStatusSettleSeconds !== 'number') {
@@ -967,14 +1036,18 @@
       />
     </SettingsItemGroup>
     <SettingsItemGroup title="Blur image">
-      <ButtonToggleGroup options={optionsForToggle} bind:selectedOptionId={blurImage} />
+      <ButtonToggleGroup archive options={optionsForToggle} bind:selectedOptionId={blurImage} />
     </SettingsItemGroup>
     {#if blurImage}
       <SettingsItemGroup
         title="Blur Mode"
         tooltip="Determines if all or only images after the table of contents will be blurred"
       >
-        <ButtonToggleGroup options={optionsForBlurMode} bind:selectedOptionId={blurImageMode} />
+        <ButtonToggleGroup
+          archive
+          options={optionsForBlurMode}
+          bind:selectedOptionId={blurImageMode}
+        />
       </SettingsItemGroup>
     {/if}
     {#if statisticsEnabled}
@@ -983,6 +1056,7 @@
         tooltip={'When enabled the tracker will auto pause and unpause while setting a custom reading point'}
       >
         <ButtonToggleGroup
+          archive
           options={optionsForToggle}
           bind:selectedOptionId={pauseTrackerOnCustomPointChange}
         />
@@ -995,6 +1069,7 @@
       >
         <div class="flex items-center">
           <ButtonToggleGroup
+            archive
             options={optionsForToggle}
             bind:selectedOptionId={customReadingPointEnabled}
           />
@@ -1002,7 +1077,7 @@
             <div
               tabindex="0"
               role="button"
-              class="ml-4 hover:underline"
+              class="c-link ml-4 inline-flex min-h-[3rem] items-center"
               on:click={() => {
                 verticalCustomReadingPosition$.next(100);
                 horizontalCustomReadingPosition$.next(0);
@@ -1016,19 +1091,25 @@
       </SettingsItemGroup>
       <SettingsItemGroup title="Auto position on resize">
         <ButtonToggleGroup
+          archive
           options={optionsForToggle}
           bind:selectedOptionId={autoPositionOnResize}
         />
       </SettingsItemGroup>
     {:else}
       <SettingsItemGroup title="Avoid Page Break" tooltip={avoidPageBreakTooltip}>
-        <ButtonToggleGroup options={optionsForToggle} bind:selectedOptionId={avoidPageBreak} />
+        <ButtonToggleGroup
+          archive
+          options={optionsForToggle}
+          bind:selectedOptionId={avoidPageBreak}
+        />
       </SettingsItemGroup>
       <SettingsItemGroup
         title="Selection to Saved Place"
         tooltip={'When enabled Save my place (B) saves the paragraph near the current/previous selected text instead of the page start'}
       >
         <ButtonToggleGroup
+          archive
           options={optionsForToggle}
           bind:selectedOptionId={selectionToBookmarkEnabled}
         />
@@ -1037,47 +1118,32 @@
         title="Tap to Flip"
         tooltip="Reserves small margins on the left and right on which you can tap to turn pages"
       >
-        <ButtonToggleGroup options={optionsForToggle} bind:selectedOptionId={enableTapEdgeToFlip} />
+        <ButtonToggleGroup
+          archive
+          options={optionsForToggle}
+          bind:selectedOptionId={enableTapEdgeToFlip}
+        />
       </SettingsItemGroup>
       {#if !verticalMode}
         <SettingsItemGroup title="Page Columns" tooltip="# of text columns rendered">
-          <input type="number" class={inputClasses} step="1" min="0" bind:value={pageColumns} />
+          <input type="number" class={fieldClasses} step="1" min="0" bind:value={pageColumns} />
         </SettingsItemGroup>
       {/if}
     {/if}
   {:else if activeSettings === 'Data'}
-    <SettingsItemGroup
+    <!-- Three sections: the library server, this device, and the old sync's items. -->
+    <SettingsSection
+      jp="接続"
       title="Library server"
       tooltip="The server this device reads the library from and syncs with: its address, this device's name, record sync and Disconnect."
-    >
+      testid="settings-section-server"
+    />
+    <div class="col-span-full pb-8 md:pb-6">
       {#if browser}
         <LibraryConnectionSettings />
       {/if}
-    </SettingsItemGroup>
-    <SettingsItemGroup
-      title="Migration from the old sync"
-      tooltip="The one-time move of books, places and statistics from the old file sync to the library server, and its check page."
-    >
-      <a
-        class="inline-flex min-h-[3rem] items-center rounded border-2 border-current px-4 font-medium"
-        href="{pagePath}/migration"
-        data-testid="migration-link"
-      >
-        Open the migration page
-      </a>
-    </SettingsItemGroup>
-    <SettingsItemGroup
-      title="Old sync manager"
-      tooltip={'The book manager of the old sync: import into this browser, storage sources, export and delete. Stays here until the old sync is retired.'}
-    >
-      <a
-        class="inline-flex min-h-[3rem] items-center rounded border-2 border-current px-4 font-medium"
-        href="{pagePath}/manage"
-        data-testid="old-sync-manager"
-      >
-        Open the old sync manager
-      </a>
-    </SettingsItemGroup>
+    </div>
+    <SettingsSection jp="この端末" title="This device" testid="settings-section-device" />
     <SettingsItemGroup
       title="Export my data"
       tooltip="One readable file (JSON) with everything synced for you: reading places, statuses and times read, highlights, notes, bookmarks, collections, statistics and the settings of every device. Book and font files are not in it."
@@ -1088,14 +1154,19 @@
     </SettingsItemGroup>
     <SettingsItemGroup title="Persistent storage" tooltip={persistentStorageTooltip}>
       <div class="flex items-center">
-        <ButtonToggleGroup options={optionsForToggle} bind:selectedOptionId={persistentStorage} />
+        <ButtonToggleGroup
+          archive
+          options={optionsForToggle}
+          bind:selectedOptionId={persistentStorage}
+        />
         {#if storageQuota}
-          <div class="ml-4">{storageQuota}</div>
+          <div class="ml-3 text-sm text-c-muted">{storageQuota}</div>
         {/if}
       </div>
     </SettingsItemGroup>
     <SettingsItemGroup title="Epub Import Fixes" tooltip={importHTMLFixModeTooltip}>
       <ButtonToggleGroup
+        archive
         options={optionsForImportHTMLFixes}
         bind:selectedOptionId={importHTMLFixMode}
       />
@@ -1106,33 +1177,67 @@
         tooltip="Restricts epub fixes for self closing tags to links only"
       >
         <ButtonToggleGroup
+          archive
           options={optionsForToggle}
           bind:selectedOptionId={restrictImportFixToAnchor}
         />
       </SettingsItemGroup>
     {/if}
+    <SettingsSection
+      jp="旧同期"
+      title="Old sync"
+      note="Until the old sync is retired"
+      testid="settings-section-old-sync"
+    />
+    <SettingsItemGroup
+      title="Migration from the old sync"
+      tooltip="The one-time move of books, places and statistics from the old file sync to the library server, and its check page."
+    >
+      <a class="c-btn c-btn-secondary" href="{pagePath}/migration" data-testid="migration-link">
+        Open the migration page
+      </a>
+    </SettingsItemGroup>
+    <SettingsItemGroup
+      title="Old sync manager"
+      tooltip={'The book manager of the old sync: import into this browser, storage sources, export and delete. Stays here until the old sync is retired.'}
+    >
+      <a class="c-btn c-btn-secondary" href="{pagePath}/manage" data-testid="old-sync-manager">
+        Open the old sync manager
+      </a>
+    </SettingsItemGroup>
     <SettingsItemGroup title="Cache Data" tooltip={cacheStorageDataTooltip}>
-      <ButtonToggleGroup options={optionsForToggle} bind:selectedOptionId={cacheStorageData} />
+      <ButtonToggleGroup
+        archive
+        options={optionsForToggle}
+        bind:selectedOptionId={cacheStorageData}
+      />
     </SettingsItemGroup>
     <SettingsItemGroup title="Auto Import/Export" tooltip={autoReplicationTypeTooltip}>
       <ButtonToggleGroup
+        archive
         options={optionsForAutoReplicationType}
         bind:selectedOptionId={autoReplication}
       />
     </SettingsItemGroup>
     <SettingsItemGroup title="Import/Export Behavior" tooltip={replicationSaveBehaviorTooltip}>
       <ButtonToggleGroup
+        archive
         options={optionsForReplicationSaveBehavior}
         bind:selectedOptionId={replicationSaveBehavior}
       />
     </SettingsItemGroup>
     <SettingsItemGroup title="Show Placeholder" tooltip={showExternalPlaceholderToolTip}>
       <ButtonToggleGroup
+        archive
         options={optionsForToggle}
         bind:selectedOptionId={showExternalPlaceholder}
       />
     </SettingsItemGroup>
-    <SettingsStorageSourceList storageSources={$storageSources$} />
+    <!-- Its own markup stays (it can't be reformatted by the commit hook); app.scss gives
+         it the Archive colours through this wrapper. -->
+    <div class="c-settings-sources col-span-full mt-4">
+      <SettingsStorageSourceList storageSources={$storageSources$} />
+    </div>
   {:else}
     <SettingsItemGroup
       title={`Day Starts At: ${startOfDayHours}`}
@@ -1143,7 +1248,7 @@
         step="1"
         min="0"
         max="23"
-        class={inputClasses}
+        class={rangeClasses}
         data-testid="settings-day-starts-at"
         bind:value={startDayHoursForTracker}
       />
@@ -1153,7 +1258,7 @@
       tooltip={'The same on every device. Used by the Stats page (and weekly goals).'}
     >
       <select
-        class="{inputClasses} min-h-[3rem]"
+        class={fieldClasses}
         data-testid="settings-week-starts-on"
         bind:value={statsWeekStart}
       >
@@ -1167,6 +1272,7 @@
       tooltip={`Determines if statistics will be merged entry by entry or replaced completely on a sync`}
     >
       <ButtonToggleGroup
+        archive
         options={optionsForMergeMode}
         bind:selectedOptionId={statisticsMergeMode}
       />
@@ -1176,6 +1282,7 @@
       tooltip={`Determines if reading goals will be merged entry by entry or replaced completely on a sync`}
     >
       <ButtonToggleGroup
+        archive
         options={optionsForMergeMode}
         bind:selectedOptionId={readingGoalsMergeMode}
       />
@@ -1184,17 +1291,23 @@
       title="Enable Statistics"
       tooltip="Enables the tracker icon in the bottom left corner of the reader which you need to use to start tracking your reading session"
     >
-      <ButtonToggleGroup options={optionsForToggle} bind:selectedOptionId={statisticsEnabled} />
+      <ButtonToggleGroup
+        archive
+        options={optionsForToggle}
+        bind:selectedOptionId={statisticsEnabled}
+      />
     </SettingsItemGroup>
     {#if statisticsEnabled}
       <SettingsItemGroup title="Tracker Auto Pause" tooltip={trackerAutoPauseTooltip}>
         <ButtonToggleGroup
+          archive
           options={optionsForTrackerAutoPause}
           bind:selectedOptionId={trackerAutoPause}
         />
       </SettingsItemGroup>
       <SettingsItemGroup title="Open Tracker on Completion">
         <ButtonToggleGroup
+          archive
           options={optionsForToggle}
           bind:selectedOptionId={openTrackerOnCompletion}
         />
@@ -1204,6 +1317,7 @@
         tooltip={`Determines if the missing amount of characters between the current position and the book total will be added to the statistics or not`}
       >
         <ButtonToggleGroup
+          archive
           options={optionsForToggle}
           bind:selectedOptionId={addCharactersOnCompletion}
         />
@@ -1214,7 +1328,7 @@
       >
         <input
           type="number"
-          class={inputClasses}
+          class={fieldClasses}
           step="1"
           min="0"
           bind:value={trackerAutoStartTime}
@@ -1233,7 +1347,7 @@
       >
         <input
           type="number"
-          class={inputClasses}
+          class={fieldClasses}
           step="0.5"
           min="0"
           bind:value={trackerIdleTimeInMin}
@@ -1254,7 +1368,7 @@
       >
         <input
           type="number"
-          class={inputClasses}
+          class={fieldClasses}
           step="50"
           min="200"
           bind:value={trackerLongPressTime}
@@ -1273,7 +1387,7 @@
       >
         <input
           type="number"
-          class={inputClasses}
+          class={fieldClasses}
           step="1"
           min="0"
           bind:value={trackerForwardSkipThreshold}
@@ -1292,7 +1406,7 @@
       >
         <input
           type="number"
-          class={inputClasses}
+          class={fieldClasses}
           step="1"
           bind:value={trackerBackwardSkipThreshold}
           on:blur={() => {
@@ -1312,6 +1426,7 @@
           tooltip={`Determines what action will be executed in case a skip threshold was triggered`}
         >
           <ButtonToggleGroup
+            archive
             options={optionsForTrackerSkipThresholdAction}
             bind:selectedOptionId={trackerSkipThresholdAction}
           />
@@ -1323,6 +1438,7 @@
           tooltip={`If enabled auto pause is skipped if open yomitan/jpdb-browser-reader was detected - yomitan requires disabled 'Secure Container' settings`}
         >
           <ButtonToggleGroup
+            archive
             options={optionsForToggle}
             bind:selectedOptionId={trackerPopupDetection}
           />
@@ -1334,6 +1450,7 @@
           tooltip={`If enabled attempts to rollback statistics by subtracting the idled time value back from the session`}
         >
           <ButtonToggleGroup
+            archive
             options={optionsForToggle}
             bind:selectedOptionId={adjustStatisticsAfterIdleTime}
           />
@@ -1348,7 +1465,7 @@
           type="number"
           step="1"
           min="0"
-          class={inputClasses}
+          class={fieldClasses}
           data-testid="settings-speed-goal-min"
           bind:value={$speedGoalMinMinutes$}
         />
@@ -1358,6 +1475,7 @@
         tooltip={'This device only. Shows how long the chapter and/or the book will take at your recent speed in the book.'}
       >
         <ButtonToggleGroup
+          archive
           options={optionsForTimeLeft}
           bind:selectedOptionId={$bottomBarTimeLeft$}
         />
@@ -1370,7 +1488,7 @@
           type="number"
           step="5"
           min="1"
-          class={inputClasses}
+          class={fieldClasses}
           data-testid="settings-time-left-recent"
           bind:value={$timeLeftRecentMinutes$}
         />
@@ -1383,7 +1501,7 @@
           type="number"
           step="1"
           min="0"
-          class={inputClasses}
+          class={fieldClasses}
           data-testid="settings-time-left-min"
           bind:value={$timeLeftMinMinutes$}
         />
