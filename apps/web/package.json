@@ -13,6 +13,7 @@
     "count-epub": "vite-node scripts/count-epub.ts --",
     "build:server-counter": "vite-node scripts/build-server-counter.ts --",
     "build:server-query": "vite-node scripts/build-server-query.ts --",
+    "build:server-redact": "vite-node scripts/build-server-redact.ts --",
     "test:parity": "vitest run --mode parity tests/parity",
     "parity:manifest": "node --experimental-sqlite node_modules/vite-node/vite-node.mjs tests/parity/build-manifest.ts --"
   },

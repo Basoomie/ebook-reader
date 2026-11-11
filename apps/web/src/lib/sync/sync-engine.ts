@@ -243,6 +243,12 @@ export class SyncEngine {
     return this.db.getAllFromIndex('records', 'bookId', bookId);
   }
 
+  /** The newest changes the server refused (kept for the bug report, WP18). */
+  async rejectedChanges(limit = 50): Promise<RejectedEntry[]> {
+    const all = await this.db.getAll('rejected');
+    return all.slice(-limit);
+  }
+
   async getMeta(): Promise<SyncMeta> {
     return (await this.db.get('meta', META_KEY)) as SyncMeta;
   }

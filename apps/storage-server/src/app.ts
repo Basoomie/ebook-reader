@@ -5,6 +5,7 @@ import { createApiRouter } from './api/router';
 import type { ServerConfig } from './config';
 import type { DatabaseState } from './db/database';
 import { createLegacyAudioUploadRouter, createLegacyFileRouter } from './legacy';
+import type { RecentLogs } from './logs/recent-logs';
 
 export interface AppOptions {
   config: ServerConfig;
@@ -13,6 +14,8 @@ export interface AppOptions {
   catalog?: CatalogOptions;
   /** See ApiOptions.seedDefaults (tests turn it off). */
   seedDefaults?: boolean;
+  /** The recent log lines for the bug report (default: the process-wide buffer). */
+  logs?: RecentLogs;
 }
 
 export function createApp({
@@ -21,6 +24,7 @@ export function createApp({
   version,
   catalog,
   seedDefaults,
+  logs,
 }: AppOptions): Express {
   const app = express();
 
@@ -52,6 +56,7 @@ export function createApp({
       migration: { dataRoot: config.dataRoot, dbDir: config.dbDir },
       fonts: { dataRoot: config.dataRoot, maxMb: config.fonts.maxMb },
       seedDefaults,
+      logs,
     }),
   );
 
