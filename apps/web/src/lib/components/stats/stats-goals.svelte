@@ -40,7 +40,8 @@
   export let speedMinMinutes: number;
 
   const control = 'min-h-[3rem] rounded border-2 border-current bg-white px-3';
-  const solid = 'border-gray-800 bg-gray-800 text-white';
+  /** A filled button: its own classes, never combined with `control` (bg-white would win). */
+  const primary = 'min-h-[3rem] rounded border-2 border-gray-800 bg-gray-800 px-3 text-white';
 
   let editing: {
     goal: StatGoal | null;
@@ -203,7 +204,7 @@
           on:keydown={cancelOnEscape}
         />
       </label>
-      <button class="{control} {solid}" type="submit">Save</button>
+      <button class={primary} type="submit">Save</button>
       <button class={control} type="button" on:click={() => (editing = null)}>Cancel</button>
       {#if editing.error}
         <p class="w-full text-sm" role="alert">{editing.error}</p>
