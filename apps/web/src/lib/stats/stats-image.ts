@@ -4,7 +4,20 @@
  * All rights reserved.
  */
 
+import {
+  canvasToPng,
+  drawText,
+  fittedFont,
+  loadCover,
+  loadImageFonts,
+  MINCHO,
+  SANS,
+  type CoverImage,
+  type Ctx
+} from '$lib/image/canvas-text';
 import type { StatsImageModel } from '$lib/stats/stats-image-model';
+
+export { loadCover, loadImageFonts, type CoverImage };
 
 /**
  * Draws the Stats image (WP12d) on a canvas: portrait 1080 × 1350, black on white (it reads
@@ -21,13 +34,8 @@ const INK = '#111111';
 const PAPER = '#ffffff';
 const GREY = '#6b6b6b';
 const LIGHT = '#d4d4d4';
-const SANS = "'Noto Sans JP', system-ui, sans-serif";
-const MINCHO = "'Shippori Mincho', 'Noto Serif JP', serif";
 const LEFT = 72;
 const RIGHT = 1008;
-
-type Ctx = CanvasRenderingContext2D;
-export type CoverImage = CanvasImageSource | null;
 
 function text(
   ctx: Ctx,
@@ -38,22 +46,12 @@ function text(
   color = INK,
   align: CanvasTextAlign = 'left'
 ) {
-  ctx.font = font;
-  ctx.fillStyle = color;
-  ctx.textAlign = align;
-  ctx.textBaseline = 'alphabetic';
-  ctx.fillText(value, x, y);
+  drawText(ctx, value, x, y, font, color, align);
 }
 
 /** Shrinks the font until the text fits `maxWidth`. */
 function fitted(ctx: Ctx, value: string, size: number, weight: number, maxWidth: number) {
-  let s = size;
-  ctx.font = `${weight} ${s}px ${SANS}`;
-  while (s > 12 && ctx.measureText(value).width > maxWidth) {
-    s -= 2;
-    ctx.font = `${weight} ${s}px ${SANS}`;
-  }
-  return `${weight} ${s}px ${SANS}`;
+  return fittedFont(ctx, value, size, weight, maxWidth, SANS);
 }
 
 /** Upright vertical text, one character per line (canvas has no writing-mode). */
@@ -213,53 +211,6 @@ export function drawStatsImage(ctx: Ctx, model: StatsImageModel, covers: CoverIm
   ctx.restore();
 }
 
-/** Waits for the bundled fonts the image uses (where the Font Loading API exists). */
-export async function loadImageFonts(doc: Document = document): Promise<void> {
-  const fonts = (doc as Document & { fonts?: FontFaceSet }).fonts;
-  if (!fonts?.load) return;
-  await Promise.all(
-    [
-      `400 28px 'Noto Sans JP'`,
-      `500 28px 'Noto Sans JP'`,
-      `700 28px 'Noto Sans JP'`,
-      `500 28px 'Shippori Mincho'`,
-      `700 44px 'Shippori Mincho'`
-    ].map((f) => fonts.load(f, 'ッツ読書記録0123').catch(() => []))
-  );
-}
-
-/** Loads a cover for drawing; null when it can't be loaded in time. */
-export function loadCover(url: string | null, timeoutMs = 6000): Promise<HTMLImageElement | null> {
-  if (!url) return Promise.resolve(null);
-  return new Promise((resolve) => {
-    const img = new Image();
-    const timer = setTimeout(() => resolve(null), timeoutMs);
-    img.crossOrigin = 'anonymous';
-    img.onload = () => {
-      clearTimeout(timer);
-      resolve(img);
-    };
-    img.onerror = () => {
-      clearTimeout(timer);
-      resolve(null);
-    };
-    img.src = url;
-  });
-}
-
-function toPng(canvas: HTMLCanvasElement): Promise<Blob> {
-  return new Promise((resolve, reject) => {
-    try {
-      canvas.toBlob(
-        (blob) => (blob ? resolve(blob) : reject(new Error('No image data'))),
-        'image/png'
-      );
-    } catch (error) {
-      reject(error);
-    }
-  });
-}
-
 /**
  * The PNG of the image. If a cover made the canvas unreadable (served without CORS), the
  * image is drawn again with plain cards for the covers.
@@ -280,9 +231,9 @@ export async function renderStatsImage(
     return canvas;
   };
   try {
-    return await toPng(draw(covers));
+    return await canvasToPng(draw(covers));
   } catch {
     // A tainted canvas stays tainted: draw a fresh one without the cover images.
-    return toPng(draw(model.covers.map(() => null)));
+    return canvasToPng(draw(model.covers.map(() => null)));
   }
 }

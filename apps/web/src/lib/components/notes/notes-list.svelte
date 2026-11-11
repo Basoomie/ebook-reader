@@ -19,6 +19,8 @@
     faNoteSticky
   } from '@fortawesome/free-solid-svg-icons';
   import DropdownMenu from '$lib/components/dropdown-menu.svelte';
+  import QuoteImageDialog from '$lib/components/notes/quote-image-dialog.svelte';
+  import { dialogManager } from '$lib/data/dialog-manager';
   import ColorDot from '$lib/components/notes/color-dot.svelte';
   import { pagePath } from '$lib/data/env';
   import { downloadBlob } from '$lib/functions/download-blob';
@@ -106,6 +108,25 @@
 
   function exportBook(group: NotesBookGroup) {
     downloadBlob(notesCsvBlob([group]), notesCsvFileName(new Date(), group.info.title));
+  }
+
+  /** WP19d: the quote image dialog for one highlight. */
+  function openQuoteImage(item: HighlightItem, book: NotesBookInfo) {
+    dialogManager.dialogs$.next([
+      {
+        component: QuoteImageDialog,
+        props: {
+          content: {
+            text: item.text,
+            note: item.note?.body ?? null,
+            title: book.unknown ? '' : book.title,
+            author: (book.authors ?? []).join(', '),
+            color: item.color,
+            coverUrl: book.thumbnail ?? null
+          }
+        }
+      }
+    ]);
   }
 
   function edgeColor(color: HighlightColor) {
@@ -371,6 +392,17 @@
                       }}
                     >
                       {item.note ? 'Edit note' : 'Add note'}
+                    </button>
+                    <button
+                      type="button"
+                      class={menuItem}
+                      data-testid="notes-page-quote-image"
+                      on:click={() => {
+                        close();
+                        openQuoteImage(item, group.info);
+                      }}
+                    >
+                      Quote image
                     </button>
                     <div class="px-3 pt-1 text-xs font-medium text-c-muted">Colour</div>
                     <div class="flex items-center gap-0.5 px-1" role="group" aria-label="Colour">
