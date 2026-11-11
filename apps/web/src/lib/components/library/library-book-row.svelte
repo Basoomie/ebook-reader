@@ -4,7 +4,7 @@
   import { formatBookCharCount } from '$lib/library/char-counts';
   import { authorHref, bookDetailsHref } from '$lib/library/format';
   import { STATUS_LABELS, finishedReadThroughs, type BookState } from '$lib/sync/book-state';
-  import { faCheck, faStar } from '@fortawesome/free-solid-svg-icons';
+  import { faDownload, faStar } from '@fortawesome/free-solid-svg-icons';
   import { createEventDispatcher } from 'svelte';
   import Fa from 'svelte-fa';
   import CoverImage from './cover-image.svelte';
@@ -129,7 +129,7 @@
     </div>
     {#if book.source === 'upload'}
       <div
-        class="shrink-0 rounded-sm border border-current px-1 text-xs font-medium"
+        class="c-badge shrink-0 px-2"
         title="Uploaded (not in Calibre)"
         data-testid="uploaded-badge"
       >
@@ -137,8 +137,12 @@
       </div>
     {/if}
     {#if onDevice}
-      <div class="flex shrink-0 items-center gap-1 text-sm" title="Saved on this device">
-        <Fa icon={faCheck} />
+      <div
+        class="flex shrink-0 items-center gap-1.5 text-sm text-c-muted"
+        title="Saved on this device"
+        data-testid="on-device-badge"
+      >
+        <Fa icon={faDownload} />
         <span class="hidden sm:inline">On this device</span>
       </div>
     {/if}

@@ -18,7 +18,7 @@
     seriesNumber
   } from '$lib/library/format';
   import { STATUS_LABELS, type BookState } from '$lib/sync/book-state';
-  import { faCheck, faStar } from '@fortawesome/free-solid-svg-icons';
+  import { faCheck, faDownload, faStar } from '@fortawesome/free-solid-svg-icons';
   import { createEventDispatcher } from 'svelte';
   import Fa from 'svelte-fa';
   import CoverImage from './cover-image.svelte';
@@ -101,7 +101,7 @@
       {/if}
       {#if book.source === 'upload'}
         <span
-          class="absolute bottom-2 left-2 rounded-sm border border-gray-800 bg-white px-1 text-xs font-medium text-black"
+          class="c-badge absolute bottom-2 left-2 px-2"
           class:hidden={selectMode}
           title="Uploaded (not in Calibre)"
           data-testid="uploaded-badge"
@@ -110,11 +110,14 @@
         </span>
       {/if}
       {#if onDevice}
+        <!-- A download mark, not a tick: a tick read as "finished". -->
         <span
-          class="absolute bottom-2 right-2 rounded-sm bg-white px-1 text-xs text-black"
+          class="c-badge absolute bottom-2 right-2 text-[0.7rem]"
           title="Saved on this device"
+          data-testid="on-device-badge"
         >
-          <Fa icon={faCheck} />
+          <Fa icon={faDownload} />
+          <span class="sr-only">Saved on this device</span>
         </span>
       {/if}
     </div>

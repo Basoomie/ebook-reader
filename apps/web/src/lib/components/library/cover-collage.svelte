@@ -38,9 +38,7 @@
   </div>
   {#if anyHidden && !compact && shown.length > 1}
     <div class="pointer-events-none absolute inset-0 flex items-center justify-center">
-      <span class="rounded border border-current bg-white px-1.5 text-xs text-black"
-        >Hidden cover</span
-      >
+      <span class="c-badge px-2">Hidden cover</span>
     </div>
   {/if}
 </div>

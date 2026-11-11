@@ -29,9 +29,7 @@
   {#if blurred}
     <div class="absolute inset-0 flex items-center justify-center" data-testid="hidden-cover">
       {#if !compact}
-        <span class="rounded border border-current bg-white px-1.5 text-xs text-black">
-          Hidden cover
-        </span>
+        <span class="c-badge px-2"> Hidden cover </span>
       {/if}
     </div>
   {/if}
