@@ -284,18 +284,33 @@
     if (state?.status === 'completed') return null;
     const best = furthestPosition(book.id, state, positions.get(book.id) ?? [], book.charCount);
     if (!best) return null;
+    // Characters read: the saved place (the server counts with the reader's code), else
+    // the fraction of the book's count.
+    const charPos = best.record.data?.charPos;
+    const total = book.charCount;
+    const chars = total
+      ? {
+          read: Math.min(
+            total,
+            typeof charPos === 'number' && charPos >= 0
+              ? Math.round(charPos)
+              : Math.round(best.fraction * total)
+          ),
+          total
+        }
+      : null;
     let timeLeft: string | null = null;
-    if (statEntries && book.charCount && best.fraction < 1) {
+    if (statEntries && chars && best.fraction < 1) {
       const estimate = speedEstimate(
         book.id,
         statEntries,
         Math.max(1, Number($timeLeftRecentMinutes$) || 60) * 60,
         Math.max(0, Number($timeLeftMinMinutes$) || 0) * 60
       );
-      const seconds = secondsLeft(Math.round(book.charCount * (1 - best.fraction)), estimate);
+      const seconds = secondsLeft(chars.total - chars.read, estimate);
       timeLeft = seconds === null ? null : formatTimeLeft(seconds);
     }
-    return { fraction: best.fraction, timeLeft };
+    return { fraction: best.fraction, chars, timeLeft };
   };
 
   /** Statistics never block Home: without them the hero has no time left. */

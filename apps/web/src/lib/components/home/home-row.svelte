@@ -47,9 +47,12 @@
   /** WP19b: show the first book large (Continue reading). */
   export let hero = false;
   /** The hero's progress (100% included) and time left, or null when nothing is known. */
-  export let heroProgressOf: (
-    book: CatalogBook
-  ) => { fraction: number; timeLeft: string | null } | null = () => null;
+  export let heroProgressOf: (book: CatalogBook) => {
+    fraction: number;
+    /** Characters read and the book's count, when the count is known. */
+    chars: { read: number; total: number } | null;
+    timeLeft: string | null;
+  } | null = () => null;
 
   const dispatch = createEventDispatcher<{
     open: CatalogBook;
@@ -66,7 +69,12 @@
   $: strip = heroBook ? books.slice(1) : books;
   $: heroProgress = heroBook ? heroProgressOf(heroBook) : null;
   $: heroInfo = heroBook
-    ? [heroBook.series?.name ?? '', seriesNumber(heroBook), formatBookCharCount(heroBook)]
+    ? [
+        heroBook.series?.name ?? '',
+        seriesNumber(heroBook),
+        // The progress line shows the count when it is known.
+        heroProgress?.chars ? '' : formatBookCharCount(heroBook)
+      ]
         .filter(Boolean)
         .join(' · ')
     : '';
@@ -149,9 +157,15 @@
               />
             </div>
             <p class="text-xs text-c-muted" data-testid="home-hero-progress">
-              {Math.floor(heroProgress.fraction * 100)}%{heroProgress.timeLeft
-                ? ` · ${heroProgress.timeLeft} left`
-                : ''}
+              {[
+                heroProgress.chars
+                  ? `${heroProgress.chars.read.toLocaleString('en')} / ${heroProgress.chars.total.toLocaleString('en')} chars`
+                  : '',
+                `${Math.floor(heroProgress.fraction * 100)}%`,
+                heroProgress.timeLeft ? `${heroProgress.timeLeft} left` : ''
+              ]
+                .filter(Boolean)
+                .join(' · ')}
             </p>
           {/if}
           <div class="mt-auto pt-1">

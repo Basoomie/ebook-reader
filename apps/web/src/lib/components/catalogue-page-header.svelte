@@ -18,6 +18,9 @@
   export let jp: string;
   export let title: string;
   export let titleTestid = '';
+
+  /** Long titles (series, collections) a step smaller, so they fit beside the search box. */
+  $: long = [...title].length > 12;
 </script>
 
 <div class="flex flex-wrap items-end justify-between gap-x-8 gap-y-3 pb-4 pt-6">
@@ -28,7 +31,9 @@
     </div>
     <div class="flex min-w-0 flex-wrap items-baseline gap-x-4 gap-y-1">
       <h1
-        class="break-words font-mincho text-3xl font-bold leading-tight sm:text-[2.75rem]"
+        class="c-header-title break-words font-mincho text-3xl font-bold leading-tight {long
+          ? 'sm:text-[2.25rem]'
+          : 'sm:text-[2.75rem]'}"
         data-testid={titleTestid || undefined}
       >
         {title}
@@ -45,5 +50,11 @@
      than 20rem. */
   .c-header-main {
     flex: 1 1 20rem;
+  }
+
+  /* A title that still wraps splits into even lines, not one character on a line of its
+     own (browsers without text-wrap: balance wrap as before). */
+  .c-header-title {
+    text-wrap: balance;
   }
 </style>
