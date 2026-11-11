@@ -1471,7 +1471,7 @@
           </div>
         {/if}
       </svelte:fragment>
-      <div class="flex w-full min-w-0 flex-col sm:w-[24rem] lg:w-[28rem]">
+      <div class="flex w-full min-w-0 flex-col sm:w-[22rem] lg:w-[24rem]">
         <form
           class="flex w-full min-w-0 items-stretch gap-2"
           role="search"
