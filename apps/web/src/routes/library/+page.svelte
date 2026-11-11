@@ -1390,182 +1390,168 @@
           <span class="text-sm text-c-muted" data-testid="result-count">Counting…</span>
         {/if}
       </span>
-      <form
-        class="flex w-full min-w-0 items-stretch gap-2 sm:w-auto sm:min-w-[22rem] lg:min-w-[26rem]"
-        role="search"
-        on:submit|preventDefault={search}
-      >
-        <label class="c-input flex min-w-0 grow items-center gap-2">
-          <span class="text-c-muted" aria-hidden="true"><Fa icon={faMagnifyingGlass} /></span>
-          <span class="sr-only">Search the library</span>
-          <input
-            class="w-full min-w-0 border-0 bg-transparent p-0 text-sm focus:ring-0"
-            type="search"
-            enterkeyhint="search"
-            autocapitalize="off"
-            spellcheck="false"
-            placeholder="Title, author or series — or author: tag: chars:<100000 …"
-            aria-invalid={queryError ? 'true' : undefined}
-            aria-describedby={queryError ? 'library-query-error' : undefined}
-            data-testid="library-search"
-            bind:value={queryInput}
-            bind:this={searchInput}
-          />
-        </label>
-        <button class="c-btn c-btn-secondary px-4" type="submit" title="Search">
-          <Fa icon={faMagnifyingGlass} />
-          <span class="sr-only">Search</span>
-        </button>
-      </form>
-    </CataloguePageHeader>
-    <div class="flex flex-wrap items-center justify-between gap-x-4 pb-1 text-sm">
-      {#if queryError}
-        <p
-          id="library-query-error"
-          class="font-medium text-c-seal"
-          role="alert"
-          data-testid="query-error"
-        >
-          {queryError}
-        </p>
-      {:else}
-        <span />
-      {/if}
-      <div class="flex flex-wrap items-center gap-x-4">
-        {#if appliedQuery && collectionId === null && !queryError}
-          <button
-            class="c-link min-h-[2.75rem]"
-            type="button"
-            data-testid="save-search"
-            on:click={saveSearch}
+      <svelte:fragment slot="back">
+        {#if collectionId !== null}
+          <a class="c-link inline-flex min-h-[2.75rem] items-center" href="{pagePath}/collections">
+            ← Collections
+          </a>
+        {:else if group}
+          <a
+            class="c-link inline-flex min-h-[2.75rem] items-center"
+            href={urlFor({ tab, q: appliedQuery, lib: appliedLibrary })}
+            data-sveltekit-noscroll
           >
-            Save as smart collection
-          </button>
+            ← {BACK_LABEL[group.by].replace(/^Back to /, '')}
+          </a>
+          <span class="sr-only">{BACK_LABEL[group.by]}</span>
         {/if}
-        <button class="c-link min-h-[2.75rem]" type="button" on:click={showSearchHelp}>
-          Search help
-        </button>
-      </div>
-    </div>
-
-    {#if collectionId !== null}
-      <div class="pb-3" data-testid="collection-header">
-        <a class="c-link inline-flex min-h-[3rem] items-center gap-2" href="{pagePath}/collections">
-          ← Collections
-        </a>
-        {#if collectionGone}
-          <p class="py-2 font-medium" data-testid="collection-gone">
-            This collection doesn't exist any more (it may have been deleted on another device).
-          </p>
-        {:else}
-          <p class="break-words text-sm text-c-muted" data-testid="collection-header-info">
-            {#if builtin}
-              Built-in · {builtin.query}
-            {:else if userCollection?.type === 'smart'}
-              Smart · {userCollection.query}
-            {:else if isList}
-              Manual · {plural(listIds.length, 'book', 'books')}
+      </svelte:fragment>
+      <svelte:fragment slot="sub">
+        {#if collectionId !== null}
+          <div
+            class="flex flex-wrap items-center gap-x-4 gap-y-2 pt-1"
+            data-testid="collection-header"
+          >
+            {#if collectionGone}
+              <p class="py-2 font-medium" data-testid="collection-gone">
+                This collection doesn't exist any more (it may have been deleted on another device).
+              </p>
+            {:else}
+              <p class="break-words text-sm text-c-muted" data-testid="collection-header-info">
+                {#if builtin}
+                  Built-in · {builtin.query}
+                {:else if userCollection?.type === 'smart'}
+                  Smart · {userCollection.query}
+                {:else if isList}
+                  Manual · {plural(listIds.length, 'book', 'books')}
+                {/if}
+              </p>
             {/if}
-          </p>
-          <div class="mt-2 flex flex-wrap gap-2">
-            {#if pinTarget}
-              <button class="c-btn c-btn-secondary" data-testid="pin-home" on:click={togglePin}>
-                {pinnedHere ? 'Unpin from Home' : 'Pin to Home'}
-              </button>
+          </div>
+        {:else if group}
+          <div class="flex flex-wrap items-center gap-x-4 gap-y-2 pt-1" data-testid="group-header">
+            {#if groupInfo}
+              <p class="text-sm text-c-muted" data-testid="group-header-info">
+                {[
+                  groupCount(groupInfo),
+                  groupInfo.bookIds
+                    ? `${seriesReadCount(groupInfo.bookIds, states)}/${groupInfo.bookCount} read`
+                    : '',
+                  groupInfo.by === 'series' ? formatGroupChars(groupInfo.chars) : ''
+                ]
+                  .filter(Boolean)
+                  .join(' · ')}
+              </p>
+            {:else if group.name === null}
+              <p class="text-sm text-c-muted">Books that are not part of a series.</p>
             {/if}
-            {#if userCollection}
-              {#if isList}
-                <button
-                  class="c-btn c-btn-secondary"
-                  aria-pressed={reorderMode}
-                  disabled={!canReorder || selectMode}
-                  title={appliedQuery ? 'Clear the search to reorder' : undefined}
-                  data-testid="reorder-mode"
-                  on:click={() => (reorderMode = !reorderMode)}
-                >
-                  {reorderMode ? 'Done' : 'Reorder'}
-                </button>
-              {/if}
-              <button
-                class="c-btn c-btn-secondary"
-                data-testid="collection-header-menu"
-                on:click={editCollection}
-              >
-                {userCollection.type === 'smart' ? 'Rename, change search…' : 'Rename, delete…'}
-              </button>
+            {#if pinTarget || headerTag !== null}
+              <div class="flex flex-wrap gap-2">
+                {#if pinTarget}
+                  <button
+                    class="c-btn c-btn-secondary min-h-[2.75rem] px-3 text-sm"
+                    data-testid="pin-home"
+                    on:click={togglePin}
+                  >
+                    {pinnedHere ? 'Unpin from Home' : 'Pin to Home'}
+                  </button>
+                {/if}
+                {#if headerTag !== null}
+                  <button
+                    class="c-btn c-btn-secondary min-h-[2.75rem] px-3 text-sm"
+                    aria-pressed={tagRules.has(headerTag)}
+                    data-testid="tag-blur-header"
+                    on:click={() => headerTag !== null && editTagCover(headerTag)}
+                  >
+                    Blur covers with this tag
+                  </button>
+                {/if}
+              </div>
             {/if}
           </div>
         {/if}
-      </div>
-    {:else if group}
-      <div class="pb-3" data-testid="group-header">
-        <a
-          class="c-link inline-flex min-h-[3rem] items-center gap-2"
-          href={urlFor({ tab, q: appliedQuery, lib: appliedLibrary })}
-          data-sveltekit-noscroll
+      </svelte:fragment>
+      <div class="flex w-full min-w-0 flex-col sm:w-[24rem] lg:w-[28rem]">
+        <form
+          class="flex w-full min-w-0 items-stretch gap-2"
+          role="search"
+          on:submit|preventDefault={search}
         >
-          ← {BACK_LABEL[group.by].replace(/^Back to /, '')}
-        </a>
-        <span class="sr-only">{BACK_LABEL[group.by]}</span>
-        {#if groupInfo}
-          <p class="text-sm text-c-muted" data-testid="group-header-info">
-            {[
-              groupCount(groupInfo),
-              groupInfo.bookIds
-                ? `${seriesReadCount(groupInfo.bookIds, states)}/${groupInfo.bookCount} read`
-                : '',
-              groupInfo.by === 'series' ? formatGroupChars(groupInfo.chars) : ''
-            ]
-              .filter(Boolean)
-              .join(' · ')}
-          </p>
-        {:else if group.name === null}
-          <p class="text-sm text-c-muted">Books that are not part of a series.</p>
-        {/if}
-        <div class="mt-2 flex flex-wrap gap-2">
-          {#if pinTarget}
-            <button class="c-btn c-btn-secondary" data-testid="pin-home" on:click={togglePin}>
-              {pinnedHere ? 'Unpin from Home' : 'Pin to Home'}
-            </button>
-          {/if}
-          {#if headerTag !== null}
-            <button
-              class="c-btn c-btn-secondary"
-              aria-pressed={tagRules.has(headerTag)}
-              data-testid="tag-blur-header"
-              on:click={() => headerTag !== null && editTagCover(headerTag)}
-            >
-              Blur covers with this tag
-            </button>
-          {/if}
-        </div>
-        {#if group.by === 'series' && group.name !== null && groupInfo?.bookIds}
-          <!-- Keyed: another series starts collapsed. -->
-          {#key group.name}
-            <SeriesHighlights
-              {api}
-              seriesName={group.name}
-              bookIds={groupInfo.bookIds}
-              eink={$einkMode$}
-              on:open={(ev) =>
-                open(
-                  ev.detail.book,
-                  ev.detail.highlight
-                    ? {
-                        bookId: ev.detail.book.id,
-                        highlightId: ev.detail.highlight.id,
-                        position: ev.detail.highlight.start
-                      }
-                    : undefined
-                )}
+          <label class="c-input flex min-w-0 grow items-center gap-2">
+            <span class="text-c-muted" aria-hidden="true"><Fa icon={faMagnifyingGlass} /></span>
+            <span class="sr-only">Search the library</span>
+            <input
+              class="w-full min-w-0 border-0 bg-transparent p-0 text-sm focus:ring-0"
+              type="search"
+              enterkeyhint="search"
+              autocapitalize="off"
+              spellcheck="false"
+              placeholder="Title, author or series — or author: tag: chars:<100000 …"
+              aria-invalid={queryError ? 'true' : undefined}
+              aria-describedby={queryError ? 'library-query-error' : undefined}
+              data-testid="library-search"
+              bind:value={queryInput}
+              bind:this={searchInput}
             />
-          {/key}
+          </label>
+          <button class="c-btn c-btn-secondary px-4" type="submit" title="Search">
+            <Fa icon={faMagnifyingGlass} />
+            <span class="sr-only">Search</span>
+          </button>
+        </form>
+        {#if queryError}
+          <p
+            id="library-query-error"
+            class="pt-2 text-sm font-medium text-c-seal"
+            role="alert"
+            data-testid="query-error"
+          >
+            {queryError}
+          </p>
         {/if}
+        <div class="flex flex-wrap items-center justify-end gap-x-4 text-sm">
+          {#if appliedQuery && collectionId === null && !queryError}
+            <button
+              class="c-link min-h-[2.75rem]"
+              type="button"
+              data-testid="save-search"
+              on:click={saveSearch}
+            >
+              Save as smart collection
+            </button>
+          {/if}
+          <button class="c-link min-h-[2.75rem]" type="button" on:click={showSearchHelp}>
+            Search help
+          </button>
+        </div>
       </div>
+    </CataloguePageHeader>
+
+    {#if group && group.by === 'series' && group.name !== null && groupInfo?.bookIds}
+      <!-- Keyed: another series starts collapsed. -->
+      {#key group.name}
+        <SeriesHighlights
+          {api}
+          seriesName={group.name}
+          bookIds={groupInfo.bookIds}
+          eink={$einkMode$}
+          on:open={(ev) =>
+            open(
+              ev.detail.book,
+              ev.detail.highlight
+                ? {
+                    bookId: ev.detail.book.id,
+                    highlightId: ev.detail.highlight.id,
+                    position: ev.detail.highlight.start
+                  }
+                : undefined
+            )}
+        />
+      {/key}
     {/if}
 
     <div
-      class="flex flex-wrap items-end justify-between gap-3 border-b pb-3 pt-2"
+      class="flex flex-wrap items-end justify-between gap-3 border-b pb-3"
       style="border-color: var(--c-gold)"
     >
       {#if collectionId === null}
@@ -1592,21 +1578,39 @@
             </a>
           {/each}
         </nav>
+      {:else if !collectionGone}
+        <div class="flex flex-wrap gap-2" data-testid="collection-actions">
+          {#if pinTarget}
+            <button class="c-btn c-btn-secondary px-3" data-testid="pin-home" on:click={togglePin}>
+              {pinnedHere ? 'Unpin from Home' : 'Pin to Home'}
+            </button>
+          {/if}
+          {#if userCollection}
+            {#if isList}
+              <button
+                class="c-btn c-btn-secondary px-3"
+                aria-pressed={reorderMode}
+                disabled={!canReorder || selectMode}
+                title={appliedQuery ? 'Clear the search to reorder' : undefined}
+                data-testid="reorder-mode"
+                on:click={() => (reorderMode = !reorderMode)}
+              >
+                {reorderMode ? 'Done' : 'Reorder'}
+              </button>
+            {/if}
+            <button
+              class="c-btn c-btn-secondary px-3"
+              data-testid="collection-header-menu"
+              on:click={editCollection}
+            >
+              {userCollection.type === 'smart' ? 'Rename, change search…' : 'Rename, delete…'}
+            </button>
+          {/if}
+        </div>
       {:else}
         <span />
       {/if}
-      <div class="flex flex-wrap items-center gap-2 text-sm">
-        {#if enabledLibraries.length > 1 && collectionId === null}
-          <label class="flex items-center gap-2">
-            <span class="text-c-muted">Library</span>
-            <select class="c-input text-sm" value={appliedLibrary} on:change={pickLibrary}>
-              <option value="">All libraries</option>
-              {#each enabledLibraries as lib (lib.id)}
-                <option value={lib.id}>{lib.name}</option>
-              {/each}
-            </select>
-          </label>
-        {/if}
+      <div class="flex flex-wrap items-center gap-2 text-sm sm:ml-auto sm:justify-end">
         {#if !reorderMode}
           <LibrarySortMenu
             context={sortContext}
@@ -1646,27 +1650,40 @@
       </div>
     </div>
 
-    <div
-      class="c-strip -mx-1 flex gap-2 px-1 pb-3 pt-3 sm:flex-wrap"
-      role="group"
-      aria-label="Filters"
-    >
-      {#each CHIPS as chip (chip.id)}
-        <button
-          class="c-btn c-btn-secondary min-h-[2.75rem] shrink-0 rounded-full px-4 text-sm"
-          aria-pressed={chips.has(chip.id)}
-          disabled={chipsDisabled}
-          data-testid="chip-{chip.id}"
-          on:click={() => onChip(chip.id)}
-        >
-          {chip.label}
-          {#if chipCounts.has(chip.id) && collectionId === null}
-            <span class="text-xs opacity-80" data-testid="chip-count-{chip.id}"
-              >{chipCounts.get(chip.id)?.toLocaleString('en')}</span
-            >
-          {/if}
-        </button>
-      {/each}
+    <div class="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 pb-3 pt-3">
+      <div
+        class="c-strip -mx-1 flex max-w-full gap-2 px-1 sm:flex-wrap"
+        role="group"
+        aria-label="Filters"
+      >
+        {#each CHIPS as chip (chip.id)}
+          <button
+            class="c-btn c-btn-secondary min-h-[2.75rem] shrink-0 rounded-full px-4 text-sm"
+            aria-pressed={chips.has(chip.id)}
+            disabled={chipsDisabled}
+            data-testid="chip-{chip.id}"
+            on:click={() => onChip(chip.id)}
+          >
+            {chip.label}
+            {#if chipCounts.has(chip.id) && collectionId === null}
+              <span class="text-xs opacity-80" data-testid="chip-count-{chip.id}"
+                >{chipCounts.get(chip.id)?.toLocaleString('en')}</span
+              >
+            {/if}
+          </button>
+        {/each}
+      </div>
+      {#if enabledLibraries.length > 1 && collectionId === null}
+        <label class="ml-auto flex items-center gap-2 text-sm">
+          <span class="text-c-muted">Library</span>
+          <select class="c-input text-sm" value={appliedLibrary} on:change={pickLibrary}>
+            <option value="">All libraries</option>
+            {#each enabledLibraries as lib (lib.id)}
+              <option value={lib.id}>{lib.name}</option>
+            {/each}
+          </select>
+        </label>
+      {/if}
     </div>
 
     {#if indexerError}
