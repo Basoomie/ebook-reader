@@ -13,9 +13,10 @@ import {
   openCalibreBook,
   type ExistingBookQuestion,
   type OpenOutcome,
+  type OpenTarget,
   type OpenStage
 } from './open-calibre-book';
-import type { CatalogBook, CatalogLibrary } from './types';
+import type { CatalogLibrary } from './types';
 
 /**
  * Opening a catalog book from a page (Library, Home: WP7b), with the browser's
@@ -66,7 +67,7 @@ export function askPlaceholderBook(question: ExistingBookQuestion): Promise<bool
 }
 
 export function openCatalogBook(
-  book: Pick<CatalogBook, 'id' | 'title'>,
+  book: OpenTarget,
   api: LibraryApi,
   store: LibraryStore,
   libraries: readonly CatalogLibrary[],

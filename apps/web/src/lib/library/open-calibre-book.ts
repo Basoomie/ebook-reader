@@ -65,8 +65,16 @@ function fileNameFor(title: string): string {
   return `${title.replace(/[\\/:*?"<>|]/g, '_') || 'book'}.epub`;
 }
 
+/** The book to open; with its authors (when the caller has them) the link keeps them current. */
+export type OpenTarget = Pick<CatalogBook, 'id' | 'title'> & {
+  authors?: readonly { name: string }[];
+};
+
+const authorNames = (authors: readonly { name: string }[] | undefined) =>
+  authors?.map((a) => a.name).filter(Boolean);
+
 export async function openCalibreBook(
-  book: Pick<CatalogBook, 'id' | 'title'>,
+  book: OpenTarget,
   deps: OpenDeps,
   signal: AbortSignal,
   onStage: (stage: OpenStage) => void = () => {}
@@ -77,7 +85,14 @@ export async function openCalibreBook(
     const link = await deps.store.getLink(book.id);
     const linkedBook = link ? await deps.getLocalBook(link.localId) : undefined;
     const before = decideBeforeDownload(link, linkedBook);
-    if (before.kind === 'open') return { status: 'opened', localId: before.localId, how: 'cached' };
+    if (before.kind === 'open') {
+      // WP19d: keep the remembered authors current (never in the way of opening).
+      const names = authorNames(book.authors);
+      if (link && names && JSON.stringify(names) !== JSON.stringify(link.authors ?? null)) {
+        await deps.store.putLink({ ...link, authors: names }).catch(() => {});
+      }
+      return { status: 'opened', localId: before.localId, how: 'cached' };
+    }
     if (before.staleLink) await deps.store.deleteLink(book.id);
 
     // 2. Download and run the import pipeline.
@@ -183,7 +198,8 @@ export async function openCalibreBook(
       characters,
       fileEtag: etag,
       linkedAt: now(),
-      how
+      how,
+      authors: authorNames(detail.authors) ?? []
     });
     return { status: 'opened', localId, how };
   } catch (error) {

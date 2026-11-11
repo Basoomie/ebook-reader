@@ -10,10 +10,12 @@ import {
   DEFAULT_QUOTE_OPTIONS,
   drawQuoteImage,
   layoutQuote,
+  luminance,
   loadQuoteOptions,
   QUOTE_OPTIONS_KEY,
   QUOTE_SIZES,
   quoteImageFileName,
+  quoteColors,
   quotePalette,
   renderQuoteImage,
   saveQuoteOptions,
@@ -169,7 +171,7 @@ describe('drawQuoteImage', () => {
 
 describe('palettes, file name, remembered choices', () => {
   it('lightens the highlight colour for the tint background', () => {
-    expect(quotePalette('tint', 1).bg).toMatch(/^rgb\(/);
+    expect(quotePalette('tint', 1).bg).toMatch(/^#[0-9a-f]{6}$/);
     expect(quotePalette('paper', 3).accent).toBe('#3f8cf0');
     expect(quotePalette('navy', 1).ink).toBe('#f3ede0');
   });
@@ -205,5 +207,139 @@ describe('palettes, file name, remembered choices', () => {
     };
     expect(loadQuoteOptions(throwing)).toEqual(DEFAULT_QUOTE_OPTIONS);
     expect(() => saveQuoteOptions(picked, throwing)).not.toThrow();
+  });
+});
+
+describe('quote image choices (WP19d follow-up)', () => {
+  it('keeps a chosen quote size and cuts what does not fit', () => {
+    const { ctx } = recordingCtx();
+    const small = layoutQuote(ctx, content({ text: '取り出し' }), opts({ quoteSize: 40 }));
+    expect(small.size).toBe(40);
+    const huge = layoutQuote(ctx, content({ text: 'あ'.repeat(400) }), opts({ quoteSize: 120 }));
+    expect(huge.size).toBe(120);
+    expect(huge.lines[huge.lines.length - 1].endsWith('…')).toBe(true);
+    expect(huge.lines.length * huge.advance).toBeLessThanOrEqual(huge.box.height);
+    // Out of range: held to the slider's limits.
+    expect(layoutQuote(ctx, content(), opts({ quoteSize: 999 })).size).toBe(140);
+  });
+
+  it('works out the automatic colours and takes the picked ones', () => {
+    const light = quoteColors(opts({ background: 'custom', customBackground: '#fafafa' }), 1);
+    expect(light.bg).toBe('#fafafa');
+    expect(luminance(light.ink)).toBeLessThan(0.2);
+    const dark = quoteColors(opts({ background: 'custom', customBackground: '#102030' }), 1);
+    expect(luminance(dark.ink)).toBeGreaterThan(0.6);
+    const picked = quoteColors(
+      opts({
+        textColor: '#aa0000',
+        markColor: '#00aa00',
+        frame: 'card',
+        frameColor: '#0000aa',
+        cardColor: '#ffffff'
+      }),
+      1
+    );
+    expect(picked).toMatchObject({
+      ink: '#aa0000',
+      mark: '#00aa00',
+      frame: '#0000aa',
+      card: '#ffffff'
+    });
+    // The mark follows the highlight's colour by default.
+    expect(quoteColors(opts(), 3).mark).toBe('#3f8cf0');
+  });
+
+  it('gives a card a shade of the background and text to suit the card', () => {
+    const navyCard = quoteColors(opts({ background: 'navy', frame: 'card' }), 1);
+    expect(navyCard.card).toMatch(/^#/);
+    expect(luminance(navyCard.ink)).toBeGreaterThan(0.6);
+    const whiteCardOnNavy = quoteColors(
+      opts({ background: 'navy', frame: 'card', cardColor: '#ffffff' }),
+      1
+    );
+    expect(luminance(whiteCardOnNavy.ink)).toBeLessThan(0.2);
+    expect(quoteColors(opts({ frame: 'none' }), 1).card).toBeNull();
+  });
+
+  it('draws a frame inside the image and moves the content in', () => {
+    const none = recordingCtx();
+    drawQuoteImage(none.ctx, content(), opts({ frame: 'none' }), null);
+    expect(none.calls.some((c) => c.name === 'stroke')).toBe(false);
+    const card = recordingCtx();
+    drawQuoteImage(card.ctx, content(), opts({ frame: 'card', cardColor: '#ffffff' }), null);
+    expect(card.calls.filter((c) => c.name === 'stroke')).toHaveLength(1);
+    expect(card.calls.some((c) => c.name === 'set:fillStyle' && c.args[0] === '#ffffff')).toBe(
+      true
+    );
+    const { ctx } = recordingCtx();
+    expect(layoutQuote(ctx, content(), opts({ frame: 'line' })).box.left).toBeGreaterThan(
+      layoutQuote(ctx, content(), opts({ frame: 'none' })).box.left
+    );
+  });
+
+  it('draws the chosen quote mark', () => {
+    const quotes = recordingCtx();
+    drawQuoteImage(quotes.ctx, content(), opts({ mark: 'quotes' }), null);
+    expect(quotes.texts()).toContain('“');
+    const corner = recordingCtx();
+    drawQuoteImage(corner.ctx, content(), opts({ mark: 'corner' }), null);
+    expect(corner.texts()).toContain('「');
+    const none = recordingCtx();
+    drawQuoteImage(none.ctx, content(), opts({ mark: 'none' }), null);
+    expect(none.texts()).not.toContain('“');
+    // No mark: the quote starts higher.
+    const { ctx } = recordingCtx();
+    expect(layoutQuote(ctx, content(), opts({ mark: 'none' })).box.top).toBeLessThan(
+      layoutQuote(ctx, content(), opts({ mark: 'quotes' })).box.top
+    );
+  });
+
+  it('puts the book title in the file name', () => {
+    const now = new Date(2026, 10, 11, 9, 5);
+    expect(quoteImageFileName(now, '週に一度クラスメイトを買う話５')).toBe(
+      'ttsu-quote-週に一度クラスメイトを買う話５-2026-11-11-0905.png'
+    );
+    expect(quoteImageFileName(now, 'a/b: c')).toBe('ttsu-quote-a-b-c-2026-11-11-0905.png');
+    expect(quoteImageFileName(now, 'x\\y')).toBe('ttsu-quote-x-y-2026-11-11-0905.png');
+    expect(quoteImageFileName(now, '')).toBe('ttsu-quote-2026-11-11-0905.png');
+  });
+
+  it('remembers the new choices and drops invalid ones', () => {
+    const data = new Map<string, string>();
+    const storage = {
+      getItem: (k: string) => data.get(k) ?? null,
+      setItem: (k: string, v: string) => void data.set(k, v)
+    };
+    const picked = opts({
+      background: 'custom',
+      customBackground: '#123456',
+      quoteSize: 72,
+      textColor: '#000000',
+      mark: 'corner',
+      markColor: '#ff0000',
+      frame: 'card',
+      frameColor: '#cccccc',
+      cardColor: '#ffffff'
+    });
+    saveQuoteOptions(picked, storage);
+    expect(loadQuoteOptions(storage)).toEqual(picked);
+    data.set(
+      QUOTE_OPTIONS_KEY,
+      JSON.stringify({
+        quoteSize: 5,
+        textColor: 'red',
+        mark: 'stars',
+        frame: 'box',
+        customBackground: '#zzz'
+      })
+    );
+    const loaded = loadQuoteOptions(storage);
+    expect(loaded).toMatchObject({
+      quoteSize: null,
+      textColor: null,
+      mark: 'line',
+      frame: 'none',
+      customBackground: DEFAULT_QUOTE_OPTIONS.customBackground
+    });
   });
 });

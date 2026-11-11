@@ -29,7 +29,16 @@ describe('breakLines', () => {
   it('hangs closing punctuation on the line before', () => {
     expect(breakLines('あいうえお。かき', 50, tens)).toEqual(['あいうえお。', 'かき']);
     expect(breakLines('あいうえお」かき', 50, tens)).toEqual(['あいうえお」', 'かき']);
-    expect(breakLines('あいうえおーか', 50, tens)).toEqual(['あいうえおー', 'か']);
+  });
+
+  it('takes the last character along for small kana and ー (nothing runs past the width)', () => {
+    expect(breakLines('あいうえおーか', 50, tens)).toEqual(['あいうえ', 'おーか']);
+    expect(breakLines('マグカップ取っ', 60, tens)).toEqual(['マグカップ', '取っ']);
+    expect(breakLines('あいうえおっっか', 50, tens)).toEqual(['あいうえ', 'おっっか']);
+    for (const line of breakLines('取ってー」と宮城が言った。それから少し黙って', 50, tens)) {
+      // Only 、。 and closing brackets may hang one past.
+      expect(tens(line) <= 50 || /[、。」]$/.test(line)).toBe(true);
+    }
   });
 
   it('moves an opening bracket to the next line', () => {

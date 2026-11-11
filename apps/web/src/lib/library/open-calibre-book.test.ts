@@ -163,12 +163,46 @@ describe('openCalibreBook', () => {
       characters: stored[0].characters,
       fileEtag: '"etag-a"',
       linkedAt: 5000,
-      how: 'imported'
+      how: 'imported',
+      authors: []
     });
 
     const second = await openCalibreBook({ id: 'a', title: 'A' }, d, signal());
     expect(second).toEqual({ status: 'opened', localId, how: 'cached' });
     expect(downloads).toEqual(['a']);
+  });
+
+  it('remembers the authors on the link and keeps them current (WP19d)', async () => {
+    const { d } = deps(
+      { w: EPUB },
+      {
+        api: {
+          book: async (id) => ({
+            ...detail(id, `uuid-${id}`),
+            authors: [
+              { name: '羽田 宇佐', sort: null },
+              { name: 'U35', sort: null }
+            ]
+          }),
+          downloadFile: async () => ({ blob: new Blob([new Uint8Array(EPUB)]), etag: null })
+        }
+      }
+    );
+    await openCalibreBook({ id: 'w', title: 'W' }, d, signal());
+    expect((await store.getLink('w'))?.authors).toEqual(['羽田 宇佐', 'U35']);
+
+    // Opened again from a list that knows newer authors: the link follows.
+    const again = await openCalibreBook(
+      { id: 'w', title: 'W', authors: [{ name: '羽田宇佐' }] },
+      d,
+      signal()
+    );
+    expect(again).toMatchObject({ status: 'opened', how: 'cached' });
+    expect((await store.getLink('w'))?.authors).toEqual(['羽田宇佐']);
+
+    // Without authors (a caller that doesn't know them) nothing changes.
+    await openCalibreBook({ id: 'w', title: 'W' }, d, signal());
+    expect((await store.getLink('w'))?.authors).toEqual(['羽田宇佐']);
   });
 
   it('links a manually imported copy without changing it', async () => {

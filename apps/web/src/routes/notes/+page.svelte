@@ -259,7 +259,8 @@
     opening = { title: book.title, stage: null, controller };
     try {
       const outcome = await openCatalogBook(
-        { id: book.id, title: book.title },
+        // WP19d: with the authors, so the link keeps them for quote images in the reader.
+        { id: book.id, title: book.title, authors: (book.authors ?? []).map((name) => ({ name })) },
         api,
         store,
         libraries,

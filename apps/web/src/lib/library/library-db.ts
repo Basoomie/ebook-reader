@@ -53,6 +53,12 @@ export interface CalibreLink {
   linkedAt: number;
   /** imported = saved from the Calibre file; matched = an existing local book was linked. */
   how: 'imported' | 'matched';
+  /**
+   * WP19d: the catalog's author names, for quote images made in the reader (which knows
+   * no authors). Written when the book is opened from the library and refreshed whenever
+   * the server is asked again; missing on older links.
+   */
+  authors?: string[];
 }
 
 interface LibraryDbSchema extends DBSchema {
