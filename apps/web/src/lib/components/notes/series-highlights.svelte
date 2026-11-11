@@ -56,6 +56,7 @@
               series: book.series,
               charCount: book.charCount,
               authors: book.authors.map((a) => a.name),
+              thumbnail: book.thumbnail && api ? api.absolute(book.thumbnail) : null,
               // A book the server didn't return (unknownCatalogBook): no details page.
               unknown: book.libraryId ? undefined : true
             }
