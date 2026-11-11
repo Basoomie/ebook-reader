@@ -539,6 +539,29 @@ html.catalogue.eink .mdc-elevation--z24 button.border-current:not(:disabled):act
     box-shadow: var(--c-pop-shadow);
     color: var(--c-ink);
   }
+
+  /* A picked option that keeps its own colours (a theme on the Settings page): a ring
+     instead of the fill. */
+  .c-picked-ring {
+    outline: 3px solid var(--c-link);
+    outline-offset: 2px;
+  }
+}
+
+/* Settings > Data: the old sync's storage-source list keeps its own markup (it can't pass
+   the commit hook's formatter); these give it the Archive look. */
+.c-settings-sources h1 {
+  @apply font-mincho text-lg font-bold;
+}
+
+.c-settings-sources hr {
+  border-width: 0 0 1px;
+  border-color: var(--c-gold);
+}
+
+.c-settings-sources button {
+  min-height: 3rem;
+  color: var(--c-link);
 }
 
 /* WP10c: matches of the last in-book search on the page you jumped to (CSS Custom
