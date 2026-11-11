@@ -84,39 +84,6 @@
   let selectedStreak = HeatmapStreakType.NONE;
   let selectedStreakDates = new Set<string>();
 
-  $: isAllTime = heatmapAggregration === HeatmapDataAggregration.ALL_TIME;
-
-  $: mapAggregationlabel = `(${isAllTime ? 'All Time' : heatmapYear})`;
-
-  $: typeLabel = heatmapType === HeatmapType.STATISTICS ? 'day' : 'goal';
-
-  $: daysReadLabel = `Days read ${mapAggregationlabel}:`;
-
-  $: readingGoalsCompletedLabel = `100% completed ${mapAggregationlabel}:`;
-
-  $: longestStreaksLabel = currentHeatmapData
-    ? `Longest ${pluralize(currentHeatmapData.longestStreaks.length, 'Streak', false)} ${mapAggregationlabel}:`
-    : '';
-
-  $: longestStreaksDuration = currentHeatmapData?.longestStreaks[0]?.duration || 0;
-
-  $: longestStreaksCount =
-    currentHeatmapData && longestStreaksDuration
-      ? ` (${pluralize(currentHeatmapData.longestStreaks.length, 'Time')})`
-      : '';
-
-  $: longestStreaksDays = `${longestStreaksDuration} ${pluralize(
-    longestStreaksDuration,
-    typeLabel,
-    false
-  )}`;
-
-  $: currentStreakLabel = `Current Streak ${mapAggregationlabel}:`;
-
-  $: currentStreakDays = currentHeatmapData
-    ? pluralize(currentHeatmapData.currentStreak.duration, typeLabel)
-    : '';
-
   $: heatmapLabel = `Reading ${
     heatmapType === HeatmapType.STATISTICS ? '' : 'Goals '
   }Data for ${heatmapYear}`;
@@ -1107,6 +1074,41 @@
 
     return { currentReadingGoalWindow, initialReadingGoalUsed, statisticsHeatmapDay };
   }
+
+  // Summary labels (formerly {@const}). Kept last: they must run after the reactive blocks
+  // above, which refresh currentHeatmapData synchronously in the same update.
+  $: isAllTime = heatmapAggregration === HeatmapDataAggregration.ALL_TIME;
+
+  $: mapAggregationlabel = `(${isAllTime ? 'All Time' : heatmapYear})`;
+
+  $: typeLabel = heatmapType === HeatmapType.STATISTICS ? 'day' : 'goal';
+
+  $: daysReadLabel = `Days read ${mapAggregationlabel}:`;
+
+  $: readingGoalsCompletedLabel = `100% completed ${mapAggregationlabel}:`;
+
+  $: longestStreaksLabel = currentHeatmapData
+    ? `Longest ${pluralize(currentHeatmapData.longestStreaks.length, 'Streak', false)} ${mapAggregationlabel}:`
+    : '';
+
+  $: longestStreaksDuration = currentHeatmapData?.longestStreaks[0]?.duration || 0;
+
+  $: longestStreaksCount =
+    currentHeatmapData && longestStreaksDuration
+      ? ` (${pluralize(currentHeatmapData.longestStreaks.length, 'Time')})`
+      : '';
+
+  $: longestStreaksDays = `${longestStreaksDuration} ${pluralize(
+    longestStreaksDuration,
+    typeLabel,
+    false
+  )}`;
+
+  $: currentStreakLabel = `Current Streak ${mapAggregationlabel}:`;
+
+  $: currentStreakDays = currentHeatmapData
+    ? pluralize(currentHeatmapData.currentStreak.duration, typeLabel)
+    : '';
 </script>
 
 {$resizeHandler$ ?? ''}
@@ -1266,7 +1268,7 @@
   </button>
 </div>
 {#if currentHeatmapData}
-  <div class="hidden grid-cols-3 justify-center mt-4 text-center text-sm sm:grid">
+  <div class="hidden grid-cols-3 items-center justify-center mt-4 text-center text-sm sm:grid">
     {#if checkIsStatisticsHeatmapData(currentHeatmapData)}
       <div>{daysReadLabel}</div>
     {:else}
@@ -1338,7 +1340,7 @@
       </button>
     </div>
   </div>
-  <div class="grid grid-cols-[auto_auto] gap-y-2 mt-4 text-xs sm:hidden">
+  <div class="grid grid-cols-[auto_auto] items-center gap-y-2 mt-4 text-xs sm:hidden">
     {#if checkIsStatisticsHeatmapData(currentHeatmapData)}
       <div>{daysReadLabel}</div>
       <div>{currentHeatmapData.daysRead}</div>

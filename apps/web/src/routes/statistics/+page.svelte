@@ -69,6 +69,8 @@
   const DAYS_PER_PAGE = 14;
   const solid = 'border-gray-800 bg-gray-800 text-white';
   const control = 'min-h-[3rem] rounded border-2 border-current bg-white px-3';
+  /** A filled button: its own classes, never combined with `control` (bg-white would win). */
+  const primary = 'min-h-[3rem] rounded border-2 border-gray-800 bg-gray-800 px-3 text-white';
   const stats = statsApi();
 
   let entries: StatEntry[] = [];
@@ -422,7 +424,7 @@
         To
         <input class={control} type="date" bind:value={customTo} />
       </label>
-      <button class="{control} {solid}" type="submit">Show</button>
+      <button class={primary} type="submit">Show</button>
     </form>
   {/if}
   <div class="flex items-center gap-2 pt-2">
@@ -574,7 +576,7 @@
     <!-- Copy for TMW -->
     <div class="flex flex-wrap items-center gap-2 pt-3">
       <button
-        class="{control} {solid}"
+        class={primary}
         data-testid="stats-save-image"
         disabled={imageBusy}
         on:click={saveImage}
@@ -784,7 +786,7 @@
                           data-testid="stats-correct-chars"
                         />
                       </label>
-                      <button class="{control} {solid}" type="submit">Save</button>
+                      <button class={primary} type="submit">Save</button>
                       <button class={control} type="button" on:click={() => (editing = null)}>
                         Cancel
                       </button>
