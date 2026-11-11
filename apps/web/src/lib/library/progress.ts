@@ -63,6 +63,21 @@ export function bookProgressLabel(
   return best ? `${Math.floor(best.fraction * 100)}%` : null;
 }
 
+/**
+ * WP19b: the bar under a cover: how far into the current read (0-1, furthestPosition),
+ * only while a book is part-read (null when unread, at the very start, or Completed).
+ */
+export function bookProgressFraction(
+  bookId: string,
+  state: BookState | undefined,
+  positions: readonly LocalRecord[],
+  charCount: number | null
+): number | null {
+  if (state?.status === 'completed') return null;
+  const best = furthestPosition(bookId, state, positions, charCount);
+  return best && best.fraction > 0 && best.fraction < 1 ? best.fraction : null;
+}
+
 /** Positions grouped by book, for many books at once. */
 export function positionsByBook(records: readonly LocalRecord[]): Map<string, LocalRecord[]> {
   const out = new Map<string, LocalRecord[]>();

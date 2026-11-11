@@ -28,8 +28,8 @@
     drop: { book: CatalogBook; index: number };
     more: CatalogBook;
   }>();
-  const iconButton =
-    'flex h-12 w-12 shrink-0 items-center justify-center rounded border-2 border-current disabled:opacity-40';
+  // WP19b: the catalogue buttons.
+  const iconButton = 'c-btn c-btn-secondary h-12 w-12 shrink-0 p-0';
 
   let list: HTMLElement | undefined;
   let sortable: Sortable | null = null;
@@ -96,7 +96,7 @@
     <!-- Focusable so Alt+Up/Down can move the row (the buttons do the same). -->
     <!-- svelte-ignore a11y-no-noninteractive-tabindex a11y-no-noninteractive-element-interactions -->
     <li
-      class="flex items-center gap-2 border-b border-gray-400/40 py-2 outline-offset-2"
+      class="flex items-center gap-2 border-b border-c-line py-2 outline-offset-2"
       tabindex="0"
       data-reorder-id={book.id}
       data-testid="reorder-row"
@@ -112,13 +112,13 @@
           <Fa icon={faGripVertical} />
         </span>
       {/if}
-      <span class="w-8 shrink-0 text-right text-sm opacity-75">{i + 1}</span>
-      <div class="h-[60px] w-10 shrink-0">
+      <span class="w-8 shrink-0 text-right text-sm text-c-muted">{i + 1}</span>
+      <div class="c-cover h-[60px] w-10 shrink-0 overflow-hidden rounded-sm">
         <CoverImage src={thumbnailUrl(book)} blurred={blurred(book)} compact />
       </div>
       <div class="min-w-0 grow">
-        <div class="line-clamp-2 font-medium">{book.title}</div>
-        <div class="truncate text-sm opacity-75">
+        <div class="line-clamp-2 font-mincho font-bold">{book.title}</div>
+        <div class="truncate text-sm text-c-muted">
           {book.authors.map((a) => a.name).join(', ')}
         </div>
       </div>

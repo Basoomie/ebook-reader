@@ -4,6 +4,7 @@
   import { page } from '$app/stores';
   import AppBottomBar from '$lib/components/app-nav/app-bottom-bar.svelte';
   import AppHeader from '$lib/components/app-nav/app-header.svelte';
+  import CataloguePageHeader from '$lib/components/catalogue-page-header.svelte';
   import { canLoadWhenVisible, loadWhenVisible } from '$lib/components/load-when-visible';
   import { libraryAutoLoad$ } from '$lib/library/settings';
   import {
@@ -58,8 +59,8 @@
 
   const PAGE_BOOKS = 20;
   const LOOKUP_CHUNK = 100;
-  const solid = 'border-gray-800 bg-gray-800 text-white';
-  const control = 'min-h-[3rem] rounded border-2 border-current bg-white px-3';
+  // WP19b: the catalogue look.
+  const control = 'c-input';
   const store = getLibraryStore();
   const notes = notesApi();
 
@@ -251,8 +252,17 @@
 <AppHeader title="Notes" />
 
 <div class="{pxScreen} pb-24 pt-16 xl:pt-14" data-testid="notes-page">
-  <div class="flex flex-wrap items-center gap-2 pb-2 pt-3">
-    <label class="flex w-full flex-col text-sm sm:w-auto">
+  <CataloguePageHeader jp="抜き書き" title="Notes">
+    <span slot="meta" class="text-sm text-c-muted">
+      {#if loaded && groups.length}
+        {groups.length}
+        {groups.length === 1 ? 'book' : 'books'} · {highlightTotal}
+        {highlightTotal === 1 ? 'highlight' : 'highlights'}
+      {/if}
+    </span>
+  </CataloguePageHeader>
+  <div class="flex flex-wrap items-end gap-3 pb-2 pt-2">
+    <label class="flex w-full flex-col gap-1 text-sm text-c-muted sm:w-auto">
       Book
       <select
         class="{control} max-w-full sm:max-w-[18rem]"
@@ -266,7 +276,7 @@
         {/each}
       </select>
     </label>
-    <label class="flex w-full flex-col text-sm sm:w-auto">
+    <label class="flex w-full flex-col gap-1 text-sm text-c-muted sm:w-auto">
       Series
       <select
         class="{control} max-w-full sm:max-w-[18rem]"
@@ -286,7 +296,7 @@
   <div class="flex flex-wrap items-center gap-2 pb-3" role="group" aria-label="Show colors">
     {#each HIGHLIGHT_COLORS as color}
       <button
-        class="flex min-h-[3rem] min-w-[3rem] items-center justify-center rounded border-2 border-current"
+        class="c-btn c-btn-secondary w-12 px-0"
         aria-pressed={filter.colors.has(color)}
         class:outline={filter.colors.has(color)}
         class:outline-4={filter.colors.has(color)}
@@ -299,9 +309,7 @@
       </button>
     {/each}
     <button
-      class="min-h-[3rem] rounded border-2 px-3 text-sm {filter.unplacedOnly
-        ? solid
-        : 'border-current'}"
+      class="c-btn c-btn-secondary px-3 text-sm"
       aria-pressed={filter.unplacedOnly}
       data-testid="notes-filter-unplaced"
       on:click={() => setFilter({ ...filter, unplacedOnly: !filter.unplacedOnly })}
@@ -310,7 +318,7 @@
     </button>
     {#if isFiltered(filter)}
       <button
-        class="min-h-[3rem] rounded border-2 border-current px-3 text-sm underline"
+        class="c-link min-h-[3rem] px-2 text-sm"
         data-testid="notes-filter-clear"
         on:click={() =>
           setFilter({ book: null, series: null, colors: new Set(), unplacedOnly: false })}
@@ -321,16 +329,16 @@
   </div>
 
   {#if connection === null}
-    <p class="py-1 text-sm" data-testid="not-connected">
+    <p class="c-notice" data-testid="not-connected">
       This device isn't connected to the library server yet, so book titles may be missing.
-      <a class="underline" href="{pagePath}/library">Connect on the Library page</a>.
+      <a class="c-link" href="{pagePath}/library">Connect on the Library page</a>.
     </p>
   {/if}
   {#if infoError}
-    <p class="py-1 text-sm" role="alert" data-testid="notes-info-error">{infoError}</p>
+    <p class="c-notice" role="alert" data-testid="notes-info-error">{infoError}</p>
   {/if}
   {#if filter.unplacedOnly}
-    <p class="py-1 text-sm">
+    <p class="c-notice">
       Highlights this device couldn't find in its copy of the book (it checks when you open the
       book). They are kept as they were.
     </p>
@@ -338,7 +346,7 @@
 
   {#if loaded}
     {#if groups.length}
-      <p class="py-1 text-sm" data-testid="notes-summary">
+      <p class="pb-2 pt-1 text-sm text-c-muted" data-testid="notes-summary">
         {groups.length}
         {groups.length === 1 ? 'book' : 'books'} · {highlightTotal}
         {highlightTotal === 1 ? 'highlight' : 'highlights'}
@@ -364,7 +372,7 @@
       />
       {#if groups.length > shown && !autoLoad}
         <button
-          class="mt-3 min-h-[3rem] w-full rounded border-2 border-current px-4 font-medium"
+          class="c-btn c-btn-secondary mt-3 w-full"
           data-testid="notes-load-more"
           on:click={() => (shown += PAGE_BOOKS)}
         >
@@ -372,9 +380,9 @@
         </button>
       {/if}
     {:else if isFiltered(filter)}
-      <p class="py-6" data-testid="notes-empty">Nothing matches these filters.</p>
+      <p class="py-6 text-c-muted" data-testid="notes-empty">Nothing matches these filters.</p>
     {:else}
-      <p class="py-6" data-testid="notes-empty">
+      <p class="py-6 text-c-muted" data-testid="notes-empty">
         No highlights or notes yet. In a book, long-press text (or select it with the mouse) to
         highlight it; L shows a book's highlights and notes.
       </p>

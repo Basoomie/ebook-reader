@@ -12,9 +12,13 @@
   import AppHeader from '$lib/components/app-nav/app-header.svelte';
   import HomeRow, { type HomeRowView } from '$lib/components/home/home-row.svelte';
   import BookStateDialog from '$lib/components/library/book-state-dialog.svelte';
+  import AddToCollectionDialog from '$lib/components/collections/add-to-collection-dialog.svelte';
+  import CataloguePageHeader from '$lib/components/catalogue-page-header.svelte';
+  import { faMagnifyingGlass } from '@fortawesome/free-solid-svg-icons';
+  import Fa from 'svelte-fa';
   import LibraryOpenOverlay from '$lib/components/library/library-open-overlay.svelte';
   import MessageDialog from '$lib/components/message-dialog.svelte';
-  import { inputClasses, pxScreen } from '$lib/css-classes';
+  import { pxScreen } from '$lib/css-classes';
   import { dialogManager } from '$lib/data/dialog-manager';
   import { pagePath } from '$lib/data/env';
   import { logger } from '$lib/data/logger';
@@ -38,7 +42,7 @@
   import { getLibraryStore, type LibraryConnection } from '$lib/library/library-db';
   import type { OpenStage } from '$lib/library/open-calibre-book';
   import { openCatalogBook } from '$lib/library/open-from-catalog';
-  import { bookProgressLabel, positionsByBook } from '$lib/library/progress';
+  import { bookProgressFraction, bookProgressLabel, positionsByBook } from '$lib/library/progress';
   import { libraryInfoLine$, libraryRequestTimeoutSeconds$ } from '$lib/library/settings';
   import type { CatalogBook, CatalogLibrary } from '$lib/library/types';
   import type { BookState } from '$lib/sync/book-state';
@@ -253,11 +257,29 @@
   $: stateOf = (book: CatalogBook) => states.get(book.id);
   $: progressOf = (book: CatalogBook) =>
     bookProgressLabel(book.id, states.get(book.id), positions.get(book.id) ?? [], book.charCount);
+  $: fractionOf = (book: CatalogBook) =>
+    bookProgressFraction(
+      book.id,
+      states.get(book.id),
+      positions.get(book.id) ?? [],
+      book.charCount
+    );
   $: blurredOf = (book: CatalogBook) =>
     !revealed.has(book.id) && isCoverBlurred(states.get(book.id)?.blur, book.tags, tagRules);
 
   function reveal(book: CatalogBook) {
     revealed = new Set([...revealed, book.id]);
+  }
+
+  /** WP19b: "Add to collection…" from a book's ⋮ menu. */
+  function openAddToCollection(book: CatalogBook) {
+    dialogManager.dialogs$.next([
+      {
+        component: AddToCollectionDialog,
+        disableCloseOnClick: true,
+        props: { bookId: book.id, title: book.title, api: collections, resolver: () => {} }
+      }
+    ]);
   }
 
   function openBookState(book: CatalogBook) {
@@ -333,41 +355,50 @@
 <AppHeader title="Home" />
 
 <div class="{pxScreen} pb-24 pt-16 xl:pt-14" data-testid="home-page">
-  <div class="flex items-center justify-end gap-2 pt-3">
-    <button
-      class="min-h-[3rem] rounded border-2 px-4 font-medium {editing
-        ? 'border-gray-800 bg-gray-800 text-white'
-        : 'border-current'}"
-      aria-pressed={editing}
-      data-testid="home-edit"
-      on:click={() => {
-        editing = !editing;
-        if (!editing && api && ready) void loadAllRows(true);
-      }}
-    >
-      {editing ? 'Done' : 'Edit'}
-    </button>
-  </div>
+  <CataloguePageHeader jp="ホーム" title="Home">
+    <div class="flex items-center gap-2">
+      <a
+        class="c-btn c-btn-secondary w-12 px-0"
+        href="{pagePath}/library?search=1"
+        title="Search the library"
+        data-testid="home-search"
+      >
+        <Fa icon={faMagnifyingGlass} />
+        <span class="sr-only">Search the library</span>
+      </a>
+      <button
+        class="c-btn c-btn-secondary"
+        aria-pressed={editing}
+        data-testid="home-edit"
+        on:click={() => {
+          editing = !editing;
+          if (!editing && api && ready) void loadAllRows(true);
+        }}
+      >
+        {editing ? 'Done' : 'Edit'}
+      </button>
+    </div>
+  </CataloguePageHeader>
 
   {#if connection === undefined}
-    <p class="py-8">Loading…</p>
+    <p class="py-8 text-c-muted">Loading…</p>
   {:else if connection === null}
-    <p class="py-6" data-testid="home-not-connected">
+    <p class="c-notice" data-testid="home-not-connected">
       This device isn't connected to the library server yet.
-      <a class="underline" href="{pagePath}/library">Connect on the Library page</a>.
+      <a class="c-link" href="{pagePath}/library">Connect on the Library page</a>.
     </p>
   {/if}
 
   {#if editing}
     <section class="pt-3" data-testid="home-edit-list">
-      <p class="pb-3 text-sm">
+      <p class="pb-3 text-sm text-c-muted">
         Pin more rows with "Pin to Home" on a collection (Collections page) or on a series, author
         or tag (Library). Rows are kept on this device only.
       </p>
       <ul class="flex flex-col gap-2">
         {#each rows as row, i (rowKey(row))}
           <li
-            class="flex flex-wrap items-center gap-2 border-2 border-gray-800 p-2"
+            class="c-edit-row flex flex-wrap items-center gap-2 rounded p-2"
             data-testid="home-edit-row"
           >
             <span class="min-w-0 grow font-medium">
@@ -378,7 +409,7 @@
               {/if}
             </span>
             <button
-              class="min-h-[3rem] min-w-[3rem] rounded border-2 border-current disabled:opacity-40"
+              class="c-btn c-btn-secondary w-12 px-0"
               aria-label="Move up"
               disabled={i === 0}
               on:click={() => save(moveRow(rows, i, -1))}
@@ -386,7 +417,7 @@
               ↑
             </button>
             <button
-              class="min-h-[3rem] min-w-[3rem] rounded border-2 border-current disabled:opacity-40"
+              class="c-btn c-btn-secondary w-12 px-0"
               aria-label="Move down"
               disabled={i === rows.length - 1}
               on:click={() => save(moveRow(rows, i, 1))}
@@ -394,7 +425,7 @@
               ↓
             </button>
             <button
-              class="min-h-[3rem] rounded border-2 border-current px-3"
+              class="c-btn c-btn-secondary px-3"
               data-testid="home-row-toggle"
               on:click={() => showRow(i, !row.hidden)}
             >
@@ -402,7 +433,7 @@
             </button>
             {#if isPinnedRow(row)}
               <button
-                class="min-h-[3rem] rounded border-2 border-current px-3"
+                class="c-btn c-btn-secondary px-3"
                 data-testid="home-row-remove"
                 on:click={() => save(unpinRow(rows, row))}
               >
@@ -415,7 +446,7 @@
       <label class="flex items-center gap-3 pt-4">
         Books per row
         <input
-          class="{inputClasses.replace(/\s*\btransition\b/, '')} w-24"
+          class="c-input w-24"
           type="number"
           min="1"
           max="200"
@@ -439,17 +470,20 @@
           {thumbnailUrl}
           {stateOf}
           {progressOf}
+          {fractionOf}
           {blurredOf}
+          hero={row.type === 'continue'}
           {onDevice}
           {infoLine}
           on:open={(ev) => open(ev.detail)}
           on:reveal={(ev) => reveal(ev.detail)}
           on:state={(ev) => openBookState(ev.detail)}
+          on:collect={(ev) => openAddToCollection(ev.detail)}
           on:retry={() => loadRow(row)}
           on:openLocal={(ev) => goto(`${pagePath}/b?id=${ev.detail}`)}
         />
       {:else}
-        <p class="py-6">Every row is hidden. Use "Edit" to show some.</p>
+        <p class="py-6 text-c-muted">Every row is hidden. Use "Edit" to show some.</p>
       {/each}
     </div>
   {/if}
@@ -464,3 +498,10 @@
     on:cancel={() => opening?.controller.abort()}
   />
 {/if}
+
+<style>
+  .c-edit-row {
+    background-color: var(--c-raised);
+    border: var(--c-border-width) solid var(--c-line-strong);
+  }
+</style>

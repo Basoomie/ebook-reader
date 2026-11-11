@@ -43,5 +43,11 @@ export const libraryGroupSort$ = writableStringLocalStorageSubject()('libraryGro
  */
 export const libraryCoverSize$ = writableNumberLocalStorageSubject()('libraryCoverSize', 0);
 
+/**
+ * WP19b: light or dark for the catalogue pages: 'auto' (follow the reader theme), 'light'
+ * or 'dark'. See lib/data/catalogue-look.ts.
+ */
+export const libraryLook$ = writableStringLocalStorageSubject()('libraryLook', 'auto');
+
 /** WP19a: load the next page when the end of a list comes near (else a "Load more" button). */
 export const libraryAutoLoad$ = writableBooleanLocalStorageSubject()('libraryAutoLoad', true);

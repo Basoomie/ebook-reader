@@ -22,7 +22,7 @@
 
 <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/40" role="dialog">
   <div
-    class="mx-4 w-full max-w-md bg-white p-6 text-black"
+    class="c-panel mx-4 w-full max-w-md rounded p-6"
     aria-live="polite"
     data-testid="upload-progress"
   >

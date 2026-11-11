@@ -175,6 +175,21 @@ describe('startAppearanceEffects', () => {
     expect(r.classes.has('eink')).toBe(false);
   });
 
+  it('sets the catalogue dark class from Library Look or the reader theme (WP19b)', () => {
+    const s = { ...settings(), libraryLook: new BehaviorSubject('auto') };
+    const r = root();
+    const stop = startAppearanceEffects(s, undefined, r);
+    expect(r.classes.has('catalogue-dark')).toBe(false);
+    s.theme.next('dark-theme');
+    expect(r.classes.has('catalogue-dark')).toBe(true);
+    s.libraryLook.next('light');
+    expect(r.classes.has('catalogue-dark')).toBe(false);
+    s.theme.next('light-theme');
+    s.libraryLook.next('dark');
+    expect(r.classes.has('catalogue-dark')).toBe(true);
+    stop();
+  });
+
   it('never throws into the app', () => {
     const s = settings({ followSystemTheme: true });
     const bad = {

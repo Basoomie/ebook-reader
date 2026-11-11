@@ -28,6 +28,7 @@
   import SettingsServerFontsDialog from '$lib/components/settings/settings-server-fonts-dialog.svelte';
   import SettingsExportData from '$lib/components/settings/settings-export-data.svelte';
   import LibraryConnectionSettings from '$lib/components/library/library-connection-settings.svelte';
+  import { libraryLook$ } from '$lib/library/settings';
   import { customFontNames$ } from '$lib/fonts/server-fonts-browser';
   import { inputClasses } from '$lib/css-classes';
   import { BlurMode } from '$lib/data/blur-mode';
@@ -261,6 +262,13 @@
   const optionsForAppOpen: ToggleOption<AppOpenTarget>[] = [
     { id: 'last-book', text: 'Last book' },
     { id: 'home', text: 'Home' }
+  ];
+
+  // WP19b: light or dark for Home, Library, Collections, Notes and Stats.
+  const optionsForLibraryLook: ToggleOption<string>[] = [
+    { id: 'auto', text: 'Like the book' },
+    { id: 'light', text: 'Light' },
+    { id: 'dark', text: 'Dark' }
   ];
 
   const optionsForFuriganaStyle: ToggleOption<FuriganaStyle>[] = [
@@ -619,6 +627,12 @@
       tooltip="This device only: pure black on white everywhere, no grays, shadows or animations. The book ignores the theme while it is on."
     >
       <ButtonToggleGroup options={optionsForToggle} bind:selectedOptionId={$einkMode$} />
+    </SettingsItemGroup>
+    <SettingsItemGroup
+      title="Library Look"
+      tooltip="This device only: light or dark for Home, Library, Collections, Notes and Stats. 'Like the book' turns dark when the reader's theme is dark (also when it follows the system). E-ink always wins."
+    >
+      <ButtonToggleGroup options={optionsForLibraryLook} bind:selectedOptionId={$libraryLook$} />
     </SettingsItemGroup>
     <SettingsItemGroup title="Font family (Group 1)">
       <div slot="header" class="flex items-center">

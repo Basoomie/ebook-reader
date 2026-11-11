@@ -35,8 +35,8 @@
   const dispatch = createEventDispatcher<{
     open: { book: NotesBookInfo; highlight: HighlightItem | null };
   }>();
-  const smallButton =
-    'flex min-h-[2.75rem] min-w-[2.75rem] items-center justify-center rounded border-2 border-current px-3 text-sm';
+  // WP19b: the catalogue buttons (light, dark, E-ink).
+  const smallButton = 'c-btn c-btn-secondary min-h-[2.75rem] min-w-[2.75rem] px-3 text-sm';
 
   let editing: { key: string; target: NoteTarget; text: string } | undefined;
   let undo: { message: string; run: Undo } | undefined;
@@ -124,7 +124,7 @@
 </script>
 
 {#if undo}
-  <p class="sticky top-14 z-10 mb-2 flex items-center gap-3 bg-white py-1" role="status">
+  <p class="c-notice sticky top-14 z-10 mb-2 flex items-center gap-3" role="status">
     {undo.message}
     <button class={smallButton} data-testid="notes-undo" on:click={runUndo}>Undo</button>
   </p>
@@ -134,13 +134,15 @@
 {/if}
 
 {#each groups as group (group.info.id)}
-  <section class="border-t-2 border-gray-400/60 py-3" data-testid="notes-book">
+  <section class="c-notes-book mb-4 rounded px-4 py-3" data-testid="notes-book">
     {#if bookHeadings}
       <div class="flex flex-wrap items-start gap-2">
         <div class="min-w-0 flex-1">
-          <h3 class="font-medium" data-testid="notes-book-title">{group.info.title}</h3>
+          <h3 class="font-mincho text-lg font-bold" data-testid="notes-book-title">
+            {group.info.title}
+          </h3>
           {#if seriesLine(group.info)}
-            <p class="text-sm">{seriesLine(group.info)}</p>
+            <p class="text-sm text-c-muted">{seriesLine(group.info)}</p>
           {/if}
         </div>
         <button
@@ -154,8 +156,8 @@
     {/if}
 
     {#each group.highlights as { item, unplaced } (item.id)}
-      <article class="border-t border-gray-300 py-2" data-testid="notes-page-highlight">
-        <p class="text-sm">
+      <article class="c-notes-item border-t py-3" data-testid="notes-page-highlight">
+        <p class="text-sm text-c-muted">
           {placeLine(item, group.info)}
           {#if unplaced}
             · <b data-testid="notes-page-unplaced">Couldn't place in the current file</b>
@@ -171,7 +173,7 @@
             bind:value={editing.text}
             rows="4"
             aria-label="Note"
-            class="mt-2 w-full rounded border-2 border-current p-2"
+            class="c-input mt-2 w-full p-2"
             data-testid="notes-page-edit-text"
           />
           <div class="mt-2 flex justify-end gap-2">
@@ -181,10 +183,7 @@
             </button>
           </div>
         {:else if item.note}
-          <p
-            class="mt-1 whitespace-pre-wrap border-l-4 border-gray-500 pl-2 text-sm"
-            data-testid="notes-page-note"
-          >
+          <p class="c-quote mt-1 whitespace-pre-wrap pl-2 text-sm" data-testid="notes-page-note">
             {item.note.body}
           </p>
         {/if}
@@ -237,18 +236,18 @@
     {/each}
 
     {#if group.notes.length}
-      <h4 class="mt-2 border-t border-gray-300 pt-2 text-sm font-medium">Notes about this book</h4>
+      <h4 class="c-notes-item mt-2 border-t pt-3 font-mincho font-bold">Notes about this book</h4>
       {#each group.notes as note (note.id)}
         <article class="py-2" data-testid="notes-page-book-note">
           {#if note.quote}
-            <p class="border-l-4 border-gray-500 pl-2 text-sm">{note.quote}</p>
+            <p class="c-quote pl-2 text-sm">{note.quote}</p>
           {/if}
           {#if editing?.key === note.id}
             <textarea
               bind:value={editing.text}
               rows="4"
               aria-label="Note"
-              class="mt-2 w-full rounded border-2 border-current p-2"
+              class="c-input mt-2 w-full p-2"
               data-testid="notes-page-edit-text"
             />
             <div class="mt-2 flex justify-end gap-2">
@@ -283,3 +282,18 @@
     {/if}
   </section>
 {/each}
+
+<style>
+  .c-notes-book {
+    background-color: var(--c-raised);
+    border: var(--c-border-width) solid var(--c-line);
+  }
+
+  .c-notes-item {
+    border-color: var(--c-line);
+  }
+
+  .c-quote {
+    border-left: 4px solid var(--c-gold);
+  }
+</style>

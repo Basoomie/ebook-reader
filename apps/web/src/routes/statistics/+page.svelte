@@ -4,6 +4,7 @@
   import { page } from '$app/stores';
   import AppBottomBar from '$lib/components/app-nav/app-bottom-bar.svelte';
   import AppHeader from '$lib/components/app-nav/app-header.svelte';
+  import CataloguePageHeader from '$lib/components/catalogue-page-header.svelte';
   import { canLoadWhenVisible, loadWhenVisible } from '$lib/components/load-when-visible';
   import { libraryAutoLoad$ } from '$lib/library/settings';
   import { HeatmapType } from '$lib/components/statistics/statistics-heatmap/statistics-heatmap';
@@ -69,10 +70,10 @@
    */
 
   const DAYS_PER_PAGE = 14;
-  const solid = 'border-gray-800 bg-gray-800 text-white';
-  const control = 'min-h-[3rem] rounded border-2 border-current bg-white px-3';
+  // WP19b: the catalogue look (app.scss: buttons, fields and selects alike).
+  const control = 'c-ctl';
   /** A filled button: its own classes, never combined with `control` (bg-white would win). */
-  const primary = 'min-h-[3rem] rounded border-2 border-gray-800 bg-gray-800 px-3 text-white';
+  const primary = 'c-btn c-btn-primary px-3';
   const stats = statsApi();
 
   let entries: StatEntry[] = [];
@@ -376,6 +377,7 @@
 <AppHeader title="Stats" />
 
 <div class="{pxScreen} pb-24 pt-16 xl:pt-14" data-testid="stats-page">
+  <CataloguePageHeader jp="読書記録" title="Stats" />
   {#if loaded}
     <StatsGoals
       {stats}
@@ -392,9 +394,7 @@
   <div class="flex flex-wrap items-center gap-2 pt-3" role="group" aria-label="Period">
     {#each PERIOD_KINDS as choice (choice.kind)}
       <button
-        class="min-h-[3rem] min-w-[3rem] rounded border-2 px-3 {period.kind === choice.kind
-          ? solid
-          : 'border-current'}"
+        class="c-ctl min-w-[3rem]"
         aria-pressed={period.kind === choice.kind}
         data-testid="stats-period-{choice.kind}"
         on:click={() => choosePeriod(choice.kind)}
@@ -403,9 +403,7 @@
       </button>
     {/each}
     <button
-      class="min-h-[3rem] rounded border-2 px-3 {period.kind === 'custom'
-        ? solid
-        : 'border-current'}"
+      class="c-ctl"
       aria-pressed={period.kind === 'custom'}
       aria-expanded={showCustom}
       data-testid="stats-period-custom"
@@ -443,7 +441,7 @@
     >
       ‹
     </button>
-    <h2 class="flex-1 text-center text-lg font-medium" data-testid="stats-period-label">
+    <h2 class="flex-1 text-center font-mincho text-xl font-bold" data-testid="stats-period-label">
       {label}
     </h2>
     <button
@@ -507,7 +505,7 @@
     </label>
     {#if filter.device || filter.library || filter.book}
       <button
-        class="{control} underline"
+        class="c-link min-h-[3rem] px-2"
         data-testid="stats-filter-clear"
         on:click={() => navigate({ filter: { device: null, library: null, book: null } })}
       >
@@ -516,11 +514,11 @@
     {/if}
   </div>
   {#if infoError}
-    <p class="pt-2 text-sm" role="alert" data-testid="stats-info-error">{infoError}</p>
+    <p class="c-notice" role="alert" data-testid="stats-info-error">{infoError}</p>
   {/if}
 
   {#if !loaded}
-    <p class="py-6">Loading…</p>
+    <p class="py-6 text-c-muted">Loading…</p>
   {:else}
     <!-- Totals -->
     <dl
@@ -528,39 +526,41 @@
       data-testid="stats-summary"
       aria-label="Totals for {label}"
     >
-      <div class="rounded border-2 border-current p-3">
-        <dt class="text-sm">Reading time</dt>
-        <dd class="text-xl font-medium" data-testid="stats-total-time">
+      <div class="c-tile rounded p-4">
+        <dt class="text-xs font-medium uppercase tracking-wider text-c-muted">Reading time</dt>
+        <dd class="font-mincho text-2xl font-bold" data-testid="stats-total-time">
           {formatDuration(view.summary.seconds)}
         </dd>
       </div>
-      <div class="rounded border-2 border-current p-3">
-        <dt class="text-sm">Characters</dt>
-        <dd class="text-xl font-medium" data-testid="stats-total-chars">
+      <div class="c-tile rounded p-4">
+        <dt class="text-xs font-medium uppercase tracking-wider text-c-muted">Characters</dt>
+        <dd class="font-mincho text-2xl font-bold" data-testid="stats-total-chars">
           {formatNumber(view.summary.chars)}
         </dd>
       </div>
-      <div class="rounded border-2 border-current p-3">
-        <dt class="text-sm">Speed</dt>
-        <dd class="text-xl font-medium" data-testid="stats-total-speed">
+      <div class="c-tile rounded p-4">
+        <dt class="text-xs font-medium uppercase tracking-wider text-c-muted">Speed</dt>
+        <dd class="font-mincho text-2xl font-bold" data-testid="stats-total-speed">
           {view.summary.speed ? `${formatNumber(view.summary.speed)} / h` : '–'}
         </dd>
       </div>
-      <div class="rounded border-2 border-current p-3">
-        <dt class="text-sm">Books completed</dt>
-        <dd class="text-xl font-medium" data-testid="stats-total-completed">
+      <div class="c-tile rounded p-4">
+        <dt class="text-xs font-medium uppercase tracking-wider text-c-muted">Books completed</dt>
+        <dd class="font-mincho text-2xl font-bold" data-testid="stats-total-completed">
           {view.summary.booksCompleted}
         </dd>
       </div>
-      <div class="rounded border-2 border-current p-3">
-        <dt class="text-sm">Dictionary lookups</dt>
-        <dd class="text-xl font-medium" data-testid="stats-total-lookups">
+      <div class="c-tile rounded p-4">
+        <dt class="text-xs font-medium uppercase tracking-wider text-c-muted">
+          Dictionary lookups
+        </dt>
+        <dd class="font-mincho text-2xl font-bold" data-testid="stats-total-lookups">
           {formatNumber(view.summary.lookups)}
         </dd>
       </div>
-      <div class="rounded border-2 border-current p-3">
-        <dt class="text-sm">Days read</dt>
-        <dd class="text-xl font-medium" data-testid="stats-total-days">
+      <div class="c-tile rounded p-4">
+        <dt class="text-xs font-medium uppercase tracking-wider text-c-muted">Days read</dt>
+        <dd class="font-mincho text-2xl font-bold" data-testid="stats-total-days">
           {view.summary.daysRead}
         </dd>
       </div>
@@ -602,7 +602,7 @@
     </div>
     {#if tmwText}
       <textarea
-        class="mt-2 w-full rounded border-2 border-current p-2 font-mono text-sm"
+        class="c-input mt-2 w-full p-2 font-mono text-sm"
         rows="6"
         readonly
         data-testid="stats-tmw-text"
@@ -635,12 +635,15 @@
 
       <!-- Books -->
       <section class="pt-6" data-testid="stats-books">
-        <h2 class="pb-2 text-lg font-medium">Books</h2>
+        <div class="flex items-center gap-4 pb-3">
+          <h2 class="font-mincho text-2xl font-bold">Books</h2>
+          <span class="c-section-rule" />
+        </div>
         {#if view.books.length}
           <div class="overflow-x-auto">
             <table class="w-full text-left text-sm">
               <thead>
-                <tr class="border-b-2 border-current">
+                <tr class="border-b-2 border-c-strong text-c-muted">
                   <th class="py-2 pr-2">Book</th>
                   <th class="py-2 pr-2 text-right">Time</th>
                   <th class="py-2 pr-2 text-right">Characters</th>
@@ -650,10 +653,10 @@
               </thead>
               <tbody>
                 {#each view.books as row (row.bookId)}
-                  <tr class="border-b border-current" data-testid="stats-book-row">
+                  <tr class="border-b border-c-line" data-testid="stats-book-row">
                     <td class="py-2 pr-2">
                       <button
-                        class="min-h-[3rem] text-left underline"
+                        class="c-link min-h-[3rem] text-left font-medium"
                         title="Show only this book"
                         on:click={() => setFilter('book', row.bookId)}
                       >
@@ -686,14 +689,17 @@
 
       <!-- Days and sessions -->
       <section class="pt-6" data-testid="stats-days">
-        <h2 class="pb-2 text-lg font-medium">Days</h2>
+        <div class="flex items-center gap-4 pb-3">
+          <h2 class="font-mincho text-2xl font-bold">Days</h2>
+          <span class="c-section-rule" />
+        </div>
         {#if actionError}
           <p class="pb-2 text-sm" role="alert">{actionError}</p>
         {/if}
         {#each shownDayRows as day (day.day)}
-          <div class="border-t-2 border-current py-3" data-testid="stats-day" data-day={day.day}>
+          <div class="border-t border-c-line py-3" data-testid="stats-day" data-day={day.day}>
             <div class="flex flex-wrap items-baseline justify-between gap-x-4">
-              <h3 class="font-medium">{formatDay(day.day, currentYear)}</h3>
+              <h3 class="font-mincho font-bold">{formatDay(day.day, currentYear)}</h3>
               <span class="text-sm">
                 {formatDuration(day.totals.seconds)} · {formatNumber(day.totals.chars)} characters
                 {#if day.totals.lookups}· {formatNumber(day.totals.lookups)} lookups{/if}

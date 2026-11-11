@@ -24,7 +24,7 @@
 </script>
 
 <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/40" role="dialog">
-  <div class="mx-4 w-full max-w-md bg-white p-6 text-black" aria-live="polite">
+  <div class="c-panel mx-4 w-full max-w-md rounded p-6" aria-live="polite">
     <div class="mb-2 line-clamp-2 font-medium">{title}</div>
     <div class="mb-6">{text}</div>
     <div class="flex justify-end">
