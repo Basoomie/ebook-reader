@@ -1050,7 +1050,8 @@ export function statsApi() {
               title: b.title,
               libraryId: b.libraryId,
               missing: b.missing,
-              charCount: b.charCount
+              charCount: b.charCount,
+              thumbnail: b.thumbnail ? api.absolute(b.thumbnail) : null
             });
           }
         }

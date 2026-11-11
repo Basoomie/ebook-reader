@@ -8,6 +8,9 @@
   import StatisticsHeatmap from '$lib/components/statistics/statistics-heatmap/statistics-heatmap.svelte';
   import StatsGoals from '$lib/components/stats/stats-goals.svelte';
   import type { StatGoal } from '$lib/stats/goals';
+  import { downloadBlob } from '$lib/functions/download-blob';
+  import { buildStatsImageModel, statsImageFileName } from '$lib/stats/stats-image-model';
+  import { renderStatsImage } from '$lib/stats/stats-image';
   import { pxScreen } from '$lib/css-classes';
   import type { BooksDbStatistic } from '$lib/data/database/books-db/versions/books-db';
   import { pagePath } from '$lib/data/env';
@@ -85,6 +88,8 @@
   let actionError = '';
   let tmwText = '';
   let tmwNote = '';
+  let imageBusy = false;
+  let imageNote = '';
   let stop: (() => void) | undefined;
   let destroyed = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -305,6 +310,53 @@
     tmwNote = 'Select the text below and copy it.';
   }
 
+  /** The filters as the image words them: "Device: Boox", "Library: …", "Book: …". */
+  function filterLabels(): string[] {
+    const out: string[] = [];
+    if (filter.device) {
+      const name = deviceChoices.find((d) => d.id === filter.device)?.name ?? 'one device';
+      out.push(`Device: ${name.replace(' (this device)', '')}`);
+    }
+    if (filter.library) {
+      out.push(
+        `Library: ${libraries?.find((l) => l.id === filter.library)?.name ?? 'one library'}`
+      );
+    }
+    if (filter.book) out.push(`Book: ${bookTitle(filter.book)}`);
+    return out;
+  }
+
+  /** WP12d: the period on screen as a PNG (1080 × 1350), downloaded. */
+  async function saveImage() {
+    imageBusy = true;
+    imageNote = '';
+    try {
+      const model = buildStatsImageModel({
+        view,
+        period,
+        filters: filterLabels(),
+        today: todayKey,
+        weekStart,
+        goals,
+        goalInput: {
+          entries,
+          readThroughs,
+          books,
+          speedMinSeconds: Math.max(0, Number($speedGoalMinMinutes$) || 0) * 60
+        },
+        thumbnails: new Map([...books].map(([id, info]) => [id, info.thumbnail ?? null]))
+      });
+      const blob = await renderStatsImage(model);
+      downloadBlob(blob, statsImageFileName(period));
+      imageNote = 'Saved.';
+    } catch (error) {
+      logger.warn(`Stats image: ${(error as Error)?.message ?? error}`);
+      imageNote = `The image could not be made: ${(error as Error)?.message ?? error}`;
+    } finally {
+      imageBusy = false;
+    }
+  }
+
   function selectAll(node: HTMLTextAreaElement) {
     node.focus();
     node.select();
@@ -521,6 +573,14 @@
 
     <!-- Copy for TMW -->
     <div class="flex flex-wrap items-center gap-2 pt-3">
+      <button
+        class="{control} {solid}"
+        data-testid="stats-save-image"
+        disabled={imageBusy}
+        on:click={saveImage}
+      >
+        {imageBusy ? 'Making the image…' : 'Save image'}
+      </button>
       <button class={control} data-testid="stats-tmw-chars" on:click={() => copyTmw('chars')}>
         Copy characters (TMW)
       </button>
@@ -529,6 +589,9 @@
       </button>
       {#if tmwNote}
         <span class="text-sm" role="status">{tmwNote}</span>
+      {/if}
+      {#if imageNote}
+        <span class="text-sm" role="status" data-testid="stats-image-note">{imageNote}</span>
       {/if}
     </div>
     {#if tmwText}

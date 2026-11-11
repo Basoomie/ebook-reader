@@ -38,6 +38,8 @@ export interface StatsBookInfo {
   missing: boolean;
   /** The catalog's character count (for manual completions). */
   charCount: number | null;
+  /** WP12d: absolute cover thumbnail URL from the catalog (for the Stats image). */
+  thumbnail?: string | null;
 }
 
 export interface StatsFilter {
