@@ -1,7 +1,8 @@
 <script lang="ts">
   import SeriesHighlights from '$lib/components/notes/series-highlights.svelte';
   import { setPendingJump, type PendingJump } from '$lib/notes/pending-jump';
-  import { afterNavigate, goto } from '$app/navigation';
+  import { afterNavigate, beforeNavigate, goto } from '$app/navigation';
+  import { saveListSnapshot, takeListSnapshot } from '$lib/library/list-snapshot';
   import { page } from '$app/stores';
   import { builtinCollection } from '$lib/collections/builtins';
   import { collectionMenu, newCollection } from '$lib/collections/collection-dialogs';
@@ -105,7 +106,7 @@
     notifySyncConnectionChanged
   } from '$lib/sync/sync-service';
   import { faMagnifyingGlass } from '@fortawesome/free-solid-svg-icons';
-  import { onDestroy, onMount } from 'svelte';
+  import { onDestroy, onMount, tick } from 'svelte';
   import Fa from 'svelte-fa';
 
   /**
@@ -171,6 +172,16 @@
   let sideCountsKey: string | null = null;
   let sideCountsTimer: ReturnType<typeof setTimeout> | undefined;
   let searchInput: HTMLInputElement | undefined;
+  /** WP19c: how the page was last reached ('popstate' = back/forward). */
+  let lastNavigation: string | null = null;
+  /** WP19c: what a list snapshot keeps. */
+  interface ListState {
+    books: CatalogBook[];
+    groups: CatalogGroup[];
+    nextCursor: string | null;
+    resultCount: number | null;
+    listConsumed: number;
+  }
   let onDevice = new Set<string>();
 
   let queryInput = '';
@@ -328,7 +339,20 @@
     opening?.controller.abort();
   });
 
-  afterNavigate(() => {
+  // WP19c: keep the list when leaving (a book's details, the reader…) for back/forward.
+  beforeNavigate(() => {
+    if (!connection || (!books.length && !groups.length)) return;
+    saveListSnapshot<ListState>(snapshotKey(), window.scrollY, {
+      books,
+      groups,
+      nextCursor,
+      resultCount,
+      listConsumed
+    });
+  });
+
+  afterNavigate((nav) => {
+    lastNavigation = nav.type;
     if (connection && api) void readUrlAndLoad();
   });
 
@@ -781,7 +805,28 @@
     void loadSideCounts();
     // WP19b: Home's search button opens the Library with the search box focused.
     if (params.get('search') === '1') setTimeout(() => searchInput?.focus(), 0);
+    // WP19c: back from a book's details: the list as it was, at the same place.
+    if (lastNavigation === 'popstate' && (await restoreSnapshot())) return;
     return loadPage(true);
+  }
+
+  /** The address the snapshot of this list is kept under. */
+  function snapshotKey() {
+    return `${$page.url.pathname}${$page.url.search}`;
+  }
+
+  async function restoreSnapshot(): Promise<boolean> {
+    const snap = takeListSnapshot<ListState>(snapshotKey());
+    if (!snap) return false;
+    listController?.abort();
+    loading = false;
+    loadError = '';
+    moreError = '';
+    ({ books, groups, nextCursor, resultCount, listConsumed } = snap.data);
+    if (group) void loadGroupInfo(new AbortController().signal);
+    await tick();
+    window.scrollTo(0, snap.scrollY);
+    return true;
   }
 
   /**

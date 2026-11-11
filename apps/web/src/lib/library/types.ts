@@ -47,6 +47,9 @@ export interface CatalogBook {
   thumbnail: string | null;
   /** WP7b: 'upload' shows the "Uploaded" badge. Missing from servers before WP7b. */
   source?: 'calibre' | 'upload';
+  /** WP19c (sent since WP2): Calibre's publisher and publication date (ms), when known. */
+  publisher?: string | null;
+  publishedAt?: number | null;
 }
 
 /** Whether the server takes uploads (WP7b), and their size limit in bytes. */
@@ -81,6 +84,8 @@ export interface CatalogBookSource {
 
 export interface CatalogBookDetail extends CatalogBook {
   sources: CatalogBookSource[];
+  /** WP19c: Calibre's description ("comments", HTML); shown as text only. */
+  description?: string | null;
 }
 
 export interface CatalogPage {

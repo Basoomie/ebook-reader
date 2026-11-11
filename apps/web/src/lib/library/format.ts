@@ -57,6 +57,11 @@ export function authorHref(pagePath: string, name: string, library = ''): string
   return `${pagePath}/library?${params.toString()}`;
 }
 
+/** WP19c: a catalog book's details page. */
+export function bookDetailsHref(pagePath: string, bookId: string): string {
+  return `${pagePath}/library/book?id=${encodeURIComponent(bookId)}`;
+}
+
 /** "#3" when the book has a series number. */
 export function seriesNumber(book: Pick<CatalogBook, 'series'>): string {
   return book.series?.index !== null && book.series?.index !== undefined
