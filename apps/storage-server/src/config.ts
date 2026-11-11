@@ -33,6 +33,8 @@ export interface ServerConfig {
   search: SearchConfig;
   /** Uploads (WP7b). */
   uploads: UploadConfig;
+  /** Custom fonts (WP13). */
+  fonts: FontConfig;
 }
 
 export interface SearchConfig {
@@ -178,6 +180,7 @@ export function loadConfig(env: Env): LoadedConfig {
       counts: parseCountsConfig(env, warnings),
       search: parseSearchConfig(env, warnings),
       uploads: parseUploadConfig(env, warnings),
+      fonts: parseFontConfig(env, warnings),
     },
     warnings,
   };
@@ -348,6 +351,28 @@ export function parseUploadConfig(env: Env, warnings: string[]): UploadConfig {
       d.stagedHours,
       1,
       24 * 365,
+      true,
+      warnings,
+    ),
+  };
+}
+
+export interface FontConfig {
+  /** Largest accepted font file (FONT_MAX_MB). */
+  maxMb: number;
+}
+
+export const DEFAULT_FONT_CONFIG: FontConfig = { maxMb: 64 };
+
+/** WP13 settings; bad values fall back to the defaults. */
+export function parseFontConfig(env: Env, warnings: string[]): FontConfig {
+  return {
+    maxMb: parseNumber(
+      'FONT_MAX_MB',
+      env.FONT_MAX_MB,
+      DEFAULT_FONT_CONFIG.maxMb,
+      1,
+      1000,
       true,
       warnings,
     ),

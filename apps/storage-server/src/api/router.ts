@@ -15,6 +15,9 @@ import { createMigrationRouter } from '../migration/routes';
 import { MigrationService } from '../migration/service';
 import { createSyncRouter, SYNC_BODY_LIMIT } from '../sync/routes';
 import { createUploadRouter } from '../uploads/routes';
+import { FontStore } from '../fonts/font-store';
+import { createFontRouter } from '../fonts/routes';
+import { FontService } from '../fonts/service';
 import { DEFAULT_MAX_CLOCK_SKEW_SECONDS, SyncStore } from '../sync/store';
 
 export interface PairingOptions {
@@ -49,6 +52,13 @@ export interface ApiOptions {
   migration?: MigrationPaths;
   /** Write the records the server creates once per user ("Planned", WP8b). Default on. */
   seedDefaults?: boolean;
+  /** Custom fonts (WP13): stored in DATA_DIR/.uploads/fonts. Without it they are off. */
+  fonts?: FontOptions;
+}
+
+export interface FontOptions {
+  dataRoot: string;
+  maxMb: number;
 }
 
 const NO_CATALOG: CatalogOptions = {
@@ -68,14 +78,16 @@ export function createApiRouter({
   sync = DEFAULT_SYNC,
   migration,
   seedDefaults = true,
+  fonts,
 }: ApiOptions): Router {
   const router = express.Router();
   // Pushes can carry many records; everything else keeps the small default limit.
   const smallJson = express.json();
   const syncJson = express.json({ limit: SYNC_BODY_LIMIT });
   router.use((req, res, next) => {
-    // An upload's body is the EPUB itself, streamed by the upload route (WP7b).
-    if (req.path === '/uploads') return next();
+    // An upload's body is the EPUB itself, streamed by the upload route (WP7b); a
+    // font upload's body is the font file (WP13).
+    if (req.path === '/uploads' || req.path === '/fonts') return next();
     (req.path === '/sync' ? syncJson : smallJson)(req, res, next);
   });
 
@@ -137,6 +149,23 @@ export function createApiRouter({
       }
     }
     router.use(createSyncRouter(db, syncStore));
+
+    // Custom fonts (WP13). Independent of Calibre; off only when the folder is unusable.
+    if (fonts) {
+      try {
+        const store = new FontStore(fonts.dataRoot);
+        store.init();
+        const service = new FontService({
+          db,
+          store,
+          sync: syncStore,
+          maxBytes: Math.round(fonts.maxMb * 1024 * 1024),
+        });
+        router.use(createFontRouter(service));
+      } catch (err) {
+        console.error('Error: custom fonts are off, the font folder is unusable:', err);
+      }
+    }
 
     if (migration) {
       const service = new MigrationService({

@@ -8,6 +8,7 @@ import {
   DEFAULT_PAIRING_CONFIG,
   DEFAULT_SYNC_CONFIG,
   DEFAULT_UPLOAD_CONFIG,
+  DEFAULT_FONT_CONFIG,
   ServerConfig,
 } from '../../src/config';
 import { DatabaseState, initDatabase } from '../../src/db/database';
@@ -32,6 +33,7 @@ export function testConfig(overrides: Partial<ServerConfig> = {}): ServerConfig 
     counts: { ...DEFAULT_COUNTS_CONFIG, background: false },
     search: { ...DEFAULT_SEARCH_CONFIG },
     uploads: { ...DEFAULT_UPLOAD_CONFIG },
+    fonts: { ...DEFAULT_FONT_CONFIG },
     ...overrides,
   };
 }

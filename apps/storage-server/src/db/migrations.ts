@@ -314,6 +314,28 @@ export const MIGRATIONS: { version: number; name: string; sql: string }[] = [
       );
     `,
   },
+  {
+    version: 8,
+    name: 'custom fonts',
+    // WP13. One row per uploaded font file (DATA_DIR/.uploads/fonts/<file_path>). The
+    // "font" sync record must match its row, so devices can delete or restore a font
+    // but never invent one or change its file. Rows are never deleted: a deleted font's
+    // file stays on the server and can be restored.
+    sql: `
+      CREATE TABLE fonts (
+        id          TEXT PRIMARY KEY,
+        user_id     TEXT NOT NULL REFERENCES users(id),
+        name        TEXT NOT NULL,
+        file_name   TEXT NOT NULL,
+        format      TEXT NOT NULL CHECK (format IN ('woff2', 'woff', 'ttf', 'otf')),
+        size        INTEGER NOT NULL CHECK (size > 0),
+        sha256      TEXT NOT NULL,
+        file_path   TEXT NOT NULL,
+        created_at  INTEGER NOT NULL
+      );
+      CREATE INDEX fonts_user ON fonts (user_id);
+    `,
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

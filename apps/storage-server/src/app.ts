@@ -50,6 +50,7 @@ export function createApp({
       pairing: { maxFailuresPerMinute: config.pairing.maxFailuresPerMinute },
       sync: { maxClockSkewSeconds: config.sync.maxClockSkewSeconds },
       migration: { dataRoot: config.dataRoot, dbDir: config.dbDir },
+      fonts: { dataRoot: config.dataRoot, maxMb: config.fonts.maxMb },
       seedDefaults,
     }),
   );

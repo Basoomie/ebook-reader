@@ -20,6 +20,7 @@
  *   docker exec ttsu-storage node dist/cli.js migration status
  *   docker exec ttsu-storage node dist/cli.js migration undo [--forget-decisions]
  *   docker exec ttsu-storage node dist/cli.js uploads list
+ *   docker exec ttsu-storage node dist/cli.js fonts list
  *
  * Uses DB_DIR (default /db) and DATA_DIR (default /data) like the server, and
  * PAIR_CODE_MINUTES for how long a pairing code stays valid.
@@ -30,9 +31,11 @@
  * migration page); the CLI only reports on them and can undo the import.
  */
 import type Database from 'better-sqlite3';
-import { readdirSync } from 'fs';
+import { existsSync, readdirSync } from 'fs';
 import path from 'path';
 import { UPLOADS_DIRNAME } from './uploads/upload-store';
+import { FontStore } from './fonts/font-store';
+import { FontService } from './fonts/service';
 import {
   getIndexState,
   getLibrary,
@@ -88,7 +91,8 @@ const USAGE = `Usage:
   cli migration undo [--forget-decisions]    Delete every record the migration import wrote (the old
                                              sync's files are never touched); --forget-decisions also
                                              clears the scan results and your link decisions
-  cli uploads list                           Uploaded books and files still waiting for a decision`;
+  cli uploads list                           Uploaded books and files still waiting for a decision
+  cli fonts list                             Custom fonts: name, size, deleted or not, file present`;
 
 function fail(message: string): never {
   console.error(message);
@@ -545,6 +549,31 @@ function uploadsCommand(
   console.log(`Waiting for a decision: ${staged.length} file(s)`);
 }
 
+/** Read-only: custom fonts (WP13), including deleted ones (their files stay). */
+function fontsCommand(
+  db: Database.Database,
+  command: string,
+  env: Record<string, string | undefined>,
+) {
+  if (command !== 'list') fail(USAGE);
+  const store = new FontStore(path.resolve(env.DATA_DIR ?? '/data'));
+  const fonts = FontService.listAll(db);
+  if (!fonts.length) console.log('No custom fonts.');
+  for (const f of fonts) {
+    let present = false;
+    try {
+      present = existsSync(store.resolve(f.filePath));
+    } catch {
+      // A stored path outside the font folder is never followed.
+    }
+    console.log(
+      `${f.id}  ${formatDate(f.createdAt)}  ${f.size} bytes  ${f.format}  ${f.name}  (${f.fileName})` +
+        (f.deleted ? '  (deleted)' : '') +
+        (present ? '' : '  (file missing)'),
+    );
+  }
+}
+
 export function main(argv: string[], env: Record<string, string | undefined>): void {
   const args = [...argv];
   let userName: string | undefined;
@@ -556,7 +585,17 @@ export function main(argv: string[], env: Record<string, string | undefined>): v
   }
 
   const [group, command, ...rest] = args;
-  const groups = ['token', 'library', 'index', 'thumbs', 'counts', 'sync', 'migration', 'uploads'];
+  const groups = [
+    'token',
+    'library',
+    'index',
+    'thumbs',
+    'counts',
+    'sync',
+    'migration',
+    'uploads',
+    'fonts',
+  ];
   if (!groups.includes(group) || !command) {
     fail(USAGE);
   }
@@ -576,6 +615,7 @@ export function main(argv: string[], env: Record<string, string | undefined>): v
     else if (group === 'sync') syncCommand(db, command, rest, env, userName);
     else if (group === 'migration') migrationCommand(db, command, rest, env, userName);
     else if (group === 'uploads') uploadsCommand(db, command, env);
+    else if (group === 'fonts') fontsCommand(db, command, env);
     else thumbsCommand(db, command, rest);
   } finally {
     db.close();
