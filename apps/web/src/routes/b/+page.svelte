@@ -1684,9 +1684,10 @@
   /**
    * WP19d: "Quote image" in the highlight bar. Like the note editor: the tracker pauses and
    * keys don't turn pages while the dialog is open. Any failure is logged, never thrown, so
-   * it can't get in the way of reading.
+   * it can't get in the way of reading. The author is the one this device remembers for
+   * the book (from the library); the dialog asks the server for a newer one.
    */
-  function openQuoteImage() {
+  async function openQuoteImage() {
     try {
       if (dialogManager.dialogs$.getValue().length) {
         return;
@@ -1702,6 +1703,22 @@
       pauseTracker();
       const keysWereSkipped = $skipKeyDownListener$;
       skipKeyDownListener$.next(true);
+
+      let author = '';
+      let refreshAuthor: (() => Promise<string | null>) | null = null;
+      const localId = $rawBookData$?.id;
+
+      if (typeof localId === 'number') {
+        try {
+          const { readerQuoteAuthor } = await import('$lib/library/reader-quote-author');
+          const found = await readerQuoteAuthor(localId);
+          author = found.author;
+          refreshAuthor = found.refresh;
+        } catch (error) {
+          logger.warn(`Quote image author: ${(error as Error)?.message ?? error}`);
+        }
+      }
+
       dialogManager.dialogs$.next([
         {
           component: QuoteImageDialog,
@@ -1710,10 +1727,11 @@
               text: quote.text,
               note: quote.note,
               title: $rawBookData$?.title ?? '',
-              author: '',
+              author,
               color: quote.color,
               coverUrl: quoteCover()
-            }
+            },
+            refreshAuthor
           }
         }
       ]);

@@ -115,12 +115,16 @@ export const NO_LINE_START = new Set([
 ]);
 /** Never at the end of a line (opening brackets). */
 export const NO_LINE_END = new Set([...'（「『【〔〈《｛［([{']);
+/** May hang past the end of a line (small punctuation and closing brackets). */
+const HANGING = new Set([...'、。，．,.）」』】〕〉》｝］)]}']);
 
 /**
  * Breaks text into lines no wider than `max` (by `measure`), keeping line breaks in the
- * text. Simple kinsoku: a character that may not start a line hangs on the line before
- * (one character past `max`, as Japanese books do), and an opening bracket moves to the
- * next line with what it opens.
+ * text. Simple kinsoku: 、。 and closing brackets that may not start a line hang on the
+ * line before (one character past `max`, as Japanese books do); other characters that may
+ * not start a line (small kana, ー, ！？) take the last character of the line with them to
+ * the next one, so nothing else runs past `max`; an opening bracket moves to the next line
+ * with what it opens.
  */
 export function breakLines(text: string, max: number, measure: (line: string) => number): string[] {
   const lines: string[] = [];
@@ -130,7 +134,7 @@ export function breakLines(text: string, max: number, measure: (line: string) =>
 
     for (const ch of paragraph) {
       if (line.length && measure([...line, ch].join('')) > max) {
-        if (NO_LINE_START.has(ch)) {
+        if (HANGING.has(ch)) {
           // Hang it on this line.
           line.push(ch);
           lines.push(line.join(''));
@@ -138,6 +142,13 @@ export function breakLines(text: string, max: number, measure: (line: string) =>
           continue;
         }
         const carry: string[] = [];
+        if (NO_LINE_START.has(ch) && line.length > 1) {
+          // Push the last character down with it (and anything that can't start a line).
+          carry.unshift(line.pop() as string);
+          while (line.length > 1 && NO_LINE_START.has(carry[0])) {
+            carry.unshift(line.pop() as string);
+          }
+        }
         while (line.length > 1 && NO_LINE_END.has(line[line.length - 1])) {
           carry.unshift(line.pop() as string);
         }

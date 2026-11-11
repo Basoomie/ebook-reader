@@ -4,7 +4,7 @@
  * All rights reserved.
  */
 
-import { localStamp } from '$lib/functions/download-blob';
+import { fileTitle, localStamp } from '$lib/functions/download-blob';
 import { HIGHLIGHT_COLOR_NAMES } from './highlights';
 import { formatCsvDate } from './notes-format';
 import { percentOf, type NotesBookGroup } from './notes-view';
@@ -100,10 +100,7 @@ export function buildNotesCsv(groups: readonly NotesBookGroup[]): string {
 /** `ttsu-highlights-2026-11-11-0725.csv`, or with a book's title for one book. */
 export function notesCsvFileName(now: Date, bookTitle?: string): string {
   const stamp = localStamp(now, true);
-  const name = bookTitle
-    ?.replace(/[\\/:*?"<>|\s]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 40);
+  const name = fileTitle(bookTitle);
   return name ? `ttsu-highlights-${name}-${stamp}.csv` : `ttsu-highlights-${stamp}.csv`;
 }
 

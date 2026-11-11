@@ -25,3 +25,12 @@ export function localStamp(now: Date, withTime = false): string {
   const day = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
   return withTime ? `${day}-${pad(now.getHours())}${pad(now.getMinutes())}` : day;
 }
+
+/** A title made safe for a file name: no path or reserved characters, at most `max` long. */
+export function fileTitle(title: string | undefined, max = 40): string {
+  return (title ?? '')
+    .replace(/[\\/:*?"<>|\s]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, max)
+    .replace(/-+$/, '');
+}
