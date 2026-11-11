@@ -17,7 +17,12 @@
   import Ripple from '$lib/components/ripple.svelte';
   import SettingsCustomTheme from '$lib/components/settings/settings-custom-theme.svelte';
   import SettingsFontSelector from '$lib/components/settings/settings-font-selector.svelte';
-  import SettingsReadingGoals from '$lib/components/settings/settings-reading-goals.svelte';
+  import {
+    bottomBarTimeLeft$,
+    speedGoalMinMinutes$,
+    timeLeftMinMinutes$,
+    timeLeftRecentMinutes$
+  } from '$lib/data/store';
   import SettingsItemGroup from '$lib/components/settings/settings-item-group.svelte';
   import SettingsStorageSourceList from '$lib/components/settings/settings-storage-source-list.svelte';
   import SettingsServerFontsDialog from '$lib/components/settings/settings-server-fonts-dialog.svelte';
@@ -244,6 +249,13 @@
     delete $customThemes$[themeId];
     $customThemes$ = { ...$customThemes$ };
   }
+
+  const optionsForTimeLeft: ToggleOption<'off' | 'chapter' | 'book' | 'both'>[] = [
+    { id: 'off', text: 'Off' },
+    { id: 'chapter', text: 'Chapter' },
+    { id: 'book', text: 'Book' },
+    { id: 'both', text: 'Both' }
+  ];
 
   const optionsForAppOpen: ToggleOption<AppOpenTarget>[] = [
     { id: 'last-book', text: 'Last book' },
@@ -1292,10 +1304,55 @@
           />
         </SettingsItemGroup>
       {/if}
-      <SettingsReadingGoals
-        storageSources={$storageSources$}
-        on:spinner={({ detail }) => (showSpinner = detail)}
-      />
+      <!-- WP12c: goals are set on the Stats page; these are their rules. -->
+      <SettingsItemGroup
+        title="Speed Goal Counts After (min)"
+        tooltip={'The same on every device. A speed goal counts for a day, week or month only after this much tracked reading in it.'}
+      >
+        <input
+          type="number"
+          step="1"
+          min="0"
+          class={inputClasses}
+          data-testid="settings-speed-goal-min"
+          bind:value={$speedGoalMinMinutes$}
+        />
+      </SettingsItemGroup>
+      <SettingsItemGroup
+        title="Time Left in the Bottom Bar"
+        tooltip={'This device only. Shows how long the chapter and/or the book will take at your recent speed in the book.'}
+      >
+        <ButtonToggleGroup
+          options={optionsForTimeLeft}
+          bind:selectedOptionId={$bottomBarTimeLeft$}
+        />
+      </SettingsItemGroup>
+      <SettingsItemGroup
+        title="Time Left: Recent Reading (min)"
+        tooltip={'This device only. Time left uses this many minutes of your newest reading in the book.'}
+      >
+        <input
+          type="number"
+          step="5"
+          min="1"
+          class={inputClasses}
+          data-testid="settings-time-left-recent"
+          bind:value={$timeLeftRecentMinutes$}
+        />
+      </SettingsItemGroup>
+      <SettingsItemGroup
+        title="Time Left: Overall Speed Below (min)"
+        tooltip={'This device only. With less reading than this in a book, time left uses your overall speed instead.'}
+      >
+        <input
+          type="number"
+          step="1"
+          min="0"
+          class={inputClasses}
+          data-testid="settings-time-left-min"
+          bind:value={$timeLeftMinMinutes$}
+        />
+      </SettingsItemGroup>
     {/if}
   {/if}
   {#if showSpinner}

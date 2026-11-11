@@ -996,6 +996,56 @@ const statSessionFixKind: KindSpec = {
   },
 };
 
+export const STAT_GOAL_METRICS = ['time', 'chars', 'speed'] as const;
+export const STAT_GOAL_PERIODS = ['day', 'week', 'month'] as const;
+const MAX_GOAL_TARGET = 1_000_000_000;
+
+/**
+ * kind "stat-goal" (WP12c): id = a UUID, lww, deletable. One reading goal:
+ *   metric     time (target in seconds) | chars | speed (characters per hour)
+ *   period     day | week | month (calendar periods under the global day boundary and
+ *              week start)
+ *   startedOn  the first day of the first period it applies to
+ *   endedOn    the last day it applies to (null = still active). Changing a goal ends
+ *              it and starts a new one, so past periods keep their target.
+ * Several goals can be active at once. The old "reading-goal" records are untouched.
+ */
+const statGoalKind: KindSpec = {
+  policy: () => 'lww',
+  deletable: true,
+  validate(id, data, deleted) {
+    if (!UUID_RE.test(id)) throw new RecordError('invalid_id', 'stat-goal ids are UUIDs');
+    if (deleted) return { bookId: null, data: {} };
+    const obj = requireObject(data);
+    const startedOn = dateOrNull(obj.startedOn, 'startedOn');
+    if (!startedOn) throw new RecordError('invalid_data', 'startedOn must be YYYY-MM-DD');
+    const endedOn = dateOrNull(obj.endedOn, 'endedOn');
+    if (endedOn !== null && endedOn < startedOn) {
+      throw new RecordError('invalid_data', 'endedOn is before startedOn');
+    }
+    const target = obj.target;
+    if (
+      typeof target !== 'number' ||
+      !Number.isInteger(target) ||
+      target < 1 ||
+      target > MAX_GOAL_TARGET
+    ) {
+      throw new RecordError('invalid_data', 'target must be a whole number from 1');
+    }
+    return {
+      bookId: null,
+      data: {
+        metric: oneOf(obj.metric, STAT_GOAL_METRICS, 'metric'),
+        period: oneOf(obj.period, STAT_GOAL_PERIODS, 'period'),
+        target,
+        startedOn,
+        endedOn,
+        createdAt: timestamp(obj.createdAt, 'createdAt'),
+      },
+    };
+  },
+};
+
 /** Smart-collection queries are checked with the search box's own parser. */
 const parserCheck: QueryCheck = (query) => {
   const result = parseQuery(query);
@@ -1023,4 +1073,5 @@ export const DEFAULT_KINDS: KindRegistry = {
   font: fontKind,
   'stat-session': statSessionKind,
   'stat-session-fix': statSessionFixKind,
+  'stat-goal': statGoalKind,
 };

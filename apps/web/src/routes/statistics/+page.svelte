@@ -6,12 +6,15 @@
   import AppHeader from '$lib/components/app-nav/app-header.svelte';
   import { HeatmapType } from '$lib/components/statistics/statistics-heatmap/statistics-heatmap';
   import StatisticsHeatmap from '$lib/components/statistics/statistics-heatmap/statistics-heatmap.svelte';
+  import StatsGoals from '$lib/components/stats/stats-goals.svelte';
+  import type { StatGoal } from '$lib/stats/goals';
   import { pxScreen } from '$lib/css-classes';
   import type { BooksDbStatistic } from '$lib/data/database/books-db/versions/books-db';
   import { pagePath } from '$lib/data/env';
   import { logger } from '$lib/data/logger';
   import {
     lastReadingDataHeatmapAggregationMode$,
+    speedGoalMinMinutes$,
     startDayHoursForTracker$,
     statsWeekStart$
   } from '$lib/data/store';
@@ -69,6 +72,7 @@
   let readThroughs = new Map<string, ReadThrough[]>();
   let deviceNames = new Map<string, string>();
   let thisDeviceId: string | null = null;
+  let goals: StatGoal[] = [];
   let books = new Map<string, StatsBookInfo>();
   let libraries: CatalogLibrary[] | null = null;
   let infoError = '';
@@ -144,6 +148,7 @@
       readThroughs = data.readThroughs;
       deviceNames = data.deviceNames;
       thisDeviceId = data.thisDeviceId;
+      goals = await stats.goals();
       loaded = true;
       const ids = [...new Set([...entries.map((e) => e.bookId), ...readThroughs.keys()])];
       const missing = ids.filter((id) => !books.has(id));
@@ -313,6 +318,18 @@
 <AppHeader title="Stats" />
 
 <div class="{pxScreen} pb-24 pt-16 xl:pt-14" data-testid="stats-page">
+  {#if loaded}
+    <StatsGoals
+      {stats}
+      {goals}
+      {entries}
+      {readThroughs}
+      {books}
+      {todayKey}
+      {weekStart}
+      speedMinMinutes={$speedGoalMinMinutes$}
+    />
+  {/if}
   <!-- Period -->
   <div class="flex flex-wrap items-center gap-2 pt-3" role="group" aria-label="Period">
     {#each PERIOD_KINDS as choice (choice.kind)}

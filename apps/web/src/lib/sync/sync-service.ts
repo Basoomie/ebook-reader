@@ -36,6 +36,7 @@ import type { BooksDbStatistic } from '$lib/data/database/books-db/versions/book
 import { LibraryApi, LibraryApiError } from '$lib/library/api';
 import type { CatalogLibrary } from '$lib/library/types';
 import { unknownBookTitle, type StatsBookInfo } from '$lib/stats/stats-view';
+import { goalsFromRecords, STAT_GOAL_KIND, type GoalWrite, type StatGoal } from '$lib/stats/goals';
 import { SessionRecorder, type RecordSideDeps } from '$lib/stats/session-recorder';
 import {
   parseStatSessionId,
@@ -1076,6 +1077,32 @@ export function statsApi() {
         return null;
       }
     },
+    /** WP12c: every reading goal (ended ones too), from the mirror. */
+    async goals(): Promise<StatGoal[]> {
+      try {
+        return goalsFromRecords(await (await getSyncEngine()).getAll(STAT_GOAL_KIND));
+      } catch (error) {
+        warn(`Stats: ${(error as Error)?.message ?? error}`);
+        return [];
+      }
+    },
+    /** WP12c: saves planned goal changes (planGoalSave / planGoalEnd). */
+    async applyGoalWrites(writes: GoalWrite[]): Promise<boolean> {
+      try {
+        const engine = await getSyncEngine();
+        let ok = true;
+        for (const w of writes) {
+          const done =
+            w.op === 'remove'
+              ? await engine.remove(STAT_GOAL_KIND, w.id)
+              : await engine.put(STAT_GOAL_KIND, w.id, { ...w.data }, { bookId: null });
+          ok = ok && done;
+        }
+        return ok;
+      } catch {
+        return false;
+      }
+    },
     /** Leaves a session out of every total (undo: clearFix). */
     excludeSession(sessionId: string): Promise<boolean> {
       return putFix(sessionId, { excluded: true });
@@ -1100,7 +1127,10 @@ export function statsApi() {
       try {
         const engine = await getSyncEngine();
         const relevant = (r: LocalRecord) =>
-          STAT_KINDS.includes(r.kind) || r.kind === READ_THROUGH_KIND || r.kind === 'device';
+          STAT_KINDS.includes(r.kind) ||
+          r.kind === READ_THROUGH_KIND ||
+          r.kind === 'device' ||
+          r.kind === STAT_GOAL_KIND;
         const offRemote = engine.onRemoteChange((records) => {
           if (records.some(relevant)) callback();
         });

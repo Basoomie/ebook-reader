@@ -110,10 +110,14 @@ export const SETTINGS_REGISTRY: Record<string, SettingSpec> = {
   trackerSkipThresholdAction: d('String'),
   trackerPopupDetection: d('Boolean'),
   adjustStatisticsAfterIdleTime: d('Boolean'),
+  timeLeftRecentMinutes: d('Number'),
+  timeLeftMinMinutes: d('Number'),
+  bottomBarTimeLeft: d('String'),
 
   // --- statistics rules that must agree across devices (global) ---
   startDayHoursForTracker: g('Number'),
   statsWeekStart: g('Number'),
+  speedGoalMinMinutes: g('Number'),
   keepLocalStatisticsOnDeletion: g('Boolean'),
   overwriteBookCompletion: g('Boolean'),
   addCharactersOnCompletion: g('Boolean'),

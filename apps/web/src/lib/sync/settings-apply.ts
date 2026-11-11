@@ -9,6 +9,7 @@ import {
   customThemes$,
   keepLocalStatisticsOnDeletion$,
   overwriteBookCompletion$,
+  speedGoalMinMinutes$,
   startDayHoursForTracker$,
   statsWeekStart$
 } from '$lib/data/store';
@@ -23,6 +24,7 @@ export const GLOBAL_SETTING_SUBJECTS: Record<string, { next(value: never): void 
   customThemes: customThemes$,
   startDayHoursForTracker: startDayHoursForTracker$,
   statsWeekStart: statsWeekStart$,
+  speedGoalMinMinutes: speedGoalMinMinutes$,
   keepLocalStatisticsOnDeletion: keepLocalStatisticsOnDeletion$,
   overwriteBookCompletion: overwriteBookCompletion$,
   addCharactersOnCompletion: addCharactersOnCompletion$

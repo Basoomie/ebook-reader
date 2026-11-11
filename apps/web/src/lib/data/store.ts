@@ -299,6 +299,23 @@ export const startDayHoursForTracker$ = writableNumberLocalStorageSubject()(
 /** WP12: the first day of a stats week, 0 = Sunday … 6 = Saturday (global, default Monday). */
 export const statsWeekStart$ = writableNumberLocalStorageSubject()('statsWeekStart', 1);
 
+/** WP12c: tracked minutes a period needs before a speed goal counts (global). */
+export const speedGoalMinMinutes$ = writableNumberLocalStorageSubject()('speedGoalMinMinutes', 15);
+
+/** WP12c: time left uses the newest N minutes of reading in the book (per device). */
+export const timeLeftRecentMinutes$ = writableNumberLocalStorageSubject()(
+  'timeLeftRecentMinutes',
+  60
+);
+
+/** WP12c: with less reading than this in the book, time left uses the overall speed. */
+export const timeLeftMinMinutes$ = writableNumberLocalStorageSubject()('timeLeftMinMinutes', 10);
+
+/** WP12c: time left in the reader's bottom bar (per device; off by default). */
+export const bottomBarTimeLeft$ = writableStringLocalStorageSubject<
+  'off' | 'chapter' | 'book' | 'both'
+>()('bottomBarTimeLeft', 'off');
+
 export const statisticsEnabled$ = writableBooleanLocalStorageSubject()('statisticsEnabled', true);
 
 export const statisticsMergeMode$ = writableStringLocalStorageSubject<MergeMode>()(
