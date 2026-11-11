@@ -193,6 +193,52 @@ html.catalogue .mdc-elevation--z24 {
   color: var(--c-ink);
 }
 
+/* Their outlined buttons (border-2 border-current) behave like the page's outlined buttons:
+   hover and pressed colours, and a picked toggle (bg-gray-700) in the picked colours. Only
+   over catalogue pages; the reader keeps its own. E-ink: no hover, pressing fills black. */
+html.catalogue .mdc-elevation--z24 button.border-current:not(.bg-gray-700),
+html.catalogue .mdc-elevation--z24 select.border-current {
+  border-color: var(--c-sec-border);
+}
+
+/* Room for the select's arrow (it overlapped "Follow tag rules"). */
+html.catalogue .mdc-elevation--z24 select.border-current {
+  padding-right: 2.5rem;
+}
+
+html.catalogue .mdc-elevation--z24 button.border-current {
+  transition:
+    background-color 0.12s ease,
+    border-color 0.12s ease,
+    color 0.12s ease;
+}
+
+html.catalogue .mdc-elevation--z24 button.border-current.bg-gray-700 {
+  background-color: var(--c-sel-bg);
+  border-color: var(--c-sel-bg);
+  color: var(--c-sel-ink);
+}
+
+@media (hover: hover) {
+  html.catalogue:not(.eink)
+    .mdc-elevation--z24
+    button.border-current:not(:disabled):not(.bg-gray-700):hover {
+    background-color: var(--c-sec-hover);
+    border-color: var(--c-sec-hover-border);
+  }
+}
+
+html.catalogue:not(.eink)
+  .mdc-elevation--z24
+  button.border-current:not(:disabled):not(.bg-gray-700):active {
+  background-color: var(--c-sec-active);
+}
+
+html.catalogue.eink .mdc-elevation--z24 button.border-current:not(:disabled):active {
+  background-color: #000;
+  color: #fff;
+}
+
 @layer components {
   /* Buttons: filled (primary), outlined (secondary) and plain rows (ghost). 48 px. */
   .c-btn {
@@ -276,6 +322,20 @@ html.catalogue .mdc-elevation--z24 {
   html.eink .c-btn-primary:not(:disabled):active {
     color: #000;
     border-color: #000;
+  }
+
+  /* Small marks on a cover ("Uploaded", saved on this device): navy on cream covers'
+     edges in light, gold in dark, black in E-ink. */
+  .c-badge {
+    @apply inline-flex h-6 min-w-[1.5rem] items-center justify-center gap-1 rounded-full px-1.5 text-xs font-medium;
+    background-color: var(--c-btn-bg);
+    color: var(--c-btn-ink);
+    box-shadow: 0 1px 3px rgb(0 0 0 / 0.35);
+  }
+
+  html.eink .c-badge {
+    box-shadow: none;
+    outline: 1px solid #fff;
   }
 
   /* Underlined only on hover (author names, "See all"). */
