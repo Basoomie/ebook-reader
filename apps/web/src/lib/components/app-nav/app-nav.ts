@@ -9,6 +9,7 @@ import {
   faChartLine,
   faHouse,
   faLayerGroup,
+  faNoteSticky,
   type IconDefinition
 } from '@fortawesome/free-solid-svg-icons';
 import LogReportDialog from '$lib/components/log-report-dialog.svelte';
@@ -22,13 +23,13 @@ export interface AppNavEntry {
 
 /**
  * The app's navigation (WP7b, decided with the user): Home, Library, Collections,
- * Stats; Settings (and Bug report) in a menu. Notes joins with WP11: adding an entry
- * here is the one change needed.
+ * Stats; Settings (and Bug report) in a menu. WP11c: Notes between Collections and Stats.
  */
 export const APP_NAV: readonly AppNavEntry[] = [
   { routeId: '/home', label: 'Home', icon: faHouse },
   { routeId: '/library', label: 'Library', icon: faBookAtlas },
   { routeId: '/collections', label: 'Collections', icon: faLayerGroup },
+  { routeId: '/notes', label: 'Notes', icon: faNoteSticky },
   { routeId: '/statistics', label: 'Stats', icon: faChartLine }
 ];
 

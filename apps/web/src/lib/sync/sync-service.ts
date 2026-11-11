@@ -822,7 +822,24 @@ export function notesApi() {
       chapter: string | null | undefined
     ) => addBookmark(bookId, place, name, chapter, notesDeps),
     renameBookmark: (id: string, name: string) => renameBookmark(id, name, notesDeps),
-    removeBookmark: (id: string) => removeBookmark(id, notesDeps)
+    removeBookmark: (id: string) => removeBookmark(id, notesDeps),
+    /** WP11c: titles this device knows for catalog books (offline fallback). */
+    async titles(): Promise<Map<string, string>> {
+      try {
+        const all = await titlesByBookId(bookIdDeps);
+        return new Map([...all].map(([id, set]) => [id, [...set][0] ?? '']));
+      } catch (error) {
+        warn(`Notes: ${(error as Error)?.message ?? error}`);
+        return new Map();
+      }
+    },
+    async syncSoon(): Promise<void> {
+      try {
+        await getSyncRunner()?.syncSoon();
+      } catch {
+        // Shown in the Connection panel.
+      }
+    }
   };
 }
 

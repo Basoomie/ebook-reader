@@ -66,7 +66,7 @@ export function askPlaceholderBook(question: ExistingBookQuestion): Promise<bool
 }
 
 export function openCatalogBook(
-  book: CatalogBook,
+  book: Pick<CatalogBook, 'id' | 'title'>,
   api: LibraryApi,
   store: LibraryStore,
   libraries: readonly CatalogLibrary[],

@@ -117,6 +117,13 @@ export class ReaderHighlights {
 
   bookId: string | null = null;
 
+  private resolveLoaded: () => void = () => {};
+
+  /** WP11c: resolves once the book is resolved and its highlights placed (or failed). */
+  readonly loaded = new Promise<void>((resolve) => {
+    this.resolveLoaded = resolve;
+  });
+
   private notes: BookNotes = emptyBookNotes();
 
   private places = new Map<string, number | null>();
@@ -183,11 +190,14 @@ export class ReaderHighlights {
       await this.reload();
     } catch (error) {
       this.warn(error);
+    } finally {
+      this.resolveLoaded();
     }
   }
 
   destroy() {
     this.destroyed = true;
+    this.resolveLoaded();
     clearTimeout(this.repaintTimer);
     clearTimeout(this.updateTimer);
     this.observer?.disconnect();
@@ -222,6 +232,16 @@ export class ReaderHighlights {
   /** Where a highlight sits on this device (its own position when it couldn't be placed). */
   positionOf(item: Pick<HighlightItem, 'id' | 'start'>) {
     return this.places.get(item.id) ?? item.start;
+  }
+
+  /**
+   * WP11c: a highlight's place on this device: a position, null when it couldn't be placed,
+   * undefined when this book has no such highlight (removed meanwhile).
+   */
+  placeOf(id: string): number | null | undefined {
+    return this.notes.highlights.some((h) => h.id === id)
+      ? (this.places.get(id) ?? null)
+      : undefined;
   }
 
   /** The live DOM range of a highlight on the page, if it is on the page. */
