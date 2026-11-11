@@ -5,17 +5,18 @@
  */
 
 import { browser } from '$app/environment';
-import { combineLatest, map, type Observable } from 'rxjs';
+import { map, type Observable } from 'rxjs';
 import { APPEARANCE_SETTINGS } from '$lib/components/book-reader/appearance-settings';
 import { IdbFontCache } from '$lib/fonts/font-cache-db';
 import { customFontNames } from '$lib/fonts/font-names';
+import { OLD_USER_FONTS_KEY, planOldFontCleanup } from '$lib/fonts/old-browser-fonts';
 import {
   FONT_KIND,
   ServerFonts,
   type FaceRegistry,
   type FontRecordLike
 } from '$lib/fonts/server-fonts';
-import { fontFamilyGroupOne$, fontFamilyGroupTwo$, userFonts$ } from '$lib/data/store';
+import { fontFamilyGroupOne$, fontFamilyGroupTwo$ } from '$lib/data/store';
 import { LibraryApi } from '$lib/library/api';
 import { getLibraryStore } from '$lib/library/library-db';
 import { libraryRequestTimeoutSeconds$ } from '$lib/library/settings';
@@ -29,8 +30,8 @@ import { logger } from '$lib/data/logger';
 
 /**
  * Registers fonts with the FontFace API (works over plain http, unlike the Cache API
- * and service worker the per-browser fonts use). Without FontFace, an @font-face rule
- * with a blob: URL does the same.
+ * and service worker the removed per-browser fonts used). Without FontFace, an
+ * @font-face rule with a blob: URL does the same.
  */
 export class BrowserFaceRegistry implements FaceRegistry {
   private readonly faces = new Map<
@@ -115,11 +116,39 @@ export const serverFonts = new ServerFonts({
   warn: (m) => logger.warn(m)
 });
 
-/** Custom fonts for the pickers: server fonts, then this browser's own fonts. */
-export const customFontNames$: Observable<string[]> = combineLatest([
-  serverFonts.names$,
-  userFonts$
-]).pipe(map(([server, local]) => customFontNames(server, local)));
+/** Custom fonts for the pickers: the server fonts. */
+export const customFontNames$: Observable<string[]> = serverFonts.names$.pipe(
+  map((names) => customFontNames(names))
+);
+
+/**
+ * Once per browser: forgets the removed per-browser fonts (WP18) and puts a font group
+ * that used one back to the bundled default. Never throws.
+ */
+function cleanUpOldBrowserFonts(): void {
+  try {
+    const raw = localStorage.getItem(OLD_USER_FONTS_KEY);
+    if (raw === null) return;
+    const plan = planOldFontCleanup(
+      raw,
+      { groupOne: fontFamilyGroupOne$.getValue(), groupTwo: fontFamilyGroupTwo$.getValue() },
+      {
+        groupOne: APPEARANCE_SETTINGS.fontFamilyGroupOne.defaultValue as string,
+        groupTwo: APPEARANCE_SETTINGS.fontFamilyGroupTwo.defaultValue as string
+      },
+      serverFonts.names$.getValue()
+    );
+    if (plan.groupOne !== undefined) fontFamilyGroupOne$.next(plan.groupOne);
+    if (plan.groupTwo !== undefined) fontFamilyGroupTwo$.next(plan.groupTwo);
+    localStorage.removeItem(OLD_USER_FONTS_KEY);
+    logger.warn(
+      `Fonts: removed the per-browser fonts (${plan.removed.join(', ') || 'none'}); ` +
+        'use Manage fonts to add fonts for every device'
+    );
+  } catch (error) {
+    logger.warn(`Fonts: could not remove the per-browser fonts: ${(error as Error)?.message}`);
+  }
+}
 
 let started = false;
 
@@ -138,10 +167,13 @@ export function startServerFonts(): void {
     .then(async (engine) => {
       engine.onRemoteChange(onRecords);
       engine.onLocalWrite((record) => onRecords([record]));
-      void serverFonts.applyRecords(await engine.getAll(FONT_KIND), { initial: true });
+      void serverFonts
+        .applyRecords(await engine.getAll(FONT_KIND), { initial: true })
+        .then(cleanUpOldBrowserFonts);
     })
     .catch((error) => {
       serverFonts.noRecords();
+      cleanUpOldBrowserFonts();
       logger.warn(`Fonts: not started: ${(error as Error)?.message ?? error}`);
     });
   window.addEventListener('online', () => void serverFonts.retry());

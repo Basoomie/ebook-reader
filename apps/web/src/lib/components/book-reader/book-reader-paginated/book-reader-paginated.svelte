@@ -4,7 +4,7 @@
   import HtmlRenderer from '$lib/components/html-renderer.svelte';
   import type { BooksDbBookmarkData } from '$lib/data/database/books-db/versions/books-db';
   import { SECTION_CHANGE } from '$lib/data/events';
-  import { isStoredFont } from '$lib/data/fonts';
+  import { reservedFontNames } from '$lib/data/fonts';
   import { isServerFontPending, whenServerFontReady } from '$lib/fonts/server-fonts-browser';
   import { FuriganaStyle } from '$lib/data/furigana-style';
   import { logger } from '$lib/data/logger';
@@ -13,8 +13,7 @@
     firstDimensionMargin$,
     selectionToBookmarkEnabled$,
     skipKeyDownListener$,
-    swipeThreshold$,
-    userFonts$
+    swipeThreshold$
   } from '$lib/data/store';
   import { clearRange, createRange, pulseElement } from '$lib/functions/range-util';
   import { iffBrowser } from '$lib/functions/rxjs/iff-browser';
@@ -534,8 +533,7 @@
     } else if (!fontLoadingAdded) {
       fontLoadingAdded = true;
 
-      const timeout =
-        isStoredFont(fontFamilyGroupOne, $userFonts$) || serverFontWait ? 30000 : 10000;
+      const timeout = reservedFontNames.has(fontFamilyGroupOne) || serverFontWait ? 30000 : 10000;
       const fontLoadTimer = setTimeout(() => {
         logger.error(`Error loading primary Font: ${fontFamilyGroupOne}`);
         triggerContentChange();

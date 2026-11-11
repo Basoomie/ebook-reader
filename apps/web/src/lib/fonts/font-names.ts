@@ -4,7 +4,7 @@
  * All rights reserved.
  */
 
-import { reservedFontNames, type UserFont } from '$lib/data/fonts';
+import { reservedFontNames } from '$lib/data/fonts';
 
 /**
  * Names a custom font can't take: the bundled fonts plus the CSS generic and keyword
@@ -41,7 +41,7 @@ const FONT_NAME_RE = /^\p{L}[\p{L}\p{M}\p{N}_-]*(?: [\p{L}\p{M}\p{N}_-]+)*$/u;
 
 /**
  * What is wrong with a name for a new font, or null. `taken` are the names already in
- * use on this device (server fonts and this browser's own fonts), compared without case.
+ * used by the server fonts, compared without case.
  */
 export function fontNameProblem(name: string, taken: readonly string[] = []): string | null {
   if (!name) return 'Enter a name for the font';
@@ -66,10 +66,10 @@ export function isFontFileName(fileName: string): boolean {
   return /\.(woff2|woff|ttf|otf)$/i.test(fileName);
 }
 
-/** The custom fonts for the pickers: server fonts, then this browser's own, no duplicates. */
-export function customFontNames(serverNames: readonly string[], userFonts: readonly UserFont[]) {
+/** The custom fonts for the pickers: the server fonts in order, no duplicates. */
+export function customFontNames(serverNames: readonly string[]): string[] {
   const out: string[] = [];
-  for (const name of [...serverNames, ...userFonts.map((f) => f.name)]) {
+  for (const name of serverNames) {
     if (!out.includes(name)) out.push(name);
   }
   return out;

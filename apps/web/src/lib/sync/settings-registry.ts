@@ -133,7 +133,6 @@ export const SETTINGS_REGISTRY: Record<string, SettingSpec> = {
 
   // --- become records of their own later (local until then) ---
   readingGoal: l('Object'), // ReadingGoal records (WP5/WP12)
-  userfonts: l('Array'), // server-synced fonts (WP13)
 
   // --- remembered UI state (local) ---
   lastExportedTarget: l('String'),

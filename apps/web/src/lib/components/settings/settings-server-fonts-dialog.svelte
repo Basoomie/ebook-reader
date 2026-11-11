@@ -7,7 +7,6 @@
    */
   import { createEventDispatcher, onDestroy, onMount } from 'svelte';
   import { inputClasses } from '$lib/css-classes';
-  import { userFonts$ } from '$lib/data/store';
   import { fontNameProblem, formatFontSize, isFontFileName } from '$lib/fonts/font-names';
   import { customFontNames$, fontApi, serverFonts } from '$lib/fonts/server-fonts-browser';
   import { FONT_KIND, type FontStatus, type ServerFontState } from '$lib/fonts/server-fonts';
@@ -123,7 +122,7 @@
     problem = '';
     notice = '';
     const trimmed = name.trim();
-    const taken = [...$customFontNames$, ...$userFonts$.map((f) => f.name)];
+    const taken = $customFontNames$;
     const nameProblem = fontNameProblem(trimmed, taken);
     if (nameProblem) {
       problem = nameProblem;

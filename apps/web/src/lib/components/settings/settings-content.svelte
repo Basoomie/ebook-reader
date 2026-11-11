@@ -1,6 +1,6 @@
 <script lang="ts">
   import { browser } from '$app/environment';
-  import { faComputer, faPlus, faSpinner } from '@fortawesome/free-solid-svg-icons';
+  import { faPlus, faSpinner } from '@fortawesome/free-solid-svg-icons';
   import {
     TrackerAutoPause,
     TrackerSkipThresholdAction
@@ -19,7 +19,6 @@
   import SettingsReadingGoals from '$lib/components/settings/settings-reading-goals.svelte';
   import SettingsItemGroup from '$lib/components/settings/settings-item-group.svelte';
   import SettingsStorageSourceList from '$lib/components/settings/settings-storage-source-list.svelte';
-  import SettingsUserFontDialog from '$lib/components/settings/settings-user-font-dialog.svelte';
   import SettingsServerFontsDialog from '$lib/components/settings/settings-server-fonts-dialog.svelte';
   import { customFontNames$ } from '$lib/fonts/server-fonts-browser';
   import { inputClasses } from '$lib/css-classes';
@@ -40,8 +39,6 @@
     einkMode$,
     followSystemTheme$,
     lightTheme$,
-    fontFamilyGroupOne$,
-    fontFamilyGroupTwo$,
     horizontalCustomReadingPosition$,
     textMarginMode$,
     textMarginValue$,
@@ -443,7 +440,6 @@
   $: autoBookmarkTooltip = `If enabled saves your place after ${autoBookmarkTime} seconds without scrolling/page change`;
   $: wakeLockSupported = browser && 'wakeLock' in navigator;
   $: verticalMode = writingMode === 'vertical-rl';
-  $: fontCacheSupported = browser && 'caches' in window;
   $: switch (furiganaStyle) {
     case FuriganaStyle.Hide:
       furiganaStyleTooltip = 'Always hidden';
@@ -625,23 +621,6 @@
           ]}
           bind:fontValue={fontFamilyGroupOne}
         />
-        {#if fontCacheSupported}
-          <div
-            tabindex="0"
-            role="button"
-            title="Open Custom Font Dialog"
-            on:click={() =>
-              dialogManager.dialogs$.next([
-                {
-                  component: SettingsUserFontDialog,
-                  props: { fontFamily: fontFamilyGroupOne$ }
-                }
-              ])}
-            on:keyup={dummyFn}
-          >
-            <Fa icon={faComputer} />
-          </div>
-        {/if}
       </div>
       <input
         type="text"
@@ -661,22 +640,6 @@
           ]}
           bind:fontValue={fontFamilyGroupTwo}
         />
-        {#if fontCacheSupported}
-          <div
-            tabindex="0"
-            role="button"
-            on:click={() =>
-              dialogManager.dialogs$.next([
-                {
-                  component: SettingsUserFontDialog,
-                  props: { fontFamily: fontFamilyGroupTwo$ }
-                }
-              ])}
-            on:keyup={dummyFn}
-          >
-            <Fa icon={faComputer} />
-          </div>
-        {/if}
       </div>
       <input
         type="text"

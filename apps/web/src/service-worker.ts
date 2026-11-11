@@ -4,7 +4,6 @@ import { build, files, prerendered, version } from '$service-worker';
 
 import { pagePath } from '$lib/data/env';
 import { toSearchParams } from '$lib/functions/to-search-params';
-import { userFontsCacheName } from '$lib/data/fonts';
 
 // eslint-disable-next-line no-restricted-globals
 const worker = self as unknown as ServiceWorkerGlobalScope;
@@ -23,9 +22,8 @@ worker.addEventListener('install', (event) => {
 worker.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys().then((keys) => {
-      const keysWithOldCache = keys.filter(
-        (key) => key !== BUILD_CACHE_NAME && key !== userFontsCacheName
-      );
+      // Also deletes 'ttu-userfonts', the cache of the removed per-browser fonts (WP18).
+      const keysWithOldCache = keys.filter((key) => key !== BUILD_CACHE_NAME);
       return Promise.all(keysWithOldCache.map((key) => caches.delete(key)));
     })
   );
@@ -50,15 +48,6 @@ worker.addEventListener('fetch', (event) => {
     const requestWithoutParams = new Request(url.pathname);
     event.respondWith(
       networkFirstRaceCache(event.request, false, BUILD_CACHE_NAME, requestWithoutParams)
-    );
-    return;
-  }
-
-  if (isSelfHost && url.pathname.startsWith('/userfonts/')) {
-    event.respondWith(
-      caches
-        .match(url.pathname)
-        .then((r) => r ?? createRedirectResponse('/fonts/noto-serif-v21-regular.woff2'))
     );
     return;
   }

@@ -17,14 +17,6 @@ export enum LocalFont {
   SANSSERIF = 'Sans-Serif'
 }
 
-export interface UserFont {
-  name: string;
-  path: string;
-  fileName: string;
-}
-
-export const userFontsCacheName = 'ttu-userfonts';
-
 export const reservedFontNames = new Set([
   'KZ UDGothic',
   'KZ UDMincho',
@@ -37,9 +29,3 @@ export const reservedFontNames = new Set([
   'Serif',
   'Sans-Serif'
 ]);
-
-export function isStoredFont(fontName: string, userFonts: UserFont[]) {
-  return (
-    reservedFontNames.has(fontName) || !!userFonts.find((userFont) => userFont.name === fontName)
-  );
-}
