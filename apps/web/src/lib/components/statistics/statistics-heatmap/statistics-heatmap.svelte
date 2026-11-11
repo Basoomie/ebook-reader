@@ -33,11 +33,7 @@
     BooksDbStatistic
   } from '$lib/data/database/books-db/versions/books-db';
   import { getDateRangeLabel } from '$lib/data/reading-goal';
-  import {
-    lastStartDayOfWeek$,
-    lastStatisticsEndDate$,
-    lastStatisticsStartDate$
-  } from '$lib/data/store';
+  import { einkMode$, statsWeekStart$ } from '$lib/data/store';
   import { reduceToEmptyString } from '$lib/functions/rxjs/reduce-to-empty-string';
   import {
     advanceDateDays,
@@ -59,6 +55,9 @@
   export let statisticsTitleFilters: Map<string, boolean>;
   export let today: Date;
   export let todayKey: string;
+  /** WP12b: the first and last day of the Stats page's period (outlined). */
+  export let selectedFrom = '';
+  export let selectedTo = '';
 
   const resizeHandler$ = fromEvent(window, 'resize').pipe(
     debounceTime(250),
@@ -85,16 +84,49 @@
   let selectedStreak = HeatmapStreakType.NONE;
   let selectedStreakDates = new Set<string>();
 
+  $: isAllTime = heatmapAggregration === HeatmapDataAggregration.ALL_TIME;
+
+  $: mapAggregationlabel = `(${isAllTime ? 'All Time' : heatmapYear})`;
+
+  $: typeLabel = heatmapType === HeatmapType.STATISTICS ? 'day' : 'goal';
+
+  $: daysReadLabel = `Days read ${mapAggregationlabel}:`;
+
+  $: readingGoalsCompletedLabel = `100% completed ${mapAggregationlabel}:`;
+
+  $: longestStreaksLabel = currentHeatmapData
+    ? `Longest ${pluralize(currentHeatmapData.longestStreaks.length, 'Streak', false)} ${mapAggregationlabel}:`
+    : '';
+
+  $: longestStreaksDuration = currentHeatmapData?.longestStreaks[0]?.duration || 0;
+
+  $: longestStreaksCount =
+    currentHeatmapData && longestStreaksDuration
+      ? ` (${pluralize(currentHeatmapData.longestStreaks.length, 'Time')})`
+      : '';
+
+  $: longestStreaksDays = `${longestStreaksDuration} ${pluralize(
+    longestStreaksDuration,
+    typeLabel,
+    false
+  )}`;
+
+  $: currentStreakLabel = `Current Streak ${mapAggregationlabel}:`;
+
+  $: currentStreakDays = currentHeatmapData
+    ? pluralize(currentHeatmapData.currentStreak.duration, typeLabel)
+    : '';
+
   $: heatmapLabel = `Reading ${
     heatmapType === HeatmapType.STATISTICS ? '' : 'Goals '
   }Data for ${heatmapYear}`;
 
   $: dayLabels = [
-    ...daysOfWeekShort.slice($lastStartDayOfWeek$),
-    ...($lastStartDayOfWeek$ ? daysOfWeekShort.slice(0, $lastStartDayOfWeek$) : [])
+    ...daysOfWeekShort.slice($statsWeekStart$),
+    ...($statsWeekStart$ ? daysOfWeekShort.slice(0, $statsWeekStart$) : [])
   ];
 
-  $: if ($lastStartDayOfWeek$ > -1 || heatmapAggregration) {
+  $: if ($statsWeekStart$ > -1 || heatmapAggregration) {
     tick().then(() => {
       updateHeatmapData(heatmapYear);
     });
@@ -125,6 +157,10 @@
 
     updateHeatmapDimensions();
   });
+
+  function isSelectedDay(dateString: string) {
+    return dateString !== todayKey && (dateString === selectedFrom || dateString === selectedTo);
+  }
 
   function checkIsStatisticsHeatmapData(
     heatmapData: StatisticsHeatmapData | ReadingGoalsHeatmapData
@@ -851,16 +887,16 @@
     let heatmapRow = 2;
     let heatmapColumn = 3;
 
-    if ($lastStartDayOfWeek$ !== dayIndex) {
-      if (!$lastStartDayOfWeek$) {
+    if ($statsWeekStart$ !== dayIndex) {
+      if (!$statsWeekStart$) {
         daysToFill = dayIndex;
       } else if (!dayIndex) {
-        daysToFill = 7 - $lastStartDayOfWeek$;
+        daysToFill = 7 - $statsWeekStart$;
       } else {
         daysToFill =
-          $lastStartDayOfWeek$ > dayIndex
-            ? 7 - Math.abs(dayIndex - $lastStartDayOfWeek$)
-            : dayIndex - $lastStartDayOfWeek$;
+          $statsWeekStart$ > dayIndex
+            ? 7 - Math.abs(dayIndex - $statsWeekStart$)
+            : dayIndex - $statsWeekStart$;
       }
     }
 
@@ -1078,14 +1114,14 @@
   {heatmapLabel}
   <button
     title="Return to current Year"
-    class="mx-4 hover:text-red-500"
+    class="mx-2 min-h-[3rem] min-w-[3rem] hover:text-red-500"
     on:click={() => changeHeatmapYear(today.getFullYear() - heatmapYear)}
   >
     <Fa icon={faRepeat} />
   </button>
   <button
     title="Switch (Streak) Data between 'All Time' and 'Current Year'"
-    class="text-lg hover:text-red-500"
+    class="min-h-[3rem] min-w-[3rem] text-lg hover:text-red-500"
     on:click={() =>
       (heatmapAggregration =
         heatmapAggregration === HeatmapDataAggregration.ALL_TIME
@@ -1098,7 +1134,7 @@
 <div class="flex justify-between">
   <button
     title="Move Backwards"
-    class="hover:text-red-500"
+    class="min-h-[3rem] min-w-[2rem] hover:text-red-500"
     on:click={() => {
       if (heatmapElement.scrollLeft === 0) {
         changeHeatmapYear(-1);
@@ -1106,7 +1142,7 @@
         heatmapElement.scrollBy({
           top: 0,
           left: -(heatmapElement.clientWidth / 2),
-          behavior: 'smooth'
+          behavior: $einkMode$ ? 'auto' : 'smooth'
         });
       }
     }}
@@ -1150,11 +1186,6 @@
       </div>
     {/each}
     {#each currentHeatmapDays as heatmapDay (heatmapDay.dateString)}
-      {@const isToday = heatmapDay.dateString === todayKey}
-      {@const isSelected =
-        !isToday &&
-        (heatmapDay.dateString === $lastStatisticsStartDate$ ||
-          heatmapDay.dateString === $lastStatisticsEndDate$)}
       <div
         tabindex="0"
         role="cell"
@@ -1162,8 +1193,8 @@
         class:cursor-pointer={heatmapDay.isCurrentYear}
         class:bg-slate-300={heatmapDay.isCurrentYear}
         class:bg-slate-200={!heatmapDay.isCurrentYear}
-        class:border-amber-500={isSelected}
-        class:border-red-500={isToday}
+        class:border-amber-500={isSelectedDay(heatmapDay.dateString)}
+        class:border-red-500={heatmapDay.dateString === todayKey}
         class:highlight={selectedStreakDates.has(heatmapDay.dateString)}
         style:animation-delay={`${3 * heatmapDay.heatmapColumn}ms`}
         style:height={`${dayElementSize}px`}
@@ -1171,7 +1202,9 @@
         style:grid-row={`${heatmapDay.heatmapRow}/${heatmapDay.heatmapRow}`}
         style:grid-column={`${heatmapDay.heatmapColumn}/${heatmapDay.heatmapColumn}`}
         style:background-color={heatmapDay.color || null}
-        style:border-width={`${isSelected || isToday ? '3' : '1'}px`}
+        style:border-width={`${
+          isSelectedDay(heatmapDay.dateString) || heatmapDay.dateString === todayKey ? '3' : '1'
+        }px`}
         title={`${heatmapDay.isCurrentYear ? `${heatmapDay.dayDetails.join('\n')}` : ''}`}
         data-date={heatmapDay.dateString}
         on:click={(event) => {
@@ -1200,7 +1233,7 @@
         >
           <button
             title="Close Details"
-            class="flex w-full justify-end absolute right-2"
+            class="absolute right-2 flex min-h-[3rem] min-w-[3rem] justify-end"
             on:click={() => (popoverDetails = [])}
           >
             <Fa icon={faClose} />
@@ -1214,7 +1247,7 @@
   </div>
   <button
     title="Move Forwards"
-    class="hover:text-red-500"
+    class="min-h-[3rem] min-w-[2rem] hover:text-red-500"
     on:click={() => {
       const scrollWidth =
         heatmapElement.scrollWidth - heatmapElement.scrollLeft - heatmapDayMargins;
@@ -1224,7 +1257,7 @@
         heatmapElement.scrollBy({
           top: 0,
           left: heatmapElement.clientWidth / 2,
-          behavior: 'smooth'
+          behavior: $einkMode$ ? 'auto' : 'smooth'
         });
       }
     }}
@@ -1233,35 +1266,13 @@
   </button>
 </div>
 {#if currentHeatmapData}
-  {@const isAllTime = heatmapAggregration === HeatmapDataAggregration.ALL_TIME}
-  {@const mapAggregationlabel = `(${isAllTime ? 'All Time' : heatmapYear})`}
-  {@const typeLabel = `${heatmapType === HeatmapType.STATISTICS ? 'day' : 'goal'}`}
-  {@const daysReadLabel = `Days read ${mapAggregationlabel}:`}
-  {@const readingGoalsCompletedLabel = `100% completed ${mapAggregationlabel}:`}
-  {@const longestStreaksLabel = `Longest ${pluralize(
-    currentHeatmapData.longestStreaks.length,
-    'Streak',
-    false
-  )} ${mapAggregationlabel}:`}
-  {@const longestStreaksDuration = currentHeatmapData.longestStreaks[0]?.duration || 0}
-  {@const longestStreaksCount = `${
-    longestStreaksDuration
-      ? ` (${pluralize(currentHeatmapData.longestStreaks.length, 'Time')})`
-      : ''
-  }`}
-  {@const longestStreaksDays = `${longestStreaksDuration} ${pluralize(
-    longestStreaksDuration,
-    typeLabel,
-    false
-  )}`}
-  {@const currentStreakLabel = `Current Streak ${mapAggregationlabel}:`}
-  {@const currentStreakDays = pluralize(currentHeatmapData.currentStreak.duration, typeLabel)}
   <div class="hidden grid-cols-3 justify-center mt-4 text-center text-sm sm:grid">
     {#if checkIsStatisticsHeatmapData(currentHeatmapData)}
       <div>{daysReadLabel}</div>
     {:else}
       <button
         title="Highlight completed Reading Goals"
+        class="min-h-[3rem]"
         on:click={() =>
           highlightStreaks(currentHeatmapData.streaks, HeatmapStreakType.READING_GOALS_COMPLETED)}
       >
@@ -1271,6 +1282,7 @@
     <div>
       <button
         title="Highlight Streak"
+        class="min-h-[3rem]"
         on:click={() =>
           highlightStreaks(currentHeatmapData.longestStreaks, HeatmapStreakType.LONGEST)}
       >
@@ -1280,6 +1292,7 @@
     <div>
       <button
         title="Highlight Streak"
+        class="min-h-[3rem]"
         on:click={() =>
           highlightStreaks(
             currentHeatmapData.currentStreak.duration ? [currentHeatmapData.currentStreak] : [],
@@ -1294,6 +1307,7 @@
     {:else}
       <button
         title="Highlight completed Reading Goals"
+        class="min-h-[3rem]"
         on:click={() =>
           highlightStreaks(currentHeatmapData.streaks, HeatmapStreakType.READING_GOALS_COMPLETED)}
       >
@@ -1303,6 +1317,7 @@
     <div>
       <button
         title="Highlight Streak"
+        class="min-h-[3rem]"
         on:click={() =>
           highlightStreaks(currentHeatmapData.longestStreaks, HeatmapStreakType.LONGEST)}
       >
@@ -1312,6 +1327,7 @@
     <div>
       <button
         title="Highlight Streak"
+        class="min-h-[3rem]"
         on:click={() =>
           highlightStreaks(
             currentHeatmapData.currentStreak.duration ? [currentHeatmapData.currentStreak] : [],
@@ -1329,7 +1345,7 @@
     {:else}
       <button
         title="Highlight completed Reading Goals"
-        class="text-left"
+        class="min-h-[3rem] text-left"
         on:click={() =>
           highlightStreaks(currentHeatmapData.streaks, HeatmapStreakType.READING_GOALS_COMPLETED)}
       >
@@ -1337,7 +1353,7 @@
       </button>
       <button
         title="Highlight completed Reading Goals"
-        class="text-left"
+        class="min-h-[3rem] text-left"
         on:click={() =>
           highlightStreaks(currentHeatmapData.streaks, HeatmapStreakType.READING_GOALS_COMPLETED)}
       >
@@ -1346,7 +1362,7 @@
     {/if}
     <button
       title="Highlight Streak"
-      class="text-left"
+      class="min-h-[3rem] text-left"
       on:click={() =>
         highlightStreaks(currentHeatmapData.longestStreaks, HeatmapStreakType.LONGEST)}
     >
@@ -1354,7 +1370,7 @@
     </button>
     <button
       title="Highlight Streak"
-      class="text-left"
+      class="min-h-[3rem] text-left"
       on:click={() =>
         highlightStreaks(currentHeatmapData.longestStreaks, HeatmapStreakType.LONGEST)}
     >
@@ -1363,6 +1379,7 @@
     <div>
       <button
         title="Highlight Streak"
+        class="min-h-[3rem]"
         on:click={() =>
           highlightStreaks(
             currentHeatmapData.currentStreak.duration ? [currentHeatmapData.currentStreak] : [],
@@ -1375,6 +1392,7 @@
     <div>
       <button
         title="Highlight Streak"
+        class="min-h-[3rem]"
         on:click={() =>
           highlightStreaks(
             currentHeatmapData.currentStreak.duration ? [currentHeatmapData.currentStreak] : [],

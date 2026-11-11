@@ -15,20 +15,10 @@ import {
   TrackerSkipThresholdAction
 } from '$lib/components/book-reader/book-reading-tracker/book-reading-tracker';
 import { HeatmapDataAggregration } from '$lib/components/statistics/statistics-heatmap/statistics-heatmap';
-import {
-  StatisticsRangeTemplate,
-  StatisticsTab,
-  type BookStatistic,
-  StatisticsReadingDataAggregationMode
-} from '$lib/components/statistics/statistics-types';
 import { BlurMode } from '$lib/data/blur-mode';
 import { MergeMode } from '$lib/data/merge-mode';
 import type { ReadingGoal } from '$lib/data/reading-goal';
 import { SortDirection, type SortOption } from '$lib/data/sort-types';
-import {
-  StatisticsTabAvailableKeybind,
-  type StatisticsTabKeybindMap
-} from '$lib/data/statistics-tab-keybind';
 import {
   InternalStorageSources,
   StorageDataType,
@@ -306,6 +296,9 @@ export const startDayHoursForTracker$ = writableNumberLocalStorageSubject()(
   0
 );
 
+/** WP12: the first day of a stats week, 0 = Sunday … 6 = Saturday (global, default Monday). */
+export const statsWeekStart$ = writableNumberLocalStorageSubject()('statsWeekStart', 1);
+
 export const statisticsEnabled$ = writableBooleanLocalStorageSubject()('statisticsEnabled', true);
 
 export const statisticsMergeMode$ = writableStringLocalStorageSubject<MergeMode>()(
@@ -406,85 +399,15 @@ export const lastReadingGoalsModified$ = writableNumberLocalStorageSubject()(
   0
 );
 
-export const lastStatisticsTab$ = writableStringLocalStorageSubject<StatisticsTab>()(
-  'lastStatisticsTab',
-  StatisticsTab.OVERVIEW
-);
-
-export const lastStatisticsRangeTemplate$ =
-  writableStringLocalStorageSubject<StatisticsRangeTemplate>()(
-    'lastStatisticsRangeTemplate',
-    StatisticsRangeTemplate.TODAY
-  );
-
-export const lastStatisticsStartDate$ = writableStringLocalStorageSubject()(
-  'lastStatisticsStartDate',
-  ''
-);
-
-export const lastStatisticsEndDate$ = writableStringLocalStorageSubject()(
-  'lastStatisticsEndDate',
-  ''
-);
-
-export const lastStartDayOfWeek$ = writableNumberLocalStorageSubject()('lastStartDayOfWeek', 1);
-
-export const lastReadingTimeDataSource$ = writableStringLocalStorageSubject<keyof BookStatistic>()(
-  'lastReadingTimeDataSource',
-  'readingTime'
-);
-
-export const lastCharactersDataSource$ = writableStringLocalStorageSubject<keyof BookStatistic>()(
-  'lastCharactersDataSource',
-  'charactersRead'
-);
-
-export const lastReadingSpeedDataSource$ = writableStringLocalStorageSubject<keyof BookStatistic>()(
-  'lastReadingSpeedDataSource',
-  'lastReadingSpeed'
-);
-
-export const lastPrimaryReadingDataAggregationMode$ =
-  writableStringLocalStorageSubject<StatisticsReadingDataAggregationMode>()(
-    'lastPrimaryReadingDataAggregationMode',
-    StatisticsReadingDataAggregationMode.NONE
-  );
-
 export const confirmStatisticsDeletion$ = writableBooleanLocalStorageSubject()(
   'confirmStatisticsDeletion',
   true
-);
-
-export const lastStatisticsFilterDateRangeOnly$ = writableBooleanLocalStorageSubject()(
-  'lastStatisticsFilterDateRangeOnly',
-  false
-);
-
-export const lastStatisticsFilterShowSelectedTitlesOnly$ = writableBooleanLocalStorageSubject()(
-  'lastStatisticsFilterShowSelectedTitlesOnly',
-  false
 );
 
 export const lastReadingDataHeatmapAggregationMode$ =
   writableStringLocalStorageSubject<HeatmapDataAggregration>()(
     'lastReadingDataHeatmapAggregationMode',
     HeatmapDataAggregration.ALL_TIME
-  );
-
-export const lastReadingGoalsHeatmapAggregationMode$ =
-  writableStringLocalStorageSubject<HeatmapDataAggregration>()(
-    'lastReadingGoalsHeatmapAggregationMode',
-    HeatmapDataAggregration.ALL_TIME
-  );
-
-export const lastStatisticsSummarySortProperty$ = writableStringLocalStorageSubject<
-  keyof BookStatistic
->()('lastStatisticsSummarySortProperty', 'readingTime');
-
-export const lastStatisticsSummarySortDirection$ =
-  writableStringLocalStorageSubject<SortDirection>()(
-    'lastStatisticsSummarySortDirection',
-    SortDirection.DESC
   );
 
 export const fileCountData$ = writableSubject<Record<string, number> | undefined>(undefined);
@@ -516,13 +439,6 @@ export const bookReaderKeybindMap$ = writableSubject<BookReaderKeybindMap>({
   f: BookReaderAvailableKeybind.TOGGLE_TRACKING_FREEZE,
   KeyZ: BookReaderAvailableKeybind.TOGGLE_ZEN,
   z: BookReaderAvailableKeybind.TOGGLE_ZEN
-});
-
-export const statisticsTabKeybindMap$ = writableSubject<StatisticsTabKeybindMap>({
-  KeyT: StatisticsTabAvailableKeybind.RANGE_TEMPLATE_TOGGLE,
-  t: StatisticsTabAvailableKeybind.RANGE_TEMPLATE_TOGGLE,
-  KeyA: StatisticsTabAvailableKeybind.AGGREGRATION_TOGGLE,
-  a: StatisticsTabAvailableKeybind.AGGREGRATION_TOGGLE
 });
 
 export const readerImageGalleryKeybindMap$ = writableSubject<ReaderImageGalleryKeybindMap>({

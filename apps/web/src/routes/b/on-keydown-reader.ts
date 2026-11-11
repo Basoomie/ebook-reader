@@ -13,10 +13,6 @@ import {
   BookReaderAvailableKeybind,
   type BookReaderKeybindMap
 } from '$lib/data/book-reader-keybind';
-import {
-  StatisticsTabAvailableKeybind,
-  type StatisticsTabKeybindMap
-} from '$lib/data/statistics-tab-keybind';
 
 export function onKeydownReader(
   ev: KeyboardEvent,
@@ -75,26 +71,6 @@ export function onKeydownReader(
       return true;
     case BookReaderAvailableKeybind.TOGGLE_ZEN:
       toggleZen();
-      return true;
-    default:
-      return false;
-  }
-}
-
-export function onKeyUpStatisticsTab(
-  ev: KeyboardEvent,
-  statisticsTabKeybindMap: StatisticsTabKeybindMap,
-  toggleStatisticsRangeTemplate: () => void,
-  toggleAggregationMode: () => void
-) {
-  const action = statisticsTabKeybindMap[ev.code || ev.key?.toLowerCase()];
-
-  switch (action) {
-    case StatisticsTabAvailableKeybind.RANGE_TEMPLATE_TOGGLE:
-      toggleStatisticsRangeTemplate();
-      return true;
-    case StatisticsTabAvailableKeybind.AGGREGRATION_TOGGLE:
-      toggleAggregationMode();
       return true;
     default:
       return false;

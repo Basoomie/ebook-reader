@@ -13,6 +13,7 @@
     type ToggleOption
   } from '$lib/components/button-toggle-group/toggle-option';
   import MessageDialog from '$lib/components/message-dialog.svelte';
+  import { WEEKDAY_NAMES } from '$lib/stats/periods';
   import Ripple from '$lib/components/ripple.svelte';
   import SettingsCustomTheme from '$lib/components/settings/settings-custom-theme.svelte';
   import SettingsFontSelector from '$lib/components/settings/settings-font-selector.svelte';
@@ -162,11 +163,10 @@
 
   export let showExternalPlaceholder: boolean;
 
-  export let keepLocalStatisticsOnDeletion: boolean;
-
-  export let overwriteBookCompletion: boolean;
-
   export let startDayHoursForTracker: number;
+
+  /** WP12: first day of a stats week (global). */
+  export let statsWeekStart: number;
 
   export let statisticsMergeMode: string;
 
@@ -1088,53 +1088,8 @@
     <SettingsStorageSourceList storageSources={$storageSources$} />
   {:else}
     <SettingsItemGroup
-      title="Keep Local Data on Deletion"
-      tooltip={'Determines if local statistics will be deleted or not when removing a local book copy'}
-    >
-      <div class="flex items-center">
-        <ButtonToggleGroup
-          options={optionsForToggle}
-          bind:selectedOptionId={keepLocalStatisticsOnDeletion}
-        />
-        <div
-          tabindex="0"
-          role="button"
-          class="ml-4 hover:underline"
-          on:click={() => {
-            showSpinner = true;
-            database
-              .clearZombieStatistics()
-              .catch(({ message }) =>
-                dialogManager.dialogs$.next([
-                  {
-                    component: MessageDialog,
-                    props: {
-                      title: 'Error',
-                      message: `Error clearing Zombie Statistics: ${message}`
-                    }
-                  }
-                ])
-              )
-              .finally(() => (showSpinner = false));
-          }}
-          on:keyup={() => {}}
-        >
-          Clear Zombie Statistics
-        </div>
-      </div>
-    </SettingsItemGroup>
-    <SettingsItemGroup
-      title="Overwrite Book Completion"
-      tooltip={`Determines if only the first Book Completion will be tracked or if it always updates to the latest one`}
-    >
-      <ButtonToggleGroup
-        options={optionsForToggle}
-        bind:selectedOptionId={overwriteBookCompletion}
-      />
-    </SettingsItemGroup>
-    <SettingsItemGroup
-      title={`Start Day Hours: ${startOfDayHours}`}
-      tooltip={'Determines at which time a new day starts.\nData before this point will be counted towards the previous day'}
+      title={`Day Starts At: ${startOfDayHours}`}
+      tooltip={'The same on every device. Reading before this time counts for the previous day.\nApplies to reading recorded from now on; days from before device tracking keep their date.'}
     >
       <input
         type="range"
@@ -1142,8 +1097,23 @@
         min="0"
         max="23"
         class={inputClasses}
+        data-testid="settings-day-starts-at"
         bind:value={startDayHoursForTracker}
       />
+    </SettingsItemGroup>
+    <SettingsItemGroup
+      title="Week Starts On"
+      tooltip={'The same on every device. Used by the Stats page (and weekly goals).'}
+    >
+      <select
+        class="{inputClasses} min-h-[3rem]"
+        data-testid="settings-week-starts-on"
+        bind:value={statsWeekStart}
+      >
+        {#each WEEKDAY_NAMES as dayName, index (dayName)}
+          <option value={index}>{dayName}</option>
+        {/each}
+      </select>
     </SettingsItemGroup>
     <SettingsItemGroup
       title="Statistics Merge"

@@ -113,6 +113,7 @@ export const SETTINGS_REGISTRY: Record<string, SettingSpec> = {
 
   // --- statistics rules that must agree across devices (global) ---
   startDayHoursForTracker: g('Number'),
+  statsWeekStart: g('Number'),
   keepLocalStatisticsOnDeletion: g('Boolean'),
   overwriteBookCompletion: g('Boolean'),
   addCharactersOnCompletion: g('Boolean'),
@@ -141,21 +142,7 @@ export const SETTINGS_REGISTRY: Record<string, SettingSpec> = {
   lastSyncedSettingsSource: l('String'),
   lastSyncedSettingsTarget: l('String'),
   lastReadingGoalsModified: l('Number'),
-  lastStatisticsTab: l('String'),
-  lastStatisticsRangeTemplate: l('String'),
-  lastStatisticsStartDate: l('String'),
-  lastStatisticsEndDate: l('String'),
-  lastStartDayOfWeek: l('Number'),
-  lastReadingTimeDataSource: l('String'),
-  lastCharactersDataSource: l('String'),
-  lastReadingSpeedDataSource: l('String'),
-  lastPrimaryReadingDataAggregationMode: l('String'),
-  lastStatisticsFilterDateRangeOnly: l('Boolean'),
-  lastStatisticsFilterShowSelectedTitlesOnly: l('Boolean'),
   lastReadingDataHeatmapAggregationMode: l('String'),
-  lastReadingGoalsHeatmapAggregationMode: l('String'),
-  lastStatisticsSummarySortProperty: l('String'),
-  lastStatisticsSummarySortDirection: l('String'),
   domainHintSeen: l('Boolean'),
 
   // --- lib/library/settings.ts (per device) ---

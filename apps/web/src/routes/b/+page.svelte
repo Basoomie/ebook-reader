@@ -181,7 +181,6 @@
   import type { PositionPrompt, PromptRow } from '$lib/sync/position-prompt-service';
   import type { ReaderPositionPrompt } from '$lib/sync/reader-position-prompt';
   import { mergeEntries } from '$lib/components/merged-header-icon/merged-entries';
-  import { preFilteredTitlesForStatistics$ } from '$lib/components/statistics/statistics-types';
   import {
     currentDbVersion,
     type BooksDbBookData,
@@ -3347,11 +3346,10 @@
         scrollToBookmark();
       }}
       on:statisticsClick={() => {
-        if ($rawBookData$) {
-          $preFilteredTitlesForStatistics$ = new Set([$rawBookData$.title]);
-        }
+        // WP12b: the Stats page opens on this book when it has a library id.
+        const query = stateBookId ? `?book=${encodeURIComponent(stateBookId)}` : '';
 
-        leaveReader(mergeEntries.STATISTICS.routeId, false);
+        leaveReader(`${mergeEntries.STATISTICS.routeId}${query}`, false);
       }}
       on:readerImageGalleryClick={() => {
         showHeader = false;

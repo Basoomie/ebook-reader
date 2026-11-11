@@ -406,17 +406,19 @@ export const MAX_LOOKUP_IDS = 200;
 /**
  * The given books in the given order, leaving out the ones that are hidden (missing,
  * disabled library, unknown id) or don't match `query`. Throws InvalidQueryError.
+ * `includeMissing` (WP12 stats: reading is kept for books removed from Calibre) keeps
+ * missing books; they come back with `missing: true`.
  */
 export function planLookup(
   db: Database.Database,
   user: CatalogUser,
   ids: string[],
-  opts: { query?: string; countSpec?: string | null } = {},
+  opts: { query?: string; countSpec?: string | null; includeMissing?: boolean } = {},
 ): PlannedQuery<{ books: BookSummary[] }> {
   const parsed = parseOrThrow(opts.query);
   const unique = [...new Set(ids)].slice(0, MAX_LOOKUP_IDS);
   const conds: SqlCondition[] = [
-    ...visibilitySql({}),
+    ...visibilitySql({ includeMissing: opts.includeMissing }),
     {
       sql: unique.length ? `b.id IN (${unique.map(() => '?').join(',')})` : '0',
       params: unique,

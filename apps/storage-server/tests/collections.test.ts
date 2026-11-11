@@ -479,6 +479,20 @@ describe('POST /api/v1/books/lookup', () => {
       '巻 1',
       '新しい本',
     ]);
+    // WP12 stats: reading is kept for books removed from Calibre, so they can be asked for.
+    const withMissing = await lookup({ ids: order.map(c.id), includeMissing: true });
+    expect(
+      (withMissing.body.books as { title: string; missing: boolean }[]).map((b) => [
+        b.title,
+        b.missing,
+      ]),
+    ).toEqual([
+      ['単発', false],
+      ['巻 2', true],
+      ['巻 1', false],
+      ['新しい本', false],
+    ]);
+    expect((await lookup({ ids: order.map(c.id), includeMissing: 'yes' })).status).toBe(400);
 
     expect((await lookup({ ids: [] })).body.books).toEqual([]);
     for (const body of [{}, { ids: ['nope'] }, { ids: Array(201).fill(c.id('巻 1')) }]) {

@@ -9,7 +9,8 @@ import {
   customThemes$,
   keepLocalStatisticsOnDeletion$,
   overwriteBookCompletion$,
-  startDayHoursForTracker$
+  startDayHoursForTracker$,
+  statsWeekStart$
 } from '$lib/data/store';
 import { parseStoredValue, SETTINGS_REGISTRY } from '$lib/sync/settings-registry';
 
@@ -21,6 +22,7 @@ import { parseStoredValue, SETTINGS_REGISTRY } from '$lib/sync/settings-registry
 export const GLOBAL_SETTING_SUBJECTS: Record<string, { next(value: never): void }> = {
   customThemes: customThemes$,
   startDayHoursForTracker: startDayHoursForTracker$,
+  statsWeekStart: statsWeekStart$,
   keepLocalStatisticsOnDeletion: keepLocalStatisticsOnDeletion$,
   overwriteBookCompletion: overwriteBookCompletion$,
   addCharactersOnCompletion: addCharactersOnCompletion$
