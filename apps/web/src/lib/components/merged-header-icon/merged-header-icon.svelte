@@ -13,10 +13,18 @@
   export let items = [mergeEntries.MANAGE, mergeEntries.SETTINGS, mergeEntries.BUG_REPORT];
   export let mergeTo = mergeEntries.MANAGE;
   export let disableRouteNavigation = false;
+  /**
+   * Entries shown only in the collapsed menu (below `sm`), above the usual
+   * ones: header controls that are hidden on narrow screens to make room.
+   * Their labels are dispatched like any other entry.
+   */
+  export let compactOnlyItems: { label: string; title: string }[] = [];
 
   const dispatch = createEventDispatcher<{ action: string }>();
 
   const actionItems = items.filter((item) => item.routeId !== $page.route.id);
+
+  $: compactItems = [...compactOnlyItems, ...actionItems];
 
   let menuElm: Popover;
 
@@ -74,8 +82,12 @@
       <div slot="icon" class={baseIconClasses}>
         <Fa icon={mergeTo.icon} />
       </div>
-      <div class="w-40 bg-gray-700 md:w-32" slot="content">
-        {#each actionItems as actionItem (actionItem.label)}
+      <div
+        class="w-40 overflow-y-auto bg-gray-700 md:w-32"
+        style="max-height: calc(100vh - 4rem); max-height: calc(100dvh - 4rem)"
+        slot="content"
+      >
+        {#each compactItems as actionItem (actionItem.label)}
           <div
             tabindex="0"
             role="button"
