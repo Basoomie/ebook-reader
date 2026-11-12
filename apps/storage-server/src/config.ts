@@ -35,6 +35,8 @@ export interface ServerConfig {
   uploads: UploadConfig;
   /** Custom fonts (WP13). */
   fonts: FontConfig;
+  /** Book attachments: whispersync's saved subtitles and match (WP15c). */
+  attachments: AttachmentConfig;
   /** Recent log lines kept for the bug report (WP18). */
   logs: LogConfig;
   /** Audiobook folder index and streaming (WP15). */
@@ -236,6 +238,7 @@ export function loadConfig(env: Env): LoadedConfig {
       search: parseSearchConfig(env, warnings),
       uploads: parseUploadConfig(env, warnings),
       fonts: parseFontConfig(env, warnings),
+      attachments: parseAttachmentConfig(env, warnings),
       logs: parseLogConfig(env, warnings),
       audio: parseAudioConfig(env, warnings),
     },
@@ -426,6 +429,28 @@ export interface FontConfig {
 }
 
 export const DEFAULT_FONT_CONFIG: FontConfig = { maxMb: 64 };
+
+export interface AttachmentConfig {
+  /** Largest accepted book attachment (ATTACHMENT_MAX_MB): a matched book's text. */
+  maxMb: number;
+}
+
+export const DEFAULT_ATTACHMENT_CONFIG: AttachmentConfig = { maxMb: 100 };
+
+/** WP15c settings; bad values fall back to the defaults. */
+export function parseAttachmentConfig(env: Env, warnings: string[]): AttachmentConfig {
+  return {
+    maxMb: parseNumber(
+      'ATTACHMENT_MAX_MB',
+      env.ATTACHMENT_MAX_MB,
+      DEFAULT_ATTACHMENT_CONFIG.maxMb,
+      1,
+      2000,
+      true,
+      warnings,
+    ),
+  };
+}
 
 export interface LogConfig {
   /** Log lines kept in memory for the bug report (LOG_BUFFER_LINES). */

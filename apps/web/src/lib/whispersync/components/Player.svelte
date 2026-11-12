@@ -890,7 +890,8 @@
   }
 
   async function requestWakeLock() {
-    if (wakeLock && !wakeLock.released) {
+    // ttsu: a secure-context API; over plain http it is missing (switches on with HTTPS).
+    if ((wakeLock && !wakeLock.released) || !('wakeLock' in navigator) || !navigator.wakeLock) {
       return;
     }
 

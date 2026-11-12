@@ -1,6 +1,6 @@
 // vendored from ttu-whispersync — MIT License — https://github.com/Renji-XD/ttu-whispersync
-import { writable, type Writable } from 'svelte/store';
-import type { NasAudioConfig } from './nas';
+import { writable } from 'svelte/store';
+import type { LinkedAudio } from './linked-audio';
 
 export type EventWithElement<T> = Event & { currentTarget: T };
 
@@ -28,7 +28,8 @@ export interface Context {
 	isPaginated: boolean;
 	supportsFileSystem: boolean;
 	isIOS: boolean;
-	nasAudioConfig$: Writable<NasAudioConfig | undefined>;
+	/** ttsu WP15c: the book's linked audiobook and the server transport (replaces the NAS config). */
+	linkedAudio: LinkedAudio | undefined;
 }
 
 export interface Subtitle {

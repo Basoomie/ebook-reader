@@ -1052,6 +1052,87 @@ const parserCheck: QueryCheck = (query) => {
   return result.ok ? null : result.error.message;
 };
 
+// ---------------------------------------------------------------------------
+// WP15c: whispersync's playback position and book attachments
+// ---------------------------------------------------------------------------
+
+/** Longest playback position accepted (a day of audio, in seconds, is far beyond any book). */
+const MAX_PLAYBACK_SECONDS = 7 * 24 * 3600;
+
+/**
+ * kind "audiobook-position": id = the book id, lww (the newest position wins, as with
+ * the old sync), deletable ("Reset all" in whispersync). data { position (seconds),
+ * modifiedAt (when the device saved it) }.
+ */
+const audiobookPositionKind: KindSpec = {
+  policy: () => 'lww',
+  deletable: true,
+  validate(id, data, deleted, ctx) {
+    if (!UUID_RE.test(id)) throw new RecordError('invalid_id', 'ids are the book id');
+    if (!bookExists(ctx, id)) throw new RecordError('unknown_book', `No book ${id}`);
+    if (deleted) return { bookId: id, data: {} };
+    const obj = requireObject(data);
+    const position = finiteNumber(obj.position, 'position');
+    if (position < 0 || position > MAX_PLAYBACK_SECONDS) {
+      throw new RecordError('invalid_data', 'position must be 0 or more seconds');
+    }
+    return { bookId: id, data: { position, modifiedAt: timestamp(obj.modifiedAt, 'modifiedAt') } };
+  },
+};
+
+export const BOOK_ATTACHMENT_KIND = 'book-attachment';
+export const BOOK_ATTACHMENT_NAMES = ['whispersync-subtitles', 'whispersync-match'] as const;
+
+export function attachmentRecordId(bookId: string, name: string): string {
+  return `${bookId}:${name}`;
+}
+
+export function parseAttachmentId(id: string): { bookId: string; name: string } | null {
+  const i = id.indexOf(':');
+  if (i < 0) return null;
+  const bookId = id.slice(0, i);
+  const name = id.slice(i + 1);
+  if (!UUID_RE.test(bookId) || !(BOOK_ATTACHMENT_NAMES as readonly string[]).includes(name)) {
+    return null;
+  }
+  return { bookId, name };
+}
+
+/**
+ * kind "book-attachment": id = <bookId>:<name>, lww, deletable. data { size, sha256,
+ * modifiedAt }. Written by the server when a device uploads the file
+ * (PUT /api/v1/books/:id/attachments/:name). Devices may delete it (a reset, on every
+ * device) or restore it, but the data must be exactly the stored file's.
+ */
+const bookAttachmentKind: KindSpec = {
+  policy: () => 'lww',
+  deletable: true,
+  validate(id, data, deleted, ctx) {
+    const parsed = parseAttachmentId(id);
+    if (!parsed) throw new RecordError('invalid_id', 'ids are <book id>:<attachment name>');
+    if (!bookExists(ctx, parsed.bookId)) {
+      throw new RecordError('unknown_book', `No book ${parsed.bookId}`);
+    }
+    if (deleted) return { bookId: parsed.bookId, data: {} };
+    const row = ctx.db
+      .prepare(
+        'SELECT size, sha256, modified_at FROM book_attachments WHERE user_id = ? AND book_id = ? AND name = ?',
+      )
+      .get(ctx.userId, parsed.bookId, parsed.name) as
+      | { size: number; sha256: string; modified_at: number }
+      | undefined;
+    if (!row) throw new RecordError('unknown_attachment', `No uploaded file for ${id}`);
+    const obj = requireObject(data);
+    const expected = { size: row.size, sha256: row.sha256, modifiedAt: row.modified_at };
+    for (const [key, value] of Object.entries(expected)) {
+      if (obj[key] !== value) {
+        throw new RecordError('invalid_data', `${key} must be the uploaded file's`);
+      }
+    }
+    return { bookId: parsed.bookId, data: expected };
+  },
+};
+
 export const DEFAULT_KINDS: KindRegistry = {
   device: deviceKind,
   setting: settingKind,
@@ -1074,4 +1155,6 @@ export const DEFAULT_KINDS: KindRegistry = {
   'stat-session': statSessionKind,
   'stat-session-fix': statSessionFixKind,
   'stat-goal': statGoalKind,
+  'audiobook-position': audiobookPositionKind,
+  [BOOK_ATTACHMENT_KIND]: bookAttachmentKind,
 };

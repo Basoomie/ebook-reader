@@ -96,7 +96,6 @@
 	import { getContext, tick } from 'svelte';
 	import { get } from 'svelte/store';
 	import TimeEditInput from './TimeEditInput.svelte';
-	import { findNasAudio, uploadAudioToNas, buildAudioNasUrl } from '../lib/nas';
 	import { confirmDestructiveInWhispersync } from '$lib/confirm/confirm-whispersync';
 	import {
 		dropFileCopy,
@@ -124,7 +123,8 @@
 	}
 
 	const { subtitlesEnablePersist$, ankiSentenceField$, ankiSoundField$ } = settings$;
-	const { isIOS, nasAudioConfig$ } = getContext<Context>('context');
+	// ttsu WP15c: the linked audiobook replaces the NAS upload (lib/linked-audio.ts).
+	const { isIOS, linkedAudio } = getContext<Context>('context');
 	const allowedSubtitleExtensions: FileExtension[] = ['.srt', '.vtt', '.txt'];
 	const allowedAudioExtensions: FileExtension[] = ['.m4a', '.m4b', '.mp3'];
 
@@ -137,7 +137,12 @@
 	let playerElement: Player;
 	let addedSubtitleByDropzone = false;
 	let addedAudioByDropzone = false;
-	let nasUploadState: { progress: number; error: string; done?: boolean } | null = null;
+	let canLinkAudiobook = false;
+
+	linkedAudio
+		?.canLink()
+		.then((value) => (canLinkAudiobook = value))
+		.catch(() => {});
 	let changeSubtitleTitle = '';
 	let resetBookTitle = '';
 	let changeAudioTitle = '';
@@ -398,31 +403,8 @@
 
 				await setAudioContext($currentCoverUrl$, $currentAudioSourceUrl$, audio.file, audioResult);
 
+				// ttsu WP15c: a dropped file plays for this session only (no upload).
 				addedAudioByDropzone = true;
-
-				// Phase 2: stream-upload to NAS in the background; switch to NAS URL when done.
-				const nasConfig = get(nasAudioConfig$);
-				if (nasConfig) {
-					const capturedBlobUrl = audioResult.audioSourceUrl;
-					nasUploadState = { progress: 0, error: '' };
-					(async () => {
-						try {
-							let nasFileName = await findNasAudio(nasConfig);
-							if (!nasFileName) {
-								nasFileName = await uploadAudioToNas(nasConfig, audio.file, (loaded, total) => {
-									nasUploadState = { progress: loaded / total, error: '' };
-								});
-							}
-							const nasUrl = buildAudioNasUrl(nasConfig, nasFileName);
-							$currentAudioSourceUrl$ = nasUrl;
-							URL.revokeObjectURL(capturedBlobUrl);
-							nasUploadState = { progress: 1, error: '', done: true };
-							setTimeout(() => { nasUploadState = null; }, 2000);
-						} catch ({ message }: any) {
-							nasUploadState = { progress: 0, error: `NAS upload failed: ${message}` };
-						}
-					})();
-				}
 			} catch ({ message }: any) {
 				errors.push(`Failed to process audio: ${message}`);
 
@@ -724,6 +706,8 @@
 			delete $bookData$.htmlBackup;
 
 			await $booksDB$.put('data', $bookData$);
+			// ttsu WP15c: Reset match applies on every device.
+			await linkedAudio?.resetMatch();
 
 			window.location.reload();
 		} catch ({ message }: any) {
@@ -751,6 +735,9 @@
 			$currentTime$ = 0;
 			$extensionData$.playbackPosition = 0;
 			$activeSubtitle$ = { previous: '', current: '', useTimeFallback: true };
+
+			// ttsu WP15c: the position syncs like every other position save.
+			document.dispatchEvent(new CustomEvent('ttu-action', { detail: { type: 'sync', syncType: 'audioBook' } }));
 		} catch ({ message }: any) {
 			$lastError$ = `Failed to reset playback position: ${message}`;
 		}
@@ -800,6 +787,8 @@
 			await tx.done;
 
 			$extensionData$.playbackPosition = 0;
+			// ttsu WP15c: Reset all applies on every device (match, subtitles, position).
+			await linkedAudio?.resetAll();
 
 			window.location.reload();
 		} catch ({ message }: any) {
@@ -1241,16 +1230,16 @@
 			/>
 		{/if}
 	</div>
-	{#if nasUploadState !== null}
+	{#if !$currentAudioSourceUrl$ && canLinkAudiobook}
+		<!-- ttsu WP15c: audiobooks are linked from the library, never uploaded. -->
 		<div class="m-y-xs">
-			{#if nasUploadState.error}
-				<span class="audio-time">{nasUploadState.error}</span>
-			{:else if nasUploadState.done}
-				<span class="audio-time">Audio synced to NAS</span>
-			{:else}
-				<span class="audio-time">Uploading to NAS… {Math.round(nasUploadState.progress * 100)}%</span>
-				<Progress currentProgress={nasUploadState.progress * 100} />
-			{/if}
+			<button
+				class="ttu-whispersync-link-audiobook"
+				data-testid="whispersync-link-audiobook"
+				on:click={() => linkedAudio?.linkAudiobook()}
+			>
+				Link an audiobook
+			</button>
 		</div>
 	{/if}
 	{#if $currentAudioSourceUrl$}

@@ -24,6 +24,7 @@ import { FontService } from '../fonts/service';
 import { DEFAULT_MAX_CLOCK_SKEW_SECONDS, SyncStore } from '../sync/store';
 import { audioStreamRoute, type AudioOptions, createAudioRouter } from '../audio/routes';
 import { createAudioLinkRouter } from '../audio/link-routes';
+import { createAttachmentRouter, type AttachmentOptions } from '../attachments/routes';
 
 export interface PairingOptions {
   /** Failed pairing attempts allowed per minute (all clients together). */
@@ -31,6 +32,8 @@ export interface PairingOptions {
 }
 
 export const DEFAULT_PAIRING: PairingOptions = { maxFailuresPerMinute: 10 };
+
+const ATTACHMENT_PATH = /^\/books\/[^/]+\/attachments\/[^/]+$/;
 
 export interface SyncOptions {
   /** updatedAt further ahead of the server clock than this is set to the server time. */
@@ -68,6 +71,8 @@ export interface ApiOptions {
   logs?: RecentLogs;
   /** Audiobook index and streaming (WP15). Without it the audio routes answer 503. */
   audio?: AudioOptions;
+  /** Book attachments (WP15c): stored in DATA_DIR/.uploads/attachments. Without it they are off. */
+  attachments?: AttachmentOptions;
 }
 
 export interface FontOptions {
@@ -95,6 +100,7 @@ export function createApiRouter({
   fonts,
   logs = serverLogs,
   audio = { service: null },
+  attachments,
 }: ApiOptions): Router {
   const router = express.Router();
   // Pushes can carry many records; everything else keeps the small default limit.
@@ -103,7 +109,10 @@ export function createApiRouter({
   router.use((req, res, next) => {
     // An upload's body is the EPUB itself, streamed by the upload route (WP7b); a
     // font upload's body is the font file (WP13).
-    if (req.path === '/uploads' || req.path === '/fonts') return next();
+    // A book attachment's body is the file itself (WP15c).
+    if (req.path === '/uploads' || req.path === '/fonts' || ATTACHMENT_PATH.test(req.path)) {
+      return next();
+    }
     (req.path === '/sync' ? syncJson : smallJson)(req, res, next);
   });
 
@@ -180,6 +189,15 @@ export function createApiRouter({
     );
     // Export my data (WP18): read-only.
     router.use(createExportRouter(db, syncStore));
+
+    // Book attachments (WP15c): off only when the folder is unusable.
+    if (attachments) {
+      try {
+        router.use(createAttachmentRouter(db, syncStore, attachments));
+      } catch (err) {
+        console.error('Error: book attachments are off, the folder is unusable:', err);
+      }
+    }
 
     // Custom fonts (WP13). Independent of Calibre; off only when the folder is unusable.
     if (fonts) {

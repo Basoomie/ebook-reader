@@ -34,6 +34,7 @@ describe('migrations', () => {
       'audio_links',
       'audio_scan_state',
       'authors',
+      'book_attachments',
       'book_authors',
       'book_sources',
       'book_tags',

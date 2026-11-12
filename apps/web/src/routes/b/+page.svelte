@@ -248,11 +248,13 @@
   import AudioBookMenu from '$lib/whispersync/components/AudioBookMenu.svelte';
   import '$lib/whispersync/styles.css';
   import type { IDBPDatabase } from 'idb';
-  import type { NasServerConfig } from '$lib/whispersync/lib/nas';
-  import { selfHostStorageSource$ } from '$lib/data/store';
+  import {
+    createReaderWhispersync,
+    withinRequestTime,
+    type ReaderWhispersync
+  } from '$lib/audio/whispersync-reader';
   import { leavingForgetsLastBook } from '$lib/home/open-target';
   import { formatTimeLeft, secondsLeft, speedEstimate } from '$lib/stats/time-left';
-  import { unlockStorageData } from '$lib/data/storage/storage-source-manager';
 
   let showSpinner = true;
   let showHeader = false;
@@ -262,28 +264,57 @@
   let bookContentEl: HTMLDivElement | null = null;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let readerDb: IDBPDatabase<any> | undefined;
-  let nasServerConfig: NasServerConfig | undefined;
-  // Resolve NAS config first; then expose readerDb so AudioBookMenu mounts only
-  // after both are ready (nasServerConfig may be undefined if selfhost not configured).
-  database.db.then(async (db) => {
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const sourceName = (selfHostStorageSource$ as any).getValue?.() ?? '';
-      if (sourceName) {
-        const source = await db.get('storageSource', sourceName);
-        const unlockResult = await unlockStorageData(source, '', undefined);
-        if (unlockResult) {
-          nasServerConfig = {
-            serverUrl: unlockResult.clientId.replace(/\/+$/, ''),
-            authToken: unlockResult.clientSecret
-          };
-        }
-      }
-    } catch {
-      // NAS not configured or locked — audio works locally only
-    }
+  database.db.then((db) => {
     readerDb = db;
   });
+
+  // WP15c: whispersync's audio comes from the book's linked audiobook, and its position,
+  // saved subtitles and saved match sync through the library server (not the old sync).
+  // AudioBookMenu mounts once the open book's first sync is done (at most the library
+  // request time); reading never waits for it.
+  let whispersync: ReaderWhispersync | undefined;
+  let whispersyncReady = false;
+  let whispersyncNotice = false;
+  let stopWhispersyncWatch: (() => void) | undefined;
+
+  $: if ($rawBookData$ && readerDb && whispersync?.localId !== $rawBookData$.id) {
+    setUpWhispersync($rawBookData$.id, $rawBookData$.title, readerDb);
+  }
+
+  function setUpWhispersync(
+    localId: number,
+    title: string,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    db: IDBPDatabase<any>
+  ) {
+    stopWhispersyncWatch?.();
+    whispersyncReady = false;
+    whispersyncNotice = false;
+    const ws = createReaderWhispersync({
+      localId,
+      title,
+      db,
+      leave: (route) => void leaveReader(route, false)
+    });
+    whispersync = ws;
+    let mounted = false;
+    void withinRequestTime(ws.ready, null).then(() => {
+      if (whispersync !== ws) return;
+      whispersyncReady = true;
+      mounted = true;
+    });
+    void ws.ready.then((changed) => {
+      if (whispersync !== ws || !changed) return;
+      // The page already shows the book's old text, so a newer match always needs a
+      // reload; position and subtitles only when they came after whispersync loaded.
+      if (changed.match || (mounted && (changed.position || changed.subtitles))) {
+        whispersyncNotice = true;
+      }
+    });
+    stopWhispersyncWatch = ws.watch(() => {
+      if (whispersync === ws) whispersyncNotice = true;
+    });
+  }
   let exploredCharCount = 0;
   let bookCharCount = 0;
   let autoScroller: AutoScroller | undefined;
@@ -825,22 +856,16 @@
       syncedPromise.finally(() => document.dispatchEvent(new CustomEvent(SYNCED)));
     } else if (detail.type === 'skipKeyDownListener') {
       skipKeyDownListener$.next(detail.params.value);
-    } else if (
-      detail.type === 'sync' &&
-      (detail.syncType === StorageDataType.AUDIOBOOK ||
-        detail.syncType === StorageDataType.SUBTITLE)
-    ) {
-      scheduleReplication(detail.syncType);
+    } else if (detail.type === 'sync' && detail.syncType === StorageDataType.AUDIOBOOK) {
+      // WP15c: whispersync's position goes to the library server (not the old sync).
+      whispersync?.onPositionSaved();
+    } else if (detail.type === 'sync' && detail.syncType === StorageDataType.SUBTITLE) {
+      whispersync?.onSubtitlesSaved();
     } else if (detail.type === 'syncAndReload') {
-      // Dispatched by onSaveMatch after writing matched HTML to local IDB.
-      // Upload the updated bookdata to the NAS before reloading so other
-      // devices pick up the highlight spans without re-matching.
-      if (upSyncEnabled) {
-        scheduleReplication(StorageDataType.DATA);
-        executeReplication(false).finally(() => window.location.reload());
-      } else {
-        window.location.reload();
-      }
+      // Dispatched by onSaveMatch after writing matched HTML to local IDB. Upload the
+      // match before reloading so other devices get it without re-matching (WP15c).
+      const upload = whispersync ? whispersync.onMatchSaved() : Promise.resolve();
+      upload.finally(() => window.location.reload());
     }
   }
   /** Experimental Code - May be removed any time without warning */
@@ -3641,6 +3666,32 @@
   </button>
 {/if}
 
+{#if whispersyncNotice}
+  <!-- WP15c: newer audiobook data (position, subtitles or match) came from another device. -->
+  <div
+    class="writing-horizontal-tb fixed inset-x-4 top-4 z-20 mx-auto flex max-w-md items-center gap-2 rounded border-2 border-gray-700 bg-white p-2 text-black"
+    role="status"
+    data-testid="whispersync-reload-notice"
+  >
+    <span class="grow px-1">Newer audiobook data from another device.</span>
+    <button
+      class="min-h-[2.75rem] rounded border-2 border-gray-700 px-3 font-medium"
+      data-testid="whispersync-reload"
+      on:click={() => window.location.reload()}
+    >
+      Reload
+    </button>
+    <button
+      class="min-h-[2.75rem] px-3"
+      aria-label="Close"
+      data-testid="whispersync-reload-close"
+      on:click={() => (whispersyncNotice = false)}
+    >
+      ✕
+    </button>
+  </div>
+{/if}
+
 {#if openNotice}
   <div
     class="writing-horizontal-tb fixed inset-x-4 top-4 z-20 mx-auto max-w-md rounded border-2 border-gray-700 bg-white text-black"
@@ -3788,7 +3839,7 @@
       on:keyup={dummyFn}
       role="none"
     >
-      {#if $rawBookData$ && bookContentEl && readerDb}
+      {#if $rawBookData$ && bookContentEl && readerDb && whispersync && whispersyncReady}
         <AudioBookMenu
           componentContainerElement={whisperContainerEl}
           bookContentElement={bookContentEl}
@@ -3797,7 +3848,7 @@
           externalElementHtml={$rawBookData$.elementHtml}
           externalBlobs={$rawBookData$.blobs}
           externalBookData={$rawBookData$}
-          {nasServerConfig}
+          linkedAudio={whispersync.linkedAudio}
         />
       {/if}
     </div>
