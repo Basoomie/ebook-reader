@@ -19,7 +19,7 @@ export interface WorkerSettings {
   serverUrl: string;
   /** A GPU worker token (`cli token worker`). */
   token: string;
-  /** SubPlz's model cache, mounted at /SyncCache (decided default). */
+  /** SubPlz's model cache (decided default folder), mounted at /config (see subplz.ts). */
   cacheDir: string;
   /** Temporary job folders; plain ASCII without spaces (the real paths have neither). */
   workDir: string;

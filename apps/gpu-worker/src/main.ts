@@ -1,7 +1,7 @@
 /**
  * ッツ Reader GPU worker (WP16), for the user's PC.
  *
- *   node C:\ttsu-worker\app\main.js          run (started at sign-in by a scheduled task)
+ *   node C:\ttsu-worker\app\main.js          run (started at sign-in by a Startup shortcut (start-hidden.vbs))
  *   node C:\ttsu-worker\app\main.js check    test the setup and print what is missing
  *
  * Settings: C:\ttsu-worker\config.json (see config.example.json). Only one worker runs at

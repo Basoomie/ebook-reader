@@ -4,6 +4,12 @@
  *
  *   docker run --rm --gpus all -v <content>:/sync -v <cache>:/SyncCache <image> sync -d /sync/<book folder>
  *
+ * One difference, found in the first real run (2026-11-12): the pinned image (and every
+ * image still on Docker Hub) no longer uses /SyncCache. It runs as uid 1000 with
+ * BASE_PATH=HOME=/config and keeps its models there (TORCH_HOME, XDG_CACHE_HOME under
+ * /config/cache), and /config is not writable without a mount, so SubPlz stopped at once.
+ * The same shared cache folder is therefore mounted at /config.
+ *
  * The SubPlz part (`sync -d /sync/book`) has no extra flags. The one Docker-side addition
  * is `--name ttsu-subplz-<job>`: stopping the docker client alone leaves the container
  * running, so a stop runs `docker kill` on that name. It never touches other containers
@@ -37,7 +43,7 @@ export function subplzArgs({
     '-v',
     `${jobDir}:/sync`,
     '-v',
-    `${cacheDir}:/SyncCache`,
+    `${cacheDir}:/config`,
     image,
     'sync',
     '-d',

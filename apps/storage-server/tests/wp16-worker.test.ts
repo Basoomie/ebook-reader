@@ -91,7 +91,7 @@ describe('worker settings and helpers', () => {
       '-v',
       'C:\\ttsu-worker\\work\\job-12:/sync',
       '-v',
-      'C:\\Data\\Japanese\\Books\\SyncCache:/SyncCache',
+      'C:\\Data\\Japanese\\Books\\SyncCache:/config',
       PINNED_IMAGE,
       'sync',
       '-d',
