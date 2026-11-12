@@ -47,6 +47,7 @@
     unlinkAudiobookCopy
   } from '$lib/confirm/confirm-copy';
   import { pagePath } from '$lib/data/env';
+  import { settingsTabHref } from '$lib/settings/settings-tab';
   import { logger } from '$lib/data/logger';
   import { LibraryApiError, type LibraryApi } from '$lib/library/api';
 
@@ -365,7 +366,7 @@
       <span class="c-section-rule" />
       <a
         class="c-link min-h-[3rem] shrink-0 text-sm leading-[3rem]"
-        href="{pagePath}/audiobooks"
+        href={settingsTabHref(pagePath, 'Audiobooks')}
         data-testid="details-audio-all">All audiobooks</a
       >
     </div>

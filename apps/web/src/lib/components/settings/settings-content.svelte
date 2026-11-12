@@ -29,6 +29,7 @@
   import SettingsServerFontsDialog from '$lib/components/settings/settings-server-fonts-dialog.svelte';
   import SettingsExportData from '$lib/components/settings/settings-export-data.svelte';
   import LibraryConnectionSettings from '$lib/components/library/library-connection-settings.svelte';
+  import AudiobooksPanel from '$lib/components/audio/audiobooks-panel.svelte';
   import { libraryLook$ } from '$lib/library/settings';
   import { customFontNames$ } from '$lib/fonts/server-fonts-browser';
   import { BlurMode } from '$lib/data/blur-mode';
@@ -1153,14 +1154,6 @@
         <LibraryConnectionSettings />
       {/if}
     </div>
-    <SettingsItemGroup
-      title="Audiobooks"
-      tooltip="The server's audiobooks folder: what the last scan found, Scan again, and which books have an audiobook linked. Each book's audiobook is chosen on its page."
-    >
-      <a class="c-btn c-btn-secondary" href="{pagePath}/audiobooks" data-testid="audiobooks-link">
-        Open Audiobooks
-      </a>
-    </SettingsItemGroup>
     <SettingsSection jp="この端末" title="This device" testid="settings-section-device" />
     <SettingsItemGroup
       title="Export my data"
@@ -1256,6 +1249,11 @@
     <div class="c-settings-sources col-span-full mt-4">
       <SettingsStorageSourceList storageSources={$storageSources$} />
     </div>
+  {:else if activeSettings === 'Audiobooks'}
+    <!-- WP15b: the server's audiobooks folder and the linked books. -->
+    {#if browser}
+      <AudiobooksPanel />
+    {/if}
   {:else}
     <SettingsItemGroup
       title={`Day Starts At: ${startOfDayHours}`}
