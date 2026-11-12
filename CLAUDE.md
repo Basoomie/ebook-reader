@@ -15,13 +15,13 @@ If code and docs disagree, or a task needs a decision the docs don't cover, STOP
 
 **Phase 5** (Phases 0-4 and WP19 are done and merged). Decisions: `docs/design/decisions.md`, "Phase 5 decisions". Agreed order, one work package at a time: **WP15** audio linking → **WP14** "Enrich last card" → **WP16** GPU worker and job queue → **WP17** generated audiobooks.
 
-WP15 now, in five branches, each reviewed and merged locally; push and deploy after all of WP15:
+WP15 now, each branch reviewed and merged locally; push and deploy after all of WP15. Done and merged: WP15a, WP15b (the picker lives in Settings > Audiobooks; WP15a+b are deployed), WP15c (merged at 7c8b060, not deployed). Left: WP15d by hand, then WP15e.
 
 1. **WP15a** `wp15a-audio-index`: server only. Read-only audiobooks mount, folder and subtitle index, matcher, search, streaming.
-2. **WP15b** `wp15b-audio-picker`: audio links, the confirmation picker on book details (never auto-link; separate subtitle step; "No audiobook"), the `/audiobooks` page.
+2. **WP15b** `wp15b-audio-picker`: audio links, the confirmation picker on book details (never auto-link; separate subtitle step; "No audiobook"), Settings > Audiobooks (`/audiobooks` forwards there).
 3. **WP15c** `wp15c-whispersync-links`: whispersync plays linked audio (single-file audiobooks only); its position, saved subtitles and saved match move off the old sync. Reset match applies on every device (decided with the user); otherwise match, re-match and reset are unchanged.
-4. **WP15d** `wp15d-audio-migration`: the 3 books with audio on the old sync move to links; the 3 audio copies are deleted only after the user confirms.
-5. **WP15e** `wp15e-remove-old-sync`: remove the old sync code and `/manage` (`/manage` redirects to `/library`); "Remove from this device" and a built-in "On this device" collection replace the Manager. The old sync's files on the NAS stay for a later cleanup.
+4. **WP15d by hand, no branch** (decided with the user 2026-11-11): the user links the 3 old-sync books in the picker and opens each once on the device that used whispersync (WP15c uploads its newer local data); Claude checks read-only that position, subtitles and match reached the server, imports by hand only what exists solely in the old-sync folder, and checks each old `audio_*` copy is byte-identical to its linked original (size + SHA-256). The 3 copies are deleted only after the user confirms. Nothing else in the old-sync folder is touched.
+5. **WP15e** `wp15e-remove-old-sync`: remove the old sync code and `/manage` (`/manage` redirects to `/library`); "Remove from this device" and a built-in "On this device" collection replace the Manager. The old sync's files on the NAS stay for a later cleanup. Also remove the empty "From the old sync" section of Settings > Audiobooks.
 
 The audiobooks folder is read-only to this app (like Calibre) until WP16 adds write access to its output folders only. New destructive actions use `confirmDestructive` / `inline-confirm.svelte` with their text in `lib/confirm/confirm-copy.ts`.
 
