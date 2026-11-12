@@ -274,6 +274,30 @@ export function stopMergeCopy(folderName: string): ConfirmCopy {
   };
 }
 
+// ---- WP16: subtitles made on the PC (SubPlz) -------------------------------------------------------
+
+export function stopSubtitleJobCopy(bookTitle: string): ConfirmCopy {
+  return {
+    title: 'Stop making subtitles?',
+    message: [
+      `Making subtitles for ${quoted(String(bookTitle))} stops. Nothing is added to the subtitle folder; you can start it again later.`
+    ],
+    confirmLabel: 'Stop making subtitles'
+  };
+}
+
+export function replaceSubtitlesWithJobCopy(subtitleName: string): ConfirmCopy {
+  return {
+    title: 'Make new subtitles for this book?',
+    message: [
+      `Your PC makes new subtitles from the audiobook and the book's text. When they are ready, this book uses them instead of ${quoted(String(subtitleName))}, on every device.`,
+      `${quoted(String(subtitleName))} stays in the subtitle folder.`
+    ],
+    confirmLabel: 'Make new subtitles',
+    danger: false
+  };
+}
+
 // ---- Whispersync (audiobook menu) -----------------------------------------------------------------
 
 export function resetMatchCopy(): ConfirmCopy {

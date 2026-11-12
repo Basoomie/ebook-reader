@@ -11,7 +11,9 @@
    * marked "No audiobook". (WP15e removed the empty "From the old sync" section: WP15d was
    * dropped.) Linking itself happens on each book's details page. Read-only towards
    * the audiobooks folder. Polling stops when the tab is left (the panel is destroyed).
+   * WP16: "Subtitles made on the PC" (gpu-worker-section.svelte) after the folder.
    */
+  import GpuWorkerSection from '$lib/components/audio/gpu-worker-section.svelte';
   import SettingsSection from '$lib/components/settings/settings-section.svelte';
   import {
     folderDetails,
@@ -217,6 +219,11 @@
         </div>
       {/if}
     </section>
+
+    <!-- WP16: subtitles made on the PC -->
+    {#if api && status?.enabled}
+      <GpuWorkerSection {api} />
+    {/if}
 
     <!-- Linked books -->
     <section class="mt-10" aria-label="Linked books" data-testid="audiobooks-linked">

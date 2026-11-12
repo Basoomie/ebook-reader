@@ -26,9 +26,18 @@ import {
   splitNotice,
   subtitleDetails,
   subtitleView,
+  subtitleJobActive,
+  subtitleJobText,
+  timeAgo,
   withoutIds
 } from './audio-link';
-import type { AudioFolderSummary, AudioLink, AudioMergeJob } from './audio-types';
+import type {
+  AudioFolderSummary,
+  AudioLink,
+  AudioMergeJob,
+  GpuWorkerStatus,
+  SubtitleJob
+} from './audio-types';
 
 const folder = (extra: Partial<AudioFolderSummary> = {}): AudioFolderSummary => ({
   id: 1,
@@ -266,5 +275,110 @@ describe('WP15f: files and merges', () => {
     expect(mergeActive(job({ state: 'running' }))).toBe(true);
     expect(mergeActive(job({ state: 'done' }))).toBe(false);
     expect(mergeActive(null)).toBe(false);
+  });
+});
+
+describe('subtitle jobs (WP16)', () => {
+  const NOW = 1_800_000_000_000;
+  const job = (extra: Partial<SubtitleJob> = {}): SubtitleJob => ({
+    id: 1,
+    bookId: 'b',
+    bookTitle: '羊と鋼の森',
+    kind: 'sync_subtitles',
+    audioFileName: '羊と鋼の森.m4b',
+    state: 'queued',
+    stage: null,
+    progress: null,
+    message: null,
+    cancelRequested: false,
+    attempts: 0,
+    outputName: null,
+    outputRelPath: null,
+    linked: false,
+    error: null,
+    logTail: null,
+    createdAt: NOW - 1000,
+    startedAt: null,
+    finishedAt: null,
+    updatedAt: NOW,
+    ...extra
+  });
+  const worker = (extra: Partial<GpuWorkerStatus> = {}): GpuWorkerStatus => ({
+    available: true,
+    online: true,
+    lastSeenAt: NOW - 5000,
+    paused: false,
+    problem: null,
+    jobs: [],
+    ...extra
+  });
+
+  it('says why a job waits', () => {
+    expect(subtitleJobText(job(), worker(), NOW)).toBe('Waiting for the PC to start…');
+    expect(subtitleJobText(job(), worker({ paused: true }), NOW)).toBe(
+      'Waiting: making subtitles on the PC is paused (Settings > Audiobooks).'
+    );
+    expect(
+      subtitleJobText(job(), worker({ online: false, lastSeenAt: NOW - 3 * 3600_000 }), NOW)
+    ).toBe('Waiting for the PC to be switched on (last seen 3 h ago).');
+    expect(subtitleJobText(job(), worker({ online: false, lastSeenAt: null }), NOW)).toBe(
+      'Waiting for the PC. The subtitle program on the PC has not checked in yet.'
+    );
+    expect(
+      subtitleJobText(job(), worker({ problem: 'Docker Desktop is not running on the PC' }), NOW)
+    ).toBe('Waiting: Docker Desktop is not running on the PC.');
+    expect(subtitleJobText(job(), worker({ jobs: [job({ id: 2, state: 'running' })] }), NOW)).toBe(
+      "Waiting for another book's subtitles to finish…"
+    );
+    expect(
+      subtitleJobText(
+        job({ message: 'The PC stopped responding during the job; it will be tried again.' }),
+        worker(),
+        NOW
+      )
+    ).toBe(
+      'The PC stopped responding during the job; it will be tried again. Waiting for the PC to start…'
+    );
+  });
+
+  it('describes a running job, its end, and the time since', () => {
+    const run = (extra: Partial<SubtitleJob>) => job({ state: 'running', ...extra });
+    expect(subtitleJobText(run({ stage: 'downloading', progress: 0.256 }), worker(), NOW)).toBe(
+      'The PC is downloading the book and the audiobook… 25 %'
+    );
+    expect(
+      subtitleJobText(
+        run({ stage: 'syncing', progress: 0.4, startedAt: NOW - 12 * 60_000 }),
+        worker(),
+        NOW
+      )
+    ).toBe("SubPlz is matching the audiobook to the book's text… 40 % Started 12 min ago.");
+    expect(subtitleJobText(run({ stage: 'syncing' }), worker(), NOW)).toBe(
+      "SubPlz is matching the audiobook to the book's text…"
+    );
+    expect(subtitleJobText(run({ stage: 'uploading' }), worker(), NOW)).toBe(
+      'The PC is sending the subtitles to the server…'
+    );
+    expect(subtitleJobText(run({ stage: 'saving' }), worker(), NOW)).toBe(
+      'Saving into the subtitle folder…'
+    );
+    expect(subtitleJobText(run({ cancelRequested: true }), worker(), NOW)).toBe('Stopping…');
+    expect(
+      subtitleJobText(job({ state: 'done', linked: true, outputName: 'a.srt' }), worker(), NOW)
+    ).toBe('Subtitles made: “a.srt”. This book now uses them.');
+    expect(subtitleJobText(job({ state: 'done', outputName: 'a.srt' }), worker(), NOW)).toMatch(
+      /were not chosen/
+    );
+    expect(subtitleJobText(job({ state: 'failed', error: 'SubPlz failed.' }), worker(), NOW)).toBe(
+      'Making subtitles failed: SubPlz failed. Nothing was added to the subtitle folder.'
+    );
+    expect(subtitleJobText(job({ state: 'cancelled' }), worker(), NOW)).toBe(
+      'Making subtitles was stopped. Nothing was added to the subtitle folder.'
+    );
+    expect(subtitleJobActive(run({}))).toBe(true);
+    expect(subtitleJobActive(job({ state: 'done' }))).toBe(false);
+    expect(subtitleJobActive(null)).toBe(false);
+    expect(timeAgo(NOW - 30_000, NOW)).toBe('just now');
+    expect(timeAgo(NOW - 3 * 86_400_000, NOW)).toBe('3 days ago');
   });
 });

@@ -16,6 +16,8 @@ import {
   mergeAudiobookCopy,
   replaceAudiobookCopy,
   stopMergeCopy,
+  stopSubtitleJobCopy,
+  replaceSubtitlesWithJobCopy,
   replaceSubtitlesCopy,
   restoreSubtitlesCopy,
   unlinkAudiobookCopy
@@ -124,6 +126,14 @@ describe('confirmation words', () => {
     const stop = stopMergeCopy('Vol 3');
     expect(stop.title).toBe('Stop the merge?');
     expect(stop.message[0]).toContain('Nothing is added to the audiobooks folder');
+    // WP16
+    const stopJob = stopSubtitleJobCopy('羊と鋼の森');
+    expect(stopJob.title).toBe('Stop making subtitles?');
+    expect(stopJob.message[0]).toContain('Nothing is added to the subtitle folder');
+    const replace = replaceSubtitlesWithJobCopy('old.srt');
+    expect(replace.title).toBe('Make new subtitles for this book?');
+    expect(replace.danger).toBe(false);
+    expect(replace.message[1]).toContain('stays in the subtitle folder');
   });
 
   it('never uses "OK" or "Confirm" and always asks a question', () => {

@@ -116,6 +116,48 @@ export interface AudioMergeJob {
   finishedAt: number | null;
 }
 
+export type SubtitleJobState = 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
+export type SubtitleJobStage = 'downloading' | 'syncing' | 'uploading' | 'saving';
+
+/** WP16: "Make subtitles on the PC" (SubPlz on the GPU worker). */
+export interface SubtitleJob {
+  id: number;
+  bookId: string;
+  bookTitle: string | null;
+  kind: 'sync_subtitles';
+  audioFileName: string;
+  state: SubtitleJobState;
+  stage: SubtitleJobStage | null;
+  /** 0..1 within the stage, or null when unknown. */
+  progress: number | null;
+  message: string | null;
+  cancelRequested: boolean;
+  attempts: number;
+  outputName: string | null;
+  outputRelPath: string | null;
+  linked: boolean;
+  error: string | null;
+  logTail: string | null;
+  createdAt: number;
+  startedAt: number | null;
+  finishedAt: number | null;
+  updatedAt: number;
+}
+
+/** WP16: the GPU worker as the server last heard from it. */
+export interface GpuWorkerStatus {
+  /** false: this server has no job queue (no audiobooks folder). */
+  available: boolean;
+  online?: boolean;
+  lastSeenAt?: number | null;
+  paused?: boolean;
+  version?: string | null;
+  image?: string | null;
+  problem?: string | null;
+  /** The user's waiting and running jobs. */
+  jobs?: SubtitleJob[];
+}
+
 export interface AudioLink {
   bookId: string;
   /** 'none' = "No audiobook". */
