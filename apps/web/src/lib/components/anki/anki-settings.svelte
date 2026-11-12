@@ -27,7 +27,7 @@
   } from '$lib/anki/settings';
 
   /**
-   * WP14: Settings > Reader > Anki. AnkiConnect on this device, and (the same on every
+   * WP14: Settings > Anki (its own tab since 2026-11-12). AnkiConnect on this device, and (the same on every
    * device) which fields of each note type "Enrich last card" fills.
    */
 

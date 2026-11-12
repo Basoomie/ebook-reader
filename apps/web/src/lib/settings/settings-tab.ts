@@ -9,7 +9,7 @@
  * so a link can open a tab and a reload keeps it. Reader has no `tab` (the plain address).
  */
 
-export const SETTINGS_TABS = ['Reader', 'Data', 'Statistics', 'Audiobooks'] as const;
+export const SETTINGS_TABS = ['Reader', 'Data', 'Statistics', 'Audiobooks', 'Anki'] as const;
 export type SettingsTab = (typeof SETTINGS_TABS)[number];
 
 /** The tab named in the address; Reader for none or an unknown name. */

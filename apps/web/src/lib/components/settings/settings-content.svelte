@@ -1020,18 +1020,6 @@
         </SettingsItemGroup>
       {/if}
     {/if}
-    <!-- WP14: "Enrich last Anki card". -->
-    <SettingsSection
-      jp="暗記"
-      title="Anki"
-      tooltip="Enrich last Anki card: what it adds to the newest note in Anki, and how it reaches Anki from this device."
-      testid="settings-section-anki"
-    />
-    <div class="col-span-full pb-8 md:pb-6">
-      {#if browser}
-        <AnkiSettings />
-      {/if}
-    </div>
   {:else if activeSettings === 'Data'}
     <!-- Three sections: the library server, this device, and the old sync's migration. -->
     <SettingsSection
@@ -1095,6 +1083,13 @@
         Open the migration page
       </a>
     </SettingsItemGroup>
+  {:else if activeSettings === 'Anki'}
+    <!-- WP14: "Enrich last Anki card" (its own tab, user 2026-11-12). -->
+    <div class="col-span-full pb-8 md:pb-6" data-testid="settings-section-anki">
+      {#if browser}
+        <AnkiSettings />
+      {/if}
+    </div>
   {:else if activeSettings === 'Audiobooks'}
     <!-- WP15b: the server's audiobooks folder and the linked books. -->
     {#if browser}

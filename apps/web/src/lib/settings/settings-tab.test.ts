@@ -10,6 +10,7 @@ import { SETTINGS_TABS, settingsTabHref, tabFromQuery, tabQuery } from './settin
 describe('settings tabs in the address', () => {
   it('reads the tab, ignoring case, and falls back to Reader', () => {
     expect(tabFromQuery('audiobooks')).toBe('Audiobooks');
+    expect(tabFromQuery('anki')).toBe('Anki');
     expect(tabFromQuery(' Data ')).toBe('Data');
     expect(tabFromQuery('statistics')).toBe('Statistics');
     expect(tabFromQuery(null)).toBe('Reader');
