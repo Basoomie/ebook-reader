@@ -27,7 +27,8 @@ export function onKeydownReader(
   handleSetCustomReadingPoint: () => void,
   toggleTracker: () => void,
   freezeTrackerPosition: () => void,
-  toggleZen: () => void = () => {}
+  toggleZen: () => void = () => {},
+  enrichAnkiCard: () => void = () => {}
 ) {
   const action = bookReaderKeybindMap[ev.code || ev.key?.toLowerCase()];
 
@@ -71,6 +72,9 @@ export function onKeydownReader(
       return true;
     case BookReaderAvailableKeybind.TOGGLE_ZEN:
       toggleZen();
+      return true;
+    case BookReaderAvailableKeybind.ANKI_ENRICH:
+      enrichAnkiCard();
       return true;
     default:
       return false;

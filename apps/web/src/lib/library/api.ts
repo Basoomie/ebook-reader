@@ -669,6 +669,24 @@ export class LibraryApi {
     }
   }
 
+  /**
+   * WP14: the MP3 of [start, end) seconds of the book's linked audiobook file (sentence
+   * audio for Anki), cut on the server.
+   */
+  async audioClip(
+    bookId: string,
+    start: number,
+    end: number,
+    options?: RequestOptions
+  ): Promise<ArrayBuffer> {
+    const qs = new URLSearchParams({ start: start.toFixed(3), end: end.toFixed(3) });
+    const response = await this.get(
+      `/books/${encodeURIComponent(bookId)}/audio-clip?${qs}`,
+      options
+    );
+    return response.arrayBuffer();
+  }
+
   /** WP15f: a folder with its files and the copies hint. */
   async audioFolder(folderId: number, options?: RequestOptions): Promise<AudioFolderDetail> {
     return (await this.get(`/audio/folders/${folderId}`, options)).json();

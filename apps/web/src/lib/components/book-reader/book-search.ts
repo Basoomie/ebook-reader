@@ -52,12 +52,12 @@ const BLOCK_TAGS = new Set([
 ]);
 
 /** Ends a sentence for the result line. */
-const SENTENCE_END = new Set(['。', '！', '？', '!', '?', '．', '…']);
+export const SENTENCE_END = new Set(['。', '！', '？', '!', '?', '．', '…']);
 
 /** Shown in place of a gaiji image; never typed, so it never matches. */
 const GAIJI_MARK = '〓';
 
-const BLOCK_BREAK = '\n';
+export const BLOCK_BREAK = '\n';
 
 /**
  * WP10c: the text of a book (or of the live page) for searching, with the reader's own

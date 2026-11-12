@@ -60,7 +60,29 @@ export interface AudioConfig {
   copyHintMinMinutes: number;
   copyHintPercent: number;
   merge: AudioMergeConfig;
+  clip: AudioClipConfig;
 }
+
+/** WP14: sentence-audio clips for Anki, cut with ffmpeg (read-only, to stdout). */
+export interface AudioClipConfig {
+  ffmpegPath: string;
+  /** Longest clip the server cuts (seconds). */
+  maxSeconds: number;
+  /** MP3 bitrate, e.g. "128k". */
+  bitrate: string;
+  /** A cut that takes longer is stopped (seconds). */
+  timeoutSeconds: number;
+  /** Cuts at the same time; more answer 429 busy. */
+  concurrency: number;
+}
+
+export const DEFAULT_AUDIO_CLIP: AudioClipConfig = {
+  ffmpegPath: 'ffmpeg',
+  maxSeconds: 60,
+  bitrate: '128k',
+  timeoutSeconds: 30,
+  concurrency: 2,
+};
 
 /** WP15f: the merge job (ffmpeg) and the files it creates in the audiobooks folder. */
 export interface AudioMergeConfig {
@@ -95,6 +117,7 @@ export const DEFAULT_AUDIO: Omit<AudioConfig, 'dir'> = {
   copyHintMinMinutes: 60,
   copyHintPercent: 3,
   merge: DEFAULT_AUDIO_MERGE,
+  clip: DEFAULT_AUDIO_CLIP,
 };
 
 export interface SearchConfig {
@@ -546,6 +569,16 @@ export function parseAudioConfig(env: Env, warnings: string[]): AudioConfig {
     else
       warnings.push(`AUDIO_MERGE_BITRATE: "${bitrateRaw}" is not like 128k; using ${m.bitrate}.`);
   }
+  const c = DEFAULT_AUDIO_CLIP;
+  const clipBitrateRaw = (env.AUDIO_CLIP_BITRATE ?? '').trim();
+  let clipBitrate = c.bitrate;
+  if (clipBitrateRaw !== '') {
+    if (/^\d{2,3}k$/i.test(clipBitrateRaw)) clipBitrate = clipBitrateRaw.toLowerCase();
+    else
+      warnings.push(
+        `AUDIO_CLIP_BITRATE: "${clipBitrateRaw}" is not like 128k; using ${c.bitrate}.`,
+      );
+  }
   return {
     dir: dirRaw ? path.resolve(dirRaw) : null,
     scanHours: parseNumber(
@@ -609,6 +642,37 @@ export function parseAudioConfig(env: Env, warnings: string[]): AudioConfig {
       fileUid: optionalId('AUDIOBOOKS_FILE_UID'),
       fileGid: optionalId('AUDIOBOOKS_FILE_GID'),
       fileMode,
+    },
+    clip: {
+      ffmpegPath: (env.FFMPEG_PATH ?? '').trim() || c.ffmpegPath,
+      maxSeconds: parseNumber(
+        'AUDIO_CLIP_MAX_SECONDS',
+        env.AUDIO_CLIP_MAX_SECONDS,
+        c.maxSeconds,
+        1,
+        3600,
+        false,
+        warnings,
+      ),
+      bitrate: clipBitrate,
+      timeoutSeconds: parseNumber(
+        'AUDIO_CLIP_TIMEOUT_SECONDS',
+        env.AUDIO_CLIP_TIMEOUT_SECONDS,
+        c.timeoutSeconds,
+        1,
+        3600,
+        false,
+        warnings,
+      ),
+      concurrency: parseNumber(
+        'AUDIO_CLIP_CONCURRENCY',
+        env.AUDIO_CLIP_CONCURRENCY,
+        c.concurrency,
+        1,
+        64,
+        true,
+        warnings,
+      ),
     },
   };
 }

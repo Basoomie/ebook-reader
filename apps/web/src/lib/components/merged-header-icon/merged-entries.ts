@@ -21,6 +21,7 @@ import {
   faImages,
   faLayerGroup,
   faListUl,
+  faNoteSticky,
   faSignOutAlt,
   faTriangleExclamation
 } from '@fortawesome/free-solid-svg-icons';
@@ -87,6 +88,13 @@ export const mergeEntries = {
     label: 'Add bookmark',
     icon: faBookmark,
     title: 'Keep this page under a name; your saved place stays where it is (K)'
+  },
+  // WP14
+  ANKI_ENRICH: {
+    routeId: '',
+    label: 'Enrich Anki card',
+    icon: faNoteSticky,
+    title: 'Add the title tag, sentence, audio, cover and link to the newest note in Anki (E)'
   },
   READER_IMAGE_GALLERY: {
     routeId: '',

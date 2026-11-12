@@ -39,6 +39,11 @@ const READER_ACTIONS: [BookReaderAvailableKeybind, string][] = [
   [BookReaderAvailableKeybind.JUMP_TO_BOOKMARK, 'Return to saved place'],
   [BookReaderAvailableKeybind.TOGGLE_ZEN, 'Zen mode (hide the bottom bar)'],
   [BookReaderAvailableKeybind.SET_READING_POINT, 'Set reading point'],
+  // WP14
+  [
+    BookReaderAvailableKeybind.ANKI_ENRICH,
+    'Enrich the last Anki card (tag, sentence, audio, cover, link)'
+  ],
   [BookReaderAvailableKeybind.AUTO_SCROLL_TOGGLE, 'Auto-scroll on or off'],
   [BookReaderAvailableKeybind.AUTO_SCROLL_INCREASE, 'Auto-scroll faster'],
   [BookReaderAvailableKeybind.AUTO_SCROLL_DECREASE, 'Auto-scroll slower']
@@ -136,8 +141,8 @@ export const AUDIOBOOK_SHORTCUTS: ShortcutRow[] = [
   { keys: ['Ctrl + →', 'Ctrl + ↑'], action: 'Fast-forward' },
   { keys: ['Ctrl + K'], action: 'Slower' },
   { keys: ['Alt + K'], action: 'Faster' },
-  { keys: ['Ctrl + E'], action: 'Create a new Anki card' },
-  { keys: ['Alt + E'], action: 'Update the last Anki card' },
+  { keys: ['Ctrl + E'], action: 'Create a new Anki card from the current line' },
+  { keys: ['Alt + E'], action: 'Update the last Anki card from the current line' },
   { keys: ['Ctrl + B'], action: 'Bookmark the current line' },
   { keys: ['Ctrl + M'], action: 'Mark the current line for merging' },
   { keys: ['Alt + G'], action: 'Edit the current line' },

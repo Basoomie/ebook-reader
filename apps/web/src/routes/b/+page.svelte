@@ -28,7 +28,7 @@
   import { browser } from '$app/environment';
   import { page } from '$app/stores';
   import { goto } from '$app/navigation';
-  import { faPause, faPlay, faSpinner } from '@fortawesome/free-solid-svg-icons';
+  import { faNoteSticky, faPause, faPlay, faSpinner } from '@fortawesome/free-solid-svg-icons';
   import BookReader from '$lib/components/book-reader/book-reader.svelte';
   import { serverFonts } from '$lib/fonts/server-fonts-browser';
   import type {
@@ -229,6 +229,8 @@
   } from '$lib/audio/whispersync-reader';
   import { leavingForgetsLastBook } from '$lib/home/open-target';
   import { formatTimeLeft, secondsLeft, speedEstimate } from '$lib/stats/time-left';
+  import { ankiBottomBarButton$ } from '$lib/anki/settings';
+  import type { LookupCapture, LookupSentence } from '$lib/anki/lookup-capture';
 
   let showSpinner = true;
   let showHeader = false;
@@ -241,6 +243,14 @@
   database.db.then((db) => {
     readerDb = db;
   });
+
+  // WP14: "Enrich last Anki card". The last dictionary lookup's sentence is remembered
+  // while reading (lib/anki/lookup-capture.ts); the action itself loads on first use.
+  // Isolated like the stats code: failures end up in the banner or the log, never in reading.
+  let lookupCapture: LookupCapture | undefined;
+  let ankiNotice = '';
+  let ankiNoticeSetup = false;
+  let ankiBusy = false;
 
   // WP15c: whispersync's audio comes from the book's linked audiobook, and its position,
   // saved subtitles and saved match sync through the library server (not the old sync).
@@ -752,6 +762,87 @@
       stopHighlights();
     };
   });
+
+  onMount(() => {
+    if (!browser) return;
+    let stopped = false;
+    import('$lib/anki/lookup-capture')
+      .then(({ LookupCapture }) => {
+        if (stopped) return;
+        lookupCapture = new LookupCapture(
+          document,
+          {
+            root: () => document.querySelector('.book-content'),
+            base: () => bookmarkManager?.sectionStartCount?.() ?? 0
+          },
+          (message) => logger.warn(message)
+        );
+        lookupCapture.start();
+      })
+      .catch((error) => logger.warn(`Anki: lookups not recorded: ${error?.message ?? error}`));
+    // bookId$ repeats on every page-store update; only another book forgets the lookup.
+    let lookupBook: number | undefined;
+    const bookChange = bookId$.subscribe((id) => {
+      if (lookupBook !== undefined && id !== lookupBook) lookupCapture?.reset();
+      lookupBook = id;
+    });
+
+    return () => {
+      stopped = true;
+      bookChange.unsubscribe();
+      lookupCapture?.stop();
+    };
+  });
+
+  /** The sentence for the card: the last lookup, else the selected text (or none). */
+  function ankiSentence(): LookupSentence | null {
+    const lookup = lookupCapture?.lastLookup ?? null;
+
+    if (lookup || !lookupCapture) {
+      return lookup;
+    }
+
+    const selection = window.getSelection();
+    const range =
+      selection && selection.rangeCount && !selection.isCollapsed
+        ? selection.getRangeAt(0)
+        : lastSelectedRange?.startContainer.isConnected && !lastSelectedRange.collapsed
+          ? lastSelectedRange
+          : undefined;
+
+    return range ? lookupCapture.selectionSentence(range) : null;
+  }
+
+  async function enrichAnkiCard() {
+    showHeader = false;
+
+    if (ankiBusy || !$rawBookData$) {
+      return;
+    }
+
+    ankiBusy = true;
+    ankiNoticeSetup = false;
+    ankiNotice = 'Sending to Anki…';
+
+    try {
+      const { enrichFromReader } = await import('$lib/anki/reader-enrich');
+      const outcome = await enrichFromReader({
+        localId: $rawBookData$.id,
+        localTitle: $rawBookData$.title,
+        coverImage: $rawBookData$.coverImage,
+        sentence: ankiSentence(),
+        readingPosition: exploredCharCount,
+        bookCharacters: bookCharCount
+      });
+      ankiNotice = outcome.message;
+      ankiNoticeSetup = !!outcome.unmapped;
+    } catch (error) {
+      ankiNotice = `Could not enrich the card: ${(error as Error)?.message ?? error}`;
+      logger.warn(`Anki: ${ankiNotice}`);
+    } finally {
+      ankiBusy = false;
+    }
+  }
 
   onMount(() => {
     // WP10a: two-finger tap (Zen mode) and mouse-drag page turns. Document level, so both
@@ -2330,7 +2421,8 @@
       handleSetCustomReadingPoint,
       toggleTrackerManually,
       freezeTrackerPosition,
-      toggleZen
+      toggleZen,
+      () => void enrichAnkiCard()
     );
 
     if (!result) return;
@@ -3102,6 +3194,7 @@
       on:jumpForwardClick={() => goJumpHistory('forward')}
       on:returnMarkerClick={returnToMarker}
       on:addBookmarkClick={addBookmarkHere}
+      on:ankiEnrichClick={() => void enrichAnkiCard()}
       on:shortcutsClick={openShortcuts}
     />
   </div>
@@ -3254,6 +3347,36 @@
   </div>
 {/if}
 
+{#if ankiNotice}
+  <!-- WP14: what "Enrich last Anki card" did, or why it couldn't. -->
+  <div
+    class="writing-horizontal-tb fixed inset-x-4 top-4 z-20 mx-auto flex max-w-md items-center gap-2 rounded border-2 border-gray-700 bg-white p-2 text-black"
+    role="status"
+    data-testid="anki-notice"
+  >
+    <span class="grow px-1" data-testid="anki-notice-text">{ankiNotice}</span>
+    {#if ankiNoticeSetup}
+      <button
+        class="min-h-[2.75rem] shrink-0 rounded border-2 border-gray-700 px-3 font-medium"
+        data-testid="anki-notice-setup"
+        on:click={() => leaveReader(mergeEntries.SETTINGS.routeId, false)}
+      >
+        Set up fields
+      </button>
+    {/if}
+    {#if !ankiBusy}
+      <button
+        class="min-h-[2.75rem] shrink-0 px-3"
+        aria-label="Close"
+        data-testid="anki-notice-close"
+        on:click={() => (ankiNotice = '')}
+      >
+        ✕
+      </button>
+    {/if}
+  </div>
+{/if}
+
 {#if openNotice}
   <div
     class="writing-horizontal-tb fixed inset-x-4 top-4 z-20 mx-auto max-w-md rounded border-2 border-gray-700 bg-white text-black"
@@ -3354,6 +3477,22 @@
         }}
       >
         <Fa icon={$isTrackerPaused$ ? faPlay : faPause} />
+      </div>
+    {/if}
+    {#if $ankiBottomBarButton$}
+      <!-- WP14: one tap to enrich the last Anki card (opt-in per device). -->
+      <div
+        tabindex="0"
+        role="button"
+        title="Enrich the last Anki card (E)"
+        aria-label="Enrich the last Anki card"
+        class="flex h-full min-w-[2.5rem] items-center justify-center text-sm sm:text-lg"
+        class:animate-pulse={ankiBusy}
+        data-testid="footer-anki"
+        on:click|stopPropagation={() => void enrichAnkiCard()}
+        on:keyup={dummyFn}
+      >
+        <Fa icon={faNoteSticky} />
       </div>
     {/if}
     {#if $showReturnMarker$ && returnMarkerPos !== undefined && !returnMarkerOnScreen && bookCharCount}

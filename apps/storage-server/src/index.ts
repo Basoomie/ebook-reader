@@ -12,6 +12,7 @@ import { UploadStore } from './uploads/upload-store';
 import { SERVER_VERSION } from './version';
 import { captureConsole, serverLogs } from './logs/recent-logs';
 import { AudioWriter } from './audio/audio-write';
+import { ClipService } from './audio/clip-service';
 import { MergeService } from './audio/merge-service';
 import { MergeWorkdir } from './audio/merge-workdir';
 import { AudioScanService } from './audio/scan-service';
@@ -157,6 +158,7 @@ catalog.search = search;
 // ever written into the audiobooks folder, through src/audio/audio-write.ts.
 let audio: AudioScanService | null = null;
 let merges: MergeService | null = null;
+let clips: ClipService | null = null;
 if (database.ok && config.audio.dir) {
   audio = new AudioScanService({
     db: database.db,
@@ -193,6 +195,12 @@ if (database.ok && config.audio.dir) {
     config: config.audio.merge,
   });
   const mergeService = merges;
+  // WP14: sentence audio for Anki (read-only cuts to stdout).
+  clips = new ClipService({
+    config: config.audio.clip,
+    hideRoots: () => [scan.root],
+    logError: (m, err) => console.error(`Error: ${m}`, err ?? ''),
+  });
   scan
     .start()
     .then(async () => {
@@ -211,6 +219,7 @@ const app = createApp({
   audio: {
     service: audio,
     merges,
+    clips,
     copyHint: {
       minMinutes: config.audio.copyHintMinMinutes,
       percent: config.audio.copyHintPercent,
