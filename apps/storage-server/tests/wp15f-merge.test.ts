@@ -19,6 +19,7 @@ import {
   MergeService,
   type MergeServiceOptions,
   parseProbe,
+  shortenPaths,
 } from '../src/audio/merge-service';
 import { MergeWorkdir } from '../src/audio/merge-workdir';
 import { looksLikeCopies } from '../src/audio/match';
@@ -84,6 +85,19 @@ describe('merge helpers', () => {
       ].join('\n'),
     );
     expect(buildConcatList([`a${path.sep}it's.m4b`])).toBe(`file 'a/it'\\''s.m4b'\n`);
+  });
+
+  it('shows no server folders in messages', () => {
+    expect(
+      shortenPaths('C:\\ab\\audiobooks\\japanese\\x\\b.m4a: Invalid data', ['C:\\ab\\audiobooks']),
+    ).toBe('b.m4a: Invalid data');
+    expect(
+      shortenPaths(
+        '/audiobooks/japanese/Vol 1/a (1).m4a: Invalid; /cache/audio-merge/3/merged.m4b: x',
+        ['/audiobooks', '/cache/audio-merge'],
+      ),
+    ).toBe('a (1).m4a: Invalid; merged.m4b: x');
+    expect(shortenPaths('ffmpeg failed', ['/audiobooks', null])).toBe('ffmpeg failed');
   });
 
   it('copies only AAC files of the same layout', () => {

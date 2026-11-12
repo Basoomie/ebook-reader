@@ -496,6 +496,14 @@
   function folderNote(f: AudioFolderSummary): string {
     return f.playable ? '' : severalFilesNote(f.fileCount);
   }
+
+  /**
+   * "Linked now" instead of "Use this": only for a single-file folder. A folder of several
+   * files keeps its button, so another of its files can be chosen (its file step marks the
+   * linked file).
+   */
+  $: isCurrentFolder = (f: AudioFolderSummary): boolean =>
+    f.playable && f.relPath === currentFolderPath;
 </script>
 
 {#if visible}
@@ -746,7 +754,7 @@
                   parent={folder.parentName}
                   details={folderDetails(folder)}
                   note={folderNote(folder)}
-                  current={folder.relPath === currentFolderPath}
+                  current={isCurrentFolder(folder)}
                   disabled={busy}
                   testid="audio-suggestion"
                   on:choose={() => chooseFolder(folder)}
@@ -796,7 +804,7 @@
                     parent={folder.parentName}
                     details={folderDetails(folder)}
                     note={folderNote(folder)}
-                    current={folder.relPath === currentFolderPath}
+                    current={isCurrentFolder(folder)}
                     disabled={busy}
                     testid="audio-result"
                     on:choose={() => chooseFolder(folder)}

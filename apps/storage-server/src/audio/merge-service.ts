@@ -186,6 +186,23 @@ export function canStreamCopy(probes: ProbeResult[]): boolean {
   });
 }
 
+/**
+ * For messages shown on the page: a path inside one of `roots` (written with either
+ * slash) is cut down to its file name, so no server folder shows.
+ */
+export function shortenPaths(message: string, roots: (string | null)[]): string {
+  let out = message;
+  for (const root of roots) {
+    if (!root) continue;
+    const forms = new Set([root, root.split('\\').join('/'), root.split('/').join('\\')]);
+    for (const form of forms) {
+      const escaped = form.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      out = out.replace(new RegExp(`${escaped}[^:\\n]*[\\\\/]`, 'g'), '');
+    }
+  }
+  return out;
+}
+
 /** ffmetadata escaping: = ; # \ and newlines. */
 function metaEscape(s: string): string {
   return s.replace(/[=;#\\\n]/g, (c) => (c === '\n' ? '\\\n' : `\\${c}`));
@@ -576,7 +593,13 @@ export class MergeService {
 
       const probes: ProbeResult[] = [];
       for (const [i, file] of inputs.entries()) {
-        const p = await this.probe(file, abort.signal);
+        let p: ProbeResult;
+        try {
+          p = await this.probe(file, abort.signal);
+        } catch (err) {
+          if (abort.signal.aborted) throw err;
+          throw new Error(`${job.files[i]} could not be read as audio`);
+        }
         if (!audioStream(p) || !Number.isFinite(p.duration) || p.duration <= 0) {
           throw new Error(`${job.files[i]} could not be read as audio`);
         }
@@ -666,7 +689,7 @@ export class MergeService {
             ? 'Interrupted: the server stopped during the merge. Start it again.'
             : err instanceof WriteAborted
               ? 'Stopped'
-              : (err as Error).message;
+              : this.plainMessage((err as Error).message);
         this.update(job.id, { state: 'failed', error: message, finished_at: this.now() });
         this.logError(`Audiobooks: merge of "${job.folderRelPath}" failed: ${message}`);
       }
@@ -674,6 +697,11 @@ export class MergeService {
       await workdir.remove(job.id).catch(() => undefined);
       this.current = null;
     }
+  }
+
+  /** An error for the page: folder paths of this server shortened to the file names. */
+  private plainMessage(message: string): string {
+    return shortenPaths(message, [this.scan.root, this.workdir?.root ?? null]);
   }
 
   private autoLink(
@@ -800,22 +828,30 @@ export class MergeService {
         lastActivity = Date.now();
         stderr = (stderr + chunk.toString('utf8')).slice(-4000);
       });
+      let settled = false;
       const finish = (err: Error | null) => {
+        if (settled) return;
+        settled = true;
         clearInterval(timer);
         signal.removeEventListener('abort', onAbort);
         if (err) reject(err);
         else resolve();
       };
-      child.on('error', (err) => finish(err));
-      child.on('close', (code) => {
-        if (signal.aborted) finish(new WriteAborted());
-        else if (stalled) {
-          finish(
-            new Error(
+      const stoppedError = () =>
+        signal.aborted
+          ? new WriteAborted()
+          : new Error(
               `ffmpeg made no progress for ${this.config.stallMinutes} minute(s) and was stopped`,
-            ),
-          );
-        } else if (code !== 0) {
+            );
+      child.on('error', (err) => finish(err));
+      // A stopped ffmpeg is done when it exits, even if something it started still holds
+      // its output open (e.g. a wrapper program around ffmpeg).
+      child.on('exit', () => {
+        if (signal.aborted || stalled) finish(stoppedError());
+      });
+      child.on('close', (code) => {
+        if (signal.aborted || stalled) finish(stoppedError());
+        else if (code !== 0) {
           const last = stderr.trim().split(/\r?\n/).pop() ?? '';
           finish(new Error(`ffmpeg failed${last ? `: ${last}` : ` (exit code ${code})`}`));
         } else finish(null);
