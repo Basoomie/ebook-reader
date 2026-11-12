@@ -87,7 +87,7 @@ const NO_CATALOG: CatalogOptions = {
 
 /**
  * /api/v1: the new API. Later work packages add their routes here, behind
- * requireUser. Failures in here never affect the legacy endpoints.
+ * requireUser.
  */
 export function createApiRouter({
   database,

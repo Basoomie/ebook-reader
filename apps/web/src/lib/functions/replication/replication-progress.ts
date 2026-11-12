@@ -27,4 +27,3 @@ export interface ReplicationDeleteResult {
 }
 
 export const replicationProgress$ = new Subject<ReplicationProgress>();
-export const executeReplicate$ = new Subject<void>();

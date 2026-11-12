@@ -25,7 +25,6 @@
   } from '$lib/data/store';
   import SettingsItemGroup from '$lib/components/settings/settings-item-group.svelte';
   import SettingsSection from '$lib/components/settings/settings-section.svelte';
-  import SettingsStorageSourceList from '$lib/components/settings/settings-storage-source-list.svelte';
   import SettingsServerFontsDialog from '$lib/components/settings/settings-server-fonts-dialog.svelte';
   import SettingsExportData from '$lib/components/settings/settings-export-data.svelte';
   import LibraryConnectionSettings from '$lib/components/library/library-connection-settings.svelte';
@@ -39,15 +38,9 @@
   import { LocalFont } from '$lib/data/fonts';
   import { FuriganaStyle } from '$lib/data/furigana-style';
   import { ImportHTMLFixMode } from '$lib/data/import-html-fix-mode';
-  import { logger } from '$lib/data/logger';
-  import { MergeMode } from '$lib/data/merge-mode';
-  import { isAppDefault } from '$lib/data/storage/storage-source-manager';
-  import { defaultStorageSources } from '$lib/data/storage/storage-types';
-  import { isStorageSourceAvailable } from '$lib/data/storage/storage-view';
   import {
     customThemes$,
     darkTheme$,
-    database,
     einkMode$,
     followSystemTheme$,
     lightTheme$,
@@ -64,11 +57,6 @@
   import type { WritingMode } from '$lib/data/writing-mode';
   import { secondsToMinutes } from '$lib/functions/statistic-util';
   import { dummyFn } from '$lib/functions/utils';
-  import {
-    ReplicationSaveBehavior,
-    AutoReplicationType
-  } from '$lib/functions/replication/replication-options';
-  import { map } from 'rxjs';
   import Fa from 'svelte-fa';
   import { onDestroy } from 'svelte';
 
@@ -170,22 +158,10 @@
 
   export let restrictImportFixToAnchor: boolean;
 
-  export let cacheStorageData: boolean;
-
-  export let autoReplication: string;
-
-  export let replicationSaveBehavior: string;
-
-  export let showExternalPlaceholder: boolean;
-
   export let startDayHoursForTracker: number;
 
   /** WP12: first day of a stats week (global). */
   export let statsWeekStart: number;
-
-  export let statisticsMergeMode: string;
-
-  export let readingGoalsMergeMode: string;
 
   export let statisticsEnabled: boolean;
 
@@ -376,36 +352,6 @@
     }
   ];
 
-  const optionsForAutoReplicationType: ToggleOption<AutoReplicationType>[] = [
-    {
-      id: AutoReplicationType.Off,
-      text: 'Off'
-    },
-    {
-      id: AutoReplicationType.Up,
-      text: 'Up'
-    },
-    {
-      id: AutoReplicationType.Down,
-      text: 'Down'
-    },
-    {
-      id: AutoReplicationType.All,
-      text: 'All'
-    }
-  ];
-
-  const optionsForReplicationSaveBehavior: ToggleOption<ReplicationSaveBehavior>[] = [
-    {
-      id: ReplicationSaveBehavior.NewOnly,
-      text: 'New Only'
-    },
-    {
-      id: ReplicationSaveBehavior.Overwrite,
-      text: 'Overwrite'
-    }
-  ];
-
   const optionsForTrackerAutoPause: ToggleOption<TrackerAutoPause>[] = [
     {
       id: TrackerAutoPause.OFF,
@@ -432,39 +378,9 @@
     }
   ];
 
-  const optionsForMergeMode: ToggleOption<MergeMode>[] = [
-    {
-      id: MergeMode.MERGE,
-      text: 'Merge'
-    },
-    {
-      id: MergeMode.REPLACE,
-      text: 'Replace'
-    }
-  ];
-
-  const storageSources$ = database.storageSourcesChanged$.pipe(
-    map((storageSources) => [
-      ...defaultStorageSources
-        .filter((defaultStorageSource) =>
-          isStorageSourceAvailable(defaultStorageSource.type, defaultStorageSource.name, window)
-        )
-        .map((defaultStorageSource) => ({
-          name: defaultStorageSource.name,
-          type: defaultStorageSource.type,
-          storedInManager: false,
-          encryptionDisabled: false,
-          data: new ArrayBuffer(0),
-          lastSourceModified: 0
-        })),
-      ...storageSources.filter((storageSource) => !isAppDefault(storageSource.name))
-    ])
-  );
-
   let showSpinner = false;
   let furiganaStyleTooltip = '';
   let importHTMLFixModeTooltip = '';
-  let autoReplicationTypeTooltip = '';
   let trackerAutoPauseTooltip = '';
 
   $: if ($textMarginMode$ === 'auto') {
@@ -511,32 +427,6 @@
         'Applies fixes for epub imports like wrong self closing elements etc.';
       break;
   }
-  $: cacheStorageDataTooltip = cacheStorageData
-    ? 'Storage data is cached. Saves network traffic/latency but requires to reload current/open a new tab to retrieve data changes'
-    : 'Storage data is refetched on every action. May consume more network traffic/latency but ensures current data';
-  $: replicationSaveBehaviorTooltip =
-    replicationSaveBehavior === ReplicationSaveBehavior.Overwrite
-      ? 'Data will always be overwritten'
-      : 'Data will only be written if none exist on target, no time data is present or if target data is older';
-  $: switch (autoReplication) {
-    case AutoReplicationType.Up:
-      autoReplicationTypeTooltip =
-        'Updated data will be exported to sync target when reading once per minute';
-      break;
-    case AutoReplicationType.Down:
-      autoReplicationTypeTooltip = 'Data will be imported from sync target when opening a book';
-      break;
-    case AutoReplicationType.All:
-      autoReplicationTypeTooltip = 'Data will be synced in both directions';
-      break;
-    default:
-      autoReplicationTypeTooltip = 'No automatic import/export of data';
-      break;
-  }
-  $: showExternalPlaceholderToolTip = showExternalPlaceholder
-    ? 'Placeholder data for external books is shown in the browser source manager'
-    : 'Placeholder data for external books is hidden';
-
   $: startOfDayHours = `${`${startDayHoursForTracker}`.padStart(2, '0')}:00`;
 
   $: trackerIdleTimeInMin = secondsToMinutes(trackerIdleTime);
@@ -553,18 +443,6 @@
       trackerAutoPauseTooltip =
         'Tracker will auto pause on certain reader events and when the reader tab loses focus';
       break;
-  }
-
-  $: if ((activeSettings === 'Data' || activeSettings === 'Statistics') && !$storageSources$) {
-    database
-      .getStorageSources()
-      .then((storageSources) => {
-        database.storageSourcesChanged$.next(storageSources);
-      })
-      .catch((error) => {
-        logger.error(`Failed to retrieve storage sources: ${error.message}`);
-        database.storageSourcesChanged$.next([]);
-      });
   }
 </script>
 
@@ -1142,7 +1020,7 @@
       {/if}
     {/if}
   {:else if activeSettings === 'Data'}
-    <!-- Three sections: the library server, this device, and the old sync's items. -->
+    <!-- Three sections: the library server, this device, and the old sync's migration. -->
     <SettingsSection
       jp="接続"
       title="Library server"
@@ -1194,12 +1072,8 @@
         />
       </SettingsItemGroup>
     {/if}
-    <SettingsSection
-      jp="旧同期"
-      title="Old sync"
-      note="Until the old sync is retired"
-      testid="settings-section-old-sync"
-    />
+    <!-- WP15e: the old sync is removed; only the link to its migration pages stays. -->
+    <SettingsSection jp="旧同期" title="Old sync" testid="settings-section-old-sync" />
     <SettingsItemGroup
       title="Migration from the old sync"
       tooltip="The one-time move of books, places and statistics from the old file sync to the library server, and its check page."
@@ -1208,47 +1082,6 @@
         Open the migration page
       </a>
     </SettingsItemGroup>
-    <SettingsItemGroup
-      title="Old sync manager"
-      tooltip={'The book manager of the old sync: import into this browser, storage sources, export and delete. Stays here until the old sync is retired.'}
-    >
-      <a class="c-btn c-btn-secondary" href="{pagePath}/manage" data-testid="old-sync-manager">
-        Open the old sync manager
-      </a>
-    </SettingsItemGroup>
-    <SettingsItemGroup title="Cache Data" tooltip={cacheStorageDataTooltip}>
-      <ButtonToggleGroup
-        archive
-        options={optionsForToggle}
-        bind:selectedOptionId={cacheStorageData}
-      />
-    </SettingsItemGroup>
-    <SettingsItemGroup title="Auto Import/Export" tooltip={autoReplicationTypeTooltip}>
-      <ButtonToggleGroup
-        archive
-        options={optionsForAutoReplicationType}
-        bind:selectedOptionId={autoReplication}
-      />
-    </SettingsItemGroup>
-    <SettingsItemGroup title="Import/Export Behavior" tooltip={replicationSaveBehaviorTooltip}>
-      <ButtonToggleGroup
-        archive
-        options={optionsForReplicationSaveBehavior}
-        bind:selectedOptionId={replicationSaveBehavior}
-      />
-    </SettingsItemGroup>
-    <SettingsItemGroup title="Show Placeholder" tooltip={showExternalPlaceholderToolTip}>
-      <ButtonToggleGroup
-        archive
-        options={optionsForToggle}
-        bind:selectedOptionId={showExternalPlaceholder}
-      />
-    </SettingsItemGroup>
-    <!-- Its own markup stays (it can't be reformatted by the commit hook); app.scss gives
-         it the Archive colours through this wrapper. -->
-    <div class="c-settings-sources col-span-full mt-4">
-      <SettingsStorageSourceList storageSources={$storageSources$} />
-    </div>
   {:else if activeSettings === 'Audiobooks'}
     <!-- WP15b: the server's audiobooks folder and the linked books. -->
     {#if browser}
@@ -1282,26 +1115,6 @@
           <option value={index}>{dayName}</option>
         {/each}
       </select>
-    </SettingsItemGroup>
-    <SettingsItemGroup
-      title="Statistics Merge"
-      tooltip={`Determines if statistics will be merged entry by entry or replaced completely on a sync`}
-    >
-      <ButtonToggleGroup
-        archive
-        options={optionsForMergeMode}
-        bind:selectedOptionId={statisticsMergeMode}
-      />
-    </SettingsItemGroup>
-    <SettingsItemGroup
-      title="Reading Goals Merge"
-      tooltip={`Determines if reading goals will be merged entry by entry or replaced completely on a sync`}
-    >
-      <ButtonToggleGroup
-        archive
-        options={optionsForMergeMode}
-        bind:selectedOptionId={readingGoalsMergeMode}
-      />
     </SettingsItemGroup>
     <SettingsItemGroup
       title="Enable Statistics"

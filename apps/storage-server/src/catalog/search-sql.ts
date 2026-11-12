@@ -140,6 +140,19 @@ function favoriteSql(userId: string, value: boolean): SqlCondition {
   };
 }
 
+/**
+ * on:device (WP15e): the books in the asking device's "device-books" record. Without a
+ * device (a token that never registered one) nothing matches.
+ */
+function deviceSql(userId: string, deviceId: string | null): SqlCondition {
+  if (!deviceId) return { sql: '0', params: [] };
+  return {
+    sql: `b.id IN (SELECT j.value FROM sync_records r, json_each(r.data, '$.bookIds') j
+           WHERE r.user_id = ? AND r.kind = 'device-books' AND r.id = ? AND r.deleted_at IS NULL)`,
+    params: [userId, deviceId],
+  };
+}
+
 function charsSql(min: number | null, max: number | null): SqlCondition {
   const parts = ['b.char_count IS NOT NULL'];
   const params: unknown[] = [];
@@ -156,9 +169,15 @@ function charsSql(min: number | null, max: number | null): SqlCondition {
 
 /**
  * One term as SQL. With `db`, author:/tag: filters pick their plan by size (SMALL_SET);
- * without it they always walk books in date order.
+ * without it they always walk books in date order. `deviceId` is the asking device
+ * (on:device).
  */
-export function termSql(term: QueryTerm, userId: string, db?: Database.Database): SqlCondition {
+export function termSql(
+  term: QueryTerm,
+  userId: string,
+  db?: Database.Database,
+  deviceId: string | null = null,
+): SqlCondition {
   if (term.type === 'chars') {
     const range = charsSql(term.min, term.max);
     // A book without a count is never included, negated or not.
@@ -180,6 +199,9 @@ export function termSql(term: QueryTerm, userId: string, db?: Database.Database)
     case 'favorite':
       cond = favoriteSql(userId, term.value);
       break;
+    case 'device':
+      cond = deviceSql(userId, deviceId);
+      break;
   }
   return term.negated ? { sql: `NOT IFNULL(${cond.sql}, 0)`, params: cond.params } : cond;
 }
@@ -189,8 +211,9 @@ export function querySql(
   query: ParsedQuery,
   userId: string,
   db?: Database.Database,
+  deviceId: string | null = null,
 ): SqlCondition[] {
-  return query.terms.map((t) => termSql(t, userId, db));
+  return query.terms.map((t) => termSql(t, userId, db, deviceId));
 }
 
 /**

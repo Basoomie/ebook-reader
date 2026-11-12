@@ -41,7 +41,6 @@ services:
         bind:
           create_host_path: false
     environment:
-      - AUTH_TOKEN=${TTSU_AUTH_TOKEN:?AUTH_TOKEN required}
       - DATA_DIR=/data
       - DB_DIR=/db
       - PORT=3001

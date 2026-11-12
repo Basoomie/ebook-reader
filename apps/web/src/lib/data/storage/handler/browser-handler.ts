@@ -499,10 +499,6 @@ export class BrowserStorageHandler extends BaseStorageHandler {
       this.titleToBookCard.delete(idToTitle.get(result) || '');
     }
 
-    if (deleted.length) {
-      database.dataListChanged$.next(this);
-    }
-
     return { error, deleted };
   }
 }

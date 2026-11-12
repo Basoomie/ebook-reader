@@ -542,7 +542,7 @@ docker run --name ebook-reader -d -p 8080:80 ebook-reader
 2. Run the command below
 
 ```sh
-TTSU_AUTH_TOKEN=changeme docker compose up
+docker compose up
 ```
 
 3. Visit [http://localhost:3080](http://localhost:3080) to use the app
@@ -555,15 +555,7 @@ This fork adds a self-hosted storage server that lets multiple devices share rea
 
 **1. Configure environment**
 
-Create a `.env` file in the repo root:
-
-```
-# Required: a secret shared by all your devices
-TTSU_AUTH_TOKEN=your-secret-token-here
-
-# Optional: where book data is stored on the host (defaults to ./data)
-# TTSU_DATA_PATH=/path/to/your/data
-```
+Create a `.env` file in the repo root with the paths and origins `docker-compose.yml` asks for (`TTSU_CALIBRE_PATH`, `TTSU_AUDIOBOOKS_PATH`, `TTSU_CORS_ORIGINS`, ...). `TTSU_AUTH_TOKEN` is no longer needed: the old file sync it was for was removed (WP15e).
 
 **2. Start both containers**
 
@@ -574,41 +566,15 @@ docker compose up -d
 - Reader: [http://localhost:3080](http://localhost:3080)
 - Storage API: `http://localhost:3081` (or your server's LAN/Tailscale IP)
 
-**3. Add the storage source in the reader**
+**3. Pair each device**
 
-On each device that should share the library:
+Each device gets its own token through a one-time pairing code:
 
-1. Open the reader → **Settings** → **Data** → **Storage Sources** → **Add**
-2. Set **Name** to anything (e.g. `home-server`)
-3. Set **Type** to **Self-hosted**
-4. Set **Server URL** to `http://<your-server-ip>:3081`
-5. Set **Auth Token** to the value of `TTSU_AUTH_TOKEN`
-6. Click **Save**
-
-**4. Activate the source**
-
-In the Storage Sources list, for the source you just added:
-
-- Click the **table** icon (⊟) to make it the **default source** — this displays the shared library in the book manager
-- Click the **cloud** icon (↑) to make it the **sync target** — this is where progress and statistics are written back
-
-**5. Enable automatic sync**
-
-In **Settings** → **Data** → **Auto Replication**, select **Upload** (pushes progress after each bookmark save) or **All** (also pulls on book open).
-
-**Data directory layout**
-
-Each book gets a subfolder inside `TTSU_DATA_PATH`:
-
-```
-data/
-└── My Book Title/
-    ├── bookdata_1_6_<chars>_<modified>_<opened>.zip
-    ├── cover_1_6.jpeg
-    └── progress_1_6_<timestamp>_<ratio>.json
+```sh
+docker exec ttsu-storage node dist/cli.js token pair "Phone"
 ```
 
-The server enforces last-write-wins for progress files: it rejects a write whose embedded timestamp is older than an existing file (HTTP 409), so the more-recent read always wins across devices.
+Then open the reader's **Library** page on that device, enter the server address (`http://<your-server-ip>:3081`) and the code. Reading places, statuses, highlights, notes, collections, statistics and settings then sync through the server; books open from the Calibre library. See `apps/storage-server/README.md` for the API, the CLI and the settings.
 
 ### Using HTTP Hosting App
 

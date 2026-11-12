@@ -5,16 +5,8 @@
  */
 
 import type { BooksDbBookData } from '$lib/data/database/books-db/versions/books-db';
-import { getStorageHandler } from '$lib/data/storage/storage-handler-factory';
-import { StorageKey } from '$lib/data/storage/storage-types';
-import {
-  cacheStorageData$,
-  database,
-  readingGoalsMergeMode$,
-  replicationSaveBehavior$,
-  requestPersistentStorage$,
-  statisticsMergeMode$
-} from '$lib/data/store';
+import { getBrowserStorageHandler } from '$lib/data/storage/storage-handler-factory';
+import { database, requestPersistentStorage$ } from '$lib/data/store';
 import { storage } from '$lib/data/window/navigator/storage';
 import loadEpub from '$lib/functions/file-loaders/epub/load-epub';
 import { ReplicationSaveBehavior } from '$lib/functions/replication/replication-options';
@@ -37,15 +29,14 @@ function toInfo(book: BooksDbBookData | undefined): LocalBookInfo | undefined {
 }
 
 /**
- * Saves a book the same way a manual import does (replicator.ts importData):
- * persistent-storage request, then the browser storage handler's
- * startContext / saveBook / saveCover, then a Manager list refresh.
- * importData itself is left untouched.
+ * Saves a book the way the old manual import did: persistent-storage request, then the
+ * browser storage handler's startContext / saveBook / saveCover. A newer copy already on
+ * this device is kept (NewOnly) unless `saveBehavior` says otherwise.
  */
 async function saveLikeManualImport(
   content: LoadData,
   signal: AbortSignal,
-  saveBehavior = replicationSaveBehavior$.getValue()
+  saveBehavior = ReplicationSaveBehavior.NewOnly
 ): Promise<number> {
   if (requestPersistentStorage$.getValue()) {
     try {
@@ -54,20 +45,10 @@ async function saveLikeManualImport(
       // no-op, as in importData
     }
   }
-  const handler = getStorageHandler(
-    window,
-    StorageKey.BROWSER,
-    '',
-    true,
-    cacheStorageData$.getValue(),
-    saveBehavior,
-    statisticsMergeMode$.getValue(),
-    readingGoalsMergeMode$.getValue()
-  );
+  const handler = getBrowserStorageHandler(window, saveBehavior);
   handler.startContext({ title: content.title, imagePath: content.coverImage || '' }, signal);
   const id = await handler.saveBook(content, false);
   if (content.coverImage) await handler.saveCover(content.coverImage);
-  database.dataListChanged$.next(handler);
   return id;
 }
 

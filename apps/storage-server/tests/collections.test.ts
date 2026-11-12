@@ -25,12 +25,13 @@ afterEach(async () => {
 
 const BASE = Date.UTC(2026, 0, 1);
 
-async function register(app: ReturnType<typeof createApp>, token: string) {
+async function register(
+  app: ReturnType<typeof createApp>,
+  token: string,
+  deviceId: string = randomUUID(),
+) {
   const auth = { Authorization: `Bearer ${token}` };
-  const res = await request(app)
-    .post('/api/v1/devices/register')
-    .set(auth)
-    .send({ deviceId: randomUUID() });
+  const res = await request(app).post('/api/v1/devices/register').set(auth).send({ deviceId });
   expect(res.status).toBe(200);
   return auth;
 }
@@ -52,7 +53,8 @@ async function catalogEnv(books: FixtureBook[], timeoutSeconds?: number) {
   enableLibrary(e.db, 'a');
   await e.indexer.tick();
   const user = listUsers(e.db)[0];
-  const auth = await register(e.app, e.token());
+  const deviceId = randomUUID();
+  const auth = await register(e.app, e.token(), deviceId);
   const ids = new Map(
     (e.db.prepare('SELECT id, title FROM books').all() as { id: string; title: string }[]).map(
       (r) => [r.title, r.id],
@@ -94,7 +96,7 @@ async function catalogEnv(books: FixtureBook[], timeoutSeconds?: number) {
     (card.tiles as { bookId: string }[]).map(
       (t) => [...ids.entries()].find(([, v]) => v === t.bookId)?.[0],
     );
-  return { e, user, auth, id, push, pushOk, status, item, cards, tileTitles };
+  return { e, user, auth, deviceId, id, push, pushOk, status, item, cards, tileTitles };
 }
 
 const BOOKS: FixtureBook[] = [
@@ -309,6 +311,83 @@ describe('"Planned" collection', () => {
 });
 
 describe('collection cards (GET /api/v1/collections/cards)', () => {
+  it('answers "On this device" (on:device) for the device that asks (WP15e)', async () => {
+    const c = await catalogEnv(BOOKS);
+    const mine = [c.id('巻 1'), c.id('単発')];
+    await c.pushOk([
+      { kind: 'device-books', id: c.deviceId, data: { bookIds: [...mine, mine[0]] } },
+    ]);
+    const stored = c.e.db
+      .prepare("SELECT data FROM sync_records WHERE kind = 'device-books' AND id = ?")
+      .get(c.deviceId) as { data: string };
+    expect(JSON.parse(stored.data)).toEqual({ bookIds: [...mine].sort() });
+
+    const list = async (auth: object, q: string) => {
+      const res = await request(c.e.app).get('/api/v1/books').query({ q, limit: 50 }).set(auth);
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      return (res.body.books as { id: string }[]).map((b) => b.id).sort();
+    };
+    const count = async (auth: object, q: string) =>
+      (await request(c.e.app).get('/api/v1/books/count').query({ q }).set(auth)).body.count;
+    expect(await list(c.auth, 'on:device')).toEqual([...mine].sort());
+    expect(await count(c.auth, 'on:device')).toBe(2);
+    expect(await count(c.auth, '-on:device')).toBe(BOOKS.length - 2);
+    expect(await count(c.auth, 'on:device status:reading')).toBe(0);
+    expect((await c.cards()).get('on-device')?.bookCount).toBe(2);
+    const groups = await request(c.e.app)
+      .get('/api/v1/groups')
+      .query({ by: 'author', q: 'on:device' })
+      .set(c.auth);
+    expect(groups.status).toBe(200);
+
+    // Another device of the same user: its own (empty) list, not this one's.
+    const otherId = randomUUID();
+    const other = await register(c.e.app, c.e.token(), otherId);
+    expect(await list(other, 'on:device')).toEqual([]);
+    expect(await count(other, 'on:device')).toBe(0);
+    const otherCards = await request(c.e.app).get('/api/v1/collections/cards').set(other);
+    expect(otherCards.body.cards.find((x: { id: string }) => x.id === 'on-device').bookCount).toBe(
+      0,
+    );
+    // The first device's answers are unchanged (cached per device).
+    expect(await count(c.auth, 'on:device')).toBe(2);
+
+    // Only the device itself writes its list; bad lists and unknown devices are refused.
+    const refused = await request(c.e.app)
+      .post('/api/v1/sync')
+      .set(other)
+      .send({
+        changes: [
+          { kind: 'device-books', id: c.deviceId, updatedAt: BASE + 9e6, data: { bookIds: [] } },
+          { kind: 'device-books', id: otherId, updatedAt: BASE + 9e6, data: { bookIds: ['x'] } },
+          { kind: 'device-books', id: otherId, updatedAt: BASE + 9e6, data: {} },
+          { kind: 'device-books', id: 'nope', updatedAt: BASE + 9e6, data: { bookIds: [] } },
+        ],
+      });
+    expect(refused.body.results.map((r: { error?: { code: string } }) => r.error?.code)).toEqual([
+      'not_owner',
+      'invalid_data',
+      'invalid_data',
+      'invalid_id',
+    ]);
+    expect(await count(c.auth, 'on:device')).toBe(2);
+
+    // Removing a book from this device's list (and a deleted list matches nothing).
+    await c.pushOk([{ kind: 'device-books', id: c.deviceId, data: { bookIds: [mine[1]] } }]);
+    expect(await list(c.auth, 'on:device')).toEqual([mine[1]]);
+    expect((await c.cards()).get('on-device')?.bookCount).toBe(1);
+    await c.pushOk([
+      {
+        kind: 'device-books',
+        id: c.deviceId,
+        data: {},
+        updatedAt: BASE + 1e7,
+        deletedAt: BASE + 1e7,
+      },
+    ]);
+    expect(await count(c.auth, 'on:device')).toBe(0);
+  });
+
   it('counts built-ins, saved searches and lists across the library', async () => {
     const c = await catalogEnv(BOOKS);
     await c.status('巻 1', 'reading');
@@ -325,7 +404,15 @@ describe('collection cards (GET /api/v1/collections/cards)', () => {
       { ...c.item(list, '別 1', 'c'), updatedAt: BASE + 1000, deletedAt: BASE + 1000 },
     ]);
     const cards = await c.cards();
-    expect([...cards.keys()].slice(0, 5)).toEqual(BUILTIN_COLLECTIONS.map((b) => b.id));
+    expect([...cards.keys()].slice(0, BUILTIN_COLLECTIONS.length)).toEqual(
+      BUILTIN_COLLECTIONS.map((b) => b.id),
+    );
+    // WP15e: nothing listed for this device yet.
+    expect(cards.get('on-device')).toMatchObject({
+      builtin: true,
+      query: 'on:device',
+      bookCount: 0,
+    });
     expect(cards.get('reading')).toMatchObject({
       builtin: true,
       query: 'status:reading',

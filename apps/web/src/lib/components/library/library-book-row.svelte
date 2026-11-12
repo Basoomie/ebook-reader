@@ -35,6 +35,7 @@
     toggle: { book: CatalogBook; shift: boolean };
     state: CatalogBook;
     collect: CatalogBook;
+    remove: CatalogBook;
   }>();
 
   function onClick(ev: MouseEvent) {
@@ -156,7 +157,9 @@
         detailsHref={bookDetailsHref(pagePath, book.id)}
         on:read={() => dispatch('open', book)}
         on:state={() => dispatch('state', book)}
+        {onDevice}
         on:collect={() => dispatch('collect', book)}
+        on:remove={() => dispatch('remove', book)}
       />
     </div>
   {/if}

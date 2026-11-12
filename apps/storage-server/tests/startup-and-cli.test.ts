@@ -6,7 +6,7 @@ import { spawnSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { describe, expect, it } from 'vitest';
-import { makeTempDir, spawnServer } from './helpers/spawn-server';
+import { makeTempDir, runUntilExit, spawnServer } from './helpers/spawn-server';
 
 const SERVER_DIR = path.resolve(__dirname, '..');
 const TOKEN = 'legacy-token';
@@ -21,7 +21,7 @@ function cli(args: string[], env: Record<string, string>) {
 }
 
 describe('server startup', () => {
-  it('creates the database, takes a first snapshot and serves both APIs', async () => {
+  it('creates the database, takes a first snapshot and serves the API', async () => {
     const dbDir = makeTempDir('db');
     const server = await spawnServer({
       AUTH_TOKEN: TOKEN,
@@ -33,10 +33,12 @@ describe('server startup', () => {
       expect(health.status).toBe(200);
       expect(fs.existsSync(path.join(dbDir, 'ttsu.db'))).toBe(true);
 
+      // WP15e: the old sync's file endpoints are gone.
       const list = await fetch(`${server.baseUrl}/list?path=`, {
         headers: { Authorization: `Bearer ${TOKEN}` },
       });
-      expect(await list.json()).toEqual([]);
+      expect(list.status).toBe(404);
+      expect(server.output()).toContain('AUTH_TOKEN is set but no longer used');
 
       // Catch-up snapshot on first start.
       const deadline = Date.now() + 10_000;
@@ -56,16 +58,46 @@ describe('server startup', () => {
     }
   });
 
-  it('keeps the legacy endpoints up when DB_DIR is missing', async () => {
+  it('starts without AUTH_TOKEN (WP15e: no endpoint uses it) and says nothing about it', async () => {
+    const server = await spawnServer({ AUTH_TOKEN: '' });
+    try {
+      expect((await fetch(`${server.baseUrl}/api/v1/health`)).status).toBe(200);
+      expect(server.output()).not.toContain('AUTH_TOKEN');
+      for (const [method, url] of [
+        ['GET', '/list?path='],
+        ['GET', '/file?path=x.txt'],
+        ['PUT', '/file?path=x.txt'],
+        ['DELETE', '/file?path=x.txt'],
+        ['POST', '/mkdir?path=d'],
+        ['DELETE', '/rmdir?path=d'],
+        ['PUT', '/audio-file?path=b%2Faudio_1.mp3'],
+      ]) {
+        const res = await fetch(server.baseUrl + url, {
+          method,
+          body: method === 'PUT' ? 'x' : undefined,
+        });
+        expect(res.status, `${method} ${url}`).toBe(404);
+      }
+      expect(fs.readdirSync(server.dataDir)).toEqual([]);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it('exits with code 1 when DATA_DIR does not exist', async () => {
+    const { code, output } = await runUntilExit({
+      DATA_DIR: path.join(makeTempDir('data'), 'missing'),
+      DB_DIR: makeTempDir('db'),
+      PORT: '0',
+    });
+    expect(code).toBe(1);
+    expect(output).toContain('DATA_DIR does not exist');
+  });
+
+  it('starts when DB_DIR is missing and reports it', async () => {
     const missing = path.join(makeTempDir('db'), 'not-mounted');
     const server = await spawnServer({ AUTH_TOKEN: TOKEN, DB_DIR: missing });
     try {
-      const put = await fetch(`${server.baseUrl}/file?path=b%2Fp.json`, {
-        method: 'PUT',
-        headers: { Authorization: `Bearer ${TOKEN}` },
-        body: '{}',
-      });
-      expect(put.status).toBe(200);
       const health = await fetch(`${server.baseUrl}/api/v1/health`);
       expect(health.status).toBe(503);
       expect(server.output()).toContain('database unavailable: DB_DIR does not exist');

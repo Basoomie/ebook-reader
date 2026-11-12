@@ -4,8 +4,8 @@ import { authenticateToken, AuthenticatedToken } from '../db/tokens';
 import { sendError } from './errors';
 
 /**
- * Accepts only per-user tokens (Authorization: Bearer ttsu_...). The legacy
- * AUTH_TOKEN is deliberately not accepted here.
+ * Accepts only per-user tokens (Authorization: Bearer ttsu_...). The old sync's
+ * AUTH_TOKEN is never accepted.
  */
 export function requireUser(db: Database.Database): RequestHandler {
   return (req: Request, res: Response, next: NextFunction) => {

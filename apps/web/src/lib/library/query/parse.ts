@@ -14,12 +14,14 @@
  *   query   := term (whitespace term)*        whitespace includes U+3000
  *   term    := ["-"] (filter | regex | text)  terms combine with AND; "-" negates
  *   filter  := field (":" | "：") value       field names ignore case
- *   field   := author | series | tag | chars | status | favorite
+ *   field   := author | series | tag | chars | status | favorite | on
  *   author/series/tag value := ["="] item ("," item)*   "=" exact; "," = any of
  *   item    := "quoted" | /regex/[i] | bare  (a quoted item is never split at commas)
  *   chars   := [<|<=|>|>=|=] N  |  N-N       N: digits, "," or "_" separators, "k" = 1000
  *   status  := unread|reading|completed|dropped ("," = any of)
  *   favorite:= yes|no
+ *   on      := device                       the books stored on the device that searches
+                                              (WP15e; the server knows it from the token)
  *   regex   := /body/ or /body/i             JavaScript syntax, Unicode mode; the body may
  *                                            contain spaces ("/" is a literal slash)
  *
@@ -61,7 +63,9 @@ export type QueryTerm =
   /** chars: inclusive bounds; null = open. */
   | (TermBase & { type: 'chars'; min: number | null; max: number | null })
   | (TermBase & { type: 'status'; values: QueryStatus[] })
-  | (TermBase & { type: 'favorite'; value: boolean });
+  | (TermBase & { type: 'favorite'; value: boolean })
+  /** on:device: the books stored on the device that asks (WP15e). */
+  | (TermBase & { type: 'device' });
 
 export interface ParsedQuery {
   terms: QueryTerm[];
@@ -85,10 +89,10 @@ class QueryError extends Error {
   }
 }
 
-const FIELDS = ['author', 'series', 'tag', 'chars', 'status', 'favorite'] as const;
+const FIELDS = ['author', 'series', 'tag', 'chars', 'status', 'favorite', 'on'] as const;
 type Field = (typeof FIELDS)[number];
 
-const FIELD_RE = /^(author|series|tag|chars|status|favorite)[:：]/i;
+const FIELD_RE = /^(author|series|tag|chars|status|favorite|on)[:：]/i;
 
 function isSpace(ch: string | undefined): boolean {
   return ch !== undefined && /\s/.test(ch);
@@ -263,12 +267,18 @@ function parseWordList(raw: string): string[] {
 
 function parseField(s: Scanner, field: Field, negated: boolean, start: number): QueryTerm | null {
   const valueStart = s.pos;
-  if (field === 'chars' || field === 'status' || field === 'favorite') {
+  if (field === 'chars' || field === 'status' || field === 'favorite' || field === 'on') {
     const raw = s.readBare(false);
     const end = s.pos;
     if (field === 'chars')
       return { type: 'chars', negated, start, end, ...parseChars(raw, start, end) };
     const words = parseWordList(raw);
+    if (field === 'on') {
+      if (words.length !== 1 || words[0] !== 'device') {
+        throw new QueryError('Use on:device (the books on this device).', start, end);
+      }
+      return { type: 'device', negated, start, end };
+    }
     if (field === 'status') {
       if (words.length === 0) {
         throw new QueryError(`status: needs a value: ${QUERY_STATUSES.join(', ')}.`, start, end);
@@ -408,9 +418,14 @@ export function parseQuery(text: string): ParseResult {
   }
 }
 
-/** True when the query filters by the user's own book state (status: or favorite:). */
+/**
+ * True when the query filters by the user's own records (status:, favorite:, or on:device,
+ * which reads this device's list of stored books): unsent changes are sent first.
+ */
 export function usesBookState(query: ParsedQuery): boolean {
-  return query.terms.some((t) => t.type === 'status' || t.type === 'favorite');
+  return query.terms.some(
+    (t) => t.type === 'status' || t.type === 'favorite' || t.type === 'device'
+  );
 }
 
 /** True when the query contains a /regex/ (the server runs those in a worker). */

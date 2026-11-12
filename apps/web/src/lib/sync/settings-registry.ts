@@ -11,8 +11,8 @@
  *   off; WP5 turns it on after the user picks the device to take values from.
  * - device: this device's own value. Published as `device:<id>:<key>` so
  *   another device can copy it later; never applied automatically.
- * - local:  never leaves the device (connection and legacy sync settings,
- *   remembered UI state, things that become records of their own later).
+ * - local:  never leaves the device (connection settings, remembered UI state,
+ *   things that become records of their own later).
  *
  * A key missing here is treated as local. A test fails when a settings file
  * gains a key that isn't listed (or one listed here disappears).
@@ -95,7 +95,6 @@ export const SETTINGS_REGISTRY: Record<string, SettingSpec> = {
   requestPersistentStorage: d('Boolean'),
   importHTMLFixMode: d('String'),
   restrictImportFixToAnchor: d('Boolean'),
-  booklistSortOptions: d('Object'),
   confirmStatisticsDeletion: d('Boolean'),
 
   // --- tracker (per device, decisions.md) ---
@@ -122,29 +121,14 @@ export const SETTINGS_REGISTRY: Record<string, SettingSpec> = {
   overwriteBookCompletion: g('Boolean'),
   addCharactersOnCompletion: g('Boolean'),
 
-  // --- legacy file sync and storage sources (local; may hold credentials) ---
-  cacheStorageData: l('Boolean'),
-  autoReplication: l('String'),
-  replicationSaveBehavior: l('String'),
-  showExternalPlaceholder: l('Boolean'),
-  gDriveStorageSource: l('String'),
-  oneDriveStorageSource: l('String'),
-  selfHostStorageSource: l('String'),
-  fsStorageSource: l('String'),
-  syncTarget: l('String'),
-  statisticsMergeMode: l('String'),
-  readingGoalsMergeMode: l('String'),
-  lastStorageSource: l('String'),
+  // (WP15e: the old sync's settings and storage sources were removed; unlisted keys,
+  // e.g. their values still in localStorage, count as local and never leave the device.)
 
   // --- become records of their own later (local until then) ---
   readingGoal: l('Object'), // ReadingGoal records (WP5/WP12)
 
   // --- remembered UI state (local) ---
-  lastExportedTarget: l('String'),
-  lastExportedTypes: l('Array'),
   lastBlurredTrackerItems: l('Set'),
-  lastSyncedSettingsSource: l('String'),
-  lastSyncedSettingsTarget: l('String'),
   lastReadingGoalsModified: l('Number'),
   lastReadingDataHeatmapAggregationMode: l('String'),
   domainHintSeen: l('Boolean'),

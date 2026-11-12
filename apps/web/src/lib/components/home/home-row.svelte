@@ -59,6 +59,7 @@
     reveal: CatalogBook;
     state: CatalogBook;
     collect: CatalogBook;
+    remove: CatalogBook;
     retry: void;
     openLocal: number;
   }>();
@@ -203,6 +204,7 @@
             on:reveal={(ev) => dispatch('reveal', ev.detail)}
             on:state={(ev) => dispatch('state', ev.detail)}
             on:collect={(ev) => dispatch('collect', ev.detail)}
+            on:remove={(ev) => dispatch('remove', ev.detail)}
           />
         {/each}
       </ul>

@@ -7,11 +7,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   completeBookCopy,
-  deleteBooksCopy,
   deleteCollectionCopy,
   endGoalCopy,
-  importBackupCopy,
   removeFromCollectionCopy,
+  removeFromDeviceCopy,
   noAudiobookCopy,
   removeSubtitlesCopy,
   replaceAudiobookCopy,
@@ -66,42 +65,14 @@ describe('confirmParagraphs', () => {
 });
 
 describe('confirmation words', () => {
-  it('names one book by its title and many by their number', () => {
-    const one = deleteBooksCopy({
-      count: 1,
-      title: '月と灯台',
-      source: 'browser',
-      keepStatistics: true
-    });
-    expect(one.title).toBe('Delete “月と灯台”?');
-    expect(one.confirmLabel).toBe('Delete book');
-    expect(one.message[0]).toBe(
-      'The book is removed from this browser, together with its audiobook and subtitles.'
-    );
-    expect(one.irreversible).toBe(true);
-
-    const many = deleteBooksCopy({
-      count: 1234,
-      title: 'x',
-      source: 'browser',
-      keepStatistics: false
-    });
-    expect(many.title).toBe('Delete 1,234 books?');
-    expect(many.confirmLabel).toBe('Delete 1,234 books');
-    expect(many.message[0]).toContain('their audiobook and subtitles and statistics');
-
-    expect(deleteBooksCopy({ count: 2, source: 'gdrive', keepStatistics: true }).message).toEqual([
-      'They are removed from Google Drive.'
-    ]);
-  });
-
-  it('lists only what an import replaces', () => {
-    expect(importBackupCopy({ books: true, statistics: false, goals: false }).message).toHaveLength(
-      1
-    );
-    expect(importBackupCopy({ books: true, statistics: true, goals: true }).message).toHaveLength(
-      3
-    );
+  it('names the book removed from this device and says what stays (WP15e)', () => {
+    const copy = removeFromDeviceCopy('月と灯台');
+    expect(copy.title).toBe('Remove “月と灯台” from this device?');
+    expect(copy.confirmLabel).toBe('Remove from this device');
+    expect(copy.message[0]).toContain('on this device is removed');
+    expect(copy.message[1]).toContain('saved with the library server stay');
+    // It can be downloaded again, so it does not say "can't be undone".
+    expect(copy.irreversible).toBeFalsy();
   });
 
   it('words collections, goals, completion and subtitles', () => {

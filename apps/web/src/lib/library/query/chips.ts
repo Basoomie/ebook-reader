@@ -5,27 +5,29 @@
  */
 
 /**
- * Library filter chips (WP7a): Reading, Unread, Completed, Dropped, Favorites. A chip is
- * not a separate filter; it edits the search text (`status:reading,completed`,
- * `favorite:yes`), so a chip and a typed filter can never disagree and a smart
+ * Library filter chips (WP7a): Reading, Unread, Completed, Dropped, Favorites, and On this
+ * device (WP15e). A chip is not a separate filter; it edits the search text
+ * (`status:reading,completed`, `favorite:yes`, `on:device`), so a chip and a typed filter can never disagree and a smart
  * collection (WP8b) is just the same text saved. Only the chip's own term is rewritten;
  * the rest of the query keeps the user's spelling.
  */
 
 import { parseQuery, type QueryStatus, type QueryTerm } from './parse';
 
-export type ChipId = QueryStatus | 'favorite';
+export type ChipId = QueryStatus | 'favorite' | 'device';
 
 export const CHIPS: { id: ChipId; label: string }[] = [
   { id: 'reading', label: 'Reading' },
   { id: 'unread', label: 'Unread' },
   { id: 'completed', label: 'Completed' },
   { id: 'dropped', label: 'Dropped' },
-  { id: 'favorite', label: 'Favorites' }
+  { id: 'favorite', label: 'Favorites' },
+  { id: 'device', label: 'On this device' }
 ];
 
 type StatusTerm = Extract<QueryTerm, { type: 'status' }>;
 type FavoriteTerm = Extract<QueryTerm, { type: 'favorite' }>;
+type DeviceTerm = Extract<QueryTerm, { type: 'device' }>;
 
 /** Which chips the query turns on. Empty when the query doesn't parse. */
 export function activeChips(text: string): Set<ChipId> {
@@ -36,6 +38,7 @@ export function activeChips(text: string): Set<ChipId> {
     if (term.negated) continue;
     if (term.type === 'status') term.values.forEach((v) => active.add(v));
     if (term.type === 'favorite' && term.value) active.add('favorite');
+    if (term.type === 'device') active.add('device');
   }
   return active;
 }
@@ -67,6 +70,14 @@ export function toggleChip(text: string, chip: ChipId): string | null {
     if (favorites.length === 0) return append(text, 'favorite:yes');
     let next = text;
     for (const term of [...favorites].reverse()) next = splice(next, term.start, term.end, '');
+    return next;
+  }
+
+  if (chip === 'device') {
+    const devices = terms.filter((t): t is DeviceTerm => t.type === 'device');
+    if (devices.length === 0) return append(text, 'on:device');
+    let next = text;
+    for (const term of [...devices].reverse()) next = splice(next, term.start, term.end, '');
     return next;
   }
 

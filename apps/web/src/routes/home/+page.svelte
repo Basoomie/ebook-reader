@@ -41,6 +41,7 @@
   import { homeRowLength$, homeRows$ } from '$lib/home/settings';
   import { LibraryApi, LibraryApiError } from '$lib/library/api';
   import { existingLocalIds } from '$lib/library/browser-open-deps';
+  import { removeFromThisDevice } from '$lib/library/remove-from-device';
   import { isCoverBlurred } from '$lib/library/cover-blur';
   import { getLibraryStore, type LibraryConnection } from '$lib/library/library-db';
   import type { OpenStage } from '$lib/library/open-calibre-book';
@@ -362,6 +363,20 @@
     ]);
   }
 
+  /** WP15e: Remove from this device (a book's ⋮ menu). */
+  async function removeFromDevice(book: CatalogBook) {
+    try {
+      if (!(await removeFromThisDevice(book))) return;
+    } catch (error) {
+      showMessage('Not removed', (error as Error).message);
+      return;
+    }
+    await refreshOnDevice();
+    // An "On this device" row needs the new list on the server first.
+    await view.sendPendingChanges(timeoutSeconds);
+    if (api && ready && !destroyed) await loadAllRows(true);
+  }
+
   function showMessage(title: string, message: string) {
     dialogManager.dialogs$.next([{ component: MessageDialog, props: { title, message } }]);
   }
@@ -569,6 +584,7 @@
           on:reveal={(ev) => reveal(ev.detail)}
           on:state={(ev) => openBookState(ev.detail)}
           on:collect={(ev) => openAddToCollection(ev.detail)}
+          on:remove={(ev) => removeFromDevice(ev.detail)}
           on:retry={() => loadRow(row)}
           on:openLocal={(ev) => goto(`${pagePath}/b?id=${ev.detail}`)}
         />

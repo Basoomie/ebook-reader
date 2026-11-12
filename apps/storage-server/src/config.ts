@@ -10,10 +10,13 @@ export interface SnapshotTime {
 }
 
 export interface ServerConfig {
-  /** Root of the legacy file API (today's sync data). */
+  /** The app's data folder: uploads, fonts, attachments, and the old sync's files (read by the migration). */
   dataRoot: string;
-  /** The legacy single static token. Only the legacy endpoints accept it. */
-  authToken: string;
+  /**
+   * The old sync's single static token (WP15e: no endpoint accepts it any more). Kept only
+   * so it is still removed from log lines; null when unset.
+   */
+  authToken: string | null;
   port: number;
   /** '*' (any origin, the pre-WP1 default) or an explicit list of allowed origins. */
   corsOrigins: '*' | string[];
@@ -202,17 +205,19 @@ export interface LoadedConfig {
 type Env = Record<string, string | undefined>;
 
 /**
- * Reads the environment. Fatal checks (AUTH_TOKEN, DATA_DIR) keep their
- * pre-WP1 order and messages. Everything new in WP1 is non-fatal: a bad
- * value is reported and a safe default is used, so the legacy endpoints
- * always come up.
+ * Reads the environment. DATA_DIR is the only fatal check (same message and exit
+ * code as before WP1). Everything else is non-fatal: a bad value is reported and a
+ * safe default is used. AUTH_TOKEN is optional since WP15e removed the old sync's
+ * endpoints: when it is still set, a warning says it is unused.
  */
 export function loadConfig(env: Env): LoadedConfig {
   const warnings: string[] = [];
 
-  const authToken = env.AUTH_TOKEN;
-  if (!authToken) {
-    throw new FatalConfigError('Fatal: AUTH_TOKEN environment variable is required');
+  const authToken = env.AUTH_TOKEN || null;
+  if (authToken) {
+    warnings.push(
+      'AUTH_TOKEN is set but no longer used (the old sync was removed); it can be left out',
+    );
   }
 
   const dataRoot = path.resolve(env.DATA_DIR ?? '/data');

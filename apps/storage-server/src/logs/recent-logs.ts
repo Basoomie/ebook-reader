@@ -1,7 +1,7 @@
 /**
  * The server's recent log lines for the bug report (WP18). console.log/info/warn/error
  * still print as before; each line is also kept in memory, with tokens, pairing codes and
- * the legacy AUTH_TOKEN removed as it is captured, so nothing secret is ever held. Memory
+ * the old sync's AUTH_TOKEN (when still set) removed as it is captured, so nothing secret is ever held. Memory
  * only: lines from before the last restart are gone (`docker logs` still has them).
  */
 import { format } from 'util';

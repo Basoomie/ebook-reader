@@ -12,8 +12,9 @@
 
   /**
    * WP19b: the ⋮ of a book (card corner or list row): Continue reading / Read, then Book
-   * status… and Add to collection…. The book itself is opened by tapping its cover or
-   * title; this menu keeps the rest one tap away.
+   * status… and Add to collection…, and (WP15e) Remove from this device when this device
+   * has a copy. The book itself is opened by tapping its cover or title; this menu keeps
+   * the rest one tap away.
    */
   export let title: string;
   /** "Continue reading" when the book is part-read, else "Read". */
@@ -24,8 +25,15 @@
   export let open = false;
   /** WP19c: the book's details page ('' = no Details item, e.g. on that page itself). */
   export let detailsHref = '';
+  /** WP15e: this device has a copy (offers Remove from this device). */
+  export let onDevice = false;
 
-  const dispatch = createEventDispatcher<{ read: void; state: void; collect: void }>();
+  const dispatch = createEventDispatcher<{
+    read: void;
+    state: void;
+    collect: void;
+    remove: void;
+  }>();
 
   const item = 'c-btn c-btn-ghost w-full justify-start px-3 text-left';
 </script>
@@ -86,5 +94,19 @@
     >
       Add to collection…
     </button>
+    {#if onDevice}
+      <div class="my-1 border-t" style="border-color: var(--c-line)" />
+      <button
+        type="button"
+        class={item}
+        data-testid="book-menu-remove-device"
+        on:click={() => {
+          close();
+          dispatch('remove');
+        }}
+      >
+        Remove from this device…
+      </button>
+    {/if}
   </div>
 </DropdownMenu>

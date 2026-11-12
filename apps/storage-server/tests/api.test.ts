@@ -98,50 +98,45 @@ describe('API routing and errors', () => {
   });
 });
 
-describe('legacy endpoints next to the API', () => {
-  it('keep working when the database is unavailable', async () => {
-    const { app } = makeTestApp({}, unavailableDatabase());
-    const auth = `Bearer ${LEGACY_TOKEN}`;
-    const put = await request(app)
-      .put('/file?path=book%2Fa.json')
-      .set('Authorization', auth)
-      .set('Content-Type', 'application/json')
-      .send('{"x":1}');
-    expect(put.status).toBe(200);
-    const get = await request(app).get('/file?path=book%2Fa.json').set('Authorization', auth);
-    expect(get.status).toBe(200);
-    expect(get.text).toBe('{"x":1}');
-    const list = await request(app).get('/list?path=book').set('Authorization', auth);
-    expect(list.body.map((e: any) => e.name)).toEqual(['a.json']);
-  });
-
-  it('do not accept per-user tokens (they keep using AUTH_TOKEN until the client moves over)', async () => {
-    const { app, newUserToken } = makeTestApp();
-    const token = newUserToken();
-    const res = await request(app).get('/list?path=').set('Authorization', `Bearer ${token}`);
-    expect(res.status).toBe(401);
-    const file = await request(app).get(`/file?path=x&token=${token}`);
-    expect(file.status).toBe(401);
-  });
-
-  it('still store JSON bodies raw (the API JSON parser does not leak into them)', async () => {
-    const { app, config } = makeTestApp();
-    const body = '{"a":   1}';
-    await request(app)
-      .put('/file?path=raw.json')
-      .set('Authorization', `Bearer ${LEGACY_TOKEN}`)
-      .set('Content-Type', 'application/json')
-      .send(body);
+describe("the old sync's file endpoints (removed in WP15e)", () => {
+  it('are gone, with either token, and write nothing into the data folder', async () => {
+    const { app, config, newUserToken } = makeTestApp();
+    const userToken = newUserToken();
     const fs = await import('fs');
-    const path = await import('path');
-    expect(fs.readFileSync(path.join(config.dataRoot, 'raw.json'), 'utf8')).toBe(body);
+    const before = fs.readdirSync(config.dataRoot);
+    for (const token of [LEGACY_TOKEN, userToken]) {
+      const auth = `Bearer ${token}`;
+      expect((await request(app).get('/list?path=').set('Authorization', auth)).status).toBe(404);
+      expect((await request(app).get('/file?path=a.json').set('Authorization', auth)).status).toBe(
+        404,
+      );
+      expect((await request(app).get(`/file?path=a.json&token=${token}`)).status).toBe(404);
+      expect(
+        (await request(app).put('/file?path=a.json').set('Authorization', auth).send('{}')).status,
+      ).toBe(404);
+      expect(
+        (
+          await request(app)
+            .put('/audio-file?path=b%2Faudio_1.mp3')
+            .set('Authorization', auth)
+            .send(Buffer.alloc(10))
+        ).status,
+      ).toBe(404);
+      expect((await request(app).post('/mkdir?path=d').set('Authorization', auth)).status).toBe(
+        404,
+      );
+      expect((await request(app).delete('/rmdir?path=d').set('Authorization', auth)).status).toBe(
+        404,
+      );
+    }
+    expect(fs.readdirSync(config.dataRoot)).toEqual(before);
   });
 
-  it('never expose the database through the file API', async () => {
-    const { app } = makeTestApp();
+  it('are gone when the database is unavailable too', async () => {
+    const { app } = makeTestApp({}, unavailableDatabase());
     const res = await request(app)
       .get('/list?path=')
       .set('Authorization', `Bearer ${LEGACY_TOKEN}`);
-    expect(res.body).toEqual([]);
+    expect(res.status).toBe(404);
   });
 });

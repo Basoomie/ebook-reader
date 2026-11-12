@@ -28,11 +28,14 @@ try {
 }
 
 const { config, warnings } = loaded;
-serverLogs.configure({ maxLines: config.logs.bufferLines, secrets: [config.authToken] });
+serverLogs.configure({
+  maxLines: config.logs.bufferLines,
+  secrets: config.authToken ? [config.authToken] : [],
+});
 for (const warning of warnings) console.warn(`Warning: ${warning}`);
 
-// The database is optional for the legacy endpoints: if it can't be opened,
-// today's sync keeps working and /api/v1 answers 503.
+// If the database can't be opened, the server still starts and /api/v1 reports the
+// reason (health answers 503).
 const database = initDatabase(config.dbDir, config.dataRoot);
 if (!database.ok) console.error(`Error: database unavailable: ${database.error}`);
 

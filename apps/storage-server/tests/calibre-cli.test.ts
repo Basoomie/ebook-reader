@@ -109,12 +109,6 @@ describe('Calibre indexer end to end', () => {
       expect(cli(['thumbs', 'rebuild'], env).code).toBe(1);
       const rebuild = cli(['thumbs', 'rebuild', '--library', id!], env);
       expect(rebuild.code, rebuild.out).toBe(0);
-
-      // The legacy file API is unaffected.
-      const legacy = await fetch(`${server.baseUrl}/list?path=`, {
-        headers: { Authorization: `Bearer ${TOKEN}` },
-      });
-      expect(await legacy.json()).toEqual([]);
     } finally {
       await server.stop();
     }
@@ -132,10 +126,6 @@ describe('Calibre indexer end to end', () => {
       await waitForOutput(server, 'Calibre indexer is off');
       expect(server.output()).toContain('is writable');
       expect((await fetch(`${server.baseUrl}/api/v1/health`)).status).toBe(200);
-      const legacy = await fetch(`${server.baseUrl}/list?path=`, {
-        headers: { Authorization: `Bearer ${TOKEN}` },
-      });
-      expect(legacy.status).toBe(200);
     } finally {
       await server.stop();
     }

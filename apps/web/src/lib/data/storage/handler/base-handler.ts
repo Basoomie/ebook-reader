@@ -4,7 +4,7 @@
  * All rights reserved.
  */
 
-import type { BookCardProps } from '$lib/components/book-card/book-card-props';
+import type { BookCardProps } from '$lib/data/storage/book-card-props';
 import {
   currentDbVersion,
   type BooksDbBookData,
@@ -18,7 +18,6 @@ import type { Section } from '$lib/data/database/books-db/versions/v4/books-db-v
 import { storageRootName } from '$lib/data/env';
 import { MergeMode } from '$lib/data/merge-mode';
 import { InternalStorageSources, type StorageKey } from '$lib/data/storage/storage-types';
-import { exporterVersion } from '$lib/functions/replication/replicator';
 import { throwIfAborted } from '$lib/functions/replication/replication-error';
 import { ReplicationSaveBehavior } from '$lib/functions/replication/replication-options';
 import {
@@ -36,6 +35,9 @@ import {
   ZipWriter,
   type Entry
 } from '@zip.js/zip.js';
+
+/** Version of the old sync's file names (was replicator.ts, removed in WP15e). */
+export const exporterVersion = 1;
 
 export enum FilePrefix {
   AUDIO_BOOK = 'audioBook_',

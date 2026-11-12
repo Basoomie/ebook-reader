@@ -4,7 +4,7 @@
  * requireUser; the thumbnail also accepts a signed URL (see thumbnailAuth).
  */
 import type Database from 'better-sqlite3';
-import express, { RequestHandler, Router } from 'express';
+import express, { RequestHandler, Response, Router } from 'express';
 import fs from 'fs/promises';
 import path from 'path';
 import { pipeline } from 'stream/promises';
@@ -66,6 +66,12 @@ function requireIndexer(catalog: CatalogOptions, what: string): void {
   if (!catalog.indexer.enabled) {
     throw new ApiError(503, 'indexer_off', `${what} unavailable: ${catalog.indexer.error}`);
   }
+}
+
+/** The user and the device of the request's token (on:device answers for that device). */
+function askingUser(res: Response): CatalogUser {
+  const auth = getAuth(res);
+  return { id: auth.user.id, deviceId: auth.token.deviceId };
 }
 
 /** Cached list counts per router (oldest dropped first). */
@@ -167,7 +173,7 @@ export function createCatalogRouter(db: Database.Database, catalog: CatalogOptio
   router.get(
     '/books',
     asyncHandler(async (req, res) => {
-      const { user } = getAuth(res);
+      const user = askingUser(res);
       const limit = listLimit(req);
       const filter = listFilter(req);
       const sort = parseBookSort(queryString(req.query.sort), queryString(req.query.dir));
@@ -201,10 +207,10 @@ export function createCatalogRouter(db: Database.Database, catalog: CatalogOptio
   router.get(
     '/books/count',
     asyncHandler(async (req, res) => {
-      const { user } = getAuth(res);
+      const user = askingUser(res);
       const filter = listFilter(req);
       const version = `${catalogVersion(db)}:${userRevision(db, user.id)}`;
-      const key = JSON.stringify([user.id, filter]);
+      const key = JSON.stringify([user.id, user.deviceId ?? null, filter]);
       const hit = countCache.get(key);
       if (hit && hit.version === version) {
         res.json({ count: hit.count });
@@ -227,7 +233,7 @@ export function createCatalogRouter(db: Database.Database, catalog: CatalogOptio
   router.get(
     '/groups',
     asyncHandler(async (req, res) => {
-      const { user } = getAuth(res);
+      const user = askingUser(res);
       const limit = listLimit(req);
       const by = groupBy(req.query.by);
       const sort = parseGroupSort(queryString(req.query.sort), queryString(req.query.dir));
@@ -263,7 +269,7 @@ export function createCatalogRouter(db: Database.Database, catalog: CatalogOptio
   router.post(
     '/books/lookup',
     asyncHandler(async (req, res) => {
-      const { user } = getAuth(res);
+      const user = askingUser(res);
       const body = (req.body ?? {}) as { ids?: unknown; q?: unknown; includeMissing?: unknown };
       const ids = body.ids;
       if (
@@ -303,7 +309,7 @@ export function createCatalogRouter(db: Database.Database, catalog: CatalogOptio
   router.get(
     '/collections/cards',
     asyncHandler(async (_req, res) => {
-      const { user } = getAuth(res);
+      const user = askingUser(res);
       const runner = catalog.search ?? fallbackRunner;
       const cards = await collectionCards(
         db,

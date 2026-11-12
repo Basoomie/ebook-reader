@@ -16,19 +16,7 @@ import {
 } from '$lib/components/book-reader/book-reading-tracker/book-reading-tracker';
 import { HeatmapDataAggregration } from '$lib/components/statistics/statistics-heatmap/statistics-heatmap';
 import { BlurMode } from '$lib/data/blur-mode';
-import { MergeMode } from '$lib/data/merge-mode';
 import type { ReadingGoal } from '$lib/data/reading-goal';
-import { SortDirection, type SortOption } from '$lib/data/sort-types';
-import {
-  InternalStorageSources,
-  StorageDataType,
-  StorageKey,
-  StorageSourceDefault
-} from '$lib/data/storage/storage-types';
-import {
-  AutoReplicationType,
-  ReplicationSaveBehavior
-} from '$lib/functions/replication/replication-options';
 import { writableSubject } from '$lib/functions/svelte/store';
 import { map } from 'rxjs';
 import { BookReaderAvailableKeybind, type BookReaderKeybindMap } from './book-reader-keybind';
@@ -38,10 +26,7 @@ import { FuriganaStyle } from './furigana-style';
 import { ImportHTMLFixMode } from './import-html-fix-mode';
 import { writableBooleanLocalStorageSubject } from './internal/writable-boolean-local-storage-subject';
 import { writableNumberLocalStorageSubject } from './internal/writable-number-local-storage-subject';
-import {
-  writableArrayLocalStorageSubject,
-  writableObjectLocalStorageSubject
-} from './internal/writable-object-local-storage-subject';
+import { writableObjectLocalStorageSubject } from './internal/writable-object-local-storage-subject';
 import type { TextMarginMode } from './text-margin-mode';
 import type { CustomTheme } from './theme-option';
 import type { VerticalTextOrientation } from './vertical-text-orientation';
@@ -244,42 +229,9 @@ export const restrictImportFixToAnchor$ = writableBooleanLocalStorageSubject()(
   true
 );
 
-export const cacheStorageData$ = writableBooleanLocalStorageSubject()('cacheStorageData', false);
-
-export const autoReplication$ = writableStringLocalStorageSubject<AutoReplicationType>()(
-  'autoReplication',
-  AutoReplicationType.Off
-);
-
-export const replicationSaveBehavior$ =
-  writableStringLocalStorageSubject<ReplicationSaveBehavior>()(
-    'replicationSaveBehavior',
-    ReplicationSaveBehavior.NewOnly
-  );
-
-export const showExternalPlaceholder$ = writableBooleanLocalStorageSubject()(
-  'showExternalPlaceholder',
-  false
-);
-
-export const gDriveStorageSource$ = writableStringLocalStorageSubject()(
-  'gDriveStorageSource',
-  StorageSourceDefault.GDRIVE_DEFAULT
-);
-
-export const oneDriveStorageSource$ = writableStringLocalStorageSubject()(
-  'oneDriveStorageSource',
-  StorageSourceDefault.ONEDRIVE_DEFAULT
-);
-
-export const selfHostStorageSource$ = writableStringLocalStorageSubject()(
-  'selfHostStorageSource',
-  StorageSourceDefault.SELFHOST_DEFAULT
-);
-
-export const fsStorageSource$ = writableStringLocalStorageSubject()('fsStorageSource', '');
-
-export const syncTarget$ = writableStringLocalStorageSubject()('syncTarget', '');
+// WP15e: the old sync's settings (cache, auto import/export, save behavior, placeholders,
+// storage sources, sync target, merge modes) were removed with it. Their localStorage
+// values are left alone; nothing reads them any more.
 
 export const keepLocalStatisticsOnDeletion$ = writableBooleanLocalStorageSubject()(
   'keepLocalStatisticsOnDeletion',
@@ -317,16 +269,6 @@ export const bottomBarTimeLeft$ = writableStringLocalStorageSubject<
 >()('bottomBarTimeLeft', 'off');
 
 export const statisticsEnabled$ = writableBooleanLocalStorageSubject()('statisticsEnabled', true);
-
-export const statisticsMergeMode$ = writableStringLocalStorageSubject<MergeMode>()(
-  'statisticsMergeMode',
-  MergeMode.MERGE
-);
-
-export const readingGoalsMergeMode$ = writableStringLocalStorageSubject<MergeMode>()(
-  'readingGoalsMergeMode',
-  MergeMode.MERGE
-);
 
 export const trackerAutoPause$ = writableStringLocalStorageSubject<TrackerAutoPause>()(
   'trackerAutoPause',
@@ -386,29 +328,9 @@ export const readingGoal$ = writableObjectLocalStorageSubject<ReadingGoal>()('re
   lastGoalModified: Date.now()
 });
 
-export const lastExportedTarget$ = writableStringLocalStorageSubject<StorageKey>()(
-  'lastExportedTarget',
-  StorageKey.BACKUP
-);
-
-export const lastExportedTypes$ = writableArrayLocalStorageSubject<StorageDataType>()(
-  'lastExportedTypes',
-  [StorageDataType.PROGRESS, StorageDataType.STATISTICS]
-);
-
 export const lastBlurredTrackerItems$ = writableSetLocalStorageSubject<string>()(
   'lastBlurredTrackerItems',
   new Set<string>()
-);
-
-export const lastSyncedSettingsSource$ = writableStringLocalStorageSubject()(
-  'lastSyncedSettingsSource',
-  InternalStorageSources.INTERNAL_BROWSER
-);
-
-export const lastSyncedSettingsTarget$ = writableStringLocalStorageSubject()(
-  'lastSyncedSettingsTarget',
-  InternalStorageSources.INTERNAL_ZIP
 );
 
 export const lastReadingGoalsModified$ = writableNumberLocalStorageSubject()(
@@ -480,17 +402,6 @@ const db = browser ? createBooksDb() : import('fake-indexeddb/auto').then(() => 
 export const database = new DatabaseService(db);
 
 export const domainHintSeen$ = writableBooleanLocalStorageSubject()('domainHintSeen', false);
-
-export const booklistSortOptions$ = writableObjectLocalStorageSubject<Record<string, SortOption>>()(
-  'booklistSortOptions',
-  {
-    [StorageKey.BROWSER]: { property: 'lastBookOpen', direction: SortDirection.DESC },
-    [StorageKey.GDRIVE]: { property: 'title', direction: SortDirection.ASC },
-    [StorageKey.ONEDRIVE]: { property: 'title', direction: SortDirection.ASC },
-    [StorageKey.FS]: { property: 'title', direction: SortDirection.ASC },
-    [StorageKey.SELFHOST]: { property: 'title', direction: SortDirection.ASC }
-  }
-);
 
 export const verticalCustomReadingPosition$ = writableNumberLocalStorageSubject()(
   'verticalCustomReadingPosition',
