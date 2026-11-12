@@ -221,7 +221,8 @@ export function subtitleJobText(
           return 'Saving into the subtitle folder…';
         default: {
           const since = job.startedAt ? ` Started ${timeAgo(job.startedAt, now)}.` : '';
-          return `SubPlz is matching the audiobook to the book's text…${percent(job.progress)}${since}`;
+          const pct = job.progress === null ? '…' : `:${percent(job.progress)}.`;
+          return `SubPlz is matching the audiobook to the book's text${pct}${since}`;
         }
       }
     case 'done':

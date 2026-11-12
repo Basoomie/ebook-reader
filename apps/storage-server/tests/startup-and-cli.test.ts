@@ -156,11 +156,19 @@ describe('token CLI', () => {
       const worker = cli(['token', 'worker', 'PC', 'GPU', 'worker'], env);
       expect(worker.code, worker.out).toBe(0);
       const workerToken = worker.out.match(/ttsu_[A-Za-z0-9_-]{43}/)?.[0];
-      const asWorker = (p: string, method = 'GET') =>
-        fetch(`${server.baseUrl}/api/v1${p}`, {
-          method,
-          headers: { Authorization: `Bearer ${workerToken}` },
-        });
+      const asWorker = async (p: string, method = 'GET') => {
+        const go = () =>
+          fetch(`${server.baseUrl}/api/v1${p}`, {
+            method,
+            headers: { Authorization: `Bearer ${workerToken}` },
+          });
+        // The CLI call can outlast the server's keep-alive: a reused socket may be reset.
+        try {
+          return await go();
+        } catch {
+          return go();
+        }
+      };
       expect((await asWorker('/me')).status).toBe(403);
       // The worker routes answer (503: no audiobooks folder on this test server).
       expect((await asWorker('/worker/claim', 'POST')).status).toBe(503);

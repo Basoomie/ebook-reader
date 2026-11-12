@@ -8,13 +8,19 @@
  *       nosrt     exits 0 without a file
  *       hang      prints progress and waits until `kill` (records its pid by container name)
  *       progress  prints 10%..100% bars over ~1 s, then ok
+ *       slow      the same over ~8 s (browser tests)
+ * The mode comes from FAKE_DOCKER_MODE, else from the file "mode" in FAKE_DOCKER_STATE.
  *   kill <name>  kills the hanging run
  */
 const fs = require('fs');
 const path = require('path');
 
 const state = process.env.FAKE_DOCKER_STATE;
-const mode = process.env.FAKE_DOCKER_MODE || 'ok';
+const modeFile = state ? path.join(state, 'mode') : null;
+const mode =
+  process.env.FAKE_DOCKER_MODE ||
+  (modeFile && fs.existsSync(modeFile) ? fs.readFileSync(modeFile, 'utf8').trim() : '') ||
+  'ok';
 const args = process.argv.slice(2);
 if (state) fs.appendFileSync(path.join(state, 'calls.jsonl'), JSON.stringify(args) + '\n');
 
@@ -68,17 +74,20 @@ if (args[0] === 'run') {
     setInterval(() => process.stderr.write(' 13%|█▎        | 13/100\r'), 200);
     return;
   }
-  if (mode === 'progress') {
+  if (mode === 'progress' || mode === 'slow') {
     let p = 0;
-    const t = setInterval(() => {
-      p += 10;
-      process.stderr.write(`${String(p).padStart(3)}%|${'█'.repeat(p / 10)}| ${p}/100\r`);
-      if (p >= 100) {
-        clearInterval(t);
-        write();
-        process.exit(0);
-      }
-    }, 100);
+    const t = setInterval(
+      () => {
+        p += 10;
+        process.stderr.write(`${String(p).padStart(3)}%|${'█'.repeat(p / 10)}| ${p}/100\r`);
+        if (p >= 100) {
+          clearInterval(t);
+          write();
+          process.exit(0);
+        }
+      },
+      mode === 'slow' ? 800 : 100,
+    );
     return;
   }
   write();

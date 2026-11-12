@@ -352,7 +352,7 @@ describe('subtitle jobs (WP16)', () => {
         worker(),
         NOW
       )
-    ).toBe("SubPlz is matching the audiobook to the book's text… 40 % Started 12 min ago.");
+    ).toBe("SubPlz is matching the audiobook to the book's text: 40 %. Started 12 min ago.");
     expect(subtitleJobText(run({ stage: 'syncing' }), worker(), NOW)).toBe(
       "SubPlz is matching the audiobook to the book's text…"
     );
