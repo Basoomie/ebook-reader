@@ -6,9 +6,18 @@
 
 import { describe, expect, it } from 'vitest';
 import {
+  COPIES_HINT,
+  fileDetails,
   folderDetails,
   formatAudioLength,
+  linkDetails,
   linkMarks,
+  mergeActive,
+  mergeSelection,
+  mergeSizeEstimate,
+  mergeStatusText,
+  moveItem,
+  severalFilesNote,
   linkView,
   linkedFolderName,
   scanBusy,
@@ -19,7 +28,7 @@ import {
   subtitleView,
   withoutIds
 } from './audio-link';
-import type { AudioFolderSummary, AudioLink } from './audio-types';
+import type { AudioFolderSummary, AudioLink, AudioMergeJob } from './audio-types';
 
 const folder = (extra: Partial<AudioFolderSummary> = {}): AudioFolderSummary => ({
   id: 1,
@@ -57,7 +66,11 @@ describe('audio link view', () => {
     expect(linkView(null)).toBe('choose');
     expect(linkView(link({ state: 'none', folder: null, status: null }))).toBe('none');
     expect(linkView(link())).toBe('linked');
-    expect(linkView(link({ folder: folder({ fileCount: 3, playable: false }) }))).toBe('split');
+    // WP15f: a whole folder of several files is "split"; one file of it plays.
+    const several = folder({ fileCount: 3, playable: false });
+    expect(linkView(link({ folder: several, fileName: null }))).toBe('split');
+    expect(linkView(link({ folder: several, fileName: 'b.m4b' }))).toBe('linked');
+    expect(linkView(link({ folder: several, fileName: 'b.m4b', playable: false }))).toBe('split');
     expect(linkView(link({ status: 'missing', folder: null }))).toBe('missing');
     expect(linkView(link({ status: 'changed' }))).toBe('changed');
   });
@@ -97,7 +110,24 @@ describe('audio link view', () => {
         missing: false
       })
     ).toBe('subs-new · 12 KB');
-    expect(splitNotice(3)).toBe("This audiobook is in 3 files and can't play yet.");
+    expect(splitNotice(3)).toBe(
+      'This audiobook is in 3 files. Choose one file, or merge them into one.'
+    );
+    expect(severalFilesNote(2)).toBe('In 2 files: you choose one file, or merge them.');
+    expect(fileDetails({ size: 2 * 1024 * 1024, durationSeconds: 3600 })).toBe(
+      '1 h 00 min · 2.0 MB'
+    );
+    expect(
+      linkDetails(
+        link({
+          folder: folder({ fileCount: 2, playable: false }),
+          fileName: 'b.m4b',
+          file: { name: 'b.m4b', size: 1024 * 1024, durationSeconds: 7200 }
+        })
+      )
+    ).toBe('2 h 00 min · 1.0 MB · one of 2 files');
+    expect(linkDetails(link())).toBe('1 file · 9 h 12 min · 412.0 MB');
+    expect(COPIES_HINT).toMatch(/look like copies/);
   });
 
   it('names a link even when the index no longer has its folder', () => {
@@ -124,8 +154,23 @@ describe('audio link view', () => {
       )
     ).toEqual(['Audiobook missing', 'Subtitle file missing']);
     expect(
-      linkMarks(link({ folder: folder({ fileCount: 2, playable: false }), subtitleState: 'none' }))
-    ).toEqual(["2 files: can't play yet"]);
+      linkMarks(
+        link({
+          folder: folder({ fileCount: 2, playable: false }),
+          fileName: null,
+          subtitleState: 'none'
+        })
+      )
+    ).toEqual(['2 files: choose one or merge']);
+    expect(
+      linkMarks(
+        link({
+          folder: folder({ fileCount: 2, playable: false }),
+          fileName: 'a.m4b',
+          subtitleState: 'none'
+        })
+      )
+    ).toEqual([]);
     expect(linkMarks(link({ status: 'changed', subtitleState: 'none' }))).toEqual([
       'Audio file changed'
     ]);
@@ -161,5 +206,65 @@ describe('audio link view', () => {
 
   it('leaves out search results already suggested', () => {
     expect(withoutIds([{ id: 1 }, { id: 2 }], [{ id: 2 }])).toEqual([{ id: 1 }]);
+  });
+});
+
+describe('WP15f: files and merges', () => {
+  it('orders and picks the files to merge', () => {
+    expect(moveItem(['a', 'b', 'c'], 1, -1)).toEqual(['b', 'a', 'c']);
+    expect(moveItem(['a', 'b', 'c'], 1, 1)).toEqual(['a', 'c', 'b']);
+    const same = ['a', 'b'];
+    expect(moveItem(same, 0, -1)).toBe(same);
+    expect(moveItem(same, 1, 1)).toBe(same);
+    expect(mergeSelection(['c', 'a', 'b'], new Set(['a', 'c']))).toEqual(['c', 'a']);
+    const files = [
+      { index: 0, name: 'a', size: 100, durationSeconds: 1, url: '' },
+      { index: 1, name: 'b', size: 50, durationSeconds: 1, url: '' },
+      { index: 2, name: 'c', size: 7, durationSeconds: 1, url: '' }
+    ];
+    expect(mergeSizeEstimate(files, ['a', 'c'])).toBe(107);
+  });
+
+  it('says how a merge is going in everyday words', () => {
+    const job = (extra: Partial<AudioMergeJob>): AudioMergeJob => ({
+      id: 1,
+      bookId: 'b',
+      libraryId: 'l',
+      folderRelPath: 'japanese/x/Vol 1',
+      folderName: 'Vol 1',
+      files: ['a.m4b', 'b.m4b'],
+      state: 'queued',
+      mode: null,
+      progress: 0,
+      outputName: null,
+      error: null,
+      linked: false,
+      createdAt: 1,
+      startedAt: null,
+      finishedAt: null,
+      ...extra
+    });
+    expect(mergeStatusText(job({}))).toBe('Waiting for another merge to finish…');
+    expect(mergeStatusText(job({ state: 'running', progress: 0.427 }))).toBe(
+      'Merging: joining the files… 42 %'
+    );
+    expect(mergeStatusText(job({ state: 'saving', progress: 0.95 }))).toBe(
+      'Saving into the audiobooks folder… 95 %'
+    );
+    expect(mergeStatusText(job({ state: 'done', linked: true, outputName: 'Vol 1.m4b' }))).toBe(
+      'Merged into “Vol 1.m4b”. This book now uses it. Now choose the subtitles.'
+    );
+    expect(mergeStatusText(job({ state: 'done', outputName: 'Vol 1.m4b' }))).toMatch(
+      /was not linked/
+    );
+    expect(mergeStatusText(job({ state: 'failed', error: 'ffmpeg failed: x' }))).toBe(
+      'The merge failed: ffmpeg failed: x. Nothing was added to the audiobooks folder.'
+    );
+    expect(mergeStatusText(job({ state: 'cancelled' }))).toBe(
+      'The merge was stopped. Nothing was added to the audiobooks folder.'
+    );
+    expect(mergeActive(job({ state: 'running' }))).toBe(true);
+    expect(mergeActive(job({ state: 'done' }))).toBe(false);
+    expect(mergeActive(null)).toBe(false);
   });
 });

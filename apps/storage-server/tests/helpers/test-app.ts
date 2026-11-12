@@ -39,7 +39,7 @@ export function testConfig(overrides: Partial<ServerConfig> = {}): ServerConfig 
     fonts: { ...DEFAULT_FONT_CONFIG },
     attachments: { ...DEFAULT_ATTACHMENT_CONFIG },
     logs: { ...DEFAULT_LOG_CONFIG },
-    audio: { ...DEFAULT_AUDIO, dir: null, requireReadonly: false },
+    audio: { ...DEFAULT_AUDIO, dir: null },
     ...overrides,
   };
 }

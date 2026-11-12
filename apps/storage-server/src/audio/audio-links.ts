@@ -25,7 +25,11 @@ export interface AudioLink {
   state: LinkState;
   /** Root-relative folder path; null when state is 'none'. */
   folderRelPath: string | null;
-  /** The audio file of a single-file folder; null for a folder of several files. */
+  /**
+   * The linked audio file. Set for a single-file folder and (WP15f) for one file chosen
+   * in a folder of several files or a merged file; null = the whole folder of several
+   * files, which can't play.
+   */
   fileName: string | null;
   subtitleState: SubtitleState;
   subtitleRelPath: string | null;
@@ -40,10 +44,20 @@ export interface AudioLink {
  */
 export type LinkStatus = 'ok' | 'missing' | 'changed';
 
+export interface LinkedFileSummary {
+  name: string;
+  size: number;
+  durationSeconds: number | null;
+}
+
 export interface ResolvedAudioLink extends AudioLink {
   folder: FolderSummary | null;
   /** null when state is 'none'. */
   status: LinkStatus | null;
+  /** WP15f: linked to one file that is there (whispersync can play it). */
+  playable: boolean;
+  /** WP15f: the linked file as indexed; null for a folder link or a missing file. */
+  file: LinkedFileSummary | null;
   subtitle: SubtitleSummary | null;
   /** null when no subtitle file is linked. */
   subtitleStatus: 'ok' | 'missing' | null;
@@ -122,14 +136,19 @@ export function deleteLink(db: Database.Database, userId: string, bookId: string
 export function resolveLink(db: Database.Database, link: AudioLink): ResolvedAudioLink {
   let folder: FolderSummary | null = null;
   let status: LinkStatus | null = null;
+  let file: LinkedFileSummary | null = null;
   if (link.state === 'linked' && link.folderRelPath !== null) {
     const row = getAudioFolderByRelPath(db, link.folderRelPath);
     folder = row ? folderSummary(row) : null;
+    const entry = row?.files.find((f) => f.name === link.fileName);
+    if (entry) {
+      file = { name: entry.name, size: entry.size, durationSeconds: entry.durationSeconds };
+    }
     if (!row || row.missingAt !== null) status = 'missing';
-    else if (link.fileName !== null && !row.files.some((f) => f.name === link.fileName))
-      status = 'changed';
+    else if (link.fileName !== null && !entry) status = 'changed';
     else status = 'ok';
   }
+  const playable = status === 'ok' && link.fileName !== null;
   let subtitle: SubtitleSummary | null = null;
   let subtitleStatus: 'ok' | 'missing' | null = null;
   if (link.subtitleState === 'linked' && link.subtitleRelPath !== null) {
@@ -137,5 +156,5 @@ export function resolveLink(db: Database.Database, link: AudioLink): ResolvedAud
     subtitle = row ? subtitleSummary(row) : null;
     subtitleStatus = row && row.missingAt === null ? 'ok' : 'missing';
   }
-  return { ...link, folder, status, subtitle, subtitleStatus };
+  return { ...link, folder, status, playable, file, subtitle, subtitleStatus };
 }

@@ -7,9 +7,11 @@
 import { formatFileSize } from '$lib/library/book-details';
 import { formatDuration } from '$lib/stats/stats-format';
 import type {
+  AudioFolderFile,
   AudioFolderSummary,
   AudioLibraryStatus,
   AudioLink,
+  AudioMergeJob,
   AudioStatus,
   SubtitleFileSummary
 } from './audio-types';
@@ -22,8 +24,8 @@ import type {
 /**
  * - choose: no link yet; suggestions and search, nothing chosen until a tap;
  * - none: "No audiobook";
- * - linked: linked and playable;
- * - split: linked, but in several files (can't play yet);
+ * - linked: linked and playable (one file);
+ * - split: linked to a whole folder of several files: choose one file or merge them;
  * - missing: the folder is no longer in the audiobooks folder;
  * - changed: the linked file is no longer in its folder.
  */
@@ -34,8 +36,13 @@ export function linkView(link: AudioLink | null): LinkView {
   if (link.state === 'none') return 'none';
   if (link.status === 'missing') return 'missing';
   if (link.status === 'changed') return 'changed';
-  if (link.folder && !link.folder.playable) return 'split';
+  if (!linkPlayable(link)) return 'split';
   return 'linked';
+}
+
+/** WP15f: a link plays when it names one file that is there. */
+export function linkPlayable(link: AudioLink): boolean {
+  return link.playable ?? (link.status === 'ok' && link.fileName !== null);
 }
 
 /** The subtitle step: only once an audiobook is linked. */
@@ -74,9 +81,78 @@ export function subtitleDetails(file: SubtitleFileSummary): string {
   return [file.parentName ?? '', formatFileSize(file.size)].filter(Boolean).join(' · ');
 }
 
-/** The user's wording (decided 2026-11-11): WP15 plays single-file audiobooks only. */
+/** WP15f: a link to a whole folder of several files. */
 export function splitNotice(fileCount: number): string {
-  return `This audiobook is in ${fileCount.toLocaleString('en-US')} files and can't play yet.`;
+  return `This audiobook is in ${fileCount.toLocaleString('en-US')} files. Choose one file, or merge them into one.`;
+}
+
+/** WP15f: the note on a suggestion or search result of several files. */
+export function severalFilesNote(fileCount: number): string {
+  return `In ${fileCount.toLocaleString('en-US')} files: you choose one file, or merge them.`;
+}
+
+/** "9 h 41 min · 412.0 MB" for one file. */
+export function fileDetails(file: { size: number; durationSeconds: number | null }): string {
+  return [formatAudioLength(file.durationSeconds), formatFileSize(file.size)].join(' · ');
+}
+
+/** The linked panel's details: the linked file's, when it is one of several. */
+export function linkDetails(link: AudioLink): string {
+  if (!link.folder) return '';
+  if (link.file && link.folder.fileCount > 1) {
+    return `${fileDetails(link.file)} · one of ${fileCountLabel(link.folder.fileCount)}`;
+  }
+  return folderDetails(link.folder);
+}
+
+export const COPIES_HINT =
+  'These files have almost the same length and look like copies of the same audiobook. You probably want to use one of them.';
+
+/** Moves one entry of an ordered list up (-1) or down (+1); unchanged at the ends. */
+export function moveItem<T>(list: T[], index: number, delta: -1 | 1): T[] {
+  const to = index + delta;
+  if (index < 0 || index >= list.length || to < 0 || to >= list.length) return list;
+  const next = list.slice();
+  [next[index], next[to]] = [next[to], next[index]];
+  return next;
+}
+
+/** The files to merge, in the order shown, that are ticked. */
+export function mergeSelection(order: string[], ticked: Set<string>): string[] {
+  return order.filter((name) => ticked.has(name));
+}
+
+/** About how big the merged file is: the files' sizes added up. */
+export function mergeSizeEstimate(files: AudioFolderFile[], names: string[]): number {
+  return files.filter((f) => names.includes(f.name)).reduce((n, f) => n + f.size, 0);
+}
+
+export function mergeActive(job: AudioMergeJob | null): boolean {
+  return !!job && (job.state === 'queued' || job.state === 'running' || job.state === 'saving');
+}
+
+/** One line on a merge, in everyday words. */
+export function mergeStatusText(job: AudioMergeJob): string {
+  const pct = `${Math.floor(Math.max(0, Math.min(1, job.progress)) * 100)} %`;
+  const name = job.outputName ? `“${job.outputName}”` : 'one file';
+  switch (job.state) {
+    case 'queued':
+      return 'Waiting for another merge to finish…';
+    case 'running':
+      return `Merging: joining the files… ${pct}`;
+    case 'saving':
+      return `Saving into the audiobooks folder… ${pct}`;
+    case 'done':
+      return job.linked
+        ? `Merged into ${name}. This book now uses it. Now choose the subtitles.`
+        : `Merged into ${name}. The audiobook for this book was changed during the merge, so the new file was not linked.`;
+    case 'cancelled':
+      return 'The merge was stopped. Nothing was added to the audiobooks folder.';
+    case 'failed':
+      return job.outputName
+        ? `The merge saved ${name} but then failed: ${job.error ?? 'unknown error'}.`
+        : `The merge failed: ${job.error ?? 'unknown error'}. Nothing was added to the audiobooks folder.`;
+  }
 }
 
 export const MISSING_NOTICE = 'This audiobook is no longer in the audiobooks folder.';
@@ -127,7 +203,7 @@ export function linkMarks(link: AudioLink): string[] {
   if (view === 'missing') marks.push('Audiobook missing');
   else if (view === 'changed') marks.push('Audio file changed');
   else if (view === 'split' && link.folder) {
-    marks.push(`${fileCountLabel(link.folder.fileCount)}: can't play yet`);
+    marks.push(`${fileCountLabel(link.folder.fileCount)}: choose one or merge`);
   }
   const sub = subtitleView(link);
   if (sub === 'choose') marks.push('Subtitles not chosen yet');

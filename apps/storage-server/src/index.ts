@@ -11,6 +11,9 @@ import { UploadService } from './uploads/service';
 import { UploadStore } from './uploads/upload-store';
 import { SERVER_VERSION } from './version';
 import { captureConsole, serverLogs } from './logs/recent-logs';
+import { AudioWriter } from './audio/audio-write';
+import { MergeService } from './audio/merge-service';
+import { MergeWorkdir } from './audio/merge-workdir';
 import { AudioScanService } from './audio/scan-service';
 
 // Every console line is also kept (secrets removed) for the bug report (WP18).
@@ -150,8 +153,10 @@ const search = database.ok
   : null;
 catalog.search = search;
 
-// Audiobook index and streaming (WP15): optional, read-only like Calibre.
+// Audiobook index and streaming (WP15): optional. WP15f: merged files are the only thing
+// ever written into the audiobooks folder, through src/audio/audio-write.ts.
 let audio: AudioScanService | null = null;
+let merges: MergeService | null = null;
 if (database.ok && config.audio.dir) {
   audio = new AudioScanService({
     db: database.db,
@@ -163,7 +168,37 @@ if (database.ok && config.audio.dir) {
       { name: 'CALIBRE_DIR', dir: config.calibre.dir },
     ],
   });
-  audio.start().catch((err) => console.error('Error: the audiobook scanner could not start:', err));
+  const scan = audio;
+  let workdir: MergeWorkdir | null = null;
+  if (config.calibre.cacheDir) {
+    try {
+      workdir = new MergeWorkdir(config.calibre.cacheDir, config.audio.dir);
+    } catch (err) {
+      console.error(`Error: merging is off: ${(err as Error).message}`);
+    }
+  }
+  merges = new MergeService({
+    db: database.db,
+    scan,
+    writer: new AudioWriter({
+      db: database.db,
+      root: config.audio.dir,
+      owner: {
+        uid: config.audio.merge.fileUid,
+        gid: config.audio.merge.fileGid,
+        mode: config.audio.merge.fileMode,
+      },
+    }),
+    workdir,
+    config: config.audio.merge,
+  });
+  const mergeService = merges;
+  scan
+    .start()
+    .then(async () => {
+      if (scan.status.enabled) await mergeService.start();
+    })
+    .catch((err) => console.error('Error: the audiobook scanner could not start:', err));
 } else if (!config.audio.dir) {
   console.log('Audiobooks are off: AUDIOBOOKS_DIR is not set');
 }
@@ -173,7 +208,14 @@ const app = createApp({
   database,
   version: SERVER_VERSION,
   catalog,
-  audio: { service: audio },
+  audio: {
+    service: audio,
+    merges,
+    copyHint: {
+      minMinutes: config.audio.copyHintMinMinutes,
+      percent: config.audio.copyHintPercent,
+    },
+  },
 });
 
 app.listen(config.port, () => {
@@ -198,6 +240,7 @@ function shutdown(signal: string): void {
   void indexer?.stop();
   void thumbnails?.stop();
   void counts?.stop();
+  void merges?.stop();
   void audio?.stop();
   void search?.close();
   if (database.ok) {

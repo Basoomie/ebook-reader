@@ -246,6 +246,34 @@ export function removeSubtitlesCopy(name: string): ConfirmCopy {
   };
 }
 
+/** WP15f: "Merge into one file" writes a new file into the audiobooks folder. */
+export function mergeAudiobookCopy(
+  folderName: string,
+  fileCount: number,
+  approxSize: string
+): ConfirmCopy {
+  return {
+    title: 'Merge into one file?',
+    message: [
+      `The ${fileCount} files of ${quoted(String(folderName))} are joined in the order shown into one new file of about ${approxSize}, saved next to them in the same folder. Each file becomes a chapter.`,
+      "The original files are not changed. Audiobookshelf will show both the originals and the new file; delete the ones you don't need yourself.",
+      'When it is done, this book uses the new file and you choose the subtitles.'
+    ],
+    confirmLabel: 'Merge files',
+    danger: false
+  };
+}
+
+export function stopMergeCopy(folderName: string): ConfirmCopy {
+  return {
+    title: 'Stop the merge?',
+    message: [
+      `The merge of ${quoted(String(folderName))} stops. Nothing is added to the audiobooks folder; you can start it again later.`
+    ],
+    confirmLabel: 'Stop merge'
+  };
+}
+
 // ---- Whispersync (audiobook menu) -----------------------------------------------------------------
 
 export function resetMatchCopy(): ConfirmCopy {

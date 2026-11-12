@@ -124,9 +124,10 @@ A library is identified by Calibre's library UUID, so renaming its folder keeps 
 
 ## Audiobooks (WP15)
 
-Audiobooks are **linked and streamed, never copied**. The audiobooks folder is read-only to this server, like Calibre:
+Audiobooks are **linked and streamed, never copied**. Existing files in the audiobooks folder are never changed:
 
-- The audiobooks root is mounted read-only (`AUDIOBOOKS_DIR`, compose: `read_only: true`). The scanner refuses to run if the mount is writable or overlaps `DATA_DIR`, `DB_DIR`, `CACHE_DIR` or `CALIBRE_DIR`. Only `src/audio/audio-fs.ts` reads it.
+- The audiobooks root is `AUDIOBOOKS_DIR`. The scanner refuses to run if it overlaps `DATA_DIR`, `DB_DIR`, `CACHE_DIR` or `CALIBRE_DIR`. `src/audio/audio-fs.ts` reads it.
+- Since WP15f the mount may be writable, for **new files only**, and only through `src/audio/audio-write.ts` (a test fails if any other audio module writes). It never overwrites, renames or deletes a file it did not create, and writes only: a merged `.m4b` directly inside an indexed audiobook folder, and (for later work packages) files under `<subtitle folder>/_generated/` and `<audio folder>-generated/` (e.g. `japanese-srt/_generated/`, `japanese-generated/`). A file is written under a hidden `.ttsu-write-*.partial` name, recorded in the database first, and gets its final name with a hard link only when complete; an interrupted write is removed at the next start. New files get `AUDIOBOOKS_FILE_UID`/`GID`/`MODE`. A read-only mount still links and streams; only merging is off.
 - Each library gets an audiobook folder and a subtitle folder inside that root with the CLI (unset = none):
 
 ```sh
@@ -135,6 +136,8 @@ docker exec ttsu-storage node dist/cli.js audio status
 ```
 
 **Index.** At start, every `AUDIO_SCAN_HOURS` and on request, the server walks each library's audiobook folder and records every folder that directly holds `.m4b`, `.m4a` or `.mp3` files: that folder is what a book links to (series are folders of volume folders). `_Archives` and dot folders are skipped; Audiobookshelf's `metadata.json` (series and number) is read when present. The subtitle folder is walked for `.srt`, `.vtt` and `.ass` files; archives are only counted. Durations come from the file headers (a few KB per file). A folder that disappears is marked missing, never deleted; a scan that suddenly finds nothing (an unmounted share) is an error and marks nothing.
+
+**One file, or a merge (WP15f).** A book links to a folder that holds one audio file, or to one file chosen in a folder of several (`PUT /books/:id/audio-link` with `audio.fileName`); only a link to one file plays. `GET /audio/folders/:id` says `looksLikeCopies` when the files are long and almost the same length (duplicate copies rather than parts; `AUDIO_COPY_HINT_*`). "Merge into one file" (`POST /books/:id/audio-merge {folderId, files}`, files in the user's order; `GET` the book's latest merge; `POST /audio/merges/:id/cancel`) runs one merge at a time: ffprobe reads each file; ffmpeg joins them by stream copy when every file is AAC of the same layout, otherwise (or when the copy fails) re-encodes to AAC (`AUDIO_MERGE_BITRATE`); one chapter per original file, tags and cover from the first, moov first (`+faststart`). ffmpeg writes only into `CACHE_DIR/audio-merge/<job>/`; the checked result (length, one chapter per file) is then saved next to the originals as `<folder name>.m4b` (or `<folder name> (merged).m4b`, `(merged 2)`, …). The folder is re-indexed and the book linked to the merged file if its link did not change meanwhile; the subtitle step asks again. A failure, cancel, stall (`AUDIO_MERGE_STALL_MINUTES`), lack of space (`AUDIO_MERGE_MIN_FREE_MB`) or restart leaves nothing in the audiobooks folder. `/audio/status` says whether merging is available and why not.
 
 **Suggestions.** `GET /api/v1/books/:id/audio/candidates` ranks folders and subtitle files by title (normalized: full/half width, brackets, `_ (出版社)`, `[N巻]`, `Vol N - `, ASINs) and series number. It never links anything: the user picks in the confirmation picker. `GET /api/v1/audio/search?q=` searches the whole index.
 
@@ -184,8 +187,15 @@ docker exec ttsu-storage node dist/cli.js audio status
 | `SEARCH_REGEX_TIMEOUT_SECONDS`     | `5`        | A library search with a `/pattern/` that runs longer is stopped (its worker thread is replaced) and answered with `regex_timeout`.   |
 | `UPLOAD_MAX_MB`                    | `200`      | Largest EPUB the Library's Upload accepts (`413 too_large` above it).                                                                |
 | `UPLOAD_STAGED_HOURS`              | `24`       | An uploaded file waiting for "Use the library copy / Add as a separate book" is deleted after this long.                             |
-| `AUDIOBOOKS_DIR`                   | _(unset)_  | Audiobooks root, mounted read-only (WP15). Unset: audio linking is off.                                                              |
-| `AUDIOBOOKS_REQUIRE_READONLY`      | `true`     | Refuse to scan a writable audiobooks mount. Set `false` only for local development.                                                  |
+| `AUDIOBOOKS_DIR`                   | _(unset)_  | Audiobooks root (WP15). Unset: audio linking is off. Writable only for merging (WP15f): new files only, see above.                   |
+| `AUDIOBOOKS_FILE_UID`, `_GID`      | _(unset)_  | Owner and group given to new files in the audiobooks folder (Unraid: `99`, `100`). Unset: left as created.                           |
+| `AUDIOBOOKS_FILE_MODE`             | _(unset)_  | Mode given to new files there, octal (Unraid: `0666`). Unset: left as created.                                                       |
+| `AUDIO_COPY_HINT_MIN_MINUTES`      | `60`       | The picker's "look like copies" hint: only files at least this long…                                                                 |
+| `AUDIO_COPY_HINT_PERCENT`          | `3`        | …whose lengths differ by at most this percent.                                                                                       |
+| `AUDIO_MERGE_BITRATE`              | `128k`     | AAC bitrate when a merge has to re-encode.                                                                                           |
+| `AUDIO_MERGE_MIN_FREE_MB`          | `2048`     | Free space a merge leaves in the cache folder and the audiobooks folder; it refuses to start or save otherwise.                      |
+| `AUDIO_MERGE_STALL_MINUTES`        | `10`       | A merge whose ffmpeg reports nothing this long is stopped.                                                                           |
+| `FFMPEG_PATH`, `FFPROBE_PATH`      | `ffmpeg`…  | The programs used to merge (in the Docker image).                                                                                    |
 | `AUDIO_SCAN_HOURS`                 | `24`       | Full rescan interval of the audiobook and subtitle folders; `0` = only at start and on request.                                      |
 | `AUDIO_POLL_SECONDS`               | `60`       | How often the server checks for a scan requested with the CLI.                                                                       |
 

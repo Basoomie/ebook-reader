@@ -465,6 +465,52 @@ export const MIGRATIONS: { version: number; name: string; sql: string }[] = [
       );
     `,
   },
+  {
+    version: 13,
+    name: 'audio merges',
+    // WP15f. audio_merge_jobs: the user's "Merge into one file" requests (one runs at a
+    // time). file_names is the JSON list in the user's order. link_confirmed_at is the
+    // book's link confirmed_at when the merge was asked for (NULL = no link): the merged
+    // file is linked only if the link is unchanged by then.
+    // audio_writes: every file src/audio/audio-write.ts creates in the audiobooks folder,
+    // recorded before it is created, so an interrupted write can remove its own partial
+    // file (and nothing else) at the next start. temp_rel_path is the file being written
+    // (a hidden .ttsu-merge-<id>.partial, or the final name itself when hard links are
+    // not available, direct = 1); final_rel_path is set once the file is published.
+    sql: `
+      CREATE TABLE audio_merge_jobs (
+        id                 INTEGER PRIMARY KEY,
+        user_id            TEXT NOT NULL REFERENCES users(id),
+        book_id            TEXT NOT NULL,
+        library_id         TEXT NOT NULL,
+        folder_rel_path    TEXT NOT NULL,
+        file_names         TEXT NOT NULL,
+        state              TEXT NOT NULL CHECK (state IN ('queued', 'running', 'saving', 'done', 'failed', 'cancelled')),
+        mode               TEXT CHECK (mode IN ('copy', 'reencode')),
+        progress           REAL NOT NULL DEFAULT 0,
+        output_name        TEXT,
+        error              TEXT,
+        linked             INTEGER NOT NULL DEFAULT 0,
+        link_confirmed_at  INTEGER,
+        created_at         INTEGER NOT NULL,
+        started_at         INTEGER,
+        finished_at        INTEGER,
+        updated_at         INTEGER NOT NULL
+      );
+      CREATE INDEX audio_merge_jobs_book ON audio_merge_jobs (user_id, book_id, id);
+
+      CREATE TABLE audio_writes (
+        id              INTEGER PRIMARY KEY,
+        purpose         TEXT NOT NULL CHECK (purpose IN ('merge', 'generated')),
+        temp_rel_path   TEXT NOT NULL,
+        final_rel_path  TEXT,
+        direct          INTEGER NOT NULL DEFAULT 0,
+        state           TEXT NOT NULL CHECK (state IN ('reserving', 'writing', 'published', 'done', 'cleaned')),
+        created_at      INTEGER NOT NULL,
+        updated_at      INTEGER NOT NULL
+      );
+    `,
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

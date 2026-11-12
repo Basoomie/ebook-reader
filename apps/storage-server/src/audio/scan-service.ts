@@ -1,7 +1,7 @@
 /**
  * Audiobook and subtitle scanner (WP15a). For every library with an audio or
  * subtitle folder set (`cli library set <id> --audio-dir japanese --subtitle-dir
- * japanese-srt`), it walks that folder under the read-only audiobooks root and
+ * japanese-srt`), it walks that folder under the audiobooks root and
  * records:
  * - each folder that directly holds audio files (`.m4b`, `.m4a`, `.mp3`): the unit a
  *   book links to. Series are folders of volume folders, so the walk is recursive.
@@ -12,7 +12,8 @@
  * Then it measures durations from the file headers, folder by folder.
  *
  * Runs at start, every AUDIO_SCAN_HOURS, and when asked (API or CLI). Reads only
- * through audio-fs.ts; never writes near the audiobooks.
+ * through audio-fs.ts; never writes. (WP15f: the only writer is audio-write.ts; after a
+ * merge, rescanFolder re-indexes that one folder.)
  */
 import type Database from 'better-sqlite3';
 import path from 'path';
@@ -30,7 +31,9 @@ import {
 } from './audio-fs';
 import {
   type AudioFileEntry,
+  type AudioFolder,
   countPresent,
+  getAudioFolder,
   foldersNeedingDurations,
   getScanState,
   markUnseenMissing,
@@ -55,6 +58,8 @@ export interface AudioStatus {
   enabled: boolean;
   /** Why audio linking is off, or null. */
   error: string | null;
+  /** WP15f: whether this process may create files in the audiobooks folder (merging). */
+  writable: boolean;
 }
 
 export interface AudioScanOptions {
@@ -88,12 +93,6 @@ export async function checkAudioConfig(
       return `${other.name} (${other.dir}) and AUDIOBOOKS_DIR (${dir}) overlap; nothing may be written near the audiobooks`;
     }
   }
-  if (config.requireReadonly && (await isWritable(dir))) {
-    return (
-      `AUDIOBOOKS_DIR (${dir}) is writable. Mount the audiobooks folder read-only ` +
-      '(docker-compose: read_only: true). AUDIOBOOKS_REQUIRE_READONLY=false is for local development only.'
-    );
-  }
   return null;
 }
 
@@ -104,7 +103,7 @@ interface ScanCounts {
 }
 
 export class AudioScanService {
-  readonly status: AudioStatus = { enabled: false, error: 'not started' };
+  readonly status: AudioStatus = { enabled: false, error: 'not started', writable: false };
   private readonly db: Database.Database;
   private readonly config: AudioConfig;
   private readonly opts: AudioScanOptions;
@@ -140,7 +139,10 @@ export class AudioScanService {
     }
     this.status.enabled = true;
     this.status.error = null;
-    this.log(`Audiobooks: on, folder ${this.root} (read-only)`);
+    this.status.writable = await isWritable(this.root);
+    this.log(
+      `Audiobooks: on, folder ${this.root} (${this.status.writable ? 'writable: merged files only' : 'read-only: merging is off'})`,
+    );
     this.wake();
     if (timer && !this.stopped) {
       this.timer = setInterval(() => this.wake(), this.config.pollSeconds * 1000);
@@ -248,37 +250,9 @@ export class AudioScanService {
     const start = resolveInsideAudio(this.root, audioDir);
     if (!(await isFolder(start))) throw new Error(`Audio folder not found: ${audioDir}`);
     await this.walk(start, 0, async (abs, dirName, parentName, entries) => {
-      const audio = entries.filter((e) => e.isFile() && AUDIO_EXTENSIONS.includes(ext(e.name)));
-      if (audio.length === 0) return;
-      const files: AudioFileEntry[] = [];
-      for (const e of audio.sort((a, b) => a.name.localeCompare(b.name, 'ja', { numeric: true }))) {
-        const st = await statAudioFile(path.join(abs, e.name));
-        if (!st) continue;
-        files.push({ name: e.name, size: st.size, mtimeMs: st.mtimeMs, durationSeconds: null });
+      if (await this.indexFolder(lib, abs, dirName, parentName, entries, started)) {
+        counts.folders += 1;
       }
-      if (files.length === 0) return;
-      const meta = entries.some((e) => e.isFile() && e.name === METADATA_JSON)
-        ? await this.readAbsMetadata(path.join(abs, METADATA_JSON))
-        : null;
-      const relPath = path.relative(this.root, abs).split(path.sep).join('/');
-      const sequence = meta?.series?.sequence ?? null;
-      const sequenceNumber =
-        sequence !== null && /^\d+(\.\d+)?$/.test(sequence) ? Number(sequence) : null;
-      upsertAudioFolder(this.db, {
-        libraryId: lib.id,
-        relPath,
-        name: dirName,
-        parentName,
-        ...entryKeys(dirName),
-        volume: sequenceNumber ?? extractVolume(dirName) ?? extractVolume(baseName(files[0].name)),
-        metaTitle: meta?.title ?? null,
-        metaSeries: meta?.series?.name ?? null,
-        metaSequence: sequence,
-        asin: meta?.asin ?? null,
-        files,
-        seenAt: started,
-      });
-      counts.folders += 1;
     });
     if (counts.folders === 0 && previousCount > 0) {
       throw new Error(
@@ -287,6 +261,73 @@ export class AudioScanService {
       );
     }
     markUnseenMissing(this.db, 'audio_folders', lib.id, started, this.now());
+  }
+
+  /**
+   * Records one folder that directly holds audio files (the unit a book links to).
+   * Returns null when it holds none.
+   */
+  private async indexFolder(
+    lib: Library,
+    abs: string,
+    dirName: string,
+    parentName: string | null,
+    entries: import('fs').Dirent[],
+    seenAt: number,
+  ): Promise<AudioFolder | null> {
+    const audio = entries.filter((e) => e.isFile() && AUDIO_EXTENSIONS.includes(ext(e.name)));
+    if (audio.length === 0) return null;
+    const files: AudioFileEntry[] = [];
+    for (const e of audio.sort((a, b) => a.name.localeCompare(b.name, 'ja', { numeric: true }))) {
+      const st = await statAudioFile(path.join(abs, e.name));
+      if (!st) continue;
+      files.push({ name: e.name, size: st.size, mtimeMs: st.mtimeMs, durationSeconds: null });
+    }
+    if (files.length === 0) return null;
+    const meta = entries.some((e) => e.isFile() && e.name === METADATA_JSON)
+      ? await this.readAbsMetadata(path.join(abs, METADATA_JSON))
+      : null;
+    const relPath = path.relative(this.root, abs).split(path.sep).join('/');
+    const sequence = meta?.series?.sequence ?? null;
+    const sequenceNumber =
+      sequence !== null && /^\d+(\.\d+)?$/.test(sequence) ? Number(sequence) : null;
+    return upsertAudioFolder(this.db, {
+      libraryId: lib.id,
+      relPath,
+      name: dirName,
+      parentName,
+      ...entryKeys(dirName),
+      volume: sequenceNumber ?? extractVolume(dirName) ?? extractVolume(baseName(files[0].name)),
+      metaTitle: meta?.title ?? null,
+      metaSeries: meta?.series?.name ?? null,
+      metaSequence: sequence,
+      asin: meta?.asin ?? null,
+      files,
+      seenAt,
+    });
+  }
+
+  /**
+   * WP15f: re-indexes one already indexed folder (after a merge added a file to it) and
+   * measures the durations still missing there. Returns the fresh row, or null when the
+   * folder is gone or holds no audio any more.
+   */
+  async rescanFolder(folder: AudioFolder): Promise<AudioFolder | null> {
+    const lib = listLibraries(this.db).find((l) => l.id === folder.libraryId);
+    if (!lib) return null;
+    const abs = resolveInsideAudio(this.root, folder.relPath);
+    if (!(await isFolder(abs))) return null;
+    const fresh = await this.indexFolder(
+      lib,
+      abs,
+      folder.name,
+      folder.parentName,
+      await readFolder(abs),
+      this.now(),
+    );
+    if (!fresh) return null;
+    await this.measureFolder(fresh);
+    return getAudioFolder(this.db, fresh.id);
   }
 
   private async scanSubtitles(
@@ -382,27 +423,33 @@ export class AudioScanService {
     let measured = 0;
     for (const folder of foldersNeedingDurations(this.db, lib.id)) {
       if (this.stopped) break;
-      const files = folder.files.map((f) => ({ ...f }));
-      for (const file of files) {
-        if (file.durationSeconds !== null || file.durationFailed) continue;
-        try {
-          const reader = await openAudioReader(
-            resolveInsideAudio(this.root, `${folder.relPath}/${file.name}`),
-          );
-          try {
-            file.durationSeconds = await audioDuration(reader, ext(file.name));
-          } finally {
-            await reader.close();
-          }
-        } catch {
-          file.durationSeconds = null;
-        }
-        if (file.durationSeconds === null) file.durationFailed = true;
-        measured += 1;
-      }
-      setFolderFiles(this.db, folder.id, files);
+      measured += await this.measureFolder(folder);
       await new Promise((r) => setImmediate(r));
     }
+    return measured;
+  }
+
+  private async measureFolder(folder: AudioFolder): Promise<number> {
+    let measured = 0;
+    const files = folder.files.map((f) => ({ ...f }));
+    for (const file of files) {
+      if (file.durationSeconds !== null || file.durationFailed) continue;
+      try {
+        const reader = await openAudioReader(
+          resolveInsideAudio(this.root, `${folder.relPath}/${file.name}`),
+        );
+        try {
+          file.durationSeconds = await audioDuration(reader, ext(file.name));
+        } finally {
+          await reader.close();
+        }
+      } catch {
+        file.durationSeconds = null;
+      }
+      if (file.durationSeconds === null) file.durationFailed = true;
+      measured += 1;
+    }
+    setFolderFiles(this.db, folder.id, files);
     return measured;
   }
 }

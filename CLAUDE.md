@@ -13,7 +13,7 @@ If code and docs disagree, or a task needs a decision the docs don't cover, STOP
 
 ## Current phase
 
-**Phase 5** (Phases 0-4 and WP19 are done and merged). Decisions: `docs/design/decisions.md`, "Phase 5 decisions". Agreed order, one work package at a time: **WP15** audio linking → **WP14** "Enrich last card" → **WP16** GPU worker and job queue → **WP17** generated audiobooks.
+**Phase 5** (Phases 0-4 and WP19 are done and merged). Decisions: `docs/design/decisions.md`, "Phase 5 decisions". Agreed order, one work package at a time: **WP15** audio linking → **WP15f** multi-file audiobooks (merge button, per-file picker; added 2026-11-12) → **WP14** "Enrich last card" → **WP16** GPU worker and job queue → **WP17** generated audiobooks.
 
 WP15 now, each branch reviewed and merged locally; push and deploy after all of WP15. Done and merged: WP15a, WP15b (the picker lives in Settings > Audiobooks; WP15a+b are deployed), WP15c (merged at 7c8b060, not deployed). Left: WP15e (WP15d is dropped).
 
@@ -23,7 +23,7 @@ WP15 now, each branch reviewed and merged locally; push and deploy after all of 
 4. **WP15d dropped** (decided with the user 2026-11-11): the 3 old-sync books are finished, so their whispersync data is not moved and they are not linked. Their 3 `audio_*` copies (~1.3 GB) stay in the old-sync folder for the later cleanup with the rest of it.
 5. **WP15e** `wp15e-remove-old-sync`: remove the old sync code and `/manage` (`/manage` redirects to `/library`); "Remove from this device" and a built-in "On this device" collection replace the Manager. The old sync's files on the NAS stay for a later cleanup. Also remove the empty "From the old sync" section of Settings > Audiobooks.
 
-The audiobooks folder is read-only to this app (like Calibre) until WP16 adds write access to its output folders only. New destructive actions use `confirmDestructive` / `inline-confirm.svelte` with their text in `lib/confirm/confirm-copy.ts`.
+The audiobooks folder is read-only to this app until WP15f makes the mount writable with guardrails (decided 2026-11-12, see "Multi-file audiobooks: WP15f decisions"): one module, create-new-files only, never overwrite/rename/delete, limited to merged files in a book's folder, `japanese-srt/_generated/` and `japanese-generated/`. New destructive actions use `confirmDestructive` / `inline-confirm.svelte` with their text in `lib/confirm/confirm-copy.ts`.
 
 The old sync is off. Still don't change the migration pages or the old-sync switch. Existing `stat-day` rows stay frozen as "before device tracking": never delete or rewrite them. Don't rewrite existing position records.
 

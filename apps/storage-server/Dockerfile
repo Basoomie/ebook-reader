@@ -11,6 +11,8 @@ RUN npm run build && npm prune --omit=dev
 
 FROM node:22-alpine
 WORKDIR /app
+# ffmpeg/ffprobe for "Merge into one file" (WP15f): joins an audiobook's files into one m4b.
+RUN apk add --no-cache ffmpeg
 COPY package*.json ./
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist

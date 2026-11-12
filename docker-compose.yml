@@ -32,12 +32,13 @@ services:
         read_only: true
         bind:
           create_host_path: false
-      # Audiobooks root (WP15), READ-ONLY: audiobook folders and the subtitle archive
-      # (e.g. japanese/, japanese-srt/). Audiobooks are linked and streamed, never copied.
+      # Audiobooks root (WP15): audiobook folders and the subtitle archive (e.g. japanese/,
+      # japanese-srt/). Audiobooks are linked and streamed, never copied. Writable since
+      # WP15f for new files only: a merged .m4b next to its originals, and later
+      # japanese-srt/_generated/ and japanese-generated/. Existing files are never changed.
       - type: bind
         source: ${TTSU_AUDIOBOOKS_PATH:?TTSU_AUDIOBOOKS_PATH required (audiobooks root, e.g. /mnt/user/data/media/audiobooks)}
         target: /audiobooks
-        read_only: true
         bind:
           create_host_path: false
     environment:
@@ -73,3 +74,8 @@ services:
       # cli library set <id> --audio-dir japanese --subtitle-dir japanese-srt
       - AUDIOBOOKS_DIR=/audiobooks
       - AUDIO_SCAN_HOURS=${TTSU_AUDIO_SCAN_HOURS:-24}
+      # New files in the audiobooks folder get this owner and mode (Unraid: nobody:users,
+      # rw for everyone, like files made over SMB, so they can be deleted from Windows).
+      - AUDIOBOOKS_FILE_UID=${TTSU_AUDIOBOOKS_FILE_UID:-99}
+      - AUDIOBOOKS_FILE_GID=${TTSU_AUDIOBOOKS_FILE_GID:-100}
+      - AUDIOBOOKS_FILE_MODE=${TTSU_AUDIOBOOKS_FILE_MODE:-0666}

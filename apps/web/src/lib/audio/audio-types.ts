@@ -18,7 +18,10 @@ export interface AudioFolderSummary {
   /** null while the server is still reading the files' lengths. */
   durationSeconds: number | null;
   volume: number | null;
-  /** Single-file audiobooks only for now. */
+  /**
+   * A single-file folder: choosing it links its file. A folder of several files needs one
+   * file chosen, or a merge (WP15f).
+   */
   playable: boolean;
   missing: boolean;
 }
@@ -69,7 +72,48 @@ export interface AudioStatus {
   /** false when the server has no usable audiobooks folder. */
   enabled: boolean;
   error: string | null;
+  /** WP15f: whether "Merge into one file" works on this server, and why not. */
+  merge?: { available: boolean; reason: string | null };
   libraries: AudioLibraryStatus[];
+}
+
+/** WP15f: one file of an audiobook folder. */
+export interface AudioFolderFile {
+  index: number;
+  name: string;
+  size: number;
+  durationSeconds: number | null;
+  url: string;
+}
+
+/** WP15f: a folder with its files (GET /audio/folders/:id). */
+export interface AudioFolderDetail extends AudioFolderSummary {
+  /** The files are long and almost the same length: probably copies, not parts. */
+  looksLikeCopies: boolean;
+  files: AudioFolderFile[];
+}
+
+export type AudioMergeState = 'queued' | 'running' | 'saving' | 'done' | 'failed' | 'cancelled';
+
+/** WP15f: "Merge into one file". */
+export interface AudioMergeJob {
+  id: number;
+  bookId: string;
+  libraryId: string;
+  folderRelPath: string;
+  folderName: string;
+  files: string[];
+  state: AudioMergeState;
+  mode: 'copy' | 'reencode' | null;
+  /** 0..1 */
+  progress: number;
+  outputName: string | null;
+  error: string | null;
+  /** The book was linked to the merged file. */
+  linked: boolean;
+  createdAt: number;
+  startedAt: number | null;
+  finishedAt: number | null;
 }
 
 export interface AudioLink {
@@ -88,7 +132,11 @@ export interface AudioLink {
   status: 'ok' | 'missing' | 'changed' | null;
   subtitle: SubtitleFileSummary | null;
   subtitleStatus: 'ok' | 'missing' | null;
-  /** WP15c: the signed URL whispersync plays (single-file links that are there), else null. */
+  /** WP15f: linked to one file that is there. */
+  playable?: boolean;
+  /** WP15f: the linked file; null for a folder link or a missing file. */
+  file?: { name: string; size: number; durationSeconds: number | null } | null;
+  /** WP15c: the signed URL whispersync plays (links to one file that is there), else null. */
   playUrl?: string | null;
 }
 
@@ -97,6 +145,7 @@ export interface AudioLinkListEntry extends AudioLink {
 }
 
 export interface AudioLinkChange {
-  audio?: { state: 'linked'; folderId: number } | { state: 'none' };
+  /** fileName (WP15f): one file of a folder of several. */
+  audio?: { state: 'linked'; folderId: number; fileName?: string } | { state: 'none' };
   subtitle?: { state: 'linked'; subtitleId: number } | { state: 'none' } | { state: null };
 }

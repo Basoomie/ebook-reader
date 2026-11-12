@@ -314,3 +314,78 @@ describe('audio links', () => {
     expect((await request(t.e.app).delete(t.url(SPY2)).set(t.auth)).status).toBe(204);
   });
 });
+
+describe('WP15f: links to one file of a folder of several', () => {
+  it('links one file (plays), keeps subtitles only for the same file, and refuses unknown files', async () => {
+    const t = await linkEnv();
+    const guin = t.folder(GUIN);
+    const folderInfo = await request(t.e.app).get(`/api/v1/audio/folders/${guin.id}`).set(t.auth);
+    expect(folderInfo.body.looksLikeCopies).toBe(false);
+
+    // The whole folder: linked, but nothing to play.
+    const whole = await t.put(GUIN, { audio: { state: 'linked', folderId: guin.id } });
+    expect(whole.body.link).toMatchObject({
+      fileName: null,
+      status: 'ok',
+      playable: false,
+      file: null,
+    });
+    expect((await t.get(GUIN)).body.link.playUrl).toBeNull();
+
+    // One file: plays.
+    const one = await t.put(GUIN, {
+      audio: { state: 'linked', folderId: guin.id, fileName: '02.mp3' },
+    });
+    expect(one.body.link).toMatchObject({
+      folderRelPath: guin.relPath,
+      fileName: '02.mp3',
+      status: 'ok',
+      playable: true,
+      file: { name: '02.mp3', size: guin.files[1].size },
+      subtitleState: null,
+    });
+    const got = (await t.get(GUIN)).body.link;
+    expect(got.playUrl).toMatch(/^\/api\/v1\/audio\/files\/\d+\/1\?/);
+    const played = await request(t.e.app).get(got.playUrl);
+    expect(played.status).toBe(200);
+    expect(played.headers['content-type']).toBe('audio/mpeg');
+
+    // Subtitles stay for the same file, and are asked again for another one.
+    const sub = t.subtitle('[2巻]');
+    await t.put(GUIN, { subtitle: { state: 'linked', subtitleId: sub.id } });
+    const same = await t.put(GUIN, {
+      audio: { state: 'linked', folderId: guin.id, fileName: '02.mp3' },
+    });
+    expect(same.body.link).toMatchObject({ subtitleState: 'linked', subtitleRelPath: sub.relPath });
+    const other = await t.put(GUIN, {
+      audio: { state: 'linked', folderId: guin.id, fileName: '01.mp3' },
+    });
+    expect(other.body.link).toMatchObject({ fileName: '01.mp3', subtitleState: null });
+
+    const unknown = await t.put(GUIN, {
+      audio: { state: 'linked', folderId: guin.id, fileName: 'nope.mp3' },
+    });
+    expect(unknown.status).toBe(404);
+    const bad = await t.put(GUIN, { audio: { state: 'linked', folderId: guin.id, fileName: 3 } });
+    expect(bad.status).toBe(400);
+    expect((await t.get(GUIN)).body.link.fileName).toBe('01.mp3');
+
+    // A single-file folder still links its file by itself.
+    const spy = t.folder('Vol 2 - スパイ');
+    const single = await t.put(SPY2, { audio: { state: 'linked', folderId: spy.id } });
+    expect(single.body.link).toMatchObject({ fileName: spy.files[0].name, playable: true });
+
+    // The file goes away: "changed", nothing to play.
+    fs.renameSync(
+      path.join(t.root, ...guin.relPath.split('/'), '01.mp3'),
+      path.join(t.root, ...guin.relPath.split('/'), '01-moved.mp3'),
+    );
+    await request(t.e.app).post('/api/v1/audio/scan').set(t.auth);
+    await t.service.idle();
+    expect((await t.get(GUIN)).body.link).toMatchObject({
+      status: 'changed',
+      playable: false,
+      playUrl: null,
+    });
+  });
+});
