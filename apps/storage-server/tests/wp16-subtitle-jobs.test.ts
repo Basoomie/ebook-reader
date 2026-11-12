@@ -162,6 +162,7 @@ describe('a job from start to finish', () => {
       leaseSeconds: 120,
     });
     expect(job.audioSize).toBeGreaterThan(0);
+    expect(job.audioSeconds).toBe(30_000); // the indexed length (whole-job progress)
     expect(await t.claim()).toBeNull(); // one at a time
     const s = await t.status();
     expect(s.online).toBe(true);

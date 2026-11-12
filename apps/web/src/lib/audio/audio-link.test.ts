@@ -344,7 +344,7 @@ describe('subtitle jobs (WP16)', () => {
   it('describes a running job, its end, and the time since', () => {
     const run = (extra: Partial<SubtitleJob>) => job({ state: 'running', ...extra });
     expect(subtitleJobText(run({ stage: 'downloading', progress: 0.256 }), worker(), NOW)).toBe(
-      'The PC is downloading the book and the audiobook… 25 %'
+      'The PC is downloading the book and the audiobook…'
     );
     expect(
       subtitleJobText(
