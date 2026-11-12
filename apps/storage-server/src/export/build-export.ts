@@ -6,11 +6,14 @@
  * must not bring a deleted item back), each with its kind, id, book, last writer,
  * timestamps, rev and data exactly as devices receive them. Read-only.
  *
+ * Also the audiobook links the user confirmed (WP15b), which are server rows, not records.
+ *
  * Never included: tokens and token hashes, pairing codes, book and font files (backed up
  * with appdata), settings a browser keeps for itself and never syncs.
  */
 import type Database from 'better-sqlite3';
 import { listDevices, type Device } from '../db/devices';
+import { listLinks } from '../audio/audio-links';
 import { DEFAULT_KINDS, type KindRegistry } from '../sync/kinds';
 import type { SyncStore, SyncRecord } from '../sync/store';
 import { SERVER_VERSION } from '../version';
@@ -31,6 +34,20 @@ export interface ExportedBook {
   sources: string[];
 }
 
+/** A confirmed audiobook link (WP15b). Paths are relative to the audiobooks folder. */
+export interface ExportedAudioLink {
+  bookId: string;
+  /** 'linked', or 'none' for "No audiobook". */
+  state: 'linked' | 'none';
+  folder: string | null;
+  fileName: string | null;
+  /** 'linked', 'none' ("No subtitles"), or null when not chosen yet. */
+  subtitleState: 'linked' | 'none' | null;
+  subtitle: string | null;
+  source: 'library' | 'migrated';
+  confirmedAt: number;
+}
+
 export interface DataExport {
   format: typeof EXPORT_FORMAT;
   formatVersion: number;
@@ -43,6 +60,7 @@ export interface DataExport {
   /** For reading the file only (a restore ignores it): the books the records name. */
   books: Record<string, ExportedBook>;
   records: Record<string, ExportedRecord[]>;
+  audioLinks: ExportedAudioLink[];
 }
 
 const ABOUT = [
@@ -60,6 +78,8 @@ const ABOUT = [
   '"stat-goal" records are reading goals (metric, period, target, the days they apply to).',
   '"stat-day" records are the reading statistics per book and day from before device ' +
     'tracking (frozen; no device changes them).',
+  '"audioLinks" are the audiobooks (and subtitle files) linked to books, with paths ' +
+    'relative to the audiobooks folder; state "none" means "No audiobook".',
   '"books" only helps reading this file: titles of the books the records name.',
   'Not included: book and font files (they are backed up with the server data), ' +
     'tokens and pairing codes, and settings a browser keeps for itself.',
@@ -143,6 +163,17 @@ export function buildExport(
       else count.deleted += 1;
       if (row.book_id) bookIds.add(row.book_id);
     }
+    const audioLinks: ExportedAudioLink[] = listLinks(db, user.id).map((l) => ({
+      bookId: l.bookId,
+      state: l.state,
+      folder: l.folderRelPath,
+      fileName: l.fileName,
+      subtitleState: l.subtitleState,
+      subtitle: l.subtitleRelPath,
+      source: l.source,
+      confirmedAt: l.confirmedAt,
+    }));
+    for (const l of audioLinks) bookIds.add(l.bookId);
     return {
       format: EXPORT_FORMAT,
       formatVersion: EXPORT_FORMAT_VERSION,
@@ -154,6 +185,7 @@ export function buildExport(
       counts,
       books: bookIndex(db, bookIds),
       records,
+      audioLinks,
     };
   })();
 }

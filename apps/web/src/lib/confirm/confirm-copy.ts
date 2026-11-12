@@ -264,6 +264,66 @@ export function completeBookCopy(charactersAdded: number): ConfirmCopy {
   };
 }
 
+// ---- Audiobook links (book details) ----------------------------------------------------------------
+
+const AUDIO_STAYS =
+  'This applies on every device. The audio files in the audiobooks folder are not touched.';
+
+export function unlinkAudiobookCopy(folderName: string): ConfirmCopy {
+  return {
+    title: 'Unlink the audiobook?',
+    message: [
+      `${quoted(String(folderName))} is no longer linked to this book, and neither are its subtitles. The suggestions come back.`,
+      AUDIO_STAYS
+    ],
+    confirmLabel: 'Unlink audiobook'
+  };
+}
+
+export function replaceAudiobookCopy(oldName: string, newName: string): ConfirmCopy {
+  return {
+    title: 'Replace the audiobook?',
+    message: [
+      `${quoted(String(newName))} is linked instead of ${quoted(String(oldName))}. You choose the subtitles again.`,
+      AUDIO_STAYS
+    ],
+    confirmLabel: 'Replace audiobook'
+  };
+}
+
+export function noAudiobookCopy(folderName: string): ConfirmCopy {
+  return {
+    title: 'Mark this book as having no audiobook?',
+    message: [
+      `${quoted(String(folderName))} is no longer linked to this book, and no audiobooks are suggested for it.`,
+      AUDIO_STAYS
+    ],
+    confirmLabel: 'No audiobook'
+  };
+}
+
+export function replaceSubtitlesCopy(oldName: string, newName: string): ConfirmCopy {
+  return {
+    title: 'Replace the subtitles?',
+    message: [
+      `${quoted(String(newName))} is linked instead of ${quoted(String(oldName))}.`,
+      'This applies on every device. The subtitle files are not touched.'
+    ],
+    confirmLabel: 'Replace subtitles'
+  };
+}
+
+export function removeSubtitlesCopy(name: string): ConfirmCopy {
+  return {
+    title: 'Remove the subtitles?',
+    message: [
+      `${quoted(String(name))} is no longer linked to this audiobook.`,
+      'This applies on every device. The subtitle file is not touched.'
+    ],
+    confirmLabel: 'Remove subtitles'
+  };
+}
+
 // ---- Whispersync (audiobook menu) -----------------------------------------------------------------
 
 export function resetMatchCopy(): ConfirmCopy {

@@ -11,6 +11,7 @@
    * Highlights; the description (as text, collapsed after a few lines); "About this book"
    * (publisher, dates, length, file size, library) with the tags; the other volumes of
    * the series and other books by each author. The address is /library/book?id=<id>.
+   * WP15b: the "Audiobook" section (the confirmation picker) between About and Series.
    */
   import { afterNavigate, goto } from '$app/navigation';
   import { browser } from '$app/environment';
@@ -18,6 +19,7 @@
   import AppBottomBar from '$lib/components/app-nav/app-bottom-bar.svelte';
   import AppHeader from '$lib/components/app-nav/app-header.svelte';
   import AddToCollectionDialog from '$lib/components/collections/add-to-collection-dialog.svelte';
+  import AudioLinkSection from '$lib/components/audio/audio-link-section.svelte';
   import BookStateDialog from '$lib/components/library/book-state-dialog.svelte';
   import CoverImage from '$lib/components/library/cover-image.svelte';
   import LibraryBookCard from '$lib/components/library/library-book-card.svelte';
@@ -499,6 +501,10 @@
         {/if}
       </section>
     </div>
+
+    {#if api}
+      <AudioLinkSection {api} bookId={book.id} />
+    {/if}
 
     {#if series.length > 1 && book.series}
       <section class="mt-12" aria-labelledby="details-series" data-testid="details-series">

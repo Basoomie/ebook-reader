@@ -183,6 +183,37 @@ export function getSubtitleFile(db: Database.Database, id: number): SubtitleFile
   return row ? toSubtitle(row) : null;
 }
 
+/**
+ * A folder by its root-relative path in any library (an audio link stores only the
+ * path). A present row wins over a missing one.
+ */
+export function getAudioFolderByRelPath(
+  db: Database.Database,
+  relPath: string,
+): AudioFolder | null {
+  const row = db
+    .prepare(
+      `SELECT * FROM audio_folders WHERE rel_path = ?
+       ORDER BY missing_at IS NOT NULL, id LIMIT 1`,
+    )
+    .get(relPath) as FolderRow | undefined;
+  return row ? toFolder(row) : null;
+}
+
+/** A subtitle file by its root-relative path in any library; a present row wins. */
+export function getSubtitleFileByRelPath(
+  db: Database.Database,
+  relPath: string,
+): SubtitleFile | null {
+  const row = db
+    .prepare(
+      `SELECT * FROM subtitle_files WHERE rel_path = ?
+       ORDER BY missing_at IS NOT NULL, id LIMIT 1`,
+    )
+    .get(relPath) as SubtitleRow | undefined;
+  return row ? toSubtitle(row) : null;
+}
+
 export function listSubtitleFiles(
   db: Database.Database,
   libraryId: string,

@@ -12,7 +12,12 @@ import {
   endGoalCopy,
   importBackupCopy,
   removeFromCollectionCopy,
-  restoreSubtitlesCopy
+  noAudiobookCopy,
+  removeSubtitlesCopy,
+  replaceAudiobookCopy,
+  replaceSubtitlesCopy,
+  restoreSubtitlesCopy,
+  unlinkAudiobookCopy
 } from './confirm-copy';
 import * as copies from './confirm-copy';
 import { IRREVERSIBLE_NOTE, answerOnce, confirmParagraphs, nextFocusIndex } from './confirm-state';
@@ -115,6 +120,22 @@ describe('confirmation words', () => {
     expect(completeBookCopy(1500).message[0]).toContain('The 1,500 characters');
     expect(completeBookCopy(0).danger).toBe(false);
     expect(restoreSubtitlesCopy(true).title).toBe('Restore the selected subtitles?');
+  });
+
+  it('words audiobook links: every device, files untouched', () => {
+    const unlink = unlinkAudiobookCopy('Vol 2 - スパイ教室02');
+    expect(unlink.title).toBe('Unlink the audiobook?');
+    expect(unlink.confirmLabel).toBe('Unlink audiobook');
+    expect(unlink.message[0]).toContain('“Vol 2 - スパイ教室02”');
+    expect(unlink.message[1]).toContain('every device');
+    expect(unlink.message[1]).toContain('not touched');
+    expect(unlink.irreversible).toBeFalsy();
+    expect(replaceAudiobookCopy('A', 'B').message[0]).toBe(
+      '“B” is linked instead of “A”. You choose the subtitles again.'
+    );
+    expect(noAudiobookCopy('A').confirmLabel).toBe('No audiobook');
+    expect(replaceSubtitlesCopy('a.srt', 'b.srt').confirmLabel).toBe('Replace subtitles');
+    expect(removeSubtitlesCopy('a.srt').title).toBe('Remove the subtitles?');
   });
 
   it('never uses "OK" or "Confirm" and always asks a question', () => {

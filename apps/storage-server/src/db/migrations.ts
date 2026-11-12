@@ -416,6 +416,33 @@ export const MIGRATIONS: { version: number; name: string; sql: string }[] = [
       );
     `,
   },
+  {
+    version: 11,
+    name: 'audio links',
+    // WP15b. The user's confirmed choice of audiobook (and subtitle file) for a book.
+    // Stored by root-relative path, never by index row id, so a link survives rescans;
+    // a folder that disappears shows as missing and is never relinked automatically.
+    // state 'none' = "No audiobook" (stops suggestions). subtitle_state NULL = the
+    // subtitle step hasn't been answered yet. book_id has no foreign key: a book that
+    // leaves Calibre keeps its link, like its reading data.
+    sql: `
+      CREATE TABLE audio_links (
+        user_id            TEXT NOT NULL REFERENCES users(id),
+        book_id            TEXT NOT NULL,
+        state              TEXT NOT NULL CHECK (state IN ('linked', 'none')),
+        folder_rel_path    TEXT,
+        file_name          TEXT,
+        subtitle_rel_path  TEXT,
+        subtitle_state     TEXT CHECK (subtitle_state IN ('linked', 'none')),
+        source             TEXT NOT NULL DEFAULT 'library' CHECK (source IN ('library', 'migrated')),
+        confirmed_at       INTEGER NOT NULL,
+        PRIMARY KEY (user_id, book_id),
+        CHECK ((state = 'linked') = (folder_rel_path IS NOT NULL)),
+        CHECK ((subtitle_state = 'linked') = (subtitle_rel_path IS NOT NULL)),
+        CHECK (state = 'linked' OR subtitle_state IS NULL)
+      );
+    `,
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

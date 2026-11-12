@@ -1153,6 +1153,14 @@
         <LibraryConnectionSettings />
       {/if}
     </div>
+    <SettingsItemGroup
+      title="Audiobooks"
+      tooltip="The server's audiobooks folder: what the last scan found, Scan again, and which books have an audiobook linked. Each book's audiobook is chosen on its page."
+    >
+      <a class="c-btn c-btn-secondary" href="{pagePath}/audiobooks" data-testid="audiobooks-link">
+        Open Audiobooks
+      </a>
+    </SettingsItemGroup>
     <SettingsSection jp="この端末" title="This device" testid="settings-section-device" />
     <SettingsItemGroup
       title="Export my data"
