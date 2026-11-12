@@ -25,6 +25,7 @@
   } from '$lib/data/store';
   import SettingsItemGroup from '$lib/components/settings/settings-item-group.svelte';
   import SettingsSection from '$lib/components/settings/settings-section.svelte';
+  import AnkiSettings from '$lib/components/anki/anki-settings.svelte';
   import SettingsServerFontsDialog from '$lib/components/settings/settings-server-fonts-dialog.svelte';
   import SettingsExportData from '$lib/components/settings/settings-export-data.svelte';
   import LibraryConnectionSettings from '$lib/components/library/library-connection-settings.svelte';
@@ -1019,6 +1020,18 @@
         </SettingsItemGroup>
       {/if}
     {/if}
+    <!-- WP14: "Enrich last Anki card". -->
+    <SettingsSection
+      jp="暗記"
+      title="Anki"
+      tooltip="Enrich last Anki card: what it adds to the newest note in Anki, and how it reaches Anki from this device."
+      testid="settings-section-anki"
+    />
+    <div class="col-span-full pb-8 md:pb-6">
+      {#if browser}
+        <AnkiSettings />
+      {/if}
+    </div>
   {:else if activeSettings === 'Data'}
     <!-- Three sections: the library server, this device, and the old sync's migration. -->
     <SettingsSection

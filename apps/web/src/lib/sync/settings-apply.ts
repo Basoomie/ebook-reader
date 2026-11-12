@@ -13,6 +13,13 @@ import {
   startDayHoursForTracker$,
   statsWeekStart$
 } from '$lib/data/store';
+import {
+  ankiAudioMatchThreshold$,
+  ankiAudioMaxSeconds$,
+  ankiFieldMapping$,
+  ankiLookBackDays$,
+  ankiTagPrefix$
+} from '$lib/anki/settings';
 import { parseStoredValue, SETTINGS_REGISTRY } from '$lib/sync/settings-registry';
 
 /**
@@ -27,7 +34,12 @@ export const GLOBAL_SETTING_SUBJECTS: Record<string, { next(value: never): void 
   speedGoalMinMinutes: speedGoalMinMinutes$,
   keepLocalStatisticsOnDeletion: keepLocalStatisticsOnDeletion$,
   overwriteBookCompletion: overwriteBookCompletion$,
-  addCharactersOnCompletion: addCharactersOnCompletion$
+  addCharactersOnCompletion: addCharactersOnCompletion$,
+  ankiFieldMapping: ankiFieldMapping$,
+  ankiLookBackDays: ankiLookBackDays$,
+  ankiTagPrefix: ankiTagPrefix$,
+  ankiAudioMatchThreshold: ankiAudioMatchThreshold$,
+  ankiAudioMaxSeconds: ankiAudioMaxSeconds$
 };
 
 /** Applies one global setting. null (never set on the source device) leaves this device's value. */

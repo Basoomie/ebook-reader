@@ -122,6 +122,21 @@ describe('readerShortcutGroups', () => {
 
   it('lists the audiobook keys', () => {
     const audio = find(readerShortcutGroups(context()), 'Audiobook');
-    expect(audio).toContainEqual({ keys: ['Alt + E'], action: 'Update the last Anki card' });
+    expect(audio).toContainEqual({
+      keys: ['Alt + E'],
+      action: 'Update the last Anki card from the current line'
+    });
+    expect(audio).toContainEqual({
+      keys: ['Ctrl + E'],
+      action: 'Create a new Anki card from the current line'
+    });
+  });
+
+  it('lists E for Enrich last Anki card (WP14)', () => {
+    const reading = find(readerShortcutGroups(context()), 'Reading');
+    expect(reading).toContainEqual({
+      keys: ['E'],
+      action: 'Enrich the last Anki card (tag, sentence, audio, cover, link)'
+    });
   });
 });

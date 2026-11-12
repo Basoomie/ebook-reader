@@ -152,6 +152,17 @@ export const SETTINGS_REGISTRY: Record<string, SettingSpec> = {
   positionPromptMinChars: d('Number'),
   readingStatusSettleSeconds: d('Number'),
 
+  // --- lib/anki/settings.ts (WP14 "Enrich last card") ---
+  ankiConnectUrl: d('String'),
+  ankiConnectTimeoutSeconds: d('Number'),
+  ankiBottomBarButton: d('Boolean'),
+  ankiConnectKey: l('String'), // AnkiConnect's key never leaves the device
+  ankiFieldMapping: g('Object'),
+  ankiLookBackDays: g('Number'),
+  ankiTagPrefix: g('String'),
+  ankiAudioMatchThreshold: g('Number'),
+  ankiAudioMaxSeconds: g('Number'),
+
   // --- lib/home/settings.ts (per device, WP7b) ---
   appOpenTarget: d('String'),
   homeRows: d('Array'),

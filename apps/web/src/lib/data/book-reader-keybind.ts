@@ -17,7 +17,9 @@ export enum BookReaderAvailableKeybind {
   SET_READING_POINT = 'setCustomReadingPoint',
   TOGGLE_TRACKING = 'toggleTracking',
   TOGGLE_TRACKING_FREEZE = 'toggleTrackingFreeze',
-  TOGGLE_ZEN = 'toggleZen'
+  TOGGLE_ZEN = 'toggleZen',
+  /** WP14 "Enrich last Anki card". */
+  ANKI_ENRICH = 'ankiEnrich'
 }
 
 export type BookReaderKeybindMap = Record<string, BookReaderAvailableKeybind>;

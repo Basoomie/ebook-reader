@@ -377,7 +377,10 @@ export const bookReaderKeybindMap$ = writableSubject<BookReaderKeybindMap>({
   KeyF: BookReaderAvailableKeybind.TOGGLE_TRACKING_FREEZE,
   f: BookReaderAvailableKeybind.TOGGLE_TRACKING_FREEZE,
   KeyZ: BookReaderAvailableKeybind.TOGGLE_ZEN,
-  z: BookReaderAvailableKeybind.TOGGLE_ZEN
+  z: BookReaderAvailableKeybind.TOGGLE_ZEN,
+  // WP14: plain E (whispersync's Anki keys are Ctrl+E and Alt+E; the reader ignores modifiers).
+  KeyE: BookReaderAvailableKeybind.ANKI_ENRICH,
+  e: BookReaderAvailableKeybind.ANKI_ENRICH
 });
 
 export const readerImageGalleryKeybindMap$ = writableSubject<ReaderImageGalleryKeybindMap>({

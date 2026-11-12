@@ -29,7 +29,8 @@ const SETTINGS_FILES = [
   'lib/data/store.ts',
   'lib/library/settings.ts',
   'lib/home/settings.ts',
-  'lib/sync/settings.ts'
+  'lib/sync/settings.ts',
+  'lib/anki/settings.ts'
 ];
 
 /** Keys and value types declared with writable*LocalStorageSubject()('key', ...). */

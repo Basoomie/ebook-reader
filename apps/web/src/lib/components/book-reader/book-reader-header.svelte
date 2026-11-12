@@ -78,6 +78,7 @@
     addBookmarkClick: void;
     jumpBackClick: void;
     jumpForwardClick: void;
+    ankiEnrichClick: void;
   }>();
 
   const customReadingPointMenuItems: {
@@ -113,6 +114,8 @@
       items.push(mergeEntries.JUMP_TO_POSITION);
       // WP11b
       items.push(mergeEntries.ADD_BOOKMARK);
+      // WP14: on every device, with or without an audiobook.
+      items.push(mergeEntries.ANKI_ENRICH);
     }
 
     if (hasBookState) {
@@ -335,6 +338,8 @@
           dispatch('shortcutsClick');
         } else if (detail === mergeEntries.ADD_BOOKMARK.label) {
           dispatch('addBookmarkClick');
+        } else if (detail === mergeEntries.ANKI_ENRICH.label) {
+          dispatch('ankiEnrichClick');
         }
       }}
     />
