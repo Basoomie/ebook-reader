@@ -15,7 +15,9 @@ If code and docs disagree, or a task needs a decision the docs don't cover, STOP
 
 **Phase 5** (Phases 0-4 and WP19 are done and merged). Decisions: `docs/design/decisions.md`, "Phase 5 decisions". Agreed order, one work package at a time: **WP15** audio linking → **WP15f** multi-file audiobooks (merge button, per-file picker; added 2026-11-12) → **WP14** "Enrich last card" → **WP16** GPU worker and job queue → **WP17** generated audiobooks.
 
-WP15 and WP15f are done, merged and pushed (WP15f merged at e2868c9 on 2026-11-12; schema v13). Next: **WP14**, only after the user approves starting it.
+WP15, WP15f and WP14 are done, merged and pushed (WP14 merged at 64a6bb7 on 2026-11-12; schema still v13). Next: **WP16**, only after the user approves starting it.
+
+WP14 "Enrich last Anki card" lives in `apps/web/src/lib/anki/` (its own AnkiConnect client; whispersync's `anki.ts` and its Ctrl+E / Alt+E are unchanged), `routes/open` (card links `/open?book=<library id>&pos=<char>`) and the server's read-only `src/audio/clip-service.ts` (sentence audio, ffmpeg to stdout).
 
 1. **WP15a** `wp15a-audio-index`: server only. Read-only audiobooks mount, folder and subtitle index, matcher, search, streaming.
 2. **WP15b** `wp15b-audio-picker`: audio links, the confirmation picker on book details (never auto-link; separate subtitle step; "No audiobook"), Settings > Audiobooks (`/audiobooks` forwards there).
