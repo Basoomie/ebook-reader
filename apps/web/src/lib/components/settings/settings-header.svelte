@@ -1,13 +1,15 @@
 <script lang="ts">
   /**
-   * The Settings page's tabs (Reader, Data, Statistics), under the page title in the
+   * The Settings page's tabs (Reader, Data, Statistics, Audiobooks), under the page title in the
    * catalogue's "Archive" look (like the Library's tabs): the current tab underlined in
    * vermilion, a gold rule below. The app navigation and Back live elsewhere (AppHeader,
    * the page title row), so the header bar holds only the navigation.
    */
-  export let activeSettings: string;
+  import { SETTINGS_TABS, type SettingsTab } from '$lib/settings/settings-tab';
 
-  const settingItems = ['Reader', 'Data', 'Statistics'];
+  export let activeSettings: SettingsTab;
+
+  const settingItems = SETTINGS_TABS;
 </script>
 
 <div

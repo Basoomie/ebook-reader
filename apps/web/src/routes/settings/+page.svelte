@@ -1,7 +1,9 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { tap } from 'rxjs';
-  import { afterNavigate } from '$app/navigation';
+  import { afterNavigate, goto } from '$app/navigation';
+  import { page } from '$app/stores';
+  import { settingsTabHref, tabFromQuery, type SettingsTab } from '$lib/settings/settings-tab';
   import SettingsContent from '$lib/components/settings/settings-content.svelte';
   import SettingsHeader from '$lib/components/settings/settings-header.svelte';
   import AppBottomBar from '$lib/components/app-nav/app-bottom-bar.svelte';
@@ -94,6 +96,9 @@
   let persistentStorageReactive = false;
 
   onMount(() => {
+    // The tab comes from the address (/settings?tab=audiobooks), so links and reloads keep it.
+    activeSettings = tabFromQuery($page.url.searchParams.get('tab'));
+    tabReady = true;
     storage.persisted().then(setPersistentStorage);
 
     setStorageQuota();
@@ -101,13 +106,24 @@
 
   let prevPage = `${pagePath}${mergeEntries.HOME.routeId}`;
 
-  let activeSettings = 'Reader';
+  let activeSettings: SettingsTab = 'Reader';
+  let tabReady = false;
+
+  // A tab change rewrites the address in place (no new history entry, no scroll).
+  $: if (tabReady) showTabInAddress(activeSettings);
+
+  function showTabInAddress(tab: SettingsTab) {
+    const href = settingsTabHref(pagePath, tab);
+    if (`${location.pathname}${location.search}` === href) return;
+    void goto(href, { replaceState: true, keepFocus: true, noScroll: true });
+  }
 
   let storageQuota = '';
 
   afterNavigate((navigation) => {
-    const { from } = navigation;
-    if (!from) return;
+    const { from, to } = navigation;
+    // A tab change is a navigation to this same page: Back still goes where it went.
+    if (!from || from.url.pathname === to?.url.pathname) return;
     prevPage = `${from.url.pathname}${from.url.search}`;
   });
 
