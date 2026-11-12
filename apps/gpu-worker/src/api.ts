@@ -13,6 +13,8 @@ export interface ClaimedJob {
   bookTitle: string | null;
   audioFileName: string;
   audioSize: number;
+  /** The audio length the server indexed; null while unknown. */
+  audioSeconds?: number | null;
   epubSize: number | null;
   leaseSeconds: number;
 }
