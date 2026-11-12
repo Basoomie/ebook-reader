@@ -3,7 +3,7 @@
  * web app EPUB import and counting code (apps/web/src/lib/server/epub/server-counter.ts).
  * Rebuild with `pnpm build:server-counter` in apps/web after changing that code.
  * epub-count-version: 1
- * build: 5e81d42b7a26c6e1
+ * build: 25ab76cc2af6946e
  */
 var __create = Object.create;
 var __defProp = Object.defineProperty;
@@ -446,8 +446,10 @@ var require_path_browserify = __commonJS({
 // src/lib/server/epub/server-counter.ts
 var server_counter_exports = {};
 __export(server_counter_exports, {
+  BOOK_SCRIPT_VERSION: () => BOOK_SCRIPT_VERSION,
   EPUB_COUNT_VERSION: () => EPUB_COUNT_VERSION,
   ImportHTMLFixMode: () => ImportHTMLFixMode,
+  bookScriptForServer: () => bookScriptForServer,
   countEpubForServer: () => countEpubForServer,
   defaultEpubImportOptions: () => defaultEpubImportOptions
 });
@@ -15000,6 +15002,277 @@ function createNodeWindow(previous) {
   return window2;
 }
 
+// src/lib/components/book-reader/book-search.ts
+var countedChar = /^[0-9A-Z○◯々-〇〻ぁ-ゖゝ-ゞァ-ヺー０-９Ａ-Ｚｦ-ﾝ\p{Radical}\p{Unified_Ideograph}]$/iu;
+var BLOCK_TAGS = /* @__PURE__ */ new Set([
+  "ADDRESS",
+  "ARTICLE",
+  "ASIDE",
+  "BLOCKQUOTE",
+  "BODY",
+  "DD",
+  "DIV",
+  "DL",
+  "DT",
+  "FIGCAPTION",
+  "FIGURE",
+  "FOOTER",
+  "H1",
+  "H2",
+  "H3",
+  "H4",
+  "H5",
+  "H6",
+  "HEADER",
+  "HR",
+  "LI",
+  "MAIN",
+  "NAV",
+  "OL",
+  "P",
+  "PRE",
+  "SECTION",
+  "TABLE",
+  "TD",
+  "TH",
+  "TR",
+  "UL"
+]);
+var SENTENCE_END = /* @__PURE__ */ new Set(["。", "！", "？", "!", "?", "．", "…"]);
+var GAIJI_MARK = "〓";
+var BLOCK_BREAK = "\n";
+function blockOf(node) {
+  let el = node.parentNode;
+  while (el && !(el.nodeType === 1 && BLOCK_TAGS.has(el.nodeName.toUpperCase()))) {
+    el = el.parentNode;
+  }
+  return el;
+}
+function insideRp(node) {
+  let el = node.parentNode;
+  while (el) {
+    if (el.nodeType === 1 && el.nodeName.toUpperCase() === "RP") {
+      return true;
+    }
+    el = el.parentNode;
+  }
+  return false;
+}
+function buildBookTextIndex(root, keepNodes = false) {
+  const display = [];
+  const countBefore = [];
+  const nodeAt = [];
+  const offsetAt = [];
+  const normToDisplay = [];
+  let norm = "";
+  let count = 0;
+  let lastBlock;
+  const push = (ch, node, offset) => {
+    display.push(ch);
+    countBefore.push(count);
+    nodeAt.push(keepNodes ? node : null);
+    offsetAt.push(offset);
+  };
+  for (const node of getParagraphNodes(root)) {
+    const block = blockOf(node);
+    if (lastBlock !== void 0 && block !== lastBlock && display.length) {
+      if (display[display.length - 1] === " ") {
+        display.pop();
+        countBefore.pop();
+        nodeAt.pop();
+        offsetAt.pop();
+      }
+      push(BLOCK_BREAK, null, 0);
+      norm += "\0";
+      normToDisplay.push(display.length - 1);
+    }
+    lastBlock = block;
+    if (isNodeGaiji(node)) {
+      push(GAIJI_MARK, node, 0);
+      norm += "";
+      normToDisplay.push(display.length - 1);
+      count += 1;
+      continue;
+    }
+    const text = node.textContent ?? "";
+    const hidden = insideRp(node);
+    let offset = 0;
+    for (const ch of Array.from(text)) {
+      const counted = countedChar.test(ch);
+      if (hidden) {
+        count += counted ? 1 : 0;
+      } else if (/\s/u.test(ch)) {
+        const last = display[display.length - 1];
+        if (display.length && last !== " " && last !== BLOCK_BREAK) {
+          push(" ", node, offset);
+        }
+      } else {
+        push(ch, node, offset);
+        const n = ch.normalize("NFKC").toLowerCase().replace(/\s+/gu, "");
+        for (let i = 0; i < n.length; i++) {
+          normToDisplay.push(display.length - 1);
+        }
+        norm += n;
+        count += counted ? 1 : 0;
+      }
+      offset += ch.length;
+    }
+  }
+  return { display, countBefore, nodeAt, offsetAt, norm, normToDisplay, total: count };
+}
+
+// src/lib/server/epub/book-script.ts
+var BOOK_SCRIPT_VERSION = 1;
+var DEFAULT_MAX_SENTENCE = 120;
+var CLOSERS = /^[」』）)】〉》"'”’]$/u;
+var PAUSE_AFTER = /* @__PURE__ */ new Set(["、", "，", ",", "　", " "]);
+var GAIJI_MARK2 = "〓";
+var SPEAKABLE = /[\p{L}\p{N}]/u;
+function rubyOf(node, stop) {
+  let el = node?.parentNode ?? null;
+  while (el && el !== stop) {
+    if (el.nodeType === 1 && el.nodeName.toUpperCase() === "RUBY") {
+      return el;
+    }
+    el = el.parentNode;
+  }
+  return null;
+}
+function rubyReading(ruby) {
+  return Array.from(ruby.querySelectorAll("rt")).map((rt) => rt.textContent ?? "").join("").replace(/\s+/gu, "");
+}
+function splitLong(range, display, max) {
+  const out = [];
+  let a = range.start;
+  while (range.end - a > max) {
+    let cut = -1;
+    for (let k = a + max - 1; k > a + Math.floor(max / 3); k--) {
+      if (PAUSE_AFTER.has(display[k])) {
+        cut = k + 1;
+        break;
+      }
+    }
+    if (cut < 0) {
+      cut = a + max;
+    }
+    out.push({ start: a, end: cut, paragraphEnd: false });
+    a = cut;
+  }
+  out.push({ start: a, end: range.end, paragraphEnd: range.paragraphEnd });
+  return out;
+}
+function sentenceRanges(display) {
+  const out = [];
+  let start = 0;
+  let i = 0;
+  while (i < display.length) {
+    const ch = display[i];
+    if (ch === BLOCK_BREAK) {
+      out.push({ start, end: i, paragraphEnd: true });
+      start = i + 1;
+      i += 1;
+      continue;
+    }
+    if (SENTENCE_END.has(ch)) {
+      let j = i + 1;
+      while (j < display.length && SENTENCE_END.has(display[j])) j += 1;
+      while (j < display.length && CLOSERS.test(display[j])) j += 1;
+      out.push({
+        start,
+        end: j,
+        paragraphEnd: j >= display.length || display[j] === BLOCK_BREAK
+      });
+      if (j < display.length && display[j] === BLOCK_BREAK) j += 1;
+      start = j;
+      i = j;
+      continue;
+    }
+    i += 1;
+  }
+  out.push({ start, end: display.length, paragraphEnd: true });
+  return out;
+}
+function elementSentences(element, offset, maxSentence) {
+  const index = buildBookTextIndex(element, true);
+  const { display, countBefore, nodeAt } = index;
+  const sentences = [];
+  for (const sentence of sentenceRanges(display)) {
+    for (const range of splitLong(sentence, display, maxSentence)) {
+      let a = range.start;
+      let b = range.end;
+      while (a < b && /\s/u.test(display[a])) a += 1;
+      while (b > a && /\s/u.test(display[b - 1])) b -= 1;
+      if (a >= b) continue;
+      const text = display.slice(a, b).join("");
+      if (!SPEAKABLE.test(text.replace(new RegExp(GAIJI_MARK2, "gu"), ""))) {
+        if (range.paragraphEnd && sentences.length) {
+          sentences[sentences.length - 1].paragraphEnd = true;
+        }
+        continue;
+      }
+      let reading = "";
+      let lastRuby = null;
+      for (let k = a; k < b; k++) {
+        const ch = display[k];
+        if (ch === GAIJI_MARK2) {
+          lastRuby = null;
+          continue;
+        }
+        const ruby = rubyOf(nodeAt[k], element);
+        const rt = ruby ? rubyReading(ruby) : "";
+        if (ruby && rt) {
+          if (ruby !== lastRuby) reading += rt;
+          lastRuby = ruby;
+        } else {
+          reading += ch;
+          lastRuby = null;
+        }
+      }
+      sentences.push({
+        text,
+        reading,
+        position: offset + countBefore[a],
+        paragraphEnd: range.paragraphEnd
+      });
+    }
+  }
+  return { sentences, total: index.total };
+}
+function bookScriptFromHtml(elementHtml, sections, characters, document2, { maxSentence = DEFAULT_MAX_SENTENCE } = {}) {
+  const container = document2.createElement("div");
+  container.innerHTML = elementHtml;
+  const sectionOf = new Map(sections.map((s) => [s.reference, s]));
+  const chapters = [];
+  for (const child of Array.from(container.children)) {
+    const section = sectionOf.get(child.id);
+    if (!chapters.length || section && !section.parentChapter) {
+      chapters.push({ title: section?.label?.trim() ?? "", parts: [child] });
+    } else {
+      chapters[chapters.length - 1].parts.push(child);
+    }
+  }
+  const out = [];
+  let offset = 0;
+  for (const chapter of chapters) {
+    const startCharacter = offset;
+    const sentences = [];
+    for (const part of chapter.parts) {
+      const result = elementSentences(part, offset, maxSentence);
+      sentences.push(...result.sentences);
+      offset += result.total;
+    }
+    if (!sentences.length) continue;
+    out.push({
+      index: out.length,
+      title: chapter.title || `Chapter ${out.length + 1}`,
+      startCharacter,
+      characters: offset - startCharacter,
+      sentences
+    });
+  }
+  return { version: BOOK_SCRIPT_VERSION, characters, chapters: out };
+}
+
 // src/lib/server/epub/count-epub-node.ts
 var defaultEpubImportOptions = {
   importHTMLFixMode: "Off" /* OFF */,
@@ -15013,16 +15286,28 @@ function prepareNode(fresh = false) {
 async function countEpubBlob(epub, options = defaultEpubImportOptions, extractOptions = {}) {
   return countEpub(epub, prepareNode(true), options, extractOptions);
 }
+async function bookScriptEpubBlob(epub, options = defaultEpubImportOptions, scriptOptions = {}) {
+  const document2 = prepareNode(true);
+  const { elementHtml, sections, characters } = await countEpub(epub, document2, options, {
+    imageData: false
+  });
+  return bookScriptFromHtml(elementHtml, sections, characters, document2, scriptOptions);
+}
 
 // src/lib/server/epub/server-counter.ts
+async function bookScriptForServer(epub, options = defaultEpubImportOptions, scriptOptions = {}) {
+  return bookScriptEpubBlob(epub, options, scriptOptions);
+}
 async function countEpubForServer(epub, options = defaultEpubImportOptions) {
   const { characters, sections } = await countEpubBlob(epub, options, { imageData: false });
   return { characters, sections };
 }
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
+  BOOK_SCRIPT_VERSION,
   EPUB_COUNT_VERSION,
   ImportHTMLFixMode,
+  bookScriptForServer,
   countEpubForServer,
   defaultEpubImportOptions
 });

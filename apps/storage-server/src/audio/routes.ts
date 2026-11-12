@@ -28,6 +28,9 @@ import { looksLikeCopies, rankEntries, searchMatches } from './match';
 import type { ClipService } from './clip-service';
 import type { MergeService } from './merge-service';
 import type { SubtitleJobService } from './subtitle-jobs';
+import type { TtsJobService } from './tts-jobs';
+import type { TtsModelService } from './tts-models';
+import type { VoiceService } from '../voices/voice-service';
 import { DEFAULT_AUDIO } from '../config';
 import type { AudioScanService } from './scan-service';
 import {
@@ -48,6 +51,10 @@ export interface AudioOptions {
   clips?: ClipService | null;
   /** WP16: the GPU worker's job queue (SubPlz subtitles); null/omitted = off. */
   jobs?: SubtitleJobService | null;
+  /** WP17: generated audiobooks, the TTS model list and voice presets; null/omitted = off. */
+  tts?: TtsJobService | null;
+  models?: TtsModelService | null;
+  voices?: VoiceService | null;
 }
 
 const CONTENT_TYPES: Record<string, string> = {
@@ -338,7 +345,8 @@ export function createAudioRouter(db: Database.Database, options: AudioOptions):
     const libs = listLibraries(db).filter(
       (l) =>
         (libraryId ? l.id === libraryId : true) &&
-        (kind === 'audio' ? l.audioDir : l.srtArchivePath),
+        // WP17: generated subtitles sit next to generated audiobooks (under the audio folder).
+        (kind === 'audio' ? l.audioDir : l.srtArchivePath || l.audioDir),
     );
     if (q.trim() === '') {
       res.json(kind === 'audio' ? { audio: [] } : { subtitles: [] });
@@ -406,13 +414,14 @@ export function createAudioRouter(db: Database.Database, options: AudioOptions):
             tier: s.tier,
           }))
         : [];
-      const subtitles = lib?.srtArchivePath
-        ? rankEntries(
-            forMatch,
-            listSubtitleFiles(db, lib.id).map((s) => ({ ...s, fileCount: 1 })),
-            limit,
-          ).map((s) => ({ ...subtitleSummary(s.entry), score: s.score, tier: s.tier }))
-        : [];
+      const subtitles =
+        lib?.srtArchivePath || lib?.audioDir
+          ? rankEntries(
+              forMatch,
+              listSubtitleFiles(db, lib.id).map((s) => ({ ...s, fileCount: 1 })),
+              limit,
+            ).map((s) => ({ ...subtitleSummary(s.entry), score: s.score, tier: s.tier }))
+          : [];
       res.json({
         book: {
           id: book.id,

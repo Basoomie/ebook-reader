@@ -318,6 +318,57 @@ export class AudioWriter {
     return this.publish('generated', dirAbs, dirRel, names, source, onProgress, signal);
   }
 
+  /**
+   * WP17: a NEW folder under a library's generated folder for one generated audiobook
+   * version: `<generated root>/<parent parts…>/<first free of folderNames>`. The parent
+   * folders are created as needed (or reused); the last folder must not exist yet (the next
+   * name is tried), so a version is never written into an existing folder. Returns its
+   * root-relative path.
+   */
+  async createGeneratedFolder({
+    libraryId,
+    area,
+    parentParts,
+    folderNames,
+  }: {
+    libraryId: string;
+    area: 'subtitles' | 'audio';
+    parentParts: string[];
+    folderNames: string[];
+  }): Promise<string> {
+    const genRel = this.generatedRoots(libraryId)[area];
+    if (!genRel) throw new WriteRefused(`This library has no ${area} folder`);
+    parentParts.forEach(checkFileName);
+    folderNames.forEach(checkFileName);
+    if (folderNames.length === 0) throw new WriteRefused('No folder name');
+    let genAbs: string;
+    try {
+      genAbs = resolveInsideAudio(this.root, genRel);
+    } catch {
+      throw new WriteRefused(`Not inside the audiobooks folder: ${genRel}`);
+    }
+    await this.realInside(path.dirname(genAbs));
+    await this.makeFolder(genAbs, path.dirname(genAbs));
+    let dirAbs = genAbs;
+    for (const part of parentParts) {
+      dirAbs = path.join(dirAbs, part);
+      await this.makeFolder(dirAbs, genAbs);
+    }
+    await this.realInside(dirAbs, genAbs);
+    for (const name of folderNames) {
+      const abs = path.join(dirAbs, name);
+      try {
+        await fs.mkdir(abs);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === 'EEXIST') continue;
+        throw err;
+      }
+      await this.realInside(abs, genAbs);
+      return toRel(genRel, ...parentParts, name);
+    }
+    throw new WriteRefused('No free folder name');
+  }
+
   /** Creates one folder (never recursive) inside `within`, or accepts it if it exists. */
   private async makeFolder(abs: string, within: string): Promise<void> {
     await this.realInside(path.dirname(abs), within);

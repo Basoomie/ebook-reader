@@ -62,7 +62,38 @@ export interface AudioConfig {
   merge: AudioMergeConfig;
   clip: AudioClipConfig;
   worker: WorkerConfig;
+  tts: TtsConfig;
 }
+
+/** WP17: generated audiobooks (TTS on the GPU worker) and voice presets. */
+export interface TtsConfig {
+  /** Largest chapter (or preview, or voice sample) the worker may upload (MB). */
+  chapterMaxMb: number;
+  /** Length of a preview (seconds of speech, roughly). */
+  previewSeconds: number;
+  /** Longest sentence sent to the model in one piece (characters). */
+  maxSentence: number;
+  /** Largest voice clip that can be uploaded (MB). */
+  voiceClipMaxMb: number;
+  /** Shortest and longest voice clip (seconds; the models use at most 120 s). */
+  voiceClipMinSeconds: number;
+  voiceClipMaxSeconds: number;
+  /** Reading a book's text for a job is stopped after this long (seconds). */
+  scriptTimeoutSeconds: number;
+  /** AAC bitrate of a generated audiobook, e.g. "96k" (mono speech). */
+  aacBitrate: string;
+}
+
+export const DEFAULT_TTS: TtsConfig = {
+  chapterMaxMb: 500,
+  previewSeconds: 60,
+  maxSentence: 120,
+  voiceClipMaxMb: 50,
+  voiceClipMinSeconds: 3,
+  voiceClipMaxSeconds: 120,
+  scriptTimeoutSeconds: 300,
+  aacBitrate: '96k',
+};
 
 /** WP16: the GPU worker's job queue (SubPlz subtitles). */
 export interface WorkerConfig {
@@ -145,6 +176,7 @@ export const DEFAULT_AUDIO: Omit<AudioConfig, 'dir'> = {
   merge: DEFAULT_AUDIO_MERGE,
   clip: DEFAULT_AUDIO_CLIP,
   worker: DEFAULT_WORKER,
+  tts: DEFAULT_TTS,
 };
 
 export interface SearchConfig {
@@ -702,6 +734,7 @@ export function parseAudioConfig(env: Env, warnings: string[]): AudioConfig {
       ),
     },
     worker: parseWorkerConfig(env, warnings),
+    tts: parseTtsConfig(env, warnings),
   };
 }
 
@@ -718,6 +751,46 @@ export function parseWorkerConfig(env: Env, warnings: string[]): WorkerConfig {
     resultMaxMb: num('WORKER_RESULT_MAX_MB', w.resultMaxMb, 1, 1000, false),
     archiveMatchMin: num('SUBTITLE_ARCHIVE_MATCH_MIN', w.archiveMatchMin, 0, 101, false),
   };
+}
+
+/** WP17 settings; a bad value is reported and the default used. */
+export function parseTtsConfig(env: Env, warnings: string[]): TtsConfig {
+  const t = DEFAULT_TTS;
+  const num = (name: string, fallback: number, min: number, max: number, integer: boolean) =>
+    parseNumber(name, env[name], fallback, min, max, integer, warnings);
+  const minSeconds = num('VOICE_CLIP_MIN_SECONDS', t.voiceClipMinSeconds, 1, 600, false);
+  return {
+    chapterMaxMb: num('TTS_CHAPTER_MAX_MB', t.chapterMaxMb, 1, 100_000, false),
+    previewSeconds: num('TTS_PREVIEW_SECONDS', t.previewSeconds, 5, 3600, false),
+    maxSentence: num('TTS_MAX_SENTENCE', t.maxSentence, 20, 1000, true),
+    voiceClipMaxMb: num('VOICE_CLIP_MAX_MB', t.voiceClipMaxMb, 1, 10_000, false),
+    voiceClipMinSeconds: minSeconds,
+    voiceClipMaxSeconds: Math.max(
+      minSeconds,
+      num('VOICE_CLIP_MAX_SECONDS', t.voiceClipMaxSeconds, 1, 3600, false),
+    ),
+    scriptTimeoutSeconds: num(
+      'TTS_SCRIPT_TIMEOUT_SECONDS',
+      t.scriptTimeoutSeconds,
+      5,
+      86_400,
+      false,
+    ),
+    aacBitrate: parseBitrate('TTS_AAC_BITRATE', env.TTS_AAC_BITRATE, t.aacBitrate, warnings),
+  };
+}
+
+function parseBitrate(
+  name: string,
+  raw: string | undefined,
+  fallback: string,
+  warnings: string[],
+): string {
+  const value = (raw ?? '').trim();
+  if (value === '') return fallback;
+  if (/^\d{2,3}k$/i.test(value)) return value.toLowerCase();
+  warnings.push(`${name}: "${value}" is not like 96k; using ${fallback}.`);
+  return fallback;
 }
 
 /** WP13 settings; bad values fall back to the defaults. */

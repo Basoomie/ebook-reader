@@ -115,7 +115,8 @@ export function createWorkerRouter(
       } catch (err) {
         rethrow(err);
       }
-      await sendBookFile(db, catalog, { id: held.job.userId }, held.job.bookId, res);
+      // heldJob() only returns subtitle jobs, which always have a book.
+      await sendBookFile(db, catalog, { id: held.job.userId }, held.job.bookId!, res);
     }),
   );
 

@@ -185,6 +185,8 @@ describe('a job from start to finish', () => {
       (await t.progress(id, { stage: 'syncing', progress: 0.4, message: 'SubPlz' })).body,
     ).toEqual({
       cancel: false,
+      // WP17: the pause switch, for jobs that stop between chapters.
+      pause: false,
     });
     expect(await t.latest(HITSUJI)).toMatchObject({
       state: 'running',

@@ -33,7 +33,9 @@ import {
   type AudioFileEntry,
   type AudioFolder,
   countPresent,
+  countPresentOf,
   getAudioFolder,
+  getAudioFolderByPath,
   foldersNeedingDurations,
   getScanState,
   markUnseenMissing,
@@ -100,6 +102,14 @@ interface ScanCounts {
   folders: number;
   subtitles: number;
   archives: number;
+}
+
+/**
+ * WP17: a library's folder of generated audiobooks, `<audio folder>-generated` (e.g.
+ * japanese-generated), next to its audio folder. Same rule as audio-write.ts.
+ */
+export function generatedAudioDir(lib: Pick<Library, 'audioDir'>): string | null {
+  return lib.audioDir ? `${lib.audioDir.replace(/\/+$/, '')}-generated` : null;
 }
 
 export class AudioScanService {
@@ -208,13 +218,20 @@ export class AudioScanService {
   /** Scans one library's audio and subtitle folders. Never throws. */
   async scanLibrary(lib: Library): Promise<void> {
     const started = this.now();
-    const before = getScanState(this.db, lib.id);
     updateScanState(this.db, lib.id, { status: 'scanning', scanRequestedAt: null });
     try {
       const counts: ScanCounts = { folders: 0, subtitles: 0, archives: 0 };
-      if (lib.audioDir) await this.scanAudio(lib, lib.audioDir, started, counts, before.folders);
+      // WP17: generated audiobooks first, so the missing-marking below sees them as seen.
+      // Their own counters: they never hide an empty audio or subtitle folder.
+      const generated: ScanCounts = { folders: 0, subtitles: 0, archives: 0 };
+      await this.scanGenerated(lib, started, generated);
+      const previousFolders = countPresentOf(this.db, 'audio_folders', lib.id, false);
+      const previousSubtitles = countPresentOf(this.db, 'subtitle_files', lib.id, false);
+      if (lib.audioDir) await this.scanAudio(lib, lib.audioDir, started, counts, previousFolders);
       if (lib.srtArchivePath) {
-        await this.scanSubtitles(lib, lib.srtArchivePath, started, counts, before.subtitles);
+        await this.scanSubtitles(lib, lib.srtArchivePath, started, counts, previousSubtitles);
+      } else {
+        markUnseenMissing(this.db, 'subtitle_files', lib.id, started, this.now());
       }
       updateScanState(this.db, lib.id, {
         status: 'idle',
@@ -227,7 +244,8 @@ export class AudioScanService {
       });
       this.log(
         `Audiobooks: "${lib.name}": ${counts.folders} audiobook folder(s), ${counts.subtitles} subtitle file(s)` +
-          (counts.archives ? `, ${counts.archives} archive(s) skipped` : ''),
+          (counts.archives ? `, ${counts.archives} archive(s) skipped` : '') +
+          (generated.folders ? `, ${generated.folders} generated audiobook(s)` : ''),
       );
     } catch (err) {
       const message = (err as Error).message ?? String(err);
@@ -264,6 +282,73 @@ export class AudioScanService {
   }
 
   /**
+   * WP17: walks `<audio folder>-generated/` (if it exists; it is made by the first generated
+   * audiobook): every folder with audio is indexed as a generated audiobook, and the
+   * subtitle files next to the audio as generated subtitles.
+   */
+  private async scanGenerated(lib: Library, started: number, counts: ScanCounts): Promise<void> {
+    const rel = generatedAudioDir(lib);
+    if (!rel) return;
+    const start = resolveInsideAudio(this.root, rel);
+    if (!(await isFolder(start))) return;
+    await this.walk(start, 0, async (abs, dirName, parentName, entries) => {
+      const folder = await this.indexFolder(lib, abs, dirName, parentName, entries, started, true);
+      if (!folder) return;
+      counts.folders += 1;
+      counts.subtitles += await this.indexSubtitlesIn(lib, start, abs, entries, started);
+    });
+  }
+
+  /** WP17: the subtitle files directly in a generated audiobook's folder. */
+  private async indexSubtitlesIn(
+    lib: Library,
+    start: string,
+    abs: string,
+    entries: import('fs').Dirent[],
+    seenAt: number,
+  ): Promise<number> {
+    let n = 0;
+    for (const e of entries) {
+      if (!e.isFile() || !SUBTITLE_EXTENSIONS.includes(ext(e.name))) continue;
+      const file = path.join(abs, e.name);
+      const st = await statAudioFile(file);
+      if (!st) continue;
+      this.indexSubtitle(lib, start, file, st, seenAt, true);
+      n += 1;
+    }
+    return n;
+  }
+
+  /**
+   * WP17: indexes one generated audiobook folder (just saved) and the subtitles in it, and
+   * measures its durations. Returns the folder, or null when it is not under the library's
+   * generated folder or holds no audio.
+   */
+  async rescanGeneratedFolder(libraryId: string, relPath: string): Promise<AudioFolder | null> {
+    const lib = listLibraries(this.db).find((l) => l.id === libraryId);
+    const rel = lib ? generatedAudioDir(lib) : null;
+    if (!lib || !rel) return null;
+    const start = resolveInsideAudio(this.root, rel);
+    const abs = resolveInsideAudio(this.root, relPath);
+    if (!isInside(start, abs) || abs === start || !(await isFolder(abs))) return null;
+    const entries = await readFolder(abs);
+    const now = this.now();
+    const folder = await this.indexFolder(
+      lib,
+      abs,
+      path.basename(abs),
+      path.basename(path.dirname(abs)),
+      entries,
+      now,
+      true,
+    );
+    if (!folder) return null;
+    await this.indexSubtitlesIn(lib, start, abs, entries, now);
+    await this.measureFolder(folder);
+    return getAudioFolderByPath(this.db, lib.id, folder.relPath);
+  }
+
+  /**
    * Records one folder that directly holds audio files (the unit a book links to).
    * Returns null when it holds none.
    */
@@ -274,6 +359,7 @@ export class AudioScanService {
     parentName: string | null,
     entries: import('fs').Dirent[],
     seenAt: number,
+    generated = false,
   ): Promise<AudioFolder | null> {
     const audio = entries.filter((e) => e.isFile() && AUDIO_EXTENSIONS.includes(ext(e.name)));
     if (audio.length === 0) return null;
@@ -304,6 +390,7 @@ export class AudioScanService {
       asin: meta?.asin ?? null,
       files,
       seenAt,
+      generated,
     });
   }
 
@@ -337,13 +424,20 @@ export class AudioScanService {
    */
   async rescanSubtitleFile(libraryId: string, relPath: string): Promise<boolean> {
     const lib = listLibraries(this.db).find((l) => l.id === libraryId);
-    if (!lib?.srtArchivePath || !SUBTITLE_EXTENSIONS.includes(ext(relPath))) return false;
-    const start = resolveInsideAudio(this.root, lib.srtArchivePath);
+    if (!lib || !SUBTITLE_EXTENSIONS.includes(ext(relPath))) return false;
     const abs = resolveInsideAudio(this.root, relPath);
-    if (!isInside(start, abs) || abs === start) return false;
+    // The subtitle folder, or (WP17) the generated audiobooks' folder.
+    const roots: { start: string; generated: boolean }[] = [];
+    if (lib.srtArchivePath) {
+      roots.push({ start: resolveInsideAudio(this.root, lib.srtArchivePath), generated: false });
+    }
+    const gen = generatedAudioDir(lib);
+    if (gen) roots.push({ start: resolveInsideAudio(this.root, gen), generated: true });
+    const root = roots.find((r) => isInside(r.start, abs) && abs !== r.start);
+    if (!root) return false;
     const st = await statAudioFile(abs);
     if (!st) return false;
-    this.indexSubtitle(lib, start, abs, st, this.now());
+    this.indexSubtitle(lib, root.start, abs, st, this.now(), root.generated);
     return true;
   }
 
@@ -353,6 +447,7 @@ export class AudioScanService {
     abs: string,
     st: { size: number; mtimeMs: number },
     seenAt: number,
+    generated = false,
   ): void {
     const name = path.basename(abs);
     const dir = path.dirname(abs);
@@ -367,6 +462,7 @@ export class AudioScanService {
       size: st.size,
       mtimeMs: st.mtimeMs,
       seenAt,
+      generated,
     });
   }
 

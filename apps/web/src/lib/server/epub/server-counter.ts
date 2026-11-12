@@ -13,12 +13,26 @@
 
 import type { Section } from '$lib/data/database/books-db/versions/v3/books-db-v3';
 import type { EpubHtmlImportOptions } from '$lib/functions/file-loaders/epub/generate-epub-html';
-import { countEpubBlob, defaultEpubImportOptions } from './count-epub-node';
+import { bookScriptEpubBlob, countEpubBlob, defaultEpubImportOptions } from './count-epub-node';
+import type { BookScript } from './book-script';
 
 export { EPUB_COUNT_VERSION } from '$lib/functions/file-loaders/epub/count-epub';
+export { BOOK_SCRIPT_VERSION } from './book-script';
 export { ImportHTMLFixMode } from '$lib/data/import-html-fix-mode';
 export { defaultEpubImportOptions };
-export type { EpubHtmlImportOptions };
+export type { EpubHtmlImportOptions, BookScript };
+
+/**
+ * WP17: the chapters and sentences a generated audiobook reads (book-script.ts), from the
+ * reader's own import. Same Blob stand-in as countEpubForServer.
+ */
+export async function bookScriptForServer(
+  epub: Blob,
+  options: EpubHtmlImportOptions = defaultEpubImportOptions,
+  scriptOptions: { maxSentence?: number } = {}
+): Promise<BookScript> {
+  return bookScriptEpubBlob(epub, options, scriptOptions);
+}
 
 export interface ServerCountResult {
   characters: number;

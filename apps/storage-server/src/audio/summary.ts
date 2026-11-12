@@ -20,6 +20,8 @@ export interface FolderSummary {
    */
   playable: boolean;
   missing: boolean;
+  /** WP17: a generated audiobook (shown with a "Generated" label). */
+  generated: boolean;
 }
 
 export interface SubtitleSummary {
@@ -30,6 +32,8 @@ export interface SubtitleSummary {
   parentName: string | null;
   size: number;
   missing: boolean;
+  /** WP17: made with a generated audiobook. */
+  generated: boolean;
 }
 
 export function folderSummary(f: AudioFolder): FolderSummary {
@@ -45,6 +49,7 @@ export function folderSummary(f: AudioFolder): FolderSummary {
     volume: f.volume,
     playable: f.fileCount === 1,
     missing: f.missingAt !== null,
+    generated: f.generated,
   };
 }
 
@@ -57,5 +62,6 @@ export function subtitleSummary(s: SubtitleFile): SubtitleSummary {
     parentName: s.parentName,
     size: s.size,
     missing: s.missingAt !== null,
+    generated: s.generated,
   };
 }

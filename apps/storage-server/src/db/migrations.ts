@@ -565,6 +565,123 @@ export const MIGRATIONS: { version: number; name: string; sql: string }[] = [
       ALTER TABLE api_tokens ADD COLUMN scope TEXT NOT NULL DEFAULT 'user' CHECK (scope IN ('user', 'worker'));
     `,
   },
+  {
+    version: 15,
+    name: 'generated audiobooks',
+    // WP17. worker_jobs is rebuilt (SQLite can't change a CHECK) for three new kinds:
+    // 'generate_audiobook' (a whole book, chapter by chapter, resumable), 'preview_audiobook'
+    // (about a minute of one chapter) and 'voice_sample' (a described voice, no book). The
+    // audio columns are only for 'sync_subtitles' now; library_id/book_id are NULL for a
+    // voice sample. params = the job's settings as JSON (voice map v1: voice, model, seed,
+    // pauses); version = the generated audiobook's version (folder <Title> / <Title> (vN));
+    // chapters_total/chapters_done = progress; claim_chapters = chapters_done when the job was
+    // last handed out (a lease that runs out after new chapters doesn't count as an attempt).
+    // tts_job_chapters: a finished chapter of a running job (its audio part waits in
+    // CACHE_DIR/tts-parts/<job>/ until the book is put together).
+    // tts_models: the TTS models offered (Settings > Audiobooks), each pinned to the revision
+    // recorded when it was added; removed_at hides it (the PC then deletes its files).
+    // tts_voices: voice presets, their reference clip in DATA_DIR/.uploads/voices/<id>/.
+    // generated: index rows found under <audio folder>-generated/.
+    sql: `
+      CREATE TABLE worker_jobs_v15 (
+        id                     INTEGER PRIMARY KEY,
+        user_id                TEXT NOT NULL REFERENCES users(id),
+        book_id                TEXT,
+        kind                   TEXT NOT NULL CHECK (kind IN ('sync_subtitles', 'generate_audiobook', 'preview_audiobook', 'voice_sample')),
+        library_id             TEXT,
+        audio_folder_rel_path  TEXT,
+        audio_file_name        TEXT,
+        link_confirmed_at      INTEGER,
+        state                  TEXT NOT NULL CHECK (state IN ('queued', 'running', 'done', 'failed', 'cancelled')),
+        stage                  TEXT CHECK (stage IN ('downloading', 'syncing', 'uploading', 'saving', 'preparing', 'generating', 'assembling')),
+        progress               REAL,
+        message                TEXT,
+        cancel_requested       INTEGER NOT NULL DEFAULT 0,
+        attempts               INTEGER NOT NULL DEFAULT 0,
+        lease_expires_at       INTEGER,
+        output_rel_path        TEXT,
+        linked                 INTEGER NOT NULL DEFAULT 0,
+        error                  TEXT,
+        log_tail               TEXT,
+        params                 TEXT,
+        version                INTEGER,
+        chapters_total         INTEGER,
+        chapters_done          INTEGER NOT NULL DEFAULT 0,
+        claim_chapters         INTEGER,
+        created_at             INTEGER NOT NULL,
+        started_at             INTEGER,
+        finished_at            INTEGER,
+        updated_at             INTEGER NOT NULL,
+        CHECK (kind <> 'sync_subtitles' OR (book_id IS NOT NULL AND library_id IS NOT NULL
+          AND audio_folder_rel_path IS NOT NULL AND audio_file_name IS NOT NULL)),
+        CHECK (kind = 'voice_sample' OR book_id IS NOT NULL)
+      );
+      INSERT INTO worker_jobs_v15 (id, user_id, book_id, kind, library_id, audio_folder_rel_path,
+        audio_file_name, link_confirmed_at, state, stage, progress, message, cancel_requested,
+        attempts, lease_expires_at, output_rel_path, linked, error, log_tail, created_at,
+        started_at, finished_at, updated_at)
+      SELECT id, user_id, book_id, kind, library_id, audio_folder_rel_path, audio_file_name,
+        link_confirmed_at, state, stage, progress, message, cancel_requested, attempts,
+        lease_expires_at, output_rel_path, linked, error, log_tail, created_at, started_at,
+        finished_at, updated_at
+      FROM worker_jobs;
+      DROP TABLE worker_jobs;
+      ALTER TABLE worker_jobs_v15 RENAME TO worker_jobs;
+      CREATE INDEX worker_jobs_book ON worker_jobs (user_id, book_id, id);
+      CREATE INDEX worker_jobs_state ON worker_jobs (state, id);
+
+      CREATE TABLE tts_job_chapters (
+        job_id       INTEGER NOT NULL REFERENCES worker_jobs(id) ON DELETE CASCADE,
+        idx          INTEGER NOT NULL,
+        title        TEXT NOT NULL,
+        duration_ms  INTEGER NOT NULL,
+        cues         TEXT NOT NULL,
+        part_file    TEXT NOT NULL,
+        bytes        INTEGER NOT NULL,
+        done_at      INTEGER NOT NULL,
+        PRIMARY KEY (job_id, idx)
+      );
+
+      CREATE TABLE tts_models (
+        id                    INTEGER PRIMARY KEY,
+        source                TEXT NOT NULL,
+        revision              TEXT NOT NULL,
+        label                 TEXT NOT NULL,
+        note                  TEXT,
+        supports_description  INTEGER,
+        supports_clip         INTEGER,
+        is_default            INTEGER NOT NULL DEFAULT 0,
+        added_at              INTEGER NOT NULL,
+        removed_at            INTEGER
+      );
+      CREATE UNIQUE INDEX tts_models_present ON tts_models (source) WHERE removed_at IS NULL;
+      INSERT INTO tts_models (source, revision, label, note, supports_description, supports_clip, is_default, added_at) VALUES
+        ('Aratako/Irodori-TTS-v4.1-Small', '2b28324dc263ed5e6638b3cf3dd94c82ead07b4b', 'Irodori v4.1 Small', 'Recommended. About 7 times faster than real time on the RTX 4070.', 1, 1, 1, 0),
+        ('Aratako/Irodori-TTS-v4.1-Small-MF', 'ccc78f5d480b6e51b69b2d5042a14c4da04fea6e', 'Irodori v4.1 Small MF', 'Fastest (about 14 times real time); a shortcut version of Small.', 1, 1, 0, 0),
+        ('Aratako/Irodori-TTS-500M-v3', '236c1e56591279fc24e3c1bf6609fc06e48dde28', 'Irodori 500M v3', 'Older model. Copies a voice clip only (no described voices).', 0, 1, 0, 0),
+        ('Aratako/Irodori-TTS-v4-Large-Quantized/float8-weight-only', 'bdef9592db4426bd1c99ccdf0cfc3a213223fb61', 'Irodori v4 Large (fp8)', 'Very slow: slower than real time, about 14 hours for a long novel. Gemma Terms of Use.', 1, 1, 0, 0);
+
+      CREATE TABLE tts_voices (
+        id            TEXT PRIMARY KEY,
+        user_id       TEXT NOT NULL REFERENCES users(id),
+        name          TEXT NOT NULL,
+        kind          TEXT NOT NULL CHECK (kind IN ('clip', 'design')),
+        description   TEXT,
+        model_source  TEXT,
+        seed          INTEGER,
+        clip_seconds  REAL NOT NULL,
+        size          INTEGER NOT NULL,
+        sha256        TEXT NOT NULL,
+        consent_at    INTEGER,
+        created_at    INTEGER NOT NULL,
+        CHECK (kind = 'design' OR consent_at IS NOT NULL)
+      );
+
+      ALTER TABLE audio_folders ADD COLUMN generated INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE subtitle_files ADD COLUMN generated INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE worker_status ADD COLUMN tts_image TEXT;
+    `,
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;
