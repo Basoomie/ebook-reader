@@ -353,6 +353,69 @@ export const MIGRATIONS: { version: number; name: string; sql: string }[] = [
       CREATE INDEX books_sort_published_desc ON books (IFNULL(published_at, -9000000000000000), id);
     `,
   },
+  {
+    version: 10,
+    name: 'audiobook folder and subtitle index',
+    // WP15a. The audiobooks root is mounted read-only; these tables only describe
+    // what a scan found there. Paths are relative to that root, with forward
+    // slashes, so a link survives a change of a library's audio folder setting.
+    // A folder or file that disappears is marked missing, never deleted, so a
+    // link to it can say so. libraries.srt_archive_path (v2) is the subtitle folder.
+    sql: `
+      ALTER TABLE libraries ADD COLUMN audio_dir TEXT;
+
+      CREATE TABLE audio_folders (
+        id                INTEGER PRIMARY KEY,
+        library_id        TEXT NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
+        rel_path          TEXT NOT NULL,
+        name              TEXT NOT NULL,
+        parent_name       TEXT,
+        title_key         TEXT NOT NULL,
+        loose_key         TEXT NOT NULL,
+        volume            REAL,
+        meta_title        TEXT,
+        meta_series       TEXT,
+        meta_sequence     TEXT,
+        asin              TEXT,
+        files             TEXT NOT NULL,
+        file_count        INTEGER NOT NULL CHECK (file_count >= 1),
+        total_bytes       INTEGER NOT NULL,
+        duration_seconds  REAL,
+        seen_at           INTEGER NOT NULL,
+        missing_at        INTEGER,
+        UNIQUE (library_id, rel_path)
+      );
+      CREATE INDEX audio_folders_title ON audio_folders (library_id, title_key);
+
+      CREATE TABLE subtitle_files (
+        id          INTEGER PRIMARY KEY,
+        library_id  TEXT NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
+        rel_path    TEXT NOT NULL,
+        name        TEXT NOT NULL,
+        parent_name TEXT,
+        title_key   TEXT NOT NULL,
+        loose_key   TEXT NOT NULL,
+        volume      REAL,
+        size        INTEGER NOT NULL,
+        mtime_ms    INTEGER NOT NULL,
+        seen_at     INTEGER NOT NULL,
+        missing_at  INTEGER,
+        UNIQUE (library_id, rel_path)
+      );
+
+      CREATE TABLE audio_scan_state (
+        library_id         TEXT PRIMARY KEY REFERENCES libraries(id) ON DELETE CASCADE,
+        status             TEXT NOT NULL DEFAULT 'idle' CHECK (status IN ('idle', 'scanning', 'error')),
+        scanned_at         INTEGER,
+        folders            INTEGER NOT NULL DEFAULT 0,
+        subtitles          INTEGER NOT NULL DEFAULT 0,
+        archives_skipped   INTEGER NOT NULL DEFAULT 0,
+        last_error         TEXT,
+        last_error_at      INTEGER,
+        scan_requested_at  INTEGER
+      );
+    `,
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

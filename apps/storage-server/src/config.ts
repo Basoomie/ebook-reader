@@ -37,7 +37,26 @@ export interface ServerConfig {
   fonts: FontConfig;
   /** Recent log lines kept for the bug report (WP18). */
   logs: LogConfig;
+  /** Audiobook folder index and streaming (WP15). */
+  audio: AudioConfig;
 }
+
+export interface AudioConfig {
+  /** Root of the audiobooks folder (mounted read-only). null = audio linking off. */
+  dir: string | null;
+  /** Refuse to scan unless the audiobooks root is mounted read-only. */
+  requireReadonly: boolean;
+  /** Full rescan interval (hours); 0 = only at start and on request. */
+  scanHours: number;
+  /** How often the server checks for a scan requested from the CLI (seconds). */
+  pollSeconds: number;
+}
+
+export const DEFAULT_AUDIO: Omit<AudioConfig, 'dir'> = {
+  requireReadonly: true,
+  scanHours: 24,
+  pollSeconds: 60,
+};
 
 export interface SearchConfig {
   /** A search with a /regex/ that runs longer is stopped (SEARCH_REGEX_TIMEOUT_SECONDS). */
@@ -218,6 +237,7 @@ export function loadConfig(env: Env): LoadedConfig {
       uploads: parseUploadConfig(env, warnings),
       fonts: parseFontConfig(env, warnings),
       logs: parseLogConfig(env, warnings),
+      audio: parseAudioConfig(env, warnings),
     },
     warnings,
   };
@@ -424,6 +444,39 @@ export function parseLogConfig(env: Env, warnings: string[]): LogConfig {
       100,
       100_000,
       true,
+      warnings,
+    ),
+  };
+}
+
+/** WP15 settings; like the other WP1+ settings, a bad value is reported and the default used. */
+export function parseAudioConfig(env: Env, warnings: string[]): AudioConfig {
+  const d = DEFAULT_AUDIO;
+  const dirRaw = (env.AUDIOBOOKS_DIR ?? '').trim();
+  return {
+    dir: dirRaw ? path.resolve(dirRaw) : null,
+    requireReadonly: parseBoolean(
+      'AUDIOBOOKS_REQUIRE_READONLY',
+      env.AUDIOBOOKS_REQUIRE_READONLY,
+      d.requireReadonly,
+      warnings,
+    ),
+    scanHours: parseNumber(
+      'AUDIO_SCAN_HOURS',
+      env.AUDIO_SCAN_HOURS,
+      d.scanHours,
+      0,
+      24 * 365,
+      false,
+      warnings,
+    ),
+    pollSeconds: parseNumber(
+      'AUDIO_POLL_SECONDS',
+      env.AUDIO_POLL_SECONDS,
+      d.pollSeconds,
+      1,
+      86_400,
+      false,
       warnings,
     ),
   };

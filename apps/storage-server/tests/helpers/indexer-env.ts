@@ -10,6 +10,7 @@ import { listUsers } from '../../src/db/users';
 import { ThumbnailService } from '../../src/thumbnails/thumbnails';
 import { UploadService } from '../../src/uploads/service';
 import { UploadStore } from '../../src/uploads/upload-store';
+import type { AudioOptions } from '../../src/audio/routes';
 import { testCalibreConfig, testConfig } from './test-app';
 
 export interface IndexerEnv {
@@ -34,7 +35,11 @@ export function makeIndexerEnv(
   overrides: Partial<CalibreConfig> = {},
   serverOverrides: Partial<ServerConfig> = {},
   countOptions: { config?: Partial<CountsConfig>; counterFile?: string } = {},
-  { seedDefaults = false, uploads = false }: { seedDefaults?: boolean; uploads?: boolean } = {},
+  {
+    seedDefaults = false,
+    uploads = false,
+    audio,
+  }: { seedDefaults?: boolean; uploads?: boolean; audio?: AudioOptions } = {},
 ): IndexerEnv {
   const calibre = testCalibreConfig({ dir: calibreDir, thumbBackground: false, ...overrides });
   const config = testConfig({ calibre, ...serverOverrides });
@@ -114,6 +119,7 @@ export function makeIndexerEnv(
       uploads: uploadService,
     },
     seedDefaults,
+    audio,
   });
   return {
     app,

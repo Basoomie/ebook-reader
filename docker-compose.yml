@@ -32,6 +32,14 @@ services:
         read_only: true
         bind:
           create_host_path: false
+      # Audiobooks root (WP15), READ-ONLY: audiobook folders and the subtitle archive
+      # (e.g. japanese/, japanese-srt/). Audiobooks are linked and streamed, never copied.
+      - type: bind
+        source: ${TTSU_AUDIOBOOKS_PATH:?TTSU_AUDIOBOOKS_PATH required (audiobooks root, e.g. /mnt/user/data/media/audiobooks)}
+        target: /audiobooks
+        read_only: true
+        bind:
+          create_host_path: false
     environment:
       - AUTH_TOKEN=${TTSU_AUTH_TOKEN:?AUTH_TOKEN required}
       - DATA_DIR=/data
@@ -62,3 +70,7 @@ services:
       # Uploads (WP7b): files go to DATA_DIR/.uploads (the data volume above).
       - UPLOAD_MAX_MB=${TTSU_UPLOAD_MAX_MB:-200}
       - UPLOAD_STAGED_HOURS=${TTSU_UPLOAD_STAGED_HOURS:-24}
+      # Audiobooks (WP15). Each library gets its folders with the CLI:
+      # cli library set <id> --audio-dir japanese --subtitle-dir japanese-srt
+      - AUDIOBOOKS_DIR=/audiobooks
+      - AUDIO_SCAN_HOURS=${TTSU_AUDIO_SCAN_HOURS:-24}

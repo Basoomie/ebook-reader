@@ -22,6 +22,7 @@ import { FontStore } from '../fonts/font-store';
 import { createFontRouter } from '../fonts/routes';
 import { FontService } from '../fonts/service';
 import { DEFAULT_MAX_CLOCK_SKEW_SECONDS, SyncStore } from '../sync/store';
+import { audioStreamRoute, type AudioOptions, createAudioRouter } from '../audio/routes';
 
 export interface PairingOptions {
   /** Failed pairing attempts allowed per minute (all clients together). */
@@ -64,6 +65,8 @@ export interface ApiOptions {
   fonts?: FontOptions;
   /** Recent log lines for the bug report (WP18). Default: the process-wide buffer. */
   logs?: RecentLogs;
+  /** Audiobook index and streaming (WP15). Without it the audio routes answer 503. */
+  audio?: AudioOptions;
 }
 
 export interface FontOptions {
@@ -90,6 +93,7 @@ export function createApiRouter({
   seedDefaults = true,
   fonts,
   logs = serverLogs,
+  audio = { service: null },
 }: ApiOptions): Router {
   const router = express.Router();
   // Pushes can carry many records; everything else keeps the small default limit.
@@ -134,6 +138,8 @@ export function createApiRouter({
 
     // Signed URL or token (a plain <img> can't send the token).
     router.get('/books/:id/thumbnail', thumbnailAuth(db), thumbnailHandler(db, catalog));
+    // Audio streams: signed URL or token (an <audio> element can't send the token, WP15).
+    router.use(audioStreamRoute(db, audio));
 
     router.use(requireUser(db));
 
@@ -146,6 +152,7 @@ export function createApiRouter({
     router.use(createLogsRouter(logs));
 
     router.use(createCatalogRouter(db, catalog));
+    router.use(createAudioRouter(db, audio));
     // Uploads (WP7b): a separate source adapter, mounted only when it is on.
     if (catalog.uploads) {
       router.use(

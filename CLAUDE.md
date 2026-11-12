@@ -6,23 +6,26 @@ The app works today. Every change must be intentional and must not break reading
 ## Design docs (read before starting any work)
 
 - `docs/design/design-doc.md`: the agreed design (v1), organized by system. Section 13 maps it to current code; section 14 lists risks.
-- `docs/design/dependency-map.md`: work packages (WP1-WP18), their prerequisites and the agreed phase order.
+- `docs/design/dependency-map.md`: work packages (WP1-WP19), their prerequisites and the agreed phase order.
 - `docs/design/decisions.md`: the log of individual decisions and verified facts about the code and the NAS.
 
 If code and docs disagree, or a task needs a decision the docs don't cover, STOP and ask. Do not guess or silently extend the design.
 
 ## Current phase
 
-**WP19: catalogue refresh**, before Phase 5 (Phases 0-4 are done and merged). Decisions: `docs/design/decisions.md`, "WP19: plan". Only the catalogue pages (Home, Library, Collections, Notes, Stats, book details); never the reader. Agreed order, one branch each:
+**Phase 5** (Phases 0-4 and WP19 are done and merged). Decisions: `docs/design/decisions.md`, "Phase 5 decisions". Agreed order, one work package at a time: **WP15** audio linking → **WP14** "Enrich last card" → **WP16** GPU worker and job queue → **WP17** generated audiobooks.
 
-1. **WP19a**: Library behaviour: sorts, result counts, loading on scroll, cover size, author links, Connection and Migration moved to Settings.
-2. **WP19b**: the new look (draft A "蔵書 Archive", navy and cream; light, dark and E-ink), hover states, card ⋮ menu.
-3. **WP19c**: book details page.
-4. **WP19d**: highlights and notes refresh (decisions: "WP19d: highlights and notes refresh, plan"), three branches: `wp19d-notes-page` (Notes page redesign, CSV export), `wp19d-quote-image` (quote images), `wp19d-reader-bar` (the reader's highlight bar). The reader bar branch is the one approved exception to "never the reader": restyle and a Quote image button only; the bar stays docked and its behaviour is unchanged.
+WP15 now, in five branches, each reviewed and merged locally; push and deploy after all of WP15:
 
-Confirmations before destructive actions (`wp19-confirm-destructive`; decisions: "WP19: confirmations before destructive actions") are a second approved exception: a confirm step (or Undo) in front of existing actions, also in the reader, whispersync and the Book Manager; never the migration pages. New destructive actions use `confirmDestructive` / `inline-confirm.svelte` with their text in `lib/confirm/confirm-copy.ts`.
+1. **WP15a** `wp15a-audio-index`: server only. Read-only audiobooks mount, folder and subtitle index, matcher, search, streaming.
+2. **WP15b** `wp15b-audio-picker`: audio links, the confirmation picker on book details (never auto-link; separate subtitle step; "No audiobook"), the `/audiobooks` page.
+3. **WP15c** `wp15c-whispersync-links`: whispersync plays linked audio (single-file audiobooks only); its position, saved subtitles and saved match move off the old sync. Reset match applies on every device (decided with the user); otherwise match, re-match and reset are unchanged.
+4. **WP15d** `wp15d-audio-migration`: the 3 books with audio on the old sync move to links; the 3 audio copies are deleted only after the user confirms.
+5. **WP15e** `wp15e-remove-old-sync`: remove the old sync code and `/manage` (`/manage` redirects to `/library`); "Remove from this device" and a built-in "On this device" collection replace the Manager. The old sync's files on the NAS stay for a later cleanup.
 
-Phase 5 (WP14-WP17) comes after WP19. The old sync is off (whispersync still uses it for matches until WP15). Still don't change the migration pages or the old-sync switch. Existing `stat-day` rows stay frozen as "before device tracking": never delete or rewrite them. Don't rewrite existing position records.
+The audiobooks folder is read-only to this app (like Calibre) until WP16 adds write access to its output folders only. New destructive actions use `confirmDestructive` / `inline-confirm.svelte` with their text in `lib/confirm/confirm-copy.ts`.
+
+The old sync is off. Still don't change the migration pages or the old-sync switch. Existing `stat-day` rows stay frozen as "before device tracking": never delete or rewrite them. Don't rewrite existing position records.
 
 Stop condition: each work package is finished on its own branch, with a summary of what changed, how it was verified, and anything unexpected. Then stop for review. Do not start the next work package or phase without approval.
 

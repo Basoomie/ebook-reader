@@ -6,6 +6,7 @@ import type { ServerConfig } from './config';
 import type { DatabaseState } from './db/database';
 import { createLegacyAudioUploadRouter, createLegacyFileRouter } from './legacy';
 import type { RecentLogs } from './logs/recent-logs';
+import type { AudioOptions } from './audio/routes';
 
 export interface AppOptions {
   config: ServerConfig;
@@ -16,6 +17,8 @@ export interface AppOptions {
   seedDefaults?: boolean;
   /** The recent log lines for the bug report (default: the process-wide buffer). */
   logs?: RecentLogs;
+  /** Audiobook index and streaming (WP15). */
+  audio?: AudioOptions;
 }
 
 export function createApp({
@@ -25,6 +28,7 @@ export function createApp({
   catalog,
   seedDefaults,
   logs,
+  audio,
 }: AppOptions): Express {
   const app = express();
 
@@ -60,6 +64,7 @@ export function createApp({
       fonts: { dataRoot: config.dataRoot, maxMb: config.fonts.maxMb },
       seedDefaults,
       logs,
+      audio,
     }),
   );
 
