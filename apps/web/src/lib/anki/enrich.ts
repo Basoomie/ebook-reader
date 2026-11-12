@@ -273,9 +273,7 @@ export function describeResult(result: EnrichResult): string {
   }
 
   if (result.unmapped) {
-    parts.push(
-      `No fields are set up for the note type "${result.noteType}" (Settings > Reader > Anki).`
-    );
+    parts.push(`No fields are set up for the note type "${result.noteType}" (Settings > Anki).`);
   }
 
   return parts.join(' ');

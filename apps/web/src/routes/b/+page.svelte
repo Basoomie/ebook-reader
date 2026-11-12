@@ -3359,7 +3359,7 @@
       <button
         class="min-h-[2.75rem] shrink-0 rounded border-2 border-gray-700 px-3 font-medium"
         data-testid="anki-notice-setup"
-        on:click={() => leaveReader(mergeEntries.SETTINGS.routeId, false)}
+        on:click={() => leaveReader(`${mergeEntries.SETTINGS.routeId}?tab=anki`, false)}
       >
         Set up fields
       </button>

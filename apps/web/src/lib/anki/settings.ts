@@ -10,7 +10,7 @@ import { writableObjectLocalStorageSubject } from '$lib/data/internal/writable-o
 import { writableStringLocalStorageSubject } from '$lib/data/internal/writable-string-local-storage-subject';
 import type { EnrichMapping } from './mapping';
 
-/** WP14 "Enrich last card" settings (Settings > Reader > Anki). */
+/** WP14 "Enrich last card" settings (Settings > Anki). */
 
 // --- This device ---
 
