@@ -158,6 +158,57 @@ describe('LibraryApi audiobooks', () => {
   });
 });
 
+describe('LibraryApi subtitle jobs (WP16)', () => {
+  it('queues a job, or returns the archive files offered first', async () => {
+    const seen: { method: string; url: string; body: unknown }[] = [];
+    let answer: () => Response = () => json(202, { job: { id: 7, state: 'queued' } });
+    const api = new LibraryApi('http://s', 't', 0, async (input, init) => {
+      seen.push({
+        method: init?.method ?? 'GET',
+        url: String(input),
+        body: init?.body ? JSON.parse(String(init.body)) : undefined
+      });
+      return answer();
+    });
+    expect(await api.startSubtitleJob('b 1', false)).toEqual({ job: { id: 7, state: 'queued' } });
+    answer = () =>
+      json(409, {
+        error: { code: 'archive_match', message: 'x', candidates: [{ id: 3, name: 'a.srt' }] }
+      });
+    expect(await api.startSubtitleJob('b 1', false)).toEqual({
+      archiveMatches: [{ id: 3, name: 'a.srt' }]
+    });
+    answer = () => json(409, { error: { code: 'busy', message: 'already' } });
+    await expect(api.startSubtitleJob('b 1', true)).rejects.toMatchObject({
+      status: 409,
+      code: 'busy'
+    });
+    expect(seen.map((x) => [x.method, x.url, x.body])).toEqual([
+      ['POST', 'http://s/api/v1/books/b%201/subtitle-job', { force: false }],
+      ['POST', 'http://s/api/v1/books/b%201/subtitle-job', { force: false }],
+      ['POST', 'http://s/api/v1/books/b%201/subtitle-job', { force: true }]
+    ]);
+  });
+
+  it('reads and stops jobs, reads the worker and sets the pause switch', async () => {
+    const seen: string[] = [];
+    const api = new LibraryApi('http://s', 't', 0, async (input, init) => {
+      seen.push(`${init?.method ?? 'GET'} ${String(input)} ${init?.body ?? ''}`.trim());
+      return json(200, { job: { id: 7 }, available: true, paused: true });
+    });
+    expect(await api.subtitleJob('b')).toEqual({ id: 7 });
+    expect(await api.cancelSubtitleJob(7)).toEqual({ id: 7 });
+    expect(await api.gpuWorker()).toMatchObject({ available: true, paused: true });
+    expect(await api.setGpuWorkerPaused(true)).toBe(true);
+    expect(seen).toEqual([
+      'GET http://s/api/v1/books/b/subtitle-job',
+      'POST http://s/api/v1/audio/subtitle-jobs/7/cancel {}',
+      'GET http://s/api/v1/gpu-worker',
+      'PUT http://s/api/v1/gpu-worker/paused {"paused":true}'
+    ]);
+  });
+});
+
 describe('pairDevice', () => {
   it('returns the token, and a wrong code is not "unauthorized"', async () => {
     const ok = await pairDevice('http://s', 'AAAA-BBBB', {}, async () =>

@@ -37,6 +37,8 @@ docker exec ttsu-storage node dist/cli.js token revoke <token-id>
 
 The database starts with a single user, `owner`.
 
+A **GPU worker token** (WP16) is made with `token worker "PC GPU worker"`. It works only on `/api/v1/worker/*` (every other route answers 403 `wrong_token`), and a device token is refused there. See `apps/gpu-worker/README.md`.
+
 ## Database
 
 - File: `$DB_DIR/ttsu.db` (SQLite, WAL mode). Schema version is `PRAGMA user_version`; migrations run at startup.
@@ -141,6 +143,17 @@ docker exec ttsu-storage node dist/cli.js audio status
 
 **Sentence audio for Anki (WP14).** `GET /books/:id/audio-clip?start=<s>&end=<s>` answers the MP3 of that time range of the book's linked audio file, for "Enrich last Anki card" (the device works out the range from the subtitle lines). Only a link that plays is used (one file, still there): no link 409 `no_audiobook`, a folder of several files 409 `not_one_file`, gone 409 `missing`/`changed`. ffmpeg reads the file and writes the clip to its output; nothing is written anywhere. At most `AUDIO_CLIP_MAX_SECONDS` long (400 `too_long`), `AUDIO_CLIP_CONCURRENCY` cuts at once (429 `busy`), stopped after `AUDIO_CLIP_TIMEOUT_SECONDS` (504 `timeout`).
 
+**Subtitles made on the PC (WP16).** The user asks for subtitles on a book's page (`POST /books/:id/subtitle-job {force}`). This needs a link to one audio file that is there, the book's EPUB and a subtitle folder for the audiobook's library. Unless `force` is set, subtitle files of the archive that look like the book's (score ≥ `SUBTITLE_ARCHIVE_MATCH_MIN`) are offered first: the answer is 409 `archive_match` with `candidates`, and nothing is queued. Jobs wait in the database (`worker_jobs`, one per book at a time). The GPU worker on the user's PC (`apps/gpu-worker`, with its own token) polls the server:
+
+- `POST /worker/heartbeat` reports its version, image and problems, and gets back the pause switch and the poll interval.
+- `POST /worker/claim` hands out the oldest job; only one runs at a time, and none while paused.
+- `GET /worker/jobs/:id/epub` and `/audio` serve only the files of the job it holds.
+- `POST /worker/jobs/:id/progress` extends the lease (`WORKER_LEASE_SECONDS`) and answers `cancel: true` once the user stopped the job.
+- `PUT /worker/jobs/:id/result` takes the `.srt` (UTF-8 with at least one cue, at most `WORKER_RESULT_MAX_MB`).
+- `POST /worker/jobs/:id/fail` reports a failure.
+
+The server saves the result through `src/audio/audio-write.ts` (new files only) as `<subtitle folder>/_generated/<book title>.srt`. When that name is taken, it saves `<title> <book id>.srt`, then `… 2.srt`, and so on. It then indexes the file and links it to the book, but only if the book's link is unchanged since the job was queued. A job whose worker goes quiet (the PC went off) goes back to the queue, and fails after `WORKER_MAX_ATTEMPTS`. User side: `GET /books/:id/subtitle-job` (the book's latest job), `POST /audio/subtitle-jobs/:id/cancel`, `GET /gpu-worker` (online, paused, problem, the user's waiting and running jobs) and `PUT /gpu-worker/paused {paused}`.
+
 **Suggestions.** `GET /api/v1/books/:id/audio/candidates` ranks folders and subtitle files by title (normalized: full/half width, brackets, `_ (出版社)`, `[N巻]`, `Vol N - `, ASINs) and series number. It never links anything: the user picks in the confirmation picker. `GET /api/v1/audio/search?q=` searches the whole index.
 
 **Streaming.** `GET /api/v1/audio/files/:folder/:index` serves one file with byte ranges (206), from a signed URL (an `<audio>` element can't send the token) or with the token. A URL stops working when the file changes (409).
@@ -204,6 +217,12 @@ docker exec ttsu-storage node dist/cli.js audio status
 | `AUDIO_CLIP_CONCURRENCY`           | `2`        | Cuts at the same time; more are answered "busy".                                                                                     |
 | `AUDIO_SCAN_HOURS`                 | `24`       | Full rescan interval of the audiobook and subtitle folders; `0` = only at start and on request.                                      |
 | `AUDIO_POLL_SECONDS`               | `60`       | How often the server checks for a scan requested with the CLI.                                                                       |
+| `WORKER_LEASE_SECONDS`             | `120`      | A running subtitle job whose worker reports nothing this long goes back to the queue (WP16).                                         |
+| `WORKER_MAX_ATTEMPTS`              | `3`        | Times a job is handed to the worker before it fails.                                                                                 |
+| `WORKER_OFFLINE_SECONDS`           | `120`      | The worker counts as off when it has not checked in this long.                                                                       |
+| `WORKER_POLL_SECONDS`              | `30`       | How often the idle worker asks for work (sent to the worker).                                                                        |
+| `WORKER_RESULT_MAX_MB`             | `20`       | Largest subtitle file the worker may upload.                                                                                         |
+| `SUBTITLE_ARCHIVE_MATCH_MIN`       | `75`       | Archive subtitle files scoring at least this are offered before new subtitles are made; `101` = never.                               |
 
 Invalid values for the WP1, WP2, WP6, WP4, WP3b, WP7a, WP7b and WP15 settings are reported at startup and fall back to the default; they never stop the legacy endpoints.
 

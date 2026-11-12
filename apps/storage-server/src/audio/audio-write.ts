@@ -136,6 +136,19 @@ export function mergedNameCandidates(folderName: string): string[] {
   return names;
 }
 
+/**
+ * WP16: names for a generated subtitle file, from the book's title:
+ * `<title>.srt`, then `<title> <bookId>.srt`, `<title> <bookId> 2.srt`, … (decided: "book
+ * ID appended on collision").
+ */
+export function subtitleNameCandidates(title: string, bookId: string, count = 20): string[] {
+  const longestSuffix = ` ${bookId} ${count}.srt`;
+  const base = truncateBytes(safeBaseName(title), MAX_NAME_BYTES - utf8Length(longestSuffix));
+  const names = [`${base}.srt`, `${base} ${bookId}.srt`];
+  for (let n = 2; n <= count; n++) names.push(`${base} ${bookId} ${n}.srt`);
+  return names;
+}
+
 function checkFileName(name: string): void {
   if (
     name === '' ||
@@ -257,12 +270,14 @@ export class AudioWriter {
   /**
    * WP16/WP17: a new file under a library's `<subtitle folder>/_generated/` (area
    * 'subtitles') or `<audio folder>-generated/` (area 'audio'). Folders below are created
-   * as needed. A file that exists is never replaced: the call fails instead.
+   * as needed. A file that exists is never replaced: the next of `fallbackNames` (names in
+   * the same folder, WP16) is tried, and the call fails when none is free.
    */
   async createGeneratedFile({
     libraryId,
     area,
     relPath,
+    fallbackNames = [],
     source,
     onProgress,
     signal,
@@ -270,6 +285,7 @@ export class AudioWriter {
     libraryId: string;
     area: 'subtitles' | 'audio';
     relPath: string;
+    fallbackNames?: string[];
     source: WriteSource;
     onProgress?: WriteProgress;
     signal?: AbortSignal;
@@ -279,6 +295,7 @@ export class AudioWriter {
     const parts = relPath.split(/[/\\]/).filter((p) => p !== '' && p !== '.');
     if (parts.length === 0) throw new WriteRefused('No file name');
     parts.forEach(checkFileName);
+    fallbackNames.forEach(checkFileName);
     const name = parts[parts.length - 1];
     const dirParts = parts.slice(0, -1);
 
@@ -297,7 +314,8 @@ export class AudioWriter {
       await this.makeFolder(dirAbs, genAbs);
     }
     const dirRel = toRel(genRel, ...dirParts);
-    return this.publish('generated', dirAbs, dirRel, [name], source, onProgress, signal);
+    const names = [name, ...fallbackNames.filter((n) => n !== name)];
+    return this.publish('generated', dirAbs, dirRel, names, source, onProgress, signal);
   }
 
   /** Creates one folder (never recursive) inside `within`, or accepts it if it exists. */

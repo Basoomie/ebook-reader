@@ -4,6 +4,7 @@
  *
  *   docker exec ttsu-storage node dist/cli.js token pair "Boox"
  *   docker exec ttsu-storage node dist/cli.js token create "Phone"
+ *   docker exec ttsu-storage node dist/cli.js token worker "PC GPU worker"
  *   docker exec ttsu-storage node dist/cli.js token list
  *   docker exec ttsu-storage node dist/cli.js token revoke <token-id>
  *   docker exec ttsu-storage node dist/cli.js library list
@@ -80,6 +81,7 @@ import { listLinks, resolveLink } from './audio/audio-links';
 const USAGE = `Usage:
   cli token pair <label> [--user <name>]     Make a one-time code a device trades for its own token
   cli token create <label> [--user <name>]   Create a token (shown once)
+  cli token worker <label> [--user <name>]   Create a GPU worker token (WP16; only the worker's routes)
   cli token list                             List tokens
   cli token revoke <token-id>                Revoke a token
   cli library list                           List discovered Calibre libraries
@@ -186,6 +188,19 @@ function tokenCommand(
       console.log(token);
       break;
     }
+    case 'worker': {
+      const label = rest.join(' ').trim();
+      if (!label) fail('token worker needs a label, e.g. token worker "PC GPU worker"');
+      const user = pickUser(db, userName);
+      const { token, record } = createToken(db, user.id, label, Date.now(), 'worker');
+      console.log(
+        `Created GPU worker token "${record.label}" for user "${user.name}" (id ${record.id}).`,
+      );
+      console.log('It works only for the GPU worker (its jobs and their files), not as a device.');
+      console.log("Copy it now into the worker's config.json; it cannot be shown again:");
+      console.log(token);
+      break;
+    }
     case 'list': {
       const tokens = listTokens(db);
       if (tokens.length === 0) {
@@ -198,6 +213,7 @@ function tokenCommand(
             t.id,
             `user=${t.userName}`,
             `label="${t.label}"`,
+            ...(t.scope === 'worker' ? ['scope=worker'] : []),
             `created=${formatDate(t.createdAt)}`,
             `last_used=${formatDate(t.lastUsedAt)}`,
             t.revokedAt === null ? 'active' : `revoked=${formatDate(t.revokedAt)}`,

@@ -61,7 +61,33 @@ export interface AudioConfig {
   copyHintPercent: number;
   merge: AudioMergeConfig;
   clip: AudioClipConfig;
+  worker: WorkerConfig;
 }
+
+/** WP16: the GPU worker's job queue (SubPlz subtitles). */
+export interface WorkerConfig {
+  /** A running job whose worker sends nothing for this long goes back to the queue (s). */
+  leaseSeconds: number;
+  /** Times a job is handed out before it fails (a lease that ran out counts). */
+  maxAttempts: number;
+  /** The worker counts as offline when not seen for this long (s). */
+  offlineSeconds: number;
+  /** How often the worker asks for work (s); sent to the worker. */
+  pollSeconds: number;
+  /** Largest subtitle file the worker may upload (MB). */
+  resultMaxMb: number;
+  /** "Make subtitles" first offers an archive file scoring at least this (0-100). */
+  archiveMatchMin: number;
+}
+
+export const DEFAULT_WORKER: WorkerConfig = {
+  leaseSeconds: 120,
+  maxAttempts: 3,
+  offlineSeconds: 120,
+  pollSeconds: 30,
+  resultMaxMb: 20,
+  archiveMatchMin: 75,
+};
 
 /** WP14: sentence-audio clips for Anki, cut with ffmpeg (read-only, to stdout). */
 export interface AudioClipConfig {
@@ -118,6 +144,7 @@ export const DEFAULT_AUDIO: Omit<AudioConfig, 'dir'> = {
   copyHintPercent: 3,
   merge: DEFAULT_AUDIO_MERGE,
   clip: DEFAULT_AUDIO_CLIP,
+  worker: DEFAULT_WORKER,
 };
 
 export interface SearchConfig {
@@ -674,6 +701,22 @@ export function parseAudioConfig(env: Env, warnings: string[]): AudioConfig {
         warnings,
       ),
     },
+    worker: parseWorkerConfig(env, warnings),
+  };
+}
+
+/** WP16 settings; a bad value is reported and the default used. */
+export function parseWorkerConfig(env: Env, warnings: string[]): WorkerConfig {
+  const w = DEFAULT_WORKER;
+  const num = (name: string, fallback: number, min: number, max: number, integer: boolean) =>
+    parseNumber(name, env[name], fallback, min, max, integer, warnings);
+  return {
+    leaseSeconds: num('WORKER_LEASE_SECONDS', w.leaseSeconds, 15, 86_400, false),
+    maxAttempts: num('WORKER_MAX_ATTEMPTS', w.maxAttempts, 1, 100, true),
+    offlineSeconds: num('WORKER_OFFLINE_SECONDS', w.offlineSeconds, 5, 86_400, false),
+    pollSeconds: num('WORKER_POLL_SECONDS', w.pollSeconds, 1, 3600, false),
+    resultMaxMb: num('WORKER_RESULT_MAX_MB', w.resultMaxMb, 1, 1000, false),
+    archiveMatchMin: num('SUBTITLE_ARCHIVE_MATCH_MIN', w.archiveMatchMin, 0, 101, false),
   };
 }
 

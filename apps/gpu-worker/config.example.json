@@ -1,0 +1,11 @@
+{
+  "serverUrl": "http://192.168.1.5:3081",
+  "token": "ttsu_PASTE_THE_WORKER_TOKEN_HERE",
+  "cacheDir": "C:\\Data\\Japanese\\Books\\SyncCache",
+  "workDir": "C:\\ttsu-worker\\work",
+  "logDir": "C:\\ttsu-worker\\logs",
+  "maxRunHours": 8,
+  "minFreeGB": 5,
+  "logMaxMB": 5,
+  "reportSeconds": 10
+}

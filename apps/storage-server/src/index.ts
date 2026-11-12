@@ -16,6 +16,7 @@ import { ClipService } from './audio/clip-service';
 import { MergeService } from './audio/merge-service';
 import { MergeWorkdir } from './audio/merge-workdir';
 import { AudioScanService } from './audio/scan-service';
+import { SubtitleJobService } from './audio/subtitle-jobs';
 
 // Every console line is also kept (secrets removed) for the bug report (WP18).
 captureConsole(serverLogs);
@@ -159,6 +160,7 @@ catalog.search = search;
 let audio: AudioScanService | null = null;
 let merges: MergeService | null = null;
 let clips: ClipService | null = null;
+let jobs: SubtitleJobService | null = null;
 if (database.ok && config.audio.dir) {
   audio = new AudioScanService({
     db: database.db,
@@ -179,21 +181,26 @@ if (database.ok && config.audio.dir) {
       console.error(`Error: merging is off: ${(err as Error).message}`);
     }
   }
+  // The one writer for the audiobooks folder: merged files (WP15f) and generated
+  // subtitles (WP16).
+  const writer = new AudioWriter({
+    db: database.db,
+    root: config.audio.dir,
+    owner: {
+      uid: config.audio.merge.fileUid,
+      gid: config.audio.merge.fileGid,
+      mode: config.audio.merge.fileMode,
+    },
+  });
   merges = new MergeService({
     db: database.db,
     scan,
-    writer: new AudioWriter({
-      db: database.db,
-      root: config.audio.dir,
-      owner: {
-        uid: config.audio.merge.fileUid,
-        gid: config.audio.merge.fileGid,
-        mode: config.audio.merge.fileMode,
-      },
-    }),
+    writer,
     workdir,
     config: config.audio.merge,
   });
+  // WP16: the GPU worker's queue. Jobs wait in the database; the worker on the PC asks.
+  jobs = new SubtitleJobService({ db: database.db, scan, writer, config: config.audio.worker });
   const mergeService = merges;
   // WP14: sentence audio for Anki (read-only cuts to stdout).
   clips = new ClipService({
@@ -220,6 +227,7 @@ const app = createApp({
     service: audio,
     merges,
     clips,
+    jobs,
     copyHint: {
       minMinutes: config.audio.copyHintMinMinutes,
       percent: config.audio.copyHintPercent,

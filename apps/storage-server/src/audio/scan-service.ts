@@ -330,6 +330,46 @@ export class AudioScanService {
     return getAudioFolder(this.db, fresh.id);
   }
 
+  /**
+   * WP16: indexes one subtitle file (a new SubPlz result in `<subtitle folder>/_generated/`)
+   * without a full scan. Returns false when the file is not there or not a subtitle file
+   * under the library's subtitle folder.
+   */
+  async rescanSubtitleFile(libraryId: string, relPath: string): Promise<boolean> {
+    const lib = listLibraries(this.db).find((l) => l.id === libraryId);
+    if (!lib?.srtArchivePath || !SUBTITLE_EXTENSIONS.includes(ext(relPath))) return false;
+    const start = resolveInsideAudio(this.root, lib.srtArchivePath);
+    const abs = resolveInsideAudio(this.root, relPath);
+    if (!isInside(start, abs) || abs === start) return false;
+    const st = await statAudioFile(abs);
+    if (!st) return false;
+    this.indexSubtitle(lib, start, abs, st, this.now());
+    return true;
+  }
+
+  private indexSubtitle(
+    lib: Library,
+    start: string,
+    abs: string,
+    st: { size: number; mtimeMs: number },
+    seenAt: number,
+  ): void {
+    const name = path.basename(abs);
+    const dir = path.dirname(abs);
+    const base = baseName(name);
+    upsertSubtitleFile(this.db, {
+      libraryId: lib.id,
+      relPath: path.relative(this.root, abs).split(path.sep).join('/'),
+      name,
+      parentName: dir === start ? null : path.basename(dir),
+      ...entryKeys(base),
+      volume: extractVolume(base),
+      size: st.size,
+      mtimeMs: st.mtimeMs,
+      seenAt,
+    });
+  }
+
   private async scanSubtitles(
     lib: Library,
     subtitleDir: string,
@@ -339,26 +379,16 @@ export class AudioScanService {
   ): Promise<void> {
     const start = resolveInsideAudio(this.root, subtitleDir);
     if (!(await isFolder(start))) throw new Error(`Subtitle folder not found: ${subtitleDir}`);
-    await this.walk(start, 0, async (abs, dirName, _parent, entries) => {
+    await this.walk(start, 0, async (abs, _dirName, _parent, entries) => {
       for (const e of entries) {
         if (!e.isFile()) continue;
         const x = ext(e.name);
         if (ARCHIVE_EXTENSIONS.includes(x)) counts.archives += 1;
         if (!SUBTITLE_EXTENSIONS.includes(x)) continue;
-        const st = await statAudioFile(path.join(abs, e.name));
+        const file = path.join(abs, e.name);
+        const st = await statAudioFile(file);
         if (!st) continue;
-        const base = baseName(e.name);
-        upsertSubtitleFile(this.db, {
-          libraryId: lib.id,
-          relPath: path.relative(this.root, path.join(abs, e.name)).split(path.sep).join('/'),
-          name: e.name,
-          parentName: abs === start ? null : dirName,
-          ...entryKeys(base),
-          volume: extractVolume(base),
-          size: st.size,
-          mtimeMs: st.mtimeMs,
-          seenAt: started,
-        });
+        this.indexSubtitle(lib, start, file, st, started);
         counts.subtitles += 1;
       }
     });

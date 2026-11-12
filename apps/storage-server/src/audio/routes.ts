@@ -7,7 +7,7 @@
  * the token) or the usual Bearer token, like thumbnails.
  */
 import type Database from 'better-sqlite3';
-import express, { RequestHandler, Router } from 'express';
+import express, { type Request, RequestHandler, type Response, Router } from 'express';
 import path from 'path';
 import { pipeline } from 'stream/promises';
 import { getLibrary, listLibraries } from '../calibre/libraries';
@@ -27,6 +27,7 @@ import {
 import { looksLikeCopies, rankEntries, searchMatches } from './match';
 import type { ClipService } from './clip-service';
 import type { MergeService } from './merge-service';
+import type { SubtitleJobService } from './subtitle-jobs';
 import { DEFAULT_AUDIO } from '../config';
 import type { AudioScanService } from './scan-service';
 import {
@@ -45,6 +46,8 @@ export interface AudioOptions {
   merges?: MergeService | null;
   /** WP14: sentence-audio clips for Anki; null/omitted = off. */
   clips?: ClipService | null;
+  /** WP16: the GPU worker's job queue (SubPlz subtitles); null/omitted = off. */
+  jobs?: SubtitleJobService | null;
 }
 
 const CONTENT_TYPES: Record<string, string> = {
@@ -138,6 +141,76 @@ function parseId(value: string): number {
   return n;
 }
 
+/**
+ * Streams one file of an indexed folder (single byte ranges, HEAD, `v` = the file version
+ * the URL was made for). Read-only. Also used by the GPU worker's download (WP16).
+ */
+export async function sendAudioFile(
+  service: AudioScanService,
+  folder: AudioFolder,
+  index: number,
+  req: Request,
+  res: Response,
+): Promise<void> {
+  if (folder.missingAt !== null) {
+    throw new ApiError(410, 'missing', 'This audiobook is no longer in the audiobooks folder');
+  }
+  const entry = folder.files[index];
+  const fileMissing = () => new ApiError(404, 'file_missing', 'The audio file was not found');
+  let file: string;
+  try {
+    file = resolveInsideAudio(service.root, `${folder.relPath}/${entry.name}`);
+  } catch {
+    throw fileMissing();
+  }
+  const stat = await statAudioFile(file);
+  if (!stat) throw fileMissing();
+  const version = fileVersion(stat.size, stat.mtimeMs);
+  if (req.query.v !== undefined && req.query.v !== version) {
+    throw new ApiError(409, 'changed', 'The audio file changed since this link was made');
+  }
+
+  res.set('Accept-Ranges', 'bytes');
+  res.set(
+    'Content-Type',
+    CONTENT_TYPES[path.extname(entry.name).toLowerCase()] ?? 'application/octet-stream',
+  );
+  res.set('ETag', `"${version}"`);
+  res.set('Last-Modified', new Date(stat.mtimeMs).toUTCString());
+  res.set('Cache-Control', 'private, max-age=86400');
+
+  const range = parseRange(req.headers.range, stat.size);
+  if (range === 'unsatisfiable') {
+    res.set('Content-Range', `bytes */${stat.size}`);
+    throw new ApiError(416, 'range_not_satisfiable', 'Requested range is outside the file');
+  }
+  if (range) {
+    res.status(206);
+    res.set('Content-Range', `bytes ${range.start}-${range.end}/${stat.size}`);
+    res.set('Content-Length', String(range.end - range.start + 1));
+  } else {
+    res.set('Content-Length', String(stat.size));
+  }
+  if (req.method === 'HEAD') {
+    res.end();
+    return;
+  }
+  let stream;
+  try {
+    stream = await openAudioStream(file, range ?? undefined);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') throw fileMissing();
+    throw err;
+  }
+  try {
+    await pipeline(stream, res);
+  } catch (err) {
+    // The player seeked or stopped; nothing to report.
+    if ((err as NodeJS.ErrnoException).code === 'ERR_STREAM_PREMATURE_CLOSE') return;
+    throw err;
+  }
+}
+
 /** The stream route: signed URL or token. Mounted before requireUser. */
 export function audioStreamRoute(db: Database.Database, options: AudioOptions): Router {
   const router = express.Router();
@@ -165,63 +238,7 @@ export function audioStreamRoute(db: Database.Database, options: AudioOptions): 
       if (!folder || !Number.isInteger(index) || index < 0 || index >= folder.files.length) {
         throw new ApiError(404, 'not_found', 'No such audio file');
       }
-      if (folder.missingAt !== null) {
-        throw new ApiError(410, 'missing', 'This audiobook is no longer in the audiobooks folder');
-      }
-      const entry = folder.files[index];
-      const fileMissing = () => new ApiError(404, 'file_missing', 'The audio file was not found');
-      let file: string;
-      try {
-        file = resolveInsideAudio(service.root, `${folder.relPath}/${entry.name}`);
-      } catch {
-        throw fileMissing();
-      }
-      const stat = await statAudioFile(file);
-      if (!stat) throw fileMissing();
-      const version = fileVersion(stat.size, stat.mtimeMs);
-      if (req.query.v !== undefined && req.query.v !== version) {
-        throw new ApiError(409, 'changed', 'The audio file changed since this link was made');
-      }
-
-      res.set('Accept-Ranges', 'bytes');
-      res.set(
-        'Content-Type',
-        CONTENT_TYPES[path.extname(entry.name).toLowerCase()] ?? 'application/octet-stream',
-      );
-      res.set('ETag', `"${version}"`);
-      res.set('Last-Modified', new Date(stat.mtimeMs).toUTCString());
-      res.set('Cache-Control', 'private, max-age=86400');
-
-      const range = parseRange(req.headers.range, stat.size);
-      if (range === 'unsatisfiable') {
-        res.set('Content-Range', `bytes */${stat.size}`);
-        throw new ApiError(416, 'range_not_satisfiable', 'Requested range is outside the file');
-      }
-      if (range) {
-        res.status(206);
-        res.set('Content-Range', `bytes ${range.start}-${range.end}/${stat.size}`);
-        res.set('Content-Length', String(range.end - range.start + 1));
-      } else {
-        res.set('Content-Length', String(stat.size));
-      }
-      if (req.method === 'HEAD') {
-        res.end();
-        return;
-      }
-      let stream;
-      try {
-        stream = await openAudioStream(file, range ?? undefined);
-      } catch (err) {
-        if ((err as NodeJS.ErrnoException).code === 'ENOENT') throw fileMissing();
-        throw err;
-      }
-      try {
-        await pipeline(stream, res);
-      } catch (err) {
-        // The player seeked or stopped; nothing to report.
-        if ((err as NodeJS.ErrnoException).code === 'ERR_STREAM_PREMATURE_CLOSE') return;
-        throw err;
-      }
+      await sendAudioFile(service, folder, index, req, res);
     }),
   );
   return router;

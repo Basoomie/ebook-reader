@@ -15,7 +15,9 @@ If code and docs disagree, or a task needs a decision the docs don't cover, STOP
 
 **Phase 5** (Phases 0-4 and WP19 are done and merged). Decisions: `docs/design/decisions.md`, "Phase 5 decisions". Agreed order, one work package at a time: **WP15** audio linking → **WP15f** multi-file audiobooks (merge button, per-file picker; added 2026-11-12) → **WP14** "Enrich last card" → **WP16** GPU worker and job queue → **WP17** generated audiobooks.
 
-WP15, WP15f and WP14 are done, merged and pushed (WP14 merged at 64a6bb7 on 2026-11-12; schema still v13). Next: **WP16**, only after the user approves starting it.
+WP15, WP15f, WP14 and WP16 are done, merged and pushed (WP16 merged 2026-11-12; schema v14). Next: **WP17**, only after the user approves starting it.
+
+WP16 "Make subtitles on the PC": the server's job queue (`apps/storage-server/src/audio/subtitle-jobs.ts`, `worker-routes.ts`; worker tokens `cli token worker` reach only `/api/v1/worker/*`), the PC worker `apps/gpu-worker` (Node, no dependencies; runs the pinned SubPlz image with Docker Desktop on the WSL 2 engine, cache folder mounted at `/config`; works in either of the user's two Windows accounts, one worker at a time), and the book page panel and Settings > Audiobooks section in the web app. Results go through `audio-write.ts` into `japanese-srt/_generated/` and are linked automatically.
 
 WP14 "Enrich last Anki card" lives in `apps/web/src/lib/anki/` (its own AnkiConnect client; whispersync's `anki.ts` and its Ctrl+E / Alt+E are unchanged), `routes/open` (card links `/open?book=<library id>&pos=<char>`) and the server's read-only `src/audio/clip-service.ts` (sentence audio, ffmpeg to stdout).
 

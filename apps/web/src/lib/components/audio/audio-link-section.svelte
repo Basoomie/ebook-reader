@@ -18,12 +18,15 @@
    * use one file, or merge files into one. A merge runs on the server; its progress shows
    * here (also after a reload), and when it is done the book uses the merged file and the
    * subtitle step asks.
+   *
+   * WP16: "Make subtitles on the PC" (subtitle-job-panel.svelte) under the linked audiobook.
    */
   import { faMagnifyingGlass } from '@fortawesome/free-solid-svg-icons';
   import Fa from 'svelte-fa';
   import { onDestroy } from 'svelte';
   import AudioChoiceRow from '$lib/components/audio/audio-choice-row.svelte';
   import AudioFilesStep from '$lib/components/audio/audio-files-step.svelte';
+  import SubtitleJobPanel from '$lib/components/audio/subtitle-job-panel.svelte';
   import {
     CHANGED_NOTICE,
     MISSING_NOTICE,
@@ -466,6 +469,20 @@
     }
   }
 
+  /** WP16: the subtitles made on the PC are ready and the server linked them. */
+  async function onSubtitlesMade() {
+    const id = bookId;
+    try {
+      const fresh = await api.audioLink(id);
+      if (!destroyed && id === bookId) {
+        link = fresh;
+        changingSubtitles = false;
+      }
+    } catch (err) {
+      message = describe(err);
+    }
+  }
+
   function startChangingAudio() {
     changingAudio = true;
     changingSubtitles = false;
@@ -699,6 +716,19 @@
             </p>
           {/if}
         </div>
+      {/if}
+
+      <!-- WP16: subtitles made on the PC (SubPlz) -->
+      {#if link && link.state === 'linked' && !changingAudio && !filesFolder}
+        <SubtitleJobPanel
+          {api}
+          {bookId}
+          {link}
+          {audioEnabled}
+          busy={busy || merging}
+          on:linked={onSubtitlesMade}
+          on:chooseSubtitle={(ev) => chooseSubtitle(ev.detail)}
+        />
       {/if}
 
       <!-- WP15f: an audiobook in several files: one file, or a merge -->

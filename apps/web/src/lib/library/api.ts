@@ -25,7 +25,9 @@ import type {
   AudioLinkChange,
   AudioLinkListEntry,
   AudioStatus,
-  SubtitleFileSummary
+  GpuWorkerStatus,
+  SubtitleFileSummary,
+  SubtitleJob
 } from '$lib/audio/audio-types';
 
 /** Client for the storage server's /api/v1 catalog (WP6). */
@@ -719,6 +721,66 @@ export class LibraryApi {
   async cancelAudioMerge(jobId: number, options?: RequestOptions): Promise<AudioMergeJob> {
     const response = await this.post(`/audio/merges/${jobId}/cancel`, {}, options);
     return ((await response.json()) as { job: AudioMergeJob }).job;
+  }
+
+  /**
+   * WP16: "Make subtitles on the PC". Returns the queued job, or the archive's subtitle
+   * files that look like this book's (nothing queued) unless `force`.
+   */
+  async startSubtitleJob(
+    bookId: string,
+    force: boolean,
+    options: RequestOptions = {}
+  ): Promise<{ job: SubtitleJob } | { archiveMatches: SubtitleFileSummary[] }> {
+    const response = await send(
+      this.fetchImpl,
+      `${this.serverUrl}/api/v1/books/${encodeURIComponent(bookId)}/subtitle-job`,
+      {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${this.token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ force })
+      },
+      { timeoutSeconds: this.timeoutSeconds, ...options }
+    );
+    if (response.status === 409) {
+      try {
+        const body = (await response.clone().json()) as {
+          error?: { code?: string; candidates?: SubtitleFileSummary[] };
+        };
+        if (body.error?.code === 'archive_match') {
+          return { archiveMatches: body.error.candidates ?? [] };
+        }
+      } catch {
+        // not JSON
+      }
+    }
+    if (!response.ok) throw await errorFrom(response);
+    return { job: ((await response.json()) as { job: SubtitleJob }).job };
+  }
+
+  /** WP16: the book's latest subtitle job, or null. */
+  async subtitleJob(bookId: string, options?: RequestOptions): Promise<SubtitleJob | null> {
+    const body: { job: SubtitleJob | null } = await (
+      await this.get(`/books/${encodeURIComponent(bookId)}/subtitle-job`, options)
+    ).json();
+    return body.job;
+  }
+
+  /** WP16: stops a waiting or running subtitle job. */
+  async cancelSubtitleJob(jobId: number, options?: RequestOptions): Promise<SubtitleJob> {
+    const response = await this.post(`/audio/subtitle-jobs/${jobId}/cancel`, {}, options);
+    return ((await response.json()) as { job: SubtitleJob }).job;
+  }
+
+  /** WP16: the PC worker's status and the user's waiting/running jobs. */
+  async gpuWorker(options?: RequestOptions): Promise<GpuWorkerStatus> {
+    return (await this.get('/gpu-worker', options)).json();
+  }
+
+  /** WP16: the pause switch (stored on the server). */
+  async setGpuWorkerPaused(paused: boolean, options?: RequestOptions): Promise<boolean> {
+    const response = await this.sendJson('PUT', '/gpu-worker/paused', { paused }, options);
+    return ((await response.json()) as { paused: boolean }).paused;
   }
 
   /** Every link of this user, problems first. */

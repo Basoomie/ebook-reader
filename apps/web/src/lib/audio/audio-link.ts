@@ -13,7 +13,9 @@ import type {
   AudioLink,
   AudioMergeJob,
   AudioStatus,
-  SubtitleFileSummary
+  GpuWorkerStatus,
+  SubtitleFileSummary,
+  SubtitleJob
 } from './audio-types';
 
 /**
@@ -152,6 +154,85 @@ export function mergeStatusText(job: AudioMergeJob): string {
       return job.outputName
         ? `The merge saved ${name} but then failed: ${job.error ?? 'unknown error'}.`
         : `The merge failed: ${job.error ?? 'unknown error'}. Nothing was added to the audiobooks folder.`;
+  }
+}
+
+// ---- WP16: subtitles made on the PC
+
+export function subtitleJobActive(job: SubtitleJob | null): boolean {
+  return !!job && (job.state === 'queued' || job.state === 'running');
+}
+
+/** "just now", "5 min ago", "2 h ago", "3 days ago". */
+export function timeAgo(then: number, now: number): string {
+  const min = Math.floor(Math.max(0, now - then) / 60_000);
+  if (min < 1) return 'just now';
+  if (min < 60) return `${min} min ago`;
+  const h = Math.floor(min / 60);
+  if (h < 48) return `${h} h ago`;
+  return `${Math.floor(h / 24)} days ago`;
+}
+
+function percent(p: number | null): string {
+  return p === null ? '' : ` ${Math.floor(Math.max(0, Math.min(1, p)) * 100)} %`;
+}
+
+/** Why a waiting job waits, from what the server last heard from the PC. */
+export function workerWaitText(
+  job: SubtitleJob,
+  worker: GpuWorkerStatus | null,
+  now: number
+): string {
+  if (!worker || !worker.available) return 'Waiting for the PC…';
+  if (worker.paused)
+    return 'Waiting: making subtitles on the PC is paused (Settings > Audiobooks).';
+  if (!worker.online) {
+    return worker.lastSeenAt
+      ? `Waiting for the PC to be switched on (last seen ${timeAgo(worker.lastSeenAt, now)}).`
+      : 'Waiting for the PC. The subtitle program on the PC has not checked in yet.';
+  }
+  if (worker.problem) return `Waiting: ${worker.problem.replace(/\.$/, '')}.`;
+  if ((worker.jobs ?? []).some((j) => j.state === 'running' && j.id !== job.id)) {
+    return "Waiting for another book's subtitles to finish…";
+  }
+  return 'Waiting for the PC to start…';
+}
+
+/** One line on a subtitle job, in everyday words. */
+export function subtitleJobText(
+  job: SubtitleJob,
+  worker: GpuWorkerStatus | null,
+  now: number
+): string {
+  const name = job.outputName ? `“${job.outputName}”` : 'the new file';
+  switch (job.state) {
+    case 'queued': {
+      const wait = workerWaitText(job, worker, now);
+      return job.message ? `${job.message} ${wait}` : wait;
+    }
+    case 'running':
+      if (job.cancelRequested) return 'Stopping…';
+      switch (job.stage) {
+        case 'downloading':
+          return `The PC is downloading the book and the audiobook…${percent(job.progress)}`;
+        case 'uploading':
+          return 'The PC is sending the subtitles to the server…';
+        case 'saving':
+          return 'Saving into the subtitle folder…';
+        default: {
+          const since = job.startedAt ? ` Started ${timeAgo(job.startedAt, now)}.` : '';
+          const pct = job.progress === null ? '…' : `:${percent(job.progress)}.`;
+          return `SubPlz is matching the audiobook to the book's text${pct}${since}`;
+        }
+      }
+    case 'done':
+      return job.linked
+        ? `Subtitles made: ${name}. This book now uses them.`
+        : `Subtitles made: ${name}. The audiobook or subtitles of this book were changed meanwhile, so they were not chosen. Pick them under “Change subtitles”.`;
+    case 'cancelled':
+      return 'Making subtitles was stopped. Nothing was added to the subtitle folder.';
+    case 'failed':
+      return `Making subtitles failed: ${(job.error ?? 'unknown error').replace(/\.$/, '')}. Nothing was added to the subtitle folder.`;
   }
 }
 

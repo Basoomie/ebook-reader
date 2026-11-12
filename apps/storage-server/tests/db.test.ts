@@ -59,6 +59,8 @@ describe('migrations', () => {
       'thumbnails',
       'user_seeds',
       'users',
+      'worker_jobs',
+      'worker_status',
     ]);
   });
 
@@ -174,7 +176,7 @@ describe('tokens', () => {
     const auth = authenticateToken(db, token, 5000);
     expect(auth).toEqual({
       user: { id: owner.id, name: OWNER_NAME },
-      token: { id: record.id, label: 'Boox', deviceId: null },
+      token: { id: record.id, label: 'Boox', scope: 'user', deviceId: null },
     });
     expect(listTokens(db)[0].lastUsedAt).toBe(5000);
   });
