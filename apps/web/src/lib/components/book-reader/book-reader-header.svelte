@@ -136,6 +136,49 @@
     menuItems = items;
   }
 
+  /**
+   * Below `sm` (phones) the header has room for about seven icons, so the
+   * less-used controls are hidden there and offered at the top of the
+   * collapsed menu instead (event the header control sends -> menu entry).
+   */
+  const compactEvents = {
+    notesClick: { label: 'Highlights and notes', title: 'Highlights and notes in this book (L)' },
+    scrollToBookmarkClick: {
+      label: 'Return to saved place',
+      title: 'Return to saved place (R)'
+    },
+    jumpForwardClick: { label: 'Forward again', title: 'Forward again (])' },
+    completeBook: { label: 'Complete book', title: 'Complete Book' },
+    showCustomReadingPoint: { label: 'Show reading point', title: 'Show Point' },
+    setCustomReadingPoint: { label: 'Set reading point', title: 'Set Point' },
+    resetCustomReadingPoint: { label: 'Reset reading point', title: 'Reset Point' },
+    fullscreenClick: { label: 'Fullscreen', title: 'Toggle Fullscreen' }
+  } as const;
+
+  const compactActions: Record<string, keyof typeof compactEvents> = {};
+
+  for (const [event, { label }] of Object.entries(compactEvents)) {
+    compactActions[label] = event as keyof typeof compactEvents;
+  }
+
+  $: showCustomReadingPointMenu = $customReadingPointEnabled$ || $viewMode$ === ViewMode.Paginated;
+
+  $: compactOnlyItems = [
+    ...(canNote ? [compactEvents.notesClick] : []),
+    ...(hasBookmarkData ? [compactEvents.scrollToBookmarkClick] : []),
+    ...(canJumpForward ? [compactEvents.jumpForwardClick] : []),
+    compactEvents.completeBook,
+    ...(showCustomReadingPointMenu
+      ? customReadingPointMenuItems.map(
+          ({ action }) => compactEvents[action as keyof typeof compactEvents]
+        )
+      : []),
+    ...(showFullscreenButton ? [compactEvents.fullscreenClick] : [])
+  ];
+
+  /** A header icon that is only shown from `sm` up (it is in the menu below). */
+  const wideOnlyIconClasses = baseIconClasses.replace(/^flex /, 'hidden sm:flex ');
+
   function dispatchCustomReadingPointAction(action: any) {
     dispatch(action);
     customReadingPointMenuElm.toggleOpen();
@@ -143,7 +186,9 @@
 </script>
 
 <div class="flex justify-between bg-gray-700 px-4 md:px-8 {baseHeaderClasses}">
-  <div class="flex transform-gpu {nTranslateXHeaderFa}">
+  <div
+    class="header-icons -mr-8 flex min-w-0 transform-gpu overflow-x-auto xl:-mr-6 {nTranslateXHeaderFa}"
+  >
     {#if hasChapterData}
       <div
         tabindex="0"
@@ -183,7 +228,7 @@
         tabindex="0"
         role="button"
         title="Highlights and notes in this book (L)"
-        class={baseIconClasses}
+        class={wideOnlyIconClasses}
         data-testid="reader-notes-button"
         on:click={() => dispatch('notesClick')}
         on:keyup={dummyFn}
@@ -206,7 +251,7 @@
         tabindex="0"
         role="button"
         title="Return to saved place (R)"
-        class={baseIconClasses}
+        class={wideOnlyIconClasses}
         on:click={() => dispatch('scrollToBookmarkClick')}
         on:keyup={dummyFn}
       >
@@ -230,7 +275,7 @@
         tabindex="0"
         role="button"
         title="Forward again (])"
-        class={baseIconClasses}
+        class={wideOnlyIconClasses}
         on:click={() => dispatch('jumpForwardClick')}
         on:keyup={dummyFn}
       >
@@ -260,19 +305,19 @@
     {/if}
   </div>
 
-  <div class="flex transform-gpu {translateXHeaderFa}">
+  <div class="flex shrink-0 transform-gpu {translateXHeaderFa}">
     <div
       tabindex="0"
       role="button"
       title="Complete Book"
-      class={baseIconClasses}
+      class={wideOnlyIconClasses}
       on:click={() => dispatch('completeBook')}
       on:keyup={dummyFn}
     >
       <Fa icon={faFlag} />
     </div>
-    {#if $customReadingPointEnabled$ || $viewMode$ === ViewMode.Paginated}
-      <div class="flex">
+    {#if showCustomReadingPointMenu}
+      <div class="hidden sm:flex">
         <Popover
           placement="bottom"
           fallbackPlacements={['bottom-end', 'bottom-start']}
@@ -303,7 +348,7 @@
         tabindex="0"
         role="button"
         title="Toggle Fullscreen"
-        class={baseIconClasses}
+        class={wideOnlyIconClasses}
         on:click={() => dispatch('fullscreenClick')}
         on:keyup={dummyFn}
       >
@@ -313,8 +358,11 @@
     <MergedHeaderIcon
       disableRouteNavigation
       items={menuItems}
+      {compactOnlyItems}
       on:action={({ detail }) => {
-        if (detail === mergeEntries.STATISTICS.label) {
+        if (compactActions[detail]) {
+          dispatch(compactActions[detail]);
+        } else if (detail === mergeEntries.STATISTICS.label) {
           dispatch('statisticsClick');
         } else if (detail === mergeEntries.JUMP_TO_POSITION.label) {
           dispatch('jumpClick');
@@ -345,3 +393,22 @@
     />
   </div>
 </div>
+
+<style>
+  /* Safety net for screens narrower than the icons: the left row scrolls
+     sideways (no visible scrollbar) instead of pushing the menu off-screen.
+     Its negative right margin (-mr-8 / xl:-mr-6, twice the header translate)
+     lets it use the space the two translated groups leave between them. */
+  .header-icons {
+    scrollbar-width: none;
+  }
+
+  .header-icons::-webkit-scrollbar {
+    display: none;
+  }
+
+  /* Icons keep their 48 px touch target rather than shrinking. */
+  .header-icons > div {
+    flex-shrink: 0;
+  }
+</style>
