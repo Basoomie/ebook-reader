@@ -3,7 +3,7 @@
  * suggestions for a book, search, and streaming of an indexed audio file.
  *
  * Nothing here links a book to an audiobook (that is the user's choice in the
- * picker, WP15b). Streaming accepts a signed URL (an <audio> element can't send
+ * picker; links are in link-routes.ts, WP15b). Streaming accepts a signed URL (an <audio> element can't send
  * the token) or the usual Bearer token, like thumbnails.
  */
 import type Database from 'better-sqlite3';
@@ -23,10 +23,15 @@ import {
   listAudioFolders,
   listSubtitleFiles,
   requestAudioScan,
-  type SubtitleFile,
 } from './audio-index';
 import { rankEntries, searchMatches } from './match';
 import type { AudioScanService } from './scan-service';
+import {
+  folderSummary,
+  subtitleSummary,
+  type FolderSummary,
+  type SubtitleSummary,
+} from './summary';
 
 export interface AudioOptions {
   /** null = audio linking is off (AUDIOBOOKS_DIR unset or unusable). */
@@ -38,59 +43,6 @@ const CONTENT_TYPES: Record<string, string> = {
   '.m4a': 'audio/mp4',
   '.mp3': 'audio/mpeg',
 };
-
-export interface FolderSummary {
-  id: number;
-  libraryId: string;
-  relPath: string;
-  name: string;
-  parentName: string | null;
-  fileCount: number;
-  totalBytes: number;
-  durationSeconds: number | null;
-  volume: number | null;
-  /** WP15 plays single-file audiobooks only (decided 2026-11-11). */
-  playable: boolean;
-  missing: boolean;
-}
-
-export interface SubtitleSummary {
-  id: number;
-  libraryId: string;
-  relPath: string;
-  name: string;
-  parentName: string | null;
-  size: number;
-  missing: boolean;
-}
-
-export function folderSummary(f: AudioFolder): FolderSummary {
-  return {
-    id: f.id,
-    libraryId: f.libraryId,
-    relPath: f.relPath,
-    name: f.name,
-    parentName: f.parentName,
-    fileCount: f.fileCount,
-    totalBytes: f.totalBytes,
-    durationSeconds: f.durationSeconds,
-    volume: f.volume,
-    playable: f.fileCount === 1,
-    missing: f.missingAt !== null,
-  };
-}
-
-export function subtitleSummary(s: SubtitleFile): SubtitleSummary {
-  return {
-    id: s.id,
-    libraryId: s.libraryId,
-    relPath: s.relPath,
-    name: s.name,
-    parentName: s.parentName,
-    size: s.size,
-    missing: s.missingAt !== null,
-  };
-}
 
 /** A file's version: changes when it is replaced, so an old URL stops working. */
 export function fileVersion(size: number, mtimeMs: number): string {
@@ -158,7 +110,7 @@ export function parseRange(
   return { start, end };
 }
 
-function requireAudio(options: AudioOptions): AudioScanService {
+export function requireAudio(options: AudioOptions): AudioScanService {
   const service = options.service;
   if (!service || !service.status.enabled) {
     throw new ApiError(

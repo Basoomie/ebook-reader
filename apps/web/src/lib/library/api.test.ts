@@ -101,6 +101,63 @@ describe('LibraryApi', () => {
   });
 });
 
+describe('LibraryApi audiobooks', () => {
+  it("reads, changes and removes a book's audio link", async () => {
+    const seen: { method: string; url: string; body: unknown; type: string | null }[] = [];
+    const api = new LibraryApi('http://s', 't', 0, async (input, init) => {
+      seen.push({
+        method: init?.method ?? 'GET',
+        url: String(input),
+        body: init?.body ? JSON.parse(String(init.body)) : undefined,
+        type: new Headers(init?.headers).get('Content-Type')
+      });
+      if (init?.method === 'DELETE') return new Response(null, { status: 204 });
+      return json(200, { link: { bookId: 'b 1', state: 'none' } });
+    });
+    expect(await api.audioLink('b 1')).toMatchObject({ state: 'none' });
+    await api.putAudioLink('b 1', { audio: { state: 'linked', folderId: 4 } });
+    await api.deleteAudioLink('b 1');
+    const url = 'http://s/api/v1/books/b%201/audio-link';
+    expect(seen).toEqual([
+      { method: 'GET', url, body: undefined, type: null },
+      {
+        method: 'PUT',
+        url,
+        body: { audio: { state: 'linked', folderId: 4 } },
+        type: 'application/json'
+      },
+      { method: 'DELETE', url, body: undefined, type: null }
+    ]);
+  });
+
+  it('searches audiobooks and subtitles and asks for suggestions', async () => {
+    const urls: string[] = [];
+    const api = new LibraryApi('http://s', 't', 0, async (input) => {
+      urls.push(String(input));
+      return json(200, { audio: [{ id: 1 }], subtitles: [{ id: 2 }], links: [] });
+    });
+    expect(await api.searchAudiobooks('スパイ 2')).toEqual([{ id: 1 }]);
+    expect(await api.searchSubtitles('x')).toEqual([{ id: 2 }]);
+    await api.audioCandidates('b', 5);
+    expect(await api.audioLinks()).toEqual([]);
+    expect(urls).toEqual([
+      'http://s/api/v1/audio/search?q=%E3%82%B9%E3%83%91%E3%82%A4+2&kind=audio',
+      'http://s/api/v1/audio/search?q=x&kind=subtitle',
+      'http://s/api/v1/books/b/audio/candidates?limit=5',
+      'http://s/api/v1/audio/links'
+    ]);
+  });
+
+  it("passes the server's refusal on with its code", async () => {
+    const api = new LibraryApi('http://s', 't', 0, async () =>
+      json(409, { error: { code: 'missing', message: 'gone' } })
+    );
+    await expect(
+      api.putAudioLink('b', { audio: { state: 'linked', folderId: 1 } })
+    ).rejects.toMatchObject({ kind: 'server', status: 409, code: 'missing' });
+  });
+});
+
 describe('pairDevice', () => {
   it('returns the token, and a wrong code is not "unauthorized"', async () => {
     const ok = await pairDevice('http://s', 'AAAA-BBBB', {}, async () =>

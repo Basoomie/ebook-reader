@@ -16,6 +16,15 @@ import type {
   UploadInfo
 } from '$lib/library/types';
 import type { ServerSort } from '$lib/library/sort';
+import type {
+  AudioCandidates,
+  AudioFolderSummary,
+  AudioLink,
+  AudioLinkChange,
+  AudioLinkListEntry,
+  AudioStatus,
+  SubtitleFileSummary
+} from '$lib/audio/audio-types';
 
 /** Client for the storage server's /api/v1 catalog (WP6). */
 
@@ -344,6 +353,24 @@ export class LibraryApi {
     return response;
   }
 
+  private async sendJson(
+    method: 'PUT' | 'DELETE',
+    path: string,
+    body: unknown,
+    options: RequestOptions = {}
+  ): Promise<Response> {
+    const headers: Record<string, string> = { Authorization: `Bearer ${this.token}` };
+    if (body !== undefined) headers['Content-Type'] = 'application/json';
+    const response = await send(
+      this.fetchImpl,
+      `${this.serverUrl}/api/v1${path}`,
+      { method, headers, body: body === undefined ? undefined : JSON.stringify(body) },
+      { timeoutSeconds: this.timeoutSeconds, ...options }
+    );
+    if (!response.ok) throw await errorFrom(response);
+    return response;
+  }
+
   private async get(path: string, options: RequestOptions = {}): Promise<Response> {
     const response = await send(
       this.fetchImpl,
@@ -497,6 +524,83 @@ export class LibraryApi {
       );
     }
     return { blob: new Blob(chunks, { type: 'application/epub+zip' }), etag };
+  }
+
+  // ---- Audiobooks (WP15a index, WP15b links)
+
+  /** The audiobook index per library; `enabled` false when the server has no audiobooks folder. */
+  async audioStatus(options?: RequestOptions): Promise<AudioStatus> {
+    return (await this.get('/audio/status', options)).json();
+  }
+
+  /** Asks the server to scan its audiobook and subtitle folders again. */
+  async requestAudioScan(options?: RequestOptions): Promise<{ requested: string[] }> {
+    return (await this.post('/audio/scan', {}, options)).json();
+  }
+
+  /** Ranked suggestions for a book. Suggestions only: nothing is linked. */
+  async audioCandidates(
+    bookId: string,
+    limit = 10,
+    options?: RequestOptions
+  ): Promise<AudioCandidates> {
+    const qs = new URLSearchParams({ limit: String(limit) });
+    const path = `/books/${encodeURIComponent(bookId)}/audio/candidates?${qs}`;
+    return (await this.get(path, options)).json();
+  }
+
+  async searchAudiobooks(q: string, options?: RequestOptions): Promise<AudioFolderSummary[]> {
+    const qs = new URLSearchParams({ q, kind: 'audio' });
+    const body: { audio: AudioFolderSummary[] } = await (
+      await this.get(`/audio/search?${qs}`, options)
+    ).json();
+    return body.audio;
+  }
+
+  async searchSubtitles(q: string, options?: RequestOptions): Promise<SubtitleFileSummary[]> {
+    const qs = new URLSearchParams({ q, kind: 'subtitle' });
+    const body: { subtitles: SubtitleFileSummary[] } = await (
+      await this.get(`/audio/search?${qs}`, options)
+    ).json();
+    return body.subtitles;
+  }
+
+  /** The book's confirmed audiobook link, or null when none was chosen yet. */
+  async audioLink(bookId: string, options?: RequestOptions): Promise<AudioLink | null> {
+    const body: { link: AudioLink | null } = await (
+      await this.get(`/books/${encodeURIComponent(bookId)}/audio-link`, options)
+    ).json();
+    return body.link;
+  }
+
+  /** Changes the link with what the user chose; omitted parts are kept. */
+  async putAudioLink(
+    bookId: string,
+    change: AudioLinkChange,
+    options?: RequestOptions
+  ): Promise<AudioLink> {
+    const response = await this.sendJson(
+      'PUT',
+      `/books/${encodeURIComponent(bookId)}/audio-link`,
+      change,
+      options
+    );
+    const body: { link: AudioLink } = await response.json();
+    return body.link;
+  }
+
+  /** Removes the link (or the "No audiobook" mark): suggestions come back. */
+  async deleteAudioLink(bookId: string, options?: RequestOptions): Promise<void> {
+    const path = `/books/${encodeURIComponent(bookId)}/audio-link`;
+    await this.sendJson('DELETE', path, undefined, options);
+  }
+
+  /** Every link of this user, problems first. */
+  async audioLinks(options?: RequestOptions): Promise<AudioLinkListEntry[]> {
+    const body: { links: AudioLinkListEntry[] } = await (
+      await this.get('/audio/links', options)
+    ).json();
+    return body.links;
   }
 
   /** Absolute URL for a relative API path such as a book's thumbnail. */

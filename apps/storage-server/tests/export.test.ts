@@ -197,6 +197,8 @@ describe('GET /export', () => {
       sources: [],
     });
 
+    expect(out.audioLinks).toEqual([]);
+
     // No secrets and nothing of the other user.
     expect(text).not.toContain('ttsu_');
     expect(text).not.toContain(hashToken(aToken));

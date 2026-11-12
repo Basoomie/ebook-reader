@@ -25,6 +25,7 @@
  *   docker exec ttsu-storage node dist/cli.js audio status
  *   docker exec ttsu-storage node dist/cli.js audio scan [<library-id>]
  *   docker exec ttsu-storage node dist/cli.js audio match <book-id>
+ *   docker exec ttsu-storage node dist/cli.js audio links
  *
  * Uses DB_DIR (default /db) and DATA_DIR (default /data) like the server, and
  * PAIR_CODE_MINUTES for how long a pairing code stays valid.
@@ -74,6 +75,7 @@ import {
   requestAudioScan,
 } from './audio/audio-index';
 import { rankEntries } from './audio/match';
+import { listLinks, resolveLink } from './audio/audio-links';
 
 const USAGE = `Usage:
   cli token pair <label> [--user <name>]     Make a one-time code a device trades for its own token
@@ -109,7 +111,8 @@ const USAGE = `Usage:
   cli fonts list                             Custom fonts: name, size, deleted or not, file present
   cli audio status                           Audiobook and subtitle index per library
   cli audio scan [<library-id>]              Scan the audiobook and subtitle folders again (in the server)
-  cli audio match <book-id> [--limit <n>]    The suggestions the picker would show for a book`;
+  cli audio match <book-id> [--limit <n>]    The suggestions the picker would show for a book
+  cli audio links                            The audiobooks linked to books, and whether they are still there`;
 
 function fail(message: string): never {
   console.error(message);
@@ -604,7 +607,7 @@ function formatDuration(seconds: number | null): string {
   return h ? `${h} h ${m} min` : `${m} min`;
 }
 
-function audioCommand(db: Database.Database, command: string, rest: string[]) {
+function audioCommand(db: Database.Database, command: string, rest: string[], userName?: string) {
   const args = [...rest];
   switch (command) {
     case 'status': {
@@ -686,6 +689,32 @@ function audioCommand(db: Database.Database, command: string, rest: string[]) {
       }
       break;
     }
+    case 'links': {
+      const user = pickUser(db, userName);
+      const links = listLinks(db, user.id).map((l) => resolveLink(db, l));
+      if (!links.length) console.log('No book has an audiobook linked yet.');
+      const title = db.prepare('SELECT title FROM books WHERE id = ?');
+      for (const l of links) {
+        const name =
+          (title.get(l.bookId) as { title: string } | undefined)?.title ?? '(unknown book)';
+        if (l.state === 'none') {
+          console.log(`${l.bookId}  ${name}\n    no audiobook`);
+          continue;
+        }
+        const files = l.folder
+          ? `${l.folder.fileCount} file${l.folder.fileCount === 1 ? '' : 's'}`
+          : '';
+        console.log(`${l.bookId}  ${name}`);
+        console.log(`    audiobook ${l.status}  ${l.folderRelPath}${files ? `  (${files})` : ''}`);
+        const sub =
+          l.subtitleState === 'linked'
+            ? `${l.subtitleStatus}  ${l.subtitleRelPath}`
+            : (l.subtitleState ?? 'not chosen yet');
+        console.log(`    subtitles ${sub}`);
+        console.log(`    confirmed ${formatDate(l.confirmedAt)}  source=${l.source}`);
+      }
+      break;
+    }
     default:
       fail(USAGE);
   }
@@ -734,7 +763,7 @@ export function main(argv: string[], env: Record<string, string | undefined>): v
     else if (group === 'migration') migrationCommand(db, command, rest, env, userName);
     else if (group === 'uploads') uploadsCommand(db, command, env);
     else if (group === 'fonts') fontsCommand(db, command, env);
-    else if (group === 'audio') audioCommand(db, command, rest);
+    else if (group === 'audio') audioCommand(db, command, rest, userName);
     else thumbsCommand(db, command, rest);
   } finally {
     db.close();
