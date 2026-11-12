@@ -16,15 +16,16 @@ import { checkSrt, SubtitleJobService } from '../src/audio/subtitle-jobs';
 import { updateLibrary } from '../src/calibre/libraries';
 import { DEFAULT_WORKER, type WorkerConfig } from '../src/config';
 import { createToken } from '../src/db/tokens';
-import { listUsers } from '../src/db/users';
+import { treeDiff } from './helpers/audio-fixtures';
 import {
-  audioEnv,
-  m4b,
-  makeAudiobooksRoot,
-  treeDiff,
-  treeHashes,
-  write,
-} from './helpers/audio-fixtures';
+  GUIN,
+  HITSUJI,
+  HITSUJI_FOLDER,
+  jobEnv as sharedJobEnv,
+  type JobEnv,
+  SPY,
+  SRT,
+} from './helpers/worker-env';
 import type { IndexerEnv } from './helpers/indexer-env';
 
 const envs: IndexerEnv[] = [];
@@ -34,103 +35,8 @@ afterEach(async () => {
   while (envs.length) await envs.pop()!.close();
 });
 
-const SRT =
-  '1\n00:00:01,000 --> 00:00:02,500\n羊と鋼の森\n\n2\n00:00:03,000 --> 00:00:04,000\nテスト\n';
-const HITSUJI = '羊と鋼の森';
-const SPY = 'スパイ教室02 《愛娘》のグレーテ';
-const GUIN = 'グイン・サーガ';
-const HITSUJI_FOLDER = 'japanese/_Unknown/羊と鋼の森 (文春文庫)';
-
-async function jobEnv(config: Partial<WorkerConfig> = {}) {
-  const root = makeAudiobooksRoot();
-  write(root, `${HITSUJI_FOLDER}/羊と鋼の森.m4b`, m4b(30_000));
-  const env = await audioEnv({ envs, services }, { root, books: [HITSUJI, SPY, GUIN] });
-  let clock = Date.now();
-  const logs: string[] = [];
-  const jobs = new SubtitleJobService({
-    db: env.e.db,
-    scan: env.service,
-    writer: new AudioWriter({ db: env.e.db, root, log: (m) => logs.push(m) }),
-    config: { ...DEFAULT_WORKER, ...config },
-    now: () => clock,
-    log: (m) => logs.push(m),
-    logError: (m) => logs.push(`ERROR ${m}`),
-  });
-  env.audio.jobs = jobs;
-  const owner = listUsers(env.e.db)[0].id;
-  const worker = {
-    Authorization: `Bearer ${createToken(env.e.db, owner, 'PC', Date.now(), 'worker').token}`,
-  };
-  const app = env.e.app;
-  const folderId = (rel: string) =>
-    (env.e.db.prepare('SELECT id FROM audio_folders WHERE rel_path = ?').get(rel) as { id: number })
-      .id;
-  const linkAudio = (book: string, rel: string, extra: Record<string, unknown> = {}) =>
-    request(app)
-      .put(`/api/v1/books/${env.bookId(book)}/audio-link`)
-      .set(env.auth)
-      .send({ audio: { state: 'linked', folderId: folderId(rel), ...extra } });
-  const queue = (book: string, body: Record<string, unknown> = {}) =>
-    request(app)
-      .post(`/api/v1/books/${env.bookId(book)}/subtitle-job`)
-      .set(env.auth)
-      .send(body);
-  const latest = async (book: string) =>
-    (
-      await request(app)
-        .get(`/api/v1/books/${env.bookId(book)}/subtitle-job`)
-        .set(env.auth)
-    ).body.job;
-  const link = async (book: string) =>
-    (
-      await request(app)
-        .get(`/api/v1/books/${env.bookId(book)}/audio-link`)
-        .set(env.auth)
-    ).body.link;
-  const heartbeat = (body: Record<string, unknown> = {}) =>
-    request(app)
-      .post('/api/v1/worker/heartbeat')
-      .set(worker)
-      .send({
-        version: '1.0.0',
-        image: 'kanjieater/subplz@sha256:abc',
-        currentJobId: null,
-        ...body,
-      });
-  const claim = async () =>
-    (await request(app).post('/api/v1/worker/claim').set(worker).send({})).body.job;
-  const progress = (id: number, body: Record<string, unknown>) =>
-    request(app).post(`/api/v1/worker/jobs/${id}/progress`).set(worker).send(body);
-  const upload = (id: number, body: Buffer | string) =>
-    request(app)
-      .put(`/api/v1/worker/jobs/${id}/result`)
-      .set(worker)
-      .set('Content-Type', 'application/x-subrip')
-      .send(Buffer.isBuffer(body) ? body : Buffer.from(body, 'utf8'));
-  const status = async () => (await request(app).get('/api/v1/gpu-worker').set(env.auth)).body;
-  return {
-    ...env,
-    jobs,
-    logs,
-    worker,
-    app,
-    linkAudio,
-    queue,
-    latest,
-    link,
-    heartbeat,
-    claim,
-    progress,
-    upload,
-    status,
-    tick: (ms: number) => {
-      clock += ms;
-    },
-    tree: () => treeHashes(root),
-  };
-}
-
-type Env = Awaited<ReturnType<typeof jobEnv>>;
+const jobEnv = (config: Partial<WorkerConfig> = {}) => sharedJobEnv({ envs, services }, config);
+type Env = JobEnv;
 
 /** Links the book's single-file audiobook and queues a job; returns the job id. */
 async function linkedAndQueued(t: Env, book = HITSUJI, rel = HITSUJI_FOLDER): Promise<number> {

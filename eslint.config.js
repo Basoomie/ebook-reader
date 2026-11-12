@@ -30,7 +30,12 @@ module.exports = (async () => {
         // WP15f: a plain Node script that stands in for ffmpeg in the merge tests.
         'apps/storage-server/tests/fixtures/wp15f/**',
         // WP14: the same for the sentence-audio clip tests.
-        'apps/storage-server/tests/fixtures/wp14/**'
+        'apps/storage-server/tests/fixtures/wp14/**',
+        // WP16: a plain Node script that stands in for docker in the GPU worker tests.
+        'apps/storage-server/tests/fixtures/wp16/**',
+        // WP16: the worker's install script (plain Node) and its build output.
+        'apps/gpu-worker/scripts/**',
+        'apps/gpu-worker/dist/**'
       ]
     },
     {
@@ -105,6 +110,19 @@ module.exports = (async () => {
       // Vendored ttu-whispersync (MIT, lib/whispersync/README.md): its files keep their
       // own license header; --fix must never replace it.
       files: ['apps/web/src/lib/whispersync/**'],
+      rules: {
+        'headers/header-format': 'off'
+      }
+    },
+    {
+      // WP16: the GPU worker is a separate Node project (the user's PC) with its own tsconfig.
+      files: ['apps/gpu-worker/**/*.ts'],
+      languageOptions: {
+        parserOptions: {
+          project: './tsconfig.eslint.json',
+          tsconfigRootDir: './apps/gpu-worker/'
+        }
+      },
       rules: {
         'headers/header-format': 'off'
       }

@@ -1,0 +1,11 @@
+{
+  "name": "ttsu-gpu-worker",
+  "version": "1.0.0",
+  "private": true,
+  "description": "WP16: the GPU worker for the user's PC. Runs SubPlz (Docker Desktop, --gpus all) on jobs queued in the reader.",
+  "scripts": {
+    "build": "node ../../node_modules/typescript/bin/tsc -p tsconfig.json",
+    "test": "cd ../storage-server && npx vitest run tests/wp16-worker",
+    "install-local": "node ../../node_modules/typescript/bin/tsc -p tsconfig.json && node scripts/install-local.cjs"
+  }
+}
