@@ -4,6 +4,8 @@ import { createHmac, randomBytes, timingSafeEqual } from 'crypto';
 /** Named random keys kept in the database (server_secrets). */
 
 export const THUMBNAIL_URL_SECRET = 'thumbnail_url';
+/** Signs audio stream URLs (WP15): an <audio> element can't send the token. */
+export const AUDIO_URL_SECRET = 'audio_url';
 
 /** Returns the named key, creating a random 32-byte key on first use. */
 export function getOrCreateSecret(db: Database.Database, name: string, now = Date.now()): Buffer {

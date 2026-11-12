@@ -30,6 +30,8 @@ describe('migrations', () => {
       .map((r: any) => r.name);
     expect(tables).toEqual([
       'api_tokens',
+      'audio_folders',
+      'audio_scan_state',
       'authors',
       'book_authors',
       'book_sources',
@@ -46,6 +48,7 @@ describe('migrations', () => {
       'pairing_codes',
       'series',
       'server_secrets',
+      'subtitle_files',
       'sync_records',
       'sync_state',
       'tags',

@@ -17,7 +17,10 @@ export interface Library {
   language: string | null;
   enabled: boolean;
   available: boolean;
+  /** Subtitle folder for this library, relative to the audiobooks root (WP15). */
   srtArchivePath: string | null;
+  /** Audiobook folder for this library, relative to the audiobooks root (WP15); null = none. */
+  audioDir: string | null;
   discoveredAt: number;
   updatedAt: number;
 }
@@ -49,6 +52,7 @@ interface LibraryRow {
   enabled: number;
   available: number;
   srt_archive_path: string | null;
+  audio_dir: string | null;
   discovered_at: number;
   updated_at: number;
 }
@@ -81,6 +85,7 @@ function toLibrary(r: LibraryRow): Library {
     enabled: r.enabled === 1,
     available: r.available === 1,
     srtArchivePath: r.srt_archive_path,
+    audioDir: r.audio_dir ?? null,
     discoveredAt: r.discovered_at,
     updatedAt: r.updated_at,
   };
@@ -189,6 +194,29 @@ export interface LibraryChanges {
   name?: string;
   language?: string;
   enabled?: boolean;
+  /** Audiobook folder relative to the audiobooks root (WP15); '' or null clears it. */
+  audioDir?: string | null;
+  /** Subtitle folder relative to the audiobooks root (WP15); '' or null clears it. */
+  subtitleDir?: string | null;
+}
+
+/**
+ * A folder relative to the audiobooks root as the user typed it: forward slashes,
+ * no leading slash, no "." or ".." parts. '', "none" or null clear the setting.
+ * Throws with a user-facing message when it would leave the root.
+ */
+export function normalizeRelativeDir(value: string | null): string | null {
+  if (value === null) return null;
+  const trimmed = value.trim();
+  if (trimmed === '' || trimmed.toLowerCase() === 'none') return null;
+  const parts = trimmed
+    .replace(/\\/g, '/')
+    .split('/')
+    .filter((p) => p !== '' && p !== '.');
+  if (parts.length === 0 || parts.some((p) => p === '..') || /^[a-zA-Z]:/.test(trimmed)) {
+    throw new Error('Give a folder inside the audiobooks folder, e.g. japanese or japanese-srt.');
+  }
+  return parts.join('/');
 }
 
 /** Applies user changes. Throws with a user-facing message on invalid input. */
@@ -218,9 +246,17 @@ export function updateLibrary(
     throw new Error('Set a language before enabling a library (--language ja, en, ...).');
   }
 
+  const audioDir =
+    changes.audioDir !== undefined ? normalizeRelativeDir(changes.audioDir) : lib.audioDir;
+  const subtitleDir =
+    changes.subtitleDir !== undefined
+      ? normalizeRelativeDir(changes.subtitleDir)
+      : lib.srtArchivePath;
+
   db.prepare(
-    'UPDATE libraries SET name = ?, language = ?, enabled = ?, updated_at = ? WHERE id = ?',
-  ).run(name, language, enabled ? 1 : 0, now, id);
+    `UPDATE libraries SET name = ?, language = ?, enabled = ?, audio_dir = ?, srt_archive_path = ?,
+       updated_at = ? WHERE id = ?`,
+  ).run(name, language, enabled ? 1 : 0, audioDir, subtitleDir, now, id);
   noteCatalogWrite(db);
   return getLibrary(db, id)!;
 }

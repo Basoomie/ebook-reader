@@ -21,12 +21,17 @@
  *   docker exec ttsu-storage node dist/cli.js migration undo [--forget-decisions]
  *   docker exec ttsu-storage node dist/cli.js uploads list
  *   docker exec ttsu-storage node dist/cli.js fonts list
+ *   docker exec ttsu-storage node dist/cli.js library set <id> --audio-dir japanese --subtitle-dir japanese-srt
+ *   docker exec ttsu-storage node dist/cli.js audio status
+ *   docker exec ttsu-storage node dist/cli.js audio scan [<library-id>]
+ *   docker exec ttsu-storage node dist/cli.js audio match <book-id>
  *
  * Uses DB_DIR (default /db) and DATA_DIR (default /data) like the server, and
  * PAIR_CODE_MINUTES for how long a pairing code stays valid.
  * The CLI never touches the Calibre libraries: `index run`, `thumbs rebuild` and
  * `counts rebuild|retry` only leave a request in the database that the server picks
- * up on its next poll.
+ * up on its next poll. The same goes for the audiobooks folder (WP15): `audio scan` only
+ * asks the server, and `audio match` reads the index in the database.
  * For the same reason the WP5 scan and import run in the server (from the
  * migration page); the CLI only reports on them and can undo the import.
  */
@@ -62,6 +67,13 @@ import { getUserByName, listUsers } from './db/users';
 import { MigrationService } from './migration/service';
 import { SyncStore } from './sync/store';
 import { forgetThumbnails, RebuildScope } from './thumbnails/thumbnails';
+import {
+  getScanState,
+  listAudioFolders,
+  listSubtitleFiles,
+  requestAudioScan,
+} from './audio/audio-index';
+import { rankEntries } from './audio/match';
 
 const USAGE = `Usage:
   cli token pair <label> [--user <name>]     Make a one-time code a device trades for its own token
@@ -70,8 +82,10 @@ const USAGE = `Usage:
   cli token revoke <token-id>                Revoke a token
   cli library list                           List discovered Calibre libraries
   cli library set <id> [--name <name>] [--language <tag>] [--enable | --disable]
+                    [--audio-dir <folder>] [--subtitle-dir <folder>]
                                              Name a library, set its language (ja, en, ...)
-                                             and turn indexing on or off
+                                             and turn indexing on or off; set its audiobook and
+                                             subtitle folders inside AUDIOBOOKS_DIR (none = unset)
   cli index status                           Show each library's index state
   cli index run [<library-id>] [--allow-mass-missing]
                                              Re-snapshot and re-index on the server's next poll
@@ -92,7 +106,10 @@ const USAGE = `Usage:
                                              sync's files are never touched); --forget-decisions also
                                              clears the scan results and your link decisions
   cli uploads list                           Uploaded books and files still waiting for a decision
-  cli fonts list                             Custom fonts: name, size, deleted or not, file present`;
+  cli fonts list                             Custom fonts: name, size, deleted or not, file present
+  cli audio status                           Audiobook and subtitle index per library
+  cli audio scan [<library-id>]              Scan the audiobook and subtitle folders again (in the server)
+  cli audio match <book-id> [--limit <n>]    The suggestions the picker would show for a book`;
 
 function fail(message: string): never {
   console.error(message);
@@ -206,6 +223,8 @@ function describeLibrary(lib: Library): string {
     `language=${lib.language ?? '(not set)'}`,
     lib.enabled ? 'enabled' : 'disabled',
     lib.available ? 'available' : 'NOT AVAILABLE',
+    ...(lib.audioDir ? [`audio="${lib.audioDir}"`] : []),
+    ...(lib.srtArchivePath ? [`subtitles="${lib.srtArchivePath}"`] : []),
   ].join('  ');
 }
 
@@ -233,7 +252,11 @@ function libraryCommand(db: Database.Database, command: string, rest: string[]) 
       const language = takeOption(args, '--language');
       const enable = takeFlag(args, '--enable');
       const disable = takeFlag(args, '--disable');
+      const audioDir = takeOption(args, '--audio-dir');
+      const subtitleDir = takeOption(args, '--subtitle-dir');
       if (enable && disable) fail('Use either --enable or --disable, not both');
+      if (audioDir !== undefined) changes.audioDir = audioDir;
+      if (subtitleDir !== undefined) changes.subtitleDir = subtitleDir;
       if (name !== undefined) changes.name = name;
       if (language !== undefined) changes.language = language;
       if (enable) changes.enabled = true;
@@ -574,6 +597,100 @@ function fontsCommand(
   }
 }
 
+function formatDuration(seconds: number | null): string {
+  if (seconds === null) return '?';
+  const h = Math.floor(seconds / 3600);
+  const m = Math.round((seconds % 3600) / 60);
+  return h ? `${h} h ${m} min` : `${m} min`;
+}
+
+function audioCommand(db: Database.Database, command: string, rest: string[]) {
+  const args = [...rest];
+  switch (command) {
+    case 'status': {
+      const libs = listLibraries(db).filter((l) => l.audioDir || l.srtArchivePath);
+      if (!libs.length) {
+        console.log(
+          'No library has an audio or subtitle folder (cli library set <id> --audio-dir ...).',
+        );
+      }
+      for (const lib of libs) {
+        const s = getScanState(db, lib.id);
+        const folders = listAudioFolders(db, lib.id);
+        const single = folders.filter((f) => f.fileCount === 1).length;
+        const pending = folders.reduce(
+          (n, f) =>
+            n + f.files.filter((x) => x.durationSeconds === null && !x.durationFailed).length,
+          0,
+        );
+        console.log(describeLibrary(lib));
+        console.log(
+          `    status=${s.status}  scanned=${formatDate(s.scannedAt)}  ` +
+            `folders=${s.folders} (single-file ${single})  subtitles=${s.subtitles}  ` +
+            `archives skipped=${s.archivesSkipped}  durations pending=${pending}` +
+            (s.scanRequestedAt ? '  scan=requested' : ''),
+        );
+        if (s.lastError) console.log(`    error (${formatDate(s.lastErrorAt)}): ${s.lastError}`);
+      }
+      break;
+    }
+    case 'scan': {
+      const targets = args[0]
+        ? [requireLibrary(db, args[0])]
+        : listLibraries(db).filter((l) => l.audioDir || l.srtArchivePath);
+      if (!targets.length) fail('No library has an audio or subtitle folder');
+      for (const lib of targets) {
+        requestAudioScan(db, lib.id);
+        console.log(`Scan requested for "${lib.name}"; the server runs it on its next poll.`);
+      }
+      break;
+    }
+    case 'match': {
+      const limitRaw = takeOption(args, '--limit');
+      const bookId = args[0];
+      if (!bookId) fail('Give a book id');
+      const book = db
+        .prepare(
+          `SELECT b.title, b.library_id, b.series_index, se.name AS series_name
+           FROM books b LEFT JOIN series se ON se.id = b.series_id WHERE b.id = ?`,
+        )
+        .get(bookId) as
+        | {
+            title: string;
+            library_id: string;
+            series_index: number | null;
+            series_name: string | null;
+          }
+        | undefined;
+      if (!book) fail(`No book with id ${bookId}`);
+      const limit = limitRaw ? Number(limitRaw) : 10;
+      const forMatch = {
+        title: book.title,
+        seriesName: book.series_name,
+        seriesIndex: book.series_name ? book.series_index : null,
+      };
+      const series = book.series_name ? `  (series ${book.series_name} #${book.series_index})` : '';
+      console.log(`${book.title}${series}`);
+      console.log('Audiobook folders:');
+      for (const s of rankEntries(forMatch, listAudioFolders(db, book.library_id), limit)) {
+        const f = s.entry;
+        const files = `${f.fileCount} file${f.fileCount === 1 ? '' : 's'}`;
+        console.log(
+          `  ${s.score} ${s.tier.padEnd(12)} ${f.relPath}  (${files}, ${formatDuration(f.durationSeconds)})`,
+        );
+      }
+      console.log('Subtitle files:');
+      const subs = listSubtitleFiles(db, book.library_id).map((x) => ({ ...x, fileCount: 1 }));
+      for (const s of rankEntries(forMatch, subs, limit)) {
+        console.log(`  ${s.score} ${s.tier.padEnd(12)} ${s.entry.relPath}`);
+      }
+      break;
+    }
+    default:
+      fail(USAGE);
+  }
+}
+
 export function main(argv: string[], env: Record<string, string | undefined>): void {
   const args = [...argv];
   let userName: string | undefined;
@@ -595,6 +712,7 @@ export function main(argv: string[], env: Record<string, string | undefined>): v
     'migration',
     'uploads',
     'fonts',
+    'audio',
   ];
   if (!groups.includes(group) || !command) {
     fail(USAGE);
@@ -616,6 +734,7 @@ export function main(argv: string[], env: Record<string, string | undefined>): v
     else if (group === 'migration') migrationCommand(db, command, rest, env, userName);
     else if (group === 'uploads') uploadsCommand(db, command, env);
     else if (group === 'fonts') fontsCommand(db, command, env);
+    else if (group === 'audio') audioCommand(db, command, rest);
     else thumbsCommand(db, command, rest);
   } finally {
     db.close();

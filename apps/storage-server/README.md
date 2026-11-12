@@ -139,6 +139,30 @@ A library is identified by Calibre's library UUID, so renaming its folder keeps 
 
 **Cache.** Everything in `CACHE_DIR` can be rebuilt (delete it with the container stopped; the next start re-snapshots and remakes the thumbnails), so it can be left out of backups.
 
+## Audiobooks (WP15)
+
+Audiobooks are **linked and streamed, never copied**. The audiobooks folder is read-only to this server, like Calibre:
+
+- The audiobooks root is mounted read-only (`AUDIOBOOKS_DIR`, compose: `read_only: true`). The scanner refuses to run if the mount is writable or overlaps `DATA_DIR`, `DB_DIR`, `CACHE_DIR` or `CALIBRE_DIR`. Only `src/audio/audio-fs.ts` reads it.
+- Each library gets an audiobook folder and a subtitle folder inside that root with the CLI (unset = none):
+
+```sh
+docker exec ttsu-storage node dist/cli.js library set <id> --audio-dir japanese --subtitle-dir japanese-srt
+docker exec ttsu-storage node dist/cli.js audio status
+```
+
+**Index.** At start, every `AUDIO_SCAN_HOURS` and on request, the server walks each library's audiobook folder and records every folder that directly holds `.m4b`, `.m4a` or `.mp3` files: that folder is what a book links to (series are folders of volume folders). `_Archives` and dot folders are skipped; Audiobookshelf's `metadata.json` (series and number) is read when present. The subtitle folder is walked for `.srt`, `.vtt` and `.ass` files; archives are only counted. Durations come from the file headers (a few KB per file). A folder that disappears is marked missing, never deleted; a scan that suddenly finds nothing (an unmounted share) is an error and marks nothing.
+
+**Suggestions.** `GET /api/v1/books/:id/audio/candidates` ranks folders and subtitle files by title (normalized: full/half width, brackets, `_ (出版社)`, `[N巻]`, `Vol N - `, ASINs) and series number. It never links anything: the user picks in the confirmation picker. `GET /api/v1/audio/search?q=` searches the whole index.
+
+**Streaming.** `GET /api/v1/audio/files/:folder/:index` serves one file with byte ranges (206), from a signed URL (an `<audio>` element can't send the token) or with the token. A URL stops working when the file changes (409).
+
+| Command                               | Description                                                                 |
+| ------------------------------------- | --------------------------------------------------------------------------- |
+| `audio status`                        | Folders, single-file folders, subtitle files and the last error per library |
+| `audio scan [<library-id>]`           | Scan again (the server runs it on its next poll)                            |
+| `audio match <book-id> [--limit <n>]` | The suggestions the picker would show for a book                            |
+
 ## Environment variables
 
 | Variable                           | Default      | Description                                                                                                                          |
@@ -177,8 +201,12 @@ A library is identified by Calibre's library UUID, so renaming its folder keeps 
 | `SEARCH_REGEX_TIMEOUT_SECONDS`     | `5`          | A library search with a `/pattern/` that runs longer is stopped (its worker thread is replaced) and answered with `regex_timeout`.   |
 | `UPLOAD_MAX_MB`                    | `200`        | Largest EPUB the Library's Upload accepts (`413 too_large` above it).                                                                |
 | `UPLOAD_STAGED_HOURS`              | `24`         | An uploaded file waiting for "Use the library copy / Add as a separate book" is deleted after this long.                             |
+| `AUDIOBOOKS_DIR`                   | _(unset)_    | Audiobooks root, mounted read-only (WP15). Unset: audio linking is off.                                                              |
+| `AUDIOBOOKS_REQUIRE_READONLY`      | `true`       | Refuse to scan a writable audiobooks mount. Set `false` only for local development.                                                  |
+| `AUDIO_SCAN_HOURS`                 | `24`         | Full rescan interval of the audiobook and subtitle folders; `0` = only at start and on request.                                      |
+| `AUDIO_POLL_SECONDS`               | `60`         | How often the server checks for a scan requested with the CLI.                                                                       |
 
-Invalid values for the WP1, WP2, WP6, WP4, WP3b, WP7a and WP7b settings are reported at startup and fall back to the default; they never stop the legacy endpoints.
+Invalid values for the WP1, WP2, WP6, WP4, WP3b, WP7a, WP7b and WP15 settings are reported at startup and fall back to the default; they never stop the legacy endpoints.
 
 ## Running with Docker
 

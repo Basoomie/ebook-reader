@@ -11,6 +11,7 @@ import { UploadService } from './uploads/service';
 import { UploadStore } from './uploads/upload-store';
 import { SERVER_VERSION } from './version';
 import { captureConsole, serverLogs } from './logs/recent-logs';
+import { AudioScanService } from './audio/scan-service';
 
 // Every console line is also kept (secrets removed) for the bug report (WP18).
 captureConsole(serverLogs);
@@ -146,7 +147,31 @@ const search = database.ok
   : null;
 catalog.search = search;
 
-const app = createApp({ config, database, version: SERVER_VERSION, catalog });
+// Audiobook index and streaming (WP15): optional, read-only like Calibre.
+let audio: AudioScanService | null = null;
+if (database.ok && config.audio.dir) {
+  audio = new AudioScanService({
+    db: database.db,
+    config: config.audio,
+    otherDirs: [
+      { name: 'DATA_DIR', dir: config.dataRoot },
+      { name: 'DB_DIR', dir: config.dbDir },
+      { name: 'CACHE_DIR', dir: config.calibre.cacheDir },
+      { name: 'CALIBRE_DIR', dir: config.calibre.dir },
+    ],
+  });
+  audio.start().catch((err) => console.error('Error: the audiobook scanner could not start:', err));
+} else if (!config.audio.dir) {
+  console.log('Audiobooks are off: AUDIOBOOKS_DIR is not set');
+}
+
+const app = createApp({
+  config,
+  database,
+  version: SERVER_VERSION,
+  catalog,
+  audio: { service: audio },
+});
 
 app.listen(config.port, () => {
   console.log(`ttsu storage server running on port ${config.port}`);
@@ -170,6 +195,7 @@ function shutdown(signal: string): void {
   void indexer?.stop();
   void thumbnails?.stop();
   void counts?.stop();
+  void audio?.stop();
   void search?.close();
   if (database.ok) {
     try {
