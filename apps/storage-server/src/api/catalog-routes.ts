@@ -336,79 +336,94 @@ export function createCatalogRouter(db: Database.Database, catalog: CatalogOptio
     '/books/:id/file',
     asyncHandler(async (req, res) => {
       const { user } = getAuth(res);
-      const location = getBookFileFor(db, user, req.params.id);
-      if (location?.kind === 'upload') {
-        await sendUploadedFile(location, res);
-        return;
-      }
-      requireIndexer(catalog, 'Book files');
-      if (!catalog.calibreDir) {
-        throw new ApiError(503, 'indexer_off', 'Book files unavailable: no Calibre folder');
-      }
-      if (!location) throw new ApiError(404, 'not_found', 'No such book');
-      if (location.missing) {
-        throw new ApiError(410, 'missing', 'This book is no longer in the Calibre library');
-      }
-      const fileMissing = () =>
-        new ApiError(404, 'file_missing', 'The book file was not found in the library');
-      let file: string;
-      try {
-        file = resolveInside(
-          path.join(catalog.calibreDir, location.libraryFolder),
-          location.filePath,
-        );
-      } catch {
-        // A stored path that would leave the library folder is never followed.
-        throw fileMissing();
-      }
-      const stat = await statFile(file);
-      if (!stat) throw fileMissing();
-      let stream;
-      try {
-        stream = await openSourceStream(file);
-      } catch (err) {
-        if ((err as NodeJS.ErrnoException).code === 'ENOENT') throw fileMissing();
-        throw err;
-      }
-      res.set('Content-Type', 'application/epub+zip');
-      res.set('Content-Length', String(stat.size));
-      res.set('ETag', `"${location.calibreLastModified ?? 0}-${stat.size}"`);
-      res.set('Cache-Control', 'private, no-cache');
-      try {
-        await pipeline(stream, res);
-      } catch (err) {
-        // The device cancelled the download; nothing to report.
-        if ((err as NodeJS.ErrnoException).code === 'ERR_STREAM_PREMATURE_CLOSE') return;
-        throw err;
-      }
+      await sendBookFile(db, catalog, user, req.params.id, res);
     }),
   );
 
-  async function sendUploadedFile(location: BookFileLocation, res: express.Response) {
-    const store = catalog.uploads?.store;
-    if (!store) throw new ApiError(503, 'uploads_off', 'Uploaded books are unavailable');
-    const fileMissing = () => new ApiError(404, 'file_missing', 'The uploaded file was not found');
-    const stat = await store.stat(location.filePath).catch(() => null);
-    if (!stat) throw fileMissing();
-    let stream;
-    try {
-      stream = await store.openStream(location.filePath);
-    } catch {
-      throw fileMissing();
-    }
-    res.set('Content-Type', 'application/epub+zip');
-    res.set('Content-Length', String(stat.size));
-    res.set('ETag', `"upload-${location.contentHash ?? stat.size}"`);
-    res.set('Cache-Control', 'private, no-cache');
-    try {
-      await pipeline(stream, res);
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ERR_STREAM_PREMATURE_CLOSE') return;
-      throw err;
-    }
-  }
-
   return router;
+}
+
+/**
+ * Streams a book's EPUB: read-only from the Calibre library (WP6), or an uploaded book's
+ * file from DATA_DIR/.uploads (WP7b). Also used by the GPU worker's download (WP16).
+ */
+export async function sendBookFile(
+  db: Database.Database,
+  catalog: CatalogOptions,
+  user: CatalogUser,
+  bookId: string,
+  res: express.Response,
+): Promise<void> {
+  const location = getBookFileFor(db, user, bookId);
+  if (location?.kind === 'upload') {
+    await sendUploadedFile(catalog, location, res);
+    return;
+  }
+  requireIndexer(catalog, 'Book files');
+  if (!catalog.calibreDir) {
+    throw new ApiError(503, 'indexer_off', 'Book files unavailable: no Calibre folder');
+  }
+  if (!location) throw new ApiError(404, 'not_found', 'No such book');
+  if (location.missing) {
+    throw new ApiError(410, 'missing', 'This book is no longer in the Calibre library');
+  }
+  const fileMissing = () =>
+    new ApiError(404, 'file_missing', 'The book file was not found in the library');
+  let file: string;
+  try {
+    file = resolveInside(path.join(catalog.calibreDir, location.libraryFolder), location.filePath);
+  } catch {
+    // A stored path that would leave the library folder is never followed.
+    throw fileMissing();
+  }
+  const stat = await statFile(file);
+  if (!stat) throw fileMissing();
+  let stream;
+  try {
+    stream = await openSourceStream(file);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') throw fileMissing();
+    throw err;
+  }
+  res.set('Content-Type', 'application/epub+zip');
+  res.set('Content-Length', String(stat.size));
+  res.set('ETag', `"${location.calibreLastModified ?? 0}-${stat.size}"`);
+  res.set('Cache-Control', 'private, no-cache');
+  try {
+    await pipeline(stream, res);
+  } catch (err) {
+    // The device cancelled the download; nothing to report.
+    if ((err as NodeJS.ErrnoException).code === 'ERR_STREAM_PREMATURE_CLOSE') return;
+    throw err;
+  }
+}
+
+async function sendUploadedFile(
+  catalog: CatalogOptions,
+  location: BookFileLocation,
+  res: express.Response,
+): Promise<void> {
+  const store = catalog.uploads?.store;
+  if (!store) throw new ApiError(503, 'uploads_off', 'Uploaded books are unavailable');
+  const fileMissing = () => new ApiError(404, 'file_missing', 'The uploaded file was not found');
+  const stat = await store.stat(location.filePath).catch(() => null);
+  if (!stat) throw fileMissing();
+  let stream;
+  try {
+    stream = await store.openStream(location.filePath);
+  } catch {
+    throw fileMissing();
+  }
+  res.set('Content-Type', 'application/epub+zip');
+  res.set('Content-Length', String(stat.size));
+  res.set('ETag', `"upload-${location.contentHash ?? stat.size}"`);
+  res.set('Cache-Control', 'private, no-cache');
+  try {
+    await pipeline(stream, res);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ERR_STREAM_PREMATURE_CLOSE') return;
+    throw err;
+  }
 }
 
 /**

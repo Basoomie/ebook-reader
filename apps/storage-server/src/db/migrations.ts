@@ -511,6 +511,60 @@ export const MIGRATIONS: { version: number; name: string; sql: string }[] = [
       );
     `,
   },
+  {
+    version: 14,
+    name: 'gpu worker jobs',
+    // WP16. worker_jobs: jobs for the GPU worker on the user's PC (the design doc's Job
+    // table; kind 'sync_subtitles' = SubPlz, WP17 adds 'generate_audiobook'). Queued only
+    // by the user from a book's page; the worker claims one at a time and holds it with a
+    // lease (lease_expires_at) that its progress reports extend; an expired lease puts the
+    // job back in the queue (attempts + 1). audio_folder_rel_path/audio_file_name are the
+    // book's linked file when the job was queued; link_confirmed_at is the link's
+    // confirmed_at then (the result is linked only if the link is unchanged).
+    // worker_status: one row (id 1): the pause switch and what the worker last reported.
+    // api_tokens.scope: 'worker' tokens reach only /api/v1/worker/* (R7).
+    sql: `
+      CREATE TABLE worker_jobs (
+        id                     INTEGER PRIMARY KEY,
+        user_id                TEXT NOT NULL REFERENCES users(id),
+        book_id                TEXT NOT NULL,
+        kind                   TEXT NOT NULL CHECK (kind IN ('sync_subtitles')),
+        library_id             TEXT NOT NULL,
+        audio_folder_rel_path  TEXT NOT NULL,
+        audio_file_name        TEXT NOT NULL,
+        link_confirmed_at      INTEGER,
+        state                  TEXT NOT NULL CHECK (state IN ('queued', 'running', 'done', 'failed', 'cancelled')),
+        stage                  TEXT CHECK (stage IN ('downloading', 'syncing', 'uploading', 'saving')),
+        progress               REAL,
+        message                TEXT,
+        cancel_requested       INTEGER NOT NULL DEFAULT 0,
+        attempts               INTEGER NOT NULL DEFAULT 0,
+        lease_expires_at       INTEGER,
+        output_rel_path        TEXT,
+        linked                 INTEGER NOT NULL DEFAULT 0,
+        error                  TEXT,
+        log_tail               TEXT,
+        created_at             INTEGER NOT NULL,
+        started_at             INTEGER,
+        finished_at            INTEGER,
+        updated_at             INTEGER NOT NULL
+      );
+      CREATE INDEX worker_jobs_book ON worker_jobs (user_id, book_id, id);
+      CREATE INDEX worker_jobs_state ON worker_jobs (state, id);
+
+      CREATE TABLE worker_status (
+        id              INTEGER PRIMARY KEY CHECK (id = 1),
+        paused          INTEGER NOT NULL DEFAULT 0,
+        last_seen_at    INTEGER,
+        worker_version  TEXT,
+        image           TEXT,
+        problem         TEXT,
+        updated_at      INTEGER NOT NULL
+      );
+
+      ALTER TABLE api_tokens ADD COLUMN scope TEXT NOT NULL DEFAULT 'user' CHECK (scope IN ('user', 'worker'));
+    `,
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

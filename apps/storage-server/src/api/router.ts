@@ -26,6 +26,11 @@ import { audioStreamRoute, type AudioOptions, createAudioRouter } from '../audio
 import { createAudioLinkRouter } from '../audio/link-routes';
 import { createAudioClipRouter } from '../audio/clip-routes';
 import { createMergeRouter } from '../audio/merge-routes';
+import {
+  createSubtitleJobRouter,
+  createWorkerRouter,
+  WORKER_RESULT_PATH,
+} from '../audio/worker-routes';
 import { createAttachmentRouter, type AttachmentOptions } from '../attachments/routes';
 
 export interface PairingOptions {
@@ -111,8 +116,14 @@ export function createApiRouter({
   router.use((req, res, next) => {
     // An upload's body is the EPUB itself, streamed by the upload route (WP7b); a
     // font upload's body is the font file (WP13).
-    // A book attachment's body is the file itself (WP15c).
-    if (req.path === '/uploads' || req.path === '/fonts' || ATTACHMENT_PATH.test(req.path)) {
+    // A book attachment's body is the file itself (WP15c), and so is the GPU worker's
+    // subtitle upload (WP16).
+    if (
+      req.path === '/uploads' ||
+      req.path === '/fonts' ||
+      ATTACHMENT_PATH.test(req.path) ||
+      WORKER_RESULT_PATH.test(req.path)
+    ) {
       return next();
     }
     (req.path === '/sync' ? syncJson : smallJson)(req, res, next);
@@ -152,6 +163,8 @@ export function createApiRouter({
     router.get('/books/:id/thumbnail', thumbnailAuth(db), thumbnailHandler(db, catalog));
     // Audio streams: signed URL or token (an <audio> element can't send the token, WP15).
     router.use(audioStreamRoute(db, audio));
+    // The GPU worker (WP16): its own token, only /worker/*, only its job's files.
+    router.use(createWorkerRouter(db, audio, catalog));
 
     router.use(requireUser(db));
 
@@ -167,6 +180,7 @@ export function createApiRouter({
     router.use(createAudioRouter(db, audio));
     router.use(createAudioLinkRouter(db, audio));
     router.use(createMergeRouter(db, audio));
+    router.use(createSubtitleJobRouter(db, audio));
     router.use(createAudioClipRouter(db, audio));
     // Uploads (WP7b): a separate source adapter, mounted only when it is on.
     if (catalog.uploads) {

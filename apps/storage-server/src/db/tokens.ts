@@ -5,10 +5,17 @@ import type { User } from './users';
 /** Per-user API tokens. Only a SHA-256 hash is stored; the token is shown once. */
 export const TOKEN_PREFIX = 'ttsu_';
 
+/**
+ * WP16 (R7): 'user' tokens reach the app's API; 'worker' tokens (the GPU worker on the
+ * PC) reach only /api/v1/worker/*, and only the files of the job they hold.
+ */
+export type TokenScope = 'user' | 'worker';
+
 export interface ApiToken {
   id: string;
   userId: string;
   label: string;
+  scope: TokenScope;
   createdAt: number;
   lastUsedAt: number | null;
   revokedAt: number | null;
@@ -17,13 +24,14 @@ export interface ApiToken {
 export interface AuthenticatedToken {
   user: Pick<User, 'id' | 'name'>;
   /** deviceId: the device this token is bound to (WP4), null until it registers. */
-  token: Pick<ApiToken, 'id' | 'label'> & { deviceId: string | null };
+  token: Pick<ApiToken, 'id' | 'label' | 'scope'> & { deviceId: string | null };
 }
 
 interface TokenRow {
   id: string;
   user_id: string;
   label: string;
+  scope: TokenScope;
   token_hash: string;
   created_at: number;
   last_used_at: number | null;
@@ -35,6 +43,7 @@ function toToken(row: TokenRow): ApiToken {
     id: row.id,
     userId: row.user_id,
     label: row.label,
+    scope: row.scope,
     createdAt: row.created_at,
     lastUsedAt: row.last_used_at,
     revokedAt: row.revoked_at,
@@ -55,14 +64,15 @@ export function createToken(
   userId: string,
   label: string,
   now = Date.now(),
+  scope: TokenScope = 'user',
 ): { token: string; record: ApiToken } {
   const trimmed = label.trim();
   if (!trimmed) throw new Error('A token needs a label (e.g. the device name).');
   const token = generateToken();
   const id = randomUUID();
   db.prepare(
-    'INSERT INTO api_tokens (id, user_id, label, token_hash, created_at) VALUES (?, ?, ?, ?, ?)',
-  ).run(id, userId, trimmed, hashToken(token), now);
+    'INSERT INTO api_tokens (id, user_id, label, scope, token_hash, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+  ).run(id, userId, trimmed, scope, hashToken(token), now);
   const row = db.prepare('SELECT * FROM api_tokens WHERE id = ?').get(id) as TokenRow;
   return { token, record: toToken(row) };
 }
@@ -76,18 +86,25 @@ export function authenticateToken(
   if (!token.startsWith(TOKEN_PREFIX)) return null;
   const row = db
     .prepare(
-      `SELECT t.id AS token_id, t.label, t.device_id, u.id AS user_id, u.name
+      `SELECT t.id AS token_id, t.label, t.scope, t.device_id, u.id AS user_id, u.name
          FROM api_tokens t JOIN users u ON u.id = t.user_id
         WHERE t.token_hash = ? AND t.revoked_at IS NULL`,
     )
     .get(hashToken(token)) as
-    | { token_id: string; label: string; device_id: string | null; user_id: string; name: string }
+    | {
+        token_id: string;
+        label: string;
+        scope: TokenScope;
+        device_id: string | null;
+        user_id: string;
+        name: string;
+      }
     | undefined;
   if (!row) return null;
   db.prepare('UPDATE api_tokens SET last_used_at = ? WHERE id = ?').run(now, row.token_id);
   return {
     user: { id: row.user_id, name: row.name },
-    token: { id: row.token_id, label: row.label, deviceId: row.device_id },
+    token: { id: row.token_id, label: row.label, scope: row.scope, deviceId: row.device_id },
   };
 }
 

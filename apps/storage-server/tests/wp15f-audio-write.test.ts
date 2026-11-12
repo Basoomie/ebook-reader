@@ -370,7 +370,7 @@ describe('the only writer', () => {
     expect(offenders).toEqual([]);
   });
 
-  it('only the startup code and the merge service use the writer', () => {
+  it('only the startup code, the merge service and the subtitle jobs use the writer', () => {
     const users: string[] = [];
     const walk = (dir: string) => {
       for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -382,6 +382,7 @@ describe('the only writer', () => {
       }
     };
     walk(SRC);
-    expect(users.sort()).toEqual(['audio/merge-service.ts', 'index.ts']);
+    // WP16 added the GPU worker's subtitle jobs (generated subtitles in _generated/).
+    expect(users.sort()).toEqual(['audio/merge-service.ts', 'audio/subtitle-jobs.ts', 'index.ts']);
   });
 });
