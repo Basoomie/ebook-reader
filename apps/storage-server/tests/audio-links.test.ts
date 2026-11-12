@@ -331,6 +331,7 @@ describe('WP15f: links to one file of a folder of several', () => {
       file: null,
     });
     expect((await t.get(GUIN)).body.link.playUrl).toBeNull();
+    expect(whole.body.link.playUrl).toBeNull();
 
     // One file: plays.
     const one = await t.put(GUIN, {
@@ -346,6 +347,8 @@ describe('WP15f: links to one file of a folder of several', () => {
     });
     const got = (await t.get(GUIN)).body.link;
     expect(got.playUrl).toMatch(/^\/api\/v1\/audio\/files\/\d+\/1\?/);
+    // PUT answers with the same playUrl as GET (the Download menu updates at once).
+    expect(one.body.link.playUrl).toBe(got.playUrl);
     const played = await request(t.e.app).get(got.playUrl);
     expect(played.status).toBe(200);
     expect(played.headers['content-type']).toBe('audio/mpeg');
