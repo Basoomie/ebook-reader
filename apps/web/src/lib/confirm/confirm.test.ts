@@ -13,7 +13,9 @@ import {
   removeFromDeviceCopy,
   noAudiobookCopy,
   removeSubtitlesCopy,
+  mergeAudiobookCopy,
   replaceAudiobookCopy,
+  stopMergeCopy,
   replaceSubtitlesCopy,
   restoreSubtitlesCopy,
   unlinkAudiobookCopy
@@ -107,6 +109,21 @@ describe('confirmation words', () => {
     expect(noAudiobookCopy('A').confirmLabel).toBe('No audiobook');
     expect(replaceSubtitlesCopy('a.srt', 'b.srt').confirmLabel).toBe('Replace subtitles');
     expect(removeSubtitlesCopy('a.srt').title).toBe('Remove the subtitles?');
+  });
+
+  it('words the merge: a new file next to the originals, which stay', () => {
+    const merge = mergeAudiobookCopy('Vol 3 - 悪役令嬢', 2, '1.2 GB');
+    expect(merge.title).toBe('Merge into one file?');
+    expect(merge.confirmLabel).toBe('Merge files');
+    expect(merge.danger).toBe(false);
+    expect(merge.message[0]).toBe(
+      'The 2 files of “Vol 3 - 悪役令嬢” are joined in the order shown into one new file of about 1.2 GB, saved next to them in the same folder. Each file becomes a chapter.'
+    );
+    expect(merge.message[1]).toContain('The original files are not changed.');
+    expect(merge.message[1]).toContain('Audiobookshelf');
+    const stop = stopMergeCopy('Vol 3');
+    expect(stop.title).toBe('Stop the merge?');
+    expect(stop.message[0]).toContain('Nothing is added to the audiobooks folder');
   });
 
   it('never uses "OK" or "Confirm" and always asks a question', () => {

@@ -13,17 +13,27 @@
    * subtitle step ("No subtitles" possible). "No audiobook" stops the suggestions.
    * Unlinking, replacing and removing ask first; the link is the same on every device.
    * Loads after the page and never blocks it; its problems show only in here.
+   *
+   * WP15f: an audiobook in several files opens a file step (audio-files-step.svelte):
+   * use one file, or merge files into one. A merge runs on the server; its progress shows
+   * here (also after a reload), and when it is done the book uses the merged file and the
+   * subtitle step asks.
    */
   import { faMagnifyingGlass } from '@fortawesome/free-solid-svg-icons';
   import Fa from 'svelte-fa';
   import { onDestroy } from 'svelte';
   import AudioChoiceRow from '$lib/components/audio/audio-choice-row.svelte';
+  import AudioFilesStep from '$lib/components/audio/audio-files-step.svelte';
   import {
     CHANGED_NOTICE,
     MISSING_NOTICE,
     SUBTITLE_MISSING_NOTICE,
     folderDetails,
+    linkDetails,
     linkView,
+    mergeActive,
+    mergeStatusText,
+    severalFilesNote,
     linkedFolderName,
     linkedSubtitleName,
     splitNotice,
@@ -36,6 +46,8 @@
     AudioFolderSummary,
     AudioLink,
     AudioLinkChange,
+    AudioMergeJob,
+    AudioStatus,
     SubtitleFileSummary
   } from '$lib/audio/audio-types';
   import { confirmDestructive } from '$lib/confirm/confirm';
@@ -44,6 +56,7 @@
     removeSubtitlesCopy,
     replaceAudiobookCopy,
     replaceSubtitlesCopy,
+    stopMergeCopy,
     unlinkAudiobookCopy
   } from '$lib/confirm/confirm-copy';
   import { pagePath } from '$lib/data/env';
@@ -59,6 +72,8 @@
   const MAX_SUGGESTIONS = 10;
   /** Search as you type, once typing pauses this long. */
   const SEARCH_SETTLE_MS = 300;
+  /** How often a running merge is asked about. */
+  const MERGE_POLL_MS = 2000;
 
   let loaded = false;
   let audioEnabled = false;
@@ -84,12 +99,21 @@
   let searchTurn = 0;
   let loadedFor = '';
   let destroyed = false;
+  /** WP15f: merging on this server, from /audio/status. */
+  let mergeInfo: AudioStatus['merge'] = undefined;
+  /** WP15f: the folder of several files whose file step is open. */
+  let filesFolder: AudioFolderSummary | null = null;
+  /** WP15f: the merge shown here (running, or finished while this page was open). */
+  let mergeJob: AudioMergeJob | null = null;
+  let mergeTimer: ReturnType<typeof setTimeout> | undefined;
 
   $: view = linkView(link);
   $: subView = subtitleView(link);
   $: visible = loaded && (audioEnabled || link !== null || loadError !== '');
-  $: showAudioPicker = view === 'choose' || changingAudio;
-  $: showSubtitlePicker = !showAudioPicker && (subView === 'choose' || changingSubtitles);
+  $: showAudioPicker = !filesFolder && (view === 'choose' || changingAudio);
+  $: showSubtitlePicker =
+    !filesFolder && !showAudioPicker && (subView === 'choose' || changingSubtitles);
+  $: merging = mergeActive(mergeJob);
   $: suggestions = (candidates?.audio ?? []).slice(
     0,
     showMore ? MAX_SUGGESTIONS : FIRST_SUGGESTIONS
@@ -110,6 +134,7 @@
     destroyed = true;
     clearTimeout(audioTimer);
     clearTimeout(subtitleTimer);
+    clearTimeout(mergeTimer);
   });
 
   function describe(err: unknown): string {
@@ -136,11 +161,28 @@
     showMore = false;
     audioQuery = subtitleQuery = '';
     audioResults = subtitleResults = [];
+    filesFolder = null;
+    mergeJob = null;
+    clearTimeout(mergeTimer);
     try {
-      const [status, current] = await Promise.all([api.audioStatus(), api.audioLink(id)]);
+      const [status, current, merge] = await Promise.all([
+        api.audioStatus(),
+        api.audioLink(id),
+        api.audioMerge(id).catch(() => null)
+      ]);
       if (destroyed || loadedFor !== id) return;
       audioEnabled = status.enabled;
+      mergeInfo = status.merge;
       link = current;
+      // A running merge, or one that failed after the link was last changed.
+      if (
+        merge &&
+        (mergeActive(merge) ||
+          (merge.state === 'failed' && (merge.finishedAt ?? 0) > (current?.confirmedAt ?? 0)))
+      ) {
+        mergeJob = merge;
+        if (mergeActive(merge)) scheduleMergePoll();
+      }
     } catch (err) {
       if (destroyed || loadedFor !== id) return;
       // Older servers have no audio routes: show nothing.
@@ -246,6 +288,11 @@
   }
 
   async function chooseFolder(folder: AudioFolderSummary) {
+    // WP15f: several files: choose one, or merge them (the file step).
+    if (!folder.playable) {
+      filesFolder = folder;
+      return;
+    }
     if (link?.state === 'linked' && link.folderRelPath !== folder.relPath) {
       const ok = await confirmDestructive({
         ...replaceAudiobookCopy(folderName, folder.name),
@@ -258,6 +305,101 @@
       changingAudio = false;
       resetSearches();
       if (subtitleView(link) === 'choose' && !candidates) await loadCandidates();
+    }
+  }
+
+  /** WP15f: links one file of a folder of several. */
+  async function useFile(folder: AudioFolderSummary, fileName: string) {
+    if (link?.state === 'linked') {
+      const sameFolder = link.folderRelPath === folder.relPath;
+      // Choosing a file for a whole-folder link only completes it; anything else replaces.
+      if (!sameFolder || (link.fileName !== null && link.fileName !== fileName)) {
+        const ok = await confirmDestructive({
+          ...replaceAudiobookCopy(
+            sameFolder && link.fileName ? link.fileName : folderName,
+            sameFolder ? fileName : folder.name
+          ),
+          testid: 'audio-replace-confirm',
+          confirmTestid: 'audio-replace-confirm-button'
+        });
+        if (!ok) return;
+      }
+    }
+    if (await save({ audio: { state: 'linked', folderId: folder.id, fileName } })) {
+      filesFolder = null;
+      changingAudio = false;
+      resetSearches();
+      if (subtitleView(link) === 'choose' && !candidates) await loadCandidates();
+    }
+  }
+
+  function openFiles(folder: AudioFolderSummary | null) {
+    if (!folder) return;
+    filesFolder = folder;
+    changingSubtitles = false;
+  }
+
+  function closeFiles() {
+    filesFolder = null;
+  }
+
+  // ---- WP15f: merges
+
+  function onMergeStarted(job: AudioMergeJob) {
+    mergeJob = job;
+    filesFolder = null;
+    changingAudio = false;
+    resetSearches();
+    scheduleMergePoll();
+  }
+
+  function scheduleMergePoll() {
+    clearTimeout(mergeTimer);
+    mergeTimer = setTimeout(() => void pollMerge(), MERGE_POLL_MS);
+  }
+
+  async function pollMerge() {
+    const id = bookId;
+    const watching = mergeJob?.id;
+    if (watching === undefined) return;
+    let job: AudioMergeJob | null;
+    try {
+      job = await api.audioMerge(id);
+    } catch {
+      // Offline for a moment: ask again later.
+      if (!destroyed && id === bookId) scheduleMergePoll();
+      return;
+    }
+    if (destroyed || id !== bookId || !job || job.id !== watching) return;
+    mergeJob = job;
+    if (mergeActive(job)) {
+      scheduleMergePoll();
+      return;
+    }
+    if (job.state === 'done') {
+      try {
+        link = await api.audioLink(id);
+        mergeInfo = (await api.audioStatus()).merge;
+      } catch (err) {
+        message = describe(err);
+      }
+      if (subtitleView(link) === 'choose' && !candidates) await loadCandidates();
+    }
+  }
+
+  async function stopMerge() {
+    if (!mergeJob) return;
+    const ok = await confirmDestructive({
+      ...stopMergeCopy(mergeJob.folderName),
+      testid: 'audio-merge-stop-confirm',
+      confirmTestid: 'audio-merge-stop-confirm-button'
+    });
+    if (!ok || !mergeJob) return;
+    try {
+      mergeJob = await api.cancelAudioMerge(mergeJob.id);
+      if (mergeActive(mergeJob)) scheduleMergePoll();
+    } catch (err) {
+      message = describe(err);
     }
   }
 
@@ -352,7 +494,7 @@
   }
 
   function folderNote(f: AudioFolderSummary): string {
-    return f.playable ? '' : splitNotice(f.fileCount);
+    return f.playable ? '' : severalFilesNote(f.fileCount);
   }
 </script>
 
@@ -379,6 +521,58 @@
     {:else}
       {#if message}
         <p class="c-notice mt-4" role="alert" data-testid="audio-message">{message}</p>
+      {/if}
+
+      <!-- WP15f: a merge running on the server, or how it ended -->
+      {#if mergeJob}
+        <div
+          class="c-apanel mt-4 rounded px-5 py-4"
+          data-testid="audio-merge"
+          data-state={mergeJob.state}
+        >
+          <div class="text-xs text-c-muted">Merge into one file</div>
+          <div class="break-words font-mincho text-lg font-bold leading-snug">
+            {mergeJob.folderName}
+          </div>
+          <p class="mt-1 text-sm" role="status" aria-live="polite" data-testid="audio-merge-text">
+            {mergeStatusText(mergeJob)}
+          </p>
+          {#if merging}
+            <div
+              class="c-mbar mt-2"
+              role="progressbar"
+              aria-label="Merge progress"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={Math.floor(mergeJob.progress * 100)}
+            >
+              <div style="width: {Math.floor(mergeJob.progress * 100)}%" />
+            </div>
+            <p class="mt-2 text-sm text-c-muted">
+              The merge goes on when you leave this page. Joining a long audiobook can take a few
+              minutes.
+            </p>
+            <div class="mt-3">
+              <button
+                class="c-btn c-btn-secondary c-round"
+                data-testid="audio-merge-stop"
+                on:click={stopMerge}
+              >
+                Stop merge
+              </button>
+            </div>
+          {:else}
+            <div class="mt-3">
+              <button
+                class="c-btn c-btn-secondary c-round"
+                data-testid="audio-merge-dismiss"
+                on:click={() => (mergeJob = null)}
+              >
+                OK
+              </button>
+            </div>
+          {/if}
+        </div>
       {/if}
 
       <!-- The current link -->
@@ -408,15 +602,30 @@
           {#if link.folder?.parentName}
             <div class="break-words text-xs text-c-muted">in {link.folder.parentName}</div>
           {/if}
+          {#if link.fileName && link.folder && link.folder.fileCount > 1 && view !== 'missing'}
+            <div class="break-all text-sm font-medium" data-testid="audio-linked-file">
+              File: {link.fileName}
+            </div>
+          {/if}
           {#if link.folder && view !== 'missing'}
             <div class="mt-0.5 text-sm text-c-muted" data-testid="audio-linked-details">
-              {folderDetails(link.folder)}
+              {linkDetails(link)}
             </div>
           {/if}
           {#if view === 'split' && link.folder}
             <p class="mt-2 text-sm font-medium" data-testid="audio-split">
               {splitNotice(link.folder.fileCount)}
             </p>
+            <div class="mt-2">
+              <button
+                class="c-btn c-btn-secondary c-round"
+                data-testid="audio-split-choose"
+                disabled={busy || changesOff || !!filesFolder}
+                on:click={() => openFiles(link?.folder ?? null)}
+              >
+                Choose a file or merge
+              </button>
+            </div>
           {:else if view === 'missing'}
             <p class="mt-2 text-sm font-semibold" data-testid="audio-missing">
               {MISSING_NOTICE}
@@ -482,6 +691,23 @@
             </p>
           {/if}
         </div>
+      {/if}
+
+      <!-- WP15f: an audiobook in several files: one file, or a merge -->
+      {#if filesFolder && audioEnabled}
+        <AudioFilesStep
+          {api}
+          {bookId}
+          folder={filesFolder}
+          currentFileName={link?.state === 'linked' && link.folderRelPath === filesFolder.relPath
+            ? link.fileName
+            : null}
+          merge={mergeInfo}
+          busy={busy || merging}
+          on:useFile={(ev) => useFile(ev.detail.folder, ev.detail.fileName)}
+          on:mergeStarted={(ev) => onMergeStarted(ev.detail)}
+          on:cancel={closeFiles}
+        />
       {/if}
 
       <!-- Step 1: the audiobook -->
@@ -719,5 +945,18 @@
 
   .c-round {
     border-radius: 0.75rem;
+  }
+
+  .c-mbar {
+    height: 0.75rem;
+    border: var(--c-border-width) solid currentColor;
+    border-radius: 0.375rem;
+    overflow: hidden;
+  }
+
+  .c-mbar > div {
+    height: 100%;
+    background-color: currentColor;
+    transition: width 0.3s;
   }
 </style>

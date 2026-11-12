@@ -18,7 +18,9 @@ import type {
 import type { ServerSort } from '$lib/library/sort';
 import type {
   AudioCandidates,
+  AudioFolderDetail,
   AudioFolderSummary,
+  AudioMergeJob,
   AudioLink,
   AudioLinkChange,
   AudioLinkListEntry,
@@ -665,6 +667,40 @@ export class LibraryApi {
       }
       throw error;
     }
+  }
+
+  /** WP15f: a folder with its files and the copies hint. */
+  async audioFolder(folderId: number, options?: RequestOptions): Promise<AudioFolderDetail> {
+    return (await this.get(`/audio/folders/${folderId}`, options)).json();
+  }
+
+  /** WP15f: asks the server to merge `files` (in this order) of a folder into one file. */
+  async startAudioMerge(
+    bookId: string,
+    folderId: number,
+    files: string[],
+    options?: RequestOptions
+  ): Promise<AudioMergeJob> {
+    const response = await this.post(
+      `/books/${encodeURIComponent(bookId)}/audio-merge`,
+      { folderId, files },
+      options
+    );
+    return ((await response.json()) as { job: AudioMergeJob }).job;
+  }
+
+  /** WP15f: the book's latest merge, or null. */
+  async audioMerge(bookId: string, options?: RequestOptions): Promise<AudioMergeJob | null> {
+    const body: { job: AudioMergeJob | null } = await (
+      await this.get(`/books/${encodeURIComponent(bookId)}/audio-merge`, options)
+    ).json();
+    return body.job;
+  }
+
+  /** WP15f: stops a waiting or running merge. */
+  async cancelAudioMerge(jobId: number, options?: RequestOptions): Promise<AudioMergeJob> {
+    const response = await this.post(`/audio/merges/${jobId}/cancel`, {}, options);
+    return ((await response.json()) as { job: AudioMergeJob }).job;
   }
 
   /** Every link of this user, problems first. */
