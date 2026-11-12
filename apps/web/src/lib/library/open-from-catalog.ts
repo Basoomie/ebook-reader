@@ -81,5 +81,13 @@ export function openCatalogBook(
     askExistingBook,
     askPlaceholderBook
   );
-  return openCalibreBook(book, deps, signal, onStage);
+  return openCalibreBook(book, deps, signal, onStage).then((outcome) => {
+    // WP15e: a new copy on this device shows in "On this device".
+    if (outcome.status === 'opened') {
+      void import('$lib/sync/sync-service')
+        .then(({ publishDeviceBooks }) => publishDeviceBooks())
+        .catch(() => {});
+    }
+    return outcome;
+  });
 }

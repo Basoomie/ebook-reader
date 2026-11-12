@@ -25,7 +25,8 @@ export type QueryTerm =
   | (TermBase & { type: 'field'; field: TextField; matchers: Matcher[] })
   | (TermBase & { type: 'chars'; min: number | null; max: number | null })
   | (TermBase & { type: 'status'; values: QueryStatus[] })
-  | (TermBase & { type: 'favorite'; value: boolean });
+  | (TermBase & { type: 'favorite'; value: boolean })
+  | (TermBase & { type: 'device' });
 
 export interface ParsedQuery {
   terms: QueryTerm[];

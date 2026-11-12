@@ -265,7 +265,10 @@ export function planGroups(
   const filtered = parsed.terms.length > 0;
   if (filtered) {
     const names = joinConds(groupNameSql(parsed, opts.by, 'gn.name'));
-    const conds: SqlCondition[] = [...visibilitySql(opts), ...querySql(parsed, user.id)];
+    const conds: SqlCondition[] = [
+      ...visibilitySql(opts),
+      ...querySql(parsed, user.id, undefined, user.deviceId ?? null),
+    ];
     if (names.sql) {
       conds.push({
         sql: `(${g.gid} IS NULL OR ${g.gid} IN (SELECT gn.id FROM ${g.table} gn ${names.sql}))`,

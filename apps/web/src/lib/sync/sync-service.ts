@@ -34,6 +34,12 @@ import {
 } from '$lib/stats/aggregate';
 import type { BooksDbStatistic } from '$lib/data/database/books-db/versions/books-db';
 import { LibraryApi, LibraryApiError } from '$lib/library/api';
+import {
+  DEVICE_BOOKS_KIND,
+  deviceBookIds,
+  MAX_DEVICE_BOOKS_BYTES,
+  sameBookIds
+} from '$lib/library/device-books';
 import type { CatalogLibrary } from '$lib/library/types';
 import { unknownBookTitle, type StatsBookInfo } from '$lib/stats/stats-view';
 import { goalsFromRecords, STAT_GOAL_KIND, type GoalWrite, type StatGoal } from '$lib/stats/goals';
@@ -262,10 +268,40 @@ export function startSync(): void {
         });
         void refreshLegacySwitch();
         void reportDeviceSoon();
+        void publishDeviceBooks();
       })
       .catch((error) => warn(`Sync: not started: ${(error as Error)?.message ?? error}`));
   } catch (error) {
     warn(`Sync: not started: ${(error as Error)?.message ?? error}`);
+  }
+}
+
+/**
+ * WP15e: publishes the library books this device stores (record "device-books", id = this
+ * device), so the server can answer "On this device" for it. Called when the app starts,
+ * after a book is opened from the library and after "Remove from this device". Writes
+ * only when the list changed. Never rejects; failures are logged.
+ */
+export async function publishDeviceBooks(): Promise<void> {
+  if (!browser) return;
+  try {
+    const engine = await getSyncEngine();
+    const [links, keys] = await Promise.all([
+      getLibraryStore().getAllLinks(),
+      database.db.then((db) => db.getAllKeys('data'))
+    ]);
+    const bookIds = deviceBookIds(links, new Set(keys));
+    const current = await engine.get(DEVICE_BOOKS_KIND, engine.deviceId);
+    if (current && current.deletedAt === null && sameBookIds(current.data.bookIds, bookIds)) return;
+    if (JSON.stringify({ bookIds }).length > MAX_DEVICE_BOOKS_BYTES) {
+      warn(
+        `Sync: ${bookIds.length} books on this device are too many to list for "On this device"`
+      );
+      return;
+    }
+    await engine.put(DEVICE_BOOKS_KIND, engine.deviceId, { bookIds }, { bookId: null });
+  } catch (error) {
+    warn(`Sync: could not list this device's books: ${(error as Error)?.message ?? error}`);
   }
 }
 

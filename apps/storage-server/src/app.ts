@@ -4,7 +4,6 @@ import type { CatalogOptions } from './api/catalog-routes';
 import { createApiRouter } from './api/router';
 import type { ServerConfig } from './config';
 import type { DatabaseState } from './db/database';
-import { createLegacyAudioUploadRouter, createLegacyFileRouter } from './legacy';
 import type { RecentLogs } from './logs/recent-logs';
 import type { AudioOptions } from './audio/routes';
 
@@ -32,8 +31,8 @@ export function createApp({
 }: AppOptions): Express {
   const app = express();
 
-  // Applies to the legacy and the new routes. With an explicit list, requests
-  // from other origins get no Access-Control-Allow-Origin and browsers block them.
+  // With an explicit list, requests from other origins get no
+  // Access-Control-Allow-Origin and browsers block them.
   app.use(
     cors({
       origin: config.corsOrigins,
@@ -43,12 +42,8 @@ export function createApp({
     }),
   );
 
-  const legacy = { dataRoot: config.dataRoot, authToken: config.authToken };
-
-  // Streaming upload: must come before any body parser.
-  app.use(createLegacyAudioUploadRouter(legacy));
-
-  // New API, with its own JSON body parser and error handling.
+  // The API, with its own JSON body parser and error handling. (WP15e removed the old
+  // sync's file endpoints: /list, /file, /audio-file, /mkdir, /rmdir.)
   app.use(
     '/api/v1',
     createApiRouter({
@@ -68,9 +63,6 @@ export function createApp({
       audio,
     }),
   );
-
-  // Legacy file API (raw body parser for everything it handles).
-  app.use(createLegacyFileRouter(legacy));
 
   return app;
 }

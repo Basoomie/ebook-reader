@@ -11,7 +11,7 @@
  * - disabled libraries are never read beyond the discovery stat.
  *
  * Every failure is caught and logged; the indexer can never take down the
- * server or the legacy endpoints.
+ * server.
  */
 import type Database from 'better-sqlite3';
 import { existsSync, statSync } from 'fs';

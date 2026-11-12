@@ -2,26 +2,9 @@
 
 Self-hosted REST storage backend for [ttsu Ebook Reader](https://github.com/ttu-ttu/ebook-reader).
 
-It has two parts:
+Its API (`/api/v1/...`, design doc section 4.4) is backed by a SQLite database: health, per-user tokens and `/me` (WP1), the Calibre catalog with cover thumbnails (WP2), record sync (WP4) and the later work packages below.
 
-- **Legacy file API** (`/list`, `/file`, `/audio-file`, `/mkdir`, `/rmdir`): the file store that today's sync (the `selfhost` storage handler) and whispersync use. Its behavior is frozen and pinned by `tests/legacy-endpoints.test.ts`.
-- **API v1** (`/api/v1/...`): the new API (design doc section 4.4), backed by a SQLite database: health, per-user tokens and `/me` (WP1), and the Calibre catalog with cover thumbnails (WP2).
-
-## Legacy file API
-
-All endpoints require `Authorization: Bearer <AUTH_TOKEN>`. `GET /file` also accepts `?token=<AUTH_TOKEN>` (for `<img src>`).
-
-| Method   | Path                      | Description                                                                                                                                                                                         |
-| -------- | ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET`    | `/list?path=<dir>`        | List entries in `<dir>`. Returns `[]` if directory does not exist.                                                                                                                                  |
-| `GET`    | `/file?path=<file>`       | Download file bytes. Returns `Last-Modified` header. Supports Range requests.                                                                                                                       |
-| `PUT`    | `/file?path=<file>`       | Upload file (raw bytes). Creates parent dirs. Returns `{lastModified}`. For `progress_*.json` files, rejects with **409** if an existing progress file in the same directory has a newer timestamp. |
-| `PUT`    | `/audio-file?path=<file>` | Streamed upload for `audio_*` files (no 200 MB buffer).                                                                                                                                             |
-| `DELETE` | `/file?path=<file>`       | Delete a file. Returns 200 or 404.                                                                                                                                                                  |
-| `POST`   | `/mkdir?path=<dir>`       | Create directory (idempotent).                                                                                                                                                                      |
-| `DELETE` | `/rmdir?path=<dir>`       | Delete directory recursively. Returns 200 or 404.                                                                                                                                                   |
-
-The legacy endpoints accept only `AUTH_TOKEN`, not the per-user tokens.
+The old sync's file endpoints (`/list`, `/file`, `/audio-file`, `/mkdir`, `/rmdir`) were removed in WP15e; those addresses now answer 404. The old sync's files in `DATA_DIR` are left as they are (the migration still reads them, read-only).
 
 ## API v1
 
@@ -36,11 +19,11 @@ The legacy endpoints accept only `AUTH_TOKEN`, not the per-user tokens.
 | `GET`  | `/api/v1/books/:id/thumbnail`                                                 | per-user token | Cover thumbnail (WebP). Use the `thumbnail` URL from the book list: its `?v=` makes it cacheable forever. 404 `no_cover` / `cover_unreadable`; 503 when the indexer is off. |
 
 - Record sync (`/api/v1/devices/*`, `/api/v1/sync`): see [Record sync](#record-sync).
-- Auth: `Authorization: Bearer ttsu_...` (a per-user token, see below). The legacy `AUTH_TOKEN` is not accepted here.
+- Auth: `Authorization: Bearer ttsu_...` (a per-user token, see below). The old sync's `AUTH_TOKEN` is never accepted.
 - Errors: `{ "error": { "code": "...", "message": "..." } }`.
-- Library search (WP7a): plain text matches the title, an author or the series; `author:` `series:` `tag:` (substring; `=` exact; `,` = any of), `chars:<N` / `>=N` / `N-M` (books without a count never match), `status:unread,reading,completed,dropped`, `favorite:yes|no` (the caller's own book state), `/regex/` and `/regex/i` (JavaScript, Unicode), `-` to leave a term out. The parser is the web app's (`vendor/library-query.cjs`, rebuilt with `pnpm build:server-query` in apps/web). Searches with a pattern run in a worker thread that is stopped after `SEARCH_REGEX_TIMEOUT_SECONDS`.
+- Library search (WP7a): plain text matches the title, an author or the series; `author:` `series:` `tag:` (substring; `=` exact; `,` = any of), `chars:<N` / `>=N` / `N-M` (books without a count never match), `status:unread,reading,completed,dropped`, `favorite:yes|no` (the caller's own book state), `on:device` (the books stored on the device whose token asks, from its `device-books` record; WP15e), `/regex/` and `/regex/i` (JavaScript, Unicode), `-` to leave a term out. The parser is the web app's (`vendor/library-query.cjs`, rebuilt with `pnpm build:server-query` in apps/web). Searches with a pattern run in a worker thread that is stopped after `SEARCH_REGEX_TIMEOUT_SECONDS`.
 - Uploads (WP7b): `POST /api/v1/uploads?library=<id>&name=<file>` with the EPUB as the body stages it and answers `{ uploadId, title, authors, series, duplicates: [{ match: same-file|fingerprint|title-author, book }] }`; `POST /api/v1/uploads/<uploadId>/add` adds it as its own book (`source: "upload"` in book lists), `DELETE /api/v1/uploads/<uploadId>` discards it. Nothing is merged automatically. Files live in `DATA_DIR/.uploads/` (created by the first upload; `books/<bookId>/book.epub`, `staging/`), never near the Calibre libraries. Uploads are on when the Calibre indexer is; `GET /api/v1/libraries` reports `uploads: { enabled, maxBytes }`. `cli uploads list` lists them.
-- If the database can't be opened, the legacy endpoints keep working and every `/api/v1` route answers 503.
+- If the database can't be opened, the server still starts and every `/api/v1` route answers 503.
 
 ### Per-user tokens
 
@@ -57,7 +40,7 @@ The database starts with a single user, `owner`.
 ## Database
 
 - File: `$DB_DIR/ttsu.db` (SQLite, WAL mode). Schema version is `PRAGMA user_version`; migrations run at startup.
-- `DB_DIR` must exist and must not be inside `DATA_DIR` (the file API would expose it). The server refuses to use it otherwise.
+- `DB_DIR` must exist and must not be inside `DATA_DIR`. The server refuses to use it otherwise.
 - **Nightly snapshot**: at `SNAPSHOT_TIME` (container local time, set `TZ`), a consistent copy is written to `$DB_DIR/snapshots/ttsu-YYYYMMDD-HHMMSSZ.db` (timestamp in UTC) using SQLite's online backup API and checked with `quick_check`. The newest `SNAPSHOT_KEEP` are kept; other files in that folder are never touched. If the newest snapshot is older than 24 hours at startup (the container was down), one is taken right away.
 - **Restore**: stop the container, copy a snapshot over `ttsu.db` (delete `ttsu.db-wal` and `ttsu.db-shm` if present), start the container, then run `docker exec ttsu-storage node dist/cli.js sync new-epoch`. The new epoch makes every device re-send the records it has, so changes made after the snapshot come back from the devices.
 - **Rolling back the server** to a build older than the database schema: the older server refuses the newer database, so restore a snapshot taken before the upgrade (schema 4 is WP4).
@@ -66,11 +49,11 @@ The database starts with a single user, `owner`.
 
 User data (WP4 onwards) syncs per record, not per file. Every record has a `kind`, an `id`, the device that last wrote it, `updatedAt`, `deletedAt` (deletion marker) and a server-assigned `rev`. The server decides which version wins:
 
-| Policy   | Rule                                                                        | Kinds (WP4)                                                                                                                         |
-| -------- | --------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `lww`    | Higher `(updatedAt, deviceId)` wins. A newer edit revives a deleted record. | `device` (name), `setting` `global:<key>`                                                                                           |
-| `owner`  | Only the device named in the id may write it; no conflicts possible.        | `position` `<bookId>:<deviceId>`, `setting` `device:<id>:<key>`, `stat-session` `<bookId>:<deviceId>:<uuid>` (sealed once `closed`) |
-| `append` | Written once; later writes to the id change nothing.                        | (none)                                                                                                                              |
+| Policy   | Rule                                                                        | Kinds (WP4)                                                                                                                                                                                                                                    |
+| -------- | --------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `lww`    | Higher `(updatedAt, deviceId)` wins. A newer edit revives a deleted record. | `device` (name), `setting` `global:<key>`                                                                                                                                                                                                      |
+| `owner`  | Only the device named in the id may write it; no conflicts possible.        | `position` `<bookId>:<deviceId>`, `setting` `device:<id>:<key>`, `stat-session` `<bookId>:<deviceId>:<uuid>` (sealed once `closed`), `device-books` `<deviceId>` (`{ bookIds }`: the books stored on that device, for "On this device"; WP15e) |
+| `append` | Written once; later writes to the id change nothing.                        | (none)                                                                                                                                                                                                                                         |
 
 `updatedAt` more than `SYNC_MAX_CLOCK_SKEW_SECONDS` ahead of the server clock is set to the server time.
 
@@ -165,46 +148,46 @@ docker exec ttsu-storage node dist/cli.js audio status
 
 ## Environment variables
 
-| Variable                           | Default      | Description                                                                                                                          |
-| ---------------------------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `AUTH_TOKEN`                       | _(required)_ | Bearer token for the legacy endpoints. Server exits if unset.                                                                        |
-| `DATA_DIR`                         | `/data`      | Root directory for the legacy file API. Server exits if missing.                                                                     |
-| `DB_DIR`                           | `/db`        | Folder for the SQLite database and snapshots.                                                                                        |
-| `PORT`                             | `3001`       | Listening port.                                                                                                                      |
-| `CORS_ORIGIN`                      | `*`          | Comma-separated list of allowed origins (e.g. `http://tower:3080,http://100.64.0.1:3080`). `*` allows any origin and logs a warning. |
-| `TZ`                               | _(UTC)_      | Time zone for the snapshot schedule.                                                                                                 |
-| `SNAPSHOT_TIME`                    | `03:00`      | Daily snapshot time, `HH:MM`.                                                                                                        |
-| `SNAPSHOT_KEEP`                    | `7`          | Number of snapshots to keep.                                                                                                         |
-| `CALIBRE_DIR`                      | _(unset)_    | Calibre libraries root, mounted read-only. Unset: the indexer is off.                                                                |
-| `CACHE_DIR`                        | `/cache`     | Snapshots of `metadata.db` and thumbnails. Must exist; must not overlap `CALIBRE_DIR`, `DB_DIR` or `DATA_DIR`.                       |
-| `CALIBRE_POLL_SECONDS`             | `60`         | How often `metadata.db` is checked for changes (5 or more).                                                                          |
-| `CALIBRE_SETTLE_SECONDS`           | `30`         | `metadata.db` must be unchanged this long before it is copied.                                                                       |
-| `CALIBRE_SNAPSHOT_TIMEOUT_SECONDS` | `600`        | A snapshot copy that takes longer is abandoned and retried on a later poll.                                                          |
-| `CALIBRE_MAX_MISSING_PERCENT`      | `20`         | If one index would flag more than this share of a library missing, nothing is flagged and a warning is recorded.                     |
-| `CALIBRE_REQUIRE_READONLY`         | `true`       | Refuse to index a writable Calibre mount. Set `false` only for local development.                                                    |
-| `THUMB_CONCURRENCY`                | `1`          | Covers the background pass works on at the same time (1-8).                                                                          |
-| `THUMB_PER_SECOND`                 | `8`          | Background pass rate limit; `0` = no limit. On-request thumbnails are not limited.                                                   |
-| `THUMB_BACKGROUND`                 | `true`       | `false` = thumbnails are only made when requested.                                                                                   |
-| `COUNT_BACKGROUND`                 | `true`       | `false` = no character counting (counts stay pending).                                                                               |
-| `COUNT_CONCURRENCY`                | `1`          | Books counted at the same time, one counter process each (1-4).                                                                      |
-| `COUNT_PER_MINUTE`                 | `0`          | Rate limit of the count pass in books per minute; `0` = no limit (the low process priority already yields to other work).            |
-| `COUNT_TIMEOUT_SECONDS`            | `120`        | A book that takes longer is recorded as `timeout` and its counter process is replaced.                                               |
-| `COUNT_START_TIMEOUT_SECONDS`      | `60`         | A counter process that is not ready after this long pauses the pass until the next poll.                                             |
-| `COUNT_MAX_MEMORY_MB`              | `768`        | Heap limit of each counter process.                                                                                                  |
-| `COUNT_BOOKS_PER_PROCESS`          | `500`        | A counter process is replaced after this many books (bounds memory growth).                                                          |
-| `COUNT_NICE`                       | `10`         | Scheduling priority of the counter processes (0-19; higher = lower priority).                                                        |
-| `COUNT_MAX_CONSECUTIVE_FAILURES`   | `5`          | The pass pauses after this many timeouts or crashes in a row.                                                                        |
-| `COUNT_IMPORT_FIX_MODE`            | `Off`        | Reader import setting the counts use: `Off`, `Standard` or `Extended`. A change recounts every book.                                 |
-| `COUNT_RESTRICT_FIX_TO_ANCHOR`     | `true`       | Reader import setting the counts use (import fix only on anchors). A change recounts every book.                                     |
-| `SYNC_MAX_CLOCK_SKEW_SECONDS`      | `300`        | A synced change stamped further ahead of the server clock gets the server time instead.                                              |
-| `SYNC_FROZEN_KINDS`                | `stat-day`   | Record kinds devices may no longer change (comma-separated; `none` = no kind). Statistics days are frozen since WP12's sessions.     |
-| `SEARCH_REGEX_TIMEOUT_SECONDS`     | `5`          | A library search with a `/pattern/` that runs longer is stopped (its worker thread is replaced) and answered with `regex_timeout`.   |
-| `UPLOAD_MAX_MB`                    | `200`        | Largest EPUB the Library's Upload accepts (`413 too_large` above it).                                                                |
-| `UPLOAD_STAGED_HOURS`              | `24`         | An uploaded file waiting for "Use the library copy / Add as a separate book" is deleted after this long.                             |
-| `AUDIOBOOKS_DIR`                   | _(unset)_    | Audiobooks root, mounted read-only (WP15). Unset: audio linking is off.                                                              |
-| `AUDIOBOOKS_REQUIRE_READONLY`      | `true`       | Refuse to scan a writable audiobooks mount. Set `false` only for local development.                                                  |
-| `AUDIO_SCAN_HOURS`                 | `24`         | Full rescan interval of the audiobook and subtitle folders; `0` = only at start and on request.                                      |
-| `AUDIO_POLL_SECONDS`               | `60`         | How often the server checks for a scan requested with the CLI.                                                                       |
+| Variable                           | Default    | Description                                                                                                                          |
+| ---------------------------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `AUTH_TOKEN`                       | _(unused)_ | The old sync's token. Unused since WP15e: when set, a startup warning says so (it is still removed from logged lines).               |
+| `DATA_DIR`                         | `/data`    | The app's data folder (uploads, fonts, attachments; the old sync's files, read by the migration). Server exits if missing.           |
+| `DB_DIR`                           | `/db`      | Folder for the SQLite database and snapshots.                                                                                        |
+| `PORT`                             | `3001`     | Listening port.                                                                                                                      |
+| `CORS_ORIGIN`                      | `*`        | Comma-separated list of allowed origins (e.g. `http://tower:3080,http://100.64.0.1:3080`). `*` allows any origin and logs a warning. |
+| `TZ`                               | _(UTC)_    | Time zone for the snapshot schedule.                                                                                                 |
+| `SNAPSHOT_TIME`                    | `03:00`    | Daily snapshot time, `HH:MM`.                                                                                                        |
+| `SNAPSHOT_KEEP`                    | `7`        | Number of snapshots to keep.                                                                                                         |
+| `CALIBRE_DIR`                      | _(unset)_  | Calibre libraries root, mounted read-only. Unset: the indexer is off.                                                                |
+| `CACHE_DIR`                        | `/cache`   | Snapshots of `metadata.db` and thumbnails. Must exist; must not overlap `CALIBRE_DIR`, `DB_DIR` or `DATA_DIR`.                       |
+| `CALIBRE_POLL_SECONDS`             | `60`       | How often `metadata.db` is checked for changes (5 or more).                                                                          |
+| `CALIBRE_SETTLE_SECONDS`           | `30`       | `metadata.db` must be unchanged this long before it is copied.                                                                       |
+| `CALIBRE_SNAPSHOT_TIMEOUT_SECONDS` | `600`      | A snapshot copy that takes longer is abandoned and retried on a later poll.                                                          |
+| `CALIBRE_MAX_MISSING_PERCENT`      | `20`       | If one index would flag more than this share of a library missing, nothing is flagged and a warning is recorded.                     |
+| `CALIBRE_REQUIRE_READONLY`         | `true`     | Refuse to index a writable Calibre mount. Set `false` only for local development.                                                    |
+| `THUMB_CONCURRENCY`                | `1`        | Covers the background pass works on at the same time (1-8).                                                                          |
+| `THUMB_PER_SECOND`                 | `8`        | Background pass rate limit; `0` = no limit. On-request thumbnails are not limited.                                                   |
+| `THUMB_BACKGROUND`                 | `true`     | `false` = thumbnails are only made when requested.                                                                                   |
+| `COUNT_BACKGROUND`                 | `true`     | `false` = no character counting (counts stay pending).                                                                               |
+| `COUNT_CONCURRENCY`                | `1`        | Books counted at the same time, one counter process each (1-4).                                                                      |
+| `COUNT_PER_MINUTE`                 | `0`        | Rate limit of the count pass in books per minute; `0` = no limit (the low process priority already yields to other work).            |
+| `COUNT_TIMEOUT_SECONDS`            | `120`      | A book that takes longer is recorded as `timeout` and its counter process is replaced.                                               |
+| `COUNT_START_TIMEOUT_SECONDS`      | `60`       | A counter process that is not ready after this long pauses the pass until the next poll.                                             |
+| `COUNT_MAX_MEMORY_MB`              | `768`      | Heap limit of each counter process.                                                                                                  |
+| `COUNT_BOOKS_PER_PROCESS`          | `500`      | A counter process is replaced after this many books (bounds memory growth).                                                          |
+| `COUNT_NICE`                       | `10`       | Scheduling priority of the counter processes (0-19; higher = lower priority).                                                        |
+| `COUNT_MAX_CONSECUTIVE_FAILURES`   | `5`        | The pass pauses after this many timeouts or crashes in a row.                                                                        |
+| `COUNT_IMPORT_FIX_MODE`            | `Off`      | Reader import setting the counts use: `Off`, `Standard` or `Extended`. A change recounts every book.                                 |
+| `COUNT_RESTRICT_FIX_TO_ANCHOR`     | `true`     | Reader import setting the counts use (import fix only on anchors). A change recounts every book.                                     |
+| `SYNC_MAX_CLOCK_SKEW_SECONDS`      | `300`      | A synced change stamped further ahead of the server clock gets the server time instead.                                              |
+| `SYNC_FROZEN_KINDS`                | `stat-day` | Record kinds devices may no longer change (comma-separated; `none` = no kind). Statistics days are frozen since WP12's sessions.     |
+| `SEARCH_REGEX_TIMEOUT_SECONDS`     | `5`        | A library search with a `/pattern/` that runs longer is stopped (its worker thread is replaced) and answered with `regex_timeout`.   |
+| `UPLOAD_MAX_MB`                    | `200`      | Largest EPUB the Library's Upload accepts (`413 too_large` above it).                                                                |
+| `UPLOAD_STAGED_HOURS`              | `24`       | An uploaded file waiting for "Use the library copy / Add as a separate book" is deleted after this long.                             |
+| `AUDIOBOOKS_DIR`                   | _(unset)_  | Audiobooks root, mounted read-only (WP15). Unset: audio linking is off.                                                              |
+| `AUDIOBOOKS_REQUIRE_READONLY`      | `true`     | Refuse to scan a writable audiobooks mount. Set `false` only for local development.                                                  |
+| `AUDIO_SCAN_HOURS`                 | `24`       | Full rescan interval of the audiobook and subtitle folders; `0` = only at start and on request.                                      |
+| `AUDIO_POLL_SECONDS`               | `60`       | How often the server checks for a scan requested with the CLI.                                                                       |
 
 Invalid values for the WP1, WP2, WP6, WP4, WP3b, WP7a, WP7b and WP15 settings are reported at startup and fall back to the default; they never stop the legacy endpoints.
 
@@ -218,7 +201,6 @@ docker run -d \
   -v /your/nas/db:/db \
   -v /your/nas/cache:/cache \
   -v /your/nas/books:/calibre:ro \
-  -e AUTH_TOKEN=changeme \
   -e CORS_ORIGIN=http://your-host:3080 \
   -e CALIBRE_DIR=/calibre \
   -e TZ=Europe/Berlin \

@@ -20,85 +20,17 @@ function quoted(name: string): string {
   return `“${name}”`;
 }
 
-// ---- Book Manager -------------------------------------------------------------
+// ---- This device (WP15e; replaces the old Book Manager's delete) ----------------------
 
-export type ManagerSource = 'browser' | 'fs' | 'gdrive' | 'onedrive' | 'selfhost' | string;
-
-const SOURCE_NAMES: Record<string, string> = {
-  fs: 'the folder on this device',
-  gdrive: 'Google Drive',
-  onedrive: 'OneDrive',
-  selfhost: 'the old sync server'
-};
-
-/** Book Manager: delete the selected books (or one, with its title). */
-export function deleteBooksCopy(options: {
-  count: number;
-  title?: string;
-  source: ManagerSource;
-  keepStatistics: boolean;
-}): ConfirmCopy {
-  const { count, title, source, keepStatistics } = options;
-  const one = count === 1;
-  const message: string[] = [];
-  if (source === 'browser') {
-    message.push(
-      `${one ? 'The book is' : 'They are'} removed from this browser, together with ${
-        one ? 'its' : 'their'
-      } audiobook and subtitles${keepStatistics ? '' : ' and statistics'}.`,
-      'Books from your library can be opened again from the Library. Reading places, highlights and notes saved with the library server stay.'
-    );
-  } else {
-    message.push(
-      `${one ? 'The book is' : 'They are'} removed from ${SOURCE_NAMES[source] ?? quoted(source)}.`
-    );
-  }
+/** "Remove from this device" (a book's ⋮ menu and its details page). */
+export function removeFromDeviceCopy(title: string): ConfirmCopy {
   return {
-    title: one && title ? `Delete ${quoted(title)}?` : `Delete ${books(count)}?`,
-    message,
-    confirmLabel: one ? 'Delete book' : `Delete ${books(count)}`,
-    irreversible: true
-  };
-}
-
-/** Book Manager: delete the statistics of the selected books (kept from before WP19). */
-export function deleteStatisticsCopy(count: number): ConfirmCopy {
-  return {
-    title: `Delete the statistics of ${books(count)}?`,
+    title: `Remove ${quoted(title)} from this device?`,
     message: [
-      'All statistics saved on this device for these books are deleted, including start and finish data.',
-      'Other devices keep theirs. To delete them there too, run a one-time sync with Import/Export Behavior “Overwrite” or Statistics Merge “Replace”.'
+      "The book's copy on this device is removed, together with its bookmark and the audiobook place and subtitles stored here.",
+      'Reading places, statistics, highlights and notes saved with the library server stay, and so does the book in your library: open it again to download it.'
     ],
-    confirmLabel: 'Delete statistics',
-    irreversible: true
-  };
-}
-
-/** Book Manager: import a backup while a setting lets it replace data on this device. */
-export function importBackupCopy(replaces: {
-  books: boolean;
-  statistics: boolean;
-  goals: boolean;
-}): ConfirmCopy {
-  const message: string[] = [];
-  if (replaces.books) {
-    message.push(
-      'Books in the backup replace the copies on this device, even newer ones (Import/Export Behavior is “Overwrite”).'
-    );
-  }
-  if (replaces.statistics) {
-    message.push(
-      "Statistics on this device are replaced by the backup's (Statistics Merge is “Replace”)."
-    );
-  }
-  if (replaces.goals) {
-    message.push("Reading goals on this device are replaced by the backup's.");
-  }
-  return {
-    title: 'Import this backup?',
-    message,
-    confirmLabel: 'Import and replace',
-    irreversible: true
+    confirmLabel: 'Remove from this device'
   };
 }
 
@@ -123,16 +55,6 @@ export function deleteThemeCopy(name: string): ConfirmCopy {
     ],
     confirmLabel: 'Delete theme',
     irreversible: true
-  };
-}
-
-export function deleteStorageSourceCopy(name: string): ConfirmCopy {
-  return {
-    title: `Delete the storage source ${quoted(name)}?`,
-    message: [
-      'Its settings and sign-in are removed from this device. Files already stored there are not touched.'
-    ],
-    confirmLabel: 'Delete source'
   };
 }
 

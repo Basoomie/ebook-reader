@@ -1,6 +1,5 @@
 <script lang="ts">
   import {
-    auditTime,
     BehaviorSubject,
     combineLatest,
     debounceTime,
@@ -29,7 +28,7 @@
   import { browser } from '$app/environment';
   import { page } from '$app/stores';
   import { goto } from '$app/navigation';
-  import { faCloudBolt, faPause, faPlay, faSpinner } from '@fortawesome/free-solid-svg-icons';
+  import { faPause, faPlay, faSpinner } from '@fortawesome/free-solid-svg-icons';
   import BookReader from '$lib/components/book-reader/book-reader.svelte';
   import { serverFonts } from '$lib/fonts/server-fonts-browser';
   import type {
@@ -37,7 +36,6 @@
     BookmarkManager,
     PageManager
   } from '$lib/components/book-reader/types';
-  import LogReportDialog from '$lib/components/log-report-dialog.svelte';
   import MessageDialog from '$lib/components/message-dialog.svelte';
   import StyleSheetRenderer from '$lib/components/style-sheet-renderer.svelte';
   import {
@@ -73,11 +71,7 @@
     viewMode$,
     selectionToBookmarkEnabled$,
     lineHeight$,
-    syncTarget$,
-    autoReplication$,
     skipKeyDownListener$,
-    replicationSaveBehavior$,
-    cacheStorageData$,
     confirmClose$,
     verticalCustomReadingPosition$,
     horizontalCustomReadingPosition$,
@@ -85,11 +79,8 @@
     statisticsEnabled$,
     openTrackerOnCompletion$,
     addCharactersOnCompletion$,
-    statisticsMergeMode$,
-    isOnline$,
     manualBookmark$,
     customThemes$,
-    readingGoalsMergeMode$,
     pauseTrackerOnCustomPointChange$,
     hideSpoilerImageMode$,
     showCharacterCounter$,
@@ -197,36 +188,19 @@
   import { DB_VERSION, PAGE_CHANGE, SKIPKEYLISTENER, SYNCED } from '$lib/data/events';
   import { fullscreenManager } from '$lib/data/fullscreen-manager';
   import { logger } from '$lib/data/logger';
-  import { getStorageHandler } from '$lib/data/storage/storage-handler-factory';
-  import { BaseStorageHandler } from '$lib/data/storage/handler/base-handler';
+  import { getBrowserStorageHandler } from '$lib/data/storage/storage-handler-factory';
   import type { BrowserStorageHandler } from '$lib/data/storage/handler/browser-handler';
-  import {
-    StorageDataType,
-    StorageSourceDefault,
-    StorageKey
-  } from '$lib/data/storage/storage-types';
-  import { storageSource$ } from '$lib/data/storage/storage-view';
+  import { StorageDataType } from '$lib/data/storage/storage-types';
   import { availableThemes, EINK_THEME_OPTION, themeColors } from '$lib/data/theme-option';
   import { ViewMode } from '$lib/data/view-mode';
   import loadBookData from '$lib/functions/book-data-loader/load-book-data';
   import { formatPageTitle } from '$lib/functions/format-page-title';
-  import {
-    allowedLegacyTypes,
-    isLegacyReadingType,
-    legacyReadingSyncOff$
-  } from '$lib/sync/legacy-switch';
   import { iffBrowser } from '$lib/functions/rxjs/iff-browser';
-  import { AutoReplicationType } from '$lib/functions/replication/replication-options';
-  import { replicateData } from '$lib/functions/replication/replicator';
   import { readableToObservable } from '$lib/functions/rxjs/readable-to-observable';
   import { reduceToEmptyString } from '$lib/functions/rxjs/reduce-to-empty-string';
   import { takeWhenBrowser } from '$lib/functions/rxjs/take-when-browser';
   import { tapDom } from '$lib/functions/rxjs/tap-dom';
   import { longPressHandler } from '$lib/functions/long-press-handler';
-  import {
-    executeReplicate$,
-    type ReplicationContext
-  } from '$lib/functions/replication/replication-progress';
   import { clickOutside } from '$lib/functions/use-click-outside';
   import {
     convertRemToPixels,
@@ -333,16 +307,6 @@
   let isSelectingCustomReadingPoint = false;
   let showCustomReadingPoint = false;
   let localStorageHandler: BrowserStorageHandler;
-  let dataToReplicate: StorageDataType[] = [];
-  let dataToReplicateQueue: StorageDataType[] = [];
-  let externalStorageHandler: BaseStorageHandler | undefined;
-  let externalStorageErrors = 0;
-  let isReplicating = false;
-  /** WP5: the user switched the old sync off (see readLegacySwitch). */
-  let legacyReadingOff = false;
-  const legacySwitchSubscription = legacyReadingSyncOff$.subscribe((off) => {
-    legacyReadingOff = off;
-  });
   let storedExploredCharacter = 0;
   let hasBookmarkData = false;
   let blockDataUpdates = false;
@@ -427,16 +391,7 @@
       let bookData: BooksDbBookData | undefined;
 
       try {
-        localStorageHandler = getStorageHandler(
-          window,
-          StorageKey.BROWSER,
-          undefined,
-          true,
-          $cacheStorageData$,
-          $replicationSaveBehavior$,
-          $statisticsMergeMode$,
-          $readingGoalsMergeMode$
-        );
+        localStorageHandler = getBrowserStorageHandler(window);
 
         localStorageHandler.startContext({ id, title: '' });
         bookData = await localStorageHandler.getBook();
@@ -453,10 +408,11 @@
 
         localStorageHandler.startContext(currentContext);
 
-        if (bookData.storageSource) {
-          externalStorageHandler = await getStorageHandlerByName(bookData.storageSource, true);
-        } else if ($autoReplication$ !== AutoReplicationType.Off) {
-          externalStorageHandler = await getStorageHandlerByName($syncTarget$);
+        // WP15e: books are read from this device's copy only (the old sync, which could
+        // fetch a placeholder's text from elsewhere, is gone). A placeholder opens from
+        // the Library, which fills it with the library copy.
+        if (!bookData.elementHtml) {
+          throw new Error("This book's text is not on this device. Open it from the Library.");
         }
 
         bookData.lastBookOpen = new Date().getTime();
@@ -464,10 +420,6 @@
         await localStorageHandler.updateLastRead(bookData);
         // WP7b: remember the book for "Opening the app: Last book", whatever page opened it.
         database.putLastItem(bookData.id).catch(() => {});
-        legacyReadingOff = await readLegacySwitch();
-        await syncDownData(externalStorageHandler, currentContext);
-
-        bookData = await saveExternalLastRead(externalStorageHandler, bookData);
 
         if (bookData.language) {
           document.documentElement.lang = bookData.language;
@@ -493,19 +445,6 @@
         showSpinner = false;
       }
 
-      if (externalStorageHandler) {
-        externalStorageHandler.updateSettings(
-          window,
-          true,
-          $replicationSaveBehavior$,
-          $statisticsMergeMode$,
-          $readingGoalsMergeMode$,
-          $cacheStorageData$,
-          false,
-          bookData.storageSource || $syncTarget$
-        );
-      }
-
       return bookData;
     }),
     share()
@@ -514,7 +453,7 @@
   const leaveIfBookMissing$ = rawBookData$.pipe(
     tap((data) => {
       if (!data) {
-        goto(`${pagePath}${mergeEntries.MANAGE.routeId}`);
+        goto(`${pagePath}${mergeEntries.LIBRARY.routeId}`);
       }
     }),
     reduceToEmptyString()
@@ -659,12 +598,6 @@
     reduceToEmptyString()
   );
 
-  const replicator$ = executeReplicate$.pipe(
-    auditTime(60000),
-    switchMap(() => executeReplication()),
-    reduceToEmptyString()
-  );
-
   // Auto-start on the first page turn. The first position report and page changes
   // while the book settles (position restore, layout) only extend the settle period
   // of trackerAutostartTime seconds (see AutoStartGate).
@@ -773,10 +706,6 @@
     });
   }
 
-  $: upSyncEnabled =
-    externalStorageHandler &&
-    ($autoReplication$ === AutoReplicationType.Up || $autoReplication$ === AutoReplicationType.All);
-
   $: bookmarkData.then((data) => {
     hasBookmarkData = !!data;
     storedExploredCharacter = data?.exploredCharCount || 0;
@@ -882,7 +811,6 @@
       URL.revokeObjectURL(quoteCoverUrl);
     }
 
-    legacySwitchSubscription.unsubscribe();
     stopPositionPrompt();
     stopStartOverWatch?.();
 
@@ -892,13 +820,7 @@
   });
 
   function handleUnload(event: BeforeUnloadEvent) {
-    if (
-      $confirmClose$ &&
-      (isReplicating ||
-        storedExploredCharacter !== exploredCharCount ||
-        (upSyncEnabled && dataToReplicate.length) ||
-        (upSyncEnabled && dataToReplicateQueue.length))
-    ) {
+    if ($confirmClose$ && storedExploredCharacter !== exploredCharCount) {
       event.preventDefault();
       // eslint-disable-next-line no-param-reassign
       return (event.returnValue = 'Are you sure you want to exit?');
@@ -2193,8 +2115,6 @@
         recordShadowPosition($rawBookData$.id, $rawBookData$.title, data);
 
         bookmarkData = Promise.resolve(data);
-
-        scheduleReplication(StorageDataType.PROGRESS);
       }
 
       // WP8a: also Completed, finishing the read-through as a tracked one. Fire
@@ -2350,216 +2270,6 @@
     }
   }
 
-  async function getStorageHandlerByName(storageSourceName: string, throwIfNotFound = false) {
-    if (!storageSourceName) {
-      if (throwIfNotFound) {
-        throw new Error(`No storage source found`);
-      }
-
-      return undefined;
-    }
-
-    if (storageSourceName === StorageSourceDefault.GDRIVE_DEFAULT) {
-      if (!$isOnline$) {
-        dialogManager.dialogs$.next([
-          {
-            component: MessageDialog,
-            props: {
-              title: 'Load Error',
-              message:
-                'Sync disabled due to missing Online Connection - refresh Page after going Online to try again'
-            }
-          }
-        ]);
-
-        return undefined;
-      }
-
-      return getStorageHandler(
-        window,
-        StorageKey.GDRIVE,
-        storageSourceName,
-        true,
-        $cacheStorageData$,
-        $replicationSaveBehavior$,
-        $statisticsMergeMode$,
-        $readingGoalsMergeMode$
-      );
-    }
-    if (storageSourceName === StorageSourceDefault.ONEDRIVE_DEFAULT) {
-      if (!$isOnline$) {
-        dialogManager.dialogs$.next([
-          {
-            component: MessageDialog,
-            props: {
-              title: 'Load Error',
-              message:
-                'Sync disabled due to missing Online Connection - refresh Page after going Online to try again'
-            }
-          }
-        ]);
-
-        return undefined;
-      }
-
-      return getStorageHandler(
-        window,
-        StorageKey.ONEDRIVE,
-        storageSourceName,
-        true,
-        $cacheStorageData$,
-        $replicationSaveBehavior$,
-        $statisticsMergeMode$,
-        $readingGoalsMergeMode$
-      );
-    }
-    if (storageSourceName) {
-      const db = await database.db;
-      const storageSource = await db.get('storageSource', storageSourceName);
-
-      if (storageSource) {
-        if (storageSource.type !== StorageKey.FS && !$isOnline$) {
-          dialogManager.dialogs$.next([
-            {
-              component: MessageDialog,
-              props: {
-                title: 'Load Error',
-                message:
-                  'Sync disabled due to missing Online Connection - refresh Page after going Online to try again'
-              }
-            }
-          ]);
-
-          return undefined;
-        }
-
-        return getStorageHandler(
-          window,
-          storageSource.type,
-          storageSourceName,
-          true,
-          $cacheStorageData$,
-          $replicationSaveBehavior$,
-          $statisticsMergeMode$,
-          $readingGoalsMergeMode$
-        );
-      }
-      if (throwIfNotFound) {
-        throw new Error(`No storage source with name ${storageSourceName} found`);
-      }
-    }
-
-    const message = `No storage source with name ${storageSourceName} found - skipping auto import/export`;
-
-    logger.warn(message);
-
-    dialogManager.dialogs$.next([
-      {
-        component: MessageDialog,
-        props: {
-          title: 'Configuration Error',
-          message
-        }
-      }
-    ]);
-
-    return undefined;
-  }
-
-  async function saveExternalLastRead(
-    storageHandler: BaseStorageHandler | undefined,
-    localBookData: BooksDbBookData
-  ) {
-    if (!storageHandler) {
-      return localBookData;
-    }
-
-    // eslint-disable-next-line prefer-const
-    let { id, ...bookData } = localBookData;
-
-    if (localBookData.storageSource) {
-      const externalBookData = await storageHandler.getBook();
-
-      if (externalBookData && !(externalBookData instanceof File)) {
-        bookData = {
-          ...externalBookData,
-          ...{
-            id: localBookData.id,
-            lastBookOpen: localBookData.lastBookOpen,
-            storageSource: localBookData.storageSource,
-            sections: externalBookData.sections?.length
-              ? externalBookData.sections
-              : localBookData.sections
-          }
-        };
-      }
-    } else if (!localBookData.elementHtml) {
-      throw new Error('Book has no data stored');
-    }
-
-    const dataToReturn = { id, ...bookData };
-
-    // WP5: with the old sync switched off its files are not written.
-    if (legacyReadingOff) {
-      return dataToReturn;
-    }
-
-    await storageHandler.updateLastRead(dataToReturn).catch((error: any) => {
-      const message = `Failed to update last read on external storage: ${error.message}`;
-
-      logger.warn(message);
-
-      dialogManager.dialogs$.next([
-        {
-          component: MessageDialog,
-          props: {
-            title: 'Update Error',
-            message
-          }
-        }
-      ]);
-    });
-
-    return dataToReturn;
-  }
-
-  async function syncDownData(
-    storageHandler: BaseStorageHandler | undefined,
-    context: ReplicationContext
-  ) {
-    if (localStorageHandler && storageHandler) {
-      storageHandler.startContext(context);
-    }
-
-    if (
-      localStorageHandler &&
-      storageHandler &&
-      ($autoReplication$ === AutoReplicationType.Down ||
-        $autoReplication$ === AutoReplicationType.All)
-    ) {
-      const error = await replicateData(
-        storageHandler,
-        localStorageHandler,
-        false,
-        [context],
-        allowedLegacyTypes(
-          [
-            StorageDataType.PROGRESS,
-            StorageDataType.STATISTICS,
-            StorageDataType.READING_GOALS,
-            StorageDataType.AUDIOBOOK,
-            StorageDataType.SUBTITLE
-          ],
-          legacyReadingOff
-        )
-      );
-
-      if (error) {
-        throw new Error(error);
-      }
-    }
-  }
-
   function onKeydown(ev: KeyboardEvent) {
     // WP10a: `?` is Shift+/ on most layouts, so it is checked before the modifier guard.
     if (
@@ -2674,33 +2384,17 @@
     if ($rawBookData$) recordShadowPosition(bookId, $rawBookData$.title, data);
 
     bookmarkData = Promise.resolve(data);
-
-    scheduleReplication(StorageDataType.PROGRESS);
   }
 
   /**
    * Record sync (WP4): also note this device's position for Calibre books.
    * Fire and forget; loaded on demand so the reader never depends on it.
-   * The bookmark above (and the file sync) stay the source of truth.
+   * The bookmark above stays the source of truth.
    */
   function recordShadowPosition(localId: number, title: string, data: BooksDbBookmarkData) {
     import('$lib/sync/sync-service')
       .then(({ recordReaderPosition }) => recordReaderPosition(localId, title, data))
       .catch(() => {});
-  }
-
-  /**
-   * WP5: whether the user switched the old sync off (it then carries only
-   * whispersync's audiobook data). Waits at most 2 s; unknown means on.
-   */
-  async function readLegacySwitch() {
-    try {
-      const { isLegacyReadingSyncOff } = await import('$lib/sync/sync-service');
-
-      return await isLegacyReadingSyncOff();
-    } catch (_) {
-      return false;
-    }
   }
 
   /**
@@ -3025,7 +2719,6 @@
       await database.putBookmark(data);
       if ($rawBookData$) recordShadowPosition(data.dataId, $rawBookData$.title, data);
       bookmarkData = Promise.resolve(data);
-      scheduleReplication(StorageDataType.PROGRESS);
     } catch (error) {
       logger.warn(`Could not save the bookmark: ${(error as Error)?.message ?? error}`);
     }
@@ -3092,109 +2785,6 @@
     }
 
     nextChapter$.next(nextChapter.reference);
-  }
-
-  async function executeReplication(isSilent = true) {
-    if (isReplicating || !dataToReplicate.length || !$rawBookData$ || !externalStorageHandler) {
-      return;
-    }
-
-    isReplicating = true;
-
-    if (!isSilent) {
-      skipKeyDownListener$.next(true);
-      logger.clearHistory();
-      openActionBackdrop();
-    }
-
-    const currentHandlerStorageSource = $rawBookData$.storageSource || $syncTarget$;
-
-    externalStorageHandler.updateSettings(
-      window,
-      false,
-      $replicationSaveBehavior$,
-      $statisticsMergeMode$,
-      $readingGoalsMergeMode$,
-      $cacheStorageData$,
-      !isSilent,
-      currentHandlerStorageSource
-    );
-
-    const error = await replicateData(
-      localStorageHandler,
-      externalStorageHandler,
-      !isSilent && $storageSource$ === externalStorageHandler.storageType,
-      [
-        {
-          id: $rawBookData$.id,
-          title: $rawBookData$.title,
-          imagePath: $rawBookData$.coverImage
-        }
-      ],
-      dataToReplicate
-    ).catch((err: any) => err.message);
-
-    externalStorageHandler.updateSettings(
-      window,
-      true,
-      $replicationSaveBehavior$,
-      $statisticsMergeMode$,
-      $readingGoalsMergeMode$,
-      $cacheStorageData$,
-      false,
-      currentHandlerStorageSource
-    );
-
-    isReplicating = false;
-
-    if (error) {
-      if (!isSilent) {
-        const showReport = logger.errorCount > 1;
-
-        logger.warn(error);
-
-        dialogManager.dialogs$.next([
-          {
-            component: showReport ? LogReportDialog : MessageDialog,
-            props: {
-              title: 'Error Processing Data',
-              message: showReport
-                ? `Some or all data could not be stored on an external storage`
-                : error
-            }
-          }
-        ]);
-      }
-
-      externalStorageErrors += 1;
-    } else {
-      externalStorageErrors = 0;
-
-      if (!isSilent) {
-        dialogManager.dialogs$.next([]);
-      }
-
-      if (dataToReplicateQueue.length) {
-        const isAudioBookOnly =
-          dataToReplicate.length === 1 && dataToReplicate[0] === StorageDataType.AUDIOBOOK;
-        dataToReplicate = JSON.parse(JSON.stringify(dataToReplicateQueue));
-        dataToReplicateQueue = [];
-
-        if (isSilent || isAudioBookOnly) {
-          executeReplicate$.next();
-        } else if (!isAudioBookOnly) {
-          await executeReplication(false);
-        } else {
-          dataToReplicate = [];
-        }
-      } else {
-        dataToReplicate = [];
-      }
-    }
-
-    if (!isSilent) {
-      skipKeyDownListener$.next(false);
-    }
   }
 
   function openActionBackdrop() {
@@ -3265,10 +2855,6 @@
       }
 
       dialogManager.dialogs$.next([]);
-
-      if (upSyncEnabled) {
-        await executeReplication(false);
-      }
     } catch (error: any) {
       message = error.message;
     }
@@ -3418,29 +3004,6 @@
         wasTrackerPaused = false;
         $isTrackerPaused$ = false;
       });
-  }
-
-  function scheduleReplication(dataType: StorageDataType) {
-    // WP5: the old sync's switch stops position, statistics and reading goals.
-    if (legacyReadingOff && isLegacyReadingType(dataType)) {
-      return;
-    }
-
-    if (upSyncEnabled) {
-      const toReplicate = isReplicating ? dataToReplicateQueue : dataToReplicate;
-
-      if (!toReplicate.includes(dataType)) {
-        toReplicate.push(dataType);
-      }
-
-      if (!isReplicating) {
-        dataToReplicate = [...dataToReplicate];
-      }
-
-      if (!blockDataUpdates) {
-        executeReplicate$.next();
-      }
-    }
   }
 </script>
 
@@ -3629,7 +3192,6 @@
   {$setBackgroundColor$ ?? ''}
   {$setWritingMode$ ?? ''}
   {$textSelector$ ?? ''}
-  {$replicator$ ?? ''}
   {$autoStartTracker$ ?? ''}
   {$firstPageTurnStatus$ ?? ''}
 {:else}
@@ -3806,30 +3368,6 @@
         on:keyup={dummyFn}
       >
         ↩ {((returnMarkerPos / bookCharCount) * 100).toFixed(1)}%
-      </div>
-    {/if}
-    {#if dataToReplicate.length}
-      <div
-        tabindex="0"
-        role="button"
-        class="flex h-full w-8 items-center justify-center text-sm sm:text-lg"
-        class:text-red-500={externalStorageErrors > 1}
-        class:animate-pulse={externalStorageErrors > 1 || isReplicating}
-        on:click|stopPropagation={() => {
-          if ($statisticsEnabled$) {
-            wasTrackerPaused = $isTrackerPaused$;
-            isTrackerPaused$.next(true);
-          }
-
-          executeReplication(false).finally(() => {
-            if ($statisticsEnabled$ && !wasTrackerPaused) {
-              isTrackerPaused$.next(false);
-            }
-          });
-        }}
-        on:keyup={dummyFn}
-      >
-        <Fa icon={faCloudBolt} />
       </div>
     {/if}
     <div

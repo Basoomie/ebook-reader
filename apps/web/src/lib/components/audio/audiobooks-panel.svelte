@@ -7,9 +7,9 @@
 
   /**
    * Settings > Audiobooks (WP15b): the server's audiobooks folder (what the last scan
-   * found, Scan again), the books with a linked audiobook (problems first), the books
-   * marked "No audiobook", and the books whose audiobook is still on the old sync (filled
-   * in by WP15d). Linking itself happens on each book's details page. Read-only towards
+   * found, Scan again), the books with a linked audiobook (problems first) and the books
+   * marked "No audiobook". (WP15e removed the empty "From the old sync" section: WP15d was
+   * dropped.) Linking itself happens on each book's details page. Read-only towards
    * the audiobooks folder. Polling stops when the tab is left (the panel is destroyed).
    */
   import SettingsSection from '$lib/components/settings/settings-section.svelte';
@@ -290,14 +290,6 @@
         {/if}
       </section>
     {/if}
-
-    <!-- The old sync (WP15d) -->
-    <section class="mt-10" aria-label="From the old sync" data-testid="audiobooks-old-sync">
-      <SettingsSection jp="旧同期" title="From the old sync" />
-      <p class="mt-4 text-[15px] text-c-muted" data-testid="audiobooks-old-sync-empty">
-        Nothing here yet.
-      </p>
-    </section>
   {/if}
 </div>
 

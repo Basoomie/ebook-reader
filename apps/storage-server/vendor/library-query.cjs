@@ -2,7 +2,7 @@
  * GENERATED FILE, DO NOT EDIT. The storage server library search parser, bundled from
  * the web app (apps/web/src/lib/library/query/server-entry.ts).
  * Rebuild with `pnpm build:server-query` in apps/web after changing that code.
- * build: d017d844b982467e
+ * build: 6753431f0ce3b680
  */
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
@@ -53,8 +53,8 @@ var QueryError = class extends Error {
     this.end = end;
   }
 };
-var FIELDS = ["author", "series", "tag", "chars", "status", "favorite"];
-var FIELD_RE = /^(author|series|tag|chars|status|favorite)[:：]/i;
+var FIELDS = ["author", "series", "tag", "chars", "status", "favorite", "on"];
+var FIELD_RE = /^(author|series|tag|chars|status|favorite|on)[:：]/i;
 function isSpace(ch) {
   return ch !== void 0 && /\s/.test(ch);
 }
@@ -201,12 +201,18 @@ function parseWordList(raw) {
 }
 function parseField(s, field, negated, start) {
   const valueStart = s.pos;
-  if (field === "chars" || field === "status" || field === "favorite") {
+  if (field === "chars" || field === "status" || field === "favorite" || field === "on") {
     const raw = s.readBare(false);
     const end = s.pos;
     if (field === "chars")
       return { type: "chars", negated, start, end, ...parseChars(raw, start, end) };
     const words = parseWordList(raw);
+    if (field === "on") {
+      if (words.length !== 1 || words[0] !== "device") {
+        throw new QueryError("Use on:device (the books on this device).", start, end);
+      }
+      return { type: "device", negated, start, end };
+    }
     if (field === "status") {
       if (words.length === 0) {
         throw new QueryError(`status: needs a value: ${QUERY_STATUSES.join(", ")}.`, start, end);
@@ -342,7 +348,9 @@ function parseQuery(text) {
   }
 }
 function usesBookState(query) {
-  return query.terms.some((t) => t.type === "status" || t.type === "favorite");
+  return query.terms.some(
+    (t) => t.type === "status" || t.type === "favorite" || t.type === "device"
+  );
 }
 function usesRegex(query) {
   return query.terms.some(

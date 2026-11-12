@@ -39,6 +39,7 @@
   import { getLibraryStore, type LibraryConnection } from '$lib/library/library-db';
   import type { OpenStage } from '$lib/library/open-calibre-book';
   import { openCatalogBook } from '$lib/library/open-from-catalog';
+  import { isOnThisDevice, removeFromThisDevice } from '$lib/library/remove-from-device';
   import { bookProgressFraction, bookProgressLabel, positionsByBook } from '$lib/library/progress';
   import { libraryCoverSize$, libraryRequestTimeoutSeconds$ } from '$lib/library/settings';
   import type { CatalogBook, CatalogBookDetail, CatalogLibrary } from '$lib/library/types';
@@ -69,6 +70,8 @@
   let series: CatalogBook[] = [];
   let alsoBy: { author: string; books: CatalogBook[] }[] = [];
   let highlights = 0;
+  /** WP15e: this device has a copy of the book (offers Remove from this device). */
+  let onDeviceHere = false;
   let states = new Map<string, BookState>();
   let tagRules = new Set<string>();
   let positions = new Map<string, LocalRecord[]>();
@@ -185,6 +188,7 @@
     loading = true;
     error = '';
     notFound = false;
+    onDeviceHere = false;
     descriptionOpen = false;
     series = [];
     alsoBy = [];
@@ -200,7 +204,23 @@
     }
     loading = false;
     void loadHighlights();
+    void loadOnDevice();
     void loadRelated(book, controller.signal);
+  }
+
+  async function loadOnDevice() {
+    const id = bookId;
+    const here = await isOnThisDevice(id);
+    if (id === bookId) onDeviceHere = here;
+  }
+
+  /** WP15e: Remove from this device. */
+  async function removeFromDevice(target: CatalogBook) {
+    try {
+      if (await removeFromThisDevice(target)) onDeviceHere = false;
+    } catch (err) {
+      showMessage('Not removed', (err as Error).message);
+    }
   }
 
   /** The other volumes of the series and other books by each author. */
@@ -424,6 +444,15 @@
           >
             Add to collection
           </button>
+          {#if onDeviceHere}
+            <button
+              class="c-btn c-btn-secondary c-round"
+              data-testid="details-remove-device"
+              on:click={() => book && removeFromDevice(book)}
+            >
+              Remove from this device…
+            </button>
+          {/if}
           {#if highlights > 0}
             <a
               class="c-btn c-btn-secondary c-round"

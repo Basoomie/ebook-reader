@@ -27,7 +27,6 @@ const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 /** Files that declare localStorage-backed settings. */
 const SETTINGS_FILES = [
   'lib/data/store.ts',
-  'lib/data/storage/storage-view.ts',
   'lib/library/settings.ts',
   'lib/home/settings.ts',
   'lib/sync/settings.ts'
@@ -71,7 +70,8 @@ describe('settings registry', () => {
     }
   });
 
-  it('keeps credentials and legacy sync settings local, and unknown keys local', () => {
+  it("keeps the old sync's leftover keys local, and unknown keys local", () => {
+    // WP15e removed the old sync; its keys may still sit in localStorage (unlisted = local).
     for (const key of ['syncTarget', 'selfHostStorageSource', 'autoReplication', 'readingGoal']) {
       expect(settingScope(key)).toBe('local');
     }

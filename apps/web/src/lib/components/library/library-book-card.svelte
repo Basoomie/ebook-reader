@@ -43,6 +43,7 @@
     toggle: { book: CatalogBook; shift: boolean };
     state: CatalogBook;
     collect: CatalogBook;
+    remove: CatalogBook;
   }>();
 
   /** WP19a: where an author name leads (default: that author in the Library). */
@@ -144,7 +145,9 @@
         bind:open={menuOpen}
         on:read={() => dispatch('open', book)}
         on:state={() => dispatch('state', book)}
+        {onDevice}
         on:collect={() => dispatch('collect', book)}
+        on:remove={() => dispatch('remove', book)}
       />
     </div>
   {/if}

@@ -1133,6 +1133,33 @@ const bookAttachmentKind: KindSpec = {
   },
 };
 
+export const DEVICE_BOOKS_KIND = 'device-books';
+
+/**
+ * kind "device-books" (WP15e): id = a device id, owner (only that device writes it),
+ * deletable. data { bookIds }: the library book ids whose copy that device stores, so the
+ * built-in "On this device" (on:device) can be answered for the device that asks. Ids
+ * are not checked against the catalog: a book that left Calibre simply matches nothing.
+ */
+const deviceBooksKind: KindSpec = {
+  policy: () => 'owner',
+  ownerOf: (id) => (UUID_RE.test(id) ? id : null),
+  deletable: true,
+  validate(id, data, deleted, ctx) {
+    if (!UUID_RE.test(id)) throw new RecordError('invalid_id', 'ids are the device id');
+    if (!deviceExists(ctx, id)) throw new RecordError('unknown_device', `No device ${id}`);
+    if (deleted) return { bookId: null, data: {} };
+    const { bookIds } = requireObject(data);
+    if (
+      !Array.isArray(bookIds) ||
+      !bookIds.every((b) => typeof b === 'string' && UUID_RE.test(b))
+    ) {
+      throw new RecordError('invalid_data', 'bookIds must be a list of book ids');
+    }
+    return { bookId: null, data: { bookIds: [...new Set(bookIds as string[])].sort() } };
+  },
+};
+
 export const DEFAULT_KINDS: KindRegistry = {
   device: deviceKind,
   setting: settingKind,
@@ -1157,4 +1184,5 @@ export const DEFAULT_KINDS: KindRegistry = {
   'stat-goal': statGoalKind,
   'audiobook-position': audiobookPositionKind,
   [BOOK_ATTACHMENT_KIND]: bookAttachmentKind,
+  [DEVICE_BOOKS_KIND]: deviceBooksKind,
 };

@@ -1,7 +1,7 @@
 import request from 'supertest';
 import { describe, expect, it } from 'vitest';
 import { parseCorsOrigins } from '../src/config';
-import { LEGACY_TOKEN, makeTestApp } from './helpers/test-app';
+import { makeTestApp } from './helpers/test-app';
 
 const APP_ORIGIN = 'http://tower:3080';
 const OTHER_ORIGIN = 'http://evil.example';
@@ -45,10 +45,7 @@ describe('CORS with an explicit origin list', () => {
   const { app, newUserToken } = makeTestApp({ corsOrigins: [APP_ORIGIN] });
   const userToken = newUserToken();
 
-  const routes = [
-    { name: 'legacy /list', path: '/list?path=', auth: LEGACY_TOKEN },
-    { name: 'api /api/v1/me', path: '/api/v1/me', auth: userToken },
-  ];
+  const routes = [{ name: 'api /api/v1/me', path: '/api/v1/me', auth: userToken }];
 
   for (const route of routes) {
     it(`${route.name}: allows the app origin`, async () => {
@@ -61,6 +58,7 @@ describe('CORS with an explicit origin list', () => {
       expect(res.headers['vary']).toContain('Origin');
       expect(res.headers['access-control-expose-headers']).toContain('Content-Range');
       expect(res.headers['access-control-expose-headers']).toContain('ETag');
+      expect(res.headers['access-control-expose-headers']).toContain('Accept-Ranges');
     });
 
     it(`${route.name}: gives other origins no Access-Control-Allow-Origin`, async () => {
@@ -91,25 +89,7 @@ describe('CORS with an explicit origin list', () => {
   }
 
   it('does not affect clients that send no Origin (curl, workers)', async () => {
-    const res = await request(app)
-      .get('/list?path=')
-      .set('Authorization', `Bearer ${LEGACY_TOKEN}`);
+    const res = await request(app).get('/api/v1/me').set('Authorization', `Bearer ${userToken}`);
     expect(res.status).toBe(200);
-  });
-
-  it('serves ranged audio to the app origin with the range headers exposed', async () => {
-    const auth = `Bearer ${LEGACY_TOKEN}`;
-    await request(app)
-      .put('/audio-file?path=b%2Faudio_1.mp3')
-      .set('Authorization', auth)
-      .send(Buffer.alloc(1000, 1));
-    const res = await request(app)
-      .get('/file?path=b%2Faudio_1.mp3')
-      .set('Origin', APP_ORIGIN)
-      .set('Authorization', auth)
-      .set('Range', 'bytes=0-99');
-    expect(res.status).toBe(206);
-    expect(res.headers['access-control-allow-origin']).toBe(APP_ORIGIN);
-    expect(res.headers['access-control-expose-headers']).toContain('Accept-Ranges');
   });
 });

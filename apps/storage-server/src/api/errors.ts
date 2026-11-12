@@ -2,7 +2,6 @@ import type { NextFunction, Request, RequestHandler, Response } from 'express';
 
 /**
  * Every /api/v1 error has the shape { error: { code, message } }.
- * (The legacy endpoints keep their own { error: string } shape.)
  */
 export class ApiError extends Error {
   constructor(

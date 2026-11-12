@@ -39,7 +39,7 @@ export type DatabaseState =
 
 /**
  * Opens the database for the server or the CLI. Never throws: on any problem
- * the server keeps serving the legacy endpoints and /api/v1 reports the reason.
+ * the server still starts and /api/v1 reports the reason.
  */
 export function initDatabase(dbDir: string, dataRoot: string): DatabaseState {
   try {
@@ -47,7 +47,7 @@ export function initDatabase(dbDir: string, dataRoot: string): DatabaseState {
       return {
         ok: false,
         error:
-          `DB_DIR (${dbDir}) is inside DATA_DIR (${dataRoot}); the legacy file API would expose it. ` +
+          `DB_DIR (${dbDir}) is inside DATA_DIR (${dataRoot}); it must not share the data folder. ` +
           'Mount the database folder separately.',
       };
     }

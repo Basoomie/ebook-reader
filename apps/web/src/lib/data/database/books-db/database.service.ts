@@ -10,11 +10,10 @@ import type {
   BooksDbBookmarkData,
   BooksDbReadingGoal,
   BooksDbStatistic,
-  BooksDbStorageSource,
   BooksDbSubtitleData
 } from '$lib/data/database/books-db/versions/books-db';
 import { Observable, Subject, from } from 'rxjs';
-import { StorageDataType, StorageKey } from '$lib/data/storage/storage-types';
+import { StorageDataType } from '$lib/data/storage/storage-types';
 import {
   advanceDateDays,
   getDate,
@@ -22,32 +21,23 @@ import {
   mergeStatistics,
   updateStatisticToStore
 } from '$lib/functions/statistic-util';
-import { catchError, map, shareReplay, startWith, switchMap, tap } from 'rxjs/operators';
+import { map, shareReplay, startWith, switchMap } from 'rxjs/operators';
 import {
   getCurrentReadingGoal,
   mergeReadingGoals,
   readingGoalSortFunction
 } from '$lib/data/reading-goal';
-import { lastReadingGoalsModified$, readingGoal$, syncTarget$ } from '$lib/data/store';
+import { lastReadingGoalsModified$, readingGoal$ } from '$lib/data/store';
 
-import type { BaseStorageHandler } from '$lib/data/storage/handler/base-handler';
 import type { BookStatistic } from '$lib/components/statistics/statistics-types';
 import type BooksDb from '$lib/data/database/books-db/versions/books-db';
 import type { IDBPDatabase } from 'idb';
-import LogReportDialog from '$lib/components/log-report-dialog.svelte';
 import { MergeMode } from '$lib/data/merge-mode';
 import MessageDialog from '$lib/components/message-dialog.svelte';
-import { ReplicationSaveBehavior } from '$lib/functions/replication/replication-options';
 import { dialogManager } from '$lib/data/dialog-manager';
+import { ReplicationSaveBehavior } from '$lib/functions/replication/replication-options';
 import { getDefaultStatistic } from '$lib/components/book-reader/book-reading-tracker/book-reading-tracker';
-import { getStorageHandler } from '$lib/data/storage/storage-handler-factory';
-import { handleErrorDuringReplication } from '$lib/functions/replication/error-handler';
-import { iffBrowser } from '$lib/functions/rxjs/iff-browser';
-import { logger } from '$lib/data/logger';
 import pLimit from 'p-limit';
-import { replicationProgress$ } from '$lib/functions/replication/replication-progress';
-import { setStorageSourceDefault } from '$lib/data/storage/storage-source-manager';
-import { storageSource$ } from '$lib/data/storage/storage-view';
 import { throwIfAborted } from '$lib/functions/replication/replication-error';
 
 const LAST_ITEM_KEY = 0;
@@ -58,61 +48,6 @@ export class DatabaseService {
   isReady$: Observable<boolean>;
 
   listLoading$ = new Subject<boolean>();
-
-  dataListChanged$ = new Subject<BaseStorageHandler | undefined>();
-
-  lastHandler: BaseStorageHandler | undefined;
-
-  dataList$ = iffBrowser(() =>
-    this.dataListChanged$.pipe(
-      startWith(undefined),
-      tap((handler) => {
-        this.lastHandler = handler;
-      }),
-      switchMap(() => storageSource$),
-      switchMap((storageSource) =>
-        from(
-          Promise.resolve(this.lastHandler || getStorageHandler(window, storageSource, '')).then(
-            (handler) => {
-              logger.clearHistory();
-
-              return handler.getBookList();
-            }
-          )
-        ).pipe(
-          catchError((error: unknown) => {
-            if (error instanceof Error) {
-              const showReport = logger.errorCount > 1;
-
-              logger.warn(error.message);
-
-              dialogManager.dialogs$.next([
-                {
-                  component: showReport ? LogReportDialog : MessageDialog,
-                  props: {
-                    title: 'Failure',
-                    message: showReport ? 'Error(s) occurred' : `An Error occured: ${error.message}`
-                  }
-                }
-              ]);
-            }
-
-            if (storageSource !== StorageKey.BROWSER) {
-              this.lastHandler = undefined;
-              storageSource$.next(StorageKey.BROWSER);
-            }
-
-            return [[]];
-          })
-        )
-      ),
-      tap(() => {
-        this.lastHandler = undefined;
-        this.listLoading$.next(false);
-      }),
-      shareReplay({ refCount: true, bufferSize: 1 })
-    )
-  );
 
   bookmarksChanged$ = new Subject<void>();
 
@@ -131,8 +66,6 @@ export class DatabaseService {
     switchMap((db) => db.get('lastItem', LAST_ITEM_KEY)),
     shareReplay({ refCount: true, bufferSize: 1 })
   );
-
-  storageSourcesChanged$ = new Subject<BooksDbStorageSource[]>();
 
   constructor(public db: Promise<IDBPDatabase<BooksDb>>) {
     this.db$ = from(db).pipe(shareReplay({ refCount: true, bufferSize: 1 }));
@@ -281,8 +214,6 @@ export class DatabaseService {
 
     let errorMessage = '';
 
-    replicationProgress$.next({ progressBase: 1, maxProgress: dataIds.length });
-
     dataIds.forEach((id) =>
       tasks.push(
         limiter(async () => {
@@ -299,11 +230,8 @@ export class DatabaseService {
               )
             );
           } catch (error) {
-            errorMessage = handleErrorDuringReplication(
-              error,
-              `Error deleting Book with id ${id}: `,
-              [limiter]
-            );
+            errorMessage = `Error deleting Book with id ${id}: ${(error as Error)?.message ?? error}`;
+            limiter.clearQueue();
           }
         })
       )
@@ -312,6 +240,21 @@ export class DatabaseService {
     await Promise.all(tasks).catch(() => {});
 
     return { error: errorMessage, deleted };
+  }
+
+  /**
+   * WP15e "Remove from this device": deletes one book's copy here with its bookmark, the
+   * last-book mark when it is this book, and whispersync's rows (audiobook position,
+   * saved subtitles, file handles), as the old Manager's delete did. Local statistics
+   * are kept, and nothing on the server changes (reading data, statistics, the Calibre
+   * file). Throws when the book could not be removed.
+   */
+  async removeBookFromDevice(dataId: number) {
+    const db = await this.db;
+    const lastItem = (await db.get('lastItem', LAST_ITEM_KEY))?.dataId;
+    const bookmarkIds = new Set(await db.getAllKeys('bookmark'));
+
+    return this.deleteSingleData(db, dataId, undefined, { lastItem, bookmarkIds }, false);
   }
 
   async getBookmark(dataId: number) {
@@ -428,80 +371,7 @@ export class DatabaseService {
       throw error;
     }
 
-    replicationProgress$.next({ progressToAdd: 1 });
-
     return dataId;
-  }
-
-  async getStorageSources() {
-    const db = await this.db;
-
-    return db.getAll('storageSource');
-  }
-
-  async saveStorageSource(
-    storageSource: BooksDbStorageSource,
-    oldName: string,
-    isSyncTarget: boolean,
-    isStorageSourceDefault: boolean
-  ) {
-    const db = await this.db;
-    const tx = db.transaction(['storageSource'], 'readwrite');
-
-    try {
-      const store = tx.objectStore('storageSource');
-
-      if (oldName && storageSource.name !== oldName) {
-        await store.delete(oldName);
-      }
-
-      if (storageSource.name === oldName) {
-        await store.put(storageSource);
-      } else {
-        await store.add(storageSource);
-      }
-
-      await tx.done;
-
-      if (isSyncTarget) {
-        syncTarget$.next(storageSource.name);
-      } else if (oldName) {
-        syncTarget$.next('');
-      }
-
-      if (isStorageSourceDefault) {
-        setStorageSourceDefault(storageSource.name, storageSource.type);
-      } else if (oldName) {
-        setStorageSourceDefault('', storageSource.type);
-      }
-    } catch (error: any) {
-      try {
-        tx.abort();
-        await tx.done;
-      } catch (_) {
-        // no-op
-      }
-
-      throw error;
-    }
-  }
-
-  async deleteStorageSource(
-    toDelete: BooksDbStorageSource,
-    wasSyncTarget: boolean,
-    wasStorageSourceDefault: boolean
-  ) {
-    const db = await this.db;
-
-    await db.delete('storageSource', toDelete.name);
-
-    if (wasSyncTarget) {
-      syncTarget$.next('');
-    }
-
-    if (wasStorageSourceDefault) {
-      setStorageSourceDefault('', toDelete.type);
-    }
   }
 
   async getStatisticsForBook(bookTitle: string) {

@@ -3,7 +3,8 @@
  * each of the user's collections, how many books it has and up to four collage tiles.
  *
  * Collections span all enabled libraries (decisions.md: personal views span libraries).
- * - Built-ins (Reading, Completed, Dropped, Unread, Favorites) are fixed searches.
+ * - Built-ins (Reading, Completed, Dropped, Unread, Favorites, On this device) are fixed
+ *   searches; "On this device" is answered for the device that asks (WP15e).
  * - A saved search ("smart") is its stored query, evaluated now.
  * - A manual collection's books are its live "collection-item" records.
  *
@@ -37,6 +38,7 @@ export const BUILTIN_COLLECTIONS: { id: string; query: string }[] = [
   { id: 'dropped', query: 'status:dropped' },
   { id: 'unread', query: 'status:unread' },
   { id: 'favorites', query: 'favorite:yes' },
+  { id: 'on-device', query: 'on:device' },
 ];
 
 export interface CollectionCard {
@@ -88,7 +90,7 @@ function searchMembers(
   run: RunQuery,
 ): Promise<unknown[]> {
   const parsed = parseOrThrow(query);
-  const conds = [...visibilitySql({}), ...querySql(parsed, user.id, db)];
+  const conds = [...visibilitySql({}), ...querySql(parsed, user.id, db, user.deviceId ?? null)];
   const where = conds.length ? `WHERE ${conds.map((c) => c.sql).join(' AND ')}` : '';
   return run(
     `SELECT ${MEMBER_COLUMNS} ${SQL_BOOK_FROM} ${where} ORDER BY b.added_at DESC, b.id DESC`,
@@ -198,7 +200,9 @@ export async function collectionCards(
     cache = new Map();
     cardCache.set(db, cache);
   }
-  const hit = cache.get(user.id);
+  // Per device too: "On this device" differs between devices.
+  const cacheKey = `${user.id}:${user.deviceId ?? ''}`;
+  const hit = cache.get(cacheKey);
   if (hit && hit.changes === changes) return hit.cards;
 
   const collections = (
@@ -261,7 +265,7 @@ export async function collectionCards(
   // Only cache a complete answer (a timed-out pattern may work next time).
   if (!cards.some((c) => c.error && c.error.code !== 'invalid_query')) {
     if (cache.size > 100) cache.clear();
-    cache.set(user.id, { changes, cards });
+    cache.set(cacheKey, { changes, cards });
   }
   return cards;
 }

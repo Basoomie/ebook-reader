@@ -43,10 +43,11 @@
   import { removeFavoritesCopy, removeFromCollectionCopy } from '$lib/confirm/confirm-copy';
   import { pagePath } from '$lib/data/env';
   import { logger } from '$lib/data/logger';
-  import { database, einkMode$, selfHostStorageSource$ } from '$lib/data/store';
+  import { database, einkMode$ } from '$lib/data/store';
   import { formatPageTitle } from '$lib/functions/format-page-title';
   import { LibraryApi, LibraryApiError } from '$lib/library/api';
   import { existingLocalIds } from '$lib/library/browser-open-deps';
+  import { removeFromThisDevice } from '$lib/library/remove-from-device';
   import { isCoverBlurred } from '$lib/library/cover-blur';
   import { coverGrid } from '$lib/library/cover-size';
   import { authorHref, formatGroupChars, groupCount, plural } from '$lib/library/format';
@@ -358,10 +359,13 @@
     if (connection && api) void readUrlAndLoad();
   });
 
-  /** The self-hosted sync server's address, as a starting point for the connect form. */
+  /**
+   * The old self-hosted sync server's address, as a starting point for the connect form.
+   * WP15e removed the old sync; its stored source (if any) is only read here.
+   */
   async function selfHostServerUrl(): Promise<string> {
     try {
-      const name = selfHostStorageSource$.getValue();
+      const name = window.localStorage.getItem('selfHostStorageSource');
       if (!name) return '';
       const db = await database.db;
       const source = await db.get('storageSource', name);
@@ -1358,6 +1362,27 @@
     dialogManager.dialogs$.next([{ component: MessageDialog, props: { title, message } }]);
   }
 
+  /** WP15e: Remove from this device (a book's ⋮ menu). */
+  async function removeFromDevice(book: CatalogBook) {
+    try {
+      if (!(await removeFromThisDevice(book))) return;
+    } catch (error) {
+      showMessage('Not removed', (error as Error).message);
+      return;
+    }
+    await refreshOnDevice();
+    if (showsOnDevice()) void loadPage(true, Math.max(books.length, LIST_PAGE));
+  }
+
+  /** The list shown depends on this device's books ("On this device", on:device). */
+  function showsOnDevice(): boolean {
+    const scope = builtinCollection(collectionId ?? '')?.query ?? smartQuery();
+    return [appliedQuery, scope].some((text) => {
+      const parsedText = text ? parseQuery(text) : null;
+      return !!parsedText?.ok && parsedText.query.terms.some((t) => t.type === 'device');
+    });
+  }
+
   /** WP11c: `jump` (Highlights section) is left for the reader once the book opened. */
   async function open(book: CatalogBook, jump?: PendingJump) {
     if (!api || opening) return;
@@ -1755,7 +1780,8 @@
     {#if loadError}
       <p class="c-notice font-medium" role="alert">
         {loadError}
-        <a class="c-link" href="{pagePath}/manage">Go to the Manager</a>
+        <!-- WP15e: Home's Continue Reading still opens this device's books without the server. -->
+        <a class="c-link" href="{pagePath}/home">Go to Home</a>
       </p>
     {/if}
 
@@ -1833,6 +1859,7 @@
               on:toggle={(ev) => onToggle(ev.detail.book, ev.detail.shift)}
               on:state={(ev) => openBookState(ev.detail)}
               on:collect={(ev) => openAddToCollection(ev.detail)}
+              on:remove={(ev) => removeFromDevice(ev.detail)}
             />
           {:else}
             <LibraryBookRow
@@ -1865,6 +1892,7 @@
               on:toggle={(ev) => onToggle(ev.detail.book, ev.detail.shift)}
               on:state={(ev) => openBookState(ev.detail)}
               on:collect={(ev) => openAddToCollection(ev.detail)}
+              on:remove={(ev) => removeFromDevice(ev.detail)}
             />
           {/if}
         {/each}

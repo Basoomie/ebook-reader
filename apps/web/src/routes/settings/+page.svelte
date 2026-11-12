@@ -16,9 +16,7 @@
     autoBookmark$,
     autoBookmarkTime$,
     autoPositionOnResize$,
-    autoReplication$,
     avoidPageBreak$,
-    cacheStorageData$,
     confirmClose$,
     customReadingPointEnabled$,
     disableWheelNavigation$,
@@ -42,7 +40,6 @@
     pageColumns$,
     pauseTrackerOnCustomPointChange$,
     prioritizeReaderStyles$,
-    replicationSaveBehavior$,
     restrictImportFixToAnchor$,
     secondDimensionMaxValue$,
     selectionToBookmarkEnabled$,
@@ -50,11 +47,9 @@
     showPercentage$,
     showFooterChapterCharacterCounter$,
     showFooterChapterPercentage$,
-    showExternalPlaceholder$,
     startDayHoursForTracker$,
     statsWeekStart$,
     statisticsEnabled$,
-    statisticsMergeMode$,
     swipeThreshold$,
     mouseDragPageTurn$,
     mouseDragThreshold$,
@@ -77,7 +72,6 @@
     verticalTextOrientation$,
     viewMode$,
     writingMode$,
-    readingGoalsMergeMode$,
     hideSpoilerImageMode$
   } from '$lib/data/store';
   import { mergeEntries } from '$lib/components/merged-header-icon/merged-entries';
@@ -233,14 +227,8 @@
       bind:readingStatusSettleSeconds={$readingStatusSettleSeconds$}
       bind:importHTMLFixMode={$importHTMLFixMode$}
       bind:restrictImportFixToAnchor={$restrictImportFixToAnchor$}
-      bind:cacheStorageData={$cacheStorageData$}
-      bind:replicationSaveBehavior={$replicationSaveBehavior$}
-      bind:autoReplication={$autoReplication$}
-      bind:showExternalPlaceholder={$showExternalPlaceholder$}
       bind:startDayHoursForTracker={$startDayHoursForTracker$}
       bind:statsWeekStart={$statsWeekStart$}
-      bind:statisticsMergeMode={$statisticsMergeMode$}
-      bind:readingGoalsMergeMode={$readingGoalsMergeMode$}
       bind:statisticsEnabled={$statisticsEnabled$}
       bind:trackerAutoPause={$trackerAutoPause$}
       bind:openTrackerOnCompletion={$openTrackerOnCompletion$}
