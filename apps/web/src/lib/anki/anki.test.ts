@@ -283,9 +283,17 @@ interface Call {
 function fakeAnki({
   notes = [] as NoteInfo[],
   android = false,
-  failOn = new Set<string>()
-}: { notes?: NoteInfo[]; android?: boolean; failOn?: Set<string> } = {}) {
+  failOn = new Set<string>(),
+  browsing = null as number | null
+}: {
+  notes?: NoteInfo[];
+  android?: boolean;
+  failOn?: Set<string>;
+  /** A note shown in Anki's Browse window: its editor loses changes made meanwhile. */
+  browsing?: number | null;
+} = {}) {
   const calls: Call[] = [];
+  let shown = browsing;
   const media: Record<string, string> = {};
   const fetchImpl = async (_url: string, init?: RequestInit) => {
     const body = JSON.parse(String(init?.body)) as Call;
@@ -310,17 +318,22 @@ function fakeAnki({
       case 'updateNoteFields': {
         const note = body.params!.note as { id: number; fields: Record<string, string> };
         const n = notes.find((x) => x.noteId === note.id)!;
+        if (shown === n.noteId) return ok(null); // the editor saves its own copy back
         for (const [k, v] of Object.entries(note.fields)) n.fields[k].value = v;
         return ok(null);
       }
       case 'addTags': {
         if (android) return err('unsupported action');
         const n = notes.find((x) => (body.params!.notes as number[]).includes(x.noteId))!;
+        if (shown === n.noteId) return ok(null); // the editor saves its own copy back
         n.tags.push(body.params!.tags as string);
         return ok(null);
       }
       case 'guiSelectedNotes':
-        return ok([]);
+        return ok(shown === null ? [] : [shown]);
+      case 'guiSelectNote':
+        shown = body.params!.note as number;
+        return ok(true);
       default:
         return err(`unknown action ${body.action}`);
     }
@@ -446,6 +459,19 @@ describe('enrich last card', () => {
     expect(second.added).toEqual([]);
     expect(second.kept).toEqual(expect.arrayContaining(['tag', 'link to the passage', 'cover']));
     expect(n.tags).toEqual(['猫の本']);
+  });
+
+  it('moves an open Browse window off the note for the fields and the tag, then back', async () => {
+    const n = note(7, { Key: '猫', Sentence: '', SentenceAudio: '', Picture: '', ReaderLink: '' });
+    const { anki, calls } = fakeAnki({ notes: [n], browsing: 7 });
+    const result = await enrichLastCard(anki, input());
+    expect(n.fields.Sentence.value).toBe('<b>猫</b>が好きだ。');
+    expect(n.tags).toEqual(['猫の本']);
+    expect(result.added[0]).toBe('tag');
+    const order = calls
+      .filter((c) => ['guiSelectNote', 'updateNoteFields', 'addTags'].includes(c.action))
+      .map((c) => (c.action === 'guiSelectNote' ? `select ${c.params!.note}` : c.action));
+    expect(order).toEqual(['select 1', 'updateNoteFields', 'addTags', 'select 7']);
   });
 
   it('adds only the tag for a note type without fields set up', async () => {

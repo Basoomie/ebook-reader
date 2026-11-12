@@ -213,41 +213,48 @@ export async function enrichLastCard(anki: AnkiConnect, input: EnrichInput): Pro
     });
   }
 
-  if (Object.keys(updates).length) {
-    const selection = await anki.releaseNote(note.noteId);
-
-    try {
-      await anki.updateFields(note.noteId, updates);
-    } catch (error) {
-      await anki.restoreSelection(selection);
-      throw new EnrichError(
-        `Anki didn't take the changes: ${(error as Error)?.message ?? error}`,
-        'anki'
-      );
-    }
-
-    await anki.restoreSelection(selection);
-  }
-
   const tag = input.titleTag(input.title, input.tagPrefix);
+  const addTag = !!tag && !note.tags.includes(tag);
 
   if (!tag) {
     result.skipped.push({ what: 'tag', reason: 'the book has no title' });
-  } else if (note.tags.includes(tag)) {
+  } else if (!addTag) {
     result.kept.push('tag');
-  } else {
-    try {
-      await anki.addTags(note.noteId, tag);
-      result.added.unshift('tag');
-    } catch (error) {
-      result.skipped.push({
-        what: 'tag',
-        reason:
-          anki.isAndroid && error instanceof AnkiConnectError
-            ? 'AnkiConnect Android did not add it'
-            : ((error as Error)?.message ?? String(error))
-      });
+  }
+
+  // Anki's editor keeps the note it shows and saves it back, so a Browse window showing the
+  // note is moved off it for the fields and the tag both, and put back afterwards.
+  const selection =
+    Object.keys(updates).length || addTag ? await anki.releaseNote(note.noteId) : null;
+
+  try {
+    if (Object.keys(updates).length) {
+      try {
+        await anki.updateFields(note.noteId, updates);
+      } catch (error) {
+        throw new EnrichError(
+          `Anki didn't take the changes: ${(error as Error)?.message ?? error}`,
+          'anki'
+        );
+      }
     }
+
+    if (addTag && tag) {
+      try {
+        await anki.addTags(note.noteId, tag);
+        result.added.unshift('tag');
+      } catch (error) {
+        result.skipped.push({
+          what: 'tag',
+          reason:
+            anki.isAndroid && error instanceof AnkiConnectError
+              ? 'AnkiConnect Android did not add it'
+              : ((error as Error)?.message ?? String(error))
+        });
+      }
+    }
+  } finally {
+    await anki.restoreSelection(selection);
   }
 
   return result;
