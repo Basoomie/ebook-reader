@@ -130,7 +130,7 @@
 </script>
 
 <div class="c-tile rounded-lg p-4 sm:px-7 sm:py-6" data-testid="anki-settings">
-  <p class="mb-4 max-w-prose">
+  <p class="mb-4">
     <strong>Enrich last Anki card</strong> adds to the note you added to Anki most recently: the
     book's title as a tag, and, in the fields chosen below, the sentence of your last dictionary
     lookup (or the selected text), its audio when the book has a linked audiobook with subtitles,
@@ -243,7 +243,7 @@
         />
       </label>
       <label class="mt-4 block text-sm text-c-muted">
-        How close subtitle lines must be when the sentence isn't in them word for word (0-1)
+        Sentence audio: how closely the subtitles must match the book (0-1)
         <input
           class={fieldClasses}
           type="number"
@@ -254,12 +254,18 @@
           bind:value={$ankiAudioMatchThreshold$}
         />
       </label>
+      <p class="mt-1 text-sm text-c-muted">
+        To find a sentence's audio, its text is looked for in the subtitles. When the subtitles word
+        it a little differently (kana instead of kanji, a missing word), the closest lines are used
+        if they are at least this similar: 0.6 = 60 %. Higher is stricter (less audio, fewer wrong
+        clips); lower finds more.
+      </p>
     </div>
   </div>
 
   <h3 class="mt-8 font-mincho text-lg font-bold">Fields per note type (every device)</h3>
   {#if !knownTypes.length}
-    <p class="mt-2 max-w-prose">Connect to Anki above to choose a note type.</p>
+    <p class="mt-2">Connect to Anki above to choose a note type.</p>
   {:else}
     <label class="mt-2 block text-sm text-c-muted">
       Note type
@@ -278,7 +284,7 @@
     </label>
     {#if noteType}
       {#if !noteTypes.includes(noteType)}
-        <p class="mt-2 max-w-prose text-sm text-c-muted">
+        <p class="mt-2 text-sm text-c-muted">
           Anki on this device doesn't have this note type (or isn't connected); its fields are kept.
         </p>
       {/if}
@@ -321,7 +327,7 @@
           </fieldset>
         {/each}
       </div>
-      <p class="mt-4 max-w-prose text-sm text-c-muted">
+      <p class="mt-4 text-sm text-c-muted">
         The link field gets only the book and place, such as <code>/open?book=…&amp;pos=…</code>.
         Add the reader's address in the card template, for example
         <code
