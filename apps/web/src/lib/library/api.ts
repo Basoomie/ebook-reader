@@ -360,11 +360,16 @@ export class LibraryApi {
     options: RequestOptions = {}
   ): Promise<Response> {
     const headers: Record<string, string> = { Authorization: `Bearer ${this.token}` };
-    if (body !== undefined) headers['Content-Type'] = 'application/json';
+    const raw = body instanceof Blob;
+    if (body !== undefined) headers['Content-Type'] = raw ? body.type : 'application/json';
     const response = await send(
       this.fetchImpl,
       `${this.serverUrl}/api/v1${path}`,
-      { method, headers, body: body === undefined ? undefined : JSON.stringify(body) },
+      {
+        method,
+        headers,
+        body: body === undefined ? undefined : raw ? body : JSON.stringify(body)
+      },
       { timeoutSeconds: this.timeoutSeconds, ...options }
     );
     if (!response.ok) throw await errorFrom(response);
@@ -593,6 +598,73 @@ export class LibraryApi {
   async deleteAudioLink(bookId: string, options?: RequestOptions): Promise<void> {
     const path = `/books/${encodeURIComponent(bookId)}/audio-link`;
     await this.sendJson('DELETE', path, undefined, options);
+  }
+
+  /**
+   * WP15c: uploads a book attachment (whispersync's saved subtitles or match). 'stale'
+   * when the server already holds newer data. No time limit (a matched book can be
+   * large); the caller cancels through `signal`.
+   */
+  async uploadAttachment(
+    bookId: string,
+    name: string,
+    body: string,
+    modifiedAt: number,
+    options: RequestOptions = {}
+  ): Promise<'ok' | 'stale'> {
+    const qs = new URLSearchParams({ modifiedAt: String(Math.round(modifiedAt)) });
+    try {
+      await this.sendJson(
+        'PUT',
+        `/books/${encodeURIComponent(bookId)}/attachments/${encodeURIComponent(name)}?${qs}`,
+        new Blob([body], { type: 'application/octet-stream' }),
+        { timeoutSeconds: 0, ...options }
+      );
+      return 'ok';
+    } catch (error) {
+      if (error instanceof LibraryApiError && error.code === 'stale') return 'stale';
+      throw error;
+    }
+  }
+
+  /** A book attachment's text and hash (ETag); null when the server has none. */
+  async downloadAttachment(
+    bookId: string,
+    name: string,
+    options: RequestOptions = {}
+  ): Promise<{ text: string; sha256: string | null } | null> {
+    try {
+      const response = await this.get(
+        `/books/${encodeURIComponent(bookId)}/attachments/${encodeURIComponent(name)}`,
+        { timeoutSeconds: 0, ...options }
+      );
+      const etag = response.headers.get('ETag');
+      return { text: await response.text(), sha256: etag ? etag.replace(/^W\/|"/g, '') : null };
+    } catch (error) {
+      if (error instanceof LibraryApiError && error.status === 404) return null;
+      throw error;
+    }
+  }
+
+  /** WP15c: the book's confirmed subtitle file, or null when none is linked or it is gone. */
+  async linkedSubtitleFile(bookId: string, options?: RequestOptions): Promise<File | null> {
+    try {
+      const response = await this.get(
+        `/books/${encodeURIComponent(bookId)}/subtitle-file`,
+        options
+      );
+      const disposition = response.headers.get('Content-Disposition') ?? '';
+      const encoded = /filename\*=UTF-8''([^;]+)/i.exec(disposition)?.[1];
+      const name = encoded ? decodeURIComponent(encoded) : 'subtitles.srt';
+      return new File([await response.blob()], name, {
+        type: response.headers.get('Content-Type') ?? 'text/plain'
+      });
+    } catch (error) {
+      if (error instanceof LibraryApiError && (error.status === 404 || error.status === 410)) {
+        return null;
+      }
+      throw error;
+    }
   }
 
   /** Every link of this user, problems first. */

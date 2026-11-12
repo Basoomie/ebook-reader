@@ -62,6 +62,7 @@ export function createApp({
       },
       migration: { dataRoot: config.dataRoot, dbDir: config.dbDir },
       fonts: { dataRoot: config.dataRoot, maxMb: config.fonts.maxMb },
+      attachments: { dataRoot: config.dataRoot, maxMb: config.attachments.maxMb },
       seedDefaults,
       logs,
       audio,

@@ -98,6 +98,14 @@ module.exports = (async () => {
       }
     },
     {
+      // Vendored ttu-whispersync (MIT, lib/whispersync/README.md): its files keep their
+      // own license header; --fix must never replace it.
+      files: ['apps/web/src/lib/whispersync/**'],
+      rules: {
+        'headers/header-format': 'off'
+      }
+    },
+    {
       // The storage server is a separate Node project with its own tsconfig.
       // It is this fork's own code, so the upstream ttu license header is not required.
       files: ['apps/storage-server/**/*.ts'],

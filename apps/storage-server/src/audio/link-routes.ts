@@ -9,9 +9,11 @@
 import type Database from 'better-sqlite3';
 import express, { Router } from 'express';
 import { getAuth } from '../api/auth';
-import { ApiError } from '../api/errors';
-import { getBookFor, summariesByIds } from '../catalog/queries';
-import { getAudioFolder, getSubtitleFile } from './audio-index';
+import path from 'path';
+import { ApiError, asyncHandler } from '../api/errors';
+import { type CatalogUser, getBookFor, summariesByIds } from '../catalog/queries';
+import { readSmallFile, resolveInsideAudio } from './audio-fs';
+import { getAudioFolder, getAudioFolderByRelPath, getSubtitleFile } from './audio-index';
 import {
   type AudioLink,
   deleteLink,
@@ -21,7 +23,32 @@ import {
   type ResolvedAudioLink,
   saveLink,
 } from './audio-links';
-import { type AudioOptions, requireAudio } from './routes';
+import { type AudioOptions, audioFileUrl, requireAudio } from './routes';
+
+/** Largest subtitle file served (a whole book's .srt is a few MB). */
+const MAX_SUBTITLE_BYTES = 50 * 1024 * 1024;
+
+const SUBTITLE_TYPES: Record<string, string> = {
+  '.srt': 'text/plain; charset=utf-8',
+  '.vtt': 'text/vtt; charset=utf-8',
+  '.ass': 'text/plain; charset=utf-8',
+};
+
+/**
+ * WP15c: what whispersync plays. A signed URL of the linked file, only for a link that
+ * is there (status ok) and in one file (WP15 plays single-file audiobooks only).
+ */
+export function linkPlayUrl(
+  db: Database.Database,
+  user: CatalogUser,
+  link: ResolvedAudioLink,
+): string | null {
+  if (link.state !== 'linked' || link.status !== 'ok' || !link.folder?.playable) return null;
+  const folder = link.folderRelPath ? getAudioFolderByRelPath(db, link.folderRelPath) : null;
+  if (!folder || folder.missingAt !== null) return null;
+  const index = folder.files.findIndex((f) => f.name === link.fileName);
+  return index < 0 ? null : audioFileUrl(db, user, folder, index);
+}
 
 function badBody(message: string): ApiError {
   return new ApiError(400, 'invalid_body', message);
@@ -148,8 +175,49 @@ export function createAudioLinkRouter(
     const { user } = getAuth(res);
     bookOr404(user.id, req.params.id);
     const link = getLink(db, user.id, req.params.id);
-    res.json({ link: link ? resolveLink(db, link) : null });
+    if (!link) {
+      res.json({ link: null });
+      return;
+    }
+    const resolved = resolveLink(db, link);
+    res.json({ link: { ...resolved, playUrl: linkPlayUrl(db, user, resolved) } });
   });
+
+  /** WP15c: the linked subtitle file, for whispersync to load as if it were dropped. */
+  router.get(
+    '/books/:id/subtitle-file',
+    asyncHandler(async (req, res) => {
+      const service = requireAudio(options);
+      const { user } = getAuth(res);
+      bookOr404(user.id, req.params.id);
+      const link = getLink(db, user.id, req.params.id);
+      const resolved = link ? resolveLink(db, link) : null;
+      if (!resolved || resolved.subtitleState !== 'linked' || !resolved.subtitleRelPath) {
+        throw new ApiError(404, 'not_found', 'This book has no subtitle file linked');
+      }
+      if (resolved.subtitleStatus !== 'ok') {
+        throw new ApiError(410, 'missing', 'The subtitle file is no longer in the subtitle folder');
+      }
+      let content: Buffer | null;
+      try {
+        content = await readSmallFile(
+          resolveInsideAudio(service.root, resolved.subtitleRelPath),
+          MAX_SUBTITLE_BYTES,
+        );
+      } catch {
+        throw new ApiError(410, 'missing', 'The subtitle file is no longer in the subtitle folder');
+      }
+      if (!content) throw new ApiError(413, 'too_large', 'The subtitle file is too large');
+      const name = path.posix.basename(resolved.subtitleRelPath);
+      res.set(
+        'Content-Type',
+        SUBTITLE_TYPES[path.extname(name).toLowerCase()] ?? 'text/plain; charset=utf-8',
+      );
+      res.set('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(name)}`);
+      res.set('Cache-Control', 'no-store');
+      res.send(content);
+    }),
+  );
 
   router.put('/books/:id/audio-link', (req, res) => {
     requireAudio(options);

@@ -465,3 +465,12 @@
 		text-align: center;
 	}
 }
+
+/* ttsu WP15c: the way to the library's audiobook picker, shown as a button. */
+.ttu-whispersync-container .ttu-whispersync-link-audiobook {
+	min-height: 2.75rem;
+	padding: 0.5rem 0.875rem;
+	border: 2px solid currentColor;
+	border-radius: 0.5rem;
+	font-weight: 600;
+}

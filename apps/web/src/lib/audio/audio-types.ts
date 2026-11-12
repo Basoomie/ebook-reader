@@ -88,6 +88,8 @@ export interface AudioLink {
   status: 'ok' | 'missing' | 'changed' | null;
   subtitle: SubtitleFileSummary | null;
   subtitleStatus: 'ok' | 'missing' | null;
+  /** WP15c: the signed URL whispersync plays (single-file links that are there), else null. */
+  playUrl?: string | null;
 }
 
 export interface AudioLinkListEntry extends AudioLink {

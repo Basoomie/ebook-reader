@@ -6,7 +6,7 @@
   import ConfirmDialog from './ConfirmDialog.svelte';
   import Dialogs from './Dialogs.svelte';
   import Icon from './Icon.svelte';
-  import { Action, executeAction } from '../lib/actions';
+  import { Action, executeAction, persistSubtitles } from '../lib/actions';
   import type { BooksDB, BooksDBData } from '../lib/db';
   import {
     setAudioContext,
@@ -92,20 +92,18 @@
   import ReaderMenu from './ReaderMenu.svelte';
   import Settings from './Settings.svelte';
   import { onDestroy, onMount, setContext } from 'svelte';
-  import { writable, get } from 'svelte/store';
-  import type { NasServerConfig } from '../lib/nas';
-  import { sanitizeTitleForNas, buildAudioNasUrl, findNasAudio } from '../lib/nas';
+  import { get } from 'svelte/store';
+  import type { LinkedAudio } from '../lib/linked-audio';
 
   export let componentContainerElement: HTMLDivElement;
   export let bookContentElement: HTMLDivElement;
   export let currentBookId: number;
   export let readerDatabase: IDBPDatabase<any>;
-  export let nasServerConfig: NasServerConfig | undefined = undefined;
+  // ttsu WP15c: the book's linked audiobook (replaces the NAS config).
+  export let linkedAudio: LinkedAudio | undefined = undefined;
   export let externalElementHtml = '';
   export let externalBlobs: Record<string, Blob> | undefined = undefined;
   export let externalBookData: Partial<BooksDBData> | undefined = undefined;
-
-  const nasAudioConfig$ = writable<import('../lib/nas').NasAudioConfig | undefined>(undefined);
 
   const sideMenuWidthKey = 'ttu-whispersync-side-menu-width';
   const supportsFileSystem = 'showOpenFilePicker' in window;
@@ -134,6 +132,7 @@
     readerMenuOpenMode$,
     readerMenuPauseMode$,
     readerMenuOpenTime$,
+    subtitlesEnablePersist$,
     subtitlesGlobalStartPadding$,
     subtitlesGlobalEndPadding$,
     playerAltRewindTime$,
@@ -314,7 +313,7 @@
     isPaginated,
     supportsFileSystem,
     isIOS,
-    nasAudioConfig$
+    linkedAudio
   });
 
   onMount(initializeComponent);
@@ -524,11 +523,6 @@
       };
 
       $currentTime$ = audioBook?.playbackPosition || 0;
-
-      // Phase 2: wire up NAS config now that the book title is known
-      if (nasServerConfig) {
-        nasAudioConfig$.set({ ...nasServerConfig, titleFolder: sanitizeTitleForNas(book.title) });
-      }
     } catch ({ message }: any) {
       loadError = `Initialization failed: ${message}`;
     }
@@ -573,14 +567,12 @@
     let lastAudio =
       !$currentAudioSourceUrl$ && $extensionData$.lastAudio ? $extensionData$.lastAudio : undefined;
 
-    // Phase 2: if the NAS has audio for this book, load it directly — no local
+    // ttsu WP15c: the book's linked audiobook streams from the library server — no local
     // file handle or user-gesture dialog needed for audio.
-    const currentNasConfig = get(nasAudioConfig$);
-    if (currentNasConfig && !$currentAudioSourceUrl$) {
+    if (linkedAudio && !$currentAudioSourceUrl$) {
       try {
-        const nasFile = await findNasAudio(currentNasConfig);
-        if (nasFile) {
-          const nasUrl = buildAudioNasUrl(currentNasConfig, nasFile);
+        const nasUrl = await linkedAudio.playUrl();
+        if (nasUrl) {
           const enableCover = get(playerEnableCover$);
           const enableChapters = get(playerEnableChapters$);
 
@@ -642,7 +634,31 @@
           lastAudio = undefined;
         }
       } catch {
-        // NAS unreachable — fall through to local file handle path
+        // Server unreachable — fall through to local file handle path
+      }
+    }
+
+    // ttsu WP15c: the confirmed subtitle file, when nothing is saved or open yet, is
+    // loaded as if it had been dropped.
+    if (
+      linkedAudio &&
+      !lastSubtitle &&
+      !$currentSubtitleFile$ &&
+      !$extensionData$.subtitleData?.subtitles.length
+    ) {
+      try {
+        const subtitleFile = await linkedAudio.subtitleFile();
+        if (subtitleFile) {
+          const newSubtitles = await updateSubtitles(subtitleFile, document);
+
+          if (get(subtitlesEnablePersist$)) {
+            await persistSubtitles({ name: subtitleFile.name, subtitles: [...newSubtitles.values()] });
+          }
+
+          setSubtitleContext(subtitleFile, newSubtitles);
+        }
+      } catch ({ message }: any) {
+        $lastError$ = `Failed to load the linked subtitle file: ${message}`;
       }
     }
 

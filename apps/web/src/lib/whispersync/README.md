@@ -23,33 +23,49 @@ The following references are isolated behind TODO comments so the project compil
 - `// TODO(phase1)` — sandbox element, chrome.runtime references (removed in Phase 1 native mount)
 - `// TODO(phase5)` — FFMPEG/MediaInfo/recorder heavy deps (re-enabled in Phase 5 for Anki/cover features)
 
-## Sync notes
+## Sync notes (WP15c: the library server, not the old file sync)
 
-- SRT + playback position + matched book HTML sync via the reader's existing replication pipeline
-- Audio blob is NOT synced via replicator; it uploads/streams via the storage server `/file` endpoint
+- Audio is **linked**, never uploaded: the book's audiobook is chosen in the library's
+  picker (book details), and whispersync plays it from a signed URL
+  (`lib/linked-audio.ts`, implemented by `$lib/audio/whispersync-reader.ts`). Only
+  single-file audiobooks play. A dropped or picked local file plays for this session only.
+- A confirmed subtitle file is loaded through `updateSubtitles`, as if dropped, when
+  nothing is saved or open yet.
+- Position, saved subtitles and saved match sync through the library server
+  (`$lib/audio/whispersync-sync.ts`). whispersync's own rows (`audioBook`, `subtitle`,
+  `data`) and its match / re-match / reset steps are unchanged.
 
 ### What syncs and how
 
-| Data | Written by | IDB store | NAS file prefix | Sync trigger |
-|------|-----------|-----------|-----------------|--------------|
-| Playback position | `Player.svelte` | `audioBook` | `audioBook_` | `ttu-action` `syncType:'audioBook'` → `scheduleReplication` |
-| Subtitle data | `actions.ts` `persistSubtitles` | `subtitle` | `subtitles_` | `ttu-action` `syncType:'subtitle'` → `scheduleReplication` |
-| Matched book HTML | `Match.svelte` `onSaveMatch` | `data` | `bookdata_` | `ttu-action` `type:'syncAndReload'` → `executeReplication(DATA)` → reload |
-| Audio file | `Audiobook.svelte` | (NAS only) | `audio_` | Streaming PUT via XHR; never through replicator |
+| Data | Written by | IDB store | On the server | Sync trigger |
+|------|-----------|-----------|---------------|--------------|
+| Playback position | `Player.svelte` | `audioBook` | record `audiobook-position` (`<bookId>`) `{position, modifiedAt}` | `ttu-action` `syncType:'audioBook'` → `onPositionSaved` |
+| Subtitle data | `actions.ts` `persistSubtitles` | `subtitle` | attachment `whispersync-subtitles` + record `book-attachment` | `ttu-action` `syncType:'subtitle'` → `onSubtitlesSaved` |
+| Matched book HTML | `Match.svelte` `onSaveMatch` | `data` | attachment `whispersync-match` + record `book-attachment` | `ttu-action` `type:'syncAndReload'` → `onMatchSaved` (waits at most the library request time) → reload |
+| Audio file | the library's audiobooks folder | — | `audio_links` (picker) | streamed with Range from `/api/v1/audio/files/...` |
 
-### Last-write-wins semantics
+Attachments are files in `DATA_DIR/.uploads/attachments/<user>/<bookId>/`; the
+`book-attachment` record (`<bookId>:<name>`, `{size, sha256, modifiedAt}`) tells the
+other devices, which download it in the background.
 
-All data types use a `lastXxxModified` timestamp embedded in the NAS filename. The replicator compares source vs target filename; if they differ, the source wins (i.e., the device that most recently wrote that type wins).
+### Newest wins
 
-**Match/re-match on device A:**
-1. `onSaveMatch` writes `{ htmlBackup: oldElementHtml, elementHtml: wrappedHtml, lastBookModified: now }` to local IDB.
-2. A `syncAndReload` event triggers `executeReplication(DATA)` — the local bookdata (newer `lastBookModified`) is uploaded to the NAS.
-3. Page reloads. Device B, on next open, runs `syncDownData` which downloads the newer bookdata and renders highlights.
+`modifiedAt` is whispersync's own save time (`lastAudioBookModified`,
+`lastSubtitleDataModified`, `lastBookModified`), as with the old sync. A device never
+uploads a copy older than the server's (the server also refuses it: 409 `stale`). When
+a book opens, and whenever a sync brings a record of the open book, newer data from
+another device is written into whispersync's rows exactly as its own save would (the
+match with its `htmlBackup`). Reading never waits: a short notice offers "Reload" when
+the open book's data changed.
 
-**Reset on device A:**
-1. `onResetBook` / `onResetAll` writes `{ elementHtml: htmlBackup, lastBookModified: now }` (removes `htmlBackup`).
-2. The reset does `location.reload()` — no explicit sync dispatch (reset is local and immediate). The next auto-replication cycle or manual sync will upload the reset state.
-3. Device B downloads the reset state on its next open.
+**Match/re-match on device A:** `onSaveMatch` writes the matched HTML and `htmlBackup`,
+dispatches `syncAndReload`; the match is uploaded, then the page reloads. Device B gets
+it on its next open (or with the notice while open).
 
-**Re-match conflict (both devices match the same book independently):**
-- Whichever device syncs to the NAS last wins. The other device will download the winning state on next open. No merge; last-write-wins.
+**Reset match applies on every device** (decided with the user, 2026-11-11):
+`onResetBook` runs as before and then removes the shared match (a deletion marker).
+Another device that finds that deletion newer than its own matched copy restores its
+`htmlBackup`, the same step as `onResetBook`. **Reset all** also removes the saved
+subtitles and the position on the server. On the device itself nothing else changes.
+
+**Re-match conflict:** the later save wins (by `modifiedAt`); no merge.

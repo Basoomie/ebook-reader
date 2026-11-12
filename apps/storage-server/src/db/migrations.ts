@@ -443,6 +443,28 @@ export const MIGRATIONS: { version: number; name: string; sql: string }[] = [
       );
     `,
   },
+  {
+    version: 12,
+    name: 'book attachments',
+    // WP15c. Files of one book of one user that are too large for a sync record
+    // (whispersync's saved subtitles and saved match), stored in
+    // DATA_DIR/.uploads/attachments/<file_path>. The "book-attachment" sync record must
+    // match its row, so a device can delete or restore it but never invent one.
+    // modified_at is the device's own save time (newest wins).
+    sql: `
+      CREATE TABLE book_attachments (
+        user_id      TEXT NOT NULL REFERENCES users(id),
+        book_id      TEXT NOT NULL,
+        name         TEXT NOT NULL CHECK (name IN ('whispersync-subtitles', 'whispersync-match')),
+        size         INTEGER NOT NULL,
+        sha256       TEXT NOT NULL,
+        modified_at  INTEGER NOT NULL,
+        file_path    TEXT NOT NULL,
+        updated_at   INTEGER NOT NULL,
+        PRIMARY KEY (user_id, book_id, name)
+      );
+    `,
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;
