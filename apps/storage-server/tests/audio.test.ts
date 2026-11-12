@@ -480,6 +480,15 @@ describe('audio API', () => {
     expect(full.headers['content-type']).toBe('audio/mp4');
     expect(full.headers['accept-ranges']).toBe('bytes');
     expect(Buffer.from(full.body).equals(bytes)).toBe(true);
+    expect(full.headers['content-disposition']).toBeUndefined();
+
+    // The book page's Download menu: same signed URL, saved as a file.
+    const saved = await request(e.app).get(`${url}&download=1`);
+    expect(saved.status).toBe(200);
+    expect(saved.headers['content-disposition']).toBe(
+      `attachment; filename*=UTF-8''${encodeURIComponent(folder.files[0].name)}`,
+    );
+    expect(Buffer.from(saved.body).equals(bytes)).toBe(true);
 
     const part = await request(e.app).get(url).set('Range', 'bytes=10-19');
     expect(part.status).toBe(206);

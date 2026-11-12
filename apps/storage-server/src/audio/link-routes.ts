@@ -248,7 +248,9 @@ export function createAudioLinkRouter(
       saveLink(db, user.id, next);
       return next;
     })();
-    res.json({ link: resolveLink(db, saved) });
+    // The same shape as GET, so the book page's Download menu sees the new file at once.
+    const resolved = resolveLink(db, saved);
+    res.json({ link: { ...resolved, playUrl: linkPlayUrl(db, user, resolved) } });
   });
 
   router.delete('/books/:id/audio-link', (req, res) => {

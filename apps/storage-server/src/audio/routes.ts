@@ -178,6 +178,14 @@ export async function sendAudioFile(
   res.set('ETag', `"${version}"`);
   res.set('Last-Modified', new Date(stat.mtimeMs).toUTCString());
   res.set('Cache-Control', 'private, max-age=86400');
+  // The book page's Download menu: the browser saves the file instead of playing it
+  // (the web app is on another origin, where <a download> is ignored).
+  if (req.query.download === '1') {
+    res.set(
+      'Content-Disposition',
+      `attachment; filename*=UTF-8''${encodeURIComponent(entry.name)}`,
+    );
+  }
 
   const range = parseRange(req.headers.range, stat.size);
   if (range === 'unsatisfiable') {

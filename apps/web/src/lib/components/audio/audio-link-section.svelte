@@ -20,6 +20,8 @@
    * subtitle step asks.
    *
    * WP16: "Make subtitles on the PC" (subtitle-job-panel.svelte) under the linked audiobook.
+   *
+   * `link` is bindable so the page's Download menu follows every change made here.
    */
   import { faMagnifyingGlass } from '@fortawesome/free-solid-svg-icons';
   import Fa from 'svelte-fa';
@@ -80,7 +82,8 @@
 
   let loaded = false;
   let audioEnabled = false;
-  let link: AudioLink | null = null;
+  /** Bound up (read-only for the parent): the book page's Download menu uses it. */
+  export let link: AudioLink | null = null;
   let candidates: AudioCandidates | null = null;
   let candidatesError = '';
   let loadError = '';
