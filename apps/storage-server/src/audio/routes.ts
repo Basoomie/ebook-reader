@@ -25,6 +25,7 @@ import {
   requestAudioScan,
 } from './audio-index';
 import { looksLikeCopies, rankEntries, searchMatches } from './match';
+import type { ClipService } from './clip-service';
 import type { MergeService } from './merge-service';
 import { DEFAULT_AUDIO } from '../config';
 import type { AudioScanService } from './scan-service';
@@ -42,6 +43,8 @@ export interface AudioOptions {
   copyHint?: { minMinutes: number; percent: number };
   /** WP15f: the merge job; null/omitted = merging is off. */
   merges?: MergeService | null;
+  /** WP14: sentence-audio clips for Anki; null/omitted = off. */
+  clips?: ClipService | null;
 }
 
 const CONTENT_TYPES: Record<string, string> = {
