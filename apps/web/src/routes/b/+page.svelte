@@ -229,7 +229,7 @@
   } from '$lib/audio/whispersync-reader';
   import { leavingForgetsLastBook } from '$lib/home/open-target';
   import { formatTimeLeft, secondsLeft, speedEstimate } from '$lib/stats/time-left';
-  import { ankiBottomBarButton$ } from '$lib/anki/settings';
+  import { ankiBottomBarButton$, ankiNoticeSeconds$ } from '$lib/anki/settings';
   import type { LookupCapture, LookupSentence } from '$lib/anki/lookup-capture';
 
   let showSpinner = true;
@@ -251,6 +251,12 @@
   let ankiNotice = '';
   let ankiNoticeSetup = false;
   let ankiBusy = false;
+  let ankiNoticeTimer: ReturnType<typeof setTimeout> | undefined;
+
+  function closeAnkiNotice() {
+    clearTimeout(ankiNoticeTimer);
+    ankiNotice = '';
+  }
 
   // WP15c: whispersync's audio comes from the book's linked audiobook, and its position,
   // saved subtitles and saved match sync through the library server (not the old sync).
@@ -791,6 +797,7 @@
       stopped = true;
       bookChange.unsubscribe();
       lookupCapture?.stop();
+      clearTimeout(ankiNoticeTimer);
     };
   });
 
@@ -822,6 +829,7 @@
 
     ankiBusy = true;
     ankiNoticeSetup = false;
+    clearTimeout(ankiNoticeTimer);
     ankiNotice = 'Sending to Anki…';
 
     try {
@@ -836,6 +844,13 @@
       });
       ankiNotice = outcome.message;
       ankiNoticeSetup = !!outcome.unmapped;
+
+      // The card was updated: the message closes by itself (problems stay until closed).
+      const seconds = Number($ankiNoticeSeconds$) || 0;
+
+      if (outcome.ok && !outcome.unmapped && seconds > 0) {
+        ankiNoticeTimer = setTimeout(closeAnkiNotice, seconds * 1000);
+      }
     } catch (error) {
       ankiNotice = `Could not enrich the card: ${(error as Error)?.message ?? error}`;
       logger.warn(`Anki: ${ankiNotice}`);
@@ -3369,7 +3384,7 @@
         class="min-h-[2.75rem] shrink-0 px-3"
         aria-label="Close"
         data-testid="anki-notice-close"
-        on:click={() => (ankiNotice = '')}
+        on:click={closeAnkiNotice}
       >
         ✕
       </button>

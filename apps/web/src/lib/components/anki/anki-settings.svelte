@@ -23,6 +23,7 @@
     ankiConnectUrl$,
     ankiFieldMapping$,
     ankiLookBackDays$,
+    ankiNoticeSeconds$,
     ankiTagPrefix$
   } from '$lib/anki/settings';
 
@@ -177,6 +178,17 @@
           step="1"
           data-testid="anki-timeout"
           bind:value={$ankiConnectTimeoutSeconds$}
+        />
+      </label>
+      <label class="mt-4 block text-sm text-c-muted">
+        Close the message after enriching a card after (seconds, 0 = keep it open)
+        <input
+          class={fieldClasses}
+          type="number"
+          min="0"
+          step="1"
+          data-testid="anki-notice-seconds"
+          bind:value={$ankiNoticeSeconds$}
         />
       </label>
       <label class="mt-4 flex min-h-[3rem] items-center gap-3">

@@ -32,6 +32,9 @@ export const ankiBottomBarButton$ = writableBooleanLocalStorageSubject()(
   false
 );
 
+/** The message after enriching a card closes by itself after this many seconds (0 = stays). */
+export const ankiNoticeSeconds$ = writableNumberLocalStorageSubject()('ankiNoticeSeconds', 5);
+
 /** AnkiConnect's API key, if it asks for one. Never leaves this device. */
 export const ankiConnectKey$ = writableStringLocalStorageSubject()('ankiConnectKey', '');
 
