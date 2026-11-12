@@ -156,6 +156,7 @@ export const SETTINGS_REGISTRY: Record<string, SettingSpec> = {
   ankiConnectUrl: d('String'),
   ankiConnectTimeoutSeconds: d('Number'),
   ankiBottomBarButton: d('Boolean'),
+  ankiNoticeSeconds: d('Number'),
   ankiConnectKey: l('String'), // AnkiConnect's key never leaves the device
   ankiFieldMapping: g('Object'),
   ankiLookBackDays: g('Number'),
