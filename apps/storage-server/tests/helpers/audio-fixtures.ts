@@ -2,8 +2,10 @@
  * Audiobook fixtures shared by the audio tests (WP15a, WP15b): tiny m4b/mp3 files with
  * real headers, an audiobooks root shaped like the NAS one, and a scanned test server.
  */
+import { createHash } from 'crypto';
 import fs from 'fs';
 import path from 'path';
+import type { AudioOptions } from '../../src/audio/routes';
 import { AudioScanService } from '../../src/audio/scan-service';
 import { updateLibrary } from '../../src/calibre/libraries';
 import { DEFAULT_AUDIO } from '../../src/config';
@@ -163,23 +165,29 @@ export function makeAudiobooksRoot(): string {
 }
 
 /** A Calibre library with 4 books, the audiobooks root above, a scanned index. */
-export async function audioEnv(track: { envs: IndexerEnv[]; services: AudioScanService[] }) {
+export async function audioEnv(
+  track: { envs: IndexerEnv[]; services: AudioScanService[] },
+  { root = makeAudiobooksRoot(), books }: { root?: string; books?: string[] } = {},
+) {
   const calibre = new CalibreRoot();
   const lib = calibre.library('japanese-library');
-  await lib.addBook({
-    title: 'スパイ教室02 《愛娘》のグレーテ',
-    series: { name: 'スパイ教室', index: 2 },
-  });
-  await lib.addBook({ title: 'かくりよの宿飯　あやかしお宿に嫁入りします。' });
-  await lib.addBook({ title: 'グイン・サーガ' });
-  await lib.addBook({ title: 'むらさきのスカートの女' });
-  const root = makeAudiobooksRoot();
-  const audio: { service: AudioScanService | null } = { service: null };
+  if (books) {
+    for (const title of books) await lib.addBook({ title });
+  } else {
+    await lib.addBook({
+      title: 'スパイ教室02 《愛娘》のグレーテ',
+      series: { name: 'スパイ教室', index: 2 },
+    });
+    await lib.addBook({ title: 'かくりよの宿飯　あやかしお宿に嫁入りします。' });
+    await lib.addBook({ title: 'グイン・サーガ' });
+    await lib.addBook({ title: 'むらさきのスカートの女' });
+  }
+  const audio: AudioOptions = { service: null };
   const e = makeIndexerEnv(calibre.dir, {}, {}, {}, { audio });
   track.envs.push(e);
   const service = new AudioScanService({
     db: e.db,
-    config: { ...DEFAULT_AUDIO, dir: root, requireReadonly: false },
+    config: { ...DEFAULT_AUDIO, dir: root },
     otherDirs: [{ name: 'DATA_DIR', dir: e.config.dataRoot }],
     log: (m) => e.logs.push(m),
     logError: (m) => e.logs.push(`ERROR ${m}`),
@@ -196,5 +204,41 @@ export async function audioEnv(track: { envs: IndexerEnv[]; services: AudioScanS
   const auth = { Authorization: `Bearer ${e.token()}` };
   const bookId = (title: string) =>
     (e.db.prepare('SELECT id FROM books WHERE title = ?').get(title) as { id: string }).id;
-  return { e, root, service, libId, auth, before, bookId };
+  return { e, root, service, libId, auth, before, bookId, audio };
+}
+
+/**
+ * WP15f: every file under `dir` (hidden ones too) with its SHA-256, size and mtime, to
+ * prove existing files stay byte-identical.
+ */
+export function treeHashes(dir: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  const walk = (d: string) => {
+    for (const entry of fs.readdirSync(d, { withFileTypes: true })) {
+      const full = path.join(d, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else {
+        const st = fs.lstatSync(full);
+        const sha = createHash('sha256').update(fs.readFileSync(full)).digest('hex');
+        out[path.relative(dir, full).split(path.sep).join('/')] = `${sha}:${st.size}:${st.mtimeMs}`;
+      }
+    }
+  };
+  walk(dir);
+  return out;
+}
+
+/** What changed between two treeHashes: added, removed and changed paths. */
+export function treeDiff(before: Record<string, string>, after: Record<string, string>) {
+  return {
+    added: Object.keys(after)
+      .filter((k) => !(k in before))
+      .sort(),
+    removed: Object.keys(before)
+      .filter((k) => !(k in after))
+      .sort(),
+    changed: Object.keys(before)
+      .filter((k) => k in after && before[k] !== after[k])
+      .sort(),
+  };
 }

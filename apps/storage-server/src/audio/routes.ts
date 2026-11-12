@@ -24,7 +24,9 @@ import {
   listSubtitleFiles,
   requestAudioScan,
 } from './audio-index';
-import { rankEntries, searchMatches } from './match';
+import { looksLikeCopies, rankEntries, searchMatches } from './match';
+import type { MergeService } from './merge-service';
+import { DEFAULT_AUDIO } from '../config';
 import type { AudioScanService } from './scan-service';
 import {
   folderSummary,
@@ -36,6 +38,10 @@ import {
 export interface AudioOptions {
   /** null = audio linking is off (AUDIOBOOKS_DIR unset or unusable). */
   service: AudioScanService | null;
+  /** WP15f: the copies hint thresholds (AUDIO_COPY_HINT_*); defaults when omitted. */
+  copyHint?: { minMinutes: number; percent: number };
+  /** WP15f: the merge job; null/omitted = merging is off. */
+  merges?: MergeService | null;
 }
 
 const CONTENT_TYPES: Record<string, string> = {
@@ -254,6 +260,9 @@ export function createAudioRouter(db: Database.Database, options: AudioOptions):
     res.json({
       enabled: service?.status.enabled ?? false,
       error: service ? service.status.error : 'AUDIOBOOKS_DIR is not set',
+      merge: options.merges
+        ? options.merges.availability()
+        : { available: false, reason: 'Merging is not set up on this server' },
       libraries,
     });
   });
@@ -283,6 +292,13 @@ export function createAudioRouter(db: Database.Database, options: AudioOptions):
       metaTitle: folder.metaTitle,
       metaSeries: folder.metaSeries,
       metaSequence: folder.metaSequence,
+      looksLikeCopies: looksLikeCopies(
+        folder.files.map((f) => f.durationSeconds),
+        options.copyHint ?? {
+          minMinutes: DEFAULT_AUDIO.copyHintMinMinutes,
+          percent: DEFAULT_AUDIO.copyHintPercent,
+        },
+      ),
       files: folder.files.map((f, index) => ({
         index,
         name: f.name,

@@ -14,7 +14,10 @@ export interface FolderSummary {
   totalBytes: number;
   durationSeconds: number | null;
   volume: number | null;
-  /** WP15 plays single-file audiobooks only (decided 2026-11-11). */
+  /**
+   * A single-file folder: choosing it links its file. A folder of several files needs a
+   * file chosen, or a merge (WP15f).
+   */
   playable: boolean;
   missing: boolean;
 }

@@ -47,20 +47,54 @@ export interface ServerConfig {
 }
 
 export interface AudioConfig {
-  /** Root of the audiobooks folder (mounted read-only). null = audio linking off. */
+  /**
+   * Root of the audiobooks folder. null = audio linking off. Since WP15f it may be
+   * writable: only src/audio/audio-write.ts writes there (new files only).
+   */
   dir: string | null;
-  /** Refuse to scan unless the audiobooks root is mounted read-only. */
-  requireReadonly: boolean;
   /** Full rescan interval (hours); 0 = only at start and on request. */
   scanHours: number;
   /** How often the server checks for a scan requested from the CLI (seconds). */
   pollSeconds: number;
+  /** WP15f: the hint that a folder's files are copies of one audiobook. */
+  copyHintMinMinutes: number;
+  copyHintPercent: number;
+  merge: AudioMergeConfig;
 }
 
+/** WP15f: the merge job (ffmpeg) and the files it creates in the audiobooks folder. */
+export interface AudioMergeConfig {
+  ffmpegPath: string;
+  ffprobePath: string;
+  /** AAC bitrate when the files can't be joined by stream copy, e.g. "128k". */
+  bitrate: string;
+  /** Free space required on the work folder and the audiobooks folder (MB). */
+  minFreeMb: number;
+  /** A merge that makes no progress this long is stopped (minutes). */
+  stallMinutes: number;
+  /** Owner, group and mode given to new files; null = left as created. */
+  fileUid: number | null;
+  fileGid: number | null;
+  fileMode: number | null;
+}
+
+export const DEFAULT_AUDIO_MERGE: AudioMergeConfig = {
+  ffmpegPath: 'ffmpeg',
+  ffprobePath: 'ffprobe',
+  bitrate: '128k',
+  minFreeMb: 2048,
+  stallMinutes: 10,
+  fileUid: null,
+  fileGid: null,
+  fileMode: null,
+};
+
 export const DEFAULT_AUDIO: Omit<AudioConfig, 'dir'> = {
-  requireReadonly: true,
   scanHours: 24,
   pollSeconds: 60,
+  copyHintMinMinutes: 60,
+  copyHintPercent: 3,
+  merge: DEFAULT_AUDIO_MERGE,
 };
 
 export interface SearchConfig {
@@ -482,15 +516,38 @@ export function parseLogConfig(env: Env, warnings: string[]): LogConfig {
 /** WP15 settings; like the other WP1+ settings, a bad value is reported and the default used. */
 export function parseAudioConfig(env: Env, warnings: string[]): AudioConfig {
   const d = DEFAULT_AUDIO;
+  const m = DEFAULT_AUDIO_MERGE;
   const dirRaw = (env.AUDIOBOOKS_DIR ?? '').trim();
+  if ((env.AUDIOBOOKS_REQUIRE_READONLY ?? '').trim() !== '') {
+    warnings.push(
+      'AUDIOBOOKS_REQUIRE_READONLY is set but no longer used (WP15f: the audiobooks folder may be writable; only new files are ever created); it can be left out',
+    );
+  }
+  const optionalId = (name: string): number | null => {
+    const raw = (env[name] ?? '').trim();
+    if (raw === '') return null;
+    // -1 is the fallback for a bad value: reported, and the files are left as created.
+    const id = parseNumber(name, raw, -1, 0, 4_294_967_294, true, warnings);
+    return id < 0 ? null : id;
+  };
+  const modeRaw = (env.AUDIOBOOKS_FILE_MODE ?? '').trim();
+  let fileMode: number | null = null;
+  if (modeRaw !== '') {
+    if (/^0?[0-7]{3}$/.test(modeRaw)) fileMode = parseInt(modeRaw, 8);
+    else
+      warnings.push(
+        `AUDIOBOOKS_FILE_MODE: "${modeRaw}" is not an octal mode like 0666; leaving new files as created.`,
+      );
+  }
+  const bitrateRaw = (env.AUDIO_MERGE_BITRATE ?? '').trim();
+  let bitrate = m.bitrate;
+  if (bitrateRaw !== '') {
+    if (/^\d{2,3}k$/i.test(bitrateRaw)) bitrate = bitrateRaw.toLowerCase();
+    else
+      warnings.push(`AUDIO_MERGE_BITRATE: "${bitrateRaw}" is not like 128k; using ${m.bitrate}.`);
+  }
   return {
     dir: dirRaw ? path.resolve(dirRaw) : null,
-    requireReadonly: parseBoolean(
-      'AUDIOBOOKS_REQUIRE_READONLY',
-      env.AUDIOBOOKS_REQUIRE_READONLY,
-      d.requireReadonly,
-      warnings,
-    ),
     scanHours: parseNumber(
       'AUDIO_SCAN_HOURS',
       env.AUDIO_SCAN_HOURS,
@@ -509,6 +566,50 @@ export function parseAudioConfig(env: Env, warnings: string[]): AudioConfig {
       false,
       warnings,
     ),
+    copyHintMinMinutes: parseNumber(
+      'AUDIO_COPY_HINT_MIN_MINUTES',
+      env.AUDIO_COPY_HINT_MIN_MINUTES,
+      d.copyHintMinMinutes,
+      0,
+      100_000,
+      false,
+      warnings,
+    ),
+    copyHintPercent: parseNumber(
+      'AUDIO_COPY_HINT_PERCENT',
+      env.AUDIO_COPY_HINT_PERCENT,
+      d.copyHintPercent,
+      0,
+      100,
+      false,
+      warnings,
+    ),
+    merge: {
+      ffmpegPath: (env.FFMPEG_PATH ?? '').trim() || m.ffmpegPath,
+      ffprobePath: (env.FFPROBE_PATH ?? '').trim() || m.ffprobePath,
+      bitrate,
+      minFreeMb: parseNumber(
+        'AUDIO_MERGE_MIN_FREE_MB',
+        env.AUDIO_MERGE_MIN_FREE_MB,
+        m.minFreeMb,
+        0,
+        10_000_000,
+        false,
+        warnings,
+      ),
+      stallMinutes: parseNumber(
+        'AUDIO_MERGE_STALL_MINUTES',
+        env.AUDIO_MERGE_STALL_MINUTES,
+        m.stallMinutes,
+        0.05,
+        24 * 60,
+        false,
+        warnings,
+      ),
+      fileUid: optionalId('AUDIOBOOKS_FILE_UID'),
+      fileGid: optionalId('AUDIOBOOKS_FILE_GID'),
+      fileMode,
+    },
   };
 }
 

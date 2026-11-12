@@ -24,6 +24,7 @@ import { FontService } from '../fonts/service';
 import { DEFAULT_MAX_CLOCK_SKEW_SECONDS, SyncStore } from '../sync/store';
 import { audioStreamRoute, type AudioOptions, createAudioRouter } from '../audio/routes';
 import { createAudioLinkRouter } from '../audio/link-routes';
+import { createMergeRouter } from '../audio/merge-routes';
 import { createAttachmentRouter, type AttachmentOptions } from '../attachments/routes';
 
 export interface PairingOptions {
@@ -164,6 +165,7 @@ export function createApiRouter({
     router.use(createCatalogRouter(db, catalog));
     router.use(createAudioRouter(db, audio));
     router.use(createAudioLinkRouter(db, audio));
+    router.use(createMergeRouter(db, audio));
     // Uploads (WP7b): a separate source adapter, mounted only when it is on.
     if (catalog.uploads) {
       router.use(

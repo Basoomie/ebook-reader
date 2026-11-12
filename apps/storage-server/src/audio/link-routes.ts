@@ -36,14 +36,15 @@ const SUBTITLE_TYPES: Record<string, string> = {
 
 /**
  * WP15c: what whispersync plays. A signed URL of the linked file, only for a link that
- * is there (status ok) and in one file (WP15 plays single-file audiobooks only).
+ * is there (status ok) and to one file (a single-file folder, or since WP15f one file
+ * chosen in a folder of several, such as a merged file).
  */
 export function linkPlayUrl(
   db: Database.Database,
   user: CatalogUser,
   link: ResolvedAudioLink,
 ): string | null {
-  if (link.state !== 'linked' || link.status !== 'ok' || !link.folder?.playable) return null;
+  if (!link.playable || link.fileName === null) return null;
   const folder = link.folderRelPath ? getAudioFolderByRelPath(db, link.folderRelPath) : null;
   if (!folder || folder.missingAt !== null) return null;
   const index = folder.files.findIndex((f) => f.name === link.fileName);
@@ -81,19 +82,32 @@ export function applyLinkChange(
   let next: AudioLink | null = current ? { ...current } : null;
 
   if (audio !== undefined) {
-    const a = audio as { state?: unknown; folderId?: unknown } | null;
+    const a = audio as { state?: unknown; folderId?: unknown; fileName?: unknown } | null;
     if (a?.state === 'linked') {
       const folder = getAudioFolder(db, positiveId(a.folderId, 'audio.folderId'));
       if (!folder) throw new ApiError(404, 'not_found', 'No such audiobook folder');
       if (folder.missingAt !== null) {
         throw new ApiError(409, 'missing', 'This audiobook is no longer in the audiobooks folder');
       }
-      const same = current?.state === 'linked' && current.folderRelPath === folder.relPath;
+      // WP15f: one file of the folder; a single-file folder links its file by itself.
+      let fileName: string | null = folder.fileCount === 1 ? folder.files[0].name : null;
+      if (a.fileName !== undefined && a.fileName !== null) {
+        if (typeof a.fileName !== 'string') throw badBody('audio.fileName must be a file name');
+        if (!folder.files.some((f) => f.name === a.fileName)) {
+          throw new ApiError(404, 'not_found', 'No such file in this audiobook folder');
+        }
+        fileName = a.fileName;
+      }
+      // The same audio keeps the subtitle choice; another folder or file asks again.
+      const same =
+        current?.state === 'linked' &&
+        current.folderRelPath === folder.relPath &&
+        current.fileName === fileName;
       next = {
         bookId,
         state: 'linked',
         folderRelPath: folder.relPath,
-        fileName: folder.fileCount === 1 ? folder.files[0].name : null,
+        fileName,
         subtitleState: same ? current.subtitleState : null,
         subtitleRelPath: same ? current.subtitleRelPath : null,
         source: same ? current.source : 'library',
@@ -147,12 +161,12 @@ export interface LinkListEntry extends ResolvedAudioLink {
   book: { title: string; authors: string[]; missing: boolean } | null;
 }
 
-/** Problems first (missing, changed, several files), then by title. */
+/** Problems first (missing, changed, a folder of several files), then by title. */
 function problemRank(l: ResolvedAudioLink): number {
   if (l.state !== 'linked') return 9;
   if (l.status === 'missing') return 0;
   if (l.status === 'changed') return 1;
-  if (l.folder && !l.folder.playable) return 2;
+  if (!l.playable) return 2;
   if (l.subtitleStatus === 'missing') return 3;
   return 5;
 }

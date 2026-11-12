@@ -227,6 +227,48 @@ describe('settings', () => {
     expect(warnings).toHaveLength(1);
   });
 
+  it('reads the WP15f merge settings and warns about the old read-only switch', () => {
+    const warnings: string[] = [];
+    const c = parseAudioConfig(
+      {
+        AUDIOBOOKS_REQUIRE_READONLY: 'true',
+        AUDIOBOOKS_FILE_UID: '99',
+        AUDIOBOOKS_FILE_GID: '100',
+        AUDIOBOOKS_FILE_MODE: '0666',
+        AUDIO_MERGE_BITRATE: '96K',
+        AUDIO_MERGE_MIN_FREE_MB: '500',
+        AUDIO_MERGE_STALL_MINUTES: '5',
+        AUDIO_COPY_HINT_MIN_MINUTES: '30',
+        AUDIO_COPY_HINT_PERCENT: '5',
+        FFMPEG_PATH: '/usr/bin/ffmpeg',
+      },
+      warnings,
+    );
+    expect(warnings).toEqual([
+      expect.stringMatching(/AUDIOBOOKS_REQUIRE_READONLY .*no longer used/),
+    ]);
+    expect(c.merge).toEqual({
+      ffmpegPath: '/usr/bin/ffmpeg',
+      ffprobePath: 'ffprobe',
+      bitrate: '96k',
+      minFreeMb: 500,
+      stallMinutes: 5,
+      fileUid: 99,
+      fileGid: 100,
+      fileMode: 0o666,
+    });
+    expect(c.copyHintMinMinutes).toBe(30);
+    expect(c.copyHintPercent).toBe(5);
+
+    const bad: string[] = [];
+    const d = parseAudioConfig(
+      { AUDIOBOOKS_FILE_UID: 'nobody', AUDIOBOOKS_FILE_MODE: 'rw', AUDIO_MERGE_BITRATE: 'loud' },
+      bad,
+    );
+    expect(bad).toHaveLength(3);
+    expect(d.merge).toMatchObject({ fileUid: null, fileMode: null, bitrate: '128k' });
+  });
+
   it('accepts only folders inside the audiobooks root', () => {
     expect(normalizeRelativeDir('japanese')).toBe('japanese');
     expect(normalizeRelativeDir('/japanese-srt/')).toBe('japanese-srt');
@@ -238,15 +280,12 @@ describe('settings', () => {
     expect(() => resolveInsideAudio('/audiobooks', 'a/../../etc')).toThrow();
   });
 
-  it('refuses a writable or overlapping audiobooks folder', async () => {
+  it('accepts a writable folder (WP15f) and refuses an overlapping one', async () => {
     const dir = makeTempDir('ab-check');
     const base = { ...DEFAULT_AUDIO, dir };
-    expect(await checkAudioConfig({ ...base, requireReadonly: true }, [])).toMatch(/writable/);
-    expect(await checkAudioConfig({ ...base, requireReadonly: false }, [])).toBeNull();
+    expect(await checkAudioConfig(base, [])).toBeNull();
     expect(
-      await checkAudioConfig({ ...base, requireReadonly: false }, [
-        { name: 'DATA_DIR', dir: path.join(dir, 'data') },
-      ]),
+      await checkAudioConfig(base, [{ name: 'DATA_DIR', dir: path.join(dir, 'data') }]),
     ).toMatch(/overlap/);
     expect(await checkAudioConfig({ ...base, dir: path.join(dir, 'nope') }, [])).toMatch(
       /does not exist/,

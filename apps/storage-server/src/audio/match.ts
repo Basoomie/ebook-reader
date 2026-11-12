@@ -204,3 +204,21 @@ export function searchMatches(query: string, name: string, relPath: string): boo
   if (!q) return false;
   return titleKey(name).includes(q) || titleKey(relPath).includes(q);
 }
+
+/**
+ * WP15f: true when a folder's files look like copies of one audiobook rather than its
+ * parts: at least two files, each at least `minMinutes` long, whose lengths differ by at
+ * most `percent` % of the longest. Only a hint in the picker; nothing acts on it.
+ */
+export function looksLikeCopies(
+  durations: (number | null)[],
+  { minMinutes, percent }: { minMinutes: number; percent: number },
+): boolean {
+  if (durations.length < 2) return false;
+  if (durations.some((d) => d === null || !Number.isFinite(d))) return false;
+  const known = durations as number[];
+  if (known.some((d) => d < minMinutes * 60)) return false;
+  const longest = Math.max(...known);
+  const shortest = Math.min(...known);
+  return longest > 0 && ((longest - shortest) / longest) * 100 <= percent;
+}
