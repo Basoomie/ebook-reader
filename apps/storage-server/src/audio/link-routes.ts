@@ -256,7 +256,7 @@ export function createAudioLinkRouter(
   router.delete('/books/:id/audio-link', (req, res) => {
     const { user } = getAuth(res);
     bookOr404(user.id, req.params.id);
-    deleteLink(db, user.id, req.params.id);
+    deleteLink(db, user.id, req.params.id, now());
     res.status(204).end();
   });
 

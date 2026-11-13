@@ -1,6 +1,8 @@
 /**
  * Audio links (WP15b, migration 11): the audiobook folder and subtitle file the user
- * confirmed for a book in the picker. Never written automatically.
+ * confirmed for a book in the picker. Written automatically only by the jobs the user
+ * started from the book (WP15f merge, WP16 subtitles, WP17 audiobook). A change of files
+ * removes whispersync's saved match and subtitles of the book (whispersync-forget.ts).
  *
  * A link is stored by root-relative path. It is resolved against the index when read:
  * a folder that disappeared shows as missing, and nothing looks for a replacement (the
@@ -15,6 +17,7 @@ import {
   type FolderSummary,
   type SubtitleSummary,
 } from './summary';
+import { forgetWhispersync } from './whispersync-forget';
 
 export type LinkState = 'linked' | 'none';
 export type SubtitleState = 'linked' | 'none' | null;
@@ -102,8 +105,41 @@ export function listLinks(db: Database.Database, userId: string): AudioLink[] {
   ).map(toLink);
 }
 
-/** Writes the whole link (the route works out the merged state). */
-export function saveLink(db: Database.Database, userId: string, link: AudioLink): void {
+/** Whether whispersync's saved data made with `prev` no longer fits `next`. */
+export function filesChanged(prev: AudioLink, next: AudioLink): boolean {
+  return (
+    prev.state !== next.state ||
+    prev.folderRelPath !== next.folderRelPath ||
+    prev.fileName !== next.fileName ||
+    prev.subtitleState !== next.subtitleState ||
+    prev.subtitleRelPath !== next.subtitleRelPath
+  );
+}
+
+/**
+ * Writes the whole link (the route works out the merged state).
+ *
+ * When the audiobook or subtitle file changes, whispersync's saved match and saved
+ * subtitles of the book are removed on every device (whispersync-forget.ts). Not when a
+ * book gets its first link, nor when the same files are confirmed again. `newFiles`: the
+ * files are new even if their paths are the same (a job's result can reuse a name).
+ */
+export function saveLink(
+  db: Database.Database,
+  userId: string,
+  link: AudioLink,
+  { newFiles = false }: { newFiles?: boolean } = {},
+): void {
+  db.transaction(() => {
+    const prev = getLink(db, userId, link.bookId);
+    writeLink(db, userId, link);
+    if (newFiles || (prev && filesChanged(prev, link))) {
+      forgetWhispersync(db, userId, link.bookId, link.confirmedAt);
+    }
+  })();
+}
+
+function writeLink(db: Database.Database, userId: string, link: AudioLink): void {
   db.prepare(
     `INSERT INTO audio_links (user_id, book_id, state, folder_rel_path, file_name,
        subtitle_rel_path, subtitle_state, source, confirmed_at)
@@ -126,11 +162,20 @@ export function saveLink(db: Database.Database, userId: string, link: AudioLink)
   );
 }
 
-export function deleteLink(db: Database.Database, userId: string, bookId: string): boolean {
-  return (
-    db.prepare('DELETE FROM audio_links WHERE user_id = ? AND book_id = ?').run(userId, bookId)
-      .changes > 0
-  );
+/** Removes the link; whispersync's saved match and subtitles of the book go with it. */
+export function deleteLink(
+  db: Database.Database,
+  userId: string,
+  bookId: string,
+  now = Date.now(),
+): boolean {
+  return db.transaction(() => {
+    const deleted =
+      db.prepare('DELETE FROM audio_links WHERE user_id = ? AND book_id = ?').run(userId, bookId)
+        .changes > 0;
+    if (deleted) forgetWhispersync(db, userId, bookId, now);
+    return deleted;
+  })();
 }
 
 export function resolveLink(db: Database.Database, link: AudioLink): ResolvedAudioLink {

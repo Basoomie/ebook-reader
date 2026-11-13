@@ -1175,16 +1175,21 @@ export class TtsJobService {
     ).link_confirmed_at;
     const current = getLink(this.db, job.userId, job.bookId!);
     if ((current?.confirmedAt ?? null) !== queuedWith) return false;
-    saveLink(this.db, job.userId, {
-      bookId: job.bookId!,
-      state: 'linked',
-      folderRelPath: folderRel,
-      fileName,
-      subtitleState: 'linked',
-      subtitleRelPath: srtRel,
-      source: 'library',
-      confirmedAt: this.now(),
-    });
+    saveLink(
+      this.db,
+      job.userId,
+      {
+        bookId: job.bookId!,
+        state: 'linked',
+        folderRelPath: folderRel,
+        fileName,
+        subtitleState: 'linked',
+        subtitleRelPath: srtRel,
+        source: 'library',
+        confirmedAt: this.now(),
+      },
+      { newFiles: true },
+    );
     return true;
   }
 

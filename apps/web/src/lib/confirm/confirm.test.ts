@@ -15,6 +15,7 @@ import {
   removeSubtitlesCopy,
   mergeAudiobookCopy,
   replaceAudiobookCopy,
+  replaceAudiobookWithMadeCopy,
   stopMergeCopy,
   stopSubtitleJobCopy,
   replaceSubtitlesWithJobCopy,
@@ -102,8 +103,8 @@ describe('confirmation words', () => {
     expect(unlink.title).toBe('Unlink the audiobook?');
     expect(unlink.confirmLabel).toBe('Unlink audiobook');
     expect(unlink.message[0]).toContain('“Vol 2 - スパイ教室02”');
-    expect(unlink.message[1]).toContain('every device');
-    expect(unlink.message[1]).toContain('not touched');
+    expect(unlink.message[2]).toContain('every device');
+    expect(unlink.message[2]).toContain('not touched');
     expect(unlink.irreversible).toBeFalsy();
     expect(replaceAudiobookCopy('A', 'B').message[0]).toBe(
       '“B” is linked instead of “A”. You choose the subtitles again.'
@@ -111,6 +112,24 @@ describe('confirmation words', () => {
     expect(noAudiobookCopy('A').confirmLabel).toBe('No audiobook');
     expect(replaceSubtitlesCopy('a.srt', 'b.srt').confirmLabel).toBe('Replace subtitles');
     expect(removeSubtitlesCopy('a.srt').title).toBe('Remove the subtitles?');
+  });
+
+  it('says a change of files resets the audiobook match and saved subtitles, not the position', () => {
+    for (const copy of [
+      unlinkAudiobookCopy('A'),
+      replaceAudiobookCopy('A', 'B'),
+      noAudiobookCopy('A'),
+      replaceSubtitlesCopy('a.srt', 'b.srt'),
+      removeSubtitlesCopy('a.srt'),
+      mergeAudiobookCopy('A', 3, '1 GB'),
+      replaceSubtitlesWithJobCopy('a.srt'),
+      replaceAudiobookWithMadeCopy('A')
+    ]) {
+      const text = copy.message.join(' ');
+      expect(text, copy.title).toContain('audiobook match');
+      expect(text, copy.title).toContain('saved subtitles');
+      expect(text, copy.title).toContain('position stays');
+    }
   });
 
   it('words the merge: a new file next to the originals, which stay', () => {

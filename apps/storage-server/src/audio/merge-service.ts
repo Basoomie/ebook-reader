@@ -713,16 +713,21 @@ export class MergeService {
     if (!fresh || !fresh.files.some((f) => f.name === name)) return false;
     const current = getLink(this.db, job.userId, job.bookId);
     if ((current?.confirmedAt ?? null) !== linkConfirmedAt) return false;
-    saveLink(this.db, job.userId, {
-      bookId: job.bookId,
-      state: 'linked',
-      folderRelPath: fresh.relPath,
-      fileName: name,
-      subtitleState: null,
-      subtitleRelPath: null,
-      source: 'library',
-      confirmedAt: this.now(),
-    });
+    saveLink(
+      this.db,
+      job.userId,
+      {
+        bookId: job.bookId,
+        state: 'linked',
+        folderRelPath: fresh.relPath,
+        fileName: name,
+        subtitleState: null,
+        subtitleRelPath: null,
+        source: 'library',
+        confirmedAt: this.now(),
+      },
+      { newFiles: true },
+    );
     return true;
   }
 

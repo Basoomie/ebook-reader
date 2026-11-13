@@ -115,6 +115,12 @@ export function isMatched(elementHtml: string | undefined): boolean {
   return !!elementHtml && /data-ttu-whispersync-matched-by=/.test(elementHtml.slice(0, 4000));
 }
 
+/** Whether whispersync's saved subtitleData ({ name, subtitles }) holds any lines. */
+function hasSubtitles(subtitleData: unknown): boolean {
+  const lines = (subtitleData as { subtitles?: unknown } | null)?.subtitles;
+  return Array.isArray(lines) && lines.length > 0;
+}
+
 function live(rec: LocalRecord | undefined): rec is LocalRecord {
   return !!rec && rec.deletedAt === null;
 }
@@ -276,6 +282,16 @@ export async function syncBook(deps: SyncDeps, book: BookRef): Promise<SyncResul
         });
         result.changed.subtitles = true;
       }
+    } else if (state === 'removed' && rec && row && hasSubtitles(row.subtitleData)) {
+      // Removed on another device (Reset all) or by the server (the book's audiobook or
+      // subtitle link changed): the same step as whispersync's onResetAll, so the linked
+      // subtitle file loads next time.
+      await deps.local.putSubtitle({
+        title: book.title,
+        subtitleData: { ...(row.subtitleData as Record<string, unknown>), subtitles: [] },
+        lastSubtitleDataModified: rec.deletedAt!
+      });
+      result.changed.subtitles = true;
     } else if (state === 'local') {
       await pushSubtitles(deps, book);
     }
