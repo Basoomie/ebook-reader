@@ -53,6 +53,9 @@ export interface CountRecord {
   durationMs: number | null;
   bytesRead: number | null;
   countedAt: number;
+  /** The counted file's identity (migration 17; null for counts made before it). */
+  fileBytes: number | null;
+  fileMtimeNs: string | null;
 }
 
 interface CountRow {
@@ -68,6 +71,8 @@ interface CountRow {
   duration_ms: number | null;
   bytes_read: number | null;
   counted_at: number;
+  file_bytes: number | null;
+  file_mtime_ns: string | null;
 }
 
 export function getCountRecord(db: Database.Database, bookId: string): CountRecord | null {
@@ -88,6 +93,8 @@ export function getCountRecord(db: Database.Database, bookId: string): CountReco
     durationMs: r.duration_ms,
     bytesRead: r.bytes_read,
     countedAt: r.counted_at,
+    fileBytes: r.file_bytes,
+    fileMtimeNs: r.file_mtime_ns,
   };
 }
 

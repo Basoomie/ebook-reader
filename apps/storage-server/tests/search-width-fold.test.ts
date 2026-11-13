@@ -11,7 +11,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { FOLDED_COLUMNS, fillSearchFolds, foldForSearch } from '../src/catalog/fold';
 import { planBooks } from '../src/catalog/queries';
 import { matcherSql } from '../src/catalog/search-sql';
-import { migrate, MIGRATIONS } from '../src/db/migrations';
+import { LATEST_SCHEMA_VERSION, migrate, MIGRATIONS } from '../src/db/migrations';
 import { listUsers } from '../src/db/users';
 import { addUploadedBook } from '../src/uploads/catalog-write';
 import { calibreDate, CalibreRoot, FixtureBook } from './helpers/calibre-fixture';
@@ -293,7 +293,7 @@ describe('folded copies', () => {
     db.prepare("INSERT INTO authors (name) VALUES ('ＡＢＣ')").run();
     db.prepare("INSERT INTO series (name) VALUES ('Ｓ')").run();
     db.prepare("INSERT INTO tags (name) VALUES ('ＴＡＧ')").run();
-    expect(migrate(db)).toBe(16);
+    expect(migrate(db)).toBe(LATEST_SCHEMA_VERSION);
     expect(db.prepare('SELECT title, title_fold FROM books').get()).toEqual({
       title: 'ＧＪ部',
       title_fold: null,
