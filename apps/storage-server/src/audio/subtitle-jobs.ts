@@ -923,12 +923,13 @@ export class SubtitleJobService {
     ) {
       return false;
     }
-    saveLink(this.db, job.userId, {
-      ...current,
-      subtitleState: 'linked',
-      subtitleRelPath,
-      confirmedAt: this.now(),
-    });
+    saveLink(
+      this.db,
+      job.userId,
+      { ...current, subtitleState: 'linked', subtitleRelPath, confirmedAt: this.now() },
+      // New subtitles, even when the name is the one of an earlier result.
+      { newFiles: true },
+    );
     return true;
   }
 

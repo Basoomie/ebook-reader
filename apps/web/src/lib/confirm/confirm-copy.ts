@@ -191,11 +191,16 @@ export function completeBookCopy(charactersAdded: number): ConfirmCopy {
 const AUDIO_STAYS =
   'This applies on every device. The audio files in the audiobooks folder are not touched.';
 
+/** A change of files resets whispersync's saved match and subtitles (server, 2026-11-13). */
+const MATCH_RESET =
+  "The book's audiobook match and its saved subtitles are reset, because they were made with the old files. The listening position stays.";
+
 export function unlinkAudiobookCopy(folderName: string): ConfirmCopy {
   return {
     title: 'Unlink the audiobook?',
     message: [
       `${quoted(String(folderName))} is no longer linked to this book, and neither are its subtitles. The suggestions come back.`,
+      MATCH_RESET,
       AUDIO_STAYS
     ],
     confirmLabel: 'Unlink audiobook'
@@ -207,6 +212,7 @@ export function replaceAudiobookCopy(oldName: string, newName: string): ConfirmC
     title: 'Replace the audiobook?',
     message: [
       `${quoted(String(newName))} is linked instead of ${quoted(String(oldName))}. You choose the subtitles again.`,
+      MATCH_RESET,
       AUDIO_STAYS
     ],
     confirmLabel: 'Replace audiobook'
@@ -218,6 +224,7 @@ export function noAudiobookCopy(folderName: string): ConfirmCopy {
     title: 'Mark this book as having no audiobook?',
     message: [
       `${quoted(String(folderName))} is no longer linked to this book, and no audiobooks are suggested for it.`,
+      MATCH_RESET,
       AUDIO_STAYS
     ],
     confirmLabel: 'No audiobook'
@@ -229,6 +236,7 @@ export function replaceSubtitlesCopy(oldName: string, newName: string): ConfirmC
     title: 'Replace the subtitles?',
     message: [
       `${quoted(String(newName))} is linked instead of ${quoted(String(oldName))}.`,
+      MATCH_RESET,
       'This applies on every device. The subtitle files are not touched.'
     ],
     confirmLabel: 'Replace subtitles'
@@ -240,6 +248,7 @@ export function removeSubtitlesCopy(name: string): ConfirmCopy {
     title: 'Remove the subtitles?',
     message: [
       `${quoted(String(name))} is no longer linked to this audiobook.`,
+      MATCH_RESET,
       'This applies on every device. The subtitle file is not touched.'
     ],
     confirmLabel: 'Remove subtitles'
@@ -257,7 +266,7 @@ export function mergeAudiobookCopy(
     message: [
       `The ${fileCount} files of ${quoted(String(folderName))} are joined in the order shown into one new file of about ${approxSize}, saved next to them in the same folder. Each file becomes a chapter.`,
       "The original files are not changed. Audiobookshelf will show both the originals and the new file; delete the ones you don't need yourself.",
-      'When it is done, this book uses the new file and you choose the subtitles.'
+      'When it is done, this book uses the new file and you choose the subtitles. Its audiobook match and saved subtitles are reset then; the listening position stays.'
     ],
     confirmLabel: 'Merge files',
     danger: false
@@ -290,7 +299,7 @@ export function replaceSubtitlesWithJobCopy(subtitleName: string): ConfirmCopy {
   return {
     title: 'Make new subtitles for this book?',
     message: [
-      `Your PC makes new subtitles from the audiobook and the book's text. When they are ready, this book uses them instead of ${quoted(String(subtitleName))}, on every device.`,
+      `Your PC makes new subtitles from the audiobook and the book's text. When they are ready, this book uses them instead of ${quoted(String(subtitleName))}, on every device, and its audiobook match and saved subtitles are reset (the listening position stays).`,
       `${quoted(String(subtitleName))} stays in the subtitle folder.`
     ],
     confirmLabel: 'Make new subtitles',
@@ -304,7 +313,7 @@ export function replaceAudiobookWithMadeCopy(audiobookName: string): ConfirmCopy
   return {
     title: 'Make an audiobook for this book?',
     message: [
-      `Your PC reads the book aloud with the voice you chose. When it is ready, this book uses the new audiobook and its subtitles instead of ${quoted(String(audiobookName))}, on every device.`,
+      `Your PC reads the book aloud with the voice you chose. When it is ready, this book uses the new audiobook and its subtitles instead of ${quoted(String(audiobookName))}, on every device, and its audiobook match and saved subtitles are reset (the listening position stays).`,
       `${quoted(String(audiobookName))} stays in the audiobooks folder.`
     ],
     confirmLabel: 'Make the audiobook',

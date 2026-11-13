@@ -207,6 +207,48 @@ describe('saved subtitles', () => {
     expect(r.changed.subtitles).toBe(false);
     expect(f.subtitle.has(BOOK.title)).toBe(false);
   });
+
+  it('are dropped here when removed elsewhere (reset all, or the link changed on the server)', async () => {
+    const f = fake();
+    f.subtitle.set(BOOK.title, {
+      title: BOOK.title,
+      subtitleData: { name: 'old.srt', subtitles: [1, 2] },
+      lastSubtitleDataModified: 300
+    });
+    // The server removed them after this device saved them.
+    f.setRecord(ATTACHMENT_KIND, attachmentId(BOOK.bookId, SUBTITLES), {
+      updatedAt: 900,
+      deletedAt: 900
+    });
+    const r = await syncBook(f.deps, BOOK);
+    expect(r.changed.subtitles).toBe(true);
+    // As whispersync's own Reset all leaves them: the name, no lines.
+    expect(f.subtitle.get(BOOK.title)).toEqual({
+      title: BOOK.title,
+      subtitleData: { name: 'old.srt', subtitles: [] },
+      lastSubtitleDataModified: 900
+    });
+    expect(f.uploads).toHaveLength(0);
+    // Already empty: nothing changes again (no reload notice).
+    expect((await syncBook(f.deps, BOOK)).changed.subtitles).toBe(false);
+  });
+
+  it('saved here after the removal are kept and go up', async () => {
+    const f = fake();
+    f.setRecord(ATTACHMENT_KIND, attachmentId(BOOK.bookId, SUBTITLES), {
+      updatedAt: 900,
+      deletedAt: 900
+    });
+    f.subtitle.set(BOOK.title, {
+      title: BOOK.title,
+      subtitleData: { name: 'new.srt', subtitles: [3] },
+      lastSubtitleDataModified: 1000
+    });
+    const r = await syncBook(f.deps, BOOK);
+    expect(r.changed.subtitles).toBe(false);
+    expect(f.subtitle.get(BOOK.title)!.subtitleData).toEqual({ name: 'new.srt', subtitles: [3] });
+    expect(f.uploads.map((u) => u.name)).toEqual([SUBTITLES]);
+  });
 });
 
 describe('saved match', () => {
