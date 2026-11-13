@@ -7,8 +7,12 @@
  *
  * - Newest books first, one book at a time by default, in separate lower-priority
  *   processes, optionally rate-limited. Resumable: char_counts holds the state.
- * - A book is counted again when its EPUB changes (Calibre last_modified, path or
- *   size) or when the spec changes (counting rules or import settings).
+ * - A book is counted again when its EPUB changes or when the spec changes (counting
+ *   rules or import settings). A book whose Calibre key (last_modified, path or size)
+ *   changed but whose file is the same one that was counted (same size and modified
+ *   time; calibre/file-identity) keeps its count: Calibre bumps last_modified for any
+ *   metadata edit and moves the folder on a title or author change
+ *   (fix-count-file-identity). Such a confirmation only stats the file.
  * - A book that fails (bad EPUB, missing file, timeout, crash) is recorded as an
  *   error and tried again only when its source or the spec changes, or on
  *   `cli counts retry`.
@@ -17,6 +21,7 @@
  */
 import type Database from 'better-sqlite3';
 import path from 'path';
+import { fileIdentity, FileIdentity, sameFile } from '../calibre/file-identity';
 import { resolveInside } from '../calibre/source-fs';
 import type { UploadStore } from '../uploads/upload-store';
 import { noteCatalogWrite } from '../catalog/catalog-version';
@@ -192,7 +197,13 @@ export class CharCountService {
     );
     const started = Date.now();
     // Shared by the worker loops below; `halt` pauses the pass (a server-side problem).
-    const pass = { counted: 0, failed: 0, consecutiveFailures: 0, halt: null as string | null };
+    const pass = {
+      counted: 0,
+      failed: 0,
+      confirmed: 0,
+      consecutiveFailures: 0,
+      halt: null as string | null,
+    };
     let cursor: PendingCursor | undefined;
     try {
       while (!this.stopped && !pass.halt) {
@@ -201,12 +212,20 @@ export class CharCountService {
         const last = batch[batch.length - 1];
         cursor = { addedAt: last.addedAt, bookId: last.bookId };
         const before = this.processed;
+        const confirmedBefore = pass.confirmed;
         const queue = [...batch];
         await Promise.all(
           this.workers.map(async (worker) => {
             while (!this.stopped && !pass.halt) {
               const src = queue.shift();
               if (!src) return;
+              // The same file as the one counted: keep the count (no counter, no slot).
+              const identity = await this.identityOf(src);
+              if (identity && this.keepIfUnchanged(src, identity)) {
+                pass.confirmed++;
+                this.processed++;
+                continue;
+              }
               await this.waitForSlot();
               if (this.stopped || pass.halt) return;
               let outcome: CountOutcome;
@@ -218,7 +237,7 @@ export class CharCountService {
                 return;
               }
               if (isStopped(outcome)) return;
-              this.record(src, outcome);
+              this.record(src, outcome, identity);
               this.processed++;
               if (outcome.ok) {
                 pass.counted++;
@@ -244,6 +263,7 @@ export class CharCountService {
             }
           }),
         );
+        if (pass.confirmed > confirmedBefore) noteCatalogWrite(this.db);
         // A batch that recorded nothing (every write failed) must not spin.
         if (this.processed === before) break;
       }
@@ -252,14 +272,52 @@ export class CharCountService {
       this.workers = [];
     }
     if (pass.halt) this.reportProblem(pass.halt);
-    if (pass.counted + pass.failed > 0) {
+    if (pass.counted + pass.failed + pass.confirmed > 0) {
       const secs = ((Date.now() - started) / 1000).toFixed(1);
       this.log(
         `Character counts: counted ${pass.counted}` +
           (pass.failed ? `, ${pass.failed} failed` : '') +
+          (pass.confirmed ? `, ${pass.confirmed} unchanged files kept their count` : '') +
           ` in ${secs} s`,
       );
     }
+  }
+
+  /** The EPUB's full path. Throws for a path outside its folder or without uploads. */
+  private sourceFile(src: CountSource): string {
+    if (src.kind === 'upload') {
+      if (!this.opts.uploads) throw new Error('uploads are not available');
+      return this.opts.uploads.resolve(src.filePath);
+    }
+    return resolveInside(path.join(this.opts.calibreDir, src.libraryFolder), src.filePath);
+  }
+
+  /** The Calibre EPUB's size and modified time (stat only); null for uploads or no file. */
+  private async identityOf(src: CountSource): Promise<FileIdentity | null> {
+    if (src.kind !== 'calibre') return null;
+    try {
+      return await fileIdentity(this.sourceFile(src));
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * When the book's last count (or failure) under the current spec was made from this
+   * same file: records the new Calibre key with the file's identity and keeps the result.
+   */
+  private keepIfUnchanged(src: CountSource, identity: FileIdentity): boolean {
+    const previous = getCountRecord(this.db, src.bookId);
+    if (!previous || previous.spec !== this.spec) return false;
+    const stored = { bytes: previous.fileBytes, mtimeNs: previous.fileMtimeNs };
+    if (!sameFile(identity, stored, previous.countedAt)) return false;
+    this.db
+      .prepare(
+        `UPDATE char_counts SET source_key = ?, file_bytes = ?, file_mtime_ns = ?
+          WHERE book_id = ?`,
+      )
+      .run(countSourceKey(src), identity.bytes, identity.mtimeNs, src.bookId);
+    return true;
   }
 
   /** Throws only CounterStartError. */
@@ -270,12 +328,7 @@ export class CharCountService {
   ): Promise<CountOutcome> {
     let file: string;
     try {
-      if (src.kind === 'upload') {
-        if (!this.opts.uploads) throw new Error('uploads are not available');
-        file = this.opts.uploads.resolve(src.filePath);
-      } else {
-        file = resolveInside(path.join(this.opts.calibreDir, src.libraryFolder), src.filePath);
-      }
+      file = this.sourceFile(src);
     } catch (err) {
       // A stored path that would leave the library folder: never opened.
       return Promise.resolve({
@@ -289,7 +342,11 @@ export class CharCountService {
   }
 
   /** Stores one outcome and updates books.char_count in the same transaction. */
-  private record(src: CountSource, outcome: RecordedOutcome): void {
+  private record(
+    src: CountSource,
+    outcome: RecordedOutcome,
+    identity: FileIdentity | null = null,
+  ): void {
     const key = countSourceKey(src);
     const previous = getCountRecord(this.db, src.bookId);
     const attempts = outcome.ok
@@ -302,15 +359,17 @@ export class CharCountService {
       this.db
         .prepare(
           `INSERT INTO char_counts (book_id, status, source_key, spec, characters, build,
-             attempts, error_code, error, duration_ms, bytes_read, counted_at)
+             attempts, error_code, error, duration_ms, bytes_read, counted_at, file_bytes,
+             file_mtime_ns)
            VALUES (@bookId, @status, @key, @spec, @characters, @build, @attempts, @errorCode,
-             @error, @durationMs, @bytesRead, @now)
+             @error, @durationMs, @bytesRead, @now, @fileBytes, @fileMtimeNs)
            ON CONFLICT(book_id) DO UPDATE SET status = excluded.status,
              source_key = excluded.source_key, spec = excluded.spec,
              characters = excluded.characters, build = excluded.build,
              attempts = excluded.attempts, error_code = excluded.error_code,
              error = excluded.error, duration_ms = excluded.duration_ms,
-             bytes_read = excluded.bytes_read, counted_at = excluded.counted_at`,
+             bytes_read = excluded.bytes_read, counted_at = excluded.counted_at,
+             file_bytes = excluded.file_bytes, file_mtime_ns = excluded.file_mtime_ns`,
         )
         .run({
           bookId: src.bookId,
@@ -325,6 +384,8 @@ export class CharCountService {
           durationMs: outcome.durationMs,
           bytesRead: outcome.ok ? outcome.bytesRead : null,
           now: Date.now(),
+          fileBytes: identity?.bytes ?? null,
+          fileMtimeNs: identity?.mtimeNs ?? null,
         });
       this.db.prepare('UPDATE books SET char_count = ? WHERE id = ?').run(characters, src.bookId);
     })();
