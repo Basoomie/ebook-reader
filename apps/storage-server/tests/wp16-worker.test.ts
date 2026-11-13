@@ -5,6 +5,7 @@
  * reports, failures with SubPlz's last lines, stopping (docker kill), the time limit,
  * Docker problems, pause, and that the job folder is always removed.
  */
+import { createHash } from 'crypto';
 import fs from 'fs';
 import type { AddressInfo } from 'net';
 import path from 'path';
@@ -32,7 +33,7 @@ import type { AudioScanService } from '../src/audio/scan-service';
 import type { WorkerConfig } from '../src/config';
 import type { IndexerEnv } from './helpers/indexer-env';
 import { makeTempDir } from './helpers/spawn-server';
-import { HITSUJI, HITSUJI_FOLDER, jobEnv, type JobEnv } from './helpers/worker-env';
+import { HITSUJI, HITSUJI_FOLDER, jobEnv, type JobEnv, SPY } from './helpers/worker-env';
 
 const FAKE_DOCKER = path.join(__dirname, 'fixtures', 'wp16', 'fake-docker.cjs');
 
@@ -156,8 +157,14 @@ describe('worker settings and helpers', () => {
     tail.push('a\nb\n 10%|█|\r 20%|██|\r');
     tail.push(' 30%|███|\nc\nd');
     expect(tail.text()).toBe(' 30%|███|\nc\nd');
-    expect(audioNameFor('羊と鋼の森 [B0X].M4B')).toBe('audio.m4b');
-    expect(audioNameFor('01.mp3')).toBe('audio.mp3');
+    // Plain ASCII, the file's own extension, and one name per audiobook (SubPlz's cache).
+    const a = audioNameFor('羊と鋼の森 [B0X].M4B', 1000);
+    expect(a).toMatch(/^audio-[0-9a-f]{16}\.m4b$/);
+    expect(audioNameFor('羊と鋼の森 [B0X].M4B', 1000)).toBe(a);
+    expect(audioNameFor('羊と鋼の森 [B0X].M4B', 1001)).not.toBe(a);
+    expect(audioNameFor('羊と鋼の森 [B0Y].M4B', 1000)).not.toBe(a);
+    expect(audioNameFor('01.mp3', 5)).toMatch(/^audio-[0-9a-f]{16}\.mp3$/);
+    expect(audioNameFor('01.flac', 5)).toMatch(/^audio-[0-9a-f]{16}\.m4b$/);
     expect(plainError('ENOENT C:\\ttsu-worker\\work\\job-3\\book', 'C:\\ttsu-worker\\work')).toBe(
       'ENOENT <work folder>\\job-3\\book',
     );
@@ -243,7 +250,7 @@ describe('the worker against the server', () => {
     const rel = `japanese-srt/_generated/${HITSUJI}.srt`;
     const saved = fs.readFileSync(path.join(t.root, rel), 'utf8');
     // The fake SubPlz lists what it found in /sync/book: plain names only.
-    expect(saved).toContain('audio.m4b,book.epub');
+    expect(saved).toMatch(/\naudio-[0-9a-f]{16}\.m4b,book\.epub\n/);
     expect((await t.link(HITSUJI)).subtitleRelPath).toBe(rel);
 
     const run = t.calls().find((c) => c[0] === 'run')!;
@@ -275,6 +282,45 @@ describe('the worker against the server', () => {
     expect(fs.readdirSync(t.s.workDir)).toEqual([]);
     // Idle: nothing to do.
     expect(await t.worker.tick()).toBe(30);
+  });
+
+  it("never gives a book the transcript SubPlz cached for another book's audio", async () => {
+    // Found 2026-11-12: every audio was `audio.m4b`, and SubPlz's cache (one transcript per
+    // file name and chapter) gave the second book the first book's chapter.
+    const t = await workerEnv('ok');
+    await queued(t);
+    await t.worker.tick();
+    expect(await t.latest(HITSUJI)).toMatchObject({ state: 'done', linked: true });
+    const spyFolder = 'japanese/_Unknown/スパイ教室/Vol 2 - スパイ教室02 《愛娘》のグレーテ';
+    expect((await t.linkAudio(SPY, spyFolder)).status).toBe(200);
+    // That book has archive subtitles: make new ones anyway.
+    expect((await t.queue(SPY, { force: true })).status).toBe(202);
+    await t.worker.tick();
+    expect(await t.latest(SPY)).toMatchObject({ state: 'done', linked: true });
+
+    const transcript = (rel: string) =>
+      /transcript: (.*)/.exec(fs.readFileSync(path.join(t.root, rel), 'utf8'))![1];
+    /** What the fake SubPlz "transcribes" from an audio file: its hash. */
+    const heard = (folder: string) => {
+      const dir = path.join(t.root, folder);
+      const m4b = fs.readdirSync(dir).find((f) => f.endsWith('.m4b'))!;
+      const hash = createHash('sha256').update(fs.readFileSync(path.join(dir, m4b)));
+      return `audio ${hash.digest('hex').slice(0, 16)}`;
+    };
+    const hitsujiSrt = (await t.link(HITSUJI)).subtitleRelPath;
+    const spySrt = (await t.link(SPY)).subtitleRelPath;
+    expect(heard(spyFolder)).not.toBe(heard(HITSUJI_FOLDER));
+    expect(transcript(hitsujiSrt)).toBe(heard(HITSUJI_FOLDER));
+    expect(transcript(spySrt)).toBe(heard(spyFolder));
+    // Two cached transcripts, one per audiobook.
+    expect(fs.readdirSync(path.join(t.s.cacheDir, 'cache'))).toHaveLength(2);
+
+    // The same audiobook again (e.g. a retry) reuses its own transcript.
+    expect((await t.queue(HITSUJI, { force: true })).status).toBe(202);
+    await t.worker.tick();
+    expect(await t.latest(HITSUJI)).toMatchObject({ state: 'done' });
+    expect(fs.readdirSync(path.join(t.s.cacheDir, 'cache'))).toHaveLength(2);
+    expect(fs.readdirSync(t.s.workDir)).toEqual([]);
   });
 
   it('reports SubPlz failures with its last lines and cleans up', async () => {

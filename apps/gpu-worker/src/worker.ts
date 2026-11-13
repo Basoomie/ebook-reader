@@ -4,9 +4,9 @@
  *
  *   1. a fresh folder `<workDir>\job-<id>\book\` (plain ASCII names: the real book and
  *      audio names have spaces and Japanese characters);
- *   2. downloads `book.epub` and `audio.<ext>` from the server;
+ *   2. downloads `book.epub` and `audio-<key>.<ext>` from the server (audioNameFor);
  *   3. runs SubPlz (subplz.ts) on that folder;
- *   4. uploads `book\audio.srt`; the server saves it and links it;
+ *   4. uploads `book\audio-<key>.srt`; the server saves it and links it;
  *   5. always deletes `job-<id>` again.
  *
  * While a job runs it reports every reportSeconds (that keeps the job; the answer says
@@ -16,6 +16,7 @@
  * worker only asks for the kinds whose program is on this PC (SubPlz image, TTS image),
  * and it deletes the files of models removed from the list in the reader (models folder).
  */
+import { createHash } from 'crypto';
 import fs from 'fs';
 import fsp from 'fs/promises';
 import path from 'path';
@@ -27,15 +28,24 @@ import { isStopped, removeDeletedModels, runTtsJob } from './tts';
 
 const TTS_KINDS: JobKind[] = ['generate_audiobook', 'preview_audiobook', 'voice_sample'];
 
-/** 1.1.0: WP17 (TTS jobs). */
-export const WORKER_VERSION = '1.1.0';
+/** 1.1.0: WP17 (TTS jobs). 1.1.1: one audio name per audiobook (SubPlz's cache). */
+export const WORKER_VERSION = '1.1.1';
 
 const AUDIO_EXTENSIONS = new Set(['.m4b', '.m4a', '.mp3']);
 
-/** The audio file's name in the job folder: `audio` plus its own extension. */
-export function audioNameFor(original: string): string {
+/**
+ * The audio file's name in the job folder: plain ASCII (the real names have spaces and
+ * Japanese characters), and different for every audiobook. SubPlz keeps each chapter's
+ * transcript in the cache folder as `<audio file name>.<chapter>.<model>.subs` and reuses
+ * it when the name comes again. With one name for every book (`audio.m4b`, until 1.1.1),
+ * a book got the chapters of the book before it (found 2026-11-12: the prologue of
+ * 魔法律学校の麗人執事3 was "transcribed" as the earlier test book). The name comes from the
+ * real file name and size, so the same audiobook (a retry) still reuses its own chapters.
+ */
+export function audioNameFor(original: string, size: number): string {
   const ext = path.extname(original).toLowerCase();
-  return `audio${AUDIO_EXTENSIONS.has(ext) ? ext : '.m4b'}`;
+  const key = createHash('sha256').update(`${original}\n${size}`, 'utf8').digest('hex');
+  return `audio-${key.slice(0, 16)}${AUDIO_EXTENSIONS.has(ext) ? ext : '.m4b'}`;
 }
 
 export function jobDirFor(workDir: string, jobId: number): string {
@@ -262,6 +272,7 @@ export class Worker {
     this.currentJobId = job.id;
     const jobDir = jobDirFor(this.s.workDir, job.id);
     const bookDir = path.join(jobDir, 'book');
+    const audioName = audioNameFor(job.audioFileName, job.audioSize);
     const title = job.bookTitle ?? job.audioFileName;
     this.log.info(`Job ${job.id}: "${title}"`);
 
@@ -314,7 +325,7 @@ export class Worker {
       await this.api.download(
         job.id,
         'audio',
-        path.join(bookDir, audioNameFor(job.audioFileName)),
+        path.join(bookDir, audioName),
         (n) => {
           progress = total > 0 ? DOWNLOAD_SHARE * Math.min(1, (epubBytes + n) / total) : null;
         },
@@ -360,7 +371,7 @@ export class Worker {
             : `SubPlz failed (exit code ${result.code})`;
         throw new Error(last ? `${why}: ${last}` : why);
       }
-      const srt = await this.findResult(bookDir);
+      const srt = await this.findResult(bookDir, audioName);
       if (!srt) throw new Error('SubPlz finished without making a subtitle file');
 
       stage = 'uploading';
@@ -401,8 +412,8 @@ export class Worker {
   }
 
   /** SubPlz writes `<audio name>.srt` next to the audio. */
-  private async findResult(bookDir: string): Promise<string | null> {
-    const expected = path.join(bookDir, 'audio.srt');
+  private async findResult(bookDir: string, audioName: string): Promise<string | null> {
+    const expected = path.join(bookDir, `${path.parse(audioName).name}.srt`);
     if (fs.existsSync(expected)) return expected;
     const other = (await fsp.readdir(bookDir)).find((n) => n.toLowerCase().endsWith('.srt'));
     return other ? path.join(bookDir, other) : null;

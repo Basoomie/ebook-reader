@@ -2,7 +2,10 @@
  * WP16 tests: stands in for `docker`. Every call is appended to $FAKE_DOCKER_STATE/calls.jsonl.
  *   info / image inspect   succeed unless FAKE_DOCKER_MODE is "no-docker" / "no-image"
  *   run ... -v <host>:/sync ... sync -d /sync/book
- *       ok        writes <host>/book/audio.srt (from the EPUB name: proves the files are there)
+ *       ok        writes <host>/book/<audio name>.srt like SubPlz: the files it found in
+ *                 /sync/book (proves they are there), then "transcript: …" from SubPlz's
+ *                 cache, <config mount>/cache/<audio file name>.0.tiny.subs ("audio <hash of
+ *                 the audio>" when missing, reused when the same name comes again)
  *       fail      prints a few lines and exits 1
  *       oom       exits 137
  *       nosrt     exits 0 without a file
@@ -14,6 +17,7 @@
  * The mode comes from FAKE_DOCKER_MODE, else from the file "mode" in FAKE_DOCKER_STATE.
  *   kill <name>  kills the hanging run
  */
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
@@ -70,8 +74,25 @@ if (args[0] === 'run') {
   const host = mount.slice(0, mount.length - ':/sync'.length);
   const book = path.join(host, 'book');
   const files = fs.readdirSync(book).sort();
+  const audio = files.find((f) => f.startsWith('audio'));
+  const config = args.find((a, i) => args[i - 1] === '-v' && a.endsWith(':/config'));
+  // SubPlz's cache: one transcript per audio file name, reused when the name comes again.
+  const transcript = () => {
+    if (!audio || !config) return 'none';
+    const cache = path.join(config.slice(0, config.length - ':/config'.length), 'cache');
+    const file = path.join(cache, `${audio}.0.tiny.subs`);
+    if (!fs.existsSync(file)) {
+      fs.mkdirSync(cache, { recursive: true });
+      const hash = crypto.createHash('sha256').update(fs.readFileSync(path.join(book, audio)));
+      fs.writeFileSync(file, `audio ${hash.digest('hex').slice(0, 16)}`);
+    }
+    return fs.readFileSync(file, 'utf8');
+  };
   const write = () =>
-    fs.writeFileSync(path.join(book, 'audio.srt'), `${SRT}\n${files.join(',')}\n`);
+    fs.writeFileSync(
+      path.join(book, `${path.parse(audio || 'audio').name}.srt`),
+      `${SRT}\n${files.join(',')}\ntranscript: ${transcript()}\n`,
+    );
   if (mode === 'fail') {
     process.stdout.write(
       'Loading model\nTraceback (most recent call last):\nValueError: no text\n',
@@ -87,7 +108,6 @@ if (args[0] === 'run') {
     return;
   }
   if (mode === 'progress' || mode === 'slow') {
-    const audio = files.find((f) => f.startsWith('audio.'));
     const seconds = mvhdSeconds(fs.readFileSync(path.join(book, audio))) ?? 1000;
     const chapters = [seconds * 0.4, seconds * 0.6];
     const log = (level, msg) =>
