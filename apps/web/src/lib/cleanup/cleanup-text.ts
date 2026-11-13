@@ -34,12 +34,18 @@ export const MODE_HINTS: Record<StageMode, string> = {
 const PAUSE_TEXT: Record<string, string> = {
   not_identical: 'A copy is no longer identical to the copy it was matched with',
   batch_failed: 'Some items of the last batch failed',
+  library_changed: 'Calibre changed since the analysis',
   mass_missing: "The reader's library index refused to mark many books as gone",
   ingest_mismatch: "The reader's library index doesn't show the last batch"
 };
 
 export function pauseTitle(reason: string): string {
   return PAUSE_TEXT[reason] ?? reason;
+}
+
+/** Pauses that only a new analysis clears (resuming alone would pause again). */
+export function pauseNeedsAnalysis(reason: string | null): boolean {
+  return reason === 'library_changed' || reason === 'not_identical';
 }
 
 /** A progress bar: what is being done, how far, and roughly how long is left. */
@@ -221,8 +227,9 @@ export function batchCountsText(batch: CleanupBatch): string {
   if (done) parts.push(`${n(done)} ${batch.kind === 'undo' ? 'brought back' : 'removed'}`);
   if (c.skipped) parts.push(`${n(c.skipped)} skipped`);
   if (c.failed) parts.push(`${n(c.failed)} failed`);
-  const waiting = (c.pending ?? 0) + (c.verified ?? 0) + (c.exported ?? 0);
-  if (waiting) parts.push(`${n(waiting)} to go`);
+  const waiting = (c.pending ?? 0) + (c.verified ?? 0) + (c.exported ?? 0) + (c.tagged ?? 0);
+  // A batch that has ended won't get to them any more.
+  if (waiting) parts.push(`${n(waiting)} ${batch.finishedAt ? 'not finished' : 'to go'}`);
   return parts.length ? parts.join(' · ') : `${n(batch.itemCount)} items`;
 }
 
@@ -238,6 +245,7 @@ const ITEM_STATE: Record<string, string> = {
   pending: 'Waiting',
   verified: 'Checked',
   exported: 'Saved to the quarantine',
+  tagged: 'Saved to the quarantine, your tags copied',
   removed: 'Removed (in Calibre’s trash)',
   restored: 'Brought back',
   failed: 'Failed',

@@ -15,7 +15,13 @@ import { BatchError, type ItemReport, type ItemState } from './batches';
 import type { CleanupService } from './cleanup-service';
 import { isSecretName } from './secrets';
 import { getSettings, SettingsError, updateSettings } from './settings';
-import { getStage, resumeStage, type StageMode } from './stages';
+import {
+  CURRENT_PROPOSALS_SQL,
+  currentAnalysisId,
+  getStage,
+  resumeStage,
+  type StageMode,
+} from './stages';
 
 export interface CleanupOptions {
   service: CleanupService | null;
@@ -315,8 +321,10 @@ export function createCleanupRouter(options: CleanupOptions): Router {
     const state = typeof req.query.state === 'string' ? req.query.state : null;
     const offset = Math.max(0, Number(req.query.offset) || 0);
     const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 50));
-    const where = ['stage = ?'];
-    const params: unknown[] = [stage];
+    // Only what counts now: the current analysis's copies plus every queued, removed, brought
+    // back or kept copy (older analyses' leftovers stay in their batches' history).
+    const where = ['stage = ?', CURRENT_PROPOSALS_SQL];
+    const params: unknown[] = [stage, currentAnalysisId(service.db, stage)];
     if (state) {
       where.push('state = ?');
       params.push(state);

@@ -112,7 +112,8 @@
           .map((t) => t.trim())
           .filter(Boolean),
         gateThresholdPercent: Number(settings.gateThresholdPercent),
-        reviewAlarmPercent: Number(settings.reviewAlarmPercent)
+        reviewAlarmPercent: Number(settings.reviewAlarmPercent),
+        libraryChangedPausePercent: Number(settings.libraryChangedPausePercent)
       });
       settings = answer.settings;
       secrets = answer.secrets;
@@ -321,6 +322,18 @@
           max="100"
           step="1"
           bind:value={settings.reviewAlarmPercent}
+        />
+      </label>
+      <label class={field}>
+        <span class={label}>Pause when this share of a batch changed in Calibre (%)</span>
+        <input
+          class="c-input"
+          type="number"
+          min="0"
+          max="100"
+          step="1"
+          data-testid="cleanup-changed-pause"
+          bind:value={settings.libraryChangedPausePercent}
         />
       </label>
     </fieldset>

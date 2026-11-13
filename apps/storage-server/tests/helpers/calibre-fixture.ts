@@ -220,6 +220,21 @@ export class LibraryFixture {
     });
   }
 
+  /**
+   * Removes one format like Calibre's "Remove formats" (the file goes, the data row goes,
+   * last_modified moves on); the book record stays.
+   */
+  removeFormat(calibreId: number, format = 'EPUB'): void {
+    if (format === 'EPUB') fs.rmSync(this.epubFile(calibreId), { force: true });
+    this.exec((db) => {
+      db.prepare('DELETE FROM data WHERE book = ? AND format = ?').run(calibreId, format);
+      db.prepare('UPDATE books SET last_modified = ? WHERE id = ?').run(
+        calibreDate(new Date(Date.now() + 1000)),
+        calibreId,
+      );
+    });
+  }
+
   /** Runs SQL against metadata.db as Calibre would (tests only). */
   exec(fn: (db: Database.Database) => void): void {
     const db = this.open();

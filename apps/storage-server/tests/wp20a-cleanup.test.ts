@@ -276,6 +276,22 @@ describe('stage 1, batches, handoff and Undo', () => {
       .expect(status);
   }
 
+  /**
+   * 40 more books, each of its own size (never hashed), so a batch can hold several copies:
+   * at most 10 % of the library's books go into one batch.
+   */
+  async function bigBatches() {
+    for (let i = 0; i < 40; i++) {
+      await env.lib.addBook({ title: `F${i}`, epub: bytes('g', 20000 + i * 10) });
+    }
+    await env.index();
+    await request(env.app)
+      .put('/api/v1/cleanup/settings')
+      .set(auth(user))
+      .send({ pacing: { batchSize: 500, maxBatchPercent: 10 } })
+      .expect(200);
+  }
+
   /** What the sidecar does for one item; the Calibre removal is simulated on the fixture. */
   async function removeItem(
     batchId: string,
@@ -543,6 +559,159 @@ describe('stage 1, batches, handoff and Undo', () => {
     // The changed pair was skipped; the others go on.
     const open = env.service.batches.open();
     expect(open).not.toBeNull();
+  });
+
+  it('pauses (and skips nothing) when Calibre changed under the analysis; a new analysis clears it', async () => {
+    await ready();
+    await analyse('analyse');
+    // Outside the cleanup, the EPUBs of three of the four copies to remove are taken off
+    // (the book records stay), as happened on the NAS on 2026-11-13.
+    env.lib.removeFormat(ids.A2);
+    env.lib.removeFormat(ids.B2);
+    env.lib.removeFormat(ids.B3);
+    await env.index();
+    await request(env.app)
+      .put('/api/v1/cleanup/stages/1')
+      .set(auth(user))
+      .send({ mode: 'on' })
+      .expect(200);
+    await env.service.tick();
+    const stage = getStage(env.cleanupDb, 1);
+    expect(stage.pauseReason).toBe('library_changed');
+    expect(stage.pauseDetail).toMatch(/has no EPUB in Calibre any more/);
+    expect(stage.pauseDetail).toMatch(/Nothing was removed or skipped/);
+    expect(env.service.batches.list()).toEqual([]);
+    const states = env.cleanupDb
+      .prepare('SELECT state, COUNT(*) AS n FROM proposed_changes GROUP BY state')
+      .all();
+    expect(states).toEqual([{ state: 'proposed', n: 4 }]);
+    // Resuming alone pauses again: the analysis is out of date.
+    await request(env.app).post('/api/v1/cleanup/stages/1/resume').set(auth(user)).expect(200);
+    await env.service.tick();
+    expect(getStage(env.cleanupDb, 1).pauseReason).toBe('library_changed');
+    // "Run the analysis again" clears the pause; the new analysis no longer has those copies.
+    await request(env.app).post('/api/v1/cleanup/stages/1/analyse').set(auth(user)).expect(200);
+    expect(getStage(env.cleanupDb, 1).pauseReason).toBeNull();
+    for (let i = 0; i < 50 && getStage(env.cleanupDb, 1).state !== 'ready'; i++) {
+      await env.service.tick();
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    await env.service.tick();
+    const left = env.cleanupDb
+      .prepare('SELECT calibre_id, state FROM proposed_changes ORDER BY calibre_id')
+      .all();
+    expect(left).toEqual([{ calibre_id: ids.C1, state: 'queued' }]);
+    expect(env.service.batches.open()).not.toBeNull();
+  });
+
+  it('skips the odd changed copy with the exact reason and goes on with the rest', async () => {
+    await ready();
+    await request(env.app)
+      .put('/api/v1/cleanup/settings')
+      .set(auth(user))
+      .send({ libraryChangedPausePercent: 50 })
+      .expect(200);
+    await bigBatches();
+    await analyse('analyse');
+    // The copy A2 would be kept against (A1) loses its EPUB: A2 must not be removed.
+    env.lib.removeFormat(ids.A1);
+    await env.index();
+    await request(env.app)
+      .put('/api/v1/cleanup/stages/1')
+      .set(auth(user))
+      .send({ mode: 'on' })
+      .expect(200);
+    await env.service.tick();
+    expect(getStage(env.cleanupDb, 1).pauseReason).toBeNull();
+    const a2 = env.cleanupDb
+      .prepare('SELECT state, review_reason FROM proposed_changes WHERE calibre_id = ?')
+      .get(ids.A2);
+    expect(a2).toEqual({
+      state: 'skipped',
+      review_reason: 'The copy to keep has no EPUB in Calibre any more',
+    });
+    const batch = env.service.batches.open()!;
+    expect(batch.itemCount).toBe(3);
+    const status = await request(env.app).get('/api/v1/cleanup/status').set(auth(user)).expect(200);
+    expect(status.body.stage1.skipReasons).toEqual([
+      { reason: 'The copy to keep has no EPUB in Calibre any more', count: 1 },
+    ]);
+    // A copy skipped before any batch is replaced by the next analysis, not kept twice.
+    env.cleanupDb.prepare("UPDATE batches SET state = 'failed', finished_at = 1").run();
+    env.cleanupDb
+      .prepare(
+        "UPDATE proposed_changes SET state = 'proposed', batch_id = NULL WHERE state = 'queued'",
+      )
+      .run();
+    await request(env.app).post('/api/v1/cleanup/stages/1/analyse').set(auth(user)).expect(200);
+    for (let i = 0; i < 50 && getStage(env.cleanupDb, 1).state !== 'ready'; i++) {
+      await env.service.tick();
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    // A2 (skipped before any batch) is gone; the three copies the stopped batch never
+    // finished stay in its history as replaced, and are proposed again under new rows.
+    const rows = env.cleanupDb
+      .prepare(
+        'SELECT calibre_id, state, review_reason FROM proposed_changes ORDER BY calibre_id, id',
+      )
+      .all() as { calibre_id: number; state: string; review_reason: string | null }[];
+    expect(rows.filter((r) => r.calibre_id === ids.A2)).toEqual([]);
+    const replaced = rows.filter((r) => r.review_reason === 'Replaced by a new analysis');
+    expect(replaced.map((r) => r.calibre_id).sort()).toEqual([ids.B2, ids.B3, ids.C1].sort());
+    const again = rows.filter((r) => r.state === 'proposed' || r.state === 'queued');
+    expect(again.map((r) => r.calibre_id).sort()).toEqual([ids.B2, ids.B3, ids.C1].sort());
+    // The page counts only the current analysis: no skipped copies, nothing doubled.
+    const now = await request(env.app).get('/api/v1/cleanup/status').set(auth(user)).expect(200);
+    expect(now.body.stage1.skipReasons).toEqual([]);
+    expect(now.body.stage1.counts.skipped ?? 0).toBe(0);
+    const list = await request(env.app)
+      .get('/api/v1/cleanup/proposals?stage=1&limit=50')
+      .set(auth(user))
+      .expect(200);
+    expect(list.body.total).toBe(3);
+  });
+
+  it('a batch that stops with an error marks the items it never finished', async () => {
+    await ready();
+    await bigBatches();
+    await analyse('on');
+    await env.service.tick();
+    const batch = await claimAndSaveSnapshot();
+    expect(batch.items.length).toBe(4);
+    await step(batch.id, batch.items[0].itemId, { step: 'verified' });
+    await request(env.app)
+      .post(`/api/v1/cleanup-apply/batches/${batch.id}/finish`)
+      .set(auth(apply))
+      .send({ error: 'Request body is too large' })
+      .expect(200);
+    const counts = env.service.batches.itemCounts(batch.id);
+    expect(counts).toEqual({ skipped: 4 });
+    const details = env.cleanupDb
+      .prepare('SELECT DISTINCT detail FROM batch_items WHERE batch_id = ?')
+      .all(batch.id);
+    expect(details).toEqual([
+      { detail: 'Not finished: the batch stopped; the copy is tried again in a later batch' },
+    ]);
+    // Their proposals go back, to be planned again.
+    const proposed = env.cleanupDb
+      .prepare("SELECT COUNT(*) AS n FROM proposed_changes WHERE state = 'proposed'")
+      .get() as { n: number };
+    expect(proposed.n).toBe(4);
+    // Running the analysis again works although the stopped batch still lists those copies
+    // (they are referenced by its items: deleting them would break the analysis).
+    await request(env.app).post('/api/v1/cleanup/stages/1/resume').set(auth(user)).expect(200);
+    await request(env.app).post('/api/v1/cleanup/stages/1/analyse').set(auth(user)).expect(200);
+    for (let i = 0; i < 50 && getStage(env.cleanupDb, 1).state !== 'ready'; i++) {
+      await env.service.tick();
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    const after = getStage(env.cleanupDb, 1);
+    expect(after.state).toBe('ready');
+    expect((after.progress as { error: string | null }).error).toBeNull();
+    await env.service.tick();
+    const next = env.service.batches.open()!;
+    expect(next).not.toBeNull();
+    expect(next.itemCount).toBe(4);
   });
 
   it('an expired lease makes the batch claimable again with its item states', async () => {

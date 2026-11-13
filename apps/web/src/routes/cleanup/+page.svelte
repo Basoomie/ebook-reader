@@ -35,6 +35,7 @@
     MODE_HINTS,
     MODE_LABELS,
     n,
+    pauseNeedsAnalysis,
     pauseTitle,
     precisionLine,
     applyProgress,
@@ -294,7 +295,11 @@
                 </button>
               {/each}
               {#if stage1.mode !== 'off'}
-                <button class="c-btn c-btn-ghost" on:click={analyseAgain}>Check again</button>
+                <button
+                  class="c-btn c-btn-ghost"
+                  data-testid="cleanup-analyse-again"
+                  on:click={analyseAgain}>Run the analysis again</button
+                >
               {/if}
             </div>
             {#each bars as bar (bar.label)}
@@ -327,9 +332,15 @@
                   <b>Paused: {pauseTitle(stage1.pauseReason)}.</b>
                   {stage1.pauseDetail ?? ''}
                 </span>
-                <button class="c-btn c-btn-secondary" on:click={() => stage1 && resume(stage1)}>
-                  Resume
-                </button>
+                {#if pauseNeedsAnalysis(stage1.pauseReason)}
+                  <button class="c-btn c-btn-secondary" on:click={analyseAgain}>
+                    Run the analysis again
+                  </button>
+                {:else}
+                  <button class="c-btn c-btn-secondary" on:click={() => stage1 && resume(stage1)}>
+                    Resume
+                  </button>
+                {/if}
               </div>
             {:else if status.waiting && stage1.mode !== 'off'}
               <p class="text-sm text-c-muted" data-testid="cleanup-waiting">{status.waiting}</p>
@@ -340,6 +351,16 @@
               )} · brought back: {n(status.stage1.counts.undone ?? 0)}
               {#if status.stage1.counts.skipped}· skipped: {n(status.stage1.counts.skipped)}{/if}
             </p>
+            {#if status.stage1.skipReasons?.length}
+              <div class="text-sm" data-testid="cleanup-skip-reasons">
+                <span class="font-medium">Why copies were skipped:</span>
+                <ul class="list-disc pl-5">
+                  {#each status.stage1.skipReasons as r (r.reason)}
+                    <li>{n(r.count)}: {r.reason}</li>
+                  {/each}
+                </ul>
+              </div>
+            {/if}
           </div>
         {/if}
         <ul class="flex flex-col gap-2 text-sm">

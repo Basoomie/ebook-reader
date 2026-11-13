@@ -72,6 +72,8 @@ export interface CleanupStatus {
   calibre: { id: string | null; auto: boolean; libraries: string[] };
   stage1: {
     counts: Record<string, number>;
+    /** Why copies were skipped, most common first. */
+    skipReasons?: { reason: string; count: number }[];
     openBatch: CleanupBatch | null;
     awaitingIngest: CleanupBatch | null;
   };
@@ -92,6 +94,7 @@ export interface CleanupSettings {
   customTags: string[];
   gateThresholdPercent: number;
   reviewAlarmPercent: number;
+  libraryChangedPausePercent: number;
   backup: { path: string; verifiedOn: string; confirmedAt: number | null };
 }
 

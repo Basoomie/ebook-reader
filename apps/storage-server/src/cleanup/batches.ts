@@ -35,8 +35,8 @@ import {
   type Handoff,
 } from './handoff';
 import { getSettings, isCustomTag } from './settings';
-import { hashSourceFile, Pacer, readSnapshotBooks } from './stage1';
-import { getStage, pauseStage, updateStage } from './stages';
+import { hashSourceFile, Pacer, readSnapshotBooks, readSnapshotPresence } from './stage1';
+import { currentAnalysisId, getStage, pauseStage, updateStage } from './stages';
 
 export type BatchKind = 'apply' | 'undo';
 export type BatchState = 'planned' | 'claimed' | 'applied' | 'partial' | 'failed' | 'undone';
@@ -198,8 +198,8 @@ const TERMINAL_UNDO: ItemState[] = ['restored', 'failed', 'skipped'];
 const APPLY_STEPS: Record<ItemState, ItemState[]> = {
   pending: ['verified', 'skipped', 'failed'],
   verified: ['exported', 'skipped', 'failed'],
-  exported: ['tagged', 'failed'],
-  tagged: ['removed', 'failed'],
+  exported: ['tagged', 'skipped', 'failed'],
+  tagged: ['removed', 'skipped', 'failed'],
   removed: [],
   restored: [],
   failed: [],
@@ -386,9 +386,10 @@ export class BatchService {
       .prepare(
         `SELECT id, calibre_id, calibre_uuid, evidence_json FROM proposed_changes
          WHERE stage = 1 AND library_id = ? AND state = 'proposed' AND class = 'auto'
+           AND analysis_id = ?
          ORDER BY id LIMIT ?`,
       )
-      .all(libraryId, cap) as {
+      .all(libraryId, currentAnalysisId(this.db), cap) as {
       id: number;
       calibre_id: number;
       calibre_uuid: string;
@@ -406,6 +407,22 @@ export class BatchService {
         lastCheckedAt: Date.now(),
       },
     });
+    // Calibre changed under the analysis for a large share of these copies (books or EPUBs
+    // removed or edited outside the cleanup): nothing is skipped or removed, the stage pauses
+    // until the analysis has run again (a skip is only for the odd copy someone edited).
+    // Measured against a full batch, so the last few copies of a run don't pause the stage
+    // over one edited book.
+    const changedShare = (100 * verdict.libraryChanged) / Math.max(cap, candidates.length);
+    if (verdict.libraryChanged > 0 && changedShare > settings.libraryChangedPausePercent) {
+      pauseStage(
+        this.db,
+        1,
+        'library_changed',
+        `${verdict.libraryChanged} of the next ${candidates.length} copies to remove changed in Calibre since the analysis (${summarizeReasons(verdict.skipped)}). ` +
+          'Nothing was removed or skipped. Run the analysis again: removing goes on by itself after it.',
+      );
+      return { batch: null, reason: 'Calibre changed since the analysis' };
+    }
     if (verdict.changedIds.length > 0) {
       const mark = this.db.prepare(
         `UPDATE proposed_changes SET state = 'skipped', review_reason = ?, updated_at = ? WHERE id = ?`,
@@ -420,7 +437,7 @@ export class BatchService {
           1,
           'not_identical',
           `${verdict.notIdentical} copies are no longer identical to the copy they were matched with. ` +
-            'Nothing was removed. Run the analysis again, then resume.',
+            'Nothing was removed. Run the analysis again: removing goes on by itself after it.',
         );
         return { batch: null, reason: 'A copy is no longer identical' };
       }
@@ -448,6 +465,8 @@ export class BatchService {
     checked: number;
     identical: number;
     notIdentical: number;
+    /** Copies skipped because Calibre changed (gone, EPUB gone, edited, unreadable). */
+    libraryChanged: number;
     changedIds: number[];
     skipped: { id: number; reason: string }[];
     stopped: boolean;
@@ -455,8 +474,18 @@ export class BatchService {
     const lib = getLibrary(this.deps.main, libraryId);
     if (!lib || !this.deps.calibreDir) throw new Error('The library is not available');
     const libDir = path.join(this.deps.calibreDir, lib.folder);
-    const books = readSnapshotBooks(snapshotFile(this.deps.cacheDir, libraryId));
+    const snapshot = snapshotFile(this.deps.cacheDir, libraryId);
+    const books = readSnapshotBooks(snapshot);
     const byUuid = new Map([...books.values()].map((b) => [b.uuid, b]));
+    const presence = readSnapshotPresence(snapshot);
+    const missing = (uuid: string, calibreId: number | null, which: 'copy' | 'kept'): string => {
+      const p = presence.get(uuid);
+      const what = which === 'copy' ? 'The copy' : 'The copy to keep';
+      if (p && (calibreId === null || p.calibreId === calibreId) && !p.hasEpub) {
+        return `${what} has no EPUB in Calibre any more`;
+      }
+      return `${what} is no longer in Calibre`;
+    };
     const settings = getSettings(this.db);
     const pacer = new Pacer(settings.pacing.hashMbPerSecond * 1024 * 1024);
     const facts = this.db.prepare(
@@ -465,6 +494,7 @@ export class BatchService {
     const skipped: { id: number; reason: string }[] = [];
     let identical = 0;
     let notIdentical = 0;
+    let libraryChanged = 0;
 
     const sameFile = async (
       calibreId: number,
@@ -489,6 +519,7 @@ export class BatchService {
           checked: 0,
           identical: 0,
           notIdentical: 0,
+          libraryChanged: 0,
           changedIds: [],
           skipped: [],
           stopped: true,
@@ -498,14 +529,17 @@ export class BatchService {
       const removed = byUuid.get(c.calibre_uuid);
       const kept = byUuid.get(ev.kept.uuid);
       if (!removed || removed.calibreId !== c.calibre_id) {
-        skipped.push({ id: c.id, reason: 'The copy is no longer in Calibre' });
+        libraryChanged++;
+        skipped.push({ id: c.id, reason: missing(c.calibre_uuid, c.calibre_id, 'copy') });
         continue;
       }
       if (!kept) {
-        skipped.push({ id: c.id, reason: 'The copy to keep is no longer in Calibre' });
+        libraryChanged++;
+        skipped.push({ id: c.id, reason: missing(ev.kept.uuid, null, 'kept') });
         continue;
       }
       if (removed.lastModified !== ev.removed.lastModified) {
+        libraryChanged++;
         skipped.push({ id: c.id, reason: 'The copy was changed in Calibre since the analysis' });
         continue;
       }
@@ -517,11 +551,13 @@ export class BatchService {
             checked: 0,
             identical: 0,
             notIdentical: 0,
+            libraryChanged: 0,
             changedIds: [],
             skipped: [],
             stopped: true,
           };
         }
+        libraryChanged++;
         skipped.push({ id: c.id, reason: 'A file of the pair could not be read' });
         continue;
       }
@@ -535,6 +571,7 @@ export class BatchService {
       checked: identical + notIdentical,
       identical,
       notIdentical,
+      libraryChanged,
       changedIds: skipped.map((s) => s.id),
       skipped,
       stopped: false,
@@ -985,6 +1022,22 @@ export class BatchService {
            WHERE id = ?`,
         )
         .run(state, now, error, now, batchId);
+      if (error) {
+        // The batch stopped: items it never finished are marked, so the batch doesn't show
+        // them as still to go (an apply item goes back to the proposals just below).
+        this.db
+          .prepare(
+            `UPDATE batch_items SET state = 'skipped', detail = ?, updated_at = ?
+             WHERE batch_id = ? AND state NOT IN ('removed', 'restored', 'failed', 'skipped')`,
+          )
+          .run(
+            batch.kind === 'apply'
+              ? 'Not finished: the batch stopped; the copy is tried again in a later batch'
+              : 'Not finished: the Undo stopped',
+            now,
+            batchId,
+          );
+      }
       if (batch.kind === 'apply') {
         // Items the sidecar never reached go back to the proposals.
         this.db
@@ -1085,4 +1138,14 @@ export class BatchService {
       .all(batchId) as { state: string; n: number }[];
     return Object.fromEntries(rows.map((r) => [r.state, r.n]));
   }
+}
+
+/** "3 have no EPUB in Calibre any more, 1 is no longer in Calibre" for a pause message. */
+export function summarizeReasons(skipped: { reason: string }[]): string {
+  const counts = new Map<string, number>();
+  for (const { reason } of skipped) counts.set(reason, (counts.get(reason) ?? 0) + 1);
+  return [...counts]
+    .sort((a, b) => b[1] - a[1])
+    .map(([reason, n]) => `${n}: ${reason.charAt(0).toLowerCase()}${reason.slice(1)}`)
+    .join('; ');
 }

@@ -125,6 +125,28 @@ export function readSnapshotBooks(file: string): Map<number, SnapshotBook> {
   }
 }
 
+/**
+ * Every book of a snapshot by UUID, with or without an EPUB: tells "no longer in Calibre"
+ * apart from "still in Calibre, but its EPUB is gone".
+ */
+export function readSnapshotPresence(
+  file: string,
+): Map<string, { calibreId: number; hasEpub: boolean }> {
+  const db = new Database(file, { readonly: true, fileMustExist: true });
+  try {
+    const rows = db
+      .prepare(
+        `SELECT b.id, b.uuid,
+                EXISTS (SELECT 1 FROM data d WHERE d.book = b.id AND d.format = 'EPUB') AS epub
+         FROM books b WHERE b.uuid IS NOT NULL AND b.uuid <> ''`,
+      )
+      .all() as { id: number; uuid: string; epub: number }[];
+    return new Map(rows.map((r) => [r.uuid, { calibreId: r.id, hasEpub: r.epub === 1 }]));
+  } finally {
+    db.close();
+  }
+}
+
 /** Token bucket for the MB/s limit. 0 = no limit. */
 export class Pacer {
   private allowance = 0;
@@ -522,12 +544,23 @@ export class Stage1Analysis {
     let bothWithData = 0;
     let tagsCopied = 0;
     cleanup.transaction(() => {
-      // Earlier proposals that were never queued are replaced by this analysis.
+      // Earlier proposals that were never queued, or were skipped without reaching a batch,
+      // are replaced by this analysis (skipped ones a batch handled stay for its history).
       cleanup
         .prepare(
-          `DELETE FROM proposed_changes WHERE stage = 1 AND library_id = ? AND state = 'proposed'`,
+          `DELETE FROM proposed_changes WHERE stage = 1 AND library_id = ?
+             AND state IN ('proposed', 'skipped')
+             AND id NOT IN (SELECT change_id FROM batch_items)`,
         )
         .run(p.libraryId);
+      // A copy a stopped batch never finished stays in that batch's history; this analysis
+      // proposes it again under a new row if it is still a duplicate.
+      cleanup
+        .prepare(
+          `UPDATE proposed_changes SET state = 'skipped', review_reason = 'Replaced by a new analysis',
+             updated_at = ? WHERE stage = 1 AND library_id = ? AND state = 'proposed'`,
+        )
+        .run(now, p.libraryId);
       for (const [sha256, { size, copies }] of sets) {
         if (copies.length < 2) continue;
         duplicateSets++;

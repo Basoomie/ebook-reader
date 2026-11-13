@@ -16,9 +16,12 @@ import { getSettings } from './settings';
 import { Stage1Analysis, type Stage1Progress } from './stage1';
 import {
   BUILT_STAGES,
+  CURRENT_PROPOSALS_SQL,
+  currentAnalysisId,
   getStage,
   listStages,
   pauseStage,
+  resumeStage,
   setStageMode,
   type StageMode,
 } from './stages';
@@ -397,6 +400,9 @@ export class CleanupService {
     const target = this.targetLibrary();
     if (!target || !this.analysis) throw new Error('Choose the library first');
     const p = this.analysis.restart(target);
+    // These pauses ask for a new analysis; it is running now.
+    const pause = getStage(this.db, 1).pauseReason;
+    if (pause === 'library_changed' || pause === 'not_identical') resumeStage(this.db, 1);
     void this.tick();
     return p;
   }
@@ -468,7 +474,18 @@ export class CleanupService {
     const { batch, reason } = await this.batches.planStage1(target, () => this.stopped);
     this.waiting = batch
       ? 'A batch is being applied'
-      : (reason ?? (this.remaining(target) === 0 ? 'Done: nothing left to apply' : null));
+      : (reason ?? (this.remaining(target) === 0 ? this.doneText(target) : null));
+  }
+
+  /** The line once nothing is left to remove: says plainly when copies were skipped. */
+  private doneText(target: string): string {
+    const c = this.stage1Counts(target);
+    const skipped = c.skipped ?? 0;
+    if (skipped === 0) return 'Done: every copy found has been removed';
+    return (
+      `Nothing left to remove: ${(c.applied ?? 0).toLocaleString('en-US')} removed, ` +
+      `${skipped.toLocaleString('en-US')} skipped (the reasons are listed below)`
+    );
   }
 
   private remaining(target: string): number {
@@ -476,9 +493,9 @@ export class CleanupService {
       this.db
         .prepare(
           `SELECT COUNT(*) AS n FROM proposed_changes WHERE stage = 1 AND library_id = ?
-           AND state = 'proposed' AND class = 'auto'`,
+           AND state = 'proposed' AND class = 'auto' AND analysis_id = ?`,
         )
-        .get(target) as { n: number }
+        .get(target, currentAnalysisId(this.db)) as { n: number }
     ).n;
   }
 
@@ -531,10 +548,24 @@ export class CleanupService {
     if (!target) return {};
     const rows = this.db
       .prepare(
-        `SELECT state, COUNT(*) AS n FROM proposed_changes WHERE stage = 1 AND library_id = ? GROUP BY state`,
+        `SELECT state, COUNT(*) AS n FROM proposed_changes WHERE stage = 1 AND library_id = ?
+         AND ${CURRENT_PROPOSALS_SQL} GROUP BY state`,
       )
-      .all(target) as { state: string; n: number }[];
+      .all(target, currentAnalysisId(this.db)) as { state: string; n: number }[];
     return Object.fromEntries(rows.map((r) => [r.state, r.n]));
+  }
+
+  /** Why copies were skipped, most common first (for the page). */
+  stage1SkipReasons(target: string | null): { reason: string; count: number }[] {
+    if (!target) return [];
+    return this.db
+      .prepare(
+        `SELECT COALESCE(review_reason, 'No reason recorded') AS reason, COUNT(*) AS count
+         FROM proposed_changes WHERE stage = 1 AND library_id = ? AND state = 'skipped'
+           AND analysis_id = ?
+         GROUP BY reason ORDER BY count DESC, reason`,
+      )
+      .all(target, currentAnalysisId(this.db)) as { reason: string; count: number }[];
   }
 
   status(now = Date.now()) {
@@ -562,6 +593,7 @@ export class CleanupService {
       calibre: this.resolvedLibraryId(),
       stage1: {
         counts: this.stage1Counts(target),
+        skipReasons: this.stage1SkipReasons(target),
         openBatch: this.batches.open(),
         awaitingIngest: this.batches.awaitingIngest(),
       },

@@ -59,7 +59,12 @@
       {/if}
       {#if handoffText(item)}{handoffText(item)}{/if}
       {#if restoreText(item.restore_method)}{restoreText(item.restore_method)}{/if}
-      {#if item.detail}<span class="font-bold">{item.detail}</span>{/if}
+      {#if item.detail}<span class="font-bold">{item.detail}</span>
+      {:else if item.state === 'skipped' && item.review_reason}
+        <span class="font-bold" data-testid="cleanup-skip-reason"
+          >Skipped: {item.review_reason}.</span
+        >
+      {/if}
     </div>
   {:else}
     <span>Calibre #{item.calibre_id}</span>

@@ -66,6 +66,20 @@ export function listStages(db: Database.Database): StageRow[] {
   return (db.prepare('SELECT * FROM stages ORDER BY stage').all() as Row[]).map(toStage);
 }
 
+/** The id of the stage's current (or running) analysis, or null before the first one. */
+export function currentAnalysisId(db: Database.Database, stage = 1): string | null {
+  const p = getStage(db, stage).progress as { analysisId?: unknown } | null;
+  return p && typeof p.analysisId === 'string' ? p.analysisId : null;
+}
+
+/**
+ * SQL condition for the proposals that count now: those of the current analysis, plus every
+ * copy that is queued, removed, brought back or kept, whichever analysis found it. Takes the
+ * analysis id as its one parameter.
+ */
+export const CURRENT_PROPOSALS_SQL =
+  "(state IN ('queued', 'applied', 'undone', 'kept') OR analysis_id = ?)";
+
 export function getStage(db: Database.Database, stage: number): StageRow {
   const row = db.prepare('SELECT * FROM stages WHERE stage = ?').get(stage) as Row | undefined;
   if (!row) throw new Error(`No stage ${stage}`);

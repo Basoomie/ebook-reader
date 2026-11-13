@@ -41,6 +41,11 @@ export interface CleanupSettings {
   gateThresholdPercent: number;
   /** A stage pauses when its share of review results is above this (%). */
   reviewAlarmPercent: number;
+  /**
+   * Stage 1 pauses (instead of skipping copies one by one) when more than this share of the
+   * next batch's copies changed in Calibre since the analysis (%).
+   */
+  libraryChangedPausePercent: number;
   backup: BackupRecord;
 }
 
@@ -70,6 +75,7 @@ export const DEFAULT_SETTINGS: CleanupSettings = {
   customTags: ['PeepoHappyBooks', 'alpindale', 'TMW-collection-*'],
   gateThresholdPercent: 95,
   reviewAlarmPercent: 5,
+  libraryChangedPausePercent: 5,
   backup: {
     path: '/mnt/user/data/backups/japanese-library-2026-11-11/',
     verifiedOn: '2026-11-12',
@@ -195,6 +201,8 @@ function validate(key: Key, value: unknown, current: CleanupSettings): unknown {
       return num('Gate threshold (%)', value, 50, 100);
     case 'reviewAlarmPercent':
       return num('Review alarm (%)', value, 0, 100);
+    case 'libraryChangedPausePercent':
+      return num('Pause when copies changed in Calibre (%)', value, 0, 100);
     case 'backup': {
       if (typeof value !== 'object' || value === null)
         throw new SettingsError('Backup must be an object');

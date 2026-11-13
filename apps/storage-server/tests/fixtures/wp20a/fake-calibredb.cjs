@@ -245,7 +245,8 @@ switch (sub) {
   case 'trash restore': {
     for (const id of ids()) {
       const src = path.join(trashDir, String(id));
-      if (!fs.existsSync(src)) fail(`Book ${id} is not in the trash`);
+      // calibre 9.18's own message (checked against the real calibredb, 2026-11-13).
+      if (!fs.existsSync(src)) fail(`No entries in the trash bin for the books: ${id}`);
       const r = JSON.parse(fs.readFileSync(path.join(src, 'row.json'), 'utf8'));
       const b = r.book;
       db.prepare(

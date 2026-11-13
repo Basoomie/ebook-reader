@@ -183,9 +183,18 @@ describe('cleanup wording', () => {
     expect(batchCountsText(batch({ counts: { removed: 2, skipped: 1 } }))).toBe(
       '2 removed · 1 skipped'
     );
-    expect(batchCountsText(batch({ kind: 'undo', counts: { restored: 2, pending: 1 } }))).toBe(
-      '2 brought back · 1 to go'
-    );
+    expect(
+      batchCountsText(
+        batch({ kind: 'undo', finishedAt: null, counts: { restored: 2, pending: 1 } })
+      )
+    ).toBe('2 brought back · 1 to go');
+    // A batch that ended (the live "23 to go" after a failure) says what it left undone.
+    expect(
+      batchCountsText(batch({ state: 'failed', finishedAt: 1, counts: { pending: 22, tagged: 1 } }))
+    ).toBe('23 not finished');
+    expect(
+      batchCountsText(batch({ state: 'claimed', finishedAt: null, counts: { pending: 2 } }))
+    ).toBe('2 to go');
     expect(restoreText('readd:rebound')).toContain('new Calibre id');
     expect(restoreText('trash')).toContain('same Calibre id');
   });

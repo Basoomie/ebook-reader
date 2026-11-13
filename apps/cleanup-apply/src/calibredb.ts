@@ -108,12 +108,22 @@ export function buildArgs(
       return ['custom_columns', ...remote, '--details'];
     case 'export':
       return ['export', ...remote, ...args];
-    case 'remove':
-      return ['remove', ...remote, ...args];
+    case 'remove': {
+      // Exactly one whole book, to Calibre's trash (never --permanent, never a list or range).
+      if (args.length !== 1 || !/^\d+$/.test(args[0])) {
+        throw new Error('remove takes exactly one book id');
+      }
+      return ['remove', ...remote, args[0]];
+    }
     case 'trash_list':
       return ['trash', 'list', ...remote, '--for-machine'];
-    case 'trash_restore':
-      return ['trash', 'restore', ...remote, ...args];
+    case 'trash_restore': {
+      // Exactly one whole book (never --formats, never a list or range).
+      if (args.length !== 1 || !/^\d+$/.test(args[0])) {
+        throw new Error('trash restore takes exactly one book id');
+      }
+      return ['trash', 'restore', ...remote, args[0]];
+    }
     case 'add':
       return ['add', ...remote, ...args];
     case 'set_tags': {

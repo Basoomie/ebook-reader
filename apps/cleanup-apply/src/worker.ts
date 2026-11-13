@@ -20,6 +20,7 @@ import {
   type BatchItem,
   type CalibreLogin,
   type CheckResult,
+  type HeartbeatAnswer,
   isFinal,
   ServerApi,
   ServerError,
@@ -39,6 +40,8 @@ import { exists, Quarantine, sha256File } from './quarantine';
 export const SIDECAR_VERSION = '1.0.0';
 /** calibredb's `trash restore` exists from this version on. */
 export const TRASH_RESTORE_VERSION = '9.18.0';
+/** Heartbeats while a check or a batch runs (the server calls a sidecar silent for 90 s offline). */
+export const KEEPALIVE_MS = 30_000;
 
 export interface Logger {
   info(m: string): void;
@@ -105,13 +108,35 @@ export class Worker {
   /** Runs until stop(). */
   async run(): Promise<void> {
     this.log.info(`Cleanup sidecar ${SIDECAR_VERSION}: server ${this.opts.config.serverUrl}`);
-    while (!this.stopped) {
-      try {
-        await this.cycle();
-      } catch (err) {
-        this.log.error(`cycle: ${(err as Error).message}`);
+    // Heartbeats also while the checks or a batch take long (calibredb against a big library
+    // can take minutes), so the page never shows a working sidecar as not running.
+    const beat = setInterval(() => void this.keepAlive(), KEEPALIVE_MS);
+    try {
+      while (!this.stopped) {
+        try {
+          await this.cycle();
+        } catch (err) {
+          this.log.error(`cycle: ${(err as Error).message}`);
+        }
+        if (!this.stopped) await sleep(this.pollMs);
       }
-      if (!this.stopped) await sleep(this.pollMs);
+    } finally {
+      clearInterval(beat);
+    }
+  }
+
+  private beating = false;
+
+  /** One heartbeat without retrying (the main loop retries); errors are ignored. */
+  async keepAlive(): Promise<void> {
+    if (this.beating || this.stopped) return;
+    this.beating = true;
+    try {
+      this.applyAnswer(await this.api.heartbeat(this.heartbeatBody()));
+    } catch {
+      // The server is away (the nightly backup); the main loop waits for it.
+    } finally {
+      this.beating = false;
     }
   }
 
@@ -138,21 +163,26 @@ export class Worker {
     return 'batch';
   }
 
+  private heartbeatBody() {
+    return {
+      version: SIDECAR_VERSION,
+      calibredb: this.calibredbVersion ? `calibredb (calibre ${this.calibredbVersion})` : null,
+      serverVersion: this.serverVersion ? `calibre ${this.serverVersion}` : null,
+      trashRestore: this.trashRestore,
+      problem: this.problem ? shorten(this.problem, 1500) : this.problem,
+      checks: this.checks.map((c) => ({
+        ...c,
+        detail: c.detail ? shorten(c.detail, 1500) : c.detail
+      })),
+      libraries: this.libraries
+    };
+  }
+
   private async heartbeat(): Promise<void> {
-    const answer = await this.retry(() =>
-      this.api.heartbeat({
-        version: SIDECAR_VERSION,
-        calibredb: this.calibredbVersion ? `calibredb (calibre ${this.calibredbVersion})` : null,
-        serverVersion: this.serverVersion ? `calibre ${this.serverVersion}` : null,
-        trashRestore: this.trashRestore,
-        problem: this.problem ? shorten(this.problem, 1500) : this.problem,
-        checks: this.checks.map((c) => ({
-          ...c,
-          detail: c.detail ? shorten(c.detail, 1500) : c.detail
-        })),
-        libraries: this.libraries
-      })
-    );
+    this.applyAnswer(await this.retry(() => this.api.heartbeat(this.heartbeatBody())));
+  }
+
+  private applyAnswer(answer: HeartbeatAnswer): void {
     const changed = JSON.stringify(answer.calibre) !== JSON.stringify(this.login);
     this.login = answer.calibre;
     this.itemDelayMs = Math.max(0, answer.itemDelaySeconds * 1000);
@@ -255,23 +285,19 @@ export class Worker {
     } catch (err) {
       add('illustrator_column', false, (err as Error).message);
     }
-    let trash = false;
-    if (
+    // `calibredb trash restore` exists from 9.18 on. The trash isn't listed here: with
+    // thousands of entries that takes minutes (it did on the NAS, 2026-11-13); Undo simply
+    // tries the restore and falls back to the quarantine copy.
+    const trash =
       versionAtLeast(this.serverVersion, TRASH_RESTORE_VERSION) &&
-      versionAtLeast(this.calibredbVersion, TRASH_RESTORE_VERSION)
-    ) {
-      try {
-        const r = await this.calibredb.run('trash_list', lib);
-        trash = r.code === 0;
-      } catch {
-        trash = false;
-      }
-    }
+      versionAtLeast(this.calibredbVersion, TRASH_RESTORE_VERSION);
     this.trashRestore = trash;
     add(
       'trash_restore',
       trash,
-      trash ? null : `needs calibre ${TRASH_RESTORE_VERSION} or newer on both sides`
+      trash
+        ? null
+        : `needs calibre ${TRASH_RESTORE_VERSION} or newer on both sides (content server ${this.serverVersion ?? '?'}, sidecar ${this.calibredbVersion ?? '?'})`
     );
     this.checks = out;
     this.checkedAt = Date.now();
@@ -385,6 +411,13 @@ export class Worker {
         });
         return;
       }
+      if (!hasEpub(book.formats)) {
+        await this.report(batch, item, {
+          step: 'skipped',
+          detail: 'The copy has no EPUB in Calibre any more'
+        });
+        return;
+      }
       const then = calibreTime(item.lastModified);
       const now = calibreTime(book.last_modified);
       if (then !== null && now !== null && Math.abs(now - then) > 1000) {
@@ -395,11 +428,9 @@ export class Worker {
         return;
       }
       const kept = await this.calibredb.book(login, item.kept.calibreId);
-      if (!kept || kept.uuid !== item.kept.uuid) {
-        await this.report(batch, item, {
-          step: 'skipped',
-          detail: 'The copy to keep is no longer in Calibre'
-        });
+      const keptProblem = keptCopyProblem(kept, item.kept.uuid);
+      if (keptProblem) {
+        await this.report(batch, item, { step: 'skipped', detail: keptProblem });
         return;
       }
       await this.report(batch, item, { step: 'verified' });
@@ -458,7 +489,18 @@ export class Worker {
       await this.report(batch, item, { step: 'tagged' });
     }
     if (item.state === 'tagged') {
-      if (await this.calibredb.book(login, item.calibreId)) {
+      const present = await this.calibredb.book(login, item.calibreId);
+      if (present) {
+        // Right before the one step that can't be taken back by the cleanup alone: the copy
+        // that stays must still be there with its EPUB.
+        const keptProblem = keptCopyProblem(
+          await this.calibredb.book(login, item.kept.calibreId),
+          item.kept.uuid
+        );
+        if (keptProblem) {
+          await this.report(batch, item, { step: 'skipped', detail: keptProblem });
+          return;
+        }
         await this.calibredb.ok('remove', login, [String(item.calibreId)]);
       }
       if (await this.calibredb.book(login, item.calibreId)) {
@@ -523,11 +565,11 @@ export class Worker {
       return;
     }
     if (this.trashRestore) {
-      const r = await this.calibredb.run('trash_list', login);
-      if (r.code === 0 && trashHasBook(r.stdout, item.calibreId)) {
-        await this.calibredb.ok('trash_restore', login, [String(item.calibreId)]);
-        const back = await this.calibredb.book(login, item.calibreId);
-        if (!back) throw new Error("Calibre's trash restore did not bring the book back");
+      // Restores the whole book only (never --formats); a book that isn't in the trash any
+      // more is refused with "No entries in the trash bin" and nothing else is touched.
+      const r = await this.calibredb.run('trash_restore', login, [String(item.calibreId)]);
+      const back = await this.calibredb.book(login, item.calibreId);
+      if (back && back.uuid === item.uuid) {
         await this.restored(batch, item, {
           step: 'restored',
           method: 'trash',
@@ -537,6 +579,12 @@ export class Worker {
         this.log.info(`Restored ${item.calibreId} from Calibre's trash`);
         return;
       }
+      const out = `${r.stderr}\n${r.stdout}`.trim();
+      if (r.code === 0) throw new Error("Calibre's trash restore did not bring the book back");
+      if (!/No entries in the trash bin/i.test(out)) {
+        throw new Error(`calibredb trash restore failed (exit ${r.code}): ${shorten(out, 500)}`);
+      }
+      // Gone from Calibre's trash (expired or emptied): the quarantine copy below.
     }
     // Re-add the quarantined export (new Calibre id and UUID).
     const dir = item.quarantineDir;
@@ -644,20 +692,17 @@ export function parseLibraryIds(output: string): string[] {
     .filter((l) => l !== '' && !/\s/.test(l) && !l.includes(':'));
 }
 
-/** `trash list --for-machine` mentions this book id. */
-export function trashHasBook(output: string, calibreId: number): boolean {
-  try {
-    const data = JSON.parse(output) as unknown;
-    const items: unknown[] = Array.isArray(data)
-      ? data
-      : Array.isArray((data as { books?: unknown[] }).books)
-        ? (data as { books: unknown[] }).books
-        : [];
-    return items.some((x) => {
-      const o = x as { book_id?: unknown; id?: unknown };
-      return o.book_id === calibreId || o.id === calibreId;
-    });
-  } catch {
-    return new RegExp(`\\b${calibreId}\\b`).test(output);
-  }
+/** EPUB among calibredb's format names. */
+export function hasEpub(formats: string[]): boolean {
+  return formats.some((f) => f.toUpperCase() === 'EPUB');
+}
+
+/** Why the copy that stays can't be relied on, or null when it is there with its EPUB. */
+export function keptCopyProblem(
+  kept: { uuid: string; formats: string[] } | null,
+  uuid: string
+): string | null {
+  if (!kept || kept.uuid !== uuid) return 'The copy to keep is no longer in Calibre';
+  if (!hasEpub(kept.formats)) return 'The copy to keep has no EPUB in Calibre any more';
+  return null;
 }

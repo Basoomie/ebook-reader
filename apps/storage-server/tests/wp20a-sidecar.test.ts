@@ -15,12 +15,7 @@ import request from 'supertest';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { buildArgs, Calibredb, type Login } from '../../cleanup-apply/src/calibredb';
 import type { SidecarConfig } from '../../cleanup-apply/src/config';
-import {
-  firstBlock,
-  hasMultipleTextColumn,
-  trashHasBook,
-  Worker,
-} from '../../cleanup-apply/src/worker';
+import { firstBlock, hasMultipleTextColumn, Worker } from '../../cleanup-apply/src/worker';
 import { getStage } from '../src/cleanup/stages';
 import { calibreDate, fingerprint } from './helpers/calibre-fixture';
 import { type CleanupEnv, makeCleanupEnv } from './helpers/cleanup-env';
@@ -50,7 +45,7 @@ describe('calibredb arguments', () => {
       'trash_restore',
       'add',
     ] as const) {
-      const args = buildArgs(cmd, login, cmd === 'remove' ? ['12'] : []);
+      const args = buildArgs(cmd, login, cmd === 'remove' || cmd === 'trash_restore' ? ['12'] : []);
       expect(args).toContain('--with-library');
       expect(args[args.indexOf('--with-library') + 1]).toBe('http://c:8081/#lib');
       expect(args[args.indexOf('--password') + 1]).toBe('<stdin>');
@@ -60,6 +55,13 @@ describe('calibredb arguments', () => {
     expect(buildArgs('libraries', login, [])).toContain('http://c:8081/#-');
     expect(() => buildArgs('remove', login, ['--permanent', '1'])).toThrow(/not allowed/);
     expect(() => buildArgs('add', login, ['--automerge', 'overwrite'])).toThrow(/not allowed/);
+    // One whole book at a time: no lists, ranges or other options.
+    expect(() => buildArgs('remove', login, ['1,2'])).toThrow(/exactly one book id/);
+    expect(() => buildArgs('remove', login, ['1', '2'])).toThrow(/exactly one book id/);
+    expect(() => buildArgs('trash_restore', login, ['--formats', '12'])).toThrow(
+      /exactly one book id/,
+    );
+    expect(() => buildArgs('trash_restore', login, ['10-20'])).toThrow(/exactly one book id/);
     expect(() => buildArgs('set_metadata' as never, login, [])).toThrow(/not allowed/);
     // Tags only: the one metadata write (your tags onto the kept copy, and back on Undo).
     const tags = buildArgs('set_tags', login, ['12', 'PeepoHappyBooks,TMW-collection-11']);
@@ -114,8 +116,6 @@ describe('calibredb arguments', () => {
       ),
     ).toBe(false);
     expect(hasMultipleTextColumn(real, 'illustrators')).toBe(false);
-    expect(trashHasBook('[{"book_id": 7, "title": "x"}]', 7)).toBe(true);
-    expect(trashHasBook('[{"book_id": 7}]', 8)).toBe(false);
   });
 });
 
@@ -508,6 +508,170 @@ describe('the sidecar with the server', () => {
     const mdb = new Database(env.lib.dbFile, { readonly: true });
     expect((mdb.prepare('SELECT COUNT(*) AS n FROM books').get() as { n: number }).n).toBe(35);
     mdb.close();
+  });
+
+  /** The open batch's (single) copy and the copy it would be kept against. */
+  function openPair(): { batchId: string; removedId: number; keptId: number } {
+    const open = env.service.batches.open()!;
+    expect(open).not.toBeNull();
+    const row = env.cleanupDb
+      .prepare(
+        `SELECT c.calibre_id, c.evidence_json FROM batch_items i
+         JOIN proposed_changes c ON c.id = i.change_id WHERE i.batch_id = ? ORDER BY i.id LIMIT 1`,
+      )
+      .get(open.id) as { calibre_id: number; evidence_json: string };
+    return {
+      batchId: open.id,
+      removedId: row.calibre_id,
+      keptId: (JSON.parse(row.evidence_json) as { kept: { calibreId: number } }).kept.calibreId,
+    };
+  }
+
+  /** The Calibre ids calibredb was asked to remove in this test. */
+  function removeCalls(): number[] {
+    return fs
+      .readFileSync(log, 'utf8')
+      .split(/\r?\n/)
+      .filter((l) => l.trim() !== '')
+      .map((l) => JSON.parse(l) as string[])
+      .filter((c) => c[0] === 'remove')
+      .map((c) => Number(c[c.length - 1]));
+  }
+
+  function epubsOf(id: number): number {
+    const mdb = new Database(env.lib.dbFile, { readonly: true });
+    const n = (
+      mdb.prepare("SELECT COUNT(*) AS n FROM data WHERE book = ? AND format = 'EPUB'").get(id) as {
+        n: number;
+      }
+    ).n;
+    mdb.close();
+    return n;
+  }
+
+  it('the copy to keep losing its EPUB before the sidecar starts: nothing is removed', async () => {
+    const w = worker();
+    await w.runChecks();
+    await w.cycle();
+    await turnOn();
+    await env.service.tick(); // the server's check passes and plans a batch
+    const { batchId, removedId, keptId } = openPair();
+    env.lib.removeFormat(keptId); // outside the cleanup, after the server's check
+    await w.cycle();
+    const item = env.cleanupDb
+      .prepare('SELECT state, detail FROM batch_items WHERE batch_id = ?')
+      .get(batchId);
+    expect(item).toEqual({
+      state: 'skipped',
+      detail: 'The copy to keep has no EPUB in Calibre any more',
+    });
+    expect(epubsOf(removedId)).toBe(1);
+    expect(removeCalls()).not.toContain(removedId);
+  });
+
+  it('the copy to keep losing its EPUB between the export and the removal: nothing is removed', async () => {
+    let keptId = -1;
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const res = await fetch(input, init);
+      const body =
+        typeof init?.body === 'string' ? (JSON.parse(init.body) as { step?: string }) : {};
+      if (String(input).includes('/items/') && body.step === 'tagged') env.lib.removeFormat(keptId);
+      return res;
+    };
+    const w = worker({ fetchImpl });
+    await w.runChecks();
+    await w.cycle();
+    await turnOn();
+    await env.service.tick();
+    const pair = openPair();
+    keptId = pair.keptId;
+    await w.cycle();
+    const item = env.cleanupDb
+      .prepare('SELECT state, detail FROM batch_items WHERE batch_id = ?')
+      .get(pair.batchId);
+    expect(item).toEqual({
+      state: 'skipped',
+      detail: 'The copy to keep has no EPUB in Calibre any more',
+    });
+    // The removed copy is still in Calibre with its EPUB; its export stays in the quarantine.
+    expect(epubsOf(pair.removedId)).toBe(1);
+    expect(
+      fs.existsSync(path.join(quarantine, pair.batchId, String(pair.removedId), 'book.epub')),
+    ).toBe(true);
+    expect(removeCalls()).not.toContain(pair.removedId);
+  });
+
+  it('keeps sending heartbeats while it is busy, and never throws when the server is away', async () => {
+    const w = worker();
+    await w.cycle();
+    env.cleanupDb.prepare('UPDATE sidecar_status SET last_seen_at = 1').run();
+    await w.keepAlive();
+    const seen = (
+      env.cleanupDb.prepare('SELECT last_seen_at FROM sidecar_status').get() as {
+        last_seen_at: number;
+      }
+    ).last_seen_at;
+    expect(Date.now() - seen).toBeLessThan(5000);
+    const away = worker({
+      fetchImpl: async () => {
+        throw new Error('connect ECONNREFUSED');
+      },
+    });
+    await expect(away.keepAlive()).resolves.toBeUndefined();
+  });
+
+  it("Undo after Calibre's trash was emptied (9.18) re-adds from the quarantine", async () => {
+    const w = worker();
+    await w.runChecks();
+    await w.cycle();
+    await turnOn();
+    await runAll(w);
+    // The trash check no longer lists the trash (minutes with thousands of entries).
+    expect((await w.runChecks()).find((c) => c.name === 'trash_restore')!.ok).toBe(true);
+    fs.rmSync(path.join(env.lib.dir, '.caltrash'), { recursive: true, force: true });
+    const [batch] = env.service.batches.list();
+    await request(env.app)
+      .post(`/api/v1/cleanup/batches/${batch.id}/undo`)
+      .set(auth(user))
+      .expect(200);
+    await runAll(w);
+    const undo = env.service.batches.list().find((b) => b.kind === 'undo')!;
+    const items = env.cleanupDb
+      .prepare('SELECT state, method FROM batch_items WHERE batch_id = ?')
+      .all(undo.id) as { state: string; method: string }[];
+    expect(items.length).toBeGreaterThan(0);
+    for (const i of items) expect(i).toEqual({ state: 'restored', method: 'readd' });
+  });
+
+  it('an unexpected trash-restore error fails the Undo item with calibredb’s message', async () => {
+    const w = worker();
+    await w.runChecks();
+    await w.cycle();
+    await turnOn();
+    await runAll(w);
+    const [batch] = env.service.batches.list();
+    await request(env.app)
+      .post(`/api/v1/cleanup/batches/${batch.id}/undo`)
+      .set(auth(user))
+      .expect(200);
+    const failing = worker({ fail: 'trash restore' });
+    await failing.runChecks();
+    await runAll(failing, 3);
+    const undo = env.service.batches.list().find((b) => b.kind === 'undo')!;
+    const items = env.cleanupDb
+      .prepare('SELECT state, detail FROM batch_items WHERE batch_id = ?')
+      .all(undo.id) as { state: string; detail: string }[];
+    for (const i of items) {
+      expect(i.state).toBe('failed');
+      expect(i.detail).toMatch(/calibredb trash restore failed \(exit 2\): simulated failure/);
+    }
+    // Nothing was re-added behind the error.
+    expect(
+      fs
+        .readFileSync(log, 'utf8')
+        .split(/\r?\n/)
+        .filter((l) => l.startsWith('["add"')),
+    ).toEqual([]);
   });
 
   it('nothing is applied while a safety check fails (no #illustrator column)', async () => {
