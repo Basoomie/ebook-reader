@@ -15,7 +15,9 @@ If code and docs disagree, or a task needs a decision the docs don't cover, STOP
 
 **Phase 5** (Phases 0-4 and WP19 are done and merged). Decisions: `docs/design/decisions.md`, "Phase 5 decisions". Agreed order, one work package at a time: **WP15** audio linking → **WP15f** multi-file audiobooks (merge button, per-file picker; added 2026-11-12) → **WP14** "Enrich last card" → **WP16** GPU worker and job queue → **WP17** generated audiobooks.
 
-WP15, WP15f, WP14 and WP16 are done, merged and pushed (WP16 merged 2026-11-12; schema v14). Next: **WP17**, only after the user approves starting it.
+WP15, WP15f, WP14 and WP16 are done, merged and pushed (WP16 merged 2026-11-12; schema v14). **WP17** is built on branch `wp17-generated-audiobooks` (schema v15) and waits for the user's review; don't merge it without their approval.
+
+WP17 "Make an audiobook on the PC": the book's text comes from the reader's own import (`apps/web/src/lib/server/epub/book-script.ts` in the counter bundle; rebuild with `pnpm build:server-counter`), jobs share the WP16 queue (`apps/storage-server/src/audio/tts-jobs.ts`, `tts-routes.ts`, `tts-models.ts`, `src/voices/`), the PC runs the TTS program (`apps/gpu-worker/tts/`: Irodori-TTS in Docker, image `ttsu-irodori:<n>` built by `main.js build-tts`; models in the shared `C:\Data\LLM\Models\ttsu-reader-tts`). The model is chosen per book (list in Settings > Audiobooks), with a Preview. Results go through `audio-write.ts` into a new folder `japanese-generated/<Author>/<Title>[ (vN)]/` and are linked automatically.
 
 WP16 "Make subtitles on the PC": the server's job queue (`apps/storage-server/src/audio/subtitle-jobs.ts`, `worker-routes.ts`; worker tokens `cli token worker` reach only `/api/v1/worker/*`), the PC worker `apps/gpu-worker` (Node, no dependencies; runs the pinned SubPlz image with Docker Desktop on the WSL 2 engine, cache folder mounted at `/config`; works in either of the user's two Windows accounts, one worker at a time), and the book page panel and Settings > Audiobooks section in the web app. Results go through `audio-write.ts` into `japanese-srt/_generated/` and are linked automatically.
 
