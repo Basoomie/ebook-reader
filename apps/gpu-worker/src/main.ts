@@ -3,10 +3,14 @@
  *
  *   node C:\ttsu-worker\app\main.js          run (started at sign-in by a Startup shortcut (start-hidden.vbs))
  *   node C:\ttsu-worker\app\main.js check    test the setup and print what is missing
+ *   node C:\ttsu-worker\app\main.js build-tts  build the TTS program's image (WP17), once per
+ *                                            Windows account and after each worker update
+ *                                            that changes it
  *
  * Settings: C:\ttsu-worker\config.json (see config.example.json). Only one worker runs at
  * a time (a lock file next to the work folder).
  */
+import { spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { ServerApi } from './api';
@@ -110,6 +114,38 @@ async function check(s: WorkerSettings): Promise<boolean> {
       line(false, 'GPU visible to SubPlz', (err as Error).message);
     }
   }
+  // WP17: the TTS program (its own image, built on this PC) and the shared models folder.
+  let ttsOk = false;
+  if (dockerOk) {
+    try {
+      await docker(['image', 'inspect', '--format', '{{.Id}}', s.ttsImage]);
+      ttsOk = true;
+      line(true, 'TTS program on the PC', s.ttsImage);
+    } catch {
+      line(false, 'TTS program on the PC', 'run: node main.js build-tts');
+    }
+  }
+  if (ttsOk) {
+    try {
+      const out = await docker(['run', '--rm', '--gpus', 'all', s.ttsImage, 'check'], 10 * 60_000);
+      line(
+        /"cuda": true/.test(out),
+        'GPU visible to the TTS program',
+        out.trim().split('\n').pop(),
+      );
+    } catch (err) {
+      line(false, 'GPU visible to the TTS program', (err as Error).message);
+    }
+  }
+  try {
+    fs.mkdirSync(s.ttsModelsDir, { recursive: true });
+    const probe = path.join(s.ttsModelsDir, `.write-test-${process.pid}`);
+    fs.writeFileSync(probe, 'ok');
+    fs.rmSync(probe);
+    line(true, 'Models folder', s.ttsModelsDir);
+  } catch (err) {
+    line(false, 'Models folder', (err as Error).message);
+  }
   line(fs.existsSync(s.cacheDir), 'Cache folder', s.cacheDir);
   try {
     fs.mkdirSync(s.workDir, { recursive: true });
@@ -118,6 +154,34 @@ async function check(s: WorkerSettings): Promise<boolean> {
     line(false, 'Work folder', (err as Error).message);
   }
   return ok;
+}
+
+/** WP17: builds the TTS program's image from the tts folder next to the app (docker build). */
+function buildTts(s: WorkerSettings): Promise<number> {
+  const context = path.join(__dirname, 'tts');
+  if (!fs.existsSync(path.join(context, 'Dockerfile'))) {
+    console.error(`No TTS program folder at ${context} (reinstall the worker)`);
+    return Promise.resolve(2);
+  }
+  console.log(
+    `Building ${s.ttsImage} from ${context} (about 10 minutes and 9-10 GB the first time)...`,
+  );
+  return new Promise((resolve) => {
+    const child = spawn(s.dockerPath, [...s.dockerPrefixArgs, 'build', '-t', s.ttsImage, context], {
+      stdio: 'inherit',
+      windowsHide: true,
+    });
+    child.on('error', (err) => {
+      console.error(err.message);
+      resolve(1);
+    });
+    child.on('close', (code) => {
+      console.log(
+        code === 0 ? `Built ${s.ttsImage}. Check it with: node main.js check` : 'The build failed.',
+      );
+      resolve(code ?? 1);
+    });
+  });
 }
 
 async function main(): Promise<void> {
@@ -135,8 +199,11 @@ async function main(): Promise<void> {
   if (command === 'check') {
     process.exit((await check(settings)) ? 0 : 1);
   }
+  if (command === 'build-tts') {
+    process.exit(await buildTts(settings));
+  }
   if (command !== 'run') {
-    console.error('Usage: node main.js [run|check]');
+    console.error('Usage: node main.js [run|check|build-tts]');
     process.exit(2);
   }
   const log = fileLogger(settings.logDir, settings.logMaxMB);

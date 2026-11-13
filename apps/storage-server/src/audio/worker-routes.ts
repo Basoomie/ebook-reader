@@ -15,7 +15,12 @@ import { type CatalogOptions, sendBookFile } from '../api/catalog-routes';
 import { ApiError, asyncHandler, notFound } from '../api/errors';
 import { getBookFor } from '../catalog/queries';
 import { type AudioOptions, requireAudio, sendAudioFile } from './routes';
-import { JobRequestError, type SubtitleJobService, type WorkerJob } from './subtitle-jobs';
+import {
+  JobRequestError,
+  type SubtitleJobService,
+  type WorkerJob,
+  type WorkerJobKind,
+} from './subtitle-jobs';
 
 /** The worker's upload: its body is the subtitle file (the JSON parser skips it). */
 export const WORKER_RESULT_PATH = /^\/worker\/jobs\/[^/]+\/result$/;
@@ -100,9 +105,14 @@ export function createWorkerRouter(
     res.json(jobs.heartbeat((req.body ?? {}) as Record<string, unknown>));
   });
 
-  router.post('/worker/claim', (_req, res) => {
+  router.post('/worker/claim', (req, res) => {
     const jobs = jobsOr503(options);
-    res.json({ job: jobs.claim() });
+    // WP17: the kinds the PC can run (its programs); a WP16 worker sends none (= all).
+    const raw = (req.body as { kinds?: unknown } | undefined)?.kinds;
+    const kinds = Array.isArray(raw)
+      ? (raw.filter((k) => typeof k === 'string') as WorkerJobKind[])
+      : undefined;
+    res.json({ job: jobs.claim(kinds) });
   });
 
   router.get(

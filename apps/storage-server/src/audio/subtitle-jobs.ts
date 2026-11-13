@@ -632,7 +632,11 @@ export class SubtitleJobService {
   }
 
   /** The next job for the worker, or null (paused, nothing waiting, or one is running). */
-  claim(): ClaimedJob | null {
+  /**
+   * The next job for the worker, or null. `kinds` (WP17): the kinds the PC can run now
+   * (its programs); omitted = every kind.
+   */
+  claim(kinds?: WorkerJobKind[]): ClaimedJob | null {
     this.db.prepare('UPDATE worker_status SET last_seen_at = ? WHERE id = 1').run(this.now());
     this.expireLeases();
     if (this.isPaused()) return null;
@@ -643,6 +647,7 @@ export class SubtitleJobService {
         .prepare(`${JOB_SELECT} WHERE j.state = 'queued' ORDER BY j.id`)
         .all() as JobRow[];
       for (const row of rows) {
+        if (kinds && !kinds.includes(row.kind)) continue;
         if (row.kind !== 'sync_subtitles') {
           const handler = this.kinds.get(row.kind);
           const prepared = handler

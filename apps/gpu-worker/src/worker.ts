@@ -11,16 +11,24 @@
  *
  * While a job runs it reports every reportSeconds (that keeps the job; the answer says
  * when the user stopped it). It never writes anywhere but its own work folder and log.
+ *
+ * WP17: TTS jobs (generated audiobooks, previews, described voices) run in tts.ts; the
+ * worker only asks for the kinds whose program is on this PC (SubPlz image, TTS image),
+ * and it deletes the files of models removed from the list in the reader (models folder).
  */
 import fs from 'fs';
 import fsp from 'fs/promises';
 import path from 'path';
-import { type ClaimedJob, ServerApi, ServerError, type Stage } from './api';
+import { type ClaimedJob, type JobKind, ServerApi, ServerError, type Stage } from './api';
 import type { WorkerSettings } from './config';
 import type { Logger } from './log';
 import { runDocker, SubplzRun, subplzArgs } from './subplz';
+import { isStopped, removeDeletedModels, runTtsJob } from './tts';
 
-export const WORKER_VERSION = '1.0.0';
+const TTS_KINDS: JobKind[] = ['generate_audiobook', 'preview_audiobook', 'voice_sample'];
+
+/** 1.1.0: WP17 (TTS jobs). */
+export const WORKER_VERSION = '1.1.0';
 
 const AUDIO_EXTENSIONS = new Set(['.m4b', '.m4a', '.mp3']);
 
@@ -81,19 +89,40 @@ export class Worker {
 
   /** Why the worker can't run SubPlz right now (Docker down, image missing), or null. */
   async problem(): Promise<string | null> {
+    return (await this.readiness()).problem;
+  }
+
+  /**
+   * Which job kinds this PC can run now (WP17), and what is missing. Docker down: none.
+   * A missing image only keeps its own kind of job waiting.
+   */
+  async readiness(): Promise<{ kinds: JobKind[]; problem: string | null }> {
     const docker = (args: string[]) =>
       runDocker(this.s.dockerPath, [...this.s.dockerPrefixArgs, ...args], 60_000);
     try {
       await docker(['info', '--format', '{{.ServerVersion}}']);
     } catch {
-      return 'Docker Desktop is not running on the PC';
+      return { kinds: [], problem: 'Docker Desktop is not running on the PC' };
     }
-    try {
-      await docker(['image', 'inspect', '--format', '{{.Id}}', this.s.image]);
-    } catch {
-      return `The SubPlz image is not on the PC (docker pull ${this.s.image})`;
-    }
-    return null;
+    const has = async (image: string) => {
+      try {
+        await docker(['image', 'inspect', '--format', '{{.Id}}', image]);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    const subplz = await has(this.s.image);
+    const tts = await has(this.s.ttsImage);
+    const kinds: JobKind[] = [
+      ...(subplz ? (['sync_subtitles'] as JobKind[]) : []),
+      ...(tts ? TTS_KINDS : []),
+    ];
+    const missing = [
+      ...(subplz ? [] : [`The SubPlz image is not on the PC (docker pull ${this.s.image})`]),
+      ...(tts ? [] : [`The TTS program is not on the PC (node main.js build-tts)`]),
+    ];
+    return { kinds, problem: missing.length ? missing.join('; ') : null };
   }
 
   /** Empties the work folder of jobs left by an earlier run (the PC was switched off). */
@@ -110,24 +139,29 @@ export class Worker {
   /** One round: check in, and run a job if there is one. Returns seconds to wait. */
   async tick(): Promise<number> {
     let problem: string | null;
+    let kinds: JobKind[] = [];
     try {
-      problem = await this.problem();
+      ({ problem, kinds } = await this.readiness());
     } catch (err) {
       problem = (err as Error).message;
     }
     if (problem !== this.lastProblem) {
       if (problem) this.log.error(problem);
-      else if (this.lastProblem) this.log.info('Docker and the SubPlz image are ready');
+      else if (this.lastProblem) this.log.info('Docker and the programs are ready');
       this.lastProblem = problem;
     }
     const hb = await this.api.heartbeat({
       version: WORKER_VERSION,
       image: this.s.image,
+      ttsImage: this.s.ttsImage,
       problem,
       currentJobId: this.currentJobId,
     });
-    if (hb.paused || problem) return hb.pollSeconds;
-    const job = await this.api.claim();
+    if (kinds.some((k) => TTS_KINDS.includes(k))) {
+      await removeDeletedModels(this.api, this.s.ttsModelsDir, this.log);
+    }
+    if (hb.paused || kinds.length === 0) return hb.pollSeconds;
+    const job = await this.api.claim(kinds);
     if (!job) return hb.pollSeconds;
     await this.runJob(job);
     return 0;
@@ -174,8 +208,44 @@ export class Worker {
     });
   }
 
+  /** WP17: a TTS job (tts.ts); reports a failure, always removes its folder. */
+  private async runTts(job: ClaimedJob): Promise<void> {
+    this.currentJobId = job.id;
+    const jobDir = jobDirFor(this.s.workDir, job.id);
+    this.log.info(`Job ${job.id} (${job.kind}): "${job.bookTitle ?? 'voice sample'}"`);
+    try {
+      await fsp.rm(jobDir, { recursive: true, force: true });
+      await fsp.mkdir(jobDir, { recursive: true });
+      await runTtsJob({ job, jobDir, s: this.s, api: this.api, log: this.log });
+    } catch (err) {
+      const stopped = isStopped(err);
+      const message = stopped
+        ? 'Stopped'
+        : plainError((err as Error).message || String(err), this.s.workDir);
+      if (!stopped) this.log.error(`Job ${job.id} failed: ${message}`);
+      const tail = (err as { tail?: string }).tail ?? null;
+      try {
+        await this.api.fail(job.id, {
+          error: message,
+          logTail: tail ? plainError(tail, this.s.workDir) : null,
+        });
+      } catch (e) {
+        this.log.error(`Job ${job.id}: could not report the failure: ${(e as Error).message}`);
+      }
+    } finally {
+      await fsp.rm(jobDir, { recursive: true, force: true }).catch((e) => {
+        this.log.error(`Job ${job.id}: could not remove ${jobDir}: ${(e as Error).message}`);
+      });
+      this.currentJobId = null;
+    }
+  }
+
   /** Does one job from download to upload; always removes its folder. */
   async runJob(job: ClaimedJob): Promise<void> {
+    if (job.kind !== 'sync_subtitles') {
+      await this.runTts(job);
+      return;
+    }
     this.currentJobId = job.id;
     const jobDir = jobDirFor(this.s.workDir, job.id);
     const bookDir = path.join(jobDir, 'book');

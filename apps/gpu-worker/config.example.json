@@ -7,5 +7,8 @@
   "maxRunHours": 8,
   "minFreeGB": 5,
   "logMaxMB": 5,
-  "reportSeconds": 10
+  "reportSeconds": 10,
+  "ttsModelsDir": "C:\\Data\\LLM\\Models\\ttsu-reader-tts",
+  "ttsBatchSize": 8,
+  "ttsChapterMaxMinutes": 120
 }

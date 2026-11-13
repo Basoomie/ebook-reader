@@ -7,17 +7,52 @@ import fs from 'fs';
 import { Readable } from 'stream';
 import { pipeline } from 'stream/promises';
 
+export type JobKind =
+  | 'sync_subtitles'
+  | 'generate_audiobook'
+  | 'preview_audiobook'
+  | 'voice_sample';
+
+/** WP17: what a TTS job needs (the server's TtsClaim). */
+export interface TtsClaim {
+  kind: JobKind;
+  model: { source: string; revision: string };
+  voice: { sha256: string; seconds: number } | null;
+  caption: string | null;
+  seed: number;
+  pauses: { sentenceMs: number; paragraphMs: number; chapterMs: number };
+  whole: boolean;
+  chaptersTotal: number;
+  chaptersDone: number;
+}
+
 export interface ClaimedJob {
   id: number;
-  kind: 'sync_subtitles';
+  kind: JobKind;
   bookTitle: string | null;
+  /** sync_subtitles only. */
   audioFileName: string;
   audioSize: number;
   epubSize: number | null;
+  /** WP17 kinds only. */
+  tts?: TtsClaim;
   leaseSeconds: number;
 }
 
-export type Stage = 'downloading' | 'syncing' | 'uploading';
+export interface ScriptChapter {
+  index: number;
+  title: string;
+  sentences: { text: string; reading: string; paragraphEnd: boolean }[];
+}
+
+export interface ModelEntry {
+  source: string;
+  revision: string;
+  /** The model's folder under the models folder: `<owner>--<name>[--sub]/<revision>`. */
+  dir: string;
+}
+
+export type Stage = 'downloading' | 'syncing' | 'uploading' | 'preparing' | 'generating';
 
 export class ServerError extends Error {
   constructor(
@@ -53,12 +88,16 @@ export class ServerApi {
     method: string,
     path: string,
     body?: unknown,
-    { raw, timeout = true }: { raw?: Buffer; timeout?: boolean } = {},
+    {
+      raw,
+      timeout = true,
+      contentType = 'application/x-subrip',
+    }: { raw?: Buffer; timeout?: boolean; contentType?: string } = {},
   ): Promise<Response> {
     const headers: Record<string, string> = { Authorization: `Bearer ${this.token}` };
     let payload: BodyInit | undefined;
     if (raw) {
-      headers['Content-Type'] = 'application/x-subrip';
+      headers['Content-Type'] = contentType;
       payload = new Uint8Array(raw);
     } else if (body !== undefined) {
       headers['Content-Type'] = 'application/json';
@@ -95,6 +134,7 @@ export class ServerApi {
   async heartbeat(input: {
     version: string;
     image: string;
+    ttsImage?: string;
     problem: string | null;
     currentJobId: number | null;
   }): Promise<{ paused: boolean; pollSeconds: number }> {
@@ -104,8 +144,9 @@ export class ServerApi {
     };
   }
 
-  async claim(): Promise<ClaimedJob | null> {
-    const json = (await (await this.request('POST', '/worker/claim', {})).json()) as {
+  /** The next job of one of `kinds` (WP17: the kinds this PC can run now). */
+  async claim(kinds?: JobKind[]): Promise<ClaimedJob | null> {
+    const json = (await (await this.request('POST', '/worker/claim', { kinds })).json()) as {
       job: ClaimedJob | null;
     };
     return json.job;
@@ -114,10 +155,86 @@ export class ServerApi {
   async progress(
     id: number,
     input: { stage: Stage; progress: number | null; message: string | null },
-  ): Promise<{ cancel: boolean }> {
+  ): Promise<{ cancel: boolean; pause?: boolean }> {
     return (await (await this.request('POST', `/worker/jobs/${id}/progress`, input)).json()) as {
       cancel: boolean;
+      pause?: boolean;
     };
+  }
+
+  // ---------------------------------------------------------------- WP17: TTS jobs
+
+  /** The chapters still to read. */
+  async script(id: number): Promise<{ chapters: ScriptChapter[] }> {
+    return (await (await this.request('GET', `/worker/jobs/${id}/script`)).json()) as {
+      chapters: ScriptChapter[];
+    };
+  }
+
+  /** A finished chapter: its FLAC (streamed from disk), then its timings. */
+  async uploadChapter(id: number, idx: number, file: string, signal?: AbortSignal): Promise<void> {
+    const size = fs.statSync(file).size;
+    const res = await this.fetchImpl(`${this.base}/worker/jobs/${id}/chapters/${idx}`, {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${this.token}`,
+        'Content-Type': 'audio/flac',
+        'Content-Length': String(size),
+      },
+      body: Readable.toWeb(fs.createReadStream(file)) as unknown as BodyInit,
+      // Node's fetch needs this for a streamed body.
+      duplex: 'half',
+      signal,
+    } as RequestInit);
+    if (!res.ok) await this.raise(res, `Upload of chapter ${idx + 1}`);
+  }
+
+  async finishChapter(
+    id: number,
+    idx: number,
+    meta: { durationMs: number; cues: number[][]; spoken: string[] },
+  ): Promise<{ state: string; chaptersDone: number }> {
+    return (await (
+      await this.request('POST', `/worker/jobs/${id}/chapters/${idx}/done`, meta)
+    ).json()) as { state: string; chaptersDone: number };
+  }
+
+  /** Paused between chapters: the job goes back to the queue. */
+  async release(id: number): Promise<string> {
+    return (
+      (await (await this.request('POST', `/worker/jobs/${id}/release`, {})).json()) as {
+        state: string;
+      }
+    ).state;
+  }
+
+  async models(): Promise<{ models: ModelEntry[]; removed: ModelEntry[] }> {
+    return (await (await this.request('GET', '/worker/models')).json()) as {
+      models: ModelEntry[];
+      removed: ModelEntry[];
+    };
+  }
+
+  async capabilities(input: {
+    source: string;
+    revision: string;
+    description: boolean;
+    clip: boolean;
+  }): Promise<void> {
+    await this.request('POST', '/worker/models/capabilities', input);
+  }
+
+  private async raise(res: Response, what: string): Promise<never> {
+    let message = `${what} failed: HTTP ${res.status}`;
+    let code = 'http_error';
+    try {
+      const json = (await res.json()) as { error?: { code?: string; message?: string } };
+      if (json.error?.message) message = json.error.message;
+      if (json.error?.code) code = json.error.code;
+    } catch {
+      // Not JSON.
+    }
+    throw new ServerError(res.status, code, message);
   }
 
   async fail(id: number, input: { error: string; logTail: string | null }): Promise<string> {
@@ -147,7 +264,7 @@ export class ServerApi {
    */
   async download(
     id: number,
-    which: 'epub' | 'audio',
+    which: 'epub' | 'audio' | 'voice',
     dest: string,
     onBytes: (received: number, total: number | null) => void,
     signal?: AbortSignal,

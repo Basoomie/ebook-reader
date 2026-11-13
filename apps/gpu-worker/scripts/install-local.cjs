@@ -3,6 +3,7 @@
  *   app\*.js              the worker (replaced on every install)
  *   config.example.json   the settings with their defaults (replaced)
  *   start-hidden.vbs      starts the worker without a window (for the sign-in task)
+ *   app\tts\              the TTS program's build folder (WP17; `main.js build-tts`), replaced
  *   config.json           only created when missing (from the example); never overwritten
  */
 const fs = require('fs');
@@ -24,6 +25,13 @@ for (const name of fs.readdirSync(dist)) {
   if (name.endsWith('.js')) fs.copyFileSync(path.join(dist, name), path.join(app, name));
 }
 fs.writeFileSync(path.join(app, 'package.json'), '{ "type": "commonjs" }\n');
+// WP17: the TTS program's build folder (Dockerfile, runner, kana conversion), for build-tts.
+const ttsTarget = path.join(app, 'tts');
+fs.rmSync(ttsTarget, { recursive: true, force: true });
+fs.mkdirSync(ttsTarget);
+for (const name of ['Dockerfile', 'ttsu_tts.py', 'kana.py']) {
+  fs.copyFileSync(path.join(here, 'tts', name), path.join(ttsTarget, name));
+}
 fs.copyFileSync(path.join(here, 'config.example.json'), path.join(target, 'config.example.json'));
 fs.copyFileSync(path.join(here, 'start-hidden.vbs'), path.join(target, 'start-hidden.vbs'));
 const config = path.join(target, 'config.json');
