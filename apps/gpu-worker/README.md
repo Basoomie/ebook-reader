@@ -1,6 +1,11 @@
-# ッツ Reader GPU worker (WP16)
+# ッツ Reader GPU worker (WP16, WP17)
 
-A small program for the PC with the GPU. It asks the reader's server for jobs ("Make subtitles on the PC" on a book's page), downloads the book's EPUB and its linked audio file into a temporary folder, runs SubPlz in Docker Desktop with the GPU, uploads the `.srt`, and deletes the temporary folder. The server saves the subtitles in `japanese-srt/_generated/` and links them to the book.
+A small program for the PC with the GPU. It asks the reader's server for jobs and runs them in Docker Desktop with the GPU:
+
+- **Make subtitles on the PC** (WP16): downloads the book's EPUB and its linked audio file into a temporary folder, runs SubPlz, uploads the `.srt`, and deletes the temporary folder. The server saves the subtitles in `japanese-srt/_generated/` and links them to the book.
+- **Make an audiobook on the PC** (WP17), its **Preview**, and **Describe a voice**: runs the TTS program (Irodori-TTS, see [TTS program](#tts-program-wp17)) on the book's text, which the server sends chapter by chapter. Each finished chapter is uploaded at once; the server puts the book together (an `.m4b` with one chapter per book chapter and an `.srt` with the exact timings) in `japanese-generated/<Author>/<Title>/` and links both to the book.
+
+The worker only asks for the kinds of job whose program is on this PC: without the TTS program it still makes subtitles, and the other way round.
 
 SubPlz runs like a manual run:
 
@@ -48,29 +53,57 @@ The worker works in whichever Windows account you are signed in to. Docker Deskt
 
 If the worker can't reach the NAS while NordVPN is connected, turn on NordVPN's setting that allows the local network (LAN discovery).
 
+## TTS program (WP17)
+
+Audiobooks are read by the TTS program, an image built on this PC from `app\tts\` (Irodori-TTS pinned to commit `3822056`, PyTorch 2.10 with CUDA 12.8, SudachiPy for kanji readings). It runs like this:
+
+```
+docker run --rm --gpus all --name ttsu-tts-<job> -v C:\ttsu-worker\work\job-<job>:/work -v C:\Data\LLM\Models\ttsu-reader-tts:/models -e HF_HOME=/models/.shared -e HF_HUB_DISABLE_SYMLINKS=1 ttsu-irodori:1 run --job /work/job.json
+```
+
+Set up, after the steps above:
+
+8. **Build the TTS program** (in **each** Windows account, because Docker Desktop keeps images per account; about 10 minutes and 9.4 GB the first time):
+   ```
+   node C:\ttsu-worker\app\main.js build-tts
+   ```
+   Then `node C:\ttsu-worker\app\main.js check` should also say `OK  TTS program on the PC`, `OK  GPU visible to the TTS program` and `OK  Models folder`.
+9. **Nothing else.** The models folder `C:\Data\LLM\Models\ttsu-reader-tts` is made by the worker and shared by every Windows account (it inherits the "Authenticated Users: Modify" permission of `C:\Data\LLM\Models`). Each model is downloaded once, the first time a book, preview or described voice uses it: `<owner>--<name>/<version>/` per model (Irodori v4.1 Small about 2.9 GB), plus `.shared` (about 0.5 GB of parts every model uses). A model removed in **Settings > Audiobooks > Models on the PC** has its folder deleted by the worker.
+
+After a worker update that changes `tts\` (the image tag in `TTS_IMAGE` changes, e.g. `ttsu-irodori:2`), run step 8 again in each account; until then `check` and Settings say the TTS program is missing, and subtitle jobs keep working.
+
+Speed on the RTX 4070 (measured): Irodori v4.1 Small reads about 7 times faster than real time, so a 10-hour audiobook takes about an hour and a half; the first chapter of a job waits 1–2 minutes while the model loads. The desktop's other programs share the GPU's memory; a model call that runs out of memory is retried in smaller batches (`ttsBatchSize`).
+
 ## Using it
 
-- Use **Settings > Audiobooks > Subtitles made on the PC** in the reader to see whether the worker is online, any problem it reports (for example "Docker Desktop is not running"), and the waiting and running jobs. The **Pause** switch is also there. A paused worker takes no new job; a running job finishes unless you stop it.
-- Jobs wait on the server while the PC is off. If the PC goes off in the middle of a job, the job goes back to the queue after two minutes and is tried again (up to 3 times).
+- Use **Settings > Audiobooks > Subtitles made on the PC** in the reader to see whether the worker is online, any problem it reports (for example "Docker Desktop is not running"), and the waiting and running jobs. The **Pause** switch is also there. A paused worker takes no new job; a running subtitle job finishes unless you stop it, and an audiobook stops after its current chapter and continues later with the next one.
+- Jobs wait on the server while the PC is off. If the PC goes off in the middle of a job, the job goes back to the queue after two minutes and is tried again (up to 3 times); an audiobook keeps the chapters it finished, and going back to the queue after a new chapter doesn't count as a try.
+- **Voices** (Settings > Audiobooks > Voices) and **Models on the PC** are stored on the server. Your own recording needs the confirmation that it is your voice or its owner agreed (the models' terms forbid copying a voice without consent).
 - The log is `C:\ttsu-worker\logs\worker.log`.
 - The first job downloads SubPlz's model into the cache folder, so it takes longer.
 
 ## Settings (`config.json`)
 
-| Key           | Default                            | Meaning                                                    |
-| ------------- | ---------------------------------- | ---------------------------------------------------------- |
-| serverUrl     | (required)                         | The storage server, e.g. `http://192.168.1.5:3081`         |
-| token         | (required)                         | The worker token from step 4                               |
-| cacheDir      | `C:\Data\Japanese\Books\SyncCache` | SubPlz's model cache, mounted at `/config`                 |
-| workDir       | `C:\ttsu-worker\work`              | Temporary job folders; plain ASCII, no spaces              |
-| logDir        | `C:\ttsu-worker\logs`              | `worker.log`, rotated to `worker.log.1`                    |
-| image         | the pinned digest above            | The SubPlz image                                           |
-| maxRunHours   | 8                                  | SubPlz is stopped after this long                          |
-| minFreeGB     | 5                                  | Free space kept on the work folder's drive besides the job |
-| logMaxMB      | 5                                  | Log size before it is rotated                              |
-| reportSeconds | 10                                 | How often a running job reports to the server              |
+| Key                  | Default                              | Meaning                                                          |
+| -------------------- | ------------------------------------ | ---------------------------------------------------------------- |
+| serverUrl            | (required)                           | The storage server, e.g. `http://192.168.1.5:3081`               |
+| token                | (required)                           | The worker token from step 4                                     |
+| cacheDir             | `C:\Data\Japanese\Books\SyncCache`   | SubPlz's model cache, mounted at `/config`                       |
+| workDir              | `C:\ttsu-worker\work`                | Temporary job folders; plain ASCII, no spaces                    |
+| logDir               | `C:\ttsu-worker\logs`                | `worker.log`, rotated to `worker.log.1`                          |
+| image                | the pinned digest above              | The SubPlz image                                                 |
+| maxRunHours          | 8                                    | SubPlz is stopped after this long                                |
+| minFreeGB            | 5                                    | Free space kept on the work folder's drive besides the job       |
+| logMaxMB             | 5                                    | Log size before it is rotated                                    |
+| reportSeconds        | 10                                   | How often a running job reports to the server                    |
+| ttsImage             | `ttsu-irodori:1`                     | The TTS program's image (built by `build-tts`)                   |
+| ttsModelsDir         | `C:\Data\LLM\Models\ttsu-reader-tts` | TTS models, shared by every Windows account                      |
+| ttsBatchSize         | 8                                    | Sentences per model call (more is faster, needs more GPU memory) |
+| ttsChapterMaxMinutes | 120                                  | A TTS run that shows no progress for this long is stopped        |
+| ttsPrecision         | `bf16`                               | Model precision on the GPU (`bf16` or `fp32`)                    |
 
 ## Development
 
 - `npx -y pnpm@9.15.9 --filter ttsu-gpu-worker build` compiles `src/` to `dist/` (Node 22 built-ins only, no dependencies).
-- The tests are in the storage server, because they run the worker against a real server: `apps/storage-server/tests/wp16-worker.test.ts`. They use a fake `docker` (`tests/fixtures/wp16/fake-docker.cjs`).
+- The tests are in the storage server, because they run the worker against a real server: `apps/storage-server/tests/wp16-worker.test.ts` and `wp17-worker.test.ts`. They use a fake `docker` (`tests/fixtures/wp16/fake-docker.cjs`, `tests/fixtures/wp17/fake-tts-docker.cjs`).
+- `tts/`: the TTS program (`Dockerfile`, `ttsu_tts.py`, `kana.py`). `ttsu_tts.py sample --spec` made the model-choice samples (step A); `run --job` is what the worker runs.
