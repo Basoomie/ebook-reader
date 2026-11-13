@@ -16,6 +16,15 @@ import type { SnapshotTime } from './config';
 export const SNAPSHOT_DIRNAME = 'snapshots';
 /** ttsu-YYYYMMDD-HHMMSSZ.db, timestamp in UTC. Pruning only ever touches names like this. */
 export const SNAPSHOT_PATTERN = /^ttsu-(\d{8})-(\d{6})Z\.db$/;
+/**
+ * WP20a: cleanup.db gets its own nightly snapshots in the same folder,
+ * cleanup-YYYYMMDD-HHMMSSZ.db, pruned separately (same keep count).
+ */
+export type SnapshotPrefix = 'ttsu' | 'cleanup';
+
+function patternFor(prefix: SnapshotPrefix): RegExp {
+  return prefix === 'ttsu' ? SNAPSHOT_PATTERN : /^cleanup-(\d{8})-(\d{6})Z\.db$/;
+}
 /** A nightly snapshot older than this means a scheduled run was missed. */
 const NIGHTLY_MS = 24 * 60 * 60 * 1000;
 
@@ -23,15 +32,15 @@ export function snapshotDir(dbDir: string): string {
   return path.join(dbDir, SNAPSHOT_DIRNAME);
 }
 
-export function snapshotFilename(date: Date): string {
+export function snapshotFilename(date: Date, prefix: SnapshotPrefix = 'ttsu'): string {
   const iso = date.toISOString(); // 2026-11-08T03:00:00.000Z
   const day = iso.slice(0, 10).replace(/-/g, '');
   const time = iso.slice(11, 19).replace(/:/g, '');
-  return `ttsu-${day}-${time}Z.db`;
+  return `${prefix}-${day}-${time}Z.db`;
 }
 
-function parseSnapshotDate(name: string): Date | null {
-  const m = SNAPSHOT_PATTERN.exec(name);
+function parseSnapshotDate(name: string, prefix: SnapshotPrefix): Date | null {
+  const m = patternFor(prefix).exec(name);
   if (!m) return null;
   const [d, t] = [m[1], m[2]];
   const iso = `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}T${t.slice(0, 2)}:${t.slice(2, 4)}:${t.slice(4, 6)}Z`;
@@ -40,7 +49,10 @@ function parseSnapshotDate(name: string): Date | null {
 }
 
 /** Snapshot files in `dir`, newest first. Ignores anything not named like a snapshot. */
-export async function listSnapshots(dir: string): Promise<{ name: string; date: Date }[]> {
+export async function listSnapshots(
+  dir: string,
+  prefix: SnapshotPrefix = 'ttsu',
+): Promise<{ name: string; date: Date }[]> {
   let names: string[];
   try {
     names = await fs.readdir(dir);
@@ -49,14 +61,18 @@ export async function listSnapshots(dir: string): Promise<{ name: string; date: 
     throw err;
   }
   return names
-    .map((name) => ({ name, date: parseSnapshotDate(name) }))
+    .map((name) => ({ name, date: parseSnapshotDate(name, prefix) }))
     .filter((s): s is { name: string; date: Date } => s.date !== null)
     .sort((a, b) => b.date.getTime() - a.date.getTime());
 }
 
 /** Deletes all but the newest `keep` snapshots. Returns the deleted names. */
-export async function pruneSnapshots(dir: string, keep: number): Promise<string[]> {
-  const snapshots = await listSnapshots(dir);
+export async function pruneSnapshots(
+  dir: string,
+  keep: number,
+  prefix: SnapshotPrefix = 'ttsu',
+): Promise<string[]> {
+  const snapshots = await listSnapshots(dir, prefix);
   const old = snapshots.slice(Math.max(1, keep));
   for (const s of old) await fs.unlink(path.join(dir, s.name));
   return old.map((s) => s.name);
@@ -96,10 +112,11 @@ export async function takeSnapshot(
   dir: string,
   keep: number,
   now = new Date(),
+  prefix: SnapshotPrefix = 'ttsu',
 ): Promise<string> {
-  const finalPath = path.join(dir, snapshotFilename(now));
+  const finalPath = path.join(dir, snapshotFilename(now, prefix));
   await writeVerifiedCopy(db, finalPath);
-  await pruneSnapshots(dir, keep);
+  await pruneSnapshots(dir, keep, prefix);
   return finalPath;
 }
 
@@ -115,8 +132,12 @@ export function nextRunAt(time: SnapshotTime, now: Date): Date {
 }
 
 /** True when there is no snapshot from the last 24 hours (a nightly run was missed). */
-export async function isSnapshotDue(dir: string, now = new Date()): Promise<boolean> {
-  const [newest] = await listSnapshots(dir);
+export async function isSnapshotDue(
+  dir: string,
+  now = new Date(),
+  prefix: SnapshotPrefix = 'ttsu',
+): Promise<boolean> {
+  const [newest] = await listSnapshots(dir, prefix);
   return !newest || now.getTime() - newest.date.getTime() >= NIGHTLY_MS;
 }
 
@@ -131,6 +152,8 @@ export interface SchedulerOptions {
   dir: string;
   time: SnapshotTime;
   keep: number;
+  /** Which database this is (file name prefix); default ttsu. */
+  prefix?: SnapshotPrefix;
   log?: (message: string) => void;
   logError?: (message: string, err: unknown) => void;
 }
@@ -140,6 +163,7 @@ export function scheduleSnapshots({
   dir,
   time,
   keep,
+  prefix = 'ttsu',
   log = console.log,
   logError = console.error,
 }: SchedulerOptions): SnapshotScheduler {
@@ -148,7 +172,7 @@ export function scheduleSnapshots({
 
   const run = async (reason: string) => {
     try {
-      const file = await takeSnapshot(db, dir, keep);
+      const file = await takeSnapshot(db, dir, keep, new Date(), prefix);
       log(`Snapshot (${reason}): ${file}`);
     } catch (err) {
       logError(`Snapshot (${reason}) failed:`, err);
@@ -167,7 +191,7 @@ export function scheduleSnapshots({
 
   const ready = (async () => {
     try {
-      if (await isSnapshotDue(dir)) await run('catch-up');
+      if (await isSnapshotDue(dir, new Date(), prefix)) await run('catch-up');
     } catch (err) {
       logError('Snapshot catch-up check failed:', err);
     }

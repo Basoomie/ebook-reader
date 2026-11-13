@@ -27,6 +27,8 @@
  *   docker exec ttsu-storage node dist/cli.js audio scan [<library-id>]
  *   docker exec ttsu-storage node dist/cli.js audio match <book-id>
  *   docker exec ttsu-storage node dist/cli.js audio links
+ *   docker exec ttsu-storage node dist/cli.js token cleanup "cleanup sidecar"
+ *   docker exec ttsu-storage node dist/cli.js cleanup status
  *
  * Uses DB_DIR (default /db) and DATA_DIR (default /data) like the server, and
  * PAIR_CODE_MINUTES for how long a pairing code stays valid.
@@ -77,11 +79,16 @@ import {
 } from './audio/audio-index';
 import { rankEntries } from './audio/match';
 import { listLinks, resolveLink } from './audio/audio-links';
+import { createApplyToken, listApplyTokens, revokeApplyToken } from './cleanup/apply-tokens';
+import { initCleanupDatabase } from './cleanup/cleanup-db';
+import { listStages } from './cleanup/stages';
 
 const USAGE = `Usage:
   cli token pair <label> [--user <name>]     Make a one-time code a device trades for its own token
   cli token create <label> [--user <name>]   Create a token (shown once)
   cli token worker <label> [--user <name>]   Create a GPU worker token (WP16; only the worker's routes)
+  cli token cleanup <label>                  Create the library cleanup sidecar's token (WP20a; only
+                                             /api/v1/cleanup-apply/*, kept in cleanup.db)
   cli token list                             List tokens
   cli token revoke <token-id>                Revoke a token
   cli library list                           List discovered Calibre libraries
@@ -114,7 +121,9 @@ const USAGE = `Usage:
   cli audio status                           Audiobook and subtitle index per library
   cli audio scan [<library-id>]              Scan the audiobook and subtitle folders again (in the server)
   cli audio match <book-id> [--limit <n>]    The suggestions the picker would show for a book
-  cli audio links                            The audiobooks linked to books, and whether they are still there`;
+  cli audio links                            The audiobooks linked to books, and whether they are still there
+  cli cleanup status                         The library cleanup's stages, batches and sidecar tokens
+  cli cleanup revoke <token-id>              Revoke a cleanup sidecar token`;
 
 function fail(message: string): never {
   console.error(message);
@@ -736,6 +745,72 @@ function audioCommand(db: Database.Database, command: string, rest: string[], us
   }
 }
 
+function cleanupCommand(command: string, rest: string[], env: Record<string, string | undefined>) {
+  const state = initCleanupDatabase(path.resolve(env.DB_DIR ?? '/db'));
+  if (!state.ok) fail(`cleanup.db unavailable: ${state.error}`);
+  const db = state.db;
+  try {
+    switch (command) {
+      case 'token': {
+        const label = rest.join(' ').trim();
+        if (!label) fail('token cleanup needs a label, e.g. token cleanup "cleanup sidecar"');
+        const { token, record } = createApplyToken(db, label);
+        console.log(`Created library cleanup sidecar token "${record.label}" (id ${record.id}).`);
+        console.log(
+          'It works only for the apply sidecar (/api/v1/cleanup-apply/*), not as a device.',
+        );
+        console.log("Copy it now into the sidecar's CLEANUP_TOKEN; it cannot be shown again:");
+        console.log(token);
+        break;
+      }
+      case 'revoke': {
+        const [id] = rest;
+        if (!id) fail('cleanup revoke needs a token id (see cleanup status)');
+        console.log(revokeApplyToken(db, id) ? `Revoked ${id}.` : `No active cleanup token ${id}.`);
+        break;
+      }
+      case 'status': {
+        for (const s of listStages(db)) {
+          console.log(
+            `stage ${s.stage} ${s.name}: mode=${s.mode} state=${s.state}` +
+              (s.pauseReason ? ` paused (${s.pauseReason}): ${s.pauseDetail ?? ''}` : ''),
+          );
+        }
+        const batches = db
+          .prepare(
+            'SELECT id, kind, state, item_count, created_at FROM batches ORDER BY created_at DESC LIMIT 10',
+          )
+          .all() as {
+          id: string;
+          kind: string;
+          state: string;
+          item_count: number;
+          created_at: number;
+        }[];
+        console.log(batches.length ? 'Latest batches:' : 'No batches.');
+        for (const b of batches) {
+          console.log(
+            `  ${b.id} ${b.kind} ${b.state} ${b.item_count} items ${formatDate(b.created_at)}`,
+          );
+        }
+        const tokens = listApplyTokens(db);
+        console.log(tokens.length ? 'Sidecar tokens:' : 'No sidecar tokens.');
+        for (const t of tokens) {
+          console.log(
+            `  ${t.id} label="${t.label}" created=${formatDate(t.createdAt)} last-used=${formatDate(t.lastUsedAt)}` +
+              (t.revokedAt ? ` revoked=${formatDate(t.revokedAt)}` : ''),
+          );
+        }
+        break;
+      }
+      default:
+        fail(USAGE);
+    }
+  } finally {
+    db.close();
+  }
+}
+
 export function main(argv: string[], env: Record<string, string | undefined>): void {
   const args = [...argv];
   let userName: string | undefined;
@@ -758,9 +833,15 @@ export function main(argv: string[], env: Record<string, string | undefined>): v
     'uploads',
     'fonts',
     'audio',
+    'cleanup',
   ];
   if (!groups.includes(group) || !command) {
     fail(USAGE);
+  }
+  // The cleanup sidecar's tokens and the cleanup's state live in cleanup.db (WP20a).
+  if (group === 'cleanup' || (group === 'token' && command === 'cleanup')) {
+    cleanupCommand(group === 'token' ? 'token' : command, rest, env);
+    return;
   }
 
   const state = initDatabase(

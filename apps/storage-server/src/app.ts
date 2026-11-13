@@ -6,6 +6,7 @@ import type { ServerConfig } from './config';
 import type { DatabaseState } from './db/database';
 import type { RecentLogs } from './logs/recent-logs';
 import type { AudioOptions } from './audio/routes';
+import type { CleanupOptions } from './cleanup/routes';
 
 export interface AppOptions {
   config: ServerConfig;
@@ -18,6 +19,8 @@ export interface AppOptions {
   logs?: RecentLogs;
   /** Audiobook index and streaming (WP15). */
   audio?: AudioOptions;
+  /** The Calibre library cleanup (WP20a). */
+  cleanup?: CleanupOptions;
 }
 
 export function createApp({
@@ -28,6 +31,7 @@ export function createApp({
   seedDefaults,
   logs,
   audio,
+  cleanup,
 }: AppOptions): Express {
   const app = express();
 
@@ -61,6 +65,7 @@ export function createApp({
       seedDefaults,
       logs,
       audio,
+      cleanup,
     }),
   );
 

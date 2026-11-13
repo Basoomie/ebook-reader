@@ -33,6 +33,11 @@ import {
 } from '../audio/worker-routes';
 import { createTtsRouter, createTtsWorkerRouter, TTS_RAW_PATHS } from '../audio/tts-routes';
 import { createAttachmentRouter, type AttachmentOptions } from '../attachments/routes';
+import {
+  type CleanupOptions,
+  createCleanupApplyRouter,
+  createCleanupRouter,
+} from '../cleanup/routes';
 
 export interface PairingOptions {
   /** Failed pairing attempts allowed per minute (all clients together). */
@@ -81,6 +86,8 @@ export interface ApiOptions {
   audio?: AudioOptions;
   /** Book attachments (WP15c): stored in DATA_DIR/.uploads/attachments. Without it they are off. */
   attachments?: AttachmentOptions;
+  /** The Calibre library cleanup (WP20a). Without it its routes answer 503. */
+  cleanup?: CleanupOptions;
 }
 
 export interface FontOptions {
@@ -109,6 +116,7 @@ export function createApiRouter({
   logs = serverLogs,
   audio = { service: null },
   attachments,
+  cleanup = { service: null, error: 'not configured' },
 }: ApiOptions): Router {
   const router = express.Router();
   // Pushes can carry many records; everything else keeps the small default limit.
@@ -170,6 +178,9 @@ export function createApiRouter({
     // WP17's worker routes first (the WP16 router answers 404 for any other /worker path).
     router.use(createTtsWorkerRouter(db, audio));
     router.use(createWorkerRouter(db, audio, catalog));
+    // The library cleanup's apply sidecar (WP20a): its own token (cleanup.db), only
+    // /cleanup-apply/*.
+    router.use(createCleanupApplyRouter(cleanup));
 
     router.use(requireUser(db));
 
@@ -188,6 +199,8 @@ export function createApiRouter({
     router.use(createSubtitleJobRouter(db, audio));
     router.use(createTtsRouter(db, audio));
     router.use(createAudioClipRouter(db, audio));
+    // The /cleanup page (WP20a).
+    router.use(createCleanupRouter(cleanup));
     // Uploads (WP7b): a separate source adapter, mounted only when it is on.
     if (catalog.uploads) {
       router.use(

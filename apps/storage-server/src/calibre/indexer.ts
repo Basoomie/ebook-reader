@@ -49,6 +49,12 @@ export interface IndexerOptions {
   thumbnails?: ThumbnailService | null;
   /** Background character counts (WP3b); woken after every poll like the thumbnails. */
   counts?: { wake(): void } | null;
+  /**
+   * WP20a: true while the library cleanup's sidecar is applying a batch to this library.
+   * The indexer then leaves the library alone (no snapshot, no ingest) until the batch is
+   * done, so the removed copies' missing flags and the reader-side handoffs land together.
+   */
+  holdIngest?: (libraryId: string) => boolean;
   log?: (message: string) => void;
   logError?: (message: string, err?: unknown) => void;
 }
@@ -206,6 +212,14 @@ export class CalibreIndexer {
 
       const unchanged = state.sourceMtimeMs === stat.mtimeMs && state.sourceSize === stat.size;
       if (unchanged && state.reindexRequestedAt === null) return;
+      if (this.opts.holdIngest?.(lib.id)) {
+        this.noteProblem(
+          lib.id,
+          `${label}: waiting for the library cleanup's batch to finish`,
+          false,
+        );
+        return;
+      }
 
       const settled = Date.now() - stat.mtimeMs >= this.config.settleSeconds * 1000;
       if (!settled || (await hasJournal(source))) {

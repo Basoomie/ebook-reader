@@ -22,6 +22,9 @@ import { TtsModelService } from './audio/tts-models';
 import { countImportOptions } from './counts/counter-bundle';
 import { VoiceService } from './voices/voice-service';
 import { VoiceStore } from './voices/voice-store';
+import { initCleanupDatabase } from './cleanup/cleanup-db';
+import { CleanupService } from './cleanup/cleanup-service';
+import type { CleanupOptions } from './cleanup/routes';
 
 // Every console line is also kept (secrets removed) for the bug report (WP18).
 captureConsole(serverLogs);
@@ -49,7 +52,14 @@ for (const warning of warnings) console.warn(`Warning: ${warning}`);
 const database = initDatabase(config.dbDir, config.dataRoot);
 if (!database.ok) console.error(`Error: database unavailable: ${database.error}`);
 
+// The Calibre library cleanup (WP20a): its own database beside ttsu.db. Optional: when it
+// can't open, only the cleanup routes are off.
+const cleanupDb = database.ok ? initCleanupDatabase(config.dbDir) : null;
+if (cleanupDb && !cleanupDb.ok) console.error(`Error: library cleanup is off: ${cleanupDb.error}`);
+const cleanupOptions: CleanupOptions = { service: null, error: 'the database is unavailable' };
+
 let snapshots: SnapshotScheduler | null = null;
+let cleanupSnapshots: SnapshotScheduler | null = null;
 if (database.ok) {
   try {
     snapshots = scheduleSnapshots({
@@ -60,6 +70,19 @@ if (database.ok) {
     });
   } catch (err) {
     console.error('Error: could not schedule database snapshots:', err);
+  }
+  if (cleanupDb?.ok) {
+    try {
+      cleanupSnapshots = scheduleSnapshots({
+        db: cleanupDb.db,
+        dir: snapshotDir(config.dbDir),
+        time: config.snapshotTime,
+        keep: config.snapshotKeep,
+        prefix: 'cleanup',
+      });
+    } catch (err) {
+      console.error('Error: could not schedule cleanup.db snapshots:', err);
+    }
   }
 }
 
@@ -73,6 +96,24 @@ const catalog: CatalogOptions = {
   counts: null,
   indexer: { enabled: false, error: 'CALIBRE_DIR is not set' },
 };
+let cleanup: CleanupService | null = null;
+if (database.ok && cleanupDb?.ok) {
+  try {
+    cleanup = new CleanupService({
+      cleanup: cleanupDb.db,
+      main: database.db,
+      calibreDir: config.calibre.dir,
+      cacheDir: config.calibre.cacheDir,
+      indexerEnabled: () => catalog.indexer.enabled,
+    });
+    cleanupOptions.service = cleanup;
+  } catch (err) {
+    console.error('Error: library cleanup is off:', err);
+    cleanupOptions.error = (err as Error).message;
+  }
+} else if (cleanupDb && !cleanupDb.ok) {
+  cleanupOptions.error = cleanupDb.error;
+}
 // Uploads (WP7b): files in DATA_DIR/.uploads, books in an indexed library.
 let uploadStore: UploadStore | null = null;
 if (database.ok && config.calibre.dir) {
@@ -119,6 +160,7 @@ if (database.ok && config.calibre.dir) {
       dataRoot: config.dataRoot,
       thumbnails,
       counts,
+      holdIngest: (libraryId) => cleanup?.holdsIngest(libraryId) ?? false,
     });
     catalog.indexer = indexer.status;
     catalog.thumbnails = thumbnails;
@@ -283,7 +325,9 @@ const app = createApp({
       percent: config.audio.copyHintPercent,
     },
   },
+  cleanup: cleanupOptions,
 });
+cleanup?.start();
 
 app.listen(config.port, () => {
   console.log(`ttsu storage server running on port ${config.port}`);
@@ -304,6 +348,8 @@ app.listen(config.port, () => {
 function shutdown(signal: string): void {
   console.log(`${signal} received, shutting down`);
   snapshots?.stop();
+  cleanupSnapshots?.stop();
+  void cleanup?.stop();
   void indexer?.stop();
   void thumbnails?.stop();
   void counts?.stop();
@@ -316,6 +362,13 @@ function shutdown(signal: string): void {
       database.db.close();
     } catch (err) {
       console.error('Error closing the database:', err);
+    }
+  }
+  if (cleanupDb?.ok) {
+    try {
+      cleanupDb.db.close();
+    } catch (err) {
+      console.error('Error closing cleanup.db:', err);
     }
   }
   process.exit(0);
