@@ -68,9 +68,14 @@ export function stage1Lines(stage: CleanupStage): string[] {
           `(the copy kept: by your tags ${n(p.keptByTags)}, the older record ${n(p.keptByDate)}).`
       );
       const extras: string[] = [];
-      if (Number(p.extraFormat) > 0) extras.push(`${n(p.extraFormat)} also have another format`);
+      const has = (count: unknown) => (Number(count) === 1 ? 'has' : 'have');
+      if (Number(p.extraFormat) > 0) {
+        extras.push(`${n(p.extraFormat)} also ${has(p.extraFormat)} another format`);
+      }
       if (Number(p.removedWithData) > 0) {
-        extras.push(`${n(p.removedWithData)} have reading data, which goes to the kept copy`);
+        extras.push(
+          `${n(p.removedWithData)} ${has(p.removedWithData)} reading data, which goes to the kept copy`
+        );
       }
       if (Number(p.bothWithData) > 0) {
         extras.push(

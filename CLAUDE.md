@@ -13,9 +13,11 @@ If code and docs disagree, or a task needs a decision the docs don't cover, STOP
 
 ## Current phase
 
-**Phase 5** (Phases 0-4 and WP19 are done and merged). Decisions: `docs/design/decisions.md`, "Phase 5 decisions". Agreed order, one work package at a time: **WP15** audio linking → **WP15f** multi-file audiobooks (merge button, per-file picker; added 2026-11-12) → **WP14** "Enrich last card" → **WP16** GPU worker and job queue → **WP17** generated audiobooks.
+**Phase 6: the Calibre library cleanup** (approved by the user 2026-11-13; Phases 0-5 are done and deployed). Design: `docs/design/library-cleanup-plan.md` (the agreed plan), `library-cleanup.md` (findings), `reference-sample.md` (measurements), `file-inventory.md` (NAS paths and backups), `known-bugs.md`. Decisions: `docs/design/decisions.md`, "Phase 6 decisions". Work packages in plan order, one at a time (`dependency-map.md`): **WP20a** groundwork + stage 0 (safety) + stage 1 (identical files) → WP20b stage 2 → WP20c stage 3 → WP20d fetch container + stage 4 rules → WP20e AI setup → WP20f stage 5 → WP20g new arrivals.
 
-WP15, WP15f, WP14 and WP16 are done, merged and pushed (WP16 merged 2026-11-12; schema v14). **WP17** is done and merged into `main` locally (2026-11-12, schema v15); not pushed or deployed yet, and the PC's TTS program isn't set up yet (see `apps/gpu-worker/README.md`). That completes the Phase 5 work packages. Deploying needs `ttsu` and `ttsu-storage` rebuilt together (schema v14 → v15) with a rollback copy `snapshots/pre-wp17-v14.db`. Don't start a new phase or work package without the user's approval.
+**WP20a** (branch `wp20a-cleanup-foundation`): `apps/storage-server/src/cleanup/` (cleanup.db beside ttsu.db with its own migrations and nightly snapshot; settings and AES-256-GCM secrets, key in ttsu.db; stage-1 analysis; batches; the reader-side handoff, which swaps two Calibre sources' reader books instead of moving records; Undo), the apply sidecar `apps/cleanup-apply` (container `ttsu-cleanup-apply`, built FROM `lscr.io/linuxserver/calibre` at the calibre container's version; its own tokens `cli token cleanup` reach only `/api/v1/cleanup-apply/*`), and `/cleanup` in the web app (linked only from Settings > Data). Every stage is off by default; the real stage-1 run is switched on by the user from `/cleanup` after deploy. Calibre must be 9.18+ for Undo from Calibre's trash; `#illustrator` is added by the user in the Calibre GUI (calibredb can't create columns through the content server).
+
+Phase 5 (done): WP15, WP15f, WP14, WP16 and WP17 are merged and deployed (schema v15).
 
 WP17 "Make an audiobook on the PC": the book's text comes from the reader's own import (`apps/web/src/lib/server/epub/book-script.ts` in the counter bundle; rebuild with `pnpm build:server-counter`), jobs share the WP16 queue (`apps/storage-server/src/audio/tts-jobs.ts`, `tts-routes.ts`, `tts-models.ts`, `src/voices/`), the PC runs the TTS program (`apps/gpu-worker/tts/`: Irodori-TTS in Docker, image `ttsu-irodori:<n>` built by `main.js build-tts`; models in the shared `C:\Data\LLM\Models\ttsu-reader-tts`). The model is chosen per book (list in Settings > Audiobooks), with a Preview. Results go through `audio-write.ts` into a new folder `japanese-generated/<Author>/<Title>[ (vN)]/` and are linked automatically.
 
@@ -38,7 +40,7 @@ Stop condition: each work package is finished on its own branch, with a summary 
 
 ## Standing rules
 
-- Never write into or near Calibre-managed ebook folders. Calibre libraries are read-only to this app.
+- Never write into or near Calibre-managed ebook folders. Calibre libraries are read-only to this app: the storage server and the web app never write to them. The only writer is the cleanup apply sidecar (`ttsu-cleanup-apply`), only through the running Calibre content server via `calibredb --with-library http://…`, and only for applied cleanup batches (decided by the user for the Phase 6 cleanup, 2026-11-13).
 - Preserve whispersync's match/re-match/reset semantics; do not "improve" them.
 - Keep audio out of the replicator.
 - The app is served over plain http (HTTPS deferred). Feature-detect every secure-context API (service worker, `navigator.storage` persist/estimate, Web Locks, `crypto.randomUUID`, Clipboard API) and degrade gracefully; it must switch on automatically when `isSecureContext` is true.
@@ -52,7 +54,7 @@ Stop condition: each work package is finished on its own branch, with a summary 
 
 ## Repo facts
 
-- pnpm workspace. `apps/web` (SvelteKit 2, Svelte 4, Vite 5) and `apps/storage-server` (Express file server).
+- pnpm workspace. `apps/web` (SvelteKit 2, Svelte 4, Vite 5) and `apps/storage-server` (Express file server), plus two Node programs without dependencies whose tests run in the storage server's suite: `apps/gpu-worker` (the PC) and `apps/cleanup-apply` (the cleanup's apply sidecar; `tests/wp20a-sidecar.test.ts` with a stand-in calibredb).
 - Root scripts: `pnpm dev`, `pnpm build`, `pnpm check` (eslint), `pnpm lint`, `pnpm format`. In `apps/web`: `pnpm check` (svelte-check).
 - Tests: Vitest in both apps (`pnpm test` in `apps/web`, `npm test` in `apps/storage-server`). `pnpm test:parity` in `apps/web` is opt-in and needs the NAS shares.
 - The server counts characters with a bundle of the web app's EPUB import code (`apps/storage-server/vendor/epub-count.cjs`). After changing that code, run `pnpm build:server-counter` in `apps/web` (a test fails otherwise), and bump `EPUB_COUNT_VERSION` in `count-epub.ts` if counts can change.

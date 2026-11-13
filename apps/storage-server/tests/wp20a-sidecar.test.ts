@@ -75,6 +75,36 @@ describe('calibredb arguments', () => {
     ).toBe(false);
     expect(hasMultipleTextColumn(out, 'rating2')).toBe(false);
     expect(firstBlock(out, 'nope')).toBeNull();
+    // calibre 9.18's real output (seen from its content server in the WP20a e2e run).
+    const real = [
+      'illustrator',
+      '',
+      "{'datatype': 'text',",
+      " 'display': {},",
+      " 'editable': True,",
+      " 'is_multiple': True,",
+      " 'label': 'illustrator',",
+      " 'multiple_seps': {'cache_to_list': '|', 'list_to_ui': ', ', 'ui_to_list': ','},",
+      " 'name': 'Illustrator',",
+      " 'normalized': True,",
+      " 'num': 1}",
+      '',
+      '',
+    ].join('\n');
+    expect(hasMultipleTextColumn(real, 'illustrator')).toBe(true);
+    expect(
+      hasMultipleTextColumn(
+        real.replace("'is_multiple': True", "'is_multiple': False"),
+        'illustrator',
+      ),
+    ).toBe(false);
+    expect(
+      hasMultipleTextColumn(
+        real.replace("'datatype': 'text'", "'datatype': 'comments'"),
+        'illustrator',
+      ),
+    ).toBe(false);
+    expect(hasMultipleTextColumn(real, 'illustrators')).toBe(false);
     expect(trashHasBook('[{"book_id": 7, "title": "x"}]', 7)).toBe(true);
     expect(trashHasBook('[{"book_id": 7}]', 8)).toBe(false);
   });

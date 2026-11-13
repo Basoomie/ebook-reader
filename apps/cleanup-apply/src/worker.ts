@@ -221,10 +221,16 @@ export class Worker {
     }
     try {
       const r = await this.calibredb.ok('custom_columns', login);
+      const ok = hasMultipleTextColumn(r.stdout, 'illustrator');
+      const block = firstBlock(r.stdout, 'illustrator');
       add(
         'illustrator_column',
-        hasMultipleTextColumn(r.stdout, 'illustrator'),
-        firstBlock(r.stdout, 'illustrator')
+        ok,
+        ok
+          ? null
+          : block
+            ? `#illustrator is not a multiple-value text column: ${block.replace(/\s+/g, ' ').slice(0, 200)}`
+            : 'Add it in Calibre: Preferences > Add your own columns, lookup name "illustrator", comma separated text'
       );
     } catch (err) {
       add('illustrator_column', false, (err as Error).message);
@@ -529,21 +535,38 @@ export class Worker {
   }
 }
 
-/** `custom_columns --details` lists a multiple-value text column with this label. */
+/**
+ * `custom_columns --details` lists a multiple-value text column with this label.
+ * calibre 9.18 prints the label, then the column's settings as a Python dict
+ * ({'datatype': 'text', 'is_multiple': True, 'label': 'illustrator', ...}); older versions
+ * printed "label (id)" with indented "key: value" lines and is_multiple as a dict.
+ */
 export function hasMultipleTextColumn(output: string, label: string): boolean {
   const block = firstBlock(output, label);
   if (!block) return false;
-  return (
-    /datatype\W+text/i.test(block) &&
-    /is_multiple\W+(\{|true|\[|['"][^'"]+['"]|\S+)/i.test(block) &&
-    !/is_multiple\W+(\{\}|false|none|''|"")/i.test(block)
-  );
+  const text = /['"]?datatype['"]?\s*:\s*['"]?text\b/i.test(block);
+  const multiple =
+    /['"]?is_multiple['"]?\s*:\s*(True\b|true\b|\{\s*['"])/.test(block) &&
+    !/['"]?is_multiple['"]?\s*:\s*(False\b|false\b|None\b|\{\s*\})/.test(block);
+  return text && multiple;
 }
 
-/** The lines describing one column in `custom_columns --details` output. */
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** The part of `custom_columns --details` output that describes one column. */
 export function firstBlock(output: string, label: string): string | null {
+  const name = escapeRegExp(label);
+  // calibre 9.x: a dict per column, with one level of nested dicts.
+  const labelKey = new RegExp(`['"]label['"]\\s*:\\s*['"]${name}['"]`);
+  for (const m of output.matchAll(/\{(?:[^{}]|\{[^{}]*\})*\}/g)) {
+    if (labelKey.test(m[0])) return m[0];
+  }
+  // Older output: "label (id)" followed by indented lines.
   const lines = output.split(/\r?\n/);
-  const start = lines.findIndex((l) => new RegExp(`^${label}\\s*\\(\\d+\\)`).test(l.trim()));
+  const head = new RegExp(`^${name}\\s*\\(\\d+\\)`);
+  const start = lines.findIndex((l) => head.test(l.trim()));
   if (start === -1) return null;
   const out = [lines[start]];
   for (const l of lines.slice(start + 1)) {
