@@ -35,6 +35,8 @@ export interface AudioFolder {
   durationSeconds: number | null;
   seenAt: number;
   missingAt: number | null;
+  /** WP17: found under the library's `<audio folder>-generated/` (a generated audiobook). */
+  generated: boolean;
 }
 
 export interface SubtitleFile {
@@ -50,6 +52,8 @@ export interface SubtitleFile {
   mtimeMs: number;
   seenAt: number;
   missingAt: number | null;
+  /** WP17: next to a generated audiobook in `<audio folder>-generated/`. */
+  generated: boolean;
 }
 
 export type AudioScanStatus = 'idle' | 'scanning' | 'error';
@@ -85,6 +89,7 @@ interface FolderRow {
   duration_seconds: number | null;
   seen_at: number;
   missing_at: number | null;
+  generated: number;
 }
 
 interface SubtitleRow {
@@ -100,6 +105,7 @@ interface SubtitleRow {
   mtime_ms: number;
   seen_at: number;
   missing_at: number | null;
+  generated: number;
 }
 
 function toFolder(r: FolderRow): AudioFolder {
@@ -122,6 +128,7 @@ function toFolder(r: FolderRow): AudioFolder {
     durationSeconds: r.duration_seconds,
     seenAt: r.seen_at,
     missingAt: r.missing_at,
+    generated: r.generated === 1,
   };
 }
 
@@ -139,6 +146,7 @@ function toSubtitle(r: SubtitleRow): SubtitleFile {
     mtimeMs: r.mtime_ms,
     seenAt: r.seen_at,
     missingAt: r.missing_at,
+    generated: r.generated === 1,
   };
 }
 
@@ -241,8 +249,8 @@ export function totalDuration(files: AudioFileEntry[]): number | null {
 
 export type FolderInput = Omit<
   AudioFolder,
-  'id' | 'missingAt' | 'durationSeconds' | 'fileCount' | 'totalBytes'
->;
+  'id' | 'missingAt' | 'durationSeconds' | 'fileCount' | 'totalBytes' | 'generated'
+> & { generated?: boolean };
 
 /**
  * Inserts or updates a folder seen by a scan. Durations already measured for a
@@ -263,9 +271,9 @@ export function upsertAudioFolder(db: Database.Database, input: FolderInput): Au
   db.prepare(
     `INSERT INTO audio_folders (library_id, rel_path, name, parent_name, title_key, loose_key, volume,
        meta_title, meta_series, meta_sequence, asin, files, file_count, total_bytes, duration_seconds,
-       seen_at, missing_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
-     ON CONFLICT (library_id, rel_path) DO UPDATE SET
+       seen_at, missing_at, generated)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
+     ON CONFLICT (library_id, rel_path) DO UPDATE SET generated = excluded.generated,
        name = excluded.name, parent_name = excluded.parent_name, title_key = excluded.title_key,
        loose_key = excluded.loose_key, volume = excluded.volume, meta_title = excluded.meta_title,
        meta_series = excluded.meta_series, meta_sequence = excluded.meta_sequence, asin = excluded.asin,
@@ -288,6 +296,7 @@ export function upsertAudioFolder(db: Database.Database, input: FolderInput): Au
     totalBytes,
     totalDuration(files),
     input.seenAt,
+    input.generated ? 1 : 0,
   );
   return getAudioFolderByPath(db, input.libraryId, input.relPath)!;
 }
@@ -307,14 +316,16 @@ export function foldersNeedingDurations(db: Database.Database, libraryId: string
   );
 }
 
-export type SubtitleInput = Omit<SubtitleFile, 'id' | 'missingAt'>;
+export type SubtitleInput = Omit<SubtitleFile, 'id' | 'missingAt' | 'generated'> & {
+  generated?: boolean;
+};
 
 export function upsertSubtitleFile(db: Database.Database, input: SubtitleInput): void {
   db.prepare(
     `INSERT INTO subtitle_files (library_id, rel_path, name, parent_name, title_key, loose_key, volume,
-       size, mtime_ms, seen_at, missing_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
-     ON CONFLICT (library_id, rel_path) DO UPDATE SET
+       size, mtime_ms, seen_at, missing_at, generated)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
+     ON CONFLICT (library_id, rel_path) DO UPDATE SET generated = excluded.generated,
        name = excluded.name, parent_name = excluded.parent_name, title_key = excluded.title_key,
        loose_key = excluded.loose_key, volume = excluded.volume, size = excluded.size,
        mtime_ms = excluded.mtime_ms, seen_at = excluded.seen_at, missing_at = NULL`,
@@ -329,7 +340,24 @@ export function upsertSubtitleFile(db: Database.Database, input: SubtitleInput):
     input.size,
     input.mtimeMs,
     input.seenAt,
+    input.generated ? 1 : 0,
   );
+}
+
+/** WP17: present rows outside (or inside) the generated folder, for the empty-scan guard. */
+export function countPresentOf(
+  db: Database.Database,
+  table: 'audio_folders' | 'subtitle_files',
+  libraryId: string,
+  generated: boolean,
+): number {
+  return (
+    db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM ${table} WHERE library_id = ? AND missing_at IS NULL AND generated = ?`,
+      )
+      .get(libraryId, generated ? 1 : 0) as { n: number }
+  ).n;
 }
 
 /** Marks rows a finished scan did not see as missing (never deletes them). Returns how many. */

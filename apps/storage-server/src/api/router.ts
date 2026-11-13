@@ -31,6 +31,7 @@ import {
   createWorkerRouter,
   WORKER_RESULT_PATH,
 } from '../audio/worker-routes';
+import { createTtsRouter, createTtsWorkerRouter, TTS_RAW_PATHS } from '../audio/tts-routes';
 import { createAttachmentRouter, type AttachmentOptions } from '../attachments/routes';
 
 export interface PairingOptions {
@@ -122,7 +123,9 @@ export function createApiRouter({
       req.path === '/uploads' ||
       req.path === '/fonts' ||
       ATTACHMENT_PATH.test(req.path) ||
-      WORKER_RESULT_PATH.test(req.path)
+      WORKER_RESULT_PATH.test(req.path) ||
+      // WP17: chapter audio and timings from the GPU worker, voice clip uploads.
+      TTS_RAW_PATHS.some((p) => p.test(req.path))
     ) {
       return next();
     }
@@ -164,6 +167,8 @@ export function createApiRouter({
     // Audio streams: signed URL or token (an <audio> element can't send the token, WP15).
     router.use(audioStreamRoute(db, audio));
     // The GPU worker (WP16): its own token, only /worker/*, only its job's files.
+    // WP17's worker routes first (the WP16 router answers 404 for any other /worker path).
+    router.use(createTtsWorkerRouter(db, audio));
     router.use(createWorkerRouter(db, audio, catalog));
 
     router.use(requireUser(db));
@@ -181,6 +186,7 @@ export function createApiRouter({
     router.use(createAudioLinkRouter(db, audio));
     router.use(createMergeRouter(db, audio));
     router.use(createSubtitleJobRouter(db, audio));
+    router.use(createTtsRouter(db, audio));
     router.use(createAudioClipRouter(db, audio));
     // Uploads (WP7b): a separate source adapter, mounted only when it is on.
     if (catalog.uploads) {

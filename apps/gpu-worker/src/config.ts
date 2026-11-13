@@ -14,6 +14,13 @@ import path from 'path';
 export const PINNED_IMAGE =
   'kanjieater/subplz@sha256:58cddc13c51789d65edb2b81ef47b2dd76613e54f9c4726cc96d94f2aff7b310';
 
+/**
+ * WP17: the TTS program's image, built on this PC from apps/gpu-worker/tts (main.js
+ * build-tts; Irodori-TTS pinned to a commit there). Bump the tag whenever that folder
+ * changes, so every Windows account builds the new one.
+ */
+export const TTS_IMAGE = 'ttsu-irodori:1';
+
 export interface WorkerSettings {
   /** The reader's server (the storage server), e.g. http://192.168.1.5:3081. */
   serverUrl: string;
@@ -40,6 +47,16 @@ export interface WorkerSettings {
   reportSeconds: number;
   /** Server requests that take longer fail (seconds); downloads have no limit. */
   requestTimeoutSeconds: number;
+  /** WP17: the TTS program's image (built by `main.js build-tts`). */
+  ttsImage: string;
+  /** WP17: TTS models, shared by every Windows account (one folder per model and version). */
+  ttsModelsDir: string;
+  /** WP17: sentences per model call (more is faster but needs more GPU memory). */
+  ttsBatchSize: number;
+  /** WP17: a TTS run that shows no progress for this long is stopped (minutes). */
+  ttsChapterMaxMinutes: number;
+  /** WP17: model precision on the GPU ('bf16' or 'fp32'). */
+  ttsPrecision: string;
 }
 
 export const DEFAULTS: Omit<WorkerSettings, 'serverUrl' | 'token'> = {
@@ -54,6 +71,11 @@ export const DEFAULTS: Omit<WorkerSettings, 'serverUrl' | 'token'> = {
   logMaxMB: 5,
   reportSeconds: 10,
   requestTimeoutSeconds: 30,
+  ttsImage: TTS_IMAGE,
+  ttsModelsDir: 'C:\\Data\\LLM\\Models\\ttsu-reader-tts',
+  ttsBatchSize: 8,
+  ttsChapterMaxMinutes: 120,
+  ttsPrecision: 'bf16',
 };
 
 export class ConfigError extends Error {}
@@ -122,6 +144,14 @@ export function parseSettings(raw: unknown): WorkerSettings {
     logMaxMB: num(r, 'logMaxMB', 0.01),
     reportSeconds: num(r, 'reportSeconds', 0.05),
     requestTimeoutSeconds: num(r, 'requestTimeoutSeconds', 1),
+    ttsImage: str(r, 'ttsImage'),
+    ttsModelsDir: str(r, 'ttsModelsDir'),
+    ttsBatchSize: Math.max(1, Math.round(num(r, 'ttsBatchSize', 1))),
+    ttsChapterMaxMinutes: num(r, 'ttsChapterMaxMinutes', 0.01),
+    ttsPrecision: ((p) => {
+      if (p !== 'bf16' && p !== 'fp32') throw new ConfigError('ttsPrecision must be bf16 or fp32');
+      return p;
+    })(str(r, 'ttsPrecision')),
   };
 }
 

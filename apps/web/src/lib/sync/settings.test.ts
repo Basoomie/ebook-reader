@@ -30,7 +30,9 @@ const SETTINGS_FILES = [
   'lib/library/settings.ts',
   'lib/home/settings.ts',
   'lib/sync/settings.ts',
-  'lib/anki/settings.ts'
+  'lib/anki/settings.ts',
+  // WP17: pauses in audiobooks made on the PC
+  'lib/audio/tts-settings.ts'
 ];
 
 /** Keys and value types declared with writable*LocalStorageSubject()('key', ...). */

@@ -6,6 +6,8 @@
 
 /** The storage server's audiobook index and audio links (WP15a, WP15b), as the API sends them. */
 
+import type { AudiobookJob } from './tts-types';
+
 export interface AudioFolderSummary {
   id: number;
   libraryId: string;
@@ -24,6 +26,8 @@ export interface AudioFolderSummary {
    */
   playable: boolean;
   missing: boolean;
+  /** WP17: an audiobook made on the PC (in the generated audiobooks folder). */
+  generated?: boolean;
 }
 
 export interface SubtitleFileSummary {
@@ -34,6 +38,8 @@ export interface SubtitleFileSummary {
   parentName: string | null;
   size: number;
   missing: boolean;
+  /** WP17: made with an audiobook made on the PC. */
+  generated?: boolean;
 }
 
 export type Ranked<T> = T & { score: number; tier: string };
@@ -153,9 +159,11 @@ export interface GpuWorkerStatus {
   paused?: boolean;
   version?: string | null;
   image?: string | null;
+  /** WP17: the TTS program's image the PC reported. */
+  ttsImage?: string | null;
   problem?: string | null;
-  /** The user's waiting and running jobs. */
-  jobs?: SubtitleJob[];
+  /** The user's waiting and running jobs (WP17: of every kind). */
+  jobs?: (SubtitleJob | AudiobookJob)[];
 }
 
 export interface AudioLink {

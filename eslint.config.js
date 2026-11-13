@@ -33,6 +33,8 @@ module.exports = (async () => {
         'apps/storage-server/tests/fixtures/wp14/**',
         // WP16: a plain Node script that stands in for docker in the GPU worker tests.
         'apps/storage-server/tests/fixtures/wp16/**',
+        // WP17: the same for the TTS program (docker run of ttsu-irodori).
+        'apps/storage-server/tests/fixtures/wp17/**',
         // WP16: the worker's install script (plain Node) and its build output.
         'apps/gpu-worker/scripts/**',
         'apps/gpu-worker/dist/**'

@@ -164,6 +164,11 @@ export const SETTINGS_REGISTRY: Record<string, SettingSpec> = {
   ankiAudioMatchThreshold: g('Number'),
   ankiAudioMaxSeconds: g('Number'),
 
+  // --- lib/audio/tts-settings.ts (WP17: pauses in audiobooks made on the PC) ---
+  ttsSentencePauseMs: g('Number'),
+  ttsParagraphPauseMs: g('Number'),
+  ttsChapterPauseMs: g('Number'),
+
   // --- lib/home/settings.ts (per device, WP7b) ---
   appOpenTarget: d('String'),
   homeRows: d('Array'),

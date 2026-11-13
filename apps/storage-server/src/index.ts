@@ -17,6 +17,11 @@ import { MergeService } from './audio/merge-service';
 import { MergeWorkdir } from './audio/merge-workdir';
 import { AudioScanService } from './audio/scan-service';
 import { SubtitleJobService } from './audio/subtitle-jobs';
+import { TtsJobService } from './audio/tts-jobs';
+import { TtsModelService } from './audio/tts-models';
+import { countImportOptions } from './counts/counter-bundle';
+import { VoiceService } from './voices/voice-service';
+import { VoiceStore } from './voices/voice-store';
 
 // Every console line is also kept (secrets removed) for the bug report (WP18).
 captureConsole(serverLogs);
@@ -161,6 +166,9 @@ let audio: AudioScanService | null = null;
 let merges: MergeService | null = null;
 let clips: ClipService | null = null;
 let jobs: SubtitleJobService | null = null;
+let tts: TtsJobService | null = null;
+let ttsModels: TtsModelService | null = null;
+let voices: VoiceService | null = null;
 if (database.ok && config.audio.dir) {
   audio = new AudioScanService({
     db: database.db,
@@ -201,6 +209,44 @@ if (database.ok && config.audio.dir) {
   });
   // WP16: the GPU worker's queue. Jobs wait in the database; the worker on the PC asks.
   jobs = new SubtitleJobService({ db: database.db, scan, writer, config: config.audio.worker });
+  // WP17: generated audiobooks on the same queue; voice presets in DATA_DIR/.uploads/voices.
+  ttsModels = new TtsModelService(database.db);
+  try {
+    voices = new VoiceService({
+      db: database.db,
+      store: new VoiceStore(config.dataRoot),
+      config: config.audio.tts,
+      ffmpegPath: config.audio.merge.ffmpegPath,
+      ffprobePath: config.audio.merge.ffprobePath,
+    });
+  } catch (err) {
+    console.error('Error: voice presets are off:', err);
+  }
+  if (config.calibre.cacheDir) {
+    try {
+      tts = new TtsJobService({
+        db: database.db,
+        jobs,
+        scan,
+        writer,
+        models: ttsModels,
+        voices,
+        config: config.audio.tts,
+        tools: config.audio.merge,
+        cacheDir: config.calibre.cacheDir,
+        calibreDir: config.calibre.dir,
+        uploads: uploadStore,
+        importOptions: countImportOptions(config.counts),
+      });
+    } catch (err) {
+      console.error(`Error: generated audiobooks are off: ${(err as Error).message}`);
+    }
+  }
+  const ttsService = tts;
+  const voiceService = voices;
+  void voiceService
+    ?.start()
+    .catch((err) => console.error('Error: voice presets could not start:', err));
   const mergeService = merges;
   // WP14: sentence audio for Anki (read-only cuts to stdout).
   clips = new ClipService({
@@ -212,6 +258,7 @@ if (database.ok && config.audio.dir) {
     .start()
     .then(async () => {
       if (scan.status.enabled) await mergeService.start();
+      if (scan.status.enabled) await ttsService?.start();
     })
     .catch((err) => console.error('Error: the audiobook scanner could not start:', err));
 } else if (!config.audio.dir) {
@@ -228,6 +275,9 @@ const app = createApp({
     merges,
     clips,
     jobs,
+    tts,
+    models: tts ? ttsModels : null,
+    voices,
     copyHint: {
       minMinutes: config.audio.copyHintMinMinutes,
       percent: config.audio.copyHintPercent,
@@ -258,6 +308,7 @@ function shutdown(signal: string): void {
   void thumbnails?.stop();
   void counts?.stop();
   void merges?.stop();
+  void tts?.stop();
   void audio?.stop();
   void search?.close();
   if (database.ok) {

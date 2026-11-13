@@ -16,7 +16,9 @@
  * - Stopping a running job sets a flag the worker sees on its next report; it stops SubPlz
  *   and reports back. Nothing is written for a stopped job.
  *
- * Kinds: only 'sync_subtitles' (WP17 adds 'generate_audiobook').
+ * Kinds: 'sync_subtitles' here; WP17's 'generate_audiobook', 'preview_audiobook' and
+ * 'voice_sample' (tts-jobs.ts) share the queue, the lease, the pause switch and Stop: they
+ * register a handler (registerKind) that prepares what the worker gets when it claims one.
  */
 import type Database from 'better-sqlite3';
 import { getLibrary } from '../calibre/libraries';
@@ -30,21 +32,52 @@ import { shortenPaths } from './merge-service';
 import type { AudioScanService } from './scan-service';
 import { subtitleSummary, type SubtitleSummary } from './summary';
 
-export type WorkerJobKind = 'sync_subtitles';
+export type WorkerJobKind =
+  | 'sync_subtitles'
+  | 'generate_audiobook'
+  | 'preview_audiobook'
+  | 'voice_sample';
 export type WorkerJobState = 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
-export type WorkerJobStage = 'downloading' | 'syncing' | 'uploading' | 'saving';
+export type WorkerJobStage =
+  | 'downloading'
+  | 'syncing'
+  | 'uploading'
+  | 'saving'
+  | 'preparing'
+  | 'generating'
+  | 'assembling';
 
-export const WORKER_STAGES: WorkerJobStage[] = ['downloading', 'syncing', 'uploading', 'saving'];
+export const WORKER_STAGES: WorkerJobStage[] = [
+  'downloading',
+  'syncing',
+  'uploading',
+  'saving',
+  'preparing',
+  'generating',
+  'assembling',
+];
+
+/**
+ * WP17: a job kind other than 'sync_subtitles' (tts-jobs.ts). `claim` gives what the
+ * worker needs (sent as `tts`), or why the job can't run (it then fails).
+ * `countsAsAttempt`: whether a lease that ran out counts against WORKER_MAX_ATTEMPTS.
+ */
+export interface WorkerKindHandler {
+  claim(job: WorkerJob): { tts: unknown } | { error: string };
+  countsAsAttempt?(job: WorkerJob): boolean;
+}
 
 export interface WorkerJob {
   id: number;
   userId: string;
-  bookId: string;
+  /** null only for a voice sample (WP17). */
+  bookId: string | null;
   bookTitle: string | null;
   kind: WorkerJobKind;
-  libraryId: string;
-  audioFolderRelPath: string;
-  audioFileName: string;
+  libraryId: string | null;
+  /** The linked audio of a 'sync_subtitles' job (null for the WP17 kinds). */
+  audioFolderRelPath: string | null;
+  audioFileName: string | null;
   state: WorkerJobState;
   stage: WorkerJobStage | null;
   /** 0..1 of the whole job (the worker works it out), or null when unknown. */
@@ -64,17 +97,23 @@ export interface WorkerJob {
   startedAt: number | null;
   finishedAt: number | null;
   updatedAt: number;
+  /** WP17: the job's settings (voice map v1 for audiobooks), parsed. */
+  params: Record<string, unknown> | null;
+  /** WP17: the generated audiobook's version (1, 2, …). */
+  version: number | null;
+  chaptersTotal: number | null;
+  chaptersDone: number;
 }
 
 interface JobRow {
   id: number;
   user_id: string;
-  book_id: string;
+  book_id: string | null;
   book_title: string | null;
   kind: WorkerJobKind;
-  library_id: string;
-  audio_folder_rel_path: string;
-  audio_file_name: string;
+  library_id: string | null;
+  audio_folder_rel_path: string | null;
+  audio_file_name: string | null;
   link_confirmed_at: number | null;
   state: WorkerJobState;
   stage: WorkerJobStage | null;
@@ -91,6 +130,11 @@ interface JobRow {
   started_at: number | null;
   finished_at: number | null;
   updated_at: number;
+  params: string | null;
+  version: number | null;
+  chapters_total: number | null;
+  chapters_done: number;
+  claim_chapters: number | null;
 }
 
 const JOB_SELECT = `SELECT j.*, b.title AS book_title FROM worker_jobs j
@@ -121,7 +165,21 @@ function toJob(r: JobRow): WorkerJob {
     startedAt: r.started_at,
     finishedAt: r.finished_at,
     updatedAt: r.updated_at,
+    params: parseParams(r.params),
+    version: r.version,
+    chaptersTotal: r.chapters_total,
+    chaptersDone: r.chapters_done,
   };
+}
+
+function parseParams(raw: string | null): Record<string, unknown> | null {
+  if (!raw) return null;
+  try {
+    const v = JSON.parse(raw) as unknown;
+    return v && typeof v === 'object' ? (v as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
 }
 
 export class JobRequestError extends Error {
@@ -142,6 +200,8 @@ export interface WorkerStatus {
   paused: boolean;
   version: string | null;
   image: string | null;
+  /** WP17: the TTS program image the worker reported. */
+  ttsImage: string | null;
   /** What keeps the worker from working, as it reported it (e.g. Docker not running). */
   problem: string | null;
   /** The user's queued and running jobs, oldest first. */
@@ -151,6 +211,7 @@ export interface WorkerStatus {
 export interface HeartbeatInput {
   version?: unknown;
   image?: unknown;
+  ttsImage?: unknown;
   problem?: unknown;
   /** The job the worker is working on, or null when idle. */
   currentJobId?: unknown;
@@ -168,11 +229,13 @@ export interface ClaimedJob {
   kind: WorkerJobKind;
   bookTitle: string | null;
   /** The audio file's own name (only its extension matters; the worker uses ASCII names). */
-  audioFileName: string;
-  audioSize: number;
+  audioFileName?: string;
+  audioSize?: number;
   /** The audio's length as indexed (null while unknown): the worker's whole-job progress. */
-  audioSeconds: number | null;
-  epubSize: number | null;
+  audioSeconds?: number | null;
+  epubSize?: number | null;
+  /** WP17 kinds: what the TTS run needs (tts-jobs.ts). */
+  tts?: unknown;
   /** Report at least this often (seconds), or the job goes back to the queue. */
   leaseSeconds: number;
 }
@@ -221,6 +284,8 @@ export class SubtitleJobService {
   private readonly now: () => number;
   /** Results being saved (a second upload of the same job waits for none, it is refused). */
   private readonly saving = new Set<number>();
+  /** WP17: handlers of the other job kinds. */
+  private readonly kinds = new Map<WorkerJobKind, WorkerKindHandler>();
 
   constructor(opts: SubtitleJobOptions) {
     this.db = opts.db;
@@ -234,16 +299,34 @@ export class SubtitleJobService {
 
   // ---------------------------------------------------------------- reading
 
+  /** WP17: a handler for job kinds other than 'sync_subtitles'. */
+  registerKind(kinds: WorkerJobKind[], handler: WorkerKindHandler): void {
+    for (const k of kinds) this.kinds.set(k, handler);
+  }
+
+  /** WP17: server-side work on a running job (its lease doesn't run out meanwhile). */
+  holdSaving(id: number, on: boolean): void {
+    if (on) this.saving.add(id);
+    else this.saving.delete(id);
+  }
+
   get(id: number): WorkerJob | null {
     const row = this.db.prepare(`${JOB_SELECT} WHERE j.id = ?`).get(id) as JobRow | undefined;
     return row ? toJob(row) : null;
   }
 
-  latestForBook(userId: string, bookId: string): WorkerJob | null {
+  latestForBook(
+    userId: string,
+    bookId: string,
+    kinds: WorkerJobKind[] = ['sync_subtitles'],
+  ): WorkerJob | null {
     this.expireLeases();
     const row = this.db
-      .prepare(`${JOB_SELECT} WHERE j.user_id = ? AND j.book_id = ? ORDER BY j.id DESC LIMIT 1`)
-      .get(userId, bookId) as JobRow | undefined;
+      .prepare(
+        `${JOB_SELECT} WHERE j.user_id = ? AND j.book_id = ?
+         AND j.kind IN (${kinds.map(() => '?').join(', ')}) ORDER BY j.id DESC LIMIT 1`,
+      )
+      .get(userId, bookId, ...kinds) as JobRow | undefined;
     return row ? toJob(row) : null;
   }
 
@@ -252,6 +335,7 @@ export class SubtitleJobService {
     last_seen_at: number | null;
     worker_version: string | null;
     image: string | null;
+    tts_image: string | null;
     problem: string | null;
   } {
     return (
@@ -261,6 +345,7 @@ export class SubtitleJobService {
             last_seen_at: number | null;
             worker_version: string | null;
             image: string | null;
+            tts_image: string | null;
             problem: string | null;
           }
         | undefined) ?? {
@@ -268,6 +353,7 @@ export class SubtitleJobService {
         last_seen_at: null,
         worker_version: null,
         image: null,
+        tts_image: null,
         problem: null,
       }
     );
@@ -295,6 +381,7 @@ export class SubtitleJobService {
       paused: s.paused === 1,
       version: s.worker_version,
       image: s.image,
+      ttsImage: s.tts_image,
       problem: s.problem,
       jobs,
     };
@@ -386,7 +473,8 @@ export class SubtitleJobService {
     const id = this.db.transaction(() => {
       const busy = this.db
         .prepare(
-          `SELECT 1 FROM worker_jobs WHERE user_id = ? AND book_id = ? AND state IN ('queued', 'running')`,
+          `SELECT 1 FROM worker_jobs WHERE user_id = ? AND book_id = ? AND kind = 'sync_subtitles'
+           AND state IN ('queued', 'running')`,
         )
         .get(userId, bookId);
       if (busy) {
@@ -430,7 +518,8 @@ export class SubtitleJobService {
     return this.get(id);
   }
 
-  private update(id: number, fields: Record<string, unknown>): void {
+  /** Sets columns of a job (and updated_at). */
+  update(id: number, fields: Record<string, unknown>): void {
     const keys = Object.keys(fields);
     this.db
       .prepare(
@@ -449,10 +538,15 @@ export class SubtitleJobService {
     const now = this.now();
     const expired = this.db
       .prepare(
-        `SELECT id, attempts, cancel_requested FROM worker_jobs
+        `SELECT id, kind, attempts, cancel_requested FROM worker_jobs
          WHERE state = 'running' AND lease_expires_at IS NOT NULL AND lease_expires_at < ?`,
       )
-      .all(now) as { id: number; attempts: number; cancel_requested: number }[];
+      .all(now) as {
+      id: number;
+      kind: WorkerJobKind;
+      attempts: number;
+      cancel_requested: number;
+    }[];
     for (const j of expired) {
       if (this.saving.has(j.id)) continue;
       this.requeueOrFail(j, 'The PC stopped responding during the job');
@@ -460,10 +554,19 @@ export class SubtitleJobService {
   }
 
   private requeueOrFail(
-    j: { id: number; attempts: number; cancel_requested: number },
+    j: { id: number; kind?: WorkerJobKind; attempts: number; cancel_requested: number },
     why: string,
   ): void {
     const now = this.now();
+    // WP17: a long job that made progress since it was handed out doesn't lose an attempt.
+    const handler = j.kind ? this.kinds.get(j.kind) : undefined;
+    if (handler?.countsAsAttempt && j.cancel_requested !== 1) {
+      const job = this.get(j.id);
+      if (job && !handler.countsAsAttempt(job)) {
+        j = { ...j, attempts: Math.max(0, j.attempts - 1) };
+        this.update(j.id, { attempts: j.attempts });
+      }
+    }
     if (j.cancel_requested === 1) {
       this.update(j.id, { state: 'cancelled', finished_at: now, lease_expires_at: null });
       this.log(`GPU worker: job ${j.id} stopped`);
@@ -492,13 +595,21 @@ export class SubtitleJobService {
     const now = this.now();
     this.db
       .prepare(
-        `INSERT INTO worker_status (id, paused, last_seen_at, worker_version, image, problem, updated_at)
-         VALUES (1, 0, ?, ?, ?, ?, ?)
+        `INSERT INTO worker_status (id, paused, last_seen_at, worker_version, image, tts_image, problem, updated_at)
+         VALUES (1, 0, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (id) DO UPDATE SET last_seen_at = excluded.last_seen_at,
            worker_version = excluded.worker_version, image = excluded.image,
-           problem = excluded.problem, updated_at = excluded.updated_at`,
+           tts_image = excluded.tts_image, problem = excluded.problem,
+           updated_at = excluded.updated_at`,
       )
-      .run(now, text(input.version, 100), text(input.image, 300), text(input.problem, 500), now);
+      .run(
+        now,
+        text(input.version, 100),
+        text(input.image, 300),
+        text(input.ttsImage, 300),
+        text(input.problem, 500),
+        now,
+      );
     // A worker that says it is idle has lost any job it was holding (the PC restarted).
     const current =
       typeof input.currentJobId === 'number' && Number.isInteger(input.currentJobId)
@@ -506,9 +617,14 @@ export class SubtitleJobService {
         : null;
     const orphans = this.db
       .prepare(
-        `SELECT id, attempts, cancel_requested FROM worker_jobs WHERE state = 'running' AND id IS NOT ?`,
+        `SELECT id, kind, attempts, cancel_requested FROM worker_jobs WHERE state = 'running' AND id IS NOT ?`,
       )
-      .all(current) as { id: number; attempts: number; cancel_requested: number }[];
+      .all(current) as {
+      id: number;
+      kind: WorkerJobKind;
+      attempts: number;
+      cancel_requested: number;
+    }[];
     for (const j of orphans) {
       if (this.saving.has(j.id)) continue;
       this.requeueOrFail(j, 'The worker restarted during the job');
@@ -518,7 +634,11 @@ export class SubtitleJobService {
   }
 
   /** The next job for the worker, or null (paused, nothing waiting, or one is running). */
-  claim(): ClaimedJob | null {
+  /**
+   * The next job for the worker, or null. `kinds` (WP17): the kinds the PC can run now
+   * (its programs); omitted = every kind.
+   */
+  claim(kinds?: WorkerJobKind[]): ClaimedJob | null {
     this.db.prepare('UPDATE worker_status SET last_seen_at = ? WHERE id = 1').run(this.now());
     this.expireLeases();
     if (this.isPaused()) return null;
@@ -529,6 +649,43 @@ export class SubtitleJobService {
         .prepare(`${JOB_SELECT} WHERE j.state = 'queued' ORDER BY j.id`)
         .all() as JobRow[];
       for (const row of rows) {
+        if (kinds && !kinds.includes(row.kind)) continue;
+        if (row.kind !== 'sync_subtitles') {
+          const handler = this.kinds.get(row.kind);
+          const prepared = handler
+            ? handler.claim(toJob(row))
+            : { error: 'This server cannot run this kind of job' };
+          if ('error' in prepared) {
+            this.update(row.id, {
+              state: 'failed',
+              error: prepared.error,
+              finished_at: this.now(),
+            });
+            this.log(`GPU worker: job ${row.id} failed before it started: ${prepared.error}`);
+            continue;
+          }
+          const now = this.now();
+          this.update(row.id, {
+            state: 'running',
+            stage: 'preparing',
+            message: null,
+            attempts: row.attempts + 1,
+            claim_chapters: row.chapters_done,
+            lease_expires_at: now + this.config.leaseSeconds * 1000,
+            started_at: row.started_at ?? now,
+            error: null,
+          });
+          this.log(
+            `GPU worker: job ${row.id} (${row.kind}) handed to the worker (attempt ${row.attempts + 1})`,
+          );
+          return {
+            id: row.id,
+            kind: row.kind,
+            bookTitle: row.book_title,
+            tts: prepared.tts,
+            leaseSeconds: this.config.leaseSeconds,
+          };
+        }
         const files = this.jobFiles(toJob(row));
         if ('error' in files) {
           this.update(row.id, { state: 'failed', error: files.error, finished_at: this.now() });
@@ -551,7 +708,7 @@ export class SubtitleJobService {
           id: row.id,
           kind: row.kind,
           bookTitle: row.book_title,
-          audioFileName: row.audio_file_name,
+          audioFileName: row.audio_file_name!,
           audioSize: files.audio.size,
           audioSeconds: files.audio.durationSeconds,
           epubSize: files.epubSize,
@@ -571,6 +728,9 @@ export class SubtitleJobService {
         epubSize: number | null;
       }
     | { error: string } {
+    if (job.kind !== 'sync_subtitles' || !job.audioFolderRelPath || !job.bookId) {
+      return { error: 'Not a subtitle job' };
+    }
     const folder = getAudioFolderByRelPath(this.db, job.audioFolderRelPath);
     if (!folder || folder.missingAt !== null) {
       return { error: 'The audiobook is no longer in the audiobooks folder' };
@@ -607,12 +767,15 @@ export class SubtitleJobService {
     return { job, folder: files.folder, index: files.index };
   }
 
-  /** A progress report; extends the lease. `cancel` tells the worker to stop. */
-  progress(id: number, input: ProgressInput): { cancel: boolean } {
+  /**
+   * A progress report; extends the lease. `cancel` tells the worker to stop; `pause` (WP17)
+   * that the pause switch is on (a long job stops after its current chapter).
+   */
+  progress(id: number, input: ProgressInput): { cancel: boolean; pause: boolean } {
     this.expireLeases();
     const job = this.get(id);
     if (!job) throw new JobRequestError(404, 'not_found', 'No such job');
-    if (job.state !== 'running') return { cancel: true };
+    if (job.state !== 'running') return { cancel: true, pause: false };
     const stage = WORKER_STAGES.includes(input.stage as WorkerJobStage)
       ? (input.stage as WorkerJobStage)
       : job.stage;
@@ -627,7 +790,24 @@ export class SubtitleJobService {
       lease_expires_at: this.now() + this.config.leaseSeconds * 1000,
     });
     this.db.prepare('UPDATE worker_status SET last_seen_at = ? WHERE id = 1').run(this.now());
-    return { cancel: job.cancelRequested };
+    return { cancel: job.cancelRequested, pause: this.isPaused() };
+  }
+
+  /** WP17: the worker paused between chapters: back to the queue, no attempt used. */
+  release(id: number): WorkerJob {
+    const job = this.get(id);
+    if (!job) throw new JobRequestError(404, 'not_found', 'No such job');
+    if (job.state !== 'running' || this.saving.has(id)) return job;
+    if (job.cancelRequested) return this.fail(id, {});
+    this.update(id, {
+      state: 'queued',
+      stage: null,
+      message: 'Paused; it continues when the PC is resumed.',
+      attempts: Math.max(0, job.attempts - 1),
+      lease_expires_at: null,
+    });
+    this.log(`GPU worker: job ${id} paused between chapters`);
+    return this.get(id)!;
   }
 
   /** The worker gave up (or stopped on request). */
@@ -661,7 +841,7 @@ export class SubtitleJobService {
     this.expireLeases();
     const job = this.get(id);
     if (!job) throw new JobRequestError(404, 'not_found', 'No such job');
-    if (job.state !== 'running' || this.saving.has(id)) {
+    if (job.state !== 'running' || this.saving.has(id) || job.kind !== 'sync_subtitles') {
       throw new JobRequestError(409, 'not_running', 'This job is not running');
     }
     if (job.cancelRequested) {
@@ -681,12 +861,12 @@ export class SubtitleJobService {
         progress: 0.99,
         lease_expires_at: this.now() + this.config.leaseSeconds * 1000,
       });
-      const title = job.bookTitle ?? job.audioFileName.replace(/\.[^.]+$/, '');
-      const [first, ...fallbackNames] = subtitleNameCandidates(title, job.bookId);
+      const title = job.bookTitle ?? (job.audioFileName ?? 'subtitles').replace(/\.[^.]+$/, '');
+      const [first, ...fallbackNames] = subtitleNameCandidates(title, job.bookId!);
       let saved: { name: string; relPath: string };
       try {
         saved = await this.writer.createGeneratedFile({
-          libraryId: job.libraryId,
+          libraryId: job.libraryId!,
           area: 'subtitles',
           relPath: first,
           fallbackNames,
@@ -706,7 +886,7 @@ export class SubtitleJobService {
       this.update(id, { output_rel_path: saved.relPath });
       let indexed = false;
       try {
-        indexed = await this.scan.rescanSubtitleFile(job.libraryId, saved.relPath);
+        indexed = await this.scan.rescanSubtitleFile(job.libraryId!, saved.relPath);
       } catch (err) {
         this.logError(`GPU worker: could not index ${saved.name}:`, err);
       }
@@ -733,7 +913,7 @@ export class SubtitleJobService {
         link_confirmed_at: number | null;
       }
     ).link_confirmed_at;
-    const current = getLink(this.db, job.userId, job.bookId);
+    const current = getLink(this.db, job.userId, job.bookId!);
     if (
       !current ||
       current.state !== 'linked' ||

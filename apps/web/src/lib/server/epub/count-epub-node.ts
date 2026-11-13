@@ -15,6 +15,7 @@ import { ImportHTMLFixMode } from '$lib/data/import-html-fix-mode';
 import { configure as zipConfigure } from '@zip.js/zip.js';
 import { installNodeDom, renewNodeDom } from './node-dom';
 import { readFile } from 'node:fs/promises';
+import { bookScriptFromHtml, type BookScript } from './book-script';
 
 /** Same defaults as `importHTMLFixMode$` / `restrictImportFixToAnchor$` in the store. */
 export const defaultEpubImportOptions: Readonly<EpubHtmlImportOptions> = {
@@ -57,6 +58,23 @@ export async function countEpubBlob(
 ): Promise<EpubCountResult> {
   // A fresh window per book: jsdom would otherwise keep every parsed chapter (node-dom.ts).
   return countEpub(epub, prepareNode(true), options, extractOptions);
+}
+
+/**
+ * WP17: the text a generated audiobook reads (book-script.ts), from the same import.
+ * Image bytes are never read.
+ */
+export async function bookScriptEpubBlob(
+  epub: Blob,
+  options: EpubHtmlImportOptions = defaultEpubImportOptions,
+  scriptOptions: { maxSentence?: number } = {}
+): Promise<BookScript> {
+  const document = prepareNode(true);
+  const { elementHtml, sections, characters } = await countEpub(epub, document, options, {
+    imageData: false
+  });
+
+  return bookScriptFromHtml(elementHtml, sections, characters, document, scriptOptions);
 }
 
 /** The reader's in-book total for stored `elementHtml`, computed in Node. */

@@ -29,6 +29,14 @@ import type {
   SubtitleFileSummary,
   SubtitleJob
 } from '$lib/audio/audio-types';
+import type {
+  AudiobookJob,
+  AudiobookRequest,
+  BookChapters,
+  TtsModel,
+  VoiceList,
+  VoicePreset
+} from '$lib/audio/tts-types';
 
 /** Client for the storage server's /api/v1 catalog (WP6). */
 
@@ -781,6 +789,144 @@ export class LibraryApi {
   async setGpuWorkerPaused(paused: boolean, options?: RequestOptions): Promise<boolean> {
     const response = await this.sendJson('PUT', '/gpu-worker/paused', { paused }, options);
     return ((await response.json()) as { paused: boolean }).paused;
+  }
+
+  // ---- WP17: audiobooks made on the PC, previews, voices, models
+
+  /** The book's chapters as an audiobook would read them (the server reads the EPUB). */
+  async audiobookChapters(bookId: string, options: RequestOptions = {}): Promise<BookChapters> {
+    return (
+      await this.get(`/books/${encodeURIComponent(bookId)}/audiobook-chapters`, {
+        timeoutSeconds: 120,
+        ...options
+      })
+    ).json();
+  }
+
+  /** "Make an audiobook on the PC": the whole book, as a new version. */
+  async startAudiobookJob(
+    bookId: string,
+    body: AudiobookRequest,
+    options: RequestOptions = {}
+  ): Promise<AudiobookJob> {
+    const response = await this.post(`/books/${encodeURIComponent(bookId)}/audiobook-job`, body, {
+      timeoutSeconds: 120,
+      ...options
+    });
+    return ((await response.json()) as { job: AudiobookJob }).job;
+  }
+
+  async audiobookJob(bookId: string, options?: RequestOptions): Promise<AudiobookJob | null> {
+    const body: { job: AudiobookJob | null } = await (
+      await this.get(`/books/${encodeURIComponent(bookId)}/audiobook-job`, options)
+    ).json();
+    return body.job;
+  }
+
+  /** "Preview": about a minute of one chapter. */
+  async startAudiobookPreview(
+    bookId: string,
+    body: AudiobookRequest,
+    options: RequestOptions = {}
+  ): Promise<AudiobookJob> {
+    const response = await this.post(
+      `/books/${encodeURIComponent(bookId)}/audiobook-preview`,
+      body,
+      { timeoutSeconds: 120, ...options }
+    );
+    return ((await response.json()) as { job: AudiobookJob }).job;
+  }
+
+  async audiobookPreview(bookId: string, options?: RequestOptions): Promise<AudiobookJob | null> {
+    const body: { job: AudiobookJob | null } = await (
+      await this.get(`/books/${encodeURIComponent(bookId)}/audiobook-preview`, options)
+    ).json();
+    return body.job;
+  }
+
+  /** The audio of a finished preview or voice sample. */
+  async ttsJobAudio(jobId: number, options: RequestOptions = {}): Promise<Blob> {
+    return (
+      await this.get(`/audio/tts-jobs/${jobId}/audio`, { timeoutSeconds: 0, ...options })
+    ).blob();
+  }
+
+  async voices(options?: RequestOptions): Promise<VoiceList> {
+    try {
+      return await (await this.get('/voices', options)).json();
+    } catch (error) {
+      if (error instanceof LibraryApiError && error.status === 404) {
+        return { available: false, voices: [], limits: null };
+      }
+      throw error;
+    }
+  }
+
+  /** Uploads a recording as a voice; the consent confirmation is required by the server. */
+  uploadVoice(
+    file: Blob,
+    name: string,
+    consent: boolean,
+    options: UploadOptions = {}
+  ): Promise<{ voice: VoicePreset }> {
+    const qs = new URLSearchParams({ name, consent: consent ? '1' : '0' });
+    return this.sendWithProgress(`/voices?${qs}`, file, 'application/octet-stream', options);
+  }
+
+  async deleteVoice(id: string, options?: RequestOptions): Promise<void> {
+    await this.sendJson('DELETE', `/voices/${encodeURIComponent(id)}`, undefined, options);
+  }
+
+  async voiceClip(id: string, options: RequestOptions = {}): Promise<Blob> {
+    return (
+      await this.get(`/voices/${encodeURIComponent(id)}/clip`, { timeoutSeconds: 0, ...options })
+    ).blob();
+  }
+
+  /** "Describe a voice": the PC makes a sample from the description. */
+  async startVoiceSample(
+    body: { name: string; description: string; modelId?: number },
+    options?: RequestOptions
+  ): Promise<AudiobookJob> {
+    const response = await this.post('/voices/samples', body, options);
+    return ((await response.json()) as { job: AudiobookJob }).job;
+  }
+
+  async latestVoiceSample(options?: RequestOptions): Promise<AudiobookJob | null> {
+    const body: { job: AudiobookJob | null } = await (
+      await this.get('/voices/samples/latest', options)
+    ).json();
+    return body.job;
+  }
+
+  async keepVoiceSample(jobId: number, options?: RequestOptions): Promise<VoicePreset> {
+    const response = await this.post(`/voices/samples/${jobId}/keep`, {}, options);
+    return ((await response.json()) as { voice: VoicePreset }).voice;
+  }
+
+  async ttsModels(options?: RequestOptions): Promise<{ available: boolean; models: TtsModel[] }> {
+    try {
+      return await (await this.get('/tts/models', options)).json();
+    } catch (error) {
+      if (error instanceof LibraryApiError && error.status === 404) {
+        return { available: false, models: [] };
+      }
+      throw error;
+    }
+  }
+
+  async addTtsModel(source: string, options: RequestOptions = {}): Promise<TtsModel> {
+    const response = await this.post('/tts/models', { source }, { timeoutSeconds: 60, ...options });
+    return ((await response.json()) as { model: TtsModel }).model;
+  }
+
+  async removeTtsModel(id: number, options?: RequestOptions): Promise<void> {
+    await this.sendJson('DELETE', `/tts/models/${id}`, undefined, options);
+  }
+
+  async setDefaultTtsModel(id: number, options?: RequestOptions): Promise<TtsModel[]> {
+    const response = await this.sendJson('PUT', `/tts/models/${id}/default`, {}, options);
+    return ((await response.json()) as { models: TtsModel[] }).models;
   }
 
   /** Every link of this user, problems first. */

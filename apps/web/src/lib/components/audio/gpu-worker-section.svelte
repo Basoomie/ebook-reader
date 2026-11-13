@@ -10,9 +10,12 @@
    * the user's PC (SubPlz, apps/gpu-worker) is there, what keeps it from working, the
    * waiting and running jobs, and the pause switch (stored on the server, so it works from
    * any device). Pausing is a toggle that undoes itself, so it doesn't ask.
+   * WP17: also audiobooks, previews and voice samples made on the PC (a long audiobook
+   * stops after its current chapter when paused).
    */
   import SettingsSection from '$lib/components/settings/settings-section.svelte';
   import { subtitleJobText, timeAgo } from '$lib/audio/audio-link';
+  import { audiobookJobText, isTtsJob, workerJobTitle } from '$lib/audio/tts-text';
   import type { GpuWorkerStatus } from '$lib/audio/audio-types';
   import { pagePath } from '$lib/data/env';
   import { LibraryApiError, type LibraryApi } from '$lib/library/api';
@@ -89,14 +92,15 @@
     }
     if (s.problem) return s.problem.replace(/\.$/, '') + '.';
     const running = (s.jobs ?? []).find((j) => j.state === 'running');
-    if (running) return `Working on “${running.bookTitle ?? running.audioFileName}”.`;
+    if (running) return `Working on “${workerJobTitle(running)}”.`;
     return 'Ready.';
   }
 
   /** "1.0.0 · SubPlz sha256:58cddc13c517" */
   function programText(s: GpuWorkerStatus): string {
     const image = s.image ? s.image.replace(/^.*@(sha256:[0-9a-f]{12}).*$/, 'SubPlz $1') : '';
-    return [s.version ? `Version ${s.version}` : '', image].filter(Boolean).join(' · ');
+    const tts = s.ttsImage ? `audiobooks ${s.ttsImage.replace(/^.*:/, 'program ')}` : '';
+    return [s.version ? `Version ${s.version}` : '', image, tts].filter(Boolean).join(' · ');
   }
 
   function bookHref(id: string) {
@@ -108,7 +112,7 @@
   <SettingsSection
     jp="字幕作成"
     title="Subtitles made on the PC"
-    tooltip="SubPlz on your PC makes subtitles for an audiobook when you ask for them on a book's page (Audiobook > Make subtitles on the PC). Jobs wait while the PC is off. The subtitles are saved in the subtitle folder."
+    tooltip="SubPlz on your PC makes subtitles for an audiobook when you ask for them on a book's page (Audiobook > Make subtitles on the PC). The PC also makes audiobooks read aloud from a book (Audiobook > Make an audiobook on the PC). Jobs wait while the PC is off. Pausing lets a long audiobook finish its current chapter and continue later."
   />
   {#if error}
     <p class="c-notice mt-4" role="alert" data-testid="gpu-worker-error">{error}</p>
@@ -152,12 +156,20 @@
       <ul class="mt-1" data-testid="gpu-worker-jobs">
         {#each jobs as job (job.id)}
           <li class="c-gwrow flex flex-col gap-1 py-3" data-testid="gpu-worker-job">
-            <a
-              class="c-link self-start break-words font-mincho text-[15px] font-bold"
-              href={bookHref(job.bookId)}>{job.bookTitle ?? job.audioFileName}</a
-            >
+            {#if job.bookId}
+              <a
+                class="c-link self-start break-words font-mincho text-[15px] font-bold"
+                href={bookHref(job.bookId)}>{workerJobTitle(job)}</a
+              >
+            {:else}
+              <span class="break-words font-mincho text-[15px] font-bold"
+                >{workerJobTitle(job)}</span
+              >
+            {/if}
             <div class="break-words text-sm" data-testid="gpu-worker-job-text">
-              {subtitleJobText(job, status, now)}
+              {isTtsJob(job)
+                ? audiobookJobText(job, status, now)
+                : subtitleJobText(job, status, now)}
             </div>
           </li>
         {/each}

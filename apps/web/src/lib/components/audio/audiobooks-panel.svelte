@@ -14,6 +14,8 @@
    * WP16: "Subtitles made on the PC" (gpu-worker-section.svelte) after the folder.
    */
   import GpuWorkerSection from '$lib/components/audio/gpu-worker-section.svelte';
+  import TtsModelsSection from '$lib/components/audio/tts-models-section.svelte';
+  import VoicesSection from '$lib/components/audio/voices-section.svelte';
   import SettingsSection from '$lib/components/settings/settings-section.svelte';
   import {
     folderDetails,
@@ -223,6 +225,9 @@
     <!-- WP16: subtitles made on the PC -->
     {#if api && status?.enabled}
       <GpuWorkerSection {api} />
+      <!-- WP17: voices and models for audiobooks made on the PC -->
+      <VoicesSection {api} />
+      <TtsModelsSection {api} />
     {/if}
 
     <!-- Linked books -->

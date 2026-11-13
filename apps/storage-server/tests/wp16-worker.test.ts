@@ -21,7 +21,13 @@ import {
 } from '../../gpu-worker/src/config';
 import { memoryLogger } from '../../gpu-worker/src/log';
 import { LineSplitter, subplzArgs, SubplzProgress, Tail } from '../../gpu-worker/src/subplz';
-import { audioNameFor, jobProgress, plainError, Worker } from '../../gpu-worker/src/worker';
+import {
+  audioNameFor,
+  jobProgress,
+  plainError,
+  Worker,
+  WORKER_VERSION,
+} from '../../gpu-worker/src/worker';
 import type { AudioScanService } from '../src/audio/scan-service';
 import type { WorkerConfig } from '../src/config';
 import type { IndexerEnv } from './helpers/indexer-env';
@@ -249,7 +255,8 @@ describe('the worker against the server', () => {
         image: PINNED_IMAGE,
       }),
     );
-    expect(t.calls().map((c) => c[0])).toEqual(['info', 'image', 'run']);
+    // WP17: two image checks (SubPlz, then the TTS program).
+    expect(t.calls().map((c) => c[0])).toEqual(['info', 'image', 'image', 'run']);
     // Reports: downloading up to 1, then SubPlz's own percentages, then uploading.
     const reports = t.sent.filter((x) => x.path.endsWith('/progress')).map((x) => x.body);
     expect(reports.some((r) => r.stage === 'downloading')).toBe(true);
@@ -263,7 +270,7 @@ describe('the worker against the server', () => {
     expect(reports.some((r) => r.stage === 'uploading' && r.progress === 0.98)).toBe(true);
     expect(reports.some((r) => r.stage === 'uploading')).toBe(true);
     const hb = t.sent.find((x) => x.path.endsWith('/heartbeat'))!.body;
-    expect(hb).toMatchObject({ version: '1.0.0', image: PINNED_IMAGE, problem: null });
+    expect(hb).toMatchObject({ version: WORKER_VERSION, image: PINNED_IMAGE, problem: null });
     // Nothing left on the PC.
     expect(fs.readdirSync(t.s.workDir)).toEqual([]);
     // Idle: nothing to do.
@@ -319,7 +326,11 @@ describe('the worker against the server', () => {
   it('takes no job while Docker or the image is missing, or while paused', async () => {
     for (const [mode, problem] of [
       ['no-docker', 'Docker Desktop is not running on the PC'],
-      ['no-image', `The SubPlz image is not on the PC (docker pull ${PINNED_IMAGE})`],
+      [
+        'no-image',
+        // WP17: both programs are missing in this mode.
+        `The SubPlz image is not on the PC (docker pull ${PINNED_IMAGE}); The TTS program is not on the PC (node main.js build-tts)`,
+      ],
     ] as const) {
       const t = await workerEnv(mode);
       await queued(t);

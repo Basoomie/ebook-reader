@@ -354,7 +354,8 @@ describe('the only writer', () => {
   const WRITE_OPEN = /\bopen(Sync)?\([^)]*['"](w|wx|a|ax|r\+|w\+|a\+)['"]/;
 
   it('no other file under src/audio writes', () => {
-    const allowed = new Set(['audio-write.ts', 'merge-workdir.ts']);
+    // WP17: tts-workdir.ts, the generated audiobooks' cache folder (like merge-workdir.ts).
+    const allowed = new Set(['audio-write.ts', 'merge-workdir.ts', 'tts-workdir.ts']);
     const offenders: string[] = [];
     for (const name of fs.readdirSync(path.join(SRC, 'audio'))) {
       if (allowed.has(name)) continue;
@@ -382,7 +383,13 @@ describe('the only writer', () => {
       }
     };
     walk(SRC);
-    // WP16 added the GPU worker's subtitle jobs (generated subtitles in _generated/).
-    expect(users.sort()).toEqual(['audio/merge-service.ts', 'audio/subtitle-jobs.ts', 'index.ts']);
+    // WP16 added the GPU worker's subtitle jobs (generated subtitles in _generated/), WP17
+    // the generated audiobooks (<audio folder>-generated/).
+    expect(users.sort()).toEqual([
+      'audio/merge-service.ts',
+      'audio/subtitle-jobs.ts',
+      'audio/tts-jobs.ts',
+      'index.ts',
+    ]);
   });
 });
