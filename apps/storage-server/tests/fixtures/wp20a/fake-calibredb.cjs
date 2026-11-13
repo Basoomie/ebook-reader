@@ -8,7 +8,8 @@
  * Env: FAKE_CALIBRE_LIBRARY (library folder), FAKE_PASSWORD (expected on stdin),
  * FAKE_VERSION (default 9.18.0), FAKE_LIBRARY_ID (default japanese-library),
  * FAKE_ILLUSTRATOR (1 = the #illustrator column exists), FAKE_LOG (argv of each call is
- * appended), FAKE_FAIL (a command name that fails).
+ * appended), FAKE_FAIL (a command name that fails), FAKE_FAIL_LONG (1 = that failure prints
+ * a 200 KB line, like a long calibre error).
  */
 const fs = require('fs');
 const path = require('path');
@@ -49,7 +50,10 @@ const stdin = fs.readFileSync(0, 'utf8').replace(/\r?\n$/, '');
 if (stdin !== process.env.FAKE_PASSWORD) fail('Invalid username/password');
 
 const sub = argv[0] === 'trash' ? `trash ${argv[1]}` : argv[0];
-if (process.env.FAKE_FAIL && process.env.FAKE_FAIL === sub) fail(`simulated failure of ${sub}`, 2);
+if (process.env.FAKE_FAIL && process.env.FAKE_FAIL === sub) {
+  const long = process.env.FAKE_FAIL_LONG === '1' ? ` ${'x'.repeat(200_000)} end` : '';
+  fail(`simulated failure of ${sub}${long}`, 2);
+}
 
 const wanted = withLibrary.split('#')[1];
 if (sub === 'list' && wanted === '-') {

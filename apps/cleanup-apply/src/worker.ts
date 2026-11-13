@@ -25,7 +25,14 @@ import {
   ServerError,
   type StepReport
 } from './api';
-import { Calibredb, calibreTime, type Login, sameVersion, versionAtLeast } from './calibredb';
+import {
+  Calibredb,
+  calibreTime,
+  type Login,
+  sameVersion,
+  shorten,
+  versionAtLeast
+} from './calibredb';
 import type { SidecarConfig } from './config';
 import { exists, Quarantine, sha256File } from './quarantine';
 
@@ -138,8 +145,11 @@ export class Worker {
         calibredb: this.calibredbVersion ? `calibredb (calibre ${this.calibredbVersion})` : null,
         serverVersion: this.serverVersion ? `calibre ${this.serverVersion}` : null,
         trashRestore: this.trashRestore,
-        problem: this.problem,
-        checks: this.checks,
+        problem: this.problem ? shorten(this.problem, 1500) : this.problem,
+        checks: this.checks.map((c) => ({
+          ...c,
+          detail: c.detail ? shorten(c.detail, 1500) : c.detail
+        })),
         libraries: this.libraries
       })
     );
@@ -275,7 +285,9 @@ export class Worker {
 
   /** Reports a step; the next step starts only after the server's answer. */
   private async report(batch: Batch, item: BatchItem, report: StepReport): Promise<void> {
-    await this.retry(() => this.api.report(batch.id, item.itemId, report));
+    // A long error message must never make the report itself too large for the server.
+    const sent = report.detail ? { ...report, detail: shorten(report.detail, 1500) } : report;
+    await this.retry(() => this.api.report(batch.id, item.itemId, sent));
     item.state = report.step;
   }
 
@@ -327,7 +339,8 @@ export class Worker {
       clearInterval(lease);
     }
     if (this.stopped) return;
-    await this.retry(() => this.api.finish(batch.id, error));
+    const sentError = error === null ? null : shorten(error, 1500);
+    await this.retry(() => this.api.finish(batch.id, sentError));
     this.log.info(`Batch ${batch.id} finished${error ? ` with an error: ${error}` : ''}`);
   }
 

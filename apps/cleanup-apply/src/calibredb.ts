@@ -183,7 +183,17 @@ export class Calibredb {
   ): Promise<RunResult> {
     const r = await this.run(command, login, args);
     if (r.code !== 0) {
-      const tail = (r.stderr || r.stdout).trim().split('\n').slice(-5).join(' | ');
+      // The last lines of the output, each and all of it kept short: calibre can print very
+      // long lines (a whole traceback or page on one line).
+      const tail = shorten(
+        (r.stderr || r.stdout)
+          .trim()
+          .split(/\r?\n/)
+          .slice(-5)
+          .map((l) => shorten(l, 300))
+          .join(' | '),
+        1000
+      );
       throw new CalibredbError(`calibredb ${command} failed (exit ${r.code}): ${tail}`, r);
     }
     return r;
@@ -250,6 +260,13 @@ export class Calibredb {
     ]);
     return (JSON.parse(r.stdout || '[]') as { id: number }[]).map((b) => b.id);
   }
+}
+
+/** At most `max` characters: the start and the end, with "…" between. */
+export function shorten(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const half = Math.floor((max - 1) / 2);
+  return `${text.slice(0, half)}…${text.slice(text.length - half)}`;
 }
 
 /** Calibre's timestamps as ms (snapshot "2026-11-09 04:00:11.251060+00:00" or ISO). */

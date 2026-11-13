@@ -233,6 +233,7 @@ describe('the sidecar with the server', () => {
       illustrator?: boolean;
       fetchImpl?: typeof fetch;
       fail?: string;
+      failLong?: boolean;
     } = {},
   ) {
     const config: SidecarConfig = {
@@ -256,6 +257,7 @@ describe('the sidecar with the server', () => {
         FAKE_ILLUSTRATOR: extra.illustrator === false ? '0' : '1',
         FAKE_LOG: log,
         FAKE_FAIL: extra.fail ?? '',
+        FAKE_FAIL_LONG: extra.failLong ? '1' : '0',
       },
     });
     return new Worker({
@@ -480,6 +482,32 @@ describe('the sidecar with the server', () => {
     expect(env.readerBook(restored.uuid)).toEqual({ bookId: a2Reader, missing: false });
     expect(env.readerBook(uuids.A1)!.bookId).not.toBe(a2Reader);
     expect(env.service.batches.get(batch.id)!.state).toBe('undone');
+  });
+
+  it('a very long calibredb error marks the copy failed (short text) instead of stopping the batch', async () => {
+    const w = worker({ fail: 'export', failLong: true });
+    await w.runChecks();
+    await w.cycle();
+    await turnOn();
+    await runAll(w);
+    const batch = env.service.batches.list()[0];
+    expect(batch.state).toBe('failed');
+    expect(batch.error ?? '').not.toMatch(/too large/i);
+    const items = env.cleanupDb.prepare('SELECT state, detail FROM batch_items').all() as {
+      state: string;
+      detail: string | null;
+    }[];
+    expect(items.length).toBeGreaterThan(0);
+    for (const i of items) {
+      expect(i.state).toBe('failed');
+      expect(i.detail).toMatch(/simulated failure of export/);
+      expect(i.detail).toMatch(/end$/);
+      expect(i.detail!.length).toBeLessThanOrEqual(1500);
+    }
+    // Nothing was removed from Calibre.
+    const mdb = new Database(env.lib.dbFile, { readonly: true });
+    expect((mdb.prepare('SELECT COUNT(*) AS n FROM books').get() as { n: number }).n).toBe(35);
+    mdb.close();
   });
 
   it('nothing is applied while a safety check fails (no #illustrator column)', async () => {
