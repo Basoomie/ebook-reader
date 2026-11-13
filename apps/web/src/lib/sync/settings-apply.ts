@@ -20,6 +20,11 @@ import {
   ankiLookBackDays$,
   ankiTagPrefix$
 } from '$lib/anki/settings';
+import {
+  ttsChapterPauseMs$,
+  ttsParagraphPauseMs$,
+  ttsSentencePauseMs$
+} from '$lib/audio/tts-settings';
 import { parseStoredValue, SETTINGS_REGISTRY } from '$lib/sync/settings-registry';
 
 /**
@@ -39,7 +44,10 @@ export const GLOBAL_SETTING_SUBJECTS: Record<string, { next(value: never): void 
   ankiLookBackDays: ankiLookBackDays$,
   ankiTagPrefix: ankiTagPrefix$,
   ankiAudioMatchThreshold: ankiAudioMatchThreshold$,
-  ankiAudioMaxSeconds: ankiAudioMaxSeconds$
+  ankiAudioMaxSeconds: ankiAudioMaxSeconds$,
+  ttsSentencePauseMs: ttsSentencePauseMs$,
+  ttsParagraphPauseMs: ttsParagraphPauseMs$,
+  ttsChapterPauseMs: ttsChapterPauseMs$
 };
 
 /** Applies one global setting. null (never set on the source device) leaves this device's value. */

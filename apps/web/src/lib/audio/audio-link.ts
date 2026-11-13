@@ -70,6 +70,8 @@ export function fileCountLabel(n: number): string {
 /** "1 file · 9 h 12 min · 412.0 MB". */
 export function folderDetails(folder: AudioFolderSummary): string {
   return [
+    // WP17: an audiobook made on the PC says so first.
+    folder.generated ? 'Generated' : '',
     fileCountLabel(folder.fileCount),
     formatAudioLength(folder.durationSeconds),
     formatFileSize(folder.totalBytes)
@@ -80,7 +82,9 @@ export function folderDetails(folder: AudioFolderSummary): string {
 
 /** "subs-new · 12 KB". */
 export function subtitleDetails(file: SubtitleFileSummary): string {
-  return [file.parentName ?? '', formatFileSize(file.size)].filter(Boolean).join(' · ');
+  return [file.generated ? 'Generated' : '', file.parentName ?? '', formatFileSize(file.size)]
+    .filter(Boolean)
+    .join(' · ');
 }
 
 /** WP15f: a link to a whole folder of several files. */

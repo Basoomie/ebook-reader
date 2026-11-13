@@ -298,6 +298,54 @@ export function replaceSubtitlesWithJobCopy(subtitleName: string): ConfirmCopy {
   };
 }
 
+// ---- Audiobooks made on the PC (WP17) -------------------------------------------------------------
+
+export function replaceAudiobookWithMadeCopy(audiobookName: string): ConfirmCopy {
+  return {
+    title: 'Make an audiobook for this book?',
+    message: [
+      `Your PC reads the book aloud with the voice you chose. When it is ready, this book uses the new audiobook and its subtitles instead of ${quoted(String(audiobookName))}, on every device.`,
+      `${quoted(String(audiobookName))} stays in the audiobooks folder.`
+    ],
+    confirmLabel: 'Make the audiobook',
+    danger: false
+  };
+}
+
+export function stopAudiobookJobCopy(bookTitle: string, chaptersDone: number): ConfirmCopy {
+  return {
+    title: 'Stop making the audiobook?',
+    message: [
+      `Making the audiobook of ${quoted(String(bookTitle))} stops, and the ${
+        chaptersDone === 1 ? 'chapter' : `${chaptersDone} chapters`
+      } read so far ${chaptersDone === 1 ? 'is' : 'are'} thrown away. Nothing is added to the audiobooks folder.`,
+      'To stop for a while and go on later instead, pause the PC in Settings > Audiobooks.'
+    ],
+    confirmLabel: 'Stop making the audiobook'
+  };
+}
+
+export function deleteVoiceCopy(name: string): ConfirmCopy {
+  return {
+    title: 'Delete this voice?',
+    message: [
+      `${quoted(String(name))} is deleted from the server. Audiobooks already made with it stay as they are.`
+    ],
+    confirmLabel: 'Delete voice'
+  };
+}
+
+export function removeTtsModelCopy(label: string): ConfirmCopy {
+  return {
+    title: 'Remove this model?',
+    message: [
+      `${quoted(String(label))} is no longer offered, and the PC deletes its files the next time it checks in. Audiobooks already made with it stay as they are.`,
+      'You can add it again later; it is then downloaded again.'
+    ],
+    confirmLabel: 'Remove model'
+  };
+}
+
 // ---- Whispersync (audiobook menu) -----------------------------------------------------------------
 
 export function resetMatchCopy(): ConfirmCopy {

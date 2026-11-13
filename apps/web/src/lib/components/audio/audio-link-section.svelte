@@ -27,6 +27,7 @@
   import AudioChoiceRow from '$lib/components/audio/audio-choice-row.svelte';
   import AudioFilesStep from '$lib/components/audio/audio-files-step.svelte';
   import SubtitleJobPanel from '$lib/components/audio/subtitle-job-panel.svelte';
+  import AudiobookJobPanel from '$lib/components/audio/audiobook-job-panel.svelte';
   import {
     CHANGED_NOTICE,
     MISSING_NOTICE,
@@ -469,7 +470,10 @@
     }
   }
 
-  /** WP16: the subtitles made on the PC are ready and the server linked them. */
+  /**
+   * WP16: the subtitles made on the PC are ready and the server linked them.
+   * WP17: also an audiobook made on the PC (with its subtitles).
+   */
   async function onSubtitlesMade() {
     const id = bookId;
     try {
@@ -477,6 +481,7 @@
       if (!destroyed && id === bookId) {
         link = fresh;
         changingSubtitles = false;
+        changingAudio = false;
       }
     } catch (err) {
       message = describe(err);
@@ -970,6 +975,18 @@
             </div>
           {/if}
         </div>
+      {/if}
+
+      <!-- WP17: an audiobook made on the PC (also for books without one) -->
+      {#if !filesFolder}
+        <AudiobookJobPanel
+          {api}
+          {bookId}
+          {link}
+          {audioEnabled}
+          busy={busy || merging}
+          on:linked={onSubtitlesMade}
+        />
       {/if}
     {/if}
   </section>
