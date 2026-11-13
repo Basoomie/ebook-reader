@@ -227,6 +227,13 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
       );
     `,
   },
+  {
+    version: 2,
+    name: "the content server's library list",
+    // The library ids the sidecar found on the content server, so the page needs no
+    // "Calibre library id" field: the id is found from the reader library's folder.
+    sql: `ALTER TABLE sidecar_status ADD COLUMN calibre_libraries TEXT;`,
+  },
 ];
 
 export const CLEANUP_SCHEMA_VERSION = CLEANUP_MIGRATIONS[CLEANUP_MIGRATIONS.length - 1].version;

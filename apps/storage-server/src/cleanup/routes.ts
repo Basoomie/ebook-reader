@@ -109,8 +109,14 @@ export function createCleanupApplyRouter(options: CleanupOptions): Router {
     '/cleanup-apply/claim',
     asyncHandler(async (_req, res) => {
       const service = serviceOr503(options);
-      if (!service.sidecarConfig()) {
-        res.json({ batch: null, wait: 'The Calibre settings are not complete' });
+      const login = service.sidecarConfig();
+      if (!login?.libraryId) {
+        res.json({
+          batch: null,
+          wait: login
+            ? 'The library on the content server is not known yet'
+            : 'The Calibre settings are not complete',
+        });
         return;
       }
       res.json(await service.batches.claim());

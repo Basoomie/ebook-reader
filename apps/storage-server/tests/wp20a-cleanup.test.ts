@@ -654,6 +654,78 @@ describe('tokens, secrets and the routes', () => {
     expect(hb2.body.calibre).toBeNull();
   });
 
+  it("finds the content server's library id by itself", async () => {
+    const user = { Authorization: `Bearer ${env.userToken()}` };
+    const apply = { Authorization: `Bearer ${env.applyToken()}` };
+    await request(env.app)
+      .put('/api/v1/cleanup/settings')
+      .set(user)
+      .send({ contentServerUrl: 'http://c:8081', calibreUsername: 'u' })
+      .expect(200);
+    await request(env.app)
+      .put('/api/v1/cleanup/secrets/calibrePassword')
+      .set(user)
+      .send({ value: 'pw' });
+    // Before the sidecar has listed the server's libraries: login without a library.
+    let hb = await request(env.app)
+      .post('/api/v1/cleanup-apply/heartbeat')
+      .set(apply)
+      .send({})
+      .expect(200);
+    expect(hb.body.calibre.libraryId).toBeNull();
+    const claim = await request(env.app).post('/api/v1/cleanup-apply/claim').set(apply).expect(200);
+    expect(claim.body).toEqual({
+      batch: null,
+      wait: 'The library on the content server is not known yet',
+    });
+    // The reader library's folder is japanese-library: that id is picked from the list.
+    hb = await request(env.app)
+      .post('/api/v1/cleanup-apply/heartbeat')
+      .set(apply)
+      .send({ libraries: ['english-library', 'japanese-library'] })
+      .expect(200);
+    expect(hb.body.calibre.libraryId).toBe('japanese-library');
+    let status = await request(env.app).get('/api/v1/cleanup/status').set(user).expect(200);
+    expect(status.body.calibre).toEqual({
+      id: 'japanese-library',
+      auto: true,
+      libraries: ['english-library', 'japanese-library'],
+    });
+    expect(
+      status.body.checks.find((c: { name: string }) => c.name === 'library_found'),
+    ).toMatchObject({
+      ok: true,
+      detail: 'japanese-library (found automatically)',
+    });
+    expect(status.body.checks.some((c: { name: string }) => c.name === 'backup_recorded')).toBe(
+      false,
+    );
+    // Not on the list and more than one library: asked on the page.
+    await request(env.app)
+      .post('/api/v1/cleanup-apply/heartbeat')
+      .set(apply)
+      .send({ libraries: ['a', 'b'] });
+    status = await request(env.app).get('/api/v1/cleanup/status').set(user).expect(200);
+    expect(status.body.calibre.id).toBeNull();
+    expect(status.body.checks.find((c: { name: string }) => c.name === 'library_found').ok).toBe(
+      false,
+    );
+    // One library only: that one.
+    await request(env.app)
+      .post('/api/v1/cleanup-apply/heartbeat')
+      .set(apply)
+      .send({ libraries: ['Books'] });
+    status = await request(env.app).get('/api/v1/cleanup/status').set(user).expect(200);
+    expect(status.body.calibre.id).toBe('Books');
+    // A library chosen on the page wins.
+    await request(env.app)
+      .put('/api/v1/cleanup/settings')
+      .set(user)
+      .send({ calibreLibraryId: 'other' });
+    status = await request(env.app).get('/api/v1/cleanup/status').set(user).expect(200);
+    expect(status.body.calibre).toMatchObject({ id: 'other', auto: false });
+  });
+
   it('stages 2-5 cannot be switched on; every stage starts off', async () => {
     const user = { Authorization: `Bearer ${env.userToken()}` };
     const status = await request(env.app).get('/api/v1/cleanup/status').set(user).expect(200);

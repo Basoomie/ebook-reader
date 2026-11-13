@@ -25,7 +25,7 @@ import {
   ServerError,
   type StepReport
 } from './api';
-import { Calibredb, calibreTime, sameVersion, versionAtLeast } from './calibredb';
+import { Calibredb, calibreTime, type Login, sameVersion, versionAtLeast } from './calibredb';
 import type { SidecarConfig } from './config';
 import { exists, Quarantine, sha256File } from './quarantine';
 
@@ -69,6 +69,7 @@ export class Worker {
   private trashRestore: boolean | null = null;
   private problem: string | null = null;
   private login: CalibreLogin | null = null;
+  private libraries: string[] = [];
   private itemDelayMs = 2000;
   private pollMs = 15000;
   private readonly retryMinMs: number;
@@ -112,9 +113,15 @@ export class Worker {
     await this.heartbeat();
     if (Date.now() - this.checkedAt >= this.opts.config.checkSeconds * 1000) {
       await this.runChecks();
+      const libraryBefore = this.login?.libraryId ?? null;
       await this.heartbeat();
+      // The server picked the library from the list just sent: check that library now.
+      if ((this.login?.libraryId ?? null) !== libraryBefore) {
+        await this.runChecks();
+        await this.heartbeat();
+      }
     }
-    if (!this.login) return 'idle';
+    if (!this.login?.libraryId) return 'idle';
     const { batch, wait } = await this.retry(() => this.api.claim());
     if (!batch) {
       if (wait) this.log.info(`No batch yet: ${wait}`);
@@ -132,7 +139,8 @@ export class Worker {
         serverVersion: this.serverVersion ? `calibre ${this.serverVersion}` : null,
         trashRestore: this.trashRestore,
         problem: this.problem,
-        checks: this.checks
+        checks: this.checks,
+        libraries: this.libraries
       })
     );
     const changed = JSON.stringify(answer.calibre) !== JSON.stringify(this.login);
@@ -203,24 +211,26 @@ export class Worker {
       same,
       `content server ${this.serverVersion ?? '?'}, sidecar calibredb ${this.calibredbVersion ?? '?'}`
     );
+    // The server's libraries (`#-` needs no library id); the reader's server picks the one to
+    // clean from this list, so nobody has to type the id.
     try {
-      const r = await this.calibredb.run('libraries', login);
-      const found = new RegExp(
-        `(^|\\s)${login.libraryId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(\\s|$)`,
-        'm'
-      ).test(r.stdout);
+      const r = await this.calibredb.run('libraries', { ...login, libraryId: '-' });
       add('login', r.code === 0, r.code === 0 ? null : (r.stderr || r.stdout).trim().slice(-300));
-      add(
-        'library_found',
-        found,
-        found ? login.libraryId : `Not in: ${r.stdout.trim().slice(0, 300)}`
-      );
+      this.libraries = r.code === 0 ? parseLibraryIds(r.stdout) : [];
     } catch (err) {
       add('login', false, (err as Error).message);
-      add('library_found', false, null);
+      this.libraries = [];
     }
+    if (!login.libraryId) {
+      add('illustrator_column', false, 'Waiting until the library on the content server is known');
+      this.trashRestore = null;
+      this.checks = out;
+      this.checkedAt = Date.now();
+      return out;
+    }
+    const lib: Login = { ...login, libraryId: login.libraryId };
     try {
-      const r = await this.calibredb.ok('custom_columns', login);
+      const r = await this.calibredb.ok('custom_columns', lib);
       const ok = hasMultipleTextColumn(r.stdout, 'illustrator');
       const block = firstBlock(r.stdout, 'illustrator');
       add(
@@ -241,7 +251,7 @@ export class Worker {
       versionAtLeast(this.calibredbVersion, TRASH_RESTORE_VERSION)
     ) {
       try {
-        const r = await this.calibredb.run('trash_list', login);
+        const r = await this.calibredb.run('trash_list', lib);
         trash = r.code === 0;
       } catch {
         trash = false;
@@ -258,9 +268,9 @@ export class Worker {
     return out;
   }
 
-  private requireLogin(): CalibreLogin {
-    if (!this.login) throw new Error('No Calibre login');
-    return this.login;
+  private requireLogin(): Login {
+    if (!this.login?.libraryId) throw new Error('No Calibre login or library yet');
+    return { ...this.login, libraryId: this.login.libraryId };
   }
 
   /** Reports a step; the next step starts only after the server's answer. */
@@ -449,7 +459,7 @@ export class Worker {
   }
 
   /** Exports one copy into a new folder of the batch (or finds an earlier complete export). */
-  private async exportItem(batch: Batch, item: BatchItem, login: CalibreLogin): Promise<string> {
+  private async exportItem(batch: Batch, item: BatchItem, login: Login): Promise<string> {
     const earlier = await this.quarantine.findExport(batch.id, item.calibreId, item.sha256);
     if (earlier) return earlier;
     const dir = await this.quarantine.freshName(
@@ -611,6 +621,14 @@ export function firstBlock(output: string, label: string): string | null {
     out.push(l);
   }
   return out.join('\n');
+}
+
+/** The library ids in `calibredb list --with-library http://…/#-` output (one per line). */
+export function parseLibraryIds(output: string): string[] {
+  return output
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l !== '' && !/\s/.test(l) && !l.includes(':'));
 }
 
 /** `trash list --for-machine` mentions this book id. */

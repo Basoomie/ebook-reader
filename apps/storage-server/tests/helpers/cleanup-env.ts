@@ -143,7 +143,6 @@ export function healthyHeartbeat(trashRestore = true) {
   const names = [
     'content_server',
     'login',
-    'library_found',
     'versions_match',
     'illustrator_column',
     'quarantine_writable',
@@ -154,6 +153,7 @@ export function healthyHeartbeat(trashRestore = true) {
     calibredb: 'calibredb (calibre 9.18.0)',
     serverVersion: 'calibre 9.18.0',
     trashRestore,
+    libraries: ['japanese-library', 'english-library'],
     checks: names.map((name) => ({ name, ok: name === 'trash_restore' ? trashRestore : true })),
   };
 }

@@ -10,7 +10,8 @@ import { pipeline } from 'stream/promises';
 
 export interface CalibreLogin {
   contentServerUrl: string;
-  libraryId: string;
+  /** null until the reader's server knows which of the content server's libraries to use. */
+  libraryId: string | null;
   username: string;
   password: string;
 }
@@ -72,6 +73,8 @@ export interface Heartbeat {
   trashRestore: boolean | null;
   problem: string | null;
   checks: CheckResult[];
+  /** The library ids the content server lists. */
+  libraries: string[];
 }
 
 export interface StepReport {

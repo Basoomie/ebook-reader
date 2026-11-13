@@ -37,12 +37,12 @@ export interface CheckResult {
 export const CHECK_LABELS: Record<string, { label: string; required: boolean }> = {
   sidecar_online: { label: 'Apply sidecar is running', required: true },
   calibre_settings: {
-    label: 'Content server address, library id, user and password are set',
+    label: 'Content server address, user and password are set',
     required: true,
   },
   content_server: { label: 'Content server reachable', required: true },
   login: { label: 'Content server login works', required: true },
-  library_found: { label: 'Calibre library id found on the content server', required: true },
+  library_found: { label: 'The library is found on the content server', required: true },
   versions_match: { label: "Sidecar's calibre matches the content server's", required: true },
   illustrator_column: {
     label: 'Custom column #illustrator exists (multiple text)',
@@ -58,7 +58,6 @@ export const CHECK_LABELS: Record<string, { label: string; required: boolean }> 
     label: "Reader's index of the library is ready (snapshot for each batch)",
     required: true,
   },
-  backup_recorded: { label: 'Full library backup recorded as done', required: true },
 };
 
 /** Sidecar results older than this count as not checked. */
@@ -73,6 +72,14 @@ export interface SidecarHeartbeat {
   trashRestore?: unknown;
   problem?: unknown;
   checks?: unknown;
+  /** The library ids the content server lists (`--with-library http://…/#-`). */
+  libraries?: unknown;
+}
+
+/** The content server names a library after its folder, with spaces as underscores. */
+export function libraryIdFromFolder(folder: string): string {
+  const name = folder.split(/[\\/]/).filter(Boolean).pop() ?? folder;
+  return name.replace(/\s/g, '_');
 }
 
 export interface CleanupServiceOptions {
@@ -179,6 +186,15 @@ export class CleanupService {
         str(body.problem, 2000),
         now,
       );
+    if (Array.isArray(body.libraries)) {
+      const ids = body.libraries
+        .map((l) => str(l, 200))
+        .filter((l): l is string => l !== null)
+        .slice(0, 100);
+      this.db
+        .prepare('UPDATE sidecar_status SET calibre_libraries = ? WHERE id = 1')
+        .run(JSON.stringify(ids));
+    }
     if (Array.isArray(body.checks)) {
       const put = this.db.prepare(
         `INSERT INTO preflight (name, ok, detail, source, checked_at) VALUES (?, ?, ?, 'sidecar', ?)
@@ -196,19 +212,54 @@ export class CleanupService {
     }
   }
 
-  /** What the sidecar needs to reach Calibre (its token only). */
+  /** The library ids the content server listed on the sidecar's last check. */
+  calibreLibraries(): string[] {
+    const r = this.db
+      .prepare('SELECT calibre_libraries FROM sidecar_status WHERE id = 1')
+      .get() as {
+      calibre_libraries: string | null;
+    };
+    try {
+      return r.calibre_libraries ? (JSON.parse(r.calibre_libraries) as string[]) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * The content server's id for the library to clean. Found automatically: the library whose
+   * id is the reader library's folder name (spaces as underscores), else the only library the
+   * server has. A library chosen on the page (settings.calibreLibraryId) wins.
+   */
+  resolvedLibraryId(): { id: string | null; auto: boolean; libraries: string[] } {
+    const libraries = this.calibreLibraries();
+    const chosen = getSettings(this.db).calibreLibraryId;
+    if (chosen) return { id: chosen, auto: false, libraries };
+    const target = this.targetLibrary();
+    const folder = target ? getLibrary(this.opts.main, target)?.folder : undefined;
+    const fromFolder = folder !== undefined ? libraryIdFromFolder(folder) : null;
+    if (fromFolder && libraries.includes(fromFolder))
+      return { id: fromFolder, auto: true, libraries };
+    if (libraries.length === 1) return { id: libraries[0], auto: true, libraries };
+    return { id: null, auto: true, libraries };
+  }
+
+  /**
+   * What the sidecar needs to reach Calibre (its token only). The library id may still be
+   * null: the sidecar then only lists the server's libraries, and no batch is handed out.
+   */
   sidecarConfig(): {
     contentServerUrl: string;
-    libraryId: string;
+    libraryId: string | null;
     username: string;
     password: string;
   } | null {
     const s = getSettings(this.db);
     const password = this.secrets.read('calibrePassword');
-    if (!s.contentServerUrl || !s.calibreLibraryId || !s.calibreUsername || !password) return null;
+    if (!s.contentServerUrl || !s.calibreUsername || !password) return null;
     return {
       contentServerUrl: s.contentServerUrl,
-      libraryId: s.calibreLibraryId,
+      libraryId: this.resolvedLibraryId().id,
       username: s.calibreUsername,
       password,
     };
@@ -235,9 +286,10 @@ export class CleanupService {
   }
 
   checks(now = Date.now()): CheckResult[] {
-    const settings = getSettings(this.db);
     const sidecar = this.sidecar(now);
     const target = this.targetLibrary();
+    const login = this.sidecarConfig();
+    const lib = this.resolvedLibraryId();
     const server: Record<string, { ok: boolean; detail: string | null }> = {
       sidecar_online: {
         ok: sidecar.online,
@@ -248,8 +300,19 @@ export class CleanupService {
           : 'Never seen. Start the ttsu-cleanup-apply container with its token.',
       },
       calibre_settings: {
-        ok: this.sidecarConfig() !== null,
-        detail: this.sidecarConfig() ? null : 'Fill in the Calibre settings below',
+        ok: login !== null,
+        detail: login ? null : 'Fill in the Calibre settings (Settings tab)',
+      },
+      library_found: {
+        ok: lib.id !== null && lib.libraries.includes(lib.id),
+        detail:
+          lib.libraries.length === 0
+            ? 'Waiting for the sidecar to list the content server’s libraries'
+            : lib.id === null
+              ? `Choose it in the Settings tab (the server has: ${lib.libraries.join(', ')})`
+              : lib.libraries.includes(lib.id)
+                ? `${lib.id}${lib.auto ? ' (found automatically)' : ''}`
+                : `${lib.id} is not on the server (it has: ${lib.libraries.join(', ')})`,
       },
       target_library: {
         ok: target !== null,
@@ -258,12 +321,6 @@ export class CleanupService {
           : 'Choose the library below',
       },
       library_indexed: this.libraryIndexed(target),
-      backup_recorded: {
-        ok: settings.backup.confirmedAt !== null,
-        detail: settings.backup.confirmedAt
-          ? `${settings.backup.path} (verified ${settings.backup.verifiedOn})`
-          : 'Confirm the full library backup below',
-      },
     };
     const sidecarRows = new Map(
       (
@@ -501,6 +558,8 @@ export class CleanupService {
         name: l.name,
         folder: l.folder,
       })),
+      // The content server's name for the library to clean (found automatically if possible).
+      calibre: this.resolvedLibraryId(),
       stage1: {
         counts: this.stage1Counts(target),
         openBatch: this.batches.open(),

@@ -15,11 +15,7 @@ import {
   stage1Lines,
   tagsMoving
 } from './cleanup-text';
-import {
-  turnOnIdenticalFilesCopy,
-  undoCleanupBatchCopy,
-  replaceCleanupSecretCopy
-} from '$lib/confirm/confirm-copy';
+import { turnOnIdenticalFilesCopy, undoCleanupBatchCopy } from '$lib/confirm/confirm-copy';
 
 const stage = (
   progress: Record<string, unknown>,
@@ -151,7 +147,6 @@ describe('cleanup wording', () => {
     expect(turnOnIdenticalFilesCopy(null).title).toBe('Remove identical copies from Calibre?');
     expect(undoCleanupBatchCopy(2).title).toBe('Bring back 2 books removed in this batch?');
     expect(undoCleanupBatchCopy(2).danger).toBe(false);
-    expect(replaceCleanupSecretCopy('Calibre password').irreversible).toBe(true);
   });
 });
 

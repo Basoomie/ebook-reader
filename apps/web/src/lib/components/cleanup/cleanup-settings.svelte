@@ -6,44 +6,39 @@
    */
 
   /**
-   * /cleanup settings (WP20a). Everything the cleanup needs is entered here and kept on the
-   * server: the Calibre content server and login, the library to clean, the backup record,
-   * your own tags, pacing, the gate threshold, the AI keys and models (stored now, used by
-   * later stages). Keys and the password are write-only: the page never gets them back,
-   * only whether one is saved (and the last 4 characters of an API key).
+   * The Settings tab of /cleanup (WP20a). Everything is kept on the server: the Calibre
+   * content server with its user and password, the library to clean (the content server's
+   * id for it is found automatically from the server's own list; asked only when it can't
+   * be told), your own tags, pacing, the accuracy threshold, and the AI keys and models
+   * (stored now, used by later stages). One Save saves all of it. The password and keys are
+   * write-only: the page never gets them back, only whether one is saved (and the last
+   * 4 characters of an API key).
+   *
+   * The app compiles with `immutable: true`, so values the template shows are always
+   * replaced, never changed in place.
    */
   import { createEventDispatcher, onMount } from 'svelte';
   import type {
     CleanupApi,
     CleanupSettings,
+    CleanupStatus,
     SecretInfo,
     SecretName
   } from '$lib/cleanup/cleanup-api';
   import { confirmDestructive } from '$lib/confirm/confirm';
-  import { removeCleanupSecretCopy, replaceCleanupSecretCopy } from '$lib/confirm/confirm-copy';
+  import { removeCleanupSecretCopy } from '$lib/confirm/confirm-copy';
   import { formatWhen } from '$lib/notes/notes-format';
 
   export let api: CleanupApi;
   export let libraries: { id: string; name: string; folder: string }[] = [];
+  /** The content server's libraries and the one in use (from the status). */
+  export let calibre: CleanupStatus['calibre'] | null = null;
 
   const dispatch = createEventDispatcher<{ saved: void }>();
 
-  const SECRETS: { name: SecretName; label: string; hint: string }[] = [
-    {
-      name: 'calibrePassword',
-      label: 'Calibre password',
-      hint: 'The content server user’s password.'
-    },
-    {
-      name: 'anthropicApiKey',
-      label: 'Anthropic API key',
-      hint: 'Used from the online-sources stage on.'
-    },
-    {
-      name: 'openaiApiKey',
-      label: 'OpenAI API key',
-      hint: 'Used from the online-sources stage on.'
-    }
+  const KEYS: { name: SecretName; label: string }[] = [
+    { name: 'anthropicApiKey', label: 'Anthropic API key' },
+    { name: 'openaiApiKey', label: 'OpenAI API key' }
   ];
 
   const MODEL_LABELS: Record<string, string> = {
@@ -66,9 +61,12 @@
     anthropicApiKey: '',
     openaiApiKey: ''
   };
-  let secretError: Partial<Record<SecretName, string>> = {};
   let customTagsText = '';
-  let backupDone = false;
+  /** The content server library chosen by hand ('' = found automatically). */
+  let serverLibrary = '';
+
+  $: needsServerLibrary =
+    !!calibre && calibre.libraries.length > 1 && (calibre.id === null || !calibre.auto);
 
   onMount(load);
 
@@ -78,13 +76,19 @@
       settings = answer.settings;
       secrets = answer.secrets;
       customTagsText = settings.customTags.join('\n');
-      backupDone = settings.backup.confirmedAt !== null;
+      serverLibrary = settings.calibreLibraryId;
       loadError = '';
     } catch (err) {
       loadError = (err as Error).message;
     }
   }
 
+  function setSecretValue(name: SecretName, value: string) {
+    secretValues = { ...secretValues, [name]: value };
+    saved = false;
+  }
+
+  /** Saves the settings and every password or key that was typed. */
   async function save() {
     if (!settings) return;
     saving = true;
@@ -93,7 +97,7 @@
     try {
       const answer = await api.saveSettings({
         contentServerUrl: settings.contentServerUrl,
-        calibreLibraryId: settings.calibreLibraryId,
+        calibreLibraryId: serverLibrary,
         calibreUsername: settings.calibreUsername,
         targetLibraryId: settings.targetLibraryId || null,
         models: settings.models,
@@ -108,16 +112,17 @@
           .map((t) => t.trim())
           .filter(Boolean),
         gateThresholdPercent: Number(settings.gateThresholdPercent),
-        reviewAlarmPercent: Number(settings.reviewAlarmPercent),
-        backup: {
-          path: settings.backup.path,
-          verifiedOn: settings.backup.verifiedOn,
-          confirmedAt: backupDone ? (settings.backup.confirmedAt ?? Date.now()) : null
-        }
+        reviewAlarmPercent: Number(settings.reviewAlarmPercent)
       });
       settings = answer.settings;
       secrets = answer.secrets;
       customTagsText = settings.customTags.join('\n');
+      for (const name of Object.keys(secretValues) as SecretName[]) {
+        const value = secretValues[name];
+        if (!value.trim()) continue;
+        secrets = (await api.saveSecret(name, value)).secrets;
+        secretValues = { ...secretValues, [name]: '' };
+      }
       saved = true;
       dispatch('saved');
     } catch (err) {
@@ -127,56 +132,35 @@
     }
   }
 
-  /**
-   * The app compiles with `immutable: true`: a value changed inside an object is not redrawn,
-   * so each keystroke replaces the object (otherwise Save stays disabled).
-   */
-  function setSecretValue(name: SecretName, value: string) {
-    secretValues = { ...secretValues, [name]: value };
-  }
-
-  async function saveSecret(name: SecretName, label: string) {
-    const value = secretValues[name];
-    if (!value.trim()) return;
-    if (secrets?.[name].set && !(await confirmDestructive(replaceCleanupSecretCopy(label)))) return;
-    try {
-      secrets = (await api.saveSecret(name, value)).secrets;
-      secretValues = { ...secretValues, [name]: '' };
-      secretError = { ...secretError, [name]: '' };
-      dispatch('saved');
-    } catch (err) {
-      secretError = { ...secretError, [name]: (err as Error).message };
-    }
-  }
-
   async function removeSecret(name: SecretName, label: string) {
     if (!(await confirmDestructive(removeCleanupSecretCopy(label)))) return;
     try {
       secrets = (await api.removeSecret(name)).secrets;
       dispatch('saved');
     } catch (err) {
-      secretError = { ...secretError, [name]: (err as Error).message };
+      saveError = (err as Error).message;
     }
   }
 
   function secretState(info: SecretInfo | undefined): string {
-    if (!info?.set) return 'Not saved';
-    const when = info.updatedAt ? ` (${formatWhen(info.updatedAt)})` : '';
-    return info.hint ? `Saved · ends in ${info.hint}${when}` : `Saved${when}`;
+    if (!info?.set) return 'Not saved yet';
+    const when = info.updatedAt ? ` ${formatWhen(info.updatedAt)}` : '';
+    return info.hint ? `Saved${when} · ends in ${info.hint}` : `Saved${when}`;
   }
 
   const field = 'flex flex-col gap-1 text-sm';
   const label = 'font-medium';
+  const legend = 'mb-2 font-mincho text-lg font-bold';
 </script>
 
 {#if loadError}
   <p class="c-notice" role="alert">{loadError}</p>
 {:else if settings && secrets}
-  <form class="flex flex-col gap-8" on:submit|preventDefault={save} data-testid="cleanup-settings">
+  <form class="flex flex-col gap-10" on:submit|preventDefault={save} data-testid="cleanup-settings">
     <fieldset class="grid gap-4 sm:grid-cols-2">
-      <legend class="mb-2 font-mincho text-lg font-bold">Calibre</legend>
-      <label class={field}>
-        <span class={label}>Content server address</span>
+      <legend class={legend}>Calibre content server</legend>
+      <label class="{field} sm:col-span-2">
+        <span class={label}>Address</span>
         <input
           class="c-input"
           type="url"
@@ -186,16 +170,7 @@
         />
       </label>
       <label class={field}>
-        <span class={label}>Calibre library id</span>
-        <input
-          class="c-input"
-          placeholder="japanese-library"
-          bind:value={settings.calibreLibraryId}
-          data-testid="cleanup-library-id"
-        />
-      </label>
-      <label class={field}>
-        <span class={label}>Content server user</span>
+        <span class={label}>User</span>
         <input
           class="c-input"
           autocomplete="off"
@@ -203,6 +178,40 @@
           data-testid="cleanup-username"
         />
       </label>
+      <div class={field}>
+        <label class={field}>
+          <span class={label}>Password</span>
+          <input
+            class="c-input"
+            type="password"
+            autocomplete="new-password"
+            placeholder={secrets.calibrePassword.set ? 'Saved; type a new one to change it' : ''}
+            value={secretValues.calibrePassword}
+            on:input={(e) => setSecretValue('calibrePassword', e.currentTarget.value)}
+            data-testid="cleanup-secret-calibrePassword"
+          />
+        </label>
+        <span
+          class="flex flex-wrap items-center gap-x-2 text-c-muted"
+          data-testid="cleanup-secret-state-calibrePassword"
+        >
+          {secretState(secrets.calibrePassword)}
+          {#if secrets.calibrePassword.set}
+            <button
+              type="button"
+              class="c-btn c-btn-ghost"
+              on:click={() => removeSecret('calibrePassword', 'Calibre password')}>Remove</button
+            >
+          {/if}
+        </span>
+      </div>
+      <p class="text-sm text-c-muted sm:col-span-2">
+        The user needs permission to make changes (not read-only) in Calibre’s sharing settings.
+      </p>
+    </fieldset>
+
+    <fieldset class="grid gap-4 sm:grid-cols-2">
+      <legend class={legend}>Library</legend>
       <label class={field}>
         <span class={label}>Library to clean</span>
         <select class="c-input" bind:value={settings.targetLibraryId} data-testid="cleanup-target">
@@ -212,31 +221,29 @@
           {/each}
         </select>
       </label>
+      <div class={field} data-testid="cleanup-server-library">
+        <span class={label}>On the content server</span>
+        {#if needsServerLibrary && calibre}
+          <select class="c-input" bind:value={serverLibrary} data-testid="cleanup-library-id">
+            <option value="">Choose…</option>
+            {#each calibre.libraries as id (id)}
+              <option value={id}>{id}</option>
+            {/each}
+          </select>
+        {:else if calibre?.id}
+          <span class="flex min-h-[3rem] items-center">
+            {calibre.id}{calibre.auto ? ' (found automatically)' : ''}
+          </span>
+        {:else}
+          <span class="flex min-h-[3rem] items-center text-c-muted">
+            Found automatically once the sidecar has reached the content server.
+          </span>
+        {/if}
+      </div>
     </fieldset>
 
     <fieldset class="grid gap-4 sm:grid-cols-2">
-      <legend class="mb-2 font-mincho text-lg font-bold">Backup</legend>
-      <label class={field}>
-        <span class={label}>Full library backup folder</span>
-        <input class="c-input" bind:value={settings.backup.path} />
-      </label>
-      <label class={field}>
-        <span class={label}>Checked on</span>
-        <input class="c-input" bind:value={settings.backup.verifiedOn} />
-      </label>
-      <label class="flex min-h-[3rem] items-center gap-3 sm:col-span-2">
-        <input
-          type="checkbox"
-          class="h-5 w-5"
-          bind:checked={backupDone}
-          data-testid="cleanup-backup-done"
-        />
-        <span>The full library backup is done and checked</span>
-      </label>
-    </fieldset>
-
-    <fieldset class="grid gap-4 sm:grid-cols-2">
-      <legend class="mb-2 font-mincho text-lg font-bold">Your tags and pacing</legend>
+      <legend class={legend}>Your tags and pacing</legend>
       <label class="{field} sm:row-span-2">
         <span class={label}
           >Your own Calibre tags (one per line, * at the end matches any ending)</span
@@ -318,8 +325,44 @@
       </label>
     </fieldset>
 
+    <fieldset class="grid gap-4 sm:grid-cols-2" data-testid="cleanup-secrets">
+      <legend class={legend}>AI keys (for later stages)</legend>
+      {#each KEYS as k (k.name)}
+        <div class={field}>
+          <label class={field}>
+            <span class={label}>{k.label}</span>
+            <input
+              class="c-input"
+              type="password"
+              autocomplete="new-password"
+              placeholder={secrets[k.name].set ? 'Saved; type a new one to change it' : ''}
+              value={secretValues[k.name]}
+              on:input={(e) => setSecretValue(k.name, e.currentTarget.value)}
+              data-testid="cleanup-secret-{k.name}"
+            />
+          </label>
+          <span
+            class="flex flex-wrap items-center gap-x-2 text-c-muted"
+            data-testid="cleanup-secret-state-{k.name}"
+          >
+            {secretState(secrets[k.name])}
+            {#if secrets[k.name].set}
+              <button
+                type="button"
+                class="c-btn c-btn-ghost"
+                on:click={() => removeSecret(k.name, k.label)}>Remove</button
+              >
+            {/if}
+          </span>
+        </div>
+      {/each}
+      <p class="text-sm text-c-muted sm:col-span-2">
+        Kept encrypted on the server and never shown again; type a new one to change it.
+      </p>
+    </fieldset>
+
     <fieldset class="grid gap-4 sm:grid-cols-2">
-      <legend class="mb-2 font-mincho text-lg font-bold">Models (for later stages)</legend>
+      <legend class={legend}>Models (for later stages)</legend>
       {#each Object.keys(MODEL_LABELS) as task (task)}
         <label class={field}>
           <span class={label}>{MODEL_LABELS[task]}</span>
@@ -341,54 +384,6 @@
       {#if saveError}<span class="text-sm font-bold" role="alert">{saveError}</span>{/if}
     </div>
   </form>
-
-  <div class="mt-10 flex flex-col gap-6" data-testid="cleanup-secrets">
-    <h3 class="font-mincho text-lg font-bold">Password and keys</h3>
-    <p class="text-sm text-c-muted">
-      Kept encrypted on the server. They are never shown again; type a new one to replace it.
-    </p>
-    {#each SECRETS as s (s.name)}
-      <div class="grid gap-2 sm:grid-cols-[1fr_auto] sm:items-end">
-        <label class={field}>
-          <span class={label}>{s.label}</span>
-          <input
-            class="c-input"
-            type="password"
-            autocomplete="new-password"
-            placeholder={secrets[s.name].set ? 'Type a new one to replace it' : ''}
-            value={secretValues[s.name]}
-            on:input={(e) => setSecretValue(s.name, e.currentTarget.value)}
-            data-testid="cleanup-secret-{s.name}"
-          />
-          <span class="text-c-muted" data-testid="cleanup-secret-state-{s.name}">
-            {secretState(secrets[s.name])} · {s.hint}
-          </span>
-          {#if secretError[s.name]}<span class="font-bold" role="alert">{secretError[s.name]}</span
-            >{/if}
-        </label>
-        <div class="flex gap-2">
-          <button
-            class="c-btn c-btn-secondary"
-            type="button"
-            disabled={!secretValues[s.name].trim()}
-            on:click={() => saveSecret(s.name, s.label)}
-            data-testid="cleanup-secret-save-{s.name}"
-          >
-            Save
-          </button>
-          {#if secrets[s.name].set}
-            <button
-              class="c-btn c-btn-ghost"
-              type="button"
-              on:click={() => removeSecret(s.name, s.label)}
-            >
-              Remove
-            </button>
-          {/if}
-        </div>
-      </div>
-    {/each}
-  </div>
 {:else}
   <p class="c-rule-text text-sm text-c-muted">Loading…</p>
 {/if}

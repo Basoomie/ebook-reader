@@ -472,16 +472,6 @@ export function undoCleanupBatchCopy(count: number): ConfirmCopy {
   };
 }
 
-/** Replacing a saved API key or the Calibre password (they can't be shown again). */
-export function replaceCleanupSecretCopy(label: string): ConfirmCopy {
-  return {
-    title: `Replace the saved ${label}?`,
-    message: ['The new one is saved instead, and the old one is gone from the server.'],
-    confirmLabel: `Replace ${label}`,
-    irreversible: true
-  };
-}
-
 /** Removing a saved API key or the Calibre password. */
 export function removeCleanupSecretCopy(label: string): ConfirmCopy {
   return {

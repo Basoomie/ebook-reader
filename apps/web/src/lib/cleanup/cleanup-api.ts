@@ -68,6 +68,8 @@ export interface CleanupStatus {
   };
   target: { id: string; name: string; folder: string; present: number } | null;
   libraries: { id: string; name: string; folder: string }[];
+  /** The content server's libraries and its id for the library to clean (auto = found by itself). */
+  calibre: { id: string | null; auto: boolean; libraries: string[] };
   stage1: {
     counts: Record<string, number>;
     openBatch: CleanupBatch | null;

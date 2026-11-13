@@ -209,7 +209,6 @@ describe('the sidecar with the server', () => {
       .set(auth(user))
       .send({
         contentServerUrl: `http://127.0.0.1:${cport}`,
-        calibreLibraryId: 'japanese-library',
         calibreUsername: 'u',
         backup: { confirmedAt: Date.now() },
         pacing: { itemDelaySeconds: 0, batchSize: 500, maxBatchPercent: 10 },
