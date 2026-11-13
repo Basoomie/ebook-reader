@@ -12,6 +12,7 @@
 import Database from 'better-sqlite3';
 import { createHash, randomUUID } from 'crypto';
 import { noteCatalogWrite } from '../catalog/catalog-version';
+import { foldForSearch } from '../catalog/fold';
 
 export const INGEST_BATCH_SIZE = 500;
 
@@ -264,16 +265,16 @@ export async function ingestSnapshot(
      WHERE library_id = ? AND kind = 'calibre' AND calibre_uuid = ?`,
   );
   const insertBook = db.prepare(
-    `INSERT INTO books (id, library_id, title, title_sort, author_sort, series_id, series_index,
-       description, publisher, published_at, added_at, created_at, updated_at)
-     VALUES (@id, @libraryId, @title, @titleSort, @authorSort, @seriesId, @seriesIndex,
-       @description, @publisher, @publishedAt, @addedAt, @now, @now)`,
+    `INSERT INTO books (id, library_id, title, title_fold, title_sort, author_sort, series_id,
+       series_index, description, publisher, published_at, added_at, created_at, updated_at)
+     VALUES (@id, @libraryId, @title, @titleFold, @titleSort, @authorSort, @seriesId,
+       @seriesIndex, @description, @publisher, @publishedAt, @addedAt, @now, @now)`,
   );
   const updateBook = db.prepare(
-    `UPDATE books SET library_id = @libraryId, title = @title, title_sort = @titleSort,
-       author_sort = @authorSort, series_id = @seriesId, series_index = @seriesIndex,
-       description = @description, publisher = @publisher, published_at = @publishedAt,
-       added_at = @addedAt, updated_at = @now
+    `UPDATE books SET library_id = @libraryId, title = @title, title_fold = @titleFold,
+       title_sort = @titleSort, author_sort = @authorSort, series_id = @seriesId,
+       series_index = @seriesIndex, description = @description, publisher = @publisher,
+       published_at = @publishedAt, added_at = @addedAt, updated_at = @now
      WHERE id = @id`,
   );
   const insertSource = db.prepare(
@@ -291,16 +292,19 @@ export async function ingestSnapshot(
      WHERE id = @id`,
   );
   const upsertAuthor = db.prepare(
-    `INSERT INTO authors (name, sort) VALUES (?, ?)
-     ON CONFLICT(name) DO UPDATE SET sort = excluded.sort RETURNING id`,
+    `INSERT INTO authors (name, sort, name_fold) VALUES (?, ?, ?)
+     ON CONFLICT(name) DO UPDATE SET sort = excluded.sort, name_fold = excluded.name_fold
+     RETURNING id`,
   );
   const upsertSeries = db.prepare(
-    `INSERT INTO series (name, sort) VALUES (?, ?)
-     ON CONFLICT(name) DO UPDATE SET sort = excluded.sort RETURNING id`,
+    `INSERT INTO series (name, sort, name_fold) VALUES (?, ?, ?)
+     ON CONFLICT(name) DO UPDATE SET sort = excluded.sort, name_fold = excluded.name_fold
+     RETURNING id`,
   );
   const upsertTag = db.prepare(
-    `INSERT INTO tags (name) VALUES (?)
-     ON CONFLICT(name) DO UPDATE SET name = excluded.name RETURNING id`,
+    `INSERT INTO tags (name, name_fold) VALUES (?, ?)
+     ON CONFLICT(name) DO UPDATE SET name = excluded.name, name_fold = excluded.name_fold
+     RETURNING id`,
   );
   const clearAuthors = db.prepare('DELETE FROM book_authors WHERE book_id = ?');
   const linkAuthor = db.prepare(
@@ -333,13 +337,18 @@ export async function ingestSnapshot(
     }
 
     const seriesId = book.series
-      ? (upsertSeries.get(book.series.name, book.series.sort) as { id: number }).id
+      ? (
+          upsertSeries.get(book.series.name, book.series.sort, foldForSearch(book.series.name)) as {
+            id: number;
+          }
+        ).id
       : null;
     const bookId = existing?.book_id ?? randomUUID();
     const bookParams = {
       id: bookId,
       libraryId,
       title: book.title,
+      titleFold: foldForSearch(book.title),
       titleSort: book.titleSort,
       authorSort: book.authorSort,
       seriesId,
@@ -375,12 +384,12 @@ export async function ingestSnapshot(
 
     clearAuthors.run(bookId);
     book.authors.forEach((a, position) => {
-      const { id } = upsertAuthor.get(a.name, a.sort) as { id: number };
+      const { id } = upsertAuthor.get(a.name, a.sort, foldForSearch(a.name)) as { id: number };
       linkAuthor.run(bookId, id, position);
     });
     clearTags.run(bookId);
     for (const tag of book.tags) {
-      const { id } = upsertTag.get(tag) as { id: number };
+      const { id } = upsertTag.get(tag, foldForSearch(tag)) as { id: number };
       linkTag.run(bookId, id);
     }
   };

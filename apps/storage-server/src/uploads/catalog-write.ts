@@ -10,6 +10,7 @@
 import type Database from 'better-sqlite3';
 import { randomUUID } from 'crypto';
 import { noteCatalogWrite } from '../catalog/catalog-version';
+import { foldForSearch } from '../catalog/fold';
 
 export interface UploadedBookInput {
   bookId: string;
@@ -27,23 +28,23 @@ export interface UploadedBookInput {
 
 export function addUploadedBook(db: Database.Database, input: UploadedBookInput): void {
   const nameId = (table: 'authors' | 'series', name: string): number => {
-    db.prepare(`INSERT INTO ${table} (name, sort) VALUES (?, ?) ON CONFLICT(name) DO NOTHING`).run(
-      name,
-      name,
-    );
+    db.prepare(
+      `INSERT INTO ${table} (name, sort, name_fold) VALUES (?, ?, ?) ON CONFLICT(name) DO NOTHING`,
+    ).run(name, name, foldForSearch(name));
     return (db.prepare(`SELECT id FROM ${table} WHERE name = ?`).get(name) as { id: number }).id;
   };
   db.transaction(() => {
     const seriesId = input.series ? nameId('series', input.series.name) : null;
     db.prepare(
-      `INSERT INTO books (id, library_id, title, title_sort, author_sort, series_id, series_index,
-         description, publisher, published_at, added_at, created_at, updated_at)
-       VALUES (@id, @libraryId, @title, @title, @authorSort, @seriesId, @seriesIndex,
-         NULL, NULL, NULL, @now, @now, @now)`,
+      `INSERT INTO books (id, library_id, title, title_fold, title_sort, author_sort, series_id,
+         series_index, description, publisher, published_at, added_at, created_at, updated_at)
+       VALUES (@id, @libraryId, @title, @titleFold, @title, @authorSort, @seriesId,
+         @seriesIndex, NULL, NULL, NULL, @now, @now, @now)`,
     ).run({
       id: input.bookId,
       libraryId: input.libraryId,
       title: input.title,
+      titleFold: foldForSearch(input.title),
       authorSort: input.authors.length ? input.authors.join(' & ') : null,
       seriesId,
       seriesIndex: input.series?.index ?? null,

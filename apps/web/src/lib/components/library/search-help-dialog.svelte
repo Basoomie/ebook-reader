@@ -55,6 +55,11 @@
     Mix them freely: <span class="font-mono">tag:SF chars:&lt;100k -status:completed</span>. Books
     not counted yet are left out of <span class="font-mono">chars:</span> searches.
   </p>
+  <p class="mt-2 text-sm" data-testid="search-help-width">
+    Full-width and half-width letters and digits match alike, and case doesn't matter:
+    <span class="font-mono">gj</span> finds <span class="font-mono">ＧＪ部</span>. Patterns match
+    the text exactly as written.
+  </p>
   <footer class="flex justify-end pt-4">
     <button class={buttonClass} on:click={close}>Close</button>
   </footer>

@@ -9,7 +9,8 @@
  * books in one), 300 tags with three per book plus one big tag on half of the books, 90%
  * counted, and some book state (statuses, favorites, opened books) for one user.
  * With --db it opens the given file READ-ONLY (use a copy of a real snapshot) and uses its
- * first user.
+ * first user. Add --migrate to first bring an older copy up to the current schema (this
+ * writes to the copy and prints how long migrations and the search-fold backfill took).
  *
  * Every query runs on the main connection (median of 5) and, for patterns, once more
  * through the search worker to show its overhead.
@@ -19,6 +20,7 @@ import { randomUUID } from 'crypto';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { fillSearchFolds } from '../src/catalog/fold';
 import { clearGroupCaches, planGroups } from '../src/catalog/groups';
 import { planBooks, planCount, PlannedQuery } from '../src/catalog/queries';
 import { BOOK_SORT_KEYS, SORT_DIRS } from '../src/catalog/sort';
@@ -149,6 +151,7 @@ function buildSynthetic(file: string, books: number): string {
     }
   })();
   getOrCreateSecret(db, THUMBNAIL_URL_SECRET);
+  fillSearchFolds(db);
   db.close();
   return user;
 }
@@ -160,6 +163,12 @@ async function main(): Promise<void> {
   let base: string | null = null;
   if (given) {
     file = path.resolve(given);
+    if (process.argv.includes('--migrate')) {
+      // Brings an older copy up to date first (migrations + search folds), timed.
+      const t = process.hrtime.bigint();
+      openDatabase(file).close();
+      console.log(`Migrated ${file} in ${(ms(t) / 1000).toFixed(2)} s`);
+    }
   } else {
     base = fs.mkdtempSync(path.join(os.tmpdir(), 'ttsu-bench-search-'));
     file = path.join(base, 'ttsu.db');
@@ -203,8 +212,10 @@ async function main(): Promise<void> {
     ['all (no search)', ''],
     ['broad text', '物語'],
     ['no-match text', '存在しない言葉'],
+    ['full-width text', 'ＧＪ部'],
     ['author (small)', `author:=${q(sample.someAuthor)}`],
     ['author (biggest)', `author:=${q(sample.bigAuthor)}`],
+    ['author substring', 'author:日向'],
     ['tag (biggest)', `tag:=${q(sample.bigTag)}`],
     ['tag (smallest)', `tag:=${q(sample.smallTag)}`],
     ['two tags (all)', `tag:=${q(sample.bigTag)} tag:=${q(sample.smallTag)}`],

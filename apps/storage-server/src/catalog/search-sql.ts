@@ -9,8 +9,11 @@
  * - status/favorite: the user's own book-state records (sync_records primary key
  *   user_id, kind, id = book id). No record = unread / not a favorite.
  * - /regex/: ttu_regexp() (regexp.ts). Queries that use it run in the search worker.
+ * - text and `=` match the folded copies (title_fold, name_fold; fold.ts), so full-width
+ *   and half-width letters and digits match alike; patterns see the original text.
  */
 import type Database from 'better-sqlite3';
+import { foldForSearch } from './fold';
 import type { Matcher, ParsedQuery, QueryStatus, QueryTerm, TextField } from './query-parser';
 
 /**
@@ -56,13 +59,18 @@ export function likePattern(term: string): string {
   return `%${term.replace(/[!%_]/g, (c) => `!${c}`)}%`;
 }
 
-/** One matcher on a text column. LIKE and NOCASE ignore case for ASCII only. */
+/**
+ * One matcher on a text column (`b.title`, `name`, `gn.name`). Text and `=` compare the
+ * folded copy `<column>_fold` with the folded value (fold.ts: full-width = half-width,
+ * any case); a /pattern/ runs on the original text.
+ */
 export function matcherSql(column: string, m: Matcher): SqlCondition {
   if (m.kind === 'regex') {
     return { sql: `ttu_regexp(?, ?, ${column})`, params: [m.source, m.ignoreCase ? 'i' : ''] };
   }
-  if (m.exact) return { sql: `${column} = ? COLLATE NOCASE`, params: [m.value] };
-  return { sql: `${column} LIKE ? ESCAPE '!'`, params: [likePattern(m.value)] };
+  const folded = `${column}_fold`;
+  if (m.exact) return { sql: `${folded} = ?`, params: [foldForSearch(m.value)] };
+  return { sql: `${folded} LIKE ? ESCAPE '!'`, params: [likePattern(foldForSearch(m.value))] };
 }
 
 /** Any of the matchers on one column. */
