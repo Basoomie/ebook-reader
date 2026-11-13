@@ -49,6 +49,8 @@ export interface Stage1Progress {
   extraFormat: number;
   removedWithData: number;
   bothWithData: number;
+  /** Removed copies whose own tags are added to the kept copy (decided 2026-11-13). */
+  tagsCopied: number;
   booksWithoutEpubFile: number;
   error: string | null;
 }
@@ -216,6 +218,7 @@ export function emptyProgress(libraryId: string, now = Date.now()): Stage1Progre
     extraFormat: 0,
     removedWithData: 0,
     bothWithData: 0,
+    tagsCopied: 0,
     booksWithoutEpubFile: 0,
     error: null,
   };
@@ -498,6 +501,7 @@ export class Stage1Analysis {
     let extraFormat = 0;
     let removedWithData = 0;
     let bothWithData = 0;
+    let tagsCopied = 0;
     cleanup.transaction(() => {
       // Earlier proposals that were never queued are replaced by this analysis.
       cleanup
@@ -520,6 +524,14 @@ export class Stage1Analysis {
           if (rule === 'tags') keptByTags++;
           else keptByDate++;
           if (extra.length > 0) extraFormat++;
+          const keptTags = new Set(keep.tags.map((t) => t.toLowerCase()));
+          if (
+            copy.tags.some(
+              (t) => isCustomTag(t, settings.customTags) && !keptTags.has(t.toLowerCase()),
+            )
+          ) {
+            tagsCopied++;
+          }
           if (removedHasData && keptHasData) bothWithData++;
           else if (removedHasData) removedWithData++;
           insert.run({
@@ -570,6 +582,7 @@ export class Stage1Analysis {
       extraFormat,
       removedWithData,
       bothWithData,
+      tagsCopied,
       phase: 'done' as const,
       finishedAt: now,
     });

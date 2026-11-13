@@ -61,7 +61,15 @@ function requireApplyToken(options: CleanupOptions) {
   };
 }
 
-const STEPS: ItemState[] = ['verified', 'exported', 'removed', 'restored', 'skipped', 'failed'];
+const STEPS: ItemState[] = [
+  'verified',
+  'exported',
+  'tagged',
+  'removed',
+  'restored',
+  'skipped',
+  'failed',
+];
 
 function parseReport(body: unknown): ItemReport {
   const b = (body ?? {}) as Record<string, unknown>;

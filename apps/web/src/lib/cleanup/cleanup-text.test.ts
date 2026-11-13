@@ -7,7 +7,14 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { CleanupBatch, CleanupStage } from './cleanup-api';
 import { CleanupApi } from './cleanup-api';
-import { batchCountsText, canUndo, precisionLine, restoreText, stage1Lines } from './cleanup-text';
+import {
+  batchCountsText,
+  canUndo,
+  precisionLine,
+  restoreText,
+  stage1Lines,
+  tagsMoving
+} from './cleanup-text';
 import {
   turnOnIdenticalFilesCopy,
   undoCleanupBatchCopy,
@@ -69,12 +76,46 @@ describe('cleanup wording', () => {
         keptByDate: 3300,
         extraFormat: 4,
         removedWithData: 2,
-        bothWithData: 1
+        bothWithData: 1,
+        tagsCopied: 943
       })
     );
     expect(done[0]).toContain('3,200 sets of identical files: 3,312 copies to remove');
     expect(done[1]).toContain('4 also have another format');
+    expect(done[1]).toContain('943 have your own tags, which are added to the copy that stays');
     expect(done[1]).toContain('2 have reading data, which goes to the kept copy');
+    const copy = {
+      id: 1,
+      calibre_id: 2,
+      calibre_uuid: 'u',
+      state: 'proposed',
+      evidence: {
+        sha256: 'x',
+        size: 1,
+        setSize: 2,
+        rule: 'older' as const,
+        kept: {
+          calibreId: 1,
+          uuid: 'k',
+          title: 't',
+          tags: ['TMW-collection-11'],
+          formats: ['EPUB'],
+          addedAt: null,
+          readerData: false
+        },
+        removed: {
+          calibreId: 2,
+          uuid: 'u',
+          title: 't',
+          tags: ['TMW-collection-13', 'needs-metadata'],
+          customTags: ['TMW-collection-13'],
+          formats: ['EPUB'],
+          addedAt: null,
+          readerData: false
+        }
+      }
+    };
+    expect(tagsMoving(copy)).toEqual(['TMW-collection-13']);
     expect(stage1Lines(stage({}, { mode: 'off' }))).toEqual([]);
   });
 

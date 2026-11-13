@@ -415,6 +415,26 @@ export class Worker {
       await this.report(batch, item, { step: 'exported', quarantineDir: dir, exportSha256: sha });
     }
     if (item.state === 'exported') {
+      // Decided with the user 2026-11-13: the removed copy's own tags (PeepoHappyBooks,
+      // TMW-collection-*, ...) are added to the copy that stays instead of leaving with it.
+      if (item.addTags.length > 0) {
+        const kept = await this.calibredb.book(login, item.kept.calibreId);
+        if (!kept || kept.uuid !== item.kept.uuid) throw new Error('The copy to keep is gone');
+        const have = new Set(kept.tags.map((t) => t.toLowerCase()));
+        const missing = item.addTags.filter((t) => !have.has(t.toLowerCase()));
+        if (missing.length > 0) {
+          await this.calibredb.setTags(login, kept.id, [...kept.tags, ...missing]);
+          const after = await this.calibredb.book(login, kept.id);
+          const now = new Set((after?.tags ?? []).map((t) => t.toLowerCase()));
+          if (!missing.every((t) => now.has(t.toLowerCase()))) {
+            throw new Error('Calibre did not keep the added tags');
+          }
+          this.log.info(`Added ${missing.join(', ')} to ${kept.id} (from ${item.calibreId})`);
+        }
+      }
+      await this.report(batch, item, { step: 'tagged' });
+    }
+    if (item.state === 'tagged') {
       if (await this.calibredb.book(login, item.calibreId)) {
         await this.calibredb.ok('remove', login, [String(item.calibreId)]);
       }
@@ -449,12 +469,29 @@ export class Worker {
     return dir;
   }
 
+  /**
+   * Undo: the tags this removal added to the kept copy come off again (only those; other tags,
+   * also ones the user added since, stay), then the item is reported as brought back.
+   */
+  private async restored(batch: Batch, item: BatchItem, report: StepReport): Promise<void> {
+    if (item.addTags.length > 0) {
+      const login = this.requireLogin();
+      const kept = await this.calibredb.book(login, item.kept.calibreId);
+      if (kept) {
+        const off = new Set(item.addTags.map((t) => t.toLowerCase()));
+        const left = kept.tags.filter((t) => !off.has(t.toLowerCase()));
+        if (left.length !== kept.tags.length) await this.calibredb.setTags(login, kept.id, left);
+      }
+    }
+    await this.report(batch, item, report);
+  }
+
   private async undoItem(batch: Batch, item: BatchItem): Promise<void> {
     const login = this.requireLogin();
     // Already back (an earlier attempt's report was lost)?
     const present = await this.calibredb.book(login, item.calibreId);
     if (present && present.uuid === item.uuid) {
-      await this.report(batch, item, {
+      await this.restored(batch, item, {
         step: 'restored',
         method: 'trash',
         calibreId: item.calibreId,
@@ -468,7 +505,7 @@ export class Worker {
         await this.calibredb.ok('trash_restore', login, [String(item.calibreId)]);
         const back = await this.calibredb.book(login, item.calibreId);
         if (!back) throw new Error("Calibre's trash restore did not bring the book back");
-        await this.report(batch, item, {
+        await this.restored(batch, item, {
           step: 'restored',
           method: 'trash',
           calibreId: back.id,
@@ -497,7 +534,7 @@ export class Worker {
       if (added.length === 1) {
         const back = await this.calibredb.book(login, added[0]);
         if (back) {
-          await this.report(batch, item, {
+          await this.restored(batch, item, {
             step: 'restored',
             method: 'readd',
             calibreId: back.id,
@@ -525,7 +562,7 @@ export class Worker {
     const back = Number.isInteger(newId) ? await this.calibredb.book(login, newId) : null;
     if (!back)
       throw new Error(`calibredb add did not report the new book: ${r.stdout.trim().slice(-200)}`);
-    await this.report(batch, item, {
+    await this.restored(batch, item, {
       step: 'restored',
       method: 'readd',
       calibreId: back.id,

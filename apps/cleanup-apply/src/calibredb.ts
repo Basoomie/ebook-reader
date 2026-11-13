@@ -6,7 +6,9 @@
  * An allowlist of subcommands, checked for every call:
  * - read: --version, list (also the library list via #-), custom_columns, export (files
  *   are sent back by the server and written into the quarantine folder), trash list;
- * - write: remove (to Calibre's trash, NEVER --permanent), trash restore and add (Undo only).
+ * - write: remove (to Calibre's trash, NEVER --permanent), set_tags (set_metadata of the tags
+ *   field only: the user's own tags of a removed copy are added to the kept copy, decided
+ *   2026-11-13, and taken off again by Undo), trash restore and add (Undo only).
  * The password goes in through stdin (`--password <stdin>`), never on the command line.
  */
 import { spawn } from 'child_process';
@@ -20,7 +22,8 @@ export type CalibredbCommand =
   | 'remove'
   | 'trash_list'
   | 'trash_restore'
-  | 'add';
+  | 'add'
+  | 'set_tags';
 
 export const ALLOWED: readonly CalibredbCommand[] = [
   'version',
@@ -31,7 +34,8 @@ export const ALLOWED: readonly CalibredbCommand[] = [
   'remove',
   'trash_list',
   'trash_restore',
-  'add'
+  'add',
+  'set_tags'
 ];
 
 /** Options never allowed, whatever the subcommand. */
@@ -112,6 +116,14 @@ export function buildArgs(
       return ['trash', 'restore', ...remote, ...args];
     case 'add':
       return ['add', ...remote, ...args];
+    case 'set_tags': {
+      // Exactly: <book id> <the whole tag list, comma separated>. Nothing but the tags field.
+      const [id, tags, ...rest] = args;
+      if (!/^\d+$/.test(id ?? '') || tags === undefined || rest.length > 0) {
+        throw new Error('set_tags takes a book id and a tag list');
+      }
+      return ['set_metadata', ...remote, id, '--field', `tags:${tags}`];
+    }
   }
 }
 
@@ -193,12 +205,13 @@ export class Calibredb {
     last_modified: string;
     formats: string[];
     title: string;
+    tags: string[];
   } | null> {
     const r = await this.ok('list', login, [
       '--search',
       `id:=${calibreId}`,
       '--fields',
-      'uuid,last_modified,formats,title',
+      'uuid,last_modified,formats,title,tags',
       '--for-machine'
     ]);
     const rows = JSON.parse(r.stdout || '[]') as {
@@ -207,9 +220,22 @@ export class Calibredb {
       last_modified: string;
       formats?: string[];
       title: string;
+      tags?: string[] | string;
     }[];
     const row = rows.find((b) => b.id === calibreId);
-    return row ? { ...row, formats: row.formats ?? [] } : null;
+    if (!row) return null;
+    const tags = Array.isArray(row.tags)
+      ? row.tags
+      : typeof row.tags === 'string' && row.tags !== ''
+        ? row.tags.split(',').map((t) => t.trim())
+        : [];
+    return { ...row, formats: row.formats ?? [], tags };
+  }
+
+  /** Replaces a book's tag list (tags only; Calibre tags never contain commas). */
+  async setTags(login: Login, calibreId: number, tags: string[]): Promise<void> {
+    if (tags.some((t) => t.includes(','))) throw new Error('A tag contains a comma');
+    await this.ok('set_tags', login, [String(calibreId), tags.join(',')]);
   }
 
   /** Books with exactly this title (for an interrupted Undo re-add). */

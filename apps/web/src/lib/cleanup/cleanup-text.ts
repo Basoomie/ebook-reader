@@ -72,6 +72,11 @@ export function stage1Lines(stage: CleanupStage): string[] {
       if (Number(p.extraFormat) > 0) {
         extras.push(`${n(p.extraFormat)} also ${has(p.extraFormat)} another format`);
       }
+      if (Number(p.tagsCopied) > 0) {
+        extras.push(
+          `${n(p.tagsCopied)} ${has(p.tagsCopied)} your own tags, which are added to the copy that stays`
+        );
+      }
       if (Number(p.removedWithData) > 0) {
         extras.push(
           `${n(p.removedWithData)} ${has(p.removedWithData)} reading data, which goes to the kept copy`
@@ -175,6 +180,17 @@ export function restoreText(method: string | null | undefined): string | null {
     return 'Added again from the quarantine (a new Calibre id; the reader kept its book).';
   }
   return null;
+}
+
+/**
+ * The removed copy's own tags (PeepoHappyBooks, TMW-collection-*, …) that the kept copy
+ * lacks: they are added to the kept copy (decided with the user 2026-11-13).
+ */
+export function tagsMoving(p: Proposal): string[] {
+  const ev = p.evidence;
+  if (!ev) return [];
+  const kept = new Set(ev.kept.tags.map((t) => t.toLowerCase()));
+  return (ev.removed.customTags ?? []).filter((t) => !kept.has(t.toLowerCase()));
 }
 
 /** Tags as one line: the user's own tags first. */

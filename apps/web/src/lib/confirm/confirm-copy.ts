@@ -452,7 +452,7 @@ export function turnOnIdenticalFilesCopy(toRemove: number | null): ConfirmCopy {
   return {
     title: `Remove ${what} from Calibre?`,
     message: [
-      'From now on this runs on its own, in batches: each copy is first saved to the quarantine folder, then moved to Calibre’s trash. The copy with more of your tags (or the older one) stays.',
+      'From now on this runs on its own, in batches: each copy is first saved to the quarantine folder, then moved to Calibre’s trash. The copy with more of your tags (or the older one) stays, and gets the removed copy’s own tags too.',
       'Reading data of a removed copy stays: when only the removed copy has any, it shows on the kept copy. Each batch can be undone on this page.'
     ],
     confirmLabel: 'Turn on and remove copies'

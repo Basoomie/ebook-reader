@@ -12,6 +12,7 @@
     itemStateText,
     restoreText,
     ruleText,
+    tagsMoving,
     tagsText
   } from '$lib/cleanup/cleanup-text';
   import { formatWhen } from '$lib/notes/notes-format';
@@ -49,6 +50,12 @@
       Identical files ({ruleText(item)}{ev.setSize > 2 ? `; ${ev.setSize} copies in all` : ''}).
       {#if ev.removed.extraFormats?.length}
         Also has {ev.removed.extraFormats.join(', ')}, kept in the quarantine.
+      {/if}
+      {#if tagsMoving(item).length}
+        Your tags {tagsMoving(item).join(', ')}
+        {item.state === 'undone'
+          ? 'were taken off the copy that stays again'
+          : 'go to the copy that stays'}.
       {/if}
       {#if handoffText(item)}{handoffText(item)}{/if}
       {#if restoreText(item.restore_method)}{restoreText(item.restore_method)}{/if}

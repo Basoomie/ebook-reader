@@ -165,7 +165,7 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
         change_id       INTEGER NOT NULL REFERENCES proposed_changes(id),
         position        INTEGER NOT NULL,
         state           TEXT NOT NULL DEFAULT 'pending'
-                        CHECK (state IN ('pending', 'verified', 'exported', 'removed', 'restored', 'failed', 'skipped')),
+                        CHECK (state IN ('pending', 'verified', 'exported', 'tagged', 'removed', 'restored', 'failed', 'skipped')),
         quarantine_dir  TEXT,
         export_sha256   TEXT,
         method          TEXT,
@@ -177,7 +177,9 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
 
       -- The undo record of every applied removal: what was removed, what it was a duplicate
       -- of (this also maps a removed reference-sample book to its kept copy), its tags, the
-      -- quarantine folder and the reader-side handoff.
+      -- user's own tags that were added to the kept copy (decided with the user 2026-11-13:
+      -- they are copied, not lost; Undo takes them off again), the quarantine folder and the
+      -- reader-side handoff.
       CREATE TABLE undo_records (
         batch_id           TEXT NOT NULL REFERENCES batches(id),
         change_id          INTEGER NOT NULL REFERENCES proposed_changes(id),
@@ -187,6 +189,7 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
         kept_calibre_id    INTEGER NOT NULL,
         kept_uuid          TEXT NOT NULL,
         tags_json          TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(tags_json)),
+        added_tags_json    TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(added_tags_json)),
         quarantine_dir     TEXT,
         handoff_json       TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(handoff_json)),
         restored_at        INTEGER,

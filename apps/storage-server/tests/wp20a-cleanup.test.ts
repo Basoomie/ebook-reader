@@ -17,6 +17,7 @@ import {
   initCleanupDatabase,
 } from '../src/cleanup/cleanup-db';
 import { chooseKeeper, type SnapshotBook } from '../src/cleanup/stage1';
+import { tagsToCopy } from '../src/cleanup/batches';
 import { getSettings, isCustomTag, updateSettings } from '../src/cleanup/settings';
 import { getStage } from '../src/cleanup/stages';
 import { calibreDate, fingerprint } from './helpers/calibre-fixture';
@@ -108,6 +109,31 @@ describe('chooseKeeper', () => {
       rule: 'older',
     });
     expect(chooseKeeper([book(5, [], 2020), book(3, [], 2020)], tags).keep.calibreId).toBe(3);
+  });
+});
+
+describe('tagsToCopy (decided 2026-11-13: your tags move to the kept copy)', () => {
+  const ev = (removed: string[], kept: string[]) =>
+    ({
+      sha256: 'x',
+      kept: { calibreId: 1, uuid: 'k', tags: kept },
+      removed: {
+        calibreId: 2,
+        uuid: 'r',
+        title: 't',
+        tags: removed,
+        formats: [],
+        lastModified: null,
+        filePath: '',
+      },
+    }) as Parameters<typeof tagsToCopy>[0];
+  const tags = ['PeepoHappyBooks', 'alpindale', 'TMW-collection-*'];
+  it('copies only your own tags the kept copy lacks', () => {
+    expect(
+      tagsToCopy(ev(['TMW-collection-13', 'needs-metadata'], ['TMW-collection-11']), tags),
+    ).toEqual(['TMW-collection-13']);
+    expect(tagsToCopy(ev(['PeepoHappyBooks', 'ln'], ['peepohappybooks']), tags)).toEqual([]);
+    expect(tagsToCopy(ev(['curated'], []), tags)).toEqual([]);
   });
 });
 
@@ -261,6 +287,7 @@ describe('stage 1, batches, handoff and Undo', () => {
       quarantineDir: `/quarantine/${batchId}/${item.calibreId}`,
       exportSha256: item.sha256,
     });
+    await step(batchId, item.itemId, { step: 'tagged' });
     env.lib.removeBook(item.calibreId);
     await step(batchId, item.itemId, { step: 'removed' });
   }
@@ -349,6 +376,9 @@ describe('stage 1, batches, handoff and Undo', () => {
       quarantineDir: `/quarantine/${batch.id}/${item.calibreId}`,
       exportSha256: item.sha256,
     });
+    // Removing before the tags were copied onto the kept copy is refused.
+    await step(batch.id, item.itemId, { step: 'removed' }, 409);
+    await step(batch.id, item.itemId, { step: 'tagged' });
     env.lib.removeBook(item.calibreId);
     await step(batch.id, item.itemId, { step: 'removed' });
     // The handoff: the data book now has A1's Calibre record; A1's empty book has A2's.

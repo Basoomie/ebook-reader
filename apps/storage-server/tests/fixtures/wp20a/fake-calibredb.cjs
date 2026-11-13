@@ -91,6 +91,7 @@ function ids() {
     '--search',
     '--fields',
     '--limit',
+    '--field',
   ]);
   const out = [];
   for (let i = 1; i < argv.length; i++) {
@@ -154,8 +155,33 @@ switch (sub) {
       title: b.title,
       last_modified: iso(b.last_modified),
       formats: formats(b.id).map((f) => f.format),
+      tags: tags(b.id),
     }));
     process.stdout.write(JSON.stringify(out));
+    break;
+  }
+  case 'set_metadata': {
+    // Only the tags field is simulated (the sidecar never sets anything else).
+    const field = opt('--field') || '';
+    if (!field.startsWith('tags:')) fail('only tags are simulated');
+    const [id] = ids();
+    if (!bookRow(id)) fail(`No book with id ${id}`);
+    const wantedTags = field
+      .slice(5)
+      .split(',')
+      .map((t) => t.trim())
+      .filter(Boolean);
+    db.prepare('DELETE FROM books_tags_link WHERE book = ?').run(id);
+    for (const t of wantedTags) {
+      db.prepare('INSERT OR IGNORE INTO tags (name) VALUES (?)').run(t);
+      const tag = db.prepare('SELECT id FROM tags WHERE name = ?').get(t);
+      db.prepare('INSERT INTO books_tags_link (book, tag) VALUES (?, ?)').run(id, tag.id);
+    }
+    db.prepare('UPDATE books SET last_modified = ? WHERE id = ?').run(
+      new Date().toISOString().replace('T', ' ').replace('Z', '000+00:00'),
+      id,
+    );
+    touchDb();
     break;
   }
   case 'custom_columns': {

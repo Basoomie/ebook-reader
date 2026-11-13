@@ -34,7 +34,7 @@ import {
   reverseHandoff,
   type Handoff,
 } from './handoff';
-import { getSettings } from './settings';
+import { getSettings, isCustomTag } from './settings';
 import { hashSourceFile, Pacer, readSnapshotBooks } from './stage1';
 import { getStage, pauseStage, updateStage } from './stages';
 
@@ -44,6 +44,8 @@ export type ItemState =
   | 'pending'
   | 'verified'
   | 'exported'
+  /** The user's own tags of the removed copy were added to the kept copy (decided 2026-11-13). */
+  | 'tagged'
   | 'removed'
   | 'restored'
   | 'failed'
@@ -135,6 +137,11 @@ export interface SidecarItem {
   formats: string[];
   sha256: string;
   kept: { calibreId: number; uuid: string };
+  /**
+   * apply: the user's own tags of this copy that the kept copy doesn't have; added to the kept
+   * copy before this copy is removed. undo: the tags that were added then, taken off again.
+   */
+  addTags: string[];
 }
 
 export interface SidecarBatch {
@@ -191,12 +198,25 @@ const TERMINAL_UNDO: ItemState[] = ['restored', 'failed', 'skipped'];
 const APPLY_STEPS: Record<ItemState, ItemState[]> = {
   pending: ['verified', 'skipped', 'failed'],
   verified: ['exported', 'skipped', 'failed'],
-  exported: ['removed', 'failed'],
+  exported: ['tagged', 'failed'],
+  tagged: ['removed', 'failed'],
   removed: [],
   restored: [],
   failed: [],
   skipped: [],
 };
+
+/**
+ * The user's own tags of the removed copy that the kept copy doesn't have (decided with the
+ * user 2026-11-13: copied onto the kept copy instead of leaving with the removed one).
+ * Calibre tag names compare case-insensitively.
+ */
+export function tagsToCopy(ev: Evidence, customTags: string[]): string[] {
+  const kept = new Set(ev.kept.tags.map((t) => t.toLowerCase()));
+  return (ev.removed.tags ?? []).filter(
+    (t) => isCustomTag(t, customTags) && !kept.has(t.toLowerCase()),
+  );
+}
 
 export function batchSnapshotPath(cacheDir: string, batchId: string): string {
   return path.join(cacheDir, 'cleanup', 'batches', `${batchId}.db`);
@@ -634,7 +654,7 @@ export class BatchService {
     const rows = this.db
       .prepare(
         `SELECT i.id AS item_id, i.change_id, i.state, i.quarantine_dir, c.calibre_id, c.calibre_uuid,
-                c.evidence_json, u.quarantine_dir AS undo_dir
+                c.evidence_json, u.quarantine_dir AS undo_dir, u.added_tags_json
          FROM batch_items i JOIN proposed_changes c ON c.id = i.change_id
          LEFT JOIN undo_records u ON u.change_id = i.change_id AND u.batch_id = ?
          WHERE i.batch_id = ? ORDER BY i.position`,
@@ -648,6 +668,7 @@ export class BatchService {
       calibre_uuid: string;
       evidence_json: string;
       undo_dir: string | null;
+      added_tags_json: string | null;
     }[];
     return {
       id: batch.id,
@@ -672,9 +693,46 @@ export class BatchService {
           formats: ev.removed?.formats ?? [],
           sha256: ev.sha256,
           kept: { calibreId: ev.kept.calibreId, uuid: ev.kept.uuid },
+          addTags:
+            batch.kind === 'undo'
+              ? this.tagsToTakeOff(batch, r.change_id, ev.kept.uuid, r.added_tags_json)
+              : tagsToCopy(ev, settings.customTags),
         };
       }),
     };
+  }
+
+  /**
+   * Undo: the tags this removal added to the kept copy, except those another removal of the
+   * same kept copy also added and that stays removed (a set of three copies).
+   */
+  private tagsToTakeOff(
+    batch: BatchRow,
+    changeId: number,
+    keptUuid: string,
+    json: string | null,
+  ): string[] {
+    const added = JSON.parse(json ?? '[]') as string[];
+    if (added.length === 0) return added;
+    const undoing = new Set(
+      (
+        this.db.prepare('SELECT change_id FROM batch_items WHERE batch_id = ?').all(batch.id) as {
+          change_id: number;
+        }[]
+      ).map((r) => r.change_id),
+    );
+    const others = this.db
+      .prepare(
+        `SELECT change_id, added_tags_json FROM undo_records
+         WHERE kept_uuid = ? AND restored_at IS NULL AND change_id <> ?`,
+      )
+      .all(keptUuid, changeId) as { change_id: number; added_tags_json: string }[];
+    const stillNeeded = new Set(
+      others
+        .filter((o) => !undoing.has(o.change_id))
+        .flatMap((o) => (JSON.parse(o.added_tags_json) as string[]).map((t) => t.toLowerCase())),
+    );
+    return added.filter((t) => !stillNeeded.has(t.toLowerCase()));
   }
 
   private requireClaimed(batchId: string): BatchRow {
@@ -810,8 +868,8 @@ export class BatchService {
     this.db
       .prepare(
         `INSERT OR IGNORE INTO undo_records (batch_id, change_id, library_id, removed_calibre_id,
-           removed_uuid, kept_calibre_id, kept_uuid, tags_json, quarantine_dir, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           removed_uuid, kept_calibre_id, kept_uuid, tags_json, added_tags_json, quarantine_dir, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         batch.id,
@@ -822,6 +880,7 @@ export class BatchService {
         change.evidence.kept.calibreId,
         change.evidence.kept.uuid,
         JSON.stringify(change.evidence.removed.tags ?? []),
+        JSON.stringify(tagsToCopy(change.evidence, getSettings(this.db).customTags)),
         item.quarantine_dir,
         now,
       );

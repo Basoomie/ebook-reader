@@ -25,6 +25,7 @@ export type ItemState =
   | 'pending'
   | 'verified'
   | 'exported'
+  | 'tagged'
   | 'removed'
   | 'restored'
   | 'failed'
@@ -42,6 +43,8 @@ export interface BatchItem {
   formats: string[];
   sha256: string;
   kept: { calibreId: number; uuid: string };
+  /** apply: the user's tags to add to the kept copy; undo: the tags to take off it again. */
+  addTags: string[];
 }
 
 export interface Batch {

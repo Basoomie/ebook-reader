@@ -238,7 +238,9 @@
           bind:value={customTagsText}
           data-testid="cleanup-tags"
         ></textarea>
-        <span class="text-c-muted">Of identical copies, the one with more of these tags stays.</span
+        <span class="text-c-muted"
+          >Of identical copies, the one with more of these tags stays; the removed copy’s tags from
+          this list are added to it.</span
         >
       </label>
       <label class={field}>

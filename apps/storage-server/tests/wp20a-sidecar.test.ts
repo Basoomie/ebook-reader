@@ -61,6 +61,15 @@ describe('calibredb arguments', () => {
     expect(() => buildArgs('remove', login, ['--permanent', '1'])).toThrow(/not allowed/);
     expect(() => buildArgs('add', login, ['--automerge', 'overwrite'])).toThrow(/not allowed/);
     expect(() => buildArgs('set_metadata' as never, login, [])).toThrow(/not allowed/);
+    // Tags only: the one metadata write (your tags onto the kept copy, and back on Undo).
+    const tags = buildArgs('set_tags', login, ['12', 'PeepoHappyBooks,TMW-collection-11']);
+    expect(tags[0]).toBe('set_metadata');
+    expect(tags.slice(-3)).toEqual(['12', '--field', 'tags:PeepoHappyBooks,TMW-collection-11']);
+    expect(() => buildArgs('set_tags', login, ['12'])).toThrow(/book id and a tag list/);
+    expect(() => buildArgs('set_tags', login, ['x', 'a'])).toThrow(/book id and a tag list/);
+    expect(() => buildArgs('set_tags', login, ['12', 'a', '--field'])).toThrow(
+      /book id and a tag list/,
+    );
   });
 
   it('parses custom_columns and trash listings', () => {
@@ -152,8 +161,23 @@ describe('the sidecar with the server', () => {
         epub: bytes('b', 5000),
       }),
       C: await env.lib.addBook({ title: 'C', epub: bytes('c', 6000) }),
+      // One custom tag each: a tie, so the older E1 stays and E2's PeepoHappyBooks is
+      // copied onto it (decided with the user 2026-11-13).
+      E1: await env.lib.addBook({
+        title: 'E',
+        tags: ['TMW-collection-11'],
+        timestamp: iso(2019),
+        epub: bytes('e', 6500),
+      }),
+      E2: await env.lib.addBook({
+        title: 'E',
+        tags: ['PeepoHappyBooks', 'needs-metadata'],
+        timestamp: iso(2022),
+        epub: bytes('e', 6500),
+      }),
     };
-    for (let i = 0; i < 15; i++)
+    // 35 books: 10 % allows 3 copies per batch, so the 3 copies are one batch.
+    for (let i = 0; i < 28; i++)
       await env.lib.addBook({
         title: `Other ${i}`,
         epub: bytes(String.fromCharCode(100 + i), 7000 + i),
@@ -245,6 +269,18 @@ describe('the sidecar with the server', () => {
     });
   }
 
+  /** A book's tags in the test library, sorted. */
+  function tagsOf(id: number): string[] {
+    const mdb = new Database(env.lib.dbFile, { readonly: true });
+    const rows = mdb
+      .prepare(
+        'SELECT t.name FROM books_tags_link l JOIN tags t ON t.id = l.tag WHERE l.book = ? ORDER BY t.name',
+      )
+      .all(id) as { name: string }[];
+    mdb.close();
+    return rows.map((r) => r.name);
+  }
+
   async function turnOn() {
     await request(env.app)
       .put('/api/v1/cleanup/stages/1')
@@ -284,11 +320,17 @@ describe('the sidecar with the server', () => {
     mdb.close();
     expect(left).not.toContain(ids.A2);
     expect(left).not.toContain(ids.B2);
+    expect(left).not.toContain(ids.E2);
     expect(left).toContain(ids.A1);
     expect(left).toContain(ids.B1);
+    expect(left).toContain(ids.E1);
     expect(fs.readdirSync(path.join(env.lib.dir, '.caltrash', 'b')).sort()).toEqual(
-      [String(ids.A2), String(ids.B2)].sort(),
+      [String(ids.A2), String(ids.B2), String(ids.E2)].sort(),
     );
+    // E2's own tag now sits on the kept E1 (its other tag, needs-metadata, is not one of yours).
+    expect(tagsOf(ids.E1)).toEqual(['PeepoHappyBooks', 'TMW-collection-11']);
+    // A2's "ln" is not one of your tags: A1 doesn't get it.
+    expect(tagsOf(ids.A1)).toEqual(['PeepoHappyBooks']);
     // The quarantine: batch.json, the snapshot, each export (EPUB identical, extra AZW3 too) and its note.
     const [batchId] = fs.readdirSync(quarantine);
     const files = fs.readdirSync(path.join(quarantine, batchId)).sort();
@@ -300,6 +342,8 @@ describe('the sidecar with the server', () => {
         `${ids.A2}.json`,
         String(ids.B2),
         `${ids.B2}.json`,
+        String(ids.E2),
+        `${ids.E2}.json`,
       ].sort(),
     );
     expect(sha(fs.readFileSync(path.join(quarantine, batchId, String(ids.A2), 'book.epub')))).toBe(
@@ -310,7 +354,7 @@ describe('the sidecar with the server', () => {
       fs.readFileSync(path.join(quarantine, batchId, String(ids.A2), 'book.opf'), 'utf8'),
     ).toContain('<dc:subject>ln</dc:subject>');
     const snap = new Database(path.join(quarantine, batchId, 'metadata.db'), { readonly: true });
-    expect((snap.prepare('SELECT COUNT(*) AS n FROM books').get() as { n: number }).n).toBe(20);
+    expect((snap.prepare('SELECT COUNT(*) AS n FROM books').get() as { n: number }).n).toBe(35);
     snap.close();
     // Every call was remote, none permanent, the password never in the arguments.
     const calls = fs
@@ -351,7 +395,7 @@ describe('the sidecar with the server', () => {
     const items = env.cleanupDb.prepare('SELECT state FROM batch_items').all() as {
       state: string;
     }[];
-    expect(items.map((i) => i.state)).toContain('exported');
+    expect(items.map((i) => i.state)).toContain('tagged');
     // Its lease runs out; a new sidecar takes over while the server is down for a moment.
     env.cleanupDb.prepare('UPDATE batches SET lease_expires_at = 1').run();
     let failures = 3;
@@ -367,12 +411,13 @@ describe('the sidecar with the server', () => {
     const dirs = fs
       .readdirSync(path.join(quarantine, batchId))
       .filter((n) => /^\d+(-\d+)?$/.test(n));
-    expect(dirs.sort()).toEqual([String(ids.A2), String(ids.B2)].sort());
+    expect(dirs.sort()).toEqual([String(ids.A2), String(ids.B2), String(ids.E2)].sort());
     const exports = fs
       .readFileSync(log, 'utf8')
       .split('\n')
       .filter((l) => l.startsWith('["export"'));
-    expect(exports.length).toBe(2);
+    expect(exports.length).toBe(3);
+    expect(tagsOf(ids.E1)).toEqual(['PeepoHappyBooks', 'TMW-collection-11']);
     expect(env.service.batches.list()[0].state).toBe('applied');
   });
 
@@ -396,6 +441,9 @@ describe('the sidecar with the server', () => {
     };
     mdb.close();
     expect(a2).toEqual({ id: ids.A2, uuid: uuids.A2 });
+    // The tag copied onto E1 is taken off again; E2 is back with its own tags.
+    expect(tagsOf(ids.E1)).toEqual(['TMW-collection-11']);
+    expect(tagsOf(ids.E2)).toEqual(['needs-metadata', 'PeepoHappyBooks']);
     expect(env.readerBook(uuids.A2)!.missing).toBe(false);
     expect(env.service.batches.get(batch.id)!.state).toBe('undone');
     const after = fingerprint(quarantine);
@@ -446,7 +494,7 @@ describe('the sidecar with the server', () => {
     expect(env.service.waiting).toMatch(/illustrator/);
     expect(env.service.batches.list()).toEqual([]);
     const mdb = new Database(env.lib.dbFile, { readonly: true });
-    expect((mdb.prepare('SELECT COUNT(*) AS n FROM books').get() as { n: number }).n).toBe(20);
+    expect((mdb.prepare('SELECT COUNT(*) AS n FROM books').get() as { n: number }).n).toBe(35);
     mdb.close();
   });
 });
