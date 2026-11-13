@@ -33,6 +33,8 @@ export interface ClaimedJob {
   /** sync_subtitles only. */
   audioFileName: string;
   audioSize: number;
+  /** The audio length the server indexed; null while unknown. */
+  audioSeconds?: number | null;
   epubSize: number | null;
   /** WP17 kinds only. */
   tts?: TtsClaim;

@@ -218,7 +218,8 @@ export function subtitleJobText(
       if (job.cancelRequested) return 'Stopping…';
       switch (job.stage) {
         case 'downloading':
-          return `The PC is downloading the book and the audiobook…${percent(job.progress)}`;
+          // The bar shows the whole job; downloading is only its first 2 %.
+          return 'The PC is downloading the book and the audiobook…';
         case 'uploading':
           return 'The PC is sending the subtitles to the server…';
         case 'saving':

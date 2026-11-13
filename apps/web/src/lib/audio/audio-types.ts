@@ -134,7 +134,7 @@ export interface SubtitleJob {
   audioFileName: string;
   state: SubtitleJobState;
   stage: SubtitleJobStage | null;
-  /** 0..1 within the stage, or null when unknown. */
+  /** 0..1 of the whole job, or null when unknown. */
   progress: number | null;
   message: string | null;
   cancelRequested: boolean;

@@ -80,7 +80,7 @@ export interface WorkerJob {
   audioFileName: string | null;
   state: WorkerJobState;
   stage: WorkerJobStage | null;
-  /** 0..1 within the stage, or null when unknown (SubPlz doesn't always say). */
+  /** 0..1 of the whole job (the worker works it out), or null when unknown. */
   progress: number | null;
   /** The worker's own line, e.g. "SubPlz: transcribing 3/12". */
   message: string | null;
@@ -231,6 +231,8 @@ export interface ClaimedJob {
   /** The audio file's own name (only its extension matters; the worker uses ASCII names). */
   audioFileName?: string;
   audioSize?: number;
+  /** The audio's length as indexed (null while unknown): the worker's whole-job progress. */
+  audioSeconds?: number | null;
   epubSize?: number | null;
   /** WP17 kinds: what the TTS run needs (tts-jobs.ts). */
   tts?: unknown;
@@ -708,6 +710,7 @@ export class SubtitleJobService {
           bookTitle: row.book_title,
           audioFileName: row.audio_file_name!,
           audioSize: files.audio.size,
+          audioSeconds: files.audio.durationSeconds,
           epubSize: files.epubSize,
           leaseSeconds: this.config.leaseSeconds,
         };
@@ -717,10 +720,13 @@ export class SubtitleJobService {
   }
 
   /** The job's two inputs as they are now, or why the job can't run. */
-  private jobFiles(
-    job: WorkerJob,
-  ):
-    | { folder: AudioFolder; index: number; audio: { size: number }; epubSize: number | null }
+  private jobFiles(job: WorkerJob):
+    | {
+        folder: AudioFolder;
+        index: number;
+        audio: { size: number; durationSeconds: number | null };
+        epubSize: number | null;
+      }
     | { error: string } {
     if (job.kind !== 'sync_subtitles' || !job.audioFolderRelPath || !job.bookId) {
       return { error: 'Not a subtitle job' };
@@ -733,7 +739,13 @@ export class SubtitleJobService {
     if (index < 0) return { error: 'The audio file is no longer in its folder' };
     const epub = getBookFileFor(this.db, { id: job.userId }, job.bookId);
     if (!epub || epub.missing) return { error: "The book's EPUB is no longer available" };
-    return { folder, index, audio: { size: folder.files[index].size }, epubSize: epub.fileSize };
+    const file = folder.files[index];
+    return {
+      folder,
+      index,
+      audio: { size: file.size, durationSeconds: file.durationSeconds ?? null },
+      epubSize: epub.fileSize,
+    };
   }
 
   /** The running job the worker may read files of, or an error for the route. */
@@ -845,7 +857,8 @@ export class SubtitleJobService {
     try {
       this.update(id, {
         stage: 'saving',
-        progress: null,
+        // The worker reports the whole job (0..1); saving is its very end.
+        progress: 0.99,
         lease_expires_at: this.now() + this.config.leaseSeconds * 1000,
       });
       const title = job.bookTitle ?? (job.audioFileName ?? 'subtitles').replace(/\.[^.]+$/, '');

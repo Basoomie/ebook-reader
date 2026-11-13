@@ -7,8 +7,10 @@
  *       oom       exits 137
  *       nosrt     exits 0 without a file
  *       hang      prints progress and waits until `kill` (records its pid by container name)
- *       progress  prints 10%..100% bars over ~1 s, then ok
- *       slow      the same over ~8 s (browser tests)
+ *       progress  prints SubPlz-shaped log lines over ~1 s, then ok: two "Transcribe:" bars in
+ *                 seconds (the audio's length from its mvhd header, split 40/60), the
+ *                 "Transcription successful" line, then matching bars (1/1, then 0/4..4/4)
+ *       slow      the same over ~10 s (browser tests)
  * The mode comes from FAKE_DOCKER_MODE, else from the file "mode" in FAKE_DOCKER_STATE.
  *   kill <name>  kills the hanging run
  */
@@ -23,6 +25,16 @@ const mode =
   'ok';
 const args = process.argv.slice(2);
 if (state) fs.appendFileSync(path.join(state, 'calls.jsonl'), JSON.stringify(args) + '\n');
+
+/** The length in seconds from an MP4's mvhd box, or null. */
+function mvhdSeconds(buf) {
+  const i = buf.indexOf('mvhd');
+  if (i < 0) return null;
+  const v = buf[i + 4];
+  const scale = v === 1 ? buf.readUInt32BE(i + 24) : buf.readUInt32BE(i + 16);
+  const dur = v === 1 ? Number(buf.readBigUInt64BE(i + 28)) : buf.readUInt32BE(i + 20);
+  return scale > 0 ? dur / scale : null;
+}
 
 const SRT = '1\n00:00:01,000 --> 00:00:02,000\nフェイク\n';
 
@@ -75,18 +87,44 @@ if (args[0] === 'run') {
     return;
   }
   if (mode === 'progress' || mode === 'slow') {
-    let p = 0;
+    const audio = files.find((f) => f.startsWith('audio.'));
+    const seconds = mvhdSeconds(fs.readFileSync(path.join(book, audio))) ?? 1000;
+    const chapters = [seconds * 0.4, seconds * 0.6];
+    const log = (level, msg) =>
+      process.stderr.write(
+        `\u001b[32m2026-11-12 20:00:00\u001b[0m | ${level.padEnd(8)} | P:1 | ${msg}\n`,
+      );
+    const steps = [];
+    for (const total of chapters) {
+      for (const f of [0, 0.25, 0.5, 0.75, 1]) {
+        const n = (total * f).toFixed(2);
+        const pct = String(Math.round(f * 100)).padStart(3);
+        steps.push(() =>
+          log(
+            'TQDM',
+            `Transcribe: ${pct}%|#####     | ${n}/${total.toFixed(2)} [00:01<00:01, 45.00sec/s]`,
+          ),
+        );
+      }
+      steps.push(() => log('TQDM', '[A'));
+    }
+    steps.push(() => log('SUCCESS', "Transcription successful with model 'tiny' on 'cuda'."));
+    steps.push(() => log('TQDM', '100%|##########| 1/1 [00:00<00:00,  5.79it/s]'));
+    for (let i = 0; i <= 4; i++) {
+      const pct = String(i * 25).padStart(3);
+      steps.push(() => log('TQDM', `${pct}%|##        | ${i}/4 [00:02<00:08,  1.46s/it]`));
+    }
+    let i = 0;
     const t = setInterval(
       () => {
-        p += 10;
-        process.stderr.write(`${String(p).padStart(3)}%|${'█'.repeat(p / 10)}| ${p}/100\r`);
-        if (p >= 100) {
+        steps[i++]();
+        if (i >= steps.length) {
           clearInterval(t);
           write();
           process.exit(0);
         }
       },
-      mode === 'slow' ? 800 : 100,
+      mode === 'slow' ? 600 : 50,
     );
     return;
   }

@@ -51,14 +51,95 @@ export function subplzArgs({
   ];
 }
 
-/** The last percentage of a progress bar in SubPlz's output (tqdm: " 45%|████▌ |"), or null. */
-export function parsePercent(text: string): number | null {
-  let last: number | null = null;
-  for (const m of text.matchAll(/(\d{1,3})%\|/g)) {
+// eslint-disable-next-line no-control-regex
+const ANSI = /\x1b\[[0-9;]*[A-Za-z]/g;
+
+/**
+ * SubPlz's share of the work from its log lines, 0..1 for the whole run (not one bar).
+ * SubPlz (the pinned image) prints several tqdm bars through its logger, one line per update
+ * ("… | TQDM | P:1 | Transcribe:  69%|######9   | 1505.3/2176.73 [00:35<00:14, 46.52sec/s]"):
+ *
+ * - transcription, the long part (about 95 % of the time): one "Transcribe:" bar per chapter
+ *   of the audio, counted in seconds of audio. Done = finished chapters' lengths + the current
+ *   chapter's count, out of the audio's length (from the server's index);
+ * - after "Transcription successful": matching the text, short; its bar counts chapter
+ *   groups ("2/8"), the largest count bar seen in that part.
+ *
+ * The result only grows. Without the audio's length, the transcription part is unknown (null).
+ */
+export class SubplzProgress {
+  static readonly TRANSCRIBE_SHARE = 0.95;
+  private phase: 'transcribe' | 'match' = 'transcribe';
+  private doneSeconds = 0;
+  private bar: { n: number; total: number } | null = null;
+  private matchFraction = 0;
+  private matchTotal = 0;
+  private best: number | null = null;
+
+  constructor(private readonly audioSeconds: number | null) {}
+
+  /** One line of SubPlz's output. */
+  feed(raw: string): void {
+    const line = raw.replace(ANSI, '');
+    if (line.includes('Transcription successful')) {
+      this.phase = 'match';
+      this.raise(SubplzProgress.TRANSCRIBE_SHARE);
+      return;
+    }
+    if (this.phase === 'transcribe') {
+      const m = /Transcribe:\s*\d{1,3}%\|[^|]*\|\s*([\d.]+)\/([\d.]+)/.exec(line);
+      if (!m) return;
+      const n = Number(m[1]);
+      const total = Number(m[2]);
+      if (!Number.isFinite(n) || !Number.isFinite(total) || total <= 0) return;
+      // A new chapter's bar: the previous chapter is done.
+      if (this.bar && (Math.abs(total - this.bar.total) > 1e-6 || n < this.bar.n)) {
+        this.doneSeconds += this.bar.total;
+      }
+      this.bar = { n, total };
+      if (this.audioSeconds && this.audioSeconds > 0) {
+        const f = Math.min(1, (this.doneSeconds + n) / this.audioSeconds);
+        this.raise(f * SubplzProgress.TRANSCRIBE_SHARE);
+      }
+      return;
+    }
+    // Matching: a bar without a description that counts items ("| 2/8 [").
+    const m = /\|\s*\d{1,3}%\|[^|]*\|\s*(\d+)\/(\d+)\s*\[/.exec(line);
+    if (!m) return;
     const n = Number(m[1]);
-    if (n >= 0 && n <= 100) last = n / 100;
+    const total = Number(m[2]);
+    // Bars of one item (the book, the audio file) say nothing about the groups.
+    if (total <= 1 || total < this.matchTotal) return;
+    if (total > this.matchTotal) {
+      this.matchTotal = total;
+      this.matchFraction = 0;
+    }
+    this.matchFraction = Math.max(this.matchFraction, Math.min(1, n / total));
+    this.raise(
+      SubplzProgress.TRANSCRIBE_SHARE + (1 - SubplzProgress.TRANSCRIBE_SHARE) * this.matchFraction,
+    );
   }
-  return last;
+
+  private raise(p: number): void {
+    if (this.best === null || p > this.best) this.best = p;
+  }
+
+  /** 0..1 of SubPlz's whole run, or null while unknown. */
+  value(): number | null {
+    return this.best;
+  }
+}
+
+/** Splits a stream's chunks into lines (tqdm may redraw with \r: each part is a line). */
+export class LineSplitter {
+  private partial = '';
+  constructor(private readonly onLine: (line: string) => void) {}
+
+  push(chunk: string): void {
+    const parts = (this.partial + chunk).split(/\r\n|\n|\r/);
+    this.partial = parts.pop() ?? '';
+    for (const p of parts) if (p.trim() !== '') this.onLine(p);
+  }
 }
 
 /** Keeps the last `max` lines of output (progress bars redraw with \r: the last state wins). */
@@ -109,8 +190,8 @@ export interface RunOptions {
   args: string[];
   jobId: number;
   maxRunMs: number;
-  onPercent?: (p: number) => void;
-  onOutput?: () => void;
+  /** Every line SubPlz prints (stdout and stderr). */
+  onLine?: (line: string) => void;
 }
 
 /** A running SubPlz; `stop()` kills its container. */
@@ -127,15 +208,15 @@ export class SubplzRun {
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
     });
-    const onData = (chunk: Buffer) => {
-      const s = chunk.toString('utf8');
-      tail.push(s);
-      opts.onOutput?.();
-      const p = parsePercent(s);
-      if (p !== null) opts.onPercent?.(p);
-    };
-    this.child.stdout!.on('data', onData);
-    this.child.stderr!.on('data', onData);
+    const lines = (line: string) => opts.onLine?.(line);
+    for (const stream of [this.child.stdout!, this.child.stderr!]) {
+      const splitter = new LineSplitter(lines);
+      stream.on('data', (chunk: Buffer) => {
+        const s = chunk.toString('utf8');
+        tail.push(s);
+        splitter.push(s);
+      });
+    }
     const timer = setTimeout(() => void this.stop('timeout'), opts.maxRunMs);
     this.done = new Promise((resolve) => {
       let settled = false;

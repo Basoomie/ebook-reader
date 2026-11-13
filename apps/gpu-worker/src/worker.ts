@@ -22,7 +22,7 @@ import path from 'path';
 import { type ClaimedJob, type JobKind, ServerApi, ServerError, type Stage } from './api';
 import type { WorkerSettings } from './config';
 import type { Logger } from './log';
-import { runDocker, SubplzRun, subplzArgs } from './subplz';
+import { runDocker, SubplzProgress, SubplzRun, subplzArgs } from './subplz';
 import { isStopped, removeDeletedModels, runTtsJob } from './tts';
 
 const TTS_KINDS: JobKind[] = ['generate_audiobook', 'preview_audiobook', 'voice_sample'];
@@ -49,6 +49,19 @@ export function plainError(message: string, workDir: string): string {
     out = out.split(form).join('<work folder>');
   }
   return out.slice(0, 1000);
+}
+
+/**
+ * The share of the whole job each step gets in the reported progress (0..1), so the bar on
+ * the book's page goes from 0 to 100 once: downloading up to 2 %, SubPlz up to 98 %,
+ * sending the subtitles after that (the server saves at 99 %).
+ */
+export const DOWNLOAD_SHARE = 0.02;
+export const SUBPLZ_END = 0.98;
+
+/** Whole-job progress while SubPlz runs, from its own share (null while unknown). */
+export function jobProgress(subplz: number | null): number | null {
+  return subplz === null ? null : DOWNLOAD_SHARE + (SUBPLZ_END - DOWNLOAD_SHARE) * subplz;
 }
 
 export class Stopped extends Error {}
@@ -294,7 +307,7 @@ export class Worker {
         path.join(bookDir, 'book.epub'),
         (n) => {
           epubBytes = n;
-          progress = total > 0 ? Math.min(1, n / total) : null;
+          progress = total > 0 ? DOWNLOAD_SHARE * Math.min(1, n / total) : null;
         },
         abort.signal,
       );
@@ -303,14 +316,16 @@ export class Worker {
         'audio',
         path.join(bookDir, audioNameFor(job.audioFileName)),
         (n) => {
-          progress = total > 0 ? Math.min(1, (epubBytes + n) / total) : null;
+          progress = total > 0 ? DOWNLOAD_SHARE * Math.min(1, (epubBytes + n) / total) : null;
         },
         abort.signal,
       );
       if (cancelled) throw new Stopped();
 
       stage = 'syncing';
-      progress = null;
+      // Without the audio's length the transcription share is unknown: no % until matching.
+      progress = job.audioSeconds ? DOWNLOAD_SHARE : null;
+      const tracker = new SubplzProgress(job.audioSeconds ?? null);
       await report();
       if (cancelled) throw new Stopped();
       this.log.info(`Job ${job.id}: SubPlz started`);
@@ -325,8 +340,10 @@ export class Worker {
         }),
         jobId: job.id,
         maxRunMs: this.s.maxRunHours * 3600 * 1000,
-        onPercent: (p) => {
-          progress = p;
+        onLine: (line) => {
+          tracker.feed(line);
+          const v = jobProgress(tracker.value());
+          if (v !== null) progress = v;
         },
       });
       const result = await run.done;
@@ -347,7 +364,7 @@ export class Worker {
       if (!srt) throw new Error('SubPlz finished without making a subtitle file');
 
       stage = 'uploading';
-      progress = null;
+      progress = SUBPLZ_END;
       await report();
       if (cancelled) throw new Stopped();
       const data = await fsp.readFile(srt);

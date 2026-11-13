@@ -12,6 +12,8 @@
    * (publisher, dates, length, file size, library) with the tags; the other volumes of
    * the series and other books by each author. The address is /library/book?id=<id>.
    * WP15b: the "Audiobook" section (the confirmation picker) between About and Series.
+   * Download (book-download-menu.svelte): the EPUB, and the linked audiobook file and
+   * subtitles when there are any (the link comes up from the Audiobook section).
    */
   import { afterNavigate, goto } from '$app/navigation';
   import { browser } from '$app/environment';
@@ -20,11 +22,13 @@
   import AppHeader from '$lib/components/app-nav/app-header.svelte';
   import AddToCollectionDialog from '$lib/components/collections/add-to-collection-dialog.svelte';
   import AudioLinkSection from '$lib/components/audio/audio-link-section.svelte';
+  import BookDownloadMenu from '$lib/components/library/book-download-menu.svelte';
   import BookStateDialog from '$lib/components/library/book-state-dialog.svelte';
   import CoverImage from '$lib/components/library/cover-image.svelte';
   import LibraryBookCard from '$lib/components/library/library-book-card.svelte';
   import LibraryOpenOverlay from '$lib/components/library/library-open-overlay.svelte';
   import MessageDialog from '$lib/components/message-dialog.svelte';
+  import type { AudioLink } from '$lib/audio/audio-types';
   import { pxScreen } from '$lib/css-classes';
   import { dialogManager } from '$lib/data/dialog-manager';
   import { pagePath } from '$lib/data/env';
@@ -72,6 +76,8 @@
   let highlights = 0;
   /** WP15e: this device has a copy of the book (offers Remove from this device). */
   let onDeviceHere = false;
+  /** The book's audiobook link, from the Audiobook section (for the Download menu). */
+  let audioLink: AudioLink | null = null;
   let states = new Map<string, BookState>();
   let tagRules = new Set<string>();
   let positions = new Map<string, LocalRecord[]>();
@@ -189,6 +195,7 @@
     error = '';
     notFound = false;
     onDeviceHere = false;
+    audioLink = null;
     descriptionOpen = false;
     series = [];
     alsoBy = [];
@@ -444,6 +451,15 @@
           >
             Add to collection
           </button>
+          {#if api}
+            <BookDownloadMenu
+              {api}
+              {book}
+              link={audioLink}
+              buttonClass="c-btn c-btn-secondary c-round"
+              on:error={(ev) => showMessage('Not downloaded', describe(ev.detail))}
+            />
+          {/if}
           {#if onDeviceHere}
             <button
               class="c-btn c-btn-secondary c-round"
@@ -532,7 +548,7 @@
     </div>
 
     {#if api}
-      <AudioLinkSection {api} bookId={book.id} />
+      <AudioLinkSection {api} bookId={book.id} bind:link={audioLink} />
     {/if}
 
     {#if series.length > 1 && book.series}

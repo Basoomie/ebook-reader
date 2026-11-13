@@ -20,8 +20,14 @@ import {
   type WorkerSettings,
 } from '../../gpu-worker/src/config';
 import { memoryLogger } from '../../gpu-worker/src/log';
-import { parsePercent, subplzArgs, Tail } from '../../gpu-worker/src/subplz';
-import { audioNameFor, plainError, Worker, WORKER_VERSION } from '../../gpu-worker/src/worker';
+import { LineSplitter, subplzArgs, SubplzProgress, Tail } from '../../gpu-worker/src/subplz';
+import {
+  audioNameFor,
+  jobProgress,
+  plainError,
+  Worker,
+  WORKER_VERSION,
+} from '../../gpu-worker/src/worker';
 import type { AudioScanService } from '../src/audio/scan-service';
 import type { WorkerConfig } from '../src/config';
 import type { IndexerEnv } from './helpers/indexer-env';
@@ -99,10 +105,53 @@ describe('worker settings and helpers', () => {
     ]);
   });
 
-  it('reads progress bars and keeps the last lines', () => {
-    expect(parsePercent(' 45%|████▌     | 45/100 [00:10<00:12]')).toBe(0.45);
-    expect(parsePercent('  5%|▌ |\r 61%|██████ |')).toBe(0.61);
-    expect(parsePercent('Loading model 100 %')).toBeNull();
+  it('turns SubPlz lines into one progress for the whole run', () => {
+    // Lines as the pinned image prints them (from a real run, 2026-11-12).
+    const at = (msg: string, level = 'TQDM') =>
+      `\u001b[32m2026-11-12 20:28:32\u001b[0m | ${level.padEnd(8)} | P:1 | ${msg}`;
+    const p = new SubplzProgress(1000);
+    p.feed(at('0%|          | 0/3087 [00:00<?, ?it/s]')); // reading the book: ignored
+    expect(p.value()).toBeNull();
+    p.feed(at('Transcribe:  50%|#####     | 200.00/400.00 [00:35<00:14, 46.52sec/s]'));
+    expect(p.value()).toBeCloseTo(0.2 * 0.95);
+    p.feed(at('[A'));
+    p.feed(at('Transcribe: 100%|##########| 400.00/400.00 [00:35<00:00, 46.52sec/s]'));
+    expect(p.value()).toBeCloseTo(0.4 * 0.95);
+    // The next chapter's bar starts at 0: the whole run keeps going up.
+    p.feed(at('Transcribe:   1%|          | 4.52/600.00 [00:00<02:18,  6.44sec/s]'));
+    expect(p.value()).toBeCloseTo(((400 + 4.52) / 1000) * 0.95);
+    p.feed(at('Transcribe:  50%|#####     | 300.00/600.00 [00:10<00:10, 45.00sec/s]'));
+    expect(p.value()).toBeCloseTo(0.7 * 0.95);
+    // A chapter's after-bar in " seconds" (no "Transcribe:") changes nothing.
+    p.feed(at('第一章: 100%|##########| 400/400 [00:00<00:00, 9.99k seconds/s]'));
+    expect(p.value()).toBeCloseTo(0.7 * 0.95);
+    p.feed(at("✅ Transcription successful with model 'tiny' on 'cuda'.", 'SUCCESS'));
+    expect(p.value()).toBeCloseTo(0.95);
+    p.feed(at('100%|##########| 1/1 [00:00<00:00,  5.79it/s]')); // one item: ignored
+    expect(p.value()).toBeCloseTo(0.95);
+    p.feed(at('0%|          | 0/8 [00:00<?, ?it/s]'));
+    p.feed(at(' 50%|#####     | 4/8 [00:22<00:25,  6.41s/it]'));
+    expect(p.value()).toBeCloseTo(0.975);
+    p.feed(at('100%|##########| 8/8 [00:40<00:00,  5.00s/it]'));
+    expect(p.value()).toBeCloseTo(1);
+    // Without the audio's length: nothing until matching.
+    const q = new SubplzProgress(null);
+    q.feed(at('Transcribe:  50%|#####     | 200.00/400.00 [00:35<00:14, 46.52sec/s]'));
+    expect(q.value()).toBeNull();
+    q.feed(at("✅ Transcription successful with model 'tiny' on 'cuda'.", 'SUCCESS'));
+    expect(q.value()).toBeCloseTo(0.95);
+    // Whole job: download up to 2 %, SubPlz up to 98 %.
+    expect(jobProgress(0)).toBeCloseTo(0.02);
+    expect(jobProgress(1)).toBeCloseTo(0.98);
+    expect(jobProgress(null)).toBeNull();
+    const lines: string[] = [];
+    const split = new LineSplitter((l) => lines.push(l));
+    split.push('a\r\nb');
+    split.push('\rc\n\nd');
+    expect(lines).toEqual(['a', 'b', 'c']);
+  });
+
+  it('keeps the last lines of output', () => {
     const tail = new Tail(3);
     tail.push('a\nb\n 10%|█|\r 20%|██|\r');
     tail.push(' 30%|███|\nc\nd');
@@ -212,6 +261,13 @@ describe('the worker against the server', () => {
     const reports = t.sent.filter((x) => x.path.endsWith('/progress')).map((x) => x.body);
     expect(reports.some((r) => r.stage === 'downloading')).toBe(true);
     expect(reports.some((r) => r.stage === 'syncing' && r.progress >= 0.3)).toBe(true);
+    // One progress for the whole job: it only goes up, and downloading stays under 2 %.
+    const values = reports.map((r) => r.progress).filter((v) => v !== null);
+    expect(values).toEqual([...values].sort((a, b) => a - b));
+    expect(reports.filter((r) => r.stage === 'downloading').every((r) => r.progress <= 0.02)).toBe(
+      true,
+    );
+    expect(reports.some((r) => r.stage === 'uploading' && r.progress === 0.98)).toBe(true);
     expect(reports.some((r) => r.stage === 'uploading')).toBe(true);
     const hb = t.sent.find((x) => x.path.endsWith('/heartbeat'))!.body;
     expect(hb).toMatchObject({ version: WORKER_VERSION, image: PINNED_IMAGE, problem: null });
