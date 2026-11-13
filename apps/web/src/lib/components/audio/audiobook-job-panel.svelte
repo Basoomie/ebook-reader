@@ -125,7 +125,8 @@
         preview = latestPreview;
         open = true;
       }
-      if (active || previewActive) schedulePoll();
+      // Not `active`/`previewActive`: reactive values update only after this function.
+      if (ttsJobActive(job) || ttsJobActive(preview)) schedulePoll();
     } catch (err) {
       logger.warn(`Details: audiobook job: ${describe(err)}`);
     }

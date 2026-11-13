@@ -81,8 +81,9 @@ if (args[0] === 'run') {
     say(
       `progress ${JSON.stringify({ chapter: ch.index, chapterNumber: i + 1, chapters: chapters.length, done: 0, total: count })}`,
     );
-    const cues = ch.sentences.map((_, k) => [k * 500, k * 500 + 400]);
-    const durationMs = count * 500 + (job.pauses.chapterMs || 0);
+    // A voice sample (one piece) is 3 s, long enough to be kept as a voice.
+    const cues = job.whole ? [[0, 2800]] : ch.sentences.map((_, k) => [k * 500, k * 500 + 400]);
+    const durationMs = job.whole ? 3000 : count * 500 + (job.pauses.chapterMs || 0);
     const base = path.join(out, `part-${String(ch.index).padStart(4, '0')}`);
     execFileSync(
       'ffmpeg',
