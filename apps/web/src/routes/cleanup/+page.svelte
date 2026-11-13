@@ -284,7 +284,7 @@
                 </button>
               {/each}
               {#if stage1.mode !== 'off'}
-                <button class="c-btn c-btn-ghost" on:click={analyseAgain}>Look again</button>
+                <button class="c-btn c-btn-ghost" on:click={analyseAgain}>Check again</button>
               {/if}
             </div>
             {#each stage1Lines(stage1) as line}

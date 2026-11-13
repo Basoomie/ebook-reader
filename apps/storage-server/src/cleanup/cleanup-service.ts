@@ -448,7 +448,7 @@ export class CleanupService {
       return;
     }
     if (stage.mode !== 'on') {
-      this.waiting = 'Analysis only: nothing is applied';
+      this.waiting = 'Preview: nothing is changed in Calibre';
       return;
     }
     const current = getStage(this.db, 1);

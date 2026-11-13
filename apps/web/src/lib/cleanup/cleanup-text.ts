@@ -21,7 +21,7 @@ export function bytesText(value: unknown): string {
 
 export const MODE_LABELS: Record<StageMode, string> = {
   off: 'Off',
-  analyse: 'Look only',
+  analyse: 'Preview',
   on: 'On'
 };
 
