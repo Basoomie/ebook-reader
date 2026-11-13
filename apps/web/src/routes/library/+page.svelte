@@ -72,7 +72,13 @@
     seriesReadCount
   } from '$lib/library/progress';
   import AddToCollectionDialog from '$lib/components/collections/add-to-collection-dialog.svelte';
-  import { activeChips, CHIPS, toggleChip, type ChipId } from '$lib/library/query/chips';
+  import {
+    activeChips,
+    chipOnlyQuery,
+    CHIPS,
+    toggleChip,
+    type ChipId
+  } from '$lib/library/query/chips';
   import { parseQuery, usesBookState } from '$lib/library/query/parse';
   import {
     boxesOverlap,
@@ -169,10 +175,13 @@
   let resultCount: number | null = null;
   let counting = false;
   let countController: AbortController | undefined;
-  /** WP19b: counts on the tabs and chips, for the picked library. */
+  /** WP19b: counts on the tabs and chips, for the current search (loadSideCounts). */
   let tabCounts: Partial<Record<Tab, number>> = {};
   let chipCounts = new Map<ChipId, number>();
-  let sideCountsKey: string | null = null;
+  let tabCountsKey: string | null = null;
+  let chipCountsKey: string | null = null;
+  let sideCountsController: AbortController | undefined;
+  let tabCountsPending = false;
   let sideCountsTimer: ReturnType<typeof setTimeout> | undefined;
   let searchInput: HTMLInputElement | undefined;
   /** WP19c: how the page was last reached ('popstate' = back/forward). */
@@ -339,6 +348,7 @@
     clearTimeout(sideCountsTimer);
     stopListeners.forEach((off) => off());
     listController?.abort();
+    sideCountsController?.abort();
     opening?.controller.abort();
   });
 
@@ -857,11 +867,15 @@
     queryInput = appliedQuery;
     queryError = '';
     selected = new Set();
-    void loadSideCounts();
+    dropStaleSideCounts();
     // WP19b: Home's search button opens the Library with the search box focused.
     if (params.get('search') === '1') setTimeout(() => searchInput?.focus(), 0);
     // WP19c: back from a book's details: the list as it was, at the same place.
-    if (lastNavigation === 'popstate' && (await restoreSnapshot())) return;
+    if (lastNavigation === 'popstate' && (await restoreSnapshot())) {
+      void loadSideCounts();
+      return;
+    }
+    // The tab and chip numbers are asked once the list's first page is there.
     return loadPage(true);
   }
 
@@ -926,47 +940,113 @@
   }
 
   /**
-   * WP19b: the counts on the tabs (books, series, authors, tags) and the filter chips, for
-   * the picked library (not the search). Cached by the server; asked again when the
-   * library changes or (a few seconds later) when a book's status or favorite changes.
+   * WP19b: the counts on the tabs (books, series, authors, tags) and the filter chips.
+   * They follow the search (fix-library-counts-follow-search; before, they were the picked
+   * library's totals):
+   * - a tab counts the search in that tab (books, or the groups with a matching book).
+   *   A tab link keeps the search and leaves an open group, so the group doesn't count.
+   * - a chip counts what the list would show with that chip as the only one on
+   *   (chipOnlyQuery), in the header's unit: books, groups in a grouped tab, or the open
+   *   group's books.
+   * Asked after the list's first page (pattern searches share one worker with the list),
+   * again when a book's status or favorite changes (a few seconds later). A search that
+   * doesn't parse keeps the previous numbers, like the list keeps its results.
    */
-  async function loadSideCounts() {
-    if (!api || collectionId !== null) return;
-    const key = appliedLibrary;
-    if (key === sideCountsKey) return;
-    sideCountsKey = key;
-    const a = api;
-    const library = appliedLibrary || undefined;
-    try {
-      const [all, series, authors, tags] = await Promise.all([
-        a.count({ library }),
-        ...(['series', 'author', 'tag'] as GroupBy[]).map((by) =>
-          a.groups({ by, library, limit: 1 }).then((r) => r.total)
-        )
-      ]);
-      if (sideCountsKey !== key) return;
-      tabCounts = { all, series, authors, tags };
-    } catch {
+  function sideCountKeys() {
+    const by = TABS.find((t) => t.id === tab)?.by ?? null;
+    const openGroup = by ? group : null;
+    const tabsKey = JSON.stringify([appliedLibrary, appliedQuery]);
+    return { by, openGroup, tabsKey, chipsKey: JSON.stringify([tabsKey, by, openGroup]) };
+  }
+
+  /**
+   * When the URL names another search, tab or group: the numbers of the previous one go
+   * at once (they would be wrong while the new list loads); loadSideCounts asks again.
+   */
+  function dropStaleSideCounts() {
+    const { tabsKey, chipsKey } = sideCountKeys();
+    if (tabsKey === tabCountsKey && chipsKey === chipCountsKey) return;
+    sideCountsController?.abort();
+    sideCountsController = undefined;
+    if (tabsKey !== tabCountsKey) {
+      tabCountsKey = null;
       tabCounts = {};
     }
-    try {
-      const entries = await Promise.all(
-        CHIPS.map(
-          async (c) => [c.id, await a.count({ q: toggleChip('', c.id) ?? '', library })] as const
-        )
-      );
-      if (sideCountsKey !== key) return;
-      chipCounts = new Map(entries);
-    } catch {
-      chipCounts = new Map();
+    chipCountsKey = null;
+    chipCounts = new Map();
+  }
+
+  async function loadSideCounts() {
+    if (!api || collectionId !== null || !parseQuery(appliedQuery).ok) return;
+    const a = api;
+    const library = appliedLibrary || undefined;
+    const q = appliedQuery || undefined;
+    const { by, openGroup, tabsKey, chipsKey } = sideCountKeys();
+    if (tabsKey === tabCountsKey && chipsKey === chipCountsKey) return;
+    // Aborting a load whose tab numbers haven't arrived means asking for them again.
+    const loadTabs = tabsKey !== tabCountsKey || tabCountsPending;
+    sideCountsController?.abort();
+    const controller = new AbortController();
+    sideCountsController = controller;
+    const options = { signal: controller.signal };
+    chipCountsKey = chipsKey;
+    chipCounts = new Map();
+    if (loadTabs) {
+      tabCountsKey = tabsKey;
+      tabCounts = {};
+      tabCountsPending = true;
     }
+    const current = () => sideCountsController === controller;
+    const groupTotal = (groupBy: GroupBy, query: string | undefined) =>
+      a.groups({ by: groupBy, q: query, library, limit: 1 }, options).then((r) => r.total);
+
+    const tabsDone = loadTabs
+      ? Promise.all([
+          a.count({ q, library }, options),
+          ...(['series', 'author', 'tag'] as GroupBy[]).map((g) => groupTotal(g, q))
+        ]).then(
+          ([all, series, authors, tags]) => {
+            if (!current()) return;
+            tabCounts = { all, series, authors, tags };
+            tabCountsPending = false;
+          },
+          () => {
+            // No numbers on the tabs; asked again with the next search.
+            if (!current()) return;
+            tabCountsKey = null;
+            tabCountsPending = false;
+          }
+        )
+      : Promise.resolve();
+    const chipsDone = Promise.all(
+      CHIPS.map(async (c) => {
+        const chipQuery = chipOnlyQuery(appliedQuery, c.id) ?? undefined;
+        const n =
+          by && !openGroup
+            ? await groupTotal(by, chipQuery)
+            : await a.count({ q: chipQuery, library, group: openGroup ?? undefined }, options);
+        return [c.id, n] as const;
+      })
+    ).then(
+      (entries) => {
+        if (!current()) return;
+        chipCounts = new Map(
+          entries.filter((e): e is readonly [ChipId, number] => typeof e[1] === 'number')
+        );
+      },
+      () => {
+        if (current()) chipCountsKey = null;
+      }
+    );
+    await Promise.all([tabsDone, chipsDone]);
   }
 
   function onStatesChangedForCounts() {
     clearTimeout(sideCountsTimer);
     // After the sync has had a moment to send the change.
     sideCountsTimer = setTimeout(() => {
-      sideCountsKey = null;
+      tabCountsKey = null;
+      chipCountsKey = null;
       void loadSideCounts();
     }, 4000);
   }
@@ -1069,6 +1149,8 @@
         groups = [];
         nextCursor = result.nextCursor;
       }
+      // After the first page: a pattern search's counts then queue behind its list.
+      if (reset && listController === controller) void loadSideCounts();
     } catch (error) {
       if (error instanceof LibraryApiError && error.kind === 'aborted') return;
       if (handleAuthError(error)) return;

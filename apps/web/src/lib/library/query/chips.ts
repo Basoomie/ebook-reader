@@ -56,6 +56,38 @@ function append(text: string, term: string): string {
   return trimmed ? `${trimmed} ${term}` : term;
 }
 
+/** The search term a chip stands for. */
+function chipTerm(chip: ChipId): string {
+  if (chip === 'favorite') return 'favorite:yes';
+  if (chip === 'device') return 'on:device';
+  return `status:${chip}`;
+}
+
+/** A term that some chip shows as switched on (activeChips). */
+function isChipTerm(term: QueryTerm): boolean {
+  if (term.negated) return false;
+  return (
+    term.type === 'status' || (term.type === 'favorite' && term.value) || term.type === 'device'
+  );
+}
+
+/**
+ * The query as if this chip were the only one switched on: every chip term (status lists,
+ * `favorite:yes`, `on:device`) is taken out and the chip's own term added. Used for the
+ * number on each chip (fix-library-counts-follow-search), which then doesn't depend on the
+ * other chips (status chips combine as "either"). Everything else stays as typed, negated
+ * terms included. Returns null when the query doesn't parse.
+ */
+export function chipOnlyQuery(text: string, chip: ChipId): string | null {
+  const parsed = parseQuery(text);
+  if (!parsed.ok) return null;
+  let next = text;
+  // Right to left, so earlier spans stay valid.
+  const owned = parsed.query.terms.filter(isChipTerm).sort((a, b) => b.start - a.start);
+  for (const term of owned) next = splice(next, term.start, term.end, '');
+  return append(next, chipTerm(chip));
+}
+
 /**
  * The query with the chip switched on or off. Returns null when the query doesn't parse
  * (the chips are then disabled until the error is fixed).
