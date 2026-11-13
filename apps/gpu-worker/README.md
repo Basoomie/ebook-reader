@@ -13,7 +13,9 @@ SubPlz runs like a manual run:
 docker run --rm --gpus all --name ttsu-subplz-<job> -v C:\ttsu-worker\work\job-<job>:/sync -v C:\Data\Japanese\Books\SyncCache:/config kanjieater/subplz@sha256:58cddc13… sync -d /sync/book
 ```
 
-The job folder uses plain names (`book\book.epub`, `book\audio.m4b`), because the real book and audio names have spaces and Japanese characters. `--name` lets "Stop" kill that one container. The cache folder is mounted at `/config`, not `/SyncCache` as in older SubPlz instructions: current SubPlz images keep their models, logs and job files under `/config` and stop at once when it isn't writable. SubPlz creates `cache`, `logs` and `jobs` folders inside the cache folder.
+The job folder uses plain names (`book\book.epub`, `book\audio-<key>.m4b`), because the real book and audio names have spaces and Japanese characters. `--name` lets "Stop" kill that one container. The cache folder is mounted at `/config`, not `/SyncCache` as in older SubPlz instructions: current SubPlz images keep their models, logs and job files under `/config` and stop at once when it isn't writable. SubPlz creates `cache`, `logs` and `jobs` folders inside the cache folder.
+
+SubPlz also keeps every chapter's transcript in `cache` as `<audio file name>.<chapter>.<model>.subs` and reuses it whenever a file of that name comes again. So `<key>` is made from the real audio file's name and size: each audiobook gets its own name, and a retry of the same audiobook reuses its own transcripts. Worker 1.1.0 and older named every audio `audio.m4b`, so a book got the transcripts of the book before it. The `audio.m4b.*.subs` files they left in `cache` are never read again and can be deleted.
 
 The SubPlz image is pinned by digest: `kanjieater/subplz@sha256:58cddc13c51789d65edb2b81ef47b2dd76613e54f9c4726cc96d94f2aff7b310`. That digest is `kanjieater/subplz:latest` as published on 2025-10-24. It changes only on purpose (`image` in `config.json`).
 
