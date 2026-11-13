@@ -181,6 +181,31 @@ describe('catalog API', () => {
     const res = await request(e.app).get(`/api/v1/books/${book.id}/thumbnail`).set(auth);
     expect(res.status).toBe(404);
     expect(res.body.error.code).toBe('no_cover');
+    const full = await request(e.app).get(`/api/v1/books/${book.id}/cover`).set(auth);
+    expect(full.status).toBe(404);
+    expect(full.body.error.code).toBe('no_cover');
+  });
+
+  it('serves the full-size cover as stored, with the token only', async () => {
+    const { e, auth } = await realLibraryEnv();
+    const list = await request(e.app).get('/api/v1/books').set(auth);
+    const book = list.body.books.find((b: { title: string }) => b.title === '両方ある本');
+    const url = `/api/v1/books/${book.id}/cover`;
+
+    expect((await request(e.app).get(url)).status).toBe(401);
+    // A thumbnail signature doesn't unlock the full cover.
+    const signed = await request(e.app).get(`${url}?${book.thumbnail.split('?')[1]}`);
+    expect(signed.status).toBe(401);
+
+    const res = await request(e.app).get(url).set(auth).buffer(true);
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toBe('image/jpeg');
+    expect(res.headers['cache-control']).toBe('private, no-cache');
+    const body = Buffer.from(res.body);
+    expect(body.subarray(0, 3)).toEqual(Buffer.from([0xff, 0xd8, 0xff]));
+
+    const unknown = await request(e.app).get('/api/v1/books/nope/cover').set(auth);
+    expect(unknown.status).toBe(404);
   });
 
   it('reports the indexer as off when it is not configured', async () => {
@@ -198,5 +223,7 @@ describe('catalog API', () => {
     });
     const thumb = await request(app).get('/api/v1/books/x/thumbnail').set(auth);
     expect(thumb.status).toBe(503);
+    const cover = await request(app).get('/api/v1/books/x/cover').set(auth);
+    expect(cover.status).toBe(503);
   });
 });

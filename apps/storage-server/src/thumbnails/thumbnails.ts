@@ -193,6 +193,27 @@ export interface ThumbnailResult {
   file: string | null;
 }
 
+export type OriginalCover =
+  | { status: 'ok'; data: Buffer; type: string }
+  | { status: 'none' }
+  | { status: 'error'; error: string };
+
+/** Image formats served as a full-size cover (others are reported as unreadable). */
+const COVER_TYPES: Record<string, string> = {
+  jpeg: 'image/jpeg',
+  png: 'image/png',
+  webp: 'image/webp',
+  gif: 'image/gif',
+};
+
+function coverError(src: CoverSource, err: unknown): string {
+  return (err as NodeJS.ErrnoException).code === 'ENOENT'
+    ? src.kind === 'upload'
+      ? 'the uploaded file is missing'
+      : 'cover.jpg is missing although Calibre lists a cover'
+    : `cover could not be read: ${(err as Error).message}`;
+}
+
 const BACKGROUND_BATCH = 200;
 
 /** Position in the newest-first walk of the background pass. */
@@ -324,23 +345,38 @@ export class ThumbnailService {
           bytes: data.length,
         });
       } catch (err) {
-        const message =
-          (err as NodeJS.ErrnoException).code === 'ENOENT'
-            ? src.kind === 'upload'
-              ? 'the uploaded file is missing'
-              : 'cover.jpg is missing although Calibre lists a cover'
-            : `cover could not be read: ${(err as Error).message}`;
         record = this.save(src.bookId, {
           status: 'error',
           key,
           now,
           attempts: (previous?.sourceKey === key ? previous.attempts : 0) + 1,
-          error: message,
+          error: coverError(src, err),
         });
         file = null;
       }
     }
     return { record, file };
+  }
+
+  /**
+   * The book's full-size cover image as stored (the book page's Download menu), not the
+   * thumbnail. Read-only and not cached. null when the book is unknown, missing, or in a
+   * disabled library.
+   */
+  async original(bookId: string): Promise<OriginalCover | null> {
+    const src = this.coverSource(bookId);
+    if (!src) return null;
+    if (!src.hasCover) return { status: 'none' };
+    try {
+      const data = await this.readCover(src);
+      // The header alone: the image's real format, whatever its file is called.
+      const { format } = await sharp(data).metadata();
+      const type = format ? COVER_TYPES[format] : undefined;
+      if (!type) throw new Error(`unsupported image format (${format ?? 'unknown'})`);
+      return { status: 'ok', data, type };
+    } catch (err) {
+      return { status: 'error', error: coverError(src, err) };
+    }
   }
 
   /** The cover image's bytes: Calibre's cover.jpg, or the image inside an uploaded EPUB. */
