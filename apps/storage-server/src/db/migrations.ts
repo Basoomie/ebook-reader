@@ -682,6 +682,21 @@ export const MIGRATIONS: { version: number; name: string; sql: string }[] = [
       ALTER TABLE worker_status ADD COLUMN tts_image TEXT;
     `,
   },
+  {
+    version: 16,
+    name: 'search folding',
+    // fix-search-width-folding: folded copies (NFKC + lower case, catalog/fold.ts) of the
+    // searchable names, so library search matches full-width and half-width alike without
+    // folding every row per query. Search only; displayed text keeps the original columns.
+    // NULL = not folded yet: openDatabase() fills them (fillSearchFolds) right after
+    // migrating, and the catalog writers set them from then on.
+    sql: `
+      ALTER TABLE books ADD COLUMN title_fold TEXT;
+      ALTER TABLE authors ADD COLUMN name_fold TEXT;
+      ALTER TABLE series ADD COLUMN name_fold TEXT;
+      ALTER TABLE tags ADD COLUMN name_fold TEXT;
+    `,
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

@@ -8,7 +8,7 @@ import path from 'path';
 import request from 'supertest';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { AudioScanService } from '../src/audio/scan-service';
-import { migrate, MIGRATIONS } from '../src/db/migrations';
+import { LATEST_SCHEMA_VERSION, migrate, MIGRATIONS } from '../src/db/migrations';
 import { audioEnv, m4b, write } from './helpers/audio-fixtures';
 import type { IndexerEnv } from './helpers/indexer-env';
 
@@ -34,7 +34,7 @@ describe('migration 15', () => {
        VALUES ('u1', 'b1', 'sync_subtitles', 'l1', 'japanese/x', 'x.m4b', 5, 'done', NULL, 1, 1,
          'japanese-srt/_generated/x.srt', 1, 10, 20)`,
     ).run();
-    expect(migrate(db)).toBe(15);
+    expect(migrate(db)).toBe(LATEST_SCHEMA_VERSION);
     const row = db.prepare('SELECT * FROM worker_jobs').get() as Record<string, unknown>;
     expect(row).toMatchObject({
       kind: 'sync_subtitles',
