@@ -127,6 +127,14 @@
     }
   }
 
+  /**
+   * The app compiles with `immutable: true`: a value changed inside an object is not redrawn,
+   * so each keystroke replaces the object (otherwise Save stays disabled).
+   */
+  function setSecretValue(name: SecretName, value: string) {
+    secretValues = { ...secretValues, [name]: value };
+  }
+
   async function saveSecret(name: SecretName, label: string) {
     const value = secretValues[name];
     if (!value.trim()) return;
@@ -348,7 +356,8 @@
             type="password"
             autocomplete="new-password"
             placeholder={secrets[s.name].set ? 'Type a new one to replace it' : ''}
-            bind:value={secretValues[s.name]}
+            value={secretValues[s.name]}
+            on:input={(e) => setSecretValue(s.name, e.currentTarget.value)}
             data-testid="cleanup-secret-{s.name}"
           />
           <span class="text-c-muted" data-testid="cleanup-secret-state-{s.name}">
