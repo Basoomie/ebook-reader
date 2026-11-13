@@ -37,7 +37,10 @@
     n,
     pauseTitle,
     precisionLine,
-    stage1Lines
+    applyProgress,
+    stage1Lines,
+    stage1Progress,
+    type ProgressBar
   } from '$lib/cleanup/cleanup-text';
   import { confirmDestructive } from '$lib/confirm/confirm';
   import { turnOnIdenticalFilesCopy } from '$lib/confirm/confirm-copy';
@@ -89,6 +92,13 @@
   $: laterStages = stages.filter((s) => s.stage >= 2);
   $: checksOk = status?.checks.filter((c) => c.required).every((c) => c.ok) ?? false;
   $: toRemove = Number((stage1?.progress as { toRemove?: number } | undefined)?.toRemove ?? 0);
+  // Recomputed on every poll (status is replaced), so the time left follows the pace.
+  $: bars = [
+    stage1 ? stage1Progress(stage1, Date.now()) : null,
+    status && stage1?.mode === 'on'
+      ? applyProgress(status.stage1.counts, batches, Date.now())
+      : null
+  ].filter((b): b is ProgressBar => b !== null);
 
   onMount(async () => {
     tab = $page.url.searchParams.get('tab') === 'settings' ? 'settings' : 'cleanup';
@@ -287,6 +297,26 @@
                 <button class="c-btn c-btn-ghost" on:click={analyseAgain}>Check again</button>
               {/if}
             </div>
+            {#each bars as bar (bar.label)}
+              <div class="flex flex-col gap-1" data-testid="cleanup-progress">
+                <div class="flex flex-wrap justify-between gap-x-4 text-sm">
+                  <span>{bar.label}</span>
+                  <span data-testid="cleanup-progress-eta"
+                    >{Math.floor(bar.fraction * 100)} %{bar.eta ? ` · ${bar.eta}` : ''}</span
+                  >
+                </div>
+                <div
+                  class="c-progress h-2 overflow-hidden rounded-full bg-c-track"
+                  role="progressbar"
+                  aria-label={bar.label}
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={Math.floor(bar.fraction * 100)}
+                >
+                  <div class="h-full bg-c-fill" style="width: {bar.fraction * 100}%" />
+                </div>
+              </div>
+            {/each}
             {#each stage1Lines(stage1) as line}
               <p class="text-sm">{line}</p>
             {/each}

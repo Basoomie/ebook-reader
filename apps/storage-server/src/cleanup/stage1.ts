@@ -51,6 +51,14 @@ export interface Stage1Progress {
   bothWithData: number;
   /** Removed copies whose own tags are added to the kept copy (decided 2026-11-13). */
   tagsCopied: number;
+  /**
+   * For the page's progress bar and time left: when the current step began (stat or hash)
+   * and how far it was then (files stat'ed, or bytes hashed), and the bytes the hash step
+   * has to read. Older analyses don't have them (the page then uses startedAt and counts).
+   */
+  phaseStartedAt?: number;
+  phaseStartDone?: number;
+  hashBytesTotal?: number;
   booksWithoutEpubFile: number;
   error: string | null;
 }
@@ -219,6 +227,9 @@ export function emptyProgress(libraryId: string, now = Date.now()): Stage1Progre
     removedWithData: 0,
     bothWithData: 0,
     tagsCopied: 0,
+    phaseStartedAt: now,
+    phaseStartDone: 0,
+    hashBytesTotal: 0,
     booksWithoutEpubFile: 0,
     error: null,
   };
@@ -316,6 +327,12 @@ export class Stage1Analysis {
       p.hashDone = sizes.filter(
         (r) => present.has(r.calibre_id) && shared.has(r.size) && r.sha256 !== null,
       ).length;
+      // For the page's progress bar and time left: what this step still has to read.
+      p.hashBytesTotal = sizes
+        .filter((r) => present.has(r.calibre_id) && shared.has(r.size) && r.sha256 === null)
+        .reduce((sum, r) => sum + r.size, 0);
+      p.phaseStartedAt = Date.now();
+      p.phaseStartDone = 0;
       return p;
     }
     const get = this.deps.cleanup.prepare(
@@ -432,6 +449,8 @@ export class Stage1Analysis {
         setHash.run(result.sha256, Date.now(), null, p.libraryId, r.calibre_id);
         p.hashDone++;
         p.bytesHashed += result.bytes;
+        // After every file, so the page's progress bar moves (one large file can take minutes).
+        this.save(p, 'analysing');
       } catch (err) {
         setHash.run(null, null, `hash: ${(err as Error).message}`, p.libraryId, r.calibre_id);
         p.hashErrors++;

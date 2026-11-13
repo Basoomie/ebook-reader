@@ -12,7 +12,10 @@ import {
   canUndo,
   precisionLine,
   restoreText,
+  applyProgress,
+  etaText,
   stage1Lines,
+  stage1Progress,
   tagsMoving
 } from './cleanup-text';
 import { turnOnIdenticalFilesCopy, undoCleanupBatchCopy } from '$lib/confirm/confirm-copy';
@@ -54,15 +57,72 @@ const batch = (extra: Partial<CleanupBatch>): CleanupBatch => ({
 });
 
 describe('cleanup wording', () => {
-  it('describes each analysis phase and the result', () => {
-    expect(stage1Lines(stage({ phase: 'stat', statDone: 1200, statTotal: 65925 }))[0]).toBe(
-      'Reading file sizes: 1,200 of 65,925 books.'
+  it('shows the analysis as a progress bar with the time left', () => {
+    const t0 = Date.UTC(2026, 10, 13, 12, 0, 0);
+    // 10 minutes in, 6,000 of 66,000 books: about 100 minutes to go.
+    const stat = stage1Progress(
+      stage({
+        phase: 'stat',
+        statDone: 6000,
+        statTotal: 66000,
+        phaseStartedAt: t0,
+        phaseStartDone: 0
+      }),
+      t0 + 10 * 60_000
     );
+    expect(stat).toEqual({
+      label: 'Step 1 of 2 · Reading file sizes: 6,000 of 66,000 books',
+      fraction: 6000 / 66000,
+      eta: 'about 1 h 40 min left'
+    });
+    // An analysis from before the bar: its start time stands in for the step's.
     expect(
-      stage1Lines(
-        stage({ phase: 'hash', hashDone: 10, hashTotal: 6600, bytesHashed: 3 * 1024 ** 3 })
-      )[0]
-    ).toBe('Comparing files of the same size: 10 of 6,600 files (3.0 GB read).');
+      stage1Progress(
+        stage({ phase: 'stat', statDone: 600, statTotal: 1200, startedAt: t0 }),
+        t0 + 60_000
+      )?.eta
+    ).toBe('about 1 min left');
+    // Too early for a guess.
+    expect(
+      stage1Progress(
+        stage({ phase: 'stat', statDone: 10, statTotal: 1200, phaseStartedAt: t0 }),
+        t0 + 5000
+      )?.eta
+    ).toBeNull();
+    const hash = stage1Progress(
+      stage({
+        phase: 'hash',
+        bytesHashed: 50 * 1024 ** 3,
+        hashBytesTotal: 100 * 1024 ** 3,
+        phaseStartedAt: t0,
+        phaseStartDone: 0
+      }),
+      t0 + 20 * 60_000
+    );
+    expect(hash?.label).toBe('Step 2 of 2 · Comparing files of the same size: 50.0 GB of 100.0 GB');
+    expect(hash?.eta).toBe('about 20 min left');
+    expect(stage1Progress(stage({ phase: 'done' }))).toBeNull();
+    expect(
+      stage1Progress(stage({ phase: 'stat', statDone: 1, statTotal: 2 }, { mode: 'off' }))
+    ).toBeNull();
+    expect(stage1Lines(stage({ phase: 'stat', statDone: 1, statTotal: 2 }))).toEqual([]);
+  });
+
+  it('shows removing the copies as a progress bar', () => {
+    const t0 = Date.UTC(2026, 10, 13, 12, 0, 0);
+    const b = batch({ claimedAt: t0, createdAt: t0 });
+    expect(applyProgress({ applied: 400, proposed: 3300 }, [b], t0 + 10 * 60_000)).toEqual({
+      label: 'Removing copies: 400 of 3,700',
+      fraction: 400 / 3700,
+      eta: 'about 1 h 23 min left'
+    });
+    expect(applyProgress({ applied: 3700 }, [b])).toBeNull();
+    expect(applyProgress({ proposed: 3700 }, [])).toBeNull();
+    expect(etaText(30_000)).toBe('less than a minute left');
+    expect(etaText(2 * 3600_000)).toBe('about 2 h left');
+  });
+
+  it('describes each analysis phase and the result', () => {
     const done = stage1Lines(
       stage({
         phase: 'done',

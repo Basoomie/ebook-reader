@@ -42,6 +42,103 @@ export function pauseTitle(reason: string): string {
   return PAUSE_TEXT[reason] ?? reason;
 }
 
+/** A progress bar: what is being done, how far, and roughly how long is left. */
+export interface ProgressBar {
+  label: string;
+  /** 0-1. */
+  fraction: number;
+  /** "about 25 min left", or null while there is too little to go on. */
+  eta: string | null;
+}
+
+/** "less than a minute left", "about 25 min left", "about 2 h 10 min left". */
+export function etaText(ms: number): string {
+  if (ms < 60_000) return 'less than a minute left';
+  const min = Math.round(ms / 60_000);
+  if (min < 60) return `about ${min} min left`;
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  return m === 0 ? `about ${h} h left` : `about ${h} h ${m} min left`;
+}
+
+/**
+ * Time left from the speed since `startedAt` (when the step began, at `startDone`). Shown only
+ * after 30 seconds and some progress, so the first guess isn't wild.
+ */
+export function eta(
+  done: number,
+  total: number,
+  startedAt: number | null,
+  startDone: number,
+  now: number
+): string | null {
+  if (startedAt === null || total <= 0 || done >= total) return null;
+  const elapsed = now - startedAt;
+  const progressed = done - startDone;
+  if (elapsed < 30_000 || progressed <= 0 || done / total < 0.005) return null;
+  return etaText(((total - done) * elapsed) / progressed);
+}
+
+function num(v: unknown): number {
+  return typeof v === 'number' && Number.isFinite(v) ? v : 0;
+}
+
+/** The analysis' progress bar (reading file sizes, then comparing same-size files). */
+export function stage1Progress(stage: CleanupStage, now = Date.now()): ProgressBar | null {
+  const p = stage.progress as Record<string, unknown>;
+  if (!p || stage.mode === 'off') return null;
+  const phaseStart = typeof p.phaseStartedAt === 'number' ? p.phaseStartedAt : null;
+  if (p.phase === 'stat') {
+    const done = num(p.statDone);
+    const total = num(p.statTotal);
+    if (total <= 0) return null;
+    // Analyses started before the bar existed have no phaseStartedAt: they began with this step.
+    const started = phaseStart ?? (typeof p.startedAt === 'number' ? p.startedAt : null);
+    return {
+      label: `Step 1 of 2 · Reading file sizes: ${n(done)} of ${n(total)} books`,
+      fraction: Math.min(1, done / total),
+      eta: eta(done, total, started, num(p.phaseStartDone), now)
+    };
+  }
+  if (p.phase === 'hash') {
+    const totalBytes = num(p.hashBytesTotal);
+    if (totalBytes > 0) {
+      const done = num(p.bytesHashed);
+      return {
+        label: `Step 2 of 2 · Comparing files of the same size: ${bytesText(done)} of ${bytesText(totalBytes)}`,
+        fraction: Math.min(1, done / totalBytes),
+        eta: eta(done, totalBytes, phaseStart, num(p.phaseStartDone), now)
+      };
+    }
+    const total = num(p.hashTotal);
+    if (total <= 0) return null;
+    return {
+      label: `Step 2 of 2 · Comparing files of the same size: ${n(p.hashDone)} of ${n(total)} files`,
+      fraction: Math.min(1, num(p.hashDone) / total),
+      eta: null
+    };
+  }
+  return null;
+}
+
+/** Removing the copies once stage 1 is on: removed of all to remove, time left from the pace. */
+export function applyProgress(
+  counts: Record<string, number>,
+  batches: CleanupBatch[],
+  now = Date.now()
+): ProgressBar | null {
+  const done = counts.applied ?? 0;
+  const total = done + (counts.proposed ?? 0) + (counts.queued ?? 0);
+  if (total <= 0 || done >= total || (done === 0 && (counts.queued ?? 0) === 0)) return null;
+  const applies = batches.filter((b) => b.kind === 'apply');
+  const first = applies.length ? Math.min(...applies.map((b) => b.claimedAt ?? b.createdAt)) : null;
+  return {
+    label: `Removing copies: ${n(done)} of ${n(total)}`,
+    fraction: done / total,
+    eta: eta(done, total, first, 0, now)
+  };
+}
+
 /** The lines under stage 1's name: where the analysis is, and what it found. */
 export function stage1Lines(stage: CleanupStage): string[] {
   const p = stage.progress as Record<string, unknown>;
@@ -49,14 +146,8 @@ export function stage1Lines(stage: CleanupStage): string[] {
     return stage.mode === 'off' ? [] : ['Waiting to start.'];
   }
   const lines: string[] = [];
-  if (p.phase === 'stat') {
-    lines.push(`Reading file sizes: ${n(p.statDone)} of ${n(p.statTotal)} books.`);
-  } else if (p.phase === 'hash') {
-    lines.push(
-      `Comparing files of the same size: ${n(p.hashDone)} of ${n(p.hashTotal)} files (${bytesText(
-        p.bytesHashed
-      )} read).`
-    );
+  if (p.phase === 'stat' || p.phase === 'hash') {
+    // Shown as a progress bar (stage1Progress).
   } else if (p.phase === 'group') {
     lines.push('Grouping identical files…');
   } else if (p.phase === 'done') {
