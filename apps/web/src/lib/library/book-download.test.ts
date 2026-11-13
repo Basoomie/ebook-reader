@@ -6,7 +6,13 @@
 
 import { describe, expect, it } from 'vitest';
 import type { AudioLink } from '$lib/audio/audio-types';
-import { audioDownloadUrl, downloadChoices, epubFileName, subtitleFileName } from './book-download';
+import {
+  audioDownloadUrl,
+  coverFileName,
+  downloadChoices,
+  epubFileName,
+  subtitleFileName
+} from './book-download';
 
 const PLAY = '/api/v1/audio/files/7/0?v=10-20&u=u1&s=sig';
 
@@ -33,16 +39,27 @@ function link(change: Partial<AudioLink> = {}): AudioLink {
 
 describe('downloadChoices', () => {
   it('offers only the book when nothing is linked', () => {
-    expect(downloadChoices({}, null)).toEqual({ book: true, audio: null, subtitles: false });
+    expect(downloadChoices({}, null)).toEqual({
+      book: true,
+      audio: null,
+      subtitles: false,
+      cover: false
+    });
     const none = link({ state: 'none', playUrl: null, subtitleState: null, subtitleStatus: null });
-    expect(downloadChoices({}, none)).toEqual({ book: true, audio: null, subtitles: false });
+    expect(downloadChoices({}, none)).toEqual({
+      book: true,
+      audio: null,
+      subtitles: false,
+      cover: false
+    });
   });
 
   it('offers the audiobook and subtitles of a link to one file', () => {
     expect(downloadChoices({ missing: false }, link())).toEqual({
       book: true,
       audio: PLAY,
-      subtitles: true
+      subtitles: true,
+      cover: false
     });
   });
 
@@ -65,11 +82,23 @@ describe('downloadChoices', () => {
 
   it('keeps subtitles when the audio file is gone', () => {
     const gone = link({ status: 'missing', playable: false, playUrl: null });
-    expect(downloadChoices({}, gone)).toEqual({ book: true, audio: null, subtitles: true });
+    expect(downloadChoices({}, gone)).toEqual({
+      book: true,
+      audio: null,
+      subtitles: true,
+      cover: false
+    });
   });
 
   it('marks the book unavailable once it left the library', () => {
     expect(downloadChoices({ missing: true }, null).book).toBe(false);
+  });
+
+  it('offers the cover only for a book with one that is still in the library', () => {
+    const thumbnail = '/api/v1/books/b1/thumbnail?v=1&u=u&s=s';
+    expect(downloadChoices({ thumbnail }, null).cover).toBe(true);
+    expect(downloadChoices({ thumbnail: null }, null).cover).toBe(false);
+    expect(downloadChoices({ thumbnail, missing: true }, null).cover).toBe(false);
   });
 });
 
@@ -79,6 +108,13 @@ describe('file names and addresses', () => {
     expect(epubFileName('a/b:c?')).toBe('a-b-c.epub');
     expect(epubFileName('')).toBe('book.epub');
     expect(epubFileName('長'.repeat(150))).toBe(`${'長'.repeat(100)}.epub`);
+  });
+
+  it('names the cover after the title, with the image type as extension', () => {
+    expect(coverFileName('月と灯台 3', 'image/jpeg')).toBe('月と灯台-3-cover.jpg');
+    expect(coverFileName('月', 'image/png')).toBe('月-cover.png');
+    expect(coverFileName('月', 'image/webp; charset=x')).toBe('月-cover.webp');
+    expect(coverFileName('', 'application/octet-stream')).toBe('book-cover.jpg');
   });
 
   it('names the subtitles after the linked file', () => {

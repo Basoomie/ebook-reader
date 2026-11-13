@@ -6,21 +6,26 @@
    */
 
   /**
-   * The book details page's Download menu: Book (the EPUB, always listed), Audiobook (a
-   * link to one audio file that is there) and SRT (a linked subtitle file that is there).
-   * Only reads: nothing on the server changes.
+   * The book details page's Download menu: Book (the EPUB, always listed), Cover (the
+   * full-size cover image, when the book has one), Audiobook (a link to one audio file that
+   * is there) and SRT (a linked subtitle file that is there). Only reads: nothing on the
+   * server changes. The button's chevron shows whether the menu is open.
    *
-   * The EPUB and the subtitles are small: fetched with the token and saved through
-   * `downloadBlob` (works over plain http). The audiobook can be gigabytes: its signed URL
-   * with `download=1` goes to the browser's own downloads, so it is never held in memory.
+   * The EPUB, the cover and the subtitles are small: fetched with the token and saved
+   * through `downloadBlob` (works over plain http). The audiobook can be gigabytes: its
+   * signed URL with `download=1` goes to the browser's own downloads, so it is never held
+   * in memory.
    */
+  import { faChevronDown, faChevronUp } from '@fortawesome/free-solid-svg-icons';
   import { createEventDispatcher, onDestroy } from 'svelte';
+  import Fa from 'svelte-fa';
   import DropdownMenu from '$lib/components/dropdown-menu.svelte';
   import type { AudioLink } from '$lib/audio/audio-types';
   import { downloadBlob } from '$lib/functions/download-blob';
   import { LibraryApiError, type LibraryApi } from '$lib/library/api';
   import {
     audioDownloadUrl,
+    coverFileName,
     downloadChoices,
     epubFileName,
     subtitleFileName
@@ -36,14 +41,18 @@
   const dispatch = createEventDispatcher<{ error: Error }>();
   const item = 'c-btn c-btn-ghost w-full justify-start px-3 text-left';
 
-  let busy: '' | 'book' | 'subtitles' = '';
+  let busy: '' | 'book' | 'cover' | 'subtitles' = '';
   let controller: AbortController | undefined;
+  let open = false;
 
   $: choices = downloadChoices(book, link);
 
   onDestroy(() => controller?.abort());
 
-  async function run(kind: 'book' | 'subtitles', task: (signal: AbortSignal) => Promise<void>) {
+  async function run(
+    kind: 'book' | 'cover' | 'subtitles',
+    task: (signal: AbortSignal) => Promise<void>
+  ) {
     if (busy) return;
     busy = kind;
     controller = new AbortController();
@@ -63,6 +72,14 @@
     void run('book', async (signal) => {
       const { blob } = await api.downloadFile(target.id, signal);
       downloadBlob(blob, epubFileName(target.title));
+    });
+  }
+
+  function saveCover() {
+    const target = book;
+    void run('cover', async (signal) => {
+      const blob = await api.coverImage(target.id, signal);
+      downloadBlob(blob, coverFileName(target.title, blob.type));
     });
   }
 
@@ -93,9 +110,13 @@
   label="Download: {book.title}"
   testid="details-download"
   panelWidth="w-56"
+  bind:open
   let:close
 >
-  <span slot="button" aria-busy={busy !== ''}>{busy ? 'Downloading…' : 'Download'}</span>
+  <span slot="button" class="flex items-center gap-2" aria-busy={busy !== ''}>
+    {busy ? 'Downloading…' : 'Download'}
+    <Fa icon={open ? faChevronUp : faChevronDown} size="xs" />
+  </span>
   <div class="flex flex-col gap-1">
     <button
       type="button"
@@ -116,6 +137,19 @@
         </span>
       {/if}
     </button>
+    {#if choices.cover}
+      <button
+        type="button"
+        class={item}
+        data-testid="details-download-cover"
+        on:click={() => {
+          close();
+          saveCover();
+        }}
+      >
+        Cover
+      </button>
+    {/if}
     {#if choices.audio}
       <button
         type="button"

@@ -503,6 +503,15 @@ export class LibraryApi {
     return (await this.get(`/books/${encodeURIComponent(id)}`, options)).json();
   }
 
+  /** The book's full-size cover image as stored (not the thumbnail), for the Download menu. */
+  async coverImage(id: string, signal: AbortSignal): Promise<Blob> {
+    const response = await this.get(`/books/${encodeURIComponent(id)}/cover`, {
+      signal,
+      timeoutSeconds: 0
+    });
+    return response.blob();
+  }
+
   /**
    * Downloads the EPUB. No timeout (large books on slow Wi-Fi); the caller
    * cancels through `signal`. Reports progress when the size is known.
