@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 import { existsSync, statSync } from 'fs';
 import path from 'path';
+import { fillSearchFolds } from '../catalog/fold';
 import { getSchemaVersion, migrate } from './migrations';
 import { ensureOwner } from './users';
 
@@ -20,6 +21,8 @@ export function openDatabase(file: string): Database.Database {
     // Lets the CLI and the server use the file at the same time.
     db.pragma('busy_timeout = 5000');
     migrate(db);
+    // The backfill after migration 16, and any name written without its folded copy.
+    fillSearchFolds(db);
     ensureOwner(db);
     return db;
   } catch (err) {

@@ -1,6 +1,6 @@
 /**
- * /api/v1 catalog routes (WP2, WP6): libraries, books, search, EPUB download
- * and cover thumbnails. Everything except the thumbnail is mounted behind
+ * /api/v1 catalog routes (WP2, WP6): libraries, books, search, EPUB download,
+ * full-size covers and cover thumbnails. Everything except the thumbnail is mounted behind
  * requireUser; the thumbnail also accepts a signed URL (see thumbnailAuth).
  */
 import type Database from 'better-sqlite3';
@@ -337,6 +337,29 @@ export function createCatalogRouter(db: Database.Database, catalog: CatalogOptio
     asyncHandler(async (req, res) => {
       const { user } = getAuth(res);
       await sendBookFile(db, catalog, user, req.params.id, res);
+    }),
+  );
+
+  // The full-size cover image (the book page's Download menu), read-only. Token only:
+  // grids keep using the signed thumbnail.
+  router.get(
+    '/books/:id/cover',
+    asyncHandler(async (req, res) => {
+      const { user } = getAuth(res);
+      if (!catalog.thumbnails || !catalog.indexer.enabled) {
+        throw new ApiError(503, 'indexer_off', `Covers unavailable: ${catalog.indexer.error}`);
+      }
+      // Same visibility rules as the book itself.
+      if (!getBookFor(db, user, req.params.id)) {
+        throw new ApiError(404, 'not_found', 'No such book');
+      }
+      const cover = await catalog.thumbnails.original(req.params.id);
+      if (!cover) throw new ApiError(404, 'not_found', 'No such book');
+      if (cover.status === 'none') throw new ApiError(404, 'no_cover', 'This book has no cover');
+      if (cover.status === 'error') throw new ApiError(404, 'cover_unreadable', cover.error);
+      res.set('Cache-Control', 'private, no-cache');
+      res.type(cover.type);
+      res.send(cover.data);
     }),
   );
 

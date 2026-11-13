@@ -9,7 +9,10 @@
  * - On request: a thumbnail that isn't made yet is generated right away.
  * - Regenerated when the book's cover source changes (Calibre bumps
  *   last_modified on a cover change; verified with Calibre 7.1) or when
- *   THUMB_SPEC changes.
+ *   THUMB_SPEC changes. When only the Calibre key changed (last_modified for any
+ *   metadata edit, the folder on a title or author change) and cover.jpg is the same
+ *   file (size and modified time; calibre/file-identity), the thumbnail is kept and only
+ *   its key updated (fix-count-file-identity).
  *
  * Never writes anywhere but CACHE_DIR/thumbs. Covers are read through
  * calibre/source-fs (read-only). Uploaded books (WP7b) take their cover image from
@@ -20,6 +23,7 @@ import { createHash, randomBytes } from 'crypto';
 import fs from 'fs/promises';
 import path from 'path';
 import sharp from 'sharp';
+import { fileIdentity, FileIdentity, sameFile } from '../calibre/file-identity';
 import { readSourceFile, resolveInside } from '../calibre/source-fs';
 import { readEpubCover } from '../uploads/epub-meta';
 import type { UploadStore } from '../uploads/upload-store';
@@ -123,6 +127,9 @@ export interface ThumbnailRecord {
   attempts: number;
   error: string | null;
   generatedAt: number;
+  /** cover.jpg's identity when the thumbnail was made (migration 17; null before it). */
+  coverBytes: number | null;
+  coverMtimeNs: string | null;
 }
 
 interface ThumbnailRow {
@@ -136,6 +143,8 @@ interface ThumbnailRow {
   attempts: number;
   error: string | null;
   generated_at: number;
+  cover_bytes: number | null;
+  cover_mtime_ns: string | null;
 }
 
 function toRecord(r: ThumbnailRow): ThumbnailRecord {
@@ -150,6 +159,8 @@ function toRecord(r: ThumbnailRow): ThumbnailRecord {
     attempts: r.attempts,
     error: r.error,
     generatedAt: r.generated_at,
+    coverBytes: r.cover_bytes,
+    coverMtimeNs: r.cover_mtime_ns,
   };
 }
 
@@ -191,6 +202,27 @@ export interface ThumbnailResult {
   record: ThumbnailRecord;
   /** The WebP file when status is 'ok'. */
   file: string | null;
+}
+
+export type OriginalCover =
+  | { status: 'ok'; data: Buffer; type: string }
+  | { status: 'none' }
+  | { status: 'error'; error: string };
+
+/** Image formats served as a full-size cover (others are reported as unreadable). */
+const COVER_TYPES: Record<string, string> = {
+  jpeg: 'image/jpeg',
+  png: 'image/png',
+  webp: 'image/webp',
+  gif: 'image/gif',
+};
+
+function coverError(src: CoverSource, err: unknown): string {
+  return (err as NodeJS.ErrnoException).code === 'ENOENT'
+    ? src.kind === 'upload'
+      ? 'the uploaded file is missing'
+      : 'cover.jpg is missing although Calibre lists a cover'
+    : `cover could not be read: ${(err as Error).message}`;
 }
 
 const BACKGROUND_BATCH = 200;
@@ -289,8 +321,55 @@ export class ThumbnailService {
     return p;
   }
 
+  /** A Calibre book's cover.jpg (full path). */
+  private coverFile(src: CoverSource): string {
+    const libraryDir = path.join(this.opts.calibreDir, src.libraryFolder);
+    return resolveInside(libraryDir, `${src.calibrePath}/cover.jpg`);
+  }
+
+  /** cover.jpg's size and modified time (stat only); null for uploads or no cover file. */
+  private async coverIdentity(src: CoverSource): Promise<FileIdentity | null> {
+    if (src.kind !== 'calibre' || !src.hasCover || !src.calibrePath) return null;
+    try {
+      return await fileIdentity(this.coverFile(src));
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * When the book's thumbnail was made from this same cover.jpg (current spec, file still
+   * in the cache): records the new key with the cover's identity and keeps the thumbnail.
+   * null when it has to be made again.
+   */
+  private async keepIfUnchanged(
+    src: CoverSource,
+    identity: FileIdentity | null,
+  ): Promise<ThumbnailResult | null> {
+    if (!identity) return null;
+    const previous = getThumbnailRecord(this.db, src.bookId);
+    if (!previous || previous.status !== 'ok' || previous.spec !== THUMB_SPEC.version) return null;
+    const stored = { bytes: previous.coverBytes, mtimeNs: previous.coverMtimeNs };
+    if (!sameFile(identity, stored, previous.generatedAt)) return null;
+    const file = thumbnailFile(this.opts.cacheDir, src.bookId);
+    if (!(await fileExists(file))) return null;
+    this.db
+      .prepare(
+        'UPDATE thumbnails SET source_key = ?, cover_bytes = ?, cover_mtime_ns = ? WHERE book_id = ?',
+      )
+      .run(sourceKey(src), identity.bytes, identity.mtimeNs, src.bookId);
+    return { record: getThumbnailRecord(this.db, src.bookId)!, file };
+  }
+
   /** Reads the cover, writes the WebP and records the outcome. Never throws for a bad cover. */
   async generate(src: CoverSource): Promise<ThumbnailResult> {
+    const identity = await this.coverIdentity(src);
+    const kept = await this.keepIfUnchanged(src, identity);
+    if (kept) return kept;
+    return this.make(src, identity);
+  }
+
+  private async make(src: CoverSource, identity: FileIdentity | null): Promise<ThumbnailResult> {
     const key = sourceKey(src);
     const now = Date.now();
     const previous = getThumbnailRecord(this.db, src.bookId);
@@ -322,25 +401,42 @@ export class ThumbnailService {
           width: info.width,
           height: info.height,
           bytes: data.length,
+          coverBytes: identity?.bytes,
+          coverMtimeNs: identity?.mtimeNs,
         });
       } catch (err) {
-        const message =
-          (err as NodeJS.ErrnoException).code === 'ENOENT'
-            ? src.kind === 'upload'
-              ? 'the uploaded file is missing'
-              : 'cover.jpg is missing although Calibre lists a cover'
-            : `cover could not be read: ${(err as Error).message}`;
         record = this.save(src.bookId, {
           status: 'error',
           key,
           now,
           attempts: (previous?.sourceKey === key ? previous.attempts : 0) + 1,
-          error: message,
+          error: coverError(src, err),
         });
         file = null;
       }
     }
     return { record, file };
+  }
+
+  /**
+   * The book's full-size cover image as stored (the book page's Download menu), not the
+   * thumbnail. Read-only and not cached. null when the book is unknown, missing, or in a
+   * disabled library.
+   */
+  async original(bookId: string): Promise<OriginalCover | null> {
+    const src = this.coverSource(bookId);
+    if (!src) return null;
+    if (!src.hasCover) return { status: 'none' };
+    try {
+      const data = await this.readCover(src);
+      // The header alone: the image's real format, whatever its file is called.
+      const { format } = await sharp(data).metadata();
+      const type = format ? COVER_TYPES[format] : undefined;
+      if (!type) throw new Error(`unsupported image format (${format ?? 'unknown'})`);
+      return { status: 'ok', data, type };
+    } catch (err) {
+      return { status: 'error', error: coverError(src, err) };
+    }
   }
 
   /** The cover image's bytes: Calibre's cover.jpg, or the image inside an uploaded EPUB. */
@@ -352,8 +448,7 @@ export class ThumbnailService {
       if (!cover) throw new Error('the EPUB has no cover image');
       return cover;
     }
-    const libraryDir = path.join(this.opts.calibreDir, src.libraryFolder);
-    return readSourceFile(resolveInside(libraryDir, `${src.calibrePath}/cover.jpg`));
+    return readSourceFile(this.coverFile(src));
   }
 
   private save(
@@ -367,17 +462,20 @@ export class ThumbnailService {
       height?: number;
       bytes?: number;
       error?: string;
+      coverBytes?: number;
+      coverMtimeNs?: string;
     },
   ): ThumbnailRecord {
     this.db
       .prepare(
         `INSERT INTO thumbnails (book_id, status, source_key, spec, width, height, bytes,
-           attempts, error, generated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           attempts, error, generated_at, cover_bytes, cover_mtime_ns)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(book_id) DO UPDATE SET status = excluded.status,
            source_key = excluded.source_key, spec = excluded.spec, width = excluded.width,
            height = excluded.height, bytes = excluded.bytes, attempts = excluded.attempts,
-           error = excluded.error, generated_at = excluded.generated_at`,
+           error = excluded.error, generated_at = excluded.generated_at,
+           cover_bytes = excluded.cover_bytes, cover_mtime_ns = excluded.cover_mtime_ns`,
       )
       .run(
         bookId,
@@ -390,6 +488,8 @@ export class ThumbnailService {
         v.attempts,
         v.error ?? null,
         v.now,
+        v.coverBytes ?? null,
+        v.coverMtimeNs ?? null,
       );
     return getThumbnailRecord(this.db, bookId)!;
   }
@@ -438,6 +538,7 @@ export class ThumbnailService {
 
   private async runBackground(): Promise<void> {
     let made = 0;
+    let kept = 0;
     const started = Date.now();
     let cursor: PendingCursor | undefined;
     while (!this.stopped) {
@@ -451,6 +552,15 @@ export class ThumbnailService {
         while (!this.stopped) {
           const src = queue.shift();
           if (!src) return;
+          // The same cover as the one made: keep the thumbnail (stat only, no slot).
+          if (!this.inflight.has(src.bookId)) {
+            const identity = await this.coverIdentity(src);
+            if (await this.keepIfUnchanged(src, identity)) {
+              this.generated++;
+              kept++;
+              continue;
+            }
+          }
           await this.waitForSlot();
           if (this.stopped) return;
           await this.generateOnce(src);
@@ -462,9 +572,13 @@ export class ThumbnailService {
       // A batch that made no progress (every write failed) must not spin.
       if (this.generated === before) break;
     }
-    if (made > 0) {
+    if (made + kept > 0) {
       const secs = ((Date.now() - started) / 1000).toFixed(1);
-      this.log(`Thumbnails: made ${made} in ${secs} s`);
+      this.log(
+        `Thumbnails: made ${made}` +
+          (kept ? `, ${kept} unchanged covers kept their thumbnail` : '') +
+          ` in ${secs} s`,
+      );
     }
   }
 }

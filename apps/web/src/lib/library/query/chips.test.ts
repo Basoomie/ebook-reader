@@ -5,7 +5,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { activeChips, toggleChip } from './chips';
+import { activeChips, chipOnlyQuery, toggleChip } from './chips';
 
 describe('filter chips', () => {
   it('adds a status term, then extends it', () => {
@@ -49,5 +49,42 @@ describe('filter chips', () => {
   it('is disabled while the query has an error', () => {
     expect(toggleChip('status:foo', 'reading')).toBeNull();
     expect(activeChips('status:foo').size).toBe(0);
+  });
+});
+
+describe('the query a chip counts (chipOnlyQuery)', () => {
+  it('adds the chip to an empty or plain search', () => {
+    expect(chipOnlyQuery('', 'reading')).toBe('status:reading');
+    expect(chipOnlyQuery('', 'favorite')).toBe('favorite:yes');
+    expect(chipOnlyQuery('', 'device')).toBe('on:device');
+    expect(chipOnlyQuery('gj', 'unread')).toBe('gj status:unread');
+  });
+
+  it('takes out every other chip, so the number does not depend on them', () => {
+    expect(chipOnlyQuery('gj status:reading', 'unread')).toBe('gj status:unread');
+    expect(chipOnlyQuery('gj status:reading', 'reading')).toBe('gj status:reading');
+    expect(chipOnlyQuery('status:reading,completed x favorite:yes on:device', 'dropped')).toBe(
+      'x status:dropped'
+    );
+    expect(chipOnlyQuery('a status:reading b status:completed c', 'favorite')).toBe(
+      'a b c favorite:yes'
+    );
+  });
+
+  it('keeps negated terms, favorite:no and everything else as typed', () => {
+    expect(chipOnlyQuery('-status:completed 薬屋', 'reading')).toBe(
+      '-status:completed 薬屋 status:reading'
+    );
+    expect(chipOnlyQuery('favorite:no x', 'favorite')).toBe('favorite:no x favorite:yes');
+    expect(chipOnlyQuery('author:"Jane  Doe"   tag：SF status:dropped', 'reading')).toBe(
+      'author:"Jane  Doe"   tag：SF status:reading'
+    );
+    expect(chipOnlyQuery('/a b/ status:unread chars:<100k', 'completed')).toBe(
+      '/a b/ chars:<100k status:completed'
+    );
+  });
+
+  it('gives null while the query has an error', () => {
+    expect(chipOnlyQuery('status:foo', 'reading')).toBeNull();
   });
 });

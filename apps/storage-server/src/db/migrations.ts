@@ -682,6 +682,36 @@ export const MIGRATIONS: { version: number; name: string; sql: string }[] = [
       ALTER TABLE worker_status ADD COLUMN tts_image TEXT;
     `,
   },
+  {
+    version: 16,
+    name: 'search folding',
+    // fix-search-width-folding: folded copies (NFKC + lower case, catalog/fold.ts) of the
+    // searchable names, so library search matches full-width and half-width alike without
+    // folding every row per query. Search only; displayed text keeps the original columns.
+    // NULL = not folded yet: openDatabase() fills them (fillSearchFolds) right after
+    // migrating, and the catalog writers set them from then on.
+    sql: `
+      ALTER TABLE books ADD COLUMN title_fold TEXT;
+      ALTER TABLE authors ADD COLUMN name_fold TEXT;
+      ALTER TABLE series ADD COLUMN name_fold TEXT;
+      ALTER TABLE tags ADD COLUMN name_fold TEXT;
+    `,
+  },
+  {
+    version: 17,
+    name: 'count and cover file identity',
+    // fix-count-file-identity: the size and modified time (nanoseconds, as text) of the file
+    // a count or thumbnail was made from. Calibre bumps last_modified for any metadata edit;
+    // when only that (or the book folder) changed and the file is the same, the count or
+    // thumbnail is kept instead of made again. NULL = made before this migration (then the
+    // file must be older than counted_at / generated_at to count as unchanged).
+    sql: `
+      ALTER TABLE char_counts ADD COLUMN file_bytes INTEGER;
+      ALTER TABLE char_counts ADD COLUMN file_mtime_ns TEXT;
+      ALTER TABLE thumbnails ADD COLUMN cover_bytes INTEGER;
+      ALTER TABLE thumbnails ADD COLUMN cover_mtime_ns TEXT;
+    `,
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;
