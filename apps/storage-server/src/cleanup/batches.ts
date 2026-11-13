@@ -144,6 +144,9 @@ export interface SidecarBatch {
   createdAt: number;
   leaseSeconds: number;
   itemDelaySeconds: number;
+  /** The metadata.db snapshot's SHA-256 (the sidecar checks its download). */
+  snapshotSha256: string | null;
+  snapshotSaved: boolean;
   items: SidecarItem[];
 }
 
@@ -653,6 +656,8 @@ export class BatchService {
       createdAt: batch.createdAt,
       leaseSeconds: this.leaseSeconds,
       itemDelaySeconds: settings.pacing.itemDelaySeconds,
+      snapshotSha256: batch.snapshotSha256,
+      snapshotSaved: batch.snapshotSaved,
       items: rows.map((r) => {
         const ev = JSON.parse(r.evidence_json) as Evidence;
         return {

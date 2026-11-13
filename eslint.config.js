@@ -37,7 +37,10 @@ module.exports = (async () => {
         'apps/storage-server/tests/fixtures/wp17/**',
         // WP16: the worker's install script (plain Node) and its build output.
         'apps/gpu-worker/scripts/**',
-        'apps/gpu-worker/dist/**'
+        'apps/gpu-worker/dist/**',
+        // WP20a: the cleanup sidecar's build output and the fake calibredb used by its tests.
+        'apps/cleanup-apply/dist/**',
+        'apps/storage-server/tests/fixtures/wp20a/**'
       ]
     },
     {
@@ -123,6 +126,19 @@ module.exports = (async () => {
         parserOptions: {
           project: './tsconfig.eslint.json',
           tsconfigRootDir: './apps/gpu-worker/'
+        }
+      },
+      rules: {
+        'headers/header-format': 'off'
+      }
+    },
+    {
+      // WP20a: the library cleanup's apply sidecar (a container next to the storage server).
+      files: ['apps/cleanup-apply/**/*.ts'],
+      languageOptions: {
+        parserOptions: {
+          project: './tsconfig.eslint.json',
+          tsconfigRootDir: './apps/cleanup-apply/'
         }
       },
       rules: {

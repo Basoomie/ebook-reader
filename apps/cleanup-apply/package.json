@@ -1,0 +1,10 @@
+{
+  "name": "ttsu-cleanup-apply",
+  "version": "1.0.0",
+  "private": true,
+  "description": "WP20a: the Calibre library cleanup's apply sidecar. Writes to Calibre only through the running content server with calibredb, only for applied cleanup batches.",
+  "scripts": {
+    "build": "node ../../node_modules/typescript/bin/tsc -p tsconfig.json",
+    "test": "cd ../storage-server && npx vitest run tests/wp20a-sidecar"
+  }
+}

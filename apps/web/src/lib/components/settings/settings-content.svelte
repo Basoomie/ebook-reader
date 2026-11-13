@@ -1083,6 +1083,16 @@
         Open the migration page
       </a>
     </SettingsItemGroup>
+    <!-- WP20a: the Calibre library cleanup has its own page, linked only from here. -->
+    <SettingsSection jp="蔵書整理" title="Library cleanup" testid="settings-section-cleanup" />
+    <SettingsItemGroup
+      title="Calibre library cleanup"
+      tooltip="Removes identical copies from the Calibre library (and later fixes metadata), in batches you can undo. Off until you turn it on there."
+    >
+      <a class="c-btn c-btn-secondary" href="{pagePath}/cleanup" data-testid="cleanup-link">
+        Open the library cleanup
+      </a>
+    </SettingsItemGroup>
   {:else if activeSettings === 'Anki'}
     <!-- WP14: "Enrich last Anki card" (its own tab, user 2026-11-12). -->
     <div class="col-span-full pb-8 md:pb-6" data-testid="settings-section-anki">

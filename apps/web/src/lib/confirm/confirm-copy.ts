@@ -438,3 +438,56 @@ export function restoreActionListCopy(): ConfirmCopy {
     confirmLabel: 'Restore defaults'
   };
 }
+
+// ---- Library cleanup (WP20a) ----------------------------------------------------------
+
+/** Turning stage 1 on: from then on it removes identical copies from Calibre on its own. */
+export function turnOnIdenticalFilesCopy(toRemove: number | null): ConfirmCopy {
+  const what =
+    typeof toRemove !== 'number' || toRemove <= 0
+      ? 'identical copies'
+      : toRemove === 1
+        ? 'the 1 identical copy'
+        : `the ${toRemove.toLocaleString('en-US')} identical copies`;
+  return {
+    title: `Remove ${what} from Calibre?`,
+    message: [
+      'From now on this runs on its own, in batches: each copy is first saved to the quarantine folder, then moved to Calibre’s trash. The copy with more of your tags (or the older one) stays.',
+      'Reading data of a removed copy stays: when only the removed copy has any, it shows on the kept copy. Each batch can be undone on this page.'
+    ],
+    confirmLabel: 'Turn on and remove copies'
+  };
+}
+
+/** Undo of one batch: the removed copies come back into Calibre. */
+export function undoCleanupBatchCopy(count: number): ConfirmCopy {
+  return {
+    title: `Bring back ${books(count)} removed in this batch?`,
+    message: [
+      'They are restored in Calibre, from Calibre’s trash when they are still there, otherwise added again from the quarantine folder (then with a new Calibre id). Reading data that moved to the kept copy moves back.',
+      'The quarantine folder stays as it is.'
+    ],
+    confirmLabel: 'Undo this batch',
+    danger: false
+  };
+}
+
+/** Replacing a saved API key or the Calibre password (they can't be shown again). */
+export function replaceCleanupSecretCopy(label: string): ConfirmCopy {
+  return {
+    title: `Replace the saved ${label}?`,
+    message: ['The new one is saved instead, and the old one is gone from the server.'],
+    confirmLabel: `Replace ${label}`,
+    irreversible: true
+  };
+}
+
+/** Removing a saved API key or the Calibre password. */
+export function removeCleanupSecretCopy(label: string): ConfirmCopy {
+  return {
+    title: `Remove the saved ${label}?`,
+    message: ['The library cleanup can’t use it until you enter it again.'],
+    confirmLabel: `Remove ${label}`,
+    irreversible: true
+  };
+}
