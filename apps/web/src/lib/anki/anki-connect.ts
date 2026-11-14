@@ -10,7 +10,9 @@
  *
  * AnkiConnect Android answers requestPermission with a JSON parse error from its server
  * library; that is how it is told apart (the same signal whispersync uses). It has no
- * `gui*` actions.
+ * `gui*` actions and no tag actions (an unknown action gets that same parse error).
+ * Its `storeMediaFile` stores every file under a new name (`<name>_<random number>.<ext>`,
+ * chosen by AnkiDroid) and returns that name.
  */
 
 export type AnkiErrorKind = 'unreachable' | 'timeout' | 'denied' | 'anki';
@@ -170,6 +172,7 @@ export class AnkiConnect {
     return info && info.noteId ? info : null;
   }
 
+  /** Stores a file and returns the name it was stored under; fields must use that name. */
   async storeMedia(fileName: string, base64: string): Promise<string> {
     const stored = await this.invoke<string | null>('storeMediaFile', {
       filename: fileName,
