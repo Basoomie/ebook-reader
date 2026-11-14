@@ -6,12 +6,17 @@
  *   batches, downloads the batch's metadata.db snapshot and reports each step.
  * - /api/v1/cleanup/*: the /cleanup page (user tokens). Status, settings (secrets are
  *   write-only), stage modes, analysis, review, batches and Undo, spot check.
+ *
+ * Stage 2 (WP20b) adds per-book sidecar routes: verify (what to write), written (what Calibre
+ * shows after the write), the EPUB's cover to write and Calibre's old cover to keep.
  */
 import express, { type NextFunction, type Request, type Response, Router } from 'express';
 import { createReadStream } from 'fs';
 import { ApiError, asyncHandler, sendError } from '../api/errors';
 import { authenticateApplyToken } from './apply-tokens';
 import { BatchError, type ItemReport, type ItemState } from './batches';
+import type { ListedBook, WrittenReport } from './stage2-batches';
+import { STAGE2_FIELDS } from './stage2-rules';
 import type { CleanupService } from './cleanup-service';
 import { isSecretName } from './secrets';
 import { getSettings, SettingsError, updateSettings } from './settings';
@@ -182,6 +187,95 @@ export function createCleanupApplyRouter(options: CleanupOptions): Router {
     }
   });
 
+  const bookParams = (req: Request): { batchId: string; calibreId: number } => {
+    const calibreId = Number(req.params.book);
+    if (!Number.isInteger(calibreId)) throw new ApiError(404, 'not_found', 'No such book');
+    return { batchId: req.params.id, calibreId };
+  };
+  const listed = (v: unknown): ListedBook | null =>
+    v && typeof v === 'object' && !Array.isArray(v) ? (v as ListedBook) : null;
+  // A file the sidecar kept in its quarantine (an absolute path; the sidecar itself only
+  // ever writes a cover back from inside its quarantine folder).
+  const quarantinePath = (v: unknown): string | null =>
+    typeof v === 'string' &&
+    v.length < 1000 &&
+    /^(\/|[A-Za-z]:[\\/])/.test(v) &&
+    !v.split(/[\\/]/).includes('..')
+      ? v
+      : null;
+
+  // Stage 2: what Calibre shows now → what to write for this book.
+  router.post('/cleanup-apply/batches/:id/books/:book/verify', (req, res) => {
+    const service = serviceOr503(options);
+    const { batchId, calibreId } = bookParams(req);
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    try {
+      res.json(
+        service.batches.stage2.verify(
+          batchId,
+          calibreId,
+          listed(body.current),
+          quarantinePath(body.oldCoverPath),
+        ),
+      );
+    } catch (err) {
+      rethrow(err);
+    }
+  });
+
+  // Stage 2: what Calibre shows after the write.
+  router.post('/cleanup-apply/batches/:id/books/:book/written', (req, res) => {
+    const service = serviceOr503(options);
+    const { batchId, calibreId } = bookParams(req);
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    const report: WrittenReport = {
+      current: listed(b.current),
+      error: typeof b.error === 'string' ? b.error.slice(0, 2000) : null,
+      final: b.final === true,
+      oldCoverPath: quarantinePath(b.oldCoverPath),
+      coverSkipped: typeof b.coverSkipped === 'string' ? b.coverSkipped.slice(0, 500) : null,
+    };
+    try {
+      res.json(service.batches.stage2.writtenReport(batchId, calibreId, report));
+    } catch (err) {
+      rethrow(err);
+    }
+  });
+
+  // Stage 2: the EPUB's own cover, ready for calibredb (D1). Read-only; no file is written.
+  router.get(
+    '/cleanup-apply/batches/:id/books/:book/cover',
+    asyncHandler(async (req, res) => {
+      const service = serviceOr503(options);
+      const { batchId, calibreId } = bookParams(req);
+      try {
+        const cover = await service.batches.stage2.coverFor(batchId, calibreId);
+        res.setHeader('Content-Type', cover.ext === 'png' ? 'image/png' : 'image/jpeg');
+        res.setHeader('X-Cover-Ext', cover.ext);
+        res.setHeader('X-Cover-Sha256', cover.sha256);
+        res.end(cover.bytes);
+      } catch (err) {
+        rethrow(err);
+      }
+    }),
+  );
+
+  // Stage 2: Calibre's cover.jpg before it is replaced (kept in the quarantine for Undo).
+  router.get(
+    '/cleanup-apply/batches/:id/books/:book/old-cover',
+    asyncHandler(async (req, res) => {
+      const service = serviceOr503(options);
+      const { batchId, calibreId } = bookParams(req);
+      try {
+        const bytes = await service.batches.stage2.oldCover(batchId, calibreId);
+        res.setHeader('Content-Type', 'image/jpeg');
+        res.end(bytes);
+      } catch (err) {
+        rethrow(err);
+      }
+    }),
+  );
+
   router.post('/cleanup-apply/batches/:id/finish', (req, res) => {
     const service = serviceOr503(options);
     const error = (req.body as { error?: unknown } | undefined)?.error;
@@ -214,14 +308,21 @@ function batchView(service: CleanupService, id: string) {
 }
 
 function proposalView(r: Record<string, unknown>) {
-  const { evidence_json, handoff_json, ...rest } = r as Record<string, unknown> & {
+  const { evidence_json, handoff_json, old_json, new_json, ...rest } = r as Record<
+    string,
+    unknown
+  > & {
     evidence_json?: string;
     handoff_json?: string | null;
+    old_json?: string | null;
+    new_json?: string | null;
   };
   return {
     ...rest,
     evidence: evidence_json ? (JSON.parse(evidence_json) as unknown) : null,
     handoff: handoff_json ? (JSON.parse(handoff_json) as unknown) : null,
+    ...(old_json !== undefined ? { old: old_json ? (JSON.parse(old_json) as unknown) : null } : {}),
+    ...(new_json !== undefined ? { new: new_json ? (JSON.parse(new_json) as unknown) : null } : {}),
   };
 }
 
@@ -305,13 +406,29 @@ export function createCleanupRouter(options: CleanupOptions): Router {
     res.json({ stage: getStage(service.db, stage) });
   });
 
-  router.post('/cleanup/stages/1/analyse', (_req, res) => {
+  router.post('/cleanup/stages/:stage/analyse', (req, res) => {
     const service = serviceOr503(options);
+    const stage = parseStage(req.params.stage);
     try {
-      res.json({ progress: service.reanalyse() });
+      res.json({ progress: service.reanalyse(stage) });
     } catch (err) {
       throw new ApiError(409, 'not_available', (err as Error).message);
     }
+  });
+
+  // Stage 2: resume one paused field (a gate pause lifts only with a new analysis that passes).
+  router.post('/cleanup/stages/:stage/fields/:field/resume', (req, res) => {
+    const service = serviceOr503(options);
+    const stage = parseStage(req.params.stage);
+    if (!(STAGE2_FIELDS as readonly string[]).includes(req.params.field)) {
+      throw new ApiError(404, 'not_found', 'No such field');
+    }
+    try {
+      service.resumeField(stage, req.params.field);
+    } catch (err) {
+      throw new ApiError(409, 'not_available', (err as Error).message);
+    }
+    res.json({ ok: true });
   });
 
   // Proposed changes of a stage (what the analysis found), paged.
@@ -323,16 +440,23 @@ export function createCleanupRouter(options: CleanupOptions): Router {
     const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 50));
     // Only what counts now: the current analysis's copies plus every queued, removed, brought
     // back or kept copy (older analyses' leftovers stay in their batches' history).
-    const where = ['stage = ?', CURRENT_PROPOSALS_SQL];
+    const where = ['stage = ?', `(${CURRENT_PROPOSALS_SQL} OR decided_by IS NOT NULL)`];
     const params: unknown[] = [stage, currentAnalysisId(service.db, stage)];
     if (state) {
       where.push('state = ?');
       params.push(state);
     }
+    for (const key of ['field', 'class', 'source'] as const) {
+      const v = req.query[key];
+      if (typeof v === 'string' && v !== '') {
+        where.push(`${key} = ?`);
+        params.push(v);
+      }
+    }
     const rows = service.db
       .prepare(
-        `SELECT id, calibre_id, calibre_uuid, field, class, review_reason, state, batch_id,
-                evidence_json, created_at, updated_at
+        `SELECT id, calibre_id, calibre_uuid, field, class, review_reason, state, batch_id, source,
+                old_json, new_json, evidence_json, created_at, updated_at
          FROM proposed_changes WHERE ${where.join(' AND ')} ORDER BY id LIMIT ? OFFSET ?`,
       )
       .all(...params, limit, offset) as Record<string, unknown>[];
@@ -350,15 +474,15 @@ export function createCleanupRouter(options: CleanupOptions): Router {
     const offset = Math.max(0, Number(req.query.offset) || 0);
     const rows = service.db
       .prepare(
-        `SELECT id, stage, calibre_id, calibre_uuid, field, review_reason, evidence_json, old_json, new_json
-         FROM proposed_changes WHERE class = 'review' AND state = 'proposed'
+        `SELECT id, stage, calibre_id, calibre_uuid, field, review_reason, source, evidence_json, old_json, new_json
+         FROM proposed_changes WHERE class = 'review' AND state = 'proposed' AND decided_by IS NULL
          ORDER BY stage, review_reason, id LIMIT 50 OFFSET ?`,
       )
       .all(offset) as Record<string, unknown>[];
     const total = (
       service.db
         .prepare(
-          `SELECT COUNT(*) AS n FROM proposed_changes WHERE class = 'review' AND state = 'proposed'`,
+          `SELECT COUNT(*) AS n FROM proposed_changes WHERE class = 'review' AND state = 'proposed' AND decided_by IS NULL`,
         )
         .get() as { n: number }
     ).n;
@@ -420,12 +544,17 @@ export function createCleanupRouter(options: CleanupOptions): Router {
     const stage = parseStage(String(req.query.stage ?? '1'));
     const rows = service.db
       .prepare(
-        `SELECT c.id, c.calibre_id, c.calibre_uuid, c.state, c.batch_id, c.evidence_json,
+        stage === 2
+          ? `SELECT c.id, c.calibre_id, c.calibre_uuid, c.state, c.batch_id, c.field, c.source,
+                    c.old_json, c.new_json, c.evidence_json, f.last_modified_after
+             FROM proposed_changes c LEFT JOIN field_undo f ON f.change_id = c.id AND f.batch_id = c.batch_id
+             WHERE c.stage = 2 AND c.state = 'applied' ORDER BY RANDOM() LIMIT 30`
+          : `SELECT c.id, c.calibre_id, c.calibre_uuid, c.state, c.batch_id, c.evidence_json,
                 u.handoff_json, u.quarantine_dir
          FROM proposed_changes c LEFT JOIN undo_records u ON u.change_id = c.id
          WHERE c.stage = ? AND c.state = 'applied' ORDER BY RANDOM() LIMIT 30`,
       )
-      .all(stage) as Record<string, unknown>[];
+      .all(...(stage === 2 ? [] : [stage])) as Record<string, unknown>[];
     res.json({ items: rows.map(proposalView) });
   });
 

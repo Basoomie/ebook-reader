@@ -234,6 +234,76 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
     // "Calibre library id" field: the id is found from the reader library's folder.
     sql: `ALTER TABLE sidecar_status ADD COLUMN calibre_libraries TEXT;`,
   },
+  {
+    version: 3,
+    name: 'stage 2: metadata and covers from the files (WP20b)',
+    sql: `
+      -- Stage 2 items end as 'written' (a book's fields were set in Calibre). CHECK lists
+      -- can't be altered, so batch_items is rebuilt; nothing references it.
+      CREATE TABLE batch_items_v3 (
+        id              INTEGER PRIMARY KEY,
+        batch_id        TEXT NOT NULL REFERENCES batches(id),
+        change_id       INTEGER NOT NULL REFERENCES proposed_changes(id),
+        position        INTEGER NOT NULL,
+        state           TEXT NOT NULL DEFAULT 'pending'
+                        CHECK (state IN ('pending', 'verified', 'exported', 'tagged', 'removed',
+                                         'written', 'restored', 'failed', 'skipped')),
+        quarantine_dir  TEXT,
+        export_sha256   TEXT,
+        method          TEXT,
+        detail          TEXT,
+        -- stage 2: what the sidecar saw when it verified the book (last_modified before the write)
+        stage2_json     TEXT CHECK (stage2_json IS NULL OR json_valid(stage2_json)),
+        updated_at      INTEGER NOT NULL,
+        UNIQUE (batch_id, change_id)
+      );
+      INSERT INTO batch_items_v3 (id, batch_id, change_id, position, state, quarantine_dir,
+        export_sha256, method, detail, updated_at)
+        SELECT id, batch_id, change_id, position, state, quarantine_dir, export_sha256, method,
+          detail, updated_at FROM batch_items;
+      DROP TABLE batch_items;
+      ALTER TABLE batch_items_v3 RENAME TO batch_items;
+      CREATE INDEX batch_items_batch ON batch_items (batch_id, position);
+
+      -- The undo record of every field stage 2 wrote: the old value (with the sort written
+      -- alongside a title or author change), the value written, Calibre's last_modified right
+      -- after the write, and Calibre's old cover saved in the quarantine before it was replaced.
+      CREATE TABLE field_undo (
+        batch_id            TEXT NOT NULL REFERENCES batches(id),
+        change_id           INTEGER NOT NULL REFERENCES proposed_changes(id),
+        library_id          TEXT NOT NULL,
+        calibre_id          INTEGER NOT NULL,
+        calibre_uuid        TEXT NOT NULL,
+        field               TEXT NOT NULL,
+        old_json            TEXT NOT NULL CHECK (json_valid(old_json)),
+        new_json            TEXT NOT NULL CHECK (json_valid(new_json)),
+        extra_json          TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(extra_json)),
+        last_modified_after TEXT,
+        old_cover_path      TEXT,
+        restored_at         INTEGER,
+        restored_last_modified TEXT,
+        restore_detail      TEXT,
+        created_at          INTEGER NOT NULL,
+        PRIMARY KEY (batch_id, change_id)
+      );
+      CREATE INDEX field_undo_book ON field_undo (library_id, calibre_uuid, field);
+
+      -- A stage can stop applying one field (e.g. titles below their bar) and go on with the
+      -- others. reason: gate, review_alarm, failures.
+      CREATE TABLE stage_field_pauses (
+        stage      INTEGER NOT NULL,
+        field      TEXT NOT NULL,
+        reason     TEXT NOT NULL,
+        detail     TEXT,
+        paused_at  INTEGER NOT NULL,
+        PRIMARY KEY (stage, field)
+      );
+
+      ALTER TABLE applied_values ADD COLUMN change_id INTEGER;
+      ALTER TABLE applied_values ADD COLUMN last_modified_after TEXT;
+      CREATE INDEX applied_values_source ON applied_values (library_id, source);
+    `,
+  },
 ];
 
 export const CLEANUP_SCHEMA_VERSION = CLEANUP_MIGRATIONS[CLEANUP_MIGRATIONS.length - 1].version;

@@ -28,6 +28,7 @@ export type ItemState =
   | 'exported'
   | 'tagged'
   | 'removed'
+  | 'written'
   | 'restored'
   | 'failed'
   | 'skipped';
@@ -53,6 +54,31 @@ export interface BatchItem {
   inCalibreTrash?: boolean | null;
 }
 
+/** Stage 2: one book of a batch, with its fields. */
+export interface Stage2Book {
+  calibreId: number;
+  uuid: string;
+  title: string;
+  state: ItemState;
+  fields: { itemId: number; field: string; state: ItemState }[];
+  oldCoverPath: string | null;
+}
+
+export interface VerifyAnswer {
+  action: 'write' | 'none';
+  fields: string[];
+  cover: boolean;
+  saveOldCover: boolean;
+  oldCoverPath: string | null;
+  items: { itemId: number; field: string; state: ItemState; detail: string | null }[];
+}
+
+export interface WrittenAnswer {
+  done: boolean;
+  pending: string[];
+  items: { itemId: number; field: string; state: ItemState }[];
+}
+
 export interface Batch {
   id: string;
   kind: 'apply' | 'undo';
@@ -63,6 +89,10 @@ export interface Batch {
   snapshotSha256: string | null;
   snapshotSaved: boolean;
   items: BatchItem[];
+  /** Stage 2: the books (items is empty). */
+  books?: Stage2Book[];
+  chunkSize?: number;
+  listFields?: string;
 }
 
 export interface CheckResult {
@@ -172,6 +202,64 @@ export class ServerApi {
 
   finish(batchId: string, error: string | null): Promise<unknown> {
     return this.call('POST', `/batches/${batchId}/finish`, error ? { error } : {});
+  }
+
+  /** Stage 2: what Calibre shows now → what to write. */
+  verifyBook(
+    batchId: string,
+    calibreId: number,
+    body: { current: unknown; oldCoverPath: string | null }
+  ): Promise<VerifyAnswer> {
+    return this.call('POST', `/batches/${batchId}/books/${calibreId}/verify`, body);
+  }
+
+  /** Stage 2: what Calibre shows after the write. */
+  writtenBook(
+    batchId: string,
+    calibreId: number,
+    body: {
+      current: unknown;
+      error: string | null;
+      final: boolean;
+      oldCoverPath: string | null;
+      coverSkipped: string | null;
+    }
+  ): Promise<WrittenAnswer> {
+    return this.call('POST', `/batches/${batchId}/books/${calibreId}/written`, body);
+  }
+
+  /**
+   * Stage 2: downloads a book's cover (`which`: the EPUB's cover to write, or Calibre's old
+   * cover to keep) into `file` (created new). Returns the server's extension and SHA-256.
+   */
+  async downloadCover(
+    batchId: string,
+    calibreId: number,
+    which: 'cover' | 'old-cover',
+    file: string
+  ): Promise<{ ext: string | null; sha256: string | null }> {
+    const res = await this.fetchImpl(
+      `${this.base}/batches/${batchId}/books/${calibreId}/${which}`,
+      {
+        headers: { Authorization: `Bearer ${this.token}` },
+        signal: AbortSignal.timeout(Math.max(this.timeoutMs, 120_000))
+      }
+    );
+    if (!res.ok || !res.body) {
+      let message = `HTTP ${res.status}`;
+      let code: string = which;
+      try {
+        const j = (await res.json()) as { error?: { code?: string; message?: string } };
+        message = j.error?.message ?? message;
+        code = j.error?.code ?? code;
+      } catch {
+        // Not JSON.
+      }
+      throw new ServerError(res.status, code, message);
+    }
+    const out = fs.createWriteStream(file, { flags: 'wx' });
+    await pipeline(Readable.fromWeb(res.body as never), out);
+    return { ext: res.headers.get('x-cover-ext'), sha256: res.headers.get('x-cover-sha256') };
   }
 
   /** Streams the batch's metadata.db snapshot into `file` (created new; never replaces). */

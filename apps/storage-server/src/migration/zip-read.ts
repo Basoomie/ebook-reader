@@ -123,8 +123,13 @@ export class ZipFile {
 
   /** Reads and inflates one entry as UTF-8 text. */
   async readText(entry: ZipEntryInfo): Promise<string> {
+    return (await this.readBytes(entry, MAX_TEXT_ENTRY_BYTES)).toString('utf8');
+  }
+
+  /** Reads and inflates one entry (at most `maxBytes`, compressed and inflated). */
+  async readBytes(entry: ZipEntryInfo, maxBytes: number): Promise<Buffer> {
     if (entry.flags & 0x1) throw new ZipError(`Encrypted entry: ${entry.name}`);
-    if (entry.size > MAX_TEXT_ENTRY_BYTES || entry.compressedSize > MAX_TEXT_ENTRY_BYTES) {
+    if (entry.size > maxBytes || entry.compressedSize > maxBytes) {
       throw new ZipError(`Entry too large: ${entry.name}`);
     }
     const header = await readAt(this.handle, entry.localHeaderOffset, 30);
@@ -133,12 +138,9 @@ export class ZipFile {
     }
     const start = entry.localHeaderOffset + 30 + header.readUInt16LE(26) + header.readUInt16LE(28);
     const raw = await readAt(this.handle, start, entry.compressedSize);
-    let data: Buffer;
-    if (entry.method === 0) data = raw;
-    else if (entry.method === 8)
-      data = inflateRawSync(raw, { maxOutputLength: MAX_TEXT_ENTRY_BYTES });
-    else throw new ZipError(`Unsupported compression ${entry.method}: ${entry.name}`);
-    return data.toString('utf8');
+    if (entry.method === 0) return raw;
+    if (entry.method === 8) return inflateRawSync(raw, { maxOutputLength: maxBytes });
+    throw new ZipError(`Unsupported compression ${entry.method}: ${entry.name}`);
   }
 
   async close(): Promise<void> {

@@ -8,10 +8,14 @@
  *   are sent back by the server and written into the quarantine folder), trash list;
  * - write: remove (to Calibre's trash, NEVER --permanent), set_tags (set_metadata of the tags
  *   field only: the user's own tags of a removed copy are added to the kept copy, decided
- *   2026-11-13, and taken off again by Undo), trash restore and add (Undo only).
+ *   2026-11-13, and taken off again by Undo), trash restore and add (Undo only), and
+ *   set_fields (stage 2, WP20b: set_metadata of exactly the fields stage 2 writes: title and
+ *   its sort, authors and author_sort, identifiers, publisher, languages, #illustrator and
+ *   the cover; never tags, never an OPF).
  * The password goes in through stdin (`--password <stdin>`), never on the command line.
  */
 import { spawn } from 'child_process';
+import path from 'path';
 
 export type CalibredbCommand =
   | 'version'
@@ -23,7 +27,8 @@ export type CalibredbCommand =
   | 'trash_list'
   | 'trash_restore'
   | 'add'
-  | 'set_tags';
+  | 'set_tags'
+  | 'set_fields';
 
 export const ALLOWED: readonly CalibredbCommand[] = [
   'version',
@@ -35,8 +40,22 @@ export const ALLOWED: readonly CalibredbCommand[] = [
   'trash_list',
   'trash_restore',
   'add',
-  'set_tags'
+  'set_tags',
+  'set_fields'
 ];
+
+/** The only fields set_fields may set (stage 2). */
+export const SET_FIELDS = [
+  'title',
+  'sort',
+  'authors',
+  'author_sort',
+  'identifiers',
+  'publisher',
+  'languages',
+  '#illustrator',
+  'cover'
+] as const;
 
 /** Options never allowed, whatever the subcommand. */
 const FORBIDDEN_ARGS = ['--permanent', '--library-path', '--automerge', '-m'];
@@ -134,6 +153,31 @@ export function buildArgs(
         throw new Error('set_tags takes a book id and a tag list');
       }
       return ['set_metadata', ...remote, id, '--field', `tags:${tags}`];
+    }
+    case 'set_fields': {
+      // Exactly: <book id> then "<field>:<value>" for the allowed fields only, each once.
+      const [id, ...fields] = args;
+      if (!/^\d+$/.test(id ?? '') || fields.length === 0) {
+        throw new Error('set_fields takes a book id and at least one field');
+      }
+      const seen = new Set<string>();
+      const out = ['set_metadata', ...remote, id];
+      for (const f of fields) {
+        const name = f.slice(0, f.indexOf(':'));
+        if (f.indexOf(':') < 1 || !(SET_FIELDS as readonly string[]).includes(name)) {
+          throw new Error(`set_fields can't set ${name || f.slice(0, 20)}`);
+        }
+        if (seen.has(name)) throw new Error(`set_fields: ${name} given twice`);
+        seen.add(name);
+        if ((name === 'title' || name === 'authors') && f.slice(name.length + 1).trim() === '') {
+          throw new Error(`set_fields: ${name} can't be empty`);
+        }
+        if (name === 'cover' && !/^(\/|[A-Za-z]:[\\/])/.test(f.slice(6))) {
+          throw new Error('set_fields: the cover must be an absolute path');
+        }
+        out.push('--field', f);
+      }
+      return out;
     }
   }
 }
@@ -278,6 +322,49 @@ export class Calibredb {
   async setTags(login: Login, calibreId: number, tags: string[]): Promise<void> {
     if (tags.some((t) => t.includes(','))) throw new Error('A tag contains a comma');
     await this.ok('set_tags', login, [String(calibreId), tags.join(',')]);
+  }
+
+  /**
+   * Stage 2: sets a book's fields. A cover must be a file in one of `coverDirs` (the sidecar's
+   * temp folder for a cover from the server, the quarantine for an old cover put back).
+   */
+  async setFields(
+    login: Login,
+    calibreId: number,
+    fields: string[],
+    coverDirs: string[]
+  ): Promise<void> {
+    for (const f of fields) {
+      if (!f.startsWith('cover:')) continue;
+      const file = path.resolve(f.slice(6));
+      if (!coverDirs.some((d) => file.startsWith(path.resolve(d) + path.sep))) {
+        throw new Error('The cover file is not in the temp or quarantine folder');
+      }
+    }
+    await this.ok('set_fields', login, [String(calibreId), ...fields]);
+  }
+
+  /** Stage 2: what Calibre shows for these books (one `list` call), by id. */
+  async listBooks(
+    login: Login,
+    calibreIds: number[],
+    fields: string
+  ): Promise<Map<number, Record<string, unknown>>> {
+    const out = new Map<number, Record<string, unknown>>();
+    if (calibreIds.length === 0) return out;
+    const r = await this.ok('list', login, [
+      '--search',
+      calibreIds.map((id) => `id:=${id}`).join(' or '),
+      '--fields',
+      fields,
+      '--for-machine',
+      '--limit',
+      String(calibreIds.length + 10)
+    ]);
+    for (const b of JSON.parse(r.stdout || '[]') as Record<string, unknown>[]) {
+      if (typeof b.id === 'number' && calibreIds.includes(b.id)) out.set(b.id, b);
+    }
+    return out;
   }
 
   /** Books with exactly this title (for an interrupted Undo re-add). */

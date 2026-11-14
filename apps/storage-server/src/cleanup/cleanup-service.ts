@@ -14,6 +14,8 @@ import { presentBookCount } from './handoff';
 import { SecretStore } from './secrets';
 import { getSettings } from './settings';
 import { Stage1Analysis, type Stage1Progress } from './stage1';
+import { Stage2Analysis, type Stage2Progress } from './stage2';
+import { listFieldPauses, loadGold, resumeField } from './stage2-gate';
 import {
   BUILT_STAGES,
   CURRENT_PROPOSALS_SQL,
@@ -57,6 +59,10 @@ export const CHECK_LABELS: Record<string, { label: string; required: boolean }> 
     required: false,
   },
   target_library: { label: 'Library to clean is chosen', required: true },
+  reference_labels: {
+    label: 'Labeled books for the stage 2 gate are found',
+    required: false,
+  },
   library_indexed: {
     label: "Reader's index of the library is ready (snapshot for each batch)",
     required: true,
@@ -94,6 +100,8 @@ export interface CleanupServiceOptions {
   cacheDir: string;
   /** Whether the reader's indexer is running (a snapshot exists per library). */
   indexerEnabled: () => boolean;
+  /** DB_DIR: the default labeled-books file is <DB_DIR>/cleanup/reference-sample/gold800.json. */
+  dbDir?: string | null;
   leaseSeconds?: number;
   log?: (m: string) => void;
   logError?: (m: string, err?: unknown) => void;
@@ -107,14 +115,18 @@ export class CleanupService {
   readonly secrets: SecretStore;
   readonly batches: BatchService;
   readonly analysis: Stage1Analysis | null;
+  readonly analysis2: Stage2Analysis | null;
   private timer: NodeJS.Timeout | null = null;
   private ticking: Promise<void> | null = null;
   private analysing: Promise<void> | null = null;
+  private analysing2: Promise<void> | null = null;
   private stopped = false;
   private readonly log: (m: string) => void;
   private readonly logError: (m: string, err?: unknown) => void;
   /** Why stage 1 is not applying right now (not a pause; it clears by itself). */
   waiting: string | null = null;
+  /** The same for stage 2. */
+  waiting2: string | null = null;
 
   constructor(private readonly opts: CleanupServiceOptions) {
     this.log = opts.log ?? console.log;
@@ -137,6 +149,16 @@ export class CleanupService {
           log: this.log,
         })
       : null;
+    this.analysis2 = opts.calibreDir
+      ? new Stage2Analysis({
+          cleanup: opts.cleanup,
+          main: opts.main,
+          calibreDir: opts.calibreDir,
+          cacheDir: opts.cacheDir,
+          dbDir: opts.dbDir ?? null,
+          log: this.log,
+        })
+      : null;
   }
 
   get db(): Database.Database {
@@ -156,6 +178,7 @@ export class CleanupService {
     if (this.timer) clearInterval(this.timer);
     await this.ticking;
     await this.analysing;
+    await this.analysing2;
   }
 
   /** The indexer asks this before touching a library. */
@@ -326,6 +349,7 @@ export class CleanupService {
           : 'Choose the library below',
       },
       library_indexed: this.libraryIndexed(target),
+      reference_labels: this.referenceLabels(),
     };
     const sidecarRows = new Map(
       (
@@ -362,6 +386,15 @@ export class CleanupService {
     });
   }
 
+  private referenceLabels(): { ok: boolean; detail: string | null } {
+    const file = this.analysis2?.referenceFile() ?? null;
+    if (!file) return { ok: false, detail: 'No labeled-books file is set' };
+    const { gold, error } = loadGold(file);
+    return gold
+      ? { ok: true, detail: `${Object.keys(gold).length} labeled books (${file})` }
+      : { ok: false, detail: error };
+  }
+
   private libraryIndexed(target: string | null): { ok: boolean; detail: string | null } {
     if (!target) return { ok: false, detail: 'No library chosen' };
     if (!this.opts.calibreDir || !this.opts.indexerEnabled()) {
@@ -394,19 +427,41 @@ export class CleanupService {
       const p = this.analysis?.progress();
       if (target && this.analysis && (!p || p.libraryId !== target)) this.analysis.restart(target);
     }
+    if (stage === 2 && mode !== 'off') {
+      const target = this.targetLibrary();
+      const p = this.analysis2?.progress();
+      if (target && this.analysis2 && (!p || p.libraryId !== target))
+        this.analysis2.restart(target);
+    }
     void this.tick();
   }
 
   /** "Analyse again". */
-  reanalyse(): Stage1Progress {
+  reanalyse(stage = 1): Stage1Progress | Stage2Progress {
     const target = this.targetLibrary();
-    if (!target || !this.analysis) throw new Error('Choose the library first');
-    const p = this.analysis.restart(target);
+    const analysis = stage === 2 ? this.analysis2 : stage === 1 ? this.analysis : null;
+    if (!analysis)
+      throw new Error(stage === 1 || stage === 2 ? 'Choose the library first' : 'No such stage');
+    if (!target) throw new Error('Choose the library first');
+    const p = analysis.restart(target);
     // These pauses ask for a new analysis; it is running now.
-    const pause = getStage(this.db, 1).pauseReason;
-    if (pause === 'library_changed' || pause === 'not_identical') resumeStage(this.db, 1);
+    const pause = getStage(this.db, stage).pauseReason;
+    if (pause === 'library_changed' || pause === 'not_identical') resumeStage(this.db, stage);
     void this.tick();
     return p;
+  }
+
+  /** Resume one paused field of stage 2. A gate pause lifts only when a new analysis passes. */
+  resumeField(stage: number, field: string): void {
+    const pause = listFieldPauses(this.db, stage).find((p) => p.field === field);
+    if (!pause) return;
+    if (pause.reason === 'gate' || pause.reason === 'no_labels') {
+      throw new Error(
+        'This field is paused by the gate on the labeled books; it resumes by itself when a new analysis passes',
+      );
+    }
+    resumeField(this.db, stage, field);
+    void this.tick();
   }
 
   /** One round: leases, ingest, guard, analysis, planning. Never throws. */
@@ -428,8 +483,163 @@ export class CleanupService {
   private async round(): Promise<void> {
     this.batches.expireLeases();
     this.batches.checkIngested();
-    const stage = getStage(this.db, 1);
     const target = this.targetLibrary();
+    await this.round1(target);
+    await this.round2(target);
+  }
+
+  /** Stage 2: analysis, then (On) one batch at a time once stage 1 has nothing left to remove. */
+  private async round2(target: string | null): Promise<void> {
+    const stage = getStage(this.db, 2);
+    if (stage.mode === 'off' || !target || !this.analysis2) {
+      this.waiting2 =
+        stage.mode === 'off'
+          ? null
+          : target
+            ? 'The Calibre folder is not set up'
+            : 'Choose the library';
+      return;
+    }
+    let progress = this.analysis2.progress();
+    if (!progress || progress.libraryId !== target) progress = this.analysis2.restart(target);
+    if (progress.phase !== 'done') {
+      if (!this.snapshotExists(target)) {
+        this.waiting2 = "Waiting for the reader's index of the library";
+        return;
+      }
+      if (this.analysing) {
+        this.waiting2 = "Waiting for stage 1's analysis to finish";
+        return;
+      }
+      this.waiting2 = 'Analysing';
+      this.runAnalysis2();
+      return;
+    }
+    if (progress.error) {
+      this.waiting2 = `The analysis failed: ${progress.error}`;
+      return;
+    }
+    if (stage.mode !== 'on') {
+      this.waiting2 = 'Preview: nothing is changed in Calibre';
+      return;
+    }
+    if (getStage(this.db, 2).pauseReason) {
+      this.waiting2 = null;
+      return;
+    }
+    if (this.batches.open()) {
+      this.waiting2 = 'A batch is being applied';
+      return;
+    }
+    if (getStage(this.db, 1).mode === 'on' && this.remaining(target) > 0) {
+      this.waiting2 = 'Waiting for stage 1 to finish removing identical copies';
+      return;
+    }
+    const checks = this.checksPass();
+    if (!checks.ok) {
+      this.waiting2 = `Waiting for the safety checks: ${checks.failing.join('; ')}`;
+      return;
+    }
+    const { batch, reason } = await this.batches.stage2.plan(target);
+    this.waiting2 = batch
+      ? 'A batch is being applied'
+      : (reason ?? (this.remaining2(target) === 0 ? 'Done: nothing left to write' : null));
+  }
+
+  private remaining2(target: string): number {
+    const paused = listFieldPauses(this.db, 2).map((p) => p.field);
+    const rows = this.db
+      .prepare(
+        `SELECT field, COUNT(*) AS n FROM proposed_changes WHERE stage = 2 AND library_id = ?
+         AND state = 'proposed' AND class = 'auto' AND (analysis_id = ? OR decided_by IS NOT NULL)
+         GROUP BY field`,
+      )
+      .all(target, currentAnalysisId(this.db, 2)) as { field: string; n: number }[];
+    return rows.filter((r) => !paused.includes(r.field)).reduce((a, r) => a + r.n, 0);
+  }
+
+  private runAnalysis2(): void {
+    if (this.analysing2 || !this.analysis2) return;
+    const analysis = this.analysis2;
+    this.analysing2 = (async () => {
+      try {
+        for (;;) {
+          if (this.stopped) break;
+          if (getStage(this.db, 2).mode === 'off') break;
+          const done = await analysis.step(
+            () => this.stopped || getStage(this.db, 2).mode === 'off',
+          );
+          if (done) break;
+        }
+      } catch (err) {
+        this.logError('Cleanup: stage 2 analysis failed:', err);
+      } finally {
+        this.analysing2 = null;
+        void this.tick();
+      }
+    })();
+  }
+
+  /** Stage 2's counts per field, class and state (current analysis plus everything queued or applied). */
+  stage2Counts(
+    target: string | null,
+  ): { field: string; class: string; state: string; n: number }[] {
+    if (!target) return [];
+    return this.db
+      .prepare(
+        `SELECT field, class, state, COUNT(*) AS n FROM proposed_changes WHERE stage = 2 AND library_id = ?
+         AND (${CURRENT_PROPOSALS_SQL} OR decided_by IS NOT NULL) GROUP BY field, class, state`,
+      )
+      .all(target, currentAnalysisId(this.db, 2)) as {
+      field: string;
+      class: string;
+      state: string;
+      n: number;
+    }[];
+  }
+
+  stage2SkipReasons(target: string | null): { reason: string; count: number }[] {
+    if (!target) return [];
+    return this.db
+      .prepare(
+        `SELECT COALESCE(review_reason, 'No reason recorded') AS reason, COUNT(*) AS count
+         FROM proposed_changes WHERE stage = 2 AND library_id = ? AND state = 'skipped' AND analysis_id = ?
+         GROUP BY reason ORDER BY count DESC, reason LIMIT 20`,
+      )
+      .all(target, currentAnalysisId(this.db, 2)) as { reason: string; count: number }[];
+  }
+
+  /** Books written in the recent window (for the page's time left). */
+  stage2Pace(now = Date.now()): { written: number; firstAt: number | null } {
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(DISTINCT c.calibre_id) AS n, MIN(i.updated_at) AS first FROM batch_items i
+         JOIN batches b ON b.id = i.batch_id JOIN proposed_changes c ON c.id = i.change_id
+         WHERE b.kind = 'apply' AND b.stage = 2 AND i.state = 'written' AND i.updated_at >= ?`,
+      )
+      .get(now - PACE_WINDOW_MS) as { n: number; first: number | null };
+    return { written: row.n, firstAt: row.first };
+  }
+
+  /** Books left to write (auto, not paused). */
+  stage2BooksLeft(target: string | null): number {
+    if (!target) return 0;
+    const paused = listFieldPauses(this.db, 2).map((p) => p.field);
+    const placeholders = paused.map(() => '?').join(',');
+    return (
+      this.db
+        .prepare(
+          `SELECT COUNT(DISTINCT calibre_id) AS n FROM proposed_changes WHERE stage = 2 AND library_id = ?
+           AND state = 'proposed' AND class = 'auto' AND (analysis_id = ? OR decided_by IS NOT NULL)
+           ${paused.length ? `AND field NOT IN (${placeholders})` : ''}`,
+        )
+        .get(target, currentAnalysisId(this.db, 2), ...paused) as { n: number }
+    ).n;
+  }
+
+  /** Stage 1: removing identical copies. */
+  private async round1(target: string | null): Promise<void> {
+    const stage = getStage(this.db, 1);
     if (stage.mode === 'off' || !target || !this.analysis) {
       this.waiting =
         stage.mode === 'off'
@@ -522,7 +732,7 @@ export class CleanupService {
   }
 
   private runAnalysis(): void {
-    if (this.analysing || !this.analysis) return;
+    if (this.analysing || this.analysing2 || !this.analysis) return;
     const analysis = this.analysis;
     this.analysing = (async () => {
       try {
@@ -612,6 +822,14 @@ export class CleanupService {
         pace: this.stage1Pace(now),
         openBatch: this.batches.open(),
         awaitingIngest: this.batches.awaitingIngest(),
+      },
+      stage2: {
+        waiting: this.waiting2,
+        counts: this.stage2Counts(target),
+        skipReasons: this.stage2SkipReasons(target),
+        fieldPauses: listFieldPauses(this.db, 2),
+        pace: this.stage2Pace(now),
+        booksLeft: this.stage2BooksLeft(target),
       },
     };
   }

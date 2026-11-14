@@ -36,6 +36,12 @@ import {
 } from './handoff';
 import { getSettings, isCustomTag } from './settings';
 import { hashSourceFile, Pacer, readSnapshotBooks, readSnapshotPresence } from './stage1';
+import {
+  LIST_FIELDS,
+  STAGE2_TERMINAL_APPLY,
+  Stage2Batches,
+  type Stage2SidecarBook,
+} from './stage2-batches';
 import { currentAnalysisId, getStage, pauseStage, updateStage } from './stages';
 
 export type BatchKind = 'apply' | 'undo';
@@ -47,6 +53,8 @@ export type ItemState =
   /** The user's own tags of the removed copy were added to the kept copy (decided 2026-11-13). */
   | 'tagged'
   | 'removed'
+  /** Stage 2: the book's fields were set in Calibre. */
+  | 'written'
   | 'restored'
   | 'failed'
   | 'skipped';
@@ -163,6 +171,11 @@ export interface SidecarBatch {
   snapshotSha256: string | null;
   snapshotSaved: boolean;
   items: SidecarItem[];
+  /** Stage 2: the books (each with its fields); `items` is empty. */
+  books?: Stage2SidecarBook[];
+  /** Stage 2: books per `calibredb list` read-back, and the fields to list. */
+  chunkSize?: number;
+  listFields?: string;
 }
 
 export interface ItemReport {
@@ -209,6 +222,7 @@ const APPLY_STEPS: Record<ItemState, ItemState[]> = {
   exported: ['tagged', 'skipped', 'failed'],
   tagged: ['removed', 'skipped', 'failed'],
   removed: [],
+  written: [],
   restored: [],
   failed: [],
   skipped: [],
@@ -243,8 +257,11 @@ async function sha256File(file: string): Promise<string> {
 
 export class BatchService {
   private readonly leaseSeconds: number;
+  /** Stage 2's batches (WP20b): writing fields instead of removing copies. */
+  readonly stage2: Stage2Batches;
   constructor(private readonly deps: BatchDeps) {
     this.leaseSeconds = deps.leaseSeconds ?? DEFAULT_LEASE_SECONDS;
+    this.stage2 = new Stage2Batches(this, deps);
   }
 
   private get db() {
@@ -303,6 +320,32 @@ export class BatchService {
     for (;;) {
       const batch = this.awaitingIngest();
       if (!batch) return;
+      if (batch.stage === 2) {
+        if (this.stage2.ingested(batch)) {
+          this.db
+            .prepare('UPDATE batches SET ingested_at = ?, updated_at = ? WHERE id = ?')
+            .run(now, now, batch.id);
+          continue;
+        }
+        const state = getIndexState(this.deps.main, batch.libraryId);
+        if (
+          state.indexedAt !== null &&
+          state.indexedAt > (batch.finishedAt ?? now) &&
+          state.status === 'idle'
+        ) {
+          pauseStage(
+            this.db,
+            2,
+            'ingest_mismatch',
+            "The reader's library index doesn't show the last batch's changes (a book may have been edited again in Calibre). Check the batch, then resume.",
+          );
+          this.db
+            .prepare('UPDATE batches SET ingested_at = ?, updated_at = ? WHERE id = ?')
+            .run(now, now, batch.id);
+          continue;
+        }
+        return;
+      }
       const rows = this.db
         .prepare(
           `SELECT i.state, u.removed_uuid, u.restored_uuid FROM batch_items i
@@ -646,7 +689,8 @@ export class BatchService {
       .run(now, now + this.leaseSeconds * 1000, now, batch.id).changes;
     if (changed !== 1) return { batch: null, wait: null };
     const view = this.sidecarView(batch.id);
-    if (view.kind === 'undo') await this.markCalibreTrash(view, batch.libraryId);
+    if (view.kind === 'undo' && view.stage === 1)
+      await this.markCalibreTrash(view, batch.libraryId);
     return { batch: view, wait: null };
   }
 
@@ -717,6 +761,22 @@ export class BatchService {
   sidecarView(batchId: string): SidecarBatch {
     const batch = this.get(batchId)!;
     const settings = getSettings(this.db);
+    if (batch.stage === 2) {
+      return {
+        id: batch.id,
+        kind: batch.kind,
+        stage: 2,
+        createdAt: batch.createdAt,
+        leaseSeconds: this.leaseSeconds,
+        itemDelaySeconds: settings.stage2.itemDelaySeconds,
+        snapshotSha256: batch.snapshotSha256,
+        snapshotSaved: batch.snapshotSaved,
+        items: [],
+        books: this.stage2.sidecarBooks(batch),
+        chunkSize: settings.stage2.chunkSize,
+        listFields: LIST_FIELDS,
+      };
+    }
     const rows = this.db
       .prepare(
         `SELECT i.id AS item_id, i.change_id, i.state, i.quarantine_dir, c.calibre_id, c.calibre_uuid,
@@ -801,7 +861,7 @@ export class BatchService {
     return added.filter((t) => !stillNeeded.has(t.toLowerCase()));
   }
 
-  private requireClaimed(batchId: string): BatchRow {
+  requireClaimed(batchId: string): BatchRow {
     const batch = this.get(batchId);
     if (!batch) throw new BatchError(404, 'not_found', 'No such batch');
     if (batch.state !== 'claimed') {
@@ -830,6 +890,13 @@ export class BatchService {
     now = Date.now(),
   ): { state: ItemState } {
     const batch = this.requireClaimed(batchId);
+    if (batch.stage === 2) {
+      throw new BatchError(
+        409,
+        'bad_step',
+        'Stage 2 books are reported per book (verify / written)',
+      );
+    }
     if (batch.kind === 'apply' && !batch.snapshotSaved && report.step !== 'skipped') {
       throw new BatchError(
         409,
@@ -1031,11 +1098,16 @@ export class BatchService {
         state: ItemState;
       }[]
     ).map((r) => r.state);
-    const terminal = batch.kind === 'apply' ? TERMINAL_APPLY : TERMINAL_UNDO;
+    const terminal =
+      batch.kind === 'apply'
+        ? batch.stage === 2
+          ? STAGE2_TERMINAL_APPLY
+          : TERMINAL_APPLY
+        : TERMINAL_UNDO;
     if (!error && states.some((s) => !terminal.includes(s))) {
       throw new BatchError(409, 'not_done', 'Some items are not finished');
     }
-    const good = batch.kind === 'apply' ? 'removed' : 'restored';
+    const good = batch.kind === 'apply' ? (batch.stage === 2 ? 'written' : 'removed') : 'restored';
     const failed = states.filter((s) => s === 'failed' || !terminal.includes(s)).length;
     const doneCount = states.filter((s) => s === good).length;
     const state: BatchState =
@@ -1057,11 +1129,13 @@ export class BatchService {
         this.db
           .prepare(
             `UPDATE batch_items SET state = 'skipped', detail = ?, updated_at = ?
-             WHERE batch_id = ? AND state NOT IN ('removed', 'restored', 'failed', 'skipped')`,
+             WHERE batch_id = ? AND state NOT IN ('removed', 'written', 'restored', 'failed', 'skipped')`,
           )
           .run(
             batch.kind === 'apply'
-              ? 'Not finished: the batch stopped; the copy is tried again in a later batch'
+              ? batch.stage === 2
+                ? 'Not finished: the batch stopped; the book is tried again in a later batch'
+                : 'Not finished: the batch stopped; the copy is tried again in a later batch'
               : 'Not finished: the Undo stopped',
             now,
             batchId,
@@ -1080,7 +1154,9 @@ export class BatchService {
         const left = (
           this.db
             .prepare(
-              `SELECT COUNT(*) AS n FROM undo_records WHERE batch_id = ? AND restored_at IS NULL`,
+              batch.stage === 2
+                ? `SELECT COUNT(*) AS n FROM field_undo WHERE batch_id = ? AND restored_at IS NULL`
+                : `SELECT COUNT(*) AS n FROM undo_records WHERE batch_id = ? AND restored_at IS NULL`,
             )
             .get(batch.undoOf) as { n: number }
         ).n;
@@ -1116,6 +1192,7 @@ export class BatchService {
     }
     if (this.open())
       throw new BatchError(409, 'busy', 'Another batch is being applied; try again after it');
+    if (batch.stage === 2) return this.stage2.undo(batch, now);
     const records = this.db
       .prepare(
         `SELECT change_id, removed_uuid, kept_uuid FROM undo_records
@@ -1152,7 +1229,8 @@ export class BatchService {
     return this.db
       .prepare(
         `SELECT i.id, i.state, i.quarantine_dir, i.method, i.detail, i.updated_at, c.calibre_id,
-                c.calibre_uuid, c.evidence_json, u.handoff_json, u.restore_method
+                c.calibre_uuid, c.field, c.old_json, c.new_json, c.source, c.evidence_json,
+                u.handoff_json, u.restore_method
          FROM batch_items i JOIN proposed_changes c ON c.id = i.change_id
          LEFT JOIN undo_records u ON u.change_id = i.change_id
            AND u.batch_id = (SELECT COALESCE(undo_of, id) FROM batches WHERE id = i.batch_id)

@@ -105,6 +105,7 @@ if (database.ok && cleanupDb?.ok) {
       calibreDir: config.calibre.dir,
       cacheDir: config.calibre.cacheDir,
       indexerEnabled: () => catalog.indexer.enabled,
+      dbDir: config.dbDir,
     });
     cleanupOptions.service = cleanup;
   } catch (err) {

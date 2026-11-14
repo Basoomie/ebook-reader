@@ -1,15 +1,15 @@
 /**
  * The cleanup's stages (plan sections 1-7). Stage 0 is the safety checks (no mode); stages
  * 1-5 each have a mode: off (default for every stage), analyse (analysis only, nothing is
- * applied) or on (analysis and unattended apply behind the automatic gates). Only stage 1
- * is built in WP20a; 2-5 exist so the page and later work packages have their rows.
+ * applied) or on (analysis and unattended apply behind the automatic gates). Stages 1 and 2
+ * are built (WP20a, WP20b); 3-5 exist so the page and later work packages have their rows.
  */
 import type Database from 'better-sqlite3';
 
 export type StageMode = 'off' | 'analyse' | 'on';
 
 /** Stages that can be switched on in this build. */
-export const BUILT_STAGES: readonly number[] = [1];
+export const BUILT_STAGES: readonly number[] = [1, 2];
 
 export const STAGE_NAMES: Record<number, string> = {
   0: 'Safety checks',

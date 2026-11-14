@@ -12,6 +12,17 @@
  * a 200 KB line, like a long calibre error), FAKE_TRASH_408 (after|never: trash restore
  * answers HTTP 408 like the NAS with thousands of trash entries; "after" restores anyway),
  * FAKE_REMOVE_TIMEOUT (after|never: remove times out; "after" removes anyway).
+ *
+ * WP20b (stage 2): set_metadata sets every stage-2 field (title, sort, authors, author_sort,
+ * identifiers, publisher, languages, #illustrator, cover) the way real calibre 9.18 does it
+ * (checked against it, 2026-11-14): shared names (authors, publishers, #illustrator values)
+ * match ignoring case and a different case renames the shared row for every book; a new
+ * author list keeps the old author_sort unless author_sort is sent empty (then it is computed
+ * from the names); "ja" is stored as "jpn"; a cover is written as cover.jpg and never
+ * removed; a title or first-author change moves the book folder. list --for-machine shows
+ * authors as "A & B", identifiers as an object, languages and *illustrator as lists, cover as
+ * 1/0, and no publisher key when there is none. FAKE_SET_TIMEOUT (after|never): set_metadata
+ * answers HTTP 408; "after" writes anyway.
  */
 const fs = require('fs');
 const path = require('path');
@@ -101,6 +112,50 @@ function tags(id) {
     .all(id)
     .map((r) => r.name);
 }
+function hasTable(name) {
+  return !!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name);
+}
+function authorsOf(id) {
+  return db
+    .prepare(
+      'SELECT a.name FROM books_authors_link l JOIN authors a ON a.id = l.author WHERE l.book = ? ORDER BY l.id',
+    )
+    .all(id)
+    .map((r) => r.name.replace(/\|/g, ','));
+}
+function identifiersOf(id) {
+  if (!hasTable('identifiers')) return {};
+  const out = {};
+  for (const r of db.prepare('SELECT type, val FROM identifiers WHERE book = ?').all(id))
+    out[r.type] = r.val;
+  return out;
+}
+function publisherOf(id) {
+  const r = db
+    .prepare(
+      'SELECT p.name FROM books_publishers_link l JOIN publishers p ON p.id = l.publisher WHERE l.book = ?',
+    )
+    .get(id);
+  return r ? r.name : null;
+}
+function languagesOf(id) {
+  if (!hasTable('books_languages_link')) return [];
+  return db
+    .prepare(
+      'SELECT g.lang_code FROM books_languages_link l JOIN languages g ON g.id = l.lang_code WHERE l.book = ? ORDER BY l.item_order',
+    )
+    .all(id)
+    .map((r) => r.lang_code);
+}
+function illustratorsOf(id) {
+  if (!hasTable('books_custom_column_1_link')) return [];
+  return db
+    .prepare(
+      'SELECT v.value FROM books_custom_column_1_link l JOIN custom_column_1 v ON v.id = l.value WHERE l.book = ? ORDER BY l.id',
+    )
+    .all(id)
+    .map((r) => r.value);
+}
 function iso(ts) {
   // "2026-11-09 04:00:11.251060+00:00" -> ISO like calibredb --for-machine
   return String(ts).replace(' ', 'T');
@@ -163,6 +218,171 @@ ${t.map((x) => `    <dc:subject>${esc(x)}</dc:subject>`).join('\n')}
 `;
 }
 
+const nowText = () => new Date().toISOString().replace('T', ' ').replace('Z', '000+00:00');
+const timeoutText =
+  'mechanize._response.get_seek_wrapper_class.<locals>.httperror_seek_wrapper: HTTP Error 408: Request Timeout';
+
+/** A shared name row (authors, publishers, custom_column_1), matched ignoring case like calibre. */
+function nameId(table, column, name, extra = {}) {
+  const row = db
+    .prepare(`SELECT id, ${column} AS v FROM ${table} WHERE lower(${column}) = lower(?)`)
+    .get(name);
+  if (row) {
+    // calibre's allow_case_change: the shared row takes the new spelling, for every book.
+    if (row.v !== name)
+      db.prepare(`UPDATE ${table} SET ${column} = ? WHERE id = ?`).run(name, row.id);
+    return row.id;
+  }
+  const cols = [column, ...Object.keys(extra)];
+  return Number(
+    db
+      .prepare(
+        `INSERT INTO ${table} (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`,
+      )
+      .run(name, ...Object.values(extra)).lastInsertRowid,
+  );
+}
+
+function setFields(fields) {
+  const [id] = ids();
+  const b = bookRow(id);
+  if (!b) fail(`No book with id: ${id} in the database`);
+  if (process.env.FAKE_SET_TIMEOUT === 'never') fail(timeoutText);
+  const kv = fields.map((x) => [x.slice(0, x.indexOf(':')), x.slice(x.indexOf(':') + 1)]);
+  const names = kv.map(([k]) => k);
+  const allowed = [
+    'title',
+    'sort',
+    'authors',
+    'author_sort',
+    'identifiers',
+    'publisher',
+    'languages',
+    '#illustrator',
+    'cover',
+  ];
+  for (const n of names) if (!allowed.includes(n)) fail(`Unknown field: ${n}`);
+  const oldTitle = b.title;
+  const oldFirst = authorsOf(id)[0];
+  for (const [k, v] of kv) {
+    if (k === 'title') db.prepare('UPDATE books SET title = ? WHERE id = ?').run(v, id);
+    else if (k === 'sort') db.prepare('UPDATE books SET sort = ? WHERE id = ?').run(v, id);
+    else if (k === 'authors') {
+      const list = v
+        .split('&')
+        .map((x) => x.trim())
+        .filter(Boolean);
+      db.prepare('DELETE FROM books_authors_link WHERE book = ?').run(id);
+      for (const n of list.length ? list : ['Unknown']) {
+        const aid = nameId('authors', 'name', n.replace(/,/g, '|'), { sort: n });
+        db.prepare('INSERT OR IGNORE INTO books_authors_link (book, author) VALUES (?, ?)').run(
+          id,
+          aid,
+        );
+      }
+      db.prepare(
+        'DELETE FROM authors WHERE id NOT IN (SELECT author FROM books_authors_link)',
+      ).run();
+      // Calibre keeps the old author_sort unless author_sort is sent empty.
+      const sortField = kv.find(([kk]) => kk === 'author_sort');
+      if (sortField && sortField[1] === '') {
+        const sorts = authorsOf(id).map(
+          (n) =>
+            db.prepare('SELECT sort FROM authors WHERE name = ?').get(n.replace(/,/g, '|'))?.sort ??
+            n,
+        );
+        db.prepare('UPDATE books SET author_sort = ? WHERE id = ?').run(sorts.join(' & '), id);
+      }
+    } else if (k === 'author_sort') {
+      if (v !== '') db.prepare('UPDATE books SET author_sort = ? WHERE id = ?').run(v, id);
+    } else if (k === 'identifiers') {
+      db.prepare('DELETE FROM identifiers WHERE book = ?').run(id);
+      for (const part of v
+        .split(',')
+        .map((x) => x.trim())
+        .filter(Boolean)) {
+        const i = part.indexOf(':');
+        if (i > 0 && part.slice(i + 1))
+          db.prepare('INSERT INTO identifiers (book, type, val) VALUES (?, ?, ?)').run(
+            id,
+            part.slice(0, i).toLowerCase(),
+            part.slice(i + 1),
+          );
+      }
+    } else if (k === 'publisher') {
+      db.prepare('DELETE FROM books_publishers_link WHERE book = ?').run(id);
+      if (v !== '') {
+        const pid = nameId('publishers', 'name', v);
+        db.prepare('INSERT INTO books_publishers_link (book, publisher) VALUES (?, ?)').run(
+          id,
+          pid,
+        );
+      }
+      db.prepare(
+        'DELETE FROM publishers WHERE id NOT IN (SELECT publisher FROM books_publishers_link)',
+      ).run();
+    } else if (k === 'languages') {
+      db.prepare('DELETE FROM books_languages_link WHERE book = ?').run(id);
+      const canon = { ja: 'jpn', en: 'eng' };
+      v.split(',')
+        .map((x) => x.trim())
+        .filter(Boolean)
+        .forEach((code, order) => {
+          const c = canon[code.toLowerCase()] || code.toLowerCase();
+          const lid = nameId('languages', 'lang_code', c);
+          db.prepare(
+            'INSERT INTO books_languages_link (book, lang_code, item_order) VALUES (?, ?, ?)',
+          ).run(id, lid, order);
+        });
+    } else if (k === '#illustrator') {
+      if (!hasTable('books_custom_column_1_link')) fail('No column #illustrator');
+      db.prepare('DELETE FROM books_custom_column_1_link WHERE book = ?').run(id);
+      for (const n of v
+        .split(',')
+        .map((x) => x.trim())
+        .filter(Boolean)) {
+        const vid = nameId('custom_column_1', 'value', n);
+        db.prepare(
+          'INSERT OR IGNORE INTO books_custom_column_1_link (book, value) VALUES (?, ?)',
+        ).run(id, vid);
+      }
+    } else if (k === 'cover') {
+      if (!fs.existsSync(v)) fail(`No such file: ${v}`);
+      const folder = path.join(lib, ...bookRow(id).path.split('/'));
+      fs.copyFileSync(v, path.join(folder, 'cover.jpg'));
+      db.prepare('UPDATE books SET has_cover = 1 WHERE id = ?').run(id);
+    }
+  }
+  // A title or first-author change moves the book folder (and renames its files), like calibre.
+  const row = bookRow(id);
+  const first = authorsOf(id)[0];
+  if (row.title !== oldTitle || first !== oldFirst) {
+    const slug = (x) =>
+      require('crypto').createHash('sha1').update(String(x)).digest('hex').slice(0, 8);
+    const newPath = `A${slug(first)}/T${slug(row.title)} (${id})`;
+    const from = path.join(lib, ...row.path.split('/'));
+    const to = path.join(lib, ...newPath.split('/'));
+    if (from !== to) {
+      fs.mkdirSync(path.dirname(to), { recursive: true });
+      fs.renameSync(from, to);
+      const parent = path.dirname(from);
+      if (fs.existsSync(parent) && fs.readdirSync(parent).length === 0) fs.rmdirSync(parent);
+      const fileName = `T${slug(row.title)} - A${slug(first)}`;
+      for (const fmt of formats(id)) {
+        fs.renameSync(
+          path.join(to, `${fmt.name}.${fmt.format.toLowerCase()}`),
+          path.join(to, `${fileName}.${fmt.format.toLowerCase()}`),
+        );
+      }
+      db.prepare('UPDATE data SET name = ? WHERE book = ?').run(fileName, id);
+      db.prepare('UPDATE books SET path = ? WHERE id = ?').run(newPath, id);
+    }
+  }
+  db.prepare('UPDATE books SET last_modified = ? WHERE id = ?').run(nowText(), id);
+  touchDb();
+  if (process.env.FAKE_SET_TIMEOUT === 'after') fail(timeoutText);
+}
+
 switch (sub) {
   case 'list': {
     const search = opt('--search') || '';
@@ -180,19 +400,36 @@ switch (sub) {
     } else rows = db.prepare('SELECT * FROM books').all();
     const limit = opt('--limit');
     if (limit !== undefined) rows = rows.slice(0, Number(limit));
-    const out = rows.map((b) => ({
-      id: b.id,
-      uuid: b.uuid,
-      title: b.title,
-      last_modified: iso(b.last_modified),
-      formats: formats(b.id).map((f) => f.format),
-      tags: tags(b.id),
-    }));
+    const out = rows.map((b) => {
+      const row = {
+        id: b.id,
+        uuid: b.uuid,
+        title: b.title,
+        last_modified: iso(b.last_modified),
+        formats: formats(b.id).map((f) => f.format),
+        tags: tags(b.id),
+        authors: authorsOf(b.id).join(' & '),
+        author_sort: b.author_sort,
+        identifiers: identifiersOf(b.id),
+        languages: languagesOf(b.id),
+        cover: b.has_cover ? 1 : 0,
+        '*illustrator': illustratorsOf(b.id),
+      };
+      const p = publisherOf(b.id);
+      if (p !== null) row.publisher = p;
+      return row;
+    });
     process.stdout.write(JSON.stringify(out));
     break;
   }
   case 'set_metadata': {
-    // Only the tags field is simulated (the sidecar never sets anything else).
+    const fields = [];
+    for (let i = 0; i < argv.length; i++) if (argv[i] === '--field') fields.push(argv[i + 1]);
+    if (fields.length > 0 && !fields[0].startsWith('tags:')) {
+      setFields(fields);
+      break;
+    }
+    // The tags field (stage 1's set_tags).
     const field = opt('--field') || '';
     if (!field.startsWith('tags:')) fail('only tags are simulated');
     const [id] = ids();

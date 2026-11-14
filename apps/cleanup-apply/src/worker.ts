@@ -8,6 +8,12 @@
  *   undo:  restore from Calibre's trash (same id and UUID, calibre 9.18+), else re-add the
  *          quarantined export (new id and UUID; the server re-binds the reader's book).
  *
+ *   stage 2 (WP20b), per book: list what Calibre shows (one call per chunk of books) ->
+ *          the server says what to write -> keep Calibre's old cover in the quarantine when a
+ *          cover is replaced -> download the EPUB's cover -> one set_metadata call with all the
+ *          book's fields -> list again and report; after an error or timeout, wait until
+ *          Calibre shows the new values (never write twice).
+ *
  * All state is on the server; after a restart (or the server's nightly stop) the sidecar
  * claims the batch again and continues from each item's state. Every step is safe to
  * repeat: an export is found again by its SHA-256, a removal is checked with `list`, an
@@ -24,6 +30,7 @@ import {
   isFinal,
   ServerApi,
   ServerError,
+  type Stage2Book,
   type StepReport
 } from './api';
 import {
@@ -351,8 +358,13 @@ export class Worker {
         )
       );
       if (!batch.snapshotSaved) await this.saveSnapshot(batch);
-      const plan = batch.kind === 'undo' ? await this.requestTrashRestore(batch) : null;
-      for (const item of batch.items) {
+      if (batch.stage === 2) {
+        await this.stage2Books(batch);
+        if (this.stopped) return;
+      }
+      const plan =
+        batch.kind === 'undo' && batch.stage !== 2 ? await this.requestTrashRestore(batch) : null;
+      for (const item of batch.stage === 2 ? [] : batch.items) {
         if (this.stopped) return;
         const final =
           batch.kind === 'apply'
@@ -383,6 +395,206 @@ export class Worker {
     const sentError = error === null ? null : shorten(error, 1500);
     await this.retry(() => this.api.finish(batch.id, sentError));
     this.log.info(`Batch ${batch.id} finished${error ? ` with an error: ${error}` : ''}`);
+  }
+
+  /** Stage 2: Calibre's view of these books, asking again while Calibre is busy (408). */
+  private async listChunk(
+    login: Login,
+    ids: number[],
+    fields: string
+  ): Promise<Map<number, Record<string, unknown>>> {
+    const until = Date.now() + this.opts.config.writeWaitSeconds * 1000;
+    const found = await this.pollUntil(until, () => this.calibredb.listBooks(login, ids, fields));
+    if (!found) throw new Error("Calibre didn't answer a list of the batch's books");
+    return found;
+  }
+
+  /** Stage 2 (WP20b): every book of the batch, a chunk at a time. */
+  private async stage2Books(batch: Batch): Promise<void> {
+    const login = this.requireLogin();
+    const fields = batch.listFields ?? 'uuid,title,authors,last_modified';
+    const chunkSize = Math.max(1, batch.chunkSize ?? 25);
+    const final =
+      batch.kind === 'apply' ? ['written', 'failed', 'skipped'] : ['restored', 'failed', 'skipped'];
+    const books = (batch.books ?? []).filter((b) => !final.includes(b.state));
+    await fsp.mkdir(this.opts.config.coverTmpDir, { recursive: true });
+    for (let i = 0; i < books.length; i += chunkSize) {
+      if (this.stopped) return;
+      const chunk = books.slice(i, i + chunkSize);
+      const before = await this.listChunk(
+        login,
+        chunk.map((b) => b.calibreId),
+        fields
+      );
+      const attempted: {
+        book: Stage2Book;
+        error: string | null;
+        oldCoverPath: string | null;
+        coverSkipped: string | null;
+      }[] = [];
+      for (const book of chunk) {
+        if (this.stopped) return;
+        const a = await this.writeBook(batch, login, book, before.get(book.calibreId) ?? null);
+        if (a) attempted.push(a);
+        if (this.itemDelayMs > 0 && a) await sleep(this.itemDelayMs);
+      }
+      if (attempted.length === 0) continue;
+      const after = await this.listChunk(
+        login,
+        attempted.map((a) => a.book.calibreId),
+        fields
+      );
+      for (const a of attempted) {
+        if (this.stopped) return;
+        await this.confirmBook(batch, login, a, after.get(a.book.calibreId) ?? null, fields);
+      }
+    }
+  }
+
+  /** Where Calibre's old cover of a book is kept (apply batch's quarantine folder). */
+  private oldCoverFile(batch: Batch, calibreId: number): string {
+    return path.join(this.quarantine.batchDir(batch.id), String(calibreId), 'old-cover.jpg');
+  }
+
+  /** Verify with the server, then one set_metadata call. Returns what was attempted, or null. */
+  private async writeBook(
+    batch: Batch,
+    login: Login,
+    book: Stage2Book,
+    current: Record<string, unknown> | null
+  ): Promise<{
+    book: Stage2Book;
+    error: string | null;
+    oldCoverPath: string | null;
+    coverSkipped: string | null;
+  } | null> {
+    const keptOld = batch.kind === 'apply' ? this.oldCoverFile(batch, book.calibreId) : null;
+    const oldCoverPath = keptOld && (await exists(keptOld)) ? keptOld : null;
+    const answer = await this.retry(() =>
+      this.api.verifyBook(batch.id, book.calibreId, { current, oldCoverPath })
+    );
+    for (const it of answer.items) {
+      const f = book.fields.find((x) => x.itemId === it.itemId);
+      if (f) f.state = it.state;
+    }
+    if (answer.action !== 'write') return null;
+    const fields = [...answer.fields];
+    let coverSkipped: string | null = null;
+    let savedOld = oldCoverPath;
+    let tmp: string | null = null;
+    if (answer.cover) {
+      if (batch.kind === 'apply') {
+        if (answer.saveOldCover && !savedOld) {
+          try {
+            const file = this.oldCoverFile(batch, book.calibreId);
+            await fsp.mkdir(path.dirname(file), { recursive: true });
+            await this.retry(() =>
+              this.api.downloadCover(batch.id, book.calibreId, 'old-cover', file)
+            );
+            savedOld = file;
+          } catch (err) {
+            coverSkipped = `Calibre's old cover couldn't be kept in the quarantine: ${shorten((err as Error).message, 300)}`;
+          }
+        }
+        if (!coverSkipped) {
+          const base = path.join(this.opts.config.coverTmpDir, `${batch.id}-${book.calibreId}`);
+          try {
+            // Only this sidecar writes its temp folder: a leftover from a stop is replaced.
+            for (const ext of ['jpg', 'png', 'part'])
+              await fsp.rm(`${base}.${ext}`, { force: true });
+            const part = `${base}.part`;
+            const got = await this.retry(() =>
+              this.api.downloadCover(batch.id, book.calibreId, 'cover', part)
+            );
+            if (got.sha256 && (await sha256File(part)) !== got.sha256)
+              throw new Error('The cover download is incomplete');
+            tmp = `${base}.${got.ext === 'png' ? 'png' : 'jpg'}`;
+            await fsp.rename(part, tmp);
+            fields.push(`cover:${tmp}`);
+          } catch (err) {
+            coverSkipped = `The book's cover couldn't be fetched: ${shorten((err as Error).message, 300)}`;
+          }
+        }
+      } else if (answer.oldCoverPath && (await exists(answer.oldCoverPath))) {
+        fields.push(`cover:${answer.oldCoverPath}`);
+      } else {
+        coverSkipped = "Calibre's old cover is not in the quarantine any more";
+      }
+    }
+    let error: string | null = null;
+    if (fields.length > 0) {
+      try {
+        await this.calibredb.setFields(login, book.calibreId, fields, [
+          this.opts.config.coverTmpDir,
+          this.opts.config.quarantineDir
+        ]);
+      } catch (err) {
+        if (this.stopped) throw err;
+        error = shorten((err as Error).message, 1000);
+        this.log.error(`Book ${book.calibreId}: ${error}`);
+      } finally {
+        if (tmp) await fsp.rm(tmp, { force: true }).catch(() => {});
+      }
+    }
+    return { book, error, oldCoverPath: savedOld, coverSkipped };
+  }
+
+  /**
+   * What Calibre shows after the write decides. After an error or a timeout the write may
+   * still happen (the content server keeps working after its 408): look again until it shows
+   * or the wait is over. Never written twice.
+   */
+  private async confirmBook(
+    batch: Batch,
+    login: Login,
+    a: {
+      book: Stage2Book;
+      error: string | null;
+      oldCoverPath: string | null;
+      coverSkipped: string | null;
+    },
+    current: Record<string, unknown> | null,
+    fields: string
+  ): Promise<void> {
+    const send = (cur: unknown, finalReport: boolean) =>
+      this.retry(() =>
+        this.api.writtenBook(batch.id, a.book.calibreId, {
+          current: cur,
+          error: a.error,
+          final: finalReport,
+          oldCoverPath: a.oldCoverPath,
+          coverSkipped: a.coverSkipped
+        })
+      );
+    let answer = await send(current, false);
+    if (!answer.done) {
+      const until = Date.now() + this.opts.config.writeWaitSeconds * 1000;
+      const done = await this.pollUntil(until, async () => {
+        const now =
+          (await this.calibredb.listBooks(login, [a.book.calibreId], fields)).get(
+            a.book.calibreId
+          ) ?? null;
+        const r = await send(now, false);
+        return r.done ? r : null;
+      });
+      if (done) answer = done;
+      else {
+        let last: unknown = null;
+        try {
+          last =
+            (await this.calibredb.listBooks(login, [a.book.calibreId], fields)).get(
+              a.book.calibreId
+            ) ?? null;
+        } catch {
+          // Calibre still busy: the server marks what it can't see as failed.
+        }
+        answer = await send(last, true);
+      }
+    }
+    for (const it of answer.items) {
+      const f = a.book.fields.find((x) => x.itemId === it.itemId);
+      if (f) f.state = it.state;
+    }
   }
 
   /** The metadata.db snapshot, saved into the batch folder before the first item. */

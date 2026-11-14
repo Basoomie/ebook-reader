@@ -17,6 +17,34 @@ export interface PacingSettings {
   maxBatchPercent: number;
 }
 
+/** Stage 2 (WP20b): metadata and covers from the files. */
+export interface Stage2Settings {
+  /** EPUBs read per second by the analysis (0 = no limit). */
+  filesPerSecond: number;
+  /** Pause between two books in the sidecar (seconds). */
+  itemDelaySeconds: number;
+  /** Books the sidecar reads back from Calibre with one `list` call. */
+  chunkSize: number;
+  /** Titles: correct on the labeled books (%) in each apply group. */
+  titleMinPercent: number;
+  /** Titles: at least this many points better than Calibre's current titles (per group). */
+  titleMarginPoints: number;
+  /** Authors: correct on the labeled books (%). */
+  authorsMinPercent: number;
+  /** A group with fewer labeled books than this is shown but not gated. */
+  gateMinBooks: number;
+  /** Covers up to this size (MB) pass through unchanged (JPEG/PNG). */
+  coverMaxMb: number;
+  /** Covers longer than this (px) on their longest side are scaled down (JPEG). */
+  coverMaxSide: number;
+  /** Two covers within this difference-hash distance are the same picture. */
+  coverSameDistance: number;
+  /** The file's cover counts as larger when its longest side is this much bigger (%). */
+  coverLargerPercent: number;
+  /** The labeled books (gold800.json); empty = <DB_DIR>/cleanup/reference-sample/gold800.json. */
+  referenceFile: string;
+}
+
 export interface BackupRecord {
   path: string;
   /** When the backup was verified (free text date, e.g. 2026-11-12). */
@@ -46,6 +74,7 @@ export interface CleanupSettings {
    * next batch's copies changed in Calibre since the analysis (%).
    */
   libraryChangedPausePercent: number;
+  stage2: Stage2Settings;
   backup: BackupRecord;
 }
 
@@ -76,6 +105,20 @@ export const DEFAULT_SETTINGS: CleanupSettings = {
   gateThresholdPercent: 95,
   reviewAlarmPercent: 5,
   libraryChangedPausePercent: 5,
+  stage2: {
+    filesPerSecond: 20,
+    itemDelaySeconds: 0.5,
+    chunkSize: 25,
+    titleMinPercent: 85,
+    titleMarginPoints: 20,
+    authorsMinPercent: 95,
+    gateMinBooks: 20,
+    coverMaxMb: 10,
+    coverMaxSide: 4096,
+    coverSameDistance: 5,
+    coverLargerPercent: 10,
+    referenceFile: '',
+  },
   backup: {
     path: '/mnt/user/data/backups/japanese-library-2026-11-11/',
     verifiedOn: '2026-11-12',
@@ -203,6 +246,41 @@ function validate(key: Key, value: unknown, current: CleanupSettings): unknown {
       return num('Review alarm (%)', value, 0, 100);
     case 'libraryChangedPausePercent':
       return num('Pause when copies changed in Calibre (%)', value, 0, 100);
+    case 'stage2': {
+      if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+        throw new SettingsError('Stage 2 settings must be an object');
+      }
+      for (const k of Object.keys(value)) {
+        if (!(k in DEFAULT_SETTINGS.stage2))
+          throw new SettingsError(`Unknown stage 2 setting: ${k}`);
+      }
+      const v = { ...current.stage2, ...(value as Partial<Stage2Settings>) };
+      return {
+        filesPerSecond: num('Files read per second', v.filesPerSecond, 0, 1000),
+        itemDelaySeconds: num('Pause between books (s)', v.itemDelaySeconds, 0, 600),
+        chunkSize: num('Books per read-back', v.chunkSize, 1, 100, true),
+        titleMinPercent: num('Titles: correct at least (%)', v.titleMinPercent, 50, 100),
+        titleMarginPoints: num(
+          'Titles: better than Calibre by (points)',
+          v.titleMarginPoints,
+          0,
+          100,
+        ),
+        authorsMinPercent: num('Authors: correct at least (%)', v.authorsMinPercent, 50, 100),
+        gateMinBooks: num('Smallest group checked (books)', v.gateMinBooks, 1, 800, true),
+        coverMaxMb: num('Covers passed on unchanged up to (MB)', v.coverMaxMb, 1, 32),
+        coverMaxSide: num('Longest cover side (px)', v.coverMaxSide, 500, 20000, true),
+        coverSameDistance: num(
+          'Same cover picture up to (hash distance)',
+          v.coverSameDistance,
+          0,
+          32,
+          true,
+        ),
+        coverLargerPercent: num('File cover larger by (%)', v.coverLargerPercent, 0, 500),
+        referenceFile: text('Labeled books file', v.referenceFile, 1000),
+      };
+    }
     case 'backup': {
       if (typeof value !== 'object' || value === null)
         throw new SettingsError('Backup must be an object');

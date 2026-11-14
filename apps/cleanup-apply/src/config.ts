@@ -33,6 +33,13 @@ export interface SidecarConfig {
   removeWaitSeconds: number;
   /** While waiting for Calibre (Undo, a timed-out remove): how often to look (s). */
   waitPollSeconds: number;
+  /**
+   * Stage 2: how long to wait for Calibre to show a book's new values after the write failed
+   * or timed out (s). The write is never sent twice in a batch.
+   */
+  writeWaitSeconds: number;
+  /** Stage 2: where a cover from the server is kept while calibredb sends it (inside the container). */
+  coverTmpDir: string;
 }
 
 export class ConfigError extends Error {}
@@ -64,6 +71,8 @@ export function loadConfig(env: Record<string, string | undefined>): SidecarConf
     requestTimeoutSeconds: num(env, 'REQUEST_TIMEOUT_SECONDS', 60),
     trashRestoreWaitSeconds: num(env, 'TRASH_RESTORE_WAIT_SECONDS', 3600),
     removeWaitSeconds: num(env, 'REMOVE_WAIT_SECONDS', 600),
-    waitPollSeconds: num(env, 'WAIT_POLL_SECONDS', 15)
+    waitPollSeconds: num(env, 'WAIT_POLL_SECONDS', 15),
+    writeWaitSeconds: num(env, 'WRITE_WAIT_SECONDS', 600),
+    coverTmpDir: env.COVER_TMP_DIR ?? '/tmp/ttsu-covers'
   };
 }
