@@ -20,6 +20,7 @@
   import AppHeader from '$lib/components/app-nav/app-header.svelte';
   import CataloguePageHeader from '$lib/components/catalogue-page-header.svelte';
   import CleanupBatches from '$lib/components/cleanup/cleanup-batches.svelte';
+  import CleanupSection from '$lib/components/cleanup/cleanup-section.svelte';
   import CopyRow from '$lib/components/cleanup/cleanup-copy-row.svelte';
   import CleanupSettings from '$lib/components/cleanup/cleanup-settings.svelte';
   import SettingsSection from '$lib/components/settings/settings-section.svelte';
@@ -39,6 +40,7 @@
     pauseTitle,
     precisionLine,
     applyProgress,
+    countsLine,
     stage1Lines,
     stage1Progress,
     type ProgressBar
@@ -219,6 +221,17 @@
     }
   }
 
+  const FOUND_LABELS: Record<string, string> = {
+    proposed: 'To remove',
+    applied: 'Removed',
+    undone: 'Brought back',
+    skipped: 'Skipped',
+    '': 'All'
+  };
+  function foundLabel(state: string): string {
+    return FOUND_LABELS[state] ?? state;
+  }
+
   function checkMark(ok: boolean, required: boolean): string {
     if (ok) return '✓';
     return required ? '✗' : '–';
@@ -345,21 +358,10 @@
             {:else if status.waiting && stage1.mode !== 'off'}
               <p class="text-sm text-c-muted" data-testid="cleanup-waiting">{status.waiting}</p>
             {/if}
-            <p class="text-sm text-c-muted">
-              Removed so far: {n(status.stage1.counts.applied ?? 0)} · waiting: {n(
-                status.stage1.counts.proposed ?? 0
-              )} · brought back: {n(status.stage1.counts.undone ?? 0)}
-              {#if status.stage1.counts.skipped}· skipped: {n(status.stage1.counts.skipped)}{/if}
-            </p>
-            {#if status.stage1.skipReasons?.length}
-              <div class="text-sm" data-testid="cleanup-skip-reasons">
-                <span class="font-medium">Why copies were skipped:</span>
-                <ul class="list-disc pl-5">
-                  {#each status.stage1.skipReasons as r (r.reason)}
-                    <li>{n(r.count)}: {r.reason}</li>
-                  {/each}
-                </ul>
-              </div>
+            {#if countsLine(status.stage1.counts)}
+              <p class="text-sm text-c-muted" data-testid="cleanup-counts">
+                {countsLine(status.stage1.counts)}
+              </p>
             {/if}
           </div>
         {/if}
@@ -405,8 +407,13 @@
         </p>
       </section>
 
-      <section class="mt-10 flex flex-col gap-3" data-testid="cleanup-found">
-        <SettingsSection jp="重複" title="Identical copies" />
+      <CleanupSection
+        id="found"
+        jp="重複"
+        title="Identical copies"
+        summary={found ? `${n(found.total)} ${foundLabel(foundState).toLowerCase()}` : ''}
+        testid="cleanup-found"
+      >
         <div class="flex flex-wrap items-center gap-2">
           <label class="flex items-center gap-2 text-sm">
             Show
@@ -446,10 +453,15 @@
             </div>
           {/if}
         {/if}
-      </section>
+      </CleanupSection>
 
-      <section class="mt-10 flex flex-col gap-3" data-testid="cleanup-review">
-        <SettingsSection jp="確認待ち" title="Review" />
+      <CleanupSection
+        id="review"
+        jp="確認待ち"
+        title="Review"
+        summary={review && review.total > 0 ? `${n(review.total)} to look at` : 'nothing to review'}
+        testid="cleanup-review"
+      >
         {#if !review || review.total === 0}
           <p class="text-sm text-c-muted">
             Nothing to review. (Identical copies never need review; later stages add their questions
@@ -472,24 +484,35 @@
             {/each}
           </ul>
         {/if}
-      </section>
+      </CleanupSection>
 
-      <section class="mt-10 flex flex-col gap-3">
-        <SettingsSection jp="一括処理" title="Batches" />
+      <CleanupSection
+        id="batches"
+        jp="一括処理"
+        title="Batches"
+        summary={batches.length ? `${n(batches.length)}` : 'none yet'}
+        testid="cleanup-batches-section"
+      >
         {#if api}
           <CleanupBatches {api} {batches} on:changed={refresh} />
         {/if}
-      </section>
+      </CleanupSection>
 
-      <section class="mt-10 flex flex-col gap-3" data-testid="cleanup-spot">
-        <SettingsSection jp="抜き取り検査" title="Spot check" />
+      <CleanupSection id="spot" jp="抜き取り検査" title="Spot check" testid="cleanup-spot">
         <p class="max-w-prose text-sm text-c-muted">
           Optional: 30 random copies that were removed, to look at by hand.
         </p>
-        <div>
+        <div class="flex flex-wrap gap-2">
           <button class="c-btn c-btn-secondary" on:click={loadSpot}
-            >Show 30 random removed copies</button
+            >{spot ? 'Show 30 others' : 'Show 30 random removed copies'}</button
           >
+          {#if spot}
+            <button
+              class="c-btn c-btn-ghost"
+              data-testid="cleanup-spot-hide"
+              on:click={() => (spot = null)}>Hide</button
+            >
+          {/if}
         </div>
         {#if spot}
           {#if spot.length === 0}
@@ -502,7 +525,7 @@
             </ul>
           {/if}
         {/if}
-      </section>
+      </CleanupSection>
     {:else}
       <section class="mt-6 flex flex-col gap-3" data-testid="cleanup-settings-tab">
         <SettingsSection jp="設定" title="Settings" />

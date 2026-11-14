@@ -159,6 +159,21 @@ export function paceEta(
   return etaText((left * span) / pace.removed);
 }
 
+/**
+ * Stage 1's copies in one line, leaving out what is zero: "Removed: 3,699 · skipped: 1"
+ * ("" when there is nothing yet).
+ */
+export function countsLine(counts: Record<string, number>): string {
+  const parts: string[] = [];
+  if (counts.applied) parts.push(`Removed: ${n(counts.applied)}`);
+  const waiting = (counts.proposed ?? 0) + (counts.queued ?? 0);
+  if (waiting) parts.push(`to remove: ${n(waiting)}`);
+  if (counts.undone) parts.push(`brought back: ${n(counts.undone)}`);
+  if (counts.skipped) parts.push(`skipped: ${n(counts.skipped)}`);
+  const line = parts.join(' · ');
+  return line.charAt(0).toUpperCase() + line.slice(1);
+}
+
 /** The lines under stage 1's name: where the analysis is, and what it found. */
 export function stage1Lines(stage: CleanupStage): string[] {
   const p = stage.progress as Record<string, unknown>;

@@ -13,6 +13,7 @@ import {
   precisionLine,
   restoreText,
   applyProgress,
+  countsLine,
   etaText,
   stage1Lines,
   stage1Progress,
@@ -106,6 +107,17 @@ describe('cleanup wording', () => {
       stage1Progress(stage({ phase: 'stat', statDone: 1, statTotal: 2 }, { mode: 'off' }))
     ).toBeNull();
     expect(stage1Lines(stage({ phase: 'stat', statDone: 1, statTotal: 2 }))).toEqual([]);
+  });
+
+  it('says the copies in one line, without the zeros', () => {
+    expect(countsLine({ applied: 3699, skipped: 1, proposed: 0, undone: 0 })).toBe(
+      'Removed: 3,699 · skipped: 1'
+    );
+    expect(countsLine({ proposed: 5 })).toBe('To remove: 5');
+    expect(countsLine({ applied: 2, proposed: 1, queued: 2, undone: 1 })).toBe(
+      'Removed: 2 · to remove: 3 · brought back: 1'
+    );
+    expect(countsLine({})).toBe('');
   });
 
   it('shows removing the copies as a progress bar', () => {

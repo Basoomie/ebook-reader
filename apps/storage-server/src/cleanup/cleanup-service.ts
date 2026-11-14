@@ -476,18 +476,15 @@ export class CleanupService {
     const { batch, reason } = await this.batches.planStage1(target, () => this.stopped);
     this.waiting = batch
       ? 'A batch is being applied'
-      : (reason ?? (this.remaining(target) === 0 ? this.doneText(target) : null));
+      : (reason ?? (this.remaining(target) === 0 ? this.doneText() : null));
   }
 
-  /** The line once nothing is left to remove: says plainly when copies were skipped. */
-  private doneText(target: string): string {
-    const c = this.stage1Counts(target);
-    const skipped = c.skipped ?? 0;
-    if (skipped === 0) return 'Done: every copy found has been removed';
-    return (
-      `Nothing left to remove: ${(c.applied ?? 0).toLocaleString('en-US')} removed, ` +
-      `${skipped.toLocaleString('en-US')} skipped (the reasons are listed below)`
-    );
+  /**
+   * The line once nothing is left to remove. The page shows the counts right below it, and
+   * each skipped copy's reason in the Identical copies list (Skipped).
+   */
+  private doneText(): string {
+    return 'Done: nothing left to remove';
   }
 
   private remaining(target: string): number {
