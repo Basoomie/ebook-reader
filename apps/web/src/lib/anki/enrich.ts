@@ -4,7 +4,7 @@
  * All rights reserved.
  */
 
-import { AnkiConnectError, type AnkiConnect, type NoteInfo } from './anki-connect';
+import type { AnkiConnect, NoteInfo } from './anki-connect';
 import { mergeField } from './field-merge';
 import { ENRICH_ROLES, ROLE_LABELS, type EnrichMapping, type EnrichRole } from './mapping';
 import type { Sentence } from './sentence';
@@ -14,7 +14,12 @@ import type { Sentence } from './sentence';
  * Anki. Always the book-title tag; then, as the note type's mapping says, the sentence,
  * sentence audio, cover and link. Fields are filled if empty or appended to, never
  * overwritten. Media is only fetched and stored when its field will change.
+ *
+ * AnkiConnect Android: fields name the media as it stored them (it renames every file), and
+ * the tag is left out with the reason (it can't add tags to an existing note).
  */
+
+export const ANDROID_NO_TAG = "AnkiConnect Android can't add tags to a card that already exists";
 
 export interface MediaFile {
   fileName: string;
@@ -89,6 +94,35 @@ function isUnavailable(value: unknown): value is Unavailable {
   return !!value && typeof value === 'object' && 'skip' in value;
 }
 
+type MediaKind = 'image' | 'sound';
+
+/** The field value that shows or plays a stored media file. */
+function mediaValue(kind: MediaKind, fileName: string): string {
+  return kind === 'image' ? `<img src="${fileName}">` : `[sound:${fileName}]`;
+}
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Whether a field already shows or plays this file: under the asked-for name, or under the
+ * name AnkiConnect Android stores it as. AnkiConnect Android passes the name without its
+ * extension to AnkiDroid, which stores `<name>_<random number>.<ext>` on every store.
+ */
+export function holdsMedia(html: string, kind: MediaKind, fileName: string): boolean {
+  const dot = fileName.indexOf('.');
+  const stem = escapeRegExp(dot < 0 ? fileName : fileName.slice(0, dot));
+  const ext = dot < 0 ? '' : escapeRegExp(fileName.slice(dot));
+  const name = `${stem}(?:_\\d+)?${ext}`;
+  const pattern =
+    kind === 'image'
+      ? new RegExp(`<img\\b[^>]*\\ssrc="${name}"`, 'i')
+      : new RegExp(`\\[sound:${name}\\]`);
+
+  return pattern.test(html);
+}
+
 export async function enrichLastCard(anki: AnkiConnect, input: EnrichInput): Promise<EnrichResult> {
   let note: NoteInfo | null;
 
@@ -122,7 +156,7 @@ export async function enrichLastCard(anki: AnkiConnect, input: EnrichInput): Pro
   result.unmapped = roles.length === 0;
 
   // What each mapped role would put in (media are resolved by name; bytes come later).
-  const wanted = new Map<EnrichRole, { value: string; file?: MediaFile }>();
+  const wanted = new Map<EnrichRole, { value: string; file?: MediaFile; kind?: MediaKind }>();
 
   for (const role of roles) {
     const label = ROLE_LABELS[role].toLowerCase();
@@ -138,7 +172,12 @@ export async function enrichLastCard(anki: AnkiConnect, input: EnrichInput): Pro
       } else if (role === 'cover') {
         const cover = await input.cover();
         if (isUnavailable(cover)) result.skipped.push({ what: label, reason: cover.skip });
-        else wanted.set(role, { value: `<img src="${cover.fileName}">`, file: cover });
+        else
+          wanted.set(role, {
+            value: mediaValue('image', cover.fileName),
+            file: cover,
+            kind: 'image'
+          });
       } else if (role === 'sentenceAudio') {
         if (!input.sentence) {
           result.skipped.push({ what: label, reason: input.noSentenceReason ?? 'no sentence' });
@@ -147,7 +186,12 @@ export async function enrichLastCard(anki: AnkiConnect, input: EnrichInput): Pro
 
         const audio = await input.audio(input.sentence);
         if (isUnavailable(audio)) result.skipped.push({ what: label, reason: audio.skip });
-        else wanted.set(role, { value: `[sound:${audio.fileName}]`, file: audio });
+        else
+          wanted.set(role, {
+            value: mediaValue('sound', audio.fileName),
+            file: audio,
+            kind: 'sound'
+          });
       }
     } catch (error) {
       result.skipped.push({ what: label, reason: (error as Error)?.message ?? String(error) });
@@ -162,7 +206,7 @@ export async function enrichLastCard(anki: AnkiConnect, input: EnrichInput): Pro
     const kept: EnrichRole[] = [];
     const missing: EnrichRole[] = [];
 
-    for (const [role, { value }] of wanted) {
+    for (const [role, { value, file, kind }] of wanted) {
       const target = mapping[role]!;
 
       if (!values.has(target.field)) {
@@ -170,7 +214,15 @@ export async function enrichLastCard(anki: AnkiConnect, input: EnrichInput): Pro
         continue;
       }
 
-      const next = mergeField(values.get(target.field) ?? '', value, target.mode);
+      const existing = values.get(target.field) ?? '';
+
+      // The same file under the name AnkiConnect Android gave it is already there too.
+      if (file && kind && holdsMedia(existing, kind, file.fileName)) {
+        kept.push(role);
+        continue;
+      }
+
+      const next = mergeField(existing, value, target.mode);
 
       if (next === null) {
         kept.push(role);
@@ -184,14 +236,18 @@ export async function enrichLastCard(anki: AnkiConnect, input: EnrichInput): Pro
     return { updates, added, kept, missing };
   };
 
-  // Store the media whose field changes; a file that can't be stored is left out.
+  // Store the media whose field changes; a file that can't be stored is left out. The field
+  // gets the name AnkiConnect stored the file under: desktop AnkiConnect keeps the name,
+  // AnkiConnect Android renames every file it stores.
   for (const role of plan().added) {
-    const file = wanted.get(role)?.file;
+    const entry = wanted.get(role);
+    const file = entry?.file;
 
-    if (!file) continue;
+    if (!entry || !file || !entry.kind) continue;
 
     try {
-      await anki.storeMedia(file.fileName, await file.load());
+      const stored = await anki.storeMedia(file.fileName, await file.load());
+      entry.value = mediaValue(entry.kind, stored);
     } catch (error) {
       wanted.delete(role);
       result.skipped.push({
@@ -214,12 +270,16 @@ export async function enrichLastCard(anki: AnkiConnect, input: EnrichInput): Pro
   }
 
   const tag = input.titleTag(input.title, input.tagPrefix);
-  const addTag = !!tag && !note.tags.includes(tag);
+  const tagMissing = !!tag && !note.tags.includes(tag);
+  // AnkiConnect Android has no action that adds tags to an existing note.
+  const addTag = tagMissing && !anki.isAndroid;
 
   if (!tag) {
     result.skipped.push({ what: 'tag', reason: 'the book has no title' });
-  } else if (!addTag) {
+  } else if (!tagMissing) {
     result.kept.push('tag');
+  } else if (!addTag) {
+    result.skipped.push({ what: 'tag', reason: ANDROID_NO_TAG });
   }
 
   // Anki's editor keeps the note it shows and saves it back, so a Browse window showing the
@@ -244,13 +304,7 @@ export async function enrichLastCard(anki: AnkiConnect, input: EnrichInput): Pro
         await anki.addTags(note.noteId, tag);
         result.added.unshift('tag');
       } catch (error) {
-        result.skipped.push({
-          what: 'tag',
-          reason:
-            anki.isAndroid && error instanceof AnkiConnectError
-              ? 'AnkiConnect Android did not add it'
-              : ((error as Error)?.message ?? String(error))
-        });
+        result.skipped.push({ what: 'tag', reason: (error as Error)?.message ?? String(error) });
       }
     }
   } finally {
