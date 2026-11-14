@@ -70,8 +70,10 @@
   }
 
   /**
-   * Floating: under (or above) the button, kept 8 px inside the window. Above only when it
-   * fits below the page's fixed header (app-header.svelte), which is drawn over the panel.
+   * Floating: under the button, or above it when there is no room below, kept 8 px inside
+   * the window and clear of the page's fixed header (app-header.svelte), which is drawn over
+   * the panel. When it fits on neither side (a phone held sideways), it goes on the side with
+   * more room, as far in as the window allows.
    */
   function place() {
     const b = button.getBoundingClientRect();
@@ -81,9 +83,13 @@
     left = Math.max(8, Math.min(left, window.innerWidth - width - 8));
     const header = document.querySelector('[data-app-header]')?.getBoundingClientRect().bottom;
     const minTop = Math.max(8, header ? header + 4 : 0);
+    const maxBottom = window.innerHeight - 8;
     let top = b.bottom + 4;
-    if (height && top + height > window.innerHeight - 8 && b.top - height - 4 >= minTop) {
-      top = b.top - height - 4;
+    if (height && top + height > maxBottom) {
+      const above = b.top - height - 4;
+      if (above >= minTop) top = above;
+      else if (b.top - 4 - minTop > maxBottom - top) top = minTop;
+      else top = Math.max(minTop, maxBottom - height);
     }
     floatStyle = `position: fixed; left: ${left}px; top: ${top}px;`;
   }
