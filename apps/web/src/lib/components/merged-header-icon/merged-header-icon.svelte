@@ -8,6 +8,7 @@
   import { baseIconClasses } from '$lib/css-classes';
   import { pagePath } from '$lib/data/env';
   import { dummyFn } from '$lib/functions/utils';
+  import type { Placement } from '@popperjs/core';
 
   export let leavePageLink = '';
   export let items = [mergeEntries.MANAGE, mergeEntries.SETTINGS, mergeEntries.BUG_REPORT];
@@ -19,6 +20,13 @@
    * Their labels are dispatched like any other entry.
    */
   export let compactOnlyItems: { label: string; title: string }[] = [];
+  /**
+   * Where the collapsed menu opens. The reader passes `bottom-end` and no fallbacks, so
+   * Popper's flip never picks the side: on the user's phone it judged the centred menu to
+   * fit although it ran past the right edge (2026-11-14; not reproduced on the PC).
+   */
+  export let placement: Placement = 'bottom';
+  export let fallbackPlacements: Placement[] = ['bottom-end', 'bottom-start'];
 
   const dispatch = createEventDispatcher<{ action: string }>();
 
@@ -73,12 +81,7 @@
     {/each}
   </div>
   <div class="flex sm:hidden">
-    <Popover
-      placement="bottom"
-      fallbackPlacements={['bottom-end', 'bottom-start']}
-      yOffset={0}
-      bind:this={menuElm}
-    >
+    <Popover {placement} {fallbackPlacements} yOffset={0} bind:this={menuElm}>
       <div slot="icon" class={baseIconClasses}>
         <Fa icon={mergeTo.icon} />
       </div>

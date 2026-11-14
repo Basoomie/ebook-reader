@@ -355,10 +355,13 @@
         <Fa icon={faExpand} />
       </div>
     {/if}
+    <!-- The menu button is the header's last control: open leftwards from its right edge. -->
     <MergedHeaderIcon
       disableRouteNavigation
       items={menuItems}
       {compactOnlyItems}
+      placement="bottom-end"
+      fallbackPlacements={[]}
       on:action={({ detail }) => {
         if (compactActions[detail]) {
           dispatch(compactActions[detail]);
