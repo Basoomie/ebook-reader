@@ -35,6 +35,8 @@ const version = process.env.FAKE_VERSION || '9.18.0';
 const libraryId = process.env.FAKE_LIBRARY_ID || 'japanese-library';
 
 if (process.env.FAKE_LOG) fs.appendFileSync(process.env.FAKE_LOG, JSON.stringify(argv) + '\n');
+// FAKE_TIMES: when each call started (ms) and its subcommand, for pacing tests.
+if (process.env.FAKE_TIMES) fs.appendFileSync(process.env.FAKE_TIMES, `${Date.now()} ${argv[0]}\n`);
 
 function fail(msg, code = 1) {
   process.stderr.write(msg + '\n');

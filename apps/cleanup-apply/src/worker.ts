@@ -436,7 +436,8 @@ export class Worker {
         if (this.stopped) return;
         const a = await this.writeBook(batch, login, book, before.get(book.calibreId) ?? null);
         if (a) attempted.push(a);
-        if (this.itemDelayMs > 0 && a) await sleep(this.itemDelayMs);
+        // Stage 2's own pause (its setting comes with the batch; the heartbeat's is stage 1's).
+        if (a && batch.itemDelaySeconds > 0) await sleep(batch.itemDelaySeconds * 1000);
       }
       if (attempted.length === 0) continue;
       const after = await this.listChunk(

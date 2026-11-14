@@ -223,6 +223,7 @@ describe('stage 2: metadata and covers from the files', () => {
         FAKE_VERSION: '9.18.0',
         FAKE_ILLUSTRATOR: '1',
         FAKE_LOG: log,
+        FAKE_TIMES: `${log}.times`,
         FAKE_SET_TIMEOUT: extra.setTimeout ?? '',
       },
     });
@@ -483,6 +484,26 @@ describe('stage 2: metadata and covers from the files', () => {
     const t = proposals('title').find((r) => r.calibre_id === ids.B5)!;
     expect(t.state).toBe('skipped');
     expect(t.review_reason).toContain('Changed in Calibre since the analysis');
+  });
+
+  it("waits stage 2's own pause between books (not stage 1's)", async () => {
+    await request(env.app)
+      .put('/api/v1/cleanup/settings')
+      .set(auth(user))
+      .send({ pacing: { itemDelaySeconds: 0 }, stage2: { itemDelaySeconds: 0.4, chunkSize: 25 } })
+      .expect(200);
+    await setMode('on');
+    await runAll(worker());
+    const writes = fs
+      .readFileSync(`${log}.times`, 'utf8')
+      .trim()
+      .split('\n')
+      .map((l) => l.split(' '))
+      .filter(([, cmd]) => cmd === 'set_metadata')
+      .map(([t]) => Number(t));
+    expect(writes.length).toBeGreaterThan(3);
+    const gaps = writes.slice(1).map((t, i) => t - writes[i]);
+    expect(Math.min(...gaps)).toBeGreaterThanOrEqual(380);
   });
 
   it('a write that times out but happens is recorded once; one that never happens fails after the wait, never sent twice', async () => {
