@@ -279,6 +279,9 @@ function authorProposals(
   else if (looksLikeImprint(first))
     fileProblem = "The file's author looks like a publisher or label";
   else if (first.includes('&')) fileProblem = "The file's author contains &, which Calibre splits";
+  // Seen in the dry run (326 books, 1 of 5 labeled right): author and illustrator in one
+  // creator, "あずみ圭/マツモトミツアキ", "原作:志倉千代丸/MAGES./Nitroplus".
+  else if (/[/／、，,]/u.test(first)) fileProblem = "The file's author holds more than one name";
 
   if (first === undefined) {
     normalizeOwn();

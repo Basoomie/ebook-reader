@@ -244,6 +244,25 @@ describe('apply classes (D6)', () => {
     ).toEqual([]);
   });
 
+  it('a file author holding two names ("A/B") goes to review', () => {
+    for (const name of [
+      'あずみ圭/マツモトミツアキ',
+      '原作:志倉千代丸/MAGES./Nitroplus',
+      '甲、乙',
+    ]) {
+      const p = proposeStage2(
+        cal({ tags: ['metadata-processed'], authors: ['あずみ圭'] }),
+        file({ creators: [{ name, role: 'aut' }] }),
+      );
+      expect(
+        byField(p, 'authors').filter((x) => x.class === 'auto' && x.source === 'file-unconfirmed'),
+      ).toEqual([]);
+      expect(byField(p, 'authors').find((x) => x.class === 'review')?.reason).toContain(
+        'more than one name',
+      );
+    }
+  });
+
   it('translators and editors are never authors; role "none" counts as an author', () => {
     const p = proposeStage2(
       cal(),
