@@ -61,8 +61,12 @@ describe('settings', () => {
     const state = initCleanupDatabase(makeTempDir('db'));
     if (!state.ok) throw new Error(state.error);
     const db = state.db;
-    expect(getSettings(db).pacing.batchSize).toBe(200);
-    expect(getSettings(db).gateThresholdPercent).toBe(95);
+    expect(getSettings(db).pacing.batchSize).toBe(500);
+    expect(getSettings(db).pacing.itemDelaySeconds).toBe(0);
+    expect(getSettings(db).gate.defaultPercent).toBe(95);
+    expect(getSettings(db).gate.fieldPercent).toEqual({ title: 85 });
+    expect(() => updateSettings(db, { gate: { fieldPercent: { colour: 90 } } })).toThrow(/field/);
+    expect(() => updateSettings(db, { stage2: {} })).toThrow(/Unknown setting/);
     expect(() => updateSettings(db, { pacing: { batchSize: 501 } })).toThrow(/Batch size/);
     expect(() => updateSettings(db, { contentServerUrl: 'ftp://x' })).toThrow(/http/);
     expect(() => updateSettings(db, { contentServerUrl: 'http://h:8083/#lib' })).toThrow(
@@ -75,6 +79,98 @@ describe('settings', () => {
     });
     expect(s.contentServerUrl).toBe('http://192.168.1.5:8083');
     expect(s.pacing).toEqual({ ...getSettings(db).pacing, batchSize: 3 });
+    db.close();
+  });
+
+  it('carries over settings stored in the earlier per-stage shape', () => {
+    const state = initCleanupDatabase(makeTempDir('db'));
+    if (!state.ok) throw new Error(state.error);
+    const db = state.db;
+    const put = db.prepare('INSERT INTO settings (key, value_json, updated_at) VALUES (?, ?, 1)');
+    // What the WP20b page stored on the NAS: every field, old defaults, plus one own value.
+    put.run(
+      'pacing',
+      JSON.stringify({
+        hashMbPerSecond: 40,
+        itemDelaySeconds: 2,
+        batchSize: 200,
+        maxBatchPercent: 3,
+      }),
+    );
+    put.run('gateThresholdPercent', '95');
+    put.run(
+      'stage2',
+      JSON.stringify({
+        filesPerSecond: 20,
+        itemDelaySeconds: 0.5,
+        chunkSize: 30,
+        titleMinPercent: 85,
+        titleMarginPoints: 20,
+        authorsMinPercent: 95,
+        gateMinBooks: 20,
+        coverMaxMb: 12,
+        coverMaxSide: 4096,
+        coverSameDistance: 5,
+        coverLargerPercent: 10,
+        referenceFile: '/db/x.json',
+      }),
+    );
+    const want = {
+      pacing: {
+        readMbPerSecond: 40,
+        itemDelaySeconds: 0,
+        batchSize: 500,
+        maxBatchPercent: 3,
+        lookupChunk: 30,
+      },
+      gate: {
+        defaultPercent: 95,
+        fieldPercent: { title: 85 },
+        marginPoints: 20,
+        minBooks: 20,
+        labeledBooksFile: '/db/x.json',
+      },
+      covers: { maxMb: 12, maxSide: 4096, sameDistance: 5, largerPercent: 10 },
+    };
+    expect(getSettings(db)).toMatchObject(want);
+    // A stored own value (not the old default) is kept.
+    db.prepare("UPDATE settings SET value_json = ? WHERE key = 'pacing'").run(
+      JSON.stringify({
+        hashMbPerSecond: 20,
+        itemDelaySeconds: 1,
+        batchSize: 50,
+        maxBatchPercent: 3,
+      }),
+    );
+    expect(getSettings(db).pacing).toMatchObject({
+      readMbPerSecond: 20,
+      itemDelaySeconds: 1,
+      batchSize: 50,
+    });
+    db.prepare("UPDATE settings SET value_json = ? WHERE key = 'pacing'").run(
+      JSON.stringify({
+        hashMbPerSecond: 40,
+        itemDelaySeconds: 2,
+        batchSize: 200,
+        maxBatchPercent: 3,
+      }),
+    );
+    // Saving anything stores today's shape and drops the old keys.
+    updateSettings(db, { reviewAlarmPercent: 6 });
+    const keys = (db.prepare('SELECT key FROM settings').all() as { key: string }[]).map(
+      (r) => r.key,
+    );
+    expect(keys).not.toContain('stage2');
+    expect(keys).not.toContain('gateThresholdPercent');
+    expect(getSettings(db)).toMatchObject({ ...want, reviewAlarmPercent: 6 });
+    const pacing = JSON.parse(
+      (
+        db.prepare("SELECT value_json FROM settings WHERE key = 'pacing'").get() as {
+          value_json: string;
+        }
+      ).value_json,
+    ) as Record<string, unknown>;
+    expect(pacing).not.toHaveProperty('hashMbPerSecond');
     db.close();
   });
 

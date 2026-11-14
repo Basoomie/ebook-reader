@@ -821,7 +821,7 @@ export class CleanupService {
         skipReasons: this.stage1SkipReasons(target),
         pace: this.stage1Pace(now),
         openBatch: this.batches.open(),
-        awaitingIngest: this.batches.awaitingIngest(),
+        awaitingIngest: this.batches.awaitingIngest(1),
       },
       stage2: {
         waiting: this.waiting2,

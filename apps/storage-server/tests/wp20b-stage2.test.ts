@@ -12,6 +12,7 @@ import path from 'path';
 import request from 'supertest';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { Calibredb, buildArgs } from '../../cleanup-apply/src/calibredb';
+import { CalibredbHelper } from '../../cleanup-apply/src/calibredb-helper';
 import type { SidecarConfig } from '../../cleanup-apply/src/config';
 import { Worker } from '../../cleanup-apply/src/worker';
 import { listFieldPauses } from '../src/cleanup/stage2-gate';
@@ -29,6 +30,7 @@ import {
 } from './helpers/stage2-fixture';
 
 const FAKE = path.resolve(__dirname, 'fixtures', 'wp20a', 'fake-calibredb.cjs');
+const FAKE_HELPER = path.resolve(__dirname, 'fixtures', 'wp20a', 'fake-calibredb-helper.cjs');
 const PASSWORD = 'calibre-test-password';
 const quiet = { info: () => {}, error: () => {} };
 const auth = (t: string) => ({ Authorization: `Bearer ${t}` });
@@ -172,14 +174,14 @@ describe('stage 2: metadata and covers from the files', () => {
       .send({
         contentServerUrl: `http://127.0.0.1:${cport}`,
         calibreUsername: 'u',
-        pacing: { itemDelaySeconds: 0, batchSize: 500, maxBatchPercent: 10 },
-        stage2: {
-          filesPerSecond: 0,
+        pacing: {
           itemDelaySeconds: 0,
-          chunkSize: 2,
-          gateMinBooks: 1,
-          referenceFile: goldFile,
+          batchSize: 500,
+          maxBatchPercent: 10,
+          readMbPerSecond: 0,
+          lookupChunk: 2,
         },
+        gate: { minBooks: 1, labeledBooksFile: goldFile },
       })
       .expect(200);
     await request(env.app)
@@ -195,8 +197,22 @@ describe('stage 2: metadata and covers from the files', () => {
     await env.close();
   });
 
+  const helpers: CalibredbHelper[] = [];
+  afterEach(() => {
+    for (const h of helpers.splice(0)) h.stop();
+  });
+
+  /**
+   * The sidecar with the stand-in calibredb. Like on the NAS, list and set_metadata go
+   * through the long-lived helper (its stand-in) unless `helper` says otherwise.
+   */
   function worker(
-    extra: { setTimeout?: 'after' | 'never'; wait?: number; fetchImpl?: typeof fetch } = {},
+    extra: {
+      setTimeout?: 'after' | 'never';
+      wait?: number;
+      fetchImpl?: typeof fetch;
+      helper?: 'on' | 'off' | 'fail-start' | { dieAfterWrites: number };
+    } = {},
   ) {
     const config: SidecarConfig = {
       serverUrl: (env as unknown as { url: string }).url,
@@ -226,6 +242,7 @@ describe('stage 2: metadata and covers from the files', () => {
         FAKE_TIMES: `${log}.times`,
         FAKE_SET_TIMEOUT: extra.setTimeout ?? '',
       },
+      helper: helperFor(extra.helper ?? 'on', extra.setTimeout),
     });
     return new Worker({
       config,
@@ -236,6 +253,37 @@ describe('stage 2: metadata and covers from the files', () => {
       fetchImpl: extra.fetchImpl,
     });
   }
+
+  function helperFor(
+    mode: 'on' | 'off' | 'fail-start' | { dieAfterWrites: number },
+    setTimeoutMode?: string,
+  ): CalibredbHelper | null {
+    if (mode === 'off') return null;
+    const h = new CalibredbHelper({
+      program: process.execPath,
+      args: [FAKE_HELPER],
+      startTimeoutMs: 10_000,
+      env: {
+        FAKE_CALIBRE_LIBRARY: env.lib.dir,
+        FAKE_PASSWORD: PASSWORD,
+        FAKE_VERSION: '9.18.0',
+        FAKE_ILLUSTRATOR: '1',
+        FAKE_LOG: log,
+        FAKE_TIMES: `${log}.times`,
+        FAKE_SET_TIMEOUT: setTimeoutMode ?? '',
+        FAKE_HELPER_LOG: `${log}.helper`,
+        FAKE_HELPER_FAIL_START: mode === 'fail-start' ? '1' : '',
+        FAKE_HELPER_DIE_AFTER_WRITES: typeof mode === 'object' ? String(mode.dieAfterWrites) : '',
+      },
+    });
+    helpers.push(h);
+    return h;
+  }
+
+  const helperCalls = () =>
+    fs.existsSync(`${log}.helper`)
+      ? fs.readFileSync(`${log}.helper`, 'utf8').trim().split(/\r?\n/).filter(Boolean)
+      : [];
 
   async function setMode(mode: 'analyse' | 'on') {
     await request(env.app)
@@ -256,7 +304,7 @@ describe('stage 2: metadata and covers from the files', () => {
       const r = await w.cycle();
       await env.index();
       await env.service.tick();
-      if (r === 'idle' && !env.service.batches.open() && !env.service.batches.awaitingIngest()) {
+      if (r === 'idle' && !env.service.batches.open() && !env.service.batches.awaitingIngest(2)) {
         const left = env.service.stage2BooksLeft(env.libraryId());
         if (left === 0 || (await env.service.batches.open()) === null) {
           if (left === 0) return;
@@ -486,11 +534,11 @@ describe('stage 2: metadata and covers from the files', () => {
     expect(t.review_reason).toContain('Changed in Calibre since the analysis');
   });
 
-  it("waits stage 2's own pause between books (not stage 1's)", async () => {
+  it('waits the pause between books from the batch it works on', async () => {
     await request(env.app)
       .put('/api/v1/cleanup/settings')
       .set(auth(user))
-      .send({ pacing: { itemDelaySeconds: 0 }, stage2: { itemDelaySeconds: 0.4, chunkSize: 25 } })
+      .send({ pacing: { itemDelaySeconds: 0.4, lookupChunk: 25 } })
       .expect(200);
     await setMode('on');
     await runAll(worker());
@@ -504,6 +552,45 @@ describe('stage 2: metadata and covers from the files', () => {
     expect(writes.length).toBeGreaterThan(3);
     const gaps = writes.slice(1).map((t, i) => t - writes[i]);
     expect(Math.min(...gaps)).toBeGreaterThanOrEqual(380);
+  });
+
+  it("batches follow one another without the reader's index (no hold, no wait), and the index checks them afterwards", async () => {
+    await request(env.app)
+      .put('/api/v1/cleanup/settings')
+      .set(auth(user))
+      .send({ pacing: { batchSize: 2 } })
+      .expect(200);
+    await setMode('on');
+    const w = worker();
+    await w.cycle(); // heartbeat and safety checks
+    await env.service.tick();
+    const first = env.service.batches.open()!;
+    expect(first.stage).toBe(2);
+    await w.cycle(); // claims it
+    // A claimed stage-2 batch doesn't hold the reader's index (stage 1's does).
+    expect(env.service.holdsIngest(env.libraryId())).toBe(false);
+    for (let i = 0; i < 10 && env.service.batches.get(first.id)!.finishedAt === null; i++)
+      await w.cycle();
+    expect(env.service.batches.get(first.id)!.finishedAt).not.toBeNull();
+    // Not indexed yet: the next batch is planned anyway.
+    await env.service.tick();
+    expect(env.service.batches.awaitingIngest(2)?.id).toBe(first.id);
+    const second = env.service.batches.open();
+    expect(second).not.toBeNull();
+    expect(second!.id).not.toBe(first.id);
+    // An index whose metadata.db copy predates the batch's end proves nothing: no pause.
+    env.db
+      .prepare(
+        `UPDATE library_index_state SET snapshot_at = ?, indexed_at = ?, status = 'idle' WHERE library_id = ?`,
+      )
+      .run(first.finishedAt! - 1000, Date.now() + 1000, env.libraryId());
+    env.service.batches.checkIngested();
+    expect(getStage(env.cleanupDb, 2).pauseReason).toBeNull();
+    // Once indexed, the first batch is marked taken in.
+    await runAll(w);
+    expect(env.service.batches.awaitingIngest(2)).toBeNull();
+    expect(getStage(env.cleanupDb, 2).pauseReason).toBeNull();
+    expect(env.service.batches.list().filter((b) => b.stage === 2).length).toBeGreaterThan(2);
   });
 
   it('a write that times out but happens is recorded once; one that never happens fails after the wait, never sent twice', async () => {
@@ -556,6 +643,40 @@ describe('stage 2: metadata and covers from the files', () => {
       const id = c[c.indexOf('--password') + 2];
       perBook.set(id, (perBook.get(id) ?? 0) + 1);
     }
+    expect([...perBook.values()].every((n) => n === 1)).toBe(true);
+  });
+
+  it('list and set_metadata go through the long-lived helper, the same calls as the program would make', async () => {
+    await setMode('on');
+    await runAll(worker());
+    expect(calibreRecord(env.lib, ids.B1)!.title).toBe('本の題名 1');
+    const viaHelper = helperCalls();
+    expect(viaHelper.filter((c) => c.startsWith('set_metadata')).length).toBe(setCalls().length);
+    expect(viaHelper.some((c) => c.startsWith('list'))).toBe(true);
+  });
+
+  it("a helper that can't start: the calls run with the calibredb program, nothing is lost", async () => {
+    await setMode('on');
+    await runAll(worker({ helper: 'fail-start' }));
+    expect(calibreRecord(env.lib, ids.B1)!.title).toBe('本の題名 1');
+    expect(helperCalls()).toEqual([]);
+    expect(setCalls().length).toBeGreaterThan(3);
+    expect(setCalls().length).toBe(
+      new Set(setCalls().map((c) => c[c.indexOf('--password') + 2])).size,
+    );
+  });
+
+  it('a helper that dies after a write: the write is found done, never sent again, and the rest go on', async () => {
+    await setMode('on');
+    await runAll(worker({ helper: { dieAfterWrites: 1 }, wait: 2 }));
+    expect(calibreRecord(env.lib, ids.B1)!.title).toBe('本の題名 1');
+    expect(proposals('title').filter((r) => r.state === 'failed')).toEqual([]);
+    const perBook = new Map<string, number>();
+    for (const c of setCalls()) {
+      const id = c[c.indexOf('--password') + 2];
+      perBook.set(id, (perBook.get(id) ?? 0) + 1);
+    }
+    expect(perBook.size).toBeGreaterThan(3);
     expect([...perBook.values()].every((n) => n === 1)).toBe(true);
   });
 

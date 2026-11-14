@@ -290,6 +290,79 @@ describe('saved match', () => {
     });
   });
 
+  it('a book stored here after the match was made picks the match up', async () => {
+    const g = fake();
+    // The match was saved on another device at 1000; this device stored its copy later.
+    g.remoteUpload(
+      MATCH,
+      { elementHtml: MATCHED, htmlBackup: ORIGINAL, lastBookModified: 1000 },
+      1000
+    );
+    g.data.set(7, { id: 7, title: BOOK.title, elementHtml: ORIGINAL, lastBookModified: 5000 });
+    const r = await syncBook(g.deps, BOOK);
+    expect(r.changed.match).toBe(true);
+    expect(g.data.get(7)).toEqual({
+      id: 7,
+      title: BOOK.title,
+      elementHtml: MATCHED,
+      htmlBackup: ORIGINAL,
+      lastBookModified: 1000
+    });
+    expect(g.uploads).toEqual([]);
+    // Level now: no upload, so the other device gets no notice.
+    expect((await syncBook(g.deps, BOOK)).changed.match).toBe(false);
+    expect(g.uploads).toEqual([]);
+
+    // "Remove from this device", then opened again: a new local copy, stored even later.
+    g.data.delete(7);
+    const again = { ...BOOK, localId: 8 };
+    g.data.set(8, { id: 8, title: BOOK.title, elementHtml: ORIGINAL, lastBookModified: 9000 });
+    expect((await syncBook(g.deps, again)).changed.match).toBe(true);
+    expect(g.data.get(8)).toMatchObject({ elementHtml: MATCHED, htmlBackup: ORIGINAL });
+    expect(g.uploads).toEqual([]);
+  });
+
+  it('a reset here is not undone by the match it removed, even before it reached the server', async () => {
+    const g = fake();
+    g.remoteUpload(
+      MATCH,
+      { elementHtml: MATCHED, htmlBackup: ORIGINAL, lastBookModified: 1000 },
+      1000
+    );
+    g.data.set(7, { id: 7, title: BOOK.title, elementHtml: ORIGINAL, lastBookModified: 5000 });
+    await syncBook(g.deps, BOOK);
+    expect(isMatched(g.data.get(7)?.elementHtml)).toBe(true);
+    // whispersync's own Reset match (onResetBook), then the shared match goes: the
+    // deletion marker is written to this device's records first (no network needed).
+    g.data.set(7, { id: 7, title: BOOK.title, elementHtml: ORIGINAL, lastBookModified: 10_000 });
+    await resetMatch(g.deps, BOOK);
+    const r = await syncBook(g.deps, BOOK);
+    expect(r.changed.match).toBe(false);
+    expect(g.data.get(7)?.elementHtml).toBe(ORIGINAL);
+    expect(g.uploads).toEqual([]);
+  });
+
+  it('a newer match here still wins over an older live match', async () => {
+    const g = fake();
+    g.remoteUpload(
+      MATCH,
+      { elementHtml: MATCHED, htmlBackup: ORIGINAL, lastBookModified: 1000 },
+      1000
+    );
+    const mine = '<div data-ttu-whispersync-matched-by="b.srt"><span>mine</span></div>';
+    g.data.set(7, {
+      id: 7,
+      title: BOOK.title,
+      elementHtml: mine,
+      htmlBackup: ORIGINAL,
+      lastBookModified: 5000
+    });
+    const r = await syncBook(g.deps, BOOK);
+    expect(r.changed.match).toBe(false);
+    expect(g.data.get(7)?.elementHtml).toBe(mine);
+    expect(g.uploads.map((u) => [u.name, u.modifiedAt])).toEqual([[MATCH, 5000]]);
+  });
+
   it('an unmatched book is never uploaded', async () => {
     const f = fake();
     f.data.set(7, { id: 7, title: BOOK.title, elementHtml: ORIGINAL, lastBookModified: 1000 });

@@ -19,6 +19,8 @@ FROM node:22-bookworm-slim AS node
 FROM lscr.io/linuxserver/calibre:${CALIBRE_TAG}
 COPY --from=node /usr/local/bin/node /usr/local/bin/node
 COPY --from=build /build/dist /app/dist
+# WP20b: the long-lived calibredb (run by calibre-debug, calibre's own Python).
+COPY helper /app/helper
 ENV CALIBREDB=/opt/calibre/calibredb \
     QUARANTINE_DIR=/quarantine \
     HOME=/tmp
