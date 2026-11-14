@@ -6,8 +6,9 @@
 
 /**
  * WP14: the book cover for a card, as JPEG (longest side at most MAX_SIDE px). From the
- * EPUB's own cover on this device, else the library server's thumbnail. Stored in Anki
- * under one name per book, so every card of a book shares the file.
+ * EPUB's own cover on this device, else the library server's thumbnail. Asked to be stored
+ * under one name per book: desktop AnkiConnect keeps it, so every card of a book shares the
+ * file; AnkiConnect Android stores a renamed copy each time.
  */
 
 export const MAX_SIDE = 800;

@@ -4,12 +4,19 @@
  * All rights reserved.
  */
 
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { buildBookTextIndex, parseBookHtml } from '$lib/components/book-reader/book-search';
 import { installNodeDom } from '$lib/server/epub/node-dom';
 import { AnkiConnect, type NoteInfo } from './anki-connect';
 import { cuesById, findCues, normalizeForMatch, similarity, type Cue } from './cue-match';
-import { describeResult, EnrichError, enrichLastCard, type EnrichInput } from './enrich';
+import {
+  ANDROID_NO_TAG,
+  describeResult,
+  EnrichError,
+  enrichLastCard,
+  holdsMedia,
+  type EnrichInput
+} from './enrich';
 import { isEmptyField, mergeField } from './field-merge';
 import { hasMapping, parseMapping, withTarget } from './mapping';
 import { parseReaderLink, readerLinkPath, titleTag } from './reader-link';
@@ -45,6 +52,24 @@ describe('field merge', () => {
     expect(mergeField('old', 'new', 'append')).toBe('old<br>new');
     expect(mergeField('', 'new', 'append')).toBe('new');
     expect(mergeField('old<br>new', 'new', 'append')).toBeNull();
+  });
+
+  it('knows a media file under its own name or the name AnkiConnect Android gave it', () => {
+    const cover = 'ttsu-cover-b1.jpg';
+    expect(holdsMedia('<img src="ttsu-cover-b1.jpg">', 'image', cover)).toBe(true);
+    expect(holdsMedia('x<br><img src="ttsu-cover-b1_123.jpg">', 'image', cover)).toBe(true);
+    expect(holdsMedia('<img src="ttsu-cover-b10.jpg">', 'image', cover)).toBe(false);
+    expect(holdsMedia('<img src="ttsu-cover-b1_123.mp3">', 'image', cover)).toBe(false);
+    expect(holdsMedia('<img src="ttsu-cover-b1_x.jpg">', 'image', cover)).toBe(false);
+    expect(holdsMedia('<img src="old-ttsu-cover-b1.jpg">', 'image', cover)).toBe(false);
+    expect(holdsMedia('[sound:ttsu-cover-b1.jpg]', 'image', cover)).toBe(false);
+    const clip = 'ttsu-b1-2000-6000.mp3';
+    expect(holdsMedia('[sound:ttsu-b1-2000-6000.mp3]', 'sound', clip)).toBe(true);
+    expect(holdsMedia('[sound:ttsu-b1-2000-6000_2485843857102392333.mp3]', 'sound', clip)).toBe(
+      true
+    );
+    expect(holdsMedia('[sound:ttsu-b1-2000-60000.mp3]', 'sound', clip)).toBe(false);
+    expect(holdsMedia('[sound:ttsu-b1-2000-6000.mp3.bak]', 'sound', clip)).toBe(false);
   });
 });
 
@@ -295,6 +320,14 @@ function fakeAnki({
   const calls: Call[] = [];
   let shown = browsing;
   const media: Record<string, string> = {};
+  let stores = 0;
+  // AnkiConnect Android cuts the name at its first dot; AnkiDroid stores it as
+  // `<name>_<random 19 digits>.<ext>` (File.createTempFile) and returns that.
+  const androidName = (name: string) => {
+    stores += 1;
+    const dot = name.indexOf('.');
+    return `${name.slice(0, dot)}_59127405328845025${10 + stores}${name.slice(dot)}`;
+  };
   const fetchImpl = async (_url: string, init?: RequestInit) => {
     const body = JSON.parse(String(init?.body)) as Call;
     calls.push(body);
@@ -312,9 +345,12 @@ function fakeAnki({
         return ok(notes.map((n) => n.noteId));
       case 'notesInfo':
         return ok(notes.filter((n) => (body.params!.notes as number[]).includes(n.noteId)));
-      case 'storeMediaFile':
-        media[body.params!.filename as string] = body.params!.data as string;
-        return ok(body.params!.filename);
+      case 'storeMediaFile': {
+        const asked = body.params!.filename as string;
+        const stored = android ? androidName(asked) : asked;
+        media[stored] = body.params!.data as string;
+        return ok(stored);
+      }
       case 'updateNoteFields': {
         const note = body.params!.note as { id: number; fields: Record<string, string> };
         const n = notes.find((x) => x.noteId === note.id)!;
@@ -323,7 +359,8 @@ function fakeAnki({
         return ok(null);
       }
       case 'addTags': {
-        if (android) return err('unsupported action');
+        // AnkiConnect Android has no addTags: its fallback answer isn't JSON.
+        if (android) return err('com.google.gson.stream.MalformedJsonException: x');
         const n = notes.find((x) => (body.params!.notes as number[]).includes(x.noteId))!;
         if (shown === n.noteId) return ok(null); // the editor saves its own copy back
         n.tags.push(body.params!.tags as string);
@@ -413,6 +450,44 @@ describe('enrich last card', () => {
     expect(Object.keys(media).sort()).toEqual(['ttsu-b1-2000-6000.mp3', 'ttsu-cover-b1.jpg']);
     expect(older.fields.Sentence.value).toBe('');
     expect(describeResult(result)).toContain('「猫」');
+  });
+
+  it('desktop: the same AnkiConnect calls, names and values as before the Android fix', async () => {
+    const n = note(5, { Key: '猫', Sentence: '', SentenceAudio: '', Picture: '', ReaderLink: '' });
+    const { anki, calls } = fakeAnki({ notes: [n] });
+    const result = await enrichLastCard(anki, input());
+    expect(calls.map((c) => c.action)).toEqual([
+      'requestPermission',
+      'findNotes',
+      'notesInfo',
+      'storeMediaFile',
+      'storeMediaFile',
+      'guiSelectedNotes',
+      'updateNoteFields',
+      'addTags'
+    ]);
+    expect(calls.filter((c) => c.action === 'storeMediaFile').map((c) => c.params)).toEqual([
+      { filename: 'ttsu-b1-2000-6000.mp3', data: 'QVVESU8=' },
+      { filename: 'ttsu-cover-b1.jpg', data: 'Q09WRVI=' }
+    ]);
+    expect(calls.find((c) => c.action === 'updateNoteFields')!.params).toEqual({
+      note: {
+        id: 5,
+        fields: {
+          Sentence: '<b>猫</b>が好きだ。',
+          SentenceAudio: '[sound:ttsu-b1-2000-6000.mp3]',
+          Picture: '<img src="ttsu-cover-b1.jpg">',
+          ReaderLink: '/open?book=b1&pos=42'
+        }
+      }
+    });
+    expect(calls.find((c) => c.action === 'addTags')!.params).toEqual({
+      notes: [5],
+      tags: '猫の本'
+    });
+    expect(describeResult(result)).toBe(
+      'Added tag, sentence, sentence audio, cover, link to the passage to 「猫」.'
+    );
   });
 
   it('never overwrites, appends once, and fetches no media for unchanged fields', async () => {
@@ -518,17 +593,95 @@ describe('enrich last card', () => {
     expect(n.fields.Sentence.value).toBe('<b>猫</b>が好きだ。');
   });
 
-  it('works with AnkiConnect Android, which may not add tags', async () => {
+  it('AnkiConnect Android: the fields name the media as stored; the tag is left out', async () => {
     const n = note(1, { Key: '猫', Sentence: '', SentenceAudio: '', Picture: '', ReaderLink: '' });
-    const { anki, calls } = fakeAnki({ notes: [n], android: true });
+    const { anki, calls, media } = fakeAnki({ notes: [n], android: true });
     const result = await enrichLastCard(anki, input());
     expect(result.android).toBe(true);
-    expect(n.fields.Sentence.value).not.toBe('');
+    expect(Object.keys(media).sort()).toEqual([
+      'ttsu-b1-2000-6000_5912740532884502511.mp3',
+      'ttsu-cover-b1_5912740532884502512.jpg'
+    ]);
+    expect(n.fields.SentenceAudio.value).toBe('[sound:ttsu-b1-2000-6000_5912740532884502511.mp3]');
+    expect(n.fields.Picture.value).toBe('<img src="ttsu-cover-b1_5912740532884502512.jpg">');
+    expect(n.fields.Sentence.value).toBe('<b>猫</b>が好きだ。');
+    expect(n.fields.ReaderLink.value).toBe('/open?book=b1&pos=42');
     expect(calls.some((c) => c.action.startsWith('gui'))).toBe(false);
-    expect(result.skipped).toContainEqual({
-      what: 'tag',
-      reason: 'AnkiConnect Android did not add it'
+    expect(calls.some((c) => c.action === 'addTags')).toBe(false);
+    expect(n.tags).toEqual([]);
+    expect(result.added).toEqual(['sentence', 'sentence audio', 'cover', 'link to the passage']);
+    expect(result.skipped).toEqual([{ what: 'tag', reason: ANDROID_NO_TAG }]);
+    expect(describeResult(result)).toBe(
+      'Added sentence, sentence audio, cover, link to the passage to 「猫」. ' +
+        "No tag: AnkiConnect Android can't add tags to a card that already exists."
+    );
+  });
+
+  it('AnkiConnect Android: a second tap in append mode stores and adds nothing again', async () => {
+    const n = note(1, { Key: '猫', Sentence: '', SentenceAudio: '', Picture: '', ReaderLink: '' });
+    const { anki, calls, media } = fakeAnki({ notes: [n], android: true });
+    const append = {
+      'JP Mining Note': {
+        sentence: { field: 'Sentence', mode: 'append' as const },
+        sentenceAudio: { field: 'SentenceAudio', mode: 'append' as const },
+        cover: { field: 'Picture', mode: 'append' as const },
+        link: { field: 'ReaderLink', mode: 'append' as const }
+      }
+    };
+    await enrichLastCard(anki, input({ mapping: append }));
+    const fields = Object.fromEntries(Object.entries(n.fields).map(([k, v]) => [k, v.value]));
+    const mark = calls.length;
+    let loads = 0;
+    const second = await enrichLastCard(
+      anki,
+      input({
+        mapping: append,
+        cover: async () => ({ fileName: 'ttsu-cover-b1.jpg', load: async () => `${++loads}` }),
+        audio: async () => ({ fileName: 'ttsu-b1-2000-6000.mp3', load: async () => `${++loads}` })
+      })
+    );
+    expect(loads).toBe(0);
+    expect(calls.slice(mark).some((c) => c.action === 'storeMediaFile')).toBe(false);
+    expect(calls.slice(mark).some((c) => c.action === 'updateNoteFields')).toBe(false);
+    expect(Object.keys(media)).toHaveLength(2);
+    expect(Object.fromEntries(Object.entries(n.fields).map(([k, v]) => [k, v.value]))).toEqual(
+      fields
+    );
+    expect(second.added).toEqual([]);
+    expect(second.kept).toEqual(['sentence', 'sentence audio', 'cover', 'link to the passage']);
+  });
+
+  it('desktop: a copy AnkiConnect Android stored counts as already there', async () => {
+    const n = note(1, {
+      Key: '猫',
+      Sentence: '',
+      SentenceAudio: '[sound:ttsu-b1-2000-6000_2485843857102392333.mp3]',
+      Picture: '<img src="ttsu-cover-b1_5644114712933410607.jpg">',
+      ReaderLink: ''
     });
+    const { anki, calls } = fakeAnki({ notes: [n] });
+    const mapping = {
+      'JP Mining Note': {
+        ...MAPPING['JP Mining Note'],
+        sentenceAudio: { field: 'SentenceAudio', mode: 'append' as const },
+        cover: { field: 'Picture', mode: 'append' as const }
+      }
+    };
+    const result = await enrichLastCard(anki, input({ mapping }));
+    expect(calls.some((c) => c.action === 'storeMediaFile')).toBe(false);
+    expect(n.fields.Picture.value).toBe('<img src="ttsu-cover-b1_5644114712933410607.jpg">');
+    expect(result.kept).toEqual(expect.arrayContaining(['sentence audio', 'cover']));
+    expect(result.added).toEqual(['tag', 'sentence', 'link to the passage']);
+  });
+
+  it('desktop: a field takes the name AnkiConnect returns', async () => {
+    const n = note(1, { Key: '猫', Sentence: '', SentenceAudio: '', Picture: '', ReaderLink: '' });
+    const { anki } = fakeAnki({ notes: [n] });
+    const store = vi.spyOn(anki, 'storeMedia').mockImplementation(async (name) => `x-${name}`);
+    await enrichLastCard(anki, input());
+    expect(store).toHaveBeenCalledTimes(2);
+    expect(n.fields.Picture.value).toBe('<img src="x-ttsu-cover-b1.jpg">');
+    expect(n.fields.SentenceAudio.value).toBe('[sound:x-ttsu-b1-2000-6000.mp3]');
   });
 
   it('fails clearly without a note or without Anki', async () => {

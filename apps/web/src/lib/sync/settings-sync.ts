@@ -15,9 +15,16 @@ import { keysWithScope } from '$lib/sync/settings-registry';
  */
 
 /**
- * Global settings sync is off until a device has been made the source of the
- * global values (WP5: the desktop, see settings-source.ts). Callers pass
- * whether it is on; the default is off.
+ * Global settings sync is on once a device has been made the source of the
+ * global values (WP5: the `migration` / `settings-source` marker, see
+ * settings-source.ts). Callers pass whether it is on; the default is off.
+ *
+ * A device publishes a global key only after it has taken over the shared
+ * value: `publishedSettings` has an entry for it (from the take-over, from an
+ * applied pulled value, or from its own publish). A key it hasn't taken over
+ * yet (e.g. one added by an app update) is taken over from the mirror first
+ * (settings-source.ts); a never-set value of such a key is not published,
+ * since the shared value, if there is one, comes with the next pull.
  */
 
 export interface RawStorage {
@@ -26,7 +33,8 @@ export interface RawStorage {
 
 /**
  * Publishes the settings whose stored value changed since the last publish:
- * always the device-scope ones, and the global ones when global sync is on.
+ * always the device-scope ones, and the global ones when global sync is on
+ * (except a never-set global key not taken over yet, see above).
  * Returns how many records were queued.
  */
 export async function publishSettings(
@@ -36,18 +44,23 @@ export async function publishSettings(
 ): Promise<number> {
   const meta = await engine.getMeta();
   const published = { ...(meta.publishedSettings ?? {}) };
-  const ids: [string, string][] = keysWithScope('device').map((key) => [
+  const ids: [string, string, boolean][] = keysWithScope('device').map((key) => [
     `device:${engine.deviceId}:${key}`,
-    key
+    key,
+    false
   ]);
   if (globalEnabled) {
-    for (const key of keysWithScope('global')) ids.push([`global:${key}`, key]);
+    for (const key of keysWithScope('global')) ids.push([`global:${key}`, key, true]);
   }
 
   let queued = 0;
-  for (const [id, key] of ids) {
+  for (const [id, key, global] of ids) {
     const raw = storage.getItem(key) ?? null;
-    if (Object.prototype.hasOwnProperty.call(published, id) && published[id] === raw) continue;
+    const known = Object.prototype.hasOwnProperty.call(published, id);
+    if (known && published[id] === raw) continue;
+    // Never set here and not taken over yet: nothing to share, and publishing it would
+    // replace the shared value on the server (lww).
+    if (global && !known && raw === null) continue;
     if (await engine.put('setting', id, { value: raw })) {
       published[id] = raw;
       queued += 1;

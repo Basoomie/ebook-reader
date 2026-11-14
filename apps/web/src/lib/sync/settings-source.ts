@@ -86,13 +86,36 @@ export async function prepareGlobalSettings(
   return true;
 }
 
-/** Before each sync: adopt if needed, then publish (global keys only when on). */
+/**
+ * Takes over the shared value of every global key this device hasn't taken over
+ * yet, from the mirror: keys added by an app update after the device adopted
+ * (Phase 7: the Anki field mapping), and values pulled while an older version
+ * didn't know the key. Marks them published, so they aren't pushed back.
+ */
+async function takeOverUnpublishedGlobals(
+  engine: SyncEngine,
+  deps: GlobalSettingsDeps
+): Promise<void> {
+  const published = (await engine.getMeta()).publishedSettings ?? {};
+  const pending = (await engine.getAll('setting')).filter(
+    (r) => r.id.startsWith('global:') && !Object.prototype.hasOwnProperty.call(published, r.id)
+  );
+  if (pending.length) {
+    await applyGlobalSettings(engine, pending, deps.apply, true, deps.readStored);
+  }
+}
+
+/**
+ * Before each sync: adopt if needed, take over global keys not taken over yet,
+ * then publish (global keys only when on).
+ */
 export async function publishAllSettings(
   engine: SyncEngine,
   storage: RawStorage,
   deps: GlobalSettingsDeps
 ): Promise<void> {
   const globalOn = await prepareGlobalSettings(engine, deps);
+  if (globalOn) await takeOverUnpublishedGlobals(engine, deps);
   await publishSettings(engine, storage, globalOn);
 }
 

@@ -126,6 +126,22 @@ describe('publishing settings', () => {
       value: '4'
     });
   });
+
+  it('does not publish a never-set global key it has not taken over (Phase 7 bug 2)', async () => {
+    const e = await engine();
+    const values: Record<string, string> = {};
+    await publishSettings(e, storage(values), true);
+    expect(await e.get('setting', 'global:ankiFieldMapping')).toBeUndefined();
+    // Set here: published, and from then on every change is.
+    values.ankiFieldMapping = '{"JPMN":{}}';
+    expect(await publishSettings(e, storage(values), true)).toBe(1);
+    expect((await e.get('setting', 'global:ankiFieldMapping'))?.data).toEqual({
+      value: '{"JPMN":{}}'
+    });
+    delete values.ankiFieldMapping;
+    expect(await publishSettings(e, storage(values), true)).toBe(1);
+    expect((await e.get('setting', 'global:ankiFieldMapping'))?.data).toEqual({ value: null });
+  });
 });
 
 describe('applying pulled global settings', () => {
@@ -168,9 +184,11 @@ describe('applying pulled global settings', () => {
     );
     expect(keys).toEqual(['startDayHoursForTracker']);
     expect(applied).toEqual([['startDayHoursForTracker', '4']]);
-    // The applied value counts as published: no echo on the next publish.
+    // The applied value counts as published: no echo on the next publish. The other
+    // global keys are never set here and not taken over: not published either.
     expect(await publishSettings(e, storage({ startDayHoursForTracker: '4' }), true)).toBe(
-      keysWithScope('device').length + keysWithScope('global').length - 1
+      keysWithScope('device').length
     );
+    expect(await e.get('setting', 'global:customThemes')).toBeUndefined();
   });
 });
