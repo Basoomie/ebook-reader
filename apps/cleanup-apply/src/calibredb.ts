@@ -118,11 +118,12 @@ export function buildArgs(
     case 'trash_list':
       return ['trash', 'list', ...remote, '--for-machine'];
     case 'trash_restore': {
-      // Exactly one whole book (never --formats, never a list or range).
-      if (args.length !== 1 || !/^\d+$/.test(args[0])) {
-        throw new Error('trash restore takes exactly one book id');
+      // Whole books only (never --formats), given as plain ids (never a range). Calibre reads
+      // its whole trash on every call, so Undo asks for all of a batch's books at once.
+      if (args.length === 0 || !args.every((a) => /^\d+$/.test(a))) {
+        throw new Error('trash restore takes book ids');
       }
-      return ['trash', 'restore', ...remote, args[0]];
+      return ['trash', 'restore', ...remote, args.join(',')];
     }
     case 'add':
       return ['add', ...remote, ...args];
@@ -250,6 +251,27 @@ export class Calibredb {
         ? row.tags.split(',').map((t) => t.trim())
         : [];
     return { ...row, formats: row.formats ?? [], tags };
+  }
+
+  /** The UUIDs of those of these books that are in the library (100 ids per `list` call). */
+  async presentUuids(login: Login, calibreIds: number[]): Promise<Map<number, string>> {
+    const out = new Map<number, string>();
+    for (let i = 0; i < calibreIds.length; i += 100) {
+      const chunk = calibreIds.slice(i, i + 100);
+      const r = await this.ok('list', login, [
+        '--search',
+        chunk.map((id) => `id:=${id}`).join(' or '),
+        '--fields',
+        'uuid',
+        '--for-machine',
+        '--limit',
+        String(chunk.length + 10)
+      ]);
+      for (const b of JSON.parse(r.stdout || '[]') as { id: number; uuid: string }[]) {
+        if (chunk.includes(b.id)) out.set(b.id, b.uuid);
+      }
+    }
+    return out;
   }
 
   /** Replaces a book's tag list (tags only; Calibre tags never contain commas). */

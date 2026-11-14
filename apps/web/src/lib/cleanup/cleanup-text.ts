@@ -130,19 +130,33 @@ export function stage1Progress(stage: CleanupStage, now = Date.now()): ProgressB
 /** Removing the copies once stage 1 is on: removed of all to remove, time left from the pace. */
 export function applyProgress(
   counts: Record<string, number>,
-  batches: CleanupBatch[],
+  pace: { removed: number; firstAt: number | null } | undefined,
   now = Date.now()
 ): ProgressBar | null {
   const done = counts.applied ?? 0;
   const total = done + (counts.proposed ?? 0) + (counts.queued ?? 0);
   if (total <= 0 || done >= total || (done === 0 && (counts.queued ?? 0) === 0)) return null;
-  const applies = batches.filter((b) => b.kind === 'apply');
-  const first = applies.length ? Math.min(...applies.map((b) => b.claimedAt ?? b.createdAt)) : null;
   return {
     label: `Removing copies: ${n(done)} of ${n(total)}`,
     fraction: done / total,
-    eta: eta(done, total, first, 0, now)
+    eta: paceEta(total - done, pace, now)
   };
+}
+
+/**
+ * Time left from the recent pace (the server's count of copies removed in the last 20
+ * minutes). Shown once at least 5 copies and 2 minutes went into the pace, so the first guess
+ * isn't wild; the pace of a slow start or of an earlier run doesn't count.
+ */
+export function paceEta(
+  left: number,
+  pace: { removed: number; firstAt: number | null } | undefined,
+  now: number
+): string | null {
+  if (!pace || pace.firstAt === null || pace.removed < 5 || left <= 0) return null;
+  const span = now - pace.firstAt;
+  if (span < 2 * 60_000) return null;
+  return etaText((left * span) / pace.removed);
 }
 
 /** The lines under stage 1's name: where the analysis is, and what it found. */

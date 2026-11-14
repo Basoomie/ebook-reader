@@ -34,6 +34,16 @@ export async function statFile(file: string): Promise<SourceStat | null> {
   }
 }
 
+/** Whether `dir` is an existing folder (read-only stat). */
+export async function folderExists(dir: string): Promise<boolean> {
+  try {
+    return (await fs.stat(dir)).isDirectory();
+  } catch (err: any) {
+    if (err.code === 'ENOENT' || err.code === 'ENOTDIR') return false;
+    throw err;
+  }
+}
+
 /** Names of the immediate subfolders of `dir` (one level, never recursive). Skips dot-folders. */
 export async function listSubfolders(dir: string): Promise<string[]> {
   const entries = await fs.readdir(dir, { withFileTypes: true });

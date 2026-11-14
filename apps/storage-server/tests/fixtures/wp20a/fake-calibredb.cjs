@@ -9,7 +9,9 @@
  * FAKE_VERSION (default 9.18.0), FAKE_LIBRARY_ID (default japanese-library),
  * FAKE_ILLUSTRATOR (1 = the #illustrator column exists), FAKE_LOG (argv of each call is
  * appended), FAKE_FAIL (a command name that fails), FAKE_FAIL_LONG (1 = that failure prints
- * a 200 KB line, like a long calibre error).
+ * a 200 KB line, like a long calibre error), FAKE_TRASH_408 (after|never: trash restore
+ * answers HTTP 408 like the NAS with thousands of trash entries; "after" restores anyway),
+ * FAKE_REMOVE_TIMEOUT (after|never: remove times out; "after" removes anyway).
  */
 const fs = require('fs');
 const path = require('path');
@@ -53,6 +55,25 @@ const sub = argv[0] === 'trash' ? `trash ${argv[1]}` : argv[0];
 if (process.env.FAKE_FAIL && process.env.FAKE_FAIL === sub) {
   const long = process.env.FAKE_FAIL_LONG === '1' ? ` ${'x'.repeat(200_000)} end` : '';
   fail(`simulated failure of ${sub}${long}`, 2);
+}
+
+// FAKE_ADD_TIMEOUT=never: add times out and adds nothing.
+if (sub === 'add' && process.env.FAKE_ADD_TIMEOUT === 'never') {
+  fail(
+    'mechanize._response.get_seek_wrapper_class.<locals>.httperror_seek_wrapper: HTTP Error 408: Request Timeout',
+  );
+}
+// FAKE_LIST_408_FILE: a file holding a number; while it is above 0, a book lookup (list)
+// answers 408 (calibre busy restoring) and the number goes down by one.
+if (sub === 'list' && process.env.FAKE_LIST_408_FILE && !withLibrary.endsWith('#-')) {
+  const f = process.env.FAKE_LIST_408_FILE;
+  const left = fs.existsSync(f) ? Number(fs.readFileSync(f, 'utf8')) : 0;
+  if (left > 0) {
+    fs.writeFileSync(f, String(left - 1));
+    fail(
+      'mechanize._response.get_seek_wrapper_class.<locals>.httperror_seek_wrapper: HTTP Error 408: Request Timeout',
+    );
+  }
 }
 
 const wanted = withLibrary.split('#')[1];
@@ -103,7 +124,8 @@ function ids() {
       i++;
       continue;
     }
-    if (/^\d+$/.test(argv[i])) out.push(Number(argv[i]));
+    // One id, or several as calibre takes them: "3,4,5".
+    if (/^\d+(,\d+)*$/.test(argv[i])) out.push(...argv[i].split(',').map(Number));
   }
   return out;
 }
@@ -147,7 +169,12 @@ switch (sub) {
     let rows;
     let m;
     if ((m = /^id:=(\d+)$/.exec(search))) rows = [bookRow(Number(m[1]))].filter(Boolean);
-    else if ((m = /^title:"=(.*)"$/.exec(search))) {
+    else if (/^id:=\d+( or id:=\d+)+$/.test(search)) {
+      rows = search
+        .split(' or ')
+        .map((s) => bookRow(Number(s.slice(4))))
+        .filter(Boolean);
+    } else if ((m = /^title:"=(.*)"$/.exec(search))) {
       const title = m[1].replace(/\\"/g, '"').replace(/\\\\/g, '\\');
       rows = db.prepare('SELECT * FROM books WHERE title = ?').all(title);
     } else rows = db.prepare('SELECT * FROM books').all();
@@ -215,6 +242,14 @@ switch (sub) {
     break;
   }
   case 'remove': {
+    // FAKE_REMOVE_TIMEOUT: the request times out like on the NAS ("urlopen error timed out");
+    // "after": calibre removes the book anyway, "never": it doesn't.
+    const removeTimeout = process.env.FAKE_REMOVE_TIMEOUT;
+    const removeTimedOut = () =>
+      fail(
+        'Traceback (most recent call last):\n  File "mechanize/_urllib2_fork.py", line 1246, in do_open\nurllib.error.URLError: <urlopen error timed out>',
+      );
+    if (removeTimeout === 'never') removeTimedOut();
     for (const id of ids()) {
       const b = bookRow(id);
       if (!b) continue;
@@ -230,6 +265,7 @@ switch (sub) {
       deleteRows(id);
     }
     touchDb();
+    if (removeTimeout === 'after') removeTimedOut();
     break;
   }
   case 'trash list': {
@@ -243,10 +279,26 @@ switch (sub) {
     break;
   }
   case 'trash restore': {
-    for (const id of ids()) {
+    // Like calibre 9.18: any id not in the trash refuses the whole call, naming those ids
+    // (message checked against the real calibredb).
+    const asked = ids();
+    // FAKE_TRASH_408: the content server answers 408 Request Timeout (its own time limit; it
+    // reads the whole trash first). "after": it still restores everything, like calibre does;
+    // "never": nothing comes back. With the 408, calibre's refusal (an id not in the trash)
+    // is hidden too: only the 408 shows and nothing is restored (seen in e2e part 4).
+    const timeout = process.env.FAKE_TRASH_408;
+    const timedOut = () =>
+      fail(
+        'Traceback (most recent call last):\n  File "mechanize/_mechanize.py", line 313, in _mech_open\nmechanize._response.get_seek_wrapper_class.<locals>.httperror_seek_wrapper: HTTP Error 408: Request Timeout',
+      );
+    const missing = asked.filter((id) => !fs.existsSync(path.join(trashDir, String(id))));
+    if (missing.length > 0) {
+      if (timeout) timedOut();
+      fail(`No entries in the trash bin for the books: ${missing.join(', ')}`);
+    }
+    if (timeout === 'never') timedOut();
+    for (const id of asked) {
       const src = path.join(trashDir, String(id));
-      // calibre 9.18's own message (checked against the real calibredb, 2026-11-13).
-      if (!fs.existsSync(src)) fail(`No entries in the trash bin for the books: ${id}`);
       const r = JSON.parse(fs.readFileSync(path.join(src, 'row.json'), 'utf8'));
       const b = r.book;
       db.prepare(
@@ -282,6 +334,7 @@ switch (sub) {
       fs.rmSync(src, { recursive: true });
     }
     touchDb();
+    if (timeout === 'after') timedOut();
     break;
   }
   case 'add': {
@@ -334,6 +387,12 @@ switch (sub) {
       db.prepare('INSERT INTO books_tags_link (book, tag) VALUES (?, ?)').run(id, tag.id);
     }
     touchDb();
+    // FAKE_ADD_TIMEOUT=after: the request times out (408) although the book was added.
+    if (process.env.FAKE_ADD_TIMEOUT === 'after') {
+      fail(
+        'mechanize._response.get_seek_wrapper_class.<locals>.httperror_seek_wrapper: HTTP Error 408: Request Timeout',
+      );
+    }
     process.stdout.write(`Added book ids: ${id}\n`);
     break;
   }

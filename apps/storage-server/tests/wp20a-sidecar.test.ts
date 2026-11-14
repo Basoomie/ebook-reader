@@ -6,6 +6,7 @@
  * the server is away, Undo from the trash and by re-adding, and the safety checks.
  */
 import Database from 'better-sqlite3';
+import { spawn, spawnSync } from 'child_process';
 import { createHash } from 'crypto';
 import fs from 'fs';
 import http from 'http';
@@ -15,7 +16,13 @@ import request from 'supertest';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { buildArgs, Calibredb, type Login } from '../../cleanup-apply/src/calibredb';
 import type { SidecarConfig } from '../../cleanup-apply/src/config';
-import { firstBlock, hasMultipleTextColumn, Worker } from '../../cleanup-apply/src/worker';
+import {
+  firstBlock,
+  hasMultipleTextColumn,
+  latestRestorePlan,
+  notInTrashIds,
+  Worker,
+} from '../../cleanup-apply/src/worker';
 import { getStage } from '../src/cleanup/stages';
 import { calibreDate, fingerprint } from './helpers/calibre-fixture';
 import { type CleanupEnv, makeCleanupEnv } from './helpers/cleanup-env';
@@ -58,10 +65,13 @@ describe('calibredb arguments', () => {
     // One whole book at a time: no lists, ranges or other options.
     expect(() => buildArgs('remove', login, ['1,2'])).toThrow(/exactly one book id/);
     expect(() => buildArgs('remove', login, ['1', '2'])).toThrow(/exactly one book id/);
-    expect(() => buildArgs('trash_restore', login, ['--formats', '12'])).toThrow(
-      /exactly one book id/,
-    );
-    expect(() => buildArgs('trash_restore', login, ['10-20'])).toThrow(/exactly one book id/);
+    // Trash restore: whole books, plain ids (all of an Undo batch in one call, comma joined);
+    // never --formats, never a range.
+    expect(buildArgs('trash_restore', login, ['12', '15', '7']).at(-1)).toBe('12,15,7');
+    expect(() => buildArgs('trash_restore', login, ['--formats', '12'])).toThrow(/book ids/);
+    expect(() => buildArgs('trash_restore', login, ['10-20'])).toThrow(/book ids/);
+    expect(() => buildArgs('trash_restore', login, ['1,2'])).toThrow(/book ids/);
+    expect(() => buildArgs('trash_restore', login, [])).toThrow(/book ids/);
     expect(() => buildArgs('set_metadata' as never, login, [])).toThrow(/not allowed/);
     // Tags only: the one metadata write (your tags onto the kept copy, and back on Undo).
     const tags = buildArgs('set_tags', login, ['12', 'PeepoHappyBooks,TMW-collection-11']);
@@ -72,6 +82,30 @@ describe('calibredb arguments', () => {
     expect(() => buildArgs('set_tags', login, ['12', 'a', '--field'])).toThrow(
       /book id and a tag list/,
     );
+  });
+
+  it("reads calibre's trash refusal and the saved restore plans", async () => {
+    expect(notInTrashIds('No entries in the trash bin for the books: 14')).toEqual([14]);
+    expect(notInTrashIds('x\nNo entries in the trash bin for the books: 3, 4,17\n')).toEqual([
+      3, 4, 17,
+    ]);
+    expect(notInTrashIds('HTTP Error 408: Request Timeout')).toEqual([]);
+    const dir = makeTempDir('plans');
+    expect(await latestRestorePlan(dir)).toBeNull();
+    fs.writeFileSync(
+      path.join(dir, 'trash-restore-100.json'),
+      JSON.stringify({ requested: [1], notInTrash: [], requestedAt: 100 }),
+    );
+    fs.writeFileSync(
+      path.join(dir, 'trash-restore-200.json'),
+      JSON.stringify({ requested: [1, 2], notInTrash: [3], requestedAt: 200 }),
+    );
+    fs.writeFileSync(path.join(dir, 'trash-restore-300.json'), '{"requested": [1'); // half written
+    expect(await latestRestorePlan(dir)).toEqual({
+      requested: [1, 2],
+      notInTrash: [3],
+      requestedAt: 200,
+    });
   });
 
   it('parses custom_columns and trash listings', () => {
@@ -227,6 +261,14 @@ describe('the sidecar with the server', () => {
     await env.close();
   });
 
+  /** A file the stand-in counts down: that many book lookups answer 408 first. */
+  function list408File(count: number | undefined): string {
+    if (!count) return '';
+    const file = path.join(makeTempDir('list408'), 'count');
+    fs.writeFileSync(file, String(count));
+    return file;
+  }
+
   function worker(
     extra: {
       version?: string;
@@ -234,6 +276,16 @@ describe('the sidecar with the server', () => {
       fetchImpl?: typeof fetch;
       fail?: string;
       failLong?: boolean;
+      /** Calibre's trash restore answers HTTP 408: "after" it restores anyway, "never" not. */
+      trash408?: 'after' | 'never';
+      /** Calibre's remove times out: "after" it removes anyway, "never" not. */
+      removeTimeout?: 'after' | 'never';
+      /** Calibre's add times out: "after" it adds anyway, "never" not. */
+      addTimeout?: 'after' | 'never';
+      /** This many book lookups answer 408 first (Calibre busy). */
+      list408?: number;
+      /** How long Undo waits for books to come back from the trash (s). */
+      wait?: number;
     } = {},
   ) {
     const config: SidecarConfig = {
@@ -245,6 +297,9 @@ describe('the sidecar with the server', () => {
       calibredbTimeoutSeconds: 60,
       checkSeconds: 3600,
       requestTimeoutSeconds: 10,
+      trashRestoreWaitSeconds: extra.wait ?? 3,
+      removeWaitSeconds: extra.wait ?? 3,
+      waitPollSeconds: 0.1,
     };
     const calibredb = new Calibredb({
       program: process.execPath,
@@ -258,6 +313,10 @@ describe('the sidecar with the server', () => {
         FAKE_LOG: log,
         FAKE_FAIL: extra.fail ?? '',
         FAKE_FAIL_LONG: extra.failLong ? '1' : '0',
+        FAKE_TRASH_408: extra.trash408 ?? '',
+        FAKE_REMOVE_TIMEOUT: extra.removeTimeout ?? '',
+        FAKE_ADD_TIMEOUT: extra.addTimeout ?? '',
+        FAKE_LIST_408_FILE: list408File(extra.list408),
       },
     });
     return new Worker({
@@ -601,6 +660,52 @@ describe('the sidecar with the server', () => {
     expect(removeCalls()).not.toContain(pair.removedId);
   });
 
+  it('a remove that times out while Calibre removes the copy anyway is recorded as removed (handoff, Undo)', async () => {
+    // As on the NAS 2026-11-14 (Calibre #9503): "urlopen error timed out", copy gone anyway.
+    const a2Reader = env.readerBook(uuids.A2)!.bookId;
+    env.addReaderData(a2Reader);
+    const w = worker({ removeTimeout: 'after' });
+    await w.runChecks();
+    await w.cycle();
+    await turnOn();
+    await runAll(w);
+    const items = env.cleanupDb
+      .prepare(
+        `SELECT c.calibre_id, i.state FROM batch_items i JOIN proposed_changes c ON c.id = i.change_id`,
+      )
+      .all() as { calibre_id: number; state: string }[];
+    expect(items.length).toBe(3);
+    for (const i of items) expect(i.state).toBe('removed');
+    // The reading-data handoff happened, and every removal has its Undo record.
+    expect(env.readerBook(uuids.A1)!.bookId).toBe(a2Reader);
+    const records = env.cleanupDb.prepare('SELECT COUNT(*) AS n FROM undo_records').get() as {
+      n: number;
+    };
+    expect(records.n).toBe(3);
+  });
+
+  it('a remove that times out and Calibre keeps the copy: the item fails after the wait', async () => {
+    const w = worker({ removeTimeout: 'never', wait: 1 });
+    await w.runChecks();
+    await w.cycle();
+    await turnOn();
+    await runAll(w, 2);
+    const items = env.cleanupDb
+      .prepare(
+        `SELECT c.calibre_id, i.state, i.detail FROM batch_items i JOIN proposed_changes c ON c.id = i.change_id`,
+      )
+      .all() as { calibre_id: number; state: string; detail: string }[];
+    expect(items.length).toBeGreaterThan(0);
+    for (const i of items) {
+      expect(i.state).toBe('failed');
+      expect(i.detail).toMatch(/urlopen error timed out/);
+      expect(epubsOf(i.calibre_id)).toBe(1); // still in Calibre
+    }
+    expect(
+      (env.cleanupDb.prepare('SELECT COUNT(*) AS n FROM undo_records').get() as { n: number }).n,
+    ).toBe(0);
+  });
+
   it('keeps sending heartbeats while it is busy, and never throws when the server is away', async () => {
     const w = worker();
     await w.cycle();
@@ -643,35 +748,269 @@ describe('the sidecar with the server', () => {
     for (const i of items) expect(i).toEqual({ state: 'restored', method: 'readd' });
   });
 
-  it('an unexpected trash-restore error fails the Undo item with calibredb’s message', async () => {
-    const w = worker();
+  /** The calibredb calls of this test, as argument lists. */
+  function calls(): string[][] {
+    if (!fs.existsSync(log)) return [];
+    return fs
+      .readFileSync(log, 'utf8')
+      .split(/\r?\n/)
+      .filter((l) => l.trim() !== '')
+      .map((l) => JSON.parse(l) as string[]);
+  }
+  const trashRestores = () => calls().filter((c) => c[0] === 'trash' && c[1] === 'restore');
+  const adds = () => calls().filter((c) => c[0] === 'add');
+
+  /** Removes the copies (all batches), then asks to undo the biggest batch. */
+  async function removeThenUndo(w: Worker) {
     await w.runChecks();
     await w.cycle();
     await turnOn();
     await runAll(w);
-    const [batch] = env.service.batches.list();
-    await request(env.app)
+    const batch = env.service.batches
+      .list()
+      .filter((b) => b.kind === 'apply')
+      .sort((a, b) => b.itemCount - a.itemCount)[0];
+    expect(batch.itemCount).toBeGreaterThan(1);
+    const res = await request(env.app)
       .post(`/api/v1/cleanup/batches/${batch.id}/undo`)
       .set(auth(user))
       .expect(200);
-    const failing = worker({ fail: 'trash restore' });
-    await failing.runChecks();
-    await runAll(failing, 3);
-    const undo = env.service.batches.list().find((b) => b.kind === 'undo')!;
-    const items = env.cleanupDb
-      .prepare('SELECT state, detail FROM batch_items WHERE batch_id = ?')
-      .all(undo.id) as { state: string; detail: string }[];
-    for (const i of items) {
-      expect(i.state).toBe('failed');
-      expect(i.detail).toMatch(/calibredb trash restore failed \(exit 2\): simulated failure/);
+    const ids = env.cleanupDb
+      .prepare(
+        `SELECT c.calibre_id FROM batch_items i JOIN proposed_changes c ON c.id = i.change_id
+         WHERE i.batch_id = ? ORDER BY c.calibre_id`,
+      )
+      .all(batch.id)
+      .map((r) => (r as { calibre_id: number }).calibre_id);
+    fs.writeFileSync(log, ''); // count only the Undo's calls from here on
+    return { applyBatch: batch, undoId: res.body.batch.id as string, ids };
+  }
+
+  function undoItems(undoId: string) {
+    return env.cleanupDb
+      .prepare(
+        `SELECT c.calibre_id, i.state, i.method, i.detail FROM batch_items i
+         JOIN proposed_changes c ON c.id = i.change_id WHERE i.batch_id = ? ORDER BY c.calibre_id`,
+      )
+      .all(undoId) as { calibre_id: number; state: string; method: string; detail: string }[];
+  }
+
+  it("Undo asks Calibre's trash once for the whole batch and waits out its 408 timeout", async () => {
+    const { undoId, ids } = await removeThenUndo(worker());
+    // Like the NAS: the request times out (HTTP 408) but Calibre restores the books anyway.
+    await runAll(worker({ trash408: 'after' }));
+    const items = undoItems(undoId);
+    expect(items.map((i) => i.calibre_id)).toEqual(ids);
+    for (const i of items) expect([i.state, i.method]).toEqual(['restored', 'trash']);
+    expect(trashRestores()).toHaveLength(1);
+    expect(trashRestores()[0].at(-1)).toBe(ids.join(','));
+    expect(adds()).toEqual([]);
+    // The same books (ids and UUIDs) are back in Calibre.
+    const mdb = new Database(env.lib.dbFile, { readonly: true });
+    for (const id of ids) {
+      expect(mdb.prepare('SELECT id FROM books WHERE id = ?').get(id)).toBeTruthy();
     }
-    // Nothing was re-added behind the error.
-    expect(
-      fs
-        .readFileSync(log, 'utf8')
-        .split(/\r?\n/)
-        .filter((l) => l.startsWith('["add"')),
-    ).toEqual([]);
+    mdb.close();
+  });
+
+  it('when Calibre never brings the books back: the items fail after the wait, nothing is added twice, and Undo again works', async () => {
+    const { applyBatch, undoId, ids } = await removeThenUndo(worker());
+    await runAll(worker({ trash408: 'never', wait: 1 }), 3);
+    for (const i of undoItems(undoId)) {
+      expect(i.state).toBe('failed');
+      expect(i.detail).toMatch(
+        /hasn't brought this book back from its trash within .* Undo again later/,
+      );
+    }
+    expect(adds()).toEqual([]);
+    // Undo again (Calibre is fine now): the books come back from the trash.
+    const again = await request(env.app)
+      .post(`/api/v1/cleanup/batches/${applyBatch.id}/undo`)
+      .set(auth(user))
+      .expect(200);
+    await runAll(worker());
+    const items = undoItems(again.body.batch.id);
+    expect(items.map((i) => i.calibre_id)).toEqual(ids);
+    for (const i of items) expect([i.state, i.method]).toEqual(['restored', 'trash']);
+    expect(adds()).toEqual([]);
+  });
+
+  it("a book gone from Calibre's trash is re-added; the others still come from the trash", async () => {
+    const { undoId, ids } = await removeThenUndo(worker());
+    const gone = ids[0];
+    fs.rmSync(path.join(env.lib.dir, '.caltrash', 'b', String(gone)), { recursive: true });
+    await runAll(worker());
+    const items = undoItems(undoId);
+    for (const i of items) {
+      expect([i.state, i.method.split(':')[0]]).toEqual([
+        'restored',
+        i.calibre_id === gone ? 'readd' : 'trash',
+      ]);
+    }
+    // The server saw the book is no longer in Calibre's trash folder: the trash was asked only
+    // for the others, in one call.
+    expect(trashRestores().map((c) => c.at(-1))).toEqual([
+      ids.filter((id) => id !== gone).join(','),
+    ]);
+    expect(adds()).toHaveLength(1);
+  });
+
+  it('a book gone from the trash while Calibre answers 408 (the NAS): the others still come back', async () => {
+    // On the NAS every trash restore answers 408, which also hides calibre's refusal of a
+    // request naming a book that isn't in its trash; nothing would come back if it were asked.
+    const { undoId, ids } = await removeThenUndo(worker());
+    const gone = ids[0];
+    fs.rmSync(path.join(env.lib.dir, '.caltrash', 'b', String(gone)), { recursive: true });
+    await runAll(worker({ trash408: 'after' }));
+    for (const i of undoItems(undoId)) {
+      expect([i.state, i.method.split(':')[0]]).toEqual([
+        'restored',
+        i.calibre_id === gone ? 'readd' : 'trash',
+      ]);
+    }
+    expect(trashRestores()).toHaveLength(1);
+    expect(adds()).toHaveLength(1);
+  });
+
+  it('lookups that time out while Calibre is busy are retried, not counted as failures', async () => {
+    const { undoId } = await removeThenUndo(worker());
+    await runAll(worker({ trash408: 'after', list408: 4 }));
+    for (const i of undoItems(undoId)) expect([i.state, i.method]).toEqual(['restored', 'trash']);
+    expect(adds()).toEqual([]);
+  });
+
+  it('a re-add that times out while Calibre adds the book anyway is recorded, not added twice', async () => {
+    const { undoId, ids } = await removeThenUndo(worker());
+    fs.rmSync(path.join(env.lib.dir, '.caltrash'), { recursive: true, force: true });
+    await runAll(worker({ addTimeout: 'after' }));
+    const items = undoItems(undoId);
+    expect(items.map((i) => i.calibre_id)).toEqual(ids);
+    for (const i of items) expect([i.state, i.method.split(':')[0]]).toEqual(['restored', 'readd']);
+    expect(adds()).toHaveLength(ids.length); // one add per book, no second try
+  });
+
+  it('a re-add Calibre finished only after the Undo failed: Undo again finds it instead of adding again', async () => {
+    const { applyBatch, undoId, ids } = await removeThenUndo(worker());
+    fs.rmSync(path.join(env.lib.dir, '.caltrash'), { recursive: true, force: true });
+    // The add times out and nothing appears within the wait: the items fail.
+    await runAll(worker({ addTimeout: 'never', wait: 1 }), 3);
+    for (const i of undoItems(undoId)) expect(i.state).toBe('failed');
+    // Calibre finishes those adds later (as the add calls the sidecar made would).
+    for (const id of ids) {
+      const exportDir = fs
+        .readdirSync(quarantine, { recursive: true, withFileTypes: true })
+        .find((e) => e.isDirectory() && e.name === String(id));
+      const dir = path.join(
+        exportDir!.parentPath ?? (exportDir as unknown as { path: string }).path,
+        exportDir!.name,
+      );
+      const r = spawnSync(
+        process.execPath,
+        [
+          FAKE,
+          'add',
+          '--with-library',
+          'http://127.0.0.1:1/#japanese-library',
+          '--username',
+          'u',
+          '--password',
+          '<stdin>',
+          '--duplicates',
+          '--one-book-per-directory',
+          dir,
+        ],
+        {
+          input: `${PASSWORD}\n`,
+          encoding: 'utf8',
+          env: { ...process.env, FAKE_CALIBRE_LIBRARY: env.lib.dir, FAKE_PASSWORD: PASSWORD },
+        },
+      );
+      expect(r.status).toBe(0);
+    }
+    fs.writeFileSync(log, '');
+    const again = await request(env.app)
+      .post(`/api/v1/cleanup/batches/${applyBatch.id}/undo`)
+      .set(auth(user))
+      .expect(200);
+    await runAll(worker());
+    for (const i of undoItems(again.body.batch.id)) {
+      expect([i.state, i.method.split(':')[0]]).toEqual(['restored', 'readd']);
+    }
+    expect(adds()).toEqual([]); // found the earlier copies, added nothing
+  });
+
+  it("when the server can't tell what is in Calibre's trash, the old behavior stays (refusal read)", async () => {
+    const { undoId, ids } = await removeThenUndo(worker());
+    const gone = ids[0];
+    fs.rmSync(path.join(env.lib.dir, '.caltrash', 'b', String(gone)), { recursive: true });
+    // An older server sends no inCalibreTrash: the sidecar asks for all, reads the refusal,
+    // and asks again without that id.
+    const strip: typeof fetch = async (input, init) => {
+      const res = await fetch(input, init);
+      if (!String(input).endsWith('/claim')) return res;
+      const body = (await res.json()) as { batch: { items: Record<string, unknown>[] } | null };
+      for (const it of body.batch?.items ?? []) delete it.inCalibreTrash;
+      return new Response(JSON.stringify(body), { status: res.status, headers: res.headers });
+    };
+    await runAll(worker({ fetchImpl: strip }));
+    for (const i of undoItems(undoId)) {
+      expect(i.state).toBe('restored');
+    }
+    expect(trashRestores().map((c) => c.at(-1))).toEqual([
+      ids.join(','),
+      ids.filter((id) => id !== gone).join(','),
+    ]);
+  });
+
+  it('after a restart, a trash restore asked for earlier is waited on, not asked again', async () => {
+    const { undoId, ids } = await removeThenUndo(worker());
+    // The sidecar had asked just before it stopped (its plan is in the quarantine folder) and
+    // Calibre is still working: the books come back a moment later.
+    fs.mkdirSync(path.join(quarantine, undoId), { recursive: true });
+    fs.writeFileSync(
+      path.join(quarantine, undoId, `trash-restore-${Date.now()}.json`),
+      JSON.stringify({ requested: ids, notInTrash: [], requestedAt: Date.now() }),
+    );
+    const later = new Promise<void>((resolve) => {
+      setTimeout(() => {
+        const child = spawn(
+          process.execPath,
+          [
+            FAKE,
+            'trash',
+            'restore',
+            '--with-library',
+            'http://127.0.0.1:1/#japanese-library',
+            '--username',
+            'u',
+            '--password',
+            '<stdin>',
+            ids.join(','),
+          ],
+          {
+            env: { ...process.env, FAKE_CALIBRE_LIBRARY: env.lib.dir, FAKE_PASSWORD: PASSWORD },
+          },
+        );
+        child.stdin.end(`${PASSWORD}\n`);
+        child.on('close', () => resolve());
+      }, 700);
+    });
+    await runAll(worker({ wait: 30 }));
+    await later;
+    const items = undoItems(undoId);
+    for (const i of items) expect([i.state, i.method]).toEqual(['restored', 'trash']);
+    expect(trashRestores()).toEqual([]); // the sidecar didn't ask a second time
+    expect(adds()).toEqual([]);
+  });
+
+  it('an unexpected trash-restore error: the items wait, then fail; nothing is re-added', async () => {
+    const { undoId } = await removeThenUndo(worker());
+    await runAll(worker({ fail: 'trash restore', wait: 1 }), 3);
+    for (const i of undoItems(undoId)) {
+      expect(i.state).toBe('failed');
+      expect(i.detail).toMatch(/Undo again later/);
+    }
+    expect(adds()).toEqual([]);
   });
 
   it('nothing is applied while a safety check fails (no #illustrator column)', async () => {

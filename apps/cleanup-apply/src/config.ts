@@ -20,6 +20,19 @@ export interface SidecarConfig {
   checkSeconds: number;
   /** Requests to the server time out after this long (s). */
   requestTimeoutSeconds: number;
+  /**
+   * Undo: how long to wait for Calibre to bring books back from its trash (s). Calibre reads
+   * its whole trash first (minutes with thousands of entries) and keeps going after the
+   * request itself times out.
+   */
+  trashRestoreWaitSeconds: number;
+  /**
+   * How long to wait for Calibre to remove a copy after the remove request failed (s). The
+   * request can time out while Calibre still removes it.
+   */
+  removeWaitSeconds: number;
+  /** While waiting for Calibre (Undo, a timed-out remove): how often to look (s). */
+  waitPollSeconds: number;
 }
 
 export class ConfigError extends Error {}
@@ -48,6 +61,9 @@ export function loadConfig(env: Record<string, string | undefined>): SidecarConf
     minFreeMb: num(env, 'QUARANTINE_MIN_FREE_MB', 2048),
     calibredbTimeoutSeconds: num(env, 'CALIBREDB_TIMEOUT_SECONDS', 600),
     checkSeconds: num(env, 'CHECK_SECONDS', 120),
-    requestTimeoutSeconds: num(env, 'REQUEST_TIMEOUT_SECONDS', 60)
+    requestTimeoutSeconds: num(env, 'REQUEST_TIMEOUT_SECONDS', 60),
+    trashRestoreWaitSeconds: num(env, 'TRASH_RESTORE_WAIT_SECONDS', 3600),
+    removeWaitSeconds: num(env, 'REMOVE_WAIT_SECONDS', 600),
+    waitPollSeconds: num(env, 'WAIT_POLL_SECONDS', 15)
   };
 }

@@ -465,6 +465,7 @@ export function undoCleanupBatchCopy(count: number): ConfirmCopy {
     title: `Bring back ${books(count)} removed in this batch?`,
     message: [
       'They are restored in Calibre, from Calibre’s trash when they are still there, otherwise added again from the quarantine folder (then with a new Calibre id). Reading data that moved to the kept copy moves back.',
+      'With many books in Calibre’s trash, Calibre takes a few minutes before the first one is back.',
       'The quarantine folder stays as it is.'
     ],
     confirmLabel: 'Undo this batch',

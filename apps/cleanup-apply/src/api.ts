@@ -46,6 +46,11 @@ export interface BatchItem {
   kept: { calibreId: number; uuid: string };
   /** apply: the user's tags to add to the kept copy; undo: the tags to take off it again. */
   addTags: string[];
+  /**
+   * undo: whether Calibre's trash folder holds this book (the server looks at the read-only
+   * library mount); null or missing when it couldn't tell.
+   */
+  inCalibreTrash?: boolean | null;
 }
 
 export interface Batch {

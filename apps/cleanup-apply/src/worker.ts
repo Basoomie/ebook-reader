@@ -30,6 +30,7 @@ import {
   Calibredb,
   calibreTime,
   type Login,
+  type RunResult,
   sameVersion,
   shorten,
   versionAtLeast
@@ -42,6 +43,19 @@ export const SIDECAR_VERSION = '1.0.0';
 export const TRASH_RESTORE_VERSION = '9.18.0';
 /** Heartbeats while a check or a batch runs (the server calls a sidecar silent for 90 s offline). */
 export const KEEPALIVE_MS = 30_000;
+
+/** An answer from Calibre that waiting won't change (stops pollUntil at once). */
+export class StopWaiting extends Error {}
+
+/** What an Undo batch asked Calibre's trash for (kept in the batch's quarantine folder). */
+export interface TrashRestorePlan {
+  /** Books a trash restore was asked for: waited for, never re-added (no double copies). */
+  requested: number[];
+  /** Books Calibre said are not in its trash any more: re-added from the quarantine. */
+  notInTrash: number[];
+  /** When the restore was asked for (ms). */
+  requestedAt: number;
+}
 
 export interface Logger {
   info(m: string): void;
@@ -337,6 +351,7 @@ export class Worker {
         )
       );
       if (!batch.snapshotSaved) await this.saveSnapshot(batch);
+      const plan = batch.kind === 'undo' ? await this.requestTrashRestore(batch) : null;
       for (const item of batch.items) {
         if (this.stopped) return;
         const final =
@@ -346,7 +361,7 @@ export class Worker {
         if (final.includes(item.state)) continue;
         try {
           if (batch.kind === 'apply') await this.applyItem(batch, item);
-          else await this.undoItem(batch, item);
+          else await this.undoItem(batch, item, plan!);
         } catch (err) {
           if (err instanceof ServerError) throw err;
           // Stopping (SIGTERM) can kill a calibredb call; the step is repeated after the restart.
@@ -501,7 +516,18 @@ export class Worker {
           await this.report(batch, item, { step: 'skipped', detail: keptProblem });
           return;
         }
-        await this.calibredb.ok('remove', login, [String(item.calibreId)]);
+        try {
+          await this.calibredb.ok('remove', login, [String(item.calibreId)]);
+        } catch (err) {
+          // The request can time out while Calibre still removes the book (seen on the NAS,
+          // 2026-11-14): look whether it goes before calling the item failed, or the removal
+          // would be missing from the records (no Undo, no handoff).
+          if (this.stopped) throw err;
+          this.log.info(
+            `Remove ${item.calibreId}: ${shorten((err as Error).message, 200)}; waiting to see whether Calibre removes it`
+          );
+          if (!(await this.waitUntilGone(login, item))) throw err;
+        }
       }
       if (await this.calibredb.book(login, item.calibreId)) {
         throw new Error('Calibre still lists the copy after remove');
@@ -551,10 +577,147 @@ export class Worker {
     await this.report(batch, item, report);
   }
 
-  private async undoItem(batch: Batch, item: BatchItem): Promise<void> {
+  /**
+   * Undo, once per batch before its items: asks Calibre's trash for all the batch's books that
+   * aren't back yet in ONE call. Calibre reads its whole trash on every call (minutes with
+   * thousands of entries on the NAS) and keeps restoring after the request itself times out
+   * (HTTP 408), so the items then wait for their books to reappear.
+   *
+   * Never two overlapping requests: the plan is written to the batch's quarantine folder
+   * before asking, and after a restart a plan younger than the wait is waited on instead of
+   * asking again. A book is re-added from the quarantine only when Calibre answered that it
+   * isn't in its trash, so a book that is still coming back is never added a second time.
+   */
+  private async requestTrashRestore(batch: Batch): Promise<TrashRestorePlan> {
+    const open = batch.items.filter((i) => !['restored', 'failed', 'skipped'].includes(i.state));
+    const plan: TrashRestorePlan = { requested: [], notInTrash: [], requestedAt: Date.now() };
+    if (open.length === 0) return plan;
+    if (!this.trashRestore) {
+      // Calibre older than 9.18 has no trash restore: re-add from the quarantine.
+      plan.notInTrash = open.map((i) => i.calibreId);
+      return plan;
+    }
+    const dir = this.quarantine.batchDir(batch.id);
+    const earlier = await latestRestorePlan(dir);
+    const waitMs = this.opts.config.trashRestoreWaitSeconds * 1000;
+    if (earlier && Date.now() - earlier.requestedAt < waitMs) {
+      this.log.info(`Undo ${batch.id}: waiting for the trash restore asked for earlier`);
+      return earlier;
+    }
     const login = this.requireLogin();
-    // Already back (an earlier attempt's report was lost)?
-    const present = await this.calibredb.book(login, item.calibreId);
+    let present = new Map<number, string>();
+    try {
+      present = await this.calibredb.presentUuids(
+        login,
+        open.map((i) => i.calibreId)
+      );
+    } catch (err) {
+      // Calibre is busy: the trash is asked for every book; one already back is simply not
+      // in the trash any more, and each item looks for its book before anything else.
+      this.log.info(
+        `Undo ${batch.id}: couldn't see which books are back yet: ${shorten((err as Error).message, 160)}`
+      );
+    }
+    const notBack = open.filter((i) => present.get(i.calibreId) !== i.uuid);
+    // Books the server saw are no longer in Calibre's trash folder go straight to re-adding:
+    // on a big trash calibre answers HTTP 408 to every restore, which would also hide its
+    // refusal of the whole request because of them (nothing would come back).
+    plan.notInTrash.push(
+      ...notBack.filter((i) => i.inCalibreTrash === false).map((i) => i.calibreId)
+    );
+    let ask = notBack.filter((i) => i.inCalibreTrash !== false).map((i) => i.calibreId);
+    // Calibre refuses the whole call when any id isn't in its trash, naming those ids: they
+    // are set aside (re-added later) and the rest is asked for again.
+    for (let attempt = 0; attempt < 5 && ask.length > 0; attempt++) {
+      plan.requestedAt = Date.now();
+      await this.saveRestorePlan(dir, { ...plan, requested: [...plan.requested, ...ask] });
+      let r: RunResult | null = null;
+      try {
+        r = await this.calibredb.run('trash_restore', login, ask.map(String));
+      } catch (err) {
+        // Our own time limit stopped calibredb; Calibre may still be working on it.
+        this.log.info(`Undo ${batch.id}: ${(err as Error).message}`);
+      }
+      const missing = r && r.code !== 0 ? notInTrashIds(`${r.stderr}\n${r.stdout}`) : [];
+      if (missing.length > 0) {
+        plan.notInTrash.push(...ask.filter((id) => missing.includes(id)));
+        ask = ask.filter((id) => !missing.includes(id));
+        continue;
+      }
+      plan.requested.push(...ask);
+      const said = r
+        ? shorten(`${r.stderr}\n${r.stdout}`.trim().split(/\r?\n/).pop() ?? '', 200)
+        : '';
+      this.log.info(
+        `Undo ${batch.id}: asked Calibre's trash for ${ask.length} books (${r ? `exit ${r.code}${said ? `: ${said}` : ''}` : 'no answer yet'})`
+      );
+      ask = [];
+    }
+    await this.saveRestorePlan(dir, plan);
+    return plan;
+  }
+
+  private async saveRestorePlan(dir: string, plan: TrashRestorePlan): Promise<void> {
+    // A new file each time: nothing in the quarantine is ever overwritten.
+    const file = await this.quarantine.freshName(dir, `trash-restore-${Date.now()}`, '.json');
+    await this.quarantine.createOnce(file, JSON.stringify(plan, null, 2));
+  }
+
+  /** True once the copy is gone from Calibre, waiting up to the configured time. */
+  /**
+   * Looks every WAIT_POLL_SECONDS until `check` gives a value or `until` (ms) passes. A look
+   * that fails (calibre busy: HTTP 408, a network timeout) only means "not known yet".
+   */
+  private async pollUntil<T>(until: number, check: () => Promise<T | null>): Promise<T | null> {
+    for (;;) {
+      try {
+        const found = await check();
+        if (found !== null) return found;
+      } catch (err) {
+        if (err instanceof StopWaiting) throw err;
+        this.log.info(`Calibre didn't answer yet: ${shorten((err as Error).message, 160)}`);
+      }
+      if (this.stopped) throw new Error('Stopping');
+      if (Date.now() >= until) return null;
+      await sleep(
+        Math.min(this.opts.config.waitPollSeconds * 1000, Math.max(0, until - Date.now()))
+      );
+    }
+  }
+
+  /** True once the copy is gone from Calibre, waiting up to the configured time. */
+  private async waitUntilGone(login: Login, item: BatchItem): Promise<boolean> {
+    const until = Date.now() + this.opts.config.removeWaitSeconds * 1000;
+    const gone = await this.pollUntil(until, async () => {
+      const book = await this.calibredb.book(login, item.calibreId);
+      return !book || book.uuid !== item.uuid ? true : null;
+    });
+    return gone === true;
+  }
+
+  /** The book back in Calibre with its UUID, waiting up to the configured time after asking. */
+  private async waitForBook(
+    login: Login,
+    item: BatchItem,
+    requestedAt: number
+  ): Promise<{ id: number; uuid: string } | null> {
+    const until = requestedAt + this.opts.config.trashRestoreWaitSeconds * 1000;
+    return this.pollUntil(until, async () => {
+      const back = await this.calibredb.book(login, item.calibreId);
+      return back && back.uuid === item.uuid ? back : null;
+    });
+  }
+
+  private async undoItem(batch: Batch, item: BatchItem, plan: TrashRestorePlan): Promise<void> {
+    const login = this.requireLogin();
+    // Already back (an earlier attempt's report was lost, or Calibre finished after a restart)?
+    let present: Awaited<ReturnType<Calibredb['book']>> | undefined;
+    try {
+      present = await this.calibredb.book(login, item.calibreId);
+    } catch (err) {
+      present = undefined; // Calibre busy: not known yet
+      this.log.info(`Calibre didn't answer yet: ${shorten((err as Error).message, 160)}`);
+    }
     if (present && present.uuid === item.uuid) {
       await this.restored(batch, item, {
         step: 'restored',
@@ -564,28 +727,27 @@ export class Worker {
       });
       return;
     }
-    if (this.trashRestore) {
-      // Restores the whole book only (never --formats); a book that isn't in the trash any
-      // more is refused with "No entries in the trash bin" and nothing else is touched.
-      const r = await this.calibredb.run('trash_restore', login, [String(item.calibreId)]);
-      const back = await this.calibredb.book(login, item.calibreId);
-      if (back && back.uuid === item.uuid) {
-        await this.restored(batch, item, {
-          step: 'restored',
-          method: 'trash',
-          calibreId: back.id,
-          uuid: back.uuid
-        });
-        this.log.info(`Restored ${item.calibreId} from Calibre's trash`);
-        return;
+    if (plan.requested.includes(item.calibreId)) {
+      const back = await this.waitForBook(login, item, plan.requestedAt);
+      if (!back) {
+        const min = Math.round(this.opts.config.trashRestoreWaitSeconds / 60);
+        throw new Error(
+          `Calibre hasn't brought this book back from its trash within ${min} min of asking. It may still be working on it: Undo again later (books already back are recognized; nothing is added twice).`
+        );
       }
-      const out = `${r.stderr}\n${r.stdout}`.trim();
-      if (r.code === 0) throw new Error("Calibre's trash restore did not bring the book back");
-      if (!/No entries in the trash bin/i.test(out)) {
-        throw new Error(`calibredb trash restore failed (exit ${r.code}): ${shorten(out, 500)}`);
-      }
-      // Gone from Calibre's trash (expired or emptied): the quarantine copy below.
+      await this.restored(batch, item, {
+        step: 'restored',
+        method: 'trash',
+        calibreId: back.id,
+        uuid: back.uuid
+      });
+      this.log.info(`Restored ${item.calibreId} from Calibre's trash`);
+      return;
     }
+    if (!plan.notInTrash.includes(item.calibreId)) {
+      throw new Error("Calibre's trash couldn't be asked for this book; Undo again");
+    }
+    // Not in Calibre's trash any more (expired or emptied): the quarantine copy below.
     // Re-add the quarantined export (new Calibre id and UUID).
     const dir = item.quarantineDir;
     if (!dir || !(await this.quarantine.epubIn(dir))) {
@@ -595,27 +757,46 @@ export class Worker {
       });
       return;
     }
-    const noteDir = this.quarantine.batchDir(batch.id);
-    const note = path.join(noteDir, `${item.calibreId}.readd.json`);
+    if (present === undefined) {
+      // Never re-add without a clear answer that the book isn't back.
+      present = await this.pollUntil(
+        Date.now() + this.opts.config.removeWaitSeconds * 1000,
+        async () => ({ book: await this.calibredb.book(login, item.calibreId) })
+      ).then((r) => (r ? r.book : undefined));
+      if (present === undefined) throw new Error("Calibre didn't answer; Undo again later");
+      if (present && present.uuid === item.uuid) {
+        await this.restored(batch, item, {
+          step: 'restored',
+          method: 'trash',
+          calibreId: item.calibreId,
+          uuid: item.uuid
+        });
+        return;
+      }
+    }
+    // The note sits beside the copy's export, so every Undo of this copy (also a later one
+    // after a failure) finds an earlier re-add that Calibre finished after a timeout.
+    const note = path.join(path.dirname(dir), `${item.calibreId}.readd.json`);
+    const newSinceNote = async (before: number[]) => {
+      const now = await this.calibredb.idsWithTitle(login, item.title);
+      const added = now.filter((id) => !before.includes(id));
+      if (added.length > 1)
+        throw new StopWaiting('An earlier re-add left more than one copy; check Calibre');
+      return added.length === 1 ? await this.calibredb.book(login, added[0]) : null;
+    };
     let before: number[];
     if (await exists(note)) {
       before = (JSON.parse(await fsp.readFile(note, 'utf8')) as { idsBefore: number[] }).idsBefore;
-      const now = await this.calibredb.idsWithTitle(login, item.title);
-      const added = now.filter((id) => !before.includes(id));
-      if (added.length === 1) {
-        const back = await this.calibredb.book(login, added[0]);
-        if (back) {
-          await this.restored(batch, item, {
-            step: 'restored',
-            method: 'readd',
-            calibreId: back.id,
-            uuid: back.uuid
-          });
-          return;
-        }
+      const earlier = await newSinceNote(before);
+      if (earlier) {
+        await this.restored(batch, item, {
+          step: 'restored',
+          method: 'readd',
+          calibreId: earlier.id,
+          uuid: earlier.uuid
+        });
+        return;
       }
-      if (added.length > 1)
-        throw new Error('An earlier re-add left more than one copy; check Calibre');
     } else {
       before = await this.calibredb.idsWithTitle(login, item.title);
       await this.quarantine.createOnce(
@@ -623,16 +804,32 @@ export class Worker {
         JSON.stringify({ idsBefore: before, at: new Date().toISOString() })
       );
     }
-    const r = await this.calibredb.ok('add', login, [
-      '--duplicates',
-      '--one-book-per-directory',
-      dir
-    ]);
-    const m = /Added book ids?:\s*([\d,\s]+)/i.exec(r.stdout);
-    const newId = m ? Number(m[1].split(',')[0].trim()) : NaN;
-    const back = Number.isInteger(newId) ? await this.calibredb.book(login, newId) : null;
-    if (!back)
-      throw new Error(`calibredb add did not report the new book: ${r.stdout.trim().slice(-200)}`);
+    let back: { id: number; uuid: string } | null = null;
+    try {
+      const r = await this.calibredb.ok('add', login, [
+        '--duplicates',
+        '--one-book-per-directory',
+        dir
+      ]);
+      const m = /Added book ids?:\s*([\d,\s]+)/i.exec(r.stdout);
+      const newId = m ? Number(m[1].split(',')[0].trim()) : NaN;
+      back = Number.isInteger(newId) ? await this.calibredb.book(login, newId) : null;
+      if (!back) {
+        throw new Error(
+          `calibredb add did not report the new book: ${r.stdout.trim().slice(-200)}`
+        );
+      }
+    } catch (err) {
+      // The request can time out while Calibre still adds the book: wait for it to appear.
+      this.log.info(
+        `Re-add ${item.calibreId}: ${shorten((err as Error).message, 200)}; waiting to see whether Calibre added it`
+      );
+      back = await this.pollUntil(
+        Date.now() + this.opts.config.trashRestoreWaitSeconds * 1000,
+        () => newSinceNote(before)
+      );
+      if (!back) throw err;
+    }
     await this.restored(batch, item, {
       step: 'restored',
       method: 'readd',
@@ -704,5 +901,41 @@ export function keptCopyProblem(
 ): string | null {
   if (!kept || kept.uuid !== uuid) return 'The copy to keep is no longer in Calibre';
   if (!hasEpub(kept.formats)) return 'The copy to keep has no EPUB in Calibre any more';
+  return null;
+}
+
+/**
+ * The ids in calibre's refusal "No entries in the trash bin for the books: 3, 4" (it refuses
+ * the whole `trash restore` call when any id isn't in its trash).
+ */
+export function notInTrashIds(output: string): number[] {
+  const m = /No entries in the trash bin for the books:\s*([\d,\s]+)/i.exec(output);
+  if (!m) return [];
+  return m[1]
+    .split(/[,\s]+/)
+    .filter((s) => /^\d+$/.test(s))
+    .map(Number);
+}
+
+/** The newest trash-restore plan saved in a batch's quarantine folder, or null. */
+export async function latestRestorePlan(dir: string): Promise<TrashRestorePlan | null> {
+  let names: string[];
+  try {
+    names = await fsp.readdir(dir);
+  } catch {
+    return null;
+  }
+  const plans = names
+    .map((n) => /^trash-restore-(\d+)(?:-\d+)?\.json$/.exec(n))
+    .filter((m): m is RegExpExecArray => m !== null)
+    .sort((a, b) => Number(b[1]) - Number(a[1]) || b[0].length - a[0].length);
+  for (const m of plans) {
+    try {
+      const p = JSON.parse(await fsp.readFile(path.join(dir, m[0]), 'utf8')) as TrashRestorePlan;
+      if (Array.isArray(p.requested) && Array.isArray(p.notInTrash) && p.requestedAt > 0) return p;
+    } catch {
+      // A half-written file (stopped while writing): try the one before.
+    }
+  }
   return null;
 }

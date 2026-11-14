@@ -110,14 +110,31 @@ describe('cleanup wording', () => {
 
   it('shows removing the copies as a progress bar', () => {
     const t0 = Date.UTC(2026, 10, 13, 12, 0, 0);
-    const b = batch({ claimedAt: t0, createdAt: t0 });
-    expect(applyProgress({ applied: 400, proposed: 3300 }, [b], t0 + 10 * 60_000)).toEqual({
+    // 200 copies in the last 20 minutes (one every 6 s): 3,300 left = 5 h 30 min.
+    const pace = { removed: 200, firstAt: t0 };
+    expect(applyProgress({ applied: 400, proposed: 3300 }, pace, t0 + 20 * 60_000)).toEqual({
       label: 'Removing copies: 400 of 3,700',
       fraction: 400 / 3700,
-      eta: 'about 1 h 23 min left'
+      eta: 'about 5 h 30 min left'
     });
-    expect(applyProgress({ applied: 3700 }, [b])).toBeNull();
-    expect(applyProgress({ proposed: 3700 }, [])).toBeNull();
+    // The live case on the NAS 2026-11-14: 55 removed after a slow start and an old failed
+    // batch from the day before; only the recent pace counts (54 in the last 10 min).
+    expect(
+      applyProgress(
+        { applied: 55, proposed: 3500, queued: 144 },
+        { removed: 54, firstAt: t0 },
+        t0 + 10 * 60_000
+      )?.eta
+    ).toBe('about 11 h 15 min left');
+    // Too little to go on yet: no guess.
+    expect(
+      applyProgress({ applied: 3, proposed: 10 }, { removed: 3, firstAt: t0 }, t0 + 600_000)?.eta
+    ).toBeNull();
+    expect(
+      applyProgress({ applied: 9, proposed: 10 }, { removed: 9, firstAt: t0 }, t0 + 60_000)?.eta
+    ).toBeNull();
+    expect(applyProgress({ applied: 3700 }, pace)).toBeNull();
+    expect(applyProgress({ proposed: 3700 }, undefined)).toBeNull();
     expect(etaText(30_000)).toBe('less than a minute left');
     expect(etaText(2 * 3600_000)).toBe('about 2 h left');
   });

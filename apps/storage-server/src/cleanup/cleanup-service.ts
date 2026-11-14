@@ -66,6 +66,8 @@ export const CHECK_LABELS: Record<string, { label: string; required: boolean }> 
 /** Sidecar results older than this count as not checked. */
 export const CHECK_MAX_AGE_MS = 5 * 60 * 1000;
 export const SIDECAR_OFFLINE_MS = 90 * 1000;
+/** The page's time left for removing copies uses the pace of this recent window. */
+export const PACE_WINDOW_MS = 20 * 60 * 1000;
 const TICK_MS = 5000;
 
 export interface SidecarHeartbeat {
@@ -568,6 +570,22 @@ export class CleanupService {
       .all(target, currentAnalysisId(this.db)) as { reason: string; count: number }[];
   }
 
+  /**
+   * The recent pace of removals (for the page's time left): copies removed in the last
+   * PACE_WINDOW_MS and when the first of them was removed. The pace of the whole run would
+   * be thrown off by a slow start or an earlier run.
+   */
+  stage1Pace(now = Date.now()): { removed: number; firstAt: number | null } {
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) AS n, MIN(i.updated_at) AS first FROM batch_items i
+         JOIN batches b ON b.id = i.batch_id
+         WHERE b.kind = 'apply' AND b.stage = 1 AND i.state = 'removed' AND i.updated_at >= ?`,
+      )
+      .get(now - PACE_WINDOW_MS) as { n: number; first: number | null };
+    return { removed: row.n, firstAt: row.first };
+  }
+
   status(now = Date.now()) {
     const target = this.targetLibrary();
     const lib = target ? getLibrary(this.opts.main, target) : null;
@@ -594,6 +612,7 @@ export class CleanupService {
       stage1: {
         counts: this.stage1Counts(target),
         skipReasons: this.stage1SkipReasons(target),
+        pace: this.stage1Pace(now),
         openBatch: this.batches.open(),
         awaitingIngest: this.batches.awaitingIngest(),
       },

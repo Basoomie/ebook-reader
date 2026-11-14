@@ -25,7 +25,7 @@ import path from 'path';
 import { snapshotFile } from '../calibre/indexer';
 import { getIndexState, getLibrary } from '../calibre/libraries';
 import { snapshotMetadataDb } from '../calibre/snapshot';
-import { METADATA_DB, resolveInside, statFile } from '../calibre/source-fs';
+import { folderExists, METADATA_DB, resolveInside, statFile } from '../calibre/source-fs';
 import {
   applyHandoff,
   findCalibreSource,
@@ -142,6 +142,14 @@ export interface SidecarItem {
    * copy before this copy is removed. undo: the tags that were added then, taken off again.
    */
   addTags: string[];
+  /**
+   * undo only: whether Calibre's trash folder still holds this book (.caltrash/b/<id>, read
+   * from the read-only library mount when the batch is handed out). On the NAS every
+   * `trash restore` answers HTTP 408, which also hides calibre's "not in the trash" refusal, so
+   * the sidecar must know beforehand which books to ask the trash for and which to re-add.
+   * null when the library folder can't be read.
+   */
+  inCalibreTrash?: boolean | null;
 }
 
 export interface SidecarBatch {
@@ -637,7 +645,28 @@ export class BatchService {
       )
       .run(now, now + this.leaseSeconds * 1000, now, batch.id).changes;
     if (changed !== 1) return { batch: null, wait: null };
-    return { batch: this.sidecarView(batch.id), wait: null };
+    const view = this.sidecarView(batch.id);
+    if (view.kind === 'undo') await this.markCalibreTrash(view, batch.libraryId);
+    return { batch: view, wait: null };
+  }
+
+  /** Undo: which of the batch's books Calibre's trash folder still holds (read-only). */
+  private async markCalibreTrash(view: SidecarBatch, libraryId: string): Promise<void> {
+    const lib = getLibrary(this.deps.main, libraryId);
+    const libDir = lib && this.deps.calibreDir ? path.join(this.deps.calibreDir, lib.folder) : null;
+    for (const item of view.items) {
+      if (!libDir) {
+        item.inCalibreTrash = null;
+        continue;
+      }
+      try {
+        item.inCalibreTrash = await folderExists(
+          resolveInside(libDir, `.caltrash/b/${item.calibreId}`),
+        );
+      } catch {
+        item.inCalibreTrash = null;
+      }
+    }
   }
 
   private async makeSnapshot(batch: BatchRow): Promise<void> {

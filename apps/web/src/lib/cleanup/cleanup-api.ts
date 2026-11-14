@@ -74,6 +74,8 @@ export interface CleanupStatus {
     counts: Record<string, number>;
     /** Why copies were skipped, most common first. */
     skipReasons?: { reason: string; count: number }[];
+    /** Copies removed in the last 20 minutes, and when the first of them was (for time left). */
+    pace?: { removed: number; firstAt: number | null };
     openBatch: CleanupBatch | null;
     awaitingIngest: CleanupBatch | null;
   };

@@ -97,7 +97,7 @@
   $: bars = [
     stage1 ? stage1Progress(stage1, Date.now()) : null,
     status && stage1?.mode === 'on'
-      ? applyProgress(status.stage1.counts, batches, Date.now())
+      ? applyProgress(status.stage1.counts, status.stage1.pace, Date.now())
       : null
   ].filter((b): b is ProgressBar => b !== null);
 
