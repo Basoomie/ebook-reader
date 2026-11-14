@@ -15,8 +15,10 @@
  *   reader-side handoff; "restored" (Undo) re-binds a new UUID and reverses the handoff.
  * - undo(): an undo batch for an applied batch (the newest touching those books).
  *
- * The indexer holds its ingest of the library while a batch is claimed, so missing flags
- * and handoffs land together.
+ * The indexer holds its ingest of the library while a stage-1 batch is claimed, so missing
+ * flags and handoffs land together, and the next stage-1 batch waits until the index shows the
+ * last one. Stage 2 neither holds nor waits: it changes no book's presence and the reader takes
+ * in its edits like any edit made in Calibre (the index only checks them afterwards).
  */
 import type Database from 'better-sqlite3';
 import { createHash, randomUUID } from 'crypto';
@@ -291,24 +293,24 @@ export class BatchService {
     return r ? toBatch(r) : null;
   }
 
-  /** True while a claimed batch with a live lease works on this library (the indexer waits). */
+  /** True while a claimed stage-1 batch with a live lease works on this library (the indexer waits). */
   holdsIngest(libraryId: string, now = Date.now()): boolean {
     const r = this.db
       .prepare(
-        `SELECT 1 FROM batches WHERE library_id = ? AND state = 'claimed' AND lease_expires_at > ? LIMIT 1`,
+        `SELECT 1 FROM batches WHERE library_id = ? AND stage = 1 AND state = 'claimed' AND lease_expires_at > ? LIMIT 1`,
       )
       .get(libraryId, now);
     return r !== undefined;
   }
 
-  /** The finished batch the indexer hasn't taken in yet (the next batch waits for it). */
-  awaitingIngest(): BatchRow | null {
+  /** The stage's oldest finished batch the index hasn't taken in yet (stage 1 waits for it). */
+  awaitingIngest(stage: number): BatchRow | null {
     const r = this.db
       .prepare(
-        `SELECT * FROM batches WHERE state IN ('applied', 'partial', 'failed', 'undone')
+        `SELECT * FROM batches WHERE stage = ? AND state IN ('applied', 'partial', 'failed', 'undone')
            AND ingested_at IS NULL ORDER BY created_at LIMIT 1`,
       )
-      .get() as RawBatch | undefined;
+      .get(stage) as RawBatch | undefined;
     return r ? toBatch(r) : null;
   }
 
@@ -317,8 +319,13 @@ export class BatchService {
    * flagged missing (apply), restored copies present again (undo).
    */
   checkIngested(now = Date.now()): void {
+    this.checkIngestedStage(1, now);
+    this.checkIngestedStage(2, now);
+  }
+
+  private checkIngestedStage(stage: number, now: number): void {
     for (;;) {
-      const batch = this.awaitingIngest();
+      const batch = this.awaitingIngest(stage);
       if (!batch) return;
       if (batch.stage === 2) {
         if (this.stage2.ingested(batch)) {
@@ -327,10 +334,13 @@ export class BatchService {
             .run(now, now, batch.id);
           continue;
         }
+        // Only an index of a metadata.db copied after the batch finished can tell (the index
+        // is not held during stage-2 batches, so one copied mid-batch may predate the writes).
         const state = getIndexState(this.deps.main, batch.libraryId);
         if (
+          state.snapshotAt !== null &&
+          state.snapshotAt > (batch.finishedAt ?? now) &&
           state.indexedAt !== null &&
-          state.indexedAt > (batch.finishedAt ?? now) &&
           state.status === 'idle'
         ) {
           pauseStage(
@@ -418,7 +428,7 @@ export class BatchService {
     shouldStop: () => boolean = () => false,
   ): Promise<{ batch: BatchRow | null; reason: string | null }> {
     if (this.open()) return { batch: null, reason: 'A batch is being applied' };
-    if (this.awaitingIngest()) {
+    if (this.awaitingIngest(1)) {
       return {
         batch: null,
         reason: "Waiting for the reader's library index to take in the last batch",
@@ -538,7 +548,7 @@ export class BatchService {
       return `${what} is no longer in Calibre`;
     };
     const settings = getSettings(this.db);
-    const pacer = new Pacer(settings.pacing.hashMbPerSecond * 1024 * 1024);
+    const pacer = new Pacer(settings.pacing.readMbPerSecond * 1024 * 1024);
     const facts = this.db.prepare(
       'SELECT size, mtime_ms, sha256 FROM file_facts WHERE library_id = ? AND calibre_id = ?',
     );
@@ -768,12 +778,12 @@ export class BatchService {
         stage: 2,
         createdAt: batch.createdAt,
         leaseSeconds: this.leaseSeconds,
-        itemDelaySeconds: settings.stage2.itemDelaySeconds,
+        itemDelaySeconds: settings.pacing.itemDelaySeconds,
         snapshotSha256: batch.snapshotSha256,
         snapshotSaved: batch.snapshotSaved,
         items: [],
         books: this.stage2.sidecarBooks(batch),
-        chunkSize: settings.stage2.chunkSize,
+        chunkSize: settings.pacing.lookupChunk,
         listFields: LIST_FIELDS,
       };
     }

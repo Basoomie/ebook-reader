@@ -103,19 +103,14 @@ export interface Stage2Status {
   booksLeft: number;
 }
 
-export interface Stage2Settings {
-  filesPerSecond: number;
-  itemDelaySeconds: number;
-  chunkSize: number;
-  titleMinPercent: number;
-  titleMarginPoints: number;
-  authorsMinPercent: number;
-  gateMinBooks: number;
-  coverMaxMb: number;
-  coverMaxSide: number;
-  coverSameDistance: number;
-  coverLargerPercent: number;
-  referenceFile: string;
+/** Shared by every stage (the server's settings.ts). */
+export interface GateSettings {
+  defaultPercent: number;
+  /** Fields with their own bar, e.g. { title: 85 }. */
+  fieldPercent: Record<string, number>;
+  marginPoints: number;
+  minBooks: number;
+  labeledBooksFile: string;
 }
 
 export interface CleanupSettings {
@@ -125,16 +120,17 @@ export interface CleanupSettings {
   targetLibraryId: string | null;
   models: Record<string, string>;
   pacing: {
-    hashMbPerSecond: number;
+    readMbPerSecond: number;
     itemDelaySeconds: number;
     batchSize: number;
     maxBatchPercent: number;
+    lookupChunk: number;
   };
   customTags: string[];
-  gateThresholdPercent: number;
+  gate: GateSettings;
   reviewAlarmPercent: number;
   libraryChangedPausePercent: number;
-  stage2?: Stage2Settings;
+  covers: { maxMb: number; maxSide: number; sameDistance: number; largerPercent: number };
   backup: { path: string; verifiedOn: string; confirmedAt: number | null };
 }
 

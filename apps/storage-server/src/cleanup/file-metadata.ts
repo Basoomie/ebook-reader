@@ -301,6 +301,24 @@ async function spineText(opf: Opf, from: 'start' | 'end', chars: number): Promis
 export interface ReadFileMetadataOptions {
   /** Read the spine text for the evidence (default true). */
   text?: boolean;
+  /** Gets the number of bytes read from the file (for pacing). */
+  counted?: { bytes: number };
+}
+
+/** source-fs's read-only opener, counting the bytes read. */
+function countingOpener(counted: { bytes: number }) {
+  return async (file: string) => {
+    const h = await openSourceFile(file);
+    return {
+      stat: () => h.stat(),
+      close: () => h.close(),
+      read: async (buf: Buffer, offset: number, length: number, position: number) => {
+        const r = await h.read(buf, offset, length, position);
+        counted.bytes += r.bytesRead;
+        return r;
+      },
+    } as unknown as Awaited<ReturnType<typeof openSourceFile>>;
+  };
 }
 
 /** Reads an EPUB's metadata and cover facts. Throws ZipError (or parse errors) for a damaged file. */
@@ -308,7 +326,10 @@ export async function readFileMetadata(
   file: string,
   options: ReadFileMetadataOptions = {},
 ): Promise<FileFacts> {
-  const zip = await ZipFile.open(file, openSourceFile);
+  const zip = await ZipFile.open(
+    file,
+    options.counted ? countingOpener(options.counted) : openSourceFile,
+  );
   try {
     const opf = await openOpf(zip);
     const md = opf.metadata;

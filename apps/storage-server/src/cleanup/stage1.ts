@@ -422,7 +422,7 @@ export class Stage1Analysis {
     const books = this.loadBooks(p.libraryId);
     const libDir = this.libraryDir(p.libraryId);
     const settings = getSettings(this.deps.cleanup);
-    const pacer = new Pacer(settings.pacing.hashMbPerSecond * 1024 * 1024);
+    const pacer = new Pacer(settings.pacing.readMbPerSecond * 1024 * 1024);
     const next = this.deps.cleanup
       .prepare(
         `SELECT f.calibre_id, f.file_path, f.size, f.mtime_ms FROM file_facts f

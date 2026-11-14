@@ -272,12 +272,6 @@ export class Stage2Batches {
   /** Plans the next stage-2 batch (the caller checked mode, pauses and the safety checks). */
   async plan(libraryId: string): Promise<{ batch: BatchRow | null; reason: string | null }> {
     if (this.batches.open()) return { batch: null, reason: 'A batch is being applied' };
-    if (this.batches.awaitingIngest()) {
-      return {
-        batch: null,
-        reason: "Waiting for the reader's library index to take in the last batch",
-      };
-    }
     const settings = getSettings(this.db);
     const present = presentBookCount(this.deps.main, libraryId);
     const cap = Math.max(
@@ -858,10 +852,10 @@ export class Stage2Batches {
     if (createHash('sha256').update(bytes).digest('hex') !== ev.cover.sha256) {
       throw new BatchError(409, 'cover_changed', "The EPUB's cover changed since the analysis");
     }
-    const s = getSettings(this.db).stage2;
+    const s = getSettings(this.db).covers;
     const out = await coverForCalibre(bytes, {
-      maxBytes: s.coverMaxMb * 1024 * 1024,
-      maxSide: s.coverMaxSide,
+      maxBytes: s.maxMb * 1024 * 1024,
+      maxSide: s.maxSide,
     });
     return { bytes: out.bytes, ext: out.ext, sha256: out.sha256 };
   }

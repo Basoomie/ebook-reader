@@ -43,6 +43,7 @@ import {
   versionAtLeast
 } from './calibredb';
 import type { SidecarConfig } from './config';
+import { CalibredbHelper } from './calibredb-helper';
 import { exists, Quarantine, sha256File } from './quarantine';
 
 export const SIDECAR_VERSION = '1.0.0';
@@ -113,11 +114,21 @@ export class Worker {
     this.api =
       opts.api ??
       new ServerApi(c.serverUrl, c.token, c.requestTimeoutSeconds * 1000, this.fetchImpl);
+    this.log = opts.log ?? consoleLogger;
     this.calibredb =
       opts.calibredb ??
-      new Calibredb({ program: c.calibredb, timeoutMs: c.calibredbTimeoutSeconds * 1000 });
+      new Calibredb({
+        program: c.calibredb,
+        timeoutMs: c.calibredbTimeoutSeconds * 1000,
+        helper: c.helper
+          ? new CalibredbHelper({
+              program: c.helper.program,
+              args: ['-e', c.helper.script],
+              log: (m) => this.log.info(m)
+            })
+          : null
+      });
     this.quarantine = new Quarantine(c.quarantineDir);
-    this.log = opts.log ?? consoleLogger;
     this.retryMinMs = opts.retryMinMs ?? 2000;
     this.retryMaxMs = opts.retryMaxMs ?? 60000;
   }
@@ -143,6 +154,7 @@ export class Worker {
       }
     } finally {
       clearInterval(beat);
+      this.calibredb.close();
     }
   }
 
