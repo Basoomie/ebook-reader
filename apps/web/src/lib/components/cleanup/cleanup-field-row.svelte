@@ -23,12 +23,13 @@
 
   $: ev = fieldEvidence(item);
   $: note = detail ?? item.review_reason ?? ev?.reason ?? null;
-  $: shown = state ?? item.state;
+  $: shown = state ?? item.state ?? 'proposed';
   $: done = ['applied', 'undone', 'written', 'restored'].includes(shown);
   $: oldLabel = done ? 'Before' : 'Now';
+  // A review item only proposes; an auto change still to write becomes the new value.
   $: newLabel = done
     ? 'Written'
-    : shown === 'proposed' || shown === 'queued'
+    : (shown === 'proposed' || shown === 'queued') && item.class !== 'review'
       ? 'Becomes'
       : 'Proposed';
 </script>

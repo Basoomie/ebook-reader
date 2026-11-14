@@ -474,7 +474,8 @@ export function createCleanupRouter(options: CleanupOptions): Router {
     const offset = Math.max(0, Number(req.query.offset) || 0);
     const rows = service.db
       .prepare(
-        `SELECT id, stage, calibre_id, calibre_uuid, field, review_reason, source, evidence_json, old_json, new_json
+        `SELECT id, stage, calibre_id, calibre_uuid, field, class, state, review_reason, source, evidence_json,
+                old_json, new_json
          FROM proposed_changes WHERE class = 'review' AND state = 'proposed' AND decided_by IS NULL
          ORDER BY stage, review_reason, id LIMIT 50 OFFSET ?`,
       )
