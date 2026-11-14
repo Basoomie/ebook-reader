@@ -18,9 +18,10 @@
     canUndo
   } from '$lib/cleanup/cleanup-text';
   import { confirmDestructive } from '$lib/confirm/confirm';
-  import { undoCleanupBatchCopy } from '$lib/confirm/confirm-copy';
+  import { undoCleanupBatchCopy, undoFileMetadataBatchCopy } from '$lib/confirm/confirm-copy';
   import { formatWhen } from '$lib/notes/notes-format';
   import CopyRow from './cleanup-copy-row.svelte';
+  import FieldRow from './cleanup-field-row.svelte';
 
   export let api: CleanupApi;
   export let batches: CleanupBatch[] = [];
@@ -29,6 +30,7 @@
 
   let open: string | null = null;
   let items: (Proposal & { state: string })[] = [];
+  let openStage = 1;
   let itemsError = '';
   let undoError = '';
 
@@ -38,6 +40,7 @@
       return;
     }
     open = batch.id;
+    openStage = batch.stage;
     items = [];
     itemsError = '';
     try {
@@ -49,13 +52,10 @@
 
   async function undo(batch: CleanupBatch) {
     undoError = '';
-    const count = batch.counts?.removed ?? batch.itemCount;
-    if (
-      !(await confirmDestructive({
-        ...undoCleanupBatchCopy(count),
-        testid: 'cleanup-undo-confirm'
-      }))
-    ) {
+    const count =
+      (batch.stage === 2 ? batch.counts?.written : batch.counts?.removed) ?? batch.itemCount;
+    const copy = batch.stage === 2 ? undoFileMetadataBatchCopy(count) : undoCleanupBatchCopy(count);
+    if (!(await confirmDestructive({ ...copy, testid: 'cleanup-undo-confirm' }))) {
       return;
     }
     try {
@@ -93,7 +93,13 @@
               on:click={() => toggle(batch)}
               aria-expanded={open === batch.id}
             >
-              {open === batch.id ? 'Hide copies' : 'Show copies'}
+              {open === batch.id
+                ? batch.stage === 2
+                  ? 'Hide changes'
+                  : 'Hide copies'
+                : batch.stage === 2
+                  ? 'Show changes'
+                  : 'Show copies'}
             </button>
             {#if canUndo(batch, batches)}
               <button
@@ -114,7 +120,11 @@
           {:else}
             <ul class="flex flex-col gap-2">
               {#each items as item (item.id)}
-                <CopyRow {item} state={item.state} />
+                {#if openStage === 2}
+                  <FieldRow {item} state={item.state} detail={item.detail ?? null} />
+                {:else}
+                  <CopyRow {item} state={item.state} />
+                {/if}
               {/each}
             </ul>
           {/if}

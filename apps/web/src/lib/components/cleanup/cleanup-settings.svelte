@@ -113,7 +113,25 @@
           .filter(Boolean),
         gateThresholdPercent: Number(settings.gateThresholdPercent),
         reviewAlarmPercent: Number(settings.reviewAlarmPercent),
-        libraryChangedPausePercent: Number(settings.libraryChangedPausePercent)
+        libraryChangedPausePercent: Number(settings.libraryChangedPausePercent),
+        ...(settings.stage2
+          ? {
+              stage2: {
+                filesPerSecond: Number(settings.stage2.filesPerSecond),
+                itemDelaySeconds: Number(settings.stage2.itemDelaySeconds),
+                chunkSize: Number(settings.stage2.chunkSize),
+                titleMinPercent: Number(settings.stage2.titleMinPercent),
+                titleMarginPoints: Number(settings.stage2.titleMarginPoints),
+                authorsMinPercent: Number(settings.stage2.authorsMinPercent),
+                gateMinBooks: Number(settings.stage2.gateMinBooks),
+                coverMaxMb: Number(settings.stage2.coverMaxMb),
+                coverMaxSide: Number(settings.stage2.coverMaxSide),
+                coverSameDistance: Number(settings.stage2.coverSameDistance),
+                coverLargerPercent: Number(settings.stage2.coverLargerPercent),
+                referenceFile: settings.stage2.referenceFile
+              }
+            }
+          : {})
       });
       settings = answer.settings;
       secrets = answer.secrets;
@@ -337,6 +355,142 @@
         />
       </label>
     </fieldset>
+
+    {#if settings.stage2}
+      <fieldset class="grid gap-4 sm:grid-cols-2" data-testid="cleanup-stage2-settings">
+        <legend class={legend}>Metadata from the files (stage 2)</legend>
+        <label class={field}>
+          <span class={label}>Books’ files read per second (0 = no limit)</span>
+          <input
+            class="c-input"
+            type="number"
+            min="0"
+            step="1"
+            bind:value={settings.stage2.filesPerSecond}
+          />
+        </label>
+        <label class={field}>
+          <span class={label}>Pause between two books (seconds)</span>
+          <input
+            class="c-input"
+            type="number"
+            min="0"
+            step="0.1"
+            bind:value={settings.stage2.itemDelaySeconds}
+          />
+        </label>
+        <label class={field}>
+          <span class={label}>Books read back from Calibre at once</span>
+          <input
+            class="c-input"
+            type="number"
+            min="1"
+            max="100"
+            step="1"
+            bind:value={settings.stage2.chunkSize}
+          />
+        </label>
+        <label class={field}>
+          <span class={label}>Titles: right on the labeled books at least (%)</span>
+          <input
+            class="c-input"
+            type="number"
+            min="50"
+            max="100"
+            step="0.5"
+            bind:value={settings.stage2.titleMinPercent}
+            data-testid="cleanup-title-bar"
+          />
+        </label>
+        <label class={field}>
+          <span class={label}>Titles: better than Calibre’s by at least (points)</span>
+          <input
+            class="c-input"
+            type="number"
+            min="0"
+            max="100"
+            step="1"
+            bind:value={settings.stage2.titleMarginPoints}
+          />
+        </label>
+        <label class={field}>
+          <span class={label}>Authors: right on the labeled books at least (%)</span>
+          <input
+            class="c-input"
+            type="number"
+            min="50"
+            max="100"
+            step="0.5"
+            bind:value={settings.stage2.authorsMinPercent}
+          />
+        </label>
+        <label class={field}>
+          <span class={label}>Check a group only from this many labeled books</span>
+          <input
+            class="c-input"
+            type="number"
+            min="1"
+            max="800"
+            step="1"
+            bind:value={settings.stage2.gateMinBooks}
+          />
+        </label>
+        <label class={field}>
+          <span class={label}>Covers passed on unchanged up to (MB)</span>
+          <input
+            class="c-input"
+            type="number"
+            min="1"
+            max="32"
+            step="1"
+            bind:value={settings.stage2.coverMaxMb}
+          />
+        </label>
+        <label class={field}>
+          <span class={label}>Longest cover side, larger ones are scaled down (px)</span>
+          <input
+            class="c-input"
+            type="number"
+            min="500"
+            max="20000"
+            step="1"
+            bind:value={settings.stage2.coverMaxSide}
+          />
+        </label>
+        <label class={field}>
+          <span class={label}>Same cover picture up to this difference (0-32)</span>
+          <input
+            class="c-input"
+            type="number"
+            min="0"
+            max="32"
+            step="1"
+            bind:value={settings.stage2.coverSameDistance}
+          />
+        </label>
+        <label class={field}>
+          <span class={label}>The file’s cover counts as larger by (%)</span>
+          <input
+            class="c-input"
+            type="number"
+            min="0"
+            max="500"
+            step="1"
+            bind:value={settings.stage2.coverLargerPercent}
+          />
+        </label>
+        <label class="{field} sm:col-span-2">
+          <span class={label}
+            >Labeled books file (empty = the one in the reader’s database folder)</span
+          >
+          <input
+            class="c-input"
+            placeholder="/db/cleanup/reference-sample/gold800.json"
+            bind:value={settings.stage2.referenceFile}
+          />
+        </label>
+      </fieldset>
+    {/if}
 
     <fieldset class="grid gap-4 sm:grid-cols-2" data-testid="cleanup-secrets">
       <legend class={legend}>AI keys (for later stages)</legend>

@@ -79,6 +79,43 @@ export interface CleanupStatus {
     openBatch: CleanupBatch | null;
     awaitingIngest: CleanupBatch | null;
   };
+  /** Stage 2 (WP20b): metadata and covers from the files. Missing on an older server. */
+  stage2?: Stage2Status;
+}
+
+export interface FieldPause {
+  field: string;
+  /** gate: below its bar on the labeled books; no_labels; review_alarm; failures. */
+  reason: string;
+  detail: string | null;
+  pausedAt: number;
+}
+
+export interface Stage2Status {
+  waiting: string | null;
+  /** Proposals per field, class (auto / review) and state. */
+  counts: { field: string; class: string; state: string; n: number }[];
+  skipReasons: { reason: string; count: number }[];
+  fieldPauses: FieldPause[];
+  /** Books written in the last 20 minutes, and when the first of them was (for time left). */
+  pace: { written: number; firstAt: number | null };
+  /** Books with changes still to write (auto, not paused). */
+  booksLeft: number;
+}
+
+export interface Stage2Settings {
+  filesPerSecond: number;
+  itemDelaySeconds: number;
+  chunkSize: number;
+  titleMinPercent: number;
+  titleMarginPoints: number;
+  authorsMinPercent: number;
+  gateMinBooks: number;
+  coverMaxMb: number;
+  coverMaxSide: number;
+  coverSameDistance: number;
+  coverLargerPercent: number;
+  referenceFile: string;
 }
 
 export interface CleanupSettings {
@@ -97,6 +134,7 @@ export interface CleanupSettings {
   gateThresholdPercent: number;
   reviewAlarmPercent: number;
   libraryChangedPausePercent: number;
+  stage2?: Stage2Settings;
   backup: { path: string; verifiedOn: string; confirmedAt: number | null };
 }
 
@@ -125,22 +163,40 @@ export interface CopyEvidence {
   customTags?: string[];
 }
 
+export interface CopyProposalEvidence {
+  sha256: string;
+  size: number;
+  setSize: number;
+  rule: 'tags' | 'older';
+  kept: CopyEvidence;
+  removed: CopyEvidence;
+}
+
+/** Stage 2: what a field change was proposed from. */
+export interface FieldEvidence {
+  /** Calibre's title and authors when the book was analysed. */
+  title: string;
+  authors?: string[];
+  group: 'unknown' | 'processed' | 'agree' | 'conflict' | null;
+  reason: string | null;
+  extra?: Record<string, { old: unknown; new: unknown }> | null;
+}
+
 export interface Proposal {
   id: number;
+  stage?: number;
   calibre_id: number;
   calibre_uuid: string;
   state: string;
   class?: string;
   review_reason?: string | null;
   batch_id?: string | null;
-  evidence: {
-    sha256: string;
-    size: number;
-    setSize: number;
-    rule: 'tags' | 'older';
-    kept: CopyEvidence;
-    removed: CopyEvidence;
-  } | null;
+  /** Stage 2: the field, its source, and the value before and after. */
+  field?: string;
+  source?: string;
+  old?: unknown;
+  new?: unknown;
+  evidence: CopyProposalEvidence | FieldEvidence | null;
   handoff?: { kind: string } | null;
   quarantine_dir?: string | null;
   restore_method?: string | null;
@@ -210,15 +266,25 @@ export class CleanupApi {
     }>;
   }
 
-  analyseAgain(): Promise<unknown> {
-    return this.request('POST', '/cleanup/stages/1/analyse', {});
+  analyseAgain(stage = 1): Promise<unknown> {
+    return this.request('POST', `/cleanup/stages/${stage}/analyse`, {});
+  }
+
+  /** Stage 2: resume one paused field (a gate pause lifts only with a new analysis). */
+  resumeField(stage: number, field: string): Promise<unknown> {
+    return this.request(
+      'POST',
+      `/cleanup/stages/${stage}/fields/${encodeURIComponent(field)}/resume`,
+      {}
+    );
   }
 
   proposals(
     stage: number,
     state: string | null,
     offset = 0,
-    limit = 50
+    limit = 50,
+    filters: { field?: string; class?: string } = {}
   ): Promise<{ total: number; items: Proposal[] }> {
     const q = new URLSearchParams({
       stage: String(stage),
@@ -226,6 +292,8 @@ export class CleanupApi {
       limit: String(limit)
     });
     if (state) q.set('state', state);
+    if (filters.field) q.set('field', filters.field);
+    if (filters.class) q.set('class', filters.class);
     return this.request('GET', `/cleanup/proposals?${q}`) as Promise<{
       total: number;
       items: Proposal[];

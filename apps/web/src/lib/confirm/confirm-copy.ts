@@ -473,6 +473,42 @@ export function undoCleanupBatchCopy(count: number): ConfirmCopy {
   };
 }
 
+/**
+ * Turning stage 2 on (WP20b): from then on it writes the books' own titles, authors, covers
+ * and more into Calibre on its own.
+ */
+export function turnOnFileMetadataCopy(counts: {
+  books: number | null;
+  folderMoves: number | null;
+}): ConfirmCopy {
+  const what =
+    typeof counts.books !== 'number' || counts.books <= 0 ? 'the books' : `${books(counts.books)}`;
+  return {
+    title: `Write the files’ metadata into Calibre for ${what}?`,
+    message: [
+      'From now on this runs on its own, in batches: titles, first authors, covers, Amazon ids, and an empty publisher, language or illustrator are taken from each book’s own file. Titles and authors are written only where Calibre’s are worse (author “Unknown” or the Google-era tag), or tidied where they already agree; the rest waits in Review.',
+      typeof counts.folderMoves === 'number' && counts.folderMoves > 0
+        ? `Calibre moves the folders of ${books(counts.folderMoves)} whose title or first author changes; the reader follows.`
+        : 'Calibre moves a book’s folder when its title or first author changes; the reader follows.',
+      'A field you change in Calibre afterwards is left alone. Each batch can be undone on this page; a cover added where Calibre had none stays.'
+    ],
+    confirmLabel: 'Turn on and write'
+  };
+}
+
+/** Undo of one stage-2 batch: the old values go back into Calibre. */
+export function undoFileMetadataBatchCopy(count: number): ConfirmCopy {
+  return {
+    title: `Put back the old values of ${count.toLocaleString('en-US')} ${count === 1 ? 'change' : 'changes'} in this batch?`,
+    message: [
+      'Titles, authors, Amazon ids, publishers, languages and illustrators get their old values again, and replaced covers their old picture (kept in the quarantine folder).',
+      'A cover added where Calibre had none stays: the content server can’t remove a cover. A value changed in Calibre since is left as it is.'
+    ],
+    confirmLabel: 'Undo this batch',
+    danger: false
+  };
+}
+
 /** Removing a saved API key or the Calibre password. */
 export function removeCleanupSecretCopy(label: string): ConfirmCopy {
   return {

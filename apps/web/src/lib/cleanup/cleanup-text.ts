@@ -4,7 +4,19 @@
  * All rights reserved.
  */
 
-import type { CleanupBatch, CleanupStage, Proposal, StageMode } from './cleanup-api';
+import type {
+  CleanupBatch,
+  CleanupStage,
+  CopyProposalEvidence,
+  Proposal,
+  StageMode
+} from './cleanup-api';
+
+/** Stage 1's evidence of a proposal (a removed copy beside the kept one), or null. */
+export function copyEvidence(p: Proposal): CopyProposalEvidence | null {
+  const ev = p.evidence;
+  return ev && 'removed' in ev && 'kept' in ev ? ev : null;
+}
 
 /** Plain wording for the /cleanup page (WP20a). Everyday words, no design-doc terms. */
 
@@ -246,14 +258,25 @@ export function batchStateText(batch: CleanupBatch): string {
 }
 
 export function batchKindText(batch: CleanupBatch): string {
-  return batch.kind === 'undo' ? 'Undo' : 'Remove identical copies';
+  if (batch.kind === 'undo') return 'Undo';
+  return batch.stage === 2 ? 'Metadata from the files' : 'Remove identical copies';
 }
 
+/** Stage 2's batch items are fields (several per book); stage 1's are copies. */
 export function batchCountsText(batch: CleanupBatch): string {
   const c = batch.counts ?? {};
   const parts: string[] = [];
-  const done = batch.kind === 'undo' ? c.restored : c.removed;
-  if (done) parts.push(`${n(done)} ${batch.kind === 'undo' ? 'brought back' : 'removed'}`);
+  const stage2 = batch.stage === 2;
+  const done = batch.kind === 'undo' ? c.restored : stage2 ? c.written : c.removed;
+  const doneWord =
+    batch.kind === 'undo'
+      ? stage2
+        ? 'changes put back'
+        : 'brought back'
+      : stage2
+        ? 'changes written'
+        : 'removed';
+  if (done) parts.push(`${n(done)} ${doneWord}`);
   if (c.skipped) parts.push(`${n(c.skipped)} skipped`);
   if (c.failed) parts.push(`${n(c.failed)} failed`);
   const waiting = (c.pending ?? 0) + (c.verified ?? 0) + (c.exported ?? 0) + (c.tagged ?? 0);
@@ -265,7 +288,7 @@ export function batchCountsText(batch: CleanupBatch): string {
 export function canUndo(batch: CleanupBatch, all: CleanupBatch[]): boolean {
   if (batch.kind !== 'apply') return false;
   if (!['applied', 'partial', 'failed'].includes(batch.state)) return false;
-  if (!(batch.counts?.removed > 0)) return false;
+  if (!((batch.stage === 2 ? batch.counts?.written : batch.counts?.removed) > 0)) return false;
   // One batch at a time.
   return !all.some((b) => b.state === 'planned' || b.state === 'claimed');
 }
@@ -276,6 +299,7 @@ const ITEM_STATE: Record<string, string> = {
   exported: 'Saved to the quarantine',
   tagged: 'Saved to the quarantine, your tags copied',
   removed: 'Removed (in Calibre’s trash)',
+  written: 'Written in Calibre',
   restored: 'Brought back',
   failed: 'Failed',
   skipped: 'Skipped',
@@ -298,7 +322,7 @@ export function handoffText(p: Proposal): string | null {
 }
 
 export function ruleText(p: Proposal): string {
-  return p.evidence?.rule === 'tags' ? 'kept: more of your tags' : 'kept: the older record';
+  return copyEvidence(p)?.rule === 'tags' ? 'kept: more of your tags' : 'kept: the older record';
 }
 
 export function restoreText(method: string | null | undefined): string | null {
@@ -315,7 +339,7 @@ export function restoreText(method: string | null | undefined): string | null {
  * lacks: they are added to the kept copy (decided with the user 2026-11-13).
  */
 export function tagsMoving(p: Proposal): string[] {
-  const ev = p.evidence;
+  const ev = copyEvidence(p);
   if (!ev) return [];
   const kept = new Set(ev.kept.tags.map((t) => t.toLowerCase()));
   return (ev.removed.customTags ?? []).filter((t) => !kept.has(t.toLowerCase()));

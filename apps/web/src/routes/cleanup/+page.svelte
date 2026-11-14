@@ -6,11 +6,11 @@
    */
 
   /**
-   * The Calibre library cleanup (Phase 6, WP20a). Not linked from reading or catalogue
-   * views; reached from Settings > Data. Status of every stage (progress, measured
+   * The Calibre library cleanup (Phase 6, WP20a; stage 2 from WP20b). Not linked from reading
+   * or catalogue views; reached from Settings > Data. Status of every stage (progress, measured
    * accuracy, pauses), the safety checks, the settings (keys and the password are
-   * write-only), what stage 1 found, the review queue, the batches with Undo, and an
-   * optional spot check. The page records decisions only; the apply sidecar does the
+   * write-only), what stage 1 found, what stage 2 would change, the review queue, the batches
+   * with Undo, and an optional spot check. The page records decisions only; the apply sidecar does the
    * writing in Calibre. Asks the server again every few seconds while open.
    */
   import { onDestroy, onMount } from 'svelte';
@@ -22,6 +22,7 @@
   import CleanupBatches from '$lib/components/cleanup/cleanup-batches.svelte';
   import CleanupSection from '$lib/components/cleanup/cleanup-section.svelte';
   import CopyRow from '$lib/components/cleanup/cleanup-copy-row.svelte';
+  import FieldRow from '$lib/components/cleanup/cleanup-field-row.svelte';
   import CleanupSettings from '$lib/components/cleanup/cleanup-settings.svelte';
   import SettingsSection from '$lib/components/settings/settings-section.svelte';
   import {
@@ -29,9 +30,22 @@
     type CleanupBatch,
     type CleanupStage,
     type CleanupStatus,
+    type FieldPause,
     type Proposal,
     type StageMode
   } from '$lib/cleanup/cleanup-api';
+  import {
+    FIELDS,
+    STAGE2_MODE_HINTS,
+    fieldLabel,
+    fieldPauseResumable,
+    fieldPauseTitle,
+    gateRows,
+    stage2ApplyProgress,
+    stage2CountLines,
+    stage2Lines,
+    stage2Progress
+  } from '$lib/cleanup/stage2-text';
   import {
     MODE_HINTS,
     MODE_LABELS,
@@ -46,7 +60,7 @@
     type ProgressBar
   } from '$lib/cleanup/cleanup-text';
   import { confirmDestructive } from '$lib/confirm/confirm';
-  import { turnOnIdenticalFilesCopy } from '$lib/confirm/confirm-copy';
+  import { turnOnFileMetadataCopy, turnOnIdenticalFilesCopy } from '$lib/confirm/confirm-copy';
   import { pxScreen } from '$lib/css-classes';
   import { pagePath } from '$lib/data/env';
   import { formatPageTitle } from '$lib/functions/format-page-title';
@@ -89,10 +103,28 @@
   let foundOffset = 0;
   let review: { total: number; items: Proposal[] } | null = null;
   let spot: Proposal[] | null = null;
+  let spotStage = 1;
+
+  // Stage 2: what it would change (or changed), by field and class.
+  let changes: { total: number; items: Proposal[] } | null = null;
+  let changesField = '';
+  let changesClass = 'auto';
+  let changesState = 'proposed';
+  let changesOffset = 0;
+  /** The gate's bars, from the settings (for the table). */
+  let gateBars: { title: number; margin: number; authors: number } | null = null;
 
   $: stages = status?.stages ?? [];
   $: stage1 = stages.find((s) => s.stage === 1);
-  $: laterStages = stages.filter((s) => s.stage >= 2);
+  $: stage2 = stages.find((s) => s.stage === 2 && s.built);
+  $: laterStages = stages.filter((s) => s.stage >= (stage2 ? 3 : 2));
+  $: fieldPauses = status?.stage2?.fieldPauses ?? [];
+  $: gate = stage2 ? gateRows(stage2, gateBars) : [];
+  $: labelsError = (stage2?.precision as { labelsError?: string | null } | undefined)?.labelsError;
+  $: bars2 = [
+    stage2 ? stage2Progress(stage2, Date.now()) : null,
+    stage2 ? stage2ApplyProgress(stage2, status?.stage2, Date.now()) : null
+  ].filter((b): b is ProgressBar => b !== null);
   $: checksOk = status?.checks.filter((c) => c.required).every((c) => c.ok) ?? false;
   $: toRemove = Number((stage1?.progress as { toRemove?: number } | undefined)?.toRemove ?? 0);
   // Recomputed on every poll (status is replaced), so the time left follows the pace.
@@ -112,7 +144,44 @@
     await refresh();
     void loadFound();
     void loadReview();
+    void loadChanges();
+    void loadGateBars();
   });
+
+  async function loadGateBars() {
+    if (!api) return;
+    try {
+      const s = (await api.settings()).settings.stage2;
+      gateBars = s
+        ? { title: s.titleMinPercent, margin: s.titleMarginPoints, authors: s.authorsMinPercent }
+        : null;
+    } catch {
+      gateBars = null;
+    }
+  }
+
+  async function loadChanges(offset = 0) {
+    if (!api || !status?.stages.some((s) => s.stage === 2 && s.built)) return;
+    try {
+      changes = await api.proposals(2, changesState || null, offset, 50, {
+        field: changesField,
+        class: changesClass
+      });
+      changesOffset = offset;
+    } catch (err) {
+      actionError = describe(err);
+    }
+  }
+
+  async function resumeField(p: FieldPause) {
+    if (!api) return;
+    try {
+      await api.resumeField(2, p.field);
+      await refresh();
+    } catch (err) {
+      actionError = describe(err);
+    }
+  }
 
   onDestroy(() => {
     destroyed = true;
@@ -155,6 +224,17 @@
       });
       if (!ok) return;
     }
+    if (stage.stage === 2 && mode === 'on') {
+      const p = stage.progress as { booksWithChanges?: number; folderMoves?: number };
+      const ok = await confirmDestructive({
+        ...turnOnFileMetadataCopy({
+          books: typeof p.booksWithChanges === 'number' ? p.booksWithChanges : null,
+          folderMoves: typeof p.folderMoves === 'number' ? p.folderMoves : null
+        }),
+        testid: 'cleanup-turn-on-2-confirm'
+      });
+      if (!ok) return;
+    }
     try {
       await api.setStageMode(stage.stage, mode);
       await refresh();
@@ -173,10 +253,10 @@
     }
   }
 
-  async function analyseAgain() {
+  async function analyseAgain(stage = 1) {
     if (!api) return;
     try {
-      await api.analyseAgain();
+      await api.analyseAgain(stage);
       await refresh();
     } catch (err) {
       actionError = describe(err);
@@ -215,7 +295,7 @@
   async function loadSpot() {
     if (!api) return;
     try {
-      spot = (await api.spotCheck(1)).items;
+      spot = (await api.spotCheck(spotStage)).items;
     } catch (err) {
       actionError = describe(err);
     }
@@ -311,7 +391,7 @@
                 <button
                   class="c-btn c-btn-ghost"
                   data-testid="cleanup-analyse-again"
-                  on:click={analyseAgain}>Run the analysis again</button
+                  on:click={() => analyseAgain(1)}>Run the analysis again</button
                 >
               {/if}
             </div>
@@ -346,7 +426,7 @@
                   {stage1.pauseDetail ?? ''}
                 </span>
                 {#if pauseNeedsAnalysis(stage1.pauseReason)}
-                  <button class="c-btn c-btn-secondary" on:click={analyseAgain}>
+                  <button class="c-btn c-btn-secondary" on:click={() => analyseAgain(1)}>
                     Run the analysis again
                   </button>
                 {:else}
@@ -363,6 +443,125 @@
                 {countsLine(status.stage1.counts)}
               </p>
             {/if}
+          </div>
+        {/if}
+        {#if stage2}
+          <div class="c-tile flex flex-col gap-3 rounded p-4" data-testid="cleanup-stage-2">
+            <div class="flex flex-wrap items-baseline justify-between gap-2">
+              <h3 class="font-mincho text-lg font-bold">2 · {stage2.name}</h3>
+              <span class="text-sm text-c-muted">{STAGE2_MODE_HINTS[stage2.mode]}</span>
+            </div>
+            <div class="flex flex-wrap gap-2" role="radiogroup" aria-label="Stage 2">
+              {#each MODES as mode (mode)}
+                <button
+                  class="c-btn {stage2.mode === mode ? 'c-btn-primary' : 'c-btn-secondary'}"
+                  role="radio"
+                  aria-checked={stage2.mode === mode}
+                  on:click={() => stage2 && setMode(stage2, mode)}
+                  data-testid="cleanup-stage-2-{mode}"
+                >
+                  {MODE_LABELS[mode]}
+                </button>
+              {/each}
+              {#if stage2.mode !== 'off'}
+                <button
+                  class="c-btn c-btn-ghost"
+                  data-testid="cleanup-analyse-again-2"
+                  on:click={() => analyseAgain(2)}>Run the analysis again</button
+                >
+              {/if}
+            </div>
+            {#each bars2 as bar (bar.label)}
+              <div class="flex flex-col gap-1" data-testid="cleanup-progress-2">
+                <div class="flex flex-wrap justify-between gap-x-4 text-sm">
+                  <span>{bar.label}</span>
+                  <span>{Math.floor(bar.fraction * 100)} %{bar.eta ? ` · ${bar.eta}` : ''}</span>
+                </div>
+                <div
+                  class="c-progress h-2 overflow-hidden rounded-full bg-c-track"
+                  role="progressbar"
+                  aria-label={bar.label}
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={Math.floor(bar.fraction * 100)}
+                >
+                  <div class="h-full bg-c-fill" style="width: {bar.fraction * 100}%" />
+                </div>
+              </div>
+            {/each}
+            {#each stage2Lines(stage2) as line}
+              <p class="text-sm" data-testid="cleanup-stage-2-line">{line}</p>
+            {/each}
+            {#if gate.length}
+              <div class="flex flex-col gap-1" data-testid="cleanup-gate">
+                <p class="text-sm font-medium">Checked on the labeled books</p>
+                <ul class="flex flex-col text-sm">
+                  {#each gate as row (row.label)}
+                    <li
+                      class="flex flex-wrap justify-between gap-x-4 border-b py-1"
+                      style="border-color: var(--c-line)"
+                    >
+                      <span>{row.label}</span>
+                      <span>
+                        <b>{row.right}</b> right{row.calibre ? ` · Calibre now ${row.calibre}` : ''}
+                        {#if row.bar}<span class="text-c-muted"> · needs {row.bar}</span>{/if}
+                        {#if row.ok !== null}
+                          <span aria-label={row.ok ? 'passes' : 'fails'}>
+                            {row.ok ? '✓' : '✗'}</span
+                          >
+                        {/if}
+                      </span>
+                    </li>
+                  {/each}
+                </ul>
+              </div>
+            {:else if labelsError && stage2.mode !== 'off'}
+              <p class="text-sm" data-testid="cleanup-gate-missing">
+                The labeled books can’t be read ({labelsError}): titles and authors stay paused.
+              </p>
+            {/if}
+            {#each fieldPauses as p (p.field)}
+              <div
+                class="c-notice flex flex-wrap items-center justify-between gap-2"
+                role="alert"
+                data-testid="cleanup-field-pause-{p.field}"
+              >
+                <span><b>{fieldPauseTitle(p)}.</b> {p.detail ?? ''}</span>
+                {#if fieldPauseResumable(p)}
+                  <button class="c-btn c-btn-secondary" on:click={() => resumeField(p)}>
+                    Resume {fieldLabel(p.field).toLowerCase()}
+                  </button>
+                {:else}
+                  <span class="text-sm text-c-muted"
+                    >Resumes by itself after an analysis that passes.</span
+                  >
+                {/if}
+              </div>
+            {/each}
+            {#if stage2.pauseReason}
+              <div class="c-notice flex flex-wrap items-center justify-between gap-2" role="alert">
+                <span>
+                  <b>Paused: {pauseTitle(stage2.pauseReason)}.</b>
+                  {stage2.pauseDetail ?? ''}
+                </span>
+                {#if pauseNeedsAnalysis(stage2.pauseReason)}
+                  <button class="c-btn c-btn-secondary" on:click={() => analyseAgain(2)}>
+                    Run the analysis again
+                  </button>
+                {:else}
+                  <button class="c-btn c-btn-secondary" on:click={() => stage2 && resume(stage2)}>
+                    Resume
+                  </button>
+                {/if}
+              </div>
+            {:else if status.stage2?.waiting && stage2.mode !== 'off'}
+              <p class="text-sm text-c-muted" data-testid="cleanup-waiting-2">
+                {status.stage2.waiting}
+              </p>
+            {/if}
+            {#each stage2CountLines(status.stage2) as line}
+              <p class="text-sm text-c-muted" data-testid="cleanup-counts-2">{line}</p>
+            {/each}
           </div>
         {/if}
         <ul class="flex flex-col gap-2 text-sm">
@@ -455,6 +654,92 @@
         {/if}
       </CleanupSection>
 
+      {#if stage2}
+        <CleanupSection
+          id="changes"
+          jp="書誌"
+          title="Metadata from the files"
+          summary={changes ? `${n(changes.total)} shown by the filter` : ''}
+          testid="cleanup-changes"
+        >
+          <div class="flex flex-wrap items-center gap-2">
+            <label class="flex items-center gap-2 text-sm">
+              Show
+              <select
+                class="c-input"
+                bind:value={changesState}
+                on:change={() => loadChanges(0)}
+                data-testid="cleanup-changes-state"
+              >
+                <option value="proposed">To write</option>
+                <option value="applied">Written</option>
+                <option value="undone">Put back</option>
+                <option value="skipped">Skipped</option>
+                <option value="">All</option>
+              </select>
+            </label>
+            <label class="flex items-center gap-2 text-sm">
+              Field
+              <select
+                class="c-input"
+                bind:value={changesField}
+                on:change={() => loadChanges(0)}
+                data-testid="cleanup-changes-field"
+              >
+                <option value="">All fields</option>
+                {#each FIELDS as f (f)}
+                  <option value={f}>{fieldLabel(f)}</option>
+                {/each}
+              </select>
+            </label>
+            <label class="flex items-center gap-2 text-sm">
+              Kind
+              <select
+                class="c-input"
+                bind:value={changesClass}
+                on:change={() => loadChanges(0)}
+                data-testid="cleanup-changes-class"
+              >
+                <option value="auto">Written automatically</option>
+                <option value="review">For review</option>
+                <option value="">Both</option>
+              </select>
+            </label>
+            <button class="c-btn c-btn-ghost" on:click={() => loadChanges(changesOffset)}
+              >Refresh</button
+            >
+          </div>
+          {#if changes}
+            {#if changes.items.length === 0}
+              <p class="text-sm text-c-muted">None.</p>
+            {:else}
+              <p class="text-sm text-c-muted">
+                {n(changesOffset + 1)}–{n(changesOffset + changes.items.length)} of {n(
+                  changes.total
+                )}
+              </p>
+              <ul class="flex flex-col gap-2">
+                {#each changes.items as item (item.id)}
+                  <FieldRow {item} />
+                {/each}
+              </ul>
+              <div class="flex gap-2">
+                <button
+                  class="c-btn c-btn-secondary"
+                  disabled={changesOffset === 0}
+                  on:click={() => loadChanges(Math.max(0, changesOffset - 50))}>Previous</button
+                >
+                <button
+                  class="c-btn c-btn-secondary"
+                  disabled={changesOffset + changes.items.length >= changes.total}
+                  on:click={() => loadChanges(changesOffset + 50)}>Next</button
+                >
+              </div>
+            {/if}
+          {/if}
+        </CleanupSection>
+      {/if}
+
       <CleanupSection
         id="review"
         jp="確認待ち"
@@ -468,10 +753,18 @@
             here.)
           </p>
         {:else}
+          <p class="max-w-prose text-sm text-c-muted">
+            Optional: nothing waits for these. Apply writes the proposed value in a later batch;
+            Keep as is leaves Calibre’s value for good.
+          </p>
           <ul class="flex flex-col gap-2">
             {#each review.items as item (item.id)}
               <li class="flex flex-col gap-2">
-                <CopyRow {item} />
+                {#if item.stage === 2}
+                  <FieldRow {item} />
+                {:else}
+                  <CopyRow {item} />
+                {/if}
                 <div class="flex gap-2">
                   <button class="c-btn c-btn-secondary" on:click={() => decide(item, 'apply')}
                     >Apply</button
@@ -500,11 +793,29 @@
 
       <CleanupSection id="spot" jp="抜き取り検査" title="Spot check" testid="cleanup-spot">
         <p class="max-w-prose text-sm text-c-muted">
-          Optional: 30 random copies that were removed, to look at by hand.
+          Optional: 30 random changes that were made, to look at by hand.
         </p>
         <div class="flex flex-wrap gap-2">
+          {#if stage2}
+            <label class="flex items-center gap-2 text-sm">
+              Stage
+              <select
+                class="c-input"
+                bind:value={spotStage}
+                on:change={() => (spot = null)}
+                data-testid="cleanup-spot-stage"
+              >
+                <option value={1}>1 · Identical files</option>
+                <option value={2}>2 · Metadata from the files</option>
+              </select>
+            </label>
+          {/if}
           <button class="c-btn c-btn-secondary" on:click={loadSpot}
-            >{spot ? 'Show 30 others' : 'Show 30 random removed copies'}</button
+            >{spot
+              ? 'Show 30 others'
+              : spotStage === 2
+                ? 'Show 30 random written changes'
+                : 'Show 30 random removed copies'}</button
           >
           {#if spot}
             <button
@@ -516,11 +827,17 @@
         </div>
         {#if spot}
           {#if spot.length === 0}
-            <p class="text-sm text-c-muted">Nothing removed yet.</p>
+            <p class="text-sm text-c-muted">
+              {spotStage === 2 ? 'Nothing written yet.' : 'Nothing removed yet.'}
+            </p>
           {:else}
             <ul class="flex flex-col gap-2">
               {#each spot as item (item.id)}
-                <CopyRow {item} />
+                {#if spotStage === 2}
+                  <FieldRow {item} />
+                {:else}
+                  <CopyRow {item} />
+                {/if}
               {/each}
             </ul>
           {/if}

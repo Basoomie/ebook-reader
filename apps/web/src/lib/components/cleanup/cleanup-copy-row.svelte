@@ -8,6 +8,7 @@
   /** One removed (or to-be-removed) copy beside the copy that stays (WP20a). */
   import type { Proposal } from '$lib/cleanup/cleanup-api';
   import {
+    copyEvidence,
     handoffText,
     itemStateText,
     restoreText,
@@ -21,7 +22,7 @@
   /** A batch item's own state (else the proposal's). */
   export let state: string | null = null;
 
-  $: ev = item.evidence;
+  $: ev = copyEvidence(item);
 </script>
 
 <li class="c-tile flex flex-col gap-2 rounded p-3 text-sm" data-testid="cleanup-copy">
