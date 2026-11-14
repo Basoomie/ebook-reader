@@ -1272,7 +1272,7 @@
   function describe(error: unknown): string {
     if (error instanceof LibraryApiError) {
       if (error.kind === 'unreachable' || error.kind === 'timeout') {
-        return 'The library server cannot be reached (offline, or the server is down). Books already on this device open from the Manager.';
+        return "The library server cannot be reached (offline, or the server is down). Books you're reading that are on this device open from Continue Reading on Home.";
       }
       if (error.code === 'indexer_off')
         return 'The Calibre library is not available on the server.';
@@ -1862,7 +1862,7 @@
     {#if loadError}
       <p class="c-notice font-medium" role="alert">
         {loadError}
-        <!-- WP15e: Home's Continue Reading still opens this device's books without the server. -->
+        <!-- WP15e: Home's Continue Reading still opens the books in it that are on this device, without the server. -->
         <a class="c-link" href="{pagePath}/home">Go to Home</a>
       </p>
     {/if}
