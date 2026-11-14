@@ -157,8 +157,12 @@ function illustratorsOf(id) {
     .map((r) => r.value);
 }
 function iso(ts) {
-  // "2026-11-09 04:00:11.251060+00:00" -> ISO like calibredb --for-machine
-  return String(ts).replace(' ', 'T');
+  // "2026-11-09 04:00:11.251060+00:00" -> ISO like calibredb --for-machine. Real calibre 9.18
+  // drops the fraction of a book it hasn't written in this server session (seen in the WP20b
+  // e2e); every call here is a new "session", so the fraction is always dropped.
+  return String(ts)
+    .replace(' ', 'T')
+    .replace(/\.\d+(?=[+-]\d\d:?\d\d$|Z$)/, '');
 }
 function ids() {
   // The positional book ids: numbers that are not option values.

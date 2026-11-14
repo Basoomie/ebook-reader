@@ -233,11 +233,18 @@ export interface WrittenReport {
 const EDITED = 'Changed in Calibre since the analysis (left as it is)';
 const EDITED_AFTER = 'Changed in Calibre since the cleanup wrote it (left as it is)';
 
-/** Calibre's times: the snapshot says "2026-11-14 13:57:11.479+00:00", `list` says ISO. */
+/**
+ * Calibre's times: the snapshot says "2026-11-14 13:57:11.479076+00:00", `list` says ISO, and
+ * (real calibre 9.18, seen in the e2e) `list` drops the fraction of a book it hasn't written in
+ * this server session ("2026-11-14T14:45:31+00:00" for "14:45:31.864916"): compared to the
+ * whole second.
+ */
 export function sameTime(a: string | null | undefined, b: string | null | undefined): boolean {
   const ta = parseCalibreDate(a ?? null);
   const tb = parseCalibreDate(b ?? null);
-  return ta !== null && tb !== null ? ta === tb : (a ?? null) === (b ?? null);
+  return ta !== null && tb !== null
+    ? Math.floor(ta / 1000) === Math.floor(tb / 1000)
+    : (a ?? null) === (b ?? null);
 }
 
 export class Stage2Batches {
