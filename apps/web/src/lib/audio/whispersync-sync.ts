@@ -16,7 +16,10 @@
  *
  * Newest wins by the device's own save time (`modifiedAt` = whispersync's
  * lastAudioBookModified / lastSubtitleDataModified / lastBookModified), as with the old
- * sync. A device never uploads a copy older than the server's. Reset match removes the
+ * sync. A device never uploads a copy older than the server's. One exception for the
+ * match: a book stored on a device gets that moment as its save time, so an unmatched
+ * copy never counts as newer than a live match (only a reset or a newer match does) and
+ * picks the match up. Reset match removes the
  * saved match on every device: another device that finds a deletion newer than its own
  * matched copy restores its backup, the same step whispersync's own reset takes.
  *
@@ -304,7 +307,11 @@ export async function syncBook(deps: SyncDeps, book: BookRef): Promise<SyncResul
     const row = await deps.local.getData(book.localId);
     if (row) {
       const rec = await deps.engine.get(ATTACHMENT_KIND, attachmentId(book.bookId, MATCH));
-      const state = compare(rec, row.lastBookModified);
+      let state = compare(rec, row.lastBookModified);
+      // An unmatched copy (stored, or stored again, on this device after the match was
+      // made) never counts as newer than a live match: only a reset (a deletion marker,
+      // written here first even offline) or a newer match on this device does.
+      if (state === 'local' && live(rec) && !isMatched(row.elementHtml)) state = 'remote';
       if (state === 'remote' && live(rec)) {
         const payload = await fetchChecked(deps, book, MATCH, rec);
         if (payload && typeof payload.elementHtml === 'string') {

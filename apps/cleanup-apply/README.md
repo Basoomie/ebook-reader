@@ -33,6 +33,18 @@ page and fetched from the server. The container only needs:
 | `TRASH_RESTORE_WAIT_SECONDS` | Undo: how long to wait for Calibre to bring books back from its trash            | `3600`                     |
 | `REMOVE_WAIT_SECONDS`        | How long to wait for Calibre to remove a copy after the remove request failed    | `600`                      |
 | `WAIT_POLL_SECONDS`          | While waiting for Calibre (Undo, a timed-out remove): how often to look          | `15`                       |
+| `WRITE_WAIT_SECONDS`         | Stage 2: how long to wait for Calibre to show a write that failed or timed out   | `600`                      |
+| `CALIBREDB_HELPER`           | `off` = every call runs the `calibredb` program (see below)                      | the helper                 |
+
+**The calibredb helper (WP20b):** `list` and `set_metadata` (stage 1's tags, stage 2's
+fields) go through one long-lived calibredb, `helper/calibredb-helper.py`, run by calibre's
+own `calibre-debug`. It runs calibredb's own command code for the same argument lists, so a
+call does exactly what the `calibredb` program does, without calibre's start-up per call. It
+only talks to the content server, allows only `list` and `set_metadata` of the cleanup's
+fields, and runs one call at a time. A call that was sent is never sent again (a write may
+have happened): if the helper stops or times out, the sidecar looks the book up as after any
+failed write. If the helper can't start, the calls run with the `calibredb` program and the
+log says so.
 
 **Undo and a big trash:** Calibre reads its whole trash before every `trash restore`, which
 takes minutes with thousands of entries, and its content server answers HTTP 408 after its
