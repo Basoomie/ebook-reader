@@ -13,9 +13,13 @@
  *   its sort, authors and author_sort, identifiers, publisher, languages, #illustrator and
  *   the cover; never tags, never an OPF).
  * The password goes in through stdin (`--password <stdin>`), never on the command line.
+ *
+ * list, set_tags and set_fields go through the long-lived calibredb helper when there is one
+ * (calibredb-helper.ts), with the same argument lists; everything else runs the program.
  */
 import { spawn } from 'child_process';
 import path from 'path';
+import { CalibredbHelper, HelperUnavailable } from './calibredb-helper';
 
 export type CalibredbCommand =
   | 'version'
@@ -89,7 +93,12 @@ export interface CalibredbOptions {
   timeoutMs: number;
   /** For tests: extra environment for the program. */
   env?: Record<string, string>;
+  /** The long-lived helper for list/set_tags/set_fields (none = always the program). */
+  helper?: CalibredbHelper | null;
 }
+
+/** The commands the helper runs (calibredb list and set_metadata). */
+const HELPER_COMMANDS: readonly CalibredbCommand[] = ['list', 'set_tags', 'set_fields'];
 
 export function withLibrary(login: Login, libraryId = login.libraryId): string {
   return `${login.contentServerUrl.replace(/\/+$/, '')}/#${libraryId}`;
@@ -185,8 +194,36 @@ export function buildArgs(
 export class Calibredb {
   constructor(private readonly opts: CalibredbOptions) {}
 
-  run(command: CalibredbCommand, login: Login | null, args: string[] = []): Promise<RunResult> {
+  async run(
+    command: CalibredbCommand,
+    login: Login | null,
+    args: string[] = []
+  ): Promise<RunResult> {
     const argv = buildArgs(command, login, args);
+    const helper = this.opts.helper;
+    if (helper && login && HELPER_COMMANDS.includes(command) && helper.usable()) {
+      try {
+        return await helper.call(argv, login.password, this.opts.timeoutMs);
+      } catch (err) {
+        // Not started: nothing was sent, so the program runs it. Sent: never again.
+        if (!(err instanceof HelperUnavailable)) {
+          throw new CalibredbError((err as Error).message, null);
+        }
+      }
+    }
+    return this.spawnRun(command, login, argv);
+  }
+
+  /** Stops the helper (after the worker stopped). */
+  close(): void {
+    this.opts.helper?.stop();
+  }
+
+  private spawnRun(
+    command: CalibredbCommand,
+    login: Login | null,
+    argv: string[]
+  ): Promise<RunResult> {
     return new Promise((resolve, reject) => {
       const child = spawn(this.opts.program, [...(this.opts.prefixArgs ?? []), ...argv], {
         stdio: ['pipe', 'pipe', 'pipe'],

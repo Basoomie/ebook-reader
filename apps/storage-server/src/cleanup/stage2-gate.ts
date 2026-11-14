@@ -3,10 +3,10 @@
  * the stage's own decisions on the labeled books (gold800.json) are compared with the labels.
  *
  * - Titles: in each of the groups where the file's title is applied (Calibre's author
- *   "Unknown", tag metadata-processed), at least `titleMinPercent` right AND at least
- *   `titleMarginPoints` better than Calibre's current titles; where the titles already agree
- *   (normalization only) at least `titleMinPercent`.
- * - Authors: at least `authorsMinPercent` right over the groups where stage 2 decides them.
+ *   "Unknown", tag metadata-processed), at least the title bar (gate.fieldPercent.title) right AND at least
+ *   `gate.marginPoints` better than Calibre's current titles; where the titles already agree
+ *   (normalization only) at least the title bar.
+ * - Authors: at least the authors bar (gate.defaultPercent unless set per field) right over the groups where stage 2 decides them.
  * A field below its bar is paused (that field only); the page shows why. A new analysis
  * evaluates the gate again and lifts the pause when the field passes.
  *
@@ -16,7 +16,7 @@
 import type Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
-import type { Stage2Settings } from './settings';
+import { gateBar, type CleanupSettings } from './settings';
 import type { ApplyGroup, FieldProposal } from './stage2-rules';
 import {
   type GoldLabel,
@@ -105,18 +105,20 @@ const GROUP_WORDS: Record<ApplyGroup, string> = {
   conflict: 'Calibre has its own value',
 };
 
-function titleVerdict(t: Record<ApplyGroup, GroupScore>, s: Stage2Settings): FieldVerdict {
+function titleVerdict(t: Record<ApplyGroup, GroupScore>, s: CleanupSettings): FieldVerdict {
   const problems: string[] = [];
+  const bar = gateBar(s, 'title');
+  const { minBooks, marginPoints } = s.gate;
   for (const g of ['unknown', 'processed', 'agree'] as const) {
     const x = t[g];
-    if (x.n < s.gateMinBooks) continue;
+    if (x.n < minBooks) continue;
     const applied = pct(x.applied, x.n)!;
     const calibre = pct(x.calibre, x.n)!;
-    if (applied < s.titleMinPercent) {
-      problems.push(`${GROUP_WORDS[g]}: ${f1(applied)} right, below ${s.titleMinPercent} %`);
-    } else if (g !== 'agree' && applied - calibre < s.titleMarginPoints) {
+    if (applied < bar) {
+      problems.push(`${GROUP_WORDS[g]}: ${f1(applied)} right, below ${bar} %`);
+    } else if (g !== 'agree' && applied - calibre < marginPoints) {
       problems.push(
-        `${GROUP_WORDS[g]}: ${f1(applied)} right, only ${(applied - calibre).toFixed(1)} points better than Calibre's titles (${f1(calibre)}); needs ${s.titleMarginPoints}`,
+        `${GROUP_WORDS[g]}: ${f1(applied)} right, only ${(applied - calibre).toFixed(1)} points better than Calibre's titles (${f1(calibre)}); needs ${marginPoints}`,
       );
     }
   }
@@ -125,19 +127,20 @@ function titleVerdict(t: Record<ApplyGroup, GroupScore>, s: Stage2Settings): Fie
     : { ok: true, reason: null };
 }
 
-function authorsVerdict(a: Record<ApplyGroup, GroupScore>, s: Stage2Settings): FieldVerdict {
+function authorsVerdict(a: Record<ApplyGroup, GroupScore>, s: CleanupSettings): FieldVerdict {
+  const bar = gateBar(s, 'authors');
   let n = 0;
   let right = 0;
   for (const g of ['unknown', 'processed', 'agree'] as const) {
     n += a[g].n;
     right += a[g].applied;
   }
-  if (n < s.gateMinBooks) return { ok: true, reason: null };
+  if (n < s.gate.minBooks) return { ok: true, reason: null };
   const p = pct(right, n)!;
-  return p < s.authorsMinPercent
+  return p < bar
     ? {
         ok: false,
-        reason: `Authors paused: ${f1(p)} right on the labeled books, below ${s.authorsMinPercent} %`,
+        reason: `Authors paused: ${f1(p)} right on the labeled books, below ${bar} %`,
       }
     : { ok: true, reason: null };
 }
@@ -145,7 +148,7 @@ function authorsVerdict(a: Record<ApplyGroup, GroupScore>, s: Stage2Settings): F
 export function evaluateGate(
   books: ScoredBook[],
   missing: number,
-  settings: Stage2Settings,
+  settings: CleanupSettings,
   now = Date.now(),
 ): GateResult {
   const score = scoreStage2(books);

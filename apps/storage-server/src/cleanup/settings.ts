@@ -2,47 +2,51 @@
  * The cleanup's settings (edited on /cleanup, stored in cleanup.db). Every behavior
  * threshold is a setting (CLAUDE.md); defaults are here. Bad values are refused with a
  * message, never silently clamped.
+ *
+ * Settings are shared by every stage (decided with the user 2026-11-14): one pacing, one gate
+ * with per-field exceptions, one cover group, one set of safety thresholds. A later stage adds
+ * a field exception or a group about a thing (covers, sources), never a copy per stage.
+ * Values stored in the earlier per-stage shape are carried over when read (`fromLegacy`).
  */
 import type Database from 'better-sqlite3';
 
 export interface PacingSettings {
-  /** Stage 1 hashing speed limit (MB/s); 0 = no limit. */
-  hashMbPerSecond: number;
+  /** How fast an analysis reads book files (MB/s); 0 = no limit. */
+  readMbPerSecond: number;
   /** Pause between two items in the sidecar (seconds). */
   itemDelaySeconds: number;
-  /** Changes per batch (at most 500, decided). */
+  /** Items per batch (copies for removals, books for metadata; at most 500). */
   batchSize: number;
-  /** Removals per batch as a share of the library's present books (%), far under the
-   * reader's 20 % mass-missing guard. */
+  /** Items per batch as a share of the library's present books (%), far under the reader's
+   * 20 % mass-missing guard. */
   maxBatchPercent: number;
+  /** Books the sidecar looks up in Calibre with one call (before and after its writes). */
+  lookupChunk: number;
 }
 
-/** Stage 2 (WP20b): metadata and covers from the files. */
-export interface Stage2Settings {
-  /** EPUBs read per second by the analysis (0 = no limit). */
-  filesPerSecond: number;
-  /** Pause between two books in the sidecar (seconds). */
-  itemDelaySeconds: number;
-  /** Books the sidecar reads back from Calibre with one `list` call. */
-  chunkSize: number;
-  /** Titles: correct on the labeled books (%) in each apply group. */
-  titleMinPercent: number;
-  /** Titles: at least this many points better than Calibre's current titles (per group). */
-  titleMarginPoints: number;
-  /** Authors: correct on the labeled books (%). */
-  authorsMinPercent: number;
-  /** A group with fewer labeled books than this is shown but not gated. */
-  gateMinBooks: number;
-  /** Covers up to this size (MB) pass through unchanged (JPEG/PNG). */
-  coverMaxMb: number;
-  /** Covers longer than this (px) on their longest side are scaled down (JPEG). */
-  coverMaxSide: number;
-  /** Two covers within this difference-hash distance are the same picture. */
-  coverSameDistance: number;
-  /** The file's cover counts as larger when its longest side is this much bigger (%). */
-  coverLargerPercent: number;
+/** The check on the labeled books, for every stage and field. */
+export interface GateSettings {
+  /** A field must be right on the labeled books at least this often (%). */
+  defaultPercent: number;
+  /** Fields with their own bar (decided: titles 85 % for stage 2). */
+  fieldPercent: Record<string, number>;
+  /** Titles from the file must also be this many points better than Calibre's current ones. */
+  marginPoints: number;
+  /** A group with fewer labeled books than this is shown but not checked. */
+  minBooks: number;
   /** The labeled books (gold800.json); empty = <DB_DIR>/cleanup/reference-sample/gold800.json. */
-  referenceFile: string;
+  labeledBooksFile: string;
+}
+
+export interface CoverSettings {
+  /** Covers up to this size (MB) are handed to Calibre unchanged (JPEG/PNG). */
+  maxMb: number;
+  /** Covers longer than this (px) on their longest side are scaled down (JPEG). */
+  maxSide: number;
+  /** Two covers within this difference-hash distance are the same picture. */
+  sameDistance: number;
+  /** A cover counts as larger when its longest side is at least this much bigger (%). */
+  largerPercent: number;
 }
 
 export interface BackupRecord {
@@ -65,16 +69,15 @@ export interface CleanupSettings {
   pacing: PacingSettings;
   /** The user's own Calibre tags (a trailing * matches any ending). */
   customTags: string[];
-  /** A stage stops applying when its measured precision is below this (%). */
-  gateThresholdPercent: number;
-  /** A stage pauses when its share of review results is above this (%). */
+  gate: GateSettings;
+  /** A field pauses when its share of review results is this many points above the labeled books'. */
   reviewAlarmPercent: number;
   /**
-   * Stage 1 pauses (instead of skipping copies one by one) when more than this share of the
-   * next batch's copies changed in Calibre since the analysis (%).
+   * A stage pauses (instead of skipping items one by one) when more than this share of the
+   * next batch changed in Calibre since the analysis (%).
    */
   libraryChangedPausePercent: number;
-  stage2: Stage2Settings;
+  covers: CoverSettings;
   backup: BackupRecord;
 }
 
@@ -100,25 +103,24 @@ export const DEFAULT_SETTINGS: CleanupSettings = {
     'stage5.primary': 'claude-haiku-5-5',
     'stage5.secondary': 'gpt-6-luna',
   },
-  pacing: { hashMbPerSecond: 40, itemDelaySeconds: 2, batchSize: 200, maxBatchPercent: 2 },
+  pacing: {
+    readMbPerSecond: 40,
+    itemDelaySeconds: 0,
+    batchSize: 500,
+    maxBatchPercent: 2,
+    lookupChunk: 25,
+  },
   customTags: ['PeepoHappyBooks', 'alpindale', 'TMW-collection-*'],
-  gateThresholdPercent: 95,
+  gate: {
+    defaultPercent: 95,
+    fieldPercent: { title: 85 },
+    marginPoints: 20,
+    minBooks: 20,
+    labeledBooksFile: '',
+  },
   reviewAlarmPercent: 5,
   libraryChangedPausePercent: 5,
-  stage2: {
-    filesPerSecond: 20,
-    itemDelaySeconds: 0.5,
-    chunkSize: 25,
-    titleMinPercent: 85,
-    titleMarginPoints: 20,
-    authorsMinPercent: 95,
-    gateMinBooks: 20,
-    coverMaxMb: 10,
-    coverMaxSide: 4096,
-    coverSameDistance: 5,
-    coverLargerPercent: 10,
-    referenceFile: '',
-  },
+  covers: { maxMb: 10, maxSide: 4096, sameDistance: 5, largerPercent: 10 },
   backup: {
     path: '/mnt/user/data/backups/japanese-library-2026-11-11/',
     verifiedOn: '2026-11-12',
@@ -128,10 +130,21 @@ export const DEFAULT_SETTINGS: CleanupSettings = {
 
 export const MAX_BATCH_SIZE = 500;
 export const MAX_BATCH_PERCENT = 10;
+/** Fields the gate knows (a bar for anything else is refused). */
+export const GATE_FIELDS = [
+  'title',
+  'authors',
+  'illustrators',
+  'series',
+  'number',
+  'format',
+] as const;
 
 export class SettingsError extends Error {}
 
 type Key = keyof CleanupSettings;
+/** Keys of the earlier per-stage shape, removed when the settings are saved again. */
+const LEGACY_KEYS = ['gateThresholdPercent', 'stage2'];
 
 function readRaw(db: Database.Database): Map<string, unknown> {
   const rows = db.prepare('SELECT key, value_json FROM settings').all() as {
@@ -141,8 +154,66 @@ function readRaw(db: Database.Database): Map<string, unknown> {
   return new Map(rows.map((r) => [r.key, JSON.parse(r.value_json) as unknown]));
 }
 
+type Obj = Record<string, unknown>;
+const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null && !Array.isArray(v);
+
+/**
+ * Settings stored in the earlier per-stage shape (WP20a's pacing with hashMbPerSecond, the
+ * unused gateThresholdPercent, WP20b's stage2 group) in today's shape. The old page saved every
+ * field, so the old defaults it stored (200 per batch, a 2 s pause) become today's
+ * recommendations (500, none); any other stored value is kept.
+ */
+export function fromLegacy(raw: Map<string, unknown>): Map<string, unknown> {
+  const out = new Map(raw);
+  const pacing = raw.get('pacing');
+  if (isObj(pacing) && 'hashMbPerSecond' in pacing) {
+    const { hashMbPerSecond, ...rest } = pacing;
+    out.set('pacing', {
+      ...rest,
+      readMbPerSecond: hashMbPerSecond,
+      batchSize: rest.batchSize === 200 ? 500 : rest.batchSize,
+      itemDelaySeconds: rest.itemDelaySeconds === 2 ? 0 : rest.itemDelaySeconds,
+    });
+  }
+  const stage2 = raw.get('stage2');
+  const oldGate = raw.get('gateThresholdPercent');
+  if (!raw.has('gate') && (isObj(stage2) || typeof oldGate === 'number')) {
+    const gate: Obj = {};
+    if (typeof oldGate === 'number') gate.defaultPercent = oldGate;
+    if (isObj(stage2)) {
+      const fieldPercent: Obj = {};
+      if (typeof stage2.titleMinPercent === 'number') fieldPercent.title = stage2.titleMinPercent;
+      if (
+        typeof stage2.authorsMinPercent === 'number' &&
+        stage2.authorsMinPercent !== (gate.defaultPercent ?? 95)
+      ) {
+        fieldPercent.authors = stage2.authorsMinPercent;
+      }
+      gate.fieldPercent = fieldPercent;
+      if (stage2.titleMarginPoints !== undefined) gate.marginPoints = stage2.titleMarginPoints;
+      if (stage2.gateMinBooks !== undefined) gate.minBooks = stage2.gateMinBooks;
+      if (stage2.referenceFile !== undefined) gate.labeledBooksFile = stage2.referenceFile;
+    }
+    out.set('gate', gate);
+  }
+  if (!raw.has('covers') && isObj(stage2)) {
+    const covers: Obj = {};
+    if (stage2.coverMaxMb !== undefined) covers.maxMb = stage2.coverMaxMb;
+    if (stage2.coverMaxSide !== undefined) covers.maxSide = stage2.coverMaxSide;
+    if (stage2.coverSameDistance !== undefined) covers.sameDistance = stage2.coverSameDistance;
+    if (stage2.coverLargerPercent !== undefined) covers.largerPercent = stage2.coverLargerPercent;
+    out.set('covers', covers);
+  }
+  if (isObj(stage2) && typeof stage2.chunkSize === 'number') {
+    const p = out.get('pacing');
+    out.set('pacing', { ...(isObj(p) ? p : {}), lookupChunk: stage2.chunkSize });
+  }
+  for (const k of LEGACY_KEYS) out.delete(k);
+  return out;
+}
+
 export function getSettings(db: Database.Database): CleanupSettings {
-  const raw = readRaw(db);
+  const raw = fromLegacy(readRaw(db));
   const s: CleanupSettings = structuredClone(DEFAULT_SETTINGS);
   for (const key of Object.keys(DEFAULT_SETTINGS) as Key[]) {
     if (!raw.has(key)) continue;
@@ -170,6 +241,14 @@ function text(name: string, value: unknown, max = 500): string {
     throw new SettingsError(`${name} must be text of at most ${max} characters`);
   }
   return value.trim();
+}
+
+function group<T extends object>(name: string, value: unknown, current: T): T {
+  if (!isObj(value)) throw new SettingsError(`${name} must be an object`);
+  for (const k of Object.keys(value)) {
+    if (!(k in current)) throw new SettingsError(`Unknown ${name.toLowerCase()} setting: ${k}`);
+  }
+  return { ...current, ...(value as Partial<T>) };
 }
 
 function validate(key: Key, value: unknown, current: CleanupSettings): unknown {
@@ -205,11 +284,9 @@ function validate(key: Key, value: unknown, current: CleanupSettings): unknown {
       if (value === null) return null;
       return text('Library', value, 100);
     case 'models': {
-      if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-        throw new SettingsError('Models must be an object');
-      }
+      if (!isObj(value)) throw new SettingsError('Models must be an object');
       const out: Record<string, string> = { ...current.models };
-      for (const [task, model] of Object.entries(value as Record<string, unknown>)) {
+      for (const [task, model] of Object.entries(value)) {
         if (!(MODEL_TASKS as readonly string[]).includes(task)) {
           throw new SettingsError(`Unknown model task: ${task}`);
         }
@@ -218,11 +295,9 @@ function validate(key: Key, value: unknown, current: CleanupSettings): unknown {
       return out;
     }
     case 'pacing': {
-      if (typeof value !== 'object' || value === null)
-        throw new SettingsError('Pacing must be an object');
-      const v = { ...current.pacing, ...(value as Partial<PacingSettings>) };
+      const v = group('Pacing', value, current.pacing);
       return {
-        hashMbPerSecond: num('Hashing speed (MB/s)', v.hashMbPerSecond, 0, 2000),
+        readMbPerSecond: num('Reading speed (MB/s)', v.readMbPerSecond, 0, 2000),
         itemDelaySeconds: num('Pause between items (s)', v.itemDelaySeconds, 0, 600),
         batchSize: num('Batch size', v.batchSize, 1, MAX_BATCH_SIZE, true),
         maxBatchPercent: num(
@@ -231,6 +306,7 @@ function validate(key: Key, value: unknown, current: CleanupSettings): unknown {
           0.1,
           MAX_BATCH_PERCENT,
         ),
+        lookupChunk: num('Books per Calibre look-up', v.lookupChunk, 1, 100, true),
       };
     }
     case 'customTags': {
@@ -240,51 +316,38 @@ function validate(key: Key, value: unknown, current: CleanupSettings): unknown {
       const tags = value.map((t) => text('Custom tag', t, 200)).filter((t) => t !== '');
       return [...new Set(tags)];
     }
-    case 'gateThresholdPercent':
-      return num('Gate threshold (%)', value, 50, 100);
-    case 'reviewAlarmPercent':
-      return num('Review alarm (%)', value, 0, 100);
-    case 'libraryChangedPausePercent':
-      return num('Pause when copies changed in Calibre (%)', value, 0, 100);
-    case 'stage2': {
-      if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-        throw new SettingsError('Stage 2 settings must be an object');
+    case 'gate': {
+      const v = group('Gate', value, current.gate);
+      if (!isObj(v.fieldPercent)) throw new SettingsError('Field bars must be an object');
+      const fieldPercent: Record<string, number> = {};
+      for (const [f, p] of Object.entries(v.fieldPercent)) {
+        if (!(GATE_FIELDS as readonly string[]).includes(f))
+          throw new SettingsError(`No such field: ${f}`);
+        fieldPercent[f] = num(`Bar for ${f} (%)`, p, 50, 100);
       }
-      for (const k of Object.keys(value)) {
-        if (!(k in DEFAULT_SETTINGS.stage2))
-          throw new SettingsError(`Unknown stage 2 setting: ${k}`);
-      }
-      const v = { ...current.stage2, ...(value as Partial<Stage2Settings>) };
       return {
-        filesPerSecond: num('Files read per second', v.filesPerSecond, 0, 1000),
-        itemDelaySeconds: num('Pause between books (s)', v.itemDelaySeconds, 0, 600),
-        chunkSize: num('Books per read-back', v.chunkSize, 1, 100, true),
-        titleMinPercent: num('Titles: correct at least (%)', v.titleMinPercent, 50, 100),
-        titleMarginPoints: num(
-          'Titles: better than Calibre by (points)',
-          v.titleMarginPoints,
-          0,
-          100,
-        ),
-        authorsMinPercent: num('Authors: correct at least (%)', v.authorsMinPercent, 50, 100),
-        gateMinBooks: num('Smallest group checked (books)', v.gateMinBooks, 1, 800, true),
-        coverMaxMb: num('Covers passed on unchanged up to (MB)', v.coverMaxMb, 1, 32),
-        coverMaxSide: num('Longest cover side (px)', v.coverMaxSide, 500, 20000, true),
-        coverSameDistance: num(
-          'Same cover picture up to (hash distance)',
-          v.coverSameDistance,
-          0,
-          32,
-          true,
-        ),
-        coverLargerPercent: num('File cover larger by (%)', v.coverLargerPercent, 0, 500),
-        referenceFile: text('Labeled books file', v.referenceFile, 1000),
+        defaultPercent: num('Bar for every field (%)', v.defaultPercent, 50, 100),
+        fieldPercent,
+        marginPoints: num('Better than Calibre by (points)', v.marginPoints, 0, 100),
+        minBooks: num('Smallest group checked (books)', v.minBooks, 1, 800, true),
+        labeledBooksFile: text('Labeled books file', v.labeledBooksFile, 1000),
+      };
+    }
+    case 'reviewAlarmPercent':
+      return num('Review alarm (points)', value, 0, 100);
+    case 'libraryChangedPausePercent':
+      return num('Pause when items changed in Calibre (%)', value, 0, 100);
+    case 'covers': {
+      const v = group('Covers', value, current.covers);
+      return {
+        maxMb: num('Covers passed on unchanged up to (MB)', v.maxMb, 1, 32),
+        maxSide: num('Longest cover side (px)', v.maxSide, 500, 20000, true),
+        sameDistance: num('Same cover picture up to (hash distance)', v.sameDistance, 0, 32, true),
+        largerPercent: num('A cover is larger by (%)', v.largerPercent, 0, 500),
       };
     }
     case 'backup': {
-      if (typeof value !== 'object' || value === null)
-        throw new SettingsError('Backup must be an object');
-      const v = { ...current.backup, ...(value as Partial<BackupRecord>) };
+      const v = group('Backup', value, current.backup);
       const confirmedAt = v.confirmedAt;
       if (
         confirmedAt !== null &&
@@ -299,6 +362,11 @@ function validate(key: Key, value: unknown, current: CleanupSettings): unknown {
       };
     }
   }
+}
+
+/** The bar a field must reach on the labeled books (its own, else the shared one). */
+export function gateBar(s: CleanupSettings, field: string): number {
+  return s.gate.fieldPercent[field] ?? s.gate.defaultPercent;
 }
 
 /** Saves the given keys (each validated against the current values). Returns the new settings. */
@@ -318,6 +386,16 @@ export function updateSettings(
      ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at`,
   );
   db.transaction(() => {
+    // The earlier per-stage shape goes once today's shape is stored (everything carried over).
+    const raw = readRaw(db);
+    if (
+      LEGACY_KEYS.some((k) => raw.has(k)) ||
+      (isObj(raw.get('pacing')) && 'hashMbPerSecond' in (raw.get('pacing') as Obj))
+    ) {
+      for (const k of ['pacing', 'gate', 'covers'] as const)
+        put.run(k, JSON.stringify(current[k]), now);
+      for (const k of LEGACY_KEYS) db.prepare('DELETE FROM settings WHERE key = ?').run(k);
+    }
     for (const [key, value] of Object.entries(next)) put.run(key, JSON.stringify(value), now);
   })();
   return getSettings(db);

@@ -21,6 +21,7 @@ import { getLibrary } from '../calibre/libraries';
 import { resolveInside, statFile } from '../calibre/source-fs';
 import { calibreCoverFacts, readFileMetadata } from './file-metadata';
 import { getSettings, type CleanupSettings } from './settings';
+import { Pacer } from './stage1';
 import {
   applyGate,
   defaultReferenceFile,
@@ -186,8 +187,8 @@ export interface Stage2Deps {
 export function proposalOptions(s: CleanupSettings, spelling?: SpellingLookup) {
   return {
     spelling,
-    coverSameDistance: s.stage2.coverSameDistance,
-    coverLargerFactor: 1 + s.stage2.coverLargerPercent / 100,
+    coverSameDistance: s.covers.sameDistance,
+    coverLargerFactor: 1 + s.covers.largerPercent / 100,
   };
 }
 
@@ -195,7 +196,8 @@ export class Stage2Analysis {
   private snapshot: Stage2Snapshot | null = null;
   private snapshotFor: string | null = null;
   private spelling: SpellingLookup | null = null;
-  private nextReadAt = 0;
+  private readPacer: Pacer | null = null;
+  private readPacerBps = -1;
 
   constructor(private readonly deps: Stage2Deps) {}
 
@@ -224,7 +226,7 @@ export class Stage2Analysis {
   }
 
   referenceFile(): string | null {
-    const s = getSettings(this.deps.cleanup).stage2.referenceFile;
+    const s = getSettings(this.deps.cleanup).gate.labeledBooksFile;
     if (s) return s;
     return this.deps.dbDir ? defaultReferenceFile(this.deps.dbDir) : null;
   }
@@ -267,13 +269,14 @@ export class Stage2Analysis {
     return loadGold(file);
   }
 
-  private async pace(): Promise<void> {
-    const fps = getSettings(this.deps.cleanup).stage2.filesPerSecond;
-    if (fps <= 0) return;
-    const now = Date.now();
-    const at = Math.max(now, this.nextReadAt);
-    this.nextReadAt = at + 1000 / fps;
-    if (at > now) await new Promise((r) => setTimeout(r, Math.min(at - now, 5000)));
+  /** Paces reading by the bytes actually read (the shared reading speed, like stage 1's hashing). */
+  private pacer(): Pacer {
+    const bps = getSettings(this.deps.cleanup).pacing.readMbPerSecond * 1024 * 1024;
+    if (!this.readPacer || this.readPacerBps !== bps) {
+      this.readPacer = new Pacer(bps);
+      this.readPacerBps = bps;
+    }
+    return this.readPacer;
   }
 
   /** Reads (or reuses) one book's evidence. */
@@ -309,13 +312,14 @@ export class Stage2Analysis {
       if (!st) {
         error = 'file_missing';
       } else {
-        await this.pace();
         read = true;
+        const counted = { bytes: 0 };
         try {
-          file = await readFileMetadata(epub);
+          file = await readFileMetadata(epub, { counted });
         } catch (err) {
           error = `read: ${String((err as Error).message ?? err).slice(0, 300)}`;
         }
+        await this.pacer().take(counted.bytes);
       }
     }
     let cover: FileEvidence['cover'] = null;
@@ -638,7 +642,7 @@ export class Stage2Analysis {
       updateStage(db, 2, { precision: { gate: null, labelsError: error } });
       return null;
     }
-    const gate = evaluateGate(books, missing, getSettings(db).stage2);
+    const gate = evaluateGate(books, missing, getSettings(db));
     updateStage(db, 2, { precision: { gate, final, labelsError: null } });
     if (final) applyGate(db, gate);
     return gate;

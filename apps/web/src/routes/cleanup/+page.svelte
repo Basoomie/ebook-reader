@@ -151,10 +151,12 @@
   async function loadGateBars() {
     if (!api) return;
     try {
-      const s = (await api.settings()).settings.stage2;
-      gateBars = s
-        ? { title: s.titleMinPercent, margin: s.titleMarginPoints, authors: s.authorsMinPercent }
-        : null;
+      const g = (await api.settings()).settings.gate;
+      gateBars = {
+        title: g.fieldPercent.title ?? g.defaultPercent,
+        margin: g.marginPoints,
+        authors: g.fieldPercent.authors ?? g.defaultPercent
+      };
     } catch {
       gateBars = null;
     }
