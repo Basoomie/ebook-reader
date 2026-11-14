@@ -203,6 +203,68 @@ describe('whispersync between devices (real server)', () => {
     expect((await syncBook(depsA, bookA())).changed.match).toBe(false);
   });
 
+  it('a book first stored on B after A matched picks the match up, also after removing and reopening', async () => {
+    // A matches again (after the reset above).
+    await new Promise((r) => setTimeout(r, 5));
+    const t = Date.now();
+    rowsA.data.set(1, {
+      id: 1,
+      title: TITLE,
+      elementHtml: MATCHED,
+      htmlBackup: ORIGINAL,
+      lastBookModified: t
+    });
+    expect(await pushMatch(depsA, bookA())).toBe('ok');
+    await syncAll();
+    const matchRecord = async () =>
+      (await a.engine.get('book-attachment', `${bookId}:whispersync-match`))?.data.modifiedAt;
+    expect(await matchRecord()).toBe(t);
+
+    // B stores the book only now: its unmatched copy's save time is after the match.
+    rowsB.data.clear();
+    rowsB.data.set(11, {
+      id: 11,
+      title: TITLE,
+      elementHtml: ORIGINAL,
+      lastBookModified: t + 60_000
+    });
+    const firstB = { bookId, localId: 11, title: TITLE };
+    expect((await syncBook(depsB, firstB)).changed.match).toBe(true);
+    expect(rowsB.data.get(11)).toMatchObject({
+      elementHtml: MATCHED,
+      htmlBackup: ORIGINAL,
+      lastBookModified: t
+    });
+    // Level: B uploads nothing, so A's match stays the same record (no notice on A).
+    expect((await syncBook(depsB, firstB)).changed.match).toBe(false);
+    await syncAll();
+    expect(await matchRecord()).toBe(t);
+    expect((await syncBook(depsA, bookA())).changed.match).toBe(false);
+
+    // "Remove from this device" on B, then opened again: a new local copy, stored later.
+    rowsB.data.clear();
+    rowsB.data.set(12, {
+      id: 12,
+      title: TITLE,
+      elementHtml: ORIGINAL,
+      lastBookModified: t + 120_000
+    });
+    const againB = { bookId, localId: 12, title: TITLE };
+    expect((await syncBook(depsB, againB)).changed.match).toBe(true);
+    expect(rowsB.data.get(12)).toMatchObject({ elementHtml: MATCHED, htmlBackup: ORIGINAL });
+
+    // Reset match on A still applies on B.
+    await new Promise((r) => setTimeout(r, 5));
+    rowsA.data.set(1, { id: 1, title: TITLE, elementHtml: ORIGINAL, lastBookModified: Date.now() });
+    await resetMatch(depsA, bookA());
+    await syncAll();
+    expect((await syncBook(depsB, againB)).changed.match).toBe(true);
+    expect(rowsB.data.get(12)?.elementHtml).toBe(ORIGINAL);
+    expect(rowsB.data.get(12)?.htmlBackup).toBeUndefined();
+    expect((await syncBook(depsB, againB)).changed.match).toBe(false);
+    expect((await syncBook(depsA, bookA())).changed.match).toBe(false);
+  });
+
   it('writes only below DATA_DIR/.uploads/attachments', () => {
     const added = files(server.dataDir).filter((f) => !dataBefore.includes(f));
     expect(added.length).toBeGreaterThan(0);
