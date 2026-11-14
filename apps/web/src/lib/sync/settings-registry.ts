@@ -7,8 +7,10 @@
 /**
  * Every localStorage-backed setting, classified for sync (WP4, design §5):
  *
- * - global: one value for all devices (lww). The mechanism ships switched
- *   off; WP5 turns it on after the user picks the device to take values from.
+ * - global: one value for all devices (lww). On once a device is the settings
+ *   source (WP5, settings-source.ts); every other device takes the shared
+ *   values over before publishing any. A key added here later is taken over
+ *   the same way on devices that adopted before it existed (settings-sync.ts).
  * - device: this device's own value. Published as `device:<id>:<key>` so
  *   another device can copy it later; never applied automatically.
  * - local:  never leaves the device (connection settings, remembered UI state,

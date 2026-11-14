@@ -344,6 +344,12 @@ describe('global settings source', () => {
     expect(await phone.e.get('setting', 'global:overwriteBookCompletion')).toMatchObject({
       deviceId: DESKTOP
     });
+    // Nor any other global key (never set on the phone): Phase 7 bug 2.
+    expect(
+      (await phone.e.getAll('setting')).filter(
+        (r) => r.id.startsWith('global:') && r.deviceId === DEVICE
+      )
+    ).toEqual([]);
 
     // Later changes flow both ways.
     phoneValues.startDayHoursForTracker = '5';
@@ -358,6 +364,112 @@ describe('global settings source', () => {
       data: { value: '{"b":2}' }
     });
     expect(await onPulledSettings(phone.e, [later], deps)).toEqual(['customThemes']);
+  });
+
+  describe('a global key added after the device adopted (Phase 7 bug 2)', () => {
+    const MAPPING = '{"JP Mining Note":{"sentence":{"field":"Sentence","mode":"fill-if-empty"}}}';
+
+    /** A phone that adopted the desktop's values with a version that didn't know `key`. */
+    async function adoptedPhone(values: Record<string, string>, key: string) {
+      const phone = await engine(DEVICE);
+      const deps = {
+        apply: (k: string, raw: string | null) => {
+          if (raw !== null) values[k] = raw;
+        },
+        readStored: (k: string) => values[k] ?? null
+      };
+      const marker = await phone.pulled({
+        kind: 'migration',
+        id: 'settings-source',
+        deviceId: DESKTOP,
+        data: { deviceId: DESKTOP }
+      });
+      await onPulledSettings(phone.e, [marker], deps);
+      // The older version's syncs (it didn't know `key`, so never read its value).
+      await publishAllSettings(phone.e, storage({}), deps);
+      // What an older version leaves: the key was never applied or published.
+      await phone.e.updateMeta((m) => {
+        delete m.publishedSettings?.[`global:${key}`];
+      });
+      const own = async () =>
+        (await phone.e.getAll('setting')).filter(
+          (r) => r.id.startsWith('global:') && r.deviceId === DEVICE
+        );
+      return { ...phone, deps, own };
+    }
+
+    it('takes over the shared value already in the mirror instead of publishing its own', async () => {
+      const values: Record<string, string> = {};
+      const phone = await adoptedPhone(values, 'ankiFieldMapping');
+      // Pulled while the older version ran: kept in the mirror, never applied.
+      await phone.pulled({
+        kind: 'setting',
+        id: 'global:ankiFieldMapping',
+        deviceId: DESKTOP,
+        data: { value: MAPPING }
+      });
+
+      await publishAllSettings(phone.e, storage(values), phone.deps);
+      expect(values.ankiFieldMapping).toBe(MAPPING);
+      expect(await phone.own()).toEqual([]);
+      expect((await phone.e.getMeta()).publishedSettings?.['global:ankiFieldMapping']).toBe(
+        MAPPING
+      );
+
+      // A later edit on the phone is published as usual.
+      values.ankiFieldMapping = '{}';
+      await publishAllSettings(phone.e, storage(values), phone.deps);
+      expect((await phone.e.get('setting', 'global:ankiFieldMapping'))?.data).toEqual({
+        value: '{}'
+      });
+    });
+
+    it('publishes nothing for a never-set key the mirror lacks; the next pull applies it', async () => {
+      const values: Record<string, string> = {};
+      const phone = await adoptedPhone(values, 'ankiFieldMapping');
+      await publishAllSettings(phone.e, storage(values), phone.deps);
+      expect(await phone.e.get('setting', 'global:ankiFieldMapping')).toBeUndefined();
+
+      const record = await phone.pulled({
+        kind: 'setting',
+        id: 'global:ankiFieldMapping',
+        deviceId: DESKTOP,
+        data: { value: MAPPING }
+      });
+      expect(await onPulledSettings(phone.e, [record], phone.deps)).toEqual(['ankiFieldMapping']);
+      expect(values.ankiFieldMapping).toBe(MAPPING);
+      await publishAllSettings(phone.e, storage(values), phone.deps);
+      expect(await phone.own()).toEqual([]);
+    });
+
+    it('keeps its own value when the shared one was never set, without pushing it', async () => {
+      const values: Record<string, string> = { ankiTagPrefix: 'book::' };
+      const phone = await adoptedPhone(values, 'ankiTagPrefix');
+      await phone.pulled({
+        kind: 'setting',
+        id: 'global:ankiTagPrefix',
+        deviceId: DESKTOP,
+        data: { value: null }
+      });
+
+      await publishAllSettings(phone.e, storage(values), phone.deps);
+      expect(values.ankiTagPrefix).toBe('book::');
+      expect(await phone.own()).toEqual([]);
+      expect(await phone.e.get('setting', 'global:ankiTagPrefix')).toMatchObject({
+        deviceId: DESKTOP
+      });
+    });
+
+    it('publishes a value set on this device when there is no shared one', async () => {
+      const values: Record<string, string> = { ankiTagPrefix: 'book::' };
+      const phone = await adoptedPhone(values, 'ankiTagPrefix');
+      expect(await phone.e.get('setting', 'global:ankiTagPrefix')).toBeUndefined();
+      await publishAllSettings(phone.e, storage(values), phone.deps);
+      expect(await phone.e.get('setting', 'global:ankiTagPrefix')).toMatchObject({
+        deviceId: DEVICE,
+        data: { value: 'book::' }
+      });
+    });
   });
 });
 
