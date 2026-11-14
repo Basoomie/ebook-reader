@@ -69,15 +69,20 @@
     if (rect.left + shift < 8) shift = 8 - rect.left;
   }
 
-  /** Floating: under (or above) the button, kept 8 px inside the window. */
+  /**
+   * Floating: under (or above) the button, kept 8 px inside the window. Above only when it
+   * fits below the page's fixed header (app-header.svelte), which is drawn over the panel.
+   */
   function place() {
     const b = button.getBoundingClientRect();
     const width = panel?.offsetWidth ?? 0;
     const height = panel?.offsetHeight ?? 0;
     let left = align === 'right' ? b.right - width : b.left;
     left = Math.max(8, Math.min(left, window.innerWidth - width - 8));
+    const header = document.querySelector('[data-app-header]')?.getBoundingClientRect().bottom;
+    const minTop = Math.max(8, header ? header + 4 : 0);
     let top = b.bottom + 4;
-    if (height && top + height > window.innerHeight - 8 && b.top - height - 4 >= 8) {
+    if (height && top + height > window.innerHeight - 8 && b.top - height - 4 >= minTop) {
       top = b.top - height - 4;
     }
     floatStyle = `position: fixed; left: ${left}px; top: ${top}px;`;

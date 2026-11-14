@@ -11,6 +11,10 @@
    *
    * Mounting it marks the document as a catalogue page (`html.catalogue`), so the page
    * behind the content takes the catalogue colours too (app.scss).
+   *
+   * z-40: above everything that scrolls under it (the cards' ⋮ buttons and author links
+   * are z-10, the drag-select box z-20, the Sort / Display / Download panels z-30), below
+   * dialogs and overlays (z-50). `data-app-header` lets a floating menu keep clear of it.
    */
   export let title: string;
 
@@ -21,7 +25,8 @@
 </script>
 
 <div
-  class="fixed inset-x-0 top-0 z-10 bg-c-header text-c-header-ink"
+  class="fixed inset-x-0 top-0 z-40 bg-c-header text-c-header-ink"
+  data-app-header
   style="border-bottom: var(--c-border-width) solid var(--c-header-border)"
 >
   <div class="relative h-12 xl:h-10">
