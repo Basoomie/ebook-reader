@@ -40,7 +40,11 @@
   import { pxScreen } from '$lib/css-classes';
   import { dialogManager, type Dialog } from '$lib/data/dialog-manager';
   import { confirmDestructive } from '$lib/confirm/confirm';
-  import { removeFavoritesCopy, removeFromCollectionCopy } from '$lib/confirm/confirm-copy';
+  import {
+    removeFavoritesCopy,
+    removeFromCollectionCopy,
+    unreadManyCopy
+  } from '$lib/confirm/confirm-copy';
   import { pagePath } from '$lib/data/env';
   import { logger } from '$lib/data/logger';
   import { database, einkMode$ } from '$lib/data/store';
@@ -687,6 +691,18 @@
         finishedOn
       );
     } else if (change.kind === 'status') {
+      // Unread takes part-read books back to the start: ask first when any is part-read.
+      if (
+        change.status === 'unread' &&
+        (await Promise.all(ids.map((id) => bookState.currentReadHasPlace(id)))).some(Boolean) &&
+        !(await confirmDestructive({
+          ...unreadManyCopy(chosen.length),
+          testid: 'unread-many-confirm',
+          confirmTestid: 'unread-many-confirm-button'
+        }))
+      ) {
+        return;
+      }
       failed = await bookState.setStatusMany(ids, change.status);
     } else if (change.kind === 'favorite') {
       if (

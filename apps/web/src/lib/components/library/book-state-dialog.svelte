@@ -11,14 +11,16 @@
     STATUS_LABELS,
     canRemoveReadThrough,
     finishedReadThroughs,
+    readThroughLines,
     type BookBlur,
     type BookState,
     type BookStatus,
-    type ReadThrough
+    type ReadThrough,
+    type ReadThroughLine
   } from '$lib/sync/book-state';
   import CollectionToggles from '$lib/components/collections/collection-toggles.svelte';
   import InlineConfirm from '$lib/components/confirm/inline-confirm.svelte';
-  import { removeReadCopy, startOverCopy } from '$lib/confirm/confirm-copy';
+  import { removeReadCopy, startOverCopy, unreadResetCopy } from '$lib/confirm/confirm-copy';
   import type { BookStateApi, CollectionsApi } from '$lib/sync/sync-service';
   import { createEventDispatcher, onDestroy, onMount } from 'svelte';
 
@@ -53,6 +55,8 @@
   let completing = false;
   let finishDate = '';
   let confirmStartOver = false;
+  /** "Set to Unread?": Unread on a part-read book also takes it back to the start. */
+  let confirmUnread = false;
   /** WP19: the read-through waiting for "Remove the 2nd read?". */
   let confirmRemoveId = '';
   /** Read-through whose finish date is being edited, and the edited value. */
@@ -98,15 +102,30 @@
     dispatch('close');
   }
 
-  function pickStatus(status: BookStatus) {
+  async function pickStatus(status: BookStatus) {
     confirmStartOver = false;
+    confirmUnread = false;
     if (status === 'completed') {
       completing = true;
       finishDate = '';
       return;
     }
     completing = false;
+    // Unread on a part-read book also takes it back to the start: ask first.
+    if (status === 'unread' && (await api.currentReadHasPlace(bookId))) {
+      confirmUnread = true;
+      return;
+    }
     void run(() => api.setStatus(bookId, status));
+  }
+
+  function setUnread() {
+    void run(async () => {
+      const reset = await api.currentReadHasPlace(bookId);
+      await api.setStatus(bookId, 'unread');
+      confirmUnread = false;
+      if (reset && inReader) close('start-over');
+    });
   }
 
   function pickBlur(value: string) {
@@ -162,15 +181,16 @@
     return `${n}${suffix}`;
   }
 
-  /** One reading of the book in plain words, e.g. "1st read · finished 2026-11-01". */
-  function describe(rt: ReadThrough): string {
-    const parts: string[] = [`${ordinal(rt.number)} read`];
+  /**
+   * One reading of the book in plain words, e.g. "1st read · finished 2026-11-01" or
+   * "Current read · started 2026-11-14". Finished reads are numbered among themselves.
+   */
+  function describe(rt: ReadThrough, finishedNumber: ReadThroughLine['finishedNumber']): string {
+    const parts: string[] = [finishedNumber ? `${ordinal(finishedNumber)} read` : 'Current read'];
     if (rt.startedOn) parts.push(`started ${rt.startedOn}`);
     if (rt.finished) {
       parts.push(rt.finishedOn ? `finished ${rt.finishedOn}` : 'finished (no date)');
       parts.push(rt.manual ? 'marked as read by you' : 'read in the app');
-    } else {
-      parts.push('reading now');
     }
     return parts.join(' · ');
   }
@@ -183,6 +203,7 @@
   }
 
   $: readCount = state ? finishedReadThroughs(state) : 0;
+  $: lines = state ? readThroughLines(state) : [];
 </script>
 
 <svelte:window on:keydown={onKeydown} />
@@ -214,6 +235,19 @@
       </div>
       {#if state.statusAuto && state.status === 'reading'}
         <p class="pt-1 text-sm">Set automatically on the first page turn.</p>
+      {/if}
+
+      {#if confirmUnread}
+        <div class="mt-3">
+          <InlineConfirm
+            {...unreadResetCopy()}
+            {busy}
+            testid="unread-confirm"
+            confirmTestid="confirm-unread"
+            on:confirm={setUnread}
+            on:cancel={() => (confirmUnread = false)}
+          />
+        </div>
       {/if}
 
       {#if completing}
@@ -274,11 +308,11 @@
       <h3 class="mt-5 font-medium">
         Times read: {readCount}
       </h3>
-      {#if state.readThroughs.length}
+      {#if lines.length}
         <ul>
-          {#each state.readThroughs as rt (rt.id)}
+          {#each lines as { readThrough: rt, finishedNumber } (rt.id)}
             <li class="border-t border-gray-400 py-2" data-testid="read-through">
-              <p>{describe(rt)}</p>
+              <p>{describe(rt, finishedNumber)}</p>
               {#if editingId === rt.id}
                 <div class="mt-2 flex flex-wrap items-end gap-2">
                   <input
@@ -292,7 +326,7 @@
               {:else if confirmRemoveId === rt.id}
                 <div class="mt-2">
                   <InlineConfirm
-                    {...removeReadCopy(ordinal(rt.number))}
+                    {...removeReadCopy(ordinal(finishedNumber ?? rt.number))}
                     {busy}
                     testid="remove-read-confirm"
                     confirmTestid="confirm-remove-read"
@@ -351,6 +385,7 @@
             data-testid="start-over"
             on:click={() => {
               completing = false;
+              confirmUnread = false;
               confirmStartOver = true;
             }}
           >

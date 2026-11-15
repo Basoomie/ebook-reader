@@ -52,6 +52,7 @@ import {
 import {
   editReadThroughFinish,
   getAllBookStates,
+  currentReadHasPlace,
   getBookState,
   markBooksCompleted,
   noteFirstPageTurn,
@@ -670,6 +671,7 @@ export function bookStateApi() {
     get: (bookId: string) => getBookState(bookId, bookStateDeps),
     getAll: () => getAllBookStates(bookStateDeps),
     setStatus: (bookId: string, status: BookStatus) => setBookStatus(bookId, status, bookStateDeps),
+    currentReadHasPlace: (bookId: string) => currentReadHasPlace(bookId, bookStateDeps),
     setFavorite: (bookId: string, favorite: boolean) =>
       setBookFavorite(bookId, favorite, bookStateDeps),
     setBlur: (bookId: string, blur: BookBlur) => setBookBlur(bookId, blur, bookStateDeps),

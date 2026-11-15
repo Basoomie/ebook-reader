@@ -6,7 +6,10 @@
 
 import 'fake-indexeddb/auto';
 import { describe, expect, it } from 'vitest';
+import { continueReadingIds } from '$lib/home/continue-reading';
+import { bookProgressFraction, positionsByBook } from '$lib/library/progress';
 import {
+  currentReadHasPlace,
   getAllBookStates,
   getBookState,
   markBooksCompleted,
@@ -117,6 +120,57 @@ describe('book state service', () => {
       { bookId: A }
     );
     expect(await pendingStartOver(A, 500, d)).toBeNull();
+  });
+
+  it('Unread on a part-read book takes it back to the start and out of Continue Reading', async () => {
+    const d = await deps();
+    // The accidental open: a page turn sets Reading and saves a place.
+    await noteFirstPageTurn(A, d);
+    await d.engine.put(
+      'position',
+      `${A}:${DEVICE}`,
+      { charPos: 900, progress: 0.03, readThroughId: null },
+      { bookId: A }
+    );
+    const view = async () => {
+      const records = await d.engine.getAll('position');
+      const states = await getAllBookStates(d);
+      return {
+        continueReading: continueReadingIds(states, positionsByBook(records), 10),
+        bar: bookProgressFraction(A, states.get(A), records, null)
+      };
+    };
+    expect(await view()).toEqual({ continueReading: [A], bar: 0.03 });
+    expect(await currentReadHasPlace(A, d)).toBe(true);
+
+    await setBookStatus(A, 'unread', d);
+    const s = await getBookState(A, d);
+    expect(s.status).toBe('unread');
+    expect(s.readThroughs.map((r) => [r.number, r.origin, r.startedOn, r.finished])).toEqual([
+      [2, 'start-over', '2026-11-09', false]
+    ]);
+    expect(await view()).toEqual({ continueReading: [], bar: null });
+    expect(await currentReadHasPlace(A, d)).toBe(false);
+    // The reader opens it at the start once.
+    expect((await pendingStartOver(A, 900, d))?.number).toBe(2);
+    // The position record itself is untouched.
+    expect((await d.engine.get('position', `${A}:${DEVICE}`))?.data).toEqual({
+      charPos: 900,
+      progress: 0.03,
+      readThroughId: null
+    });
+
+    // Unread again without a place: nothing new.
+    await setBookStatus(A, 'unread', d);
+    expect((await getBookState(A, d)).readThroughs).toHaveLength(1);
+  });
+
+  it('Unread on a book without a place changes only the status', async () => {
+    const d = await deps();
+    await noteFirstPageTurn(A, d);
+    await setBookStatus(A, 'unread', d);
+    const s = await getBookState(A, d);
+    expect([s.status, s.readThroughs]).toEqual(['unread', []]);
   });
 
   it('never writes stat-day or position records', async () => {

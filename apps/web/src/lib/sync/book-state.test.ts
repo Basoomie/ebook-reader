@@ -23,6 +23,7 @@ import {
   planStartOver,
   positionReadThroughId,
   positionReadThroughOf,
+  readThroughLines,
   readThroughOfDay,
   startOverToApply,
   type BookState,
@@ -156,6 +157,45 @@ describe('transitions', () => {
       planSetStatus(state([rec('book-status', BOOK, { status: 'reading', auto: true })]), 'reading')
     ).toHaveLength(1);
     expect(() => planSetStatus(state([]), 'completed')).toThrow();
+  });
+
+  it('Unread on a book with a place is a Start over (the place resets); without one only the status', () => {
+    const today = '2026-11-14';
+    const statuses = [
+      [],
+      [rec('book-status', BOOK, { status: 'reading', auto: true })],
+      [rec('book-status', BOOK, { status: 'dropped', auto: false })],
+      [rec('book-status', BOOK, { status: 'unread', auto: false })]
+    ];
+    for (const records of statuses) {
+      const s = state(records);
+      expect(planSetStatus(s, 'unread', { today, hasPlace: true })).toEqual(
+        planStartOver(s, today)
+      );
+    }
+    // From Completed: after the finished read, a new one.
+    const done = state([
+      rec('book-status', BOOK, { status: 'completed', auto: false }),
+      rtRecord(1, { finished: true, finishedOn: '2026-11-10', origin: 'completion' })
+    ]);
+    const writes = planSetStatus(done, 'unread', { today, hasPlace: true });
+    expect(writes.map((w) => w.id)).toEqual([`${BOOK}:2`, BOOK]);
+    expect(writes[1]).toMatchObject({ data: { status: 'unread', auto: false } });
+
+    expect(
+      planSetStatus(
+        state([rec('book-status', BOOK, { status: 'reading', auto: true })]),
+        'unread',
+        {
+          today,
+          hasPlace: false
+        }
+      )
+    ).toEqual([
+      { kind: 'book-status', id: BOOK, bookId: BOOK, data: { status: 'unread', auto: false } }
+    ]);
+    // A place only matters for Unread.
+    expect(planSetStatus(state([]), 'dropped', { today, hasPlace: true })).toHaveLength(1);
   });
 
   it('mark completed without read-throughs creates a finished manual #1', () => {
@@ -538,5 +578,41 @@ describe('Start over refused for a stale mirror (re-plan)', () => {
     expect(startOverToApply(s, older, 500)?.number).toBe(3);
     const noMove = { ...s, ownMove: undefined };
     expect(startOverToApply(noMove, own, 500)?.number).toBe(3);
+  });
+});
+
+describe('read-throughs as the Book status dialog lists them', () => {
+  const lines = (records: LocalRecord[]) =>
+    readThroughLines(state(records)).map((l) => [l.readThrough.number, l.finishedNumber]);
+  const status = (s: string) => rec('book-status', BOOK, { status: s, auto: false });
+
+  it('lists nothing after a Start over of an unfinished book (no "2nd read")', () => {
+    expect(lines([status('unread'), rtRecord(2)])).toEqual([]);
+  });
+
+  it('numbers finished reads among themselves and lists the current read while Reading or Dropped', () => {
+    const records = [
+      rtRecord(2, { finished: true, finishedOn: '2026-11-05' }),
+      rtRecord(3),
+      rtRecord(4, { finished: true, finishedOn: '2026-11-08' }),
+      rtRecord(5)
+    ];
+    // #3 was left by a Start over: not listed, and it doesn't take a number.
+    expect(lines([status('reading'), ...records])).toEqual([
+      [2, 1],
+      [4, 2],
+      [5, null]
+    ]);
+    expect(lines([status('dropped'), ...records])).toContainEqual([5, null]);
+    expect(lines([status('unread'), ...records])).toEqual([
+      [2, 1],
+      [4, 2]
+    ]);
+  });
+
+  it('a finished current read is listed once', () => {
+    expect(
+      lines([status('completed'), rtRecord(1, { finished: true, origin: 'completion' })])
+    ).toEqual([[1, 1]]);
   });
 });
