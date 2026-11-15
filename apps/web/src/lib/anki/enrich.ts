@@ -205,6 +205,13 @@ export async function enrichNote(
   note: NoteInfo,
   input: Omit<EnrichInput, 'days'>
 ): Promise<EnrichResult> {
+  // Tells AnkiConnect Android apart (media names, no tag), as finding the newest note does.
+  try {
+    await anki.connect();
+  } catch (error) {
+    throw new EnrichError((error as Error).message, 'anki');
+  }
+
   const result: EnrichResult = {
     noteId: note.noteId,
     noteType: note.modelName,
