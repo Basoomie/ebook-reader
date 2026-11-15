@@ -28,6 +28,22 @@ export interface LookupSentence extends Sentence {
   at: number;
 }
 
+/**
+ * One lookup (Phase 8, automatic enrichment): from the popup shown on a word until it is
+ * hidden or moves on to another word. `sentence` is filled in once it is worked out (or
+ * stays null when the place isn't in the book's text).
+ */
+export interface LookupRecord {
+  id: number;
+  /** When the popup showed this word (`Date.now()`). */
+  startedAt: number;
+  /** When it was hidden or moved on, or null while it is shown. */
+  endedAt: number | null;
+  sentence: LookupSentence | null;
+}
+
+export type LookupListener = (lookup: LookupRecord, change: 'start' | 'end') => void;
+
 export interface LookupHost {
   /** The book's content element (.book-content). */
   root(): Element | null;
@@ -113,6 +129,10 @@ export class LookupCapture {
   private readonly shown = new WeakMap<HTMLElement, string>();
   private pending: ReturnType<typeof setTimeout> | null = null;
   private stopped = false;
+  /** The lookup shown now, and the popup showing it. */
+  private current: { lookup: LookupRecord; popup: HTMLElement } | null = null;
+  private nextLookupId = 1;
+  private readonly listeners = new Set<LookupListener>();
 
   constructor(
     private readonly doc: Document,
@@ -123,6 +143,12 @@ export class LookupCapture {
   /** The sentence of the last lookup since the book opened, or null. */
   get lastLookup(): LookupSentence | null {
     return this.last;
+  }
+
+  /** Calls `listener` when a lookup starts and when it ends. Returns the unsubscribe. */
+  onLookup(listener: LookupListener): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
   }
 
   /** When the last lookup was recorded (`Date.now()`), or 0. */
@@ -174,6 +200,8 @@ export class LookupCapture {
   }
 
   stop(): void {
+    this.endLookup();
+    this.listeners.clear();
     this.stopped = true;
     this.doc.removeEventListener('pointermove', this.onPointer, { capture: true });
     this.doc.removeEventListener('pointerdown', this.onPointer, { capture: true });
@@ -317,30 +345,70 @@ export class LookupCapture {
     }
   }
 
-  /** A popup shown, or moved while shown (a new word), is a lookup. */
+  /**
+   * A popup shown, or moved while shown (a new word), is a lookup. Hidden, or moved on, it
+   * ends (Phase 8).
+   */
   private check(popup: HTMLElement) {
     try {
       const style = isPopupShown(popup) ? `${popup.style.left}|${popup.style.top}` : '';
       const before = this.shown.get(popup) ?? '';
       this.shown.set(popup, style);
 
-      if (style && style !== before) this.schedule();
+      if (style && style !== before) {
+        this.endLookup();
+        this.schedule(this.startLookup(popup));
+      } else if (!style && before && this.current?.popup === popup) {
+        this.endLookup();
+      }
     } catch (error) {
       this.fail(error);
     }
   }
 
+  private startLookup(popup: HTMLElement): LookupRecord {
+    const lookup: LookupRecord = {
+      id: this.nextLookupId++,
+      startedAt: Date.now(),
+      endedAt: null,
+      sentence: null
+    };
+    this.current = { lookup, popup };
+    this.emit(lookup, 'start');
+    return lookup;
+  }
+
+  private endLookup() {
+    const current = this.current;
+
+    if (!current) return;
+
+    this.current = null;
+    current.lookup.endedAt = Date.now();
+    this.emit(current.lookup, 'end');
+  }
+
+  private emit(lookup: LookupRecord, change: 'start' | 'end') {
+    for (const listener of this.listeners) {
+      try {
+        listener(lookup, change);
+      } catch (error) {
+        this.fail(error);
+      }
+    }
+  }
+
   /** After the popup's own work (Yomitan selects the word before or as it shows the popup). */
-  private schedule() {
+  private schedule(lookup: LookupRecord) {
     if (this.pending) clearTimeout(this.pending);
 
     this.pending = setTimeout(() => {
       this.pending = null;
-      if (!this.stopped) this.capture();
+      if (!this.stopped) lookup.sentence = this.capture();
     }, 30);
   }
 
-  private capture() {
+  private capture(): LookupSentence | null {
     try {
       const selection = this.doc.getSelection();
       const root = this.host.root();
@@ -351,17 +419,22 @@ export class LookupCapture {
         !selection.isCollapsed &&
         root?.contains(selection.getRangeAt(0).startContainer)
       ) {
-        if (this.captureRange(selection.getRangeAt(0).cloneRange(), { boldWord: true })) return;
+        const selected = this.captureRange(selection.getRangeAt(0).cloneRange(), {
+          boldWord: true
+        });
+        if (selected) return selected;
       }
 
       // The character under the pointer now, else the last one it passed over.
       const now = this.pointer ? characterAtPoint(this.doc, this.pointer.x, this.pointer.y) : null;
+      const atPointer = now ? this.captureRange(now) : null;
 
-      if (now && this.captureRange(now)) return;
+      if (atPointer) return atPointer;
 
-      if (this.caret?.startContainer.isConnected) this.captureRange(this.caret);
+      return this.caret?.startContainer.isConnected ? this.captureRange(this.caret) : null;
     } catch (error) {
       this.fail(error);
+      return null;
     }
   }
 

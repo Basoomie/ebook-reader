@@ -17,6 +17,7 @@
   import {
     ankiAudioMatchThreshold$,
     ankiAudioMaxSeconds$,
+    ankiAutoEnrich$,
     ankiBottomBarButton$,
     ankiConnectKey$,
     ankiConnectTimeoutSeconds$,
@@ -225,7 +226,20 @@
 
     <div class="border-c-line border-t pt-6 lg:border-l lg:border-t-0 lg:pl-10 lg:pt-0">
       <h3 class="font-mincho text-lg font-bold">Every device</h3>
-      <label class="mt-2 block text-sm text-c-muted">
+      <label class="mt-2 flex min-h-[3rem] items-center gap-3">
+        <input
+          type="checkbox"
+          class="h-6 w-6"
+          data-testid="anki-auto-enrich"
+          bind:checked={$ankiAutoEnrich$}
+        />
+        <span>Enrich new cards automatically</span>
+      </label>
+      <p class="mt-1 max-w-prose text-sm text-c-muted">
+        When you make a card in Yomitan while reading, it gets the sentence, sentence audio, cover
+        and link as Enrich would. Looking up a word without making a card changes nothing.
+      </p>
+      <label class="mt-4 block text-sm text-c-muted">
         Enrich the newest note added in the last … days
         <input
           class={fieldClasses}

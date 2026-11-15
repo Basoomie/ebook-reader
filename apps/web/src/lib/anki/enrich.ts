@@ -193,6 +193,18 @@ export async function enrichLastCard(anki: AnkiConnect, input: EnrichInput): Pro
     );
   }
 
+  return enrichNote(anki, note, input);
+}
+
+/**
+ * Enrich's work on one given note (the newest for the button; a card just made with
+ * Yomitan for automatic enrichment, Phase 8).
+ */
+export async function enrichNote(
+  anki: AnkiConnect,
+  note: NoteInfo,
+  input: Omit<EnrichInput, 'days'>
+): Promise<EnrichResult> {
   const result: EnrichResult = {
     noteId: note.noteId,
     noteType: note.modelName,

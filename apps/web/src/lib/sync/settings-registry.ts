@@ -168,6 +168,7 @@ export const SETTINGS_REGISTRY: Record<string, SettingSpec> = {
   ankiTagPrefix: g('String'),
   ankiAudioMatchThreshold: g('Number'),
   ankiAudioMaxSeconds: g('Number'),
+  ankiAutoEnrich: g('Boolean'), // Phase 8: enrich a card made with Yomitan by itself
 
   // --- lib/audio/tts-settings.ts (WP17: pauses in audiobooks made on the PC) ---
   ttsSentencePauseMs: g('Number'),
