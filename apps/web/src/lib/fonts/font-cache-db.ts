@@ -25,6 +25,11 @@ export interface CachedFont {
   sha256: string;
   blob: Blob;
   savedAt: number;
+  /**
+   * Phase 10: a Google font's other weights (its bold), each with its own file. Kept in
+   * the same entry (no database version change); older app builds ignore the field.
+   */
+  faces?: { weight: number; format: string; size: number; sha256: string; blob: Blob }[];
 }
 
 interface FontCacheSchema extends DBSchema {

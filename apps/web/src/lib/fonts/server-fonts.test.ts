@@ -7,10 +7,26 @@
 import 'fake-indexeddb/auto';
 import { describe, expect, it } from 'vitest';
 import { IdbFontCache, openFontCacheDb, type CachedFont, type FontCache } from './font-cache-db';
-import { customFontNames, fontNameProblem, formatFontSize, isFontFileName } from './font-names';
+import {
+  customFontNames,
+  fontNameProblem,
+  formatFontSize,
+  googleCategory,
+  isFontFileName,
+  licenseName,
+  weightsLabel
+} from './font-names';
+import {
+  GooglePreviews,
+  previewCssUrl,
+  previewFamilyName,
+  previewFontUrl,
+  type PreviewDeps
+} from './google-preview';
 import { oldFontNames, planOldFontCleanup } from './old-browser-fonts';
 import {
   FONT_KIND,
+  fontRecordData,
   ServerFonts,
   type FaceRegistry,
   type FontRecordData,
@@ -52,14 +68,25 @@ class MemoryCache implements FontCache {
 
 class Faces implements FaceRegistry {
   registered = new Map<string, string>();
+  /** The other weights each font was registered with, and their bytes. */
+  weights = new Map<string, Record<number, string>>();
   refuse = new Set<string>();
-  async register(id: string, name: string, blob: Blob) {
+  async register(
+    id: string,
+    name: string,
+    blob: Blob,
+    faces: readonly { weight: number; blob: Blob }[] = []
+  ) {
     if (this.refuse.has(name)) throw new Error('bad font');
     await blob.text();
+    const weights: Record<number, string> = {};
+    for (const f of faces) weights[f.weight] = await f.blob.text();
     this.registered.set(id, name);
+    this.weights.set(id, weights);
   }
   unregister(id: string) {
     this.registered.delete(id);
+    this.weights.delete(id);
   }
 }
 
@@ -80,11 +107,12 @@ function make(
   const fonts = new ServerFonts({
     cache,
     faces,
-    async download(id) {
+    async download(id, weight) {
       if (!connected) return null;
-      downloads.push(id);
-      if (!(id in files)) throw new Error('404');
-      return new Blob([files[id]]);
+      const key = weight === undefined ? id : `${id}:${weight}`;
+      downloads.push(key);
+      if (!(key in files)) throw new Error('404');
+      return new Blob([files[key]]);
     },
     hash: options.hash ?? (async (blob) => `sha-${await blob.text()}`),
     onFontDeleted: (name) => deletedNames.push(name),
@@ -345,5 +373,228 @@ describe('IdbFontCache', () => {
     expect(all.map((f) => f.id)).toEqual([ID_A]);
     await cache.delete(ID_A);
     expect(await cache.getAll()).toEqual([]);
+  });
+});
+
+/** A Google font's record data: regular `bytes`, bold `bold` (Phase 10). */
+function googleData(name: string, bytes: string, bold: string | null, boldSha = `sha-${bold}`) {
+  return {
+    ...data(name, bytes),
+    source: 'google' as const,
+    copyright: 'Copyright 2021 The Zen Old Mincho Project Authors',
+    licenseUrl: 'https://scripts.sil.org/OFL',
+    faces:
+      bold === null ? [] : [{ weight: 700, format: 'woff2', size: bold.length, sha256: boldSha }]
+  };
+}
+
+describe('ServerFonts with Google fonts (Phase 10)', () => {
+  it('downloads the regular and bold files, saves both and registers bold with its weight', async () => {
+    const t = make({ files: { [ID_A]: 'reg', [`${ID_A}:700`]: 'bold!' } });
+    await t.fonts.start();
+    await t.fonts.applyRecords([], { initial: true });
+    const arrived: string[] = [];
+    t.fonts.arrived$.subscribe((n) => arrived.push(n));
+    await t.fonts.applyRecords([record(ID_A, googleData('Zen Old Mincho', 'reg', 'bold!'))]);
+    expect(t.downloads).toEqual([ID_A, `${ID_A}:700`]);
+    expect(t.faces.registered.get(ID_A)).toBe('Zen Old Mincho');
+    expect(t.faces.weights.get(ID_A)).toEqual({ 700: 'bold!' });
+    const saved = t.cache.files.get(ID_A);
+    expect(await saved?.blob.text()).toBe('reg');
+    expect(saved?.faces?.map((f) => [f.weight, f.sha256])).toEqual([[700, 'sha-bold!']]);
+    expect(arrived).toEqual(['Zen Old Mincho']);
+    expect(t.fonts.fonts$.getValue()).toEqual([
+      expect.objectContaining({
+        name: 'Zen Old Mincho',
+        status: 'saved',
+        source: 'google',
+        size: 8,
+        weights: [400, 700],
+        licenseUrl: 'https://scripts.sil.org/OFL',
+        copyright: 'Copyright 2021 The Zen Old Mincho Project Authors'
+      })
+    ]);
+    // Registered again at the next start, bold included, without downloading.
+    const again = make();
+    again.cache.files = t.cache.files;
+    await again.fonts.start();
+    expect(again.faces.weights.get(ID_A)).toEqual({ 700: 'bold!' });
+    await again.fonts.applyRecords([record(ID_A, googleData('Zen Old Mincho', 'reg', 'bold!'))], {
+      initial: true
+    });
+    expect(again.downloads).toEqual([]);
+    expect(again.fonts.fonts$.getValue()[0].status).toBe('saved');
+  });
+
+  it('saves nothing when the bold file fails, and tries again later', async () => {
+    const t = make({ files: { [ID_A]: 'reg' } });
+    await t.fonts.start();
+    await t.fonts.applyRecords([], { initial: true });
+    await t.fonts.applyRecords([record(ID_A, googleData('Zen', 'reg', 'bold!'))]);
+    expect(t.fonts.fonts$.getValue()[0].status).toBe('failed');
+    expect(t.cache.files.size).toBe(0);
+    expect(t.faces.registered.size).toBe(0);
+    expect(t.fonts.isPending('Zen')).toBe(false);
+    t.files[`${ID_A}:700`] = 'bold!';
+    await t.fonts.retry();
+    expect(t.fonts.fonts$.getValue()[0].status).toBe('saved');
+    expect(t.faces.weights.get(ID_A)).toEqual({ 700: 'bold!' });
+  });
+
+  it('refuses a damaged bold file', async () => {
+    const t = make({ files: { [ID_A]: 'reg', [`${ID_A}:700`]: 'bold!' } });
+    await t.fonts.start();
+    await t.fonts.applyRecords([], { initial: true });
+    await t.fonts.applyRecords([record(ID_A, googleData('Zen', 'reg', 'bold!', 'sha-other'))]);
+    expect(t.fonts.fonts$.getValue()[0].status).toBe('failed');
+    expect(t.warnings.join('\n')).toMatch(/damaged \(weight 700\)/);
+  });
+
+  it('keeps a saved regular file and downloads only the missing bold', async () => {
+    const t = make({ files: { [`${ID_A}:700`]: 'bold!' } });
+    // Saved by an app version that took only the regular file.
+    await t.cache.put({
+      id: ID_A,
+      name: 'Zen',
+      format: 'woff2',
+      size: 3,
+      sha256: 'sha-reg',
+      blob: new Blob(['reg']),
+      savedAt: 1
+    });
+    await t.fonts.start();
+    expect(t.faces.weights.get(ID_A)).toEqual({});
+    await t.fonts.applyRecords([record(ID_A, googleData('Zen', 'reg', 'bold!'))], {
+      initial: true
+    });
+    expect(t.downloads).toEqual([`${ID_A}:700`]);
+    expect(t.faces.weights.get(ID_A)).toEqual({ 700: 'bold!' });
+    expect(t.fonts.fonts$.getValue()[0].status).toBe('saved');
+  });
+
+  it('stores a regular-only Google font as one file', async () => {
+    const t = make({ files: { [ID_A]: 'reg' } });
+    await t.fonts.start();
+    await t.fonts.applyRecords([], { initial: true });
+    await t.fonts.applyRecords([record(ID_A, googleData('Hina', 'reg', null))]);
+    expect(t.downloads).toEqual([ID_A]);
+    expect(t.cache.files.get(ID_A)?.faces).toBeUndefined();
+    expect(t.fonts.fonts$.getValue()[0]).toMatchObject({ status: 'saved', weights: [400] });
+  });
+
+  it('reads Google records and leaves uploaded ones as they were', () => {
+    const base = data('Mine', 'abc');
+    expect(fontRecordData({ ...base })).toEqual(base);
+    // Faces on a record that isn't a Google font are not read.
+    expect(fontRecordData({ ...base, faces: [{ weight: 700 }] })).toEqual(base);
+    expect(
+      fontRecordData({
+        ...base,
+        source: 'google',
+        copyright: 7,
+        faces: [
+          { weight: 900, format: 'woff2', size: 1, sha256: 'b' },
+          { weight: 700, format: 'woff2', size: 1, sha256: 'a' },
+          { weight: 700, format: 'woff2', size: 2, sha256: 'dup' },
+          { weight: 400, format: 'woff2', size: 1, sha256: 'regular' },
+          { weight: 'bold', format: 'woff2', size: 1, sha256: 'x' },
+          null
+        ]
+      })
+    ).toEqual({
+      ...base,
+      source: 'google',
+      copyright: null,
+      licenseUrl: null,
+      faces: [
+        { weight: 700, format: 'woff2', size: 1, sha256: 'a' },
+        { weight: 900, format: 'woff2', size: 1, sha256: 'b' }
+      ]
+    });
+  });
+
+  it('shows an uploaded font as one regular file', async () => {
+    const t = make({ files: { [ID_A]: 'abc' } });
+    await t.fonts.start();
+    await t.fonts.applyRecords([], { initial: true });
+    await t.fonts.applyRecords([record(ID_A, data('Mine', 'abc'))]);
+    expect(t.fonts.fonts$.getValue()[0]).toMatchObject({
+      source: 'upload',
+      weights: [400],
+      copyright: null,
+      licenseUrl: null
+    });
+    expect(t.faces.weights.get(ID_A)).toEqual({});
+  });
+});
+
+describe('Google Fonts wording (Phase 10)', () => {
+  it('names the license, the category and the weights in plain words', () => {
+    expect(licenseName('https://scripts.sil.org/OFL')).toBe('SIL Open Font License');
+    expect(licenseName('http://scripts.sil.org/OFL')).toBe('SIL Open Font License');
+    expect(licenseName('https://openfontlicense.org')).toBe('SIL Open Font License');
+    expect(licenseName('https://www.apache.org/licenses/LICENSE-2.0')).toBe('Apache License 2.0');
+    expect(licenseName('https://example.com/license')).toBe('https://example.com/license');
+    expect(licenseName(null)).toBeNull();
+    expect(googleCategory('Serif')).toBe('Mincho (serif)');
+    expect(googleCategory('Sans Serif')).toBe('Gothic (sans-serif)');
+    expect(googleCategory('Handwriting')).toBe('Handwriting');
+    expect(googleCategory('')).toBe('Other');
+    expect(weightsLabel([400, 700])).toBe('Regular and bold');
+    expect(weightsLabel([400])).toBe('Regular only');
+  });
+});
+
+describe('Google Fonts samples (Phase 10)', () => {
+  it('asks Google for just the sample text and takes only fonts.gstatic.com files', () => {
+    expect(previewCssUrl('Zen Old Mincho', 'ab')).toBe(
+      'https://fonts.googleapis.com/css2?family=Zen+Old+Mincho&text=ab'
+    );
+    expect(previewFamilyName('M PLUS 1p')).toBe('ttu-preview-m-plus-1p');
+    expect(
+      previewFontUrl("src: url(https://fonts.gstatic.com/l/font?kit=x&v=v14) format('truetype');")
+    ).toBe('https://fonts.gstatic.com/l/font?kit=x&v=v14');
+    expect(previewFontUrl('src: url(https://evil.example/a.woff2)')).toBeNull();
+    expect(previewFontUrl('nothing')).toBeNull();
+  });
+
+  it('loads each sample once, a few at a time, and removes them all on close', async () => {
+    const css: string[] = [];
+    const removed: string[] = [];
+    let open = 0;
+    let most = 0;
+    const deps: PreviewDeps = {
+      async fetchCss(url) {
+        css.push(url);
+        open++;
+        most = Math.max(most, open);
+        await new Promise((r) => setTimeout(r, 5));
+        open--;
+        if (url.includes('Broken')) throw new Error('offline');
+        return `src: url(https://fonts.gstatic.com/l/${css.length})`;
+      },
+      async addFace(name) {
+        return { remove: () => removed.push(name) };
+      }
+    };
+    const previews = new GooglePreviews(deps, 2);
+    const names = ['A', 'B', 'C', 'Broken', 'A'];
+    const results = await Promise.all(names.map((n) => previews.load(n)));
+    expect(results).toEqual([
+      'ttu-preview-a',
+      'ttu-preview-b',
+      'ttu-preview-c',
+      null,
+      'ttu-preview-a'
+    ]);
+    expect(css).toHaveLength(4);
+    expect(most).toBe(2);
+    previews.close();
+    expect(removed.sort()).toEqual(['ttu-preview-a', 'ttu-preview-b', 'ttu-preview-c']);
+    expect(await previews.load('D')).toBeNull();
+  });
+
+  it('shows no samples where the browser has no FontFace', async () => {
+    expect(await new GooglePreviews(null).load('A')).toBeNull();
   });
 });

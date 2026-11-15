@@ -554,9 +554,11 @@ export function parseUploadConfig(env: Env, warnings: string[]): UploadConfig {
 export interface FontConfig {
   /** Largest accepted font file (FONT_MAX_MB). */
   maxMb: number;
+  /** Each request to Google Fonts gives up after this (GOOGLE_FONTS_TIMEOUT_SECONDS). */
+  googleTimeoutSeconds: number;
 }
 
-export const DEFAULT_FONT_CONFIG: FontConfig = { maxMb: 64 };
+export const DEFAULT_FONT_CONFIG: FontConfig = { maxMb: 64, googleTimeoutSeconds: 60 };
 
 export interface AttachmentConfig {
   /** Largest accepted book attachment (ATTACHMENT_MAX_MB): a matched book's text. */
@@ -809,6 +811,15 @@ export function parseFontConfig(env: Env, warnings: string[]): FontConfig {
       DEFAULT_FONT_CONFIG.maxMb,
       1,
       1000,
+      true,
+      warnings,
+    ),
+    googleTimeoutSeconds: parseNumber(
+      'GOOGLE_FONTS_TIMEOUT_SECONDS',
+      env.GOOGLE_FONTS_TIMEOUT_SECONDS,
+      DEFAULT_FONT_CONFIG.googleTimeoutSeconds,
+      5,
+      600,
       true,
       warnings,
     ),

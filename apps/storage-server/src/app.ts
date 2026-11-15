@@ -64,7 +64,11 @@ export function createApp({
         frozenKinds: config.sync.frozenKinds,
       },
       migration: { dataRoot: config.dataRoot, dbDir: config.dbDir },
-      fonts: { dataRoot: config.dataRoot, maxMb: config.fonts.maxMb },
+      fonts: {
+        dataRoot: config.dataRoot,
+        maxMb: config.fonts.maxMb,
+        googleTimeoutSeconds: config.fonts.googleTimeoutSeconds,
+      },
       attachments: { dataRoot: config.dataRoot, maxMb: config.attachments.maxMb },
       seedDefaults,
       logs,

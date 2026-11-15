@@ -44,6 +44,7 @@ describe('migrations', () => {
       'char_counts',
       'devices',
       'file_hashes',
+      'font_faces',
       'fonts',
       'legacy_books',
       'legacy_device_reports',

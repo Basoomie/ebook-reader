@@ -815,11 +815,30 @@ interface FontRow {
   size: number;
   sha256: string;
   created_at: number;
+  /** Phase 10 (migration 19); absent in rows read by older code paths. */
+  source?: string;
+  copyright?: string | null;
+  license_url?: string | null;
 }
 
-/** What a font's record holds: exactly its `fonts` row. */
-export function fontRecordData(row: FontRow): Record<string, unknown> {
-  return {
+/** A font's other weights (Phase 10: a Google font's bold), lightest first. */
+export interface FontFaceRow {
+  weight: number;
+  format: string;
+  size: number;
+  sha256: string;
+}
+
+/**
+ * What a font's record holds: exactly its `fonts` row. A Google font (Phase 10) also has
+ * source, copyright, licenseUrl and faces (its other weights); an uploaded font's record
+ * keeps exactly the WP13 fields, so it is unchanged by Phase 10.
+ */
+export function fontRecordData(
+  row: FontRow,
+  faces: readonly FontFaceRow[] = [],
+): Record<string, unknown> {
+  const data: Record<string, unknown> = {
     name: row.name,
     fileName: row.file_name,
     format: row.format,
@@ -827,14 +846,36 @@ export function fontRecordData(row: FontRow): Record<string, unknown> {
     sha256: row.sha256,
     createdAt: row.created_at,
   };
+  if (row.source === 'google') {
+    data.source = 'google';
+    data.copyright = row.copyright ?? null;
+    data.licenseUrl = row.license_url ?? null;
+    data.faces = faces.map((f) => ({
+      weight: f.weight,
+      format: f.format,
+      size: f.size,
+      sha256: f.sha256,
+    }));
+  }
+  return data;
+}
+
+/** A font's other weights as its record lists them. */
+export function fontFaceRows(db: Database.Database, fontId: string): FontFaceRow[] {
+  return db
+    .prepare(
+      'SELECT weight, format, size, sha256 FROM font_faces WHERE font_id = ? ORDER BY weight',
+    )
+    .all(fontId) as FontFaceRow[];
 }
 
 /**
  * kind "font": id = the font id, lww, deletable. data { name, fileName, format, size,
- * sha256, createdAt }. Written by the server when a font is uploaded
- * (POST /api/v1/fonts, as the uploading device). Devices may delete it (gone from
- * every device) or restore it, but the data must be exactly the stored font's: a
- * record without an uploaded file, or with another name or file, is refused.
+ * sha256, createdAt } (+ source, copyright, licenseUrl, faces for a Google font).
+ * Written by the server when a font is uploaded (POST /api/v1/fonts) or added from Google
+ * Fonts (POST /api/v1/fonts/google), as the asking device. Devices may delete it (gone
+ * from every device) or restore it, but the data must be exactly the stored font's: a
+ * record without a stored file, or with another name or file, is refused.
  */
 const fontKind: KindSpec = {
   policy: () => 'lww',
@@ -843,16 +884,17 @@ const fontKind: KindSpec = {
     if (!UUID_RE.test(id)) throw new RecordError('invalid_id', 'font ids are UUIDs');
     const row = ctx.db
       .prepare(
-        'SELECT name, file_name, format, size, sha256, created_at FROM fonts WHERE id = ? AND user_id = ?',
+        `SELECT name, file_name, format, size, sha256, created_at, source, copyright, license_url
+           FROM fonts WHERE id = ? AND user_id = ?`,
       )
       .get(id, ctx.userId) as FontRow | undefined;
     if (!row) throw new RecordError('unknown_font', `No uploaded font ${id}`);
     if (deleted) return { bookId: null, data: {} };
     const obj = requireObject(data);
-    const expected = fontRecordData(row);
+    const expected = fontRecordData(row, fontFaceRows(ctx.db, id));
     for (const [key, value] of Object.entries(expected)) {
-      if (obj[key] !== value) {
-        throw new RecordError('invalid_data', `${key} must be the uploaded font's`);
+      if (JSON.stringify(obj[key]) !== JSON.stringify(value)) {
+        throw new RecordError('invalid_data', `${key} must be the stored font's`);
       }
     }
     return { bookId: null, data: expected };

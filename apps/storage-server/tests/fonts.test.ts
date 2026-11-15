@@ -104,9 +104,15 @@ describe('font format and name', () => {
 
   it('parses FONT_MAX_MB', () => {
     const warnings: string[] = [];
-    expect(parseFontConfig({}, warnings)).toEqual({ maxMb: 64 });
-    expect(parseFontConfig({ FONT_MAX_MB: '20' }, warnings)).toEqual({ maxMb: 20 });
-    expect(parseFontConfig({ FONT_MAX_MB: 'lots' }, warnings)).toEqual({ maxMb: 64 });
+    expect(parseFontConfig({}, warnings)).toEqual({ maxMb: 64, googleTimeoutSeconds: 60 });
+    expect(parseFontConfig({ FONT_MAX_MB: '20' }, warnings)).toEqual({
+      maxMb: 20,
+      googleTimeoutSeconds: 60,
+    });
+    expect(parseFontConfig({ FONT_MAX_MB: 'lots' }, warnings)).toEqual({
+      maxMb: 64,
+      googleTimeoutSeconds: 60,
+    });
     expect(warnings.length).toBe(1);
   });
 });
@@ -220,7 +226,7 @@ describe('font routes', () => {
   });
 
   it('refuses taken and unusable names, files that are not fonts, and too large files', async () => {
-    const s = await setup({ fonts: { maxMb: 0.01 } });
+    const s = await setup({ fonts: { maxMb: 0.01, googleTimeoutSeconds: 60 } });
     const a = await s.device('A');
     expect((await s.upload(a.auth, fakeFont(), 'Mine')).status).toBe(201);
 

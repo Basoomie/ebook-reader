@@ -21,6 +21,7 @@ import { serverLogs, type RecentLogs } from '../logs/recent-logs';
 import { createUploadRouter } from '../uploads/routes';
 import { FontStore } from '../fonts/font-store';
 import { createFontRouter } from '../fonts/routes';
+import { type FetchLike, GoogleFonts } from '../fonts/google-fonts';
 import { FontService } from '../fonts/service';
 import { DEFAULT_MAX_CLOCK_SKEW_SECONDS, SyncStore } from '../sync/store';
 import { audioStreamRoute, type AudioOptions, createAudioRouter } from '../audio/routes';
@@ -96,6 +97,10 @@ export interface ApiOptions {
 export interface FontOptions {
   dataRoot: string;
   maxMb: number;
+  /** Phase 10: each request to Google Fonts gives up after this (default 60). */
+  googleTimeoutSeconds?: number;
+  /** Tests: a stand-in for the requests to Google Fonts. */
+  googleFetch?: FetchLike;
 }
 
 const NO_CATALOG: CatalogOptions = {
@@ -252,6 +257,10 @@ export function createApiRouter({
           store,
           sync: syncStore,
           maxBytes: Math.round(fonts.maxMb * 1024 * 1024),
+          google: new GoogleFonts({
+            timeoutSeconds: fonts.googleTimeoutSeconds ?? 60,
+            fetch: fonts.googleFetch,
+          }),
         });
         router.use(createFontRouter(service));
       } catch (err) {

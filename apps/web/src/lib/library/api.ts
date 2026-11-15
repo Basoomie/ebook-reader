@@ -178,6 +178,25 @@ export interface ServerFontInfo {
   size: number;
   sha256: string;
   createdAt: number;
+  /** Phase 10: a font added from Google Fonts, with its license and other weights. */
+  source?: 'google';
+  copyright?: string | null;
+  licenseUrl?: string | null;
+  faces?: { weight: number; format: string; size: number; sha256: string }[];
+}
+
+/** A Japanese family on Google Fonts, as the storage server lists it (Phase 10). */
+export interface GoogleFontFamily {
+  family: string;
+  /** Google's category: Serif, Sans Serif, Display, Handwriting, Monospace. */
+  category: string;
+  /** The weights the reader would store: [400] or [400, 700]. */
+  weights: number[];
+  /**
+   * available: can be added. added: already added from Google Fonts. built_in: the reader
+   * has it built in. name_taken: an uploaded font has this name.
+   */
+  status: 'available' | 'added' | 'built_in' | 'name_taken';
 }
 
 /** GET /logs/recent (WP18): lines since the server started, oldest first. */
@@ -259,7 +278,7 @@ export class LibraryApi {
   /** The server's font size limit and its fonts; null when the server takes no fonts. */
   async fontInfo(
     options?: RequestOptions
-  ): Promise<{ maxBytes: number; fonts: ServerFontInfo[] } | null> {
+  ): Promise<{ maxBytes: number; google?: boolean; fonts: ServerFontInfo[] } | null> {
     try {
       return await (await this.get('/fonts', options)).json();
     } catch (error) {
@@ -268,13 +287,41 @@ export class LibraryApi {
     }
   }
 
-  /** A font file (WP13). */
-  async downloadFont(id: string, options: RequestOptions = {}): Promise<Blob> {
-    const response = await this.get(`/fonts/${encodeURIComponent(id)}/file`, {
+  /** A font file (WP13); with `weight`, a Google font's other weight (Phase 10). */
+  async downloadFont(
+    id: string,
+    { weight, ...options }: RequestOptions & { weight?: number } = {}
+  ): Promise<Blob> {
+    const query = weight === undefined ? '' : `?weight=${encodeURIComponent(String(weight))}`;
+    const response = await this.get(`/fonts/${encodeURIComponent(id)}/file${query}`, {
       timeoutSeconds: 0,
       ...options
     });
     return response.blob();
+  }
+
+  /**
+   * Google's Japanese families (Phase 10). The server asks Google on each call, so no
+   * timeout of its own here (the server's GOOGLE_FONTS_TIMEOUT_SECONDS bounds it); the
+   * caller can cancel.
+   */
+  async googleFonts(options: RequestOptions = {}): Promise<GoogleFontFamily[]> {
+    const response = await this.get('/fonts/google', { timeoutSeconds: 0, ...options });
+    return ((await response.json()) as { families: GoogleFontFamily[] }).families;
+  }
+
+  /**
+   * The server downloads a family from Google Fonts and adds it as a font for every device
+   * (Phase 10). Its record reaches this device with the next sync. No timeout; the caller
+   * can cancel (the server still finishes).
+   */
+  async addGoogleFont(family: string, options: RequestOptions = {}): Promise<ServerFontInfo> {
+    const response = await this.post(
+      '/fonts/google',
+      { family },
+      { timeoutSeconds: 0, ...options }
+    );
+    return ((await response.json()) as { font: ServerFontInfo }).font;
   }
 
   /**

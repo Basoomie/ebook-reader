@@ -36,36 +36,60 @@ import { logger } from '$lib/data/logger';
 export class BrowserFaceRegistry implements FaceRegistry {
   private readonly faces = new Map<
     string,
-    { face: FontFace } | { style: HTMLStyleElement; url: string }
+    { faces: FontFace[] } | { style: HTMLStyleElement; urls: string[] }
   >();
 
-  async register(id: string, name: string, blob: Blob): Promise<void> {
+  /**
+   * The regular file without a weight (FontFace's "normal", as for every uploaded font),
+   * other weights (a Google font's bold) with theirs, so bold text uses the real bold.
+   */
+  async register(
+    id: string,
+    name: string,
+    blob: Blob,
+    others: readonly { weight: number; blob: Blob }[] = []
+  ): Promise<void> {
     this.unregister(id);
+    const files: { weight: number | null; blob: Blob }[] = [{ weight: null, blob }, ...others];
     if (typeof FontFace === 'function' && typeof document.fonts?.add === 'function') {
-      const face = new FontFace(name, await blob.arrayBuffer(), { display: 'swap' });
-      await face.load();
-      document.fonts.add(face);
-      this.faces.set(id, { face });
+      const faces: FontFace[] = [];
+      for (const file of files) {
+        const descriptors: FontFaceDescriptors = { display: 'swap' };
+        if (file.weight !== null) descriptors.weight = String(file.weight);
+        const face = new FontFace(name, await file.blob.arrayBuffer(), descriptors);
+        await face.load();
+        faces.push(face);
+      }
+      // Added only once every file loaded, so a font never shows with half its files.
+      for (const face of faces) document.fonts.add(face);
+      this.faces.set(id, { faces });
       return;
     }
-    const url = URL.createObjectURL(blob);
+    const urls = files.map((file) => URL.createObjectURL(file.blob));
     const style = document.createElement('style');
     style.dataset.ttuServerFont = id;
     // Names are letters, digits, spaces, - and _ only (checked by the server).
-    style.textContent = `@font-face{font-family:'${name}';font-display:swap;src:url('${url}')}`;
+    style.textContent = files
+      .map(
+        (file, i) =>
+          `@font-face{font-family:'${name}';font-display:swap;` +
+          (file.weight === null ? '' : `font-weight:${file.weight};`) +
+          `src:url('${urls[i]}')}`
+      )
+      .join('');
     document.head.appendChild(style);
-    this.faces.set(id, { style, url });
+    this.faces.set(id, { style, urls });
   }
 
   unregister(id: string): void {
     const entry = this.faces.get(id);
     if (!entry) return;
     this.faces.delete(id);
-    if ('face' in entry) {
-      document.fonts.delete(entry.face);
+    if ('faces' in entry) {
+      for (const face of entry.faces) document.fonts.delete(face);
     } else {
       entry.style.remove();
-      URL.revokeObjectURL(entry.url);
+      for (const url of entry.urls) URL.revokeObjectURL(url);
     }
   }
 }
@@ -107,9 +131,9 @@ export const serverFonts = new ServerFonts({
   faces: browser
     ? new BrowserFaceRegistry()
     : { register: () => Promise.reject(new Error('no browser')), unregister: () => {} },
-  async download(id) {
+  async download(id, weight) {
     const api = await fontApi();
-    return api ? api.downloadFont(id) : null;
+    return api ? api.downloadFont(id, { weight }) : null;
   },
   hash: sha256,
   onFontDeleted: resetDeletedFont,

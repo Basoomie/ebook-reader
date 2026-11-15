@@ -27,6 +27,21 @@ export interface FontRecordData {
   size: number;
   sha256: string;
   createdAt: number;
+  /** Phase 10: set for a font added from Google Fonts. */
+  source?: 'google';
+  /** A Google font's copyright and license URL, from its file. */
+  copyright?: string | null;
+  licenseUrl?: string | null;
+  /** A Google font's other weights (its bold). The fields above are its regular file. */
+  faces?: FontFaceData[];
+}
+
+/** Another weight of a font: its own file, registered with that weight. */
+export interface FontFaceData {
+  weight: number;
+  format: string;
+  size: number;
+  sha256: string;
 }
 
 /** The parts of a synced record the service reads. */
@@ -49,29 +64,66 @@ export interface ServerFontState {
   name: string;
   fileName: string;
   format: string;
+  /** All of the font's files together. */
   size: number;
   createdAt: number;
   status: FontStatus;
+  source: 'upload' | 'google';
+  copyright: string | null;
+  licenseUrl: string | null;
+  /** The weights it has its own files for: [400] for an uploaded font. */
+  weights: number[];
 }
 
-/** Makes a font file usable by the page under a family name. */
+/** The regular file's weight (FontFace's default "normal"). */
+export const REGULAR_WEIGHT = 400;
+
+/** Makes a font's files usable by the page under a family name. */
 export interface FaceRegistry {
-  /** Throws when the browser can't use the file as a font. */
-  register(id: string, name: string, blob: Blob): Promise<void>;
+  /**
+   * The regular file, plus other weights with their own files. Throws when the browser
+   * can't use one of them as a font.
+   */
+  register(
+    id: string,
+    name: string,
+    blob: Blob,
+    faces?: readonly { weight: number; blob: Blob }[]
+  ): Promise<void>;
   unregister(id: string): void;
 }
 
 export interface ServerFontDeps {
   cache: FontCache;
   faces: FaceRegistry;
-  /** Downloads a font file; null when this device isn't connected to a server. */
-  download(id: string): Promise<Blob | null>;
+  /**
+   * Downloads a font file (another weight's with `weight`); null when this device isn't
+   * connected to a server.
+   */
+  download(id: string, weight?: number): Promise<Blob | null>;
   /** SHA-256 (hex) of a file, or null when the browser can't hash (plain http). */
   hash(blob: Blob): Promise<string | null>;
   /** A font that was deleted on the server (to reset this device's font setting). */
   onFontDeleted?(name: string): void;
   now?: () => number;
   warn(message: string): void;
+}
+
+function faceData(value: unknown): FontFaceData | null {
+  const { weight, format, size, sha256 } = (value ?? {}) as Record<string, unknown>;
+  if (
+    typeof weight !== 'number' ||
+    !Number.isInteger(weight) ||
+    weight < 1 ||
+    weight > 1000 ||
+    weight === REGULAR_WEIGHT ||
+    typeof format !== 'string' ||
+    typeof size !== 'number' ||
+    typeof sha256 !== 'string'
+  ) {
+    return null;
+  }
+  return { weight, format, size, sha256 };
 }
 
 export function fontRecordData(data: Record<string, unknown>): FontRecordData | null {
@@ -86,7 +138,26 @@ export function fontRecordData(data: Record<string, unknown>): FontRecordData | 
   ) {
     return null;
   }
-  return { name, fileName, format, size, sha256, createdAt };
+  const out: FontRecordData = { name, fileName, format, size, sha256, createdAt };
+  if (data.source === 'google') {
+    out.source = 'google';
+    out.copyright = typeof data.copyright === 'string' ? data.copyright : null;
+    out.licenseUrl = typeof data.licenseUrl === 'string' ? data.licenseUrl : null;
+    const faces: FontFaceData[] = [];
+    for (const f of Array.isArray(data.faces) ? data.faces : []) {
+      const face = faceData(f);
+      if (face && !faces.some((x) => x.weight === face.weight)) faces.push(face);
+    }
+    out.faces = faces.sort((a, b) => a.weight - b.weight);
+  }
+  return out;
+}
+
+/** The font's other weights' files are all saved here, with the right bytes. */
+function facesSaved(data: FontRecordData, file: CachedFont): boolean {
+  return (data.faces ?? []).every((f) =>
+    (file.faces ?? []).some((c) => c.weight === f.weight && c.sha256 === f.sha256)
+  );
 }
 
 const message = (error: unknown) => (error as Error)?.message ?? String(error);
@@ -252,7 +323,13 @@ export class ServerFonts {
   private isSaved(id: string): boolean {
     const data = this.live.get(id);
     const file = this.cached.get(id);
-    return !!data && !!file && file.sha256 === data.sha256 && this.registered.has(id);
+    return (
+      !!data &&
+      !!file &&
+      file.sha256 === data.sha256 &&
+      facesSaved(data, file) &&
+      this.registered.has(id)
+    );
   }
 
   private isLoading(id: string): boolean {
@@ -260,10 +337,15 @@ export class ServerFonts {
     return s === 'queued' || s === 'downloading';
   }
 
-  private async registerFace(font: CachedFont): Promise<void> {
-    if (this.registered.get(font.id) === font.name) return;
+  private async registerFace(font: CachedFont, again = false): Promise<void> {
+    if (!again && this.registered.get(font.id) === font.name) return;
     try {
-      await this.deps.faces.register(font.id, font.name, font.blob);
+      await this.deps.faces.register(
+        font.id,
+        font.name,
+        font.blob,
+        (font.faces ?? []).map((f) => ({ weight: f.weight, blob: f.blob }))
+      );
       this.registered.set(font.id, font.name);
     } catch (error) {
       this.deps.warn(`Fonts: this browser can't use "${font.name}": ${message(error)}`);
@@ -322,10 +404,27 @@ export class ServerFonts {
     return this.downloading;
   }
 
+  /** Downloads one file and checks its size and (where the browser can) its hash. */
+  private async fetchFile(
+    id: string,
+    expected: { size: number; sha256: string },
+    weight?: number
+  ): Promise<Blob | null> {
+    const blob = await this.deps.download(id, weight);
+    if (!blob) return null;
+    const what = weight === undefined ? '' : ` (weight ${weight})`;
+    if (blob.size !== expected.size) {
+      throw new Error(`got ${blob.size} bytes instead of ${expected.size}${what}`);
+    }
+    const hash = await this.deps.hash(blob);
+    if (hash !== null && hash !== expected.sha256) throw new Error(`the file is damaged${what}`);
+    return blob;
+  }
+
   private async fetchOne(id: string, data: FontRecordData): Promise<void> {
     // Already saved with the right bytes (e.g. registered at start).
     const file = this.cached.get(id);
-    if (file && file.sha256 === data.sha256) {
+    if (file && file.sha256 === data.sha256 && facesSaved(data, file)) {
       await this.registerFace(file);
       this.status.set(id, this.registered.has(id) ? 'saved' : 'failed');
       this.publish();
@@ -334,16 +433,22 @@ export class ServerFonts {
     this.status.set(id, 'downloading');
     this.publish();
     try {
-      const blob = await this.deps.download(id);
+      // Files already saved with the right bytes are kept; the rest is downloaded.
+      const blob = file && file.sha256 === data.sha256 ? file.blob : await this.fetchFile(id, data);
       if (!blob) {
         this.status.set(id, 'waiting');
         return;
       }
-      if (blob.size !== data.size) {
-        throw new Error(`got ${blob.size} bytes instead of ${data.size}`);
+      const faces: NonNullable<CachedFont['faces']> = [];
+      for (const face of data.faces ?? []) {
+        const kept = file?.faces?.find((c) => c.weight === face.weight && c.sha256 === face.sha256);
+        const faceBlob = kept ? kept.blob : await this.fetchFile(id, face, face.weight);
+        if (!faceBlob) {
+          this.status.set(id, 'waiting');
+          return;
+        }
+        faces.push({ ...face, blob: faceBlob });
       }
-      const hash = await this.deps.hash(blob);
-      if (hash !== null && hash !== data.sha256) throw new Error('the file is damaged');
       // Deleted while downloading.
       if (!this.live.has(id)) return;
       const font: CachedFont = {
@@ -355,9 +460,11 @@ export class ServerFonts {
         blob,
         savedAt: this.now()
       };
+      if (faces.length) font.faces = faces;
       await this.deps.cache.put(font);
       this.cached.set(id, font);
-      await this.registerFace(font);
+      // A font registered earlier without all its files is registered again with them.
+      await this.registerFace(font, true);
       if (!this.registered.has(id)) {
         this.status.set(id, 'failed');
         return;
@@ -379,9 +486,13 @@ export class ServerFonts {
         name: d.name,
         fileName: d.fileName,
         format: d.format,
-        size: d.size,
+        size: d.size + (d.faces ?? []).reduce((sum, f) => sum + f.size, 0),
         createdAt: d.createdAt,
-        status: this.isSaved(id) ? ('saved' as const) : (this.status.get(id) ?? 'queued')
+        status: this.isSaved(id) ? ('saved' as const) : (this.status.get(id) ?? 'queued'),
+        source: d.source === 'google' ? ('google' as const) : ('upload' as const),
+        copyright: d.copyright ?? null,
+        licenseUrl: d.licenseUrl ?? null,
+        weights: [REGULAR_WEIGHT, ...(d.faces ?? []).map((f) => f.weight)]
       }))
       .sort((a, b) => a.createdAt - b.createdAt);
     this.fonts$.next(states);

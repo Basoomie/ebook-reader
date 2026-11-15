@@ -96,6 +96,13 @@ export class FontStore {
     return `${fontId}/font.${format}`;
   }
 
+  /** The stored path of another weight of a font (Google fonts' bold): `<id>/font-700.woff2`. */
+  static facePath(fontId: string, weight: number, format: FontFormat): string {
+    if (!ID_RE.test(fontId)) throw new Error('Invalid font id');
+    if (!Number.isInteger(weight) || weight < 1 || weight > 1000) throw new Error('Invalid weight');
+    return `${fontId}/font-${weight}.${format}`;
+  }
+
   /** Absolute path of a stored relative path; throws when it would leave .uploads/fonts. */
   resolve(relative: string): string {
     const resolved = path.resolve(this.root, relative);
@@ -167,11 +174,24 @@ export class FontStore {
     return relative;
   }
 
+  /** Moves another weight of a font next to its committed regular file. */
+  async commitFace(received: ReceivedFont, fontId: string, weight: number): Promise<string> {
+    const relative = FontStore.facePath(fontId, weight, received.format);
+    const target = this.resolve(relative);
+    await fs.rename(received.tmp, target);
+    return relative;
+  }
+
   /** Undoes commit() (the database write failed): the file and its folder go. */
   async uncommit(relative: string): Promise<void> {
     const target = this.resolve(relative);
     await fs.unlink(target).catch(() => {});
     await fs.rmdir(path.dirname(target)).catch(() => {});
+  }
+
+  /** Undoes commit() and commitFace(): the files, then their folder. */
+  async uncommitAll(relatives: readonly string[]): Promise<void> {
+    for (const relative of [...relatives].reverse()) await this.uncommit(relative);
   }
 
   /** Deletes a received temp file (no error when it is already gone). */

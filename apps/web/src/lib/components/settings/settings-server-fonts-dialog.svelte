@@ -7,7 +7,14 @@
    */
   import { createEventDispatcher, onDestroy, onMount } from 'svelte';
   import { inputClasses } from '$lib/css-classes';
-  import { fontNameProblem, formatFontSize, isFontFileName } from '$lib/fonts/font-names';
+  import {
+    fontNameProblem,
+    formatFontSize,
+    isFontFileName,
+    licenseName,
+    weightsLabel
+  } from '$lib/fonts/font-names';
+  import SettingsGoogleFonts from '$lib/components/settings/settings-google-fonts.svelte';
   import { customFontNames$, fontApi, serverFonts } from '$lib/fonts/server-fonts-browser';
   import { FONT_KIND, type FontStatus, type ServerFontState } from '$lib/fonts/server-fonts';
   import { LibraryApiError } from '$lib/library/api';
@@ -19,7 +26,7 @@
   const fonts$ = serverFonts.fonts$;
 
   /** null: still checking; false: not connected; 'off': the server takes no fonts. */
-  let server: { maxBytes: number } | false | 'off' | null = null;
+  let server: { maxBytes: number; google: boolean } | false | 'off' | null = null;
   let name = '';
   let file: File | null = null;
   let fileInput: HTMLInputElement;
@@ -46,7 +53,7 @@
         return;
       }
       const info = await api.fontInfo();
-      server = info ? { maxBytes: info.maxBytes } : 'off';
+      server = info ? { maxBytes: info.maxBytes, google: info.google === true } : 'off';
       void serverFonts.retry();
     } catch (error) {
       server = false;
@@ -221,10 +228,24 @@
               <div class="break-words font-medium" style:font-family={`'${font.name}', sans-serif`}>
                 {font.name}
               </div>
-              <div class="break-words text-sm">
-                {font.fileName} · {formatFontSize(font.size)} ·
-                <span data-testid="server-font-status">{statusText[font.status]}</span>
-              </div>
+              {#if font.source === 'google'}
+                <div class="break-words text-sm" data-testid="server-font-google">
+                  Google Fonts{licenseName(font.licenseUrl)
+                    ? ` · ${licenseName(font.licenseUrl)}`
+                    : ''} · {weightsLabel(font.weights)} · {formatFontSize(font.size)} ·
+                  <span data-testid="server-font-status">{statusText[font.status]}</span>
+                </div>
+                {#if font.copyright}
+                  <div class="break-words text-xs" data-testid="server-font-copyright">
+                    {font.copyright}
+                  </div>
+                {/if}
+              {:else}
+                <div class="break-words text-sm">
+                  {font.fileName} · {formatFontSize(font.size)} ·
+                  <span data-testid="server-font-status">{statusText[font.status]}</span>
+                </div>
+              {/if}
             </div>
             {#if confirmDelete?.id !== font.id}
               <button
@@ -251,6 +272,12 @@
       </ul>
     {:else}
       <p class="mb-4">No custom fonts yet.</p>
+    {/if}
+
+    {#if server && server !== 'off' && server.google}
+      <div class="mb-5">
+        <SettingsGoogleFonts on:added={() => void syncSoon()} />
+      </div>
     {/if}
 
     <h3 class="mb-2 font-medium">Add a font</h3>

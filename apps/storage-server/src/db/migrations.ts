@@ -731,6 +731,29 @@ export const MIGRATIONS: { version: number; name: string; sql: string }[] = [
       );
     `,
   },
+  {
+    version: 19,
+    name: 'google fonts',
+    // Season 2 Phase 10: fonts added from Google Fonts. A Google font's `fonts` row is its
+    // regular file (so the WP13 record fields and file route stay as they are); its other
+    // weights (bold) are in font_faces. source is 'upload' for every font before this.
+    // copyright and license_url come from the font file's own name table.
+    sql: `
+      ALTER TABLE fonts ADD COLUMN source TEXT NOT NULL DEFAULT 'upload'
+        CHECK (source IN ('upload', 'google'));
+      ALTER TABLE fonts ADD COLUMN copyright TEXT;
+      ALTER TABLE fonts ADD COLUMN license_url TEXT;
+      CREATE TABLE font_faces (
+        font_id    TEXT NOT NULL REFERENCES fonts(id),
+        weight     INTEGER NOT NULL CHECK (weight BETWEEN 1 AND 1000),
+        format     TEXT NOT NULL CHECK (format IN ('woff2', 'woff', 'ttf', 'otf')),
+        size       INTEGER NOT NULL CHECK (size > 0),
+        sha256     TEXT NOT NULL,
+        file_path  TEXT NOT NULL,
+        PRIMARY KEY (font_id, weight)
+      );
+    `,
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

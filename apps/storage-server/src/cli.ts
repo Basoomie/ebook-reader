@@ -117,7 +117,7 @@ const USAGE = `Usage:
                                              sync's files are never touched); --forget-decisions also
                                              clears the scan results and your link decisions
   cli uploads list                           Uploaded books and files still waiting for a decision
-  cli fonts list                             Custom fonts: name, size, deleted or not, file present
+  cli fonts list                             Custom fonts: name, size, source, deleted or not, file present
   cli audio status                           Audiobook and subtitle index per library
   cli audio scan [<library-id>]              Scan the audiobook and subtitle folders again (in the server)
   cli audio match <book-id> [--limit <n>]    The suggestions the picker would show for a book
@@ -610,15 +610,24 @@ function fontsCommand(
   const store = new FontStore(path.resolve(env.DATA_DIR ?? '/data'));
   const fonts = FontService.listAll(db);
   if (!fonts.length) console.log('No custom fonts.');
-  for (const f of fonts) {
-    let present = false;
+  const exists = (relative: string) => {
     try {
-      present = existsSync(store.resolve(f.filePath));
+      return existsSync(store.resolve(relative));
     } catch {
       // A stored path outside the font folder is never followed.
+      return false;
     }
+  };
+  const faceRows = db.prepare(
+    'SELECT weight, size, file_path FROM font_faces WHERE font_id = ? ORDER BY weight',
+  );
+  for (const f of fonts) {
+    const faces = faceRows.all(f.id) as { weight: number; size: number; file_path: string }[];
+    const present = exists(f.filePath) && faces.every((face) => exists(face.file_path));
     console.log(
       `${f.id}  ${formatDate(f.createdAt)}  ${f.size} bytes  ${f.format}  ${f.name}  (${f.fileName})` +
+        (f.source === 'google' ? '  from Google Fonts' : '') +
+        faces.map((face) => `  +${face.weight}: ${face.size} bytes`).join('') +
         (f.deleted ? '  (deleted)' : '') +
         (present ? '' : '  (file missing)'),
     );

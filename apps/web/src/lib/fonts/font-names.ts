@@ -80,3 +80,38 @@ export function formatFontSize(bytes: number): string {
   if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
   return `${Math.max(1, Math.round(bytes / 1024))} KB`;
 }
+
+/**
+ * The license a font's file names by URL, in words (Phase 10). Every Japanese Google font
+ * checked (2026-11-15) names the SIL Open Font License (scripts.sil.org/OFL or
+ * openfontlicense.org) or the Apache License 2.0; any other URL is shown as it is.
+ */
+export function licenseName(url: string | null | undefined): string | null {
+  if (!url) return null;
+  if (/scripts\.sil\.org\/OFL|openfontlicense\.org/i.test(url)) return 'SIL Open Font License';
+  if (/apache\.org\/licenses\/LICENSE-2\.0/i.test(url)) return 'Apache License 2.0';
+  return url;
+}
+
+/** Google's font category in plain words for Japanese fonts. */
+export function googleCategory(category: string): string {
+  switch (category) {
+    case 'Serif':
+      return 'Mincho (serif)';
+    case 'Sans Serif':
+      return 'Gothic (sans-serif)';
+    case 'Handwriting':
+      return 'Handwriting';
+    case 'Display':
+      return 'Display';
+    case 'Monospace':
+      return 'Monospace';
+    default:
+      return category || 'Other';
+  }
+}
+
+/** "Regular and bold" for a font with its own bold file, otherwise "Regular only". */
+export function weightsLabel(weights: readonly number[]): string {
+  return weights.includes(700) ? 'Regular and bold' : 'Regular only';
+}
