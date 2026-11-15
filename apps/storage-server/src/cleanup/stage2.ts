@@ -409,11 +409,10 @@ export class Stage2Analysis {
     spelling?: SpellingLookup,
   ): FieldProposal[] {
     if (!ev.file) return [];
-    return proposeStage2(
-      calibreFactsOf(book, ev.cover?.facts ?? null),
-      ev.file,
-      proposalOptions(settings, spelling),
-    );
+    return proposeStage2(calibreFactsOf(book, ev.cover?.facts ?? null), ev.file, {
+      ...proposalOptions(settings, spelling),
+      calibreId: book.calibreId,
+    });
   }
 
   private rebuildSpelling(p: Stage2Progress, snap: Stage2Snapshot): SpellingLookup {

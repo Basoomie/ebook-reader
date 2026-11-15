@@ -13,6 +13,7 @@ import {
   looksLikeImprint,
   looksLikeMojibake,
   normalizeName,
+  repeatsItself,
   titleSort,
 } from '../src/cleanup/title-rules';
 import {
@@ -20,6 +21,8 @@ import {
   type FileFacts,
   asinFromIdentifiers,
   authorGroup,
+  calibreNameBytes,
+  NAME_MAX_BYTES,
   proposeStage2,
   titleGroup,
 } from '../src/cleanup/stage2-rules';
@@ -377,5 +380,78 @@ describe('covers, identifiers, publisher, language, illustrators', () => {
     expect(byField(full, 'illustrator')).toEqual([]);
     // No #illustrator column in the library: nothing proposed.
     expect(byField(proposeStage2(cal({ illustrators: null }), f), 'illustrator')).toEqual([]);
+  });
+});
+
+describe('titles Calibre would turn into bad folder names (NAS run 2026-11-14)', () => {
+  const longVolume =
+    '恋した人は、妹の代わりに死んでくれと言った。2―妹と結婚した片思い相手がなぜ今さら私のもとに？と思ったら―';
+  const series =
+    '恋した人は、妹の代わりに死んでくれと言った。―妹と結婚した片思い相手がなぜ今さら私のもとに？と思ったら―';
+
+  it('a file title that says itself twice (series name added) goes to review', () => {
+    for (const t of [
+      `${longVolume}【電子書籍限定書き下ろしSS付き】 ${series}`,
+      '怪盗探偵山猫 「怪盗探偵山猫」シリーズ',
+      'Another エピソードS（角川文庫版） Another',
+      'おしかけメイド隊2 おしかけメイド隊シリーズ',
+    ]) {
+      expect(repeatsItself(cleanTitle(t)), t).toBe(true);
+      const p = proposeStage2(cal(), file({ title: t }));
+      expect(byField(p, 'title'), t).toMatchObject([{ class: 'review' }]);
+      expect(byField(p, 'title')[0].reason).toContain('says itself twice');
+    }
+    // Not a repeat: short parts, or different words.
+    for (const t of [
+      '魔女の旅々 20',
+      'ソードアート・オンライン プログレッシブ',
+      'Re:ゼロ Re:ゼロ',
+      '本の題名 上',
+    ]) {
+      expect(repeatsItself(t), t).toBe(false);
+    }
+  });
+
+  it('measures names the way calibre 9.18 builds them (95 characters + " (id)" for the folder)', () => {
+    // The folder the NAS refused: 95 characters of the title + " (8260)" = 288 bytes.
+    expect(calibreNameBytes(8260, `${longVolume} ${series}`, '永野水貴')).toBe(288);
+    expect(calibreNameBytes(8262, series, '永野水貴')).toBeLessThanOrEqual(NAME_MAX_BYTES);
+    expect(calibreNameBytes(1, 'A'.repeat(300), 'B')).toBe(100);
+  });
+
+  it('a title change whose folder name the disk would refuse goes to review; the other fields go on', () => {
+    // A genuinely long title (no repeat): too long once Japanese characters are kept.
+    const long = 'あ'.repeat(90);
+    const p = proposeStage2(
+      cal(),
+      file({ title: long, creators: [{ name: '著者', role: 'aut' }], publishers: ['出版社'] }),
+      { calibreId: 12345 },
+    );
+    expect(byField(p, 'title')).toMatchObject([{ class: 'review' }]);
+    expect(byField(p, 'title')[0].reason).toContain('Too long for a folder name');
+    // Without the title the folder name fits, so the author still goes in automatically.
+    expect(byField(p, 'authors')).toMatchObject([{ class: 'auto', new: ['著者'] }]);
+    expect(byField(p, 'publisher')).toMatchObject([{ class: 'auto' }]);
+    // A short one is fine.
+    expect(
+      byField(
+        proposeStage2(cal(), file({ title: 'あ'.repeat(60) }), { calibreId: 12345 }),
+        'title',
+      ),
+    ).toMatchObject([{ class: 'auto' }]);
+  });
+
+  it("an author change that would move a too-long Calibre title's folder goes to review", () => {
+    const c = cal({ title: 'い'.repeat(95), authors: ['Unknown'] });
+    const p = proposeStage2(
+      c,
+      file({ title: 'い'.repeat(95), creators: [{ name: '著者', role: 'aut' }] }),
+      {
+        calibreId: 7,
+      },
+    );
+    expect(byField(p, 'title')).toEqual([]);
+    expect(byField(p, 'authors')).toMatchObject([{ class: 'review' }]);
+    expect(byField(p, 'authors')[0].reason).toContain('Too long for a folder name');
   });
 });
