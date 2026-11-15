@@ -8,7 +8,7 @@
   import { createEventDispatcher, onMount } from 'svelte';
   import ButtonToggleGroup from '$lib/components/button-toggle-group/button-toggle-group.svelte';
   import { optionsForToggle } from '$lib/components/button-toggle-group/toggle-option';
-  import { LocalFont } from '$lib/data/fonts';
+  import { availableFontNames, LocalFont } from '$lib/data/fonts';
   import { FuriganaStyle } from '$lib/data/furigana-style';
   import {
     customThemes$,
@@ -81,7 +81,7 @@
     LocalFont.SANSSERIF,
     ...$customFontNames$
   ] as string[];
-  $: allFonts = [...new Set([...fontsOne, ...fontsTwo])];
+  $: allFonts = availableFontNames($customFontNames$);
 
   $: fontChoicesOne = fontsOne.includes($fontFamilyGroupOne$)
     ? fontsOne

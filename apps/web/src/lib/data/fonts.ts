@@ -29,3 +29,12 @@ export const reservedFontNames = new Set([
   'Serif',
   'Sans-Serif'
 ]);
+
+/**
+ * Every font name a font setting can use on this device: the bundled fonts plus the
+ * custom (server) fonts. "Copy from another device" keeps the current font when the other
+ * device's font isn't one of these.
+ */
+export function availableFontNames(customFonts: readonly string[]): string[] {
+  return [...new Set<string>([...Object.values(LocalFont), ...customFonts])];
+}

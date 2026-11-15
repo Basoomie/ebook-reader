@@ -10,6 +10,21 @@ import { writableSubject } from '$lib/functions/svelte/store';
 
 type Storage = typeof localStorage;
 
+/** A live setting as its subject was created: what "Copy settings from another device" writes. */
+export interface LiveStorageSetting {
+  subject: { next(value: unknown): void; getValue(): unknown };
+  defaultValue: unknown;
+  /** The subject's own reading of a stored string (as on page load). */
+  mapFromString: (s: string) => unknown;
+}
+
+const liveSettings = new Map<string, LiveStorageSetting[]>();
+
+/** The subjects created for a localStorage key (normally exactly one). */
+export function liveStorageSettings(key: string): readonly LiveStorageSetting[] {
+  return liveSettings.get(key) ?? [];
+}
+
 export function writableStorageSubject<T>(
   storage: Storage,
   mapFromString: (s: string) => T,
@@ -21,6 +36,13 @@ export function writableStorageSubject<T>(
     subject.pipe(skip(1)).subscribe((updatedValue) => {
       storage.setItem(key, mapToString(updatedValue ?? defaultValue));
     });
+    const live = liveSettings.get(key) ?? [];
+    live.push({
+      subject: subject as unknown as LiveStorageSetting['subject'],
+      defaultValue,
+      mapFromString
+    });
+    liveSettings.set(key, live);
     return subject;
   };
 }

@@ -43,8 +43,16 @@ function declaredSettings(): Map<string, string> {
     const source = readFileSync(path.join(SRC, file), 'utf8');
     for (const match of source.matchAll(pattern)) found.set(match[2], match[1]);
   }
+  // Whispersync's own settings (vendored): writable{Boolean,Number,String}Store()('key')
+  // and writeableArrayStore<T>()('key').
+  const whispersync =
+    /write?able(Boolean|Number|String|Array)Store(?:<[^()]*?>)?\(\)\s*\(\s*'([^']+)'/gs;
+  const stores = readFileSync(path.join(SRC, WHISPERSYNC_STORES), 'utf8');
+  for (const match of stores.matchAll(whispersync)) found.set(match[2], match[1]);
   return found;
 }
+
+const WHISPERSYNC_STORES = 'lib/whispersync/lib/stores.ts';
 
 let run = 0;
 async function engine() {
@@ -63,7 +71,8 @@ function storage(values: Record<string, string>) {
 describe('settings registry', () => {
   it('classifies every localStorage setting, with the right value type', () => {
     const declared = declaredSettings();
-    expect(declared.size).toBeGreaterThan(90);
+    expect(declared.size).toBeGreaterThan(190);
+    expect([...declared.keys()].filter((k) => k.startsWith('ttu-whispersync-'))).toHaveLength(78);
     const missing = [...declared.keys()].filter((k) => !(k in SETTINGS_REGISTRY));
     const stale = Object.keys(SETTINGS_REGISTRY).filter((k) => !declared.has(k));
     expect(missing, 'add these keys to SETTINGS_REGISTRY').toEqual([]);
@@ -81,6 +90,30 @@ describe('settings registry', () => {
     expect(settingScope('somethingNew')).toBe('local');
     expect(settingScope('fontSize')).toBe('device');
     expect(settingScope('trackerIdleTime')).toBe('device');
+  });
+
+  it('shares every setting a device keeps for itself, except the AnkiConnect keys and bookkeeping', () => {
+    // Whispersync's own settings are per device ("Copy settings from another device").
+    expect(settingScope('ttu-whispersync-player-rewind-time')).toBe('device');
+    expect(settingScope('ttu-whispersync-action-list-of-reader')).toBe('device');
+    expect(settingScope('ttu-whispersync-menu-position')).toBe('device');
+    // Remembered choices, copied with the rest.
+    expect(settingScope('lastBlurredTrackerItems')).toBe('device');
+    expect(settingScope('lastReadingDataHeatmapAggregationMode')).toBe('device');
+    // Never leave the device.
+    for (const key of [
+      'ankiConnectKey',
+      'ttu-whispersync-anki-key',
+      'readingGoal',
+      'lastReadingGoalsModified',
+      'domainHintSeen',
+      'ttu-whispersync-side-menu-width'
+    ]) {
+      expect(settingScope(key), key).toBe('local');
+    }
+    expect(keysWithScope('global')).toHaveLength(15);
+    expect(keysWithScope('device')).toHaveLength(95 + 2 + 77);
+    expect(keysWithScope('local')).toHaveLength(5);
   });
 
   it('has a live setting for every global key', () => {
