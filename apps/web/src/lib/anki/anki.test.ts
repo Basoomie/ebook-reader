@@ -14,6 +14,7 @@ import {
   describeResult,
   EnrichError,
   enrichLastCard,
+  heldMediaName,
   holdsMedia,
   type EnrichInput
 } from './enrich';
@@ -54,6 +55,26 @@ describe('field merge', () => {
     expect(mergeField('old<br>new', 'new', 'append')).toBeNull();
   });
 
+  it('overwrites a filled field, and changes nothing when it already equals the value', () => {
+    expect(mergeField('', 'new', 'overwrite')).toBe('new');
+    expect(mergeField('Yomitan の文', 'new', 'overwrite')).toBe('new');
+    expect(mergeField('old<br>new', 'new', 'overwrite')).toBe('new');
+    expect(mergeField('new', 'new', 'overwrite')).toBeNull();
+    expect(mergeField('old', '', 'overwrite')).toBeNull();
+  });
+
+  it('finds the name a field holds a media file under', () => {
+    const clip = 'ttsu-b1-2000-6000.mp3';
+    expect(heldMediaName('[sound:ttsu-b1-2000-6000.mp3]', 'sound', clip)).toBe(clip);
+    expect(heldMediaName('x [sound:ttsu-b1-2000-6000_123.mp3]', 'sound', clip)).toBe(
+      'ttsu-b1-2000-6000_123.mp3'
+    );
+    expect(heldMediaName('<img src="ttsu-cover-b1_9.jpg">', 'image', 'ttsu-cover-b1.jpg')).toBe(
+      'ttsu-cover-b1_9.jpg'
+    );
+    expect(heldMediaName('[sound:other.mp3]', 'sound', clip)).toBeNull();
+  });
+
   it('knows a media file under its own name or the name AnkiConnect Android gave it', () => {
     const cover = 'ttsu-cover-b1.jpg';
     expect(holdsMedia('<img src="ttsu-cover-b1.jpg">', 'image', cover)).toBe(true);
@@ -84,7 +105,7 @@ describe('mapping', () => {
           sentenceAudio: { field: 'SentenceAudio', mode: 'append' },
           cover: { field: '' },
           bogus: { field: 'X' },
-          link: { field: 'ReaderLink', mode: 'overwrite' }
+          link: { field: 'ReaderLink', mode: 'replace-all' }
         },
         broken: 'x',
         list: []
@@ -98,6 +119,24 @@ describe('mapping', () => {
     });
     expect(parseMapping(null)).toEqual({});
     expect(parseMapping([1])).toEqual({});
+  });
+
+  it('keeps every stored mode as it is, Overwrite included', () => {
+    const stored = {
+      'JP Mining Note': {
+        sentence: { field: 'Sentence', mode: 'overwrite' },
+        sentenceAudio: { field: 'SentenceAudio', mode: 'append' },
+        cover: { field: 'Picture', mode: 'fill-if-empty' },
+        link: { field: 'ReaderLink', mode: 'overwrite' }
+      }
+    };
+    expect(parseMapping(stored)).toEqual(stored);
+    expect(parseMapping(JSON.parse(JSON.stringify(stored)))).toEqual(stored);
+    // A mapping saved before Overwrite existed parses exactly as before.
+    const before = {
+      A: { sentence: { field: 'S', mode: 'append' }, link: { field: 'L', mode: 'fill-if-empty' } }
+    };
+    expect(parseMapping(before)).toEqual(before);
   });
 
   it('sets and removes one role without touching the others', () => {
@@ -682,6 +721,201 @@ describe('enrich last card', () => {
     expect(store).toHaveBeenCalledTimes(2);
     expect(n.fields.Picture.value).toBe('<img src="x-ttsu-cover-b1.jpg">');
     expect(n.fields.SentenceAudio.value).toBe('[sound:x-ttsu-b1-2000-6000.mp3]');
+  });
+
+  describe('overwrite', () => {
+    const OVERWRITE = {
+      'JP Mining Note': {
+        sentence: { field: 'Sentence', mode: 'overwrite' as const },
+        sentenceAudio: { field: 'SentenceAudio', mode: 'overwrite' as const },
+        cover: { field: 'Picture', mode: 'overwrite' as const },
+        link: { field: 'ReaderLink', mode: 'overwrite' as const }
+      }
+    };
+    const filled = () =>
+      note(1, {
+        Key: '猫',
+        Sentence: 'Yomitan の文',
+        SentenceAudio: '[sound:ttsu-b1-1000-1500.mp3]',
+        Picture: '<img src="old.jpg">',
+        ReaderLink: '/open?book=b1&pos=7'
+      });
+    const values = (n: NoteInfo) =>
+      Object.fromEntries(Object.entries(n.fields).map(([k, v]) => [k, v.value]));
+
+    it('replaces what the fields have, stores the new media and deletes nothing', async () => {
+      const n = filled();
+      const { anki, calls, media } = fakeAnki({ notes: [n] });
+      const result = await enrichLastCard(anki, input({ mapping: OVERWRITE }));
+      expect(values(n)).toEqual({
+        Key: '猫',
+        Sentence: '<b>猫</b>が好きだ。',
+        SentenceAudio: '[sound:ttsu-b1-2000-6000.mp3]',
+        Picture: '<img src="ttsu-cover-b1.jpg">',
+        ReaderLink: '/open?book=b1&pos=42'
+      });
+      expect(Object.keys(media).sort()).toEqual(['ttsu-b1-2000-6000.mp3', 'ttsu-cover-b1.jpg']);
+      expect(calls.map((c) => c.action)).not.toContain('deleteMediaFile');
+      expect(result.added).toEqual(['tag']);
+      expect(result.replaced).toEqual([
+        'sentence',
+        'sentence audio',
+        'cover',
+        'link to the passage'
+      ]);
+      expect(describeResult(result)).toBe(
+        'Added tag to 「猫」. Replaced sentence, sentence audio, cover, link to the passage in 「猫」.'
+      );
+    });
+
+    it('counts an empty field as added, not replaced', async () => {
+      const n = note(1, { Key: '猫', Sentence: '<br>', SentenceAudio: '', Picture: '' });
+      const { anki } = fakeAnki({ notes: [n] });
+      const result = await enrichLastCard(
+        anki,
+        input({ mapping: OVERWRITE, link: { skip: 'the book is not in the library' } })
+      );
+      expect(result.added).toEqual(['tag', 'sentence', 'sentence audio', 'cover']);
+      expect(result.replaced).toEqual([]);
+      expect(describeResult(result)).toBe(
+        'Added tag, sentence, sentence audio, cover to 「猫」. ' +
+          'No link to the passage: the book is not in the library.'
+      );
+    });
+
+    it('a second tap loads, stores and writes nothing', async () => {
+      const n = filled();
+      const { anki, calls } = fakeAnki({ notes: [n] });
+      let loads = 0;
+      const run = () =>
+        enrichLastCard(
+          anki,
+          input({
+            mapping: OVERWRITE,
+            cover: async () => ({ fileName: 'ttsu-cover-b1.jpg', load: async () => `${++loads}` }),
+            audio: async () => ({
+              fileName: 'ttsu-b1-2000-6000.mp3',
+              load: async () => `${++loads}`
+            })
+          })
+        );
+      await run();
+      const after = values(n);
+      const mark = calls.length;
+      loads = 0;
+      const second = await run();
+      expect(loads).toBe(0);
+      expect(calls.slice(mark).map((c) => c.action)).toEqual(['findNotes', 'notesInfo']);
+      expect(values(n)).toEqual(after);
+      expect(second.added).toEqual([]);
+      expect(second.replaced).toEqual([]);
+      expect(describeResult(second)).toBe(
+        'Nothing new to add to 「猫」. Already there: sentence, sentence audio, cover, link to the passage, tag.'
+      );
+    });
+
+    it('AnkiConnect Android: replaces with the renamed copy, and a second tap stores nothing', async () => {
+      const n = filled();
+      const { anki, calls, media } = fakeAnki({ notes: [n], android: true });
+      await enrichLastCard(anki, input({ mapping: OVERWRITE }));
+      expect(n.fields.SentenceAudio.value).toBe(
+        '[sound:ttsu-b1-2000-6000_5912740532884502511.mp3]'
+      );
+      expect(n.fields.Picture.value).toBe('<img src="ttsu-cover-b1_5912740532884502512.jpg">');
+      const after = values(n);
+      const mark = calls.length;
+      const second = await enrichLastCard(anki, input({ mapping: OVERWRITE }));
+      expect(calls.slice(mark).some((c) => c.action === 'storeMediaFile')).toBe(false);
+      expect(calls.slice(mark).some((c) => c.action === 'updateNoteFields')).toBe(false);
+      expect(Object.keys(media)).toHaveLength(2);
+      expect(values(n)).toEqual(after);
+      expect(second.kept).toEqual(['sentence', 'sentence audio', 'cover', 'link to the passage']);
+    });
+
+    it('reuses a copy the field already shows and drops the rest of the field', async () => {
+      const n = note(1, {
+        Key: '猫',
+        Sentence: '<b>猫</b>が好きだ。',
+        SentenceAudio: '[sound:yomitan.mp3]<br>[sound:ttsu-b1-2000-6000_2485843857102392333.mp3]',
+        Picture: '<img src="ttsu-cover-b1.jpg">',
+        ReaderLink: '/open?book=b1&pos=42'
+      });
+      const { anki, calls } = fakeAnki({ notes: [n] });
+      const result = await enrichLastCard(anki, input({ mapping: OVERWRITE }));
+      expect(calls.some((c) => c.action === 'storeMediaFile')).toBe(false);
+      expect(n.fields.SentenceAudio.value).toBe(
+        '[sound:ttsu-b1-2000-6000_2485843857102392333.mp3]'
+      );
+      expect(result.replaced).toEqual(['sentence audio']);
+      expect(result.kept).toEqual(['sentence', 'cover', 'link to the passage']);
+    });
+
+    it('leaves a field as it is when there is nothing new for it, and says why', async () => {
+      const n = filled();
+      const before = values(n);
+      const { anki, calls } = fakeAnki({ notes: [n] });
+      const result = await enrichLastCard(
+        anki,
+        input({
+          mapping: OVERWRITE,
+          sentence: null,
+          noSentenceReason: 'look up a word or select a sentence first',
+          cover: async () => ({ skip: 'the book has no cover' }),
+          link: { skip: 'the book is not in the library' }
+        })
+      );
+      expect(values(n)).toEqual(before);
+      expect(calls.some((c) => c.action === 'updateNoteFields')).toBe(false);
+      expect(result.skipped).toEqual([
+        { what: 'sentence', reason: 'look up a word or select a sentence first' },
+        { what: 'sentence audio', reason: 'look up a word or select a sentence first' },
+        { what: 'cover', reason: 'the book has no cover' },
+        { what: 'link to the passage', reason: 'the book is not in the library' }
+      ]);
+
+      // A new sentence without its audio: the sentence is replaced, the audio field kept.
+      const audioMissing = await enrichLastCard(
+        anki,
+        input({
+          mapping: OVERWRITE,
+          audio: async () => ({ skip: "the sentence wasn't found in the subtitles" })
+        })
+      );
+      expect(n.fields.Sentence.value).toBe('<b>猫</b>が好きだ。');
+      expect(n.fields.SentenceAudio.value).toBe(before.SentenceAudio);
+      expect(audioMissing.skipped).toContainEqual({
+        what: 'sentence audio',
+        reason: "the sentence wasn't found in the subtitles"
+      });
+    });
+
+    it('a stored file that fails to store leaves its field as it is', async () => {
+      const n = filled();
+      const { anki } = fakeAnki({ notes: [n], failOn: new Set(['storeMediaFile']) });
+      const result = await enrichLastCard(anki, input({ mapping: OVERWRITE }));
+      expect(n.fields.Picture.value).toBe('<img src="old.jpg">');
+      expect(n.fields.SentenceAudio.value).toBe('[sound:ttsu-b1-1000-1500.mp3]');
+      expect(n.fields.Sentence.value).toBe('<b>猫</b>が好きだ。');
+      expect(result.skipped).toContainEqual({ what: 'cover', reason: 'storeMediaFile failed' });
+    });
+
+    it('two roles in one field: the field gets exactly this tap’s values, once', async () => {
+      const n = note(1, { Key: '猫', Sentence: 'Yomitan の文' });
+      const { anki, calls } = fakeAnki({ notes: [n] });
+      const shared = {
+        'JP Mining Note': {
+          sentence: { field: 'Sentence', mode: 'overwrite' as const },
+          link: { field: 'Sentence', mode: 'append' as const }
+        }
+      };
+      const first = await enrichLastCard(anki, input({ mapping: shared }));
+      expect(n.fields.Sentence.value).toBe('<b>猫</b>が好きだ。<br>/open?book=b1&pos=42');
+      expect(first.replaced).toEqual(['sentence', 'link to the passage']);
+      const mark = calls.length;
+      const second = await enrichLastCard(anki, input({ mapping: shared }));
+      expect(calls.slice(mark).some((c) => c.action === 'updateNoteFields')).toBe(false);
+      expect(second.kept).toEqual(['sentence', 'link to the passage', 'tag']);
+    });
   });
 
   it('fails clearly without a note or without Anki', async () => {

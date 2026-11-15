@@ -36,7 +36,8 @@
   const selectClasses = 'c-input mt-1 block min-h-[3rem] w-full max-w-[18rem] text-base';
   const MODE_LABELS: Record<FieldMode, string> = {
     'fill-if-empty': 'Fill if empty',
-    append: 'Add to the end'
+    append: 'Add to the end',
+    overwrite: 'Overwrite'
   };
 
   const origin = typeof location === 'undefined' ? '' : location.origin;
@@ -134,10 +135,10 @@
   <p class="mb-4">
     <strong>Enrich last Anki card</strong> adds to the note you added to Anki most recently: the
     book's title as a tag, and, in the fields chosen below, the sentence of your last dictionary
-    lookup (or the selected text), its audio when the book has a linked audiobook with subtitles,
-    the cover and a link back to the passage. A field is filled only if it is empty, or added to at
-    the end; it is never overwritten. In a book: the Anki button in the menu at the top, the bottom
-    bar button, or <kbd>E</kbd>.
+    lookup (or the text you selected after it), its audio when the book has a linked audiobook with
+    subtitles, the cover and a link back to the passage. A field is filled only if it is empty,
+    added to at the end, or overwritten, as chosen for each field below. In a book: the Anki button
+    in the menu at the top, the bottom bar button, or <kbd>E</kbd>.
   </p>
 
   <div class="grid grid-cols-1 gap-y-6 lg:grid-cols-2 lg:gap-x-12">

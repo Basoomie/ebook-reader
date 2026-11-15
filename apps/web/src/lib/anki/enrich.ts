@@ -5,15 +5,23 @@
  */
 
 import type { AnkiConnect, NoteInfo } from './anki-connect';
-import { mergeField } from './field-merge';
+import { APPEND_SEPARATOR, isEmptyField, mergeField } from './field-merge';
 import { ENRICH_ROLES, ROLE_LABELS, type EnrichMapping, type EnrichRole } from './mapping';
 import type { Sentence } from './sentence';
 
 /**
  * WP14 "Enrich last card": adds what the book has to the most recently added note in
  * Anki. Always the book-title tag; then, as the note type's mapping says, the sentence,
- * sentence audio, cover and link. Fields are filled if empty or appended to, never
- * overwritten. Media is only fetched and stored when its field will change.
+ * sentence audio, cover and link. Each field is filled if empty, appended to, or
+ * overwritten (Phase 8), as its mode says. Media is only fetched and stored when its field
+ * will change.
+ *
+ * Overwrite (decided with the user, 2026-11-15): the field gets exactly what this tap has
+ * for it. A media field gets only the new sound or picture; the old file is never deleted
+ * (it stays in Anki's media folder until Check Media). When the field already shows the
+ * same file (also as AnkiConnect Android's renamed copy), that copy is used and nothing is
+ * stored. When there is nothing new for the field, it stays as it is and the reason is
+ * shown.
  *
  * AnkiConnect Android: fields name the media as it stored them (it renames every file), and
  * the tag is left out with the reason (it can't add tags to an existing note).
@@ -56,6 +64,8 @@ export interface EnrichResult {
   /** The note's first field as text, to say which card was changed. */
   word: string;
   added: string[];
+  /** Overwritten: the field had something else, which this tap replaced. */
+  replaced: string[];
   /** Already there (fill-if-empty on a filled field, or the same value appended before). */
   kept: string[];
   skipped: { what: string; reason: string }[];
@@ -111,16 +121,21 @@ function escapeRegExp(text: string): string {
  * extension to AnkiDroid, which stores `<name>_<random number>.<ext>` on every store.
  */
 export function holdsMedia(html: string, kind: MediaKind, fileName: string): boolean {
+  return heldMediaName(html, kind, fileName) !== null;
+}
+
+/** The name under which a field shows or plays this file (see `holdsMedia`), or null. */
+export function heldMediaName(html: string, kind: MediaKind, fileName: string): string | null {
   const dot = fileName.indexOf('.');
   const stem = escapeRegExp(dot < 0 ? fileName : fileName.slice(0, dot));
   const ext = dot < 0 ? '' : escapeRegExp(fileName.slice(dot));
-  const name = `${stem}(?:_\\d+)?${ext}`;
+  const name = `(${stem}(?:_\\d+)?${ext})`;
   const pattern =
     kind === 'image'
       ? new RegExp(`<img\\b[^>]*\\ssrc="${name}"`, 'i')
       : new RegExp(`\\[sound:${name}\\]`);
 
-  return pattern.test(html);
+  return pattern.exec(html)?.[1] ?? null;
 }
 
 export async function enrichLastCard(anki: AnkiConnect, input: EnrichInput): Promise<EnrichResult> {
@@ -146,6 +161,7 @@ export async function enrichLastCard(anki: AnkiConnect, input: EnrichInput): Pro
     noteType: note.modelName,
     word: noteWord(note),
     added: [],
+    replaced: [],
     kept: [],
     skipped: [],
     unmapped: false,
@@ -157,6 +173,22 @@ export async function enrichLastCard(anki: AnkiConnect, input: EnrichInput): Pro
 
   // What each mapped role would put in (media are resolved by name; bytes come later).
   const wanted = new Map<EnrichRole, { value: string; file?: MediaFile; kind?: MediaKind }>();
+
+  // A media role: overwrite reuses the copy the field already shows (nothing is stored).
+  const media = (role: EnrichRole, kind: MediaKind, file: MediaFile) => {
+    const target = mapping[role]!;
+    const held =
+      target.mode === 'overwrite'
+        ? heldMediaName(note!.fields[target.field]?.value ?? '', kind, file.fileName)
+        : null;
+
+    wanted.set(
+      role,
+      held
+        ? { value: mediaValue(kind, held), kind }
+        : { value: mediaValue(kind, file.fileName), file, kind }
+    );
+  };
 
   for (const role of roles) {
     const label = ROLE_LABELS[role].toLowerCase();
@@ -172,12 +204,7 @@ export async function enrichLastCard(anki: AnkiConnect, input: EnrichInput): Pro
       } else if (role === 'cover') {
         const cover = await input.cover();
         if (isUnavailable(cover)) result.skipped.push({ what: label, reason: cover.skip });
-        else
-          wanted.set(role, {
-            value: mediaValue('image', cover.fileName),
-            file: cover,
-            kind: 'image'
-          });
+        else media(role, 'image', cover);
       } else if (role === 'sentenceAudio') {
         if (!input.sentence) {
           result.skipped.push({ what: label, reason: input.noSentenceReason ?? 'no sentence' });
@@ -186,31 +213,41 @@ export async function enrichLastCard(anki: AnkiConnect, input: EnrichInput): Pro
 
         const audio = await input.audio(input.sentence);
         if (isUnavailable(audio)) result.skipped.push({ what: label, reason: audio.skip });
-        else
-          wanted.set(role, {
-            value: mediaValue('sound', audio.fileName),
-            file: audio,
-            kind: 'sound'
-          });
+        else media(role, 'sound', audio);
       }
     } catch (error) {
       result.skipped.push({ what: label, reason: (error as Error)?.message ?? String(error) });
     }
   }
 
-  // Which fields change. Running values, so two roles mapped to one field both land.
+  // Which fields change. Running values, so two roles mapped to one field both land. A field
+  // that any of its roles overwrites gets exactly this tap's values for it, in role order
+  // (so a second tap finds it equal and changes nothing).
   const plan = () => {
     const values = new Map(Object.entries(note!.fields).map(([k, v]) => [k, v.value]));
     const updates: Record<string, string> = {};
     const added: EnrichRole[] = [];
+    const replaced: EnrichRole[] = [];
     const kept: EnrichRole[] = [];
     const missing: EnrichRole[] = [];
+    const rebuilt = new Map<string, EnrichRole[]>();
+
+    for (const role of wanted.keys()) {
+      const target = mapping[role]!;
+
+      if (!values.has(target.field)) missing.push(role);
+      else if (target.mode === 'overwrite') rebuilt.set(target.field, []);
+    }
 
     for (const [role, { value, file, kind }] of wanted) {
       const target = mapping[role]!;
 
-      if (!values.has(target.field)) {
-        missing.push(role);
+      if (!values.has(target.field)) continue;
+
+      const overwritten = rebuilt.get(target.field);
+
+      if (overwritten) {
+        overwritten.push(role);
         continue;
       }
 
@@ -233,13 +270,40 @@ export async function enrichLastCard(anki: AnkiConnect, input: EnrichInput): Pro
       }
     }
 
-    return { updates, added, kept, missing };
+    for (const [field, fieldRoles] of rebuilt) {
+      const existing = values.get(field) ?? '';
+      const next = mergeField(
+        existing,
+        fieldRoles.map((role) => wanted.get(role)!.value).join(APPEND_SEPARATOR),
+        'overwrite'
+      );
+
+      if (next === null) {
+        kept.push(...fieldRoles);
+      } else {
+        values.set(field, next);
+        updates[field] = next;
+        (isEmptyField(existing) ? added : replaced).push(...fieldRoles);
+      }
+    }
+
+    const inRoleOrder = (list: EnrichRole[]) => ENRICH_ROLES.filter((role) => list.includes(role));
+
+    return {
+      updates,
+      added: inRoleOrder(added),
+      replaced: inRoleOrder(replaced),
+      kept: inRoleOrder(kept),
+      missing
+    };
   };
 
   // Store the media whose field changes; a file that can't be stored is left out. The field
   // gets the name AnkiConnect stored the file under: desktop AnkiConnect keeps the name,
   // AnkiConnect Android renames every file it stores.
-  for (const role of plan().added) {
+  const first = plan();
+
+  for (const role of [...first.added, ...first.replaced]) {
     const entry = wanted.get(role);
     const file = entry?.file;
 
@@ -257,9 +321,10 @@ export async function enrichLastCard(anki: AnkiConnect, input: EnrichInput): Pro
     }
   }
 
-  const { updates, added, kept, missing } = plan();
+  const { updates, added, replaced, kept, missing } = plan();
   const label = (role: EnrichRole) => ROLE_LABELS[role].toLowerCase();
   result.added.push(...added.map(label));
+  result.replaced.push(...replaced.map(label));
   result.kept.push(...kept.map(label));
 
   for (const role of missing) {
@@ -321,7 +386,13 @@ export function describeResult(result: EnrichResult): string {
 
   if (result.added.length) {
     parts.push(`Added ${result.added.join(', ')} to ${name}.`);
-  } else {
+  }
+
+  if (result.replaced.length) {
+    parts.push(`Replaced ${result.replaced.join(', ')} in ${name}.`);
+  }
+
+  if (!result.added.length && !result.replaced.length) {
     parts.push(`Nothing new to add to ${name}.`);
   }
 

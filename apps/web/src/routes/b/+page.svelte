@@ -232,6 +232,7 @@
   import { formatTimeLeft, secondsLeft, speedEstimate } from '$lib/stats/time-left';
   import { ankiBottomBarButton$, ankiNoticeSeconds$ } from '$lib/anki/settings';
   import type { LookupCapture, LookupSentence } from '$lib/anki/lookup-capture';
+  import { chooseSentence } from '$lib/anki/sentence-choice';
 
   let showSpinner = true;
   let showHeader = false;
@@ -321,6 +322,8 @@
   let customReadingPointRange: Range | undefined;
   let lastSelectedRange: Range | undefined;
   let lastSelectedRangeWasEmpty = true;
+  /** When the selection last changed to some text (ms), for Enrich's sentence choice. */
+  let lastSelectedAt = 0;
   let isSelectingCustomReadingPoint = false;
   let showCustomReadingPoint = false;
   let localStorageHandler: BrowserStorageHandler;
@@ -610,6 +613,7 @@
       } else if (currentSelected) {
         lastSelectedRange = window.getSelection()?.getRangeAt(0);
         lastSelectedRangeWasEmpty = false;
+        lastSelectedAt = Date.now();
       } else {
         lastSelectedRangeWasEmpty = true;
       }
@@ -804,14 +808,18 @@
     };
   });
 
-  /** The sentence for the card: the last lookup, else the selected text (or none). */
+  /**
+   * The sentence for the card: the newer of the last lookup and the selected text (see
+   * sentence-choice.ts), or none.
+   */
   function ankiSentence(): LookupSentence | null {
-    const lookup = lookupCapture?.lastLookup ?? null;
+    const capture = lookupCapture;
 
-    if (lookup || !lookupCapture) {
-      return lookup;
+    if (!capture) {
+      return null;
     }
 
+    const lookup = capture.lastLookup;
     const selection = window.getSelection();
     const range =
       selection && selection.rangeCount && !selection.isCollapsed
@@ -820,7 +828,16 @@
           ? lastSelectedRange
           : undefined;
 
-    return range ? lookupCapture.selectionSentence(range) : null;
+    return chooseSentence(
+      lookup ? { sentence: lookup, at: capture.lastLookupAt } : null,
+      range
+        ? {
+            at: lastSelectedAt,
+            isLookup: capture.isLookupSelection(range),
+            sentence: () => capture.selectionSentence(range)
+          }
+        : null
+    );
   }
 
   async function enrichAnkiCard() {

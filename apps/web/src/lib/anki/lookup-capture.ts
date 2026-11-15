@@ -98,6 +98,9 @@ export function cueIdsIn(index: BookTextIndex, from: number, to: number): string
 
 export class LookupCapture {
   private last: LookupSentence | null = null;
+  private lastAt = 0;
+  /** The selection the last lookup was taken from, or null (taken from the pointer). */
+  private lastRange: Range | null = null;
   private pointer: { x: number; y: number } | null = null;
   /** The character under the pointer, found once per frame while it moves over the book. */
   private caret: Range | null = null;
@@ -120,6 +123,32 @@ export class LookupCapture {
   /** The sentence of the last lookup since the book opened, or null. */
   get lastLookup(): LookupSentence | null {
     return this.last;
+  }
+
+  /** When the last lookup was recorded (`Date.now()`), or 0. */
+  get lastLookupAt(): number {
+    return this.last ? this.lastAt : 0;
+  }
+
+  /**
+   * Whether `range` is the selection the last lookup was taken from (Yomitan's "select
+   * matched text" selects the word it looked up), so it is the lookup, not a selection of
+   * the user's own.
+   */
+  isLookupSelection(range: Range): boolean {
+    const own = this.lastRange;
+
+    try {
+      return (
+        !!this.last &&
+        !!own &&
+        own.startContainer.isConnected &&
+        range.compareBoundaryPoints(Range.START_TO_START, own) === 0 &&
+        range.compareBoundaryPoints(Range.END_TO_END, own) === 0
+      );
+    } catch {
+      return false;
+    }
   }
 
   start(): void {
@@ -160,6 +189,7 @@ export class LookupCapture {
   /** Forgets the last lookup (another book was opened). */
   reset(): void {
     this.last = null;
+    this.lastRange = null;
     this.live = null;
   }
 
@@ -192,6 +222,8 @@ export class LookupCapture {
         cueIds: cueIdsIn(live, shown.start, shown.end)
       };
       this.last = lookup;
+      this.lastAt = Date.now();
+      this.lastRange = boldWord ? range : null;
       return lookup;
     } catch (error) {
       this.fail(error);

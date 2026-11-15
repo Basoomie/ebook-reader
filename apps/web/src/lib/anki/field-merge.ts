@@ -5,18 +5,19 @@
  */
 
 /**
- * WP14 "Enrich last card": how a value goes into an Anki field. Decided with the user:
- * each mapped field is "fill if empty" (default) or "append"; a field is never
- * overwritten. Append adds nothing that is already in the field, so a second tap on the
- * same card adds nothing twice.
+ * WP14 "Enrich last card": how a value goes into an Anki field. Each mapped field is
+ * "fill if empty" (default), "append" or (Phase 8, decided with the user 2026-11-14)
+ * "overwrite", which replaces what the field has, without asking. Append adds nothing that
+ * is already in the field, and overwrite changes nothing when the field already equals the
+ * value, so a second tap on the same card adds nothing twice.
  */
 
-export type FieldMode = 'fill-if-empty' | 'append';
+export type FieldMode = 'fill-if-empty' | 'append' | 'overwrite';
 
-export const FIELD_MODES: readonly FieldMode[] = ['fill-if-empty', 'append'];
+export const FIELD_MODES: readonly FieldMode[] = ['fill-if-empty', 'append', 'overwrite'];
 
 export function isFieldMode(value: unknown): value is FieldMode {
-  return value === 'fill-if-empty' || value === 'append';
+  return (FIELD_MODES as readonly unknown[]).includes(value);
 }
 
 /** Separator between an existing value and an appended one. */
@@ -42,12 +43,17 @@ export function isEmptyField(html: string): boolean {
 }
 
 /**
- * The field's new value, or null when it stays as it is (fill-if-empty on a filled field,
- * or append of a value the field already contains).
+ * The field's new value, or null when it stays as it is (no value, fill-if-empty on a
+ * filled field, append of a value the field already contains, or overwrite with the value
+ * the field already has).
  */
 export function mergeField(existing: string, value: string, mode: FieldMode): string | null {
   if (!value) {
     return null;
+  }
+
+  if (mode === 'overwrite') {
+    return existing === value ? null : value;
   }
 
   if (isEmptyField(existing)) {
