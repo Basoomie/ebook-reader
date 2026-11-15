@@ -65,6 +65,7 @@ export async function makeCleanupEnv({ leaseSeconds }: { leaseSeconds?: number }
     log,
     logError,
     holdIngest: (id) => service.holdsIngest(id),
+    wantsIngest: (id) => service.wantsIngest(id),
   });
   const service = new CleanupService({
     cleanup: cleanupState.db,

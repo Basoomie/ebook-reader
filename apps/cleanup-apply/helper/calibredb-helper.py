@@ -7,8 +7,10 @@
 # doesn't pay calibre's start-up. It talks only to the content server given in each call's
 # --with-library (an http URL); never to a library folder.
 #
-# Allowed: `list`, and `set_metadata <id> --field ...` for the fields the sidecar may set
-# (the sidecar builds and checks the arguments; this checks them again).
+# Allowed: `list`; `set_metadata <id> --field ...` for the fields the sidecar may set;
+# `remove <id>` (one book, to Calibre's trash, never --permanent); `export <id>` into a folder
+# under TTSU_EXPORT_DIRS (the quarantine) only. The sidecar builds and checks the arguments;
+# this checks them again.
 #
 # Protocol: one JSON object per line on stdin {"id", "args", "password"}; one line per answer
 # on stdout, "@@ttsu " + {"id", "code", "stdout", "stderr"}. The first line says it is ready.
@@ -44,6 +46,17 @@ def check(cmd, opts, rest):
         raise SystemExit('Only a content server (http URL) is allowed')
     if cmd == 'list':
         return
+    if cmd == 'remove':
+        if getattr(opts, 'permanent', True) or len(rest) != 1 or not rest[0].isdigit():
+            raise SystemExit('remove takes exactly one book id, never --permanent')
+        return
+    if cmd == 'export':
+        dirs = [d for d in os.environ.get('TTSU_EXPORT_DIRS', '').split(':') if d]
+        to = os.path.realpath(opts.to_dir or '')
+        inside = any(to == os.path.realpath(d) or to.startswith(os.path.realpath(d) + os.sep) for d in dirs)
+        if getattr(opts, 'all', True) or len(rest) != 1 or not rest[0].isdigit() or not inside:
+            raise SystemExit('export takes one book id and a folder in the quarantine')
+        return
     if cmd != 'set_metadata':
         raise SystemExit(f'{cmd} is not allowed')
     if getattr(opts, 'list_fields', False) or len(rest) != 1 or not rest[0].isdigit():
@@ -67,7 +80,7 @@ def context(opts, parser):
 
 def run(args, password):
     # As calibredb's main(): the command is taken out, the rest parsed by its parser.
-    if not args or args[0] not in ('list', 'set_metadata'):
+    if not args or args[0] not in ('list', 'set_metadata', 'remove', 'export'):
         raise SystemExit(f'{args[0] if args else "nothing"} is not allowed')
     cmd = args[0]
     argv = ['calibredb'] + list(args[1:])

@@ -271,6 +271,25 @@ describe('change detection and snapshots', () => {
     expect(books(e.db)).toHaveLength(2);
   });
 
+  it('indexes a busy metadata.db at once when the library cleanup waits for it (stage 1)', async () => {
+    const root = new CalibreRoot();
+    const lib = root.library('a');
+    await lib.addBook({ title: 'One' });
+    const e = env(root.dir, { settleSeconds: 600, maxSettleWaitSeconds: 600 });
+    let wanted = false;
+    (e.indexer as unknown as { opts: { wantsIngest: () => boolean } }).opts.wantsIngest = () =>
+      wanted;
+    await e.indexer.start({ timer: false });
+    const id = enableLibrary(e.db, 'a');
+    await e.indexer.tick();
+    expect(getIndexState(e.db, id).status).toBe('settling');
+    wanted = true;
+    await e.indexer.tick();
+    expect(getIndexState(e.db, id).status).toBe('idle');
+    expect(books(e.db)).toHaveLength(1);
+    expect(e.logs.some((l) => l.includes('the library cleanup waits for this index'))).toBe(true);
+  });
+
   it('with no longest wait (0) it waits for metadata.db to settle, as before', async () => {
     const root = new CalibreRoot();
     const lib = root.library('a');

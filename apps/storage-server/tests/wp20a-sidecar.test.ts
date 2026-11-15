@@ -15,6 +15,7 @@ import path from 'path';
 import request from 'supertest';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { buildArgs, Calibredb, type Login } from '../../cleanup-apply/src/calibredb';
+import { CalibredbHelper } from '../../cleanup-apply/src/calibredb-helper';
 import type { SidecarConfig } from '../../cleanup-apply/src/config';
 import {
   firstBlock,
@@ -29,6 +30,9 @@ import { type CleanupEnv, makeCleanupEnv } from './helpers/cleanup-env';
 import { makeTempDir } from './helpers/spawn-server';
 
 const FAKE = path.resolve(__dirname, 'fixtures', 'wp20a', 'fake-calibredb.cjs');
+const FAKE_HELPER = path.resolve(__dirname, 'fixtures', 'wp20a', 'fake-calibredb-helper.cjs');
+/** Helpers started by the tests' sidecars (stopped after each test). */
+const helpers: CalibredbHelper[] = [];
 const PASSWORD = 'calibre-test-password';
 const sha = (b: Buffer) => createHash('sha256').update(b).digest('hex');
 const bytes = (fill: string, n = 4096) => Buffer.alloc(n, fill);
@@ -256,6 +260,7 @@ describe('the sidecar with the server', () => {
   });
 
   afterEach(async () => {
+    for (const h of helpers.splice(0)) h.stop();
     await new Promise((r) => server.close(r));
     await new Promise((r) => calibreServer.close(r));
     await env.close();
@@ -271,6 +276,10 @@ describe('the sidecar with the server', () => {
 
   function worker(
     extra: {
+      /** Like the NAS: list/set_tags/remove/export through the long-lived helper (default on). */
+      helper?: boolean;
+      /** Collects the sidecar's log lines. */
+      logs?: string[];
       version?: string;
       illustrator?: boolean;
       fetchImpl?: typeof fetch;
@@ -301,28 +310,41 @@ describe('the sidecar with the server', () => {
       removeWaitSeconds: extra.wait ?? 3,
       waitPollSeconds: 0.1,
     };
+    const fakeEnv = {
+      FAKE_CALIBRE_LIBRARY: env.lib.dir,
+      FAKE_PASSWORD: PASSWORD,
+      FAKE_VERSION: extra.version ?? '9.18.0',
+      FAKE_ILLUSTRATOR: extra.illustrator === false ? '0' : '1',
+      FAKE_LOG: log,
+      FAKE_FAIL: extra.fail ?? '',
+      FAKE_FAIL_LONG: extra.failLong ? '1' : '0',
+      FAKE_TRASH_408: extra.trash408 ?? '',
+      FAKE_REMOVE_TIMEOUT: extra.removeTimeout ?? '',
+      FAKE_ADD_TIMEOUT: extra.addTimeout ?? '',
+      FAKE_LIST_408_FILE: list408File(extra.list408),
+    };
+    let helper: CalibredbHelper | null = null;
+    if (extra.helper !== false) {
+      helper = new CalibredbHelper({
+        program: process.execPath,
+        args: [FAKE_HELPER],
+        startTimeoutMs: 10_000,
+        env: { ...fakeEnv, FAKE_HELPER_LOG: `${log}.helper` },
+      });
+      helpers.push(helper);
+    }
     const calibredb = new Calibredb({
       program: process.execPath,
       prefixArgs: [FAKE],
       timeoutMs: 60_000,
-      env: {
-        FAKE_CALIBRE_LIBRARY: env.lib.dir,
-        FAKE_PASSWORD: PASSWORD,
-        FAKE_VERSION: extra.version ?? '9.18.0',
-        FAKE_ILLUSTRATOR: extra.illustrator === false ? '0' : '1',
-        FAKE_LOG: log,
-        FAKE_FAIL: extra.fail ?? '',
-        FAKE_FAIL_LONG: extra.failLong ? '1' : '0',
-        FAKE_TRASH_408: extra.trash408 ?? '',
-        FAKE_REMOVE_TIMEOUT: extra.removeTimeout ?? '',
-        FAKE_ADD_TIMEOUT: extra.addTimeout ?? '',
-        FAKE_LIST_408_FILE: list408File(extra.list408),
-      },
+      env: fakeEnv,
+      helper,
     });
+    const logs = extra.logs;
     return new Worker({
       config,
       calibredb,
-      log: quiet,
+      log: logs ? { info: (m) => logs.push(m), error: (m) => logs.push(`ERROR ${m}`) } : quiet,
       retryMinMs: 20,
       retryMaxMs: 100,
       fetchImpl: extra.fetchImpl,
@@ -364,6 +386,25 @@ describe('the sidecar with the server', () => {
       if (r === 'idle' && !env.service.batches.open()) return;
     }
   }
+
+  it("logs where each copy's time goes; export and remove go through the long-lived helper", async () => {
+    const logs: string[] = [];
+    const w = worker({ logs });
+    await w.runChecks();
+    await w.cycle(); // heartbeat with the checks
+    await turnOn();
+    await runAll(w);
+    const timing = logs.filter((l) => l.startsWith('Timing: '));
+    expect(timing.length).toBeGreaterThan(0);
+    const all = timing.join(' | ');
+    expect(all).toMatch(/calibre export \d/);
+    expect(all).toMatch(/calibre remove \d/);
+    expect(all).toMatch(/server report \d/);
+    expect(all).not.toContain('(program)');
+    const viaHelper = fs.readFileSync(`${log}.helper`, 'utf8');
+    expect(viaHelper).toMatch(/^export /m);
+    expect(viaHelper).toMatch(/^remove /m);
+  });
 
   it('removes the identical copies through calibredb, with the quarantine, the snapshot and the handoff', async () => {
     const a2Reader = env.readerBook(uuids.A2)!.bookId;

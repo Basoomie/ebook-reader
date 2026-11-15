@@ -14,7 +14,7 @@
  *   the cover; never tags, never an OPF).
  * The password goes in through stdin (`--password <stdin>`), never on the command line.
  *
- * list, set_tags and set_fields go through the long-lived calibredb helper when there is one
+ * list, set_tags, set_fields, remove and export go through the long-lived calibredb helper when there is one
  * (calibredb-helper.ts), with the same argument lists; everything else runs the program.
  */
 import { spawn } from 'child_process';
@@ -98,7 +98,13 @@ export interface CalibredbOptions {
 }
 
 /** The commands the helper runs (calibredb list and set_metadata). */
-const HELPER_COMMANDS: readonly CalibredbCommand[] = ['list', 'set_tags', 'set_fields'];
+const HELPER_COMMANDS: readonly CalibredbCommand[] = [
+  'list',
+  'set_tags',
+  'set_fields',
+  'remove',
+  'export'
+];
 
 export function withLibrary(login: Login, libraryId = login.libraryId): string {
   return `${login.contentServerUrl.replace(/\/+$/, '')}/#${libraryId}`;
@@ -192,6 +198,9 @@ export function buildArgs(
 }
 
 export class Calibredb {
+  /** Called after every call with its time (the sidecar's step timing; stage 1 uses it). */
+  onCall: ((command: CalibredbCommand, ms: number, viaHelper: boolean) => void) | null = null;
+
   constructor(private readonly opts: CalibredbOptions) {}
 
   async run(
@@ -199,10 +208,26 @@ export class Calibredb {
     login: Login | null,
     args: string[] = []
   ): Promise<RunResult> {
+    const t0 = Date.now();
+    let viaHelper = false;
+    try {
+      return await this.runTimed(command, login, args, () => (viaHelper = true));
+    } finally {
+      this.onCall?.(command, Date.now() - t0, viaHelper);
+    }
+  }
+
+  private async runTimed(
+    command: CalibredbCommand,
+    login: Login | null,
+    args: string[],
+    helped: () => void
+  ): Promise<RunResult> {
     const argv = buildArgs(command, login, args);
     const helper = this.opts.helper;
     if (helper && login && HELPER_COMMANDS.includes(command) && helper.usable()) {
       try {
+        helped();
         return await helper.call(argv, login.password, this.opts.timeoutMs);
       } catch (err) {
         // Not started: nothing was sent, so the program runs it. Sent: never again.
