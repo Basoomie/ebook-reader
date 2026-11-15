@@ -76,6 +76,21 @@ describe('stage 2 wording', () => {
     expect(stage2Progress(stage({ phase: 'read', pass: 'labeled', readTotal: 100 }))?.label).toBe(
       'Step 1 of 2 · Reading the labeled books first'
     );
+    // The labeled pass moves too (it used to sit at 0 % until it ended).
+    expect(
+      stage2Progress(
+        stage({
+          phase: 'read',
+          pass: 'labeled',
+          readTotal: 100,
+          labeledIds: [3, 7, 9, 20],
+          cursor: 9
+        })
+      )
+    ).toMatchObject({
+      label: 'Step 1 of 2 · Reading the labeled books first: 3 of 4',
+      fraction: 0.75
+    });
     expect(
       stage2Progress(stage({ phase: 'read', pass: 'all', readTotal: 100, readDone: 25 }))
     ).toMatchObject({

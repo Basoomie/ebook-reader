@@ -94,7 +94,16 @@ export function stage2Progress(stage: CleanupStage, now = Date.now()): ProgressB
     const total = num(p.readTotal);
     if (total <= 0) return null;
     if (p.pass === 'labeled') {
-      return { label: 'Step 1 of 2 · Reading the labeled books first', fraction: 0, eta: null };
+      // The labeled books are read in id order; the cursor is the last one read.
+      const ids = Array.isArray(p.labeledIds) ? (p.labeledIds as unknown[]).map(num) : [];
+      const read = ids.filter((id) => id <= num(p.cursor)).length;
+      return {
+        label: ids.length
+          ? `Step 1 of 2 · Reading the labeled books first: ${n(read)} of ${n(ids.length)}`
+          : 'Step 1 of 2 · Reading the labeled books first',
+        fraction: ids.length ? Math.min(1, read / ids.length) : 0,
+        eta: null
+      };
     }
     const done = num(p.readDone);
     return {

@@ -9,6 +9,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { pipeline } from 'stream/promises';
 import type { IndexerStatus } from '../calibre/indexer';
+import { currentCalibreEpub } from '../calibre/live-lookup';
 import { openSourceStream, resolveInside, statFile } from '../calibre/source-fs';
 import { planGroups } from '../catalog/groups';
 import { collectionCards } from '../collections/cards';
@@ -392,14 +393,23 @@ export async function sendBookFile(
   }
   const fileMissing = () =>
     new ApiError(404, 'file_missing', 'The book file was not found in the library');
+  const libraryDir = path.join(catalog.calibreDir, location.libraryFolder);
   let file: string;
   try {
-    file = resolveInside(path.join(catalog.calibreDir, location.libraryFolder), location.filePath);
+    file = resolveInside(libraryDir, location.filePath);
   } catch {
     // A stored path that would leave the library folder is never followed.
     throw fileMissing();
   }
-  const stat = await statFile(file);
+  let stat = await statFile(file);
+  if (!stat && location.calibreUuid) {
+    // Calibre moved the book's folder (a title or author change) since the last index.
+    const moved = await currentCalibreEpub(libraryDir, location.calibreUuid);
+    if (moved) {
+      file = resolveInside(libraryDir, moved);
+      stat = await statFile(file);
+    }
+  }
   if (!stat) throw fileMissing();
   let stream;
   try {

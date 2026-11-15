@@ -285,6 +285,11 @@ export interface CalibreConfig {
   pollSeconds: number;
   /** metadata.db must be unchanged this long before it is copied. */
   settleSeconds: number;
+  /**
+   * When metadata.db never stays unchanged that long (Calibre's own background writes, a long
+   * cleanup run), it is copied anyway after waiting this long; 0 = wait as long as it takes.
+   */
+  maxSettleWaitSeconds: number;
   /** A snapshot copy that takes longer than this is abandoned and retried on a later poll. */
   snapshotTimeoutSeconds: number;
   /** Skip missing-marking when one index would mark more than this share of a library missing. */
@@ -301,6 +306,7 @@ export interface CalibreConfig {
 export const DEFAULT_CALIBRE: Omit<CalibreConfig, 'dir' | 'cacheDir'> = {
   pollSeconds: 60,
   settleSeconds: 30,
+  maxSettleWaitSeconds: 600,
   snapshotTimeoutSeconds: 600,
   maxMissingPercent: 20,
   requireReadonly: true,
@@ -443,6 +449,7 @@ export function parseCalibreConfig(env: Env, warnings: string[]): CalibreConfig 
     cacheDir: path.resolve((env.CACHE_DIR ?? '').trim() || '/cache'),
     pollSeconds: num('CALIBRE_POLL_SECONDS', d.pollSeconds, 5, 86_400),
     settleSeconds: num('CALIBRE_SETTLE_SECONDS', d.settleSeconds, 0, 86_400),
+    maxSettleWaitSeconds: num('CALIBRE_MAX_SETTLE_WAIT_SECONDS', d.maxSettleWaitSeconds, 0, 86_400),
     snapshotTimeoutSeconds: num(
       'CALIBRE_SNAPSHOT_TIMEOUT_SECONDS',
       d.snapshotTimeoutSeconds,

@@ -564,6 +564,8 @@ export interface BookFileLocation {
   fileSize: number | null;
   calibreLastModified: number | null;
   missing: boolean;
+  /** The Calibre book's UUID (to find a folder Calibre moved since the last index). */
+  calibreUuid: string | null;
 }
 
 /** Where a visible book's EPUB lives, or null when the book is unknown or not visible. */
@@ -575,7 +577,7 @@ export function getBookFileFor(
   const row = db
     .prepare(
       `SELECT s.kind, s.content_hash, l.folder, s.file_path, s.file_size,
-              s.calibre_last_modified, (s.missing_at IS NOT NULL) AS missing
+              s.calibre_last_modified, s.calibre_uuid, (s.missing_at IS NOT NULL) AS missing
          FROM books b
          JOIN book_sources s ON s.book_id = b.id AND ${SQL_CATALOG_SOURCE}
          JOIN libraries l ON l.id = b.library_id AND l.enabled = 1
@@ -589,6 +591,7 @@ export function getBookFileFor(
         file_path: string | null;
         file_size: number | null;
         calibre_last_modified: number | null;
+        calibre_uuid: string | null;
         missing: number;
       }
     | undefined;
@@ -601,5 +604,6 @@ export function getBookFileFor(
     fileSize: row.file_size,
     calibreLastModified: row.calibre_last_modified,
     missing: row.missing === 1,
+    calibreUuid: row.calibre_uuid,
   };
 }
