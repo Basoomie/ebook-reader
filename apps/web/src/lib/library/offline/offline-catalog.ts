@@ -158,19 +158,41 @@ function groupKeys(book: CatalogBook, by: GroupBy): (string | null)[] {
 
 export class OfflineCatalog {
   private reading: Promise<OfflineData> | null = null;
+  private cached: OfflineData | null = null;
+  /** Bumped by invalidate(): a read started before it is not kept. */
+  private generation = 0;
 
-  /** `load` reads the device's data; it is read again for every request (never stale). */
+  /**
+   * `load` reads the device's data. It is read once and kept until `invalidate()` (a
+   * page visit, a change to book states, positions, collections or the copies), so the
+   * many requests of one page (a list, its count, the tab and chip counts) don't each
+   * read every copy and record again.
+   */
   constructor(private readonly load: () => Promise<OfflineData>) {}
 
-  /** Requests made at the same moment (a list and its counts) share one read. */
+  /** The next request reads the device's data again. */
+  invalidate(): void {
+    this.generation += 1;
+    this.cached = null;
+    this.reading = null;
+  }
+
+  /** Requests made at the same moment share one read; later ones use what it read. */
   private data(): Promise<OfflineData> {
+    if (this.cached) return Promise.resolve(this.cached);
     if (!this.reading) {
+      const generation = this.generation;
       const reading = this.load();
       this.reading = reading;
-      const clear = () => {
-        if (this.reading === reading) this.reading = null;
-      };
-      reading.then(clear, clear);
+      reading.then(
+        (data) => {
+          if (this.reading === reading) this.reading = null;
+          if (this.generation === generation) this.cached = data;
+        },
+        () => {
+          if (this.reading === reading) this.reading = null;
+        }
+      );
     }
     return this.reading;
   }
