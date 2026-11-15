@@ -14,6 +14,13 @@
   import { isCoverBlurred } from '$lib/library/cover-blur';
   import { plural } from '$lib/library/format';
   import { getLibraryStore, type LibraryConnection } from '$lib/library/library-db';
+  import {
+    browserOnline,
+    isUnreachable,
+    offlineCatalog,
+    OFFLINE_NOTICE,
+    refreshOfflineCopies
+  } from '$lib/library/offline/offline-source';
   import CataloguePageHeader from '$lib/components/catalogue-page-header.svelte';
   import LibraryDisplayMenu from '$lib/components/library/library-display-menu.svelte';
   import { coverGrid } from '$lib/library/cover-size';
@@ -47,6 +54,8 @@
   let cards = new Map<string, CollectionCardData>();
   let cardsLoading = false;
   let cardsError = '';
+  /** Season 2 §2: the server can't be reached; the cards count this device's books. */
+  let offline = false;
   let staleNote = false;
   let states = new Map<string, BookState>();
   let tagRules = new Set<string>();
@@ -75,12 +84,15 @@
     connection = (await store.getConnection()) ?? null;
     if (connection) {
       api = new LibraryApi(connection.serverUrl, connection.token, timeoutSeconds);
+      offline = !browserOnline();
+      window.addEventListener('online', tryServerAgain);
       await loadCards();
     }
   });
 
   onDestroy(() => {
     destroyed = true;
+    if (typeof window !== 'undefined') window.removeEventListener('online', tryServerAgain);
     clearTimeout(timer);
     stopListeners.forEach((off) => off());
   });
@@ -111,23 +123,39 @@
     if (!api) return;
     const request = ++cardsRequest;
     cardsLoading = true;
+    const asked = offline;
     try {
-      // Counts and covers of built-ins and saved searches use your book state on the server.
-      staleNote = await view.sendPendingChanges(timeoutSeconds);
-      const result = await api.collectionCards();
+      if (asked) {
+        // The offline Library: this device's books, from its own records.
+        staleNote = false;
+      } else {
+        // Counts and covers of built-ins and saved searches use your book state on the server.
+        staleNote = await view.sendPendingChanges(timeoutSeconds);
+      }
+      const result = await (asked ? offlineCatalog() : api).collectionCards();
       if (request !== cardsRequest) return;
       cards = new Map(result.cards.map((c) => [c.id, c]));
       cardsError = '';
+      if (!asked) void refreshOfflineCopies(api);
     } catch (error) {
       if (request !== cardsRequest) return;
-      cardsError =
-        error instanceof LibraryApiError &&
-        (error.kind === 'unreachable' || error.kind === 'timeout')
-          ? "The library server can't be reached, so covers and counts are missing."
-          : `Covers and counts could not be loaded: ${(error as Error).message}`;
+      if (!asked && isUnreachable(error)) {
+        offline = true;
+        cardsLoading = false;
+        void loadCards();
+        return;
+      }
+      cardsError = `Covers and counts could not be loaded: ${(error as Error).message}`;
     } finally {
       if (request === cardsRequest) cardsLoading = false;
     }
+  }
+
+  /** "Try again", or the browser is online again: ask the server. */
+  function tryServerAgain() {
+    if (!offline) return;
+    offline = false;
+    void loadCards();
   }
 
   function tilesOf(
@@ -215,6 +243,16 @@
     <p class="c-notice" data-testid="not-connected">
       This device isn't connected to the library server yet.
       <a class="c-link" href="{pagePath}/library">Connect on the Library page</a>.
+    </p>
+  {/if}
+  {#if offline && connection}
+    <p class="c-notice flex flex-wrap items-center gap-x-3 gap-y-2" data-testid="offline-notice">
+      <span role="status">{OFFLINE_NOTICE}</span>
+      <button
+        class="c-btn c-btn-secondary px-3"
+        data-testid="offline-retry"
+        on:click={tryServerAgain}>Try again</button
+      >
     </p>
   {/if}
   {#if cardsError}

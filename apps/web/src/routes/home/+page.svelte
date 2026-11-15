@@ -41,6 +41,15 @@
   import { homeRowLength$, homeRows$ } from '$lib/home/settings';
   import { LibraryApi, LibraryApiError } from '$lib/library/api';
   import { existingLocalIds } from '$lib/library/browser-open-deps';
+  import type { OfflineCatalog } from '$lib/library/offline/offline-catalog';
+  import {
+    browserOnline,
+    isUnreachable,
+    offlineCatalog,
+    OFFLINE_NOTICE,
+    refreshOfflineCopies,
+    saveOfflineLibraries
+  } from '$lib/library/offline/offline-source';
   import { removeFromThisDevice } from '$lib/library/remove-from-device';
   import { isCoverBlurred } from '$lib/library/cover-blur';
   import { getLibraryStore, type LibraryConnection } from '$lib/library/library-db';
@@ -69,6 +78,8 @@
 
   let connection: LibraryConnection | null | undefined;
   let api: LibraryApi | undefined;
+  /** Season 2 §2: the server can't be reached; rows show this device's books. */
+  let offline = false;
   let libraries: CatalogLibrary[] = [];
   let states = new Map<string, BookState>();
   let tagRules = new Set<string>();
@@ -126,15 +137,27 @@
     if (!connection) return;
     api = new LibraryApi(connection.serverUrl, connection.token, timeoutSeconds);
     await refreshOnDevice();
-    try {
-      libraries = (await api.libraries()).libraries;
-    } catch {
-      // Each row reports the problem.
+    window.addEventListener('online', tryServerAgain);
+    offline = !browserOnline();
+    if (!offline) {
+      try {
+        libraries = (await api.libraries()).libraries;
+        void saveOfflineLibraries(libraries);
+      } catch {
+        // Each row reports the problem (or shows this device's books).
+      }
+      // The server only knows state changes that reached it (built-in lists filter by them).
+      await view.sendPendingChanges(timeoutSeconds);
     }
-    // The server only knows state changes that reached it (built-in lists filter by them).
-    await view.sendPendingChanges(timeoutSeconds);
     ready = true;
   });
+
+  /** "Try again", or the browser is online again: rows ask the server. */
+  function tryServerAgain() {
+    if (!offline || !api) return;
+    offline = false;
+    void loadAllRows(true);
+  }
 
   // Rows load when first shown (also a row pinned, shown or added while here).
   $: if (ready && api) {
@@ -143,6 +166,7 @@
 
   onDestroy(() => {
     destroyed = true;
+    if (typeof window !== 'undefined') window.removeEventListener('online', tryServerAgain);
     clearTimeout(mirrorTimer);
     stopListeners.forEach((off) => off());
     opening?.controller.abort();
@@ -206,23 +230,29 @@
   async function loadRow(row: HomeRowEntry, quiet = false) {
     const key = rowKey(row);
     if (!api) return;
+    const asked = offline;
     if (!quiet || !views.has(key)) setView(key, { status: 'loading' });
     try {
-      const books = await fetchRow(row, api);
+      const books = await fetchRow(row, asked ? offlineCatalog() : api);
       if (destroyed) return;
       setView(key, { status: 'ok', books });
+      if (!asked) void refreshOfflineCopies(api);
     } catch (error) {
       if (destroyed) return;
-      const message = describe(error);
-      if (row.type === 'continue') {
-        setView(key, { status: 'offline', message, local: await localContinue() });
-      } else {
-        setView(key, { status: 'error', message });
+      if (!asked && isUnreachable(error)) {
+        // The offline Library: the row from this device's books.
+        offline = true;
+        await loadRow(row, quiet);
+        return;
       }
+      setView(key, { status: 'error', message: describe(error) });
     }
   }
 
-  async function fetchRow(row: HomeRowEntry, a: LibraryApi): Promise<CatalogBook[]> {
+  async function fetchRow(
+    row: HomeRowEntry,
+    a: LibraryApi | OfflineCatalog
+  ): Promise<CatalogBook[]> {
     switch (row.type) {
       case 'continue': {
         const ids = continueReadingIds(states, positions, rowLength);
@@ -245,23 +275,6 @@
       }
       default:
         return (await a.books({ group: { by: row.type, name: row.ref }, limit: rowLength })).books;
-    }
-  }
-
-  /** Continue Reading without the server: its books that are on this device, by title. */
-  async function localContinue() {
-    try {
-      const ids = continueReadingIds(states, positions, rowLength);
-      const [links, existing] = await Promise.all([store.getAllLinks(), existingLocalIds()]);
-      const byBook = new Map(
-        links.filter((l) => existing.has(l.localId)).map((l) => [l.bookId, l])
-      );
-      return ids
-        .map((id) => byBook.get(id))
-        .filter((l): l is NonNullable<typeof l> => !!l)
-        .map((l) => ({ bookId: l.bookId, title: l.calibreTitle || l.title, localId: l.localId }));
-    } catch {
-      return [];
     }
   }
 
@@ -564,6 +577,19 @@
       </label>
     </section>
   {:else if connection}
+    {#if offline}
+      <p
+        class="c-notice mt-2 flex flex-wrap items-center gap-x-3 gap-y-2"
+        data-testid="offline-notice"
+      >
+        <span role="status">{OFFLINE_NOTICE}</span>
+        <button
+          class="c-btn c-btn-secondary px-3"
+          data-testid="offline-retry"
+          on:click={tryServerAgain}>Try again</button
+        >
+      </p>
+    {/if}
     <div class="pt-2">
       {#each shownRows as row (rowKey(row))}
         <HomeRow
@@ -586,7 +612,6 @@
           on:collect={(ev) => openAddToCollection(ev.detail)}
           on:remove={(ev) => removeFromDevice(ev.detail)}
           on:retry={() => loadRow(row)}
-          on:openLocal={(ev) => goto(`${pagePath}/b?id=${ev.detail}`)}
         />
       {:else}
         <p class="py-6 text-c-muted">Every row is hidden. Use "Edit" to show some.</p>

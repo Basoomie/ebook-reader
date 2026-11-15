@@ -54,6 +54,13 @@ export async function removeFromThisDevice(book: { id: string; title: string }):
   for (const localId of localIds) {
     await database.removeBookFromDevice(localId);
   }
+  // Season 2 §2: the offline Library lists only books on this device (never rejects).
+  try {
+    const { removeOfflineCopy } = await import('$lib/library/offline/offline-source');
+    await removeOfflineCopy(book.id);
+  } catch {
+    // The next refresh deletes it.
+  }
   // Before the caller reloads a list that uses on:device (publishDeviceBooks never rejects).
   try {
     const { publishDeviceBooks } = await import('$lib/sync/sync-service');
