@@ -14,7 +14,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { Calibredb, buildArgs } from '../../cleanup-apply/src/calibredb';
 import { CalibredbHelper } from '../../cleanup-apply/src/calibredb-helper';
 import type { SidecarConfig } from '../../cleanup-apply/src/config';
-import { StepTimes, Worker, writeKind } from '../../cleanup-apply/src/worker';
+import { mayStillHappen, StepTimes, Worker, writeKind } from '../../cleanup-apply/src/worker';
 import { listFieldPauses } from '../src/cleanup/stage2-gate';
 import { getStage } from '../src/cleanup/stages';
 import { fingerprint, makeJpeg } from './helpers/calibre-fixture';
@@ -214,6 +214,8 @@ describe('stage 2: metadata and covers from the files', () => {
       wait?: number;
       fetchImpl?: typeof fetch;
       helper?: 'on' | 'off' | 'fail-start' | { dieAfterWrites: number };
+      /** This Calibre id's writes are refused like the NAS's root-owned covers. */
+      denied?: number;
     } = {},
   ) {
     const config: SidecarConfig = {
@@ -243,8 +245,9 @@ describe('stage 2: metadata and covers from the files', () => {
         FAKE_LOG: log,
         FAKE_TIMES: `${log}.times`,
         FAKE_SET_TIMEOUT: extra.setTimeout ?? '',
+        FAKE_SET_DENIED: extra.denied ? String(extra.denied) : '',
       },
-      helper: helperFor(extra.helper ?? 'on', extra.setTimeout),
+      helper: helperFor(extra.helper ?? 'on', extra.setTimeout, extra.denied),
     });
     return new Worker({
       config,
@@ -259,6 +262,7 @@ describe('stage 2: metadata and covers from the files', () => {
   function helperFor(
     mode: 'on' | 'off' | 'fail-start' | { dieAfterWrites: number },
     setTimeoutMode?: string,
+    denied?: number,
   ): CalibredbHelper | null {
     if (mode === 'off') return null;
     const h = new CalibredbHelper({
@@ -273,6 +277,7 @@ describe('stage 2: metadata and covers from the files', () => {
         FAKE_LOG: log,
         FAKE_TIMES: `${log}.times`,
         FAKE_SET_TIMEOUT: setTimeoutMode ?? '',
+        FAKE_SET_DENIED: denied ? String(denied) : '',
         FAKE_HELPER_LOG: `${log}.helper`,
         FAKE_HELPER_FAIL_START: mode === 'fail-start' ? '1' : '',
         FAKE_HELPER_DIE_AFTER_WRITES: typeof mode === 'object' ? String(mode.dieAfterWrites) : '',
@@ -618,6 +623,50 @@ describe('stage 2: metadata and covers from the files', () => {
       .get(row.id) as { state: string; detail: string };
     expect(item.state).toBe('failed');
     expect(item.detail).toContain("doesn't show the new value");
+  });
+
+  it('a write Calibre refuses outright (Permission denied) fails at once; the others go on', async () => {
+    await request(env.app)
+      .put('/api/v1/cleanup/settings')
+      .set(auth(user))
+      .send({ failedPausePercent: 100 })
+      .expect(200);
+    await setMode('on');
+    const t0 = Date.now();
+    await runAll(worker({ denied: ids.B1, wait: 60 }));
+    // Without the change this waits the full 60 s for a value that can't appear.
+    expect(Date.now() - t0).toBeLessThan(30_000);
+    const items = env.cleanupDb
+      .prepare(
+        `SELECT i.state, i.detail FROM batch_items i JOIN proposed_changes c ON c.id = i.change_id
+         WHERE c.calibre_id = ?`,
+      )
+      .all(ids.B1) as { state: string; detail: string }[];
+    expect(items.length).toBeGreaterThan(0);
+    expect(items.every((i) => i.state === 'failed')).toBe(true);
+    expect(items[0].detail).toContain('Permission denied');
+    expect(calibreRecord(env.lib, ids.B2)!.title).toBe('正しい題名');
+  });
+
+  it('error messages: a timeout or dropped connection may still happen; a refusal is final', () => {
+    // Real messages (calibre 9.18 in the e2e; the NAS 2026-11-15).
+    expect(
+      mayStillHappen(
+        'calibredb set_fields failed (exit 1): … httperror_seek_wrapper: HTTP Error 408: Request Timeout',
+      ),
+    ).toBe(true);
+    expect(mayStillHappen('calibredb set_fields took longer than 600 s')).toBe(true);
+    expect(mayStillHappen('The calibredb helper stopped (exit 3)')).toBe(true);
+    expect(
+      mayStillHappen(
+        "calibredb set_fields failed (exit 1): [Errno 13] Permission denied: '/books/x/cover.jpg'",
+      ),
+    ).toBe(false);
+    expect(
+      mayStillHappen(
+        "calibredb set_fields failed (exit 1): [Errno 36] File name too long: '/books/x'",
+      ),
+    ).toBe(false);
   });
 
   it('a write that times out but happens is recorded once; one that never happens fails after the wait, never sent twice', async () => {
