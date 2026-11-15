@@ -165,7 +165,13 @@ const HAS_KANJI_OR_HIRAGANA = /[一-龥ぁ-ん]/u;
  * family and given name, other names keep single spaces.
  */
 export function normalizeName(name: string | null | undefined): string {
-  const n = pyStrip(nfkc(name).replace(re(WS, 'g'), ' '));
+  // A full-width ＆ stays: NFKC would make it "&", which Calibre splits into two authors
+  // (seen on the NAS 2026-11-15, "蛇蔵＆海野凪子").
+  const n = pyStrip(
+    nfkc((name ?? '').replace(/＆/gu, ''))
+      .replace(re(WS, 'g'), ' ')
+      .replace(//gu, '＆'),
+  );
   if (KATAKANA_NAME.test(n)) return n.replace(/\s+/gu, '・');
   if (HAS_KANJI_OR_HIRAGANA.test(n)) return n.replace(/\s+/gu, '');
   return n.replace(/\s{2,}/gu, ' ');

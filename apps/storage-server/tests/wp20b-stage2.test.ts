@@ -617,6 +617,57 @@ describe('stage 2: metadata and covers from the files', () => {
     expect(setCalls().length).toBe(books.size);
   });
 
+  it('a batch with failed items under the share set in the settings does not pause the stage', async () => {
+    await request(env.app)
+      .put('/api/v1/cleanup/settings')
+      .set(auth(user))
+      .send({ failedPausePercent: 100 })
+      .expect(200);
+    await setMode('on');
+    const w = worker({ setTimeout: 'never', wait: 0.5 });
+    await w.cycle(); // heartbeat and safety checks
+    await env.service.tick();
+    await w.cycle();
+    const first = env.service.batches.list().find((b) => b.stage === 2 && b.state === 'failed')!;
+    // Not paused: the next batch is already planned.
+    expect(env.service.batches.list().some((b) => b.stage === 2 && b.state === 'planned')).toBe(
+      true,
+    );
+    console.log(
+      'DEBUG',
+      first.state,
+      JSON.stringify(env.service.batches.itemCounts(first.id)),
+      getStage(env.cleanupDb, 2).pauseReason,
+      env.service.batches
+        .list()
+        .map((b) => b.stage + b.state)
+        .join(),
+    );
+    expect(env.service.batches.itemCounts(first.id).failed).toBeGreaterThan(0);
+    expect(getStage(env.cleanupDb, 2).pauseReason).toBeNull();
+    expect(env.logs.some((l) => l.includes('going on'))).toBe(true);
+  });
+
+  it('an author change whose name holds & goes to review when the batch is planned', async () => {
+    await setMode('analyse');
+    const row = env.cleanupDb
+      .prepare(
+        `SELECT id FROM proposed_changes WHERE stage = 2 AND field = 'authors' AND class = 'auto' LIMIT 1`,
+      )
+      .get() as { id: number };
+    env.cleanupDb
+      .prepare('UPDATE proposed_changes SET new_json = ? WHERE id = ?')
+      .run(JSON.stringify(['蛇蔵&海野凪子']), row.id);
+    await setMode('on');
+    await worker().cycle();
+    await env.service.tick();
+    const after = env.cleanupDb
+      .prepare('SELECT class, review_reason, state FROM proposed_changes WHERE id = ?')
+      .get(row.id) as { class: string; review_reason: string; state: string };
+    expect(after).toMatchObject({ class: 'review', state: 'proposed' });
+    expect(after.review_reason).toContain('Calibre splits');
+  });
+
   it('a sidecar stopped after a write resumes without writing again', async () => {
     await setMode('on');
     let stoppedOnce = false;

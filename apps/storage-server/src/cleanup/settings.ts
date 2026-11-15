@@ -77,6 +77,11 @@ export interface CleanupSettings {
    * next batch changed in Calibre since the analysis (%).
    */
   libraryChangedPausePercent: number;
+  /**
+   * A batch pauses its stage only when more than this share of its items failed (%); fewer
+   * failed items are listed in the batch and the run goes on. 0 = any failure pauses.
+   */
+  failedPausePercent: number;
   covers: CoverSettings;
   backup: BackupRecord;
 }
@@ -120,6 +125,7 @@ export const DEFAULT_SETTINGS: CleanupSettings = {
   },
   reviewAlarmPercent: 5,
   libraryChangedPausePercent: 5,
+  failedPausePercent: 1,
   covers: { maxMb: 10, maxSide: 4096, sameDistance: 5, largerPercent: 10 },
   backup: {
     path: '/mnt/user/data/backups/japanese-library-2026-11-11/',
@@ -337,6 +343,8 @@ function validate(key: Key, value: unknown, current: CleanupSettings): unknown {
       return num('Review alarm (points)', value, 0, 100);
     case 'libraryChangedPausePercent':
       return num('Pause when items changed in Calibre (%)', value, 0, 100);
+    case 'failedPausePercent':
+      return num('Pause when items of a batch failed (%)', value, 0, 100);
     case 'covers': {
       const v = group('Covers', value, current.covers);
       return {
