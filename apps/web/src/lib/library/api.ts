@@ -494,6 +494,17 @@ export class LibraryApi {
     return (await this.post('/books/lookup', { ids, includeMissing: true }, options)).json();
   }
 
+  /**
+   * Season 2: the SHA-256 of each book's current file and the ETag its download sends now
+   * (at most 200 ids); null for a missing book or a file that can't be found.
+   */
+  async fileHashes(
+    ids: readonly string[],
+    options?: RequestOptions
+  ): Promise<{ books: { id: string; sha256: string | null; etag: string | null }[] }> {
+    return (await this.post('/books/file-hashes', { ids }, options)).json();
+  }
+
   /** Count and collage tiles of every collection (WP8b). */
   async collectionCards(options?: RequestOptions): Promise<{ cards: CollectionCardData[] }> {
     return (await this.get('/collections/cards', options)).json();

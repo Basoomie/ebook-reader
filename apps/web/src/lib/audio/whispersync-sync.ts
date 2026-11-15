@@ -19,7 +19,11 @@
  * sync. A device never uploads a copy older than the server's. One exception for the
  * match: a book stored on a device gets that moment as its save time, so an unmatched
  * copy never counts as newer than a live match (only a reset or a newer match does) and
- * picks the match up. Reset match removes the
+ * picks the match up. Season 2: a match records the library file it was made from
+ * (`fileSha256` in its JSON); when this copy's file is known too, the match is applied only
+ * to a copy of that same file, so a copy made from a changed file never gets the old match
+ * (matches saved before, and copies whose file isn't known, keep the rule above). Reset
+ * match removes the
  * saved match on every device: another device that finds a deletion newer than its own
  * matched copy restores its backup, the same step whispersync's own reset takes.
  *
@@ -105,12 +109,50 @@ export interface BookRef {
   bookId: string;
   localId: number;
   title: string;
+  /**
+   * Season 2: the SHA-256 of the library file this device's copy was imported from (its
+   * library link); null or absent when unknown. A saved match records the file it was made
+   * from, and is applied only to a copy of that same file.
+   */
+  fileSha256?: string | null;
 }
 
 export interface SyncResult {
   /** Something from another device was written into this device's rows. */
   changed: { position: boolean; subtitles: boolean; match: boolean };
+  /** Season 2: a newer match was made from another file than this copy's (not applied). */
+  skippedMatch?: boolean;
   problems: string[];
+}
+
+/** The file a saved match names (Season 2), or null for one saved before that. */
+export function matchFile(payload: Record<string, unknown>): string | null {
+  return typeof payload.fileSha256 === 'string' && payload.fileSha256 ? payload.fileSha256 : null;
+}
+
+/**
+ * Whether a saved match may be applied to this copy: when both name their file, only to a
+ * copy of the same file. A match saved before Season 2, or a copy whose file isn't known,
+ * keeps the earlier rule (applied).
+ */
+export function matchFitsCopy(payload: Record<string, unknown>, book: BookRef): boolean {
+  const made = matchFile(payload);
+  return !made || !book.fileSha256 || made === book.fileSha256;
+}
+
+/**
+ * Season 2: this book's live saved match and the file it names (`file` null: saved before
+ * Season 2), or null when there is none. Rejects when it can't be read now (offline).
+ */
+export async function liveMatchFile(
+  deps: SyncDeps,
+  book: BookRef
+): Promise<{ file: string | null } | null> {
+  const rec = await deps.engine.get(ATTACHMENT_KIND, attachmentId(book.bookId, MATCH));
+  if (!live(rec)) return null;
+  const payload = await fetchChecked(deps, book, MATCH, rec);
+  if (!payload) throw new Error('The saved match could not be read');
+  return { file: matchFile(payload) };
 }
 
 /** Whether a book's text carries whispersync's match stamp (Match.svelte). */
@@ -204,7 +246,9 @@ export async function pushMatch(
   const body = JSON.stringify({
     elementHtml: row.elementHtml,
     htmlBackup: row.htmlBackup ?? null,
-    lastBookModified: row.lastBookModified
+    lastBookModified: row.lastBookModified,
+    // Season 2: the file this match was made from (null when this copy's file is unknown).
+    fileSha256: book.fileSha256 ?? null
   });
   return deps.api.upload(book.bookId, MATCH, body, row.lastBookModified);
 }
@@ -314,7 +358,10 @@ export async function syncBook(deps: SyncDeps, book: BookRef): Promise<SyncResul
       if (state === 'local' && live(rec) && !isMatched(row.elementHtml)) state = 'remote';
       if (state === 'remote' && live(rec)) {
         const payload = await fetchChecked(deps, book, MATCH, rec);
-        if (payload && typeof payload.elementHtml === 'string') {
+        if (payload && !matchFitsCopy(payload, book)) {
+          // Season 2: made from another file than this copy's: not applied here.
+          result.skippedMatch = true;
+        } else if (payload && typeof payload.elementHtml === 'string') {
           const next: DataRow = {
             ...row,
             elementHtml: payload.elementHtml,

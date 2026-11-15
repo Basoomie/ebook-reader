@@ -5,15 +5,32 @@
  */
 
 import { browser } from '$app/environment';
+import { localStores } from '$lib/audio/whispersync-reader';
+import {
+  isMatched,
+  liveMatchFile,
+  resetMatch,
+  type BookRef,
+  type SyncDeps
+} from '$lib/audio/whispersync-sync';
 import { logger } from '$lib/data/logger';
-import { database } from '$lib/data/store';
+import { database, highlightRefindChars$ } from '$lib/data/store';
+import loadEpub from '$lib/functions/file-loaders/epub/load-epub';
 import { LibraryApiError, type LibraryApi } from '$lib/library/api';
 import { existingLocalIds } from '$lib/library/browser-open-deps';
 import { deviceBookIds } from '$lib/library/device-books';
 import { getLibraryStore, type CalibreLink } from '$lib/library/library-db';
 import type { CatalogBookDetail, CatalogLibrary } from '$lib/library/types';
-import { bookStateApi, collectionsApi, libraryViewApi } from '$lib/sync/sync-service';
+import {
+  bookStateApi,
+  collectionsApi,
+  getSyncEngine,
+  libraryViewApi
+} from '$lib/sync/sync-service';
 import { copyFromDetail, refreshCopies, type RefreshResult } from './copies';
+import { updateChangedFiles, type FileUpdateDeps } from './file-updates';
+import { isOpenInReader } from './open-in-reader';
+import { remapPlace } from './place-remap';
 import { getOfflineStore, type OfflineCopy } from './offline-db';
 import { OfflineCatalog, type OfflineData } from './offline-catalog';
 
@@ -64,6 +81,52 @@ async function fetchBlob(url: string): Promise<Blob> {
   return response.blob();
 }
 
+/** file-updates.ts in the browser: this device's books database, links and whispersync. */
+function fileUpdateDeps(api: LibraryApi): FileUpdateDeps {
+  const whispersync = async (link: CalibreLink): Promise<{ deps: SyncDeps; book: BookRef }> => {
+    const db = await database.db;
+    return {
+      book: {
+        bookId: link.bookId,
+        localId: link.localId,
+        title: link.title,
+        fileSha256: link.fileSha256 ?? null
+      },
+      deps: {
+        engine: await getSyncEngine(),
+        api: {
+          upload: (id, name, body, modifiedAt) => api.uploadAttachment(id, name, body, modifiedAt),
+          download: (id, name) => api.downloadAttachment(id, name)
+        },
+        local: localStores(db)
+      }
+    };
+  };
+  return {
+    api,
+    links: async () => (await deviceLinks()).links,
+    putLink: (link) => getLibraryStore().putLink(link),
+    getRow: async (localId) => (await database.db).get('data', localId),
+    getPlace: async (localId) => (await database.getBookmark(localId))?.exploredCharCount ?? null,
+    loadEpub: (file) => loadEpub(file, document, Date.now()),
+    remapPlace: (oldHtml, newHtml, position) =>
+      remapPlace(oldHtml, newHtml, position, Number(highlightRefindChars$.getValue()) || 0)
+        .position,
+    replace: (localId, content, place) => database.replaceBookContent(localId, content, place),
+    isMatched,
+    liveMatchFile: async (link) => {
+      const { deps, book } = await whispersync(link);
+      return liveMatchFile(deps, book);
+    },
+    resetMatch: async (link) => {
+      const { deps, book } = await whispersync(link);
+      await resetMatch(deps, book);
+    },
+    isOpenInReader,
+    warn: (message) => logger.warn(`Library files: ${message}`)
+  };
+}
+
 let running: Promise<RefreshResult | null> | null = null;
 let again = false;
 let lastRun = 0;
@@ -99,6 +162,19 @@ export function refreshOfflineCopies(
         });
       } catch (error) {
         logger.warn(`Offline library: not updated: ${(error as Error)?.message ?? error}`);
+      }
+      // Season 2: books whose library file changed get the new file.
+      if (result && !result.stopped) {
+        try {
+          const updated = await updateChangedFiles(fileUpdateDeps(api));
+          if (updated.replaced || updated.adopted || updated.sameText) {
+            logger.info(
+              `Library files: ${updated.replaced} updated, ${updated.sameText} with the same text, ${updated.adopted} recorded`
+            );
+          }
+        } catch (error) {
+          logger.warn(`Library files: not checked: ${(error as Error)?.message ?? error}`);
+        }
       }
     } while (again);
     return result;

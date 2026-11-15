@@ -15,6 +15,7 @@ import {
   compare,
   concernsBook,
   isMatched,
+  liveMatchFile,
   pushMatch,
   pushPosition,
   pushSubtitles,
@@ -265,7 +266,9 @@ describe('saved match', () => {
     expect(JSON.parse(f.uploads[0].body)).toEqual({
       elementHtml: MATCHED,
       htmlBackup: ORIGINAL,
-      lastBookModified: 1000
+      lastBookModified: 1000,
+      // Season 2: the file the match was made from (unknown for this copy).
+      fileSha256: null
     });
 
     // Device B: unmatched copy, older.
@@ -419,6 +422,91 @@ describe('saved match', () => {
     expect(r.changed.match).toBe(false);
     expect(f.data.get(7)?.elementHtml).toBe(MATCHED);
     expect(f.uploads).toHaveLength(1);
+  });
+});
+
+describe('saved match tied to its file (Season 2)', () => {
+  const FILE_X = 'x'.repeat(64);
+  const FILE_Y = 'y'.repeat(64);
+
+  it('records the file it was made from', async () => {
+    const g = fake();
+    g.data.set(7, { id: 7, title: BOOK.title, elementHtml: MATCHED, lastBookModified: 2000 });
+    expect(await pushMatch(g.deps, { ...BOOK, fileSha256: FILE_X })).toBe('ok');
+    expect(JSON.parse(g.uploads[0].body).fileSha256).toBe(FILE_X);
+  });
+
+  it('a copy of the same file picks it up; a copy of another file never does', async () => {
+    const g = fake();
+    g.remoteUpload(
+      MATCH,
+      { elementHtml: MATCHED, htmlBackup: ORIGINAL, lastBookModified: 1000, fileSha256: FILE_X },
+      1000
+    );
+    // Stored later from file Y (the changed file): unmatched, and stays unmatched.
+    g.data.set(7, { id: 7, title: BOOK.title, elementHtml: ORIGINAL, lastBookModified: 5000 });
+    const y = await syncBook(g.deps, { ...BOOK, fileSha256: FILE_Y });
+    expect(y.changed.match).toBe(false);
+    expect(y.skippedMatch).toBe(true);
+    expect(g.data.get(7)?.elementHtml).toBe(ORIGINAL);
+    expect(g.uploads).toEqual([]);
+    // A copy of file X picks it up (the bug 3 case, now by the file).
+    const x = await syncBook(g.deps, { ...BOOK, fileSha256: FILE_X });
+    expect(x.changed.match).toBe(true);
+    expect(g.data.get(7)?.elementHtml).toBe(MATCHED);
+  });
+
+  it('a newer match on file Y is skipped by a copy still on file X, which keeps its own', async () => {
+    const g = fake();
+    g.data.set(7, { id: 7, title: BOOK.title, elementHtml: MATCHED, lastBookModified: 1000 });
+    g.remoteUpload(
+      MATCH,
+      {
+        elementHtml: '<div data-ttu-whispersync-matched-by="b.srt">y</div>',
+        lastBookModified: 3000,
+        fileSha256: FILE_Y
+      },
+      3000
+    );
+    const r = await syncBook(g.deps, { ...BOOK, fileSha256: FILE_X });
+    expect(r.changed.match).toBe(false);
+    expect(r.skippedMatch).toBe(true);
+    expect(g.data.get(7)?.elementHtml).toBe(MATCHED);
+  });
+
+  it('a match saved before, or a copy whose file is unknown, keeps the earlier rule', async () => {
+    const g = fake();
+    g.remoteUpload(
+      MATCH,
+      { elementHtml: MATCHED, htmlBackup: ORIGINAL, lastBookModified: 1000 },
+      1000
+    );
+    g.data.set(7, { id: 7, title: BOOK.title, elementHtml: ORIGINAL, lastBookModified: 5000 });
+    expect((await syncBook(g.deps, { ...BOOK, fileSha256: FILE_Y })).changed.match).toBe(true);
+
+    const h = fake();
+    h.remoteUpload(
+      MATCH,
+      { elementHtml: MATCHED, htmlBackup: ORIGINAL, lastBookModified: 1000, fileSha256: FILE_X },
+      1000
+    );
+    h.data.set(7, { id: 7, title: BOOK.title, elementHtml: ORIGINAL, lastBookModified: 5000 });
+    expect((await syncBook(h.deps, { ...BOOK, fileSha256: null })).changed.match).toBe(true);
+  });
+
+  it('liveMatchFile names the file, null for a match saved before, nothing after a reset', async () => {
+    const g = fake();
+    expect(await liveMatchFile(g.deps, BOOK)).toBeNull();
+    g.remoteUpload(MATCH, { elementHtml: MATCHED, lastBookModified: 1000 }, 1000);
+    expect(await liveMatchFile(g.deps, BOOK)).toEqual({ file: null });
+    g.remoteUpload(
+      MATCH,
+      { elementHtml: MATCHED, lastBookModified: 2000, fileSha256: FILE_X },
+      2000
+    );
+    expect(await liveMatchFile(g.deps, BOOK)).toEqual({ file: FILE_X });
+    await resetMatch(g.deps, BOOK);
+    expect(await liveMatchFile(g.deps, BOOK)).toBeNull();
   });
 });
 

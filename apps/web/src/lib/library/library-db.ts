@@ -50,6 +50,12 @@ export interface CalibreLink {
   characters: number;
   /** ETag of the downloaded file, to notice a changed file later. */
   fileEtag: string | null;
+  /**
+   * Season 2: the SHA-256 of the library file this device's copy was imported from (the
+   * server's `POST /books/file-hashes`); a different hash means the file changed. Missing on
+   * links made before, and on `matched` links (a copy this device already had).
+   */
+  fileSha256?: string | null;
   linkedAt: number;
   /** imported = saved from the Calibre file; matched = an existing local book was linked. */
   how: 'imported' | 'matched';

@@ -712,6 +712,25 @@ export const MIGRATIONS: { version: number; name: string; sql: string }[] = [
       ALTER TABLE thumbnails ADD COLUMN cover_mtime_ns TEXT;
     `,
   },
+  {
+    version: 18,
+    name: 'book file hashes',
+    // Season 2 "Cached book whose Calibre file changed": the SHA-256 of a book's EPUB with
+    // the size and modified time (nanoseconds, as text) of the file it was made from, so a
+    // device can tell a changed file from a metadata edit. Made when a device asks
+    // (catalog/file-hashes.ts); hashed again only when the file's size or modified time
+    // changed. No book_id foreign key: a row is only a cache and is replaced, never read
+    // for a book the catalog no longer has.
+    sql: `
+      CREATE TABLE file_hashes (
+        book_id    TEXT PRIMARY KEY,
+        bytes      INTEGER NOT NULL,
+        mtime_ns   TEXT NOT NULL,
+        sha256     TEXT NOT NULL,
+        hashed_at  INTEGER NOT NULL
+      );
+    `,
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

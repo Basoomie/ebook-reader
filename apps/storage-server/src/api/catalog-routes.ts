@@ -6,11 +6,10 @@
 import type Database from 'better-sqlite3';
 import express, { RequestHandler, Response, Router } from 'express';
 import fs from 'fs/promises';
-import path from 'path';
 import { pipeline } from 'stream/promises';
 import type { IndexerStatus } from '../calibre/indexer';
-import { currentCalibreEpub } from '../calibre/live-lookup';
-import { openSourceStream, resolveInside, statFile } from '../calibre/source-fs';
+import { openSourceStream } from '../calibre/source-fs';
+import { calibreEtag, fileHashes, locateCalibreFile, uploadEtag } from '../catalog/file-hashes';
 import { planGroups } from '../catalog/groups';
 import { collectionCards } from '../collections/cards';
 import {
@@ -306,6 +305,34 @@ export function createCatalogRouter(db: Database.Database, catalog: CatalogOptio
     }),
   );
 
+  // Season 2 §2: the SHA-256 of each book's current file (catalog/file-hashes.ts), so a
+  // device can tell a changed file from a metadata edit. Hashed only when a file is new.
+  router.post(
+    '/books/file-hashes',
+    asyncHandler(async (req, res) => {
+      const { user } = getAuth(res);
+      const ids = (req.body ?? {}).ids as unknown;
+      if (
+        !Array.isArray(ids) ||
+        ids.length > MAX_LOOKUP_IDS ||
+        !ids.every((id) => typeof id === 'string' && UUID_RE.test(id))
+      ) {
+        throw new ApiError(
+          400,
+          'invalid_ids',
+          `ids must be a list of at most ${MAX_LOOKUP_IDS} book ids`,
+        );
+      }
+      const store = catalog.uploads?.store;
+      const books = await fileHashes(db, user, ids as string[], {
+        calibreDir: catalog.indexer.enabled ? (catalog.calibreDir ?? null) : null,
+        uploadSize: async (filePath) =>
+          store ? ((await store.stat(filePath).catch(() => null))?.size ?? null) : null,
+      });
+      res.json({ books });
+    }),
+  );
+
   // Collections page (WP8b): count and collage tiles of every collection.
   router.get(
     '/collections/cards',
@@ -393,24 +420,11 @@ export async function sendBookFile(
   }
   const fileMissing = () =>
     new ApiError(404, 'file_missing', 'The book file was not found in the library');
-  const libraryDir = path.join(catalog.calibreDir, location.libraryFolder);
-  let file: string;
-  try {
-    file = resolveInside(libraryDir, location.filePath);
-  } catch {
-    // A stored path that would leave the library folder is never followed.
-    throw fileMissing();
-  }
-  let stat = await statFile(file);
-  if (!stat && location.calibreUuid) {
-    // Calibre moved the book's folder (a title or author change) since the last index.
-    const moved = await currentCalibreEpub(libraryDir, location.calibreUuid);
-    if (moved) {
-      file = resolveInside(libraryDir, moved);
-      stat = await statFile(file);
-    }
-  }
-  if (!stat) throw fileMissing();
+  // A stored path that would leave the library folder is never followed; a folder Calibre
+  // moved since the last index (a title or author change) is found by the book's UUID.
+  const found = await locateCalibreFile(catalog.calibreDir, location);
+  if (!found) throw fileMissing();
+  const { file, stat } = found;
   let stream;
   try {
     stream = await openSourceStream(file);
@@ -420,7 +434,7 @@ export async function sendBookFile(
   }
   res.set('Content-Type', 'application/epub+zip');
   res.set('Content-Length', String(stat.size));
-  res.set('ETag', `"${location.calibreLastModified ?? 0}-${stat.size}"`);
+  res.set('ETag', calibreEtag(location, stat.size));
   res.set('Cache-Control', 'private, no-cache');
   try {
     await pipeline(stream, res);
@@ -449,7 +463,7 @@ async function sendUploadedFile(
   }
   res.set('Content-Type', 'application/epub+zip');
   res.set('Content-Length', String(stat.size));
-  res.set('ETag', `"upload-${location.contentHash ?? stat.size}"`);
+  res.set('ETag', uploadEtag(location, stat.size));
   res.set('Cache-Control', 'private, no-cache');
   try {
     await pipeline(stream, res);
