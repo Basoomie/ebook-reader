@@ -28,7 +28,13 @@
   import { browser } from '$app/environment';
   import { page } from '$app/stores';
   import { goto } from '$app/navigation';
-  import { faNoteSticky, faPause, faPlay, faSpinner } from '@fortawesome/free-solid-svg-icons';
+  import {
+    faGaugeHigh,
+    faNoteSticky,
+    faPause,
+    faPlay,
+    faSpinner
+  } from '@fortawesome/free-solid-svg-icons';
   import BookReader from '$lib/components/book-reader/book-reader.svelte';
   import { serverFonts } from '$lib/fonts/server-fonts-browser';
   import type {
@@ -100,7 +106,15 @@
     highlightLastColor$,
     highlightRefindChars$,
     highlightBarAnySelection$,
-    showReturnMarker$
+    showReturnMarker$,
+    pacerMode$,
+    pacerSpeed$,
+    pacerTurnPages$,
+    pacerKeepBehind$,
+    pacerEinkStep$,
+    pacerLookupResume$,
+    pacerIdleMinutes$,
+    pacerTextlessPageSeconds$
   } from '$lib/data/store';
   import HighlightBar from '$lib/components/book-reader/highlight-bar.svelte';
   import NotesPanel from '$lib/components/book-reader/notes-panel.svelte';
@@ -125,6 +139,9 @@
   import { readable, type Readable } from 'svelte/store';
   import { JumpHistory } from '$lib/components/book-reader/jump-history';
   import AppearancePanel from '$lib/components/book-reader/appearance-panel.svelte';
+  import PacerPanel from '$lib/components/book-reader/pacer/pacer-panel.svelte';
+  import { stepSpeed } from '$lib/components/book-reader/pacer/pacer-clock';
+  import type { Pacer, PacerSettings, PacerState } from '$lib/components/book-reader/pacer/pacer';
   import BookSearchDialog from '$lib/components/book-reader/book-search-dialog.svelte';
   import {
     buildBookTextIndex,
@@ -1047,6 +1064,8 @@
 
     stopPositionPrompt();
     stopStartOverWatch?.();
+    stopPacerAutoScroll?.();
+    destroyPacer();
 
     if (dismissDialogs) {
       dialogManager.dialogs$.next([]);
@@ -1326,6 +1345,184 @@
     restoreAppearanceKeys?.();
   }
 
+  // -------------------------------------------------------------------------
+  // Season 2 pacer (lib/components/book-reader/pacer). Off by default; its code is loaded
+  // only when it is started, and nothing listens or paints until then. Painted with the
+  // CSS Custom Highlight API (no DOM changes); its page turns are the reader's own, so the
+  // tracker sees them like yours. Failures are logged and stop the pacer only.
+
+  const PACER_IDLE_STATE: PacerState = {
+    running: false,
+    pausedFor: [],
+    ended: false,
+    failed: false
+  };
+
+  const pacerSupported =
+    browser && !!(window as any).CSS?.highlights && typeof (window as any).Highlight === 'function';
+
+  let pacer: Pacer | undefined;
+
+  let pacerLoading: Promise<Pacer | undefined> | undefined;
+
+  let pacerState: PacerState = PACER_IDLE_STATE;
+
+  let showPacerPanel = false;
+
+  let stopPacerLookups: (() => void) | undefined;
+
+  let stopPacerAutoScroll: (() => void) | undefined;
+
+  let pacerBookId: number | undefined;
+
+  function pacerSettings(): PacerSettings {
+    return {
+      mode: $pacerMode$,
+      speed: Number($pacerSpeed$),
+      turnPages: $pacerTurnPages$,
+      keep: Number($pacerKeepBehind$),
+      einkStep: $pacerEinkStep$ === 'line' ? 'line' : 'sentence',
+      lookupResume: Number($pacerLookupResume$),
+      idleMinutes: Number($pacerIdleMinutes$),
+      textlessSeconds: Number($pacerTextlessPageSeconds$),
+      eink: $einkMode$
+    };
+  }
+
+  function loadPacer(): Promise<Pacer | undefined> {
+    if (pacer) return Promise.resolve(pacer);
+
+    pacerLoading ??= import('$lib/components/book-reader/pacer/pacer')
+      .then(({ createPacer }) => {
+        if (pacer) return pacer;
+        if ($pacerMode$ === 'off' || !$rawBookData$) return undefined;
+
+        const created = createPacer({
+          page: {
+            root: () => document.querySelector('.book-content'),
+            base: () => bookmarkManager?.sectionStartCount?.() ?? 0,
+            paginated: () => isPaginated,
+            vertical: () => readerLayout.writingMode === 'vertical-rl'
+          },
+          host: {
+            paginated: () => isPaginated,
+            settings: pacerSettings,
+            nextPage: () => pageManager?.nextPage(),
+            onState: (state) => {
+              pacerState = state;
+            },
+            warn: (message) => logger.warn(message)
+          }
+        });
+        pacer = created;
+        pacerBookId = $rawBookData$.id;
+        return created;
+      })
+      .catch((error) => {
+        logger.warn(`Pacer: ${(error as Error)?.message ?? error}`);
+        return undefined;
+      })
+      .finally(() => {
+        pacerLoading = undefined;
+      });
+
+    return pacerLoading;
+  }
+
+  function destroyPacer() {
+    stopPacerLookups?.();
+    stopPacerLookups = undefined;
+    pacer?.destroy();
+    pacer = undefined;
+    pacerBookId = undefined;
+    pacerState = PACER_IDLE_STATE;
+  }
+
+  async function togglePacer() {
+    if ($pacerMode$ === 'off' || !pacerSupported) {
+      openPacerPanel();
+      return;
+    }
+
+    const loaded = await loadPacer();
+
+    if (!loaded) return;
+
+    if (!loaded.state().running) {
+      autoScroller?.off();
+    }
+
+    loaded.toggle();
+  }
+
+  function openPacerPanel() {
+    showHeader = false;
+
+    if (showAppearance) {
+      closeAppearance();
+    }
+
+    showPacerPanel = true;
+  }
+
+  /** The "Use my speed" figure: the same estimate as "Time left". */
+  async function pacerSpeedEstimate() {
+    if (!$rawBookData$) return null;
+
+    const sync = await import('$lib/sync/sync-service');
+    const bookId =
+      stateBookId ?? (await sync.bookIdForLocalBook($rawBookData$.id, $rawBookData$.title));
+    const entries = await sync.statsApi().allEntries();
+    return speedEstimate(
+      bookId ?? '',
+      entries,
+      Math.max(1, Number($timeLeftRecentMinutes$) || 60) * 60,
+      Math.max(0, Number($timeLeftMinMinutes$) || 0) * 60
+    );
+  }
+
+  $: if (pacer && $pacerMode$ === 'off') {
+    destroyPacer();
+  }
+
+  $: if (pacer && pacerBookId !== undefined && $rawBookData$?.id !== pacerBookId) {
+    destroyPacer();
+  }
+
+  function refreshPacer(..._changed: unknown[]) {
+    pacer?.refresh();
+  }
+
+  // Settings that change the painting (the speed is read on every frame).
+  $: refreshPacer(
+    pacer,
+    $pacerMode$,
+    $pacerKeepBehind$,
+    $pacerEinkStep$,
+    $einkMode$,
+    $themeOption$
+  );
+
+  // Automatic pauses: a dialog or menu that has the keys (the Aa panel, whispersync's menus),
+  // the TOC, the highlight bar. The Pacer panel itself doesn't pause it.
+  $: pacer?.setPaused('dialog', !!$skipKeyDownListener$ || !!$tocIsOpen$);
+
+  $: pacer?.setPaused('selection', $highlightBarState.mode !== 'hidden');
+
+  $: if (pacer && lookupCapture && !stopPacerLookups) {
+    const target = pacer;
+    stopPacerLookups = lookupCapture.onLookup((_lookup, change) => target.lookup(change));
+  }
+
+  // Auto-scroll (continuous mode) and the pacer don't run together.
+  $: {
+    stopPacerAutoScroll?.();
+    const subscription = autoScroller?.wasAutoScrollerEnabled$.subscribe((on) => {
+      if (on) pacer?.pause();
+    });
+    stopPacerAutoScroll = () => subscription?.unsubscribe();
+  }
+
   function noteLayoutSettling() {
     const now = Date.now();
     autoStartGate?.noteSettling(now);
@@ -1338,12 +1535,14 @@
     }
 
     const wasRunning = $statisticsEnabled$ && !$isTrackerPaused$;
+    const pacerAtStart = pacer;
 
     try {
       if (wasRunning) {
         pauseTracker();
       }
 
+      pacerAtStart?.setPaused('layout', true);
       noteLayoutSettling();
       clearSearchMark?.();
       await bookReaderRef.relayout();
@@ -1354,6 +1553,8 @@
       if (wasRunning) {
         restartTrackerAfterCharacterChangeOrTime(500);
       }
+
+      pacerAtStart?.setPaused('layout', false);
     }
   }
 
@@ -1377,6 +1578,7 @@
       pauseTracker();
     }
 
+    pacer?.setPaused('layout', true);
     noteLayoutSettling();
     clearSearchMark?.();
     // Whispersync holds the page element and its writing mode: it starts again with the new
@@ -1400,6 +1602,7 @@
           awaitingBookHtml = false;
           remountTarget = undefined;
           logger.warn(`Appearance: ${(error as Error)?.message ?? error}`);
+          pacer?.setPaused('layout', false);
 
           if (remountTrackerWasRunning) {
             restartTrackerAfterCharacterChangeOrTime(1);
@@ -1442,6 +1645,8 @@
     if (remountTrackerWasRunning) {
       restartTrackerAfterCharacterChangeOrTime(1000);
     }
+
+    pacer?.setPaused('layout', false);
 
     // Changed again while reopening: reopen once more for the latest settings.
     if (JSON.stringify(currentLayout()) !== JSON.stringify(readerLayout)) {
@@ -2092,7 +2297,8 @@
               verticalMode: $verticalMode$,
               tapEdgeToFlip: $enableTapEdgeToFlip$,
               mouseDragPageTurn: $mouseDragPageTurn$,
-              statisticsEnabled: $statisticsEnabled$
+              statisticsEnabled: $statisticsEnabled$,
+              pacerOn: $pacerMode$ !== 'off' && pacerSupported
             }),
             resolver
           }
@@ -2545,6 +2751,13 @@
       return;
     }
 
+    // Season 2 pacer: "," slower, "." faster (typed characters, like `[` and `]`).
+    if ((ev.key === ',' || ev.key === '.') && $pacerMode$ !== 'off' && !isTypingTarget(ev.target)) {
+      ev.preventDefault();
+      pacerSpeed$.next(stepSpeed($pacerSpeed$, ev.key === '.' ? 1 : -1));
+      return;
+    }
+
     // WP11a: H highlights the selection, L opens the notes, 1-5 / Esc while the bar is open.
     if (onHighlightKey(ev)) {
       ev.preventDefault();
@@ -2565,7 +2778,8 @@
       toggleTrackerManually,
       freezeTrackerPosition,
       toggleZen,
-      () => void enrichAnkiCard()
+      () => void enrichAnkiCard(),
+      () => void togglePacer()
     );
 
     if (!result) return;
@@ -3338,6 +3552,7 @@
       on:returnMarkerClick={returnToMarker}
       on:addBookmarkClick={addBookmarkHere}
       on:ankiEnrichClick={() => void enrichAnkiCard()}
+      on:pacerClick={openPacerPanel}
       on:shortcutsClick={openShortcuts}
     />
   </div>
@@ -3436,6 +3651,19 @@
 
 {#if showAppearance}
   <AppearancePanel on:close={closeAppearance} />
+{/if}
+
+{#if showPacerPanel}
+  <PacerPanel
+    supported={pacerSupported}
+    running={pacerState.running}
+    pausedFor={pacerState.pausedFor}
+    ended={pacerState.ended}
+    failed={pacerState.failed}
+    loadSpeed={pacerSpeedEstimate}
+    on:toggle={() => void togglePacer()}
+    on:close={() => (showPacerPanel = false)}
+  />
 {/if}
 
 {#if readerHighlights}
@@ -3636,6 +3864,23 @@
         on:keyup={dummyFn}
       >
         <Fa icon={faNoteSticky} />
+      </div>
+    {/if}
+    {#if $pacerMode$ !== 'off' && pacerSupported}
+      <!-- Season 2 pacer: shown only while a pacer mode is picked (off by default). -->
+      <div
+        tabindex="0"
+        role="button"
+        title="Pacer: start or pause (S)"
+        aria-label={pacerState.running ? 'Pause the pacer' : 'Start the pacer'}
+        class="flex h-full min-w-[3rem] items-center justify-center gap-1 text-sm sm:text-lg"
+        data-testid="footer-pacer"
+        data-running={pacerState.running ? '1' : '0'}
+        on:click|stopPropagation={() => void togglePacer()}
+        on:keyup={dummyFn}
+      >
+        <Fa icon={faGaugeHigh} />
+        <Fa icon={pacerState.running ? faPause : faPlay} size="xs" />
       </div>
     {/if}
     {#if $showReturnMarker$ && returnMarkerPos !== undefined && !returnMarkerOnScreen && bookCharCount}

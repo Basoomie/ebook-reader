@@ -16,6 +16,7 @@ import {
   faFileArrowUp,
   faFileZipper,
   faFolderPlus,
+  faGaugeHigh,
   faHashtag,
   faHouse,
   faImages,
@@ -76,6 +77,13 @@ export const mergeEntries = {
     label: 'Zen mode',
     icon: faEyeSlash,
     title: 'Hide or show the bottom bar (Z, or a two-finger tap)'
+  },
+  // Season 2 pacer
+  PACER: {
+    routeId: '',
+    label: 'Pacer',
+    icon: faGaugeHigh,
+    title: 'Pacer: paragraph mode, text reveal, disappearing text (S)'
   },
   SHORTCUTS: {
     routeId: '',

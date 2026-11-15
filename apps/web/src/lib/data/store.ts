@@ -268,6 +268,40 @@ export const bottomBarTimeLeft$ = writableStringLocalStorageSubject<
   'off' | 'chapter' | 'book' | 'both'
 >()('bottomBarTimeLeft', 'off');
 
+/**
+ * Season 2 pacer (per device, decided with the user 2026-11-15). Mode off by default: the
+ * reader is unchanged until a mode is picked. Speed in characters per hour, like the stats.
+ */
+export const pacerMode$ = writableStringLocalStorageSubject<
+  'off' | 'paragraph' | 'reveal' | 'disappear' | 'reveal-disappear'
+>()('pacerMode', 'off');
+
+export const pacerSpeed$ = writableNumberLocalStorageSubject()('pacerSpeed', 18000);
+
+/** Turn the page (scroll, in continuous mode) at the end of the screen, else wait. */
+export const pacerTurnPages$ = writableBooleanLocalStorageSubject()('pacerTurnPages', true);
+
+/** Disappearing text: characters kept visible behind the reading point. */
+export const pacerKeepBehind$ = writableNumberLocalStorageSubject()('pacerKeepBehind', 40);
+
+/** E-ink mode moves in steps: a sentence or a line at a time. */
+export const pacerEinkStep$ = writableStringLocalStorageSubject<'sentence' | 'line'>()(
+  'pacerEinkStep',
+  'sentence'
+);
+
+/** Seconds after a dictionary popup closes before the pacer goes on (0 = stays paused). */
+export const pacerLookupResume$ = writableNumberLocalStorageSubject()('pacerLookupResume', 1);
+
+/** Minutes without touch, key or mouse before the pacer pauses itself (0 = never). */
+export const pacerIdleMinutes$ = writableNumberLocalStorageSubject()('pacerIdleMinutes', 0);
+
+/** Seconds on a page without text (a full-page illustration) before the pacer turns it. */
+export const pacerTextlessPageSeconds$ = writableNumberLocalStorageSubject()(
+  'pacerTextlessPageSeconds',
+  3
+);
+
 export const statisticsEnabled$ = writableBooleanLocalStorageSubject()('statisticsEnabled', true);
 
 export const trackerAutoPause$ = writableStringLocalStorageSubject<TrackerAutoPause>()(
@@ -380,7 +414,10 @@ export const bookReaderKeybindMap$ = writableSubject<BookReaderKeybindMap>({
   z: BookReaderAvailableKeybind.TOGGLE_ZEN,
   // WP14: plain E (whispersync's Anki keys are Ctrl+E and Alt+E; the reader ignores modifiers).
   KeyE: BookReaderAvailableKeybind.ANKI_ENRICH,
-  e: BookReaderAvailableKeybind.ANKI_ENRICH
+  e: BookReaderAvailableKeybind.ANKI_ENRICH,
+  // Season 2 pacer: start / pause.
+  KeyS: BookReaderAvailableKeybind.PACER_TOGGLE,
+  s: BookReaderAvailableKeybind.PACER_TOGGLE
 });
 
 export const readerImageGalleryKeybindMap$ = writableSubject<ReaderImageGalleryKeybindMap>({

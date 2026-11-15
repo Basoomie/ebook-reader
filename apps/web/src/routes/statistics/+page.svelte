@@ -10,6 +10,20 @@
   import { HeatmapType } from '$lib/components/statistics/statistics-heatmap/statistics-heatmap';
   import StatisticsHeatmap from '$lib/components/statistics/statistics-heatmap/statistics-heatmap.svelte';
   import StatsGoals from '$lib/components/stats/stats-goals.svelte';
+  import StatsPeriodChart from '$lib/components/stats/stats-period-chart.svelte';
+  import {
+    changeLine,
+    chartMeasureFromParam,
+    comparedWith,
+    formatSummaryValue,
+    periodChart,
+    periodComparison,
+    showsWhole,
+    wholeLabel,
+    type ChartMeasure,
+    type PeriodComparison,
+    type SummaryKey
+  } from '$lib/stats/period-compare';
   import type { StatGoal } from '$lib/stats/goals';
   import { downloadBlob } from '$lib/functions/download-blob';
   import { buildStatsImageModel, statsImageFileName } from '$lib/stats/stats-image-model';
@@ -54,7 +68,9 @@
     tmwLog,
     unknownBookTitle,
     type StatsBookInfo,
-    type StatsFilter
+    type StatsFilter,
+    type StatsSummary,
+    type StatsView
   } from '$lib/stats/stats-view';
   import type { ReadThrough } from '$lib/sync/book-state';
   import { statsApi } from '$lib/sync/sync-service';
@@ -113,6 +129,14 @@
     book: params.get('book') || null
   } as StatsFilter;
   $: view = buildStatsView({ entries, readThroughs, books, filter, period });
+  // Phase 11: a week, month or year beside the one before it (same rules as the totals).
+  $: measure = chartMeasureFromParam(params.get('measure'));
+  $: comparison = periodComparison(period, todayKey, weekStart);
+  $: changes = changeLines(comparison, entries, readThroughs, books, filter);
+  $: chart =
+    comparison && comparison.state !== 'future'
+      ? periodChart(view, comparison, measure, todayKey)
+      : null;
   $: shownDayRows = view.days.slice(0, shownDays);
   $: deviceChoices = devicesIn(entries, namesWithThisDevice(deviceNames, thisDeviceId));
   $: bookChoices = bookChoiceList(entries, readThroughs, books);
@@ -194,14 +218,54 @@
       .sort((a, b) => a.title.localeCompare(b.title, 'ja'));
   }
 
-  function navigate(next: { period?: StatsPeriod; filter?: StatsFilter }) {
+  const SUMMARY_KEYS: SummaryKey[] = [
+    'seconds',
+    'chars',
+    'speed',
+    'booksCompleted',
+    'lookups',
+    'daysRead'
+  ];
+
+  /**
+   * Each tile's change vs the previous period's same days (or whole period when over),
+   * and the previous period's whole total while the period is running.
+   */
+  function changeLines(
+    c: PeriodComparison | null,
+    list: StatEntry[],
+    rts: Map<string, ReadThrough[]>,
+    info: Map<string, StatsBookInfo>,
+    f: StatsFilter
+  ): Partial<Record<SummaryKey, { change: string | null; whole: string | null }>> {
+    if (!c || c.state === 'future') return {};
+    const summaryOf = (p: StatsPeriod): StatsSummary =>
+      buildStatsView({ entries: list, readThroughs: rts, books: info, filter: f, period: p })
+        .summary;
+    const current = summaryOf(c.current);
+    const same = summaryOf(c.previousSame);
+    const whole: StatsView['summary'] | null = showsWhole(c) ? summaryOf(c.previous) : null;
+    const against = comparedWith(c);
+    const out: Partial<Record<SummaryKey, { change: string | null; whole: string | null }>> = {};
+    for (const key of SUMMARY_KEYS) {
+      out[key] = {
+        change: changeLine(key, current, same, against),
+        whole: whole ? `${wholeLabel(c)}: ${formatSummaryValue(key, whole[key])}` : null
+      };
+    }
+    return out;
+  }
+
+  function navigate(next: { period?: StatsPeriod; filter?: StatsFilter; measure?: ChartMeasure }) {
     const p = next.period ?? period;
     const f = next.filter ?? filter;
+    const m = next.measure ?? measure;
     const query = new URLSearchParams();
     query.set('period', periodToParam(p));
     if (f.device) query.set('device', f.device);
     if (f.library) query.set('lib', f.library);
     if (f.book) query.set('book', f.book);
+    if (m !== 'chars') query.set('measure', m);
     shownDays = DAYS_PER_PAGE;
     editing = null;
     tmwText = '';
@@ -531,24 +595,58 @@
         <dd class="font-mincho text-2xl font-bold" data-testid="stats-total-time">
           {formatDuration(view.summary.seconds)}
         </dd>
+        {#if changes.seconds?.change}
+          <dd class="pt-1 text-xs" data-testid="stats-change-time">{changes.seconds.change}</dd>
+        {/if}
+        {#if changes.seconds?.whole}
+          <dd class="text-xs text-c-muted" data-testid="stats-whole-time">
+            {changes.seconds.whole}
+          </dd>
+        {/if}
       </div>
       <div class="c-tile rounded p-4">
         <dt class="text-xs font-medium uppercase tracking-wider text-c-muted">Characters</dt>
         <dd class="font-mincho text-2xl font-bold" data-testid="stats-total-chars">
           {formatNumber(view.summary.chars)}
         </dd>
+        {#if changes.chars?.change}
+          <dd class="pt-1 text-xs" data-testid="stats-change-chars">{changes.chars.change}</dd>
+        {/if}
+        {#if changes.chars?.whole}
+          <dd class="text-xs text-c-muted" data-testid="stats-whole-chars">
+            {changes.chars.whole}
+          </dd>
+        {/if}
       </div>
       <div class="c-tile rounded p-4">
         <dt class="text-xs font-medium uppercase tracking-wider text-c-muted">Speed</dt>
         <dd class="font-mincho text-2xl font-bold" data-testid="stats-total-speed">
           {view.summary.speed ? `${formatNumber(view.summary.speed)} / h` : '–'}
         </dd>
+        {#if changes.speed?.change}
+          <dd class="pt-1 text-xs" data-testid="stats-change-speed">{changes.speed.change}</dd>
+        {/if}
+        {#if changes.speed?.whole}
+          <dd class="text-xs text-c-muted" data-testid="stats-whole-speed">
+            {changes.speed.whole}
+          </dd>
+        {/if}
       </div>
       <div class="c-tile rounded p-4">
         <dt class="text-xs font-medium uppercase tracking-wider text-c-muted">Books completed</dt>
         <dd class="font-mincho text-2xl font-bold" data-testid="stats-total-completed">
           {view.summary.booksCompleted}
         </dd>
+        {#if changes.booksCompleted?.change}
+          <dd class="pt-1 text-xs" data-testid="stats-change-completed">
+            {changes.booksCompleted.change}
+          </dd>
+        {/if}
+        {#if changes.booksCompleted?.whole}
+          <dd class="text-xs text-c-muted" data-testid="stats-whole-completed">
+            {changes.booksCompleted.whole}
+          </dd>
+        {/if}
       </div>
       <div class="c-tile rounded p-4">
         <dt class="text-xs font-medium uppercase tracking-wider text-c-muted">
@@ -557,12 +655,28 @@
         <dd class="font-mincho text-2xl font-bold" data-testid="stats-total-lookups">
           {formatNumber(view.summary.lookups)}
         </dd>
+        {#if changes.lookups?.change}
+          <dd class="pt-1 text-xs" data-testid="stats-change-lookups">{changes.lookups.change}</dd>
+        {/if}
+        {#if changes.lookups?.whole}
+          <dd class="text-xs text-c-muted" data-testid="stats-whole-lookups">
+            {changes.lookups.whole}
+          </dd>
+        {/if}
       </div>
       <div class="c-tile rounded p-4">
         <dt class="text-xs font-medium uppercase tracking-wider text-c-muted">Days read</dt>
         <dd class="font-mincho text-2xl font-bold" data-testid="stats-total-days">
           {view.summary.daysRead}
         </dd>
+        {#if changes.daysRead?.change}
+          <dd class="pt-1 text-xs" data-testid="stats-change-days">{changes.daysRead.change}</dd>
+        {/if}
+        {#if changes.daysRead?.whole}
+          <dd class="text-xs text-c-muted" data-testid="stats-whole-days">
+            {changes.daysRead.whole}
+          </dd>
+        {/if}
       </div>
     </dl>
     {#if view.summary.manualChars}
@@ -574,6 +688,21 @@
     {#if filter.device}
       <p class="pt-2 text-sm">
         Books completed counts every device: a completion isn't tied to one device.
+      </p>
+    {/if}
+
+    <!-- Phase 11: this week, month or year beside the one before it -->
+    {#if comparison && chart}
+      <StatsPeriodChart
+        {chart}
+        {comparison}
+        {measure}
+        today={todayKey}
+        on:measure={(ev) => navigate({ measure: ev.detail })}
+      />
+    {:else if comparison?.state === 'future'}
+      <p class="pt-4 text-sm" data-testid="stats-chart-future">
+        This {comparison.kind} hasn't started yet.
       </p>
     {/if}
 

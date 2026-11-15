@@ -19,6 +19,10 @@
   import SettingsFontSelector from '$lib/components/settings/settings-font-selector.svelte';
   import {
     bottomBarTimeLeft$,
+    pacerEinkStep$,
+    pacerIdleMinutes$,
+    pacerLookupResume$,
+    pacerTextlessPageSeconds$,
     speedGoalMinMinutes$,
     timeLeftMinMinutes$,
     timeLeftRecentMinutes$
@@ -69,6 +73,25 @@
   const fieldClasses = 'c-input mt-1 block w-full max-w-xs';
   // 48 px tall: the slider's touch area (the track itself stays thin).
   const rangeClasses = 'c-range mt-1 block h-12 w-full max-w-xs';
+
+  // Season 2 pacer
+  const optionsForPacerStep = [
+    { id: 'sentence', text: 'Sentence' },
+    { id: 'line', text: 'Line' }
+  ];
+
+  /**
+   * A whole number of at least 0 from a number field, else the default. The field shows the
+   * value kept (it isn't redrawn when the stored value stays the same).
+   */
+  function nonNegative(event: Event, fallback: number) {
+    const input = event.target as HTMLInputElement;
+    const value = Number(input.value);
+    const kept =
+      input.value !== '' && Number.isFinite(value) && value >= 0 ? Math.round(value) : fallback;
+    input.value = String(kept);
+    return kept;
+  }
 
   export let selectedTheme: string;
 
@@ -703,6 +726,61 @@
             jumpHistoryLimit = 50;
           }
         }}
+      />
+    </SettingsItemGroup>
+    <!-- Season 2 pacer: the rarely changed settings (mode and speed are in the reader). -->
+    <SettingsItemGroup
+      title="Pacer: E-ink Steps"
+      tooltip="This device only. In E-ink mode the pacer moves a sentence or a line at a time instead of smoothly. Mode and speed are set inside a book: open the menu at the top and tap Pacer."
+    >
+      <div data-testid="settings-pacer-eink-step">
+        <ButtonToggleGroup
+          archive
+          options={optionsForPacerStep}
+          bind:selectedOptionId={$pacerEinkStep$}
+        />
+      </div>
+    </SettingsItemGroup>
+    <SettingsItemGroup
+      title="Pacer: Wait After a Lookup (Seconds)"
+      tooltip="This device only. The pacer waits while a dictionary popup is open and goes on this many seconds after it closes. 0: it stays paused until you start it again."
+    >
+      <input
+        type="number"
+        step="1"
+        min="0"
+        class={fieldClasses}
+        data-testid="settings-pacer-lookup-resume"
+        value={$pacerLookupResume$}
+        on:change={(e) => pacerLookupResume$.next(nonNegative(e, 1))}
+      />
+    </SettingsItemGroup>
+    <SettingsItemGroup
+      title="Pacer: Pause After No Input (Minutes)"
+      tooltip="This device only. The pacer pauses itself after this many minutes without a touch, key or mouse. It can't tell reading from not reading, so it also pauses while you read hands-free. 0: never."
+    >
+      <input
+        type="number"
+        step="1"
+        min="0"
+        class={fieldClasses}
+        data-testid="settings-pacer-idle"
+        value={$pacerIdleMinutes$}
+        on:change={(e) => pacerIdleMinutes$.next(nonNegative(e, 0))}
+      />
+    </SettingsItemGroup>
+    <SettingsItemGroup
+      title="Pacer: Pages Without Text (Seconds)"
+      tooltip="This device only. On a page with only an illustration, the pacer turns the page after this many seconds (when it turns pages by itself)."
+    >
+      <input
+        type="number"
+        step="1"
+        min="0"
+        class={fieldClasses}
+        data-testid="settings-pacer-textless"
+        value={$pacerTextlessPageSeconds$}
+        on:change={(e) => pacerTextlessPageSeconds$.next(nonNegative(e, 3))}
       />
     </SettingsItemGroup>
     <SettingsItemGroup
