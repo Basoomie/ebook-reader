@@ -24,6 +24,7 @@
     ttsJobActive
   } from '$lib/audio/tts-text';
   import type { AudiobookJob, BookChapters, TtsModel, VoicePreset } from '$lib/audio/tts-types';
+  import { jobFixesText } from '$lib/audio/pronunciation/fix-text';
   import { confirmDestructive } from '$lib/confirm/confirm';
   import { replaceAudiobookWithMadeCopy, stopAudiobookJobCopy } from '$lib/confirm/confirm-copy';
   import { pagePath } from '$lib/data/env';
@@ -64,6 +65,7 @@
   $: model = usable.find((m) => m.id === modelId) ?? null;
   $: active = ttsJobActive(job);
   $: previewActive = ttsJobActive(preview);
+  $: fixesUsed = jobFixesText(job?.params?.fixes);
   $: barValue =
     job && active && job.progress !== null && !job.cancelRequested
       ? Math.floor(Math.max(0, Math.min(1, job.progress)) * 100)
@@ -292,7 +294,9 @@
       </p>
       {#if job.params}
         <p class="mt-1 text-sm text-c-muted" data-testid="audiobook-job-voice">
-          Voice “{job.params.narrator.name}”, {job.params.model.label}
+          Voice “{job.params.narrator.name}”, {job.params.model.label}{fixesUsed
+            ? ` · ${fixesUsed}`
+            : ''}
         </p>
       {/if}
       {#if barValue !== null}

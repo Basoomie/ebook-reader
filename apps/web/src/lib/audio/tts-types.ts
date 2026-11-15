@@ -7,6 +7,7 @@
 /** WP17: generated audiobooks, previews, voice presets and the model list (server shapes). */
 
 import type { SubtitleJobState } from './audio-types';
+import type { FixSummary } from './pronunciation/fix-types';
 
 export type TtsJobKind = 'generate_audiobook' | 'preview_audiobook' | 'voice_sample';
 export type TtsJobStage = 'preparing' | 'generating' | 'assembling' | 'saving';
@@ -32,6 +33,8 @@ export interface VoiceMapV1 {
   pauses: TtsPauses;
   chapterIndex?: number;
   chapterTitle?: string;
+  /** Season 2 Phase 12: the pronunciation fixes the job used (absent: none, or older). */
+  fixes?: FixSummary;
 }
 
 export interface AudiobookJob {

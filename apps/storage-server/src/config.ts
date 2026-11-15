@@ -82,6 +82,11 @@ export interface TtsConfig {
   scriptTimeoutSeconds: number;
   /** AAC bitrate of a generated audiobook, e.g. "96k" (mono speech). */
   aacBitrate: string;
+  /**
+   * Season 2 Phase 12: applying the pronunciation fixes to a book's text is stopped after
+   * this long (a regex pattern can run for ever), seconds.
+   */
+  fixTimeoutSeconds: number;
 }
 
 export const DEFAULT_TTS: TtsConfig = {
@@ -93,6 +98,7 @@ export const DEFAULT_TTS: TtsConfig = {
   voiceClipMaxSeconds: 120,
   scriptTimeoutSeconds: 300,
   aacBitrate: '96k',
+  fixTimeoutSeconds: 10,
 };
 
 /** WP16: the GPU worker's job queue (SubPlz subtitles). */
@@ -799,6 +805,13 @@ export function parseTtsConfig(env: Env, warnings: string[]): TtsConfig {
       false,
     ),
     aacBitrate: parseBitrate('TTS_AAC_BITRATE', env.TTS_AAC_BITRATE, t.aacBitrate, warnings),
+    fixTimeoutSeconds: num(
+      'PRONUNCIATION_REGEX_TIMEOUT_SECONDS',
+      t.fixTimeoutSeconds,
+      1,
+      3600,
+      false,
+    ),
   };
 }
 

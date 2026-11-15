@@ -11,6 +11,11 @@ import { COUNTER_BUNDLE } from '../counts/counter-bundle';
 export interface ScriptSentence {
   text: string;
   reading: string;
+  /**
+   * Script v2 (Season 2 Phase 12): where `reading` has the book's furigana instead of the
+   * text (UTF-16 offsets in `text`). Absent in scripts of jobs queued before.
+   */
+  ruby?: { start: number; end: number; rt: string }[];
   position: number;
   paragraphEnd: boolean;
 }

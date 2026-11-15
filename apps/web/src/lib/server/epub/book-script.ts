@@ -18,7 +18,9 @@
  *   call stays well under the TTS model's text limit.
  * - `text` is the sentence as shown (it becomes the subtitle line, so whispersync's match
  *   finds it in the book); `reading` is the same with every ruby base replaced by its
- *   furigana and gaiji left out (it is what the PC converts to kana and reads aloud).
+ *   furigana and gaiji left out (it is what the PC converts to kana and reads aloud);
+ *   `ruby` says where in `text` the furigana was used (pronunciation fixes skip those
+ *   places and rebuild `reading` from `text`, `ruby` and their own readings).
  * - `position` is the reader position (counted characters before the sentence).
  */
 
@@ -29,12 +31,25 @@ import {
 } from '$lib/components/book-reader/book-search';
 import type { Section } from '$lib/data/database/books-db/versions/v3/books-db-v3';
 
-export const BOOK_SCRIPT_VERSION = 1;
+/** 2: sentences carry their ruby runs (pronunciation fixes, Season 2 Phase 12). */
+export const BOOK_SCRIPT_VERSION = 2;
 export const DEFAULT_MAX_SENTENCE = 120;
+
+/**
+ * A run of `text` that `reading` replaces by the book's furigana: UTF-16 offsets
+ * [start, end) in `text`, and the furigana read there.
+ */
+export interface RubyRun {
+  start: number;
+  end: number;
+  rt: string;
+}
 
 export interface ScriptSentence {
   text: string;
   reading: string;
+  /** Where `reading` has the book's furigana instead of the text (in text order). */
+  ruby: RubyRun[];
   position: number;
   /** The last sentence of its paragraph (a longer pause follows). */
   paragraphEnd: boolean;
@@ -194,9 +209,14 @@ function elementSentences(
 
       let reading = '';
       let lastRuby: Element | null = null;
+      const runs: RubyRun[] = [];
+      let at = 0;
 
       for (let k = a; k < b; k++) {
         const ch = display[k];
+        const from = at;
+
+        at += ch.length;
 
         if (ch === GAIJI_MARK) {
           lastRuby = null;
@@ -207,7 +227,12 @@ function elementSentences(
         const rt = ruby ? rubyReading(ruby) : '';
 
         if (ruby && rt) {
-          if (ruby !== lastRuby) reading += rt;
+          if (ruby !== lastRuby) {
+            reading += rt;
+            runs.push({ start: from, end: at, rt });
+          } else {
+            runs[runs.length - 1].end = at;
+          }
           lastRuby = ruby;
         } else {
           reading += ch;
@@ -218,6 +243,7 @@ function elementSentences(
       sentences.push({
         text,
         reading,
+        ruby: runs,
         position: offset + countBefore[a],
         paragraphEnd: range.paragraphEnd
       });

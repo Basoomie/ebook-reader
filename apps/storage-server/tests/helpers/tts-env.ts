@@ -11,6 +11,8 @@ import type { BookScript } from '../../src/audio/book-script';
 import { TtsJobService } from '../../src/audio/tts-jobs';
 import { TtsModelService } from '../../src/audio/tts-models';
 import { DEFAULT_AUDIO_MERGE, DEFAULT_TTS } from '../../src/config';
+import { FixRunner } from '../../src/pronunciation/fix-runner';
+import { FixService } from '../../src/pronunciation/fix-service';
 import { VoiceService } from '../../src/voices/voice-service';
 import { VoiceStore } from '../../src/voices/voice-store';
 import { makeTempDir } from './spawn-server';
@@ -112,6 +114,7 @@ export const SCRIPT: BookScript = {
         {
           text: '善なるものは畢竟、遠い。',
           reading: '善なるものはひっきょう、遠い。',
+          ruby: [{ start: 6, end: 8, rt: 'ひっきょう' }],
           position: 0,
           paragraphEnd: false,
         },
@@ -135,7 +138,7 @@ export const SCRIPT: BookScript = {
 
 export async function ttsEnv(
   track: Track,
-  opts: { script?: BookScript; leaseSeconds?: number } = {},
+  opts: { script?: BookScript; leaseSeconds?: number; fixTimeoutSeconds?: number } = {},
 ) {
   const t = await jobEnv(track, { leaseSeconds: opts.leaseSeconds ?? 60 });
   let clock = Date.now();
@@ -153,6 +156,13 @@ export async function ttsEnv(
     ffprobePath: 'ffprobe',
   });
   await voices.start();
+  // Season 2 Phase 12: the pronunciation fixes (their worker thread starts when first used).
+  const fixes = new FixService(
+    t.e.db,
+    new FixRunner({ timeoutSeconds: opts.fixTimeoutSeconds ?? 30 }),
+    () => clock,
+  );
+  track.services.push({ stop: () => fixes.close() } as never);
   const scripts: string[] = [];
   const tts = new TtsJobService({
     db: t.e.db,
@@ -161,6 +171,7 @@ export async function ttsEnv(
     writer: (t.jobs as unknown as { writer: never }).writer,
     models,
     voices,
+    fixes,
     config: DEFAULT_TTS,
     tools: { ...DEFAULT_AUDIO_MERGE, minFreeMb: 0 },
     cacheDir,
@@ -179,6 +190,7 @@ export async function ttsEnv(
   t.audio.tts = tts;
   t.audio.models = models;
   t.audio.voices = voices;
+  t.audio.fixes = fixes;
   const app = t.app;
   const addVoice = async (name = 'Narrator') =>
     (
@@ -214,6 +226,7 @@ export async function ttsEnv(
     tts,
     models,
     voices,
+    fixes,
     scripts,
     cacheDir,
     addVoice,

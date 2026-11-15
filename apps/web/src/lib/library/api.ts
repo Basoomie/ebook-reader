@@ -38,6 +38,12 @@ import type {
   VoiceList,
   VoicePreset
 } from '$lib/audio/tts-types';
+import type {
+  FixInput,
+  FixList,
+  PronunciationCheck,
+  PronunciationFix
+} from '$lib/audio/pronunciation/fix-types';
 
 /** Client for the storage server's /api/v1 catalog (WP6). */
 
@@ -414,7 +420,7 @@ export class LibraryApi {
   }
 
   private async sendJson(
-    method: 'PUT' | 'DELETE',
+    method: 'PUT' | 'PATCH' | 'DELETE',
     path: string,
     body: unknown,
     options: RequestOptions = {}
@@ -1004,6 +1010,75 @@ export class LibraryApi {
   async setDefaultTtsModel(id: number, options?: RequestOptions): Promise<TtsModel[]> {
     const response = await this.sendJson('PUT', `/tts/models/${id}/default`, {}, options);
     return ((await response.json()) as { models: TtsModel[] }).models;
+  }
+
+  // ---- Season 2 Phase 12: pronunciation fixes for the PC voices
+
+  /** A book's list (bookId), or the global one (null). */
+  async pronunciationFixes(bookId: string | null, options?: RequestOptions): Promise<FixList> {
+    const qs = bookId ? `?bookId=${encodeURIComponent(bookId)}` : '';
+    try {
+      return await (await this.get(`/pronunciation-fixes${qs}`, options)).json();
+    } catch (error) {
+      if (error instanceof LibraryApiError && error.status === 404 && !bookId) {
+        // An older server without pronunciation fixes.
+        return {
+          available: false,
+          entries: [],
+          limits: {
+            wordMax: 0,
+            patternMax: 0,
+            readingMax: 0,
+            entriesPerList: 0,
+            timeoutSeconds: null
+          }
+        };
+      }
+      throw error;
+    }
+  }
+
+  /** Adds a fix; a pattern for a book's list is tried on the book first (can take a while). */
+  async addPronunciationFix(
+    bookId: string | null,
+    fix: FixInput,
+    options: RequestOptions = {}
+  ): Promise<PronunciationFix> {
+    const response = await this.post(
+      '/pronunciation-fixes',
+      { ...fix, ...(bookId ? { bookId } : {}) },
+      { timeoutSeconds: 120, ...options }
+    );
+    return ((await response.json()) as { entry: PronunciationFix }).entry;
+  }
+
+  async updatePronunciationFix(
+    id: number,
+    fix: FixInput,
+    options: RequestOptions = {}
+  ): Promise<PronunciationFix> {
+    const response = await this.sendJson('PATCH', `/pronunciation-fixes/${id}`, fix, {
+      timeoutSeconds: 120,
+      ...options
+    });
+    return ((await response.json()) as { entry: PronunciationFix }).entry;
+  }
+
+  async removePronunciationFix(id: number, options?: RequestOptions): Promise<void> {
+    await this.sendJson('DELETE', `/pronunciation-fixes/${id}`, undefined, options);
+  }
+
+  /** The text check: each fix's places in the book (the server reads the EPUB). */
+  async pronunciationCheck(
+    bookId: string,
+    options: RequestOptions = {}
+  ): Promise<PronunciationCheck> {
+    return (
+      await this.get(`/books/${encodeURIComponent(bookId)}/pronunciation-check`, {
+        timeoutSeconds: 120,
+        ...options
+      })
+    ).json();
   }
 
   /** Every link of this user, problems first. */
