@@ -22,6 +22,7 @@
   import { dialogManager } from '$lib/data/dialog-manager';
   import { pagePath } from '$lib/data/env';
   import { logger } from '$lib/data/logger';
+  import { audioBookIdsOnDevice } from '$lib/audio/offline/audio-offline';
   import { formatPageTitle } from '$lib/functions/format-page-title';
   import { continueReadingIds } from '$lib/home/continue-reading';
   import {
@@ -88,6 +89,8 @@
   let collectionItems = new Map<string, CollectionItem[]>();
   let collectionsLoaded = false;
   let onDevice = new Set<string>();
+  /** Season 2 Phase 9: books whose audio is downloaded here. */
+  let audioOnDevice = new Set<string>();
   let revealed = new Set<string>();
   /** Reading statistics for the hero's time left (null until read, or if they can't be). */
   let statEntries: StatEntry[] | null = null;
@@ -203,6 +206,11 @@
       onDevice = new Set(links.filter((l) => ids.has(l.localId)).map((l) => l.bookId));
     } catch (error) {
       logger.warn(`Home: could not read local links: ${(error as Error).message}`);
+    }
+    try {
+      audioOnDevice = new Set(await audioBookIdsOnDevice());
+    } catch (error) {
+      logger.warn(`Home: could not read the downloaded audio: ${(error as Error).message}`);
     }
   }
 
@@ -605,6 +613,7 @@
           {blurredOf}
           hero={row.type === 'continue'}
           {onDevice}
+          {audioOnDevice}
           {infoLine}
           on:open={(ev) => open(ev.detail)}
           on:reveal={(ev) => reveal(ev.detail)}

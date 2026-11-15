@@ -47,6 +47,7 @@
   } from '$lib/confirm/confirm-copy';
   import { pagePath } from '$lib/data/env';
   import { logger } from '$lib/data/logger';
+  import { audioBookIdsOnDevice } from '$lib/audio/offline/audio-offline';
   import { database, einkMode$ } from '$lib/data/store';
   import { formatPageTitle } from '$lib/functions/format-page-title';
   import { LibraryApi, LibraryApiError } from '$lib/library/api';
@@ -219,6 +220,8 @@
     listConsumed: number;
   }
   let onDevice = new Set<string>();
+  /** Season 2 Phase 9: books whose audio is downloaded here. */
+  let audioOnDevice = new Set<string>();
 
   let queryInput = '';
   let queryError = '';
@@ -922,6 +925,11 @@
     } catch (error) {
       logger.warn(`Library: could not read local links: ${(error as Error).message}`);
     }
+    try {
+      audioOnDevice = new Set(await audioBookIdsOnDevice());
+    } catch (error) {
+      logger.warn(`Library: could not read the downloaded audio: ${(error as Error).message}`);
+    }
   }
 
   async function readUrlAndLoad() {
@@ -1560,7 +1568,10 @@
     const scope = builtinCollection(collectionId ?? '')?.query ?? smartQuery();
     return [appliedQuery, scope].some((text) => {
       const parsedText = text ? parseQuery(text) : null;
-      return !!parsedText?.ok && parsedText.query.terms.some((t) => t.type === 'device');
+      return (
+        !!parsedText?.ok &&
+        parsedText.query.terms.some((t) => t.type === 'device' || t.type === 'deviceAudio')
+      );
     });
   }
 
@@ -2036,6 +2047,7 @@
               {infoLine}
               blurred={bookBlurred(book, states, tagRules, revealed)}
               onDevice={onDevice.has(book.id)}
+              audioOnDevice={audioOnDevice.has(book.id)}
               {selectMode}
               selected={selected.has(book.id)}
               {authorLink}
@@ -2057,6 +2069,7 @@
               {book}
               thumbnailUrl={book.thumbnail && api ? api.absolute(book.thumbnail) : ''}
               onDevice={onDevice.has(book.id)}
+              audioOnDevice={audioOnDevice.has(book.id)}
               state={states.get(book.id)}
               progress={bookProgressLabel(
                 book.id,

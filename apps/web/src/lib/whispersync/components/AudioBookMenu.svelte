@@ -15,7 +15,7 @@
     updateSubtitles,
     verifyPermissions
   } from '../lib/files';
-  import { getAudioMetadataFromUrl, getMediaInfoCover } from '../lib/mediaInfo';
+  import { getAudioMetadata, getAudioMetadataFromUrl, getMediaInfoCover } from '../lib/mediaInfo';
   import type { AudioChapter } from '../lib/general';
   import type { IDBPDatabase } from 'idb';
   import { type Context, Tabs, type Subtitle, getDummySubtitle } from '../lib/general';
@@ -568,11 +568,13 @@
       !$currentAudioSourceUrl$ && $extensionData$.lastAudio ? $extensionData$.lastAudio : undefined;
 
     // ttsu WP15c: the book's linked audiobook streams from the library server — no local
-    // file handle or user-gesture dialog needed for audio.
+    // file handle or user-gesture dialog needed for audio. Season 2 Phase 9: or plays the
+    // copy downloaded to this device (a blob: URL; its File only for cover and chapters).
     if (linkedAudio && !$currentAudioSourceUrl$) {
       try {
-        const nasUrl = await linkedAudio.playUrl();
-        if (nasUrl) {
+        const source = await linkedAudio.playSource();
+        const nasUrl = source?.url;
+        if (source && nasUrl) {
           const enableCover = get(playerEnableCover$);
           const enableChapters = get(playerEnableChapters$);
 
@@ -581,7 +583,9 @@
 
           if (enableCover || enableChapters) {
             try {
-              const metadata = await getAudioMetadataFromUrl(nasUrl, enableCover);
+              const metadata = source.file
+                ? await getAudioMetadata(source.file, enableCover)
+                : await getAudioMetadataFromUrl(nasUrl, enableCover);
 
               if (metadata?.media) {
                 const generalTrack = metadata.media.track.find(

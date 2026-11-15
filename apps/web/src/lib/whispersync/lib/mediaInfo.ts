@@ -3,9 +3,10 @@
 
 import { type MediaInfo, type MediaInfoType, type ReadChunkFunc } from 'mediainfo.js';
 import MediaInfoFactory from 'mediainfo.js';
-
-// CDN URL for the MediaInfo WASM — no Greasemonkey/extension bundle needed in native mount
-const MEDIAINFO_WASM_CDN = 'https://cdn.jsdelivr.net/npm/mediainfo.js@0.2.2/dist/MediaInfoModule.wasm';
+// ttsu Season 2 Phase 9: the package's own WASM, served with the app's build (and kept by
+// its service worker), instead of jsdelivr's copy of the same file: cover and chapters of
+// audio downloaded to the device then load offline too.
+import MEDIAINFO_WASM_URL from 'mediainfo.js/MediaInfoModule.wasm?url';
 
 const imageMagicNumbers: Map<string, string> = new Map([
 	['/9j/', 'image/jpg'],
@@ -44,7 +45,7 @@ export function setMediaInfoInstance(
 			{
 				coverData,
 				format: 'object',
-				locateFile: () => MEDIAINFO_WASM_CDN,
+				locateFile: () => MEDIAINFO_WASM_URL,
 			},
 			(mediainfo: MediaInfo<'object'>) => {
 				if (mediaInfoInstance) {

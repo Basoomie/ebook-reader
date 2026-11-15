@@ -7,6 +7,7 @@
 import { confirmDestructive } from '$lib/confirm/confirm';
 import { removeFromDeviceCopy } from '$lib/confirm/confirm-copy';
 import { database } from '$lib/data/store';
+import { formatBytes } from '$lib/diagnostics/diagnostics-text';
 import { localIdsOfBook } from '$lib/library/device-books';
 import { getLibraryStore } from '$lib/library/library-db';
 
@@ -44,8 +45,11 @@ export async function removeFromThisDevice(book: { id: string; title: string }):
   const localIds = localIdsOfBook(links, new Set(keys), book.id);
   if (!localIds.length) return false;
 
+  // Season 2 Phase 9: the book's downloaded audio goes with it (decided 2026-11-14).
+  const { removeAudio, storedAudio } = await import('$lib/audio/offline/audio-offline');
+  const audio = await storedAudio(book.id);
   const confirmed = await confirmDestructive({
-    ...removeFromDeviceCopy(book.title),
+    ...removeFromDeviceCopy(book.title, audio ? formatBytes(audio.size) : undefined),
     testid: 'remove-device-confirm',
     confirmTestid: 'remove-device-confirm-button'
   });
@@ -54,6 +58,7 @@ export async function removeFromThisDevice(book: { id: string; title: string }):
   for (const localId of localIds) {
     await database.removeBookFromDevice(localId);
   }
+  if (audio) await removeAudio(book.id);
   // Season 2 §2: the offline Library lists only books on this device (never rejects).
   try {
     const { removeOfflineCopy } = await import('$lib/library/offline/offline-source');

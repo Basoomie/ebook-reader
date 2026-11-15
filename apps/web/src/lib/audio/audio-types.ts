@@ -185,7 +185,13 @@ export interface AudioLink {
   /** WP15f: linked to one file that is there. */
   playable?: boolean;
   /** WP15f: the linked file; null for a folder link or a missing file. */
-  file?: { name: string; size: number; durationSeconds: number | null } | null;
+  file?: {
+    name: string;
+    size: number;
+    durationSeconds: number | null;
+    /** Season 2 Phase 9: the file's version on the server (absent from older servers). */
+    version?: string;
+  } | null;
   /** WP15c: the signed URL whispersync plays (links to one file that is there), else null. */
   playUrl?: string | null;
 }

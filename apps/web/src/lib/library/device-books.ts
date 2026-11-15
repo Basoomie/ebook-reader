@@ -38,5 +38,18 @@ export function sameBookIds(stored: unknown, ids: readonly string[]): boolean {
   return sorted.every((id, i) => id === ids[i]);
 }
 
+/**
+ * Season 2 Phase 9: the books of `bookIds` whose audio is fully downloaded here, for
+ * on:audio (the record's `audioBookIds`). Audio of a book that isn't stored doesn't count
+ * (the server drops it too). Pure.
+ */
+export function deviceAudioBookIds(
+  bookIds: readonly string[],
+  completeAudio: readonly string[]
+): string[] {
+  const stored = new Set(bookIds);
+  return [...new Set(completeAudio.filter((id) => stored.has(id)))].sort();
+}
+
 /** A record above this size would be refused by the server (64 KB per record). */
 export const MAX_DEVICE_BOOKS_BYTES = 60 * 1024;

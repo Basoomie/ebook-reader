@@ -12,6 +12,7 @@
 import type Database from 'better-sqlite3';
 import { getAudioFolderByRelPath, getSubtitleFileByRelPath } from './audio-index';
 import {
+  fileVersion,
   folderSummary,
   subtitleSummary,
   type FolderSummary,
@@ -51,6 +52,12 @@ export interface LinkedFileSummary {
   name: string;
   size: number;
   durationSeconds: number | null;
+  /**
+   * Season 2 Phase 9: the file's version as indexed (size and modified time; the play
+   * URL's `v` and the stream's ETag). A device keeps it with a downloaded copy, so a file
+   * replaced under the same name is told apart.
+   */
+  version: string;
 }
 
 export interface ResolvedAudioLink extends AudioLink {
@@ -187,7 +194,12 @@ export function resolveLink(db: Database.Database, link: AudioLink): ResolvedAud
     folder = row ? folderSummary(row) : null;
     const entry = row?.files.find((f) => f.name === link.fileName);
     if (entry) {
-      file = { name: entry.name, size: entry.size, durationSeconds: entry.durationSeconds };
+      file = {
+        name: entry.name,
+        size: entry.size,
+        durationSeconds: entry.durationSeconds,
+        version: fileVersion(entry.size, entry.mtimeMs),
+      };
     }
     if (!row || row.missingAt !== null) status = 'missing';
     else if (link.fileName !== null && !entry) status = 'changed';

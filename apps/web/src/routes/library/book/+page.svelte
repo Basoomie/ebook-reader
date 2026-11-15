@@ -606,7 +606,7 @@
     </div>
 
     {#if api}
-      <AudioLinkSection {api} bookId={book.id} bind:link={audioLink} />
+      <AudioLinkSection {api} bookId={book.id} bookOnDevice={onDeviceHere} bind:link={audioLink} />
     {/if}
 
     {#if series.length > 1 && book.series}

@@ -65,7 +65,9 @@ export type QueryTerm =
   | (TermBase & { type: 'status'; values: QueryStatus[] })
   | (TermBase & { type: 'favorite'; value: boolean })
   /** on:device: the books stored on the device that asks (WP15e). */
-  | (TermBase & { type: 'device' });
+  | (TermBase & { type: 'device' })
+  /** on:audio: the books whose audio the device that asks has downloaded (Season 2 Phase 9). */
+  | (TermBase & { type: 'deviceAudio' });
 
 export interface ParsedQuery {
   terms: QueryTerm[];
@@ -274,10 +276,17 @@ function parseField(s: Scanner, field: Field, negated: boolean, start: number): 
       return { type: 'chars', negated, start, end, ...parseChars(raw, start, end) };
     const words = parseWordList(raw);
     if (field === 'on') {
-      if (words.length !== 1 || words[0] !== 'device') {
-        throw new QueryError('Use on:device (the books on this device).', start, end);
+      if (words.length === 1 && words[0] === 'device') {
+        return { type: 'device', negated, start, end };
       }
-      return { type: 'device', negated, start, end };
+      if (words.length === 1 && words[0] === 'audio') {
+        return { type: 'deviceAudio', negated, start, end };
+      }
+      throw new QueryError(
+        'Use on:device (the books on this device) or on:audio (their audio is on this device).',
+        start,
+        end
+      );
     }
     if (field === 'status') {
       if (words.length === 0) {
@@ -419,12 +428,17 @@ export function parseQuery(text: string): ParseResult {
 }
 
 /**
- * True when the query filters by the user's own records (status:, favorite:, or on:device,
- * which reads this device's list of stored books): unsent changes are sent first.
+ * True when the query filters by the user's own records (status:, favorite:, or on:device
+ * and on:audio, which read this device's list of stored books): unsent changes are sent
+ * first.
  */
 export function usesBookState(query: ParsedQuery): boolean {
   return query.terms.some(
-    (t) => t.type === 'status' || t.type === 'favorite' || t.type === 'device'
+    (t) =>
+      t.type === 'status' ||
+      t.type === 'favorite' ||
+      t.type === 'device' ||
+      t.type === 'deviceAudio'
   );
 }
 

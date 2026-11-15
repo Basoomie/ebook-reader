@@ -79,9 +79,14 @@ function data(over: Partial<OfflineData> = {}): OfflineData {
   };
 }
 
-const ctx = (states = new Map<string, BookState>(), device = () => true) => ({
+const ctx = (
+  states = new Map<string, BookState>(),
+  device = () => true,
+  audio: (id: string) => boolean = () => false
+) => ({
   states,
-  onDevice: device
+  onDevice: device,
+  audioOnDevice: audio
 });
 
 function q(text: string) {
@@ -174,6 +179,39 @@ describe('offline search terms', () => {
         ctx(undefined, () => true)
       )
     ).toBe(false);
+  });
+
+  it('on:audio (Season 2 Phase 9)', () => {
+    const audioOf = (id: string) => id === 'a';
+    expect(
+      matchesQuery(
+        b,
+        q('on:audio'),
+        ctx(undefined, () => true, audioOf)
+      )
+    ).toBe(true);
+    expect(
+      matchesQuery(
+        b,
+        q('-on:audio'),
+        ctx(undefined, () => true, audioOf)
+      )
+    ).toBe(false);
+    const other = book('z', { title: 'other' });
+    expect(
+      matchesQuery(
+        other,
+        q('on:audio'),
+        ctx(undefined, () => true, audioOf)
+      )
+    ).toBe(false);
+    expect(
+      matchesQuery(
+        other,
+        q('on:device -on:audio'),
+        ctx(undefined, () => true, audioOf)
+      )
+    ).toBe(true);
   });
 });
 

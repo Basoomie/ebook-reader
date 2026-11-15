@@ -14,6 +14,14 @@
 import type { IDBPDatabase } from 'idb';
 import { logger } from '$lib/data/logger';
 import type { AudioLink } from '$lib/audio/audio-types';
+import { keepSubtitle, localSource, storedAudio } from '$lib/audio/offline/audio-offline';
+import type { AudioCopy } from '$lib/audio/offline/audio-offline-db';
+import {
+  chooseSource,
+  chooseSubtitle,
+  shouldKeepSubtitle,
+  type LinkAnswer
+} from '$lib/audio/offline/play-choice';
 import { LibraryApi } from '$lib/library/api';
 import { getLibraryStore } from '$lib/library/library-db';
 import { libraryRequestTimeoutSeconds$ } from '$lib/library/settings';
@@ -177,12 +185,37 @@ export function createReaderWhispersync(options: {
     return linkPromise;
   }
 
+  // Season 2 Phase 9: the link as an answer (ok, or couldn't be read), and the audio
+  // downloaded to this device. Offline the request isn't waited for.
+  async function linkAnswer(): Promise<{ answer: LinkAnswer; api: LibraryApi | null }> {
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      return { answer: { ok: false }, api: null };
+    }
+    try {
+      const found = await bookLink();
+      return { answer: { ok: true, link: found?.link ?? null }, api: found?.api ?? null };
+    } catch (error) {
+      warn(`linked audiobook: ${(error as Error)?.message ?? error}`);
+      return { answer: { ok: false }, api: null };
+    }
+  }
+  async function downloaded(): Promise<AudioCopy | null> {
+    const bookId = await bookIdPromise;
+    return bookId ? storedAudio(bookId) : null;
+  }
+
   const linkedAudio: LinkedAudio = {
-    async playUrl() {
+    async playSource() {
       try {
-        const found = await bookLink();
-        const url = found?.link?.playUrl;
-        return found && url ? found.api.absolute(url) : null;
+        const [{ answer, api }, copy] = await Promise.all([linkAnswer(), downloaded()]);
+        const choice = chooseSource(answer, copy);
+        if (choice === 'copy' && copy) {
+          const local = await localSource(copy);
+          if (local) return local;
+          warn('the audio on this device could not be read; streaming instead');
+        }
+        const url = answer.ok ? answer.link?.playUrl : null;
+        return api && url ? { url: api.absolute(url), file: null } : null;
       } catch (error) {
         warn(`linked audiobook: ${(error as Error)?.message ?? error}`);
         return null;
@@ -190,13 +223,22 @@ export function createReaderWhispersync(options: {
     },
     async subtitleFile() {
       try {
-        const found = await bookLink();
-        const link = found?.link;
-        // Only a confirmed subtitle file that is still there is fetched.
-        if (!found || !link || link.subtitleState !== 'linked' || link.subtitleStatus !== 'ok') {
-          return null;
+        const [{ answer, api }, copy] = await Promise.all([linkAnswer(), downloaded()]);
+        const choice = chooseSubtitle(answer, copy);
+        if (choice === 'copy' && copy?.subtitle) {
+          return new File([copy.subtitle.blob], copy.subtitle.name, {
+            type: copy.subtitle.blob.type || 'text/plain'
+          });
         }
-        return await found.api.linkedSubtitleFile(link.bookId);
+        // Only a confirmed subtitle file that is still there is fetched.
+        if (choice !== 'server' || !answer.ok || !answer.link || !api) return null;
+        const link = answer.link;
+        const file = await api.linkedSubtitleFile(link.bookId);
+        if (file && shouldKeepSubtitle(link, copy)) {
+          // The downloaded audio keeps the subtitles it plays with, for offline use.
+          await keepSubtitle(copy!, link.subtitleRelPath!, file);
+        }
+        return file;
       } catch (error) {
         warn(`linked subtitles: ${(error as Error)?.message ?? error}`);
         return null;

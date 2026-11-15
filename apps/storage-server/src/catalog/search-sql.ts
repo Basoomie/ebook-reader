@@ -161,6 +161,20 @@ function deviceSql(userId: string, deviceId: string | null): SqlCondition {
   };
 }
 
+/**
+ * on:audio (Season 2 Phase 9): the books whose audio the asking device has downloaded, the
+ * `audioBookIds` of its "device-books" record. Without a device, or a record without the
+ * list (a device on an older version), nothing matches.
+ */
+function deviceAudioSql(userId: string, deviceId: string | null): SqlCondition {
+  if (!deviceId) return { sql: '0', params: [] };
+  return {
+    sql: `b.id IN (SELECT j.value FROM sync_records r, json_each(r.data, '$.audioBookIds') j
+           WHERE r.user_id = ? AND r.kind = 'device-books' AND r.id = ? AND r.deleted_at IS NULL)`,
+    params: [userId, deviceId],
+  };
+}
+
 function charsSql(min: number | null, max: number | null): SqlCondition {
   const parts = ['b.char_count IS NOT NULL'];
   const params: unknown[] = [];
@@ -209,6 +223,9 @@ export function termSql(
       break;
     case 'device':
       cond = deviceSql(userId, deviceId);
+      break;
+    case 'deviceAudio':
+      cond = deviceAudioSql(userId, deviceId);
       break;
   }
   return term.negated ? { sql: `NOT IFNULL(${cond.sql}, 0)`, params: cond.params } : cond;

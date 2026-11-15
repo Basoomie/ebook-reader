@@ -37,6 +37,8 @@
   export let fractionOf: (book: CatalogBook) => number | null = () => null;
   export let blurredOf: (book: CatalogBook) => boolean;
   export let onDevice: Set<string>;
+  /** Season 2 Phase 9: books whose audio is downloaded here. */
+  export let audioOnDevice: Set<string> = new Set();
   export let infoLine = true;
   /** WP19b: show the first book large (Continue reading). */
   export let hero = false;
@@ -173,6 +175,7 @@
             progressFraction={fractionOf(book)}
             blurred={blurredOf(book)}
             onDevice={onDevice.has(book.id)}
+            audioOnDevice={audioOnDevice.has(book.id)}
             {infoLine}
             on:open={(ev) => dispatch('open', ev.detail)}
             on:reveal={(ev) => dispatch('reveal', ev.detail)}

@@ -19,6 +19,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { LibraryApi } from '$lib/library/api';
 import {
   DEVICE_BOOKS_KIND,
+  deviceAudioBookIds,
   deviceBookIds,
   localIdsOfBook,
   sameBookIds
@@ -111,6 +112,35 @@ describe('"On this device" between devices (real server)', () => {
     expect(cardsA.get('on-device')?.bookCount).toBe(1);
   });
 
+  it('answers on:audio per device from the downloaded audio list (Season 2 Phase 9)', async () => {
+    expect(await apiA.count({ q: 'on:audio' })).toBe(0);
+    await a.engine.put(DEVICE_BOOKS_KIND, a.engine.deviceId, {
+      bookIds: [books[0], books[1]],
+      // books[3] is not stored on A: dropped by the server.
+      audioBookIds: [books[1], books[3]]
+    });
+    await b.engine.put(DEVICE_BOOKS_KIND, b.engine.deviceId, {
+      bookIds: [books[2]],
+      audioBookIds: [books[2]]
+    });
+    await syncAll(a, b);
+    expect(await onDeviceIds(apiA, 'on:audio')).toEqual([books[1]]);
+    expect(await onDeviceIds(apiB, 'on:audio')).toEqual([books[2]]);
+    expect(await onDeviceIds(apiA, 'on:device -on:audio')).toEqual([books[0]]);
+    expect(await apiA.count({ q: '-on:audio' })).toBe(3);
+    // The server's copy of A's list, as B's mirror sees it.
+    const mirrored = await b.engine.get(DEVICE_BOOKS_KIND, a.engine.deviceId);
+    expect(mirrored?.data).toEqual({
+      bookIds: [books[0], books[1]].sort(),
+      audioBookIds: [books[1]]
+    });
+    // Back to the lists the other tests expect.
+    await a.engine.put(DEVICE_BOOKS_KIND, a.engine.deviceId, { bookIds: [books[1]] });
+    await b.engine.put(DEVICE_BOOKS_KIND, b.engine.deviceId, { bookIds: [books[2]] });
+    await syncAll(a, b);
+    expect(await apiA.count({ q: 'on:audio' })).toBe(0);
+  });
+
   it('wrote no stat-day or position records', async () => {
     for (const device of [a, b]) {
       expect(await device.engine.getAll('stat-day')).toEqual([]);
@@ -133,5 +163,9 @@ describe('device-books helpers', () => {
     expect(sameBookIds(['b', 'a'], ['a', 'b'])).toBe(true);
     expect(sameBookIds(['a'], ['a', 'b'])).toBe(false);
     expect(sameBookIds(undefined, [])).toBe(false);
+  });
+
+  it('lists only downloaded audio of stored books', () => {
+    expect(deviceAudioBookIds(['a', 'b'], ['b', 'z', 'b'])).toEqual(['b']);
   });
 });

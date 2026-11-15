@@ -4,7 +4,7 @@
   import { formatBookCharCount } from '$lib/library/char-counts';
   import { authorHref, bookDetailsHref } from '$lib/library/format';
   import { STATUS_LABELS, finishedReadThroughs, type BookState } from '$lib/sync/book-state';
-  import { faDownload, faStar } from '@fortawesome/free-solid-svg-icons';
+  import { faDownload, faHeadphones, faStar } from '@fortawesome/free-solid-svg-icons';
   import { createEventDispatcher } from 'svelte';
   import Fa from 'svelte-fa';
   import CoverImage from './cover-image.svelte';
@@ -14,6 +14,8 @@
   /** Absolute thumbnail URL, or '' for none. */
   export let thumbnailUrl: string;
   export let onDevice = false;
+  /** Season 2 Phase 9: its audio is downloaded on this device too. */
+  export let audioOnDevice = false;
   export let libraryName = '';
   /** WP8a: the book's state from the sync mirror (undefined = Unread, defaults). */
   export let state: BookState | undefined = undefined;
@@ -146,6 +148,16 @@
         <Fa icon={faDownload} />
         <span class="hidden sm:inline">On this device</span>
       </div>
+      {#if audioOnDevice}
+        <div
+          class="flex shrink-0 items-center gap-1.5 text-sm text-c-muted"
+          title="Its audio is on this device"
+          data-testid="audio-on-device-badge"
+        >
+          <Fa icon={faHeadphones} />
+          <span class="hidden sm:inline">Audio on this device</span>
+        </div>
+      {/if}
     {/if}
   </div>
   {#if !selectMode}

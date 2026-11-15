@@ -2,7 +2,7 @@
  * GENERATED FILE, DO NOT EDIT. The storage server library search parser, bundled from
  * the web app (apps/web/src/lib/library/query/server-entry.ts).
  * Rebuild with `pnpm build:server-query` in apps/web after changing that code.
- * build: 6753431f0ce3b680
+ * build: 30ebcf081efd380b
  */
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
@@ -208,10 +208,17 @@ function parseField(s, field, negated, start) {
       return { type: "chars", negated, start, end, ...parseChars(raw, start, end) };
     const words = parseWordList(raw);
     if (field === "on") {
-      if (words.length !== 1 || words[0] !== "device") {
-        throw new QueryError("Use on:device (the books on this device).", start, end);
+      if (words.length === 1 && words[0] === "device") {
+        return { type: "device", negated, start, end };
       }
-      return { type: "device", negated, start, end };
+      if (words.length === 1 && words[0] === "audio") {
+        return { type: "deviceAudio", negated, start, end };
+      }
+      throw new QueryError(
+        "Use on:device (the books on this device) or on:audio (their audio is on this device).",
+        start,
+        end
+      );
     }
     if (field === "status") {
       if (words.length === 0) {
@@ -349,7 +356,7 @@ function parseQuery(text) {
 }
 function usesBookState(query) {
   return query.terms.some(
-    (t) => t.type === "status" || t.type === "favorite" || t.type === "device"
+    (t) => t.type === "status" || t.type === "favorite" || t.type === "device" || t.type === "deviceAudio"
   );
 }
 function usesRegex(query) {

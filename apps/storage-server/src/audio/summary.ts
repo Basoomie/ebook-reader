@@ -4,6 +4,15 @@
  */
 import type { AudioFolder, SubtitleFile } from './audio-index';
 
+/**
+ * A file's version: changes when it is replaced, so an old URL stops working. The signed
+ * stream URL carries it (`v=`), the stream sends it as the ETag, and the resolved audio
+ * link shows it (Season 2 Phase 9: a device compares its downloaded copy with it).
+ */
+export function fileVersion(size: number, mtimeMs: number): string {
+  return `${size.toString(36)}-${mtimeMs.toString(36)}`;
+}
+
 export interface FolderSummary {
   id: number;
   libraryId: string;

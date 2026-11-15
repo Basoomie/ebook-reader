@@ -34,6 +34,7 @@ import type { VoiceService } from '../voices/voice-service';
 import { DEFAULT_AUDIO } from '../config';
 import type { AudioScanService } from './scan-service';
 import {
+  fileVersion,
   folderSummary,
   subtitleSummary,
   type FolderSummary,
@@ -63,10 +64,7 @@ const CONTENT_TYPES: Record<string, string> = {
   '.mp3': 'audio/mpeg',
 };
 
-/** A file's version: changes when it is replaced, so an old URL stops working. */
-export function fileVersion(size: number, mtimeMs: number): string {
-  return `${size.toString(36)}-${mtimeMs.toString(36)}`;
-}
+export { fileVersion };
 
 function streamMessage(userId: string, folderId: number, index: number, version: string): string {
   return `audio:${userId}:${folderId}:${index}:${version}`;

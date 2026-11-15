@@ -22,15 +22,47 @@ function quoted(name: string): string {
 
 // ---- This device (WP15e; replaces the old Book Manager's delete) ----------------------
 
-/** "Remove from this device" (a book's ⋮ menu and its details page). */
-export function removeFromDeviceCopy(title: string): ConfirmCopy {
+/**
+ * "Remove from this device" (a book's ⋮ menu and its details page). `audioSize`: the
+ * book's downloaded audio, removed with it (Season 2 Phase 9), as "1.2 GB".
+ */
+export function removeFromDeviceCopy(title: string, audioSize?: string): ConfirmCopy {
   return {
     title: `Remove ${quoted(title)} from this device?`,
     message: [
       "The book's copy on this device is removed, together with its bookmark and the audiobook place and subtitles stored here.",
+      ...(audioSize
+        ? [
+            `Its audio downloaded to this device (${audioSize}) is removed too; the audiobook stays linked and streams from the library server.`
+          ]
+        : []),
       'Reading places, statistics, highlights and notes saved with the library server stay, and so does the book in your library: open it again to download it.'
     ],
     confirmLabel: 'Remove from this device'
+  };
+}
+
+/** Season 2 Phase 9: the book page's "Remove audio from this device". */
+export function removeAudioCopy(size: string): ConfirmCopy {
+  return {
+    title: 'Remove the audio from this device?',
+    message: [
+      `The audio downloaded to this device (${size}) is removed. The audiobook stays linked: whispersync streams it from the library server again.`,
+      'Your listening place and match stay. You can download the audio again.'
+    ],
+    confirmLabel: 'Remove audio'
+  };
+}
+
+/** Season 2 Phase 9: "Download the current audio" over a copy of an earlier link. */
+export function replaceAudioCopy(oldFile: string, size: string): ConfirmCopy {
+  return {
+    title: 'Replace the audio on this device?',
+    message: [
+      `The audio on this device (${quoted(oldFile)}, ${size}) is removed, and the audiobook linked now is downloaded instead.`,
+      'Your listening place and match stay.'
+    ],
+    confirmLabel: 'Replace audio'
   };
 }
 

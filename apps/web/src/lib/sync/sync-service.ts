@@ -34,8 +34,10 @@ import {
 } from '$lib/stats/aggregate';
 import type { BooksDbStatistic } from '$lib/data/database/books-db/versions/books-db';
 import { LibraryApi, LibraryApiError } from '$lib/library/api';
+import { getAudioOfflineStore } from '$lib/audio/offline/audio-offline-db';
 import {
   DEVICE_BOOKS_KIND,
+  deviceAudioBookIds,
   deviceBookIds,
   MAX_DEVICE_BOOKS_BYTES,
   sameBookIds
@@ -288,25 +290,49 @@ export function startSync(): void {
  * device), so the server can answer "On this device" for it. Called when the app starts,
  * after a book is opened from the library and after "Remove from this device". Writes
  * only when the list changed. Never rejects; failures are logged.
+ *
+ * Season 2 Phase 9: also the books whose audio is downloaded here (`audioBookIds`, for
+ * on:audio), after a download finishes and after audio is removed. When the downloaded
+ * audio can't be read, the list published before is kept.
  */
 export async function publishDeviceBooks(): Promise<void> {
   if (!browser) return;
   try {
     const engine = await getSyncEngine();
-    const [links, keys] = await Promise.all([
+    const [links, keys, audio] = await Promise.all([
       getLibraryStore().getAllLinks(),
-      database.db.then((db) => db.getAllKeys('data'))
+      database.db.then((db) => db.getAllKeys('data')),
+      getAudioOfflineStore()
+        .getAll()
+        .then((copies) => copies.filter((c) => c.complete).map((c) => c.bookId))
+        .catch((error) => {
+          warn(`Sync: could not read the downloaded audio: ${(error as Error)?.message ?? error}`);
+          return null;
+        })
     ]);
     const bookIds = deviceBookIds(links, new Set(keys));
     const current = await engine.get(DEVICE_BOOKS_KIND, engine.deviceId);
-    if (current && current.deletedAt === null && sameBookIds(current.data.bookIds, bookIds)) return;
-    if (JSON.stringify({ bookIds }).length > MAX_DEVICE_BOOKS_BYTES) {
+    const live = current && current.deletedAt === null ? current : null;
+    const before = Array.isArray(live?.data.audioBookIds)
+      ? (live!.data.audioBookIds as string[])
+      : [];
+    const audioBookIds = deviceAudioBookIds(bookIds, audio ?? before);
+    // A record of the WP15e shape (no audio list yet) is written once with the list.
+    if (
+      live &&
+      sameBookIds(live.data.bookIds, bookIds) &&
+      sameBookIds(live.data.audioBookIds, audioBookIds)
+    ) {
+      return;
+    }
+    const data = { bookIds, audioBookIds };
+    if (JSON.stringify(data).length > MAX_DEVICE_BOOKS_BYTES) {
       warn(
         `Sync: ${bookIds.length} books on this device are too many to list for "On this device"`
       );
       return;
     }
-    await engine.put(DEVICE_BOOKS_KIND, engine.deviceId, { bookIds }, { bookId: null });
+    await engine.put(DEVICE_BOOKS_KIND, engine.deviceId, data, { bookId: null });
   } catch (error) {
     warn(`Sync: could not list this device's books: ${(error as Error)?.message ?? error}`);
   }

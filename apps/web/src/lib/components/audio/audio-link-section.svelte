@@ -22,6 +22,9 @@
    * WP16: "Make subtitles on the PC" (subtitle-job-panel.svelte) under the linked audiobook.
    *
    * `link` is bindable so the page's Download menu follows every change made here.
+   *
+   * Season 2 Phase 9: the book's audio on this device (audio-device-panel.svelte):
+   * download, remove, and what is stored, also while the server can't be reached.
    */
   import { faMagnifyingGlass } from '@fortawesome/free-solid-svg-icons';
   import Fa from 'svelte-fa';
@@ -30,6 +33,8 @@
   import AudioFilesStep from '$lib/components/audio/audio-files-step.svelte';
   import SubtitleJobPanel from '$lib/components/audio/subtitle-job-panel.svelte';
   import AudiobookJobPanel from '$lib/components/audio/audiobook-job-panel.svelte';
+  import AudioDevicePanel from '$lib/components/audio/audio-device-panel.svelte';
+  import { storedAudio } from '$lib/audio/offline/audio-offline';
   import {
     CHANGED_NOTICE,
     MISSING_NOTICE,
@@ -72,6 +77,10 @@
 
   export let api: LibraryApi;
   export let bookId: string;
+  /** Season 2 Phase 9: the book's own copy is on this device (audio downloads need it). */
+  export let bookOnDevice = false;
+  /** Season 2 Phase 9: audio of this book is stored on this device (shows the section). */
+  let hasAudioCopy = false;
 
   /** Suggestions shown before "Show more". */
   const FIRST_SUGGESTIONS = 5;
@@ -116,7 +125,7 @@
 
   $: view = linkView(link);
   $: subView = subtitleView(link);
-  $: visible = loaded && (audioEnabled || link !== null || loadError !== '');
+  $: visible = loaded && (audioEnabled || link !== null || loadError !== '' || hasAudioCopy);
   $: showAudioPicker = !filesFolder && (view === 'choose' || changingAudio);
   $: showSubtitlePicker =
     !filesFolder && !showAudioPicker && (subView === 'choose' || changingSubtitles);
@@ -171,6 +180,7 @@
     filesFolder = null;
     mergeJob = null;
     clearTimeout(mergeTimer);
+    hasAudioCopy = !!(await storedAudio(id));
     try {
       const [status, current, merge] = await Promise.all([
         api.audioStatus(),
@@ -551,6 +561,13 @@
         {loadError}
         <button class="c-link ml-2 min-h-[2.75rem]" on:click={() => load(bookId)}>Try again</button>
       </p>
+      <AudioDevicePanel
+        {bookId}
+        link={null}
+        linkKnown={false}
+        {bookOnDevice}
+        bind:hasCopy={hasAudioCopy}
+      />
     {:else}
       {#if message}
         <p class="c-notice mt-4" role="alert" data-testid="audio-message">{message}</p>
@@ -724,6 +741,11 @@
             </p>
           {/if}
         </div>
+      {/if}
+
+      <!-- Season 2 Phase 9: the audio on this device -->
+      {#if !changingAudio && !filesFolder}
+        <AudioDevicePanel {bookId} {link} linkKnown {bookOnDevice} bind:hasCopy={hasAudioCopy} />
       {/if}
 
       <!-- WP16: subtitles made on the PC (SubPlz) -->

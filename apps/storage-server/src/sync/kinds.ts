@@ -1140,6 +1140,11 @@ export const DEVICE_BOOKS_KIND = 'device-books';
  * deletable. data { bookIds }: the library book ids whose copy that device stores, so the
  * built-in "On this device" (on:device) can be answered for the device that asks. Ids
  * are not checked against the catalog: a book that left Calibre simply matches nothing.
+ *
+ * Season 2 Phase 9: optional `audioBookIds`, the books of `bookIds` whose linked audio
+ * that device has downloaded (on:audio). Ids not in `bookIds` are dropped (a device
+ * downloads audio only for a book it stores). Left out when absent, so a device on an
+ * older version keeps writing the WP15e shape.
  */
 const deviceBooksKind: KindSpec = {
   policy: () => 'owner',
@@ -1149,14 +1154,20 @@ const deviceBooksKind: KindSpec = {
     if (!UUID_RE.test(id)) throw new RecordError('invalid_id', 'ids are the device id');
     if (!deviceExists(ctx, id)) throw new RecordError('unknown_device', `No device ${id}`);
     if (deleted) return { bookId: null, data: {} };
-    const { bookIds } = requireObject(data);
-    if (
-      !Array.isArray(bookIds) ||
-      !bookIds.every((b) => typeof b === 'string' && UUID_RE.test(b))
-    ) {
+    const { bookIds, audioBookIds } = requireObject(data);
+    const isIdList = (list: unknown): list is string[] =>
+      Array.isArray(list) && list.every((b) => typeof b === 'string' && UUID_RE.test(b));
+    if (!isIdList(bookIds)) {
       throw new RecordError('invalid_data', 'bookIds must be a list of book ids');
     }
-    return { bookId: null, data: { bookIds: [...new Set(bookIds as string[])].sort() } };
+    const books = [...new Set(bookIds)].sort();
+    if (audioBookIds === undefined) return { bookId: null, data: { bookIds: books } };
+    if (!isIdList(audioBookIds)) {
+      throw new RecordError('invalid_data', 'audioBookIds must be a list of book ids');
+    }
+    const stored = new Set(books);
+    const audio = [...new Set(audioBookIds)].filter((b) => stored.has(b)).sort();
+    return { bookId: null, data: { bookIds: books, audioBookIds: audio } };
   },
 };
 

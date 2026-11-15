@@ -55,6 +55,11 @@ export interface OfflineData {
   positions: readonly LocalRecord[];
   collections: readonly Collection[];
   items: ReadonlyMap<string, CollectionItem[]>;
+  /**
+   * Season 2 Phase 9: the books whose audio is downloaded here (on:audio; only books on
+   * this device count, as on the server).
+   */
+  audioOnDevice?: ReadonlySet<string>;
 }
 
 const DEFAULT_PAGE_SIZE = 50;
@@ -177,7 +182,12 @@ export class OfflineCatalog {
 
   private context(data: OfflineData): MatchContext {
     const ids = new Set(data.books.map((b) => b.id));
-    return { states: data.states, onDevice: (id) => ids.has(id) };
+    const audio = data.audioOnDevice ?? new Set<string>();
+    return {
+      states: data.states,
+      onDevice: (id) => ids.has(id),
+      audioOnDevice: (id) => ids.has(id) && audio.has(id)
+    };
   }
 
   private visible(

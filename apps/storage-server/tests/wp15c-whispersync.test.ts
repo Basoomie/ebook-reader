@@ -295,4 +295,37 @@ describe('the linked audiobook for whispersync', () => {
     const gone = await request(t.e.app).get(`/api/v1/books/${id}/subtitle-file`).set(t.auth);
     expect([gone.status, gone.body.error.code]).toEqual([410, 'missing']);
   });
+
+  it("shows the linked file version, the play URL's v and the stream's ETag (Season 2 Phase 9)", async () => {
+    const t = await setup();
+    const id = t.bookId(SPY2);
+    const folder = listAudioFolders(t.e.db, t.libId).find((f) =>
+      f.name.startsWith('Vol 2 - スパイ'),
+    )!;
+    const url = `/api/v1/books/${id}/audio-link`;
+    await request(t.e.app)
+      .put(url)
+      .set(t.auth)
+      .send({ audio: { state: 'linked', folderId: folder.id } });
+    const link = (await request(t.e.app).get(url).set(t.auth)).body.link;
+    const v = new URL(link.playUrl, 'http://x').searchParams.get('v');
+    expect(link.file.version).toBe(v);
+    expect(link.file.version).toMatch(/^[0-9a-z]+-[0-9a-z]+$/);
+    const range = await request(t.e.app).get(link.playUrl).set('Range', 'bytes=0-9');
+    expect([range.status, range.headers.etag]).toEqual([206, `"${v}"`]);
+    expect(range.headers['content-range']).toBe(`bytes 0-9/${link.file.size}`);
+
+    // The file replaced under the same name: still "ok", but a new version, and the old
+    // URL answers 409 changed (what a device's stopped download meets on Continue).
+    const file = path.join(t.root, ...folder.relPath.split('/'), folder.files[0].name);
+    fs.appendFileSync(file, Buffer.alloc(16));
+    fs.utimesSync(file, new Date(), new Date(Date.now() + 5000));
+    await t.service.scanLibrary(t.service.libraries()[0]);
+    const after = (await request(t.e.app).get(url).set(t.auth)).body.link;
+    expect(after.status).toBe('ok');
+    expect(after.file.version).not.toBe(link.file.version);
+    expect(after.file.size).toBe(link.file.size + 16);
+    const stale = await request(t.e.app).get(link.playUrl).set('Range', 'bytes=0-9');
+    expect([stale.status, stale.body.error?.code]).toEqual([409, 'changed']);
+  });
 });

@@ -30,6 +30,8 @@ export function foldForSearch(text: string): string {
 export interface MatchContext {
   states: ReadonlyMap<string, BookState>;
   onDevice(bookId: string): boolean;
+  /** Season 2 Phase 9: on:audio, the book's audio is downloaded on this device. */
+  audioOnDevice(bookId: string): boolean;
 }
 
 const regexCache = new Map<string, RegExp>();
@@ -95,6 +97,8 @@ function termMatches(book: CatalogBook, term: QueryTerm, ctx: MatchContext): boo
       return (ctx.states.get(book.id)?.favorite ?? false) === term.value;
     case 'device':
       return ctx.onDevice(book.id);
+    case 'deviceAudio':
+      return ctx.audioOnDevice(book.id);
   }
 }
 

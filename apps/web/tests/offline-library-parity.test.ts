@@ -76,6 +76,11 @@ const QUERIES = [
   'favorite:no',
   'on:device',
   '-on:device',
+  // Season 2 Phase 9: the books whose audio is downloaded on the device.
+  'on:audio',
+  '-on:audio',
+  'on:audio status:reading',
+  '-on:audio favorite:yes',
   '/^ＧＪ/',
   '/gj/i',
   '/ＧＪ/',
@@ -150,6 +155,7 @@ describe('offline Library answers like the server (real server)', () => {
   let api: LibraryApi;
   let offline: OfflineCatalog;
   let bookIds: string[] = [];
+  let audioIds = new Set<string>();
   const listId = randomUUID();
   const smartId = randomUUID();
 
@@ -193,9 +199,14 @@ describe('offline Library answers like the server (real server)', () => {
       );
       await new Promise((r) => setTimeout(r, 5));
     }
+    // Audio downloaded for four books (one of them in the switched-off library or missing
+    // would be hidden on both sides alike).
+    const audio = [b[2], b[5], b[9], b[21]];
     await device.engine.put(DEVICE_BOOKS_KIND, device.engine.deviceId, {
-      bookIds: [...b].sort()
+      bookIds: [...b].sort(),
+      audioBookIds: [...audio].sort()
     });
+    audioIds = new Set(audio);
     await device.engine.put(COLLECTION_KIND, listId, { name: 'List', type: 'manual' });
     await device.engine.put(COLLECTION_KIND, smartId, {
       name: 'Smart',
@@ -236,7 +247,8 @@ describe('offline Library answers like the server (real server)', () => {
       states: await getAllBookStates(deps(device)),
       positions: await device.engine.getAll('position'),
       collections: collectionsFrom(await device.engine.getAll(COLLECTION_KIND)),
-      items: itemsByCollection(await device.engine.getAll(COLLECTION_ITEM_KIND))
+      items: itemsByCollection(await device.engine.getAll(COLLECTION_ITEM_KIND)),
+      audioOnDevice: audioIds
     }));
   }, 180_000);
 
@@ -288,6 +300,7 @@ describe('offline Library answers like the server (real server)', () => {
       { scope: 'status:reading' },
       { scope: 'favorite:yes', q: 'Zed' },
       { scope: 'on:device', sort: { key: 'author', dir: 'desc' } },
+      { scope: 'on:audio', sort: { key: 'title', dir: 'asc' } },
       { collection: listId, sort: { key: 'title', dir: 'asc' } },
       { collection: listId, q: 'tag:ミステリー', sort: { key: 'added', dir: 'desc' } }
     ];

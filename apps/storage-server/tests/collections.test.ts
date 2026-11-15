@@ -388,6 +388,98 @@ describe('collection cards (GET /api/v1/collections/cards)', () => {
     expect(await count(c.auth, 'on:device')).toBe(0);
   });
 
+  it("answers on:audio from the asking device's downloaded audio (Season 2 Phase 9)", async () => {
+    const c = await catalogEnv(BOOKS);
+    const list = async (auth: object, q: string) => {
+      const res = await request(c.e.app).get('/api/v1/books').query({ q, limit: 50 }).set(auth);
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      return (res.body.books as { id: string }[]).map((b) => b.id).sort();
+    };
+    const count = async (auth: object, q: string) =>
+      (await request(c.e.app).get('/api/v1/books/count').query({ q }).set(auth)).body.count;
+    const stored = () =>
+      JSON.parse(
+        (
+          c.e.db
+            .prepare("SELECT data FROM sync_records WHERE kind = 'device-books' AND id = ?")
+            .get(c.deviceId) as { data: string }
+        ).data,
+      );
+    const mine = [c.id('巻 1'), c.id('単発'), c.id('別 1')];
+
+    // The WP15e shape (a device on an older version): kept as it is, on:audio matches nothing.
+    await c.pushOk([{ kind: 'device-books', id: c.deviceId, data: { bookIds: mine } }]);
+    expect(stored()).toEqual({ bookIds: [...mine].sort() });
+    expect(await count(c.auth, 'on:audio')).toBe(0);
+    expect(await count(c.auth, '-on:audio')).toBe(BOOKS.length);
+
+    // Sorted, without repeats; an id that isn't one of the stored books is dropped.
+    const stranger = randomUUID();
+    await c.pushOk([
+      {
+        kind: 'device-books',
+        id: c.deviceId,
+        data: { bookIds: mine, audioBookIds: [mine[2], stranger, mine[0], mine[0]] },
+      },
+    ]);
+    const audio = [mine[0], mine[2]].sort();
+    expect(stored()).toEqual({ bookIds: [...mine].sort(), audioBookIds: audio });
+    expect(await list(c.auth, 'on:audio')).toEqual(audio);
+    expect(await count(c.auth, 'on:audio')).toBe(2);
+    expect(await count(c.auth, '-on:audio')).toBe(BOOKS.length - 2);
+    expect(await list(c.auth, 'on:device -on:audio')).toEqual([mine[1]]);
+    expect(await count(c.auth, 'on:audio status:reading')).toBe(0);
+    const groups = await request(c.e.app)
+      .get('/api/v1/groups')
+      .query({ by: 'author', q: 'on:audio' })
+      .set(c.auth);
+    expect(groups.status).toBe(200);
+
+    // Another device: its own answer.
+    const otherId = randomUUID();
+    const other = await register(c.e.app, c.e.token(), otherId);
+    expect(await count(other, 'on:audio')).toBe(0);
+    const refused = await request(c.e.app)
+      .post('/api/v1/sync')
+      .set(other)
+      .send({
+        changes: [
+          {
+            kind: 'device-books',
+            id: otherId,
+            updatedAt: BASE + 9e6,
+            data: { bookIds: [], audioBookIds: ['x'] },
+          },
+          {
+            kind: 'device-books',
+            id: otherId,
+            updatedAt: BASE + 9e6,
+            data: { bookIds: [], audioBookIds: 'all' },
+          },
+        ],
+      });
+    expect(refused.body.results.map((r: { error?: { code: string } }) => r.error?.code)).toEqual([
+      'invalid_data',
+      'invalid_data',
+    ]);
+    expect(await count(c.auth, 'on:audio')).toBe(2);
+
+    // The audio removed again.
+    await c.pushOk([
+      { kind: 'device-books', id: c.deviceId, data: { bookIds: mine, audioBookIds: [] } },
+    ]);
+    expect(await count(c.auth, 'on:audio')).toBe(0);
+    expect(await count(c.auth, 'on:device')).toBe(3);
+
+    // A misspelt word names both.
+    const bad = await request(c.e.app)
+      .get('/api/v1/books')
+      .query({ q: 'on:audiobook' })
+      .set(c.auth);
+    expect(bad.status).toBe(400);
+    expect(JSON.stringify(bad.body)).toContain('on:audio');
+  });
+
   it('counts built-ins, saved searches and lists across the library', async () => {
     const c = await catalogEnv(BOOKS);
     await c.status('巻 1', 'reading');

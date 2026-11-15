@@ -18,7 +18,7 @@
     seriesNumber
   } from '$lib/library/format';
   import { STATUS_LABELS, type BookState } from '$lib/sync/book-state';
-  import { faCheck, faDownload, faStar } from '@fortawesome/free-solid-svg-icons';
+  import { faCheck, faDownload, faHeadphones, faStar } from '@fortawesome/free-solid-svg-icons';
   import { createEventDispatcher } from 'svelte';
   import Fa from 'svelte-fa';
   import CoverImage from './cover-image.svelte';
@@ -34,6 +34,8 @@
   export let infoLine = true;
   export let blurred = false;
   export let onDevice = false;
+  /** Season 2 Phase 9: its audio is downloaded on this device too. */
+  export let audioOnDevice = false;
   export let selectMode = false;
   export let selected = false;
 
@@ -113,12 +115,17 @@
       {#if onDevice}
         <!-- A download mark, not a tick: a tick read as "finished". -->
         <span
-          class="c-badge absolute bottom-2 right-2 text-[0.7rem]"
-          title="Saved on this device"
+          class="c-badge absolute bottom-2 right-2 flex items-center gap-1.5 text-[0.7rem]"
+          title={audioOnDevice ? 'Saved on this device, with its audio' : 'Saved on this device'}
           data-testid="on-device-badge"
         >
           <Fa icon={faDownload} />
-          <span class="sr-only">Saved on this device</span>
+          {#if audioOnDevice}
+            <span data-testid="audio-on-device-badge"><Fa icon={faHeadphones} /></span>
+          {/if}
+          <span class="sr-only"
+            >{audioOnDevice ? 'Saved on this device, with its audio' : 'Saved on this device'}</span
+          >
         </span>
       {/if}
     </div>

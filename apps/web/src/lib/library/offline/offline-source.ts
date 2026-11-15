@@ -6,6 +6,7 @@
 
 import { browser } from '$app/environment';
 import { localStores } from '$lib/audio/whispersync-reader';
+import { audioBookIdsOnDevice } from '$lib/audio/offline/audio-offline';
 import {
   isMatched,
   liveMatchFile,
@@ -278,13 +279,14 @@ export function bookFromLink(link: CalibreLink, thumbnail: string | null): Catal
 }
 
 export async function loadOfflineData(): Promise<OfflineData> {
-  const [{ links, ids }, copies, saved, states, positions, view] = await Promise.all([
+  const [{ links, ids }, copies, saved, states, positions, view, audio] = await Promise.all([
     deviceLinks(),
     getOfflineStore().getAll(),
     getOfflineStore().getLibraries(),
     bookStateApi().getAll(),
     libraryViewApi().positions(),
-    collectionsApi().view()
+    collectionsApi().view(),
+    audioBookIdsOnDevice().catch(() => [] as string[])
   ]);
   const byId = new Map(copies.map((c) => [c.bookId, c]));
   const books: CatalogBookDetail[] = [];
@@ -303,7 +305,8 @@ export async function loadOfflineData(): Promise<OfflineData> {
     states,
     positions,
     collections: view.collections,
-    items: view.items
+    items: view.items,
+    audioOnDevice: new Set(audio)
   };
 }
 
