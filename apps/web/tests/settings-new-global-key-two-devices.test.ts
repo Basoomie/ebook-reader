@@ -168,6 +168,37 @@ describe('a global setting added by an update reaches every device (real server)
     expect(phone.values.ankiTagPrefix).toBe('novel::');
   });
 
+  it('Phase 8: automatic enrichment switched on at one device reaches a device on the older version', async () => {
+    // The phone ran a version without the setting: no value, nothing published, and the
+    // desktop's record possibly pulled into its mirror without being applied.
+    await phone.forgetAsOlderVersion('ankiAutoEnrich', { mirror: false });
+    desktop.values.ankiAutoEnrich = '1';
+    await desktop.cycle();
+    await phone.cycle(); // pulled, not applied: the older version doesn't know the key
+    await phone.forgetAsOlderVersion('ankiAutoEnrich', { mirror: true });
+
+    await phone.cycle(); // the first sync after the update
+    expect(phone.values.ankiAutoEnrich).toBe('1');
+    expect((await phone.ownGlobalRecords()).map((r) => r.id)).not.toContain(
+      'global:ankiAutoEnrich'
+    );
+
+    await desktop.cycle();
+    const record = await desktop.engine.get('setting', 'global:ankiAutoEnrich');
+    expect(record?.deviceId).toBe(desktop.engine.deviceId);
+    expect(record?.data.value).toBe('1');
+
+    // Switched off on the phone: off on the desktop too.
+    phone.values.ankiAutoEnrich = '0';
+    await phone.cycle();
+    await desktop.cycle();
+    expect(desktop.values.ankiAutoEnrich).toBe('0');
+    phone.values.ankiAutoEnrich = '1';
+    await phone.cycle();
+    await desktop.cycle();
+    expect(desktop.values.ankiAutoEnrich).toBe('1');
+  });
+
   it('a newly paired device gets the shared values and publishes none of its own', async () => {
     const tablet = new SettingsDevice(new Device('tablet', tokens[2], server));
     await tablet.open();
@@ -175,6 +206,7 @@ describe('a global setting added by an update reaches every device (real server)
     await tablet.cycle();
     expect(tablet.values.ankiFieldMapping).toBe(phone.values.ankiFieldMapping);
     expect(tablet.values.ankiTagPrefix).toBe('novel::');
+    expect(tablet.values.ankiAutoEnrich).toBe('1');
     expect(tablet.values.startDayHoursForTracker).toBe('4');
     expect(await tablet.ownGlobalRecords()).toEqual([]);
     tablet.engine.close();

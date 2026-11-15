@@ -60,3 +60,9 @@ export const ankiAudioMatchThreshold$ = writableNumberLocalStorageSubject()(
 
 /** Longest sentence audio (seconds); a longer one is left out. */
 export const ankiAudioMaxSeconds$ = writableNumberLocalStorageSubject()('ankiAudioMaxSeconds', 30);
+
+/**
+ * Phase 8: a card made with Yomitan while reading is enriched by itself (auto-enrich.ts).
+ * Off by default; switched on once, it reaches every device.
+ */
+export const ankiAutoEnrich$ = writableBooleanLocalStorageSubject()('ankiAutoEnrich', false);

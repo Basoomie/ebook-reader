@@ -9,13 +9,15 @@ import { LibraryApi, LibraryApiError } from '$lib/library/api';
 import { getLibraryStore } from '$lib/library/library-db';
 import { libraryRequestTimeoutSeconds$ } from '$lib/library/settings';
 import { bookIdForLocalBook } from '$lib/sync/sync-service';
-import { AnkiConnect } from './anki-connect';
+import { AnkiConnect, type NoteInfo } from './anki-connect';
 import { coverFileName, coverJpegBase64 } from './cover';
 import {
   describeResult,
   EnrichError,
   enrichLastCard,
+  enrichNote,
   WaitError,
+  type EnrichInput,
   type EnrichResult,
   type MediaFile,
   type Unavailable,
@@ -53,6 +55,8 @@ export interface ReaderEnrichContext {
   coverImage: Blob | string | undefined;
   /** The sentence: the last lookup, else the current selection, else null. */
   sentence: LookupSentence | null;
+  /** Why there is no sentence (default: the button's "look up a word or select …"). */
+  noSentenceReason?: string;
   /** Where the reader is (for the link when there is no sentence). */
   readingPosition: number;
   bookCharacters: number;
@@ -63,6 +67,8 @@ export interface ReaderEnrichOutcome {
   message: string;
   /** The note type has no fields set up. */
   unmapped?: boolean;
+  /** The note that was changed (or found to need nothing). */
+  noteId?: number;
 }
 
 /** "Sentence audio will be added …" */
@@ -263,7 +269,14 @@ function runWaitingClips(): void {
     .catch(() => undefined);
 }
 
-export async function enrichFromReader(ctx: ReaderEnrichContext): Promise<ReaderEnrichOutcome> {
+/**
+ * Enrich from the reader: the newest card (the button), or `target`, a card just made with
+ * Yomitan (automatic enrichment, Phase 8).
+ */
+export async function enrichFromReader(
+  ctx: ReaderEnrichContext,
+  target?: NoteInfo
+): Promise<ReaderEnrichOutcome> {
   try {
     const bookId = await bookIdForLocalBook(ctx.localId, ctx.localTitle).catch(() => null);
     const api = await libraryApi().catch(() => null);
@@ -281,11 +294,11 @@ export async function enrichFromReader(ctx: ReaderEnrichContext): Promise<Reader
       timeoutSeconds: Number(ankiConnectTimeoutSeconds$.getValue()) || 10
     });
 
-    const result = await enrichLastCard(anki, {
+    const input: EnrichInput = {
       title,
       tagPrefix: ankiTagPrefix$.getValue(),
       sentence,
-      noSentenceReason: 'look up a word or select a sentence first',
+      noSentenceReason: ctx.noSentenceReason ?? 'look up a word or select a sentence first',
       link: bookId
         ? readerLinkPath(bookId, sentence?.position ?? ctx.readingPosition)
         : { skip: 'the book is not in the library' },
@@ -303,7 +316,10 @@ export async function enrichFromReader(ctx: ReaderEnrichContext): Promise<Reader
       days: Math.max(1, Math.round(Number(ankiLookBackDays$.getValue()) || 1)),
       mapping,
       titleTag
-    });
+    };
+    const result = target
+      ? await enrichNote(anki, target, input)
+      : await enrichLastCard(anki, input);
 
     const audioTarget = mapping[result.noteType]?.sentenceAudio;
 
@@ -323,7 +339,12 @@ export async function enrichFromReader(ctx: ReaderEnrichContext): Promise<Reader
 
     runWaitingClips();
 
-    return { ok: true, message: describeResult(result), unmapped: result.unmapped };
+    return {
+      ok: true,
+      message: describeResult(result),
+      unmapped: result.unmapped,
+      noteId: result.noteId
+    };
   } catch (error) {
     const message =
       error instanceof EnrichError

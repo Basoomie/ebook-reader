@@ -14,6 +14,7 @@ import {
   describeResult,
   EnrichError,
   enrichLastCard,
+  enrichNote,
   heldMediaName,
   holdsMedia,
   WaitError,
@@ -953,6 +954,80 @@ describe('enrich last card', () => {
 });
 
 // ---------------------------------------------------------------- Enrich while offline
+
+describe('enrich a given note (automatic enrichment, Phase 8)', () => {
+  it('enriches exactly that note, not the newest, without asking for the newest', async () => {
+    const made = note(100, {
+      Key: '猫',
+      Sentence: '',
+      SentenceAudio: '',
+      Picture: '',
+      ReaderLink: ''
+    });
+    const newer = note(200, {
+      Key: '犬',
+      Sentence: '',
+      SentenceAudio: '',
+      Picture: '',
+      ReaderLink: ''
+    });
+    const { anki, calls } = fakeAnki({ notes: [made, newer] });
+    const result = await enrichNote(anki, made, input());
+
+    expect(calls.some((c) => c.action === 'findNotes')).toBe(false);
+    expect(result).toMatchObject({ noteId: 100, word: '猫' });
+    expect(made.fields.Sentence.value).toBe('<b>猫</b>が好きだ。');
+    expect(made.fields.SentenceAudio.value).toBe('[sound:ttsu-b1-2000-6000.mp3]');
+    expect(made.tags).toEqual(['猫の本']);
+    expect(newer.fields.Sentence.value).toBe('');
+    expect(newer.tags).toEqual([]);
+  });
+
+  it('the same calls and values as Enrich on the newest note', async () => {
+    const fields = { Key: '猫', Sentence: '', SentenceAudio: '', Picture: '', ReaderLink: '' };
+    const a = note(7, { ...fields });
+    const b = note(7, { ...fields });
+    const last = fakeAnki({ notes: [a] });
+    const given = fakeAnki({ notes: [b] });
+    await enrichLastCard(last.anki, input());
+    await enrichNote(given.anki, b, input());
+    const withoutFind = last.calls.filter(
+      (c) => c.action !== 'findNotes' && !(c.action === 'notesInfo')
+    );
+    expect(given.calls).toEqual(withoutFind);
+    expect(b.fields).toEqual(a.fields);
+    expect(b.tags).toEqual(a.tags);
+  });
+
+  it('AnkiConnect Android on a fresh client: media named as stored, no addTags (found by the e2e)', async () => {
+    const made = note(100, {
+      Key: '猫',
+      Sentence: '',
+      SentenceAudio: '',
+      Picture: '',
+      ReaderLink: ''
+    });
+    const { anki, calls } = fakeAnki({ notes: [made], android: true });
+    const result = await enrichNote(anki, made, input());
+
+    expect(calls[0].action).toBe('requestPermission');
+    expect(calls.some((c) => c.action === 'addTags')).toBe(false);
+    expect(result.android).toBe(true);
+    expect(made.fields.SentenceAudio.value).toMatch(/^\[sound:ttsu-b1-2000-6000_\d+\.mp3\]$/);
+    expect(describeResult(result)).toContain(`No tag: ${ANDROID_NO_TAG}.`);
+  });
+
+  it('recent note ids and several notes in one request', async () => {
+    const one = note(10, { Key: 'a' });
+    const two = note(20, { Key: 'b' });
+    const { anki, calls } = fakeAnki({ notes: [one, two] });
+    expect(await anki.recentNoteIds(2)).toEqual([10, 20]);
+    expect(calls.find((c) => c.action === 'findNotes')!.params).toEqual({ query: 'added:2' });
+    expect((await anki.notesInfo([20, 10, 99])).map((n) => n.noteId)).toEqual([10, 20]);
+    expect(calls.filter((c) => c.action === 'notesInfo')).toHaveLength(1);
+    expect(await anki.notesInfo([])).toEqual([]);
+  });
+});
 
 describe('enrich with sentence audio that waits (Season 2 §3)', () => {
   const WAIT = 'when the library server can be reached';

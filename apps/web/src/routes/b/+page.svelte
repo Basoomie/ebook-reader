@@ -230,9 +230,14 @@
   } from '$lib/audio/whispersync-reader';
   import { leavingForgetsLastBook } from '$lib/home/open-target';
   import { formatTimeLeft, secondsLeft, speedEstimate } from '$lib/stats/time-left';
-  import { ankiBottomBarButton$, ankiNoticeSeconds$ } from '$lib/anki/settings';
+  import { ankiAutoEnrich$, ankiBottomBarButton$, ankiNoticeSeconds$ } from '$lib/anki/settings';
   import type { LookupCapture, LookupSentence } from '$lib/anki/lookup-capture';
+  import type { AutoEnricher, NewCard } from '$lib/anki/auto-enrich';
+  import type { ReaderEnrichOutcome } from '$lib/anki/reader-enrich';
   import { chooseSentence } from '$lib/anki/sentence-choice';
+
+  /** Phase 8: why a card made from a lookup has no sentence. */
+  const NO_LOOKUP_SENTENCE = "the looked-up word wasn't found in the book's text";
 
   let showSpinner = true;
   let showHeader = false;
@@ -254,10 +259,34 @@
   let ankiNoticeSetup = false;
   let ankiBusy = false;
   let ankiNoticeTimer: ReturnType<typeof setTimeout> | undefined;
+  // Phase 8: a card made with Yomitan is enriched by itself (lib/anki/auto-enrich.ts; loaded
+  // only once the setting is on). The button and automatic runs take turns (one queue).
+  let autoEnricher: AutoEnricher | undefined;
+  let ankiQueue: Promise<unknown> = Promise.resolve();
+  let ankiTapQueued = false;
 
   function closeAnkiNotice() {
     clearTimeout(ankiNoticeTimer);
     ankiNotice = '';
+  }
+
+  /** Runs `task` after any Enrich in progress (by the button or by itself). */
+  function ankiExclusive(task: () => Promise<void>): Promise<void> {
+    const run = ankiQueue.then(task, task);
+    ankiQueue = run.catch(() => undefined);
+    return run;
+  }
+
+  function showAnkiOutcome(outcomes: ReaderEnrichOutcome[]) {
+    ankiNotice = outcomes.map((o) => o.message).join(' ');
+    ankiNoticeSetup = outcomes.some((o) => o.unmapped);
+
+    // The card was updated: the message closes by itself (problems stay until closed).
+    const seconds = Number($ankiNoticeSeconds$) || 0;
+
+    if (outcomes.every((o) => o.ok && !o.unmapped) && seconds > 0) {
+      ankiNoticeTimer = setTimeout(closeAnkiNotice, seconds * 1000);
+    }
   }
 
   // WP15c: whispersync's audio comes from the book's linked audiobook, and its position,
@@ -791,18 +820,49 @@
           (message) => logger.warn(message)
         );
         lookupCapture.start();
+        startAutoEnrich();
       })
       .catch((error) => logger.warn(`Anki: lookups not recorded: ${error?.message ?? error}`));
     // bookId$ repeats on every page-store update; only another book forgets the lookup.
     let lookupBook: number | undefined;
     const bookChange = bookId$.subscribe((id) => {
-      if (lookupBook !== undefined && id !== lookupBook) lookupCapture?.reset();
+      if (lookupBook !== undefined && id !== lookupBook) {
+        lookupCapture?.reset();
+        autoEnricher?.reset();
+      }
       lookupBook = id;
     });
+    // Loaded once the setting is on (also when it arrives from another device meanwhile).
+    let autoLoading = false;
+    const startAutoEnrich = () => {
+      if (stopped || autoLoading || autoEnricher || !lookupCapture || !ankiAutoEnrich$.getValue()) {
+        return;
+      }
+
+      autoLoading = true;
+      const capture = lookupCapture;
+      import('$lib/anki/reader-auto-enrich')
+        .then(({ createReaderAutoEnricher }) => {
+          if (stopped) return;
+          autoEnricher = createReaderAutoEnricher({
+            exclusive: ankiExclusive,
+            enrich: autoEnrichCards,
+            log: (message) => logger.info(message)
+          });
+          capture.onLookup(autoEnricher.onLookup);
+        })
+        .catch((error) => logger.warn(`Anki: automatic enrichment off: ${error?.message ?? error}`))
+        .finally(() => {
+          autoLoading = false;
+        });
+    };
+    const autoSetting = ankiAutoEnrich$.subscribe(() => startAutoEnrich());
 
     return () => {
       stopped = true;
       bookChange.unsubscribe();
+      autoSetting.unsubscribe();
+      autoEnricher?.stop();
       lookupCapture?.stop();
       clearTimeout(ankiNoticeTimer);
     };
@@ -843,9 +903,53 @@
   async function enrichAnkiCard() {
     showHeader = false;
 
-    if (ankiBusy || !$rawBookData$) {
+    const book = $rawBookData$;
+
+    if (ankiTapQueued || !book) {
       return;
     }
+
+    // What the tap means is taken now; an automatic run in progress finishes first.
+    ankiTapQueued = true;
+    const context = {
+      localId: book.id,
+      localTitle: book.title,
+      coverImage: book.coverImage,
+      sentence: ankiSentence(),
+      readingPosition: exploredCharCount,
+      bookCharacters: bookCharCount
+    };
+
+    try {
+      await ankiExclusive(async () => {
+        ankiBusy = true;
+        ankiNoticeSetup = false;
+        clearTimeout(ankiNoticeTimer);
+        ankiNotice = 'Sending to Anki…';
+
+        try {
+          const { enrichFromReader } = await import('$lib/anki/reader-enrich');
+          const outcome = await enrichFromReader(context);
+          // Enriched by hand: never enriched by itself afterwards.
+          autoEnricher?.markHandled(outcome.noteId);
+          showAnkiOutcome([outcome]);
+        } catch (error) {
+          ankiNotice = `Could not enrich the card: ${(error as Error)?.message ?? error}`;
+          logger.warn(`Anki: ${ankiNotice}`);
+        } finally {
+          ankiBusy = false;
+        }
+      });
+    } finally {
+      ankiTapQueued = false;
+    }
+  }
+
+  /** Phase 8: cards just made with Yomitan (in the queue, oldest first, one banner). */
+  async function autoEnrichCards(cards: NewCard[]) {
+    const book = $rawBookData$;
+
+    if (!book || !cards.length) return;
 
     ankiBusy = true;
     ankiNoticeSetup = false;
@@ -854,25 +958,28 @@
 
     try {
       const { enrichFromReader } = await import('$lib/anki/reader-enrich');
-      const outcome = await enrichFromReader({
-        localId: $rawBookData$.id,
-        localTitle: $rawBookData$.title,
-        coverImage: $rawBookData$.coverImage,
-        sentence: ankiSentence(),
-        readingPosition: exploredCharCount,
-        bookCharacters: bookCharCount
-      });
-      ankiNotice = outcome.message;
-      ankiNoticeSetup = !!outcome.unmapped;
+      const outcomes: ReaderEnrichOutcome[] = [];
 
-      // The card was updated: the message closes by itself (problems stay until closed).
-      const seconds = Number($ankiNoticeSeconds$) || 0;
-
-      if (outcome.ok && !outcome.unmapped && seconds > 0) {
-        ankiNoticeTimer = setTimeout(closeAnkiNotice, seconds * 1000);
+      for (const { note, lookup } of cards) {
+        outcomes.push(
+          await enrichFromReader(
+            {
+              localId: book.id,
+              localTitle: book.title,
+              coverImage: book.coverImage,
+              sentence: lookup.sentence,
+              noSentenceReason: NO_LOOKUP_SENTENCE,
+              readingPosition: exploredCharCount,
+              bookCharacters: bookCharCount
+            },
+            note
+          )
+        );
       }
+
+      showAnkiOutcome(outcomes);
     } catch (error) {
-      ankiNotice = `Could not enrich the card: ${(error as Error)?.message ?? error}`;
+      ankiNotice = `Could not enrich the new card: ${(error as Error)?.message ?? error}`;
       logger.warn(`Anki: ${ankiNotice}`);
     } finally {
       ankiBusy = false;

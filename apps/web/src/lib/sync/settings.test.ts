@@ -111,7 +111,7 @@ describe('settings registry', () => {
     ]) {
       expect(settingScope(key), key).toBe('local');
     }
-    expect(keysWithScope('global')).toHaveLength(15);
+    expect(keysWithScope('global')).toHaveLength(16); // 15 + ankiAutoEnrich (Phase 8)
     expect(keysWithScope('device')).toHaveLength(95 + 2 + 77);
     expect(keysWithScope('local')).toHaveLength(5);
   });

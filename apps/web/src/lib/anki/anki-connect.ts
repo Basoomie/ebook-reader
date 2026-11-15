@@ -155,14 +155,33 @@ export class AnkiConnect {
     return this.invoke<string[]>('modelFieldNames', { modelName: noteType });
   }
 
-  /** The most recently added note in the last `days` days (highest note id), or null. */
-  async newestNote(days: number): Promise<NoteInfo | null> {
+  /**
+   * Ids of the notes added in the last `days` days (Anki's own `added:` search; desktop and
+   * AnkiConnect Android). A note id is the time the note was added, in milliseconds.
+   */
+  async recentNoteIds(days: number): Promise<number[]> {
     await this.connect();
     const ids = await this.invoke<number[]>('findNotes', {
       query: `added:${Math.max(1, Math.round(days))}`
     });
 
-    if (!ids?.length) {
+    return Array.isArray(ids) ? ids : [];
+  }
+
+  /** The notes that still exist among `ids` (one request). */
+  async notesInfo(ids: number[]): Promise<NoteInfo[]> {
+    if (!ids.length) return [];
+    await this.connect();
+    const infos = (await this.invoke<NoteInfo[]>('notesInfo', { notes: ids })) ?? [];
+
+    return infos.filter((info) => info && info.noteId && ids.includes(info.noteId));
+  }
+
+  /** The most recently added note in the last `days` days (highest note id), or null. */
+  async newestNote(days: number): Promise<NoteInfo | null> {
+    const ids = await this.recentNoteIds(days);
+
+    if (!ids.length) {
       return null;
     }
 
