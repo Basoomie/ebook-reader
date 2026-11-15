@@ -28,7 +28,8 @@ export function onKeydownReader(
   toggleTracker: () => void,
   freezeTrackerPosition: () => void,
   toggleZen: () => void = () => {},
-  enrichAnkiCard: () => void = () => {}
+  enrichAnkiCard: () => void = () => {},
+  togglePacer: () => void = () => {}
 ) {
   const action = bookReaderKeybindMap[ev.code || ev.key?.toLowerCase()];
 
@@ -75,6 +76,9 @@ export function onKeydownReader(
       return true;
     case BookReaderAvailableKeybind.ANKI_ENRICH:
       enrichAnkiCard();
+      return true;
+    case BookReaderAvailableKeybind.PACER_TOGGLE:
+      togglePacer();
       return true;
     default:
       return false;

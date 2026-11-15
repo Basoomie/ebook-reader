@@ -48,6 +48,20 @@ describe('readerShortcutGroups', () => {
     }
   });
 
+  it('lists the pacer keys, and its bottom-bar button only while a mode is picked', () => {
+    const groups = readerShortcutGroups(context());
+    const reading = find(groups, 'Reading');
+    const at = reading.findIndex((r) => r.action === 'Pacer: start or pause');
+    expect(reading[at].keys).toEqual(['S']);
+    expect(reading[at + 1].keys).toEqual([',']);
+    expect(reading[at + 2].keys).toEqual(['.']);
+    const button = { keys: ['Tap ▶ in the bottom bar'], action: 'Pacer: start or pause' };
+    expect(find(groups, 'Touch and mouse')).not.toContainEqual(button);
+    expect(
+      find(readerShortcutGroups(context({ pacerOn: true })), 'Touch and mouse')
+    ).toContainEqual(button);
+  });
+
   it('shows the Zen key, the two-finger tap and the cheat sheet key', () => {
     const groups = readerShortcutGroups(context());
     const reading = find(groups, 'Reading');
