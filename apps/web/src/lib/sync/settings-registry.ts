@@ -149,6 +149,7 @@ export const SETTINGS_REGISTRY: Record<string, SettingSpec> = {
   libraryCoverSize: d('Number'),
   libraryAutoLoad: d('Boolean'),
   libraryLook: d('String'),
+  bookIllustrationsPosition: d('String'),
 
   // --- lib/sync/settings.ts (per device) ---
   recordSyncEnabled: d('Boolean'),

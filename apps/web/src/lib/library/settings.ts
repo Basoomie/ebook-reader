@@ -65,5 +65,14 @@ export const libraryCoverSize$ = writableNumberLocalStorageSubject()('libraryCov
  */
 export const libraryLook$ = writableStringLocalStorageSubject()('libraryLook', 'auto');
 
+/**
+ * Season 2 §6: where the book page shows the book's illustrations: 'description' (a
+ * full-width strip under the description and About this book, the default) or 'cover' (in
+ * the cover's column, under the cover). Per device (decided 2026-11-15).
+ */
+export const bookIllustrationsPosition$ = writableStringLocalStorageSubject<
+  'description' | 'cover'
+>()('bookIllustrationsPosition', 'description');
+
 /** WP19a: load the next page when the end of a list comes near (else a "Load more" button). */
 export const libraryAutoLoad$ = writableBooleanLocalStorageSubject()('libraryAutoLoad', true);

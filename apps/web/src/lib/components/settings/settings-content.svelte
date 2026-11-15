@@ -34,7 +34,7 @@
   import DiagnosticsPanel from '$lib/components/settings/diagnostics-panel.svelte';
   import { NOT_OVER_HTTP } from '$lib/diagnostics/diagnostics-text';
   import { canPersistStorage } from '$lib/functions/secure-context';
-  import { libraryLook$ } from '$lib/library/settings';
+  import { bookIllustrationsPosition$, libraryLook$ } from '$lib/library/settings';
   import { customFontNames$ } from '$lib/fonts/server-fonts-browser';
   import { BlurMode } from '$lib/data/blur-mode';
   import { dialogManager } from '$lib/data/dialog-manager';
@@ -270,6 +270,12 @@
     { id: 'auto', text: 'Like the book' },
     { id: 'light', text: 'Light' },
     { id: 'dark', text: 'Dark' }
+  ];
+
+  // Season 2 §6: where the book page shows the book's illustrations.
+  const optionsForIllustrationsPosition: ToggleOption<string>[] = [
+    { id: 'description', text: 'Under the description' },
+    { id: 'cover', text: 'Under the cover' }
   ];
 
   const optionsForFuriganaStyle: ToggleOption<FuriganaStyle>[] = [
@@ -550,6 +556,16 @@
         archive
         options={optionsForLibraryLook}
         bind:selectedOptionId={$libraryLook$}
+      />
+    </SettingsItemGroup>
+    <SettingsItemGroup
+      title="Illustrations on the book page"
+      tooltip="This device only: where a book's page shows its illustrations, as a row under the description or in the cover's column. Hidden pictures follow 'Hide spoiler images'."
+    >
+      <ButtonToggleGroup
+        archive
+        options={optionsForIllustrationsPosition}
+        bind:selectedOptionId={$bookIllustrationsPosition$}
       />
     </SettingsItemGroup>
     <SettingsItemGroup title="Font family (Group 1)">

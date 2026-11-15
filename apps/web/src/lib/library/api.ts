@@ -16,6 +16,7 @@ import type {
   UploadInfo
 } from '$lib/library/types';
 import type { ServerSort } from '$lib/library/sort';
+import type { ServerIllustrationList } from '$lib/library/illustrations/types';
 import type {
   AudioCandidates,
   AudioFolderDetail,
@@ -559,6 +560,15 @@ export class LibraryApi {
 
   async book(id: string, options?: RequestOptions): Promise<CatalogBookDetail> {
     return (await this.get(`/books/${encodeURIComponent(id)}`, options)).json();
+  }
+
+  /**
+   * Season 2 §6: the book's illustrations as the server reads them from its file. A list
+   * still being made answers `preparing` (ask again shortly). Picture URLs are signed and
+   * relative (`absolute()` them).
+   */
+  async illustrations(id: string, options?: RequestOptions): Promise<ServerIllustrationList> {
+    return (await this.get(`/books/${encodeURIComponent(id)}/illustrations`, options)).json();
   }
 
   /** The book's full-size cover image as stored (not the thumbnail), for the Download menu. */

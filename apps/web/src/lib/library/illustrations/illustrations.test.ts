@@ -226,7 +226,7 @@ describe('imageSize', () => {
 
 async function importFixture(options: { withCoverMeta?: boolean } = {}) {
   const bytes = await buildIllustratedEpub(options);
-  const { contents, result, contentsDirectory } = await extractEpub(new Blob([bytes]));
+  const { contents, result, contentsDirectory } = await extractEpub(new Blob([bytes as BlobPart]));
   const { element } = generateEpubHtml(result, contents, document, contentsDirectory, {
     importHTMLFixMode: ImportHTMLFixMode.OFF,
     restrictImportFixToAnchor: true
@@ -249,7 +249,7 @@ describe('the real import of an illustrated EPUB', () => {
     const { contents, blobs } = await importFixture({ withCoverMeta: true });
     expect(opfCoverKey(contents, new Set(Object.keys(blobs)))).toBe('images/cover.png');
     const p = PICTURES['images/cover.png'];
-    expect(await storedCoverKey(blobs, new Blob([solidPng(p.w, p.h, p.rgb)]))).toBe(
+    expect(await storedCoverKey(blobs, new Blob([solidPng(p.w, p.h, p.rgb) as BlobPart]))).toBe(
       'images/cover.png'
     );
     expect(await storedCoverKey(blobs, undefined)).toBeNull();

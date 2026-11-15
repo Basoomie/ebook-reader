@@ -12,6 +12,8 @@
    * (publisher, dates, length, file size, library) with the tags; the other volumes of
    * the series and other books by each author. The address is /library/book?id=<id>.
    * WP15b: the "Audiobook" section (the confirmation picker) between About and Series.
+   * Season 2 §6: the illustrations strip (book-illustrations.svelte) under the description
+   * or under the cover (the device's setting); a tap on the cover expands it.
    * Download (book-download-menu.svelte): the EPUB, and the linked audiobook file and
    * subtitles when there are any (the link comes up from the Audiobook section).
    */
@@ -23,6 +25,7 @@
   import AddToCollectionDialog from '$lib/components/collections/add-to-collection-dialog.svelte';
   import AudioLinkSection from '$lib/components/audio/audio-link-section.svelte';
   import BookDownloadMenu from '$lib/components/library/book-download-menu.svelte';
+  import BookIllustrations from '$lib/components/library/book-illustrations.svelte';
   import BookStateDialog from '$lib/components/library/book-state-dialog.svelte';
   import CoverImage from '$lib/components/library/cover-image.svelte';
   import LibraryBookCard from '$lib/components/library/library-book-card.svelte';
@@ -60,7 +63,11 @@
   } from '$lib/library/offline/offline-source';
   import { isOnThisDevice, removeFromThisDevice } from '$lib/library/remove-from-device';
   import { bookProgressFraction, bookProgressLabel, positionsByBook } from '$lib/library/progress';
-  import { libraryCoverSize$, libraryRequestTimeoutSeconds$ } from '$lib/library/settings';
+  import {
+    bookIllustrationsPosition$,
+    libraryCoverSize$,
+    libraryRequestTimeoutSeconds$
+  } from '$lib/library/settings';
   import type { CatalogBook, CatalogBookDetail, CatalogLibrary } from '$lib/library/types';
   import { STATUS_LABELS, type BookState } from '$lib/sync/book-state';
   import type { LocalRecord } from '$lib/sync/sync-db';
@@ -93,6 +100,10 @@
   let highlights = 0;
   /** WP15e: this device has a copy of the book (offers Remove from this device). */
   let onDeviceHere = false;
+  /** Whether `onDeviceHere` is known for this book yet (the illustrations wait for it). */
+  let onDeviceChecked = false;
+  /** Season 2 §6: the illustrations strip (it also shows the expanded cover). */
+  let illustrations: BookIllustrations | undefined;
   /** The book's audiobook link, from the Audiobook section (for the Download menu). */
   let audioLink: AudioLink | null = null;
   let states = new Map<string, BookState>();
@@ -131,6 +142,8 @@
     ? !revealed.has(book.id) && isCoverBlurred(state?.blur, book.tags, tagRules)
     : false;
   $: gridLayout = coverGrid($libraryCoverSize$);
+  // Season 2 §6: the device's setting (anything unknown counts as the default).
+  $: illustrationsAt = $bookIllustrationsPosition$ === 'cover' ? 'cover' : 'description';
   $: seriesLabel = book?.series
     ? `${book.series.name}${book.series.index !== null ? ` · 第${formatSeriesIndex(book.series.index)}巻` : ''}`
     : '';
@@ -254,6 +267,7 @@
     error = '';
     notFound = false;
     onDeviceHere = false;
+    onDeviceChecked = false;
     audioLink = null;
     descriptionOpen = false;
     series = [];
@@ -297,7 +311,10 @@
   async function loadOnDevice() {
     const id = bookId;
     const here = await isOnThisDevice(id);
-    if (id === bookId) onDeviceHere = here;
+    if (id === bookId) {
+      onDeviceHere = here;
+      onDeviceChecked = true;
+    }
   }
 
   /** WP15e: Remove from this device. */
@@ -468,18 +485,32 @@
     <p class="c-notice" role="alert">{error}</p>
   {:else if book}
     <div class="c-dgrid mt-2">
-      <button
-        class="c-cover c-focus c-dcover relative aspect-[2/3] w-full overflow-hidden rounded-sm"
-        aria-label={coverBlurred ? `Show cover: ${book.title}` : `${readLabel}: ${book.title}`}
-        data-testid="details-cover"
-        disabled={book.missing}
-        on:click={() => (book && coverBlurred ? reveal(book) : book && open(book))}
-      >
-        <CoverImage src={thumb(book)} blurred={coverBlurred} />
-        {#if book.series?.index !== null && book.series?.index !== undefined}
-          <span class="c-dribbon">{formatSeriesIndex(book.series.index)}</span>
+      <!-- Season 2 §6: a tap on the cover expands it (no longer opens the book); the
+           illustrations strip sits under it when the device's setting says so. -->
+      <div class="c-dcovercol">
+        <button
+          class="c-cover c-focus c-dcover relative aspect-[2/3] w-full overflow-hidden rounded-sm"
+          aria-label={coverBlurred ? `Show cover: ${book.title}` : `Expand cover: ${book.title}`}
+          data-testid="details-cover"
+          on:click={() => (book && coverBlurred ? reveal(book) : illustrations?.openCover())}
+        >
+          <CoverImage src={thumb(book)} blurred={coverBlurred} />
+          {#if book.series?.index !== null && book.series?.index !== undefined}
+            <span class="c-dribbon">{formatSeriesIndex(book.series.index)}</span>
+          {/if}
+        </button>
+        {#if illustrationsAt === 'cover'}
+          <BookIllustrations
+            bind:this={illustrations}
+            {api}
+            bookId={book.id}
+            onDevice={onDeviceChecked ? onDeviceHere : null}
+            {offline}
+            variant="cover"
+            coverThumb={thumb(book)}
+          />
         {/if}
-      </button>
+      </div>
 
       <div class="c-dmain flex min-w-0 flex-col gap-3">
         {#if seriesLabel}
@@ -639,6 +670,18 @@
       </section>
     </div>
 
+    {#if illustrationsAt === 'description'}
+      <BookIllustrations
+        bind:this={illustrations}
+        {api}
+        bookId={book.id}
+        onDevice={onDeviceChecked ? onDeviceHere : null}
+        {offline}
+        variant="description"
+        coverThumb={thumb(book)}
+      />
+    {/if}
+
     {#if api}
       <AudioLinkSection {api} bookId={book.id} bookOnDevice={onDeviceHere} bind:link={audioLink} />
     {/if}
@@ -776,6 +819,15 @@
 
   .c-dcover {
     grid-area: cover;
+  }
+
+  /* The cover and, when the setting says so, the illustrations strip under it. */
+  .c-dcovercol {
+    grid-area: cover;
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 1.25rem;
   }
 
   .c-dmain {
