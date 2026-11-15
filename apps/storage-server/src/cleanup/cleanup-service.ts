@@ -181,6 +181,15 @@ export class CleanupService {
     await this.analysing2;
   }
 
+  /** A finished stage-1 batch waits for the reader's index of this library (index it now). */
+  wantsIngest(libraryId: string): boolean {
+    try {
+      return this.batches.awaitingIngest(1)?.libraryId === libraryId;
+    } catch {
+      return false;
+    }
+  }
+
   /** The indexer asks this before touching a library. */
   holdsIngest(libraryId: string): boolean {
     try {
