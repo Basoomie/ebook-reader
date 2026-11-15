@@ -4,28 +4,29 @@
  * All rights reserved.
  */
 
-import { get } from 'svelte/store';
-import { database } from '$lib/data/store';
-import { LibraryApi } from '$lib/library/api';
+import { browser } from '$app/environment';
+import { LibraryApi, LibraryApiError } from '$lib/library/api';
 import { getLibraryStore } from '$lib/library/library-db';
 import { libraryRequestTimeoutSeconds$ } from '$lib/library/settings';
 import { bookIdForLocalBook } from '$lib/sync/sync-service';
 import { AnkiConnect } from './anki-connect';
 import { coverFileName, coverJpegBase64 } from './cover';
-import { cuesById, findCues, type Cue } from './cue-match';
 import {
   describeResult,
   EnrichError,
   enrichLastCard,
+  WaitError,
+  type EnrichResult,
   type MediaFile,
-  type Unavailable
+  type Unavailable,
+  type Waiting
 } from './enrich';
+import { arrayBufferToBase64 } from './base64';
+import { cutLibraryClip, planLibraryClip, type LibraryClipRequest } from './library-clip';
 import { parseMapping } from './mapping';
 import { readerLinkPath, titleTag } from './reader-link';
 import type { LookupSentence } from './lookup-capture';
 import {
-  ankiAudioMatchThreshold$,
-  ankiAudioMaxSeconds$,
   ankiConnectKey$,
   ankiConnectTimeoutSeconds$,
   ankiConnectUrl$,
@@ -33,12 +34,16 @@ import {
   ankiLookBackDays$,
   ankiTagPrefix$
 } from './settings';
-import { cuesFromFile, cuesFromSaved, type Padding, type SavedSubtitle } from './subtitle-cues';
 
 /**
  * WP14: "Enrich last card" from the reader. Loaded on first use. Everything that can fail
  * is caught here and comes back as a message for the reader's banner; reading is never
  * touched.
+ *
+ * Enrich while offline (Season 2 §3): when the library server can't be reached (or doesn't
+ * answer in time), the sentence audio waits on this device and is added to the card later
+ * (`pending/`); everything else is added now. If it can't be kept, it is left out with the
+ * reason.
  */
 
 export interface ReaderEnrichContext {
@@ -60,6 +65,11 @@ export interface ReaderEnrichOutcome {
   unmapped?: boolean;
 }
 
+/** "Sentence audio will be added …" */
+export const WAIT_FOR_SERVER = 'when the library server can be reached';
+export const NOT_KEPT = "the library server can't be reached, and it couldn't be kept for later";
+const SERVER_UNREACHABLE = "the library server can't be reached";
+
 function timeoutSeconds(): number {
   return Math.max(0, Number(libraryRequestTimeoutSeconds$.getValue()) || 0);
 }
@@ -71,70 +81,16 @@ async function libraryApi(): Promise<LibraryApi | null> {
     : null;
 }
 
-function arrayBufferToBase64(buffer: ArrayBuffer): string {
-  const bytes = new Uint8Array(buffer);
-  let binary = '';
-
-  for (let i = 0; i < bytes.length; i += 0x8000) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-  }
-
-  return btoa(binary);
+/** The server gave no answer (offline, down, or too slow): the clip can wait. */
+export function serverUnreachable(error: unknown): boolean {
+  return (
+    error instanceof LibraryApiError && (error.kind === 'unreachable' || error.kind === 'timeout')
+  );
 }
 
-async function whispersyncPadding(): Promise<Padding> {
-  try {
-    const { settings$ } = await import('$lib/whispersync/lib/stores');
-    return {
-      startMs: Number(get(settings$.subtitlesGlobalStartPadding$)) || 0,
-      endMs: Number(get(settings$.subtitlesGlobalEndPadding$)) || 0
-    };
-  } catch {
-    return { startMs: 0, endMs: 0 };
-  }
-}
-
-/** whispersync's loaded lines, else its saved lines, else the linked subtitle file. */
-async function loadCues(
-  api: LibraryApi,
-  bookId: string,
-  localTitle: string,
-  subtitleLinked: boolean
-): Promise<Cue[]> {
-  try {
-    const { currentSubtitles$ } = await import('$lib/whispersync/lib/stores');
-    const loaded = get(currentSubtitles$);
-
-    if (loaded?.size) {
-      return [...loaded.values()].map((s) => ({
-        id: String(s.id),
-        start: s.startSeconds,
-        end: s.endSeconds,
-        text: s.text
-      }));
-    }
-  } catch {
-    // whispersync not loaded: try its saved lines.
-  }
-
-  const padding = await whispersyncPadding();
-
-  try {
-    const saved = (await database.getSubtitleData(localTitle)) as
-      | { subtitleData?: { subtitles?: SavedSubtitle[] }; subtitles?: SavedSubtitle[] }
-      | undefined;
-    const rows = saved?.subtitleData?.subtitles ?? saved?.subtitles;
-
-    if (rows?.length) return cuesFromSaved(rows, padding);
-  } catch {
-    // No saved lines.
-  }
-
-  if (!subtitleLinked) return [];
-
-  const file = await api.linkedSubtitleFile(bookId);
-
-  return file ? cuesFromFile(file.name, await file.text(), padding) : [];
+/** False when the browser knows it has no network (then there is no point in asking). */
+function browserOnline(): boolean {
+  return !browser || typeof navigator === 'undefined' || navigator.onLine !== false;
 }
 
 async function sentenceAudio(
@@ -142,57 +98,60 @@ async function sentenceAudio(
   bookId: string | null,
   ctx: ReaderEnrichContext,
   sentence: LookupSentence
-): Promise<MediaFile | Unavailable> {
+): Promise<MediaFile | Unavailable | Waiting> {
   if (!api || !bookId) {
     return { skip: 'the book is not in the library' };
   }
 
-  const link = await api.audioLink(bookId);
-
-  if (!link || link.state !== 'linked') {
-    return { skip: 'the book has no linked audiobook' };
+  if (!browserOnline()) {
+    return { wait: WAIT_FOR_SERVER };
   }
 
-  if (!link.playable) {
-    return { skip: "the linked audiobook can't play (several files, missing or changed)" };
+  const request: LibraryClipRequest = {
+    bookId,
+    localId: ctx.localId,
+    localTitle: ctx.localTitle,
+    text: sentence.text,
+    position: sentence.position,
+    cueIds: sentence.cueIds ?? [],
+    bookCharacters: ctx.bookCharacters,
+    useLoadedLines: true
+  };
+  let plan: Awaited<ReturnType<typeof planLibraryClip>>;
+
+  try {
+    plan = await planLibraryClip(api, request);
+  } catch (error) {
+    if (serverUnreachable(error)) return { wait: WAIT_FOR_SERVER };
+    throw error;
   }
 
-  const subtitleLinked = link.subtitleState === 'linked' && link.subtitleStatus === 'ok';
-  const cues = await loadCues(api, bookId, ctx.localTitle, subtitleLinked);
+  if ('skip' in plan) return plan;
 
-  if (!cues.length) {
-    return { skip: 'the audiobook has no subtitles' };
-  }
-
-  const duration = link.file?.durationSeconds ?? null;
-  const expectedSeconds =
-    duration && ctx.bookCharacters > 0 ? (sentence.position / ctx.bookCharacters) * duration : null;
-  const match =
-    cuesById(cues, sentence.cueIds) ??
-    findCues(cues, sentence.text, {
-      expectedSeconds,
-      threshold: Math.min(1, Math.max(0, Number(ankiAudioMatchThreshold$.getValue()) || 0.6))
-    });
-
-  if (!match) {
-    return { skip: "the sentence wasn't found in the subtitles" };
-  }
-
-  const max = Math.max(1, Number(ankiAudioMaxSeconds$.getValue()) || 30);
-
-  if (match.end - match.start > max) {
-    return { skip: `it would be longer than ${max} seconds` };
-  }
-
-  const start = Math.max(0, match.start);
-  const end = match.end;
-  const key = bookId.replace(/[^A-Za-z0-9]/g, '').slice(0, 8);
+  const clip = plan;
 
   return {
-    fileName: `ttsu-${key}-${Math.round(start * 1000)}-${Math.round(end * 1000)}.mp3`,
-    load: async () =>
-      arrayBufferToBase64(await api.audioClip(bookId, start, end, { timeoutSeconds: 0 }))
+    fileName: clip.fileName,
+    load: async () => {
+      try {
+        return arrayBufferToBase64(await cutLibraryClip(api, bookId, clip));
+      } catch (error) {
+        if (serverUnreachable(error)) throw new WaitError(WAIT_FOR_SERVER);
+        throw error;
+      }
+    }
   };
+}
+
+/** The cover the offline Library keeps for the book (Season 2 §2), or null. */
+async function offlineCover(bookId: string): Promise<Blob | null> {
+  try {
+    const { getOfflineStore } = await import('$lib/library/offline/offline-db');
+    const copy = await getOfflineStore().get(bookId);
+    return copy?.thumbnail && copy.thumbnail.size ? copy.thumbnail : null;
+  } catch {
+    return null;
+  }
 }
 
 async function coverBlob(
@@ -212,16 +171,96 @@ async function coverBlob(
   }
 
   if (api && bookId) {
-    const book = await api.book(bookId);
-    const thumbnail = (book as { thumbnail?: string | null }).thumbnail;
+    try {
+      if (!browserOnline()) {
+        throw new LibraryApiError('unreachable', SERVER_UNREACHABLE);
+      }
 
-    if (thumbnail) {
-      const response = await fetch(api.absolute(thumbnail));
-      if (response.ok) return await response.blob();
+      const book = await api.book(bookId);
+      const thumbnail = (book as { thumbnail?: string | null }).thumbnail;
+
+      if (thumbnail) {
+        const response = await fetch(api.absolute(thumbnail));
+        if (response.ok) return await response.blob();
+      }
+    } catch (error) {
+      if (!serverUnreachable(error)) throw error;
+
+      const copy = await offlineCover(bookId);
+      if (copy) return copy;
+      throw new Error(SERVER_UNREACHABLE);
     }
   }
 
   return null;
+}
+
+/**
+ * Keeps the waiting clip on this device. A newer tap whose sentence audio overwrites drops
+ * the card's older waiting clips first. False when it couldn't be kept.
+ */
+async function keepWaitingClip(
+  result: EnrichResult,
+  ctx: ReaderEnrichContext,
+  bookId: string,
+  bookTitle: string,
+  sentence: LookupSentence
+): Promise<boolean> {
+  const waiting = result.waiting!;
+
+  try {
+    const { getPendingStore } = await import('./pending/pending-db');
+    const { newPendingId } = await import('./pending/pending-clip');
+    const now = Date.now();
+    await getPendingStore().add({
+      id: newPendingId(now),
+      createdAt: now,
+      state: 'waiting',
+      noteId: result.noteId,
+      noteType: result.noteType,
+      word: result.word,
+      field: waiting.field,
+      mode: waiting.mode,
+      fieldAtTap: waiting.fieldAtTap,
+      ...(waiting.shared ? { shared: waiting.shared } : {}),
+      bookId,
+      localId: ctx.localId,
+      localTitle: ctx.localTitle,
+      bookTitle,
+      source: {
+        kind: 'library',
+        text: sentence.text,
+        position: sentence.position,
+        cueIds: sentence.cueIds ?? [],
+        bookCharacters: ctx.bookCharacters
+      }
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Under Overwrite the newest tap decides the field: older waiting clips for it go. */
+async function dropSuperseded(noteId: number, field: string): Promise<void> {
+  try {
+    const { getPendingStore } = await import('./pending/pending-db');
+    const { supersededBy } = await import('./pending/pending-clip');
+    const store = getPendingStore();
+
+    for (const clip of supersededBy(await store.all(), noteId, field)) {
+      await store.delete(clip.id);
+    }
+  } catch {
+    // Nothing kept, or the store can't be opened: nothing to drop.
+  }
+}
+
+/** Tries the waiting clips (older ones may go in now). Never rejects. */
+function runWaitingClips(): void {
+  import('./pending/pending-service')
+    .then(({ runPendingClipsSoon }) => runPendingClipsSoon())
+    .catch(() => undefined);
 }
 
 export async function enrichFromReader(ctx: ReaderEnrichContext): Promise<ReaderEnrichOutcome> {
@@ -235,6 +274,7 @@ export async function enrichFromReader(ctx: ReaderEnrichContext): Promise<Reader
       : undefined;
     const title = libraryLink?.calibreTitle || ctx.localTitle;
     const sentence = ctx.sentence;
+    const mapping = parseMapping(ankiFieldMapping$.getValue());
     const anki = new AnkiConnect({
       url: ankiConnectUrl$.getValue(),
       key: ankiConnectKey$.getValue(),
@@ -261,9 +301,27 @@ export async function enrichFromReader(ctx: ReaderEnrichContext): Promise<Reader
       },
       audio: (s) => sentenceAudio(api, bookId, ctx, s as LookupSentence),
       days: Math.max(1, Math.round(Number(ankiLookBackDays$.getValue()) || 1)),
-      mapping: parseMapping(ankiFieldMapping$.getValue()),
+      mapping,
       titleTag
     });
+
+    const audioTarget = mapping[result.noteType]?.sentenceAudio;
+
+    if (audioTarget?.mode === 'overwrite') {
+      await dropSuperseded(result.noteId, audioTarget.field);
+    }
+
+    if (result.waiting) {
+      const kept =
+        !!bookId && !!sentence && (await keepWaitingClip(result, ctx, bookId, title, sentence));
+
+      if (!kept) {
+        delete result.waiting;
+        result.skipped.push({ what: 'sentence audio', reason: NOT_KEPT });
+      }
+    }
+
+    runWaitingClips();
 
     return { ok: true, message: describeResult(result), unmapped: result.unmapped };
   } catch (error) {

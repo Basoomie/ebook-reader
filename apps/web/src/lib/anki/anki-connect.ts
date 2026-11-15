@@ -172,6 +172,17 @@ export class AnkiConnect {
     return info && info.noteId ? info : null;
   }
 
+  /**
+   * One note, or null when it no longer exists (desktop answers `[{}]`, AnkiConnect
+   * Android an empty list).
+   */
+  async noteInfo(noteId: number): Promise<NoteInfo | null> {
+    await this.connect();
+    const [info] = (await this.invoke<NoteInfo[]>('notesInfo', { notes: [noteId] })) ?? [];
+
+    return info && info.noteId === noteId ? info : null;
+  }
+
   /** Stores a file and returns the name it was stored under; fields must use that name. */
   async storeMedia(fileName: string, base64: string): Promise<string> {
     const stored = await this.invoke<string | null>('storeMediaFile', {

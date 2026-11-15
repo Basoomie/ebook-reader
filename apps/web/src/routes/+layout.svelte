@@ -78,6 +78,14 @@
       .catch((error) => console.warn('Sync: not started', error));
   });
 
+  // Enrich while offline (Season 2 §3): sentence audio that waited is added to its card
+  // once the library server answers again. Loaded separately; nothing is shown here.
+  onMount(() => {
+    import('$lib/anki/pending/pending-service')
+      .then(({ startPendingClips }) => startPendingClips())
+      .catch((error) => console.warn('Anki: waiting sentence audio not started', error));
+  });
+
   // Offline app loading and the "New version available" notice (Season 2 §2): the
   // service worker is registered here (HTTPS only). Loaded separately; a failure
   // only means no notice.

@@ -1,3 +1,4 @@
+import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
 import { describe, expect, it, vi } from 'vitest';
@@ -89,5 +90,46 @@ describe('metadata.db snapshot', () => {
     await expect(snapshotMetadataDb(notDb, dest, { timeoutMs: 10_000 })).rejects.toThrow(
       SnapshotFailed,
     );
+  });
+});
+
+describe('a metadata.db Calibre writes every few milliseconds (NAS 2026-11-15)', () => {
+  async function busyLibrary() {
+    const { root, lib } = await sourceLibrary();
+    // Big enough for many 100-page steps (~8 MB).
+    const db = new Database(lib.dbFile);
+    db.exec('CREATE TABLE IF NOT EXISTS filler (x BLOB)');
+    const ins = db.prepare('INSERT INTO filler VALUES (?)');
+    db.transaction(() => {
+      for (let i = 0; i < 2000; i++) ins.run(Buffer.alloc(4000, i % 255));
+    })();
+    return { root, lib, db };
+  }
+
+  it('copies it in one step even while it keeps changing; step by step it never gets through', async () => {
+    statHook.bumpAfter = -1;
+    const { lib, db } = await busyLibrary();
+    const touch = db.prepare('UPDATE books SET title = ? WHERE id = 1');
+    let n = 0;
+    const writer = setInterval(() => touch.run(`t${n++}`), 2);
+    try {
+      const dest = path.join(makeTempDir('cache'), 'snap.db');
+      // The old way: 100 pages at a time, restarted by every write, until the deadline.
+      await expect(
+        snapshotMetadataDb(lib.dbFile, dest, { timeoutMs: 1500, allowChanging: true }),
+      ).rejects.toThrow(SnapshotSkipped);
+      const res = await snapshotMetadataDb(lib.dbFile, dest, {
+        timeoutMs: 10_000,
+        allowChanging: true,
+        oneStep: true,
+      });
+      const copy = new Database(res.file, { readonly: true });
+      expect(copy.pragma('quick_check', { simple: true })).toBe('ok');
+      expect((copy.prepare('SELECT COUNT(*) n FROM filler').get() as { n: number }).n).toBe(2000);
+      copy.close();
+    } finally {
+      clearInterval(writer);
+      db.close();
+    }
   });
 });
