@@ -20,6 +20,7 @@ import { SubtitleJobService } from './audio/subtitle-jobs';
 import { TtsJobService } from './audio/tts-jobs';
 import { TtsModelService } from './audio/tts-models';
 import { countImportOptions } from './counts/counter-bundle';
+import { IllustrationService } from './catalog/illustrations';
 import { VoiceService } from './voices/voice-service';
 import { VoiceStore } from './voices/voice-store';
 import { initCleanupDatabase } from './cleanup/cleanup-db';
@@ -168,6 +169,15 @@ if (database.ok && config.calibre.dir) {
     catalog.thumbnails = thumbnails;
     catalog.counts = counts;
     catalog.calibreDir = config.calibre.dir;
+    // The book page's illustrations (Season 2 §6): read on request, cached in CACHE_DIR.
+    catalog.illustrations = new IllustrationService({
+      db: database.db,
+      cacheDir: config.calibre.cacheDir,
+      calibreDir: () => (catalog.indexer.enabled ? (catalog.calibreDir ?? null) : null),
+      uploads: uploadStore,
+      importOptions: countImportOptions(config.counts),
+      timeoutMs: config.calibre.illustrationsTimeoutSeconds * 1000,
+    });
     if (uploadStore) {
       const uploads = new UploadService({
         db: database.db,

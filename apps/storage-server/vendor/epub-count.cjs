@@ -3,7 +3,7 @@
  * web app EPUB import and counting code (apps/web/src/lib/server/epub/server-counter.ts).
  * Rebuild with `pnpm build:server-counter` in apps/web after changing that code.
  * epub-count-version: 1
- * build: 25ab76cc2af6946e
+ * build: 7341222544661be5
  */
 var __create = Object.create;
 var __defProp = Object.defineProperty;
@@ -40,20 +40,20 @@ var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: tru
 var require_path_browserify = __commonJS({
   "../../node_modules/.pnpm/path-browserify@1.0.1/node_modules/path-browserify/index.js"(exports2, module2) {
     "use strict";
-    function assertPath(path3) {
-      if (typeof path3 !== "string") {
-        throw new TypeError("Path must be a string. Received " + JSON.stringify(path3));
+    function assertPath(path4) {
+      if (typeof path4 !== "string") {
+        throw new TypeError("Path must be a string. Received " + JSON.stringify(path4));
       }
     }
-    function normalizeStringPosix(path3, allowAboveRoot) {
+    function normalizeStringPosix(path4, allowAboveRoot) {
       var res = "";
       var lastSegmentLength = 0;
       var lastSlash = -1;
       var dots = 0;
       var code;
-      for (var i = 0; i <= path3.length; ++i) {
-        if (i < path3.length)
-          code = path3.charCodeAt(i);
+      for (var i = 0; i <= path4.length; ++i) {
+        if (i < path4.length)
+          code = path4.charCodeAt(i);
         else if (code === 47)
           break;
         else
@@ -93,9 +93,9 @@ var require_path_browserify = __commonJS({
             }
           } else {
             if (res.length > 0)
-              res += "/" + path3.slice(lastSlash + 1, i);
+              res += "/" + path4.slice(lastSlash + 1, i);
             else
-              res = path3.slice(lastSlash + 1, i);
+              res = path4.slice(lastSlash + 1, i);
             lastSegmentLength = i - lastSlash - 1;
           }
           lastSlash = i;
@@ -126,20 +126,20 @@ var require_path_browserify = __commonJS({
         var resolvedAbsolute = false;
         var cwd;
         for (var i = arguments.length - 1; i >= -1 && !resolvedAbsolute; i--) {
-          var path3;
+          var path4;
           if (i >= 0)
-            path3 = arguments[i];
+            path4 = arguments[i];
           else {
             if (cwd === void 0)
               cwd = process.cwd();
-            path3 = cwd;
+            path4 = cwd;
           }
-          assertPath(path3);
-          if (path3.length === 0) {
+          assertPath(path4);
+          if (path4.length === 0) {
             continue;
           }
-          resolvedPath = path3 + "/" + resolvedPath;
-          resolvedAbsolute = path3.charCodeAt(0) === 47;
+          resolvedPath = path4 + "/" + resolvedPath;
+          resolvedAbsolute = path4.charCodeAt(0) === 47;
         }
         resolvedPath = normalizeStringPosix(resolvedPath, !resolvedAbsolute);
         if (resolvedAbsolute) {
@@ -153,20 +153,20 @@ var require_path_browserify = __commonJS({
           return ".";
         }
       },
-      normalize: function normalize(path3) {
-        assertPath(path3);
-        if (path3.length === 0) return ".";
-        var isAbsolute = path3.charCodeAt(0) === 47;
-        var trailingSeparator = path3.charCodeAt(path3.length - 1) === 47;
-        path3 = normalizeStringPosix(path3, !isAbsolute);
-        if (path3.length === 0 && !isAbsolute) path3 = ".";
-        if (path3.length > 0 && trailingSeparator) path3 += "/";
-        if (isAbsolute) return "/" + path3;
-        return path3;
+      normalize: function normalize(path4) {
+        assertPath(path4);
+        if (path4.length === 0) return ".";
+        var isAbsolute = path4.charCodeAt(0) === 47;
+        var trailingSeparator = path4.charCodeAt(path4.length - 1) === 47;
+        path4 = normalizeStringPosix(path4, !isAbsolute);
+        if (path4.length === 0 && !isAbsolute) path4 = ".";
+        if (path4.length > 0 && trailingSeparator) path4 += "/";
+        if (isAbsolute) return "/" + path4;
+        return path4;
       },
-      isAbsolute: function isAbsolute(path3) {
-        assertPath(path3);
-        return path3.length > 0 && path3.charCodeAt(0) === 47;
+      isAbsolute: function isAbsolute(path4) {
+        assertPath(path4);
+        return path4.length > 0 && path4.charCodeAt(0) === 47;
       },
       join: function join() {
         if (arguments.length === 0)
@@ -252,18 +252,18 @@ var require_path_browserify = __commonJS({
           return to.slice(toStart);
         }
       },
-      _makeLong: function _makeLong(path3) {
-        return path3;
+      _makeLong: function _makeLong(path4) {
+        return path4;
       },
-      dirname: function dirname(path3) {
-        assertPath(path3);
-        if (path3.length === 0) return ".";
-        var code = path3.charCodeAt(0);
+      dirname: function dirname(path4) {
+        assertPath(path4);
+        if (path4.length === 0) return ".";
+        var code = path4.charCodeAt(0);
         var hasRoot = code === 47;
         var end = -1;
         var matchedSlash = true;
-        for (var i = path3.length - 1; i >= 1; --i) {
-          code = path3.charCodeAt(i);
+        for (var i = path4.length - 1; i >= 1; --i) {
+          code = path4.charCodeAt(i);
           if (code === 47) {
             if (!matchedSlash) {
               end = i;
@@ -275,21 +275,21 @@ var require_path_browserify = __commonJS({
         }
         if (end === -1) return hasRoot ? "/" : ".";
         if (hasRoot && end === 1) return "//";
-        return path3.slice(0, end);
+        return path4.slice(0, end);
       },
-      basename: function basename(path3, ext) {
+      basename: function basename(path4, ext) {
         if (ext !== void 0 && typeof ext !== "string") throw new TypeError('"ext" argument must be a string');
-        assertPath(path3);
+        assertPath(path4);
         var start = 0;
         var end = -1;
         var matchedSlash = true;
         var i;
-        if (ext !== void 0 && ext.length > 0 && ext.length <= path3.length) {
-          if (ext.length === path3.length && ext === path3) return "";
+        if (ext !== void 0 && ext.length > 0 && ext.length <= path4.length) {
+          if (ext.length === path4.length && ext === path4) return "";
           var extIdx = ext.length - 1;
           var firstNonSlashEnd = -1;
-          for (i = path3.length - 1; i >= 0; --i) {
-            var code = path3.charCodeAt(i);
+          for (i = path4.length - 1; i >= 0; --i) {
+            var code = path4.charCodeAt(i);
             if (code === 47) {
               if (!matchedSlash) {
                 start = i + 1;
@@ -313,11 +313,11 @@ var require_path_browserify = __commonJS({
             }
           }
           if (start === end) end = firstNonSlashEnd;
-          else if (end === -1) end = path3.length;
-          return path3.slice(start, end);
+          else if (end === -1) end = path4.length;
+          return path4.slice(start, end);
         } else {
-          for (i = path3.length - 1; i >= 0; --i) {
-            if (path3.charCodeAt(i) === 47) {
+          for (i = path4.length - 1; i >= 0; --i) {
+            if (path4.charCodeAt(i) === 47) {
               if (!matchedSlash) {
                 start = i + 1;
                 break;
@@ -328,18 +328,18 @@ var require_path_browserify = __commonJS({
             }
           }
           if (end === -1) return "";
-          return path3.slice(start, end);
+          return path4.slice(start, end);
         }
       },
-      extname: function extname(path3) {
-        assertPath(path3);
+      extname: function extname(path4) {
+        assertPath(path4);
         var startDot = -1;
         var startPart = 0;
         var end = -1;
         var matchedSlash = true;
         var preDotState = 0;
-        for (var i = path3.length - 1; i >= 0; --i) {
-          var code = path3.charCodeAt(i);
+        for (var i = path4.length - 1; i >= 0; --i) {
+          var code = path4.charCodeAt(i);
           if (code === 47) {
             if (!matchedSlash) {
               startPart = i + 1;
@@ -365,7 +365,7 @@ var require_path_browserify = __commonJS({
         preDotState === 1 && startDot === end - 1 && startDot === startPart + 1) {
           return "";
         }
-        return path3.slice(startDot, end);
+        return path4.slice(startDot, end);
       },
       format: function format(pathObject) {
         if (pathObject === null || typeof pathObject !== "object") {
@@ -373,11 +373,11 @@ var require_path_browserify = __commonJS({
         }
         return _format("/", pathObject);
       },
-      parse: function parse(path3) {
-        assertPath(path3);
+      parse: function parse(path4) {
+        assertPath(path4);
         var ret = { root: "", dir: "", base: "", ext: "", name: "" };
-        if (path3.length === 0) return ret;
-        var code = path3.charCodeAt(0);
+        if (path4.length === 0) return ret;
+        var code = path4.charCodeAt(0);
         var isAbsolute = code === 47;
         var start;
         if (isAbsolute) {
@@ -390,10 +390,10 @@ var require_path_browserify = __commonJS({
         var startPart = 0;
         var end = -1;
         var matchedSlash = true;
-        var i = path3.length - 1;
+        var i = path4.length - 1;
         var preDotState = 0;
         for (; i >= start; --i) {
-          code = path3.charCodeAt(i);
+          code = path4.charCodeAt(i);
           if (code === 47) {
             if (!matchedSlash) {
               startPart = i + 1;
@@ -416,20 +416,20 @@ var require_path_browserify = __commonJS({
         preDotState === 0 || // The (right-most) trimmed path component is exactly '..'
         preDotState === 1 && startDot === end - 1 && startDot === startPart + 1) {
           if (end !== -1) {
-            if (startPart === 0 && isAbsolute) ret.base = ret.name = path3.slice(1, end);
-            else ret.base = ret.name = path3.slice(startPart, end);
+            if (startPart === 0 && isAbsolute) ret.base = ret.name = path4.slice(1, end);
+            else ret.base = ret.name = path4.slice(startPart, end);
           }
         } else {
           if (startPart === 0 && isAbsolute) {
-            ret.name = path3.slice(1, startDot);
-            ret.base = path3.slice(1, end);
+            ret.name = path4.slice(1, startDot);
+            ret.base = path4.slice(1, end);
           } else {
-            ret.name = path3.slice(startPart, startDot);
-            ret.base = path3.slice(startPart, end);
+            ret.name = path4.slice(startPart, startDot);
+            ret.base = path4.slice(startPart, end);
           }
-          ret.ext = path3.slice(startDot, end);
+          ret.ext = path4.slice(startDot, end);
         }
-        if (startPart > 0) ret.dir = path3.slice(0, startPart - 1);
+        if (startPart > 0) ret.dir = path4.slice(0, startPart - 1);
         else if (isAbsolute) ret.dir = "/";
         return ret;
       },
@@ -451,7 +451,8 @@ __export(server_counter_exports, {
   ImportHTMLFixMode: () => ImportHTMLFixMode,
   bookScriptForServer: () => bookScriptForServer,
   countEpubForServer: () => countEpubForServer,
-  defaultEpubImportOptions: () => defaultEpubImportOptions
+  defaultEpubImportOptions: () => defaultEpubImportOptions,
+  illustrationsForServer: () => illustrationsForServer
 });
 module.exports = __toCommonJS(server_counter_exports);
 
@@ -11287,16 +11288,16 @@ var MatcherView = class {
    * @returns {string|undefined}
    */
   getCurrentTag() {
-    const path3 = this._matcher.path;
-    return path3.length > 0 ? path3[path3.length - 1].tag : void 0;
+    const path4 = this._matcher.path;
+    return path4.length > 0 ? path4[path4.length - 1].tag : void 0;
   }
   /**
    * Get current namespace.
    * @returns {string|undefined}
    */
   getCurrentNamespace() {
-    const path3 = this._matcher.path;
-    return path3.length > 0 ? path3[path3.length - 1].namespace : void 0;
+    const path4 = this._matcher.path;
+    return path4.length > 0 ? path4[path4.length - 1].namespace : void 0;
   }
   /**
    * Get current node's attribute value.
@@ -11304,9 +11305,9 @@ var MatcherView = class {
    * @returns {*}
    */
   getAttrValue(attrName) {
-    const path3 = this._matcher.path;
-    if (path3.length === 0) return void 0;
-    return path3[path3.length - 1].values?.[attrName];
+    const path4 = this._matcher.path;
+    if (path4.length === 0) return void 0;
+    return path4[path4.length - 1].values?.[attrName];
   }
   /**
    * Check if current node has an attribute.
@@ -11314,9 +11315,9 @@ var MatcherView = class {
    * @returns {boolean}
    */
   hasAttr(attrName) {
-    const path3 = this._matcher.path;
-    if (path3.length === 0) return false;
-    const current = path3[path3.length - 1];
+    const path4 = this._matcher.path;
+    if (path4.length === 0) return false;
+    const current = path4[path4.length - 1];
     return current.values !== void 0 && attrName in current.values;
   }
   /**
@@ -11324,18 +11325,18 @@ var MatcherView = class {
    * @returns {number}
    */
   getPosition() {
-    const path3 = this._matcher.path;
-    if (path3.length === 0) return -1;
-    return path3[path3.length - 1].position ?? 0;
+    const path4 = this._matcher.path;
+    if (path4.length === 0) return -1;
+    return path4[path4.length - 1].position ?? 0;
   }
   /**
    * Get current node's repeat counter (occurrence count of this tag name).
    * @returns {number}
    */
   getCounter() {
-    const path3 = this._matcher.path;
-    if (path3.length === 0) return -1;
-    return path3[path3.length - 1].counter ?? 0;
+    const path4 = this._matcher.path;
+    if (path4.length === 0) return -1;
+    return path4[path4.length - 1].counter ?? 0;
   }
   /**
    * Get current node's sibling index (alias for getPosition).
@@ -15273,7 +15274,159 @@ function bookScriptFromHtml(elementHtml, sections, characters, document2, { maxS
   return { version: BOOK_SCRIPT_VERSION, characters, chapters: out };
 }
 
+// src/lib/library/illustrations/image-size.ts
+function imageSize(bytes) {
+  const b = bytes;
+  const n = b.length;
+  const u16be = (i) => b[i] << 8 | b[i + 1];
+  const u16le = (i) => b[i] | b[i + 1] << 8;
+  const u24le = (i) => b[i] | b[i + 1] << 8 | b[i + 2] << 16;
+  const u32be = (i) => (b[i] << 24 | b[i + 1] << 16 | b[i + 2] << 8 | b[i + 3]) >>> 0;
+  const ascii = (i, s) => i + s.length <= n && [...s].every((c, k) => b[i + k] === c.charCodeAt(0));
+  const size = (width, height) => width > 0 && height > 0 ? { width, height } : null;
+  if (n >= 24 && b[0] === 137 && ascii(1, "PNG") && ascii(12, "IHDR")) {
+    return size(u32be(16), u32be(20));
+  }
+  if (n >= 10 && ascii(0, "GIF8")) return size(u16le(6), u16le(8));
+  if (n >= 30 && ascii(0, "RIFF") && ascii(8, "WEBP")) {
+    if (ascii(12, "VP8 ")) return size(u16le(26) & 16383, u16le(28) & 16383);
+    if (ascii(12, "VP8L") && b[20] === 47) {
+      const b1 = b[22];
+      const b2 = b[23];
+      const b3 = b[24];
+      return size(
+        1 + ((b1 & 63) << 8 | b[21]),
+        1 + ((b3 & 15) << 10 | b2 << 2 | (b1 & 192) >> 6)
+      );
+    }
+    if (ascii(12, "VP8X")) return size(1 + u24le(24), 1 + u24le(27));
+    return null;
+  }
+  if (n >= 4 && b[0] === 255 && b[1] === 216) {
+    let i = 2;
+    while (i + 3 < n) {
+      if (b[i] !== 255) return null;
+      const marker = b[i + 1];
+      if (marker === 255) {
+        i += 1;
+        continue;
+      }
+      if (marker === 216 || marker === 1 || marker >= 208 && marker <= 215) {
+        i += 2;
+        continue;
+      }
+      const isFrame = marker >= 192 && marker <= 207 && marker !== 196 && marker !== 200 && marker !== 204;
+      if (isFrame) return i + 8 < n ? size(u16be(i + 7), u16be(i + 5)) : null;
+      i += 2 + u16be(i + 2);
+    }
+    return null;
+  }
+  return null;
+}
+function needsMoreBytes(bytes) {
+  return bytes.length >= 2 && bytes[0] === 255 && bytes[1] === 216 && imageSize(bytes) === null;
+}
+var IMAGE_HEADER_BYTES = 64 * 1024;
+async function blobImageSize(blob) {
+  const head = new Uint8Array(await blob.slice(0, IMAGE_HEADER_BYTES).arrayBuffer());
+  if (blob.size > IMAGE_HEADER_BYTES && needsMoreBytes(head)) {
+    return imageSize(new Uint8Array(await blob.arrayBuffer()));
+  }
+  return imageSize(head);
+}
+
+// src/lib/library/illustrations/pick-illustrations.ts
+var MIN_ILLUSTRATION_SIDE = 300;
+var ILLUSTRATIONS_RULE_VERSION = 1;
+var DUMMY_PREFIX = "data:image/gif;ttu:";
+var DUMMY_SUFFIX = ";base64,";
+function imageKeyOf(value) {
+  if (!value) return null;
+  if (value.startsWith(DUMMY_PREFIX)) {
+    const end = value.lastIndexOf(DUMMY_SUFFIX);
+    return end > DUMMY_PREFIX.length ? value.slice(DUMMY_PREFIX.length, end) : null;
+  }
+  if (value.startsWith("ttu:")) return value.slice(4) || null;
+  return null;
+}
+function keyOfElement(el) {
+  if (el.tagName.toLowerCase() === "img") return imageKeyOf(el.getAttribute("src"));
+  for (const name of el.getAttributeNames()) {
+    if (name.endsWith("href")) {
+      const key = imageKeyOf(el.getAttribute(name));
+      if (key) return key;
+    }
+  }
+  return null;
+}
+function firstPartAfterToc(parts) {
+  const after = parts.findIndex((part) => part.getElementsByTagName("a").length > 1) + 1;
+  return after > 0 && after < parts.length ? after : 0;
+}
+function illustrationCandidates(root) {
+  const parts = Array.from(root.children);
+  const after = firstPartAfterToc(parts);
+  const out = [];
+  parts.forEach((part, index) => {
+    const beforeToc = index < after;
+    for (const el of Array.from(part.querySelectorAll("img, image"))) {
+      const tag = el.tagName.toLowerCase();
+      if (tag === "img") {
+        if (isElementGaiji(el)) continue;
+      } else if (!el.closest("svg")) {
+        continue;
+      }
+      const key = keyOfElement(el);
+      out.push(key ? { key, beforeToc } : null);
+    }
+  });
+  return out;
+}
+function pickIllustrations(root, options) {
+  const minSide = options.minSide ?? MIN_ILLUSTRATION_SIDE;
+  const seen = /* @__PURE__ */ new Set();
+  const out = [];
+  for (const candidate of illustrationCandidates(root)) {
+    if (!candidate) continue;
+    const { key } = candidate;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (!options.keys.has(key) || key === options.coverKey) continue;
+    const size = options.sizeOf(key);
+    if (size && Math.min(size.width, size.height) < minSide) continue;
+    out.push({ ...candidate, width: size?.width ?? null, height: size?.height ?? null });
+  }
+  return out;
+}
+
+// src/lib/library/illustrations/collect.ts
+async function collectIllustrations(root, blobs, coverKey) {
+  const keys = new Set(Object.keys(blobs));
+  const sizes = /* @__PURE__ */ new Map();
+  for (const candidate of illustrationCandidates(root)) {
+    if (!candidate || sizes.has(candidate.key) || !keys.has(candidate.key)) continue;
+    if (candidate.key === coverKey) continue;
+    sizes.set(candidate.key, await blobImageSize(blobs[candidate.key]).catch(() => null));
+  }
+  return pickIllustrations(root, { keys, coverKey, sizeOf: (key) => sizes.get(key) ?? null });
+}
+var asArray = (value) => value === void 0 || value === null ? [] : Array.isArray(value) ? value : [value];
+function opfCoverKey(contents, keys) {
+  const items = asArray(
+    isOPFType(contents) ? contents["opf:package"]["opf:manifest"]["opf:item"] : contents.package.manifest.item
+  );
+  const byProperty = items.find((item) => item["@_properties"] === "cover-image");
+  if (byProperty && keys.has(byProperty["@_href"])) return byProperty["@_href"];
+  const metas = asArray(
+    isOPFType(contents) ? contents["opf:package"]["opf:metadata"]?.["opf:meta"] : contents.package.metadata?.meta
+  );
+  const id = metas.find((m) => m["@_name"] === "cover")?.["@_content"];
+  const href = id ? items.find((item) => item["@_id"] === id)?.["@_href"] : void 0;
+  return href && keys.has(href) ? href : null;
+}
+
 // src/lib/server/epub/count-epub-node.ts
+var import_path_browserify3 = __toESM(require_path_browserify(), 1);
 var defaultEpubImportOptions = {
   importHTMLFixMode: "Off" /* OFF */,
   restrictImportFixToAnchor: true
@@ -15293,10 +15446,28 @@ async function bookScriptEpubBlob(epub, options = defaultEpubImportOptions, scri
   });
   return bookScriptFromHtml(elementHtml, sections, characters, document2, scriptOptions);
 }
+async function illustrationsEpubBlob(epub, options = defaultEpubImportOptions) {
+  const document2 = prepareNode(true);
+  const { contents, result, contentsDirectory } = await extractEpub(epub);
+  const { element } = generateEpubHtml(result, contents, document2, contentsDirectory, options);
+  const blobs = Object.fromEntries(
+    Object.entries(result).filter((entry) => entry[1] instanceof Blob)
+  );
+  const coverKey = opfCoverKey(contents, new Set(Object.keys(blobs)));
+  const items = await collectIllustrations(element, blobs, coverKey);
+  return {
+    version: ILLUSTRATIONS_RULE_VERSION,
+    // The same path extract-epub opened the entry by.
+    items: items.map((item) => ({ ...item, entry: import_path_browserify3.default.join(contentsDirectory, item.key) }))
+  };
+}
 
 // src/lib/server/epub/server-counter.ts
 async function bookScriptForServer(epub, options = defaultEpubImportOptions, scriptOptions = {}) {
   return bookScriptEpubBlob(epub, options, scriptOptions);
+}
+async function illustrationsForServer(epub, options = defaultEpubImportOptions) {
+  return illustrationsEpubBlob(epub, options);
 }
 async function countEpubForServer(epub, options = defaultEpubImportOptions) {
   const { characters, sections } = await countEpubBlob(epub, options, { imageData: false });
@@ -15309,7 +15480,8 @@ async function countEpubForServer(epub, options = defaultEpubImportOptions) {
   ImportHTMLFixMode,
   bookScriptForServer,
   countEpubForServer,
-  defaultEpubImportOptions
+  defaultEpubImportOptions,
+  illustrationsForServer
 });
 /**
  * @license BSD-3-Clause
