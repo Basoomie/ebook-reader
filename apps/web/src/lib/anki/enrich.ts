@@ -5,7 +5,7 @@
  */
 
 import type { AnkiConnect, NoteInfo } from './anki-connect';
-import { APPEND_SEPARATOR, isEmptyField, mergeField } from './field-merge';
+import { APPEND_SEPARATOR, isEmptyField, mergeField, type FieldMode } from './field-merge';
 import { ENRICH_ROLES, ROLE_LABELS, type EnrichMapping, type EnrichRole } from './mapping';
 import type { Sentence } from './sentence';
 
@@ -25,6 +25,11 @@ import type { Sentence } from './sentence';
  *
  * AnkiConnect Android: fields name the media as it stored them (it renames every file), and
  * the tag is left out with the reason (it can't add tags to an existing note).
+ *
+ * Enrich while offline (Season 2 §3): when the sentence audio can't be made now (the
+ * library server can't be reached), it waits: its field stays as it is, the result says so
+ * (`waiting`), and the caller keeps it for later (`pending/`). The field's mode is applied
+ * when the clip is added.
  */
 
 export const ANDROID_NO_TAG = "AnkiConnect Android can't add tags to a card that already exists";
@@ -40,6 +45,29 @@ export interface Unavailable {
   skip: string;
 }
 
+/** A piece that will be added later, with when (shown as "… will be added <wait>."). */
+export interface Waiting {
+  wait: string;
+}
+
+/** Thrown by a MediaFile's `load` when the piece should wait instead of being left out. */
+export class WaitError extends Error {
+  constructor(readonly wait: string) {
+    super(wait);
+  }
+}
+
+/** The sentence audio waits: what the clip is added to later. */
+export interface WaitingClip {
+  field: string;
+  mode: FieldMode;
+  /** The field's value after this tap's write. */
+  fieldAtTap: string;
+  /** Overwrite of a field other roles fill too: their values, in role order. */
+  shared?: { before: string[]; after: string[] };
+  wait: string;
+}
+
 export interface EnrichInput {
   /** Library title (Calibre), falling back to the book's own title. */
   title: string;
@@ -50,8 +78,11 @@ export interface EnrichInput {
   link: string | Unavailable;
   /** Resolved only when the note type maps a cover field. */
   cover: () => Promise<MediaFile | Unavailable>;
-  /** Resolved only when the note type maps a sentence-audio field and there is a sentence. */
-  audio: (sentence: Sentence) => Promise<MediaFile | Unavailable>;
+  /**
+   * Resolved only when the note type maps a sentence-audio field and there is a sentence.
+   * Waiting (or a `load` that throws WaitError): the clip is added later.
+   */
+  audio: (sentence: Sentence) => Promise<MediaFile | Unavailable | Waiting>;
   /** Days back to look for the newest note. */
   days: number;
   mapping: EnrichMapping;
@@ -72,6 +103,8 @@ export interface EnrichResult {
   /** The note type has nothing mapped: only the tag was added. */
   unmapped: boolean;
   android: boolean;
+  /** The sentence audio waits (only set then). */
+  waiting?: WaitingClip;
 }
 
 export class EnrichError extends Error {
@@ -102,6 +135,10 @@ export function noteWord(note: NoteInfo): string {
 
 function isUnavailable(value: unknown): value is Unavailable {
   return !!value && typeof value === 'object' && 'skip' in value;
+}
+
+function isWaiting(value: unknown): value is Waiting {
+  return !!value && typeof value === 'object' && 'wait' in value;
 }
 
 type MediaKind = 'image' | 'sound';
@@ -173,6 +210,8 @@ export async function enrichLastCard(anki: AnkiConnect, input: EnrichInput): Pro
 
   // What each mapped role would put in (media are resolved by name; bytes come later).
   const wanted = new Map<EnrichRole, { value: string; file?: MediaFile; kind?: MediaKind }>();
+  // The sentence audio can't be made now: when it will be.
+  let audioWait: string | null = null;
 
   // A media role: overwrite reuses the copy the field already shows (nothing is stored).
   const media = (role: EnrichRole, kind: MediaKind, file: MediaFile) => {
@@ -213,6 +252,7 @@ export async function enrichLastCard(anki: AnkiConnect, input: EnrichInput): Pro
 
         const audio = await input.audio(input.sentence);
         if (isUnavailable(audio)) result.skipped.push({ what: label, reason: audio.skip });
+        else if (isWaiting(audio)) audioWait = audio.wait;
         else media(role, 'sound', audio);
       }
     } catch (error) {
@@ -231,12 +271,21 @@ export async function enrichLastCard(anki: AnkiConnect, input: EnrichInput): Pro
     const kept: EnrichRole[] = [];
     const missing: EnrichRole[] = [];
     const rebuilt = new Map<string, EnrichRole[]>();
+    const audioTarget = audioWait !== null ? mapping.sentenceAudio : undefined;
 
     for (const role of wanted.keys()) {
       const target = mapping[role]!;
 
       if (!values.has(target.field)) missing.push(role);
       else if (target.mode === 'overwrite') rebuilt.set(target.field, []);
+    }
+
+    // A waiting overwrite: the field's other roles still get exactly this tap's values.
+    if (audioTarget) {
+      if (!values.has(audioTarget.field)) missing.push('sentenceAudio');
+      else if (audioTarget.mode === 'overwrite' && !rebuilt.has(audioTarget.field)) {
+        rebuilt.set(audioTarget.field, []);
+      }
     }
 
     for (const [role, { value, file, kind }] of wanted) {
@@ -287,6 +336,36 @@ export async function enrichLastCard(anki: AnkiConnect, input: EnrichInput): Pro
       }
     }
 
+    // The waiting clip: fill if empty into a field that has something now adds nothing (an
+    // online tap would have found it filled too); otherwise it waits for this field.
+    let waiting: WaitingClip | undefined;
+
+    if (audioTarget && values.has(audioTarget.field)) {
+      const fieldAtTap = values.get(audioTarget.field) ?? '';
+
+      if (audioTarget.mode === 'fill-if-empty' && !isEmptyField(fieldAtTap)) {
+        kept.push('sentenceAudio');
+      } else {
+        waiting = {
+          field: audioTarget.field,
+          mode: audioTarget.mode,
+          fieldAtTap,
+          wait: audioWait!
+        };
+
+        const others = rebuilt.get(audioTarget.field);
+
+        if (audioTarget.mode === 'overwrite' && others?.length) {
+          const at = ENRICH_ROLES.indexOf('sentenceAudio');
+          const valueOf = (role: EnrichRole) => wanted.get(role)!.value;
+          waiting.shared = {
+            before: others.filter((r) => ENRICH_ROLES.indexOf(r) < at).map(valueOf),
+            after: others.filter((r) => ENRICH_ROLES.indexOf(r) > at).map(valueOf)
+          };
+        }
+      }
+    }
+
     const inRoleOrder = (list: EnrichRole[]) => ENRICH_ROLES.filter((role) => list.includes(role));
 
     return {
@@ -294,7 +373,8 @@ export async function enrichLastCard(anki: AnkiConnect, input: EnrichInput): Pro
       added: inRoleOrder(added),
       replaced: inRoleOrder(replaced),
       kept: inRoleOrder(kept),
-      missing
+      missing,
+      waiting
     };
   };
 
@@ -314,6 +394,12 @@ export async function enrichLastCard(anki: AnkiConnect, input: EnrichInput): Pro
       entry.value = mediaValue(entry.kind, stored);
     } catch (error) {
       wanted.delete(role);
+
+      if (role === 'sentenceAudio' && error instanceof WaitError) {
+        audioWait = error.wait;
+        continue;
+      }
+
       result.skipped.push({
         what: ROLE_LABELS[role].toLowerCase(),
         reason: (error as Error)?.message ?? String(error)
@@ -321,7 +407,7 @@ export async function enrichLastCard(anki: AnkiConnect, input: EnrichInput): Pro
     }
   }
 
-  const { updates, added, replaced, kept, missing } = plan();
+  const { updates, added, replaced, kept, missing, waiting } = plan();
   const label = (role: EnrichRole) => ROLE_LABELS[role].toLowerCase();
   result.added.push(...added.map(label));
   result.replaced.push(...replaced.map(label));
@@ -346,6 +432,8 @@ export async function enrichLastCard(anki: AnkiConnect, input: EnrichInput): Pro
   } else if (!addTag) {
     result.skipped.push({ what: 'tag', reason: ANDROID_NO_TAG });
   }
+
+  if (waiting) result.waiting = waiting;
 
   // Anki's editor keeps the note it shows and saves it back, so a Browse window showing the
   // note is moved off it for the fields and the tag both, and put back afterwards.
@@ -392,8 +480,12 @@ export function describeResult(result: EnrichResult): string {
     parts.push(`Replaced ${result.replaced.join(', ')} in ${name}.`);
   }
 
-  if (!result.added.length && !result.replaced.length) {
+  if (!result.added.length && !result.replaced.length && !result.waiting) {
     parts.push(`Nothing new to add to ${name}.`);
+  }
+
+  if (result.waiting) {
+    parts.push(`${ROLE_LABELS.sentenceAudio} will be added ${result.waiting.wait}.`);
   }
 
   if (result.kept.length) {

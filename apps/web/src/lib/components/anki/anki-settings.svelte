@@ -26,6 +26,7 @@
     ankiNoticeSeconds$,
     ankiTagPrefix$
   } from '$lib/anki/settings';
+  import PendingClipsSection from './pending-clips-section.svelte';
 
   /**
    * WP14: Settings > Anki (its own tab since 2026-11-12). AnkiConnect on this device, and (the same on every
@@ -219,6 +220,7 @@
           {status}
         </p>
       {/if}
+      <PendingClipsSection />
     </div>
 
     <div class="border-c-line border-t pt-6 lg:border-l lg:border-t-0 lg:pl-10 lg:pt-0">

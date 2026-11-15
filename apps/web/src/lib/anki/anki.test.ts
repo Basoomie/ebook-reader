@@ -16,6 +16,7 @@ import {
   enrichLastCard,
   heldMediaName,
   holdsMedia,
+  WaitError,
   type EnrichInput
 } from './enrich';
 import { isEmptyField, mergeField } from './field-merge';
@@ -948,5 +949,183 @@ describe('enrich last card', () => {
         )
     });
     await expect(hung.invoke('version')).rejects.toThrow("Anki didn't answer in time");
+  });
+});
+
+// ---------------------------------------------------------------- Enrich while offline
+
+describe('enrich with sentence audio that waits (Season 2 §3)', () => {
+  const WAIT = 'when the library server can be reached';
+  const card = (over: Record<string, string> = {}) =>
+    note(300, { Key: '猫', Sentence: '', SentenceAudio: '', Picture: '', ReaderLink: '', ...over });
+  const withModes = (
+    modes: Partial<Record<'sentence' | 'sentenceAudio' | 'cover' | 'link', string>>,
+    fields: Partial<Record<'sentence' | 'sentenceAudio' | 'cover' | 'link', string>> = {}
+  ) => ({
+    'JP Mining Note': Object.fromEntries(
+      (['sentence', 'sentenceAudio', 'cover', 'link'] as const).map((role) => [
+        role,
+        {
+          field: fields[role] ?? MAPPING['JP Mining Note'][role].field,
+          mode: (modes[role] ?? 'fill-if-empty') as 'fill-if-empty' | 'append' | 'overwrite'
+        }
+      ])
+    )
+  });
+  const stores = (calls: Call[]) =>
+    calls.filter((c) => c.action === 'storeMediaFile').map((c) => c.params!.filename);
+  const updates = (calls: Call[]) =>
+    calls
+      .filter((c) => c.action === 'updateNoteFields')
+      .map((c) => (c.params!.note as { fields: Record<string, string> }).fields);
+
+  it('adds everything else and says the sentence audio will be added later', async () => {
+    const n = card();
+    const { anki, calls } = fakeAnki({ notes: [n] });
+    const result = await enrichLastCard(anki, input({ audio: async () => ({ wait: WAIT }) }));
+
+    expect(updates(calls)).toEqual([
+      {
+        Sentence: '<b>猫</b>が好きだ。',
+        Picture: '<img src="ttsu-cover-b1.jpg">',
+        ReaderLink: '/open?book=b1&pos=42'
+      }
+    ]);
+    expect(stores(calls)).toEqual(['ttsu-cover-b1.jpg']);
+    expect(result.waiting).toEqual({
+      field: 'SentenceAudio',
+      mode: 'fill-if-empty',
+      fieldAtTap: '',
+      wait: WAIT
+    });
+    expect(result.added).toEqual(['tag', 'sentence', 'cover', 'link to the passage']);
+    expect(result.skipped).toEqual([]);
+    expect(describeResult(result)).toBe(
+      'Added tag, sentence, cover, link to the passage to 「猫」. Sentence audio will be added when the library server can be reached.'
+    );
+  });
+
+  it('waits when the clip itself can’t be fetched (WaitError from load)', async () => {
+    const n = card();
+    const { anki, calls } = fakeAnki({ notes: [n] });
+    const result = await enrichLastCard(
+      anki,
+      input({
+        audio: async () => ({
+          fileName: 'ttsu-b1-2000-6000.mp3',
+          load: async () => {
+            throw new WaitError(WAIT);
+          }
+        })
+      })
+    );
+
+    expect(stores(calls)).toEqual(['ttsu-cover-b1.jpg']);
+    expect(updates(calls)[0]).not.toHaveProperty('SentenceAudio');
+    expect(result.waiting?.field).toBe('SentenceAudio');
+    expect(result.skipped).toEqual([]);
+  });
+
+  it('nothing waits when fill if empty finds the audio field filled', async () => {
+    const n = card({ SentenceAudio: '[sound:yomitan.mp3]' });
+    const { anki } = fakeAnki({ notes: [n] });
+    const result = await enrichLastCard(anki, input({ audio: async () => ({ wait: WAIT }) }));
+
+    expect(result.waiting).toBeUndefined();
+    expect(result.kept).toContain('sentence audio');
+    expect(describeResult(result)).not.toContain('will be added');
+  });
+
+  it('add to the end waits with the field as it is', async () => {
+    const n = card({ SentenceAudio: '[sound:old.mp3]' });
+    const { anki } = fakeAnki({ notes: [n] });
+    const result = await enrichLastCard(
+      anki,
+      input({
+        mapping: withModes({ sentenceAudio: 'append' }),
+        audio: async () => ({ wait: WAIT })
+      })
+    );
+
+    expect(result.waiting).toEqual({
+      field: 'SentenceAudio',
+      mode: 'append',
+      fieldAtTap: '[sound:old.mp3]',
+      wait: WAIT
+    });
+    expect(n.fields.SentenceAudio.value).toBe('[sound:old.mp3]');
+  });
+
+  it('overwrite keeps the field until the clip comes, and remembers what it held', async () => {
+    const n = card({ SentenceAudio: '[sound:yomitan.mp3]' });
+    const { anki, calls } = fakeAnki({ notes: [n] });
+    const result = await enrichLastCard(
+      anki,
+      input({
+        mapping: withModes({ sentenceAudio: 'overwrite' }),
+        audio: async () => ({ wait: WAIT })
+      })
+    );
+
+    expect(n.fields.SentenceAudio.value).toBe('[sound:yomitan.mp3]');
+    expect(updates(calls)[0]).not.toHaveProperty('SentenceAudio');
+    expect(result.waiting).toEqual({
+      field: 'SentenceAudio',
+      mode: 'overwrite',
+      fieldAtTap: '[sound:yomitan.mp3]',
+      wait: WAIT
+    });
+  });
+
+  it('overwrite of a field other roles fill too: they are written, their values kept around the clip', async () => {
+    const n = card({ Sentence: 'Yomitan の文' });
+    const { anki } = fakeAnki({ notes: [n] });
+    const result = await enrichLastCard(
+      anki,
+      input({
+        mapping: withModes(
+          { sentence: 'overwrite', sentenceAudio: 'overwrite', link: 'overwrite' },
+          { sentenceAudio: 'Sentence', link: 'Sentence' }
+        ),
+        audio: async () => ({ wait: WAIT })
+      })
+    );
+
+    expect(n.fields.Sentence.value).toBe('<b>猫</b>が好きだ。<br>/open?book=b1&pos=42');
+    expect(result.waiting).toEqual({
+      field: 'Sentence',
+      mode: 'overwrite',
+      fieldAtTap: '<b>猫</b>が好きだ。<br>/open?book=b1&pos=42',
+      shared: { before: ['<b>猫</b>が好きだ。'], after: ['/open?book=b1&pos=42'] },
+      wait: WAIT
+    });
+  });
+
+  it('only the waiting audio: no "Nothing new to add"', async () => {
+    const n = card({
+      Sentence: '<b>猫</b>が好きだ。',
+      Picture: '<img src="ttsu-cover-b1.jpg">',
+      ReaderLink: '/open?book=b1&pos=42'
+    });
+    n.tags.push('猫の本');
+    const { anki, calls } = fakeAnki({ notes: [n] });
+    const result = await enrichLastCard(anki, input({ audio: async () => ({ wait: WAIT }) }));
+
+    expect(updates(calls)).toEqual([]);
+    expect(describeResult(result)).toBe(
+      'Sentence audio will be added when the library server can be reached. Already there: sentence, cover, link to the passage, tag.'
+    );
+  });
+
+  it('a note type without the audio field: left out with the reason, nothing waits', async () => {
+    const n = note(300, { Key: '猫', Sentence: '', Picture: '', ReaderLink: '' });
+    const { anki } = fakeAnki({ notes: [n] });
+    const result = await enrichLastCard(anki, input({ audio: async () => ({ wait: WAIT }) }));
+
+    expect(result.waiting).toBeUndefined();
+    expect(result.skipped).toContainEqual({
+      what: 'sentence audio',
+      reason: 'the note type has no field "SentenceAudio"'
+    });
   });
 });

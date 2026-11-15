@@ -36,6 +36,21 @@ export function removeFromDeviceCopy(title: string): ConfirmCopy {
 
 // ---- Settings -----------------------------------------------------------------------
 
+/** Settings > Anki: cancel sentence audio that waits to be added (Season 2 §3). */
+export function cancelPendingClipCopy(word: string): ConfirmCopy {
+  return {
+    title: word
+      ? `Stop waiting to add sentence audio to 「${word}」?`
+      : 'Stop waiting to add this sentence audio?',
+    message: [
+      'The sentence audio is not added to the card, and what this device kept for it is removed.',
+      'The card stays as it is. Enrich it again to add the audio.'
+    ],
+    confirmLabel: 'Stop waiting',
+    cancelLabel: 'Keep waiting'
+  };
+}
+
 export function disconnectCopy(): ConfirmCopy {
   return {
     title: 'Disconnect this device?',
