@@ -130,6 +130,8 @@ export interface CleanupSettings {
   gate: GateSettings;
   reviewAlarmPercent: number;
   libraryChangedPausePercent: number;
+  /** A batch pauses its stage only when more than this share of its items failed. */
+  failedPausePercent: number;
   covers: { maxMb: number; maxSide: number; sameDistance: number; largerPercent: number };
   backup: { path: string; verifiedOn: string; confirmedAt: number | null };
 }

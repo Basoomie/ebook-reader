@@ -95,7 +95,7 @@ docker exec ttsu-storage node dist/cli.js index status
 
 A library is identified by Calibre's library UUID, so renaming its folder keeps its books and IDs: enable the renamed folder once and the old record moves over. Two folders holding the same Calibre library (for example a copy) are refused.
 
-**Change detection.** Every `CALIBRE_POLL_SECONDS`, the server `stat`s each enabled library's `metadata.db`. When it changed, has not changed for `CALIBRE_SETTLE_SECONDS` and Calibre has no journal file next to it, the server snapshots and re-indexes it (unchanged books are skipped). A copy is thrown away and retried on the next poll if `metadata.db` changed while it was copied.
+**Change detection.** Every `CALIBRE_POLL_SECONDS`, the server `stat`s each enabled library's `metadata.db`. When it changed, has not changed for `CALIBRE_SETTLE_SECONDS` and Calibre has no journal file next to it, the server snapshots and re-indexes it (unchanged books are skipped). A copy is thrown away and retried on the next poll if `metadata.db` changed while it was copied. Calibre can keep changing `metadata.db` for hours (its background writes of each changed book's `metadata.opf`, a long cleanup run), so after `CALIBRE_MAX_SETTLE_WAIT_SECONDS` of waiting the server copies it anyway: SQLite's backup gives a consistent copy even while Calibre writes. A book whose folder Calibre moved since the last index (a title or author change) is still served: its current path is read from the live `metadata.db`.
 
 **Thumbnails.** Made from each book's `cover.jpg`: fit inside 320x480, WebP quality 75 (about 15 KB each), stored in `$CACHE_DIR/thumbs/`. A background pass makes them newest first, one at a time and at most `THUMB_PER_SECOND`; a thumbnail requested before the pass reaches it is made on the spot. They are remade when Calibre changes the cover.
 
@@ -182,6 +182,7 @@ The server saves the result through `src/audio/audio-write.ts` (new files only) 
 | `CACHE_DIR`                        | `/cache`   | Snapshots of `metadata.db` and thumbnails. Must exist; must not overlap `CALIBRE_DIR`, `DB_DIR` or `DATA_DIR`.                       |
 | `CALIBRE_POLL_SECONDS`             | `60`       | How often `metadata.db` is checked for changes (5 or more).                                                                          |
 | `CALIBRE_SETTLE_SECONDS`           | `30`       | `metadata.db` must be unchanged this long before it is copied.                                                                       |
+| `CALIBRE_MAX_SETTLE_WAIT_SECONDS`  | `600`      | When `metadata.db` never stays unchanged that long, it is copied anyway after this wait. `0` = wait as long as it takes.             |
 | `CALIBRE_SNAPSHOT_TIMEOUT_SECONDS` | `600`      | A snapshot copy that takes longer is abandoned and retried on a later poll.                                                          |
 | `CALIBRE_MAX_MISSING_PERCENT`      | `20`       | If one index would flag more than this share of a library missing, nothing is flagged and a warning is recorded.                     |
 | `CALIBRE_REQUIRE_READONLY`         | `true`     | Refuse to index a writable Calibre mount. Set `false` only for local development.                                                    |

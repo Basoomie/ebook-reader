@@ -113,6 +113,8 @@ export class CalibreIndexer {
   private stopped = false;
   /** Last message logged per library, so a persisting problem is logged once. */
   private readonly lastProblem = new Map<string, string>();
+  /** Since when each library's metadata.db has kept changing (the settle wait). */
+  private readonly unsettledSince = new Map<string, number>();
 
   constructor(opts: IndexerOptions) {
     this.opts = opts;
@@ -222,16 +224,33 @@ export class CalibreIndexer {
       }
 
       const settled = Date.now() - stat.mtimeMs >= this.config.settleSeconds * 1000;
+      let forced = false;
       if (!settled || (await hasJournal(source))) {
-        if (state.status !== 'settling') updateIndexState(this.db, lib.id, { status: 'settling' });
-        return;
+        // Calibre can keep changing metadata.db for hours (its own background writes of each
+        // changed book's metadata.opf; a long cleanup run): past the wait, copy it anyway.
+        const since = this.unsettledSince.get(lib.id) ?? Date.now();
+        this.unsettledSince.set(lib.id, since);
+        const maxWait = this.config.maxSettleWaitSeconds * 1000;
+        if (maxWait <= 0 || Date.now() - since < maxWait) {
+          if (state.status !== 'settling')
+            updateIndexState(this.db, lib.id, { status: 'settling' });
+          return;
+        }
+        forced = true;
+        this.noteProblem(
+          lib.id,
+          `${label}: metadata.db has not stayed unchanged for ${this.config.settleSeconds} s in ${Math.round((Date.now() - since) / 1000)} s; indexing it anyway`,
+          false,
+        );
       }
 
       updateIndexState(this.db, lib.id, { status: 'snapshotting' });
       let dest = snapshotFile(this.config.cacheDir, lib.id);
       const snap = await snapshotMetadataDb(source, dest, {
         timeoutMs: this.config.snapshotTimeoutSeconds * 1000,
+        allowChanging: forced,
       });
+      this.unsettledSince.delete(lib.id);
 
       const target = adoptLibraryUuid(this.db, lib.id, snap.libraryUuid);
       if (target.id !== lib.id) {

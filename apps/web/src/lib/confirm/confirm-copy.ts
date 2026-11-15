@@ -138,7 +138,29 @@ export function startOverCopy(): ConfirmCopy {
   };
 }
 
-/** `ordinal`: "2nd" (from the read's number). */
+/** Unread on a book that is part-read: it also goes back to the start (planSetStatus). */
+export function unreadResetCopy(): ConfirmCopy {
+  return {
+    title: 'Set to Unread?',
+    message: [
+      'The book goes back to the start on every device and leaves Continue Reading. Your stats and earlier reads are kept.'
+    ],
+    confirmLabel: 'Set to Unread'
+  };
+}
+
+/** Unread for a library selection. */
+export function unreadManyCopy(count: number): ConfirmCopy {
+  return {
+    title: `Set ${books(count)} to Unread?`,
+    message: [
+      'Part-read books go back to the start on every device and leave Continue Reading. Your stats and earlier reads are kept.'
+    ],
+    confirmLabel: 'Set to Unread'
+  };
+}
+
+/** `ordinal`: "2nd" (the read's place among the finished reads). */
 export function removeReadCopy(ordinal: string): ConfirmCopy {
   return {
     title: `Remove the ${ordinal} read?`,

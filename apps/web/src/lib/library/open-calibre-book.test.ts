@@ -162,6 +162,8 @@ describe('openCalibreBook', () => {
       calibreTitle: 'Calibre a',
       characters: stored[0].characters,
       fileEtag: '"etag-a"',
+      // No hash from this server (the stand-in API has no fileHashes).
+      fileSha256: null,
       linkedAt: 5000,
       how: 'imported',
       authors: []
@@ -170,6 +172,27 @@ describe('openCalibreBook', () => {
     const second = await openCalibreBook({ id: 'a', title: 'A' }, d, signal());
     expect(second).toEqual({ status: 'opened', localId, how: 'cached' });
     expect(downloads).toEqual(['a']);
+  });
+
+  it("Season 2: an imported copy remembers its file's hash; a copy this device had doesn't", async () => {
+    const hashed = (d: OpenDeps): OpenDeps => ({
+      ...d,
+      api: {
+        ...d.api,
+        fileHashes: async (ids) => ({
+          books: ids.map((id) => ({ id, sha256: `sha-${id}`, etag: `"etag-${id}"` }))
+        })
+      }
+    });
+    const imported = deps({ a: EPUB });
+    await openCalibreBook({ id: 'a', title: 'A' }, hashed(imported.d), signal());
+    expect((await store.getLink('a'))?.fileSha256).toBe('sha-a');
+
+    await manualImport(OTHER_EPUB, 'other.epub');
+    const kept = deps({ b: OTHER_EPUB });
+    const result = await openCalibreBook({ id: 'b', title: 'B' }, hashed(kept.d), signal());
+    expect(result).toMatchObject({ how: 'matched' });
+    expect((await store.getLink('b'))?.fileSha256).toBeNull();
   });
 
   it('remembers the authors on the link and keeps them current (WP19d)', async () => {

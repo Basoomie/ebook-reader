@@ -257,6 +257,56 @@ export class DatabaseService {
     return this.deleteSingleData(db, dataId, undefined, { lastItem, bookmarkIds }, false);
   }
 
+  /**
+   * Season 2 "Cached book whose Calibre file changed": puts a new import of a library book
+   * into its existing record, in one transaction with its saved place. The record keeps its
+   * id (bookmark, last item and library link stay attached), its title (the local key of
+   * its statistics and whispersync rows) and when it was last opened; everything else comes
+   * from the new file, and whispersync's backup of the old text is dropped. The saved place
+   * is moved to `place` (found again by its text) and its scroll values, which belong to the
+   * old text, are dropped. Resolves to false when the record is gone or is a placeholder.
+   */
+  async replaceBookContent(
+    dataId: number,
+    content: Omit<BooksDbBookData, 'id'>,
+    place: { exploredCharCount: number; progress: number } | null,
+    now = Date.now()
+  ): Promise<boolean> {
+    const db = await this.db;
+    const tx = db.transaction(['data', 'bookmark'], 'readwrite');
+    const data = tx.objectStore('data');
+    const old = await data.get(dataId);
+    if (!old || !old.elementHtml) {
+      tx.abort();
+      await tx.done.catch(() => {});
+      return false;
+    }
+    const next: BooksDbBookData = {
+      ...content,
+      id: old.id,
+      title: old.title,
+      lastBookOpen: old.lastBookOpen,
+      lastBookModified: now,
+      storageSource: undefined
+    };
+    delete next.htmlBackup;
+    await data.put(next);
+    const bookmarks = tx.objectStore('bookmark');
+    const bookmark = await bookmarks.get(dataId);
+    if (bookmark && place) {
+      const moved: BooksDbBookmarkData = {
+        dataId,
+        exploredCharCount: place.exploredCharCount,
+        progress: place.progress,
+        lastBookmarkModified: now
+      };
+      await bookmarks.put(moved);
+    }
+    await tx.done;
+    this.bookmarksChanged$.next();
+    return true;
+  }
+
   async getBookmark(dataId: number) {
     const db = await this.db;
     return db.get('bookmark', dataId);

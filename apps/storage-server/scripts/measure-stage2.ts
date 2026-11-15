@@ -139,7 +139,13 @@ export function reproduce(dir: string): Reproduction {
       if (golds.some((a) => eq(S(fa), S(a)))) c.aa += 1;
       if (golds.some((a) => eq(S(fa.slice(0, 1)), S(a)))) c.a1 += 1;
     }
-    books.push({ id, gold: g, cal, file, proposals: proposeStage2(cal, file) });
+    books.push({
+      id,
+      gold: g,
+      cal,
+      file,
+      proposals: proposeStage2(cal, file, { calibreId: Number(id) }),
+    });
   }
   return { python, stage2: scoreStage2(books), asinMismatches };
 }

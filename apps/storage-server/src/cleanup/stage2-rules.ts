@@ -16,6 +16,7 @@ import {
   normalizeName,
   nfkc,
   pyStrip,
+  repeatsItself,
   titleSort,
 } from './title-rules';
 
@@ -109,6 +110,8 @@ export interface Stage2Options {
   coverSameDistance?: number;
   /** The file cover is "larger" when its longest side is at least this factor bigger. */
   coverLargerFactor?: number;
+  /** The book's Calibre id (its folder name ends with it); unknown = the longest, 6 digits. */
+  calibreId?: number;
 }
 
 export const PROCESSED_TAG = 'metadata-processed';
@@ -211,6 +214,8 @@ function titleProposals(cal: CalibreFacts, file: FileFacts): FieldProposal[] {
   let fileProblem: string | null = null;
   if (looksLikeMojibake(raw)) fileProblem = "The file's title is garbled (wrong text encoding)";
   else if (fileClean === '') fileProblem = 'The file has no title';
+  else if (repeatsItself(fileClean))
+    fileProblem = "The file's title says itself twice (series name added)";
 
   if (group === 'unknown' || group === 'processed') {
     if (fileProblem) {
@@ -281,7 +286,7 @@ function authorProposals(
   else if (first.includes('&')) fileProblem = "The file's author contains &, which Calibre splits";
   // Seen in the dry run (326 books, 1 of 5 labeled right): author and illustrator in one
   // creator, "あずみ圭/マツモトミツアキ", "原作:志倉千代丸/MAGES./Nitroplus".
-  else if (/[/／、，,]/u.test(first)) fileProblem = "The file's author holds more than one name";
+  else if (/[/／、，,＆]/u.test(first)) fileProblem = "The file's author holds more than one name";
 
   if (first === undefined) {
     normalizeOwn();
@@ -459,6 +464,57 @@ function illustratorProposal(
   };
 }
 
+/**
+ * The longest file or folder name the NAS's disks accept, in bytes (Linux NAME_MAX). Calibre
+ * doesn't check it: a title or first author that makes a longer name is refused by the disk
+ * ("File name too long", seen on the NAS 2026-11-14), after Calibre already took the title.
+ */
+export const NAME_MAX_BYTES = 255;
+/** calibre's PATH_LIMIT on Linux (db/backend.py). */
+const CALIBRE_PATH_LIMIT = 100;
+/** calibre reserves room for the longest format name (ORIGINAL_EPUB). */
+const CALIBRE_EXT_LEN = 14;
+
+const cut = (s: string, n: number) => [...s].slice(0, n).join('');
+const bytes = (s: string) => Buffer.byteLength(s, 'utf8');
+
+/**
+ * The longest name Calibre would make for a book with this title and first author
+ * (construct_path_name / construct_file_name of calibre 9.18), in bytes. Worst case: the
+ * NAS's Calibre keeps Japanese characters in names (3 bytes each); one that transliterates
+ * makes shorter ones.
+ */
+export function calibreNameBytes(calibreId: number, title: string, firstAuthor: string): number {
+  const idPart = ` (${calibreId})`;
+  const l = CALIBRE_PATH_LIMIT - Math.floor(idPart.length / 2) - 2;
+  const folder = cut(title.trimStart(), l).trimEnd() + idPart;
+  const authorFolder = cut(firstAuthor, l).replace(/[ .]+$/u, '');
+  const l2 = Math.floor((CALIBRE_PATH_LIMIT - CALIBRE_EXT_LEN - 2) / 2);
+  const file = `${cut(title.trimStart(), l2).trimEnd()} - ${cut(firstAuthor, l2)}.original_epub`;
+  return Math.max(bytes(folder), bytes(authorFolder), bytes(file));
+}
+
+/**
+ * A title or authors change makes Calibre rename the book's folder and file: one whose new
+ * name the disk would refuse goes to review instead (the title first, then the authors).
+ */
+function keepNamesShort(cal: CalibreFacts, out: FieldProposal[], calibreId: number): void {
+  const tooLong = () => {
+    const title = valueAfterAuto('title', cal, out) as string;
+    const authors = valueAfterAuto('authors', cal, out) as string[];
+    return calibreNameBytes(calibreId, title, authors[0] ?? 'Unknown');
+  };
+  for (const field of ['title', 'authors'] as const) {
+    const n = tooLong();
+    if (n <= NAME_MAX_BYTES) return;
+    for (const p of out) {
+      if (p.field !== field || p.class !== 'auto') continue;
+      p.class = 'review';
+      p.reason = `Too long for a folder name in Calibre's library (${n} bytes; the disk takes ${NAME_MAX_BYTES})`;
+    }
+  }
+}
+
 /** Every change stage 2 proposes for one book. */
 export function proposeStage2(
   cal: CalibreFacts,
@@ -469,6 +525,7 @@ export function proposeStage2(
     spelling: options.spelling ?? keepSpelling,
     coverSameDistance: options.coverSameDistance ?? 5,
     coverLargerFactor: options.coverLargerFactor ?? 1.1,
+    calibreId: options.calibreId ?? 999999,
   };
   const out: FieldProposal[] = [
     ...titleProposals(cal, file),
@@ -483,6 +540,7 @@ export function proposeStage2(
   ]) {
     if (p) out.push(p);
   }
+  keepNamesShort(cal, out, o.calibreId);
   return out;
 }
 

@@ -242,6 +242,49 @@ describe('change detection and snapshots', () => {
     expect(books(e.db)).toHaveLength(1);
   });
 
+  it('indexes a metadata.db that never stays unchanged once the longest wait is over', async () => {
+    // Calibre's own background writes (one metadata.opf per changed book) can keep touching
+    // metadata.db for hours; seen on the NAS 2026-11-15, the index waited 18 h.
+    const root = new CalibreRoot();
+    const lib = root.library('a');
+    await lib.addBook({ title: 'One' });
+    const e = env(root.dir, { settleSeconds: 600, maxSettleWaitSeconds: 0.3 });
+    await e.indexer.start({ timer: false });
+    const id = enableLibrary(e.db, 'a');
+    await e.indexer.tick();
+    expect(getIndexState(e.db, id).status).toBe('settling');
+    expect(books(e.db)).toHaveLength(0);
+    await new Promise((r) => setTimeout(r, 400));
+    const now = new Date();
+    fs.utimesSync(lib.dbFile, now, now); // still changing
+    await e.indexer.tick();
+    expect(getIndexState(e.db, id).status).toBe('idle');
+    expect(books(e.db)).toHaveLength(1);
+    expect(e.logs.some((l) => l.includes('indexing it anyway'))).toBe(true);
+
+    // The wait starts again after each index: a new change waits once more first.
+    await lib.addBook({ title: 'Two' });
+    await e.indexer.tick();
+    expect(books(e.db)).toHaveLength(1);
+    await new Promise((r) => setTimeout(r, 400));
+    await e.indexer.tick();
+    expect(books(e.db)).toHaveLength(2);
+  });
+
+  it('with no longest wait (0) it waits for metadata.db to settle, as before', async () => {
+    const root = new CalibreRoot();
+    const lib = root.library('a');
+    await lib.addBook({ title: 'One' });
+    const e = env(root.dir, { settleSeconds: 600, maxSettleWaitSeconds: 0 });
+    await e.indexer.start({ timer: false });
+    const id = enableLibrary(e.db, 'a');
+    await e.indexer.tick();
+    await new Promise((r) => setTimeout(r, 300));
+    await e.indexer.tick();
+    expect(getIndexState(e.db, id).status).toBe('settling');
+    expect(books(e.db)).toHaveLength(0);
+  });
+
   it('reports a WAL-mode metadata.db as an error instead of reading it', async () => {
     const root = new CalibreRoot();
     const lib = root.library('a');

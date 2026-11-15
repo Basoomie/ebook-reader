@@ -48,6 +48,11 @@ export interface SnapshotResult {
 
 export interface SnapshotOptions {
   timeoutMs: number;
+  /**
+   * Accept a source that changed during the copy. SQLite's backup restarts by itself when the
+   * source changes, so the copy is still consistent; only use when the source never settles.
+   */
+  allowChanging?: boolean;
 }
 
 async function removeQuietly(file: string): Promise<void> {
@@ -59,7 +64,7 @@ async function removeQuietly(file: string): Promise<void> {
 export async function snapshotMetadataDb(
   source: string,
   dest: string,
-  { timeoutMs }: SnapshotOptions,
+  { timeoutMs, allowChanging = false }: SnapshotOptions,
 ): Promise<SnapshotResult> {
   const before = await statFile(source);
   if (!before) throw new SnapshotSkipped(`${METADATA_DB} is not there`);
@@ -99,7 +104,7 @@ export async function snapshotMetadataDb(
     }
 
     const after = await statFile(source);
-    if (!sameStat(before, after) || (await hasJournal(source))) {
+    if (!allowChanging && (!sameStat(before, after) || (await hasJournal(source)))) {
       throw new SnapshotSkipped(`${METADATA_DB} changed during the copy`);
     }
 

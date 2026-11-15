@@ -28,6 +28,7 @@ import {
   BOOK_BLUR_KIND,
   BOOK_FAVORITE_KIND
 } from '$lib/sync/book-state';
+import { currentReadPastStart } from '$lib/library/progress';
 import { positionRecordId } from '$lib/sync/record-position';
 import type { LocalRecord, SyncMeta } from '$lib/sync/sync-db';
 import type { RefusalHandler, SyncEngine } from '$lib/sync/sync-engine';
@@ -128,8 +129,39 @@ async function plan(
 
 // ---- user actions (throw on failure so the UI can say so) -------------------
 
-export function setBookStatus(bookId: string, status: BookStatus, deps: BookStateDeps) {
-  return plan(bookId, deps, (s) => planSetStatus(s, status));
+/** The book's state (with this device's re-planned Start over) and its position records. */
+async function stateAndPositions(
+  engine: SyncEngine,
+  bookId: string
+): Promise<{ state: BookState; positions: LocalRecord[] }> {
+  const [records, meta] = await Promise.all([engine.getForBook(bookId), engine.getMeta()]);
+  return {
+    state: withOwnMove(bookStateFrom(bookId, records), meta, engine.deviceId),
+    positions: records.filter((r) => r.kind === 'position')
+  };
+}
+
+/** Unread, Reading or Dropped. Unread on a book with a place resets the place (planSetStatus). */
+export async function setBookStatus(bookId: string, status: BookStatus, deps: BookStateDeps) {
+  const engine = await deps.getEngine();
+  const { state, positions } = await stateAndPositions(engine, bookId);
+  const hasPlace = status === 'unread' && currentReadPastStart(bookId, state, positions);
+  await applyWrites(engine, planSetStatus(state, status, { today: deps.today(), hasPlace }));
+}
+
+/**
+ * Whether choosing Unread would reset the book's place (the current read is past the
+ * start on some device), so the dialog can ask first. False when it can't tell.
+ */
+export async function currentReadHasPlace(bookId: string, deps: BookStateDeps): Promise<boolean> {
+  try {
+    const engine = await deps.getEngine();
+    const { state, positions } = await stateAndPositions(engine, bookId);
+    return currentReadPastStart(bookId, state, positions);
+  } catch (error) {
+    deps.warn(`Book state: ${(error as Error)?.message ?? error}`);
+    return false;
+  }
 }
 
 export async function setBookFavorite(bookId: string, favorite: boolean, deps: BookStateDeps) {

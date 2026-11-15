@@ -48,6 +48,27 @@ export function furthestPosition(
 }
 
 /**
+ * Whether the current read has a place past the start on any device: a known fraction
+ * above 0, or a character position above 0 (also when the fraction can't be told).
+ * Continue Reading lists such books; choosing Unread resets them (planSetStatus).
+ */
+export function currentReadPastStart(
+  bookId: string,
+  state: BookState | undefined,
+  positions: readonly LocalRecord[]
+): boolean {
+  const current = state ?? bookStateFrom(bookId, []);
+  const own = positions.filter(
+    (r) => r.deletedAt === null && r.bookId === bookId && isCurrentReadThroughPosition(current, r)
+  );
+  const best = furthestPosition(bookId, current, own, null);
+  return (
+    (best !== null && best.fraction > 0) ||
+    own.some((r) => typeof r.data?.charPos === 'number' && r.data.charPos > 0)
+  );
+}
+
+/**
  * A book's progress for the library info line: "Finished" for Completed books,
  * otherwise the furthest place of the current read on any device (furthestPosition),
  * as a whole percent. Null when there is nothing to show (never opened, or no way to tell).

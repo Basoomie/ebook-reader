@@ -5,13 +5,7 @@
   export type HomeRowView =
     | { status: 'loading' }
     | { status: 'ok'; books: CatalogBook[] }
-    | { status: 'error'; message: string }
-    /** Offline Continue Reading: books on this device, by title only. */
-    | {
-        status: 'offline';
-        message: string;
-        local: { bookId: string; title: string; localId: number }[];
-      };
+    | { status: 'error'; message: string };
 </script>
 
 <script lang="ts">
@@ -61,7 +55,6 @@
     collect: CatalogBook;
     remove: CatalogBook;
     retry: void;
-    openLocal: number;
   }>();
 
   $: size = coverSize($libraryCoverSize$);
@@ -102,25 +95,6 @@
       <span>{view.message}</span>
       <button class="c-btn c-btn-secondary" on:click={() => dispatch('retry')}>Retry</button>
     </div>
-  {:else if view.status === 'offline'}
-    <div class="flex flex-wrap items-center gap-3 py-2 text-sm" role="alert">
-      <span>{view.message}</span>
-      <button class="c-btn c-btn-secondary" on:click={() => dispatch('retry')}>Retry</button>
-    </div>
-    {#if view.local.length}
-      <ul class="flex flex-col gap-2" data-testid="home-offline-list">
-        {#each view.local as b (b.bookId)}
-          <li>
-            <button
-              class="c-btn c-btn-secondary w-full justify-start text-left"
-              on:click={() => dispatch('openLocal', b.localId)}
-            >
-              {b.title}
-            </button>
-          </li>
-        {/each}
-      </ul>
-    {/if}
   {:else if view.books.length === 0}
     <p class="py-2 text-sm text-c-muted">{emptyText}</p>
   {:else}

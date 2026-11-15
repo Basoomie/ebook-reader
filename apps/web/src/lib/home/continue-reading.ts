@@ -4,7 +4,7 @@
  * All rights reserved.
  */
 
-import { furthestPosition } from '$lib/library/progress';
+import { currentReadPastStart } from '$lib/library/progress';
 import { bookStateFrom, isCurrentReadThroughPosition, type BookState } from '$lib/sync/book-state';
 import type { LocalRecord } from '$lib/sync/sync-db';
 
@@ -26,17 +26,13 @@ export function continueReadingIds(
   for (const [bookId, records] of positions) {
     const state = states.get(bookId);
     if (state?.status === 'completed' || state?.status === 'dropped') continue;
+    if (!currentReadPastStart(bookId, state, records)) continue;
     const current = (records as LocalRecord[]).filter(
       (r) =>
         r.deletedAt === null &&
         r.bookId === bookId &&
         isCurrentReadThroughPosition(state ?? bookStateFrom(bookId, []), r)
     );
-    const best = furthestPosition(bookId, state, current, null);
-    const pastStart =
-      (best !== null && best.fraction > 0) ||
-      current.some((r) => typeof r.data?.charPos === 'number' && r.data.charPos > 0);
-    if (!pastStart) continue;
     placed.push({ id: bookId, at: Math.max(...current.map((r) => r.updatedAt)) });
     seen.add(bookId);
   }

@@ -43,6 +43,15 @@
   import { getLibraryStore, type LibraryConnection } from '$lib/library/library-db';
   import type { OpenStage } from '$lib/library/open-calibre-book';
   import { openCatalogBook } from '$lib/library/open-from-catalog';
+  import type { OfflineCatalog } from '$lib/library/offline/offline-catalog';
+  import {
+    browserOnline,
+    isUnreachable,
+    offlineCatalog,
+    OFFLINE_NOTICE,
+    saveOfflineDetail,
+    saveOfflineLibraries
+  } from '$lib/library/offline/offline-source';
   import { isOnThisDevice, removeFromThisDevice } from '$lib/library/remove-from-device';
   import { bookProgressFraction, bookProgressLabel, positionsByBook } from '$lib/library/progress';
   import { libraryCoverSize$, libraryRequestTimeoutSeconds$ } from '$lib/library/settings';
@@ -65,6 +74,8 @@
 
   let connection: LibraryConnection | null | undefined;
   let api: LibraryApi | undefined;
+  /** Season 2 §2: the server can't be reached; the book's offline copy is shown. */
+  let offline = false;
   let libraries: CatalogLibrary[] = [];
   let bookId = '';
   let book: CatalogBookDetail | null = null;
@@ -139,13 +150,31 @@
     }
     const timeout = Math.max(0, Number($libraryRequestTimeoutSeconds$) || 0);
     api = new LibraryApi(connection.serverUrl, connection.token, timeout);
-    try {
-      libraries = (await api.libraries()).libraries;
-    } catch {
-      // The book request reports connection problems.
+    offline = !browserOnline();
+    if (!offline) {
+      try {
+        libraries = (await api.libraries()).libraries;
+        void saveOfflineLibraries(libraries);
+      } catch {
+        // The book request reports connection problems.
+      }
     }
     await load();
   });
+
+  /** Who answers: the server, or the offline catalog while it can't be reached. */
+  function source(): LibraryApi | OfflineCatalog | undefined {
+    if (!api) return undefined;
+    return offline ? offlineCatalog() : api;
+  }
+
+  /** "Try again": ask the server for this book again. */
+  function tryServerAgain() {
+    offline = false;
+    book = null;
+    bookId = '';
+    void load();
+  }
 
   onDestroy(() => {
     destroyed = true;
@@ -200,11 +229,27 @@
     series = [];
     alsoBy = [];
     try {
-      book = await api.book(id, { signal: controller.signal });
+      try {
+        book = await (source() as LibraryApi | OfflineCatalog).book(id, {
+          signal: controller.signal
+        });
+        if (!offline) void saveOfflineDetail(book);
+      } catch (err) {
+        // The server can't be reached: the copy on this device, when there is one.
+        if (offline || !isUnreachable(err)) throw err;
+        offline = true;
+        if (!libraries.length) libraries = (await offlineCatalog().libraries()).libraries;
+        try {
+          book = await offlineCatalog().book(id, { signal: controller.signal });
+        } catch (offlineErr) {
+          if (offlineErr instanceof LibraryApiError && offlineErr.code === 'not_found') throw err;
+          throw offlineErr;
+        }
+      }
     } catch (err) {
       if (err instanceof LibraryApiError && err.kind === 'aborted') return;
       book = null;
-      if (err instanceof LibraryApiError && err.status === 404) notFound = true;
+      if (err instanceof LibraryApiError && err.status === 404 && !offline) notFound = true;
       else error = describe(err);
       loading = false;
       return;
@@ -232,8 +277,8 @@
 
   /** The other volumes of the series and other books by each author. */
   async function loadRelated(current: CatalogBookDetail, signal: AbortSignal) {
-    if (!api) return;
-    const a = api;
+    const a = source();
+    if (!a) return;
     try {
       if (current.series) {
         const page = await a.books(
@@ -262,7 +307,7 @@
 
   function describe(err: unknown): string {
     if (err instanceof LibraryApiError && (err.kind === 'unreachable' || err.kind === 'timeout')) {
-      return 'The library server cannot be reached (offline, or the server is down).';
+      return 'The library server cannot be reached (offline, or the server is down), and the book is not on this device.';
     }
     return (err as Error).message;
   }
@@ -370,6 +415,19 @@
     </p>
   {:else if loading && !book}
     <p class="py-8 text-c-muted">Loading…</p>
+  {/if}
+  {#if offline && connection}
+    <p class="c-notice flex flex-wrap items-center gap-x-3 gap-y-2" data-testid="offline-notice">
+      <span role="status">{OFFLINE_NOTICE}</span>
+      <button
+        class="c-btn c-btn-secondary px-3"
+        data-testid="offline-retry"
+        on:click={tryServerAgain}>Try again</button
+      >
+    </p>
+  {/if}
+  {#if connection === null || (loading && !book)}
+    <!-- Shown above. -->
   {:else if notFound}
     <p class="c-notice" data-testid="details-not-found">This book isn't in the library.</p>
   {:else if error}

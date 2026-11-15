@@ -240,9 +240,26 @@ export function planFirstPageTurn(state: BookState): BookStateWrite[] {
   return state.status === 'unread' ? [statusWrite(state.bookId, 'reading', true)] : [];
 }
 
-/** Unread, Reading or Dropped: only the status changes. Completed goes through planMarkCompleted. */
-export function planSetStatus(state: BookState, status: BookStatus): BookStateWrite[] {
+export interface SetStatusInput {
+  /** Today's date key (the tracker's day), for a reset's new read-through. */
+  today: string;
+  /** The current read has a place past the start on some device (currentReadPastStart). */
+  hasPlace: boolean;
+}
+
+/**
+ * Unread, Reading or Dropped: the status changes. Completed goes through planMarkCompleted.
+ * Unread on a book whose current read has a place past the start also resets the place
+ * (decided with the user, 2026-11-14): it is a Start over, so the book opens at the start
+ * on every device and leaves Continue Reading. Nothing is rewritten or deleted.
+ */
+export function planSetStatus(
+  state: BookState,
+  status: BookStatus,
+  input?: SetStatusInput
+): BookStateWrite[] {
   if (status === 'completed') throw new Error('Use planMarkCompleted for Completed');
+  if (status === 'unread' && input?.hasPlace) return planStartOver(state, input.today);
   if (state.status === status && !state.statusAuto) return [];
   return [statusWrite(state.bookId, status, false)];
 }
@@ -314,6 +331,35 @@ export function planStartOver(state: BookState, today: string): BookStateWrite[]
     }),
     statusWrite(state.bookId, 'unread', false)
   ];
+}
+
+/** One read-through as the Book status dialog lists it. */
+export interface ReadThroughLine {
+  readThrough: ReadThrough;
+  /** 1, 2, … among the finished reads; null for the current unfinished read. */
+  finishedNumber: number | null;
+}
+
+/**
+ * The reads the Book status dialog lists: finished reads, numbered among themselves
+ * (so "1st read" is the first finished one), then the current unfinished read while
+ * the book is Reading or Dropped. Unfinished reads left behind by a Start over are not
+ * listed (like the implicit first read), and neither is a fresh read of an Unread book.
+ */
+export function readThroughLines(state: BookState): ReadThroughLine[] {
+  const lines: ReadThroughLine[] = [];
+  let finished = 0;
+  for (const rt of state.readThroughs) {
+    if (rt.finished) {
+      finished += 1;
+      lines.push({ readThrough: rt, finishedNumber: finished });
+    }
+  }
+  const current = currentReadThrough(state);
+  if (current && !current.finished && state.status !== 'unread') {
+    lines.push({ readThrough: current, finishedNumber: null });
+  }
+  return lines;
 }
 
 /** Changes the finish date of a finished read-through (null = blank). */

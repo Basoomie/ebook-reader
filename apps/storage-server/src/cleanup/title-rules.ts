@@ -165,7 +165,13 @@ const HAS_KANJI_OR_HIRAGANA = /[一-龥ぁ-ん]/u;
  * family and given name, other names keep single spaces.
  */
 export function normalizeName(name: string | null | undefined): string {
-  const n = pyStrip(nfkc(name).replace(re(WS, 'g'), ' '));
+  // A full-width ＆ stays: NFKC would make it "&", which Calibre splits into two authors
+  // (seen on the NAS 2026-11-15, "蛇蔵＆海野凪子").
+  const n = pyStrip(
+    nfkc((name ?? '').replace(/＆/gu, ''))
+      .replace(re(WS, 'g'), ' ')
+      .replace(//gu, '＆'),
+  );
   if (KATAKANA_NAME.test(n)) return n.replace(/\s+/gu, '・');
   if (HAS_KANJI_OR_HIRAGANA.test(n)) return n.replace(/\s+/gu, '');
   return n.replace(/\s{2,}/gu, ' ');
@@ -217,6 +223,26 @@ export function titleSort(title: string): string {
     if (t && IGNORE_STARTS.includes(t[0])) t = t.slice(1);
   }
   return pyStrip(t);
+}
+
+/**
+ * A title that says itself twice: the volume title and then the series title after a space,
+ * as some publishers fill dc:title ("X2―sub― X―sub―", "怪盗探偵山猫 「怪盗探偵山猫」シリーズ",
+ * "Another エピソードS（角川文庫版） Another"). Seen on the NAS run 2026-11-14 (263 of 47,140
+ * automatic titles). Compared without numbers, spaces and width differences; both parts at
+ * least REPEAT_MIN_CHARS long, and one starts with the other.
+ */
+export const REPEAT_MIN_CHARS = 6;
+export function repeatsItself(title: string | null | undefined): boolean {
+  const parts = (title ?? '').split(/[ \u3000]+/u).filter(Boolean);
+  const core = (s: string) => (N(s) ?? '').replace(/[0-9]+/gu, '').replace(/\s+/gu, '');
+  for (let k = 1; k < parts.length; k++) {
+    const a = core(parts.slice(0, k).join(' '));
+    const b = core(parts.slice(k).join(' '));
+    if (a.length < REPEAT_MIN_CHARS || b.length < REPEAT_MIN_CHARS) continue;
+    if (a === b || a.startsWith(b) || b.startsWith(a)) return true;
+  }
+  return false;
 }
 
 export { IDEOGRAPHIC_SPACE };

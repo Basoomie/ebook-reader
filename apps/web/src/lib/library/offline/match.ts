@@ -1,0 +1,127 @@
+/**
+ * @license BSD-3-Clause
+ * Copyright (c) 2026, ッツ Reader Authors
+ * All rights reserved.
+ */
+
+import type { Matcher, ParsedQuery, QueryTerm, TextField } from '$lib/library/query/parse';
+import type { CatalogBook } from '$lib/library/types';
+import type { BookState } from '$lib/sync/book-state';
+
+/**
+ * The library search evaluated on the device (offline Library), term by term the same as
+ * the server's SQL (apps/storage-server/src/catalog/search-sql.ts):
+ *
+ * - text and `=` compare folded text (NFKC, then lower case; the server's fold.ts), so
+ *   full-width and half-width letters and digits match alike; /patterns/ (Unicode mode,
+ *   optional i) run on the original text;
+ * - plain text: the title, the series name or any author name (not tags);
+ * - chars: books without a count never match, negated or not;
+ * - status: no record = unread; favorite: no record = not a favorite;
+ * - on:device: the books this device stores (offline, every listed book);
+ * - "-" negates a term: NOT IFNULL(cond, 0), so `-series:x` keeps books without a series.
+ */
+
+/** The server's fold (catalog/fold.ts, foldForSearch). */
+export function foldForSearch(text: string): string {
+  return text.normalize('NFKC').toLowerCase();
+}
+
+export interface MatchContext {
+  states: ReadonlyMap<string, BookState>;
+  onDevice(bookId: string): boolean;
+}
+
+const regexCache = new Map<string, RegExp>();
+
+function compiled(source: string, ignoreCase: boolean): RegExp {
+  const key = `${ignoreCase ? 'i' : ''}/${source}`;
+  let re = regexCache.get(key);
+  if (!re) {
+    re = new RegExp(source, ignoreCase ? 'iu' : 'u');
+    if (regexCache.size >= 16) regexCache.delete(regexCache.keys().next().value as string);
+    regexCache.set(key, re);
+  }
+  return re;
+}
+
+/** One matcher on one stored text (null: no value, never matches). */
+export function matchesText(value: string | null | undefined, m: Matcher): boolean {
+  if (typeof value !== 'string') return false;
+  if (m.kind === 'regex') return compiled(m.source, m.ignoreCase).test(value);
+  const folded = foldForSearch(value);
+  const term = foldForSearch(m.value);
+  return m.exact ? folded === term : folded.includes(term);
+}
+
+function anyMatcher(value: string | null | undefined, matchers: readonly Matcher[]): boolean {
+  return matchers.some((m) => matchesText(value, m));
+}
+
+/** The names a book has for a grouping field (authors and tags without repeats). */
+export function fieldNames(book: CatalogBook, field: TextField): string[] {
+  switch (field) {
+    case 'author':
+      return [...new Set(book.authors.map((a) => a.name))];
+    case 'series':
+      return book.series ? [book.series.name] : [];
+    case 'tag':
+      return [...new Set(book.tags)];
+  }
+}
+
+function fieldMatches(book: CatalogBook, field: TextField, matchers: readonly Matcher[]): boolean {
+  return fieldNames(book, field).some((name) => anyMatcher(name, matchers));
+}
+
+function termMatches(book: CatalogBook, term: QueryTerm, ctx: MatchContext): boolean {
+  switch (term.type) {
+    case 'any':
+      return (
+        matchesText(book.title, term.matcher) ||
+        fieldMatches(book, 'series', [term.matcher]) ||
+        fieldMatches(book, 'author', [term.matcher])
+      );
+    case 'field':
+      return fieldMatches(book, term.field, term.matchers);
+    case 'chars': {
+      const n = book.charCount;
+      if (n === null || n === undefined) return false;
+      return (term.min === null || n >= term.min) && (term.max === null || n <= term.max);
+    }
+    case 'status':
+      return term.values.includes(ctx.states.get(book.id)?.status ?? 'unread');
+    case 'favorite':
+      return (ctx.states.get(book.id)?.favorite ?? false) === term.value;
+    case 'device':
+      return ctx.onDevice(book.id);
+  }
+}
+
+/** Whether one term holds for the book, negation included. */
+export function termHolds(book: CatalogBook, term: QueryTerm, ctx: MatchContext): boolean {
+  if (term.type === 'chars' && term.negated) {
+    // A book without a count is never included, negated or not.
+    const n = book.charCount;
+    return n !== null && n !== undefined && !termMatches(book, { ...term, negated: false }, ctx);
+  }
+  const hit = termMatches(book, term, ctx);
+  return term.negated ? !hit : hit;
+}
+
+/** All terms (ANDed). */
+export function matchesQuery(book: CatalogBook, query: ParsedQuery, ctx: MatchContext): boolean {
+  return query.terms.every((t) => termHolds(book, t, ctx));
+}
+
+/**
+ * In a grouped tab, the terms on the grouping field also filter the groups by name
+ * (the server's groupNameSql): in Authors, `author:日向` lists 日向夏, not every co-author.
+ */
+export function groupNameMatches(name: string, query: ParsedQuery, field: TextField): boolean {
+  return query.terms.every((t) => {
+    if (t.type !== 'field' || t.field !== field) return true;
+    const hit = anyMatcher(name, t.matchers);
+    return t.negated ? !hit : hit;
+  });
+}

@@ -203,6 +203,38 @@ describe('EPUB download (GET /api/v1/books/:id/file)', () => {
     expect(vanished.body.error.code).toBe('file_missing');
   });
 
+  it('serves a book from the folder Calibre moved it to, before the next index', async () => {
+    const { e, root, auth } = await syntheticEnv([{ title: 'Old title' }]);
+    const [book] = (await request(e.app).get('/api/v1/books').set(auth)).body.books;
+    const detail = await request(e.app).get(`/api/v1/books/${book.id}`).set(auth);
+    const oldFile = detail.body.sources[0].filePath as string;
+    const libDir = path.join(root.dir, 'a');
+    // What Calibre does on a title change: a new folder and file name, metadata.db updated.
+    const [oldFolder, name] = [path.posix.dirname(oldFile), path.posix.basename(oldFile, '.epub')];
+    const newFolder = `${path.posix.dirname(oldFolder)}/New title (${oldFolder.match(/\((\d+)\)$/)![1]})`;
+    fs.mkdirSync(path.join(libDir, ...newFolder.split('/')), { recursive: true });
+    fs.renameSync(
+      path.join(libDir, ...oldFile.split('/')),
+      path.join(libDir, ...newFolder.split('/'), 'New title - A.epub'),
+    );
+    const cal = new Database(path.join(libDir, 'metadata.db'));
+    const calId = Number(oldFolder.match(/\((\d+)\)$/)![1]);
+    cal.prepare('UPDATE books SET path = ? WHERE id = ?').run(newFolder, calId);
+    cal
+      .prepare(`UPDATE data SET name = ? WHERE book = ? AND format = 'EPUB'`)
+      .run('New title - A', calId);
+    cal.close();
+    expect(name).not.toBe('New title - A');
+    // The index hasn't run: the stored path is the old one, and the book still opens.
+    const res = await request(e.app).get(`/api/v1/books/${book.id}/file`).set(auth);
+    expect(res.status).toBe(200);
+    expect(res.headers['content-length']).toBe('1');
+    // A book Calibre doesn't have any more is still "not found", not something else.
+    fs.rmSync(path.join(libDir, ...newFolder.split('/')), { recursive: true });
+    const gone = await request(e.app).get(`/api/v1/books/${book.id}/file`).set(auth);
+    expect(gone.body.error.code).toBe('file_missing');
+  });
+
   it('never follows a stored path out of the library folder', async () => {
     const { e, auth } = await syntheticEnv([{ title: 'Sneaky' }]);
     const [book] = (await request(e.app).get('/api/v1/books').set(auth)).body.books;
