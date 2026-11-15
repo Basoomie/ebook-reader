@@ -45,12 +45,18 @@
   import { openCatalogBook } from '$lib/library/open-from-catalog';
   import type { OfflineCatalog } from '$lib/library/offline/offline-catalog';
   import {
-    browserOnline,
+    askServerFirst,
+    freshOfflineCatalog,
     isUnreachable,
+    noteReachable,
+    noteUnreachable,
     offlineCatalog,
     OFFLINE_NOTICE,
     saveOfflineDetail,
-    saveOfflineLibraries
+    saveOfflineLibraries,
+    serverAnswersAgain,
+    serverWorthAsking,
+    startsOffline
   } from '$lib/library/offline/offline-source';
   import { isOnThisDevice, removeFromThisDevice } from '$lib/library/remove-from-device';
   import { bookProgressFraction, bookProgressLabel, positionsByBook } from '$lib/library/progress';
@@ -149,18 +155,39 @@
       return;
     }
     const timeout = Math.max(0, Number($libraryRequestTimeoutSeconds$) || 0);
-    api = new LibraryApi(connection.serverUrl, connection.token, timeout);
-    offline = !browserOnline();
-    if (!offline) {
-      try {
-        libraries = (await api.libraries()).libraries;
+    const a = new LibraryApi(connection.serverUrl, connection.token, timeout);
+    api = a;
+    freshOfflineCatalog();
+    // No network, or the server didn't answer a moment ago (another page): the copy on
+    // this device at once, and the server is asked again in the background.
+    offline = startsOffline();
+    if (offline) {
+      void recheckServer(connection);
+    } else {
+      const first = await askServerFirst(connection.serverUrl, (signal) => a.libraries({ signal }));
+      if (first.status === 'ok') {
+        libraries = first.value.libraries;
         void saveOfflineLibraries(libraries);
-      } catch {
-        // The book request reports connection problems.
+      } else if (first.status === 'unreachable') {
+        offline = true;
       }
+      // Other problems: the book request reports them.
+    }
+    if (offline && !libraries.length) {
+      libraries = (
+        await offlineCatalog()
+          .libraries()
+          .catch(() => ({ libraries: [] }))
+      ).libraries;
     }
     await load();
   });
+
+  /** Offline: when the server answers the quick check again, ask it for this book. */
+  async function recheckServer(conn: LibraryConnection) {
+    if (!(await serverAnswersAgain(conn.serverUrl))) return;
+    if (!destroyed && offline && connection === conn) void tryServerAgain();
+  }
 
   /** Who answers: the server, or the offline catalog while it can't be reached. */
   function source(): LibraryApi | OfflineCatalog | undefined {
@@ -169,7 +196,10 @@
   }
 
   /** "Try again": ask the server for this book again. */
-  function tryServerAgain() {
+  async function tryServerAgain() {
+    // Away from home: no request timeout wait when the server still doesn't answer.
+    if (connection && !(await serverWorthAsking(connection.serverUrl))) return;
+    if (destroyed) return;
     offline = false;
     book = null;
     bookId = '';
@@ -233,11 +263,15 @@
         book = await (source() as LibraryApi | OfflineCatalog).book(id, {
           signal: controller.signal
         });
-        if (!offline) void saveOfflineDetail(book);
+        if (!offline) {
+          noteReachable();
+          void saveOfflineDetail(book);
+        }
       } catch (err) {
         // The server can't be reached: the copy on this device, when there is one.
         if (offline || !isUnreachable(err)) throw err;
         offline = true;
+        noteUnreachable();
         if (!libraries.length) libraries = (await offlineCatalog().libraries()).libraries;
         try {
           book = await offlineCatalog().book(id, { signal: controller.signal });

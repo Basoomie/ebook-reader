@@ -77,6 +77,20 @@ export const consoleLogger: Logger = {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * Whether a failed calibredb write may still be done by Calibre (wait and look again) or is
+ * Calibre's definite answer (one look afterwards is final). From real messages: an HTTP 408
+ * is the content server's own time limit while it keeps working (seen on the NAS and with
+ * real calibre: "HTTP Error 408: Request Timeout"); a call the sidecar stopped; a dropped
+ * connection. A Python error from Calibre's side ("[Errno 13] Permission denied",
+ * "[Errno 36] File name too long", seen on the NAS 2026-11-15) is final.
+ */
+export function mayStillHappen(error: string): boolean {
+  return /\b408\b|Request Timeout|timed out|took longer than|helper (was )?stopped|helper did not start|URLError|Connection (reset|aborted|refused)|RemoteDisconnected|IncompleteRead|BrokenPipe|ECONNRESET/i.test(
+    error
+  );
+}
+
 /** The step name of a stage-2 write, by what it holds (a cover; a title or author). */
 export function writeKind(fields: string[]): string {
   const has = (p: string) => fields.some((f) => f.startsWith(p));
@@ -673,10 +687,11 @@ export class Worker {
         })
       );
     let answer = await send(current, false);
-    if (!answer.done && a.error === null) {
-      // Calibre answered the write without an error: what it shows now is final. Waiting is
-      // only for a write that errored or timed out, which Calibre may still finish (seen on
-      // the NAS 2026-11-15: a value Calibre stores differently was waited on for 10 minutes).
+    if (!answer.done && (a.error === null || !mayStillHappen(a.error))) {
+      // Calibre answered the write (without an error, or with a definite refusal such as
+      // "Permission denied"): what it shows now is final. Waiting is only for a write that
+      // timed out or lost its connection, which Calibre may still finish (seen on the NAS
+      // 2026-11-15: refusals and values Calibre stores differently were waited on for 10 min).
       answer = await send(current, true);
     } else if (!answer.done) {
       const until = Date.now() + this.opts.config.writeWaitSeconds * 1000;

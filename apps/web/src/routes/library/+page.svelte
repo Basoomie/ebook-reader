@@ -54,12 +54,17 @@
   import { existingLocalIds } from '$lib/library/browser-open-deps';
   import type { OfflineCatalog } from '$lib/library/offline/offline-catalog';
   import {
-    browserOnline,
+    askServerFirst,
+    freshOfflineCatalog,
     isUnreachable,
+    noteReachable,
+    noteUnreachable,
     offlineCatalog,
     OFFLINE_NOTICE,
     refreshOfflineCopies,
-    saveOfflineLibraries
+    saveOfflineLibraries,
+    serverAnswersAgain,
+    startsOffline
   } from '$lib/library/offline/offline-source';
   import { removeFromThisDevice } from '$lib/library/remove-from-device';
   import { isCoverBlurred } from '$lib/library/cover-blur';
@@ -346,6 +351,8 @@
   }
 
   onMount(async () => {
+    // Offline, this visit reads this device's books once (not once per request).
+    freshOfflineCatalog();
     void loadMirror();
     // Places saved on other devices (and their collections) show without waiting for
     // the next timed sync.
@@ -421,23 +428,54 @@
 
   async function startSession(conn: LibraryConnection) {
     api = makeApi(conn);
+    // "Loading…" until the first list is shown ("No books yet" only for an empty list).
+    loading = true;
     await refreshOnDevice();
-    // No network at all: no point in waiting for the server.
-    offline = !browserOnline();
-    if (!offline) {
-      try {
-        const result = await api.libraries();
-        libraries = result.libraries;
-        indexerError = result.indexer.enabled ? '' : result.indexer.error || 'The indexer is off';
-        uploadInfo = result.uploads ?? null;
-        void saveOfflineLibraries(result.libraries);
-      } catch (error) {
-        if (handleAuthError(error)) return;
-        // The list request below reports the problem (or switches to the offline Library).
+    // No network at all, or the server didn't answer a moment ago (another page): show
+    // this device's books at once and ask the server in the background.
+    offline = startsOffline();
+    if (offline) {
+      void recheckServer(conn);
+    } else {
+      const reached = await askLibraries(api, conn);
+      if (reached === 'unauthorized') {
+        loading = false;
+        return;
       }
+      if (reached === 'unreachable') offline = true;
     }
     if (offline) await useOfflineLibraries();
     await readUrlAndLoad();
+  }
+
+  /**
+   * The libraries, with the quick server check beside it: when the check gets no answer
+   * in its short time, the request is given up (away from home it would only end at the
+   * request timeout) and the page shows this device's books.
+   */
+  async function askLibraries(
+    a: LibraryApi,
+    conn: LibraryConnection
+  ): Promise<'ok' | 'unreachable' | 'unauthorized' | 'failed'> {
+    const first = await askServerFirst(conn.serverUrl, (signal) => a.libraries({ signal }));
+    if (first.status === 'unreachable') return 'unreachable';
+    if (first.status === 'error') {
+      if (handleAuthError(first.error)) return 'unauthorized';
+      // Another problem: the list request below reports it.
+      return 'failed';
+    }
+    const result = first.value;
+    libraries = result.libraries;
+    indexerError = result.indexer.enabled ? '' : result.indexer.error || 'The indexer is off';
+    uploadInfo = result.uploads ?? null;
+    void saveOfflineLibraries(result.libraries);
+    return 'ok';
+  }
+
+  /** Offline: when the server answers the quick check again, show the whole library. */
+  async function recheckServer(conn: LibraryConnection) {
+    if (!(await serverAnswersAgain(conn.serverUrl))) return;
+    if (!destroyed && offline && connection === conn) tryServerAgain();
   }
 
   /** The libraries the server named last time (picker, names), while offline. */
@@ -455,6 +493,7 @@
    * books on this device) until "Try again" or the network comes back.
    */
   async function goOffline() {
+    noteUnreachable();
     if (offline) return;
     offline = true;
     staleNote = false;
@@ -469,6 +508,8 @@
   function tryServerAgain() {
     if (!offline || !connection) return;
     offline = false;
+    // Ask the server itself (with the quick check), not what the last page found.
+    noteReachable();
     tabCountsKey = null;
     chipCountsKey = null;
     void startSession(connection);
@@ -1190,6 +1231,7 @@
       books = [];
       groups = [];
       nextCursor = null;
+      loading = false;
       return;
     }
     loading = true;
@@ -1248,12 +1290,15 @@
       // After the first page: a pattern search's counts then queue behind its list.
       if (reset && listController === controller) void loadSideCounts();
       // The offline Library's copies of this device's books (at most once a minute).
-      if (reset && !asked && api) void refreshOfflineCopies(api);
+      if (reset && !asked && api) {
+        noteReachable();
+        void refreshOfflineCopies(api);
+      }
     } catch (error) {
       if (error instanceof LibraryApiError && error.kind === 'aborted') return;
       if (handleAuthError(error)) return;
       if (!asked && reset && isUnreachable(error)) {
-        if (listController === controller) loading = false;
+        // Stays "Loading…" until this device's books are shown.
         await goOffline();
         return;
       }

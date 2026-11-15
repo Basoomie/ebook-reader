@@ -16,6 +16,22 @@ export const libraryRequestTimeoutSeconds$ = writableNumberLocalStorageSubject()
   20
 );
 
+/**
+ * The offline Library's quick server check: how long the Library, Collections, Home and
+ * a book's details wait for the server's health answer before showing the books on this
+ * device (away from home a request often gets no answer until the request timeout).
+ * 0 = no quick check (the pages wait for their first request, as before).
+ */
+export const libraryServerCheckSeconds$ = writableNumberLocalStorageSubject()(
+  'libraryServerCheckSeconds',
+  5
+);
+
+/** The quick server check time in seconds (0 = off). */
+export function serverCheckSeconds(): number {
+  return Math.max(0, Number(libraryServerCheckSeconds$.getValue()) || 0);
+}
+
 /** Library picked in the Library page ('' = all libraries). */
 export const libraryFilter$ = writableStringLocalStorageSubject()('libraryFilter', '');
 

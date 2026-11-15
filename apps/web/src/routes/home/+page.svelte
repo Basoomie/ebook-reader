@@ -44,12 +44,18 @@
   import { existingLocalIds } from '$lib/library/browser-open-deps';
   import type { OfflineCatalog } from '$lib/library/offline/offline-catalog';
   import {
-    browserOnline,
+    askServerFirst,
+    freshOfflineCatalog,
     isUnreachable,
+    noteReachable,
+    noteUnreachable,
     offlineCatalog,
     OFFLINE_NOTICE,
     refreshOfflineCopies,
-    saveOfflineLibraries
+    saveOfflineLibraries,
+    serverAnswersAgain,
+    serverWorthAsking,
+    startsOffline
   } from '$lib/library/offline/offline-source';
   import { removeFromThisDevice } from '$lib/library/remove-from-device';
   import { isCoverBlurred } from '$lib/library/cover-blur';
@@ -122,6 +128,8 @@
     collectionList.find((c) => c.id === id)?.name ?? null;
 
   onMount(async () => {
+    // Offline, this visit reads this device's books once (not once per row).
+    freshOfflineCatalog();
     await loadMirror();
     void loadStatEntries();
     void view.syncSoon();
@@ -141,25 +149,40 @@
     api = new LibraryApi(connection.serverUrl, connection.token, timeoutSeconds);
     await refreshOnDevice();
     window.addEventListener('online', tryServerAgain);
-    offline = !browserOnline();
-    if (!offline) {
-      try {
-        libraries = (await api.libraries()).libraries;
+    // No network, or the server didn't answer a moment ago (another page): this device's
+    // books at once, and the server is asked again in the background.
+    offline = startsOffline();
+    if (offline) {
+      void recheckServer(connection);
+    } else {
+      const a = api;
+      const first = await askServerFirst(connection.serverUrl, (signal) => a.libraries({ signal }));
+      if (first.status === 'ok') {
+        libraries = first.value.libraries;
         void saveOfflineLibraries(libraries);
-      } catch {
-        // Each row reports the problem (or shows this device's books).
       }
+      // No answer: the rows show this device's books (other problems: each row reports it).
+      if (first.status === 'unreachable') offline = true;
       // The server only knows state changes that reached it (built-in lists filter by them).
-      await view.sendPendingChanges(timeoutSeconds);
+      else await view.sendPendingChanges(timeoutSeconds);
     }
     ready = true;
   });
 
   /** "Try again", or the browser is online again: rows ask the server. */
-  function tryServerAgain() {
-    if (!offline || !api) return;
+  async function tryServerAgain() {
+    if (!offline || !api || !connection) return;
+    // Away from home: no 20 s wait per row when the server still doesn't answer.
+    if (!(await serverWorthAsking(connection.serverUrl))) return;
+    if (destroyed || !offline) return;
     offline = false;
     void loadAllRows(true);
+  }
+
+  /** Offline: when the server answers the quick check again, rows ask it. */
+  async function recheckServer(conn: LibraryConnection) {
+    if (!(await serverAnswersAgain(conn.serverUrl))) return;
+    if (!destroyed && offline && connection === conn) void tryServerAgain();
   }
 
   // Rows load when first shown (also a row pinned, shown or added while here).
@@ -244,12 +267,16 @@
       const books = await fetchRow(row, asked ? offlineCatalog() : api);
       if (destroyed) return;
       setView(key, { status: 'ok', books });
-      if (!asked) void refreshOfflineCopies(api);
+      if (!asked) {
+        noteReachable();
+        void refreshOfflineCopies(api);
+      }
     } catch (error) {
       if (destroyed) return;
       if (!asked && isUnreachable(error)) {
         // The offline Library: the row from this device's books.
         offline = true;
+        noteUnreachable();
         await loadRow(row, quiet);
         return;
       }
