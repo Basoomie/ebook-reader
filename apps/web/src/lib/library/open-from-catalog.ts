@@ -87,6 +87,11 @@ export function openCatalogBook(
       void import('$lib/sync/sync-service')
         .then(({ publishDeviceBooks }) => publishDeviceBooks())
         .catch(() => {});
+      // Season 2 §2: its offline Library copy (opening a stored book asks nothing of the
+      // server, and the refresh stops quietly when it can't be reached).
+      void import('$lib/library/offline/offline-source')
+        .then(({ refreshOfflineCopies }) => refreshOfflineCopies(api, { force: true }))
+        .catch(() => {});
     }
     return outcome;
   });

@@ -21,7 +21,8 @@
   } from '$lib/notes/notes-view';
   import { notesApi } from '$lib/sync/sync-service';
 
-  export let api: LibraryApi | undefined;
+  /** The server, or the offline Library's catalog while it can't be reached. */
+  export let api: Pick<LibraryApi, 'lookup' | 'absolute'> | undefined;
   export let seriesName: string;
   /** The series' books in series order. */
   export let bookIds: readonly string[];

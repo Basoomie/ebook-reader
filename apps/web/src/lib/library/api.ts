@@ -946,8 +946,12 @@ export class LibraryApi {
     return body.links;
   }
 
-  /** Absolute URL for a relative API path such as a book's thumbnail. */
+  /**
+   * Absolute URL for a relative API path such as a book's thumbnail. A `blob:` or `data:`
+   * URL (the offline Library's stored covers) is already absolute and passes through.
+   */
   absolute(relative: string): string {
+    if (/^(blob|data):/.test(relative)) return relative;
     return `${this.serverUrl}${relative}`;
   }
 }

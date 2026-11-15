@@ -51,6 +51,15 @@
   import { formatPageTitle } from '$lib/functions/format-page-title';
   import { LibraryApi, LibraryApiError } from '$lib/library/api';
   import { existingLocalIds } from '$lib/library/browser-open-deps';
+  import type { OfflineCatalog } from '$lib/library/offline/offline-catalog';
+  import {
+    browserOnline,
+    isUnreachable,
+    offlineCatalog,
+    OFFLINE_NOTICE,
+    refreshOfflineCopies,
+    saveOfflineLibraries
+  } from '$lib/library/offline/offline-source';
   import { removeFromThisDevice } from '$lib/library/remove-from-device';
   import { isCoverBlurred } from '$lib/library/cover-blur';
   import { coverGrid } from '$lib/library/cover-size';
@@ -162,6 +171,17 @@
   let connectNotice = '';
   let suggestedServerUrl = '';
   let api: LibraryApi | undefined;
+  /**
+   * Season 2 §2, offline Library: the server can't be reached, so every list is answered
+   * by the offline catalog (this device's books) until "Try again" or the network returns.
+   */
+  let offline = false;
+
+  /** Who answers the lists: the server, or the offline catalog while offline. */
+  function source(): LibraryApi | OfflineCatalog | undefined {
+    if (!api) return undefined;
+    return offline ? offlineCatalog() : api;
+  }
 
   let libraries: CatalogLibrary[] = [];
   let indexerError = '';
@@ -341,6 +361,7 @@
         else stopListeners.push(off);
       });
     }
+    window.addEventListener('online', onBrowserOnline);
     suggestedServerUrl = await selfHostServerUrl();
     connection = (await store.getConnection()) ?? null;
     if (connection) await startSession(connection);
@@ -348,6 +369,7 @@
 
   onDestroy(() => {
     destroyed = true;
+    if (browser) window.removeEventListener('online', onBrowserOnline);
     clearTimeout(collectionsTimer);
     clearTimeout(sideCountsTimer);
     stopListeners.forEach((off) => off());
@@ -397,16 +419,60 @@
   async function startSession(conn: LibraryConnection) {
     api = makeApi(conn);
     await refreshOnDevice();
-    try {
-      const result = await api.libraries();
-      libraries = result.libraries;
-      indexerError = result.indexer.enabled ? '' : result.indexer.error || 'The indexer is off';
-      uploadInfo = result.uploads ?? null;
-    } catch (error) {
-      if (handleAuthError(error)) return;
-      // The list request below reports the problem.
+    // No network at all: no point in waiting for the server.
+    offline = !browserOnline();
+    if (!offline) {
+      try {
+        const result = await api.libraries();
+        libraries = result.libraries;
+        indexerError = result.indexer.enabled ? '' : result.indexer.error || 'The indexer is off';
+        uploadInfo = result.uploads ?? null;
+        void saveOfflineLibraries(result.libraries);
+      } catch (error) {
+        if (handleAuthError(error)) return;
+        // The list request below reports the problem (or switches to the offline Library).
+      }
     }
+    if (offline) await useOfflineLibraries();
     await readUrlAndLoad();
+  }
+
+  /** The libraries the server named last time (picker, names), while offline. */
+  async function useOfflineLibraries() {
+    if (libraries.length) return;
+    try {
+      libraries = (await offlineCatalog().libraries()).libraries;
+    } catch {
+      // No picker.
+    }
+  }
+
+  /**
+   * The server can't be reached: from now on this visit shows the offline Library (the
+   * books on this device) until "Try again" or the network comes back.
+   */
+  async function goOffline() {
+    if (offline) return;
+    offline = true;
+    staleNote = false;
+    uploadInfo = null;
+    tabCountsKey = null;
+    chipCountsKey = null;
+    await useOfflineLibraries();
+    await loadPage(true);
+  }
+
+  /** "Try again", or the browser is online again: ask the server. */
+  function tryServerAgain() {
+    if (!offline || !connection) return;
+    offline = false;
+    tabCountsKey = null;
+    chipCountsKey = null;
+    void startSession(connection);
+  }
+
+  function onBrowserOnline() {
+    tryServerAgain();
   }
 
   function loadMirror() {
@@ -897,7 +963,8 @@
 
   /** The address the snapshot of this list is kept under. */
   function snapshotKey() {
-    return `${$page.url.pathname}${$page.url.search}`;
+    // An offline list (offset cursors) is only restored offline, and the other way round.
+    return `${offline ? 'offline:' : ''}${$page.url.pathname}${$page.url.search}`;
   }
 
   async function restoreSnapshot(): Promise<boolean> {
@@ -993,8 +1060,8 @@
   }
 
   async function loadSideCounts() {
-    if (!api || collectionId !== null || !parseQuery(appliedQuery).ok) return;
-    const a = api;
+    const a = source();
+    if (!a || collectionId !== null || !parseQuery(appliedQuery).ok) return;
     const library = appliedLibrary || undefined;
     const q = appliedQuery || undefined;
     const { by, openGroup, tabsKey, chipsKey } = sideCountKeys();
@@ -1074,12 +1141,13 @@
   async function loadCount(scope: string | null) {
     countController?.abort();
     resultCount = null;
-    if (!api || sortContext === 'groups') return;
+    const a = source();
+    if (!a || sortContext === 'groups') return;
     const controller = new AbortController();
     countController = controller;
     counting = true;
     try {
-      const n = await api.count(
+      const n = await a.count(
         collectionId !== null
           ? {
               q: appliedQuery || undefined,
@@ -1102,7 +1170,9 @@
   }
 
   async function loadPage(reset: boolean, minBooks = LIST_PAGE) {
-    if (!api) return;
+    const a = source();
+    if (!a) return;
+    const asked = offline;
     listController?.abort();
     const controller = new AbortController();
     listController = controller;
@@ -1124,10 +1194,12 @@
       const parsedScope = scope ? parseQuery(scope) : null;
       // A manual collection in another order is sorted by the server from its records.
       const sortsOnServer = collectionId !== null && !scope && serverSort(sortValue, 'list');
+      // Offline, the device answers from its own records (unsent changes included).
       if (
-        usesBookState(parsed.query) ||
-        (parsedScope?.ok && usesBookState(parsedScope.query)) ||
-        sortsOnServer
+        !asked &&
+        (usesBookState(parsed.query) ||
+          (parsedScope?.ok && usesBookState(parsedScope.query)) ||
+          sortsOnServer)
       ) {
         staleNote = await view.sendPendingChanges(timeoutSeconds);
         if (controller.signal.aborted) return;
@@ -1147,7 +1219,7 @@
       // changed in this tick.
       const by = TABS.find((t) => t.id === tab)?.by ?? null;
       if (by && group === null) {
-        const result = await api.groups(
+        const result = await a.groups(
           { by, ...common, sort: serverSort(sortValue, 'groups') },
           options
         );
@@ -1157,7 +1229,7 @@
         if (reset) resultCount = result.total ?? null;
       } else {
         if (reset) void loadGroupInfo(controller.signal);
-        const result = await api.books(
+        const result = await a.books(
           { ...common, group: group ?? undefined, sort: serverSort(sortValue, sortContext) },
           options
         );
@@ -1167,9 +1239,16 @@
       }
       // After the first page: a pattern search's counts then queue behind its list.
       if (reset && listController === controller) void loadSideCounts();
+      // The offline Library's copies of this device's books (at most once a minute).
+      if (reset && !asked && api) void refreshOfflineCopies(api);
     } catch (error) {
       if (error instanceof LibraryApiError && error.kind === 'aborted') return;
       if (handleAuthError(error)) return;
+      if (!asked && reset && isUnreachable(error)) {
+        if (listController === controller) loading = false;
+        await goOffline();
+        return;
+      }
       if (
         error instanceof LibraryApiError &&
         (error.code === 'invalid_query' || error.code === 'regex_timeout')
@@ -1209,10 +1288,11 @@
     minBooks: number,
     signal: AbortSignal
   ) {
-    if (!api || collectionId === null) return;
+    const a = source();
+    if (!a || collectionId === null) return;
     const c = collectionList.find((x) => x.id === collectionId);
     if (scope) {
-      const result = await api.books(
+      const result = await a.books(
         {
           q: appliedQuery || undefined,
           scope,
@@ -1235,7 +1315,7 @@
     const sort = serverSort(sortValue, 'list');
     if (sort) {
       // WP19a: another order than the collection's own: the server sorts its items.
-      const result = await api.books(
+      const result = await a.books(
         {
           q: appliedQuery || undefined,
           collection: c.id,
@@ -1254,7 +1334,7 @@
     const found: CatalogBook[] = [];
     while (consumed < ids.length && found.length < minBooks) {
       const chunk = ids.slice(consumed, consumed + LOOKUP_CHUNK);
-      const result = await api.lookup(chunk, appliedQuery || undefined, { signal });
+      const result = await a.lookup(chunk, appliedQuery || undefined, { signal });
       found.push(...result.books);
       consumed += chunk.length;
     }
@@ -1267,9 +1347,10 @@
   /** Totals and the read count for the open group's header. */
   async function loadGroupInfo(signal: AbortSignal) {
     groupInfo = null;
-    if (!api || !group || group.name === null || group.name.includes('"')) return;
+    const a = source();
+    if (!a || !group || group.name === null || group.name.includes('"')) return;
     try {
-      const result = await api.groups(
+      const result = await a.groups(
         {
           by: group.by,
           q: `${FIELD_OF[group.by]}:="${group.name}"`,
@@ -1288,7 +1369,9 @@
   function describe(error: unknown): string {
     if (error instanceof LibraryApiError) {
       if (error.kind === 'unreachable' || error.kind === 'timeout') {
-        return "The library server cannot be reached (offline, or the server is down). Books you're reading that are on this device open from Continue Reading on Home.";
+        // Only a book that isn't on this device needs the server (the list then switches
+        // to the books on this device).
+        return 'The library server cannot be reached (offline, or the server is down), and the book is not on this device.';
       }
       if (error.code === 'indexer_off')
         return 'The Calibre library is not available on the server.';
@@ -1508,6 +1591,7 @@
       if (handleAuthError(error)) return;
       logger.warn(`Library: opening "${book.title}" failed: ${(error as Error).message}`);
       showMessage('Could not open the book', describe(error));
+      if (isUnreachable(error)) void goOffline();
     } finally {
       opening = null;
     }
@@ -1705,7 +1789,7 @@
       <!-- Keyed: another series starts collapsed. -->
       {#key group.name}
         <SeriesHighlights
-          {api}
+          api={offline && api ? offlineCatalog() : api}
           seriesName={group.name}
           bookIds={groupInfo.bookIds}
           eink={$einkMode$}
@@ -1860,6 +1944,16 @@
       {/if}
     </div>
 
+    {#if offline}
+      <p class="c-notice flex flex-wrap items-center gap-x-3 gap-y-2" data-testid="offline-notice">
+        <span role="status">{OFFLINE_NOTICE}</span>
+        <button
+          class="c-btn c-btn-secondary px-3"
+          data-testid="offline-retry"
+          on:click={tryServerAgain}>Try again</button
+        >
+      </p>
+    {/if}
     {#if indexerError}
       <p class="c-notice" role="status">{indexerError}</p>
     {/if}
@@ -1878,7 +1972,6 @@
     {#if loadError}
       <p class="c-notice font-medium" role="alert">
         {loadError}
-        <!-- WP15e: Home's Continue Reading still opens the books in it that are on this device, without the server. -->
         <a class="c-link" href="{pagePath}/home">Go to Home</a>
       </p>
     {/if}

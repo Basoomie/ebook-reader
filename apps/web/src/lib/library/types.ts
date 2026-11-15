@@ -35,6 +35,12 @@ export interface CatalogBook {
   id: string;
   libraryId: string;
   title: string;
+  /**
+   * Calibre's title and author sort (sent since WP19a; the server sorts by them). Kept by
+   * the offline Library, which sorts the same way.
+   */
+  titleSort?: string | null;
+  authorSort?: string | null;
   authors: { name: string; sort: string | null }[];
   series: { name: string; index: number | null } | null;
   tags: string[];
