@@ -1,6 +1,9 @@
 <script lang="ts">
-  import { browser } from '$app/environment';
+  import { browser, version } from '$app/environment';
+  import { base } from '$app/paths';
   import { page } from '$app/stores';
+  import type { AppUpdate } from '$lib/app-update/app-update';
+  import AppUpdateNotice from '$lib/components/app-update-notice.svelte';
   import DomainHint from '$lib/components/domain-hint.svelte';
   import { basePath, clearConsoleOnReload } from '$lib/data/env';
   import { dialogManager, type Dialog } from '$lib/data/dialog-manager';
@@ -27,6 +30,7 @@
   let dialogs: Dialog[] = [];
   let clickOnCloseDisabled = false;
   let zIndex = '';
+  let appUpdate: AppUpdate | undefined;
 
   $: if (browser) {
     isMobile$.next(isMobile(window));
@@ -72,6 +76,23 @@
     import('$lib/sync/sync-service')
       .then(({ startSync }) => startSync())
       .catch((error) => console.warn('Sync: not started', error));
+  });
+
+  // Offline app loading and the "New version available" notice (Season 2 §2): the
+  // service worker is registered here (HTTPS only). Loaded separately; a failure
+  // only means no notice.
+  onMount(() => {
+    let stopped = false;
+    import('$lib/app-update/app-update')
+      .then(({ startAppUpdate }) => {
+        if (stopped) return;
+        appUpdate = startAppUpdate(version, base);
+      })
+      .catch((error) => console.warn('App update: not started', error));
+    return () => {
+      stopped = true;
+      appUpdate?.stop();
+    };
   });
 
   if (clearConsoleOnReload && import.meta.hot) {
@@ -145,3 +166,7 @@
 <span style={`font-family: ${$fontFamilyGroupOne$ || 'Noto Serif JP'}`} />
 
 <DomainHint />
+
+{#if appUpdate}
+  <AppUpdateNotice {appUpdate} />
+{/if}

@@ -18,7 +18,12 @@ const config = {
   kit: {
     adapter: adapter({
       fallback: '404.html'
-    })
+    }),
+    // Registered by the app itself (lib/app-update), which watches for a waiting
+    // version and shows "New version available". Same script and scope as before.
+    serviceWorker: {
+      register: false
+    }
   }
 };
 
