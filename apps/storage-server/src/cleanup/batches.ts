@@ -1177,7 +1177,18 @@ export class BatchService {
         }
       }
     })();
-    if (failed > 0 && batch.kind === 'apply') {
+    const failedLimit = getSettings(this.db).failedPausePercent;
+    if (
+      failed > 0 &&
+      batch.kind === 'apply' &&
+      !error &&
+      (100 * failed) / states.length <= failedLimit
+    ) {
+      // A few failed items don't stop the run (decided 2026-11-15): they stay listed in the batch.
+      this.deps.log?.(
+        `Cleanup: ${failed} of ${states.length} items failed in batch ${batchId} (not above ${failedLimit} %): going on`,
+      );
+    } else if (failed > 0 && batch.kind === 'apply') {
       pauseStage(
         this.db,
         batch.stage,

@@ -131,6 +131,7 @@
         },
         reviewAlarmPercent: Number(settings.reviewAlarmPercent),
         libraryChangedPausePercent: Number(settings.libraryChangedPausePercent),
+        failedPausePercent: Number(settings.failedPausePercent),
         covers: {
           maxMb: Number(settings.covers.maxMb),
           maxSide: Number(settings.covers.maxSide),
@@ -412,6 +413,20 @@
           step="1"
           data-testid="cleanup-changed-pause"
           bind:value={settings.libraryChangedPausePercent}
+        />
+      </label>
+      <label class={field}>
+        <span class={label}
+          >Pause only when more than this share of a batch failed (%, 0 = any failure)</span
+        >
+        <input
+          class="c-input"
+          type="number"
+          min="0"
+          max="100"
+          step="0.5"
+          data-testid="cleanup-failed-pause"
+          bind:value={settings.failedPausePercent}
         />
       </label>
       <label class="{field} sm:col-span-2">
