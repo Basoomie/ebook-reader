@@ -254,6 +254,12 @@ function setFields(fields) {
   const b = bookRow(id);
   if (!b) fail(`No book with id: ${id} in the database`);
   if (process.env.FAKE_SET_TIMEOUT === 'never') fail(timeoutText);
+  // Calibre can't write the book's files (root-owned cover.jpg on the NAS, 2026-11-15).
+  if (process.env.FAKE_SET_DENIED && String(id) === process.env.FAKE_SET_DENIED) {
+    fail(
+      `  File "calibre/db/cli/main.py", line 264, in remote_run | [Errno 13] Permission denied: '/books/japanese-library/${b.path}/cover.jpg'`,
+    );
+  }
   const kv = fields.map((x) => [x.slice(0, x.indexOf(':')), x.slice(x.indexOf(':') + 1)]);
   const names = kv.map(([k]) => k);
   const allowed = [

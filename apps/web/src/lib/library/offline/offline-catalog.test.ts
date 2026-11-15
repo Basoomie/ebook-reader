@@ -4,7 +4,7 @@
  * All rights reserved.
  */
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { CollectionItem } from '$lib/collections/collections';
 import { LibraryApiError } from '$lib/library/api';
 import { parseQuery } from '$lib/library/query/parse';
@@ -411,5 +411,48 @@ describe('OfflineCatalog', () => {
     await expect(catalog.books({}, { signal: controller.signal })).rejects.toMatchObject({
       kind: 'aborted'
     });
+  });
+});
+
+describe('OfflineCatalog reads', () => {
+  it("reads the device once for a page's requests, again after invalidate", async () => {
+    let titles = ['one'];
+    const load = vi.fn(async () => data({ books: titles.map((t) => book(t)) }));
+    const catalog = new OfflineCatalog(load);
+    await Promise.all([catalog.books({}), catalog.count({})]);
+    await catalog.groups({ by: 'author' });
+    await catalog.count({ q: 'one' });
+    expect(load).toHaveBeenCalledTimes(1);
+    titles = ['one', 'two'];
+    expect(await catalog.count({})).toBe(1);
+    catalog.invalidate();
+    expect(await catalog.count({})).toBe(2);
+    expect(load).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not keep a read that started before invalidate', async () => {
+    const answers: ((d: OfflineData) => void)[] = [];
+    const load = vi.fn(() => new Promise<OfflineData>((resolve) => answers.push(resolve)));
+    const catalog = new OfflineCatalog(load);
+    const before = catalog.count({});
+    catalog.invalidate();
+    const after = catalog.count({});
+    expect(load).toHaveBeenCalledTimes(2);
+    answers[0](data({ books: [book('old')] }));
+    answers[1](data({ books: [book('a'), book('b')] }));
+    expect(await before).toBe(1);
+    expect(await after).toBe(2);
+    expect(await catalog.count({})).toBe(2);
+    expect(load).toHaveBeenCalledTimes(2);
+  });
+
+  it('reads again after a failed read', async () => {
+    const load = vi
+      .fn<() => Promise<OfflineData>>()
+      .mockRejectedValueOnce(new Error('blocked'))
+      .mockResolvedValue(data({ books: [book('x')] }));
+    const catalog = new OfflineCatalog(load);
+    await expect(catalog.count({})).rejects.toThrow('blocked');
+    expect(await catalog.count({})).toBe(1);
   });
 });

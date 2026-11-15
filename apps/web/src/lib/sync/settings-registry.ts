@@ -150,6 +150,7 @@ export const SETTINGS_REGISTRY: Record<string, SettingSpec> = {
 
   // --- lib/library/settings.ts (per device) ---
   libraryRequestTimeoutSeconds: d('Number'),
+  libraryServerCheckSeconds: d('Number'),
   libraryFilter: d('String'),
   libraryView: d('String'),
   libraryInfoLine: d('Boolean'),

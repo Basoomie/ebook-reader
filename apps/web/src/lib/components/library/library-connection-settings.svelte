@@ -10,7 +10,7 @@
   import { LibraryApi } from '$lib/library/api';
   import { summarizeCharCounts } from '$lib/library/char-counts';
   import { getLibraryStore, type LibraryConnection } from '$lib/library/library-db';
-  import { libraryRequestTimeoutSeconds$ } from '$lib/library/settings';
+  import { libraryRequestTimeoutSeconds$, libraryServerCheckSeconds$ } from '$lib/library/settings';
   import { notifySyncConnectionChanged } from '$lib/sync/sync-service';
   import { confirmDestructive } from '$lib/confirm/confirm';
   import { disconnectCopy } from '$lib/confirm/confirm-copy';
@@ -86,6 +86,20 @@
             bind:value={$libraryRequestTimeoutSeconds$}
           />
         </label>
+        <label class="mt-4 block text-sm text-c-muted">
+          Quick server check (seconds, 0 = off)
+          <input
+            class={fieldClasses}
+            type="number"
+            min="0"
+            step="1"
+            data-testid="server-check-seconds"
+            bind:value={$libraryServerCheckSeconds$}
+          />
+        </label>
+        <p class="mt-1 text-sm text-c-muted">
+          If the server doesn't answer within this time, the Library shows the books on this device.
+        </p>
         <p class="mt-6 text-sm text-c-muted">
           Disconnecting forgets the token on this device. To block it on the server too, run
           <code>token revoke</code> there.

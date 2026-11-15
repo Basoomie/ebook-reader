@@ -34,6 +34,8 @@ import { isOpenInReader } from './open-in-reader';
 import { remapPlace } from './place-remap';
 import { getOfflineStore, type OfflineCopy } from './offline-db';
 import { OfflineCatalog, type OfflineData } from './offline-catalog';
+import { firstServerAnswer, serverReachability, type FirstAnswer } from './reachability';
+import { serverCheckSeconds } from '$lib/library/settings';
 
 /**
  * The offline Library in the browser: keeping the copies current (copies.ts) and the
@@ -63,6 +65,65 @@ export function isUnreachable(error: unknown): boolean {
 /** False when the browser knows it has no network (then there is no point in asking). */
 export function browserOnline(): boolean {
   return !browser || typeof navigator === 'undefined' || navigator.onLine !== false;
+}
+
+// ---- whether to ask the server (reachability.ts) ---------------------------------------
+
+/**
+ * A page starts with this device's books at once: no network, or the server didn't
+ * answer the last time any page asked (it is asked again in the background).
+ */
+export function startsOffline(): boolean {
+  return !browserOnline() || serverReachability.knownUnreachable();
+}
+
+/** A page's first request, given up when the quick server check gets no answer. */
+export function askServerFirst<T>(
+  serverUrl: string,
+  request: (signal: AbortSignal) => Promise<T>
+): Promise<FirstAnswer<T>> {
+  return firstServerAnswer(
+    serverReachability,
+    serverUrl,
+    serverCheckSeconds(),
+    request,
+    isUnreachable
+  );
+}
+
+/**
+ * Offline: resolves to true once the server answers the quick check (the page then asks
+ * it again), false at once when the quick check is off or there is no network (then only
+ * "Try again" or the network coming back ask again), or when it gets no answer.
+ */
+export async function serverAnswersAgain(serverUrl: string): Promise<boolean> {
+  const seconds = serverCheckSeconds();
+  if (seconds <= 0 || !browserOnline()) return false;
+  return serverReachability.check(serverUrl, seconds);
+}
+
+/**
+ * "Try again" or the network came back: whether to ask the server now. With the quick
+ * check on, only when it answers it (else the page stays offline without waiting for the
+ * request timeout); with it off, always.
+ */
+export async function serverWorthAsking(serverUrl: string): Promise<boolean> {
+  const seconds = serverCheckSeconds();
+  if (seconds <= 0) {
+    serverReachability.markReachable();
+    return true;
+  }
+  return serverReachability.check(serverUrl, seconds);
+}
+
+/** A request got no answer: the next pages start offline. */
+export function noteUnreachable(): void {
+  serverReachability.markUnreachable();
+}
+
+/** "Try again", the network came back, or the server answered: ask it on the next pages. */
+export function noteReachable(): void {
+  serverReachability.markReachable();
 }
 
 async function deviceLinks(): Promise<{ links: CalibreLink[]; ids: string[] }> {
@@ -178,6 +239,7 @@ export function refreshOfflineCopies(
         }
       }
     } while (again);
+    catalog?.invalidate();
     return result;
   };
   running = run().finally(() => {
@@ -206,6 +268,7 @@ export async function saveOfflineDetail(detail: CatalogBookDetail): Promise<void
     const old = await store.get(detail.id);
     if (old?.hasDetail && JSON.stringify(old.book) === JSON.stringify(detail)) return;
     await store.put(copyFromDetail(detail, old, Date.now()));
+    catalog?.invalidate();
   } catch (error) {
     logger.warn(`Offline library: details not saved: ${(error as Error)?.message ?? error}`);
   }
@@ -216,6 +279,7 @@ export async function removeOfflineCopy(bookId: string): Promise<void> {
   if (!browser) return;
   try {
     await getOfflineStore().delete(bookId);
+    catalog?.invalidate();
   } catch (error) {
     logger.warn(`Offline library: copy not removed: ${(error as Error)?.message ?? error}`);
   }
@@ -279,6 +343,7 @@ export function bookFromLink(link: CalibreLink, thumbnail: string | null): Catal
 }
 
 export async function loadOfflineData(): Promise<OfflineData> {
+  const started = Date.now();
   const [{ links, ids }, copies, saved, states, positions, view, audio] = await Promise.all([
     deviceLinks(),
     getOfflineStore().getAll(),
@@ -289,16 +354,21 @@ export async function loadOfflineData(): Promise<OfflineData> {
     audioBookIdsOnDevice().catch(() => [] as string[])
   ]);
   const byId = new Map(copies.map((c) => [c.bookId, c]));
-  const books: CatalogBookDetail[] = [];
-  for (const id of ids) {
-    const copy = byId.get(id);
-    if (copy) {
-      if (!copy.hidden) books.push({ ...copy.book, thumbnail: thumbnailUrl(copy) });
-      continue;
-    }
-    const link = links.find((l) => l.bookId === id);
-    if (link) books.push(bookFromLink(link, await localCover(link.localId)));
-  }
+  const linkById = new Map(links.map((l) => [l.bookId, l]));
+  // Books without a copy yet: their EPUB covers are read together, not one after another.
+  const books = (
+    await Promise.all(
+      ids.map(async (id): Promise<CatalogBookDetail | null> => {
+        const copy = byId.get(id);
+        if (copy) return copy.hidden ? null : { ...copy.book, thumbnail: thumbnailUrl(copy) };
+        const link = linkById.get(id);
+        return link ? bookFromLink(link, await localCover(link.localId)) : null;
+      })
+    )
+  ).filter((b): b is CatalogBookDetail => b !== null);
+  logger.info(
+    `Offline library: read ${books.length} books on this device in ${Date.now() - started} ms`
+  );
   return {
     books,
     libraries: saved?.libraries ?? [],
@@ -314,6 +384,22 @@ let catalog: OfflineCatalog | undefined;
 
 /** The catalog to ask while the server can't be reached (browser only). */
 export function offlineCatalog(): OfflineCatalog {
-  catalog ??= new OfflineCatalog(loadOfflineData);
+  if (!catalog) {
+    const created = new OfflineCatalog(loadOfflineData);
+    catalog = created;
+    // Status, favorites, places and collections changed here or on another device.
+    const invalidate = () => created.invalidate();
+    void bookStateApi().onChanged(invalidate);
+    void libraryViewApi().onChanged(invalidate);
+    void collectionsApi().onChanged(invalidate);
+  }
   return catalog;
+}
+
+/**
+ * A page of the offline Library opened: the next offline answer reads this device again
+ * (books stored or removed since), once for all of the page's requests.
+ */
+export function freshOfflineCatalog(): void {
+  catalog?.invalidate();
 }
