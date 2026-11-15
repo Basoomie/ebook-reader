@@ -16,6 +16,7 @@ import { MigrationService } from '../migration/service';
 import { createSyncRouter, SYNC_BODY_LIMIT } from '../sync/routes';
 import { createExportRouter } from '../export/routes';
 import { createLogsRouter } from '../logs/routes';
+import { createDiagnosticsRouter } from '../diagnostics/routes';
 import { serverLogs, type RecentLogs } from '../logs/recent-logs';
 import { createUploadRouter } from '../uploads/routes';
 import { FontStore } from '../fonts/font-store';
@@ -70,6 +71,8 @@ export interface MigrationPaths {
 export interface ApiOptions {
   database: DatabaseState;
   version: string;
+  /** When the server's code was built (version.ts), for Settings > Diagnostics. */
+  builtAt?: number | null;
   /** Catalog routes (WP2). Without it they report the indexer as off. */
   catalog?: CatalogOptions;
   pairing?: PairingOptions;
@@ -107,6 +110,7 @@ const NO_CATALOG: CatalogOptions = {
 export function createApiRouter({
   database,
   version,
+  builtAt = null,
   catalog = NO_CATALOG,
   pairing = DEFAULT_PAIRING,
   sync = DEFAULT_SYNC,
@@ -224,6 +228,8 @@ export function createApiRouter({
         frozenKinds: sync.frozenKinds ?? DEFAULT_SYNC.frozenKinds ?? [],
       }),
     );
+    // Settings > Diagnostics (Season 2 §7): read-only.
+    router.use(createDiagnosticsRouter(db, syncStore, { version, builtAt, audio, cleanup }));
     // Export my data (WP18): read-only.
     router.use(createExportRouter(db, syncStore));
 

@@ -13,6 +13,7 @@ describe('settings tabs in the address', () => {
     expect(tabFromQuery('anki')).toBe('Anki');
     expect(tabFromQuery(' Data ')).toBe('Data');
     expect(tabFromQuery('statistics')).toBe('Statistics');
+    expect(tabFromQuery('diagnostics')).toBe('Diagnostics');
     expect(tabFromQuery(null)).toBe('Reader');
     expect(tabFromQuery('')).toBe('Reader');
     expect(tabFromQuery('nonsense')).toBe('Reader');
@@ -24,5 +25,6 @@ describe('settings tabs in the address', () => {
     expect(tabQuery('nonsense')).toBe('');
     for (const t of SETTINGS_TABS) expect(tabFromQuery(tabQuery(t).slice(5) || null)).toBe(t);
     expect(settingsTabHref('/app', 'Audiobooks')).toBe('/app/settings?tab=audiobooks');
+    expect(settingsTabHref('', 'Diagnostics')).toBe('/settings?tab=diagnostics');
   });
 });

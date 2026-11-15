@@ -30,6 +30,9 @@
   import SettingsExportData from '$lib/components/settings/settings-export-data.svelte';
   import LibraryConnectionSettings from '$lib/components/library/library-connection-settings.svelte';
   import AudiobooksPanel from '$lib/components/audio/audiobooks-panel.svelte';
+  import DiagnosticsPanel from '$lib/components/settings/diagnostics-panel.svelte';
+  import { NOT_OVER_HTTP } from '$lib/diagnostics/diagnostics-text';
+  import { canPersistStorage } from '$lib/functions/secure-context';
   import { libraryLook$ } from '$lib/library/settings';
   import { customFontNames$ } from '$lib/fonts/server-fonts-browser';
   import { BlurMode } from '$lib/data/blur-mode';
@@ -127,6 +130,10 @@
   export let pageColumns: number;
 
   export let storageQuota: string;
+
+  // Persistent storage and its figures exist only in a secure context (https). The
+  // prerendered page keeps the toggle; the browser then shows the note on plain http.
+  const storageAvailable = !browser || canPersistStorage();
 
   export let persistentStorage: boolean;
 
@@ -1043,16 +1050,23 @@
       {/if}
     </SettingsItemGroup>
     <SettingsItemGroup title="Persistent storage" tooltip={persistentStorageTooltip}>
-      <div class="flex items-center">
-        <ButtonToggleGroup
-          archive
-          options={optionsForToggle}
-          bind:selectedOptionId={persistentStorage}
-        />
-        {#if storageQuota}
-          <div class="ml-3 text-sm text-c-muted">{storageQuota}</div>
-        {/if}
-      </div>
+      {#if storageAvailable}
+        <div class="flex items-center">
+          <ButtonToggleGroup
+            archive
+            options={optionsForToggle}
+            bind:selectedOptionId={persistentStorage}
+          />
+          {#if storageQuota}
+            <div class="ml-3 text-sm text-c-muted">{storageQuota}</div>
+          {/if}
+        </div>
+      {:else}
+        <!-- Plain http: the browser has no navigator.storage (secure contexts only). -->
+        <p class="text-sm text-c-muted" data-testid="persistent-storage-unavailable">
+          {NOT_OVER_HTTP}
+        </p>
+      {/if}
     </SettingsItemGroup>
     <SettingsItemGroup title="Epub Import Fixes" tooltip={importHTMLFixModeTooltip}>
       <ButtonToggleGroup
@@ -1104,6 +1118,11 @@
     <!-- WP15b: the server's audiobooks folder and the linked books. -->
     {#if browser}
       <AudiobooksPanel />
+    {/if}
+  {:else if activeSettings === 'Diagnostics'}
+    <!-- Season 2 §7: read-only status of this device, the devices, the PC, the server. -->
+    {#if browser}
+      <DiagnosticsPanel />
     {/if}
   {:else}
     <SettingsItemGroup

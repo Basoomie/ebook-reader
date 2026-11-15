@@ -9,7 +9,7 @@ import { initDatabase } from './db/database';
 import { scheduleSnapshots, snapshotDir, SnapshotScheduler } from './snapshot';
 import { UploadService } from './uploads/service';
 import { UploadStore } from './uploads/upload-store';
-import { SERVER_VERSION } from './version';
+import { SERVER_BUILT_AT, SERVER_VERSION } from './version';
 import { captureConsole, serverLogs } from './logs/recent-logs';
 import { AudioWriter } from './audio/audio-write';
 import { ClipService } from './audio/clip-service';
@@ -312,6 +312,7 @@ const app = createApp({
   config,
   database,
   version: SERVER_VERSION,
+  builtAt: SERVER_BUILT_AT,
   catalog,
   audio: {
     service: audio,

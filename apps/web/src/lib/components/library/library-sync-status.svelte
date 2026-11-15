@@ -6,6 +6,7 @@
   } from '$lib/sync/settings';
   import { getSyncRunner } from '$lib/sync/sync-service';
   import type { RunnerStatus } from '$lib/sync/sync-runner';
+  import { SYNC_STATE_TEXT } from '$lib/sync/sync-state-text';
   import { onDestroy } from 'svelte';
 
   /**
@@ -25,13 +26,7 @@
   const subscription = runner?.status$.subscribe((s) => (status = s));
   onDestroy(() => subscription?.unsubscribe());
 
-  const stateText: Record<RunnerStatus['state'], string> = {
-    idle: 'Up to date',
-    syncing: 'Syncing…',
-    off: 'Off on this device',
-    disconnected: 'Not connected',
-    error: 'Last sync failed'
-  };
+  const stateText = SYNC_STATE_TEXT;
 
   function formatTime(ms: number | null): string {
     return ms ? new Date(ms).toLocaleString() : 'never';

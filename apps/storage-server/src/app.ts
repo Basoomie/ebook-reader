@@ -12,6 +12,8 @@ export interface AppOptions {
   config: ServerConfig;
   database: DatabaseState;
   version: string;
+  /** When the server's code was built (version.ts). */
+  builtAt?: number | null;
   catalog?: CatalogOptions;
   /** See ApiOptions.seedDefaults (tests turn it off). */
   seedDefaults?: boolean;
@@ -27,6 +29,7 @@ export function createApp({
   config,
   database,
   version,
+  builtAt,
   catalog,
   seedDefaults,
   logs,
@@ -53,6 +56,7 @@ export function createApp({
     createApiRouter({
       database,
       version,
+      builtAt,
       catalog,
       pairing: { maxFailuresPerMinute: config.pairing.maxFailuresPerMinute },
       sync: {

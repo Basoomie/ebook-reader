@@ -77,6 +77,7 @@
   import { mergeEntries } from '$lib/components/merged-header-icon/merged-entries';
   import { pagePath } from '$lib/data/env';
   import { storage } from '$lib/data/window/navigator/storage';
+  import { canEstimateStorage, canPersistStorage } from '$lib/functions/secure-context';
   import { formatPageTitle } from '$lib/functions/format-page-title';
   import {
     positionPromptEnabled$,
@@ -93,9 +94,10 @@
     // The tab comes from the address (/settings?tab=audiobooks), so links and reloads keep it.
     activeSettings = tabFromQuery($page.url.searchParams.get('tab'));
     tabReady = true;
-    storage.persisted().then(setPersistentStorage);
-
-    setStorageQuota();
+    // Plain http has no navigator.storage: `storage` is then a stand-in that would read
+    // as "Off" and "100 % used", so the Data tab shows a note instead (settings-content).
+    if (canPersistStorage()) storage.persisted().then(setPersistentStorage);
+    if (canEstimateStorage()) setStorageQuota();
   });
 
   let prevPage = `${pagePath}${mergeEntries.HOME.routeId}`;
@@ -129,7 +131,12 @@
         return;
       }
 
-      storage.persist().then(setPersistentStorage).finally(setStorageQuota);
+      storage
+        .persist()
+        .then(setPersistentStorage)
+        .finally(() => {
+          if (canEstimateStorage()) setStorageQuota();
+        });
     }),
     reduceToEmptyString()
   );
