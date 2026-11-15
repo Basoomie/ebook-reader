@@ -174,6 +174,8 @@ export class Worker {
           ? new CalibredbHelper({
               program: c.helper.program,
               args: ['-e', c.helper.script],
+              // The only folder the helper may export into (checked again in Python).
+              env: { TTSU_EXPORT_DIRS: c.quarantineDir },
               log: (m) => this.log.info(m)
             })
           : null
@@ -396,7 +398,9 @@ export class Worker {
   private async report(batch: Batch, item: BatchItem, report: StepReport): Promise<void> {
     // A long error message must never make the report itself too large for the server.
     const sent = report.detail ? { ...report, detail: shorten(report.detail, 1500) } : report;
-    await this.retry(() => this.api.report(batch.id, item.itemId, sent));
+    await this.step('server report', () =>
+      this.retry(() => this.api.report(batch.id, item.itemId, sent))
+    );
     item.state = report.step;
   }
 
@@ -426,6 +430,19 @@ export class Worker {
       }
       const plan =
         batch.kind === 'undo' && batch.stage !== 2 ? await this.requestTrashRestore(batch) : null;
+      // Stage 1's step timing: every calibredb call by command, plus the server's reports,
+      // one log line per 25 copies (decided 2026-11-15, like stage 2's per chunk).
+      let timed = 0;
+      if (batch.stage !== 2) {
+        this.steps = new StepTimes();
+        this.calibredb.onCall = (cmd, ms, viaHelper) =>
+          this.steps?.add(`calibre ${cmd}${viaHelper ? '' : ' (program)'}`, ms);
+      }
+      const logTiming = () => {
+        if (this.steps && timed > 0) this.log.info(`Timing: ${this.steps.summary(timed)}`);
+        this.steps = batch.stage !== 2 ? new StepTimes() : null;
+        timed = 0;
+      };
       for (const item of batch.stage === 2 ? [] : batch.items) {
         if (this.stopped) return;
         const final =
@@ -444,14 +461,19 @@ export class Worker {
           this.log.error(`Item ${item.calibreId}: ${message}`);
           await this.report(batch, item, { step: 'failed', detail: message });
         }
-        if (this.itemDelayMs > 0) await sleep(this.itemDelayMs);
+        if (this.itemDelayMs > 0) await this.step('pause', () => sleep(this.itemDelayMs));
+        timed += 1;
+        if (timed >= 25) logTiming();
       }
+      if (batch.stage !== 2) logTiming();
     } catch (err) {
       error = (err as Error).message;
       this.log.error(`Batch ${batch.id}: ${error}`);
       if (err instanceof ServerError && err.code === 'not_claimed') return; // claimed again later
     } finally {
       clearInterval(lease);
+      this.calibredb.onCall = null;
+      if (batch.stage !== 2) this.steps = null;
     }
     if (this.stopped) return;
     const sentError = error === null ? null : shorten(error, 1500);
@@ -651,7 +673,12 @@ export class Worker {
         })
       );
     let answer = await send(current, false);
-    if (!answer.done) {
+    if (!answer.done && a.error === null) {
+      // Calibre answered the write without an error: what it shows now is final. Waiting is
+      // only for a write that errored or timed out, which Calibre may still finish (seen on
+      // the NAS 2026-11-15: a value Calibre stores differently was waited on for 10 minutes).
+      answer = await send(current, true);
+    } else if (!answer.done) {
       const until = Date.now() + this.opts.config.writeWaitSeconds * 1000;
       const done = await this.pollUntil(until, async () => {
         const now =
@@ -750,7 +777,7 @@ export class Worker {
       const dir = await this.exportItem(batch, item, login);
       const epub = await this.quarantine.epubIn(dir);
       if (!epub) throw new Error('The export has no EPUB');
-      const sha = await sha256File(epub);
+      const sha = await this.step('hash export', () => sha256File(epub));
       if (sha !== item.sha256) {
         await this.report(batch, item, {
           step: 'failed',

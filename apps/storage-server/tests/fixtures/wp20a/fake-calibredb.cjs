@@ -343,8 +343,19 @@ function setFields(fields) {
     } else if (k === '#illustrator') {
       if (!hasTable('books_custom_column_1_link')) fail('No column #illustrator');
       db.prepare('DELETE FROM books_custom_column_1_link WHERE book = ?').run(id);
+      // Like calibre 9.18: a names column ("Contains names") separates values with "&",
+      // any other multiple text column with "," (checked on real calibre 2026-11-15).
+      let names = false;
+      try {
+        const col = db
+          .prepare("SELECT display FROM custom_columns WHERE label = 'illustrator'")
+          .get();
+        names = !!col && JSON.parse(col.display || '{}').is_names === true;
+      } catch {
+        names = false;
+      }
       for (const n of v
-        .split(',')
+        .split(names ? '&' : ',')
         .map((x) => x.trim())
         .filter(Boolean)) {
         const vid = nameId('custom_column_1', 'value', n);

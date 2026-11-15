@@ -40,6 +40,26 @@ function tableExists(db: Database.Database, name: string): boolean {
   return !!db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`).get(name);
 }
 
+/**
+ * Whether the library's #illustrator column holds names ("Contains names" in Calibre): such a
+ * column separates values with "&" like authors, so "A,B" is one name (checked on real calibre
+ * 9.18, 2026-11-15). Without the flag, "," separates values.
+ */
+export function illustratorIsNames(file: string): boolean {
+  const db = new Database(file, { readonly: true, fileMustExist: true });
+  try {
+    const row = db
+      .prepare(`SELECT display FROM custom_columns WHERE label = 'illustrator'`)
+      .get() as { display: string | null } | undefined;
+    if (!row?.display) return false;
+    return (JSON.parse(row.display) as { is_names?: boolean }).is_names === true;
+  } catch {
+    return false;
+  } finally {
+    db.close();
+  }
+}
+
 export function readStage2Snapshot(file: string): Stage2Snapshot {
   const db = new Database(file, { readonly: true, fileMustExist: true });
   try {

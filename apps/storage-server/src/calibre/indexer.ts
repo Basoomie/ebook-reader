@@ -55,6 +55,11 @@ export interface IndexerOptions {
    * done, so the removed copies' missing flags and the reader-side handoffs land together.
    */
   holdIngest?: (libraryId: string) => boolean;
+  /**
+   * True when something waits for this library's next index (a finished stage-1 cleanup
+   * batch): a busy metadata.db is copied at once instead of after the longest settle wait.
+   */
+  wantsIngest?: (libraryId: string) => boolean;
   log?: (message: string) => void;
   logError?: (message: string, err?: unknown) => void;
 }
@@ -231,7 +236,8 @@ export class CalibreIndexer {
         const since = this.unsettledSince.get(lib.id) ?? Date.now();
         this.unsettledSince.set(lib.id, since);
         const maxWait = this.config.maxSettleWaitSeconds * 1000;
-        if (maxWait <= 0 || Date.now() - since < maxWait) {
+        const wanted = this.opts.wantsIngest?.(lib.id) ?? false;
+        if (!wanted && (maxWait <= 0 || Date.now() - since < maxWait)) {
           if (state.status !== 'settling')
             updateIndexState(this.db, lib.id, { status: 'settling' });
           return;
@@ -239,7 +245,9 @@ export class CalibreIndexer {
         forced = true;
         this.noteProblem(
           lib.id,
-          `${label}: metadata.db has not stayed unchanged for ${this.config.settleSeconds} s in ${Math.round((Date.now() - since) / 1000)} s; indexing it anyway`,
+          wanted
+            ? `${label}: the library cleanup waits for this index; indexing without waiting for metadata.db to stay unchanged`
+            : `${label}: metadata.db has not stayed unchanged for ${this.config.settleSeconds} s in ${Math.round((Date.now() - since) / 1000)} s; indexing it anyway`,
           false,
         );
       }

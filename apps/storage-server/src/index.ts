@@ -162,6 +162,7 @@ if (database.ok && config.calibre.dir) {
       thumbnails,
       counts,
       holdIngest: (libraryId) => cleanup?.holdsIngest(libraryId) ?? false,
+      wantsIngest: (libraryId) => cleanup?.wantsIngest(libraryId) ?? false,
     });
     catalog.indexer = indexer.status;
     catalog.thumbnails = thumbnails;

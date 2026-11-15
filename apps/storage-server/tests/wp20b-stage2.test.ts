@@ -131,6 +131,8 @@ describe('stage 2: metadata and covers from the files', () => {
           creators: [
             { name: '作家', role: 'aut' },
             { name: '画家 一', role: 'ill' },
+            // Two illustrators: a names column (like the NAS's) separates them with "&".
+            { name: '画家 二', role: 'ill' },
           ],
         }),
       }),
@@ -153,7 +155,7 @@ describe('stage 2: metadata and covers from the files', () => {
         [ids.B1]: { t: '本の題名 1', au: ['山田太郎'] },
         [ids.B2]: { t: '正しい題名', au: ['佐藤花子'] },
         [ids.B3]: { t: '魔女の旅々 20', au: ['榊一郎'] },
-        [ids.B8]: { t: '挿絵のある本', au: ['作家'], il: ['画家一'] },
+        [ids.B8]: { t: '挿絵のある本', au: ['作家'], il: ['画家一', '画家二'] },
       }),
     );
     server = http.createServer(env.app);
@@ -367,7 +369,7 @@ describe('stage 2: metadata and covers from the files', () => {
       isbn: '9780000000002',
       amazon_jp: 'B0AAAAAAAA',
     });
-    expect(proposals('illustrator')[0].new_json).toBe('["画家一"]');
+    expect(proposals('illustrator')[0].new_json).toBe('["画家一","画家二"]');
     // The gate passes on the labeled books.
     const gate = (getStage(env.cleanupDb, 2).precision as any).gate;
     expect(gate.labeled).toBe(4);
@@ -428,7 +430,8 @@ describe('stage 2: metadata and covers from the files', () => {
     // Calibre's spelling of a known name; the other book keeps its author (no shared rename).
     expect(calibreRecord(env.lib, ids.B6)!.authors).toEqual(['Abc Def']);
     expect(calibreRecord(env.lib, ids.B7)!.authors).toEqual(['Abc Def']);
-    expect(calibreRecord(env.lib, ids.B8)!.illustrators).toEqual(['画家一']);
+    // Both names, as two values (sent "画家一 & 画家二": a comma would make one name).
+    expect(calibreRecord(env.lib, ids.B8)!.illustrators).toEqual(['画家一', '画家二']);
     // One set_metadata per book, never tags, never an OPF.
     const calls = setCalls();
     expect(calls.length).toBe(new Set(calls.map((c) => c[c.indexOf('--password') + 2])).size);
@@ -591,6 +594,30 @@ describe('stage 2: metadata and covers from the files', () => {
     expect(env.service.batches.awaitingIngest(2)).toBeNull();
     expect(getStage(env.cleanupDb, 2).pauseReason).toBeNull();
     expect(env.service.batches.list().filter((b) => b.stage === 2).length).toBeGreaterThan(2);
+  });
+
+  it('a value Calibre stores differently after answering the write fails at once, without the long wait', async () => {
+    await setMode('analyse');
+    // A comma-separated column (no "Contains names") splits "X,Y" into two values.
+    const cal = new Database(path.join(env.lib.dir, 'metadata.db'));
+    cal.prepare(`UPDATE custom_columns SET display = '{}' WHERE label = 'illustrator'`).run();
+    cal.close();
+    await env.index();
+    const row = env.cleanupDb
+      .prepare(`SELECT id FROM proposed_changes WHERE stage = 2 AND field = 'illustrator' LIMIT 1`)
+      .get() as { id: number };
+    env.cleanupDb
+      .prepare('UPDATE proposed_changes SET new_json = ? WHERE id = ?')
+      .run(JSON.stringify(['X,Y']), row.id);
+    await setMode('on');
+    const t0 = Date.now();
+    await runAll(worker({ wait: 60 }));
+    expect(Date.now() - t0).toBeLessThan(30_000);
+    const item = env.cleanupDb
+      .prepare('SELECT state, detail FROM batch_items WHERE change_id = ?')
+      .get(row.id) as { state: string; detail: string };
+    expect(item.state).toBe('failed');
+    expect(item.detail).toContain("doesn't show the new value");
   });
 
   it('a write that times out but happens is recorded once; one that never happens fails after the wait, never sent twice', async () => {

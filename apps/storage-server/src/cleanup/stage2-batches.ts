@@ -19,6 +19,7 @@
  */
 import type Database from 'better-sqlite3';
 import { createHash } from 'crypto';
+import fs from 'fs';
 import path from 'path';
 import { snapshotFile } from '../calibre/indexer';
 import { parseCalibreDate } from '../calibre/ingest';
@@ -30,7 +31,7 @@ import { presentBookCount } from './handoff';
 import { getSettings } from './settings';
 import { listFieldPauses } from './stage2-gate';
 import { titleSort } from './title-rules';
-import { readStage2Snapshot, type Stage2Book } from './stage2-snapshot';
+import { illustratorIsNames, readStage2Snapshot, type Stage2Book } from './stage2-snapshot';
 import { currentAnalysisId, pauseStage } from './stages';
 
 export const STAGE2_TERMINAL_APPLY: ItemState[] = ['written', 'failed', 'skipped'];
@@ -147,6 +148,8 @@ export function fieldArgs(
   field: string,
   value: unknown,
   extra: Record<string, unknown> = {},
+  /** " & " for a names column (see illustratorIsNames), "," otherwise. */
+  illustratorSeparator = ',',
 ): string[] {
   switch (field) {
     case 'title':
@@ -170,7 +173,7 @@ export function fieldArgs(
     case 'languages':
       return [`languages:${((value as string[] | null) ?? []).join(',')}`];
     case 'illustrator':
-      return [`#illustrator:${((value as string[] | null) ?? []).join(',')}`];
+      return [`#illustrator:${((value as string[] | null) ?? []).join(illustratorSeparator)}`];
     default:
       throw new BatchError(500, 'bad_field', `No such field: ${field}`);
   }
@@ -262,6 +265,23 @@ export class Stage2Batches {
 
   private get db() {
     return this.deps.cleanup;
+  }
+
+  private namesColumn: { file: string; mtimeMs: number; sep: string } | null = null;
+
+  /** How #illustrator values are joined for Calibre (from the indexer's latest snapshot). */
+  private illustratorSeparator(libraryId: string): string {
+    const file = snapshotFile(this.deps.cacheDir, libraryId);
+    let mtimeMs = 0;
+    try {
+      mtimeMs = fs.statSync(file).mtimeMs;
+    } catch {
+      return ',';
+    }
+    if (this.namesColumn?.file !== file || this.namesColumn.mtimeMs !== mtimeMs) {
+      this.namesColumn = { file, mtimeMs, sep: illustratorIsNames(file) ? ' & ' : ',' };
+    }
+    return this.namesColumn.sep;
   }
 
   private libDir(libraryId: string): string {
@@ -640,7 +660,9 @@ export class Stage2Batches {
       return push('skipped', EDITED);
     }
     const extra = Object.fromEntries(Object.entries(ev.extra ?? {}).map(([k, v]) => [k, v.new]));
-    answer.fields.push(...fieldArgs(r.field, newV, extra));
+    answer.fields.push(
+      ...fieldArgs(r.field, newV, extra, this.illustratorSeparator(batch.libraryId)),
+    );
     this.setItem(r.item_id, 'verified', null, { ...seen, oldValue: matched.value }, now);
     push('verified', null);
   }
@@ -703,7 +725,12 @@ export class Stage2Batches {
       return push('skipped', EDITED_AFTER);
     }
     answer.fields.push(
-      ...fieldArgs(r.field, oldV ?? (r.field === 'identifiers' ? {} : null), { ...extraOld }),
+      ...fieldArgs(
+        r.field,
+        oldV ?? (r.field === 'identifiers' ? {} : null),
+        { ...extraOld },
+        this.illustratorSeparator(batch.libraryId),
+      ),
     );
     this.setItem(r.item_id, 'verified', null, { lastModified: cur.lastModified }, now);
     push('verified', null);
