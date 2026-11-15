@@ -83,7 +83,7 @@ export function withinRequestTime<T>(
   });
 }
 
-function localStores(db: IDBPDatabase<any>): LocalStores {
+export function localStores(db: IDBPDatabase<any>): LocalStores {
   return {
     getAudioBook: (title) => db.get('audioBook', title),
     putAudioBook: async (row) => void (await db.put('audioBook', row)),
@@ -114,8 +114,16 @@ export function createReaderWhispersync(options: {
     const api = await libraryApi();
     if (!api) return null;
     const engine = await getSyncEngine();
+    // Season 2: the file this copy was imported from (a match is applied only to it).
+    const link = await getLibraryStore()
+      .getLink(bookId)
+      .catch(() => undefined);
+    const fileSha256 =
+      link && link.localId === options.localId && link.how === 'imported'
+        ? (link.fileSha256 ?? null)
+        : null;
     return {
-      book: { bookId, localId: options.localId, title: options.title },
+      book: { bookId, localId: options.localId, title: options.title, fileSha256 },
       api,
       deps: {
         engine,

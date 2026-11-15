@@ -247,6 +247,8 @@ export function sameTime(a: string | null | undefined, b: string | null | undefi
     : (a ?? null) === (b ?? null);
 }
 
+export const SPLIT_NAME_REASON = 'A name contains &, which Calibre splits into two names';
+
 export class Stage2Batches {
   constructor(
     private readonly batches: BatchService,
@@ -270,8 +272,32 @@ export class Stage2Batches {
   }
 
   /** Plans the next stage-2 batch (the caller checked mode, pauses and the safety checks). */
+  /**
+   * Calibre splits a name on "&" into two authors (seen on the NAS 2026-11-15: the change then
+   * never shows and the book fails). Such author or illustrator changes go to review.
+   */
+  private reviewSplitNames(libraryId: string, now = Date.now()): void {
+    const rows = this.db
+      .prepare(
+        `SELECT id, new_json FROM proposed_changes
+         WHERE stage = 2 AND library_id = ? AND state = 'proposed' AND class = 'auto'
+           AND field IN ('authors', 'illustrator') AND new_json LIKE '%&%'`,
+      )
+      .all(libraryId) as { id: number; new_json: string }[];
+    const mark = this.db.prepare(
+      `UPDATE proposed_changes SET class = 'review', review_reason = ?, updated_at = ? WHERE id = ?`,
+    );
+    for (const r of rows) {
+      const v = JSON.parse(r.new_json) as unknown;
+      if (Array.isArray(v) && v.some((n) => typeof n === 'string' && n.includes('&'))) {
+        mark.run(SPLIT_NAME_REASON, now, r.id);
+      }
+    }
+  }
+
   async plan(libraryId: string): Promise<{ batch: BatchRow | null; reason: string | null }> {
     if (this.batches.open()) return { batch: null, reason: 'A batch is being applied' };
+    this.reviewSplitNames(libraryId);
     const settings = getSettings(this.db);
     const present = presentBookCount(this.deps.main, libraryId);
     const cap = Math.max(

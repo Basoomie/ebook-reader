@@ -455,3 +455,27 @@ describe('titles Calibre would turn into bad folder names (NAS run 2026-11-14)',
     expect(byField(p, 'authors')[0].reason).toContain('Too long for a folder name');
   });
 });
+
+describe('names Calibre would split (NAS run 2026-11-15)', () => {
+  it('keeps a full-width ＆ (NFKC would make "&", which Calibre splits into two authors)', () => {
+    expect(normalizeName('蛇蔵＆海野凪子')).toBe('蛇蔵＆海野凪子');
+    expect(normalizeName('島田フミカネ＆Ｐｒｏｊｅｋｔ Ｗｏｒｌｄ Ｗｉｔｃｈｅｓ')).toBe(
+      '島田フミカネ＆ProjektWorldWitches',
+    );
+    // Calibre's own name is tidied without turning ＆ into &.
+    const p = proposeStage2(
+      cal({ authors: ['蛇蔵＆海野 凪子'], title: '題名' }),
+      file({ title: '題名' }),
+    );
+    for (const x of byField(p, 'authors')) expect((x.new as string[]).join('')).not.toContain('&');
+  });
+
+  it('a file author holding ＆ goes to review like other names holding two names', () => {
+    const p = proposeStage2(
+      cal(),
+      file({ creators: [{ name: '原作 島田フミカネ＆Projekt World Witches', role: 'aut' }] }),
+    );
+    expect(byField(p, 'authors')).toMatchObject([{ class: 'review' }]);
+    expect(byField(p, 'authors')[0].reason).toContain('more than one name');
+  });
+});

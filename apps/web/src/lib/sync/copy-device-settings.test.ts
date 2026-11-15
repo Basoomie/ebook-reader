@@ -11,9 +11,12 @@ import {
 } from '$lib/components/book-reader/appearance-settings';
 import { SETTINGS_REGISTRY } from '$lib/sync/settings-registry';
 import {
+  allDeviceSettingKeys,
   APPEARANCE_COPY_KEYS,
   otherDevicesAppearance,
-  planAppearanceCopy
+  otherDevicesSettings,
+  planAppearanceCopy,
+  planSettingsCopy
 } from './copy-device-settings';
 import type { LocalRecord } from './sync-db';
 
@@ -65,6 +68,68 @@ describe('otherDevicesAppearance', () => {
       values: { fontSize: '24', writingMode: 'vertical-rl' }
     });
     expect(list[1].values).not.toHaveProperty('einkMode');
+  });
+});
+
+describe('otherDevicesSettings (all of a device own settings)', () => {
+  it('takes every per-device key, whispersync included, never local or shared ones', () => {
+    const list = otherDevicesSettings(
+      [
+        rec('device:me:fontSize', '30', 500),
+        rec('device:boox:fontSize', '24', 100),
+        rec('device:boox:einkMode', '1', 900),
+        rec('device:boox:trackerIdleTime', '60', 120),
+        rec('device:boox:ttu-whispersync-player-rewind-time', '15', 130),
+        rec('device:boox:homeRows', null, 140),
+        // Never published by the app; ignored if a record exists anyway.
+        rec('device:boox:ankiConnectKey', 'secret', 950),
+        rec('device:boox:ttu-whispersync-anki-key', 'secret', 950),
+        rec('device:phone:theme', 'dark-theme', 300),
+        rec('device:gone:fontSize', '40', 999, 1000),
+        rec('global:customThemes', '{}', 999)
+      ],
+      'me',
+      { boox: 'Boox' },
+      allDeviceSettingKeys()
+    );
+    expect(list.map((d) => d.deviceId)).toEqual(['boox', 'phone']);
+    expect(list[0]).toEqual({
+      deviceId: 'boox',
+      name: 'Boox',
+      updatedAt: 900,
+      values: {
+        fontSize: '24',
+        einkMode: '1',
+        trackerIdleTime: '60',
+        'ttu-whispersync-player-rewind-time': '15',
+        homeRows: null
+      }
+    });
+  });
+});
+
+describe('planSettingsCopy', () => {
+  it('copies every listed setting and keeps the current font when this device lacks it', () => {
+    const plan = planSettingsCopy(
+      {
+        fontFamilyGroupOne: 'My Font',
+        fontFamilyGroupTwo: 'Noto Sans JP',
+        einkMode: '1',
+        zenMode: '1',
+        'ttu-whispersync-player-rewind-time': '15',
+        homeRows: null,
+        ankiConnectKey: 'secret'
+      },
+      ['Noto Serif JP', 'Noto Sans JP']
+    );
+    expect(plan.apply).toEqual({
+      fontFamilyGroupTwo: 'Noto Sans JP',
+      einkMode: '1',
+      zenMode: '1',
+      'ttu-whispersync-player-rewind-time': '15',
+      homeRows: null
+    });
+    expect(plan.missingFonts).toEqual(['My Font']);
   });
 });
 

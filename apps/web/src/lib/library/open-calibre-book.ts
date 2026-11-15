@@ -28,7 +28,7 @@ export interface ExistingBookQuestion {
 }
 
 export interface OpenDeps {
-  api: Pick<LibraryApi, 'book' | 'downloadFile'>;
+  api: Pick<LibraryApi, 'book' | 'downloadFile'> & Partial<Pick<LibraryApi, 'fileHashes'>>;
   store: Pick<LibraryStore, 'getLink' | 'getLinksForLocalId' | 'putLink' | 'deleteLink'>;
   getLocalBook(id: number): Promise<LocalBookInfo | undefined>;
   getLocalBookByTitle(title: string): Promise<LocalBookInfo | undefined>;
@@ -73,6 +73,21 @@ export type OpenTarget = Pick<CatalogBook, 'id' | 'title'> & {
 const authorNames = (authors: readonly { name: string }[] | undefined) =>
   authors?.map((a) => a.name).filter(Boolean);
 
+/** The current file's hash, or null (an older server, a failure: the check compares text). */
+async function fileHashOf(
+  deps: OpenDeps,
+  bookId: string,
+  signal: AbortSignal
+): Promise<string | null> {
+  if (!deps.api.fileHashes) return null;
+  try {
+    const { books } = await deps.api.fileHashes([bookId], { signal });
+    return books.find((b) => b.id === bookId)?.sha256 ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export async function openCalibreBook(
   book: OpenTarget,
   deps: OpenDeps,
@@ -105,6 +120,9 @@ export async function openCalibreBook(
       return { status: 'refused', message: 'This book has no file to open.' };
     }
     onStage({ stage: 'download', loaded: 0, total: source.fileSize });
+    // Season 2: which file this copy comes from, asked just before the download (a file
+    // replaced in between is noticed by the next check, which compares the text).
+    const fileSha256 = await fileHashOf(deps, book.id, signal);
     const { blob, etag } = await deps.api.downloadFile(book.id, signal, (loaded, total) =>
       onStage({ stage: 'download', loaded, total })
     );
@@ -197,6 +215,8 @@ export async function openCalibreBook(
       calibreTitle: detail.title,
       characters,
       fileEtag: etag,
+      // Only a copy made from this file is updated when the file changes later.
+      fileSha256: how === 'imported' ? fileSha256 : null,
       linkedAt: now(),
       how,
       authors: authorNames(detail.authors) ?? []

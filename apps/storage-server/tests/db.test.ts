@@ -43,6 +43,7 @@ describe('migrations', () => {
       'books',
       'char_counts',
       'devices',
+      'file_hashes',
       'fonts',
       'legacy_books',
       'legacy_device_reports',

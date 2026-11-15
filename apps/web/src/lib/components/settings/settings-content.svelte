@@ -28,6 +28,7 @@
   import AnkiSettings from '$lib/components/anki/anki-settings.svelte';
   import SettingsServerFontsDialog from '$lib/components/settings/settings-server-fonts-dialog.svelte';
   import SettingsExportData from '$lib/components/settings/settings-export-data.svelte';
+  import SettingsCopyDevice from '$lib/components/settings/settings-copy-device.svelte';
   import LibraryConnectionSettings from '$lib/components/library/library-connection-settings.svelte';
   import AudiobooksPanel from '$lib/components/audio/audiobooks-panel.svelte';
   import DiagnosticsPanel from '$lib/components/settings/diagnostics-panel.svelte';
@@ -1041,6 +1042,14 @@
       {/if}
     </div>
     <SettingsSection jp="この端末" title="This device" testid="settings-section-device" />
+    <SettingsItemGroup
+      title="Copy settings from another device"
+      tooltip="Brings over all of another device's own settings in one tap, for example when this device starts using a new address."
+    >
+      {#if browser}
+        <SettingsCopyDevice />
+      {/if}
+    </SettingsItemGroup>
     <SettingsItemGroup
       title="Export my data"
       tooltip="One readable file (JSON) with everything synced for you: reading places, statuses and times read, highlights, notes, bookmarks, collections, statistics and the settings of every device. Book and font files are not in it."

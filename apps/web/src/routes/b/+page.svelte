@@ -195,6 +195,7 @@
   import { ViewMode } from '$lib/data/view-mode';
   import loadBookData from '$lib/functions/book-data-loader/load-book-data';
   import { formatPageTitle } from '$lib/functions/format-page-title';
+  import { setOpenInReader } from '$lib/library/offline/open-in-reader';
   import { iffBrowser } from '$lib/functions/rxjs/iff-browser';
   import { readableToObservable } from '$lib/functions/rxjs/readable-to-observable';
   import { reduceToEmptyString } from '$lib/functions/rxjs/reduce-to-empty-string';
@@ -408,6 +409,8 @@
 
       try {
         localStorageHandler = getBrowserStorageHandler(window);
+        // Season 2: a changed library file isn't put into the book while it is open here.
+        setOpenInReader(id);
 
         localStorageHandler.startContext({ id, title: '' });
         bookData = await localStorageHandler.getBook();
@@ -906,6 +909,7 @@
   /** Experimental Code - May be removed any time without warning */
 
   onDestroy(() => {
+    setOpenInReader(null);
     if (browser) {
       document.removeEventListener('ttu-action', handleAction, false);
       document.documentElement.lang = 'ja';

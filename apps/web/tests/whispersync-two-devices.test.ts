@@ -265,6 +265,68 @@ describe('whispersync between devices (real server)', () => {
     expect((await syncBook(depsA, bookA())).changed.match).toBe(false);
   });
 
+  it('Season 2: a match is applied only to a copy of the file it was made from', async () => {
+    const X = 'a'.repeat(64);
+    const Y = 'b'.repeat(64);
+    const MATCHED_Y = '<div data-ttu-whispersync-matched-by="b.srt"><span>new text</span></div>';
+    const syncMatch = async (deps: SyncDeps, ref: ReturnType<typeof bookA>) => syncBook(deps, ref);
+
+    // A matches its copy of file X.
+    await new Promise((r) => setTimeout(r, 5));
+    const t = Date.now();
+    rowsA.data.set(1, {
+      id: 1,
+      title: TITLE,
+      elementHtml: MATCHED,
+      htmlBackup: ORIGINAL,
+      lastBookModified: t
+    });
+    expect(await pushMatch(depsA, { ...bookA(), fileSha256: X })).toBe('ok');
+    await syncAll();
+
+    // B with a copy of file X (stored later) picks it up.
+    rowsB.data.clear();
+    rowsB.data.set(21, { id: 21, title: TITLE, elementHtml: ORIGINAL, lastBookModified: t + 1000 });
+    const bOnX = { bookId, localId: 21, title: TITLE, fileSha256: X };
+    expect((await syncMatch(depsB, bOnX)).changed.match).toBe(true);
+    expect(rowsB.data.get(21)?.elementHtml).toBe(MATCHED);
+
+    // B with a copy of the changed file Y never gets it, and uploads nothing.
+    rowsB.data.set(22, {
+      id: 22,
+      title: TITLE,
+      elementHtml: '<div>new text</div>',
+      lastBookModified: t + 2000
+    });
+    const bOnY = { bookId, localId: 22, title: TITLE, fileSha256: Y };
+    const skipped = await syncMatch(depsB, bOnY);
+    expect(skipped.changed.match).toBe(false);
+    expect(skipped.skippedMatch).toBe(true);
+    expect(rowsB.data.get(22)?.elementHtml).toBe('<div>new text</div>');
+    await syncAll();
+    const record = async () =>
+      (await a.engine.get('book-attachment', `${bookId}:whispersync-match`))?.data.modifiedAt;
+    expect(await record()).toBe(t);
+
+    // A updates to Y and matches again: B on X skips it, B on Y pulls it.
+    await new Promise((r) => setTimeout(r, 5));
+    const t2 = Date.now();
+    rowsA.data.set(1, {
+      id: 1,
+      title: TITLE,
+      elementHtml: MATCHED_Y,
+      htmlBackup: '<div>new text</div>',
+      lastBookModified: t2
+    });
+    expect(await pushMatch(depsA, { ...bookA(), fileSha256: Y })).toBe('ok');
+    await syncAll();
+    const onX = await syncMatch(depsB, bOnX);
+    expect(onX.changed.match).toBe(false);
+    expect(rowsB.data.get(21)?.elementHtml).toBe(MATCHED);
+    expect((await syncMatch(depsB, bOnY)).changed.match).toBe(true);
+    expect(rowsB.data.get(22)?.elementHtml).toBe(MATCHED_Y);
+  });
+
   it('writes only below DATA_DIR/.uploads/attachments', () => {
     const added = files(server.dataDir).filter((f) => !dataBefore.includes(f));
     expect(added.length).toBeGreaterThan(0);

@@ -98,7 +98,13 @@ import {
 import { recordPosition, resolveLinkedBookId, type BookmarkLike } from '$lib/sync/record-position';
 import { recordStatistics, STAT_DAY_KIND } from '$lib/sync/record-statistics';
 import { applyGlobalSettingValue } from '$lib/sync/settings-apply';
-import { otherDevicesAppearance, type DeviceAppearance } from '$lib/sync/copy-device-settings';
+import {
+  allDeviceSettingKeys,
+  otherDevicesAppearance,
+  otherDevicesSettings,
+  type DeviceAppearance,
+  type DeviceSettings
+} from '$lib/sync/copy-device-settings';
 import type { TextAnchor } from '$lib/notes/anchor';
 import type { BookNotes, HighlightColor } from '$lib/notes/highlights';
 import {
@@ -915,21 +921,44 @@ export type NotesApi = ReturnType<typeof notesApi>;
  */
 export async function listOtherDevicesAppearance(): Promise<DeviceAppearance[]> {
   try {
-    const engine = await getSyncEngine();
-    const records = await engine.getAll('setting');
-    const names: Record<string, string | undefined> = {};
-    for (const record of records) {
-      const deviceId = /^device:([^:]+):/.exec(record.id)?.[1];
-      if (!deviceId || deviceId === engine.deviceId || deviceId in names) continue;
-      const device = await engine.get('device', deviceId);
-      const name = device && device.deletedAt === null ? device.data?.name : undefined;
-      names[deviceId] = typeof name === 'string' ? name : undefined;
-    }
+    const { engine, records, names } = await otherDevicesSettingRecords();
     return otherDevicesAppearance(records, engine.deviceId, names);
   } catch (error) {
     warn(`Copy settings: ${(error as Error)?.message ?? error}`);
     return [];
   }
+}
+
+/**
+ * "Copy settings from another device" (Settings > Data): every other device's own settings
+ * from the local mirror (works offline), newest first. `updatedAt` is turned into this
+ * device's clock. Never throws: an unavailable mirror is an empty list.
+ */
+export async function listOtherDevicesSettings(): Promise<DeviceSettings[]> {
+  try {
+    const { engine, records, names } = await otherDevicesSettingRecords();
+    const offset = (await engine.getMeta()).clockOffsetMs || 0;
+    return otherDevicesSettings(records, engine.deviceId, names, allDeviceSettingKeys()).map(
+      (device) => ({ ...device, updatedAt: device.updatedAt - offset })
+    );
+  } catch (error) {
+    warn(`Copy settings: ${(error as Error)?.message ?? error}`);
+    return [];
+  }
+}
+
+async function otherDevicesSettingRecords() {
+  const engine = await getSyncEngine();
+  const records = await engine.getAll('setting');
+  const names: Record<string, string | undefined> = {};
+  for (const record of records) {
+    const deviceId = /^device:([^:]+):/.exec(record.id)?.[1];
+    if (!deviceId || deviceId === engine.deviceId || deviceId in names) continue;
+    const device = await engine.get('device', deviceId);
+    const name = device && device.deletedAt === null ? device.data?.name : undefined;
+    names[deviceId] = typeof name === 'string' ? name : undefined;
+  }
+  return { engine, records, names };
 }
 
 // ---------------------------------------------------------------------------

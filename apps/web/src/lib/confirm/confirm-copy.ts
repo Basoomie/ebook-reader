@@ -192,6 +192,18 @@ export function copyLookCopy(device: string): ConfirmCopy {
   };
 }
 
+/** Settings > Data, "Copy settings from another device": all of that device's own settings. */
+export function copyAllSettingsCopy(device: string, savedWhen: string): ConfirmCopy {
+  return {
+    title: `Use all settings of ${device}?`,
+    message: [
+      `This device's own settings are replaced by ${device}'s, as saved there ${savedWhen}: the reader's look and behaviour, E-ink and Zen mode, the reading tracker, Library and Home, sync and Anki connection settings, and whispersync's settings.`,
+      "Not copied: the AnkiConnect key. Enter it again in Settings > Anki, and in whispersync's Anki settings if you use them. Settings shared by all devices are already the same here."
+    ],
+    confirmLabel: 'Copy all settings'
+  };
+}
+
 /** The reader's Complete Book (not a removal, so the plain filled button). */
 export function completeBookCopy(charactersAdded: number): ConfirmCopy {
   return {

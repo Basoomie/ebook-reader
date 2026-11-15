@@ -12,13 +12,15 @@
  *   values over before publishing any. A key added here later is taken over
  *   the same way on devices that adopted before it existed (settings-sync.ts).
  * - device: this device's own value. Published as `device:<id>:<key>` so
- *   another device can copy it later; never applied automatically.
- * - local:  never leaves the device (connection settings, remembered UI state,
- *   things that become records of their own later).
+ *   another device can copy it ("Copy settings from another device" in
+ *   Settings > Data copies every device key); never applied automatically.
+ * - local:  never leaves the device (the AnkiConnect keys, bookkeeping,
+ *   things that are records of their own).
  *
  * A key missing here is treated as local. A test fails when a settings file
  * gains a key that isn't listed (or one listed here disappears).
- * Whispersync's own settings (lib/whispersync) are not listed: they stay local.
+ * Whispersync's own settings (lib/whispersync/lib/stores.ts) are listed too:
+ * per device, except its AnkiConnect key.
  */
 
 export type SettingScope = 'global' | 'device' | 'local';
@@ -126,14 +128,15 @@ export const SETTINGS_REGISTRY: Record<string, SettingSpec> = {
   // (WP15e: the old sync's settings and storage sources were removed; unlisted keys,
   // e.g. their values still in localStorage, count as local and never leave the device.)
 
-  // --- become records of their own later (local until then) ---
-  readingGoal: l('Object'), // ReadingGoal records (WP5/WP12)
-
-  // --- remembered UI state (local) ---
-  lastBlurredTrackerItems: l('Set'),
+  // --- local: the current goal (goals sync as records of their own), goal-sync bookkeeping,
+  // and ttsu's one-time hint for its old web address ---
+  readingGoal: l('Object'),
   lastReadingGoalsModified: l('Number'),
-  lastReadingDataHeatmapAggregationMode: l('String'),
   domainHintSeen: l('Boolean'),
+
+  // --- remembered choices (per device: copied with the device's other settings) ---
+  lastBlurredTrackerItems: d('Set'),
+  lastReadingDataHeatmapAggregationMode: d('String'),
 
   // --- lib/library/settings.ts (per device) ---
   libraryRequestTimeoutSeconds: d('Number'),
@@ -174,7 +177,89 @@ export const SETTINGS_REGISTRY: Record<string, SettingSpec> = {
   // --- lib/home/settings.ts (per device, WP7b) ---
   appOpenTarget: d('String'),
   homeRows: d('Array'),
-  homeRowLength: d('Number')
+  homeRowLength: d('Number'),
+
+  // --- lib/whispersync/lib/stores.ts: whispersync's own settings (per device; its AnkiConnect
+  // key never leaves the device, like ankiConnectKey). Not the dragged side-menu width
+  // (ttu-whispersync-side-menu-width, plain localStorage in AudioBookMenu.svelte): unlisted, local. ---
+  'ttu-whispersync-menu-position': d('String'),
+  'ttu-whispersync-hide-footer-actions': d('Boolean'),
+  'ttu-whispersync-player-playback-rate': d('Number'),
+  'ttu-whispersync-reader-line-highlight-color': d('String'),
+  'ttu-whispersync-reader-line-text-highlight-color': d('String'),
+  'ttu-whispersync-reader-enable-line-highlight': d('Boolean'),
+  'ttu-whispersync-reader-enable-line-text-highlight': d('Boolean'),
+  'ttu-whispersync-reader-enable-auto-reload': d('Boolean'),
+  'ttu-whispersync-reader-enable-filesystem-api': d('Boolean'),
+  'ttu-whispersync-reader-enable-auto-scroll': d('Boolean'),
+  'ttu-whispersync-reader-enable-tracker-auto-pause': d('Boolean'),
+  'ttu-whispersync-reader-prevent-action-on-selection': d('Boolean'),
+  'ttu-whispersync-reader-enable-menu-target': d('Boolean'),
+  'ttu-whispersync-reader-scroll-mode': d('String'),
+  'ttu-whispersync-reader-scroll-behavior': d('String'),
+  'ttu-whispersync-reader-click-action': d('String'),
+  'ttu-whispersync-reader-menu-open-mode': d('String'),
+  'ttu-whispersync-reader-menu-pause-mode': d('String'),
+  'ttu-whispersync-reader-menu-open-time': d('Number'),
+  'ttu-whispersync-reader-tracker-pause-threshold': d('Number'),
+  'ttu-whispersync-subtitles-enable-persist': d('Boolean'),
+  'ttu-whispersync-subtitles-enable-auto-scroll': d('Boolean'),
+  'ttu-whispersync-subtitles-copy-font-family': d('Boolean'),
+  'ttu-whispersync-subtitles-copy-font-size': d('Boolean'),
+  'ttu-whispersync-subtitles-copy-line-height': d('Boolean'),
+  'ttu-whispersync-subtitles-prevent-action-on-selection': d('Boolean'),
+  'ttu-whispersync-subtitles-click-action': d('String'),
+  'ttu-whispersync-subtitles-actions-visibility': d('String'),
+  'ttu-whispersync-subtitles-actions-visibility-time': d('Number'),
+  'ttu-whispersync-subtitles-global-start-padding': d('Number'),
+  'ttu-whispersync-subtitles-global-end-padding': d('Number'),
+  'ttu-whispersync-subtitles-font-family': d('String'),
+  'ttu-whispersync-subtitles-font-size': d('Number'),
+  'ttu-whispersync-subtitles-line-height': d('Number'),
+  'ttu-whispersync-player-enable-cover': d('Boolean'),
+  'ttu-whispersync-player-enable-chapters': d('Boolean'),
+  'ttu-whispersync-player-enable-wake-lock': d('Boolean'),
+  'ttu-whispersync-player-enable-subtitle-copy': d('Boolean'),
+  'ttu-whispersync-player-enable-dictionary-detection': d('Boolean'),
+  'ttu-whispersync-player-auto-pause-mode': d('String'),
+  'ttu-whispersync-player-rewind-time': d('Number'),
+  'ttu-whispersync-player-alt-rewind-time': d('Number'),
+  'ttu-whispersync-player-fast-forward-time': d('Number'),
+  'ttu-whispersync-player-alt-fast-forward-time': d('Number'),
+  'ttu-whispersync-player-playback-rate-decrease-time': d('Number'),
+  'ttu-whispersync-player-playback-rate-increase-time': d('Number'),
+  'ttu-whispersync-export-field-mode': d('String'),
+  'ttu-whispersync-export-audio-processor': d('String'),
+  'ttu-whispersync-export-audio-format': d('String'),
+  'ttu-whispersync-export-audio-bitrate': d('Number'),
+  'ttu-whispersync-export-cover-format': d('String'),
+  'ttu-whispersync-export-enable-merge-selection-auto-clear': d('Boolean'),
+  'ttu-whispersync-enable-ffmpeg-log': d('Boolean'),
+  'ttu-whispersync-anki-add-subtitle-tag': d('Boolean'),
+  'ttu-whispersync-anki-add-audio-tag': d('Boolean'),
+  'ttu-whispersync-anki-allow-empty-key-field': d('Boolean'),
+  'ttu-whispersync-anki-tag-list': d('String'),
+  'ttu-whispersync-anki-duplicate-mode': d('String'),
+  'ttu-whispersync-anki-url': d('String'),
+  'ttu-whispersync-anki-key': l('String'),
+  'ttu-whispersync-anki-deck': d('String'),
+  'ttu-whispersync-anki-update-deck': d('String'),
+  'ttu-whispersync-anki-model': d('String'),
+  'ttu-whispersync-anki-update-model': d('String'),
+  'ttu-whispersync-anki-sentence-field': d('String'),
+  'ttu-whispersync-anki-update-sentence-field': d('String'),
+  'ttu-whispersync-anki-sound-field': d('String'),
+  'ttu-whispersync-anki-update-sound-field': d('String'),
+  'ttu-whispersync-anki-cover-field': d('String'),
+  'ttu-whispersync-anki-update-cover-field': d('String'),
+  'ttu-whispersync-anki-enable-open-in-browser': d('Boolean'),
+  'ttu-whispersync-action-list-of-reader': d('Array'),
+  'ttu-whispersync-action-list-of-subtitles': d('Array'),
+  'ttu-whispersync-action-list-of-footer': d('Array'),
+  'ttu-whispersync-keybindings-enable-time-fallback': d('Boolean'),
+  'ttu-whispersync-match-line-ignore-rp': d('Boolean'),
+  'ttu-whispersync-match-line-similarity-threshold': d('Number'),
+  'ttu-whispersync-match-line-max-attempts': d('Number')
 };
 
 export function settingScope(key: string): SettingScope {
