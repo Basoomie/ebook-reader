@@ -673,7 +673,12 @@ export class Worker {
         })
       );
     let answer = await send(current, false);
-    if (!answer.done) {
+    if (!answer.done && a.error === null) {
+      // Calibre answered the write without an error: what it shows now is final. Waiting is
+      // only for a write that errored or timed out, which Calibre may still finish (seen on
+      // the NAS 2026-11-15: a value Calibre stores differently was waited on for 10 minutes).
+      answer = await send(current, true);
+    } else if (!answer.done) {
       const until = Date.now() + this.opts.config.writeWaitSeconds * 1000;
       const done = await this.pollUntil(until, async () => {
         const now =

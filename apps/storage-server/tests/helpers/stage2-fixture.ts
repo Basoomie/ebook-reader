@@ -132,8 +132,8 @@ export const STAGE2_DDL = `
     value TEXT NOT NULL COLLATE NOCASE, link TEXT NOT NULL DEFAULT '', UNIQUE(value));
   CREATE TABLE IF NOT EXISTS books_custom_column_1_link ( id INTEGER PRIMARY KEY AUTOINCREMENT,
     book INTEGER NOT NULL, value INTEGER NOT NULL, UNIQUE(book, value));
-  INSERT OR IGNORE INTO custom_columns (id, label, name, datatype, is_multiple, normalized)
-    VALUES (1, 'illustrator', 'Illustrator', 'text', 1, 1);
+  INSERT OR IGNORE INTO custom_columns (id, label, name, datatype, is_multiple, normalized, display)
+    VALUES (1, 'illustrator', 'Illustrator', 'text', 1, 1, '{"is_names": true}');
 `;
 
 function libDb(lib: LibraryFixture): Database.Database {
