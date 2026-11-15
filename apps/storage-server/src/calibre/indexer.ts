@@ -249,6 +249,7 @@ export class CalibreIndexer {
       const snap = await snapshotMetadataDb(source, dest, {
         timeoutMs: this.config.snapshotTimeoutSeconds * 1000,
         allowChanging: forced,
+        oneStep: forced,
       });
       this.unsettledSince.delete(lib.id);
 
