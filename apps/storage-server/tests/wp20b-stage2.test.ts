@@ -14,7 +14,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { Calibredb, buildArgs } from '../../cleanup-apply/src/calibredb';
 import { CalibredbHelper } from '../../cleanup-apply/src/calibredb-helper';
 import type { SidecarConfig } from '../../cleanup-apply/src/config';
-import { Worker } from '../../cleanup-apply/src/worker';
+import { StepTimes, Worker, writeKind } from '../../cleanup-apply/src/worker';
 import { listFieldPauses } from '../src/cleanup/stage2-gate';
 import { getStage } from '../src/cleanup/stages';
 import { fingerprint, makeJpeg } from './helpers/calibre-fixture';
@@ -839,3 +839,21 @@ describe('set_fields arguments', () => {
 });
 
 void Database;
+
+describe('stage-2 step timing in the sidecar log', () => {
+  it('names a write by what it holds and sums each step per chunk', async () => {
+    expect(writeKind(['title:A', 'sort:A', 'cover:/tmp/x.jpg'])).toBe(
+      'calibre write (cover + title/author)',
+    );
+    expect(writeKind(['authors:B', 'author_sort:'])).toBe('calibre write (title/author)');
+    expect(writeKind(['identifiers:amazon_jp:B0X'])).toBe('calibre write (other fields)');
+    const t = new StepTimes();
+    await t.time('calibre write (title/author)', () => new Promise((r) => setTimeout(r, 30)));
+    await t.time('calibre write (title/author)', () => new Promise((r) => setTimeout(r, 10)));
+    t.add('server verify', 5);
+    const s = t.summary(2);
+    expect(s).toMatch(
+      /^2 books in \d+\.\d s: calibre write \(title\/author\) \d+\.\d s \(2, max \d+\.\d s\) · server verify \d+\.\d s \(1, max \d+\.\d s\)$/,
+    );
+  });
+});

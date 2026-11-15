@@ -77,6 +77,51 @@ export const consoleLogger: Logger = {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/** The step name of a stage-2 write, by what it holds (a cover; a title or author). */
+export function writeKind(fields: string[]): string {
+  const has = (p: string) => fields.some((f) => f.startsWith(p));
+  const parts = [
+    has('cover:') ? 'cover' : null,
+    has('title:') || has('authors:') ? 'title/author' : null
+  ].filter(Boolean);
+  return parts.length ? `calibre write (${parts.join(' + ')})` : 'calibre write (other fields)';
+}
+
+/**
+ * Time spent per step of a stage-2 chunk, logged once per chunk (decided 2026-11-15, to find
+ * where a book's time goes on the NAS instead of guessing).
+ */
+export class StepTimes {
+  private readonly ms = new Map<string, { total: number; count: number; max: number }>();
+  private readonly startedAt = Date.now();
+
+  async time<T>(step: string, fn: () => Promise<T>): Promise<T> {
+    const t0 = Date.now();
+    try {
+      return await fn();
+    } finally {
+      this.add(step, Date.now() - t0);
+    }
+  }
+
+  add(step: string, ms: number): void {
+    const s = this.ms.get(step) ?? { total: 0, count: 0, max: 0 };
+    s.total += ms;
+    s.count += 1;
+    s.max = Math.max(s.max, ms);
+    this.ms.set(step, s);
+  }
+
+  /** "25 books in 31.2 s: calibre write 19.8 s (25, max 2.1 s) · list before 0.4 s · …" */
+  summary(books: number): string {
+    const sec = (ms: number) => `${(ms / 1000).toFixed(1)} s`;
+    const parts = [...this.ms.entries()]
+      .sort((a, b) => b[1].total - a[1].total)
+      .map(([k, v]) => `${k} ${sec(v.total)} (${v.count}, max ${sec(v.max)})`);
+    return `${books} books in ${sec(Date.now() - this.startedAt)}: ${parts.join(' · ')}`;
+  }
+}
+
 export interface WorkerOptions {
   config: SidecarConfig;
   api?: ServerApi;
@@ -103,6 +148,11 @@ export class Worker {
   private login: CalibreLogin | null = null;
   private libraries: string[] = [];
   private itemDelayMs = 2000;
+  /** The current stage-2 chunk's step times (null outside a chunk). */
+  private steps: StepTimes | null = null;
+  private async step<T>(name: string, fn: () => Promise<T>): Promise<T> {
+    return this.steps ? this.steps.time(name, fn) : fn();
+  }
   private pollMs = 15000;
   private readonly retryMinMs: number;
   private readonly retryMaxMs: number;
@@ -433,10 +483,13 @@ export class Worker {
     for (let i = 0; i < books.length; i += chunkSize) {
       if (this.stopped) return;
       const chunk = books.slice(i, i + chunkSize);
-      const before = await this.listChunk(
-        login,
-        chunk.map((b) => b.calibreId),
-        fields
+      this.steps = new StepTimes();
+      const before = await this.step('calibre list before', () =>
+        this.listChunk(
+          login,
+          chunk.map((b) => b.calibreId),
+          fields
+        )
       );
       const attempted: {
         book: Stage2Book;
@@ -449,18 +502,28 @@ export class Worker {
         const a = await this.writeBook(batch, login, book, before.get(book.calibreId) ?? null);
         if (a) attempted.push(a);
         // Stage 2's own pause (its setting comes with the batch; the heartbeat's is stage 1's).
-        if (a && batch.itemDelaySeconds > 0) await sleep(batch.itemDelaySeconds * 1000);
+        if (a && batch.itemDelaySeconds > 0)
+          await this.step('pause', () => sleep(batch.itemDelaySeconds * 1000));
       }
-      if (attempted.length === 0) continue;
-      const after = await this.listChunk(
-        login,
-        attempted.map((a) => a.book.calibreId),
-        fields
+      if (attempted.length === 0) {
+        this.steps = null;
+        continue;
+      }
+      const after = await this.step('calibre list after', () =>
+        this.listChunk(
+          login,
+          attempted.map((a) => a.book.calibreId),
+          fields
+        )
       );
       for (const a of attempted) {
         if (this.stopped) return;
-        await this.confirmBook(batch, login, a, after.get(a.book.calibreId) ?? null, fields);
+        await this.step('confirm', () =>
+          this.confirmBook(batch, login, a, after.get(a.book.calibreId) ?? null, fields)
+        );
       }
+      this.log.info(`Timing: ${this.steps.summary(chunk.length)}`);
+      this.steps = null;
     }
   }
 
@@ -482,9 +545,10 @@ export class Worker {
     coverSkipped: string | null;
   } | null> {
     const keptOld = batch.kind === 'apply' ? this.oldCoverFile(batch, book.calibreId) : null;
-    const oldCoverPath = keptOld && (await exists(keptOld)) ? keptOld : null;
-    const answer = await this.retry(() =>
-      this.api.verifyBook(batch.id, book.calibreId, { current, oldCoverPath })
+    const oldCoverPath =
+      keptOld && (await this.step('quarantine check', () => exists(keptOld))) ? keptOld : null;
+    const answer = await this.step('server verify', () =>
+      this.retry(() => this.api.verifyBook(batch.id, book.calibreId, { current, oldCoverPath }))
     );
     for (const it of answer.items) {
       const f = book.fields.find((x) => x.itemId === it.itemId);
@@ -500,10 +564,12 @@ export class Worker {
         if (answer.saveOldCover && !savedOld) {
           try {
             const file = this.oldCoverFile(batch, book.calibreId);
-            await fsp.mkdir(path.dirname(file), { recursive: true });
-            await this.retry(() =>
-              this.api.downloadCover(batch.id, book.calibreId, 'old-cover', file)
-            );
+            await this.step('old cover to quarantine', async () => {
+              await fsp.mkdir(path.dirname(file), { recursive: true });
+              await this.retry(() =>
+                this.api.downloadCover(batch.id, book.calibreId, 'old-cover', file)
+              );
+            });
             savedOld = file;
           } catch (err) {
             coverSkipped = `Calibre's old cover couldn't be kept in the quarantine: ${shorten((err as Error).message, 300)}`;
@@ -516,11 +582,14 @@ export class Worker {
             for (const ext of ['jpg', 'png', 'part'])
               await fsp.rm(`${base}.${ext}`, { force: true });
             const part = `${base}.part`;
-            const got = await this.retry(() =>
-              this.api.downloadCover(batch.id, book.calibreId, 'cover', part)
-            );
-            if (got.sha256 && (await sha256File(part)) !== got.sha256)
-              throw new Error('The cover download is incomplete');
+            const got = await this.step('cover download', async () => {
+              const g = await this.retry(() =>
+                this.api.downloadCover(batch.id, book.calibreId, 'cover', part)
+              );
+              if (g.sha256 && (await sha256File(part)) !== g.sha256)
+                throw new Error('The cover download is incomplete');
+              return g;
+            });
             tmp = `${base}.${got.ext === 'png' ? 'png' : 'jpg'}`;
             await fsp.rename(part, tmp);
             fields.push(`cover:${tmp}`);
@@ -537,10 +606,12 @@ export class Worker {
     let error: string | null = null;
     if (fields.length > 0) {
       try {
-        await this.calibredb.setFields(login, book.calibreId, fields, [
-          this.opts.config.coverTmpDir,
-          this.opts.config.quarantineDir
-        ]);
+        await this.step(writeKind(fields), () =>
+          this.calibredb.setFields(login, book.calibreId, fields, [
+            this.opts.config.coverTmpDir,
+            this.opts.config.quarantineDir
+          ])
+        );
       } catch (err) {
         if (this.stopped) throw err;
         error = shorten((err as Error).message, 1000);
