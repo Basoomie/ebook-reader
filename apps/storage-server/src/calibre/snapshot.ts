@@ -53,6 +53,12 @@ export interface SnapshotOptions {
    * source changes, so the copy is still consistent; only use when the source never settles.
    */
   allowChanging?: boolean;
+  /**
+   * Copy everything after the first step in one go: one read lock for the whole copy, so a
+   * source Calibre writes every second can't make SQLite restart it again and again (seen on
+   * the NAS 2026-11-15). Calibre waits up to 10 s for a lock (BUSY_TIMEOUT in calibre 9.18).
+   */
+  oneStep?: boolean;
 }
 
 async function removeQuietly(file: string): Promise<void> {
@@ -64,7 +70,7 @@ async function removeQuietly(file: string): Promise<void> {
 export async function snapshotMetadataDb(
   source: string,
   dest: string,
-  { timeoutMs, allowChanging = false }: SnapshotOptions,
+  { timeoutMs, allowChanging = false, oneStep = false }: SnapshotOptions,
 ): Promise<SnapshotResult> {
   const before = await statFile(source);
   if (!before) throw new SnapshotSkipped(`${METADATA_DB} is not there`);
@@ -92,11 +98,11 @@ export async function snapshotMetadataDb(
         // Steps of 100 pages: each read lock lasts milliseconds, so
         // Calibre is never blocked for long. A source that keeps changing makes
         // SQLite restart the copy; the deadline stops that from running forever.
-        progress: () => {
+        progress: ({ remainingPages }) => {
           if (Date.now() > deadline) {
             throw new SnapshotSkipped(`the copy took longer than ${timeoutMs / 1000} s`);
           }
-          return BACKUP_STEP_PAGES;
+          return oneStep ? Math.max(remainingPages, 1) : BACKUP_STEP_PAGES;
         },
       });
     } finally {

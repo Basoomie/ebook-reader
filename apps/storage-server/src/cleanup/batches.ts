@@ -259,6 +259,10 @@ async function sha256File(file: string): Promise<string> {
 
 export class BatchService {
   private readonly leaseSeconds: number;
+  /** metadata.db copies being made, per batch (never two at once for one batch). */
+  private readonly snapshotting = new Map<string, Promise<void>>();
+  /** How long a claim waits for a copy before answering "being made" (under the sidecar's 60 s). */
+  snapshotAnswerMs = 30_000;
   /** Stage 2's batches (WP20b): writing fields instead of removing copies. */
   readonly stage2: Stage2Batches;
   constructor(private readonly deps: BatchDeps) {
@@ -684,8 +688,20 @@ export class BatchService {
     if (!raw) return { batch: null, wait: null };
     const batch = toBatch(raw);
     if (!batch.snapshotSaved) {
+      // One copy per batch at a time, and the sidecar gets an answer within its request time:
+      // a copy still running answers "being made" and is asked about again on the next claim.
+      let making = this.snapshotting.get(batch.id);
+      if (!making) {
+        making = this.makeSnapshot(batch).finally(() => this.snapshotting.delete(batch.id));
+        this.snapshotting.set(batch.id, making);
+        making.catch(() => {});
+      }
       try {
-        await this.makeSnapshot(batch);
+        const done = await Promise.race([
+          making.then(() => true),
+          new Promise<false>((r) => setTimeout(() => r(false), this.snapshotAnswerMs).unref()),
+        ]);
+        if (!done) return { batch: null, wait: 'metadata.db snapshot is being made' };
       } catch (err) {
         return { batch: null, wait: `metadata.db snapshot postponed: ${(err as Error).message}` };
       }
@@ -736,8 +752,12 @@ export class BatchService {
     const lib = getLibrary(this.deps.main, batch.libraryId);
     if (!lib || !this.deps.calibreDir) throw new Error('the library is not available');
     await fs.mkdir(path.dirname(dest), { recursive: true });
+    // Calibre keeps writing metadata.db during a run (its own background writes): a consistent
+    // copy in one step (SQLite's backup), not one that must find metadata.db unchanged.
     await snapshotMetadataDb(path.join(this.deps.calibreDir, lib.folder, METADATA_DB), dest, {
       timeoutMs: 600_000,
+      allowChanging: true,
+      oneStep: true,
     });
     const sha = await sha256File(dest);
     this.db

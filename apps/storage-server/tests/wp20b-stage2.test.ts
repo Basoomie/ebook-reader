@@ -668,6 +668,42 @@ describe('stage 2: metadata and covers from the files', () => {
     expect(after.review_reason).toContain('Calibre splits');
   });
 
+  it('a slow metadata.db copy answers "being made" in time and is never made twice for one batch', async () => {
+    await setMode('on');
+    await worker().cycle(); // heartbeat and safety checks
+    await env.service.tick();
+    const planned = env.service.batches.open()!;
+    const svc = env.service.batches as unknown as {
+      makeSnapshot: (b: unknown) => Promise<void>;
+      snapshotAnswerMs: number;
+    };
+    const real = svc.makeSnapshot.bind(env.service.batches);
+    let calls = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    svc.makeSnapshot = async (b) => {
+      calls += 1;
+      await gate;
+      return real(b);
+    };
+    svc.snapshotAnswerMs = 50;
+    const first = await env.service.batches.claim();
+    const second = await env.service.batches.claim();
+    expect(first).toEqual({ batch: null, wait: 'metadata.db snapshot is being made' });
+    expect(second).toEqual({ batch: null, wait: 'metadata.db snapshot is being made' });
+    expect(calls).toBe(1);
+    release();
+    await new Promise((r) => setTimeout(r, 200));
+    // Once made, the next claim hands the batch out (the copy is reused, not made again).
+    const sha = env.service.batches.get(planned.id)!.snapshotSha256;
+    expect(sha).toMatch(/^[0-9a-f]{64}$/);
+    const third = await env.service.batches.claim();
+    expect(third.batch?.id).toBe(planned.id);
+    expect(third.batch?.snapshotSha256).toBe(sha);
+    const madeAt = fs.statSync(env.service.batches.snapshotFileFor(planned.id)).mtimeMs;
+    expect(madeAt).toBeLessThan(Date.now());
+  });
+
   it('a sidecar stopped after a write resumes without writing again', async () => {
     await setMode('on');
     let stoppedOnce = false;
