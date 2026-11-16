@@ -16,6 +16,7 @@ import { configure as zipConfigure } from '@zip.js/zip.js';
 import { installNodeDom, renewNodeDom } from './node-dom';
 import { readFile } from 'node:fs/promises';
 import { bookScriptFromHtml, type BookScript } from './book-script';
+import { bookTextFromHtml, type BookText } from './book-text';
 import extractEpub from '$lib/functions/file-loaders/epub/extract-epub';
 import generateEpubHtml from '$lib/functions/file-loaders/epub/generate-epub-html';
 import { collectIllustrations, opfCoverKey } from '$lib/library/illustrations/collect';
@@ -83,6 +84,22 @@ export async function bookScriptEpubBlob(
   });
 
   return bookScriptFromHtml(elementHtml, sections, characters, document, scriptOptions);
+}
+
+/**
+ * Phase 6 stage 3: the book's counted text (book-text.ts), from the same import.
+ * Image bytes are never read.
+ */
+export async function bookTextEpubBlob(
+  epub: Blob,
+  options: EpubHtmlImportOptions = defaultEpubImportOptions
+): Promise<BookText & { importCharacters: number }> {
+  const document = prepareNode(true);
+  const { elementHtml, sections, characters } = await countEpub(epub, document, options, {
+    imageData: false
+  });
+
+  return { ...bookTextFromHtml(elementHtml, sections, document), importCharacters: characters };
 }
 
 /** The reader's in-book total for stored `elementHtml`, computed in Node. */

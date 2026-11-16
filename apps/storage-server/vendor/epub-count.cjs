@@ -3,7 +3,7 @@
  * web app EPUB import and counting code (apps/web/src/lib/server/epub/server-counter.ts).
  * Rebuild with `pnpm build:server-counter` in apps/web after changing that code.
  * epub-count-version: 1
- * build: 3ec2aec298672602
+ * build: 95d46f5d8c9eadfa
  */
 var __create = Object.create;
 var __defProp = Object.defineProperty;
@@ -450,6 +450,7 @@ __export(server_counter_exports, {
   EPUB_COUNT_VERSION: () => EPUB_COUNT_VERSION,
   ImportHTMLFixMode: () => ImportHTMLFixMode,
   bookScriptForServer: () => bookScriptForServer,
+  bookTextForServer: () => bookTextForServer,
   countEpubForServer: () => countEpubForServer,
   defaultEpubImportOptions: () => defaultEpubImportOptions,
   illustrationsForServer: () => illustrationsForServer
@@ -14445,6 +14446,12 @@ function isNodeGaiji(node) {
 function getCharacterCount(node) {
   return isNodeGaiji(node) ? 1 : getRawCharacterCount(node);
 }
+var GAIJI_CHARACTER = "〓";
+function getCountedText(node) {
+  if (isNodeGaiji(node)) return GAIJI_CHARACTER;
+  if (!node.textContent) return "";
+  return node.textContent.replace(isNotJapaneseRegex, "");
+}
 var isNotJapaneseRegex = /[^0-9A-Z○◯々-〇〻ぁ-ゖゝ-ゞァ-ヺー０-９Ａ-Ｚｦ-ﾝ\p{Radical}\p{Unified_Ideograph}]+/gimu;
 function getRawCharacterCount(node) {
   if (!node.textContent) return 0;
@@ -15284,6 +15291,47 @@ function bookScriptFromHtml(elementHtml, sections, characters, document2, { maxS
   return { version: BOOK_SCRIPT_VERSION, characters, chapters: out };
 }
 
+// src/lib/server/epub/book-text.ts
+function codePoints(s) {
+  let n = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c >= 55296 && c <= 56319 && i + 1 < s.length) {
+      const d = s.charCodeAt(i + 1);
+      if (d >= 56320 && d <= 57343) i++;
+    }
+    n++;
+  }
+  return n;
+}
+function bookTextFromHtml(elementHtml, sections, document2) {
+  const container = document2.createElement("div");
+  container.innerHTML = elementHtml;
+  const sectionOf = new Map(sections.map((s) => [s.reference, s]));
+  const parts = [];
+  const chapters = [];
+  let offset = 0;
+  for (const child of Array.from(container.children)) {
+    const section = sectionOf.get(child.id);
+    if (!chapters.length || section && !section.parentChapter) {
+      chapters.push({ start: offset, label: section?.label?.trim() ?? "" });
+    }
+    for (const node of getParagraphNodes(child)) {
+      const piece = getCountedText(node);
+      if (!piece) continue;
+      parts.push(piece);
+      offset += codePoints(piece);
+    }
+  }
+  return {
+    text: parts.join(""),
+    characters: offset,
+    chapters,
+    ruby: container.getElementsByTagName("ruby").length,
+    tocEntries: sections.filter((s) => !s.parentChapter && s.label?.trim()).length
+  };
+}
+
 // src/lib/library/illustrations/image-size.ts
 function imageSize(bytes) {
   const b = bytes;
@@ -15456,6 +15504,13 @@ async function bookScriptEpubBlob(epub, options = defaultEpubImportOptions, scri
   });
   return bookScriptFromHtml(elementHtml, sections, characters, document2, scriptOptions);
 }
+async function bookTextEpubBlob(epub, options = defaultEpubImportOptions) {
+  const document2 = prepareNode(true);
+  const { elementHtml, sections, characters } = await countEpub(epub, document2, options, {
+    imageData: false
+  });
+  return { ...bookTextFromHtml(elementHtml, sections, document2), importCharacters: characters };
+}
 async function illustrationsEpubBlob(epub, options = defaultEpubImportOptions) {
   const document2 = prepareNode(true);
   const { contents, result, contentsDirectory } = await extractEpub(epub);
@@ -15479,6 +15534,9 @@ async function bookScriptForServer(epub, options = defaultEpubImportOptions, scr
 async function illustrationsForServer(epub, options = defaultEpubImportOptions) {
   return illustrationsEpubBlob(epub, options);
 }
+async function bookTextForServer(epub, options = defaultEpubImportOptions) {
+  return bookTextEpubBlob(epub, options);
+}
 async function countEpubForServer(epub, options = defaultEpubImportOptions) {
   const { characters, sections } = await countEpubBlob(epub, options, { imageData: false });
   return { characters, sections };
@@ -15489,6 +15547,7 @@ async function countEpubForServer(epub, options = defaultEpubImportOptions) {
   EPUB_COUNT_VERSION,
   ImportHTMLFixMode,
   bookScriptForServer,
+  bookTextForServer,
   countEpubForServer,
   defaultEpubImportOptions,
   illustrationsForServer

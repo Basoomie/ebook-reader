@@ -15,18 +15,20 @@ import type { Section } from '$lib/data/database/books-db/versions/v3/books-db-v
 import type { EpubHtmlImportOptions } from '$lib/functions/file-loaders/epub/generate-epub-html';
 import {
   bookScriptEpubBlob,
+  bookTextEpubBlob,
   countEpubBlob,
   defaultEpubImportOptions,
   illustrationsEpubBlob,
   type ServerIllustrations
 } from './count-epub-node';
 import type { BookScript } from './book-script';
+import type { BookText } from './book-text';
 
 export { EPUB_COUNT_VERSION } from '$lib/functions/file-loaders/epub/count-epub';
 export { BOOK_SCRIPT_VERSION } from './book-script';
 export { ImportHTMLFixMode } from '$lib/data/import-html-fix-mode';
 export { defaultEpubImportOptions };
-export type { EpubHtmlImportOptions, BookScript };
+export type { EpubHtmlImportOptions, BookScript, BookText };
 
 /**
  * WP17: the chapters and sentences a generated audiobook reads (book-script.ts), from the
@@ -53,6 +55,18 @@ export async function illustrationsForServer(
 }
 
 export type { ServerIllustrations };
+
+/**
+ * Phase 6 stage 3 (content duplicates): the book's text as the reader counts it, plus the
+ * import's own count (`importCharacters`; the two must be equal). Same Blob stand-in as
+ * countEpubForServer (image bytes are never read).
+ */
+export async function bookTextForServer(
+  epub: Blob,
+  options: EpubHtmlImportOptions = defaultEpubImportOptions
+): Promise<BookText & { importCharacters: number }> {
+  return bookTextEpubBlob(epub, options);
+}
 
 export interface ServerCountResult {
   characters: number;
