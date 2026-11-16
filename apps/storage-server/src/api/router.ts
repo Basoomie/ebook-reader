@@ -10,6 +10,7 @@ import {
   thumbnailHandler,
 } from './catalog-routes';
 import { ApiError, errorHandler, notFound, sendError } from './errors';
+import { createIllustrationRouter, illustrationImageRoute } from './illustration-routes';
 import { seedPlannedCollections } from '../collections/seed';
 import { createMigrationRouter } from '../migration/routes';
 import { MigrationService } from '../migration/service';
@@ -181,6 +182,8 @@ export function createApiRouter({
 
     // Signed URL or token (a plain <img> can't send the token).
     router.get('/books/:id/thumbnail', thumbnailAuth(db), thumbnailHandler(db, catalog));
+    // The book page's illustrations (Season 2 §6): signed URL or token, like thumbnails.
+    router.use(illustrationImageRoute(db, catalog));
     // Audio streams: signed URL or token (an <audio> element can't send the token, WP15).
     router.use(audioStreamRoute(db, audio));
     // The GPU worker (WP16): its own token, only /worker/*, only its job's files.
@@ -202,6 +205,7 @@ export function createApiRouter({
     router.use(createLogsRouter(logs));
 
     router.use(createCatalogRouter(db, catalog));
+    router.use(createIllustrationRouter(db, catalog));
     router.use(createAudioRouter(db, audio));
     router.use(createAudioLinkRouter(db, audio));
     router.use(createMergeRouter(db, audio));

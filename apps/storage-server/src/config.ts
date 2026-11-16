@@ -301,6 +301,11 @@ export interface CalibreConfig {
   thumbPerSecond: number;
   /** false = thumbnails are only made when requested. */
   thumbBackground: boolean;
+  /**
+   * Season 2 §6: reading a book's illustrations list (the reader's import in a child process)
+   * is stopped after this long, and the book page says it couldn't read them.
+   */
+  illustrationsTimeoutSeconds: number;
 }
 
 export const DEFAULT_CALIBRE: Omit<CalibreConfig, 'dir' | 'cacheDir'> = {
@@ -313,6 +318,7 @@ export const DEFAULT_CALIBRE: Omit<CalibreConfig, 'dir' | 'cacheDir'> = {
   thumbConcurrency: 1,
   thumbPerSecond: 8,
   thumbBackground: true,
+  illustrationsTimeoutSeconds: 120,
 };
 
 export const DEFAULT_SNAPSHOT_TIME: SnapshotTime = { hour: 3, minute: 0 };
@@ -461,6 +467,13 @@ export function parseCalibreConfig(env: Env, warnings: string[]): CalibreConfig 
     thumbConcurrency: num('THUMB_CONCURRENCY', d.thumbConcurrency, 1, 8, true),
     thumbPerSecond: num('THUMB_PER_SECOND', d.thumbPerSecond, 0, 1000),
     thumbBackground: bool('THUMB_BACKGROUND', d.thumbBackground),
+    illustrationsTimeoutSeconds: num(
+      'ILLUSTRATIONS_TIMEOUT_SECONDS',
+      d.illustrationsTimeoutSeconds,
+      10,
+      3600,
+      true,
+    ),
   };
 }
 

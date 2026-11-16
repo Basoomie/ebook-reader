@@ -117,6 +117,16 @@ export const SETTINGS_REGISTRY: Record<string, SettingSpec> = {
   timeLeftMinMinutes: d('Number'),
   bottomBarTimeLeft: d('String'),
 
+  // --- pacer (per device, Season 2 Phase 10) ---
+  pacerMode: d('String'),
+  pacerSpeed: d('Number'),
+  pacerTurnPages: d('Boolean'),
+  pacerKeepBehind: d('Number'),
+  pacerEinkStep: d('String'),
+  pacerLookupResume: d('Number'),
+  pacerIdleMinutes: d('Number'),
+  pacerTextlessPageSeconds: d('Number'),
+
   // --- statistics rules that must agree across devices (global) ---
   startDayHoursForTracker: g('Number'),
   statsWeekStart: g('Number'),
@@ -140,6 +150,7 @@ export const SETTINGS_REGISTRY: Record<string, SettingSpec> = {
 
   // --- lib/library/settings.ts (per device) ---
   libraryRequestTimeoutSeconds: d('Number'),
+  libraryServerCheckSeconds: d('Number'),
   libraryFilter: d('String'),
   libraryView: d('String'),
   libraryInfoLine: d('Boolean'),
@@ -148,6 +159,7 @@ export const SETTINGS_REGISTRY: Record<string, SettingSpec> = {
   libraryCoverSize: d('Number'),
   libraryAutoLoad: d('Boolean'),
   libraryLook: d('String'),
+  bookIllustrationsPosition: d('String'),
 
   // --- lib/sync/settings.ts (per device) ---
   recordSyncEnabled: d('Boolean'),

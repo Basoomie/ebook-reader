@@ -27,6 +27,8 @@ export interface ShortcutContext {
   tapEdgeToFlip: boolean;
   mouseDragPageTurn: boolean;
   statisticsEnabled: boolean;
+  /** Season 2 pacer: a mode is picked (its bottom-bar button shows). */
+  pacerOn?: boolean;
 }
 
 /** On-screen names of the reader actions, in the order they are listed. */
@@ -44,6 +46,8 @@ const READER_ACTIONS: [BookReaderAvailableKeybind, string][] = [
     BookReaderAvailableKeybind.ANKI_ENRICH,
     'Enrich the last Anki card (tag, sentence, audio, cover, link)'
   ],
+  // Season 2 pacer
+  [BookReaderAvailableKeybind.PACER_TOGGLE, 'Pacer: start or pause'],
   [BookReaderAvailableKeybind.AUTO_SCROLL_TOGGLE, 'Auto-scroll on or off'],
   [BookReaderAvailableKeybind.AUTO_SCROLL_INCREASE, 'Auto-scroll faster'],
   [BookReaderAvailableKeybind.AUTO_SCROLL_DECREASE, 'Auto-scroll slower']
@@ -198,6 +202,15 @@ export function readerShortcutGroups(context: ShortcutContext): ShortcutGroup[] 
     { keys: ['K'], action: 'Add a bookmark (keeps this page; your saved place stays)' }
   );
 
+  // Season 2 pacer: speed keys (typed characters, like [ and ]).
+  const afterPacer = reading.findIndex((row) => row.action === 'Pacer: start or pause') + 1;
+  reading.splice(
+    afterPacer || reading.length,
+    0,
+    { keys: [','], action: 'Pacer slower (600 characters per hour)' },
+    { keys: ['.'], action: 'Pacer faster' }
+  );
+
   reading.push({ keys: ['?'], action: 'Show this list' });
 
   const groups: ShortcutGroup[] = [{ title: 'Reading', rows: reading }];
@@ -233,6 +246,10 @@ export function readerShortcutGroups(context: ShortcutContext): ShortcutGroup[] 
       { keys: ['Tap the tracker icon'], action: 'Pause or resume the tracker' },
       { keys: ['Hold the tracker icon'], action: 'Open the tracker menu' }
     );
+  }
+
+  if (context.pacerOn) {
+    touch.push({ keys: ['Tap ▶ in the bottom bar'], action: 'Pacer: start or pause' });
   }
 
   touch.push(

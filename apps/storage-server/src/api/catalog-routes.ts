@@ -34,6 +34,7 @@ import { InvalidQueryError } from '../catalog/query-parser';
 import { RegexTimeoutError, SearchRunner } from '../catalog/search-runner';
 import { UUID_RE } from '../sync/kinds';
 import type { CharCountService } from '../counts/count-service';
+import type { IllustrationService } from '../catalog/illustrations';
 import { thumbnailVersion, type ThumbnailService } from '../thumbnails/thumbnails';
 import type { UploadService } from '../uploads/service';
 import { getAuth, requireUser } from './auth';
@@ -50,6 +51,8 @@ export interface CatalogOptions {
   search?: SearchRunner | null;
   /** Uploads (WP7b); null or absent = the upload adapter is off. */
   uploads?: UploadService | null;
+  /** The book page's illustrations (Season 2 §6); null or absent = off. */
+  illustrations?: IllustrationService | null;
 }
 
 const GROUP_BYS: GroupBy[] = ['series', 'author', 'tag'];

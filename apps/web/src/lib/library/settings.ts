@@ -16,6 +16,22 @@ export const libraryRequestTimeoutSeconds$ = writableNumberLocalStorageSubject()
   20
 );
 
+/**
+ * The offline Library's quick server check: how long the Library, Collections, Home and
+ * a book's details wait for the server's health answer before showing the books on this
+ * device (away from home a request often gets no answer until the request timeout).
+ * 0 = no quick check (the pages wait for their first request, as before).
+ */
+export const libraryServerCheckSeconds$ = writableNumberLocalStorageSubject()(
+  'libraryServerCheckSeconds',
+  5
+);
+
+/** The quick server check time in seconds (0 = off). */
+export function serverCheckSeconds(): number {
+  return Math.max(0, Number(libraryServerCheckSeconds$.getValue()) || 0);
+}
+
 /** Library picked in the Library page ('' = all libraries). */
 export const libraryFilter$ = writableStringLocalStorageSubject()('libraryFilter', '');
 
@@ -48,6 +64,15 @@ export const libraryCoverSize$ = writableNumberLocalStorageSubject()('libraryCov
  * or 'dark'. See lib/data/catalogue-look.ts.
  */
 export const libraryLook$ = writableStringLocalStorageSubject()('libraryLook', 'auto');
+
+/**
+ * Season 2 §6: where the book page shows the book's illustrations: 'description' (a
+ * full-width strip under the description and About this book, the default) or 'cover' (in
+ * the cover's column, under the cover). Per device (decided 2026-11-15).
+ */
+export const bookIllustrationsPosition$ = writableStringLocalStorageSubject<
+  'description' | 'cover'
+>()('bookIllustrationsPosition', 'description');
 
 /** WP19a: load the next page when the end of a list comes near (else a "Load more" button). */
 export const libraryAutoLoad$ = writableBooleanLocalStorageSubject()('libraryAutoLoad', true);

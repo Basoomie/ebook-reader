@@ -13,7 +13,13 @@
 
 import type { Section } from '$lib/data/database/books-db/versions/v3/books-db-v3';
 import type { EpubHtmlImportOptions } from '$lib/functions/file-loaders/epub/generate-epub-html';
-import { bookScriptEpubBlob, countEpubBlob, defaultEpubImportOptions } from './count-epub-node';
+import {
+  bookScriptEpubBlob,
+  countEpubBlob,
+  defaultEpubImportOptions,
+  illustrationsEpubBlob,
+  type ServerIllustrations
+} from './count-epub-node';
 import type { BookScript } from './book-script';
 
 export { EPUB_COUNT_VERSION } from '$lib/functions/file-loaders/epub/count-epub';
@@ -33,6 +39,20 @@ export async function bookScriptForServer(
 ): Promise<BookScript> {
   return bookScriptEpubBlob(epub, options, scriptOptions);
 }
+
+/**
+ * Season 2 §6: the book's illustrations for the book page, by the same rule a device
+ * applies to its stored copy. Same Blob stand-in as countEpubForServer (image entries are
+ * read: their sizes decide).
+ */
+export async function illustrationsForServer(
+  epub: Blob,
+  options: EpubHtmlImportOptions = defaultEpubImportOptions
+): Promise<ServerIllustrations> {
+  return illustrationsEpubBlob(epub, options);
+}
+
+export type { ServerIllustrations };
 
 export interface ServerCountResult {
   characters: number;

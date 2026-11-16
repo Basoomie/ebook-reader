@@ -15,6 +15,14 @@ import { isNodeGaiji } from '$lib/functions/is-node-gaiji';
 const countedChar =
   /^[0-9A-Z○◯々-〇〻ぁ-ゖゝ-ゞァ-ヺー０-９Ａ-Ｚｦ-ﾝ\p{Radical}\p{Unified_Ideograph}]$/iu;
 
+/** Whether the reader counts this character (one code point). Also used by the pacer. */
+export function isCountedChar(ch: string) {
+  return countedChar.test(ch);
+}
+
+/** Closing brackets kept with the sentence end before them. */
+export const CLOSING_BRACKET = /^[」』）)】〉》"'”’]$/u;
+
 /** Block elements: text in different ones never matches across them. */
 const BLOCK_TAGS = new Set([
   'ADDRESS',
@@ -120,7 +128,8 @@ export function normalizeForSearch(text: string) {
   return out;
 }
 
-function blockOf(node: Node) {
+/** The nearest block element around a node (paragraph, heading, …), or null. */
+export function blockOf(node: Node) {
   let el: Node | null = node.parentNode;
 
   while (el && !(el.nodeType === 1 && BLOCK_TAGS.has((el as Element).nodeName.toUpperCase()))) {
@@ -286,7 +295,7 @@ export function resultLine(index: BookTextIndex, match: SearchMatch, max = 60): 
 
     if (SENTENCE_END.has(ch)) {
       // Keep closing brackets that follow the sentence end (」』）).
-      while (end < display.length && /^[」』）)】〉》"'”’]$/u.test(display[end])) {
+      while (end < display.length && CLOSING_BRACKET.test(display[end])) {
         end += 1;
       }
 

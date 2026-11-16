@@ -19,7 +19,9 @@ export enum BookReaderAvailableKeybind {
   TOGGLE_TRACKING_FREEZE = 'toggleTrackingFreeze',
   TOGGLE_ZEN = 'toggleZen',
   /** WP14 "Enrich last Anki card". */
-  ANKI_ENRICH = 'ankiEnrich'
+  ANKI_ENRICH = 'ankiEnrich',
+  /** Season 2 pacer: start / pause. */
+  PACER_TOGGLE = 'pacerToggle'
 }
 
 export type BookReaderKeybindMap = Record<string, BookReaderAvailableKeybind>;

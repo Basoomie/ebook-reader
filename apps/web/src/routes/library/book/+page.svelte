@@ -12,6 +12,8 @@
    * (publisher, dates, length, file size, library) with the tags; the other volumes of
    * the series and other books by each author. The address is /library/book?id=<id>.
    * WP15b: the "Audiobook" section (the confirmation picker) between About and Series.
+   * Season 2 §6: the illustrations strip (book-illustrations.svelte) under the description
+   * or under the cover (the device's setting); a tap on the cover expands it.
    * Download (book-download-menu.svelte): the EPUB, and the linked audiobook file and
    * subtitles when there are any (the link comes up from the Audiobook section).
    */
@@ -23,6 +25,7 @@
   import AddToCollectionDialog from '$lib/components/collections/add-to-collection-dialog.svelte';
   import AudioLinkSection from '$lib/components/audio/audio-link-section.svelte';
   import BookDownloadMenu from '$lib/components/library/book-download-menu.svelte';
+  import BookIllustrations from '$lib/components/library/book-illustrations.svelte';
   import BookStateDialog from '$lib/components/library/book-state-dialog.svelte';
   import CoverImage from '$lib/components/library/cover-image.svelte';
   import LibraryBookCard from '$lib/components/library/library-book-card.svelte';
@@ -45,16 +48,26 @@
   import { openCatalogBook } from '$lib/library/open-from-catalog';
   import type { OfflineCatalog } from '$lib/library/offline/offline-catalog';
   import {
-    browserOnline,
+    askServerFirst,
+    freshOfflineCatalog,
     isUnreachable,
+    noteReachable,
+    noteUnreachable,
     offlineCatalog,
     OFFLINE_NOTICE,
     saveOfflineDetail,
-    saveOfflineLibraries
+    saveOfflineLibraries,
+    serverAnswersAgain,
+    serverWorthAsking,
+    startsOffline
   } from '$lib/library/offline/offline-source';
   import { isOnThisDevice, removeFromThisDevice } from '$lib/library/remove-from-device';
   import { bookProgressFraction, bookProgressLabel, positionsByBook } from '$lib/library/progress';
-  import { libraryCoverSize$, libraryRequestTimeoutSeconds$ } from '$lib/library/settings';
+  import {
+    bookIllustrationsPosition$,
+    libraryCoverSize$,
+    libraryRequestTimeoutSeconds$
+  } from '$lib/library/settings';
   import type { CatalogBook, CatalogBookDetail, CatalogLibrary } from '$lib/library/types';
   import { STATUS_LABELS, type BookState } from '$lib/sync/book-state';
   import type { LocalRecord } from '$lib/sync/sync-db';
@@ -87,6 +100,10 @@
   let highlights = 0;
   /** WP15e: this device has a copy of the book (offers Remove from this device). */
   let onDeviceHere = false;
+  /** Whether `onDeviceHere` is known for this book yet (the illustrations wait for it). */
+  let onDeviceChecked = false;
+  /** Season 2 §6: the illustrations strip (it also shows the expanded cover). */
+  let illustrations: BookIllustrations | undefined;
   /** The book's audiobook link, from the Audiobook section (for the Download menu). */
   let audioLink: AudioLink | null = null;
   let states = new Map<string, BookState>();
@@ -125,6 +142,8 @@
     ? !revealed.has(book.id) && isCoverBlurred(state?.blur, book.tags, tagRules)
     : false;
   $: gridLayout = coverGrid($libraryCoverSize$);
+  // Season 2 §6: the device's setting (anything unknown counts as the default).
+  $: illustrationsAt = $bookIllustrationsPosition$ === 'cover' ? 'cover' : 'description';
   $: seriesLabel = book?.series
     ? `${book.series.name}${book.series.index !== null ? ` · 第${formatSeriesIndex(book.series.index)}巻` : ''}`
     : '';
@@ -149,18 +168,39 @@
       return;
     }
     const timeout = Math.max(0, Number($libraryRequestTimeoutSeconds$) || 0);
-    api = new LibraryApi(connection.serverUrl, connection.token, timeout);
-    offline = !browserOnline();
-    if (!offline) {
-      try {
-        libraries = (await api.libraries()).libraries;
+    const a = new LibraryApi(connection.serverUrl, connection.token, timeout);
+    api = a;
+    freshOfflineCatalog();
+    // No network, or the server didn't answer a moment ago (another page): the copy on
+    // this device at once, and the server is asked again in the background.
+    offline = startsOffline();
+    if (offline) {
+      void recheckServer(connection);
+    } else {
+      const first = await askServerFirst(connection.serverUrl, (signal) => a.libraries({ signal }));
+      if (first.status === 'ok') {
+        libraries = first.value.libraries;
         void saveOfflineLibraries(libraries);
-      } catch {
-        // The book request reports connection problems.
+      } else if (first.status === 'unreachable') {
+        offline = true;
       }
+      // Other problems: the book request reports them.
+    }
+    if (offline && !libraries.length) {
+      libraries = (
+        await offlineCatalog()
+          .libraries()
+          .catch(() => ({ libraries: [] }))
+      ).libraries;
     }
     await load();
   });
+
+  /** Offline: when the server answers the quick check again, ask it for this book. */
+  async function recheckServer(conn: LibraryConnection) {
+    if (!(await serverAnswersAgain(conn.serverUrl))) return;
+    if (!destroyed && offline && connection === conn) void tryServerAgain();
+  }
 
   /** Who answers: the server, or the offline catalog while it can't be reached. */
   function source(): LibraryApi | OfflineCatalog | undefined {
@@ -169,7 +209,10 @@
   }
 
   /** "Try again": ask the server for this book again. */
-  function tryServerAgain() {
+  async function tryServerAgain() {
+    // Away from home: no request timeout wait when the server still doesn't answer.
+    if (connection && !(await serverWorthAsking(connection.serverUrl))) return;
+    if (destroyed) return;
     offline = false;
     book = null;
     bookId = '';
@@ -224,6 +267,7 @@
     error = '';
     notFound = false;
     onDeviceHere = false;
+    onDeviceChecked = false;
     audioLink = null;
     descriptionOpen = false;
     series = [];
@@ -233,11 +277,15 @@
         book = await (source() as LibraryApi | OfflineCatalog).book(id, {
           signal: controller.signal
         });
-        if (!offline) void saveOfflineDetail(book);
+        if (!offline) {
+          noteReachable();
+          void saveOfflineDetail(book);
+        }
       } catch (err) {
         // The server can't be reached: the copy on this device, when there is one.
         if (offline || !isUnreachable(err)) throw err;
         offline = true;
+        noteUnreachable();
         if (!libraries.length) libraries = (await offlineCatalog().libraries()).libraries;
         try {
           book = await offlineCatalog().book(id, { signal: controller.signal });
@@ -263,7 +311,10 @@
   async function loadOnDevice() {
     const id = bookId;
     const here = await isOnThisDevice(id);
-    if (id === bookId) onDeviceHere = here;
+    if (id === bookId) {
+      onDeviceHere = here;
+      onDeviceChecked = true;
+    }
   }
 
   /** WP15e: Remove from this device. */
@@ -434,18 +485,32 @@
     <p class="c-notice" role="alert">{error}</p>
   {:else if book}
     <div class="c-dgrid mt-2">
-      <button
-        class="c-cover c-focus c-dcover relative aspect-[2/3] w-full overflow-hidden rounded-sm"
-        aria-label={coverBlurred ? `Show cover: ${book.title}` : `${readLabel}: ${book.title}`}
-        data-testid="details-cover"
-        disabled={book.missing}
-        on:click={() => (book && coverBlurred ? reveal(book) : book && open(book))}
-      >
-        <CoverImage src={thumb(book)} blurred={coverBlurred} />
-        {#if book.series?.index !== null && book.series?.index !== undefined}
-          <span class="c-dribbon">{formatSeriesIndex(book.series.index)}</span>
+      <!-- Season 2 §6: a tap on the cover expands it (no longer opens the book); the
+           illustrations strip sits under it when the device's setting says so. -->
+      <div class="c-dcovercol">
+        <button
+          class="c-cover c-focus c-dcover relative aspect-[2/3] w-full overflow-hidden rounded-sm"
+          aria-label={coverBlurred ? `Show cover: ${book.title}` : `Expand cover: ${book.title}`}
+          data-testid="details-cover"
+          on:click={() => (book && coverBlurred ? reveal(book) : illustrations?.openCover())}
+        >
+          <CoverImage src={thumb(book)} blurred={coverBlurred} />
+          {#if book.series?.index !== null && book.series?.index !== undefined}
+            <span class="c-dribbon">{formatSeriesIndex(book.series.index)}</span>
+          {/if}
+        </button>
+        {#if illustrationsAt === 'cover'}
+          <BookIllustrations
+            bind:this={illustrations}
+            {api}
+            bookId={book.id}
+            onDevice={onDeviceChecked ? onDeviceHere : null}
+            {offline}
+            variant="cover"
+            coverThumb={thumb(book)}
+          />
         {/if}
-      </button>
+      </div>
 
       <div class="c-dmain flex min-w-0 flex-col gap-3">
         {#if seriesLabel}
@@ -605,6 +670,18 @@
       </section>
     </div>
 
+    {#if illustrationsAt === 'description'}
+      <BookIllustrations
+        bind:this={illustrations}
+        {api}
+        bookId={book.id}
+        onDevice={onDeviceChecked ? onDeviceHere : null}
+        {offline}
+        variant="description"
+        coverThumb={thumb(book)}
+      />
+    {/if}
+
     {#if api}
       <AudioLinkSection {api} bookId={book.id} bookOnDevice={onDeviceHere} bind:link={audioLink} />
     {/if}
@@ -742,6 +819,15 @@
 
   .c-dcover {
     grid-area: cover;
+  }
+
+  /* The cover and, when the setting says so, the illustrations strip under it. */
+  .c-dcovercol {
+    grid-area: cover;
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 1.25rem;
   }
 
   .c-dmain {

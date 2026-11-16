@@ -79,6 +79,7 @@
     jumpBackClick: void;
     jumpForwardClick: void;
     ankiEnrichClick: void;
+    pacerClick: void;
   }>();
 
   const customReadingPointMenuItems: {
@@ -116,6 +117,8 @@
       items.push(mergeEntries.ADD_BOOKMARK);
       // WP14: on every device, with or without an audiobook.
       items.push(mergeEntries.ANKI_ENRICH);
+      // Season 2 pacer
+      items.push(mergeEntries.PACER);
     }
 
     if (hasBookState) {
@@ -391,6 +394,8 @@
           dispatch('addBookmarkClick');
         } else if (detail === mergeEntries.ANKI_ENRICH.label) {
           dispatch('ankiEnrichClick');
+        } else if (detail === mergeEntries.PACER.label) {
+          dispatch('pacerClick');
         }
       }}
     />

@@ -16,6 +16,14 @@ import { configure as zipConfigure } from '@zip.js/zip.js';
 import { installNodeDom, renewNodeDom } from './node-dom';
 import { readFile } from 'node:fs/promises';
 import { bookScriptFromHtml, type BookScript } from './book-script';
+import extractEpub from '$lib/functions/file-loaders/epub/extract-epub';
+import generateEpubHtml from '$lib/functions/file-loaders/epub/generate-epub-html';
+import { collectIllustrations, opfCoverKey } from '$lib/library/illustrations/collect';
+import {
+  ILLUSTRATIONS_RULE_VERSION,
+  type Illustration
+} from '$lib/library/illustrations/pick-illustrations';
+import path from 'path-browserify';
 
 /** Same defaults as `importHTMLFixMode$` / `restrictImportFixToAnchor$` in the store. */
 export const defaultEpubImportOptions: Readonly<EpubHtmlImportOptions> = {
@@ -80,4 +88,39 @@ export async function bookScriptEpubBlob(
 /** The reader's in-book total for stored `elementHtml`, computed in Node. */
 export function countStoredHtml(elementHtml: string) {
   return countHtml(elementHtml, prepareNode());
+}
+
+export interface ServerIllustration extends Illustration {
+  /** The image's path inside the EPUB (what the server reads to serve it). */
+  entry: string;
+}
+
+export interface ServerIllustrations {
+  version: number;
+  items: ServerIllustration[];
+}
+
+/**
+ * Season 2 §6: the book's illustrations, with the reader's own import and the same rule
+ * the device applies to its stored copy (lib/library/illustrations). Image bytes are read
+ * (their sizes decide), but only the candidates' headers are looked at.
+ */
+export async function illustrationsEpubBlob(
+  epub: Blob,
+  options: EpubHtmlImportOptions = defaultEpubImportOptions
+): Promise<ServerIllustrations> {
+  const document = prepareNode(true);
+  const { contents, result, contentsDirectory } = await extractEpub(epub);
+  const { element } = generateEpubHtml(result, contents, document, contentsDirectory, options);
+  const blobs = Object.fromEntries(
+    Object.entries(result).filter((entry): entry is [string, Blob] => entry[1] instanceof Blob)
+  );
+  const coverKey = opfCoverKey(contents, new Set(Object.keys(blobs)));
+  const items = await collectIllustrations(element, blobs, coverKey);
+
+  return {
+    version: ILLUSTRATIONS_RULE_VERSION,
+    // The same path extract-epub opened the entry by.
+    items: items.map((item) => ({ ...item, entry: path.join(contentsDirectory, item.key) }))
+  };
 }

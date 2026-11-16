@@ -15,11 +15,15 @@
   import { plural } from '$lib/library/format';
   import { getLibraryStore, type LibraryConnection } from '$lib/library/library-db';
   import {
-    browserOnline,
-    isUnreachable,
+    askServerFirst,
+    freshOfflineCatalog,
+    noteReachable,
+    noteUnreachable,
     offlineCatalog,
     OFFLINE_NOTICE,
-    refreshOfflineCopies
+    refreshOfflineCopies,
+    serverAnswersAgain,
+    startsOffline
   } from '$lib/library/offline/offline-source';
   import CataloguePageHeader from '$lib/components/catalogue-page-header.svelte';
   import LibraryDisplayMenu from '$lib/components/library/library-display-menu.svelte';
@@ -69,6 +73,8 @@
   $: timeoutSeconds = Math.max(0, Number($libraryRequestTimeoutSeconds$) || 0);
 
   onMount(async () => {
+    // Offline, this visit reads this device's books once.
+    freshOfflineCatalog();
     void view.syncSoon();
     await loadMirror();
     for (const sub of [
@@ -84,7 +90,10 @@
     connection = (await store.getConnection()) ?? null;
     if (connection) {
       api = new LibraryApi(connection.serverUrl, connection.token, timeoutSeconds);
-      offline = !browserOnline();
+      // No network, or the server didn't answer a moment ago (another page): this device's
+      // books at once, and the server is asked again in the background.
+      offline = startsOffline();
+      if (offline) void recheckServer(connection);
       window.addEventListener('online', tryServerAgain);
       await loadCards();
     }
@@ -124,27 +133,44 @@
     const request = ++cardsRequest;
     cardsLoading = true;
     const asked = offline;
+    const server = api;
+    const serverUrl = connection?.serverUrl ?? server.serverUrl;
     try {
+      let result: { cards: CollectionCardData[] };
       if (asked) {
         // The offline Library: this device's books, from its own records.
         staleNote = false;
+        result = await offlineCatalog().collectionCards();
       } else {
-        // Counts and covers of built-ins and saved searches use your book state on the server.
-        staleNote = await view.sendPendingChanges(timeoutSeconds);
+        // With the quick server check beside it: no answer in its time means offline.
+        const first = await askServerFirst(serverUrl, async (signal) => {
+          // Counts and covers of built-ins and saved searches use your book state on the
+          // server.
+          const stale = await view.sendPendingChanges(timeoutSeconds);
+          const answer = await server.collectionCards({ signal });
+          return { stale, answer };
+        });
+        if (request !== cardsRequest) return;
+        if (first.status === 'unreachable') {
+          offline = true;
+          noteUnreachable();
+          cardsLoading = false;
+          void loadCards();
+          return;
+        }
+        if (first.status === 'error') throw first.error;
+        staleNote = first.value.stale;
+        result = first.value.answer;
       }
-      const result = await (asked ? offlineCatalog() : api).collectionCards();
       if (request !== cardsRequest) return;
       cards = new Map(result.cards.map((c) => [c.id, c]));
       cardsError = '';
-      if (!asked) void refreshOfflineCopies(api);
+      if (!asked) {
+        noteReachable();
+        void refreshOfflineCopies(server);
+      }
     } catch (error) {
       if (request !== cardsRequest) return;
-      if (!asked && isUnreachable(error)) {
-        offline = true;
-        cardsLoading = false;
-        void loadCards();
-        return;
-      }
       cardsError = `Covers and counts could not be loaded: ${(error as Error).message}`;
     } finally {
       if (request === cardsRequest) cardsLoading = false;
@@ -155,7 +181,14 @@
   function tryServerAgain() {
     if (!offline) return;
     offline = false;
+    noteReachable();
     void loadCards();
+  }
+
+  /** Offline: when the server answers the quick check again, ask it. */
+  async function recheckServer(conn: LibraryConnection) {
+    if (!(await serverAnswersAgain(conn.serverUrl))) return;
+    if (!destroyed && offline && connection === conn) tryServerAgain();
   }
 
   function tilesOf(

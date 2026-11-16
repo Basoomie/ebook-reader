@@ -10,6 +10,8 @@ import { listUsers } from '../../src/db/users';
 import { ThumbnailService } from '../../src/thumbnails/thumbnails';
 import { UploadService } from '../../src/uploads/service';
 import { UploadStore } from '../../src/uploads/upload-store';
+import { IllustrationService, type ListReader } from '../../src/catalog/illustrations';
+import { countImportOptions } from '../../src/counts/counter-bundle';
 import type { AudioOptions } from '../../src/audio/routes';
 import { testCalibreConfig, testConfig } from './test-app';
 
@@ -24,6 +26,8 @@ export interface IndexerEnv {
   config: ServerConfig;
   /** Present when made with `uploads: true` (WP7b). */
   uploads: UploadService | null;
+  /** The book page's illustrations (Season 2 §6). */
+  illustrations: IllustrationService;
   logs: string[];
   token: () => string;
   close: () => Promise<void>;
@@ -39,7 +43,14 @@ export function makeIndexerEnv(
     seedDefaults = false,
     uploads = false,
     audio,
-  }: { seedDefaults?: boolean; uploads?: boolean; audio?: AudioOptions } = {},
+    illustrationsRead,
+  }: {
+    seedDefaults?: boolean;
+    uploads?: boolean;
+    audio?: AudioOptions;
+    /** A stand-in for the illustrations child process. */
+    illustrationsRead?: ListReader;
+  } = {},
 ): IndexerEnv {
   const calibre = testCalibreConfig({ dir: calibreDir, thumbBackground: false, ...overrides });
   const config = testConfig({ calibre, ...serverOverrides });
@@ -106,11 +117,21 @@ export function makeIndexerEnv(
         logError,
       })
     : null;
+  const illustrations = new IllustrationService({
+    db,
+    cacheDir: calibre.cacheDir,
+    calibreDir: () => (indexer.status.enabled ? calibreDir : null),
+    uploads: uploadStore,
+    importOptions: countImportOptions(config.counts),
+    timeoutMs: calibre.illustrationsTimeoutSeconds * 1000,
+    read: illustrationsRead,
+  });
   const app = createApp({
     config,
     database: state,
     version: '9.9.9-test',
     catalog: {
+      illustrations,
       thumbnails,
       counts,
       indexer: indexer.status,
@@ -131,6 +152,7 @@ export function makeIndexerEnv(
     calibre,
     config,
     uploads: uploadService,
+    illustrations,
     logs,
     token: () => createToken(db, listUsers(db)[0].id, 'test').token,
     close: async () => {
