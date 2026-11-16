@@ -99,6 +99,7 @@ export interface Stage3Progress {
   textDone: number;
   textRead: number;
   textReadMs: number;
+  textPrepMs?: number;
   textErrors: number;
   imageOnly: number;
   readerCompared: number;

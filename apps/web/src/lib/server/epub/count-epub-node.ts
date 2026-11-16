@@ -16,7 +16,7 @@ import { configure as zipConfigure } from '@zip.js/zip.js';
 import { installNodeDom, renewNodeDom } from './node-dom';
 import { readFile } from 'node:fs/promises';
 import { bookScriptFromHtml, type BookScript } from './book-script';
-import { bookTextFromHtml, type BookText } from './book-text';
+import { bookTextFromElement, type BookText } from './book-text';
 import extractEpub from '$lib/functions/file-loaders/epub/extract-epub';
 import generateEpubHtml from '$lib/functions/file-loaders/epub/generate-epub-html';
 import { collectIllustrations, opfCoverKey } from '$lib/library/illustrations/collect';
@@ -95,11 +95,24 @@ export async function bookTextEpubBlob(
   options: EpubHtmlImportOptions = defaultEpubImportOptions
 ): Promise<BookText & { importCharacters: number }> {
   const document = prepareNode(true);
-  const { elementHtml, sections, characters } = await countEpub(epub, document, options, {
+  // The import as countEpub runs it, but its element is read directly: serializing it to
+  // elementHtml and parsing that again doubled the work per book.
+  const {
+    contents,
+    result: data,
+    contentsDirectory
+  } = await extractEpub(epub, {
     imageData: false
   });
+  const { element, sections, characters } = generateEpubHtml(
+    data,
+    contents,
+    document,
+    contentsDirectory,
+    options
+  );
 
-  return { ...bookTextFromHtml(elementHtml, sections, document), importCharacters: characters };
+  return { ...bookTextFromElement(element, sections), importCharacters: characters };
 }
 
 /** The reader's in-book total for stored `elementHtml`, computed in Node. */

@@ -3,7 +3,7 @@
  * web app EPUB import and counting code (apps/web/src/lib/server/epub/server-counter.ts).
  * Rebuild with `pnpm build:server-counter` in apps/web after changing that code.
  * epub-count-version: 1
- * build: 1eb9b2257388d918
+ * build: 23a13f17cb84d94a
  */
 var __create = Object.create;
 var __defProp = Object.defineProperty;
@@ -15433,9 +15433,7 @@ function codePoints(s) {
   }
   return n;
 }
-function bookTextFromHtml(elementHtml, sections, document2) {
-  const container = document2.createElement("div");
-  container.innerHTML = elementHtml;
+function bookTextFromElement(container, sections) {
   const sectionOf = new Map(sections.map((s) => [s.reference, s]));
   const parts = [];
   const chapters = [];
@@ -15635,10 +15633,21 @@ async function bookScriptEpubBlob(epub, options = defaultEpubImportOptions, scri
 }
 async function bookTextEpubBlob(epub, options = defaultEpubImportOptions) {
   const document2 = prepareNode(true);
-  const { elementHtml, sections, characters } = await countEpub(epub, document2, options, {
+  const {
+    contents,
+    result: data,
+    contentsDirectory
+  } = await extractEpub(epub, {
     imageData: false
   });
-  return { ...bookTextFromHtml(elementHtml, sections, document2), importCharacters: characters };
+  const { element, sections, characters } = generateEpubHtml(
+    data,
+    contents,
+    document2,
+    contentsDirectory,
+    options
+  );
+  return { ...bookTextFromElement(element, sections), importCharacters: characters };
 }
 async function illustrationsEpubBlob(epub, options = defaultEpubImportOptions) {
   const document2 = prepareNode(true);

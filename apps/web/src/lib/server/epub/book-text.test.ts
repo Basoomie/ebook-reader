@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { installNodeDom } from './node-dom';
 import { bookTextFromHtml } from './book-text';
-import { bookTextEpubBlob } from './count-epub-node';
+import { bookTextEpubBlob, countEpubBlob } from './count-epub-node';
 import { countHtml } from '$lib/functions/file-loaders/epub/count-epub';
 import type { Section } from '$lib/data/database/books-db/versions/v3/books-db-v3';
 
@@ -75,4 +75,20 @@ describe('bookTextEpubBlob on the fixture books', () => {
     expect(Array.from(result.text).length).toBe(result.characters);
     expect(result.characters).toBeGreaterThan(0);
   });
+
+  it.each(books)(
+    '%s: read from the import element, the same as from its stored HTML parsed again',
+    async (name) => {
+      const bytes = readFileSync(path.join(fixturesDir, name));
+      const counted = await countEpubBlob(new Blob([bytes]), undefined, { imageData: false });
+      const fromHtml = bookTextFromHtml(counted.elementHtml, counted.sections, installNodeDom());
+      const fromElement = await bookTextEpubBlob(new Blob([bytes]));
+
+      expect(fromElement.text).toBe(fromHtml.text);
+      expect(fromElement.chapters).toEqual(fromHtml.chapters);
+      expect(fromElement.ruby).toBe(fromHtml.ruby);
+      expect(fromElement.tocEntries).toBe(fromHtml.tocEntries);
+      expect(fromElement.characters).toBe(counted.characters);
+    }
+  );
 });
