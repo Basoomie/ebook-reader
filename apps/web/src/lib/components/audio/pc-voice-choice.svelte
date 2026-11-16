@@ -11,6 +11,10 @@
    * every book (Settings > Anki; Off by default) and, on a book's page, one for that book
    * ("Same as in Settings" by default); "Make an audiobook on the PC" starts from it. Stored
    * on the server, so every device has the same; a change is saved at once.
+   *
+   * Session 4 (decided with the user, 2026-11-16): a "Dialogue voice" beside it ("Same as
+   * the voice" by default): quotes in 「」 are read with it in audiobooks made on the PC,
+   * read-aloud and Anki's sentence audio.
    */
   import { createEventDispatcher, onMount } from 'svelte';
   import { modelsForVoices } from '$lib/audio/tts-text';
@@ -36,12 +40,16 @@
   let global: VoiceChoice | null = null;
   /** '' = off (every book) / same as Settings (a book). */
   let voiceId = '';
+  /** '' = the same voice reads the dialogue. */
+  let dialogueVoiceId = '';
   let modelId: number | null = null;
 
   $: usable = modelsForVoices(models);
   $: problem = own?.problem ?? null;
   $: sameText = global
-    ? `Same as in Settings > Anki (${global.voiceName ?? 'a deleted voice'}, ${global.modelLabel ?? 'a removed model'})`
+    ? `Same as in Settings > Anki (${global.voiceName ?? 'a deleted voice'}${
+        global.dialogueVoiceId ? `, dialogue ${global.dialogueVoiceName ?? 'a deleted voice'}` : ''
+      }, ${global.modelLabel ?? 'a removed model'})`
     : 'Same as in Settings > Anki (off)';
 
   function describe(err: unknown): string {
@@ -54,6 +62,7 @@
   function show(choice: VoiceChoice | null) {
     own = choice;
     voiceId = choice?.voiceId ?? '';
+    dialogueVoiceId = choice?.dialogueVoiceId ?? '';
     modelId = choice?.modelId ?? modelsForVoices(models)[0]?.id ?? null;
   }
 
@@ -89,7 +98,15 @@
     saving = true;
     saved = '';
     error = '';
-    const choice = voiceId && modelId !== null ? { voiceId, modelId } : null;
+    const choice =
+      voiceId && modelId !== null
+        ? {
+            voiceId,
+            dialogueVoiceId:
+              dialogueVoiceId && dialogueVoiceId !== voiceId ? dialogueVoiceId : null,
+            modelId
+          }
+        : null;
     try {
       if (bookId) {
         const choices = await api.setBookVoiceChoice(bookId, choice);
@@ -114,6 +131,11 @@
     if (voiceId && (modelId === null || !list.some((m) => m.id === modelId))) {
       modelId = list[0]?.id ?? null;
     }
+    void save();
+  }
+
+  function onDialogue(event: Event) {
+    dialogueVoiceId = (event.currentTarget as HTMLSelectElement).value;
     void save();
   }
 
@@ -152,6 +174,25 @@
       </select>
     </label>
     {#if voiceId}
+      <label class="mt-3 block text-sm text-c-muted">
+        Dialogue voice
+        <select
+          class={selectClasses}
+          data-testid="{testid}-dialogue"
+          value={dialogueVoiceId}
+          disabled={saving}
+          on:change={onDialogue}
+        >
+          <option value="">Same as the voice</option>
+          {#each voices.filter((v) => v.id !== voiceId) as v (v.id)}
+            <option value={v.id}>{v.name}</option>
+          {/each}
+          {#if own?.dialogueVoiceId && !voices.some((v) => v.id === own?.dialogueVoiceId)}
+            <option value={own.dialogueVoiceId}>A deleted voice</option>
+          {/if}
+        </select>
+        <span class="mt-1 block text-xs">Reads quotes in 「」.</span>
+      </label>
       <label class="mt-3 block text-sm text-c-muted">
         Model
         <select

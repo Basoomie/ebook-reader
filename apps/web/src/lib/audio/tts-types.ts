@@ -21,9 +21,37 @@ export interface TtsPauses {
   sentenceMs: number;
   paragraphMs: number;
   chapterMs: number;
+  /** Session 4: between a sentence's narration and dialogue (absent in older jobs). */
+  dialogueMs?: number;
 }
 
-/** The voice map, v1: one narrator. */
+/** A voice in a job's voice map (v2). */
+export interface VoiceRef {
+  voiceId: string | null;
+  name: string;
+  kind: 'clip' | 'design' | 'description';
+  sha256: string | null;
+  description: string | null;
+  seed: number;
+}
+
+/**
+ * The voice map, v2 (Season 2 Phase 12 session 4): voices by key and the key that reads each
+ * role (one voice: dialogue → 'narration'). Jobs made before are v1 (`voiceMapV2`).
+ */
+export interface VoiceMapV2 {
+  mapVersion: 2;
+  voices: Record<string, VoiceRef>;
+  roles: { narration: string; dialogue: string };
+  dialogueRule: number;
+  model: { id: number; source: string; revision: string; label: string };
+  pauses: TtsPauses;
+  chapterIndex?: number;
+  chapterTitle?: string;
+  fixes?: FixSummary;
+}
+
+/** The voice map, v1: one narrator (jobs made before session 4). */
 export interface VoiceMapV1 {
   mapVersion: 1;
   narrator: {
@@ -65,7 +93,7 @@ export interface AudiobookJob {
   startedAt: number | null;
   finishedAt: number | null;
   updatedAt: number;
-  params: VoiceMapV1 | null;
+  params: VoiceMapV1 | VoiceMapV2 | null;
   version: number | null;
   chaptersTotal: number | null;
   chaptersDone: number;
@@ -112,9 +140,12 @@ export interface BookChapters {
  */
 export interface VoiceChoice {
   voiceId: string;
+  /** Session 4: the voice for dialogue; null = the same voice reads everything. */
+  dialogueVoiceId: string | null;
   modelId: number;
   updatedAt: number;
   voiceName: string | null;
+  dialogueVoiceName: string | null;
   modelLabel: string | null;
   /** Why it can't be used now (the voice deleted, the model removed). */
   problem: string | null;
@@ -159,6 +190,8 @@ export interface ReadAloudSentence {
   ruby: { start: number; end: number; rt: string }[];
   position: number;
   paragraphEnd: boolean;
+  /** Session 4: the dialogue runs (book-script.ts v3). */
+  parts?: { start: number; end: number; role: 'dialogue'; quote: number }[];
 }
 
 /** A batch of sentences the PC reads for read-aloud. */
@@ -192,7 +225,8 @@ export interface ReadAloudSession {
   bookId: string | null;
   state: 'open' | 'ended';
   ended: string | null;
-  voice: { name: string; model: string; from: 'book' | 'global' };
+  /** `dialogue`: the dialogue voice's name when it has its own (session 4). */
+  voice: { name: string; dialogue?: string | null; model: string; from: 'book' | 'global' };
   batches: ReadAloudBatch[];
   pc: ReadAloudPc;
 }
@@ -200,6 +234,8 @@ export interface ReadAloudSession {
 /** What starting an audiobook or a preview sends (the pauses are user settings). */
 export interface AudiobookRequest {
   voiceId: string;
+  /** Session 4: the dialogue's own voice (none: the same voice). */
+  dialogueVoiceId?: string | null;
   modelId?: number;
   pauses: TtsPauses;
   chapterIndex?: number;

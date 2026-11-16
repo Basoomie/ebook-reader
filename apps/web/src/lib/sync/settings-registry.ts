@@ -195,6 +195,7 @@ export const SETTINGS_REGISTRY: Record<string, SettingSpec> = {
   ttsSentencePauseMs: g('Number'),
   ttsParagraphPauseMs: g('Number'),
   ttsChapterPauseMs: g('Number'),
+  ttsDialoguePauseMs: g('Number'), // Season 2 Phase 12 session 4: between narration and dialogue
 
   // --- lib/home/settings.ts (per device, WP7b) ---
   appOpenTarget: d('String'),

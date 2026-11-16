@@ -13,6 +13,11 @@ import { writableNumberLocalStorageSubject } from '$lib/data/internal/writable-n
 export const ttsSentencePauseMs$ = writableNumberLocalStorageSubject()('ttsSentencePauseMs', 300);
 export const ttsParagraphPauseMs$ = writableNumberLocalStorageSubject()('ttsParagraphPauseMs', 700);
 export const ttsChapterPauseMs$ = writableNumberLocalStorageSubject()('ttsChapterPauseMs', 2000);
+/**
+ * Season 2 Phase 12 session 4: between a sentence's narration and its dialogue when the
+ * dialogue has its own voice (audiobooks, previews, read-aloud, Enrich clips).
+ */
+export const ttsDialoguePauseMs$ = writableNumberLocalStorageSubject()('ttsDialoguePauseMs', 150);
 
 const clampMs = (v: unknown, fallback: number) => {
   const n = Number(v);
@@ -24,6 +29,7 @@ export function currentPauses() {
   return {
     sentenceMs: clampMs(ttsSentencePauseMs$.getValue(), 300),
     paragraphMs: clampMs(ttsParagraphPauseMs$.getValue(), 700),
-    chapterMs: clampMs(ttsChapterPauseMs$.getValue(), 2000)
+    chapterMs: clampMs(ttsChapterPauseMs$.getValue(), 2000),
+    dialogueMs: clampMs(ttsDialoguePauseMs$.getValue(), 150)
   };
 }

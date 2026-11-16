@@ -91,6 +91,13 @@ describe('the script built on the device', () => {
     expect(script.startAt(11)).toBe(-1);
     expect(countedLength('〓だ、ね。')).toBe(3);
   });
+
+  it('keeps the dialogue runs the server reads with the dialogue voice (session 4)', () => {
+    const html = '<div id="a"><p>「行こう」と彼は言った。</p><p>地の文。</p></div>';
+    const script = ReadAloudScript.build(html, [], 0, doc);
+    expect(script.lines[0].parts).toEqual([{ start: 0, end: 5, role: 'dialogue', quote: 0 }]);
+    expect(script.lines[1].parts).toBeUndefined();
+  });
 });
 
 describe('the player timeline', () => {
@@ -294,6 +301,8 @@ const PC: ReadAloudPc = {
 /** A stand-in for the server: batches are read when the test says so. */
 class FakeApi {
   batches: { seq: number; lines: string[]; replace: boolean; state: string; error?: string }[] = [];
+  /** What each batch sent (session 4: the dialogue runs go along). */
+  sent: { text: string; parts?: unknown }[][] = [];
   polls: { after: number; playing: boolean }[] = [];
   stopped = 0;
   endWith: string | null = null;
@@ -302,7 +311,12 @@ class FakeApi {
   async startReadAloud(): Promise<ReadAloudSession> {
     return this.view();
   }
-  async readAloudBatch(_id: string, sentences: { text: string }[], replace: boolean) {
+  async readAloudBatch(
+    _id: string,
+    sentences: { text: string; parts?: unknown }[],
+    replace: boolean
+  ) {
+    this.sent.push(sentences);
     if (replace) for (const b of this.batches) if (b.state === 'waiting') b.state = 'dropped';
     const seq = this.batches.length + 1;
     this.batches.push({ seq, lines: sentences.map((s) => s.text), replace, state: 'waiting' });
@@ -523,6 +537,20 @@ describe('the read-aloud controller', () => {
     };
     await t.controller.play();
     expect(t.view()).toMatchObject({ phase: 'error', needsVoice: true });
+  });
+
+  it('sends each sentence with its dialogue runs', async () => {
+    const html = '<div id="a"><p>「行こう」と彼は言った。</p><p>地の文。</p></div>';
+    const script = ReadAloudScript.build(html, [], 0, doc);
+    const t = setup(2, { script: async () => script });
+    await t.controller.play();
+    await until(() => t.api.sent.length >= 1);
+    expect(t.api.sent[0][0]).toMatchObject({
+      text: '「行こう」と彼は言った。',
+      parts: [{ start: 0, end: 5, role: 'dialogue', quote: 0 }]
+    });
+    await until(() => t.api.sent.length >= 2);
+    expect(t.api.sent[1][0].parts).toBeUndefined();
   });
 
   it('ends at the end of the book', async () => {
