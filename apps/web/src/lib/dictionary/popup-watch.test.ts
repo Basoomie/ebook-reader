@@ -12,7 +12,7 @@ import {
   type PopupChange
 } from '$lib/dictionary/popup-watch';
 
-const settle = () => new Promise((r) => setTimeout(r, 0));
+const settle = (ms = 0) => new Promise((r) => setTimeout(r, ms));
 
 /**
  * The event sequences below are the ones recorded in the user's Chrome with Yomitan 26.7.29
@@ -148,6 +148,99 @@ describe('DictionaryPopupWatch', () => {
     select(text, 0, 4);
     release();
     expect(changes).toEqual([]);
+  });
+
+  describe('selectionByUser (Enrich: whose selection the page has)', () => {
+    it('a mouse drag is the user’s, also once released and while a handle extends it', () => {
+      const text = setup();
+      expect(watch!.selectionByUser).toBe(false);
+      press();
+      fire('selectstart');
+      select(text, 0, 1);
+      select(text, 0, 4); // growing while the button is held
+      expect(watch!.selectionByUser).toBe(true);
+      release();
+      select(text, 0, 6);
+      expect(watch!.selectionByUser).toBe(true);
+      collapse();
+      expect(watch!.selectionByUser).toBe(false);
+    });
+
+    it('a long-press is the user’s (the selection appears while the finger is down)', () => {
+      const text = setup();
+      fire('pointerdown', { pointerId: 3, pointerType: 'touch' });
+      select(text, 9, 11);
+      fire('pointerup', { pointerId: 3, pointerType: 'touch' });
+      fire('contextmenu');
+      expect(watch!.selectionByUser).toBe(true);
+    });
+
+    it('a tap and then Yomitan’s word is not the user’s (recorded order on a phone)', () => {
+      const text = setup();
+      fire('pointerdown', { pointerId: 7, pointerType: 'touch' });
+      fire('pointerup', { pointerId: 7, pointerType: 'touch' });
+      fire('mousedown');
+      fire('selectstart'); // the browser's, from the compatibility mousedown
+      collapse(); // the caret
+      select(text, 9, 10); // Yomitan's word, 10-60 ms after the tap ended
+      expect(watch!.selectionByUser).toBe(false);
+    });
+
+    it('a tap and then Yomitan’s word is not the user’s with the popup element shown first', async () => {
+      const text = setup();
+      const popup = document.createElement('iframe');
+      popup.className = 'yomitan-popup';
+      popup.style.visibility = 'hidden';
+      document.body.appendChild(popup);
+      await settle();
+      popup.style.visibility = 'visible';
+      await settle(40);
+      fire('pointerdown', { pointerId: 7, pointerType: 'touch' });
+      fire('pointerup', { pointerId: 7, pointerType: 'touch' });
+      fire('mousedown');
+      fire('selectstart');
+      collapse();
+      select(text, 9, 10);
+      expect(watch!.selectionByUser).toBe(false);
+    });
+
+    it('Yomitan’s word on Shift-hover is not the user’s, also after a click elsewhere', () => {
+      const text = setup();
+      press();
+      fire('selectstart'); // a plain click: the caret only
+      collapse();
+      release();
+      key('Shift', { shiftKey: true });
+      select(text, 2, 3);
+      expect(watch!.selectionByUser).toBe(false);
+      select(text, 4, 7); // the next word
+      expect(watch!.selectionByUser).toBe(false);
+    });
+
+    it('a keyboard selection is the user’s; Shift alone is not', () => {
+      const text = setup();
+      key('ArrowLeft', { shiftKey: true });
+      select(text, 0, 2);
+      expect(watch!.selectionByUser).toBe(true);
+      collapse();
+      key('a', { ctrlKey: true });
+      select(text, 0, 15);
+      expect(watch!.selectionByUser).toBe(true);
+      collapse();
+      key('Shift', { shiftKey: true });
+      select(text, 2, 3);
+      expect(watch!.selectionByUser).toBe(false);
+    });
+
+    it('the user’s own selection replacing Yomitan’s word is the user’s', () => {
+      const text = setup();
+      select(text, 2, 3); // Yomitan's
+      expect(watch!.selectionByUser).toBe(false);
+      press();
+      select(text, 0, 8);
+      release();
+      expect(watch!.selectionByUser).toBe(true);
+    });
   });
 
   it('the popup element: shown, moved, hidden; jpdb by opacity', async () => {
