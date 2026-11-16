@@ -63,6 +63,7 @@
   import Popover from './Popover.svelte';
   import Progress from './Progress.svelte';
   import { createEventDispatcher, getContext, onDestroy, onMount, tick } from 'svelte';
+  import { sharedPopupWatch } from '$lib/dictionary/popup-watch';
 
   export let imageLoaded: () => void;
 
@@ -137,12 +138,12 @@
   } = settings$;
   const { isIOS } = getContext<Context>('context');
   const statisticsEnabled = !!+`${window.localStorage.getItem('statisticsEnabled') || '0'}`;
-  const yomiObserver = new MutationObserver(handleYomiMutation);
-  const dictionaryObserver = new MutationObserver(handleMutation);
+  // ttsu: dictionary popups (Yomitan, jpdb) from the shared watch, which also sees Yomitan inside
+  // its secure container (lib/dictionary/popup-watch.ts).
+  const popups = sharedPopupWatch(document);
+  let stopPopupChanges: (() => void) | null = null;
 
   let audioElement: HTMLAudioElement;
-  let yomiPopover: HTMLElement | null;
-  let jpdbPopover: HTMLElement | null;
   let wakeLock: WakeLockSentinel | undefined;
   let playbackRatesPopover: Popover;
   let visibilityState: DocumentVisibilityState;
@@ -184,28 +185,9 @@
     updateTextTrack($subtitleChange$);
   }
 
-  $: if ($playerAutoPauseMode$ !== AutoPauseMode.DISABLED && !yomiPopover) {
-    yomiPopover = document.querySelector(
-      '.yomichan-popup,.yomichan-float,.yomitan-popup,.yomitan-float'
-    );
-
-    if (!yomiPopover) {
-      yomiObserver.observe(document.body, { childList: true, subtree: false });
-    }
-  } else {
-    yomiObserver.disconnect();
-  }
-
-  $: if ($playerAutoPauseMode$ !== AutoPauseMode.DISABLED && !$playerEnableDictionaryDetection$) {
-    if (yomiPopover) {
-      dictionaryObserver.observe(yomiPopover, { attributes: true });
-    }
-    if (jpdbPopover) {
-      dictionaryObserver.observe(jpdbPopover, { attributes: true });
-    }
-  } else {
-    dictionaryObserver.disconnect();
-  }
+  $: followPopups(
+    $playerAutoPauseMode$ !== AutoPauseMode.DISABLED && !$playerEnableDictionaryDetection$
+  );
 
   $: if ($playerEnableWakeLock$) {
     requestWakeLock();
@@ -216,14 +198,14 @@
   onMount(() => {
     document.addEventListener('ttsu:section.change', updateCSSClasses, false);
 
-    jpdbPopover = document.getElementById('jpdb-popup');
   });
 
   onDestroy(() => {
     document.removeEventListener('ttsu:section.change', updateCSSClasses, false);
 
-    yomiObserver.disconnect();
-    dictionaryObserver.disconnect();
+    stopPopupChanges?.();
+    stopPopupChanges = null;
+    popups.release();
 
     releaseRecorderGraph();
     releaseWakeLock();
@@ -856,18 +838,17 @@
     }
   }
 
-  function handleYomiMutation() {
-    yomiPopover = document.querySelector(
-      '.yomichan-popup,.yomichan-float,.yomitan-popup,.yomitan-float'
-    );
-
-    if (yomiPopover) {
-      yomiObserver.disconnect();
+  function followPopups(on: boolean) {
+    if (on && !stopPopupChanges) {
+      stopPopupChanges = popups.watch.subscribe(handleMutation);
+    } else if (!on && stopPopupChanges) {
+      stopPopupChanges();
+      stopPopupChanges = null;
     }
   }
 
   function handleMutation() {
-    if ((!jpdbPopover && !yomiPopover) || $isRecording$) {
+    if ($isRecording$) {
       return;
     }
 
@@ -883,10 +864,7 @@
   }
 
   function isDictionaryDisplayed() {
-    return (
-      (yomiPopover && yomiPopover.style.visibility !== 'hidden') ||
-      (jpdbPopover && jpdbPopover.style.opacity !== '0')
-    );
+    return popups.watch.shown;
   }
 
   async function requestWakeLock() {

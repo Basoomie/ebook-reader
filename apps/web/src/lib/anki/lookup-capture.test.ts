@@ -88,6 +88,27 @@ describe('LookupCapture lookup start and end', () => {
     expect(capture!.lastLookup?.text).toBe('その本を読んだ。');
   });
 
+  it("Yomitan's word selection alone (secure container) starts and ends a lookup with its sentence", async () => {
+    const { content, popup, events } = setup();
+    popup.remove();
+    const text = content.firstChild!;
+    const range = document.createRange();
+    range.setStart(text, 2);
+    range.setEnd(text, 3);
+    getSelection()!.removeAllRanges();
+    getSelection()!.addRange(range);
+    document.dispatchEvent(new Event('selectionchange'));
+    await settle(60);
+    expect(events.map((e) => [e.change, e.id])).toEqual([['start', 1]]);
+    expect(events[0].lookup.sentence?.text).toBe('その本を読んだ。');
+    getSelection()!.removeAllRanges();
+    document.dispatchEvent(new Event('selectionchange'));
+    expect(events.map((e) => [e.change, e.id])).toEqual([
+      ['start', 1],
+      ['end', 1]
+    ]);
+  });
+
   it('a lookup outside the book has no sentence, and the last lookup is kept', async () => {
     const { popup, events } = setup();
     getSelection()!.removeAllRanges();
