@@ -281,7 +281,7 @@
   import type { LookupCapture, LookupSentence } from '$lib/anki/lookup-capture';
   import type { AutoEnricher, NewCard } from '$lib/anki/auto-enrich';
   import type { ReaderEnrichContext, ReaderEnrichOutcome } from '$lib/anki/reader-enrich';
-  import { SelectionOrigin } from '$lib/anki/selection-origin';
+  import { sharedPopupWatch, type DictionaryPopupWatch } from '$lib/dictionary/popup-watch';
 
   let showSpinner = true;
   let showHeader = false;
@@ -309,9 +309,10 @@
   let autoEnricher: AutoEnricher | undefined;
   let ankiQueue: Promise<unknown> = Promise.resolve();
   let ankiTapQueued = false;
-  // Whether the selection was made by the user (a drag) or set by a script (Yomitan selects
-  // the word it looked up): only the user's own selection is Enrich's sentence.
-  const selectionOrigin = new SelectionOrigin();
+  // Whether the selection was made by the user (drag, long-press, keyboard) or set by a script
+  // (Yomitan selects the word it looked up): only the user's own selection is Enrich's
+  // sentence. The shared popup watch decides, by the rule it uses for lookups.
+  let selectionWatch: DictionaryPopupWatch | undefined;
 
   function closeAnkiNotice() {
     clearTimeout(ankiNoticeTimer);
@@ -693,7 +694,7 @@
         lastSelectedRange = window.getSelection()?.getRangeAt(0);
         lastSelectedRangeWasEmpty = false;
         lastSelectedAt = Date.now();
-        lastSelectedByUser = selectionOrigin.byUser;
+        lastSelectedByUser = selectionWatch?.selectionByUser ?? false;
       } else {
         lastSelectedRangeWasEmpty = true;
       }
@@ -900,15 +901,9 @@
         startAutoEnrich();
       })
       .catch((error) => logger.warn(`Anki: lookups not recorded: ${error?.message ?? error}`));
-    // Who made the selection (see selection-origin.ts); passive, never in reading's way.
-    const listen = { capture: true, passive: true };
-    const onGesture = () => selectionOrigin.gesture();
-    const onSelectStart = () => selectionOrigin.selectStart();
-    const onSelectionChange = () => selectionOrigin.selectionChange();
-    document.addEventListener('pointerdown', onGesture, listen);
-    document.addEventListener('keydown', onGesture, listen);
-    document.addEventListener('selectstart', onSelectStart, listen);
-    document.addEventListener('selectionchange', onSelectionChange, listen);
+    // Who made the selection (lib/dictionary/popup-watch.ts); passive, never in reading's way.
+    const popups = sharedPopupWatch(document, (message) => logger.warn(message));
+    selectionWatch = popups.watch;
     // Shown again (e.g. back from Anki): check for new cards at once.
     const onVisible = () => {
       if (document.visibilityState === 'visible' && ankiAutoEnrich$.getValue()) {
@@ -960,10 +955,8 @@
       stopped = true;
       bookChange.unsubscribe();
       autoSetting.unsubscribe();
-      document.removeEventListener('pointerdown', onGesture, listen);
-      document.removeEventListener('keydown', onGesture, listen);
-      document.removeEventListener('selectstart', onSelectStart, listen);
-      document.removeEventListener('selectionchange', onSelectionChange, listen);
+      selectionWatch = undefined;
+      popups.release();
       document.removeEventListener('visibilitychange', onVisible);
       autoEnricher?.stop();
       lookupCapture?.stop();
@@ -1106,8 +1099,12 @@
     document.addEventListener('pointercancel', onReaderPointerCancel, options);
     window.addEventListener('click', swallowGestureClick, true);
     document.addEventListener('selectstart', blockOffTextSelection, true);
+    // Fix of 2026-11-16: an element another extension adds to <body> (Yomitan's popup host)
+    // must not open a line beside the book and widen the page (see app.scss).
+    document.body.classList.add('ttu-reader-body');
 
     return () => {
+      document.body.classList.remove('ttu-reader-body');
       document.removeEventListener('selectstart', blockOffTextSelection, true);
       document.removeEventListener('pointerdown', onReaderPointerDown, options);
       document.removeEventListener('pointermove', onReaderPointerMove, options);

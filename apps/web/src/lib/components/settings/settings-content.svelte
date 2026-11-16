@@ -1458,7 +1458,7 @@
       {#if trackerAutoPause !== TrackerAutoPause.OFF}
         <SettingsItemGroup
           title="Dictionary Detection"
-          tooltip={`If enabled auto pause is skipped if open yomitan/jpdb-browser-reader was detected - yomitan requires disabled 'Secure Container' settings`}
+          tooltip={`If enabled auto pause is skipped while a Yomitan or jpdb-browser-reader popup is open; if disabled the tracker pauses while one is open. With Yomitan's "Use a secure container around popups" on (its default), a lookup made while you have text selected isn't seen.`}
         >
           <ButtonToggleGroup
             archive
