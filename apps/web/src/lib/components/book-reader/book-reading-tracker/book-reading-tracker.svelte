@@ -31,7 +31,8 @@
     type SpeedEstimate
   } from '$lib/stats/time-left';
   import { lastCompletion, readingSpeed, totalsByDay, type StatTotals } from '$lib/stats/aggregate';
-  import { DICTIONARY_POPUP_SELECTOR, LookupCounter } from '$lib/stats/lookup-counter';
+  import { LookupCounter } from '$lib/stats/lookup-counter';
+  import { sharedPopupWatch } from '$lib/dictionary/popup-watch';
   import { lazyRecorderDeps, SessionRecorder } from '$lib/stats/session-recorder';
   import { randomId } from '$lib/functions/secure-context';
   import { parseStatSessionId } from '$lib/stats/stat-records';
@@ -252,8 +253,6 @@
     return [hadError, toUpdate.length];
   }
 
-  let yomiPopover: HTMLElement | null;
-  let jpdbPopover: HTMLElement | null;
   let actionInProgress = false;
   let hadError = false;
   let pausedByAutoPause = false;
@@ -297,8 +296,9 @@
     statisticsSaved: void;
     trackerMenuClosed: void;
   }>();
-  const yomiObserver = new MutationObserver(handleYomiMutation);
-  const dictionaryObserver = new MutationObserver(handleMutation);
+  // Dictionary popups (Yomitan, jpdb), shared with the lookup count and the pacer.
+  const popups = sharedPopupWatch(document, (message) => logger.warn(message));
+  let stopPopupChanges: (() => void) | null = null;
 
   const readingTracker$ = isTrackerPaused$.pipe(
     switchMap((isPaused) => {
@@ -390,33 +390,14 @@
     );
   }
 
-  $: if ($trackerAutoPause$ !== TrackerAutoPause.OFF && !yomiPopover) {
-    yomiPopover = document.querySelector(DICTIONARY_POPUP_SELECTOR);
-
-    if (!yomiPopover) {
-      yomiObserver.observe(document.body, { childList: true, subtree: false });
-    }
-  } else {
-    yomiObserver.disconnect();
-  }
-
-  $: if ($trackerAutoPause$ !== TrackerAutoPause.OFF && !$trackerPopupDetection$) {
-    if (yomiPopover) {
-      dictionaryObserver.observe(yomiPopover, { attributes: true });
-    }
-
-    if (jpdbPopover) {
-      dictionaryObserver.observe(jpdbPopover, { attributes: true });
-    }
-  } else {
-    dictionaryObserver.disconnect();
-  }
+  $: followPopups($trackerAutoPause$ !== TrackerAutoPause.OFF && !$trackerPopupDetection$);
 
   onMount(init);
 
   onDestroy(() => {
-    yomiObserver.disconnect();
-    dictionaryObserver.disconnect();
+    stopPopupChanges?.();
+    stopPopupChanges = null;
+    popups.release();
     isTrackerPausedByIdle$.next(false);
     lookupCounter?.stop();
     void sealSession();
@@ -569,19 +550,17 @@
     }
   }
 
-  function handleYomiMutation() {
-    yomiPopover = document.querySelector(DICTIONARY_POPUP_SELECTOR);
-
-    if (yomiPopover) {
-      yomiObserver.disconnect();
+  /** Pause while a popup is shown (auto-pause on, popup detection off). */
+  function followPopups(on: boolean) {
+    if (on && !stopPopupChanges) {
+      stopPopupChanges = popups.watch.subscribe(handleMutation);
+    } else if (!on && stopPopupChanges) {
+      stopPopupChanges();
+      stopPopupChanges = null;
     }
   }
 
   function handleMutation() {
-    if (!jpdbPopover && !yomiPopover) {
-      return;
-    }
-
     const isDisplayed = isDictionaryDisplayed();
 
     if (isDisplayed && !$isTrackerPaused$) {
@@ -594,10 +573,7 @@
   }
 
   function isDictionaryDisplayed() {
-    return (
-      (yomiPopover && yomiPopover.style.visibility !== 'hidden') ||
-      (jpdbPopover && jpdbPopover.style.opacity !== '0')
-    );
+    return popups.watch.shown;
   }
 
   function handleBlur() {
@@ -729,7 +705,6 @@
   async function init() {
     try {
       todayKey = getDateKey($startDayHoursForTracker$);
-      jpdbPopover = document.getElementById('jpdb-popup');
 
       // WP12: reading is recorded as sessions; the book's earlier reading comes from
       // the synced records (every device), never from this browser's old rows.
