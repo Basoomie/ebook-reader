@@ -269,6 +269,17 @@ export const bottomBarTimeLeft$ = writableStringLocalStorageSubject<
 >()('bottomBarTimeLeft', 'off');
 
 /**
+ * Season 2 §9: the on-track dot at the right end of the reader's bottom bar (per device,
+ * off by default), and how week and month goals are judged (`lib/stats/on-track.ts`).
+ */
+export const onTrackDot$ = writableBooleanLocalStorageSubject()('onTrackDot', false);
+
+export const onTrackDotRule$ = writableStringLocalStorageSubject<'pace' | 'share'>()(
+  'onTrackDotRule',
+  'pace'
+);
+
+/**
  * Season 2 pacer (per device, decided with the user 2026-11-15). Mode off by default: the
  * reader is unchanged until a mode is picked. Speed in characters per hour, like the stats.
  */

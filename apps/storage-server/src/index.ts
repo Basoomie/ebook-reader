@@ -19,6 +19,8 @@ import { AudioScanService } from './audio/scan-service';
 import { SubtitleJobService } from './audio/subtitle-jobs';
 import { TtsJobService } from './audio/tts-jobs';
 import { TtsModelService } from './audio/tts-models';
+import { FixRunner } from './pronunciation/fix-runner';
+import { FixService } from './pronunciation/fix-service';
 import { countImportOptions } from './counts/counter-bundle';
 import { IllustrationService } from './catalog/illustrations';
 import { VoiceService } from './voices/voice-service';
@@ -223,6 +225,7 @@ let jobs: SubtitleJobService | null = null;
 let tts: TtsJobService | null = null;
 let ttsModels: TtsModelService | null = null;
 let voices: VoiceService | null = null;
+let fixes: FixService | null = null;
 if (database.ok && config.audio.dir) {
   audio = new AudioScanService({
     db: database.db,
@@ -276,6 +279,14 @@ if (database.ok && config.audio.dir) {
   } catch (err) {
     console.error('Error: voice presets are off:', err);
   }
+  // Season 2 Phase 12: pronunciation fixes, applied in a worker thread with a time limit.
+  fixes = new FixService(
+    database.db,
+    new FixRunner({
+      timeoutSeconds: config.audio.tts.fixTimeoutSeconds,
+      logError: (m, err) => console.error(`Error: ${m}:`, err),
+    }),
+  );
   if (config.calibre.cacheDir) {
     try {
       tts = new TtsJobService({
@@ -285,6 +296,7 @@ if (database.ok && config.audio.dir) {
         writer,
         models: ttsModels,
         voices,
+        fixes,
         config: config.audio.tts,
         tools: config.audio.merge,
         cacheDir: config.calibre.cacheDir,
@@ -333,6 +345,7 @@ const app = createApp({
     tts,
     models: tts ? ttsModels : null,
     voices,
+    fixes: tts ? fixes : null,
     copyHint: {
       minMinutes: config.audio.copyHintMinMinutes,
       percent: config.audio.copyHintPercent,
@@ -370,6 +383,7 @@ function shutdown(signal: string): void {
   void tts?.stop();
   void audio?.stop();
   void search?.close();
+  void fixes?.close();
   if (database.ok) {
     try {
       database.db.close();

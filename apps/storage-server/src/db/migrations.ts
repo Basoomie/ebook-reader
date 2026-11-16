@@ -754,6 +754,30 @@ export const MIGRATIONS: { version: number; name: string; sql: string }[] = [
       );
     `,
   },
+  {
+    version: 20,
+    name: 'pronunciation fixes',
+    // Season 2 Phase 12: the per-book (book_id) and global (book_id NULL) pronunciation
+    // fixes the PC voices use: a plain word or a JavaScript regex pattern, and the reading
+    // to say instead (src/pronunciation/). No book_id foreign key, like audio_links: a fix
+    // stays when the catalog forgets a book. Order within a list: created_at, then id.
+    sql: `
+      CREATE TABLE pronunciation_fixes (
+        id          INTEGER PRIMARY KEY,
+        user_id     TEXT NOT NULL REFERENCES users(id),
+        book_id     TEXT,
+        kind        TEXT NOT NULL CHECK (kind IN ('word', 'pattern')),
+        match       TEXT NOT NULL,
+        reading     TEXT NOT NULL,
+        created_at  INTEGER NOT NULL,
+        updated_at  INTEGER NOT NULL
+      );
+      CREATE UNIQUE INDEX pronunciation_fixes_book
+        ON pronunciation_fixes (user_id, book_id, kind, match) WHERE book_id IS NOT NULL;
+      CREATE UNIQUE INDEX pronunciation_fixes_global
+        ON pronunciation_fixes (user_id, kind, match) WHERE book_id IS NULL;
+    `,
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

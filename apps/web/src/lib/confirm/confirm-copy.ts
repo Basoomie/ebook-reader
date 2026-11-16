@@ -436,6 +436,20 @@ export function removeTtsModelCopy(label: string): ConfirmCopy {
   };
 }
 
+/** Season 2 Phase 12: remove a pronunciation fix (a book's or the global list). */
+export function removePronunciationFixCopy(match: string, global: boolean): ConfirmCopy {
+  return {
+    title: `Remove the fix for ${quoted(match)}?`,
+    message: [
+      global
+        ? 'Audio the PC makes from now on reads it as before, in every book.'
+        : 'Audio the PC makes for this book from now on reads it as before.',
+      'Audiobooks already made stay as they are.'
+    ],
+    confirmLabel: 'Remove fix'
+  };
+}
+
 // ---- Whispersync (audiobook menu) -----------------------------------------------------------------
 
 export function resetMatchCopy(): ConfirmCopy {

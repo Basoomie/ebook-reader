@@ -520,9 +520,15 @@ describe('the real book script (the reader import in a child process)', () => {
     });
     expect(script.chapters.map((c) => c.title)).toEqual(['一章', '二章']);
     expect(script.chapters[0].sentences).toEqual([
-      { text: '畢竟、遠い。', reading: 'ひっきょう、遠い。', position: 0, paragraphEnd: false },
+      {
+        text: '畢竟、遠い。',
+        reading: 'ひっきょう、遠い。',
+        ruby: [{ start: 0, end: 2, rt: 'ひっきょう' }],
+        position: 0,
+        paragraphEnd: false,
+      },
       // 畢竟遠い = 4 counted characters (、。 are not counted, as in the reader).
-      { text: '近い！', reading: '近い！', position: 4, paragraphEnd: true },
+      { text: '近い！', reading: '近い！', ruby: [], position: 4, paragraphEnd: true },
     ]);
     expect(script.characters).toBe(8);
   }, 120_000);

@@ -15,6 +15,7 @@ import { Calibredb, buildArgs } from '../../cleanup-apply/src/calibredb';
 import { CalibredbHelper } from '../../cleanup-apply/src/calibredb-helper';
 import type { SidecarConfig } from '../../cleanup-apply/src/config';
 import { mayStillHappen, StepTimes, Worker, writeKind } from '../../cleanup-apply/src/worker';
+import { PROPOSED_TWICE_REASON, TWO_VALUES_REASON } from '../src/cleanup/stage2-batches';
 import { listFieldPauses } from '../src/cleanup/stage2-gate';
 import { getStage } from '../src/cleanup/stages';
 import { fingerprint, makeJpeg } from './helpers/calibre-fixture';
@@ -646,6 +647,83 @@ describe('stage 2: metadata and covers from the files', () => {
     expect(items.every((i) => i.state === 'failed')).toBe(true);
     expect(items[0].detail).toContain('Permission denied');
     expect(calibreRecord(env.lib, ids.B2)!.title).toBe('正しい題名');
+  });
+
+  /** A second copy of a book's automatic proposals, as the NAS's analysis made on 2026-11-15. */
+  function copyProposals(calibreId: number, field?: string, newJson?: string) {
+    env.cleanupDb
+      .prepare(
+        `INSERT INTO proposed_changes (stage, library_id, calibre_id, calibre_uuid, field, old_json, new_json,
+           source, evidence_json, class, review_reason, state, analysis_id, created_at, updated_at)
+         SELECT stage, library_id, calibre_id, calibre_uuid, field, old_json, COALESCE(?, new_json),
+           source, evidence_json, class, review_reason, state, analysis_id, created_at + 4600, updated_at
+         FROM proposed_changes WHERE stage = 2 AND calibre_id = ? AND class = 'auto'
+           AND state = 'proposed' ${field ? 'AND field = ?' : ''} ORDER BY id`,
+      )
+      .run(newJson ?? null, calibreId, ...(field ? [field] : []));
+  }
+
+  it('a change the analysis proposed twice is written once; the copy is set aside', async () => {
+    await setMode('analyse');
+    copyProposals(ids.B2);
+    await setMode('on');
+    await runAll(worker());
+    const rows = proposals().filter((r) => r.calibre_id === ids.B2 && r.class === 'auto');
+    const byField = new Map<string, typeof rows>();
+    for (const r of rows) byField.set(r.field, [...(byField.get(r.field) ?? []), r]);
+    expect(byField.size).toBeGreaterThan(1);
+    for (const [, copies] of byField) {
+      expect(copies.map((c) => c.state)).toEqual(['applied', 'skipped']);
+      expect(copies[1].review_reason).toBe(PROPOSED_TWICE_REASON);
+    }
+    // Without the change the sidecar refuses the book ("title given twice") and nothing is written.
+    const failed = env.cleanupDb
+      .prepare(`SELECT COUNT(*) AS n FROM batch_items WHERE state = 'failed'`)
+      .get() as { n: number };
+    expect(failed.n).toBe(0);
+    expect(calibreRecord(env.lib, ids.B2)).toMatchObject({
+      title: '正しい題名',
+      authors: ['佐藤花子'],
+    });
+    expect(setCalls().filter((a) => a.includes(String(ids.B2))).length).toBe(1);
+  });
+
+  it("two different values for one field: that field is set aside, the book's other fields are written", async () => {
+    await setMode('analyse');
+    copyProposals(ids.B2, 'title', JSON.stringify('別の題名'));
+    await setMode('on');
+    await runAll(worker());
+    const titles = proposals('title').filter((r) => r.calibre_id === ids.B2 && r.class === 'auto');
+    expect(titles.map((r) => [r.state, r.review_reason])).toEqual([
+      ['skipped', TWO_VALUES_REASON],
+      ['skipped', TWO_VALUES_REASON],
+    ]);
+    const b2 = calibreRecord(env.lib, ids.B2)!;
+    expect(b2.title).toBe('Googleの題名');
+    expect(b2.authors).toEqual(['佐藤花子']);
+  });
+
+  it('an analysis step run again before its cursor was saved proposes nothing twice', async () => {
+    await setMode('analyse');
+    const count = () =>
+      (
+        env.cleanupDb
+          .prepare('SELECT COUNT(*) AS n FROM proposed_changes WHERE stage = 2')
+          .get() as {
+          n: number;
+        }
+      ).n;
+    const before = count();
+    // The propose phase again from just after the first book, with the same analysis.
+    env.cleanupDb
+      .prepare(
+        `UPDATE stages SET progress_json = json_set(progress_json, '$.phase', 'propose', '$.proposeCursor', ?)
+         WHERE stage = 2`,
+      )
+      .run(ids.B1);
+    for (let i = 0; i < 20 && !(await env.service.analysis2!.step(() => false)); i++);
+    expect(getStage(env.cleanupDb, 2).progress.phase).toBe('done');
+    expect(count()).toBe(before);
   });
 
   it('error messages: a timeout or dropped connection may still happen; a refusal is final', () => {

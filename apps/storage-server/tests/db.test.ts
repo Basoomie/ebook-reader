@@ -52,6 +52,7 @@ describe('migrations', () => {
       'library_index_state',
       'migration_state',
       'pairing_codes',
+      'pronunciation_fixes',
       'series',
       'server_secrets',
       'subtitle_files',

@@ -116,6 +116,8 @@ export const SETTINGS_REGISTRY: Record<string, SettingSpec> = {
   timeLeftRecentMinutes: d('Number'),
   timeLeftMinMinutes: d('Number'),
   bottomBarTimeLeft: d('String'),
+  onTrackDot: d('Boolean'),
+  onTrackDotRule: d('String'),
 
   // --- pacer (per device, Season 2 Phase 10) ---
   pacerMode: d('String'),

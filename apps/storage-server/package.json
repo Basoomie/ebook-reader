@@ -6,7 +6,8 @@
     "build": "tsc && node -e \"require('fs').writeFileSync('dist/build-info.json', JSON.stringify({ builtAt: Date.now() }))\"",
     "start": "node dist/index.js",
     "dev": "ts-node src/index.ts",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:sudachi": "vitest run tests/pronunciation-sudachi.test.ts"
   },
   "dependencies": {
     "better-sqlite3": "^12.11.1",

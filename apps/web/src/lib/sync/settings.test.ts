@@ -112,7 +112,7 @@ describe('settings registry', () => {
       expect(settingScope(key), key).toBe('local');
     }
     expect(keysWithScope('global')).toHaveLength(17); // 15 + ankiAutoEnrich (Phase 8) + ankiAutoEnrichSeconds
-    expect(keysWithScope('device')).toHaveLength(95 + 2 + 77 + 1 + 8 + 1); // + libraryServerCheckSeconds, + 8 pacer (Phase 10), + bookIllustrationsPosition (Season 2 §6)
+    expect(keysWithScope('device')).toHaveLength(95 + 2 + 77 + 1 + 8 + 1 + 2); // + libraryServerCheckSeconds, + 8 pacer (Phase 10), + bookIllustrationsPosition (Season 2 §6), + 2 on-track dot (Season 2 §9)
     expect(keysWithScope('local')).toHaveLength(5);
   });
 

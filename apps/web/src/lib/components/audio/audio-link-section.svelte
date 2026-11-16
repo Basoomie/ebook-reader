@@ -33,6 +33,7 @@
   import AudioFilesStep from '$lib/components/audio/audio-files-step.svelte';
   import SubtitleJobPanel from '$lib/components/audio/subtitle-job-panel.svelte';
   import AudiobookJobPanel from '$lib/components/audio/audiobook-job-panel.svelte';
+  import BookPronunciationPanel from '$lib/components/audio/book-pronunciation-panel.svelte';
   import AudioDevicePanel from '$lib/components/audio/audio-device-panel.svelte';
   import { storedAudio } from '$lib/audio/offline/audio-offline';
   import {
@@ -1012,6 +1013,8 @@
           busy={busy || merging}
           on:linked={onSubtitlesMade}
         />
+        <!-- Season 2 Phase 12: how the PC voices read this book -->
+        <BookPronunciationPanel {api} {bookId} {link} />
       {/if}
     {/if}
   </section>

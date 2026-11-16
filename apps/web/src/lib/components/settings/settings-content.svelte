@@ -14,11 +14,14 @@
   } from '$lib/components/button-toggle-group/toggle-option';
   import MessageDialog from '$lib/components/message-dialog.svelte';
   import { WEEKDAY_NAMES } from '$lib/stats/periods';
+  import { ON_TRACK_RULES } from '$lib/stats/on-track';
   import Ripple from '$lib/components/ripple.svelte';
   import SettingsCustomTheme from '$lib/components/settings/settings-custom-theme.svelte';
   import SettingsFontSelector from '$lib/components/settings/settings-font-selector.svelte';
   import {
     bottomBarTimeLeft$,
+    onTrackDot$,
+    onTrackDotRule$,
     pacerEinkStep$,
     pacerIdleMinutes$,
     pacerLookupResume$,
@@ -282,6 +285,11 @@
     { id: 'book', text: 'Book' },
     { id: 'both', text: 'Both' }
   ];
+
+  const optionsForOnTrackRule: ToggleOption<'pace' | 'share'>[] = ON_TRACK_RULES.map((r) => ({
+    id: r.rule,
+    text: r.label
+  }));
 
   const optionsForAppOpen: ToggleOption<AppOpenTarget>[] = [
     { id: 'last-book', text: 'Last book' },
@@ -1447,6 +1455,27 @@
           archive
           options={optionsForTimeLeft}
           bind:selectedOptionId={$bottomBarTimeLeft$}
+        />
+      </SettingsItemGroup>
+      <!-- Season 2 §9: the on-track dot at the right end of the reader's bottom bar. -->
+      <SettingsItemGroup
+        title="On-track Dot in the Bottom Bar"
+        tooltip={'This device only. A dot at the right end of the bottom bar while reading: filled when your reading goals are on track, with a tick when they are met, an empty ring when one is behind. Tap it to see each goal. It uses the goals on the Stats page and the reading of every device.'}
+      >
+        <ButtonToggleGroup
+          archive
+          options={optionsForToggle}
+          bind:selectedOptionId={$onTrackDot$}
+        />
+      </SettingsItemGroup>
+      <SettingsItemGroup
+        title="On-track Dot: Week and Month Goals"
+        tooltip={"This device only. Even pace: on track when you have read at least your share of the goal for the days so far, today included; reading ahead counts. Today's share: on track when today's reading covers what is left of the goal divided by the days left, today included. A daily goal is on track only once it is met."}
+      >
+        <ButtonToggleGroup
+          archive
+          options={optionsForOnTrackRule}
+          bind:selectedOptionId={$onTrackDotRule$}
         />
       </SettingsItemGroup>
       <SettingsItemGroup

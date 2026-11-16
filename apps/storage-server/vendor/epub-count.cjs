@@ -3,7 +3,7 @@
  * web app EPUB import and counting code (apps/web/src/lib/server/epub/server-counter.ts).
  * Rebuild with `pnpm build:server-counter` in apps/web after changing that code.
  * epub-count-version: 1
- * build: 7341222544661be5
+ * build: 3ec2aec298672602
  */
 var __create = Object.create;
 var __defProp = Object.defineProperty;
@@ -15123,7 +15123,7 @@ function buildBookTextIndex(root, keepNodes = false) {
 }
 
 // src/lib/server/epub/book-script.ts
-var BOOK_SCRIPT_VERSION = 1;
+var BOOK_SCRIPT_VERSION = 2;
 var DEFAULT_MAX_SENTENCE = 120;
 var CLOSERS = /^[」』）)】〉》"'”’]$/u;
 var PAUSE_AFTER = /* @__PURE__ */ new Set(["、", "，", ",", "　", " "]);
@@ -15213,8 +15213,12 @@ function elementSentences(element, offset, maxSentence) {
       }
       let reading = "";
       let lastRuby = null;
+      const runs = [];
+      let at = 0;
       for (let k = a; k < b; k++) {
         const ch = display[k];
+        const from = at;
+        at += ch.length;
         if (ch === GAIJI_MARK2) {
           lastRuby = null;
           continue;
@@ -15222,7 +15226,12 @@ function elementSentences(element, offset, maxSentence) {
         const ruby = rubyOf(nodeAt[k], element);
         const rt = ruby ? rubyReading(ruby) : "";
         if (ruby && rt) {
-          if (ruby !== lastRuby) reading += rt;
+          if (ruby !== lastRuby) {
+            reading += rt;
+            runs.push({ start: from, end: at, rt });
+          } else {
+            runs[runs.length - 1].end = at;
+          }
           lastRuby = ruby;
         } else {
           reading += ch;
@@ -15232,6 +15241,7 @@ function elementSentences(element, offset, maxSentence) {
       sentences.push({
         text,
         reading,
+        ruby: runs,
         position: offset + countBefore[a],
         paragraphEnd: range.paragraphEnd
       });

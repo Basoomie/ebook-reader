@@ -19,6 +19,10 @@
  *
  * Every job records its settings as the voice map v1: { mapVersion: 1, narrator, model,
  * seed, pauses }. The text comes from the reader's own import (book-script.ts).
+ *
+ * Season 2 Phase 12: the pronunciation fixes (src/pronunciation/) are applied to that text
+ * when a job is queued, and the job records which ones it used (`params.fixes`); the PC
+ * reads the fixed readings and converts what is left to kana as before.
  */
 import type Database from 'better-sqlite3';
 import { createHash, randomInt } from 'crypto';
@@ -28,6 +32,14 @@ import { getLibrary } from '../calibre/libraries';
 import { resolveInside, statFile } from '../calibre/source-fs';
 import { getBookFileFor } from '../catalog/queries';
 import type { AudioMergeConfig, TtsConfig } from '../config';
+import { type FixSentence } from '../pronunciation/fix-rules';
+import {
+  type FixCheck,
+  FixRequestError,
+  FixService,
+  type FixSummary,
+  NO_FIXES,
+} from '../pronunciation/fix-service';
 import type { UploadStore } from '../uploads/upload-store';
 import type { VoiceService } from '../voices/voice-service';
 import { getLink, saveLink } from './audio-links';
@@ -88,6 +100,8 @@ export interface VoiceMapV1 {
   /** Preview: the chapter read. */
   chapterIndex?: number;
   chapterTitle?: string;
+  /** Season 2 Phase 12: the pronunciation fixes used (absent: made before them, none). */
+  fixes?: FixSummary;
 }
 
 /** What the worker gets for a TTS job when it claims it. */
@@ -130,6 +144,8 @@ export interface TtsJobOptions {
   writer: AudioWriter;
   models: TtsModelService;
   voices: VoiceService | null;
+  /** Season 2 Phase 12: the pronunciation fix lists; null/omitted = no fixes applied. */
+  fixes?: FixService | null;
   config: TtsConfig;
   tools: Pick<AudioMergeConfig, 'ffmpegPath' | 'ffprobePath' | 'minFreeMb' | 'stallMinutes'>;
   /** CACHE_DIR: chapter parts, previews and samples go to CACHE_DIR/tts/<job>/. */
@@ -205,6 +221,13 @@ export function versionFolderNames(title: string, version: number, count = 50): 
   return names;
 }
 
+/** The m4b comment's note on the pronunciation fixes used (none: nothing). */
+export function fixesNote(fixes: FixSummary | undefined): string {
+  const n = (fixes?.book ?? 0) + (fixes?.global ?? 0);
+  if (!n) return '';
+  return ` ${n} pronunciation ${n === 1 ? 'fix' : 'fixes'} (${fixes!.places} ${fixes!.places === 1 ? 'place' : 'places'}).`;
+}
+
 /** A seed that stays the same for a book and voice, so a preview sounds like the book. */
 export function seedFor(bookId: string, voiceKey: string): number {
   return (
@@ -231,6 +254,7 @@ export class TtsJobService {
   private readonly writer: AudioWriter;
   private readonly models: TtsModelService;
   private readonly voices: VoiceService | null;
+  private readonly fixes: FixService | null;
   private readonly tools: TtsJobOptions['tools'];
   readonly workdir: TtsWorkdir;
   private readonly calibreDir: string | null;
@@ -252,6 +276,7 @@ export class TtsJobService {
     this.writer = opts.writer;
     this.models = opts.models;
     this.voices = opts.voices;
+    this.fixes = opts.fixes ?? null;
     this.config = opts.config;
     this.tools = opts.tools;
     this.workdir = new TtsWorkdir(opts.cacheDir, opts.scan.root);
@@ -416,6 +441,104 @@ export class TtsJobService {
     };
   }
 
+  // ---------------------------------------------------------------- pronunciation fixes
+
+  /**
+   * The chapters with the book's and the global pronunciation fixes applied to their
+   * readings (Season 2 Phase 12), and what the job records about them. Without the fix
+   * service, unchanged and no summary. A run past the time limit is refused (422).
+   */
+  private async applyFixes(
+    userId: string,
+    bookId: string | null,
+    chapters: ScriptChapter[],
+  ): Promise<{ chapters: ScriptChapter[]; summary: FixSummary | null }> {
+    if (!this.fixes) return { chapters, summary: null };
+    const entries = this.fixes.entriesFor(userId, bookId);
+    if (!entries.length) return { chapters, summary: { ...NO_FIXES } };
+    const sentences = chapters.flatMap((c) => c.sentences);
+    const results = await this.runFixes(entries, sentences);
+    let i = 0;
+    const out = chapters.map((c) => ({
+      ...c,
+      sentences: c.sentences.map((s) => {
+        const r = results[i++];
+        return r.reading === undefined ? s : { ...s, reading: r.reading };
+      }),
+    }));
+    return { chapters: out, summary: FixService.summary(entries, results) };
+  }
+
+  private async runFixes(entries: Parameters<FixService['run']>[0], sentences: FixSentence[]) {
+    try {
+      return await this.fixes!.run(entries, sentences);
+    } catch (err) {
+      if (err instanceof FixRequestError)
+        throw new JobRequestError(err.status, err.code, err.message);
+      throw err;
+    }
+  }
+
+  /**
+   * The text check for a book's page: each entry of both lists with its places in this
+   * book, the places its furigana keeps, and up to 3 sentences with the reading the PC is
+   * given. Also whether the linked audiobook was made on the PC with the fixes that match
+   * this book now (`madeWithCurrentFixes`; null when it isn't a generated one).
+   */
+  async pronunciationCheck(
+    userId: string,
+    bookId: string,
+  ): Promise<{
+    entries: FixCheck[];
+    audiobook: { version: number | null; madeWithCurrentFixes: boolean } | null;
+  }> {
+    if (!this.fixes) throw new JobRequestError(503, 'tts_off', 'Pronunciation fixes are off');
+    const script = await this.bookScript(userId, bookId);
+    const entries = this.fixes.entriesFor(userId, bookId);
+    const sentences = script.chapters.flatMap((c) => c.sentences);
+    const results = entries.length
+      ? await this.runFixes(entries, sentences)
+      : sentences.map(() => ({ hits: [], skipped: [] }));
+    const checks = FixService.checks(entries, sentences, results);
+    const made = this.linkedGeneratedJob(userId, bookId);
+    let audiobook: { version: number | null; madeWithCurrentFixes: boolean } | null = null;
+    if (made) {
+      const now = FixService.summary(entries, results);
+      const params = made.params as unknown as VoiceMapV1 | null;
+      audiobook = {
+        version: made.version,
+        madeWithCurrentFixes: (params?.fixes?.digest ?? '') === now.digest,
+      };
+    }
+    return { entries: checks, audiobook };
+  }
+
+  /**
+   * The save check of a pattern for a book's list: runs that one entry on the book's text
+   * within the time limit (FixRequestError 422 `fix_timeout` when it takes too long).
+   */
+  async trialFix(userId: string, bookId: string, entry: Parameters<FixService['run']>[0][number]) {
+    if (!this.fixes) return;
+    const script = await this.bookScript(userId, bookId);
+    await this.fixes.run(
+      [entry],
+      script.chapters.flatMap((c) => c.sentences),
+    );
+  }
+
+  /** The finished job that made the book's linked audiobook, if it was made on the PC. */
+  private linkedGeneratedJob(userId: string, bookId: string): WorkerJob | null {
+    const link = getLink(this.db, userId, bookId);
+    if (!link || link.state !== 'linked' || !link.folderRelPath || !link.fileName) return null;
+    const row = this.db
+      .prepare(
+        `SELECT id FROM worker_jobs WHERE user_id = ? AND book_id = ? AND kind = 'generate_audiobook'
+           AND state = 'done' AND output_rel_path = ? ORDER BY id DESC LIMIT 1`,
+      )
+      .get(userId, bookId, `${link.folderRelPath}/${link.fileName}`) as { id: number } | undefined;
+    return row ? this.jobs.get(row.id) : null;
+  }
+
   // ---------------------------------------------------------------- starting jobs
 
   private chooseModel(modelId: unknown): TtsModel {
@@ -558,6 +681,7 @@ export class TtsJobService {
       throw new JobRequestError(409, 'busy', 'An audiobook is being made for this book already');
     }
     const script = await this.bookScript(userId, bookId);
+    const fixed = await this.applyFixes(userId, bookId, script.chapters);
     const link = getLink(this.db, userId, bookId);
     const id = this.insertJob({
       userId,
@@ -565,12 +689,15 @@ export class TtsJobService {
       kind: 'generate_audiobook',
       libraryId: lib.id,
       linkConfirmedAt: link?.confirmedAt ?? null,
-      params: this.voiceMap(voice, model, bookId, parsePauses(input.pauses)),
+      params: {
+        ...this.voiceMap(voice, model, bookId, parsePauses(input.pauses)),
+        ...(fixed.summary ? { fixes: fixed.summary } : {}),
+      },
       version: this.nextVersion(userId, bookId),
       chaptersTotal: script.chapters.length,
     });
     try {
-      await this.writeScript(id, script.chapters);
+      await this.writeScript(id, fixed.chapters);
     } catch (err) {
       this.jobs.update(id, {
         state: 'failed',
@@ -596,7 +723,10 @@ export class TtsJobService {
     const script = await this.bookScript(userId, bookId);
     const wanted = typeof input.chapterIndex === 'number' ? input.chapterIndex : 0;
     const chapter = script.chapters.find((c) => c.index === wanted) ?? script.chapters[0];
-    const sentences = previewSentences(chapter, this.config.previewSeconds);
+    const fixed = await this.applyFixes(userId, bookId, [
+      { ...chapter, sentences: previewSentences(chapter, this.config.previewSeconds) },
+    ]);
+    const [previewChapter] = fixed.chapters;
     // A new preview replaces the one waiting.
     const waiting = this.activeFor(userId, bookId, 'preview_audiobook');
     if (waiting) this.jobs.cancel(userId, waiting.id);
@@ -604,6 +734,7 @@ export class TtsJobService {
       ...this.voiceMap(voice, model, bookId, parsePauses(input.pauses)),
       chapterIndex: chapter.index,
       chapterTitle: chapter.title,
+      ...(fixed.summary ? { fixes: fixed.summary } : {}),
     };
     const id = this.insertJob({
       userId,
@@ -615,7 +746,7 @@ export class TtsJobService {
       version: null,
       chaptersTotal: 1,
     });
-    await this.writeScript(id, [{ ...chapter, index: 0, sentences }]);
+    await this.writeScript(id, [{ ...previewChapter, index: 0 }]);
     this.log(`GPU worker: preview queued for book ${bookId} (job ${id})`);
     return this.jobs.get(id)!;
   }
@@ -648,6 +779,25 @@ export class TtsJobService {
       seed: randomInt(1, 2_000_000_000),
       pauses: { ...DEFAULT_PAUSES, chapterMs: 0 },
     };
+    // The global pronunciation fixes apply here too (everything the PC voices read).
+    const fixed = await this.applyFixes(userId, null, [
+      {
+        index: 0,
+        title: name,
+        startCharacter: 0,
+        characters: VOICE_SAMPLE_TEXT.length,
+        sentences: [
+          {
+            text: VOICE_SAMPLE_TEXT,
+            reading: VOICE_SAMPLE_TEXT,
+            ruby: [],
+            position: 0,
+            paragraphEnd: true,
+          },
+        ],
+      },
+    ]);
+    if (fixed.summary) params.fixes = fixed.summary;
     const id = this.insertJob({
       userId,
       bookId: null,
@@ -658,17 +808,7 @@ export class TtsJobService {
       version: null,
       chaptersTotal: 1,
     });
-    await this.writeScript(id, [
-      {
-        index: 0,
-        title: name,
-        startCharacter: 0,
-        characters: VOICE_SAMPLE_TEXT.length,
-        sentences: [
-          { text: VOICE_SAMPLE_TEXT, reading: VOICE_SAMPLE_TEXT, position: 0, paragraphEnd: true },
-        ],
-      },
-    ]);
+    await this.writeScript(id, fixed.chapters);
     this.log(`GPU worker: voice sample queued (job ${id})`);
     return this.jobs.get(id)!;
   }
@@ -1070,7 +1210,7 @@ export class TtsJobService {
             album: title,
             genre: 'Audiobook',
             date: date.slice(0, 4),
-            comment: `Generated ${date} with ${params.model.label} (${params.model.source}@${params.model.revision.slice(0, 8)}), voice "${params.narrator.name}". Version ${job.version ?? 1}.`,
+            comment: `Generated ${date} with ${params.model.label} (${params.model.source}@${params.model.revision.slice(0, 8)}), voice "${params.narrator.name}". Version ${job.version ?? 1}.${fixesNote(params.fixes)}`,
           },
           parts.map((p) => ({ title: p.title, durationMs: p.duration_ms })),
         ),

@@ -32,6 +32,7 @@ import type { TtsJobService } from './tts-jobs';
 import type { TtsModelService } from './tts-models';
 import type { VoiceService } from '../voices/voice-service';
 import { DEFAULT_AUDIO } from '../config';
+import type { FixService } from '../pronunciation/fix-service';
 import type { AudioScanService } from './scan-service';
 import {
   fileVersion,
@@ -56,6 +57,8 @@ export interface AudioOptions {
   tts?: TtsJobService | null;
   models?: TtsModelService | null;
   voices?: VoiceService | null;
+  /** Season 2 Phase 12: the pronunciation fix lists; null/omitted = off. */
+  fixes?: FixService | null;
 }
 
 const CONTENT_TYPES: Record<string, string> = {

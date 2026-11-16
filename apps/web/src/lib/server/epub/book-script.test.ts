@@ -26,6 +26,19 @@ beforeAll(() => {
 const wrap = (id: string, body: string) =>
   `<div id="ttu-${id}"><div class="ttu-book-html-wrapper"><div class="ttu-book-body-wrapper">${body}</div></div></div>`;
 
+/** The reading rebuilt from the text and its ruby runs (as pronunciation fixes do). */
+function rebuilt(s: { text: string; ruby: { start: number; end: number; rt: string }[] }) {
+  let out = '';
+  let i = 0;
+
+  for (const run of s.ruby) {
+    out += s.text.slice(i, run.start).replace(/〓/gu, '') + run.rt;
+    i = run.end;
+  }
+
+  return out + s.text.slice(i).replace(/〓/gu, '');
+}
+
 describe('bookScriptFromHtml', () => {
   const html =
     wrap('c0', '<p>表紙</p>') +
@@ -66,6 +79,13 @@ describe('bookScriptFromHtml', () => {
     expect(ch1.sentences[1].reading).toBe('善なるものはひっきょう、遠い。');
     expect(ch1.sentences[4].reading).toBe('二つ目のだんらくです');
     expect(ch1.sentences[6].reading).toBe('外字。');
+    expect(ch1.sentences[1].ruby).toEqual([{ start: 6, end: 8, rt: 'ひっきょう' }]);
+    expect(ch1.sentences[4].ruby).toEqual([{ start: 4, end: 6, rt: 'だんらく' }]);
+    expect(ch1.sentences[2].ruby).toEqual([]);
+
+    for (const s of script.chapters.flatMap((c) => c.sentences)) {
+      expect(rebuilt(s)).toBe(s.reading);
+    }
     expect(ch1.sentences.map((s) => s.paragraphEnd)).toEqual([
       true,
       false,
@@ -108,6 +128,29 @@ describe('bookScriptFromHtml', () => {
     expect(parts.map((p) => p.paragraphEnd)).toEqual([false, true]);
   });
 
+  it('records ruby runs in UTF-16 offsets, also after gaiji and astral characters', () => {
+    const body =
+      '<p>𠮟る<ruby>𩸽<rt>ほっけ</rt></ruby>と<ruby>漢<rt>かん</rt></ruby><img class="gaiji" src="g.png"/>' +
+      '<ruby>字<rt>じ</rt></ruby>、<ruby>空<rt></rt></ruby>白。</p>';
+    const script = bookScriptFromHtml(
+      wrap('r', body),
+      [{ reference: 'ttu-r', charactersWeight: 1, label: 'R' }],
+      9,
+      doc
+    );
+    const [s] = script.chapters[0].sentences;
+
+    expect(s.text).toBe('𠮟る𩸽と漢〓字、空白。');
+    expect(s.reading).toBe('𠮟るほっけとかんじ、空白。');
+    expect(s.ruby).toEqual([
+      { start: 3, end: 5, rt: 'ほっけ' },
+      { start: 6, end: 7, rt: 'かん' },
+      { start: 8, end: 9, rt: 'じ' }
+    ]);
+    expect(s.text.slice(3, 5)).toBe('𩸽');
+    expect(rebuilt(s)).toBe(s.reading);
+  });
+
   it('treats a book without a table of contents as one chapter', () => {
     const script = bookScriptFromHtml(
       wrap('a', '<p>一。</p>') + wrap('b', '<p>二。</p>'),
@@ -143,6 +186,7 @@ describe('bookScriptEpubBlob on the fixture books', () => {
         expect(s.position).toBeLessThan(chapter.startCharacter + chapter.characters);
         expect(s.text.trim()).toBe(s.text);
         expect(s.text.length).toBeGreaterThan(0);
+        expect(rebuilt(s)).toBe(s.reading);
       }
     }
   });
