@@ -487,6 +487,20 @@ export class Stage2Analysis {
        VALUES (2, @lib, @id, @uuid, @field, @old, @new, @source, @evidence, @class, @reason, 'proposed',
          @analysis, @now, @now)`,
     );
+    // What this analysis already proposed for these books: a chunk run again (seen on the NAS
+    // 2026-11-15: one chunk of 1,000 books proposed twice, 4.6 s apart) adds nothing.
+    const already = new Set(
+      (
+        db
+          .prepare(
+            `SELECT calibre_uuid || '|' || field || '|' || class || '|' || COALESCE(new_json, '') AS k
+             FROM proposed_changes WHERE stage = 2 AND analysis_id = ? AND calibre_id BETWEEN ? AND ?`,
+          )
+          .all(p.analysisId, books[0].calibreId, books[books.length - 1].calibreId) as {
+          k: string;
+        }[]
+      ).map((r) => r.k),
+    );
     db.transaction(() => {
       for (const book of books) {
         p.proposeCursor = book.calibreId;
@@ -496,6 +510,9 @@ export class Stage2Analysis {
         if (!ev?.file) continue;
         for (const prop of this.proposalsFor(book, ev, settings, this.spelling!)) {
           if (done.has(`${book.uuid}|${prop.field}`)) continue;
+          const key = `${book.uuid}|${prop.field}|${prop.class}|${JSON.stringify(prop.new ?? null)}`;
+          if (already.has(key)) continue;
+          already.add(key);
           insert.run({
             lib: p.libraryId,
             id: book.calibreId,
@@ -528,6 +545,8 @@ export class Stage2Analysis {
           });
         }
       }
+      // The cursor is saved with the proposals, never after a yield.
+      this.save(p, 'analysing');
     })();
     await yieldNow();
     return p;

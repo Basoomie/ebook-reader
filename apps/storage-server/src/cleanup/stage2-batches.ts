@@ -251,6 +251,9 @@ export function sameTime(a: string | null | undefined, b: string | null | undefi
 }
 
 export const SPLIT_NAME_REASON = 'A name contains &, which Calibre splits into two names';
+export const PROPOSED_TWICE_REASON = 'The same change was proposed twice; it is written once';
+export const TWO_VALUES_REASON =
+  'Two different changes were proposed for this field; run the analysis again';
 
 export class Stage2Batches {
   constructor(
@@ -345,15 +348,53 @@ export class Stage2Batches {
       evidence_json: string;
     }[];
     const byBook = new Map<string, typeof rows>();
+    // A book's field goes to Calibre once per write (the sidecar refuses a field given twice:
+    // on the NAS 2026-11-15 a chunk the analysis proposed twice failed 75 books this way).
+    const twice: { id: number; reason: string }[] = [];
+    const twoValues = new Set<string>();
     for (const r of rows) {
       if (paused.has(r.field)) continue;
-      if (!byBook.has(r.calibre_uuid)) {
+      const key = `${r.calibre_uuid}|${r.field}`;
+      if (twoValues.has(key)) {
+        twice.push({ id: r.id, reason: TWO_VALUES_REASON });
+        continue;
+      }
+      const items = byBook.get(r.calibre_uuid);
+      const first = items?.find((x) => x.field === r.field);
+      if (items && first) {
+        if (first.new_json === r.new_json) {
+          twice.push({ id: r.id, reason: PROPOSED_TWICE_REASON });
+        } else {
+          // Two different values: neither is clearly the one; the field waits for a new analysis.
+          twoValues.add(key);
+          twice.push(
+            { id: first.id, reason: TWO_VALUES_REASON },
+            { id: r.id, reason: TWO_VALUES_REASON },
+          );
+          items.splice(items.indexOf(first), 1);
+        }
+        continue;
+      }
+      if (!items) {
         if (byBook.size >= cap) break;
         byBook.set(r.calibre_uuid, []);
       }
       byBook.get(r.calibre_uuid)!.push(r);
     }
+    for (const [uuid, items] of byBook) if (items.length === 0) byBook.delete(uuid);
+    const setAsideTwice = () => {
+      if (twice.length === 0) return;
+      const mark = this.db.prepare(
+        `UPDATE proposed_changes SET state = 'skipped', review_reason = ?, updated_at = ?
+         WHERE id = ? AND state = 'proposed'`,
+      );
+      const now = Date.now();
+      this.db.transaction(() => {
+        for (const s of twice) mark.run(s.reason, now, s.id);
+      })();
+    };
     if (byBook.size === 0) {
+      setAsideTwice();
       return {
         batch: null,
         reason: rows.length > 0 ? 'Every field left to apply is paused' : null,
@@ -389,6 +430,7 @@ export class Stage2Batches {
       );
       return { batch: null, reason: 'Calibre changed since the analysis' };
     }
+    setAsideTwice();
     if (skip.length > 0) {
       const mark = this.db.prepare(
         `UPDATE proposed_changes SET state = 'skipped', review_reason = ?, updated_at = ? WHERE id = ?`,
