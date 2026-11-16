@@ -130,7 +130,8 @@ export function classifyPair(
       reason: `${KIND_WORDS[which].replace(/^./, (c) => c.toUpperCase())} is never a duplicate of the full book`,
     };
   }
-  if (a.kind === 'omnibus' || b.kind === 'omnibus') {
+  // An omnibus sharing (almost) no text with the other book is simply another book.
+  if ((a.kind === 'omnibus' || b.kind === 'omnibus') && most >= s.reviewFloor) {
     if (both) {
       return {
         cls: 'duplicate',

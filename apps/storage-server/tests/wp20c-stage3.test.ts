@@ -537,4 +537,61 @@ describe('stage 3: content duplicates', () => {
     ]);
     expect(fs.existsSync(env.lib.epubFile(extra))).toBe(true);
   }, 120_000);
+
+  it("a preview whose marker stage 2 took out of Calibre's title is still a preview", async () => {
+    await request(env.app).post('/api/v1/cleanup/stages/3/resume').set(auth(user)).expect(200);
+    await request(env.app)
+      .put('/api/v1/cleanup/stages/3')
+      .set(auth(user))
+      .send({ mode: 'off' })
+      .expect(200);
+    // The file and Calibre say "P"; stage 2's undo record keeps Calibre's earlier title.
+    const pv = await env.lib.addBook({
+      title: 'P',
+      authors: ['作者'],
+      epub: makeTextEpub({ title: 'P', chapters: [chaptersOf(2)[0].slice(3000, 6000)] }),
+    });
+    await env.index();
+    const uuid = (
+      new Database(env.lib.dbFile, { readonly: true })
+        .prepare('SELECT uuid FROM books WHERE id = ?')
+        .get(pv) as {
+        uuid: string;
+      }
+    ).uuid;
+    const lib = env.libraryId();
+    env.cleanupDb
+      .prepare(
+        `INSERT INTO batches (id, stage, library_id, kind, state, item_count, created_at, updated_at)
+         VALUES ('old-stage2', 2, ?, 'apply', 'applied', 1, 1, 1)`,
+      )
+      .run(lib);
+    const change = env.cleanupDb
+      .prepare(
+        `INSERT INTO proposed_changes (stage, library_id, calibre_id, calibre_uuid, field, old_json, new_json,
+           source, class, state, created_at, updated_at)
+         VALUES (2, ?, ?, ?, 'title', '"P【試し読み】"', '"P"', 'file', 'auto', 'applied', 1, 1)`,
+      )
+      .run(lib, pv, uuid).lastInsertRowid;
+    env.cleanupDb
+      .prepare(
+        `INSERT INTO field_undo (batch_id, change_id, library_id, calibre_id, calibre_uuid, field, old_json,
+           new_json, created_at) VALUES ('old-stage2', ?, ?, ?, ?, 'title', '"P【試し読み】"', '"P"', 1)`,
+      )
+      .run(change, lib, pv, uuid);
+    await request(env.app).post('/api/v1/cleanup/stages/3/analyse').set(auth(user)).expect(200);
+    await analyse('analyse');
+    const pb = await request(env.app)
+      .get('/api/v1/cleanup/stage3/pairs?view=never&limit=200')
+      .set(auth(user));
+    const pair = pb.body.items.find(
+      (x: { a: { calibreId: number }; b: { calibreId: number } }) =>
+        x.a.calibreId === pv || x.b.calibreId === pv,
+    );
+    expect(pair?.rule).toBe('sample');
+    const props = await request(env.app)
+      .get('/api/v1/cleanup/proposals?stage=3&state=proposed&limit=50')
+      .set(auth(user));
+    expect(props.body.items.map((i: { calibre_id: number }) => i.calibre_id)).not.toContain(pv);
+  }, 120_000);
 });

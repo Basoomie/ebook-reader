@@ -410,6 +410,23 @@ export class Stage3Analysis {
     const sketchRow = this.cache().prepare(
       'SELECT size, mtime_ms, build FROM sketches WHERE library_id = ? AND calibre_id = ?',
     );
+    // Calibre's title before stage 2 wrote it: stage 2 removed store markers (試し読み, 合本版,
+    // 購入特典 …) from titles, and the kinds still need them (decided with stage 2: the removed
+    // markers are still used). Kept in stage 2's undo records.
+    const oldTitle = this.deps.cleanup.prepare(
+      `SELECT old_json FROM field_undo WHERE library_id = ? AND calibre_uuid = ? AND field = 'title'
+       ORDER BY created_at LIMIT 1`,
+    );
+    const titleBefore = (uuid: string): string | null => {
+      const r = oldTitle.get(p.libraryId, uuid) as { old_json: string } | undefined;
+      if (!r) return null;
+      try {
+        const v = JSON.parse(r.old_json) as unknown;
+        return typeof v === 'string' ? v : null;
+      } catch {
+        return null;
+      }
+    };
     type Out = { row: Record<string, unknown>; sketch?: Buffer; readMs?: number; reused: boolean };
     const readOne = async (book: Stage3Book): Promise<Out | null> => {
       if (shouldStop()) return null;
@@ -433,7 +450,12 @@ export class Stage3Analysis {
         | { size: number; mtime_ms: number; build: string }
         | undefined;
       const kindOf = (fileTitle: string | null) =>
-        editionKind([fileTitle, book.title, path.posix.basename(book.filePath, '.epub')]);
+        editionKind([
+          fileTitle,
+          book.title,
+          path.posix.basename(book.filePath, '.epub'),
+          titleBefore(book.uuid),
+        ]);
       if (
         old &&
         old.error === null &&
@@ -1528,7 +1550,19 @@ export class Stage3Analysis {
       // A pair with a copy no longer in the library can't be measured: listed, not failed.
       const gone = results.filter((r) => r.note === NOT_IN_LIBRARY).length;
       const checked = results.length - gone;
-      const asMeasured = results.filter((r) => r.got === r.expected).length;
+      // Compared by outcome: removable (same text, one holds the other), review, or no action
+      // (never the same book, different books): "never" and "different" both keep both copies.
+      const outcome = (c: string | null) =>
+        c === 'duplicate' || c === 'superset'
+          ? 'remove'
+          : c === 'review'
+            ? 'review'
+            : c === 'never' || c === 'different'
+              ? 'none'
+              : c;
+      const asMeasured = results.filter(
+        (r) => r.got !== null && outcome(r.got) === outcome(r.expected),
+      ).length;
       gate.pairs = {
         file: file!,
         total: loaded.pairs.length,

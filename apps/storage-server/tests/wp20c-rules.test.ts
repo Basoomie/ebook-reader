@@ -257,6 +257,14 @@ describe('the pair rules', () => {
       'duplicate',
       'omnibus_same',
     ],
+    [
+      'an omnibus sharing no text: different books',
+      book(1, 'omnibus'),
+      book(2),
+      m(0.02, 0.01),
+      'different',
+      'different',
+    ],
     ['special edition, same text', book(1, 'special'), book(2), m(1, 1), 'duplicate', 'both_ways'],
   ] as const)('%s', (_name, a, b, measure, cls, rule) => {
     const v = classifyPair(a, b, measure, S);
