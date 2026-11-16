@@ -1090,8 +1090,12 @@
     document.addEventListener('pointercancel', onReaderPointerCancel, options);
     window.addEventListener('click', swallowGestureClick, true);
     document.addEventListener('selectstart', blockOffTextSelection, true);
+    // Fix of 2026-11-16: an element another extension adds to <body> (Yomitan's popup host)
+    // must not open a line beside the book and widen the page (see app.scss).
+    document.body.classList.add('ttu-reader-body');
 
     return () => {
+      document.body.classList.remove('ttu-reader-body');
       document.removeEventListener('selectstart', blockOffTextSelection, true);
       document.removeEventListener('pointerdown', onReaderPointerDown, options);
       document.removeEventListener('pointermove', onReaderPointerMove, options);

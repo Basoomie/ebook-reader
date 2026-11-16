@@ -838,6 +838,15 @@ html.eink {
   }
 }
 
+/* Fix of 2026-11-16: while a book is open <body> is a grid. Yomitan's popup host (a <div> with
+   `all: initial !important`, so horizontal writing) would otherwise be an inline-block beside
+   the vertical book: it opens a 24 px line (the body's line-height) past the page's edge, so
+   the page could sit 24 px sideways. As a grid item it is an empty block of 0 size. The
+   reader's own root is its only other in-flow child; dialogs and menus on <body> are fixed. */
+body.ttu-reader-body {
+  display: grid;
+}
+
 @layer utilities {
   .writing-horizontal-tb {
     writing-mode: horizontal-tb;
