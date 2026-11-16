@@ -21,7 +21,9 @@ export enum BookReaderAvailableKeybind {
   /** WP14 "Enrich last Anki card". */
   ANKI_ENRICH = 'ankiEnrich',
   /** Season 2 pacer: start / pause. */
-  PACER_TOGGLE = 'pacerToggle'
+  PACER_TOGGLE = 'pacerToggle',
+  /** Season 2 Phase 12 session 3: read-aloud play / pause. */
+  READ_ALOUD_TOGGLE = 'readAloudToggle'
 }
 
 export type BookReaderKeybindMap = Record<string, BookReaderAvailableKeybind>;

@@ -48,6 +48,8 @@ const READER_ACTIONS: [BookReaderAvailableKeybind, string][] = [
   ],
   // Season 2 pacer
   [BookReaderAvailableKeybind.PACER_TOGGLE, 'Pacer: start or pause'],
+  // Season 2 Phase 12 session 3
+  [BookReaderAvailableKeybind.READ_ALOUD_TOGGLE, "Read aloud with the PC's voice: play or pause"],
   [BookReaderAvailableKeybind.AUTO_SCROLL_TOGGLE, 'Auto-scroll on or off'],
   [BookReaderAvailableKeybind.AUTO_SCROLL_INCREASE, 'Auto-scroll faster'],
   [BookReaderAvailableKeybind.AUTO_SCROLL_DECREASE, 'Auto-scroll slower']
@@ -209,6 +211,15 @@ export function readerShortcutGroups(context: ShortcutContext): ShortcutGroup[] 
     0,
     { keys: [','], action: 'Pacer slower (600 characters per hour)' },
     { keys: ['.'], action: 'Pacer faster' }
+  );
+
+  // Season 2 Phase 12 session 3: sentence keys while read-aloud is on (typed characters).
+  const afterReadAloud = reading.findIndex((row) => row.action.startsWith('Read aloud with')) + 1;
+  reading.splice(
+    afterReadAloud || reading.length,
+    0,
+    { keys: ['<'], action: 'Read-aloud: the previous sentence' },
+    { keys: ['>'], action: 'Read-aloud: the next sentence' }
   );
 
   reading.push({ keys: ['?'], action: 'Show this list' });

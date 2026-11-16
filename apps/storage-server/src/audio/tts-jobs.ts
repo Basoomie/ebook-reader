@@ -608,6 +608,8 @@ export class TtsJobService {
     chaptersTotal: number;
   }): number {
     const now = this.now();
+    // An idle PC waiting in its check-in hears about the job at once (after this transaction).
+    queueMicrotask(() => this.jobs.notify());
     return Number(
       this.db
         .prepare(
@@ -1139,6 +1141,8 @@ export class TtsJobService {
       return done;
     })();
     if (job.kind === 'sentence_audio') {
+      // Read with the PC's loaded voice (worker 1.2.0+): its keep time starts again.
+      this.jobs.touchVoice();
       await this.sentence?.clipRead(job, idx, partName, cues as number[][]);
       if (counts >= (job.chaptersTotal ?? 0)) {
         this.jobs.update(id, {

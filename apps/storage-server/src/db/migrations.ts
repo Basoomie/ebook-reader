@@ -885,6 +885,22 @@ export const MIGRATIONS: { version: number; name: string; sql: string }[] = [
       ALTER TABLE worker_status ADD COLUMN kinds TEXT;
     `,
   },
+  {
+    version: 22,
+    name: 'live read-aloud with the PC voice',
+    // Season 2 Phase 12 session 3 (audio/read-aloud.ts): the PC keeps one voice process
+    // loaded for read-aloud and Enrich clips.
+    // keep_loaded_minutes: how long it stays loaded after read-aloud's last activity (a user
+    //   setting, Settings > Audiobooks, stored here like the pause switch).
+    // engine: what the PC last reported about that process (JSON: model, state, since), or NULL.
+    // voice_used_at: the last time the loaded voice was used (read-aloud or a clip); the
+    //   keep time counts from it, also across a server restart.
+    sql: `
+      ALTER TABLE worker_status ADD COLUMN keep_loaded_minutes INTEGER NOT NULL DEFAULT 10;
+      ALTER TABLE worker_status ADD COLUMN engine TEXT;
+      ALTER TABLE worker_status ADD COLUMN voice_used_at INTEGER;
+    `,
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

@@ -152,7 +152,14 @@ describe('a job from start to finish', () => {
     expect((await t.status()).jobs.map((j: { id: number }) => j.id)).toEqual([id]);
     expect((await t.status()).online).toBe(false);
 
-    expect((await t.heartbeat()).body).toEqual({ paused: false, pollSeconds: 30 });
+    expect((await t.heartbeat()).body).toEqual({
+      paused: false,
+      pollSeconds: 30,
+      // Season 2 Phase 12 session 3 (read-aloud): nothing for a PC without a voice process.
+      live: false,
+      keepVoiceSeconds: null,
+      keepLoadedMinutes: 10,
+    });
     const job = await t.claim();
     expect(job).toMatchObject({
       id,
@@ -188,6 +195,8 @@ describe('a job from start to finish', () => {
       cancel: false,
       // WP17: the pause switch, for jobs that stop between chapters.
       pause: false,
+      // Season 2 Phase 12 session 3: read-aloud stops a running audiobook at once.
+      yield: false,
     });
     expect(await t.latest(HITSUJI)).toMatchObject({
       state: 'running',

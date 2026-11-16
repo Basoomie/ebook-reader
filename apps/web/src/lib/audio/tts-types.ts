@@ -152,6 +152,51 @@ export interface SentencePc {
   ahead: { kind: string; bookTitle: string | null; makesWay: boolean } | null;
 }
 
+/** Season 2 Phase 12 session 3: a sentence as read-aloud sends it (book-script.ts). */
+export interface ReadAloudSentence {
+  text: string;
+  reading: string;
+  ruby: { start: number; end: number; rt: string }[];
+  position: number;
+  paragraphEnd: boolean;
+}
+
+/** A batch of sentences the PC reads for read-aloud. */
+export interface ReadAloudBatch {
+  seq: number;
+  state: 'waiting' | 'reading' | 'done' | 'failed';
+  durationMs: number | null;
+  /** [start, end] ms of each sentence in the batch's audio. */
+  cues: number[][] | null;
+  error: string | null;
+}
+
+/** The PC as read-aloud's status needs it. */
+export interface ReadAloudPc {
+  online: boolean;
+  lastSeenAt: number | null;
+  paused: boolean;
+  problem: string | null;
+  version: string | null;
+  /** The PC's program can read aloud (1.2.0+). */
+  supportsLive: boolean;
+  /** The PC asked for read-aloud work in the last seconds. */
+  answering: boolean;
+  lastAskedAt: number | null;
+  engine: { state: 'loading' | 'ready'; source: string; revision: string; since: number } | null;
+  busy: { kind: string; bookTitle: string | null; yielding: boolean } | null;
+}
+
+export interface ReadAloudSession {
+  id: string;
+  bookId: string | null;
+  state: 'open' | 'ended';
+  ended: string | null;
+  voice: { name: string; model: string; from: 'book' | 'global' };
+  batches: ReadAloudBatch[];
+  pc: ReadAloudPc;
+}
+
 /** What starting an audiobook or a preview sends (the pauses are user settings). */
 export interface AudiobookRequest {
   voiceId: string;

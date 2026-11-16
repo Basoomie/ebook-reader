@@ -17,6 +17,7 @@ import {
   faFileZipper,
   faFolderPlus,
   faGaugeHigh,
+  faVolumeHigh,
   faHashtag,
   faHouse,
   faImages,
@@ -84,6 +85,13 @@ export const mergeEntries = {
     label: 'Pacer',
     icon: faGaugeHigh,
     title: 'Pacer: paragraph mode, text reveal, disappearing text (S)'
+  },
+  // Season 2 Phase 12 session 3: live read-aloud with the PC's voice
+  READ_ALOUD: {
+    routeId: '',
+    label: 'Read aloud',
+    icon: faVolumeHigh,
+    title: "Read aloud with the PC's voice (V)"
   },
   SHORTCUTS: {
     routeId: '',

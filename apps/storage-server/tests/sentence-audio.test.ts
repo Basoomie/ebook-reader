@@ -254,6 +254,7 @@ describe.skipIf(!HAS_FFMPEG)('sentence audio from the PC (Season 2 Phase 12)', (
     expect((await t.progress(book, { stage: 'generating' })).body).toEqual({
       cancel: false,
       pause: false,
+      yield: false,
     });
     const clip2 = (await t.queue(HITSUJI, { text: 'けれども悪は近い！', position: 11 })).body.clip
       .id as string;
@@ -263,6 +264,7 @@ describe.skipIf(!HAS_FFMPEG)('sentence audio from the PC (Season 2 Phase 12)', (
     expect((await t.progress(book, { stage: 'generating' })).body).toEqual({
       cancel: false,
       pause: true,
+      yield: false,
     });
     // The PC finishes its chapter and gives the job back (WP17's pause path).
     await t.uploadChapter(book, 0, flac('ch0', 2));

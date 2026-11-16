@@ -28,7 +28,7 @@ import { statFile } from '../calibre/source-fs';
 import { getLink } from './audio-links';
 import { clipText, type ClipSentence, squeeze } from './sentence-text';
 import { JobRequestError, type SubtitleJobService, type WorkerJob } from './subtitle-jobs';
-import { runTool } from './tool-run';
+import { encodeMp3 } from './tool-run';
 import {
   parsePauses,
   type SentenceJobHooks,
@@ -326,30 +326,12 @@ export class SentenceAudioService implements SentenceJobHooks {
     const out = workdir.file(job.id, clipFile(row.id));
     const now = this.now();
     try {
-      await runTool(
+      await encodeMp3(
         this.tts.toolPaths.ffmpegPath,
-        [
-          '-hide_banner',
-          '-nostdin',
-          '-y',
-          '-i',
-          workdir.file(job.id, partName),
-          '-t',
-          (endMs / 1000).toFixed(3),
-          '-map',
-          '0:a:0',
-          '-vn',
-          '-map_metadata',
-          '-1',
-          '-c:a',
-          'libmp3lame',
-          '-b:a',
-          this.bitrate,
-          '-f',
-          'mp3',
-          out,
-        ],
-        { timeoutMs: 120_000 },
+        workdir.file(job.id, partName),
+        out,
+        this.bitrate,
+        { endMs },
       );
       const st = await statFile(out);
       if (!st) throw new Error('ffmpeg wrote no file');

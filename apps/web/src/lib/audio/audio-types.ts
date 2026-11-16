@@ -164,6 +164,14 @@ export interface GpuWorkerStatus {
   problem?: string | null;
   /** The user's waiting and running jobs (WP17: of every kind). */
   jobs?: (SubtitleJob | AudiobookJob)[];
+  /** Season 2 Phase 12 session 3: how long the PC keeps its voice loaded (minutes). */
+  keepLoadedMinutes?: number;
+  /** The PC's voice process as it last reported it. */
+  engine?: { state: 'loading' | 'ready'; source: string; revision: string; since: number } | null;
+  /** Until when the loaded voice is kept (ms), or null (none, or read-aloud uses it). */
+  keepVoiceUntil?: number | null;
+  /** A read-aloud session uses the PC now. */
+  live?: boolean;
 }
 
 export interface AudioLink {

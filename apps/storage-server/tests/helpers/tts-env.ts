@@ -9,6 +9,8 @@ import path from 'path';
 import request from 'supertest';
 import type { BookScript } from '../../src/audio/book-script';
 import { SentenceAudioService } from '../../src/audio/sentence-audio';
+import { ReadAloudService } from '../../src/audio/read-aloud';
+import { getBookFor } from '../../src/catalog/queries';
 import { TtsJobService } from '../../src/audio/tts-jobs';
 import { VoiceChoiceService } from '../../src/audio/tts-voice-choice';
 import { TtsModelService } from '../../src/audio/tts-models';
@@ -145,6 +147,7 @@ export async function ttsEnv(
     leaseSeconds?: number;
     fixTimeoutSeconds?: number;
     clipKeepDays?: number;
+    readAloud?: Partial<typeof DEFAULT_TTS>;
   } = {},
 ) {
   const t = await jobEnv(track, { leaseSeconds: opts.leaseSeconds ?? 60 });
@@ -206,6 +209,25 @@ export async function ttsEnv(
     log: (m) => t.logs.push(m),
     logError: (m) => t.logs.push(`ERROR ${m}`),
   });
+  // Season 2 Phase 12 session 3: live read-aloud (no housekeeping timer: tests call it).
+  const readAloud = new ReadAloudService({
+    db: t.e.db,
+    jobs: t.jobs,
+    tts,
+    choices: voiceChoices,
+    voices,
+    config: { ...DEFAULT_TTS, ...opts.readAloud },
+    bitrate: '128k',
+    cacheDir,
+    audiobooksRoot: t.service.root,
+    bookExists: (userId, bookId) => !!getBookFor(t.e.db, { id: userId }, bookId),
+    now: () => clock,
+    log: (m) => t.logs.push(m),
+    logError: (m) => t.logs.push(`ERROR ${m}`),
+  });
+  await readAloud.workdir.clear();
+  track.services.push({ stop: () => readAloud.stop() } as never);
+  t.audio.readAloud = readAloud;
   t.audio.sentenceAudio = sentenceAudio;
   t.audio.voiceChoices = voiceChoices;
   t.audio.tts = tts;
@@ -249,6 +271,7 @@ export async function ttsEnv(
     voices,
     fixes,
     sentenceAudio,
+    readAloud,
     voiceChoices,
     scripts,
     cacheDir,

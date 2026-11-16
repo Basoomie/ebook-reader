@@ -80,6 +80,7 @@
     jumpForwardClick: void;
     ankiEnrichClick: void;
     pacerClick: void;
+    readAloudClick: void;
   }>();
 
   const customReadingPointMenuItems: {
@@ -119,6 +120,8 @@
       items.push(mergeEntries.ANKI_ENRICH);
       // Season 2 pacer
       items.push(mergeEntries.PACER);
+      // Season 2 Phase 12 session 3
+      items.push(mergeEntries.READ_ALOUD);
     }
 
     if (hasBookState) {
@@ -396,6 +399,8 @@
           dispatch('ankiEnrichClick');
         } else if (detail === mergeEntries.PACER.label) {
           dispatch('pacerClick');
+        } else if (detail === mergeEntries.READ_ALOUD.label) {
+          dispatch('readAloudClick');
         }
       }}
     />

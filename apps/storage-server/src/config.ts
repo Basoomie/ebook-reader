@@ -94,6 +94,18 @@ export interface TtsConfig {
   clipKeepDays: number;
   /** The longest sentence the PC reads for Anki (characters, spaces left out). */
   clipMaxCharacters: number;
+  /**
+   * Season 2 Phase 12 session 3 (live read-aloud): a read-aloud session whose device has not
+   * asked how it is doing for this long ends (seconds).
+   */
+  readAloudDeviceIdleSeconds: number;
+  /**
+   * Read-aloud: the PC counts as not answering when it hasn't asked for read-aloud work for
+   * this long while a session waits for it (seconds).
+   */
+  readAloudPcWaitSeconds: number;
+  /** Read-aloud: the longest a device's or the PC's long-poll is held open (seconds). */
+  readAloudPollWaitSeconds: number;
 }
 
 export const DEFAULT_TTS: TtsConfig = {
@@ -108,6 +120,9 @@ export const DEFAULT_TTS: TtsConfig = {
   fixTimeoutSeconds: 10,
   clipKeepDays: 30,
   clipMaxCharacters: 500,
+  readAloudDeviceIdleSeconds: 60,
+  readAloudPcWaitSeconds: 15,
+  readAloudPollWaitSeconds: 20,
 };
 
 /** WP16: the GPU worker's job queue (SubPlz subtitles). */
@@ -823,6 +838,27 @@ export function parseTtsConfig(env: Env, warnings: string[]): TtsConfig {
     ),
     clipKeepDays: num('TTS_CLIP_KEEP_DAYS', t.clipKeepDays, 1, 3650, false),
     clipMaxCharacters: num('TTS_CLIP_MAX_CHARACTERS', t.clipMaxCharacters, 10, 10_000, true),
+    readAloudDeviceIdleSeconds: num(
+      'READ_ALOUD_DEVICE_IDLE_SECONDS',
+      t.readAloudDeviceIdleSeconds,
+      10,
+      3600,
+      false,
+    ),
+    readAloudPcWaitSeconds: num(
+      'READ_ALOUD_PC_WAIT_SECONDS',
+      t.readAloudPcWaitSeconds,
+      2,
+      3600,
+      false,
+    ),
+    readAloudPollWaitSeconds: num(
+      'READ_ALOUD_POLL_WAIT_SECONDS',
+      t.readAloudPollWaitSeconds,
+      1,
+      60,
+      false,
+    ),
   };
 }
 

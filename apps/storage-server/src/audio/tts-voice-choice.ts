@@ -105,6 +105,26 @@ export class VoiceChoiceService {
     };
   }
 
+  /**
+   * Read-aloud (Season 2 Phase 12 session 3) for a book outside the library: the choice for
+   * every book, or why not (409); null = off.
+   */
+  resolveGlobal(userId: string): { voice: Voice; model: TtsModel } | null {
+    const global = this.global(userId);
+    if (!global) return null;
+    if (global.problem) {
+      throw new JobRequestError(
+        409,
+        'bad_choice',
+        `${capital(global.problem)}: choose again in Settings > Anki`,
+      );
+    }
+    return {
+      voice: this.voices!.get(userId, global.voiceId)!,
+      model: this.models.get(global.modelId)!,
+    };
+  }
+
   /** Saves a choice (null book = every book). Refuses a voice or model that can't be used. */
   set(userId: string, bookId: string | null, input: { voiceId?: unknown; modelId?: unknown }) {
     if (!this.voices) {

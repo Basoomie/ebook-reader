@@ -17,6 +17,7 @@ import { getBookFor } from '../catalog/queries';
 import { type AudioOptions, requireAudio, sendAudioFile } from './routes';
 import {
   JobRequestError,
+  KEEP_LOADED_MAX_MINUTES,
   type SubtitleJobService,
   type WorkerJob,
   type WorkerJobKind,
@@ -100,19 +101,36 @@ export function createWorkerRouter(
   const router = express.Router();
   router.use('/worker', requireWorker(db));
 
-  router.post('/worker/heartbeat', (req, res) => {
-    const jobs = jobsOr503(options);
-    res.json(jobs.heartbeat((req.body ?? {}) as Record<string, unknown>));
-  });
+  router.post(
+    '/worker/heartbeat',
+    asyncHandler(async (req, res) => {
+      const jobs = jobsOr503(options);
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      // Worker 1.2.0+: an idle check-in may wait (seconds) until there is work.
+      const wait =
+        typeof body.wait === 'number' && Number.isFinite(body.wait)
+          ? Math.min(Math.max(0, body.wait), 60)
+          : 0;
+      // The client went away before the answer (a request's own 'close' fires once its body
+      // is read, so the response's is the one to watch).
+      let closed = false;
+      res.on('close', () => {
+        if (!res.writableFinished) closed = true;
+      });
+      const answer = await jobs.heartbeatWait(body, wait);
+      if (!closed) res.json(answer);
+    }),
+  );
 
   router.post('/worker/claim', (req, res) => {
     const jobs = jobsOr503(options);
     // WP17: the kinds the PC can run (its programs); a WP16 worker sends none (= all).
-    const raw = (req.body as { kinds?: unknown } | undefined)?.kinds;
+    const body = (req.body ?? {}) as { kinds?: unknown; engine?: unknown };
+    const raw = body.kinds;
     const kinds = Array.isArray(raw)
       ? (raw.filter((k) => typeof k === 'string') as WorkerJobKind[])
       : undefined;
-    res.json({ job: jobs.claim(kinds) });
+    res.json({ job: jobs.claim(kinds, body.engine) });
   });
 
   router.get(
@@ -246,6 +264,26 @@ export function createSubtitleJobRouter(db: Database.Database, options: AudioOpt
     }
     jobs.setPaused(paused);
     res.json({ paused: jobs.isPaused() });
+  });
+
+  /** Read-aloud: how long the PC keeps its voice loaded after the last use (minutes). */
+  router.put('/gpu-worker/keep-loaded', (req, res) => {
+    const jobs = jobsOr503(options);
+    const minutes = (req.body as { minutes?: unknown } | undefined)?.minutes;
+    if (
+      typeof minutes !== 'number' ||
+      !Number.isInteger(minutes) ||
+      minutes < 0 ||
+      minutes > KEEP_LOADED_MAX_MINUTES
+    ) {
+      throw new ApiError(
+        400,
+        'invalid_body',
+        `minutes must be a whole number from 0 to ${KEEP_LOADED_MAX_MINUTES}`,
+      );
+    }
+    jobs.setKeepLoaded(minutes);
+    res.json({ keepLoadedMinutes: jobs.keepLoadedMinutes() });
   });
 
   return router;

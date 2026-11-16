@@ -129,6 +129,12 @@ export const SETTINGS_REGISTRY: Record<string, SettingSpec> = {
   pacerIdleMinutes: d('Number'),
   pacerTextlessPageSeconds: d('Number'),
 
+  // --- read-aloud with the PC voice (per device, Season 2 Phase 12 session 3) ---
+  readAloudSpeed: d('Number'),
+  readAloudAheadSeconds: d('Number'),
+  readAloudLookupResume: d('Number'),
+  readAloudBottomBarButton: d('Boolean'),
+
   // --- statistics rules that must agree across devices (global) ---
   startDayHoursForTracker: g('Number'),
   statsWeekStart: g('Number'),

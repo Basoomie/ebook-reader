@@ -32,7 +32,9 @@ const SETTINGS_FILES = [
   'lib/sync/settings.ts',
   'lib/anki/settings.ts',
   // WP17: pauses in audiobooks made on the PC
-  'lib/audio/tts-settings.ts'
+  'lib/audio/tts-settings.ts',
+  // Season 2 Phase 12 session 3: read-aloud
+  'lib/read-aloud/settings.ts'
 ];
 
 /** Keys and value types declared with writable*LocalStorageSubject()('key', ...). */
@@ -112,7 +114,7 @@ describe('settings registry', () => {
       expect(settingScope(key), key).toBe('local');
     }
     expect(keysWithScope('global')).toHaveLength(17); // 15 + ankiAutoEnrich (Phase 8) + ankiAutoEnrichSeconds
-    expect(keysWithScope('device')).toHaveLength(95 + 2 + 77 + 1 + 8 + 1 + 2); // + libraryServerCheckSeconds, + 8 pacer (Phase 10), + bookIllustrationsPosition (Season 2 §6), + 2 on-track dot (Season 2 §9)
+    expect(keysWithScope('device')).toHaveLength(95 + 2 + 77 + 1 + 8 + 1 + 2 + 4); // + libraryServerCheckSeconds, + 8 pacer (Phase 10), + bookIllustrationsPosition (Season 2 §6), + 2 on-track dot (Season 2 §9), + 4 read-aloud (Phase 12)
     expect(keysWithScope('local')).toHaveLength(5);
   });
 
