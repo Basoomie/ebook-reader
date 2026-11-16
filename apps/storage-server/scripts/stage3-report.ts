@@ -50,7 +50,7 @@ export function stage3Report(file: string) {
     const p = JSON.parse(stage.progress_json) as Record<string, unknown> & {
       analysisId: string;
       libraryId: string;
-      times: Record<string, { ms: number }>;
+      times: Record<string, { ms: number; items?: number }>;
       textRead: number;
       textDone: number;
       textReadMs: number;
@@ -178,6 +178,9 @@ export function stage3Report(file: string) {
       examples,
       timing: {
         phaseMs,
+        phaseItems: Object.fromEntries(
+          Object.entries(p.times ?? {}).map(([k, v]) => [k, v.items ?? 0]),
+        ) as Record<string, number>,
         totalMs,
         secondsPerBookWall: p.textRead ? (phaseMs.text ?? 0) / 1000 / p.textRead : null,
         secondsPerBookRead: p.textRead ? p.textReadMs / 1000 / p.textRead : null,
@@ -213,4 +216,10 @@ if (require.main === module) {
   console.log(
     `Time: ${(r.timing.totalMs / 3_600_000).toFixed(2)} h in all; ${r.timing.secondsPerBookWall?.toFixed(3)} s per book (wall), ${r.timing.secondsPerBookRead?.toFixed(3)} s per book in one reader process`,
   );
+  for (const [k, ms] of Object.entries(r.timing.phaseMs)) {
+    const n = r.timing.phaseItems[k] ?? 0;
+    console.log(
+      `  ${k}: ${(ms / 1000).toFixed(1)} s, ${n} items${n ? `, ${(ms / 1000 / n).toFixed(3)} s each` : ''}`,
+    );
+  }
 }

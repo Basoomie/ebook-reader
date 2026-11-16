@@ -104,6 +104,15 @@ export interface Stage3Progress {
   gate: Stage3Gate | null;
 }
 
+/** Items a phase has handled so far (books read, pairs compared or measured). */
+function phaseItems(p: Stage3Progress, phase: Stage3Phase = p.phase): number {
+  if (phase === 'text') return p.textDone;
+  if (phase === 'candidates') return p.candidates;
+  if (phase === 'compare') return p.compareDone;
+  if (phase === 'quality') return p.qualityDone;
+  return 0;
+}
+
 export interface Stage3Book extends SnapshotBook {
   firstAuthor: string;
 }
@@ -344,6 +353,7 @@ export class Stage3Analysis {
     try {
       const before = p.phase;
       const started = Date.now();
+      const doneBefore = phaseItems(p);
       if (p.phase === 'text') p = await this.textStep(p, shouldStop);
       else if (p.phase === 'candidates') p = await this.candidatesStep(p);
       else if (p.phase === 'compare') p = await this.compareStep(p, shouldStop);
@@ -351,6 +361,7 @@ export class Stage3Analysis {
       else if (p.phase === 'group') p = this.groupStep(p);
       const t = p.times[before as Exclude<Stage3Phase, 'done'>] ?? { ms: 0, items: 0 };
       t.ms += Date.now() - started;
+      t.items += Math.max(0, phaseItems(p, before) - doneBefore);
       p.times[before as Exclude<Stage3Phase, 'done'>] = t;
       if (p.phase !== before) {
         p.phaseStartedAt = Date.now();
