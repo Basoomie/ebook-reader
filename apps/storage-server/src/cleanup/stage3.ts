@@ -1270,7 +1270,9 @@ export class Stage3Analysis {
           { ...opts, superset: x.class === 'superset' ? (x.container ?? undefined) : undefined },
         );
         const keep = best.keep === 'a' ? x.a_id : best.keep === 'b' ? x.b_id : null;
-        updateBest.run(JSON.stringify(best), keep, x.class, x.rule, x.reason, x.id);
+        x.best_json = JSON.stringify(best);
+        updateBest.run(x.best_json, keep, x.class, x.rule, x.reason, x.id);
+        // The removals below carry this comparison in their evidence.
         x.keep_id = keep;
         edges.push({ a: x.a_id, b: x.b_id, keep });
       }

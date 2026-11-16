@@ -293,6 +293,10 @@ describe('stage 3: content duplicates', () => {
     const a1 = props.body.items.find((i: { calibre_id: number }) => i.calibre_id === ids.A1);
     expect(a1.evidence.kept.uuid).toBe(uuids.A2);
     expect(a1.evidence.removed.customTags).toEqual(['PeepoHappyBooks']);
+    // The comparison that chose the copy is in the removal's evidence from the first analysis on.
+    expect(
+      a1.evidence.stage3.best.measures.find((m: { name: string }) => m.name === 'images').winner,
+    ).toBe('b');
     expect(a1.evidence.sha256).toBe(sha(fs.readFileSync(env.lib.epubFile(ids.A1))));
 
     expect(p.gate!.passed).toBe(true);
