@@ -67,6 +67,14 @@
   let titleBar: number | '' = '';
   /** The content server library chosen by hand ('' = found automatically). */
   let serverLibrary = '';
+  /** Stage 3's limits for extra text inside the chapters, in % ('' = not set yet). */
+  let spreadKeepBoth: number | '' = '';
+  let spreadIgnore: number | '' = '';
+
+  const percentOf = (v: number | null | undefined): number | '' =>
+    typeof v === 'number' ? Math.round(v * 10000) / 100 : '';
+  const shareOf = (v: number | '' | null): number | null =>
+    v === '' || v === null || v === undefined ? null : Number(v) / 100;
 
   $: needsServerLibrary =
     !!calibre && calibre.libraries.length > 1 && (calibre.id === null || !calibre.auto);
@@ -81,6 +89,8 @@
       customTagsText = settings.customTags.join('\n');
       titleBar = settings.gate.fieldPercent.title ?? '';
       serverLibrary = settings.calibreLibraryId;
+      spreadKeepBoth = percentOf(settings.duplicates?.spreadKeepBoth);
+      spreadIgnore = percentOf(settings.duplicates?.spreadIgnore);
       loadError = '';
     } catch (err) {
       loadError = (err as Error).message;
@@ -127,7 +137,8 @@
           fieldPercent: fieldBars(),
           marginPoints: Number(settings.gate.marginPoints),
           minBooks: Number(settings.gate.minBooks),
-          labeledBooksFile: settings.gate.labeledBooksFile
+          labeledBooksFile: settings.gate.labeledBooksFile,
+          duplicatePairsFile: settings.gate.duplicatePairsFile ?? ''
         },
         reviewAlarmPercent: Number(settings.reviewAlarmPercent),
         libraryChangedPausePercent: Number(settings.libraryChangedPausePercent),
@@ -137,10 +148,28 @@
           maxSide: Number(settings.covers.maxSide),
           sameDistance: Number(settings.covers.sameDistance),
           largerPercent: Number(settings.covers.largerPercent)
-        }
+        },
+        ...(settings.duplicates
+          ? {
+              duplicates: {
+                bothWays: Number(settings.duplicates.bothWays),
+                superset: Number(settings.duplicates.superset),
+                reviewFloor: Number(settings.duplicates.reviewFloor),
+                spreadKeepBoth: shareOf(spreadKeepBoth),
+                spreadIgnore: shareOf(spreadIgnore),
+                imageOnlyMaxChars: Number(settings.duplicates.imageOnlyMaxChars),
+                imageMatchDistance: Number(settings.duplicates.imageMatchDistance),
+                commonWindowBooks: Number(settings.duplicates.commonWindowBooks),
+                textTimeoutSeconds: Number(settings.duplicates.textTimeoutSeconds),
+                textWorkers: Number(settings.duplicates.textWorkers)
+              }
+            }
+          : {})
       });
       settings = answer.settings;
       titleBar = settings.gate.fieldPercent.title ?? '';
+      spreadKeepBoth = percentOf(settings.duplicates?.spreadKeepBoth);
+      spreadIgnore = percentOf(settings.duplicates?.spreadIgnore);
       secrets = answer.secrets;
       customTagsText = settings.customTags.join('\n');
       for (const name of Object.keys(secretValues) as SecretName[]) {
@@ -488,6 +517,138 @@
         />
       </label>
     </fieldset>
+
+    {#if settings.duplicates}
+      <fieldset class="grid gap-4 sm:grid-cols-2" data-testid="cleanup-duplicates">
+        <legend class={legend}>Same text in other files (stage 3)</legend>
+        <label class={field}>
+          <span class={label}>Same text when both copies share at least (0-1)</span>
+          <input
+            class="c-input"
+            type="number"
+            min="0"
+            max="1"
+            step="0.01"
+            bind:value={settings.duplicates.bothWays}
+          />
+        </label>
+        <label class={field}>
+          <span class={label}>One copy holds the other from (0-1)</span>
+          <input
+            class="c-input"
+            type="number"
+            min="0"
+            max="1"
+            step="0.01"
+            bind:value={settings.duplicates.superset}
+          />
+        </label>
+        <label class={field}>
+          <span class={label}>Different books below (0-1)</span>
+          <input
+            class="c-input"
+            type="number"
+            min="0"
+            max="1"
+            step="0.01"
+            bind:value={settings.duplicates.reviewFloor}
+          />
+        </label>
+        <label class={field}>
+          <span class={label}
+            >Both copies stay from this much extra text inside the chapters (%; empty = not set yet)</span
+          >
+          <input
+            class="c-input"
+            type="number"
+            min="0"
+            max="100"
+            step="0.1"
+            data-testid="cleanup-spread-keep-both"
+            bind:value={spreadKeepBoth}
+          />
+        </label>
+        <label class={field}>
+          <span class={label}
+            >Extra text inside the chapters ignored below (%; empty = not set yet)</span
+          >
+          <input
+            class="c-input"
+            type="number"
+            min="0"
+            max="100"
+            step="0.1"
+            data-testid="cleanup-spread-ignore"
+            bind:value={spreadIgnore}
+          />
+        </label>
+        <label class={field}>
+          <span class={label}>Picture books: fewer characters than</span>
+          <input
+            class="c-input"
+            type="number"
+            min="0"
+            max="100000"
+            step="1"
+            bind:value={settings.duplicates.imageOnlyMaxChars}
+          />
+        </label>
+        <label class={field}>
+          <span class={label}>Same picture up to this difference (0-32)</span>
+          <input
+            class="c-input"
+            type="number"
+            min="0"
+            max="32"
+            step="1"
+            bind:value={settings.duplicates.imageMatchDistance}
+          />
+        </label>
+        <label class={field}>
+          <span class={label}>Text found in more books than this is ignored (notices)</span>
+          <input
+            class="c-input"
+            type="number"
+            min="2"
+            max="10000"
+            step="1"
+            bind:value={settings.duplicates.commonWindowBooks}
+          />
+        </label>
+        <label class={field}>
+          <span class={label}>Books read at the same time</span>
+          <input
+            class="c-input"
+            type="number"
+            min="1"
+            max="8"
+            step="1"
+            bind:value={settings.duplicates.textWorkers}
+          />
+        </label>
+        <label class={field}>
+          <span class={label}>Time limit to read one book (s)</span>
+          <input
+            class="c-input"
+            type="number"
+            min="10"
+            max="3600"
+            step="1"
+            bind:value={settings.duplicates.textTimeoutSeconds}
+          />
+        </label>
+        <label class="{field} sm:col-span-2">
+          <span class={label}
+            >Measured duplicate pairs file (empty = stage3-pairs.json beside the labeled books)</span
+          >
+          <input
+            class="c-input"
+            placeholder="/db/cleanup/reference-sample/stage3-pairs.json"
+            bind:value={settings.gate.duplicatePairsFile}
+          />
+        </label>
+      </fieldset>
+    {/if}
 
     <fieldset class="grid gap-4 sm:grid-cols-2" data-testid="cleanup-secrets">
       <legend class={legend}>AI keys (for later stages)</legend>

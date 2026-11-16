@@ -17,6 +17,7 @@
     tagsText
   } from '$lib/cleanup/cleanup-text';
   import { formatWhen } from '$lib/notes/notes-format';
+  import { classText, pct } from '$lib/cleanup/stage3-text';
 
   export let item: Proposal;
   /** A batch item's own state (else the proposal's). */
@@ -48,7 +49,15 @@
       </div>
     </div>
     <div class="text-c-muted">
-      Identical files ({ruleText(item)}{ev.setSize > 2 ? `; ${ev.setSize} copies in all` : ''}).
+      {#if ev.rule === 'stage3' && ev.stage3}
+        {classText(ev.stage3.class)}: {pct(ev.stage3.removedInKept)} of the removed copy’s text is in
+        the copy that stays, {pct(ev.stage3.keptInRemoved)} the other way.
+        {ev.stage3.byUser
+          ? 'You chose this copy to go.'
+          : (ev.stage3.best?.reason ?? '')}{ev.setSize > 2 ? ` ${ev.setSize} copies in all.` : ''}
+      {:else}
+        Identical files ({ruleText(item)}{ev.setSize > 2 ? `; ${ev.setSize} copies in all` : ''}).
+      {/if}
       {#if ev.removed.extraFormats?.length}
         Also has {ev.removed.extraFormats.join(', ')}, kept in the quarantine.
       {/if}

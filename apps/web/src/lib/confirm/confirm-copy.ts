@@ -591,6 +591,28 @@ export function turnOnFileMetadataCopy(counts: {
   };
 }
 
+/** Turning stage 3 on: the worse copy of books with the same text is removed (WP20c). */
+export function turnOnContentDuplicatesCopy(counts: {
+  toRemove: number | null;
+  review: number | null;
+}): ConfirmCopy {
+  const what =
+    typeof counts.toRemove !== 'number' || counts.toRemove <= 0
+      ? 'the copies'
+      : `${counts.toRemove.toLocaleString('en-US')} ${counts.toRemove === 1 ? 'copy' : 'copies'}`;
+  return {
+    title: `Remove ${what} whose text another copy has?`,
+    message: [
+      'From now on this runs on its own, in batches: of two books with the same text, the copy that is worse on every measure (pictures, furigana, contents, cover, text) is exported to the quarantine folder and moved to Calibre’s trash. Your own tags go to the copy that stays, and reading data moves with the book.',
+      typeof counts.review === 'number' && counts.review > 0
+        ? `${counts.review.toLocaleString('en-US')} pairs where each copy is better somewhere, or with extra text inside the chapters, wait in the review list; nothing is removed for them.`
+        : 'Pairs where each copy is better somewhere wait in the review list; nothing is removed for them.',
+      'Each batch can be undone on this page.'
+    ],
+    confirmLabel: 'Turn on and remove'
+  };
+}
+
 /** Undo of one stage-2 batch: the old values go back into Calibre. */
 export function undoFileMetadataBatchCopy(count: number): ConfirmCopy {
   return {

@@ -81,6 +81,173 @@ export interface CleanupStatus {
   };
   /** Stage 2 (WP20b): metadata and covers from the files. Missing on an older server. */
   stage2?: Stage2Status;
+  /** Stage 3 (WP20c): content duplicates. Missing on an older server. */
+  stage3?: Stage3Status;
+}
+
+/** Stage 3's analysis progress (the server's Stage3Progress, without the gate). */
+export interface Stage3Progress {
+  analysisId: string;
+  phase: 'text' | 'candidates' | 'compare' | 'quality' | 'group' | 'done';
+  startedAt: number;
+  finishedAt: number | null;
+  error: string | null;
+  phaseStartedAt: number;
+  phaseStartDone: number;
+  times: Partial<Record<string, { ms: number; items: number }>>;
+  textTotal: number;
+  textDone: number;
+  textRead: number;
+  textReadMs: number;
+  textErrors: number;
+  imageOnly: number;
+  readerCompared: number;
+  readerDiffering: number;
+  candidates: number;
+  compareTotal: number;
+  compareDone: number;
+  compareErrors: number;
+  omnibusByText: number;
+  qualityTotal: number;
+  qualityDone: number;
+  qualityErrors: number;
+  classes: Record<string, number>;
+  sets: number;
+  setsWithoutKeeper: number;
+  toRemove: number;
+  review: number;
+  removedWithData: number;
+  bothWithData: number;
+  tagsCopied: number;
+}
+
+export interface Stage3GatePair {
+  key: string;
+  group: string;
+  a: number;
+  b: number;
+  expected: string;
+  got: string | null;
+  measured: { aInB: number; bInA: number };
+  ours: { aInB: number; bInA: number } | null;
+  foundByIndex: boolean;
+  note: string | null;
+}
+
+export interface Stage3Gate {
+  checkedAt: number;
+  passed: boolean;
+  problems: string[];
+  pairs: {
+    file: string;
+    total: number;
+    sameAfterStage1: number;
+    notInLibrary: number;
+    checked: number;
+    asMeasured: number;
+    results?: Stage3GatePair[];
+  } | null;
+  spread: { ok: boolean | null; detail: string } | null;
+  kinds: {
+    guards: number;
+    recognized: number;
+    missed: { id: number; label: string; got: string }[];
+    imageOnly: number;
+    imageOnlyRecognized: number;
+    imageOnlyMissed: number[];
+  } | null;
+  textLength: {
+    compared: number;
+    equal: number;
+    differing: { id: number; ours: number; reader: number }[];
+  } | null;
+}
+
+export interface Stage3Status {
+  waiting: string | null;
+  progress: Stage3Progress | null;
+  gate: Stage3Gate | null;
+  /** Removals per state (current analysis plus everything queued or applied). */
+  counts: Record<string, number>;
+  skipReasons: { reason: string; count: number }[];
+  /** Copies removed in the last 20 minutes, and when the first of them was (for time left). */
+  pace: { removed: number; firstAt: number | null };
+  awaitingIngest: CleanupBatch | null;
+}
+
+export interface ExtraText {
+  extraChars: number;
+  runs: { start: number; length: number; interleaved: boolean }[];
+  runCount: number;
+  interleavedRuns: number;
+  interleavedChars: number;
+  interleavedShare: number;
+  chaptersTouched: number;
+}
+
+export interface PairMeasure {
+  name: 'text' | 'images' | 'ruby' | 'toc' | 'cover' | 'direction';
+  winner: 'a' | 'b' | 'tie' | 'tradeoff';
+  detail: string;
+}
+
+export interface PairBookFacts {
+  calibreId: number;
+  title: string | null;
+  author: string | null;
+  tags: string[];
+  formats: string[];
+  addedAt: number | null;
+  chars?: number | null;
+  reader_chars?: number | null;
+  kind?: string | null;
+  kind_marker?: string | null;
+  kind_by?: string | null;
+  ruby?: number | null;
+  toc_entries?: number | null;
+  vertical?: number | null;
+  cover_side?: number | null;
+  images?: number | null;
+  image_entries?: number | null;
+  error?: string | null;
+  quality_error?: string | null;
+}
+
+/** A measured pair of books (stage 3). a and b are ordered by Calibre id. */
+export interface Stage3Pair {
+  id: number;
+  source: 'index' | 'gate' | 'image_only';
+  class: string | null;
+  rule: string | null;
+  reason: string | null;
+  container: 'a' | 'b' | null;
+  aInB: number | null;
+  bInA: number | null;
+  estAInB: number | null;
+  estBInA: number | null;
+  /** The copy to keep between the two; null when each is better somewhere. */
+  keepId: number | null;
+  error: string | null;
+  spread: { a: ExtraText | null; b: ExtraText | null } | null;
+  best: { keep: 'a' | 'b' | null; by: string; measures: PairMeasure[]; reason: string } | null;
+  /** Your decision on the pair (survives a new analysis). */
+  decision: 'keep_both' | 'remove_a' | 'remove_b' | null;
+  a: PairBookFacts;
+  b: PairBookFacts;
+}
+
+export type PairDecision = 'keep_both' | 'remove_a' | 'remove_b' | 'clear';
+
+export interface Stage3Book {
+  calibre_id: number;
+  title: string | null;
+  author: string | null;
+  chars: number | null;
+  kind: string | null;
+  kind_marker: string | null;
+  kind_by: string | null;
+  image_entries: number | null;
+  error: string | null;
 }
 
 export interface FieldPause {
@@ -111,6 +278,23 @@ export interface GateSettings {
   marginPoints: number;
   minBooks: number;
   labeledBooksFile: string;
+  /** Stage 3's measured duplicate pairs; empty = the one beside the labeled books. */
+  duplicatePairsFile: string;
+}
+
+/** Stage 3: the thresholds of plan section 5 (shared settings, group "duplicates"). */
+export interface DuplicateSettings {
+  bothWays: number;
+  superset: number;
+  reviewFloor: number;
+  /** null until set after the Preview report (until then such pairs go to review). */
+  spreadKeepBoth: number | null;
+  spreadIgnore: number | null;
+  imageOnlyMaxChars: number;
+  imageMatchDistance: number;
+  commonWindowBooks: number;
+  textTimeoutSeconds: number;
+  textWorkers: number;
 }
 
 export interface CleanupSettings {
@@ -133,6 +317,8 @@ export interface CleanupSettings {
   /** A batch pauses its stage only when more than this share of its items failed. */
   failedPausePercent: number;
   covers: { maxMb: number; maxSide: number; sameDistance: number; largerPercent: number };
+  /** Missing on an older server. */
+  duplicates?: DuplicateSettings;
   backup: { path: string; verifiedOn: string; confirmedAt: number | null };
 }
 
@@ -165,9 +351,21 @@ export interface CopyProposalEvidence {
   sha256: string;
   size: number;
   setSize: number;
-  rule: 'tags' | 'older';
+  /** Stage 1: why the kept copy stays; stage 3: 'stage3' (see stage3). */
+  rule: 'tags' | 'older' | 'stage3';
   kept: CopyEvidence;
   removed: CopyEvidence;
+  /** Stage 3 (WP20c): what the pair's comparison found. */
+  stage3?: {
+    pairId: number;
+    class: string;
+    rule: string;
+    reason: string;
+    removedInKept: number | null;
+    keptInRemoved: number | null;
+    best: { keep: 'a' | 'b' | null; by: string; measures: PairMeasure[]; reason: string } | null;
+    byUser: boolean;
+  };
 }
 
 /** Stage 2: what a field change was proposed from. */
@@ -324,6 +522,35 @@ export class CleanupApi {
     return this.request('POST', `/cleanup/batches/${encodeURIComponent(id)}/undo`, {}) as Promise<{
       batch: CleanupBatch;
     }>;
+  }
+
+  /** Stage 3's pairs: view = review, a class, image_only, errors, spread or examples (class). */
+  stage3Pairs(
+    view: string,
+    { cls, offset = 0, limit = 50 }: { cls?: string; offset?: number; limit?: number } = {}
+  ): Promise<{ total: number; items: Stage3Pair[] }> {
+    const q = new URLSearchParams({ view, offset: String(offset), limit: String(limit) });
+    if (cls) q.set('class', cls);
+    return this.request('GET', `/cleanup/stage3/pairs?${q}`) as Promise<{
+      total: number;
+      items: Stage3Pair[];
+    }>;
+  }
+
+  decidePair(id: number, decision: PairDecision): Promise<unknown> {
+    return this.request('POST', `/cleanup/stage3/pairs/${id}`, { decision });
+  }
+
+  /** Stage 3's books: view = omnibus, errors or image_only. */
+  stage3Books(view: string, offset = 0): Promise<{ total: number; items: Stage3Book[] }> {
+    return this.request(
+      'GET',
+      `/cleanup/stage3/books?view=${encodeURIComponent(view)}&offset=${offset}`
+    ) as Promise<{ total: number; items: Stage3Book[] }>;
+  }
+
+  stage3Gate(): Promise<{ gate: Stage3Gate | null }> {
+    return this.request('GET', '/cleanup/stage3/gate') as Promise<{ gate: Stage3Gate | null }>;
   }
 
   spotCheck(stage = 1): Promise<{ items: Proposal[] }> {

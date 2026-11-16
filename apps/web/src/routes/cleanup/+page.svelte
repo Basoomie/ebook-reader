@@ -6,7 +6,7 @@
    */
 
   /**
-   * The Calibre library cleanup (Phase 6, WP20a; stage 2 from WP20b). Not linked from reading
+   * The Calibre library cleanup (Phase 6, WP20a; stage 2 from WP20b; stage 3 from WP20c). Not linked from reading
    * or catalogue views; reached from Settings > Data. Status of every stage (progress, measured
    * accuracy, pauses), the safety checks, the settings (keys and the password are
    * write-only), what stage 1 found, what stage 2 would change, the review queue, the batches
@@ -24,6 +24,7 @@
   import CopyRow from '$lib/components/cleanup/cleanup-copy-row.svelte';
   import FieldRow from '$lib/components/cleanup/cleanup-field-row.svelte';
   import CleanupSettings from '$lib/components/cleanup/cleanup-settings.svelte';
+  import Stage3Lists from '$lib/components/cleanup/cleanup-stage3-lists.svelte';
   import SettingsSection from '$lib/components/settings/settings-section.svelte';
   import {
     CleanupApi,
@@ -59,8 +60,20 @@
     stage1Progress,
     type ProgressBar
   } from '$lib/cleanup/cleanup-text';
+  import {
+    STAGE3_MODE_HINTS,
+    gateLines,
+    stage3ApplyProgress,
+    stage3Lines,
+    stage3PauseTitle,
+    stage3Progress
+  } from '$lib/cleanup/stage3-text';
   import { confirmDestructive } from '$lib/confirm/confirm';
-  import { turnOnFileMetadataCopy, turnOnIdenticalFilesCopy } from '$lib/confirm/confirm-copy';
+  import {
+    turnOnContentDuplicatesCopy,
+    turnOnFileMetadataCopy,
+    turnOnIdenticalFilesCopy
+  } from '$lib/confirm/confirm-copy';
   import { pxScreen } from '$lib/css-classes';
   import { pagePath } from '$lib/data/env';
   import { formatPageTitle } from '$lib/functions/format-page-title';
@@ -117,7 +130,13 @@
   $: stages = status?.stages ?? [];
   $: stage1 = stages.find((s) => s.stage === 1);
   $: stage2 = stages.find((s) => s.stage === 2 && s.built);
-  $: laterStages = stages.filter((s) => s.stage >= (stage2 ? 3 : 2));
+  $: stage3 = stages.find((s) => s.stage === 3 && s.built);
+  $: laterStages = stages.filter((s) => s.stage >= (stage3 ? 4 : stage2 ? 3 : 2));
+  $: bars3 = [
+    stage3 ? stage3Progress(stage3, status?.stage3, Date.now()) : null,
+    stage3 ? stage3ApplyProgress(status?.stage3, stage3, Date.now()) : null
+  ].filter((b): b is ProgressBar => b !== null);
+  $: gate3 = status?.stage3?.gate ?? null;
   $: fieldPauses = status?.stage2?.fieldPauses ?? [];
   $: gate = stage2 ? gateRows(stage2, gateBars) : [];
   $: labelsError = (stage2?.precision as { labelsError?: string | null } | undefined)?.labelsError;
@@ -234,6 +253,17 @@
           folderMoves: typeof p.folderMoves === 'number' ? p.folderMoves : null
         }),
         testid: 'cleanup-turn-on-2-confirm'
+      });
+      if (!ok) return;
+    }
+    if (stage.stage === 3 && mode === 'on') {
+      const p = status?.stage3?.progress;
+      const ok = await confirmDestructive({
+        ...turnOnContentDuplicatesCopy({
+          toRemove: p && p.phase === 'done' ? p.toRemove : null,
+          review: p && p.phase === 'done' ? p.review : null
+        }),
+        testid: 'cleanup-turn-on-3-confirm'
       });
       if (!ok) return;
     }
@@ -566,6 +596,102 @@
             {/each}
           </div>
         {/if}
+        {#if stage3}
+          <div class="c-tile flex flex-col gap-3 rounded p-4" data-testid="cleanup-stage-3">
+            <div class="flex flex-wrap items-baseline justify-between gap-2">
+              <h3 class="font-mincho text-lg font-bold">3 · {stage3.name}</h3>
+              <span class="text-sm text-c-muted">{STAGE3_MODE_HINTS[stage3.mode]}</span>
+            </div>
+            <div class="flex flex-wrap gap-2" role="radiogroup" aria-label="Stage 3">
+              {#each MODES as mode (mode)}
+                <button
+                  class="c-btn {stage3.mode === mode ? 'c-btn-primary' : 'c-btn-secondary'}"
+                  role="radio"
+                  aria-checked={stage3.mode === mode}
+                  on:click={() => stage3 && setMode(stage3, mode)}
+                  data-testid="cleanup-stage-3-{mode}"
+                >
+                  {MODE_LABELS[mode]}
+                </button>
+              {/each}
+              {#if stage3.mode !== 'off'}
+                <button
+                  class="c-btn c-btn-ghost"
+                  data-testid="cleanup-analyse-again-3"
+                  on:click={() => analyseAgain(3)}>Run the analysis again</button
+                >
+              {/if}
+            </div>
+            {#each bars3 as bar (bar.label)}
+              <div class="flex flex-col gap-1" data-testid="cleanup-progress-3">
+                <div class="flex flex-wrap justify-between gap-x-4 text-sm">
+                  <span>{bar.label}</span>
+                  <span>{Math.floor(bar.fraction * 100)} %{bar.eta ? ` · ${bar.eta}` : ''}</span>
+                </div>
+                <div
+                  class="c-progress h-2 overflow-hidden rounded-full bg-c-track"
+                  role="progressbar"
+                  aria-label={bar.label}
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={Math.floor(bar.fraction * 100)}
+                >
+                  <div class="h-full bg-c-fill" style="width: {bar.fraction * 100}%" />
+                </div>
+              </div>
+            {/each}
+            {#each stage3Lines(stage3, status.stage3) as line}
+              <p class="text-sm" data-testid="cleanup-stage-3-line">{line}</p>
+            {/each}
+            {#if gate3}
+              <div class="flex flex-col gap-1" data-testid="cleanup-gate-3">
+                <p class="text-sm font-medium">
+                  Checked on the measured pairs and the labeled books:
+                  <span aria-label={gate3.passed ? 'passes' : 'fails'}
+                    >{gate3.passed ? '✓ passes' : '✗ not passed'}</span
+                  >
+                </p>
+                {#each gateLines(gate3) as line}
+                  <p class="text-sm">{line}</p>
+                {/each}
+                {#each gate3.problems as problem}
+                  <p class="text-sm font-bold">{problem}</p>
+                {/each}
+              </div>
+            {/if}
+            {#if precisionLine(stage3)}
+              <p class="text-sm">
+                {precisionLine(stage3)?.replace('pairs still identical', 'pairs’ files unchanged')}
+              </p>
+            {/if}
+            {#if stage3.pauseReason}
+              <div class="c-notice flex flex-wrap items-center justify-between gap-2" role="alert">
+                <span>
+                  <b>Paused: {stage3PauseTitle(stage3.pauseReason)}.</b>
+                  {stage3.pauseDetail ?? ''}
+                </span>
+                {#if pauseNeedsAnalysis(stage3.pauseReason)}
+                  <button class="c-btn c-btn-secondary" on:click={() => analyseAgain(3)}>
+                    Run the analysis again
+                  </button>
+                {:else}
+                  <button class="c-btn c-btn-secondary" on:click={() => stage3 && resume(stage3)}>
+                    Resume
+                  </button>
+                {/if}
+              </div>
+            {:else if status.stage3?.waiting && stage3.mode !== 'off'}
+              <p class="text-sm text-c-muted" data-testid="cleanup-waiting-3">
+                {status.stage3.waiting}
+              </p>
+            {/if}
+            {#if status.stage3 && countsLine(status.stage3.counts)}
+              <p class="text-sm text-c-muted" data-testid="cleanup-counts-3">
+                {countsLine(status.stage3.counts)}
+              </p>
+            {/if}
+          </div>
+        {/if}
         <ul class="flex flex-col gap-2 text-sm">
           {#each laterStages as s (s.stage)}
             <li
@@ -742,6 +868,20 @@
         </CleanupSection>
       {/if}
 
+      {#if stage3 && api}
+        <CleanupSection
+          id="stage3"
+          jp="本文重複"
+          title="Same text in other files"
+          summary={status.stage3?.progress?.phase === 'done'
+            ? `${n(status.stage3.progress.toRemove)} to remove · ${n(status.stage3.progress.review)} for review`
+            : ''}
+          testid="cleanup-stage3"
+        >
+          <Stage3Lists {api} on:changed={refresh} />
+        </CleanupSection>
+      {/if}
+
       <CleanupSection
         id="review"
         jp="確認待ち"
@@ -751,8 +891,8 @@
       >
         {#if !review || review.total === 0}
           <p class="text-sm text-c-muted">
-            Nothing to review. (Identical copies never need review; later stages add their questions
-            here.)
+            Nothing to review. (Identical copies never need review; copies with the same text are
+            reviewed under “Same text in other files”; later stages add their questions here.)
           </p>
         {:else}
           <p class="max-w-prose text-sm text-c-muted">
@@ -809,6 +949,7 @@
               >
                 <option value={1}>1 · Identical files</option>
                 <option value={2}>2 · Metadata from the files</option>
+                {#if stage3}<option value={3}>3 · Same text in other files</option>{/if}
               </select>
             </label>
           {/if}

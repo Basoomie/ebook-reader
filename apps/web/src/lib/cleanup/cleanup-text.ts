@@ -259,7 +259,8 @@ export function batchStateText(batch: CleanupBatch): string {
 
 export function batchKindText(batch: CleanupBatch): string {
   if (batch.kind === 'undo') return 'Undo';
-  return batch.stage === 2 ? 'Metadata from the files' : 'Remove identical copies';
+  if (batch.stage === 2) return 'Metadata from the files';
+  return batch.stage === 3 ? 'Remove copies with the same text' : 'Remove identical copies';
 }
 
 /** Stage 2's batch items are fields (several per book); stage 1's are copies. */

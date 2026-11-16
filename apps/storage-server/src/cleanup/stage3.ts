@@ -787,7 +787,7 @@ export class Stage3Analysis {
           decideByKind.run(
             'review',
             'image_only',
-            'Image-only books with the same title and author (compared by their pictures)',
+            'Picture books with the same title and author (compared by their pictures)',
             now,
             p.analysisId,
             x.a,
@@ -1643,6 +1643,24 @@ export class Stage3Analysis {
         problems.push(
           `${differing.length} labeled books' text length differs from the reader's count`,
         );
+    }
+    // Library-wide: stage 3's text length against the reader's own count of the same file.
+    const books = this.loadBooks(p.libraryId);
+    let compared = 0;
+    let differing = 0;
+    for (const f of facts.values()) {
+      if (!books.has(f.calibre_id) || f.error || f.reader_chars === null || f.chars === null)
+        continue;
+      compared++;
+      if (f.reader_chars !== f.chars) differing++;
+    }
+    p.readerCompared = compared;
+    p.readerDiffering = differing;
+    const alarm = getSettings(this.deps.cleanup).reviewAlarmPercent;
+    if (compared > 0 && (100 * differing) / compared > alarm) {
+      problems.push(
+        `${differing} of ${compared} books' text length differs from the reader's own count (more than ${alarm} %)`,
+      );
     }
     gate.passed = problems.length === 0;
     return gate;

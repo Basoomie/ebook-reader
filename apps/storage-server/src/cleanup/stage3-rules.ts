@@ -327,10 +327,11 @@ export function bestCopy(
   const images = combine([...perImage, count]);
   const wonA = perImage.filter((s) => s === 'a').length;
   const wonB = perImage.filter((s) => s === 'b').length;
+  const mixed = perImage.filter((s) => s === 'tradeoff').length;
   measures.push({
     name: 'images',
     winner: images,
-    detail: `${ia.length} / ${ib.length} pictures, ${matched.length} matched (better in the first ${wonA}, in the second ${wonB})`,
+    detail: `${ia.length} / ${ib.length} pictures, ${matched.length} matched (better in the first ${wonA}, in the second ${wonB}${mixed ? `, larger in one but more compressed: ${mixed}` : ''})`,
   });
 
   // Ruby
