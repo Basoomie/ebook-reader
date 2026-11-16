@@ -55,7 +55,7 @@
     <label class="grid min-w-0 grow basis-40 gap-1 text-sm">
       <span class="text-c-muted">{kind === 'pattern' ? 'Pattern' : 'Word as written'}</span>
       <input
-        class="c-input text-base"
+        class="c-input block w-full min-w-0 text-base"
         lang="ja"
         maxlength={matchMax}
         placeholder={kind === 'pattern' ? '日本(?!橋)' : '椎名'}
@@ -67,7 +67,7 @@
     <label class="grid min-w-0 grow basis-40 gap-1 text-sm">
       <span class="text-c-muted">Read as</span>
       <input
-        class="c-input text-base"
+        class="c-input block w-full min-w-0 text-base"
         lang="ja"
         maxlength={limits?.readingMax || undefined}
         placeholder={kind === 'pattern' ? 'にっぽん' : 'しいな'}

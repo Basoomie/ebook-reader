@@ -146,20 +146,22 @@
                 {/if}
               </div>
               {#if !readonly}
-                <button
-                  class="c-btn c-btn-secondary c-round"
-                  data-testid="pron-fix-edit-button"
-                  on:click={() => startEdit(fix)}
-                >
-                  Edit
-                </button>
-                <button
-                  class="c-btn c-btn-secondary c-round"
-                  data-testid="pron-fix-remove"
-                  on:click={() => ((confirming = fix.id), (editing = null))}
-                >
-                  Remove
-                </button>
+                <div class="flex shrink-0 gap-2">
+                  <button
+                    class="c-btn c-btn-secondary c-round"
+                    data-testid="pron-fix-edit-button"
+                    on:click={() => startEdit(fix)}
+                  >
+                    Edit
+                  </button>
+                  <button
+                    class="c-btn c-btn-secondary c-round"
+                    data-testid="pron-fix-remove"
+                    on:click={() => ((confirming = fix.id), (editing = null))}
+                  >
+                    Remove
+                  </button>
+                </div>
               {/if}
             </div>
             {#if checks && (checks.get(fix.id)?.examples.length ?? 0) > 0}
