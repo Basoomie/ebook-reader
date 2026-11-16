@@ -93,6 +93,11 @@
     bottomBarTimeLeft$,
     timeLeftMinMinutes$,
     timeLeftRecentMinutes$,
+    onTrackDot$,
+    onTrackDotRule$,
+    startDayHoursForTracker$,
+    statsWeekStart$,
+    speedGoalMinMinutes$,
     showPercentage$,
     enableVerticalFontKerning$,
     enableFontVPAL$,
@@ -247,6 +252,15 @@
   } from '$lib/audio/whispersync-reader';
   import { leavingForgetsLastBook } from '$lib/home/open-target';
   import { formatTimeLeft, secondsLeft, speedEstimate } from '$lib/stats/time-left';
+  import OnTrackDot from '$lib/components/book-reader/on-track-dot.svelte';
+  import {
+    goalTrackLine,
+    normalizeOnTrackRule,
+    onTrackView,
+    type OnTrackDotState
+  } from '$lib/stats/on-track';
+  import { goalTitle } from '$lib/stats/goals';
+  import { getDateKey } from '$lib/functions/statistic-util';
   import { ankiAutoEnrich$, ankiBottomBarButton$, ankiNoticeSeconds$ } from '$lib/anki/settings';
   import type { LookupCapture, LookupSentence } from '$lib/anki/lookup-capture';
   import type { AutoEnricher, NewCard } from '$lib/anki/auto-enrich';
@@ -769,6 +783,32 @@
 
   $: scheduleTimeLeft($bottomBarTimeLeft$, exploredCharCount, bookCharCount);
 
+  // Season 2 §9: the on-track dot (opt-in per device). Recomputed after stats records
+  // change (each tracker flush, each pull), when the tab returns, when its settings change
+  // and when the day changes; the DOM changes only when the state or the card text changes.
+  let onTrackState: OnTrackDotState | null = null;
+  let onTrackLines: { title: string; text: string }[] = [];
+  let onTrackNote = '';
+  let onTrackOpen = false;
+  let onTrackTimer: ReturnType<typeof setTimeout> | undefined;
+  let onTrackDayTimer: ReturnType<typeof setInterval> | undefined;
+  let onTrackDayKey = '';
+  let onTrackOff: (() => void) | undefined;
+  let onTrackRun = 0;
+
+  $: onTrackActive = browser && $onTrackDot$ && $statisticsEnabled$;
+  $: setUpOnTrack(onTrackActive);
+  $: if (onTrackActive) {
+    scheduleOnTrack(
+      $onTrackDotRule$,
+      $statsWeekStart$,
+      $speedGoalMinMinutes$,
+      $startDayHoursForTracker$,
+      stateBookId
+    );
+  }
+  $: if ($zenMode$) onTrackOpen = false;
+
   $: if ($bookData$) {
     tick().then(() => {
       bookContentEl = document.querySelector<HTMLDivElement>('.book-content');
@@ -1066,6 +1106,7 @@
     stopStartOverWatch?.();
     stopPacerAutoScroll?.();
     destroyPacer();
+    stopOnTrack();
 
     if (dismissDialogs) {
       dialogManager.dialogs$.next([]);
@@ -2649,6 +2690,106 @@
     }
   }
 
+  function onTrackVisibility() {
+    if (document.visibilityState === 'visible') scheduleOnTrack();
+  }
+
+  function stopOnTrack() {
+    onTrackRun += 1;
+    clearTimeout(onTrackTimer);
+    clearInterval(onTrackDayTimer);
+    onTrackDayTimer = undefined;
+    onTrackOff?.();
+    onTrackOff = undefined;
+
+    if (browser) {
+      document.removeEventListener('visibilitychange', onTrackVisibility);
+    }
+
+    onTrackState = null;
+    onTrackLines = [];
+    onTrackNote = '';
+    onTrackOpen = false;
+  }
+
+  /** Starts or stops the dot's listeners; with the dot off nothing is loaded or listened to. */
+  function setUpOnTrack(active: boolean) {
+    stopOnTrack();
+
+    if (!active) return;
+
+    const run = onTrackRun;
+
+    onTrackDayKey = getDateKey($startDayHoursForTracker$);
+    onTrackDayTimer = setInterval(() => {
+      if (getDateKey($startDayHoursForTracker$) !== onTrackDayKey) scheduleOnTrack();
+    }, 60_000);
+    document.addEventListener('visibilitychange', onTrackVisibility);
+    import('$lib/sync/sync-service')
+      .then((sync) => sync.statsApi().onChanged(() => scheduleOnTrack()))
+      .then((off) => {
+        if (run === onTrackRun) {
+          onTrackOff = off;
+        } else {
+          off();
+        }
+      })
+      .catch((error: any) => logger.warn(`Stats: on-track dot: ${error?.message ?? error}`));
+  }
+
+  function scheduleOnTrack(..._inputs: unknown[]) {
+    clearTimeout(onTrackTimer);
+
+    if (!onTrackActive) return;
+
+    onTrackTimer = setTimeout(() => void updateOnTrack(), 600);
+  }
+
+  /** The goals' current periods from every device's records; never blocks reading. */
+  async function updateOnTrack() {
+    const run = onTrackRun;
+
+    try {
+      const sync = await import('$lib/sync/sync-service');
+      const api = sync.statsApi();
+      const [data, goals] = await Promise.all([api.pageData(), api.goals()]);
+      const book = $rawBookData$;
+      const bookId =
+        stateBookId ?? (book ? await sync.bookIdForLocalBook(book.id, book.title) : null);
+
+      if (run !== onTrackRun || !onTrackActive) return;
+
+      const today = getDateKey($startDayHoursForTracker$);
+      const speedMinMinutes = Math.max(0, Number($speedGoalMinMinutes$) || 0);
+      const view = onTrackView(
+        goals,
+        today,
+        $statsWeekStart$,
+        {
+          entries: data.entries,
+          readThroughs: data.readThroughs,
+          books: new Map(),
+          speedMinSeconds: speedMinMinutes * 60
+        },
+        normalizeOnTrackRule($onTrackDotRule$)
+      );
+      const lines = view.goals.map((track) => ({
+        title: goalTitle(track.goal),
+        text: goalTrackLine(track, speedMinMinutes)
+      }));
+      const note =
+        book && !bookId ? "This book isn't in the library, so its reading isn't counted." : '';
+
+      onTrackDayKey = today;
+
+      if (view.state !== onTrackState) onTrackState = view.state;
+      if (JSON.stringify(lines) !== JSON.stringify(onTrackLines)) onTrackLines = lines;
+      if (note !== onTrackNote) onTrackNote = note;
+    } catch (error: any) {
+      logger.warn(`Stats: on-track dot: ${error?.message ?? error}`);
+    }
+  }
+
   function getCurrentChapterProgress(sectionData: SectionWithProgress[]) {
     if (
       (!$showFooterChapterCharacterCounter$ && !$showFooterChapterPercentage$) ||
@@ -3938,6 +4079,8 @@
         !$showFooterChapterPercentage$ &&
         !timeLeftText}
       style:color={$themeOption$?.tooltipTextFontColor}
+      style:right={onTrackState ? '2.5rem' : null}
+      data-testid="footer-progress"
       on:click|stopPropagation={({ target }) => {
         if (!$showCharacterCounter$ && !$showPercentage$) {
           return;
@@ -3957,6 +4100,20 @@
       <span class="mr-4" class:invisible={!footerChapterProgress}>{footerChapterProgress}</span>
       <span class:invisible={!$showCharacterCounter$ && !$showPercentage$}>{currentProgress}</span>
     </div>
+  {/if}
+  {#if onTrackState}
+    <!-- Season 2 §9: the on-track dot at the right end (opt-in per device); Zen hides it. -->
+    <OnTrackDot
+      state={onTrackState}
+      lines={onTrackLines}
+      note={onTrackNote}
+      eink={$einkMode$}
+      barColor={$themeOption$?.tooltipTextFontColor ?? 'currentColor'}
+      fontColor={$themeOption$?.fontColor ?? '#000'}
+      backgroundColor={$themeOption$?.backgroundColor ?? '#fff'}
+      bind:open={onTrackOpen}
+      on:stats={() => leaveReader(mergeEntries.STATISTICS.routeId, false)}
+    />
   {/if}
 </div>
 
