@@ -46,7 +46,7 @@ import {
   type SetEdge,
 } from './stage3-rules';
 import { sketchToBlob } from './stage3-sketch';
-import type { Stage3Reader } from '../counts/book-text-worker';
+import type { Outcome, Stage3Reader } from '../counts/book-text-worker';
 import { getStage, updateStage } from './stages';
 
 export type Stage3Phase = 'text' | 'candidates' | 'compare' | 'quality' | 'group' | 'done';
@@ -132,7 +132,6 @@ export interface Stage3Deps {
   log?: (m: string) => void;
 }
 
-const yieldNow = () => new Promise<void>((r) => setImmediate(r));
 /** Books per compare request (each read once per request). */
 const BOOKS_PER_COMPARE = 8;
 const COMPARE_CHUNK = 200;
@@ -301,24 +300,38 @@ type TextOut = {
   reused: boolean;
 };
 
+/** One finished compare request: its pairs and the reader's answer. */
+type CompareDone = {
+  r: { books: Set<number>; pairs: PairRow[] };
+  out: Outcome<CompareResult>;
+};
+/** One book's best-copy facts in the quality phase (row null: nothing to save). */
+type QualityDone = { id: number; row: Record<string, unknown> | null };
+
 /** A text step returns after this long; the books being read go on. */
 const TEXT_STEP_MS = 20_000;
 /** Read books are saved at least this often, or once this many are ready in cursor order. */
 const TEXT_COMMIT_MS = 2_000;
 const TEXT_COMMIT_BOOKS = 32;
+/** Finished compare requests are saved at least every TEXT_COMMIT_MS, or once this many are done. */
+const COMPARE_COMMIT_REQUESTS = 8;
 
 /**
- * Keeps `limit` books in flight: the next book starts as soon as one finishes. Results come
- * out in the order of `ids` (the cursor order), so the books saved are always a prefix. A
- * book whose run answers null (stopped) stops the pipeline there; one that throws makes take()
- * throw (the analysis fails, as a failed group did before).
+ * Keeps `limit` jobs in flight: the next job starts as soon as one finishes, so the reader
+ * processes never wait for a group's slowest job. Ordered (the text and quality phases, which
+ * resume from a cursor): results come out in the order of `ids`, always a prefix, and a job
+ * that answers null (stopped) stops the pipeline there. Unordered (the compare phase, which
+ * resumes from what is saved): every finished job comes out as it finishes; a stopped job is
+ * left undone and stops the pipeline. A job that throws makes take() throw (the analysis
+ * fails, as a failed group did before).
  */
-export class TextPipe<T> {
+export class WorkPipe<T> {
   stopped = false;
   inFlight = 0;
   limit = 1;
   run: (id: number) => Promise<T | null> = () => Promise.resolve(null);
   private launched = 0;
+  /** Ordered: the next index to take. Both: how many jobs were taken. */
   private taken = 0;
   private readonly results = new Map<number, { value: T | null } | { error: unknown }>();
   private wake: (() => void) | null = null;
@@ -329,12 +342,18 @@ export class TextPipe<T> {
     readonly analysisId: string,
     readonly total: number,
     private readonly ids: number[],
+    private readonly ordered = true,
   ) {}
 
   setPace(bytesPerSecond: number): void {
     if (bytesPerSecond === this.rate) return;
     this.rate = bytesPerSecond;
     this.pacer = new Pacer(bytesPerSecond);
+  }
+
+  /** The pacer for a reader that takes one (the whole-file hash). */
+  pacerFor(): Pacer {
+    return this.pacer ?? new Pacer(0);
   }
 
   pace(bytes: number): Promise<void> {
@@ -360,8 +379,13 @@ export class TextPipe<T> {
     w?.();
   }
 
-  /** Books finished in cursor order and not yet taken. */
+  /** Jobs that take() would give now. */
   ready(): number {
+    if (!this.ordered) {
+      let n = 0;
+      for (const r of this.results.values()) if ('error' in r || r.value !== null) n++;
+      return n;
+    }
     let n = 0;
     for (let i = this.taken; i < this.launched; i++) {
       const r = this.results.get(this.ids[i]);
@@ -373,6 +397,19 @@ export class TextPipe<T> {
 
   take(): T[] {
     const out: T[] = [];
+    if (!this.ordered) {
+      for (const [id, r] of [...this.results]) {
+        if ('error' in r) throw r.error;
+        this.results.delete(id);
+        if (r.value === null) {
+          this.stopped = true;
+          continue;
+        }
+        out.push(r.value);
+        this.taken++;
+      }
+      return out;
+    }
     while (this.taken < this.launched) {
       const id = this.ids[this.taken];
       const r = this.results.get(id);
@@ -397,7 +434,7 @@ export class TextPipe<T> {
     return this.taken === this.ids.length;
   }
 
-  /** Waits for a book to finish, or `ms` at most. */
+  /** Waits for a job to finish, or `ms` at most. */
   wait(ms: number): Promise<void> {
     return new Promise((resolve) => {
       const t = setTimeout(
@@ -574,15 +611,15 @@ export class Stage3Analysis {
     }
   }
 
-  private textPipe: TextPipe<TextOut> | null = null;
+  private textPipe: WorkPipe<TextOut> | null = null;
 
   /** A pipeline over the books after the saved cursor (stage 3's text phase). */
-  private openTextPipe(p: Stage3Progress): TextPipe<TextOut> {
+  private openTextPipe(p: Stage3Progress): WorkPipe<TextOut> {
     const books = this.loadBooks(p.libraryId);
     const libDir = this.libraryDir(p.libraryId);
     const dup = getSettings(this.deps.cleanup).duplicates;
     const ids = [...books.keys()].filter((id) => id > p.textCursor).sort((a, b) => a - b);
-    const pipe = new TextPipe<TextOut>(p.analysisId, books.size, ids);
+    const pipe = new WorkPipe<TextOut>(p.analysisId, books.size, ids);
     const facts = this.deps.cleanup.prepare(
       'SELECT * FROM text_facts WHERE library_id = ? AND calibre_id = ?',
     );
@@ -1031,56 +1068,121 @@ export class Stage3Analysis {
 
   // ---- compare ----
 
+  /**
+   * The compare phase: every candidate pair measured exactly. Pairs go to the reader processes in
+   * requests of at most BOOKS_PER_COMPARE books (built as before: COMPARE_CHUNK pairs at a time,
+   * each pair into the first request with room), and the next request starts as soon as a
+   * process is free. A finished request is saved at once (a pair is done when its class or error
+   * is set, so the phase resumes from what is saved); a step returns after STEP_MS without
+   * waiting for the requests still running.
+   */
   private async compareStep(p: Stage3Progress, shouldStop: () => boolean): Promise<Stage3Progress> {
+    const settings = getSettings(this.deps.cleanup);
+    let pipe = this.comparePipe;
+    if (!pipe || pipe.analysisId !== p.analysisId || pipe.stopped) {
+      pipe = this.comparePipe = this.openComparePipe(p);
+      if (!pipe) {
+        this.findOmnibusByText(p);
+        p.phase = 'quality';
+        p.qualityTotal = this.qualityBooks(p).length;
+        return p;
+      }
+    }
+    pipe.limit = Math.max(1, settings.duplicates.textWorkers) * 2;
+    pipe.setPace(settings.pacing.readMbPerSecond * 1024 * 1024);
+    const deadline = Date.now() + TEXT_STEP_MS;
+    let lastCommit = Date.now();
+    for (;;) {
+      if (shouldStop()) pipe.stopped = true;
+      pipe.fill();
+      const ready = pipe.ready();
+      if (
+        ready > 0 &&
+        (ready >= COMPARE_COMMIT_REQUESTS ||
+          Date.now() - lastCommit >= TEXT_COMMIT_MS ||
+          Date.now() >= deadline ||
+          pipe.stopped ||
+          pipe.launchedAll())
+      ) {
+        this.commitCompare(p, pipe.take());
+        lastCommit = Date.now();
+      }
+      if (pipe.finished() || (pipe.stopped && pipe.inFlight === 0)) {
+        // Finished: the next step finds nothing left to measure and moves on.
+        this.comparePipe = null;
+        return p;
+      }
+      if (Date.now() >= deadline) return p;
+      await pipe.wait(Math.min(deadline, lastCommit + TEXT_COMMIT_MS) - Date.now());
+    }
+  }
+
+  private comparePipe: WorkPipe<CompareDone> | null = null;
+  /** The facts the compare phase classifies with (kinds and lengths; fixed during the phase). */
+  private compareFacts: Map<number, FactRow> | null = null;
+
+  /** A pipeline over the pairs not measured yet, or null when there are none. */
+  private openComparePipe(p: Stage3Progress): WorkPipe<CompareDone> | null {
     const pending = this.deps.cleanup
       .prepare(
         `SELECT * FROM content_pairs WHERE analysis_id = ? AND class IS NULL AND error IS NULL
-         ORDER BY a_id, b_id LIMIT ?`,
+         ORDER BY a_id, b_id`,
       )
-      .all(p.analysisId, COMPARE_CHUNK) as PairRow[];
-    if (pending.length === 0) {
-      this.findOmnibusByText(p);
-      p.phase = 'quality';
-      p.qualityTotal = this.qualityBooks(p).length;
-      return p;
-    }
+      .all(p.analysisId) as PairRow[];
+    if (pending.length === 0) return null;
     const books = this.loadBooks(p.libraryId);
     const libDir = this.libraryDir(p.libraryId);
-    const settings = getSettings(this.deps.cleanup);
-    const pacer = new Pacer(settings.pacing.readMbPerSecond * 1024 * 1024);
-    const facts = this.facts(p.libraryId);
+    this.compareFacts = this.facts(p.libraryId);
 
-    // Requests of at most BOOKS_PER_COMPARE books each.
+    // Requests of at most BOOKS_PER_COMPARE books each, built COMPARE_CHUNK pairs at a time.
     const requests: { books: Set<number>; pairs: PairRow[] }[] = [];
-    for (const pair of pending) {
-      let req = requests.find(
-        (r) =>
-          r.books.size + (r.books.has(pair.a_id) ? 0 : 1) + (r.books.has(pair.b_id) ? 0 : 1) <=
-          BOOKS_PER_COMPARE,
-      );
-      if (!req) {
-        req = { books: new Set(), pairs: [] };
-        requests.push(req);
-      }
-      req.books.add(pair.a_id);
-      req.books.add(pair.b_id);
-      req.pairs.push(pair);
-    }
-    const results = await Promise.all(
-      requests.map(async (r) => {
-        if (shouldStop()) return null;
-        const list = [...r.books]
-          .filter((id) => books.has(id))
-          .map((id) => ({ key: id, file: resolveInside(libDir, books.get(id)!.filePath) }));
-        const out = await this.deps.reader().compare(
-          list,
-          r.pairs.map((x) => [x.a_id, x.b_id] as [number, number]),
-          { minRun: MIN_RUN, minContext: MIN_CONTEXT },
+    for (let at = 0; at < pending.length; at += COMPARE_CHUNK) {
+      const chunk: { books: Set<number>; pairs: PairRow[] }[] = [];
+      for (const pair of pending.slice(at, at + COMPARE_CHUNK)) {
+        let req = chunk.find(
+          (r) =>
+            r.books.size + (r.books.has(pair.a_id) ? 0 : 1) + (r.books.has(pair.b_id) ? 0 : 1) <=
+            BOOKS_PER_COMPARE,
         );
-        if (out.ok) await pacer.take(out.data.bytesRead);
-        return { r, out };
-      }),
+        if (!req) {
+          req = { books: new Set(), pairs: [] };
+          chunk.push(req);
+        }
+        req.books.add(pair.a_id);
+        req.books.add(pair.b_id);
+        req.pairs.push(pair);
+      }
+      requests.push(...chunk);
+    }
+    const pipe = new WorkPipe<CompareDone>(
+      p.analysisId,
+      requests.length,
+      requests.map((_, i) => i),
+      false,
     );
+    pipe.run = async (i) => {
+      if (pipe.stopped) return null;
+      const r = requests[i];
+      const list = [...r.books]
+        .filter((id) => books.has(id))
+        .map((id) => ({ key: id, file: resolveInside(libDir, books.get(id)!.filePath) }));
+      const out = await this.deps.reader().compare(
+        list,
+        r.pairs.map((x) => [x.a_id, x.b_id] as [number, number]),
+        { minRun: MIN_RUN, minContext: MIN_CONTEXT },
+      );
+      if (out.ok) await pipe.pace(out.data.bytesRead);
+      else if (out.stopped) return null;
+      return { r, out };
+    };
+    return pipe;
+  }
+
+  /** Saves finished compare requests (their pairs' measures and classes) with the progress. */
+  private commitCompare(p: Stage3Progress, results: CompareDone[]): void {
+    if (results.length === 0) return;
+    const settings = getSettings(this.deps.cleanup);
+    const facts = this.compareFacts ?? this.facts(p.libraryId);
     const update = this.deps.cleanup.prepare(
       `UPDATE content_pairs SET a_in_b = @aInB, b_in_a = @bInA, class = @cls, rule = @rule,
          reason = @reason, container = @container, spread_json = @spread, measured_at = @now,
@@ -1089,10 +1191,8 @@ export class Stage3Analysis {
     const now = Date.now();
     this.deps.cleanup.transaction(() => {
       for (const res of results) {
-        if (!res) continue;
         const { r, out } = res;
         if (!out.ok) {
-          if (out.stopped) continue;
           for (const pair of r.pairs) {
             update.run({
               id: pair.id,
@@ -1150,8 +1250,6 @@ export class Stage3Analysis {
       }
       this.save(p, 'analysing');
     })();
-    await yieldNow();
-    return p;
   }
 
   private pairBook(f: FactRow | undefined, id: number): PairBook {
@@ -1247,24 +1345,65 @@ export class Stage3Analysis {
     return rows.map((r) => r.id);
   }
 
+  /**
+   * The quality phase (best-copy facts: whole-file SHA-256, layout, cover, pictures) for the books
+   * of duplicate pairs. The next book starts as soon as one finishes; results are saved in
+   * cursor order with the cursor, so a restart resumes where the saved rows end. A step returns
+   * after STEP_MS without waiting for the books still being read.
+   */
   private async qualityStep(p: Stage3Progress, shouldStop: () => boolean): Promise<Stage3Progress> {
+    const settings = getSettings(this.deps.cleanup);
+    let pipe = this.qualityPipe;
+    if (!pipe || pipe.analysisId !== p.analysisId || pipe.stopped) {
+      pipe = this.qualityPipe = this.openQualityPipe(p);
+    }
+    p.qualityTotal = pipe.total;
+    pipe.limit = Math.max(4, settings.duplicates.textWorkers * 2);
+    pipe.setPace(settings.pacing.readMbPerSecond * 1024 * 1024);
+    const deadline = Date.now() + TEXT_STEP_MS;
+    let lastCommit = Date.now();
+    for (;;) {
+      if (shouldStop()) pipe.stopped = true;
+      pipe.fill();
+      const ready = pipe.ready();
+      if (
+        ready > 0 &&
+        (ready >= TEXT_COMMIT_BOOKS ||
+          Date.now() - lastCommit >= TEXT_COMMIT_MS ||
+          Date.now() >= deadline ||
+          pipe.stopped ||
+          pipe.launchedAll())
+      ) {
+        this.commitQuality(p, pipe.take());
+        lastCommit = Date.now();
+      }
+      if (pipe.finished()) {
+        this.qualityPipe = null;
+        p.phase = 'group';
+        return p;
+      }
+      if (pipe.stopped && pipe.inFlight === 0) {
+        this.qualityPipe = null;
+        return p;
+      }
+      if (Date.now() >= deadline) return p;
+      await pipe.wait(Math.min(deadline, lastCommit + TEXT_COMMIT_MS) - Date.now());
+    }
+  }
+
+  private qualityPipe: WorkPipe<QualityDone> | null = null;
+
+  /** A pipeline over the quality books after the saved cursor. */
+  private openQualityPipe(p: Stage3Progress): WorkPipe<QualityDone> {
     const books = this.loadBooks(p.libraryId);
     const libDir = this.libraryDir(p.libraryId);
-    const settings = getSettings(this.deps.cleanup);
-    const pacer = new Pacer(settings.pacing.readMbPerSecond * 1024 * 1024);
     const all = this.qualityBooks(p);
-    p.qualityTotal = all.length;
-    const ids = all
-      .filter((id) => id > p.qualityCursor)
-      .slice(0, Math.max(4, settings.duplicates.textWorkers * 2));
-    if (ids.length === 0) {
-      p.phase = 'group';
-      return p;
-    }
+    const ids = all.filter((id) => id > p.qualityCursor);
     const facts = this.facts(p.libraryId);
-    type Q = { id: number; row: Record<string, unknown> | null };
+    const pipe = new WorkPipe<QualityDone>(p.analysisId, all.length, ids);
+    type Q = QualityDone;
     const one = async (id: number): Promise<Q | null> => {
-      if (shouldStop()) return null;
+      if (pipe.stopped) return null;
       const book = books.get(id);
       const f = facts.get(id);
       if (!book || !f) return { id, row: null };
@@ -1284,14 +1423,14 @@ export class Stage3Analysis {
           layout: true,
           counted,
         });
-        const hashed = await hashSourceFile(file, pacer, shouldStop);
+        const hashed = await hashSourceFile(file, pipe.pacerFor(), () => pipe.stopped);
         if (!hashed) return null;
         const images = await epubImageFacts(
           file,
           (meta.layout?.images ?? []).map((i) => i.entry),
           counted,
         );
-        await pacer.take(counted.bytes);
+        await pipe.pace(counted.bytes);
         return {
           id,
           row: {
@@ -1315,12 +1454,13 @@ export class Stage3Analysis {
         return { id, row: { id, error: (err as Error).message.slice(0, 500) } };
       }
     };
-    const results = await Promise.all(ids.map(one));
-    const done: Q[] = [];
-    for (const r of results) {
-      if (!r) break;
-      done.push(r);
-    }
+    pipe.run = one;
+    return pipe;
+  }
+
+  /** Saves quality facts (in cursor order) with the cursor and the progress. */
+  private commitQuality(p: Stage3Progress, done: QualityDone[]): void {
+    if (done.length === 0) return;
     const put = this.deps.cleanup.prepare(
       `UPDATE text_facts SET quality_size = @size, quality_mtime_ms = @mtime, sha256 = @sha,
          vertical = @vertical, cover_side = @cover, images_json = @images, quality_ms = @ms,
@@ -1343,8 +1483,6 @@ export class Stage3Analysis {
       }
       this.save(p, 'analysing');
     })();
-    await yieldNow();
-    return p;
   }
 
   // ---- group ----

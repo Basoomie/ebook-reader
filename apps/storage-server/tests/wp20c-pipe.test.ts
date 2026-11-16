@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { TextPipe } from '../src/cleanup/stage3';
+import { WorkPipe as TextPipe } from '../src/cleanup/stage3';
 
 /** A run whose books finish when the test says so. */
 function controlled() {
@@ -99,5 +99,37 @@ describe('stage 3 text pipeline', () => {
     await c.finish(1);
     await waiting;
     expect(pipe.take()).toEqual(['book 1']);
+  });
+  it('unordered (compare): every finished job comes out as it finishes; a stopped one is left undone', async () => {
+    const c = controlled();
+    const pipe = new TextPipe<string>('a', 4, [0, 1, 2, 3], false);
+    pipe.run = c.run;
+    pipe.limit = 3;
+    pipe.fill();
+    await c.finish(2);
+    expect(pipe.ready()).toBe(1);
+    expect(pipe.take()).toEqual(['book 2']);
+    pipe.fill();
+    expect(c.started).toEqual([0, 1, 2, 3]);
+    await c.finish(0);
+    await c.finish(3);
+    expect(pipe.take().sort()).toEqual(['book 0', 'book 3']);
+    expect(pipe.finished()).toBe(false);
+    await c.finish(1, null);
+    expect(pipe.take()).toEqual([]);
+    expect(pipe.stopped).toBe(true);
+    expect(pipe.finished()).toBe(false);
+  });
+
+  it('unordered: all jobs taken means finished', async () => {
+    const c = controlled();
+    const pipe = new TextPipe<string>('a', 2, [0, 1], false);
+    pipe.run = c.run;
+    pipe.limit = 2;
+    pipe.fill();
+    await c.finish(1);
+    await c.finish(0);
+    expect(pipe.take().length).toBe(2);
+    expect(pipe.finished()).toBe(true);
   });
 });
