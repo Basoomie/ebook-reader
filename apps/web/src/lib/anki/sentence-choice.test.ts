@@ -6,7 +6,6 @@
 
 import { describe, expect, it } from 'vitest';
 import { chooseSentence, type SelectionCandidate } from './sentence-choice';
-import { SelectionOrigin } from './selection-origin';
 
 const NOTE = 1000;
 const selection = (
@@ -110,40 +109,5 @@ describe('sentence choice', () => {
       card('card')
     );
     expect(notAsked).toBe(0);
-  });
-});
-
-describe('selection origin', () => {
-  it('a drag (press, selectstart, changes) is the user’s', () => {
-    const origin = new SelectionOrigin();
-    origin.gesture();
-    origin.selectStart();
-    origin.selectionChange();
-    origin.selectionChange();
-    expect(origin.byUser).toBe(true);
-  });
-
-  it('a script’s selection (no selectstart) is not the user’s', () => {
-    const origin = new SelectionOrigin();
-    origin.selectionChange();
-    expect(origin.byUser).toBe(false);
-  });
-
-  it('a script’s selection after the user’s own drag is told apart', () => {
-    const origin = new SelectionOrigin();
-    origin.gesture();
-    origin.selectStart();
-    origin.selectionChange();
-    // Shift held (a key) for a Yomitan lookup, which then selects the word.
-    origin.gesture();
-    origin.selectionChange();
-    expect(origin.byUser).toBe(false);
-  });
-
-  it('a tap on a word (Yomitan on a phone) is not the user’s selection', () => {
-    const origin = new SelectionOrigin();
-    origin.gesture();
-    origin.selectionChange();
-    expect(origin.byUser).toBe(false);
   });
 });

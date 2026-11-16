@@ -7,7 +7,8 @@
 /**
  * Whether a dictionary popup (Yomitan, Yomichan, jpdb) is open, for the lookup count, the
  * tracker's and whispersync's auto-pause and the pacer (fix of 2026-11-15). One instance per
- * document (`sharedPopupWatch`), so every feature sees the same lookups.
+ * document (`sharedPopupWatch`), so every feature sees the same lookups. Enrich asks it whose
+ * selection the page has (`selectionByUser`), by the same rule.
  *
  * Two signals, never counted twice:
  *
@@ -82,6 +83,15 @@ export class DictionaryPopupWatch {
   /** Whether a dictionary popup is open now. */
   get shown(): boolean {
     return this.current !== null;
+  }
+
+  /**
+   * Whether the page's selection is the user's own (made while pressed or by keyboard), not
+   * Yomitan's word selection: Enrich's sentence choice (`lib/anki/sentence-choice.ts`). False
+   * when there is no selection.
+   */
+  get selectionByUser(): boolean {
+    return this.owner === 'user';
   }
 
   /** Calls `listener` on each change. Returns the unsubscribe. */
