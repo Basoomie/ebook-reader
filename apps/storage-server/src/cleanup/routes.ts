@@ -510,6 +510,65 @@ export function createCleanupRouter(options: CleanupOptions): Router {
     res.json({ ok: true });
   });
 
+  // Stage 3 (content duplicates): pairs by list, your decision on a pair, books, the gate.
+  router.get('/cleanup/stage3/pairs', (req, res) => {
+    const service = serviceOr503(options);
+    const view = typeof req.query.view === 'string' ? req.query.view : 'review';
+    try {
+      res.json(
+        service.stage3Pairs(view, {
+          cls: typeof req.query.class === 'string' ? req.query.class : undefined,
+          offset: Math.max(0, Number(req.query.offset) || 0),
+          limit: Math.min(200, Math.max(1, Number(req.query.limit) || 50)),
+        }),
+      );
+    } catch (err) {
+      throw new ApiError(400, 'bad_request', (err as Error).message);
+    }
+  });
+
+  router.post('/cleanup/stage3/pairs/:id', (req, res) => {
+    const service = serviceOr503(options);
+    const decision = (req.body as { decision?: unknown } | undefined)?.decision;
+    if (
+      decision !== 'keep_both' &&
+      decision !== 'remove_a' &&
+      decision !== 'remove_b' &&
+      decision !== 'clear'
+    ) {
+      throw new ApiError(
+        400,
+        'bad_request',
+        'decision must be keep_both, remove_a, remove_b or clear',
+      );
+    }
+    try {
+      service.decidePair(Number(req.params.id), decision);
+    } catch (err) {
+      throw new ApiError(404, 'not_found', (err as Error).message);
+    }
+    res.json({ ok: true });
+  });
+
+  router.get('/cleanup/stage3/books', (req, res) => {
+    const service = serviceOr503(options);
+    try {
+      res.json(
+        service.stage3Books(typeof req.query.view === 'string' ? req.query.view : 'omnibus', {
+          offset: Math.max(0, Number(req.query.offset) || 0),
+          limit: Math.min(200, Math.max(1, Number(req.query.limit) || 50)),
+        }),
+      );
+    } catch (err) {
+      throw new ApiError(400, 'bad_request', (err as Error).message);
+    }
+  });
+
+  router.get('/cleanup/stage3/gate', (_req, res) => {
+    const service = serviceOr503(options);
+    res.json({ gate: service.stage3Gate() });
+  });
+
   router.get('/cleanup/batches', (_req, res) => {
     const service = serviceOr503(options);
     res.json({

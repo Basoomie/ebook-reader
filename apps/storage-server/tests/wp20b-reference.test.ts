@@ -87,7 +87,7 @@ describe('cleanup.db migration to v3', () => {
       `INSERT INTO undo_records (batch_id, change_id, library_id, removed_calibre_id, removed_uuid, kept_calibre_id, kept_uuid, created_at)
        VALUES ('b1', 1, 'lib', 5, 'u5', 4, 'u4', 0)`,
     ).run();
-    expect(migrateCleanup(db)).toBe(3);
+    expect(migrateCleanup(db)).toBeGreaterThanOrEqual(3);
     expect(
       db.prepare('SELECT id, state, quarantine_dir, export_sha256 FROM batch_items').all(),
     ).toEqual([

@@ -67,6 +67,20 @@ export interface FileFacts {
   cover: FileCover | null;
   frontText?: string;
   colophonText?: string;
+  /** Stage 3 only (readFileMetadata's `layout` option). */
+  layout?: EpubLayout;
+}
+
+/** Stage 3: how the EPUB is laid out and which images it holds. */
+export interface EpubLayout {
+  /** The spine's page-progression-direction. */
+  pageDirection: string | null;
+  /** true = vertical, false = horizontal, null = the file doesn't say. */
+  vertical: boolean | null;
+  /** Every image entry of the manifest (path in the ZIP, size). */
+  images: { entry: string; bytes: number }[];
+  /** The declared cover's entry. */
+  coverEntry: string | null;
 }
 
 /** The book's current Calibre record, as far as stage 2 reads or writes it. */

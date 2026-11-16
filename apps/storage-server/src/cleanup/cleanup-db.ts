@@ -304,6 +304,98 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
       CREATE INDEX applied_values_source ON applied_values (library_id, source);
     `,
   },
+  {
+    version: 4,
+    name: 'stage 3: content duplicates (WP20c)',
+    sql: `
+      -- What stage 3 read from each EPUB: its text as the reader counts it (length, the
+      -- reader's own count for the same file, chapters), its edition kind, and for books in
+      -- a duplicate pair the facts that pick the better copy. The sketch itself lives in the
+      -- regenerable cache (cache/cleanup/stage3.db). A file is read again only when its size
+      -- or mtime changed, or the counter bundle did.
+      CREATE TABLE text_facts (
+        library_id             TEXT NOT NULL,
+        calibre_id             INTEGER NOT NULL,
+        calibre_uuid           TEXT NOT NULL,
+        file_path              TEXT NOT NULL,
+        size                   INTEGER,
+        mtime_ms               INTEGER,
+        calibre_last_modified  TEXT,
+        counter_build          TEXT,
+        chars                  INTEGER,
+        import_chars           INTEGER,
+        reader_chars           INTEGER,
+        samples                INTEGER,
+        chapters_json          TEXT CHECK (chapters_json IS NULL OR json_valid(chapters_json)),
+        ruby                   INTEGER,
+        toc_entries            INTEGER,
+        file_title             TEXT,
+        kind                   TEXT,
+        kind_marker            TEXT,
+        kind_by                TEXT,
+        image_entries          INTEGER,
+        image_only             INTEGER NOT NULL DEFAULT 0,
+        read_ms                INTEGER,
+        read_at                INTEGER,
+        error                  TEXT,
+        -- Best-copy facts (only books in a duplicate pair): the EPUB's SHA-256 (the export
+        -- check), writing direction, cover side and every picture's pHash/side/quantization.
+        quality_size           INTEGER,
+        quality_mtime_ms       INTEGER,
+        sha256                 TEXT,
+        vertical               INTEGER,
+        cover_side             INTEGER,
+        images_json            TEXT CHECK (images_json IS NULL OR json_valid(images_json)),
+        quality_ms             INTEGER,
+        quality_at             INTEGER,
+        quality_error          TEXT,
+        PRIMARY KEY (library_id, calibre_id)
+      );
+      CREATE INDEX text_facts_uuid ON text_facts (library_id, calibre_uuid);
+
+      -- Pairs of one analysis: how they were found (index, gate, image_only), the estimate,
+      -- the exact containment both ways, the class and its rule, the extra-text measure,
+      -- the best-copy comparison, and the copy each pair keeps (null = trade-off).
+      CREATE TABLE content_pairs (
+        id             INTEGER PRIMARY KEY,
+        analysis_id    TEXT NOT NULL,
+        library_id     TEXT NOT NULL,
+        a_id           INTEGER NOT NULL,
+        a_uuid         TEXT NOT NULL,
+        b_id           INTEGER NOT NULL,
+        b_uuid         TEXT NOT NULL,
+        source         TEXT NOT NULL,
+        shared         INTEGER,
+        est_a_in_b     REAL,
+        est_b_in_a     REAL,
+        a_in_b         REAL,
+        b_in_a         REAL,
+        class          TEXT,
+        rule           TEXT,
+        reason         TEXT,
+        container      TEXT,
+        spread_json    TEXT CHECK (spread_json IS NULL OR json_valid(spread_json)),
+        best_json      TEXT CHECK (best_json IS NULL OR json_valid(best_json)),
+        keep_id        INTEGER,
+        measured_at    INTEGER,
+        error          TEXT,
+        UNIQUE (analysis_id, a_id, b_id)
+      );
+      CREATE INDEX content_pairs_class ON content_pairs (analysis_id, class);
+      CREATE INDEX content_pairs_books ON content_pairs (analysis_id, a_id, b_id);
+
+      -- Your decisions on review pairs (keep both / remove one copy), by UUID so they
+      -- survive a new analysis.
+      CREATE TABLE pair_decisions (
+        library_id   TEXT NOT NULL,
+        a_uuid       TEXT NOT NULL,
+        b_uuid       TEXT NOT NULL,
+        decision     TEXT NOT NULL CHECK (decision IN ('keep_both', 'remove_a', 'remove_b')),
+        decided_at   INTEGER NOT NULL,
+        PRIMARY KEY (library_id, a_uuid, b_uuid)
+      );
+    `,
+  },
 ];
 
 export const CLEANUP_SCHEMA_VERSION = CLEANUP_MIGRATIONS[CLEANUP_MIGRATIONS.length - 1].version;

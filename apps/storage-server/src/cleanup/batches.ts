@@ -15,8 +15,12 @@
  *   reader-side handoff; "restored" (Undo) re-binds a new UUID and reverses the handoff.
  * - undo(): an undo batch for an applied batch (the newest touching those books).
  *
- * The indexer holds its ingest of the library while a stage-1 batch is claimed, so missing
- * flags and handoffs land together, and the next stage-1 batch waits until the index shows the
+ * Stage 3 (WP20c, content duplicates) removes copies through exactly this path: its batches
+ * are removal batches like stage 1's (`isRemovalStage`), with their own check before each
+ * batch (`planStage3`: both files unchanged since the analysis).
+ *
+ * The indexer holds its ingest of the library while a removal batch is claimed, so missing
+ * flags and handoffs land together, and the next removal batch waits until the index shows the
  * last one. Stage 2 neither holds nor waits: it changes no book's presence and the reader takes
  * in its edits like any edit made in Calibre (the index only checks them afterwards).
  */
@@ -62,6 +66,10 @@ export type ItemState =
   | 'skipped';
 
 export const DEFAULT_LEASE_SECONDS = 120;
+
+/** Stages whose batches remove copies (stage 1 identical files, stage 3 content duplicates). */
+export const REMOVAL_STAGES: readonly number[] = [1, 3];
+export const isRemovalStage = (stage: number) => REMOVAL_STAGES.includes(stage);
 
 export class BatchError extends Error {
   constructor(
@@ -194,7 +202,15 @@ export interface ItemReport {
 interface Evidence {
   sha256: string;
   title?: string;
-  kept: { calibreId: number; uuid: string; tags: string[] };
+  kept: {
+    calibreId: number;
+    uuid: string;
+    tags: string[];
+    /** Stage 3: the kept copy's own file (a different file from the removed one). */
+    sha256?: string;
+    size?: number | null;
+    mtimeMs?: number | null;
+  };
   removed: {
     calibreId: number;
     uuid: string;
@@ -203,6 +219,8 @@ interface Evidence {
     formats: string[];
     lastModified: string | null;
     filePath: string;
+    size?: number | null;
+    mtimeMs?: number | null;
   };
 }
 
@@ -297,11 +315,12 @@ export class BatchService {
     return r ? toBatch(r) : null;
   }
 
-  /** True while a claimed stage-1 batch with a live lease works on this library (the indexer waits). */
+  /** True while a claimed removal batch with a live lease works on this library (the indexer waits). */
   holdsIngest(libraryId: string, now = Date.now()): boolean {
     const r = this.db
       .prepare(
-        `SELECT 1 FROM batches WHERE library_id = ? AND stage = 1 AND state = 'claimed' AND lease_expires_at > ? LIMIT 1`,
+        `SELECT 1 FROM batches WHERE library_id = ? AND stage IN (${REMOVAL_STAGES.join(',')})
+           AND state = 'claimed' AND lease_expires_at > ? LIMIT 1`,
       )
       .get(libraryId, now);
     return r !== undefined;
@@ -325,6 +344,7 @@ export class BatchService {
   checkIngested(now = Date.now()): void {
     this.checkIngestedStage(1, now);
     this.checkIngestedStage(2, now);
+    this.checkIngestedStage(3, now);
   }
 
   private checkIngestedStage(stage: number, now: number): void {
@@ -431,8 +451,29 @@ export class BatchService {
     libraryId: string,
     shouldStop: () => boolean = () => false,
   ): Promise<{ batch: BatchRow | null; reason: string | null }> {
+    return this.planRemovals(1, libraryId, shouldStop);
+  }
+
+  /**
+   * Plans the next stage-3 batch (content duplicates): the same removal path as stage 1. The
+   * check before the batch: both records still in Calibre with their EPUB, the removed copy
+   * unchanged, and both files unchanged since the analysis (size and mtime, else hashed
+   * again), since the pair's measure holds only for those files.
+   */
+  async planStage3(
+    libraryId: string,
+    shouldStop: () => boolean = () => false,
+  ): Promise<{ batch: BatchRow | null; reason: string | null }> {
+    return this.planRemovals(3, libraryId, shouldStop);
+  }
+
+  private async planRemovals(
+    stage: number,
+    libraryId: string,
+    shouldStop: () => boolean,
+  ): Promise<{ batch: BatchRow | null; reason: string | null }> {
     if (this.open()) return { batch: null, reason: 'A batch is being applied' };
-    if (this.awaitingIngest(1)) {
+    if (REMOVAL_STAGES.some((st) => this.awaitingIngest(st))) {
       return {
         batch: null,
         reason: "Waiting for the reader's library index to take in the last batch",
@@ -450,11 +491,11 @@ export class BatchService {
     const candidates = this.db
       .prepare(
         `SELECT id, calibre_id, calibre_uuid, evidence_json FROM proposed_changes
-         WHERE stage = 1 AND library_id = ? AND state = 'proposed' AND class = 'auto'
+         WHERE stage = ? AND library_id = ? AND state = 'proposed' AND class = 'auto'
            AND analysis_id = ?
          ORDER BY id LIMIT ?`,
       )
-      .all(libraryId, currentAnalysisId(this.db), cap) as {
+      .all(stage, libraryId, currentAnalysisId(this.db, stage), cap) as {
       id: number;
       calibre_id: number;
       calibre_uuid: string;
@@ -462,10 +503,10 @@ export class BatchService {
     }[];
     if (candidates.length === 0) return { batch: null, reason: null };
 
-    const verdict = await this.verifyStage1(libraryId, candidates, shouldStop);
+    const verdict = await this.verifyRemovals(stage, libraryId, candidates, shouldStop);
     if (verdict.stopped) return { batch: null, reason: null };
-    const progress = getStage(this.db, 1).precision as { checked?: number; identical?: number };
-    updateStage(this.db, 1, {
+    const progress = getStage(this.db, stage).precision as { checked?: number; identical?: number };
+    updateStage(this.db, stage, {
       precision: {
         checked: (progress.checked ?? 0) + verdict.checked,
         identical: (progress.identical ?? 0) + verdict.identical,
@@ -481,7 +522,7 @@ export class BatchService {
     if (verdict.libraryChanged > 0 && changedShare > settings.libraryChangedPausePercent) {
       pauseStage(
         this.db,
-        1,
+        stage,
         'library_changed',
         `${verdict.libraryChanged} of the next ${candidates.length} copies to remove changed in Calibre since the analysis (${summarizeReasons(verdict.skipped)}). ` +
           'Nothing was removed or skipped. Run the analysis again: removing goes on by itself after it.',
@@ -499,19 +540,25 @@ export class BatchService {
       if (verdict.notIdentical > 0) {
         pauseStage(
           this.db,
-          1,
+          stage,
           'not_identical',
-          `${verdict.notIdentical} copies are no longer identical to the copy they were matched with. ` +
-            'Nothing was removed. Run the analysis again: removing goes on by itself after it.',
+          stage === 1
+            ? `${verdict.notIdentical} copies are no longer identical to the copy they were matched with. ` +
+                'Nothing was removed. Run the analysis again: removing goes on by itself after it.'
+            : `${verdict.notIdentical} pairs' files changed since the analysis, so their text was not measured on these files. ` +
+                'Nothing was removed. Run the analysis again: removing goes on by itself after it.',
         );
-        return { batch: null, reason: 'A copy is no longer identical' };
+        return {
+          batch: null,
+          reason: stage === 1 ? 'A copy is no longer identical' : "A pair's files changed",
+        };
       }
     }
     const ok = candidates.filter((c) => !verdict.changedIds.includes(c.id));
     if (ok.length === 0) return { batch: null, reason: null };
     return {
       batch: this.createBatch(
-        1,
+        stage,
         libraryId,
         'apply',
         null,
@@ -521,8 +568,13 @@ export class BatchService {
     };
   }
 
-  /** The stage-1 gate: each copy and its kept copy are still the same record and the same bytes. */
-  private async verifyStage1(
+  /**
+   * The check before a removal batch: each copy and its kept copy are still the same records
+   * and the same bytes (stage 1: both files are the analysed one; stage 3: each is the file
+   * its pair was measured on).
+   */
+  private async verifyRemovals(
+    stage: number,
     libraryId: string,
     candidates: { id: number; calibre_id: number; calibre_uuid: string; evidence_json: string }[],
     shouldStop: () => boolean,
@@ -565,6 +617,7 @@ export class BatchService {
       calibreId: number,
       filePath: string,
       sha: string,
+      known: { size?: number | null; mtimeMs?: number | null } = {},
     ): Promise<boolean | null> => {
       const f = facts.get(libraryId, calibreId) as
         | { size: number; mtime_ms: number; sha256: string | null }
@@ -573,10 +626,15 @@ export class BatchService {
       const st = await statFile(file);
       if (!st) return null;
       if (f && f.sha256 === sha && f.size === st.size && f.mtime_ms === st.mtimeMs) return true;
+      if (known.size === st.size && known.mtimeMs === Math.round(st.mtimeMs)) return true;
       const h = await hashSourceFile(file, pacer, shouldStop);
       if (!h) return null;
       return h.sha256 === sha;
     };
+    const queued = this.db.prepare(
+      `SELECT 1 FROM proposed_changes WHERE library_id = ? AND calibre_uuid = ?
+         AND state IN ('queued', 'applied') AND field = 'book' LIMIT 1`,
+    );
 
     for (const c of candidates) {
       if (shouldStop()) {
@@ -608,8 +666,18 @@ export class BatchService {
         skipped.push({ id: c.id, reason: 'The copy was changed in Calibre since the analysis' });
         continue;
       }
-      const a = await sameFile(removed.calibreId, removed.filePath, ev.sha256);
-      const b = await sameFile(kept.calibreId, kept.filePath, ev.sha256);
+      if (stage !== 1 && queued.get(libraryId, ev.kept.uuid)) {
+        libraryChanged++;
+        skipped.push({ id: c.id, reason: 'The copy to keep is itself being removed' });
+        continue;
+      }
+      const a = await sameFile(removed.calibreId, removed.filePath, ev.sha256, ev.removed);
+      const b =
+        stage === 1
+          ? await sameFile(kept.calibreId, kept.filePath, ev.sha256)
+          : ev.kept.sha256
+            ? await sameFile(kept.calibreId, kept.filePath, ev.kept.sha256, ev.kept)
+            : false;
       if (a === null || b === null) {
         if (shouldStop()) {
           return {
@@ -629,7 +697,13 @@ export class BatchService {
       if (a && b) identical++;
       else {
         notIdentical++;
-        skipped.push({ id: c.id, reason: 'The files are no longer identical' });
+        skipped.push({
+          id: c.id,
+          reason:
+            stage === 1
+              ? 'The files are no longer identical'
+              : "A copy's file changed since the analysis",
+        });
       }
     }
     return {
@@ -715,7 +789,7 @@ export class BatchService {
       .run(now, now + this.leaseSeconds * 1000, now, batch.id).changes;
     if (changed !== 1) return { batch: null, wait: null };
     const view = this.sidecarView(batch.id);
-    if (view.kind === 'undo' && view.stage === 1)
+    if (view.kind === 'undo' && isRemovalStage(view.stage))
       await this.markCalibreTrash(view, batch.libraryId);
     return { batch: view, wait: null };
   }

@@ -19,6 +19,7 @@ import { openSourceFile, readSourceFile } from '../calibre/source-fs';
 import { ZipError, ZipFile, type ZipEntryInfo } from '../migration/zip-read';
 import {
   type CoverFacts,
+  type EpubLayout,
   type FileCreator,
   type FileFacts,
   asinFromIdentifiers,
@@ -173,6 +174,8 @@ interface Opf {
   metadata: Node;
   manifest: Node[];
   spine: Node[];
+  /** The spine's page-progression-direction ("rtl", "ltr"), if given. */
+  pageDirection: string | null;
 }
 
 async function openOpf(zip: ZipFile): Promise<Opf> {
@@ -197,6 +200,8 @@ async function openOpf(zip: ZipFile): Promise<Opf> {
     metadata: (child(pkg, 'metadata') ?? {}) as Node,
     manifest: asArray(child(child(pkg, 'manifest') as Node, 'item')) as Node[],
     spine: asArray(child(child(pkg, 'spine') as Node, 'itemref')) as Node[],
+    pageDirection:
+      attr(child(pkg, 'spine'), 'page-progression-direction')?.trim().toLowerCase() || null,
   };
 }
 
@@ -301,6 +306,10 @@ async function spineText(opf: Opf, from: 'start' | 'end', chars: number): Promis
 export interface ReadFileMetadataOptions {
   /** Read the spine text for the evidence (default true). */
   text?: boolean;
+  /** Read the declared cover's bytes for its size and hash (default true). */
+  cover?: boolean;
+  /** Stage 3: the writing direction and the image entries (default false). */
+  layout?: boolean;
   /** Gets the number of bytes read from the file (for pacing). */
   counted?: { bytes: number };
 }
@@ -351,7 +360,13 @@ export async function readFileMetadata(
     const item = coverItem(opf, metas);
     const href = item ? attr(item, 'href') : undefined;
     const entry = href ? findEntry(zip, opf.dir, href) : undefined;
-    if (item && entry && entry.size <= MAX_COVER_BYTES && entry.size > 0) {
+    if (
+      options.cover !== false &&
+      item &&
+      entry &&
+      entry.size <= MAX_COVER_BYTES &&
+      entry.size > 0
+    ) {
       try {
         const bytes = await zip.readBytes(entry, MAX_COVER_BYTES);
         const img = await imageFacts(bytes);
@@ -368,6 +383,7 @@ export async function readFileMetadata(
         // A cover that can't be read counts as no cover.
       }
     }
+    if (options.layout) facts.layout = await readLayout(opf, entry?.name ?? null);
     if (options.text !== false) {
       try {
         facts.frontText = await spineText(opf, 'start', FRONT_CHARS);
@@ -380,6 +396,51 @@ export async function readFileMetadata(
   } finally {
     await zip.close();
   }
+}
+
+/** Largest stylesheet read for the writing direction. */
+const MAX_CSS_BYTES = 1024 * 1024;
+
+/** Stage 3: the writing direction (spine and stylesheets) and every image entry. */
+async function readLayout(opf: Opf, coverEntry: string | null): Promise<EpubLayout> {
+  let cssVertical = false;
+  let cssHorizontal = false;
+  for (const item of opf.manifest) {
+    if ((attr(item, 'media-type') ?? '').toLowerCase() !== 'text/css') continue;
+    const href = attr(item, 'href');
+    const entry = href ? findEntry(opf.zip, opf.dir, href) : undefined;
+    if (!entry || entry.size > MAX_CSS_BYTES) continue;
+    try {
+      const css = (await opf.zip.readBytes(entry, MAX_CSS_BYTES)).toString('utf8');
+      if (/writing-modes*:s*(tb-rl|vertical)/i.test(css)) cssVertical = true;
+      if (/writing-modes*:s*(lr-tb|horizontal)/i.test(css)) cssHorizontal = true;
+    } catch {
+      // An unreadable stylesheet says nothing.
+    }
+  }
+  const dir = opf.pageDirection;
+  const vertical =
+    dir === 'rtl' || (cssVertical && dir !== 'ltr')
+      ? true
+      : dir === 'ltr' || (cssHorizontal && !cssVertical)
+        ? false
+        : null;
+  const images: ZipEntryInfo[] = [];
+  const seen = new Set<string>();
+  for (const item of opf.manifest) {
+    if (!(attr(item, 'media-type') ?? '').toLowerCase().startsWith('image/')) continue;
+    const href = attr(item, 'href');
+    const entry = href ? findEntry(opf.zip, opf.dir, href) : undefined;
+    if (!entry || seen.has(entry.name)) continue;
+    seen.add(entry.name);
+    images.push(entry);
+  }
+  return {
+    pageDirection: dir,
+    vertical,
+    images: images.map((e) => ({ entry: e.name, bytes: e.size })),
+    coverEntry,
+  };
 }
 
 /** The cover's bytes, read again for the sidecar; null when the entry is gone or too large. */

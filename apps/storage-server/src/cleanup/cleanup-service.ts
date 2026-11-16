@@ -9,13 +9,16 @@ import type Database from 'better-sqlite3';
 import { existsSync } from 'fs';
 import { snapshotFile } from '../calibre/indexer';
 import { getIndexState, getLibrary, listLibraries } from '../calibre/libraries';
-import { BatchService } from './batches';
+import { COUNTER_BUNDLE, readCounterInfo } from '../counts/counter-bundle';
+import { BatchService, REMOVAL_STAGES } from './batches';
 import { presentBookCount } from './handoff';
 import { SecretStore } from './secrets';
 import { getSettings } from './settings';
 import { Stage1Analysis, type Stage1Progress } from './stage1';
 import { Stage2Analysis, type Stage2Progress } from './stage2';
 import { listFieldPauses, loadGold, resumeField } from './stage2-gate';
+import { Stage3Analysis, type PairRow, type Stage3Progress } from './stage3';
+import { Stage3Worker, type Stage3Reader } from '../counts/book-text-worker';
 import {
   BUILT_STAGES,
   CURRENT_PROPOSALS_SQL,
@@ -26,6 +29,7 @@ import {
   resumeStage,
   setStageMode,
   type StageMode,
+  updateStage,
 } from './stages';
 
 export interface CheckResult {
@@ -102,9 +106,24 @@ export interface CleanupServiceOptions {
   indexerEnabled: () => boolean;
   /** DB_DIR: the default labeled-books file is <DB_DIR>/cleanup/reference-sample/gold800.json. */
   dbDir?: string | null;
+  /** Stage 3: the reader's import settings (the same as its character counts use). */
+  countImport?: unknown;
+  /** Stage 3: a stand-in for the reader processes (tests). */
+  stage3Reader?: Stage3Reader;
+  /** Stage 3: the counter bundle's build id (read from the bundle when not given). */
+  counterBuild?: string;
   leaseSeconds?: number;
   log?: (m: string) => void;
   logError?: (m: string, err?: unknown) => void;
+}
+
+/** The counter bundle's build id (its header), or "unknown" when it can't be read. */
+function counterBuild(): string {
+  try {
+    return readCounterInfo(COUNTER_BUNDLE).build;
+  } catch {
+    return 'unknown';
+  }
 }
 
 function str(v: unknown, max = 500): string | null {
@@ -116,6 +135,11 @@ export class CleanupService {
   readonly batches: BatchService;
   readonly analysis: Stage1Analysis | null;
   readonly analysis2: Stage2Analysis | null;
+  readonly analysis3: Stage3Analysis | null;
+  private reader3: Stage3Reader | null = null;
+  private analysing3: Promise<void> | null = null;
+  /** Why stage 3 is not applying right now. */
+  waiting3: string | null = null;
   private timer: NodeJS.Timeout | null = null;
   private ticking: Promise<void> | null = null;
   private analysing: Promise<void> | null = null;
@@ -159,6 +183,40 @@ export class CleanupService {
           log: this.log,
         })
       : null;
+    this.analysis3 = opts.calibreDir
+      ? new Stage3Analysis({
+          cleanup: opts.cleanup,
+          main: opts.main,
+          calibreDir: opts.calibreDir,
+          cacheDir: opts.cacheDir,
+          dbDir: opts.dbDir ?? null,
+          reader: () => this.stage3Reader(),
+          counterBuild: opts.counterBuild ?? counterBuild(),
+          log: this.log,
+        })
+      : null;
+  }
+
+  /** The reader processes for stage 3 (started on first use; their number follows the settings). */
+  private stage3Reader(): Stage3Reader {
+    if (this.opts.stage3Reader) return this.opts.stage3Reader;
+    const dup = getSettings(this.db).duplicates;
+    if (!this.reader3) {
+      this.reader3 = new Stage3Worker(
+        {
+          bundle: COUNTER_BUNDLE,
+          importOptions: this.opts.countImport ?? {
+            importHTMLFixMode: 'Off',
+            restrictImportFixToAnchor: true,
+          },
+          timeoutMs: () => getSettings(this.db).duplicates.textTimeoutSeconds * 1000,
+          log: this.log,
+        },
+        dup.textWorkers,
+      );
+    }
+    (this.reader3 as Stage3Worker).resize?.(dup.textWorkers);
+    return this.reader3;
   }
 
   get db(): Database.Database {
@@ -179,12 +237,15 @@ export class CleanupService {
     await this.ticking;
     await this.analysing;
     await this.analysing2;
+    this.reader3?.close();
+    await this.analysing3;
+    this.analysis3?.close();
   }
 
-  /** A finished stage-1 batch waits for the reader's index of this library (index it now). */
+  /** A finished removal batch waits for the reader's index of this library (index it now). */
   wantsIngest(libraryId: string): boolean {
     try {
-      return this.batches.awaitingIngest(1)?.libraryId === libraryId;
+      return REMOVAL_STAGES.some((st) => this.batches.awaitingIngest(st)?.libraryId === libraryId);
     } catch {
       return false;
     }
@@ -442,15 +503,28 @@ export class CleanupService {
       if (target && this.analysis2 && (!p || p.libraryId !== target))
         this.analysis2.restart(target);
     }
+    if (stage === 3 && mode !== 'off') {
+      const target = this.targetLibrary();
+      const p = this.analysis3?.progress();
+      if (target && this.analysis3 && (!p || p.libraryId !== target))
+        this.analysis3.restart(target);
+    }
     void this.tick();
   }
 
   /** "Analyse again". */
-  reanalyse(stage = 1): Stage1Progress | Stage2Progress {
+  reanalyse(stage = 1): Stage1Progress | Stage2Progress | Stage3Progress {
     const target = this.targetLibrary();
-    const analysis = stage === 2 ? this.analysis2 : stage === 1 ? this.analysis : null;
+    const analysis =
+      stage === 3
+        ? this.analysis3
+        : stage === 2
+          ? this.analysis2
+          : stage === 1
+            ? this.analysis
+            : null;
     if (!analysis)
-      throw new Error(stage === 1 || stage === 2 ? 'Choose the library first' : 'No such stage');
+      throw new Error(stage >= 1 && stage <= 3 ? 'Choose the library first' : 'No such stage');
     if (!target) throw new Error('Choose the library first');
     const p = analysis.restart(target);
     // These pauses ask for a new analysis; it is running now.
@@ -495,6 +569,146 @@ export class CleanupService {
     const target = this.targetLibrary();
     await this.round1(target);
     await this.round2(target);
+    await this.round3(target);
+  }
+
+  /**
+   * Stage 3: analysis (after stage 1's and 2's), then (On, gate passed) one removal batch at a
+   * time once stages 1 and 2 have nothing left to apply.
+   */
+  private async round3(target: string | null): Promise<void> {
+    const stage = getStage(this.db, 3);
+    if (stage.mode === 'off' || !target || !this.analysis3) {
+      this.waiting3 =
+        stage.mode === 'off'
+          ? null
+          : target
+            ? 'The Calibre folder is not set up'
+            : 'Choose the library';
+      return;
+    }
+    let progress = this.analysis3.progress();
+    if (!progress || progress.libraryId !== target) progress = this.analysis3.restart(target);
+    if (progress.phase !== 'done') {
+      if (!this.snapshotExists(target)) {
+        this.waiting3 = "Waiting for the reader's index of the library";
+        return;
+      }
+      if (this.analysing || this.analysing2) {
+        this.waiting3 = "Waiting for stage 1's or stage 2's analysis to finish";
+        return;
+      }
+      this.waiting3 = 'Analysing';
+      this.runAnalysis3();
+      return;
+    }
+    if (progress.error) {
+      this.waiting3 = `The analysis failed: ${progress.error}`;
+      return;
+    }
+    if (stage.mode !== 'on') {
+      this.waiting3 = 'Preview: nothing is changed in Calibre';
+      return;
+    }
+    if (getStage(this.db, 3).pauseReason) {
+      this.waiting3 = null;
+      return;
+    }
+    if (!progress.gate?.passed) {
+      this.waiting3 = `Not applying: the gate hasn't passed (${(progress.gate?.problems ?? ['not checked']).join('; ')})`;
+      return;
+    }
+    if (this.batches.open()) {
+      this.waiting3 = 'A batch is being applied';
+      return;
+    }
+    if (getStage(this.db, 1).mode === 'on' && this.remaining(target) > 0) {
+      this.waiting3 = 'Waiting for stage 1 to finish removing identical copies';
+      return;
+    }
+    if (getStage(this.db, 2).mode === 'on' && this.remaining2(target) > 0) {
+      this.waiting3 = 'Waiting for stage 2 to finish writing';
+      return;
+    }
+    const checks = this.checksPass();
+    if (!checks.ok) {
+      this.waiting3 = `Waiting for the safety checks: ${checks.failing.join('; ')}`;
+      return;
+    }
+    const { batch, reason } = await this.batches.planStage3(target, () => this.stopped);
+    this.waiting3 = batch
+      ? 'A batch is being applied'
+      : (reason ?? (this.remaining3(target) === 0 ? 'Done: nothing left to remove' : null));
+  }
+
+  private remaining3(target: string): number {
+    return (
+      this.db
+        .prepare(
+          `SELECT COUNT(*) AS n FROM proposed_changes WHERE stage = 3 AND library_id = ?
+           AND state = 'proposed' AND class = 'auto' AND analysis_id = ?`,
+        )
+        .get(target, currentAnalysisId(this.db, 3)) as { n: number }
+    ).n;
+  }
+
+  private runAnalysis3(): void {
+    if (this.analysing3 || !this.analysis3) return;
+    const analysis = this.analysis3;
+    this.analysing3 = (async () => {
+      try {
+        for (;;) {
+          if (this.stopped) break;
+          if (getStage(this.db, 3).mode === 'off') break;
+          const done = await analysis.step(
+            () => this.stopped || getStage(this.db, 3).mode === 'off',
+          );
+          if (done) break;
+        }
+      } catch (err) {
+        this.logError('Cleanup: stage 3 analysis failed:', err);
+      } finally {
+        this.analysing3 = null;
+        void this.tick();
+      }
+    })();
+  }
+
+  /** Your decision on a stage-3 pair (keep both, remove one, or none); the sets are worked out again. */
+  decidePair(pairId: number, decision: 'keep_both' | 'remove_a' | 'remove_b' | 'clear'): void {
+    const target = this.targetLibrary();
+    const p = this.analysis3?.progress();
+    if (!target || !p || !this.analysis3) throw new Error('Stage 3 has no analysis');
+    const pair = this.db
+      .prepare('SELECT * FROM content_pairs WHERE id = ? AND analysis_id = ?')
+      .get(pairId, p.analysisId) as PairRow | undefined;
+    if (!pair) throw new Error('No such pair in the current analysis');
+    if (decision === 'clear') {
+      this.db
+        .prepare(
+          `DELETE FROM pair_decisions WHERE library_id = ?
+             AND ((a_uuid = ? AND b_uuid = ?) OR (a_uuid = ? AND b_uuid = ?))`,
+        )
+        .run(target, pair.a_uuid, pair.b_uuid, pair.b_uuid, pair.a_uuid);
+    } else {
+      this.db
+        .prepare(
+          `INSERT INTO pair_decisions (library_id, a_uuid, b_uuid, decision, decided_at)
+           VALUES (?, ?, ?, ?, ?) ON CONFLICT(library_id, a_uuid, b_uuid)
+           DO UPDATE SET decision = excluded.decision, decided_at = excluded.decided_at`,
+        )
+        .run(target, pair.a_uuid, pair.b_uuid, decision, Date.now());
+    }
+    // Work out the sets again with the decision (fast; the measurements are kept).
+    if (p.phase === 'done' && !p.error) {
+      p.phase = 'group';
+      p.finishedAt = null;
+      updateStage(this.db, 3, {
+        progress: p as unknown as Record<string, unknown>,
+        state: 'analysing',
+      });
+    }
+    void this.tick();
   }
 
   /** Stage 2: analysis, then (On) one batch at a time once stage 1 has nothing left to remove. */
@@ -733,7 +947,17 @@ export class CleanupService {
         )
         .get(target) as { t: number | null };
       if (last.t !== null && state.lastWarningAt >= last.t) {
-        pauseStage(this.db, 1, 'mass_missing', `The reader's index reported: ${state.lastWarning}`);
+        // Every removing stage stops: the index refused a batch's missing copies.
+        for (const st of REMOVAL_STAGES) {
+          if (getStage(this.db, st).mode === 'on' && !getStage(this.db, st).pauseReason) {
+            pauseStage(
+              this.db,
+              st,
+              'mass_missing',
+              `The reader's index reported: ${state.lastWarning}`,
+            );
+          }
+        }
       }
     } catch {
       // No index state yet.
@@ -802,6 +1026,198 @@ export class CleanupService {
     return { removed: row.n, firstAt: row.first };
   }
 
+  /**
+   * Stage 3's pairs for the page, with both books' facts. view: review (waiting for a
+   * decision), a class (duplicate, superset, keep_both, never, different), image_only,
+   * errors, spread (pairs with extra text inside the chapters, most first: the special-edition
+   * measure) or examples (30 random pairs of one class).
+   */
+  stage3Pairs(
+    view: string,
+    { cls, offset = 0, limit = 50 }: { cls?: string; offset?: number; limit?: number } = {},
+  ): { total: number; items: Record<string, unknown>[] } {
+    const target = this.targetLibrary();
+    const p = this.analysis3?.progress();
+    if (!target || !p || !this.analysis3) return { total: 0, items: [] };
+    const where = ['p.analysis_id = ?'];
+    const params: unknown[] = [p.analysisId];
+    let order = 'p.a_id, p.b_id';
+    const classes = ['duplicate', 'superset', 'keep_both', 'never', 'different', 'review'];
+    if (view === 'review') {
+      where.push(
+        `(p.class = 'review' OR (p.class IN ('duplicate', 'superset') AND p.keep_id IS NULL))`,
+      );
+    } else if (view === 'image_only') where.push(`p.source = 'image_only'`);
+    else if (view === 'errors') where.push('p.error IS NOT NULL');
+    else if (view === 'spread') {
+      where.push(
+        `p.spread_json IS NOT NULL AND p.class IN ('duplicate', 'superset', 'review', 'keep_both')`,
+      );
+      where.push(
+        `MAX(COALESCE(json_extract(p.spread_json, '$.a.interleavedShare'), 0),
+             COALESCE(json_extract(p.spread_json, '$.b.interleavedShare'), 0)) > 0`,
+      );
+      order = `MAX(COALESCE(json_extract(p.spread_json, '$.a.interleavedShare'), 0),
+                    COALESCE(json_extract(p.spread_json, '$.b.interleavedShare'), 0)) DESC`;
+    } else if (view === 'examples') {
+      if (!cls || !classes.includes(cls)) throw new Error('Name a class for the examples');
+      where.push('p.class = ?');
+      params.push(cls);
+      order = 'RANDOM()';
+      limit = 30;
+      offset = 0;
+    } else if (classes.includes(view)) {
+      where.push('p.class = ?');
+      params.push(view);
+    } else throw new Error('No such list');
+    const total = (
+      this.db
+        .prepare(`SELECT COUNT(*) AS n FROM content_pairs p WHERE ${where.join(' AND ')}`)
+        .get(...params) as { n: number }
+    ).n;
+    const rows = this.db
+      .prepare(
+        `SELECT p.* FROM content_pairs p WHERE ${where.join(' AND ')} ORDER BY ${order} LIMIT ? OFFSET ?`,
+      )
+      .all(...params, limit, offset) as PairRow[];
+    const books = this.analysis3.loadBooks(target);
+    const fact = this.db.prepare(
+      `SELECT calibre_id, chars, reader_chars, kind, kind_marker, kind_by, ruby, toc_entries, vertical,
+              cover_side, json_array_length(images_json) AS images, image_entries, error, quality_error
+       FROM text_facts WHERE library_id = ? AND calibre_id = ?`,
+    );
+    const decision = this.db.prepare(
+      `SELECT a_uuid, decision FROM pair_decisions WHERE library_id = ?
+         AND ((a_uuid = ? AND b_uuid = ?) OR (a_uuid = ? AND b_uuid = ?))`,
+    );
+    const side = (id: number) => {
+      const b = books.get(id);
+      return {
+        calibreId: id,
+        title: b?.title ?? null,
+        author: b?.firstAuthor ?? null,
+        tags: b?.tags ?? [],
+        formats: b?.formats ?? [],
+        addedAt: b?.timestamp ?? null,
+        ...((fact.get(target, id) as Record<string, unknown> | undefined) ?? {}),
+      };
+    };
+    const items = rows.map((r) => {
+      const d = decision.get(target, r.a_uuid, r.b_uuid, r.b_uuid, r.a_uuid) as
+        | { a_uuid: string; decision: string }
+        | undefined;
+      let mine: string | null = d?.decision ?? null;
+      if (d && d.a_uuid !== r.a_uuid && mine !== 'keep_both')
+        mine = mine === 'remove_a' ? 'remove_b' : 'remove_a';
+      return {
+        id: r.id,
+        source: r.source,
+        class: r.class,
+        rule: r.rule,
+        reason: r.reason,
+        container: r.container,
+        aInB: r.a_in_b,
+        bInA: r.b_in_a,
+        estAInB: r.est_a_in_b,
+        estBInA: r.est_b_in_a,
+        keepId: r.keep_id,
+        error: r.error,
+        spread: r.spread_json ? JSON.parse(r.spread_json) : null,
+        best: r.best_json ? JSON.parse(r.best_json) : null,
+        decision: mine,
+        a: side(r.a_id),
+        b: side(r.b_id),
+      };
+    });
+    return { total, items };
+  }
+
+  /** Stage 3's books of one sort: omnibus files, unreadable files, image-only books. */
+  stage3Books(
+    view: string,
+    { offset = 0, limit = 50 }: { offset?: number; limit?: number } = {},
+  ): { total: number; items: Record<string, unknown>[] } {
+    const target = this.targetLibrary();
+    if (!target || !this.analysis3) return { total: 0, items: [] };
+    const where =
+      view === 'omnibus'
+        ? `kind = 'omnibus'`
+        : view === 'errors'
+          ? 'error IS NOT NULL'
+          : view === 'image_only'
+            ? 'image_only = 1'
+            : null;
+    if (!where) throw new Error('No such list');
+    const books = this.analysis3.loadBooks(target);
+    const rows = (
+      this.db
+        .prepare(
+          `SELECT calibre_id, chars, kind, kind_marker, kind_by, image_entries, error FROM text_facts
+           WHERE library_id = ? AND ${where} ORDER BY calibre_id`,
+        )
+        .all(target) as { calibre_id: number }[]
+    ).filter((r) => books.has(r.calibre_id));
+    return {
+      total: rows.length,
+      items: rows.slice(offset, offset + limit).map((r) => ({
+        ...r,
+        title: books.get(r.calibre_id)?.title ?? null,
+        author: books.get(r.calibre_id)?.firstAuthor ?? null,
+      })),
+    };
+  }
+
+  /** The gate's result per measured pair. */
+  stage3Gate() {
+    return this.analysis3?.progress()?.gate ?? null;
+  }
+
+  /** Stage 3's line on the page (the gate's per-pair results come from their own route). */
+  stage3Status(target: string | null, now = Date.now()) {
+    const p = this.analysis3?.progress() ?? null;
+    const counts: Record<string, number> = {};
+    if (target) {
+      for (const r of this.db
+        .prepare(
+          `SELECT state, COUNT(*) AS n FROM proposed_changes WHERE stage = 3 AND library_id = ?
+           AND ${CURRENT_PROPOSALS_SQL} GROUP BY state`,
+        )
+        .all(target, currentAnalysisId(this.db, 3)) as { state: string; n: number }[]) {
+        counts[r.state] = r.n;
+      }
+    }
+    const pace = this.db
+      .prepare(
+        `SELECT COUNT(*) AS n, MIN(i.updated_at) AS first FROM batch_items i
+         JOIN batches b ON b.id = i.batch_id
+         WHERE b.kind = 'apply' AND b.stage = 3 AND i.state = 'removed' AND i.updated_at >= ?`,
+      )
+      .get(now - PACE_WINDOW_MS) as { n: number; first: number | null };
+    const gate = p?.gate
+      ? {
+          ...p.gate,
+          pairs: p.gate.pairs ? { ...p.gate.pairs, results: undefined } : null,
+        }
+      : null;
+    return {
+      waiting: this.waiting3,
+      progress: p ? { ...p, gate: undefined } : null,
+      gate,
+      counts,
+      skipReasons: target
+        ? (this.db
+            .prepare(
+              `SELECT COALESCE(review_reason, 'No reason recorded') AS reason, COUNT(*) AS count
+               FROM proposed_changes WHERE stage = 3 AND library_id = ? AND state = 'skipped'
+                 AND analysis_id = ? GROUP BY reason ORDER BY count DESC, reason LIMIT 20`,
+            )
+            .all(target, currentAnalysisId(this.db, 3)) as { reason: string; count: number }[])
+        : [],
+      pace: { removed: pace.n, firstAt: pace.first },
+      awaitingIngest: this.batches.awaitingIngest(3),
+    };
+  }
+
   status(now = Date.now()) {
     const target = this.targetLibrary();
     const lib = target ? getLibrary(this.opts.main, target) : null;
@@ -832,6 +1248,7 @@ export class CleanupService {
         openBatch: this.batches.open(),
         awaitingIngest: this.batches.awaitingIngest(1),
       },
+      stage3: this.stage3Status(target, now),
       stage2: {
         waiting: this.waiting2,
         counts: this.stage2Counts(target),

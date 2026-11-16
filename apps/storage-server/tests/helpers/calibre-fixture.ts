@@ -261,6 +261,51 @@ export class LibraryFixture {
     });
   }
 
+  private trashed = new Map<number, Record<string, Record<string, unknown>[]>>();
+
+  /** Like calibre's remove (to its trash): the book's rows go, kept for trashRestore. */
+  trashBook(calibreId: number): void {
+    const rows: Record<string, Record<string, unknown>[]> = {};
+    this.exec((db) => {
+      rows.books = db.prepare('SELECT * FROM books WHERE id = ?').all(calibreId) as Record<
+        string,
+        unknown
+      >[];
+      for (const t of [
+        'books_authors_link',
+        'books_tags_link',
+        'books_series_link',
+        'books_publishers_link',
+        'comments',
+        'data',
+      ]) {
+        rows[t] = db.prepare(`SELECT * FROM ${t} WHERE book = ?`).all(calibreId) as Record<
+          string,
+          unknown
+        >[];
+      }
+    });
+    this.trashed.set(calibreId, rows);
+    this.removeBook(calibreId);
+  }
+
+  /** Like calibredb trash restore: the same id and UUID back. */
+  trashRestore(calibreId: number): void {
+    const rows = this.trashed.get(calibreId);
+    if (!rows) throw new Error(`book ${calibreId} is not in the trash`);
+    this.exec((db) => {
+      for (const [table, list] of Object.entries(rows)) {
+        for (const r of list) {
+          const cols = Object.keys(r);
+          db.prepare(
+            `INSERT INTO ${table} (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`,
+          ).run(...cols.map((c) => r[c]));
+        }
+      }
+    });
+    this.trashed.delete(calibreId);
+  }
+
   setTitle(calibreId: number, title: string): void {
     this.exec((db) =>
       db

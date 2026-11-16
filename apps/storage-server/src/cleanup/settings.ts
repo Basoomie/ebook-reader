@@ -9,6 +9,7 @@
  * Values stored in the earlier per-stage shape are carried over when read (`fromLegacy`).
  */
 import type Database from 'better-sqlite3';
+import { DEFAULT_DUPLICATE_SETTINGS, type DuplicateSettings } from './stage3-rules';
 
 export interface PacingSettings {
   /** How fast an analysis reads book files (MB/s); 0 = no limit. */
@@ -36,6 +37,11 @@ export interface GateSettings {
   minBooks: number;
   /** The labeled books (gold800.json); empty = <DB_DIR>/cleanup/reference-sample/gold800.json. */
   labeledBooksFile: string;
+  /**
+   * Stage 3: the measured duplicate pairs with their expected classes; empty =
+   * <DB_DIR>/cleanup/reference-sample/stage3-pairs.json.
+   */
+  duplicatePairsFile: string;
 }
 
 export interface CoverSettings {
@@ -83,6 +89,8 @@ export interface CleanupSettings {
    */
   failedPausePercent: number;
   covers: CoverSettings;
+  /** Stage 3: content duplicates (thresholds of plan section 5). */
+  duplicates: DuplicateSettings;
   backup: BackupRecord;
 }
 
@@ -122,11 +130,13 @@ export const DEFAULT_SETTINGS: CleanupSettings = {
     marginPoints: 20,
     minBooks: 20,
     labeledBooksFile: '',
+    duplicatePairsFile: '',
   },
   reviewAlarmPercent: 5,
   libraryChangedPausePercent: 5,
   failedPausePercent: 1,
   covers: { maxMb: 10, maxSide: 4096, sameDistance: 5, largerPercent: 10 },
+  duplicates: { ...DEFAULT_DUPLICATE_SETTINGS },
   backup: {
     path: '/mnt/user/data/backups/japanese-library-2026-11-11/',
     verifiedOn: '2026-11-12',
@@ -337,6 +347,7 @@ function validate(key: Key, value: unknown, current: CleanupSettings): unknown {
         marginPoints: num('Better than Calibre by (points)', v.marginPoints, 0, 100),
         minBooks: num('Smallest group checked (books)', v.minBooks, 1, 800, true),
         labeledBooksFile: text('Labeled books file', v.labeledBooksFile, 1000),
+        duplicatePairsFile: text('Measured duplicate pairs file', v.duplicatePairsFile, 1000),
       };
     }
     case 'reviewAlarmPercent':
@@ -353,6 +364,62 @@ function validate(key: Key, value: unknown, current: CleanupSettings): unknown {
         sameDistance: num('Same cover picture up to (hash distance)', v.sameDistance, 0, 32, true),
         largerPercent: num('A cover is larger by (%)', v.largerPercent, 0, 500),
       };
+    }
+    case 'duplicates': {
+      const v = group('Duplicates', value, current.duplicates);
+      const share = (name: string, x: unknown) => num(name, x, 0, 1);
+      const optional = (name: string, x: unknown) => (x === null ? null : share(name, x));
+      const out: DuplicateSettings = {
+        bothWays: share('Same text both ways from', v.bothWays),
+        superset: share('One copy holds the other from', v.superset),
+        reviewFloor: share('Different books below', v.reviewFloor),
+        spreadKeepBoth: optional(
+          'Keep both copies from (extra text inside the chapters)',
+          v.spreadKeepBoth,
+        ),
+        spreadIgnore: optional('Extra text inside the chapters ignored below', v.spreadIgnore),
+        imageOnlyMaxChars: num(
+          'Image-only books: fewer characters than',
+          v.imageOnlyMaxChars,
+          0,
+          100_000,
+          true,
+        ),
+        imageMatchDistance: num(
+          'Same picture up to (hash distance)',
+          v.imageMatchDistance,
+          0,
+          32,
+          true,
+        ),
+        commonWindowBooks: num(
+          'Text shared by more books than this is ignored',
+          v.commonWindowBooks,
+          2,
+          10_000,
+          true,
+        ),
+        textTimeoutSeconds: num(
+          'Time limit to read one book (s)',
+          v.textTimeoutSeconds,
+          10,
+          3600,
+          true,
+        ),
+        textWorkers: num('Books read at the same time', v.textWorkers, 1, 8, true),
+      };
+      if (out.reviewFloor > out.bothWays || out.bothWays > out.superset) {
+        throw new SettingsError(
+          'The limits must go up: different books below ≤ same text both ways ≤ one copy holds the other',
+        );
+      }
+      if ((out.spreadKeepBoth === null) !== (out.spreadIgnore === null)) {
+        throw new SettingsError('Set both limits for extra text inside the chapters, or neither');
+      }
+      if (out.spreadKeepBoth !== null && out.spreadIgnore! > out.spreadKeepBoth) {
+        throw new SettingsError('"Ignored below" must not be above "keep both copies from"');
+      }
+      return out;
     }
     case 'backup': {
       const v = group('Backup', value, current.backup);

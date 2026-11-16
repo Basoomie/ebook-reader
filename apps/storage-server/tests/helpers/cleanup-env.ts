@@ -9,7 +9,7 @@ import { CalibreIndexer } from '../../src/calibre/indexer';
 import { listLibraries, updateLibrary } from '../../src/calibre/libraries';
 import { createApplyToken } from '../../src/cleanup/apply-tokens';
 import { initCleanupDatabase } from '../../src/cleanup/cleanup-db';
-import { CleanupService } from '../../src/cleanup/cleanup-service';
+import { CleanupService, type CleanupServiceOptions } from '../../src/cleanup/cleanup-service';
 import type { CleanupOptions } from '../../src/cleanup/routes';
 import { initDatabase } from '../../src/db/database';
 import { createToken } from '../../src/db/tokens';
@@ -18,6 +18,7 @@ import { CalibreRoot, type LibraryFixture } from './calibre-fixture';
 import { testCalibreConfig, testConfig } from './test-app';
 
 export interface CleanupEnv {
+  dbDir: string;
   root: CalibreRoot;
   lib: LibraryFixture;
   db: Database.Database;
@@ -39,7 +40,10 @@ export interface CleanupEnv {
 
 let rev = 1000;
 
-export async function makeCleanupEnv({ leaseSeconds }: { leaseSeconds?: number } = {}): Promise<{
+export async function makeCleanupEnv({
+  leaseSeconds,
+  service: serviceOptions = {},
+}: { leaseSeconds?: number; service?: Partial<CleanupServiceOptions> } = {}): Promise<{
   env: CleanupEnv;
   setup: () => Promise<void>;
 }> {
@@ -76,6 +80,7 @@ export async function makeCleanupEnv({ leaseSeconds }: { leaseSeconds?: number }
     leaseSeconds,
     log,
     logError,
+    ...serviceOptions,
   });
   const cleanup: CleanupOptions = { service };
   const app = createApp({
@@ -91,6 +96,7 @@ export async function makeCleanupEnv({ leaseSeconds }: { leaseSeconds?: number }
     return l.id;
   };
   const env: CleanupEnv = {
+    dbDir: config.dbDir,
     root,
     lib,
     db,
