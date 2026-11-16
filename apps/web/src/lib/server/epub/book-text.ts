@@ -54,6 +54,15 @@ export function bookTextFromHtml(
 
   container.innerHTML = elementHtml;
 
+  return bookTextFromElement(container, sections);
+}
+
+/**
+ * The counted text of the import's own element (`generateEpubHtml`'s `element`, whose
+ * children are the sections), read without serializing it to `elementHtml` and parsing that
+ * again: the same nodes in the same order, read once (stage 3 reads every book of the library).
+ */
+export function bookTextFromElement(container: Element, sections: Section[]): BookText {
   const sectionOf = new Map(sections.map((s) => [s.reference, s]));
   const parts: string[] = [];
   const chapters: { start: number; label: string }[] = [];

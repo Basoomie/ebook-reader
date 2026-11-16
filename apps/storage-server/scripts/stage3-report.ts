@@ -54,6 +54,7 @@ export function stage3Report(file: string) {
       textRead: number;
       textDone: number;
       textReadMs: number;
+      textPrepMs?: number;
       gate: Record<string, unknown> | null;
     };
     const pairs = db
@@ -184,6 +185,7 @@ export function stage3Report(file: string) {
         totalMs,
         secondsPerBookWall: p.textRead ? (phaseMs.text ?? 0) / 1000 / p.textRead : null,
         secondsPerBookRead: p.textRead ? p.textReadMs / 1000 / p.textRead : null,
+        secondsPerBookServer: p.textRead ? (p.textPrepMs ?? 0) / 1000 / p.textRead : null,
       },
       gate: p.gate,
     };
@@ -214,7 +216,7 @@ if (require.main === module) {
       .join(', ')}`,
   );
   console.log(
-    `Time: ${(r.timing.totalMs / 3_600_000).toFixed(2)} h in all; ${r.timing.secondsPerBookWall?.toFixed(3)} s per book (wall), ${r.timing.secondsPerBookRead?.toFixed(3)} s per book in one reader process`,
+    `Time: ${(r.timing.totalMs / 3_600_000).toFixed(2)} h in all; ${r.timing.secondsPerBookWall?.toFixed(3)} s per book (wall), ${r.timing.secondsPerBookRead?.toFixed(3)} s per book in one reader process, ${r.timing.secondsPerBookServer?.toFixed(3)} s per book in the server before it`,
   );
   for (const [k, ms] of Object.entries(r.timing.phaseMs)) {
     const n = r.timing.phaseItems[k] ?? 0;

@@ -74,6 +74,8 @@ export interface Stage3Progress {
   /** Books actually read (not kept from an earlier analysis) and their summed read time. */
   textRead: number;
   textReadMs: number;
+  /** Server time before books went to a reader process (file facts, metadata), summed. */
+  textPrepMs?: number;
   textErrors: number;
   imageOnly: number;
   /** Books whose file the reader counted too, and how many lengths differ. */
@@ -201,6 +203,7 @@ export function emptyStage3Progress(libraryId: string, now = Date.now()): Stage3
     textDone: 0,
     textRead: 0,
     textReadMs: 0,
+    textPrepMs: 0,
     textErrors: 0,
     imageOnly: 0,
     readerCompared: 0,
@@ -285,6 +288,131 @@ export function looseTitle(t: string): string {
     .replace(/【[^】]*】|\[[^\]]*\]|\([^)]*\)|（[^）]*）/g, '')
     .replace(/[\s・:：~～\-‐ー]/g, '')
     .toLowerCase();
+}
+
+/** One book's result in the text phase. */
+type TextOut = {
+  row: Record<string, unknown>;
+  sketch?: Buffer;
+  /** The reader process's own time for the book (ms). */
+  readMs?: number;
+  /** Time in the server before the book went to a reader process (file facts, metadata). */
+  prepMs?: number;
+  reused: boolean;
+};
+
+/** A text step returns after this long; the books being read go on. */
+const TEXT_STEP_MS = 20_000;
+/** Read books are saved at least this often, or once this many are ready in cursor order. */
+const TEXT_COMMIT_MS = 2_000;
+const TEXT_COMMIT_BOOKS = 32;
+
+/**
+ * Keeps `limit` books in flight: the next book starts as soon as one finishes. Results come
+ * out in the order of `ids` (the cursor order), so the books saved are always a prefix. A
+ * book whose run answers null (stopped) stops the pipeline there; one that throws makes take()
+ * throw (the analysis fails, as a failed group did before).
+ */
+export class TextPipe<T> {
+  stopped = false;
+  inFlight = 0;
+  limit = 1;
+  run: (id: number) => Promise<T | null> = () => Promise.resolve(null);
+  private launched = 0;
+  private taken = 0;
+  private readonly results = new Map<number, { value: T | null } | { error: unknown }>();
+  private wake: (() => void) | null = null;
+  private pacer: Pacer | null = null;
+  private rate = -1;
+
+  constructor(
+    readonly analysisId: string,
+    readonly total: number,
+    private readonly ids: number[],
+  ) {}
+
+  setPace(bytesPerSecond: number): void {
+    if (bytesPerSecond === this.rate) return;
+    this.rate = bytesPerSecond;
+    this.pacer = new Pacer(bytesPerSecond);
+  }
+
+  pace(bytes: number): Promise<void> {
+    return this.pacer ? this.pacer.take(bytes) : Promise.resolve();
+  }
+
+  fill(): void {
+    while (!this.stopped && this.inFlight < this.limit && this.launched < this.ids.length) {
+      const id = this.ids[this.launched++];
+      this.inFlight++;
+      this.run(id).then(
+        (value) => this.settle(id, { value }),
+        (error: unknown) => this.settle(id, { error }),
+      );
+    }
+  }
+
+  private settle(id: number, r: { value: T | null } | { error: unknown }): void {
+    this.results.set(id, r);
+    this.inFlight--;
+    const w = this.wake;
+    this.wake = null;
+    w?.();
+  }
+
+  /** Books finished in cursor order and not yet taken. */
+  ready(): number {
+    let n = 0;
+    for (let i = this.taken; i < this.launched; i++) {
+      const r = this.results.get(this.ids[i]);
+      if (!r || ('value' in r && r.value === null)) break;
+      n++;
+    }
+    return n;
+  }
+
+  take(): T[] {
+    const out: T[] = [];
+    while (this.taken < this.launched) {
+      const id = this.ids[this.taken];
+      const r = this.results.get(id);
+      if (!r) break;
+      if ('error' in r) throw r.error;
+      if (r.value === null) {
+        this.stopped = true;
+        break;
+      }
+      this.results.delete(id);
+      out.push(r.value);
+      this.taken++;
+    }
+    return out;
+  }
+
+  launchedAll(): boolean {
+    return this.launched === this.ids.length;
+  }
+
+  finished(): boolean {
+    return this.taken === this.ids.length;
+  }
+
+  /** Waits for a book to finish, or `ms` at most. */
+  wait(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+      const t = setTimeout(
+        () => {
+          this.wake = null;
+          resolve();
+        },
+        Math.max(0, ms),
+      );
+      this.wake = () => {
+        clearTimeout(t);
+        resolve();
+      };
+    });
+  }
 }
 
 export class Stage3Analysis {
@@ -399,22 +527,62 @@ export class Stage3Analysis {
     }
   }
 
+  /**
+   * The text phase. Books go to the reader processes one at a time as each process becomes free
+   * (a pipeline kept across steps), not in groups that wait for their slowest book; results are
+   * saved in cursor order, the cursor in the same transaction as the rows, so a restart resumes
+   * exactly where the saved rows end. A step returns after TEXT_STEP_MS without waiting for the
+   * books still being read.
+   */
   private async textStep(p: Stage3Progress, shouldStop: () => boolean): Promise<Stage3Progress> {
+    const settings = getSettings(this.deps.cleanup);
+    let pipe = this.textPipe;
+    if (!pipe || pipe.analysisId !== p.analysisId || pipe.stopped) {
+      pipe = this.textPipe = this.openTextPipe(p);
+    }
+    p.textTotal = pipe.total;
+    pipe.limit = Math.max(1, settings.duplicates.textWorkers) * 2;
+    pipe.setPace(settings.pacing.readMbPerSecond * 1024 * 1024);
+    const deadline = Date.now() + TEXT_STEP_MS;
+    let lastCommit = Date.now();
+    for (;;) {
+      if (shouldStop()) pipe.stopped = true;
+      pipe.fill();
+      const ready = pipe.ready();
+      if (
+        ready > 0 &&
+        (ready >= TEXT_COMMIT_BOOKS ||
+          Date.now() - lastCommit >= TEXT_COMMIT_MS ||
+          Date.now() >= deadline ||
+          pipe.stopped ||
+          pipe.launchedAll())
+      ) {
+        this.commitText(p, pipe.take());
+        lastCommit = Date.now();
+      }
+      if (pipe.finished()) {
+        this.textPipe = null;
+        p.phase = 'candidates';
+        return p;
+      }
+      if (pipe.stopped && pipe.inFlight === 0) {
+        this.textPipe = null;
+        return p;
+      }
+      if (Date.now() >= deadline) return p;
+      await pipe.wait(Math.min(deadline, lastCommit + TEXT_COMMIT_MS) - Date.now());
+    }
+  }
+
+  private textPipe: TextPipe<TextOut> | null = null;
+
+  /** A pipeline over the books after the saved cursor (stage 3's text phase). */
+  private openTextPipe(p: Stage3Progress): TextPipe<TextOut> {
     const books = this.loadBooks(p.libraryId);
     const libDir = this.libraryDir(p.libraryId);
-    const settings = getSettings(this.deps.cleanup);
-    const dup = settings.duplicates;
-    const pacer = new Pacer(settings.pacing.readMbPerSecond * 1024 * 1024);
-    p.textTotal = books.size;
-    const chunk = Math.max(8, dup.textWorkers * 4);
-    const ids = [...books.keys()]
-      .filter((id) => id > p.textCursor)
-      .sort((a, b) => a - b)
-      .slice(0, chunk);
-    if (ids.length === 0) {
-      p.phase = 'candidates';
-      return p;
-    }
+    const dup = getSettings(this.deps.cleanup).duplicates;
+    const ids = [...books.keys()].filter((id) => id > p.textCursor).sort((a, b) => a - b);
+    const pipe = new TextPipe<TextOut>(p.analysisId, books.size, ids);
     const facts = this.deps.cleanup.prepare(
       'SELECT * FROM text_facts WHERE library_id = ? AND calibre_id = ?',
     );
@@ -438,9 +606,9 @@ export class Stage3Analysis {
         return null;
       }
     };
-    type Out = { row: Record<string, unknown>; sketch?: Buffer; readMs?: number; reused: boolean };
+    type Out = TextOut;
     const readOne = async (book: Stage3Book): Promise<Out | null> => {
-      if (shouldStop()) return null;
+      if (pipe.stopped) return null;
       const file = resolveInside(libDir, book.filePath);
       const now = Date.now();
       const base = {
@@ -514,13 +682,16 @@ export class Stage3Analysis {
         // The reader's import decides whether the file can be read at all.
       }
       const started = Date.now();
+      const prepMs = started - now;
       const out = await this.deps.reader().text(file);
-      const readMs = Date.now() - started;
+      // The reader process's own time for the book (not the time it waited for a free process).
+      const readMs = out.ok ? out.data.durationMs : Date.now() - started;
       if (!out.ok) {
         if (out.stopped) return null;
         return {
           reused: false,
           readMs,
+          prepMs,
           row: {
             ...base,
             size: st.size,
@@ -531,7 +702,7 @@ export class Stage3Analysis {
           },
         };
       }
-      await pacer.take(out.data.bytesRead + counted.bytes);
+      await pipe.pace(out.data.bytesRead + counted.bytes);
       const kind = kindOf(fileTitle);
       const imageOnly =
         out.data.characters < dup.imageOnlyMaxChars && (imageEntries ?? 0) > 0 ? 1 : 0;
@@ -539,6 +710,7 @@ export class Stage3Analysis {
       return {
         reused: false,
         readMs,
+        prepMs,
         sketch: sketchToBlob(sketch),
         row: {
           ...base,
@@ -564,15 +736,15 @@ export class Stage3Analysis {
       };
     };
 
-    const results = await Promise.all(ids.map((id) => readOne(books.get(id)!)));
-    // Stopped part-way: keep only the books before the first one not done (cursor order).
-    const done: Out[] = [];
-    for (const r of results) {
-      if (!r) break;
-      done.push(r);
-    }
-    if (done.length === 0) return p;
+    pipe.run = (id) => readOne(books.get(id)!);
+    pipe.setPace(getSettings(this.deps.cleanup).pacing.readMbPerSecond * 1024 * 1024);
+    pipe.limit = Math.max(1, dup.textWorkers) * 2;
+    return pipe;
+  }
 
+  /** Saves read books (in cursor order) with the cursor and the progress, in one transaction. */
+  private commitText(p: Stage3Progress, done: TextOut[]): void {
+    if (done.length === 0) return;
     const cache = this.cache();
     const putSketch = cache.prepare(
       `INSERT INTO sketches (library_id, calibre_id, size, mtime_ms, build, samples)
@@ -647,14 +819,13 @@ export class Stage3Analysis {
         if (!d.reused) {
           p.textRead++;
           p.textReadMs += d.readMs ?? 0;
+          p.textPrepMs = (p.textPrepMs ?? 0) + (d.prepMs ?? 0);
         }
         if (r.error) p.textErrors++;
         p.textCursor = r.id as number;
       }
       this.save(p, 'analysing');
     })();
-    await yieldNow();
-    return p;
   }
 
   // ---- candidates ----
