@@ -19,6 +19,13 @@
  * Kinds: 'sync_subtitles' here; WP17's 'generate_audiobook', 'preview_audiobook' and
  * 'voice_sample' (tts-jobs.ts) share the queue, the lease, the pause switch and Stop: they
  * register a handler (registerKind) that prepares what the worker gets when it claims one.
+ *
+ * Season 2 Phase 12 (decided with the user, 2026-11-15): 'sentence_audio' (Enrich's sentence
+ * clips read on the PC, sentence-audio.ts) goes before every other waiting job, and a running
+ * audiobook makes way for it after its current chapter (the pause path: the PC stops after
+ * the chapter and the job goes back to the queue, then continues after the clips). Only
+ * when the PC's last claim asked for 'sentence_audio': an older PC program would otherwise
+ * stop the audiobook again and again for clips it can't read.
  */
 import type Database from 'better-sqlite3';
 import { getLibrary } from '../calibre/libraries';
@@ -36,7 +43,8 @@ export type WorkerJobKind =
   | 'sync_subtitles'
   | 'generate_audiobook'
   | 'preview_audiobook'
-  | 'voice_sample';
+  | 'voice_sample'
+  | 'sentence_audio';
 export type WorkerJobState = 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
 export type WorkerJobStage =
   | 'downloading'
@@ -46,6 +54,14 @@ export type WorkerJobStage =
   | 'preparing'
   | 'generating'
   | 'assembling';
+
+const ALL_KINDS: WorkerJobKind[] = [
+  'sync_subtitles',
+  'generate_audiobook',
+  'preview_audiobook',
+  'voice_sample',
+  'sentence_audio',
+];
 
 export const WORKER_STAGES: WorkerJobStage[] = [
   'downloading',
@@ -363,6 +379,36 @@ export class SubtitleJobService {
     return this.statusRow().paused === 1;
   }
 
+  /** The kinds the PC asked for in its last claim (null: it never claimed yet). */
+  claimedKinds(): WorkerJobKind[] | null {
+    const row = this.db.prepare('SELECT kinds FROM worker_status WHERE id = 1').get() as
+      | { kinds: string | null }
+      | undefined;
+    if (!row?.kinds) return null;
+    try {
+      const v = JSON.parse(row.kinds) as unknown;
+      return Array.isArray(v) ? (v.filter((k) => typeof k === 'string') as WorkerJobKind[]) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Whether the PC can read sentence audio (null: not known, it never claimed yet). */
+  readsSentenceAudio(): boolean | null {
+    const kinds = this.claimedKinds();
+    return kinds === null ? null : kinds.includes('sentence_audio');
+  }
+
+  /** Sentence audio waits and the PC can read it: a running audiobook makes way. */
+  private clipsWaiting(): boolean {
+    if (this.readsSentenceAudio() !== true) return false;
+    return !!this.db
+      .prepare(
+        "SELECT 1 FROM worker_jobs WHERE kind = 'sentence_audio' AND state = 'queued' LIMIT 1",
+      )
+      .get();
+  }
+
   status(userId: string): WorkerStatus {
     this.expireLeases();
     const s = this.statusRow();
@@ -639,14 +685,22 @@ export class SubtitleJobService {
    * (its programs); omitted = every kind.
    */
   claim(kinds?: WorkerJobKind[]): ClaimedJob | null {
-    this.db.prepare('UPDATE worker_status SET last_seen_at = ? WHERE id = 1').run(this.now());
+    const now = this.now();
+    this.db
+      .prepare(
+        `INSERT INTO worker_status (id, paused, last_seen_at, kinds, updated_at) VALUES (1, 0, ?, ?, ?)
+         ON CONFLICT (id) DO UPDATE SET last_seen_at = excluded.last_seen_at, kinds = excluded.kinds`,
+      )
+      .run(now, JSON.stringify(kinds ?? ALL_KINDS), now);
     this.expireLeases();
     if (this.isPaused()) return null;
     return this.db.transaction((): ClaimedJob | null => {
       const running = this.db.prepare("SELECT 1 FROM worker_jobs WHERE state = 'running'").get();
       if (running) return null;
       const rows = this.db
-        .prepare(`${JOB_SELECT} WHERE j.state = 'queued' ORDER BY j.id`)
+        .prepare(
+          `${JOB_SELECT} WHERE j.state = 'queued' ORDER BY (j.kind = 'sentence_audio') DESC, j.id`,
+        )
         .all() as JobRow[];
       for (const row of rows) {
         if (kinds && !kinds.includes(row.kind)) continue;
@@ -790,7 +844,10 @@ export class SubtitleJobService {
       lease_expires_at: this.now() + this.config.leaseSeconds * 1000,
     });
     this.db.prepare('UPDATE worker_status SET last_seen_at = ? WHERE id = 1').run(this.now());
-    return { cancel: job.cancelRequested, pause: this.isPaused() };
+    return {
+      cancel: job.cancelRequested,
+      pause: this.isPaused() || (job.kind === 'generate_audiobook' && this.clipsWaiting()),
+    };
   }
 
   /** WP17: the worker paused between chapters: back to the queue, no attempt used. */
@@ -799,14 +856,19 @@ export class SubtitleJobService {
     if (!job) throw new JobRequestError(404, 'not_found', 'No such job');
     if (job.state !== 'running' || this.saving.has(id)) return job;
     if (job.cancelRequested) return this.fail(id, {});
+    const paused = this.isPaused();
     this.update(id, {
       state: 'queued',
       stage: null,
-      message: 'Paused; it continues when the PC is resumed.',
+      message: paused
+        ? 'Paused; it continues when the PC is resumed.'
+        : 'Paused for sentence audio for Anki; it continues next.',
       attempts: Math.max(0, job.attempts - 1),
       lease_expires_at: null,
     });
-    this.log(`GPU worker: job ${id} paused between chapters`);
+    this.log(
+      `GPU worker: job ${id} ${paused ? 'paused' : 'made way for sentence audio'} between chapters`,
+    );
     return this.get(id)!;
   }
 

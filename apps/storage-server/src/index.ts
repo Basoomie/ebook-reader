@@ -19,6 +19,8 @@ import { AudioScanService } from './audio/scan-service';
 import { SubtitleJobService } from './audio/subtitle-jobs';
 import { TtsJobService } from './audio/tts-jobs';
 import { TtsModelService } from './audio/tts-models';
+import { SentenceAudioService } from './audio/sentence-audio';
+import { VoiceChoiceService } from './audio/tts-voice-choice';
 import { FixRunner } from './pronunciation/fix-runner';
 import { FixService } from './pronunciation/fix-service';
 import { countImportOptions } from './counts/counter-bundle';
@@ -226,6 +228,8 @@ let tts: TtsJobService | null = null;
 let ttsModels: TtsModelService | null = null;
 let voices: VoiceService | null = null;
 let fixes: FixService | null = null;
+let sentenceAudio: SentenceAudioService | null = null;
+let voiceChoices: VoiceChoiceService | null = null;
 if (database.ok && config.audio.dir) {
   audio = new AudioScanService({
     db: database.db,
@@ -308,6 +312,17 @@ if (database.ok && config.audio.dir) {
       console.error(`Error: generated audiobooks are off: ${(err as Error).message}`);
     }
   }
+  // Season 2 Phase 12: Enrich's sentence audio read by the PC, and the PC voice choices.
+  voiceChoices = new VoiceChoiceService(database.db, voices, ttsModels);
+  if (tts) {
+    sentenceAudio = new SentenceAudioService({
+      db: database.db,
+      jobs,
+      tts,
+      choices: voiceChoices,
+      bitrate: config.audio.clip.bitrate,
+    });
+  }
   const ttsService = tts;
   const voiceService = voices;
   void voiceService
@@ -346,6 +361,8 @@ const app = createApp({
     models: tts ? ttsModels : null,
     voices,
     fixes: tts ? fixes : null,
+    sentenceAudio,
+    voiceChoices: tts ? voiceChoices : null,
     copyHint: {
       minMinutes: config.audio.copyHintMinMinutes,
       percent: config.audio.copyHintPercent,

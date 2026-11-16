@@ -36,6 +36,7 @@ import {
 } from '../audio/worker-routes';
 import { createTtsRouter, createTtsWorkerRouter, TTS_RAW_PATHS } from '../audio/tts-routes';
 import { createPronunciationRouter } from '../pronunciation/fix-routes';
+import { createSentenceAudioRouter } from '../audio/sentence-audio-routes';
 import { createAttachmentRouter, type AttachmentOptions } from '../attachments/routes';
 import {
   type CleanupOptions,
@@ -213,6 +214,7 @@ export function createApiRouter({
     router.use(createSubtitleJobRouter(db, audio));
     router.use(createTtsRouter(db, audio));
     router.use(createPronunciationRouter(db, audio));
+    router.use(createSentenceAudioRouter(db, audio));
     router.use(createAudioClipRouter(db, audio));
     // The /cleanup page (WP20a).
     router.use(createCleanupRouter(cleanup));

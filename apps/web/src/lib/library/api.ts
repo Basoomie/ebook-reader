@@ -34,7 +34,12 @@ import type {
   AudiobookJob,
   AudiobookRequest,
   BookChapters,
+  BookVoiceChoices,
+  SentenceClip,
+  SentencePc,
   TtsModel,
+  TtsPauses,
+  VoiceChoice,
   VoiceList,
   VoicePreset
 } from '$lib/audio/tts-types';
@@ -1010,6 +1015,91 @@ export class LibraryApi {
   async setDefaultTtsModel(id: number, options?: RequestOptions): Promise<TtsModel[]> {
     const response = await this.sendJson('PUT', `/tts/models/${id}/default`, {}, options);
     return ((await response.json()) as { models: TtsModel[] }).models;
+  }
+
+  // ---- Season 2 Phase 12: Enrich's sentence audio read by the PC, and the PC voice
+
+  /** The PC voice for every book (Settings > Anki); null = sentence audio from the PC is off. */
+  async voiceChoice(options?: RequestOptions): Promise<VoiceChoice | null> {
+    return (
+      (await (await this.get('/tts/voice-choice', options)).json()) as {
+        choice: VoiceChoice | null;
+      }
+    ).choice;
+  }
+
+  async setVoiceChoice(
+    choice: { voiceId: string; modelId: number } | null,
+    options?: RequestOptions
+  ): Promise<VoiceChoice | null> {
+    if (!choice) {
+      await this.sendJson('DELETE', '/tts/voice-choice', undefined, options);
+      return null;
+    }
+    const response = await this.sendJson('PUT', '/tts/voice-choice', choice, options);
+    return ((await response.json()) as { choice: VoiceChoice | null }).choice;
+  }
+
+  /** The book's own PC voice, the one for every book, and which one is used. */
+  async bookVoiceChoice(bookId: string, options?: RequestOptions): Promise<BookVoiceChoices> {
+    return (
+      await this.get(`/books/${encodeURIComponent(bookId)}/tts-voice-choice`, options)
+    ).json();
+  }
+
+  /** Sets the book's own PC voice, or (null) uses the one for every book again. */
+  async setBookVoiceChoice(
+    bookId: string,
+    choice: { voiceId: string; modelId: number } | null,
+    options?: RequestOptions
+  ): Promise<BookVoiceChoices> {
+    const path = `/books/${encodeURIComponent(bookId)}/tts-voice-choice`;
+    const response = choice
+      ? await this.sendJson('PUT', path, choice, options)
+      : await this.sendJson('DELETE', path, undefined, options);
+    return response.json();
+  }
+
+  /** Asks the PC to read an Enrich sentence for a book without an audiobook. */
+  async queueSentenceAudio(
+    bookId: string,
+    body: { text: string; position: number; pauses: TtsPauses },
+    options: RequestOptions = {}
+  ): Promise<SentenceClip> {
+    const response = await this.post(
+      `/books/${encodeURIComponent(bookId)}/sentence-audio`,
+      body,
+      // The server reads the book's text first (a large book takes a few seconds).
+      { timeoutSeconds: this.timeoutSeconds && Math.max(this.timeoutSeconds, 120), ...options }
+    );
+    return ((await response.json()) as { clip: SentenceClip }).clip;
+  }
+
+  async sentenceAudioStatus(
+    clipId: string,
+    options?: RequestOptions
+  ): Promise<{ clip: SentenceClip; pc: SentencePc }> {
+    return (await this.get(`/sentence-audio/${encodeURIComponent(clipId)}`, options)).json();
+  }
+
+  /** The finished clip (MP3). */
+  async sentenceAudioFile(clipId: string, options: RequestOptions = {}): Promise<ArrayBuffer> {
+    return (
+      await this.get(`/sentence-audio/${encodeURIComponent(clipId)}/audio`, {
+        timeoutSeconds: 0,
+        ...options
+      })
+    ).arrayBuffer();
+  }
+
+  /** The device has the clip (or doesn't want it any more): the server lets it go. */
+  async dropSentenceAudio(clipId: string, options?: RequestOptions): Promise<void> {
+    await this.sendJson(
+      'DELETE',
+      `/sentence-audio/${encodeURIComponent(clipId)}`,
+      undefined,
+      options
+    );
   }
 
   // ---- Season 2 Phase 12: pronunciation fixes for the PC voices

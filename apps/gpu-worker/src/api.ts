@@ -11,7 +11,8 @@ export type JobKind =
   | 'sync_subtitles'
   | 'generate_audiobook'
   | 'preview_audiobook'
-  | 'voice_sample';
+  | 'voice_sample'
+  | 'sentence_audio';
 
 /** WP17: what a TTS job needs (the server's TtsClaim). */
 export interface TtsClaim {

@@ -8,9 +8,22 @@ import { browser } from '$app/environment';
 import { LibraryApi, LibraryApiError } from '$lib/library/api';
 import { getLibraryStore } from '$lib/library/library-db';
 import { libraryRequestTimeoutSeconds$ } from '$lib/library/settings';
+import { currentPauses } from '$lib/audio/tts-settings';
 import { AnkiConnect } from '../anki-connect';
-import { ankiConnectKey$, ankiConnectTimeoutSeconds$, ankiConnectUrl$ } from '../settings';
-import { newPendingId, type PendingClip } from './pending-clip';
+import {
+  ankiAudioMaxSeconds$,
+  ankiConnectKey$,
+  ankiConnectTimeoutSeconds$,
+  ankiConnectUrl$
+} from '../settings';
+import { pcVoiceChosen, resolvePcClip } from './pc-source';
+import {
+  newPendingId,
+  type ClipSource,
+  type LibraryClipSource,
+  type PcClipSource,
+  type PendingClip
+} from './pending-clip';
 import { getPendingStore } from './pending-db';
 import { RetryLater, runPendingOnce, type MadeClip, type RunReport } from './pending-runner';
 
@@ -21,11 +34,15 @@ import { RetryLater, runPendingOnce, type MadeClip, type RunReport } from './pen
  * on the browser's `online` and coming-to-the-front events (also when sync is off), after
  * each Enrich tap and on "Try now". Loaded separately from the rest of the app; every
  * failure is caught (reading is never touched).
+ *
+ * Season 2 Phase 12: a clip the PC reads (a book without an audiobook) is asked for and
+ * checked on at the same moments (pc-source.ts); no timer of its own either.
  */
 
 const SERVER_UNREACHABLE = "the library server can't be reached";
 const NOT_CONNECTED = 'this device is not connected to a library server';
 const SUBTITLES_GONE = "the book's subtitles are no longer on this device";
+const WAITING_FOR_SERVER = 'Waiting for the library server';
 
 const tabId = newPendingId(Date.now());
 
@@ -47,20 +64,25 @@ async function libraryApi(): Promise<LibraryApi | null> {
 function serverProblem(error: unknown): RetryLater | { skip: string } {
   if (error instanceof LibraryApiError) {
     if (error.kind === 'unreachable' || error.kind === 'timeout' || error.kind === 'aborted') {
-      return new RetryLater(SERVER_UNREACHABLE, true);
+      return new RetryLater(SERVER_UNREACHABLE, true, WAITING_FOR_SERVER);
     }
 
     if (error.kind === 'unauthorized') {
       return new RetryLater(
         'the library server refused this device (Settings > Data: connect again)',
-        true
+        true,
+        WAITING_FOR_SERVER
       );
     }
 
     const status = error.status ?? 0;
 
     if (status === 429 || status >= 500) {
-      return new RetryLater(`the library server is busy (${error.message})`);
+      return new RetryLater(
+        `the library server is busy (${error.message})`,
+        false,
+        WAITING_FOR_SERVER
+      );
     }
 
     return { skip: error.message };
@@ -79,41 +101,109 @@ async function onThisDevice(localId: number): Promise<boolean> {
 }
 
 /** The library source: the same lines and cut as an Enrich tap (library-clip.ts). */
-async function resolveClip(clip: PendingClip): Promise<MadeClip> {
-  if (!browserOnline()) throw new RetryLater(SERVER_UNREACHABLE, true);
-
-  const api = await libraryApi();
-  if (!api) throw new RetryLater(NOT_CONNECTED, true);
-
+async function resolveLibraryClip(
+  api: LibraryApi,
+  clip: PendingClip,
+  source: LibraryClipSource
+): Promise<MadeClip> {
   const [{ planLibraryClip, cutLibraryClip }, { isOpenInReader }] = await Promise.all([
     import('../library-clip'),
     import('$lib/library/offline/open-in-reader')
   ]);
+  const plan = await planLibraryClip(api, {
+    bookId: clip.bookId,
+    localId: clip.localId,
+    localTitle: clip.localTitle,
+    text: source.text,
+    position: source.position,
+    cueIds: source.cueIds,
+    bookCharacters: source.bookCharacters,
+    useLoadedLines: isOpenInReader(clip.localId)
+  });
+
+  if ('skip' in plan) {
+    if (plan.skip === 'the audiobook has no subtitles' && !(await onThisDevice(clip.localId))) {
+      return { skip: SUBTITLES_GONE };
+    }
+    return plan;
+  }
+
+  return { fileName: plan.fileName, data: await cutLibraryClip(api, clip.bookId, plan) };
+}
+
+async function saveSource(id: string, source: ClipSource): Promise<void> {
+  await getPendingStore().update(id, (r) => ({ ...r, source }));
+}
+
+/** The PC source (Season 2 Phase 12): read on the PC for a book without an audiobook. */
+async function resolveOnPc(
+  api: LibraryApi,
+  clip: PendingClip,
+  source: PcClipSource
+): Promise<MadeClip> {
+  const made = await resolvePcClip(
+    { ...clip, source },
+    { api, saveSource: (s) => saveSource(clip.id, s) }
+  );
+  // The book has an audiobook now: its clip comes from it.
+  if ('library' in made) return resolveLibraryClip(api, clip, made.library);
+  return made;
+}
+
+/**
+ * Makes a waiting clip from its source. A clip that waited for the library server (an
+ * offline tap) for a book that turns out to have no audiobook is read by the PC instead,
+ * when a PC voice is chosen (Season 2 Phase 12).
+ */
+export async function resolveClip(clip: PendingClip): Promise<MadeClip> {
+  if (!browserOnline()) throw new RetryLater(SERVER_UNREACHABLE, true, WAITING_FOR_SERVER);
+
+  const api = await libraryApi();
+  if (!api) throw new RetryLater(NOT_CONNECTED, true, WAITING_FOR_SERVER);
 
   try {
-    const plan = await planLibraryClip(api, {
-      bookId: clip.bookId,
-      localId: clip.localId,
-      localTitle: clip.localTitle,
-      text: clip.source.text,
-      position: clip.source.position,
-      cueIds: clip.source.cueIds,
-      bookCharacters: clip.source.bookCharacters,
-      useLoadedLines: isOpenInReader(clip.localId)
-    });
+    const source = clip.source;
 
-    if ('skip' in plan) {
-      if (plan.skip === 'the audiobook has no subtitles' && !(await onThisDevice(clip.localId))) {
-        return { skip: SUBTITLES_GONE };
-      }
-      return plan;
+    if (source.kind === 'pc') return await resolveOnPc(api, clip, source);
+
+    const made = await resolveLibraryClip(api, clip, source);
+    const { NO_LINKED_AUDIOBOOK } = await import('../library-clip');
+
+    if (
+      'skip' in made &&
+      made.skip === NO_LINKED_AUDIOBOOK &&
+      (await pcVoiceChosen(api, clip.bookId)) === true
+    ) {
+      const pc: PcClipSource = {
+        kind: 'pc',
+        text: source.text,
+        position: source.position,
+        bookCharacters: source.bookCharacters,
+        maxSeconds: Math.max(1, Number(ankiAudioMaxSeconds$.getValue()) || 30),
+        pauses: currentPauses()
+      };
+      await saveSource(clip.id, pc);
+      return await resolveOnPc(api, clip, pc);
     }
 
-    return { fileName: plan.fileName, data: await cutLibraryClip(api, clip.bookId, plan) };
+    return made;
   } catch (error) {
+    if (error instanceof RetryLater) throw error;
     const problem = serverProblem(error);
     if (problem instanceof RetryLater) throw problem;
     return problem;
+  }
+}
+
+/** The server may let go of a PC clip (its bytes are kept here now, or it was cancelled). */
+async function dropOnServer(clip: PendingClip | undefined): Promise<void> {
+  if (!clip || clip.source.kind !== 'pc' || !clip.source.clipId) return;
+  try {
+    const api = await libraryApi();
+    await api?.dropSentenceAudio(clip.source.clipId);
+  } catch (error) {
+    // The server forgets it by itself after TTS_CLIP_KEEP_DAYS.
+    warn(`sentence audio not let go on the server: ${(error as Error)?.message ?? error}`);
   }
 }
 
@@ -134,7 +224,13 @@ async function runOnce(): Promise<RunReport | null> {
     const clips = await store.all();
     if (!clips.some((c) => c.state !== 'failed')) return null;
 
-    return await runPendingOnce({ store, resolve: resolveClip, anki: ankiClient, tabId });
+    return await runPendingOnce({
+      store,
+      resolve: resolveClip,
+      anki: ankiClient,
+      tabId,
+      onReady: dropOnServer
+    });
   } catch (error) {
     warn(`waiting sentence audio: ${(error as Error)?.message ?? error}`);
     return null;
@@ -203,9 +299,12 @@ export async function listPendingClips(): Promise<PendingClip[]> {
   return clips.sort((a, b) => a.createdAt - b.createdAt);
 }
 
-/** Cancel (a waiting one) or Dismiss (a failed one). */
+/** Cancel (a waiting one) or Dismiss (a failed one). A PC clip is let go on the server too. */
 export async function removePendingClip(id: string): Promise<void> {
-  await getPendingStore().delete(id);
+  const store = getPendingStore();
+  const clip = await store.get(id).catch(() => undefined);
+  await store.delete(id);
+  void dropOnServer(clip);
 }
 
 export function onPendingClipsChange(listener: () => void): () => void {

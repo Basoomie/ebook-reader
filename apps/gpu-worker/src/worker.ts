@@ -14,6 +14,7 @@
  *
  * WP17: TTS jobs (generated audiobooks, previews, described voices) run in tts.ts; the
  * worker only asks for the kinds whose program is on this PC (SubPlz image, TTS image),
+ * Season 2 Phase 12's sentence audio for Anki ('sentence_audio') among them,
  * and it deletes the files of models removed from the list in the reader (models folder).
  */
 import { createHash } from 'crypto';
@@ -26,10 +27,18 @@ import type { Logger } from './log';
 import { runDocker, SubplzProgress, SubplzRun, subplzArgs } from './subplz';
 import { isStopped, removeDeletedModels, runTtsJob } from './tts';
 
-const TTS_KINDS: JobKind[] = ['generate_audiobook', 'preview_audiobook', 'voice_sample'];
+const TTS_KINDS: JobKind[] = [
+  'generate_audiobook',
+  'preview_audiobook',
+  'voice_sample',
+  'sentence_audio',
+];
 
-/** 1.1.0: WP17 (TTS jobs). 1.1.1: one audio name per audiobook (SubPlz's cache). */
-export const WORKER_VERSION = '1.1.1';
+/**
+ * 1.1.0: WP17 (TTS jobs). 1.1.1: one audio name per audiobook (SubPlz's cache). 1.1.2:
+ * Season 2 Phase 12, Enrich's sentence audio ('sentence_audio': each clip is one chapter).
+ */
+export const WORKER_VERSION = '1.1.2';
 
 const AUDIO_EXTENSIONS = new Set(['.m4b', '.m4a', '.mp3']);
 

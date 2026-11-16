@@ -97,6 +97,12 @@ async function loadCues(
 }
 
 /**
+ * No link chosen yet, or "No audiobook": the PC may read the sentence instead (Season 2
+ * Phase 12, when a PC voice is chosen).
+ */
+export const NO_LINKED_AUDIOBOOK = 'the book has no linked audiobook';
+
+/**
  * Which part of the audiobook is the sentence, or why there is none. Rejects with the
  * server's error when it can't be asked (the caller decides whether the clip waits).
  */
@@ -108,7 +114,7 @@ export async function planLibraryClip(
   const link = await api.audioLink(bookId);
 
   if (!link || link.state !== 'linked') {
-    return { skip: 'the book has no linked audiobook' };
+    return { skip: NO_LINKED_AUDIOBOOK };
   }
 
   if (!link.playable) {

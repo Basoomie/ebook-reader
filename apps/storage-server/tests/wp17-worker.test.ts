@@ -183,6 +183,85 @@ describe.skipIf(!HAS_FFMPEG)('the worker running TTS jobs', () => {
     expect(models[0]).toMatchObject({ supportsDescription: true, supportsClip: true });
   }, 60_000);
 
+  it('reads the waiting sentence clips for Anki in one run (Season 2 Phase 12)', async () => {
+    const t = await workerEnv('ok');
+    const voice = await t.addVoice();
+    await request(t.app)
+      .put('/api/v1/tts/voice-choice')
+      .set(t.auth)
+      .send({ voiceId: voice.id, modelId: 1 });
+    const queue = async (text: string, position: number) =>
+      (
+        await request(t.app)
+          .post(`/api/v1/books/${t.bookId(HITSUJI)}/sentence-audio`)
+          .set(t.auth)
+          .send({ text, position })
+      ).body.clip.id as string;
+    const a = await queue('善なるものは畢竟、遠い。', 0);
+    const b = await queue('けれども悪は近い！', 11);
+    expect(await t.worker.tick()).toBe(0);
+    const runs = t.calls().filter((c) => c[0] === 'run');
+    expect(runs).toHaveLength(1);
+    expect(t.jobJson(1)).toMatchObject({
+      voice: '/work/voice.wav',
+      caption: null,
+      whole: false,
+      pauses: { sentenceMs: 300, paragraphMs: 700, chapterMs: 0 },
+    });
+    expect(
+      t
+        .jobJson(1)
+        .chapters.map((c: { sentences: { reading: string }[] }) => c.sentences[0].reading),
+    ).toEqual(['善なるものはひっきょう、遠い。', 'けれども悪は近い！']);
+    for (const id of [a, b]) {
+      const st = (await request(t.app).get(`/api/v1/sentence-audio/${id}`).set(t.auth)).body;
+      expect(st.clip, JSON.stringify(t.log.lines)).toMatchObject({
+        state: 'done',
+        durationMs: 400,
+      });
+      expect(st.pc.readsClips).toBe(true);
+      const audio = await request(t.app).get(`/api/v1/sentence-audio/${id}/audio`).set(t.auth);
+      expect(audio.status).toBe(200);
+      expect(audio.headers['content-type']).toBe('audio/mpeg');
+    }
+  }, 60_000);
+
+  it('a running audiobook makes way for a sentence clip after its chapter', async () => {
+    const t = await workerEnv('slow');
+    const voice = await t.addVoice();
+    await request(t.app)
+      .put('/api/v1/tts/voice-choice')
+      .set(t.auth)
+      .send({ voiceId: voice.id, modelId: 1 });
+    const book = (await t.startBook(HITSUJI, { voiceId: voice.id })).body.job.id as number;
+    const running = t.worker.tick();
+    await waitFor(
+      () => t.latestBook(HITSUJI),
+      (j) => j.stage === 'generating',
+    );
+    const clip = (
+      await request(t.app)
+        .post(`/api/v1/books/${t.bookId(HITSUJI)}/sentence-audio`)
+        .set(t.auth)
+        .send({ text: '最後の文。', position: 20 })
+    ).body.clip.id as string;
+    await running;
+    expect(t.jobs.get(book)).toMatchObject({
+      state: 'queued',
+      chaptersDone: 1,
+      message: 'Paused for sentence audio for Anki; it continues next.',
+    });
+    t.setMode('ok');
+    await t.worker.tick(); // the clip
+    expect(
+      (await request(t.app).get(`/api/v1/sentence-audio/${clip}`).set(t.auth)).body.clip.state,
+    ).toBe('done');
+    await t.worker.tick(); // the rest of the audiobook
+    await t.tts.idle();
+    expect(await t.latestBook(HITSUJI)).toMatchObject({ state: 'done', linked: true });
+    expect(t.jobJson(3).chapters.map((c: { index: number }) => c.index)).toEqual([1]);
+  }, 60_000);
+
   it('pauses after the current chapter and continues with the next one', async () => {
     const t = await workerEnv('slow');
     const voice = await t.addVoice();

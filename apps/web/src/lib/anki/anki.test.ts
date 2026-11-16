@@ -1081,6 +1081,24 @@ describe('enrich with sentence audio that waits (Season 2 §3)', () => {
     );
   });
 
+  it('a book without an audiobook: the sentence audio waits for the PC (Season 2 Phase 12)', async () => {
+    const n = card();
+    const { anki, calls } = fakeAnki({ notes: [n] });
+    const result = await enrichLastCard(
+      anki,
+      input({ audio: async () => ({ wait: 'once the PC has read it' }) })
+    );
+
+    expect(stores(calls)).toEqual(['ttsu-cover-b1.jpg']);
+    expect(result.waiting).toMatchObject({
+      field: 'SentenceAudio',
+      wait: 'once the PC has read it'
+    });
+    expect(describeResult(result)).toBe(
+      'Added tag, sentence, cover, link to the passage to 「猫」. Sentence audio will be added once the PC has read it.'
+    );
+  });
+
   it('waits when the clip itself can’t be fetched (WaitError from load)', async () => {
     const n = card();
     const { anki, calls } = fakeAnki({ notes: [n] });

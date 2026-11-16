@@ -33,6 +33,8 @@ import type { TtsModelService } from './tts-models';
 import type { VoiceService } from '../voices/voice-service';
 import { DEFAULT_AUDIO } from '../config';
 import type { FixService } from '../pronunciation/fix-service';
+import type { SentenceAudioService } from './sentence-audio';
+import type { VoiceChoiceService } from './tts-voice-choice';
 import type { AudioScanService } from './scan-service';
 import {
   fileVersion,
@@ -59,6 +61,10 @@ export interface AudioOptions {
   voices?: VoiceService | null;
   /** Season 2 Phase 12: the pronunciation fix lists; null/omitted = off. */
   fixes?: FixService | null;
+  /** Season 2 Phase 12: Enrich's sentence audio read by the PC; null/omitted = off. */
+  sentenceAudio?: SentenceAudioService | null;
+  /** Season 2 Phase 12: the PC voice per book and for every book; null/omitted = off. */
+  voiceChoices?: VoiceChoiceService | null;
 }
 
 const CONTENT_TYPES: Record<string, string> = {

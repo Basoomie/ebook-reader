@@ -778,6 +778,113 @@ export const MIGRATIONS: { version: number; name: string; sql: string }[] = [
         ON pronunciation_fixes (user_id, kind, match) WHERE book_id IS NULL;
     `,
   },
+  {
+    version: 21,
+    name: 'sentence audio from the PC',
+    // Season 2 Phase 12: Enrich's sentence audio read by the PC for a book without an
+    // audiobook (audio/sentence-audio.ts).
+    // worker_jobs: rebuilt for the new kind 'sentence_audio' (its rows kept as they are).
+    //   tts_job_chapters references it, so it is set aside and put back around the rebuild
+    //   (a DROP TABLE with foreign keys on would delete its rows).
+    // tts_sentence_clips: one clip a device asked for; it is one chapter (idx) of a
+    //   'sentence_audio' job; its MP3 waits in CACHE_DIR/tts/<job>/ until the device has it.
+    // tts_voice_choices: the voice and model the PC reads with, per book (book_id) or for
+    //   every book (book_id NULL). No book foreign key, like audio_links.
+    // worker_status.kinds: the job kinds the PC asked for in its last claim (JSON), so a
+    //   long audiobook only makes way for sentence audio when the PC can read it.
+    sql: `
+      CREATE TABLE tts_job_chapters_keep AS SELECT * FROM tts_job_chapters;
+      DROP TABLE tts_job_chapters;
+
+      CREATE TABLE worker_jobs_v21 (
+        id                     INTEGER PRIMARY KEY,
+        user_id                TEXT NOT NULL REFERENCES users(id),
+        book_id                TEXT,
+        kind                   TEXT NOT NULL CHECK (kind IN ('sync_subtitles', 'generate_audiobook', 'preview_audiobook', 'voice_sample', 'sentence_audio')),
+        library_id             TEXT,
+        audio_folder_rel_path  TEXT,
+        audio_file_name        TEXT,
+        link_confirmed_at      INTEGER,
+        state                  TEXT NOT NULL CHECK (state IN ('queued', 'running', 'done', 'failed', 'cancelled')),
+        stage                  TEXT CHECK (stage IN ('downloading', 'syncing', 'uploading', 'saving', 'preparing', 'generating', 'assembling')),
+        progress               REAL,
+        message                TEXT,
+        cancel_requested       INTEGER NOT NULL DEFAULT 0,
+        attempts               INTEGER NOT NULL DEFAULT 0,
+        lease_expires_at       INTEGER,
+        output_rel_path        TEXT,
+        linked                 INTEGER NOT NULL DEFAULT 0,
+        error                  TEXT,
+        log_tail               TEXT,
+        params                 TEXT,
+        version                INTEGER,
+        chapters_total         INTEGER,
+        chapters_done          INTEGER NOT NULL DEFAULT 0,
+        claim_chapters         INTEGER,
+        created_at             INTEGER NOT NULL,
+        started_at             INTEGER,
+        finished_at            INTEGER,
+        updated_at             INTEGER NOT NULL,
+        CHECK (kind <> 'sync_subtitles' OR (book_id IS NOT NULL AND library_id IS NOT NULL
+          AND audio_folder_rel_path IS NOT NULL AND audio_file_name IS NOT NULL)),
+        CHECK (kind = 'voice_sample' OR book_id IS NOT NULL)
+      );
+      INSERT INTO worker_jobs_v21 SELECT * FROM worker_jobs;
+      DROP TABLE worker_jobs;
+      ALTER TABLE worker_jobs_v21 RENAME TO worker_jobs;
+      CREATE INDEX worker_jobs_book ON worker_jobs (user_id, book_id, id);
+      CREATE INDEX worker_jobs_state ON worker_jobs (state, id);
+
+      CREATE TABLE tts_job_chapters (
+        job_id       INTEGER NOT NULL REFERENCES worker_jobs(id) ON DELETE CASCADE,
+        idx          INTEGER NOT NULL,
+        title        TEXT NOT NULL,
+        duration_ms  INTEGER NOT NULL,
+        cues         TEXT NOT NULL,
+        part_file    TEXT NOT NULL,
+        bytes        INTEGER NOT NULL,
+        done_at      INTEGER NOT NULL,
+        PRIMARY KEY (job_id, idx)
+      );
+      INSERT INTO tts_job_chapters (job_id, idx, title, duration_ms, cues, part_file, bytes, done_at)
+        SELECT job_id, idx, title, duration_ms, cues, part_file, bytes, done_at FROM tts_job_chapters_keep;
+      DROP TABLE tts_job_chapters_keep;
+
+      CREATE TABLE tts_sentence_clips (
+        id            TEXT PRIMARY KEY,
+        user_id       TEXT NOT NULL REFERENCES users(id),
+        book_id       TEXT NOT NULL,
+        job_id        INTEGER,
+        idx           INTEGER,
+        text          TEXT NOT NULL,
+        sentences     TEXT NOT NULL CHECK (json_valid(sentences)),
+        found         INTEGER NOT NULL DEFAULT 1,
+        fixes         TEXT,
+        state         TEXT NOT NULL CHECK (state IN ('waiting', 'done', 'failed', 'cancelled')),
+        duration_ms   INTEGER,
+        bytes         INTEGER,
+        error         TEXT,
+        created_at    INTEGER NOT NULL,
+        done_at       INTEGER,
+        picked_up_at  INTEGER
+      );
+      CREATE INDEX tts_sentence_clips_job ON tts_sentence_clips (job_id, idx);
+
+      CREATE TABLE tts_voice_choices (
+        user_id     TEXT NOT NULL REFERENCES users(id),
+        book_id     TEXT,
+        voice_id    TEXT NOT NULL,
+        model_id    INTEGER NOT NULL,
+        updated_at  INTEGER NOT NULL
+      );
+      CREATE UNIQUE INDEX tts_voice_choices_book
+        ON tts_voice_choices (user_id, book_id) WHERE book_id IS NOT NULL;
+      CREATE UNIQUE INDEX tts_voice_choices_global
+        ON tts_voice_choices (user_id) WHERE book_id IS NULL;
+
+      ALTER TABLE worker_status ADD COLUMN kinds TEXT;
+    `,
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

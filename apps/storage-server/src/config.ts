@@ -87,6 +87,13 @@ export interface TtsConfig {
    * this long (a regex pattern can run for ever), seconds.
    */
   fixTimeoutSeconds: number;
+  /**
+   * Season 2 Phase 12: a sentence clip for Anki made on the PC is kept on the server until
+   * the device that asked for it has it, or at most this many days.
+   */
+  clipKeepDays: number;
+  /** The longest sentence the PC reads for Anki (characters, spaces left out). */
+  clipMaxCharacters: number;
 }
 
 export const DEFAULT_TTS: TtsConfig = {
@@ -99,6 +106,8 @@ export const DEFAULT_TTS: TtsConfig = {
   scriptTimeoutSeconds: 300,
   aacBitrate: '96k',
   fixTimeoutSeconds: 10,
+  clipKeepDays: 30,
+  clipMaxCharacters: 500,
 };
 
 /** WP16: the GPU worker's job queue (SubPlz subtitles). */
@@ -812,6 +821,8 @@ export function parseTtsConfig(env: Env, warnings: string[]): TtsConfig {
       3600,
       false,
     ),
+    clipKeepDays: num('TTS_CLIP_KEEP_DAYS', t.clipKeepDays, 1, 3650, false),
+    clipMaxCharacters: num('TTS_CLIP_MAX_CHARACTERS', t.clipMaxCharacters, 10, 10_000, true),
   };
 }
 

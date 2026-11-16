@@ -102,9 +102,10 @@
     Waiting sentence audio{#if waitingCount}&nbsp;({waitingCount}){/if}
   </h4>
   <p class="mt-1 max-w-prose text-sm text-c-muted">
-    When the library server can't be reached, Enrich adds everything else and keeps the sentence
-    audio here. It is added to its card by itself once the server and Anki answer again, as the
-    field was set up when you enriched the card.
+    When the library server can't be reached, or the PC reads the sentence for a book without an
+    audiobook, Enrich adds everything else and keeps the sentence audio here. It is added to its
+    card by itself once it is ready and Anki answers (when the app starts or comes back to the
+    front, after a sync, or with Try now), as the field was set up when you enriched the card.
   </p>
 
   {#if !loaded}

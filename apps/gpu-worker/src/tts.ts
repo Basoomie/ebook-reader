@@ -368,7 +368,7 @@ export async function runTtsJob({
         { tail: result.tail },
       );
     }
-    if (doneCount < total && job.kind === 'generate_audiobook') {
+    if (doneCount < total && (job.kind === 'generate_audiobook' || job.kind === 'sentence_audio')) {
       throw Object.assign(new Error('The TTS program ended before the last chapter'), {
         tail: result.tail,
       });

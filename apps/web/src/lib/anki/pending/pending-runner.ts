@@ -24,7 +24,9 @@ export class RetryLater extends Error {
   constructor(
     message: string,
     /** The source is down: the other clips waiting for it aren't tried in this pass. */
-    readonly sourceDown = false
+    readonly sourceDown = false,
+    /** What it waits for (the status line in Settings > Anki), e.g. "Waiting for the PC". */
+    readonly waitingFor?: string
   ) {
     super(message);
   }
@@ -42,6 +44,11 @@ export interface PendingRunnerDeps {
   now?: () => number;
   /** How long a claim holds (a tab that stopped mid-way frees it after this). */
   claimMs?: number;
+  /**
+   * The clip's bytes are kept on this device now (its source may let go of it; Season 2
+   * Phase 12: the server deletes a PC clip). Errors are ignored.
+   */
+  onReady?: (clip: PendingClip) => Promise<void>;
 }
 
 export interface RunReport {
@@ -81,8 +88,8 @@ export async function runPendingOnce(deps: PendingRunnerDeps): Promise<RunReport
     report.failed += 1;
   };
 
-  const stillWaiting = async (id: string, problem: string) => {
-    await store.update(id, (r) => ({ ...r, problem, lastTriedAt: now() }));
+  const stillWaiting = async (id: string, problem: string, waitingFor?: string) => {
+    await store.update(id, (r) => ({ ...r, problem, waitingFor, lastTriedAt: now() }));
     report.waiting += 1;
   };
 
@@ -108,7 +115,11 @@ export async function runPendingOnce(deps: PendingRunnerDeps): Promise<RunReport
           made = await deps.resolve(clip);
         } catch (error) {
           if (error instanceof RetryLater && error.sourceDown) sourceDown = true;
-          await stillWaiting(clip.id, messageOf(error));
+          await stillWaiting(
+            clip.id,
+            messageOf(error),
+            error instanceof RetryLater ? error.waitingFor : undefined
+          );
           continue;
         }
 
@@ -122,10 +133,12 @@ export async function runPendingOnce(deps: PendingRunnerDeps): Promise<RunReport
           state: 'ready',
           clip: { fileName: made.fileName, data: (made as { data: ArrayBuffer }).data },
           problem: undefined,
+          waitingFor: undefined,
           lastTriedAt: now()
         }));
 
         if (!clip) continue; // cancelled meanwhile
+        await deps.onReady?.(clip).catch(() => undefined);
       }
 
       if (ankiOff) {

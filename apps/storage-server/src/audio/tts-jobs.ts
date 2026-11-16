@@ -67,7 +67,19 @@ export const TTS_KINDS: WorkerJobKind[] = [
   'generate_audiobook',
   'preview_audiobook',
   'voice_sample',
+  'sentence_audio',
 ];
+
+/**
+ * Season 2 Phase 12: what the sentence-audio service (sentence-audio.ts) provides for its
+ * 'sentence_audio' jobs, whose chapters are Enrich clips: their text, what to do with a
+ * read clip, and which work folders to keep.
+ */
+export interface SentenceJobHooks {
+  script(jobId: number): ScriptChapter[];
+  clipRead(job: WorkerJob, idx: number, partName: string, cues: number[][]): Promise<void>;
+  keepJobs(): Set<number>;
+}
 
 /** What "Describe a voice" reads (neutral narration, ~20 s). */
 export const VOICE_SAMPLE_TEXT =
@@ -235,7 +247,7 @@ export function seedFor(bookId: string, voiceKey: string): number {
   );
 }
 
-function parsePauses(raw: unknown): Pauses {
+export function parsePauses(raw: unknown): Pauses {
   const p = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
   const ms = (v: unknown, d: number) =>
     typeof v === 'number' && Number.isFinite(v) ? Math.min(10_000, Math.max(0, Math.round(v))) : d;
@@ -268,6 +280,8 @@ export class TtsJobService {
   private readonly assembling = new Map<number, Promise<void>>();
   /** Book chapter lists for the book page (per book file), short-lived. */
   private readonly chapterCache = new Map<string, { at: number; script: BookScript }>();
+  /** Season 2 Phase 12: the sentence-audio service, once it is set up. */
+  private sentence: SentenceJobHooks | null = null;
 
   constructor(opts: TtsJobOptions) {
     this.db = opts.db;
@@ -311,6 +325,16 @@ export class TtsJobService {
       .all() as { id: number }[];
     for (const { id } of left) this.kickAssembly(id);
     await this.sweep();
+  }
+
+  /** Season 2 Phase 12: the sentence-audio service (sentence-audio.ts) attaches itself. */
+  attachSentenceAudio(hooks: SentenceJobHooks): void {
+    this.sentence = hooks;
+  }
+
+  /** The ffmpeg/ffprobe settings (the sentence-audio service encodes its clips with them). */
+  get toolPaths(): { ffmpegPath: string; ffprobePath: string } {
+    return { ffmpegPath: this.tools.ffmpegPath, ffprobePath: this.tools.ffprobePath };
   }
 
   async stop(): Promise<void> {
@@ -363,6 +387,7 @@ export class TtsJobService {
       if (r.kind === 'voice_sample' && (r.finished_at ?? 0) < this.now() - 86_400_000) continue;
       keep.add(r.id);
     }
+    for (const id of this.sentence?.keepJobs() ?? []) keep.add(id);
     for (const id of ids) {
       if (keep.has(id)) continue;
       await this.workdir.removeJob(id).catch(() => undefined);
@@ -400,7 +425,8 @@ export class TtsJobService {
     }
   }
 
-  private async bookScript(userId: string, bookId: string): Promise<BookScript> {
+  /** The book's script (cached for a while; also used by sentence-audio.ts). */
+  async bookScript(userId: string, bookId: string): Promise<BookScript> {
     const file = this.epubFile(userId, bookId);
     if (!file) {
       throw new JobRequestError(409, 'no_epub', "This book's EPUB is not available on the server");
@@ -448,7 +474,7 @@ export class TtsJobService {
    * readings (Season 2 Phase 12), and what the job records about them. Without the fix
    * service, unchanged and no summary. A run past the time limit is refused (422).
    */
-  private async applyFixes(
+  async applyFixes(
     userId: string,
     bookId: string | null,
     chapters: ScriptChapter[],
@@ -571,7 +597,7 @@ export class TtsJobService {
     return row ? this.jobs.get(row.id) : null;
   }
 
-  private insertJob(fields: {
+  insertJob(fields: {
     userId: string;
     bookId: string | null;
     kind: WorkerJobKind;
@@ -609,11 +635,16 @@ export class TtsJobService {
   }
 
   private async readJobScript(id: number): Promise<ScriptChapter[]> {
+    // Season 2 Phase 12: a sentence-audio job's chapters are its clips (rows, not a file, so
+    // a clip can join the job while it waits).
+    if (this.sentence && this.jobs.get(id)?.kind === 'sentence_audio') {
+      return this.sentence.script(id);
+    }
     const raw = await fs.readFile(this.file(id, 'script.json'), 'utf8');
     return (JSON.parse(raw) as { chapters: ScriptChapter[] }).chapters;
   }
 
-  private bookLibrary(bookId: string): string | null {
+  bookLibrary(bookId: string): string | null {
     const row = this.db.prepare('SELECT library_id FROM books WHERE id = ?').get(bookId) as
       | { library_id: string }
       | undefined;
@@ -630,7 +661,7 @@ export class TtsJobService {
     return (row.v ?? 0) + 1;
   }
 
-  private voiceMap(
+  voiceMap(
     voice: {
       id: string;
       name: string;
@@ -876,7 +907,10 @@ export class TtsJobService {
         return { error: 'The voice preset of this job changed' };
       voice = { sha256: v.sha256, seconds: v.clipSeconds };
     }
-    if (job.kind === 'generate_audiobook' && job.chaptersDone >= (job.chaptersTotal ?? 0)) {
+    if (
+      (job.kind === 'generate_audiobook' || job.kind === 'sentence_audio') &&
+      job.chaptersDone >= (job.chaptersTotal ?? 0)
+    ) {
       return { error: 'Nothing left to read' };
     }
     return {
@@ -886,7 +920,8 @@ export class TtsJobService {
         voice,
         caption: job.kind === 'voice_sample' ? params.narrator.description : null,
         seed: params.seed,
-        pauses: params.pauses,
+        // A sentence clip ends where its last sentence ends (the server cuts it there).
+        pauses: job.kind === 'sentence_audio' ? { ...params.pauses, chapterMs: 0 } : params.pauses,
         whole: job.kind === 'voice_sample',
         chaptersTotal: job.chaptersTotal ?? 0,
         chaptersDone: job.chaptersDone,
@@ -1103,7 +1138,22 @@ export class TtsJobService {
       });
       return done;
     })();
-    if (job.kind !== 'generate_audiobook') {
+    if (job.kind === 'sentence_audio') {
+      await this.sentence?.clipRead(job, idx, partName, cues as number[][]);
+      if (counts >= (job.chaptersTotal ?? 0)) {
+        this.jobs.update(id, {
+          state: 'done',
+          stage: null,
+          progress: 1,
+          finished_at: this.now(),
+          lease_expires_at: null,
+        });
+        this.log(
+          `GPU worker: sentence audio ${id} read (${counts} ${counts === 1 ? 'clip' : 'clips'})`,
+        );
+        void this.sweep();
+      }
+    } else if (job.kind !== 'generate_audiobook') {
       this.jobs.update(id, {
         state: 'done',
         stage: null,

@@ -4,6 +4,7 @@ A small program for the PC with the GPU. It asks the reader's server for jobs an
 
 - **Make subtitles on the PC** (WP16): downloads the book's EPUB and its linked audio file into a temporary folder, runs SubPlz, uploads the `.srt`, and deletes the temporary folder. The server saves the subtitles in `japanese-srt/_generated/` and links them to the book.
 - **Make an audiobook on the PC** (WP17), its **Preview**, and **Describe a voice**: runs the TTS program (Irodori-TTS, see [TTS program](#tts-program-wp17)) on the book's text, which the server sends chapter by chapter. Each finished chapter is uploaded at once; the server puts the book together (an `.m4b` with one chapter per book chapter and an `.srt` with the exact timings) in `japanese-generated/<Author>/<Title>/` and links both to the book.
+- **Sentence audio for Anki** (Season 2 Phase 12, worker 1.1.2): for a book without an audiobook, Enrich's sentence is read by the same TTS program; the sentences waiting for one book are read in one run (each is one "chapter"), so the model is loaded once for all of them. The server takes them before other waiting jobs, and a running audiobook stops after its current chapter to let them in, then continues. An older worker never asks for them, so it needs `install-local` again (no `build-tts`: the TTS image is unchanged).
 
 The worker only asks for the kinds of job whose program is on this PC: without the TTS program it still makes subtitles, and the other way round.
 
