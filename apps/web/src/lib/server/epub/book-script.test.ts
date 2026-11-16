@@ -187,6 +187,17 @@ describe('bookScriptEpubBlob on the fixture books', () => {
         expect(s.text.trim()).toBe(s.text);
         expect(s.text.length).toBeGreaterThan(0);
         expect(rebuilt(s)).toBe(s.reading);
+
+        // Dialogue runs (session 4): inside the text, in order, never empty.
+        let at = 0;
+
+        for (const p of s.parts ?? []) {
+          expect(p.start).toBeGreaterThanOrEqual(at);
+          expect(p.end).toBeGreaterThan(p.start);
+          expect(p.end).toBeLessThanOrEqual(s.text.length);
+          expect(p.role).toBe('dialogue');
+          at = p.end;
+        }
       }
     }
   });
