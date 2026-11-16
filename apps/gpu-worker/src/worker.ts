@@ -46,8 +46,10 @@ const TTS_KINDS: JobKind[] = [
  * 1.1.0: WP17 (TTS jobs). 1.1.1: one audio name per audiobook (SubPlz's cache). 1.1.2:
  * Season 2 Phase 12, Enrich's sentence audio ('sentence_audio': each clip is one chapter).
  * 1.2.0: Season 2 Phase 12 session 3, live read-aloud and the voice kept loaded (TTS image 2).
+ * 1.3.0: Season 2 Phase 12 session 4, narration and dialogue voices: a sentence may come in runs,
+ * each read with its own voice (TTS image 3). The server gives two-voice work only to 1.3.0+.
  */
-export const WORKER_VERSION = '1.2.0';
+export const WORKER_VERSION = '1.3.0';
 
 const AUDIO_EXTENSIONS = new Set(['.m4b', '.m4a', '.mp3']);
 

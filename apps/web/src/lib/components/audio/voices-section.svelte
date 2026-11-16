@@ -16,11 +16,13 @@
   import type { GpuWorkerStatus } from '$lib/audio/audio-types';
   import {
     ttsChapterPauseMs$,
+    ttsDialoguePauseMs$,
     ttsParagraphPauseMs$,
     ttsSentencePauseMs$
   } from '$lib/audio/tts-settings';
   import {
     audiobookJobText,
+    jobVoices,
     modelsForDescriptions,
     ttsJobActive,
     voiceDetails
@@ -381,7 +383,9 @@
       </p>
       {#if sample && sample.state !== 'cancelled' && sample.state !== 'failed'}
         <div class="mt-3" data-testid="voice-sample" data-state={sample.state}>
-          <div class="font-mincho text-[15px] font-bold">{sample.params?.narrator.name ?? ''}</div>
+          <div class="font-mincho text-[15px] font-bold">
+            {jobVoices(sample.params)?.narration ?? ''}
+          </div>
           <p class="text-sm" role="status" aria-live="polite" data-testid="voice-sample-text">
             {audiobookJobText(sample, worker, now)}
           </p>
@@ -481,7 +485,7 @@
       <p class="mt-1 text-sm text-c-muted">
         In milliseconds (1000 = one second). Used for audiobooks and previews started from now on.
       </p>
-      <div class="mt-3 grid gap-3 sm:grid-cols-3">
+      <div class="mt-3 grid gap-3 sm:grid-cols-2 md:grid-cols-4">
         <label class="grid gap-1 text-sm">
           <span class="text-c-muted">After a sentence</span>
           <input
@@ -518,7 +522,23 @@
             data-testid="tts-pause-chapter"
           />
         </label>
+        <label class="grid gap-1 text-sm">
+          <span class="text-c-muted">Between narration and dialogue</span>
+          <input
+            class="c-input text-base"
+            type="number"
+            min="0"
+            max="10000"
+            step="50"
+            bind:value={$ttsDialoguePauseMs$}
+            data-testid="tts-pause-dialogue"
+          />
+        </label>
       </div>
+      <p class="mt-2 text-xs text-c-muted">
+        The last one is used inside a sentence like 「行こう」と彼は言った。 when the dialogue has a
+        voice of its own (also for read-aloud and Anki's sentence audio).
+      </p>
     </div>
   {/if}
 </section>

@@ -6,6 +6,7 @@ A small program for the PC with the GPU. It asks the reader's server for jobs an
 - **Make an audiobook on the PC** (WP17), its **Preview**, and **Describe a voice**: runs the TTS program (Irodori-TTS, see [TTS program](#tts-program-wp17)) on the book's text, which the server sends chapter by chapter. Each finished chapter is uploaded at once; the server puts the book together (an `.m4b` with one chapter per book chapter and an `.srt` with the exact timings) in `japanese-generated/<Author>/<Title>/` and links both to the book.
 - **Sentence audio for Anki** (Season 2 Phase 12, worker 1.1.2): for a book without an audiobook, Enrich's sentence is read by the same TTS program; the sentences waiting for one book are read in one run (each is one "chapter"), so the model is loaded once for all of them. The server takes them before other waiting jobs, and a running audiobook stops after its current chapter to let them in, then continues. An older worker never asks for them, so it needs `install-local` again (no `build-tts`: the TTS image is unchanged).
 - **Read aloud** (Season 2 Phase 12 session 3, worker 1.2.0, TTS image 2): the reader's read-aloud is read by the voice kept loaded (see [TTS program](#tts-program-wp17)), a few sentences at a time, as the reader asks for them. Updating to 1.2.0 needs `install-local` and `build-tts` (step 8) in each Windows account.
+- **Narration and dialogue voices** (Season 2 Phase 12 session 4, worker 1.3.0, TTS image 3): when a book's PC voice has a dialogue voice, the server sends a sentence with dialogue in runs, each naming its voice; the TTS program reads each run with that voice's clip and seed (both voices in the same batches, the model loaded once) and joins a sentence's runs with a short pause, keeping one timing per sentence. The server gives two-voice work only to 1.3.0 or later; an older worker keeps reading one-voice work. Updating needs `install-local` and `build-tts` (step 8) in each Windows account.
 
 The worker only asks for the kinds of job whose program is on this PC: without the TTS program it still makes subtitles, and the other way round.
 
@@ -62,13 +63,13 @@ If the worker can't reach the NAS while NordVPN is connected, turn on NordVPN's 
 Audiobooks are read by the TTS program, an image built on this PC from `app\tts\` (Irodori-TTS pinned to commit `3822056`, PyTorch 2.10 with CUDA 12.8, SudachiPy for kanji readings). It runs like this:
 
 ```
-docker run --rm --gpus all --name ttsu-tts-<job> -v C:\ttsu-worker\work\job-<job>:/work -v C:\Data\LLM\Models\ttsu-reader-tts:/models -e HF_HOME=/models/.shared -e HF_HUB_DISABLE_SYMLINKS=1 ttsu-irodori:2 run --job /work/job.json
+docker run --rm --gpus all --name ttsu-tts-<job> -v C:\ttsu-worker\work\job-<job>:/work -v C:\Data\LLM\Models\ttsu-reader-tts:/models -e HF_HOME=/models/.shared -e HF_HUB_DISABLE_SYMLINKS=1 ttsu-irodori:3 run --job /work/job.json
 ```
 
 **The voice kept loaded (1.2.0, Season 2 Phase 12 session 3).** Read-aloud in the reader and Enrich's sentence clips use one long-lived container of the same program instead, which loads the model once (1–2 minutes) and then reads a few sentences in seconds:
 
 ```
-docker run --rm -i --gpus all --name ttsu-tts-live -v C:\ttsu-worker\work\live:/work -v C:\Data\LLM\Models\ttsu-reader-tts:/models -e HF_HOME=/models/.shared -e HF_HUB_DISABLE_SYMLINKS=1 ttsu-irodori:2 serve
+docker run --rm -i --gpus all --name ttsu-tts-live -v C:\ttsu-worker\work\live:/work -v C:\Data\LLM\Models\ttsu-reader-tts:/models -e HF_HOME=/models/.shared -e HF_HUB_DISABLE_SYMLINKS=1 ttsu-irodori:3 serve
 ```
 
 It stays loaded for **Settings > Audiobooks > Keep the voice loaded** (default 10 minutes) after read-aloud's or a clip's last use, also when an audiobook or subtitle job waits; those start when the time is up. The worker lets it go then, on Pause, and before any other job. While read-aloud plays, a running audiobook, preview or voice sample is stopped at once and goes back to the queue (no try used); a running subtitle job finishes first.
@@ -82,7 +83,7 @@ Set up, after the steps above:
    Then `node C:\ttsu-worker\app\main.js check` should also say `OK  TTS program on the PC`, `OK  GPU visible to the TTS program` and `OK  Models folder`.
 9. **Nothing else.** The models folder `C:\Data\LLM\Models\ttsu-reader-tts` is made by the worker and shared by every Windows account (it inherits the "Authenticated Users: Modify" permission of `C:\Data\LLM\Models`). Each model is downloaded once, the first time a book, preview or described voice uses it: `<owner>--<name>/<version>/` per model (Irodori v4.1 Small about 2.9 GB), plus `.shared` (about 0.5 GB of parts every model uses). A model removed in **Settings > Audiobooks > Models on the PC** has its folder deleted by the worker.
 
-After a worker update that changes `tts\` (the image tag in `TTS_IMAGE` changes, e.g. `ttsu-irodori:2`), run step 8 again in each account; until then `check` and Settings say the TTS program is missing, and subtitle jobs keep working.
+After a worker update that changes `tts\` (the image tag in `TTS_IMAGE` changes, e.g. `ttsu-irodori:3`), run step 8 again in each account; until then `check` and Settings say the TTS program is missing, and subtitle jobs keep working.
 
 Speed on the RTX 4070 (measured): Irodori v4.1 Small reads about 7 times faster than real time, so a 10-hour audiobook takes about an hour and a half; the first chapter of a job waits 1–2 minutes while the model loads. The desktop's other programs share the GPU's memory; a model call that runs out of memory is retried in smaller batches (`ttsBatchSize`).
 
@@ -108,7 +109,7 @@ Speed on the RTX 4070 (measured): Irodori v4.1 Small reads about 7 times faster 
 | minFreeGB            | 5                                    | Free space kept on the work folder's drive besides the job       |
 | logMaxMB             | 5                                    | Log size before it is rotated                                    |
 | reportSeconds        | 10                                   | How often a running job reports to the server                    |
-| ttsImage             | `ttsu-irodori:2`                     | The TTS program's image (built by `build-tts`)                   |
+| ttsImage             | `ttsu-irodori:3`                     | The TTS program's image (built by `build-tts`)                   |
 | ttsModelsDir         | `C:\Data\LLM\Models\ttsu-reader-tts` | TTS models, shared by every Windows account                      |
 | ttsBatchSize         | 8                                    | Sentences per model call (more is faster, needs more GPU memory) |
 | ttsChapterMaxMinutes | 120                                  | A TTS run that shows no progress for this long is stopped        |

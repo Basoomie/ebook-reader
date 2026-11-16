@@ -256,6 +256,24 @@ export async function runTtsJob({
       voice = path.join(jobDir, 'voice.wav');
       await api.download(job.id, 'voice', voice, () => undefined);
     }
+    // Session 4: the other voices the sentences' segments name (the narration's is voice.wav).
+    const voices: Record<string, { voice: string; seed: number }> = {};
+    for (const [key, v] of Object.entries(tts.voices ?? {})) {
+      if (!/^[a-f0-9]{64}$/.test(v.sha256)) throw new Error('Bad voice id');
+      let file = 'voice.wav';
+      if (v.sha256 !== tts.voice?.sha256) {
+        file = `voice-${v.sha256.slice(0, 16)}.wav`;
+        await api.download(
+          job.id,
+          'voice',
+          path.join(jobDir, file),
+          () => undefined,
+          undefined,
+          v.sha256,
+        );
+      }
+      voices[key] = { voice: `/work/${file}`, seed: v.seed };
+    }
     await fsp.mkdir(s.ttsModelsDir, { recursive: true });
     await fsp.writeFile(
       path.join(jobDir, 'job.json'),
@@ -267,6 +285,7 @@ export async function runTtsJob({
         caption: tts.caption,
         seed: tts.seed,
         pauses: tts.pauses,
+        voices: Object.keys(voices).length ? voices : null,
         whole: tts.whole,
         batch: s.ttsBatchSize,
         out: '/work/out',
@@ -461,6 +480,13 @@ export async function runClipsWithEngine({
       await api.download(job.id, 'voice', tmp, () => undefined);
       await fsp.copyFile(tmp, engine.voiceFile(tts.voice.sha256));
     }
+    // Session 4: every other voice the clips' segments name.
+    for (const v of Object.values(tts.voices ?? {})) {
+      if (await engine.hasVoice(v.sha256)) continue;
+      const tmp = path.join(jobDir, `voice-${v.sha256.slice(0, 16)}.wav`);
+      await api.download(job.id, 'voice', tmp, () => undefined, undefined, v.sha256);
+      await fsp.copyFile(tmp, engine.voiceFile(v.sha256));
+    }
     message = 'Reading';
     const total = tts.chaptersTotal;
     let doneCount = tts.chaptersDone;
@@ -470,6 +496,7 @@ export async function runClipsWithEngine({
       const result = await engine.read({
         sentences: chapter.sentences,
         voiceSha: tts.voice?.sha256 ?? null,
+        voices: tts.voices,
         caption: tts.caption,
         seed: tts.seed,
         pauses: tts.pauses,

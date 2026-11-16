@@ -23,6 +23,10 @@
  *              FAKE_TTS_READ_MS (or the file "read-ms") is added before it answers
  *       quit   exits
  *   Each request is kept in $FAKE_DOCKER_STATE/serve.jsonl.
+ *
+ * Season 2 Phase 12 session 4: a sentence with "segments" is "spoken" as
+ * "[<voice key>]<reading>" per segment (so tests see which voice read which run); a segment
+ * whose voice's clip isn't in the work folder fails the read like a real missing file.
  */
 const { execFileSync } = require('child_process');
 const fs = require('fs');
@@ -35,6 +39,20 @@ const mode =
   (modeFile && fs.existsSync(modeFile) ? fs.readFileSync(modeFile, 'utf8').trim() : '') ||
   'ok';
 const args = process.argv.slice(2);
+
+/** What a sentence is "spoken" as: its reading, or its runs with their voice keys. */
+function spokenOf(s, voices, hostOf) {
+  if (!s.segments || !s.segments.length) return s.reading;
+  return s.segments
+    .map((g) => {
+      const v = voices && voices[g.voice];
+      if (!v || !fs.existsSync(hostOf(v.voice))) {
+        throw new Error(`FileNotFoundError: no clip for the voice "${g.voice}"`);
+      }
+      return `[${g.voice}]${g.reading}`;
+    })
+    .join('');
+}
 if (state) fs.appendFileSync(path.join(state, 'calls.jsonl'), JSON.stringify(args) + '\n');
 
 if (args[0] === 'info') {
@@ -99,6 +117,15 @@ if (args[0] === 'run' && args[args.length - 1] === 'serve') {
         return;
       }
       const sentences = req.sentences;
+      let spoken;
+      try {
+        spoken = sentences.map((x) =>
+          spokenOf(x, req.voices, (p) => path.join(host, p.replace(/^\/work\//, ''))),
+        );
+      } catch (err) {
+        say(`read-error ${JSON.stringify({ id: req.id, error: err.message })}`);
+        return;
+      }
       const cues = [];
       let t = 0;
       sentences.forEach((x, k) => {
@@ -138,10 +165,7 @@ if (args[0] === 'run' && args[args.length - 1] === 'serve') {
         { windowsHide: true },
       );
       fs.renameSync(`${base}.flac.tmp`, `${base}.flac`);
-      fs.writeFileSync(
-        `${base}.json`,
-        JSON.stringify({ durationMs: t, cues, spoken: sentences.map((x) => x.reading) }),
-      );
+      fs.writeFileSync(`${base}.json`, JSON.stringify({ durationMs: t, cues, spoken }));
       say(
         `progress ${JSON.stringify({ id: req.id, done: sentences.length, total: sentences.length })}`,
       );
@@ -197,6 +221,15 @@ if (args[0] === 'run') {
     if (i >= chapters.length) process.exit(0);
     const ch = chapters[i];
     const count = ch.sentences.length;
+    let spoken;
+    try {
+      spoken = ch.sentences.map((s) =>
+        spokenOf(s, job.voices, (p) => path.join(host, p.replace(/^\/work\//, ''))),
+      );
+    } catch (err) {
+      say(`error ${err.message}`);
+      process.exit(1);
+    }
     say(
       `progress ${JSON.stringify({ chapter: ch.index, chapterNumber: i + 1, chapters: chapters.length, done: 0, total: count })}`,
     );
@@ -227,10 +260,7 @@ if (args[0] === 'run') {
       { windowsHide: true },
     );
     fs.renameSync(`${base}.flac.tmp`, `${base}.flac`);
-    fs.writeFileSync(
-      `${base}.json`,
-      JSON.stringify({ durationMs, cues, spoken: ch.sentences.map((s) => s.reading) }),
-    );
+    fs.writeFileSync(`${base}.json`, JSON.stringify({ durationMs, cues, spoken }));
     say(
       `progress ${JSON.stringify({ chapter: ch.index, chapterNumber: i + 1, chapters: chapters.length, done: count, total: count })}`,
     );

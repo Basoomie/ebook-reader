@@ -20,6 +20,7 @@
   import {
     audioLengthText,
     audiobookJobText,
+    jobVoicesText,
     modelsForVoices,
     ttsJobActive
   } from '$lib/audio/tts-text';
@@ -52,6 +53,8 @@
   let chaptersError = '';
   let open = false;
   let voiceId = '';
+  /** Session 4: the dialogue's own voice ('' = the same voice). */
+  let dialogueVoiceId = '';
   let modelId: number | null = null;
   let chapterIndex = 0;
   let message = '';
@@ -90,9 +93,15 @@
    * Season 2 Phase 12: start from the book's PC voice (its own, else the one in Settings >
    * Anki), when it can still be used. Changing it here doesn't change that choice.
    */
-  export function usePreferred(choice: { voiceId: string; modelId: number } | null) {
+  export function usePreferred(
+    choice: { voiceId: string; dialogueVoiceId?: string | null; modelId: number } | null
+  ) {
     if (!choice || active) return;
     if (voices.some((v) => v.id === choice.voiceId)) voiceId = choice.voiceId;
+    dialogueVoiceId =
+      choice.dialogueVoiceId && voices.some((v) => v.id === choice.dialogueVoiceId)
+        ? choice.dialogueVoiceId
+        : '';
     if (modelsForVoices(models).some((m) => m.id === choice.modelId)) modelId = choice.modelId;
   }
 
@@ -205,6 +214,7 @@
   function request(withChapter: boolean) {
     return {
       voiceId,
+      dialogueVoiceId: dialogueVoiceId && dialogueVoiceId !== voiceId ? dialogueVoiceId : null,
       modelId: model?.id,
       pauses: currentPauses(),
       ...(withChapter ? { chapterIndex } : {})
@@ -306,9 +316,7 @@
       </p>
       {#if job.params}
         <p class="mt-1 text-sm text-c-muted" data-testid="audiobook-job-voice">
-          Voice “{job.params.narrator.name}”, {job.params.model.label}{fixesUsed
-            ? ` · ${fixesUsed}`
-            : ''}
+          {jobVoicesText(job.params)}, {job.params.model.label}{fixesUsed ? ` · ${fixesUsed}` : ''}
         </p>
       {/if}
       {#if barValue !== null}
@@ -390,6 +398,19 @@
               data-testid="audiobook-job-voice-select"
             >
               {#each voices as v (v.id)}
+                <option value={v.id}>{v.name}</option>
+              {/each}
+            </select>
+          </label>
+          <label class="grid gap-1 text-sm">
+            <span class="text-c-muted">Dialogue voice (quotes in 「」)</span>
+            <select
+              class="c-input block w-full text-base"
+              bind:value={dialogueVoiceId}
+              data-testid="audiobook-job-dialogue-select"
+            >
+              <option value="">Same as the voice</option>
+              {#each voices.filter((v) => v.id !== voiceId) as v (v.id)}
                 <option value={v.id}>{v.name}</option>
               {/each}
             </select>

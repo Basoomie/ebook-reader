@@ -363,10 +363,10 @@ describe.skipIf(!HAS_FFMPEG)('sentence audio from the PC (Season 2 Phase 12)', (
     const claimed = await t.claim();
     expect(claimed.id).toBe(t.jobOf(id).job_id);
     const params = t.jobs.get(claimed.id)!.params as {
-      narrator: { voiceId: string };
+      voices: { narration: { voiceId: string } };
       model: { id: number };
     };
-    expect([params.narrator.voiceId, params.model.id]).toEqual([other.id, 2]);
+    expect([params.voices.narration.voiceId, params.model.id]).toEqual([other.id, 2]);
     // Another book uses the global one.
     const cleared = await request(t.app).delete(bookUrl).set(t.auth);
     expect(cleared.body.effective).toMatchObject({ voiceId: t.voice.id, from: 'global' });

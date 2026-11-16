@@ -7,6 +7,7 @@ import { fork } from 'child_process';
 import os from 'os';
 import path from 'path';
 import { COUNTER_BUNDLE } from '../counts/counter-bundle';
+import type { DialoguePart, ScriptSegment } from './voice-map';
 
 export interface ScriptSentence {
   text: string;
@@ -18,6 +19,16 @@ export interface ScriptSentence {
   ruby?: { start: number; end: number; rt: string }[];
   position: number;
   paragraphEnd: boolean;
+  /**
+   * Script v3 (Season 2 Phase 12 session 4): the dialogue runs of `text` (voice-map.ts).
+   * Absent: all narration (also in scripts made before).
+   */
+  parts?: DialoguePart[];
+  /**
+   * Set when a job is queued (tts-jobs.ts applyFixes): the sentence's runs with their
+   * readings, for a sentence with dialogue.
+   */
+  segments?: ScriptSegment[];
 }
 
 export interface ScriptChapter {

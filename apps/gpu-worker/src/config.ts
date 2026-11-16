@@ -20,7 +20,7 @@ export const PINNED_IMAGE =
  * changes, so every Windows account builds the new one. 2: the `serve` mode (Season 2
  * Phase 12 session 3, the voice kept loaded).
  */
-export const TTS_IMAGE = 'ttsu-irodori:2';
+export const TTS_IMAGE = 'ttsu-irodori:3';
 
 export interface WorkerSettings {
   /** The reader's server (the storage server), e.g. http://192.168.1.5:3081. */

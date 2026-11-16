@@ -17,8 +17,11 @@
  * - 'voice_sample': "Describe a voice": one ~20 s sample in one model call; kept as a voice
  *   preset only when the user keeps it.
  *
- * Every job records its settings as the voice map v1: { mapVersion: 1, narrator, model,
- * seed, pauses }. The text comes from the reader's own import (book-script.ts).
+ * Every job records its settings as a voice map (voice-map.ts): v1 { mapVersion: 1,
+ * narrator, model, seed, pauses } until Season 2 Phase 12 session 4, since then v2 (voices by
+ * key, the key that reads narration and dialogue, model, pauses). The text comes from the
+ * reader's own import (book-script.ts); sentences with dialogue are read in runs, each by its
+ * role's voice (one cue per sentence still).
  *
  * Season 2 Phase 12: the pronunciation fixes (src/pronunciation/) are applied to that text
  * when a job is queued, and the job records which ones it used (`params.fixes`); the PC
@@ -43,6 +46,21 @@ import {
 import type { UploadStore } from '../uploads/upload-store';
 import type { VoiceService } from '../voices/voice-service';
 import { getLink, saveLink } from './audio-links';
+import {
+  DEFAULT_PAUSES,
+  DIALOGUE_RULE,
+  narrationVoice,
+  normalizeVoiceMap,
+  type Pauses,
+  sentenceSegments,
+  usesSeveralVoices,
+  type VoiceMapV1,
+  type VoiceMapV2,
+  type VoiceRef,
+  voicesLabel,
+  workerSegments,
+  workerVoices,
+} from './voice-map';
 import { type AudioWriter, safeBaseName } from './audio-write';
 import {
   type BookScript,
@@ -56,6 +74,7 @@ import type { AudioScanService } from './scan-service';
 import {
   JobRequestError,
   type SubtitleJobService,
+  versionAtLeast,
   type WorkerJob,
   type WorkerJobKind,
 } from './subtitle-jobs';
@@ -88,33 +107,13 @@ export const VOICE_SAMPLE_TEXT =
   '物語の中の人たちが、それぞれの思いを抱えて、少しずつ動き出します。' +
   'それでは、最初のページを開きましょう。';
 
-export interface Pauses {
-  sentenceMs: number;
-  paragraphMs: number;
-  chapterMs: number;
-}
+export { DEFAULT_PAUSES, type Pauses, type VoiceMapV1, type VoiceMapV2 };
 
-export const DEFAULT_PAUSES: Pauses = { sentenceMs: 300, paragraphMs: 700, chapterMs: 2000 };
-
-/** The voice map, v1: one narrator (later versions add dialogue and character voices). */
-export interface VoiceMapV1 {
-  mapVersion: 1;
-  narrator: {
-    voiceId: string | null;
-    name: string;
-    kind: 'clip' | 'design' | 'description';
-    sha256: string | null;
-    description: string | null;
-  };
-  model: { id: number; source: string; revision: string; label: string };
-  seed: number;
-  pauses: Pauses;
-  /** Preview: the chapter read. */
-  chapterIndex?: number;
-  chapterTitle?: string;
-  /** Season 2 Phase 12: the pronunciation fixes used (absent: made before them, none). */
-  fixes?: FixSummary;
-}
+/** The first worker version that reads a job's sentences in runs with several voices. */
+export const VOICES_WORKER_VERSION = '1.3.0';
+/** Why a job read with several voices waits (an older program on the PC). */
+export const TWO_VOICES_UPDATE =
+  'Waiting for the program on the PC to be updated: two voices need version 1.3.0';
 
 /** What the worker gets for a TTS job when it claims it. */
 export interface TtsClaim {
@@ -122,6 +121,11 @@ export interface TtsClaim {
   model: { source: string; revision: string };
   /** The reference clip to copy (GET …/voice), or null (a described voice sample). */
   voice: { sha256: string; seconds: number } | null;
+  /**
+   * Session 4 (worker 1.3.0+): every voice the job reads with, by key (GET …/voice?sha=),
+   * with its seed. A sentence's segments name these keys; 'narration' reads the rest.
+   */
+  voices: Record<string, { sha256: string; seed: number }>;
   /** A voice description (voice samples only). */
   caption: string | null;
   seed: number;
@@ -255,7 +259,68 @@ export function parsePauses(raw: unknown): Pauses {
     sentenceMs: ms(p.sentenceMs, DEFAULT_PAUSES.sentenceMs),
     paragraphMs: ms(p.paragraphMs, DEFAULT_PAUSES.paragraphMs),
     chapterMs: ms(p.chapterMs, DEFAULT_PAUSES.chapterMs),
+    dialogueMs: ms(p.dialogueMs, DEFAULT_PAUSES.dialogueMs),
   };
+}
+
+/** A voice preset as a voice map's entry, with the book's seed for it. */
+export function voiceRef(
+  voice: {
+    id: string;
+    name: string;
+    kind: 'clip' | 'design';
+    sha256: string;
+    description: string | null;
+  },
+  bookId: string,
+): VoiceRef {
+  return {
+    voiceId: voice.id,
+    name: voice.name,
+    kind: voice.kind,
+    sha256: voice.sha256,
+    description: voice.description,
+    seed: seedFor(bookId, voice.sha256),
+  };
+}
+
+/** The job's settings: a narration voice and, when it differs, a dialogue voice (v2). */
+export function buildVoiceMap(
+  narration: VoiceRef,
+  dialogue: VoiceRef | null,
+  model: { id: number; source: string; revision: string; label: string },
+  pauses: Pauses,
+): VoiceMapV2 {
+  const two = !!dialogue && dialogue.sha256 !== narration.sha256;
+  return {
+    mapVersion: 2,
+    voices: two ? { narration, dialogue: dialogue! } : { narration },
+    roles: { narration: 'narration', dialogue: two ? 'dialogue' : 'narration' },
+    dialogueRule: DIALOGUE_RULE,
+    model: { id: model.id, source: model.source, revision: model.revision, label: model.label },
+    pauses,
+  };
+}
+
+/**
+ * A preview's sentences: about `seconds` from the chapter's start, or, when the dialogue has
+ * its own voice, from two sentences before the chapter's first dialogue (so both are heard).
+ */
+export function previewFrom(
+  chapter: ScriptChapter,
+  seconds: number,
+  withDialogue: boolean,
+): ScriptChapter['sentences'] {
+  if (withDialogue) {
+    const first = chapter.sentences.findIndex((s) => s.parts?.length);
+    if (first > 2) {
+      return previewSentences(
+        { ...chapter, sentences: chapter.sentences.slice(first - 2) },
+        seconds,
+      );
+    }
+  }
+  return previewSentences(chapter, seconds);
 }
 
 export class TtsJobService {
@@ -479,19 +544,23 @@ export class TtsJobService {
     bookId: string | null,
     chapters: ScriptChapter[],
   ): Promise<{ chapters: ScriptChapter[]; summary: FixSummary | null }> {
-    if (!this.fixes) return { chapters, summary: null };
-    const entries = this.fixes.entriesFor(userId, bookId);
-    if (!entries.length) return { chapters, summary: { ...NO_FIXES } };
+    const entries = this.fixes ? this.fixes.entriesFor(userId, bookId) : [];
     const sentences = chapters.flatMap((c) => c.sentences);
-    const results = await this.runFixes(entries, sentences);
+    const results = entries.length ? await this.runFixes(entries, sentences) : null;
     let i = 0;
+    // Session 4: a sentence with dialogue also gets its runs, each with its reading (the
+    // fixes' hits go to the run they start in).
     const out = chapters.map((c) => ({
       ...c,
       sentences: c.sentences.map((s) => {
-        const r = results[i++];
-        return r.reading === undefined ? s : { ...s, reading: r.reading };
+        const r = results?.[i++];
+        const fixed = r?.reading === undefined ? s : { ...s, reading: r.reading };
+        const segments = sentenceSegments(s, r?.hits ?? []);
+        return segments ? { ...fixed, segments } : fixed;
       }),
     }));
+    if (!this.fixes) return { chapters: out, summary: null };
+    if (!results) return { chapters: out, summary: { ...NO_FIXES } };
     return { chapters: out, summary: FixService.summary(entries, results) };
   }
 
@@ -530,7 +599,7 @@ export class TtsJobService {
     let audiobook: { version: number | null; madeWithCurrentFixes: boolean } | null = null;
     if (made) {
       const now = FixService.summary(entries, results);
-      const params = made.params as unknown as VoiceMapV1 | null;
+      const params = normalizeVoiceMap(made.params);
       audiobook = {
         version: made.version,
         madeWithCurrentFixes: (params?.fixes?.digest ?? '') === now.digest,
@@ -587,6 +656,15 @@ export class TtsJobService {
     return voice;
   }
 
+  /** Session 4: the dialogue voice asked for (none, '' or the same as narration: one voice). */
+  private chooseDialogueVoice(userId: string, voiceId: unknown) {
+    if (voiceId === undefined || voiceId === null || voiceId === '') return null;
+    const voice = typeof voiceId === 'string' ? this.voices?.get(userId, voiceId) : null;
+    if (!voice)
+      throw new JobRequestError(409, 'no_dialogue_voice', 'Choose the dialogue voice again');
+    return voice;
+  }
+
   private activeFor(userId: string, bookId: string, kind: WorkerJobKind): WorkerJob | null {
     const row = this.db
       .prepare(
@@ -603,7 +681,7 @@ export class TtsJobService {
     kind: WorkerJobKind;
     libraryId: string | null;
     linkConfirmedAt: number | null;
-    params: VoiceMapV1;
+    params: VoiceMapV2;
     version: number | null;
     chaptersTotal: number;
   }): number {
@@ -663,6 +741,10 @@ export class TtsJobService {
     return (row.v ?? 0) + 1;
   }
 
+  /**
+   * A job's voice map (v2): the narration voice, the dialogue voice when there is one (and
+   * it differs), the model and the pauses. Seeds are the book's for each voice.
+   */
   voiceMap(
     voice: {
       id: string;
@@ -674,27 +756,27 @@ export class TtsJobService {
     model: TtsModel,
     bookId: string,
     pauses: Pauses,
-  ): VoiceMapV1 {
-    return {
-      mapVersion: 1,
-      narrator: {
-        voiceId: voice.id,
-        name: voice.name,
-        kind: voice.kind,
-        sha256: voice.sha256,
-        description: voice.description,
-      },
-      model: { id: model.id, source: model.source, revision: model.revision, label: model.label },
-      seed: seedFor(bookId, voice.sha256),
+    dialogue: {
+      id: string;
+      name: string;
+      kind: 'clip' | 'design';
+      sha256: string;
+      description: string | null;
+    } | null = null,
+  ): VoiceMapV2 {
+    return buildVoiceMap(
+      voiceRef(voice, bookId),
+      dialogue ? voiceRef(dialogue, bookId) : null,
+      model,
       pauses,
-    };
+    );
   }
 
   /** "Make an audiobook on the PC": the whole book, as a new version. */
   async startAudiobook(
     userId: string,
     bookId: string,
-    input: { voiceId?: unknown; modelId?: unknown; pauses?: unknown },
+    input: { voiceId?: unknown; dialogueVoiceId?: unknown; modelId?: unknown; pauses?: unknown },
   ): Promise<WorkerJob> {
     if (!this.scan.status.enabled) {
       throw new JobRequestError(503, 'audio_off', "The server's audiobooks folder isn't available");
@@ -710,6 +792,7 @@ export class TtsJobService {
     }
     const model = this.chooseModel(input.modelId);
     const voice = this.chooseVoice(userId, input.voiceId, model);
+    const dialogue = this.chooseDialogueVoice(userId, input.dialogueVoiceId);
     if (this.activeFor(userId, bookId, 'generate_audiobook')) {
       throw new JobRequestError(409, 'busy', 'An audiobook is being made for this book already');
     }
@@ -723,7 +806,7 @@ export class TtsJobService {
       libraryId: lib.id,
       linkConfirmedAt: link?.confirmedAt ?? null,
       params: {
-        ...this.voiceMap(voice, model, bookId, parsePauses(input.pauses)),
+        ...this.voiceMap(voice, model, bookId, parsePauses(input.pauses), dialogue),
         ...(fixed.summary ? { fixes: fixed.summary } : {}),
       },
       version: this.nextVersion(userId, bookId),
@@ -749,22 +832,33 @@ export class TtsJobService {
   async startPreview(
     userId: string,
     bookId: string,
-    input: { voiceId?: unknown; modelId?: unknown; pauses?: unknown; chapterIndex?: unknown },
+    input: {
+      voiceId?: unknown;
+      dialogueVoiceId?: unknown;
+      modelId?: unknown;
+      pauses?: unknown;
+      chapterIndex?: unknown;
+    },
   ): Promise<WorkerJob> {
     const model = this.chooseModel(input.modelId);
     const voice = this.chooseVoice(userId, input.voiceId, model);
+    const dialogue = this.chooseDialogueVoice(userId, input.dialogueVoiceId);
+    const map = this.voiceMap(voice, model, bookId, parsePauses(input.pauses), dialogue);
     const script = await this.bookScript(userId, bookId);
     const wanted = typeof input.chapterIndex === 'number' ? input.chapterIndex : 0;
     const chapter = script.chapters.find((c) => c.index === wanted) ?? script.chapters[0];
     const fixed = await this.applyFixes(userId, bookId, [
-      { ...chapter, sentences: previewSentences(chapter, this.config.previewSeconds) },
+      {
+        ...chapter,
+        sentences: previewFrom(chapter, this.config.previewSeconds, usesSeveralVoices(map)),
+      },
     ]);
     const [previewChapter] = fixed.chapters;
     // A new preview replaces the one waiting.
     const waiting = this.activeFor(userId, bookId, 'preview_audiobook');
     if (waiting) this.jobs.cancel(userId, waiting.id);
     const params = {
-      ...this.voiceMap(voice, model, bookId, parsePauses(input.pauses)),
+      ...map,
       chapterIndex: chapter.index,
       chapterTitle: chapter.title,
       ...(fixed.summary ? { fixes: fixed.summary } : {}),
@@ -805,13 +899,19 @@ export class TtsJobService {
         );
       model = other;
     }
-    const params: VoiceMapV1 = {
-      mapVersion: 1,
-      narrator: { voiceId: null, name, kind: 'description', sha256: null, description },
-      model: { id: model.id, source: model.source, revision: model.revision, label: model.label },
-      seed: randomInt(1, 2_000_000_000),
-      pauses: { ...DEFAULT_PAUSES, chapterMs: 0 },
-    };
+    const params: VoiceMapV2 = buildVoiceMap(
+      {
+        voiceId: null,
+        name,
+        kind: 'description',
+        sha256: null,
+        description,
+        seed: randomInt(1, 2_000_000_000),
+      },
+      null,
+      model,
+      { ...DEFAULT_PAUSES, chapterMs: 0 },
+    );
     // The global pronunciation fixes apply here too (everything the PC voices read).
     const fixed = await this.applyFixes(userId, null, [
       {
@@ -856,16 +956,18 @@ export class TtsJobService {
     }
     if (job.state !== 'done')
       throw new JobRequestError(409, 'not_ready', 'The sample is not ready');
-    const params = job.params as unknown as VoiceMapV1;
+    const params = normalizeVoiceMap(job.params);
+    if (!params) throw new JobRequestError(409, 'not_ready', 'The sample has no settings');
+    const voice = narrationVoice(params);
     const sample = this.file(jobId, 'part-0000.flac');
     if (!(await statFile(sample)))
       throw new JobRequestError(410, 'gone', 'The sample is no longer there; make a new one');
     try {
       return await this.voices.addDesign(userId, sample, {
-        name: params.narrator.name,
-        description: params.narrator.description ?? '',
+        name: voice.name,
+        description: voice.description ?? '',
         modelSource: params.model.source,
-        seed: params.seed,
+        seed: voice.seed,
       });
     } catch (err) {
       const e = err as { status?: number; code?: string; message: string };
@@ -898,17 +1000,28 @@ export class TtsJobService {
 
   // ---------------------------------------------------------------- the worker
 
-  private prepareClaim(job: WorkerJob): { tts: TtsClaim } | { error: string } {
-    const params = job.params as unknown as VoiceMapV1 | null;
-    if (!params || params.mapVersion !== 1) return { error: 'This job has no settings' };
-    let voice: TtsClaim['voice'] = null;
-    if (params.narrator.voiceId) {
-      const v = this.voices?.byId(params.narrator.voiceId);
-      if (!v) return { error: 'The voice preset of this job was deleted' };
-      if (v.sha256 !== params.narrator.sha256)
-        return { error: 'The voice preset of this job changed' };
-      voice = { sha256: v.sha256, seconds: v.clipSeconds };
+  private prepareClaim(job: WorkerJob): { tts: TtsClaim } | { error: string } | { wait: string } {
+    const params = normalizeVoiceMap(job.params);
+    if (!params) return { error: 'This job has no settings' };
+    // Session 4: a job read with several voices needs a PC program that reads them (an older
+    // one would read everything with the narration voice); it waits for the update.
+    if (
+      usesSeveralVoices(params) &&
+      !versionAtLeast(this.jobs.workerVersion(), VOICES_WORKER_VERSION)
+    ) {
+      return { wait: TWO_VOICES_UPDATE };
     }
+    let voice: TtsClaim['voice'] = null;
+    for (const key of new Set(Object.values(params.roles))) {
+      const ref = params.voices[key];
+      if (!ref?.voiceId) continue;
+      const v = this.voices?.byId(ref.voiceId);
+      const what = key === 'narration' ? 'The voice preset' : `The ${key} voice preset`;
+      if (!v) return { error: `${what} of this job was deleted` };
+      if (v.sha256 !== ref.sha256) return { error: `${what} of this job changed` };
+      if (key === params.roles.narration) voice = { sha256: v.sha256, seconds: v.clipSeconds };
+    }
+    const narration = narrationVoice(params);
     if (
       (job.kind === 'generate_audiobook' || job.kind === 'sentence_audio') &&
       job.chaptersDone >= (job.chaptersTotal ?? 0)
@@ -920,8 +1033,9 @@ export class TtsJobService {
         kind: job.kind,
         model: { source: params.model.source, revision: params.model.revision },
         voice,
-        caption: job.kind === 'voice_sample' ? params.narrator.description : null,
-        seed: params.seed,
+        voices: workerVoices(params),
+        caption: job.kind === 'voice_sample' ? narration.description : null,
+        seed: narration.seed,
         // A sentence clip ends where its last sentence ends (the server cuts it there).
         pauses: job.kind === 'sentence_audio' ? { ...params.pauses, chapterMs: 0 } : params.pauses,
         whole: job.kind === 'voice_sample',
@@ -956,30 +1070,44 @@ export class TtsJobService {
 
   /** The chapters still to read (text as shown, and the reading to speak). */
   async workerScript(id: number) {
-    this.held(id);
+    const job = this.held(id);
+    const map = normalizeVoiceMap(job.params);
     const done = new Set(this.doneChapters(id).map((c) => c.idx));
     const chapters = (await this.readJobScript(id)).filter((c) => !done.has(c.index));
     return {
       chapters: chapters.map((c) => ({
         index: c.index,
         title: c.title,
-        sentences: c.sentences.map((s) => ({
-          text: s.text,
-          reading: s.reading,
-          paragraphEnd: s.paragraphEnd,
-        })),
+        sentences: c.sentences.map((s) => {
+          // Session 4: the sentence's runs by voice key (none: one voice reads it all).
+          const segments = map ? workerSegments(s.segments, map) : undefined;
+          return {
+            text: s.text,
+            reading: s.reading,
+            paragraphEnd: s.paragraphEnd,
+            ...(segments ? { segments } : {}),
+          };
+        }),
       })),
     };
   }
 
-  /** The reference clip of the job's voice (path inside the voice store). */
-  voiceClip(id: number): { relative: string } {
+  /**
+   * The reference clip of one of the job's voices (path inside the voice store): the
+   * narration voice, or the one whose clip is `sha256` (session 4: GET …/voice?sha=).
+   */
+  voiceClip(id: number, sha256?: string): { relative: string } {
     const job = this.held(id);
-    const params = job.params as unknown as VoiceMapV1;
-    if (!params.narrator.voiceId || !this.voices) {
-      throw new JobRequestError(404, 'no_voice', 'This job has no voice clip');
+    const map = normalizeVoiceMap(job.params);
+    const ref = !map
+      ? null
+      : sha256
+        ? Object.values(map.voices).find((v) => v.sha256 === sha256)
+        : narrationVoice(map);
+    if (!ref?.voiceId || !this.voices) {
+      throw new JobRequestError(404, 'no_voice', 'This job has no such voice clip');
     }
-    return { relative: this.voices.clipRelative(params.narrator.voiceId) };
+    return { relative: this.voices.clipRelative(ref.voiceId) };
   }
 
   private async freeBytes(dir: string): Promise<number | null> {
@@ -1233,7 +1361,11 @@ export class TtsJobService {
   private async assemble(id: number): Promise<void> {
     const job = this.jobs.get(id);
     if (!job || job.state !== 'running' || !job.bookId || !job.libraryId) return;
-    const params = job.params as unknown as VoiceMapV1;
+    const params = normalizeVoiceMap(job.params);
+    if (!params) {
+      this.failJob(id, 'This job has no settings');
+      return;
+    }
     this.jobs.update(id, { stage: 'assembling', progress: 0.99, lease_expires_at: null });
     const parts = this.doneChapters(id);
     const script = await this.readJobScript(id);
@@ -1264,7 +1396,7 @@ export class TtsJobService {
             album: title,
             genre: 'Audiobook',
             date: date.slice(0, 4),
-            comment: `Generated ${date} with ${params.model.label} (${params.model.source}@${params.model.revision.slice(0, 8)}), voice "${params.narrator.name}". Version ${job.version ?? 1}.${fixesNote(params.fixes)}`,
+            comment: `Generated ${date} with ${params.model.label} (${params.model.source}@${params.model.revision.slice(0, 8)}), ${voicesLabel(params)}. Version ${job.version ?? 1}.${fixesNote(params.fixes)}`,
           },
           parts.map((p) => ({ title: p.title, durationMs: p.duration_ms })),
         ),

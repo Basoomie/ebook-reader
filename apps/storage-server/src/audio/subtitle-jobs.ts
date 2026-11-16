@@ -92,7 +92,11 @@ export const WORKER_STAGES: WorkerJobStage[] = [
  * `countsAsAttempt`: whether a lease that ran out counts against WORKER_MAX_ATTEMPTS.
  */
 export interface WorkerKindHandler {
-  claim(job: WorkerJob): { tts: unknown } | { error: string };
+  /**
+   * `wait` (session 4): the job can't run on this PC yet (its program is too old); it stays
+   * queued with that message and the next job is looked at.
+   */
+  claim(job: WorkerJob): { tts: unknown } | { error: string } | { wait: string };
   countsAsAttempt?(job: WorkerJob): boolean;
 }
 
@@ -1002,6 +1006,10 @@ export class SubtitleJobService {
           const prepared = handler
             ? handler.claim(toJob(row))
             : { error: 'This server cannot run this kind of job' };
+          if ('wait' in prepared) {
+            if (row.message !== prepared.wait) this.update(row.id, { message: prepared.wait });
+            continue;
+          }
           if ('error' in prepared) {
             this.update(row.id, {
               state: 'failed',

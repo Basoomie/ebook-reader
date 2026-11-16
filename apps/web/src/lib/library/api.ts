@@ -1036,7 +1036,7 @@ export class LibraryApi {
   }
 
   async setVoiceChoice(
-    choice: { voiceId: string; modelId: number } | null,
+    choice: { voiceId: string; dialogueVoiceId?: string | null; modelId: number } | null,
     options?: RequestOptions
   ): Promise<VoiceChoice | null> {
     if (!choice) {
@@ -1057,7 +1057,7 @@ export class LibraryApi {
   /** Sets the book's own PC voice, or (null) uses the one for every book again. */
   async setBookVoiceChoice(
     bookId: string,
-    choice: { voiceId: string; modelId: number } | null,
+    choice: { voiceId: string; dialogueVoiceId?: string | null; modelId: number } | null,
     options?: RequestOptions
   ): Promise<BookVoiceChoices> {
     const path = `/books/${encodeURIComponent(bookId)}/tts-voice-choice`;

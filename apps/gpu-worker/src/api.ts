@@ -19,9 +19,14 @@ export interface TtsClaim {
   kind: JobKind;
   model: { source: string; revision: string };
   voice: { sha256: string; seconds: number } | null;
+  /**
+   * Session 4 (server 23+): every voice the job reads with, by key, with its seed. A
+   * sentence's segments name these keys.
+   */
+  voices?: Record<string, { sha256: string; seed: number }>;
   caption: string | null;
   seed: number;
-  pauses: { sentenceMs: number; paragraphMs: number; chapterMs: number };
+  pauses: { sentenceMs: number; paragraphMs: number; chapterMs: number; dialogueMs?: number };
   whole: boolean;
   chaptersTotal: number;
   chaptersDone: number;
@@ -42,10 +47,23 @@ export interface ClaimedJob {
   leaseSeconds: number;
 }
 
+/** Session 4: a run of a sentence read with the voice its key names. */
+export interface ScriptSegment {
+  reading: string;
+  voice: string;
+}
+
+export interface ScriptSentence {
+  text: string;
+  reading: string;
+  paragraphEnd: boolean;
+  segments?: ScriptSegment[];
+}
+
 export interface ScriptChapter {
   index: number;
   title: string;
-  sentences: { text: string; reading: string; paragraphEnd: boolean }[];
+  sentences: ScriptSentence[];
 }
 
 export interface ModelEntry {
@@ -80,11 +98,13 @@ export interface LiveAssignment {
     model: { source: string; revision: string };
     voice: { sha256: string };
     seed: number;
-    pauses: { sentenceMs: number; paragraphMs: number; chapterMs: number };
+    /** Session 4 (server 23+): every voice by key; segments name these keys. */
+    voices?: Record<string, { sha256: string; seed: number }>;
+    pauses: { sentenceMs: number; paragraphMs: number; chapterMs: number; dialogueMs?: number };
   };
   batch: {
     seq: number;
-    sentences: { text: string; reading: string; paragraphEnd: boolean }[];
+    sentences: ScriptSentence[];
   } | null;
 }
 
@@ -374,8 +394,11 @@ export class ServerApi {
     dest: string,
     onBytes: (received: number, total: number | null) => void,
     signal?: AbortSignal,
+    /** Session 4: which of the job's voices (by its clip's sha256); none: the narration. */
+    sha256?: string,
   ): Promise<number> {
-    const res = await this.fetchImpl(`${this.base}/worker/jobs/${id}/${which}`, {
+    const query = which === 'voice' && sha256 ? `?sha=${sha256}` : '';
+    const res = await this.fetchImpl(`${this.base}/worker/jobs/${id}/${which}${query}`, {
       headers: { Authorization: `Bearer ${this.token}` },
       signal,
     });

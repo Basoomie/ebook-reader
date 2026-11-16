@@ -43,9 +43,26 @@ import {
   type ReadAloudGate,
   type SubtitleJobService,
   type WorkerJobKind,
+  versionAtLeast,
 } from './subtitle-jobs';
 import { encodeMp3, probeFile } from './tool-run';
-import { parsePauses, type Pauses, seedFor, type TtsJobService } from './tts-jobs';
+import {
+  parsePauses,
+  type Pauses,
+  seedFor,
+  type TtsJobService,
+  VOICES_WORKER_VERSION,
+} from './tts-jobs';
+import {
+  type DialoguePart,
+  dialogueVoice,
+  type ScriptSegment,
+  usesSeveralVoices,
+  type VoiceMapV2,
+  type WorkerSegment,
+  workerSegments,
+  workerVoices,
+} from './voice-map';
 import type { VoiceChoiceService } from './tts-voice-choice';
 
 /** Most sentences in one batch, and batches waiting for the PC at once. */
@@ -66,6 +83,10 @@ export interface ReadAloudSentence {
   ruby: RubyRun[];
   position: number;
   paragraphEnd: boolean;
+  /** Session 4: the sentence's dialogue runs (book-script.ts v3). */
+  parts?: DialoguePart[];
+  /** Set by the server (applyFixes): the runs with their readings. */
+  segments?: ScriptSegment[];
 }
 
 interface Batch {
@@ -89,6 +110,9 @@ interface Session {
   model: { id: number; source: string; revision: string; label: string };
   from: 'book' | 'global';
   seed: number;
+  /** Session 4: the voices (narration, dialogue) as a job's voice map, and their clips. */
+  map: VoiceMapV2;
+  clips: Map<string, string>;
   pauses: Pauses;
   createdAt: number;
   lastPollAt: number;
@@ -129,7 +153,8 @@ export interface SessionView {
   bookId: string | null;
   state: 'open' | 'ended';
   ended: SessionEnd | null;
-  voice: { name: string; model: string; from: 'book' | 'global' };
+  /** `dialogue`: the dialogue voice's name when it has its own (session 4). */
+  voice: { name: string; dialogue: string | null; model: string; from: 'book' | 'global' };
   /** The batches after `after`, in order. */
   batches: BatchView[];
   pc: LivePcView;
@@ -142,11 +167,18 @@ export interface LiveAssignment {
     model: { source: string; revision: string };
     voice: { sha256: string };
     seed: number;
+    /** Session 4 (worker 1.3.0+): every voice by key; segments name these keys. */
+    voices: Record<string, { sha256: string; seed: number }>;
     pauses: Pauses;
   };
   batch: {
     seq: number;
-    sentences: { text: string; reading: string; paragraphEnd: boolean }[];
+    sentences: {
+      text: string;
+      reading: string;
+      paragraphEnd: boolean;
+      segments?: WorkerSegment[];
+    }[];
   } | null;
 }
 
@@ -223,10 +255,19 @@ export class ReadAloudService implements ReadAloudGate {
 
   // ---------------------------------------------------------------- the queue's view
 
+  /** Whether the PC's program can read this session (its voices). */
+  private pcReadsSession(s: Session): boolean {
+    return (
+      !usesSeveralVoices(s.map) || versionAtLeast(this.jobs.workerVersion(), VOICES_WORKER_VERSION)
+    );
+  }
+
   /** A session needs the PC now: it plays, or batches wait for the PC (ReadAloudGate). */
   needsPc(): boolean {
     const s = this.session;
     if (!s) return false;
+    // Session 4: two voices need worker 1.3.0; an older PC isn't asked (the device says so).
+    if (!this.pcReadsSession(s)) return false;
     if (s.playing) return true;
     for (const b of s.batches.values()) {
       if (b.state === 'waiting' || b.state === 'reading') return true;
@@ -259,6 +300,18 @@ export class ReadAloudService implements ReadAloudGate {
       : 'global';
     if (this.session) await this.end(this.session, 'takeover');
     const now = this.now();
+    const pauses = { ...parsePauses(input.pauses), chapterMs: 0 };
+    const map = this.tts.voiceMap(
+      choice.voice,
+      choice.model,
+      bookId ?? 'read-aloud',
+      pauses,
+      choice.dialogue,
+    );
+    const clips = new Map([[choice.voice.sha256, this.voices.clipRelative(choice.voice.id)]]);
+    if (choice.dialogue) {
+      clips.set(choice.dialogue.sha256, this.voices.clipRelative(choice.dialogue.id));
+    }
     const session: Session = {
       id: randomUUID().replace(/-/g, ''),
       userId,
@@ -277,7 +330,9 @@ export class ReadAloudService implements ReadAloudGate {
       },
       from,
       seed: seedFor(bookId ?? 'read-aloud', choice.voice.sha256),
-      pauses: { ...parsePauses(input.pauses), chapterMs: 0 },
+      map,
+      clips,
+      pauses,
       createdAt: now,
       lastPollAt: now,
       playing: false,
@@ -442,11 +497,11 @@ export class ReadAloudService implements ReadAloudGate {
 
   /** The voice clip of the current session (path inside the voice store). */
   voiceClip(sha256: string): { relative: string } {
-    const s = this.session;
-    if (!s || s.voice.sha256 !== sha256) {
+    const relative = this.session?.clips.get(sha256);
+    if (!relative) {
       throw new JobRequestError(404, 'not_found', 'No read-aloud session uses this voice');
     }
-    return { relative: s.voice.clipRelative };
+    return { relative };
   }
 
   private heldBatch(sessionId: string, seq: number): { s: Session; b: Batch } {
@@ -535,16 +590,21 @@ export class ReadAloudService implements ReadAloudGate {
         model: { source: s.model.source, revision: s.model.revision },
         voice: { sha256: s.voice.sha256 },
         seed: s.seed,
+        voices: workerVoices(s.map),
         pauses: s.pauses,
       },
       batch: b
         ? {
             seq: b.seq,
-            sentences: b.sentences.map((x) => ({
-              text: x.text,
-              reading: x.reading,
-              paragraphEnd: x.paragraphEnd,
-            })),
+            sentences: b.sentences.map((x) => {
+              const segments = workerSegments(x.segments, s.map);
+              return {
+                text: x.text,
+                reading: x.reading,
+                paragraphEnd: x.paragraphEnd,
+                ...(segments ? { segments } : {}),
+              };
+            }),
           }
         : null,
     };
@@ -627,7 +687,12 @@ export class ReadAloudService implements ReadAloudGate {
       bookId: s.bookId,
       state: 'open',
       ended: null,
-      voice: { name: s.voice.name, model: s.model.label, from: s.from },
+      voice: {
+        name: s.voice.name,
+        dialogue: dialogueVoice(s.map)?.name ?? null,
+        model: s.model.label,
+        from: s.from,
+      },
       batches: [...s.batches.values()]
         .filter((b) => b.seq > after)
         .sort((a, b) => a.seq - b.seq)
@@ -672,7 +737,8 @@ export class ReadAloudService implements ReadAloudGate {
       paused: st?.paused === 1,
       problem: st?.problem ?? null,
       version: st?.worker_version ?? null,
-      supportsLive: this.jobs.supportsLive(),
+      supportsLive:
+        this.jobs.supportsLive() && (!this.session || this.pcReadsSession(this.session)),
       answering: this.pcAskedAt !== null && now - this.pcAskedAt <= waitMs,
       lastAskedAt: this.pcAskedAt,
       engine,
@@ -730,8 +796,45 @@ export function parseSentences(raw: unknown): ReadAloudSentence[] {
       typeof o.position === 'number' && Number.isFinite(o.position) && o.position >= 0
         ? Math.round(o.position)
         : 0;
-    return { text, reading, ruby, position, paragraphEnd: o.paragraphEnd === true };
+    const parts = parseParts(o.parts, text);
+    return {
+      text,
+      reading,
+      ruby,
+      position,
+      paragraphEnd: o.paragraphEnd === true,
+      ...(parts ? { parts } : {}),
+    };
   });
+}
+
+/** A sentence's dialogue runs from the device, checked (in order, inside the text). */
+function parseParts(raw: unknown, text: string): DialoguePart[] | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (!Array.isArray(raw) || raw.length > 64) bad('The dialogue runs do not fit their sentence');
+  const out: DialoguePart[] = [];
+  let at = 0;
+  for (const x of raw) {
+    const y = (x && typeof x === 'object' ? x : {}) as Record<string, unknown>;
+    const { start, end, quote } = y;
+    if (
+      typeof start !== 'number' ||
+      typeof end !== 'number' ||
+      !Number.isInteger(start) ||
+      !Number.isInteger(end) ||
+      start < at ||
+      end <= start ||
+      end > text.length ||
+      typeof quote !== 'number' ||
+      !Number.isInteger(quote) ||
+      quote < 0
+    ) {
+      bad('The dialogue runs do not fit their sentence');
+    }
+    out.push({ start, end, role: 'dialogue', quote });
+    at = end;
+  }
+  return out.length ? out : undefined;
 }
 
 /** One [start, end] ms pair per sentence, in order. */

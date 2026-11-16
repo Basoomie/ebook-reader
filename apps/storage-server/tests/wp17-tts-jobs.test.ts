@@ -167,14 +167,16 @@ describe.skipIf(!HAS_FFMPEG)('making an audiobook', () => {
       chaptersTotal: 2,
       chaptersDone: 0,
     });
+    // Season 2 Phase 12 session 4: jobs record the voice map v2 (one voice: dialogue → narration).
     expect(res.body.job.params).toMatchObject({
-      mapVersion: 1,
-      narrator: { voiceId: voice.id, name: 'Narrator', kind: 'clip' },
+      mapVersion: 2,
+      voices: { narration: { voiceId: voice.id, name: 'Narrator', kind: 'clip' } },
+      roles: { narration: 'narration', dialogue: 'narration' },
       model: {
         source: 'Aratako/Irodori-TTS-v4.1-Small',
         revision: '2b28324dc263ed5e6638b3cf3dd94c82ead07b4b',
       },
-      pauses: { sentenceMs: 300, paragraphMs: 700, chapterMs: 2000 },
+      pauses: { sentenceMs: 300, paragraphMs: 700, chapterMs: 2000, dialogueMs: 150 },
     });
     expect((await t.startBook(HITSUJI, { voiceId: voice.id })).body.error.code).toBe('busy');
     const id = res.body.job.id as number;

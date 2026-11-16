@@ -37,12 +37,22 @@ export interface EngineReport extends EngineModel {
 }
 
 export interface ReadRequest {
-  sentences: { text: string; reading: string; paragraphEnd: boolean }[];
+  sentences: {
+    text: string;
+    reading: string;
+    paragraphEnd: boolean;
+    segments?: { reading: string; voice: string }[];
+  }[];
   /** The voice clip's sha256 (its file must be in voices\, see voiceFile), or null. */
   voiceSha: string | null;
+  /**
+   * Session 4: every voice a sentence's segments may name, by key: its clip's sha256 (file
+   * in voices\) and seed.
+   */
+  voices?: Record<string, { sha256: string; seed: number }>;
   caption: string | null;
   seed: number;
-  pauses: { sentenceMs: number; paragraphMs: number; chapterMs?: number };
+  pauses: { sentenceMs: number; paragraphMs: number; chapterMs?: number; dialogueMs?: number };
   whole: boolean;
   /** The pause after the last sentence (ms). */
   lastGapMs: number;
@@ -145,6 +155,11 @@ export class VoiceEngine {
   voiceFile(sha256: string): string {
     if (!/^[a-f0-9]{64}$/.test(sha256)) throw new Error('Bad voice id');
     return path.join(this.liveDir, 'voices', `${sha256}.wav`);
+  }
+
+  private checkedSha(sha256: string): string {
+    if (!/^[a-f0-9]{64}$/.test(sha256)) throw new Error('Bad voice id');
+    return sha256;
   }
 
   async hasVoice(sha256: string): Promise<boolean> {
@@ -328,6 +343,14 @@ export class VoiceEngine {
       {
         sentences: req.sentences,
         voice: req.voiceSha ? `/work/voices/${req.voiceSha}.wav` : null,
+        voices: req.voices
+          ? Object.fromEntries(
+              Object.entries(req.voices).map(([key, v]) => [
+                key,
+                { voice: `/work/voices/${this.checkedSha(v.sha256)}.wav`, seed: v.seed },
+              ]),
+            )
+          : null,
         caption: req.caption,
         seed: req.seed,
         pauses: req.pauses,

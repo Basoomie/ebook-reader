@@ -235,13 +235,14 @@ export async function ttsEnv(
   t.audio.voices = voices;
   t.audio.fixes = fixes;
   const app = t.app;
-  const addVoice = async (name = 'Narrator') =>
+  /** A voice preset; `seconds` other than 4 gives a clip of its own (another sha256). */
+  const addVoice = async (name = 'Narrator', seconds = 4) =>
     (
       await request(app)
         .post(`/api/v1/voices?name=${encodeURIComponent(name)}&consent=1`)
         .set(t.auth)
         .set('Content-Type', 'application/octet-stream')
-        .send(wav('voice', 4))
+        .send(wav(`voice${seconds}`, seconds))
     ).body.voice as { id: string };
   const startBook = (book: string, body: Record<string, unknown>) =>
     request(app)

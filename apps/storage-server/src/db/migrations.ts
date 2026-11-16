@@ -901,6 +901,15 @@ export const MIGRATIONS: { version: number; name: string; sql: string }[] = [
       ALTER TABLE worker_status ADD COLUMN voice_used_at INTEGER;
     `,
   },
+  {
+    version: 23,
+    name: 'narration and dialogue voices',
+    // Season 2 Phase 12 session 4 (audio/voice-map.ts): the PC voice choice (every book, or
+    // one book) can name a second voice for dialogue. NULL: one voice reads everything.
+    sql: `
+      ALTER TABLE tts_voice_choices ADD COLUMN dialogue_voice_id TEXT;
+    `,
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

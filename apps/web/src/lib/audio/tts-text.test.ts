@@ -9,6 +9,8 @@ import {
   audioLengthText,
   audiobookJobText,
   durationText,
+  jobVoices,
+  jobVoicesText,
   modelsForDescriptions,
   modelsForVoices,
   ttsJobActive,
@@ -16,7 +18,48 @@ import {
   workerJobTitle
 } from './tts-text';
 import { folderDetails, subtitleDetails } from './audio-link';
-import type { AudiobookJob, TtsModel } from './tts-types';
+import type { AudiobookJob, TtsModel, VoiceMapV1, VoiceMapV2 } from './tts-types';
+
+describe('the voices a job read with (session 4)', () => {
+  const model = { id: 1, source: 'o/m', revision: 'r', label: 'M' };
+  const pauses = { sentenceMs: 300, paragraphMs: 700, chapterMs: 2000 };
+  const ref = (name: string) => ({
+    voiceId: name,
+    name,
+    kind: 'clip' as const,
+    sha256: name,
+    description: null,
+    seed: 1
+  });
+
+  it('reads v1 (one narrator) and v2 (narration and dialogue)', () => {
+    const v1: VoiceMapV1 = {
+      mapVersion: 1,
+      narrator: { voiceId: 'a', name: 'Aoi', kind: 'clip', sha256: 'a', description: null },
+      model,
+      seed: 1,
+      pauses
+    };
+    const one: VoiceMapV2 = {
+      mapVersion: 2,
+      voices: { narration: ref('Aoi') },
+      roles: { narration: 'narration', dialogue: 'narration' },
+      dialogueRule: 1,
+      model,
+      pauses
+    };
+    const two: VoiceMapV2 = {
+      ...one,
+      voices: { narration: ref('Aoi'), dialogue: ref('Ren') },
+      roles: { narration: 'narration', dialogue: 'dialogue' }
+    };
+    expect(jobVoices(v1)).toEqual({ narration: 'Aoi', dialogue: null });
+    expect(jobVoices(one)).toEqual({ narration: 'Aoi', dialogue: null });
+    expect(jobVoices(null)).toBeNull();
+    expect(jobVoicesText(v1)).toBe('Voice “Aoi”');
+    expect(jobVoicesText(two)).toBe('Voice “Aoi”, dialogue “Ren”');
+  });
+});
 import type { GpuWorkerStatus } from './audio-types';
 import {
   deleteVoiceCopy,

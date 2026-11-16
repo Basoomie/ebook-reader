@@ -3,7 +3,7 @@
  * web app EPUB import and counting code (apps/web/src/lib/server/epub/server-counter.ts).
  * Rebuild with `pnpm build:server-counter` in apps/web after changing that code.
  * epub-count-version: 1
- * build: e57d872668f4dda1
+ * build: 23a13f17cb84d94a
  */
 var __create = Object.create;
 var __defProp = Object.defineProperty;
@@ -15130,7 +15130,7 @@ function buildBookTextIndex(root, keepNodes = false) {
 }
 
 // src/lib/audio/book-script.ts
-var BOOK_SCRIPT_VERSION = 2;
+var BOOK_SCRIPT_VERSION = 3;
 var DEFAULT_MAX_SENTENCE = 120;
 var CLOSERS = /^[」』）)】〉》"'”’]$/u;
 var PAUSE_AFTER = /* @__PURE__ */ new Set(["、", "，", ",", "　", " "]);
@@ -15200,10 +15200,136 @@ function sentenceRanges(display) {
   out.push({ start, end: display.length, paragraphEnd: true });
   return out;
 }
-function elementSentences(element, offset, maxSentence) {
+var TERM_AFTER = /^(?:という|といった|とか|との|とは|として|の|を|に|が|は|で|も|や|へ|から|より|まで|だ)/u;
+var SPEECH_AFTER = /^(?:と|って)/u;
+var SPEECH_END = /[。！？!?．…―─〜～]$/u;
+function dialogueSpans(display) {
+  const out = [];
+  let p0 = 0;
+  for (let i = 0; i <= display.length; i++) {
+    if (i === display.length || display[i] === BLOCK_BREAK) {
+      out.push(...paragraphDialogue(display, p0, i));
+      p0 = i + 1;
+    }
+  }
+  return out;
+}
+var isSpace = (ch) => ch !== void 0 && /\s/u.test(ch);
+function closeOf(display, open, end) {
+  const stack = [display[open]];
+  for (let k = open + 1; k < end; k++) {
+    const ch = display[k];
+    if (ch === "「" || ch === "『") {
+      stack.push(ch);
+    } else if (ch === "」" && stack[stack.length - 1] === "「" || ch === "』" && stack[stack.length - 1] === "『") {
+      stack.pop();
+      if (!stack.length) return { at: k + 1, closed: true };
+    }
+  }
+  return { at: end, closed: false };
+}
+function opensSentence(display, p0, k) {
+  let j = k - 1;
+  while (j >= p0 && isSpace(display[j])) j -= 1;
+  if (j < p0) return true;
+  if (display[j] === "」" || display[j] === "』") return true;
+  while (j >= p0 && CLOSERS.test(display[j])) j -= 1;
+  return j >= p0 && SENTENCE_END.has(display[j]);
+}
+function paragraphDialogue(display, p0, p1) {
+  let a = p0;
+  let b = p1;
+  while (a < b && isSpace(display[a])) a += 1;
+  while (b > a && isSpace(display[b - 1])) b -= 1;
+  if (a >= b) return [];
+  if (display[a] === "『") {
+    const c = closeOf(display, a, b);
+    if (c.closed && c.at === b) return [{ start: a, end: b }];
+  }
+  const quotes = [];
+  let k = a;
+  while (k < b) {
+    const ch = display[k];
+    if (ch === "『") {
+      const c2 = closeOf(display, k, b);
+      k = c2.closed ? c2.at : k + 1;
+      continue;
+    }
+    if (ch !== "「") {
+      k += 1;
+      continue;
+    }
+    const c = closeOf(display, k, b);
+    const after = display.slice(c.at, Math.min(b, c.at + 4)).join("");
+    let speech;
+    if (!c.closed) {
+      speech = true;
+    } else if (after.startsWith("「")) {
+      speech = null;
+    } else if (opensSentence(display, a, k)) {
+      speech = !TERM_AFTER.test(after);
+    } else if (TERM_AFTER.test(after)) {
+      speech = false;
+    } else if (SPEECH_AFTER.test(after)) {
+      speech = true;
+    } else {
+      const rest = display.slice(c.at, b).join("");
+      const inner = display.slice(k + 1, c.at - 1).join("");
+      speech = rest === "" || SENTENCE_END.has(rest[0]) && SPEECH_END.test(inner);
+    }
+    quotes.push({ start: k, end: c.at, speech });
+    k = c.at;
+  }
+  for (let q = quotes.length - 1; q >= 0; q--) {
+    if (quotes[q].speech === null) quotes[q].speech = quotes[q + 1]?.speech ?? true;
+  }
+  return quotes.filter((q) => q.speech).map(({ start, end }) => ({ start, end }));
+}
+function sentenceParts(display, a, b, spans, quoteOf) {
+  const pieces = [];
+  let at = a;
+  spans.forEach((s, i) => {
+    const from = Math.max(a, s.start);
+    const to = Math.min(b, s.end);
+    if (from >= to) return;
+    if (from > at) pieces.push({ from: at, to: from, quote: null });
+    pieces.push({ from, to, quote: quoteOf(i) });
+    at = to;
+  });
+  if (!pieces.some((p) => p.quote !== null)) return void 0;
+  if (at < b) pieces.push({ from: at, to: b, quote: null });
+  const speakable = (p) => SPEAKABLE.test(display.slice(p.from, p.to).join("").replace(new RegExp(GAIJI_MARK2, "gu"), ""));
+  const merged = [];
+  for (const p of pieces) {
+    const last = merged[merged.length - 1];
+    if (last && (!speakable(p) || !speakable(last))) {
+      last.quote = speakable(last) ? last.quote : p.quote;
+      last.to = p.to;
+    } else {
+      merged.push({ ...p });
+    }
+  }
+  const offset = [];
+  let u = 0;
+  for (let k = a; k <= b; k++) {
+    offset[k - a] = u;
+    if (k < b) u += display[k].length;
+  }
+  const parts = merged.filter((p) => p.quote !== null).map((p) => ({
+    start: offset[p.from - a],
+    end: offset[p.to - a],
+    role: "dialogue",
+    quote: p.quote
+  }));
+  return parts.length ? parts : void 0;
+}
+function elementSentences(element, offset, maxSentence, quotes) {
   const index = buildBookTextIndex(element, true);
   const { display, countBefore, nodeAt } = index;
   const sentences = [];
+  const spans = dialogueSpans(display);
+  const firstQuote = quotes.next;
+  quotes.next += spans.length;
   for (const sentence of sentenceRanges(display)) {
     for (const range of splitLong(sentence, display, maxSentence)) {
       let a = range.start;
@@ -15245,12 +15371,14 @@ function elementSentences(element, offset, maxSentence) {
           lastRuby = null;
         }
       }
+      const parts = sentenceParts(display, a, b, spans, (i) => firstQuote + i);
       sentences.push({
         text,
         reading,
         ruby: runs,
         position: offset + countBefore[a],
-        paragraphEnd: range.paragraphEnd
+        paragraphEnd: range.paragraphEnd,
+        ...parts ? { parts } : {}
       });
     }
   }
@@ -15271,11 +15399,12 @@ function bookScriptFromHtml(elementHtml, sections, characters, document2, { maxS
   }
   const out = [];
   let offset = 0;
+  const quotes = { next: 0 };
   for (const chapter of chapters) {
     const startCharacter = offset;
     const sentences = [];
     for (const part of chapter.parts) {
-      const result = elementSentences(part, offset, maxSentence);
+      const result = elementSentences(part, offset, maxSentence, quotes);
       sentences.push(...result.sentences);
       offset += result.total;
     }

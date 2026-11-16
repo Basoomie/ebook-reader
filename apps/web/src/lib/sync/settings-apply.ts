@@ -24,6 +24,7 @@ import {
 } from '$lib/anki/settings';
 import {
   ttsChapterPauseMs$,
+  ttsDialoguePauseMs$,
   ttsParagraphPauseMs$,
   ttsSentencePauseMs$
 } from '$lib/audio/tts-settings';
@@ -51,7 +52,8 @@ export const GLOBAL_SETTING_SUBJECTS: Record<string, { next(value: never): void 
   ankiAutoEnrichSeconds: ankiAutoEnrichSeconds$,
   ttsSentencePauseMs: ttsSentencePauseMs$,
   ttsParagraphPauseMs: ttsParagraphPauseMs$,
-  ttsChapterPauseMs: ttsChapterPauseMs$
+  ttsChapterPauseMs: ttsChapterPauseMs$,
+  ttsDialoguePauseMs: ttsDialoguePauseMs$
 };
 
 /** Applies one global setting. null (never set on the source device) leaves this device's value. */

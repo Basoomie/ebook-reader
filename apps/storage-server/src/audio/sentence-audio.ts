@@ -29,12 +29,8 @@ import { getLink } from './audio-links';
 import { clipText, type ClipSentence, squeeze } from './sentence-text';
 import { JobRequestError, type SubtitleJobService, type WorkerJob } from './subtitle-jobs';
 import { encodeMp3 } from './tool-run';
-import {
-  parsePauses,
-  type SentenceJobHooks,
-  type TtsJobService,
-  type VoiceMapV1,
-} from './tts-jobs';
+import { parsePauses, type SentenceJobHooks, type TtsJobService } from './tts-jobs';
+import { normalizeVoiceMap, type VoiceMapV2 } from './voice-map';
 import type { ScriptChapter } from './book-script';
 import type { VoiceChoiceService } from './tts-voice-choice';
 
@@ -180,7 +176,7 @@ export class SentenceAudioService implements SentenceJobHooks {
     ]);
     const sentences = fixed.chapters[0].sentences as ClipSentence[];
     const pauses = { ...parsePauses(input.pauses), chapterMs: 0 };
-    const params = this.tts.voiceMap(choice.voice, choice.model, bookId, pauses);
+    const params = this.tts.voiceMap(choice.voice, choice.model, bookId, pauses, choice.dialogue);
     const key = joinKey(params);
     const id = randomUUID().replace(/-/g, '');
     const now = this.now();
@@ -193,7 +189,7 @@ export class SentenceAudioService implements SentenceJobHooks {
         .all(userId, bookId) as { id: number; params: string | null; chapters_total: number }[];
       const join = waiting.find((j) => {
         try {
-          return joinKey(JSON.parse(j.params ?? 'null') as VoiceMapV1) === key;
+          return joinKey(normalizeVoiceMap(JSON.parse(j.params ?? 'null'))) === key;
         } catch {
           return false;
         }
@@ -443,17 +439,19 @@ export class SentenceAudioService implements SentenceJobHooks {
   }
 }
 
-/** Clips join a waiting job only with the same voice (and its clip), model and pauses. */
-function joinKey(p: VoiceMapV1 | null): string {
+/** Clips join a waiting job only with the same voices (and their clips), model and pauses. */
+function joinKey(p: VoiceMapV2 | null): string {
   if (!p) return '';
+  const voice = (key: string) => [p.voices[key]?.voiceId ?? null, p.voices[key]?.sha256 ?? null];
   return JSON.stringify([
-    p.narrator.voiceId,
-    p.narrator.sha256,
+    ...voice(p.roles.narration),
+    ...(p.roles.dialogue === p.roles.narration ? [] : voice(p.roles.dialogue)),
     p.model.id,
     p.model.revision,
     p.pauses.sentenceMs,
     p.pauses.paragraphMs,
     p.pauses.chapterMs,
+    ...(p.roles.dialogue === p.roles.narration ? [] : [p.pauses.dialogueMs]),
   ]);
 }
 

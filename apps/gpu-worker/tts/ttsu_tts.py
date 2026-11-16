@@ -17,9 +17,20 @@ then "TTSU chapter-done {...}" is printed and the worker uploads it.
 job.json:
   { "model": {"source": "...", "revision": "<sha>"}, "modelsDir": "/models",
     "precision": "bf16", "voice": "/work/voice.wav" | null, "caption": "..." | null,
-    "seed": 1234, "pauses": {"sentenceMs": 300, "paragraphMs": 700, "chapterMs": 2000},
+    "seed": 1234, "pauses": {"sentenceMs": 300, "paragraphMs": 700, "chapterMs": 2000,
+    "dialogueMs": 150},
+    "voices": {"narration": {"voice": "/work/voice.wav", "seed": 1234},
+               "dialogue": {"voice": "/work/voice-dialogue.wav", "seed": 99}},
     "whole": false, "batch": 8, "out": "/work/out",
-    "chapters": [{"index": 0, "title": "...", "sentences": [{"text", "reading", "paragraphEnd"}]}] }
+    "chapters": [{"index": 0, "title": "...", "sentences": [{"text", "reading", "paragraphEnd",
+                  "segments": [{"reading", "voice": "dialogue"}, ...]}]}] }
+
+Season 2 Phase 12 session 4 (narration and dialogue voices): a sentence may come in runs
+("segments"), each read with the voice its key names in "voices" (its clip and seed); the runs
+of a sentence go through the model like sentences do (in batches, several voices in one batch:
+Irodori batches requests by settings, not by reference clip) and are joined with
+pauses.dialogueMs. A sentence still gets one cue, so subtitles and whispersync are unchanged.
+Without "segments" the sentence is read with "voice" and "seed", as before.
 
 Lines on stdout starting with "TTSU " are for the worker: "TTSU stage <name>",
 "TTSU model {...}", "TTSU progress {...}", "TTSU chapter-done {...}", "TTSU error <text>".
@@ -297,21 +308,22 @@ def cmd_sample(spec_path: str) -> int:
     return 0
 
 
-def _synthesize_group(runtime, texts, *, caption, ref, seed):
-    """One batch of sentences; on running out of GPU memory, the batch is split."""
-    reqs = [request_for(runtime, t, caption=caption, ref=ref, seed=seed) for t in texts]
+def _synthesize_group(runtime, units, *, caption):
+    """One batch of (text, reference clip, seed) units; on running out of GPU memory, the
+    batch is split."""
+    reqs = [request_for(runtime, t, caption=caption, ref=ref, seed=seed) for t, ref, seed in units]
     if len(reqs) > 1:
         for r in reqs:
             r.decode_mode = "batch"
     try:
         return [r.audio for r in runtime.synthesize_batch(reqs)], runtime
     except torch.cuda.OutOfMemoryError:
-        if len(texts) == 1:
+        if len(units) == 1:
             raise
         torch.cuda.empty_cache()
-        half = len(texts) // 2
-        a, _ = _synthesize_group(runtime, texts[:half], caption=caption, ref=ref, seed=seed)
-        b, _ = _synthesize_group(runtime, texts[half:], caption=caption, ref=ref, seed=seed)
+        half = len(units) // 2
+        a, _ = _synthesize_group(runtime, units[:half], caption=caption)
+        b, _ = _synthesize_group(runtime, units[half:], caption=caption)
         return a + b, runtime
 
 
@@ -319,6 +331,24 @@ def _write_atomic(path: Path, write) -> None:
     tmp = path.with_name(f".{path.name}.part")
     write(tmp)
     os.replace(tmp, path)
+
+
+def sentence_units(sentences, *, whole: bool, ref, seed: int, voices: dict | None):
+    """The units the model reads, in order: (sentence index, reading, reference clip, seed).
+    A sentence with "segments" gives one unit per segment, with the voice its key names
+    (an unknown key reads with the default voice)."""
+    if whole:
+        return [(0, "".join(s["reading"] for s in sentences), ref, seed)]
+    units = []
+    for i, s in enumerate(sentences):
+        segments = s.get("segments") or []
+        if not segments:
+            units.append((i, s["reading"], ref, seed))
+            continue
+        for seg in segments:
+            v = (voices or {}).get(seg.get("voice")) or {}
+            units.append((i, seg["reading"], v.get("voice") or ref, int(v.get("seed", seed))))
+    return units
 
 
 def read_sentences(
@@ -333,35 +363,47 @@ def read_sentences(
     whole: bool,
     last_gap_ms: int,
     on_progress=None,
+    voices: dict | None = None,
 ):
-    """Reads one chapter (or one read-aloud batch): every sentence's reading turned into kana
-    and synthesized in batches, each sentence's audio kept apart so its start and end are
-    exact, joined with the pauses (sentence, paragraph, and `last_gap_ms` after the last).
-    Returns (audio float32 mono, sample rate, cues [[startMs, endMs], ...], spoken)."""
+    """Reads one chapter (or one read-aloud batch): every sentence's reading (or each of its
+    segments, session 4) turned into kana and synthesized in batches, each unit's audio kept
+    apart so a sentence's start and end are exact; a sentence's segments are joined with
+    pauses.dialogueMs, the sentences with the pauses (sentence, paragraph, and `last_gap_ms`
+    after the last). Returns (audio float32 mono, sample rate, cues [[startMs, endMs], ...]
+    one per sentence, spoken one per sentence)."""
     import numpy as np
 
     from kana import to_kana
 
-    if whole:
-        readings = ["".join(s["reading"] for s in sentences)]
-    else:
-        readings = [s["reading"] for s in sentences]
-    spoken = [to_kana(r) for r in readings]
-    audios = []
+    units = sentence_units(sentences, whole=whole, ref=ref, seed=seed, voices=voices)
+    unit_spoken = [to_kana(u[1]) for u in units]
+    unit_audio = []
     sample_rate = None
-    for b0 in range(0, len(spoken), batch):
-        group = spoken[b0 : b0 + batch]
-        got, _ = _synthesize_group(runtime, group, caption=caption, ref=ref, seed=seed)
+    for b0 in range(0, len(units), batch):
+        group = [(unit_spoken[k], units[k][2], units[k][3]) for k in range(b0, min(len(units), b0 + batch))]
+        got, _ = _synthesize_group(runtime, group, caption=caption)
         for a in got:
             a = a.detach().to("cpu", torch.float32)
             if a.ndim > 1:
                 a = a.mean(dim=0)
-            audios.append(a.numpy())
+            unit_audio.append(a.numpy())
         if sample_rate is None:
             sample_rate = int(runtime.codec.sample_rate)
         if on_progress:
-            on_progress(min(len(spoken), b0 + len(group)), len(spoken))
+            on_progress(min(len(units), b0 + len(group)), len(units))
     sr = sample_rate or 48000
+    # Each sentence's audio: its units joined with the pause between narration and dialogue.
+    gap_inside = np.zeros(int(sr * int(pauses.get("dialogueMs", 150)) / 1000), dtype=np.float32)
+    count = 1 if whole else len(sentences)
+    audios = [[] for _ in range(count)]
+    spoken_parts = [[] for _ in range(count)]
+    for (i, _r, _ref, _seed), a, sp in zip(units, unit_audio, unit_spoken):
+        if audios[i] and len(gap_inside):
+            audios[i].append(gap_inside)
+        audios[i].append(a)
+        spoken_parts[i].append(sp)
+    audios = [np.concatenate(x) if x else np.zeros(0, dtype=np.float32) for x in audios]
+    spoken = ["".join(x) for x in spoken_parts]
     pieces = []
     cues = []
     t = 0
@@ -413,6 +455,7 @@ def cmd_run(job_path: str) -> int:
     ref = job.get("voice") or None
     seed = int(job.get("seed", 1234))
     whole = bool(job.get("whole"))
+    voices = job.get("voices") or None
     model = job["model"]
 
     log("stage downloading")
@@ -462,6 +505,7 @@ def cmd_run(job_path: str) -> int:
             whole=whole,
             last_gap_ms=pauses.get("chapterMs", 0),
             on_progress=progress,
+            voices=voices,
         )
         # A whole read (a voice sample) has one sentence: one cue.
         name = f"part-{int(chapter['index']):04d}"
@@ -477,7 +521,8 @@ def cmd_serve() -> int:
       {"op": "load", "model": {"source", "revision"}, "precision": "bf16", "modelsDir": "/models"}
           loads the model (once; another model replaces it), then one warm-up call;
           prints "TTSU loaded {description, clip, downloadSeconds, loadSeconds}".
-      {"op": "read", "id": "...", "sentences": [{text, reading, paragraphEnd}], "voice": path|null,
+      {"op": "read", "id": "...", "sentences": [{text, reading, paragraphEnd, segments?}],
+       "voice": path|null, "voices": {key: {"voice": path, "seed": n}}|null,
        "caption": null, "seed": 1, "pauses": {...}, "batch": 8, "whole": false,
        "lastGapMs": 300, "out": "/work/out", "name": "b-12"}
           reads like one chapter of `run` (read_sentences), writes <out>/<name>.flac + .json,
@@ -562,6 +607,7 @@ def cmd_serve() -> int:
                     whole=bool(req.get("whole")),
                     last_gap_ms=int(req.get("lastGapMs", 0)),
                     on_progress=progress,
+                    voices=req.get("voices") or None,
                 )
                 duration_ms = write_part(out, req["name"], audio, sr, cues, spoken)
                 log("read-done " + json.dumps({"id": rid, "durationMs": duration_ms}))

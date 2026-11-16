@@ -123,10 +123,34 @@ export function audiobookJobText(
   }
 }
 
+/**
+ * The voices a job read with, from its voice map (v1: one narrator; v2, Season 2 Phase 12
+ * session 4: the narration voice, and the dialogue voice when it has its own).
+ */
+export function jobVoices(
+  params: AudiobookJob['params']
+): { narration: string; dialogue: string | null } | null {
+  if (!params) return null;
+  if (params.mapVersion === 1) return { narration: params.narrator.name, dialogue: null };
+  const narration = params.voices[params.roles.narration]?.name ?? '';
+  const dialogue =
+    params.roles.dialogue !== params.roles.narration
+      ? (params.voices[params.roles.dialogue]?.name ?? null)
+      : null;
+  return { narration, dialogue };
+}
+
+/** “Voice “A”” or “Voice “A”, dialogue “B”” (a job's settings line). */
+export function jobVoicesText(params: AudiobookJob['params']): string {
+  const v = jobVoices(params);
+  if (!v) return '';
+  return v.dialogue ? `Voice “${v.narration}”, dialogue “${v.dialogue}”` : `Voice “${v.narration}”`;
+}
+
 /** The name of a job in Settings' list of waiting and running jobs. */
 export function workerJobTitle(job: SubtitleJob | AudiobookJob): string {
   if (job.kind === 'voice_sample') {
-    return `Voice sample “${(job as AudiobookJob).params?.narrator.name ?? ''}”`;
+    return `Voice sample “${jobVoices((job as AudiobookJob).params)?.narration ?? ''}”`;
   }
   const title = job.bookTitle ?? ('audioFileName' in job ? job.audioFileName : '') ?? '';
   if (job.kind === 'preview_audiobook') return `${title} (preview)`;

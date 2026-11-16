@@ -463,7 +463,9 @@ export class ReadAloudController {
             reading: l.reading,
             ruby: l.ruby,
             position: l.position,
-            paragraphEnd: l.paragraphEnd
+            paragraphEnd: l.paragraphEnd,
+            // Session 4: the dialogue runs (the server reads them with the dialogue voice).
+            ...(l.parts ? { parts: l.parts } : {})
           })),
           replace
         );
@@ -674,7 +676,9 @@ export class ReadAloudController {
       phase: this.phase,
       pausedFor: this.wantPlay ? null : this.pausedFor,
       status: this.status,
-      voice: voice ? `${voice.name} · ${voice.model}` : null,
+      voice: voice
+        ? `${voice.name}${voice.dialogue ? `, dialogue ${voice.dialogue}` : ''} · ${voice.model}`
+        : null,
       voiceFrom: voice?.from ?? null,
       line: this.lastLine,
       needsVoice: this.needsVoice
