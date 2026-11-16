@@ -6,9 +6,11 @@
 
 import { AnkiConnect } from './anki-connect';
 import { AutoEnricher, type NewCard } from './auto-enrich';
-import { hasMapping, parseMapping } from './mapping';
+import type { LookupSentence } from './lookup-capture';
+import { parseMapping } from './mapping';
 import {
   ankiAutoEnrich$,
+  ankiAutoEnrichSeconds$,
   ankiConnectKey$,
   ankiConnectTimeoutSeconds$,
   ankiConnectUrl$,
@@ -18,12 +20,14 @@ import {
 /**
  * Phase 8: the reader's automatic enrichment, wired to this device's settings. One
  * AnkiConnect client is kept for the checks (made again when its address, key or timeout
- * changes), so the permission request isn't repeated on every lookup.
+ * changes), so the permission request isn't repeated on every check.
  */
 
 export interface ReaderAutoEnrichOptions {
   exclusive(task: () => Promise<void>): Promise<void>;
   enrich(cards: NewCard[]): Promise<void>;
+  /** A card's sentence placed in the open book's loaded text, or null. */
+  place(text: string): LookupSentence | null;
   log(message: string): void;
 }
 
@@ -42,15 +46,14 @@ export function createReaderAutoEnricher(options: ReaderAutoEnrichOptions): Auto
 
     return client.anki;
   };
-  const mapping = () => parseMapping(ankiFieldMapping$.getValue());
 
   return new AutoEnricher({
-    enabled: () => {
-      if (!ankiAutoEnrich$.getValue()) return false;
-      const current = mapping();
-      return Object.keys(current).some((type) => hasMapping(current, type));
-    },
-    isMapped: (noteType) => hasMapping(mapping(), noteType),
+    enabled: () => !!ankiAutoEnrich$.getValue(),
+    sentenceField: (noteType) =>
+      parseMapping(ankiFieldMapping$.getValue())[noteType]?.sentence?.field ?? null,
+    intervalMs: () => (Number(ankiAutoEnrichSeconds$.getValue()) || 3) * 1000,
+    visible: () => typeof document === 'undefined' || document.visibilityState !== 'hidden',
+    place: options.place,
     recentNoteIds: (days) => anki().recentNoteIds(days),
     notesInfo: (ids) => anki().notesInfo(ids),
     enrich: options.enrich,

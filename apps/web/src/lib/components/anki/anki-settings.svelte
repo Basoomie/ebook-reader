@@ -18,6 +18,7 @@
     ankiAudioMatchThreshold$,
     ankiAudioMaxSeconds$,
     ankiAutoEnrich$,
+    ankiAutoEnrichSeconds$,
     ankiBottomBarButton$,
     ankiConnectKey$,
     ankiConnectTimeoutSeconds$,
@@ -136,11 +137,12 @@
 <div class="c-tile rounded-lg p-4 sm:px-7 sm:py-6" data-testid="anki-settings">
   <p class="mb-4">
     <strong>Enrich last Anki card</strong> adds to the note you added to Anki most recently: the
-    book's title as a tag, and, in the fields chosen below, the sentence of your last dictionary
-    lookup (or the text you selected after it), its audio when the book has a linked audiobook with
-    subtitles, the cover and a link back to the passage. A field is filled only if it is empty,
-    added to at the end, or overwritten, as chosen for each field below. In a book: the Anki button
-    in the menu at the top, the bottom bar button, or <kbd>E</kbd>.
+    book's title as a tag, and, in the fields chosen below, the card's sentence (the one in its
+    Sentence field, or the text you select after making the card), its audio when the book has a
+    linked audiobook with subtitles, the cover and a link back to the passage. The card's own
+    sentence is never replaced unless you select text. A field is filled only if it is empty, added
+    to at the end, or overwritten, as chosen for each field below. In a book: the Anki button in the
+    menu at the top, the bottom bar button, or <kbd>E</kbd>.
   </p>
 
   <div class="grid grid-cols-1 gap-y-6 lg:grid-cols-2 lg:gap-x-12">
@@ -236,9 +238,22 @@
         <span>Enrich new cards automatically</span>
       </label>
       <p class="mt-1 max-w-prose text-sm text-c-muted">
-        When you make a card in Yomitan while reading, it gets the sentence, sentence audio, cover
-        and link as Enrich would. Looking up a word without making a card changes nothing.
+        When you make a card in Yomitan while reading, it gets the sentence audio, cover and link as
+        Enrich would. While a book is open, the reader asks Anki for new cards; a card is enriched
+        when the sentence in its Sentence field is in the open book, so the note type needs its
+        Sentence field set up below.
       </p>
+      <label class="mt-4 block text-sm text-c-muted">
+        Ask Anki for new cards every … seconds
+        <input
+          class={fieldClasses}
+          type="number"
+          min="1"
+          step="1"
+          data-testid="anki-auto-enrich-seconds"
+          bind:value={$ankiAutoEnrichSeconds$}
+        />
+      </label>
       <label class="mt-4 block text-sm text-c-muted">
         Enrich the newest note added in the last … days
         <input

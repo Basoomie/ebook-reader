@@ -5,39 +5,64 @@
  */
 
 /**
- * Which sentence Enrich uses (Phase 8, decided with the user 2026-11-15): the newer of the
- * last lookup and the user's selection. So selecting several sentences after a lookup and
- * tapping Enrich uses the selection (with Overwrite, it replaces the one sentence Yomitan
- * put on the card). A selection that is the lookup's own (Yomitan's "select matched text")
- * counts as the lookup. Without a lookup the selection is used, as before.
+ * Which sentence Enrich uses, decided once the card is known (fix of 2026-11-15).
+ *
+ * Yomitan by default keeps its popup in a closed shadow root, so the page can't see a
+ * lookup; and with "Select matched text" (on by default) it selects the looked-up word in the
+ * page, which is not a sentence. The card itself is the record of the lookup: Yomitan put
+ * the sentence in its Sentence field. So, in this order:
+ *
+ * 1. the user's own selection (begun with a real gesture, see selection-origin.ts), made
+ *    after the card was added (a note id is the time it was added): the user chose these
+ *    sentences for this card (e.g. several sentences, with Overwrite);
+ * 2. the card's own sentence (its mapped Sentence field), placed in the book;
+ * 3. the last lookup the reader saw (only where the dictionary popup is visible to the page);
+ * 4. none.
  */
 
-export interface LookupChoice<T> {
-  sentence: T;
-  /** When the lookup was recorded (ms). */
-  at: number;
-}
-
-export interface SelectionChoice<T> {
+export interface SelectionCandidate<T> {
   /** When the selection was last changed (ms). */
   at: number;
-  /** The selection is the word the last lookup selected. */
-  isLookup: boolean;
+  /** Begun with the user's own gesture (not set by a script such as Yomitan). */
+  byUser: boolean;
   /** The selection as the sentence (null when it isn't in the book's text). */
   sentence: () => T | null;
 }
 
+export interface SentenceCandidates<T> {
+  selection: SelectionCandidate<T> | null;
+  /** The last lookup's sentence, or null. */
+  lookup: T | null;
+}
+
+export type SentenceSource = 'selection' | 'card' | 'lookup';
+
+export interface ChosenSentence<T> {
+  sentence: T;
+  source: SentenceSource;
+}
+
+/**
+ * `noteAddedAt` is the card's note id; `card` gives the card's own sentence (null when the
+ * note type maps no Sentence field or the field is empty). Each candidate is worked out only
+ * when it is needed.
+ */
 export function chooseSentence<T>(
-  lookup: LookupChoice<T> | null,
-  selection: SelectionChoice<T> | null
-): T | null {
-  if (!lookup) {
-    return selection ? selection.sentence() : null;
+  candidates: SentenceCandidates<T>,
+  noteAddedAt: number,
+  card: () => T | null
+): ChosenSentence<T> | null {
+  const { selection, lookup } = candidates;
+
+  if (selection && selection.byUser && selection.at > noteAddedAt) {
+    const sentence = selection.sentence();
+    if (sentence) return { sentence, source: 'selection' };
   }
 
-  if (selection && !selection.isLookup && selection.at > lookup.at) {
-    return selection.sentence() ?? lookup.sentence;
-  }
+  const own = card();
+  if (own) return { sentence: own, source: 'card' };
 
-  return lookup.sentence;
+  if (lookup) return { sentence: lookup, source: 'lookup' };
+
+  return null;
 }

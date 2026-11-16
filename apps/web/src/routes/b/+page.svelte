@@ -250,11 +250,8 @@
   import { ankiAutoEnrich$, ankiBottomBarButton$, ankiNoticeSeconds$ } from '$lib/anki/settings';
   import type { LookupCapture, LookupSentence } from '$lib/anki/lookup-capture';
   import type { AutoEnricher, NewCard } from '$lib/anki/auto-enrich';
-  import type { ReaderEnrichOutcome } from '$lib/anki/reader-enrich';
-  import { chooseSentence } from '$lib/anki/sentence-choice';
-
-  /** Phase 8: why a card made from a lookup has no sentence. */
-  const NO_LOOKUP_SENTENCE = "the looked-up word wasn't found in the book's text";
+  import type { ReaderEnrichContext, ReaderEnrichOutcome } from '$lib/anki/reader-enrich';
+  import { SelectionOrigin } from '$lib/anki/selection-origin';
 
   let showSpinner = true;
   let showHeader = false;
@@ -268,8 +265,9 @@
     readerDb = db;
   });
 
-  // WP14: "Enrich last Anki card". The last dictionary lookup's sentence is remembered
-  // while reading (lib/anki/lookup-capture.ts); the action itself loads on first use.
+  // WP14: "Enrich last Anki card". The sentence is picked once the card is known
+  // (lib/anki/sentence-choice.ts): the user's own selection, the card's own sentence placed in
+  // the book (lib/anki/lookup-capture.ts), or the last lookup; the action loads on first use.
   // Isolated like the stats code: failures end up in the banner or the log, never in reading.
   let lookupCapture: LookupCapture | undefined;
   let ankiNotice = '';
@@ -281,6 +279,9 @@
   let autoEnricher: AutoEnricher | undefined;
   let ankiQueue: Promise<unknown> = Promise.resolve();
   let ankiTapQueued = false;
+  // Whether the selection was made by the user (a drag) or set by a script (Yomitan selects
+  // the word it looked up): only the user's own selection is Enrich's sentence.
+  const selectionOrigin = new SelectionOrigin();
 
   function closeAnkiNotice() {
     clearTimeout(ankiNoticeTimer);
@@ -370,6 +371,8 @@
   let lastSelectedRangeWasEmpty = true;
   /** When the selection last changed to some text (ms), for Enrich's sentence choice. */
   let lastSelectedAt = 0;
+  /** That selection was made by the user (not set by a script such as Yomitan). */
+  let lastSelectedByUser = false;
   let isSelectingCustomReadingPoint = false;
   let showCustomReadingPoint = false;
   let localStorageHandler: BrowserStorageHandler;
@@ -660,6 +663,7 @@
         lastSelectedRange = window.getSelection()?.getRangeAt(0);
         lastSelectedRangeWasEmpty = false;
         lastSelectedAt = Date.now();
+        lastSelectedByUser = selectionOrigin.byUser;
       } else {
         lastSelectedRangeWasEmpty = true;
       }
@@ -840,6 +844,22 @@
         startAutoEnrich();
       })
       .catch((error) => logger.warn(`Anki: lookups not recorded: ${error?.message ?? error}`));
+    // Who made the selection (see selection-origin.ts); passive, never in reading's way.
+    const listen = { capture: true, passive: true };
+    const onGesture = () => selectionOrigin.gesture();
+    const onSelectStart = () => selectionOrigin.selectStart();
+    const onSelectionChange = () => selectionOrigin.selectionChange();
+    document.addEventListener('pointerdown', onGesture, listen);
+    document.addEventListener('keydown', onGesture, listen);
+    document.addEventListener('selectstart', onSelectStart, listen);
+    document.addEventListener('selectionchange', onSelectionChange, listen);
+    // Shown again (e.g. back from Anki): check for new cards at once.
+    const onVisible = () => {
+      if (document.visibilityState === 'visible' && ankiAutoEnrich$.getValue()) {
+        void autoEnricher?.check();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisible);
     // bookId$ repeats on every page-store update; only another book forgets the lookup.
     let lookupBook: number | undefined;
     const bookChange = bookId$.subscribe((id) => {
@@ -864,21 +884,31 @@
           autoEnricher = createReaderAutoEnricher({
             exclusive: ankiExclusive,
             enrich: autoEnrichCards,
+            place: (text) => capture.findSentence(text, exploredCharCount),
             log: (message) => logger.info(message)
           });
-          capture.onLookup(autoEnricher.onLookup);
+          autoEnricher.start();
         })
         .catch((error) => logger.warn(`Anki: automatic enrichment off: ${error?.message ?? error}`))
         .finally(() => {
           autoLoading = false;
         });
     };
-    const autoSetting = ankiAutoEnrich$.subscribe(() => startAutoEnrich());
+    const autoSetting = ankiAutoEnrich$.subscribe((on) => {
+      // Switched on again: only cards made from now on.
+      if (on) autoEnricher?.reset();
+      startAutoEnrich();
+    });
 
     return () => {
       stopped = true;
       bookChange.unsubscribe();
       autoSetting.unsubscribe();
+      document.removeEventListener('pointerdown', onGesture, listen);
+      document.removeEventListener('keydown', onGesture, listen);
+      document.removeEventListener('selectstart', onSelectStart, listen);
+      document.removeEventListener('selectionchange', onSelectionChange, listen);
+      document.removeEventListener('visibilitychange', onVisible);
       autoEnricher?.stop();
       lookupCapture?.stop();
       clearTimeout(ankiNoticeTimer);
@@ -886,17 +916,21 @@
   });
 
   /**
-   * The sentence for the card: the newer of the last lookup and the selected text (see
-   * sentence-choice.ts), or none.
+   * What Enrich may take the card's sentence from (decided once the card is known, see
+   * lib/anki/sentence-choice.ts): the selection, the last lookup the reader saw, and the
+   * card's own sentence placed in the book.
    */
-  function ankiSentence(): LookupSentence | null {
+  function ankiSentenceCandidates(): Pick<
+    ReaderEnrichContext,
+    'selection' | 'lookup' | 'placeCardSentence'
+  > {
     const capture = lookupCapture;
+    const near = exploredCharCount;
 
     if (!capture) {
-      return null;
+      return { selection: null, lookup: null, placeCardSentence: () => null };
     }
 
-    const lookup = capture.lastLookup;
     const selection = window.getSelection();
     const range =
       selection && selection.rangeCount && !selection.isCollapsed
@@ -905,16 +939,17 @@
           ? lastSelectedRange
           : undefined;
 
-    return chooseSentence(
-      lookup ? { sentence: lookup, at: capture.lastLookupAt } : null,
-      range
+    return {
+      selection: range
         ? {
             at: lastSelectedAt,
-            isLookup: capture.isLookupSelection(range),
+            byUser: lastSelectedByUser && !capture.isLookupSelection(range),
             sentence: () => capture.selectionSentence(range)
           }
-        : null
-    );
+        : null,
+      lookup: capture.lastLookup,
+      placeCardSentence: (text) => capture.findSentence(text, near)
+    };
   }
 
   async function enrichAnkiCard() {
@@ -932,7 +967,7 @@
       localId: book.id,
       localTitle: book.title,
       coverImage: book.coverImage,
-      sentence: ankiSentence(),
+      ...ankiSentenceCandidates(),
       readingPosition: exploredCharCount,
       bookCharacters: bookCharCount
     };
@@ -977,15 +1012,17 @@
       const { enrichFromReader } = await import('$lib/anki/reader-enrich');
       const outcomes: ReaderEnrichOutcome[] = [];
 
-      for (const { note, lookup } of cards) {
+      for (const { note, sentence } of cards) {
         outcomes.push(
           await enrichFromReader(
             {
               localId: book.id,
               localTitle: book.title,
               coverImage: book.coverImage,
-              sentence: lookup.sentence,
-              noSentenceReason: NO_LOOKUP_SENTENCE,
+              // The card's own sentence, already placed in the book.
+              selection: null,
+              lookup: null,
+              placeCardSentence: () => sentence,
               readingPosition: exploredCharCount,
               bookCharacters: bookCharCount
             },

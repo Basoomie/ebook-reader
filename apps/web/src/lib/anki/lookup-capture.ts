@@ -4,7 +4,11 @@
  * All rights reserved.
  */
 
-import { buildBookTextIndex, type BookTextIndex } from '$lib/components/book-reader/book-search';
+import {
+  buildBookTextIndex,
+  findMatches,
+  type BookTextIndex
+} from '$lib/components/book-reader/book-search';
 import { spanOfRange } from '$lib/notes/anchor';
 import { DICTIONARY_POPUP_SELECTOR, isPopupShown, JPDB_POPUP_ID } from '$lib/stats/lookup-counter';
 import { sentenceAt, sentenceFromText, type Sentence } from './sentence';
@@ -284,6 +288,37 @@ export class LookupCapture {
             at: position,
             cueIds: cueIdsIn(live, span.displayStart, span.displayEnd)
           }
+        : null;
+    } catch (error) {
+      this.fail(error);
+      return null;
+    }
+  }
+
+  /**
+   * A card's own sentence (the one Yomitan put on it) placed in the book's loaded text: its
+   * occurrence nearest to `near` (a reader position), with its whispersync lines. Matched as
+   * in-book search matches (spaces and ruby readings left out). Null when it isn't there.
+   */
+  findSentence(text: string, near: number): LookupSentence | null {
+    try {
+      const root = this.host.root();
+
+      if (!root) return null;
+
+      const live = this.liveIndex(root);
+      const { matches } = findMatches(live, text, 100);
+
+      if (!matches.length) return null;
+
+      const base = this.host.base();
+      const distance = (position: number) => Math.abs(base + position - near);
+      const best = matches.reduce((a, b) => (distance(b.position) < distance(a.position) ? b : a));
+      const position = base + best.position;
+      const sentence = sentenceFromText(text, position);
+
+      return sentence
+        ? { ...sentence, at: position, cueIds: cueIdsIn(live, best.displayStart, best.displayEnd) }
         : null;
     } catch (error) {
       this.fail(error);

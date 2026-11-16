@@ -119,3 +119,52 @@ describe('LookupCapture lookup start and end', () => {
     expect(events.map((e) => [e.change, e.id]).at(-1)).toEqual(['end', 2]);
   });
 });
+
+/** Fix of 2026-11-15: a card's own sentence placed in the book (Yomitan's popup can't be seen). */
+describe('LookupCapture.findSentence', () => {
+  afterEach(() => {
+    document.body.innerHTML = '';
+  });
+
+  function setup(html: string, base = 0) {
+    const content = document.createElement('div');
+    content.className = 'book-content';
+    content.innerHTML = html;
+    document.body.appendChild(content);
+    return new LookupCapture(document, { root: () => content, base: () => base });
+  }
+
+  it('finds the sentence and its position', () => {
+    const capture = setup('<p>前の文。その本を読んだ。後の文。</p>');
+    const found = capture.findSentence('その本を読んだ。', 0);
+    expect(found?.text).toBe('その本を読んだ。');
+    expect(found?.position).toBe(3); // 前の文 (the 。 isn't counted)
+    expect(found?.cueIds).toEqual([]);
+  });
+
+  it('matches across ruby readings and spaces, as in-book search does', () => {
+    const capture = setup('<p>前。<ruby>漢字<rt>かんじ</rt></ruby>を 読む。</p>');
+    // Positions count letters only (no punctuation): 前 is 1.
+    expect(capture.findSentence('漢字を読む。', 0)?.position).toBe(1);
+  });
+
+  it('picks the occurrence nearest the reading position, with the section start added', () => {
+    const capture = setup('<p>はい。</p><p>いいえ。</p><p>はい。</p>', 1000);
+    expect(capture.findSentence('はい。', 1000)?.position).toBe(1000);
+    // はい + いいえ = 5 letters before the second はい.
+    expect(capture.findSentence('はい。', 1009)?.position).toBe(1005);
+  });
+
+  it("gives the sentence's whispersync lines", () => {
+    const capture = setup(
+      '<p><span class="ttu-whispersync-line-highlight-7">前。</span><span class="ttu-whispersync-line-highlight-8">その本を</span><span class="ttu-whispersync-line-highlight-9">読んだ。</span></p>'
+    );
+    expect(capture.findSentence('その本を読んだ。', 0)?.cueIds).toEqual(['8', '9']);
+  });
+
+  it('is null when the sentence is not in the loaded text', () => {
+    const capture = setup('<p>その本を読んだ。</p>');
+    expect(capture.findSentence('別の文。', 0)).toBeNull();
+    expect(capture.findSentence('', 0)).toBeNull();
+  });
+});

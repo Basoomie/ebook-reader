@@ -66,3 +66,9 @@ export const ankiAudioMaxSeconds$ = writableNumberLocalStorageSubject()('ankiAud
  * Off by default; switched on once, it reaches every device.
  */
 export const ankiAutoEnrich$ = writableBooleanLocalStorageSubject()('ankiAutoEnrich', false);
+
+/** How often (seconds) the reader asks Anki for new cards while auto-enrich is on. */
+export const ankiAutoEnrichSeconds$ = writableNumberLocalStorageSubject()(
+  'ankiAutoEnrichSeconds',
+  3
+);

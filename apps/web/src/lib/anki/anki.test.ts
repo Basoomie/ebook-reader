@@ -24,6 +24,7 @@ import { isEmptyField, mergeField } from './field-merge';
 import { hasMapping, parseMapping, withTarget } from './mapping';
 import { parseReaderLink, readerLinkPath, titleTag } from './reader-link';
 import { sentenceAt, sentenceFromText } from './sentence';
+import { chooseSentence } from './sentence-choice';
 import { cuesFromFile, cuesFromSaved, parseVtt } from './subtitle-cues';
 import { coverFileName } from './cover';
 
@@ -1202,5 +1203,148 @@ describe('enrich with sentence audio that waits (Season 2 §3)', () => {
       what: 'sentence audio',
       reason: 'the note type has no field "SentenceAudio"'
     });
+  });
+});
+
+// ------------------------------------------------- the sentence, picked once the card is known
+
+describe('the sentence is picked once the card is known (fix of 2026-11-15)', () => {
+  const OVERWRITE = {
+    'JP Mining Note': {
+      sentence: { field: 'Sentence', mode: 'overwrite' as const },
+      sentenceAudio: { field: 'SentenceAudio', mode: 'overwrite' as const },
+      cover: { field: 'Picture', mode: 'fill-if-empty' as const },
+      link: { field: 'ReaderLink', mode: 'overwrite' as const }
+    }
+  };
+  const YOMITAN = '<b>猫</b>が好きだ。';
+  const card = () =>
+    note(5_000, { Key: '猫', Sentence: YOMITAN, SentenceAudio: '', Picture: '', ReaderLink: '' });
+  /** As reader-enrich.ts does: the card's own sentence is placed in the book at 42. */
+  const placed = (text: string) => ({ text, html: text, position: 42 });
+  const chooser = (selection: Parameters<typeof chooseSentence>[0]['selection']) =>
+    ((n: NoteInfo, cardText: string | null) =>
+      chooseSentence({ selection, lookup: null }, n.noteId, () =>
+        cardText ? placed(cardText) : null
+      )) as EnrichInput['chooseSentence'];
+  const linkAt = (s: { position: number } | null) => `/open?book=b1&pos=${s?.position ?? 0}`;
+
+  it("no selection: the card's own sentence gives the audio and link, and stays as Yomitan wrote it (Overwrite too)", async () => {
+    const n = card();
+    const { anki } = fakeAnki({ notes: [n] });
+    const asked: string[] = [];
+    const result = await enrichLastCard(
+      anki,
+      input({
+        mapping: OVERWRITE,
+        sentence: null,
+        chooseSentence: chooser(null),
+        link: linkAt,
+        audio: async (s) => {
+          asked.push(s.text);
+          return { fileName: 'ttsu-b1-2000-6000.mp3', load: async () => 'QVVESU8=' };
+        }
+      })
+    );
+    expect(asked).toEqual(['猫が好きだ。']);
+    expect(n.fields.Sentence.value).toBe(YOMITAN);
+    expect(n.fields.SentenceAudio.value).toBe('[sound:ttsu-b1-2000-6000.mp3]');
+    expect(n.fields.ReaderLink.value).toBe('/open?book=b1&pos=42');
+    expect(result.sentenceSource).toBe('card');
+    expect(result.sentence?.text).toBe('猫が好きだ。');
+    expect(result.kept).toContain('sentence');
+    expect(result.added).not.toContain('sentence');
+    expect(describeResult(result)).toContain('Already there: sentence');
+  });
+
+  it("ignores Yomitan's selection of the word (set by a script)", async () => {
+    const n = card();
+    const { anki } = fakeAnki({ notes: [n] });
+    await enrichLastCard(
+      anki,
+      input({
+        mapping: OVERWRITE,
+        sentence: null,
+        chooseSentence: chooser({
+          at: 9_000,
+          byUser: false,
+          sentence: () => ({ text: '猫', html: '猫', position: 42 })
+        }),
+        link: linkAt
+      })
+    );
+    expect(n.fields.Sentence.value).toBe(YOMITAN);
+  });
+
+  it("the user's own selection made after the card replaces the sentence under Overwrite", async () => {
+    const n = card();
+    const { anki } = fakeAnki({ notes: [n] });
+    const asked: string[] = [];
+    const result = await enrichLastCard(
+      anki,
+      input({
+        mapping: OVERWRITE,
+        sentence: null,
+        chooseSentence: chooser({
+          at: 9_000,
+          byUser: true,
+          sentence: () => ({
+            text: '前の文。猫が好きだ。',
+            html: '前の文。猫が好きだ。',
+            position: 38
+          })
+        }),
+        link: linkAt,
+        audio: async (s) => {
+          asked.push(s.text);
+          return { fileName: 'ttsu-b1-1000-6000.mp3', load: async () => 'QVVESU8=' };
+        }
+      })
+    );
+    expect(n.fields.Sentence.value).toBe('前の文。猫が好きだ。');
+    expect(asked).toEqual(['前の文。猫が好きだ。']);
+    expect(n.fields.ReaderLink.value).toBe('/open?book=b1&pos=38');
+    expect(result.sentenceSource).toBe('selection');
+    expect(result.replaced).toContain('sentence');
+  });
+
+  it('a note type without a Sentence field and no lookup: no sentence, with the reason', async () => {
+    const n = note(5_000, { Key: '猫', SentenceAudio: '' });
+    const { anki } = fakeAnki({ notes: [n] });
+    const result = await enrichLastCard(
+      anki,
+      input({
+        mapping: {
+          'JP Mining Note': { sentenceAudio: { field: 'SentenceAudio', mode: 'overwrite' } }
+        },
+        sentence: null,
+        chooseSentence: chooser(null),
+        noSentenceReason: 'select the sentence',
+        link: linkAt
+      })
+    );
+    expect(result.skipped).toContainEqual({
+      what: 'sentence audio',
+      reason: 'select the sentence'
+    });
+    expect(result.sentence).toBeNull();
+  });
+
+  it("waiting sentence audio keeps the card's sentence for later", async () => {
+    const n = card();
+    const { anki } = fakeAnki({ notes: [n] });
+    const result = await enrichLastCard(
+      anki,
+      input({
+        mapping: OVERWRITE,
+        sentence: null,
+        chooseSentence: chooser(null),
+        link: linkAt,
+        audio: async () => ({ wait: 'later' })
+      })
+    );
+    expect(result.waiting).toBeTruthy();
+    expect(result.sentence).toEqual({ text: '猫が好きだ。', html: '猫が好きだ。', position: 42 });
+    expect(n.fields.Sentence.value).toBe(YOMITAN);
   });
 });

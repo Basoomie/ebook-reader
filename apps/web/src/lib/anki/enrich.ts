@@ -5,9 +5,11 @@
  */
 
 import type { AnkiConnect, NoteInfo } from './anki-connect';
+import { fieldText } from './auto-enrich';
 import { APPEND_SEPARATOR, isEmptyField, mergeField, type FieldMode } from './field-merge';
 import { ENRICH_ROLES, ROLE_LABELS, type EnrichMapping, type EnrichRole } from './mapping';
 import type { Sentence } from './sentence';
+import type { ChosenSentence, SentenceSource } from './sentence-choice';
 
 /**
  * WP14 "Enrich last card": adds what the book has to the most recently added note in
@@ -73,9 +75,17 @@ export interface EnrichInput {
   title: string;
   tagPrefix: string;
   sentence: Sentence | null;
+  /**
+   * Picks the sentence once the note is known (fix of 2026-11-15, see sentence-choice.ts),
+   * given the text of the note's own Sentence field (null when none is mapped or it is
+   * empty). Replaces `sentence` when set. A sentence that is the card's own is not written
+   * back to its Sentence field.
+   */
+  chooseSentence?: (note: NoteInfo, cardSentence: string | null) => ChosenSentence<Sentence> | null;
   /** Why there is no sentence (shown when the sentence field is mapped). */
   noSentenceReason?: string;
-  link: string | Unavailable;
+  /** The link to the passage, or how to make it from the sentence used. */
+  link: string | Unavailable | ((sentence: Sentence | null) => string | Unavailable);
   /** Resolved only when the note type maps a cover field. */
   cover: () => Promise<MediaFile | Unavailable>;
   /**
@@ -105,6 +115,9 @@ export interface EnrichResult {
   android: boolean;
   /** The sentence audio waits (only set then). */
   waiting?: WaitingClip;
+  /** The sentence this tap used, and where it came from (null: none). */
+  sentence: Sentence | null;
+  sentenceSource: SentenceSource | null;
 }
 
 export class EnrichError extends Error {
@@ -120,9 +133,11 @@ function plain(html: string): string {
   return html
     .replace(/<[^>]*>/g, '')
     .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#0?39;/g, "'")
+    .replace(/&amp;/g, '&')
     .replace(/\[sound:[^\]]*\]/g, '')
     .trim();
 }
@@ -221,11 +236,29 @@ export async function enrichNote(
     kept: [],
     skipped: [],
     unmapped: false,
-    android: anki.isAndroid
+    android: anki.isAndroid,
+    sentence: null,
+    sentenceSource: null
   };
   const mapping = input.mapping[note.modelName] ?? {};
   const roles = ENRICH_ROLES.filter((role) => mapping[role]);
   result.unmapped = roles.length === 0;
+
+  // The sentence: picked now that the card (and its own sentence) is known.
+  const cardText = mapping.sentence
+    ? fieldText(note.fields[mapping.sentence.field]?.value ?? '') || null
+    : null;
+  const chosen = input.chooseSentence
+    ? input.chooseSentence(note, cardText)
+    : input.sentence
+      ? { sentence: input.sentence, source: 'lookup' as const }
+      : null;
+  const sentence = chosen?.sentence ?? null;
+  // The card's own sentence stays as Yomitan wrote it (also under Overwrite).
+  const sentenceIsCards = chosen?.source === 'card';
+  const link = typeof input.link === 'function' ? input.link(sentence) : input.link;
+  result.sentence = sentence;
+  result.sentenceSource = chosen?.source ?? null;
 
   // What each mapped role would put in (media are resolved by name; bytes come later).
   const wanted = new Map<EnrichRole, { value: string; file?: MediaFile; kind?: MediaKind }>();
@@ -253,23 +286,23 @@ export async function enrichNote(
 
     try {
       if (role === 'sentence') {
-        if (input.sentence) wanted.set(role, { value: input.sentence.html });
+        if (sentenceIsCards) continue;
+        if (sentence) wanted.set(role, { value: sentence.html });
         else result.skipped.push({ what: label, reason: input.noSentenceReason ?? 'no sentence' });
       } else if (role === 'link') {
-        if (isUnavailable(input.link))
-          result.skipped.push({ what: label, reason: input.link.skip });
-        else wanted.set(role, { value: input.link });
+        if (isUnavailable(link)) result.skipped.push({ what: label, reason: link.skip });
+        else wanted.set(role, { value: link });
       } else if (role === 'cover') {
         const cover = await input.cover();
         if (isUnavailable(cover)) result.skipped.push({ what: label, reason: cover.skip });
         else media(role, 'image', cover);
       } else if (role === 'sentenceAudio') {
-        if (!input.sentence) {
+        if (!sentence) {
           result.skipped.push({ what: label, reason: input.noSentenceReason ?? 'no sentence' });
           continue;
         }
 
-        const audio = await input.audio(input.sentence);
+        const audio = await input.audio(sentence);
         if (isUnavailable(audio)) result.skipped.push({ what: label, reason: audio.skip });
         else if (isWaiting(audio)) audioWait = audio.wait;
         else media(role, 'sound', audio);
@@ -430,6 +463,7 @@ export async function enrichNote(
   const label = (role: EnrichRole) => ROLE_LABELS[role].toLowerCase();
   result.added.push(...added.map(label));
   result.replaced.push(...replaced.map(label));
+  if (sentenceIsCards && mapping.sentence) result.kept.push(label('sentence'));
   result.kept.push(...kept.map(label));
 
   for (const role of missing) {

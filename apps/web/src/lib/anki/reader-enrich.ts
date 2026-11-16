@@ -28,6 +28,8 @@ import { cutLibraryClip, planLibraryClip, type LibraryClipRequest } from './libr
 import { parseMapping } from './mapping';
 import { readerLinkPath, titleTag } from './reader-link';
 import type { LookupSentence } from './lookup-capture';
+import { sentenceFromText } from './sentence';
+import { chooseSentence, type SelectionCandidate } from './sentence-choice';
 import {
   ankiConnectKey$,
   ankiConnectTimeoutSeconds$,
@@ -53,8 +55,14 @@ export interface ReaderEnrichContext {
   /** The book's own title (the key of whispersync's rows). */
   localTitle: string;
   coverImage: Blob | string | undefined;
-  /** The sentence: the last lookup, else the current selection, else null. */
-  sentence: LookupSentence | null;
+  /**
+   * The current selection (null: none), the last lookup the reader saw (null: none) and how
+   * to place a card's own sentence in the book; the sentence is picked once the card is
+   * known (sentence-choice.ts).
+   */
+  selection: SelectionCandidate<LookupSentence> | null;
+  lookup: LookupSentence | null;
+  placeCardSentence: (text: string) => LookupSentence | null;
   /** Why there is no sentence (default: the button's "look up a word or select …"). */
   noSentenceReason?: string;
   /** Where the reader is (for the link when there is no sentence). */
@@ -69,6 +77,23 @@ export interface ReaderEnrichOutcome {
   unmapped?: boolean;
   /** The note that was changed (or found to need nothing). */
   noteId?: number;
+}
+
+/** No selection of the user's, no Sentence field on the card and no lookup seen. */
+export const NO_SENTENCE =
+  'select a sentence; the card has none of its own (its Sentence field is empty or not set up in Settings > Anki)';
+
+/**
+ * A card's own sentence, placed in the book's loaded text; when it isn't there, its text at
+ * the reading position (the sentence audio is then found by its text).
+ */
+function cardSentence(ctx: ReaderEnrichContext, text: string): LookupSentence | null {
+  const placed = ctx.placeCardSentence(text);
+
+  if (placed) return placed;
+
+  const sentence = sentenceFromText(text, ctx.readingPosition);
+  return sentence ? { ...sentence, at: ctx.readingPosition, cueIds: [] } : null;
 }
 
 /** "Sentence audio will be added …" */
@@ -286,7 +311,6 @@ export async function enrichFromReader(
           .catch(() => undefined)
       : undefined;
     const title = libraryLink?.calibreTitle || ctx.localTitle;
-    const sentence = ctx.sentence;
     const mapping = parseMapping(ankiFieldMapping$.getValue());
     const anki = new AnkiConnect({
       url: ankiConnectUrl$.getValue(),
@@ -297,11 +321,16 @@ export async function enrichFromReader(
     const input: EnrichInput = {
       title,
       tagPrefix: ankiTagPrefix$.getValue(),
-      sentence,
-      noSentenceReason: ctx.noSentenceReason ?? 'look up a word or select a sentence first',
-      link: bookId
-        ? readerLinkPath(bookId, sentence?.position ?? ctx.readingPosition)
-        : { skip: 'the book is not in the library' },
+      sentence: null,
+      chooseSentence: (note, cardText) =>
+        chooseSentence({ selection: ctx.selection, lookup: ctx.lookup }, note.noteId, () =>
+          cardText ? cardSentence(ctx, cardText) : null
+        ),
+      noSentenceReason: ctx.noSentenceReason ?? NO_SENTENCE,
+      link: (sentence) =>
+        bookId
+          ? readerLinkPath(bookId, sentence?.position ?? ctx.readingPosition)
+          : { skip: 'the book is not in the library' },
       cover: async () => {
         const blob = await coverBlob(api, bookId, ctx.coverImage);
 
@@ -328,6 +357,7 @@ export async function enrichFromReader(
     }
 
     if (result.waiting) {
+      const sentence = result.sentence as LookupSentence | null;
       const kept =
         !!bookId && !!sentence && (await keepWaitingClip(result, ctx, bookId, title, sentence));
 

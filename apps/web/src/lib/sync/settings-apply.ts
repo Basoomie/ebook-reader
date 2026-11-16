@@ -17,6 +17,7 @@ import {
   ankiAudioMatchThreshold$,
   ankiAudioMaxSeconds$,
   ankiAutoEnrich$,
+  ankiAutoEnrichSeconds$,
   ankiFieldMapping$,
   ankiLookBackDays$,
   ankiTagPrefix$
@@ -47,6 +48,7 @@ export const GLOBAL_SETTING_SUBJECTS: Record<string, { next(value: never): void 
   ankiAudioMatchThreshold: ankiAudioMatchThreshold$,
   ankiAudioMaxSeconds: ankiAudioMaxSeconds$,
   ankiAutoEnrich: ankiAutoEnrich$,
+  ankiAutoEnrichSeconds: ankiAutoEnrichSeconds$,
   ttsSentencePauseMs: ttsSentencePauseMs$,
   ttsParagraphPauseMs: ttsParagraphPauseMs$,
   ttsChapterPauseMs: ttsChapterPauseMs$
