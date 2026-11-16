@@ -807,6 +807,14 @@ export class ReaderHighlights {
     this.finish();
   }
 
+  /**
+   * Season 2 Phase 12 session 3: where the selection the bar is for starts (a reader
+   * position), for "Read aloud from here".
+   */
+  selectionStart(): number | undefined {
+    return this.anchor?.start;
+  }
+
   /** `H`: highlights the selection with the last color. Returns whether it did anything. */
   async highlightSelection() {
     try {

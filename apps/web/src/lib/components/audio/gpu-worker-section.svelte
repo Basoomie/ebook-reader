@@ -12,6 +12,8 @@
    * any device). Pausing is a toggle that undoes itself, so it doesn't ask.
    * WP17: also audiobooks, previews and voice samples made on the PC (a long audiobook
    * stops after its current chapter when paused).
+   * Season 2 Phase 12 session 3: the voice the PC keeps loaded for read-aloud and Enrich
+   * clips, and how long it keeps it after its last use (stored on the server, every device).
    */
   import SettingsSection from '$lib/components/settings/settings-section.svelte';
   import { subtitleJobText, timeAgo } from '$lib/audio/audio-link';
@@ -67,6 +69,43 @@
     now = Date.now();
     clearTimeout(timer);
     if (!destroyed) timer = setTimeout(() => void load(), POLL_MS);
+  }
+
+  let keepInput = '';
+  let keepError = '';
+  $: if (status?.keepLoadedMinutes !== undefined && keepInput === '') {
+    keepInput = String(status.keepLoadedMinutes);
+  }
+
+  async function saveKeep() {
+    const n = Number(keepInput);
+    if (!Number.isInteger(n) || n < 0 || n > 1440) {
+      keepError = 'A whole number of minutes from 0 to 1440.';
+      return;
+    }
+    try {
+      const minutes = await api.setKeepLoaded(n);
+      if (status) status = { ...status, keepLoadedMinutes: minutes };
+      keepInput = String(minutes);
+      keepError = '';
+    } catch (err) {
+      keepError = describe(err);
+    }
+  }
+
+  const clockTime = (ms: number) =>
+    new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+  /** "Irodori-TTS-v4.1-Small loaded · kept until 14:32" */
+  function voiceText(s: GpuWorkerStatus): string {
+    const engine = s.engine;
+    if (!engine) return 'Not loaded.';
+    const model = engine.source.split('/').pop() ?? engine.source;
+    if (engine.state === 'loading') return `Loading ${model}…`;
+    if (s.live) return `${model} loaded · in use by read-aloud.`;
+    return s.keepVoiceUntil
+      ? `${model} loaded · kept until ${clockTime(s.keepVoiceUntil)}; other jobs wait until then.`
+      : `${model} loaded.`;
   }
 
   async function togglePause() {
@@ -130,7 +169,39 @@
           <dt class="text-c-muted">Program</dt>
           <dd class="break-words" data-testid="gpu-worker-program">{programText(status)}</dd>
         {/if}
+        {#if status.keepLoadedMinutes !== undefined}
+          <dt class="text-c-muted">Voice</dt>
+          <dd class="break-words" data-testid="gpu-worker-voice">{voiceText(status)}</dd>
+        {/if}
       </dl>
+      {#if status.keepLoadedMinutes !== undefined}
+        <label class="mt-4 block text-sm" for="gpu-worker-keep">
+          Keep the voice loaded after read-aloud or an Enrich clip (minutes)
+        </label>
+        <div class="mt-1 flex flex-wrap items-center gap-3">
+          <input
+            id="gpu-worker-keep"
+            type="number"
+            min="0"
+            max="1440"
+            step="1"
+            class="c-input min-h-[3rem] w-28 text-base"
+            data-testid="gpu-worker-keep"
+            value={keepInput}
+            on:change={(e) => {
+              keepInput = e.currentTarget.value;
+              void saveKeep();
+            }}
+          />
+          <span class="text-sm text-c-muted">
+            Loading the voice takes about 2 minutes. While it is kept, audiobooks and subtitles
+            wait; 0 lets it go at once.
+          </span>
+        </div>
+        {#if keepError}
+          <p class="c-notice mt-2" role="alert" data-testid="gpu-worker-keep-error">{keepError}</p>
+        {/if}
+      {/if}
       <div class="mt-4 flex flex-wrap items-center gap-3">
         <button
           class="c-btn c-btn-secondary"

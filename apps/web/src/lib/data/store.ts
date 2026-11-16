@@ -428,7 +428,10 @@ export const bookReaderKeybindMap$ = writableSubject<BookReaderKeybindMap>({
   e: BookReaderAvailableKeybind.ANKI_ENRICH,
   // Season 2 pacer: start / pause.
   KeyS: BookReaderAvailableKeybind.PACER_TOGGLE,
-  s: BookReaderAvailableKeybind.PACER_TOGGLE
+  s: BookReaderAvailableKeybind.PACER_TOGGLE,
+  // Season 2 Phase 12 session 3: read-aloud play / pause.
+  KeyV: BookReaderAvailableKeybind.READ_ALOUD_TOGGLE,
+  v: BookReaderAvailableKeybind.READ_ALOUD_TOGGLE
 });
 
 export const readerImageGalleryKeybindMap$ = writableSubject<ReaderImageGalleryKeybindMap>({

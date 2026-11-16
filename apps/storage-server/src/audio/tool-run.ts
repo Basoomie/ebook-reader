@@ -75,3 +75,41 @@ export async function probeFile(
     codec: audio?.codec_name ?? null,
   };
 }
+
+/**
+ * Season 2 Phase 12: a part the PC read (FLAC) as an MP3 for a device: an Enrich clip (cut
+ * where its last sentence ends, `endMs`) or a read-aloud batch (whole). Same arguments as
+ * the clips of an audiobook (WP14): no metadata, `bitrate` (AUDIO_CLIP_BITRATE).
+ */
+export function encodeMp3(
+  ffmpeg: string,
+  input: string,
+  out: string,
+  bitrate: string,
+  { endMs, timeoutMs = 120_000 }: { endMs?: number; timeoutMs?: number } = {},
+): Promise<string> {
+  return runTool(
+    ffmpeg,
+    [
+      '-hide_banner',
+      '-nostdin',
+      '-y',
+      '-i',
+      input,
+      ...(endMs !== undefined ? ['-t', (endMs / 1000).toFixed(3)] : []),
+      '-map',
+      '0:a:0',
+      '-vn',
+      '-map_metadata',
+      '-1',
+      '-c:a',
+      'libmp3lame',
+      '-b:a',
+      bitrate,
+      '-f',
+      'mp3',
+      out,
+    ],
+    { timeoutMs },
+  );
+}

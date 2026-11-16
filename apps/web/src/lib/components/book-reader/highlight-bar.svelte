@@ -15,7 +15,13 @@
    */
   import { createEventDispatcher } from 'svelte';
   import Fa from 'svelte-fa';
-  import { faImage, faNoteSticky, faTrashCan, faXmark } from '@fortawesome/free-solid-svg-icons';
+  import {
+    faImage,
+    faNoteSticky,
+    faTrashCan,
+    faVolumeHigh,
+    faXmark
+  } from '@fortawesome/free-solid-svg-icons';
   import ColorDot from '$lib/components/notes/color-dot.svelte';
   import {
     HIGHLIGHT_COLOR_NAMES,
@@ -27,8 +33,11 @@
   export let state: BarState;
   export let lastColor: HighlightColor;
   export let eink = false;
+  /** Season 2 Phase 12 session 3: offer "Read aloud from here" for the selection. */
+  export let readAloud = false;
 
   const dispatch = createEventDispatcher<{
+    readAloud: void;
     color: HighlightColor;
     note: void;
     quote: void;
@@ -93,6 +102,17 @@
         >
           <Fa icon={faImage} />
         </button>
+        {#if readAloud}
+          <button
+            class={icon}
+            title="Read aloud from here"
+            aria-label="Read aloud from here"
+            data-testid="highlight-read-aloud"
+            on:click={() => dispatch('readAloud')}
+          >
+            <Fa icon={faVolumeHigh} />
+          </button>
+        {/if}
         {#if state.mode === 'existing'}
           <button
             class={icon}
@@ -125,6 +145,17 @@
       </button>
     {:else}
       <span class="px-3" role="status" data-testid="highlight-bar-message">{state.message}</span>
+      {#if readAloud && state.mode === 'unavailable'}
+        <button
+          class={icon}
+          title="Read aloud from here"
+          aria-label="Read aloud from here"
+          data-testid="highlight-read-aloud"
+          on:click={() => dispatch('readAloud')}
+        >
+          <Fa icon={faVolumeHigh} />
+        </button>
+      {/if}
     {/if}
     {#if state.mode !== 'new' && state.mode !== 'existing'}
       <button

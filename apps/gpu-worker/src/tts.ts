@@ -14,12 +14,17 @@
  *   4. Stop (from the reader) and the time limit kill the container (`docker kill`); the
  *      pause switch lets the current chapter finish, then the job goes back to the queue;
  *   5. the job folder is always removed.
+ *
+ * Season 2 Phase 12 session 3: read-aloud stops a running audiobook, preview or voice sample
+ * at once (`yield`: docker kill, then release; no attempt used, it continues later), and
+ * Enrich's sentence clips are read by the voice kept loaded (engine.ts, runClipsWithEngine).
  */
 import { type ChildProcess, spawn } from 'child_process';
 import fsp from 'fs/promises';
 import path from 'path';
 import { type ClaimedJob, type ScriptChapter, ServerApi, ServerError, type Stage } from './api';
 import type { WorkerSettings } from './config';
+import type { VoiceEngine } from './engine';
 import type { Logger } from './log';
 import { runDocker, Tail } from './subplz';
 
@@ -211,6 +216,7 @@ export async function runTtsJob({
   let message: string | null = null;
   let cancelled = false;
   let pauseWanted = false;
+  let yieldWanted = false;
   let run: TtsRun | null = null;
   const report = async () => {
     try {
@@ -224,6 +230,12 @@ export async function runTtsJob({
         pauseWanted = true;
         log.info(`Job ${job.id}: paused; stopping after the current chapter`);
       }
+      if (r.yield && !yieldWanted) {
+        // Read-aloud needs the PC: stop now (what this chapter read so far is lost).
+        yieldWanted = true;
+        log.info(`Job ${job.id}: making way for read-aloud; stopping now`);
+        await run?.stop('pause');
+      }
     } catch (err) {
       log.error(`Job ${job.id}: progress report failed: ${(err as Error).message}`);
     }
@@ -233,6 +245,10 @@ export async function runTtsJob({
     await fsp.mkdir(out, { recursive: true });
     await report();
     if (cancelled) throw new TtsStopped();
+    if (yieldWanted) {
+      await api.release(job.id);
+      return { tail: null };
+    }
     const script = await api.script(job.id);
     if (script.chapters.length === 0) throw new Error('Nothing left to read');
     let voice: string | null = null;
@@ -284,6 +300,11 @@ export async function runTtsJob({
     message = 'Loading the model';
     await report();
     if (cancelled) throw new TtsStopped();
+    if (yieldWanted) {
+      await api.release(job.id);
+      log.info(`Job ${job.id}: made way for read-aloud before it started`);
+      return { tail: null };
+    }
     log.info(`Job ${job.id}: TTS started (${tts.model.source})`);
     run = new TtsRun(
       s,
@@ -343,7 +364,9 @@ export async function runTtsJob({
     if (uploadError) throw uploadError;
     if (result.stopped === 'pause') {
       await api.release(job.id);
-      log.info(`Job ${job.id}: paused after ${doneCount} of ${total} chapters`);
+      log.info(
+        `Job ${job.id}: ${yieldWanted ? 'made way for read-aloud' : 'paused'} after ${doneCount} of ${total} chapters`,
+      );
       return { tail: null };
     }
     if (result.stopped === 'timeout') {
@@ -368,7 +391,7 @@ export async function runTtsJob({
         { tail: result.tail },
       );
     }
-    if (doneCount < total && job.kind === 'generate_audiobook') {
+    if (doneCount < total && (job.kind === 'generate_audiobook' || job.kind === 'sentence_audio')) {
       throw Object.assign(new Error('The TTS program ended before the last chapter'), {
         tail: result.tail,
       });
@@ -382,4 +405,92 @@ export async function runTtsJob({
 
 export function isStopped(err: unknown, cancelledCode = 'cancelled'): boolean {
   return err instanceof TtsStopped || (err as ServerError)?.code === cancelledCode;
+}
+
+/**
+ * Season 2 Phase 12 session 3: Enrich's sentence clips ('sentence_audio') read by the voice
+ * kept loaded (engine.ts) instead of a container of their own: the model is loaded once
+ * and stays for the keep time, so a clip takes seconds once it is loaded. Each clip is one
+ * chapter, read and uploaded exactly as `runTtsJob` does (the same chapter reading in the
+ * TTS program). Stop from the reader is honoured between clips.
+ */
+export async function runClipsWithEngine({
+  job,
+  jobDir,
+  engine,
+  api,
+  log,
+  s,
+}: {
+  job: ClaimedJob;
+  jobDir: string;
+  engine: VoiceEngine;
+  api: ServerApi;
+  log: Logger;
+  s: WorkerSettings;
+}): Promise<{ tail: string | null }> {
+  const tts = job.tts!;
+  let stage: Stage = 'preparing';
+  let progress: number | null = 0;
+  let message: string | null = null;
+  let cancelled = false;
+  const report = async () => {
+    try {
+      const r = await api.progress(job.id, { stage, progress, message });
+      if (r.cancel && !cancelled) {
+        cancelled = true;
+        log.info(`Job ${job.id}: stopped from the reader`);
+      }
+    } catch (err) {
+      log.error(`Job ${job.id}: progress report failed: ${(err as Error).message}`);
+    }
+  };
+  const timer = setInterval(() => void report(), s.reportSeconds * 1000);
+  try {
+    await report();
+    if (cancelled) throw new TtsStopped();
+    const script = await api.script(job.id);
+    if (script.chapters.length === 0) throw new Error('Nothing left to read');
+    stage = 'generating';
+    message = engine.readyWith(tts.model) ? 'Reading' : 'Loading the model';
+    await report();
+    // The process first (a new one empties its folder), then the voice clip into it.
+    await engine.ensure(tts.model);
+    if (tts.voice && !(await engine.hasVoice(tts.voice.sha256))) {
+      const tmp = path.join(jobDir, 'voice.wav');
+      await api.download(job.id, 'voice', tmp, () => undefined);
+      await fsp.copyFile(tmp, engine.voiceFile(tts.voice.sha256));
+    }
+    message = 'Reading';
+    const total = tts.chaptersTotal;
+    let doneCount = tts.chaptersDone;
+    for (const chapter of script.chapters) {
+      if (cancelled) throw new TtsStopped();
+      const name = `clip-${job.id}-${chapter.index}`;
+      const result = await engine.read({
+        sentences: chapter.sentences,
+        voiceSha: tts.voice?.sha256 ?? null,
+        caption: tts.caption,
+        seed: tts.seed,
+        pauses: tts.pauses,
+        whole: tts.whole,
+        lastGapMs: tts.pauses.chapterMs,
+        name,
+      });
+      try {
+        await api.uploadChapter(job.id, chapter.index, result.flac);
+        await api.finishChapter(job.id, chapter.index, result.meta);
+      } finally {
+        await engine.forget(name);
+      }
+      doneCount += 1;
+      progress = overallProgress(doneCount, total, null);
+      log.info(`Job ${job.id}: clip ${doneCount} of ${total} saved on the server`);
+    }
+    if (doneCount < total) throw new Error('The voice process ended before the last clip');
+    log.info(`Job ${job.id}: done`);
+    return { tail: null };
+  } finally {
+    clearInterval(timer);
+  }
 }

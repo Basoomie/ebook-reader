@@ -60,6 +60,31 @@ describe('LookupCounter', () => {
     expect(count).toBe(2);
   });
 
+  it("counts Yomitan's word selection (secure container) once per opening", async () => {
+    let count = 0;
+    counter = new LookupCounter(document, () => (count += 1));
+    counter.start();
+    const content = document.createElement('div');
+    content.textContent = 'その本を読んだ。';
+    document.body.appendChild(content);
+    const select = (start: number, end: number) => {
+      const range = document.createRange();
+      range.setStart(content.firstChild!, start);
+      range.setEnd(content.firstChild!, end);
+      getSelection()!.removeAllRanges();
+      getSelection()!.addRange(range);
+      document.dispatchEvent(new Event('selectionchange'));
+    };
+    select(2, 3);
+    select(4, 7); // the next word, popup still open
+    expect(count).toBe(1);
+    getSelection()!.removeAllRanges();
+    document.dispatchEvent(new Event('selectionchange'));
+    select(2, 3);
+    expect(count).toBe(2);
+    getSelection()!.removeAllRanges();
+  });
+
   it('stops counting after stop()', async () => {
     let count = 0;
     counter = new LookupCounter(document, () => (count += 1));

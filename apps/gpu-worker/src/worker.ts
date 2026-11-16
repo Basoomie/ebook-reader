@@ -14,7 +14,14 @@
  *
  * WP17: TTS jobs (generated audiobooks, previews, described voices) run in tts.ts; the
  * worker only asks for the kinds whose program is on this PC (SubPlz image, TTS image),
+ * Season 2 Phase 12's sentence audio for Anki ('sentence_audio') among them,
  * and it deletes the files of models removed from the list in the reader (models folder).
+ *
+ * Season 2 Phase 12 session 3 (1.2.0): the voice kept loaded (engine.ts) for live read-aloud
+ * (live.ts) and Enrich's clips. The idle check-in waits on the server (`wait`) and is
+ * answered as soon as there is work, so read-aloud and clips start without the 30-s poll.
+ * The voice is let go when the server says its keep time is over, on Pause, and before any
+ * other job (an audiobook chapter needs nearly all of the GPU's memory).
  */
 import { createHash } from 'crypto';
 import fs from 'fs';
@@ -24,12 +31,23 @@ import { type ClaimedJob, type JobKind, ServerApi, ServerError, type Stage } fro
 import type { WorkerSettings } from './config';
 import type { Logger } from './log';
 import { runDocker, SubplzProgress, SubplzRun, subplzArgs } from './subplz';
-import { isStopped, removeDeletedModels, runTtsJob } from './tts';
+import { VoiceEngine } from './engine';
+import { LiveReader } from './live';
+import { isStopped, removeDeletedModels, runClipsWithEngine, runTtsJob } from './tts';
 
-const TTS_KINDS: JobKind[] = ['generate_audiobook', 'preview_audiobook', 'voice_sample'];
+const TTS_KINDS: JobKind[] = [
+  'generate_audiobook',
+  'preview_audiobook',
+  'voice_sample',
+  'sentence_audio',
+];
 
-/** 1.1.0: WP17 (TTS jobs). 1.1.1: one audio name per audiobook (SubPlz's cache). */
-export const WORKER_VERSION = '1.1.1';
+/**
+ * 1.1.0: WP17 (TTS jobs). 1.1.1: one audio name per audiobook (SubPlz's cache). 1.1.2:
+ * Season 2 Phase 12, Enrich's sentence audio ('sentence_audio': each clip is one chapter).
+ * 1.2.0: Season 2 Phase 12 session 3, live read-aloud and the voice kept loaded (TTS image 2).
+ */
+export const WORKER_VERSION = '1.2.0';
 
 const AUDIO_EXTENSIONS = new Set(['.m4b', '.m4a', '.mp3']);
 
@@ -102,12 +120,23 @@ export class Worker {
   private stopping = false;
   private wake: (() => void) | null = null;
   private lastProblem: string | null | undefined = undefined;
+  /** Season 2 Phase 12 session 3: the voice kept loaded, and read-aloud. */
+  readonly engine: VoiceEngine;
+  private readonly live: LiveReader;
 
   constructor(deps: WorkerDeps) {
     this.s = deps.settings;
     this.api = deps.api;
     this.log = deps.log;
     this.freeBytes = deps.freeBytes ?? statfsFree;
+    this.engine = new VoiceEngine(this.s, this.log);
+    this.live = new LiveReader({
+      api: this.api,
+      engine: this.engine,
+      log: this.log,
+      readMaxSeconds: this.s.liveReadMaxSeconds,
+      stopping: () => this.stopping,
+    });
   }
 
   /** Why the worker can't run SubPlz right now (Docker down, image missing), or null. */
@@ -161,6 +190,7 @@ export class Worker {
 
   /** One round: check in, and run a job if there is one. Returns seconds to wait. */
   async tick(): Promise<number> {
+    const started = Date.now();
     let problem: string | null;
     let kinds: JobKind[] = [];
     try {
@@ -173,19 +203,41 @@ export class Worker {
       else if (this.lastProblem) this.log.info('Docker and the programs are ready');
       this.lastProblem = problem;
     }
+    const tts = kinds.some((k) => TTS_KINDS.includes(k));
     const hb = await this.api.heartbeat({
       version: WORKER_VERSION,
       image: this.s.image,
       ttsImage: this.s.ttsImage,
       problem,
       currentJobId: this.currentJobId,
+      engine: this.engine.report(),
+      wait: this.s.idleWaitSeconds,
     });
-    if (kinds.some((k) => TTS_KINDS.includes(k))) {
+    // A server before read-aloud answers at once: the old poll interval applies.
+    const waited = hb.live !== undefined;
+    const again = () => (waited ? Math.max(0, 1 - (Date.now() - started) / 1000) : hb.pollSeconds);
+    if (tts) {
       await removeDeletedModels(this.api, this.s.ttsModelsDir, this.log);
     }
-    if (hb.paused || kinds.length === 0) return hb.pollSeconds;
-    const job = await this.api.claim(kinds);
-    if (!job) return hb.pollSeconds;
+    // The voice kept loaded: let it go when the keep time is over, on Pause, or when the
+    // server doesn't know about it.
+    if (
+      this.engine.running &&
+      (hb.paused || hb.keepVoiceSeconds === 0 || (!hb.live && hb.keepVoiceSeconds == null))
+    ) {
+      await this.engine.quit(hb.paused ? 'paused' : 'the keep time is over');
+    }
+    if (hb.paused || kinds.length === 0) return again();
+    if (hb.live && tts) {
+      await this.live.run();
+      return 0;
+    }
+    const job = await this.api.claim(kinds, this.engine.report());
+    if (!job) return again();
+    // Any other job needs the GPU's memory: the voice is let go first.
+    if (job.kind !== 'sentence_audio' && this.engine.running) {
+      await this.engine.quit('another job needs the GPU');
+    }
     await this.runJob(job);
     return 0;
   }
@@ -215,6 +267,7 @@ export class Worker {
   stop(): void {
     this.stopping = true;
     this.wake?.();
+    void this.engine.quit('the worker stops');
   }
 
   private sleep(ms: number): Promise<void> {
@@ -239,7 +292,19 @@ export class Worker {
     try {
       await fsp.rm(jobDir, { recursive: true, force: true });
       await fsp.mkdir(jobDir, { recursive: true });
-      await runTtsJob({ job, jobDir, s: this.s, api: this.api, log: this.log });
+      if (job.kind === 'sentence_audio') {
+        // 1.2.0: Enrich's clips are read by the voice kept loaded.
+        await runClipsWithEngine({
+          job,
+          jobDir,
+          engine: this.engine,
+          api: this.api,
+          log: this.log,
+          s: this.s,
+        });
+      } else {
+        await runTtsJob({ job, jobDir, s: this.s, api: this.api, log: this.log });
+      }
     } catch (err) {
       const stopped = isStopped(err);
       const message = stopped

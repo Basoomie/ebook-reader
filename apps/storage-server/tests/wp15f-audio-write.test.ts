@@ -355,7 +355,13 @@ describe('the only writer', () => {
 
   it('no other file under src/audio writes', () => {
     // WP17: tts-workdir.ts, the generated audiobooks' cache folder (like merge-workdir.ts).
-    const allowed = new Set(['audio-write.ts', 'merge-workdir.ts', 'tts-workdir.ts']);
+    // Season 2 Phase 12: read-aloud-workdir.ts, live read-aloud's cache folder (the same).
+    const allowed = new Set([
+      'audio-write.ts',
+      'merge-workdir.ts',
+      'tts-workdir.ts',
+      'read-aloud-workdir.ts',
+    ]);
     const offenders: string[] = [];
     for (const name of fs.readdirSync(path.join(SRC, 'audio'))) {
       if (allowed.has(name)) continue;

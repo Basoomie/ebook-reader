@@ -19,6 +19,26 @@
  * Kinds: 'sync_subtitles' here; WP17's 'generate_audiobook', 'preview_audiobook' and
  * 'voice_sample' (tts-jobs.ts) share the queue, the lease, the pause switch and Stop: they
  * register a handler (registerKind) that prepares what the worker gets when it claims one.
+ *
+ * Season 2 Phase 12 (decided with the user, 2026-11-15): 'sentence_audio' (Enrich's sentence
+ * clips read on the PC, sentence-audio.ts) goes before every other waiting job, and a running
+ * audiobook makes way for it after its current chapter (the pause path: the PC stops after
+ * the chapter and the job goes back to the queue, then continues after the clips). Only
+ * when the PC's last claim asked for 'sentence_audio': an older PC program would otherwise
+ * stop the audiobook again and again for clips it can't read.
+ *
+ * Season 2 Phase 12 session 3, live read-aloud (decided with the user, 2026-11-16;
+ * read-aloud.ts): the PC (worker 1.2.0+) keeps one voice process loaded for read-aloud and
+ * Enrich clips.
+ * - While a read-aloud session needs the PC ("live"), the queue hands out nothing, and a
+ *   running audiobook, preview or voice sample is asked to make way at once (`yield`: the PC
+ *   stops it and releases it, no attempt used; it continues later from its unfinished
+ *   chapter). A running subtitle job is not interrupted.
+ * - Afterwards the voice stays loaded for "Keep the voice loaded" minutes after its last use
+ *   ("warm"), even when other jobs wait; meanwhile only sentence clips are handed out (the
+ *   PC reads them with the loaded voice). Then the PC lets the voice go and the queue goes on.
+ * - The worker's idle check-in can wait (`wait`): it is answered as soon as there is work
+ *   (a session, a job), so read-aloud and clips don't wait for the 30-s poll.
  */
 import type Database from 'better-sqlite3';
 import { getLibrary } from '../calibre/libraries';
@@ -36,7 +56,8 @@ export type WorkerJobKind =
   | 'sync_subtitles'
   | 'generate_audiobook'
   | 'preview_audiobook'
-  | 'voice_sample';
+  | 'voice_sample'
+  | 'sentence_audio';
 export type WorkerJobState = 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
 export type WorkerJobStage =
   | 'downloading'
@@ -46,6 +67,14 @@ export type WorkerJobStage =
   | 'preparing'
   | 'generating'
   | 'assembling';
+
+const ALL_KINDS: WorkerJobKind[] = [
+  'sync_subtitles',
+  'generate_audiobook',
+  'preview_audiobook',
+  'voice_sample',
+  'sentence_audio',
+];
 
 export const WORKER_STAGES: WorkerJobStage[] = [
   'downloading',
@@ -206,6 +235,14 @@ export interface WorkerStatus {
   problem: string | null;
   /** The user's queued and running jobs, oldest first. */
   jobs: WorkerJob[];
+  /** Read-aloud: how long the PC keeps its voice loaded after the last use (minutes). */
+  keepLoadedMinutes: number;
+  /** The PC's voice process as it last reported it (null: none loaded, or an older PC). */
+  engine: EngineState | null;
+  /** Until when the loaded voice is kept (ms), or null (not loaded, or in use now). */
+  keepVoiceUntil: number | null;
+  /** A read-aloud session is using the PC now. */
+  live: boolean;
 }
 
 export interface HeartbeatInput {
@@ -215,7 +252,58 @@ export interface HeartbeatInput {
   problem?: unknown;
   /** The job the worker is working on, or null when idle. */
   currentJobId?: unknown;
+  /** Read-aloud (worker 1.2.0+): its voice process, or null when none is loaded. */
+  engine?: unknown;
 }
+
+/** The PC's voice process as it reports it (worker 1.2.0+). */
+export interface EngineReport {
+  state: 'loading' | 'ready';
+  source: string;
+  revision: string;
+}
+
+/** …and since when it is in that state (the server's clock). */
+export interface EngineState extends EngineReport {
+  since: number;
+}
+
+/** What the heartbeat tells the worker. */
+export interface HeartbeatAnswer {
+  paused: boolean;
+  pollSeconds: number;
+  /** Read-aloud needs the PC now (worker 1.2.0+: go to /worker/live/next). */
+  live: boolean;
+  /** How much longer to keep the loaded voice (s); 0 = let it go now; null = nothing to keep. */
+  keepVoiceSeconds: number | null;
+  keepLoadedMinutes: number;
+}
+
+/** Read-aloud (read-aloud.ts) tells the queue whether a session needs the PC now. */
+export interface ReadAloudGate {
+  needsPc(): boolean;
+}
+
+/** The first worker version with the voice process and read-aloud. */
+export const LIVE_WORKER_VERSION = '1.2.0';
+
+/** Whether a worker version (e.g. "1.2.0") is at least `min`. */
+export function versionAtLeast(version: string | null, min: string): boolean {
+  if (!version) return false;
+  const a = version.split('.').map((n) => parseInt(n, 10));
+  const b = min.split('.').map((n) => parseInt(n, 10));
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const x = Number.isFinite(a[i]) ? a[i] : 0;
+    const y = Number.isFinite(b[i]) ? b[i] : 0;
+    if (x !== y) return x > y;
+  }
+  return true;
+}
+
+/** Job kinds a read-aloud session stops at once (the PC kills and releases them). */
+const YIELDING_KINDS: WorkerJobKind[] = ['generate_audiobook', 'preview_audiobook', 'voice_sample'];
+
+export const KEEP_LOADED_MAX_MINUTES = 24 * 60;
 
 export interface ProgressInput {
   stage?: unknown;
@@ -286,6 +374,10 @@ export class SubtitleJobService {
   private readonly saving = new Set<number>();
   /** WP17: handlers of the other job kinds. */
   private readonly kinds = new Map<WorkerJobKind, WorkerKindHandler>();
+  /** Read-aloud: whether a session needs the PC now (read-aloud.ts attaches it). */
+  private readAloud: ReadAloudGate | null = null;
+  /** Idle check-ins waiting for work (answered early by `notify`). */
+  private readonly waiters = new Set<() => void>();
 
   constructor(opts: SubtitleJobOptions) {
     this.db = opts.db;
@@ -363,6 +455,209 @@ export class SubtitleJobService {
     return this.statusRow().paused === 1;
   }
 
+  // ---------------------------------------------------------------- read-aloud and the voice
+
+  /** Read-aloud (read-aloud.ts) attaches itself. */
+  attachReadAloud(gate: ReadAloudGate): void {
+    this.readAloud = gate;
+  }
+
+  /** Something changed that an idle PC should hear about now (a job, a session, Pause). */
+  notify(): void {
+    for (const wake of [...this.waiters]) wake();
+  }
+
+  /** Waits until `notify` or `ms` (an idle check-in held open). */
+  waitForWork(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+      const done = () => {
+        clearTimeout(timer);
+        this.waiters.delete(done);
+        resolve();
+      };
+      const timer = setTimeout(done, Math.max(0, ms));
+      this.waiters.add(done);
+    });
+  }
+
+  /** The PC's program version as it last reported it. */
+  workerVersion(): string | null {
+    return this.statusRow().worker_version;
+  }
+
+  /** Whether the PC's program can read aloud (worker 1.2.0+). */
+  supportsLive(): boolean {
+    return versionAtLeast(this.workerVersion(), LIVE_WORKER_VERSION);
+  }
+
+  /** A read-aloud session needs the PC now (and the PC can serve it, and isn't paused). */
+  live(): boolean {
+    return !!this.readAloud?.needsPc() && this.supportsLive() && !this.isPaused();
+  }
+
+  private extraRow(): {
+    keep_loaded_minutes: number;
+    engine: string | null;
+    voice_used_at: number | null;
+  } {
+    return (
+      (this.db
+        .prepare(
+          'SELECT keep_loaded_minutes, engine, voice_used_at FROM worker_status WHERE id = 1',
+        )
+        .get() as
+        | { keep_loaded_minutes: number; engine: string | null; voice_used_at: number | null }
+        | undefined) ?? { keep_loaded_minutes: 10, engine: null, voice_used_at: null }
+    );
+  }
+
+  keepLoadedMinutes(): number {
+    return this.extraRow().keep_loaded_minutes;
+  }
+
+  /** Settings > Audiobooks: how long the voice stays loaded after its last use (minutes). */
+  setKeepLoaded(minutes: number): void {
+    const now = this.now();
+    this.db
+      .prepare(
+        `INSERT INTO worker_status (id, paused, keep_loaded_minutes, updated_at) VALUES (1, 0, ?, ?)
+         ON CONFLICT (id) DO UPDATE SET keep_loaded_minutes = excluded.keep_loaded_minutes,
+           updated_at = excluded.updated_at`,
+      )
+      .run(minutes, now);
+    this.log(`GPU worker: the voice is kept loaded for ${minutes} min after its last use`);
+    this.notify();
+  }
+
+  /** The loaded voice was used now (read-aloud or a clip): the keep time starts again. */
+  touchVoice(): void {
+    const now = this.now();
+    this.db
+      .prepare(
+        `INSERT INTO worker_status (id, paused, voice_used_at, updated_at) VALUES (1, 0, ?, ?)
+         ON CONFLICT (id) DO UPDATE SET voice_used_at = excluded.voice_used_at`,
+      )
+      .run(now, now);
+  }
+
+  /** The PC's voice process as it last reported it. */
+  engine(): EngineState | null {
+    const raw = this.extraRow().engine;
+    if (!raw) return null;
+    try {
+      const v = JSON.parse(raw) as EngineState;
+      return v && (v.state === 'loading' || v.state === 'ready') ? v : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Stores what the PC says about its voice process (undefined: an older PC, nothing).
+   * Returns whether it changed (loading, loaded, let go, another model).
+   */
+  recordEngine(raw: unknown): boolean {
+    if (raw === undefined) return false;
+    let next: EngineState | null = null;
+    if (raw && typeof raw === 'object') {
+      const r = raw as Record<string, unknown>;
+      const source = text(r.source, 300);
+      const revision = text(r.revision, 100);
+      if ((r.state === 'loading' || r.state === 'ready') && source && revision) {
+        const prev = this.engine();
+        const same =
+          prev && prev.state === r.state && prev.source === source && prev.revision === revision;
+        next = {
+          state: r.state,
+          source,
+          revision,
+          since: same ? prev.since : this.now(),
+        };
+      }
+    }
+    const prev = this.engine();
+    // A voice just loaded (or another model): its keep time starts now.
+    if (next && (!prev || prev.source !== next.source || prev.revision !== next.revision)) {
+      this.touchVoice();
+    }
+    this.db
+      .prepare('UPDATE worker_status SET engine = ? WHERE id = 1')
+      .run(next ? JSON.stringify(next) : null);
+    return (
+      (prev?.state ?? null) !== (next?.state ?? null) ||
+      prev?.source !== next?.source ||
+      prev?.revision !== next?.revision
+    );
+  }
+
+  /** Until when the loaded voice is kept (ms); null: nothing loaded, or read-aloud uses it. */
+  keepVoiceUntil(): number | null {
+    if (this.live() || !this.engine()) return null;
+    const { keep_loaded_minutes: keep, voice_used_at: used } = this.extraRow();
+    return (used ?? 0) + keep * 60_000;
+  }
+
+  /** How much longer the PC keeps its voice (s): 0 = let it go now; null = nothing to keep. */
+  private keepVoiceSeconds(): number | null {
+    if (this.isPaused()) return 0;
+    if (this.live()) return this.keepLoadedMinutes() * 60;
+    const until = this.keepVoiceUntil();
+    if (until === null) return null;
+    return Math.max(0, Math.ceil((until - this.now()) / 1000));
+  }
+
+  /** The voice is loaded and kept: only sentence clips are handed out meanwhile. */
+  private warm(): boolean {
+    const s = this.keepVoiceSeconds();
+    return !this.live() && s !== null && s > 0;
+  }
+
+  /** Whether the idle PC has something to do now (its check-in is answered at once). */
+  private workWaiting(): boolean {
+    if (this.isPaused()) return false;
+    if (this.live()) return true;
+    const kinds = this.claimedKinds() ?? ALL_KINDS;
+    const allowed = this.warm() ? kinds.filter((k) => k === 'sentence_audio') : kinds;
+    if (!allowed.length) return false;
+    if (this.db.prepare("SELECT 1 FROM worker_jobs WHERE state = 'running'").get()) return false;
+    return !!this.db
+      .prepare(
+        `SELECT 1 FROM worker_jobs WHERE state = 'queued'
+           AND kind IN (${allowed.map(() => '?').join(', ')}) LIMIT 1`,
+      )
+      .get(...allowed);
+  }
+
+  /** The kinds the PC asked for in its last claim (null: it never claimed yet). */
+  claimedKinds(): WorkerJobKind[] | null {
+    const row = this.db.prepare('SELECT kinds FROM worker_status WHERE id = 1').get() as
+      | { kinds: string | null }
+      | undefined;
+    if (!row?.kinds) return null;
+    try {
+      const v = JSON.parse(row.kinds) as unknown;
+      return Array.isArray(v) ? (v.filter((k) => typeof k === 'string') as WorkerJobKind[]) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Whether the PC can read sentence audio (null: not known, it never claimed yet). */
+  readsSentenceAudio(): boolean | null {
+    const kinds = this.claimedKinds();
+    return kinds === null ? null : kinds.includes('sentence_audio');
+  }
+
+  /** Sentence audio waits and the PC can read it: a running audiobook makes way. */
+  private clipsWaiting(): boolean {
+    if (this.readsSentenceAudio() !== true) return false;
+    return !!this.db
+      .prepare(
+        "SELECT 1 FROM worker_jobs WHERE kind = 'sentence_audio' AND state = 'queued' LIMIT 1",
+      )
+      .get();
+  }
+
   status(userId: string): WorkerStatus {
     this.expireLeases();
     const s = this.statusRow();
@@ -384,6 +679,10 @@ export class SubtitleJobService {
       ttsImage: s.tts_image,
       problem: s.problem,
       jobs,
+      keepLoadedMinutes: this.keepLoadedMinutes(),
+      engine: this.engine(),
+      keepVoiceUntil: this.keepVoiceUntil(),
+      live: this.live(),
     };
   }
 
@@ -396,6 +695,7 @@ export class SubtitleJobService {
       )
       .run(paused ? 1 : 0, now);
     this.log(`GPU worker: ${paused ? 'paused' : 'resumed'} from Settings`);
+    this.notify();
   }
 
   // ---------------------------------------------------------------- queuing
@@ -500,6 +800,7 @@ export class SubtitleJobService {
       );
     })();
     this.log(`GPU worker: subtitles queued for book ${bookId} (job ${id})`);
+    this.notify();
     return this.get(id)!;
   }
 
@@ -526,6 +827,11 @@ export class SubtitleJobService {
         `UPDATE worker_jobs SET ${keys.map((k) => `${k} = ?`).join(', ')}, updated_at = ? WHERE id = ?`,
       )
       .run(...keys.map((k) => fields[k]), this.now(), id);
+    // A job left 'running' (done, failed, stopped, back in the queue, or an audiobook put
+    // together): an idle PC waiting in its check-in may have work now.
+    if (typeof fields.state === 'string' && fields.state !== 'running') {
+      queueMicrotask(() => this.notify());
+    }
   }
 
   // ---------------------------------------------------------------- the worker
@@ -590,8 +896,36 @@ export class SubtitleJobService {
     }
   }
 
+  /**
+   * The idle worker's check-in held open up to `waitSeconds` (worker 1.2.0+): answered at
+   * once when there is work (a read-aloud session, a job it can take), else when work comes
+   * or the time is up; never past the moment the kept voice should be let go.
+   */
+  async heartbeatWait(input: HeartbeatInput, waitSeconds: number): Promise<HeartbeatAnswer> {
+    const first = this.heartbeat(input);
+    if (!(waitSeconds > 0) || this.workWaiting()) return first;
+    // The kept voice should go now: answered at once.
+    if (first.keepVoiceSeconds === 0 && this.engine()) return first;
+    let ms = waitSeconds * 1000;
+    if (first.keepVoiceSeconds !== null && first.keepVoiceSeconds > 0) {
+      ms = Math.min(ms, first.keepVoiceSeconds * 1000 + 250);
+    }
+    await this.waitForWork(ms);
+    return this.answer();
+  }
+
+  private answer(): HeartbeatAnswer {
+    return {
+      paused: this.isPaused(),
+      pollSeconds: this.config.pollSeconds,
+      live: this.live(),
+      keepVoiceSeconds: this.keepVoiceSeconds(),
+      keepLoadedMinutes: this.keepLoadedMinutes(),
+    };
+  }
+
   /** The worker's regular check-in when idle (also says whether it is paused). */
-  heartbeat(input: HeartbeatInput): { paused: boolean; pollSeconds: number } {
+  heartbeat(input: HeartbeatInput): HeartbeatAnswer {
     const now = this.now();
     this.db
       .prepare(
@@ -610,6 +944,7 @@ export class SubtitleJobService {
         text(input.problem, 500),
         now,
       );
+    this.recordEngine(input.engine);
     // A worker that says it is idle has lost any job it was holding (the PC restarted).
     const current =
       typeof input.currentJobId === 'number' && Number.isInteger(input.currentJobId)
@@ -630,7 +965,7 @@ export class SubtitleJobService {
       this.requeueOrFail(j, 'The worker restarted during the job');
     }
     this.expireLeases();
-    return { paused: this.isPaused(), pollSeconds: this.config.pollSeconds };
+    return this.answer();
   }
 
   /** The next job for the worker, or null (paused, nothing waiting, or one is running). */
@@ -638,15 +973,27 @@ export class SubtitleJobService {
    * The next job for the worker, or null. `kinds` (WP17): the kinds the PC can run now
    * (its programs); omitted = every kind.
    */
-  claim(kinds?: WorkerJobKind[]): ClaimedJob | null {
-    this.db.prepare('UPDATE worker_status SET last_seen_at = ? WHERE id = 1').run(this.now());
+  claim(kinds?: WorkerJobKind[], engine?: unknown): ClaimedJob | null {
+    const now = this.now();
+    this.db
+      .prepare(
+        `INSERT INTO worker_status (id, paused, last_seen_at, kinds, updated_at) VALUES (1, 0, ?, ?, ?)
+         ON CONFLICT (id) DO UPDATE SET last_seen_at = excluded.last_seen_at, kinds = excluded.kinds`,
+      )
+      .run(now, JSON.stringify(kinds ?? ALL_KINDS), now);
+    this.recordEngine(engine);
     this.expireLeases();
     if (this.isPaused()) return null;
+    // Read-aloud uses the PC now; while the voice is kept loaded only clips are read.
+    if (this.live()) return null;
+    if (this.warm()) kinds = (kinds ?? ALL_KINDS).filter((k) => k === 'sentence_audio');
     return this.db.transaction((): ClaimedJob | null => {
       const running = this.db.prepare("SELECT 1 FROM worker_jobs WHERE state = 'running'").get();
       if (running) return null;
       const rows = this.db
-        .prepare(`${JOB_SELECT} WHERE j.state = 'queued' ORDER BY j.id`)
+        .prepare(
+          `${JOB_SELECT} WHERE j.state = 'queued' ORDER BY (j.kind = 'sentence_audio') DESC, j.id`,
+        )
         .all() as JobRow[];
       for (const row of rows) {
         if (kinds && !kinds.includes(row.kind)) continue;
@@ -771,11 +1118,11 @@ export class SubtitleJobService {
    * A progress report; extends the lease. `cancel` tells the worker to stop; `pause` (WP17)
    * that the pause switch is on (a long job stops after its current chapter).
    */
-  progress(id: number, input: ProgressInput): { cancel: boolean; pause: boolean } {
+  progress(id: number, input: ProgressInput): { cancel: boolean; pause: boolean; yield: boolean } {
     this.expireLeases();
     const job = this.get(id);
     if (!job) throw new JobRequestError(404, 'not_found', 'No such job');
-    if (job.state !== 'running') return { cancel: true, pause: false };
+    if (job.state !== 'running') return { cancel: true, pause: false, yield: false };
     const stage = WORKER_STAGES.includes(input.stage as WorkerJobStage)
       ? (input.stage as WorkerJobStage)
       : job.stage;
@@ -790,7 +1137,12 @@ export class SubtitleJobService {
       lease_expires_at: this.now() + this.config.leaseSeconds * 1000,
     });
     this.db.prepare('UPDATE worker_status SET last_seen_at = ? WHERE id = 1').run(this.now());
-    return { cancel: job.cancelRequested, pause: this.isPaused() };
+    return {
+      cancel: job.cancelRequested,
+      pause: this.isPaused() || (job.kind === 'generate_audiobook' && this.clipsWaiting()),
+      // Read-aloud (worker 1.2.0+): stop now and release, no attempt used.
+      yield: YIELDING_KINDS.includes(job.kind) && this.live(),
+    };
   }
 
   /** WP17: the worker paused between chapters: back to the queue, no attempt used. */
@@ -799,14 +1151,24 @@ export class SubtitleJobService {
     if (!job) throw new JobRequestError(404, 'not_found', 'No such job');
     if (job.state !== 'running' || this.saving.has(id)) return job;
     if (job.cancelRequested) return this.fail(id, {});
+    const paused = this.isPaused();
+    const live = !paused && this.live();
     this.update(id, {
       state: 'queued',
       stage: null,
-      message: 'Paused; it continues when the PC is resumed.',
+      message: paused
+        ? 'Paused; it continues when the PC is resumed.'
+        : live
+          ? 'Paused for read-aloud; it continues afterwards.'
+          : 'Paused for sentence audio for Anki; it continues next.',
       attempts: Math.max(0, job.attempts - 1),
       lease_expires_at: null,
     });
-    this.log(`GPU worker: job ${id} paused between chapters`);
+    this.log(
+      live
+        ? `GPU worker: job ${id} made way for read-aloud`
+        : `GPU worker: job ${id} ${paused ? 'paused' : 'made way for sentence audio'} between chapters`,
+    );
     return this.get(id)!;
   }
 

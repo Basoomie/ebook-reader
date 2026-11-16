@@ -42,6 +42,11 @@
   import { NOT_OVER_HTTP } from '$lib/diagnostics/diagnostics-text';
   import { canPersistStorage } from '$lib/functions/secure-context';
   import { bookIllustrationsPosition$, libraryLook$ } from '$lib/library/settings';
+  import {
+    readAloudAheadSeconds$,
+    readAloudBottomBarButton$,
+    readAloudLookupResume$
+  } from '$lib/read-aloud/settings';
   import { customFontNames$ } from '$lib/fonts/server-fonts-browser';
   import { BlurMode } from '$lib/data/blur-mode';
   import { dialogManager } from '$lib/data/dialog-manager';
@@ -791,6 +796,47 @@
         on:change={(e) => pacerTextlessPageSeconds$.next(nonNegative(e, 3))}
       />
     </SettingsItemGroup>
+    <!-- Season 2 Phase 12 session 3: read-aloud's rarely changed settings (play and speed are in the reader). -->
+    <SettingsItemGroup
+      title="Read Aloud: Button in the Bottom Bar"
+      tooltip="This device only. A read-aloud button (play or pause) in the reader's bottom bar. It also shows while read-aloud is on. Read-aloud itself is in the reader's menu: Read aloud (key V)."
+    >
+      <div data-testid="settings-read-aloud-button">
+        <ButtonToggleGroup
+          archive
+          options={optionsForToggle}
+          bind:selectedOptionId={$readAloudBottomBarButton$}
+        />
+      </div>
+    </SettingsItemGroup>
+    <SettingsItemGroup
+      title="Read Aloud: Read Ahead (Seconds)"
+      tooltip="This device only. How much audio the PC reads ahead of what is playing. More bridges short gaps (the PC busy for a moment) but makes the PC read sentences you may skip."
+    >
+      <input
+        type="number"
+        step="10"
+        min="10"
+        class={fieldClasses}
+        data-testid="settings-read-aloud-ahead"
+        value={$readAloudAheadSeconds$}
+        on:change={(e) => readAloudAheadSeconds$.next(Math.max(10, nonNegative(e, 60)))}
+      />
+    </SettingsItemGroup>
+    <SettingsItemGroup
+      title="Read Aloud: Wait After a Lookup (Seconds)"
+      tooltip="This device only. Read-aloud pauses while a dictionary popup is open and goes on this many seconds after it closes. 0: it stays paused until you play it again."
+    >
+      <input
+        type="number"
+        step="1"
+        min="0"
+        class={fieldClasses}
+        data-testid="settings-read-aloud-lookup-resume"
+        value={$readAloudLookupResume$}
+        on:change={(e) => readAloudLookupResume$.next(nonNegative(e, 1))}
+      />
+    </SettingsItemGroup>
     <SettingsItemGroup
       title="Highlight Bar for Any Selection"
       tooltip="Normally the highlight bar appears after you long-press text or select it with the mouse. Turn this on if it never appears on this device: then any text selection in the book shows it."
@@ -1412,7 +1458,7 @@
       {#if trackerAutoPause !== TrackerAutoPause.OFF}
         <SettingsItemGroup
           title="Dictionary Detection"
-          tooltip={`If enabled auto pause is skipped if open yomitan/jpdb-browser-reader was detected - yomitan requires disabled 'Secure Container' settings`}
+          tooltip={`If enabled auto pause is skipped while a Yomitan or jpdb-browser-reader popup is open; if disabled the tracker pauses while one is open. With Yomitan's "Use a secure container around popups" on (its default), a lookup made while you have text selected isn't seen.`}
         >
           <ButtonToggleGroup
             archive

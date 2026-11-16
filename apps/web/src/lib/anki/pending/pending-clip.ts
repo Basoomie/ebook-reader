@@ -14,9 +14,10 @@ import { APPEND_SEPARATOR, isEmptyField, mergeField, type FieldMode } from '../f
  * cancelled, or dismissed after it turned out impossible (decided with the user, 2026-11-15).
  *
  * Two steps: 'waiting' (the clip isn't made yet) → 'ready' (the clip's bytes are kept here)
- * → added to the card, then the record is deleted. Where the clip comes from is `source`;
- * Phase 12 adds the PC's generated sentence audio as another source, and the step that
- * writes it into the card stays the same.
+ * → added to the card, then the record is deleted. Where the clip comes from is `source`:
+ * 'library', cut from the book's audiobook on the server; 'pc' (Season 2 Phase 12), read
+ * by the PC for a book without an audiobook. The step that writes it into the card is the
+ * same for both.
  */
 
 export type PendingState = 'waiting' | 'ready' | 'failed';
@@ -33,7 +34,25 @@ export interface LibraryClipSource {
   bookCharacters: number;
 }
 
-export type ClipSource = LibraryClipSource;
+/**
+ * Season 2 Phase 12: the PC reads the sentence (a book without an audiobook). The server
+ * finds the text in the book (its furigana) and keeps the clip until this device has it.
+ */
+export interface PcClipSource {
+  kind: 'pc';
+  /** The sentence as shown (plain text): what Enrich put in the card. */
+  text: string;
+  position: number;
+  bookCharacters: number;
+  /** "Longest sentence audio" at the tap (seconds): a longer clip is left out. */
+  maxSeconds: number;
+  /** The pauses between sentences at the tap (Settings > Audiobooks). */
+  pauses: { sentenceMs: number; paragraphMs: number; chapterMs: number };
+  /** The server's clip, once it was asked for. */
+  clipId?: string;
+}
+
+export type ClipSource = LibraryClipSource | PcClipSource;
 
 export interface PendingClip {
   id: string;
@@ -66,6 +85,8 @@ export interface PendingClip {
   lastTriedAt?: number;
   /** Why it is still waiting (the last attempt's problem). */
   problem?: string;
+  /** What it waits for, as the last attempt found it (default: by its source). */
+  waitingFor?: string;
   /** 'failed': why it can't be added; shown until dismissed. */
   failedReason?: string;
   /** The tab working on it, so two tabs never add it twice. */
@@ -165,5 +186,6 @@ export function newPendingId(now: number, random = Math.random): string {
 export function pendingStatus(clip: PendingClip): string {
   if (clip.state === 'failed') return `Couldn't add: ${clip.failedReason ?? 'unknown problem'}.`;
   if (clip.state === 'ready') return 'Waiting for Anki';
-  return 'Waiting for the library server';
+  if (clip.waitingFor) return clip.waitingFor;
+  return clip.source.kind === 'pc' ? 'Waiting for the PC' : 'Waiting for the library server';
 }

@@ -34,6 +34,7 @@
   import SubtitleJobPanel from '$lib/components/audio/subtitle-job-panel.svelte';
   import AudiobookJobPanel from '$lib/components/audio/audiobook-job-panel.svelte';
   import BookPronunciationPanel from '$lib/components/audio/book-pronunciation-panel.svelte';
+  import BookVoiceChoice from '$lib/components/audio/book-voice-choice.svelte';
   import AudioDevicePanel from '$lib/components/audio/audio-device-panel.svelte';
   import { storedAudio } from '$lib/audio/offline/audio-offline';
   import {
@@ -93,6 +94,8 @@
 
   let loaded = false;
   let audioEnabled = false;
+  /** Season 2 Phase 12: starts from the book's PC voice when that changes. */
+  let jobPanel: AudiobookJobPanel | undefined;
   /** Bound up (read-only for the parent): the book page's Download menu uses it. */
   export let link: AudioLink | null = null;
   let candidates: AudioCandidates | null = null;
@@ -1006,6 +1009,7 @@
       <!-- WP17: an audiobook made on the PC (also for books without one) -->
       {#if !filesFolder}
         <AudiobookJobPanel
+          bind:this={jobPanel}
           {api}
           {bookId}
           {link}
@@ -1014,6 +1018,12 @@
           on:linked={onSubtitlesMade}
         />
         <!-- Season 2 Phase 12: how the PC voices read this book -->
+        <BookVoiceChoice
+          {api}
+          {bookId}
+          {link}
+          on:changed={(e) => jobPanel?.usePreferred(e.detail.effective)}
+        />
         <BookPronunciationPanel {api} {bookId} {link} />
       {/if}
     {/if}

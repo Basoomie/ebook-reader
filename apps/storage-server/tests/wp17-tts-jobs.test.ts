@@ -358,6 +358,7 @@ describe.skipIf(!HAS_FFMPEG)('making an audiobook', () => {
     expect((await t.progress(id, { stage: 'generating', progress: 0.5 })).body).toEqual({
       cancel: false,
       pause: true,
+      yield: false,
     });
     expect(
       (await request(t.app).post(`/api/v1/worker/jobs/${id}/release`).set(t.worker).send({})).body

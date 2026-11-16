@@ -1,6 +1,8 @@
 """ttsu TTS runner (WP17), run inside the ttsu-irodori image.
 
   ttsu_tts.py run --job /work/job.json      a job of the reader (worker: apps/gpu-worker)
+  ttsu_tts.py serve                          the voice kept loaded (read-aloud, Enrich clips;
+                                             requests on stdin, see cmd_serve)
   ttsu_tts.py sample --spec /work/spec.json  the model-choice samples (step A)
   ttsu_tts.py check                          CUDA visible?
 
@@ -319,12 +321,89 @@ def _write_atomic(path: Path, write) -> None:
     os.replace(tmp, path)
 
 
-def cmd_run(job_path: str) -> int:
+def read_sentences(
+    runtime,
+    sentences,
+    *,
+    caption,
+    ref,
+    seed: int,
+    pauses: dict,
+    batch: int,
+    whole: bool,
+    last_gap_ms: int,
+    on_progress=None,
+):
+    """Reads one chapter (or one read-aloud batch): every sentence's reading turned into kana
+    and synthesized in batches, each sentence's audio kept apart so its start and end are
+    exact, joined with the pauses (sentence, paragraph, and `last_gap_ms` after the last).
+    Returns (audio float32 mono, sample rate, cues [[startMs, endMs], ...], spoken)."""
     import numpy as np
-    import soundfile as sf
 
     from kana import to_kana
 
+    if whole:
+        readings = ["".join(s["reading"] for s in sentences)]
+    else:
+        readings = [s["reading"] for s in sentences]
+    spoken = [to_kana(r) for r in readings]
+    audios = []
+    sample_rate = None
+    for b0 in range(0, len(spoken), batch):
+        group = spoken[b0 : b0 + batch]
+        got, _ = _synthesize_group(runtime, group, caption=caption, ref=ref, seed=seed)
+        for a in got:
+            a = a.detach().to("cpu", torch.float32)
+            if a.ndim > 1:
+                a = a.mean(dim=0)
+            audios.append(a.numpy())
+        if sample_rate is None:
+            sample_rate = int(runtime.codec.sample_rate)
+        if on_progress:
+            on_progress(min(len(spoken), b0 + len(group)), len(spoken))
+    sr = sample_rate or 48000
+    pieces = []
+    cues = []
+    t = 0
+    for i, a in enumerate(audios):
+        start = t
+        pieces.append(a)
+        t += len(a)
+        cues.append([round(start * 1000 / sr), round(t * 1000 / sr)])
+        last = i == len(audios) - 1
+        if last:
+            gap = last_gap_ms
+        elif not whole and sentences[i].get("paragraphEnd"):
+            gap = pauses.get("paragraphMs", 700)
+        else:
+            gap = pauses.get("sentenceMs", 300)
+        n = int(sr * gap / 1000)
+        if n > 0:
+            pieces.append(np.zeros(n, dtype=np.float32))
+            t += n
+    audio = np.clip(np.concatenate(pieces), -1.0, 1.0)
+    return audio, sr, cues, spoken
+
+
+def write_part(out: Path, name: str, audio, sr: int, cues, spoken) -> int:
+    """`<name>.flac` (48 kHz mono PCM 16) and `<name>.json` ({durationMs, cues, spoken}),
+    each written atomically. Returns the length in ms."""
+    import soundfile as sf
+
+    _write_atomic(
+        out / f"{name}.flac",
+        lambda p: sf.write(str(p), audio, sr, format="FLAC", subtype="PCM_16"),
+    )
+    duration_ms = round(len(audio) * 1000 / sr)
+    meta = {"durationMs": duration_ms, "cues": cues, "spoken": spoken}
+    _write_atomic(
+        out / f"{name}.json",
+        lambda p: p.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8"),
+    )
+    return duration_ms
+
+
+def cmd_run(job_path: str) -> int:
     job = json.loads(Path(job_path).read_text(encoding="utf-8"))
     out = Path(job["out"])
     out.mkdir(parents=True, exist_ok=True)
@@ -357,26 +436,8 @@ def cmd_run(job_path: str) -> int:
 
     chapters = job["chapters"]
     for ci, chapter in enumerate(chapters):
-        sentences = chapter["sentences"]
-        if whole:
-            texts = ["".join(s["text"] for s in sentences)]
-            readings = ["".join(s["reading"] for s in sentences)]
-        else:
-            texts = [s["text"] for s in sentences]
-            readings = [s["reading"] for s in sentences]
-        spoken = [to_kana(r) for r in readings]
-        audios = []
-        sample_rate = None
-        for b0 in range(0, len(spoken), batch):
-            group = spoken[b0 : b0 + batch]
-            got, _ = _synthesize_group(runtime, group, caption=caption, ref=ref, seed=seed)
-            for a in got:
-                a = a.detach().to("cpu", torch.float32)
-                if a.ndim > 1:
-                    a = a.mean(dim=0)
-                audios.append(a.numpy())
-            if sample_rate is None:
-                sample_rate = int(runtime.codec.sample_rate)
+
+        def progress(done: int, total: int, ci=ci, chapter=chapter) -> None:
             log(
                 "progress "
                 + json.dumps(
@@ -384,44 +445,136 @@ def cmd_run(job_path: str) -> int:
                         "chapter": chapter["index"],
                         "chapterNumber": ci + 1,
                         "chapters": len(chapters),
-                        "done": min(len(spoken), b0 + len(group)),
-                        "total": len(spoken),
+                        "done": done,
+                        "total": total,
                     }
                 )
             )
-        sr = sample_rate or 48000
-        pieces = []
-        cues = []
-        t = 0
-        for i, a in enumerate(audios):
-            start = t
-            pieces.append(a)
-            t += len(a)
-            cues.append([round(start * 1000 / sr), round(t * 1000 / sr)])
-            last = i == len(audios) - 1
-            if last:
-                gap = pauses.get("chapterMs", 0)
-            elif not whole and sentences[i].get("paragraphEnd"):
-                gap = pauses.get("paragraphMs", 700)
-            else:
-                gap = pauses.get("sentenceMs", 300)
-            n = int(sr * gap / 1000)
-            if n > 0:
-                pieces.append(np.zeros(n, dtype=np.float32))
-                t += n
-        audio = np.clip(np.concatenate(pieces), -1.0, 1.0)
-        name = f"part-{int(chapter['index']):04d}"
-        _write_atomic(
-            out / f"{name}.flac",
-            lambda p: sf.write(str(p), audio, sr, format="FLAC", subtype="PCM_16"),
+
+        audio, sr, cues, spoken = read_sentences(
+            runtime,
+            chapter["sentences"],
+            caption=caption,
+            ref=ref,
+            seed=seed,
+            pauses=pauses,
+            batch=batch,
+            whole=whole,
+            last_gap_ms=pauses.get("chapterMs", 0),
+            on_progress=progress,
         )
         # A whole read (a voice sample) has one sentence: one cue.
-        meta = {"durationMs": round(t * 1000 / sr), "cues": cues, "spoken": spoken}
-        _write_atomic(
-            out / f"{name}.json",
-            lambda p: p.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8"),
-        )
-        log("chapter-done " + json.dumps({"index": chapter["index"], "durationMs": meta["durationMs"]}))
+        name = f"part-{int(chapter['index']):04d}"
+        duration_ms = write_part(out, name, audio, sr, cues, spoken)
+        log("chapter-done " + json.dumps({"index": chapter["index"], "durationMs": duration_ms}))
+    return 0
+
+
+def cmd_serve() -> int:
+    """Season 2 Phase 12 session 3: the voice process the worker keeps loaded (read-aloud and
+    Enrich clips). Reads one JSON request per line on stdin:
+
+      {"op": "load", "model": {"source", "revision"}, "precision": "bf16", "modelsDir": "/models"}
+          loads the model (once; another model replaces it), then one warm-up call;
+          prints "TTSU loaded {description, clip, downloadSeconds, loadSeconds}".
+      {"op": "read", "id": "...", "sentences": [{text, reading, paragraphEnd}], "voice": path|null,
+       "caption": null, "seed": 1, "pauses": {...}, "batch": 8, "whole": false,
+       "lastGapMs": 300, "out": "/work/out", "name": "b-12"}
+          reads like one chapter of `run` (read_sentences), writes <out>/<name>.flac + .json,
+          prints "TTSU read-done {id, durationMs}" or "TTSU read-error {id, error}".
+      {"op": "quit"}  exits.
+
+    A failed request is reported and the process goes on (CUDA out of memory frees the cache).
+    """
+    runtime = None
+    loaded = None
+    log("stage ready-for-requests")
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            req = json.loads(line)
+        except json.JSONDecodeError:
+            log("serve-error " + json.dumps({"error": "not JSON"}))
+            continue
+        op = req.get("op")
+        if op == "quit":
+            log("stage quitting")
+            return 0
+        if op == "load":
+            model = req["model"]
+            key = (model["source"], model["revision"], req.get("precision", "bf16"))
+            if loaded == key:
+                log("loaded " + json.dumps({"already": True}))
+                continue
+            try:
+                runtime = None
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                log("stage loading")
+                runtime, load_stats = load_runtime(
+                    model["source"], model["revision"], key[2], req.get("modelsDir")
+                )
+                # Warm-up call (CUDA kernels, caches), so the first request is quick.
+                runtime.synthesize(request_for(runtime, "こんにちは。", caption=None, ref=None, seed=1))
+                loaded = key
+                caps = {
+                    "description": bool(runtime.model_cfg.use_caption_condition),
+                    "clip": bool(runtime.model_cfg.use_speaker_condition_resolved),
+                    **load_stats,
+                }
+                if torch.cuda.is_available():
+                    caps["vramMiB"] = round(torch.cuda.memory_reserved() / 2**20)
+                log("loaded " + json.dumps(caps))
+            except Exception as exc:  # noqa: BLE001 - the worker shows the reason
+                runtime = None
+                loaded = None
+                text = str(exc).splitlines()[0] if str(exc) else type(exc).__name__
+                log("load-error " + json.dumps({"error": f"{type(exc).__name__}: {text}"[:500]}))
+            continue
+        if op == "read":
+            rid = req.get("id")
+            if runtime is None:
+                log("read-error " + json.dumps({"id": rid, "error": "No model is loaded"}))
+                continue
+            try:
+                caption = req.get("caption") or None
+                ref = req.get("voice") or None
+                if caption and not runtime.model_cfg.use_caption_condition:
+                    raise ValueError("This model can't make a voice from a description")
+                if ref and not runtime.model_cfg.use_speaker_condition_resolved:
+                    raise ValueError("This model can't copy a voice clip")
+                out = Path(req["out"])
+                out.mkdir(parents=True, exist_ok=True)
+
+                def progress(done: int, total: int, rid=rid) -> None:
+                    log("progress " + json.dumps({"id": rid, "done": done, "total": total}))
+
+                audio, sr, cues, spoken = read_sentences(
+                    runtime,
+                    req["sentences"],
+                    caption=caption,
+                    ref=ref,
+                    seed=int(req.get("seed", 1234)),
+                    pauses=req.get("pauses", {}),
+                    batch=max(1, int(req.get("batch", 8))),
+                    whole=bool(req.get("whole")),
+                    last_gap_ms=int(req.get("lastGapMs", 0)),
+                    on_progress=progress,
+                )
+                duration_ms = write_part(out, req["name"], audio, sr, cues, spoken)
+                log("read-done " + json.dumps({"id": rid, "durationMs": duration_ms}))
+            except Exception as exc:  # noqa: BLE001 - the worker shows the reason
+                import traceback
+
+                traceback.print_exc()
+                if isinstance(exc, torch.cuda.OutOfMemoryError):
+                    torch.cuda.empty_cache()
+                text = str(exc).splitlines()[0] if str(exc) else type(exc).__name__
+                log("read-error " + json.dumps({"id": rid, "error": f"{type(exc).__name__}: {text}"[:500]}))
+            continue
+        log("serve-error " + json.dumps({"error": f"unknown op {op!r}"}))
     return 0
 
 
@@ -438,10 +591,13 @@ def main(argv: list[str]) -> int:
     s.add_argument("--spec", required=True)
     r = sub.add_parser("run")
     r.add_argument("--job", required=True)
+    sub.add_parser("serve")
     sub.add_parser("check")
     args = ap.parse_args(argv)
     if args.cmd == "sample":
         return cmd_sample(args.spec)
+    if args.cmd == "serve":
+        return cmd_serve()
     if args.cmd == "run":
         try:
             return cmd_run(args.job)

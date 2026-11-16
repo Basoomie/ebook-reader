@@ -715,7 +715,7 @@
 		{#if $playerAutoPauseMode$ !== AutoPauseMode.DISABLED}
 			<SettingsCheckbox
 				label="Dictionary detection"
-				helpText="If enabled auto pause is skipped if open yomitan/jpdb-browser-reader popup was detected, disable to auto pause on open popup - yomitan requires disabled 'Secure Container' settings. Mobile / Touchscreen devices may require an explicit tap into the dictionary popup in order to trigger the pause."
+				helpText="If enabled auto pause is skipped if open yomitan/jpdb-browser-reader popup was detected, disable to auto pause on open popup. With Yomitan's 'Use a secure container around popups' on (its default), a lookup made while you have text selected isn't seen."
 				targetStore$={settings$.playerEnableDictionaryDetection$}
 			/>
 		{/if}

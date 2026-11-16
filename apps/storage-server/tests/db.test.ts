@@ -62,6 +62,8 @@ describe('migrations', () => {
       'thumbnails',
       'tts_job_chapters',
       'tts_models',
+      'tts_sentence_clips',
+      'tts_voice_choices',
       'tts_voices',
       'user_seeds',
       'users',

@@ -12,9 +12,10 @@
  * page, which is not a sentence. The card itself is the record of the lookup: Yomitan put
  * the sentence in its Sentence field. So, in this order:
  *
- * 1. the user's own selection (begun with a real gesture, see selection-origin.ts), made
- *    after the card was added (a note id is the time it was added): the user chose these
- *    sentences for this card (e.g. several sentences, with Overwrite);
+ * 1. the user's own selection (made while pressed or by keyboard, not Yomitan's word
+ *    selection: `selectionByUser` in lib/dictionary/popup-watch.ts), made after the card was
+ *    added (a note id is the time it was added): the user chose these sentences for this
+ *    card (e.g. several sentences, with Overwrite);
  * 2. the card's own sentence (its mapped Sentence field), placed in the book;
  * 3. the last lookup the reader saw (only where the dictionary popup is visible to the page);
  * 4. none.
@@ -23,7 +24,7 @@
 export interface SelectionCandidate<T> {
   /** When the selection was last changed (ms). */
   at: number;
-  /** Begun with the user's own gesture (not set by a script such as Yomitan). */
+  /** Made by the user (while pressed or by keyboard), not set by a script such as Yomitan. */
   byUser: boolean;
   /** The selection as the sentence (null when it isn't in the book's text). */
   sentence: () => T | null;

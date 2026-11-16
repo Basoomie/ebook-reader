@@ -115,6 +115,16 @@ describe('audiobook texts', () => {
   it('names jobs, lengths and voices', () => {
     expect(workerJobTitle(job())).toBe('羊と鋼の森');
     expect(workerJobTitle(job({ kind: 'preview_audiobook' }))).toBe('羊と鋼の森 (preview)');
+    // Season 2 Phase 12: Enrich's sentences read by the PC.
+    expect(workerJobTitle(job({ kind: 'sentence_audio', chaptersTotal: 1 }))).toBe(
+      '羊と鋼の森 (sentence audio for Anki)'
+    );
+    expect(workerJobTitle(job({ kind: 'sentence_audio', chaptersTotal: 3 }))).toBe(
+      '羊と鋼の森 (sentence audio for Anki, 3 sentences)'
+    );
+    expect(
+      audiobookJobText(job({ kind: 'sentence_audio', state: 'done', stage: null }), null, NOW)
+    ).toBe('The sentence audio is ready.');
     expect(workerJobTitle(job({ kind: 'voice_sample', bookId: null, bookTitle: null }))).toBe(
       'Voice sample “Calm”'
     );

@@ -19,10 +19,11 @@ import {
 } from '../../gpu-worker/src/config';
 import { memoryLogger } from '../../gpu-worker/src/log';
 import { overallProgress, parseTtsLine, ttsArgs } from '../../gpu-worker/src/tts';
+import { engineArgs } from '../../gpu-worker/src/engine';
 import { Worker } from '../../gpu-worker/src/worker';
 import { HAS_FFMPEG, ttsEnv } from './helpers/tts-env';
 import { makeTempDir } from './helpers/spawn-server';
-import { HITSUJI, type Track } from './helpers/worker-env';
+import { HITSUJI, SPY, type Track } from './helpers/worker-env';
 
 const FAKE_DOCKER = path.join(__dirname, 'fixtures', 'wp17', 'fake-tts-docker.cjs');
 
@@ -112,6 +113,8 @@ async function workerEnv(mode: string, settings: Partial<WorkerSettings> = {}) {
     dockerPrefixArgs: [FAKE_DOCKER],
     reportSeconds: 0.05,
     ttsModelsDir: modelsDir,
+    // Season 2 Phase 12 session 3: the idle check-in waits on the server; short in tests.
+    idleWaitSeconds: 0.2,
     ...settings,
   };
   const api = new ServerApi(s);
@@ -128,7 +131,17 @@ async function workerEnv(mode: string, settings: Partial<WorkerSettings> = {}) {
   const jobJson = (n: number) =>
     JSON.parse(fs.readFileSync(path.join(state, `job-${n}.json`), 'utf8'));
   const setMode = (m: string) => fs.writeFileSync(path.join(state, 'mode'), m);
-  return { ...t, s, worker, log, calls, state, jobJson, setMode, modelsDir };
+  // Season 2 Phase 12 session 3: what the voice kept loaded was asked (serve mode).
+  const served = () =>
+    fs.existsSync(path.join(state, 'serve.jsonl'))
+      ? fs
+          .readFileSync(path.join(state, 'serve.jsonl'), 'utf8')
+          .trim()
+          .split(/\r?\n/)
+          .map((l) => JSON.parse(l) as Record<string, unknown>)
+      : [];
+  closers.push(async () => worker.engine.kill());
+  return { ...t, s, worker, log, calls, state, jobJson, setMode, modelsDir, served };
 }
 
 async function waitFor<T>(fn: () => Promise<T> | T, ok: (v: T) => boolean, ms = 20_000) {
@@ -183,6 +196,104 @@ describe.skipIf(!HAS_FFMPEG)('the worker running TTS jobs', () => {
     expect(models[0]).toMatchObject({ supportsDescription: true, supportsClip: true });
   }, 60_000);
 
+  it('reads the waiting sentence clips for Anki with the voice kept loaded (1.2.0)', async () => {
+    const t = await workerEnv('ok');
+    const voice = await t.addVoice();
+    await request(t.app)
+      .put('/api/v1/tts/voice-choice')
+      .set(t.auth)
+      .send({ voiceId: voice.id, modelId: 1 });
+    const queue = async (text: string, position: number) =>
+      (
+        await request(t.app)
+          .post(`/api/v1/books/${t.bookId(HITSUJI)}/sentence-audio`)
+          .set(t.auth)
+          .send({ text, position })
+      ).body.clip.id as string;
+    const a = await queue('善なるものは畢竟、遠い。', 0);
+    const b = await queue('けれども悪は近い！', 11);
+    expect(await t.worker.tick()).toBe(0);
+    // No container of its own: the voice process loaded the model once and read both.
+    expect(t.calls().filter((c) => c[0] === 'run')).toEqual([
+      engineArgs({
+        liveDir: path.join(t.s.workDir, 'live'),
+        modelsDir: t.modelsDir,
+        image: TTS_IMAGE,
+      }),
+    ]);
+    const served = t.served();
+    expect(served.map((r) => r.op)).toEqual(['load', 'read', 'read']);
+    expect(served[0]).toMatchObject({
+      model: { source: 'Aratako/Irodori-TTS-v4.1-Small' },
+      precision: 'bf16',
+      modelsDir: '/models',
+    });
+    expect(served[1]).toMatchObject({
+      voice: expect.stringMatching(/^\/work\/voices\/[0-9a-f]{64}\.wav$/),
+      caption: null,
+      whole: false,
+      lastGapMs: 0,
+      pauses: { sentenceMs: 300, paragraphMs: 700, chapterMs: 0 },
+    });
+    expect(served.slice(1).map((r) => (r.sentences as { reading: string }[])[0].reading)).toEqual([
+      '善なるものはひっきょう、遠い。',
+      'けれども悪は近い！',
+    ]);
+    for (const [id, ms] of [
+      [a, 1200],
+      [b, 900],
+    ] as const) {
+      const st = (await request(t.app).get(`/api/v1/sentence-audio/${id}`).set(t.auth)).body;
+      expect(st.clip, JSON.stringify(t.log.lines)).toMatchObject({
+        state: 'done',
+        durationMs: ms,
+      });
+      expect(st.pc.readsClips).toBe(true);
+      const audio = await request(t.app).get(`/api/v1/sentence-audio/${id}/audio`).set(t.auth);
+      expect(audio.status).toBe(200);
+      expect(audio.headers['content-type']).toBe('audio/mpeg');
+    }
+  }, 60_000);
+
+  it('a running audiobook makes way for a sentence clip after its chapter', async () => {
+    const t = await workerEnv('slow');
+    // The voice is let go right after the clip (else the audiobook waits for the keep time).
+    t.jobs.setKeepLoaded(0);
+    const voice = await t.addVoice();
+    await request(t.app)
+      .put('/api/v1/tts/voice-choice')
+      .set(t.auth)
+      .send({ voiceId: voice.id, modelId: 1 });
+    const book = (await t.startBook(HITSUJI, { voiceId: voice.id })).body.job.id as number;
+    const running = t.worker.tick();
+    await waitFor(
+      () => t.latestBook(HITSUJI),
+      (j) => j.stage === 'generating',
+    );
+    const clip = (
+      await request(t.app)
+        .post(`/api/v1/books/${t.bookId(HITSUJI)}/sentence-audio`)
+        .set(t.auth)
+        .send({ text: '最後の文。', position: 20 })
+    ).body.clip.id as string;
+    await running;
+    expect(t.jobs.get(book)).toMatchObject({
+      state: 'queued',
+      chaptersDone: 1,
+      message: 'Paused for sentence audio for Anki; it continues next.',
+    });
+    t.setMode('ok');
+    await t.worker.tick(); // the clip
+    expect(
+      (await request(t.app).get(`/api/v1/sentence-audio/${clip}`).set(t.auth)).body.clip.state,
+    ).toBe('done');
+    await t.worker.tick(); // the voice is let go, then the rest of the audiobook
+    await t.tts.idle();
+    expect(await t.latestBook(HITSUJI)).toMatchObject({ state: 'done', linked: true });
+    expect(t.served().map((r) => r.op)).toEqual(['load', 'read', 'quit']);
+    expect(t.jobJson(2).chapters.map((c: { index: number }) => c.index)).toEqual([1]);
+  }, 60_000);
+
   it('pauses after the current chapter and continues with the next one', async () => {
     const t = await workerEnv('slow');
     const voice = await t.addVoice();
@@ -200,7 +311,8 @@ describe.skipIf(!HAS_FFMPEG)('the worker running TTS jobs', () => {
       attempts: 0,
     });
     expect(t.calls()).toContainEqual(['kill', `ttsu-tts-${id}`]);
-    expect(await t.worker.tick()).toBeGreaterThan(0); // paused: nothing taken
+    await t.worker.tick(); // paused: nothing taken
+    expect(await t.latestBook(HITSUJI)).toMatchObject({ state: 'queued' });
     t.jobs.setPaused(false);
     t.setMode('ok');
     await t.worker.tick();
@@ -274,5 +386,148 @@ describe.skipIf(!HAS_FFMPEG)('the worker running TTS jobs', () => {
     expect(fs.existsSync(gone)).toBe(false);
     expect(fs.existsSync(path.dirname(gone))).toBe(false);
     expect(fs.existsSync(path.join(keep, 'model.safetensors'))).toBe(true);
+  }, 60_000);
+});
+
+describe.skipIf(!HAS_FFMPEG)('the worker reading aloud (Season 2 Phase 12 session 3)', () => {
+  const SENTENCES = [
+    {
+      text: '善なるものは畢竟、遠い。',
+      reading: '善なるものはひっきょう、遠い。',
+      ruby: [{ start: 6, end: 8, rt: 'ひっきょう' }],
+      position: 0,
+      paragraphEnd: false,
+    },
+    {
+      text: 'けれども悪は近い！',
+      reading: 'けれども悪は近い！',
+      ruby: [],
+      position: 11,
+      paragraphEnd: true,
+    },
+  ];
+
+  async function liveEnv(mode: string) {
+    const t = await workerEnv(mode);
+    const voice = await t.addVoice();
+    await request(t.app)
+      .put('/api/v1/tts/voice-choice')
+      .set(t.auth)
+      .send({ voiceId: voice.id, modelId: 1 });
+    const open = async () =>
+      (
+        await request(t.app)
+          .post('/api/v1/read-aloud/sessions')
+          .set(t.auth)
+          .send({ bookId: t.bookId(HITSUJI) })
+      ).body.session.id as string;
+    const batch = (id: string, sentences = SENTENCES) =>
+      request(t.app)
+        .post(`/api/v1/read-aloud/sessions/${id}/batches`)
+        .set(t.auth)
+        .send({ sentences });
+    const poll = async (id: string, q = '') =>
+      (await request(t.app).get(`/api/v1/read-aloud/sessions/${id}${q}`).set(t.auth)).body.session;
+    return { ...t, voice, open, batch, poll };
+  }
+
+  it('loads the voice once, reads the batches, then keeps the voice for the keep time', async () => {
+    const t = await liveEnv('ok');
+    const id = await t.open();
+    await t.batch(id);
+    const serving = t.worker.tick();
+    const first = await waitFor(
+      () => t.poll(id),
+      (s) => s.batches[0]?.state === 'done',
+    );
+    expect(first.batches[0]).toMatchObject({
+      seq: 1,
+      // max(600, 100 × characters) of tone each, the sentence pause between, and the
+      // paragraph pause after the last (it ends its paragraph).
+      cues: [
+        [0, 1200],
+        [1500, 2400],
+      ],
+      durationMs: 3100,
+    });
+    expect(first.pc).toMatchObject({ answering: true, engine: { state: 'ready' } });
+    await t.batch(id, [SENTENCES[1]]);
+    await waitFor(
+      () => t.poll(id),
+      (s) =>
+        s.batches.some((b: { seq: number; state: string }) => b.seq === 2 && b.state === 'done'),
+    );
+    // Paused on the device: the PC goes back to its queue, the voice stays loaded.
+    await t.poll(id, '?playing=0&after=2');
+    expect(await serving).toBe(0);
+    const served = t.served();
+    expect(served.map((r) => r.op)).toEqual(['load', 'read', 'read']);
+    expect(served[1]).toMatchObject({
+      sentences: [
+        { text: SENTENCES[0].text, reading: '善なるものはひっきょう、遠い。', paragraphEnd: false },
+        { text: SENTENCES[1].text, reading: SENTENCES[1].reading, paragraphEnd: true },
+      ],
+      lastGapMs: 700,
+      pauses: { sentenceMs: 300, paragraphMs: 700, chapterMs: 0 },
+    });
+    // While kept, an audiobook waits; nothing quits the voice.
+    await t.startBook(SPY, { voiceId: t.voice.id });
+    await t.worker.tick();
+    expect(await t.latestBook(SPY)).toMatchObject({ state: 'queued' });
+    expect(t.served().map((r) => r.op)).toEqual(['load', 'read', 'read']);
+    const status = (await request(t.app).get('/api/v1/gpu-worker').set(t.auth)).body;
+    expect(status.engine).toMatchObject({ state: 'ready' });
+    expect(status.keepVoiceUntil).toBeGreaterThan(Date.now());
+    // The keep time is over: the voice is let go and the audiobook runs.
+    t.jobs.setKeepLoaded(0);
+    await t.worker.tick();
+    await t.tts.idle();
+    expect(t.served().map((r) => r.op)).toEqual(['load', 'read', 'read', 'quit']);
+    expect(await t.latestBook(SPY)).toMatchObject({ state: 'done' });
+  }, 60_000);
+
+  it('stops a running audiobook at once for read-aloud and continues it afterwards', async () => {
+    const t = await liveEnv('slow');
+    const book = (await t.startBook(HITSUJI, { voiceId: t.voice.id })).body.job.id as number;
+    const running = t.worker.tick();
+    await waitFor(
+      () => t.latestBook(HITSUJI),
+      (j) => j.stage === 'generating',
+    );
+    const id = await t.open();
+    await t.batch(id);
+    await running;
+    expect(t.calls()).toContainEqual(['kill', `ttsu-tts-${book}`]);
+    expect(t.jobs.get(book)).toMatchObject({
+      state: 'queued',
+      attempts: 0,
+      message: 'Paused for read-aloud; it continues afterwards.',
+    });
+    t.setMode('ok');
+    const serving = t.worker.tick();
+    await waitFor(
+      () => t.poll(id),
+      (s) => s.batches[0]?.state === 'done',
+    );
+    await request(t.app).delete(`/api/v1/read-aloud/sessions/${id}`).set(t.auth);
+    await serving;
+    t.jobs.setKeepLoaded(0);
+    await t.worker.tick();
+    await t.tts.idle();
+    expect(await t.latestBook(HITSUJI)).toMatchObject({ state: 'done', linked: true });
+  }, 60_000);
+
+  it('tells the device when the voice cannot be loaded', async () => {
+    const t = await liveEnv('load-fail');
+    const id = await t.open();
+    await t.batch(id);
+    const serving = t.worker.tick();
+    const failed = await waitFor(
+      () => t.poll(id),
+      (s) => s.batches[0]?.state === 'failed',
+    );
+    expect(failed.batches[0].error).toBe('RuntimeError: CUDA out of memory');
+    await request(t.app).delete(`/api/v1/read-aloud/sessions/${id}`).set(t.auth);
+    await serving;
   }, 60_000);
 });

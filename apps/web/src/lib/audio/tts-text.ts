@@ -64,7 +64,9 @@ const what = (job: AudiobookJob) =>
     ? 'the voice sample'
     : job.kind === 'preview_audiobook'
       ? 'the preview'
-      : 'the audiobook';
+      : job.kind === 'sentence_audio'
+        ? 'sentence audio for Anki'
+        : 'the audiobook';
 
 /** One line on an audiobook, preview or voice sample being made. */
 export function audiobookJobText(
@@ -104,6 +106,7 @@ export function audiobookJobText(
       }
     case 'done':
       if (job.kind === 'preview_audiobook') return 'The preview is ready.';
+      if (job.kind === 'sentence_audio') return 'The sentence audio is ready.';
       if (job.kind === 'voice_sample')
         return 'The sample is ready. Listen, then keep it or try again.';
       return job.linked
@@ -127,6 +130,10 @@ export function workerJobTitle(job: SubtitleJob | AudiobookJob): string {
   }
   const title = job.bookTitle ?? ('audioFileName' in job ? job.audioFileName : '') ?? '';
   if (job.kind === 'preview_audiobook') return `${title} (preview)`;
+  if (job.kind === 'sentence_audio') {
+    const n = (job as AudiobookJob).chaptersTotal ?? 1;
+    return `${title} (sentence audio for Anki${n > 1 ? `, ${n} sentences` : ''})`;
+  }
   return title;
 }
 

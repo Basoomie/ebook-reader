@@ -17,9 +17,10 @@ export const PINNED_IMAGE =
 /**
  * WP17: the TTS program's image, built on this PC from apps/gpu-worker/tts (main.js
  * build-tts; Irodori-TTS pinned to a commit there). Bump the tag whenever that folder
- * changes, so every Windows account builds the new one.
+ * changes, so every Windows account builds the new one. 2: the `serve` mode (Season 2
+ * Phase 12 session 3, the voice kept loaded).
  */
-export const TTS_IMAGE = 'ttsu-irodori:1';
+export const TTS_IMAGE = 'ttsu-irodori:2';
 
 export interface WorkerSettings {
   /** The reader's server (the storage server), e.g. http://192.168.1.5:3081. */
@@ -57,6 +58,16 @@ export interface WorkerSettings {
   ttsChapterMaxMinutes: number;
   /** WP17: model precision on the GPU ('bf16' or 'fp32'). */
   ttsPrecision: string;
+  /**
+   * Season 2 Phase 12 session 3: how long an idle check-in may wait on the server for work
+   * (seconds); the server answers at once when there is some.
+   */
+  idleWaitSeconds: number;
+  /**
+   * Read-aloud: a batch the voice process hasn't read within this long stops it (the batch is
+   * reported; the next one loads the voice again), seconds.
+   */
+  liveReadMaxSeconds: number;
 }
 
 export const DEFAULTS: Omit<WorkerSettings, 'serverUrl' | 'token'> = {
@@ -76,6 +87,8 @@ export const DEFAULTS: Omit<WorkerSettings, 'serverUrl' | 'token'> = {
   ttsBatchSize: 8,
   ttsChapterMaxMinutes: 120,
   ttsPrecision: 'bf16',
+  idleWaitSeconds: 25,
+  liveReadMaxSeconds: 120,
 };
 
 export class ConfigError extends Error {}
@@ -148,6 +161,8 @@ export function parseSettings(raw: unknown): WorkerSettings {
     ttsModelsDir: str(r, 'ttsModelsDir'),
     ttsBatchSize: Math.max(1, Math.round(num(r, 'ttsBatchSize', 1))),
     ttsChapterMaxMinutes: num(r, 'ttsChapterMaxMinutes', 0.01),
+    idleWaitSeconds: Math.min(60, num(r, 'idleWaitSeconds', 0)),
+    liveReadMaxSeconds: num(r, 'liveReadMaxSeconds', 1),
     ttsPrecision: ((p) => {
       if (p !== 'bf16' && p !== 'fp32') throw new ConfigError('ttsPrecision must be bf16 or fp32');
       return p;

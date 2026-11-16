@@ -86,6 +86,16 @@
     return (err as Error).message;
   }
 
+  /**
+   * Season 2 Phase 12: start from the book's PC voice (its own, else the one in Settings >
+   * Anki), when it can still be used. Changing it here doesn't change that choice.
+   */
+  export function usePreferred(choice: { voiceId: string; modelId: number } | null) {
+    if (!choice || active) return;
+    if (voices.some((v) => v.id === choice.voiceId)) voiceId = choice.voiceId;
+    if (modelsForVoices(models).some((m) => m.id === choice.modelId)) modelId = choice.modelId;
+  }
+
   function setPreviewUrl(url: string) {
     if (previewUrl) URL.revokeObjectURL(previewUrl);
     previewUrl = url;
@@ -101,12 +111,13 @@
     setPreviewUrl('');
     clearTimeout(timer);
     try {
-      const [status, modelList, voiceList, latest, latestPreview] = await Promise.all([
+      const [status, modelList, voiceList, latest, latestPreview, choices] = await Promise.all([
         api.gpuWorker().catch(() => null),
         api.ttsModels().catch(() => ({ available: false, models: [] })),
         api.voices().catch(() => ({ available: false, voices: [], limits: null })),
         api.audiobookJob(id).catch(() => null),
-        api.audiobookPreview(id).catch(() => null)
+        api.audiobookPreview(id).catch(() => null),
+        api.bookVoiceChoice(id).catch(() => null)
       ]);
       if (destroyed || loadedFor !== id) return;
       worker = status;
@@ -115,6 +126,7 @@
       available = !!status?.available && modelList.available && voiceList.available;
       modelId = modelsForVoices(models)[0]?.id ?? null;
       voiceId = voices[0]?.id ?? '';
+      usePreferred(choices?.effective ?? null);
       now = Date.now();
       if (
         latest &&

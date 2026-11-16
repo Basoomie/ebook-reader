@@ -34,7 +34,14 @@ import type {
   AudiobookJob,
   AudiobookRequest,
   BookChapters,
+  BookVoiceChoices,
+  ReadAloudSentence,
+  ReadAloudSession,
+  SentenceClip,
+  SentencePc,
   TtsModel,
+  TtsPauses,
+  VoiceChoice,
   VoiceList,
   VoicePreset
 } from '$lib/audio/tts-types';
@@ -64,7 +71,9 @@ export class LibraryApiError extends Error {
     readonly status?: number,
     readonly code?: string,
     /** invalid_query: the character span of the problem in the search text. */
-    readonly span?: { start: number; end: number }
+    readonly span?: { start: number; end: number },
+    /** Season 2 Phase 12 session 3: why a read-aloud session ended (410 ended). */
+    readonly why?: string
   ) {
     super(message);
   }
@@ -127,6 +136,7 @@ export async function errorFrom(response: Response): Promise<LibraryApiError> {
   let code: string | undefined;
   let message = `The library server answered ${response.status}`;
   let span: { start: number; end: number } | undefined;
+  let why: string | undefined;
   try {
     const body = (await response.json()) as {
       error?: { code?: string; message?: string; start?: unknown; end?: unknown };
@@ -136,13 +146,15 @@ export async function errorFrom(response: Response): Promise<LibraryApiError> {
     if (typeof body.error?.start === 'number' && typeof body.error?.end === 'number') {
       span = { start: body.error.start, end: body.error.end };
     }
+    const w = (body.error as { why?: unknown } | undefined)?.why;
+    if (typeof w === 'string') why = w;
   } catch {
     // not JSON
   }
   if (response.status === 401 && code !== 'invalid_code') {
     return new LibraryApiError('unauthorized', message, 401, code);
   }
-  return new LibraryApiError('server', message, response.status, code, span);
+  return new LibraryApiError('server', message, response.status, code, span, why);
 }
 
 /** Trades a pairing code (from `cli token pair`) for this device's token. */
@@ -1010,6 +1022,163 @@ export class LibraryApi {
   async setDefaultTtsModel(id: number, options?: RequestOptions): Promise<TtsModel[]> {
     const response = await this.sendJson('PUT', `/tts/models/${id}/default`, {}, options);
     return ((await response.json()) as { models: TtsModel[] }).models;
+  }
+
+  // ---- Season 2 Phase 12: Enrich's sentence audio read by the PC, and the PC voice
+
+  /** The PC voice for every book (Settings > Anki); null = sentence audio from the PC is off. */
+  async voiceChoice(options?: RequestOptions): Promise<VoiceChoice | null> {
+    return (
+      (await (await this.get('/tts/voice-choice', options)).json()) as {
+        choice: VoiceChoice | null;
+      }
+    ).choice;
+  }
+
+  async setVoiceChoice(
+    choice: { voiceId: string; modelId: number } | null,
+    options?: RequestOptions
+  ): Promise<VoiceChoice | null> {
+    if (!choice) {
+      await this.sendJson('DELETE', '/tts/voice-choice', undefined, options);
+      return null;
+    }
+    const response = await this.sendJson('PUT', '/tts/voice-choice', choice, options);
+    return ((await response.json()) as { choice: VoiceChoice | null }).choice;
+  }
+
+  /** The book's own PC voice, the one for every book, and which one is used. */
+  async bookVoiceChoice(bookId: string, options?: RequestOptions): Promise<BookVoiceChoices> {
+    return (
+      await this.get(`/books/${encodeURIComponent(bookId)}/tts-voice-choice`, options)
+    ).json();
+  }
+
+  /** Sets the book's own PC voice, or (null) uses the one for every book again. */
+  async setBookVoiceChoice(
+    bookId: string,
+    choice: { voiceId: string; modelId: number } | null,
+    options?: RequestOptions
+  ): Promise<BookVoiceChoices> {
+    const path = `/books/${encodeURIComponent(bookId)}/tts-voice-choice`;
+    const response = choice
+      ? await this.sendJson('PUT', path, choice, options)
+      : await this.sendJson('DELETE', path, undefined, options);
+    return response.json();
+  }
+
+  /** Asks the PC to read an Enrich sentence for a book without an audiobook. */
+  async queueSentenceAudio(
+    bookId: string,
+    body: { text: string; position: number; pauses: TtsPauses },
+    options: RequestOptions = {}
+  ): Promise<SentenceClip> {
+    const response = await this.post(
+      `/books/${encodeURIComponent(bookId)}/sentence-audio`,
+      body,
+      // The server reads the book's text first (a large book takes a few seconds).
+      { timeoutSeconds: this.timeoutSeconds && Math.max(this.timeoutSeconds, 120), ...options }
+    );
+    return ((await response.json()) as { clip: SentenceClip }).clip;
+  }
+
+  async sentenceAudioStatus(
+    clipId: string,
+    options?: RequestOptions
+  ): Promise<{ clip: SentenceClip; pc: SentencePc }> {
+    return (await this.get(`/sentence-audio/${encodeURIComponent(clipId)}`, options)).json();
+  }
+
+  /** The finished clip (MP3). */
+  async sentenceAudioFile(clipId: string, options: RequestOptions = {}): Promise<ArrayBuffer> {
+    return (
+      await this.get(`/sentence-audio/${encodeURIComponent(clipId)}/audio`, {
+        timeoutSeconds: 0,
+        ...options
+      })
+    ).arrayBuffer();
+  }
+
+  /** The device has the clip (or doesn't want it any more): the server lets it go. */
+  async dropSentenceAudio(clipId: string, options?: RequestOptions): Promise<void> {
+    await this.sendJson(
+      'DELETE',
+      `/sentence-audio/${encodeURIComponent(clipId)}`,
+      undefined,
+      options
+    );
+  }
+
+  // ---- Season 2 Phase 12 session 3: live read-aloud with the PC voice
+
+  /** Starts read-aloud for a library book (null: a book outside the library). */
+  async startReadAloud(
+    bookId: string | null,
+    pauses: TtsPauses,
+    options?: RequestOptions
+  ): Promise<ReadAloudSession> {
+    const response = await this.post('/read-aloud/sessions', { bookId, pauses }, options);
+    return ((await response.json()) as { session: ReadAloudSession }).session;
+  }
+
+  /** Sentences to read next (`replace`: the waiting ones are dropped first). */
+  async readAloudBatch(
+    sessionId: string,
+    sentences: ReadAloudSentence[],
+    replace: boolean,
+    options?: RequestOptions
+  ): Promise<number> {
+    const response = await this.post(
+      `/read-aloud/sessions/${encodeURIComponent(sessionId)}/batches`,
+      { sentences, replace },
+      // The server applies the pronunciation fixes first (a pattern may take a while).
+      { timeoutSeconds: this.timeoutSeconds && Math.max(this.timeoutSeconds, 30), ...options }
+    );
+    return ((await response.json()) as { seq: number }).seq;
+  }
+
+  /** The session, held open up to `wait` seconds until something changes. */
+  async readAloudPoll(
+    sessionId: string,
+    { after, wait, playing }: { after: number; wait: number; playing: boolean },
+    options: RequestOptions = {}
+  ): Promise<ReadAloudSession> {
+    const qs = `?after=${after}&wait=${wait}&playing=${playing ? 1 : 0}`;
+    const response = await this.get(`/read-aloud/sessions/${encodeURIComponent(sessionId)}${qs}`, {
+      timeoutSeconds: (this.timeoutSeconds || 20) + wait,
+      ...options
+    });
+    return ((await response.json()) as { session: ReadAloudSession }).session;
+  }
+
+  /** A batch's MP3. */
+  async readAloudAudio(
+    sessionId: string,
+    seq: number,
+    options: RequestOptions = {}
+  ): Promise<ArrayBuffer> {
+    return (
+      await this.get(`/read-aloud/sessions/${encodeURIComponent(sessionId)}/batches/${seq}/audio`, {
+        timeoutSeconds: 0,
+        ...options
+      })
+    ).arrayBuffer();
+  }
+
+  /** Stop: the session ends (the PC keeps the voice for the keep time). */
+  async stopReadAloud(sessionId: string, options?: RequestOptions): Promise<void> {
+    await this.sendJson(
+      'DELETE',
+      `/read-aloud/sessions/${encodeURIComponent(sessionId)}`,
+      undefined,
+      options
+    );
+  }
+
+  /** Settings > Audiobooks: how long the PC keeps its voice loaded after the last use. */
+  async setKeepLoaded(minutes: number, options?: RequestOptions): Promise<number> {
+    const response = await this.sendJson('PUT', '/gpu-worker/keep-loaded', { minutes }, options);
+    return ((await response.json()) as { keepLoadedMinutes: number }).keepLoadedMinutes;
   }
 
   // ---- Season 2 Phase 12: pronunciation fixes for the PC voices

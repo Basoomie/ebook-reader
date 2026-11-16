@@ -198,6 +198,8 @@ async function workerEnv(
     dockerPath: process.execPath,
     dockerPrefixArgs: [FAKE_DOCKER],
     reportSeconds: 0.05,
+    // Season 2 Phase 12 session 3 (1.2.0): the idle check-in waits on the server; short here.
+    idleWaitSeconds: 0.2,
     ...settings,
   };
   const sent: { path: string; body: any }[] = [];
@@ -280,8 +282,8 @@ describe('the worker against the server', () => {
     expect(hb).toMatchObject({ version: WORKER_VERSION, image: PINNED_IMAGE, problem: null });
     // Nothing left on the PC.
     expect(fs.readdirSync(t.s.workDir)).toEqual([]);
-    // Idle: nothing to do.
-    expect(await t.worker.tick()).toBe(30);
+    // Idle: nothing to do (1.2.0: the check-in waited on the server; at most a second more).
+    expect(await t.worker.tick()).toBeLessThanOrEqual(1);
   });
 
   it("never gives a book the transcript SubPlz cached for another book's audio", async () => {
@@ -380,7 +382,7 @@ describe('the worker against the server', () => {
     ] as const) {
       const t = await workerEnv(mode);
       await queued(t);
-      expect(await t.worker.tick()).toBe(30);
+      expect(await t.worker.tick()).toBeLessThanOrEqual(1);
       expect((await t.latest(HITSUJI)).state).toBe('queued');
       const status = await t.status();
       expect(status).toMatchObject({ online: true, problem });

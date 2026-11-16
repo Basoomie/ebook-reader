@@ -24,7 +24,13 @@ import {
   type Waiting
 } from './enrich';
 import { arrayBufferToBase64 } from './base64';
-import { cutLibraryClip, planLibraryClip, type LibraryClipRequest } from './library-clip';
+import { currentPauses } from '$lib/audio/tts-settings';
+import {
+  cutLibraryClip,
+  NO_LINKED_AUDIOBOOK,
+  planLibraryClip,
+  type LibraryClipRequest
+} from './library-clip';
 import { parseMapping } from './mapping';
 import { readerLinkPath, titleTag } from './reader-link';
 import type { LookupSentence } from './lookup-capture';
@@ -35,6 +41,7 @@ import {
   ankiConnectTimeoutSeconds$,
   ankiConnectUrl$,
   ankiFieldMapping$,
+  ankiAudioMaxSeconds$,
   ankiLookBackDays$,
   ankiTagPrefix$
 } from './settings';
@@ -48,6 +55,10 @@ import {
  * answer in time), the sentence audio waits on this device and is added to the card later
  * (`pending/`); everything else is added now. If it can't be kept, it is left out with the
  * reason.
+ *
+ * AI sentence audio (Season 2 Phase 12): a book without an audiobook gets its sentence audio
+ * from the PC when a PC voice is chosen (Settings > Anki, or the book's page); the clip
+ * waits the same way and is added once the PC has read it (`pending/pc-source.ts`).
  */
 
 export interface ReaderEnrichContext {
@@ -99,6 +110,7 @@ function cardSentence(ctx: ReaderEnrichContext, text: string): LookupSentence | 
 /** "Sentence audio will be added …" */
 export const WAIT_FOR_SERVER = 'when the library server can be reached';
 export const NOT_KEPT = "the library server can't be reached, and it couldn't be kept for later";
+export const NOT_KEPT_FOR_PC = "it couldn't be kept on this device while the PC reads it";
 const SERVER_UNREACHABLE = "the library server can't be reached";
 
 function timeoutSeconds(): number {
@@ -124,11 +136,34 @@ function browserOnline(): boolean {
   return !browser || typeof navigator === 'undefined' || navigator.onLine !== false;
 }
 
+/** "Sentence audio will be added …" for a clip the PC reads (Season 2 Phase 12). */
+export const WAIT_FOR_PC = 'once the PC has read it';
+
+/**
+ * A book without an audiobook: the PC reads the sentence when a PC voice is chosen (the
+ * clip then waits for it), else the reason, with a hint where the PC could read it.
+ */
+async function pcSentenceAudio(
+  api: LibraryApi,
+  bookId: string,
+  from: { pc: boolean }
+): Promise<Unavailable | Waiting> {
+  const { pcVoiceChosen, CHOOSE_PC_VOICE } = await import('./pending/pc-source');
+  const chosen = await pcVoiceChosen(api, bookId);
+
+  if (chosen === null) return { skip: NO_LINKED_AUDIOBOOK };
+  if (!chosen) return { skip: CHOOSE_PC_VOICE };
+
+  from.pc = true;
+  return { wait: WAIT_FOR_PC };
+}
+
 async function sentenceAudio(
   api: LibraryApi | null,
   bookId: string | null,
   ctx: ReaderEnrichContext,
-  sentence: LookupSentence
+  sentence: LookupSentence,
+  from: { pc: boolean }
 ): Promise<MediaFile | Unavailable | Waiting> {
   if (!api || !bookId) {
     return { skip: 'the book is not in the library' };
@@ -152,6 +187,9 @@ async function sentenceAudio(
 
   try {
     plan = await planLibraryClip(api, request);
+    if ('skip' in plan && plan.skip === NO_LINKED_AUDIOBOOK) {
+      return await pcSentenceAudio(api, bookId, from);
+    }
   } catch (error) {
     if (serverUnreachable(error)) return { wait: WAIT_FOR_SERVER };
     throw error;
@@ -235,7 +273,8 @@ async function keepWaitingClip(
   ctx: ReaderEnrichContext,
   bookId: string,
   bookTitle: string,
-  sentence: LookupSentence
+  sentence: LookupSentence,
+  onPc: boolean
 ): Promise<boolean> {
   const waiting = result.waiting!;
 
@@ -258,13 +297,22 @@ async function keepWaitingClip(
       localId: ctx.localId,
       localTitle: ctx.localTitle,
       bookTitle,
-      source: {
-        kind: 'library',
-        text: sentence.text,
-        position: sentence.position,
-        cueIds: sentence.cueIds ?? [],
-        bookCharacters: ctx.bookCharacters
-      }
+      source: onPc
+        ? {
+            kind: 'pc',
+            text: sentence.text,
+            position: sentence.position,
+            bookCharacters: ctx.bookCharacters,
+            maxSeconds: Math.max(1, Number(ankiAudioMaxSeconds$.getValue()) || 30),
+            pauses: currentPauses()
+          }
+        : {
+            kind: 'library',
+            text: sentence.text,
+            position: sentence.position,
+            cueIds: sentence.cueIds ?? [],
+            bookCharacters: ctx.bookCharacters
+          }
     });
     return true;
   } catch {
@@ -317,6 +365,8 @@ export async function enrichFromReader(
       key: ankiConnectKey$.getValue(),
       timeoutSeconds: Number(ankiConnectTimeoutSeconds$.getValue()) || 10
     });
+    /** Set when the sentence audio waits for the PC (a book without an audiobook). */
+    const audioFrom = { pc: false };
 
     const input: EnrichInput = {
       title,
@@ -341,7 +391,7 @@ export async function enrichFromReader(
           load: () => coverJpegBase64(blob)
         };
       },
-      audio: (s) => sentenceAudio(api, bookId, ctx, s as LookupSentence),
+      audio: (s) => sentenceAudio(api, bookId, ctx, s as LookupSentence, audioFrom),
       days: Math.max(1, Math.round(Number(ankiLookBackDays$.getValue()) || 1)),
       mapping,
       titleTag
@@ -359,11 +409,16 @@ export async function enrichFromReader(
     if (result.waiting) {
       const sentence = result.sentence as LookupSentence | null;
       const kept =
-        !!bookId && !!sentence && (await keepWaitingClip(result, ctx, bookId, title, sentence));
+        !!bookId &&
+        !!sentence &&
+        (await keepWaitingClip(result, ctx, bookId, title, sentence, audioFrom.pc));
 
       if (!kept) {
         delete result.waiting;
-        result.skipped.push({ what: 'sentence audio', reason: NOT_KEPT });
+        result.skipped.push({
+          what: 'sentence audio',
+          reason: audioFrom.pc ? NOT_KEPT_FOR_PC : NOT_KEPT
+        });
       }
     }
 

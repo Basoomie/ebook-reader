@@ -3,7 +3,7 @@
  * web app EPUB import and counting code (apps/web/src/lib/server/epub/server-counter.ts).
  * Rebuild with `pnpm build:server-counter` in apps/web after changing that code.
  * epub-count-version: 1
- * build: 95d46f5d8c9eadfa
+ * build: eb93234e6529db5e
  */
 var __create = Object.create;
 var __defProp = Object.defineProperty;
@@ -15129,7 +15129,7 @@ function buildBookTextIndex(root, keepNodes = false) {
   return { display, countBefore, nodeAt, offsetAt, norm, normToDisplay, total: count };
 }
 
-// src/lib/server/epub/book-script.ts
+// src/lib/audio/book-script.ts
 var BOOK_SCRIPT_VERSION = 2;
 var DEFAULT_MAX_SENTENCE = 120;
 var CLOSERS = /^[」』）)】〉》"'”’]$/u;

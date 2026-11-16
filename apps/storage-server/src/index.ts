@@ -19,6 +19,10 @@ import { AudioScanService } from './audio/scan-service';
 import { SubtitleJobService } from './audio/subtitle-jobs';
 import { TtsJobService } from './audio/tts-jobs';
 import { TtsModelService } from './audio/tts-models';
+import { SentenceAudioService } from './audio/sentence-audio';
+import { ReadAloudService } from './audio/read-aloud';
+import { getBookFor } from './catalog/queries';
+import { VoiceChoiceService } from './audio/tts-voice-choice';
 import { FixRunner } from './pronunciation/fix-runner';
 import { FixService } from './pronunciation/fix-service';
 import { countImportOptions } from './counts/counter-bundle';
@@ -227,6 +231,9 @@ let tts: TtsJobService | null = null;
 let ttsModels: TtsModelService | null = null;
 let voices: VoiceService | null = null;
 let fixes: FixService | null = null;
+let sentenceAudio: SentenceAudioService | null = null;
+let voiceChoices: VoiceChoiceService | null = null;
+let readAloud: ReadAloudService | null = null;
 if (database.ok && config.audio.dir) {
   audio = new AudioScanService({
     db: database.db,
@@ -309,6 +316,37 @@ if (database.ok && config.audio.dir) {
       console.error(`Error: generated audiobooks are off: ${(err as Error).message}`);
     }
   }
+  // Season 2 Phase 12: Enrich's sentence audio read by the PC, and the PC voice choices.
+  voiceChoices = new VoiceChoiceService(database.db, voices, ttsModels);
+  if (tts) {
+    sentenceAudio = new SentenceAudioService({
+      db: database.db,
+      jobs,
+      tts,
+      choices: voiceChoices,
+      bitrate: config.audio.clip.bitrate,
+    });
+    // Season 2 Phase 12 session 3: live read-aloud with the PC voice.
+    if (voices && config.calibre.cacheDir) {
+      try {
+        readAloud = new ReadAloudService({
+          db: database.db,
+          jobs,
+          tts,
+          choices: voiceChoices,
+          voices,
+          config: config.audio.tts,
+          bitrate: config.audio.clip.bitrate,
+          cacheDir: config.calibre.cacheDir,
+          audiobooksRoot: config.audio.dir,
+          bookExists: (userId, bookId) => !!getBookFor(database.db, { id: userId }, bookId),
+        });
+      } catch (err) {
+        console.error(`Error: read-aloud is off: ${(err as Error).message}`);
+      }
+    }
+  }
+  const readAloudService = readAloud;
   const ttsService = tts;
   const voiceService = voices;
   void voiceService
@@ -326,6 +364,7 @@ if (database.ok && config.audio.dir) {
     .then(async () => {
       if (scan.status.enabled) await mergeService.start();
       if (scan.status.enabled) await ttsService?.start();
+      if (scan.status.enabled) await readAloudService?.start();
     })
     .catch((err) => console.error('Error: the audiobook scanner could not start:', err));
 } else if (!config.audio.dir) {
@@ -347,6 +386,9 @@ const app = createApp({
     models: tts ? ttsModels : null,
     voices,
     fixes: tts ? fixes : null,
+    sentenceAudio,
+    voiceChoices: tts ? voiceChoices : null,
+    readAloud,
     copyHint: {
       minMinutes: config.audio.copyHintMinMinutes,
       percent: config.audio.copyHintPercent,
@@ -382,6 +424,7 @@ function shutdown(signal: string): void {
   void counts?.stop();
   void merges?.stop();
   void tts?.stop();
+  void readAloud?.stop();
   void audio?.stop();
   void search?.close();
   void fixes?.close();

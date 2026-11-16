@@ -11,7 +11,8 @@ export type JobKind =
   | 'sync_subtitles'
   | 'generate_audiobook'
   | 'preview_audiobook'
-  | 'voice_sample';
+  | 'voice_sample'
+  | 'sentence_audio';
 
 /** WP17: what a TTS job needs (the server's TtsClaim). */
 export interface TtsClaim {
@@ -56,6 +57,37 @@ export interface ModelEntry {
 
 export type Stage = 'downloading' | 'syncing' | 'uploading' | 'preparing' | 'generating';
 
+/** Season 2 Phase 12 session 3: the voice process as the worker reports it. */
+export interface EngineReport {
+  state: 'loading' | 'ready';
+  source: string;
+  revision: string;
+}
+
+/** What the server says at a check-in (live, keepVoiceSeconds: server 22+). */
+export interface HeartbeatAnswer {
+  paused: boolean;
+  pollSeconds: number;
+  live?: boolean;
+  keepVoiceSeconds?: number | null;
+  keepLoadedMinutes?: number;
+}
+
+/** Read-aloud work from /worker/live/next. */
+export interface LiveAssignment {
+  session: {
+    id: string;
+    model: { source: string; revision: string };
+    voice: { sha256: string };
+    seed: number;
+    pauses: { sentenceMs: number; paragraphMs: number; chapterMs: number };
+  };
+  batch: {
+    seq: number;
+    sentences: { text: string; reading: string; paragraphEnd: boolean }[];
+  } | null;
+}
+
 export class ServerError extends Error {
   constructor(
     readonly status: number,
@@ -93,8 +125,9 @@ export class ServerApi {
     {
       raw,
       timeout = true,
+      timeoutMs,
       contentType = 'application/x-subrip',
-    }: { raw?: Buffer; timeout?: boolean; contentType?: string } = {},
+    }: { raw?: Buffer; timeout?: boolean; timeoutMs?: number; contentType?: string } = {},
   ): Promise<Response> {
     const headers: Record<string, string> = { Authorization: `Bearer ${this.token}` };
     let payload: BodyInit | undefined;
@@ -109,7 +142,7 @@ export class ServerApi {
       method,
       headers,
       body: payload,
-      signal: timeout ? AbortSignal.timeout(this.timeoutMs) : undefined,
+      signal: timeout ? AbortSignal.timeout(timeoutMs ?? this.timeoutMs) : undefined,
     });
     if (!res.ok) {
       let code = 'http_error';
@@ -133,22 +166,31 @@ export class ServerApi {
     return (await res.json()) as { ok: boolean; version?: string; schemaVersion?: number };
   }
 
+  /**
+   * The idle check-in. `wait` (1.2.0): the server may hold it open that many seconds until
+   * there is work (an older server answers at once).
+   */
   async heartbeat(input: {
     version: string;
     image: string;
     ttsImage?: string;
     problem: string | null;
     currentJobId: number | null;
-  }): Promise<{ paused: boolean; pollSeconds: number }> {
-    return (await (await this.request('POST', '/worker/heartbeat', input)).json()) as {
-      paused: boolean;
-      pollSeconds: number;
-    };
+    engine?: EngineReport | null;
+    wait?: number;
+  }): Promise<HeartbeatAnswer> {
+    return (await (
+      await this.request('POST', '/worker/heartbeat', input, {
+        timeoutMs: this.timeoutMs + (input.wait ?? 0) * 1000,
+      })
+    ).json()) as HeartbeatAnswer;
   }
 
   /** The next job of one of `kinds` (WP17: the kinds this PC can run now). */
-  async claim(kinds?: JobKind[]): Promise<ClaimedJob | null> {
-    const json = (await (await this.request('POST', '/worker/claim', { kinds })).json()) as {
+  async claim(kinds?: JobKind[], engine?: EngineReport | null): Promise<ClaimedJob | null> {
+    const json = (await (
+      await this.request('POST', '/worker/claim', { kinds, engine })
+    ).json()) as {
       job: ClaimedJob | null;
     };
     return json.job;
@@ -157,11 +199,73 @@ export class ServerApi {
   async progress(
     id: number,
     input: { stage: Stage; progress: number | null; message: string | null },
-  ): Promise<{ cancel: boolean; pause?: boolean }> {
+  ): Promise<{ cancel: boolean; pause?: boolean; yield?: boolean }> {
     return (await (await this.request('POST', `/worker/jobs/${id}/progress`, input)).json()) as {
       cancel: boolean;
       pause?: boolean;
+      yield?: boolean;
     };
+  }
+
+  // ---------------------------------------------------------------- read-aloud (1.2.0)
+
+  /**
+   * Read-aloud work: the session and (`take`) its next batch, the request held open up to
+   * `wait` seconds. Null: no session needs the PC now.
+   */
+  async liveNext(input: {
+    engine: EngineReport | null;
+    take: boolean;
+    wait: number;
+  }): Promise<LiveAssignment | null> {
+    const json = (await (
+      await this.request('POST', '/worker/live/next', input, {
+        timeoutMs: this.timeoutMs + input.wait * 1000,
+      })
+    ).json()) as LiveAssignment | { end: true };
+    return 'end' in json ? null : json;
+  }
+
+  /** The session's voice clip, saved to `dest` (a new file). */
+  async liveVoice(sha256: string, dest: string): Promise<void> {
+    const res = await this.fetchImpl(`${this.base}/worker/live/voice/${sha256}`, {
+      headers: { Authorization: `Bearer ${this.token}` },
+      signal: AbortSignal.timeout(this.timeoutMs * 4),
+    });
+    if (!res.ok || !res.body) await this.raise(res, 'Download of the voice clip');
+    const source = Readable.fromWeb(res.body as import('stream/web').ReadableStream<Uint8Array>);
+    await pipeline(source, fs.createWriteStream(dest, { flags: 'wx' }));
+  }
+
+  /** A read batch: its FLAC (streamed from disk), then its timings. */
+  async liveUpload(session: string, seq: number, file: string): Promise<void> {
+    const size = fs.statSync(file).size;
+    const res = await this.fetchImpl(`${this.base}/worker/live/${session}/${seq}`, {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${this.token}`,
+        'Content-Type': 'audio/flac',
+        'Content-Length': String(size),
+      },
+      body: Readable.toWeb(fs.createReadStream(file)) as unknown as BodyInit,
+      duplex: 'half',
+      signal: AbortSignal.timeout(this.timeoutMs * 4),
+    } as RequestInit);
+    if (!res.ok) await this.raise(res, `Upload of read-aloud batch ${seq}`);
+  }
+
+  async liveDone(
+    session: string,
+    seq: number,
+    meta: { durationMs: number; cues: number[][] },
+  ): Promise<void> {
+    await this.request('POST', `/worker/live/${session}/${seq}/done`, meta, {
+      timeoutMs: this.timeoutMs * 4,
+    });
+  }
+
+  async liveFail(session: string, seq: number, error: string): Promise<void> {
+    await this.request('POST', `/worker/live/${session}/${seq}/fail`, { error });
   }
 
   // ---------------------------------------------------------------- WP17: TTS jobs

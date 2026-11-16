@@ -12,6 +12,17 @@
  *       hang     the first chapter, then waits until `kill`
  *       fail     "TTSU error RuntimeError: CUDA out of memory", exit 1
  * A copy of each job.json is kept as $FAKE_DOCKER_STATE/job-<n>.json.
+ *
+ * Season 2 Phase 12 session 3: rm -f <name> (ok), and the voice kept loaded:
+ *   run -i … -v <live>:/work … serve   requests on stdin, one JSON per line:
+ *       load   "TTSU loaded {…}" after FAKE_TTS_LOAD_MS (default 300; the file "load-ms" in
+ *              the state folder wins); mode "load-fail": "TTSU load-error {…}"
+ *       read   every sentence max(600, 100 × characters) ms of tone, then its pause
+ *              (sentence / paragraph, lastGapMs after the last); <out>/<name>.flac + .json,
+ *              "TTSU read-done {id, durationMs}"; mode "read-fail": "TTSU read-error {…}";
+ *              FAKE_TTS_READ_MS (or the file "read-ms") is added before it answers
+ *       quit   exits
+ *   Each request is kept in $FAKE_DOCKER_STATE/serve.jsonl.
  */
 const { execFileSync } = require('child_process');
 const fs = require('fs');
@@ -42,6 +53,114 @@ if (args[0] === 'image') {
   }
   process.stdout.write('sha256:fake\n');
   process.exit(0);
+}
+if (args[0] === 'rm') {
+  process.exit(0);
+}
+if (args[0] === 'run' && args[args.length - 1] === 'serve') {
+  const name = args[args.indexOf('--name') + 1];
+  fs.writeFileSync(path.join(state, `${name}.pid`), String(process.pid));
+  const mount = args.find((a, i) => args[i - 1] === '-v' && a.endsWith(':/work'));
+  const host = mount.slice(0, mount.length - ':/work'.length);
+  const say = (line) => process.stdout.write(`TTSU ${line}\n`);
+  const fromFile = (file, env, d) => {
+    const p = path.join(state, file);
+    if (fs.existsSync(p)) return Number(fs.readFileSync(p, 'utf8').trim());
+    return Number(process.env[env] || d);
+  };
+  const currentMode = () =>
+    process.env.FAKE_TTS_MODE ||
+    (modeFile && fs.existsSync(modeFile) ? fs.readFileSync(modeFile, 'utf8').trim() : '') ||
+    'ok';
+  say('stage ready-for-requests');
+  let buffered = '';
+  let chain = Promise.resolve();
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const handle = async (req) => {
+    fs.appendFileSync(path.join(state, 'serve.jsonl'), JSON.stringify(req) + '\n');
+    if (req.op === 'quit') {
+      say('stage quitting');
+      process.exit(0);
+    }
+    if (req.op === 'load') {
+      say('stage loading');
+      await sleep(fromFile('load-ms', 'FAKE_TTS_LOAD_MS', 300));
+      if (currentMode() === 'load-fail') {
+        say(`load-error ${JSON.stringify({ error: 'RuntimeError: CUDA out of memory' })}`);
+        return;
+      }
+      say(`loaded ${JSON.stringify({ description: true, clip: true, loadSeconds: 0.3 })}`);
+      return;
+    }
+    if (req.op === 'read') {
+      await sleep(fromFile('read-ms', 'FAKE_TTS_READ_MS', 0));
+      if (currentMode() === 'read-fail') {
+        say(`read-error ${JSON.stringify({ id: req.id, error: 'RuntimeError: CUDA error' })}`);
+        return;
+      }
+      const sentences = req.sentences;
+      const cues = [];
+      let t = 0;
+      sentences.forEach((x, k) => {
+        const speech = Math.max(600, 100 * [...x.text].length);
+        cues.push([t, t + speech]);
+        t += speech;
+        const last = k === sentences.length - 1;
+        t += last
+          ? req.lastGapMs || 0
+          : x.paragraphEnd
+            ? (req.pauses.paragraphMs ?? 700)
+            : (req.pauses.sentenceMs ?? 300);
+      });
+      const out = path.join(host, 'out');
+      fs.mkdirSync(out, { recursive: true });
+      const base = path.join(out, req.name);
+      execFileSync(
+        'ffmpeg',
+        [
+          '-v',
+          'error',
+          '-y',
+          '-f',
+          'lavfi',
+          '-i',
+          `sine=frequency=440:duration=${t / 1000}`,
+          '-ac',
+          '1',
+          '-ar',
+          '48000',
+          '-c:a',
+          'flac',
+          '-f',
+          'flac',
+          `${base}.flac.tmp`,
+        ],
+        { windowsHide: true },
+      );
+      fs.renameSync(`${base}.flac.tmp`, `${base}.flac`);
+      fs.writeFileSync(
+        `${base}.json`,
+        JSON.stringify({ durationMs: t, cues, spoken: sentences.map((x) => x.reading) }),
+      );
+      say(
+        `progress ${JSON.stringify({ id: req.id, done: sentences.length, total: sentences.length })}`,
+      );
+      say(`read-done ${JSON.stringify({ id: req.id, durationMs: t })}`);
+    }
+  };
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('data', (chunk) => {
+    buffered += chunk;
+    const lines = buffered.split('\n');
+    buffered = lines.pop();
+    for (const l of lines) {
+      if (!l.trim()) continue;
+      const req = JSON.parse(l);
+      chain = chain.then(() => handle(req));
+    }
+  });
+  process.stdin.on('end', () => chain.then(() => process.exit(0)));
+  return;
 }
 if (args[0] === 'kill') {
   const file = path.join(state, `${args[1]}.pid`);

@@ -29,7 +29,8 @@ export function onKeydownReader(
   freezeTrackerPosition: () => void,
   toggleZen: () => void = () => {},
   enrichAnkiCard: () => void = () => {},
-  togglePacer: () => void = () => {}
+  togglePacer: () => void = () => {},
+  toggleReadAloud: () => void = () => {}
 ) {
   const action = bookReaderKeybindMap[ev.code || ev.key?.toLowerCase()];
 
@@ -79,6 +80,9 @@ export function onKeydownReader(
       return true;
     case BookReaderAvailableKeybind.PACER_TOGGLE:
       togglePacer();
+      return true;
+    case BookReaderAvailableKeybind.READ_ALOUD_TOGGLE:
+      toggleReadAloud();
       return true;
     default:
       return false;

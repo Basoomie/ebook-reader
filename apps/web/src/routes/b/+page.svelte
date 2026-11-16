@@ -33,7 +33,8 @@
     faNoteSticky,
     faPause,
     faPlay,
-    faSpinner
+    faSpinner,
+    faVolumeHigh
   } from '@fortawesome/free-solid-svg-icons';
   import BookReader from '$lib/components/book-reader/book-reader.svelte';
   import { serverFonts } from '$lib/fonts/server-fonts-browser';
@@ -145,6 +146,21 @@
   import { JumpHistory } from '$lib/components/book-reader/jump-history';
   import AppearancePanel from '$lib/components/book-reader/appearance-panel.svelte';
   import PacerPanel from '$lib/components/book-reader/pacer/pacer-panel.svelte';
+  import ReadAloudPanel from '$lib/components/book-reader/read-aloud/read-aloud-panel.svelte';
+  import type { ReadAloudController, ReadAloudView } from '$lib/read-aloud/session';
+  import type { ReadAloudFollow } from '$lib/read-aloud/follow';
+  import {
+    readAloudAheadSeconds$,
+    readAloudBottomBarButton$,
+    readAloudLookupResume$,
+    readAloudSpeed$,
+    stepSpeed as stepReadAloudSpeed,
+    usableSpeed
+  } from '$lib/read-aloud/settings';
+  import { currentPauses } from '$lib/audio/tts-settings';
+  import { LibraryApi } from '$lib/library/api';
+  import { getLibraryStore } from '$lib/library/library-db';
+  import { libraryRequestTimeoutSeconds$ } from '$lib/library/settings';
   import { stepSpeed } from '$lib/components/book-reader/pacer/pacer-clock';
   import type { Pacer, PacerSettings, PacerState } from '$lib/components/book-reader/pacer/pacer';
   import BookSearchDialog from '$lib/components/book-reader/book-search-dialog.svelte';
@@ -265,7 +281,7 @@
   import type { LookupCapture, LookupSentence } from '$lib/anki/lookup-capture';
   import type { AutoEnricher, NewCard } from '$lib/anki/auto-enrich';
   import type { ReaderEnrichContext, ReaderEnrichOutcome } from '$lib/anki/reader-enrich';
-  import { SelectionOrigin } from '$lib/anki/selection-origin';
+  import { sharedPopupWatch, type DictionaryPopupWatch } from '$lib/dictionary/popup-watch';
 
   let showSpinner = true;
   let showHeader = false;
@@ -293,9 +309,10 @@
   let autoEnricher: AutoEnricher | undefined;
   let ankiQueue: Promise<unknown> = Promise.resolve();
   let ankiTapQueued = false;
-  // Whether the selection was made by the user (a drag) or set by a script (Yomitan selects
-  // the word it looked up): only the user's own selection is Enrich's sentence.
-  const selectionOrigin = new SelectionOrigin();
+  // Whether the selection was made by the user (drag, long-press, keyboard) or set by a script
+  // (Yomitan selects the word it looked up): only the user's own selection is Enrich's
+  // sentence. The shared popup watch decides, by the rule it uses for lookups.
+  let selectionWatch: DictionaryPopupWatch | undefined;
 
   function closeAnkiNotice() {
     clearTimeout(ankiNoticeTimer);
@@ -677,7 +694,7 @@
         lastSelectedRange = window.getSelection()?.getRangeAt(0);
         lastSelectedRangeWasEmpty = false;
         lastSelectedAt = Date.now();
-        lastSelectedByUser = selectionOrigin.byUser;
+        lastSelectedByUser = selectionWatch?.selectionByUser ?? false;
       } else {
         lastSelectedRangeWasEmpty = true;
       }
@@ -884,15 +901,9 @@
         startAutoEnrich();
       })
       .catch((error) => logger.warn(`Anki: lookups not recorded: ${error?.message ?? error}`));
-    // Who made the selection (see selection-origin.ts); passive, never in reading's way.
-    const listen = { capture: true, passive: true };
-    const onGesture = () => selectionOrigin.gesture();
-    const onSelectStart = () => selectionOrigin.selectStart();
-    const onSelectionChange = () => selectionOrigin.selectionChange();
-    document.addEventListener('pointerdown', onGesture, listen);
-    document.addEventListener('keydown', onGesture, listen);
-    document.addEventListener('selectstart', onSelectStart, listen);
-    document.addEventListener('selectionchange', onSelectionChange, listen);
+    // Who made the selection (lib/dictionary/popup-watch.ts); passive, never in reading's way.
+    const popups = sharedPopupWatch(document, (message) => logger.warn(message));
+    selectionWatch = popups.watch;
     // Shown again (e.g. back from Anki): check for new cards at once.
     const onVisible = () => {
       if (document.visibilityState === 'visible' && ankiAutoEnrich$.getValue()) {
@@ -944,10 +955,8 @@
       stopped = true;
       bookChange.unsubscribe();
       autoSetting.unsubscribe();
-      document.removeEventListener('pointerdown', onGesture, listen);
-      document.removeEventListener('keydown', onGesture, listen);
-      document.removeEventListener('selectstart', onSelectStart, listen);
-      document.removeEventListener('selectionchange', onSelectionChange, listen);
+      selectionWatch = undefined;
+      popups.release();
       document.removeEventListener('visibilitychange', onVisible);
       autoEnricher?.stop();
       lookupCapture?.stop();
@@ -1090,8 +1099,12 @@
     document.addEventListener('pointercancel', onReaderPointerCancel, options);
     window.addEventListener('click', swallowGestureClick, true);
     document.addEventListener('selectstart', blockOffTextSelection, true);
+    // Fix of 2026-11-16: an element another extension adds to <body> (Yomitan's popup host)
+    // must not open a line beside the book and widen the page (see app.scss).
+    document.body.classList.add('ttu-reader-body');
 
     return () => {
+      document.body.classList.remove('ttu-reader-body');
       document.removeEventListener('selectstart', blockOffTextSelection, true);
       document.removeEventListener('pointerdown', onReaderPointerDown, options);
       document.removeEventListener('pointermove', onReaderPointerMove, options);
@@ -1143,6 +1156,8 @@
     stopStartOverWatch?.();
     stopPacerAutoScroll?.();
     destroyPacer();
+    stopReadAloudAutoScroll?.();
+    destroyReadAloud();
     stopOnTrack();
 
     if (dismissDialogs) {
@@ -1601,6 +1616,253 @@
     stopPacerAutoScroll = () => subscription?.unsubscribe();
   }
 
+  // -------------------------------------------------------------------------
+  // Season 2 Phase 12 session 3: live read-aloud with the PC's voice (lib/read-aloud). Its
+  // code is loaded on first use (the menu, the bottom-bar button, V); nothing listens, plays
+  // or paints until then. The sentence is painted with the CSS Custom Highlight API like the
+  // pacer; its page turns are the reader's own (the tracker counts them, as the pacer's). It
+  // doesn't run together with the pacer or auto-scroll, and one audio plays at a time
+  // (whispersync's own code is unchanged: read-aloud pauses when other audio starts).
+
+  const READ_ALOUD_IDLE: ReadAloudView = {
+    phase: 'idle',
+    pausedFor: null,
+    status: '',
+    voice: null,
+    voiceFrom: null,
+    line: null,
+    needsVoice: false
+  };
+
+  let readAloud: ReadAloudController | undefined;
+
+  let readAloudFollow: ReadAloudFollow | undefined;
+
+  let readAloudLoading: Promise<ReadAloudController | undefined> | undefined;
+
+  let readAloudView: ReadAloudView = READ_ALOUD_IDLE;
+
+  let readAloudFollowing = true;
+
+  let showReadAloudPanel = false;
+
+  let readAloudApi: LibraryApi | null = null;
+
+  let readAloudBookId: string | null = null;
+
+  let readAloudLocalId: number | undefined;
+
+  let readAloudCoverUrl: string | undefined;
+
+  let stopReadAloudWatch: (() => void) | undefined;
+
+  $: readAloudActive = readAloudView.phase !== 'idle';
+
+  $: readAloudPlaying =
+    readAloudView.phase === 'playing' ||
+    readAloudView.phase === 'waiting' ||
+    readAloudView.phase === 'preparing';
+
+  function loadReadAloud(): Promise<ReadAloudController | undefined> {
+    if (readAloud) return Promise.resolve(readAloud);
+
+    readAloudLoading ??= Promise.all([
+      import('$lib/read-aloud/session'),
+      import('$lib/read-aloud/follow'),
+      import('$lib/read-aloud/script')
+    ])
+      .then(async ([{ ReadAloudController }, { ReadAloudFollow }, { ReadAloudScript }]) => {
+        if (readAloud) return readAloud;
+        const book = $rawBookData$;
+        if (!book) return undefined;
+
+        const connection = await getLibraryStore().getConnection();
+        readAloudApi = connection
+          ? new LibraryApi(
+              connection.serverUrl,
+              connection.token,
+              Math.max(0, Number(libraryRequestTimeoutSeconds$.getValue()) || 0)
+            )
+          : null;
+        const sync = await import('$lib/sync/sync-service');
+        readAloudBookId = stateBookId ?? (await sync.bookIdForLocalBook(book.id, book.title));
+
+        const follow = new ReadAloudFollow({
+          page: {
+            root: () => document.querySelector('.book-content'),
+            base: () => bookmarkManager?.sectionStartCount?.() ?? 0,
+            paginated: () => isPaginated,
+            vertical: () => readerLayout.writingMode === 'vertical-rl'
+          },
+          nextPage: () => pageManager?.nextPage(),
+          jump: (position) => jumpToPosition(position, { save: false, record: false }),
+          eink: () => $einkMode$,
+          onFollowChange: (following) => {
+            readAloudFollowing = following;
+          }
+        });
+
+        if (readAloudCoverUrl) URL.revokeObjectURL(readAloudCoverUrl);
+        readAloudCoverUrl =
+          book.coverImage instanceof Blob ? URL.createObjectURL(book.coverImage) : undefined;
+
+        const created = new ReadAloudController({
+          api: () => readAloudApi,
+          bookId: () => readAloudBookId,
+          script: async () =>
+            ReadAloudScript.build(book.elementHtml, book.sections ?? [], book.characters ?? 0),
+          pauses: () => currentPauses(),
+          speed: () => usableSpeed($readAloudSpeed$),
+          aheadSeconds: () => Math.max(10, Number($readAloudAheadSeconds$) || 60),
+          lookupResume: () => Math.max(0, Number($readAloudLookupResume$) || 0),
+          screenPosition: () => follow.screenPosition() ?? exploredCharCount,
+          onLine: (line, progress) => {
+            follow.show(line ? { position: line.position, end: line.end } : null, progress);
+          },
+          onView: (view) => {
+            readAloudView = view;
+          },
+          media: () => ({
+            title: book.title,
+            artwork:
+              readAloudCoverUrl ??
+              (typeof book.coverImage === 'string' && book.coverImage ? book.coverImage : undefined)
+          }),
+          warn: (message) => logger.warn(message)
+        });
+
+        // The reader's page changes and scrolls: ours, or the user's (it stops following).
+        const onMoved = () => follow.moved();
+        const onVisible = () => {
+          if (document.visibilityState === 'visible') follow.update();
+        };
+        // Your inputs: a page change after one of them is yours (it stops the following).
+        const onInput = () => follow.noteInput();
+        const inputs = ['keydown', 'wheel', 'touchstart', 'pointerdown'] as const;
+        document.addEventListener(PAGE_CHANGE, onMoved);
+        window.addEventListener('scroll', onMoved, { passive: true });
+        document.addEventListener('visibilitychange', onVisible);
+        for (const type of inputs) {
+          document.addEventListener(type, onInput, { capture: true, passive: true });
+        }
+        const stopLookups = lookupCapture?.onLookup((_lookup, change) => created.lookup(change));
+        stopReadAloudWatch = () => {
+          document.removeEventListener(PAGE_CHANGE, onMoved);
+          window.removeEventListener('scroll', onMoved);
+          document.removeEventListener('visibilitychange', onVisible);
+          for (const type of inputs) {
+            document.removeEventListener(type, onInput, { capture: true });
+          }
+          stopLookups?.();
+        };
+
+        readAloud = created;
+        readAloudFollow = follow;
+        readAloudLocalId = book.id;
+        readAloudFollowing = true;
+        return created;
+      })
+      .catch((error) => {
+        logger.warn(`Read-aloud: ${(error as Error)?.message ?? error}`);
+        return undefined;
+      })
+      .finally(() => {
+        readAloudLoading = undefined;
+      });
+
+    return readAloudLoading;
+  }
+
+  function destroyReadAloud() {
+    stopReadAloudWatch?.();
+    stopReadAloudWatch = undefined;
+    readAloud?.destroy();
+    readAloud = undefined;
+    readAloudFollow?.destroy();
+    readAloudFollow = undefined;
+    readAloudLocalId = undefined;
+    readAloudView = READ_ALOUD_IDLE;
+    readAloudFollowing = true;
+    if (readAloudCoverUrl) URL.revokeObjectURL(readAloudCoverUrl);
+    readAloudCoverUrl = undefined;
+  }
+
+  /** The pacer and auto-scroll don't run together with read-aloud. */
+  function readAloudTakesOver() {
+    autoScroller?.off();
+    if (pacer?.state().running) pacer.pause();
+  }
+
+  async function toggleReadAloud() {
+    const loaded = await loadReadAloud();
+
+    if (!loaded) {
+      openReadAloudPanel();
+      return;
+    }
+
+    if (!loaded.playing) readAloudTakesOver();
+    await loaded.toggle();
+
+    // Without a voice the panel shows the choice.
+    if (readAloudView.needsVoice) openReadAloudPanel();
+  }
+
+  async function readAloudFromHere(position?: number) {
+    const loaded = await loadReadAloud();
+
+    if (!loaded) return;
+
+    readAloudTakesOver();
+    readAloudFollow?.back();
+    await loaded.readFrom(position ?? readAloudFollow?.screenPosition() ?? exploredCharCount);
+  }
+
+  async function readAloudFromSelection() {
+    const position = readerHighlights?.selectionStart();
+    readerHighlights?.close();
+
+    if (position === undefined) return;
+
+    await readAloudFromHere(position);
+  }
+
+  function openReadAloudPanel() {
+    showHeader = false;
+
+    if (showAppearance) {
+      closeAppearance();
+    }
+
+    showPacerPanel = false;
+    showReadAloudPanel = true;
+    void loadReadAloud();
+  }
+
+  // The speed applies at once, also while it reads.
+  $: readAloud?.setSpeed(usableSpeed($readAloudSpeed$));
+
+  // Another book opened in this page: read-aloud of the last one ends.
+  $: if (readAloud && readAloudLocalId !== undefined && $rawBookData$?.id !== readAloudLocalId) {
+    destroyReadAloud();
+  }
+
+  // The pacer started while read-aloud plays: read-aloud pauses.
+  $: if (pacerState.running && readAloud?.playing) {
+    readAloud.pause();
+  }
+
+  let stopReadAloudAutoScroll: (() => void) | undefined;
+
+  // Auto-scroll turned on: read-aloud pauses.
+  $: {
+    stopReadAloudAutoScroll?.();
+    const subscription = autoScroller?.wasAutoScrollerEnabled$.subscribe((on) => {
+      if (on) readAloud?.pause();
+    });
+    stopReadAloudAutoScroll = () => subscription?.unsubscribe();
+  }
+
   function noteLayoutSettling() {
     const now = Date.now();
     autoStartGate?.noteSettling(now);
@@ -1621,6 +1883,7 @@
       }
 
       pacerAtStart?.setPaused('layout', true);
+      readAloudFollow?.hold(true);
       noteLayoutSettling();
       clearSearchMark?.();
       await bookReaderRef.relayout();
@@ -1633,6 +1896,7 @@
       }
 
       pacerAtStart?.setPaused('layout', false);
+      readAloudFollow?.hold(false);
     }
   }
 
@@ -1657,6 +1921,7 @@
     }
 
     pacer?.setPaused('layout', true);
+    readAloudFollow?.hold(true);
     noteLayoutSettling();
     clearSearchMark?.();
     // Whispersync holds the page element and its writing mode: it starts again with the new
@@ -1681,6 +1946,7 @@
           remountTarget = undefined;
           logger.warn(`Appearance: ${(error as Error)?.message ?? error}`);
           pacer?.setPaused('layout', false);
+          readAloudFollow?.hold(false);
 
           if (remountTrackerWasRunning) {
             restartTrackerAfterCharacterChangeOrTime(1);
@@ -1725,6 +1991,7 @@
     }
 
     pacer?.setPaused('layout', false);
+    readAloudFollow?.hold(false);
 
     // Changed again while reopening: reopen once more for the latest settings.
     if (JSON.stringify(currentLayout()) !== JSON.stringify(readerLayout)) {
@@ -2904,6 +3171,23 @@
       return;
     }
 
+    // Season 2 Phase 12 session 3: "<" / ">" the previous / next sentence while read-aloud is
+    // on (typed characters, usually with Shift, so checked before the modifier guard).
+    if (
+      (ev.key === '<' || ev.key === '>') &&
+      readAloudActive &&
+      !$skipKeyDownListener$ &&
+      !ev.altKey &&
+      !ev.ctrlKey &&
+      !ev.metaKey &&
+      !ev.repeat &&
+      !isTypingTarget(ev.target)
+    ) {
+      ev.preventDefault();
+      void readAloud?.skip(ev.key === '>' ? 1 : -1);
+      return;
+    }
+
     if (
       $skipKeyDownListener$ ||
       ev.altKey ||
@@ -2957,7 +3241,8 @@
       freezeTrackerPosition,
       toggleZen,
       () => void enrichAnkiCard(),
-      () => void togglePacer()
+      () => void togglePacer(),
+      () => void toggleReadAloud()
     );
 
     if (!result) return;
@@ -3731,6 +4016,7 @@
       on:addBookmarkClick={addBookmarkHere}
       on:ankiEnrichClick={() => void enrichAnkiCard()}
       on:pacerClick={openPacerPanel}
+      on:readAloudClick={openReadAloudPanel}
       on:shortcutsClick={openShortcuts}
     />
   </div>
@@ -3844,11 +4130,29 @@
   />
 {/if}
 
+{#if showReadAloudPanel}
+  <ReadAloudPanel
+    view={readAloudView}
+    following={readAloudFollowing}
+    highlightSupported={pacerSupported}
+    api={readAloudApi}
+    bookId={readAloudBookId}
+    on:toggle={() => void toggleReadAloud()}
+    on:stop={() => void readAloud?.stop()}
+    on:skip={({ detail }) => void readAloud?.skip(detail)}
+    on:here={() => void readAloudFromHere()}
+    on:back={() => readAloudFollow?.back()}
+    on:close={() => (showReadAloudPanel = false)}
+  />
+{/if}
+
 {#if readerHighlights}
   <HighlightBar
     state={$highlightBarState}
     lastColor={highlightLastColor()}
     eink={$einkMode$}
+    readAloud
+    on:readAloud={() => void readAloudFromSelection()}
     on:color={({ detail }) => readerHighlights?.chooseColor(detail)}
     on:note={() => readerHighlights?.chooseNote()}
     on:quote={openQuoteImage}
@@ -4060,6 +4364,38 @@
         <Fa icon={faGaugeHigh} />
         <Fa icon={pacerState.running ? faPause : faPlay} size="xs" />
       </div>
+    {/if}
+    {#if $readAloudBottomBarButton$ || readAloudActive}
+      <!-- Season 2 Phase 12 session 3: read-aloud (opt-in per device; shown while it is on). -->
+      <div
+        tabindex="0"
+        role="button"
+        title="Read aloud: play or pause (V)"
+        aria-label={readAloudPlaying ? 'Pause read-aloud' : 'Read aloud'}
+        class="flex h-full min-w-[3rem] items-center justify-center gap-1 text-sm sm:text-lg"
+        class:animate-pulse={readAloudView.phase === 'waiting' ||
+          readAloudView.phase === 'preparing'}
+        data-testid="footer-read-aloud"
+        data-phase={readAloudView.phase}
+        on:click|stopPropagation={() => void toggleReadAloud()}
+        on:keyup={dummyFn}
+      >
+        <Fa icon={faVolumeHigh} />
+        <Fa icon={readAloudPlaying ? faPause : faPlay} size="xs" />
+      </div>
+      {#if readAloudActive && !readAloudFollowing}
+        <div
+          tabindex="0"
+          role="button"
+          title="Back to the sentence being read"
+          class="flex h-full items-center px-2 text-xs sm:text-sm"
+          data-testid="footer-read-aloud-back"
+          on:click|stopPropagation={() => readAloudFollow?.back()}
+          on:keyup={dummyFn}
+        >
+          ↩ Voice
+        </div>
+      {/if}
     {/if}
     {#if $showReturnMarker$ && returnMarkerPos !== undefined && !returnMarkerOnScreen && bookCharCount}
       <!-- WP11b: where you were reading before jumping (opt-in per device). -->

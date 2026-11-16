@@ -10,18 +10,19 @@ import {
   type BookTextIndex
 } from '$lib/components/book-reader/book-search';
 import { spanOfRange } from '$lib/notes/anchor';
-import { DICTIONARY_POPUP_SELECTOR, isPopupShown, JPDB_POPUP_ID } from '$lib/stats/lookup-counter';
+import { sharedPopupWatch, type PopupChange } from '$lib/dictionary/popup-watch';
 import { sentenceAt, sentenceFromText, type Sentence } from './sentence';
 
 /**
  * WP14: remembers the sentence of the last dictionary lookup in the open book, for
  * "Enrich last card".
  *
- * A lookup is a Yomitan (or jpdb) popup appearing, or moving to a new word while shown
- * (the same popup signals as the lookup count; needs Yomitan's Secure Container off). The
- * looked-up place is Yomitan's own selection when it selects the matched text, else the
- * character under the last pointer position on the page. The sentence and its position
- * are worked out at once, so later page turns don't matter.
+ * A lookup is a Yomitan (or jpdb) popup appearing, or moving to a new word while shown, as
+ * the shared popup watch sees it (`lib/dictionary/popup-watch.ts`: the popup element, or
+ * Yomitan's word selection when its secure container hides the element). The looked-up
+ * place is Yomitan's own selection when it selects the matched text, else the character
+ * under the last pointer position on the page. The sentence and its position are worked
+ * out at once, so later page turns don't matter.
  *
  * Isolated like the stats code: every failure is caught and only loses the lookup.
  */
@@ -127,14 +128,12 @@ export class LookupCapture {
   private frame: number | null = null;
   private live: { root: Element; index: BookTextIndex } | null = null;
   private contentObserver: MutationObserver | null = null;
-  private bodyObserver: MutationObserver | null = null;
-  private popupObserver: MutationObserver | null = null;
-  private readonly watched = new Set<HTMLElement>();
-  private readonly shown = new WeakMap<HTMLElement, string>();
+  private releasePopups: (() => void) | null = null;
+  private stopPopups: (() => void) | null = null;
   private pending: ReturnType<typeof setTimeout> | null = null;
   private stopped = false;
-  /** The lookup shown now, and the popup showing it. */
-  private current: { lookup: LookupRecord; popup: HTMLElement } | null = null;
+  /** The lookup shown now. */
+  private current: { lookup: LookupRecord } | null = null;
   private nextLookupId = 1;
   private readonly listeners = new Set<LookupListener>();
 
@@ -189,15 +188,12 @@ export class LookupCapture {
 
       this.doc.addEventListener('pointermove', this.onPointer, { capture: true, passive: true });
       this.doc.addEventListener('pointerdown', this.onPointer, { capture: true, passive: true });
-      this.popupObserver = new Observer((mutations) => {
-        for (const m of mutations) this.check(m.target as HTMLElement);
-      });
-      this.bodyObserver = new Observer(() => this.scan());
-      this.bodyObserver.observe(this.doc.body, { childList: true });
       this.contentObserver = new Observer(() => {
         this.live = null;
       });
-      this.scan();
+      const { watch, release } = sharedPopupWatch(this.doc, this.warn);
+      this.releasePopups = release;
+      this.stopPopups = watch.subscribe(this.onPopup);
     } catch (error) {
       this.fail(error);
     }
@@ -209,10 +205,11 @@ export class LookupCapture {
     this.stopped = true;
     this.doc.removeEventListener('pointermove', this.onPointer, { capture: true });
     this.doc.removeEventListener('pointerdown', this.onPointer, { capture: true });
-    this.bodyObserver?.disconnect();
-    this.popupObserver?.disconnect();
+    this.stopPopups?.();
+    this.releasePopups?.();
+    this.stopPopups = null;
+    this.releasePopups = null;
     this.contentObserver?.disconnect();
-    this.watched.clear();
     this.live = null;
     if (this.pending) clearTimeout(this.pending);
     if (this.frame !== null) this.doc.defaultView?.cancelAnimationFrame(this.frame);
@@ -362,53 +359,27 @@ export class LookupCapture {
     }
   }
 
-  private scan() {
-    try {
-      const popups = [
-        ...Array.from(this.doc.querySelectorAll<HTMLElement>(DICTIONARY_POPUP_SELECTOR)),
-        ...[this.doc.getElementById(JPDB_POPUP_ID)].filter((e): e is HTMLElement => !!e)
-      ];
-
-      for (const popup of popups) {
-        if (this.watched.has(popup)) continue;
-        this.watched.add(popup);
-        this.popupObserver?.observe(popup, { attributes: true, attributeFilter: ['style'] });
-        this.check(popup);
-      }
-    } catch (error) {
-      this.fail(error);
-    }
-  }
-
   /**
    * A popup shown, or moved while shown (a new word), is a lookup. Hidden, or moved on, it
    * ends (Phase 8).
    */
-  private check(popup: HTMLElement) {
+  private readonly onPopup = ({ kind }: PopupChange) => {
     try {
-      const style = isPopupShown(popup) ? `${popup.style.left}|${popup.style.top}` : '';
-      const before = this.shown.get(popup) ?? '';
-      this.shown.set(popup, style);
-
-      if (style && style !== before) {
-        this.endLookup();
-        this.schedule(this.startLookup(popup));
-      } else if (!style && before && this.current?.popup === popup) {
-        this.endLookup();
-      }
+      this.endLookup();
+      if (kind !== 'close' && !this.stopped) this.schedule(this.startLookup());
     } catch (error) {
       this.fail(error);
     }
-  }
+  };
 
-  private startLookup(popup: HTMLElement): LookupRecord {
+  private startLookup(): LookupRecord {
     const lookup: LookupRecord = {
       id: this.nextLookupId++,
       startedAt: Date.now(),
       endedAt: null,
       sentence: null
     };
-    this.current = { lookup, popup };
+    this.current = { lookup };
     this.emit(lookup, 'start');
     return lookup;
   }
