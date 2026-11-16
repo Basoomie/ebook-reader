@@ -827,6 +827,11 @@ export class SubtitleJobService {
         `UPDATE worker_jobs SET ${keys.map((k) => `${k} = ?`).join(', ')}, updated_at = ? WHERE id = ?`,
       )
       .run(...keys.map((k) => fields[k]), this.now(), id);
+    // A job left 'running' (done, failed, stopped, back in the queue, or an audiobook put
+    // together): an idle PC waiting in its check-in may have work now.
+    if (typeof fields.state === 'string' && fields.state !== 'running') {
+      queueMicrotask(() => this.notify());
+    }
   }
 
   // ---------------------------------------------------------------- the worker
@@ -899,6 +904,8 @@ export class SubtitleJobService {
   async heartbeatWait(input: HeartbeatInput, waitSeconds: number): Promise<HeartbeatAnswer> {
     const first = this.heartbeat(input);
     if (!(waitSeconds > 0) || this.workWaiting()) return first;
+    // The kept voice should go now: answered at once.
+    if (first.keepVoiceSeconds === 0 && this.engine()) return first;
     let ms = waitSeconds * 1000;
     if (first.keepVoiceSeconds !== null && first.keepVoiceSeconds > 0) {
       ms = Math.min(ms, first.keepVoiceSeconds * 1000 + 250);
@@ -1158,7 +1165,9 @@ export class SubtitleJobService {
       lease_expires_at: null,
     });
     this.log(
-      `GPU worker: job ${id} ${paused ? 'paused' : live ? 'made way for read-aloud' : 'made way for sentence audio'}`,
+      live
+        ? `GPU worker: job ${id} made way for read-aloud`
+        : `GPU worker: job ${id} ${paused ? 'paused' : 'made way for sentence audio'} between chapters`,
     );
     return this.get(id)!;
   }

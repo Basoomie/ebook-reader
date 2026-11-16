@@ -361,6 +361,27 @@ describe.skipIf(!HAS_FFMPEG)('live read-aloud (Season 2 Phase 12 session 3)', ()
     expect((await t.poll(id)).body.session.pc.paused).toBe(true);
   });
 
+  it('answers a waiting check-in when a running job ends (an audiobook put together)', async () => {
+    const t = await setup();
+    await t.chooseGlobal();
+    await t.startBook(SPY, { voiceId: t.voice.id, modelId: DEFAULT_MODEL });
+    await t.beat({ engine: null });
+    const job = await t.claimAs(['generate_audiobook'], null);
+    // Another job waits; the PC's check-in waits while the first one runs.
+    await t.api('post', `/books/${t.bookId(HITSUJI)}/sentence-audio`).send({ text: '遠い。' });
+    await t.chooseGlobal();
+    const started = Date.now();
+    const waiting = t.beat({ engine: null, wait: 10 });
+    setTimeout(() => t.jobs.update(job.id, { state: 'done' }), 300);
+    await waiting;
+    expect(Date.now() - started).toBeLessThan(5000);
+    // With the voice to let go (keep time 0) it is answered at once too.
+    await t.api('put', '/gpu-worker/keep-loaded').send({ minutes: 0 });
+    const t2 = Date.now();
+    expect((await t.beat({ wait: 10 })).body.keepVoiceSeconds).toBe(0);
+    expect(Date.now() - t2).toBeLessThan(5000);
+  });
+
   it('keeps the voice as long as Settings says; refuses a bad value', async () => {
     const t = await setup();
     const put = (minutes: unknown) => t.api('put', '/gpu-worker/keep-loaded').send({ minutes });
