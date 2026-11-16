@@ -90,7 +90,7 @@ describe('migration 22', () => {
       'INSERT INTO worker_status (id, paused, last_seen_at, updated_at, kinds) VALUES (1, 1, 5, 5, \'["sentence_audio"]\')',
     ).run();
     expect(migrate(db)).toBe(LATEST_SCHEMA_VERSION);
-    expect(LATEST_SCHEMA_VERSION).toBe(22);
+    expect(LATEST_SCHEMA_VERSION).toBeGreaterThanOrEqual(22);
     expect(
       db
         .prepare(

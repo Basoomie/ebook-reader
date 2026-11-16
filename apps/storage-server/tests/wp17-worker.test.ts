@@ -21,7 +21,8 @@ import { memoryLogger } from '../../gpu-worker/src/log';
 import { overallProgress, parseTtsLine, ttsArgs } from '../../gpu-worker/src/tts';
 import { engineArgs } from '../../gpu-worker/src/engine';
 import { Worker } from '../../gpu-worker/src/worker';
-import { HAS_FFMPEG, ttsEnv } from './helpers/tts-env';
+import type { BookScript } from '../src/audio/book-script';
+import { HAS_FFMPEG, SCRIPT, ttsEnv } from './helpers/tts-env';
 import { makeTempDir } from './helpers/spawn-server';
 import { HITSUJI, SPY, type Track } from './helpers/worker-env';
 
@@ -92,8 +93,12 @@ describe('worker pieces', () => {
   });
 });
 
-async function workerEnv(mode: string, settings: Partial<WorkerSettings> = {}) {
-  const t = await ttsEnv(track);
+async function workerEnv(
+  mode: string,
+  settings: Partial<WorkerSettings> = {},
+  script?: BookScript,
+) {
+  const t = await ttsEnv(track, script ? { script } : {});
   const server = t.app.listen(0, '127.0.0.1');
   await new Promise((r) => server.once('listening', r));
   closers.push(() => new Promise((r) => server.close(() => r())));
@@ -386,6 +391,151 @@ describe.skipIf(!HAS_FFMPEG)('the worker running TTS jobs', () => {
     expect(fs.existsSync(gone)).toBe(false);
     expect(fs.existsSync(path.dirname(gone))).toBe(false);
     expect(fs.existsSync(path.join(keep, 'model.safetensors'))).toBe(true);
+  }, 60_000);
+});
+
+describe.skipIf(!HAS_FFMPEG)('the worker with two voices (Season 2 Phase 12 session 4)', () => {
+  /** The test book with a mixed sentence and a quote (script v3 parts). */
+  const DIALOGUE: BookScript = {
+    ...SCRIPT,
+    chapters: [
+      {
+        ...SCRIPT.chapters[0],
+        sentences: [
+          SCRIPT.chapters[0].sentences[0],
+          {
+            text: '「行こう」と彼は言った。',
+            reading: '「行こう」と彼は言った。',
+            ruby: [],
+            position: 11,
+            paragraphEnd: false,
+            parts: [{ start: 0, end: 5, role: 'dialogue', quote: 0 }],
+          },
+          {
+            text: '「近い！」',
+            reading: '「近い！」',
+            ruby: [],
+            position: 23,
+            paragraphEnd: true,
+            parts: [{ start: 0, end: 5, role: 'dialogue', quote: 1 }],
+          },
+        ],
+      },
+      SCRIPT.chapters[1],
+    ],
+  };
+
+  async function twoVoices(mode: string) {
+    const t = await workerEnv(mode, {}, DIALOGUE);
+    const narrator = await t.addVoice('Narrator');
+    const speaker = await t.addVoice('Speaker', 5);
+    const sha = (id: string) =>
+      (t.e.db.prepare('SELECT sha256 FROM tts_voices WHERE id = ?').get(id) as { sha256: string })
+        .sha256;
+    return { ...t, narrator, speaker, sha };
+  }
+
+  it('makes an audiobook reading the dialogue with its own voice', async () => {
+    const t = await twoVoices('ok');
+    const res = await t.startBook(HITSUJI, {
+      voiceId: t.narrator.id,
+      dialogueVoiceId: t.speaker.id,
+    });
+    const id = res.body.job.id as number;
+    expect(await t.worker.tick()).toBe(0);
+    await t.tts.idle();
+    expect(await t.latestBook(HITSUJI), JSON.stringify(t.log.lines)).toMatchObject({
+      id,
+      state: 'done',
+    });
+    const job = t.jobJson(1);
+    const dialogueFile = `/work/voice-${t.sha(t.speaker.id).slice(0, 16)}.wav`;
+    expect(job.voice).toBe('/work/voice.wav');
+    expect(job.voices).toEqual({
+      narration: { voice: '/work/voice.wav', seed: job.seed },
+      dialogue: { voice: dialogueFile, seed: expect.any(Number) },
+    });
+    expect(job.chapters[0].sentences[1].segments).toEqual([
+      { reading: '「行こう」', voice: 'dialogue' },
+      { reading: 'と彼は言った。', voice: 'narration' },
+    ]);
+    // What the program said, sentence by sentence (one cue each, as before).
+    const row = t.e.db
+      .prepare('SELECT cues FROM tts_job_chapters WHERE job_id = ? AND idx = 0')
+      .get(id) as { cues: string };
+    const kept = JSON.parse(row.cues) as { cues: number[][]; spoken: string[] };
+    expect(kept.cues).toHaveLength(3);
+    expect(kept.spoken).toEqual([
+      '善なるものはひっきょう、遠い。',
+      '[dialogue]「行こう」[narration]と彼は言った。',
+      '[dialogue]「近い！」',
+    ]);
+  }, 60_000);
+
+  it('waits for a newer program on the PC (an older one would read it with one voice)', async () => {
+    const t = await twoVoices('ok');
+    await t.startBook(HITSUJI, { voiceId: t.narrator.id, dialogueVoiceId: t.speaker.id });
+    await t.heartbeat({ version: '1.2.0' });
+    expect(await t.claim()).toBeNull();
+    expect((await t.latestBook(HITSUJI)).state).toBe('queued');
+  }, 60_000);
+
+  it('reads aloud and reads Enrich clips with both voices kept in the voice process', async () => {
+    const t = await twoVoices('ok');
+    await request(t.app)
+      .put('/api/v1/tts/voice-choice')
+      .set(t.auth)
+      .send({ voiceId: t.narrator.id, dialogueVoiceId: t.speaker.id, modelId: 1 });
+    const session = (
+      await request(t.app)
+        .post('/api/v1/read-aloud/sessions')
+        .set(t.auth)
+        .send({ bookId: t.bookId(HITSUJI) })
+    ).body.session.id as string;
+    await request(t.app)
+      .post(`/api/v1/read-aloud/sessions/${session}/batches`)
+      .set(t.auth)
+      .send({ sentences: DIALOGUE.chapters[0].sentences.slice(1) });
+    const serving = t.worker.tick();
+    const poll = async () =>
+      (await request(t.app).get(`/api/v1/read-aloud/sessions/${session}`).set(t.auth)).body.session;
+    const done = await waitFor(poll, (s) => ['done', 'failed'].includes(s.batches[0]?.state));
+    expect(done.batches[0], JSON.stringify(t.log.lines)).toMatchObject({ state: 'done' });
+    await request(t.app)
+      .get(`/api/v1/read-aloud/sessions/${session}?playing=0&after=1`)
+      .set(t.auth);
+    expect(await serving).toBe(0);
+    const read = t.served().find((r) => r.op === 'read')!;
+    expect(read.voices).toEqual({
+      narration: { voice: `/work/voices/${t.sha(t.narrator.id)}.wav`, seed: expect.any(Number) },
+      dialogue: { voice: `/work/voices/${t.sha(t.speaker.id)}.wav`, seed: expect.any(Number) },
+    });
+    expect((read.sentences as { segments?: unknown }[])[0].segments).toEqual([
+      { reading: '「行こう」', voice: 'dialogue' },
+      { reading: 'と彼は言った。', voice: 'narration' },
+    ]);
+    // Both clips are in the voice process's folder.
+    for (const id of [t.narrator.id, t.speaker.id]) {
+      expect(fs.existsSync(path.join(t.s.workDir, 'live', 'voices', `${t.sha(id)}.wav`))).toBe(
+        true,
+      );
+    }
+    // An Enrich clip of the mixed sentence through the kept voice.
+    const clip = (
+      await request(t.app)
+        .post(`/api/v1/books/${t.bookId(HITSUJI)}/sentence-audio`)
+        .set(t.auth)
+        .send({ text: '「行こう」と彼は言った。', position: 11 })
+    ).body.clip.id as string;
+    await t.worker.tick();
+    const st = (await request(t.app).get(`/api/v1/sentence-audio/${clip}`).set(t.auth)).body;
+    expect(st.clip, JSON.stringify(t.log.lines)).toMatchObject({ state: 'done' });
+    const reads = t.served().filter((r) => r.op === 'read');
+    expect((reads[reads.length - 1].sentences as { segments?: unknown }[])[0].segments).toEqual([
+      { reading: '「行こう」', voice: 'dialogue' },
+      { reading: 'と彼は言った。', voice: 'narration' },
+    ]);
+    expect(t.served().filter((r) => r.op === 'load')).toHaveLength(1);
   }, 60_000);
 });
 

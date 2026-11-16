@@ -139,7 +139,12 @@ export function createTtsWorkerRouter(db: Database.Database, options: TtsOptions
     asyncHandler(async (req, res) => {
       const tts = ttsOr503(options);
       const voices = voicesOr503(options);
-      const { relative } = await attempt(() => tts.voiceClip(id(req.params.id)));
+      // Session 4: ?sha= names one of the job's voices (worker 1.3.0); none: the narration.
+      const sha =
+        typeof req.query.sha === 'string' && /^[a-f0-9]{64}$/.test(req.query.sha)
+          ? req.query.sha
+          : undefined;
+      const { relative } = await attempt(() => tts.voiceClip(id(req.params.id), sha));
       const st = await voices.store.stat(relative);
       if (!st) throw new ApiError(410, 'missing', 'The voice clip is missing');
       res.set('Content-Length', String(st.size));

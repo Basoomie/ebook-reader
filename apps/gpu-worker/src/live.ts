@@ -59,6 +59,8 @@ export class LiveReader {
         continue;
       }
       await this.voice(next.session.voice.sha256);
+      // Session 4: the dialogue voice (and any other the segments name).
+      for (const v of Object.values(next.session.voices ?? {})) await this.voice(v.sha256);
       next = await api.liveNext({ engine: engine.report(), take: true, wait: LIVE_WAIT_SECONDS });
       if (!next) break;
       if (!next.batch) continue;
@@ -143,6 +145,7 @@ export class LiveReader {
       const reading = engine.read({
         sentences: batch.sentences,
         voiceSha: a.session.voice.sha256,
+        voices: a.session.voices,
         caption: null,
         seed: a.session.seed,
         pauses: a.session.pauses,

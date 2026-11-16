@@ -14,10 +14,13 @@
  *   crosses is dropped (its kanji are then read by SudachiPy). A whole sentence keeps its
  *   reading exactly as the script has it.
  * - Not found (the book's file changed since the tap): the text as it is, without furigana.
+ * - Session 4: the dialogue runs (`parts`) are cut with the sentence, so a clip reads its
+ *   dialogue with the dialogue voice as the audiobook would (not found: all narration).
  *
  * Pure code, no server imports.
  */
 import { buildReading, type RubyRun } from '../pronunciation/fix-rules';
+import type { DialoguePart } from './voice-map';
 
 /** A script sentence as book-script.ts makes it (the fields used here). */
 export interface SourceSentence {
@@ -26,6 +29,7 @@ export interface SourceSentence {
   ruby?: RubyRun[];
   position: number;
   paragraphEnd: boolean;
+  parts?: DialoguePart[];
 }
 
 /** One piece the PC reads (a script sentence, or the part of one inside the span). */
@@ -35,6 +39,7 @@ export interface ClipSentence {
   ruby: RubyRun[];
   position: number;
   paragraphEnd: boolean;
+  parts?: DialoguePart[];
 }
 
 export interface ClipText {
@@ -113,12 +118,20 @@ export function clipText(source: SourceSentence[], text: string, position: numbe
     const ruby = (s.ruby ?? [])
       .filter((r) => r.start >= start && r.end <= end)
       .map((r) => ({ start: r.start - start, end: r.end - start, rt: r.rt }));
+    const parts = (s.parts ?? [])
+      .map((p) => ({
+        ...p,
+        start: Math.max(p.start, start) - start,
+        end: Math.min(p.end, end) - start,
+      }))
+      .filter((p) => p.end > p.start);
     sentences.push({
       text: piece,
       reading: whole ? s.reading : buildReading({ text: piece, reading: piece, ruby }, []),
       ruby,
       position: s.position,
       paragraphEnd: k === last ? true : s.paragraphEnd,
+      ...(parts.length ? { parts } : {}),
     });
   }
   return { sentences, found: true };
