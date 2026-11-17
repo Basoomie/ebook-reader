@@ -13,7 +13,13 @@ import { getOrCreateSecret } from '../db/secrets';
 
 export const CLEANUP_SECRET_KEY_NAME = 'cleanup_secrets';
 
-export const SECRET_NAMES = ['anthropicApiKey', 'openaiApiKey', 'calibrePassword'] as const;
+export const SECRET_NAMES = [
+  'anthropicApiKey',
+  'openaiApiKey',
+  'calibrePassword',
+  // WP21a: Audiobookshelf's API key (an admin's, to read every user's progress). Only read.
+  'absApiKey',
+] as const;
 export type SecretName = (typeof SECRET_NAMES)[number];
 
 export function isSecretName(name: string): name is SecretName {

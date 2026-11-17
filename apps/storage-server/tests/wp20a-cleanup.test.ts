@@ -1071,7 +1071,12 @@ describe('static guards', () => {
         .join('\n');
       // No process is ever started with a calibre program, and the cleanup module starts none.
       expect(/(spawn|execFile|exec|fork)\w*\(\s*['"`][^'"`]*calibre/.test(text), f).toBe(false);
-      if (f.includes(`${path.sep}cleanup${path.sep}`))
+      // WP21a: the audiobook cleanup's probe.ts runs only ffprobe/ffmpeg on a read-only file
+      // descriptor (its own test proves that); nothing else in the cleanup starts a process.
+      if (
+        f.includes(`${path.sep}cleanup${path.sep}`) &&
+        !f.endsWith(`${path.sep}cleanup${path.sep}audio${path.sep}probe.ts`)
+      )
         expect(/child_process/.test(text), f).toBe(false);
     }
   });

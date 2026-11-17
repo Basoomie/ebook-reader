@@ -36,6 +36,7 @@ import { VoiceService } from './voices/voice-service';
 import { VoiceStore } from './voices/voice-store';
 import { initCleanupDatabase } from './cleanup/cleanup-db';
 import { CleanupService } from './cleanup/cleanup-service';
+import { AudioCleanupService } from './cleanup/audio/audio-cleanup-service';
 import type { CleanupOptions } from './cleanup/routes';
 
 // Every console line is also kept (secrets removed) for the bug report (WP18).
@@ -121,6 +122,19 @@ if (database.ok && cleanupDb?.ok) {
       countImport: countImportOptions(config.counts),
     });
     cleanupOptions.service = cleanup;
+    // The audiobook cleanup (WP21a): analysis only, shares the disk lock and the settings.
+    cleanupOptions.audio = new AudioCleanupService({
+      db: cleanupDb.db,
+      secrets: cleanup.secrets,
+      lock: cleanup.diskLock,
+      roots: config.cleanupAudio
+        ? { torrents: config.cleanupAudio.torrentsDir, library: config.cleanupAudio.libraryDir }
+        : null,
+      tools: {
+        ffprobePath: config.audio.merge.ffprobePath,
+        ffmpegPath: config.audio.merge.ffmpegPath,
+      },
+    });
   } catch (err) {
     console.error('Error: library cleanup is off:', err);
     cleanupOptions.error = (err as Error).message;
@@ -435,6 +449,7 @@ const app = createApp({
   cleanup: cleanupOptions,
 });
 cleanup?.start();
+cleanupOptions.audio?.start();
 
 app.listen(config.port, () => {
   console.log(`ttsu storage server running on port ${config.port}`);
@@ -457,6 +472,7 @@ function shutdown(signal: string): void {
   snapshots?.stop();
   cleanupSnapshots?.stop();
   void cleanup?.stop();
+  void cleanupOptions.audio?.stop();
   void indexer?.stop();
   void thumbnails?.stop();
   void counts?.stop();

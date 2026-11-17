@@ -55,6 +55,29 @@ export interface CoverSettings {
   largerPercent: number;
 }
 
+/** The audiobook cleanup (WP21a). Audiobookshelf is only read. */
+export interface AudiobookSettings {
+  /** Audiobookshelf's address as the storage server reaches it, e.g. http://192.168.1.5:13378. */
+  absUrl: string;
+  /** Stage 1: how fast files are hashed (MB/s); 0 = no limit (it holds the disk lock alone). */
+  readMbPerSecond: number;
+  /**
+   * Stage 2: files checked at the same time. While a Calibre job uses the disk, stage 2 waits
+   * (it doesn't check slowly: even listing the folders slowed Calibre stage 3 down 3-4x).
+   */
+  healthWorkers: number;
+  /** Stage 2: seconds decoded at the start and at the end of every file. */
+  decodeSeconds: number;
+  /** Stage 2: time limit for one ffprobe or ffmpeg run (s). */
+  toolTimeoutSeconds: number;
+  /** A folder's files look like full copies when each is at least this long (minutes) ... */
+  copyHintMinMinutes: number;
+  /** ... and their lengths are within this share of the longest (%). */
+  copyHintPercent: number;
+  /** Time limit for one request to Audiobookshelf (s). */
+  absTimeoutSeconds: number;
+}
+
 export interface BackupRecord {
   path: string;
   /** When the backup was verified (free text date, e.g. 2026-11-12). */
@@ -91,6 +114,8 @@ export interface CleanupSettings {
   covers: CoverSettings;
   /** Stage 3: content duplicates (thresholds of plan section 5). */
   duplicates: DuplicateSettings;
+  /** The audiobook cleanup (WP21a). */
+  audiobooks: AudiobookSettings;
   backup: BackupRecord;
 }
 
@@ -137,6 +162,16 @@ export const DEFAULT_SETTINGS: CleanupSettings = {
   failedPausePercent: 1,
   covers: { maxMb: 10, maxSide: 4096, sameDistance: 5, largerPercent: 10 },
   duplicates: { ...DEFAULT_DUPLICATE_SETTINGS },
+  audiobooks: {
+    absUrl: '',
+    readMbPerSecond: 0,
+    healthWorkers: 4,
+    decodeSeconds: 20,
+    toolTimeoutSeconds: 60,
+    copyHintMinMinutes: 60,
+    copyHintPercent: 3,
+    absTimeoutSeconds: 30,
+  },
   backup: {
     path: '/mnt/user/data/backups/japanese-library-2026-11-11/',
     verifiedOn: '2026-11-12',
@@ -224,6 +259,13 @@ export function fromLegacy(raw: Map<string, unknown>): Map<string, unknown> {
     const p = out.get('pacing');
     out.set('pacing', { ...(isObj(p) ? p : {}), lookupChunk: stage2.chunkSize });
   }
+  // WP21a: the per-second pace of stage 2 was replaced by waiting for Calibre (never deployed,
+  // but test and dry-run databases may hold it).
+  const audio = out.get('audiobooks');
+  if (isObj(audio) && 'healthFilesPerSecond' in audio) {
+    const { healthFilesPerSecond: _pace, ...rest } = audio;
+    out.set('audiobooks', rest);
+  }
   for (const k of LEGACY_KEYS) out.delete(k);
   return out;
 }
@@ -267,6 +309,27 @@ function group<T extends object>(name: string, value: unknown, current: T): T {
   return { ...current, ...(value as Partial<T>) };
 }
 
+/** Audiobookshelf's address: http(s), no query, fragment or login; '' = not set. */
+function absAddress(value: unknown): string {
+  const v = text('Audiobookshelf address', value);
+  if (v === '') return v;
+  let url: URL;
+  try {
+    url = new URL(v);
+  } catch {
+    throw new SettingsError('Audiobookshelf address must look like http://192.168.1.5:13378');
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new SettingsError('Audiobookshelf address must start with http:// or https://');
+  }
+  if (url.hash || url.search || url.username || url.password) {
+    throw new SettingsError(
+      'Audiobookshelf address: no #, query or login in the address (the API key has its own field)',
+    );
+  }
+  return url.toString().replace(/\/$/, '');
+}
+
 function validate(key: Key, value: unknown, current: CleanupSettings): unknown {
   switch (key) {
     case 'contentServerUrl': {
@@ -287,6 +350,30 @@ function validate(key: Key, value: unknown, current: CleanupSettings): unknown {
         );
       }
       return url.toString().replace(/\/$/, '');
+    }
+    case 'audiobooks': {
+      const v = group('Audiobooks', value, current.audiobooks);
+      return {
+        absUrl: absAddress(v.absUrl),
+        readMbPerSecond: num('Hashing speed (MB/s)', v.readMbPerSecond, 0, 2000),
+        healthWorkers: num('Files checked at the same time', v.healthWorkers, 1, 16, true),
+        decodeSeconds: num('Seconds decoded at each end', v.decodeSeconds, 1, 600, true),
+        toolTimeoutSeconds: num(
+          'Time limit for one check (s)',
+          v.toolTimeoutSeconds,
+          5,
+          3600,
+          true,
+        ),
+        copyHintMinMinutes: num(
+          'Copies: each file at least (minutes)',
+          v.copyHintMinMinutes,
+          0,
+          6000,
+        ),
+        copyHintPercent: num('Copies: lengths within (%)', v.copyHintPercent, 0, 50),
+        absTimeoutSeconds: num('Audiobookshelf time limit (s)', v.absTimeoutSeconds, 1, 600, true),
+      };
     }
     case 'calibreLibraryId': {
       const v = text('Calibre library id', value, 200);

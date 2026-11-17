@@ -10,6 +10,10 @@ import { listLibraries, updateLibrary } from '../../src/calibre/libraries';
 import { createApplyToken } from '../../src/cleanup/apply-tokens';
 import { initCleanupDatabase } from '../../src/cleanup/cleanup-db';
 import { CleanupService, type CleanupServiceOptions } from '../../src/cleanup/cleanup-service';
+import {
+  AudioCleanupService,
+  type AudioCleanupOptions,
+} from '../../src/cleanup/audio/audio-cleanup-service';
 import type { CleanupOptions } from '../../src/cleanup/routes';
 import { initDatabase } from '../../src/db/database';
 import { createToken } from '../../src/db/tokens';
@@ -25,6 +29,8 @@ export interface CleanupEnv {
   cleanupDb: Database.Database;
   indexer: CalibreIndexer;
   service: CleanupService;
+  /** The audiobook cleanup (WP21a), when asked for. */
+  audio: AudioCleanupService | null;
   app: ReturnType<typeof createApp>;
   libraryId: () => string;
   userToken: () => string;
@@ -43,7 +49,12 @@ let rev = 1000;
 export async function makeCleanupEnv({
   leaseSeconds,
   service: serviceOptions = {},
-}: { leaseSeconds?: number; service?: Partial<CleanupServiceOptions> } = {}): Promise<{
+  audio: audioOptions,
+}: {
+  leaseSeconds?: number;
+  service?: Partial<CleanupServiceOptions>;
+  audio?: Partial<AudioCleanupOptions>;
+} = {}): Promise<{
   env: CleanupEnv;
   setup: () => Promise<void>;
 }> {
@@ -82,7 +93,19 @@ export async function makeCleanupEnv({
     logError,
     ...serviceOptions,
   });
-  const cleanup: CleanupOptions = { service };
+  const audio = audioOptions
+    ? new AudioCleanupService({
+        db: cleanupState.db,
+        secrets: service.secrets,
+        lock: service.diskLock,
+        roots: null,
+        tools: { ffprobePath: 'ffprobe', ffmpegPath: 'ffmpeg' },
+        log,
+        logError,
+        ...audioOptions,
+      })
+    : null;
+  const cleanup: CleanupOptions = { service, audio };
   const app = createApp({
     config,
     database: state,
@@ -103,6 +126,7 @@ export async function makeCleanupEnv({
     cleanupDb: cleanupState.db,
     indexer,
     service,
+    audio,
     app,
     libraryId,
     userToken: () => createToken(db, listUsers(db)[0].id, 'test').token,
@@ -129,6 +153,7 @@ export async function makeCleanupEnv({
     },
     logs,
     close: async () => {
+      await audio?.stop();
       await service.stop();
       await indexer.stop();
       cleanupState.db.close();

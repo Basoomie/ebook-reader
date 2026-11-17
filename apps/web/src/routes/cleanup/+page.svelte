@@ -19,6 +19,7 @@
   import AppBottomBar from '$lib/components/app-nav/app-bottom-bar.svelte';
   import AppHeader from '$lib/components/app-nav/app-header.svelte';
   import CataloguePageHeader from '$lib/components/catalogue-page-header.svelte';
+  import CleanupAudiobooks from '$lib/components/cleanup/cleanup-audiobooks.svelte';
   import CleanupBatches from '$lib/components/cleanup/cleanup-batches.svelte';
   import CleanupSection from '$lib/components/cleanup/cleanup-section.svelte';
   import CopyRow from '$lib/components/cleanup/cleanup-copy-row.svelte';
@@ -86,17 +87,25 @@
   const POLL_MS = 5000;
   const MODES: StageMode[] = ['off', 'analyse', 'on'];
 
-  /** Two tabs: the cleanup itself (status to spot check) and its settings. In the address. */
-  type Tab = 'cleanup' | 'settings';
+  /**
+   * Three tabs: the Calibre cleanup itself (status to spot check), the audiobook cleanup
+   * (WP21a) and the settings of both. In the address.
+   */
+  type Tab = 'cleanup' | 'audiobooks' | 'settings';
   const TABS: { id: Tab; label: string }[] = [
     { id: 'cleanup', label: 'Cleanup' },
+    { id: 'audiobooks', label: 'Audiobooks' },
     { id: 'settings', label: 'Settings' }
   ];
   let tab: Tab = 'cleanup';
 
+  function tabFrom(value: string | null): Tab {
+    return value === 'settings' || value === 'audiobooks' ? value : 'cleanup';
+  }
+
   function showTab(next: Tab) {
     tab = next;
-    const href = `${pagePath}/cleanup${next === 'settings' ? '?tab=settings' : ''}`;
+    const href = `${pagePath}/cleanup${next === 'cleanup' ? '' : `?tab=${next}`}`;
     if (`${location.pathname}${location.search}` !== href) {
       void goto(href, { replaceState: true, keepFocus: true, noScroll: true });
     }
@@ -155,7 +164,7 @@
   ].filter((b): b is ProgressBar => b !== null);
 
   onMount(async () => {
-    tab = $page.url.searchParams.get('tab') === 'settings' ? 'settings' : 'cleanup';
+    tab = tabFrom($page.url.searchParams.get('tab'));
     connection = (await getLibraryStore().getConnection()) ?? null;
     if (!connection) return;
     const timeout = Math.max(0, Number($libraryRequestTimeoutSeconds$) || 0);
@@ -640,25 +649,6 @@
                 </div>
               </div>
             {/each}
-            {#each stage3Lines(stage3, status.stage3) as line}
-              <p class="text-sm" data-testid="cleanup-stage-3-line">{line}</p>
-            {/each}
-            {#if gate3}
-              <div class="flex flex-col gap-1" data-testid="cleanup-gate-3">
-                <p class="text-sm font-medium">
-                  Checked on the measured pairs and the labeled books:
-                  <span aria-label={gate3.passed ? 'passes' : 'fails'}
-                    >{gate3.passed ? '✓ passes' : '✗ not passed'}</span
-                  >
-                </p>
-                {#each gateLines(gate3) as line}
-                  <p class="text-sm">{line}</p>
-                {/each}
-                {#each gate3.problems as problem}
-                  <p class="text-sm font-bold">{problem}</p>
-                {/each}
-              </div>
-            {/if}
             {#if precisionLine(stage3)}
               <p class="text-sm">
                 {precisionLine(stage3)?.replace('pairs still identical', 'pairs’ files unchanged')}
@@ -689,6 +679,37 @@
               <p class="text-sm text-c-muted" data-testid="cleanup-counts-3">
                 {countsLine(status.stage3.counts)}
               </p>
+            {/if}
+            {#if stage3Lines(stage3, status.stage3).length > 0 || gate3}
+              <details
+                class="flex flex-col gap-2"
+                open={stage3.mode !== 'on'}
+                data-testid="cleanup-stage-3-analysis"
+              >
+                <summary class="cursor-pointer text-sm font-medium">What the analysis found</summary
+                >
+                <div class="mt-2 flex flex-col gap-2">
+                  {#each stage3Lines(stage3, status.stage3) as line}
+                    <p class="text-sm" data-testid="cleanup-stage-3-line">{line}</p>
+                  {/each}
+                  {#if gate3}
+                    <div class="flex flex-col gap-1" data-testid="cleanup-gate-3">
+                      <p class="text-sm font-medium">
+                        Checked on the measured pairs and the labeled books:
+                        <span aria-label={gate3.passed ? 'passes' : 'fails'}
+                          >{gate3.passed ? '✓ passes' : '✗ not passed'}</span
+                        >
+                      </p>
+                      {#each gateLines(gate3) as line}
+                        <p class="text-sm">{line}</p>
+                      {/each}
+                      {#each gate3.problems as problem}
+                        <p class="text-sm font-bold">{problem}</p>
+                      {/each}
+                    </div>
+                  {/if}
+                </div>
+              </details>
             {/if}
           </div>
         {/if}
@@ -986,6 +1007,10 @@
           {/if}
         {/if}
       </CleanupSection>
+    {:else if tab === 'audiobooks'}
+      {#if api}
+        <CleanupAudiobooks {api} />
+      {/if}
     {:else}
       <section class="mt-6 flex flex-col gap-3" data-testid="cleanup-settings-tab">
         <SettingsSection jp="設定" title="Settings" />

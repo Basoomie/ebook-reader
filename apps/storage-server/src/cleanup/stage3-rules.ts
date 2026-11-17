@@ -149,11 +149,17 @@ export function classifyPair(
   if (both) {
     verdict = { cls: 'duplicate', rule: 'both_ways', reason: `Same text (${overlap})` };
   } else if (most >= s.superset && !small(a.kind)) {
+    // Decided 2026-11-17 (Preview): a copy holding the other's whole text and at least a
+    // quarter more (less would be "same text" above) is in practice a collection, a set or a
+    // split edition holding one work, not a book with an added bonus: review, never removed
+    // automatically (unless the extra text inside the chapters says both stay).
     const container = m.aInB >= m.bInA ? 'b' : 'a';
-    verdict = {
-      cls: 'superset',
-      rule: 'superset',
-      reason: `One copy holds the other's whole text and more (${overlap})`,
+    const spread = spreadVerdict(m, s);
+    if (spread?.cls === 'keep_both') return spread;
+    return {
+      cls: 'review',
+      rule: 'holds_other',
+      reason: `One copy holds the other's whole text and much more (${overlap}): a collection or set, not removed automatically`,
       container,
     };
   }
@@ -212,7 +218,7 @@ export interface QualityFacts {
 export type Side = 'a' | 'b' | 'tie' | 'tradeoff';
 
 export interface Measure {
-  name: 'text' | 'images' | 'ruby' | 'toc' | 'cover' | 'direction';
+  name: 'text' | 'images' | 'artwork' | 'ruby' | 'toc' | 'cover' | 'direction';
   winner: Side;
   detail: string;
 }
@@ -228,6 +234,32 @@ export interface BestCopy {
 
 /** Illustrations smaller than this (ornaments, gaiji) are not compared. */
 export const MIN_ILLUSTRATION_SIDE = 200;
+/** Full-size illustrations (the artwork of an edition): at least this long side. */
+export const FULL_ILLUSTRATION_SIDE = 800;
+const BLANK_PHASH = '0000000000000000';
+
+/**
+ * Different artwork (2026-11-17, found in the Preview): both copies have at least 3 full-size
+ * illustrations the other lacks, and fewer than half of the smaller set match. Same text with
+ * other art is another edition (新装版 and the like): not a duplicate, both stay (design:
+ * "Different editions = not duplicates; keep both"; unsure = review).
+ */
+export function differentArtwork(
+  a: ImageFact[],
+  b: ImageFact[],
+  maxDistance: number,
+): { different: boolean; matched: number; a: number; b: number } {
+  const full = (xs: ImageFact[]) =>
+    xs.filter((i) => i.side >= FULL_ILLUSTRATION_SIDE && i.phash !== BLANK_PHASH);
+  const fa = full(a);
+  const fb = full(b);
+  const matched = matchImages(fa, fb, maxDistance).length;
+  const different =
+    fa.length - matched >= 3 &&
+    fb.length - matched >= 3 &&
+    matched < 0.5 * Math.min(fa.length, fb.length);
+  return { different, matched, a: fa.length, b: fb.length };
+}
 
 function hamming(a: string, b: string): number {
   let d = 0;
@@ -335,6 +367,16 @@ export function bestCopy(
     detail: `${ia.length} / ${ib.length} pictures, ${matched.length} matched (better in the first ${wonA}, in the second ${wonB}${mixed ? `, larger in one but more compressed: ${mixed}` : ''})`,
   });
 
+  // Artwork: another edition's illustrations make the pair a trade-off (review).
+  const art = differentArtwork(a.images, b.images, options.imageMatchDistance);
+  if (art.different) {
+    measures.push({
+      name: 'artwork',
+      winner: 'tradeoff',
+      detail: `different artwork: ${art.matched} of ${art.a} / ${art.b} full-size illustrations match`,
+    });
+  }
+
   // Ruby
   measures.push({
     name: 'ruby',
@@ -383,7 +425,9 @@ export function bestCopy(
       keep: null,
       by: 'tradeoff',
       measures,
-      reason: `Each copy is better somewhere (${names.join(', ')})`,
+      reason: art.different
+        ? 'The copies have different artwork: another edition, not removed automatically'
+        : `Each copy is better somewhere (${names.join(', ')})`,
     };
   }
   if (overall !== 'tie') {

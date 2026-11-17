@@ -12,6 +12,7 @@ import { jpegQuantization, imageFactOf } from '../src/cleanup/stage3-images';
 import { editionKind } from '../src/cleanup/stage3-kinds';
 import {
   bestCopy,
+  differentArtwork,
   classifyPair,
   decideSets,
   DEFAULT_DUPLICATE_SETTINGS,
@@ -169,6 +170,13 @@ describe('edition kinds (titles from the dup_test pairs)', () => {
     ['【合本版1-5巻】夜伽の国の月光姫', 'omnibus'],
     ['猫かぶり姫と天上の音楽 合本版【初回限定SS付】【イラスト付】【合本版】', 'omnibus'],
     ['少女回春5～8総集編', 'omnibus'],
+    // Found in the Preview (2026-11-17): sets of volumes.
+    [
+      '【対訳】ピーターラビットシリーズ １～５巻セット かわいいイラストと、英語と日本語で楽しめる、ピーターラビットと仲間たちのお話！',
+      'omnibus',
+    ],
+    ['【対訳】ピーターラビットシリーズ 5巻セット かわいいイラストと', 'omnibus'],
+    ['【対訳】ピーターラビット ⑤ モペットちゃんのおはなし -THE STORY OF MISS MOPPET-', 'full'],
     ['この素晴らしい世界に祝福を！ 11 大魔法使いの妹【電子特別版】', 'special'],
     ['デート・ア・ライブ 十香デッドエンド BOOK☆WALKER special edition', 'special'],
     ['サイレント・ウィッチ VII 特装版【掌編小説集付き】 沈黙の魔女の隠しごと', 'special'],
@@ -204,7 +212,8 @@ describe('the pair rules', () => {
   it.each([
     ['same text both ways', book(1), book(2), m(0.99, 0.98), 'duplicate', 'both_ways'],
     ['exactly the both-ways limit', book(1), book(2), m(0.8, 0.8), 'duplicate', 'both_ways'],
-    ['one way holds the other', book(1), book(2), m(1, 0.7), 'superset', 'superset'],
+    // 2026-11-17: a quarter or more beyond the other's text is a collection: review.
+    ['one way holds the other', book(1), book(2), m(1, 0.7), 'review', 'holds_other'],
     ['superset just under the limit', book(1), book(2), m(0.949, 0.7), 'review', 'partial'],
     ['partial overlap', book(1), book(2), m(0.3, 0.2), 'review', 'partial'],
     ['at the review floor', book(1), book(2), m(0.1, 0.05), 'review', 'partial'],
@@ -339,6 +348,31 @@ describe('the best copy', () => {
     const a = q({ calibreId: 1, images: [img(p1, 1600, 8), img(p2, 1600, 8)] });
     const b = q({ calibreId: 2, images: [img(p1, 1186, 60), img(p2, 1186, 60)] });
     expect(bestCopy(a, b, OPTS)).toMatchObject({ keep: 'a', by: 'measures' });
+  });
+
+  it('different artwork (another edition): a trade-off with its own reason, never auto', () => {
+    // Four illustrations each, none alike (e.g. a 新装版 with new art).
+    const artA = ['0000ffff0000ffff', '00ff00ff00ff00ff', '0f0f0f0f0f0f0f0f', '3333333333333333'];
+    const artB = ['ffff0000ffff0000', 'ff00ff00ff00ff00', 'f0f0f0f0f0f0f0f0', 'cccccccccccccccc'];
+    const a = q({ calibreId: 1, images: artA.map((h) => img(h, 1600, 8)) });
+    const b = q({ calibreId: 2, images: artB.map((h) => img(h, 1000, 60)) });
+    const best = bestCopy(a, b, OPTS);
+    expect(best).toMatchObject({ keep: null, by: 'tradeoff' });
+    expect(best.reason).toMatch(/different artwork/);
+    expect(best.measures.find((m) => m.name === 'artwork')?.detail).toBe(
+      'different artwork: 0 of 4 / 4 full-size illustrations match',
+    );
+    // The same art, only sharper in one copy: no artwork measure, the sharper copy stays.
+    const same = q({ calibreId: 3, images: artA.map((h) => img(h, 1000, 60)) });
+    const sharper = bestCopy(a, same, OPTS);
+    expect(sharper.keep).toBe('a');
+    expect(sharper.measures.some((m) => m.name === 'artwork')).toBe(false);
+    // Two different illustrations only (an extra page, a store's own art): not another edition.
+    const two = q({
+      calibreId: 4,
+      images: [...artA.slice(0, 2), ...artB.slice(0, 2)].map((h) => img(h, 1600, 8)),
+    });
+    expect(differentArtwork(two.images, a.images, 10).different).toBe(false);
   });
 
   it('larger pictures but stronger compression: a trade-off', () => {

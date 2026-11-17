@@ -151,13 +151,32 @@ export function stage3Lines(stage: CleanupStage, status: Stage3Status | undefine
   if (!p) return stage.mode === 'off' ? [] : ['Waiting to start.'];
   const lines: string[] = [];
   if (p.phase !== 'done') {
-    if (p.phase !== 'text' && p.textDone)
-      lines.push(
-        `Read ${n(p.textDone)} books${p.textErrors ? ` (${n(p.textErrors)} couldn’t be read)` : ''}${
-          secondsPerBook(p) ? `, ${secondsPerBook(p)}` : ''
-        }.`
-      );
-    if (p.candidates) lines.push(`${n(p.candidates)} pairs of books share text.`);
+    // While it runs: one line per finished step, named like the progress bar's step, so no
+    // line reads as if it were about the step running now.
+    const current = PHASE_STEP[p.phase] ?? 0;
+    const done = (phase: string, text: string) => {
+      if (PHASE_STEP[phase] < current)
+        lines.push(`Step ${PHASE_STEP[phase]} done · ${PHASES[phase]}: ${text}`);
+    };
+    done(
+      'text',
+      `${n(p.textDone)} books read${p.textErrors ? ` (${n(p.textErrors)} couldn’t be read)` : ''}${
+        secondsPerBook(p) ? `, ${secondsPerBook(p)}` : ''
+      }.`
+    );
+    done('candidates', `${n(p.candidates)} pairs to compare.`);
+    done(
+      'compare',
+      `${n(p.compareDone)} pairs compared${
+        p.compareErrors ? ` (${n(p.compareErrors)} couldn’t be compared)` : ''
+      }.`
+    );
+    done(
+      'quality',
+      `${n(p.qualityDone)} books checked${
+        p.qualityErrors ? ` (${n(p.qualityErrors)} couldn’t be checked)` : ''
+      }.`
+    );
     return lines;
   }
   if (p.error) return [`The analysis stopped: ${p.error}`];
@@ -193,7 +212,7 @@ export function stage3Lines(stage: CleanupStage, status: Stage3Status | undefine
   if (extras.length) lines.push(`${extras.join('; ')}.`);
   const spb = secondsPerBook(p);
   const total = Object.values(p.times ?? {}).reduce((a, t) => a + (t?.ms ?? 0), 0);
-  if (spb) lines.push(`Took ${durationText(total)} (${spb}).`);
+  if (spb) lines.push(`The analysis took ${durationText(total)} (${spb} read).`);
   return lines;
 }
 
@@ -242,6 +261,7 @@ export function stage3PauseTitle(reason: string): string {
 const MEASURE_LABELS: Record<PairMeasure['name'], string> = {
   text: 'Text',
   images: 'Pictures',
+  artwork: 'Artwork',
   ruby: 'Furigana',
   toc: 'Contents',
   cover: 'Cover',

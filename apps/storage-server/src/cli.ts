@@ -29,6 +29,7 @@
  *   docker exec ttsu-storage node dist/cli.js audio links
  *   docker exec ttsu-storage node dist/cli.js token cleanup "cleanup sidecar"
  *   docker exec ttsu-storage node dist/cli.js cleanup status
+ *   docker exec ttsu-storage node dist/cli.js cleanup resume 3
  *
  * Uses DB_DIR (default /db) and DATA_DIR (default /data) like the server, and
  * PAIR_CODE_MINUTES for how long a pairing code stays valid.
@@ -40,7 +41,7 @@
  * migration page); the CLI only reports on them and can undo the import.
  */
 import type Database from 'better-sqlite3';
-import { existsSync, readdirSync } from 'fs';
+import { existsSync, readFileSync, readdirSync } from 'fs';
 import path from 'path';
 import { UPLOADS_DIRNAME } from './uploads/upload-store';
 import { FontStore } from './fonts/font-store';
@@ -82,6 +83,8 @@ import { listLinks, resolveLink } from './audio/audio-links';
 import { createApplyToken, listApplyTokens, revokeApplyToken } from './cleanup/apply-tokens';
 import { initCleanupDatabase } from './cleanup/cleanup-db';
 import { listStages } from './cleanup/stages';
+import { recordReviewDecisions, resumeFailedStage3 } from './cleanup/stage3';
+import { importDryRun, runAudioDryRun } from './cleanup/audio/dry-run';
 
 const USAGE = `Usage:
   cli token pair <label> [--user <name>]     Make a one-time code a device trades for its own token
@@ -123,7 +126,18 @@ const USAGE = `Usage:
   cli audio match <book-id> [--limit <n>]    The suggestions the picker would show for a book
   cli audio links                            The audiobooks linked to books, and whether they are still there
   cli cleanup status                         The library cleanup's stages, batches and sidecar tokens
-  cli cleanup revoke <token-id>              Revoke a cleanup sidecar token`;
+  cli cleanup revoke <token-id>              Revoke a cleanup sidecar token
+  cli cleanup decide 3 <file>                Record the review's decisions on stage 3 pairs (marked as
+                                             Claude's; your own decisions stay)
+  cli cleanup resume 3                       Resume stage 3's failed analysis at the step that failed
+                                             (keeps the books read and the pairs measured)
+  cli cleanup audio-dryrun --stage 0|1|2 --out <folder>
+                                             Audiobook cleanup dry run (WP21a): the real analysis on a
+                                             scratch database in <folder>, never the live cleanup.db;
+                                             stage 0 needs --abs-url and the API key on stdin
+  cli cleanup audio-import-dryrun <file>...  The live audiobook stages take over the dry runs' results
+                                             (stage 1's hashes, stage 2's file checks), kept only for
+                                             files that are unchanged when the live run walks them`;
 
 function fail(message: string): never {
   console.error(message);
@@ -772,6 +786,46 @@ function cleanupCommand(command: string, rest: string[], env: Record<string, str
         console.log(token);
         break;
       }
+      case 'resume': {
+        const [which] = rest;
+        if (which !== '3')
+          fail(
+            'cleanup resume needs the stage: only stage 3 can resume a failed analysis (cleanup resume 3)',
+          );
+        const out = resumeFailedStage3(db);
+        console.log(out.message);
+        if (!out.ok) process.exitCode = 1;
+        break;
+      }
+      case 'decide': {
+        const [which, file] = rest;
+        if (which !== '3' || !file)
+          fail('cleanup decide needs the stage and a file: cleanup decide 3 <decisions.json>');
+        let input: unknown;
+        try {
+          input = JSON.parse(readFileSync(file, 'utf8'));
+        } catch (err) {
+          fail(`Can't read ${file}: ${(err as Error).message}`);
+        }
+        const out = recordReviewDecisions(db, input);
+        console.log(out.message);
+        if (!out.ok) process.exitCode = 1;
+        break;
+      }
+      case 'audio-import-dryrun': {
+        if (rest.length === 0)
+          fail('cleanup audio-import-dryrun needs the dry runs’ cleanup-dryrun.db files');
+        for (const file of rest) {
+          const out = importDryRun(db, file);
+          console.log(
+            `${file}: ${out.files} files, ${out.hashes} hashes and ${out.checks} file checks taken over.`,
+          );
+        }
+        console.log(
+          'Each is kept only if the file is unchanged when the live run walks the folders; changed files are read again.',
+        );
+        break;
+      }
       case 'revoke': {
         const [id] = rest;
         if (!id) fail('cleanup revoke needs a token id (see cleanup status)');
@@ -846,6 +900,17 @@ export function main(argv: string[], env: Record<string, string | undefined>): v
   ];
   if (!groups.includes(group) || !command) {
     fail(USAGE);
+  }
+  // The audiobook dry run never opens the live cleanup.db (WP21a).
+  if (group === 'cleanup' && command === 'audio-dryrun') {
+    void runAudioDryRun(rest, env).then(
+      (code) => process.exit(code),
+      (err) => {
+        console.error(`Dry run failed: ${(err as Error).message ?? err}`);
+        process.exit(1);
+      },
+    );
+    return;
   }
   // The cleanup sidecar's tokens and the cleanup's state live in cleanup.db (WP20a).
   if (group === 'cleanup' || (group === 'token' && command === 'cleanup')) {

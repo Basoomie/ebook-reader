@@ -44,7 +44,9 @@ describe('stage 3: content duplicates', () => {
     const mid = [await picture(3, 800, 80)];
     const vol1 = chaptersOf(4);
     const vol2 = chaptersOf(5);
-    const ss = fakeText(999, 12_000);
+    // A bonus story under a quarter of the book: the same text, the copy with it stays (one
+    // copy holding the other plus a quarter or more is a collection and goes to review).
+    const ss = fakeText(999, 4_000);
     const c = chaptersOf(3);
     const commentary = c.map(
       (ch, i) => ch.slice(0, 3000) + fakeText(77_000 + i, 1000) + ch.slice(3000),
@@ -162,7 +164,7 @@ describe('stage 3: content duplicates', () => {
       JSON.stringify({
         pairs: [
           pair('a', 'bonus_attached', ids.A1, ids.A2, 'duplicate', 'not_spread'),
-          pair('b', 'bonus_attached', ids.B1, ids.B2, 'superset'),
+          pair('b', 'bonus_attached', ids.B1, ids.B2, 'duplicate'),
           pair('s', 'sample', ids.S, ids.B1, 'never'),
           pair('bb', 'bonus_item', ids.BB, ids.B2, 'never'),
           pair('o', 'omnibus', ids.O1, ids.V1, 'never'),
@@ -262,7 +264,7 @@ describe('stage 3: content duplicates', () => {
     expect([a.class, a.keepId]).toEqual(['duplicate', ids.A2]);
     expect(a.best.measures.find((m: { name: string }) => m.name === 'images').winner).toBe('b');
     const b = await pairOf('B1', 'B2');
-    expect([b.class, b.keepId, b.container]).toEqual(['superset', ids.B2, 'b']);
+    expect([b.class, b.keepId]).toEqual(['duplicate', ids.B2]);
     const c = await pairOf('C1', 'C2');
     expect([c.class, c.rule]).toEqual(['review', 'spread_unset']);
     expect(Math.max(c.spread.a.interleavedRuns, c.spread.b.interleavedRuns)).toBe(6);

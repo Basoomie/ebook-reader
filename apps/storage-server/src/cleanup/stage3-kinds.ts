@@ -21,7 +21,9 @@ const SAMPLE =
 const BONUS_ITEM = /ショートストーリー|購入特典/;
 /** "…SS付き", "…ショートストーリー付", "特典付き": the bonus comes with the full book. */
 const ATTACHED = /(ss|ショートストーリー|特典|小説|短編|掌編)[^】)）\]」』]{0,8}(付|つき)/i;
-const OMNIBUS = /合本|総集編|全\d+巻セット|\d+冊セット|全巻セット/;
+/** Also "5巻セット" and "1~5巻セット" (after NFKC; found in the Preview, 2026-11-17). */
+const OMNIBUS =
+  /合本|総集編|全\d+巻セット|\d+冊セット|全巻セット|\d+\s*(?:[~〜\-–]\s*\d+\s*)?巻\s*セット/;
 const SPECIAL =
   /特別版|特装版|増量版|special edition|☆walker special|完全版|限定版|記念|メモリアル|豪華版|特典付|特典あり|(ss|ショートストーリー|短編|掌編|小説集)[^】)）]{0,8}(付|つき)|付録/i;
 

@@ -11,13 +11,14 @@ import { snapshotFile } from '../calibre/indexer';
 import { getIndexState, getLibrary, listLibraries } from '../calibre/libraries';
 import { COUNTER_BUNDLE, readCounterInfo } from '../counts/counter-bundle';
 import { BatchService, REMOVAL_STAGES } from './batches';
+import { DISK_OWNERS, DiskLock } from './disk-lock';
 import { presentBookCount } from './handoff';
 import { SecretStore } from './secrets';
 import { getSettings } from './settings';
 import { Stage1Analysis, type Stage1Progress } from './stage1';
 import { Stage2Analysis, type Stage2Progress } from './stage2';
 import { listFieldPauses, loadGold, resumeField } from './stage2-gate';
-import { Stage3Analysis, type PairRow, type Stage3Progress } from './stage3';
+import { STAGE3_WAITING_SQL, Stage3Analysis, type PairRow, type Stage3Progress } from './stage3';
 import { Stage3Worker, type Stage3Reader } from '../counts/book-text-worker';
 import {
   BUILT_STAGES,
@@ -112,6 +113,8 @@ export interface CleanupServiceOptions {
   stage3Reader?: Stage3Reader;
   /** Stage 3: the counter bundle's build id (read from the bundle when not given). */
   counterBuild?: string;
+  /** The disk lock shared with the audiobook cleanup (WP21a); a new one when not given. */
+  diskLock?: DiskLock;
   leaseSeconds?: number;
   log?: (m: string) => void;
   logError?: (m: string, err?: unknown) => void;
@@ -130,8 +133,20 @@ function str(v: unknown, max = 500): string | null {
   return typeof v === 'string' && v.trim() !== '' ? v.trim().slice(0, max) : null;
 }
 
+/**
+ * Phases of the Calibre analyses that read book files (WP21a: they take the shared disk lock).
+ * Stage 1 stat + hash, stage 2 read, stage 3 text + quality; the others work in the databases.
+ */
+export const DISK_PHASES: Record<number, readonly string[]> = {
+  1: ['stat', 'hash'],
+  2: ['read'],
+  3: ['text', 'quality'],
+};
+
 export class CleanupService {
   readonly secrets: SecretStore;
+  /** One disk-heavy job at a time across the Calibre and audiobook cleanups (WP21a). */
+  readonly diskLock: DiskLock;
   readonly batches: BatchService;
   readonly analysis: Stage1Analysis | null;
   readonly analysis2: Stage2Analysis | null;
@@ -156,6 +171,11 @@ export class CleanupService {
     this.log = opts.log ?? console.log;
     this.logError = opts.logError ?? console.error;
     this.secrets = new SecretStore(opts.cleanup, opts.main);
+    this.diskLock = opts.diskLock ?? new DiskLock();
+    // A batch being applied is Calibre's own disk work: audiobook jobs wait for it too.
+    // A Calibre stage that is On with work left counts as using the disk also between its
+    // batches (found live 2026-11-17: 2-6 min gaps while the reader's index takes in a batch).
+    this.diskLock.setCalibreApplying(() => this.calibreApplying());
     this.batches = new BatchService({
       cleanup: opts.cleanup,
       main: opts.main,
@@ -383,7 +403,11 @@ export class CleanupService {
     };
   }
 
-  checks(now = Date.now()): CheckResult[] {
+  /**
+   * present: the reader's count of the library's books, when the caller already has it; null
+   * leaves it out of the detail (no check depends on it, and counting reads 60,000+ rows).
+   */
+  checks(now = Date.now(), present?: number | null): CheckResult[] {
     const sidecar = this.sidecar(now);
     const target = this.targetLibrary();
     const login = this.sidecarConfig();
@@ -418,7 +442,7 @@ export class CleanupService {
           ? (getLibrary(this.opts.main, target)?.name ?? target)
           : 'Choose the library below',
       },
-      library_indexed: this.libraryIndexed(target),
+      library_indexed: this.libraryIndexed(target, present),
       reference_labels: this.referenceLabels(),
     };
     const sidecarRows = new Map(
@@ -465,7 +489,10 @@ export class CleanupService {
       : { ok: false, detail: error };
   }
 
-  private libraryIndexed(target: string | null): { ok: boolean; detail: string | null } {
+  private libraryIndexed(
+    target: string | null,
+    present?: number | null,
+  ): { ok: boolean; detail: string | null } {
     if (!target) return { ok: false, detail: 'No library chosen' };
     if (!this.opts.calibreDir || !this.opts.indexerEnabled()) {
       return { ok: false, detail: "The reader's Calibre indexer is off" };
@@ -473,14 +500,19 @@ export class CleanupService {
     try {
       const state = getIndexState(this.opts.main, target);
       if (state.indexedAt === null) return { ok: false, detail: 'Not indexed yet' };
-      return { ok: true, detail: `${presentBookCount(this.opts.main, target)} books in the index` };
+      if (present === null) return { ok: true, detail: null };
+      return {
+        ok: true,
+        detail: `${present ?? presentBookCount(this.opts.main, target)} books in the index`,
+      };
     } catch (err) {
       return { ok: false, detail: (err as Error).message };
     }
   }
 
+  /** Whether the required checks pass (each round of every stage asks; no book count needed). */
   checksPass(now = Date.now()): { ok: boolean; failing: string[] } {
-    const failing = this.checks(now)
+    const failing = this.checks(now, null)
       .filter((c) => c.required && !c.ok)
       .map((c) => c.label);
     return { ok: failing.length === 0, failing };
@@ -606,6 +638,14 @@ export class CleanupService {
       this.waiting3 = `The analysis failed: ${progress.error}`;
       return;
     }
+    // New rules or new limits in the settings: the measured pairs are classified again
+    // (nothing read again), then the copies are chosen again.
+    if (this.analysis3.needsReclassify(progress) && !this.batches.open()) {
+      this.analysis3.reclassify();
+      this.waiting3 = 'Analysing';
+      this.runAnalysis3();
+      return;
+    }
     if (stage.mode !== 'on') {
       this.waiting3 = 'Preview: nothing is changed in Calibre';
       return;
@@ -641,6 +681,30 @@ export class CleanupService {
       : (reason ?? (this.remaining3(target) === 0 ? 'Done: nothing left to remove' : null));
   }
 
+  /**
+   * The Calibre cleanup's applying, for the shared disk lock (WP21a): a batch that is planned
+   * or claimed, or a stage that is On with removals or writes left (between its batches it
+   * waits for the reader's index, then plans the next). Null when no stage applies anything.
+   */
+  calibreApplying(): string | null {
+    const open = this.batches.open() as { stage?: number } | null;
+    if (open) return `Calibre stage ${open.stage ?? ''} (applying a batch)`;
+    const target = this.targetLibrary();
+    if (!target) return null;
+    const left: [number, () => number][] = [
+      [1, () => this.remaining(target)],
+      [2, () => this.remaining2(target)],
+      [3, () => this.remaining3(target)],
+    ];
+    for (const [stage, count] of left) {
+      const st = getStage(this.db, stage);
+      if (st.mode === 'on' && !st.pauseReason && count() > 0) {
+        return `Calibre stage ${stage} (between batches)`;
+      }
+    }
+    return null;
+  }
+
   private remaining3(target: string): number {
     return (
       this.db
@@ -652,6 +716,24 @@ export class CleanupService {
     ).n;
   }
 
+  /**
+   * Before a Calibre analysis step (WP21a): a phase that reads book files holds the shared
+   * disk lock (waiting for an audiobook job to give it back, which it does at once); any other
+   * phase gives it back. False when the analysis was stopped while waiting.
+   */
+  private async diskFor(
+    stage: 1 | 2 | 3,
+    phase: string | undefined,
+    shouldStop: () => boolean,
+  ): Promise<boolean> {
+    const owner = DISK_OWNERS[`calibre${stage}`];
+    if (phase && DISK_PHASES[stage].includes(phase)) {
+      return this.diskLock.acquire(owner, 'calibre', shouldStop);
+    }
+    this.diskLock.release(owner);
+    return true;
+  }
+
   private runAnalysis3(): void {
     if (this.analysing3 || !this.analysis3) return;
     const analysis = this.analysis3;
@@ -660,14 +742,15 @@ export class CleanupService {
         for (;;) {
           if (this.stopped) break;
           if (getStage(this.db, 3).mode === 'off') break;
-          const done = await analysis.step(
-            () => this.stopped || getStage(this.db, 3).mode === 'off',
-          );
+          const stop3 = () => this.stopped || getStage(this.db, 3).mode === 'off';
+          if (!(await this.diskFor(3, analysis.progress()?.phase, stop3))) break;
+          const done = await analysis.step(stop3);
           if (done) break;
         }
       } catch (err) {
         this.logError('Cleanup: stage 3 analysis failed:', err);
       } finally {
+        this.diskLock.release(DISK_OWNERS.calibre3);
         this.analysing3 = null;
         void this.tick();
       }
@@ -789,14 +872,15 @@ export class CleanupService {
         for (;;) {
           if (this.stopped) break;
           if (getStage(this.db, 2).mode === 'off') break;
-          const done = await analysis.step(
-            () => this.stopped || getStage(this.db, 2).mode === 'off',
-          );
+          const stop2 = () => this.stopped || getStage(this.db, 2).mode === 'off';
+          if (!(await this.diskFor(2, analysis.progress()?.phase, stop2))) break;
+          const done = await analysis.step(stop2);
           if (done) break;
         }
       } catch (err) {
         this.logError('Cleanup: stage 2 analysis failed:', err);
       } finally {
+        this.diskLock.release(DISK_OWNERS.calibre2);
         this.analysing2 = null;
         void this.tick();
       }
@@ -972,14 +1056,15 @@ export class CleanupService {
         for (;;) {
           if (this.stopped) break;
           if (getStage(this.db, 1).mode === 'off') break;
-          const done = await analysis.step(
-            () => this.stopped || getStage(this.db, 1).mode === 'off',
-          );
+          const stop1 = () => this.stopped || getStage(this.db, 1).mode === 'off';
+          if (!(await this.diskFor(1, analysis.progress()?.phase, stop1))) break;
+          const done = await analysis.step(stop1);
           if (done) break;
         }
       } catch (err) {
         this.logError('Cleanup: analysis failed:', err);
       } finally {
+        this.diskLock.release(DISK_OWNERS.calibre1);
         this.analysing = null;
         void this.tick();
       }
@@ -1044,9 +1129,9 @@ export class CleanupService {
     let order = 'p.a_id, p.b_id';
     const classes = ['duplicate', 'superset', 'keep_both', 'never', 'different', 'review'];
     if (view === 'review') {
-      where.push(
-        `(p.class = 'review' OR (p.class IN ('duplicate', 'superset') AND p.keep_id IS NULL))`,
-      );
+      // Waiting for a decision: the pairs already decided are in the other lists (removals,
+      // keep both), so this list and the page's count agree.
+      where.push(STAGE3_WAITING_SQL);
     } else if (view === 'image_only') where.push(`p.source = 'image_only'`);
     else if (view === 'errors') where.push('p.error IS NOT NULL');
     else if (view === 'spread') {
@@ -1221,17 +1306,21 @@ export class CleanupService {
   status(now = Date.now()) {
     const target = this.targetLibrary();
     const lib = target ? getLibrary(this.opts.main, target) : null;
+    // Counted once: the reader's index of 60,000+ books is read row by row (0.3 s on the PC).
+    const present = lib ? presentBookCount(this.opts.main, lib.id) : undefined;
     return {
       stages: listStages(this.db),
+      // The disk lock shared with the audiobook cleanup (WP21a).
+      disk: this.diskLock.state(),
       waiting: this.waiting,
-      checks: this.checks(now),
+      checks: this.checks(now, present),
       sidecar: this.sidecar(now),
       target: lib
         ? {
             id: lib.id,
             name: lib.name,
             folder: lib.folder,
-            present: presentBookCount(this.opts.main, lib.id),
+            present: present ?? 0,
           }
         : null,
       libraries: listLibraries(this.opts.main).map((l) => ({

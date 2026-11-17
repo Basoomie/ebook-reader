@@ -187,7 +187,7 @@ export interface ExtraText {
 }
 
 export interface PairMeasure {
-  name: 'text' | 'images' | 'ruby' | 'toc' | 'cover' | 'direction';
+  name: 'text' | 'images' | 'artwork' | 'ruby' | 'toc' | 'cover' | 'direction';
   winner: 'a' | 'b' | 'tie' | 'tradeoff';
   detail: string;
 }
@@ -320,10 +320,202 @@ export interface CleanupSettings {
   covers: { maxMb: number; maxSide: number; sameDistance: number; largerPercent: number };
   /** Missing on an older server. */
   duplicates?: DuplicateSettings;
+  /** The audiobook cleanup (WP21a); missing on an older server. */
+  audiobooks?: AudiobookSettings;
   backup: { path: string; verifiedOn: string; confirmedAt: number | null };
 }
 
-export type SecretName = 'anthropicApiKey' | 'openaiApiKey' | 'calibrePassword';
+export interface AudiobookSettings {
+  absUrl: string;
+  readMbPerSecond: number;
+  healthWorkers: number;
+  decodeSeconds: number;
+  toolTimeoutSeconds: number;
+  copyHintMinMinutes: number;
+  copyHintPercent: number;
+  absTimeoutSeconds: number;
+}
+
+export type SecretName = 'anthropicApiKey' | 'openaiApiKey' | 'calibrePassword' | 'absApiKey';
+
+// ---------------------------------------------------------------- the audiobook cleanup (WP21a)
+
+export type AudioStageMode = 'off' | 'analyse';
+
+export interface DiskLockState {
+  holder: { owner: string; side: 'calibre' | 'audio'; since: number } | null;
+  waiting: { owner: string; side: 'calibre' | 'audio'; since: number }[];
+  /** A Calibre batch being applied (missing on an older server). */
+  calibreApplying?: string | null;
+}
+
+export interface AudioStageRow {
+  stage: number;
+  name: string;
+  mode: AudioStageMode | 'on';
+  state: string;
+  pauseReason: string | null;
+  pauseDetail: string | null;
+  progress: Record<string, unknown>;
+  updatedAt: number;
+}
+
+export interface WalkResult {
+  startedAt: number;
+  finishedAt: number;
+  files: { torrents: number; library: number };
+  audio: { torrents: number; library: number };
+  bytes: { torrents: number; library: number };
+  skippedFolders: number;
+  links: number;
+  errors: string[];
+  gone: number;
+  rawNames: number;
+}
+
+export interface AudioStage1Progress {
+  analysisId: string;
+  phase: 'walk' | 'hash' | 'classify' | 'done';
+  startedAt: number;
+  finishedAt: number | null;
+  walk: WalkResult | null;
+  hashTotal: number;
+  hashDone: number;
+  hashBytesTotal: number;
+  bytesHashed: number;
+  hashErrors: number;
+  hashChanged: number;
+  hashReused: number;
+  phaseStartedAt: number;
+  phaseStartBytes: number;
+  yields: number;
+  error: string | null;
+}
+
+export interface AudioStage2Progress {
+  analysisId: string;
+  phase: 'walk' | 'units' | 'health' | 'classify' | 'done';
+  startedAt: number;
+  finishedAt: number | null;
+  walk: WalkResult | null;
+  books: number;
+  healthTotal: number;
+  healthDone: number;
+  healthReused: number;
+  phaseStartedAt: number;
+  phaseStartDone: number;
+  error: string | null;
+}
+
+export interface AbsSnapshotSummary {
+  takenAt: number;
+  serverVersion: string | null;
+  libraries: number;
+  items: number;
+  users: number;
+  progress: number;
+  finished: number;
+  inProgress: number;
+  notInAbs: number;
+  problems: number;
+}
+
+export interface AbsProgressRow {
+  user: string;
+  title: string | null;
+  author: string | null;
+  library: string | null;
+  path: string | null;
+  relPath: string | null;
+  inAbs: boolean;
+  isFinished: boolean;
+  progressPercent: number;
+  currentTime: number | null;
+  duration: number | null;
+  lastUpdate: number | null;
+}
+
+export interface AbsSnapshot {
+  takenAt: number;
+  serverVersion: string | null;
+  libraries: {
+    id: string;
+    name: string | null;
+    provider: string | null;
+    folders: string[];
+    itemCount: number | null;
+  }[];
+  serverSettings: string;
+  users: { id: string; username: string; type: string | null; progressCount: number }[];
+  progress: AbsProgressRow[];
+  problems: string[];
+}
+
+export interface AudioStatus {
+  available: boolean;
+  error?: string;
+  roots: { ok: boolean; problem: string | null; checkedAt: number };
+  stages: AudioStageRow[];
+  lock: DiskLockState;
+  stage0: {
+    snapshotting: boolean;
+    latest: { id: number; summary: AbsSnapshotSummary } | null;
+    snapshots: { id: number; summary: AbsSnapshotSummary }[];
+    absUrlSet: boolean;
+    keySet: boolean;
+  };
+  stage1: {
+    waiting: string | null;
+    progress: AudioStage1Progress | null;
+    counts: Record<string, number> | null;
+  };
+  stage2: {
+    waiting: string | null;
+    progress: AudioStage2Progress | null;
+    counts: Record<string, number> | null;
+  };
+}
+
+export interface AudioFileRow {
+  id: number;
+  root: 'torrents' | 'library';
+  rel_path: string;
+  decoded_path: string | null;
+  raw_name: number;
+  size: number;
+  ext: string;
+  nlink: number;
+  class?: string;
+  detail?: string | null;
+  originals?: { root: string; rel_path: string }[];
+  format?: string | null;
+  codec?: string | null;
+  duration?: number | null;
+  error?: string | null;
+  decode_error?: string | null;
+}
+
+export interface AudioBookRow {
+  id: number;
+  root: 'torrents' | 'library';
+  unit_rel_path: string;
+  unit_kind: 'folder' | 'file';
+  source: string;
+  name_raw: string;
+  name_decoded: string | null;
+  file_count: number;
+  total_seconds: number | null;
+  multi_class: string | null;
+  class_reason: string | null;
+  files: {
+    rel_path: string;
+    size: number;
+    duration: number | null;
+    format: string | null;
+    codec: string | null;
+    chapter_count: number | null;
+  }[];
+}
 
 export interface SecretInfo {
   set: boolean;
@@ -366,6 +558,9 @@ export interface CopyProposalEvidence {
     keptInRemoved: number | null;
     best: { keep: 'a' | 'b' | null; by: string; measures: PairMeasure[]; reason: string } | null;
     byUser: boolean;
+    /** Who decided the pair in the review ('you' on the page, 'claude'), and why. */
+    decidedBy?: string | null;
+    decisionNote?: string | null;
   };
 }
 
@@ -552,6 +747,68 @@ export class CleanupApi {
 
   stage3Gate(): Promise<{ gate: Stage3Gate | null }> {
     return this.request('GET', '/cleanup/stage3/gate') as Promise<{ gate: Stage3Gate | null }>;
+  }
+
+  // ---------------------------------------------------------------- audiobooks (WP21a)
+
+  audioStatus(): Promise<AudioStatus> {
+    return this.request('GET', '/cleanup/audio/status') as Promise<AudioStatus>;
+  }
+
+  setAudioStageMode(stage: number, mode: AudioStageMode): Promise<AudioStatus> {
+    return this.request('PUT', `/cleanup/audio/stages/${stage}`, { mode }) as Promise<AudioStatus>;
+  }
+
+  audioAnalyseAgain(stage: number): Promise<AudioStatus> {
+    return this.request(
+      'POST',
+      `/cleanup/audio/stages/${stage}/analyse`,
+      {}
+    ) as Promise<AudioStatus>;
+  }
+
+  takeAbsSnapshot(): Promise<AudioStatus> {
+    return this.request('POST', '/cleanup/audio/abs-snapshots', {}) as Promise<AudioStatus>;
+  }
+
+  absSnapshot(id: number): Promise<AbsSnapshot> {
+    return this.request('GET', `/cleanup/audio/abs-snapshots/${id}`) as Promise<AbsSnapshot>;
+  }
+
+  /** The snapshot as a file to save (JSON, or the progress list as CSV). */
+  async absSnapshotFile(id: number, format: 'json' | 'csv'): Promise<Blob> {
+    const response = await send(
+      this.fetchImpl,
+      `${this.serverUrl}/api/v1/cleanup/audio/abs-snapshots/${id}.${format}`,
+      { method: 'GET', headers: { Authorization: `Bearer ${this.token}` } },
+      { timeoutSeconds: this.timeoutSeconds }
+    );
+    if (!response.ok) throw await errorFrom(response);
+    return response.blob();
+  }
+
+  audioFiles(
+    list: string,
+    offset = 0,
+    limit = 50
+  ): Promise<{ total: number; items: AudioFileRow[] }> {
+    const q = new URLSearchParams({ list, offset: String(offset), limit: String(limit) });
+    return this.request('GET', `/cleanup/audio/files?${q}`) as Promise<{
+      total: number;
+      items: AudioFileRow[];
+    }>;
+  }
+
+  audioBooks(
+    list: string,
+    offset = 0,
+    limit = 50
+  ): Promise<{ total: number; items: AudioBookRow[] }> {
+    const q = new URLSearchParams({ list, offset: String(offset), limit: String(limit) });
+    return this.request('GET', `/cleanup/audio/books?${q}`) as Promise<{
+      total: number;
+      items: AudioBookRow[];
+    }>;
   }
 
   spotCheck(stage = 1): Promise<{ items: Proposal[] }> {

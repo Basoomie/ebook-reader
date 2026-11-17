@@ -322,14 +322,6 @@ export class Stage2Batches {
     if (this.batches.open()) return { batch: null, reason: 'A batch is being applied' };
     this.reviewSplitNames(libraryId);
     const settings = getSettings(this.db);
-    const present = presentBookCount(this.deps.main, libraryId);
-    const cap = Math.max(
-      1,
-      Math.min(
-        settings.pacing.batchSize,
-        Math.floor((present * settings.pacing.maxBatchPercent) / 100),
-      ),
-    );
     const paused = new Set(listFieldPauses(this.db, 2).map((p) => p.field));
     const rows = this.db
       .prepare(
@@ -347,6 +339,16 @@ export class Stage2Batches {
       new_json: string;
       evidence_json: string;
     }[];
+    // Counted only when something is left: this plan runs every round while other stages
+    // apply, and the count reads 60,000+ rows (it blocked the server between stage 3's batches).
+    const present = rows.length > 0 ? presentBookCount(this.deps.main, libraryId) : 0;
+    const cap = Math.max(
+      1,
+      Math.min(
+        settings.pacing.batchSize,
+        Math.floor((present * settings.pacing.maxBatchPercent) / 100),
+      ),
+    );
     const byBook = new Map<string, typeof rows>();
     // A book's field goes to Calibre once per write (the sidecar refuses a field given twice:
     // on the NAS 2026-11-15 a chunk the analysis proposed twice failed 75 books this way).

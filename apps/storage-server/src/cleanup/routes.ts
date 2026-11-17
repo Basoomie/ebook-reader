@@ -18,6 +18,7 @@ import { BatchError, type ItemReport, type ItemState } from './batches';
 import type { ListedBook, WrittenReport } from './stage2-batches';
 import { STAGE2_FIELDS } from './stage2-rules';
 import type { CleanupService } from './cleanup-service';
+import type { AudioCleanupService } from './audio/audio-cleanup-service';
 import { isSecretName } from './secrets';
 import { getSettings, SettingsError, updateSettings } from './settings';
 import {
@@ -30,6 +31,8 @@ import {
 
 export interface CleanupOptions {
   service: CleanupService | null;
+  /** The audiobook cleanup (WP21a); null when the cleanup itself is off. */
+  audio?: AudioCleanupService | null;
   /** Why the cleanup is off (cleanup.db can't open, no Calibre folder, ...). */
   error?: string;
 }
@@ -326,9 +329,127 @@ function proposalView(r: Record<string, unknown>) {
   };
 }
 
+function audioOr503(options: CleanupOptions): AudioCleanupService {
+  if (!options.audio) {
+    throw new ApiError(
+      503,
+      'cleanup_off',
+      `The audiobook cleanup is off: ${options.error ?? 'not set up'}`,
+    );
+  }
+  return options.audio;
+}
+
+function page(req: Request): { offset: number; limit: number } {
+  return {
+    offset: Math.max(0, Number(req.query.offset) || 0),
+    limit: Math.min(200, Math.max(1, Number(req.query.limit) || 50)),
+  };
+}
+
+/**
+ * /api/v1/cleanup/audio/*: the audiobook cleanup (WP21a). Analysis only; Audiobookshelf is
+ * only read.
+ */
+function addAudioRoutes(router: Router, options: CleanupOptions): void {
+  router.get('/cleanup/audio/status', (_req, res) => {
+    if (!options.audio) {
+      res.json({ available: false, error: options.error ?? 'not set up' });
+      return;
+    }
+    res.json({ available: true, ...options.audio.status() });
+  });
+
+  router.put('/cleanup/audio/stages/:stage', (req, res) => {
+    const audio = audioOr503(options);
+    const stage = Number(req.params.stage);
+    const mode = (req.body as { mode?: unknown } | undefined)?.mode;
+    if (mode !== 'off' && mode !== 'analyse') {
+      throw new ApiError(
+        400,
+        'bad_request',
+        'mode must be off or analyse (nothing can be switched on yet)',
+      );
+    }
+    try {
+      audio.setMode(stage, mode);
+    } catch (err) {
+      throw new ApiError(409, 'not_available', (err as Error).message);
+    }
+    res.json(audio.status());
+  });
+
+  router.post('/cleanup/audio/stages/:stage/analyse', (req, res) => {
+    const audio = audioOr503(options);
+    try {
+      audio.reanalyse(Number(req.params.stage));
+    } catch (err) {
+      throw new ApiError(409, 'not_available', (err as Error).message);
+    }
+    res.json(audio.status());
+  });
+
+  router.post('/cleanup/audio/abs-snapshots', (_req, res) => {
+    const audio = audioOr503(options);
+    try {
+      void audio.takeSnapshot();
+    } catch (err) {
+      throw new ApiError(409, 'not_available', (err as Error).message);
+    }
+    res.status(202).json(audio.status());
+  });
+
+  router.get('/cleanup/audio/abs-snapshots/:id', (req, res) => {
+    const audio = audioOr503(options);
+    const m = /^(\d+)(?:\.(json|csv))?$/.exec(req.params.id);
+    if (!m) throw new ApiError(404, 'not_found', 'No such snapshot');
+    const id = Number(m[1]);
+    const format = m[2] ?? 'json';
+    if (format === 'csv') {
+      const csv = audio.snapshotCsv(id);
+      if (csv === null) throw new ApiError(404, 'not_found', 'No such snapshot');
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="audiobookshelf-progress-${id}.csv"`,
+      );
+      res.send(csv);
+      return;
+    }
+    const data = audio.snapshot(id);
+    if (!data) throw new ApiError(404, 'not_found', 'No such snapshot');
+    if (m[2] === 'json') {
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="audiobookshelf-snapshot-${id}.json"`,
+      );
+    }
+    res.json(data);
+  });
+
+  router.get('/cleanup/audio/files', (req, res) => {
+    const audio = audioOr503(options);
+    try {
+      res.json(audio.files(String(req.query.list ?? ''), page(req)));
+    } catch (err) {
+      throw new ApiError(400, 'bad_request', (err as Error).message);
+    }
+  });
+
+  router.get('/cleanup/audio/books', (req, res) => {
+    const audio = audioOr503(options);
+    try {
+      res.json(audio.books(String(req.query.list ?? ''), page(req)));
+    } catch (err) {
+      throw new ApiError(400, 'bad_request', (err as Error).message);
+    }
+  });
+}
+
 /** /api/v1/cleanup/*: the /cleanup page. Behind requireUser. */
 export function createCleanupRouter(options: CleanupOptions): Router {
   const router = express.Router();
+  addAudioRoutes(router, options);
 
   router.get('/cleanup/status', (_req, res) => {
     if (!options.service) {
