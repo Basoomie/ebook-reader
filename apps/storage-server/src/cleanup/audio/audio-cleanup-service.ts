@@ -267,8 +267,8 @@ export class AudioCleanupService {
       this.waiting2 = p.error ? `The analysis failed: ${p.error}` : 'Preview: nothing is changed';
       return;
     }
-    if (this.stage1Hashing()) {
-      this.waiting2 = 'Waiting for stage 1 to finish hashing (both would read the same disk)';
+    if (this.stage1Reading()) {
+      this.waiting2 = 'Waiting for stage 1 to finish reading the files (both read the same disk)';
       return;
     }
     this.waiting2 = this.opts.lock.calibreBusy()
@@ -277,14 +277,16 @@ export class AudioCleanupService {
     if (!this.running2) this.run2();
   }
 
-  private stage1Hashing(): boolean {
-    return getAudioStage(this.db, 1).mode !== 'off' && this.stage1?.hashing() === true;
+  /** Stage 2 starts only once stage 1 has finished listing and hashing (found live 2026-11-17:
+   * stage 2 said "Analysing" while its listing was queued behind stage 1's). */
+  private stage1Reading(): boolean {
+    return getAudioStage(this.db, 1).mode !== 'off' && this.stage1?.reading() === true;
   }
 
   private run2(): void {
     const stage = this.stage2!;
     const stop = () =>
-      this.stopped || getAudioStage(this.db, 2).mode === 'off' || this.stage1Hashing();
+      this.stopped || getAudioStage(this.db, 2).mode === 'off' || this.stage1Reading();
     this.running2 = (async () => {
       try {
         for (;;) {
