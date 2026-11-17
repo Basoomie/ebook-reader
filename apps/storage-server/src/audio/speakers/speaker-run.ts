@@ -418,7 +418,7 @@ export class SpeakerRun {
 
   /** The characters named in a speaker prompt: those of the window's part of the book, the narrator, the main ones. */
   private listed(win: Window, merger: CharacterMerger, narrator: number | null): MergedCharacter[] {
-    const all = merger.characters();
+    const all = merger.characters().filter((c) => !c.hidden);
     const near = new Set<number>();
     for (const p of [win.paragraphs[0], win.paragraphs[win.paragraphs.length - 1]]) {
       const w = this.charWindowOf.get(p.index);

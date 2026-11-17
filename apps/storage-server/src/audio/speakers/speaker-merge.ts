@@ -219,6 +219,11 @@ export interface MergedCharacter {
   narrator: boolean;
   /** Set for characters the user made or edited (seedFrom): never renamed by a run. */
   fixed?: boolean;
+  /**
+   * "Not a character" (the user): kept so its names still map to it, never offered as a
+   * speaker in the prompts.
+   */
+  hidden?: boolean;
 }
 
 function uniq(list: string[]): string[] {

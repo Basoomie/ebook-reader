@@ -177,6 +177,10 @@ export class SentenceAudioService implements SentenceJobHooks {
     const sentences = fixed.chapters[0].sentences as ClipSentence[];
     const pauses = { ...parsePauses(input.pauses), chapterMs: 0 };
     const params = this.tts.voiceMap(choice.voice, choice.model, bookId, pauses, choice.dialogue);
+    // Session 5: every voiced character of the book is in a clip's map (not only the ones
+    // this clip needs), so the book's clips still share one job.
+    this.tts.speakers?.extend(userId, bookId, params);
+    this.tts.speakers?.assign(userId, bookId, sentences, params, { prune: false });
     const key = joinKey(params);
     const id = randomUUID().replace(/-/g, '');
     const now = this.now();
@@ -452,6 +456,12 @@ function joinKey(p: VoiceMapV2 | null): string {
     p.pauses.paragraphMs,
     p.pauses.chapterMs,
     ...(p.roles.dialogue === p.roles.narration ? [] : [p.pauses.dialogueMs]),
+    // Session 5: the character voices (and who reads the narration).
+    ...Object.keys(p.voices)
+      .filter((k) => k.startsWith('character:'))
+      .sort()
+      .map((k) => `${k}=${p.voices[k].sha256}`),
+    p.roles.narration,
   ]);
 }
 

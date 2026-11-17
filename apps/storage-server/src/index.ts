@@ -20,6 +20,11 @@ import { SubtitleJobService } from './audio/subtitle-jobs';
 import { TtsJobService } from './audio/tts-jobs';
 import { TtsModelService } from './audio/tts-models';
 import { SentenceAudioService } from './audio/sentence-audio';
+import { SpeakerBookService } from './audio/speakers/speaker-book';
+import { SpeakerJobService } from './audio/speakers/speaker-jobs';
+import { SpeakerModelService } from './audio/speakers/speaker-models';
+import { SpeakerStore } from './audio/speakers/speaker-store';
+import { SpeakerVoices } from './audio/speakers/speaker-voices';
 import { ReadAloudService } from './audio/read-aloud';
 import { getBookFor } from './catalog/queries';
 import { VoiceChoiceService } from './audio/tts-voice-choice';
@@ -234,6 +239,11 @@ let fixes: FixService | null = null;
 let sentenceAudio: SentenceAudioService | null = null;
 let voiceChoices: VoiceChoiceService | null = null;
 let readAloud: ReadAloudService | null = null;
+let speakerJobs: SpeakerJobService | null = null;
+let speakerBook: SpeakerBookService | null = null;
+let speakerModels: SpeakerModelService | null = null;
+let speakerStore: SpeakerStore | null = null;
+let speakerVoices: SpeakerVoices | null = null;
 if (database.ok && config.audio.dir) {
   audio = new AudioScanService({
     db: database.db,
@@ -326,6 +336,29 @@ if (database.ok && config.audio.dir) {
       choices: voiceChoices,
       bitrate: config.audio.clip.bitrate,
     });
+    // Season 2 Phase 12 session 5: per-character voices (a speaker model on the PC; each
+    // character's voice in audiobooks, previews, read-aloud and Enrich clips).
+    speakerStore = new SpeakerStore(database.db);
+    speakerModels = new SpeakerModelService(database.db);
+    speakerVoices = new SpeakerVoices(speakerStore, voices);
+    tts.speakers = speakerVoices;
+    speakerJobs = new SpeakerJobService({
+      db: database.db,
+      jobs,
+      tts,
+      store: speakerStore,
+      models: speakerModels,
+    });
+    speakerJobs.sweep();
+    speakerBook = new SpeakerBookService({
+      store: speakerStore,
+      jobs,
+      speakerJobs,
+      tts,
+      models: speakerModels,
+      voices,
+      speakerVoices,
+    });
     // Season 2 Phase 12 session 3: live read-aloud with the PC voice.
     if (voices && config.calibre.cacheDir) {
       try {
@@ -389,6 +422,11 @@ const app = createApp({
     sentenceAudio,
     voiceChoices: tts ? voiceChoices : null,
     readAloud,
+    speakerJobs,
+    speakerBook,
+    speakerModels,
+    speakerStore,
+    speakerVoices,
     copyHint: {
       minMinutes: config.audio.copyHintMinMinutes,
       percent: config.audio.copyHintPercent,
