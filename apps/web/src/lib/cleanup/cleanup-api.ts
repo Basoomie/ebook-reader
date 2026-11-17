@@ -187,7 +187,7 @@ export interface ExtraText {
 }
 
 export interface PairMeasure {
-  name: 'text' | 'images' | 'ruby' | 'toc' | 'cover' | 'direction';
+  name: 'text' | 'images' | 'artwork' | 'ruby' | 'toc' | 'cover' | 'direction';
   winner: 'a' | 'b' | 'tie' | 'tradeoff';
   detail: string;
 }

@@ -108,6 +108,14 @@ describe('stage 3: classified again, and the review decisions', () => {
     expect(await settle()).toBe('ready');
     expect(pair('C1', 'C2').rule).toBe('spread_unset');
     const reads = reader.texts;
+    const qualityAt = () =>
+      env.cleanupDb
+        .prepare(
+          'SELECT calibre_id, quality_at FROM text_facts WHERE sha256 IS NOT NULL ORDER BY calibre_id',
+        )
+        .all();
+    const pictureFacts = qualityAt();
+    expect(pictureFacts.length).toBeGreaterThan(0);
     const p0 = env.service.analysis3!.progress()!;
     expect(p0.rulesKey).toBe(stage3RulesKey(getSettings(env.cleanupDb).duplicates));
 
@@ -121,6 +129,10 @@ describe('stage 3: classified again, and the review decisions', () => {
     const c = pair('C1', 'C2');
     expect([c.class, c.rule]).toEqual(['keep_both', 'spread_keep_both']);
     expect(reader.texts).toBe(reads);
+    // Books that had picture facts were not read again (only books without them are).
+    const after = new Map(qualityAt().map((r: any) => [r.calibre_id, r.quality_at]));
+    for (const r of pictureFacts as { calibre_id: number; quality_at: number }[])
+      expect(after.get(r.calibre_id)).toBe(r.quality_at);
     const p1 = env.service.analysis3!.progress()!;
     expect(p1.analysisId).toBe(p0.analysisId);
     expect(p1.error).toBeNull();

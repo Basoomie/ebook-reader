@@ -12,6 +12,7 @@ import { jpegQuantization, imageFactOf } from '../src/cleanup/stage3-images';
 import { editionKind } from '../src/cleanup/stage3-kinds';
 import {
   bestCopy,
+  differentArtwork,
   classifyPair,
   decideSets,
   DEFAULT_DUPLICATE_SETTINGS,
@@ -347,6 +348,31 @@ describe('the best copy', () => {
     const a = q({ calibreId: 1, images: [img(p1, 1600, 8), img(p2, 1600, 8)] });
     const b = q({ calibreId: 2, images: [img(p1, 1186, 60), img(p2, 1186, 60)] });
     expect(bestCopy(a, b, OPTS)).toMatchObject({ keep: 'a', by: 'measures' });
+  });
+
+  it('different artwork (another edition): a trade-off with its own reason, never auto', () => {
+    // Four illustrations each, none alike (e.g. a 新装版 with new art).
+    const artA = ['0000ffff0000ffff', '00ff00ff00ff00ff', '0f0f0f0f0f0f0f0f', '3333333333333333'];
+    const artB = ['ffff0000ffff0000', 'ff00ff00ff00ff00', 'f0f0f0f0f0f0f0f0', 'cccccccccccccccc'];
+    const a = q({ calibreId: 1, images: artA.map((h) => img(h, 1600, 8)) });
+    const b = q({ calibreId: 2, images: artB.map((h) => img(h, 1000, 60)) });
+    const best = bestCopy(a, b, OPTS);
+    expect(best).toMatchObject({ keep: null, by: 'tradeoff' });
+    expect(best.reason).toMatch(/different artwork/);
+    expect(best.measures.find((m) => m.name === 'artwork')?.detail).toBe(
+      'different artwork: 0 of 4 / 4 full-size illustrations match',
+    );
+    // The same art, only sharper in one copy: no artwork measure, the sharper copy stays.
+    const same = q({ calibreId: 3, images: artA.map((h) => img(h, 1000, 60)) });
+    const sharper = bestCopy(a, same, OPTS);
+    expect(sharper.keep).toBe('a');
+    expect(sharper.measures.some((m) => m.name === 'artwork')).toBe(false);
+    // Two different illustrations only (an extra page, a store's own art): not another edition.
+    const two = q({
+      calibreId: 4,
+      images: [...artA.slice(0, 2), ...artB.slice(0, 2)].map((h) => img(h, 1600, 8)),
+    });
+    expect(differentArtwork(two.images, a.images, 10).different).toBe(false);
   });
 
   it('larger pictures but stronger compression: a trade-off', () => {

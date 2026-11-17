@@ -261,6 +261,7 @@ export function stage3PauseTitle(reason: string): string {
 const MEASURE_LABELS: Record<PairMeasure['name'], string> = {
   text: 'Text',
   images: 'Pictures',
+  artwork: 'Artwork',
   ruby: 'Furigana',
   toc: 'Contents',
   cover: 'Cover',

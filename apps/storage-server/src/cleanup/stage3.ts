@@ -84,6 +84,8 @@ export interface Stage3Progress {
    * the measured pairs are classified again (reclassify) without reading any book.
    */
   rulesKey?: string | null;
+  /** After a reclassify: the quality step reads only the books without picture facts. */
+  qualityMissingOnly?: boolean;
   textErrors: number;
   imageOnly: number;
   /** Books whose file the reader counted too, and how many lengths differ. */
@@ -609,8 +611,10 @@ export function recordReviewDecisions(
  * measured pairs again (reclassify) instead of reading the library again.
  *   2 (2026-11-17): one copy holding the other's text and much more goes to review; "N巻セット"
  *     and "N~M巻セット" are omnibus markers.
+ *   3 (2026-11-17): same text with different artwork (another edition) is never removed
+ *     automatically.
  */
-export const STAGE3_RULES_VERSION = 2;
+export const STAGE3_RULES_VERSION = 3;
 
 /** What the saved classes depend on: the rules and the classifying settings. */
 export function stage3RulesKey(s: ReturnType<typeof getSettings>['duplicates']): string {
@@ -753,7 +757,8 @@ export class Stage3Analysis {
 
   /** Whether a finished analysis's classes were made with other rules or settings. */
   needsReclassify(p: Stage3Progress): boolean {
-    if (p.phase !== 'done' || p.error) return false;
+    if (p.error) return false;
+    if (p.phase !== 'done' && p.phase !== 'quality' && p.phase !== 'group') return false;
     return p.rulesKey !== stage3RulesKey(getSettings(this.deps.cleanup).duplicates);
   }
 
@@ -765,7 +770,8 @@ export class Stage3Analysis {
    */
   reclassify(): Stage3Progress | null {
     const p = this.progress();
-    if (!p || p.phase !== 'done' || p.error) return null;
+    if (!p || p.error || (p.phase !== 'done' && p.phase !== 'quality' && p.phase !== 'group'))
+      return null;
     const db = this.deps.cleanup;
     const books = this.loadBooks(p.libraryId);
     const dup = getSettings(db).duplicates;
@@ -834,6 +840,9 @@ export class Stage3Analysis {
     p.qualityCursor = 0;
     p.qualityDone = 0;
     p.qualityErrors = 0;
+    // Only books without picture facts are read (files changed since are caught by the check
+    // before every batch, which compares each file again).
+    p.qualityMissingOnly = true;
     p.qualityTotal = this.qualityBooks(p).length;
     p.finishedAt = null;
     p.phaseStartedAt = Date.now();
@@ -1610,6 +1619,22 @@ export class Stage3Analysis {
 
   /** Books whose best-copy facts are needed: both sides of duplicate pairs, image-only pairs. */
   private qualityBooks(p: Stage3Progress): number[] {
+    const all = this.qualityBooksAll(p);
+    if (!p.qualityMissingOnly) return all;
+    const has = new Set(
+      (
+        this.deps.cleanup
+          .prepare(
+            `SELECT calibre_id FROM text_facts WHERE library_id = ? AND sha256 IS NOT NULL
+               AND quality_size IS NOT NULL`,
+          )
+          .all(p.libraryId) as { calibre_id: number }[]
+      ).map((r) => r.calibre_id),
+    );
+    return all.filter((id) => !has.has(id));
+  }
+
+  private qualityBooksAll(p: Stage3Progress): number[] {
     const rows = this.deps.cleanup
       .prepare(
         `WITH decided AS (
