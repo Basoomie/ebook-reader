@@ -66,7 +66,9 @@ const what = (job: AudiobookJob) =>
       ? 'the preview'
       : job.kind === 'sentence_audio'
         ? 'sentence audio for Anki'
-        : 'the audiobook';
+        : job.kind === 'attribute_speakers'
+          ? 'the list of who speaks'
+          : 'the audiobook';
 
 /** One line on an audiobook, preview or voice sample being made. */
 export function audiobookJobText(
@@ -140,11 +142,18 @@ export function jobVoices(
   return { narration, dialogue };
 }
 
-/** “Voice “A”” or “Voice “A”, dialogue “B”” (a job's settings line). */
+/**
+ * “Voice “A”” or “Voice “A”, dialogue “B”” (a job's settings line); session 5 adds the
+ * character voices (“, voices for 3 characters”).
+ */
 export function jobVoicesText(params: AudiobookJob['params']): string {
   const v = jobVoices(params);
   if (!v) return '';
-  return v.dialogue ? `Voice “${v.narration}”, dialogue “${v.dialogue}”` : `Voice “${v.narration}”`;
+  const base = v.dialogue
+    ? `Voice “${v.narration}”, dialogue “${v.dialogue}”`
+    : `Voice “${v.narration}”`;
+  const c = params && params.mapVersion === 2 ? (params.speakers?.characters ?? 0) : 0;
+  return c ? `${base}, voices for ${c} ${c === 1 ? 'character' : 'characters'}` : base;
 }
 
 /** The name of a job in Settings' list of waiting and running jobs. */
@@ -158,6 +167,7 @@ export function workerJobTitle(job: SubtitleJob | AudiobookJob): string {
     const n = (job as AudiobookJob).chaptersTotal ?? 1;
     return `${title} (sentence audio for Anki${n > 1 ? `, ${n} sentences` : ''})`;
   }
+  if (job.kind === 'attribute_speakers') return `${title} (finding who speaks)`;
   return title;
 }
 

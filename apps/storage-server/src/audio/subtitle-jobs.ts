@@ -39,6 +39,11 @@
  *   PC reads them with the loaded voice). Then the PC lets the voice go and the queue goes on.
  * - The worker's idle check-in can wait (`wait`): it is answered as soon as there is work
  *   (a session, a job), so read-aloud and clips don't wait for the 30-s poll.
+ *
+ * Season 2 Phase 12 session 5, per-character voices (speakers/speaker-jobs.ts):
+ * 'attribute_speakers' runs the speaker model on the PC. It yields to read-aloud at once and
+ * makes way for sentence clips after its current request, like an audiobook; it continues
+ * from the answers it has.
  */
 import type Database from 'better-sqlite3';
 import { getLibrary } from '../calibre/libraries';
@@ -57,7 +62,8 @@ export type WorkerJobKind =
   | 'generate_audiobook'
   | 'preview_audiobook'
   | 'voice_sample'
-  | 'sentence_audio';
+  | 'sentence_audio'
+  | 'attribute_speakers';
 export type WorkerJobState = 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
 export type WorkerJobStage =
   | 'downloading'
@@ -74,6 +80,7 @@ const ALL_KINDS: WorkerJobKind[] = [
   'preview_audiobook',
   'voice_sample',
   'sentence_audio',
+  'attribute_speakers',
 ];
 
 export const WORKER_STAGES: WorkerJobStage[] = [
@@ -305,7 +312,19 @@ export function versionAtLeast(version: string | null, min: string): boolean {
 }
 
 /** Job kinds a read-aloud session stops at once (the PC kills and releases them). */
-const YIELDING_KINDS: WorkerJobKind[] = ['generate_audiobook', 'preview_audiobook', 'voice_sample'];
+const YIELDING_KINDS: WorkerJobKind[] = [
+  'generate_audiobook',
+  'preview_audiobook',
+  'voice_sample',
+  // Season 2 Phase 12 session 5: the speaker model needs the GPU too.
+  'attribute_speakers',
+];
+
+/**
+ * Long jobs that make way for waiting sentence clips after their current step (the pause
+ * path): an audiobook after its chapter, a speaker run after its current request.
+ */
+const MAKES_WAY_FOR_CLIPS: WorkerJobKind[] = ['generate_audiobook', 'attribute_speakers'];
 
 export const KEEP_LOADED_MAX_MINUTES = 24 * 60;
 
@@ -1147,7 +1166,7 @@ export class SubtitleJobService {
     this.db.prepare('UPDATE worker_status SET last_seen_at = ? WHERE id = 1').run(this.now());
     return {
       cancel: job.cancelRequested,
-      pause: this.isPaused() || (job.kind === 'generate_audiobook' && this.clipsWaiting()),
+      pause: this.isPaused() || (MAKES_WAY_FOR_CLIPS.includes(job.kind) && this.clipsWaiting()),
       // Read-aloud (worker 1.2.0+): stop now and release, no attempt used.
       yield: YIELDING_KINDS.includes(job.kind) && this.live(),
     };

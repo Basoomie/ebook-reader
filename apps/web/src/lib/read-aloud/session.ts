@@ -677,7 +677,11 @@ export class ReadAloudController {
       pausedFor: this.wantPlay ? null : this.pausedFor,
       status: this.status,
       voice: voice
-        ? `${voice.name}${voice.dialogue ? `, dialogue ${voice.dialogue}` : ''} · ${voice.model}`
+        ? `${voice.name}${voice.dialogue ? `, dialogue ${voice.dialogue}` : ''}${
+            voice.characters
+              ? `, ${voice.characters} character ${voice.characters === 1 ? 'voice' : 'voices'}`
+              : ''
+          } · ${voice.model}`
         : null,
       voiceFrom: voice?.from ?? null,
       line: this.lastLine,

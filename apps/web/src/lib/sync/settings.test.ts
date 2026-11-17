@@ -113,7 +113,7 @@ describe('settings registry', () => {
     ]) {
       expect(settingScope(key), key).toBe('local');
     }
-    expect(keysWithScope('global')).toHaveLength(18); // 15 + ankiAutoEnrich (Phase 8) + ankiAutoEnrichSeconds + ttsDialoguePauseMs (Phase 12 session 4)
+    expect(keysWithScope('global')).toHaveLength(19); // 15 + ankiAutoEnrich (Phase 8) + ankiAutoEnrichSeconds + ttsDialoguePauseMs (Phase 12 session 4) + speakerUnsureBelow (session 5)
     expect(keysWithScope('device')).toHaveLength(95 + 2 + 77 + 1 + 8 + 1 + 2 + 4); // + libraryServerCheckSeconds, + 8 pacer (Phase 10), + bookIllustrationsPosition (Season 2 §6), + 2 on-track dot (Season 2 §9), + 4 read-aloud (Phase 12)
     expect(keysWithScope('local')).toHaveLength(5);
   });

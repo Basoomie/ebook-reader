@@ -82,6 +82,12 @@ export interface VoiceMapV2 {
   chapterIndex?: number;
   chapterTitle?: string;
   fixes?: FixSummary;
+  /**
+   * Session 5 (per-character voices): the character voices the job uses (keys
+   * 'character:<no>' in `voices`), how many quotes they read, and whether the narrator's
+   * voice reads the narration.
+   */
+  speakers?: { characters: number; quotes: number; narrator: boolean };
 }
 
 export type StoredVoiceMap = VoiceMapV1 | VoiceMapV2;
@@ -120,16 +126,26 @@ export function dialogueVoice(map: VoiceMapV2): VoiceRef | null {
   return map.voices[map.roles.dialogue] ?? null;
 }
 
+/** The voice keys a job reads with: its roles' and its character voices (session 5). */
+export function usedKeys(map: VoiceMapV2): Set<string> {
+  return new Set([
+    ...Object.values(map.roles),
+    ...Object.keys(map.voices).filter((k) => k.startsWith('character:')),
+  ]);
+}
+
 /** Whether the job reads with more than one voice (the PC needs worker 1.3.0). */
 export function usesSeveralVoices(map: VoiceMapV2): boolean {
-  return new Set(Object.values(map.roles)).size > 1;
+  return usedKeys(map).size > 1;
 }
 
 /** "voice A" or "voice A, dialogue voice B" (the m4b comment, logs). */
 export function voicesLabel(map: VoiceMapV2): string {
   const d = dialogueVoice(map);
   const n = narrationVoice(map);
-  return d ? `voice "${n.name}", dialogue voice "${d.name}"` : `voice "${n.name}"`;
+  const base = d ? `voice "${n.name}", dialogue voice "${d.name}"` : `voice "${n.name}"`;
+  const c = map.speakers?.characters ?? 0;
+  return c ? `${base}, voices for ${c} ${c === 1 ? 'character' : 'characters'}` : base;
 }
 
 /** A dialogue run of a sentence (book-script.ts v3). */
@@ -146,6 +162,8 @@ export interface ScriptSegment {
   role: Role;
   /** The quote's number in the book (dialogue only). */
   quote: number | null;
+  /** Session 5: the voice key of the quote's speaker (none: the role's voice). */
+  voice?: string;
 }
 
 const GAIJI_MARK = /〓/gu;
@@ -221,7 +239,9 @@ export function workerSegments(
   if (!segments?.length) return undefined;
   const out: WorkerSegment[] = [];
   for (const s of segments) {
-    const voice = map.roles[s.role] ?? map.roles.narration;
+    // Session 5: a quote's speaker reads it in their own voice.
+    const voice =
+      s.voice && map.voices[s.voice] ? s.voice : (map.roles[s.role] ?? map.roles.narration);
     const last = out[out.length - 1];
     if (last && last.voice === voice) last.reading += s.reading;
     else out.push({ reading: s.reading, voice });
@@ -230,10 +250,10 @@ export function workerSegments(
   return out;
 }
 
-/** The voices the PC needs for a map: key → clip and seed (only keys a role uses). */
+/** The voices the PC needs for a map: key → clip and seed (the roles' and the characters'). */
 export function workerVoices(map: VoiceMapV2): Record<string, { sha256: string; seed: number }> {
   const out: Record<string, { sha256: string; seed: number }> = {};
-  for (const key of new Set(Object.values(map.roles))) {
+  for (const key of usedKeys(map)) {
     const v = map.voices[key];
     if (v?.sha256) out[key] = { sha256: v.sha256, seed: v.seed };
   }

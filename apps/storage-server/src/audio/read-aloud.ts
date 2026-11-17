@@ -153,8 +153,17 @@ export interface SessionView {
   bookId: string | null;
   state: 'open' | 'ended';
   ended: SessionEnd | null;
-  /** `dialogue`: the dialogue voice's name when it has its own (session 4). */
-  voice: { name: string; dialogue: string | null; model: string; from: 'book' | 'global' };
+  /**
+   * `dialogue`: the dialogue voice's name when it has its own (session 4); `characters`: how
+   * many characters read with voices of their own (session 5).
+   */
+  voice: {
+    name: string;
+    dialogue: string | null;
+    characters: number;
+    model: string;
+    from: 'book' | 'global';
+  };
   /** The batches after `after`, in order. */
   batches: BatchView[];
   pc: LivePcView;
@@ -312,6 +321,12 @@ export class ReadAloudService implements ReadAloudGate {
     if (choice.dialogue) {
       clips.set(choice.dialogue.sha256, this.voices.clipRelative(choice.dialogue.id));
     }
+    // Session 5: the book's character voices (the PC loads their clips with the others).
+    if (bookId) {
+      for (const v of this.tts.speakers?.extend(userId, bookId, map) ?? []) {
+        clips.set(v.sha256, this.voices.clipRelative(v.voiceId));
+      }
+    }
     const session: Session = {
       id: randomUUID().replace(/-/g, ''),
       userId,
@@ -376,6 +391,13 @@ export class ReadAloudService implements ReadAloudGate {
     ]);
     // The session may have ended while the fixes ran.
     if (this.session !== s) this.own(userId, id);
+    // Session 5: each quote in its speaker's voice (looked up per batch: corrections apply
+    // at once). The device numbers quotes on its own copy; the text decides.
+    if (s.bookId) {
+      this.tts.speakers?.assign(userId, s.bookId, fixed.chapters[0].sentences, s.map, {
+        prune: false,
+      });
+    }
     if (input.replace === true) {
       for (const [seq, b] of s.batches) if (b.state === 'waiting') s.batches.delete(seq);
     }
@@ -690,6 +712,7 @@ export class ReadAloudService implements ReadAloudGate {
       voice: {
         name: s.voice.name,
         dialogue: dialogueVoice(s.map)?.name ?? null,
+        characters: Object.keys(s.map.voices).filter((k) => k.startsWith('character:')).length,
         model: s.model.label,
         from: s.from,
       },

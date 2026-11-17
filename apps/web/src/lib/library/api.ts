@@ -16,6 +16,13 @@ import type {
   UploadInfo
 } from '$lib/library/types';
 import type { ServerSort } from '$lib/library/sort';
+import type {
+  QuoteFilter,
+  SpeakerCharacter,
+  SpeakerModel,
+  SpeakerOverview,
+  SpeakerQuoteItem
+} from '$lib/audio/speakers/speaker-types';
 import type { ServerIllustrationList } from '$lib/library/illustrations/types';
 import type {
   AudioCandidates,
@@ -1022,6 +1029,149 @@ export class LibraryApi {
   async setDefaultTtsModel(id: number, options?: RequestOptions): Promise<TtsModel[]> {
     const response = await this.sendJson('PUT', `/tts/models/${id}/default`, {}, options);
     return ((await response.json()) as { models: TtsModel[] }).models;
+  }
+
+  // ---- Season 2 Phase 12 session 5: per-character voices
+
+  /** The book's speakers: characters, the latest job, counts. Null: an older server. */
+  async speakers(
+    bookId: string,
+    below: number,
+    options?: RequestOptions
+  ): Promise<SpeakerOverview | null> {
+    try {
+      return await (
+        await this.get(`/books/${encodeURIComponent(bookId)}/speakers?below=${below}`, options)
+      ).json();
+    } catch (error) {
+      if (error instanceof LibraryApiError && (error.status === 404 || error.status === 503)) {
+        return null;
+      }
+      throw error;
+    }
+  }
+
+  /** "Find who speaks each quote": queues a run on the PC with the chosen model. */
+  async runSpeakers(bookId: string, modelId: number | null, options?: RequestOptions) {
+    const response = await this.post(
+      `/books/${encodeURIComponent(bookId)}/speakers/run`,
+      modelId === null ? {} : { modelId },
+      { timeoutSeconds: 120, ...options }
+    );
+    return ((await response.json()) as { job: SubtitleJob }).job;
+  }
+
+  async speakerQuotes(
+    bookId: string,
+    q: { filter: QuoteFilter; character?: number; below: number; offset: number; limit: number },
+    options?: RequestOptions
+  ): Promise<{ items: SpeakerQuoteItem[]; total: number }> {
+    const params = new URLSearchParams({
+      filter: q.filter,
+      below: String(q.below),
+      offset: String(q.offset),
+      limit: String(q.limit)
+    });
+    if (q.character !== undefined) params.set('character', String(q.character));
+    return (
+      await this.get(`/books/${encodeURIComponent(bookId)}/speakers/quotes?${params}`, {
+        timeoutSeconds: 120,
+        ...options
+      })
+    ).json();
+  }
+
+  /** The user's speaker for a quote (null: no speaker), or back to the model's (reset). */
+  async setQuoteSpeaker(
+    bookId: string,
+    quote: number,
+    body: { character: number | null } | { reset: true },
+    options?: RequestOptions
+  ) {
+    const response = await this.sendJson(
+      'PATCH',
+      `/books/${encodeURIComponent(bookId)}/speakers/quotes/${quote}`,
+      body,
+      options
+    );
+    return ((await response.json()) as { quote: unknown }).quote;
+  }
+
+  async addCharacter(bookId: string, name: string, options?: RequestOptions) {
+    const response = await this.post(
+      `/books/${encodeURIComponent(bookId)}/speakers/characters`,
+      { name },
+      options
+    );
+    return ((await response.json()) as { character: SpeakerCharacter }).character;
+  }
+
+  /** Renames, sets the voice (null: the dialogue voice) or hides ("not a character"). */
+  async editCharacter(
+    bookId: string,
+    id: number,
+    body: { name?: string; voiceId?: string | null; hidden?: boolean },
+    options?: RequestOptions
+  ) {
+    const response = await this.sendJson(
+      'PATCH',
+      `/books/${encodeURIComponent(bookId)}/speakers/characters/${id}`,
+      body,
+      options
+    );
+    return ((await response.json()) as { character: SpeakerCharacter }).character;
+  }
+
+  async mergeCharacter(bookId: string, id: number, into: number, options?: RequestOptions) {
+    const response = await this.post(
+      `/books/${encodeURIComponent(bookId)}/speakers/characters/${id}/merge`,
+      { into },
+      options
+    );
+    return ((await response.json()) as { character: SpeakerCharacter }).character;
+  }
+
+  async setNarrationBy(bookId: string, by: 'narration' | 'narrator', options?: RequestOptions) {
+    await this.sendJson(
+      'PUT',
+      `/books/${encodeURIComponent(bookId)}/speakers/narration`,
+      { by },
+      options
+    );
+  }
+
+  /** Settings > Audiobooks: the speaker model list (available false: an older server). */
+  async speakerModels(
+    options?: RequestOptions
+  ): Promise<{ available: boolean; models: SpeakerModel[] }> {
+    try {
+      const body = (await (await this.get('/speaker-models', options)).json()) as {
+        models: SpeakerModel[];
+      };
+      return { available: true, models: body.models };
+    } catch (error) {
+      if (error instanceof LibraryApiError && (error.status === 404 || error.status === 503)) {
+        return { available: false, models: [] };
+      }
+      throw error;
+    }
+  }
+
+  async addSpeakerModel(repo: string, file: string, options: RequestOptions = {}) {
+    const response = await this.post(
+      '/speaker-models',
+      { repo, file },
+      { timeoutSeconds: 60, ...options }
+    );
+    return ((await response.json()) as { model: SpeakerModel }).model;
+  }
+
+  async removeSpeakerModel(id: number, options?: RequestOptions): Promise<void> {
+    await this.sendJson('DELETE', `/speaker-models/${id}`, undefined, options);
+  }
+
+  async setDefaultSpeakerModel(id: number, options?: RequestOptions): Promise<void> {
+    await this.sendJson('PUT', `/speaker-models/${id}/default`, {}, options);
   }
 
   // ---- Season 2 Phase 12: Enrich's sentence audio read by the PC, and the PC voice

@@ -15,6 +15,7 @@
    */
   import GpuWorkerSection from '$lib/components/audio/gpu-worker-section.svelte';
   import TtsModelsSection from '$lib/components/audio/tts-models-section.svelte';
+  import SpeakerModelsSection from '$lib/components/audio/speaker-models-section.svelte';
   import PronunciationFixesSection from '$lib/components/audio/pronunciation-fixes-section.svelte';
   import VoicesSection from '$lib/components/audio/voices-section.svelte';
   import SettingsSection from '$lib/components/settings/settings-section.svelte';
@@ -229,6 +230,8 @@
       <!-- WP17: voices and models for audiobooks made on the PC -->
       <VoicesSection {api} />
       <TtsModelsSection {api} />
+      <!-- Season 2 Phase 12 session 5: the models that find who speaks -->
+      <SpeakerModelsSection {api} />
       <!-- Season 2 Phase 12: pronunciation fixes for every book -->
       <PronunciationFixesSection {api} />
     {/if}

@@ -14,6 +14,11 @@ import { getBookFor } from '../../src/catalog/queries';
 import { TtsJobService } from '../../src/audio/tts-jobs';
 import { VoiceChoiceService } from '../../src/audio/tts-voice-choice';
 import { TtsModelService } from '../../src/audio/tts-models';
+import { SpeakerBookService } from '../../src/audio/speakers/speaker-book';
+import { SpeakerJobService } from '../../src/audio/speakers/speaker-jobs';
+import { SpeakerModelService } from '../../src/audio/speakers/speaker-models';
+import { SpeakerStore } from '../../src/audio/speakers/speaker-store';
+import { SpeakerVoices } from '../../src/audio/speakers/speaker-voices';
 import { DEFAULT_AUDIO_MERGE, DEFAULT_TTS } from '../../src/config';
 import { FixRunner } from '../../src/pronunciation/fix-runner';
 import { FixService } from '../../src/pronunciation/fix-service';
@@ -226,6 +231,40 @@ export async function ttsEnv(
     logError: (m) => t.logs.push(`ERROR ${m}`),
   });
   await readAloud.workdir.clear();
+  // Season 2 Phase 12 session 5: per-character voices (Hugging Face lookups stubbed).
+  const speakerStore = new SpeakerStore(t.e.db, () => clock);
+  const speakerModels = new SpeakerModelService(
+    t.e.db,
+    async () => 'e'.repeat(40),
+    async () => ({ size: 1234, sha256: 'd'.repeat(64) }),
+    () => clock,
+  );
+  const speakerVoices = new SpeakerVoices(speakerStore, voices, () => clock);
+  tts.speakers = speakerVoices;
+  const speakerJobs = new SpeakerJobService({
+    db: t.e.db,
+    jobs: t.jobs,
+    tts,
+    store: speakerStore,
+    models: speakerModels,
+    now: () => clock,
+    log: (m) => t.logs.push(m),
+    logError: (m) => t.logs.push(`ERROR ${m}`),
+  });
+  const speakerBook = new SpeakerBookService({
+    store: speakerStore,
+    jobs: t.jobs,
+    speakerJobs,
+    tts,
+    models: speakerModels,
+    voices,
+    speakerVoices,
+  });
+  t.audio.speakerJobs = speakerJobs;
+  t.audio.speakerBook = speakerBook;
+  t.audio.speakerModels = speakerModels;
+  t.audio.speakerStore = speakerStore;
+  t.audio.speakerVoices = speakerVoices;
   track.services.push({ stop: () => readAloud.stop() } as never);
   t.audio.readAloud = readAloud;
   t.audio.sentenceAudio = sentenceAudio;
@@ -274,6 +313,11 @@ export async function ttsEnv(
     sentenceAudio,
     readAloud,
     voiceChoices,
+    speakerStore,
+    speakerModels,
+    speakerVoices,
+    speakerJobs,
+    speakerBook,
     scripts,
     cacheDir,
     addVoice,

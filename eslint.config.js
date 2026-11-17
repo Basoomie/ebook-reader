@@ -35,6 +35,8 @@ module.exports = (async () => {
         'apps/storage-server/tests/fixtures/wp16/**',
         // WP17: the same for the TTS program (docker run of ttsu-irodori).
         'apps/storage-server/tests/fixtures/wp17/**',
+        // Season 2 Phase 12 session 5: the stand-in speaker model (and its llama.cpp server).
+        'apps/storage-server/tests/fixtures/speakers/**',
         // WP16: the worker's install script (plain Node) and its build output.
         'apps/gpu-worker/scripts/**',
         'apps/gpu-worker/dist/**',

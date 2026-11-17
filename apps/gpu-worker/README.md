@@ -7,6 +7,7 @@ A small program for the PC with the GPU. It asks the reader's server for jobs an
 - **Sentence audio for Anki** (Season 2 Phase 12, worker 1.1.2): for a book without an audiobook, Enrich's sentence is read by the same TTS program; the sentences waiting for one book are read in one run (each is one "chapter"), so the model is loaded once for all of them. The server takes them before other waiting jobs, and a running audiobook stops after its current chapter to let them in, then continues. An older worker never asks for them, so it needs `install-local` again (no `build-tts`: the TTS image is unchanged).
 - **Read aloud** (Season 2 Phase 12 session 3, worker 1.2.0, TTS image 2): the reader's read-aloud is read by the voice kept loaded (see [TTS program](#tts-program-wp17)), a few sentences at a time, as the reader asks for them. Updating to 1.2.0 needs `install-local` and `build-tts` (step 8) in each Windows account.
 - **Narration and dialogue voices** (Season 2 Phase 12 session 4, worker 1.3.0, TTS image 3): when a book's PC voice has a dialogue voice, the server sends a sentence with dialogue in runs, each naming its voice; the TTS program reads each run with that voice's clip and seed (both voices in the same batches, the model loaded once) and joins a sentence's runs with a short pause, keeping one timing per sentence. The server gives two-voice work only to 1.3.0 or later; an older worker keeps reading one-voice work. Updating needs `install-local` and `build-tts` (step 8) in each Windows account.
+- **Per-character voices** (Season 2 Phase 12 session 5, worker 1.4.0): "Find who speaks each quote" on a book's page runs a speaker model (a GGUF file from the reader's list in **Settings > Audiobooks**; Gemma 4 26B A4B to start) in llama.cpp's server, in Docker with the GPU, listening on 127.0.0.1 only. The server sends the requests one at a time and keeps each answer, so a job that makes way (Pause, read-aloud, sentence audio) continues later where it was. Updating needs `install-local` and `pull-speakers` (step 10) in each Windows account; an older worker never asks for speaker jobs.
 
 The worker only asks for the kinds of job whose program is on this PC: without the TTS program it still makes subtitles, and the other way round.
 
@@ -82,6 +83,13 @@ Set up, after the steps above:
    ```
    Then `node C:\ttsu-worker\app\main.js check` should also say `OK  TTS program on the PC`, `OK  GPU visible to the TTS program` and `OK  Models folder`.
 9. **Nothing else.** The models folder `C:\Data\LLM\Models\ttsu-reader-tts` is made by the worker and shared by every Windows account (it inherits the "Authenticated Users: Modify" permission of `C:\Data\LLM\Models`). Each model is downloaded once, the first time a book, preview or described voice uses it: `<owner>--<name>/<version>/` per model (Irodori v4.1 Small about 2.9 GB), plus `.shared` (about 0.5 GB of parts every model uses). A model removed in **Settings > Audiobooks > Models on the PC** has its folder deleted by the worker.
+10. **Download the speaker program** (in **each** Windows account; about 4.4 GB the first time):
+
+```
+node C:\ttsu-worker\app\main.js pull-speakers
+```
+
+Then `check` should also say `OK  Speaker program on the PC`, `OK  GPU visible to the speaker program` and `OK  Speaker models folder`. A speaker model is downloaded the first time a book uses it, into `C:\Data\LLM\Models\ttsu-reader-speakers\<owner>--<repo>\<version>\` (Gemma 4 26B A4B: 13.6 GB), and its sha256 is checked once. Loading it took 94 s, and books of 104,000–156,000 characters took 9–21 minutes (measured on the RTX 4070). It needs nearly all of the GPU and about 16 GB of Docker's memory while it runs, so it takes turns with the voice: read-aloud and sentence audio go first.
 
 After a worker update that changes `tts\` (the image tag in `TTS_IMAGE` changes, e.g. `ttsu-irodori:3`), run step 8 again in each account; until then `check` and Settings say the TTS program is missing, and subtitle jobs keep working.
 
@@ -97,25 +105,30 @@ Speed on the RTX 4070 (measured): Irodori v4.1 Small reads about 7 times faster 
 
 ## Settings (`config.json`)
 
-| Key                  | Default                              | Meaning                                                          |
-| -------------------- | ------------------------------------ | ---------------------------------------------------------------- |
-| serverUrl            | (required)                           | The storage server, e.g. `http://192.168.1.5:3081`               |
-| token                | (required)                           | The worker token from step 4                                     |
-| cacheDir             | `C:\Data\Japanese\Books\SyncCache`   | SubPlz's model cache, mounted at `/config`                       |
-| workDir              | `C:\ttsu-worker\work`                | Temporary job folders; plain ASCII, no spaces                    |
-| logDir               | `C:\ttsu-worker\logs`                | `worker.log`, rotated to `worker.log.1`                          |
-| image                | the pinned digest above              | The SubPlz image                                                 |
-| maxRunHours          | 8                                    | SubPlz is stopped after this long                                |
-| minFreeGB            | 5                                    | Free space kept on the work folder's drive besides the job       |
-| logMaxMB             | 5                                    | Log size before it is rotated                                    |
-| reportSeconds        | 10                                   | How often a running job reports to the server                    |
-| ttsImage             | `ttsu-irodori:3`                     | The TTS program's image (built by `build-tts`)                   |
-| ttsModelsDir         | `C:\Data\LLM\Models\ttsu-reader-tts` | TTS models, shared by every Windows account                      |
-| ttsBatchSize         | 8                                    | Sentences per model call (more is faster, needs more GPU memory) |
-| ttsChapterMaxMinutes | 120                                  | A TTS run that shows no progress for this long is stopped        |
-| ttsPrecision         | `bf16`                               | Model precision on the GPU (`bf16` or `fp32`)                    |
-| idleWaitSeconds      | 25                                   | An idle check-in waits this long on the server for work (1.2.0)  |
-| liveReadMaxSeconds   | 120                                  | A read-aloud batch not read in this long stops the voice process |
+| Key                      | Default                                   | Meaning                                                          |
+| ------------------------ | ----------------------------------------- | ---------------------------------------------------------------- |
+| serverUrl                | (required)                                | The storage server, e.g. `http://192.168.1.5:3081`               |
+| token                    | (required)                                | The worker token from step 4                                     |
+| cacheDir                 | `C:\Data\Japanese\Books\SyncCache`        | SubPlz's model cache, mounted at `/config`                       |
+| workDir                  | `C:\ttsu-worker\work`                     | Temporary job folders; plain ASCII, no spaces                    |
+| logDir                   | `C:\ttsu-worker\logs`                     | `worker.log`, rotated to `worker.log.1`                          |
+| image                    | the pinned digest above                   | The SubPlz image                                                 |
+| maxRunHours              | 8                                         | SubPlz is stopped after this long                                |
+| minFreeGB                | 5                                         | Free space kept on the work folder's drive besides the job       |
+| logMaxMB                 | 5                                         | Log size before it is rotated                                    |
+| reportSeconds            | 10                                        | How often a running job reports to the server                    |
+| ttsImage                 | `ttsu-irodori:3`                          | The TTS program's image (built by `build-tts`)                   |
+| ttsModelsDir             | `C:\Data\LLM\Models\ttsu-reader-tts`      | TTS models, shared by every Windows account                      |
+| ttsBatchSize             | 8                                         | Sentences per model call (more is faster, needs more GPU memory) |
+| ttsChapterMaxMinutes     | 120                                       | A TTS run that shows no progress for this long is stopped        |
+| ttsPrecision             | `bf16`                                    | Model precision on the GPU (`bf16` or `fp32`)                    |
+| idleWaitSeconds          | 25                                        | An idle check-in waits this long on the server for work (1.2.0)  |
+| liveReadMaxSeconds       | 120                                       | A read-aloud batch not read in this long stops the voice process |
+| speakerModelsDir         | `C:\Data\LLM\Models\ttsu-reader-speakers` | Speaker models (GGUF files), shared by every Windows account     |
+| speakerPort              | 8791                                      | The local port of the speaker program (127.0.0.1 only)           |
+| speakerLoadMaxMinutes    | 30                                        | Loading the speaker model may take this long                     |
+| speakerRequestMaxMinutes | 10                                        | One request to the speaker model may take this long              |
+| speakerGpuMarginMiB      | 4096                                      | Graphics memory the speaker model leaves free for other programs |
 
 ## Development
 

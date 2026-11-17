@@ -910,6 +910,169 @@ export const MIGRATIONS: { version: number; name: string; sql: string }[] = [
       ALTER TABLE tts_voice_choices ADD COLUMN dialogue_voice_id TEXT;
     `,
   },
+  {
+    version: 24,
+    name: 'per-character voices',
+    // Season 2 Phase 12 session 5 (audio/speakers/): a model on the PC works out who speaks
+    // each quote of a book; each character can have a voice.
+    // worker_jobs: rebuilt for the new kind 'attribute_speakers' (rows kept as they are;
+    //   tts_job_chapters set aside and put back, as in migration 21).
+    // speaker_models: the speaker models offered (Settings > Audiobooks), one GGUF file of a
+    //   Hugging Face repo each, pinned to a revision, with the file's size and sha256 (the PC
+    //   checks its download). Seeded with the model picked in step A (2026-11-17).
+    // speaker_books: per book, the last finished run, what it read (script version, dialogue
+    //   rule, the EPUB's size|mtime) and who reads the narration (the narration voice, or the
+    //   narrator character's voice: a per-book setting, user 2026-11-16).
+    // speaker_characters: the book's characters; `no` is their number in the book (C<no> in
+    //   the model's prompts); `edited`: the user renamed it (a run never renames it again);
+    //   `hidden`: "not a character" (never offered as a speaker).
+    // speaker_quotes: one row per quote, keyed by its text (quote_key: occurrence + the first
+    //   40 characters), so a renumbered book finds them again. The model's answer and the
+    //   user's correction are kept apart: a run writes only the model columns.
+    // speaker_steps: the answers of a running job (what lets it continue after a pause);
+    //   removed when the job ends.
+    sql: `
+      CREATE TABLE tts_job_chapters_keep AS SELECT * FROM tts_job_chapters;
+      DROP TABLE tts_job_chapters;
+
+      CREATE TABLE worker_jobs_v24 (
+        id                     INTEGER PRIMARY KEY,
+        user_id                TEXT NOT NULL REFERENCES users(id),
+        book_id                TEXT,
+        kind                   TEXT NOT NULL CHECK (kind IN ('sync_subtitles', 'generate_audiobook', 'preview_audiobook', 'voice_sample', 'sentence_audio', 'attribute_speakers')),
+        library_id             TEXT,
+        audio_folder_rel_path  TEXT,
+        audio_file_name        TEXT,
+        link_confirmed_at      INTEGER,
+        state                  TEXT NOT NULL CHECK (state IN ('queued', 'running', 'done', 'failed', 'cancelled')),
+        stage                  TEXT CHECK (stage IN ('downloading', 'syncing', 'uploading', 'saving', 'preparing', 'generating', 'assembling')),
+        progress               REAL,
+        message                TEXT,
+        cancel_requested       INTEGER NOT NULL DEFAULT 0,
+        attempts               INTEGER NOT NULL DEFAULT 0,
+        lease_expires_at       INTEGER,
+        output_rel_path        TEXT,
+        linked                 INTEGER NOT NULL DEFAULT 0,
+        error                  TEXT,
+        log_tail               TEXT,
+        params                 TEXT,
+        version                INTEGER,
+        chapters_total         INTEGER,
+        chapters_done          INTEGER NOT NULL DEFAULT 0,
+        claim_chapters         INTEGER,
+        created_at             INTEGER NOT NULL,
+        started_at             INTEGER,
+        finished_at            INTEGER,
+        updated_at             INTEGER NOT NULL,
+        CHECK (kind <> 'sync_subtitles' OR (book_id IS NOT NULL AND library_id IS NOT NULL
+          AND audio_folder_rel_path IS NOT NULL AND audio_file_name IS NOT NULL)),
+        CHECK (kind = 'voice_sample' OR book_id IS NOT NULL)
+      );
+      INSERT INTO worker_jobs_v24 SELECT * FROM worker_jobs;
+      DROP TABLE worker_jobs;
+      ALTER TABLE worker_jobs_v24 RENAME TO worker_jobs;
+      CREATE INDEX worker_jobs_book ON worker_jobs (user_id, book_id, id);
+      CREATE INDEX worker_jobs_state ON worker_jobs (state, id);
+
+      CREATE TABLE tts_job_chapters (
+        job_id       INTEGER NOT NULL REFERENCES worker_jobs(id) ON DELETE CASCADE,
+        idx          INTEGER NOT NULL,
+        title        TEXT NOT NULL,
+        duration_ms  INTEGER NOT NULL,
+        cues         TEXT NOT NULL,
+        part_file    TEXT NOT NULL,
+        bytes        INTEGER NOT NULL,
+        done_at      INTEGER NOT NULL,
+        PRIMARY KEY (job_id, idx)
+      );
+      INSERT INTO tts_job_chapters (job_id, idx, title, duration_ms, cues, part_file, bytes, done_at)
+        SELECT job_id, idx, title, duration_ms, cues, part_file, bytes, done_at FROM tts_job_chapters_keep;
+      DROP TABLE tts_job_chapters_keep;
+
+      CREATE TABLE speaker_models (
+        id          INTEGER PRIMARY KEY,
+        repo        TEXT NOT NULL,
+        file        TEXT NOT NULL,
+        revision    TEXT NOT NULL,
+        size        INTEGER,
+        sha256      TEXT,
+        label       TEXT NOT NULL,
+        is_default  INTEGER NOT NULL DEFAULT 0,
+        added_at    INTEGER NOT NULL,
+        removed_at  INTEGER
+      );
+      INSERT INTO speaker_models (repo, file, revision, size, sha256, label, is_default, added_at)
+        VALUES ('unsloth/gemma-4-26B-A4B-it-GGUF', 'gemma-4-26B-A4B-it-UD-IQ4_XS.gguf',
+          'c099eb48e663fd284577b04978a94ffccb261841', 13597177568,
+          'babd1e389d386352f71600765d37390f7dc993fbfad6725caccf996ffe34aecf',
+          'Gemma 4 26B A4B', 1, CAST(strftime('%s', 'now') AS INTEGER) * 1000);
+
+      CREATE TABLE speaker_books (
+        user_id         TEXT NOT NULL REFERENCES users(id),
+        book_id         TEXT NOT NULL,
+        job_id          INTEGER,
+        model_id        INTEGER,
+        prompt_version  INTEGER,
+        script_version  INTEGER,
+        dialogue_rule   INTEGER,
+        file_key        TEXT,
+        quotes          INTEGER,
+        finished_at     INTEGER,
+        narration_by    TEXT NOT NULL DEFAULT 'narration' CHECK (narration_by IN ('narration', 'narrator')),
+        updated_at      INTEGER NOT NULL,
+        PRIMARY KEY (user_id, book_id)
+      );
+
+      CREATE TABLE speaker_characters (
+        id            INTEGER PRIMARY KEY,
+        user_id       TEXT NOT NULL REFERENCES users(id),
+        book_id       TEXT NOT NULL,
+        no            INTEGER NOT NULL,
+        name          TEXT NOT NULL,
+        aliases       TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(aliases)),
+        first_person  TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(first_person)),
+        gender        TEXT NOT NULL DEFAULT '不明',
+        narrator      INTEGER NOT NULL DEFAULT 0,
+        voice_id      TEXT,
+        origin        TEXT NOT NULL CHECK (origin IN ('model', 'user')),
+        edited        INTEGER NOT NULL DEFAULT 0,
+        hidden        INTEGER NOT NULL DEFAULT 0,
+        windows       INTEGER NOT NULL DEFAULT 0,
+        created_at    INTEGER NOT NULL,
+        updated_at    INTEGER NOT NULL,
+        UNIQUE (user_id, book_id, no)
+      );
+
+      CREATE TABLE speaker_quotes (
+        user_id          TEXT NOT NULL REFERENCES users(id),
+        book_id          TEXT NOT NULL,
+        quote_key        TEXT NOT NULL,
+        quote            INTEGER NOT NULL,
+        text             TEXT NOT NULL,
+        paragraph        INTEGER,
+        position         INTEGER,
+        model_character  INTEGER,
+        model_p          REAL,
+        model_unknown    INTEGER NOT NULL DEFAULT 0,
+        user_set         INTEGER NOT NULL DEFAULT 0,
+        user_character   INTEGER,
+        user_at          INTEGER,
+        lost             INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (user_id, book_id, quote_key)
+      );
+      CREATE INDEX speaker_quotes_quote ON speaker_quotes (user_id, book_id, quote);
+
+      CREATE TABLE speaker_steps (
+        job_id      INTEGER NOT NULL,
+        seq         INTEGER NOT NULL,
+        stage       TEXT NOT NULL,
+        answer      TEXT NOT NULL,
+        ms          INTEGER,
+        created_at  INTEGER NOT NULL,
+        PRIMARY KEY (job_id, seq)
+      );
+    `,
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;
