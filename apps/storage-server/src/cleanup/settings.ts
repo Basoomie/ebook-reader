@@ -29,8 +29,10 @@ export interface PacingSettings {
 export interface GateSettings {
   /** A field must be right on the labeled books at least this often (%). */
   defaultPercent: number;
-  /** Fields with their own bar (decided: titles 85 % for stage 2). */
+  /** Stage 2's fields with their own bar (decided: titles 85 % for stage 2's file titles). */
   fieldPercent: Record<string, number>;
+  /** Stage 4's fields with their own bar; a field not listed uses the shared bar (WP20d). */
+  stage4Percent: Record<string, number>;
   /** Titles from the file must also be this many points better than Calibre's current ones. */
   marginPoints: number;
   /** A group with fewer labeled books than this is shown but not checked. */
@@ -78,6 +80,70 @@ export interface AudiobookSettings {
   absTimeoutSeconds: number;
 }
 
+/** One site's queue in the fetch container (WP20d). */
+export interface FetchSiteSettings {
+  enabled: boolean;
+  /** Seconds from the start of one request to the start of the next on this queue. */
+  intervalSeconds: number;
+}
+
+/**
+ * Stage 4's online lookups (WP20d, plan section 6). The fetch container runs through gluetun; the
+ * server hands out one request per site when its pace allows. Every threshold is a setting.
+ */
+export interface FetchSettings {
+  sites: Record<string, FetchSiteSettings>;
+  /**
+   * Amazon's product pages and Kindle searches: one shared slot ('shared', the reference run's
+   * rate), each its own pace ('separate'), or 'trial': the labeled books' first half shared, the
+   * second half separate, to measure which is faster without more challenge pages.
+   */
+  amazonPace: 'shared' | 'separate' | 'trial';
+  /** A challenge page backs off Amazon this long first (s), doubling up to the longest (s). */
+  challengeBackoffSeconds: number;
+  challengeBackoffMaxSeconds: number;
+  /** This many challenge pages in a row pause the site until resumed on the page. */
+  challengePauseAfter: number;
+  /** Slow Amazon down (interval x 1.5) while challenges in the last N requests exceed this share (%). */
+  slowDownPercent: number;
+  slowDownWindow: number;
+  /** A failed request (network, busy) is asked again after this long (s), doubling. */
+  retrySeconds: number;
+  /** A request is given up after this many attempts (it can be asked again later). */
+  maxAttempts: number;
+  /** A claimed request goes back to the queue when the fetcher hasn't answered in this time (s). */
+  leaseSeconds: number;
+  /** The fetcher's time limit for one request (s). */
+  requestTimeoutSeconds: number;
+  /** Largest answer kept (MB). */
+  maxPageMb: number;
+  /** Names per NDL query (NDL allows 1,000 result rows per query). */
+  ndlNamesPerQuery: number;
+  /** NDL's daily outage (from about 4:00 JST): no queries from this time (JST, HH:MM) ... */
+  ndlOutageStartJst: string;
+  /** ... for this long (minutes). */
+  ndlOutageMinutes: number;
+  /** Natively's sitemap is read again after this many days (new books). */
+  nativelyRereadDays: number;
+  /** A file cover whose longer side is under this (px) counts as small (store image looked up). */
+  smallCoverPx: number;
+  /** The fetcher counts as offline after this long without a heartbeat (s). */
+  offlineSeconds: number;
+}
+
+export const FETCH_SITES = [
+  'amazon-dp',
+  'amazon-search',
+  'amazon-img',
+  'ranobedb',
+  'bookwalker',
+  'bookmeter',
+  'natively',
+  'ndl',
+  'sudachi',
+] as const;
+export type FetchSite = (typeof FETCH_SITES)[number];
+
 export interface BackupRecord {
   path: string;
   /** When the backup was verified (free text date, e.g. 2026-11-12). */
@@ -116,6 +182,8 @@ export interface CleanupSettings {
   duplicates: DuplicateSettings;
   /** The audiobook cleanup (WP21a). */
   audiobooks: AudiobookSettings;
+  /** Stage 4's online lookups (WP20d). */
+  fetch: FetchSettings;
   backup: BackupRecord;
 }
 
@@ -152,6 +220,7 @@ export const DEFAULT_SETTINGS: CleanupSettings = {
   gate: {
     defaultPercent: 95,
     fieldPercent: { title: 85 },
+    stage4Percent: {},
     marginPoints: 20,
     minBooks: 20,
     labeledBooksFile: '',
@@ -171,6 +240,38 @@ export const DEFAULT_SETTINGS: CleanupSettings = {
     copyHintMinMinutes: 60,
     copyHintPercent: 3,
     absTimeoutSeconds: 30,
+  },
+  fetch: {
+    // Paces of plan section 6 (Bookmeter and Natively as BookWalker; the cover images as decided
+    // in the WP20d plan); Sudachi runs inside the fetch container, no network.
+    sites: {
+      'amazon-dp': { enabled: true, intervalSeconds: 8 },
+      'amazon-search': { enabled: true, intervalSeconds: 8 },
+      'amazon-img': { enabled: true, intervalSeconds: 5 },
+      ranobedb: { enabled: true, intervalSeconds: 1 },
+      bookwalker: { enabled: true, intervalSeconds: 5 },
+      bookmeter: { enabled: true, intervalSeconds: 5 },
+      natively: { enabled: true, intervalSeconds: 5 },
+      ndl: { enabled: true, intervalSeconds: 30 },
+      sudachi: { enabled: true, intervalSeconds: 0 },
+    },
+    amazonPace: 'trial',
+    challengeBackoffSeconds: 60,
+    challengeBackoffMaxSeconds: 900,
+    challengePauseAfter: 8,
+    slowDownPercent: 10,
+    slowDownWindow: 100,
+    retrySeconds: 30,
+    maxAttempts: 6,
+    leaseSeconds: 120,
+    requestTimeoutSeconds: 30,
+    maxPageMb: 16,
+    ndlNamesPerQuery: 50,
+    ndlOutageStartJst: '03:55',
+    ndlOutageMinutes: 20,
+    nativelyRereadDays: 30,
+    smallCoverPx: 800,
+    offlineSeconds: 90,
   },
   backup: {
     path: '/mnt/user/data/backups/japanese-library-2026-11-11/',
@@ -375,6 +476,100 @@ function validate(key: Key, value: unknown, current: CleanupSettings): unknown {
         absTimeoutSeconds: num('Audiobookshelf time limit (s)', v.absTimeoutSeconds, 1, 600, true),
       };
     }
+    case 'fetch': {
+      const v = group('Online sources', value, current.fetch);
+      if (!isObj(v.sites)) throw new SettingsError('Online sources: sites must be an object');
+      const sites: Record<string, FetchSiteSettings> = {};
+      for (const site of FETCH_SITES) {
+        const got = (v.sites as Record<string, unknown>)[site];
+        const cur = current.fetch.sites[site];
+        const o = got === undefined ? cur : group(`Site ${site}`, got, cur);
+        if (typeof o.enabled !== 'boolean')
+          throw new SettingsError(`${site}: on/off must be true or false`);
+        sites[site] = {
+          enabled: o.enabled,
+          intervalSeconds: num(
+            `${site}: seconds between requests`,
+            o.intervalSeconds,
+            site === 'sudachi' ? 0 : site === 'ranobedb' ? 1 : 2,
+            3600,
+          ),
+        };
+      }
+      for (const k of Object.keys(v.sites as object)) {
+        if (!(FETCH_SITES as readonly string[]).includes(k))
+          throw new SettingsError(`Unknown site: ${k}`);
+      }
+      if (!['shared', 'separate', 'trial'].includes(v.amazonPace as string)) {
+        throw new SettingsError('Amazon pace must be shared, separate or trial');
+      }
+      if (
+        typeof v.ndlOutageStartJst !== 'string' ||
+        !/^([01]\d|2[0-3]):[0-5]\d$/.test(v.ndlOutageStartJst)
+      ) {
+        throw new SettingsError('NDL outage start must be a time like 03:55');
+      }
+      const out: FetchSettings = {
+        sites,
+        amazonPace: v.amazonPace as FetchSettings['amazonPace'],
+        challengeBackoffSeconds: num(
+          'Back off after a challenge page (s)',
+          v.challengeBackoffSeconds,
+          10,
+          86400,
+          true,
+        ),
+        challengeBackoffMaxSeconds: num(
+          'Longest back-off (s)',
+          v.challengeBackoffMaxSeconds,
+          10,
+          86400,
+          true,
+        ),
+        challengePauseAfter: num(
+          'Pause after challenge pages in a row',
+          v.challengePauseAfter,
+          1,
+          1000,
+          true,
+        ),
+        slowDownPercent: num('Slow down above challenge share (%)', v.slowDownPercent, 0, 100),
+        slowDownWindow: num(
+          'Challenge share over the last (requests)',
+          v.slowDownWindow,
+          10,
+          10000,
+          true,
+        ),
+        retrySeconds: num('Ask a failed request again after (s)', v.retrySeconds, 1, 86400, true),
+        maxAttempts: num('Give a request up after (attempts)', v.maxAttempts, 1, 100, true),
+        leaseSeconds: num('Fetcher answer time (s)', v.leaseSeconds, 30, 3600, true),
+        requestTimeoutSeconds: num(
+          'Time limit for one request (s)',
+          v.requestTimeoutSeconds,
+          5,
+          600,
+          true,
+        ),
+        maxPageMb: num('Largest answer kept (MB)', v.maxPageMb, 1, 64),
+        ndlNamesPerQuery: num('Names per NDL query', v.ndlNamesPerQuery, 1, 200, true),
+        ndlOutageStartJst: v.ndlOutageStartJst,
+        ndlOutageMinutes: num('NDL outage length (minutes)', v.ndlOutageMinutes, 0, 240, true),
+        nativelyRereadDays: num(
+          'Read Natively again after (days)',
+          v.nativelyRereadDays,
+          1,
+          3650,
+          true,
+        ),
+        smallCoverPx: num('Small cover below (px)', v.smallCoverPx, 100, 5000, true),
+        offlineSeconds: num('Fetcher offline after (s)', v.offlineSeconds, 30, 3600, true),
+      };
+      if (out.challengeBackoffMaxSeconds < out.challengeBackoffSeconds) {
+        throw new SettingsError('The longest back-off must not be shorter than the first');
+      }
+      return out;
+    }
     case 'calibreLibraryId': {
       const v = text('Calibre library id', value, 200);
       if (/[#/\s]/.test(v))
@@ -428,9 +623,17 @@ function validate(key: Key, value: unknown, current: CleanupSettings): unknown {
           throw new SettingsError(`No such field: ${f}`);
         fieldPercent[f] = num(`Bar for ${f} (%)`, p, 50, 100);
       }
+      if (!isObj(v.stage4Percent)) throw new SettingsError('Stage 4 field bars must be an object');
+      const stage4Percent: Record<string, number> = {};
+      for (const [f, p] of Object.entries(v.stage4Percent)) {
+        if (!(GATE_FIELDS as readonly string[]).includes(f))
+          throw new SettingsError(`No such field: ${f}`);
+        stage4Percent[f] = num(`Stage 4 bar for ${f} (%)`, p, 50, 100);
+      }
       return {
         defaultPercent: num('Bar for every field (%)', v.defaultPercent, 50, 100),
         fieldPercent,
+        stage4Percent,
         marginPoints: num('Better than Calibre by (points)', v.marginPoints, 0, 100),
         minBooks: num('Smallest group checked (books)', v.minBooks, 1, 800, true),
         labeledBooksFile: text('Labeled books file', v.labeledBooksFile, 1000),
@@ -526,9 +729,14 @@ function validate(key: Key, value: unknown, current: CleanupSettings): unknown {
   }
 }
 
-/** The bar a field must reach on the labeled books (its own, else the shared one). */
+/** The bar a stage-2 field must reach on the labeled books (its own, else the shared one). */
 export function gateBar(s: CleanupSettings, field: string): number {
   return s.gate.fieldPercent[field] ?? s.gate.defaultPercent;
+}
+
+/** The bar a stage-4 field must reach on the labeled books (its own, else the shared one). */
+export function stage4Bar(s: CleanupSettings, field: string): number {
+  return s.gate.stage4Percent[field] ?? s.gate.defaultPercent;
 }
 
 /** Saves the given keys (each validated against the current values). Returns the new settings. */

@@ -41,9 +41,28 @@ export function unescapeHtml(s: string): string {
   });
 }
 
-/** bytes.decode('utf8', 'ignore'). */
+const REPLACEMENT_BYTES = Buffer.from([0xef, 0xbf, 0xbd]);
+
+/**
+ * bytes.decode('utf8', 'ignore'): invalid bytes dropped, everything else kept, a byte-order mark
+ * and genuine U+FFFD characters included (both appear in real EPUBs: 12 of the labeled books
+ * start their documents with a BOM, one carries U+FFFD in its OPF). TextDecoder replaces each
+ * invalid sequence with U+FFFD (the same maximal-subpart rule as Python), so the text is decoded
+ * between the genuine U+FFFD bytes and the replacements removed.
+ */
 export function decodeIgnore(body: Buffer): string {
-  return new TextDecoder('utf-8', { fatal: false }).decode(body).split(REPLACEMENT).join('');
+  const dec = new TextDecoder('utf-8', { fatal: false, ignoreBOM: true });
+  const parts: string[] = [];
+  let from = 0;
+  for (;;) {
+    const at = body.indexOf(REPLACEMENT_BYTES, from);
+    const piece = body.subarray(from, at === -1 ? body.length : at);
+    parts.push(dec.decode(piece).split(REPLACEMENT).join(''));
+    if (at === -1) break;
+    parts.push(REPLACEMENT);
+    from = at + 3;
+  }
+  return parts.join('');
 }
 
 export const nfkc = (s: string | null | undefined): string => (s ?? '').normalize('NFKC');

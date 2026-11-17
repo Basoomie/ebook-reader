@@ -42,6 +42,8 @@ module.exports = (async () => {
         'apps/gpu-worker/dist/**',
         // WP20a: the cleanup sidecar's build output and the fake calibredb used by its tests.
         'apps/cleanup-apply/dist/**',
+        // WP20d: the cleanup fetch container's build output.
+        'apps/cleanup-fetch/dist/**',
         'apps/storage-server/tests/fixtures/wp20a/**'
       ]
     },
@@ -141,6 +143,19 @@ module.exports = (async () => {
         parserOptions: {
           project: './tsconfig.eslint.json',
           tsconfigRootDir: './apps/cleanup-apply/'
+        }
+      },
+      rules: {
+        'headers/header-format': 'off'
+      }
+    },
+    {
+      // WP20d: the library cleanup's fetch container (runs inside gluetun's network).
+      files: ['apps/cleanup-fetch/**/*.ts'],
+      languageOptions: {
+        parserOptions: {
+          project: './tsconfig.eslint.json',
+          tsconfigRootDir: './apps/cleanup-fetch/'
         }
       },
       rules: {

@@ -570,6 +570,156 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
       );
     `,
   },
+  {
+    version: 9,
+    name: 'stage 4: the fetch queue, lookups, Natively index and author readings (WP20d)',
+    sql: `
+      -- The fetch container's tokens reach only /api/v1/cleanup-fetch/*; the apply sidecar's
+      -- only /api/v1/cleanup-apply/*.
+      ALTER TABLE apply_tokens ADD COLUMN scope TEXT NOT NULL DEFAULT 'apply'
+        CHECK (scope IN ('apply', 'fetch'));
+
+      -- Pace and backoff state per site (and per shared key: 'amazon' paces product pages and
+      -- searches together when they share a slot, and backs off every Amazon queue at once).
+      -- Survives restarts, so neither side can burst after one.
+      CREATE TABLE fetch_sites (
+        site               TEXT PRIMARY KEY,
+        last_claim_at      INTEGER,
+        backoff_until      INTEGER,
+        backoff_reason     TEXT,
+        backoff_seconds    INTEGER NOT NULL DEFAULT 0,
+        failures_in_row    INTEGER NOT NULL DEFAULT 0,
+        challenges_in_row  INTEGER NOT NULL DEFAULT 0,
+        paused_reason      TEXT,
+        paused_at          INTEGER,
+        slow_factor        REAL NOT NULL DEFAULT 1,
+        mode               TEXT,
+        updated_at         INTEGER NOT NULL
+      );
+
+      -- One row per distinct request (a series page shared by many volumes is asked once).
+      -- The answer itself is in the fetch cache (cache/cleanup/fetch/<site>/..., regenerable).
+      CREATE TABLE fetch_requests (
+        id           INTEGER PRIMARY KEY,
+        site         TEXT NOT NULL,
+        key          TEXT NOT NULL,
+        method       TEXT NOT NULL DEFAULT 'GET',
+        url          TEXT NOT NULL,
+        body         TEXT,
+        accept       TEXT,
+        priority     INTEGER NOT NULL DEFAULT 0,
+        state        TEXT NOT NULL DEFAULT 'queued'
+                     CHECK (state IN ('queued', 'leased', 'done', 'gone', 'failed')),
+        attempts     INTEGER NOT NULL DEFAULT 0,
+        next_at      INTEGER NOT NULL DEFAULT 0,
+        lease_token  TEXT,
+        lease_until  INTEGER,
+        status       INTEGER,
+        bytes        INTEGER,
+        outcome      TEXT,
+        error        TEXT,
+        ms           INTEGER,
+        cache_file   TEXT,
+        created_at   INTEGER NOT NULL,
+        finished_at  INTEGER,
+        updated_at   INTEGER NOT NULL,
+        UNIQUE (site, key)
+      );
+      CREATE INDEX fetch_requests_due ON fetch_requests (site, state, priority, next_at);
+      CREATE INDEX fetch_requests_lease ON fetch_requests (state, lease_until);
+
+      -- Every attempt (pace, challenge rate, seconds per request), with the Amazon pace in use.
+      CREATE TABLE fetch_attempts (
+        id          INTEGER PRIMARY KEY,
+        request_id  INTEGER NOT NULL,
+        site        TEXT NOT NULL,
+        at          INTEGER NOT NULL,
+        ms          INTEGER,
+        status      INTEGER,
+        bytes       INTEGER,
+        outcome     TEXT NOT NULL,
+        pace        TEXT,
+        labeled     INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE INDEX fetch_attempts_site ON fetch_attempts (site, at);
+
+      -- Which book waits on which request, and at which lookup step. ready = the request has
+      -- its answer (or was given up); the analysis takes ready rows and deletes them once the
+      -- book's next step is saved, so an answer survives any restart.
+      CREATE TABLE fetch_waiters (
+        request_id    INTEGER NOT NULL REFERENCES fetch_requests(id),
+        library_id    TEXT NOT NULL,
+        calibre_uuid  TEXT NOT NULL,
+        step          TEXT NOT NULL,
+        ready         INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (request_id, library_id, calibre_uuid, step)
+      );
+      CREATE INDEX fetch_waiters_book ON fetch_waiters (library_id, calibre_uuid);
+      CREATE INDEX fetch_waiters_ready ON fetch_waiters (ready, request_id) WHERE ready = 1;
+
+      -- Stage 4's state per book: read (file evidence taken), waiting (lookups open), ready
+      -- (all answered), proposed (rules run), error. lookup_json holds each source's step.
+      CREATE TABLE stage4_books (
+        library_id    TEXT NOT NULL,
+        calibre_uuid  TEXT NOT NULL,
+        calibre_id    INTEGER NOT NULL,
+        analysis_id   TEXT NOT NULL,
+        labeled       INTEGER NOT NULL DEFAULT 0,
+        state         TEXT NOT NULL
+                      CHECK (state IN ('read', 'waiting', 'ready', 'proposed', 'error')),
+        pending       INTEGER NOT NULL DEFAULT 0,
+        lookup_json   TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(lookup_json)),
+        error         TEXT,
+        updated_at    INTEGER NOT NULL,
+        PRIMARY KEY (library_id, calibre_uuid)
+      );
+      CREATE INDEX stage4_books_state ON stage4_books (analysis_id, state, labeled);
+
+      -- Natively's book pages (from its sitemap), read once each: their ISBNs and Kindle ASINs.
+      CREATE TABLE natively_books (
+        natively_id  TEXT PRIMARY KEY,
+        url          TEXT NOT NULL,
+        title        TEXT,
+        isbn10       TEXT,
+        isbn13       TEXT,
+        listed_at    INTEGER NOT NULL,
+        read_at      INTEGER
+      );
+      CREATE INDEX natively_books_isbn13 ON natively_books (isbn13);
+      CREATE TABLE natively_asins (
+        asin         TEXT NOT NULL,
+        natively_id  TEXT NOT NULL,
+        PRIMARY KEY (asin, natively_id)
+      );
+
+      -- Author readings: Web NDL Authorities first; a generated reading (Sudachi) is marked.
+      -- queued -> asked (NDL) -> found | not_found -> generating (Sudachi) -> generated | none.
+      CREATE TABLE author_readings (
+        name        TEXT PRIMARY KEY,
+        state       TEXT NOT NULL
+                    CHECK (state IN ('queued', 'asked', 'found', 'not_found', 'generating', 'generated', 'none')),
+        reading     TEXT,
+        source      TEXT,
+        authority   TEXT,
+        ambiguous   INTEGER NOT NULL DEFAULT 0,
+        generated   TEXT,
+        request_id  INTEGER,
+        updated_at  INTEGER NOT NULL
+      );
+      CREATE INDEX author_readings_state ON author_readings (state);
+
+      CREATE TABLE fetcher_status (
+        id            INTEGER PRIMARY KEY CHECK (id = 1),
+        fetcher_id    TEXT,
+        last_seen_at  INTEGER,
+        version       TEXT,
+        problem       TEXT,
+        sudachi       TEXT,
+        updated_at    INTEGER NOT NULL
+      );
+      INSERT INTO fetcher_status (id, updated_at) VALUES (1, 0);
+    `,
+  },
 ];
 
 export const CLEANUP_SCHEMA_VERSION = CLEANUP_MIGRATIONS[CLEANUP_MIGRATIONS.length - 1].version;

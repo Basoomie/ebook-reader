@@ -20,8 +20,12 @@ import { Stage2Analysis, type Stage2Progress } from './stage2';
 import { listFieldPauses, loadGold, resumeField } from './stage2-gate';
 import { STAGE3_WAITING_SQL, Stage3Analysis, type PairRow, type Stage3Progress } from './stage3';
 import { Stage3Worker, type Stage3Reader } from '../counts/book-text-worker';
+import { Stage4Analysis, type Stage4Progress } from './stage4/analysis';
+import { FetchQueue, backoffKey } from './stage4/queue';
+import { FETCH_SITES, type FetchSite } from './settings';
 import {
   BUILT_STAGES,
+  PREVIEW_ONLY_STAGES,
   CURRENT_PROPOSALS_SQL,
   currentAnalysisId,
   getStage,
@@ -141,6 +145,7 @@ export const DISK_PHASES: Record<number, readonly string[]> = {
   1: ['stat', 'hash'],
   2: ['read'],
   3: ['text', 'quality'],
+  4: ['read'],
 };
 
 export class CleanupService {
@@ -151,6 +156,13 @@ export class CleanupService {
   readonly analysis: Stage1Analysis | null;
   readonly analysis2: Stage2Analysis | null;
   readonly analysis3: Stage3Analysis | null;
+  /** Stage 4 (WP20d): the fetch queue and the online-sources analysis (Preview only). */
+  readonly fetchQueue: FetchQueue;
+  readonly analysis4: Stage4Analysis | null;
+  private analysing4: Promise<void> | null = null;
+  /** Why stage 4 is not working right now. */
+  waiting4: string | null = null;
+  private status4Cache: { at: number; value: unknown } | null = null;
   private reader3: Stage3Reader | null = null;
   private analysing3: Promise<void> | null = null;
   /** Why stage 3 is not applying right now. */
@@ -215,6 +227,93 @@ export class CleanupService {
           log: this.log,
         })
       : null;
+    this.fetchQueue = new FetchQueue(
+      opts.cleanup,
+      opts.cacheDir + '/cleanup',
+      () => getSettings(this.db).fetch,
+      this.log,
+    );
+    this.analysis4 = opts.calibreDir
+      ? new Stage4Analysis({
+          cleanup: opts.cleanup,
+          main: opts.main,
+          calibreDir: opts.calibreDir,
+          cacheDir: opts.cacheDir,
+          dbDir: opts.dbDir ?? null,
+          queue: this.fetchQueue,
+          log: this.log,
+        })
+      : null;
+  }
+
+  /** An answer reached the queue: move the books on soon. */
+  answerArrived(): void {
+    void this.tick();
+  }
+
+  /** The fetch container's heartbeat; true when it is (or becomes) the one active fetcher. */
+  fetchHeartbeat(
+    hb: {
+      fetcherId: string;
+      version: string | null;
+      problem: string | null;
+      sudachi: string | null;
+    },
+    now = Date.now(),
+  ): boolean {
+    const s = getSettings(this.db).fetch;
+    const r = this.db
+      .prepare('SELECT fetcher_id, last_seen_at FROM fetcher_status WHERE id = 1')
+      .get() as {
+      fetcher_id: string | null;
+      last_seen_at: number | null;
+    };
+    const other =
+      r.fetcher_id !== null &&
+      r.fetcher_id !== hb.fetcherId &&
+      r.last_seen_at !== null &&
+      now - r.last_seen_at < s.offlineSeconds * 1000;
+    if (other) return false;
+    this.db
+      .prepare(
+        `UPDATE fetcher_status SET fetcher_id = ?, last_seen_at = ?, version = ?, problem = ?, sudachi = ?, updated_at = ?
+         WHERE id = 1`,
+      )
+      .run(hb.fetcherId, now, hb.version, hb.problem, hb.sudachi, now);
+    return true;
+  }
+
+  isActiveFetcher(fetcherId: string, now = Date.now()): boolean {
+    const s = getSettings(this.db).fetch;
+    const r = this.db
+      .prepare('SELECT fetcher_id, last_seen_at FROM fetcher_status WHERE id = 1')
+      .get() as {
+      fetcher_id: string | null;
+      last_seen_at: number | null;
+    };
+    return (
+      r.fetcher_id === fetcherId &&
+      r.last_seen_at !== null &&
+      now - r.last_seen_at < s.offlineSeconds * 1000
+    );
+  }
+
+  fetcher(now = Date.now()) {
+    const s = getSettings(this.db).fetch;
+    const r = this.db.prepare('SELECT * FROM fetcher_status WHERE id = 1').get() as {
+      fetcher_id: string | null;
+      last_seen_at: number | null;
+      version: string | null;
+      problem: string | null;
+      sudachi: string | null;
+    };
+    return {
+      online: r.last_seen_at !== null && now - r.last_seen_at < s.offlineSeconds * 1000,
+      lastSeenAt: r.last_seen_at,
+      version: r.version,
+      problem: r.problem,
+      sudachi: r.sudachi,
+    };
   }
 
   /** The reader processes for stage 3 (started on first use; their number follows the settings). */
@@ -260,6 +359,7 @@ export class CleanupService {
     this.reader3?.close();
     await this.analysing3;
     this.analysis3?.close();
+    await this.analysing4;
   }
 
   /** A finished removal batch waits for the reader's index of this library (index it now). */
@@ -523,6 +623,9 @@ export class CleanupService {
     if (mode !== 'off' && !BUILT_STAGES.includes(stage)) {
       throw new Error('This stage is not built yet');
     }
+    if (mode === 'on' && PREVIEW_ONLY_STAGES.includes(stage)) {
+      throw new Error('Stage 4 is Preview only for now: its writes come with the AI check (WP20e)');
+    }
     setStageMode(this.db, stage, mode);
     if (stage === 1 && mode !== 'off') {
       const target = this.targetLibrary();
@@ -541,22 +644,30 @@ export class CleanupService {
       if (target && this.analysis3 && (!p || p.libraryId !== target))
         this.analysis3.restart(target);
     }
+    if (stage === 4 && mode !== 'off') {
+      const target = this.targetLibrary();
+      const p = this.analysis4?.progress();
+      if (target && this.analysis4 && (!p || p.libraryId !== target))
+        this.analysis4.restart(target);
+    }
     void this.tick();
   }
 
   /** "Analyse again". */
-  reanalyse(stage = 1): Stage1Progress | Stage2Progress | Stage3Progress {
+  reanalyse(stage = 1): Stage1Progress | Stage2Progress | Stage3Progress | Stage4Progress {
     const target = this.targetLibrary();
     const analysis =
-      stage === 3
-        ? this.analysis3
-        : stage === 2
-          ? this.analysis2
-          : stage === 1
-            ? this.analysis
-            : null;
+      stage === 4
+        ? this.analysis4
+        : stage === 3
+          ? this.analysis3
+          : stage === 2
+            ? this.analysis2
+            : stage === 1
+              ? this.analysis
+              : null;
     if (!analysis)
-      throw new Error(stage >= 1 && stage <= 3 ? 'Choose the library first' : 'No such stage');
+      throw new Error(stage >= 1 && stage <= 4 ? 'Choose the library first' : 'No such stage');
     if (!target) throw new Error('Choose the library first');
     const p = analysis.restart(target);
     // These pauses ask for a new analysis; it is running now.
@@ -602,6 +713,191 @@ export class CleanupService {
     await this.round1(target);
     await this.round2(target);
     await this.round3(target);
+    this.round4(target);
+  }
+
+  /** Stage 4 (WP20d): Preview only; the analysis (reading, lookups, proposals) runs while not Off. */
+  private round4(target: string | null): void {
+    const stage = getStage(this.db, 4);
+    if (stage.mode === 'off' || !target || !this.analysis4) {
+      this.waiting4 =
+        stage.mode === 'off'
+          ? null
+          : target
+            ? 'The Calibre folder is not set up'
+            : 'Choose the library';
+      return;
+    }
+    const p = this.analysis4.progress();
+    if (!p || p.libraryId !== target) {
+      this.analysis4.restart(target);
+    } else if (p.phase === 'done') {
+      this.waiting4 = p.error ? `The analysis failed: ${p.error}` : 'Done';
+      return;
+    }
+    this.waiting4 = this.fetcher().online
+      ? null
+      : 'The fetch container is not running (or has no token yet)';
+    this.runAnalysis4();
+  }
+
+  private runAnalysis4(): void {
+    if (this.analysing4 || !this.analysis4) return;
+    const analysis = this.analysis4;
+    this.analysing4 = (async () => {
+      try {
+        for (;;) {
+          if (this.stopped) break;
+          if (getStage(this.db, 4).mode === 'off') break;
+          const stop4 = () => this.stopped || getStage(this.db, 4).mode === 'off';
+          if (!(await this.diskFor(4, analysis.progress()?.phase, stop4))) break;
+          const before = analysis.progress();
+          const done = await analysis.step(stop4);
+          if (done) break;
+          // Waiting on the fetcher: no busy loop; the next answer or round goes on.
+          const after = analysis.progress();
+          if (after && after.phase !== 'read' && JSON.stringify(after) === JSON.stringify(before)) {
+            if (!this.stage4HasWork()) break;
+          }
+        }
+      } catch (err) {
+        this.logError('Cleanup: stage 4 analysis failed:', err);
+      } finally {
+        this.diskLock.release(DISK_OWNERS.calibre4);
+        this.analysing4 = null;
+      }
+    })();
+  }
+
+  /** Stage 4 work that needs no answer from the fetcher (answered requests, books to plan or propose). */
+  private stage4HasWork(): boolean {
+    const p = this.analysis4?.progress();
+    if (!p) return false;
+    const ready = this.db.prepare('SELECT 1 FROM fetch_waiters WHERE ready = 1 LIMIT 1').get();
+    if (ready) return true;
+    const books = this.db
+      .prepare(
+        `SELECT 1 FROM stage4_books WHERE analysis_id = ? AND state IN ('read', 'ready') LIMIT 1`,
+      )
+      .get(p.analysisId);
+    return !!books;
+  }
+
+  /** Stage 4's status for the page (cached 30 s: some counts read the whole queue). */
+  stage4Status(target: string | null, now = Date.now()): unknown {
+    if (this.status4Cache && now - this.status4Cache.at < 30_000) return this.status4Cache.value;
+    const p = this.analysis4?.progress() ?? null;
+    const s = getSettings(this.db).fetch;
+    const counts = this.db
+      .prepare('SELECT site, state, COUNT(*) AS n FROM fetch_requests GROUP BY site, state')
+      .all() as { site: string; state: string; n: number }[];
+    const recent = this.db
+      .prepare(
+        `SELECT site, COUNT(*) AS n, SUM(outcome = 'challenge') AS challenges, SUM(outcome = 'error') AS errors,
+           AVG(ms) AS ms, MIN(at) AS first FROM fetch_attempts WHERE at >= ? GROUP BY site`,
+      )
+      .all(now - 20 * 60_000) as {
+      site: string;
+      n: number;
+      challenges: number;
+      errors: number;
+      ms: number | null;
+      first: number;
+    }[];
+    const totals = this.db
+      .prepare(
+        `SELECT site, COUNT(*) AS n, SUM(outcome = 'challenge') AS challenges, SUM(outcome = 'error') AS errors,
+           SUM(outcome = 'busy') AS busy FROM fetch_attempts GROUP BY site`,
+      )
+      .all() as { site: string; n: number; challenges: number; errors: number; busy: number }[];
+    const sites = (FETCH_SITES as readonly FetchSite[]).map((site) => {
+      const by = (st: string) => counts.find((c) => c.site === site && c.state === st)?.n ?? 0;
+      const r = recent.find((x) => x.site === site);
+      const t = totals.find((x) => x.site === site);
+      const row = this.db
+        .prepare('SELECT * FROM fetch_sites WHERE site = ?')
+        .get(backoffKey(site)) as
+        | {
+            paused_reason: string | null;
+            backoff_until: number | null;
+            backoff_reason: string | null;
+            slow_factor: number;
+          }
+        | undefined;
+      const left = by('queued') + by('leased');
+      const perRequest =
+        r && r.n > 1 ? (now - r.first) / 1000 / r.n : s.sites[site].intervalSeconds;
+      return {
+        site,
+        enabled: s.sites[site].enabled,
+        intervalSeconds: s.sites[site].intervalSeconds,
+        queued: by('queued'),
+        leased: by('leased'),
+        done: by('done'),
+        gone: by('gone'),
+        failed: by('failed'),
+        attempts: t?.n ?? 0,
+        challenges: t?.challenges ?? 0,
+        errors: t?.errors ?? 0,
+        busy: t?.busy ?? 0,
+        recent: r
+          ? {
+              requests: r.n,
+              challenges: r.challenges,
+              errors: r.errors,
+              avgMs: r.ms === null ? null : Math.round(r.ms),
+            }
+          : null,
+        secondsPerRequest: Math.round(perRequest * 10) / 10,
+        secondsLeft: Math.round(left * perRequest),
+        pausedReason: row?.paused_reason ?? null,
+        backoffUntil: row?.backoff_until && row.backoff_until > now ? row.backoff_until : null,
+        backoffReason: row?.backoff_until && row.backoff_until > now ? row.backoff_reason : null,
+        slowFactor: row?.slow_factor ?? 1,
+      };
+    });
+    const books = p
+      ? (this.db
+          .prepare(
+            'SELECT state, labeled, COUNT(*) AS n FROM stage4_books WHERE analysis_id = ? GROUP BY state, labeled',
+          )
+          .all(p.analysisId) as { state: string; labeled: number; n: number }[])
+      : [];
+    const readings = this.db
+      .prepare('SELECT state, COUNT(*) AS n FROM author_readings GROUP BY state')
+      .all() as { state: string; n: number }[];
+    const natively = this.db
+      .prepare(
+        'SELECT COUNT(*) AS listed, SUM(read_at IS NOT NULL) AS read, SUM(isbn13 IS NOT NULL) AS withIsbn FROM natively_books',
+      )
+      .get() as { listed: number; read: number | null; withIsbn: number | null };
+    const nativelyAsins = (
+      this.db.prepare('SELECT COUNT(*) AS n FROM natively_asins').get() as { n: number }
+    ).n;
+    const fields =
+      target && p
+        ? (this.db
+            .prepare(
+              `SELECT field, class, COUNT(*) AS n FROM proposed_changes WHERE stage = 4 AND library_id = ? AND analysis_id = ?
+             GROUP BY field, class`,
+            )
+            .all(target, p.analysisId) as { field: string; class: string; n: number }[])
+        : [];
+    const value = {
+      waiting: this.waiting4,
+      fetcher: this.fetcher(now),
+      amazonPace:
+        s.amazonPace === 'trial' ? `trial (now ${this.fetchQueue.amazonPace(now)})` : s.amazonPace,
+      sites,
+      books,
+      readings,
+      natively: { ...natively, asins: nativelyAsins },
+      fields,
+      fieldPauses: listFieldPauses(this.db, 4),
+      cachedAt: now,
+    };
+    this.status4Cache = { at: now, value };
+    return value;
   }
 
   /**
@@ -722,7 +1018,7 @@ export class CleanupService {
    * phase gives it back. False when the analysis was stopped while waiting.
    */
   private async diskFor(
-    stage: 1 | 2 | 3,
+    stage: 1 | 2 | 3 | 4,
     phase: string | undefined,
     shouldStop: () => boolean,
   ): Promise<boolean> {
@@ -1338,6 +1634,7 @@ export class CleanupService {
         awaitingIngest: this.batches.awaitingIngest(1),
       },
       stage3: this.stage3Status(target, now),
+      stage4: this.stage4Status(target, now),
       stage2: {
         waiting: this.waiting2,
         counts: this.stage2Counts(target),

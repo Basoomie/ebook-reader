@@ -1,3 +1,4 @@
+import { createCleanupFetchRouter } from '../cleanup/stage4/fetch-routes';
 import express, { Router } from 'express';
 import type { DatabaseState } from '../db/database';
 import { getSchemaVersion } from '../db/migrations';
@@ -211,6 +212,8 @@ export function createApiRouter({
     // The library cleanup's apply sidecar (WP20a): its own token (cleanup.db), only
     // /cleanup-apply/*.
     router.use(createCleanupApplyRouter(cleanup));
+    // The cleanup's fetch container (WP20d): its own token (scope fetch), only /cleanup-fetch/*.
+    router.use(createCleanupFetchRouter(cleanup));
 
     router.use(requireUser(db));
 
