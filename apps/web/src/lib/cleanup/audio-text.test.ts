@@ -137,15 +137,14 @@ describe('the Audiobooks tab wording', () => {
     const lines = booksLines({
       'torrents.single': 6000,
       'torrents.likely_copies': 3,
-      'library.single': 5178,
-      'library.likely_copies': 94,
-      'library.parts': 70,
-      'library.unclear': 12,
+      'library.abs_items': 5354,
+      'library.abs_items.multi': 176,
+      'library.abs_items.no_torrent_book': 5,
       'library.health.mp4_no_chapters': 700,
       'books.decoded_names': 12
     });
     expect(lines[2]).toBe(
-      'Library: 5,354 books; 94 folders look like two or more full copies, 70 books are in parts, 12 unclear.'
+      'Library: 5,354 Audiobookshelf items recorded as they are (not used as books); 176 with several files, 5 whose files match no torrent book.'
     );
     expect(lines[lines.length - 1]).toMatch(/^12 book names are garbled Japanese/);
   });

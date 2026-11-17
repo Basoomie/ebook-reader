@@ -1,6 +1,11 @@
 /**
  * Audiobook stage 2: books and file health (WP21a, plan section 4). Analysis only.
  *
+ * Book units come from the torrent side only (user, 2026-11-17). Audiobookshelf's current items
+ * (the library folders that hold audio) are only recorded: one evidence record per item, with
+ * its files, ABS's metadata.json and the torrent files and books its files are copies of
+ * (stage 1); they are never book units. Library files still get the health check.
+ *
  * Phases (resumable):
  *   walk      inventory of both roots (walk.ts)
  *   units     book units (book-units.ts) of the current analysis
@@ -17,7 +22,7 @@ import { getSettings } from '../settings';
 import { insideRoot, readSmall } from './audio-source-fs';
 import { getAudioStage, updateAudioStage } from './audio-stages';
 import { buildUnits, classifyMulti, idsInNames, type RootName } from './book-units';
-import { decodeMojibake } from './mojibake';
+import { decodeMojibake, decodePath } from './mojibake';
 import { checkHealth, toolVersion, type HealthResult, type ToolPaths } from './probe';
 import { walkRoots, type AudioRoots, type WalkResult } from './walk';
 
@@ -30,6 +35,8 @@ export interface AudioStage2Progress {
   finishedAt: number | null;
   walk: WalkResult | null;
   books: number;
+  /** Audiobookshelf items recorded (library folders that hold audio; not book units). */
+  absItems?: number;
   healthTotal: number;
   healthDone: number;
   healthReused: number;
@@ -146,7 +153,7 @@ export class AudioStage2 {
         'INSERT INTO audio_book_files (book_id, file_id, position, disc) VALUES (?, ?, ?, ?)',
       );
       let n = 0;
-      for (const root of ['torrents', 'library'] as const) {
+      for (const root of ['torrents'] as const) {
         const units = buildUnits(
           root,
           files.filter((f) => f.root === root).map((f) => ({ fileId: f.id, rel: f.rel_path })),
@@ -331,20 +338,6 @@ export class AudioStage2 {
         ...files.map((f) => f.rel_path.split('/').pop() ?? ''),
       ];
       const decodedNames = names.map((n) => decodeMojibake(n) ?? n);
-      let abs: unknown = null;
-      if (b.root === 'library' && b.unit_kind === 'folder') {
-        const raw = await readSmall(
-          insideRoot(this.deps.roots.library, `${b.unit_rel_path}/metadata.json`),
-          1024 * 1024,
-        );
-        if (raw) {
-          try {
-            abs = JSON.parse(raw.toString('utf8'));
-          } catch {
-            abs = { unreadable: true };
-          }
-        }
-      }
       const first = files[0];
       const evidence = {
         root: b.root,
@@ -366,7 +359,6 @@ export class AudioStage2 {
           disc: f.disc,
         })),
         tags: first?.tags_json ? (JSON.parse(first.tags_json) as unknown) : null,
-        absMetadata: abs,
         multi: { cls, reason },
       };
       rows.push({
@@ -385,17 +377,146 @@ export class AudioStage2 {
         putEvidence.run(r.key, EVIDENCE_VERSION, r.evidence, now);
       }
     })();
+    p.absItems = await this.recordAbsItems(p.analysisId);
     p.counts = booksCounts(db, p.analysisId);
     p.phase = 'done';
     p.finishedAt = Date.now();
     this.deps.log?.(`Audiobooks stage 2: done (${JSON.stringify(p.counts)})`);
     return p;
   }
+
+  /**
+   * Records Audiobookshelf's current items: each library folder that holds audio (Disc/CD
+   * subfolders belong to it, as ABS groups them). Not book units: one evidence record each
+   * (kind abs_item), with its files, ABS's metadata.json (read only), and for each file the
+   * torrent files it is a byte copy of and their torrent books (from stage 1's current
+   * analysis, when there is one). Returns how many items were recorded.
+   */
+  private async recordAbsItems(analysisId: string): Promise<number> {
+    const db = this.deps.db;
+    const files = db
+      .prepare(
+        `SELECT f.id, f.rel_path, f.decoded_path, f.size, h.duration, h.format, h.codec,
+           h.chapter_count, h.has_cover
+         FROM audio_files f LEFT JOIN audio_file_health h ON h.file_id = f.id
+         WHERE f.root = 'library' AND f.kind = 'audio' AND f.gone_at IS NULL`,
+      )
+      .all() as AbsItemFile[];
+    const byId = new Map(files.map((f) => [f.id, f]));
+    const items = buildUnits(
+      'library',
+      files.map((f) => ({ fileId: f.id, rel: f.rel_path })),
+    );
+    const s1 = getAudioStage(db, 1).progress as { analysisId?: string; phase?: string };
+    const stage1Id = s1.phase === 'done' && s1.analysisId ? s1.analysisId : null;
+    const identity = db.prepare(
+      'SELECT class, original_file_ids FROM audio_identity WHERE analysis_id = ? AND file_id = ?',
+    );
+    const original = db.prepare(
+      `SELECT f.rel_path, b.book_key FROM audio_files f
+       LEFT JOIN audio_book_files bf ON bf.file_id = f.id
+       LEFT JOIN audio_books b ON b.id = bf.book_id AND b.analysis_id = ?
+       WHERE f.id = ?`,
+    );
+    const records: { key: string; data: string }[] = [];
+    for (const item of items) {
+      let abs: unknown = null;
+      const raw = await readSmall(
+        insideRoot(this.deps.roots.library, `${item.unitRelPath}/metadata.json`),
+        1024 * 1024,
+      );
+      if (raw) {
+        try {
+          abs = JSON.parse(raw.toString('utf8'));
+        } catch {
+          abs = { unreadable: true };
+        }
+      }
+      const torrentBooks = new Set<string>();
+      const itemFiles = item.files.map((uf) => {
+        const f = byId.get(uf.fileId)!;
+        const id = stage1Id
+          ? (identity.get(stage1Id, f.id) as
+              | { class: string; original_file_ids: string | null }
+              | undefined)
+          : undefined;
+        const originals = id?.original_file_ids
+          ? (JSON.parse(id.original_file_ids) as number[])
+              .map(
+                (oid) =>
+                  original.get(analysisId, oid) as
+                    | { rel_path: string; book_key: string | null }
+                    | undefined,
+              )
+              .filter((o): o is { rel_path: string; book_key: string | null } => !!o)
+          : [];
+        for (const o of originals) if (o.book_key) torrentBooks.add(o.book_key);
+        return {
+          name: f.rel_path.split('/').pop(),
+          decoded: f.decoded_path ? f.decoded_path.split('/').pop() : null,
+          disc: uf.disc,
+          size: f.size,
+          seconds: f.duration,
+          format: f.format,
+          codec: f.codec,
+          chapters: f.chapter_count,
+          cover: f.has_cover === 1,
+          identity: id?.class ?? null,
+          originals: originals.map((o) => o.rel_path),
+        };
+      });
+      records.push({
+        key: item.bookKey,
+        data: JSON.stringify({
+          folder: item.unitRelPath,
+          folderDecoded: decodePath(item.unitRelPath),
+          files: itemFiles,
+          torrentBooks: [...torrentBooks],
+          absMetadata: abs,
+        }),
+      });
+    }
+    const now = Date.now();
+    db.transaction(() => {
+      db.prepare(`DELETE FROM audio_evidence WHERE kind = 'abs_item'`).run();
+      const put = db.prepare(
+        `INSERT INTO audio_evidence (book_key, kind, version, data, created_at)
+         VALUES (?, 'abs_item', ?, ?, ?)`,
+      );
+      for (const r of records) put.run(r.key, EVIDENCE_VERSION, r.data, now);
+    })();
+    return records.length;
+  }
+}
+
+/** The files of one recorded ABS item, with what stage 2 found in them. */
+interface AbsItemFile {
+  id: number;
+  rel_path: string;
+  decoded_path: string | null;
+  size: number;
+  duration: number | null;
+  format: string | null;
+  codec: string | null;
+  chapter_count: number | null;
+  has_cover: number | null;
 }
 
 /** Counts for the page and the report. */
 export function booksCounts(db: Database.Database, analysisId: string): Record<string, number> {
   const out: Record<string, number> = {};
+  // Audiobookshelf's items: recorded, not book units.
+  const abs = db
+    .prepare(
+      `SELECT COUNT(*) AS items,
+         COALESCE(SUM(json_array_length(data, '$.files') > 1), 0) AS multi,
+         COALESCE(SUM(json_array_length(data, '$.torrentBooks') = 0), 0) AS no_torrent_book
+       FROM audio_evidence WHERE kind = 'abs_item'`,
+    )
+    .get() as { items: number; multi: number; no_torrent_book: number };
+  out['library.abs_items'] = abs.items;
+  out['library.abs_items.multi'] = abs.multi;
+  out['library.abs_items.no_torrent_book'] = abs.no_torrent_book;
   for (const r of db
     .prepare(
       `SELECT root || '.' || COALESCE(multi_class, 'none') AS k, COUNT(*) AS n FROM audio_books

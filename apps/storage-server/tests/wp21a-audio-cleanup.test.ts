@@ -748,6 +748,10 @@ describe('file health', () => {
       updateSettings(db, {
         audiobooks: { healthFilesPerSecond: 50, decodeSeconds: 2, copyHintMinMinutes: 0 },
       });
+      // Stage 1 first, so the recorded ABS items name their torrent originals.
+      const s1 = new AudioStage1({ db, roots: { torrents, library }, lock: new DiskLock(5) });
+      s1.restart();
+      for (let i = 0; i < 100; i++) if (await s1.step(() => false)) break;
       const stage = new AudioStage2({ db, roots: { torrents, library }, tools: TOOLS });
       stage.restart();
       for (let i = 0; i < 100; i++) if (await stage.step(() => false)) break;
@@ -760,22 +764,41 @@ describe('file health', () => {
         'torrents.source.tmw': 2,
         'torrents.source.discord': 2,
         'torrents.source.mam': 1,
-        'library.source.library': 2,
         'books.decoded_names': 1,
         'torrents.likely_copies': 1,
-        'library.parts': 1,
         'torrents.health.ext_mismatch': 1,
+        // Audiobookshelf's items are recorded, never book units (user, 2026-11-17).
+        'library.abs_items': 2,
+        'library.abs_items.multi': 1,
+        // 本1 is a copy of the TMW files; 本X's Disc 2 is a copy of the Discord mp3s.
+        'library.abs_items.no_torrent_book': 0,
       });
+      expect(
+        db.prepare(`SELECT COUNT(*) AS n FROM audio_books WHERE root = 'library'`).get(),
+      ).toEqual({ n: 0 });
       const decoded = db
         .prepare(`SELECT name_decoded FROM audio_books WHERE name_decoded IS NOT NULL`)
         .get() as { name_decoded: string };
       expect(decoded.name_decoded).toBe('君がくれた七日間の余命カレンダー [B0H713688W]');
       const ev = db
-        .prepare(`SELECT data FROM audio_evidence WHERE book_key = 'library:_Unknown/本1'`)
+        .prepare(
+          `SELECT data FROM audio_evidence WHERE book_key = 'library:_Unknown/本1' AND kind = 'abs_item'`,
+        )
         .get() as { data: string };
       const evidence = JSON.parse(ev.data);
       expect(evidence.absMetadata).toEqual({ title: '本1', asin: 'B0A0000001' });
-      expect(evidence.ids.asins).toEqual([]);
+      // Its file is a copy of the two identical TMW files; their torrent books are recorded.
+      expect(evidence.files[0].identity).toBe('copy');
+      expect(evidence.torrentBooks).toHaveLength(2);
+      expect(evidence.torrentBooks[0]).toMatch(/^torrents:TMW .*\[01\]/);
+      const discs = JSON.parse(
+        (
+          db
+            .prepare(`SELECT data FROM audio_evidence WHERE book_key = 'library:_Unknown/本X'`)
+            .get() as { data: string }
+        ).data,
+      );
+      expect(discs.files.map((f: { disc: string }) => f.disc)).toEqual(['1', '2']);
       const tmwEv = JSON.parse(
         (
           db

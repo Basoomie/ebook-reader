@@ -192,10 +192,18 @@ export function booksLines(counts: Record<string, number> | null): string[] {
   for (const root of ['torrents', 'library'] as const) {
     const where = root === 'torrents' ? 'Torrents' : 'Library';
     const k = (key: string) => c(counts, `${root}.${key}`);
-    const books = k('single') + k('parts') + k('likely_copies') + k('unclear');
-    lines.push(
-      `${where}: ${count(books, 'book', 'books')}; ${count(k('likely_copies'), 'folder looks', 'folders look')} like two or more full copies, ${count(k('parts'), 'book is', 'books are')} in parts, ${n(k('unclear'))} unclear.`
-    );
+    if (root === 'torrents') {
+      // Books come from the torrents only.
+      const books = k('single') + k('parts') + k('likely_copies') + k('unclear');
+      lines.push(
+        `${where}: ${count(books, 'book', 'books')}; ${count(k('likely_copies'), 'folder looks', 'folders look')} like two or more full copies, ${count(k('parts'), 'book is', 'books are')} in parts, ${n(k('unclear'))} unclear.`
+      );
+    } else {
+      // Audiobookshelf's current items are only recorded, never books.
+      lines.push(
+        `${where}: ${count(k('abs_items'), 'Audiobookshelf item', 'Audiobookshelf items')} recorded as they are (not used as books); ${n(k('abs_items.multi'))} with several files, ${n(k('abs_items.no_torrent_book'))} whose files match no torrent book.`
+      );
+    }
     lines.push(
       `${where}: ${count(k('health.unreadable'), 'file', 'files')} can’t be read, ${n(k('health.damaged'))} fail to play at the start or the end, ${n(k('health.mp4_no_chapters'))} m4b/m4a without chapters, ${n(k('health.no_cover'))} without a cover, ${n(k('health.ext_mismatch'))} named as another format.`
     );
