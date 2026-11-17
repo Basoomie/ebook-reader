@@ -266,6 +266,48 @@ describe.skipIf(!HAS_FFMPEG)('speaker runs (Season 2 Phase 12 session 5)', () =>
     ).toBe(404);
   });
 
+  it('one entry per name: a re-run joins two characters with one name, keeping voice and fixes', async () => {
+    const t = await setup();
+    await t.api('post', `/books/${t.book}/speakers/run`).send({});
+    await t.runPc();
+    const o = await t.overview();
+    const holo = o.characters.find((c: { name: string }) => c.name === 'ホロ');
+    // An earlier run left a second ホロ (live run 2026-11-17: ミュラー twice), with a voice and
+    // a quote the user gave it.
+    const db = t.e.db;
+    const row = db
+      .prepare('SELECT user_id, no FROM speaker_characters WHERE id = ?')
+      .get(holo.id) as { user_id: string; no: number };
+    const maxNo = (
+      db.prepare('SELECT MAX(no) n FROM speaker_characters WHERE book_id = ?').get(t.book) as {
+        n: number;
+      }
+    ).n;
+    const voice = await t.addVoice('Wolf', 6);
+    const dup = Number(
+      db
+        .prepare(
+          `INSERT INTO speaker_characters (user_id, book_id, no, name, aliases, first_person, gender,
+             narrator, origin, windows, voice_id, created_at, updated_at)
+           VALUES (?, ?, ?, 'ホロ', '[]', '[]', '女', 0, 'model', 1, ?, 1, 1)`,
+        )
+        .run(row.user_id, t.book, maxNo + 1, voice.id).lastInsertRowid,
+    );
+    await t.api('patch', `/books/${t.book}/speakers/quotes/1`).send({ character: dup });
+    expect(
+      (await t.overview()).characters.filter((c: { name: string }) => c.name === 'ホロ'),
+    ).toHaveLength(2);
+    await t.api('post', `/books/${t.book}/speakers/run`).send({});
+    await t.runPc();
+    const after = await t.overview();
+    const holos = after.characters.filter((c: { name: string }) => c.name === 'ホロ');
+    expect(holos).toHaveLength(1);
+    expect(holos[0]).toMatchObject({ id: holo.id, voiceId: voice.id });
+    const q1 = (await t.api('get', `/books/${t.book}/speakers/quotes?filter=corrected`)).body
+      .items[0];
+    expect(q1).toMatchObject({ quote: 1, character: holo.id, corrected: true });
+  });
+
   it('continues after making way (pause), from the answers it has', async () => {
     const t = await setup();
     await t.api('post', `/books/${t.book}/speakers/run`).send({});

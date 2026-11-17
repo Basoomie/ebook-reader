@@ -131,6 +131,56 @@ describe('merging the characters of every window', () => {
     expect(m.characters()).toHaveLength(3);
   });
 
+  it('one entry per name (2026-11-17): every unnamed 兵士 is one character', () => {
+    const m = new CharacterMerger();
+    const a = m.add(f('兵士', [], 0));
+    expect(m.add(f('兵士', [], 3))).toBe(a);
+    // A new name from a speaker answer joins too.
+    expect(m.add(f('兵士', [], -1))).toBe(a);
+    expect(m.characters().filter((c) => c.name === '兵士')).toHaveLength(1);
+    // A generic alias still joins nobody: 少女 listed for Holo is not every 少女.
+    const holo = m.add(f('ホロ', ['少女'], 0));
+    const girl = m.add(f('少女', [], 5));
+    expect(girl).not.toBe(holo);
+    expect(m.add(f('少女', [], 6))).toBe(girl);
+  });
+
+  it('joins two characters with the same name (live run: ミュラー twice)', () => {
+    // An earlier run stored two ミュラー (the model's own entries): the next run joins them.
+    const c = (id: number, aliases: string[], windows: number[]) => ({
+      id,
+      name: 'ミュラー',
+      aliases,
+      firstPerson: ['俺'],
+      gender: '男' as const,
+      windows,
+      narrator: false,
+    });
+    const m = new CharacterMerger([c(9, ['ウルー・ミュラー'], [2, 5]), c(14, [], [7])]);
+    const moved = m.joinSameNames();
+    expect([...moved]).toEqual([[14, 9]]);
+    expect(m.characters()).toHaveLength(1);
+    expect(m.byId(9)!.windows).toEqual([2, 5, 7]);
+    // Later entries find the one that is left.
+    expect(m.add(f('ミュラー', [], 9))).toBe(9);
+  });
+
+  it('keeps two of the user’s characters with one name apart (the user decides)', () => {
+    const c = (id: number) => ({
+      id,
+      name: '兵士',
+      aliases: [],
+      firstPerson: [],
+      gender: '男' as const,
+      windows: [0],
+      narrator: false,
+      fixed: true,
+    });
+    const m = new CharacterMerger([c(1), c(2)]);
+    expect(m.joinSameNames().size).toBe(0);
+    expect(m.characters()).toHaveLength(2);
+  });
+
   it('never names a character by a first-person word', () => {
     const m = new CharacterMerger();
     const holo = m.add(f('わっち', ['ホロ', '賢狼'], 0, { firstPerson: ['わっち'] }))!;

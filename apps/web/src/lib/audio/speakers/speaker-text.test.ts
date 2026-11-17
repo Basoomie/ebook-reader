@@ -14,6 +14,7 @@ import {
   pcProgramNote,
   runText,
   sortedCharacters,
+  isQuiet,
   speakerJobActive,
   speakerJobText,
   sureText
@@ -127,6 +128,13 @@ describe('who speaks: what the page says', () => {
       ch({ id: 3, no: 3, name: 'C', quotes: 7 })
     ]);
     expect(list.map((c) => c.name)).toEqual(['C', 'A', 'B']);
+    // Folded away: found by the PC, no quotes, nothing set on it.
+    expect(isQuiet(ch({ quotes: 0 }))).toBe(true);
+    expect(isQuiet(ch({ quotes: 1 }))).toBe(false);
+    expect(isQuiet(ch({ quotes: 0, origin: 'user' }))).toBe(false);
+    expect(isQuiet(ch({ quotes: 0, voiceId: 'v1' }))).toBe(false);
+    expect(isQuiet(ch({ quotes: 0, hidden: true }))).toBe(false);
+    expect(isQuiet(ch({ quotes: 0, narrator: true }))).toBe(false);
     expect(
       characterLabel(
         ch({ name: 'ロレンス', aliases: ['クラフト・ロレンス', '行商人', 'ぬし', '若造'] })

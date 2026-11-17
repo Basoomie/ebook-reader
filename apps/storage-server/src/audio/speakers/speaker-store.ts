@@ -303,6 +303,28 @@ export class SpeakerStore {
           idOfNo.set(c.id, id);
         }
       }
+      // A stored character the run joined into another (same name, the model's groups): its
+      // quotes, the user's corrections and its voice go to that one, as a Merge does.
+      for (const [fromNo, intoNo] of result.joined ?? []) {
+        const from = existing.get(fromNo);
+        const intoId = idOfNo.get(intoNo);
+        if (!from || intoId === undefined || from.id === intoId) continue;
+        for (const col of ['model_character', 'user_character']) {
+          this.db
+            .prepare(
+              `UPDATE speaker_quotes SET ${col} = ? WHERE user_id = ? AND book_id = ? AND ${col} = ?`,
+            )
+            .run(intoId, userId, bookId, from.id);
+        }
+        if (from.voice_id) {
+          this.db
+            .prepare(
+              'UPDATE speaker_characters SET voice_id = COALESCE(voice_id, ?), updated_at = ? WHERE id = ?',
+            )
+            .run(from.voice_id, now, intoId);
+        }
+        this.db.prepare('DELETE FROM speaker_characters WHERE id = ?').run(from.id);
+      }
       const answers = new Map(result.quotes.map((q) => [q.quote, q]));
       const upsert = this.db.prepare(
         `INSERT INTO speaker_quotes (user_id, book_id, quote_key, quote, text, paragraph, position,

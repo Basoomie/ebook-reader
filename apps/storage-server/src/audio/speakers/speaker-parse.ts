@@ -93,11 +93,13 @@ export function parseCharacters(content: string): ParsedCharacters {
   const characters = (Array.isArray(o.characters) ? o.characters : [])
     .map((c) => (c ?? {}) as Record<string, unknown>)
     .filter((c) => typeof c.name === 'string' && c.name.trim().length <= 60)
-    .map((c) => ({ ...c, name: cleanName(c.name as string) }))
-    .filter((c): c is typeof c & { name: string } => !!c.name && c.name.length <= 40)
+    .map((c) => ({ raw: c, name: cleanName(c.name as string) }))
+    .filter(
+      (c): c is { raw: Record<string, unknown>; name: string } => !!c.name && c.name.length <= 40,
+    )
     .slice(0, 60)
-    .map((c) => ({
-      name: c.name,
+    .map(({ raw: c, name }) => ({
+      name,
       aliases: strings(c.aliases, 12),
       firstPerson: strings(c.firstPerson, 6),
       gender: (GENDERS.has(c.gender as string) ? c.gender : '不明') as Gender,

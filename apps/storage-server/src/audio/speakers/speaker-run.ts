@@ -26,7 +26,7 @@ import {
 import type { SpeakerBook, SpeakerParagraph } from './speaker-text';
 
 /** Bumped when the prompts or the windows change (recorded with each run). */
-export const PROMPT_VERSION = 4;
+export const PROMPT_VERSION = 5;
 
 export interface RunOptions {
   charWindow: number;
@@ -211,6 +211,8 @@ export interface RunResult {
   characters: MergedCharacter[];
   quotes: QuoteResult[];
   narrator: number | null;
+  /** Characters joined into another during the run (from, into): saving re-points them. */
+  joined: [number, number][];
 }
 
 /**
@@ -253,7 +255,12 @@ export class SpeakerRun {
   /** The result of a complete run (or of the answers so far). */
   result(answers: Map<number, LlmAnswer>): RunResult {
     const s = this.replay(answers);
-    return { characters: s.merger.characters(), quotes: s.quotes, narrator: s.narrator };
+    return {
+      characters: s.merger.characters(),
+      quotes: s.quotes,
+      narrator: s.narrator,
+      joined: s.merger.joined(),
+    };
   }
 
   private replay(answers: Map<number, LlmAnswer>) {
@@ -282,6 +289,8 @@ export class SpeakerRun {
       for (const c of parsed.characters) merger.add({ ...c, window: w });
       narration[w] = parsed.narrator;
     }
+    // One entry per name (2026-11-17): renames by the most common name can make two.
+    merger.joinSameNames();
 
     // The narrator: the name most windows with first-person narration give.
     const firstPersonWindows = narration.filter((n) => n?.firstPerson);
@@ -308,6 +317,8 @@ export class SpeakerRun {
       }
       const valid = new Set(merger.characters().map((c) => c.id));
       merger.applyGroups(parseGroups(a.content, valid));
+      const moved = merger.joinSameNames();
+      if (narrator !== null && moved.has(narrator)) narrator = moved.get(narrator)!;
       if (narrator !== null && !merger.byId(narrator)) {
         narrator = merger.characters().find((c) => c.narrator)?.id ?? null;
       }
@@ -407,11 +418,19 @@ export class SpeakerRun {
         seq++;
       }
     }
+    // New names from the speaker answers can rename a character into another one's name.
+    const moved = merger.joinSameNames();
+    if (narrator !== null && moved.has(narrator)) narrator = moved.get(narrator)!;
+    const quotes = [...found.values()].map((q) =>
+      q.character !== null && moved.has(q.character)
+        ? { ...q, character: moved.get(q.character)! }
+        : q,
+    );
     return {
       request: null,
       progress: progress('done'),
       merger,
-      quotes: [...found.values()],
+      quotes,
       narrator,
     };
   }

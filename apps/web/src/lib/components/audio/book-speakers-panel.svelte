@@ -21,6 +21,7 @@
     pcProgramNote,
     runText,
     sortedCharacters,
+    isQuiet,
     speakerJobActive,
     speakerJobText
   } from '$lib/audio/speakers/speaker-text';
@@ -64,6 +65,10 @@
   $: job = overview?.job ?? null;
   $: active = speakerJobActive(job);
   $: characters = overview ? sortedCharacters(overview.characters) : [];
+  // Characters without quotes (the PC lists everyone a scene mentions) stay folded away.
+  let showQuiet = false;
+  $: quiet = characters.filter(isQuiet).length;
+  $: listed = showQuiet ? characters : characters.filter((c) => !isQuiet(c));
   $: shown = characters.filter((c) => !c.hidden);
   $: narrator = overview?.characters.find((c) => c.narrator && !c.hidden) ?? null;
   $: note = overview ? pcProgramNote(overview, worker) : '';
@@ -322,7 +327,7 @@
 
       {#if characters.length}
         <ul class="mt-3 max-w-3xl" data-testid="book-speakers-list">
-          {#each characters as c (c.id)}
+          {#each listed as c (c.id)}
             <li class="c-crow py-3" data-testid="book-speaker" data-name={c.name}>
               <div class="flex flex-wrap items-center gap-x-4 gap-y-2">
                 <div class="min-w-0 grow basis-48">
@@ -455,6 +460,16 @@
             </li>
           {/each}
         </ul>
+        {#if quiet}
+          <button
+            class="c-btn c-btn-secondary c-round mt-2"
+            data-testid="book-speakers-quiet"
+            aria-expanded={showQuiet}
+            on:click={() => (showQuiet = !showQuiet)}
+          >
+            {showQuiet ? `Hide the ${quiet} without quotes` : `${quiet} more without quotes`}
+          </button>
+        {/if}
       {/if}
 
       {#if overview.run}

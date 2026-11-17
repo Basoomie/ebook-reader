@@ -280,7 +280,18 @@ export class SpeakerJobService {
     if (!snap) throw new JobRequestError(410, 'missing', 'This job lost its copy of the book');
     const { book, seeds } = JSON.parse(snap.answer) as Snapshot;
     const answers = new Map<number, LlmAnswer>();
-    for (const r of rows) if (r.seq >= 0) answers.set(r.seq, JSON.parse(r.answer) as LlmAnswer);
+    // Answers made with other prompts (a server update during the run) may name characters
+    // by other ids: the run starts over from the book.
+    const job = this.jobs.get(id);
+    const params = job ? this.params(job) : null;
+    if (params?.promptVersion === PROMPT_VERSION) {
+      for (const r of rows) if (r.seq >= 0) answers.set(r.seq, JSON.parse(r.answer) as LlmAnswer);
+    } else {
+      this.db.prepare('DELETE FROM speaker_steps WHERE job_id = ? AND seq >= 0').run(id);
+      this.jobs.update(id, {
+        params: JSON.stringify({ ...params, promptVersion: PROMPT_VERSION }),
+      });
+    }
     const loaded = { run: new SpeakerRun(book, seeds), answers };
     this.loaded.set(id, loaded);
     return loaded;

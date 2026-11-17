@@ -134,6 +134,15 @@ export function normalizeName(name: string): string {
   return s;
 }
 
+/**
+ * A character's own name as compared for "one entry per name": like normalizeName, but a
+ * generic word (兵士, 男) counts too. Empty for a first-person word.
+ */
+export function sameNameKey(name: string): string {
+  if (isPronoun(name)) return '';
+  return normalizeName(name) || name.normalize('NFKC').replace(SEPARATORS, '');
+}
+
 /** Whether a name may join two characters (not empty, not a generic form of address). */
 export function isJoiningName(name: string): boolean {
   const n = name.normalize('NFKC').replace(SEPARATORS, '');
@@ -270,6 +279,8 @@ export class CharacterMerger {
   private readonly aliasForms = new Map<number, Set<string>>();
   /** How often each id was listed under each name (the most common becomes the name). */
   private readonly nameVotes = new Map<number, string[]>();
+  /** Every id joined into another (groups, same names): from -> into. */
+  private readonly joinedInto = new Map<number, number>();
   private nextId = 1;
 
   constructor(seed: MergedCharacter[] = []) {
@@ -314,8 +325,52 @@ export class CharacterMerger {
     return (
       this.only(this.names, [name]) ??
       this.only(this.aliasForms, [name]) ??
-      (aliases.length ? this.only(this.names, aliases) : null)
+      (aliases.length ? this.only(this.names, aliases) : null) ??
+      this.named(name)
     );
+  }
+
+  /**
+   * The character called `name` now, generic words included (one entry per name, decided with
+   * the user 2026-11-17: every unnamed 兵士 is one "兵士" with one voice).
+   */
+  private named(name: string): number | null {
+    const k = sameNameKey(name);
+    if (!k) return null;
+    const hits = this.list.filter((c) => sameNameKey(c.name) === k);
+    if (!hits.length) return null;
+    return hits.sort((a, b) => b.windows.length - a.windows.length || a.id - b.id)[0].id;
+  }
+
+  /**
+   * Joins characters with the same name (a rename by the most common name can make two),
+   * keeping the user's one, else the one most windows list. Two of the user's characters stay
+   * apart (the user decides). Returns the ids that were joined into another.
+   */
+  joinSameNames(): Map<number, number> {
+    const moved = new Map<number, number>();
+    const byKey = new Map<string, MergedCharacter[]>();
+    for (const c of this.list) {
+      const k = sameNameKey(c.name);
+      if (!k) continue;
+      byKey.set(k, [...(byKey.get(k) ?? []), c]);
+    }
+    for (const group of byKey.values()) {
+      if (group.length < 2) continue;
+      group.sort(
+        (a, b) =>
+          Number(!!(b.fixed || b.hidden)) - Number(!!(a.fixed || a.hidden)) ||
+          b.windows.length - a.windows.length ||
+          a.id - b.id,
+      );
+      const keep = group[0];
+      for (const other of group.slice(1)) {
+        if ((other.fixed || other.hidden) && (keep.fixed || keep.hidden)) continue;
+        this.join(keep, other);
+        moved.set(other.id, keep.id);
+      }
+    }
+    return moved;
   }
 
   byId(id: number): MergedCharacter | undefined {
@@ -391,29 +446,38 @@ export class CharacterMerger {
         const other = this.byId(id)!;
         if (other.fixed && keep.fixed) continue; // two of the user's characters: the user decides
         if (!namesOverlap(keep, other)) continue;
-        keep.aliases = uniq([...keep.aliases, other.name, ...other.aliases]).filter(
-          (n) => n !== keep.name,
-        );
-        keep.firstPerson = uniq([...keep.firstPerson, ...other.firstPerson]);
-        keep.windows = [...new Set([...keep.windows, ...other.windows])].sort((a, b) => a - b);
-        keep.narrator = keep.narrator || other.narrator;
-        if (keep.gender === '不明') keep.gender = other.gender;
-        this.list.splice(this.list.indexOf(other), 1);
-        for (const map of [this.names, this.aliasForms]) {
-          const into = map.get(keep.id) ?? new Set<string>();
-          for (const k of map.get(id) ?? []) into.add(k);
-          map.set(keep.id, into);
-          map.delete(id);
-        }
-        const votes = [...(this.nameVotes.get(keep.id) ?? []), ...(this.nameVotes.get(id) ?? [])];
-        this.nameVotes.set(keep.id, votes);
-        if (!keep.fixed) {
-          const name = mostCommon(votes, keep.name);
-          if (name !== keep.name) {
-            keep.aliases = uniq([...keep.aliases, keep.name]).filter((n) => n !== name);
-            keep.name = name;
-          }
-        }
+        this.join(keep, other);
+      }
+    }
+  }
+
+  /** `other` becomes part of `keep` (names, first-person words, windows, name votes). */
+  private join(keep: MergedCharacter, other: MergedCharacter): void {
+    const id = other.id;
+    keep.aliases = uniq([...keep.aliases, other.name, ...other.aliases]).filter(
+      (n) => n !== keep.name,
+    );
+    keep.firstPerson = uniq([...keep.firstPerson, ...other.firstPerson]);
+    keep.windows = [...new Set([...keep.windows, ...other.windows])].sort((a, b) => a - b);
+    keep.narrator = keep.narrator || other.narrator;
+    if (keep.gender === '不明') keep.gender = other.gender;
+    this.list.splice(this.list.indexOf(other), 1);
+    for (const map of [this.names, this.aliasForms]) {
+      const into = map.get(keep.id) ?? new Set<string>();
+      for (const k of map.get(id) ?? []) into.add(k);
+      map.set(keep.id, into);
+      map.delete(id);
+    }
+    const votes = [...(this.nameVotes.get(keep.id) ?? []), ...(this.nameVotes.get(id) ?? [])];
+    this.nameVotes.set(keep.id, votes);
+    this.nameVotes.delete(id);
+    this.joinedInto.set(id, keep.id);
+    for (const [from, into] of this.joinedInto) if (into === id) this.joinedInto.set(from, keep.id);
+    if (!keep.fixed) {
+      const name = mostCommon(votes, keep.name);
+      if (name !== keep.name) {
+        keep.aliases = uniq([...keep.aliases, keep.name]).filter((n) => n !== name);
+        keep.name = name;
       }
     }
   }
@@ -432,6 +496,11 @@ export class CharacterMerger {
   /** The id of a name, if known. */
   idOf(name: string): number | null {
     return this.find(name);
+  }
+
+  /** The ids joined into another, with the one each is part of now. */
+  joined(): [number, number][] {
+    return [...this.joinedInto];
   }
 
   characters(): MergedCharacter[] {

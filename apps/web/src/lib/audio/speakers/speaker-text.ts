@@ -67,6 +67,14 @@ export function sortedCharacters(list: SpeakerCharacter[]): SpeakerCharacter[] {
   );
 }
 
+/**
+ * A character the list folds away (decided with the user 2026-11-17): the PC found it, it
+ * speaks no quote, and nothing was set on it (voice, narrator, "not a character").
+ */
+export function isQuiet(c: SpeakerCharacter): boolean {
+  return c.quotes === 0 && c.origin === 'model' && !c.voiceId && !c.narrator && !c.hidden;
+}
+
 /** "Found 12 characters for 1,039 quotes (Gemma 4 26B A4B, 2 h ago)." */
 export function runText(o: SpeakerOverview, now: number): string {
   if (!o.run) return '';
