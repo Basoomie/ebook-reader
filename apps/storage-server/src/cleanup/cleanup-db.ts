@@ -404,6 +404,145 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
       ALTER TABLE pair_decisions ADD COLUMN note TEXT;
     `,
   },
+  {
+    version: 6,
+    name: 'audiobook cleanup: stages 0-2 (WP21a)',
+    sql: `
+      -- The audiobook cleanup's own stages (Calibre's stages table means Calibre's stages).
+      -- 0 = the ABS snapshot, 1 = identity, 2 = books and file health; later WPs add rows.
+      CREATE TABLE audio_stages (
+        stage          INTEGER PRIMARY KEY CHECK (stage BETWEEN 0 AND 9),
+        mode           TEXT NOT NULL DEFAULT 'off' CHECK (mode IN ('off', 'analyse', 'on')),
+        state          TEXT NOT NULL DEFAULT 'idle',
+        pause_reason   TEXT,
+        pause_detail   TEXT,
+        paused_at      INTEGER,
+        progress_json  TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(progress_json)),
+        updated_at     INTEGER NOT NULL
+      );
+      INSERT INTO audio_stages (stage, updated_at) VALUES (0, 0), (1, 0), (2, 0);
+
+      -- Every file under the two audiobook roots (read-only): torrents/audiobooks/japanese and
+      -- media/audiobooks/japanese. rel_path is the name as text; rel_path_raw (hex) only when the
+      -- bytes on disk are not valid UTF-8. A hash is kept only while path, size, mtime and inode
+      -- are unchanged.
+      CREATE TABLE audio_files (
+        id             INTEGER PRIMARY KEY,
+        root           TEXT NOT NULL CHECK (root IN ('torrents', 'library')),
+        rel_path       TEXT NOT NULL,
+        rel_path_raw   TEXT,
+        decoded_path   TEXT,
+        ext            TEXT NOT NULL,
+        kind           TEXT NOT NULL CHECK (kind IN ('audio', 'archive', 'other', 'link')),
+        size           INTEGER NOT NULL,
+        mtime_ms       INTEGER NOT NULL,
+        dev            INTEGER NOT NULL,
+        ino            INTEGER NOT NULL,
+        nlink          INTEGER NOT NULL,
+        sha256         TEXT,
+        hashed_at      INTEGER,
+        hash_error     TEXT,
+        hash_source    TEXT,
+        first_seen_at  INTEGER NOT NULL,
+        seen_at        INTEGER NOT NULL,
+        gone_at        INTEGER,
+        UNIQUE (root, rel_path)
+      );
+      CREATE INDEX audio_files_size ON audio_files (size, root);
+      CREATE INDEX audio_files_sha ON audio_files (sha256);
+      CREATE INDEX audio_files_inode ON audio_files (dev, ino);
+
+      -- Stage 1's result per file of the current analysis.
+      CREATE TABLE audio_identity (
+        analysis_id        TEXT NOT NULL,
+        file_id            INTEGER NOT NULL REFERENCES audio_files(id),
+        class              TEXT NOT NULL,
+        ai_original        INTEGER NOT NULL DEFAULT 0,
+        group_sha256       TEXT,
+        original_file_ids  TEXT CHECK (original_file_ids IS NULL OR json_valid(original_file_ids)),
+        detail             TEXT,
+        PRIMARY KEY (analysis_id, file_id)
+      );
+      CREATE INDEX audio_identity_class ON audio_identity (analysis_id, class);
+
+      -- Stage 2: book units of the current analysis (a folder that holds audio, or one file in
+      -- the TMW torrents), keyed by book_key = root + ':' + unit path (stable across analyses).
+      CREATE TABLE audio_books (
+        id             INTEGER PRIMARY KEY,
+        analysis_id    TEXT NOT NULL,
+        book_key       TEXT NOT NULL,
+        root           TEXT NOT NULL,
+        unit_rel_path  TEXT NOT NULL,
+        unit_kind      TEXT NOT NULL CHECK (unit_kind IN ('folder', 'file')),
+        source         TEXT NOT NULL,
+        name_raw       TEXT NOT NULL,
+        name_decoded   TEXT,
+        file_count     INTEGER NOT NULL,
+        total_seconds  REAL,
+        multi_class    TEXT,
+        class_reason   TEXT,
+        UNIQUE (analysis_id, book_key)
+      );
+      CREATE INDEX audio_books_class ON audio_books (analysis_id, multi_class);
+
+      CREATE TABLE audio_book_files (
+        book_id   INTEGER NOT NULL REFERENCES audio_books(id) ON DELETE CASCADE,
+        file_id   INTEGER NOT NULL REFERENCES audio_files(id),
+        position  INTEGER NOT NULL,
+        disc      TEXT,
+        PRIMARY KEY (book_id, file_id)
+      );
+      CREATE INDEX audio_book_files_file ON audio_book_files (file_id);
+
+      -- Stage 2: what ffprobe and two short decodes found in each audio file (format from the
+      -- content, not the name). Kept until the file's size or mtime changes.
+      CREATE TABLE audio_file_health (
+        file_id          INTEGER PRIMARY KEY REFERENCES audio_files(id),
+        size             INTEGER NOT NULL,
+        mtime_ms         INTEGER NOT NULL,
+        format           TEXT,
+        format_long      TEXT,
+        codec            TEXT,
+        profile          TEXT,
+        bitrate          INTEGER,
+        sample_rate      INTEGER,
+        channels         INTEGER,
+        duration         REAL,
+        chapter_count    INTEGER,
+        chapters_json    TEXT CHECK (chapters_json IS NULL OR json_valid(chapters_json)),
+        has_cover        INTEGER,
+        tags_json        TEXT CHECK (tags_json IS NULL OR json_valid(tags_json)),
+        header_ok        INTEGER NOT NULL DEFAULT 0,
+        start_decode_ok  INTEGER,
+        end_decode_ok    INTEGER,
+        decode_error     TEXT,
+        error            TEXT,
+        tool_version     TEXT,
+        checked_ms       INTEGER,
+        checked_at       INTEGER NOT NULL
+      );
+
+      -- Each book's evidence (names raw and decoded, ids in the names, the first file's tags,
+      -- ABS's metadata.json), kept for the later AI upgrade path.
+      CREATE TABLE audio_evidence (
+        book_key    TEXT NOT NULL,
+        kind        TEXT NOT NULL,
+        version     INTEGER NOT NULL,
+        data        TEXT NOT NULL CHECK (json_valid(data)),
+        created_at  INTEGER NOT NULL,
+        PRIMARY KEY (book_key, kind)
+      );
+
+      -- Stage 0: read-only snapshots of Audiobookshelf (libraries, counts, every user's progress).
+      CREATE TABLE abs_snapshots (
+        id            INTEGER PRIMARY KEY,
+        taken_at      INTEGER NOT NULL,
+        abs_version   TEXT,
+        data_json     TEXT NOT NULL CHECK (json_valid(data_json)),
+        summary_json  TEXT NOT NULL CHECK (json_valid(summary_json))
+      );
+    `,
+  },
 ];
 
 export const CLEANUP_SCHEMA_VERSION = CLEANUP_MIGRATIONS[CLEANUP_MIGRATIONS.length - 1].version;

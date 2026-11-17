@@ -19,6 +19,7 @@
   import AppBottomBar from '$lib/components/app-nav/app-bottom-bar.svelte';
   import AppHeader from '$lib/components/app-nav/app-header.svelte';
   import CataloguePageHeader from '$lib/components/catalogue-page-header.svelte';
+  import CleanupAudiobooks from '$lib/components/cleanup/cleanup-audiobooks.svelte';
   import CleanupBatches from '$lib/components/cleanup/cleanup-batches.svelte';
   import CleanupSection from '$lib/components/cleanup/cleanup-section.svelte';
   import CopyRow from '$lib/components/cleanup/cleanup-copy-row.svelte';
@@ -86,17 +87,25 @@
   const POLL_MS = 5000;
   const MODES: StageMode[] = ['off', 'analyse', 'on'];
 
-  /** Two tabs: the cleanup itself (status to spot check) and its settings. In the address. */
-  type Tab = 'cleanup' | 'settings';
+  /**
+   * Three tabs: the Calibre cleanup itself (status to spot check), the audiobook cleanup
+   * (WP21a) and the settings of both. In the address.
+   */
+  type Tab = 'cleanup' | 'audiobooks' | 'settings';
   const TABS: { id: Tab; label: string }[] = [
     { id: 'cleanup', label: 'Cleanup' },
+    { id: 'audiobooks', label: 'Audiobooks' },
     { id: 'settings', label: 'Settings' }
   ];
   let tab: Tab = 'cleanup';
 
+  function tabFrom(value: string | null): Tab {
+    return value === 'settings' || value === 'audiobooks' ? value : 'cleanup';
+  }
+
   function showTab(next: Tab) {
     tab = next;
-    const href = `${pagePath}/cleanup${next === 'settings' ? '?tab=settings' : ''}`;
+    const href = `${pagePath}/cleanup${next === 'cleanup' ? '' : `?tab=${next}`}`;
     if (`${location.pathname}${location.search}` !== href) {
       void goto(href, { replaceState: true, keepFocus: true, noScroll: true });
     }
@@ -155,7 +164,7 @@
   ].filter((b): b is ProgressBar => b !== null);
 
   onMount(async () => {
-    tab = $page.url.searchParams.get('tab') === 'settings' ? 'settings' : 'cleanup';
+    tab = tabFrom($page.url.searchParams.get('tab'));
     connection = (await getLibraryStore().getConnection()) ?? null;
     if (!connection) return;
     const timeout = Math.max(0, Number($libraryRequestTimeoutSeconds$) || 0);
@@ -986,6 +995,10 @@
           {/if}
         {/if}
       </CleanupSection>
+    {:else if tab === 'audiobooks'}
+      {#if api}
+        <CleanupAudiobooks {api} />
+      {/if}
     {:else}
       <section class="mt-6 flex flex-col gap-3" data-testid="cleanup-settings-tab">
         <SettingsSection jp="設定" title="Settings" />

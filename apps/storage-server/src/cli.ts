@@ -84,6 +84,7 @@ import { createApplyToken, listApplyTokens, revokeApplyToken } from './cleanup/a
 import { initCleanupDatabase } from './cleanup/cleanup-db';
 import { listStages } from './cleanup/stages';
 import { recordReviewDecisions, resumeFailedStage3 } from './cleanup/stage3';
+import { importDryRunHashes, runAudioDryRun } from './cleanup/audio/dry-run';
 
 const USAGE = `Usage:
   cli token pair <label> [--user <name>]     Make a one-time code a device trades for its own token
@@ -129,7 +130,13 @@ const USAGE = `Usage:
   cli cleanup decide 3 <file>                Record the review's decisions on stage 3 pairs (marked as
                                              Claude's; your own decisions stay)
   cli cleanup resume 3                       Resume stage 3's failed analysis at the step that failed
-                                             (keeps the books read and the pairs measured)`;
+                                             (keeps the books read and the pairs measured)
+  cli cleanup audio-dryrun --stage 0|1|2 --out <folder>
+                                             Audiobook cleanup dry run (WP21a): the real analysis on a
+                                             scratch database in <folder>, never the live cleanup.db;
+                                             stage 0 needs --abs-url and the API key on stdin
+  cli cleanup audio-import-hashes <file>     Live stage 1 takes over a dry run's hashes (kept only for
+                                             files whose path, size, mtime and inode are unchanged)`;
 
 function fail(message: string): never {
   console.error(message);
@@ -804,6 +811,15 @@ function cleanupCommand(command: string, rest: string[], env: Record<string, str
         if (!out.ok) process.exitCode = 1;
         break;
       }
+      case 'audio-import-hashes': {
+        const [file] = rest;
+        if (!file) fail('cleanup audio-import-hashes needs the dry run’s cleanup-dryrun.db');
+        const out = importDryRunHashes(db, file);
+        console.log(
+          `Took over ${out.added} hashes (${out.skipped} already known or changed). The live stage 1 keeps each only if the file is unchanged when it walks the folders.`,
+        );
+        break;
+      }
       case 'revoke': {
         const [id] = rest;
         if (!id) fail('cleanup revoke needs a token id (see cleanup status)');
@@ -878,6 +894,17 @@ export function main(argv: string[], env: Record<string, string | undefined>): v
   ];
   if (!groups.includes(group) || !command) {
     fail(USAGE);
+  }
+  // The audiobook dry run never opens the live cleanup.db (WP21a).
+  if (group === 'cleanup' && command === 'audio-dryrun') {
+    void runAudioDryRun(rest, env).then(
+      (code) => process.exit(code),
+      (err) => {
+        console.error('Dry run failed:', err);
+        process.exit(1);
+      },
+    );
+    return;
   }
   // The cleanup sidecar's tokens and the cleanup's state live in cleanup.db (WP20a).
   if (group === 'cleanup' || (group === 'token' && command === 'cleanup')) {

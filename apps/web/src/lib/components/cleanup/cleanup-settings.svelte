@@ -60,7 +60,8 @@
   let secretValues: Record<SecretName, string> = {
     calibrePassword: '',
     anthropicApiKey: '',
-    openaiApiKey: ''
+    openaiApiKey: '',
+    absApiKey: ''
   };
   let customTagsText = '';
   /** The titles' own bar ('' = the bar for every field). */
@@ -164,6 +165,20 @@
                 textWorkers: Number(settings.duplicates.textWorkers)
               }
             }
+          : {}),
+        ...(settings.audiobooks
+          ? {
+              audiobooks: {
+                absUrl: settings.audiobooks.absUrl,
+                readMbPerSecond: Number(settings.audiobooks.readMbPerSecond),
+                healthFilesPerSecond: Number(settings.audiobooks.healthFilesPerSecond),
+                decodeSeconds: Number(settings.audiobooks.decodeSeconds),
+                toolTimeoutSeconds: Number(settings.audiobooks.toolTimeoutSeconds),
+                copyHintMinMinutes: Number(settings.audiobooks.copyHintMinMinutes),
+                copyHintPercent: Number(settings.audiobooks.copyHintPercent),
+                absTimeoutSeconds: Number(settings.audiobooks.absTimeoutSeconds)
+              }
+            }
           : {})
       });
       settings = answer.settings;
@@ -264,6 +279,124 @@
         The user needs permission to make changes (not read-only) in Calibre’s sharing settings.
       </p>
     </fieldset>
+
+    {#if settings.audiobooks}
+      <fieldset class="grid gap-4 sm:grid-cols-2" data-testid="cleanup-audiobooks-settings">
+        <legend class={legend}>Audiobooks</legend>
+        <label class="{field} sm:col-span-2">
+          <span class={label}>Audiobookshelf address</span>
+          <input
+            class="c-input"
+            type="url"
+            placeholder="http://192.168.1.5:13378"
+            bind:value={settings.audiobooks.absUrl}
+            data-testid="cleanup-abs-url"
+          />
+        </label>
+        <div class="{field} sm:col-span-2">
+          <label class={field}>
+            <span class={label}>Audiobookshelf API key</span>
+            <input
+              class="c-input"
+              type="password"
+              autocomplete="off"
+              placeholder={secrets.absApiKey?.set ? 'Saved; type a new one to change it' : ''}
+              value={secretValues.absApiKey}
+              on:input={(e) => setSecretValue('absApiKey', e.currentTarget.value)}
+              data-testid="cleanup-secret-absApiKey"
+            />
+          </label>
+          <span
+            class="flex flex-wrap items-center gap-x-2 text-c-muted"
+            data-testid="cleanup-secret-state-absApiKey"
+          >
+            {secretState(secrets.absApiKey)}
+            {#if secrets.absApiKey?.set}
+              <button
+                type="button"
+                class="c-btn c-btn-ghost"
+                on:click={() => removeSecret('absApiKey', 'Audiobookshelf API key')}>Remove</button
+              >
+            {/if}
+          </span>
+          <span class="text-c-muted">
+            Make the key in Audiobookshelf (Settings › API Keys) for an admin user, so every user’s
+            listening progress can be read. Audiobookshelf is only read, never changed.
+          </span>
+        </div>
+        <label class={field}>
+          <span class={label}>Reading speed for comparing files (MB/s, 0 = no limit)</span>
+          <input
+            class="c-input"
+            type="number"
+            min="0"
+            step="1"
+            bind:value={settings.audiobooks.readMbPerSecond}
+            data-testid="cleanup-audio-read-mbps"
+          />
+        </label>
+        <label class={field}>
+          <span class={label}>Files checked per second</span>
+          <input
+            class="c-input"
+            type="number"
+            min="0.1"
+            step="0.1"
+            bind:value={settings.audiobooks.healthFilesPerSecond}
+          />
+        </label>
+        <label class={field}>
+          <span class={label}>Seconds played at the start and the end of each file</span>
+          <input
+            class="c-input"
+            type="number"
+            min="1"
+            step="1"
+            bind:value={settings.audiobooks.decodeSeconds}
+          />
+        </label>
+        <label class={field}>
+          <span class={label}>Time limit for checking one file (s)</span>
+          <input
+            class="c-input"
+            type="number"
+            min="5"
+            step="1"
+            bind:value={settings.audiobooks.toolTimeoutSeconds}
+          />
+        </label>
+        <label class={field}>
+          <span class={label}>Copies in one folder: each file at least (minutes)</span>
+          <input
+            class="c-input"
+            type="number"
+            min="0"
+            step="1"
+            bind:value={settings.audiobooks.copyHintMinMinutes}
+          />
+        </label>
+        <label class={field}>
+          <span class={label}>Copies in one folder: lengths within (%)</span>
+          <input
+            class="c-input"
+            type="number"
+            min="0"
+            step="0.5"
+            bind:value={settings.audiobooks.copyHintPercent}
+          />
+        </label>
+        <label class={field}>
+          <span class={label}>Audiobookshelf time limit (s)</span>
+          <input
+            class="c-input"
+            type="number"
+            min="1"
+            step="1"
+            bind:value={settings.audiobooks.absTimeoutSeconds}
+          />
+        </label>
+      </fieldset>
+    {/if}
 
     <fieldset class="grid gap-4 sm:grid-cols-2">
       <legend class={legend}>Library</legend>

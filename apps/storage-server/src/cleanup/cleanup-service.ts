@@ -11,6 +11,7 @@ import { snapshotFile } from '../calibre/indexer';
 import { getIndexState, getLibrary, listLibraries } from '../calibre/libraries';
 import { COUNTER_BUNDLE, readCounterInfo } from '../counts/counter-bundle';
 import { BatchService, REMOVAL_STAGES } from './batches';
+import { DISK_OWNERS, DiskLock } from './disk-lock';
 import { presentBookCount } from './handoff';
 import { SecretStore } from './secrets';
 import { getSettings } from './settings';
@@ -112,6 +113,8 @@ export interface CleanupServiceOptions {
   stage3Reader?: Stage3Reader;
   /** Stage 3: the counter bundle's build id (read from the bundle when not given). */
   counterBuild?: string;
+  /** The disk lock shared with the audiobook cleanup (WP21a); a new one when not given. */
+  diskLock?: DiskLock;
   leaseSeconds?: number;
   log?: (m: string) => void;
   logError?: (m: string, err?: unknown) => void;
@@ -130,8 +133,20 @@ function str(v: unknown, max = 500): string | null {
   return typeof v === 'string' && v.trim() !== '' ? v.trim().slice(0, max) : null;
 }
 
+/**
+ * Phases of the Calibre analyses that read book files (WP21a: they take the shared disk lock).
+ * Stage 1 stat + hash, stage 2 read, stage 3 text + quality; the others work in the databases.
+ */
+export const DISK_PHASES: Record<number, readonly string[]> = {
+  1: ['stat', 'hash'],
+  2: ['read'],
+  3: ['text', 'quality'],
+};
+
 export class CleanupService {
   readonly secrets: SecretStore;
+  /** One disk-heavy job at a time across the Calibre and audiobook cleanups (WP21a). */
+  readonly diskLock: DiskLock;
   readonly batches: BatchService;
   readonly analysis: Stage1Analysis | null;
   readonly analysis2: Stage2Analysis | null;
@@ -156,6 +171,7 @@ export class CleanupService {
     this.log = opts.log ?? console.log;
     this.logError = opts.logError ?? console.error;
     this.secrets = new SecretStore(opts.cleanup, opts.main);
+    this.diskLock = opts.diskLock ?? new DiskLock();
     this.batches = new BatchService({
       cleanup: opts.cleanup,
       main: opts.main,
@@ -660,6 +676,24 @@ export class CleanupService {
     ).n;
   }
 
+  /**
+   * Before a Calibre analysis step (WP21a): a phase that reads book files holds the shared
+   * disk lock (waiting for an audiobook job to give it back, which it does at once); any other
+   * phase gives it back. False when the analysis was stopped while waiting.
+   */
+  private async diskFor(
+    stage: 1 | 2 | 3,
+    phase: string | undefined,
+    shouldStop: () => boolean,
+  ): Promise<boolean> {
+    const owner = DISK_OWNERS[`calibre${stage}`];
+    if (phase && DISK_PHASES[stage].includes(phase)) {
+      return this.diskLock.acquire(owner, 'calibre', shouldStop);
+    }
+    this.diskLock.release(owner);
+    return true;
+  }
+
   private runAnalysis3(): void {
     if (this.analysing3 || !this.analysis3) return;
     const analysis = this.analysis3;
@@ -668,14 +702,15 @@ export class CleanupService {
         for (;;) {
           if (this.stopped) break;
           if (getStage(this.db, 3).mode === 'off') break;
-          const done = await analysis.step(
-            () => this.stopped || getStage(this.db, 3).mode === 'off',
-          );
+          const stop3 = () => this.stopped || getStage(this.db, 3).mode === 'off';
+          if (!(await this.diskFor(3, analysis.progress()?.phase, stop3))) break;
+          const done = await analysis.step(stop3);
           if (done) break;
         }
       } catch (err) {
         this.logError('Cleanup: stage 3 analysis failed:', err);
       } finally {
+        this.diskLock.release(DISK_OWNERS.calibre3);
         this.analysing3 = null;
         void this.tick();
       }
@@ -797,14 +832,15 @@ export class CleanupService {
         for (;;) {
           if (this.stopped) break;
           if (getStage(this.db, 2).mode === 'off') break;
-          const done = await analysis.step(
-            () => this.stopped || getStage(this.db, 2).mode === 'off',
-          );
+          const stop2 = () => this.stopped || getStage(this.db, 2).mode === 'off';
+          if (!(await this.diskFor(2, analysis.progress()?.phase, stop2))) break;
+          const done = await analysis.step(stop2);
           if (done) break;
         }
       } catch (err) {
         this.logError('Cleanup: stage 2 analysis failed:', err);
       } finally {
+        this.diskLock.release(DISK_OWNERS.calibre2);
         this.analysing2 = null;
         void this.tick();
       }
@@ -980,14 +1016,15 @@ export class CleanupService {
         for (;;) {
           if (this.stopped) break;
           if (getStage(this.db, 1).mode === 'off') break;
-          const done = await analysis.step(
-            () => this.stopped || getStage(this.db, 1).mode === 'off',
-          );
+          const stop1 = () => this.stopped || getStage(this.db, 1).mode === 'off';
+          if (!(await this.diskFor(1, analysis.progress()?.phase, stop1))) break;
+          const done = await analysis.step(stop1);
           if (done) break;
         }
       } catch (err) {
         this.logError('Cleanup: analysis failed:', err);
       } finally {
+        this.diskLock.release(DISK_OWNERS.calibre1);
         this.analysing = null;
         void this.tick();
       }
@@ -1231,6 +1268,8 @@ export class CleanupService {
     const lib = target ? getLibrary(this.opts.main, target) : null;
     return {
       stages: listStages(this.db),
+      // The disk lock shared with the audiobook cleanup (WP21a).
+      disk: this.diskLock.state(),
       waiting: this.waiting,
       checks: this.checks(now),
       sidecar: this.sidecar(now),
