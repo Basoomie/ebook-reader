@@ -35,6 +35,11 @@ import {
   WORKER_RESULT_PATH,
 } from '../audio/worker-routes';
 import { createTtsRouter, createTtsWorkerRouter, TTS_RAW_PATHS } from '../audio/tts-routes';
+import {
+  createSpeakerRouter,
+  createSpeakerWorkerRouter,
+  SPEAKER_RAW_PATHS,
+} from '../audio/speakers/speaker-routes';
 import { createPronunciationRouter } from '../pronunciation/fix-routes';
 import { createSentenceAudioRouter } from '../audio/sentence-audio-routes';
 import {
@@ -152,7 +157,9 @@ export function createApiRouter({
       // WP17: chapter audio and timings from the GPU worker, voice clip uploads.
       TTS_RAW_PATHS.some((p) => p.test(req.path)) ||
       // Season 2 Phase 12: read-aloud batch audio from the GPU worker.
-      READ_ALOUD_RAW_PATHS.some((p) => p.test(req.path))
+      READ_ALOUD_RAW_PATHS.some((p) => p.test(req.path)) ||
+      // Session 5: a speaker answer from the GPU worker (its own larger limit).
+      SPEAKER_RAW_PATHS.some((p) => p.test(req.path))
     ) {
       return next();
     }
@@ -199,6 +206,7 @@ export function createApiRouter({
     // WP17's worker routes first (the WP16 router answers 404 for any other /worker path).
     router.use(createTtsWorkerRouter(db, audio));
     router.use(createReadAloudWorkerRouter(db, audio));
+    router.use(createSpeakerWorkerRouter(db, audio));
     router.use(createWorkerRouter(db, audio, catalog));
     // The library cleanup's apply sidecar (WP20a): its own token (cleanup.db), only
     // /cleanup-apply/*.
@@ -224,6 +232,7 @@ export function createApiRouter({
     router.use(createPronunciationRouter(db, audio));
     router.use(createSentenceAudioRouter(db, audio));
     router.use(createReadAloudRouter(db, audio));
+    router.use(createSpeakerRouter(db, audio));
     router.use(createAudioClipRouter(db, audio));
     // The /cleanup page (WP20a).
     router.use(createCleanupRouter(cleanup));

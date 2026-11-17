@@ -18,6 +18,17 @@ export const ttsChapterPauseMs$ = writableNumberLocalStorageSubject()('ttsChapte
  * dialogue has its own voice (audiobooks, previews, read-aloud, Enrich clips).
  */
 export const ttsDialoguePauseMs$ = writableNumberLocalStorageSubject()('ttsDialoguePauseMs', 150);
+/**
+ * Session 5 (per-character voices): a quote whose speaker the model was less sure of than
+ * this (percent) is "unsure" and listed to check (Settings > Audiobooks, every device).
+ */
+export const speakerUnsureBelow$ = writableNumberLocalStorageSubject()('speakerUnsureBelow', 90);
+
+/** The "unsure" bar as the server takes it (0..1). */
+export function unsureBelow(): number {
+  const n = Number(speakerUnsureBelow$.getValue());
+  return Number.isFinite(n) ? Math.min(100, Math.max(1, Math.round(n))) / 100 : 0.9;
+}
 
 const clampMs = (v: unknown, fallback: number) => {
   const n = Number(v);

@@ -6,6 +6,11 @@
  * picker; links are in link-routes.ts, WP15b). Streaming accepts a signed URL (an <audio> element can't send
  * the token) or the usual Bearer token, like thumbnails.
  */
+import type { SpeakerBookService } from './speakers/speaker-book';
+import type { SpeakerJobService } from './speakers/speaker-jobs';
+import type { SpeakerModelService } from './speakers/speaker-models';
+import type { SpeakerStore } from './speakers/speaker-store';
+import type { SpeakerVoices } from './speakers/speaker-voices';
 import type Database from 'better-sqlite3';
 import express, { type Request, RequestHandler, type Response, Router } from 'express';
 import path from 'path';
@@ -68,6 +73,12 @@ export interface AudioOptions {
   voiceChoices?: VoiceChoiceService | null;
   /** Season 2 Phase 12 session 3: live read-aloud with the PC voice; null/omitted = off. */
   readAloud?: ReadAloudService | null;
+  /** Season 2 Phase 12 session 5: per-character voices; null/omitted = off. */
+  speakerJobs?: SpeakerJobService | null;
+  speakerBook?: SpeakerBookService | null;
+  speakerModels?: SpeakerModelService | null;
+  speakerStore?: SpeakerStore | null;
+  speakerVoices?: SpeakerVoices | null;
 }
 
 const CONTENT_TYPES: Record<string, string> = {

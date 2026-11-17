@@ -10,5 +10,6 @@
   "reportSeconds": 10,
   "ttsModelsDir": "C:\\Data\\LLM\\Models\\ttsu-reader-tts",
   "ttsBatchSize": 8,
-  "ttsChapterMaxMinutes": 120
+  "ttsChapterMaxMinutes": 120,
+  "speakerModelsDir": "C:\\Data\\LLM\\Models\\ttsu-reader-speakers"
 }

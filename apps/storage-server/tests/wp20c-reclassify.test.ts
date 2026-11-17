@@ -9,7 +9,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { COUNTER_BUNDLE } from '../src/counts/counter-bundle';
 import { InProcessReader, type Stage3Reader } from '../src/counts/book-text-worker';
 import type { BookTextModule } from '../src/cleanup/stage3-work';
-import { recordReviewDecisions, stage3RulesKey } from '../src/cleanup/stage3';
+import { STAGE3_WAITING_SQL, recordReviewDecisions, stage3RulesKey } from '../src/cleanup/stage3';
 import { getSettings } from '../src/cleanup/settings';
 import { getStage } from '../src/cleanup/stages';
 import { makeCleanupEnv, type CleanupEnv } from './helpers/cleanup-env';
@@ -59,6 +59,7 @@ describe('stage 3: classified again, and the review decisions', () => {
       C2: await add('C 解説付き', commentary),
       E1: await add('E', chaptersOf(5)),
       E2: await add('E', chaptersOf(5)),
+      E3: await add('E', chaptersOf(5)),
     };
     await made.setup();
     user = env.userToken();
@@ -138,7 +139,7 @@ describe('stage 3: classified again, and the review decisions', () => {
     expect(p1.error).toBeNull();
     // Same text pairs still give their removals.
     // Tied copies: the older record stays.
-    expect(removals().map((r) => r.id)).toEqual([ids.A2, ids.E2].sort((x, y) => x - y));
+    expect(removals().map((r) => r.id)).toEqual([ids.A2, ids.E2, ids.E3].sort((x, y) => x - y));
 
     // Back to "review" for the next test.
     await request(env.app)
@@ -161,6 +162,33 @@ describe('stage 3: classified again, and the review decisions', () => {
     expect(await settle()).toBe('ready');
 
     const c = pair('C1', 'C2');
+    const waitingIds = () =>
+      env.service.stage3Pairs('review', { limit: 1000 }).items.map((x) => x.id as number);
+    expect(waitingIds()).toContain(c.id);
+    // A pair whose copy the cleanup removed (in favour of a third copy) leaves nothing to decide;
+    // an Undo brings it back (2026-11-17: 365 such pairs were still counted). Each lookup is an
+    // index search, not a scan per pair.
+    const removal = env.cleanupDb
+      .prepare(
+        `INSERT INTO proposed_changes (stage, library_id, calibre_id, calibre_uuid, field, source,
+           class, state, analysis_id, created_at, updated_at)
+         SELECT 3, library_id, a_id, a_uuid, 'book', 'test', 'auto', 'applied', 'other', 0, 0
+         FROM content_pairs WHERE id = ?`,
+      )
+      .run(c.id).lastInsertRowid;
+    expect(waitingIds()).not.toContain(c.id);
+    env.cleanupDb.prepare("UPDATE proposed_changes SET state = 'undone' WHERE id = ?").run(removal);
+    expect(waitingIds()).toContain(c.id);
+    env.cleanupDb.prepare('DELETE FROM proposed_changes WHERE id = ?').run(removal);
+    const plan = (
+      env.cleanupDb
+        .prepare(
+          `EXPLAIN QUERY PLAN SELECT p.id FROM content_pairs p WHERE p.analysis_id = ? AND ${STAGE3_WAITING_SQL}`,
+        )
+        .all('x') as { detail: string }[]
+    ).map((r) => r.detail);
+    expect(plan.filter((d) => /^SCAN/.test(d))).toEqual([]);
+    expect(plan.filter((d) => /pair_decisions|proposed_changes_book/.test(d))).toHaveLength(4);
     const note = 'Same book; the copy with commentary has everything the other has';
     const out = recordReviewDecisions(env.cleanupDb, {
       decisions: [
@@ -184,6 +212,34 @@ describe('stage 3: classified again, and the review decisions', () => {
     // Your keep-both on E stays.
     expect(r.some((x) => x.id === ids.E1 || x.id === ids.E2)).toBe(false);
     expect(pair('E1', 'E2').class).toBe('keep_both');
+    // A decided removal keeps its class "review" but no longer waits: the page's count and its
+    // review list leave it out, and agree (2026-11-17: the count included decided pairs).
+    expect(pair('C1', 'C2').class).toBe('review');
+    expect(waitingIds()).not.toContain(c.id);
+    expect(env.service.analysis3!.progress()!.review).toBe(env.service.stage3Pairs('review').total);
+
+    // No single winner in E's set (you keep E1 and E2 both), but E3 loses to both: it goes, in
+    // favour of E1 (2026-11-17: 78 such sets kept every copy).
+    const e3 = r.find((x) => x.id === ids.E3)!;
+    expect(e3).toBeTruthy();
+    expect(e3.ev.kept.calibreId).toBe(ids.E1);
+    expect(e3.ev.stage3.pairId).toBe(pair('E1', 'E3').id);
+    const withoutKeeper = env.service.analysis3!.progress()!.setsWithoutKeeper;
+    expect(withoutKeeper).toBeGreaterThan(0);
+
+    // E1 leaves Calibre by hand: its pairs stay out of the sets (as a pair that can't be compared
+    // it made the set look undecided), so E3 now goes in favour of E2.
+    env.lib.removeBook(ids.E1);
+    await env.index();
+    const p = env.service.analysis3!.progress()!;
+    env.cleanupDb
+      .prepare('UPDATE stages SET progress_json = ? WHERE stage = 3')
+      .run(JSON.stringify({ ...p, rulesKey: null }));
+    expect(await settle()).toBe('ready');
+    const again = removals();
+    expect(again.find((x) => x.id === ids.E3)?.ev.kept.calibreId).toBe(ids.E2);
+    expect(again.some((x) => x.id === ids.E2 || x.id === ids.E1)).toBe(false);
+    expect(env.service.analysis3!.progress()!.setsWithoutKeeper).toBeLessThan(withoutKeeper);
   });
 
   it('settings changed while the copy choice was pending: the classes follow the new settings (2026-11-17)', async () => {
@@ -221,5 +277,16 @@ describe('stage 3: classified again, and the review decisions', () => {
         decisions: [{ aUuid: 'x', bUuid: 'y', decision: 'keep_both', note: 'n' }],
       }).ok,
     ).toBe(false);
+    // The same pair twice, here once in each order: refused, nothing recorded.
+    const before = env.cleanupDb.prepare('SELECT COUNT(*) AS n FROM pair_decisions').get();
+    const twice = recordReviewDecisions(env.cleanupDb, {
+      decisions: [
+        { aUuid: c.a_uuid, bUuid: c.b_uuid, decision: 'keep_both', note: 'one' },
+        { aUuid: c.b_uuid, bUuid: c.a_uuid, decision: 'remove_a', note: 'two' },
+      ],
+    });
+    expect(twice).toMatchObject({ ok: false });
+    expect(twice.message).toMatch(/repeat a pair.*decisions 0 and 1.*Nothing was recorded/);
+    expect(env.cleanupDb.prepare('SELECT COUNT(*) AS n FROM pair_decisions').get()).toEqual(before);
   });
 });

@@ -25,6 +25,7 @@ import {
 import {
   ttsChapterPauseMs$,
   ttsDialoguePauseMs$,
+  speakerUnsureBelow$,
   ttsParagraphPauseMs$,
   ttsSentencePauseMs$
 } from '$lib/audio/tts-settings';
@@ -53,7 +54,8 @@ export const GLOBAL_SETTING_SUBJECTS: Record<string, { next(value: never): void 
   ttsSentencePauseMs: ttsSentencePauseMs$,
   ttsParagraphPauseMs: ttsParagraphPauseMs$,
   ttsChapterPauseMs: ttsChapterPauseMs$,
-  ttsDialoguePauseMs: ttsDialoguePauseMs$
+  ttsDialoguePauseMs: ttsDialoguePauseMs$,
+  speakerUnsureBelow: speakerUnsureBelow$
 };
 
 /** Applies one global setting. null (never set on the source device) leaves this device's value. */

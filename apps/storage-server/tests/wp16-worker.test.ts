@@ -264,8 +264,8 @@ describe('the worker against the server', () => {
         image: PINNED_IMAGE,
       }),
     );
-    // WP17: two image checks (SubPlz, then the TTS program).
-    expect(t.calls().map((c) => c[0])).toEqual(['info', 'image', 'image', 'run']);
+    // WP17: image checks (SubPlz, then the TTS program; session 5: the speaker program).
+    expect(t.calls().map((c) => c[0])).toEqual(['info', 'image', 'image', 'image', 'run']);
     // Reports: downloading up to 1, then SubPlz's own percentages, then uploading.
     const reports = t.sent.filter((x) => x.path.endsWith('/progress')).map((x) => x.body);
     expect(reports.some((r) => r.stage === 'downloading')).toBe(true);
@@ -376,8 +376,8 @@ describe('the worker against the server', () => {
       ['no-docker', 'Docker Desktop is not running on the PC'],
       [
         'no-image',
-        // WP17: both programs are missing in this mode.
-        `The SubPlz image is not on the PC (docker pull ${PINNED_IMAGE}); The TTS program is not on the PC (node main.js build-tts)`,
+        // WP17: every program is missing in this mode (session 5: the speaker program too).
+        `The SubPlz image is not on the PC (docker pull ${PINNED_IMAGE}); The TTS program is not on the PC (node main.js build-tts); The speaker program is not on the PC (node main.js pull-speakers)`,
       ],
     ] as const) {
       const t = await workerEnv(mode);

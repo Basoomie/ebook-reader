@@ -363,7 +363,16 @@ describe('the only writer', () => {
       'read-aloud-workdir.ts',
     ]);
     const offenders: string[] = [];
-    for (const name of fs.readdirSync(path.join(SRC, 'audio'))) {
+    // Season 2 Phase 12 session 5: subfolders too (audio/speakers/ writes nothing).
+    const files: string[] = [];
+    const collect = (dir: string, rel: string) => {
+      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (e.isDirectory()) collect(path.join(dir, e.name), `${rel}${e.name}/`);
+        else files.push(`${rel}${e.name}`);
+      }
+    };
+    collect(path.join(SRC, 'audio'), '');
+    for (const name of files) {
       if (allowed.has(name)) continue;
       const text = fs.readFileSync(path.join(SRC, 'audio', name), 'utf8');
       text.split('\n').forEach((line, i) => {

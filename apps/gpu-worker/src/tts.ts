@@ -6,6 +6,7 @@
  *   2. one container of the TTS program (ttsu-irodori, apps/gpu-worker/tts) reads them:
  *        docker run --rm --gpus all --name ttsu-tts-<id> -v <job>:/work
  *          -v <ttsModelsDir>:/models -e HF_HOME=/models/.shared -e HF_HUB_DISABLE_SYMLINKS=1
+ *          -e PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
  *          <ttsImage> run --job /work/job.json
  *      The model is loaded once; models are downloaded once into the shared models folder
  *      (plain folders, no Hugging Face cache links, so every Windows account uses them);
@@ -59,6 +60,10 @@ export function ttsArgs({
     'HF_HOME=/models/.shared',
     '-e',
     'HF_HUB_DISABLE_SYMLINKS=1',
+    // Session 5: batches mixing several voices' clips fragmented PyTorch's memory cache
+    // (5.3 -> 7.0 GB reserved for the same 4.4 GB in use) until Windows swapped it.
+    '-e',
+    'PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True',
     image,
     'run',
     '--job',

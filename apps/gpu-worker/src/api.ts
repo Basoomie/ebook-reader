@@ -12,7 +12,36 @@ export type JobKind =
   | 'generate_audiobook'
   | 'preview_audiobook'
   | 'voice_sample'
-  | 'sentence_audio';
+  | 'sentence_audio'
+  | 'attribute_speakers';
+
+/** Session 5: what a speaker job needs (the server's SpeakerClaim, in the claim's `tts`). */
+export interface SpeakerClaim {
+  speakers: {
+    model: {
+      repo: string;
+      file: string;
+      revision: string;
+      size: number | null;
+      sha256: string | null;
+      label: string;
+    };
+    contextSize: number;
+  };
+}
+
+/** Session 5: one request for the speaker model (the server's LlmRequest). */
+export interface SpeakerRequest {
+  seq: number;
+  stage: string;
+  window: number;
+  messages: { role: 'system' | 'user'; content: string }[];
+  grammar?: string;
+  jsonSchema?: unknown;
+  nPredict: number;
+  nProbs: number;
+  think?: boolean;
+}
 
 /** WP17: what a TTS job needs (the server's TtsClaim). */
 export interface TtsClaim {
@@ -42,7 +71,7 @@ export interface ClaimedJob {
   /** The audio length the server indexed; null while unknown. */
   audioSeconds?: number | null;
   epubSize: number | null;
-  /** WP17 kinds only. */
+  /** WP17 kinds only (session 5: a speaker job sends its SpeakerClaim here). */
   tts?: TtsClaim;
   leaseSeconds: number;
 }
@@ -332,6 +361,58 @@ export class ServerApi {
         state: string;
       }
     ).state;
+  }
+
+  // ---------------------------------------------------------------- speakers (1.4.0)
+
+  /** The speaker job's next request; null when the run is complete (the server saved it). */
+  async speakersNext(id: number): Promise<{
+    request: SpeakerRequest | null;
+    progress: { stage: string; done: number; total: number };
+  }> {
+    return (await (await this.request('POST', `/worker/jobs/${id}/speakers/next`, {})).json()) as {
+      request: SpeakerRequest | null;
+      progress: { stage: string; done: number; total: number };
+    };
+  }
+
+  /** The model's answer to request `seq`; the server says whether to stop, pause or make way. */
+  async speakersAnswer(
+    id: number,
+    seq: number,
+    body: { content: string; probs?: unknown; ms: number },
+  ): Promise<{ cancel: boolean; pause?: boolean; yield?: boolean }> {
+    return (await (
+      await this.request('POST', `/worker/jobs/${id}/speakers/${seq}`, body, {
+        timeoutMs: this.timeoutMs * 4,
+      })
+    ).json()) as { cancel: boolean; pause?: boolean; yield?: boolean };
+  }
+
+  /** Still waiting on the model (keeps the job's lease); the server says whether to stop or make way. */
+  async speakersWorking(
+    id: number,
+  ): Promise<{ cancel: boolean; pause?: boolean; yield?: boolean }> {
+    return (await (
+      await this.request('POST', `/worker/jobs/${id}/speakers/working`, {})
+    ).json()) as { cancel: boolean; pause?: boolean; yield?: boolean };
+  }
+
+  /** Made way (Pause, read-aloud, sentence clips): the job goes back to the queue. */
+  async speakersRelease(id: number): Promise<string> {
+    return (
+      (await (await this.request('POST', `/worker/jobs/${id}/speakers/release`, {})).json()) as {
+        state: string;
+      }
+    ).state;
+  }
+
+  /** The speaker models, and the folders of removed ones (deleted on this PC). */
+  async speakerModels(): Promise<{ models: { dir: string }[]; removed: { dir: string }[] }> {
+    return (await (await this.request('GET', '/worker/speaker-models')).json()) as {
+      models: { dir: string }[];
+      removed: { dir: string }[];
+    };
   }
 
   async models(): Promise<{ models: ModelEntry[]; removed: ModelEntry[] }> {

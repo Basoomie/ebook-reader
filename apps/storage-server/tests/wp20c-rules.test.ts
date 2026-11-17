@@ -440,17 +440,66 @@ describe('sets of copies', () => {
       { a: 2, b: 3, keep: 2 },
       { a: 1, b: 3, keep: 3 },
     ]);
-    expect(d).toEqual([{ members: [1, 2, 3], keeper: 2, removed: [1, 3] }]);
+    expect(d).toEqual([
+      {
+        members: [1, 2, 3],
+        keeper: 2,
+        removed: [1, 3],
+        removals: [
+          { id: 1, keep: 2 },
+          { id: 3, keep: 2 },
+        ],
+      },
+    ]);
   });
 
-  it('no copy at least as good as all others: nothing removed', () => {
+  it('no copy at least as good as all others, none beaten by all: nothing removed', () => {
     expect(
       decideSets([
         { a: 1, b: 2, keep: 2 },
         { a: 2, b: 3, keep: 3 },
       ]),
-    ).toEqual([{ members: [1, 2, 3], keeper: null, removed: [] }]);
-    expect(decideSets([{ a: 1, b: 2, keep: null }])[0].keeper).toBeNull();
+    ).toEqual([{ members: [1, 2, 3], keeper: null, removed: [], removals: [] }]);
+    expect(decideSets([{ a: 1, b: 2, keep: null }])[0]).toMatchObject({
+      keeper: null,
+      removals: [],
+    });
+  });
+
+  it('no single winner: the copy every other copy beats goes, the others stay (2026-11-17)', () => {
+    // 1 and 2 both stay (each better somewhere); 3 loses to both: it goes, in favour of the copy
+    // that beats more of the others (tie: the lower id).
+    expect(
+      decideSets([
+        { a: 1, b: 2, keep: null },
+        { a: 1, b: 3, keep: 1 },
+        { a: 2, b: 3, keep: 2 },
+      ]),
+    ).toEqual([{ members: [1, 2, 3], keeper: null, removed: [3], removals: [{ id: 3, keep: 1 }] }]);
+    // A chain: 4 loses to all, then 3 loses to all copies left; 1 and 2 stay.
+    const chain = decideSets([
+      { a: 1, b: 2, keep: null },
+      { a: 1, b: 3, keep: 1 },
+      { a: 2, b: 3, keep: 2 },
+      { a: 1, b: 4, keep: 1 },
+      { a: 2, b: 4, keep: 2 },
+      { a: 3, b: 4, keep: 3 },
+    ])[0];
+    expect(chain.keeper).toBeNull();
+    expect(chain.removals).toEqual([
+      { id: 4, keep: 1 },
+      { id: 3, keep: 1 },
+    ]);
+    // Beaten by all but one copy it has no measured pair with: it stays.
+    expect(
+      decideSets([
+        { a: 1, b: 2, keep: null },
+        { a: 1, b: 3, keep: 1 },
+        { a: 2, b: 4, keep: 2 },
+      ])[0].removals,
+    ).toEqual([]);
+    // Every removal points at a copy that stays and beats it.
+    for (const r of chain.removals) expect([1, 2]).toContain(r.keep);
   });
 });
 

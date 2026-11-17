@@ -516,6 +516,25 @@ export function resumeFailedStage3(db: Database.Database): {
 }
 
 /**
+ * A content_pairs row `p` waiting for a decision: in review (or a duplicate without a clear
+ * better copy), not decided by you or the review (in either order of the pair), and with both
+ * copies still in Calibre: a copy the cleanup removed (in favour of a third copy of the same
+ * book) leaves nothing to decide (2026-11-17: 365 of the 366 pairs the page still counted).
+ */
+// Each lookup is one index search per pair (by primary key, and by (library_id, calibre_uuid);
+// the + keeps SQLite on that index): an OR or IN here scanned every decision and every applied
+// removal per pair, 3.6 s on a copy of the live database.
+export const STAGE3_WAITING_SQL = `(p.class = 'review' OR (p.class IN ('duplicate', 'superset') AND p.keep_id IS NULL))
+  AND NOT EXISTS (SELECT 1 FROM pair_decisions d WHERE d.library_id = p.library_id
+    AND d.a_uuid = p.a_uuid AND d.b_uuid = p.b_uuid)
+  AND NOT EXISTS (SELECT 1 FROM pair_decisions d WHERE d.library_id = p.library_id
+    AND d.a_uuid = p.b_uuid AND d.b_uuid = p.a_uuid)
+  AND NOT EXISTS (SELECT 1 FROM proposed_changes c WHERE c.library_id = p.library_id
+    AND c.calibre_uuid = p.a_uuid AND +c.stage IN (1, 3) AND +c.field = 'book' AND +c.state = 'applied')
+  AND NOT EXISTS (SELECT 1 FROM proposed_changes c WHERE c.library_id = p.library_id
+    AND c.calibre_uuid = p.b_uuid AND +c.stage IN (1, 3) AND +c.field = 'book' AND +c.state = 'applied')`;
+
+/**
  * Records the review's decisions on stage 3 pairs (`cli cleanup decide 3 <file>`): each one
  * marked as Claude's, with its reason, never replacing a decision you made on the page. The
  * file: { "decisions": [{ "aUuid", "bUuid", "decision": "keep_both" | "remove_a" |
@@ -556,6 +575,22 @@ export function recordReviewDecisions(
     return {
       ok: false,
       message: `${bad.length} decisions are not valid (each needs aUuid, bUuid, a decision and a note), first at ${bad[0]}. Nothing was recorded.`,
+    };
+  }
+  // One decision per pair: a file deciding a pair twice (in either order) would keep only the
+  // last one, so it is refused as a whole (the review's own uniqueness check, 2026-11-17).
+  const firstAt = new Map<string, number>();
+  const twice: [number, number][] = [];
+  rows.forEach((r, i) => {
+    const key = [r.a, r.b].sort().join('|');
+    const first = firstAt.get(key);
+    if (first === undefined) firstAt.set(key, i);
+    else twice.push([first, i]);
+  });
+  if (twice.length > 0) {
+    return {
+      ok: false,
+      message: `${twice.length} decisions repeat a pair decided earlier in the file (first: decisions ${twice[0][0]} and ${twice[0][1]}). Nothing was recorded.`,
     };
   }
   const pairExists = db.prepare(
@@ -613,8 +648,10 @@ export function recordReviewDecisions(
  *     and "N~M巻セット" are omnibus markers.
  *   3 (2026-11-17): same text with different artwork (another edition) is never removed
  *     automatically.
+ *   4 (2026-11-17): a set with no single winner still loses the copies every other copy
+ *     beats; pairs with a copy no longer in Calibre stay out of the sets.
  */
-export const STAGE3_RULES_VERSION = 3;
+export const STAGE3_RULES_VERSION = 4;
 
 /** What the saved classes depend on: the rules and the classifying settings. */
 export function stage3RulesKey(s: ReturnType<typeof getSettings>['duplicates']): string {
@@ -693,11 +730,23 @@ export class Stage3Analysis {
     return path.join(this.deps.calibreDir, lib.folder);
   }
 
+  /**
+   * Calibre's books as the reader's last snapshot has them, read again whenever the indexer
+   * made a new snapshot (2026-11-17: the list was read once per server run, so a copy choice
+   * after removals still saw the removed copies).
+   */
   loadBooks(libraryId: string): Map<number, Stage3Book> {
     const file = snapshotFile(this.deps.cacheDir, libraryId);
-    if (this.books && this.booksFor === file) return this.books;
+    let key = file;
+    try {
+      const st = fs.statSync(file);
+      key = `${file}|${st.mtimeMs}|${st.size}`;
+    } catch {
+      // No snapshot: reading it below says so.
+    }
+    if (this.books && this.booksFor === key) return this.books;
     this.books = readStage3Books(file);
-    this.booksFor = file;
+    this.booksFor = key;
     return this.books;
   }
 
@@ -1875,8 +1924,14 @@ export class Stage3Analysis {
       imageMatchDistance: settings.duplicates.imageMatchDistance,
       coverLargerPercent: settings.covers.largerPercent,
     };
+    // A copy no longer in Calibre (removed by an earlier batch, or by hand) leaves nothing to
+    // decide in its pairs: they stay out of the sets. As a "can't compare" pair, it made every
+    // set it was in look undecided after the removals (79 became 7,953 in the 2026-11-17
+    // rehearsal, nothing more removed).
+    const present = (id: number, uuid: string) => books.get(id)?.uuid === uuid;
     db.transaction(() => {
       for (const x of pairs) {
+        if (!present(x.a_id, x.a_uuid) || !present(x.b_id, x.b_uuid)) continue;
         const decision = decisionOf(x);
         const key = `${x.a_id}:${x.b_id}`;
         pairOf.set(key, x);
@@ -1993,19 +2048,16 @@ export class Stage3Analysis {
            updated_at = ? WHERE stage = 3 AND library_id = ? AND state = 'proposed'`,
       ).run(now, p.libraryId);
       for (const set of sets) {
-        if (set.keeper === null) {
-          setsWithoutKeeper++;
-          continue;
-        }
-        const keep = books.get(set.keeper)!;
-        const keepFacts = facts.get(set.keeper)!;
-        const keptReader = readerBook(keep.uuid);
-        const keptHasData = keptReader ? withData.has(keptReader) : false;
-        for (const id of set.removed) {
+        if (set.keeper === null) setsWithoutKeeper++;
+        for (const { id, keep: keepId } of set.removals) {
+          const keep = books.get(keepId);
+          const keepFacts = facts.get(keepId);
           const copy = books.get(id);
           const copyFacts = facts.get(id);
-          if (!copy || !copyFacts || active.has(copy.uuid)) continue;
-          const key = `${Math.min(id, set.keeper)}:${Math.max(id, set.keeper)}`;
+          if (!keep || !keepFacts || !copy || !copyFacts || active.has(copy.uuid)) continue;
+          const keptReader = readerBook(keep.uuid);
+          const keptHasData = keptReader ? withData.has(keptReader) : false;
+          const key = `${Math.min(id, keepId)}:${Math.max(id, keepId)}`;
           const pair = pairOf.get(key)!;
           const removedReader = readerBook(copy.uuid);
           const removedHasData = removedReader ? withData.has(removedReader) : false;
@@ -2129,13 +2181,17 @@ export class Stage3Analysis {
     return p;
   }
 
-  /** Pairs waiting for a decision: review, image-only, and duplicates without a clear better copy. */
+  /**
+   * Pairs waiting for a decision: review, image-only, and duplicates without a clear better
+   * copy, without the pairs already decided (on the page or in the review): a removal decided
+   * keeps its class "review" with the copy to keep set.
+   */
   reviewCount(analysisId: string): number {
     return (
       this.deps.cleanup
         .prepare(
-          `SELECT COUNT(*) AS n FROM content_pairs WHERE analysis_id = ?
-             AND (class = 'review' OR (class IN ('duplicate', 'superset') AND keep_id IS NULL))`,
+          `SELECT COUNT(*) AS n FROM content_pairs p WHERE p.analysis_id = ?
+             AND ${STAGE3_WAITING_SQL}`,
         )
         .get(analysisId) as { n: number }
     ).n;

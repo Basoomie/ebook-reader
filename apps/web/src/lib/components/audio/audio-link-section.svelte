@@ -35,6 +35,7 @@
   import AudiobookJobPanel from '$lib/components/audio/audiobook-job-panel.svelte';
   import BookPronunciationPanel from '$lib/components/audio/book-pronunciation-panel.svelte';
   import BookVoiceChoice from '$lib/components/audio/book-voice-choice.svelte';
+  import BookSpeakersPanel from '$lib/components/audio/book-speakers-panel.svelte';
   import AudioDevicePanel from '$lib/components/audio/audio-device-panel.svelte';
   import { storedAudio } from '$lib/audio/offline/audio-offline';
   import {
@@ -1024,6 +1025,8 @@
           {link}
           on:changed={(e) => jobPanel?.usePreferred(e.detail.effective)}
         />
+        <!-- Session 5: who speaks each quote, and each character's voice -->
+        <BookSpeakersPanel {api} {bookId} />
         <BookPronunciationPanel {api} {bookId} {link} />
       {/if}
     {/if}

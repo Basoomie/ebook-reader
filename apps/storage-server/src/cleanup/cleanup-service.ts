@@ -18,7 +18,7 @@ import { getSettings } from './settings';
 import { Stage1Analysis, type Stage1Progress } from './stage1';
 import { Stage2Analysis, type Stage2Progress } from './stage2';
 import { listFieldPauses, loadGold, resumeField } from './stage2-gate';
-import { Stage3Analysis, type PairRow, type Stage3Progress } from './stage3';
+import { STAGE3_WAITING_SQL, Stage3Analysis, type PairRow, type Stage3Progress } from './stage3';
 import { Stage3Worker, type Stage3Reader } from '../counts/book-text-worker';
 import {
   BUILT_STAGES,
@@ -1129,9 +1129,9 @@ export class CleanupService {
     let order = 'p.a_id, p.b_id';
     const classes = ['duplicate', 'superset', 'keep_both', 'never', 'different', 'review'];
     if (view === 'review') {
-      where.push(
-        `(p.class = 'review' OR (p.class IN ('duplicate', 'superset') AND p.keep_id IS NULL))`,
-      );
+      // Waiting for a decision: the pairs already decided are in the other lists (removals,
+      // keep both), so this list and the page's count agree.
+      where.push(STAGE3_WAITING_SQL);
     } else if (view === 'image_only') where.push(`p.source = 'image_only'`);
     else if (view === 'errors') where.push('p.error IS NOT NULL');
     else if (view === 'spread') {

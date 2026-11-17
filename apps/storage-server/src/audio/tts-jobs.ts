@@ -53,6 +53,7 @@ import {
   normalizeVoiceMap,
   type Pauses,
   sentenceSegments,
+  usedKeys,
   usesSeveralVoices,
   type VoiceMapV1,
   type VoiceMapV2,
@@ -81,6 +82,7 @@ import {
 import { probeFile, runTool } from './tool-run';
 import type { TtsModel, TtsModelService } from './tts-models';
 import { TooLargeError, TtsWorkdir } from './tts-workdir';
+import type { SpeakerVoices } from './speakers/speaker-voices';
 
 export const TTS_KINDS: WorkerJobKind[] = [
   'generate_audiobook',
@@ -347,6 +349,8 @@ export class TtsJobService {
   private readonly chapterCache = new Map<string, { at: number; script: BookScript }>();
   /** Season 2 Phase 12: the sentence-audio service, once it is set up. */
   private sentence: SentenceJobHooks | null = null;
+  /** Session 5: character voices (speakers/speaker-voices.ts), once set up. */
+  speakers: SpeakerVoices | null = null;
 
   constructor(opts: TtsJobOptions) {
     this.db = opts.db;
@@ -390,6 +394,25 @@ export class TtsJobService {
       .all() as { id: number }[];
     for (const { id } of left) this.kickAssembly(id);
     await this.sweep();
+  }
+
+  /** Session 5: the book's character voices join a job's map, and its runs get them. */
+  withSpeakers(
+    userId: string,
+    bookId: string,
+    map: VoiceMapV2,
+    chapters: ScriptChapter[],
+  ): VoiceMapV2 {
+    if (!this.speakers) return map;
+    this.speakers.extend(userId, bookId, map);
+    this.speakers.assign(
+      userId,
+      bookId,
+      chapters.flatMap((c) => c.sentences),
+      map,
+      { prune: true },
+    );
+    return map;
   }
 
   /** Season 2 Phase 12: the sentence-audio service (sentence-audio.ts) attaches itself. */
@@ -488,6 +511,17 @@ export class TtsJobService {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * Season 2 Phase 12 session 5: the book's EPUB as `size|mtime` (null: not available), so the
+   * speaker results notice a changed file (their quote numbers may have moved).
+   */
+  async fileKey(userId: string, bookId: string): Promise<string | null> {
+    const file = this.epubFile(userId, bookId);
+    if (!file) return null;
+    const st = await statFile(file);
+    return st ? `${st.size}|${st.mtimeMs}` : null;
   }
 
   /** The book's script (cached for a while; also used by sentence-audio.ts). */
@@ -799,6 +833,12 @@ export class TtsJobService {
     const script = await this.bookScript(userId, bookId);
     const fixed = await this.applyFixes(userId, bookId, script.chapters);
     const link = getLink(this.db, userId, bookId);
+    const map = this.withSpeakers(
+      userId,
+      bookId,
+      this.voiceMap(voice, model, bookId, parsePauses(input.pauses), dialogue),
+      fixed.chapters,
+    );
     const id = this.insertJob({
       userId,
       bookId,
@@ -806,7 +846,7 @@ export class TtsJobService {
       libraryId: lib.id,
       linkConfirmedAt: link?.confirmedAt ?? null,
       params: {
-        ...this.voiceMap(voice, model, bookId, parsePauses(input.pauses), dialogue),
+        ...map,
         ...(fixed.summary ? { fixes: fixed.summary } : {}),
       },
       version: this.nextVersion(userId, bookId),
@@ -844,6 +884,9 @@ export class TtsJobService {
     const voice = this.chooseVoice(userId, input.voiceId, model);
     const dialogue = this.chooseDialogueVoice(userId, input.dialogueVoiceId);
     const map = this.voiceMap(voice, model, bookId, parsePauses(input.pauses), dialogue);
+    // Session 5: the character voices count as more than one voice (the preview then starts
+    // just before the chapter's first dialogue).
+    this.speakers?.extend(userId, bookId, map);
     const script = await this.bookScript(userId, bookId);
     const wanted = typeof input.chapterIndex === 'number' ? input.chapterIndex : 0;
     const chapter = script.chapters.find((c) => c.index === wanted) ?? script.chapters[0];
@@ -853,6 +896,7 @@ export class TtsJobService {
         sentences: previewFrom(chapter, this.config.previewSeconds, usesSeveralVoices(map)),
       },
     ]);
+    this.speakers?.assign(userId, bookId, fixed.chapters[0].sentences, map, { prune: true });
     const [previewChapter] = fixed.chapters;
     // A new preview replaces the one waiting.
     const waiting = this.activeFor(userId, bookId, 'preview_audiobook');
@@ -1012,11 +1056,16 @@ export class TtsJobService {
       return { wait: TWO_VOICES_UPDATE };
     }
     let voice: TtsClaim['voice'] = null;
-    for (const key of new Set(Object.values(params.roles))) {
+    for (const key of usedKeys(params)) {
       const ref = params.voices[key];
       if (!ref?.voiceId) continue;
       const v = this.voices?.byId(ref.voiceId);
-      const what = key === 'narration' ? 'The voice preset' : `The ${key} voice preset`;
+      const what =
+        key === 'narration'
+          ? 'The voice preset'
+          : key.startsWith('character:')
+            ? `The voice preset "${ref.name}" of a character`
+            : `The ${key} voice preset`;
       if (!v) return { error: `${what} of this job was deleted` };
       if (v.sha256 !== ref.sha256) return { error: `${what} of this job changed` };
       if (key === params.roles.narration) voice = { sha256: v.sha256, seconds: v.clipSeconds };
