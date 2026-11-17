@@ -153,8 +153,17 @@ export interface SessionView {
   bookId: string | null;
   state: 'open' | 'ended';
   ended: SessionEnd | null;
-  /** `dialogue`: the dialogue voice's name when it has its own (session 4). */
-  voice: { name: string; dialogue: string | null; model: string; from: 'book' | 'global' };
+  /**
+   * `dialogue`: the dialogue voice's name when it has its own (session 4); `characters`: how
+   * many characters read with voices of their own (session 5).
+   */
+  voice: {
+    name: string;
+    dialogue: string | null;
+    characters: number;
+    model: string;
+    from: 'book' | 'global';
+  };
   /** The batches after `after`, in order. */
   batches: BatchView[];
   pc: LivePcView;
@@ -703,6 +712,7 @@ export class ReadAloudService implements ReadAloudGate {
       voice: {
         name: s.voice.name,
         dialogue: dialogueVoice(s.map)?.name ?? null,
+        characters: Object.keys(s.map.voices).filter((k) => k.startsWith('character:')).length,
         model: s.model.label,
         from: s.from,
       },

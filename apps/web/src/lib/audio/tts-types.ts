@@ -14,7 +14,9 @@ export type TtsJobKind =
   | 'preview_audiobook'
   | 'voice_sample'
   /** Season 2 Phase 12: Enrich's sentence audio for Anki (each clip one chapter). */
-  | 'sentence_audio';
+  | 'sentence_audio'
+  /** Session 5: working out who speaks each quote (the speaker model on the PC). */
+  | 'attribute_speakers';
 export type TtsJobStage = 'preparing' | 'generating' | 'assembling' | 'saving';
 
 export interface TtsPauses {
@@ -49,6 +51,8 @@ export interface VoiceMapV2 {
   chapterIndex?: number;
   chapterTitle?: string;
   fixes?: FixSummary;
+  /** Session 5: the character voices the job reads with (keys 'character:<no>'). */
+  speakers?: { characters: number; quotes: number; narrator: boolean };
 }
 
 /** The voice map, v1: one narrator (jobs made before session 4). */
@@ -225,8 +229,17 @@ export interface ReadAloudSession {
   bookId: string | null;
   state: 'open' | 'ended';
   ended: string | null;
-  /** `dialogue`: the dialogue voice's name when it has its own (session 4). */
-  voice: { name: string; dialogue?: string | null; model: string; from: 'book' | 'global' };
+  /**
+   * `dialogue`: the dialogue voice's name when it has its own (session 4); `characters`
+   * (session 5): how many characters read with voices of their own (absent: an older server).
+   */
+  voice: {
+    name: string;
+    dialogue?: string | null;
+    characters?: number;
+    model: string;
+    from: 'book' | 'global';
+  };
   batches: ReadAloudBatch[];
   pc: ReadAloudPc;
 }

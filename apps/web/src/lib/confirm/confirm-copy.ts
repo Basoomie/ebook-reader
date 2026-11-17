@@ -436,6 +436,74 @@ export function removeTtsModelCopy(label: string): ConfirmCopy {
   };
 }
 
+// ---- Per-character voices (Season 2 Phase 12 session 5) ---------------------------------
+
+/** Stop working out who speaks (the answers so far are thrown away). */
+export function stopSpeakersCopy(bookTitle: string): ConfirmCopy {
+  return {
+    title: 'Stop finding who speaks?',
+    message: [
+      `The PC stops working out who speaks in ${quoted(String(bookTitle))}. What it found in this run is thrown away; the characters and speakers from an earlier run, and your changes, stay.`,
+      'To stop for a while and go on later instead, pause the PC in Settings > Audiobooks.'
+    ],
+    confirmLabel: 'Stop finding who speaks'
+  };
+}
+
+/** Run again over a book that has speakers (corrections and voices are kept). */
+export function runSpeakersAgainCopy(corrected: number): ConfirmCopy {
+  return {
+    title: 'Find who speaks again?',
+    message: [
+      'The PC reads the whole book again and gives every quote the speaker it finds now.',
+      `${corrected ? `Your ${corrected === 1 ? 'correction' : `${corrected} corrections`}, ` : 'Your '}renamed characters and their voices stay as you set them.`
+    ],
+    confirmLabel: 'Find who speaks again',
+    danger: false
+  };
+}
+
+/** Merge one character into another. */
+export function mergeCharacterCopy(from: string, into: string, quotes: number): ConfirmCopy {
+  return {
+    title: `Merge ${quoted(from)} into ${quoted(into)}?`,
+    message: [
+      `${quotes === 1 ? 'Its quote is' : `Its ${quotes} quotes are`} read by ${quoted(into)} from now on, and ${quoted(from)} becomes another name of ${quoted(into)} (later runs find it by that name too).`,
+      `${quoted(from)} is removed from the list; to separate them again, add the character back and change the quotes.`
+    ],
+    confirmLabel: 'Merge'
+  };
+}
+
+/** Start an audiobook while the book's speakers are not (yet) worked out (user, 2026-11-16). */
+export function audiobookWithoutSpeakersCopy(running: boolean): ConfirmCopy {
+  return {
+    title: running
+      ? 'Make the audiobook before the speakers are found?'
+      : 'Make the audiobook without character voices?',
+    message: [
+      running
+        ? 'The PC is still working out who speaks in this book. An audiobook started now uses what is known so far: quotes without a speaker are read with the dialogue voice.'
+        : 'Who speaks each quote has not been worked out for this book, so every quote is read with the dialogue voice.',
+      'Find who speaks under “Characters” to give characters their own voices; you can make a new version of the audiobook later.'
+    ],
+    confirmLabel: 'Make it anyway',
+    danger: false
+  };
+}
+
+/** Remove a speaker model from the list (Settings > Audiobooks). */
+export function removeSpeakerModelCopy(label: string): ConfirmCopy {
+  return {
+    title: 'Remove this speaker model?',
+    message: [
+      `${quoted(String(label))} is no longer offered, and the PC deletes its file the next time it checks in. Speakers already found with it stay as they are.`,
+      'You can add it again later; it is then downloaded again.'
+    ],
+    confirmLabel: 'Remove model'
+  };
+}
+
 /** Season 2 Phase 12: remove a pronunciation fix (a book's or the global list). */
 export function removePronunciationFixCopy(match: string, global: boolean): ConfirmCopy {
   return {

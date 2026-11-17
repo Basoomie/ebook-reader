@@ -27,7 +27,14 @@
   import type { AudiobookJob, BookChapters, TtsModel, VoicePreset } from '$lib/audio/tts-types';
   import { jobFixesText } from '$lib/audio/pronunciation/fix-text';
   import { confirmDestructive } from '$lib/confirm/confirm';
-  import { replaceAudiobookWithMadeCopy, stopAudiobookJobCopy } from '$lib/confirm/confirm-copy';
+  import {
+    audiobookWithoutSpeakersCopy,
+    replaceAudiobookWithMadeCopy,
+    stopAudiobookJobCopy
+  } from '$lib/confirm/confirm-copy';
+  import { speakerJobActive } from '$lib/audio/speakers/speaker-text';
+  import type { SpeakerOverview } from '$lib/audio/speakers/speaker-types';
+  import { unsureBelow } from '$lib/audio/tts-settings';
   import { pagePath } from '$lib/data/env';
   import { logger } from '$lib/data/logger';
   import { LibraryApiError, type LibraryApi } from '$lib/library/api';
@@ -155,9 +162,25 @@
     }
   }
 
+  /** Session 5: the book's speakers (null: none yet, or an older server). */
+  let speakers: SpeakerOverview | null = null;
+  let speakersKnown = false;
+  $: voiced = speakers ? speakers.characters.filter((c) => !c.hidden && c.voiceId).length : 0;
+
+  async function loadSpeakers() {
+    try {
+      speakers = await api.speakers(bookId, unsureBelow());
+      speakersKnown = true;
+    } catch {
+      speakers = null;
+      speakersKnown = false;
+    }
+  }
+
   async function openForm() {
     open = true;
     message = '';
+    void loadSpeakers();
     if (chapters) return;
     chaptersError = '';
     const id = bookId;
@@ -241,6 +264,17 @@
 
   async function start() {
     if (starting || !canStart) return;
+    // Session 5 (user, 2026-11-16): starting before the book's speakers are worked out asks
+    // first; the audiobook then reads every quote without a speaker with the dialogue voice.
+    await loadSpeakers();
+    if (speakersKnown && speakers && (speakerJobActive(speakers.job) || !speakers.run)) {
+      const ok = await confirmDestructive({
+        ...audiobookWithoutSpeakersCopy(speakerJobActive(speakers.job)),
+        testid: 'audiobook-job-speakers-confirm',
+        confirmTestid: 'audiobook-job-speakers-confirm-button'
+      });
+      if (!ok) return;
+    }
     if (link?.state === 'linked') {
       const ok = await confirmDestructive({
         ...replaceAudiobookWithMadeCopy(linkedFolderName(link)),
@@ -415,6 +449,17 @@
               {/each}
             </select>
           </label>
+          {#if speakers?.run}
+            <p class="text-sm" data-testid="audiobook-job-characters">
+              {#if voiced}
+                Character voices: {voiced}
+                {voiced === 1 ? 'character reads' : 'characters read'} their own quotes (Characters,
+                below).
+              {:else}
+                No character has a voice of their own yet (Characters, below).
+              {/if}
+            </p>
+          {/if}
           <label class="grid gap-1 text-sm">
             <span class="text-c-muted">Model</span>
             <select
