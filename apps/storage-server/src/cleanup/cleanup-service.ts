@@ -383,7 +383,8 @@ export class CleanupService {
     };
   }
 
-  checks(now = Date.now()): CheckResult[] {
+  /** present: the reader's count of the library's books, when the caller already has it. */
+  checks(now = Date.now(), present?: number): CheckResult[] {
     const sidecar = this.sidecar(now);
     const target = this.targetLibrary();
     const login = this.sidecarConfig();
@@ -418,7 +419,7 @@ export class CleanupService {
           ? (getLibrary(this.opts.main, target)?.name ?? target)
           : 'Choose the library below',
       },
-      library_indexed: this.libraryIndexed(target),
+      library_indexed: this.libraryIndexed(target, present),
       reference_labels: this.referenceLabels(),
     };
     const sidecarRows = new Map(
@@ -465,7 +466,10 @@ export class CleanupService {
       : { ok: false, detail: error };
   }
 
-  private libraryIndexed(target: string | null): { ok: boolean; detail: string | null } {
+  private libraryIndexed(
+    target: string | null,
+    present?: number,
+  ): { ok: boolean; detail: string | null } {
     if (!target) return { ok: false, detail: 'No library chosen' };
     if (!this.opts.calibreDir || !this.opts.indexerEnabled()) {
       return { ok: false, detail: "The reader's Calibre indexer is off" };
@@ -473,7 +477,10 @@ export class CleanupService {
     try {
       const state = getIndexState(this.opts.main, target);
       if (state.indexedAt === null) return { ok: false, detail: 'Not indexed yet' };
-      return { ok: true, detail: `${presentBookCount(this.opts.main, target)} books in the index` };
+      return {
+        ok: true,
+        detail: `${present ?? presentBookCount(this.opts.main, target)} books in the index`,
+      };
     } catch (err) {
       return { ok: false, detail: (err as Error).message };
     }
@@ -1229,17 +1236,19 @@ export class CleanupService {
   status(now = Date.now()) {
     const target = this.targetLibrary();
     const lib = target ? getLibrary(this.opts.main, target) : null;
+    // Counted once: the reader's index of 60,000+ books is read row by row (0.3 s on the PC).
+    const present = lib ? presentBookCount(this.opts.main, lib.id) : undefined;
     return {
       stages: listStages(this.db),
       waiting: this.waiting,
-      checks: this.checks(now),
+      checks: this.checks(now, present),
       sidecar: this.sidecar(now),
       target: lib
         ? {
             id: lib.id,
             name: lib.name,
             folder: lib.folder,
-            present: presentBookCount(this.opts.main, lib.id),
+            present: present ?? 0,
           }
         : null,
       libraries: listLibraries(this.opts.main).map((l) => ({

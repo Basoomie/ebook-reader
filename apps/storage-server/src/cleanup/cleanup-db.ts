@@ -416,6 +416,21 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
       CREATE INDEX IF NOT EXISTS field_undo_change ON field_undo (change_id);
     `,
   },
+  {
+    version: 7,
+    name: 'covering indexes for the page status (counts, pace, batch counts)',
+    // Found live 2026-11-17: while /cleanup was open, its status poll read every row of
+    // proposed_changes (224,000 wide rows, stage 2's counts) and batch_items (204,000, the pace
+    // and the counts of 100 batches) every 5 s, blocking the server ~3 s of every 8 on the NAS;
+    // the sidecar's reports waited behind it (a third of stage 3's removal time). Same results,
+    // read from the indexes: 2 s -> 0.1 s on the PC.
+    sql: `
+      CREATE INDEX IF NOT EXISTS proposed_changes_counts
+        ON proposed_changes (stage, library_id, state, field, class, analysis_id, decided_by);
+      CREATE INDEX IF NOT EXISTS batch_items_batch_state ON batch_items (batch_id, state);
+      CREATE INDEX IF NOT EXISTS batch_items_done ON batch_items (state, updated_at);
+    `,
+  },
 ];
 
 export const CLEANUP_SCHEMA_VERSION = CLEANUP_MIGRATIONS[CLEANUP_MIGRATIONS.length - 1].version;
