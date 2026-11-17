@@ -649,25 +649,6 @@
                 </div>
               </div>
             {/each}
-            {#each stage3Lines(stage3, status.stage3) as line}
-              <p class="text-sm" data-testid="cleanup-stage-3-line">{line}</p>
-            {/each}
-            {#if gate3}
-              <div class="flex flex-col gap-1" data-testid="cleanup-gate-3">
-                <p class="text-sm font-medium">
-                  Checked on the measured pairs and the labeled books:
-                  <span aria-label={gate3.passed ? 'passes' : 'fails'}
-                    >{gate3.passed ? '✓ passes' : '✗ not passed'}</span
-                  >
-                </p>
-                {#each gateLines(gate3) as line}
-                  <p class="text-sm">{line}</p>
-                {/each}
-                {#each gate3.problems as problem}
-                  <p class="text-sm font-bold">{problem}</p>
-                {/each}
-              </div>
-            {/if}
             {#if precisionLine(stage3)}
               <p class="text-sm">
                 {precisionLine(stage3)?.replace('pairs still identical', 'pairs’ files unchanged')}
@@ -698,6 +679,37 @@
               <p class="text-sm text-c-muted" data-testid="cleanup-counts-3">
                 {countsLine(status.stage3.counts)}
               </p>
+            {/if}
+            {#if stage3Lines(stage3, status.stage3).length > 0 || gate3}
+              <details
+                class="flex flex-col gap-2"
+                open={stage3.mode !== 'on'}
+                data-testid="cleanup-stage-3-analysis"
+              >
+                <summary class="cursor-pointer text-sm font-medium">What the analysis found</summary
+                >
+                <div class="mt-2 flex flex-col gap-2">
+                  {#each stage3Lines(stage3, status.stage3) as line}
+                    <p class="text-sm" data-testid="cleanup-stage-3-line">{line}</p>
+                  {/each}
+                  {#if gate3}
+                    <div class="flex flex-col gap-1" data-testid="cleanup-gate-3">
+                      <p class="text-sm font-medium">
+                        Checked on the measured pairs and the labeled books:
+                        <span aria-label={gate3.passed ? 'passes' : 'fails'}
+                          >{gate3.passed ? '✓ passes' : '✗ not passed'}</span
+                        >
+                      </p>
+                      {#each gateLines(gate3) as line}
+                        <p class="text-sm">{line}</p>
+                      {/each}
+                      {#each gate3.problems as problem}
+                        <p class="text-sm font-bold">{problem}</p>
+                      {/each}
+                    </div>
+                  {/if}
+                </div>
+              </details>
             {/if}
           </div>
         {/if}

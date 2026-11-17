@@ -406,6 +406,33 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
   },
   {
     version: 6,
+    name: 'indexes on the tables that point at proposed changes (a delete checked them row by row)',
+    // Found live 2026-11-17: stage 3 replacing 8,664 proposals scanned batch_items (204,000 rows),
+    // field_undo and undo_records once per deleted row for the foreign keys; the server answered
+    // nothing for over an hour. With these indexes the same delete takes half a second.
+    sql: `
+      CREATE INDEX IF NOT EXISTS batch_items_change ON batch_items (change_id);
+      CREATE INDEX IF NOT EXISTS undo_records_change ON undo_records (change_id);
+      CREATE INDEX IF NOT EXISTS field_undo_change ON field_undo (change_id);
+    `,
+  },
+  {
+    version: 7,
+    name: 'covering indexes for the page status (counts, pace, batch counts)',
+    // Found live 2026-11-17: while /cleanup was open, its status poll read every row of
+    // proposed_changes (224,000 wide rows, stage 2's counts) and batch_items (204,000, the pace
+    // and the counts of 100 batches) every 5 s, blocking the server ~3 s of every 8 on the NAS;
+    // the sidecar's reports waited behind it (a third of stage 3's removal time). Same results,
+    // read from the indexes: 2 s -> 0.1 s on the PC.
+    sql: `
+      CREATE INDEX IF NOT EXISTS proposed_changes_counts
+        ON proposed_changes (stage, library_id, state, field, class, analysis_id, decided_by);
+      CREATE INDEX IF NOT EXISTS batch_items_batch_state ON batch_items (batch_id, state);
+      CREATE INDEX IF NOT EXISTS batch_items_done ON batch_items (state, updated_at);
+    `,
+  },
+  {
+    version: 8,
     name: 'audiobook cleanup: stages 0-2 (WP21a)',
     sql: `
       -- The audiobook cleanup's own stages (Calibre's stages table means Calibre's stages).

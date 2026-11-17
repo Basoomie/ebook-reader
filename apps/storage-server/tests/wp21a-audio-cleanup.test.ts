@@ -1,5 +1,5 @@
 /**
- * WP21a: the audiobook cleanup's groundwork (cleanup.db v6, the disk lock shared with the
+ * WP21a: the audiobook cleanup's groundwork (cleanup.db v8, the disk lock shared with the
  * Calibre cleanup, settings and the ABS key), stage 0 (Audiobookshelf snapshot, GET only),
  * stage 1 (identity) and stage 2 (books and file health), and the proofs that nothing is
  * written under the audiobook roots.
@@ -94,20 +94,20 @@ function put(root: string, rel: string, data: Buffer | string): string {
 }
 
 // ---------------------------------------------------------------------------------------
-describe('cleanup.db migration 6', () => {
-  it('adds the audiobook tables to a v5 file and leaves the Calibre stages as they were', () => {
+describe('cleanup.db migration 8', () => {
+  it('adds the audiobook tables to a v7 file (the live one has 7) and leaves the Calibre stages as they were', () => {
     const dir = makeTempDir('wp21a-mig');
     const file = path.join(dir, 'cleanup.db');
     const v5 = new Database(file);
-    for (const m of CLEANUP_MIGRATIONS.filter((x) => x.version <= 5)) {
+    for (const m of CLEANUP_MIGRATIONS.filter((x) => x.version <= 7)) {
       v5.exec(m.sql);
       v5.pragma(`user_version = ${m.version}`);
     }
     v5.prepare(`UPDATE stages SET mode = 'analyse', state = 'ready' WHERE stage = 3`).run();
     v5.close();
     const db = openCleanupDatabase(file);
-    expect(db.pragma('user_version', { simple: true })).toBe(6);
-    expect(CLEANUP_SCHEMA_VERSION).toBe(6);
+    expect(db.pragma('user_version', { simple: true })).toBe(8);
+    expect(CLEANUP_SCHEMA_VERSION).toBe(8);
     expect(getStage(db, 3).mode).toBe('analyse');
     expect(getStage(db, 3).state).toBe('ready');
     expect(

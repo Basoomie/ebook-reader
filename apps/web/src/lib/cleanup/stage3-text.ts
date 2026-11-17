@@ -212,7 +212,7 @@ export function stage3Lines(stage: CleanupStage, status: Stage3Status | undefine
   if (extras.length) lines.push(`${extras.join('; ')}.`);
   const spb = secondsPerBook(p);
   const total = Object.values(p.times ?? {}).reduce((a, t) => a + (t?.ms ?? 0), 0);
-  if (spb) lines.push(`Took ${durationText(total)} (${spb}).`);
+  if (spb) lines.push(`The analysis took ${durationText(total)} (${spb} read).`);
   return lines;
 }
 
@@ -261,6 +261,7 @@ export function stage3PauseTitle(reason: string): string {
 const MEASURE_LABELS: Record<PairMeasure['name'], string> = {
   text: 'Text',
   images: 'Pictures',
+  artwork: 'Artwork',
   ruby: 'Furigana',
   toc: 'Contents',
   cover: 'Cover',
