@@ -128,6 +128,7 @@ Speed on the RTX 4070 (measured): Irodori v4.1 Small reads about 7 times faster 
 | speakerPort              | 8791                                      | The local port of the speaker program (127.0.0.1 only)           |
 | speakerLoadMaxMinutes    | 30                                        | Loading the speaker model may take this long                     |
 | speakerRequestMaxMinutes | 10                                        | One request to the speaker model may take this long              |
+| speakerGpuMarginMiB      | 4096                                      | Graphics memory the speaker model leaves free for other programs |
 
 ## Development
 

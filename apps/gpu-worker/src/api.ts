@@ -389,6 +389,15 @@ export class ServerApi {
     ).json()) as { cancel: boolean; pause?: boolean; yield?: boolean };
   }
 
+  /** Still waiting on the model (keeps the job's lease); the server says whether to stop or make way. */
+  async speakersWorking(
+    id: number,
+  ): Promise<{ cancel: boolean; pause?: boolean; yield?: boolean }> {
+    return (await (
+      await this.request('POST', `/worker/jobs/${id}/speakers/working`, {})
+    ).json()) as { cancel: boolean; pause?: boolean; yield?: boolean };
+  }
+
   /** Made way (Pause, read-aloud, sentence clips): the job goes back to the queue. */
   async speakersRelease(id: number): Promise<string> {
     return (

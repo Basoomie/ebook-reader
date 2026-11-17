@@ -299,6 +299,21 @@ export class SpeakerJobService {
   }
 
   /**
+   * The PC is still waiting on the model for the current request (one request can take
+   * minutes when the PC is busy): keeps the lease without changing the job's progress line, and
+   * gives the queue's answer, so a stop, a pause or read-aloud takes effect during the request.
+   */
+  working(id: number): { cancel: boolean; pause: boolean; yield: boolean } {
+    const job = this.jobs.get(id);
+    if (!job || job.kind !== KIND) throw new JobRequestError(404, 'not_found', 'No such job');
+    return this.jobs.progress(id, {
+      stage: job.stage,
+      progress: job.progress,
+      message: job.message,
+    });
+  }
+
+  /**
    * The PC's answer to request `seq` (it must be the one `next` gave). Returns the queue's
    * answer for the PC: stop, pause or make way.
    */

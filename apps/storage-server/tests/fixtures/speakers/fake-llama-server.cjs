@@ -3,7 +3,7 @@
  *   GET  /health          503 for the first "load-ms" ms (file in FAKE_DOCKER_STATE, default 200)
  *   POST /apply-template  { prompt }: the messages' text, one per line
  *   POST /completion      the stand-in model's answer (fake-model.cjs); "request-ms" (file)
- *                         is waited first; each request is kept in requests.jsonl
+ *                         is waited after the request is kept in requests.jsonl
  */
 const fs = require('fs');
 const http = require('http');
@@ -37,7 +37,6 @@ const server = http.createServer((req, res) => {
       return send(200, { prompt: body.messages.map((m) => m.content).join('\n') });
     }
     if (req.url === '/completion') {
-      await new Promise((r) => setTimeout(r, num('request-ms', 0)));
       if (state) {
         fs.appendFileSync(
           path.join(state, 'requests.jsonl'),
@@ -46,9 +45,11 @@ const server = http.createServer((req, res) => {
             temperature: body.temperature,
             grammar: !!body.grammar,
             schema: !!body.json_schema,
+            prompt: body.prompt,
           }) + '\n',
         );
       }
+      await new Promise((r) => setTimeout(r, num('request-ms', 0)));
       const a = fake.answer({
         prompt: body.prompt,
         grammar: body.grammar,

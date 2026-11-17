@@ -86,6 +86,11 @@ export interface WorkerSettings {
   speakerLoadMaxMinutes: number;
   /** Session 5: one request to the speaker model may take this long (minutes). */
   speakerRequestMaxMinutes: number;
+  /**
+   * Session 5: graphics memory (MiB) the speaker model leaves free for the desktop (llama.cpp's
+   * --fit-target). Too little and Windows swaps the model's memory when other programs draw.
+   */
+  speakerGpuMarginMiB: number;
   /** Session 5: where models are downloaded from (tests: a local stand-in). */
   huggingFaceUrl: string;
 }
@@ -114,6 +119,7 @@ export const DEFAULTS: Omit<WorkerSettings, 'serverUrl' | 'token'> = {
   speakerPort: 8791,
   speakerLoadMaxMinutes: 30,
   speakerRequestMaxMinutes: 10,
+  speakerGpuMarginMiB: 4096,
   huggingFaceUrl: 'https://huggingface.co',
 };
 
@@ -194,6 +200,7 @@ export function parseSettings(raw: unknown): WorkerSettings {
     speakerPort: Math.round(num(r, 'speakerPort', 1024)),
     speakerLoadMaxMinutes: num(r, 'speakerLoadMaxMinutes', 0.01),
     speakerRequestMaxMinutes: num(r, 'speakerRequestMaxMinutes', 0.01),
+    speakerGpuMarginMiB: Math.round(num(r, 'speakerGpuMarginMiB', 0)),
     huggingFaceUrl: str(r, 'huggingFaceUrl').replace(/\/+$/, ''),
     ttsPrecision: ((p) => {
       if (p !== 'bf16' && p !== 'fp32') throw new ConfigError('ttsPrecision must be bf16 or fp32');

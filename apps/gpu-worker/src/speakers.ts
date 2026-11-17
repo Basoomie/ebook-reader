@@ -76,6 +76,8 @@ export function speakerArgs(
     '--jinja',
     '-rea',
     'off',
+    '--fit-target',
+    String(s.speakerGpuMarginMiB),
   ];
 }
 
@@ -86,6 +88,7 @@ function local(
   route: string,
   body: unknown,
   timeoutMs: number,
+  signal?: AbortSignal,
 ): Promise<{ status: number; json: unknown }> {
   return new Promise((resolve, reject) => {
     const data = body === undefined ? undefined : Buffer.from(JSON.stringify(body));
@@ -118,6 +121,8 @@ function local(
       ),
     );
     req.on('error', reject);
+    // Closing the connection also ends the request in llama.cpp's server.
+    signal?.addEventListener('abort', () => req.destroy(new Error('Stopped')), { once: true });
     req.end(data);
   });
 }
@@ -292,10 +297,48 @@ export async function runSpeakerJob({
     }
     log.info(`Job ${job.id}: the speaker model is loaded`);
     const timeoutMs = s.speakerRequestMaxMinutes * 60_000;
+    // One request can take minutes when the PC is busy: check in with the server meanwhile
+    // (keeps the job's lease; a stop, a pause or read-aloud ends the request at once).
+    const askWatched = async (request: SpeakerRequest) => {
+      const stop = new AbortController();
+      let stopped: Error | null = null;
+      let checking = false;
+      const timer = setInterval(() => {
+        if (checking) return;
+        checking = true;
+        api
+          .speakersWorking(job.id)
+          .then(decide)
+          .then((d) => {
+            if (d === 'release') {
+              stopped = new TtsStopped('release');
+              stop.abort();
+            }
+          })
+          .catch((err: unknown) => {
+            if (err instanceof TtsStopped) {
+              stopped = err;
+              stop.abort();
+            }
+            // Otherwise a missed check-in: the lease allows it; the next one may get through.
+          })
+          .finally(() => {
+            checking = false;
+          });
+      }, s.reportSeconds * 1000);
+      try {
+        return await ask(s.speakerPort, request, timeoutMs, stop.signal);
+      } catch (err) {
+        if (stopped) throw stopped;
+        throw err;
+      } finally {
+        clearInterval(timer);
+      }
+    };
     for (;;) {
       const { request } = await api.speakersNext(job.id);
       if (!request) break;
-      const answer = await ask(s.speakerPort, request, timeoutMs);
+      const answer = await askWatched(request);
       const flags = await api.speakersAnswer(job.id, request.seq, answer);
       if ((await decide(flags)) === 'release') throw new TtsStopped('release');
     }
@@ -317,6 +360,7 @@ async function ask(
   port: number,
   r: SpeakerRequest,
   timeoutMs: number,
+  signal?: AbortSignal,
 ): Promise<{ content: string; probs?: unknown; ms: number }> {
   const t0 = Date.now();
   const tpl = await local(
@@ -342,7 +386,7 @@ async function ask(
   };
   if (r.grammar) body.grammar = r.grammar;
   if (r.jsonSchema) body.json_schema = r.jsonSchema;
-  const out = await local(port, 'POST', '/completion', body, timeoutMs);
+  const out = await local(port, 'POST', '/completion', body, timeoutMs, signal);
   const json = out.json as {
     content?: unknown;
     completion_probabilities?: unknown;

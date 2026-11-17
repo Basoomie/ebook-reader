@@ -102,6 +102,16 @@ export function createSpeakerWorkerRouter(db: Database.Database, o: SpeakerOptio
     }
   });
 
+  // Worker 1.4.0: still on a long request; keeps the lease and says whether to stop or make way.
+  router.post('/worker/jobs/:id/speakers/working', (req, res) => {
+    const jobs = o.speakerJobs ?? off();
+    try {
+      res.json(jobs.working(num(req.params.id)));
+    } catch (err) {
+      rethrow(err);
+    }
+  });
+
   router.post('/worker/jobs/:id/speakers/:seq', answerJson, (req, res) => {
     const jobs = o.speakerJobs ?? off();
     try {

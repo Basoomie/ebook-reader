@@ -73,8 +73,8 @@ async function freePort(): Promise<number> {
   return port;
 }
 
-async function workerEnv(mode = 'ok') {
-  const t = await ttsEnv(track, { script: SCRIPT });
+async function workerEnv(mode = 'ok', leaseSeconds?: number) {
+  const t = await ttsEnv(track, { script: SCRIPT, leaseSeconds });
   const server = t.app.listen(0, '127.0.0.1');
   await new Promise((r) => server.once('listening', r));
   closers.push(() => new Promise((r) => server.close(() => r())));
@@ -228,6 +228,8 @@ describe('speaker worker pieces', () => {
       '--jinja',
       '-rea',
       'off',
+      '--fit-target',
+      '4096',
     ]);
     expect(() => speakerModelPath({ repo: 'a/b c', revision: 'r', file: 'a.gguf' })).toThrow();
     expect(() => speakerModelPath({ repo: 'a/b', revision: '..', file: 'a.gguf' })).toThrow();
@@ -314,18 +316,46 @@ describe.skipIf(!HAS_FFMPEG)('the worker running speaker jobs (1.4.0)', () => {
     await t.worker.tick();
     job = (await t.api('get', `/books/${t.book}/speakers`)).body.job;
     expect(job.state).toBe('done');
-    // This book is one window of each stage: 3 requests in all, none asked twice.
-    expect(t.requests().length).toBe(3);
+    // This book is one window of each stage: 3 requests in all. An answered one is not asked
+    // again; the one the pause cut short is (at most one more).
+    const prompts = t.requests().map((r) => JSON.stringify(r.prompt));
+    expect(new Set(prompts).size).toBe(3);
+    expect(prompts.length).toBeLessThanOrEqual(4);
     expect(answered).toBeLessThan(3);
     // Stop while it runs.
     await t.api('post', `/books/${t.book}/speakers/run`).send({});
     const second = t.worker.tick();
-    for (let i = 0; i < 200 && t.requests().length < 4; i++)
+    for (let i = 0; i < 200 && t.requests().length < prompts.length + 1; i++)
       await new Promise((r) => setTimeout(r, 25));
     const id = (await t.api('get', `/books/${t.book}/speakers`)).body.job.id;
     await t.api('post', `/audio/subtitle-jobs/${id}/cancel`).send({});
     await second;
     expect((await t.api('get', `/books/${t.book}/speakers`)).body.job.state).toBe('cancelled');
+    expect(fs.readdirSync(t.state).filter((f) => f.endsWith('.pid'))).toEqual([]);
+  }, 60_000);
+
+  it('a request longer than the lease keeps the job; a pause ends a request at once', async () => {
+    // The live run (2026-11-17): a busy PC took minutes per request and the job was given up
+    // as "The PC stopped responding". The PC checks in while it waits on the model.
+    const t = await workerEnv('ok', 1);
+    fs.writeFileSync(path.join(t.state, 'request-ms'), '2500');
+    await t.api('post', `/books/${t.book}/speakers/run`).send({});
+    await t.worker.tick();
+    let job = (await t.api('get', `/books/${t.book}/speakers`)).body.job;
+    expect(job).toMatchObject({ state: 'done', attempts: 1 });
+    expect(t.requests().length).toBe(3);
+    // Paused during a long request: the request ends now (not after its 20 s), back to the queue.
+    fs.writeFileSync(path.join(t.state, 'request-ms'), '20000');
+    await t.api('post', `/books/${t.book}/speakers/run`).send({});
+    const ticking = t.worker.tick();
+    for (let i = 0; i < 400 && t.requests().length < 4; i++)
+      await new Promise((r) => setTimeout(r, 25));
+    const t0 = Date.now();
+    await t.api('put', '/gpu-worker/paused').send({ paused: true });
+    await ticking;
+    expect(Date.now() - t0).toBeLessThan(5000);
+    job = (await t.api('get', `/books/${t.book}/speakers`)).body.job;
+    expect(job).toMatchObject({ state: 'queued', attempts: 0 });
     expect(fs.readdirSync(t.state).filter((f) => f.endsWith('.pid'))).toEqual([]);
   }, 60_000);
 
