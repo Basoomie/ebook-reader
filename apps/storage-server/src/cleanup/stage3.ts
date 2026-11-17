@@ -1344,6 +1344,9 @@ export class Stage3Analysis {
           .get(p.analysisId) as { n: number }
       ).n;
       p.phase = 'compare';
+      // The classes are made from here on with these rules and settings (a change later makes
+      // the finished analysis classify again; the copy choice never stamps this itself).
+      p.rulesKey = stage3RulesKey(getSettings(this.deps.cleanup).duplicates);
       this.save(p, 'analysing');
     })();
     this.deps.log?.(
@@ -1811,7 +1814,6 @@ export class Stage3Analysis {
   }
 
   private groupStep(p: Stage3Progress): Stage3Progress {
-    p.rulesKey = stage3RulesKey(getSettings(this.deps.cleanup).duplicates);
     const db = this.deps.cleanup;
     const settings = getSettings(db);
     const books = this.loadBooks(p.libraryId);

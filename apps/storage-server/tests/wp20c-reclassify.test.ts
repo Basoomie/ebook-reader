@@ -186,6 +186,29 @@ describe('stage 3: classified again, and the review decisions', () => {
     expect(pair('E1', 'E2').class).toBe('keep_both');
   });
 
+  it('settings changed while the copy choice was pending: the classes follow the new settings (2026-11-17)', async () => {
+    // As on the NAS: classes made with the old settings, the copy choice still to run, then
+    // the new limits saved.
+    const settings = getSettings(env.cleanupDb);
+    expect(pair('C1', 'C2').rule).toBe('spread_unset');
+    const p = env.service.analysis3!.progress()!;
+    env.cleanupDb
+      .prepare("UPDATE stages SET state = 'analysing', progress_json = ? WHERE stage = 3")
+      .run(JSON.stringify({ ...p, phase: 'group', finishedAt: null }));
+    env.cleanupDb
+      .prepare("UPDATE settings SET value_json = ? WHERE key = 'duplicates'")
+      .run(JSON.stringify({ ...settings.duplicates, spreadIgnore: 0.01, spreadKeepBoth: 0.02 }));
+    expect(await settle()).toBe('ready');
+    expect(pair('C1', 'C2').rule).toBe('spread_keep_both');
+    // Back to the earlier settings for the tests after this one.
+    await request(env.app)
+      .put('/api/v1/cleanup/settings')
+      .set(auth(user))
+      .send({ duplicates: { ...settings.duplicates } })
+      .expect(200);
+    expect(await settle()).toBe('ready');
+  });
+
   it('a decisions file with a missing note or an unknown pair records nothing', () => {
     const c = pair('C1', 'C2');
     expect(
