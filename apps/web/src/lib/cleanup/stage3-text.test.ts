@@ -104,7 +104,7 @@ describe('stage 3 wording', () => {
       /^13 copies to remove\. Same text: 12 pairs · one holds the other: 3 · for review: 6/
     );
     expect(lines[2]).toMatch(/1 omnibus files found by their text/);
-    expect(lines[3]).toBe('Took 30 s (0.26 s per book).');
+    expect(lines[3]).toBe('The analysis took 30 s (0.26 s per book read).');
     expect(stage3Lines(stage('analyse'), status(progress({ error: 'boom' })))).toEqual([
       'The analysis stopped: boom'
     ]);
