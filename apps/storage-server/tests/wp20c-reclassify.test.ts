@@ -161,6 +161,9 @@ describe('stage 3: classified again, and the review decisions', () => {
     expect(await settle()).toBe('ready');
 
     const c = pair('C1', 'C2');
+    const waitingIds = () =>
+      env.service.stage3Pairs('review', { limit: 1000 }).items.map((x) => x.id as number);
+    expect(waitingIds()).toContain(c.id);
     const note = 'Same book; the copy with commentary has everything the other has';
     const out = recordReviewDecisions(env.cleanupDb, {
       decisions: [
@@ -184,6 +187,11 @@ describe('stage 3: classified again, and the review decisions', () => {
     // Your keep-both on E stays.
     expect(r.some((x) => x.id === ids.E1 || x.id === ids.E2)).toBe(false);
     expect(pair('E1', 'E2').class).toBe('keep_both');
+    // A decided removal keeps its class "review" but no longer waits: the page's count and its
+    // review list leave it out, and agree (2026-11-17: the count included decided pairs).
+    expect(pair('C1', 'C2').class).toBe('review');
+    expect(waitingIds()).not.toContain(c.id);
+    expect(env.service.analysis3!.progress()!.review).toBe(env.service.stage3Pairs('review').total);
   });
 
   it('settings changed while the copy choice was pending: the classes follow the new settings (2026-11-17)', async () => {
@@ -221,5 +229,16 @@ describe('stage 3: classified again, and the review decisions', () => {
         decisions: [{ aUuid: 'x', bUuid: 'y', decision: 'keep_both', note: 'n' }],
       }).ok,
     ).toBe(false);
+    // The same pair twice, here once in each order: refused, nothing recorded.
+    const before = env.cleanupDb.prepare('SELECT COUNT(*) AS n FROM pair_decisions').get();
+    const twice = recordReviewDecisions(env.cleanupDb, {
+      decisions: [
+        { aUuid: c.a_uuid, bUuid: c.b_uuid, decision: 'keep_both', note: 'one' },
+        { aUuid: c.b_uuid, bUuid: c.a_uuid, decision: 'remove_a', note: 'two' },
+      ],
+    });
+    expect(twice).toMatchObject({ ok: false });
+    expect(twice.message).toMatch(/repeat a pair.*decisions 0 and 1.*Nothing was recorded/);
+    expect(env.cleanupDb.prepare('SELECT COUNT(*) AS n FROM pair_decisions').get()).toEqual(before);
   });
 });

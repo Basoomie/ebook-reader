@@ -516,6 +516,14 @@ export function resumeFailedStage3(db: Database.Database): {
 }
 
 /**
+ * A content_pairs row `p` waiting for a decision: in review (or a duplicate without a clear
+ * better copy) and not decided by you or the review, in either order of the pair.
+ */
+export const STAGE3_WAITING_SQL = `(p.class = 'review' OR (p.class IN ('duplicate', 'superset') AND p.keep_id IS NULL))
+  AND NOT EXISTS (SELECT 1 FROM pair_decisions d WHERE d.library_id = p.library_id
+    AND ((d.a_uuid = p.a_uuid AND d.b_uuid = p.b_uuid) OR (d.a_uuid = p.b_uuid AND d.b_uuid = p.a_uuid)))`;
+
+/**
  * Records the review's decisions on stage 3 pairs (`cli cleanup decide 3 <file>`): each one
  * marked as Claude's, with its reason, never replacing a decision you made on the page. The
  * file: { "decisions": [{ "aUuid", "bUuid", "decision": "keep_both" | "remove_a" |
@@ -556,6 +564,22 @@ export function recordReviewDecisions(
     return {
       ok: false,
       message: `${bad.length} decisions are not valid (each needs aUuid, bUuid, a decision and a note), first at ${bad[0]}. Nothing was recorded.`,
+    };
+  }
+  // One decision per pair: a file deciding a pair twice (in either order) would keep only the
+  // last one, so it is refused as a whole (the review's own uniqueness check, 2026-11-17).
+  const firstAt = new Map<string, number>();
+  const twice: [number, number][] = [];
+  rows.forEach((r, i) => {
+    const key = [r.a, r.b].sort().join('|');
+    const first = firstAt.get(key);
+    if (first === undefined) firstAt.set(key, i);
+    else twice.push([first, i]);
+  });
+  if (twice.length > 0) {
+    return {
+      ok: false,
+      message: `${twice.length} decisions repeat a pair decided earlier in the file (first: decisions ${twice[0][0]} and ${twice[0][1]}). Nothing was recorded.`,
     };
   }
   const pairExists = db.prepare(
@@ -2129,13 +2153,17 @@ export class Stage3Analysis {
     return p;
   }
 
-  /** Pairs waiting for a decision: review, image-only, and duplicates without a clear better copy. */
+  /**
+   * Pairs waiting for a decision: review, image-only, and duplicates without a clear better
+   * copy, without the pairs already decided (on the page or in the review): a removal decided
+   * keeps its class "review" with the copy to keep set.
+   */
   reviewCount(analysisId: string): number {
     return (
       this.deps.cleanup
         .prepare(
-          `SELECT COUNT(*) AS n FROM content_pairs WHERE analysis_id = ?
-             AND (class = 'review' OR (class IN ('duplicate', 'superset') AND keep_id IS NULL))`,
+          `SELECT COUNT(*) AS n FROM content_pairs p WHERE p.analysis_id = ?
+             AND ${STAGE3_WAITING_SQL}`,
         )
         .get(analysisId) as { n: number }
     ).n;
