@@ -160,7 +160,48 @@ describe('the shared disk lock', () => {
     lock.release('calibre3');
     expect(await audio2).toBe(true);
     lock.release('audio2');
-    expect(lock.state()).toEqual({ holder: null, waiting: [] });
+    expect(lock.state()).toEqual({ holder: null, waiting: [], calibreApplying: null });
+  });
+
+  it('while a Calibre batch is being applied, audiobook jobs wait and a holder gives the disk back', async () => {
+    const lock = new DiskLock(5);
+    let applying: string | null = null;
+    lock.setCalibreApplying(() => applying);
+    expect(lock.tryAcquire('audio', 'audio')).toBe(true);
+    expect(lock.shouldYield('audio')).toBe(false);
+    applying = 'Calibre stage 3 (applying a batch)';
+    await new Promise((r) => setTimeout(r, 1100)); // the check is reused for 1 s
+    expect(lock.shouldYield('audio')).toBe(true);
+    lock.release('audio');
+    expect(lock.tryAcquire('audio', 'audio')).toBe(false);
+    expect(lock.state().calibreApplying).toBe('Calibre stage 3 (applying a batch)');
+    // Calibre's own analysis is not held back by its batch.
+    expect(lock.tryAcquire('calibre3', 'calibre')).toBe(true);
+    lock.release('calibre3');
+    applying = null;
+    await new Promise((r) => setTimeout(r, 1100));
+    expect(lock.tryAcquire('audio', 'audio')).toBe(true);
+  });
+
+  it('an open Calibre batch in cleanup.db holds the audiobook jobs back', async () => {
+    const { env, setup } = await makeCleanupEnv();
+    try {
+      await setup();
+      expect(env.service.diskLock.state().calibreApplying).toBeNull();
+      env.cleanupDb
+        .prepare(
+          `INSERT INTO batches (id, stage, library_id, kind, state, item_count, created_at, updated_at)
+           VALUES ('b1', 3, ?, 'apply', 'claimed', 1, ?, ?)`,
+        )
+        .run(env.libraryId(), Date.now(), Date.now());
+      await new Promise((r) => setTimeout(r, 1100));
+      expect(env.service.diskLock.state().calibreApplying).toBe(
+        'Calibre stage 3 (applying a batch)',
+      );
+      expect(env.service.diskLock.tryAcquire(DISK_OWNERS.audio1, 'audio')).toBe(false);
+    } finally {
+      await env.close();
+    }
   });
 
   it('an audiobook job cannot take a free disk while a Calibre job waits', () => {
@@ -206,7 +247,11 @@ describe('the shared disk lock', () => {
       }
       expect(getStage(env.cleanupDb, 1).state).toBe('ready');
       expect(lock.state().holder).toBeNull();
-      expect(env.service.status().disk).toEqual({ holder: null, waiting: [] });
+      expect(env.service.status().disk).toEqual({
+        holder: null,
+        waiting: [],
+        calibreApplying: null,
+      });
     } finally {
       await env.close();
     }
@@ -1080,7 +1125,7 @@ describe('stage 0: Audiobookshelf, read only', () => {
       // The Calibre status shows the shared disk lock.
       expect(
         (await request(env.app).get('/api/v1/cleanup/status').set(auth).expect(200)).body.disk,
-      ).toEqual({ holder: null, waiting: [] });
+      ).toEqual({ holder: null, waiting: [], calibreApplying: null });
     } finally {
       await env.close();
     }

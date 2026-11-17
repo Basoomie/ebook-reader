@@ -198,6 +198,7 @@ export class AudioCleanupService {
   private waiting1Text(p: AudioStage1Progress): string {
     if (p.phase === 'hash') {
       const lock = this.opts.lock.state();
+      if (lock.calibreApplying) return `Waiting for the disk: ${lock.calibreApplying}`;
       if (lock.holder && lock.holder.owner !== DISK_OWNERS.audio1) {
         return `Waiting for the disk: ${lock.holder.owner} is reading`;
       }

@@ -45,6 +45,7 @@ export function diskLine(lock: DiskLockState | null | undefined, now = Date.now(
   if (lock.holder)
     parts.push(`Reading the disk: ${lock.holder.owner} (for ${minutes(now - lock.holder.since)})`);
   else parts.push('The disk is free: no cleanup job is reading it');
+  if (lock.calibreApplying) parts.push(`${lock.calibreApplying}: audiobook jobs wait`);
   for (const w of lock.waiting) parts.push(`waiting: ${w.owner}`);
   return parts.join(' · ');
 }

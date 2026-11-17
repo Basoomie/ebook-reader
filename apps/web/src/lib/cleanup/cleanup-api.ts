@@ -345,6 +345,8 @@ export type AudioStageMode = 'off' | 'analyse';
 export interface DiskLockState {
   holder: { owner: string; side: 'calibre' | 'audio'; since: number } | null;
   waiting: { owner: string; side: 'calibre' | 'audio'; since: number }[];
+  /** A Calibre batch being applied (missing on an older server). */
+  calibreApplying?: string | null;
 }
 
 export interface AudioStageRow {

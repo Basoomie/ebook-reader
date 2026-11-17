@@ -172,6 +172,11 @@ export class CleanupService {
     this.logError = opts.logError ?? console.error;
     this.secrets = new SecretStore(opts.cleanup, opts.main);
     this.diskLock = opts.diskLock ?? new DiskLock();
+    // A batch being applied is Calibre's own disk work: audiobook jobs wait for it too.
+    this.diskLock.setCalibreApplying(() => {
+      const open = this.batches.open() as { stage?: number } | null;
+      return open ? `Calibre stage ${open.stage ?? ''} (applying a batch)` : null;
+    });
     this.batches = new BatchService({
       cleanup: opts.cleanup,
       main: opts.main,

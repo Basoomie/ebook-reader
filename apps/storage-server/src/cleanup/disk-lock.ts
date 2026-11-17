@@ -14,15 +14,45 @@ export type DiskSide = 'calibre' | 'audio';
 export interface DiskLockState {
   holder: { owner: string; side: DiskSide; since: number } | null;
   waiting: { owner: string; side: DiskSide; since: number }[];
+  /** A Calibre batch being applied (its own disk work): audiobook jobs wait meanwhile. */
+  calibreApplying: string | null;
 }
+
+/** How long the answer of the "Calibre is applying" check is reused (it reads cleanup.db). */
+const BUSY_CACHE_MS = 1000;
 
 const POLL_MS = 250;
 
 export class DiskLock {
   private holder: { owner: string; side: DiskSide; since: number } | null = null;
   private readonly waiters = new Map<string, { side: DiskSide; since: number }>();
+  private busyCheck: () => string | null = () => null;
+  private busyAt = 0;
+  private busyValue: string | null = null;
 
   constructor(private readonly pollMs = POLL_MS) {}
+
+  /**
+   * The Calibre cleanup's applying of a batch (the sidecar exports and removes through Calibre)
+   * also has the disk first (user, 2026-11-17: nothing may hold up Calibre stage 3): while it
+   * names a batch, no audiobook job takes the lock and a holder gives it back.
+   */
+  setCalibreApplying(check: () => string | null): void {
+    this.busyCheck = check;
+    this.busyAt = 0;
+  }
+
+  private calibreApplying(now = Date.now()): string | null {
+    if (now - this.busyAt >= BUSY_CACHE_MS) {
+      try {
+        this.busyValue = this.busyCheck();
+      } catch {
+        this.busyValue = null;
+      }
+      this.busyAt = now;
+    }
+    return this.busyValue;
+  }
 
   /** Takes the lock if the rules allow it now (the same owner may take it again). */
   tryAcquire(owner: string, side: DiskSide, now = Date.now()): boolean {
@@ -30,6 +60,7 @@ export class DiskLock {
     if (side === 'audio' && [...this.waiters.values()].some((w) => w.side === 'calibre')) {
       return false;
     }
+    if (side === 'audio' && this.calibreApplying(now) !== null) return false;
     if (side === 'calibre') {
       // Calibre jobs among themselves: the one waiting longest first.
       const first = [...this.waiters.entries()]
@@ -76,7 +107,10 @@ export class DiskLock {
   /** True for an audiobook holder while a Calibre job waits: it must give the lock back now. */
   shouldYield(owner: string): boolean {
     if (this.holder?.owner !== owner || this.holder.side !== 'audio') return false;
-    return [...this.waiters.values()].some((w) => w.side === 'calibre');
+    return (
+      [...this.waiters.values()].some((w) => w.side === 'calibre') ||
+      this.calibreApplying() !== null
+    );
   }
 
   state(): DiskLockState {
@@ -85,6 +119,7 @@ export class DiskLock {
       waiting: [...this.waiters.entries()]
         .map(([owner, w]) => ({ owner, side: w.side, since: w.since }))
         .sort((a, b) => a.since - b.since),
+      calibreApplying: this.calibreApplying(),
     };
   }
 }
