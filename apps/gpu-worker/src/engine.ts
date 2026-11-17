@@ -4,6 +4,7 @@
  *
  *   docker run --rm -i --gpus all --name ttsu-tts-live -v <workDir>\live:/work
  *     -v <ttsModelsDir>:/models -e HF_HOME=/models/.shared -e HF_HUB_DISABLE_SYMLINKS=1
+ *     -e PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
  *     <ttsImage> serve
  *
  * It takes one JSON request per line on stdin (load a model, read sentences, quit) and
@@ -91,6 +92,10 @@ export function engineArgs({
     'HF_HOME=/models/.shared',
     '-e',
     'HF_HUB_DISABLE_SYMLINKS=1',
+    // Session 5: batches mixing several voices' clips fragmented PyTorch's memory cache
+    // (5.3 -> 7.0 GB reserved for the same 4.4 GB in use) until Windows swapped it.
+    '-e',
+    'PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True',
     image,
     'serve',
   ];

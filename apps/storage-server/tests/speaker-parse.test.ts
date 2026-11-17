@@ -4,6 +4,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  cleanName,
   parseCharacters,
   parseGroups,
   parseSpeakers,
@@ -52,6 +53,48 @@ describe('stage 1 and 2 answers', () => {
       [2, 3],
     ]);
     expect(parseGroups('{', new Set([1]))).toEqual([]);
+  });
+});
+
+describe('names as the model writes them (live run, 2026-11-17)', () => {
+  it('drops the notes it adds, and "we" and "unknown"', () => {
+    expect(cleanName('ピアスキー（手紙の差出人）※文脈')).toBe('ピアスキー');
+    expect(cleanName('兵士of_the_army (※')).toBe('兵士');
+    expect(cleanName('旧メンバーof_the_club')).toBe('旧メンバー');
+    expect(cleanName('友人（C3, C4, C6の旧会')).toBe('友人');
+    expect(cleanName('猿の声（または物語内の描写）※文')).toBe('猿の声');
+    expect(cleanName('私（語り手）')).toBeNull();
+    expect(cleanName('私たち')).toBeNull();
+    expect(cleanName('名前不明')).toBeNull();
+    expect(cleanName('  ')).toBeNull();
+    // Real names stay as they are.
+    expect(cleanName('ヨイツの賢狼ホロ')).toBe('ヨイツの賢狼ホロ');
+    expect(cleanName('クラフト・ロレンス')).toBe('クラフト・ロレンス');
+    expect(cleanName('Ｋ')).toBe('Ｋ');
+  });
+
+  it('cleans stage 1 names and aliases, and a new name in a speaker answer', () => {
+    const c = parseCharacters(
+      JSON.stringify({
+        characters: [
+          {
+            name: 'ピアスキー（手紙の差出人）',
+            aliases: ['差出人※', '私たち'],
+            firstPerson: [],
+            gender: '男',
+          },
+          { name: '私たち', aliases: [], firstPerson: [], gender: '不明' },
+        ],
+        narrator: { firstPerson: true, name: '私（語り手）' },
+      }),
+    );
+    expect(c.characters).toEqual([
+      { name: 'ピアスキー', aliases: ['差出人'], firstPerson: [], gender: '男' },
+    ]);
+    expect(c.narrator.name).toBeNull();
+    const r = parseSpeakers('Q1=+兵士of_the_army (※\nQ2=+私たち\n', null, [1, 2], new Set([1]));
+    expect(r.get(1)).toEqual({ kind: 'new', name: '兵士', p: null });
+    expect(r.get(2)).toEqual({ kind: 'unknown', p: null });
   });
 });
 

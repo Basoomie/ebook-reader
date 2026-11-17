@@ -62,6 +62,8 @@ describe('worker pieces', () => {
       'HF_HOME=/models/.shared',
       '-e',
       'HF_HUB_DISABLE_SYMLINKS=1',
+      '-e',
+      'PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True',
       'ttsu-irodori:1',
       'run',
       '--job',

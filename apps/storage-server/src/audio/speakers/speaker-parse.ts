@@ -35,7 +35,40 @@ const NOT_A_NAME = new Set([
   'なし',
   'ナレーション',
   '地の文',
+  // "We" and "someone": never one character (seen in the live run, 2026-11-17).
+  '私たち',
+  'わたしたち',
+  '私達',
+  '僕たち',
+  '僕達',
+  '僕ら',
+  'ぼくら',
+  '俺たち',
+  '俺達',
+  '俺ら',
+  'おれたち',
+  '我々',
+  'われわれ',
+  'あたしたち',
+  'うちら',
+  '名前不明',
+  '誰か',
+  '謎の人物',
 ]);
+
+/**
+ * A name as the model wrote it, without the notes it sometimes adds: "ピアスキー（手紙の
+ * 差出人）※文脈" -> "ピアスキー", "兵士of_the_army (※" -> "兵士" (live run, 2026-11-17).
+ * Null when nothing is left or it is not a name (the narrator, "we", "unknown").
+ */
+export function cleanName(raw: string): string | null {
+  const s = raw
+    .split(/[（(［[【〔＜<｛{※,，、:：;；\n]/u)[0]
+    .replace(/[A-Za-z0-9]*_[\x20-\x7E]*$/u, '')
+    .trim();
+  if (!s || NOT_A_NAME.has(s.normalize('NFKC'))) return null;
+  return s;
+}
 
 const GENDERS = new Set(['男', '女', '不明']);
 
@@ -43,8 +76,8 @@ function strings(v: unknown, max: number): string[] {
   if (!Array.isArray(v)) return [];
   return v
     .filter((x): x is string => typeof x === 'string')
-    .map((x) => x.trim())
-    .filter((x) => x && x.length <= 40)
+    .map((x) => cleanName(x))
+    .filter((x): x is string => !!x && x.length <= 40)
     .slice(0, max);
 }
 
@@ -59,19 +92,20 @@ export function parseCharacters(content: string): ParsedCharacters {
   const o = (raw ?? {}) as Record<string, unknown>;
   const characters = (Array.isArray(o.characters) ? o.characters : [])
     .map((c) => (c ?? {}) as Record<string, unknown>)
-    .filter((c) => typeof c.name === 'string' && c.name.trim() && c.name.trim().length <= 40)
+    .filter((c) => typeof c.name === 'string' && c.name.trim().length <= 60)
+    .map((c) => ({ ...c, name: cleanName(c.name as string) }))
+    .filter((c): c is typeof c & { name: string } => !!c.name && c.name.length <= 40)
     .slice(0, 60)
     .map((c) => ({
-      name: (c.name as string).trim(),
+      name: c.name,
       aliases: strings(c.aliases, 12),
       firstPerson: strings(c.firstPerson, 6),
       gender: (GENDERS.has(c.gender as string) ? c.gender : '不明') as Gender,
     }));
   const n = (o.narrator ?? {}) as Record<string, unknown>;
-  let name = typeof n.name === 'string' && n.name.trim() ? n.name.trim().slice(0, 40) : null;
-  if (name && NOT_A_NAME.has(name.normalize('NFKC'))) name = null;
+  const name = typeof n.name === 'string' ? cleanName(n.name.slice(0, 60)) : null;
   return {
-    characters: characters.filter((c) => !NOT_A_NAME.has(c.name.normalize('NFKC'))),
+    characters,
     narrator: { firstPerson: n.firstPerson === true, name },
   };
 }
@@ -193,9 +227,11 @@ export function parseSpeakers(
     const p = probs ? sureness(probs, starts, content, at, to, validSpeakers) : null;
     const id = /^C(\d+)$/.exec(value);
     if (id && valid.has(Number(id[1]))) out.set(quote, { kind: 'character', id: Number(id[1]), p });
-    else if (value.startsWith('+') && value.slice(1).trim())
-      out.set(quote, { kind: 'new', name: value.slice(1).trim().slice(0, 40), p });
-    else if (value === '?') out.set(quote, { kind: 'unknown', p });
+    else if (value.startsWith('+')) {
+      // A name that is only a note (or "we", "unknown") counts as unknown.
+      const name = cleanName(value.slice(1));
+      out.set(quote, name ? { kind: 'new', name: name.slice(0, 40), p } : { kind: 'unknown', p });
+    } else if (value === '?') out.set(quote, { kind: 'unknown', p });
   }
   return out;
 }
