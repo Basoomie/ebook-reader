@@ -633,6 +633,11 @@ describe('file health', () => {
       expect(a.filter((x) => x === '-i')).toHaveLength(1);
     }
     expect(toolArgs('decode-end', 'in', 20)).toContain('-sseof');
+    const both = toolArgs('decode-both', '/dev/fd/3', 20);
+    expect(both.slice(-3)).toEqual(['-f', 'null', '-']);
+    expect(both).not.toContain('-y');
+    expect(both.filter((x) => x === '-i')).toHaveLength(2);
+    expect(both.filter((x) => x === '/dev/fd/3')).toHaveLength(2);
     const p = toolArgs('probe', 'in', 20);
     expect(p[p.length - 1]).toBe('in');
     expect(p).not.toContain('-y');
@@ -718,6 +723,46 @@ describe('file health', () => {
       fs.rmSync(meta);
       return { m4b, mp3, fakeWav, broken, notAudio: path.join(dir, 'not-audio.m4b') };
     }
+
+    it('one combined run for both ends gives exactly the results of two separate runs', async () => {
+      const dir = makeTempDir('wp21a-same');
+      const f = makeAudio(dir);
+      // A file damaged only at the start, and one damaged at both ends.
+      const mp3 = fs.readFileSync(f.mp3);
+      const startBad = Buffer.from(mp3);
+      startBad.fill(0x55, 0, Math.floor(startBad.length * 0.3));
+      fs.writeFileSync(path.join(dir, 'start-bad.mp3'), startBad);
+      const bothBad = Buffer.from(mp3);
+      bothBad.fill(0x55, 0, Math.floor(bothBad.length * 0.3));
+      bothBad.fill(0x55, Math.floor(bothBad.length * 0.7));
+      fs.writeFileSync(path.join(dir, 'both-bad.mp3'), bothBad);
+      const files = [
+        f.m4b,
+        f.mp3,
+        f.fakeWav,
+        f.broken,
+        f.notAudio,
+        path.join(dir, 'start-bad.mp3'),
+        path.join(dir, 'both-bad.mp3'),
+      ];
+      for (const decodeSeconds of [2, 20]) {
+        for (const file of files) {
+          const opts = { decodeSeconds, timeoutMs: 30_000 };
+          const combined = await checkHealth(file, TOOLS, opts);
+          const separate = await checkHealth(file, TOOLS, { ...opts, combined: false });
+          // ffmpeg's messages carry memory addresses; compare them without.
+          // (The message is cut at a fixed length, so compare its start.)
+          const strip = (r: typeof combined) => ({
+            ...r,
+            decodeError: r.decodeError?.replace(/@ (0x)?[0-9a-fA-F]+/g, '@').slice(0, 150) ?? null,
+            error: r.error?.replace(/@ (0x)?[0-9a-fA-F]+/g, '@').slice(0, 150) ?? null,
+          });
+          expect(strip(combined), `${path.basename(file)} at ${decodeSeconds} s`).toEqual(
+            strip(separate),
+          );
+        }
+      }
+    });
 
     it('reads format from the content, chapters, and checks start and end', async () => {
       const dir = makeTempDir('wp21a-health');
@@ -858,6 +903,49 @@ describe('file health', () => {
       for (let i = 0; i < 100; i++) if (await stage.step(() => false)) break;
       expect(stage.progress()!.healthReused).toBe(9);
       expect(treeProof(base)).toBe(before);
+    });
+
+    it('several files at once give the same results as one at a time, also when Calibre starts and stops using the disk', async () => {
+      const base = makeTempDir('wp21a-par');
+      const torrents = path.join(base, 'torrents');
+      const library = path.join(base, 'library');
+      const f = makeAudio(makeTempDir('wp21a-par-src'));
+      const sources = [f.m4b, f.mp3, f.fakeWav, f.broken, f.notAudio];
+      for (let k = 0; k < 12; k++) {
+        const src = sources[k % sources.length];
+        put(torrents, `MAM/本${k}/${k}${path.extname(src)}`, fs.readFileSync(src));
+      }
+      put(library, '_Unknown/本0/0.m4b', fs.readFileSync(f.m4b));
+      const roots = { torrents, library };
+      const runWith = async (busy: () => boolean, workers: number) => {
+        const db = freshDb();
+        updateSettings(db, {
+          audiobooks: { healthFilesPerSecond: 50, healthWorkers: workers, decodeSeconds: 2 },
+        });
+        const st = new AudioStage2({ db, roots, tools: TOOLS, calibreBusy: busy });
+        st.restart();
+        for (let i = 0; i < 200; i++) if (await st.step(() => false)) break;
+        expect(st.progress()!.error).toBeNull();
+        expect(st.progress()!.healthDone).toBe(13);
+        const rows = db
+          .prepare(
+            `SELECT f.root, f.rel_path, h.format, h.codec, h.duration, h.chapter_count, h.has_cover,
+               h.header_ok, h.start_decode_ok, h.end_decode_ok,
+               (h.decode_error IS NOT NULL) AS decode_problem, (h.error IS NOT NULL) AS error
+             FROM audio_file_health h JOIN audio_files f ON f.id = h.file_id ORDER BY f.root, f.rel_path`,
+          )
+          .all();
+        const counts = booksCounts(db, st.progress()!.analysisId);
+        return { rows, counts };
+      };
+      const oneAtATime = await runWith(() => true, 1);
+      const parallel = await runWith(() => false, 4);
+      expect(parallel.rows).toEqual(oneAtATime.rows);
+      expect(parallel.counts).toEqual(oneAtATime.counts);
+      // Calibre starts and stops using the disk during the run.
+      let calls = 0;
+      const switching = await runWith(() => Math.floor(++calls / 7) % 2 === 1, 4);
+      expect(switching.rows).toEqual(oneAtATime.rows);
     });
 
     it("the live stage 2 takes over a dry run's file checks; only changed files are checked again", async () => {

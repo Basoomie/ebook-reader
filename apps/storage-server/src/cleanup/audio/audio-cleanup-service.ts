@@ -127,7 +127,20 @@ export class AudioCleanupService {
       ? new AudioStage1({ db: opts.db, roots: opts.roots, lock: opts.lock, log: this.log })
       : null;
     this.stage2 = opts.roots
-      ? new AudioStage2({ db: opts.db, roots: opts.roots, tools: opts.tools, log: this.log })
+      ? new AudioStage2({
+          db: opts.db,
+          roots: opts.roots,
+          tools: opts.tools,
+          calibreBusy: () => {
+            const s = opts.lock.state();
+            return (
+              s.calibreApplying !== null ||
+              s.holder?.side === 'calibre' ||
+              s.waiting.some((w) => w.side === 'calibre')
+            );
+          },
+          log: this.log,
+        })
       : null;
   }
 

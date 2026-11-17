@@ -45,7 +45,8 @@ export interface HealthResult {
   invalidUtf8: boolean;
 }
 
-export type ToolKind = 'probe' | 'decode-start' | 'decode-end';
+/** decode-both: the start and the end in one ffmpeg run (two inputs of the same file). */
+export type ToolKind = 'probe' | 'decode-start' | 'decode-end' | 'decode-both';
 
 /**
  * The only place tool arguments are built. Every command reads one input and writes nothing:
@@ -67,6 +68,26 @@ export function toolArgs(kind: ToolKind, input: string, decodeSeconds: number): 
     ];
   }
   const s = String(Math.max(1, Math.round(decodeSeconds)));
+  if (kind === 'decode-both') {
+    return [
+      ...base,
+      '-t',
+      s,
+      '-i',
+      input,
+      '-sseof',
+      `-${s}`,
+      '-i',
+      input,
+      '-map',
+      '0:a:0',
+      '-map',
+      '1:a:0',
+      '-f',
+      'null',
+      '-',
+    ];
+  }
   const position = kind === 'decode-start' ? ['-t', s] : ['-sseof', `-${s}`];
   return [...base, ...position, '-i', input, '-map', '0:a:0', '-f', 'null', '-'];
 }
@@ -223,7 +244,16 @@ export function parseProbe(
 export async function checkHealth(
   file: string | Buffer,
   tools: ToolPaths,
-  { decodeSeconds, timeoutMs }: { decodeSeconds: number; timeoutMs: number },
+  {
+    decodeSeconds,
+    timeoutMs,
+    combined = true,
+  }: {
+    decodeSeconds: number;
+    timeoutMs: number;
+    /** false: always play the two ends in separate runs (the tests compare both ways). */
+    combined?: boolean;
+  },
 ): Promise<HealthResult> {
   const empty: HealthResult = {
     format: null,
@@ -268,6 +298,18 @@ export async function checkHealth(
     if (probe.stderr.trim()) result.error = short(probe.stderr);
     if (!result.headerOk) {
       result.error ??= 'No audio stream found';
+      return result;
+    }
+    // Both ends in one run. Clean (exit 0, nothing reported) = both ends play. Anything else:
+    // each end is played again on its own, so every problem is recorded against its own end
+    // exactly as before (the combined run only saves a second program start for clean files).
+    const both = combined
+      ? await run(tools.ffmpegPath, toolArgs('decode-both', input, decodeSeconds), fd, timeoutMs)
+      : null;
+    if (both && !both.timedOut && both.code === 0 && both.stderr.trim() === '') {
+      result.startDecodeOk = true;
+      result.endDecodeOk = true;
+      result.decodeError = null;
       return result;
     }
     const problems: string[] = [];

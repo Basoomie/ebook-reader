@@ -72,6 +72,11 @@ export interface Stage2Deps {
   db: Database.Database;
   roots: AudioRoots;
   tools: ToolPaths;
+  /**
+   * True while a Calibre job uses the disk (reads or applies a batch): the checks then go one
+   * at a time at healthFilesPerSecond; otherwise healthWorkers files at once, unpaced.
+   */
+  calibreBusy?: () => boolean;
   log?: (m: string) => void;
 }
 
@@ -199,7 +204,9 @@ export class AudioStage2 {
     const db = this.deps.db;
     const s = getSettings(db).audiobooks;
     const next = db
-      .prepare(`${STALE_SQL} ORDER BY f.root, f.rel_path LIMIT ${HEALTH_CHUNK}`)
+      .prepare(
+        `${STALE_SQL} ORDER BY f.root, f.rel_path LIMIT ${Math.max(HEALTH_CHUNK, s.healthWorkers * 4)}`,
+      )
       .all() as {
       id: number;
       root: RootName;
@@ -232,8 +239,8 @@ export class AudioStage2 {
          checked_ms = excluded.checked_ms, checked_at = excluded.checked_at`,
     );
     const gapMs = 1000 / s.healthFilesPerSecond;
-    for (const f of next) {
-      if (shouldStop()) break;
+    const busy = () => this.deps.calibreBusy?.() ?? false;
+    const checkOne = async (f: (typeof next)[number]): Promise<number> => {
       const t0 = Date.now();
       const file = insideRoot(this.deps.roots[f.root], f.rel_path, f.rel_path_raw);
       const h: HealthResult | null = await checkHealth(file, this.deps.tools, {
@@ -270,9 +277,30 @@ export class AudioStage2 {
       });
       p.healthDone++;
       this.save(p, 'analysing');
-      const wait = gapMs - took;
-      if (wait > 0) await new Promise((r) => setTimeout(r, Math.min(wait, 10_000)));
+      return took;
+    };
+    if (busy()) {
+      // A Calibre job uses the disk: one file at a time, at the set pace.
+      for (const f of next) {
+        if (shouldStop()) break;
+        const took = await checkOne(f);
+        const wait = gapMs - took;
+        if (wait > 0) await new Promise((r) => setTimeout(r, Math.min(wait, 10_000)));
+        if (!busy()) break; // the disk is free again: the next step goes at full speed
+      }
+      return p;
     }
+    // The disk is free of Calibre jobs: several files at once, unpaced. Each worker stops taking
+    // new files as soon as a Calibre job starts using the disk (the rest wait for the next step).
+    let i = 0;
+    await Promise.all(
+      Array.from({ length: Math.min(s.healthWorkers, next.length) }, async () => {
+        while (i < next.length) {
+          if (shouldStop() || busy()) return;
+          await checkOne(next[i++]);
+        }
+      }),
+    );
     return p;
   }
 

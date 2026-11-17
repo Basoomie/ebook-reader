@@ -45,7 +45,7 @@ export async function runAudioDryRun(
   const out = arg(args, '--out');
   if (![0, 1, 2].includes(stage) || !out) {
     console.error(
-      'Usage: cleanup audio-dryrun --stage 0|1|2 --out <folder> [--abs-url <url>] [--read-mbps N] [--files-per-second N]',
+      'Usage: cleanup audio-dryrun --stage 0|1|2 --out <folder> [--abs-url <url>] [--read-mbps N] [--files-per-second N] [--workers N] [--full-speed]',
     );
     return 2;
   }
@@ -104,8 +104,11 @@ export async function runAudioDryRun(
     const settings: Record<string, number> = {};
     const mbps = arg(args, '--read-mbps');
     const fps = arg(args, '--files-per-second');
+    const workers = arg(args, '--workers');
+    const fullSpeed = args.includes('--full-speed');
     if (mbps !== null) settings.readMbPerSecond = Number(mbps);
     if (fps !== null) settings.healthFilesPerSecond = Number(fps);
+    if (workers !== null) settings.healthWorkers = Number(workers);
     if (Object.keys(settings).length) updateSettings(db, { audiobooks: settings });
     setAudioStageMode(db, stage, 'analyse');
     const lock = new DiskLock();
@@ -116,7 +119,15 @@ export async function runAudioDryRun(
     const runner =
       stage === 1
         ? new AudioStage1({ db, roots, lock, log: line })
-        : new AudioStage2({ db, roots, tools, log: line });
+        : new AudioStage2({
+            db,
+            roots,
+            tools,
+            // A container can't see the Calibre cleanup: slow and one at a time unless told
+            // the disk is free (--full-speed).
+            calibreBusy: () => !fullSpeed,
+            log: line,
+          });
     if (!runner.progress() || runner.progress()!.phase === 'done') runner.restart();
     let stop = false;
     process.on('SIGTERM', () => (stop = true));

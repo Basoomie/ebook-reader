@@ -61,8 +61,13 @@ export interface AudiobookSettings {
   absUrl: string;
   /** Stage 1: how fast files are hashed (MB/s); 0 = no limit (it holds the disk lock alone). */
   readMbPerSecond: number;
-  /** Stage 2: audio files checked per second (headers and two short decodes each). */
+  /**
+   * Stage 2: audio files checked per second while a Calibre job uses the disk (one at a time);
+   * when the disk is free of Calibre jobs, healthWorkers files are checked at once, unpaced.
+   */
   healthFilesPerSecond: number;
+  /** Stage 2: files checked at the same time while no Calibre job uses the disk. */
+  healthWorkers: number;
   /** Stage 2: seconds decoded at the start and at the end of every file. */
   decodeSeconds: number;
   /** Stage 2: time limit for one ffprobe or ffmpeg run (s). */
@@ -163,6 +168,7 @@ export const DEFAULT_SETTINGS: CleanupSettings = {
     absUrl: '',
     readMbPerSecond: 0,
     healthFilesPerSecond: 2,
+    healthWorkers: 4,
     decodeSeconds: 20,
     toolTimeoutSeconds: 60,
     copyHintMinMinutes: 60,
@@ -346,7 +352,13 @@ function validate(key: Key, value: unknown, current: CleanupSettings): unknown {
       return {
         absUrl: absAddress(v.absUrl),
         readMbPerSecond: num('Hashing speed (MB/s)', v.readMbPerSecond, 0, 2000),
-        healthFilesPerSecond: num('Files checked per second', v.healthFilesPerSecond, 0.1, 50),
+        healthFilesPerSecond: num(
+          'Files checked per second while Calibre uses the disk',
+          v.healthFilesPerSecond,
+          0.1,
+          50,
+        ),
+        healthWorkers: num('Files checked at the same time', v.healthWorkers, 1, 16, true),
         decodeSeconds: num('Seconds decoded at each end', v.decodeSeconds, 1, 600, true),
         toolTimeoutSeconds: num(
           'Time limit for one check (s)',
