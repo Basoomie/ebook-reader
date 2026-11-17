@@ -89,7 +89,7 @@ Set up, after the steps above:
 node C:\ttsu-worker\app\main.js pull-speakers
 ```
 
-Then `check` should also say `OK  Speaker program on the PC`, `OK  GPU visible to the speaker program` and `OK  Speaker models folder`. A speaker model is downloaded the first time a book uses it, into `C:\Data\LLM\Models\ttsu-reader-speakers\<owner>--<repo>\<version>\` (Gemma 4 26B A4B: 13.6 GB), and its sha256 is checked once. Loading it took 94 s, and books of 104,000–156,000 characters took 9–21 minutes (measured on the RTX 4070). It needs nearly all of the GPU and about 16 GB of Docker's memory while it runs, so it takes turns with the voice: read-aloud and sentence audio go first.
+Then `check` should also say `OK  Speaker program on the PC`, `OK  GPU visible to the speaker program` and `OK  Speaker models folder`. A speaker model is downloaded the first time a book uses it, into `C:\Data\LLM\Models\ttsu-reader-speakers\<owner>--<repo>\<version>\` (Gemma 4 26B A4B: 13.6 GB), and its sha256 is checked once. Loading it takes about 1.5–2.5 minutes. It leaves 4 GB of graphics memory free for other programs (`speakerGpuMarginMiB` in `config.json`; with less, Windows can start swapping the model's memory when the desktop draws, and a book takes hours): 狼と香辛料XII then took about 17 minutes on the RTX 4070 (9 with the card to itself). It needs nearly all of the GPU and about 16 GB of Docker's memory while it runs, so it takes turns with the voice: read-aloud and sentence audio go first.
 
 After a worker update that changes `tts\` (the image tag in `TTS_IMAGE` changes, e.g. `ttsu-irodori:3`), run step 8 again in each account; until then `check` and Settings say the TTS program is missing, and subtitle jobs keep working.
 
