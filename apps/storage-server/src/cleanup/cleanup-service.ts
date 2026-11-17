@@ -383,8 +383,11 @@ export class CleanupService {
     };
   }
 
-  /** present: the reader's count of the library's books, when the caller already has it. */
-  checks(now = Date.now(), present?: number): CheckResult[] {
+  /**
+   * present: the reader's count of the library's books, when the caller already has it; null
+   * leaves it out of the detail (no check depends on it, and counting reads 60,000+ rows).
+   */
+  checks(now = Date.now(), present?: number | null): CheckResult[] {
     const sidecar = this.sidecar(now);
     const target = this.targetLibrary();
     const login = this.sidecarConfig();
@@ -468,7 +471,7 @@ export class CleanupService {
 
   private libraryIndexed(
     target: string | null,
-    present?: number,
+    present?: number | null,
   ): { ok: boolean; detail: string | null } {
     if (!target) return { ok: false, detail: 'No library chosen' };
     if (!this.opts.calibreDir || !this.opts.indexerEnabled()) {
@@ -477,6 +480,7 @@ export class CleanupService {
     try {
       const state = getIndexState(this.opts.main, target);
       if (state.indexedAt === null) return { ok: false, detail: 'Not indexed yet' };
+      if (present === null) return { ok: true, detail: null };
       return {
         ok: true,
         detail: `${present ?? presentBookCount(this.opts.main, target)} books in the index`,
@@ -486,8 +490,9 @@ export class CleanupService {
     }
   }
 
+  /** Whether the required checks pass (each round of every stage asks; no book count needed). */
   checksPass(now = Date.now()): { ok: boolean; failing: string[] } {
-    const failing = this.checks(now)
+    const failing = this.checks(now, null)
       .filter((c) => c.required && !c.ok)
       .map((c) => c.label);
     return { ok: failing.length === 0, failing };
