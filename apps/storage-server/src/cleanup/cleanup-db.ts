@@ -404,6 +404,18 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
       ALTER TABLE pair_decisions ADD COLUMN note TEXT;
     `,
   },
+  {
+    version: 6,
+    name: 'indexes on the tables that point at proposed changes (a delete checked them row by row)',
+    // Found live 2026-11-17: stage 3 replacing 8,664 proposals scanned batch_items (204,000 rows),
+    // field_undo and undo_records once per deleted row for the foreign keys; the server answered
+    // nothing for over an hour. With these indexes the same delete takes half a second.
+    sql: `
+      CREATE INDEX IF NOT EXISTS batch_items_change ON batch_items (change_id);
+      CREATE INDEX IF NOT EXISTS undo_records_change ON undo_records (change_id);
+      CREATE INDEX IF NOT EXISTS field_undo_change ON field_undo (change_id);
+    `,
+  },
 ];
 
 export const CLEANUP_SCHEMA_VERSION = CLEANUP_MIGRATIONS[CLEANUP_MIGRATIONS.length - 1].version;
