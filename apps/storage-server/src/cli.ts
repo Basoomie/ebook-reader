@@ -84,7 +84,7 @@ import { createApplyToken, listApplyTokens, revokeApplyToken } from './cleanup/a
 import { initCleanupDatabase } from './cleanup/cleanup-db';
 import { listStages } from './cleanup/stages';
 import { recordReviewDecisions, resumeFailedStage3 } from './cleanup/stage3';
-import { importDryRunHashes, runAudioDryRun } from './cleanup/audio/dry-run';
+import { importDryRun, runAudioDryRun } from './cleanup/audio/dry-run';
 
 const USAGE = `Usage:
   cli token pair <label> [--user <name>]     Make a one-time code a device trades for its own token
@@ -135,8 +135,9 @@ const USAGE = `Usage:
                                              Audiobook cleanup dry run (WP21a): the real analysis on a
                                              scratch database in <folder>, never the live cleanup.db;
                                              stage 0 needs --abs-url and the API key on stdin
-  cli cleanup audio-import-hashes <file>     Live stage 1 takes over a dry run's hashes (kept only for
-                                             files whose path, size, mtime and inode are unchanged)`;
+  cli cleanup audio-import-dryrun <file>...  The live audiobook stages take over the dry runs' results
+                                             (stage 1's hashes, stage 2's file checks), kept only for
+                                             files that are unchanged when the live run walks them`;
 
 function fail(message: string): never {
   console.error(message);
@@ -811,12 +812,17 @@ function cleanupCommand(command: string, rest: string[], env: Record<string, str
         if (!out.ok) process.exitCode = 1;
         break;
       }
-      case 'audio-import-hashes': {
-        const [file] = rest;
-        if (!file) fail('cleanup audio-import-hashes needs the dry run’s cleanup-dryrun.db');
-        const out = importDryRunHashes(db, file);
+      case 'audio-import-dryrun': {
+        if (rest.length === 0)
+          fail('cleanup audio-import-dryrun needs the dry runs’ cleanup-dryrun.db files');
+        for (const file of rest) {
+          const out = importDryRun(db, file);
+          console.log(
+            `${file}: ${out.files} files, ${out.hashes} hashes and ${out.checks} file checks taken over.`,
+          );
+        }
         console.log(
-          `Took over ${out.added} hashes (${out.skipped} already known or changed). The live stage 1 keeps each only if the file is unchanged when it walks the folders.`,
+          'Each is kept only if the file is unchanged when the live run walks the folders; changed files are read again.',
         );
         break;
       }

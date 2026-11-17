@@ -7,7 +7,7 @@
  *   node dist/cli.js cleanup audio-dryrun --stage 0 --out /out --abs-url http://… (key on stdin)
  *
  * Roots: CLEANUP_AUDIO_TORRENTS_DIR and CLEANUP_AUDIO_LIBRARY_DIR. Afterwards the live
- * stage 1 can take over the hashes of unchanged files (`cleanup audio-import-hashes`).
+ * stages take over the results for unchanged files (`cleanup audio-import-dryrun`).
  */
 import Database from 'better-sqlite3';
 import { existsSync, mkdirSync, writeFileSync } from 'fs';
@@ -168,39 +168,81 @@ export async function runAudioDryRun(
 }
 
 /**
- * The live stage 1 takes over the dry run's hashes (decided with the user 2026-11-17): rows
- * with a hash are added to audio_files as "gone" until the live walk sees them; the walk keeps
- * a hash only when root, path, size, mtime, device and inode are all unchanged.
+ * The live stages take over the dry runs' results (decided with the user 2026-11-17), so no
+ * file is read twice: stage 1's hashes and stage 2's file checks. Every file of a dry run's
+ * scratch database is added to the live audio_files as "gone" until the live walk sees it; the
+ * walk keeps a hash only when root, path, size, mtime, device and inode are unchanged, and
+ * stage 2 checks a file again whenever its size or mtime differ from the check's. Takes one or
+ * more scratch databases (the stage 1 and stage 2 dry runs have their own).
  */
-export function importDryRunHashes(
+export function importDryRun(
   live: Database.Database,
   file: string,
-): { added: number; skipped: number } {
+): { files: number; hashes: number; checks: number } {
   const scratch = new Database(file, { readonly: true, fileMustExist: true });
   try {
-    const rows = scratch
+    const files = scratch
       .prepare(
-        `SELECT root, rel_path, rel_path_raw, decoded_path, ext, kind, size, mtime_ms, dev, ino, nlink,
-           sha256, hashed_at FROM audio_files WHERE sha256 IS NOT NULL`,
+        `SELECT id, root, rel_path, rel_path_raw, decoded_path, ext, kind, size, mtime_ms, dev, ino,
+           nlink, sha256, hashed_at FROM audio_files`,
+      )
+      .all() as (Record<string, unknown> & { id: number; sha256: string | null })[];
+    const checks = scratch
+      .prepare(
+        `SELECT f.root, f.rel_path, h.* FROM audio_file_health h JOIN audio_files f ON f.id = h.file_id`,
       )
       .all() as Record<string, unknown>[];
     const now = Date.now();
-    const put = live.prepare(
+    const putFile = live.prepare(
       `INSERT INTO audio_files (root, rel_path, rel_path_raw, decoded_path, ext, kind, size, mtime_ms,
          dev, ino, nlink, sha256, hashed_at, hash_source, first_seen_at, seen_at, gone_at)
        VALUES (@root, @rel_path, @rel_path_raw, @decoded_path, @ext, @kind, @size, @mtime_ms, @dev, @ino,
-         @nlink, @sha256, @hashed_at, 'dry_run', @now, 0, @now)
+         @nlink, @sha256, @hashed_at, CASE WHEN @sha256 IS NULL THEN NULL ELSE 'dry_run' END, @now, 0, @now)
        ON CONFLICT(root, rel_path) DO UPDATE SET sha256 = excluded.sha256,
          hashed_at = excluded.hashed_at, hash_source = 'dry_run'
-       WHERE audio_files.sha256 IS NULL AND audio_files.size = excluded.size
-         AND audio_files.mtime_ms = excluded.mtime_ms AND audio_files.dev = excluded.dev
-         AND audio_files.ino = excluded.ino`,
+       WHERE audio_files.sha256 IS NULL AND excluded.sha256 IS NOT NULL
+         AND audio_files.size = excluded.size AND audio_files.mtime_ms = excluded.mtime_ms
+         AND audio_files.dev = excluded.dev AND audio_files.ino = excluded.ino`,
     );
-    let added = 0;
+    const liveId = live.prepare(
+      `SELECT id FROM audio_files WHERE root = ? AND rel_path = ? AND size = ? AND mtime_ms = ?`,
+    );
+    const putCheck = live.prepare(
+      `INSERT INTO audio_file_health (file_id, size, mtime_ms, format, format_long, codec, profile,
+         bitrate, sample_rate, channels, duration, chapter_count, chapters_json, has_cover, tags_json,
+         header_ok, start_decode_ok, end_decode_ok, decode_error, error, tool_version, checked_ms, checked_at)
+       VALUES (@file_id, @size, @mtime_ms, @format, @format_long, @codec, @profile, @bitrate,
+         @sample_rate, @channels, @duration, @chapter_count, @chapters_json, @has_cover, @tags_json,
+         @header_ok, @start_decode_ok, @end_decode_ok, @decode_error, @error, @tool_version,
+         @checked_ms, @checked_at)
+       ON CONFLICT(file_id) DO UPDATE SET size = excluded.size, mtime_ms = excluded.mtime_ms,
+         format = excluded.format, format_long = excluded.format_long, codec = excluded.codec,
+         profile = excluded.profile, bitrate = excluded.bitrate, sample_rate = excluded.sample_rate,
+         channels = excluded.channels, duration = excluded.duration,
+         chapter_count = excluded.chapter_count, chapters_json = excluded.chapters_json,
+         has_cover = excluded.has_cover, tags_json = excluded.tags_json,
+         header_ok = excluded.header_ok, start_decode_ok = excluded.start_decode_ok,
+         end_decode_ok = excluded.end_decode_ok, decode_error = excluded.decode_error,
+         error = excluded.error, tool_version = excluded.tool_version,
+         checked_ms = excluded.checked_ms, checked_at = excluded.checked_at
+       WHERE audio_file_health.size <> excluded.size OR audio_file_health.mtime_ms <> excluded.mtime_ms`,
+    );
+    let hashes = 0;
+    let taken = 0;
     live.transaction(() => {
-      for (const r of rows) added += put.run({ ...r, now }).changes;
+      for (const f of files) {
+        const { id: _id, ...row } = f;
+        const changes = putFile.run({ ...row, now }).changes;
+        if (changes && f.sha256) hashes++;
+      }
+      for (const c of checks) {
+        const id = liveId.get(c.root, c.rel_path, c.size, c.mtime_ms) as { id: number } | undefined;
+        if (!id) continue;
+        const { root: _r, rel_path: _p, file_id: _f, ...rest } = c;
+        taken += putCheck.run({ ...rest, file_id: id.id }).changes;
+      }
     })();
-    return { added, skipped: rows.length - added };
+    return { files: files.length, hashes, checks: taken };
   } finally {
     scratch.close();
   }

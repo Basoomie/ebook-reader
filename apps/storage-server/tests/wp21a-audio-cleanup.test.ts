@@ -24,7 +24,7 @@ import {
   idsInNames,
   sourceOf,
 } from '../src/cleanup/audio/book-units';
-import { importDryRunHashes } from '../src/cleanup/audio/dry-run';
+import { importDryRun } from '../src/cleanup/audio/dry-run';
 import { decodeMojibake, decodePath } from '../src/cleanup/audio/mojibake';
 import { checkHealth, parseProbe, toolArgs } from '../src/cleanup/audio/probe';
 import { AudioStage1, identityCounts } from '../src/cleanup/audio/stage1-identity';
@@ -575,8 +575,8 @@ describe('stage 1: identity on a fixture tree', () => {
     const t = new Date(Date.now() + 60_000);
     fs.utimesSync(changed, t, t);
     const live = freshDb();
-    const out = importDryRunHashes(live, path.join(scratchDir, 'cleanup-dryrun.db'));
-    expect(out.added).toBeGreaterThan(5);
+    const out = importDryRun(live, path.join(scratchDir, 'cleanup-dryrun.db'));
+    expect(out.hashes).toBeGreaterThan(5);
     await walkRoots(live, roots);
     const rows = live
       .prepare(
@@ -585,7 +585,7 @@ describe('stage 1: identity on a fixture tree', () => {
       .all() as { rel_path: string; sha256: string | null; hash_source: string | null }[];
     const a = rows.find((r) => r.rel_path === '_Unknown/本A/本A [B0A0000001].m4b')!;
     expect(a.sha256).toBeNull();
-    expect(rows.filter((r) => r.hash_source === 'dry_run').length).toBe(out.added - 1);
+    expect(rows.filter((r) => r.hash_source === 'dry_run').length).toBe(out.hashes - 1);
     const stage = new AudioStage1({ db: live, roots, lock: new DiskLock(5) });
     stage.restart();
     await run(stage);
@@ -858,6 +858,64 @@ describe('file health', () => {
       for (let i = 0; i < 100; i++) if (await stage.step(() => false)) break;
       expect(stage.progress()!.healthReused).toBe(9);
       expect(treeProof(base)).toBe(before);
+    });
+
+    it("the live stage 2 takes over a dry run's file checks; only changed files are checked again", async () => {
+      const base = makeTempDir('wp21a-s2imp');
+      const torrents = path.join(base, 'torrents');
+      const library = path.join(base, 'library');
+      const f = makeAudio(makeTempDir('wp21a-s2imp-src'));
+      put(torrents, 'MAM/本1/本1.m4b', fs.readFileSync(f.m4b));
+      put(torrents, 'MAM/本2/本2.mp3', fs.readFileSync(f.mp3));
+      put(library, '_Unknown/本1/本1.m4b', fs.readFileSync(f.m4b));
+      const roots = { torrents, library };
+      const opts = { healthFilesPerSecond: 50, decodeSeconds: 2 };
+      // The dry runs, each in its own scratch database (as on the NAS).
+      const d1 = path.join(makeTempDir('wp21a-dry1'), 'cleanup-dryrun.db');
+      const d2 = path.join(makeTempDir('wp21a-dry2'), 'cleanup-dryrun.db');
+      const s1db = openCleanupDatabase(d1);
+      const s1 = new AudioStage1({ db: s1db, roots, lock: new DiskLock(5) });
+      s1.restart();
+      for (let i = 0; i < 100; i++) if (await s1.step(() => false)) break;
+      s1db.close();
+      const s2db = openCleanupDatabase(d2);
+      updateSettings(s2db, { audiobooks: opts });
+      const s2 = new AudioStage2({ db: s2db, roots, tools: TOOLS });
+      s2.restart();
+      for (let i = 0; i < 100; i++) if (await s2.step(() => false)) break;
+      expect(s2.progress()!.healthDone).toBe(3);
+      s2db.close();
+      // One file changes after the dry runs.
+      const t = new Date(Date.now() + 60_000);
+      fs.utimesSync(path.join(torrents, 'MAM', '本2', '本2.mp3'), t, t);
+      const live = freshDb();
+      updateSettings(live, { audiobooks: opts });
+      const a = importDryRun(live, d1);
+      const b = importDryRun(live, d2);
+      expect(a.hashes).toBe(2); // the two 本1 copies (same size on both sides)
+      expect(b.checks).toBe(3);
+      const stage = new AudioStage2({ db: live, roots, tools: TOOLS });
+      stage.restart();
+      for (let i = 0; i < 100; i++) if (await stage.step(() => false)) break;
+      const p = stage.progress()!;
+      expect(p.error).toBeNull();
+      // Two checks taken over; only the changed file was checked again.
+      expect(p.healthReused).toBe(2);
+      expect(p.healthDone).toBe(3);
+      const checked = live
+        .prepare(
+          `SELECT f.rel_path, h.format FROM audio_file_health h JOIN audio_files f ON f.id = h.file_id
+           WHERE f.gone_at IS NULL ORDER BY f.rel_path`,
+        )
+        .all();
+      expect(checked).toHaveLength(3);
+      expect(
+        live
+          .prepare(
+            `SELECT COUNT(*) AS n FROM audio_files WHERE gone_at IS NULL AND sha256 IS NOT NULL`,
+          )
+          .get(),
+      ).toEqual({ n: 2 });
     });
   });
 });
