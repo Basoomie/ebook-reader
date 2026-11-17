@@ -34,6 +34,7 @@ import { runDocker, SubplzProgress, SubplzRun, subplzArgs } from './subplz';
 import { VoiceEngine } from './engine';
 import { LiveReader } from './live';
 import { isStopped, removeDeletedModels, runClipsWithEngine, runTtsJob } from './tts';
+import { removeDeletedSpeakerModels, runSpeakerJob } from './speakers';
 
 const TTS_KINDS: JobKind[] = [
   'generate_audiobook',
@@ -48,8 +49,10 @@ const TTS_KINDS: JobKind[] = [
  * 1.2.0: Season 2 Phase 12 session 3, live read-aloud and the voice kept loaded (TTS image 2).
  * 1.3.0: Season 2 Phase 12 session 4, narration and dialogue voices: a sentence may come in runs,
  * each read with its own voice (TTS image 3). The server gives two-voice work only to 1.3.0+.
+ * 1.4.0: Season 2 Phase 12 session 5, per-character voices: speaker jobs ('attribute_speakers',
+ * speakers.ts) with llama.cpp's server (its image pulled by `main.js pull-speakers`).
  */
-export const WORKER_VERSION = '1.3.0';
+export const WORKER_VERSION = '1.4.0';
 
 const AUDIO_EXTENSIONS = new Set(['.m4b', '.m4a', '.mp3']);
 
@@ -168,13 +171,16 @@ export class Worker {
     };
     const subplz = await has(this.s.image);
     const tts = await has(this.s.ttsImage);
+    const speakers = await has(this.s.speakerImage);
     const kinds: JobKind[] = [
       ...(subplz ? (['sync_subtitles'] as JobKind[]) : []),
       ...(tts ? TTS_KINDS : []),
+      ...(speakers ? (['attribute_speakers'] as JobKind[]) : []),
     ];
     const missing = [
       ...(subplz ? [] : [`The SubPlz image is not on the PC (docker pull ${this.s.image})`]),
       ...(tts ? [] : [`The TTS program is not on the PC (node main.js build-tts)`]),
+      ...(speakers ? [] : [`The speaker program is not on the PC (node main.js pull-speakers)`]),
     ];
     return { kinds, problem: missing.length ? missing.join('; ') : null };
   }
@@ -220,6 +226,9 @@ export class Worker {
     const again = () => (waited ? Math.max(0, 1 - (Date.now() - started) / 1000) : hb.pollSeconds);
     if (tts) {
       await removeDeletedModels(this.api, this.s.ttsModelsDir, this.log);
+    }
+    if (kinds.includes('attribute_speakers')) {
+      await removeDeletedSpeakerModels(this.api, this.s.speakerModelsDir, this.log);
     }
     // The voice kept loaded: let it go when the keep time is over, on Pause, or when the
     // server doesn't know about it.
@@ -294,7 +303,10 @@ export class Worker {
     try {
       await fsp.rm(jobDir, { recursive: true, force: true });
       await fsp.mkdir(jobDir, { recursive: true });
-      if (job.kind === 'sentence_audio') {
+      if (job.kind === 'attribute_speakers') {
+        // Session 5: the speaker model (llama.cpp) answers the server's requests.
+        await runSpeakerJob({ job, s: this.s, api: this.api, log: this.log });
+      } else if (job.kind === 'sentence_audio') {
         // 1.2.0: Enrich's clips are read by the voice kept loaded.
         await runClipsWithEngine({
           job,

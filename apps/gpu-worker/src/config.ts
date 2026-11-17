@@ -22,6 +22,14 @@ export const PINNED_IMAGE =
  */
 export const TTS_IMAGE = 'ttsu-irodori:3';
 
+/**
+ * Season 2 Phase 12 session 5: the speaker model's runtime, llama.cpp's server with CUDA,
+ * pinned by digest (ghcr.io/ggml-org/llama.cpp:server-cuda as published 2026-11-16, build
+ * 12429, the one measured in step A). Pulled once per Windows account (main.js pull-speakers).
+ */
+export const SPEAKER_IMAGE =
+  'ghcr.io/ggml-org/llama.cpp@sha256:d68ec493c0ff9105ddfe2e909fff304117bc6e1fffbbd8d94182bd455983c264';
+
 export interface WorkerSettings {
   /** The reader's server (the storage server), e.g. http://192.168.1.5:3081. */
   serverUrl: string;
@@ -68,6 +76,18 @@ export interface WorkerSettings {
    * reported; the next one loads the voice again), seconds.
    */
   liveReadMaxSeconds: number;
+  /** Session 5: llama.cpp's server image (speaker jobs). */
+  speakerImage: string;
+  /** Session 5: speaker models (GGUF files), shared by every Windows account. */
+  speakerModelsDir: string;
+  /** Session 5: the local port llama.cpp's server listens on (127.0.0.1 only). */
+  speakerPort: number;
+  /** Session 5: loading the speaker model may take this long (minutes). */
+  speakerLoadMaxMinutes: number;
+  /** Session 5: one request to the speaker model may take this long (minutes). */
+  speakerRequestMaxMinutes: number;
+  /** Session 5: where models are downloaded from (tests: a local stand-in). */
+  huggingFaceUrl: string;
 }
 
 export const DEFAULTS: Omit<WorkerSettings, 'serverUrl' | 'token'> = {
@@ -89,6 +109,12 @@ export const DEFAULTS: Omit<WorkerSettings, 'serverUrl' | 'token'> = {
   ttsPrecision: 'bf16',
   idleWaitSeconds: 25,
   liveReadMaxSeconds: 120,
+  speakerImage: SPEAKER_IMAGE,
+  speakerModelsDir: 'C:\\Data\\LLM\\Models\\ttsu-reader-speakers',
+  speakerPort: 8791,
+  speakerLoadMaxMinutes: 30,
+  speakerRequestMaxMinutes: 10,
+  huggingFaceUrl: 'https://huggingface.co',
 };
 
 export class ConfigError extends Error {}
@@ -163,6 +189,12 @@ export function parseSettings(raw: unknown): WorkerSettings {
     ttsChapterMaxMinutes: num(r, 'ttsChapterMaxMinutes', 0.01),
     idleWaitSeconds: Math.min(60, num(r, 'idleWaitSeconds', 0)),
     liveReadMaxSeconds: num(r, 'liveReadMaxSeconds', 1),
+    speakerImage: str(r, 'speakerImage'),
+    speakerModelsDir: str(r, 'speakerModelsDir'),
+    speakerPort: Math.round(num(r, 'speakerPort', 1024)),
+    speakerLoadMaxMinutes: num(r, 'speakerLoadMaxMinutes', 0.01),
+    speakerRequestMaxMinutes: num(r, 'speakerRequestMaxMinutes', 0.01),
+    huggingFaceUrl: str(r, 'huggingFaceUrl').replace(/\/+$/, ''),
     ttsPrecision: ((p) => {
       if (p !== 'bf16' && p !== 'fp32') throw new ConfigError('ttsPrecision must be bf16 or fp32');
       return p;

@@ -6,6 +6,8 @@
  *   node C:\ttsu-worker\app\main.js build-tts  build the TTS program's image (WP17), once per
  *                                            Windows account and after each worker update
  *                                            that changes it
+ *   node C:	tsu-workerappmain.js pull-speakers  download the speaker program's image (season 2
+ *                                            phase 12 session 5, llama.cpp), once per Windows account
  *
  * Settings: C:\ttsu-worker\config.json (see config.example.json). Only one worker runs at
  * a time (a lock file next to the work folder).
@@ -146,6 +148,37 @@ async function check(s: WorkerSettings): Promise<boolean> {
   } catch (err) {
     line(false, 'Models folder', (err as Error).message);
   }
+  // Session 5: the speaker program (llama.cpp's server, pinned) and its models folder.
+  let speakersOk = false;
+  if (dockerOk) {
+    try {
+      await docker(['image', 'inspect', '--format', '{{.Id}}', s.speakerImage]);
+      speakersOk = true;
+      line(true, 'Speaker program on the PC', s.speakerImage);
+    } catch {
+      line(false, 'Speaker program on the PC', 'run: node main.js pull-speakers');
+    }
+  }
+  if (speakersOk) {
+    try {
+      const out = await docker(
+        ['run', '--rm', '--gpus', 'all', s.speakerImage, '--list-devices'],
+        5 * 60_000,
+      );
+      line(/CUDA/i.test(out), 'GPU visible to the speaker program', out.trim().split('\n').pop());
+    } catch (err) {
+      line(false, 'GPU visible to the speaker program', (err as Error).message);
+    }
+  }
+  try {
+    fs.mkdirSync(s.speakerModelsDir, { recursive: true });
+    const probe = path.join(s.speakerModelsDir, `.write-test-${process.pid}`);
+    fs.writeFileSync(probe, 'ok');
+    fs.rmSync(probe);
+    line(true, 'Speaker models folder', s.speakerModelsDir);
+  } catch (err) {
+    line(false, 'Speaker models folder', (err as Error).message);
+  }
   line(fs.existsSync(s.cacheDir), 'Cache folder', s.cacheDir);
   try {
     fs.mkdirSync(s.workDir, { recursive: true });
@@ -184,6 +217,25 @@ function buildTts(s: WorkerSettings): Promise<number> {
   });
 }
 
+/** Session 5: downloads the speaker program's image (pinned by digest). */
+function pullSpeakers(s: WorkerSettings): Promise<number> {
+  console.log(`Downloading ${s.speakerImage} (about 4.4 GB the first time)...`);
+  return new Promise((resolve) => {
+    const child = spawn(s.dockerPath, [...s.dockerPrefixArgs, 'pull', s.speakerImage], {
+      stdio: 'inherit',
+      windowsHide: true,
+    });
+    child.on('error', (err) => {
+      console.error(err.message);
+      resolve(1);
+    });
+    child.on('close', (code) => {
+      console.log(code === 0 ? 'Done. Check it with: node main.js check' : 'The download failed.');
+      resolve(code ?? 1);
+    });
+  });
+}
+
 async function main(): Promise<void> {
   const command = process.argv[2] ?? 'run';
   let settings: WorkerSettings;
@@ -202,8 +254,11 @@ async function main(): Promise<void> {
   if (command === 'build-tts') {
     process.exit(await buildTts(settings));
   }
+  if (command === 'pull-speakers') {
+    process.exit(await pullSpeakers(settings));
+  }
   if (command !== 'run') {
-    console.error('Usage: node main.js [run|check|build-tts]');
+    console.error('Usage: node main.js [run|check|build-tts|pull-speakers]');
     process.exit(2);
   }
   const log = fileLogger(settings.logDir, settings.logMaxMB);
