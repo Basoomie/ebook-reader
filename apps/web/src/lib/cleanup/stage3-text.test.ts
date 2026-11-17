@@ -110,6 +110,31 @@ describe('stage 3 wording', () => {
     ]);
   });
 
+  it('while it runs, each line names the finished step it is about', () => {
+    expect(stage3Lines(stage('analyse'), status(progress({ phase: 'text' })))).toEqual([]);
+    expect(
+      stage3Lines(stage('analyse'), status(progress({ phase: 'candidates', candidates: 0 })))
+    ).toEqual([
+      'Step 1 done · Reading every book’s text: 100 books read (2 couldn’t be read), 0.26 s per book.'
+    ]);
+    const compare = stage3Lines(
+      stage('analyse'),
+      status(progress({ phase: 'compare', candidates: 26272 }))
+    );
+    expect(compare).toEqual([
+      'Step 1 done · Reading every book’s text: 100 books read (2 couldn’t be read), 0.26 s per book.',
+      'Step 2 done · Finding books that share text: 26,272 pairs to compare.'
+    ]);
+    const quality = stage3Lines(
+      stage('analyse'),
+      status(progress({ phase: 'quality', compareDone: 39, compareErrors: 1 }))
+    );
+    expect(quality[2]).toBe(
+      'Step 3 done · Comparing those books word for word: 39 pairs compared (1 couldn’t be compared).'
+    );
+    expect(quality).toHaveLength(3);
+  });
+
   it('removing copies once on', () => {
     expect(
       stage3ApplyProgress(status(null, { applied: 3, proposed: 7 }), stage('on'))
