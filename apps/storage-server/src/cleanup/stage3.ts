@@ -517,11 +517,22 @@ export function resumeFailedStage3(db: Database.Database): {
 
 /**
  * A content_pairs row `p` waiting for a decision: in review (or a duplicate without a clear
- * better copy) and not decided by you or the review, in either order of the pair.
+ * better copy), not decided by you or the review (in either order of the pair), and with both
+ * copies still in Calibre: a copy the cleanup removed (in favour of a third copy of the same
+ * book) leaves nothing to decide (2026-11-17: 365 of the 366 pairs the page still counted).
  */
+// Each lookup is one index search per pair (by primary key, and by (library_id, calibre_uuid);
+// the + keeps SQLite on that index): an OR or IN here scanned every decision and every applied
+// removal per pair, 3.6 s on a copy of the live database.
 export const STAGE3_WAITING_SQL = `(p.class = 'review' OR (p.class IN ('duplicate', 'superset') AND p.keep_id IS NULL))
   AND NOT EXISTS (SELECT 1 FROM pair_decisions d WHERE d.library_id = p.library_id
-    AND ((d.a_uuid = p.a_uuid AND d.b_uuid = p.b_uuid) OR (d.a_uuid = p.b_uuid AND d.b_uuid = p.a_uuid)))`;
+    AND d.a_uuid = p.a_uuid AND d.b_uuid = p.b_uuid)
+  AND NOT EXISTS (SELECT 1 FROM pair_decisions d WHERE d.library_id = p.library_id
+    AND d.a_uuid = p.b_uuid AND d.b_uuid = p.a_uuid)
+  AND NOT EXISTS (SELECT 1 FROM proposed_changes c WHERE c.library_id = p.library_id
+    AND c.calibre_uuid = p.a_uuid AND +c.stage IN (1, 3) AND +c.field = 'book' AND +c.state = 'applied')
+  AND NOT EXISTS (SELECT 1 FROM proposed_changes c WHERE c.library_id = p.library_id
+    AND c.calibre_uuid = p.b_uuid AND +c.stage IN (1, 3) AND +c.field = 'book' AND +c.state = 'applied')`;
 
 /**
  * Records the review's decisions on stage 3 pairs (`cli cleanup decide 3 <file>`): each one

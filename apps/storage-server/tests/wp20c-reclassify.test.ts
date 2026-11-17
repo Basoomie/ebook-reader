@@ -9,7 +9,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { COUNTER_BUNDLE } from '../src/counts/counter-bundle';
 import { InProcessReader, type Stage3Reader } from '../src/counts/book-text-worker';
 import type { BookTextModule } from '../src/cleanup/stage3-work';
-import { recordReviewDecisions, stage3RulesKey } from '../src/cleanup/stage3';
+import { STAGE3_WAITING_SQL, recordReviewDecisions, stage3RulesKey } from '../src/cleanup/stage3';
 import { getSettings } from '../src/cleanup/settings';
 import { getStage } from '../src/cleanup/stages';
 import { makeCleanupEnv, type CleanupEnv } from './helpers/cleanup-env';
@@ -164,6 +164,30 @@ describe('stage 3: classified again, and the review decisions', () => {
     const waitingIds = () =>
       env.service.stage3Pairs('review', { limit: 1000 }).items.map((x) => x.id as number);
     expect(waitingIds()).toContain(c.id);
+    // A pair whose copy the cleanup removed (in favour of a third copy) leaves nothing to decide;
+    // an Undo brings it back (2026-11-17: 365 such pairs were still counted). Each lookup is an
+    // index search, not a scan per pair.
+    const removal = env.cleanupDb
+      .prepare(
+        `INSERT INTO proposed_changes (stage, library_id, calibre_id, calibre_uuid, field, source,
+           class, state, analysis_id, created_at, updated_at)
+         SELECT 3, library_id, a_id, a_uuid, 'book', 'test', 'auto', 'applied', 'other', 0, 0
+         FROM content_pairs WHERE id = ?`,
+      )
+      .run(c.id).lastInsertRowid;
+    expect(waitingIds()).not.toContain(c.id);
+    env.cleanupDb.prepare("UPDATE proposed_changes SET state = 'undone' WHERE id = ?").run(removal);
+    expect(waitingIds()).toContain(c.id);
+    env.cleanupDb.prepare('DELETE FROM proposed_changes WHERE id = ?').run(removal);
+    const plan = (
+      env.cleanupDb
+        .prepare(
+          `EXPLAIN QUERY PLAN SELECT p.id FROM content_pairs p WHERE p.analysis_id = ? AND ${STAGE3_WAITING_SQL}`,
+        )
+        .all('x') as { detail: string }[]
+    ).map((r) => r.detail);
+    expect(plan.filter((d) => /^SCAN/.test(d))).toEqual([]);
+    expect(plan.filter((d) => /pair_decisions|proposed_changes_book/.test(d))).toHaveLength(4);
     const note = 'Same book; the copy with commentary has everything the other has';
     const out = recordReviewDecisions(env.cleanupDb, {
       decisions: [
