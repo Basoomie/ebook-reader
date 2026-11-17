@@ -20,6 +20,22 @@ const modeFile = state ? path.join(state, 'mode') : null;
 const mode =
   (modeFile && fs.existsSync(modeFile) ? fs.readFileSync(modeFile, 'utf8').trim() : '') || 'ok';
 const args = process.argv.slice(2);
+
+// The browser tests: every other command goes to the TTS program's fake (FAKE_TTS_DOCKER).
+const forSpeakers =
+  (args[0] === 'image' && args[1] === 'inspect' && args[args.length - 1].includes('llama.cpp')) ||
+  (args[0] === 'run' && args.includes('-p')) ||
+  (args[0] === 'ps' && args.join(' ').includes('ttsu-llm-')) ||
+  (args[0] === 'rm' && /ttsu-llm-/.test(args[args.length - 1])) ||
+  args[0] === 'pull';
+if (process.env.FAKE_TTS_DOCKER && !forSpeakers) {
+  const { spawnSync } = require('child_process');
+  const r = spawnSync(process.execPath, [process.env.FAKE_TTS_DOCKER, ...args], {
+    stdio: 'inherit',
+    env: process.env,
+  });
+  process.exit(r.status ?? 1);
+}
 if (state) fs.appendFileSync(path.join(state, 'calls.jsonl'), JSON.stringify(args) + '\n');
 
 const pidFile = (name) => path.join(state, `${name}.pid`);
