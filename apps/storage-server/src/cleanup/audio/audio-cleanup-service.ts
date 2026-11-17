@@ -208,8 +208,13 @@ export class AudioCleanupService {
     if (!this.running1) this.run1();
   }
 
+  /**
+   * What stage 1 is doing now. Both its listing (walk) and its hashing wait while a Calibre job
+   * uses the disk, so both say so (found live 2026-11-17: the listing waited but the page said
+   * "Analysing").
+   */
   private waiting1Text(p: AudioStage1Progress): string {
-    if (p.phase === 'hash') {
+    if (p.phase === 'walk' || p.phase === 'hash') {
       const lock = this.opts.lock.state();
       if (lock.calibreApplying) return `Waiting for the disk: ${lock.calibreApplying}`;
       if (lock.holder && lock.holder.owner !== DISK_OWNERS.audio1) {

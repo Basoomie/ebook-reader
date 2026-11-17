@@ -204,6 +204,34 @@ describe('the shared disk lock', () => {
     }
   });
 
+  it('a Calibre stage that is On with work left holds them back between its batches too; a paused one does not', async () => {
+    const { env, setup } = await makeCleanupEnv();
+    try {
+      await setup();
+      const db = env.cleanupDb;
+      db.prepare(
+        `UPDATE stages SET mode = 'on', state = 'ready', progress_json = ? WHERE stage = 3`,
+      ).run(JSON.stringify({ analysisId: 'a1', phase: 'done' }));
+      expect(env.service.calibreApplying()).toBeNull(); // On, but nothing left
+      db.prepare(
+        `INSERT INTO proposed_changes (stage, library_id, calibre_id, calibre_uuid, field, source,
+           class, state, analysis_id, created_at, updated_at)
+         VALUES (3, ?, 1, 'u1', 'book', 'rules', 'auto', 'proposed', 'a1', 0, 0)`,
+      ).run(env.libraryId());
+      // No batch is open (the gap while the reader's index takes in the last one).
+      expect(env.service.calibreApplying()).toBe('Calibre stage 3 (between batches)');
+      await new Promise((r) => setTimeout(r, 1100));
+      expect(env.service.diskLock.calibreBusy()).toBe(true);
+      expect(env.service.diskLock.tryAcquire(DISK_OWNERS.audio1, 'audio')).toBe(false);
+      db.prepare(`UPDATE stages SET pause_reason = 'library_changed' WHERE stage = 3`).run();
+      expect(env.service.calibreApplying()).toBeNull();
+      db.prepare(`UPDATE stages SET pause_reason = NULL, mode = 'analyse' WHERE stage = 3`).run();
+      expect(env.service.calibreApplying()).toBeNull(); // Preview applies nothing
+    } finally {
+      await env.close();
+    }
+  });
+
   it('an audiobook job cannot take a free disk while a Calibre job waits', () => {
     const lock = new DiskLock(5);
     lock.tryAcquire('x', 'calibre');

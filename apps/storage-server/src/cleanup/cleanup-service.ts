@@ -173,10 +173,9 @@ export class CleanupService {
     this.secrets = new SecretStore(opts.cleanup, opts.main);
     this.diskLock = opts.diskLock ?? new DiskLock();
     // A batch being applied is Calibre's own disk work: audiobook jobs wait for it too.
-    this.diskLock.setCalibreApplying(() => {
-      const open = this.batches.open() as { stage?: number } | null;
-      return open ? `Calibre stage ${open.stage ?? ''} (applying a batch)` : null;
-    });
+    // A Calibre stage that is On with work left counts as using the disk also between its
+    // batches (found live 2026-11-17: 2-6 min gaps while the reader's index takes in a batch).
+    this.diskLock.setCalibreApplying(() => this.calibreApplying());
     this.batches = new BatchService({
       cleanup: opts.cleanup,
       main: opts.main,
@@ -680,6 +679,30 @@ export class CleanupService {
     this.waiting3 = batch
       ? 'A batch is being applied'
       : (reason ?? (this.remaining3(target) === 0 ? 'Done: nothing left to remove' : null));
+  }
+
+  /**
+   * The Calibre cleanup's applying, for the shared disk lock (WP21a): a batch that is planned
+   * or claimed, or a stage that is On with removals or writes left (between its batches it
+   * waits for the reader's index, then plans the next). Null when no stage applies anything.
+   */
+  calibreApplying(): string | null {
+    const open = this.batches.open() as { stage?: number } | null;
+    if (open) return `Calibre stage ${open.stage ?? ''} (applying a batch)`;
+    const target = this.targetLibrary();
+    if (!target) return null;
+    const left: [number, () => number][] = [
+      [1, () => this.remaining(target)],
+      [2, () => this.remaining2(target)],
+      [3, () => this.remaining3(target)],
+    ];
+    for (const [stage, count] of left) {
+      const st = getStage(this.db, stage);
+      if (st.mode === 'on' && !st.pauseReason && count() > 0) {
+        return `Calibre stage ${stage} (between batches)`;
+      }
+    }
+    return null;
   }
 
   private remaining3(target: string): number {
