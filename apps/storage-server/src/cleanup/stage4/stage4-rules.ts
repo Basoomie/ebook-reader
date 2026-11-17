@@ -1,0 +1,167 @@
+/**
+ * Stage 4's rules (WP20d): the measured rules v3 (rules-v3.ts, unchanged) plus what the plan
+ * decided after them (section 6) and the fixes from fresh check D:
+ *
+ * - An Amazon match in a manga category is rejected when the file has text (check D, 8671:
+ *   the search matched the manga volume of the same title and pulled the format with it).
+ * - ライトノベル anywhere in Amazon's categories (menu path or ranking) = light novel (decided
+ *   2026-11-12; v3 read the menu path only).
+ * - Edition kind (full, sample, bonus, special edition, omnibus) from the titles, as stage 3
+ *   decides it; format and kind stay apart.
+ * - The number's best guess where v3 sends it to review: a side volume after its predecessor
+ *   (10.5) or its printed decimal; a store bonus = its volume + .1; an omnibus right after the
+ *   last volume it covers (1-5 -> 5.9), unknown range = no number. v3's auto/review classes are
+ *   kept, so the measured numbers stay comparable; WP20e's flagged fields use these guesses.
+ */
+import { N, nfkc } from '../title-rules';
+import { editionKind, type EditionKind } from '../stage3-kinds';
+import { nums } from './pick';
+import {
+  decide,
+  titleNumber,
+  type Format,
+  type RefRecord,
+  type V3Auto,
+  type V3Trace,
+  type V3Values,
+} from './rules-v3';
+
+export const STAGE4_RULES_VERSION = 1;
+
+/** The gold labels' names for the kinds. */
+export type Kind = 'full' | 'sample' | 'bonus' | 'special edition' | 'omnibus';
+const KIND_NAME: Record<EditionKind, Kind> = {
+  full: 'full',
+  sample: 'sample',
+  bonus: 'bonus',
+  special: 'special edition',
+  omnibus: 'omnibus',
+};
+
+/** Amazon's menu path says manga (rules v3's own test), and not ライトノベル. */
+export function amazonSaysManga(breadcrumbs: readonly string[] | null | undefined): boolean {
+  const bc = (breadcrumbs || []).join(' ');
+  if (bc.includes('ライトノベル')) return false;
+  return (
+    ['マンガ', 'コミック ', ' コミック'].some((x) => bc.includes(x)) || bc.endsWith('コミック')
+  );
+}
+
+export interface Stage4Options {
+  /** Characters of the book's text; at least this many = "the file has text" (v3: 5,000). */
+  textChars?: number;
+}
+
+export interface Stage4Decision {
+  values: V3Values & { kind: Kind };
+  auto: V3Auto & { kind: boolean };
+  /** The number's best guess where the rules don't apply one (side volume, bonus, omnibus). */
+  numberGuess: { value: number | null; rule: string } | null;
+  /** Why an Amazon match was set aside. */
+  amazonRejected: string | null;
+  kindMarker: string | null;
+  trace: V3Trace;
+}
+
+export function decideStage4(record: RefRecord, options: Stage4Options = {}): Stage4Decision {
+  const textChars = options.textChars ?? 5000;
+  let r = record;
+  let amazonRejected: string | null = null;
+  const product = r.amazon?.product;
+  if (product && (r.file.chars || 0) >= textChars && amazonSaysManga(product.breadcrumbs)) {
+    amazonRejected = 'Amazon lists it as manga, but the file has text';
+    r = { ...r, amazon: { ...r.amazon, product: null } };
+  }
+  const { P, AU, trace } = decide(r);
+  const values = { ...P } as V3Values & { kind: Kind };
+  const auto = { ...AU } as V3Auto & { kind: boolean };
+
+  // ライトノベル anywhere in Amazon's categories (menu path or ranking).
+  const ap = r.amazon?.product;
+  if (
+    trace.amazonIdentified &&
+    ap &&
+    values.fmt !== 'light novel' &&
+    values.fmt !== 'image-only' &&
+    values.fmt !== 'manga' &&
+    (ap.rank_categories || []).some((c) => c.includes('ライトノベル'))
+  ) {
+    values.fmt = 'light novel' as Format;
+  }
+
+  const titles = [r.file.opf_title, r.calibre.cal_title];
+  const k = editionKind(titles);
+  values.kind = KIND_NAME[k.kind];
+  auto.kind = true;
+
+  const numberGuess = guessNumber(values, trace, r, k.kind);
+  return { values, auto, numberGuess, amazonRejected, kindMarker: k.marker, trace };
+}
+
+/** Half-width digits (with a decimal) out of a title part. */
+function numbersIn(s: string): number[] {
+  return [...nfkc(s).matchAll(/\d+(?:\.\d+)?/g)]
+    .map((m) => parseFloat(m[0]))
+    .filter((n) => n < 500);
+}
+
+function guessNumber(
+  values: V3Values,
+  trace: V3Trace,
+  r: RefRecord,
+  kind: EditionKind,
+): Stage4Decision['numberGuess'] {
+  const se = values.se;
+  if (!se) return null;
+  const title = nfkc(r.file.opf_title || r.calibre.cal_title);
+  if (kind === 'bonus') {
+    // 『<series> 3 ～…』BOOK☆WALKER限定書き下ろし…: the volume it belongs to + .1.
+    const quoted = /『([^』]+)』/u.exec(title)?.[1] ?? title;
+    const n = titleNumber(quoted, se) ?? numbersIn(quoted).at(-1) ?? null;
+    return { value: n === null ? null : Math.floor(n) + 0.1, rule: 'store bonus: its volume + .1' };
+  }
+  if (kind === 'omnibus') {
+    const m = /(\d+)\s*[~〜～\-–・]\s*(\d+)/u.exec(nfkc(values.t));
+    return m
+      ? { value: parseInt(m[2], 10) + 0.9, rule: 'omnibus: right after the last volume it covers' }
+      : { value: null, rule: 'omnibus with unknown volumes: no number' };
+  }
+  if (!trace.side) return null;
+  const printed = titleNumber(values.t, se);
+  if (printed !== null && !Number.isInteger(printed))
+    return { value: printed, rule: 'side volume: printed number' };
+  if (!trace.ranobedb?.sub) {
+    // v3's "side": the title carries a number the rules couldn't confirm as the series number.
+    const last = numbersIn(values.t).at(-1);
+    if (last !== undefined)
+      return { value: last, rule: 'number not confirmed: the number printed in the title' };
+    const part = /[(（〈]?(上|中|下|前編|中編|後編)[)）〉]?\s*$/u.exec(nfkc(values.t));
+    if (part) {
+      const n = { 上: 1, 前編: 1, 中: 2, 中編: 2, 下: 2, 後編: 2 }[part[1]]!;
+      return { value: n, rule: 'number not confirmed: (上)/(下) in the title' };
+    }
+    const other = [...nums(values.t)];
+    return other.length === 1
+      ? { value: other[0], rule: 'number not confirmed: a roman or kanji number in the title' }
+      : { value: null, rule: 'number not confirmed: none printed' };
+  }
+  // A side volume (RanobeDB "sub"): after its predecessor.
+  const books = (r.ranobedb?.series?.books || []).filter((b) => typeof b.sort_order === 'number');
+  const me = r.ranobedb?.book?.id;
+  const sorted = [...books].sort((a, b) => (a.sort_order as number) - (b.sort_order as number));
+  const at = sorted.findIndex((b) => b.id === me);
+  for (let i = at - 1; i >= 0; i--) {
+    const prev = sorted[i] as { type?: string | null; title_orig?: string | null };
+    if (prev.type === 'sub') continue;
+    const n =
+      titleNumber(prev.title_orig, se) ??
+      titleNumber(prev.title_orig, r.ranobedb?.series?.title_orig);
+    if (n !== null)
+      return { value: Math.floor(n) + 0.5, rule: 'side volume: after its predecessor' };
+  }
+  return { value: null, rule: 'side volume: predecessor not known' };
+}
+
+/** The series name as the gold labels compare it (for reports). */
+export const sameSeries = (a: string | null, b: string | null) =>
+  a === null || b === null ? a === b : N(a) === N(b);
