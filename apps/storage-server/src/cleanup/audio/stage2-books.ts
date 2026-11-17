@@ -73,8 +73,8 @@ export interface Stage2Deps {
   roots: AudioRoots;
   tools: ToolPaths;
   /**
-   * True while a Calibre job uses the disk (reads or applies a batch): the checks then go one
-   * at a time at healthFilesPerSecond; otherwise healthWorkers files at once, unpaced.
+   * True while a Calibre job uses the disk (reads or applies a batch): stage 2 then waits,
+   * listing and checking nothing; otherwise healthWorkers files at once, unpaced.
    */
   calibreBusy?: () => boolean;
   log?: (m: string) => void;
@@ -133,7 +133,10 @@ export class AudioStage2 {
     p: AudioStage2Progress,
     shouldStop: () => boolean,
   ): Promise<AudioStage2Progress> {
-    const walk = await walkRoots(this.deps.db, this.deps.roots, { shouldStop });
+    const walk = await walkRoots(this.deps.db, this.deps.roots, {
+      shouldStop,
+      shouldPause: () => this.deps.calibreBusy?.() ?? false,
+    });
     if (!walk) return p;
     p.walk = walk;
     p.phase = 'units';
@@ -238,7 +241,6 @@ export class AudioStage2 {
          error = excluded.error, tool_version = excluded.tool_version,
          checked_ms = excluded.checked_ms, checked_at = excluded.checked_at`,
     );
-    const gapMs = 1000 / s.healthFilesPerSecond;
     const busy = () => this.deps.calibreBusy?.() ?? false;
     const checkOne = async (f: (typeof next)[number]): Promise<number> => {
       const t0 = Date.now();
@@ -280,14 +282,8 @@ export class AudioStage2 {
       return took;
     };
     if (busy()) {
-      // A Calibre job uses the disk: one file at a time, at the set pace.
-      for (const f of next) {
-        if (shouldStop()) break;
-        const took = await checkOne(f);
-        const wait = gapMs - took;
-        if (wait > 0) await new Promise((r) => setTimeout(r, Math.min(wait, 10_000)));
-        if (!busy()) break; // the disk is free again: the next step goes at full speed
-      }
+      // A Calibre job uses the disk: wait (the next step looks again).
+      await new Promise((r) => setTimeout(r, 1000));
       return p;
     }
     // The disk is free of Calibre jobs: several files at once, unpaced. Each worker stops taking

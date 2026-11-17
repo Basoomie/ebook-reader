@@ -328,7 +328,6 @@ export interface CleanupSettings {
 export interface AudiobookSettings {
   absUrl: string;
   readMbPerSecond: number;
-  healthFilesPerSecond: number;
   healthWorkers: number;
   decodeSeconds: number;
   toolTimeoutSeconds: number;

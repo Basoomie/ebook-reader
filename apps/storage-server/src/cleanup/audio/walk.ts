@@ -45,6 +45,8 @@ export interface WalkResult {
   gone: number;
   /** Non-UTF-8 names (kept as exact bytes). */
   rawNames: number;
+  /** Time spent waiting for the Calibre cleanup to finish using the disk. */
+  pausedMs: number;
 }
 
 function extOf(name: string): string {
@@ -60,7 +62,7 @@ const running = new WeakMap<Database.Database, Promise<unknown>>();
 export function walkRoots(
   db: Database.Database,
   roots: AudioRoots,
-  opts: { shouldStop?: () => boolean; onFile?: (n: number) => void } = {},
+  opts: WalkOptions = {},
 ): Promise<WalkResult | null> {
   const before = running.get(db) ?? Promise.resolve();
   const next = before.catch(() => undefined).then(() => walkOnce(db, roots, opts));
@@ -68,13 +70,21 @@ export function walkRoots(
   return next;
 }
 
+export interface WalkOptions {
+  shouldStop?: () => boolean;
+  /**
+   * True while a Calibre job uses the disk: the walk waits (its stat and readdir calls are
+   * small reads scattered over the disk and slowed Calibre stage 3 down 3-4x on the NAS,
+   * measured 2026-11-17).
+   */
+  shouldPause?: () => boolean;
+  onFile?: (n: number) => void;
+}
+
 async function walkOnce(
   db: Database.Database,
   roots: AudioRoots,
-  {
-    shouldStop = () => false,
-    onFile,
-  }: { shouldStop?: () => boolean; onFile?: (n: number) => void } = {},
+  { shouldStop = () => false, shouldPause = () => false, onFile }: WalkOptions = {},
 ): Promise<WalkResult | null> {
   const startedAt = Date.now();
   const result: WalkResult = {
@@ -88,6 +98,17 @@ async function walkOnce(
     errors: [],
     gone: 0,
     rawNames: 0,
+    pausedMs: 0,
+  };
+  /** Waits while a Calibre job uses the disk. False when stopped meanwhile. */
+  const giveWay = async (): Promise<boolean> => {
+    while (shouldPause()) {
+      if (shouldStop()) return false;
+      const t = Date.now();
+      await new Promise((r) => setTimeout(r, 1000));
+      result.pausedMs += Date.now() - t;
+    }
+    return !shouldStop();
   };
   const upsert = db.prepare(
     `INSERT INTO audio_files (root, rel_path, rel_path_raw, decoded_path, ext, kind, size, mtime_ms,
@@ -127,7 +148,7 @@ async function walkOnce(
       { full: base, rel: '', relBytes: Buffer.alloc(0), raw: false },
     ];
     while (stack.length) {
-      if (shouldStop()) return null;
+      if (!(await giveWay())) return null;
       const dir = stack.pop()!;
       let entries;
       try {
@@ -143,6 +164,7 @@ async function walkOnce(
           ? Buffer.concat([dir.relBytes, Buffer.from('/'), nameBytes])
           : nameBytes;
         const raw = dir.raw || e.rawHex !== null;
+        if (shouldPause() && !(await giveWay())) return null;
         let st;
         try {
           st = await lstatEntry(e.fullPath);

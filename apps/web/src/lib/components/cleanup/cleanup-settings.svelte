@@ -171,7 +171,6 @@
               audiobooks: {
                 absUrl: settings.audiobooks.absUrl,
                 readMbPerSecond: Number(settings.audiobooks.readMbPerSecond),
-                healthFilesPerSecond: Number(settings.audiobooks.healthFilesPerSecond),
                 healthWorkers: Number(settings.audiobooks.healthWorkers),
                 decodeSeconds: Number(settings.audiobooks.decodeSeconds),
                 toolTimeoutSeconds: Number(settings.audiobooks.toolTimeoutSeconds),
@@ -346,17 +345,6 @@
             step="1"
             bind:value={settings.audiobooks.healthWorkers}
             data-testid="cleanup-audio-workers"
-          />
-        </label>
-        <label class={field}>
-          <span class={label}>Files checked per second while the Calibre cleanup uses the disk</span
-          >
-          <input
-            class="c-input"
-            type="number"
-            min="0.1"
-            step="0.1"
-            bind:value={settings.audiobooks.healthFilesPerSecond}
           />
         </label>
         <label class={field}>

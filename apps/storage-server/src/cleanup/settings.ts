@@ -62,11 +62,9 @@ export interface AudiobookSettings {
   /** Stage 1: how fast files are hashed (MB/s); 0 = no limit (it holds the disk lock alone). */
   readMbPerSecond: number;
   /**
-   * Stage 2: audio files checked per second while a Calibre job uses the disk (one at a time);
-   * when the disk is free of Calibre jobs, healthWorkers files are checked at once, unpaced.
+   * Stage 2: files checked at the same time. While a Calibre job uses the disk, stage 2 waits
+   * (it doesn't check slowly: even listing the folders slowed Calibre stage 3 down 3-4x).
    */
-  healthFilesPerSecond: number;
-  /** Stage 2: files checked at the same time while no Calibre job uses the disk. */
   healthWorkers: number;
   /** Stage 2: seconds decoded at the start and at the end of every file. */
   decodeSeconds: number;
@@ -167,7 +165,6 @@ export const DEFAULT_SETTINGS: CleanupSettings = {
   audiobooks: {
     absUrl: '',
     readMbPerSecond: 0,
-    healthFilesPerSecond: 2,
     healthWorkers: 4,
     decodeSeconds: 20,
     toolTimeoutSeconds: 60,
@@ -262,6 +259,13 @@ export function fromLegacy(raw: Map<string, unknown>): Map<string, unknown> {
     const p = out.get('pacing');
     out.set('pacing', { ...(isObj(p) ? p : {}), lookupChunk: stage2.chunkSize });
   }
+  // WP21a: the per-second pace of stage 2 was replaced by waiting for Calibre (never deployed,
+  // but test and dry-run databases may hold it).
+  const audio = out.get('audiobooks');
+  if (isObj(audio) && 'healthFilesPerSecond' in audio) {
+    const { healthFilesPerSecond: _pace, ...rest } = audio;
+    out.set('audiobooks', rest);
+  }
   for (const k of LEGACY_KEYS) out.delete(k);
   return out;
 }
@@ -352,12 +356,6 @@ function validate(key: Key, value: unknown, current: CleanupSettings): unknown {
       return {
         absUrl: absAddress(v.absUrl),
         readMbPerSecond: num('Hashing speed (MB/s)', v.readMbPerSecond, 0, 2000),
-        healthFilesPerSecond: num(
-          'Files checked per second while Calibre uses the disk',
-          v.healthFilesPerSecond,
-          0.1,
-          50,
-        ),
         healthWorkers: num('Files checked at the same time', v.healthWorkers, 1, 16, true),
         decodeSeconds: num('Seconds decoded at each end', v.decodeSeconds, 1, 600, true),
         toolTimeoutSeconds: num(

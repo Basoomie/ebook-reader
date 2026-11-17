@@ -265,7 +265,7 @@ describe('settings and the Audiobookshelf key', () => {
     expect(getSettings(db).audiobooks).toMatchObject({
       absUrl: '',
       readMbPerSecond: 0,
-      healthFilesPerSecond: 2,
+      healthWorkers: 4,
       decodeSeconds: 20,
     });
     expect(() => updateSettings(db, { audiobooks: { absUrl: 'ftp://x' } })).toThrow(/http/);
@@ -280,6 +280,18 @@ describe('settings and the Audiobookshelf key', () => {
     expect(s.audiobooks.absUrl).toBe('http://192.168.1.5:13378');
     expect(s.audiobooks.readMbPerSecond).toBe(80);
     expect(s.audiobooks.decodeSeconds).toBe(20);
+  });
+
+  it('a stored pace from an earlier build is dropped without losing the other settings', () => {
+    const db = freshDb();
+    db.prepare(
+      `INSERT INTO settings (key, value_json, updated_at) VALUES ('audiobooks', ?, 0)`,
+    ).run(JSON.stringify({ absUrl: 'http://h:13378', healthFilesPerSecond: 1, healthWorkers: 2 }));
+    expect(getSettings(db).audiobooks).toMatchObject({
+      absUrl: 'http://h:13378',
+      healthWorkers: 2,
+    });
+    expect('healthFilesPerSecond' in getSettings(db).audiobooks).toBe(false);
   });
 
   it('the ABS key is a write-only secret', async () => {
@@ -596,6 +608,26 @@ describe('stage 1: identity on a fixture tree', () => {
     expect(identityCounts(live, p.analysisId)['library.copy']).toBe(3);
   });
 
+  it('listing the folders waits while a Calibre job uses the disk (also a batch being applied)', async () => {
+    const roots = makeTree();
+    const db = freshDb();
+    const lock = new DiskLock(5);
+    let applying: string | null = 'Calibre stage 3 (applying a batch)';
+    lock.setCalibreApplying(() => applying);
+    const stage = new AudioStage1({ db, roots, lock });
+    stage.restart();
+    const walking = stage.step(() => false);
+    await new Promise((r) => setTimeout(r, 300));
+    // Nothing listed yet: it waits for Calibre.
+    expect(db.prepare('SELECT COUNT(*) AS n FROM audio_files').get()).toEqual({ n: 0 });
+    applying = null;
+    await walking;
+    const p = stage.progress()!;
+    expect(p.phase).toBe('hash');
+    expect(p.walk!.pausedMs).toBeGreaterThanOrEqual(900);
+    expect(p.walk!.audio.library).toBe(6);
+  });
+
   it('a root that comes back empty marks nothing gone', async () => {
     const roots = makeTree();
     const db = freshDb();
@@ -836,7 +868,7 @@ describe('file health', () => {
       const before = treeProof(base);
       const db = freshDb();
       updateSettings(db, {
-        audiobooks: { healthFilesPerSecond: 50, decodeSeconds: 2, copyHintMinMinutes: 0 },
+        audiobooks: { decodeSeconds: 2, copyHintMinMinutes: 0 },
       });
       // Stage 1 first, so the recorded ABS items name their torrent originals.
       const s1 = new AudioStage1({ db, roots: { torrents, library }, lock: new DiskLock(5) });
@@ -905,6 +937,35 @@ describe('file health', () => {
       expect(treeProof(base)).toBe(before);
     });
 
+    it('stage 2 reads nothing while a Calibre job uses the disk, then runs', async () => {
+      const base = makeTempDir('wp21a-wait');
+      const torrents = path.join(base, 'torrents');
+      const library = path.join(base, 'library');
+      const f = makeAudio(makeTempDir('wp21a-wait-src'));
+      put(torrents, 'MAM/本1/本1.m4b', fs.readFileSync(f.m4b));
+      put(library, '_Unknown/本1/本1.m4b', fs.readFileSync(f.m4b));
+      const db = freshDb();
+      updateSettings(db, { audiobooks: { decodeSeconds: 2 } });
+      let busy = true;
+      const st = new AudioStage2({
+        db,
+        roots: { torrents, library },
+        tools: TOOLS,
+        calibreBusy: () => busy,
+      });
+      st.restart();
+      let stop = false;
+      setTimeout(() => (stop = true), 1500);
+      for (let i = 0; i < 20 && !stop; i++) await st.step(() => stop);
+      // Nothing listed, nothing checked.
+      expect(db.prepare('SELECT COUNT(*) AS n FROM audio_files').get()).toEqual({ n: 0 });
+      expect(db.prepare('SELECT COUNT(*) AS n FROM audio_file_health').get()).toEqual({ n: 0 });
+      busy = false;
+      for (let i = 0; i < 100; i++) if (await st.step(() => false)) break;
+      expect(st.progress()!.phase).toBe('done');
+      expect(st.progress()!.healthDone).toBe(2);
+    });
+
     it('several files at once give the same results as one at a time, also when Calibre starts and stops using the disk', async () => {
       const base = makeTempDir('wp21a-par');
       const torrents = path.join(base, 'torrents');
@@ -920,7 +981,7 @@ describe('file health', () => {
       const runWith = async (busy: () => boolean, workers: number) => {
         const db = freshDb();
         updateSettings(db, {
-          audiobooks: { healthFilesPerSecond: 50, healthWorkers: workers, decodeSeconds: 2 },
+          audiobooks: { healthWorkers: workers, decodeSeconds: 2 },
         });
         const st = new AudioStage2({ db, roots, tools: TOOLS, calibreBusy: busy });
         st.restart();
@@ -938,15 +999,15 @@ describe('file health', () => {
         const counts = booksCounts(db, st.progress()!.analysisId);
         return { rows, counts };
       };
-      const oneAtATime = await runWith(() => true, 1);
+      const oneAtATime = await runWith(() => false, 1);
       const parallel = await runWith(() => false, 4);
       expect(parallel.rows).toEqual(oneAtATime.rows);
       expect(parallel.counts).toEqual(oneAtATime.counts);
       // Calibre starts and stops using the disk during the run.
-      let calls = 0;
-      const switching = await runWith(() => Math.floor(++calls / 7) % 2 === 1, 4);
+      const t0 = Date.now();
+      const switching = await runWith(() => Math.floor((Date.now() - t0) / 300) % 2 === 1, 4);
       expect(switching.rows).toEqual(oneAtATime.rows);
-    });
+    }, 120_000);
 
     it("the live stage 2 takes over a dry run's file checks; only changed files are checked again", async () => {
       const base = makeTempDir('wp21a-s2imp');
@@ -957,7 +1018,7 @@ describe('file health', () => {
       put(torrents, 'MAM/本2/本2.mp3', fs.readFileSync(f.mp3));
       put(library, '_Unknown/本1/本1.m4b', fs.readFileSync(f.m4b));
       const roots = { torrents, library };
-      const opts = { healthFilesPerSecond: 50, decodeSeconds: 2 };
+      const opts = { decodeSeconds: 2 };
       // The dry runs, each in its own scratch database (as on the NAS).
       const d1 = path.join(makeTempDir('wp21a-dry1'), 'cleanup-dryrun.db');
       const d2 = path.join(makeTempDir('wp21a-dry2'), 'cleanup-dryrun.db');

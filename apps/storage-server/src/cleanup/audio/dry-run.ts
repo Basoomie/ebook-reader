@@ -45,7 +45,7 @@ export async function runAudioDryRun(
   const out = arg(args, '--out');
   if (![0, 1, 2].includes(stage) || !out) {
     console.error(
-      'Usage: cleanup audio-dryrun --stage 0|1|2 --out <folder> [--abs-url <url>] [--read-mbps N] [--files-per-second N] [--workers N] [--full-speed]',
+      'Usage: cleanup audio-dryrun --stage 0|1|2 --out <folder> [--abs-url <url>] [--read-mbps N] [--workers N] [--calibre-idle]',
     );
     return 2;
   }
@@ -103,11 +103,18 @@ export async function runAudioDryRun(
     }
     const settings: Record<string, number> = {};
     const mbps = arg(args, '--read-mbps');
-    const fps = arg(args, '--files-per-second');
     const workers = arg(args, '--workers');
-    const fullSpeed = args.includes('--full-speed');
+    // A container can't see the Calibre cleanup, and even listing the folders slowed Calibre
+    // stage 3 down 3-4x on the NAS (2026-11-17). So stages 1 and 2 run only when the user
+    // confirms no Calibre job uses the disk, and then at full speed.
+    if (!args.includes('--calibre-idle')) {
+      line(
+        'Refused: stages 1 and 2 read the audiobook folders and would slow the Calibre cleanup. ' +
+          'Run them only while no Calibre stage is analysing or applying, with --calibre-idle.',
+      );
+      return 2;
+    }
     if (mbps !== null) settings.readMbPerSecond = Number(mbps);
-    if (fps !== null) settings.healthFilesPerSecond = Number(fps);
     if (workers !== null) settings.healthWorkers = Number(workers);
     if (Object.keys(settings).length) updateSettings(db, { audiobooks: settings });
     setAudioStageMode(db, stage, 'analyse');
@@ -123,9 +130,8 @@ export async function runAudioDryRun(
             db,
             roots,
             tools,
-            // A container can't see the Calibre cleanup: slow and one at a time unless told
-            // the disk is free (--full-speed).
-            calibreBusy: () => !fullSpeed,
+            // --calibre-idle: the user confirmed no Calibre job uses the disk.
+            calibreBusy: () => false,
             log: line,
           });
     if (!runner.progress() || runner.progress()!.phase === 'done') runner.restart();

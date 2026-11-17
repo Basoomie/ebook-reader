@@ -144,7 +144,10 @@ export class AudioStage1 {
     p: AudioStage1Progress,
     shouldStop: () => boolean,
   ): Promise<AudioStage1Progress> {
-    const walk = await walkRoots(this.deps.db, this.deps.roots, { shouldStop });
+    const walk = await walkRoots(this.deps.db, this.deps.roots, {
+      shouldStop,
+      shouldPause: () => this.deps.lock.calibreBusy(),
+    });
     if (!walk) return p; // stopped: the walk starts again next time
     p.walk = walk;
     if (walk.errors.length)

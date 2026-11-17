@@ -100,6 +100,18 @@ export class DiskLock {
     this.waiters.delete(owner);
   }
 
+  /**
+   * True while a Calibre job uses the disk: it holds the lock, waits for it, or applies a batch.
+   * Audiobook work that doesn't take the lock (listing the folders, file checks) gives way then.
+   */
+  calibreBusy(): boolean {
+    return (
+      this.calibreApplying() !== null ||
+      this.holder?.side === 'calibre' ||
+      [...this.waiters.values()].some((w) => w.side === 'calibre')
+    );
+  }
+
   holds(owner: string): boolean {
     return this.holder?.owner === owner;
   }

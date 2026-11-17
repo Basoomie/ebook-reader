@@ -266,7 +266,9 @@ export class AudioCleanupService {
       this.waiting2 = 'Waiting for stage 1 to finish hashing (both would read the same disk)';
       return;
     }
-    this.waiting2 = 'Analysing';
+    this.waiting2 = this.opts.lock.calibreBusy()
+      ? 'Waiting while the Calibre cleanup uses the disk'
+      : 'Analysing';
     if (!this.running2) this.run2();
   }
 
