@@ -67,6 +67,8 @@ export interface Stage3Progress {
   phaseStartedAt: number;
   phaseStartDone: number;
   times: Partial<Record<Exclude<Stage3Phase, 'done'>, PhaseTime>>;
+  /** The step that failed (kept so the analysis can resume there: cli cleanup resume 3). */
+  failedPhase?: Exclude<Stage3Phase, 'done'>;
   // text
   textCursor: number;
   textTotal: number;
@@ -452,6 +454,59 @@ export class WorkPipe<T> {
   }
 }
 
+/**
+ * Resumes stage 3's failed analysis at the step that failed, keeping everything done before it
+ * (the books read, the pairs measured): `cli cleanup resume 3`. The step is the one recorded at
+ * the failure, or (for a failure recorded before that was kept) the first step not complete.
+ * The running server picks the analysis up on its next round.
+ */
+export function resumeFailedStage3(db: Database.Database): {
+  ok: boolean;
+  message: string;
+  phase?: Stage3Phase;
+} {
+  const stage = getStage(db, 3);
+  const p = stage.progress as unknown as Stage3Progress | null;
+  if (!p || typeof p.analysisId !== 'string') {
+    return { ok: false, message: 'Stage 3 has no analysis to resume.' };
+  }
+  if (stage.state !== 'failed' || !p.error) {
+    return { ok: false, message: `Stage 3's analysis has not failed (state: ${stage.state}).` };
+  }
+  const pending = (
+    db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM content_pairs WHERE analysis_id = ? AND class IS NULL
+           AND error IS NULL`,
+      )
+      .get(p.analysisId) as { n: number }
+  ).n;
+  const phase: Exclude<Stage3Phase, 'done'> =
+    p.failedPhase ??
+    (p.textDone < p.textTotal
+      ? 'text'
+      : !p.indexStats
+        ? 'candidates'
+        : pending > 0
+          ? 'compare'
+          : p.qualityTotal === 0 || p.qualityDone < p.qualityTotal
+            ? 'quality'
+            : 'group');
+  const was = p.error;
+  p.phase = phase;
+  p.error = null;
+  p.finishedAt = null;
+  delete p.failedPhase;
+  p.phaseStartedAt = Date.now();
+  p.phaseStartDone = 0;
+  updateStage(db, 3, { progress: p as unknown as Record<string, unknown>, state: 'analysing' });
+  return {
+    ok: true,
+    phase,
+    message: `Stage 3's analysis resumes at the ${phase} step (it had failed: ${was}). Everything done before that step is kept.`,
+  };
+}
+
 export class Stage3Analysis {
   private books: Map<number, Stage3Book> | null = null;
   private booksFor: string | null = null;
@@ -515,8 +570,8 @@ export class Stage3Analysis {
   async step(shouldStop: () => boolean): Promise<boolean> {
     let p = this.progress();
     if (!p || p.phase === 'done') return true;
+    const before = p.phase;
     try {
-      const before = p.phase;
       const started = Date.now();
       const doneBefore = phaseItems(p);
       if (p.phase === 'text') p = await this.textStep(p, shouldStop);
@@ -536,6 +591,7 @@ export class Stage3Analysis {
       return p.phase === 'done';
     } catch (err) {
       p.error = (err as Error).message ?? String(err);
+      p.failedPhase = before;
       p.phase = 'done';
       p.finishedAt = Date.now();
       this.save(p, 'failed');

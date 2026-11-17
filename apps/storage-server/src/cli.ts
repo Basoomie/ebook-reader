@@ -29,6 +29,7 @@
  *   docker exec ttsu-storage node dist/cli.js audio links
  *   docker exec ttsu-storage node dist/cli.js token cleanup "cleanup sidecar"
  *   docker exec ttsu-storage node dist/cli.js cleanup status
+ *   docker exec ttsu-storage node dist/cli.js cleanup resume 3
  *
  * Uses DB_DIR (default /db) and DATA_DIR (default /data) like the server, and
  * PAIR_CODE_MINUTES for how long a pairing code stays valid.
@@ -82,6 +83,7 @@ import { listLinks, resolveLink } from './audio/audio-links';
 import { createApplyToken, listApplyTokens, revokeApplyToken } from './cleanup/apply-tokens';
 import { initCleanupDatabase } from './cleanup/cleanup-db';
 import { listStages } from './cleanup/stages';
+import { resumeFailedStage3 } from './cleanup/stage3';
 
 const USAGE = `Usage:
   cli token pair <label> [--user <name>]     Make a one-time code a device trades for its own token
@@ -123,7 +125,9 @@ const USAGE = `Usage:
   cli audio match <book-id> [--limit <n>]    The suggestions the picker would show for a book
   cli audio links                            The audiobooks linked to books, and whether they are still there
   cli cleanup status                         The library cleanup's stages, batches and sidecar tokens
-  cli cleanup revoke <token-id>              Revoke a cleanup sidecar token`;
+  cli cleanup revoke <token-id>              Revoke a cleanup sidecar token
+  cli cleanup resume 3                       Resume stage 3's failed analysis at the step that failed
+                                             (keeps the books read and the pairs measured)`;
 
 function fail(message: string): never {
   console.error(message);
@@ -770,6 +774,17 @@ function cleanupCommand(command: string, rest: string[], env: Record<string, str
         );
         console.log("Copy it now into the sidecar's CLEANUP_TOKEN; it cannot be shown again:");
         console.log(token);
+        break;
+      }
+      case 'resume': {
+        const [which] = rest;
+        if (which !== '3')
+          fail(
+            'cleanup resume needs the stage: only stage 3 can resume a failed analysis (cleanup resume 3)',
+          );
+        const out = resumeFailedStage3(db);
+        console.log(out.message);
+        if (!out.ok) process.exitCode = 1;
         break;
       }
       case 'revoke': {
