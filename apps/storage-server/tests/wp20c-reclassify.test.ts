@@ -59,6 +59,7 @@ describe('stage 3: classified again, and the review decisions', () => {
       C2: await add('C 解説付き', commentary),
       E1: await add('E', chaptersOf(5)),
       E2: await add('E', chaptersOf(5)),
+      E3: await add('E', chaptersOf(5)),
     };
     await made.setup();
     user = env.userToken();
@@ -138,7 +139,7 @@ describe('stage 3: classified again, and the review decisions', () => {
     expect(p1.error).toBeNull();
     // Same text pairs still give their removals.
     // Tied copies: the older record stays.
-    expect(removals().map((r) => r.id)).toEqual([ids.A2, ids.E2].sort((x, y) => x - y));
+    expect(removals().map((r) => r.id)).toEqual([ids.A2, ids.E2, ids.E3].sort((x, y) => x - y));
 
     // Back to "review" for the next test.
     await request(env.app)
@@ -216,6 +217,29 @@ describe('stage 3: classified again, and the review decisions', () => {
     expect(pair('C1', 'C2').class).toBe('review');
     expect(waitingIds()).not.toContain(c.id);
     expect(env.service.analysis3!.progress()!.review).toBe(env.service.stage3Pairs('review').total);
+
+    // No single winner in E's set (you keep E1 and E2 both), but E3 loses to both: it goes, in
+    // favour of E1 (2026-11-17: 78 such sets kept every copy).
+    const e3 = r.find((x) => x.id === ids.E3)!;
+    expect(e3).toBeTruthy();
+    expect(e3.ev.kept.calibreId).toBe(ids.E1);
+    expect(e3.ev.stage3.pairId).toBe(pair('E1', 'E3').id);
+    const withoutKeeper = env.service.analysis3!.progress()!.setsWithoutKeeper;
+    expect(withoutKeeper).toBeGreaterThan(0);
+
+    // E1 leaves Calibre by hand: its pairs stay out of the sets (as a pair that can't be compared
+    // it made the set look undecided), so E3 now goes in favour of E2.
+    env.lib.removeBook(ids.E1);
+    await env.index();
+    const p = env.service.analysis3!.progress()!;
+    env.cleanupDb
+      .prepare('UPDATE stages SET progress_json = ? WHERE stage = 3')
+      .run(JSON.stringify({ ...p, rulesKey: null }));
+    expect(await settle()).toBe('ready');
+    const again = removals();
+    expect(again.find((x) => x.id === ids.E3)?.ev.kept.calibreId).toBe(ids.E2);
+    expect(again.some((x) => x.id === ids.E2 || x.id === ids.E1)).toBe(false);
+    expect(env.service.analysis3!.progress()!.setsWithoutKeeper).toBeLessThan(withoutKeeper);
   });
 
   it('settings changed while the copy choice was pending: the classes follow the new settings (2026-11-17)', async () => {

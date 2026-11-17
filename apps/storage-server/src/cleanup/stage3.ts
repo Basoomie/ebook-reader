@@ -648,8 +648,10 @@ export function recordReviewDecisions(
  *     and "N~M巻セット" are omnibus markers.
  *   3 (2026-11-17): same text with different artwork (another edition) is never removed
  *     automatically.
+ *   4 (2026-11-17): a set with no single winner still loses the copies every other copy
+ *     beats; pairs with a copy no longer in Calibre stay out of the sets.
  */
-export const STAGE3_RULES_VERSION = 3;
+export const STAGE3_RULES_VERSION = 4;
 
 /** What the saved classes depend on: the rules and the classifying settings. */
 export function stage3RulesKey(s: ReturnType<typeof getSettings>['duplicates']): string {
@@ -728,11 +730,23 @@ export class Stage3Analysis {
     return path.join(this.deps.calibreDir, lib.folder);
   }
 
+  /**
+   * Calibre's books as the reader's last snapshot has them, read again whenever the indexer
+   * made a new snapshot (2026-11-17: the list was read once per server run, so a copy choice
+   * after removals still saw the removed copies).
+   */
   loadBooks(libraryId: string): Map<number, Stage3Book> {
     const file = snapshotFile(this.deps.cacheDir, libraryId);
-    if (this.books && this.booksFor === file) return this.books;
+    let key = file;
+    try {
+      const st = fs.statSync(file);
+      key = `${file}|${st.mtimeMs}|${st.size}`;
+    } catch {
+      // No snapshot: reading it below says so.
+    }
+    if (this.books && this.booksFor === key) return this.books;
     this.books = readStage3Books(file);
-    this.booksFor = file;
+    this.booksFor = key;
     return this.books;
   }
 
@@ -1910,8 +1924,14 @@ export class Stage3Analysis {
       imageMatchDistance: settings.duplicates.imageMatchDistance,
       coverLargerPercent: settings.covers.largerPercent,
     };
+    // A copy no longer in Calibre (removed by an earlier batch, or by hand) leaves nothing to
+    // decide in its pairs: they stay out of the sets. As a "can't compare" pair, it made every
+    // set it was in look undecided after the removals (79 became 7,953 in the 2026-11-17
+    // rehearsal, nothing more removed).
+    const present = (id: number, uuid: string) => books.get(id)?.uuid === uuid;
     db.transaction(() => {
       for (const x of pairs) {
+        if (!present(x.a_id, x.a_uuid) || !present(x.b_id, x.b_uuid)) continue;
         const decision = decisionOf(x);
         const key = `${x.a_id}:${x.b_id}`;
         pairOf.set(key, x);
@@ -2028,19 +2048,16 @@ export class Stage3Analysis {
            updated_at = ? WHERE stage = 3 AND library_id = ? AND state = 'proposed'`,
       ).run(now, p.libraryId);
       for (const set of sets) {
-        if (set.keeper === null) {
-          setsWithoutKeeper++;
-          continue;
-        }
-        const keep = books.get(set.keeper)!;
-        const keepFacts = facts.get(set.keeper)!;
-        const keptReader = readerBook(keep.uuid);
-        const keptHasData = keptReader ? withData.has(keptReader) : false;
-        for (const id of set.removed) {
+        if (set.keeper === null) setsWithoutKeeper++;
+        for (const { id, keep: keepId } of set.removals) {
+          const keep = books.get(keepId);
+          const keepFacts = facts.get(keepId);
           const copy = books.get(id);
           const copyFacts = facts.get(id);
-          if (!copy || !copyFacts || active.has(copy.uuid)) continue;
-          const key = `${Math.min(id, set.keeper)}:${Math.max(id, set.keeper)}`;
+          if (!keep || !keepFacts || !copy || !copyFacts || active.has(copy.uuid)) continue;
+          const keptReader = readerBook(keep.uuid);
+          const keptHasData = keptReader ? withData.has(keptReader) : false;
+          const key = `${Math.min(id, keepId)}:${Math.max(id, keepId)}`;
           const pair = pairOf.get(key)!;
           const removedReader = readerBook(copy.uuid);
           const removedHasData = removedReader ? withData.has(removedReader) : false;

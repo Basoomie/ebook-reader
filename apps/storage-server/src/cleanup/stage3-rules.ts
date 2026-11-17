@@ -474,15 +474,19 @@ export interface SetEdge {
 
 export interface SetDecision {
   members: number[];
-  /** null: no copy is at least as good as every other one: the whole set goes to review. */
+  /** null: no copy is at least as good as every other one (more than one copy stays). */
   keeper: number | null;
   removed: number[];
+  /** Each removed copy and the copy it is removed in favour of (the keeper, when there is one). */
+  removals: { id: number; keep: number }[];
 }
 
 /**
  * Sets of copies joined by duplicate/superset pairs. A copy stays when, against every other
  * copy of the set, a measured pair says it is the one to keep; the others are removed.
- * When no copy qualifies, nothing in the set is removed.
+ * When no copy qualifies, the copies that every other copy beats are removed, one at a time
+ * (each copy left then still beats it), in favour of the copy left that beats the most others;
+ * the rest stay (decided 2026-11-17: in 78 such sets one copy lost to all the others).
  */
 export function decideSets(edges: SetEdge[]): SetDecision[] {
   const parent = new Map<number, number>();
@@ -512,18 +516,33 @@ export function decideSets(edges: SetEdge[]): SetDecision[] {
   const keepOf = new Map<string, number | null>();
   for (const e of edges) keepOf.set(`${Math.min(e.a, e.b)}:${Math.max(e.a, e.b)}`, e.keep);
 
+  const keepBetween = (m: number, o: number) => keepOf.get(`${Math.min(m, o)}:${Math.max(m, o)}`);
   const out: SetDecision[] = [];
   for (const members of groups.values()) {
     members.sort((x, y) => x - y);
     const keeper =
-      members.find((m) =>
-        members.every((o) => o === m || keepOf.get(`${Math.min(m, o)}:${Math.max(m, o)}`) === m),
-      ) ?? null;
-    out.push({
-      members,
-      keeper,
-      removed: keeper === null ? [] : members.filter((m) => m !== keeper),
-    });
+      members.find((m) => members.every((o) => o === m || keepBetween(m, o) === m)) ?? null;
+    if (keeper !== null) {
+      const removed = members.filter((m) => m !== keeper);
+      out.push({ members, keeper, removed, removals: removed.map((id) => ({ id, keep: keeper })) });
+      continue;
+    }
+    // No single winner: a copy every other copy left beats goes, one at a time. Two such copies
+    // can't exist at once (each would beat the other), and no copy left can become a single
+    // winner (it would have beaten the removed one too, and so been the keeper already).
+    let left = [...members];
+    const removals: { id: number; keep: number }[] = [];
+    for (;;) {
+      const loser = left.find(
+        (m) => left.length > 1 && left.every((o) => o === m || keepBetween(m, o) === o),
+      );
+      if (loser === undefined) break;
+      left = left.filter((x) => x !== loser);
+      const wins = (c: number) => left.filter((o) => o !== c && keepBetween(c, o) === c).length;
+      const keep = [...left].sort((x, y) => wins(y) - wins(x) || x - y)[0];
+      removals.push({ id: loser, keep });
+    }
+    out.push({ members, keeper: null, removed: removals.map((r) => r.id), removals });
   }
   return out.sort((x, y) => x.members[0] - y.members[0]);
 }
