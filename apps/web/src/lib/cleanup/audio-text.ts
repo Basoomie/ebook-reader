@@ -96,13 +96,18 @@ function mbPerSecond(bytes: number, ms: number): string {
   return ms > 0 ? `${(bytes / 1e6 / (ms / 1000)).toFixed(0)} MB/s` : '';
 }
 
+/** "1 file" / "3 files": a count with the right form of its word. */
+export function count(value: number, one: string, many: string): string {
+  return `${n(value)} ${value === 1 ? one : many}`;
+}
+
 export function audioStage1Lines(p: AudioStage1Progress | null, now = Date.now()): string[] {
   if (!p) return [];
   const out: string[] = [];
   if (p.phase !== 'done') out.push(`Now: ${STAGE1_PHASES[p.phase]}.`);
   if (p.walk) {
     out.push(
-      `Found ${n(p.walk.audio.torrents)} audio files in the torrents (${bytesText(p.walk.bytes.torrents)}) and ${n(p.walk.audio.library)} in the library (${bytesText(p.walk.bytes.library)}).`
+      `Found ${count(p.walk.audio.torrents, 'audio file', 'audio files')} in the torrents (${bytesText(p.walk.bytes.torrents)}) and ${n(p.walk.audio.library)} in the library (${bytesText(p.walk.bytes.library)}).`
     );
   }
   if (p.hashTotal > 0) {
@@ -111,14 +116,19 @@ export function audioStage1Lines(p: AudioStage1Progress | null, now = Date.now()
         ? mbPerSecond(p.bytesHashed - p.phaseStartBytes, now - p.phaseStartedAt)
         : '';
     out.push(
-      `${n(p.hashDone)} of ${n(p.hashTotal)} files to compare are read${pace ? ` (${pace})` : ''}.`
+      `${n(p.hashDone)} of ${count(p.hashTotal, 'file', 'files')} to compare read${pace ? ` (${pace})` : ''}.`
     );
   }
-  if (p.hashReused) out.push(`${n(p.hashReused)} were already known and not read again.`);
+  if (p.hashReused)
+    out.push(`${count(p.hashReused, 'file was', 'files were')} already known and not read again.`);
   if (p.hashChanged)
-    out.push(`${n(p.hashChanged)} changed while being read; they are read again next time.`);
-  if (p.hashErrors) out.push(`${n(p.hashErrors)} could not be read (listed below).`);
-  if (p.yields) out.push(`Gave the disk to the Calibre cleanup ${n(p.yields)} times.`);
+    out.push(
+      `${count(p.hashChanged, 'file', 'files')} changed while being read; read again next time.`
+    );
+  if (p.hashErrors)
+    out.push(`${count(p.hashErrors, 'file', 'files')} could not be read (listed below).`);
+  if (p.yields)
+    out.push(`Gave the disk to the Calibre cleanup ${count(p.yields, 'time', 'times')}.`);
   if (p.walk && p.walk.errors.length)
     out.push(`Folders that could not be listed: ${p.walk.errors.slice(0, 3).join('; ')}`);
   if (p.error) out.push(`The analysis failed: ${p.error}`);
@@ -133,28 +143,28 @@ const c = (counts: Record<string, number>, key: string) => counts[key] ?? 0;
 /** What stage 1 found, one line each (counts from the server). */
 export function identityLines(counts: Record<string, number> | null): string[] {
   if (!counts) return [];
+  const lib = (key: string, one: string, many: string) =>
+    count(c(counts, key), `library file ${one}`, `library files ${many}`);
   const lines = [
-    `${n(c(counts, 'library.copy'))} library files are exact copies of a torrent file (${bytesText(c(counts, 'library.copy.bytes'))}).`,
-    `${n(c(counts, 'library.linked'))} library files are already hard links to their torrent file.`,
-    `${n(c(counts, 'library.library_only'))} library files have no torrent file of the same size.`,
-    `${n(c(counts, 'torrents.torrent_only'))} torrent audio files are not in the library (${bytesText(c(counts, 'torrents.torrent_only.bytes'))}).`,
-    `${n(c(counts, 'torrents.copy_extra'))} torrent files are exact copies of another torrent file (${n(c(counts, 'torrents.copy_groups'))} groups).`,
-    `${n(c(counts, 'library.ai_original'))} library files come from the AI folder (${bytesText(c(counts, 'library.ai_original.bytes'))}); they move to japanese-generated later.`,
-    `${n(c(counts, 'torrents.archive'))} archives in the torrents (.zip/.rar), to unpack later.`
+    `${lib('library.copy', 'is an exact copy', 'are exact copies')} of a torrent file (${bytesText(c(counts, 'library.copy.bytes'))}).`,
+    `${lib('library.linked', 'is already a hard link', 'are already hard links')} to its torrent file.`,
+    `${lib('library.library_only', 'has', 'have')} no torrent file of the same size.`,
+    `${count(c(counts, 'torrents.torrent_only'), 'torrent audio file is', 'torrent audio files are')} not in the library (${bytesText(c(counts, 'torrents.torrent_only.bytes'))}).`,
+    `${count(c(counts, 'torrents.copy_extra'), 'torrent file is an exact copy', 'torrent files are exact copies')} of another torrent file (${count(c(counts, 'torrents.copy_groups'), 'group', 'groups')}).`,
+    `${lib('library.ai_original', 'comes', 'come')} from the AI folder (${bytesText(c(counts, 'library.ai_original.bytes'))}); they move to japanese-generated later.`,
+    `${count(c(counts, 'torrents.archive'), 'archive', 'archives')} in the torrents (.zip/.rar), to unpack later.`
   ];
   if (c(counts, 'library.size_only')) {
     lines.push(
-      `${n(c(counts, 'library.size_only'))} library files have a torrent file of the same size but other contents.`
+      `${lib('library.size_only', 'has', 'have')} a torrent file of the same size but other contents.`
     );
   }
   if (c(counts, 'library.unhashed')) {
-    lines.push(
-      `${n(c(counts, 'library.unhashed'))} library files could not be compared (read error or changed).`
-    );
+    lines.push(`${lib('library.unhashed', '', '')}could not be compared (read error or changed).`);
   }
   if (c(counts, 'files.nlink_gt1')) {
     lines.push(
-      `${n(c(counts, 'files.nlink_gt1'))} files have more than one name on the disk (hard links).`
+      `${count(c(counts, 'files.nlink_gt1'), 'file has', 'files have')} more than one name on the disk (hard links).`
     );
   }
   return lines;
@@ -164,9 +174,11 @@ export function audioStage2Lines(p: AudioStage2Progress | null): string[] {
   if (!p) return [];
   const out: string[] = [];
   if (p.phase !== 'done') out.push(`Now: ${STAGE2_PHASES[p.phase]}.`);
-  if (p.books) out.push(`${n(p.books)} books in both folders.`);
+  if (p.books) out.push(`${count(p.books, 'book', 'books')} in both folders.`);
   if (p.healthReused)
-    out.push(`${n(p.healthReused)} files were checked before and had not changed.`);
+    out.push(
+      `${count(p.healthReused, 'file was', 'files were')} checked before and had not changed.`
+    );
   if (p.error) out.push(`The analysis failed: ${p.error}`);
   if (p.phase === 'done' && p.finishedAt)
     out.push(`Finished in ${minutes(p.finishedAt - p.startedAt)}.`);
@@ -179,21 +191,18 @@ export function booksLines(counts: Record<string, number> | null): string[] {
   const lines: string[] = [];
   for (const root of ['torrents', 'library'] as const) {
     const where = root === 'torrents' ? 'Torrents' : 'Library';
-    const books =
-      c(counts, `${root}.single`) +
-      c(counts, `${root}.parts`) +
-      c(counts, `${root}.likely_copies`) +
-      c(counts, `${root}.unclear`);
+    const k = (key: string) => c(counts, `${root}.${key}`);
+    const books = k('single') + k('parts') + k('likely_copies') + k('unclear');
     lines.push(
-      `${where}: ${n(books)} books; ${n(c(counts, `${root}.likely_copies`))} folders look like two or more full copies, ${n(c(counts, `${root}.parts`))} are in parts, ${n(c(counts, `${root}.unclear`))} are unclear.`
+      `${where}: ${count(books, 'book', 'books')}; ${count(k('likely_copies'), 'folder looks', 'folders look')} like two or more full copies, ${count(k('parts'), 'book is', 'books are')} in parts, ${n(k('unclear'))} unclear.`
     );
     lines.push(
-      `${where}: ${n(c(counts, `${root}.health.unreadable`))} files can’t be read, ${n(c(counts, `${root}.health.damaged`))} fail to play at the start or the end, ${n(c(counts, `${root}.health.mp4_no_chapters`))} m4b/m4a without chapters, ${n(c(counts, `${root}.health.no_cover`))} without a cover, ${n(c(counts, `${root}.health.ext_mismatch`))} named as another format.`
+      `${where}: ${count(k('health.unreadable'), 'file', 'files')} can’t be read, ${n(k('health.damaged'))} fail to play at the start or the end, ${n(k('health.mp4_no_chapters'))} m4b/m4a without chapters, ${n(k('health.no_cover'))} without a cover, ${n(k('health.ext_mismatch'))} named as another format.`
     );
   }
   if (c(counts, 'books.decoded_names')) {
     lines.push(
-      `${n(c(counts, 'books.decoded_names'))} book names are garbled Japanese that could be read back (shown below; nothing is renamed).`
+      `${count(c(counts, 'books.decoded_names'), 'book name is', 'book names are')} garbled Japanese that could be read back (shown below; nothing is renamed).`
     );
   }
   return lines;
@@ -202,7 +211,7 @@ export function booksLines(counts: Record<string, number> | null): string[] {
 export function snapshotLine(s: AbsSnapshotSummary | null | undefined): string {
   if (!s) return 'No snapshot yet.';
   const version = s.serverVersion ? ` (Audiobookshelf ${s.serverVersion})` : '';
-  return `${n(s.libraries)} libraries with ${n(s.items)} items, ${n(s.users)} users${version}; ${n(s.progress)} books with listening progress: ${n(s.finished)} finished, ${n(s.inProgress)} started${s.notInAbs ? `, ${n(s.notInAbs)} no longer in Audiobookshelf` : ''}.`;
+  return `${count(s.libraries, 'library', 'libraries')} with ${count(s.items, 'item', 'items')}, ${count(s.users, 'user', 'users')}${version}; ${count(s.progress, 'book', 'books')} with listening progress: ${n(s.finished)} finished, ${n(s.inProgress)} started${s.notInAbs ? `, ${n(s.notInAbs)} no longer in Audiobookshelf` : ''}.`;
 }
 
 export function durationText(seconds: number | null | undefined): string {

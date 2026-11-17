@@ -81,7 +81,7 @@ describe('the Audiobooks tab wording', () => {
     expect(lines[1]).toBe(
       'Found 6,065 audio files in the torrents (2660.0 GB) and 5,586 in the library (2476.0 GB).'
     );
-    expect(lines[2]).toBe('3,000 of 12,000 files to compare are read (125 MB/s).');
+    expect(lines[2]).toBe('3,000 of 12,000 files to compare read (125 MB/s).');
     expect(lines).toContain('Gave the disk to the Calibre cleanup 2 times.');
   });
 
@@ -105,6 +105,16 @@ describe('the Audiobooks tab wording', () => {
       '122 library files come from the AI folder (32.2 GB); they move to japanese-generated later.'
     );
     expect(lines.some((l) => /same size but other contents/.test(l))).toBe(false);
+    const one = identityLines({
+      'library.linked': 1,
+      'torrents.archive': 1,
+      'torrents.copy_extra': 1,
+      'torrents.copy_groups': 1,
+      'files.nlink_gt1': 2
+    });
+    expect(one).toContain('1 library file is already a hard link to its torrent file.');
+    expect(one).toContain('1 archive in the torrents (.zip/.rar), to unpack later.');
+    expect(one).toContain('1 torrent file is an exact copy of another torrent file (1 group).');
     expect(identityLines(null)).toEqual([]);
   });
 
@@ -135,7 +145,7 @@ describe('the Audiobooks tab wording', () => {
       'books.decoded_names': 12
     });
     expect(lines[2]).toBe(
-      'Library: 5,354 books; 94 folders look like two or more full copies, 70 are in parts, 12 are unclear.'
+      'Library: 5,354 books; 94 folders look like two or more full copies, 70 books are in parts, 12 unclear.'
     );
     expect(lines[lines.length - 1]).toMatch(/^12 book names are garbled Japanese/);
   });
@@ -156,7 +166,7 @@ describe('the Audiobooks tab wording', () => {
         problems: 0
       })
     ).toBe(
-      '3 libraries with 5,400 items, 1 users (Audiobookshelf 2.37.1); 15 books with listening progress: 5 finished, 10 started, 4 no longer in Audiobookshelf.'
+      '3 libraries with 5,400 items, 1 user (Audiobookshelf 2.37.1); 15 books with listening progress: 5 finished, 10 started, 4 no longer in Audiobookshelf.'
     );
     expect(durationText(46_620)).toBe('12 h 57 min');
     expect(durationText(65)).toBe('1 min 5 s');

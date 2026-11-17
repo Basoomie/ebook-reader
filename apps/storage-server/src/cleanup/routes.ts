@@ -401,7 +401,7 @@ function addAudioRoutes(router: Router, options: CleanupOptions): void {
 
   router.get('/cleanup/audio/abs-snapshots/:id', (req, res) => {
     const audio = audioOr503(options);
-    const m = /^(d+)(?:.(json|csv))?$/.exec(req.params.id);
+    const m = /^(\d+)(?:\.(json|csv))?$/.exec(req.params.id);
     if (!m) throw new ApiError(404, 'not_found', 'No such snapshot');
     const id = Number(m[1]);
     const format = m[2] ?? 'json';

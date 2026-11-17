@@ -58,6 +58,8 @@
   let timer: ReturnType<typeof setTimeout> | undefined;
   let snapshot: AbsSnapshot | null = null;
   let snapshotId: number | null = null;
+  /** The stages' analyses and phases last seen (the lists reload when they change). */
+  let lastAnalyses: string | null = null;
 
   let fileList = FILE_LISTS[0].id;
   let files: { total: number; items: AudioFileRow[] } | null = null;
@@ -107,6 +109,18 @@
       if (id !== null && id !== snapshotId) {
         snapshotId = id;
         snapshot = await api.absSnapshot(id).catch(() => null);
+      }
+      // A stage finished or started again: the lists show what it found now.
+      const analyses = [status.stage1?.progress, status.stage2?.progress]
+        .map((p) => (p ? `${p.analysisId}:${p.phase}` : '-'))
+        .join('|');
+      if (analyses !== lastAnalyses) {
+        const first = lastAnalyses === null;
+        lastAnalyses = analyses;
+        if (!first) {
+          void loadFiles(fileOffset);
+          void loadBooks(bookOffset);
+        }
       }
     } catch (err) {
       if (!destroyed) error = describe(err);

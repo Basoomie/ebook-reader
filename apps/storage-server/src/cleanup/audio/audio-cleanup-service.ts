@@ -385,13 +385,12 @@ export class AudioCleanupService {
     };
   }
 
-  /** Stage 1's lists (paged). */
+  /** Stage 1's and 2's file lists (paged), each file with what stage 2 found in it. */
   files(
     list: string,
     { offset = 0, limit = 50 }: { offset?: number; limit?: number } = {},
   ): { total: number; items: Record<string, unknown>[] } {
     const p1 = this.stage1?.progress();
-    const p2 = this.stage2?.progress();
     let where: string;
     const params: unknown[] = [];
     let from = 'audio_files f';
@@ -435,15 +434,12 @@ export class AudioCleanupService {
       case 'damaged':
       case 'ext_mismatch':
         from = 'audio_files f JOIN audio_file_health h ON h.file_id = f.id';
-        extra =
-          ', h.format, h.codec, h.duration, h.error, h.decode_error, h.start_decode_ok, h.end_decode_ok';
         where =
           list === 'unreadable'
             ? `f.gone_at IS NULL AND h.header_ok = 0`
             : list === 'damaged'
               ? `f.gone_at IS NULL AND h.header_ok = 1 AND (h.start_decode_ok = 0 OR h.end_decode_ok = 0)`
               : `f.gone_at IS NULL AND h.header_ok = 1 AND f.ext <> '.' || h.format AND NOT (h.format = 'mp4' AND f.ext IN ('.m4b', '.m4a', '.mp4', '.aac'))`;
-        void p2;
         break;
       default:
         throw new Error('No such list');
@@ -456,8 +452,9 @@ export class AudioCleanupService {
     const items = this.db
       .prepare(
         `SELECT f.id, f.root, f.rel_path, f.decoded_path, f.rel_path_raw IS NOT NULL AS raw_name, f.size,
-           f.ext, f.nlink, f.sha256 ${extra}
-         FROM ${from} WHERE ${where} ORDER BY f.root, f.rel_path LIMIT ? OFFSET ?`,
+           f.ext, f.nlink, f.sha256, fh.format, fh.codec, fh.duration, fh.error, fh.decode_error ${extra}
+         FROM ${from} LEFT JOIN audio_file_health fh ON fh.file_id = f.id
+         WHERE ${where} ORDER BY f.root, f.rel_path LIMIT ? OFFSET ?`,
       )
       .all(...params, limit, offset) as Record<string, unknown>[];
     // For library copies and AI files: the original's path.

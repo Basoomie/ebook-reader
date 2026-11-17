@@ -900,7 +900,7 @@ export function main(argv: string[], env: Record<string, string | undefined>): v
     void runAudioDryRun(rest, env).then(
       (code) => process.exit(code),
       (err) => {
-        console.error('Dry run failed:', err);
+        console.error(`Dry run failed: ${(err as Error).message ?? err}`);
         process.exit(1);
       },
     );

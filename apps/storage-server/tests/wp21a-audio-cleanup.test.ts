@@ -966,6 +966,103 @@ describe('stage 0: Audiobookshelf, read only', () => {
     ).rejects.toThrow(/not an admin/);
   });
 
+  it('through the /cleanup/audio routes: settings, snapshot, downloads, modes and lists', async () => {
+    const { url } = await stubAbs();
+    const { env, setup } = await makeCleanupEnv({ audio: {} });
+    try {
+      await setup();
+      const request = (await import('supertest')).default;
+      const auth = { Authorization: `Bearer ${env.userToken()}` };
+      // Before the address and key: the snapshot is refused with a plain reason.
+      const refused = await request(env.app)
+        .post('/api/v1/cleanup/audio/abs-snapshots')
+        .set(auth)
+        .expect(409);
+      expect(refused.body.error.message).toMatch(/address and API key/);
+      await request(env.app)
+        .put('/api/v1/cleanup/settings')
+        .set(auth)
+        .send({ audiobooks: { absUrl: url } })
+        .expect(200);
+      await request(env.app)
+        .put('/api/v1/cleanup/secrets/absApiKey')
+        .set(auth)
+        .send({ value: 'key-1' })
+        .expect(200);
+      await request(env.app).post('/api/v1/cleanup/audio/abs-snapshots').set(auth).expect(202);
+      let status: { stage0: { latest: { id: number } | null } } | null = null;
+      for (let i = 0; i < 50 && !status?.stage0.latest; i++) {
+        await new Promise((r) => setTimeout(r, 20));
+        status = (await request(env.app).get('/api/v1/cleanup/audio/status').set(auth).expect(200))
+          .body;
+      }
+      const id = status!.stage0.latest!.id;
+      const json = await request(env.app)
+        .get(`/api/v1/cleanup/audio/abs-snapshots/${id}`)
+        .set(auth)
+        .expect(200);
+      expect(json.body.progress).toHaveLength(3);
+      expect(JSON.stringify(json.body)).not.toContain('key-1');
+      const file = await request(env.app)
+        .get(`/api/v1/cleanup/audio/abs-snapshots/${id}.json`)
+        .set(auth)
+        .expect(200);
+      expect(file.headers['content-disposition']).toMatch(
+        /attachment; filename="audiobookshelf-snapshot-\d+\.json"/,
+      );
+      const csv = await request(env.app)
+        .get(`/api/v1/cleanup/audio/abs-snapshots/${id}.csv`)
+        .set(auth)
+        .expect(200);
+      expect(csv.headers['content-type']).toMatch(/text\/csv/);
+      expect(csv.text).toContain('消えた本');
+      await request(env.app)
+        .get('/api/v1/cleanup/audio/abs-snapshots/99.csv')
+        .set(auth)
+        .expect(404);
+      await request(env.app).get('/api/v1/cleanup/audio/abs-snapshots/x').set(auth).expect(404);
+      // Modes: On is refused; Preview without the folders says why it waits.
+      await request(env.app)
+        .put('/api/v1/cleanup/audio/stages/1')
+        .set(auth)
+        .send({ mode: 'on' })
+        .expect(400);
+      const prev = await request(env.app)
+        .put('/api/v1/cleanup/audio/stages/1')
+        .set(auth)
+        .send({ mode: 'analyse' })
+        .expect(200);
+      expect(prev.body.stages[1].mode).toBe('analyse');
+      await env.audio!.tick();
+      const st = (await request(env.app).get('/api/v1/cleanup/audio/status').set(auth).expect(200))
+        .body;
+      expect(st.stage1.waiting).toMatch(/not set up/);
+      await request(env.app).get('/api/v1/cleanup/audio/files?list=nope').set(auth).expect(400);
+      expect(
+        (
+          await request(env.app)
+            .get('/api/v1/cleanup/audio/files?list=library_only')
+            .set(auth)
+            .expect(200)
+        ).body,
+      ).toEqual({ total: 0, items: [] });
+      expect(
+        (
+          await request(env.app)
+            .get('/api/v1/cleanup/audio/books?list=likely_copies')
+            .set(auth)
+            .expect(200)
+        ).body.total,
+      ).toBe(0);
+      // The Calibre status shows the shared disk lock.
+      expect(
+        (await request(env.app).get('/api/v1/cleanup/status').set(auth).expect(200)).body.disk,
+      ).toEqual({ holder: null, waiting: [] });
+    } finally {
+      await env.close();
+    }
+  });
+
   it('the client can only send GET', () => {
     const src = fs.readFileSync(path.join(SRC, 'cleanup', 'audio', 'abs-client.ts'), 'utf8');
     expect(src).toMatch(/method: 'GET'/);
