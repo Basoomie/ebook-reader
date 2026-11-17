@@ -169,6 +169,13 @@ describe('edition kinds (titles from the dup_test pairs)', () => {
     ['【合本版1-5巻】夜伽の国の月光姫', 'omnibus'],
     ['猫かぶり姫と天上の音楽 合本版【初回限定SS付】【イラスト付】【合本版】', 'omnibus'],
     ['少女回春5～8総集編', 'omnibus'],
+    // Found in the Preview (2026-11-17): sets of volumes.
+    [
+      '【対訳】ピーターラビットシリーズ １～５巻セット かわいいイラストと、英語と日本語で楽しめる、ピーターラビットと仲間たちのお話！',
+      'omnibus',
+    ],
+    ['【対訳】ピーターラビットシリーズ 5巻セット かわいいイラストと', 'omnibus'],
+    ['【対訳】ピーターラビット ⑤ モペットちゃんのおはなし -THE STORY OF MISS MOPPET-', 'full'],
     ['この素晴らしい世界に祝福を！ 11 大魔法使いの妹【電子特別版】', 'special'],
     ['デート・ア・ライブ 十香デッドエンド BOOK☆WALKER special edition', 'special'],
     ['サイレント・ウィッチ VII 特装版【掌編小説集付き】 沈黙の魔女の隠しごと', 'special'],
@@ -204,7 +211,8 @@ describe('the pair rules', () => {
   it.each([
     ['same text both ways', book(1), book(2), m(0.99, 0.98), 'duplicate', 'both_ways'],
     ['exactly the both-ways limit', book(1), book(2), m(0.8, 0.8), 'duplicate', 'both_ways'],
-    ['one way holds the other', book(1), book(2), m(1, 0.7), 'superset', 'superset'],
+    // 2026-11-17: a quarter or more beyond the other's text is a collection: review.
+    ['one way holds the other', book(1), book(2), m(1, 0.7), 'review', 'holds_other'],
     ['superset just under the limit', book(1), book(2), m(0.949, 0.7), 'review', 'partial'],
     ['partial overlap', book(1), book(2), m(0.3, 0.2), 'review', 'partial'],
     ['at the review floor', book(1), book(2), m(0.1, 0.05), 'review', 'partial'],

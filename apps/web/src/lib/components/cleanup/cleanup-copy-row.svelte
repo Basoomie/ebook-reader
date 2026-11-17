@@ -54,7 +54,9 @@
         the copy that stays, {pct(ev.stage3.keptInRemoved)} the other way.
         {ev.stage3.byUser
           ? 'You chose this copy to go.'
-          : (ev.stage3.best?.reason ?? '')}{ev.setSize > 2 ? ` ${ev.setSize} copies in all.` : ''}
+          : ev.stage3.decidedBy === 'claude'
+            ? `Decided in the review: ${ev.stage3.decisionNote ?? ''}`
+            : (ev.stage3.best?.reason ?? '')}{ev.setSize > 2 ? ` ${ev.setSize} copies in all.` : ''}
       {:else}
         Identical files ({ruleText(item)}{ev.setSize > 2 ? `; ${ev.setSize} copies in all` : ''}).
       {/if}

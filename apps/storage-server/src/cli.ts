@@ -41,7 +41,7 @@
  * migration page); the CLI only reports on them and can undo the import.
  */
 import type Database from 'better-sqlite3';
-import { existsSync, readdirSync } from 'fs';
+import { existsSync, readFileSync, readdirSync } from 'fs';
 import path from 'path';
 import { UPLOADS_DIRNAME } from './uploads/upload-store';
 import { FontStore } from './fonts/font-store';
@@ -83,7 +83,7 @@ import { listLinks, resolveLink } from './audio/audio-links';
 import { createApplyToken, listApplyTokens, revokeApplyToken } from './cleanup/apply-tokens';
 import { initCleanupDatabase } from './cleanup/cleanup-db';
 import { listStages } from './cleanup/stages';
-import { resumeFailedStage3 } from './cleanup/stage3';
+import { recordReviewDecisions, resumeFailedStage3 } from './cleanup/stage3';
 
 const USAGE = `Usage:
   cli token pair <label> [--user <name>]     Make a one-time code a device trades for its own token
@@ -126,6 +126,8 @@ const USAGE = `Usage:
   cli audio links                            The audiobooks linked to books, and whether they are still there
   cli cleanup status                         The library cleanup's stages, batches and sidecar tokens
   cli cleanup revoke <token-id>              Revoke a cleanup sidecar token
+  cli cleanup decide 3 <file>                Record the review's decisions on stage 3 pairs (marked as
+                                             Claude's; your own decisions stay)
   cli cleanup resume 3                       Resume stage 3's failed analysis at the step that failed
                                              (keeps the books read and the pairs measured)`;
 
@@ -783,6 +785,21 @@ function cleanupCommand(command: string, rest: string[], env: Record<string, str
             'cleanup resume needs the stage: only stage 3 can resume a failed analysis (cleanup resume 3)',
           );
         const out = resumeFailedStage3(db);
+        console.log(out.message);
+        if (!out.ok) process.exitCode = 1;
+        break;
+      }
+      case 'decide': {
+        const [which, file] = rest;
+        if (which !== '3' || !file)
+          fail('cleanup decide needs the stage and a file: cleanup decide 3 <decisions.json>');
+        let input: unknown;
+        try {
+          input = JSON.parse(readFileSync(file, 'utf8'));
+        } catch (err) {
+          fail(`Can't read ${file}: ${(err as Error).message}`);
+        }
+        const out = recordReviewDecisions(db, input);
         console.log(out.message);
         if (!out.ok) process.exitCode = 1;
         break;

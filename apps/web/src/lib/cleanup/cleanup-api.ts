@@ -366,6 +366,9 @@ export interface CopyProposalEvidence {
     keptInRemoved: number | null;
     best: { keep: 'a' | 'b' | null; by: string; measures: PairMeasure[]; reason: string } | null;
     byUser: boolean;
+    /** Who decided the pair in the review ('you' on the page, 'claude'), and why. */
+    decidedBy?: string | null;
+    decisionNote?: string | null;
   };
 }
 

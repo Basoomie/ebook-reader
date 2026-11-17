@@ -149,11 +149,17 @@ export function classifyPair(
   if (both) {
     verdict = { cls: 'duplicate', rule: 'both_ways', reason: `Same text (${overlap})` };
   } else if (most >= s.superset && !small(a.kind)) {
+    // Decided 2026-11-17 (Preview): a copy holding the other's whole text and at least a
+    // quarter more (less would be "same text" above) is in practice a collection, a set or a
+    // split edition holding one work, not a book with an added bonus: review, never removed
+    // automatically (unless the extra text inside the chapters says both stay).
     const container = m.aInB >= m.bInA ? 'b' : 'a';
-    verdict = {
-      cls: 'superset',
-      rule: 'superset',
-      reason: `One copy holds the other's whole text and more (${overlap})`,
+    const spread = spreadVerdict(m, s);
+    if (spread?.cls === 'keep_both') return spread;
+    return {
+      cls: 'review',
+      rule: 'holds_other',
+      reason: `One copy holds the other's whole text and much more (${overlap}): a collection or set, not removed automatically`,
       container,
     };
   }

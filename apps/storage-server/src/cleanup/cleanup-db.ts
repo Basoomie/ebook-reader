@@ -396,6 +396,14 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
       );
     `,
   },
+  {
+    version: 5,
+    name: 'stage 3: who decided a pair (you on the page, or Claude in the review) and why',
+    sql: `
+      ALTER TABLE pair_decisions ADD COLUMN decided_by TEXT NOT NULL DEFAULT 'you';
+      ALTER TABLE pair_decisions ADD COLUMN note TEXT;
+    `,
+  },
 ];
 
 export const CLEANUP_SCHEMA_VERSION = CLEANUP_MIGRATIONS[CLEANUP_MIGRATIONS.length - 1].version;

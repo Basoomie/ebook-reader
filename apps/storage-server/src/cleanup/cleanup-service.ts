@@ -606,6 +606,14 @@ export class CleanupService {
       this.waiting3 = `The analysis failed: ${progress.error}`;
       return;
     }
+    // New rules or new limits in the settings: the measured pairs are classified again
+    // (nothing read again), then the copies are chosen again.
+    if (this.analysis3.needsReclassify(progress) && !this.batches.open()) {
+      this.analysis3.reclassify();
+      this.waiting3 = 'Analysing';
+      this.runAnalysis3();
+      return;
+    }
     if (stage.mode !== 'on') {
       this.waiting3 = 'Preview: nothing is changed in Calibre';
       return;
