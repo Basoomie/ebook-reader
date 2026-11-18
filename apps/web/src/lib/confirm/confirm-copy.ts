@@ -695,6 +695,16 @@ export function undoFileMetadataBatchCopy(count: number): ConfirmCopy {
 }
 
 /** Removing a saved API key or the Calibre password. */
+/** Settings > Notifications: removing the webhook address or the app password. */
+export function removeNotificationSecretCopy(label: string): ConfirmCopy {
+  return {
+    title: `Remove the saved ${label}?`,
+    message: ['Nothing is sent on this channel until you enter it again.'],
+    confirmLabel: `Remove ${label}`,
+    irreversible: true
+  };
+}
+
 export function removeCleanupSecretCopy(label: string): ConfirmCopy {
   return {
     title: `Remove the saved ${label}?`,

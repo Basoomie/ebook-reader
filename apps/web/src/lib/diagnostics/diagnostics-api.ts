@@ -42,12 +42,49 @@ export type DiagnosticsCleanupHelper =
   | { available: false }
   | { available: true; online: boolean; lastSeenAt: number | null };
 
+/** Notifications N1: what is still wrong, and what was sent. */
+export interface DiagnosticsOpenProblem {
+  event: string;
+  label: string;
+  summary: string | null;
+  /** Longer text (e.g. the Calibre indexer's whole warning). */
+  detail: string | null;
+  since: number;
+  noticedAt: number | null;
+}
+
+export interface DiagnosticsNotificationLog {
+  id: number;
+  at: number;
+  createdAt: number;
+  channel: 'discord' | 'email';
+  kind: 'now' | 'digest' | 'test';
+  event: string;
+  label: string;
+  text: string;
+  status: 'pending' | 'sent' | 'failed';
+  attempts: number;
+  error: string | null;
+}
+
+export type DiagnosticsNotifications =
+  | { available: false }
+  | {
+      available: true;
+      channels: { discord: boolean; email: boolean };
+      secretsUnreadable: boolean;
+      openProblems: DiagnosticsOpenProblem[];
+      log: DiagnosticsNotificationLog[];
+    };
+
 export interface DiagnosticsResponse {
   serverTime: number;
   server: { version: string; builtAt: number | null; schemaVersion: number };
   devices: DiagnosticsDevice[];
   pcWorker: DiagnosticsPcWorker;
   cleanupHelper: DiagnosticsCleanupHelper;
+  /** Missing from a server before notifications. */
+  notifications?: DiagnosticsNotifications;
 }
 
 export async function fetchDiagnostics(

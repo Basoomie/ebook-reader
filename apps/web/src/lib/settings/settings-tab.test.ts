@@ -14,6 +14,7 @@ describe('settings tabs in the address', () => {
     expect(tabFromQuery(' Data ')).toBe('Data');
     expect(tabFromQuery('statistics')).toBe('Statistics');
     expect(tabFromQuery('diagnostics')).toBe('Diagnostics');
+    expect(tabFromQuery('notifications')).toBe('Notifications');
     expect(tabFromQuery(null)).toBe('Reader');
     expect(tabFromQuery('')).toBe('Reader');
     expect(tabFromQuery('nonsense')).toBe('Reader');

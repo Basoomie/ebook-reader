@@ -39,6 +39,11 @@ import { CleanupService } from './cleanup/cleanup-service';
 import { AudioCleanupService } from './cleanup/audio/audio-cleanup-service';
 import { audioLabelsReader, readerWrittenFiles } from './cleanup/audio-stage3-inputs';
 import type { CleanupOptions } from './cleanup/routes';
+import { onStagePaused } from './cleanup/stages';
+import { onAudioStagePaused } from './cleanup/audio/audio-stages';
+import { parseNotificationsConfig } from './notifications/config';
+import { NotificationService } from './notifications/service';
+import { NotificationWatcher } from './notifications/watcher';
 
 // Every console line is also kept (secrets removed) for the bug report (WP18).
 captureConsole(serverLogs);
@@ -72,6 +77,22 @@ const cleanupDb = database.ok ? initCleanupDatabase(config.dbDir) : null;
 if (cleanupDb && !cleanupDb.ok) console.error(`Error: library cleanup is off: ${cleanupDb.error}`);
 const cleanupOptions: CleanupOptions = { service: null, error: 'the database is unavailable' };
 
+// Notifications (N1): Discord and Gmail. Optional: when it can't start, everything else runs.
+let notifications: NotificationService | null = null;
+if (database.ok) {
+  try {
+    const notifyWarnings: string[] = [];
+    notifications = new NotificationService({
+      db: database.db,
+      dbDir: config.dbDir,
+      config: parseNotificationsConfig(process.env, notifyWarnings),
+    });
+    for (const warning of notifyWarnings) console.warn(`Warning: ${warning}`);
+  } catch (err) {
+    console.error('Error: notifications are off:', err);
+  }
+}
+
 let snapshots: SnapshotScheduler | null = null;
 let cleanupSnapshots: SnapshotScheduler | null = null;
 if (database.ok) {
@@ -81,6 +102,7 @@ if (database.ok) {
       dir: snapshotDir(config.dbDir),
       time: config.snapshotTime,
       keep: config.snapshotKeep,
+      onResult: (ok, error) => notifications?.snapshotResult('ttsu', ok, error),
     });
   } catch (err) {
     console.error('Error: could not schedule database snapshots:', err);
@@ -93,6 +115,7 @@ if (database.ok) {
         time: config.snapshotTime,
         keep: config.snapshotKeep,
         prefix: 'cleanup',
+        onResult: (ok, error) => notifications?.snapshotResult('cleanup', ok, error),
       });
     } catch (err) {
       console.error('Error: could not schedule cleanup.db snapshots:', err);
@@ -425,6 +448,22 @@ if (database.ok && config.audio.dir) {
   console.log('Audiobooks are off: AUDIOBOOKS_DIR is not set');
 }
 
+if (notifications && database.ok) {
+  notifications.attachWatcher(
+    new NotificationWatcher(notifications, {
+      db: database.db,
+      cleanupDb: cleanupDb?.ok ? cleanupDb.db : null,
+      cleanup,
+      jobs,
+      workerOfflineSeconds: jobs ? config.audio.worker.offlineSeconds : undefined,
+    }),
+  );
+  // A paused stage is looked at at once, not on the next round.
+  const notifier = notifications;
+  onStagePaused(() => notifier.poke());
+  onAudioStagePaused(() => notifier.poke());
+}
+
 const app = createApp({
   config,
   database,
@@ -454,9 +493,11 @@ const app = createApp({
     },
   },
   cleanup: cleanupOptions,
+  notifications,
 });
 cleanup?.start();
 cleanupOptions.audio?.start();
+notifications?.start();
 
 app.listen(config.port, () => {
   console.log(`ttsu storage server running on port ${config.port}`);
@@ -478,6 +519,7 @@ function shutdown(signal: string): void {
   console.log(`${signal} received, shutting down`);
   snapshots?.stop();
   cleanupSnapshots?.stop();
+  void notifications?.stop();
   void cleanup?.stop();
   void cleanupOptions.audio?.stop();
   void indexer?.stop();

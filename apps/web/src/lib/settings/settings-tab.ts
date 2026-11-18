@@ -15,6 +15,7 @@ export const SETTINGS_TABS = [
   'Statistics',
   'Audiobooks',
   'Anki',
+  'Notifications',
   'Diagnostics'
 ] as const;
 export type SettingsTab = (typeof SETTINGS_TABS)[number];

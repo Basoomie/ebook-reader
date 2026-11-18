@@ -1073,6 +1073,75 @@ export const MIGRATIONS: { version: number; name: string; sql: string }[] = [
       );
     `,
   },
+  {
+    version: 25,
+    name: 'notifications',
+    // Notifications N1 (src/notifications/): the server tells the user about problems through
+    // Discord and Gmail.
+    // notification_settings: one JSON value per key ('settings'), like cleanup.db's settings.
+    // notification_secrets: the webhook URL and the Gmail app password, AES-256-GCM; the key
+    //   is NOT in this database but in its own file beside it (DB_DIR/notification-secrets.key,
+    //   decided with the user 2026-11-18), so copies of ttsu.db reveal nothing.
+    // notification_problems: one row per problem the watcher has seen (waiting for its wait
+    //   time, open, or resolved and waiting for the digest's "resolved" line).
+    // notification_log: every message, also the outbox (pending → sent / failed after retries).
+    // notification_digest_lines: lines waiting for the next daily digest.
+    // notification_state: watermarks and the last digest day.
+    sql: `
+      CREATE TABLE notification_settings (
+        key         TEXT PRIMARY KEY,
+        value_json  TEXT NOT NULL CHECK (json_valid(value_json)),
+        updated_at  INTEGER NOT NULL
+      );
+
+      CREATE TABLE notification_secrets (
+        name        TEXT PRIMARY KEY,
+        ciphertext  BLOB NOT NULL,
+        nonce       BLOB NOT NULL,
+        tag         BLOB NOT NULL,
+        updated_at  INTEGER NOT NULL
+      );
+
+      CREATE TABLE notification_problems (
+        key             TEXT PRIMARY KEY,
+        event           TEXT NOT NULL,
+        first_seen_at   INTEGER NOT NULL,
+        last_active_at  INTEGER NOT NULL,
+        noticed_at      INTEGER,
+        resolved_at     INTEGER,
+        summary         TEXT,
+        detail          TEXT
+      );
+
+      CREATE TABLE notification_log (
+        id          INTEGER PRIMARY KEY,
+        created_at  INTEGER NOT NULL,
+        event       TEXT NOT NULL,
+        kind        TEXT NOT NULL CHECK (kind IN ('now', 'digest', 'test')),
+        channel     TEXT NOT NULL CHECK (channel IN ('discord', 'email')),
+        text        TEXT NOT NULL,
+        status      TEXT NOT NULL CHECK (status IN ('pending', 'sent', 'failed')),
+        attempts    INTEGER NOT NULL DEFAULT 0,
+        next_at     INTEGER,
+        error       TEXT,
+        sent_at     INTEGER
+      );
+      CREATE INDEX notification_log_pending ON notification_log (status, next_at);
+
+      CREATE TABLE notification_digest_lines (
+        id          INTEGER PRIMARY KEY,
+        event       TEXT NOT NULL,
+        text        TEXT NOT NULL,
+        link        TEXT,
+        created_at  INTEGER NOT NULL
+      );
+
+      CREATE TABLE notification_state (
+        name        TEXT PRIMARY KEY,
+        value_json  TEXT NOT NULL CHECK (json_valid(value_json))
+      );
+    `,
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

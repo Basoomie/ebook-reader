@@ -39,6 +39,7 @@
   import LibraryConnectionSettings from '$lib/components/library/library-connection-settings.svelte';
   import AudiobooksPanel from '$lib/components/audio/audiobooks-panel.svelte';
   import DiagnosticsPanel from '$lib/components/settings/diagnostics-panel.svelte';
+  import NotificationsPanel from '$lib/components/settings/notifications-panel.svelte';
   import { NOT_OVER_HTTP } from '$lib/diagnostics/diagnostics-text';
   import { canPersistStorage } from '$lib/functions/secure-context';
   import { bookIllustrationsPosition$, libraryLook$ } from '$lib/library/settings';
@@ -1275,6 +1276,11 @@
     <!-- WP15b: the server's audiobooks folder and the linked books. -->
     {#if browser}
       <AudiobooksPanel />
+    {/if}
+  {:else if activeSettings === 'Notifications'}
+    <!-- Notifications N1: Discord and Gmail, stored on the server (it sends). -->
+    {#if browser}
+      <NotificationsPanel />
     {/if}
   {:else if activeSettings === 'Diagnostics'}
     <!-- Season 2 §7: read-only status of this device, the devices, the PC, the server. -->

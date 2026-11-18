@@ -156,6 +156,8 @@ export interface SchedulerOptions {
   prefix?: SnapshotPrefix;
   log?: (message: string) => void;
   logError?: (message: string, err: unknown) => void;
+  /** Told after every snapshot (notifications N1); its own errors are ignored. */
+  onResult?: (ok: boolean, error?: unknown) => void;
 }
 
 export function scheduleSnapshots({
@@ -166,16 +168,27 @@ export function scheduleSnapshots({
   prefix = 'ttsu',
   log = console.log,
   logError = console.error,
+  onResult,
 }: SchedulerOptions): SnapshotScheduler {
   let timer: NodeJS.Timeout | null = null;
   let stopped = false;
+
+  const tell = (ok: boolean, error?: unknown) => {
+    try {
+      onResult?.(ok, error);
+    } catch {
+      // Never affects the snapshots.
+    }
+  };
 
   const run = async (reason: string) => {
     try {
       const file = await takeSnapshot(db, dir, keep, new Date(), prefix);
       log(`Snapshot (${reason}): ${file}`);
+      tell(true);
     } catch (err) {
       logError(`Snapshot (${reason}) failed:`, err);
+      tell(false, err);
     }
   };
 

@@ -26,6 +26,12 @@
   import { getSyncRunner } from '$lib/sync/sync-service';
   import { SYNC_STATE_TEXT } from '$lib/sync/sync-state-text';
   import { onDestroy, onMount } from 'svelte';
+  import {
+    CHANNEL_NAMES,
+    firstLine,
+    logKindText,
+    logStatusText
+  } from '$lib/notifications/notifications-text';
 
   /**
    * Settings > Diagnostics (Season 2 §7): read-only. This device's own figures come from
@@ -310,6 +316,70 @@
         {/if}
       </dd>
     </dl>
+  {:else if !serverError}
+    <p class="text-c-muted">Loading…</p>
+  {/if}
+</div>
+
+<SettingsSection
+  jp="通知"
+  title="Notifications"
+  tooltip="Problems the server has told you about that are still there, and the last messages it sent (Settings > Notifications)."
+  testid="diag-section-notifications"
+/>
+<div class="col-span-full">
+  {#if connection === null}
+    <p class="text-c-muted">{NOT_CONNECTED}</p>
+  {:else if diag}
+    {#if !diag.notifications?.available}
+      <p class="pb-8 text-c-muted" data-testid="diag-notify-off">
+        Notifications are off on the server{diag.notifications ? '' : ' (update the server)'}.
+      </p>
+    {:else}
+      {#if diag.notifications.secretsUnreadable}
+        <p class="c-notice mb-4" role="alert">
+          A saved webhook address or app password can’t be read on the server any more: enter it
+          again in Settings, Notifications.
+        </p>
+      {/if}
+      <h3 class="mt-2 font-bold">Open problems</h3>
+      {#if diag.notifications.openProblems.length}
+        <ul class="flex max-w-3xl flex-col gap-3 py-3" data-testid="diag-open-problems">
+          {#each diag.notifications.openProblems as p (p.event + p.since + (p.summary ?? ''))}
+            <li data-testid="diag-open-problem">
+              <span class="block">{p.summary ?? p.label}</span>
+              <span class="block text-sm text-c-muted">since {formatTime(p.since)}</span>
+              {#if p.detail}
+                <span class="block break-words text-sm text-c-muted">{p.detail}</span>
+              {/if}
+            </li>
+          {/each}
+        </ul>
+      {:else}
+        <p class="py-3 text-c-muted" data-testid="diag-open-problems-none">None.</p>
+      {/if}
+      <h3 class="mt-4 font-bold">Sent</h3>
+      {#if diag.notifications.log.length}
+        <ul class="flex max-w-3xl flex-col gap-3 pb-8 pt-3" data-testid="diag-notify-log">
+          {#each diag.notifications.log as row (row.id)}
+            <li data-testid="diag-notify-log-row">
+              <span class="block text-sm text-c-muted"
+                >{formatTime(row.at)} · {CHANNEL_NAMES[row.channel]} · {logKindText(row.kind)}</span
+              >
+              <span class="block break-words">{firstLine(row.text)}</span>
+              <span
+                class="block break-words text-sm {row.status === 'failed'
+                  ? 'text-c-seal'
+                  : 'text-c-muted'}"
+                data-testid="diag-notify-status">{logStatusText(row)}</span
+              >
+            </li>
+          {/each}
+        </ul>
+      {:else}
+        <p class="pb-8 pt-3 text-c-muted">Nothing sent yet.</p>
+      {/if}
+    {/if}
   {:else if !serverError}
     <p class="text-c-muted">Loading…</p>
   {/if}

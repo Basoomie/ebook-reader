@@ -129,10 +129,36 @@ export function pauseStage(
   detail: string | null,
   now = Date.now(),
 ): void {
-  db.prepare(
-    `UPDATE stages SET pause_reason = ?, pause_detail = ?, paused_at = ?, updated_at = ?
+  const changed = db
+    .prepare(
+      `UPDATE stages SET pause_reason = ?, pause_detail = ?, paused_at = ?, updated_at = ?
      WHERE stage = ? AND (pause_reason IS NULL OR pause_reason <> ? OR pause_detail IS NOT ?)`,
-  ).run(reason, detail, now, now, stage, reason, detail);
+    )
+    .run(reason, detail, now, now, stage, reason, detail).changes;
+  if (changed > 0) tellStagePaused(stage, reason);
+}
+
+/**
+ * Notifications (N1): told after a stage pauses, outside the caller's transaction and never
+ * able to break it. They read the stage rows themselves; this only makes them look at once.
+ */
+const stagePauseListeners = new Set<(stage: number, reason: string) => void>();
+
+export function onStagePaused(listener: (stage: number, reason: string) => void): () => void {
+  stagePauseListeners.add(listener);
+  return () => stagePauseListeners.delete(listener);
+}
+
+function tellStagePaused(stage: number, reason: string): void {
+  for (const listener of stagePauseListeners) {
+    setImmediate(() => {
+      try {
+        listener(stage, reason);
+      } catch {
+        // A listener's problem is its own.
+      }
+    });
+  }
 }
 
 export function resumeStage(db: Database.Database, stage: number, now = Date.now()): void {

@@ -23,10 +23,24 @@ function deviceErrorToApi(err: unknown): never {
  *   POST /sync              push changes
  *   GET  /sync?cursor=      pull changes since the cursor
  */
+/** A push had refused changes (notifications N1). Errors in it never reach the push. */
+export type RefusedListener = (info: {
+  userId: string;
+  deviceId: string;
+  deviceName: string | null;
+  refused: { kind: string; code: string; message: string }[];
+}) => void;
+
+/**
+ * Refused with this code, the device settles the change by itself on its next sync (the web
+ * app's startOverRefusalHandler): not a problem to report.
+ */
+const SELF_SETTLING_CODES = new Set(['read_through_finished']);
+
 export function createSyncRouter(
   db: Database.Database,
   store: SyncStore,
-  { frozenKinds = [] }: { frozenKinds?: string[] } = {},
+  { frozenKinds = [], onRefused }: { frozenKinds?: string[]; onRefused?: RefusedListener } = {},
 ): Router {
   const router = express.Router();
   // WP12: kinds devices may no longer change. Only device pushes are refused here;
@@ -83,6 +97,21 @@ export function createSyncRouter(
     const results = store.push(user.id, deviceId, changes as SyncChange[], now, { frozen });
     touchDevice(db, deviceId, now);
     res.json({ results, serverTime: Date.now() });
+    if (onRefused) {
+      try {
+        const refused = results.flatMap((r) =>
+          r.status === 'rejected' && !SELF_SETTLING_CODES.has(r.error.code)
+            ? [{ kind: r.kind, code: r.error.code, message: r.error.message }]
+            : [],
+        );
+        if (refused.length) {
+          const name = listDevices(db, store, user.id).find((d) => d.id === deviceId)?.name ?? null;
+          onRefused({ userId: user.id, deviceId, deviceName: name, refused });
+        }
+      } catch (err) {
+        console.error('Sync: reporting refused changes failed:', err);
+      }
+    }
   });
 
   router.get('/sync', (req, res) => {

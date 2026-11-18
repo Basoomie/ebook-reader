@@ -2,7 +2,7 @@
  * Settings > Diagnostics (Season 2 §7): one read-only request with what the page shows
  * from the server. Mounted after requireUser.
  *
- *   GET /diagnostics  { serverTime, server, devices, pcWorker, cleanupHelper }
+ *   GET /diagnostics  { serverTime, server, devices, pcWorker, cleanupHelper, notifications }
  *
  * `devices` leaves out the server's pseudo-devices (never seen; see below).
  *
@@ -19,6 +19,7 @@ import type { CleanupOptions } from '../cleanup/routes';
 import { listDevices } from '../db/devices';
 import { getSchemaVersion } from '../db/migrations';
 import type { SyncStore } from '../sync/store';
+import type { NotificationService } from '../notifications/service';
 
 export interface DiagnosticsOptions {
   version: string;
@@ -26,14 +27,26 @@ export interface DiagnosticsOptions {
   builtAt: number | null;
   audio: AudioOptions;
   cleanup: CleanupOptions;
+  /** Notifications N1: open problems and the log of what was sent. */
+  notifications?: NotificationService | null;
 }
 
 export function createDiagnosticsRouter(
   db: Database.Database,
   store: SyncStore,
-  { version, builtAt, audio, cleanup }: DiagnosticsOptions,
+  { version, builtAt, audio, cleanup, notifications }: DiagnosticsOptions,
 ): Router {
   const router = express.Router();
+
+  const notificationsView = () => {
+    if (!notifications) return { available: false as const };
+    try {
+      return notifications.diagnostics();
+    } catch (err) {
+      console.error('Diagnostics: notifications failed:', err);
+      return { available: false as const };
+    }
+  };
 
   router.get('/diagnostics', (_req, res) => {
     const auth = getAuth(res);
@@ -85,6 +98,7 @@ export function createDiagnosticsRouter(
       devices,
       pcWorker,
       cleanupHelper,
+      notifications: notificationsView(),
     });
   });
 

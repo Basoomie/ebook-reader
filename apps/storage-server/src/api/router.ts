@@ -49,6 +49,8 @@ import {
   READ_ALOUD_RAW_PATHS,
 } from '../audio/read-aloud-routes';
 import { createAttachmentRouter, type AttachmentOptions } from '../attachments/routes';
+import { createNotificationsRouter } from '../notifications/routes';
+import type { NotificationService } from '../notifications/service';
 import {
   type CleanupOptions,
   createCleanupApplyRouter,
@@ -106,6 +108,8 @@ export interface ApiOptions {
   attachments?: AttachmentOptions;
   /** The Calibre library cleanup (WP20a). Without it its routes answer 503. */
   cleanup?: CleanupOptions;
+  /** Notifications (N1). Without it its routes answer 503. */
+  notifications?: NotificationService | null;
 }
 
 export interface FontOptions {
@@ -140,6 +144,7 @@ export function createApiRouter({
   audio = { service: null },
   attachments,
   cleanup = { service: null, error: 'not configured' },
+  notifications = null,
 }: ApiOptions): Router {
   const router = express.Router();
   // Pushes can carry many records; everything else keeps the small default limit.
@@ -239,6 +244,8 @@ export function createApiRouter({
     router.use(createAudioClipRouter(db, audio));
     // The /cleanup page (WP20a).
     router.use(createCleanupRouter(cleanup));
+    // Settings > Notifications (N1).
+    router.use(createNotificationsRouter(notifications));
     // Uploads (WP7b): a separate source adapter, mounted only when it is on.
     if (catalog.uploads) {
       router.use(
@@ -260,10 +267,15 @@ export function createApiRouter({
     router.use(
       createSyncRouter(db, syncStore, {
         frozenKinds: sync.frozenKinds ?? DEFAULT_SYNC.frozenKinds ?? [],
+        onRefused: notifications
+          ? (i) => notifications.syncRefused(i.deviceId, i.deviceName, i.refused)
+          : undefined,
       }),
     );
     // Settings > Diagnostics (Season 2 §7): read-only.
-    router.use(createDiagnosticsRouter(db, syncStore, { version, builtAt, audio, cleanup }));
+    router.use(
+      createDiagnosticsRouter(db, syncStore, { version, builtAt, audio, cleanup, notifications }),
+    );
     // Export my data (WP18): read-only.
     router.use(createExportRouter(db, syncStore));
 

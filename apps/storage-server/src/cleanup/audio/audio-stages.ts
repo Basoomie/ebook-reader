@@ -102,6 +102,30 @@ export function pauseAudioStage(
     `UPDATE audio_stages SET pause_reason = ?, pause_detail = ?, paused_at = ?, updated_at = ?
      WHERE stage = ?`,
   ).run(reason, detail, now, now, stage);
+  tellAudioStagePaused(stage, reason);
+}
+
+/**
+ * Notifications (N1): told after an audiobook stage pauses, outside the caller's transaction
+ * and never able to break it. They read the stage rows themselves (a repeat is no new alert).
+ */
+const audioStagePauseListeners = new Set<(stage: number, reason: string) => void>();
+
+export function onAudioStagePaused(listener: (stage: number, reason: string) => void): () => void {
+  audioStagePauseListeners.add(listener);
+  return () => audioStagePauseListeners.delete(listener);
+}
+
+function tellAudioStagePaused(stage: number, reason: string): void {
+  for (const listener of audioStagePauseListeners) {
+    setImmediate(() => {
+      try {
+        listener(stage, reason);
+      } catch {
+        // A listener's problem is its own.
+      }
+    });
+  }
 }
 
 export function resumeAudioStage(db: Database.Database, stage: number, now = Date.now()): void {

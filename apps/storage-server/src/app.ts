@@ -7,6 +7,7 @@ import type { DatabaseState } from './db/database';
 import type { RecentLogs } from './logs/recent-logs';
 import type { AudioOptions } from './audio/routes';
 import type { CleanupOptions } from './cleanup/routes';
+import type { NotificationService } from './notifications/service';
 
 export interface AppOptions {
   config: ServerConfig;
@@ -23,6 +24,8 @@ export interface AppOptions {
   audio?: AudioOptions;
   /** The Calibre library cleanup (WP20a). */
   cleanup?: CleanupOptions;
+  /** Notifications (N1). */
+  notifications?: NotificationService | null;
 }
 
 export function createApp({
@@ -35,6 +38,7 @@ export function createApp({
   logs,
   audio,
   cleanup,
+  notifications,
 }: AppOptions): Express {
   const app = express();
 
@@ -74,6 +78,7 @@ export function createApp({
       logs,
       audio,
       cleanup,
+      notifications,
     }),
   );
 

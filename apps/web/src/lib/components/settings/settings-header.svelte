@@ -1,6 +1,6 @@
 <script lang="ts">
   /**
-   * The Settings page's tabs (Reader, Data, Statistics, Audiobooks, Anki, Diagnostics), under the page title in the
+   * The Settings page's tabs (Reader, Data, Statistics, Audiobooks, Anki, Notifications, Diagnostics), under the page title in the
    * catalogue's "Archive" look (like the Library's tabs): the current tab underlined in
    * vermilion, a gold rule below. The app navigation and Back live elsewhere (AppHeader,
    * the page title row), so the header bar holds only the navigation.
