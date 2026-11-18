@@ -37,6 +37,7 @@ import { VoiceStore } from './voices/voice-store';
 import { initCleanupDatabase } from './cleanup/cleanup-db';
 import { CleanupService } from './cleanup/cleanup-service';
 import { AudioCleanupService } from './cleanup/audio/audio-cleanup-service';
+import { audioLabelsReader, readerWrittenFiles } from './cleanup/audio-stage3-inputs';
 import type { CleanupOptions } from './cleanup/routes';
 
 // Every console line is also kept (secrets removed) for the bug report (WP18).
@@ -133,7 +134,13 @@ if (database.ok && cleanupDb?.ok) {
       tools: {
         ffprobePath: config.audio.merge.ffprobePath,
         ffmpegPath: config.audio.merge.ffmpegPath,
+        fpcalcPath: (process.env.FPCALC_PATH ?? '').trim() || 'fpcalc',
+        faadPath: (process.env.FAAD_PATH ?? '').trim() || 'faad',
       },
+      readLabels: audioLabelsReader(cleanupDb.db, config.dbDir),
+      readerWrittenFiles: config.cleanupAudio
+        ? readerWrittenFiles(database.db, config.cleanupAudio.libraryDir)
+        : undefined,
     });
   } catch (err) {
     console.error('Error: library cleanup is off:', err);

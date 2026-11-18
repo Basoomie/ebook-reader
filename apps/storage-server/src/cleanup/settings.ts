@@ -44,6 +44,11 @@ export interface GateSettings {
    * <DB_DIR>/cleanup/reference-sample/stage3-pairs.json.
    */
   duplicatePairsFile: string;
+  /**
+   * Audiobooks stage 3: the labeled pairs (labels.json); empty =
+   * <DB_DIR>/cleanup/reference-sample/audio/labels.json.
+   */
+  audiobookPairsFile: string;
 }
 
 export interface CoverSettings {
@@ -78,6 +83,32 @@ export interface AudiobookSettings {
   copyHintPercent: number;
   /** Time limit for one request to Audiobookshelf (s). */
   absTimeoutSeconds: number;
+  /** Stage 3 (WP21b): length of each compared window (s). */
+  dupWindowSeconds: number;
+  /** Stage 3: how far two copies may be shifted at their start and at their end (s). */
+  dupShiftSeconds: number;
+  /** Stage 3: the middle window searches at most this much of the other copy (minutes). */
+  dupMiddleSearchMinutes: number;
+  /** Stage 3: a window counts as the same recording at this score or above (0-1). */
+  dupSameScore: number;
+  /** Stage 3: same title and volume are compared when the lengths are within this (%). */
+  dupCandidatePercent: number;
+  /** Stage 3: same ASIN counts as the same recording when the lengths are within this (s). */
+  dupAsinToleranceSeconds: number;
+  /** Stage 3: lengths this close count as equal (s). */
+  dupLengthEqualSeconds: number;
+  /** Stage 3: a copy this much shorter than its twin is incomplete (rule 0; s). */
+  dupIncompleteSeconds: number;
+  /** Stage 3: bitrates within this share count as equal (rule 5; %). */
+  dupBitrateMarginPercent: number;
+  /** Stage 3: chapters within this length count as the same (rule 1; s). */
+  dupChapterToleranceSeconds: number;
+  /** Stage 3: windows fingerprinted at the same time (small reads; wait while Calibre reads). */
+  dupFingerprintWorkers: number;
+  /** Stage 3: full decodes at the same time (they hold the shared disk lock). */
+  dupDecodeWorkers: number;
+  /** Stage 3: seconds played from the start or the end of a copy on the review page. */
+  dupClipSeconds: number;
 }
 
 /** One site's queue in the fetch container (WP20d). */
@@ -225,6 +256,7 @@ export const DEFAULT_SETTINGS: CleanupSettings = {
     minBooks: 20,
     labeledBooksFile: '',
     duplicatePairsFile: '',
+    audiobookPairsFile: '',
   },
   reviewAlarmPercent: 5,
   libraryChangedPausePercent: 5,
@@ -240,6 +272,23 @@ export const DEFAULT_SETTINGS: CleanupSettings = {
     copyHintMinMinutes: 60,
     copyHintPercent: 3,
     absTimeoutSeconds: 30,
+    // Stage 3 (WP21b). The score and the length limits were set from the labeled pairs (see
+    // decisions.md "WP21b"): same recording >= 0.894 and different <= 0.613 in every window of
+    // the sample, so the line sits in the middle of that gap; the same recording differed by at
+    // most 15 s (Discord vs TMW), so 60 s is "incomplete".
+    dupWindowSeconds: 45,
+    dupShiftSeconds: 60,
+    dupMiddleSearchMinutes: 15,
+    dupSameScore: 0.75,
+    dupCandidatePercent: 5,
+    dupAsinToleranceSeconds: 60,
+    dupLengthEqualSeconds: 2,
+    dupIncompleteSeconds: 60,
+    dupBitrateMarginPercent: 5,
+    dupChapterToleranceSeconds: 2,
+    dupFingerprintWorkers: 4,
+    dupDecodeWorkers: 2,
+    dupClipSeconds: 10,
   },
   fetch: {
     // Paces of plan section 6 (Bookmeter and Natively as BookWalker; the cover images as decided
@@ -474,6 +523,45 @@ function validate(key: Key, value: unknown, current: CleanupSettings): unknown {
         ),
         copyHintPercent: num('Copies: lengths within (%)', v.copyHintPercent, 0, 50),
         absTimeoutSeconds: num('Audiobookshelf time limit (s)', v.absTimeoutSeconds, 1, 600, true),
+        dupWindowSeconds: num('Window length (s)', v.dupWindowSeconds, 10, 300, true),
+        dupShiftSeconds: num('Shift searched at each end (s)', v.dupShiftSeconds, 0, 600, true),
+        dupMiddleSearchMinutes: num(
+          'Middle window: minutes searched',
+          v.dupMiddleSearchMinutes,
+          1,
+          120,
+        ),
+        dupSameScore: num('Same recording at a score of', v.dupSameScore, 0.5, 1),
+        dupCandidatePercent: num('Same title: lengths within (%)', v.dupCandidatePercent, 0, 50),
+        dupAsinToleranceSeconds: num(
+          'Same ASIN: lengths within (s)',
+          v.dupAsinToleranceSeconds,
+          0,
+          3600,
+        ),
+        dupLengthEqualSeconds: num('Lengths equal within (s)', v.dupLengthEqualSeconds, 0, 600),
+        dupIncompleteSeconds: num(
+          'Incomplete when shorter by (s)',
+          v.dupIncompleteSeconds,
+          1,
+          36000,
+        ),
+        dupBitrateMarginPercent: num('Bitrates equal within (%)', v.dupBitrateMarginPercent, 0, 50),
+        dupChapterToleranceSeconds: num(
+          'Chapters equal within (s)',
+          v.dupChapterToleranceSeconds,
+          0,
+          600,
+        ),
+        dupFingerprintWorkers: num(
+          'Windows read at the same time',
+          v.dupFingerprintWorkers,
+          1,
+          16,
+          true,
+        ),
+        dupDecodeWorkers: num('Full decodes at the same time', v.dupDecodeWorkers, 1, 8, true),
+        dupClipSeconds: num('Seconds played on the review page', v.dupClipSeconds, 2, 60, true),
       };
     }
     case 'fetch': {
@@ -643,6 +731,7 @@ function validate(key: Key, value: unknown, current: CleanupSettings): unknown {
         minBooks: num('Smallest group checked (books)', v.minBooks, 1, 800, true),
         labeledBooksFile: text('Labeled books file', v.labeledBooksFile, 1000),
         duplicatePairsFile: text('Measured duplicate pairs file', v.duplicatePairsFile, 1000),
+        audiobookPairsFile: text('Labeled audiobook pairs file', v.audiobookPairsFile, 1000),
       };
     }
     case 'reviewAlarmPercent':

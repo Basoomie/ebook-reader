@@ -30,6 +30,7 @@
   import { removeCleanupSecretCopy } from '$lib/confirm/confirm-copy';
   import { formatWhen } from '$lib/notes/notes-format';
   import { SITE_NAMES } from '$lib/cleanup/stage4-text';
+  import { DUP_FIELDS } from '$lib/cleanup/audio-dup-text';
 
   export let api: CleanupApi;
   export let libraries: { id: string; name: string; folder: string }[] = [];
@@ -140,7 +141,10 @@
           marginPoints: Number(settings.gate.marginPoints),
           minBooks: Number(settings.gate.minBooks),
           labeledBooksFile: settings.gate.labeledBooksFile,
-          duplicatePairsFile: settings.gate.duplicatePairsFile ?? ''
+          duplicatePairsFile: settings.gate.duplicatePairsFile ?? '',
+          ...(settings.gate.audiobookPairsFile !== undefined
+            ? { audiobookPairsFile: settings.gate.audiobookPairsFile }
+            : {})
         },
         reviewAlarmPercent: Number(settings.reviewAlarmPercent),
         libraryChangedPausePercent: Number(settings.libraryChangedPausePercent),
@@ -177,7 +181,13 @@
                 toolTimeoutSeconds: Number(settings.audiobooks.toolTimeoutSeconds),
                 copyHintMinMinutes: Number(settings.audiobooks.copyHintMinMinutes),
                 copyHintPercent: Number(settings.audiobooks.copyHintPercent),
-                absTimeoutSeconds: Number(settings.audiobooks.absTimeoutSeconds)
+                absTimeoutSeconds: Number(settings.audiobooks.absTimeoutSeconds),
+                // Stage 3 (WP21b): only when the server knows them.
+                ...(settings.audiobooks.dupSameScore !== undefined
+                  ? Object.fromEntries(
+                      DUP_FIELDS.map((d) => [d.key, Number(settings?.audiobooks?.[d.key])])
+                    )
+                  : {})
               }
             }
           : {}),
@@ -426,6 +436,39 @@
             bind:value={settings.audiobooks.absTimeoutSeconds}
           />
         </label>
+        {#if settings.audiobooks.dupSameScore !== undefined}
+          <p class="text-c-muted sm:col-span-2" data-testid="cleanup-audio-dup-settings">
+            Same recording (stage 3). The line and the length limits were set from the labeled
+            pairs; a change compares again from what was already heard (nothing is read twice).
+          </p>
+          {#each DUP_FIELDS as d (d.key)}
+            <label class={field}>
+              <span class={label}>{d.label}</span>
+              <input
+                class="c-input"
+                type="number"
+                min={d.min}
+                max={d.max}
+                step={d.step}
+                bind:value={settings.audiobooks[d.key]}
+                data-testid="cleanup-audio-{d.key}"
+              />
+            </label>
+          {/each}
+          {#if settings.gate.audiobookPairsFile !== undefined}
+            <label class="{field} sm:col-span-2">
+              <span class={label}
+                >Labeled audiobook pairs file (empty = reference-sample/audio/labels.json)</span
+              >
+              <input
+                class="c-input"
+                placeholder="/db/cleanup/reference-sample/audio/labels.json"
+                bind:value={settings.gate.audiobookPairsFile}
+                data-testid="cleanup-audio-pairs-file"
+              />
+            </label>
+          {/if}
+        {/if}
       </fieldset>
     {/if}
 

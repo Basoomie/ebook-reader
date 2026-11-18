@@ -143,4 +143,5 @@ export const DISK_OWNERS = {
   calibre3: 'Calibre stage 3 (content duplicates)',
   calibre4: 'Calibre stage 4 (reading the files for the online lookups)',
   audio1: 'Audiobooks stage 1 (identity)',
+  audio3: 'Audiobooks stage 3 (full decodes of duplicate copies)',
 } as const;

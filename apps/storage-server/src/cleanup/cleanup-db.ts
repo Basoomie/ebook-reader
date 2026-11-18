@@ -729,6 +729,129 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
       INSERT INTO fetcher_status (id, updated_at) VALUES (1, 0);
     `,
   },
+  {
+    version: 10,
+    name: 'audiobook cleanup: stage 3, duplicates (WP21b)',
+    sql: `
+      INSERT INTO audio_stages (stage, updated_at) VALUES (3, 0);
+
+      -- A Chromaprint fingerprint of one stretch of a copy. win_key names the stretch as the
+      -- files and seconds read ([[file_id, start_ms, length_ms], ...]); files_sig holds each
+      -- file's size and mtime when it was read, so a changed file is read again. Kept across
+      -- analyses (taken over, never repeated).
+      CREATE TABLE audio_fingerprints (
+        win_key       TEXT PRIMARY KEY,
+        files_sig     TEXT NOT NULL,
+        fp            BLOB,
+        items         INTEGER NOT NULL DEFAULT 0,
+        error         TEXT,
+        tool_version  TEXT,
+        took_ms       INTEGER,
+        made_at       INTEGER NOT NULL
+      );
+
+      -- Full decodes (rule 0): ffmpeg's error count, and faad2's decoded length (it stops
+      -- silently at damage). Kept until the file's size or mtime changes.
+      CREATE TABLE audio_full_decodes (
+        file_id           INTEGER NOT NULL REFERENCES audio_files(id),
+        decoder           TEXT NOT NULL CHECK (decoder IN ('ffmpeg', 'faad')),
+        size              INTEGER NOT NULL,
+        mtime_ms          INTEGER NOT NULL,
+        ok                INTEGER,
+        error_count       INTEGER,
+        decoded_seconds   REAL,
+        expected_seconds  REAL,
+        detail            TEXT,
+        tool_version      TEXT,
+        took_ms           INTEGER,
+        checked_at        INTEGER NOT NULL,
+        PRIMARY KEY (file_id, decoder)
+      );
+
+      -- Stage 3's copies: one complete recording each (a file, the parts of a folder, or a
+      -- library-only file), keyed by copy_key (stable across analyses).
+      CREATE TABLE audio_dup_copies (
+        id           INTEGER PRIMARY KEY,
+        analysis_id  TEXT NOT NULL,
+        copy_key     TEXT NOT NULL,
+        book_key     TEXT NOT NULL,
+        kind         TEXT NOT NULL CHECK (kind IN ('file', 'parts', 'library_only')),
+        file_ids     TEXT NOT NULL CHECK (json_valid(file_ids)),
+        name         TEXT NOT NULL,
+        seconds      REAL,
+        ai           INTEGER NOT NULL DEFAULT 0,
+        title_key    TEXT,
+        volume       TEXT,
+        asins        TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(asins)),
+        abs_asins    TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(abs_asins)),
+        excluded     TEXT,
+        UNIQUE (analysis_id, copy_key)
+      );
+      CREATE INDEX audio_dup_copies_title ON audio_dup_copies (analysis_id, title_key);
+
+      -- Candidate pairs and what measured them (the cheapest test that proposed the pair).
+      CREATE TABLE audio_dup_pairs (
+        id            INTEGER PRIMARY KEY,
+        analysis_id   TEXT NOT NULL,
+        a_id          INTEGER NOT NULL,
+        b_id          INTEGER NOT NULL,
+        test          TEXT NOT NULL CHECK (test IN ('identical', 'asin', 'abs_asin', 'title', 'in_folder')),
+        verdict       TEXT NOT NULL DEFAULT 'pending'
+                      CHECK (verdict IN ('pending', 'same', 'different', 'unsure')),
+        fp_verdict    TEXT,
+        scores_json   TEXT CHECK (scores_json IS NULL OR json_valid(scores_json)),
+        length_diff   REAL,
+        detail        TEXT,
+        rules_key     TEXT,
+        UNIQUE (analysis_id, a_id, b_id)
+      );
+      CREATE INDEX audio_dup_pairs_verdict ON audio_dup_pairs (analysis_id, verdict, test);
+      CREATE INDEX audio_dup_pairs_b ON audio_dup_pairs (analysis_id, b_id);
+
+      -- Groups of copies of one recording (kind 'group') and unsure pairs (kind 'unsure': both
+      -- stay, review). best_copy_id is the best copy or the best guess.
+      CREATE TABLE audio_dup_groups (
+        id             INTEGER PRIMARY KEY,
+        analysis_id    TEXT NOT NULL,
+        group_key      TEXT NOT NULL,
+        kind           TEXT NOT NULL CHECK (kind IN ('group', 'unsure')),
+        first_test     TEXT NOT NULL,
+        tests_json     TEXT NOT NULL CHECK (json_valid(tests_json)),
+        members        INTEGER NOT NULL,
+        best_copy_id   INTEGER,
+        rule           TEXT,
+        outcome        TEXT NOT NULL CHECK (outcome IN ('auto', 'review')),
+        review_reason  TEXT,
+        conflicts_json TEXT CHECK (conflicts_json IS NULL OR json_valid(conflicts_json)),
+        damaged        INTEGER NOT NULL DEFAULT 0,
+        rules_key      TEXT,
+        UNIQUE (analysis_id, group_key)
+      );
+      CREATE INDEX audio_dup_groups_outcome ON audio_dup_groups (analysis_id, outcome, kind);
+      CREATE INDEX audio_dup_groups_test ON audio_dup_groups (analysis_id, first_test);
+
+      CREATE TABLE audio_dup_members (
+        group_id      INTEGER NOT NULL REFERENCES audio_dup_groups(id) ON DELETE CASCADE,
+        copy_id       INTEGER NOT NULL,
+        rank          INTEGER NOT NULL,
+        role          TEXT NOT NULL CHECK (role IN ('keep', 'drop', 'review')),
+        against_json  TEXT CHECK (against_json IS NULL OR json_valid(against_json)),
+        PRIMARY KEY (group_id, copy_id)
+      );
+      CREATE INDEX audio_dup_members_copy ON audio_dup_members (copy_id);
+
+      -- The user's choices on the review page (recorded only; WP21e applies them). Keyed by
+      -- the group's copies, so a choice survives a new analysis of the same copies.
+      CREATE TABLE audio_dup_decisions (
+        group_key    TEXT PRIMARY KEY,
+        member_keys  TEXT NOT NULL CHECK (json_valid(member_keys)),
+        decision     TEXT NOT NULL,
+        decided_by   TEXT NOT NULL DEFAULT 'you',
+        note         TEXT,
+        decided_at   INTEGER NOT NULL
+      );
+    `,
+  },
 ];
 
 export const CLEANUP_SCHEMA_VERSION = CLEANUP_MIGRATIONS[CLEANUP_MIGRATIONS.length - 1].version;

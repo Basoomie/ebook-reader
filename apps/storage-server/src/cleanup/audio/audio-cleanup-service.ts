@@ -1,9 +1,9 @@
 /**
  * The audiobook cleanup inside the storage server (WP21a): the Audiobookshelf snapshot
- * (stage 0), identity (stage 1) and books and file health (stage 2). Analysis only: nothing
- * here writes to the audiobook roots or to Audiobookshelf (read-only mounts, the read-only
- * file module, a GET-only ABS client). Every failure is caught and logged; reading is never
- * affected.
+ * (stage 0), identity (stage 1), books and file health (stage 2) and duplicates (stage 3,
+ * WP21b). Analysis only: nothing here writes to the audiobook roots or to Audiobookshelf
+ * (read-only mounts, the read-only file module, a GET-only ABS client). Every failure is
+ * caught and logged; reading is never affected.
  */
 import type Database from 'better-sqlite3';
 import type { DiskLock } from '../disk-lock';
@@ -28,10 +28,18 @@ import {
   updateAudioStage,
   type AudioStageMode,
 } from './audio-stages';
-import type { ToolPaths } from './probe';
+import { insideRoot } from './audio-source-fs';
+import { cutClip, type ToolPaths } from './probe';
 import { AudioStage1, identityCounts, type AudioStage1Progress } from './stage1-identity';
 import { AudioStage2, booksCounts } from './stage2-books';
+import { AudioStage3, stage3SettingsKey, type LoadedCopy } from './stage3-dups';
 import type { AudioRoots } from './walk';
+
+/** A clip can't be cut now (a Calibre job uses the disk): try again in a moment. */
+export class AudioBusyError extends Error {}
+
+/** What the review page may record for a group (WP21e applies it). */
+export type DupDecision = 'keep_all' | `keep:${string}` | 'clear';
 
 const TICK_MS = 5000;
 const ROOTS_CHECK_MS = 60_000;
@@ -43,6 +51,10 @@ export interface AudioCleanupOptions {
   /** null: CLEANUP_AUDIO_TORRENTS_DIR / CLEANUP_AUDIO_LIBRARY_DIR are not set. */
   roots: AudioRoots | null;
   tools: ToolPaths;
+  /** Stage 3's labeled pairs (labels.json) as text, or why they can't be read. */
+  readLabels?: () => { text: string | null; error: string | null };
+  /** Library paths of files the reader wrote (merges): they never compete in stage 3. */
+  readerWrittenFiles?: () => string[];
   fetchImpl?: typeof fetch;
   log?: (m: string) => void;
   logError?: (m: string, err?: unknown) => void;
@@ -108,15 +120,18 @@ export async function checkRoots(roots: AudioRoots | null): Promise<RootsCheck> 
 export class AudioCleanupService {
   readonly stage1: AudioStage1 | null;
   readonly stage2: AudioStage2 | null;
+  readonly stage3: AudioStage3 | null;
   private roots: RootsCheck = { ok: false, problem: 'Not checked yet', checkedAt: 0 };
   private timer: NodeJS.Timeout | null = null;
   private ticking: Promise<void> | null = null;
   private running1: Promise<void> | null = null;
   private running2: Promise<void> | null = null;
+  private running3: Promise<void> | null = null;
   private snapshotting: Promise<void> | null = null;
   private stopped = false;
   waiting1: string | null = null;
   waiting2: string | null = null;
+  waiting3: string | null = null;
   private readonly log: (m: string) => void;
   private readonly logError: (m: string, err?: unknown) => void;
 
@@ -142,6 +157,18 @@ export class AudioCleanupService {
           log: this.log,
         })
       : null;
+    this.stage3 = opts.roots
+      ? new AudioStage3({
+          db: opts.db,
+          roots: opts.roots,
+          tools: opts.tools,
+          lock: opts.lock,
+          calibreBusy: () => opts.lock.calibreBusy(),
+          readLabels: opts.readLabels,
+          readerWrittenFiles: opts.readerWrittenFiles,
+          log: this.log,
+        })
+      : null;
   }
 
   get db(): Database.Database {
@@ -162,8 +189,10 @@ export class AudioCleanupService {
     await this.ticking;
     await this.running1;
     await this.running2;
+    await this.running3;
     await this.snapshotting;
     this.opts.lock.release(DISK_OWNERS.audio1);
+    this.opts.lock.release(DISK_OWNERS.audio3);
   }
 
   tick(): Promise<void> {
@@ -187,6 +216,7 @@ export class AudioCleanupService {
     }
     this.round1();
     this.round2();
+    this.round3();
   }
 
   private round1(): void {
@@ -303,6 +333,89 @@ export class AudioCleanupService {
     })();
   }
 
+  private round3(): void {
+    const st = getAudioStage(this.db, 3);
+    if (st.mode === 'off' || !this.stage3) {
+      this.waiting3 = st.mode === 'off' ? null : this.roots.problem;
+      return;
+    }
+    if (!this.roots.ok) {
+      this.waiting3 = this.roots.problem;
+      return;
+    }
+    // Stage 3 compares what stages 1 and 2 found: it starts once both have finished, and
+    // starts over when either ran again.
+    const s1 = getAudioStage(this.db, 1).progress as { analysisId?: string; phase?: string };
+    const s2 = getAudioStage(this.db, 2).progress as { analysisId?: string; phase?: string };
+    if (s1.phase !== 'done' || s2.phase !== 'done') {
+      this.waiting3 = 'Waiting for stages 1 and 2 to finish (stage 3 compares what they found)';
+      return;
+    }
+    let p = this.stage3.progress();
+    if (!p || (p.stage1Id && (p.stage1Id !== s1.analysisId || p.stage2Id !== s2.analysisId))) {
+      if (this.running3) return;
+      p = this.stage3.restart();
+    }
+    // Changed settings: compare again from the stored measurements (nothing read twice).
+    const key = stage3SettingsKey(getSettings(this.db).audiobooks);
+    if (p.rulesKey && p.rulesKey !== key && p.phase !== 'copies' && p.phase !== 'candidates') {
+      if (this.running3) return;
+      this.stage3.recompare();
+      p = this.stage3.progress()!;
+    }
+    if (p.phase === 'done') {
+      this.waiting3 = p.error ? `The analysis failed: ${p.error}` : 'Preview: nothing is changed';
+      return;
+    }
+    this.waiting3 = this.waiting3Text();
+    if (!this.running3) this.run3();
+  }
+
+  /** What stage 3 is doing now, and what it waits for. */
+  private waiting3Text(): string {
+    const p = this.stage3?.progress();
+    const lock = this.opts.lock.state();
+    if (p?.phase === 'fingerprints' && this.opts.lock.calibreBusy()) {
+      return 'Waiting while the Calibre cleanup uses the disk';
+    }
+    if (p?.phase === 'decode' && !this.opts.lock.holds(DISK_OWNERS.audio3)) {
+      if (lock.calibreApplying) return `Waiting for the disk: ${lock.calibreApplying}`;
+      if (lock.holder && lock.holder.owner !== DISK_OWNERS.audio3) {
+        return `Waiting for the disk: ${lock.holder.owner} is reading`;
+      }
+      if (lock.waiting.some((w) => w.side === 'calibre'))
+        return 'Giving the disk to the Calibre cleanup';
+    }
+    return 'Analysing';
+  }
+
+  private run3(): void {
+    const stage = this.stage3!;
+    const stop = () => this.stopped || getAudioStage(this.db, 3).mode === 'off';
+    this.running3 = (async () => {
+      try {
+        for (;;) {
+          if (stop()) break;
+          const done = await stage.step(stop);
+          this.waiting3 = this.waiting3Text();
+          if (done) break;
+          // Let the server answer requests between steps (each is short).
+          await new Promise((r) => setImmediate(r));
+          const p = stage.progress();
+          if (p?.phase === 'decode' && !this.opts.lock.holds(DISK_OWNERS.audio3)) {
+            await new Promise((r) => setTimeout(r, 1000));
+          }
+        }
+      } catch (err) {
+        this.logError('Audiobook cleanup: stage 3 failed:', err);
+      } finally {
+        this.opts.lock.release(DISK_OWNERS.audio3);
+        this.running3 = null;
+        void this.tick();
+      }
+    })();
+  }
+
   setMode(stage: number, mode: AudioStageMode): void {
     if (!AUDIO_ANALYSIS_STAGES.includes(stage)) throw new Error('No such stage');
     setAudioStageMode(this.db, stage, mode);
@@ -313,7 +426,10 @@ export class AudioCleanupService {
   reanalyse(stage: number): void {
     if (stage === 1 && this.stage1) this.stage1.restart();
     else if (stage === 2 && this.stage2) this.stage2.restart();
-    else throw new Error('The audiobook folders are not set up');
+    else if (stage === 3 && this.stage3) {
+      if (this.running3) throw new Error('Stage 3 is analysing; switch it Off first');
+      this.stage3.restart();
+    } else throw new Error('The audiobook folders are not set up');
     void this.tick();
   }
 
@@ -373,6 +489,7 @@ export class AudioCleanupService {
   status() {
     const p1 = this.stage1?.progress() ?? null;
     const p2 = this.stage2?.progress() ?? null;
+    const p3 = this.stage3?.progress() ?? null;
     const snapshots = listSnapshots(this.db);
     return {
       roots: this.roots,
@@ -405,7 +522,232 @@ export class AudioCleanupService {
             ? booksCounts(this.db, p2.analysisId)
             : (p2?.counts ?? null),
       },
+      stage3: {
+        waiting: this.waiting3,
+        progress: p3
+          ? {
+              ...p3,
+              gateCopyIds: undefined,
+              gate: p3.gate ? { ...p3.gate, results: undefined } : null,
+            }
+          : null,
+        counts: p3?.counts ?? null,
+      },
     };
+  }
+
+  // -------------------------------------------------------------------------------------------
+  // Stage 3's lists, decisions and clips
+
+  private copyView(c: LoadedCopy) {
+    const f = this.stage3!.factsOf(c);
+    return {
+      id: c.id,
+      key: c.key,
+      kind: c.kind,
+      name: c.name,
+      paths: c.files
+        .slice(0, 20)
+        .map((x) => `${x.root === 'library' ? 'library' : 'torrents'}/${x.rel}`),
+      fileIds: c.files.map((x) => x.id),
+      files: c.files.length,
+      seconds: c.seconds,
+      codec: f.codec,
+      bitrate: f.bitrate === null ? null : Math.round(f.bitrate),
+      sampleRate: f.sampleRate,
+      chapters: f.chapters.length,
+      cover: f.hasCover,
+      asins: c.asins,
+      absAsins: c.absAsins,
+      ai: c.ai,
+      damage: f.damage,
+      damageDetail: f.damageDetail ?? null,
+      excluded: c.excluded,
+    };
+  }
+
+  /** Stage 3's lists (paged): groups and review items with their copies side by side. */
+  dups(
+    list: string,
+    { offset = 0, limit = 50 }: { offset?: number; limit?: number } = {},
+  ): { total: number; items: Record<string, unknown>[] } {
+    const p = this.stage3?.progress();
+    if (!this.stage3 || !p) return { total: 0, items: [] };
+    const copies = this.stage3.loadCopies(p.analysisId);
+    if (list === 'gate') {
+      const results = p.gate?.results ?? [];
+      return {
+        total: results.length,
+        items: results.slice(offset, offset + limit) as unknown as Record<string, unknown>[],
+      };
+    }
+    if (list === 'excluded' || list === 'different') {
+      if (list === 'excluded') {
+        const all = [...copies.values()].filter((c) => c.excluded);
+        return {
+          total: all.length,
+          items: all.slice(offset, offset + limit).map((c) => this.copyView(c)),
+        };
+      }
+      const where = `analysis_id = ? AND verdict = 'different'`;
+      const total = (
+        this.db
+          .prepare(`SELECT COUNT(*) AS n FROM audio_dup_pairs WHERE ${where}`)
+          .get(p.analysisId) as { n: number }
+      ).n;
+      const rows = this.db
+        .prepare(`SELECT * FROM audio_dup_pairs WHERE ${where} ORDER BY id LIMIT ? OFFSET ?`)
+        .all(p.analysisId, limit, offset) as Record<string, unknown>[];
+      return {
+        total,
+        items: rows.map((r) => ({
+          id: r.id,
+          test: r.test,
+          verdict: r.verdict,
+          scores: r.scores_json ? JSON.parse(r.scores_json as string) : null,
+          lengthDiff: r.length_diff,
+          detail: r.detail,
+          copies: [copies.get(r.a_id as number), copies.get(r.b_id as number)]
+            .filter((c): c is LoadedCopy => !!c)
+            .map((c) => this.copyView(c)),
+        })),
+      };
+    }
+    let where: string;
+    const params: unknown[] = [p.analysisId];
+    if (list === 'review') where = `g.analysis_id = ? AND g.outcome = 'review'`;
+    else if (list === 'auto')
+      where = `g.analysis_id = ? AND g.outcome = 'auto' AND g.kind = 'group'`;
+    else if (list === 'unsure')
+      where = `g.analysis_id = ? AND g.outcome = 'review' AND g.kind = 'unsure'`;
+    else if (list === 'damaged') where = `g.analysis_id = ? AND g.damaged = 1`;
+    else if (list.startsWith('test:')) {
+      where = `g.analysis_id = ? AND g.first_test = ? AND g.kind = 'group'`;
+      params.push(list.slice(5));
+    } else throw new Error('No such list');
+    const total = (
+      this.db
+        .prepare(`SELECT COUNT(*) AS n FROM audio_dup_groups g WHERE ${where}`)
+        .get(...params) as { n: number }
+    ).n;
+    const groups = this.db
+      .prepare(`SELECT g.* FROM audio_dup_groups g WHERE ${where} ORDER BY g.id LIMIT ? OFFSET ?`)
+      .all(...params, limit, offset) as Record<string, unknown>[];
+    const members = this.db.prepare(
+      'SELECT copy_id, rank, role, against_json FROM audio_dup_members WHERE group_id = ? ORDER BY rank',
+    );
+    const pairBetween = this.db.prepare(
+      `SELECT a_id, b_id, test, verdict, fp_verdict, scores_json, length_diff, detail FROM audio_dup_pairs
+       WHERE analysis_id = ? AND a_id = ? AND b_id = ?`,
+    );
+    const decision = this.db.prepare(
+      'SELECT decision, decided_by, decided_at FROM audio_dup_decisions WHERE group_key = ?',
+    );
+    const items = groups.map((g) => {
+      const ms = members.all(g.id) as {
+        copy_id: number;
+        rank: number;
+        role: string;
+        against_json: string | null;
+      }[];
+      const ids = ms.map((m) => m.copy_id);
+      const pairs: Record<string, unknown>[] = [];
+      for (let i = 0; i < ids.length && pairs.length < 10; i++)
+        for (let j = i + 1; j < ids.length && pairs.length < 10; j++) {
+          const r = pairBetween.get(
+            p.analysisId,
+            Math.min(ids[i], ids[j]),
+            Math.max(ids[i], ids[j]),
+          ) as Record<string, unknown> | undefined;
+          if (r)
+            pairs.push({
+              ...r,
+              scores: r.scores_json ? JSON.parse(r.scores_json as string) : null,
+              scores_json: undefined,
+            });
+        }
+      return {
+        id: g.id,
+        groupKey: g.group_key,
+        kind: g.kind,
+        firstTest: g.first_test,
+        tests: JSON.parse(g.tests_json as string),
+        rule: g.rule,
+        outcome: g.outcome,
+        reviewReason: g.review_reason,
+        damaged: g.damaged === 1,
+        bestCopyId: g.best_copy_id,
+        decision: decision.get(g.group_key) ?? null,
+        copies: ms
+          .map((m) => {
+            const c = copies.get(m.copy_id);
+            return c ? { ...this.copyView(c), rank: m.rank, role: m.role } : null;
+          })
+          .filter(Boolean),
+        pairs,
+      };
+    });
+    return { total, items };
+  }
+
+  /** Records the user's choice for a group (WP21e applies it); 'clear' forgets it. */
+  decideDup(groupId: number, decision: DupDecision): void {
+    const p = this.stage3?.progress();
+    if (!this.stage3 || !p) throw new Error('Stage 3 has not run');
+    const g = this.db
+      .prepare('SELECT id, group_key FROM audio_dup_groups WHERE id = ? AND analysis_id = ?')
+      .get(groupId, p.analysisId) as { id: number; group_key: string } | undefined;
+    if (!g) throw new Error('No such group in the current analysis');
+    const copies = this.stage3.loadCopies(p.analysisId);
+    const keys = (
+      this.db.prepare('SELECT copy_id FROM audio_dup_members WHERE group_id = ?').all(g.id) as {
+        copy_id: number;
+      }[]
+    ).map((m) => copies.get(m.copy_id)?.key ?? String(m.copy_id));
+    if (decision === 'clear') {
+      this.db.prepare('DELETE FROM audio_dup_decisions WHERE group_key = ?').run(g.group_key);
+      return;
+    }
+    if (
+      decision !== 'keep_all' &&
+      !(decision.startsWith('keep:') && keys.includes(decision.slice(5)))
+    ) {
+      throw new Error('decision must be keep_all, keep:<a copy of this group> or clear');
+    }
+    this.db
+      .prepare(
+        `INSERT INTO audio_dup_decisions (group_key, member_keys, decision, decided_by, decided_at)
+         VALUES (?, ?, ?, 'you', ?)
+         ON CONFLICT(group_key) DO UPDATE SET member_keys = excluded.member_keys,
+           decision = excluded.decision, decided_by = 'you', decided_at = excluded.decided_at`,
+      )
+      .run(g.group_key, JSON.stringify(keys), decision, Date.now());
+  }
+
+  /**
+   * A few seconds from the start or the end of a copy (mp3), for the review page. Waits like
+   * every audiobook read: while a Calibre job uses the disk it is refused (AudioBusyError) and
+   * the page tries again (decided with the user, 2026-11-18).
+   */
+  async clip(copyId: number, at: 'start' | 'end'): Promise<Buffer> {
+    const p = this.stage3?.progress();
+    if (!this.stage3 || !p || !this.opts.roots) throw new Error('Stage 3 has not run');
+    const c = this.stage3.loadCopies(p.analysisId).get(copyId);
+    if (!c || c.files.length === 0) throw new Error('No such copy');
+    if (this.opts.lock.calibreBusy()) {
+      throw new AudioBusyError(
+        'The Calibre cleanup is using the disk; the clip plays when it is free',
+      );
+    }
+    const f = at === 'start' ? c.files[0] : c.files[c.files.length - 1];
+    const s = getSettings(this.db).audiobooks;
+    const buf = await cutClip(insideRoot(this.opts.roots[f.root], f.rel, f.raw), this.opts.tools, {
+      at,
+      seconds: s.dupClipSeconds,
+      timeoutMs: s.toolTimeoutSeconds * 1000,
+    });
+    if (!buf) throw new Error('The clip could not be cut from this file');
+    return buf;
   }
 
   /** Stage 1's and 2's file lists (paged), each file with what stage 2 found in it. */

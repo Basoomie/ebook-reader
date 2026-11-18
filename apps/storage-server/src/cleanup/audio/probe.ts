@@ -1,19 +1,36 @@
 /**
- * File health for the audiobook cleanup's stage 2 (WP21a): what ffprobe finds in an audio file
- * (format from the content, not the name), and a short decode at its start and at its end
- * (damage check, rule 0 of the best-copy order; a full decode only later, for duplicate copies).
+ * The audiobook cleanup's tools. Stage 2 (WP21a): what ffprobe finds in an audio file (format
+ * from the content, not the name), and a short decode at its start and at its end. Stage 3
+ * (WP21b): Chromaprint fingerprints of a few windows (ffmpeg decodes the window to raw samples
+ * on stdout, fpcalc reads them on stdin), full decodes of competing copies (ffmpeg, and faad2
+ * as a second, independent AAC decoder), and short clips for the review page (mp3 on stdout).
  *
- * Read-only by construction: the tools never get an output file (`-f null -` only, built by
- * `toolArgs`), and on Linux they get only a read-only descriptor of the file (`/dev/fd/3`,
- * opened by audio-source-fs), never its path.
+ * Read-only by construction: the tools never get an output file (`-f null -` or stdout only,
+ * built by `toolArgs`), and on Linux they get only a read-only descriptor of the file
+ * (`/dev/fd/3`, opened by audio-source-fs), never its path.
  */
 import { spawn } from 'child_process';
 import os from 'os';
 import { openReadOnly } from './audio-source-fs';
+import { parseFpcalc } from './dup-fingerprint';
 
 export interface ToolPaths {
   ffprobePath: string;
   ffmpegPath: string;
+  /** Chromaprint's fpcalc (stage 3); default 'fpcalc'. */
+  fpcalcPath?: string;
+  /** faad2's command-line decoder (stage 3); default 'faad'. */
+  faadPath?: string;
+}
+
+/** Every tool path, the optional ones with their defaults. */
+export function allTools(t: ToolPaths): Required<ToolPaths> {
+  return {
+    ffprobePath: t.ffprobePath,
+    ffmpegPath: t.ffmpegPath,
+    fpcalcPath: t.fpcalcPath || 'fpcalc',
+    faadPath: t.faadPath || 'faad',
+  };
 }
 
 export interface Chapter {
@@ -45,15 +62,97 @@ export interface HealthResult {
   invalidUtf8: boolean;
 }
 
-/** decode-both: the start and the end in one ffmpeg run (two inputs of the same file). */
-export type ToolKind = 'probe' | 'decode-start' | 'decode-end' | 'decode-both';
+/**
+ * decode-both: the start and the end in one ffmpeg run (two inputs of the same file).
+ * Stage 3: window-pcm (a stretch as raw 11,025 Hz mono samples on stdout), fpcalc (reads those
+ * on stdin), full-decode (the whole file to the null muxer), faad (the whole file decoded to
+ * stdout, counted and dropped), clip-start / clip-end (a few seconds as mp3 on stdout).
+ */
+export type ToolKind =
+  | 'probe'
+  | 'decode-start'
+  | 'decode-end'
+  | 'decode-both'
+  | 'window-pcm'
+  | 'fpcalc'
+  | 'full-decode'
+  | 'faad'
+  | 'clip-start'
+  | 'clip-end';
+
+/** Seconds as tool arguments (three decimals). */
+function secs(x: number): string {
+  return (Math.round(Math.max(0, x) * 1000) / 1000).toFixed(3);
+}
 
 /**
- * The only place tool arguments are built. Every command reads one input and writes nothing:
- * ffprobe prints JSON to stdout; ffmpeg decodes to the null muxer (`-f null -`).
+ * The only place tool arguments are built. Every command reads one input and writes nothing
+ * but stdout: ffprobe prints JSON; ffmpeg decodes to the null muxer (`-f null -`) or to stdout
+ * (`-`); fpcalc reads stdin (`-`); faad writes to stdout (`-w`).
  */
-export function toolArgs(kind: ToolKind, input: string, decodeSeconds: number): string[] {
+export function toolArgs(
+  kind: ToolKind,
+  input: string,
+  decodeSeconds: number,
+  span: { start: number; length: number } = { start: 0, length: 0 },
+): string[] {
   const base = ['-hide_banner', '-nostdin', '-v', 'error'];
+  if (kind === 'window-pcm') {
+    return [
+      ...base,
+      '-ss',
+      secs(span.start),
+      '-t',
+      secs(span.length),
+      '-i',
+      input,
+      '-map',
+      '0:a:0',
+      '-ac',
+      '1',
+      '-ar',
+      '11025',
+      '-f',
+      's16le',
+      '-',
+    ];
+  }
+  if (kind === 'fpcalc') {
+    return [
+      '-raw',
+      '-format',
+      's16le',
+      '-rate',
+      '11025',
+      '-channels',
+      '1',
+      '-length',
+      String(Math.ceil(span.length) + 5),
+      '-',
+    ];
+  }
+  if (kind === 'full-decode') return [...base, '-i', input, '-map', '0:a:0', '-f', 'null', '-'];
+  if (kind === 'faad') return ['-w', input];
+  if (kind === 'clip-start' || kind === 'clip-end') {
+    const len = secs(Math.max(1, span.length));
+    return [
+      ...base,
+      ...(kind === 'clip-start' ? ['-ss', secs(span.start), '-t', len] : ['-sseof', `-${len}`]),
+      '-i',
+      input,
+      '-map',
+      '0:a:0',
+      '-ac',
+      '1',
+      '-c:a',
+      'libmp3lame',
+      '-b:a',
+      '64k',
+      '-f',
+      'mp3',
+      '-',
+    ];
+  }
   if (kind === 'probe') {
     return [
       '-hide_banner',
@@ -95,8 +194,99 @@ export function toolArgs(kind: ToolKind, input: string, decodeSeconds: number): 
 interface RunResult {
   code: number | null;
   stdout: Buffer;
+  /** Bytes written to stdout in all (also those not kept). */
+  stdoutBytes: number;
   stderr: string;
+  /** Lines written to stderr in all (also those not kept). */
+  stderrLines: number;
   timedOut: boolean;
+}
+
+interface RunOptions {
+  /** Keep at most this many stdout bytes (the rest is only counted); default 32 MB. */
+  keepStdout?: number;
+  /** Each stdout chunk as it comes (e.g. to pass samples on to fpcalc). */
+  onStdout?: (b: Buffer) => void;
+  /** stdin is a pipe the caller writes (see `Started.stdin`). */
+  stdinPipe?: boolean;
+  /** Stops the run early (killed) when it turns true; checked every second. */
+  shouldStop?: () => boolean;
+}
+
+interface Started {
+  done: Promise<RunResult>;
+  stdin: NodeJS.WritableStream | null;
+}
+
+/** The one place a process is started. */
+function start(
+  bin: string,
+  args: string[],
+  fd: number | null,
+  timeoutMs: number,
+  opts: RunOptions = {},
+): Started {
+  const stdio: ('ignore' | 'pipe' | number)[] = [
+    opts.stdinPipe ? 'pipe' : 'ignore',
+    'pipe',
+    'pipe',
+  ];
+  if (fd !== null) stdio.push(fd);
+  const child = spawn(bin, args, { stdio, windowsHide: true });
+  try {
+    if (child.pid) os.setPriority(child.pid, 10);
+  } catch {
+    // Lower priority is a nicety only.
+  }
+  const keep = opts.keepStdout ?? 32 * 1024 * 1024;
+  const done = new Promise<RunResult>((resolve, reject) => {
+    const out: Buffer[] = [];
+    let outBytes = 0;
+    let err = '';
+    let errLines = 0;
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill('SIGKILL');
+    }, timeoutMs);
+    const poll = opts.shouldStop
+      ? setInterval(() => {
+          if (opts.shouldStop!()) child.kill('SIGKILL');
+        }, 1000)
+      : null;
+    child.stdout!.on('data', (b: Buffer) => {
+      if (outBytes < keep) {
+        out.push(outBytes + b.length <= keep ? b : b.subarray(0, keep - outBytes));
+      }
+      outBytes += b.length;
+      opts.onStdout?.(b);
+    });
+    child.stderr!.on('data', (b: Buffer) => {
+      const t = b.toString('utf8');
+      for (let i = 0; i < t.length; i++) if (t.charCodeAt(i) === 10) errLines++;
+      if (err.length < 64 * 1024) err += t;
+    });
+    child.on('error', (e) => {
+      clearTimeout(timer);
+      if (poll) clearInterval(poll);
+      reject(e);
+    });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      if (poll) clearInterval(poll);
+      resolve({
+        code,
+        stdout: Buffer.concat(out),
+        stdoutBytes: outBytes,
+        stderr: err,
+        stderrLines: errLines,
+        timedOut,
+      });
+    });
+  });
+  // A broken pipe (the reader ended early) shows in the result, it is not thrown.
+  child.stdin?.on('error', () => undefined);
+  return { done, stdin: child.stdin ?? null };
 }
 
 function run(
@@ -104,40 +294,9 @@ function run(
   args: string[],
   fd: number | null,
   timeoutMs: number,
+  opts: RunOptions = {},
 ): Promise<RunResult> {
-  return new Promise((resolve, reject) => {
-    const stdio: ('ignore' | 'pipe' | number)[] = ['ignore', 'pipe', 'pipe'];
-    if (fd !== null) stdio.push(fd);
-    const child = spawn(bin, args, { stdio, windowsHide: true });
-    try {
-      if (child.pid) os.setPriority(child.pid, 10);
-    } catch {
-      // Lower priority is a nicety only.
-    }
-    const out: Buffer[] = [];
-    let outBytes = 0;
-    let err = '';
-    let timedOut = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      child.kill('SIGKILL');
-    }, timeoutMs);
-    child.stdout!.on('data', (b: Buffer) => {
-      if (outBytes < 32 * 1024 * 1024) out.push(b);
-      outBytes += b.length;
-    });
-    child.stderr!.on('data', (b: Buffer) => {
-      if (err.length < 64 * 1024) err += b.toString('utf8');
-    });
-    child.on('error', (e) => {
-      clearTimeout(timer);
-      reject(e);
-    });
-    child.on('close', (code) => {
-      clearTimeout(timer);
-      resolve({ code, stdout: Buffer.concat(out), stderr: err, timedOut });
-    });
-  });
+  return start(bin, args, fd, timeoutMs, opts).done;
 }
 
 /**
@@ -364,4 +523,311 @@ export async function toolVersion(tools: ToolPaths): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Stage 3 (WP21b)
+
+/** A stretch of one file (seconds from the file's start). */
+export interface FileSpan {
+  file: string | Buffer;
+  start: number;
+  length: number;
+}
+
+export interface FingerprintResult {
+  fp: Uint32Array | null;
+  /** What the tools reported (shortened), or null. */
+  error: string | null;
+}
+
+function refuseRawName(file: string | Buffer): string | null {
+  return process.platform !== 'linux' && typeof file !== 'string'
+    ? 'A name that is not UTF-8 can only be read on Linux'
+    : null;
+}
+
+/**
+ * A Chromaprint fingerprint of consecutive stretches (one window of a copy; it may run over
+ * from one file of a split copy into the next). ffmpeg decodes each stretch to raw samples;
+ * they go on to fpcalc's stdin.
+ */
+export async function fingerprintSpans(
+  spans: FileSpan[],
+  toolPaths: ToolPaths,
+  { timeoutMs, shouldStop }: { timeoutMs: number; shouldStop?: () => boolean },
+): Promise<FingerprintResult> {
+  const tools = allTools(toolPaths);
+  for (const sp of spans) {
+    const refused = refuseRawName(sp.file);
+    if (refused) return { fp: null, error: refused };
+  }
+  const total = spans.reduce((a, sp) => a + sp.length, 0);
+  const fpc = start(
+    tools.fpcalcPath,
+    toolArgs('fpcalc', '-', 0, { start: 0, length: total }),
+    null,
+    timeoutMs,
+    { stdinPipe: true, shouldStop },
+  );
+  const problems: string[] = [];
+  try {
+    for (const sp of spans) {
+      if (shouldStop?.()) break;
+      const handle = process.platform === 'linux' ? await openReadOnly(sp.file) : null;
+      try {
+        const input = handle ? '/dev/fd/3' : (sp.file as string);
+        const r = await run(
+          tools.ffmpegPath,
+          toolArgs('window-pcm', input, 0, { start: sp.start, length: sp.length }),
+          handle ? handle.fd : null,
+          timeoutMs,
+          { keepStdout: 0, onStdout: (b) => fpc.stdin?.write(b), shouldStop },
+        );
+        const reported = audioProblems(r.stderr);
+        if (r.timedOut) problems.push('ffmpeg took too long');
+        else if (r.code !== 0 || reported) problems.push(short(reported, 200) || `exit ${r.code}`);
+      } finally {
+        await handle?.close();
+      }
+    }
+  } finally {
+    fpc.stdin?.end();
+  }
+  const out = await fpc.done;
+  if (out.timedOut) problems.push('fpcalc took too long');
+  const fp = parseFpcalc(out.stdout.toString('utf8'));
+  if (!fp || fp.length === 0) {
+    problems.push(short(out.stderr, 200) || `fpcalc gave no fingerprint (exit ${out.code})`);
+    return { fp: null, error: problems.join('; ') };
+  }
+  return { fp, error: problems.length ? problems.join('; ') : null };
+}
+
+export interface DecodeResult {
+  /** true: clean; false: damaged; null: stopped before the end (read again later). */
+  ok: boolean | null;
+  /** ffmpeg: problem lines reported; faad: 0 or 1. */
+  errorCount: number;
+  /** faad: seconds it decoded before stopping (it stops silently at damage). */
+  decodedSeconds: number | null;
+  detail: string | null;
+  tookMs: number;
+}
+
+/** A whole file through ffmpeg's decoder (to the null muxer); counts what it reports. */
+export async function decodeWithFfmpeg(
+  file: string | Buffer,
+  toolPaths: ToolPaths,
+  { timeoutMs, shouldStop }: { timeoutMs: number; shouldStop?: () => boolean },
+): Promise<DecodeResult> {
+  const tools = allTools(toolPaths);
+  const t0 = Date.now();
+  const refused = refuseRawName(file);
+  if (refused) {
+    return { ok: null, errorCount: 0, decodedSeconds: null, detail: refused, tookMs: 0 };
+  }
+  const handle = process.platform === 'linux' ? await openReadOnly(file) : null;
+  try {
+    const input = handle ? '/dev/fd/3' : (file as string);
+    let stopped = false;
+    const r = await run(
+      tools.ffmpegPath,
+      toolArgs('full-decode', input, 0),
+      handle ? handle.fd : null,
+      timeoutMs,
+      {
+        keepStdout: 0,
+        shouldStop: () => {
+          if (shouldStop?.()) stopped = true;
+          return stopped;
+        },
+      },
+    );
+    const took = Date.now() - t0;
+    if (stopped)
+      return { ok: null, errorCount: 0, decodedSeconds: null, detail: null, tookMs: took };
+    const reported = audioProblems(r.stderr);
+    const lines = reported ? reported.split('\n').length : 0;
+    // stderr beyond 64 KB is only counted: use the larger of the two counts.
+    const count = reported ? Math.max(lines, r.stderrLines) : 0;
+    const ok = !r.timedOut && r.code === 0 && !reported;
+    return {
+      ok,
+      errorCount: count,
+      decodedSeconds: null,
+      detail: r.timedOut
+        ? 'took too long'
+        : reported
+          ? short(reported, 400)
+          : ok
+            ? null
+            : `exit ${r.code}`,
+      tookMs: took,
+    };
+  } finally {
+    await handle?.close();
+  }
+}
+
+/** The WAV header's sample rate, channels and bits, and where the samples start. */
+export function wavFormat(
+  head: Buffer,
+): { rate: number; channels: number; bits: number; dataOffset: number } | null {
+  if (head.length < 44 || head.toString('latin1', 0, 4) !== 'RIFF') return null;
+  const fmt = head.indexOf('fmt ', 12, 'latin1');
+  const data = head.indexOf('data', 12, 'latin1');
+  if (fmt < 0 || data < 0) return null;
+  const channels = head.readUInt16LE(fmt + 10);
+  const rate = head.readUInt32LE(fmt + 12);
+  const bits = head.readUInt16LE(fmt + 22);
+  if (!channels || !rate || !bits) return null;
+  return { rate, channels, bits, dataOffset: data + 8 };
+}
+
+/**
+ * A whole file through faad2 (a second AAC decoder, independent of ffmpeg's). faad stops at
+ * damage without saying so and still exits 0 (checked 2026-11-18 on a file with 200 KB of
+ * noise written into it: 36 of 115 MB decoded), so the result is how much it decoded.
+ */
+export async function decodeWithFaad(
+  file: string | Buffer,
+  toolPaths: ToolPaths,
+  {
+    expectedSeconds,
+    timeoutMs,
+    shouldStop,
+  }: { expectedSeconds: number; timeoutMs: number; shouldStop?: () => boolean },
+): Promise<DecodeResult> {
+  const tools = allTools(toolPaths);
+  const t0 = Date.now();
+  const refused = refuseRawName(file);
+  if (refused) {
+    return { ok: null, errorCount: 0, decodedSeconds: null, detail: refused, tookMs: 0 };
+  }
+  const handle = process.platform === 'linux' ? await openReadOnly(file) : null;
+  try {
+    const input = handle ? '/dev/fd/3' : (file as string);
+    let stopped = false;
+    const r = await run(
+      tools.faadPath,
+      toolArgs('faad', input, 0),
+      handle ? handle.fd : null,
+      timeoutMs,
+      {
+        keepStdout: 256,
+        shouldStop: () => {
+          if (shouldStop?.()) stopped = true;
+          return stopped;
+        },
+      },
+    );
+    const took = Date.now() - t0;
+    if (stopped)
+      return { ok: null, errorCount: 0, decodedSeconds: null, detail: null, tookMs: took };
+    const wav = wavFormat(r.stdout);
+    if (!wav) {
+      return {
+        ok: false,
+        errorCount: 1,
+        decodedSeconds: 0,
+        detail: r.timedOut
+          ? 'took too long'
+          : short(faadMessages(r.stderr), 300) || 'faad decoded nothing',
+        tookMs: took,
+      };
+    }
+    const decoded =
+      Math.max(0, r.stdoutBytes - wav.dataOffset) / (wav.rate * wav.channels * (wav.bits / 8));
+    const complete = decoded >= expectedSeconds - 1;
+    const ok = !r.timedOut && r.code === 0 && complete;
+    return {
+      ok,
+      errorCount: ok ? 0 : 1,
+      decodedSeconds: Math.round(decoded * 100) / 100,
+      detail: ok
+        ? null
+        : r.timedOut
+          ? 'took too long'
+          : `stopped at ${Math.round(decoded)} s of ${Math.round(expectedSeconds)} s${
+              faadMessages(r.stderr) ? `: ${short(faadMessages(r.stderr), 200)}` : ''
+            }`,
+      tookMs: took,
+    };
+  } finally {
+    await handle?.close();
+  }
+}
+
+/** faad's messages without its banner, file info and progress lines. */
+export function faadMessages(stderr: string): string {
+  return stderr
+    .split(/[\r\n]+/)
+    .map((l) => l.trim())
+    .filter((l) => /warning|error|unable|fail|not/i.test(l) && !/% decoding/.test(l))
+    .join('\n');
+}
+
+/** A few seconds from the start or the end of a file as mp3 (the review page plays it). */
+export async function cutClip(
+  file: string | Buffer,
+  toolPaths: ToolPaths,
+  { at, seconds, timeoutMs }: { at: 'start' | 'end'; seconds: number; timeoutMs: number },
+): Promise<Buffer | null> {
+  const tools = allTools(toolPaths);
+  if (refuseRawName(file)) return null;
+  const handle = process.platform === 'linux' ? await openReadOnly(file) : null;
+  try {
+    const input = handle ? '/dev/fd/3' : (file as string);
+    const r = await run(
+      tools.ffmpegPath,
+      toolArgs(at === 'start' ? 'clip-start' : 'clip-end', input, 0, { start: 0, length: seconds }),
+      handle ? handle.fd : null,
+      timeoutMs,
+      { keepStdout: 4 * 1024 * 1024 },
+    );
+    return r.code === 0 && !r.timedOut && r.stdoutBytes > 0 ? r.stdout : null;
+  } finally {
+    await handle?.close();
+  }
+}
+
+/** The stage 3 tools' version lines (recorded with each result). */
+export async function stage3ToolVersions(
+  toolPaths: ToolPaths,
+): Promise<{ fpcalc: string | null; faad: string | null; ffmpeg: string | null }> {
+  const tools = allTools(toolPaths);
+  const first = (t: string) =>
+    t
+      .split(/\r?\n/)
+      .find((l) => l.trim())
+      ?.trim()
+      .slice(0, 200) ?? null;
+  const out = {
+    fpcalc: null as string | null,
+    faad: null as string | null,
+    ffmpeg: null as string | null,
+  };
+  try {
+    const r = await run(tools.fpcalcPath, ['-version'], null, 10_000);
+    out.fpcalc = first(r.stdout.toString('utf8') || r.stderr);
+  } catch {
+    // Not installed: the stage reports it.
+  }
+  try {
+    const r = await run(tools.faadPath, ['-h'], null, 10_000);
+    out.faad =
+      first(r.stdout.toString('utf8') + r.stderr)
+        ?.replace(/\*/g, '')
+        .trim() ?? null;
+  } catch {
+    // Not installed: the stage reports it.
+  }
+  try {
+    const r = await run(tools.ffmpegPath, ['-version'], null, 10_000);
+    out.ffmpeg = first(r.stdout.toString('utf8'));
+  } catch {
+    // Not installed.
+  }
+  return out;
 }

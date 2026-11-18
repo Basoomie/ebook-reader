@@ -123,7 +123,8 @@ describe('cleanup.db migration 8', () => {
           mode: string;
         }[]
       ).map((r) => r.mode),
-    ).toEqual(['off', 'off', 'off']);
+      // Stages 0-2 (WP21a), 3 (WP21b), all Off.
+    ).toEqual(['off', 'off', 'off', 'off']);
     for (const t of [
       'audio_files',
       'audio_identity',
@@ -1502,13 +1503,22 @@ describe('nothing in the audiobook cleanup writes under the audiobook roots', ()
     }
   });
 
-  it('probe.ts is the only module that starts a process, and only ffprobe or ffmpeg', () => {
+  it('probe.ts is the only module that starts a process, and only ffprobe, ffmpeg, fpcalc or faad', () => {
     const src = fs.readFileSync(path.join(dir, 'probe.ts'), 'utf8');
     expect(src.match(/\bspawn\(/g)).toHaveLength(1);
     expect(src).toMatch(/spawn\(bin, args,/);
-    const calls = [...src.matchAll(/await run\(\s*([^,]+),/g)].map((m) => m[1].trim());
+    // Every program start: run(...) and, for fpcalc's stdin pipe (WP21b), start(...).
+    const calls = [...src.matchAll(/(?:await run|= start)\(\s*([^,]+),/g)].map((m) => m[1].trim());
     expect(calls.length).toBeGreaterThan(0);
-    for (const c of calls) expect(c).toMatch(/^tools\.(ffprobePath|ffmpegPath)$/);
+    // WP21b adds fpcalc (Chromaprint) and faad (faad2) for stage 3.
+    for (const c of calls) {
+      expect(c).toMatch(/^tools\.(ffprobePath|ffmpegPath|fpcalcPath|faadPath)$/);
+    }
+    // No other call of run() or start() than those checked above.
+    const all = (src.match(/\b(?:run|start)\(/g) ?? []).length;
+    const defs = (src.match(/function (?:run|start)\(/g) ?? []).length;
+    const inside = (src.match(/return start\(bin, args, fd, timeoutMs, opts\)/g) ?? []).length;
+    expect(all - defs - inside).toBe(calls.length);
     for (const f of files) {
       if (f === 'probe.ts') continue;
       expect(fs.readFileSync(path.join(dir, f), 'utf8'), f).not.toMatch(/child_process/);

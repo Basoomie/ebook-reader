@@ -18,7 +18,11 @@ import { BatchError, type ItemReport, type ItemState } from './batches';
 import type { ListedBook, WrittenReport } from './stage2-batches';
 import { STAGE2_FIELDS } from './stage2-rules';
 import type { CleanupService } from './cleanup-service';
-import type { AudioCleanupService } from './audio/audio-cleanup-service';
+import {
+  AudioBusyError,
+  type AudioCleanupService,
+  type DupDecision,
+} from './audio/audio-cleanup-service';
 import { isSecretName } from './secrets';
 import { getSettings, SettingsError, updateSettings } from './settings';
 import {
@@ -443,6 +447,52 @@ function addAudioRoutes(router: Router, options: CleanupOptions): void {
     } catch (err) {
       throw new ApiError(400, 'bad_request', (err as Error).message);
     }
+  });
+
+  // Stage 3 (WP21b): duplicate groups and review items, the user's choices, short clips.
+  router.get('/cleanup/audio/dups', (req, res) => {
+    const audio = audioOr503(options);
+    try {
+      res.json(audio.dups(String(req.query.list ?? ''), page(req)));
+    } catch (err) {
+      throw new ApiError(400, 'bad_request', (err as Error).message);
+    }
+  });
+
+  router.post('/cleanup/audio/dups/:id', (req, res) => {
+    const audio = audioOr503(options);
+    const decision = (req.body as { decision?: unknown } | undefined)?.decision;
+    if (typeof decision !== 'string') {
+      throw new ApiError(400, 'bad_request', 'decision must be keep_all, keep:<copy> or clear');
+    }
+    try {
+      audio.decideDup(Number(req.params.id), decision as DupDecision);
+    } catch (err) {
+      throw new ApiError(400, 'bad_request', (err as Error).message);
+    }
+    res.json({ ok: true });
+  });
+
+  router.get('/cleanup/audio/clip/:copyId/:at', (req, res, next) => {
+    const audio = audioOr503(options);
+    const at = req.params.at;
+    const copyId = Number(req.params.copyId);
+    if ((at !== 'start' && at !== 'end') || !Number.isInteger(copyId)) {
+      throw new ApiError(400, 'bad_request', 'Ask for /clip/<copy id>/start or /end');
+    }
+    audio
+      .clip(copyId, at)
+      .then((buf) => {
+        res.setHeader('Content-Type', 'audio/mpeg');
+        res.setHeader('Cache-Control', 'private, max-age=600');
+        res.send(buf);
+      })
+      .catch((err: Error) => {
+        if (err instanceof AudioBusyError) {
+          res.setHeader('Retry-After', '15');
+          next(new ApiError(503, 'calibre_busy', err.message));
+        } else next(new ApiError(404, 'not_found', err.message));
+      });
   });
 }
 
