@@ -10,7 +10,8 @@
    * changes a file or Audiobookshelf: stage 0 takes a read-only snapshot of Audiobookshelf
    * (libraries, counts, every user's listening progress, to download), stage 1 finds which
    * library files are copies of which torrent files, stage 2 groups the files into books and
-   * checks each file. Both stages are Off or Preview. The disk line shows which cleanup job
+   * checks each file, stage 3 (WP21b) finds copies of the same recording and picks the best
+   * copy (its review queue below). The stages are Off or Preview. The disk line shows which cleanup job
    * reads the disk (one at a time; the Calibre cleanup goes first). Asks the server again
    * every few seconds while open.
    */
@@ -40,11 +41,20 @@
     identityLines,
     snapshotLine
   } from '$lib/cleanup/audio-text';
+  import {
+    STAGE3_HINTS,
+    audioStage3Bar,
+    audioStage3Lines,
+    dupLines,
+    gateLines,
+    missLine
+  } from '$lib/cleanup/audio-dup-text';
   import { bytesText, n, type ProgressBar } from '$lib/cleanup/cleanup-text';
   import { LibraryApiError } from '$lib/library/api';
   import { formatWhen } from '$lib/notes/notes-format';
   import SettingsSection from '$lib/components/settings/settings-section.svelte';
   import CleanupSection from './cleanup-section.svelte';
+  import CleanupAudioDups from './cleanup-audio-dups.svelte';
 
   export let api: CleanupApi;
 
@@ -71,6 +81,42 @@
 
   $: stage1 = status?.stages.find((s) => s.stage === 1) ?? null;
   $: stage2 = status?.stages.find((s) => s.stage === 2) ?? null;
+  $: stage3 = status?.stages.find((s) => s.stage === 3) ?? null;
+  $: p3 = status?.stage3?.progress ?? null;
+  $: bars3 = [audioStage3Bar(p3, Date.now())].filter((b): b is ProgressBar => b !== null);
+  /** Stage 3's analysis and phase: the duplicate lists reload when it changes. */
+  $: analysis3 = p3 ? `${p3.analysisId}:${p3.phase}:${p3.finishedAt ?? ''}` : '';
+  interface StageView {
+    bars: ProgressBar[];
+    lines: string[];
+    waiting: string | null;
+    found: string[];
+  }
+  /** Per stage: its bars, lines, waiting text and what it found. */
+  $: views = {
+    1: {
+      bars: bars1,
+      lines: audioStage1Lines(p1, Date.now()),
+      waiting: status?.stage1.waiting ?? null,
+      found: identityLines(status?.stage1.counts ?? null)
+    },
+    2: {
+      bars: bars2,
+      lines: audioStage2Lines(p2),
+      waiting: status?.stage2.waiting ?? null,
+      found: booksLines(status?.stage2.counts ?? null)
+    },
+    3: {
+      bars: bars3,
+      lines: audioStage3Lines(p3),
+      waiting: status?.stage3?.waiting ?? null,
+      found: dupLines(status?.stage3?.counts ?? null)
+    }
+  } as Record<number, StageView>;
+  function hint(stage: AudioStageRow): string {
+    const mode = stage.mode === 'on' ? 'analyse' : stage.mode;
+    return stage.stage === 3 ? STAGE3_HINTS[mode] : (AUDIO_STAGE_HINTS[stage.stage]?.[mode] ?? '');
+  }
   $: p1 = status?.stage1.progress ?? null;
   $: p2 = status?.stage2.progress ?? null;
   $: bars1 = [audioStage1Bar(p1, Date.now())].filter((b): b is ProgressBar => b !== null);
@@ -285,14 +331,14 @@
       </p>
     </div>
 
-    {#each [stage1, stage2] as stage (stage?.stage)}
+    {#each [stage1, stage2, stage3] as stage (stage?.stage)}
       {#if stage}
         <div class="c-tile flex flex-col gap-3 rounded p-4" data-testid="audio-stage-{stage.stage}">
           <div class="flex flex-wrap items-baseline justify-between gap-2">
             <h3 class="font-mincho text-lg font-bold">{stage.stage} · {stage.name}</h3>
           </div>
           <p class="text-sm text-c-muted">
-            {AUDIO_STAGE_HINTS[stage.stage]?.[stage.mode === 'on' ? 'analyse' : stage.mode] ?? ''}
+            {hint(stage)}
           </p>
           <div class="flex flex-wrap gap-2" role="radiogroup" aria-label="Stage {stage.stage}">
             {#each MODES as mode (mode)}
@@ -314,7 +360,7 @@
               >
             {/if}
           </div>
-          {#each stage.stage === 1 ? bars1 : bars2 as bar (bar.label)}
+          {#each views[stage.stage].bars as bar (bar.label)}
             <div class="flex flex-col gap-1" data-testid="audio-progress-{stage.stage}">
               <div class="flex flex-wrap justify-between gap-x-4 text-sm">
                 <span>{bar.label}</span>
@@ -332,7 +378,7 @@
               </div>
             </div>
           {/each}
-          {#each stage.stage === 1 ? audioStage1Lines(p1, Date.now()) : audioStage2Lines(p2) as line}
+          {#each views[stage.stage].lines as line}
             <p class="text-sm">{line}</p>
           {/each}
           {#if stage.pauseReason}
@@ -340,18 +386,46 @@
               <b>Paused:</b>
               {stage.pauseDetail ?? stage.pauseReason}
             </p>
-          {:else if stage.mode !== 'off' && (stage.stage === 1 ? status.stage1.waiting : status.stage2.waiting)}
+          {:else if stage.mode !== 'off' && views[stage.stage].waiting}
             <p class="text-sm text-c-muted" data-testid="audio-waiting-{stage.stage}">
-              {stage.stage === 1 ? status.stage1.waiting : status.stage2.waiting}
+              {views[stage.stage].waiting}
             </p>
           {/if}
-          {#each stage.stage === 1 ? identityLines(status.stage1.counts) : booksLines(status.stage2.counts) as line}
+          {#each views[stage.stage].found as line}
             <p class="text-sm" data-testid="audio-found-{stage.stage}">{line}</p>
           {/each}
+          {#if stage.stage === 3 && p3?.gate}
+            <div class="flex flex-col gap-1 text-sm" data-testid="audio-gate">
+              <p class="font-medium">
+                Checked on the labeled pairs: {p3.gate.passed ? '✓ passes' : '✗ not passed'}
+              </p>
+              {#each gateLines(p3.gate) as line}<p>{line}</p>{/each}
+              {#each p3.gate.misses.slice(0, 10) as m (m.n)}
+                <p class="font-bold">{missLine(m)}</p>
+              {/each}
+              {#if p3.gate.misses.length > 10}
+                <p class="text-c-muted">
+                  And {n(p3.gate.misses.length - 10)} more (list “Checked on the labeled pairs” below).
+                </p>
+              {/if}
+            </div>
+          {/if}
         </div>
       {/if}
     {/each}
   </section>
+
+  {#if stage3 && p3}
+    <CleanupSection
+      id="audio-dups"
+      jp="重複"
+      title="Same recording"
+      summary={status.stage3?.counts ? `${n(status.stage3.counts.review ?? 0)} to review` : ''}
+      testid="audio-dups-section"
+    >
+      <CleanupAudioDups {api} analysis={analysis3} />
+    </CleanupSection>
+  {/if}
 
   {#if snapshot && snapshot.progress.length}
     <!-- The list is long (every user's progress): folded away so the stages stay at the top. -->

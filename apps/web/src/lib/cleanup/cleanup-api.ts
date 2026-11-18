@@ -380,6 +380,8 @@ export interface GateSettings {
   labeledBooksFile: string;
   /** Stage 3's measured duplicate pairs; empty = the one beside the labeled books. */
   duplicatePairsFile: string;
+  /** Audiobooks stage 3's labeled pairs; empty = reference-sample/audio/labels.json (WP21b). */
+  audiobookPairsFile?: string;
 }
 
 /** Stage 3: the thresholds of plan section 5 (shared settings, group "duplicates"). */
@@ -456,6 +458,20 @@ export interface AudiobookSettings {
   copyHintMinMinutes: number;
   copyHintPercent: number;
   absTimeoutSeconds: number;
+  /** Stage 3 (WP21b); missing on an older server. */
+  dupWindowSeconds?: number;
+  dupShiftSeconds?: number;
+  dupMiddleSearchMinutes?: number;
+  dupSameScore?: number;
+  dupCandidatePercent?: number;
+  dupAsinToleranceSeconds?: number;
+  dupLengthEqualSeconds?: number;
+  dupIncompleteSeconds?: number;
+  dupBitrateMarginPercent?: number;
+  dupChapterToleranceSeconds?: number;
+  dupFingerprintWorkers?: number;
+  dupDecodeWorkers?: number;
+  dupClipSeconds?: number;
 }
 
 export type SecretName = 'anthropicApiKey' | 'openaiApiKey' | 'calibrePassword' | 'absApiKey';
@@ -598,6 +614,127 @@ export interface AudioStatus {
     progress: AudioStage2Progress | null;
     counts: Record<string, number> | null;
   };
+  /** Missing on an older server (WP21b). */
+  stage3?: {
+    waiting: string | null;
+    progress: AudioStage3Progress | null;
+    counts: Record<string, number> | null;
+  };
+}
+
+export type AudioStage3Phase =
+  | 'copies'
+  | 'candidates'
+  | 'fingerprints'
+  | 'compare'
+  | 'decode'
+  | 'decide'
+  | 'done';
+
+export interface AudioGateResult {
+  passed: boolean;
+  checked: number;
+  correct: number;
+  sameChecked: number;
+  sameCorrect: number;
+  bestChecked: number;
+  bestCorrect: number;
+  skipped: number;
+  misses: { n: number; kind: string; expected: string; got: string; ok: boolean; note?: string }[];
+  error: string | null;
+}
+
+export interface AudioStage3Progress {
+  analysisId: string;
+  phase: AudioStage3Phase;
+  startedAt: number;
+  finishedAt: number | null;
+  copies: number;
+  excluded: number;
+  pairsByTest: Record<string, number>;
+  windowsTotal: number;
+  windowsDone: number;
+  windowsReused: number;
+  windowErrors: number;
+  decodesDone: number;
+  decodesReused: number;
+  yields: number;
+  phaseStartedAt: number;
+  phaseStartDone: number;
+  phaseTimes: Record<string, { ms: number; items: number }>;
+  tools: { fpcalc: string | null; faad: string | null; ffmpeg: string | null } | null;
+  counts: Record<string, number> | null;
+  gate: AudioGateResult | null;
+  error: string | null;
+}
+
+/** One copy of a recording, as the review page shows it (WP21b). */
+export interface AudioDupCopy {
+  id: number;
+  key: string;
+  kind: 'file' | 'parts' | 'library_only';
+  name: string;
+  paths: string[];
+  files: number;
+  seconds: number | null;
+  codec: string | null;
+  bitrate: number | null;
+  sampleRate: number | null;
+  chapters: number;
+  cover: boolean;
+  asins: string[];
+  absAsins: string[];
+  ai: boolean;
+  damage: 'damaged' | 'suspect' | 'ok' | null;
+  damageDetail: string | null;
+  excluded: string | null;
+  rank?: number;
+  role?: 'keep' | 'drop' | 'review';
+}
+
+export interface AudioWindowScore {
+  name: 'start' | 'middle' | 'end';
+  score: number | null;
+  shiftSeconds: number | null;
+  reason?: string;
+}
+
+export interface AudioDupPair {
+  a_id: number;
+  b_id: number;
+  test: string;
+  verdict: string;
+  fp_verdict: string | null;
+  length_diff: number | null;
+  detail: string | null;
+  scores: { windows: AudioWindowScore[]; skipped: { name: string; reason: string }[] } | null;
+}
+
+export interface AudioDupGroup {
+  id: number;
+  groupKey: string;
+  kind: 'group' | 'unsure';
+  firstTest: string;
+  tests: string[];
+  rule: string | null;
+  outcome: 'auto' | 'review';
+  reviewReason: string | null;
+  damaged: boolean;
+  bestCopyId: number | null;
+  decision: { decision: string; decided_by: string; decided_at: number } | null;
+  copies: AudioDupCopy[];
+  pairs: AudioDupPair[];
+}
+
+/** Rows of the 'different' list: pairs measured as different recordings. */
+export interface AudioDupDifferent {
+  id: number;
+  test: string;
+  verdict: string;
+  lengthDiff: number | null;
+  detail: string | null;
+  scores: AudioDupPair['scores'];
+  copies: AudioDupCopy[];
 }
 
 export interface AudioFileRow {
@@ -983,6 +1120,43 @@ export class CleanupApi {
       total: number;
       items: AudioBookRow[];
     }>;
+  }
+
+  // ---------------------------------------------------------------- audiobooks stage 3 (WP21b)
+
+  audioDups(
+    list: string,
+    offset = 0,
+    limit = 50
+  ): Promise<{ total: number; items: Record<string, unknown>[] }> {
+    const q = new URLSearchParams({ list, offset: String(offset), limit: String(limit) });
+    return this.request('GET', `/cleanup/audio/dups?${q}`) as Promise<{
+      total: number;
+      items: Record<string, unknown>[];
+    }>;
+  }
+
+  /** Records a choice for a group: keep_all, keep:<copy key>, or clear (WP21e applies it). */
+  decideAudioDup(id: number, decision: string): Promise<{ ok: boolean }> {
+    return this.request('POST', `/cleanup/audio/dups/${id}`, { decision }) as Promise<{
+      ok: boolean;
+    }>;
+  }
+
+  /**
+   * A few seconds from the start or the end of a copy (mp3). Null while the Calibre cleanup uses
+   * the disk (the server answers 503: try again in a moment).
+   */
+  async audioClip(copyId: number, at: 'start' | 'end'): Promise<Blob | null> {
+    const response = await send(
+      this.fetchImpl,
+      `${this.serverUrl}/api/v1/cleanup/audio/clip/${copyId}/${at}`,
+      { method: 'GET', headers: { Authorization: `Bearer ${this.token}` } },
+      { timeoutSeconds: this.timeoutSeconds }
+    );
+    if (response.status === 503) return null;
+    if (!response.ok) throw await errorFrom(response);
+    return response.blob();
   }
 
   spotCheck(stage = 1): Promise<{ items: Proposal[] }> {
