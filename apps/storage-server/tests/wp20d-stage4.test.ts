@@ -387,6 +387,17 @@ describe('stage 4: online sources (Preview)', () => {
     await running;
     delay.disable();
     expect(phase).toBe('done');
+    // Each book is counted once (the labeled books were counted twice: read first, then again
+    // when the library pass skipped them), and the page's numbers come from the database.
+    const prog = getStage(env.cleanupDb, 4).progress as { readDone: number; readTotal: number };
+    expect(prog.readDone).toBe(prog.readTotal);
+    const st4 = env.service.stage4Status(env.libraryId(), Date.now() + 60_000) as {
+      read: { done: number; total: number };
+      timeLeft: { read: number | null; basis: string } | null;
+    };
+    expect(st4.read.done).toBe(st4.read.total);
+    // Done: nothing left to show.
+    expect(st4.timeLeft).toBeNull();
     expect(delay.max / 1e6).toBeLessThan(500);
     expect(metadataDbHash()).toBe(before);
 

@@ -126,7 +126,21 @@ export interface Stage4Status {
   natively: { listed: number; read: number | null; withIsbn: number | null; asins: number };
   fields: { field: string; class: string; n: number }[];
   fieldPauses: FieldPause[];
+  /** The reading: books read (each once, from the database), the books with an EPUB, the pace. */
+  read: { done: number; total: number; perSecond: number | null } | null;
+  /** Time left (seconds; null while not measured yet). */
+  timeLeft: Stage4TimeLeft | null;
   cachedAt: number;
+}
+
+export interface Stage4TimeLeft {
+  read: number | null;
+  sites: Record<string, number>;
+  slowest: { site: string; seconds: number } | null;
+  final: number | null;
+  total: number | null;
+  /** Requests per book from the reference run, or from this run's labeled books once done. */
+  basis: 'labeled' | 'reference';
 }
 
 /** One field of the stage-4 gate (the server's precision.gate.fields). */

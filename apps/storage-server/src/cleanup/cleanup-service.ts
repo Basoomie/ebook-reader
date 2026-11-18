@@ -21,7 +21,8 @@ import { listFieldPauses, loadGold, resumeField } from './stage2-gate';
 import { STAGE3_WAITING_SQL, Stage3Analysis, type PairRow, type Stage3Progress } from './stage3';
 import { Stage3Worker, type Stage3Reader } from '../counts/book-text-worker';
 import { Stage4Analysis, type Stage4Progress } from './stage4/analysis';
-import { FetchQueue, backoffKey } from './stage4/queue';
+import { stage4Eta, type SiteCounts } from './stage4/eta';
+import { FetchQueue, LABELED_PRIORITY, backoffKey } from './stage4/queue';
 import { FETCH_SITES, type FetchSite } from './settings';
 import {
   BUILT_STAGES,
@@ -163,6 +164,9 @@ export class CleanupService {
   /** Why stage 4 is not working right now. */
   waiting4: string | null = null;
   private status4Cache: { at: number; value: unknown } | null = null;
+  /** Books read at each status (the reading's measured rate over the last minutes). */
+  private readMarks: { at: number; n: number; analysisId: string }[] = [];
+  private labeled4Cache: { at: number; value: { site: string; n: number }[] } | null = null;
   private fields4Cache: {
     at: number;
     value: { field: string; class: string; n: number }[];
@@ -989,6 +993,13 @@ export class CleanupService {
     const readings = this.db
       .prepare('SELECT state, COUNT(*) AS n FROM author_readings GROUP BY state')
       .all() as { state: string; n: number }[];
+    // Nothing is left once the analysis is done (or failed).
+    const eta =
+      p && p.phase !== 'done' ? this.stage4TimeLeft(p, sites, books, readings, now) : null;
+    for (const site of sites) {
+      const t = eta?.result.sites[site.site];
+      if (t !== undefined) site.secondsLeft = t;
+    }
     const natively = this.db
       .prepare(
         'SELECT COUNT(*) AS listed, SUM(read_at IS NOT NULL) AS read, SUM(isbn13 IS NOT NULL) AS withIsbn FROM natively_books',
@@ -1025,10 +1036,100 @@ export class CleanupService {
       natively: { ...natively, asins: nativelyAsins },
       fields,
       fieldPauses: listFieldPauses(this.db, 4),
+      read: p
+        ? {
+            done: books.reduce((a, b) => a + b.n, 0),
+            total: p.readTotal,
+            perSecond: eta?.readPerSecond ?? null,
+          }
+        : null,
+      timeLeft: eta?.result ?? null,
       cachedAt: now,
     };
     this.status4Cache = { at: now, value };
     return value;
+  }
+
+  /**
+   * Stage 4's time left (stage4/eta.ts): the reading at its rate measured over the last minutes
+   * (books read, counted from stage4_books, at each status), every site's requests still to
+   * come at its measured pace, and the final pass at the measured time per proposed book.
+   */
+  private stage4TimeLeft(
+    p: Stage4Progress,
+    sites: {
+      site: FetchSite;
+      enabled: boolean;
+      queued: number;
+      leased: number;
+      done: number;
+      gone: number;
+      failed: number;
+      secondsPerRequest: number;
+    }[],
+    books: { state: string; labeled: number; n: number }[],
+    readings: { state: string; n: number }[],
+    now: number,
+  ) {
+    const s = getSettings(this.db).fetch;
+    const count = (states: string[]) =>
+      books.filter((b) => states.includes(b.state)).reduce((a, b) => a + b.n, 0);
+    const booksRead = count(['read', 'waiting', 'ready', 'proposed', 'error']);
+    this.readMarks = this.readMarks.filter(
+      (m) => m.analysisId === p.analysisId && now - m.at <= 20 * 60_000,
+    );
+    if (p.phase === 'read')
+      this.readMarks.push({ at: now, n: booksRead, analysisId: p.analysisId });
+    const first = this.readMarks[0];
+    const readPerSecond =
+      first && now - first.at >= 120_000 && booksRead > first.n
+        ? (booksRead - first.n) / ((now - first.at) / 1000)
+        : null;
+    // This run's requests on the labeled books, once they are all proposed (10 minutes kept).
+    let labeled: { site: string; n: number }[] = [];
+    if (p.labeledDoneAt !== null) {
+      if (!this.labeled4Cache || now - this.labeled4Cache.at > 600_000) {
+        this.labeled4Cache = {
+          at: now,
+          value: this.db
+            .prepare(
+              'SELECT site, COUNT(*) AS n FROM fetch_requests WHERE priority >= ? GROUP BY site',
+            )
+            .all(LABELED_PRIORITY) as { site: string; n: number }[],
+        };
+      }
+      labeled = this.labeled4Cache.value;
+    }
+    const per = p.times?.['propose: book'];
+    const unreadable = count(['error']);
+    const result = stage4Eta({
+      sites: sites.map(
+        (x): SiteCounts => ({
+          site: x.site,
+          enabled: x.enabled,
+          open: x.queued + x.leased,
+          finished: x.done + x.gone + x.failed,
+          secondsPerRequest: x.secondsPerRequest,
+          labeledRequests: labeled.find((l) => l.site === x.site)?.n ?? 0,
+        }),
+      ),
+      booksTotal: p.readTotal,
+      booksRead: p.phase === 'read' ? booksRead : p.readTotal,
+      booksUnreadable: unreadable,
+      readPerSecond,
+      labeledBooks: p.labeledIds.length,
+      labeledDone: p.labeledDoneAt !== null,
+      amazonShared: this.fetchQueue.amazonPace(now) === 'shared',
+      ndlNames: readings.filter((r) => r.state === 'queued').reduce((a, b) => a + b.n, 0),
+      ndlBatch: s.ndlNamesPerQuery,
+      ndlSecondsPerQuery: s.sites.ndl?.intervalSeconds ?? 30,
+      finalBooks: Math.max(
+        0,
+        p.readTotal - unreadable - (p.phase === 'final' ? (p.finalDone ?? 0) : 0),
+      ),
+      msPerProposal: per && per.n > 0 ? per.ms / per.n : null,
+    });
+    return { result, readPerSecond };
   }
 
   /**

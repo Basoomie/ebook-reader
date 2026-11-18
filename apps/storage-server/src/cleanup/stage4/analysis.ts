@@ -122,6 +122,8 @@ export interface Stage4Progress {
   labeledDoneAt: number | null;
   /** The answer time of the Natively sitemap whose pages are listed. */
   nativelyListedAt?: number | null;
+  /** Books the final pass has proposed again (for its time left). */
+  finalDone?: number;
   /** Time per step (lessons 1-3: every stage times its steps from the first build). */
   times?: Record<string, StepTime>;
 }
@@ -545,8 +547,8 @@ export class Stage4Analysis {
       const book = snap.books.get(id)!;
       // The labeled books are read in the first pass and skipped (already planned) in the second.
       if (p.pass === 'all' && labeled.has(id)) {
+        // Read (and counted) in the first pass: not counted again.
         p.cursor = id;
-        p.readDone += 1;
         continue;
       }
       const { ev, read } = await timed(p, 'read: book', () =>
@@ -1062,7 +1064,9 @@ export class Stage4Analysis {
       .all(p.analysisId, PROPOSE_CHUNK) as { calibre_uuid: string; labeled: number }[];
     for (const r of done) {
       await slicer.maybeYield();
+      const tb = performance.now();
       this.proposeBook(p, r.calibre_uuid);
+      addTime(p, 'propose: book', performance.now() - tb);
     }
     if (done.length) addTime(p, 'lookups: propose', performance.now() - t);
     if (done.length) await yieldNow();
@@ -1559,6 +1563,7 @@ export class Stage4Analysis {
       this.db.transaction(() => {
         if (book && res) this.writeProposals(p, book, res.proposals, fields);
         p.finalCursor = r.calibre_id;
+        p.finalDone = (p.finalDone ?? 0) + 1;
         this.save(p);
       })();
     }

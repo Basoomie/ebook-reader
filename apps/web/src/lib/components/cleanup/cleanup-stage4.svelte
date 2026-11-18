@@ -26,6 +26,8 @@
   import {
     FIELD_NAMES,
     SITE_NAMES,
+    readingLine,
+    timeLeftLine,
     STAGE4_MODE_HINTS,
     booksLine,
     fieldCounts,
@@ -141,10 +143,13 @@
     {/if}
   </div>
   {#if stage.mode !== 'off'}
-    {#if progress.phase === 'read' && progress.readTotal}
-      <p class="text-sm" data-testid="cleanup-stage-4-reading">
-        Reading the files: {n(progress.readDone ?? 0)} of {n(progress.readTotal)}
+    {#if status && timeLeftLine(status)}
+      <p class="text-sm font-medium" data-testid="cleanup-stage-4-time-left">
+        {timeLeftLine(status)}
       </p>
+    {/if}
+    {#if progress.phase === 'read' && status && readingLine(status)}
+      <p class="text-sm" data-testid="cleanup-stage-4-reading">{readingLine(status)}</p>
     {/if}
     {#if progress.error}
       <p class="c-notice text-sm" role="alert">The analysis failed: {progress.error}</p>

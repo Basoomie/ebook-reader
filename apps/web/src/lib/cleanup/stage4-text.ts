@@ -98,12 +98,52 @@ export function siteLine(s: Stage4Site, now = Date.now()): string {
   return parts.join(' · ');
 }
 
+/** The reading: each book once, out of the books with an EPUB, with its pace and time left. */
+export function readingLine(status: Stage4Status): string {
+  const r = status.read;
+  if (!r || !r.total || r.done >= r.total) return '';
+  const parts = [`Reading the files: ${n(r.done)} of ${n(r.total)}`];
+  const left = status.timeLeft?.read;
+  if (r.perSecond && left !== null && left !== undefined) {
+    parts.push(`${r.perSecond.toFixed(1)} books a second · about ${duration(left)} left`);
+  } else parts.push('measuring the speed');
+  return parts.join(' · ');
+}
+
+/** The lookups, out of every book with an EPUB (not only the books read so far). */
 export function booksLine(status: Stage4Status): string {
   const by = (states: string[]) =>
     status.books.filter((b) => states.includes(b.state)).reduce((a, b) => a + b.n, 0);
-  const total = by(['read', 'waiting', 'ready', 'proposed', 'error']);
+  const total = status.read?.total ?? by(['read', 'waiting', 'ready', 'proposed', 'error']);
   if (!total) return '';
-  return `${n(by(['proposed']))} of ${n(total)} books looked up${by(['error']) ? ` · ${n(by(['error']))} couldn’t be read` : ''}`;
+  const parts = [`${n(by(['proposed']))} of ${n(total)} books looked up`];
+  const open = by(['read', 'waiting', 'ready']);
+  if (open) parts.push(`${n(open)} waiting for the sites`);
+  if (by(['error'])) parts.push(`${n(by(['error']))} couldn’t be read`);
+  return parts.join(' · ');
+}
+
+/** The whole Preview's time left: the reading, the slowest site, then the final pass. */
+export function timeLeftLine(status: Stage4Status): string {
+  const t = status.timeLeft;
+  if (!t) return '';
+  if (t.total === null) return 'Time left for the whole Preview: measuring…';
+  if (t.total < 60) return 'Time left for the whole Preview: less than a minute';
+  const parts = [`Time left for the whole Preview: about ${duration(t.total)}`];
+  if (t.slowest && t.slowest.seconds > 0) {
+    const name =
+      t.slowest.site === 'amazon'
+        ? 'Amazon (product pages and searches share one slot)'
+        : (SITE_NAMES[t.slowest.site] ?? t.slowest.site);
+    parts.push(`the slowest site is ${name}, about ${duration(t.slowest.seconds)}`);
+  }
+  if (t.final) parts.push(`then the final pass, about ${duration(t.final)}`);
+  parts.push(
+    t.basis === 'labeled'
+      ? "requests per book measured on this run's labeled books"
+      : 'requests per book from the reference run until the labeled books are done; shared series pages make it an upper bound'
+  );
+  return parts.join(' · ');
 }
 
 export function readingsLine(status: Stage4Status): string {

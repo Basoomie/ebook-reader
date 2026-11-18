@@ -10,8 +10,10 @@ import {
   booksLine,
   duration,
   gateRows,
+  readingLine,
   readingsLine,
   siteLine,
+  timeLeftLine,
   sourceName,
   valueText
 } from './stage4-text';
@@ -78,9 +80,46 @@ describe('stage 4 wording', () => {
         { state: 'queued', n: 5 }
       ]
     } as unknown as Stage4Status;
-    expect(booksLine(status)).toBe('1,600 of 2,002 books looked up · 2 couldn’t be read');
+    expect(booksLine(status)).toBe(
+      '1,600 of 2,002 books looked up · 400 waiting for the sites · 2 couldn’t be read'
+    );
     expect(readingsLine(status)).toBe(
       'Author readings: 90 from Web NDL Authorities · 8 generated (spot check) · 2 without a reading · 5 to look up'
+    );
+    // Against every book with an EPUB, not only the books read so far.
+    const reading = {
+      ...status,
+      read: { done: 2002, total: 52164, perSecond: 9.3 },
+      timeLeft: {
+        read: 5394,
+        sites: {},
+        slowest: { site: 'bookwalker', seconds: 690000 },
+        final: 900,
+        total: 690900,
+        basis: 'reference'
+      }
+    } as unknown as Stage4Status;
+    expect(booksLine(reading)).toBe(
+      '1,600 of 52,164 books looked up · 400 waiting for the sites · 2 couldn’t be read'
+    );
+    expect(readingLine(reading)).toBe(
+      'Reading the files: 2,002 of 52,164 · 9.3 books a second · about 1 h 30 min left'
+    );
+    expect(timeLeftLine(reading)).toBe(
+      'Time left for the whole Preview: about 7 days 23 h · the slowest site is BOOK☆WALKER, about 7 days 23 h · then the final pass, about 15 min · requests per book from the reference run until the labeled books are done; shared series pages make it an upper bound'
+    );
+    expect(
+      readingLine({
+        ...reading,
+        read: { done: 10, total: 100, perSecond: null },
+        timeLeft: { ...reading.timeLeft!, read: null }
+      })
+    ).toBe('Reading the files: 10 of 100 · measuring the speed');
+    expect(timeLeftLine({ ...reading, timeLeft: { ...reading.timeLeft!, total: 30 } })).toBe(
+      'Time left for the whole Preview: less than a minute'
+    );
+    expect(timeLeftLine({ ...reading, timeLeft: { ...reading.timeLeft!, total: null } })).toBe(
+      'Time left for the whole Preview: measuring…'
     );
   });
 
