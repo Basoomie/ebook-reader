@@ -43,12 +43,10 @@ describe('stage 4 wording', () => {
   it('says per site what is answered, left and why it waits', () => {
     expect(
       siteLine(site({ done: 1200, gone: 3, queued: 50000, secondsLeft: 400000, challenges: 2 }))
-    ).toBe(
-      '1,203 answered · 50,000 to ask · 2 challenge pages · 8 s per request · about 4 days 15 h left'
-    );
+    ).toBe('1,203 answered · 50,000 to ask · 2 refused · 8 s per request · about 4 days 15 h left');
     expect(siteLine(site({ enabled: false }))).toBe('Switched off');
-    expect(siteLine(site({ pausedReason: '8 challenge pages in a row' }))).toContain(
-      'paused: 8 challenge pages in a row'
+    expect(siteLine(site({ pausedReason: '8 refusals in a row' }))).toContain(
+      'paused: 8 refusals in a row'
     );
     expect(siteLine(site({ slowFactor: 1.5 }))).toContain('slowed down ×1.5');
   });

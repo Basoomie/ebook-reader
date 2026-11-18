@@ -434,8 +434,9 @@
         <legend class={legend}>Online sources (stage 4)</legend>
         <p class="text-sm text-c-muted sm:col-span-2">
           The fetch container asks each site at most once per the seconds below (from the start of
-          one request to the next). Challenge pages are never answered: the site waits and is asked
-          again.
+          one request to the next). When Amazon refuses (a bot check page, or HTTP 503 or 429), the
+          request is never pushed through: every Amazon request waits, longer each time it refuses
+          again, and is asked again.
         </p>
         {#each Object.keys(settings.fetch.sites) as site (site)}
           <div class="flex flex-wrap items-end gap-3" data-testid="cleanup-fetch-site-{site}">
@@ -468,7 +469,7 @@
           </select>
         </label>
         <label class={field}>
-          <span class={label}>First wait after a challenge page (s)</span>
+          <span class={label}>First wait after Amazon refuses (s)</span>
           <input
             class="c-input"
             type="number"
@@ -488,7 +489,7 @@
           />
         </label>
         <label class={field}>
-          <span class={label}>Pause after challenge pages in a row</span>
+          <span class={label}>Pause after refusals in a row</span>
           <input
             class="c-input"
             type="number"
@@ -498,7 +499,7 @@
           />
         </label>
         <label class={field}>
-          <span class={label}>Slow Amazon down above this share of challenge pages (%)</span>
+          <span class={label}>Slow Amazon down above this share of refusals (%)</span>
           <input
             class="c-input"
             type="number"

@@ -8,6 +8,9 @@
  * - Amazon's bot check: HTTP 200, 2-5 KB, Akamai's interstitial (bm-verify, /_sec/verify,
  *   triggerInterstitialChallenge). The classic captcha page (/errors/validateCaptcha) is matched
  *   too.
+ * - Amazon's HTTP 503 (a 320-byte page) or 429: seen live 2026-11-17 for 64 of 381 Amazon
+ *   requests at the 8 s pace while one-off requests got the page. Treated like the bot check
+ *   (decided by the user): the same doubling back-off and the automatic slow-down.
  * Bookmeter's search page always carries a congestion notice in its template, so it says
  * nothing; Bookmeter's busy answers are its HTTP statuses (403/429/503).
  */
@@ -25,8 +28,7 @@ export function classifyResponse(
 ): ResponseClass {
   if (status === null) return 'error';
   if (status === 404 || status === 410) return 'gone';
-  if (status === 429 || status === 503)
-    return site.startsWith('amazon') && looksLikeAmazonCheck(body) ? 'challenge' : 'busy';
+  if (status === 429 || status === 503) return site.startsWith('amazon') ? 'challenge' : 'busy';
   if (status === 403)
     return site.startsWith('amazon') && looksLikeAmazonCheck(body) ? 'challenge' : 'busy';
   if (status < 200 || status >= 300) return 'error';

@@ -118,7 +118,9 @@ describe('WP20d fetch queue', () => {
     expect(q.report(search.id, search.leaseToken, page(AMAZON_CHALLENGE), T0 + 1000)).toMatchObject(
       { outcome: 'challenge', state: 'queued' },
     );
-    expect(q.blocked('amazon-dp', T0 + 30_000)?.reason).toMatch(/challenge page: waiting 60 s/);
+    expect(q.blocked('amazon-dp', T0 + 30_000)?.reason).toMatch(
+      /refused \(bot check page\): waiting 60 s/,
+    );
     expect(q.blocked('amazon-search', T0 + 61_001)).toBeNull();
     // The second challenge in a row doubles the wait and pauses Amazon.
     const dpc = claims.find((c) => c.site === 'amazon-dp')!;
@@ -127,12 +129,71 @@ describe('WP20d fetch queue', () => {
       .prepare("SELECT backoff_seconds, paused_reason FROM fetch_sites WHERE site = 'amazon'")
       .get() as { backoff_seconds: number; paused_reason: string };
     expect(row.backoff_seconds).toBe(120);
-    expect(row.paused_reason).toBe('2 challenge pages in a row');
-    expect(q.blocked('amazon-dp', T0 + 10 * 60_000)?.reason).toBe('2 challenge pages in a row');
+    expect(row.paused_reason).toBe('2 refusals in a row');
+    expect(q.blocked('amazon-dp', T0 + 10 * 60_000)?.reason).toBe('2 refusals in a row');
     q.resume('amazon-dp', T0 + 10 * 60_000);
     expect(q.blocked('amazon-dp', T0 + 10 * 60_000)).toBeNull();
     // Challenges never count toward giving up.
     expect(db.prepare('SELECT MAX(attempts) AS a FROM fetch_requests').get()).toEqual({ a: 0 });
+  });
+
+  it("Amazon's 503 is a refusal like the bot check: doubling wait, slow-down, page kept, never given up", () => {
+    // Seen live 2026-11-17: a 320-byte 503 for 64 of 381 Amazon requests at the 8 s pace.
+    updateSettings(db, {
+      fetch: {
+        ...getSettings(db).fetch,
+        challengePauseAfter: 1000,
+        slowDownWindow: 20,
+        slowDownPercent: 10,
+      },
+    });
+    const refused = {
+      status: 503,
+      ms: 300,
+      error: null,
+      body: brotliCompressSync(Buffer.from('<html><body>' + 'x'.repeat(290) + '</body></html>')),
+      encoding: 'br' as const,
+    };
+    expect(classifyResponse('amazon-dp', 503, Buffer.alloc(320))).toBe('challenge');
+    expect(classifyResponse('amazon-search', 429, null)).toBe('challenge');
+    // Other sites' 503 stays "busy" (Bookmeter's congestion).
+    expect(classifyResponse('bookmeter', 503, Buffer.alloc(320))).toBe('busy');
+    let t = T0;
+    const waits: number[] = [];
+    for (let i = 0; i < 7; i++) {
+      q.enqueue(dp('B0000000AA'), null, t);
+      const [c] = q.claim(t).requests.filter((r) => r.site === 'amazon-dp');
+      expect(q.report(c.id, c.leaseToken, refused, t + 300)).toMatchObject({
+        outcome: 'challenge',
+        state: 'queued',
+      });
+      const row = db
+        .prepare("SELECT backoff_until, backoff_reason FROM fetch_sites WHERE site = 'amazon'")
+        .get() as { backoff_until: number; backoff_reason: string };
+      expect(row.backoff_reason).toMatch(/^refused \(HTTP 503\): waiting \d+ s$/);
+      waits.push(Math.round((row.backoff_until - (t + 300)) / 1000));
+      t = row.backoff_until + 1;
+    }
+    // 60 s doubling up to 15 min (the settings' defaults).
+    expect(waits).toEqual([60, 120, 240, 480, 900, 900, 900]);
+    // Refusals never count toward giving up.
+    expect(
+      db.prepare("SELECT state, attempts FROM fetch_requests WHERE key = 'B0000000AA'").get(),
+    ).toEqual({ state: 'queued', attempts: 0 });
+    // The page of each refusal is kept for a look.
+    const kept = fs.readdirSync(path.join(dir, 'cache', 'fetch-refused', 'amazon-dp'));
+    expect(kept).toHaveLength(7);
+    expect(kept.every((f) => /-503\.br$/.test(f))).toBe(true);
+    // And the refusals count toward the automatic slow-down.
+    for (let i = 0; i < 13; i++) {
+      q.enqueue(dp(`B00000${String(i).padStart(4, '0')}`), null, t);
+      const [c] = q.claim(t).requests.filter((r) => r.site === 'amazon-dp');
+      q.report(c.id, c.leaseToken, page('<html>' + 'x'.repeat(30000)), t + 500);
+      t += 20_000;
+    }
+    expect(db.prepare("SELECT slow_factor FROM fetch_sites WHERE site = 'amazon'").get()).toEqual({
+      slow_factor: 1.5,
+    });
   });
 
   it("Amazon's not-found page is gone, not a challenge; network errors are asked again and given up", () => {

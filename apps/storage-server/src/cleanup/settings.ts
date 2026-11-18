@@ -513,7 +513,7 @@ function validate(key: Key, value: unknown, current: CleanupSettings): unknown {
         sites,
         amazonPace: v.amazonPace as FetchSettings['amazonPace'],
         challengeBackoffSeconds: num(
-          'Back off after a challenge page (s)',
+          'First wait after Amazon refuses (s)',
           v.challengeBackoffSeconds,
           10,
           86400,
@@ -527,15 +527,20 @@ function validate(key: Key, value: unknown, current: CleanupSettings): unknown {
           true,
         ),
         challengePauseAfter: num(
-          'Pause after challenge pages in a row',
+          'Pause after refusals in a row',
           v.challengePauseAfter,
           1,
           1000,
           true,
         ),
-        slowDownPercent: num('Slow down above challenge share (%)', v.slowDownPercent, 0, 100),
+        slowDownPercent: num(
+          'Slow Amazon down above this share of refusals (%)',
+          v.slowDownPercent,
+          0,
+          100,
+        ),
         slowDownWindow: num(
-          'Challenge share over the last (requests)',
+          'Refusal share over the last (requests)',
           v.slowDownWindow,
           10,
           10000,

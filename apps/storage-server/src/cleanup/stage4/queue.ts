@@ -23,6 +23,10 @@ import { brotliCompressSync, brotliDecompressSync, constants as zc } from 'zlib'
 import type { FetchSettings, FetchSite } from '../settings';
 import { classifyResponse, type ResponseClass } from './challenge';
 
+/** Refused pages kept per site, and the most kept of each (bot checks and 503s are a few KB). */
+const REFUSED_KEEP = 500;
+const REFUSED_MAX_BYTES = 256 * 1024;
+
 export const LABELED_PRIORITY = 10;
 
 export interface RequestSpec {
@@ -359,6 +363,8 @@ export class FetchQueue {
         : classifyResponse(req.site, answer.status, raw);
     const bkey = backoffKey(req.site);
     const pace = AMAZON.has(req.site) ? this.amazonPace(now) : null;
+    if (outcome !== 'ok' && outcome !== 'gone' && raw)
+      this.keepRefused(req.site, id, answer.status, raw, now);
     let cacheFile: string | null = null;
     if ((outcome === 'ok' || outcome === 'gone') && raw) {
       cacheFile = this.cacheFile(req.site, req.key);
@@ -426,11 +432,9 @@ export class FetchQueue {
           .run(
             now + secs * 1000,
             secs,
-            `challenge page: waiting ${secs} s`,
+            `refused (${answer.status === 200 ? 'bot check page' : `HTTP ${answer.status}`}): waiting ${secs} s`,
             inRow,
-            inRow >= s.challengePauseAfter
-              ? `${inRow} challenge pages in a row`
-              : row.paused_reason,
+            inRow >= s.challengePauseAfter ? `${inRow} refusals in a row` : row.paused_reason,
             inRow >= s.challengePauseAfter ? now : row.paused_at,
             now,
             bkey,
@@ -497,7 +501,34 @@ export class FetchQueue {
     return { accepted: true, outcome, state };
   }
 
-  /** Amazon slows down (x1.5) while its recent challenge share is above the setting. */
+  /**
+   * A refused answer's page (a bot check, a 503, an error page), kept for a look at what the
+   * site said: cache/cleanup/fetch-refused/<site>/<time>-<request>-<status>.br, at most
+   * REFUSED_KEEP per site (the cache isn't backed up). Never read by the analysis.
+   */
+  private keepRefused(
+    site: string,
+    id: number,
+    status: number | null,
+    raw: Buffer,
+    now: number,
+  ): void {
+    try {
+      const dir = path.join(this.cacheDir, 'fetch-refused', site);
+      fs.mkdirSync(dir, { recursive: true });
+      if (fs.readdirSync(dir).length >= REFUSED_KEEP) return;
+      const stamp = new Date(now).toISOString().replace(/[:.]/g, '-');
+      const body = raw.subarray(0, REFUSED_MAX_BYTES);
+      fs.writeFileSync(
+        path.join(dir, `${stamp}-${id}-${status ?? 'none'}.br`),
+        brotliCompressSync(body, { params: { [zc.BROTLI_PARAM_QUALITY]: 5 } }),
+      );
+    } catch {
+      // Only for a look later: never in the way of the answer.
+    }
+  }
+
+  /** Amazon slows down (x1.5) while its recent refusal share is above the setting. */
   private updateSlowDown(now: number): void {
     const s = this.settings();
     const rows = this.db
@@ -515,7 +546,7 @@ export class FetchQueue {
         .prepare('UPDATE fetch_sites SET slow_factor = ?, updated_at = ? WHERE site = ?')
         .run(factor, now, 'amazon');
       this.log(
-        `fetch: Amazon ${factor > 1 ? 'slowed down' : 'back to its pace'} (challenge share ${share.toFixed(1)} % of the last ${rows.length})`,
+        `fetch: Amazon ${factor > 1 ? 'slowed down' : 'back to its pace'} (refused ${share.toFixed(1)} % of the last ${rows.length})`,
       );
     }
   }

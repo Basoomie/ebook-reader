@@ -83,7 +83,7 @@ export function siteLine(s: Stage4Site, now = Date.now()): string {
   const parts = [`${n(s.done + s.gone)} answered`];
   if (s.queued + s.leased) parts.push(`${n(s.queued + s.leased)} to ask`);
   if (s.failed) parts.push(`${n(s.failed)} given up`);
-  if (s.challenges) parts.push(`${n(s.challenges)} challenge page${s.challenges === 1 ? '' : 's'}`);
+  if (s.challenges) parts.push(`${n(s.challenges)} refused`);
   if (s.errors) parts.push(`${n(s.errors)} network error${s.errors === 1 ? '' : 's'}`);
   if (s.queued + s.leased > 0) {
     parts.push(`${s.secondsPerRequest} s per request · about ${duration(s.secondsLeft)} left`);
@@ -94,7 +94,7 @@ export function siteLine(s: Stage4Site, now = Date.now()): string {
       `${s.backoffReason ?? 'waiting'} (until ${new Date(s.backoffUntil).toLocaleTimeString()})`
     );
   }
-  if (s.slowFactor > 1) parts.push(`slowed down ×${s.slowFactor} (many challenge pages)`);
+  if (s.slowFactor > 1) parts.push(`slowed down ×${s.slowFactor} (many refusals)`);
   return parts.join(' · ');
 }
 
