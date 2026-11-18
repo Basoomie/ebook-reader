@@ -21,6 +21,14 @@ import { clean, type RefRecord } from './rules-v3';
 import { decideStage4 } from './stage4-rules';
 import { N, NA, nfkc } from '../title-rules';
 
+/**
+ * Measured refinements (2026-11-18, scripts/measure-stage4-bw.ts): a volume number written
+ * with a prefix (life.4, #04, Vol.3), the book's title stem only when most volumes start with
+ * it (more than half), and a light novel's illustrators as every person who isn't a file
+ * author when BookWalker lists three or more. Switchable for the measurement only.
+ */
+export const standinOptions = { prefixes: true, strictMajority: true, multiIllustrators: true };
+
 /** Marks the record's Amazon part as BookWalker standing in (proposals name BookWalker). */
 export const STANDIN = 'bookwalker';
 
@@ -89,6 +97,13 @@ function tidy(p: string): string {
 /** The book's title up to its volume number (or the whole title when it has none). */
 export function titleStem(title: string): string {
   const t = nfkc(title).replace(/【[^】]*】/gu, '');
+  if (standinOptions.prefixes) {
+    const p =
+      /^(.*?)[\s\u3000]*(?:life\.|#|vol\.?|Vol\.?|VOL\.?|No\.?)\s*\d+(?:[\s\u3000~～\-―(（【].*)?$/u.exec(
+        t,
+      );
+    if (p) return tidy(p[1]);
+  }
   const m =
     /^(.*?)[\s\u3000]*(?:第?\d+(?:巻|部)?|[IVX]+|[Ⅰ-Ⅻ]|[上中下]|\(\d+\))(?:[\s\u3000~～\-―(（【].*)?$/u.exec(
       t,
@@ -104,7 +119,11 @@ export function commonSeries(titles: string[], fileTitle: string): string | null
   if (titles.length < 2) return null;
   const vols = titles.map(nfkc);
   const stem = titleStem(fileTitle);
-  if (stem.length >= 2 && vols.filter((v) => v.startsWith(stem)).length * 2 >= vols.length)
+  const starting = vols.filter((v) => v.startsWith(stem)).length;
+  if (
+    stem.length >= 2 &&
+    (standinOptions.strictMajority ? starting * 2 > vols.length : starting * 2 >= vols.length)
+  )
     return stem;
   let p = vols[0];
   for (const t of vols.slice(1)) {
@@ -130,10 +149,14 @@ export function bwAsAmazon(rr: RefRecord): RefRecord['amazon'] | null {
   // BookWalker lists the author(s) first and a light novel's illustrator last; EPUB files often
   // list the illustrator as an author too, so the file can't tell them apart.
   const ln = category === 'ライトノベル' || category === '新文芸';
+  const many = standinOptions.multiIllustrators && ln && people.length >= 3 && fa.size > 0;
   const authors = people.map((name, i) => ({
     name,
-    role:
-      ln && people.length >= 2
+    role: many
+      ? fa.has(NA(name))
+        ? '著'
+        : 'イラスト'
+      : ln && people.length >= 2
         ? i === people.length - 1
           ? 'イラスト'
           : '著'
@@ -207,5 +230,9 @@ export function bwSettles(rr: RefRecord): boolean {
   if (!bwLightNovel(r) || !bwIdentified(r)) return false;
   const x = { ...r, amazon: bwAsAmazon(r) ?? {} } as RefRecord;
   const d = decideStage4(x);
+  // BookWalker never settles "no series" for a numbered title (measured: one labeled book,
+  // 『…無双譚４…』, where Amazon rightly left the series for review): Amazon is asked.
+  const ft = nfkc((r.file.opf_title || r.calibre.cal_title) as string);
+  if (d.values.se === null && /[0-9Ⅰ-Ⅻ]/u.test(ft)) return false;
   return (['t', 'au', 'il', 'se', 'ix', 'fmt'] as const).every((f) => d.auto[f]);
 }

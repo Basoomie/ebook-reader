@@ -429,3 +429,35 @@ if (process.argv.includes('--ln')) {
     for (const e of ex[k]) console.log('    ' + e);
   }
 }
+
+// The refinements one at a time and together (bw-standin.ts standinOptions).
+if (process.argv.includes('--tuning')) {
+  const combos: [string, Partial<typeof prod.standinOptions>][] = [
+    ['none', { prefixes: false, strictMajority: false, multiIllustrators: false }],
+    ['prefixes', { prefixes: true, strictMajority: false, multiIllustrators: false }],
+    ['strict majority', { prefixes: false, strictMajority: true, multiIllustrators: false }],
+    ['several illustrators', { prefixes: false, strictMajority: false, multiIllustrators: true }],
+    ['all three', { prefixes: true, strictMajority: true, multiIllustrators: true }],
+  ];
+  for (const [name, o] of combos) {
+    Object.assign(prod.standinOptions, o);
+    const res = run((r) => (prod.bwSettles(r) ? 'prod' : 'amazon'));
+    console.log(
+      `\nTUNING ${name}: Amazon requests per book ${res.perBook.toFixed(3)}; BookWalker stood in for ${res.bw}`,
+    );
+    for (const grp of ['ABC', 'D'] as const) {
+      const s = res.groups[grp];
+      const t = today.groups[grp];
+      console.log(
+        `  ${grp === 'ABC' ? 'the 600' : 'check D'}: ` +
+          SCORED_FIELDS.map((f) => {
+            const p = percent(s[f].right, s[f].auto);
+            const a = percent(s[f].auto, s[f].scored);
+            const pt = percent(t[f].right, t[f].auto);
+            const at = percent(t[f].auto, t[f].scored);
+            return `${f} ${p?.toFixed(1)} (${pt?.toFixed(1)}) / ${a?.toFixed(0)} (${at?.toFixed(0)}) [${s[f].auto - s[f].right} wrong vs ${t[f].auto - t[f].right}]`;
+          }).join(' | '),
+      );
+    }
+  }
+}
