@@ -937,6 +937,9 @@ export class CleanupService {
     const totals = this.db
       .prepare('SELECT site, attempts AS n, challenges, errors, busy FROM fetch_sites')
       .all() as { site: string; n: number; challenges: number; errors: number; busy: number }[];
+    const lastAttempts = this.db.prepare(
+      'SELECT at FROM fetch_attempts WHERE site = ? ORDER BY at DESC LIMIT ?',
+    );
     const sites = (FETCH_SITES as readonly FetchSite[]).map((site) => {
       const by = (st: string) => counts.find((c) => c.site === site && c.state === st)?.n ?? 0;
       const r = recent.find((x) => x.site === site);
@@ -952,8 +955,18 @@ export class CleanupService {
           }
         | undefined;
       const left = by('queued') + by('leased');
+      // The median gap between the site's last 100 requests: its pace while it answers. An
+      // average over the last minutes took a refusal's wait for the pace (found live
+      // 2026-11-17: Amazon at 545 s per request during a 15-minute wait, 601 days in all).
+      const ats = (lastAttempts.all(site, 101) as { at: number }[]).map((x) => x.at);
+      const gaps = ats
+        .slice(1)
+        .map((x, k) => ats[k] - x)
+        .sort((x, y) => x - y);
       const perRequest =
-        r && r.n > 1 ? (now - r.first) / 1000 / r.n : s.sites[site].intervalSeconds;
+        gaps.length >= 10
+          ? Math.max(gaps[Math.floor(gaps.length / 2)] / 1000, 0.1)
+          : s.sites[site].intervalSeconds;
       return {
         site,
         enabled: s.sites[site].enabled,

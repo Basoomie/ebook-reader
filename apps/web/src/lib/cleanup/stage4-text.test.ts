@@ -115,6 +115,26 @@ describe('stage 4 wording', () => {
         timeLeft: { ...reading.timeLeft!, read: null }
       })
     ).toBe('Reading the files: 10 of 100 · measuring the speed');
+    const refused = {
+      ...reading,
+      sites: [
+        site({
+          site: 'amazon-dp',
+          backoffUntil: 2000,
+          backoffReason: 'refused (HTTP 503): waiting 900 s'
+        }),
+        site({
+          site: 'amazon-search',
+          backoffUntil: 2000,
+          backoffReason: 'refused (HTTP 503): waiting 900 s'
+        }),
+        site({ site: 'ranobedb', backoffUntil: 2000, backoffReason: 'network error: waiting 30 s' })
+      ]
+    } as unknown as Stage4Status;
+    expect(timeLeftLine(refused, 1000)).toMatch(
+      / · Amazon is held up by refusals right now; this assumes it answers again at its pace · /
+    );
+    expect(timeLeftLine(refused, 3000)).not.toMatch(/held up/);
     expect(timeLeftLine({ ...reading, timeLeft: { ...reading.timeLeft!, total: 30 } })).toBe(
       'Time left for the whole Preview: less than a minute'
     );

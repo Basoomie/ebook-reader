@@ -124,7 +124,7 @@ export function booksLine(status: Stage4Status): string {
 }
 
 /** The whole Preview's time left: the reading, the slowest site, then the final pass. */
-export function timeLeftLine(status: Stage4Status): string {
+export function timeLeftLine(status: Stage4Status, now = Date.now()): string {
   const t = status.timeLeft;
   if (!t) return '';
   if (t.total === null) return 'Time left for the whole Preview: measuring…';
@@ -138,6 +138,22 @@ export function timeLeftLine(status: Stage4Status): string {
     parts.push(`the slowest site is ${name}, about ${duration(t.slowest.seconds)}`);
   }
   if (t.final) parts.push(`then the final pass, about ${duration(t.final)}`);
+  // A site held up by refusals (or paused) right now: the estimate assumes it answers again.
+  const held = new Set(
+    (status.sites ?? [])
+      .filter(
+        (s) =>
+          s.enabled &&
+          (s.pausedReason ||
+            (s.backoffUntil && s.backoffUntil > now && /^refused/.test(s.backoffReason ?? '')))
+      )
+      .map((s) => (s.site.startsWith('amazon') ? 'Amazon' : (SITE_NAMES[s.site] ?? s.site)))
+  );
+  for (const name of held) {
+    parts.push(
+      `${name} is held up by refusals right now; this assumes it answers again at its pace`
+    );
+  }
   parts.push(
     t.basis === 'labeled'
       ? "requests per book measured on this run's labeled books"
