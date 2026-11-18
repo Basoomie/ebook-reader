@@ -66,16 +66,51 @@ export const DUP_LISTS: { id: string; label: string }[] = [
   { id: 'gate', label: 'Checked on the labeled pairs' }
 ];
 
+/** Hours and minutes of audio. */
+function audioHours(seconds: number): string {
+  const m = Math.round(seconds / 60);
+  return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`;
+}
+
 export function audioStage3Bar(
   p: AudioStage3Progress | null | undefined,
   now = Date.now()
 ): ProgressBar | null {
-  if (!p || p.phase !== 'fingerprints' || p.windowsTotal <= 0) return null;
-  return {
-    label: `${PHASES.fingerprints}: ${n(p.windowsDone)} of ${n(p.windowsTotal)}`,
-    fraction: Math.min(1, p.windowsDone / p.windowsTotal),
-    eta: eta(p.windowsDone, p.windowsTotal, p.phaseStartedAt, p.phaseStartDone, now)
-  };
+  if (!p) return null;
+  if (p.phase === 'fingerprints' && p.windowsTotal > 0) {
+    return {
+      label: `${PHASES.fingerprints}: ${n(p.windowsDone)} of ${n(p.windowsTotal)}`,
+      fraction: Math.min(1, p.windowsDone / p.windowsTotal),
+      eta: eta(p.windowsDone, p.windowsTotal, p.phaseStartedAt, p.phaseStartDone, now)
+    };
+  }
+  if (p.phase === 'compare' && p.compareTotal) {
+    const done = p.compareDone ?? 0;
+    return {
+      label: `${PHASES.compare}: ${n(done)} of ${count(p.compareTotal, 'pair', 'pairs')}`,
+      fraction: Math.min(1, done / p.compareTotal),
+      eta: null
+    };
+  }
+  if (p.phase === 'decode' && p.decodesLeft !== undefined) {
+    const doneFiles = p.decodesDone;
+    const total = doneFiles + p.decodesLeft;
+    // Time left from the audio decoded since the server started (the list can still grow).
+    const audioDone = p.decodeAudioDone ?? 0;
+    const from = p.decodeRateFrom;
+    const left = p.decodeAudioLeft ?? 0;
+    let time: string | null = null;
+    if (from && left > 0) {
+      time = eta(audioDone, audioDone + left, from.at, from.audio, now);
+      if (time) time = `${time} (estimate; more may be added)`;
+    }
+    return {
+      label: `${PHASES.decode}: ${n(doneFiles)} of ${count(total, 'file', 'files')} (${audioHours(left)} of audio left)`,
+      fraction: total > 0 ? Math.min(1, doneFiles / total) : 0,
+      eta: time
+    };
+  }
+  return null;
 }
 
 function minutes(ms: number): string {

@@ -660,6 +660,13 @@ export interface AudioStage3Progress {
   windowErrors: number;
   decodesDone: number;
   decodesReused: number;
+  /** Missing on a server before the progress fix. */
+  decodesLeft?: number;
+  decodeAudioLeft?: number;
+  decodeAudioDone?: number;
+  decodeRateFrom?: { at: number; audio: number } | null;
+  compareDone?: number;
+  compareTotal?: number;
   yields: number;
   phaseStartedAt: number;
   phaseStartDone: number;
