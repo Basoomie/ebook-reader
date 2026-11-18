@@ -220,7 +220,16 @@ export function booksLines(counts: Record<string, number> | null): string[] {
 export function snapshotLine(s: AbsSnapshotSummary | null | undefined): string {
   if (!s) return 'No snapshot yet.';
   const version = s.serverVersion ? ` (Audiobookshelf ${s.serverVersion})` : '';
-  return `${count(s.libraries, 'library', 'libraries')} with ${count(s.items, 'item', 'items')}, ${count(s.users, 'user', 'users')}${version}; ${count(s.progress, 'book', 'books')} with listening progress: ${n(s.finished)} finished, ${n(s.inProgress)} started${s.notInAbs ? `, ${n(s.notInAbs)} no longer in Audiobookshelf` : ''}.`;
+  // Every library is in the snapshot; each is counted on its own (their items are not added up).
+  const libs = s.perLibrary
+    ? `${count(s.libraries, 'library', 'libraries')}${s.perLibrary.length ? ': ' : ''}${s.perLibrary
+        .map(
+          (l) =>
+            `${l.name ?? '(no name)'} ${l.items === null ? '(items not known)' : count(l.items, 'item', 'items')}${l.progress ? ` (${n(l.progress)} with progress)` : ''}`
+        )
+        .join(' · ')}`
+    : `${count(s.libraries, 'library', 'libraries')} with ${count(s.items, 'item', 'items')}`;
+  return `${libs}; ${count(s.users, 'user', 'users')}${version}; ${count(s.progress, 'book', 'books')} with listening progress: ${n(s.finished)} finished, ${n(s.inProgress)} started${s.notInAbs ? `, ${n(s.notInAbs)} no longer in Audiobookshelf` : ''}.`;
 }
 
 export function durationText(seconds: number | null | undefined): string {

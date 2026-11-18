@@ -165,7 +165,29 @@ describe('the Audiobooks tab wording', () => {
         problems: 0
       })
     ).toBe(
-      '3 libraries with 5,400 items, 1 user (Audiobookshelf 2.37.1); 15 books with listening progress: 5 finished, 10 started, 4 no longer in Audiobookshelf.'
+      '3 libraries with 5,400 items; 1 user (Audiobookshelf 2.37.1); 15 books with listening progress: 5 finished, 10 started, 4 no longer in Audiobookshelf.'
+    );
+    // Every library on its own, not added up (user, 2026-11-18).
+    expect(
+      snapshotLine({
+        takenAt: NOW,
+        serverVersion: '2.37.1',
+        libraries: 3,
+        items: 5400,
+        perLibrary: [
+          { name: 'Japanese Audiobooks', items: 5354, progress: 14 },
+          { name: 'English', items: 1, progress: 0 },
+          { name: null, items: null, progress: 1 }
+        ],
+        users: 1,
+        progress: 15,
+        finished: 5,
+        inProgress: 10,
+        notInAbs: 0,
+        problems: 0
+      })
+    ).toBe(
+      '3 libraries: Japanese Audiobooks 5,354 items (14 with progress) · English 1 item · (no name) (items not known) (1 with progress); 1 user (Audiobookshelf 2.37.1); 15 books with listening progress: 5 finished, 10 started.'
     );
     expect(durationText(46_620)).toBe('12 h 57 min');
     expect(durationText(65)).toBe('1 min 5 s');

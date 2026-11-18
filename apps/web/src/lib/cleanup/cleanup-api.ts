@@ -412,6 +412,8 @@ export interface AbsSnapshotSummary {
   serverVersion: string | null;
   libraries: number;
   items: number;
+  /** Each library on its own: item count (null: not known) and books with listening progress. */
+  perLibrary?: { name: string | null; items: number | null; progress: number }[];
   users: number;
   progress: number;
   finished: number;

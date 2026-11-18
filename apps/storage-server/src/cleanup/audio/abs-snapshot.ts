@@ -87,6 +87,11 @@ export interface AbsSnapshotSummary {
   serverVersion: string | null;
   libraries: number;
   items: number;
+  /**
+   * Each library on its own (the snapshot covers every library, user 2026-11-18): its item
+   * count (null: ABS didn't answer) and how many books in it have listening progress.
+   */
+  perLibrary: { name: string | null; items: number | null; progress: number }[];
   users: number;
   progress: number;
   finished: number;
@@ -205,6 +210,12 @@ export function summarize(d: AbsSnapshotData): AbsSnapshotSummary {
     serverVersion: d.serverVersion,
     libraries: d.libraries.length,
     items: d.libraries.reduce((a, l) => a + (l.itemCount ?? 0), 0),
+    perLibrary: d.libraries.map((l) => ({
+      name: l.name,
+      items: l.itemCount,
+      // A progress row names its library as the snapshot does (its id when it has no name).
+      progress: d.progress.filter((p) => p.library === (l.name ?? l.id)).length,
+    })),
     users: d.users.length,
     progress: d.progress.length,
     finished: d.progress.filter((p) => p.isFinished).length,
@@ -226,6 +237,19 @@ export function saveSnapshot(db: Database.Database, d: AbsSnapshotData): number 
 export function listSnapshots(
   db: Database.Database,
 ): { id: number; summary: AbsSnapshotSummary }[] {
+  // A snapshot saved before the summary had perLibrary (2026-11-18) gets it once from its data.
+  const older = db
+    .prepare(
+      `SELECT id, data_json FROM abs_snapshots WHERE json_extract(summary_json, '$.perLibrary') IS NULL`,
+    )
+    .all() as { id: number; data_json: string }[];
+  if (older.length) {
+    const put = db.prepare('UPDATE abs_snapshots SET summary_json = ? WHERE id = ?');
+    db.transaction(() => {
+      for (const r of older)
+        put.run(JSON.stringify(summarize(JSON.parse(r.data_json) as AbsSnapshotData)), r.id);
+    })();
+  }
   return (
     db.prepare('SELECT id, summary_json FROM abs_snapshots ORDER BY id DESC LIMIT 50').all() as {
       id: number;

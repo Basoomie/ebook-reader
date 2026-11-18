@@ -14,7 +14,13 @@ import type { AddressInfo } from 'net';
 import path from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { AbsClient } from '../src/cleanup/audio/abs-client';
-import { progressCsv, summarize, takeAbsSnapshot } from '../src/cleanup/audio/abs-snapshot';
+import {
+  listSnapshots,
+  progressCsv,
+  saveSnapshot,
+  summarize,
+  takeAbsSnapshot,
+} from '../src/cleanup/audio/abs-snapshot';
 import { checkRoots } from '../src/cleanup/audio/audio-cleanup-service';
 import { getAudioStage, setAudioStageMode } from '../src/cleanup/audio/audio-stages';
 import {
@@ -1328,7 +1334,21 @@ describe('stage 0: Audiobookshelf, read only', () => {
       finished: 1,
       inProgress: 2,
       notInAbs: 1,
+      // Every library on its own (user, 2026-11-18); the book no longer in ABS has no library.
+      perLibrary: [{ name: 'Japanese Audiobooks', items: 5354, progress: 2 }],
     });
+    // A snapshot saved before perLibrary existed gets it from its data when listed.
+    const db = freshDb();
+    const id = saveSnapshot(db, d);
+    const old = { ...summarize(d) } as Partial<ReturnType<typeof summarize>>;
+    delete old.perLibrary;
+    db.prepare('UPDATE abs_snapshots SET summary_json = ? WHERE id = ?').run(
+      JSON.stringify(old),
+      id,
+    );
+    expect(listSnapshots(db)[0].summary.perLibrary).toEqual([
+      { name: 'Japanese Audiobooks', items: 5354, progress: 2 },
+    ]);
     const csv = progressCsv(d);
     expect(csv.charCodeAt(0)).toBe(0xfeff);
     expect(csv).toContain(
