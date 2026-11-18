@@ -131,3 +131,5 @@ services:
       # The storage server as reached from inside gluetun's network (the NAS's LAN address).
       - TTSU_URL=${TTSU_FETCH_SERVER_URL:-http://192.168.1.5:3081}
       - FETCH_TOKEN=${TTSU_FETCH_TOKEN:-}
+      # Kept across restarts, so a restarted fetcher takes over at once.
+      - FETCHER_ID=ttsu-cleanup-fetch

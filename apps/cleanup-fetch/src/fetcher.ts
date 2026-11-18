@@ -12,7 +12,6 @@
  */
 import { spawn } from 'child_process';
 import { randomUUID } from 'crypto';
-import { hostname } from 'os';
 import { brotliCompressSync, constants as zc } from 'zlib';
 import type { FetchConfig } from './config';
 import { allowedUrl } from './hosts';
@@ -45,11 +44,11 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export class Fetcher {
   /**
-   * The container's hostname (kept across restarts of the same container, so a restarted fetcher
-   * takes over at once); a second container has its own and stays inactive while this one runs.
+   * FETCHER_ID from the compose file (kept across restarts, so a restarted fetcher takes over at
+   * once), else a random id. Not the hostname: a container on gluetun's network has gluetun's.
+   * Whichever fetcher asks, the server gives one request per site at a time at the site's pace.
    */
-  readonly id =
-    `${hostname()}-${process.env.FETCHER_ID_SUFFIX ?? ''}`.replace(/-$/, '') || randomUUID();
+  readonly id = process.env.FETCHER_ID?.trim() || randomUUID();
   private active = false;
   private stopped = false;
   private requestTimeoutMs = 30_000;

@@ -10,8 +10,9 @@ VPN's address, never the home one.
   stop) the answer is kept and posted again. Restarts lose nothing.
 - **Only allowlisted https hosts** (`src/hosts.ts`), redirects only within them, the reference
   run's browser headers. Challenge pages are never answered: the server backs the site off.
-- **One fetcher at a time.** Its id is the container's hostname; a second container stays idle
-  while the first one's heartbeat is fresh.
+- **One fetcher at a time.** Its id is `FETCHER_ID` (kept across restarts); a second fetcher stays
+  idle while the first one's heartbeat is fresh, and the server gives one request per site at a
+  time at the site's pace whoever asks.
 - **Generated author readings** for names Web NDL Authorities doesn't know: SudachiPy 0.6.10 with
   sudachidict-core 20260428 (the PC TTS's pins), `sudachi/readings.py`, only for names written in
   kana and kanji; always marked for spot checks.
