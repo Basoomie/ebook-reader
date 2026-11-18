@@ -85,7 +85,11 @@ const STALE_SQL = `
   SELECT f.id, f.root, f.rel_path, f.rel_path_raw, f.size, f.mtime_ms FROM audio_files f
   LEFT JOIN audio_file_health h ON h.file_id = f.id
   WHERE f.kind = 'audio' AND f.gone_at IS NULL
-    AND (h.file_id IS NULL OR h.size <> f.size OR h.mtime_ms <> f.mtime_ms)`;
+    AND (h.file_id IS NULL OR h.size <> f.size OR h.mtime_ms <> f.mtime_ms
+      OR ((h.start_decode_ok = 0 OR h.end_decode_ok = 0) AND h.checked_at < @since))`;
+// A file whose play failed is checked again once in every analysis (@since = the analysis's
+// start; few files: 77 of 11,651 in the live run), so a change in what counts as a problem
+// reaches the results already stored.
 
 export class AudioStage2 {
   private version: string | null | undefined;
@@ -185,7 +189,11 @@ export class AudioStage2 {
       }
       p.books = n;
     })();
-    const stale = (db.prepare(`SELECT COUNT(*) AS n FROM (${STALE_SQL})`).get() as { n: number }).n;
+    const stale = (
+      db.prepare(`SELECT COUNT(*) AS n FROM (${STALE_SQL})`).get({ since: p.startedAt }) as {
+        n: number;
+      }
+    ).n;
     const all = (
       db
         .prepare(`SELECT COUNT(*) AS n FROM audio_files WHERE kind = 'audio' AND gone_at IS NULL`)
@@ -210,7 +218,7 @@ export class AudioStage2 {
       .prepare(
         `${STALE_SQL} ORDER BY f.root, f.rel_path LIMIT ${Math.max(HEALTH_CHUNK, s.healthWorkers * 4)}`,
       )
-      .all() as {
+      .all({ since: p.startedAt }) as {
       id: number;
       root: RootName;
       rel_path: string;

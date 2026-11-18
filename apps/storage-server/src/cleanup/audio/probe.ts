@@ -140,6 +140,29 @@ function run(
   });
 }
 
+/**
+ * ffmpeg messages about the file's container that say nothing about the audio. A play that
+ * reports only these is clean. Found in the live run (2026-11-18): one file was counted as
+ * damaged for "Referenced QT chapter track not found" (a broken reference to the chapter
+ * track; the audio plays with exit 0 and the chapter list still reads). ffmpeg 8.0 prefixes it
+ * with "[mov,mp4,…]", 8.1 with "[in#0 …]", so only the message text is matched.
+ */
+const NOT_AUDIO_PROBLEMS: readonly RegExp[] = [/Referenced QT chapter track not found/];
+
+/** What a play reported about the audio itself: its messages without the notices above. */
+export function audioProblems(stderr: string): string {
+  const kept: string[] = [];
+  let skippedLast = false;
+  for (const line of stderr.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    // ffmpeg folds repeats into "Last message repeated N times": it belongs to the line before.
+    if (/Last message repeated \d+ times?/.test(line) && skippedLast) continue;
+    skippedLast = NOT_AUDIO_PROBLEMS.some((re) => re.test(line));
+    if (!skippedLast) kept.push(line);
+  }
+  return kept.join('\n').trim();
+}
+
 function short(text: string, max = 500): string {
   const t = text.trim().replace(/\s+/g, ' ');
   return t.length > max ? `${t.slice(0, max)}…` : t;
@@ -306,7 +329,7 @@ export async function checkHealth(
     const both = combined
       ? await run(tools.ffmpegPath, toolArgs('decode-both', input, decodeSeconds), fd, timeoutMs)
       : null;
-    if (both && !both.timedOut && both.code === 0 && both.stderr.trim() === '') {
+    if (both && !both.timedOut && both.code === 0 && audioProblems(both.stderr) === '') {
       result.startDecodeOk = true;
       result.endDecodeOk = true;
       result.decodeError = null;
@@ -315,13 +338,14 @@ export async function checkHealth(
     const problems: string[] = [];
     for (const kind of ['decode-start', 'decode-end'] as const) {
       const r = await run(tools.ffmpegPath, toolArgs(kind, input, decodeSeconds), fd, timeoutMs);
-      const ok = !r.timedOut && r.code === 0 && r.stderr.trim() === '';
+      const reported = audioProblems(r.stderr);
+      const ok = !r.timedOut && r.code === 0 && reported === '';
       if (kind === 'decode-start') result.startDecodeOk = ok;
       else result.endDecodeOk = ok;
       if (!ok) {
         const what = kind === 'decode-start' ? 'start' : 'end';
         problems.push(
-          `${what}: ${r.timedOut ? 'took too long' : short(r.stderr, 300) || `exit ${r.code}`}`,
+          `${what}: ${r.timedOut ? 'took too long' : short(reported, 300) || `exit ${r.code}`}`,
         );
       }
     }

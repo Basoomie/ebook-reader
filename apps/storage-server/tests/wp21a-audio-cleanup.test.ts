@@ -26,7 +26,7 @@ import {
 } from '../src/cleanup/audio/book-units';
 import { importDryRun } from '../src/cleanup/audio/dry-run';
 import { decodeMojibake, decodePath } from '../src/cleanup/audio/mojibake';
-import { checkHealth, parseProbe, toolArgs } from '../src/cleanup/audio/probe';
+import { audioProblems, checkHealth, parseProbe, toolArgs } from '../src/cleanup/audio/probe';
 import { AudioStage1, identityCounts } from '../src/cleanup/audio/stage1-identity';
 import { AudioStage2, booksCounts } from '../src/cleanup/audio/stage2-books';
 import { walkRoots } from '../src/cleanup/audio/walk';
@@ -730,6 +730,23 @@ describe('file health', () => {
     expect(r.tags).toEqual({ title: 't', artist: 'a', composer: 'n' });
   });
 
+  it('a container notice about the chapter track is not an audio problem', () => {
+    const notice =
+      '[mov,mp4,m4a,3gp,3g2,mj2 @ 0x15261f0d5380] Referenced QT chapter track not found';
+    const NL = String.fromCharCode(10);
+    const CR = String.fromCharCode(13);
+    expect(audioProblems(notice + NL)).toBe('');
+    expect(
+      audioProblems('[in#0 @ 0000018fe743cfc0] Referenced QT chapter track not found' + CR + NL),
+    ).toBe('');
+    expect(audioProblems(notice + NL + '    Last message repeated 1 times' + NL)).toBe('');
+    // Real problems stay, also next to the notice, with their own repeat line.
+    const bad = '[aac @ 0x1] Number of bands (59) exceeds limit (40).';
+    const repeat = '    Last message repeated 3 times';
+    expect(audioProblems(notice + NL + bad + NL + repeat)).toBe(bad + NL + repeat);
+    expect(audioProblems('')).toBe('');
+  });
+
   describe.skipIf(!HAS_FFMPEG)('with ffmpeg', () => {
     function ff(args: string[]) {
       execFileSync('ffmpeg', ['-v', 'error', '-y', ...args], { windowsHide: true });
@@ -823,6 +840,32 @@ describe('file health', () => {
         }
       }
     }, 120_000);
+
+    it('a file whose chapter track reference is broken plays clean (live run, 2026-11-18)', async () => {
+      const dir = makeTempDir('wp21a-qtchap');
+      const f = makeAudio(dir);
+      // Point the chapter track reference (tref/chap) at a track that does not exist.
+      const buf = fs.readFileSync(f.m4b);
+      const tref = buf.indexOf(Buffer.from('tref'));
+      expect(tref).toBeGreaterThan(0);
+      const chap = buf.indexOf(Buffer.from('chap'), tref);
+      buf.writeUInt32BE(99, chap + 4);
+      const file = path.join(dir, 'chapter-ref.m4b');
+      fs.writeFileSync(file, buf);
+      const opts = { decodeSeconds: 2, timeoutMs: 30_000 };
+      for (const combined of [true, false]) {
+        const r = await checkHealth(file, TOOLS, { ...opts, combined });
+        expect(r).toMatchObject({
+          headerOk: true,
+          startDecodeOk: true,
+          endDecodeOk: true,
+          decodeError: null,
+        });
+        // ffprobe's note stays on the file, and the chapter list still reads.
+        expect(r.error).toMatch(/Referenced QT chapter track not found/);
+        expect(r.chapters).toHaveLength(2);
+      }
+    });
 
     it('reads format from the content, chapters, and checks start and end', async () => {
       const dir = makeTempDir('wp21a-health');
@@ -958,10 +1001,45 @@ describe('file health', () => {
       );
       expect(tmwEv.ids).toMatchObject({ asins: ['B0A0000001'], order: 1 });
       expect(tmwEv.files[0].chapters).toBe(2);
-      // A second analysis reads no file again (nothing changed).
+      // A second analysis reads no clean file again (nothing changed); the one damaged file is
+      // checked once more (a stored failed play is checked again in every analysis, so a change
+      // in what counts as a problem reaches the results already stored; live run 2026-11-18).
+      const damagedBefore = db
+        .prepare(
+          'SELECT file_id FROM audio_file_health WHERE start_decode_ok = 0 OR end_decode_ok = 0',
+        )
+        .all();
+      expect(damagedBefore).toHaveLength(1);
       stage.restart();
       for (let i = 0; i < 100; i++) if (await stage.step(() => false)) break;
-      expect(stage.progress()!.healthReused).toBe(9);
+      expect(stage.progress()!.healthReused).toBe(8);
+      expect(stage.progress()!.healthDone).toBe(9);
+      expect(
+        db
+          .prepare(
+            'SELECT file_id FROM audio_file_health WHERE start_decode_ok = 0 OR end_decode_ok = 0',
+          )
+          .all(),
+      ).toEqual(damagedBefore);
+      // A clean file stored as failed by an older rule comes back clean.
+      const firstId = (
+        db
+          .prepare(
+            'SELECT MIN(file_id) AS id FROM audio_file_health WHERE start_decode_ok = 1 AND end_decode_ok = 1',
+          )
+          .get() as { id: number }
+      ).id;
+      db.prepare(
+        `UPDATE audio_file_health SET start_decode_ok = 0, decode_error = 'start: old rule' WHERE file_id = ?`,
+      ).run(firstId);
+      stage.restart();
+      for (let i = 0; i < 100; i++) if (await stage.step(() => false)) break;
+      expect(stage.progress()!.healthReused).toBe(7);
+      expect(
+        db
+          .prepare('SELECT start_decode_ok, decode_error FROM audio_file_health WHERE file_id = ?')
+          .get(firstId),
+      ).toEqual({ start_decode_ok: 1, decode_error: null });
       expect(treeProof(base)).toBe(before);
     });
 

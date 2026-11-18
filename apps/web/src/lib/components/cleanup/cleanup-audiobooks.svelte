@@ -34,6 +34,7 @@
     audioStage2Bar,
     audioStage2Lines,
     booksLines,
+    count,
     diskLine,
     durationText,
     identityLines,
@@ -282,29 +283,6 @@
         {#if latest}Taken {formatWhen(latest.summary.takenAt)}:
         {/if}{snapshotLine(latest?.summary)}
       </p>
-      {#if snapshot && snapshot.progress.length}
-        <ul class="flex flex-col text-sm" data-testid="audio-progress-list">
-          {#each snapshot.progress as row, i (i)}
-            <li class="flex flex-col gap-0.5 border-b py-2" style="border-color: var(--c-line)">
-              <span class="font-medium">
-                {row.title ?? '(no title)'}
-                {#if !row.inAbs}<span class="text-c-muted">
-                    · no longer in Audiobookshelf</span
-                  >{/if}
-              </span>
-              <span class="text-c-muted">
-                {row.user} ·
-                {row.isFinished
-                  ? 'Finished'
-                  : `${row.progressPercent} % · at ${position(row.currentTime)} of ${position(row.duration)}`}
-                {#if row.lastUpdate}
-                  · {formatWhen(row.lastUpdate)}{/if}
-              </span>
-              {#if row.relPath}<span class="break-all text-c-muted">{row.relPath}</span>{/if}
-            </li>
-          {/each}
-        </ul>
-      {/if}
     </div>
 
     {#each [stage1, stage2] as stage (stage?.stage)}
@@ -374,6 +352,37 @@
       {/if}
     {/each}
   </section>
+
+  {#if snapshot && snapshot.progress.length}
+    <!-- The list is long (every user's progress): folded away so the stages stay at the top. -->
+    <CleanupSection
+      id="audio-progress"
+      jp="進捗"
+      title="Listening progress"
+      summary={count(snapshot.progress.length, 'entry', 'entries')}
+      testid="audio-progress"
+    >
+      <ul class="flex flex-col text-sm" data-testid="audio-progress-list">
+        {#each snapshot.progress as row, i (i)}
+          <li class="flex flex-col gap-0.5 border-b py-2" style="border-color: var(--c-line)">
+            <span class="font-medium">
+              {row.title ?? '(no title)'}
+              {#if !row.inAbs}<span class="text-c-muted"> · no longer in Audiobookshelf</span>{/if}
+            </span>
+            <span class="text-c-muted">
+              {row.user} ·
+              {row.isFinished
+                ? 'Finished'
+                : `${row.progressPercent} % · at ${position(row.currentTime)} of ${position(row.duration)}`}
+              {#if row.lastUpdate}
+                · {formatWhen(row.lastUpdate)}{/if}
+            </span>
+            {#if row.relPath}<span class="break-all text-c-muted">{row.relPath}</span>{/if}
+          </li>
+        {/each}
+      </ul>
+    </CleanupSection>
+  {/if}
 
   <CleanupSection id="audio-files" jp="一覧" title="Files" testid="audio-files">
     <label class="flex flex-col gap-1 text-sm">
