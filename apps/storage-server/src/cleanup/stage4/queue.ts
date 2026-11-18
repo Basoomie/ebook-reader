@@ -250,7 +250,20 @@ export class FetchQueue {
     const stamp = this.db.prepare(
       'UPDATE fetch_sites SET last_claim_at = ?, updated_at = ? WHERE site = ?',
     );
-    for (const site of Object.keys(s.sites) as FetchSite[]) {
+    // Sites whose own last claim is oldest go first: where two share one slot (Amazon's product
+    // pages and searches), they take turns. In a fixed order the product pages always won it
+    // (found live 2026-11-18: 50 searches answered in a day, 30,103 waiting).
+    const lastOwn = this.db.prepare('SELECT last_claim_at FROM fetch_sites WHERE site = ?');
+    const order = (Object.keys(s.sites) as FetchSite[])
+      .map((site, i) => ({
+        site,
+        i,
+        last:
+          (lastOwn.get(site) as { last_claim_at: number | null } | undefined)?.last_claim_at ?? 0,
+      }))
+      .sort((a, b) => a.last - b.last || a.i - b.i)
+      .map((x) => x.site);
+    for (const site of order) {
       const b = this.blocked(site, now);
       if (b) {
         if (b.until) soonest = Math.min(soonest, b.until);
@@ -273,6 +286,11 @@ export class FetchQueue {
         if (take.run(token, now + s.leaseSeconds * 1000, now, r.id).changes !== 1) return false;
         this.site(paceKey, now);
         stamp.run(now, now, paceKey);
+        // The site's own last claim too (its turn in a shared slot).
+        if (paceKey !== site) {
+          this.site(site, now);
+          stamp.run(now, now, site);
+        }
         return true;
       })();
       if (ok) out.push({ ...r, leaseToken: token });

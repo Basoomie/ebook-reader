@@ -97,6 +97,41 @@ describe('WP20d fetch queue', () => {
     expect(q2.claim(T0 + 8000).requests.map((r) => r.site)).toEqual(['amazon-dp']);
   });
 
+  it('product pages and searches take turns in their shared slot', () => {
+    // Found live 2026-11-18: in a fixed order the product pages always took the slot.
+    updateSettings(db, { fetch: { ...getSettings(db).fetch, amazonPace: 'shared' } });
+    for (let i = 0; i < 4; i++) {
+      q.enqueue(dp(`B00000000${i}`), null, T0);
+      q.enqueue(
+        {
+          site: 'amazon-search',
+          key: `k${i}`,
+          url: `https://www.amazon.co.jp/s?k=k${i}&i=digital-text`,
+        },
+        null,
+        T0,
+      );
+    }
+    const sites: string[] = [];
+    let t = T0;
+    for (let i = 0; i < 6; i++) {
+      const got = q.claim(t).requests.filter((r) => r.site.startsWith('amazon'));
+      // One request per slot, never both queues at once.
+      expect(got).toHaveLength(1);
+      sites.push(got[0].site);
+      q.report(got[0].id, got[0].leaseToken, page('<html>' + 'x'.repeat(30000)), t + 500);
+      t += 8000;
+    }
+    expect(sites).toEqual([
+      'amazon-dp',
+      'amazon-search',
+      'amazon-dp',
+      'amazon-search',
+      'amazon-dp',
+      'amazon-search',
+    ]);
+  });
+
   it('labeled books go first', () => {
     q.enqueue(dp('B000000001'), null, T0);
     q.enqueue(dp('B000000002', LABELED_PRIORITY), null, T0);
