@@ -816,10 +816,11 @@ export async function stage3ToolVersions(
   }
   try {
     const r = await run(tools.faadPath, ['-h'], null, 10_000);
-    out.faad =
-      first(r.stdout.toString('utf8') + r.stderr)
-        ?.replace(/\*/g, '')
-        .trim() ?? null;
+    // faad prints its usage on stdout and its banner ("… Decoder V2.11.2 …") on stderr.
+    const banner = `${r.stderr}\n${r.stdout.toString('utf8')}`
+      .split(/\r?\n/)
+      .find((l) => /Decoder\s+V\d/i.test(l));
+    out.faad = banner ? banner.replace(/\*/g, '').trim().slice(0, 200) : null;
   } catch {
     // Not installed: the stage reports it.
   }

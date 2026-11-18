@@ -96,6 +96,19 @@ export interface AudioStage3Progress {
   windowErrors: number;
   decodesDone: number;
   decodesReused: number;
+  /**
+   * The decode step's progress (missing in progress saved before it existed): files and seconds
+   * of audio still to decode, as counted at the last step (the list can grow: a chosen copy
+   * that turns out damaged adds the next one), the audio decoded so far, and where the pace is
+   * measured from (reset when the server starts, so a restart's downtime isn't counted).
+   */
+  decodesLeft?: number;
+  decodeAudioLeft?: number;
+  decodeAudioDone?: number;
+  decodeRateFrom?: { at: number; audio: number } | null;
+  /** The compare step: pairs scored of those to score. */
+  compareDone?: number;
+  compareTotal?: number;
   /** Times the decode phase gave the disk to a Calibre job. */
   yields: number;
   phaseStartedAt: number;
@@ -272,6 +285,8 @@ export class AudioStage3 {
   private copiesCache: { analysisId: string; byId: Map<number, LoadedCopy> } | null = null;
   private windowsCache: { analysisId: string; rulesKey: string; keys: WindowNeed[] } | null = null;
   private versions: AudioStage3Progress['tools'] = null;
+  /** The decode pace is measured from this process's first decode step. */
+  private rateReset = false;
 
   constructor(private readonly deps: Stage3Deps) {}
 
@@ -753,6 +768,8 @@ export class AudioStage3 {
     p.rulesKey = stage3SettingsKey(s);
     this.windowsCache = null;
     const need = this.neededWindows(p);
+    p.compareDone = 0;
+    p.compareTotal = rows.filter((r) => r.test !== 'identical').length;
     p.windowsTotal = need.length;
     p.windowsDone = need.filter((w) => w.stored).length;
     p.windowsReused = p.windowsDone;
@@ -963,6 +980,7 @@ export class AudioStage3 {
     db.transaction(() => {
       for (const r of results) set.run(...r);
     })();
+    p.compareDone = (p.compareDone ?? 0) + pairs.length;
     return pairs.length;
   }
 
@@ -1134,6 +1152,14 @@ export class AudioStage3 {
     const db = this.deps.db;
     const s = getSettings(db).audiobooks;
     const queue = this.decodeQueue(p);
+    // What is left, for the page's bar and time left.
+    p.decodesLeft = queue.length;
+    p.decodeAudioLeft = queue.reduce((a, q) => a + (q.file.duration ?? 0), 0);
+    p.decodeAudioDone ??= 0;
+    if (!this.rateReset || !p.decodeRateFrom) {
+      p.decodeRateFrom = { at: Date.now(), audio: p.decodeAudioDone };
+      this.rateReset = true;
+    }
     if (queue.length === 0) {
       this.deps.lock.release(OWNER);
       this.nextPhase(p, 'decide');
@@ -1185,6 +1211,9 @@ export class AudioStage3 {
         );
         done++;
         p.decodesDone++;
+        p.decodeAudioDone = (p.decodeAudioDone ?? 0) + expected;
+        p.decodesLeft = Math.max(0, (p.decodesLeft ?? 1) - 1);
+        p.decodeAudioLeft = Math.max(0, (p.decodeAudioLeft ?? expected) - expected);
         this.save(p, 'analysing');
       }),
     );

@@ -83,7 +83,31 @@ describe('the Audiobooks tab, stage 3 wording', () => {
     const bar = audioStage3Bar(progress(), NOW)!;
     expect(bar.label).toBe('Listening to a few stretches of each copy: 1,000 of 2,055');
     expect(bar.fraction).toBeCloseTo(1000 / 2055);
+    // Older progress without the counts: no bar rather than a wrong one.
     expect(audioStage3Bar(progress({ phase: 'compare' }), NOW)).toBeNull();
+    expect(audioStage3Bar(progress({ phase: 'decode' }), NOW)).toBeNull();
+    const cmp = audioStage3Bar(
+      progress({ phase: 'compare', compareDone: 100, compareTotal: 396 }),
+      NOW
+    )!;
+    expect(cmp.label).toBe('Comparing what was heard: 100 of 396 pairs');
+    // Decodes: files done of all known, audio left, time left from the pace since the start.
+    const dec = audioStage3Bar(
+      progress({
+        phase: 'decode',
+        decodesDone: 60,
+        decodesLeft: 240,
+        decodeAudioDone: 60 * 30_000,
+        decodeAudioLeft: 240 * 30_000,
+        decodeRateFrom: { at: NOW - 30 * 60_000, audio: 0 }
+      }),
+      NOW
+    )!;
+    expect(dec.label).toBe(
+      'Playing the chosen copies all the way through: 60 of 300 files (2000 h 0 min of audio left)'
+    );
+    expect(dec.fraction).toBeCloseTo(0.2);
+    expect(dec.eta).toBe('about 2 h left (estimate; more may be added)');
     const lines = audioStage3Lines(progress());
     expect(lines).toContain('Now: Listening to a few stretches of each copy.');
     expect(lines).toContain(

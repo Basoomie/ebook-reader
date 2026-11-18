@@ -825,6 +825,14 @@ describe.skipIf(!HAS_TOOLS)('stage 3 on fixture audio with ffmpeg, fpcalc and fa
       ]);
       expect(p.windowErrors).toBe(0);
       expect(p.tools?.fpcalc).toMatch(/fpcalc/);
+      expect(p.tools?.faad).toMatch(/Decoder V\d/);
+      // Progress of the compare and decode steps (the page's bars and time left).
+      expect(p.compareDone).toBe(p.compareTotal);
+      expect(p.compareTotal).toBeGreaterThan(0);
+      expect(p.decodesLeft).toBe(0);
+      expect(p.decodeAudioLeft).toBe(0);
+      expect(p.decodeAudioDone!).toBeGreaterThan(150 * (p.decodesDone - 1));
+      expect(p.decodeRateFrom?.at).toBeGreaterThan(0);
 
       // Lookups by torrent path.
       const copyOf = (rel: string) =>
