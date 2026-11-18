@@ -860,6 +860,31 @@ export class Stage4Analysis {
   private async lookupStep(p: Stage4Progress): Promise<Stage4Progress> {
     const db = this.db;
     this.loadSnapshot(p.libraryId);
+    // 0. A site switched off answers nothing: its queued requests are given up, so the books
+    // go on without that source ("Ask again" on the page re-asks them once it is back on).
+    const off = Object.entries(getSettings(db).fetch.sites)
+      .filter(([, v]) => !v.enabled)
+      .map(([k]) => k);
+    for (const site of off) {
+      const ids = (
+        db
+          .prepare(`SELECT id FROM fetch_requests WHERE site = ? AND state = 'queued' LIMIT 1000`)
+          .all(site) as {
+          id: number;
+        }[]
+      ).map((r) => r.id);
+      if (!ids.length) continue;
+      const now = Date.now();
+      db.transaction(() => {
+        for (const id of ids) {
+          db.prepare(
+            `UPDATE fetch_requests SET state = 'failed', error = 'The site is switched off', finished_at = ?, updated_at = ?
+             WHERE id = ? AND state = 'queued'`,
+          ).run(now, now, id);
+          db.prepare('UPDATE fetch_waiters SET ready = 1 WHERE request_id = ?').run(id);
+        }
+      })();
+    }
     // 1. Start the lookups of books that were read (labeled books first).
     const toPlan = db
       .prepare(
