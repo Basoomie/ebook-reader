@@ -44,7 +44,9 @@ module.exports = (async () => {
         'apps/cleanup-apply/dist/**',
         // WP20d: the cleanup fetch container's build output.
         'apps/cleanup-fetch/dist/**',
-        'apps/storage-server/tests/fixtures/wp20a/**'
+        'apps/storage-server/tests/fixtures/wp20a/**',
+        // Plain Node test tooling shared by the apps (the per-run temp folder for vitest).
+        'tools/**'
       ]
     },
     {
