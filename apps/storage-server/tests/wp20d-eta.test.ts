@@ -79,6 +79,15 @@ describe('stage 4 time left', () => {
       }),
     );
     expect(q.sites.bookwalker).toBe(30_000);
+    // Amazon's queues keep the measured requests per book (their rules changed mid-run).
+    const a = stage4Eta(
+      base({
+        labeledDone: true,
+        amazonShared: false,
+        sites: [site('amazon-dp', { labeledRequests: 1600 })],
+      }),
+    );
+    expect(a.sites['amazon-dp']).toBe(Math.round(REFERENCE_PER_BOOK['amazon-dp']! * 10_000 * 5));
   });
 
   it("counts Amazon's two queues together while they share one slot", () => {

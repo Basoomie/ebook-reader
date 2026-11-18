@@ -162,7 +162,7 @@ export function timeLeftLine(status: Stage4Status, now = Date.now()): string {
   }
   parts.push(
     t.basis === 'labeled'
-      ? "requests per book measured on this run's labeled books"
+      ? "requests per book measured on this run's labeled books (Amazon's measured on the same books with today's rules)"
       : 'requests per book from the reference run until the labeled books are done; shared series pages make it an upper bound'
   );
   return parts.join(' · ');

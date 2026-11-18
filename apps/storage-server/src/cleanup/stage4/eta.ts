@@ -57,6 +57,14 @@ export function paceSeconds(
   return gaps.length >= 20 ? gaps.reduce((a, b) => a + b, 0) / gaps.length / 1000 : null;
 }
 
+/**
+ * Sites whose requests per book always come from REFERENCE_PER_BOOK: their rules changed while
+ * the live run's labeled books were being looked up, so this run's labeled requests mix the old
+ * rules' requests in (found live 2026-11-18: 1.28 Amazon requests per labeled book, 632 of them
+ * made before "Amazon where needed", against 0.93 measured on the same 800 books with it).
+ */
+export const MEASURED_POLICY = new Set<FetchSite>(['amazon-dp', 'amazon-search']);
+
 export interface SiteCounts {
   site: FetchSite;
   enabled: boolean;
@@ -119,7 +127,9 @@ export function stage4Eta(i: EtaInput): EtaResult {
   for (const s of i.sites) {
     if (!s.enabled) continue;
     const perBook =
-      basis === 'labeled' ? s.labeledRequests / i.labeledBooks : (REFERENCE_PER_BOOK[s.site] ?? 0);
+      basis === 'labeled' && !MEASURED_POLICY.has(s.site)
+        ? s.labeledRequests / i.labeledBooks
+        : (REFERENCE_PER_BOOK[s.site] ?? 0);
     const expected = perBook * books;
     // Never less than what is queued now.
     left[s.site] = Math.max(s.open, expected - s.finished);
