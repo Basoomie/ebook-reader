@@ -57,6 +57,7 @@ import {
   rdbCandidates,
   rdbSeries,
 } from './parse';
+import { bwAsAmazon, bwSettles, STANDIN } from './bw-standin';
 import { ASIN_RE, pickByVolume, pyQuote, queryTitle, sim } from './pick';
 import { proposeStage4, type Stage4Proposal } from './proposals';
 import { FetchQueue, LABELED_PRIORITY } from './queue';
@@ -122,6 +123,12 @@ export interface Stage4Progress {
   labeledDoneAt: number | null;
   /** The answer time of the Natively sitemap whose pages are listed. */
   nativelyListedAt?: number | null;
+  /**
+   * "Amazon where needed" (2026-11-18): the one-time sweep that takes the Amazon requests queued
+   * before it out of the queue (cursor per phase), so each book asks Amazon only when BookWalker
+   * and RanobeDB don't settle it.
+   */
+  amazonSweep?: { phase: 'waiters' | 'requests' | 'books' | 'done'; cursor: string };
   /** Books the final pass has proposed again (for its time left). */
   finalDone?: number;
   /** Time per step (lessons 1-3: every stage times its steps from the first build). */
@@ -168,6 +175,10 @@ export interface OnlineEvidence {
   v: number;
   query: { title: string; author: string; text_book: boolean };
   amazon: {
+    /** Amazon was asked for this book (after BookWalker and RanobeDB, when they don't settle it). */
+    asked?: boolean;
+    /** BookWalker settles the book in Amazon's place (bw-standin.ts); Amazon isn't asked. */
+    standin?: string;
     asin_from_title?: boolean;
     search_candidates?: [string, string][];
     picked_from_search?: boolean;
@@ -232,6 +243,8 @@ const ANSWER_CHUNK = 200;
 const PROPOSE_CHUNK = 100;
 const FINAL_CHUNK = 50;
 const NATIVELY_ENQUEUE_CHUNK = 2000;
+/** Rows per chunk of the one-time Amazon sweep (measured on a live copy: 42 ms typical, 82 ms p90). */
+const SWEEP_CHUNK = 500;
 /** The waiter "library" of Natively's pages (they belong to no book). */
 const NATIVELY_WAITER = 'natively';
 
@@ -590,6 +603,13 @@ export class Stage4Analysis {
   }
 
   private record(book: Stage2Book, ref: RefFile, ev: OnlineEvidence): RefRecord {
+    const r = this.baseRecord(book, ref, ev);
+    // BookWalker settles the book: the rules read its page in Amazon's place.
+    if (ev.amazon.standin === STANDIN) r.amazon = bwAsAmazon(r) ?? {};
+    return r;
+  }
+
+  private baseRecord(book: Stage2Book, ref: RefFile, ev: OnlineEvidence): RefRecord {
     return {
       calibre: {
         cal_title: book.title,
@@ -623,36 +643,8 @@ export class Stage4Analysis {
       open: ['amazon', 'ranobedb', 'bookwalker', 'bookmeter'],
     };
     const w = (step: string) => ({ libraryId: p.libraryId, uuid: book.uuid, step });
-    let asin = ref.asin;
-    if (!asin) {
-      const m = ASIN_RE.exec(nfkc(`${ref.opf_title || ''} ${book.title}`));
-      if (m) {
-        asin = m[0];
-        ev.amazon.asin_from_title = true;
-      }
-    }
-    if (asin) {
-      ev.requests['amazon-dp'] = q.enqueue(
-        {
-          site: 'amazon-dp',
-          key: asin,
-          url: `https://www.amazon.co.jp/dp/${asin}`,
-          priority: prio,
-        },
-        w('amazon-dp'),
-      ).id;
-    } else {
-      const k = `${title} ${author}`.trim();
-      ev.requests['amazon-search'] = q.enqueue(
-        {
-          site: 'amazon-search',
-          key: k,
-          url: `https://www.amazon.co.jp/s?k=${pyQuote(k)}&i=digital-text`,
-          priority: prio,
-        },
-        w('amazon-search'),
-      ).id;
-    }
+    // Amazon is asked only once BookWalker and RanobeDB have answered and don't settle the book
+    // (decideAmazon): Amazon allows this address ~3,600-4,000 requests a day.
     ev.requests['ranobedb-search'] = q.enqueue(
       {
         site: 'ranobedb',
@@ -689,6 +681,202 @@ export class Stage4Analysis {
         )
         .run(ev.open.length, Date.now(), p.libraryId, book.uuid);
     })();
+  }
+
+  /** True while the book's Amazon step waits for the decision (not asked, not settled). */
+  private amazonPending(libraryId: string, uuid: string, ev: OnlineEvidence): boolean {
+    if (!ev.open.includes('amazon') || ev.amazon.asked || ev.amazon.standin) return false;
+    return !this.db
+      .prepare(
+        `SELECT 1 FROM fetch_waiters WHERE library_id = ? AND calibre_uuid = ?
+         AND step IN ('amazon-search', 'amazon-dp') LIMIT 1`,
+      )
+      .get(libraryId, uuid);
+  }
+
+  /**
+   * Once BookWalker and RanobeDB have answered: BookWalker settles the book (bw-standin.ts), or
+   * Amazon is asked as before. A book whose file cover is small or missing always asks Amazon
+   * (covers are replaced only from Amazon's picture). True when the evidence changed.
+   */
+  private decideAmazon(
+    p: Stage4Progress,
+    book: Stage2Book,
+    ref: RefFile,
+    ev: OnlineEvidence,
+    labeled: boolean,
+  ): boolean {
+    if (ev.open.includes('bookwalker') || ev.open.includes('ranobedb')) return false;
+    // Not while the sweep still clears old Amazon requests (it would clear this book's new one);
+    // its pass over every book decides the books that waited meanwhile.
+    const sweep = p.amazonSweep?.phase;
+    if (sweep === 'waiters' || sweep === 'requests') return false;
+    if (!this.amazonPending(p.libraryId, book.uuid, ev)) return false;
+    const fc = this.loadRef(p.libraryId, book.uuid)?.cover ?? null;
+    const side = fc ? Math.max(fc.width, fc.height) : null;
+    const coverOk = side !== null && side >= getSettings(this.db).fetch.smallCoverPx;
+    if (coverOk && bwSettles(this.baseRecord(book, ref, ev))) {
+      ev.amazon.standin = STANDIN;
+      ev.open = ev.open.filter((x) => x !== 'amazon');
+      return true;
+    }
+    this.askAmazon(p, book, ref, ev, labeled);
+    return true;
+  }
+
+  /** Asks Amazon where the book's Amazon lookup stands: the product page of its ASIN or pick, else the Kindle search. */
+  private askAmazon(
+    p: Stage4Progress,
+    book: Stage2Book,
+    ref: RefFile,
+    ev: OnlineEvidence,
+    labeled: boolean,
+  ): void {
+    const q = this.deps.queue;
+    const prio = labeled ? LABELED_PRIORITY : 0;
+    const w = (step: string) => ({ libraryId: p.libraryId, uuid: book.uuid, step });
+    ev.amazon.asked = true;
+    if (ev.amazon.picked_from_search && ev.amazon.search_candidates) {
+      // The search was answered before the sweep: its pick's product page.
+      const pick = pickByVolume(
+        ev.query.title,
+        ev.amazon.search_candidates.slice(0, 6),
+        ev.query.text_book,
+      );
+      if (!pick) {
+        ev.open = ev.open.filter((x) => x !== 'amazon');
+        return;
+      }
+      ev.requests['amazon-dp'] = q.enqueue(
+        {
+          site: 'amazon-dp',
+          key: pick[0],
+          url: `https://www.amazon.co.jp/dp/${pick[0]}`,
+          priority: prio,
+        },
+        w('amazon-dp'),
+      ).id;
+      return;
+    }
+    let asin = ref.asin;
+    if (!asin) {
+      const m = ASIN_RE.exec(nfkc(`${ref.opf_title || ''} ${book.title}`));
+      if (m) {
+        asin = m[0];
+        ev.amazon.asin_from_title = true;
+      }
+    }
+    if (asin) {
+      ev.requests['amazon-dp'] = q.enqueue(
+        {
+          site: 'amazon-dp',
+          key: asin,
+          url: `https://www.amazon.co.jp/dp/${asin}`,
+          priority: prio,
+        },
+        w('amazon-dp'),
+      ).id;
+    } else {
+      const k = `${ev.query.title} ${ev.query.author}`.trim();
+      ev.requests['amazon-search'] = q.enqueue(
+        {
+          site: 'amazon-search',
+          key: k,
+          url: `https://www.amazon.co.jp/s?k=${pyQuote(k)}&i=digital-text`,
+          priority: prio,
+        },
+        w('amazon-search'),
+      ).id;
+    }
+  }
+
+  /**
+   * The one-time sweep after "Amazon where needed" came in (chunked, the server answers
+   * between chunks): the Amazon requests still queued lose their waiters and leave the queue,
+   * then every waiting book whose BookWalker and RanobeDB have answered is decided now.
+   */
+  private async amazonSweepStep(p: Stage4Progress): Promise<void> {
+    const sw = (p.amazonSweep ??= { phase: 'waiters', cursor: '' });
+    if (sw.phase === 'done') return;
+    const db = this.db;
+    const t = performance.now();
+    if (sw.phase === 'waiters') {
+      const n = db
+        .prepare(
+          `DELETE FROM fetch_waiters WHERE rowid IN (
+             SELECT w.rowid FROM fetch_requests r CROSS JOIN fetch_waiters w ON w.request_id = r.id
+             WHERE r.site IN ('amazon-search', 'amazon-dp') AND r.state = 'queued'
+               AND w.step IN ('amazon-search', 'amazon-dp') LIMIT ${SWEEP_CHUNK})`,
+        )
+        .run().changes;
+      if (n < SWEEP_CHUNK) sw.phase = 'requests';
+    } else if (sw.phase === 'requests') {
+      const n = db
+        .prepare(
+          `DELETE FROM fetch_requests WHERE id IN (
+             SELECT r.id FROM fetch_requests r
+             WHERE r.site IN ('amazon-dp', 'amazon-search') AND r.state = 'queued'
+               AND NOT EXISTS (SELECT 1 FROM fetch_waiters w WHERE w.request_id = r.id)
+             LIMIT ${SWEEP_CHUNK})`,
+        )
+        .run().changes;
+      if (n < SWEEP_CHUNK) {
+        sw.phase = 'books';
+        sw.cursor = '';
+      }
+    } else {
+      const rows = db
+        .prepare(
+          `SELECT calibre_uuid, labeled, state FROM stage4_books
+           WHERE library_id = ? AND calibre_uuid > ? ORDER BY calibre_uuid LIMIT 200`,
+        )
+        .all(p.libraryId, sw.cursor) as { calibre_uuid: string; labeled: number; state: string }[];
+      const slicer = new Slicer(p);
+      for (const r of rows) {
+        await slicer.maybeYield();
+        sw.cursor = r.calibre_uuid;
+        if (r.state !== 'waiting') continue;
+        const book = this.book(r.calibre_uuid);
+        const ev = book ? this.loadOnline(p.libraryId, r.calibre_uuid) : null;
+        const ref = book ? this.loadRef(p.libraryId, r.calibre_uuid)?.file : null;
+        if (!book || !ev || !ref) continue;
+        if (!this.decideAmazon(p, book, ref, ev, r.labeled === 1)) continue;
+        db.transaction(() => {
+          this.saveEvidence(p.libraryId, r.calibre_uuid, ONLINE_KIND, ev);
+          db.prepare(
+            `UPDATE stage4_books SET state = ?, pending = ?, updated_at = ? WHERE library_id = ? AND calibre_uuid = ?`,
+          ).run(
+            ev.open.length ? 'waiting' : 'ready',
+            ev.open.length,
+            Date.now(),
+            p.libraryId,
+            r.calibre_uuid,
+          );
+        })();
+        if (!ev.open.length || !ev.requests['core-done']) {
+          // Its last source closed with the decision: the follow-ups (Bookmeter's store list).
+          if (this.core.every((s) => !ev.open.includes(s)) && !ev.requests['core-done']) {
+            ev.requests['core-done'] = 1;
+            this.afterCore(p, book, ref, ev, r.labeled === 1);
+            db.transaction(() => {
+              this.saveEvidence(p.libraryId, r.calibre_uuid, ONLINE_KIND, ev);
+              db.prepare(
+                `UPDATE stage4_books SET state = ?, pending = ?, updated_at = ? WHERE library_id = ? AND calibre_uuid = ?`,
+              ).run(
+                ev.open.length ? 'waiting' : 'ready',
+                ev.open.length,
+                Date.now(),
+                p.libraryId,
+                r.calibre_uuid,
+              );
+            })();
+          }
+        }
+      }
+      if (rows.length < 200) sw.phase = 'done';
+    }
+    addTime(p, `amazon sweep: ${sw.phase}`, performance.now() - t);
+    this.save(p);
   }
 
   /** Moves a book on with one answer; returns the evidence (saved by the caller). */
@@ -922,6 +1110,7 @@ export class Stage4Analysis {
   private async lookupStep(p: Stage4Progress): Promise<Stage4Progress> {
     const db = this.db;
     this.loadSnapshot(p.libraryId);
+    await this.amazonSweepStep(p);
     const t0 = performance.now();
     // 0. A site switched off answers nothing: its queued requests are given up, so the books
     // go on without that source ("Ask again" on the page re-asks them once it is back on).
@@ -1012,6 +1201,8 @@ export class Stage4Analysis {
       const ref = this.loadRef(wr.library_id, wr.calibre_uuid)!.file!;
       const labeled = row.labeled === 1;
       this.onAnswer(p, book, ev, wr.step, wr.request_id, labeled);
+      // BookWalker and RanobeDB have answered: BookWalker settles the book, or Amazon is asked.
+      this.decideAmazon(p, book, ref, ev, labeled);
       if (wr.step === 'cover' && ev.cover) {
         const img = this.deps.queue.readAnswer(wr.request_id);
         const facts = img ? await imageFacts(img).catch(() => null) : null;

@@ -114,14 +114,17 @@ export function displayTitle(
   return lightNormalize(ruleTitle);
 }
 
-const sourceOf = (d: Stage4Decision) =>
+const sourceOf = (d: Stage4Decision, record: RefRecord) =>
+  (record.amazon as { standin?: string } | undefined)?.standin === 'bookwalker' &&
   d.trace.amazonIdentified
-    ? d.trace.amazonByAsin
-      ? 'amazon-asin'
-      : 'amazon-search'
-    : d.trace.ranobedbIdentified
-      ? 'ranobedb'
-      : 'file';
+    ? 'bookwalker'
+    : d.trace.amazonIdentified
+      ? d.trace.amazonByAsin
+        ? 'amazon-asin'
+        : 'amazon-search'
+      : d.trace.ranobedbIdentified
+        ? 'ranobedb'
+        : 'file';
 
 function userChanged(applied: Map<string, unknown>, field: string, current: unknown): boolean {
   if (!applied.has(field)) return false;
@@ -133,7 +136,7 @@ export function proposeStage4(input: ProposalInput): Stage4Proposal[] {
   const out: Stage4Proposal[] = [];
   const spell = input.spelling ?? ((_k: unknown, n: string) => n);
   const v = d.values;
-  const src = sourceOf(d);
+  const src = sourceOf(d, record);
 
   const push = (p: Stage4Proposal, current: unknown, appliedField = p.field) => {
     if (JSON.stringify(p.old) === JSON.stringify(p.new)) return;
