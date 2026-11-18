@@ -250,9 +250,18 @@ export class CleanupService {
       : null;
   }
 
-  /** An answer reached the queue: move the books on soon. */
+  /**
+   * An answer reached the queue: wakes stage 4's analysis only (when it is not running already).
+   * A whole round per answer ran stages 1-3's planning about once a second (found live
+   * 2026-11-17); the 5 s timer still runs every stage.
+   */
   answerArrived(): void {
-    void this.tick();
+    if (this.stopped || this.analysing4) return;
+    try {
+      this.round4(this.targetLibrary());
+    } catch (err) {
+      this.logError('Cleanup: stage 4 wake-up failed:', err);
+    }
   }
 
   /** The fetch container's heartbeat; true when it is (or becomes) the one active fetcher. */
@@ -758,9 +767,14 @@ export class CleanupService {
           const before = analysis.progress();
           const done = await analysis.step(stop4);
           if (done) break;
-          // Waiting on the fetcher: no busy loop; the next answer or round goes on.
+          // Waiting on the fetcher: no busy loop; the next answer or round goes on. The step
+          // times change on every step, so they don't count as progress (with them the loop
+          // never saw "nothing changed" and spun without giving the server back).
           const after = analysis.progress();
-          if (after && after.phase !== 'read' && JSON.stringify(after) === JSON.stringify(before)) {
+          const same = (a: typeof after, b: typeof before) =>
+            JSON.stringify({ ...a, times: undefined }) ===
+            JSON.stringify({ ...b, times: undefined });
+          if (after && after.phase !== 'read' && same(after, before)) {
             if (!this.stage4HasWork()) break;
           }
         }

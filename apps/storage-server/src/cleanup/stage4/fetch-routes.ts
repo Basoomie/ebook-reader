@@ -81,6 +81,7 @@ export function createCleanupFetchRouter(options: FetchRouteOptions): Router {
       res.json({
         requests: [],
         waitSeconds: 30,
+        waitMs: 30_000,
         wait: 'Another fetcher is active (or no heartbeat yet)',
       });
       return;

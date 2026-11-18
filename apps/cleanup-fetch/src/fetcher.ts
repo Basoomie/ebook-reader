@@ -16,7 +16,7 @@ import { brotliCompressSync, constants as zc } from 'zlib';
 import type { FetchConfig } from './config';
 import { allowedUrl } from './hosts';
 
-export const VERSION = '1.0.0';
+export const VERSION = '1.1.0';
 /** The reference run's browser headers (ref4.py); RanobeDB refuses Python's default user agent. */
 const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36';
@@ -55,6 +55,10 @@ export class Fetcher {
   private maxPageBytes = 16 * 1024 * 1024;
   private sudachiVersion: string | null = null;
   private readonly inFlight = new Set<string>();
+  /** Ends the claim loop's wait early (an answer was posted: its site may be due again now). */
+  private wakeUp: (() => void) | null = null;
+  /** An answer was posted since the last claim (also while that claim was on its way). */
+  private answered = false;
 
   constructor(
     private readonly config: FetchConfig,
@@ -254,6 +258,8 @@ export class Fetcher {
       await this.report(c, r);
     } finally {
       this.inFlight.delete(c.site);
+      this.answered = true;
+      this.wakeUp?.();
     }
   }
 
@@ -278,6 +284,20 @@ export class Fetcher {
     if (!this.sudachiVersion) this.log(`Sudachi check failed: ${r.error ?? 'no version'}`);
   }
 
+  /** Sleeps up to `ms`, or until an in-flight request's answer has been posted. */
+  private waitOrWake(ms: number): Promise<void> {
+    if (this.answered) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      const done = () => {
+        clearTimeout(timer);
+        this.wakeUp = null;
+        resolve();
+      };
+      const timer = setTimeout(done, ms);
+      this.wakeUp = done;
+    });
+  }
+
   /** Runs until stopped. */
   async run(): Promise<void> {
     await this.sudachiCheck();
@@ -294,6 +314,7 @@ export class Fetcher {
           await sleep(30_000);
           continue;
         }
+        this.answered = false;
         const r = await this.server('/cleanup-fetch/claim', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -305,9 +326,14 @@ export class Fetcher {
           if (this.inFlight.has(c.site)) continue;
           void this.handle(c);
         }
-        const wait = typeof r.waitSeconds === 'number' ? r.waitSeconds : 5;
-        // Come back soon: a site whose request finishes may be due again before the wait ends.
-        await sleep(Math.min(wait, 1) * 1000);
+        // Until the next site is due (the server's exact wait), until an answer is posted (that
+        // site may be due at once), and at most 1 s: new requests appear as the books move on
+        // (the server can't tell the fetcher), and the server's own pause shows within a second.
+        const waitMs =
+          typeof r.waitMs === 'number'
+            ? r.waitMs
+            : (typeof r.waitSeconds === 'number' ? r.waitSeconds : 1) * 1000;
+        await this.waitOrWake(Math.max(20, Math.min(waitMs, 1000)));
       } catch (err) {
         this.log(`server not reachable: ${String((err as Error).message ?? err).slice(0, 200)}`);
         await sleep(backoff);

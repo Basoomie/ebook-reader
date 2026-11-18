@@ -480,6 +480,16 @@ export class BatchService {
       };
     }
     const settings = getSettings(this.db);
+    // A finished stage plans nothing: checked before the count (the plan runs every round).
+    const any = this.db
+      .prepare(
+        `SELECT 1 FROM proposed_changes
+         WHERE stage = ? AND library_id = ? AND state = 'proposed' AND class = 'auto'
+           AND analysis_id = ?
+         LIMIT 1`,
+      )
+      .get(stage, libraryId, currentAnalysisId(this.db, stage));
+    if (!any) return { batch: null, reason: null };
     const present = presentBookCount(this.deps.main, libraryId);
     const cap = Math.max(
       1,

@@ -226,7 +226,7 @@ export class FetchQueue {
   // ------------------------------------------------------------ claims
 
   /** Gives the fetcher one due request per site whose pace allows it. */
-  claim(now = Date.now()): { requests: ClaimedRequest[]; waitSeconds: number } {
+  claim(now = Date.now()): { requests: ClaimedRequest[]; waitSeconds: number; waitMs: number } {
     const s = this.settings();
     this.expireLeases(now);
     const out: ClaimedRequest[] = [];
@@ -260,7 +260,7 @@ export class FetchQueue {
       const r = pick.get(site, now) as Omit<ClaimedRequest, 'leaseToken'> | undefined;
       if (!r) {
         const t = (next.get(site) as { t: number | null }).t;
-        if (t !== null) soonest = Math.min(soonest, Math.max(t, now + 1000));
+        if (t !== null) soonest = Math.min(soonest, Math.max(t, now + 20));
         continue;
       }
       const token = randomUUID();
@@ -276,6 +276,10 @@ export class FetchQueue {
     return {
       requests: out,
       waitSeconds: Math.max(1, Math.min(30, Math.ceil((soonest - now) / 1000))),
+      // Exact, so a site is asked again when its pace allows, not up to a second later (1.1.0
+      // fetchers; waitSeconds stays for 1.0.0). A site with a request in flight isn't counted:
+      // the fetcher asks again as soon as it has posted that answer.
+      waitMs: Math.max(20, Math.min(30_000, soonest - now)),
     };
   }
 

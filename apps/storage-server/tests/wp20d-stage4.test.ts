@@ -15,7 +15,9 @@ import request from 'supertest';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { FetchConfig } from '../../cleanup-fetch/src/config';
 import { Fetcher, type FetchResult } from '../../cleanup-fetch/src/fetcher';
+import { noteCatalogWrite } from '../src/catalog/catalog-version';
 import { createApplyToken } from '../src/cleanup/apply-tokens';
+import { presentBookCount } from '../src/cleanup/handoff';
 import { getSettings } from '../src/cleanup/settings';
 import { getStage } from '../src/cleanup/stages';
 import { makeJpeg } from './helpers/calibre-fixture';
@@ -513,4 +515,121 @@ describe('stage 4: online sources (Preview)', () => {
       ]),
     );
   }, 120_000);
+
+  it("asks each site again as soon as its pace allows, and an answer runs no other stage's round", async () => {
+    // Found live 2026-11-17: every site ran 1.3-2 s over its pace (a claim once a second, and a
+    // whole cleanup round per answer that froze the server ~1.2 s on the NAS).
+    const fetchToken = createApplyToken(env.cleanupDb, 'fetch', Date.now(), 'fetch').token;
+    const q = env.service.fetchQueue;
+    const now = Date.now();
+    for (let i = 0; i < 6; i++) {
+      q.enqueue(
+        { site: 'ranobedb', key: `r${i}`, url: `https://ranobedb.org/api/v0/book/${i}` },
+        null,
+        now,
+      );
+    }
+    for (let i = 0; i < 4; i++) {
+      q.enqueue(
+        { site: 'bookwalker', key: `b${i}`, url: `https://bookwalker.jp/de${i}/` },
+        null,
+        now,
+      );
+    }
+    const svc = env.service as unknown as Record<string, (...a: unknown[]) => unknown>;
+    let otherRounds = 0;
+    for (const name of ['round1', 'round2', 'round3']) {
+      const orig = svc[name].bind(env.service);
+      svc[name] = (...a: unknown[]) => {
+        otherRounds += 1;
+        return orig(...a);
+      };
+    }
+    const starts: Record<string, number[]> = {};
+    const fetcher = new TestFetcher(
+      {
+        serverUrl: url,
+        token: fetchToken,
+        serverTimeoutSeconds: 10,
+        sudachiPython: '',
+        sudachiScript: '',
+      },
+      () => {},
+      async (input, init) => {
+        const u = String(input);
+        if (u.startsWith(url)) return fetch(input, init);
+        const site = u.includes('ranobedb') ? 'ranobedb' : 'bookwalker';
+        (starts[site] ??= []).push(Date.now());
+        await sleep(50);
+        return new Response(
+          site === 'ranobedb' ? '{"book":{}}' : `<html>${'x'.repeat(30000)}</html>`,
+          { status: 200 },
+        );
+      },
+    );
+    const running = fetcher.run();
+    const open = () =>
+      (
+        env.cleanupDb
+          .prepare("SELECT COUNT(*) AS n FROM fetch_requests WHERE state IN ('queued', 'leased')")
+          .get() as { n: number }
+      ).n;
+    const deadline = Date.now() + 30_000;
+    while (open() > 0 && Date.now() < deadline) await sleep(100);
+    // A request that appears while the fetcher has nothing to do (a book's next step) is
+    // asked within about a second, not after a long wait.
+    await sleep(2500);
+    const queuedAt = Date.now();
+    q.enqueue(
+      { site: 'ranobedb', key: 'late', url: 'https://ranobedb.org/api/v0/book/late' },
+      null,
+      queuedAt,
+    );
+    while (open() > 0 && Date.now() < deadline + 10_000) await sleep(100);
+    fetcher.stop();
+    await running;
+    expect(open()).toBe(0);
+    const late = starts.ranobedb.pop()!;
+    expect(late - queuedAt).toBeLessThan(1300);
+    expect(starts.ranobedb).toHaveLength(6);
+    expect(starts.bookwalker).toHaveLength(4);
+    for (const site of ['ranobedb', 'bookwalker']) {
+      const t = starts[site];
+      const gaps = t.slice(1).map((x, i) => x - t[i]);
+      // The pace (1 s start to start) is kept, and nothing waits much beyond it.
+      for (const g of gaps) {
+        expect(g).toBeGreaterThanOrEqual(990);
+        expect(g).toBeLessThan(1250);
+      }
+    }
+    // The 10 answers woke stage 4 only: stages 1-3 ran in no round (no timer in the test).
+    expect(otherRounds).toBe(0);
+  }, 60_000);
+
+  it("counts the library's present books once until the catalog changes", () => {
+    const lib = env.libraryId();
+    const main = env.db;
+    let counts = 0;
+    const origPrepare = main.prepare.bind(main);
+    (main as unknown as { prepare: (sql: string) => unknown }).prepare = (sql: string) => {
+      if (/COUNT\(\*\) AS n FROM book_sources/.test(sql)) counts += 1;
+      return origPrepare(sql);
+    };
+    try {
+      const n = presentBookCount(main, lib);
+      expect(presentBookCount(main, lib)).toBe(n);
+      expect(presentBookCount(main, lib)).toBe(n);
+      expect(counts).toBe(1);
+      // A book goes missing in the reader's index: its writer notes the catalog write.
+      const src = origPrepare(
+        "SELECT id FROM book_sources WHERE library_id = ? AND kind = 'calibre' AND missing_at IS NULL LIMIT 1",
+      ).get(lib) as { id: string };
+      origPrepare('UPDATE book_sources SET missing_at = ? WHERE id = ?').run(Date.now(), src.id);
+      noteCatalogWrite(main);
+      expect(presentBookCount(main, lib)).toBe(n - 1);
+      expect(counts).toBe(2);
+    } finally {
+      (main as unknown as { prepare: unknown }).prepare = origPrepare;
+    }
+  });
 });

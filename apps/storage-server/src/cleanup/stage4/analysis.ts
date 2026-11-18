@@ -22,6 +22,7 @@ import type Database from 'better-sqlite3';
 import { randomUUID } from 'crypto';
 import fs from 'fs';
 import path from 'path';
+import { performance } from 'perf_hooks';
 import { gunzipSync, gzipSync } from 'zlib';
 import { snapshotFile } from '../../calibre/indexer';
 import { getLibrary } from '../../calibre/libraries';
@@ -121,7 +122,44 @@ export interface Stage4Progress {
   labeledDoneAt: number | null;
   /** The answer time of the Natively sitemap whose pages are listed. */
   nativelyListedAt?: number | null;
+  /** Time per step (lessons 1-3: every stage times its steps from the first build). */
+  times?: Record<string, StepTime>;
 }
+
+/** Wall time of one named step: total, count and the longest single run (ms). */
+export interface StepTime {
+  ms: number;
+  n: number;
+  max: number;
+}
+
+function addTime(p: Stage4Progress, name: string, ms: number): void {
+  const times = (p.times ??= {});
+  const t = (times[name] ??= { ms: 0, n: 0, max: 0 });
+  t.ms += ms;
+  t.n += 1;
+  if (ms > t.max) t.max = ms;
+}
+
+async function timed<T>(p: Stage4Progress, name: string, fn: () => T | Promise<T>): Promise<T> {
+  const t = performance.now();
+  try {
+    return await fn();
+  } finally {
+    addTime(p, name, performance.now() - t);
+  }
+}
+
+/** The step times as one log line, the costliest first. */
+export function formatTimes(times: Record<string, StepTime> | undefined): string {
+  return Object.entries(times ?? {})
+    .sort((a, b) => b[1].ms - a[1].ms)
+    .map(([k, t]) => `${k} ${Math.round(t.ms)} ms/${t.n} (max ${Math.round(t.max)})`)
+    .join(', ');
+}
+
+/** How often the step times go to the server log. */
+const TIMES_LOG_MS = 10 * 60_000;
 
 /** One book's online evidence (kind 'online'), in the reference record's shape plus the store links. */
 export interface OnlineEvidence {
@@ -177,8 +215,11 @@ const yieldNow = () => new Promise<void>((r) => setImmediate(r));
 const SLICE_MS = 30;
 class Slicer {
   private at = Date.now();
+  constructor(private readonly p?: Stage4Progress) {}
   async maybeYield(): Promise<void> {
-    if (Date.now() - this.at < SLICE_MS) return;
+    const ran = Date.now() - this.at;
+    if (ran < SLICE_MS) return;
+    if (this.p) addTime(this.p, 'sync slice', ran);
     await yieldNow();
     this.at = Date.now();
   }
@@ -252,6 +293,8 @@ export class Stage4Analysis {
   private readPacer: Pacer | null = null;
   private readPacerBps = -1;
   private readonly log: (m: string) => void;
+  private timesLoggedAt = Date.now();
+  private withEpubCache: Stage2Book[] | null = null;
 
   constructor(private readonly deps: Stage4Deps) {
     this.log = deps.log ?? (() => {});
@@ -313,10 +356,14 @@ export class Stage4Analysis {
     if (this.snapshot && this.snapshotFor === file && this.snapshotMtime === mtime)
       return this.snapshot;
     this.snapshotMtime = mtime;
+    this.withEpubCache = null;
+    const t = performance.now();
     this.snapshot = readStage2Snapshot(file);
     this.extras = readStage4Extras(file);
     this.byUuid = new Map([...this.snapshot.books.values()].map((b) => [b.uuid, b]));
     this.snapshotFor = file;
+    const p = this.progress();
+    if (p) addTime(p, 'snapshot load', performance.now() - t);
     return this.snapshot;
   }
 
@@ -325,14 +372,20 @@ export class Stage4Analysis {
     let p = this.progress();
     if (!p || p.phase === 'done') return true;
     try {
-      if (p.phase === 'read') {
-        p = await this.readStep(p, shouldStop);
+      const q = p;
+      if (q.phase === 'read') {
+        const r = await timed(q, 'read', () => this.readStep(q, shouldStop));
         // Books already read start their lookups while the rest of the library is read.
-        await this.lookupStep(p);
-      } else if (p.phase === 'lookups') {
-        p = await this.lookupStep(p);
-      } else if (p.phase === 'final') {
-        p = await this.finalStep(p);
+        await timed(r, 'lookups', () => this.lookupStep(r));
+        p = r;
+      } else if (q.phase === 'lookups') {
+        p = await timed(q, 'lookups', () => this.lookupStep(q));
+      } else if (q.phase === 'final') {
+        p = await timed(q, 'final', () => this.finalStep(q));
+      }
+      if (Date.now() - this.timesLoggedAt >= TIMES_LOG_MS) {
+        this.timesLoggedAt = Date.now();
+        this.log(`stage 4 timing: ${formatTimes(p.times)}`);
       }
       this.save(p, p.phase === 'done' ? (p.error ? 'failed' : 'ready') : 'analysing');
       return p.phase === 'done';
@@ -392,6 +445,7 @@ export class Stage4Analysis {
   }
 
   private async readBook(
+    p: Stage4Progress,
     libDir: string,
     libraryId: string,
     book: Stage2Book,
@@ -415,7 +469,7 @@ export class Stage4Analysis {
     let cover: RefEvidence['cover'] = null;
     if (st) {
       try {
-        file = await readRefEpub(epub, counted);
+        file = await timed(p, 'read: EPUB text', () => readRefEpub(epub, counted));
       } catch (err) {
         error = `read: ${String((err as Error).message ?? err).slice(0, 300)}`;
       }
@@ -425,13 +479,15 @@ export class Stage4Analysis {
       let fc = same ? (s2.file?.cover ?? null) : null;
       if (!same && file) {
         try {
-          fc = (await readFileMetadata(epub, { text: false, counted })).cover;
+          fc = (
+            await timed(p, 'read: cover', () => readFileMetadata(epub, { text: false, counted }))
+          ).cover;
         } catch {
           fc = null;
         }
       }
       cover = fc ? { width: fc.width, height: fc.height, dhash: fc.dhash } : null;
-      await this.pacer().take(counted.bytes);
+      await timed(p, 'read: pace wait', () => this.pacer().take(counted.bytes));
     }
     const ev: RefEvidence = {
       v: 1,
@@ -449,7 +505,9 @@ export class Stage4Analysis {
   private async readStep(p: Stage4Progress, shouldStop: () => boolean): Promise<Stage4Progress> {
     const snap = this.loadSnapshot(p.libraryId);
     const libDir = this.libraryDir(p.libraryId);
-    const withEpub = [...snap.books.values()].filter((b) => b.filePath !== null);
+    const withEpub = (this.withEpubCache ??= [...snap.books.values()].filter(
+      (b) => b.filePath !== null,
+    ));
     p.readTotal = withEpub.length;
     p.booksWithoutEpub = snap.books.size - withEpub.length;
     if (p.pass === 'labeled' && p.labeledIds.length === 0 && p.cursor === 0) {
@@ -491,7 +549,9 @@ export class Stage4Analysis {
         p.readDone += 1;
         continue;
       }
-      const { ev, read } = await this.readBook(libDir, p.libraryId, book);
+      const { ev, read } = await timed(p, 'read: book', () =>
+        this.readBook(p, libDir, p.libraryId, book),
+      );
       this.db.transaction(() => {
         p.cursor = id;
         p.readDone += 1;
@@ -860,6 +920,7 @@ export class Stage4Analysis {
   private async lookupStep(p: Stage4Progress): Promise<Stage4Progress> {
     const db = this.db;
     this.loadSnapshot(p.libraryId);
+    const t0 = performance.now();
     // 0. A site switched off answers nothing: its queued requests are given up, so the books
     // go on without that source ("Ask again" on the page re-asks them once it is back on).
     const off = Object.entries(getSettings(db).fetch.sites)
@@ -885,14 +946,16 @@ export class Stage4Analysis {
         }
       })();
     }
+    addTime(p, 'lookups: switched-off sites', performance.now() - t0);
     // 1. Start the lookups of books that were read (labeled books first).
+    let t = performance.now();
     const toPlan = db
       .prepare(
         `SELECT calibre_uuid, labeled FROM stage4_books WHERE analysis_id = ? AND state = 'read'
          ORDER BY labeled DESC LIMIT ?`,
       )
       .all(p.analysisId, PLAN_CHUNK) as { calibre_uuid: string; labeled: number }[];
-    const slicer = new Slicer();
+    const slicer = new Slicer(p);
     for (const r of toPlan) {
       await slicer.maybeYield();
       const book = this.book(r.calibre_uuid);
@@ -905,9 +968,11 @@ export class Stage4Analysis {
       }
       this.plan(p, book, ref.file, r.labeled === 1);
     }
+    if (toPlan.length) addTime(p, 'lookups: plan', performance.now() - t);
     if (toPlan.length) await yieldNow();
 
     // 2. Answers that arrived.
+    t = performance.now();
     const ready = db
       .prepare(
         `SELECT request_id, library_id, calibre_uuid, step FROM fetch_waiters WHERE ready = 1 LIMIT ?`,
@@ -985,9 +1050,11 @@ export class Stage4Analysis {
         }
       })();
     }
+    if (ready.length) addTime(p, 'lookups: answers', performance.now() - t);
     if (ready.length) await yieldNow();
 
     // 3. Proposals for books whose lookups are answered.
+    t = performance.now();
     const done = db
       .prepare(
         `SELECT calibre_uuid, labeled FROM stage4_books WHERE analysis_id = ? AND state = 'ready' ORDER BY labeled DESC LIMIT ?`,
@@ -997,20 +1064,25 @@ export class Stage4Analysis {
       await slicer.maybeYield();
       this.proposeBook(p, r.calibre_uuid);
     }
+    if (done.length) addTime(p, 'lookups: propose', performance.now() - t);
     if (done.length) await yieldNow();
 
     // 4. Natively's sitemap and pages, the authors' readings.
+    t = performance.now();
     this.natively(p);
+    addTime(p, 'lookups: Natively', performance.now() - t);
+    t = performance.now();
     this.readings(p);
+    addTime(p, 'lookups: readings', performance.now() - t);
 
     // 5. The gate once the labeled books are proposed.
     if (p.labeledDoneAt === null && p.labeledIds.length) {
       const open = db
         .prepare(
-          `SELECT COUNT(*) AS n FROM stage4_books WHERE analysis_id = ? AND labeled = 1 AND state IN ('read', 'waiting', 'ready')`,
+          `SELECT 1 FROM stage4_books WHERE analysis_id = ? AND labeled = 1 AND state IN ('read', 'waiting', 'ready') LIMIT 1`,
         )
-        .get(p.analysisId) as { n: number };
-      if (open.n === 0 && p.pass === 'all') {
+        .get(p.analysisId);
+      if (!open && p.pass === 'all') {
         p.labeledDoneAt = Date.now();
         await this.gateNow(p);
       }
@@ -1020,10 +1092,10 @@ export class Stage4Analysis {
     if (p.phase === 'lookups') {
       const open = db
         .prepare(
-          `SELECT COUNT(*) AS n FROM stage4_books WHERE analysis_id = ? AND state IN ('read', 'waiting', 'ready')`,
+          `SELECT 1 FROM stage4_books WHERE analysis_id = ? AND state IN ('read', 'waiting', 'ready') LIMIT 1`,
         )
-        .get(p.analysisId) as { n: number };
-      if (open.n === 0 && this.nativelyDone() && this.readingsDone()) {
+        .get(p.analysisId);
+      if (!open && this.nativelyDone() && this.readingsDone()) {
         p.phase = 'final';
         p.finalCursor = 0;
       }
@@ -1479,7 +1551,7 @@ export class Stage4Analysis {
     }
     const settings = getSettings(this.db);
     const fields = new Set(['identifiers', 'author_sort']);
-    const slicer = new Slicer();
+    const slicer = new Slicer(p);
     for (const r of rows) {
       await slicer.maybeYield();
       const book = this.book(r.calibre_uuid);
@@ -1507,7 +1579,7 @@ export class Stage4Analysis {
     const groups = { ABC: emptyScores(), D: emptyScores(), all: emptyScores() };
     const kind = { right: 0, all: 0 };
     let books = 0;
-    const slicer = new Slicer();
+    const slicer = new Slicer(p);
     for (const [gid, calibreId] of mapped) {
       await slicer.maybeYield();
       const book = this.snapshot?.books.get(calibreId);
