@@ -87,9 +87,16 @@ describe('stage 4 time left', () => {
     ];
     const shared = stage4Eta(base({ sites, amazonShared: true }));
     expect(shared.slowest?.site).toBe('amazon');
-    expect(shared.slowest?.seconds).toBe(Math.round((1.02 + 0.82) * 10_000 * 8));
+    expect(shared.slowest?.seconds).toBe(
+      Math.round(
+        (REFERENCE_PER_BOOK['amazon-dp']! + REFERENCE_PER_BOOK['amazon-search']!) * 10_000 * 8,
+      ),
+    );
     const separate = stage4Eta(base({ sites, amazonShared: false }));
-    expect(separate.slowest).toEqual({ site: 'amazon-dp', seconds: 1.02 * 10_000 * 8 });
+    expect(separate.slowest).toEqual({
+      site: 'amazon-dp',
+      seconds: Math.round(REFERENCE_PER_BOOK['amazon-dp']! * 10_000 * 8),
+    });
   });
 
   it('waits for a measured reading speed, and adds NDL and a switched-off site correctly', () => {

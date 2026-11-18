@@ -14,8 +14,10 @@ import type { FetchSite } from '../settings';
 
 /** Requests per book in the reference run (source-probe/out3/log.jsonl, 800 books). */
 export const REFERENCE_PER_BOOK: Partial<Record<FetchSite, number>> = {
-  'amazon-dp': 1.02,
-  'amazon-search': 0.82,
+  // Amazon only where needed (bw-standin.ts): measured on the same 800 books, with books whose
+  // file cover is small asking Amazon too (was 1.02 product pages and 0.82 searches).
+  'amazon-dp': 0.6,
+  'amazon-search': 0.33,
   ranobedb: 2.15,
   bookwalker: 2.58,
   // Bookmeter: its search, then the matched book's store list (plan section 8).

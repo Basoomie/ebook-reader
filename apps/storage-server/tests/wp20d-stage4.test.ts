@@ -159,6 +159,32 @@ describe('stage 4: online sources (Preview)', () => {
         },
       });
     }
+    if (
+      u.startsWith('https://bookwalker.jp/search/?word=') &&
+      decodeURIComponent(u).includes('星降る')
+    ) {
+      return html(
+        bookwalkerList([['https://bookwalker.jp/series/4242/list/', '星降る街の物語 2']]),
+      );
+    }
+    if (u === 'https://bookwalker.jp/series/4242/list/') {
+      return html(
+        bookwalkerList([
+          ['https://bookwalker.jp/de42000000-0000-0000-0000-000000000001/', '星降る街の物語 1'],
+          ['https://bookwalker.jp/de42000000-0000-0000-0000-000000000002/', '星降る街の物語 2'],
+          ['https://bookwalker.jp/de42000000-0000-0000-0000-000000000003/', '星降る街の物語 3'],
+        ]),
+      );
+    }
+    if (u === 'https://bookwalker.jp/de42000000-0000-0000-0000-000000000002/') {
+      return html(
+        bookwalkerDetail(
+          '星降る街の物語 2',
+          '星の降る街の話。',
+          '星降る街の物語 2,ホシフルマチノモノガタリ02,星野一郎,挿絵次郎,テスト文庫,ライトノベル,電子書籍',
+        ),
+      );
+    }
     if (u.startsWith('https://bookwalker.jp/search/?word=')) {
       const q = decodeURIComponent(u.split('word=')[1]);
       if (!q.startsWith('魔法使いの旅')) return html('', 404);
@@ -237,6 +263,21 @@ describe('stage 4: online sources (Preview)', () => {
         epub: makeMetaEpub({
           title: 'ふしぎな本',
           creators: [{ name: '鈴木 一郎', role: 'aut' }],
+          pages: [longText],
+        }),
+      }),
+      // A light novel BookWalker settles (series list, large cover): Amazon is never asked.
+      D: await env.lib.addBook({
+        title: 'd-scan',
+        authors: ['Unknown'],
+        cover: 'none',
+        epub: makeMetaEpub({
+          title: '星降る街の物語 2',
+          creators: [
+            { name: '星野 一郎', role: 'aut' },
+            { name: '挿絵 次郎', role: 'aut' },
+          ],
+          cover: { data: bigCover },
           pages: [longText],
         }),
       }),
@@ -339,6 +380,18 @@ describe('stage 4: online sources (Preview)', () => {
       .send({ mode: 'on' });
     expect(on.status).toBeGreaterThanOrEqual(400);
     expect(JSON.stringify(on.body)).toMatch(/Preview only/);
+    const old = env.service.fetchQueue.enqueue(
+      {
+        site: 'amazon-search',
+        key: 'old plan',
+        url: 'https://www.amazon.co.jp/s?k=old&i=digital-text',
+      },
+      { libraryId: env.libraryId(), uuid: 'not-a-book', step: 'amazon-search' },
+    );
+    // Not due for an hour: only the sweep can take it out of the queue.
+    env.cleanupDb
+      .prepare('UPDATE fetch_requests SET next_at = ? WHERE id = ?')
+      .run(Date.now() + 3_600_000, old.id);
     await request(env.app)
       .put('/api/v1/cleanup/stages/4')
       .set(auth(user))
@@ -525,6 +578,57 @@ describe('stage 4: online sources (Preview)', () => {
         'cover',
       ]),
     );
+
+    // Amazon where needed: BookWalker settled the light novel, Amazon was never asked for it.
+    let uuidD = '';
+    env.lib.exec((db) => {
+      uuidD = (db.prepare('SELECT uuid FROM books WHERE id = ?').get(ids.D) as { uuid: string })
+        .uuid;
+    });
+    const evD = env.service.analysis4!.loadOnline(env.libraryId(), uuidD)!;
+    expect(evD.amazon.standin).toBe('bookwalker');
+    expect(evD.amazon.asked).toBeUndefined();
+    expect(seen.some((u) => u.includes('amazon') && decodeURIComponent(u).includes('星降る'))).toBe(
+      false,
+    );
+    const d = props(ids.D);
+    expect(d.series).toMatchObject({
+      value: { name: '星降る街の物語', index: 2 },
+      class: 'auto',
+      source: 'bookwalker',
+    });
+    expect(d.illustrator).toMatchObject({
+      value: ['挿絵次郎'],
+      class: 'auto',
+      source: 'bookwalker',
+    });
+    expect(d.authors).toMatchObject({ value: ['星野一郎'], class: 'auto', source: 'bookwalker' });
+    expect(d.format).toMatchObject({ value: 'light novel', class: 'auto' });
+    expect(JSON.stringify(d)).not.toMatch(/amazon/);
+    // The non-light novel asked Amazon only once BookWalker and RanobeDB had answered.
+    const at = (site: string, key: string) =>
+      env.cleanupDb
+        .prepare('SELECT created_at, finished_at FROM fetch_requests WHERE site = ? AND key = ?')
+        .get(site, key) as { created_at: number; finished_at: number };
+    const searchB = env.cleanupDb
+      .prepare(
+        "SELECT created_at FROM fetch_requests WHERE site = 'amazon-search' AND key LIKE 'ふしぎな本%'",
+      )
+      .get() as { created_at: number };
+    expect(searchB.created_at).toBeGreaterThanOrEqual(
+      at('bookwalker', 'search:ふしぎな本').finished_at,
+    );
+    expect(searchB.created_at).toBeGreaterThanOrEqual(
+      at('ranobedb', 'search:ふしぎな本').finished_at,
+    );
+    // The request queued the old way left the queue with its waiter; the sweep finished.
+    expect(
+      env.cleanupDb.prepare('SELECT 1 FROM fetch_requests WHERE id = ?').get(old.id),
+    ).toBeUndefined();
+    expect(
+      (getStage(env.cleanupDb, 4).progress as { amazonSweep?: { phase: string } }).amazonSweep
+        ?.phase,
+    ).toBe('done');
   }, 120_000);
 
   it("asks each site again as soon as its pace allows, and an answer runs no other stage's round", async () => {
