@@ -25,7 +25,7 @@ import { gunzipSync, gzipSync } from 'zlib';
 import { snapshotFile } from '../../calibre/indexer';
 import { getLibrary } from '../../calibre/libraries';
 import { resolveInside, statFile } from '../../calibre/source-fs';
-import { imageFacts } from '../file-metadata';
+import { imageFacts, readFileMetadata } from '../file-metadata';
 import { getSettings, stage4Bar, type CleanupSettings } from '../settings';
 import { Pacer } from '../stage1';
 import { loadEvidence as loadFileEvidence } from '../stage2';
@@ -118,6 +118,8 @@ export interface Stage4Progress {
   error: string | null;
   /** When the labeled books were all proposed (for the report's "time to the first gate"). */
   labeledDoneAt: number | null;
+  /** The answer time of the Natively sitemap whose pages are listed. */
+  nativelyListedAt?: number | null;
 }
 
 /** One book's online evidence (kind 'online'), in the reference record's shape plus the store links. */
@@ -172,6 +174,8 @@ const ANSWER_CHUNK = 200;
 const PROPOSE_CHUNK = 100;
 const FINAL_CHUNK = 500;
 const NATIVELY_ENQUEUE_CHUNK = 2000;
+/** The waiter "library" of Natively's pages (they belong to no book). */
+const NATIVELY_WAITER = 'natively';
 
 export interface Stage4Deps {
   cleanup: Database.Database;
@@ -220,6 +224,8 @@ export interface RefEvidence {
   mtimeMs: number;
   file: RefFile | null;
   error: string | null;
+  /** The file's own cover (stage 2's facts when it read the book, else read here); null = none. */
+  cover?: { width: number; height: number; dhash: string | null } | null;
 }
 
 export class Stage4Analysis {
@@ -381,12 +387,25 @@ export class Stage4Analysis {
     const counted = { bytes: 0 };
     let file: RefFile | null = null;
     let error: string | null = st ? null : 'file_missing';
+    let cover: RefEvidence['cover'] = null;
     if (st) {
       try {
         file = await readRefEpub(epub, counted);
       } catch (err) {
         error = `read: ${String((err as Error).message ?? err).slice(0, 300)}`;
       }
+      const s2 = loadFileEvidence(this.db, libraryId, book.uuid);
+      const same =
+        s2 && s2.path === book.filePath && s2.size === st.size && s2.mtimeMs === st.mtimeMs;
+      let fc = same ? (s2.file?.cover ?? null) : null;
+      if (!same && file) {
+        try {
+          fc = (await readFileMetadata(epub, { text: false, counted })).cover;
+        } catch {
+          fc = null;
+        }
+      }
+      cover = fc ? { width: fc.width, height: fc.height, dhash: fc.dhash } : null;
       await this.pacer().take(counted.bytes);
     }
     const ev: RefEvidence = {
@@ -396,6 +415,7 @@ export class Stage4Analysis {
       mtimeMs: st?.mtimeMs ?? 0,
       file,
       error,
+      cover,
     };
     this.saveEvidence(libraryId, book.uuid, REF_KIND, ev);
     return { ev, read: true };
@@ -796,8 +816,7 @@ export class Stage4Analysis {
       }
     }
     if (ev.cover === null) {
-      const fileEv = loadFileEvidence(this.db, p.libraryId, book.uuid);
-      const fc = fileEv?.file?.cover ?? null;
+      const fc = this.loadRef(p.libraryId, book.uuid)?.cover ?? null;
       const side = fc ? Math.max(fc.width, fc.height) : null;
       const url = (ev.amazon.product?.cover_url as string | null | undefined) ?? null;
       if (url && d.trace.amazonIdentified && (side === null || side < s.fetch.smallCoverPx)) {
@@ -848,6 +867,15 @@ export class Stage4Analysis {
       step: string;
     }[];
     for (const wr of ready) {
+      if (wr.step === 'natively-page') {
+        db.transaction(() => {
+          this.nativelyPage(wr.request_id, wr.calibre_uuid, Date.now());
+          db.prepare(
+            'DELETE FROM fetch_waiters WHERE request_id = ? AND library_id = ? AND calibre_uuid = ? AND step = ?',
+          ).run(wr.request_id, wr.library_id, wr.calibre_uuid, wr.step);
+        })();
+        continue;
+      }
       const book = this.book(wr.calibre_uuid);
       const ev = book ? this.loadOnline(wr.library_id, wr.calibre_uuid) : null;
       const row = db
@@ -889,6 +917,19 @@ export class Stage4Analysis {
           wr.library_id,
           wr.calibre_uuid,
         );
+        // A given-up request is noted on the book, so "Ask again" on the page re-plans it.
+        const st = db
+          .prepare('SELECT site, state FROM fetch_requests WHERE id = ?')
+          .get(wr.request_id) as {
+          site: string;
+          state: string;
+        };
+        if (st.state === 'failed') {
+          db.prepare(
+            `UPDATE stage4_books SET lookup_json = json_set(lookup_json, '$.failed.' || ?, 1)
+             WHERE library_id = ? AND calibre_uuid = ?`,
+          ).run(st.site, wr.library_id, wr.calibre_uuid);
+        }
       })();
     }
     if (ready.length) await yieldNow();
@@ -903,7 +944,7 @@ export class Stage4Analysis {
     if (done.length) await yieldNow();
 
     // 4. Natively's sitemap and pages, the authors' readings.
-    this.natively();
+    this.natively(p);
     this.readings(p);
 
     // 5. The gate once the labeled books are proposed.
@@ -965,8 +1006,7 @@ export class Stage4Analysis {
         readings.set(n, { reading: r.reading, source: r.state === 'found' ? 'ndl' : 'generated' });
       }
     }
-    const fileEv = loadFileEvidence(this.db, p.libraryId, uuid);
-    const fc = fileEv?.file?.cover ?? null;
+    const fc = ref.cover ?? null;
     const cover =
       ev.cover && ev.cover.width
         ? {
@@ -1116,7 +1156,26 @@ export class Stage4Analysis {
     return open.n === 0;
   }
 
-  private natively(): void {
+  /** One answered Natively page into the index (its ISBNs and Kindle ASINs). */
+  private nativelyPage(requestId: number, nativelyId: string, now: number): void {
+    const req = this.db.prepare('SELECT state FROM fetch_requests WHERE id = ?').get(requestId) as {
+      state: string;
+    };
+    const body = req.state === 'done' ? this.deps.queue.readAnswer(requestId) : null;
+    const b = body ? parseNativelyBook(body) : null;
+    const isbn13 = b?.isbn13 ?? (b?.isbn10 ? isbn13From10(b.isbn10) : null);
+    this.db
+      .prepare(
+        'UPDATE natively_books SET title = ?, isbn10 = ?, isbn13 = ?, read_at = ? WHERE natively_id = ?',
+      )
+      .run(b?.title ?? null, b?.isbn10 ?? null, isbn13, now, nativelyId);
+    const addAsin = this.db.prepare(
+      'INSERT OR IGNORE INTO natively_asins (asin, natively_id) VALUES (?, ?)',
+    );
+    for (const asin of b?.kindleAsins ?? []) addAsin.run(asin, nativelyId);
+  }
+
+  private natively(p: Stage4Progress): void {
     const db = this.db;
     const s = getSettings(db).fetch;
     if (!s.sites.natively.enabled) return;
@@ -1141,10 +1200,7 @@ export class Stage4Analysis {
       return;
     }
     if (sitemap.state === 'done' && sitemap.finished_at !== null) {
-      const listed = db.prepare('SELECT MAX(listed_at) AS t FROM natively_books').get() as {
-        t: number | null;
-      };
-      if (listed.t === null || listed.t < sitemap.finished_at) {
+      if ((p.nativelyListedAt ?? 0) < sitemap.finished_at) {
         const body = this.deps.queue.readAnswer(sitemap.id);
         const pages = body ? parseNativelySitemap(body) : [];
         const ins = db.prepare(
@@ -1154,6 +1210,7 @@ export class Stage4Analysis {
         db.transaction(() => {
           for (const pg of pages) ins.run(pg.id, pg.url, sitemap.finished_at);
         })();
+        p.nativelyListedAt = sitemap.finished_at;
         this.log(`stage 4: Natively's sitemap lists ${pages.length} book pages`);
       }
       // A sitemap older than the re-read time is asked again (new Natively books).
@@ -1163,43 +1220,26 @@ export class Stage4Analysis {
         ).run(now, sitemap.id);
       }
     }
-    // Pages not read yet go to the queue (in chunks; each read once).
-    const unread = db
-      .prepare(
-        `SELECT n.natively_id, n.url FROM natively_books n
-         WHERE n.read_at IS NULL AND NOT EXISTS (SELECT 1 FROM fetch_requests r WHERE r.site = 'natively' AND r.key = n.natively_id)
-         LIMIT ?`,
-      )
+    // Pages not asked yet go to the queue (in chunks, each once); their answers come back
+    // through the waiters like a book's (lookupStep).
+    const unqueued = db
+      .prepare(`SELECT natively_id, url FROM natively_books WHERE queued_at IS NULL LIMIT ?`)
       .all(NATIVELY_ENQUEUE_CHUNK) as { natively_id: string; url: string }[];
-    for (const u of unread)
-      this.deps.queue.enqueue(
-        { site: 'natively', key: u.natively_id, url: u.url, priority: 0 },
-        null,
-        now,
-      );
-    // Answered pages go into the index.
-    const answered = db
-      .prepare(
-        `SELECT r.id, r.key, r.state FROM fetch_requests r JOIN natively_books n ON n.natively_id = r.key
-         WHERE r.site = 'natively' AND r.key <> 'sitemap' AND r.state IN ('done', 'gone', 'failed') AND n.read_at IS NULL
-         LIMIT 500`,
-      )
-      .all() as { id: number; key: string; state: string }[];
-    const setBook = db.prepare(
-      'UPDATE natively_books SET title = ?, isbn10 = ?, isbn13 = ?, read_at = ? WHERE natively_id = ?',
-    );
-    const addAsin = db.prepare(
-      'INSERT OR IGNORE INTO natively_asins (asin, natively_id) VALUES (?, ?)',
-    );
-    db.transaction(() => {
-      for (const a of answered) {
-        const body = a.state === 'done' ? this.deps.queue.readAnswer(a.id) : null;
-        const b = body ? parseNativelyBook(body) : null;
-        const isbn13 = b?.isbn13 ?? (b?.isbn10 ? isbn13From10(b.isbn10) : null);
-        setBook.run(b?.title ?? null, b?.isbn10 ?? null, isbn13, now, a.key);
-        for (const asin of b?.kindleAsins ?? []) addAsin.run(asin, a.key);
-      }
-    })();
+    if (unqueued.length) {
+      db.transaction(() => {
+        for (const u of unqueued) {
+          this.deps.queue.enqueue(
+            { site: 'natively', key: u.natively_id, url: u.url, priority: 0 },
+            { libraryId: NATIVELY_WAITER, uuid: u.natively_id, step: 'natively-page' },
+            now,
+          );
+          db.prepare('UPDATE natively_books SET queued_at = ? WHERE natively_id = ?').run(
+            now,
+            u.natively_id,
+          );
+        }
+      })();
+    }
   }
 
   // ------------------------------------------------------------ readings
@@ -1261,7 +1301,12 @@ export class Stage4Analysis {
         )
         .get(p.analysisId) as { n: number }
     ).n;
-    if (s.sites.ndl.enabled) {
+    if (!s.sites.ndl.enabled) {
+      // NDL switched off: its names go straight to the generated readings.
+      db.prepare(
+        `UPDATE author_readings SET state = 'not_found', updated_at = ? WHERE state = 'queued'`,
+      ).run(now);
+    } else {
       for (;;) {
         const names = (
           db

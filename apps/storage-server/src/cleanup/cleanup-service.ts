@@ -783,6 +783,114 @@ export class CleanupService {
     return !!books;
   }
 
+  /** "Ask again" for a site: its given-up requests go back to the queue and their books are planned again. */
+  retryStage4Site(site: string, now = Date.now()): { requests: number; books: number } {
+    const p = this.analysis4?.progress();
+    const requests = this.fetchQueue.retryFailed(site, now);
+    const books = p
+      ? this.db
+          .prepare(
+            `UPDATE stage4_books SET state = 'read', lookup_json = '{}', updated_at = ?
+             WHERE analysis_id = ? AND json_extract(lookup_json, '$.failed.' || ?) IS NOT NULL`,
+          )
+          .run(now, p.analysisId, site).changes
+      : 0;
+    if (p && p.phase !== 'lookups' && p.phase !== 'read' && books > 0) {
+      p.phase = 'lookups';
+      updateStage(this.db, 4, {
+        progress: p as unknown as Record<string, unknown>,
+        state: 'analysing',
+      });
+    }
+    this.status4Cache = null;
+    void this.tick();
+    return { requests, books };
+  }
+
+  /** Stage 4's proposals for the page's list (paged). */
+  stage4Proposals(f: {
+    field: string | null;
+    cls: 'auto' | 'review' | null;
+    source: string | null;
+    offset: number;
+    limit: number;
+  }) {
+    const p = this.analysis4?.progress();
+    const target = this.targetLibrary();
+    if (!p || !target) return { total: 0, items: [] };
+    const where = ['stage = 4', 'library_id = ?', "state = 'proposed'", 'analysis_id = ?'];
+    const args: unknown[] = [target, p.analysisId];
+    if (f.field) {
+      where.push('field = ?');
+      args.push(f.field);
+    }
+    if (f.cls) {
+      where.push('class = ?');
+      args.push(f.cls);
+    }
+    if (f.source) {
+      where.push('source = ?');
+      args.push(f.source);
+    }
+    const sql = where.join(' AND ');
+    const total = (
+      this.db.prepare(`SELECT COUNT(*) AS n FROM proposed_changes WHERE ${sql}`).get(...args) as {
+        n: number;
+      }
+    ).n;
+    const rows = this.db
+      .prepare(
+        `SELECT id, calibre_id, calibre_uuid, field, old_json, new_json, class, source, review_reason, evidence_json
+         FROM proposed_changes WHERE ${sql} ORDER BY calibre_id, field LIMIT ? OFFSET ?`,
+      )
+      .all(...args, f.limit, f.offset) as {
+      id: number;
+      calibre_id: number;
+      calibre_uuid: string;
+      field: string;
+      old_json: string | null;
+      new_json: string | null;
+      class: string;
+      source: string;
+      review_reason: string | null;
+      evidence_json: string;
+    }[];
+    const snap = this.analysis4!.loadSnapshot(target);
+    return {
+      total,
+      items: rows.map((r) => ({
+        id: r.id,
+        calibreId: r.calibre_id,
+        title: snap.books.get(r.calibre_id)?.title ?? null,
+        field: r.field,
+        old: r.old_json === null ? null : (JSON.parse(r.old_json) as unknown),
+        new: r.new_json === null ? null : (JSON.parse(r.new_json) as unknown),
+        class: r.class,
+        source: r.source,
+        reason: r.review_reason,
+        evidence: JSON.parse(r.evidence_json) as unknown,
+      })),
+    };
+  }
+
+  /** The author readings (NDL's and generated ones) for the page's list. */
+  stage4Readings(state: string | null, offset: number) {
+    const where = state ? 'WHERE state = ?' : '';
+    const args = state ? [state] : [];
+    const total = (
+      this.db.prepare(`SELECT COUNT(*) AS n FROM author_readings ${where}`).get(...args) as {
+        n: number;
+      }
+    ).n;
+    const items = this.db
+      .prepare(
+        `SELECT name, state, reading, source, authority, ambiguous FROM author_readings ${where}
+         ORDER BY name LIMIT 100 OFFSET ?`,
+      )
+      .all(...args, offset);
+    return { total, items };
+  }
+
   /** Stage 4's status for the page (cached 30 s: some counts read the whole queue). */
   stage4Status(target: string | null, now = Date.now()): unknown {
     if (this.status4Cache && now - this.status4Cache.at < 30_000) return this.status4Cache.value;

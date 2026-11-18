@@ -683,9 +683,11 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
         isbn10       TEXT,
         isbn13       TEXT,
         listed_at    INTEGER NOT NULL,
+        queued_at    INTEGER,
         read_at      INTEGER
       );
       CREATE INDEX natively_books_isbn13 ON natively_books (isbn13);
+      CREATE INDEX natively_books_unqueued ON natively_books (natively_id) WHERE queued_at IS NULL;
       CREATE TABLE natively_asins (
         asin         TEXT NOT NULL,
         natively_id  TEXT NOT NULL,

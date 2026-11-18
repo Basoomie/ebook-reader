@@ -29,6 +29,7 @@
   import { confirmDestructive } from '$lib/confirm/confirm';
   import { removeCleanupSecretCopy } from '$lib/confirm/confirm-copy';
   import { formatWhen } from '$lib/notes/notes-format';
+  import { SITE_NAMES } from '$lib/cleanup/stage4-text';
 
   export let api: CleanupApi;
   export let libraries: { id: string; name: string; folder: string }[] = [];
@@ -177,6 +178,34 @@
                 copyHintMinMinutes: Number(settings.audiobooks.copyHintMinMinutes),
                 copyHintPercent: Number(settings.audiobooks.copyHintPercent),
                 absTimeoutSeconds: Number(settings.audiobooks.absTimeoutSeconds)
+              }
+            }
+          : {}),
+        ...(settings.fetch
+          ? {
+              fetch: {
+                ...settings.fetch,
+                sites: Object.fromEntries(
+                  Object.entries(settings.fetch.sites).map(([k, v]) => [
+                    k,
+                    { enabled: v.enabled, intervalSeconds: Number(v.intervalSeconds) }
+                  ])
+                ),
+                challengeBackoffSeconds: Number(settings.fetch.challengeBackoffSeconds),
+                challengeBackoffMaxSeconds: Number(settings.fetch.challengeBackoffMaxSeconds),
+                challengePauseAfter: Number(settings.fetch.challengePauseAfter),
+                slowDownPercent: Number(settings.fetch.slowDownPercent),
+                slowDownWindow: Number(settings.fetch.slowDownWindow),
+                retrySeconds: Number(settings.fetch.retrySeconds),
+                maxAttempts: Number(settings.fetch.maxAttempts),
+                leaseSeconds: Number(settings.fetch.leaseSeconds),
+                requestTimeoutSeconds: Number(settings.fetch.requestTimeoutSeconds),
+                maxPageMb: Number(settings.fetch.maxPageMb),
+                ndlNamesPerQuery: Number(settings.fetch.ndlNamesPerQuery),
+                ndlOutageMinutes: Number(settings.fetch.ndlOutageMinutes),
+                nativelyRereadDays: Number(settings.fetch.nativelyRereadDays),
+                smallCoverPx: Number(settings.fetch.smallCoverPx),
+                offlineSeconds: Number(settings.fetch.offlineSeconds)
               }
             }
           : {})
@@ -395,6 +424,171 @@
             min="1"
             step="1"
             bind:value={settings.audiobooks.absTimeoutSeconds}
+          />
+        </label>
+      </fieldset>
+    {/if}
+
+    {#if settings.fetch}
+      <fieldset class="grid gap-4 sm:grid-cols-2" data-testid="cleanup-fetch-settings">
+        <legend class={legend}>Online sources (stage 4)</legend>
+        <p class="text-sm text-c-muted sm:col-span-2">
+          The fetch container asks each site at most once per the seconds below (from the start of
+          one request to the next). Challenge pages are never answered: the site waits and is asked
+          again.
+        </p>
+        {#each Object.keys(settings.fetch.sites) as site (site)}
+          <div class="flex flex-wrap items-end gap-3" data-testid="cleanup-fetch-site-{site}">
+            <label class="flex items-center gap-2 text-sm">
+              <input type="checkbox" bind:checked={settings.fetch.sites[site].enabled} />
+              <span class={label}>{SITE_NAMES[site] ?? site}</span>
+            </label>
+            {#if site !== 'sudachi'}
+              <label class="flex flex-col gap-1 text-sm">
+                <span>Seconds between requests</span>
+                <input
+                  class="c-input w-28"
+                  type="number"
+                  min="1"
+                  step="1"
+                  bind:value={settings.fetch.sites[site].intervalSeconds}
+                />
+              </label>
+            {/if}
+          </div>
+        {/each}
+        <label class={field}>
+          <span class={label}>Amazon product pages and searches</span>
+          <select class="c-input" bind:value={settings.fetch.amazonPace}>
+            <option value="trial"
+              >Measure both on the labeled books (shared first, then separate)</option
+            >
+            <option value="shared">One shared slot (the reference run's rate)</option>
+            <option value="separate">Each at its own pace</option>
+          </select>
+        </label>
+        <label class={field}>
+          <span class={label}>First wait after a challenge page (s)</span>
+          <input
+            class="c-input"
+            type="number"
+            min="10"
+            step="1"
+            bind:value={settings.fetch.challengeBackoffSeconds}
+          />
+        </label>
+        <label class={field}>
+          <span class={label}>Longest wait (s)</span>
+          <input
+            class="c-input"
+            type="number"
+            min="10"
+            step="1"
+            bind:value={settings.fetch.challengeBackoffMaxSeconds}
+          />
+        </label>
+        <label class={field}>
+          <span class={label}>Pause after challenge pages in a row</span>
+          <input
+            class="c-input"
+            type="number"
+            min="1"
+            step="1"
+            bind:value={settings.fetch.challengePauseAfter}
+          />
+        </label>
+        <label class={field}>
+          <span class={label}>Slow Amazon down above this share of challenge pages (%)</span>
+          <input
+            class="c-input"
+            type="number"
+            min="0"
+            step="1"
+            bind:value={settings.fetch.slowDownPercent}
+          />
+        </label>
+        <label class={field}>
+          <span class={label}>… over the last (requests)</span>
+          <input
+            class="c-input"
+            type="number"
+            min="10"
+            step="1"
+            bind:value={settings.fetch.slowDownWindow}
+          />
+        </label>
+        <label class={field}>
+          <span class={label}>Ask a failed request again after (s, doubling)</span>
+          <input
+            class="c-input"
+            type="number"
+            min="1"
+            step="1"
+            bind:value={settings.fetch.retrySeconds}
+          />
+        </label>
+        <label class={field}>
+          <span class={label}>Give a request up after (attempts)</span>
+          <input
+            class="c-input"
+            type="number"
+            min="1"
+            step="1"
+            bind:value={settings.fetch.maxAttempts}
+          />
+        </label>
+        <label class={field}>
+          <span class={label}>Time limit for one request (s)</span>
+          <input
+            class="c-input"
+            type="number"
+            min="5"
+            step="1"
+            bind:value={settings.fetch.requestTimeoutSeconds}
+          />
+        </label>
+        <label class={field}>
+          <span class={label}>Names per NDL query</span>
+          <input
+            class="c-input"
+            type="number"
+            min="1"
+            step="1"
+            bind:value={settings.fetch.ndlNamesPerQuery}
+          />
+        </label>
+        <label class={field}>
+          <span class={label}>NDL's daily outage starts (Japan time, HH:MM)</span>
+          <input class="c-input" type="text" bind:value={settings.fetch.ndlOutageStartJst} />
+        </label>
+        <label class={field}>
+          <span class={label}>… and lasts (minutes)</span>
+          <input
+            class="c-input"
+            type="number"
+            min="0"
+            step="1"
+            bind:value={settings.fetch.ndlOutageMinutes}
+          />
+        </label>
+        <label class={field}>
+          <span class={label}>Read Natively’s list again after (days)</span>
+          <input
+            class="c-input"
+            type="number"
+            min="1"
+            step="1"
+            bind:value={settings.fetch.nativelyRereadDays}
+          />
+        </label>
+        <label class={field}>
+          <span class={label}>A file cover is small below (px)</span>
+          <input
+            class="c-input"
+            type="number"
+            min="100"
+            step="1"
+            bind:value={settings.fetch.smallCoverPx}
           />
         </label>
       </fieldset>

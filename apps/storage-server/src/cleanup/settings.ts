@@ -491,7 +491,7 @@ function validate(key: Key, value: unknown, current: CleanupSettings): unknown {
           intervalSeconds: num(
             `${site}: seconds between requests`,
             o.intervalSeconds,
-            site === 'sudachi' ? 0 : site === 'ranobedb' ? 1 : 2,
+            site === 'sudachi' ? 0 : 1,
             3600,
           ),
         };

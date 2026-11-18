@@ -28,7 +28,7 @@ export function amazonDp(p: AmazonPage): string {
 <span id="productTitle" class="a-size-extra-large">${esc(p.title)}</span>
 ${authors}
 <div id="bookDescription_feature_div"><div class="a-expander-content a-expander-partial-collapse-content">${(p.description ?? '').split('\n').map(esc).join('<br>')}</div></div>
-${p.series !== undefined ? `<div data-rpi-attribute-name="book_details-series"><span>${esc(p.series)}</span></div>` : ''}
+${p.series !== undefined ? `<div data-rpi-attribute-name="book_details-series"><span>${esc(p.series)}</span></div><div>本の長さ 300ページ</div>` : ''}
 <ul><li>Amazon 売れ筋ランキング: ${(p.rank ?? ['Kindleストアの売れ筋ランキングを見る', 'ライトノベル (Kindleストア)']).map((r) => `<a href="/r">${esc(r)}</a>`).join(' ')}</li></ul>
 <script>var data = {"hiRes":"${p.cover ?? `https://m.media-amazon.com/images/I/${p.asin}.jpg`}"};</script>
 </body></html>`;
