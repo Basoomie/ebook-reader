@@ -14,6 +14,8 @@ export default defineConfig({
     // exact Node code path a server-side job would use.
     environment: 'node',
     include: ['src/**/*.test.ts', 'tests/**/*.test.ts'],
+    // One temp folder per run, deleted at the end (the tests' temp folders used to pile up).
+    globalSetup: ['../../tools/vitest-temp-dir.mjs'],
     testTimeout: 60_000
   }
 });

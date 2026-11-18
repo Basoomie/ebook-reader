@@ -112,8 +112,9 @@ describe('cleanup.db migration 8', () => {
     v5.prepare(`UPDATE stages SET mode = 'analyse', state = 'ready' WHERE stage = 3`).run();
     v5.close();
     const db = openCleanupDatabase(file);
-    expect(db.pragma('user_version', { simple: true })).toBe(8);
-    expect(CLEANUP_SCHEMA_VERSION).toBe(8);
+    // Later migrations (WP20d's 9) run on top; the audiobook tables come with 8.
+    expect(db.pragma('user_version', { simple: true })).toBe(CLEANUP_SCHEMA_VERSION);
+    expect(CLEANUP_SCHEMA_VERSION).toBeGreaterThanOrEqual(8);
     expect(getStage(db, 3).mode).toBe('analyse');
     expect(getStage(db, 3).state).toBe('ready');
     expect(
@@ -257,7 +258,13 @@ describe('the shared disk lock', () => {
   });
 
   it('the Calibre phases that read book files are the ones that take it', () => {
-    expect(DISK_PHASES).toEqual({ 1: ['stat', 'hash'], 2: ['read'], 3: ['text', 'quality'] });
+    expect(DISK_PHASES).toEqual({
+      1: ['stat', 'hash'],
+      2: ['read'],
+      3: ['text', 'quality'],
+      // WP20d: stage 4 reads each EPUB as the measured run did.
+      4: ['read'],
+    });
   });
 
   it("Calibre's stage 1 analysis waits while an audiobook job holds the disk, then runs and gives it back", async () => {

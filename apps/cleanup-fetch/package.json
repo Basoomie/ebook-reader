@@ -1,0 +1,10 @@
+{
+  "name": "ttsu-cleanup-fetch",
+  "version": "1.0.0",
+  "private": true,
+  "description": "WP20d: the library cleanup's fetch container. Runs inside gluetun's network and fetches the online sources the reader's server hands out, at the server's pace.",
+  "scripts": {
+    "build": "node ../../node_modules/typescript/bin/tsc -p tsconfig.json",
+    "test": "cd ../storage-server && npx vitest run tests/wp20d-fetcher"
+  }
+}

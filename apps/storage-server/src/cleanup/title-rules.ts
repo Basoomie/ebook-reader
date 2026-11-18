@@ -23,6 +23,8 @@ const PY_WS =
   range(0x2000, 0x200a) +
   ch(0x2028, 0x2029, 0x202f, 0x205f, 0x3000);
 const WS = `[${PY_WS}]`;
+/** Python's \s (str.isspace) as the inside of a character class, for ports of the Python rules. */
+export const PY_SPACE = PY_WS;
 const IDEOGRAPHIC_SPACE = ch(0x3000);
 
 /** Python's \d (Unicode decimal digits). */
@@ -134,6 +136,11 @@ function cleanWith(t: string | null | undefined, flavour: Flavour): string {
   let s = stripImprint(stripMarkers(t, flavour), flavour);
   s = s.replace(re(`${WS}*(中公文庫|新潮文庫)$`), '');
   return s;
+}
+
+/** rules_v3 strip_markers() exactly (NFKC, edition markers removed): stage 4's port uses it. */
+export function stripMarkersV3(t: string): string {
+  return stripMarkers(t, 'v3');
 }
 
 /** rules_v3 clean() with no confirming sources (no appended series removed). */

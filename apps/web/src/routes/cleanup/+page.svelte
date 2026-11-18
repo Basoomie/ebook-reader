@@ -26,6 +26,7 @@
   import FieldRow from '$lib/components/cleanup/cleanup-field-row.svelte';
   import CleanupSettings from '$lib/components/cleanup/cleanup-settings.svelte';
   import Stage3Lists from '$lib/components/cleanup/cleanup-stage3-lists.svelte';
+  import Stage4Card from '$lib/components/cleanup/cleanup-stage4.svelte';
   import SettingsSection from '$lib/components/settings/settings-section.svelte';
   import {
     CleanupApi,
@@ -140,7 +141,8 @@
   $: stage1 = stages.find((s) => s.stage === 1);
   $: stage2 = stages.find((s) => s.stage === 2 && s.built);
   $: stage3 = stages.find((s) => s.stage === 3 && s.built);
-  $: laterStages = stages.filter((s) => s.stage >= (stage3 ? 4 : stage2 ? 3 : 2));
+  $: stage4 = stages.find((s) => s.stage === 4 && s.built);
+  $: laterStages = stages.filter((s) => s.stage >= (stage4 ? 5 : stage3 ? 4 : stage2 ? 3 : 2));
   $: bars3 = [
     stage3 ? stage3Progress(stage3, status?.stage3, Date.now()) : null,
     stage3 ? stage3ApplyProgress(status?.stage3, stage3, Date.now()) : null
@@ -712,6 +714,16 @@
               </details>
             {/if}
           </div>
+        {/if}
+        {#if stage4 && api}
+          <Stage4Card
+            {api}
+            stage={stage4}
+            status={status.stage4 ?? null}
+            {setMode}
+            {analyseAgain}
+            on:changed={refresh}
+          />
         {/if}
         <ul class="flex flex-col gap-2 text-sm">
           {#each laterStages as s (s.stage)}

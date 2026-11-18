@@ -92,6 +92,8 @@ const USAGE = `Usage:
   cli token worker <label> [--user <name>]   Create a GPU worker token (WP16; only the worker's routes)
   cli token cleanup <label>                  Create the library cleanup sidecar's token (WP20a; only
                                              /api/v1/cleanup-apply/*, kept in cleanup.db)
+  cli token fetch <label>                    Create the cleanup fetch container's token (WP20d; only
+                                             /api/v1/cleanup-fetch/*, kept in cleanup.db)
   cli token list                             List tokens
   cli token revoke <token-id>                Revoke a token
   cli library list                           List discovered Calibre libraries
@@ -786,6 +788,20 @@ function cleanupCommand(command: string, rest: string[], env: Record<string, str
         console.log(token);
         break;
       }
+      case 'token-fetch': {
+        const label = rest.join(' ').trim();
+        if (!label) fail('token fetch needs a label, e.g. token fetch "fetch container"');
+        const { token, record } = createApplyToken(db, label, Date.now(), 'fetch');
+        console.log(`Created library cleanup fetch token "${record.label}" (id ${record.id}).`);
+        console.log(
+          'It works only for the fetch container (/api/v1/cleanup-fetch/*), not as a device.',
+        );
+        console.log(
+          "Copy it now into the fetch container's FETCH_TOKEN; it cannot be shown again:",
+        );
+        console.log(token);
+        break;
+      }
       case 'resume': {
         const [which] = rest;
         if (which !== '3')
@@ -857,10 +873,10 @@ function cleanupCommand(command: string, rest: string[], env: Record<string, str
           );
         }
         const tokens = listApplyTokens(db);
-        console.log(tokens.length ? 'Sidecar tokens:' : 'No sidecar tokens.');
+        console.log(tokens.length ? 'Sidecar and fetch tokens:' : 'No sidecar or fetch tokens.');
         for (const t of tokens) {
           console.log(
-            `  ${t.id} label="${t.label}" created=${formatDate(t.createdAt)} last-used=${formatDate(t.lastUsedAt)}` +
+            `  ${t.id} ${t.scope} label="${t.label}" created=${formatDate(t.createdAt)} last-used=${formatDate(t.lastUsedAt)}` +
               (t.revokedAt ? ` revoked=${formatDate(t.revokedAt)}` : ''),
           );
         }
@@ -913,8 +929,15 @@ export function main(argv: string[], env: Record<string, string | undefined>): v
     return;
   }
   // The cleanup sidecar's tokens and the cleanup's state live in cleanup.db (WP20a).
-  if (group === 'cleanup' || (group === 'token' && command === 'cleanup')) {
-    cleanupCommand(group === 'token' ? 'token' : command, rest, env);
+  if (
+    group === 'cleanup' ||
+    (group === 'token' && (command === 'cleanup' || command === 'fetch'))
+  ) {
+    cleanupCommand(
+      group === 'token' ? (command === 'fetch' ? 'token-fetch' : 'token') : command,
+      rest,
+      env,
+    );
     return;
   }
 

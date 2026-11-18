@@ -610,21 +610,31 @@ describe('the sidecar with the server', () => {
     mdb.close();
   });
 
-  /** The open batch's (single) copy and the copy it would be kept against. */
-  function openPair(): { batchId: string; removedId: number; keptId: number } {
+  /**
+   * The open batch's first copy and the copy it would be kept against. The batch holds more
+   * than one copy, so later reads go by itemId: an unordered `WHERE batch_id = ?` is answered
+   * from the (batch_id, state) index since cleanup.db v7 and returns another item first.
+   */
+  function openPair(): { batchId: string; itemId: number; removedId: number; keptId: number } {
     const open = env.service.batches.open()!;
     expect(open).not.toBeNull();
     const row = env.cleanupDb
       .prepare(
-        `SELECT c.calibre_id, c.evidence_json FROM batch_items i
+        `SELECT i.id, c.calibre_id, c.evidence_json FROM batch_items i
          JOIN proposed_changes c ON c.id = i.change_id WHERE i.batch_id = ? ORDER BY i.id LIMIT 1`,
       )
-      .get(open.id) as { calibre_id: number; evidence_json: string };
+      .get(open.id) as { id: number; calibre_id: number; evidence_json: string };
     return {
       batchId: open.id,
+      itemId: row.id,
       removedId: row.calibre_id,
       keptId: (JSON.parse(row.evidence_json) as { kept: { calibreId: number } }).kept.calibreId,
     };
+  }
+
+  /** One batch item's outcome. */
+  function itemOutcome(itemId: number): unknown {
+    return env.cleanupDb.prepare('SELECT state, detail FROM batch_items WHERE id = ?').get(itemId);
   }
 
   /** The Calibre ids calibredb was asked to remove in this test. */
@@ -655,13 +665,10 @@ describe('the sidecar with the server', () => {
     await w.cycle();
     await turnOn();
     await env.service.tick(); // the server's check passes and plans a batch
-    const { batchId, removedId, keptId } = openPair();
+    const { itemId, removedId, keptId } = openPair();
     env.lib.removeFormat(keptId); // outside the cleanup, after the server's check
     await w.cycle();
-    const item = env.cleanupDb
-      .prepare('SELECT state, detail FROM batch_items WHERE batch_id = ?')
-      .get(batchId);
-    expect(item).toEqual({
+    expect(itemOutcome(itemId)).toEqual({
       state: 'skipped',
       detail: 'The copy to keep has no EPUB in Calibre any more',
     });
@@ -686,10 +693,7 @@ describe('the sidecar with the server', () => {
     const pair = openPair();
     keptId = pair.keptId;
     await w.cycle();
-    const item = env.cleanupDb
-      .prepare('SELECT state, detail FROM batch_items WHERE batch_id = ?')
-      .get(pair.batchId);
-    expect(item).toEqual({
+    expect(itemOutcome(pair.itemId)).toEqual({
       state: 'skipped',
       detail: 'The copy to keep has no EPUB in Calibre any more',
     });

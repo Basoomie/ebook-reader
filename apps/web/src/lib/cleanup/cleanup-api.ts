@@ -83,6 +83,105 @@ export interface CleanupStatus {
   stage2?: Stage2Status;
   /** Stage 3 (WP20c): content duplicates. Missing on an older server. */
   stage3?: Stage3Status;
+  /** Stage 4 (WP20d): online sources, Preview only. Missing on an older server. */
+  stage4?: Stage4Status;
+}
+
+/** One site's queue in the fetch container (WP20d). */
+export interface Stage4Site {
+  site: string;
+  enabled: boolean;
+  intervalSeconds: number;
+  queued: number;
+  leased: number;
+  done: number;
+  gone: number;
+  failed: number;
+  attempts: number;
+  challenges: number;
+  errors: number;
+  busy: number;
+  recent: { requests: number; challenges: number; errors: number; avgMs: number | null } | null;
+  secondsPerRequest: number;
+  secondsLeft: number;
+  pausedReason: string | null;
+  backoffUntil: number | null;
+  backoffReason: string | null;
+  slowFactor: number;
+}
+
+export interface Stage4Status {
+  waiting: string | null;
+  fetcher: {
+    online: boolean;
+    lastSeenAt: number | null;
+    version: string | null;
+    problem: string | null;
+    sudachi: string | null;
+  };
+  amazonPace: string;
+  sites: Stage4Site[];
+  books: { state: string; labeled: number; n: number }[];
+  readings: { state: string; n: number }[];
+  natively: { listed: number; read: number | null; withIsbn: number | null; asins: number };
+  fields: { field: string; class: string; n: number }[];
+  fieldPauses: FieldPause[];
+  /** The reading: books read (each once, from the database), the books with an EPUB, the pace. */
+  read: { done: number; total: number; perSecond: number | null } | null;
+  /** Time left (seconds; null while not measured yet). */
+  timeLeft: Stage4TimeLeft | null;
+  cachedAt: number;
+}
+
+export interface Stage4TimeLeft {
+  read: number | null;
+  sites: Record<string, number>;
+  slowest: { site: string; seconds: number } | null;
+  final: number | null;
+  total: number | null;
+  /** Requests per book from the reference run, or from this run's labeled books once done. */
+  basis: 'labeled' | 'reference';
+}
+
+/** One field of the stage-4 gate (the server's precision.gate.fields). */
+export interface Stage4GateField {
+  auto: number;
+  scored: number;
+  right: number;
+  percent: number | null;
+  bar: number;
+  below: boolean;
+  the600: { auto: number; right: number; percent: number | null; measured: number };
+  checkD: { auto: number; right: number; percent: number | null; measured: number };
+}
+
+export interface Stage4Gate {
+  books: number;
+  at: number;
+  fields: Record<string, Stage4GateField>;
+  kind: { right: number; all: number; percent: number | null };
+}
+
+export interface Stage4Proposal {
+  id: number;
+  calibreId: number;
+  title: string | null;
+  field: string;
+  old: unknown;
+  new: unknown;
+  class: 'auto' | 'review';
+  source: string;
+  reason: string | null;
+  evidence: Record<string, unknown>;
+}
+
+export interface AuthorReading {
+  name: string;
+  state: string;
+  reading: string | null;
+  source: string | null;
+  authority: string | null;
+  ambiguous: number;
 }
 
 /** Stage 3's analysis progress (the server's Stage3Progress, without the gate). */
@@ -322,7 +421,30 @@ export interface CleanupSettings {
   duplicates?: DuplicateSettings;
   /** The audiobook cleanup (WP21a); missing on an older server. */
   audiobooks?: AudiobookSettings;
+  /** Stage 4's online lookups (WP20d); missing on an older server. */
+  fetch?: FetchSettings;
   backup: { path: string; verifiedOn: string; confirmedAt: number | null };
+}
+
+export interface FetchSettings {
+  sites: Record<string, { enabled: boolean; intervalSeconds: number }>;
+  amazonPace: 'shared' | 'separate' | 'trial';
+  challengeBackoffSeconds: number;
+  challengeBackoffMaxSeconds: number;
+  challengePauseAfter: number;
+  slowDownPercent: number;
+  slowDownWindow: number;
+  retrySeconds: number;
+  maxAttempts: number;
+  leaseSeconds: number;
+  requestTimeoutSeconds: number;
+  maxPageMb: number;
+  ndlNamesPerQuery: number;
+  ndlOutageStartJst: string;
+  ndlOutageMinutes: number;
+  nativelyRereadDays: number;
+  smallCoverPx: number;
+  offlineSeconds: number;
 }
 
 export interface AudiobookSettings {
@@ -749,6 +871,56 @@ export class CleanupApi {
 
   stage3Gate(): Promise<{ gate: Stage3Gate | null }> {
     return this.request('GET', '/cleanup/stage3/gate') as Promise<{ gate: Stage3Gate | null }>;
+  }
+
+  // ---------------------------------------------------------------- stage 4 (WP20d)
+
+  stage4Proposals({
+    field,
+    cls,
+    source,
+    offset = 0,
+    limit = 50
+  }: {
+    field?: string;
+    cls?: string;
+    source?: string;
+    offset?: number;
+    limit?: number;
+  } = {}): Promise<{
+    total: number;
+    items: Stage4Proposal[];
+  }> {
+    const q = new URLSearchParams({ offset: String(offset), limit: String(limit) });
+    if (field) q.set('field', field);
+    if (cls) q.set('class', cls);
+    if (source) q.set('source', source);
+    return this.request('GET', `/cleanup/stage4/proposals?${q}`) as Promise<{
+      total: number;
+      items: Stage4Proposal[];
+    }>;
+  }
+
+  stage4Readings(state = '', offset = 0): Promise<{ total: number; items: AuthorReading[] }> {
+    const q = new URLSearchParams({ offset: String(offset) });
+    if (state) q.set('state', state);
+    return this.request('GET', `/cleanup/stage4/readings?${q}`) as Promise<{
+      total: number;
+      items: AuthorReading[];
+    }>;
+  }
+
+  resumeSite(site: string): Promise<unknown> {
+    return this.request('POST', `/cleanup/stage4/sites/${encodeURIComponent(site)}/resume`);
+  }
+
+  retrySite(site: string): Promise<{ retried: { requests: number; books: number } }> {
+    return this.request(
+      'POST',
+      `/cleanup/stage4/sites/${encodeURIComponent(site)}/retry`
+    ) as Promise<{
+      retried: { requests: number; books: number };
+    }>;
   }
 
   // ---------------------------------------------------------------- audiobooks (WP21a)

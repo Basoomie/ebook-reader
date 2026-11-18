@@ -690,6 +690,42 @@ export function createCleanupRouter(options: CleanupOptions): Router {
     res.json({ gate: service.stage3Gate() });
   });
 
+  // ---------------------------------------------------------------- stage 4 (WP20d)
+
+  router.get('/cleanup/stage4/proposals', (req, res) => {
+    const service = serviceOr503(options);
+    const q = req.query as Record<string, string | undefined>;
+    const offset = Math.max(0, Number(q.offset ?? 0) || 0);
+    const limit = Math.min(200, Math.max(1, Number(q.limit ?? 50) || 50));
+    res.json(
+      service.stage4Proposals({
+        field: q.field ?? null,
+        cls: q.class === 'auto' || q.class === 'review' ? q.class : null,
+        source: q.source ?? null,
+        offset,
+        limit,
+      }),
+    );
+  });
+
+  router.get('/cleanup/stage4/readings', (req, res) => {
+    const service = serviceOr503(options);
+    const q = req.query as Record<string, string | undefined>;
+    const offset = Math.max(0, Number(q.offset ?? 0) || 0);
+    res.json(service.stage4Readings(q.state ?? null, offset));
+  });
+
+  router.post('/cleanup/stage4/sites/:site/resume', (req, res) => {
+    const service = serviceOr503(options);
+    service.fetchQueue.resume(req.params.site);
+    res.json({ ok: true });
+  });
+
+  router.post('/cleanup/stage4/sites/:site/retry', (req, res) => {
+    const service = serviceOr503(options);
+    res.json({ retried: service.retryStage4Site(req.params.site) });
+  });
+
   router.get('/cleanup/batches', (_req, res) => {
     const service = serviceOr503(options);
     res.json({
