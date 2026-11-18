@@ -825,6 +825,7 @@ describe.skipIf(!HAS_TOOLS)('stage 3 on fixture audio with ffmpeg, fpcalc and fa
       ]);
       expect(p.windowErrors).toBe(0);
       expect(p.tools?.fpcalc).toMatch(/fpcalc/);
+      expect(p.tools?.faad).toMatch(/Decoder V\d/);
 
       // Lookups by torrent path.
       const copyOf = (rel: string) =>
