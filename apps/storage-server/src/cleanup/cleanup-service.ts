@@ -163,6 +163,10 @@ export class CleanupService {
   /** Why stage 4 is not working right now. */
   waiting4: string | null = null;
   private status4Cache: { at: number; value: unknown } | null = null;
+  private fields4Cache: {
+    at: number;
+    value: { field: string; class: string; n: number }[];
+  } | null = null;
   private reader3: Stage3Reader | null = null;
   private analysing3: Promise<void> | null = null;
   /** Why stage 3 is not applying right now. */
@@ -913,10 +917,7 @@ export class CleanupService {
       first: number;
     }[];
     const totals = this.db
-      .prepare(
-        `SELECT site, COUNT(*) AS n, SUM(outcome = 'challenge') AS challenges, SUM(outcome = 'error') AS errors,
-           SUM(outcome = 'busy') AS busy FROM fetch_attempts GROUP BY site`,
-      )
+      .prepare('SELECT site, attempts AS n, challenges, errors, busy FROM fetch_sites')
       .all() as { site: string; n: number; challenges: number; errors: number; busy: number }[];
     const sites = (FETCH_SITES as readonly FetchSite[]).map((site) => {
       const by = (st: string) => counts.find((c) => c.site === site && c.state === st)?.n ?? 0;
@@ -982,15 +983,23 @@ export class CleanupService {
     const nativelyAsins = (
       this.db.prepare('SELECT COUNT(*) AS n FROM natively_asins').get() as { n: number }
     ).n;
-    const fields =
-      target && p
-        ? (this.db
-            .prepare(
-              `SELECT field, class, COUNT(*) AS n FROM proposed_changes WHERE stage = 4 AND library_id = ? AND analysis_id = ?
-             GROUP BY field, class`,
-            )
-            .all(target, p.analysisId) as { field: string; class: string; n: number }[])
-        : [];
+    // The proposals' counts read every stage-4 proposal (41 ms on the PC at the library's size):
+    // counted at most every 5 minutes.
+    if (!this.fields4Cache || now - this.fields4Cache.at > 300_000) {
+      this.fields4Cache = {
+        at: now,
+        value:
+          target && p
+            ? (this.db
+                .prepare(
+                  `SELECT field, class, COUNT(*) AS n FROM proposed_changes WHERE stage = 4 AND library_id = ?
+                 AND state = 'proposed' AND analysis_id = ? GROUP BY field, class`,
+                )
+                .all(target, p.analysisId) as { field: string; class: string; n: number }[])
+            : [],
+      };
+    }
+    const fields = this.fields4Cache.value;
     const value = {
       waiting: this.waiting4,
       fetcher: this.fetcher(now),

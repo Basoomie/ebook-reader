@@ -594,6 +594,12 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
         paused_at          INTEGER,
         slow_factor        REAL NOT NULL DEFAULT 1,
         mode               TEXT,
+        -- Totals per site for the page (counted as answers arrive; reading fetch_attempts
+        -- for them took 0.4 s on the PC at the library's size).
+        attempts           INTEGER NOT NULL DEFAULT 0,
+        challenges         INTEGER NOT NULL DEFAULT 0,
+        errors             INTEGER NOT NULL DEFAULT 0,
+        busy               INTEGER NOT NULL DEFAULT 0,
         updated_at         INTEGER NOT NULL
       );
 
@@ -625,7 +631,8 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
         updated_at   INTEGER NOT NULL,
         UNIQUE (site, key)
       );
-      CREATE INDEX fetch_requests_due ON fetch_requests (site, state, priority, next_at);
+      -- The claim takes a site's next request straight off this index (priority first).
+      CREATE INDEX fetch_requests_due ON fetch_requests (site, state, priority DESC, next_at);
       CREATE INDEX fetch_requests_lease ON fetch_requests (state, lease_until);
 
       -- Every attempt (pace, challenge rate, seconds per request), with the Amazon pace in use.

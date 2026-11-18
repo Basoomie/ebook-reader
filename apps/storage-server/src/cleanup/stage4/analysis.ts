@@ -20,6 +20,7 @@
  */
 import type Database from 'better-sqlite3';
 import { randomUUID } from 'crypto';
+import fs from 'fs';
 import path from 'path';
 import { gunzipSync, gzipSync } from 'zlib';
 import { snapshotFile } from '../../calibre/indexer';
@@ -168,11 +169,25 @@ export interface OnlineEvidence {
 }
 
 const yieldNow = () => new Promise<void>((r) => setImmediate(r));
+
+/**
+ * Gives the server back at least every SLICE_MS (lessons 3: a synchronous step blocks the reader
+ * and /cleanup; one answer can take ~15 ms: decompressing and parsing a 1.3 MB page).
+ */
+const SLICE_MS = 30;
+class Slicer {
+  private at = Date.now();
+  async maybeYield(): Promise<void> {
+    if (Date.now() - this.at < SLICE_MS) return;
+    await yieldNow();
+    this.at = Date.now();
+  }
+}
 const READ_CHUNK = 20;
 const PLAN_CHUNK = 500;
 const ANSWER_CHUNK = 200;
 const PROPOSE_CHUNK = 100;
-const FINAL_CHUNK = 500;
+const FINAL_CHUNK = 50;
 const NATIVELY_ENQUEUE_CHUNK = 2000;
 /** The waiter "library" of Natively's pages (they belong to no book). */
 const NATIVELY_WAITER = 'natively';
@@ -232,6 +247,7 @@ export class Stage4Analysis {
   private snapshot: Stage2Snapshot | null = null;
   private extras: Map<number, Stage4Extras> | null = null;
   private snapshotFor: string | null = null;
+  private snapshotMtime = 0;
   private byUuid: Map<string, Stage2Book> | null = null;
   private readPacer: Pacer | null = null;
   private readPacerBps = -1;
@@ -285,9 +301,18 @@ export class Stage4Analysis {
     return path.join(this.deps.calibreDir, lib.folder);
   }
 
+  /** The reader's metadata.db snapshot, read again whenever the indexer made a new one. */
   loadSnapshot(libraryId: string): Stage2Snapshot {
     const file = snapshotFile(this.deps.cacheDir, libraryId);
-    if (this.snapshot && this.snapshotFor === file) return this.snapshot;
+    let mtime = 0;
+    try {
+      mtime = fs.statSync(file).mtimeMs;
+    } catch {
+      mtime = 0;
+    }
+    if (this.snapshot && this.snapshotFor === file && this.snapshotMtime === mtime)
+      return this.snapshot;
+    this.snapshotMtime = mtime;
     this.snapshot = readStage2Snapshot(file);
     this.extras = readStage4Extras(file);
     this.byUuid = new Map([...this.snapshot.books.values()].map((b) => [b.uuid, b]));
@@ -842,7 +867,9 @@ export class Stage4Analysis {
          ORDER BY labeled DESC LIMIT ?`,
       )
       .all(p.analysisId, PLAN_CHUNK) as { calibre_uuid: string; labeled: number }[];
+    const slicer = new Slicer();
     for (const r of toPlan) {
+      await slicer.maybeYield();
       const book = this.book(r.calibre_uuid);
       const ref = this.loadRef(p.libraryId, r.calibre_uuid);
       if (!book || !ref?.file) {
@@ -867,6 +894,7 @@ export class Stage4Analysis {
       step: string;
     }[];
     for (const wr of ready) {
+      await slicer.maybeYield();
       if (wr.step === 'natively-page') {
         db.transaction(() => {
           this.nativelyPage(wr.request_id, wr.calibre_uuid, Date.now());
@@ -940,7 +968,10 @@ export class Stage4Analysis {
         `SELECT calibre_uuid, labeled FROM stage4_books WHERE analysis_id = ? AND state = 'ready' ORDER BY labeled DESC LIMIT ?`,
       )
       .all(p.analysisId, PROPOSE_CHUNK) as { calibre_uuid: string; labeled: number }[];
-    for (const r of done) this.proposeBook(p, r.calibre_uuid);
+    for (const r of done) {
+      await slicer.maybeYield();
+      this.proposeBook(p, r.calibre_uuid);
+    }
     if (done.length) await yieldNow();
 
     // 4. Natively's sitemap and pages, the authors' readings.
@@ -956,7 +987,7 @@ export class Stage4Analysis {
         .get(p.analysisId) as { n: number };
       if (open.n === 0 && p.pass === 'all') {
         p.labeledDoneAt = Date.now();
-        this.gateNow(p);
+        await this.gateNow(p);
       }
     }
 
@@ -1416,22 +1447,24 @@ export class Stage4Analysis {
       calibre_id: number;
     }[];
     if (!rows.length) {
-      this.gateNow(p);
+      await this.gateNow(p);
       p.phase = 'done';
       p.finishedAt = Date.now();
       return p;
     }
     const settings = getSettings(this.db);
     const fields = new Set(['identifiers', 'author_sort']);
-    this.db.transaction(() => {
-      for (const r of rows) {
-        const book = this.book(r.calibre_uuid);
-        const res = book ? this.proposalsFor(p, r.calibre_uuid, settings) : null;
+    const slicer = new Slicer();
+    for (const r of rows) {
+      await slicer.maybeYield();
+      const book = this.book(r.calibre_uuid);
+      const res = book ? this.proposalsFor(p, r.calibre_uuid, settings) : null;
+      this.db.transaction(() => {
         if (book && res) this.writeProposals(p, book, res.proposals, fields);
         p.finalCursor = r.calibre_id;
-      }
-      this.save(p);
-    })();
+        this.save(p);
+      })();
+    }
     await yieldNow();
     return p;
   }
@@ -1439,7 +1472,7 @@ export class Stage4Analysis {
   // ------------------------------------------------------------ gate
 
   /** Grades the labeled books per field (the 600 and check D apart) and pauses a field below its bar. */
-  gateNow(p: Stage4Progress): Record<string, unknown> | null {
+  async gateNow(p: Stage4Progress): Promise<Record<string, unknown> | null> {
     const file = this.referenceFile();
     if (!file) return null;
     const { gold } = loadGold(file);
@@ -1449,7 +1482,9 @@ export class Stage4Analysis {
     const groups = { ABC: emptyScores(), D: emptyScores(), all: emptyScores() };
     const kind = { right: 0, all: 0 };
     let books = 0;
+    const slicer = new Slicer();
     for (const [gid, calibreId] of mapped) {
+      await slicer.maybeYield();
       const book = this.snapshot?.books.get(calibreId);
       if (!book) continue;
       const res = this.proposalsFor(p, book.uuid, settings);

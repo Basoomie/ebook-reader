@@ -370,6 +370,18 @@ export class FetchQueue {
     }
     const state = this.db.transaction(() => {
       this.site(bkey, now);
+      this.site(req.site, now);
+      this.db
+        .prepare(
+          `UPDATE fetch_sites SET attempts = attempts + 1, challenges = challenges + ?, errors = errors + ?,
+             busy = busy + ? WHERE site = ?`,
+        )
+        .run(
+          outcome === 'challenge' ? 1 : 0,
+          outcome === 'error' ? 1 : 0,
+          outcome === 'busy' ? 1 : 0,
+          req.site,
+        );
       this.db
         .prepare(
           `INSERT INTO fetch_attempts (request_id, site, at, ms, status, bytes, outcome, pace, labeled)

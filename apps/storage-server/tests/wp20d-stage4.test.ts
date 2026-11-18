@@ -10,6 +10,7 @@ import fs from 'fs';
 import http from 'http';
 import type { AddressInfo } from 'net';
 import path from 'path';
+import { monitorEventLoopDelay } from 'perf_hooks';
 import request from 'supertest';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { FetchConfig } from '../../cleanup-fetch/src/config';
@@ -364,6 +365,9 @@ describe('stage 4: online sources (Preview)', () => {
       () => {},
       (input, init) => fetch(input, init),
     );
+    // The server must stay responsive: the longest event-loop block over the whole run.
+    const delay = monitorEventLoopDelay({ resolution: 10 });
+    delay.enable();
     const running = fetcher.run();
     await sleep(300);
     await second.heartbeat();
@@ -379,7 +383,9 @@ describe('stage 4: online sources (Preview)', () => {
     }
     fetcher.stop();
     await running;
+    delay.disable();
     expect(phase).toBe('done');
+    expect(delay.max / 1e6).toBeLessThan(500);
     expect(metadataDbHash()).toBe(before);
 
     // Every store host the fetcher asked is on its list; Natively's search was never used.
