@@ -3,8 +3,8 @@
 stdin: {"names": [...]} (or {"version": true} to report the versions); stdout: {"readings":
 {name: reading}, "version": "..."}. Uses the same SudachiPy and dictionary as the PC's TTS
 (sudachipy 0.6.10, sudachidict-core 20260428), split mode C. The reading is katakana; a name of
-two person-name words gets NDL's "Family, Given" form. A name with a word Sudachi can't read gets
-no reading. Generated readings are always listed for spot checks."""
+two person-name words gets NDL's "Family, Given" form. A name with a word Sudachi can't read, and
+a name with anything but kana and kanji, gets no reading. Generated readings are always listed for spot checks."""
 import json
 import sys
 import unicodedata
@@ -16,6 +16,11 @@ def katakana(text):
         code = ord(ch)
         out.append(chr(code + 0x60) if 0x3041 <= code <= 0x3096 else ch)
     return ''.join(out)
+
+
+def japanese(c):
+    o = ord(c)
+    return 0x3040 <= o <= 0x30FF or 0x4E00 <= o <= 0x9FFF or 0x3400 <= o <= 0x4DBF or 0xF900 <= o <= 0xFAFF
 
 
 def is_kana(text):
@@ -39,6 +44,10 @@ def main():
         for name in names:
             n = unicodedata.normalize('NFKC', name).strip()
             if not n:
+                continue
+            # Only names written in kana and kanji get a reading: Latin letters and digits are read
+            # badly (竹井10日 as タケイイチレイニチ, 著者M with メートル), and a Latin name's own sort is right.
+            if not all(japanese(c) or c in ' ・ー々〆' for c in n):
                 continue
             if is_kana(n.replace(' ', '')):
                 out['readings'][name] = katakana(n.replace(' ', ''))

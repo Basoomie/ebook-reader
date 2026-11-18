@@ -109,3 +109,25 @@ services:
       - TTSU_URL=http://ttsu-storage:3001
       - CLEANUP_TOKEN=${TTSU_CLEANUP_TOKEN:-}
       - QUARANTINE_MIN_FREE_MB=${TTSU_QUARANTINE_MIN_FREE_MB:-2048}
+
+  # WP20d: the library cleanup's fetch container (stage 4's online sources). It shares gluetun's
+  # network (NordVPN), so the stores see the VPN's address; gluetun must let it reach the storage
+  # server (FIREWALL_OUTBOUND_SUBNETS=<the NAS address>/32). Only one fetcher runs at a time; the
+  # server keeps the queue and every site's pace. Its token comes from
+  #   docker exec ttsu-storage node dist/cli.js token fetch "fetch container"
+  # Started only with the profile: docker compose --profile fetch up -d ttsu-cleanup-fetch
+  ttsu-cleanup-fetch:
+    profiles: ['fetch']
+    build:
+      context: ./apps/cleanup-fetch
+    container_name: ttsu-cleanup-fetch
+    restart: unless-stopped
+    network_mode: container:gluetun
+    user: '${TTSU_CLEANUP_UID:-99}:${TTSU_CLEANUP_GID:-100}'
+    read_only: true
+    tmpfs:
+      - /tmp
+    environment:
+      # The storage server as reached from inside gluetun's network (the NAS's LAN address).
+      - TTSU_URL=${TTSU_FETCH_SERVER_URL:-http://192.168.1.5:3081}
+      - FETCH_TOKEN=${TTSU_FETCH_TOKEN:-}

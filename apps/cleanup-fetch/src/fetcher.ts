@@ -12,6 +12,7 @@
  */
 import { spawn } from 'child_process';
 import { randomUUID } from 'crypto';
+import { hostname } from 'os';
 import { brotliCompressSync, constants as zc } from 'zlib';
 import type { FetchConfig } from './config';
 import { allowedUrl } from './hosts';
@@ -43,7 +44,12 @@ export interface FetchResult {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export class Fetcher {
-  readonly id = randomUUID();
+  /**
+   * The container's hostname (kept across restarts of the same container, so a restarted fetcher
+   * takes over at once); a second container has its own and stays inactive while this one runs.
+   */
+  readonly id =
+    `${hostname()}-${process.env.FETCHER_ID_SUFFIX ?? ''}`.replace(/-$/, '') || randomUUID();
   private active = false;
   private stopped = false;
   private requestTimeoutMs = 30_000;

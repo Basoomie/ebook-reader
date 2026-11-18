@@ -169,7 +169,7 @@
           <li class="flex flex-col gap-1 border-b py-2" style="border-color: var(--c-line)">
             <span class="font-medium">{SITE_NAMES[s.site] ?? s.site}</span>
             <span class="text-c-muted">{siteLine(s)}</span>
-            {#if s.pausedReason || s.failed}
+            {#if s.pausedReason || (s.failed && s.enabled)}
               <span class="flex flex-wrap gap-2">
                 {#if s.pausedReason}
                   <button
@@ -178,7 +178,7 @@
                     on:click={() => resumeSite(s.site)}>Resume</button
                   >
                 {/if}
-                {#if s.failed}
+                {#if s.failed && s.enabled}
                   <button
                     class="c-btn c-btn-secondary"
                     disabled={busySite === s.site}
