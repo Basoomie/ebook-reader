@@ -115,8 +115,10 @@ export class AudioStage1 {
   }
 
   /** Is the hash phase running (stage 2 waits for it)? */
-  hashing(): boolean {
-    return this.progress()?.phase === 'hash';
+  /** Is stage 1 reading the folders (listing or hashing)? Stage 2 waits meanwhile. */
+  reading(): boolean {
+    const phase = this.progress()?.phase;
+    return phase === 'walk' || phase === 'hash';
   }
 
   /** One unit of work; true when the analysis is finished or failed. Never throws. */

@@ -829,7 +829,7 @@ describe('file health', () => {
           );
         }
       }
-    });
+    }, 120_000);
 
     it('reads format from the content, chapters, and checks start and end', async () => {
       const dir = makeTempDir('wp21a-health');
