@@ -52,6 +52,8 @@ export interface EtaInput {
   labeledBooks: number;
   labeledDone: boolean;
   amazonShared: boolean;
+  /** Measured seconds per request of Amazon's shared slot (both queues together), when known. */
+  amazonSlotSeconds?: number | null;
   /** Author names waiting for NDL, its batch size and seconds per query. */
   ndlNames: number;
   ndlBatch: number;
@@ -99,8 +101,13 @@ export function stage4Eta(i: EtaInput): EtaResult {
     const dp = i.sites.find((s) => s.site === 'amazon-dp');
     const search = i.sites.find((s) => s.site === 'amazon-search');
     if (dp?.enabled && search?.enabled) {
-      // One slot for both: the slot's pace times both queues' requests.
-      const pace = Math.max(dp.secondsPerRequest, search.secondsPerRequest);
+      // One slot for both: the slot's pace times both queues' requests. Each queue alone takes
+      // every other turn, so its own gap is twice the slot's.
+      const pace = i.amazonSlotSeconds ?? Math.min(dp.secondsPerRequest, search.secondsPerRequest);
+      // The shared slot replaces the two queues' own figures (each is every other turn).
+      for (let k = candidates.length - 1; k >= 0; k--)
+        if (candidates[k].site === 'amazon-dp' || candidates[k].site === 'amazon-search')
+          candidates.splice(k, 1);
       candidates.push({
         site: 'amazon',
         seconds: Math.round(((left['amazon-dp'] ?? 0) + (left['amazon-search'] ?? 0)) * pace),

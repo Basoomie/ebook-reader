@@ -99,6 +99,23 @@ describe('stage 4 time left', () => {
     });
   });
 
+  it("uses the shared slot's measured pace, not one queue's (each takes every other turn)", () => {
+    // Found live 2026-11-18: each queue's own gap was 40 s in a 20 s slot; the slot's mean gap
+    // over both queues (refusal waits included) is what Amazon really allows.
+    const sites = [
+      site('amazon-dp', { finished: 0, secondsPerRequest: 40 }),
+      site('amazon-search', { finished: 0, secondsPerRequest: 40 }),
+    ];
+    const r = stage4Eta(base({ sites, amazonShared: true, amazonSlotSeconds: 30 }));
+    const per = REFERENCE_PER_BOOK['amazon-dp']! + REFERENCE_PER_BOOK['amazon-search']!;
+    expect(r.slowest).toEqual({ site: 'amazon', seconds: Math.round(per * 10_000 * 30) });
+    // Without a measured slot: the faster queue's gap, never the slower one.
+    const s2 = stage4Eta(
+      base({ sites: [sites[0], { ...sites[1], secondsPerRequest: 20 }], amazonShared: true }),
+    );
+    expect(s2.slowest?.seconds).toBe(Math.round(per * 10_000 * 20));
+  });
+
   it('waits for a measured reading speed, and adds NDL and a switched-off site correctly', () => {
     const r = stage4Eta(
       base({
