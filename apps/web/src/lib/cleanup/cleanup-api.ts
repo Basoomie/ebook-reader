@@ -108,6 +108,8 @@ export interface Stage4Site {
   backoffUntil: number | null;
   backoffReason: string | null;
   slowFactor: number;
+  /** Amazon's product pages and searches share one slot: pace and time left are the slot's. */
+  sharedSlot?: boolean;
 }
 
 export interface Stage4Status {

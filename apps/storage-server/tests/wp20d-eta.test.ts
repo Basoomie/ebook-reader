@@ -5,6 +5,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  paceSeconds,
   REFERENCE_PER_BOOK,
   stage4Eta,
   type EtaInput,
@@ -130,5 +131,42 @@ describe('stage 4 time left', () => {
     expect(r.sites.ndl).toBe(3 * 30);
     // All read: no reading left.
     expect(stage4Eta(base({ booksRead: 10_000, readPerSecond: null })).read).toBe(0);
+  });
+});
+
+describe('a site’s pace', () => {
+  const IDLE = 960_000;
+  // Newest first: request k asked at at[k], made at created[k].
+  const rows = (ats: number[], created: (at: number, k: number) => number) =>
+    ats.map((at, k) => ({ at, created: created(at, k) }));
+
+  it('counts only gaps across which a request was waiting', () => {
+    // Cover pictures: each made 1 s before it is asked, 200 s apart (live 2026-11-18). No
+    // request waited across any gap: not measured (the set pace is used), not 200 s.
+    const trickle = rows(
+      Array.from({ length: 40 }, (_, k) => 1e9 - k * 200_000),
+      (at) => at - 1000,
+    );
+    expect(paceSeconds(trickle, () => null, IDLE)).toBeNull();
+    // A queue with work waiting: 5 s apart, one refusal wait of 300 s counted (work waited).
+    const ats = Array.from({ length: 40 }, (_, k) => 1e9 - k * 5000 - (k > 20 ? 295_000 : 0));
+    const busy = rows(ats, () => 0);
+    expect(paceSeconds(busy, () => null, IDLE)).toBeCloseTo((39 * 5 + 295) / 39, 5);
+    // A gap longer than the longest refusal wait (fetcher offline) is left out.
+    const off = rows(
+      Array.from({ length: 40 }, (_, k) => 1e9 - k * 5000 - (k > 20 ? 2_000_000 : 0)),
+      () => 0,
+    );
+    expect(paceSeconds(off, () => null, IDLE)).toBeCloseTo(5, 5);
+  });
+
+  it('counts a gap when an older request is still open, or one asked later was made before', () => {
+    // A search's product page is made after the search was asked, but older work waited.
+    const ats = Array.from({ length: 30 }, (_, k) => 1e9 - k * 20_000);
+    const r = rows(ats, (at) => at - 100);
+    expect(paceSeconds(r, () => 0, IDLE)).toBeCloseTo(20, 5);
+    // Every second request made long before: each gap is spanned by one of them.
+    const mixed = rows(ats, (at, k) => (k % 2 ? 0 : at - 100));
+    expect(paceSeconds(mixed, () => null, IDLE)).toBeCloseTo(20, 5);
   });
 });

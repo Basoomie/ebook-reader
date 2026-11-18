@@ -26,6 +26,37 @@ export const REFERENCE_PER_BOOK: Partial<Record<FetchSite, number>> = {
   'amazon-img': 0.1,
 };
 
+/**
+ * Seconds per request from a site's (or Amazon's shared slot's) last requests, newest first:
+ * the mean gap, counting only gaps across which a request was already waiting (made before the
+ * earlier request and asked at or after the later one, or still open now). A queue that runs
+ * dry between requests (cover pictures, asked for a few books) shows how often work arrives,
+ * not how fast the site answers: found live 2026-11-18, 216 s per cover picture against a 5 s
+ * pace, 13 days. Refusal waits count (work was waiting); gaps over `idleMs` don't (fetcher
+ * offline, nightly stop). Null below 20 counted gaps.
+ */
+export function paceSeconds(
+  rows: { at: number; created: number }[],
+  openSince: () => number | null,
+  idleMs: number,
+): number | null {
+  const gaps: number[] = [];
+  let open: number | null | undefined;
+  let waiting = Infinity; // the oldest creation among requests asked at or after rows[k]
+  for (let k = 0; k + 1 < rows.length; k++) {
+    waiting = Math.min(waiting, rows[k].created);
+    const g = rows[k].at - rows[k + 1].at;
+    if (g > idleMs) continue;
+    let busy = waiting <= rows[k + 1].at;
+    if (!busy) {
+      if (open === undefined) open = openSince();
+      busy = open !== null && open <= rows[k + 1].at;
+    }
+    if (busy) gaps.push(g);
+  }
+  return gaps.length >= 20 ? gaps.reduce((a, b) => a + b, 0) / gaps.length / 1000 : null;
+}
+
 export interface SiteCounts {
   site: FetchSite;
   enabled: boolean;
@@ -68,6 +99,8 @@ export interface EtaResult {
   read: number | null;
   /** Seconds left per site (its own queue plus the requests still to come). */
   sites: Partial<Record<FetchSite, number>>;
+  /** Amazon's shared slot: both queues' requests left at the slot's pace (null when separate). */
+  amazonSlot: number | null;
   /** The slowest site (or Amazon's shared slot) and its seconds. */
   slowest: { site: string; seconds: number } | null;
   /** The final pass (identifiers and readings for every book). */
@@ -97,6 +130,7 @@ export function stage4Eta(i: EtaInput): EtaResult {
   const candidates: { site: string; seconds: number }[] = Object.entries(sites).map(
     ([site, seconds]) => ({ site, seconds: seconds! }),
   );
+  let amazonSlot: number | null = null;
   if (i.amazonShared) {
     const dp = i.sites.find((s) => s.site === 'amazon-dp');
     const search = i.sites.find((s) => s.site === 'amazon-search');
@@ -108,10 +142,8 @@ export function stage4Eta(i: EtaInput): EtaResult {
       for (let k = candidates.length - 1; k >= 0; k--)
         if (candidates[k].site === 'amazon-dp' || candidates[k].site === 'amazon-search')
           candidates.splice(k, 1);
-      candidates.push({
-        site: 'amazon',
-        seconds: Math.round(((left['amazon-dp'] ?? 0) + (left['amazon-search'] ?? 0)) * pace),
-      });
+      amazonSlot = Math.round(((left['amazon-dp'] ?? 0) + (left['amazon-search'] ?? 0)) * pace);
+      candidates.push({ site: 'amazon', seconds: amazonSlot });
     }
   }
   const slowest = candidates.length
@@ -124,5 +156,5 @@ export function stage4Eta(i: EtaInput): EtaResult {
   // Lookups start as books are read, so the reading only adds where it outlasts the sites.
   const total =
     read === null || final === null ? null : Math.max(read, slowest?.seconds ?? 0) + final;
-  return { read, sites, slowest, final, total, basis };
+  return { read, sites, amazonSlot, slowest, final, total, basis };
 }

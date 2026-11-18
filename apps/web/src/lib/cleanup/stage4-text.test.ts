@@ -51,6 +51,21 @@ describe('stage 4 wording', () => {
       'paused: 8 refusals in a row'
     );
     expect(siteLine(site({ slowFactor: 1.5 }))).toContain('slowed down ×1.5');
+    // Amazon's two queues in one slot: the slot's pace and the time for both, also when this
+    // queue has nothing waiting right now.
+    expect(
+      siteLine(
+        site({
+          site: 'amazon-dp',
+          done: 1701,
+          sharedSlot: true,
+          secondsPerRequest: 24,
+          secondsLeft: 1_100_000
+        })
+      )
+    ).toBe(
+      '1,701 answered · 24 s per request in the slot shared with Kindle search · about 12 days 17 h left for both'
+    );
   });
 
   it('times, sources and values in plain words', () => {

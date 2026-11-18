@@ -21,7 +21,7 @@ import { listFieldPauses, loadGold, resumeField } from './stage2-gate';
 import { STAGE3_WAITING_SQL, Stage3Analysis, type PairRow, type Stage3Progress } from './stage3';
 import { Stage3Worker, type Stage3Reader } from '../counts/book-text-worker';
 import { Stage4Analysis, type Stage4Progress } from './stage4/analysis';
-import { stage4Eta, type SiteCounts } from './stage4/eta';
+import { paceSeconds, stage4Eta, type SiteCounts } from './stage4/eta';
 import { FetchQueue, LABELED_PRIORITY, backoffKey } from './stage4/queue';
 import { FETCH_SITES, type FetchSite } from './settings';
 import {
@@ -937,20 +937,34 @@ export class CleanupService {
     const totals = this.db
       .prepare('SELECT site, attempts AS n, challenges, errors, busy FROM fetch_sites')
       .all() as { site: string; n: number; challenges: number; errors: number; busy: number }[];
-    const lastAttempts = this.db.prepare(
-      'SELECT at FROM fetch_attempts WHERE site = ? ORDER BY at DESC LIMIT ?',
-    );
-    // A site's pace: the mean gap over its last 500 requests, refusal waits included (Amazon's
-    // cap shows as waits). Gaps longer than the longest refusal wait are idle time (nothing was
-    // queued), not pace. The median (2026-11-18 morning) left out the waits, and per queue it
-    // read 40 s for Amazon's two queues taking turns in one 20 s slot.
+    // A site's pace: the mean gap over its last 500 requests while work was waiting, refusal
+    // waits included (Amazon's cap shows as waits); see stage4/eta.ts paceSeconds. The median
+    // (2026-11-18 morning) left out the waits, and per queue it read 40 s for Amazon's two
+    // queues taking turns in one 20 s slot.
     const idleMs = (s.challengeBackoffMaxSeconds + 60) * 1000;
-    const meanGap = (ats: number[]): number | null => {
-      const gaps = ats
-        .slice(1)
-        .map((x, k) => ats[k] - x)
-        .filter((g) => g <= idleMs);
-      return gaps.length >= 20 ? gaps.reduce((a, b) => a + b, 0) / gaps.length / 1000 : null;
+    // Each site's last 501 straight from its index (two sites together in one query sort all
+    // their requests), merged for Amazon's slot.
+    const lastAttempts = this.db.prepare(
+      `SELECT a.at, r.created_at AS created FROM fetch_attempts a
+       JOIN fetch_requests r ON r.id = a.request_id
+       WHERE a.site = ? ORDER BY a.at DESC LIMIT 501`,
+    );
+    const oldestOpen = this.db.prepare(
+      `SELECT MIN(created_at) AS m FROM fetch_requests
+       WHERE site = ? AND state IN ('queued', 'leased')`,
+    );
+    const pace = (group: string[]): number | null => {
+      const rows = group
+        .flatMap((g) => lastAttempts.all(g) as { at: number; created: number }[])
+        .sort((a, b) => b.at - a.at)
+        .slice(0, 501);
+      const openSince = () => {
+        const ms = group
+          .map((g) => (oldestOpen.get(g) as { m: number | null }).m)
+          .filter((m): m is number => m !== null);
+        return ms.length ? Math.min(...ms) : null;
+      };
+      return paceSeconds(rows, openSince, idleMs);
     };
     const sites = (FETCH_SITES as readonly FetchSite[]).map((site) => {
       const by = (st: string) => counts.find((c) => c.site === site && c.state === st)?.n ?? 0;
@@ -967,8 +981,7 @@ export class CleanupService {
           }
         | undefined;
       const left = by('queued') + by('leased');
-      const ats = (lastAttempts.all(site, 501) as { at: number }[]).map((x) => x.at);
-      const perRequest = Math.max(meanGap(ats) ?? s.sites[site].intervalSeconds, 0.1);
+      const perRequest = Math.max(pace([site]) ?? s.sites[site].intervalSeconds, 0.1);
       return {
         site,
         enabled: s.sites[site].enabled,
@@ -996,6 +1009,7 @@ export class CleanupService {
         backoffUntil: row?.backoff_until && row.backoff_until > now ? row.backoff_until : null,
         backoffReason: row?.backoff_until && row.backoff_until > now ? row.backoff_reason : null,
         slowFactor: row?.slow_factor ?? 1,
+        sharedSlot: false,
       };
     });
     const books = p
@@ -1009,16 +1023,8 @@ export class CleanupService {
       .prepare('SELECT state, COUNT(*) AS n FROM author_readings GROUP BY state')
       .all() as { state: string; n: number }[];
     // Nothing is left once the analysis is done (or failed).
-    // Amazon's shared slot: the mean gap over both queues' last 500 requests together.
-    const slotAts = (
-      this.db
-        .prepare(
-          `SELECT at FROM fetch_attempts WHERE site IN ('amazon-dp', 'amazon-search')
-           ORDER BY at DESC LIMIT 501`,
-        )
-        .all() as { at: number }[]
-    ).map((x) => x.at);
-    const amazonSlot = meanGap(slotAts);
+    // Amazon's shared slot: the pace over both queues' last 500 requests together.
+    const amazonSlot = pace(['amazon-dp', 'amazon-search']);
     const eta =
       p && p.phase !== 'done'
         ? this.stage4TimeLeft(p, sites, books, readings, now, amazonSlot)
@@ -1026,6 +1032,19 @@ export class CleanupService {
     for (const site of sites) {
       const t = eta?.result.sites[site.site];
       if (t !== undefined) site.secondsLeft = t;
+      // In the shared slot each queue takes every other turn: both show the slot's pace and
+      // the time left for both together.
+      const slot = eta?.result.amazonSlot;
+      if (
+        slot !== null &&
+        slot !== undefined &&
+        amazonSlot !== null &&
+        (site.site === 'amazon-dp' || site.site === 'amazon-search')
+      ) {
+        site.sharedSlot = true;
+        site.secondsPerRequest = Math.round(amazonSlot * 10) / 10;
+        site.secondsLeft = slot;
+      }
     }
     const natively = this.db
       .prepare(

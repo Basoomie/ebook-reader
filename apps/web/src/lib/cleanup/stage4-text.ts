@@ -85,7 +85,13 @@ export function siteLine(s: Stage4Site, now = Date.now()): string {
   if (s.failed) parts.push(`${n(s.failed)} given up`);
   if (s.challenges) parts.push(`${n(s.challenges)} refused`);
   if (s.errors) parts.push(`${n(s.errors)} network error${s.errors === 1 ? '' : 's'}`);
-  if (s.queued + s.leased > 0) {
+  if (s.sharedSlot && s.secondsLeft > 0) {
+    // Product pages and searches take turns in one slot: its pace, and the time for both.
+    const other = s.site === 'amazon-dp' ? 'Kindle search' : 'product pages';
+    parts.push(
+      `${s.secondsPerRequest} s per request in the slot shared with ${other} · about ${duration(s.secondsLeft)} left for both`
+    );
+  } else if (s.queued + s.leased > 0) {
     parts.push(`${s.secondsPerRequest} s per request · about ${duration(s.secondsLeft)} left`);
   }
   if (s.pausedReason) parts.push(`paused: ${s.pausedReason}`);
