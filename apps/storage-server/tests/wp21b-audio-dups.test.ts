@@ -719,14 +719,14 @@ describe.skipIf(!HAS_TOOLS)('stage 3 on fixture audio with ffmpeg and fpcalc', (
         .toString()
         .trim(),
     );
-  function chaptersFile(dir: string, name: string, chapters: number[]): string {
+  function chaptersFile(dir: string, name: string, chapters: number[], titles?: string[]): string {
     const meta = path.join(dir, `${name}.txt`);
     let t = 0;
     const lines = [';FFMETADATA1', 'title=本'];
     chapters.forEach((len, i) => {
       lines.push('[CHAPTER]', 'TIMEBASE=1/1000', `START=${Math.round(t * 1000)}`);
       t += len;
-      lines.push(`END=${Math.round(t * 1000)}`, `title=第${i + 1}章`);
+      lines.push(`END=${Math.round(t * 1000)}`, `title=${titles?.[i] ?? `第${i + 1}章`}`);
     });
     fs.writeFileSync(meta, lines.join('\n') + '\n');
     return meta;
@@ -885,6 +885,24 @@ describe.skipIf(!HAS_TOOLS)('stage 3 on fixture audio with ffmpeg and fpcalc', (
     const fG96 = fs.readFileSync(m4b(src, 'g96', [G], '96k', [75, 75]));
     const fG64 = fs.readFileSync(m4b(src, 'g64', [G], '64k', [75, 75]));
     const fH = fs.readFileSync(m4b(src, 'h', [samples(60, 10)], '64k', [60]));
+    // 本N: the same file with its chapter names written another way (nested, as TMW's).
+    const nPlain = m4b(src, 'n-plain', [samples(150, 29)], '64k', [75, 75]);
+    const nNested = path.join(src, 'n-nested.m4b');
+    ff([
+      '-i',
+      nPlain,
+      '-i',
+      chaptersFile(src, 'n-nested', [75, 75], ['第一部 始まり: 第1章', '第一部 始まり: 第2章']),
+      '-map',
+      '0:a',
+      '-map_metadata',
+      '1',
+      '-map_chapters',
+      '1',
+      '-c',
+      'copy',
+      nNested,
+    ]);
     const yabu = [26, 27, 28].map((seed, i) =>
       fs.readFileSync(
         m4b(src, `yabu${i}`, [samples([30, 45, 60][i], seed)], '64k', [[30, 45, 60][i]]),
@@ -921,6 +939,8 @@ describe.skipIf(!HAS_TOOLS)('stage 3 on fixture audio with ffmpeg and fpcalc', (
     put(torrents, 'Discord/moved/本E/本E (1).m4b', fE96);
     put(torrents, 'Discord/moved/本E/本E (2).m4b', fE64);
     put(torrents, `${tmw}/[作者G] 本G/[01] 本G 1 [B0A0000009].m4b`, fG96);
+    put(torrents, `${tmw}/[作者N] 本N/本N.m4b`, fs.readFileSync(nNested));
+    put(torrents, 'Discord/moved/本N/本N.m4b', fs.readFileSync(nPlain));
     yabu.forEach((b, i) => put(torrents, `Discord/moved/藪の中/藪の中 分割版00${i + 1}.m4b`, b));
     put(torrents, 'AI/本A 1/本A 1.m4b', A.short); // the same audio, but AI: never competes
     put(library, '_Unknown/本A/[01] 本A 1 [B0A0000001].m4b', A.short);
@@ -1098,6 +1118,14 @@ describe.skipIf(!HAS_TOOLS)('stage 3 on fixture audio with ffmpeg and fpcalc', (
       const gM = groupOf(`${tmw12}/風花帖M/風花帖M.m4b`)!;
       expect(gM).toMatchObject({ outcome: 'auto', rule: 'extra', role: 'drop' });
       expect(gM.review_reason).toMatch(/20\.\d s more audio/);
+      // 本N: the same audio, chapter names written another way: the fuller names stay (not the
+      // first by path).
+      const gN = groupOf(`${tmw}/[作者N] 本N/本N.m4b`)!;
+      expect(gN).toMatchObject({ outcome: 'auto', rule: 'frames', role: 'keep' });
+      expect(gN.review_reason).toMatch(
+        /chapter names are written differently: the copy with the fuller names stays/,
+      );
+      expect(roleOf('Discord/moved/本N/本N.m4b')).toBe('drop');
       // 本B, 本E, 本G: the same recording but encoded separately: not proven, every copy stays.
       for (const rel of [
         `${tmw12}/本B/本B.m4b`,
@@ -1139,6 +1167,7 @@ describe.skipIf(!HAS_TOOLS)('stage 3 on fixture audio with ffmpeg and fpcalc', (
         'branding',
         'branding',
         'extra',
+        'frames',
       ]);
       const review = await request(env.app)
         .get('/api/v1/cleanup/audio/dups?list=review')

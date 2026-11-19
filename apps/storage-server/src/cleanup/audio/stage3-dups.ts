@@ -180,11 +180,18 @@ export interface Stage3Deps {
   log?: (m: string) => void;
 }
 
+/**
+ * The version of stage 3's rules: raised when a code change can change the decisions, so the
+ * stage decides again from its stored measurements (2: chapter names don't block a proof).
+ */
+const STAGE3_RULES_VERSION = 2;
+
 /** The settings a stage 3 result depends on (a change makes the stage compare again). */
 export function stage3SettingsKey(s: AudiobookSettings): string {
   return createHash('sha1')
     .update(
       JSON.stringify([
+        STAGE3_RULES_VERSION,
         s.dupWindowSeconds,
         s.dupShiftSeconds,
         s.dupMiddleSearchMinutes,
@@ -1429,8 +1436,11 @@ export class AudioStage3 {
   }
 
   /**
-   * A group's proof (frame checks, chapter titles, cover): which copy stays and why, or why both
-   * stay. `branding` holds the candidates whose opening/closing is proven to be branding.
+   * A group's proof (frame checks, cover): which copy stays and why, or why both stay.
+   * `branding` holds the candidates whose opening/closing is proven to be branding.
+   * Chapter names are not part of the audio (each program that converted the download writes
+   * them its own way; user, 2026-11-18): when they differ, the copy with the fuller names stays
+   * among the copies the audio proof leaves to choose from.
    */
   private proveGroup(
     distinct: LoadedCopy[],
@@ -1441,29 +1451,54 @@ export class AudioStage3 {
     const others = distinct.filter((c) => c !== k);
     const titles = (c: LoadedCopy) =>
       c.files.flatMap((f) =>
-        (f.chapters as { title?: string | null }[]).map((ch) => ch.title ?? ''),
+        (f.chapters as { title?: string | null }[]).map((ch) => (ch.title ?? '').trim()),
       );
+    const namesDiffer = distinct.some(
+      (c) => JSON.stringify(titles(c)) !== JSON.stringify(titles(distinct[0])),
+    );
+    /** The copy with the fuller chapter names (more text, then more chapters), else canonical. */
+    const fullest = (list: LoadedCopy[]): LoadedCopy => {
+      const size = (c: LoadedCopy) => {
+        const t = titles(c).filter(Boolean);
+        return [[...t.join('')].length, t.length] as const;
+      };
+      const best = list.reduce((a, c) => {
+        const [ta, na] = size(a);
+        const [tc, nc] = size(c);
+        return tc > ta || (tc === ta && nc > na) ? c : a;
+      });
+      const [tb, nb] = size(best);
+      return canonical(list.filter((c) => size(c)[0] === tb && size(c)[1] === nb));
+    };
+    const namesNote = (kept: LoadedCopy) =>
+      !namesDiffer
+        ? ''
+        : fullest(distinct) === kept
+          ? '; the chapter names are written differently: the copy with the fuller names stays'
+          : '; the chapter names are written differently (not part of the audio)';
     const checks: FrameComparison[] = [];
     for (const x of others) {
       const r = this.frameCheck(k, x);
       if (!r) return { why: 'not compared frame by frame yet' };
       if (!r.contained)
         return { why: `the audio is not the same frame by frame: ${r.detail ?? 'it differs'}` };
-      if (JSON.stringify(titles(k)) !== JSON.stringify(titles(x))) {
-        return { why: 'the audio is the same, but the chapter lists differ' };
-      }
       if ((k.files[0]?.hasCover ?? false) !== (x.files[0]?.hasCover ?? false)) {
         return { why: 'the audio is the same, but only one copy has a cover picture' };
       }
       checks.push(r);
     }
-    const sec = (v: number) => `${v.toFixed(1)} s`;
+    const sec = (v: number) => (v < 0.1 ? `${Math.round(v * 1000)} ms` : `${v.toFixed(1)} s`);
     if (
       checks.every(
         (r) => r.identical || (r.startExtra === 0 && r.endExtra === 0 && r.middleExtra === 0),
       )
     ) {
-      return { keep: canonical(distinct), rule: 'frames', detail: 'the same audio frame by frame' };
+      const keep = fullest(distinct);
+      return {
+        keep,
+        rule: 'frames',
+        detail: `the same audio frame by frame${namesNote(keep)}`,
+      };
     }
     const brandingShaped = checks.every(
       (r) =>
@@ -1480,10 +1515,11 @@ export class AudioStage3 {
       const b = branding(k);
       const r = checks[0];
       if ((r.startExtra === 0 || b.start) && (r.endExtra === 0 || b.end)) {
+        const keep = fullest(others);
         return {
-          keep: canonical(others),
+          keep,
           rule: 'branding',
-          detail: `the same audio frame by frame, apart from Audible's opening (${sec(r.startExtra)}) and closing (${sec(r.endExtra)}) in the longer copy: the copy without them stays`,
+          detail: `the same audio frame by frame, apart from Audible's opening (${sec(r.startExtra)}) and closing (${sec(r.endExtra)}) in the longer copy: the copy without them stays${namesNote(keep)}`,
         };
       }
     }
@@ -1493,7 +1529,7 @@ export class AudioStage3 {
     return {
       keep: k,
       rule: 'extra',
-      detail: `everything in the other ${others.length === 1 ? 'copy' : 'copies'} is in this one frame by frame; this one has ${sec(extra)} more audio`,
+      detail: `everything in the other ${others.length === 1 ? 'copy' : 'copies'} is in this one frame by frame; this one has ${sec(extra)} more audio${namesNote(k)}`,
     };
   }
 
