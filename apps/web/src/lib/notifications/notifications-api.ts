@@ -12,8 +12,10 @@ import { errorFrom, send } from '$lib/library/api';
  */
 
 export type NotificationChannel = 'discord' | 'email';
-export type NotificationSectionId = 'jobs' | 'cleanup' | 'data';
+export type NotificationSectionId = 'jobs' | 'cleanup' | 'data' | 'stats';
 export type FinishedMode = 'now' | 'digest' | 'off';
+/** N2: a period with no reading: skip its stats message, or send "No reading". */
+export type NoReadingMode = 'skip' | 'send';
 
 export interface NotificationWaits {
   pcWaitingHours: number;
@@ -30,6 +32,7 @@ export interface NotificationSettings {
   finishedJobs: FinishedMode;
   waits: NotificationWaits;
   sections: Record<NotificationSectionId, boolean>;
+  stats: { noReading: NoReadingMode };
   events: Record<string, Record<NotificationChannel, boolean>>;
 }
 
@@ -45,8 +48,8 @@ export interface NotificationEvent {
   id: string;
   section: NotificationSectionId;
   label: string;
-  /** now: an alert; digest: a digest line; finished: Now / Digest / Off. */
-  kind: 'now' | 'digest' | 'finished';
+  /** now: an alert; digest: a digest line; finished: Now / Digest / Off; report: stats (N2). */
+  kind: 'now' | 'digest' | 'finished' | 'report';
 }
 
 export interface NotificationsView {

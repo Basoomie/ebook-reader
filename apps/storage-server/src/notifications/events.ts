@@ -4,9 +4,12 @@
  * shows it without a web change: the Calibre and audiobook daily summaries, and N2's Stats.
  */
 
-export type SectionId = 'jobs' | 'cleanup' | 'data';
-/** now: an alert; digest: a line in the daily digest; finished: the user's Now/Digest/Off. */
-export type EventKind = 'now' | 'digest' | 'finished';
+export type SectionId = 'jobs' | 'cleanup' | 'data' | 'stats';
+/**
+ * now: an alert; digest: a line in the daily digest; finished: the user's Now/Digest/Off;
+ * report: a stats message (N2) when a day, week or month ends.
+ */
+export type EventKind = 'now' | 'digest' | 'finished' | 'report';
 
 export interface EventDef {
   id: string;
@@ -19,6 +22,8 @@ export const SECTIONS: { id: SectionId; label: string }[] = [
   { id: 'jobs', label: 'Jobs (PC and NAS)' },
   { id: 'cleanup', label: 'Library cleanup' },
   { id: 'data', label: 'Library and data' },
+  // N2: its events are added by stats-report.ts (registerEvent). Off by default.
+  { id: 'stats', label: 'Stats' },
 ];
 
 const EVENTS: EventDef[] = [

@@ -5,10 +5,13 @@
  */
 import type Database from 'better-sqlite3';
 import { listEvents, SECTIONS, SectionId } from './events';
+// Registers N2's stats events before any defaults are made.
+import './stats-events';
 
 export type Channel = 'discord' | 'email';
 export const CHANNELS: Channel[] = ['discord', 'email'];
 export type FinishedMode = 'now' | 'digest' | 'off';
+export type NoReadingMode = 'skip' | 'send';
 
 export interface Waits {
   /** Jobs waiting while the PC is off or paused (hours). */
@@ -32,6 +35,8 @@ export interface NotificationSettings {
   finishedJobs: FinishedMode;
   waits: Waits;
   sections: Record<SectionId, boolean>;
+  /** N2: a period without reading: skip its message, or send "No reading" (user: skip). */
+  stats: { noReading: NoReadingMode };
   /** Per event, per channel. Kept when its section is off, so switching it on restores them. */
   events: Record<string, Record<Channel, boolean>>;
 }
@@ -59,7 +64,9 @@ export function defaultSettings(): NotificationSettings {
       fetchHelperMinutes: 30,
       refusalQuietHours: 24,
     },
-    sections: { jobs: true, cleanup: true, data: true },
+    // Stats is off by default (approved layout); its three messages start on once it is on.
+    sections: { jobs: true, cleanup: true, data: true, stats: false },
+    stats: { noReading: 'skip' },
     events,
   };
 }
@@ -133,6 +140,15 @@ export function mergeSettings(base: NotificationSettings, input: unknown): Notif
       throw new SettingsError('Finished jobs must be now, digest or off');
     }
     out.finishedJobs = i.finishedJobs as FinishedMode;
+  }
+  if (i.stats !== undefined) {
+    const s = obj(i.stats);
+    if (s.noReading !== undefined) {
+      if (s.noReading !== 'skip' && s.noReading !== 'send') {
+        throw new SettingsError('A period with no reading must be skip or send');
+      }
+      out.stats.noReading = s.noReading;
+    }
   }
   if (i.waits !== undefined) {
     const w = obj(i.waits);

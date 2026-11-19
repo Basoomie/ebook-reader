@@ -37,7 +37,8 @@ export interface LogRow {
   id: number;
   created_at: number;
   event: string;
-  kind: 'now' | 'digest' | 'test';
+  /** report: a stats message (N2, migration 26). */
+  kind: 'now' | 'digest' | 'test' | 'report';
   channel: Channel;
   text: string;
   status: 'pending' | 'sent' | 'failed';

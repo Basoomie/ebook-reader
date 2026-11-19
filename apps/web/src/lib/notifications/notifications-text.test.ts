@@ -37,6 +37,7 @@ describe('notifications text', () => {
     );
     expect(logKindText('now')).toBe('Alert');
     expect(logKindText('digest')).toBe('Daily summary');
+    expect(logKindText('report')).toBe('Stats');
     expect(firstLine('A failed\nBook\nhttp://x')).toBe('A failed');
     expect(firstLine('ッツ Reader: daily summary\n• one\n• two\n• three')).toBe(
       '• one (and 2 more)'

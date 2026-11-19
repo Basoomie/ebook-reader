@@ -1,0 +1,599 @@
+{
+  "about": "Notifications N2 parity fixture, written by apps/web/scripts/server-stats/make-parity-fixture.ts: records (as a device mirror holds them), catalog character counts, and the Stats page summaries per period. apps/web/tests/stats/server-stats.test.ts checks the summaries are the web source results; apps/storage-server/tests/notifications-stats.test.ts checks the server gives the same from its own database.",
+  "devices": ["d1000000-0000-4000-8000-0000000000d1", "d2000000-0000-4000-8000-0000000000d2"],
+  "books": [
+    { "id": "0a1a0000-0000-4000-8000-00000000000a", "charCount": 100000 },
+    { "id": "0b1b0000-0000-4000-8000-00000000000b", "charCount": 60000 },
+    { "id": "0c1c0000-0000-4000-8000-00000000000c", "charCount": 70000 }
+  ],
+  "records": [
+    {
+      "kind": "stat-day",
+      "id": "0a1a0000-0000-4000-8000-00000000000a:2026-10-05",
+      "bookId": "0a1a0000-0000-4000-8000-00000000000a",
+      "deviceId": "d1000000-0000-4000-8000-0000000000d1",
+      "updatedAt": 1790812800000,
+      "deletedAt": null,
+      "rev": null,
+      "data": {
+        "title": "x",
+        "dateKey": "2026-10-05",
+        "charactersRead": 20000,
+        "readingTime": 3600,
+        "minReadingSpeed": 0,
+        "altMinReadingSpeed": 0,
+        "lastReadingSpeed": 0,
+        "maxReadingSpeed": 0,
+        "lastStatisticModified": 1790812800000
+      }
+    },
+    {
+      "kind": "stat-day",
+      "id": "0a1a0000-0000-4000-8000-00000000000a:2026-10-30",
+      "bookId": "0a1a0000-0000-4000-8000-00000000000a",
+      "deviceId": "d1000000-0000-4000-8000-0000000000d1",
+      "updatedAt": 1790812800000,
+      "deletedAt": null,
+      "rev": null,
+      "data": {
+        "title": "x",
+        "dateKey": "2026-10-30",
+        "charactersRead": 9000,
+        "readingTime": 1800,
+        "minReadingSpeed": 0,
+        "altMinReadingSpeed": 0,
+        "lastReadingSpeed": 0,
+        "maxReadingSpeed": 0,
+        "lastStatisticModified": 1790812800000
+      }
+    },
+    {
+      "kind": "stat-session",
+      "id": "0a1a0000-0000-4000-8000-00000000000a:d1000000-0000-4000-8000-0000000000d1:5e550000-0000-4000-8000-000000000001",
+      "bookId": "0a1a0000-0000-4000-8000-00000000000a",
+      "deviceId": "d1000000-0000-4000-8000-0000000000d1",
+      "updatedAt": 1793442001000,
+      "deletedAt": null,
+      "rev": null,
+      "data": {
+        "day": "2026-10-31",
+        "startedAt": 1793440801000,
+        "endedAt": 1793442001000,
+        "seconds": 1200,
+        "chars": 7000,
+        "lookups": 4,
+        "readThroughId": null,
+        "source": "tracker",
+        "closed": true
+      }
+    },
+    {
+      "kind": "stat-session",
+      "id": "0a1a0000-0000-4000-8000-00000000000a:d2000000-0000-4000-8000-0000000000d2:5e550000-0000-4000-8000-000000000002",
+      "bookId": "0a1a0000-0000-4000-8000-00000000000a",
+      "deviceId": "d2000000-0000-4000-8000-0000000000d2",
+      "updatedAt": 1793529602000,
+      "deletedAt": null,
+      "rev": null,
+      "data": {
+        "day": "2026-11-01",
+        "startedAt": 1793527202000,
+        "endedAt": 1793529602000,
+        "seconds": 2400,
+        "chars": 15000,
+        "lookups": 9,
+        "readThroughId": null,
+        "source": "tracker",
+        "closed": true
+      }
+    },
+    {
+      "kind": "stat-session",
+      "id": "0a1a0000-0000-4000-8000-00000000000a:d1000000-0000-4000-8000-0000000000d1:5e550000-0000-4000-8000-000000000003",
+      "bookId": "0a1a0000-0000-4000-8000-00000000000a",
+      "deviceId": "d1000000-0000-4000-8000-0000000000d1",
+      "updatedAt": 1793614503000,
+      "deletedAt": null,
+      "rev": null,
+      "data": {
+        "day": "2026-11-02",
+        "startedAt": 1793613603000,
+        "endedAt": 1793614503000,
+        "seconds": 900,
+        "chars": 4000,
+        "lookups": 0,
+        "readThroughId": null,
+        "source": "tracker",
+        "closed": true
+      }
+    },
+    {
+      "kind": "stat-session",
+      "id": "0a1a0000-0000-4000-8000-00000000000a:d2000000-0000-4000-8000-0000000000d2:5e550000-0000-4000-8000-000000000004",
+      "bookId": "0a1a0000-0000-4000-8000-00000000000a",
+      "deviceId": "d2000000-0000-4000-8000-0000000000d2",
+      "updatedAt": 1793703004000,
+      "deletedAt": null,
+      "rev": null,
+      "data": {
+        "day": "2026-11-03",
+        "startedAt": 1793700004000,
+        "endedAt": 1793703004000,
+        "seconds": 3000,
+        "chars": 99999,
+        "lookups": 5,
+        "readThroughId": null,
+        "source": "tracker",
+        "closed": true
+      }
+    },
+    {
+      "kind": "stat-session-fix",
+      "id": "0a1a0000-0000-4000-8000-00000000000a:d2000000-0000-4000-8000-0000000000d2:5e550000-0000-4000-8000-000000000004",
+      "bookId": "0a1a0000-0000-4000-8000-00000000000a",
+      "deviceId": "d2000000-0000-4000-8000-0000000000d2",
+      "updatedAt": 1790812800099,
+      "deletedAt": null,
+      "rev": null,
+      "data": { "excluded": true }
+    },
+    {
+      "kind": "stat-session",
+      "id": "0a1a0000-0000-4000-8000-00000000000a:d1000000-0000-4000-8000-0000000000d1:5e550000-0000-4000-8000-000000000005",
+      "bookId": "0a1a0000-0000-4000-8000-00000000000a",
+      "deviceId": "d1000000-0000-4000-8000-0000000000d1",
+      "updatedAt": 1794219405000,
+      "deletedAt": null,
+      "rev": null,
+      "data": {
+        "day": "2026-11-09",
+        "startedAt": 1794218405000,
+        "endedAt": 1794219405000,
+        "seconds": 1000,
+        "chars": 5000,
+        "lookups": 2,
+        "readThroughId": null,
+        "source": "tracker",
+        "closed": true
+      }
+    },
+    {
+      "kind": "stat-session-fix",
+      "id": "0a1a0000-0000-4000-8000-00000000000a:d1000000-0000-4000-8000-0000000000d1:5e550000-0000-4000-8000-000000000005",
+      "bookId": "0a1a0000-0000-4000-8000-00000000000a",
+      "deviceId": "d2000000-0000-4000-8000-0000000000d2",
+      "updatedAt": 1790812800099,
+      "deletedAt": null,
+      "rev": null,
+      "data": { "seconds": 1500, "chars": 8000 }
+    },
+    {
+      "kind": "stat-session",
+      "id": "0a1a0000-0000-4000-8000-00000000000a:d1000000-0000-4000-8000-0000000000d1:5e550000-0000-4000-8000-000000000006",
+      "bookId": "0a1a0000-0000-4000-8000-00000000000a",
+      "deviceId": "d1000000-0000-4000-8000-0000000000d1",
+      "updatedAt": 1794478206000,
+      "deletedAt": null,
+      "rev": null,
+      "data": {
+        "day": "2026-11-12",
+        "startedAt": 1794477606000,
+        "endedAt": 1794478206000,
+        "seconds": 600,
+        "chars": 3000,
+        "lookups": 1,
+        "readThroughId": null,
+        "source": "tracker",
+        "closed": true
+      }
+    },
+    {
+      "kind": "stat-session",
+      "id": "0a1a0000-0000-4000-8000-00000000000a:d1000000-0000-4000-8000-0000000000d1:5e550000-0000-4000-8000-000000000007",
+      "bookId": "0a1a0000-0000-4000-8000-00000000000a",
+      "deviceId": "d1000000-0000-4000-8000-0000000000d1",
+      "updatedAt": 1794477607000,
+      "deletedAt": null,
+      "rev": null,
+      "data": {
+        "day": "2026-11-12",
+        "startedAt": 1794477607000,
+        "endedAt": 1794477607000,
+        "seconds": 0,
+        "chars": 12000,
+        "lookups": 0,
+        "readThroughId": null,
+        "source": "completion",
+        "closed": true
+      }
+    },
+    {
+      "kind": "read-through",
+      "id": "0a1a0000-0000-4000-8000-00000000000a:1",
+      "bookId": "0a1a0000-0000-4000-8000-00000000000a",
+      "deviceId": "d1000000-0000-4000-8000-0000000000d1",
+      "updatedAt": 1790812800001,
+      "deletedAt": null,
+      "rev": null,
+      "data": {
+        "number": 1,
+        "origin": "completion",
+        "startedOn": null,
+        "finished": true,
+        "finishedOn": "2026-11-12",
+        "manual": false,
+        "charCount": null
+      }
+    },
+    {
+      "kind": "read-through",
+      "id": "0a1a0000-0000-4000-8000-00000000000a:2",
+      "bookId": "0a1a0000-0000-4000-8000-00000000000a",
+      "deviceId": "d1000000-0000-4000-8000-0000000000d1",
+      "updatedAt": 1790812800002,
+      "deletedAt": null,
+      "rev": null,
+      "data": {
+        "number": 2,
+        "origin": "start-over",
+        "startedOn": "2026-11-13",
+        "finished": false,
+        "finishedOn": null,
+        "manual": false,
+        "charCount": null
+      }
+    },
+    {
+      "kind": "stat-session",
+      "id": "0a1a0000-0000-4000-8000-00000000000a:d2000000-0000-4000-8000-0000000000d2:5e550000-0000-4000-8000-000000000008",
+      "bookId": "0a1a0000-0000-4000-8000-00000000000a",
+      "deviceId": "d2000000-0000-4000-8000-0000000000d2",
+      "updatedAt": 1794738608000,
+      "deletedAt": null,
+      "rev": null,
+      "data": {
+        "day": "2026-11-15",
+        "startedAt": 1794736808000,
+        "endedAt": 1794738608000,
+        "seconds": 1800,
+        "chars": 11000,
+        "lookups": 7,
+        "readThroughId": "0a1a0000-0000-4000-8000-00000000000a:2",
+        "source": "tracker",
+        "closed": true
+      }
+    },
+    {
+      "kind": "stat-session",
+      "id": "0a1a0000-0000-4000-8000-00000000000a:d2000000-0000-4000-8000-0000000000d2:5e550000-0000-4000-8000-000000000009",
+      "bookId": "0a1a0000-0000-4000-8000-00000000000a",
+      "deviceId": "d2000000-0000-4000-8000-0000000000d2",
+      "updatedAt": 1794825009000,
+      "deletedAt": null,
+      "rev": null,
+      "data": {
+        "day": "2026-11-16",
+        "startedAt": 1794823209000,
+        "endedAt": 1794825009000,
+        "seconds": 1800,
+        "chars": 11000,
+        "lookups": 7,
+        "readThroughId": "0a1a0000-0000-4000-8000-00000000000a:2",
+        "source": "tracker",
+        "closed": true
+      }
+    },
+    {
+      "kind": "stat-session",
+      "id": "0b1b0000-0000-4000-8000-00000000000b:d2000000-0000-4000-8000-0000000000d2:5e550000-0000-4000-8000-000000000010",
+      "bookId": "0b1b0000-0000-4000-8000-00000000000b",
+      "deviceId": "d2000000-0000-4000-8000-0000000000d2",
+      "updatedAt": 1794134010000,
+      "deletedAt": null,
+      "rev": null,
+      "data": {
+        "day": "2026-11-08",
+        "startedAt": 1794132010000,
+        "endedAt": 1794134010000,
+        "seconds": 2000,
+        "chars": 10000,
+        "lookups": 3,
+        "readThroughId": null,
+        "source": "tracker",
+        "closed": true
+      }
+    },
+    {
+      "kind": "stat-session",
+      "id": "0b1b0000-0000-4000-8000-00000000000b:d1000000-0000-4000-8000-0000000000d1:5e550000-0000-4000-8000-000000000011",
+      "bookId": "0b1b0000-0000-4000-8000-00000000000b",
+      "deviceId": "d1000000-0000-4000-8000-0000000000d1",
+      "updatedAt": 1794305811000,
+      "deletedAt": null,
+      "rev": null,
+      "data": {
+        "day": "2026-11-10",
+        "startedAt": 1794304811000,
+        "endedAt": 1794305811000,
+        "seconds": 1000,
+        "chars": 6000,
+        "lookups": 1,
+        "readThroughId": null,
+        "source": "tracker",
+        "closed": true
+      }
+    },
+    {
+      "kind": "read-through",
+      "id": "0b1b0000-0000-4000-8000-00000000000b:1",
+      "bookId": "0b1b0000-0000-4000-8000-00000000000b",
+      "deviceId": "d1000000-0000-4000-8000-0000000000d1",
+      "updatedAt": 1790812800001,
+      "deletedAt": null,
+      "rev": null,
+      "data": {
+        "number": 1,
+        "origin": "start-over",
+        "startedOn": null,
+        "finished": true,
+        "finishedOn": "2026-11-10",
+        "manual": true,
+        "charCount": 50000
+      }
+    },
+    {
+      "kind": "read-through",
+      "id": "0c1c0000-0000-4000-8000-00000000000c:1",
+      "bookId": "0c1c0000-0000-4000-8000-00000000000c",
+      "deviceId": "d1000000-0000-4000-8000-0000000000d1",
+      "updatedAt": 1790812800001,
+      "deletedAt": null,
+      "rev": null,
+      "data": {
+        "number": 1,
+        "origin": "start-over",
+        "startedOn": null,
+        "finished": true,
+        "finishedOn": "2026-11-03",
+        "manual": true,
+        "charCount": null
+      }
+    }
+  ],
+  "cases": [
+    {
+      "weekStart": 1,
+      "period": { "kind": "day", "from": "2026-10-31", "to": "2026-10-31" },
+      "summary": {
+        "seconds": 1200,
+        "chars": 7000,
+        "speed": 21000,
+        "lookups": 4,
+        "booksCompleted": 0,
+        "daysRead": 1,
+        "manualChars": 0
+      }
+    },
+    {
+      "weekStart": 1,
+      "period": { "kind": "day", "from": "2026-11-01", "to": "2026-11-01" },
+      "summary": {
+        "seconds": 2400,
+        "chars": 15000,
+        "speed": 22500,
+        "lookups": 9,
+        "booksCompleted": 0,
+        "daysRead": 1,
+        "manualChars": 0
+      }
+    },
+    {
+      "weekStart": 1,
+      "period": { "kind": "day", "from": "2026-11-03", "to": "2026-11-03" },
+      "summary": {
+        "seconds": 0,
+        "chars": 70000,
+        "speed": 0,
+        "lookups": 0,
+        "booksCompleted": 1,
+        "daysRead": 0,
+        "manualChars": 70000
+      }
+    },
+    {
+      "weekStart": 1,
+      "period": { "kind": "day", "from": "2026-11-09", "to": "2026-11-09" },
+      "summary": {
+        "seconds": 1500,
+        "chars": 8000,
+        "speed": 19200,
+        "lookups": 2,
+        "booksCompleted": 0,
+        "daysRead": 1,
+        "manualChars": 0
+      }
+    },
+    {
+      "weekStart": 1,
+      "period": { "kind": "day", "from": "2026-11-10", "to": "2026-11-10" },
+      "summary": {
+        "seconds": 1000,
+        "chars": 50000,
+        "speed": 0,
+        "lookups": 1,
+        "booksCompleted": 1,
+        "daysRead": 1,
+        "manualChars": 50000
+      }
+    },
+    {
+      "weekStart": 1,
+      "period": { "kind": "day", "from": "2026-11-11", "to": "2026-11-11" },
+      "summary": {
+        "seconds": 0,
+        "chars": 0,
+        "speed": 0,
+        "lookups": 0,
+        "booksCompleted": 0,
+        "daysRead": 0,
+        "manualChars": 0
+      }
+    },
+    {
+      "weekStart": 1,
+      "period": { "kind": "day", "from": "2026-11-12", "to": "2026-11-12" },
+      "summary": {
+        "seconds": 600,
+        "chars": 15000,
+        "speed": 18000,
+        "lookups": 1,
+        "booksCompleted": 1,
+        "daysRead": 1,
+        "manualChars": 0
+      }
+    },
+    {
+      "weekStart": 1,
+      "period": { "kind": "day", "from": "2026-11-16", "to": "2026-11-16" },
+      "summary": {
+        "seconds": 1800,
+        "chars": 11000,
+        "speed": 22000,
+        "lookups": 7,
+        "booksCompleted": 0,
+        "daysRead": 1,
+        "manualChars": 0
+      }
+    },
+    {
+      "weekStart": 1,
+      "period": { "kind": "week", "from": "2026-10-26", "to": "2026-11-01" },
+      "summary": {
+        "seconds": 5400,
+        "chars": 31000,
+        "speed": 20667,
+        "lookups": 13,
+        "booksCompleted": 0,
+        "daysRead": 3,
+        "manualChars": 0
+      }
+    },
+    {
+      "weekStart": 1,
+      "period": { "kind": "week", "from": "2026-11-02", "to": "2026-11-08" },
+      "summary": {
+        "seconds": 2900,
+        "chars": 74000,
+        "speed": 4966,
+        "lookups": 3,
+        "booksCompleted": 1,
+        "daysRead": 2,
+        "manualChars": 70000
+      }
+    },
+    {
+      "weekStart": 1,
+      "period": { "kind": "week", "from": "2026-11-09", "to": "2026-11-15" },
+      "summary": {
+        "seconds": 4900,
+        "chars": 84000,
+        "speed": 16164,
+        "lookups": 11,
+        "booksCompleted": 2,
+        "daysRead": 4,
+        "manualChars": 50000
+      }
+    },
+    {
+      "weekStart": 1,
+      "period": { "kind": "week", "from": "2026-11-16", "to": "2026-11-22" },
+      "summary": {
+        "seconds": 1800,
+        "chars": 11000,
+        "speed": 22000,
+        "lookups": 7,
+        "booksCompleted": 0,
+        "daysRead": 1,
+        "manualChars": 0
+      }
+    },
+    {
+      "weekStart": 0,
+      "period": { "kind": "week", "from": "2026-10-25", "to": "2026-10-31" },
+      "summary": {
+        "seconds": 3000,
+        "chars": 16000,
+        "speed": 19200,
+        "lookups": 4,
+        "booksCompleted": 0,
+        "daysRead": 2,
+        "manualChars": 0
+      }
+    },
+    {
+      "weekStart": 0,
+      "period": { "kind": "week", "from": "2026-11-01", "to": "2026-11-07" },
+      "summary": {
+        "seconds": 3300,
+        "chars": 89000,
+        "speed": 20728,
+        "lookups": 9,
+        "booksCompleted": 1,
+        "daysRead": 2,
+        "manualChars": 70000
+      }
+    },
+    {
+      "weekStart": 0,
+      "period": { "kind": "week", "from": "2026-11-08", "to": "2026-11-14" },
+      "summary": {
+        "seconds": 5100,
+        "chars": 73000,
+        "speed": 7765,
+        "lookups": 7,
+        "booksCompleted": 2,
+        "daysRead": 4,
+        "manualChars": 50000
+      }
+    },
+    {
+      "weekStart": 0,
+      "period": { "kind": "week", "from": "2026-11-15", "to": "2026-11-21" },
+      "summary": {
+        "seconds": 3600,
+        "chars": 22000,
+        "speed": 22000,
+        "lookups": 14,
+        "booksCompleted": 0,
+        "daysRead": 2,
+        "manualChars": 0
+      }
+    },
+    {
+      "weekStart": 1,
+      "period": { "kind": "month", "from": "2026-10-01", "to": "2026-10-31" },
+      "summary": {
+        "seconds": 6600,
+        "chars": 36000,
+        "speed": 19637,
+        "lookups": 4,
+        "booksCompleted": 0,
+        "daysRead": 3,
+        "manualChars": 0
+      }
+    },
+    {
+      "weekStart": 1,
+      "period": { "kind": "month", "from": "2026-11-01", "to": "2026-11-30" },
+      "summary": {
+        "seconds": 12000,
+        "chars": 184000,
+        "speed": 15600,
+        "lookups": 30,
+        "booksCompleted": 3,
+        "daysRead": 8,
+        "manualChars": 120000
+      }
+    }
+  ]
+}

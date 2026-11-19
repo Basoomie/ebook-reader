@@ -104,6 +104,7 @@ export function firstLine(text: string): string {
 }
 
 /** The log's kind column. */
-export function logKindText(kind: 'now' | 'digest' | 'test'): string {
+export function logKindText(kind: 'now' | 'digest' | 'test' | 'report'): string {
+  if (kind === 'report') return 'Stats';
   return kind === 'now' ? 'Alert' : kind === 'digest' ? 'Daily summary' : 'Test';
 }

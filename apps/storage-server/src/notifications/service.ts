@@ -37,6 +37,17 @@ import {
 } from './secrets';
 import { NotificationStore, Observation } from './store';
 import type { NotificationWatcher } from './watcher';
+import {
+  buildReport,
+  lastEnded,
+  loadStatsInput,
+  ownerId,
+  readCalendar,
+  REPORT_KINDS,
+  STATS_EVENT,
+  StatsInput,
+  statsToday,
+} from './stats-report';
 
 export type { Message } from './messages';
 
@@ -438,17 +449,77 @@ export class NotificationService {
     return out;
   }
 
+  // ---- stats (N2) ----
+
+  /**
+   * Queues the stats message of each day, week or month that has ended since the last
+   * round (stats-report.ts). Each kind remembers the last day of the last period it
+   * handled; only a later period is sent, so a missed one goes once when the server is back
+   * and older ones are skipped. The first run only remembers. The mark moves on even while
+   * the Stats section or the event is off, so switching it on never sends an old period.
+   * Returns the number of messages queued.
+   */
+  statsIfDue(settings = this.settings()): number {
+    const db = this.store.db;
+    const userId = ownerId(db);
+    if (!userId) return 0;
+    const zone = settings.digest.timeZone ?? serverTimeZone();
+    const calendar = readCalendar(db, userId);
+    const today = statsToday(zonedClock(this.now(), zone), calendar.dayStartHour);
+    let input: StatsInput | null = null;
+    let queued = 0;
+    for (const kind of REPORT_KINDS) {
+      this.guard(`the ${kind} stats message`, () => {
+        const ended = lastEnded(kind, today, calendar.weekStart);
+        const key = `stats_last:${kind}`;
+        const last = this.store.getState<string>(key);
+        if (!ended.to || (last !== undefined && ended.to <= last)) return;
+        this.store.setState(key, ended.to);
+        if (last === undefined) return;
+        const event = STATS_EVENT[kind];
+        const channels = this.channelsFor(event, settings);
+        if (channels.length === 0) return;
+        input ??= loadStatsInput(db, userId);
+        const text = buildReport(
+          input,
+          kind,
+          ended,
+          calendar.weekStart,
+          settings.linkBase,
+          settings.stats.noReading,
+        );
+        if (text === null) {
+          this.log(`Notifications: no reading ${ended.from}–${ended.to}, ${kind} stats skipped`);
+          return;
+        }
+        const now = this.now();
+        for (const ch of channels) this.store.queue(event, 'report', ch, text, now);
+        queued += channels.length;
+        this.log(`Notifications: ${kind} stats for ${ended.from}–${ended.to}`);
+      });
+    }
+    return queued;
+  }
+
   // ---- the round ----
 
-  /** One round: look for problems, the digest, then send. */
+  /** One round: look for problems, the digest, the stats messages, then send. */
   async tick(): Promise<void> {
     if (this.stopped) return;
+    let settings: NotificationSettings | null = null;
     try {
-      const settings = this.settings();
+      settings = this.settings();
       if (this.watcher) this.watcher.check(settings);
       this.digestIfDue(settings);
     } catch (err) {
       this.logError('Notifications: the check failed:', err);
+    }
+    if (settings) {
+      try {
+        this.statsIfDue(settings);
+      } catch (err) {
+        this.logError('Notifications: the stats messages failed:', err);
+      }
     }
     await this.sendDue();
   }

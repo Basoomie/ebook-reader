@@ -11,7 +11,8 @@
    * secrets can only be written), Send test, the daily digest time, the link address,
    * finished jobs (Now / Digest / Off), the wait times, and per section a switch for the
    * whole section plus a switch per event and set-up channel. A channel's column shows only
-   * once it is set up. Each change is saved at once.
+   * once it is set up. Each change is saved at once. N2 adds the Stats section (daily,
+   * weekly and monthly stats messages, off by default) with its "no reading" choice.
    */
   import SettingsSection from '$lib/components/settings/settings-section.svelte';
   import { confirmDestructive } from '$lib/confirm/confirm';
@@ -189,6 +190,10 @@
   function setFinished(value: string) {
     if (value === 'now' || value === 'digest' || value === 'off')
       void save({ finishedJobs: value });
+  }
+
+  function setNoReading(value: string) {
+    if (value === 'skip' || value === 'send') void save({ stats: { noReading: value } });
   }
 
   function toggleEvent(id: string, channel: NotificationChannel, on: boolean) {
@@ -444,6 +449,24 @@
         />
         <span class={labelCls}>Notify about this section</span>
       </label>
+      {#if section.id === 'stats'}
+        <p class="mb-4 text-sm text-c-muted" data-testid="notify-stats-when">
+          Sent when a day, week or month ends: at the day start set in Settings &gt; Statistics, in
+          the time zone above.
+        </p>
+        <label class="{field} mb-4 max-w-xs">
+          <span class={labelCls}>Periods with no reading</span>
+          <select
+            class="c-input"
+            value={view.settings.stats.noReading}
+            on:change={(e) => setNoReading(e.currentTarget.value)}
+            data-testid="notify-stats-no-reading"
+          >
+            <option value="skip">Skip</option>
+            <option value="send">Send “No reading”</option>
+          </select>
+        </label>
+      {/if}
       {#if channels.length === 0}
         <p class="text-sm text-c-muted">Set up Discord or email above to choose what goes where.</p>
       {:else}

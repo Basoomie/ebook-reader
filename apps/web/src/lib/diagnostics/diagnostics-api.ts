@@ -58,7 +58,7 @@ export interface DiagnosticsNotificationLog {
   at: number;
   createdAt: number;
   channel: 'discord' | 'email';
-  kind: 'now' | 'digest' | 'test';
+  kind: 'now' | 'digest' | 'test' | 'report';
   event: string;
   label: string;
   text: string;

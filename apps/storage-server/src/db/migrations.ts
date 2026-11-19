@@ -1142,6 +1142,35 @@ export const MIGRATIONS: { version: number; name: string; sql: string }[] = [
       );
     `,
   },
+  {
+    version: 26,
+    name: 'notification-stats-reports',
+    // Notifications N2: the daily, weekly and monthly stats messages are logged (and sent
+    // from the outbox) with kind 'report'. SQLite can't change a CHECK, so the log table is
+    // rebuilt with the same columns and rows (at most NOTIFY_LOG_KEEP, 500) and its index.
+    sql: `
+      CREATE TABLE notification_log_new (
+        id          INTEGER PRIMARY KEY,
+        created_at  INTEGER NOT NULL,
+        event       TEXT NOT NULL,
+        kind        TEXT NOT NULL CHECK (kind IN ('now', 'digest', 'test', 'report')),
+        channel     TEXT NOT NULL CHECK (channel IN ('discord', 'email')),
+        text        TEXT NOT NULL,
+        status      TEXT NOT NULL CHECK (status IN ('pending', 'sent', 'failed')),
+        attempts    INTEGER NOT NULL DEFAULT 0,
+        next_at     INTEGER,
+        error       TEXT,
+        sent_at     INTEGER
+      );
+      INSERT INTO notification_log_new
+        (id, created_at, event, kind, channel, text, status, attempts, next_at, error, sent_at)
+        SELECT id, created_at, event, kind, channel, text, status, attempts, next_at, error, sent_at
+        FROM notification_log;
+      DROP TABLE notification_log;
+      ALTER TABLE notification_log_new RENAME TO notification_log;
+      CREATE INDEX notification_log_pending ON notification_log (status, next_at);
+    `,
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;
