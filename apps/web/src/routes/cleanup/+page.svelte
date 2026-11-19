@@ -578,11 +578,6 @@
                 {status.stage2.waiting}
               </p>
             {/if}
-            {#each stage2CountLines(status.stage2) as line, i}
-              <!-- The first line ("Done: …") is the card's summary; the per-field counts wait in
-                   the details. -->
-              {#if i === 0}<p class="text-sm" data-testid="cleanup-counts-2">{line}</p>{/if}
-            {/each}
             <CleanupDetails id="stage-2" testid="cleanup-details-2">
               <p class="text-c-muted">{STAGE2_MODE_HINTS[stage2.mode]}</p>
               {#if stage2.mode !== 'off'}
@@ -597,7 +592,7 @@
               {#each stage2Lines(stage2) as line}
                 <p data-testid="cleanup-stage-2-line">{line}</p>
               {/each}
-              {#each stage2CountLines(status.stage2).slice(1) as line}
+              {#each stage2CountLines(status.stage2) as line}
                 <p class="text-c-muted" data-testid="cleanup-counts-2">{line}</p>
               {/each}
               {#if gate.length}
