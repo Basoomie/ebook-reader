@@ -64,6 +64,7 @@ export function createCleanupFetchRouter(options: FetchRouteOptions): Router {
       version: str(b.version, 50),
       problem: str(b.problem),
       sudachi: str(b.sudachi, 100),
+      runId: str(b.runId, 100),
     });
     const s = getSettings(service.db).fetch;
     res.json({

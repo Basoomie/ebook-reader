@@ -721,6 +721,79 @@ describe('stage 4: online sources (Preview)', () => {
     expect(otherRounds).toBe(0);
   }, 60_000);
 
+  it('asks a restarted fetcher’s requests again at once, not after their leases', async () => {
+    // Found live 2026-11-18: a VPN switch every 15 minutes restarts the fetch container; every
+    // site with a request in flight then stood still for its 2-minute lease.
+    const fetchToken = createApplyToken(env.cleanupDb, 'fetch', Date.now(), 'fetch').token;
+    const q = env.service.fetchQueue;
+    q.enqueue(
+      { site: 'ranobedb', key: 'stuck', url: 'https://ranobedb.org/api/v0/book/stuck' },
+      null,
+      Date.now(),
+    );
+    const config = {
+      serverUrl: url,
+      token: fetchToken,
+      serverTimeoutSeconds: 10,
+      sudachiPython: '',
+      sudachiScript: '',
+    };
+    // FETCHER_ID is set in the compose file: a restarted container keeps its id.
+    const savedId = process.env.FETCHER_ID;
+    process.env.FETCHER_ID = 'ttsu-cleanup-fetch';
+    const asked: number[] = [];
+    // The first process: its request never comes back (the container is stopped mid-request).
+    const first = new TestFetcher(
+      config,
+      () => {},
+      async (input, init) => {
+        const u = String(input);
+        if (u.startsWith(url)) return fetch(input, init);
+        asked.push(Date.now());
+        return new Promise<Response>(() => {});
+      },
+    );
+    const firstRun = first.run();
+    const leased = () =>
+      (
+        env.cleanupDb
+          .prepare("SELECT COUNT(*) AS n FROM fetch_requests WHERE state = 'leased'")
+          .get() as { n: number }
+      ).n;
+    let deadline = Date.now() + 10_000;
+    while (asked.length === 0 && Date.now() < deadline) await sleep(50);
+    expect(leased()).toBe(1);
+    first.stop();
+    await firstRun;
+    // The restarted process (same fetcher id, new run) asks it again within seconds.
+    const restartedAt = Date.now();
+    const second = new TestFetcher(
+      config,
+      () => {},
+      async (input, init) => {
+        const u = String(input);
+        if (u.startsWith(url)) return fetch(input, init);
+        asked.push(Date.now());
+        return new Response('{"book":{}}', { status: 200 });
+      },
+    );
+    expect(second.id).toBe(first.id);
+    expect(second.runId).not.toBe(first.runId);
+    const secondRun = second.run();
+    deadline = Date.now() + 10_000;
+    while (asked.length < 2 && Date.now() < deadline) await sleep(50);
+    second.stop();
+    await secondRun;
+    if (savedId === undefined) delete process.env.FETCHER_ID;
+    else process.env.FETCHER_ID = savedId;
+    expect(asked).toHaveLength(2);
+    expect(asked[1] - restartedAt).toBeLessThan(3000);
+    const row = env.cleanupDb
+      .prepare("SELECT state, attempts FROM fetch_requests WHERE key = 'stuck'")
+      .get() as { state: string; attempts: number };
+    expect(row.state).toBe('done');
+  }, 60_000);
+
   it("counts the library's present books once until the catalog changes", () => {
     const lib = env.libraryId();
     const main = env.db;

@@ -305,6 +305,19 @@ export class FetchQueue {
     };
   }
 
+  /**
+   * Every open lease goes back to the queue now (their attempt count unchanged): the fetcher that
+   * held them restarted and can't answer them. The site's pace still applies at the next claim.
+   */
+  releaseLeases(now = Date.now()): number {
+    return this.db
+      .prepare(
+        `UPDATE fetch_requests SET state = 'queued', lease_token = NULL, lease_until = NULL, updated_at = ?
+         WHERE state = 'leased'`,
+      )
+      .run(now).changes;
+  }
+
   /** Leases nobody answered go back to the queue (their attempt count unchanged). */
   expireLeases(now = Date.now()): number {
     return this.db

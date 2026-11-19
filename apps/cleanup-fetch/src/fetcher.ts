@@ -16,7 +16,7 @@ import { brotliCompressSync, constants as zc } from 'zlib';
 import type { FetchConfig } from './config';
 import { allowedUrl } from './hosts';
 
-export const VERSION = '1.1.0';
+export const VERSION = '1.2.0';
 /** The reference run's browser headers (ref4.py); RanobeDB refuses Python's default user agent. */
 const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36';
@@ -49,6 +49,12 @@ export class Fetcher {
    * Whichever fetcher asks, the server gives one request per site at a time at the site's pace.
    */
   readonly id = process.env.FETCHER_ID?.trim() || randomUUID();
+  /**
+   * This process's run: a restarted fetcher (same id) sends a new one, and the server puts the
+   * requests the old process had in flight back in the queue at once instead of after their
+   * leases (2 minutes), e.g. when a VPN switch restarts this container.
+   */
+  readonly runId = randomUUID();
   private active = false;
   private stopped = false;
   private requestTimeoutMs = 30_000;
@@ -100,6 +106,7 @@ export class Fetcher {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         fetcherId: this.id,
+        runId: this.runId,
         version: VERSION,
         problem,
         sudachi: this.sudachiVersion
@@ -337,7 +344,9 @@ export class Fetcher {
       } catch (err) {
         this.log(`server not reachable: ${String((err as Error).message ?? err).slice(0, 200)}`);
         await sleep(backoff);
-        backoff = Math.min(60_000, backoff * 2);
+        // The server is on the home network: ask again within 10 s (a VPN switch or a server
+        // restart is over in seconds; a 60 s cap kept every site waiting up to a minute longer).
+        backoff = Math.min(10_000, backoff * 2);
         lastBeat = 0;
       }
     }

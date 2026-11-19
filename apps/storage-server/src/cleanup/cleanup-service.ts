@@ -268,13 +268,26 @@ export class CleanupService {
     }
   }
 
-  /** The fetch container's heartbeat; true when it is (or becomes) the one active fetcher. */
+  /** The active fetcher's process (its run id), as last seen by this server process. */
+  private fetcherRun: { fetcherId: string; runId: string } | null = null;
+
+  /**
+   * The fetch container's heartbeat; true when it is (or becomes) the one active fetcher.
+   *
+   * A restarted fetcher (a new run id under the same fetcher id, or another fetcher taking over)
+   * can't post the answers its old process had in flight: those requests go back to the queue at
+   * once instead of waiting out their leases (2 minutes). Found live 2026-11-18: a VPN switch
+   * every 15 minutes restarts the fetcher, and every site with a request in flight stood still
+   * for the lease. Run ids are kept in memory only: after a server restart the first heartbeat
+   * just records one (a fetcher that kept running may still post its answers).
+   */
   fetchHeartbeat(
     hb: {
       fetcherId: string;
       version: string | null;
       problem: string | null;
       sudachi: string | null;
+      runId?: string | null;
     },
     now = Date.now(),
   ): boolean {
@@ -291,6 +304,16 @@ export class CleanupService {
       r.last_seen_at !== null &&
       now - r.last_seen_at < s.offlineSeconds * 1000;
     if (other) return false;
+    if (hb.runId) {
+      const prev = this.fetcherRun;
+      const restarted =
+        prev !== null && (prev.fetcherId !== hb.fetcherId || prev.runId !== hb.runId);
+      this.fetcherRun = { fetcherId: hb.fetcherId, runId: hb.runId };
+      if (restarted) {
+        const n = this.fetchQueue.releaseLeases(now);
+        if (n > 0) this.log(`Cleanup: fetcher restarted; ${n} requests in flight asked again`);
+      }
+    }
     this.db
       .prepare(
         `UPDATE fetcher_status SET fetcher_id = ?, last_seen_at = ?, version = ?, problem = ?, sudachi = ?, updated_at = ?
