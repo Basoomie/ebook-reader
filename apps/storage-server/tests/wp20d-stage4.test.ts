@@ -871,6 +871,74 @@ describe('stage 4: online sources (Preview)', () => {
     expect(otherRounds).toBe(0);
   }, 60_000);
 
+  it('asks a slow site two at a time at its pace when set to, never more', async () => {
+    // Found 2026-11-19: Bookmeter answers in about a second, so one request at a time ran at
+    // 1.3 s whatever its interval. Two at once at 0.5 s: about 0.75 s each here.
+    const fetchToken = createApplyToken(env.cleanupDb, 'fetch', Date.now(), 'fetch').token;
+    const s0 = getSettings(env.cleanupDb).fetch;
+    await request(env.app)
+      .put('/api/v1/cleanup/settings')
+      .set(auth(user))
+      .send({
+        fetch: {
+          ...s0,
+          sites: { ...s0.sites, ranobedb: { enabled: true, intervalSeconds: 0.5, inFlight: 2 } },
+        },
+      })
+      .expect(200);
+    const q = env.service.fetchQueue;
+    for (let i = 0; i < 10; i++)
+      q.enqueue(
+        { site: 'ranobedb', key: `slow${i}`, url: `https://ranobedb.org/api/v0/book/s${i}` },
+        null,
+        Date.now(),
+      );
+    const starts: number[] = [];
+    let inFlight = 0;
+    let most = 0;
+    const fetcher = new TestFetcher(
+      {
+        serverUrl: url,
+        token: fetchToken,
+        serverTimeoutSeconds: 10,
+        sudachiPython: '',
+        sudachiScript: '',
+      },
+      () => {},
+      async (input, init) => {
+        const u = String(input);
+        if (u.startsWith(url)) return fetch(input, init);
+        starts.push(Date.now());
+        inFlight++;
+        most = Math.max(most, inFlight);
+        await sleep(1500);
+        inFlight--;
+        return new Response('{"book":{}}', { status: 200 });
+      },
+    );
+    const running = fetcher.run();
+    const open = () =>
+      (
+        env.cleanupDb
+          .prepare(
+            "SELECT COUNT(*) AS n FROM fetch_requests WHERE site = 'ranobedb' AND state IN ('queued', 'leased')",
+          )
+          .get() as { n: number }
+      ).n;
+    const deadline = Date.now() + 30_000;
+    while (open() > 0 && Date.now() < deadline) await sleep(100);
+    fetcher.stop();
+    await running;
+    expect(open()).toBe(0);
+    expect(starts).toHaveLength(10);
+    expect(most).toBe(2);
+    const gaps = starts.slice(1).map((x, i) => x - starts[i]);
+    // The pace holds between starts, and two at once beat one at a time (1.5 s each).
+    for (const g of gaps) expect(g).toBeGreaterThanOrEqual(490);
+    const mean = gaps.reduce((a, b) => a + b, 0) / gaps.length;
+    expect(mean).toBeLessThan(1000);
+  }, 60_000);
+
   it('asks a restarted fetcher’s requests again at once, not after their leases', async () => {
     // Found live 2026-11-18: a VPN switch every 15 minutes restarts the fetch container; every
     // site with a request in flight then stood still for its 2-minute lease.

@@ -431,7 +431,8 @@ export interface CleanupSettings {
 }
 
 export interface FetchSettings {
-  sites: Record<string, { enabled: boolean; intervalSeconds: number }>;
+  /** inFlight: requests of the site at once (1-4; Amazon's queues always 1). */
+  sites: Record<string, { enabled: boolean; intervalSeconds: number; inFlight?: number }>;
   amazonPace: 'shared' | 'separate' | 'trial';
   challengeBackoffSeconds: number;
   challengeBackoffMaxSeconds: number;

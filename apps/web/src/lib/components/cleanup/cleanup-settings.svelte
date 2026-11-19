@@ -211,7 +211,11 @@
                 sites: Object.fromEntries(
                   Object.entries(settings.fetch.sites).map(([k, v]) => [
                     k,
-                    { enabled: v.enabled, intervalSeconds: Number(v.intervalSeconds) }
+                    {
+                      enabled: v.enabled,
+                      intervalSeconds: Number(v.intervalSeconds),
+                      inFlight: Number(v.inFlight ?? 1)
+                    }
                   ])
                 ),
                 challengeBackoffSeconds: Number(settings.fetch.challengeBackoffSeconds),
@@ -523,9 +527,11 @@
         <legend class={legend}>Online sources (stage 4)</legend>
         <p class="text-sm text-c-muted sm:col-span-2">
           The fetch container asks each site at most once per the seconds below (from the start of
-          one request to the next). When Amazon refuses (a bot check page, or HTTP 503 or 429), the
-          request is never pushed through: every Amazon request waits, longer each time it refuses
-          again, and is asked again.
+          one request to the next), with at most the number of requests at once below (a site that
+          takes a second to answer can't go faster than a request a second with one at a time). When
+          Amazon refuses (a bot check page, or HTTP 503 or 429), the request is never pushed
+          through: every Amazon request waits, longer each time it refuses again, and is asked
+          again. Amazon's queues always ask one request at a time.
         </p>
         {#each Object.keys(settings.fetch.sites) as site (site)}
           <div class="flex flex-wrap items-end gap-3" data-testid="cleanup-fetch-site-{site}">
@@ -539,11 +545,26 @@
                 <input
                   class="c-input w-28"
                   type="number"
-                  min="1"
-                  step="1"
+                  min="0.25"
+                  step="any"
                   bind:value={settings.fetch.sites[site].intervalSeconds}
+                  data-testid="cleanup-fetch-interval-{site}"
                 />
               </label>
+              {#if !site.startsWith('amazon')}
+                <label class="flex flex-col gap-1 text-sm">
+                  <span>Requests at once</span>
+                  <input
+                    class="c-input w-20"
+                    type="number"
+                    min="1"
+                    max="4"
+                    step="1"
+                    bind:value={settings.fetch.sites[site].inFlight}
+                    data-testid="cleanup-fetch-inflight-{site}"
+                  />
+                </label>
+              {/if}
             {/if}
           </div>
         {/each}
