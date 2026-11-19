@@ -14,6 +14,7 @@ import type {
   AudioSiteLine,
   AudioStage4Status
 } from './cleanup-api';
+import { count } from './audio-text';
 import { etaText, n, type ProgressBar } from './cleanup-text';
 
 export const STAGE4_HINTS: Record<'off' | 'analyse', string> = {
@@ -140,7 +141,7 @@ export function audioStage4Lines(s: AudioStage4Status | null | undefined): strin
   }
   if (p.openingsRead || p.samplesRead || p.openingErrors || p.sampleErrors) {
     out.push(
-      `Sample audio: ${n(p.openingsRead)} openings and ${n(p.samplesRead)} store samples compared${p.openingErrors + p.sampleErrors ? `, ${n(p.openingErrors + p.sampleErrors)} unreadable` : ''}${p.yields ? `; gave the disk to the Calibre cleanup ${n(p.yields)} times` : ''}.`
+      `Sample audio: ${count(p.openingsRead, 'opening', 'openings')} and ${count(p.samplesRead, 'store sample', 'store samples')} compared${p.openingErrors + p.sampleErrors ? `, ${n(p.openingErrors + p.sampleErrors)} unreadable` : ''}${p.yields ? `; gave the disk to the Calibre cleanup ${count(p.yields, 'time', 'times')}` : ''}.`
     );
   }
   const times = Object.entries(p.phaseTimes ?? {})

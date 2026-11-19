@@ -13,6 +13,7 @@
  * are estimated from what the labeled books needed (--all also plans every unit).
  */
 import Database from 'better-sqlite3';
+import { monitorEventLoopDelay, performance } from 'perf_hooks';
 import { randomUUID } from 'crypto';
 import fs from 'fs';
 import path from 'path';
@@ -47,6 +48,9 @@ const db = new Database(dbFile);
 db.pragma('journal_mode = WAL');
 const t0 = Date.now();
 migrateCleanup(db);
+// The copy brings the live WAL along: checkpoint it now, so its first automatic checkpoint
+// (any writer's, on the live server too) isn't timed as the first step's.
+db.pragma('wal_checkpoint(TRUNCATE)');
 console.log(`migrated to v${db.pragma('user_version', { simple: true })} in ${Date.now() - t0} ms`);
 
 // ---- the stand-in internet
@@ -85,6 +89,11 @@ const stage3 = new AudioStage3({ db, roots, tools, lock, readLabels });
 const stage4 = new AudioStage4({ db, roots, tools, lock, queue, stage3, readLabels });
 
 const asked = new Map<string, number>();
+/** Requests per unit and site (the units waiting on each request when it was answered). */
+const perUnitAsked = new Map<string, Map<string, number>>();
+const lag = monitorEventLoopDelay({ resolution: 10 });
+let stepLag = 0;
+lag.enable();
 const missing: { site: string; url: string }[] = [];
 const sites = AUDIO_FETCH_SITES as readonly string[];
 const marks = sites.map(() => '?').join(', ');
@@ -102,6 +111,13 @@ function answerAll(): number {
     ).run(token, Date.now() + 120_000, Date.now(), r.id);
     const a = answers.get(r.url);
     asked.set(r.site, (asked.get(r.site) ?? 0) + 1);
+    for (const w of db
+      .prepare('SELECT DISTINCT unit_key FROM audio_fetch_waiters WHERE request_id = ?')
+      .all(r.id) as { unit_key: string }[]) {
+      let m = perUnitAsked.get(w.unit_key);
+      if (!m) perUnitAsked.set(w.unit_key, (m = new Map()));
+      m.set(r.site, (m.get(r.site) ?? 0) + 1);
+    }
     if (!a) missing.push({ site: r.site, url: r.url });
     const res = queue.report(r.id, token, {
       status: a ? a.status : 404,
@@ -119,8 +135,16 @@ async function run(): Promise<void> {
   const all = process.argv.includes('--all');
   let p = stage4.restart();
   const ts = Date.now();
+  // Stage 3's copies are loaded first and timed apart (WP21b's own cached load).
+  const tc = performance.now();
+  stage3.loadCopies((stage3.progress() as { analysisId: string }).analysisId);
+  console.log(`stage 3 copies loaded in ${Math.round(performance.now() - tc)} ms`);
+  await new Promise((r) => setTimeout(r, 20));
+  lag.reset();
   await stage4.step(() => false); // units
   p = stage4.progress()!;
+  console.log(`units step: longest event-loop delay ${Math.round(lag.max / 1e6)} ms`);
+  lag.reset();
   console.log(
     `units ${p.units} (lookup ${p.lookupUnits}, no record expected ${p.noRecordUnits}, labeled ${p.labeledUnits}) in ${Date.now() - ts} ms`,
   );
@@ -164,7 +188,10 @@ async function run(): Promise<void> {
   }
   for (let i = 0; i < 2000; i++) {
     answerAll();
+    await new Promise((r) => setTimeout(r, 20));
+    lag.reset();
     const done = await stage4.step(() => false);
+    stepLag = Math.max(stepLag, lag.max);
     if (done) break;
     p = stage4.progress()!;
     if (p.phase === 'lookups' && i % 20 === 0) {
@@ -203,10 +230,126 @@ async function run(): Promise<void> {
     [...asked].map(([k, v]) => [k, Math.round((v / lab) * 1000) / 1000]),
   );
   console.log('requests per looked-up unit:', perUnit);
+  console.log(`lookups: longest event-loop delay inside a step ${Math.round(stepLag / 1e6)} ms`);
+
+  // Requests per unit by kind of unit (from the units this run looked up), and the library's
+  // estimate: the units of each kind times their requests per unit, at the set paces.
+  const kindOf = (i: UnitInputs) =>
+    i.asins.length ? 'nameAsin' : i.absAsins.length ? 'absOnly' : 'searchOnly';
+  const looked = db
+    .prepare(
+      `SELECT unit_key, inputs_json FROM audio_online_units WHERE analysis_id = ? AND kind = 'lookup'`,
+    )
+    .all(p.analysisId) as { unit_key: string; inputs_json: string }[];
+  const unitKinds: Record<string, { units: number; sites: Record<string, number> }> = {};
+  for (const u of looked) {
+    const k = kindOf(JSON.parse(u.inputs_json) as UnitInputs);
+    const e = (unitKinds[k] ??= { units: 0, sites: {} });
+    e.units++;
+    for (const [site, n] of perUnitAsked.get(u.unit_key) ?? [])
+      e.sites[site] = (e.sites[site] ?? 0) + n;
+  }
+  const libKinds: Record<string, number> = {
+    nameAsin: lib.nameAsin,
+    absOnly: lib.absOnly,
+    searchOnly: lib.searchOnly,
+  };
+  const pace = getSettings(db).fetch.sites;
+  const est: Record<string, { requests: number; hours: number }> = {};
+  for (const [k, e] of Object.entries(unitKinds)) {
+    console.log(
+      `  ${k}: ${e.units} units here, per unit`,
+      Object.fromEntries(
+        Object.entries(e.sites).map(([s2, n]) => [s2, Math.round((n / e.units) * 100) / 100]),
+      ),
+    );
+    for (const [site, n] of Object.entries(e.sites)) {
+      const r = (est[site] ??= { requests: 0, hours: 0 });
+      r.requests += (n / e.units) * (libKinds[k] ?? 0);
+    }
+  }
+  for (const [site, r] of Object.entries(est)) {
+    r.requests = Math.round(r.requests);
+    r.hours = Math.round(((r.requests * (pace[site]?.intervalSeconds ?? 5)) / 3600) * 10) / 10;
+  }
+  console.log('library estimate (requests, hours at the set pace):', est);
+
+  // The page's polled queries on this copy: plans and times.
+  const plans: Record<string, string> = {};
+  const time = (name: string, sql: string, ...args: unknown[]) => {
+    const t0 = performance.now();
+    for (let i = 0; i < 5; i++) db.prepare(sql).all(...args);
+    const ms = (performance.now() - t0) / 5;
+    plans[name] =
+      `${ms.toFixed(2)} ms | ${(db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...args) as { detail: string }[]).map((x) => x.detail).join('; ')}`;
+  };
+  const a = p.analysisId;
+  time(
+    'units to advance',
+    `SELECT id, unit_key, labeled, inputs_json FROM audio_online_units WHERE analysis_id = ? AND state IN ('planned', 'ready') ORDER BY labeled DESC, id LIMIT 100`,
+    a,
+  );
+  time(
+    'units reading audio',
+    `SELECT id FROM audio_online_units WHERE analysis_id = ? AND state = 'audio' ORDER BY labeled DESC, id LIMIT 4`,
+    a,
+  );
+  time(
+    'open units',
+    `SELECT COUNT(*) AS n FROM audio_online_units WHERE analysis_id = ? AND state NOT IN ('decided', 'error')`,
+    a,
+  );
+  time(
+    'unit states',
+    `SELECT state, labeled, COUNT(*) AS n FROM audio_online_units WHERE analysis_id = ? GROUP BY state, labeled`,
+    a,
+  );
+  time(
+    'counts',
+    `SELECT kind, state, class, source, review_reason, COUNT(*) AS n FROM audio_online_units WHERE analysis_id = ? GROUP BY kind, state, class, source, review_reason`,
+    a,
+  );
+  time(
+    'site counts',
+    `SELECT site, state, COUNT(*) AS n FROM fetch_requests WHERE site IN (${marks}) GROUP BY site, state`,
+    ...sites,
+  );
+  time(
+    'site recent',
+    `SELECT COUNT(*) AS n, SUM(outcome = 'error') AS errors, AVG(ms) AS ms FROM fetch_attempts WHERE site = ? AND at >= ?`,
+    'audible',
+    Date.now() - 20 * 60_000,
+  );
+  time(
+    'site last 501',
+    `SELECT a.at, r.created_at AS created FROM fetch_attempts a JOIN fetch_requests r ON r.id = a.request_id WHERE a.site = ? ORDER BY a.at DESC LIMIT 501`,
+    'audible',
+  );
+  time(
+    'oldest open',
+    `SELECT MIN(created_at) AS m FROM fetch_requests WHERE site = ? AND state IN ('queued', 'leased')`,
+    'audible',
+  );
+  time('ready waiters', `SELECT unit_key FROM audio_fetch_waiters WHERE ready = 1`);
+  time(
+    'review list',
+    `SELECT id FROM audio_online_units WHERE analysis_id = ? AND class = 'review' AND review_reason = ? ORDER BY labeled DESC, id LIMIT 50`,
+    a,
+    'title',
+  );
+  console.log('polled queries on the live copy:', JSON.stringify(plans, null, 1));
   fs.writeFileSync(
     path.join(out, 'summary.json'),
     JSON.stringify(
-      { lib, asked: Object.fromEntries(asked), perUnit, counts: stage4Counts(db, p.analysisId) },
+      {
+        lib,
+        asked: Object.fromEntries(asked),
+        perUnit,
+        unitKinds,
+        est,
+        plans,
+        counts: stage4Counts(db, p.analysisId),
+      },
       null,
       1,
     ),

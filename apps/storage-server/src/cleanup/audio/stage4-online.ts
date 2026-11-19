@@ -369,7 +369,7 @@ export class AudioStage4 {
     const t0 = Date.now();
     try {
       if (p.phase === 'units') {
-        const n = this.unitsStep(p);
+        const n = await this.unitsStep(p);
         this.addTime(p, 'units', Date.now() - t0, n);
         this.nextPhase(p, 'lookups');
         return false;
@@ -409,7 +409,19 @@ export class AudioStage4 {
     return (l.books ?? []).map((b) => b.torrent).filter((t) => typeof t === 'string' && t);
   }
 
-  private unitsStep(p: AudioStage4Progress): number {
+  /**
+   * Builds the units. Library-sized (about 6,000 copies): the server answers requests between
+   * slices of about 30 ms, and the rows are written in transactions of 500 (WP20 lessons (3):
+   * no long synchronous step). Repeating it after a restart writes the same rows (keys).
+   */
+  private async unitsStep(p: AudioStage4Progress): Promise<number> {
+    let slice = Date.now();
+    const breathe = async () => {
+      if (Date.now() - slice > 30) {
+        await new Promise((r) => setImmediate(r));
+        slice = Date.now();
+      }
+    };
     const db = this.db;
     const s3 = this.deps.stage3.progress();
     if (!s3 || s3.phase !== 'done' || s3.error) throw new Error('Stage 3 must have finished first');
@@ -459,6 +471,7 @@ export class AudioStage4 {
       reason: string | null;
     }[] = [];
     for (const [gkey, cs] of units) {
+      await breathe();
       cs.sort((a, b) => a.key.localeCompare(b.key));
       const gid = gkey.startsWith('g') ? Number(gkey.slice(1)) : null;
       const rep =
@@ -570,40 +583,53 @@ export class AudioStage4 {
       });
     }
     const now = Date.now();
-    db.transaction(() => {
-      // Earlier analyses' units go (their requests and answers stay in the queue).
+    // Earlier analyses' units go (their requests and answers stay in the queue), 500 at a time.
+    for (;;) {
       const old = db
-        .prepare('SELECT id FROM audio_online_units WHERE analysis_id <> ?')
+        .prepare('SELECT id FROM audio_online_units WHERE analysis_id <> ? LIMIT 500')
         .all(p.analysisId) as { id: number }[];
-      const delC = db.prepare('DELETE FROM audio_online_candidates WHERE unit_id = ?');
-      for (const o of old) delC.run(o.id);
-      db.prepare('DELETE FROM audio_online_units WHERE analysis_id <> ?').run(p.analysisId);
-      db.prepare('DELETE FROM audio_fetch_waiters').run();
-      const put = db.prepare(
-        `INSERT INTO audio_online_units (analysis_id, unit_key, copy_keys, book_keys, name, seconds,
+      if (!old.length) break;
+      db.transaction(() => {
+        const delC = db.prepare('DELETE FROM audio_online_candidates WHERE unit_id = ?');
+        const delU = db.prepare('DELETE FROM audio_online_units WHERE id = ?');
+        for (const o of old) {
+          delC.run(o.id);
+          delU.run(o.id);
+        }
+      })();
+      await new Promise((r) => setImmediate(r));
+    }
+    db.prepare('DELETE FROM audio_fetch_waiters').run();
+    for (let at = 0; at < rows.length; at += 500) {
+      const chunk = rows.slice(at, at + 500);
+      await new Promise((r) => setImmediate(r));
+      db.transaction(() => {
+        const put = db.prepare(
+          `INSERT INTO audio_online_units (analysis_id, unit_key, copy_keys, book_keys, name, seconds,
            labeled, kind, state, inputs_json, class, review_reason, rules_key, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(analysis_id, unit_key) DO NOTHING`,
-      );
-      for (const r of rows) {
-        put.run(
-          p.analysisId,
-          r.key,
-          JSON.stringify(r.copyKeys),
-          JSON.stringify(r.bookKeys),
-          r.name,
-          r.seconds,
-          r.labeled ? 1 : 0,
-          r.kind,
-          r.kind === 'lookup' ? 'planned' : 'decided',
-          JSON.stringify(r.inputs),
-          r.kind === 'lookup' ? null : 'none_expected',
-          r.reason,
-          p.rulesKey,
-          now,
         );
-      }
-    })();
+        for (const r of chunk) {
+          put.run(
+            p.analysisId,
+            r.key,
+            JSON.stringify(r.copyKeys),
+            JSON.stringify(r.bookKeys),
+            r.name,
+            r.seconds,
+            r.labeled ? 1 : 0,
+            r.kind,
+            r.kind === 'lookup' ? 'planned' : 'decided',
+            JSON.stringify(r.inputs),
+            r.kind === 'lookup' ? null : 'none_expected',
+            r.reason,
+            p.rulesKey,
+            now,
+          );
+        }
+      })();
+    }
     p.units = rows.length;
     p.lookupUnits = rows.filter((r) => r.kind === 'lookup').length;
     p.noRecordUnits = rows.length - p.lookupUnits;
