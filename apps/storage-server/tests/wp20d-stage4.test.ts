@@ -19,7 +19,7 @@ import { noteCatalogWrite } from '../src/catalog/catalog-version';
 import { createApplyToken } from '../src/cleanup/apply-tokens';
 import { presentBookCount } from '../src/cleanup/handoff';
 import { getSettings } from '../src/cleanup/settings';
-import { getStage } from '../src/cleanup/stages';
+import { getStage, updateStage } from '../src/cleanup/stages';
 import { makeJpeg } from './helpers/calibre-fixture';
 import { type CleanupEnv, makeCleanupEnv } from './helpers/cleanup-env';
 import { makeTempDir } from './helpers/spawn-server';
@@ -204,6 +204,8 @@ describe('stage 4: online sources (Preview)', () => {
       );
     }
     if (u.startsWith('https://bookmeter.com/search?')) {
+      // Bookmeter's v2 index misses books its plain one finds (live 2026-11-19).
+      if (new URL(u).searchParams.get('type') === 'japanese_v2') return html(bookmeterPartial([]));
       const q = decodeURIComponent(new URL(u).searchParams.get('keyword') ?? '');
       return html(
         q.startsWith('魔法使いの旅')
@@ -629,6 +631,117 @@ describe('stage 4: online sources (Preview)', () => {
       (getStage(env.cleanupDb, 4).progress as { amazonSweep?: { phase: string } }).amazonSweep
         ?.phase,
     ).toBe('done');
+  }, 120_000);
+
+  it('asks Bookmeter’s plain index, and asks again for books the v2 index found nothing for', async () => {
+    const fetchToken = createApplyToken(env.cleanupDb, 'fetch', Date.now(), 'fetch').token;
+    await request(env.app)
+      .put('/api/v1/cleanup/stages/4')
+      .set(auth(user))
+      .send({ mode: 'analyse' })
+      .expect(200);
+    const fetcher = new TestFetcher(
+      {
+        serverUrl: url,
+        token: fetchToken,
+        serverTimeoutSeconds: 10,
+        sudachiPython: 'stand-in',
+        sudachiScript: '',
+      },
+      () => {},
+      (input, init) => {
+        const u = String(input);
+        return u.startsWith(url) ? fetch(input, init) : Promise.resolve(internet(u, init));
+      },
+    );
+    const phase = () => String((getStage(env.cleanupDb, 4).progress as { phase?: string }).phase);
+    const running = fetcher.run();
+    let deadline = Date.now() + 90_000;
+    while (Date.now() < deadline && phase() !== 'done') {
+      await env.service.tick();
+      await sleep(200);
+    }
+    fetcher.stop();
+    await running;
+    expect(phase()).toBe('done');
+    // Every search went to the plain index, and it found book A.
+    const searches = seen.filter((u) => u.startsWith('https://bookmeter.com/search?'));
+    expect(searches.length).toBeGreaterThan(0);
+    expect(searches.every((u) => new URL(u).searchParams.get('type') === 'japanese')).toBe(true);
+    let uuidA = '';
+    env.lib.exec((db) => {
+      uuidA = (db.prepare('SELECT uuid FROM books WHERE id = ?').get(ids.A) as { uuid: string })
+        .uuid;
+    });
+    const a4 = env.service.analysis4! as unknown as {
+      loadOnline: (
+        l: string,
+        u: string,
+      ) => { bookmeter: Record<string, unknown>; requests: Record<string, number> } | null;
+      saveEvidence: (l: string, u: string, kind: string, v: unknown) => void;
+    };
+    expect(a4.loadOnline(env.libraryId(), uuidA)!.bookmeter.accepted).toMatchObject({ id: '777' });
+
+    // Book A as the v2 index left it (no results, so no Bookmeter id), and a search still queued
+    // the old way.
+    const q = env.service.fetchQueue;
+    const v2 = (k: string) =>
+      `https://bookmeter.com/search?author=&keyword=${encodeURIComponent(k)}&partial=true&sort=recommended&type=japanese_v2`;
+    const oldA = q.enqueue(
+      { site: 'bookmeter', key: 'search:魔法使いの旅 1', url: v2('魔法使いの旅 1') },
+      null,
+    );
+    env.cleanupDb
+      .prepare(
+        "UPDATE fetch_requests SET state = 'done', outcome = 'ok', finished_at = ? WHERE id = ?",
+      )
+      .run(Date.now(), oldA.id);
+    const queuedOld = q.enqueue({ site: 'bookmeter', key: 'search:まだ', url: v2('まだ') }, null);
+    env.cleanupDb
+      .prepare('UPDATE fetch_requests SET next_at = ? WHERE id = ?')
+      .run(Date.now() + 3_600_000, queuedOld.id);
+    const evA = a4.loadOnline(env.libraryId(), uuidA)!;
+    evA.bookmeter = { hits: [], accepted: null, reason: 'no results' };
+    evA.requests['bookmeter-search'] = oldA.id;
+    a4.saveEvidence(env.libraryId(), uuidA, 'online', evA);
+    env.cleanupDb
+      .prepare(
+        "DELETE FROM proposed_changes WHERE stage = 4 AND calibre_id = ? AND field = 'identifiers'",
+      )
+      .run(ids.A);
+    const prog = getStage(env.cleanupDb, 4).progress as Record<string, unknown>;
+    delete prog.bookmeterRedo;
+    prog.phase = 'lookups';
+    updateStage(env.cleanupDb, 4, { progress: prog, state: 'analysing' });
+
+    // The pass: the queued search points at the plain index, book A asks it again (answered
+    // from the cache: no new request to Bookmeter) and is proposed again with its Bookmeter id.
+    const asked = seen.length;
+    deadline = Date.now() + 30_000;
+    while (Date.now() < deadline && phase() !== 'done') {
+      await env.service.tick();
+      await sleep(100);
+    }
+    expect(phase()).toBe('done');
+    expect(seen.length).toBe(asked);
+    expect(
+      (
+        env.cleanupDb.prepare('SELECT url FROM fetch_requests WHERE id = ?').get(queuedOld.id) as {
+          url: string;
+        }
+      ).url,
+    ).toMatch(/[?&]type=japanese$/);
+    expect(a4.loadOnline(env.libraryId(), uuidA)!.bookmeter.accepted).toMatchObject({ id: '777' });
+    const ident = env.cleanupDb
+      .prepare(
+        "SELECT new_json FROM proposed_changes WHERE stage = 4 AND calibre_id = ? AND field = 'identifiers'",
+      )
+      .get(ids.A) as { new_json: string } | undefined;
+    expect(JSON.parse(ident!.new_json)).toMatchObject({ bookmeter: '777', isbn: '9784000000001' });
+    expect(
+      (getStage(env.cleanupDb, 4).progress as { bookmeterRedo?: { phase: string; books: number } })
+        .bookmeterRedo,
+    ).toMatchObject({ phase: 'done', books: 1 });
   }, 120_000);
 
   it("asks each site again as soon as its pace allows, and an answer runs no other stage's round", async () => {

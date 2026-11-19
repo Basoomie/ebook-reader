@@ -80,8 +80,10 @@ import {
   NATIVELY_SITEMAP,
   NDL_SPARQL,
   acceptBookmeter,
+  BOOKMETER_SEARCH_KEY,
   bookmeterSearchUrl,
   bookmeterStoresUrl,
+  oldBookmeterSearch,
   isbn13From10,
   ndlQuery,
   ndlReading,
@@ -129,6 +131,8 @@ export interface Stage4Progress {
    * and RanobeDB don't settle it.
    */
   amazonSweep?: { phase: 'waiters' | 'requests' | 'books' | 'done'; cursor: string };
+  /** Bookmeter asked again with its plain index (bookmeterRedoStep), once per analysis. */
+  bookmeterRedo?: { phase: 'queued' | 'books' | 'done'; cursor: string; books: number };
   /** Books the final pass has proposed again (for its time left). */
   finalDone?: number;
   /** Time per step (lessons 1-3: every stage times its steps from the first build). */
@@ -666,7 +670,7 @@ export class Stage4Analysis {
     ev.requests['bookmeter-search'] = q.enqueue(
       {
         site: 'bookmeter',
-        key: `search:${title}`,
+        key: `${BOOKMETER_SEARCH_KEY}${title}`,
         url: bookmeterSearchUrl(title),
         accept: 'text/html, */*; q=0.01',
         priority: prio,
@@ -876,6 +880,81 @@ export class Stage4Analysis {
       if (rows.length < 200) sw.phase = 'done';
     }
     addTime(p, `amazon sweep: ${sw.phase}`, performance.now() - t);
+    this.save(p);
+  }
+
+  /**
+   * Bookmeter asked again with its plain index, once per analysis (found 2026-11-19: the
+   * type=japanese_v2 index returned nothing for 46% of the searches). First the searches still
+   * queued are pointed at the plain index (their address only: nothing was answered yet). Then
+   * every book whose Bookmeter search was answered by the old index without an accepted match
+   * asks the new search (key BOOKMETER_SEARCH_KEY) and waits for it; its other sources stay as
+   * answered, and once the answer is in its match is checked again and its proposals rewritten.
+   * Chunked and sliced like the Amazon sweep (the event loop never waits long).
+   */
+  private async bookmeterRedoStep(p: Stage4Progress): Promise<void> {
+    const r0 = (p.bookmeterRedo ??= { phase: 'queued', cursor: '', books: 0 });
+    if (r0.phase === 'done') return;
+    const db = this.db;
+    const t = performance.now();
+    if (r0.phase === 'queued') {
+      const n = db
+        .prepare(
+          `UPDATE fetch_requests SET url = replace(url, 'type=japanese_v2', 'type=japanese'), updated_at = ?
+           WHERE id IN (SELECT id FROM fetch_requests WHERE site = 'bookmeter' AND state = 'queued'
+             AND url LIKE '%type=japanese_v2%' LIMIT ${SWEEP_CHUNK})`,
+        )
+        .run(Date.now()).changes;
+      if (n < SWEEP_CHUNK) r0.phase = 'books';
+    } else {
+      const rows = db
+        .prepare(
+          `SELECT calibre_uuid, labeled, state FROM stage4_books
+           WHERE library_id = ? AND calibre_uuid > ? ORDER BY calibre_uuid LIMIT 200`,
+        )
+        .all(p.libraryId, r0.cursor) as { calibre_uuid: string; labeled: number; state: string }[];
+      const reqOf = db.prepare('SELECT url, state FROM fetch_requests WHERE id = ?');
+      const slicer = new Slicer(p);
+      for (const r of rows) {
+        await slicer.maybeYield();
+        r0.cursor = r.calibre_uuid;
+        if (r.state !== 'waiting' && r.state !== 'ready' && r.state !== 'proposed') continue;
+        const book = this.book(r.calibre_uuid);
+        const ev = book ? this.loadOnline(p.libraryId, r.calibre_uuid) : null;
+        const id = ev?.requests['bookmeter-search'];
+        if (!book || !ev || !id || ev.bookmeter.accepted) continue;
+        const req = reqOf.get(id) as { url: string; state: string } | undefined;
+        // Still queued (its address was fixed above), in flight, or given up: nothing to redo.
+        if (!req || req.state !== 'done' || !oldBookmeterSearch(req.url)) continue;
+        const title = ev.query.title;
+        ev.bookmeter = {};
+        if (!ev.open.includes('bookmeter')) ev.open.push('bookmeter');
+        // The match is checked again (afterCore) once the new answer is in.
+        delete ev.requests['core-done'];
+        ev.requests['bookmeter-search'] = this.deps.queue.enqueue(
+          {
+            site: 'bookmeter',
+            key: `${BOOKMETER_SEARCH_KEY}${title}`,
+            url: bookmeterSearchUrl(title),
+            accept: 'text/html, */*; q=0.01',
+            priority: r.labeled === 1 ? LABELED_PRIORITY : 0,
+          },
+          { libraryId: p.libraryId, uuid: r.calibre_uuid, step: 'bookmeter-search' },
+        ).id;
+        db.transaction(() => {
+          this.saveEvidence(p.libraryId, r.calibre_uuid, ONLINE_KIND, ev);
+          db.prepare(
+            `UPDATE stage4_books SET state = 'waiting', pending = ?, updated_at = ? WHERE library_id = ? AND calibre_uuid = ?`,
+          ).run(ev.open.length, Date.now(), p.libraryId, r.calibre_uuid);
+        })();
+        r0.books++;
+      }
+      if (rows.length < 200) {
+        r0.phase = 'done';
+        this.log(`Stage 4: Bookmeter asked again for ${r0.books} books (plain index)`);
+      }
+    }
+    addTime(p, `bookmeter redo: ${r0.phase}`, performance.now() - t);
     this.save(p);
   }
 
@@ -1111,6 +1190,7 @@ export class Stage4Analysis {
     const db = this.db;
     this.loadSnapshot(p.libraryId);
     await this.amazonSweepStep(p);
+    if (p.amazonSweep?.phase === 'done') await this.bookmeterRedoStep(p);
     const t0 = performance.now();
     // 0. A site switched off answers nothing: its queued requests are given up, so the books
     // go on without that source ("Ask again" on the page re-asks them once it is back on).
@@ -1291,7 +1371,9 @@ export class Stage4Analysis {
           `SELECT 1 FROM stage4_books WHERE analysis_id = ? AND state IN ('read', 'waiting', 'ready') LIMIT 1`,
         )
         .get(p.analysisId);
-      if (!open && this.nativelyDone() && this.readingsDone()) {
+      // Not before the one-time passes are through every book (they can reopen finished ones).
+      const passesDone = p.amazonSweep?.phase === 'done' && p.bookmeterRedo?.phase === 'done';
+      if (!open && passesDone && this.nativelyDone() && this.readingsDone()) {
         p.phase = 'final';
         p.finalCursor = 0;
       }

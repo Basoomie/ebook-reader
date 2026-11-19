@@ -29,8 +29,22 @@ export interface BookmeterHit {
   pages: number | null;
 }
 
+/**
+ * Bookmeter's search of Japanese books. Not type=japanese_v2: that index misses many books the
+ * plain one finds (proven 2026-11-19: 13,955 of 30,168 searches came back empty with v2; of 19
+ * of them asked again with type=japanese, 15 found the exact book first). Its requests use
+ * BOOKMETER_SEARCH_KEY so an answer from the old index is never reused.
+ */
 export function bookmeterSearchUrl(title: string): string {
-  return `https://bookmeter.com/search?author=&keyword=${pyQuote(title)}&partial=true&sort=recommended&type=japanese_v2`;
+  return `https://bookmeter.com/search?author=&keyword=${pyQuote(title)}&partial=true&sort=recommended&type=japanese`;
+}
+
+/** The queue key of a Bookmeter search (type=japanese); the old index's were `search:<title>`. */
+export const BOOKMETER_SEARCH_KEY = 'search-jp:';
+
+/** True for a Bookmeter search address that asked the old index. */
+export function oldBookmeterSearch(url: string): boolean {
+  return url.includes('type=japanese_v2');
 }
 
 export function bookmeterStoresUrl(id: string): string {
