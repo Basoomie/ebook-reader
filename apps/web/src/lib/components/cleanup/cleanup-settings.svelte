@@ -1222,7 +1222,7 @@
             type="number"
             min="0"
             max="10000"
-            step="0.01"
+            step="any"
             bind:value={limitText}
             data-testid="cleanup-ai-limit"
           />
@@ -1313,7 +1313,7 @@
             type="number"
             min="0"
             max="1"
-            step="0.05"
+            step="any"
             bind:value={settings.ai.batchPriceFactor}
           />
         </label>
@@ -1330,14 +1330,14 @@
                 class="c-input w-24"
                 type="number"
                 min="0"
-                step="0.01"
+                step="any"
                 bind:value={settings.ai.prices[model].inputPerMTok}
               />
               <input
                 class="c-input w-24"
                 type="number"
                 min="0"
-                step="0.01"
+                step="any"
                 bind:value={settings.ai.prices[model].outputPerMTok}
               />
             </div>

@@ -46,8 +46,8 @@ export async function startAiStandin(opts: any = {}): Promise<any> {
   };
   const answer = opts.answer ?? (() => ({ kind: 'json', json: {} }));
   const usage = opts.usage ?? USAGE;
-  /** Batch polls answered "in progress" before a batch ends. */
-  const batchPolls = opts.batchPolls ?? 0;
+  /** Batch polls answered "in progress" before a batch ends (read at each poll: adjustable). */
+  const pollsBeforeEnd = () => opts.batchPolls ?? 0;
   const calls = [];
   const batches = new Map();
   const files = new Map();
@@ -225,7 +225,7 @@ export async function startAiStandin(opts: any = {}): Promise<any> {
           }
           calls.push({ path: ap, provider: 'anthropic', batch: bm[1], poll: true });
           bt.polls++;
-          const ended = bt.polls > batchPolls;
+          const ended = bt.polls > pollsBeforeEnd();
           return send(res, 200, {
             id: bm[1],
             type: 'message_batch',
@@ -242,7 +242,10 @@ export async function startAiStandin(opts: any = {}): Promise<any> {
             ended_at: ended ? new Date().toISOString() : null,
             archived_at: null,
             cancel_initiated_at: null,
-            results_url: ended ? `${base}/anthropic/v1/messages/batches/${bm[1]}/results` : null,
+            // The address the caller reached us at (in a container the listening one is 0.0.0.0).
+            results_url: ended
+              ? `http://${req.headers.host}/anthropic/v1/messages/batches/${bm[1]}/results`
+              : null,
           });
         }
       }
@@ -323,7 +326,7 @@ export async function startAiStandin(opts: any = {}): Promise<any> {
         if (!bt) return send(res, 404, { error: { message: 'no batch' } });
         calls.push({ path: op, provider: 'openai', batch: ob[1], poll: true });
         bt.polls++;
-        const ended = bt.polls > batchPolls;
+        const ended = bt.polls > pollsBeforeEnd();
         if (ended && !bt.output) {
           const out = bt.requests.map((r) => {
             const c = openaiCompletion(r.body.model, r.body.messages);

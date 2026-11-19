@@ -42,6 +42,9 @@ export type AiWait =
   | { kind: 'model_check_failed'; provider: Provider; error: string }
   | { kind: 'provider_busy'; provider: Provider; until: number; error: string };
 
+/** US$ with cents, or four places below a cent ($0.0030). */
+const usd = (v: number) => (v > 0 && v < 0.1 ? `$${v.toFixed(4)}` : `$${v.toFixed(2)}`);
+
 /** The page's words for a wait. */
 export function waitText(w: AiWait): string {
   const name = (p: Provider) => (p === 'anthropic' ? 'Anthropic' : 'OpenAI');
@@ -49,7 +52,7 @@ export function waitText(w: AiWait): string {
     case 'no_limit':
       return 'Set a spending limit first (Settings > AI)';
     case 'limit_reached':
-      return `Spending limit reached ($${w.spentUsd.toFixed(2)} spent, $${w.reservedUsd.toFixed(2)} held for batches, limit $${w.limitUsd.toFixed(2)})`;
+      return `Spending limit reached (${usd(w.spentUsd)} spent, ${usd(w.reservedUsd)} held for batches, limit ${usd(w.limitUsd)})`;
     case 'no_key':
       return `The ${name(w.provider)} API key is missing (Settings > AI keys)`;
     case 'auth_failed':
