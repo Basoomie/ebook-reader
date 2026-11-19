@@ -134,6 +134,13 @@ export const EXTRA =
 
 export type Pick = [string, string];
 
+/**
+ * A bracketed note that the edition comes with a bonus ("【特典SS付】", "【電子書店共通特典SS付】",
+ * "【特典ショートストーリーつき】"): the normal edition, not a bonus item of its own.
+ */
+export const BUNDLED_BONUS =
+  /【[^】]*(?:特典SS付き?|特典SS付|特典ショートストーリー(?:つき|付き?))[^】]*】/gu;
+
 /** ref4 pick_by_volume(): comic editions last for text books, then the volume, then similarity. */
 export function pickByVolume<T extends [unknown, string]>(
   qtitle: string,
@@ -142,7 +149,15 @@ export function pickByVolume<T extends [unknown, string]>(
 ): T | null {
   const qn = nums(qtitle);
   let list = cands;
-  if (!EXTRA.test(nfkc(qtitle))) list = list.filter((c) => !EXTRA.test(nfkc(c[1])));
+  if (!EXTRA.test(nfkc(qtitle))) {
+    const plain = list.filter((c) => !EXTRA.test(nfkc(c[1])));
+    // Every result is marked: Amazon marks many normal editions "【特典SS付】" (found
+    // 2026-11-19: 10 of 4,564 searches picked nothing). Those editions count; bonus stories of
+    // their own (購入特典, …限定ショートストーリー) still don't.
+    list = plain.length
+      ? plain
+      : list.filter((c) => !EXTRA.test(nfkc(c[1]).replace(BUNDLED_BONUS, '')));
+  }
   let best: T | null = null;
   let bestKey: [number, number, number] | null = null;
   for (const c of list) {

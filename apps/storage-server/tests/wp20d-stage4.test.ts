@@ -187,7 +187,9 @@ describe('stage 4: online sources (Preview)', () => {
     }
     if (u.startsWith('https://bookwalker.jp/search/?word=')) {
       const q = decodeURIComponent(u.split('word=')[1]);
-      if (!q.startsWith('魔法使いの旅')) return html('', 404);
+      // Like the real search, it misses the title with its volume number and finds the series
+      // name (live 2026-11-19: "鋼鉄の白兎騎士団10" 404, "鋼鉄の白兎騎士団" found).
+      if (!q.startsWith('魔法使いの旅') || q === '魔法使いの旅 1') return html('', 404);
       return html(
         bookwalkerList([
           ['https://bookwalker.jp/de11111111-2222-3333-4444-555555555555/', '魔法使いの旅 1'],
@@ -571,6 +573,12 @@ describe('stage 4: online sources (Preview)', () => {
     const ev = env.service.analysis4!.loadOnline(env.libraryId(), uuidA)!;
     expect(ev.amazon.product?.asin).toBe('B0TESTAAA1');
     expect(ev.bookmeter.accepted?.id).toBe('777');
+    // BookWalker missed "魔法使いの旅 1" and was asked once more by the series name.
+    expect(ev.bookwalker.retried).toBe('魔法使いの旅');
+    expect(seen).toContain(
+      `https://bookwalker.jp/search/?word=${encodeURIComponent('魔法使いの旅')}`,
+    );
+    expect(ev.bookwalker.detail?.title).toBe('魔法使いの旅 1');
     expect(Object.keys(ev.requests)).toEqual(
       expect.arrayContaining([
         'amazon-dp',
@@ -703,6 +711,14 @@ describe('stage 4: online sources (Preview)', () => {
     const evA = a4.loadOnline(env.libraryId(), uuidA)!;
     evA.bookmeter = { hits: [], accepted: null, reason: 'no results' };
     evA.requests['bookmeter-search'] = oldA.id;
+    // …and BookWalker's search as it ended before the retry existed: "not found", nothing else.
+    const bwFirst = env.cleanupDb
+      .prepare(
+        "SELECT id FROM fetch_requests WHERE site = 'bookwalker' AND key = 'search:魔法使いの旅 1'",
+      )
+      .get() as { id: number };
+    (evA as unknown as { bookwalker: Record<string, unknown> }).bookwalker = {};
+    evA.requests['bookwalker-search'] = bwFirst.id;
     a4.saveEvidence(env.libraryId(), uuidA, 'online', evA);
     env.cleanupDb
       .prepare(
@@ -711,6 +727,7 @@ describe('stage 4: online sources (Preview)', () => {
       .run(ids.A);
     const prog = getStage(env.cleanupDb, 4).progress as Record<string, unknown>;
     delete prog.bookmeterRedo;
+    delete prog.bookwalkerRetry;
     prog.phase = 'lookups';
     updateStage(env.cleanupDb, 4, { progress: prog, state: 'analysing' });
 
@@ -741,6 +758,19 @@ describe('stage 4: online sources (Preview)', () => {
     expect(
       (getStage(env.cleanupDb, 4).progress as { bookmeterRedo?: { phase: string; books: number } })
         .bookmeterRedo,
+    ).toMatchObject({ phase: 'done', books: 1 });
+    // The BookWalker pass asked the series name again (from the cache) and found the book.
+    const evA2 = a4.loadOnline(env.libraryId(), uuidA)! as unknown as {
+      bookwalker: { retried?: string; detail?: { title?: string } };
+    };
+    expect(evA2.bookwalker.retried).toBe('魔法使いの旅');
+    expect(evA2.bookwalker.detail?.title).toBe('魔法使いの旅 1');
+    expect(
+      (
+        getStage(env.cleanupDb, 4).progress as {
+          bookwalkerRetry?: { phase: string; books: number };
+        }
+      ).bookwalkerRetry,
     ).toMatchObject({ phase: 'done', books: 1 });
   }, 120_000);
 
