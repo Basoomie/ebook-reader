@@ -33,6 +33,10 @@ import { cutClip, type ToolPaths } from './probe';
 import { AudioStage1, identityCounts, type AudioStage1Progress } from './stage1-identity';
 import { AudioStage2, booksCounts } from './stage2-books';
 import { AudioStage3, stage3SettingsKey, type LoadedCopy } from './stage3-dups';
+import { AudioStage4, stage4SettingsKey } from './stage4-online';
+import { audioSiteLines, onlineList, unitStates } from './online-views';
+import type { FetchQueue } from '../stage4/queue';
+import { AUDIO_FETCH_SITES } from '../settings';
 import type { AudioRoots } from './walk';
 
 /** A clip can't be cut now (a Calibre job uses the disk): try again in a moment. */
@@ -56,6 +60,9 @@ export interface AudioCleanupOptions {
   /** Library paths of files the reader wrote (merges): they never compete in stage 3. */
   readerWrittenFiles?: () => string[];
   fetchImpl?: typeof fetch;
+  /** Stage 4 (WP21c): the shared fetch queue (the Calibre cleanup's), and its fetcher's state. */
+  fetchQueue?: FetchQueue | null;
+  fetcherStatus?: () => unknown;
   log?: (m: string) => void;
   logError?: (m: string, err?: unknown) => void;
 }
@@ -121,17 +128,20 @@ export class AudioCleanupService {
   readonly stage1: AudioStage1 | null;
   readonly stage2: AudioStage2 | null;
   readonly stage3: AudioStage3 | null;
+  readonly stage4: AudioStage4 | null;
   private roots: RootsCheck = { ok: false, problem: 'Not checked yet', checkedAt: 0 };
   private timer: NodeJS.Timeout | null = null;
   private ticking: Promise<void> | null = null;
   private running1: Promise<void> | null = null;
   private running2: Promise<void> | null = null;
   private running3: Promise<void> | null = null;
+  private running4: Promise<void> | null = null;
   private snapshotting: Promise<void> | null = null;
   private stopped = false;
   waiting1: string | null = null;
   waiting2: string | null = null;
   waiting3: string | null = null;
+  waiting4: string | null = null;
   private readonly log: (m: string) => void;
   private readonly logError: (m: string, err?: unknown) => void;
 
@@ -169,6 +179,20 @@ export class AudioCleanupService {
           log: this.log,
         })
       : null;
+    this.stage4 =
+      opts.roots && this.stage3 && opts.fetchQueue
+        ? new AudioStage4({
+            db: opts.db,
+            roots: opts.roots,
+            tools: opts.tools,
+            lock: opts.lock,
+            queue: opts.fetchQueue,
+            stage3: this.stage3,
+            calibreBusy: () => opts.lock.calibreBusy(),
+            readLabels: opts.readLabels,
+            log: this.log,
+          })
+        : null;
   }
 
   get db(): Database.Database {
@@ -190,9 +214,11 @@ export class AudioCleanupService {
     await this.running1;
     await this.running2;
     await this.running3;
+    await this.running4;
     await this.snapshotting;
     this.opts.lock.release(DISK_OWNERS.audio1);
     this.opts.lock.release(DISK_OWNERS.audio3);
+    this.opts.lock.release(DISK_OWNERS.audio4);
   }
 
   tick(): Promise<void> {
@@ -217,6 +243,7 @@ export class AudioCleanupService {
     this.round1();
     this.round2();
     this.round3();
+    this.round4();
   }
 
   private round1(): void {
@@ -426,6 +453,110 @@ export class AudioCleanupService {
     })();
   }
 
+  /**
+   * Stage 4 (WP21c): looks the recordings stage 3 found up online. It starts once stage 3 has
+   * finished, starts over when stage 3 runs again, and decides again (nothing fetched twice)
+   * when its settings change. It needs the fetch container (the Calibre cleanup's queue).
+   */
+  private round4(): void {
+    const st = getAudioStage(this.db, 4);
+    if (st.mode === 'off' || !this.stage4) {
+      this.waiting4 =
+        st.mode === 'off'
+          ? null
+          : !this.opts.fetchQueue
+            ? 'The fetch container is not set up'
+            : this.roots.problem;
+      return;
+    }
+    if (!this.roots.ok) {
+      this.waiting4 = this.roots.problem;
+      return;
+    }
+    const s3 = this.stage3?.progress();
+    if (!s3 || s3.phase !== 'done' || s3.error) {
+      this.waiting4 = 'Waiting for stage 3 to finish (stage 4 looks up the recordings it found)';
+      return;
+    }
+    let p = this.stage4.progress();
+    if (!p || (p.stage3Id && p.stage3Id !== s3.analysisId)) {
+      if (this.running4) return;
+      p = this.stage4.restart();
+    }
+    if (p.phase === 'done') {
+      // A settings change after the analysis finished: decide again from the stored answers.
+      const key = stage4SettingsKey(getSettings(this.db).audiobooks);
+      if (p.rulesKey && p.rulesKey !== key && !p.error && !this.running4) {
+        this.stage4.redecide();
+        p = this.stage4.progress()!;
+      } else {
+        this.waiting4 = p.error ? `The analysis failed: ${p.error}` : 'Preview: nothing is changed';
+        return;
+      }
+    }
+    this.waiting4 = this.waiting4Text();
+    if (!this.running4) this.run4();
+  }
+
+  /** What stage 4 is doing now, and what it waits for. */
+  private waiting4Text(): string {
+    const p = this.stage4?.progress();
+    if (p?.phase === 'lookups' && this.stage4?.waitingForDisk()) {
+      const lock = this.opts.lock.state();
+      if (lock.calibreApplying) return `Waiting for the disk: ${lock.calibreApplying}`;
+      if (this.opts.lock.calibreBusy()) return 'Waiting while the Calibre cleanup uses the disk';
+    }
+    if (p?.phase === 'lookups') {
+      const f = this.opts.fetcherStatus?.() as { online?: boolean } | undefined;
+      if (f && f.online === false) return 'Waiting for the fetch container (it is offline)';
+      return 'Looking up';
+    }
+    return 'Analysing';
+  }
+
+  /** Stage 3 has finished the analysis stage 4 works on. */
+  private stage3Done(): boolean {
+    const s3 = this.stage3?.progress();
+    const p = this.stage4?.progress();
+    return (
+      !!s3 && s3.phase === 'done' && !s3.error && (!p?.stage3Id || p.stage3Id === s3.analysisId)
+    );
+  }
+
+  private run4(): void {
+    const stage = this.stage4!;
+    const stop = () =>
+      this.stopped || getAudioStage(this.db, 4).mode === 'off' || !this.stage3Done();
+    this.running4 = (async () => {
+      try {
+        for (;;) {
+          if (stop()) break;
+          // Changed settings: every unit is decided again from the answers it has.
+          const p = stage.progress();
+          const key = stage4SettingsKey(getSettings(this.db).audiobooks);
+          if (p && p.rulesKey && p.rulesKey !== key && p.phase === 'lookups') stage.redecide();
+          const done = await stage.step(stop);
+          this.waiting4 = this.waiting4Text();
+          if (done) break;
+          await new Promise((r) => setImmediate(r));
+        }
+      } catch (err) {
+        this.logError('Audiobook cleanup: stage 4 failed:', err);
+      } finally {
+        this.opts.lock.release(DISK_OWNERS.audio4);
+        this.running4 = null;
+        void this.tick();
+      }
+    })();
+  }
+
+  /** An answer reached the shared queue: stage 4's loop takes it on its next step. */
+  answerArrived(): void {
+    if (!this.stopped && !this.running4 && getAudioStage(this.db, 4).mode !== 'off') {
+      void this.tick();
+    }
+  }
+
   setMode(stage: number, mode: AudioStageMode): void {
     if (!AUDIO_ANALYSIS_STAGES.includes(stage)) throw new Error('No such stage');
     setAudioStageMode(this.db, stage, mode);
@@ -439,6 +570,9 @@ export class AudioCleanupService {
     else if (stage === 3 && this.stage3) {
       if (this.running3) throw new Error('Stage 3 is analysing; switch it Off first');
       this.stage3.restart();
+    } else if (stage === 4 && this.stage4) {
+      if (this.running4) throw new Error('Stage 4 is looking up; switch it Off first');
+      this.stage4.restart();
     } else throw new Error('The audiobook folders are not set up');
     void this.tick();
   }
@@ -543,7 +677,60 @@ export class AudioCleanupService {
           : null,
         counts: p3?.counts ?? null,
       },
+      stage4: this.stage4Status(),
     };
+  }
+
+  /** Stage 4's card: progress, the sites' queues and time left, the gate. */
+  private stage4Status() {
+    const p4 = this.stage4?.progress() ?? null;
+    const lines = audioSiteLines(this.db, p4, Date.now());
+    return {
+      available: this.stage4 !== null,
+      waiting: this.waiting4,
+      fetcher: this.opts.fetcherStatus?.() ?? null,
+      progress: p4 ? { ...p4, gate: p4.gate ? { ...p4.gate, results: undefined } : null } : null,
+      units: p4 ? unitStates(this.db, p4.analysisId) : {},
+      sites: lines.sites,
+      secondsLeft: lines.secondsLeft,
+      ratios: lines.ratios,
+      counts: p4?.counts ?? null,
+    };
+  }
+
+  /** Stage 4's lists (paged). */
+  online(
+    list: string,
+    opts: { offset?: number; limit?: number } = {},
+  ): { total: number; items: Record<string, unknown>[] } {
+    const p = this.stage4?.progress();
+    if (!this.stage4 || !p) return { total: 0, items: [] };
+    return onlineList(this.db, p, list, opts);
+  }
+
+  /**
+   * "Ask again" for an audio site: its given-up requests go back to the queue, and every unit
+   * not matched automatically is looked up again (its answered steps come from the cache).
+   */
+  retryOnlineSite(site: string): { requests: number; units: number } {
+    if (!(AUDIO_FETCH_SITES as readonly string[]).includes(site)) throw new Error('No such site');
+    if (!this.opts.fetchQueue) throw new Error('The fetch container is not set up');
+    const requests = this.opts.fetchQueue.retryFailed(site);
+    const p = this.stage4?.progress();
+    let units = 0;
+    if (p && this.stage4 && requests > 0) {
+      if (p.phase === 'done') this.stage4.redecide();
+      else {
+        units = this.db
+          .prepare(
+            `UPDATE audio_online_units SET state = 'ready', updated_at = ?
+             WHERE analysis_id = ? AND kind = 'lookup' AND (state = 'error' OR (state = 'decided' AND class <> 'auto'))`,
+          )
+          .run(Date.now(), p.analysisId).changes;
+      }
+    }
+    void this.tick();
+    return { requests, units };
   }
 
   // -------------------------------------------------------------------------------------------

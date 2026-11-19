@@ -164,7 +164,12 @@ if (database.ok && cleanupDb?.ok) {
       readerWrittenFiles: config.cleanupAudio
         ? readerWrittenFiles(database.db, config.cleanupAudio.libraryDir)
         : undefined,
+      // Stage 4 (WP21c) asks through the Calibre cleanup's fetch queue and container.
+      fetchQueue: cleanup.fetchQueue,
+      fetcherStatus: () => cleanup?.fetcher() ?? null,
     });
+    const audioCleanup = cleanupOptions.audio;
+    cleanup.onAnswerArrived(() => audioCleanup.answerArrived());
   } catch (err) {
     console.error('Error: library cleanup is off:', err);
     cleanupOptions.error = (err as Error).message;

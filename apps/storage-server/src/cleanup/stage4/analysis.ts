@@ -28,7 +28,7 @@ import { snapshotFile } from '../../calibre/indexer';
 import { getLibrary } from '../../calibre/libraries';
 import { resolveInside, statFile } from '../../calibre/source-fs';
 import { imageFacts, readFileMetadata } from '../file-metadata';
-import { getSettings, stage4Bar, type CleanupSettings } from '../settings';
+import { CALIBRE_FETCH_SITES, getSettings, stage4Bar, type CleanupSettings } from '../settings';
 import { Pacer } from '../stage1';
 import { loadEvidence as loadFileEvidence } from '../stage2';
 import {
@@ -1114,8 +1114,9 @@ export class Stage4Analysis {
     const t0 = performance.now();
     // 0. A site switched off answers nothing: its queued requests are given up, so the books
     // go on without that source ("Ask again" on the page re-asks them once it is back on).
+    // Only Calibre's sites: the audiobook cleanup's (WP21c) have their own books and waiters.
     const off = Object.entries(getSettings(db).fetch.sites)
-      .filter(([, v]) => !v.enabled)
+      .filter(([k, v]) => !v.enabled && (CALIBRE_FETCH_SITES as readonly string[]).includes(k))
       .map(([k]) => k);
     for (const site of off) {
       const ids = (

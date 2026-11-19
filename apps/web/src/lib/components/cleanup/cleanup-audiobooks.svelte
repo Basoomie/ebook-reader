@@ -11,7 +11,8 @@
    * (libraries, counts, every user's listening progress, to download), stage 1 finds which
    * library files are copies of which torrent files, stage 2 groups the files into books and
    * checks each file, stage 3 (WP21b) finds copies of the same recording and picks the best
-   * copy (its review queue below). The stages are Off or Preview. The disk line shows which cleanup job
+   * copy (its review queue below), stage 4 (WP21c) looks each recording up on Audible, kikubon
+   * and audiobook.jp (its lists below). The stages are Off or Preview. The disk line shows which cleanup job
    * reads the disk (one at a time; the Calibre cleanup goes first). Asks the server again
    * every few seconds while open.
    */
@@ -49,12 +50,22 @@
     gateLines,
     missLine
   } from '$lib/cleanup/audio-dup-text';
+  import {
+    STAGE4_HINTS,
+    audioStage4Bar,
+    audioStage4Lines,
+    onlineFoundLines,
+    onlineGateLines,
+    onlineMissLine,
+    siteLine
+  } from '$lib/cleanup/audio-online-text';
   import { bytesText, n, type ProgressBar } from '$lib/cleanup/cleanup-text';
   import { LibraryApiError } from '$lib/library/api';
   import { formatWhen } from '$lib/notes/notes-format';
   import SettingsSection from '$lib/components/settings/settings-section.svelte';
   import CleanupSection from './cleanup-section.svelte';
   import CleanupAudioDups from './cleanup-audio-dups.svelte';
+  import CleanupAudioOnline from './cleanup-audio-online.svelte';
 
   export let api: CleanupApi;
 
@@ -86,6 +97,14 @@
   $: bars3 = [audioStage3Bar(p3, Date.now())].filter((b): b is ProgressBar => b !== null);
   /** Stage 3's analysis and phase: the duplicate lists reload when it changes. */
   $: analysis3 = p3 ? `${p3.analysisId}:${p3.phase}:${p3.finishedAt ?? ''}` : '';
+  $: stage4 = status?.stages.find((s) => s.stage === 4) ?? null;
+  $: s4 = status?.stage4 ?? null;
+  $: p4 = s4?.progress ?? null;
+  $: bars4 = [audioStage4Bar(s4)].filter((b): b is ProgressBar => b !== null);
+  /** Stage 4's analysis and phase (the online lists reload when it changes, or every 50 decided). */
+  $: analysis4 = p4
+    ? `${p4.analysisId}:${p4.phase}:${p4.finishedAt ?? ''}:${Math.floor(p4.decided / 50)}`
+    : '';
   interface StageView {
     bars: ProgressBar[];
     lines: string[];
@@ -111,10 +130,17 @@
       lines: audioStage3Lines(p3),
       waiting: status?.stage3?.waiting ?? null,
       found: dupLines(status?.stage3?.counts ?? null)
+    },
+    4: {
+      bars: bars4,
+      lines: audioStage4Lines(s4),
+      waiting: s4?.waiting ?? null,
+      found: onlineFoundLines(s4?.counts ?? null)
     }
   } as Record<number, StageView>;
   function hint(stage: AudioStageRow): string {
     const mode = stage.mode === 'on' ? 'analyse' : stage.mode;
+    if (stage.stage === 4) return STAGE4_HINTS[mode];
     return stage.stage === 3 ? STAGE3_HINTS[mode] : (AUDIO_STAGE_HINTS[stage.stage]?.[mode] ?? '');
   }
   $: p1 = status?.stage1.progress ?? null;
@@ -256,6 +282,26 @@
     return `${Math.floor(t / 3600)}:${String(Math.floor((t % 3600) / 60)).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`;
   }
 
+  async function resumeSite(site: string) {
+    actionError = '';
+    try {
+      await api.resumeSite(site);
+      await refresh();
+    } catch (err) {
+      actionError = describe(err);
+    }
+  }
+
+  async function retrySite(site: string) {
+    actionError = '';
+    try {
+      await api.retryAudioSite(site);
+      await refresh();
+    } catch (err) {
+      actionError = describe(err);
+    }
+  }
+
   function rootLabel(root: string): string {
     return root === 'torrents' ? 'Torrents' : 'Library';
   }
@@ -331,7 +377,7 @@
       </p>
     </div>
 
-    {#each [stage1, stage2, stage3] as stage (stage?.stage)}
+    {#each [stage1, stage2, stage3, stage4] as stage (stage?.stage)}
       {#if stage}
         <div class="c-tile flex flex-col gap-3 rounded p-4" data-testid="audio-stage-{stage.stage}">
           <div class="flex flex-wrap items-baseline justify-between gap-2">
@@ -394,6 +440,43 @@
           {#each views[stage.stage].found as line}
             <p class="text-sm" data-testid="audio-found-{stage.stage}">{line}</p>
           {/each}
+          {#if stage.stage === 4 && s4 && stage.mode !== 'off'}
+            <div class="flex flex-col gap-1 text-sm" data-testid="audio-sites">
+              {#if s4.fetcher && !s4.fetcher.online}
+                <p class="c-notice" role="alert" data-testid="audio-fetcher-offline">
+                  The fetch container is offline: nothing is asked until it is back.
+                </p>
+              {/if}
+              {#each s4.sites as site (site.site)}
+                <p data-testid="audio-site-{site.site}">
+                  {siteLine(site)}
+                  {#if site.pausedReason}
+                    <button class="c-btn c-btn-ghost" on:click={() => resumeSite(site.site)}
+                      >Resume</button
+                    >
+                  {/if}
+                  {#if site.failed > 0}
+                    <button
+                      class="c-btn c-btn-ghost"
+                      on:click={() => retrySite(site.site)}
+                      data-testid="audio-site-retry-{site.site}">Ask again</button
+                    >
+                  {/if}
+                </p>
+              {/each}
+            </div>
+          {/if}
+          {#if stage.stage === 4 && p4?.gate}
+            <div class="flex flex-col gap-1 text-sm" data-testid="audio-online-gate-card">
+              <p class="font-medium">
+                Checked on the labeled books: {p4.gate.passed ? '✓ passes' : '✗ not passed'}
+              </p>
+              {#each onlineGateLines(p4.gate) as line}<p>{line}</p>{/each}
+              {#each p4.gate.misses.slice(0, 10) as m (m.id)}
+                <p class="font-bold">{onlineMissLine(m)}</p>
+              {/each}
+            </div>
+          {/if}
           {#if stage.stage === 3 && p3?.gate}
             <div class="flex flex-col gap-1 text-sm" data-testid="audio-gate">
               <p class="font-medium">
@@ -424,6 +507,18 @@
       testid="audio-dups-section"
     >
       <CleanupAudioDups {api} analysis={analysis3} />
+    </CleanupSection>
+  {/if}
+
+  {#if stage4 && p4}
+    <CleanupSection
+      id="audio-online"
+      jp="照合"
+      title="Online sources"
+      summary={s4?.counts ? `${n(s4.counts.review ?? 0)} to review` : ''}
+      testid="audio-online-section"
+    >
+      <CleanupAudioOnline {api} analysis={analysis4} />
     </CleanupSection>
   {/if}
 

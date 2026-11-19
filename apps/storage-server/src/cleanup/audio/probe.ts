@@ -576,6 +576,8 @@ export async function fingerprintSpans(
     timeoutMs,
     { stdinPipe: true, shouldStop },
   );
+  // A tool that can't start rejects at once: handled here, reported when awaited below.
+  fpc.done.catch(() => undefined);
   const problems: string[] = [];
   try {
     for (const sp of spans) {
@@ -597,6 +599,52 @@ export async function fingerprintSpans(
         await handle?.close();
       }
     }
+  } finally {
+    fpc.stdin?.end();
+  }
+  const out = await fpc.done;
+  if (out.timedOut) problems.push('fpcalc took too long');
+  const fp = parseFpcalc(out.stdout.toString('utf8'));
+  if (!fp || fp.length === 0) {
+    problems.push(short(out.stderr, 200) || `fpcalc gave no fingerprint (exit ${out.code})`);
+    return { fp: null, error: problems.join('; ') };
+  }
+  return { fp, error: problems.length ? problems.join('; ') : null };
+}
+
+/**
+ * Stage 4 (WP21c): a Chromaprint fingerprint of audio held in memory (a store's sample mp3, as
+ * the fetcher brought it). ffmpeg reads it from stdin (no file is written anywhere), decodes up
+ * to `seconds` to raw samples, and fpcalc reads those on its stdin, as for the files' windows.
+ */
+export async function fingerprintBytes(
+  audio: Buffer,
+  toolPaths: ToolPaths,
+  { timeoutMs, seconds }: { timeoutMs: number; seconds: number },
+): Promise<FingerprintResult> {
+  const tools = allTools(toolPaths);
+  const fpc = start(
+    tools.fpcalcPath,
+    toolArgs('fpcalc', '-', 0, { start: 0, length: seconds }),
+    null,
+    timeoutMs,
+    { stdinPipe: true },
+  );
+  fpc.done.catch(() => undefined);
+  const problems: string[] = [];
+  try {
+    const dec = start(
+      tools.ffmpegPath,
+      toolArgs('window-pcm', 'pipe:0', 0, { start: 0, length: seconds }),
+      null,
+      timeoutMs,
+      { stdinPipe: true, keepStdout: 0, onStdout: (b) => fpc.stdin?.write(b) },
+    );
+    dec.stdin?.end(audio);
+    const r = await dec.done;
+    const reported = audioProblems(r.stderr);
+    if (r.timedOut) problems.push('ffmpeg took too long');
+    else if (r.code !== 0) problems.push(short(reported, 200) || `exit ${r.code}`);
   } finally {
     fpc.stdin?.end();
   }

@@ -16,7 +16,7 @@ import { brotliCompressSync, constants as zc } from 'zlib';
 import type { FetchConfig } from './config';
 import { allowedUrl } from './hosts';
 
-export const VERSION = '1.2.0';
+export const VERSION = '1.3.0';
 /** The reference run's browser headers (ref4.py); RanobeDB refuses Python's default user agent. */
 const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36';

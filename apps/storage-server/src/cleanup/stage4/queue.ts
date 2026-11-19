@@ -525,6 +525,8 @@ export class FetchQueue {
         );
       if (next.state !== 'queued') {
         this.db.prepare('UPDATE fetch_waiters SET ready = 1 WHERE request_id = ?').run(id);
+        // The audiobook cleanup's lookups (WP21c) wait in their own table.
+        this.db.prepare('UPDATE audio_fetch_waiters SET ready = 1 WHERE request_id = ?').run(id);
       }
       return next.state;
     })();
@@ -590,6 +592,33 @@ export class FetchQueue {
            backoff_seconds = 0, backoff_reason = NULL, updated_at = ? WHERE site = ?`,
       )
       .run(now, backoffKey(site));
+  }
+
+  /**
+   * Gives up the queued requests of a switched-off site (at most `limit`), so whoever waits on
+   * them goes on without that source; returns their ids. "Ask again" re-asks them later.
+   */
+  giveUpQueued(site: string, limit = 1000, now = Date.now()): number[] {
+    const ids = (
+      this.db
+        .prepare(`SELECT id FROM fetch_requests WHERE site = ? AND state = 'queued' LIMIT ?`)
+        .all(site, limit) as { id: number }[]
+    ).map((r) => r.id);
+    if (!ids.length) return ids;
+    this.db.transaction(() => {
+      const fail = this.db.prepare(
+        `UPDATE fetch_requests SET state = 'failed', error = 'The site is switched off', finished_at = ?, updated_at = ?
+         WHERE id = ? AND state = 'queued'`,
+      );
+      const ready = this.db.prepare(
+        'UPDATE audio_fetch_waiters SET ready = 1 WHERE request_id = ?',
+      );
+      for (const id of ids) {
+        fail.run(now, now, id);
+        ready.run(id);
+      }
+    })();
+    return ids;
   }
 
   /** Puts given-up requests of a site back in the queue (from the page). */

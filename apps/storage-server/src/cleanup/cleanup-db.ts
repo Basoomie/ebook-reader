@@ -868,6 +868,84 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
       );
     `,
   },
+  {
+    version: 12,
+    name: 'audiobook cleanup: stage 4, online sources (WP21c)',
+    sql: `
+      INSERT INTO audio_stages (stage, updated_at) VALUES (4, 0);
+
+      -- Which lookup unit waits on which request of the shared fetch queue, and at which step.
+      -- Separate from Calibre's fetch_waiters (its stage 4 takes every ready row there and
+      -- empties the table when it starts over). ready = answered or given up.
+      CREATE TABLE audio_fetch_waiters (
+        request_id  INTEGER NOT NULL REFERENCES fetch_requests(id),
+        unit_key    TEXT NOT NULL,
+        step        TEXT NOT NULL,
+        ready       INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (request_id, unit_key, step)
+      );
+      CREATE INDEX audio_fetch_waiters_ready ON audio_fetch_waiters (ready, request_id) WHERE ready = 1;
+      CREATE INDEX audio_fetch_waiters_unit ON audio_fetch_waiters (unit_key);
+
+      -- One recording looked up once: the stage-3 copies proven the same recording, or one copy.
+      -- kind none_expected: AI books and the radio clips (no store record by nature).
+      -- state: planned -> waiting (requests open) -> ready (one answered) -> ... -> decided;
+      -- audio = needs the recording's opening or a store sample fingerprinted (the disk part).
+      -- class: auto | review | unknown | none_expected once decided.
+      CREATE TABLE audio_online_units (
+        id             INTEGER PRIMARY KEY,
+        analysis_id    TEXT NOT NULL,
+        unit_key       TEXT NOT NULL,
+        copy_keys      TEXT NOT NULL CHECK (json_valid(copy_keys)),
+        book_keys      TEXT NOT NULL CHECK (json_valid(book_keys)),
+        name           TEXT NOT NULL,
+        seconds        REAL,
+        labeled        INTEGER NOT NULL DEFAULT 0,
+        kind           TEXT NOT NULL CHECK (kind IN ('lookup', 'none_expected')),
+        state          TEXT NOT NULL
+                       CHECK (state IN ('planned', 'waiting', 'ready', 'audio', 'decided', 'error')),
+        pending        INTEGER NOT NULL DEFAULT 0,
+        inputs_json    TEXT NOT NULL CHECK (json_valid(inputs_json)),
+        steps_json     TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(steps_json)),
+        class          TEXT,
+        source         TEXT,
+        store_id       TEXT,
+        review_reason  TEXT,
+        detail         TEXT,
+        rules_key      TEXT,
+        error          TEXT,
+        updated_at     INTEGER NOT NULL,
+        UNIQUE (analysis_id, unit_key)
+      );
+      CREATE INDEX audio_online_units_state ON audio_online_units (analysis_id, state, labeled);
+      CREATE INDEX audio_online_units_class ON audio_online_units (analysis_id, class, source);
+      CREATE INDEX audio_online_units_reason ON audio_online_units (analysis_id, review_reason);
+
+      -- Every store record a unit's lookups found, with each check's result on both sides.
+      CREATE TABLE audio_online_candidates (
+        id           INTEGER PRIMARY KEY,
+        unit_id      INTEGER NOT NULL REFERENCES audio_online_units(id) ON DELETE CASCADE,
+        source       TEXT NOT NULL,
+        store_id     TEXT NOT NULL,
+        via          TEXT NOT NULL,
+        checks_json  TEXT NOT NULL CHECK (json_valid(checks_json)),
+        verdict      TEXT NOT NULL,
+        sample_score REAL,
+        UNIQUE (unit_id, source, store_id)
+      );
+
+      -- Each store record once, with every field its answer had (what WP21d reads; nothing is
+      -- fetched again), and the request it came from (its page stays in the fetch cache).
+      CREATE TABLE audio_online_records (
+        source      TEXT NOT NULL,
+        store_id    TEXT NOT NULL,
+        request_id  INTEGER,
+        record      BLOB NOT NULL,
+        fetched_at  INTEGER NOT NULL,
+        PRIMARY KEY (source, store_id)
+      );
+    `,
+  },
 ];
 
 export const CLEANUP_SCHEMA_VERSION = CLEANUP_MIGRATIONS[CLEANUP_MIGRATIONS.length - 1].version;

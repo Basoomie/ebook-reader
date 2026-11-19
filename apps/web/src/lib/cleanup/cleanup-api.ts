@@ -479,6 +479,13 @@ export interface AudiobookSettings {
   dupNoticeableErrors?: number;
   /** Stage 2: files of a folder this long (minutes) are separate books. */
   fullBookMinutes?: number;
+  /** Stage 4 (WP21c); missing on an older server. */
+  onlineRuntimeMinutes?: number;
+  onlineTitleScore?: number;
+  onlineSearchProducts?: number;
+  onlineStorePages?: number;
+  onlineOpeningSeconds?: number;
+  noStoreRecordFolders?: string[];
 }
 
 export type SecretName = 'anthropicApiKey' | 'openaiApiKey' | 'calibrePassword' | 'absApiKey';
@@ -629,6 +636,145 @@ export interface AudioStatus {
     progress: AudioStage3Progress | null;
     counts: Record<string, number> | null;
   };
+  /** Missing on an older server (WP21c). */
+  stage4?: AudioStage4Status;
+}
+
+// ---------------------------------------------------------------- audiobooks stage 4 (WP21c)
+
+export type AudioStage4Phase = 'units' | 'lookups' | 'gate' | 'done';
+
+export interface AudioOnlineGateBook {
+  id: string;
+  title: string | null;
+  expected: string;
+  got: string;
+  source: string;
+  outcome: 'auto_agrees' | 'review' | 'unknown' | 'none_expected' | 'not_found' | 'miss';
+  ok: boolean;
+  note?: string;
+}
+
+export interface AudioOnlineGate {
+  passed: boolean;
+  checked: number;
+  misses: AudioOnlineGateBook[];
+  bySource: Record<string, Record<string, number>>;
+  error: string | null;
+}
+
+export interface AudioStage4Progress {
+  analysisId: string;
+  phase: AudioStage4Phase;
+  startedAt: number;
+  finishedAt: number | null;
+  units: number;
+  lookupUnits: number;
+  noRecordUnits: number;
+  labeledUnits: number;
+  decided: number;
+  openingsRead: number;
+  openingErrors: number;
+  samplesRead: number;
+  sampleErrors: number;
+  yields: number;
+  phaseStartedAt: number;
+  phaseStartDone: number;
+  phaseTimes: Record<string, { ms: number; items: number }>;
+  counts: Record<string, number> | null;
+  gate: AudioOnlineGate | null;
+  error: string | null;
+}
+
+export interface AudioSiteLine {
+  site: string;
+  enabled: boolean;
+  intervalSeconds: number;
+  queued: number;
+  leased: number;
+  done: number;
+  gone: number;
+  failed: number;
+  attempts: number;
+  refused: number;
+  errors: number;
+  busy: number;
+  recent: { requests: number; errors: number; avgMs: number | null } | null;
+  secondsPerRequest: number;
+  expected: number;
+  secondsLeft: number;
+  pausedReason: string | null;
+  backoffUntil: number | null;
+  backoffReason: string | null;
+}
+
+export interface AudioStage4Status {
+  available: boolean;
+  waiting: string | null;
+  fetcher: { online: boolean; version: string | null; lastSeenAt: number | null } | null;
+  progress: AudioStage4Progress | null;
+  units: Record<string, number>;
+  sites: AudioSiteLine[];
+  secondsLeft: number | null;
+  ratios: string;
+  counts: Record<string, number> | null;
+}
+
+export interface AudioOnlineRecordBrief {
+  title: string;
+  authors: string[];
+  narrators: string[];
+  seconds: number | null;
+  publisher: string | null;
+  releaseDate: string | null;
+  series: { name: string; sequence: string | null; sort: string | null }[];
+}
+
+export interface AudioOnlineCheck {
+  ok: boolean;
+  unknown?: boolean;
+  file: unknown;
+  store: unknown;
+  detail?: string;
+}
+
+export interface AudioOnlineItem {
+  id: number;
+  name: string;
+  seconds: number | null;
+  labeled: boolean;
+  kind: string;
+  state: string;
+  class: string | null;
+  source: string | null;
+  storeId: string | null;
+  reason: string | null;
+  detail: string | null;
+  error: string | null;
+  copies: number;
+  file: {
+    title: string;
+    authors: string[];
+    narrators: string[];
+    volume: string | null;
+    drama: { number: string | null } | null;
+    seconds: number | null;
+    files: number;
+    paths: string[];
+    asins: string[];
+    absAsins: string[];
+    queries: string[];
+  };
+  record: AudioOnlineRecordBrief | null;
+  candidates: {
+    source: string;
+    storeId: string;
+    via: string;
+    verdict: string;
+    sampleScore: number | null;
+    checks: Record<string, AudioOnlineCheck>;
+    record: AudioOnlineRecordBrief | null;
+  }[];
 }
 
 export type AudioStage3Phase =
@@ -1178,6 +1324,29 @@ export class CleanupApi {
     if (response.status === 503) return null;
     if (!response.ok) throw await errorFrom(response);
     return response.blob();
+  }
+
+  // ---------------------------------------------------------------- audiobooks stage 4 (WP21c)
+
+  audioOnline(
+    list: string,
+    offset = 0,
+    limit = 50
+  ): Promise<{ total: number; items: AudioOnlineItem[] | AudioOnlineGateBook[] }> {
+    const q = new URLSearchParams({ list, offset: String(offset), limit: String(limit) });
+    return this.request('GET', `/cleanup/audio/online?${q}`) as Promise<{
+      total: number;
+      items: AudioOnlineItem[] | AudioOnlineGateBook[];
+    }>;
+  }
+
+  /** "Ask again": an audiobook site's given-up requests go back to the queue. */
+  retryAudioSite(site: string): Promise<{ requests: number; units: number }> {
+    return this.request(
+      'POST',
+      `/cleanup/audio/online/sites/${encodeURIComponent(site)}/retry`,
+      {}
+    ) as Promise<{ requests: number; units: number }>;
   }
 
   spotCheck(stage = 1): Promise<{ items: Proposal[] }> {

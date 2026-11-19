@@ -31,6 +31,7 @@
   import { formatWhen } from '$lib/notes/notes-format';
   import { SITE_NAMES } from '$lib/cleanup/stage4-text';
   import { DUP_FIELDS } from '$lib/cleanup/audio-dup-text';
+  import { ONLINE_FIELDS, SITE_LABELS, foldersFromText } from '$lib/cleanup/audio-online-text';
 
   export let api: CleanupApi;
   export let libraries: { id: string; name: string; folder: string }[] = [];
@@ -66,6 +67,8 @@
     absApiKey: ''
   };
   let customTagsText = '';
+  /** Audiobook stage 4: folders with no store record, one per line. */
+  let noRecordText = '';
   /** The titles' own bar ('' = the bar for every field). */
   let titleBar: number | '' = '';
   /** The content server library chosen by hand ('' = found automatically). */
@@ -90,6 +93,7 @@
       settings = answer.settings;
       secrets = answer.secrets;
       customTagsText = settings.customTags.join('\n');
+      noRecordText = (settings.audiobooks?.noStoreRecordFolders ?? []).join('\n');
       titleBar = settings.gate.fieldPercent.title ?? '';
       serverLibrary = settings.calibreLibraryId;
       spreadKeepBoth = percentOf(settings.duplicates?.spreadKeepBoth);
@@ -187,6 +191,15 @@
                   ? Object.fromEntries(
                       DUP_FIELDS.map((d) => [d.key, Number(settings?.audiobooks?.[d.key])])
                     )
+                  : {}),
+                // Stage 4 (WP21c): only when the server knows them.
+                ...(settings.audiobooks.onlineRuntimeMinutes !== undefined
+                  ? {
+                      ...Object.fromEntries(
+                        ONLINE_FIELDS.map((d) => [d.key, Number(settings?.audiobooks?.[d.key])])
+                      ),
+                      noStoreRecordFolders: foldersFromText(noRecordText)
+                    }
                   : {})
               }
             }
@@ -226,6 +239,7 @@
       spreadIgnore = percentOf(settings.duplicates?.spreadIgnore);
       secrets = answer.secrets;
       customTagsText = settings.customTags.join('\n');
+      noRecordText = (settings.audiobooks?.noStoreRecordFolders ?? []).join('\n');
       for (const name of Object.keys(secretValues) as SecretName[]) {
         const value = secretValues[name];
         if (!value.trim()) continue;
@@ -455,6 +469,38 @@
               />
             </label>
           {/each}
+          {#if settings.audiobooks.onlineRuntimeMinutes !== undefined}
+            <p class="text-c-muted sm:col-span-2" data-testid="cleanup-audio-online-settings">
+              Online sources (stage 4). A store record matches only when the title, the author (when
+              the names or tags give one), the printed volume and the length all agree; a change
+              decides again from the answers already fetched (nothing is asked twice).
+            </p>
+            {#each ONLINE_FIELDS as d (d.key)}
+              <label class={field}>
+                <span class={label}>{d.label}</span>
+                <input
+                  class="c-input"
+                  type="number"
+                  min={d.min}
+                  max={d.max}
+                  step={d.step}
+                  bind:value={settings.audiobooks[d.key]}
+                  data-testid="cleanup-audio-{d.key}"
+                />
+              </label>
+            {/each}
+            <label class="{field} sm:col-span-2">
+              <span class={label}
+                >Folders with no store record (radio clips; one per line, under the torrents)</span
+              >
+              <textarea
+                class="c-input"
+                rows="2"
+                bind:value={noRecordText}
+                data-testid="cleanup-audio-no-record-folders"
+              />
+            </label>
+          {/if}
           {#if settings.gate.audiobookPairsFile !== undefined}
             <label class="{field} sm:col-span-2">
               <span class={label}
@@ -485,7 +531,7 @@
           <div class="flex flex-wrap items-end gap-3" data-testid="cleanup-fetch-site-{site}">
             <label class="flex items-center gap-2 text-sm">
               <input type="checkbox" bind:checked={settings.fetch.sites[site].enabled} />
-              <span class={label}>{SITE_NAMES[site] ?? site}</span>
+              <span class={label}>{SITE_NAMES[site] ?? SITE_LABELS[site] ?? site}</span>
             </label>
             {#if site !== 'sudachi'}
               <label class="flex flex-col gap-1 text-sm">

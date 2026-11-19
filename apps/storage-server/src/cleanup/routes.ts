@@ -494,6 +494,26 @@ function addAudioRoutes(router: Router, options: CleanupOptions): void {
         } else next(new ApiError(404, 'not_found', err.message));
       });
   });
+
+  // Stage 4 (WP21c): the online lookups' lists and "Ask again" for a site. A paused site is
+  // resumed through the Calibre cleanup's existing route (the queue is shared).
+  router.get('/cleanup/audio/online', (req, res) => {
+    const audio = audioOr503(options);
+    try {
+      res.json(audio.online(String(req.query.list ?? ''), page(req)));
+    } catch (err) {
+      throw new ApiError(400, 'bad_request', (err as Error).message);
+    }
+  });
+
+  router.post('/cleanup/audio/online/sites/:site/retry', (req, res) => {
+    const audio = audioOr503(options);
+    try {
+      res.json(audio.retryOnlineSite(req.params.site));
+    } catch (err) {
+      throw new ApiError(400, 'bad_request', (err as Error).message);
+    }
+  });
 }
 
 /** /api/v1/cleanup/*: the /cleanup page. Behind requireUser. */

@@ -23,7 +23,7 @@ import { Stage3Worker, type Stage3Reader } from '../counts/book-text-worker';
 import { Stage4Analysis, type Stage4Progress } from './stage4/analysis';
 import { paceSeconds, stage4Eta, type SiteCounts } from './stage4/eta';
 import { FetchQueue, LABELED_PRIORITY, backoffKey } from './stage4/queue';
-import { FETCH_SITES, type FetchSite } from './settings';
+import { CALIBRE_FETCH_SITES, type FetchSite } from './settings';
 import {
   BUILT_STAGES,
   PREVIEW_ONLY_STAGES,
@@ -260,12 +260,28 @@ export class CleanupService {
    * 2026-11-17); the 5 s timer still runs every stage.
    */
   answerArrived(): void {
+    // The audiobook cleanup's stage 4 (WP21c) shares the queue: it is told too.
+    for (const l of this.answerListeners) {
+      try {
+        l();
+      } catch (err) {
+        this.logError('Cleanup: an answer listener failed:', err);
+      }
+    }
     if (this.stopped || this.analysing4) return;
     try {
       this.round4(this.targetLibrary());
     } catch (err) {
       this.logError('Cleanup: stage 4 wake-up failed:', err);
     }
+  }
+
+  private readonly answerListeners = new Set<() => void>();
+
+  /** Called whenever the fetcher's answer reached the queue (the audiobook cleanup's stage 4). */
+  onAnswerArrived(listener: () => void): () => void {
+    this.answerListeners.add(listener);
+    return () => this.answerListeners.delete(listener);
   }
 
   /** The active fetcher's process (its run id), as last seen by this server process. */
@@ -989,7 +1005,7 @@ export class CleanupService {
       };
       return paceSeconds(rows, openSince, idleMs);
     };
-    const sites = (FETCH_SITES as readonly FetchSite[]).map((site) => {
+    const sites = (CALIBRE_FETCH_SITES as readonly FetchSite[]).map((site) => {
       const by = (st: string) => counts.find((c) => c.site === site && c.state === st)?.n ?? 0;
       const r = recent.find((x) => x.site === site);
       const t = totals.find((x) => x.site === site);

@@ -1,6 +1,7 @@
 /**
  * The audiobook cleanup's stages (WP21a): 0 = the Audiobookshelf snapshot (taken on request),
- * 1 = identity, 2 = books and file health, 3 = duplicates (WP21b). Stages 1-3 are Off (default)
+ * 1 = identity, 2 = books and file health, 3 = duplicates (WP21b), 4 = online sources (WP21c).
+ * Stages 1-4 are Off (default)
  * or Preview (`analyse`: analysis only). Nothing applies anything yet, so On is refused.
  */
 import type Database from 'better-sqlite3';
@@ -12,10 +13,11 @@ export const AUDIO_STAGE_NAMES: Record<number, string> = {
   1: 'Identity (which files are copies)',
   2: 'Books and file health',
   3: 'Duplicates (same recording)',
+  4: 'Online sources (Audible, kikubon, audiobook.jp)',
 };
 
 /** Stages with a mode in this build (stage 0 is taken on request). */
-export const AUDIO_ANALYSIS_STAGES: readonly number[] = [1, 2, 3];
+export const AUDIO_ANALYSIS_STAGES: readonly number[] = [1, 2, 3, 4];
 
 export interface AudioStageRow {
   stage: number;

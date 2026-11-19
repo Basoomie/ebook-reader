@@ -127,6 +127,24 @@ export interface AudiobookSettings {
    * (a few at the very start or end can't be heard: user, 2026-11-18).
    */
   dupNoticeableErrors: number;
+  /**
+   * Stage 4 (WP21c): a store record's length agrees with the recording within this many
+   * minutes (Audible gives whole minutes; the sample's confirmed matches were within 1-2).
+   */
+  onlineRuntimeMinutes: number;
+  /** Stage 4: the titles agree at this share of the file title's character pairs (0-1). */
+  onlineTitleScore: number;
+  /** Stage 4: Audible search hits whose full record is fetched (per search). */
+  onlineSearchProducts: number;
+  /** Stage 4: kikubon and audiobook.jp product pages read per search (title agreeing only). */
+  onlineStorePages: number;
+  /** Stage 4: seconds of a recording's opening compared with the stores' sample audio. */
+  onlineOpeningSeconds: number;
+  /**
+   * Stage 4: folders under the torrents whose recordings have no store record by nature (the
+   * radio bonus clips; user, 2026-11-18): looked up nowhere. AI books never are either.
+   */
+  noStoreRecordFolders: string[];
 }
 
 /** One site's queue in the fetch container (WP20d). */
@@ -180,7 +198,8 @@ export interface FetchSettings {
   offlineSeconds: number;
 }
 
-export const FETCH_SITES = [
+/** The Calibre cleanup's sites (WP20d): its stage-4 card and its lookups use only these. */
+export const CALIBRE_FETCH_SITES = [
   'amazon-dp',
   'amazon-search',
   'amazon-img',
@@ -191,7 +210,18 @@ export const FETCH_SITES = [
   'ndl',
   'sudachi',
 ] as const;
+/** The audiobook cleanup's sites (WP21c): Audible, kikubon, audiobook.jp and their samples. */
+export const AUDIO_FETCH_SITES = [
+  'audible',
+  'audible-sample',
+  'kikubon',
+  'audiobookjp',
+  'audiobookjp-sample',
+] as const;
+export const FETCH_SITES = [...CALIBRE_FETCH_SITES, ...AUDIO_FETCH_SITES] as const;
 export type FetchSite = (typeof FETCH_SITES)[number];
+export type CalibreFetchSite = (typeof CALIBRE_FETCH_SITES)[number];
+export type AudioFetchSite = (typeof AUDIO_FETCH_SITES)[number];
 
 export interface BackupRecord {
   path: string;
@@ -311,6 +341,14 @@ export const DEFAULT_SETTINGS: CleanupSettings = {
     dupBrandingMaxSeconds: 12,
     dupBrandingScore: 0.9,
     dupNoticeableErrors: 100,
+    // Stage 4 (WP21c). The runtime and title lines are checked on the labeled books (decisions.md
+    // "WP21c"); the search and page counts are the reference sample's (refsample.py).
+    onlineRuntimeMinutes: 2,
+    onlineTitleScore: 0.8,
+    onlineSearchProducts: 2,
+    onlineStorePages: 3,
+    onlineOpeningSeconds: 240,
+    noStoreRecordFolders: ['Discord/moved/山田じぇみ子の ざこざこお兄さん取締ラジオ'],
   },
   fetch: {
     // Paces of plan section 6 (Bookmeter and Natively as BookWalker; the cover images as decided
@@ -325,6 +363,13 @@ export const DEFAULT_SETTINGS: CleanupSettings = {
       natively: { enabled: true, intervalSeconds: 5 },
       ndl: { enabled: true, intervalSeconds: 30 },
       sudachi: { enabled: true, intervalSeconds: 0 },
+      // The audiobook cleanup (WP21c): its own sites, never paced or backed off with Amazon's.
+      // Paces of the audiobook plan section 6 (the probes' and the reference sample's).
+      audible: { enabled: true, intervalSeconds: 3 },
+      'audible-sample': { enabled: true, intervalSeconds: 5 },
+      kikubon: { enabled: true, intervalSeconds: 5 },
+      audiobookjp: { enabled: true, intervalSeconds: 5 },
+      'audiobookjp-sample': { enabled: true, intervalSeconds: 5 },
     },
     amazonPace: 'trial',
     challengeBackoffSeconds: 60,
@@ -481,6 +526,25 @@ function group<T extends object>(name: string, value: unknown, current: T): T {
   return { ...current, ...(value as Partial<T>) };
 }
 
+/** Folders under the torrents root (relative, "/"-separated, no "..": at most 50). */
+function folderList(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length > 50) {
+    throw new SettingsError('Folders without a store record must be a list of at most 50 folders');
+  }
+  const out: string[] = [];
+  for (const v of value) {
+    const f = text('Folder', v, 500)
+      .replace(/\\/g, '/')
+      .replace(/^\/+|\/+$/g, '');
+    if (f === '') continue;
+    if (f.split('/').some((s) => s === '..' || s === '.')) {
+      throw new SettingsError(`Folder ${f}: no "." or ".." parts`);
+    }
+    out.push(f);
+  }
+  return [...new Set(out)];
+}
+
 /** Audiobookshelf's address: http(s), no query, fragment or login; '' = not set. */
 function absAddress(value: unknown): string {
   const v = text('Audiobookshelf address', value);
@@ -599,6 +663,35 @@ function validate(key: Key, value: unknown, current: CleanupSettings): unknown {
           1000000,
           true,
         ),
+        onlineRuntimeMinutes: num(
+          'Store length agrees within (minutes)',
+          v.onlineRuntimeMinutes,
+          0,
+          60,
+        ),
+        onlineTitleScore: num('Titles agree at a score of', v.onlineTitleScore, 0.3, 1),
+        onlineSearchProducts: num(
+          'Audible records read per search',
+          v.onlineSearchProducts,
+          1,
+          10,
+          true,
+        ),
+        onlineStorePages: num(
+          'kikubon / audiobook.jp pages read per search',
+          v.onlineStorePages,
+          1,
+          10,
+          true,
+        ),
+        onlineOpeningSeconds: num(
+          'Opening compared with sample audio (s)',
+          v.onlineOpeningSeconds,
+          30,
+          900,
+          true,
+        ),
+        noStoreRecordFolders: folderList(v.noStoreRecordFolders),
       };
     }
     case 'fetch': {
