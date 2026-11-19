@@ -25,6 +25,9 @@ import { scoreOnlineGate, type LabeledBook } from '../src/cleanup/audio/online-g
 import {
   dramaNumber,
   evaluate,
+  hitWorthReading,
+  noOwnTitle,
+  seriesFolderTitles,
   storeTitle,
   titlesAgree,
   volumeMarks,
@@ -32,10 +35,14 @@ import {
 } from '../src/cleanup/audio/online-match';
 import {
   authorFromName,
+  describesFiles,
+  hasOwnTitle,
+  leadingNumber,
   meaningless,
   peopleFromTags,
   searchTitle,
   titleVariants,
+  withoutTrackNumber,
 } from '../src/cleanup/audio/online-names';
 import {
   clockSeconds,
@@ -59,7 +66,14 @@ import {
   kikubonSearch,
 } from '../src/cleanup/audio/online-requests';
 import { AudioStage3 } from '../src/cleanup/audio/stage3-dups';
-import { AudioStage4, stage4Counts } from '../src/cleanup/audio/stage4-online';
+import {
+  AudioStage4,
+  STAGE4_UNITS_VERSION,
+  stage4Counts,
+  stage4StartsOver,
+  type AudioStage4Progress,
+  type UnitInputs,
+} from '../src/cleanup/audio/stage4-online';
 import { initCleanupDatabase } from '../src/cleanup/cleanup-db';
 import { DiskLock } from '../src/cleanup/disk-lock';
 import { getSettings, updateSettings } from '../src/cleanup/settings';
@@ -93,7 +107,7 @@ function freshDb(): Database.Database {
   return s.db;
 }
 
-const M = { runtimeMinutes: 2, titleScore: 0.8 };
+const M = { runtimeMinutes: 2, titleScore: 0.8, titleMinChars: 3, titleMinShare: 0.25 };
 
 function unit(over: Partial<UnitFacts>): UnitFacts {
   return {
@@ -323,8 +337,13 @@ describe('accepting a match (all four checks; the sample’s runtime-only traps)
       rec({ title: 'とある飛空士への恋歌3', seconds: 641 * 60 }),
       M,
     );
-    expect(e.checks.title.ok).toBe(true);
-    expect(e.failed).toEqual(['volume']);
+    // Since follow-up (2) a 2-character title inside a longer one is only partial too.
+    expect(e.checks.title).toMatchObject({
+      ok: false,
+      detail: 'only inside a longer title: 2 of 11 characters',
+    });
+    expect(e.titlePartial).toBe(true);
+    expect(e.failed).toEqual(['title', 'volume']);
   });
 
   it('another translation (源氏物語 若紫) and other editions (金五十両): the narrator differs', () => {
@@ -391,6 +410,170 @@ describe('accepting a match (all four checks; the sample’s runtime-only traps)
     expect(titlesAgree(['卍（まんじ）'], '卍（まんじ）', 0.8).ok).toBe(true);
     expect(storeTitle('[17巻] 盾の勇者の成り上がり 17')).toBe('盾の勇者の成り上がり 17');
     expect([...volumeMarks('ペテロの葬列 上： 杉村三郎シリーズ３')].sort()).toEqual(['3', '上']);
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// WP21c follow-up (2): the cases measured on the live run (decisions.md "WP21c follow-up (2)").
+describe('title guards (follow-up (2), measured on the live run)', () => {
+  const G = { minChars: 3, minShare: 0.25 };
+
+  it('folders that only describe the files are never titles; a source folder with its batch number neither', () => {
+    for (const n of [
+      'Audio',
+      'audio',
+      'MP3',
+      'm4b',
+      'Disc 2',
+      'disc_1',
+      'CD1',
+      'CD 1',
+      'Part 3',
+      '33 audiobook.jp',
+      '12',
+    ])
+      expect(describesFiles(n), n).toBe(true);
+    for (const n of [
+      '涼宮ハルヒの驚愕前',
+      '[CD]本好きの剋',
+      'MM9',
+      'BUTTER',
+      'From GOAT Vol.2',
+      'ＨＡＣＫ',
+      '宮本武蔵',
+    ])
+      expect(describesFiles(n), n).toBe(false);
+  });
+
+  it('a leading number is read off ("01 涼宮ハルヒの憂鬱"); brackets, dates and bare numbers are not track numbers', () => {
+    expect(leadingNumber('01 涼宮ハルヒの憂鬱')).toBe(1);
+    expect(leadingNumber('13 涼宮ハルヒの劇場')).toBe(13);
+    expect(withoutTrackNumber('01 涼宮ハルヒの憂鬱')).toBe('涼宮ハルヒの憂鬱');
+    expect(leadingNumber('[01] 狼と香辛料')).toBeNull();
+    expect(leadingNumber('2022-12-22')).toBeNull();
+    expect(leadingNumber('1984')).toBeNull();
+    // A number alone in its folder is a title; the caller decides (777 トリプルセブン).
+    expect(leadingNumber('777 トリプルセブン')).toBe(777);
+  });
+
+  it('a file without a title of its own: [ASIN].m4b and 【ア】【イ】 (the cleaning leaves "：")', () => {
+    expect(noOwnTitle('[B09YY1LQRS]')).toBe(true);
+    expect(noOwnTitle('【ア】【イ】꞉ (小学館) [B0F7W3XPD7]')).toBe(true);
+    expect(noOwnTitle('N. 文芸単行本')).toBe(false);
+    expect(noOwnTitle('1984')).toBe(false);
+    expect(hasOwnTitle('：')).toBe(false);
+  });
+
+  it('a short title inside a longer one is only partial: Académie and 暗殺 fail, 嫌われる勇気 and こころ（１） agree', () => {
+    const academie = 'Académie de trading : Leçons audio | Crystal Ball Markets';
+    expect(titlesAgree(['Audio'], academie, 0.8)).toMatchObject({ ok: true }); // before
+    expect(titlesAgree(['Audio'], academie, 0.8, G)).toEqual({
+      ok: false,
+      best: 0,
+      partial: '5 of 47 characters',
+    });
+    expect(titlesAgree(['暗殺'], 'QED 龍馬暗殺', 0.8, G)).toMatchObject({
+      ok: false,
+      partial: '2 of 7 characters',
+    });
+    expect(
+      titlesAgree(['嫌われる勇気'], '嫌われる勇気―――自己啓発の源流「アドラー」の教え', 0.8, G).ok,
+    ).toBe(true);
+    expect(titlesAgree(['こころ'], 'こころ（１）', 0.8, G).ok).toBe(true);
+    expect(
+      titlesAgree(['囚われの蜜奴隷'], '囚われの蜜奴隷 ～ドSな叔父様に愛されて～', 0.8, G).ok,
+    ).toBe(true);
+    // The live run's labeled partial agreements still agree (A034, A201, A257).
+    expect(
+      titlesAgree(['ペテロの葬列 上： 杉村三郎シリーズ３'], 'ペテロの葬列 上', 0.8, G).ok,
+    ).toBe(true);
+    expect(
+      titlesAgree(
+        ['やはり俺の青春ラブコメはまちがっている。４（ガガガ文庫）'],
+        '[4巻] やはり俺の青春ラブコメはまちがっている。４（ガガガ文庫）: （小学館）',
+        0.8,
+        G,
+      ).ok,
+    ).toBe(true);
+  });
+
+  it('a series folder the file’s own title contains is not the book’s title (十津川警部, 朗読執事)', () => {
+    expect(seriesFolderTitles('十津川警部 高山本線の秘密', ['十津川警部'])).toEqual(['十津川警部']);
+    expect(
+      seriesFolderTitles('朗読執事～まだらの紐【シャーロック・ホームズの冒険】～', ['朗読執事']),
+    ).toEqual(['朗読執事']);
+    expect(seriesFolderTitles('こころ', ['こころ'])).toEqual([]);
+    expect(seriesFolderTitles('涼宮ハルヒの憂鬱', ['涼宮ハルヒの驚愕前'])).toEqual([]);
+    const e = evaluate(
+      unit({ title: '十津川警部 高山本線の秘密', seconds: 300 * 60 }),
+      rec({ title: '十津川警部 南紀オーシャンアロー号の謎', seconds: 300 * 60 }),
+      M,
+    );
+    expect(e.failed).toEqual(['title']);
+    expect(e.titlePartial).toBe(false);
+  });
+
+  it('a record the id in the name chose keeps the plain comparison (武士道); found by search it is partial', () => {
+    const u = unit({ title: '武士道. いま人は何を考え、どう生きればいいのか。' });
+    expect(evaluate(u, rec({ title: '武士道' }), M, { viaNameAsin: true }).failed).toEqual([]);
+    expect(evaluate(u, rec({ title: '武士道' }), M, { viaNameId: true }).failed).toEqual([]);
+    const bySearch = evaluate(u, rec({ title: '武士道' }), M);
+    expect(bySearch.failed).toEqual(['title']);
+    expect(bySearch.titlePartial).toBe(true);
+    expect(
+      hitWorthReading(
+        unit({ title: '01 涼宮ハルヒの憂鬱', otherTitles: ['Audio'], seconds: 29724 }),
+        { title: 'Académie de trading : Leçons audio | Crystal Ball Markets', seconds: null },
+        M,
+      ),
+    ).toBe(false);
+  });
+
+  it('no title of its own and the name’s ASIN chose the record: the other checks decide; otherwise not', () => {
+    const u = unit({ title: '', authors: ['宮本 輝'], narrators: ['山口 恵'], seconds: 1000 * 60 });
+    const r = rec({
+      title: '流転の海―第一部―',
+      authors: ['宮本 輝'],
+      narrators: ['山口 恵'],
+      seconds: 1000 * 60,
+    });
+    const e = evaluate(u, r, M, { viaNameAsin: true });
+    expect(e.failed).toEqual([]);
+    expect(e.checks.title).toMatchObject({
+      ok: true,
+      unknown: true,
+      detail: 'the file has no title; the ASIN in its name chose the record',
+    });
+    // The length still decides.
+    expect(evaluate({ ...u, seconds: 990 * 60 }, r, M, { viaNameAsin: true }).failed).toEqual([
+      'runtime',
+    ]);
+    expect(evaluate(u, r, M).failed).toContain('title');
+    // A file with a title keeps its title check: 86 Ep.7's ASIN is Audible's Ep.8; N. vs "N".
+    expect(
+      evaluate(
+        unit({ title: '86‐エイティシックス‐Ep.7 ‐ミスト‐', authors: ['安里 アサト'] }),
+        rec({
+          title: '[8巻] 86‐エイティシックス‐Ep.8 ‐ガンスモーク・オン・ザ・ウォーター‐',
+          authors: ['安里 アサト'],
+        }),
+        M,
+        { viaNameAsin: true },
+      ).failed,
+    ).toContain('title');
+    expect(
+      evaluate(unit({ title: 'N. 文芸単行本' }), rec({ title: 'N' }), M, { viaNameAsin: true })
+        .failed,
+    ).toContain('title');
+  });
+
+  it('units built by older code start the stage over (answers from the cache)', () => {
+    const p = (over: Partial<AudioStage4Progress>) =>
+      ({ stage3Id: 's3', ...over }) as AudioStage4Progress;
+    expect(stage4StartsOver(null, 's3')).toBe(true);
+    expect(stage4StartsOver(p({ unitsVersion: STAGE4_UNITS_VERSION }), 's3')).toBe(false);
+    expect(stage4StartsOver(p({}), 's3')).toBe(true); // built before follow-up (2)
+    expect(stage4StartsOver(p({ unitsVersion: STAGE4_UNITS_VERSION }), 'other')).toBe(true);
   });
 });
 
@@ -559,6 +742,8 @@ interface CopySpec {
   /** Copies with the same group are proven the same recording. */
   group?: string;
   sha?: string;
+  /** A recording in parts (its name is its folder's); one file here. */
+  kind?: 'file' | 'parts';
 }
 
 function seedStage3(db: Database.Database, copies: CopySpec[]): string {
@@ -574,7 +759,7 @@ function seedStage3(db: Database.Database, copies: CopySpec[]): string {
   );
   const putCopy = db.prepare(
     `INSERT INTO audio_dup_copies (analysis_id, copy_key, book_key, kind, file_ids, name, seconds, ai, asins, abs_asins)
-     VALUES (?, ?, ?, 'file', ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   const ids = new Map<string, number>();
   copies.forEach((c, i) => {
@@ -586,6 +771,7 @@ function seedStage3(db: Database.Database, copies: CopySpec[]): string {
       analysisId,
       c.key,
       `torrents:${c.rel}`,
+      c.kind ?? 'file',
       JSON.stringify([fid]),
       c.name,
       c.seconds,
@@ -1040,6 +1226,167 @@ describe('stage 4 on stage-3 rows with a stand-in internet', () => {
 });
 
 // ---------------------------------------------------------------------------------------
+describe('follow-up (2) on stage-3 rows: folders, track numbers, series folders, names with only an ASIN', () => {
+  it('searches the books, never "Audio" or a source folder; numbered tracks lose their number; the ASIN decides a file without a title', async () => {
+    const db = freshDb();
+    const audio = 'Discord/moved/涼宮ハルヒの驚愕前/Audio';
+    const tsugawa =
+      'TMW Japanese Audiobooks Collection (Part 12) - General Fiction (audiobook.jp)/十津川警部/十津川警部 高山本線の秘密.m4b';
+    seedStage3(db, [
+      {
+        key: 'h1',
+        rel: `${audio}/01 涼宮ハルヒの憂鬱.wav`,
+        name: '01 涼宮ハルヒの憂鬱',
+        seconds: 29724,
+      },
+      {
+        key: 'h2',
+        rel: `${audio}/02 涼宮ハルヒの溜息.wav`,
+        name: '02 涼宮ハルヒの溜息',
+        seconds: 27314,
+      },
+      {
+        key: 't1',
+        rel: 'MAM/777 トリプルセブン/777 トリプルセブン.m4b',
+        name: '777 トリプルセブン',
+        seconds: 600 * 60,
+      },
+      { key: 's1', rel: tsugawa, name: '十津川警部 高山本線の秘密', seconds: 300 * 60 },
+      {
+        key: 'a1',
+        rel: 'Discord/new/流転の海 1-3/ù¼ô]é╠èCü/[B09YY1LQRS]/ù¼ô]é╠èCü/[B09YY1LQRS].m4b',
+        name: '[B09YY1LQRS]',
+        asins: ['B09YY1LQRS'],
+        seconds: 1000 * 60,
+        tags: { artist: '宮本 輝', composer: '山口 恵' },
+      },
+      {
+        key: 'a2',
+        rel: 'Discord/moved/26/GOAT Vol. 1/【ア】【イ】 [B0F7W3XPD7]/【ア】【イ】꞉ (小学館) [B0F7W3XPD7].m4b',
+        name: '【ア】【イ】꞉ (小学館) [B0F7W3XPD7]',
+        asins: ['B0F7W3XPD7'],
+        seconds: 60 * 60,
+        tags: { artist: '尾崎 世界観', composer: '知愛' },
+      },
+      {
+        key: 'g1',
+        rel: 'Discord/moved/33 audiobook.jp/幸せになる勇気 [audiobook.jp 234335].m4b',
+        name: '幸せになる勇気 [audiobook.jp 234335]',
+        seconds: 400 * 60,
+      },
+      { key: 'p1', rel: 'MAM/本P/Disc 2/01.mp3', name: 'Disc 2', kind: 'parts', seconds: 50 * 60 },
+    ]);
+    const search = (products: object[]) => Buffer.from(JSON.stringify({ products }));
+    const pages = new Map<string, Buffer>([
+      [
+        audibleSearch('涼宮ハルヒの憂鬱').url,
+        search([{ asin: 'B0HARUHI01', title: '涼宮ハルヒの憂鬱', runtime_length_min: 495 }]),
+      ],
+      [
+        audibleProduct('B0HARUHI01').url,
+        audibleJson('B0HARUHI01', { title: '涼宮ハルヒの憂鬱', runtime_length_min: 495 }),
+      ],
+      // What the live run found for "Audio": never asked now.
+      [
+        audibleSearch('Audio').url,
+        search([
+          {
+            asin: 'B0HQWZ96GN',
+            title: 'Académie de trading : Leçons audio | Crystal Ball Markets',
+          },
+        ]),
+      ],
+      // The series folder's search finds another episode of the same length: not read.
+      [
+        audibleSearch('十津川警部').url,
+        search([
+          {
+            asin: 'B09QPNS418',
+            title: '十津川警部 南紀オーシャンアロー号の謎',
+            runtime_length_min: 300,
+          },
+        ]),
+      ],
+      [
+        audibleProduct('B09QPNS418').url,
+        audibleJson('B09QPNS418', {
+          title: '十津川警部 南紀オーシャンアロー号の謎',
+          runtime_length_min: 300,
+        }),
+      ],
+      [
+        audibleProduct('B09YY1LQRS').url,
+        audibleJson('B09YY1LQRS', {
+          title: '流転の海―第一部―',
+          authors: [{ name: '宮本 輝' }],
+          narrators: [{ name: '山口 恵' }],
+          runtime_length_min: 1000,
+        }),
+      ],
+      [
+        audibleProduct('B0F7W3XPD7').url,
+        audibleJson('B0F7W3XPD7', {
+          title: '【ア】【イ】',
+          authors: [{ name: '尾崎 世界観' }],
+          narrators: [{ name: '知愛' }],
+          runtime_length_min: 60,
+        }),
+      ],
+    ]);
+    const { stage4, queue } = makeStage(db);
+    stage4.restart();
+    const asked: string[] = [];
+    await runToEnd(db, stage4, queue, pages, asked);
+    expect(stage4.progress()).toMatchObject({ error: null, unitsVersion: STAGE4_UNITS_VERSION });
+    const rows = db
+      .prepare(
+        'SELECT name, class, source, store_id, review_reason, inputs_json FROM audio_online_units',
+      )
+      .all() as { name: string; class: string; store_id: string | null; inputs_json: string }[];
+    const by = (n: string) => {
+      const r = rows.find((x) => x.name === n)!;
+      return { ...r, inputs: JSON.parse(r.inputs_json) as UnitInputs };
+    };
+    const decoded = asked.map((u) => decodeURIComponent(u.replace(/\+/g, ' ')));
+    // Never the folder "Audio", never a numbered name, never the source folder.
+    expect(decoded.some((u) => /title=Audio(&|$)/.test(u) || /keywords=Audio(&|$)/.test(u))).toBe(
+      false,
+    );
+    expect(decoded.some((u) => /0[12] 涼宮/.test(u))).toBe(false);
+    expect(decoded.some((u) => u.includes('33 audiobook.jp'))).toBe(false);
+    const h1 = by('01 涼宮ハルヒの憂鬱');
+    expect(h1).toMatchObject({ class: 'auto', store_id: 'B0HARUHI01' });
+    expect(h1.inputs.facts).toMatchObject({
+      title: '涼宮ハルヒの憂鬱',
+      volume: null,
+      otherTitles: ['涼宮ハルヒの驚愕前'],
+    });
+    expect(h1.inputs.queries).toEqual(['涼宮ハルヒの憂鬱', '涼宮ハルヒの驚愕前']);
+    expect(by('02 涼宮ハルヒの溜息').inputs.queries[0]).toBe('涼宮ハルヒの溜息');
+    // Alone in its folder, a leading number is part of the title.
+    expect(by('777 トリプルセブン').inputs.queries[0]).toBe('777 トリプルセブン');
+    // The series folder is searched but is not the title: the other episode is never read.
+    const s1 = by('十津川警部 高山本線の秘密');
+    expect(s1.inputs.facts.seriesTitles).toEqual(['十津川警部']);
+    expect(s1.inputs.facts.otherTitles).not.toContain('十津川警部');
+    expect(s1.inputs.queries).toContain('十津川警部');
+    expect(asked).not.toContain(audibleProduct('B09QPNS418').url);
+    expect(s1.class).not.toBe('auto');
+    // Names with only an ASIN: matched by the other checks.
+    expect(by('[B09YY1LQRS]')).toMatchObject({ class: 'auto', store_id: 'B09YY1LQRS' });
+    expect(by('【ア】【イ】꞉ (小学館) [B0F7W3XPD7]')).toMatchObject({
+      class: 'auto',
+      store_id: 'B0F7W3XPD7',
+    });
+    // A source folder is no title; a recording in parts in "Disc 2" takes the book folder above.
+    expect(by('幸せになる勇気 [audiobook.jp 234335]').inputs.queries).toEqual(['幸せになる勇気']);
+    expect(by('Disc 2').inputs.facts.title).toBe('本P');
+    expect(by('Disc 2').inputs.queries).toEqual(['本P']);
+    expect(new Set(asked).size).toBe(asked.length);
+  });
+});
+
+// ---------------------------------------------------------------------------------------
 describe('cleanup.db v12', () => {
   it('adds stage 4 and its tables; every polled query uses an index', () => {
     const db = freshDb();
@@ -1088,6 +1435,24 @@ describe('cleanup.db v12', () => {
     expect(() =>
       updateSettings(db, { audiobooks: { ...s.audiobooks, onlineTitleScore: 2 } }),
     ).toThrow();
+    // Follow-up (2): the short-title guard's two limits.
+    expect(s.audiobooks).toMatchObject({ onlineTitleMinChars: 3, onlineTitleMinShare: 0.25 });
+    expect(() =>
+      updateSettings(db, { audiobooks: { ...s.audiobooks, onlineTitleMinShare: 1.5 } }),
+    ).toThrow();
+    expect(() =>
+      updateSettings(db, { audiobooks: { ...s.audiobooks, onlineTitleMinChars: 2.5 } }),
+    ).toThrow();
+    // A stored group from before follow-up (2) gets the new limits from the defaults.
+    const { onlineTitleMinChars: _a, onlineTitleMinShare: _b, ...older } = s.audiobooks;
+    db.prepare(
+      `INSERT OR REPLACE INTO settings (key, value_json, updated_at) VALUES ('audiobooks', ?, ?)`,
+    ).run(JSON.stringify({ ...older, onlineRuntimeMinutes: 3 }), Date.now());
+    expect(getSettings(db).audiobooks).toMatchObject({
+      onlineRuntimeMinutes: 3,
+      onlineTitleMinChars: 3,
+      onlineTitleMinShare: 0.25,
+    });
   });
 });
 

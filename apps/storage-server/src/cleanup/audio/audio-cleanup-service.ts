@@ -33,7 +33,12 @@ import { cutClip, type ToolPaths } from './probe';
 import { AudioStage1, identityCounts, type AudioStage1Progress } from './stage1-identity';
 import { AudioStage2, booksCounts } from './stage2-books';
 import { AudioStage3, stage3SettingsKey, type LoadedCopy } from './stage3-dups';
-import { AudioStage4, stage4SettingsKey } from './stage4-online';
+import {
+  AudioStage4,
+  STAGE4_UNITS_VERSION,
+  stage4SettingsKey,
+  stage4StartsOver,
+} from './stage4-online';
 import { audioSiteLines, onlineList, unitStates } from './online-views';
 import type { FetchQueue } from '../stage4/queue';
 import { AUDIO_FETCH_SITES } from '../settings';
@@ -479,8 +484,14 @@ export class AudioCleanupService {
       return;
     }
     let p = this.stage4.progress();
-    if (!p || (p.stage3Id && p.stage3Id !== s3.analysisId)) {
+    // A new stage-3 analysis, or units built by older code (WP21c follow-up (2): titles and
+    // folders), start over from the units; every answer comes from the cache.
+    if (!p || stage4StartsOver(p, s3.analysisId)) {
       if (this.running4) return;
+      if (p)
+        this.log(
+          `Audiobooks stage 4: starting over (units v${p.unitsVersion ?? 1}, now v${STAGE4_UNITS_VERSION}; stage 3 ${s3.analysisId})`,
+        );
       p = this.stage4.restart();
     }
     if (p.phase === 'done') {

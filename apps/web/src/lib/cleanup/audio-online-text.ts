@@ -237,6 +237,8 @@ export const ONLINE_FIELDS: {
   key:
     | 'onlineRuntimeMinutes'
     | 'onlineTitleScore'
+    | 'onlineTitleMinChars'
+    | 'onlineTitleMinShare'
     | 'onlineSearchProducts'
     | 'onlineStorePages'
     | 'onlineOpeningSeconds';
@@ -258,6 +260,20 @@ export const ONLINE_FIELDS: {
     min: 0.3,
     max: 1,
     step: 0.01
+  },
+  {
+    key: 'onlineTitleMinChars',
+    label: 'A title inside a longer one counts from (characters)',
+    min: 1,
+    max: 20,
+    step: 1
+  },
+  {
+    key: 'onlineTitleMinShare',
+    label: 'A title inside a longer one counts from (share of the longer, 0–1)',
+    min: 0,
+    max: 1,
+    step: 0.05
   },
   {
     key: 'onlineSearchProducts',
