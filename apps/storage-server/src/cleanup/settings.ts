@@ -134,6 +134,14 @@ export interface AudiobookSettings {
   onlineRuntimeMinutes: number;
   /** Stage 4: the titles agree at this share of the file title's character pairs (0-1). */
   onlineTitleScore: number;
+  /**
+   * Stage 4: one title inside the other (or the pair share) counts only when the shorter has at
+   * least this many characters (cleaned)... (WP21c follow-up (2): "audio" agreed with
+   * "Académie de trading : Leçons audio").
+   */
+  onlineTitleMinChars: number;
+  /** ...and at least this share of the longer title's characters (0-1). */
+  onlineTitleMinShare: number;
   /** Stage 4: Audible search hits whose full record is fetched (per search). */
   onlineSearchProducts: number;
   /** Stage 4: kikubon and audiobook.jp product pages read per search (title agreeing only). */
@@ -345,6 +353,9 @@ export const DEFAULT_SETTINGS: CleanupSettings = {
     // "WP21c"); the search and page counts are the reference sample's (refsample.py).
     onlineRuntimeMinutes: 2,
     onlineTitleScore: 0.8,
+    // Measured on the live run's 196 partial agreements (decisions.md "WP21c follow-up (2)").
+    onlineTitleMinChars: 3,
+    onlineTitleMinShare: 0.25,
     onlineSearchProducts: 2,
     onlineStorePages: 3,
     onlineOpeningSeconds: 240,
@@ -670,6 +681,19 @@ function validate(key: Key, value: unknown, current: CleanupSettings): unknown {
           60,
         ),
         onlineTitleScore: num('Titles agree at a score of', v.onlineTitleScore, 0.3, 1),
+        onlineTitleMinChars: num(
+          'A title inside another counts from (characters)',
+          v.onlineTitleMinChars,
+          1,
+          20,
+          true,
+        ),
+        onlineTitleMinShare: num(
+          'A title inside another counts from (share of the longer)',
+          v.onlineTitleMinShare,
+          0,
+          1,
+        ),
         onlineSearchProducts: num(
           'Audible records read per search',
           v.onlineSearchProducts,

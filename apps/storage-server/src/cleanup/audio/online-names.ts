@@ -56,6 +56,45 @@ export function meaningless(q: string): boolean {
   );
 }
 
+/**
+ * A folder name that only describes the files in it, never a book's title (WP21c follow-up (2):
+ * the live run searched `涼宮ハルヒの驚愕前/Audio/` as "Audio"): "Audio", "mp3", "m4b", "Disc 2",
+ * "CD1", "Part 3", a bare number, a source folder with its batch number ("33 audiobook.jp").
+ */
+export function describesFiles(name: string): boolean {
+  const forms = [name.normalize('NFKC').trim(), searchTitle(name).normalize('NFKC').trim()];
+  return forms.some(
+    (s) =>
+      /^(audios?|mp3s?|m4b|m4a|mp4|aac|wav|flac|ogg|opus|files?|tracks?)$/i.test(s) ||
+      /^(disc|disk|cd|part|vol|volume|track|side|ディスク|パート)\s*[._#-]?\s*\d+$/i.test(s) ||
+      /^\d+$/.test(s) ||
+      /^\d+[\s_-]*(audiobook\.?jp|kikubon|audible|mam|tmw|discord)$/i.test(s),
+  );
+}
+
+// (\s matches the full-width space too.)
+const TRACK = /^([0-9０-９]{1,3})[\s._-]+(?=[^\s\d０-９])/u;
+
+/**
+ * A leading number of a file name ("01 涼宮ハルヒの憂鬱" → 1), or null. It is a track number
+ * only when the folder holds other files numbered the same way (the caller checks that):
+ * "777 トリプルセブン" alone in its folder is a title.
+ */
+export function leadingNumber(name: string): number | null {
+  const m = TRACK.exec(name);
+  return m ? Number(m[1].normalize('NFKC')) : null;
+}
+
+/** The name without its leading track number (nothing else changed). */
+export function withoutTrackNumber(name: string): string {
+  return name.replace(TRACK, '');
+}
+
+/** The cleaned title says something (a letter, kana, kanji or digit): "：" alone doesn't. */
+export function hasOwnTitle(title: string): boolean {
+  return /[\p{L}\p{N}]/u.test(title);
+}
+
 /** refsample.py's variants (NFKC, a space before the last number, no imprint, no number), plus
  * the other digit width: the variants tried, in order, before the search gives up. */
 export function titleVariants(t: string): string[] {

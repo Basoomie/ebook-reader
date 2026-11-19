@@ -42,6 +42,8 @@ import {
   isDrama,
   rankEvaluation,
   reviewReason,
+  searchGuard,
+  seriesFolderTitles,
   titlesAgree,
   type Evaluation,
   type MatchSettings,
@@ -49,10 +51,13 @@ import {
 } from './online-match';
 import {
   authorFromName,
+  describesFiles,
+  leadingNumber,
   meaningless,
   peopleFromTags,
   searchTitle,
   titleVariants,
+  withoutTrackNumber,
   type FileTags,
 } from './online-names';
 import {
@@ -102,7 +107,14 @@ const MAX_QUERIES = 3;
  * The version of stage 4's rules: raised when a code change can change the decisions, so the
  * stage decides again from the stored answers.
  */
-export const STAGE4_RULES_VERSION = 1;
+export const STAGE4_RULES_VERSION = 2;
+
+/**
+ * The version of how units are built (titles, search titles, folders): raised when that code
+ * changes, so a finished stage starts over from the units (every answer comes from the cache).
+ * 2: file-describing folders, track numbers, series folders (WP21c follow-up (2)).
+ */
+export const STAGE4_UNITS_VERSION = 2;
 
 export type Stage4Phase = 'units' | 'lookups' | 'gate' | 'done';
 
@@ -120,6 +132,8 @@ export interface AudioStage4Progress {
   stage3Id: string | null;
   /** The settings the decisions were made with (a change decides again, nothing re-read). */
   rulesKey: string | null;
+  /** How the units were built (STAGE4_UNITS_VERSION; missing = 1). */
+  unitsVersion?: number;
   units: number;
   lookupUnits: number;
   noRecordUnits: number;
@@ -149,6 +163,7 @@ export function emptyStage4(now = Date.now()): AudioStage4Progress {
     finishedAt: null,
     stage3Id: null,
     rulesKey: null,
+    unitsVersion: STAGE4_UNITS_VERSION,
     units: 0,
     lookupUnits: 0,
     noRecordUnits: 0,
@@ -168,6 +183,18 @@ export function emptyStage4(now = Date.now()): AudioStage4Progress {
   };
 }
 
+/**
+ * Stage 4 starts over from the units (nothing fetched twice: answers come from the cache) when
+ * there is no analysis, stage 3 ran again, or the units were built by older code.
+ */
+export function stage4StartsOver(p: AudioStage4Progress | null, stage3Id: string): boolean {
+  return (
+    !p ||
+    (!!p.stage3Id && p.stage3Id !== stage3Id) ||
+    (p.unitsVersion ?? 1) !== STAGE4_UNITS_VERSION
+  );
+}
+
 /** The settings stage 4's decisions depend on. */
 export function stage4SettingsKey(s: AudiobookSettings): string {
   return createHash('sha1')
@@ -176,6 +203,8 @@ export function stage4SettingsKey(s: AudiobookSettings): string {
         STAGE4_RULES_VERSION,
         s.onlineRuntimeMinutes,
         s.onlineTitleScore,
+        s.onlineTitleMinChars,
+        s.onlineTitleMinShare,
         s.onlineSearchProducts,
         s.onlineStorePages,
         s.onlineOpeningSeconds,
@@ -432,6 +461,7 @@ export class AudioStage4 {
     p.stage3Id = s3.analysisId;
     const s = getSettings(db).audiobooks;
     p.rulesKey = stage4SettingsKey(s);
+    p.unitsVersion = STAGE4_UNITS_VERSION;
     const copies = this.deps.stage3.loadCopies(s3.analysisId);
     // Copies proven the same recording: one unit each group.
     const groupOf = new Map<number, number>();
@@ -461,6 +491,60 @@ export class AudioStage4 {
     }
     const tagsOf = db.prepare('SELECT tags_json FROM audio_file_health WHERE file_id = ?');
     const decodedOf = db.prepare('SELECT decoded_path FROM audio_files WHERE id = ?');
+    const segsCache = new Map<number, string[]>();
+    const segsOf = (f: { id: number; rel: string }): string[] => {
+      let segs = segsCache.get(f.id);
+      if (!segs) {
+        const decoded = (decodedOf.get(f.id) as { decoded_path: string | null } | undefined)
+          ?.decoded_path;
+        segs = (decoded ?? f.rel).split('/');
+        segsCache.set(f.id, segs);
+      }
+      return segs;
+    };
+    // Folders whose files are numbered "01 …", "02 …": the numbers are track numbers, not part
+    // of the titles (WP21c follow-up (2): "01 涼宮ハルヒの憂鬱" found nothing on Audible).
+    // "777 トリプルセブン" alone in its folder keeps its number.
+    const numbersIn = new Map<string, Set<number>>();
+    const dirOf = (root: string, segs: string[]) => `${root}:${segs.slice(0, -1).join('/')}`;
+    for (const c of copies.values()) {
+      await breathe();
+      for (const f of c.files) {
+        const segs = segsOf(f);
+        const n = leadingNumber(segs[segs.length - 1]);
+        if (n === null) continue;
+        const dir = dirOf(f.root, segs);
+        let set = numbersIn.get(dir);
+        if (!set) numbersIn.set(dir, (set = new Set()));
+        set.add(n);
+      }
+    }
+    const trackNumbered = (root: string, segs: string[]) =>
+      (numbersIn.get(dirOf(root, segs))?.size ?? 0) >= 2;
+    // The nearest folder above segs[at] that names a book: folders that only describe the files
+    // ("Audio", "Disc 2") are passed over; one that says nothing ("moved", a batch number) or a
+    // TMW "[Author] Series" folder ends the walk without a title.
+    const bookAbove = (segs: string[], at: number): string | null => {
+      for (let k = at - 1; k >= 0; k--) {
+        const x = segs[k];
+        if (describesFiles(x)) continue;
+        if (meaningless(searchTitle(x)) || /^\[[^\]]+\]\s/.test(x)) return null;
+        return x;
+      }
+      return null;
+    };
+    // A copy's own name as a title: a recording in parts in a file-describing folder takes the
+    // book folder above it; a file among numbered tracks loses its track number.
+    const ownName = (c: LoadedCopy): string => {
+      const f = c.files[0];
+      if (!f) return c.name;
+      const segs = segsOf(f);
+      if (c.kind === 'parts')
+        return describesFiles(c.name) ? (bookAbove(segs, segs.length - 2) ?? c.name) : c.name;
+      return trackNumbered(f.root, segs) && leadingNumber(c.name) !== null
+        ? withoutTrackNumber(c.name)
+        : c.name;
+    };
     const labeled = new Set(this.labeledPaths());
     const noRecord = s.noStoreRecordFolders.map((f) => f.replace(/\/+$/, '') + '/');
     const rows: {
@@ -486,7 +570,9 @@ export class AudioStage4 {
       // Titles: each copy's own name (a file's, or the folder of a recording in parts), then
       // the folder a single file sits in when that folder is the book's own (not a TMW
       // "[Author] Series" folder, which names a series). Ids and authors: also two folders up
-      // (a drama CD's ASIN may be on its folder only).
+      // (a drama CD's ASIN may be on its folder only). A folder that only describes the files
+      // ("Audio", "Disc 2", "33 audiobook.jp") is never a title: the nearest book folder above
+      // it is (WP21c follow-up (2)).
       const names: string[] = [];
       const add = (list: string[], n: string | null | undefined) => {
         if (n && !list.includes(n)) list.push(n);
@@ -494,22 +580,25 @@ export class AudioStage4 {
       const bookFolders: string[] = [];
       const upper: string[] = [];
       for (const c of [rep, ...cs.filter((x) => x !== rep)]) {
-        add(names, c.name);
+        add(names, ownName(c));
         for (const f of c.files) {
-          const decoded = (decodedOf.get(f.id) as { decoded_path: string | null } | undefined)
-            ?.decoded_path;
-          const segs = (decoded ?? f.rel).split('/');
-          if (c.kind !== 'parts') add(names, segs[segs.length - 1].replace(/\.[^.]+$/, ''));
+          const segs = segsOf(f);
+          if (c.kind !== 'parts') {
+            const base = segs[segs.length - 1].replace(/\.[^.]+$/, '');
+            add(names, trackNumbered(f.root, segs) ? withoutTrackNumber(base) : base);
+          }
           const parent = segs.length >= 2 ? segs[segs.length - 2] : null;
-          if (parent && c.kind !== 'parts' && !/^\[[^\]]+\]\s/.test(parent))
-            add(bookFolders, parent);
+          if (parent && c.kind !== 'parts') {
+            if (describesFiles(parent)) add(bookFolders, bookAbove(segs, segs.length - 2));
+            else if (!/^\[[^\]]+\]\s/.test(parent)) add(bookFolders, parent);
+          }
           for (const seg of segs.slice(Math.max(0, segs.length - 3), -1)) add(upper, seg);
         }
       }
       const queries: string[] = [];
       for (const n of [...names, ...bookFolders]) {
         const q = searchTitle(n);
-        if (!meaningless(q) && !queries.includes(q)) queries.push(q);
+        if (!meaningless(q) && !describesFiles(q) && !queries.includes(q)) queries.push(q);
       }
       const folders = [...bookFolders, ...upper.filter((x) => !bookFolders.includes(x))];
       const ids = idsInNames([...names, ...folders]);
@@ -529,16 +618,25 @@ export class AudioStage4 {
       const nameAuthors = [...names, ...folders]
         .map(authorFromName)
         .filter((a): a is string => !!a);
-      const title = searchTitle(rep.name);
+      const repName = ownName(rep);
+      const title = searchTitle(repName);
       const drama = [...names, ...folders].some(isDrama) ? { number: dramaNumber(rep.name) } : null;
+      // A folder title the file's own, longer title contains names the series (十津川警部/):
+      // searched, but never what a record's title may agree with.
+      const folderTitles = bookFolders.map(searchTitle);
+      const series = seriesFolderTitles(title, folderTitles);
       const facts: UnitFacts = {
         title,
-        otherTitles: [...new Set([...names, ...bookFolders].map(searchTitle))].filter(
-          (t) => t !== title && !meaningless(t),
-        ),
+        otherTitles: [
+          ...new Set([
+            ...names.map(searchTitle),
+            ...folderTitles.filter((t) => !series.includes(t)),
+          ]),
+        ].filter((t) => t !== title && !meaningless(t) && !describesFiles(t)),
+        seriesTitles: series,
         authors: [...new Set([...nameAuthors, ...people.authors])],
         narrators: people.narrators,
-        volume: printedVolume(rep.name),
+        volume: printedVolume(repName),
         drama,
         seconds: rep.seconds,
         files: rep.files.length,
@@ -647,7 +745,15 @@ export class AudioStage4 {
 
   private settingsNow(): { s: AudiobookSettings; m: MatchSettings } {
     const s = getSettings(this.db).audiobooks;
-    return { s, m: { runtimeMinutes: s.onlineRuntimeMinutes, titleScore: s.onlineTitleScore } };
+    return {
+      s,
+      m: {
+        runtimeMinutes: s.onlineRuntimeMinutes,
+        titleScore: s.onlineTitleScore,
+        titleMinChars: s.onlineTitleMinChars,
+        titleMinShare: s.onlineTitleMinShare,
+      },
+    };
   }
 
   /**
@@ -862,7 +968,10 @@ export class AudioStage4 {
         rec,
         via,
         requestId,
-        ev: evaluate(facts, rec, m, { viaNameAsin: via === 'asin_name' }),
+        ev: evaluate(facts, rec, m, {
+          viaNameAsin: via === 'asin_name',
+          viaNameId: via === 'name_id',
+        }),
       });
     };
     const waiting = (): Advance => ({ kind: 'waiting', waits: ctx.waits });
@@ -930,7 +1039,15 @@ export class AudioStage4 {
       if (!r.pending) {
         const hits = r.ok ? (this.parse(r.id, parseKikubonSearch) ?? []) : [];
         const worth = hits
-          .filter((h) => titlesAgree([facts.title, ...facts.otherTitles], h.title, m.titleScore).ok)
+          .filter(
+            (h) =>
+              titlesAgree(
+                [facts.title, ...facts.otherTitles],
+                h.title,
+                m.titleScore,
+                searchGuard(m),
+              ).ok,
+          )
           .slice(0, s.onlineStorePages);
         for (const h of worth) {
           const rp = this.need(ctx, kikubonProduct(h.id), 'kikubon-product');
@@ -1001,7 +1118,11 @@ export class AudioStage4 {
     if (narratorOnly.length) return this.bySamples(inputs, narratorOnly, cands, ctx, 'narrator', s);
     // A record whose title disagrees is another book (a wrong id in a name, a search's
     // neighbour): shown for review only when the ASIN in the file's name chose it.
-    const plausible = cands.filter((c) => c.ev.checks.title.ok || c.via === 'asin_name');
+    // A record whose title agrees only partly (a short title inside a longer one) is shown too,
+    // never matched automatically.
+    const plausible = cands.filter(
+      (c) => c.ev.checks.title.ok || c.via === 'asin_name' || c.ev.titlePartial === true,
+    );
     if (!plausible.length) {
       return {
         kind: 'decided',

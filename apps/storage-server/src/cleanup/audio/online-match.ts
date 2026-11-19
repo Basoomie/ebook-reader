@@ -11,17 +11,32 @@
  *     third of its total (then its files may be copies: review, never automatic).
  * A narrator who differs from the file's tags sends the record to review (another edition or
  * translation, e.g. 源氏物語 若紫). The runtime alone picked 5 wrong books of 200 in the sample.
+ *
+ * Title guards (WP21c follow-up (2), measured on the live run's 196 partial agreements):
+ *   - one title inside the other (or the pair share) counts only when the shorter title has at
+ *     least `titleMinChars` characters and `titleMinShare` of the longer one ("audio" inside
+ *     "Académie de trading : Leçons audio", 暗殺 inside "QED 龍馬暗殺" don't); records the id in
+ *     the file name chose keep the plain comparison (the id chose them; 武士道 vs its subtitle),
+ *   - a folder title that the file's own, longer title contains names the series, not the book
+ *     (十津川警部/十津川警部 高山本線の秘密): it is left out of `otherTitles` (`seriesTitles`),
+ *   - a file without a title of its own (`[B09YY1LQRS].m4b`) has no title to compare: when the
+ *     ASIN in its name chose the record, the other checks decide.
  */
 import { norm, sim } from '../stage4/pick';
 import { printedVolume } from './dup-names';
 import type { StoreRecord } from './online-pages';
-import { personKey, searchTitle } from './online-names';
+import { hasOwnTitle, personKey, searchTitle } from './online-names';
 
 export interface UnitFacts {
   /** The title searched for (from the torrent names). */
   title: string;
   /** Other names of the recording (the folder's, other copies'): a title may agree with any. */
   otherTitles: string[];
+  /**
+   * Folder titles the file's own title contains (a series folder): searched, but never what a
+   * record's title may agree with. Missing in units built before follow-up (2).
+   */
+  seriesTitles?: string[];
   authors: string[];
   narrators: string[];
   /** The printed volume from the names (`[4巻]`, `上`, a trailing number), or null. */
@@ -36,6 +51,16 @@ export interface UnitFacts {
 export interface MatchSettings {
   runtimeMinutes: number;
   titleScore: number;
+  /** One title inside the other counts from this many characters (cleaned)... */
+  titleMinChars: number;
+  /** ...and this share of the longer title. */
+  titleMinShare: number;
+}
+
+/** The short-title guard; null = the plain comparison (a record the name's id chose). */
+export interface TitleGuard {
+  minChars: number;
+  minShare: number;
 }
 
 export type CheckName = 'title' | 'author' | 'volume' | 'runtime' | 'narrator';
@@ -55,6 +80,8 @@ export interface Evaluation {
   failed: CheckName[];
   /** The length matched only at a half or a third of a multi-file recording. */
   fraction: 1 | 2 | 3 | null;
+  /** The title agreed only partly (a short title inside a longer one): review at most. */
+  titlePartial?: boolean;
   pass: boolean;
 }
 
@@ -72,27 +99,63 @@ export function storeTitle(t: string): string {
   return s.replace(/\s+/g, ' ').trim();
 }
 
-/** The two titles name the same book (either contains the other, or the pair share is high). */
+/**
+ * The two titles name the same book (either contains the other, or the pair share is high).
+ * With a guard, containment and the pair share count only when the shorter title is long
+ * enough; a pair that would have agreed without it is reported as `partial` ("5 of 47
+ * characters").
+ */
 export function titlesAgree(
   file: string[],
   store: string,
   score: number,
-): { ok: boolean; best: number } {
+  guard: TitleGuard | null = null,
+): { ok: boolean; best: number; partial: string | null } {
   const st = storeTitle(store);
   const sn = norm(st);
   let best = 0;
+  let partial: string | null = null;
   for (const f of file) {
     // The same cleaning on both sides (a series in ＜ ＞, a reading in brackets: 卍（まんじ）).
     const ft = storeTitle(searchTitle(f));
     const fn = norm(ft);
     if (!fn || !sn) continue;
-    if (fn === sn) return { ok: true, best: 1 };
+    if (fn === sn) return { ok: true, best: 1, partial: null };
+    const a = [...fn].length;
+    const b = [...sn].length;
+    const short = Math.min(a, b);
+    const long = Math.max(a, b);
+    const enough = !guard || (short >= guard.minChars && short / long >= guard.minShare);
+    const why = `${short} of ${long} characters`;
     if (fn.length >= 2 && sn.length >= 2 && (sn.includes(fn) || fn.includes(sn))) {
-      return { ok: true, best: 1 };
+      if (enough) return { ok: true, best: 1, partial: null };
+      partial ??= why;
+      continue;
     }
-    best = Math.max(best, sim(ft, st), sim(st, ft));
+    const s = Math.max(sim(ft, st), sim(st, ft));
+    if (enough) best = Math.max(best, s);
+    else if (s >= score) partial ??= why;
   }
-  return { ok: best >= score, best: Math.round(best * 1000) / 1000 };
+  const ok = best >= score;
+  return { ok, best: Math.round(best * 1000) / 1000, partial: ok ? null : partial };
+}
+
+/**
+ * Folder titles that the file's own, longer title contains: the series' name, not the book's
+ * (十津川警部/十津川警部 高山本線の秘密, 朗読執事/朗読執事～まだらの紐～).
+ */
+export function seriesFolderTitles(own: string, folders: string[]): string[] {
+  const on = norm(storeTitle(searchTitle(own)));
+  if (!on) return [];
+  return folders.filter((f) => {
+    const fn = norm(storeTitle(searchTitle(f)));
+    return fn !== '' && fn !== on && on.includes(fn);
+  });
+}
+
+/** The file's own title says nothing once cleaned (`[B09YY1LQRS].m4b`, `【ア】【イ】`). */
+export function noOwnTitle(title: string): boolean {
+  return !hasOwnTitle(norm(storeTitle(searchTitle(title))));
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -166,17 +229,39 @@ export function evaluate(
   unit: UnitFacts,
   r: StoreRecord,
   s: MatchSettings,
-  opts: { viaNameAsin?: boolean } = {},
+  opts: { viaNameAsin?: boolean; viaNameId?: boolean } = {},
 ): Evaluation {
   const titles = [unit.title, ...unit.otherTitles];
-  const t = titlesAgree(titles, r.title, s.titleScore);
   const checks = {} as Record<CheckName, Check>;
-  checks.title = {
-    ok: t.ok,
-    file: unit.title,
-    store: r.title,
-    detail: t.ok ? undefined : `score ${t.best}`,
-  };
+  let titlePartial = false;
+  if (opts.viaNameAsin && noOwnTitle(unit.title)) {
+    // Nothing to compare: the ASIN in the name chose the record; the other checks decide.
+    checks.title = {
+      ok: true,
+      unknown: true,
+      file: unit.title || null,
+      store: r.title,
+      detail: 'the file has no title; the ASIN in its name chose the record',
+    };
+  } else {
+    // A record the id in the file name chose keeps the plain comparison.
+    const guard =
+      opts.viaNameAsin || opts.viaNameId
+        ? null
+        : { minChars: s.titleMinChars, minShare: s.titleMinShare };
+    const t = titlesAgree(titles, r.title, s.titleScore, guard);
+    titlePartial = !t.ok && t.partial !== null;
+    checks.title = {
+      ok: t.ok,
+      file: unit.title,
+      store: r.title,
+      detail: t.ok
+        ? undefined
+        : t.partial
+          ? `only inside a longer title: ${t.partial}`
+          : `score ${t.best}`,
+    };
+  }
 
   // Author: only when the recording names one (and the store lists any). Names written in
   // different scripts (Arthur Conan Doyle / アーサー・コナン・ドイル) can't be compared.
@@ -290,7 +375,12 @@ export function evaluate(
 
   const order: CheckName[] = ['title', 'author', 'volume', 'runtime', 'narrator'];
   const failed = order.filter((c) => !checks[c].ok);
-  return { checks, failed, fraction, pass: failed.length === 0 };
+  return { checks, failed, fraction, titlePartial, pass: failed.length === 0 };
+}
+
+/** The guard for records found by a search (never chosen by an id in the name). */
+export function searchGuard(s: MatchSettings): TitleGuard {
+  return { minChars: s.titleMinChars, minShare: s.titleMinShare };
 }
 
 /** Pre-check of a search hit (before its full record is read): title and length. */
@@ -299,7 +389,8 @@ export function hitWorthReading(
   hit: { title: string; seconds: number | null },
   s: MatchSettings,
 ): boolean {
-  if (!titlesAgree([unit.title, ...unit.otherTitles], hit.title, s.titleScore).ok) return false;
+  if (!titlesAgree([unit.title, ...unit.otherTitles], hit.title, s.titleScore, searchGuard(s)).ok)
+    return false;
   if (hit.seconds === null || unit.seconds === null) return true;
   const tol = s.runtimeMinutes * 60;
   const tries = unit.files > 1 ? [1, 2, 3] : [1];

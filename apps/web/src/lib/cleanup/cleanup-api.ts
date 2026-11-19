@@ -482,6 +482,9 @@ export interface AudiobookSettings {
   /** Stage 4 (WP21c); missing on an older server. */
   onlineRuntimeMinutes?: number;
   onlineTitleScore?: number;
+  /** WP21c follow-up (2); missing on an older server. */
+  onlineTitleMinChars?: number;
+  onlineTitleMinShare?: number;
   onlineSearchProducts?: number;
   onlineStorePages?: number;
   onlineOpeningSeconds?: number;
