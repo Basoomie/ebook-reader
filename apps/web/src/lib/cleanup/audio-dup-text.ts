@@ -31,6 +31,7 @@ const PHASES: Record<AudioStage3Progress['phase'], string> = {
   fingerprints: 'Listening to a few stretches of each copy',
   compare: 'Comparing what was heard',
   decode: 'Playing the chosen copies all the way through',
+  verify: 'Comparing the copies frame by frame',
   decide: 'Picking the best copies',
   done: 'Done'
 };
@@ -53,12 +54,15 @@ export const RULE_LABELS: Record<string, string> = {
   '6': 'has a cover',
   '7': 'ASIN in the name',
   tie: 'nothing separates them',
-  identical: 'identical files (either)'
+  identical: 'identical files',
+  frames: 'the same audio frame by frame',
+  branding: 'the same apart from Audible’s opening and closing (the copy without them stays)',
+  extra: 'everything in one copy is in the other, which has more (the longer stays)'
 };
 
 export const DUP_LISTS: { id: string; label: string }[] = [
-  { id: 'review', label: 'To review (both copies stay until you choose)' },
-  { id: 'auto', label: 'Decided: same recording, best copy picked' },
+  { id: 'review', label: 'Same recording, not proven identical: both stay unless you choose' },
+  { id: 'auto', label: 'Proven the same: one copy is enough' },
   { id: 'unsure', label: 'Not sure it is the same recording' },
   { id: 'damaged', label: 'Groups with a damaged copy' },
   { id: 'different', label: 'Same name, different recordings' },
@@ -90,6 +94,18 @@ export function audioStage3Bar(
       label: `${PHASES.compare}: ${n(done)} of ${count(p.compareTotal, 'pair', 'pairs')}`,
       fraction: Math.min(1, done / p.compareTotal),
       eta: null
+    };
+  }
+  if (p.phase === 'verify' && p.verifyLeft !== undefined) {
+    const done = p.verifyDone ?? 0;
+    const total = done + p.verifyLeft;
+    const from = p.verifyRateFrom;
+    let time = from ? eta(done, total, from.at, from.done, now) : null;
+    if (time) time = `${time} (estimate)`;
+    return {
+      label: `${PHASES.verify}: ${n(done)} of ${count(total, 'pair', 'pairs')}`,
+      fraction: total > 0 ? Math.min(1, done / total) : 0,
+      eta: time
     };
   }
   if (p.phase === 'decode' && p.decodesLeft !== undefined) {
@@ -170,11 +186,11 @@ export function dupLines(counts: Record<string, number> | null | undefined): str
     .sort((a, b) => b[1] - a[1]);
   if (rules.length) {
     lines.push(
-      `Best copy decided: ${rules.map(([r, v]) => `${RULE_LABELS[r] ?? r} ${n(v)}`).join(', ')}; ${count(c(counts, 'dropped'), 'copy', 'copies')} not needed.`
+      `Proven the same, so one copy is enough: ${rules.map(([r, v]) => `${RULE_LABELS[r] ?? r} ${n(v)}`).join(', ')}; ${count(c(counts, 'dropped'), 'copy', 'copies')} not needed.`
     );
   }
   lines.push(
-    `${count(c(counts, 'review'), 'item waits', 'items wait')} for review (both copies stay until you choose).`
+    `${count(c(counts, 'review'), 'recording keeps', 'recordings keep')} every copy (not proven identical); you can still choose one.`
   );
   const diff = Object.keys(counts)
     .filter((k) => k.startsWith('pairs.') && k.endsWith('.different'))
@@ -263,11 +279,11 @@ export function groupHeadline(g: AudioDupGroup): string {
   // Every test that joined copies of the group, cheapest first.
   const tests = g.tests?.length ? g.tests : [g.firstTest];
   const how = tests.map((t) => TEST_LABELS[t] ?? t).join(', ');
-  if (g.kind === 'unsure') return `Not sure it is the same recording (${how})`;
+  if (g.kind === 'unsure') return `Not sure it is the same recording, both stay (${how})`;
   const rule = g.rule ? (RULE_LABELS[g.rule] ?? g.rule) : '';
   return g.outcome === 'review'
-    ? `Same recording, to review (${how}); best guess by: ${rule}`
-    : `Same recording (${how}); best copy by: ${rule}`;
+    ? `Same recording, not proven identical: every copy stays (${how}); best guess by: ${rule}`
+    : `Proven the same (${how}): ${rule}`;
 }
 
 export function decisionText(g: AudioDupGroup): string | null {
@@ -295,7 +311,11 @@ export const DUP_FIELDS: {
     | 'dupChapterToleranceSeconds'
     | 'dupFingerprintWorkers'
     | 'dupDecodeWorkers'
-    | 'dupClipSeconds';
+    | 'dupClipSeconds'
+    | 'dupBrandingMaxSeconds'
+    | 'dupBrandingScore'
+    | 'dupNoticeableErrors'
+    | 'fullBookMinutes';
   label: string;
   min: number;
   max: number;
@@ -386,5 +406,33 @@ export const DUP_FIELDS: {
     max: 8,
     step: 1
   },
-  { key: 'dupClipSeconds', label: 'Seconds played on the review page', min: 2, max: 60, step: 1 }
+  { key: 'dupClipSeconds', label: 'Seconds played on the review page', min: 2, max: 60, step: 1 },
+  {
+    key: 'dupBrandingMaxSeconds',
+    label: 'Audible opening/closing: at most this long at each end (s)',
+    min: 0,
+    max: 60,
+    step: 0.5
+  },
+  {
+    key: 'dupBrandingScore',
+    label: 'Audible opening/closing: matches other books’ at a score of',
+    min: 0.5,
+    max: 1,
+    step: 0.001
+  },
+  {
+    key: 'dupNoticeableErrors',
+    label: 'A copy is damaged above this many bad frames',
+    min: 0,
+    max: 1000000,
+    step: 1
+  },
+  {
+    key: 'fullBookMinutes',
+    label: 'Files of one folder this long are separate books (minutes)',
+    min: 1,
+    max: 6000,
+    step: 1
+  }
 ];

@@ -122,17 +122,22 @@ export function scoreGate(labels: LabelsFile, look: GateLookups): GateResult {
     } else {
       sameCorrect++;
       bestChecked++;
+      // Under the user's rule (2026-11-18: a copy goes only when proven the same; otherwise both
+      // stay), keeping both is never wrong; a decided drop is wrong when it drops the copy the
+      // label says is better.
       if (shared && !together) {
         got = 'same file';
-        ok = want.best === 'any';
+        ok = true;
       } else {
         const t = together!;
         const best = t.ra === t.rb ? 'any' : t.ra < t.rb ? 'a' : 'b';
-        got = t.outcome === 'review' ? `review (best guess ${best})` : `best ${best}`;
-        ok =
-          want.best === 'review'
-            ? t.outcome === 'review'
-            : t.outcome === 'auto' && (want.best === 'any' || want.best === best);
+        if (t.outcome === 'review') {
+          got = `both stay (best guess ${best})`;
+          ok = true;
+        } else {
+          got = `${best} stays (proven)`;
+          ok = want.best === 'any' || want.best === 'review' || want.best === best;
+        }
       }
       if (ok) bestCorrect++;
     }

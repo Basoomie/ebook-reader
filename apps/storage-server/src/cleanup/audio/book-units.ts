@@ -7,6 +7,10 @@
  *   folders this way.
  * - Exception: in the TMW torrents every audio file is one book, also inside
  *   `[Author] Series/` folders that hold several volumes.
+ * - A folder is not a book by itself (user, 2026-11-18: "one folder = one book" was never the
+ *   rule; most folders only happen to hold one book). Once the files' lengths are known (stage
+ *   2's classify step), a folder whose files are each full length is split into one book per
+ *   file (`foldersToSplit`); short files stay one book in parts; a mix is shown as unclear.
  */
 
 export type UnitSource = 'tmw' | 'discord' | 'mam' | 'ai' | 'other' | 'library';
@@ -147,6 +151,29 @@ export function idsInNames(names: string[]): NameIds {
 }
 
 export type MultiClass = 'single' | 'parts' | 'likely_copies' | 'unclear';
+
+/**
+ * Is a folder of several audio files one book or several? (Measured on the live data
+ * 2026-11-18: of the 20 non-TMW folders with more than one file, every file of 10 was 2 h or
+ * longer (AI series, 涼宮ハルヒ's volumes, unrelated novels side by side, two full copies) and
+ * every file of the other 10 shorter (藪の中 分割版, 女生徒【1】-【5】, chapter files, radio
+ * episodes); none mixed.)
+ *   split  every file is at least `fullMinutes` long: each file is its own book
+ *   parts  every file is shorter: one book in parts (as before)
+ *   mixed  some of each, or a length is unknown: kept as one, shown as unclear
+ * Disc/CD subfolders always belong to one book.
+ */
+export function folderBooks(
+  files: { seconds: number | null; disc: string | null }[],
+  fullMinutes: number,
+): 'split' | 'parts' | 'mixed' {
+  if (files.some((f) => f.disc !== null)) return 'parts';
+  if (files.some((f) => typeof f.seconds !== 'number')) return 'mixed';
+  const full = files.filter((f) => (f.seconds as number) >= fullMinutes * 60).length;
+  if (full === files.length) return 'split';
+  if (full === 0) return 'parts';
+  return 'mixed';
+}
 
 /**
  * Parts or copies? (WP15f's hint, measured on the NAS: 94 of 127 multi-file folders were

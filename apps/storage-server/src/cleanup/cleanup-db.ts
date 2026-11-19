@@ -852,6 +852,22 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
       );
     `,
   },
+  {
+    version: 11,
+    name: 'audiobook cleanup: stage 3 proves copies frame by frame (WP21b follow-up)',
+    sql: `
+      -- The frame-by-frame comparison of two copies (the longer one first): whether the shorter
+      -- is inside the longer and what is extra. Keyed by the copies' contents (SHA-256, or the
+      -- file as it was when not hashed), so it is never repeated while the files are the same.
+      CREATE TABLE audio_frame_checks (
+        pair_key      TEXT PRIMARY KEY,
+        result_json   TEXT NOT NULL CHECK (json_valid(result_json)),
+        tool_version  TEXT,
+        took_ms       INTEGER,
+        checked_at    INTEGER NOT NULL
+      );
+    `,
+  },
 ];
 
 export const CLEANUP_SCHEMA_VERSION = CLEANUP_MIGRATIONS[CLEANUP_MIGRATIONS.length - 1].version;

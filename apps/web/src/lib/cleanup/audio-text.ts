@@ -176,6 +176,10 @@ export function audioStage2Lines(p: AudioStage2Progress | null): string[] {
   const out: string[] = [];
   if (p.phase !== 'done') out.push(`Now: ${STAGE2_PHASES[p.phase]}.`);
   if (p.books) out.push(`${count(p.books, 'book', 'books')} in both folders.`);
+  if (p.splitFolders)
+    out.push(
+      `${count(p.splitFolders, 'folder holds', 'folders hold')} several full-length files: each file is its own book.`
+    );
   if (p.healthReused)
     out.push(
       `${count(p.healthReused, 'file was', 'files were')} checked before and had not changed.`

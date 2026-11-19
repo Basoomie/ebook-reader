@@ -137,9 +137,11 @@ describe('the Audiobooks tab, stage 3 wording', () => {
       '592 recordings have more than one copy (found by identical files 400, same ASIN in the names 162, same title and volume 30).'
     );
     expect(lines[1]).toBe(
-      'Best copy decided: identical files (either) 400, higher bitrate / sample rate 120, damaged or incomplete copy loses 2; 610 copies not needed.'
+      'Proven the same, so one copy is enough: identical files 400, higher bitrate / sample rate 120, damaged or incomplete copy loses 2; 610 copies not needed.'
     );
-    expect(lines).toContain('20 items wait for review (both copies stay until you choose).');
+    expect(lines).toContain(
+      '20 recordings keep every copy (not proven identical); you can still choose one.'
+    );
     expect(lines).toContain('41 pairs with the same name turned out to be different recordings.');
     expect(lines).toContain(
       'Played all the way through: 37 with errors in ffmpeg, of which 5 also failed in the second player (faad2).'
@@ -231,13 +233,27 @@ describe('the Audiobooks tab, stage 3 wording', () => {
       pairs: []
     };
     expect(groupHeadline(g)).toBe(
-      'Same recording, to review (same ASIN in the names); best guess by: nothing separates them'
+      'Same recording, not proven identical: every copy stays (same ASIN in the names); best guess by: nothing separates them'
     );
     expect(decisionText(g)).toBe('Your choice: keep only copy 2.');
     expect(decisionText({ ...g, decision: { ...g.decision!, decision: 'keep_all' } })).toBe(
       'Your choice: keep all copies.'
     );
     expect(groupHeadline({ ...g, kind: 'unsure' })).toMatch(/^Not sure/);
+    expect(groupHeadline({ ...g, outcome: 'auto', rule: 'branding' })).toBe(
+      'Proven the same (same ASIN in the names): the same apart from Audible’s opening and closing (the copy without them stays)'
+    );
+    const ver = audioStage3Bar(
+      progress({
+        phase: 'verify',
+        verifyDone: 50,
+        verifyLeft: 150,
+        verifyRateFrom: { at: NOW - 600_000, done: 0 }
+      }),
+      NOW
+    )!;
+    expect(ver.label).toBe('Comparing the copies frame by frame: 50 of 200 pairs');
+    expect(ver.eta).toBe('about 30 min left (estimate)');
     // Every test that joined the group, and which copies a score line is about.
     expect(groupHeadline({ ...g, firstTest: 'identical', tests: ['identical', 'asin'] })).toMatch(
       /\(identical files, same ASIN in the names\)/

@@ -81,6 +81,12 @@ export interface AudiobookSettings {
   copyHintMinMinutes: number;
   /** ... and their lengths are within this share of the longest (%). */
   copyHintPercent: number;
+  /**
+   * Files of one folder that are each at least this long (minutes) are separate books; shorter
+   * files are parts of one book (stage 2; measured: every multi-file folder is all one or all
+   * the other at 2 h).
+   */
+  fullBookMinutes: number;
   /** Time limit for one request to Audiobookshelf (s). */
   absTimeoutSeconds: number;
   /** Stage 3 (WP21b): length of each compared window (s). */
@@ -109,6 +115,18 @@ export interface AudiobookSettings {
   dupDecodeWorkers: number;
   /** Stage 3: seconds played from the start or the end of a copy on the review page. */
   dupClipSeconds: number;
+  /**
+   * Stage 3: extra audio at most this long at the very start or end of the longer copy can be
+   * Audible's opening and closing (checked against other books before it counts).
+   */
+  dupBrandingMaxSeconds: number;
+  /** Stage 3: the extra audio is the same opening/closing as other books' at this score. */
+  dupBrandingScore: number;
+  /**
+   * Stage 3: a copy counts as damaged when a player reports more than this many bad frames
+   * (a few at the very start or end can't be heard: user, 2026-11-18).
+   */
+  dupNoticeableErrors: number;
 }
 
 /** One site's queue in the fetch container (WP20d). */
@@ -271,6 +289,7 @@ export const DEFAULT_SETTINGS: CleanupSettings = {
     toolTimeoutSeconds: 60,
     copyHintMinMinutes: 60,
     copyHintPercent: 3,
+    fullBookMinutes: 120,
     absTimeoutSeconds: 30,
     // Stage 3 (WP21b). The score and the length limits were set from the labeled pairs (see
     // decisions.md "WP21b"): same recording >= 0.894 and different <= 0.613 in every window of
@@ -289,6 +308,9 @@ export const DEFAULT_SETTINGS: CleanupSettings = {
     dupFingerprintWorkers: 4,
     dupDecodeWorkers: 2,
     dupClipSeconds: 10,
+    dupBrandingMaxSeconds: 12,
+    dupBrandingScore: 0.9,
+    dupNoticeableErrors: 100,
   },
   fetch: {
     // Paces of plan section 6 (Bookmeter and Natively as BookWalker; the cover images as decided
@@ -522,6 +544,12 @@ function validate(key: Key, value: unknown, current: CleanupSettings): unknown {
           6000,
         ),
         copyHintPercent: num('Copies: lengths within (%)', v.copyHintPercent, 0, 50),
+        fullBookMinutes: num(
+          'Files this long are separate books (minutes)',
+          v.fullBookMinutes,
+          1,
+          6000,
+        ),
         absTimeoutSeconds: num('Audiobookshelf time limit (s)', v.absTimeoutSeconds, 1, 600, true),
         dupWindowSeconds: num('Window length (s)', v.dupWindowSeconds, 10, 300, true),
         dupShiftSeconds: num('Shift searched at each end (s)', v.dupShiftSeconds, 0, 600, true),
@@ -562,6 +590,15 @@ function validate(key: Key, value: unknown, current: CleanupSettings): unknown {
         ),
         dupDecodeWorkers: num('Full decodes at the same time', v.dupDecodeWorkers, 1, 8, true),
         dupClipSeconds: num('Seconds played on the review page', v.dupClipSeconds, 2, 60, true),
+        dupBrandingMaxSeconds: num('Opening/closing at most (s)', v.dupBrandingMaxSeconds, 0, 60),
+        dupBrandingScore: num('Opening/closing match at a score of', v.dupBrandingScore, 0.5, 1),
+        dupNoticeableErrors: num(
+          'Damaged above this many bad frames',
+          v.dupNoticeableErrors,
+          0,
+          1000000,
+          true,
+        ),
       };
     }
     case 'fetch': {
