@@ -102,7 +102,7 @@ export function siteLine(l: AudioSiteLine, now = Date.now()): string {
     l.queued + l.leased > 0 ? `${n(l.queued + l.leased)} waiting` : null,
     l.failed ? `${n(l.failed)} given up` : null,
     l.refused || l.busy ? `${n(l.refused + l.busy)} refused or busy` : null,
-    l.errors ? `${n(l.errors)} network errors` : null
+    l.errors ? count(l.errors, 'network error', 'network errors') : null
   ].filter(Boolean);
   let s = `${name}: ${parts.join(', ')} · one request every ${l.secondsPerRequest.toFixed(1)} s`;
   if (l.secondsLeft > 0) s += ` · ${etaText(l.secondsLeft * 1000)}`;

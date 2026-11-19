@@ -49,6 +49,10 @@ describe('audiobook stage 4 words', () => {
       siteLine(site({ backoffUntil: 120_000, backoffReason: 'busy (HTTP 503): waiting 60 s' }), 0)
     ).toContain('waiting 2 min: busy (HTTP 503)');
     expect(siteLine(site({ pausedReason: '8 refusals in a row' }))).toContain('paused: 8 refusals');
+    expect(siteLine(site({ site: 'kikubon', done: 512, gone: 1, errors: 1 }))).toBe(
+      'kikubon: 513 answered, 1 network error · one request every 3.0 s'
+    );
+    expect(siteLine(site({ errors: 3 }))).toContain(', 3 network errors ·');
   });
 
   it('what was found, per source and per review reason', () => {
