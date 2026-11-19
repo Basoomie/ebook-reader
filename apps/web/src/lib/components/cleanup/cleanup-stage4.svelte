@@ -39,6 +39,8 @@
     valueText
   } from '$lib/cleanup/stage4-text';
   import { formatWhen } from '$lib/notes/notes-format';
+  import CleanupDetails from './cleanup-details.svelte';
+  import { stage4GateSummary, stage4SitesNeedingYou } from '$lib/cleanup/cleanup-card-text';
 
   export let api: CleanupApi;
   export let stage: CleanupStage;
@@ -114,33 +116,25 @@
   }
 </script>
 
-<div class="c-tile flex flex-col gap-3 rounded p-4" data-testid="cleanup-stage-4">
-  <div class="flex flex-wrap items-baseline justify-between gap-2">
-    <h3 class="font-mincho text-lg font-bold">4 · {stage.name}</h3>
-    <span class="text-sm text-c-muted">{STAGE4_MODE_HINTS[stage.mode]}</span>
-  </div>
-  <div class="flex flex-wrap gap-2" role="radiogroup" aria-label="Stage 4">
-    {#each ['off', 'analyse'] as mode (mode)}
-      <button
-        class="c-btn {stage.mode === mode ? 'c-btn-primary' : 'c-btn-secondary'}"
-        role="radio"
-        aria-checked={stage.mode === mode}
-        on:click={() => setMode(stage, mode === 'off' ? 'off' : 'analyse')}
-        data-testid="cleanup-stage-4-{mode}"
+<div class="c-tile flex flex-col gap-2 rounded p-3" data-testid="cleanup-stage-4">
+  <div class="flex flex-wrap items-center justify-between gap-2">
+    <h3 class="font-mincho font-bold">4 · {stage.name}</h3>
+    <div class="flex flex-wrap gap-2" role="radiogroup" aria-label="Stage 4">
+      {#each ['off', 'analyse'] as mode (mode)}
+        <button
+          class="c-btn {stage.mode === mode ? 'c-btn-primary' : 'c-btn-secondary'}"
+          role="radio"
+          aria-checked={stage.mode === mode}
+          on:click={() => setMode(stage, mode === 'off' ? 'off' : 'analyse')}
+          data-testid="cleanup-stage-4-{mode}"
+        >
+          {mode === 'off' ? 'Off' : 'Preview'}
+        </button>
+      {/each}
+      <button class="c-btn c-btn-secondary" disabled title="Comes with the AI check (WP20e)"
+        >On</button
       >
-        {mode === 'off' ? 'Off' : 'Preview'}
-      </button>
-    {/each}
-    <button class="c-btn c-btn-secondary" disabled title="Comes with the AI check (WP20e)"
-      >On</button
-    >
-    {#if stage.mode !== 'off'}
-      <button
-        class="c-btn c-btn-ghost"
-        data-testid="cleanup-analyse-again-4"
-        on:click={() => analyseAgain(4)}>Run the analysis again</button
-      >
-    {/if}
+    </div>
   </div>
   {#if stage.mode !== 'off'}
     {#if status && timeLeftLine(status)}
@@ -158,76 +152,98 @@
       {#if status.waiting}
         <p class="text-sm text-c-muted" data-testid="cleanup-waiting-4">{status.waiting}</p>
       {/if}
-      <p class="text-sm text-c-muted" data-testid="cleanup-fetcher">
-        Fetch container: {status.fetcher.online ? 'running' : 'not running'}
-        {#if status.fetcher.lastSeenAt}· last seen {formatWhen(status.fetcher.lastSeenAt)}{/if}
-        {#if status.fetcher.version}· {status.fetcher.version}{/if}
-        {#if status.fetcher.sudachi}· {status.fetcher.sudachi}{/if}
-        {#if status.fetcher.problem}· {status.fetcher.problem}{/if}
-        · Amazon pace: {status.amazonPace}
-      </p>
+      {#if !status.fetcher.online}
+        <p class="c-notice text-sm" role="alert" data-testid="cleanup-fetcher-offline">
+          The fetch container is not running: nothing is looked up until it is back.
+        </p>
+      {/if}
       {#if booksLine(status)}
         <p class="text-sm" data-testid="cleanup-stage-4-books">{booksLine(status)}</p>
       {/if}
-      <ul class="flex flex-col gap-2 text-sm" data-testid="cleanup-sites">
-        {#each status.sites as s (s.site)}
-          <li class="flex flex-col gap-1 border-b py-2" style="border-color: var(--c-line)">
-            <span class="font-medium">{SITE_NAMES[s.site] ?? s.site}</span>
-            <span class="text-c-muted">{siteLine(s)}</span>
-            {#if s.pausedReason || (s.failed && s.enabled)}
-              <span class="flex flex-wrap gap-2">
-                {#if s.pausedReason}
-                  <button
-                    class="c-btn c-btn-secondary"
-                    disabled={busySite === s.site}
-                    on:click={() => resumeSite(s.site)}>Resume</button
-                  >
-                {/if}
-                {#if s.failed && s.enabled}
-                  <button
-                    class="c-btn c-btn-secondary"
-                    disabled={busySite === s.site}
-                    on:click={() => retrySite(s.site)}>Ask the given-up requests again</button
-                  >
-                {/if}
-              </span>
-            {/if}
-          </li>
-        {/each}
-      </ul>
-      {#if message}<p class="text-sm">{message}</p>{/if}
-      {#if readingsLine(status)}<p class="text-sm">{readingsLine(status)}</p>{/if}
-      {#if nativelyLine(status)}<p class="text-sm">{nativelyLine(status)}</p>{/if}
-      {#if status.fields.length}
-        <p class="text-sm" data-testid="cleanup-stage-4-fields">
-          Would change:
-          {#each fieldCounts(status) as f, i (f.field)}
-            {i ? ' · ' : ''}{f.label} {n(f.auto)} automatically, {n(f.review)} for review
-          {/each}
+      <!-- A site that needs you (paused, or requests given up) shows outside the fold. -->
+      {#each stage4SitesNeedingYou(status) as s (s.site)}
+        <p class="text-sm" data-testid="cleanup-site-problem-{s.site}">
+          <b>{SITE_NAMES[s.site] ?? s.site}:</b>
+          {siteLine(s)}
+          {#if s.pausedReason}
+            <button
+              class="c-btn c-btn-ghost"
+              disabled={busySite === s.site}
+              on:click={() => resumeSite(s.site)}>Resume</button
+            >
+          {/if}
+          {#if s.failed > 0}
+            <button
+              class="c-btn c-btn-ghost"
+              disabled={busySite === s.site}
+              on:click={() => retrySite(s.site)}>Ask the given-up requests again</button
+            >
+          {/if}
         </p>
-      {/if}
+      {/each}
+      {#if message}<p class="text-sm">{message}</p>{/if}
     {/if}
-    {#if gate}
-      <details class="flex flex-col gap-2" open data-testid="cleanup-gate-4">
-        <summary class="cursor-pointer text-sm font-medium"
-          >Checked on {n(gate.books)} labeled books ({formatWhen(gate.at)})</summary
+    {#if stage4GateSummary(gate)}
+      <p class="text-sm" data-testid="cleanup-gate-summary-4">{stage4GateSummary(gate)}</p>
+    {/if}
+    <CleanupDetails id="stage-4" testid="cleanup-details-4">
+      <p class="text-c-muted">{STAGE4_MODE_HINTS[stage.mode]}</p>
+      <div>
+        <button
+          class="c-btn c-btn-ghost"
+          data-testid="cleanup-analyse-again-4"
+          on:click={() => analyseAgain(4)}>Run the analysis again</button
         >
-        <ul class="mt-2 flex flex-col gap-1 text-sm">
-          {#each gateRows(gate) as row (row.field)}
-            <li class={row.below ? 'font-bold' : ''}>
-              {row.field}: {row.percent} · {row.auto} · {row.the600} · {row.checkD}{row.below
-                ? ' · paused'
-                : ''}
+      </div>
+      {#if status}
+        <p class="text-c-muted" data-testid="cleanup-fetcher">
+          Fetch container: {status.fetcher.online ? 'running' : 'not running'}
+          {#if status.fetcher.lastSeenAt}· last seen {formatWhen(status.fetcher.lastSeenAt)}{/if}
+          {#if status.fetcher.version}· {status.fetcher.version}{/if}
+          {#if status.fetcher.sudachi}· {status.fetcher.sudachi}{/if}
+          {#if status.fetcher.problem}· {status.fetcher.problem}{/if}
+          · Amazon pace: {status.amazonPace}
+        </p>
+        <ul class="flex flex-col gap-2" data-testid="cleanup-sites">
+          {#each status.sites as s (s.site)}
+            <li class="flex flex-col gap-1 border-b py-2" style="border-color: var(--c-line)">
+              <span class="font-medium">{SITE_NAMES[s.site] ?? s.site}</span>
+              <span class="text-c-muted">{siteLine(s)}</span>
             </li>
           {/each}
-          <li>
-            Edition: {gate.kind.percent === null ? '–' : `${gate.kind.percent.toFixed(1)} %`} right ({n(
-              gate.kind.right
-            )} of {n(gate.kind.all)})
-          </li>
         </ul>
-      </details>
-    {/if}
+        {#if readingsLine(status)}<p>{readingsLine(status)}</p>{/if}
+        {#if nativelyLine(status)}<p>{nativelyLine(status)}</p>{/if}
+        {#if status.fields.length}
+          <p data-testid="cleanup-stage-4-fields">
+            Would change:
+            {#each fieldCounts(status) as f, i (f.field)}
+              {i ? ' · ' : ''}{f.label} {n(f.auto)} automatically, {n(f.review)} for review
+            {/each}
+          </p>
+        {/if}
+      {/if}
+      {#if gate}
+        <div class="flex flex-col gap-1" data-testid="cleanup-gate-4">
+          <p class="font-medium">
+            Checked on {n(gate.books)} labeled books ({formatWhen(gate.at)})
+          </p>
+          <ul class="flex flex-col gap-1">
+            {#each gateRows(gate) as row (row.field)}
+              <li class={row.below ? 'font-bold' : ''}>
+                {row.field}: {row.percent} · {row.auto} · {row.the600} · {row.checkD}{row.below
+                  ? ' · paused'
+                  : ''}
+              </li>
+            {/each}
+            <li>
+              Edition: {gate.kind.percent === null ? '–' : `${gate.kind.percent.toFixed(1)} %`} right
+              ({n(gate.kind.right)} of {n(gate.kind.all)})
+            </li>
+          </ul>
+        </div>
+      {/if}
+    </CleanupDetails>
     <details
       class="flex flex-col gap-2"
       data-testid="cleanup-stage-4-list"

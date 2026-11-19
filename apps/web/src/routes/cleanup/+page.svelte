@@ -27,6 +27,12 @@
   import CleanupSettings from '$lib/components/cleanup/cleanup-settings.svelte';
   import Stage3Lists from '$lib/components/cleanup/cleanup-stage3-lists.svelte';
   import Stage4Card from '$lib/components/cleanup/cleanup-stage4.svelte';
+  import CleanupDetails from '$lib/components/cleanup/cleanup-details.svelte';
+  import {
+    checksSummary,
+    stage2GateSummary,
+    stage3GateSummary
+  } from '$lib/cleanup/cleanup-card-text';
   import SettingsSection from '$lib/components/settings/settings-section.svelte';
   import {
     CleanupApi,
@@ -142,7 +148,6 @@
   $: stage2 = stages.find((s) => s.stage === 2 && s.built);
   $: stage3 = stages.find((s) => s.stage === 3 && s.built);
   $: stage4 = stages.find((s) => s.stage === 4 && s.built);
-  $: laterStages = stages.filter((s) => s.stage >= (stage4 ? 5 : stage3 ? 4 : stage2 ? 3 : 2));
   $: bars3 = [
     stage3 ? stage3Progress(stage3, status?.stage3, Date.now()) : null,
     stage3 ? stage3ApplyProgress(status?.stage3, stage3, Date.now()) : null
@@ -155,7 +160,6 @@
     stage2 ? stage2Progress(stage2, Date.now()) : null,
     stage2 ? stage2ApplyProgress(stage2, status?.stage2, Date.now()) : null
   ].filter((b): b is ProgressBar => b !== null);
-  $: checksOk = status?.checks.filter((c) => c.required).every((c) => c.ok) ?? false;
   $: toRemove = Number((stage1?.progress as { toRemove?: number } | undefined)?.toRemove ?? 0);
   // Recomputed on every poll (status is replaced), so the time left follows the pace.
   $: bars = [
@@ -413,30 +417,22 @@
           {/if}
         </p>
         {#if stage1}
-          <div class="c-tile flex flex-col gap-3 rounded p-4" data-testid="cleanup-stage-1">
-            <div class="flex flex-wrap items-baseline justify-between gap-2">
-              <h3 class="font-mincho text-lg font-bold">1 · {stage1.name}</h3>
-              <span class="text-sm text-c-muted">{MODE_HINTS[stage1.mode]}</span>
-            </div>
-            <div class="flex flex-wrap gap-2" role="radiogroup" aria-label="Stage 1">
-              {#each MODES as mode (mode)}
-                <button
-                  class="c-btn {stage1.mode === mode ? 'c-btn-primary' : 'c-btn-secondary'}"
-                  role="radio"
-                  aria-checked={stage1.mode === mode}
-                  on:click={() => stage1 && setMode(stage1, mode)}
-                  data-testid="cleanup-stage-1-{mode}"
-                >
-                  {MODE_LABELS[mode]}
-                </button>
-              {/each}
-              {#if stage1.mode !== 'off'}
-                <button
-                  class="c-btn c-btn-ghost"
-                  data-testid="cleanup-analyse-again"
-                  on:click={() => analyseAgain(1)}>Run the analysis again</button
-                >
-              {/if}
+          <div class="c-tile flex flex-col gap-2 rounded p-3" data-testid="cleanup-stage-1">
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <h3 class="font-mincho font-bold">1 · {stage1.name}</h3>
+              <div class="flex flex-wrap gap-2" role="radiogroup" aria-label="Stage 1">
+                {#each MODES as mode (mode)}
+                  <button
+                    class="c-btn {stage1.mode === mode ? 'c-btn-primary' : 'c-btn-secondary'}"
+                    role="radio"
+                    aria-checked={stage1.mode === mode}
+                    on:click={() => stage1 && setMode(stage1, mode)}
+                    data-testid="cleanup-stage-1-{mode}"
+                  >
+                    {MODE_LABELS[mode]}
+                  </button>
+                {/each}
+              </div>
             </div>
             {#each bars as bar (bar.label)}
               <div class="flex flex-col gap-1" data-testid="cleanup-progress">
@@ -458,10 +454,6 @@
                 </div>
               </div>
             {/each}
-            {#each stage1Lines(stage1) as line}
-              <p class="text-sm">{line}</p>
-            {/each}
-            {#if precisionLine(stage1)}<p class="text-sm">{precisionLine(stage1)}</p>{/if}
             {#if stage1.pauseReason}
               <div class="c-notice flex flex-wrap items-center justify-between gap-2" role="alert">
                 <span>
@@ -482,37 +474,45 @@
               <p class="text-sm text-c-muted" data-testid="cleanup-waiting">{status.waiting}</p>
             {/if}
             {#if countsLine(status.stage1.counts)}
-              <p class="text-sm text-c-muted" data-testid="cleanup-counts">
+              <p class="text-sm" data-testid="cleanup-counts">
                 {countsLine(status.stage1.counts)}
               </p>
             {/if}
+            <CleanupDetails id="stage-1" testid="cleanup-details-1">
+              <p class="text-c-muted">{MODE_HINTS[stage1.mode]}</p>
+              {#if stage1.mode !== 'off'}
+                <div>
+                  <button
+                    class="c-btn c-btn-ghost"
+                    data-testid="cleanup-analyse-again"
+                    on:click={() => analyseAgain(1)}>Run the analysis again</button
+                  >
+                </div>
+              {/if}
+              {#each stage1Lines(stage1) as line}
+                <p>{line}</p>
+              {/each}
+              {#if precisionLine(stage1)}<p>{precisionLine(stage1)}</p>{/if}
+            </CleanupDetails>
           </div>
         {/if}
         {#if stage2}
-          <div class="c-tile flex flex-col gap-3 rounded p-4" data-testid="cleanup-stage-2">
-            <div class="flex flex-wrap items-baseline justify-between gap-2">
-              <h3 class="font-mincho text-lg font-bold">2 · {stage2.name}</h3>
-              <span class="text-sm text-c-muted">{STAGE2_MODE_HINTS[stage2.mode]}</span>
-            </div>
-            <div class="flex flex-wrap gap-2" role="radiogroup" aria-label="Stage 2">
-              {#each MODES as mode (mode)}
-                <button
-                  class="c-btn {stage2.mode === mode ? 'c-btn-primary' : 'c-btn-secondary'}"
-                  role="radio"
-                  aria-checked={stage2.mode === mode}
-                  on:click={() => stage2 && setMode(stage2, mode)}
-                  data-testid="cleanup-stage-2-{mode}"
-                >
-                  {MODE_LABELS[mode]}
-                </button>
-              {/each}
-              {#if stage2.mode !== 'off'}
-                <button
-                  class="c-btn c-btn-ghost"
-                  data-testid="cleanup-analyse-again-2"
-                  on:click={() => analyseAgain(2)}>Run the analysis again</button
-                >
-              {/if}
+          <div class="c-tile flex flex-col gap-2 rounded p-3" data-testid="cleanup-stage-2">
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <h3 class="font-mincho font-bold">2 · {stage2.name}</h3>
+              <div class="flex flex-wrap gap-2" role="radiogroup" aria-label="Stage 2">
+                {#each MODES as mode (mode)}
+                  <button
+                    class="c-btn {stage2.mode === mode ? 'c-btn-primary' : 'c-btn-secondary'}"
+                    role="radio"
+                    aria-checked={stage2.mode === mode}
+                    on:click={() => stage2 && setMode(stage2, mode)}
+                    data-testid="cleanup-stage-2-{mode}"
+                  >
+                    {MODE_LABELS[mode]}
+                  </button>
+                {/each}
+              </div>
             </div>
             {#each bars2 as bar (bar.label)}
               <div class="flex flex-col gap-1" data-testid="cleanup-progress-2">
@@ -532,32 +532,8 @@
                 </div>
               </div>
             {/each}
-            {#each stage2Lines(stage2) as line}
-              <p class="text-sm" data-testid="cleanup-stage-2-line">{line}</p>
-            {/each}
-            {#if gate.length}
-              <div class="flex flex-col gap-1" data-testid="cleanup-gate">
-                <p class="text-sm font-medium">Checked on the labeled books</p>
-                <ul class="flex flex-col text-sm">
-                  {#each gate as row (row.label)}
-                    <li
-                      class="flex flex-wrap justify-between gap-x-4 border-b py-1"
-                      style="border-color: var(--c-line)"
-                    >
-                      <span>{row.label}</span>
-                      <span>
-                        <b>{row.right}</b> right{row.calibre ? ` · Calibre now ${row.calibre}` : ''}
-                        {#if row.bar}<span class="text-c-muted"> · needs {row.bar}</span>{/if}
-                        {#if row.ok !== null}
-                          <span aria-label={row.ok ? 'passes' : 'fails'}>
-                            {row.ok ? '✓' : '✗'}</span
-                          >
-                        {/if}
-                      </span>
-                    </li>
-                  {/each}
-                </ul>
-              </div>
+            {#if stage2GateSummary(gate)}
+              <p class="text-sm" data-testid="cleanup-gate-summary-2">{stage2GateSummary(gate)}</p>
             {:else if labelsError && stage2.mode !== 'off'}
               <p class="text-sm" data-testid="cleanup-gate-missing">
                 The labeled books can’t be read ({labelsError}): titles and authors stay paused.
@@ -602,36 +578,74 @@
                 {status.stage2.waiting}
               </p>
             {/if}
-            {#each stage2CountLines(status.stage2) as line}
-              <p class="text-sm text-c-muted" data-testid="cleanup-counts-2">{line}</p>
+            {#each stage2CountLines(status.stage2) as line, i}
+              <!-- The first line ("Done: …") is the card's summary; the per-field counts wait in
+                   the details. -->
+              {#if i === 0}<p class="text-sm" data-testid="cleanup-counts-2">{line}</p>{/if}
             {/each}
+            <CleanupDetails id="stage-2" testid="cleanup-details-2">
+              <p class="text-c-muted">{STAGE2_MODE_HINTS[stage2.mode]}</p>
+              {#if stage2.mode !== 'off'}
+                <div>
+                  <button
+                    class="c-btn c-btn-ghost"
+                    data-testid="cleanup-analyse-again-2"
+                    on:click={() => analyseAgain(2)}>Run the analysis again</button
+                  >
+                </div>
+              {/if}
+              {#each stage2Lines(stage2) as line}
+                <p data-testid="cleanup-stage-2-line">{line}</p>
+              {/each}
+              {#each stage2CountLines(status.stage2).slice(1) as line}
+                <p class="text-c-muted" data-testid="cleanup-counts-2">{line}</p>
+              {/each}
+              {#if gate.length}
+                <div class="flex flex-col gap-1" data-testid="cleanup-gate">
+                  <p class="font-medium">Checked on the labeled books</p>
+                  <ul class="flex flex-col">
+                    {#each gate as row (row.label)}
+                      <li
+                        class="flex flex-wrap justify-between gap-x-4 border-b py-1"
+                        style="border-color: var(--c-line)"
+                      >
+                        <span>{row.label}</span>
+                        <span>
+                          <b>{row.right}</b> right{row.calibre
+                            ? ` · Calibre now ${row.calibre}`
+                            : ''}
+                          {#if row.bar}<span class="text-c-muted"> · needs {row.bar}</span>{/if}
+                          {#if row.ok !== null}
+                            <span aria-label={row.ok ? 'passes' : 'fails'}>
+                              {row.ok ? '✓' : '✗'}</span
+                            >
+                          {/if}
+                        </span>
+                      </li>
+                    {/each}
+                  </ul>
+                </div>
+              {/if}
+            </CleanupDetails>
           </div>
         {/if}
         {#if stage3}
-          <div class="c-tile flex flex-col gap-3 rounded p-4" data-testid="cleanup-stage-3">
-            <div class="flex flex-wrap items-baseline justify-between gap-2">
-              <h3 class="font-mincho text-lg font-bold">3 · {stage3.name}</h3>
-              <span class="text-sm text-c-muted">{STAGE3_MODE_HINTS[stage3.mode]}</span>
-            </div>
-            <div class="flex flex-wrap gap-2" role="radiogroup" aria-label="Stage 3">
-              {#each MODES as mode (mode)}
-                <button
-                  class="c-btn {stage3.mode === mode ? 'c-btn-primary' : 'c-btn-secondary'}"
-                  role="radio"
-                  aria-checked={stage3.mode === mode}
-                  on:click={() => stage3 && setMode(stage3, mode)}
-                  data-testid="cleanup-stage-3-{mode}"
-                >
-                  {MODE_LABELS[mode]}
-                </button>
-              {/each}
-              {#if stage3.mode !== 'off'}
-                <button
-                  class="c-btn c-btn-ghost"
-                  data-testid="cleanup-analyse-again-3"
-                  on:click={() => analyseAgain(3)}>Run the analysis again</button
-                >
-              {/if}
+          <div class="c-tile flex flex-col gap-2 rounded p-3" data-testid="cleanup-stage-3">
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <h3 class="font-mincho font-bold">3 · {stage3.name}</h3>
+              <div class="flex flex-wrap gap-2" role="radiogroup" aria-label="Stage 3">
+                {#each MODES as mode (mode)}
+                  <button
+                    class="c-btn {stage3.mode === mode ? 'c-btn-primary' : 'c-btn-secondary'}"
+                    role="radio"
+                    aria-checked={stage3.mode === mode}
+                    on:click={() => stage3 && setMode(stage3, mode)}
+                    data-testid="cleanup-stage-3-{mode}"
+                  >
+                    {MODE_LABELS[mode]}
+                  </button>
+                {/each}
+              </div>
             </div>
             {#each bars3 as bar (bar.label)}
               <div class="flex flex-col gap-1" data-testid="cleanup-progress-3">
@@ -651,11 +665,6 @@
                 </div>
               </div>
             {/each}
-            {#if precisionLine(stage3)}
-              <p class="text-sm">
-                {precisionLine(stage3)?.replace('pairs still identical', 'pairs’ files unchanged')}
-              </p>
-            {/if}
             {#if stage3.pauseReason}
               <div class="c-notice flex flex-wrap items-center justify-between gap-2" role="alert">
                 <span>
@@ -678,41 +687,54 @@
               </p>
             {/if}
             {#if status.stage3 && countsLine(status.stage3.counts)}
-              <p class="text-sm text-c-muted" data-testid="cleanup-counts-3">
+              <p class="text-sm" data-testid="cleanup-counts-3">
                 {countsLine(status.stage3.counts)}
               </p>
             {/if}
-            {#if stage3Lines(stage3, status.stage3).length > 0 || gate3}
-              <details
-                class="flex flex-col gap-2"
-                open={stage3.mode !== 'on'}
-                data-testid="cleanup-stage-3-analysis"
-              >
-                <summary class="cursor-pointer text-sm font-medium">What the analysis found</summary
-                >
-                <div class="mt-2 flex flex-col gap-2">
-                  {#each stage3Lines(stage3, status.stage3) as line}
-                    <p class="text-sm" data-testid="cleanup-stage-3-line">{line}</p>
-                  {/each}
-                  {#if gate3}
-                    <div class="flex flex-col gap-1" data-testid="cleanup-gate-3">
-                      <p class="text-sm font-medium">
-                        Checked on the measured pairs and the labeled books:
-                        <span aria-label={gate3.passed ? 'passes' : 'fails'}
-                          >{gate3.passed ? '✓ passes' : '✗ not passed'}</span
-                        >
-                      </p>
-                      {#each gateLines(gate3) as line}
-                        <p class="text-sm">{line}</p>
-                      {/each}
-                      {#each gate3.problems as problem}
-                        <p class="text-sm font-bold">{problem}</p>
-                      {/each}
-                    </div>
-                  {/if}
-                </div>
-              </details>
+            {#if stage3GateSummary(gate3)}
+              <p class="text-sm" data-testid="cleanup-gate-summary-3">
+                {stage3GateSummary(gate3)}
+              </p>
             {/if}
+            <CleanupDetails id="stage-3" testid="cleanup-stage-3-analysis">
+              <p class="text-c-muted">{STAGE3_MODE_HINTS[stage3.mode]}</p>
+              {#if stage3.mode !== 'off'}
+                <div>
+                  <button
+                    class="c-btn c-btn-ghost"
+                    data-testid="cleanup-analyse-again-3"
+                    on:click={() => analyseAgain(3)}>Run the analysis again</button
+                  >
+                </div>
+              {/if}
+              {#if precisionLine(stage3)}
+                <p>
+                  {precisionLine(stage3)?.replace(
+                    'pairs still identical',
+                    'pairs’ files unchanged'
+                  )}
+                </p>
+              {/if}
+              {#each stage3Lines(stage3, status.stage3) as line}
+                <p data-testid="cleanup-stage-3-line">{line}</p>
+              {/each}
+              {#if gate3}
+                <div class="flex flex-col gap-1" data-testid="cleanup-gate-3">
+                  <p class="font-medium">
+                    Checked on the measured pairs and the labeled books:
+                    <span aria-label={gate3.passed ? 'passes' : 'fails'}
+                      >{gate3.passed ? '✓ passes' : '✗ not passed'}</span
+                    >
+                  </p>
+                  {#each gateLines(gate3) as line}
+                    <p>{line}</p>
+                  {/each}
+                  {#each gate3.problems as problem}
+                    <p class="font-bold">{problem}</p>
+                  {/each}
+                </div>
+              {/if}
+            </CleanupDetails>
           </div>
         {/if}
         {#if stage4 && api}
@@ -725,46 +747,62 @@
             on:changed={refresh}
           />
         {/if}
-        <ul class="flex flex-col gap-2 text-sm">
-          {#each laterStages as s (s.stage)}
-            <li
-              class="flex flex-wrap justify-between gap-2 border-b py-2"
-              style="border-color: var(--c-line)"
-            >
-              <span>{s.stage} · {s.name}</span>
-              <span class="text-c-muted">Not built yet · Off</span>
-            </li>
-          {/each}
-        </ul>
       </section>
 
       <section class="mt-10 flex flex-col gap-3" data-testid="cleanup-checks">
         <SettingsSection jp="安全確認" title="Safety checks" />
-        <p class="text-sm {checksOk ? '' : 'font-bold'}">
-          {checksOk
-            ? 'All checks pass.'
-            : 'Nothing is changed in Calibre until every check passes.'}
-        </p>
-        <ul class="flex flex-col gap-1 text-sm">
-          {#each status.checks as c (c.name)}
-            <li class="flex gap-3" data-testid="cleanup-check-{c.name}">
-              <span class="w-4 shrink-0 font-bold" aria-label={c.ok ? 'passes' : 'fails'}>
-                {checkMark(c.ok, c.required)}
-              </span>
-              <span>
-                {c.label}{c.required ? '' : ' (optional)'}
-                {#if c.detail}<span class="text-c-muted"> · {c.detail}</span>{/if}
-              </span>
-            </li>
-          {/each}
-        </ul>
-        <p class="text-sm text-c-muted">
-          Sidecar: {status.sidecar.online ? 'running' : 'not running'}
-          {#if status.sidecar.lastSeenAt}· last seen {formatWhen(status.sidecar.lastSeenAt)}{/if}
-          {#if status.sidecar.calibredb}· {status.sidecar.calibredb}{/if}
-          {#if status.sidecar.serverVersion}· content server {status.sidecar.serverVersion}{/if}
-          {#if status.sidecar.problem}· {status.sidecar.problem}{/if}
-        </p>
+        {#if checksSummary(status.checks, status.sidecar.online)}
+          <!-- Every required check passes: one line, the list in the fold. -->
+          <p class="text-sm" data-testid="cleanup-checks-summary">
+            {checksSummary(status.checks, status.sidecar.online)}
+          </p>
+          <CleanupDetails id="checks" testid="cleanup-checks-details">
+            <ul class="flex flex-col gap-1">
+              {#each status.checks as c (c.name)}
+                <li class="flex gap-3" data-testid="cleanup-check-{c.name}">
+                  <span class="w-4 shrink-0 font-bold" aria-label={c.ok ? 'passes' : 'fails'}>
+                    {checkMark(c.ok, c.required)}
+                  </span>
+                  <span>
+                    {c.label}{c.required ? '' : ' (optional)'}
+                    {#if c.detail}<span class="text-c-muted"> · {c.detail}</span>{/if}
+                  </span>
+                </li>
+              {/each}
+            </ul>
+            <p class="text-c-muted">
+              Sidecar: {status.sidecar.online ? 'running' : 'not running'}
+              {#if status.sidecar.lastSeenAt}· last seen {formatWhen(
+                  status.sidecar.lastSeenAt
+                )}{/if}
+              {#if status.sidecar.calibredb}· {status.sidecar.calibredb}{/if}
+              {#if status.sidecar.serverVersion}· content server {status.sidecar.serverVersion}{/if}
+              {#if status.sidecar.problem}· {status.sidecar.problem}{/if}
+            </p>
+          </CleanupDetails>
+        {:else}
+          <p class="text-sm font-bold">Nothing is changed in Calibre until every check passes.</p>
+          <ul class="flex flex-col gap-1 text-sm">
+            {#each status.checks as c (c.name)}
+              <li class="flex gap-3" data-testid="cleanup-check-{c.name}">
+                <span class="w-4 shrink-0 font-bold" aria-label={c.ok ? 'passes' : 'fails'}>
+                  {checkMark(c.ok, c.required)}
+                </span>
+                <span>
+                  {c.label}{c.required ? '' : ' (optional)'}
+                  {#if c.detail}<span class="text-c-muted"> · {c.detail}</span>{/if}
+                </span>
+              </li>
+            {/each}
+          </ul>
+          <p class="text-sm text-c-muted">
+            Sidecar: {status.sidecar.online ? 'running' : 'not running'}
+            {#if status.sidecar.lastSeenAt}· last seen {formatWhen(status.sidecar.lastSeenAt)}{/if}
+            {#if status.sidecar.calibredb}· {status.sidecar.calibredb}{/if}
+            {#if status.sidecar.serverVersion}· content server {status.sidecar.serverVersion}{/if}
+            {#if status.sidecar.problem}· {status.sidecar.problem}{/if}
+          </p>
+        {/if}
       </section>
 
       <CleanupSection
