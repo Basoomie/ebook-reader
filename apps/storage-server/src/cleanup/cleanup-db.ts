@@ -998,7 +998,7 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
       );
       CREATE INDEX ai_requests_state ON ai_requests (stage, state, model, labeled);
       CREATE INDEX ai_requests_batch ON ai_requests (batch_id) WHERE batch_id IS NOT NULL;
-      CREATE INDEX ai_requests_run ON ai_requests (run_id);
+      CREATE INDEX ai_requests_run ON ai_requests (run_id, stage, state, model, labeled);
       CREATE INDEX ai_requests_model ON ai_requests (model, state);
       CREATE INDEX ai_requests_item ON ai_requests (stage, item_key);
 

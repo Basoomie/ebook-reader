@@ -9,7 +9,13 @@
  * 24/7"): one summary per stage and one gate line shown on the card; everything else waits in
  * the card's folded details. Pure, tested.
  */
-import type { AudioGateResult, AudioOnlineGate, AudioStatus, DiskLockState } from './cleanup-api';
+import type {
+  AudioGateResult,
+  AudioMetaGate,
+  AudioOnlineGate,
+  AudioStatus,
+  DiskLockState
+} from './cleanup-api';
 import { count } from './audio-text';
 import { n } from './cleanup-text';
 
@@ -51,7 +57,25 @@ export function stageSummary(stage: number, status: AudioStatus): string | null 
     if (!k || status.stage4?.progress?.phase !== 'done') return null;
     return `${n(c(k, 'auto'))} matched, ${n(c(k, 'review'))} to review, ${n(c(k, 'unknown'))} not found, ${n(c(k, 'none_expected'))} not looked up.`;
   }
+  if (stage === 5) {
+    const p = status.stage5?.progress;
+    if (!p || p.phase !== 'done' || !p.counts) return null;
+    const flagged = p.counts.title?.flagged ?? 0;
+    const spent = p.cost ? ` AI cost $${p.cost.costUsd.toFixed(2)}.` : '';
+    return `${count(p.units, 'recording', 'recordings')} decided; ${count(flagged, 'title', 'titles')} unconfirmed.${spent}`;
+  }
   return null;
+}
+
+/** Stage 5's gate in one line (WP21d): every field on the labeled books. */
+export function metaGateSummary(gate: AudioMetaGate | null | undefined): string | null {
+  if (!gate) return null;
+  if (gate.error) return 'Labeled check: the labels can’t be read.';
+  const fields = Object.values(gate.fields);
+  const failed = Object.entries(gate.fields).filter(([, f]) => !f.passed);
+  return gate.passed
+    ? `Labeled books: ✓ every field passes (${n(fields.reduce((a, f) => a + f.auto, 0))} automatic values checked).`
+    : `Labeled books: ✗ ${failed.map(([k]) => k).join(', ')} below the bar; ${count(gate.misses.length, 'value differs', 'values differ')} from the labels.`;
 }
 
 /** The gate in one line: passes, or how many labeled items came out wrong. */

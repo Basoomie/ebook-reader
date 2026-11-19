@@ -12,7 +12,8 @@
    * library files are copies of which torrent files, stage 2 groups the files into books and
    * checks each file, stage 3 (WP21b) finds copies of the same recording and picks the best
    * copy (its review queue below), stage 4 (WP21c) looks each recording up on Audible, kikubon
-   * and audiobook.jp (its lists below). The stages are Off or Preview. The disk line shows which cleanup job
+   * and audiobook.jp (its lists below), stage 5 (WP21d) decides each recording's metadata with the
+   * rules and the two AI models (its list below). The stages are Off or Preview. The disk line shows which cleanup job
    * reads the disk (one at a time; the Calibre cleanup goes first). Asks the server again
    * every few seconds while open.
    */
@@ -66,7 +67,22 @@
   import CleanupSection from './cleanup-section.svelte';
   import CleanupAudioDups from './cleanup-audio-dups.svelte';
   import CleanupAudioOnline from './cleanup-audio-online.svelte';
-  import { diskBusy, gateSummary, stageSummary } from '$lib/cleanup/audio-card-text';
+  import CleanupAudioMeta from './cleanup-audio-meta.svelte';
+  import {
+    diskBusy,
+    gateSummary,
+    metaGateSummary,
+    stageSummary
+  } from '$lib/cleanup/audio-card-text';
+  import {
+    STAGE5_HINTS,
+    audioStage5Bar,
+    audioStage5Lines,
+    metaCountLines,
+    metaGateLines,
+    metaMissLine,
+    spendLine
+  } from '$lib/cleanup/audio-meta-text';
 
   export let api: CleanupApi;
 
@@ -105,6 +121,14 @@
   /** Stage 4's analysis and phase (the online lists reload when it changes, or every 50 decided). */
   $: analysis4 = p4
     ? `${p4.analysisId}:${p4.phase}:${p4.finishedAt ?? ''}:${Math.floor(p4.decided / 50)}`
+    : '';
+  $: stage5 = status?.stages.find((s) => s.stage === 5) ?? null;
+  $: s5 = status?.stage5 ?? null;
+  $: p5 = s5?.progress ?? null;
+  $: bars5 = [audioStage5Bar(s5)].filter((b): b is ProgressBar => b !== null);
+  /** Stage 5's analysis and phase (the metadata list reloads when it changes). */
+  $: analysis5 = p5
+    ? `${p5.analysisId}:${p5.phase}:${p5.finishedAt ?? ''}:${Math.floor(p5.decided / 200)}`
     : '';
   interface StageView {
     bars: ProgressBar[];
@@ -153,10 +177,20 @@
       done: p4?.phase === 'done',
       summary: status ? stageSummary(4, status) : null,
       gate: gateSummary(4, p4?.gate)
+    },
+    5: {
+      bars: bars5,
+      lines: audioStage5Lines(s5),
+      waiting: s5?.waiting ?? null,
+      found: metaCountLines(p5?.counts),
+      done: p5?.phase === 'done',
+      summary: status ? stageSummary(5, status) : null,
+      gate: metaGateSummary(p5?.gate)
     }
   } as Record<number, StageView>;
   function hint(stage: AudioStageRow): string {
     const mode = stage.mode === 'on' ? 'analyse' : stage.mode;
+    if (stage.stage === 5) return STAGE5_HINTS[mode];
     if (stage.stage === 4) return STAGE4_HINTS[mode];
     return stage.stage === 3 ? STAGE3_HINTS[mode] : (AUDIO_STAGE_HINTS[stage.stage]?.[mode] ?? '');
   }
@@ -422,7 +456,7 @@
       {/if}
     </div>
 
-    {#each [stage1, stage2, stage3, stage4] as stage (stage?.stage)}
+    {#each [stage1, stage2, stage3, stage4, stage5] as stage (stage?.stage)}
       {#if stage}
         <div class="c-tile flex flex-col gap-2 rounded p-3" data-testid="audio-stage-{stage.stage}">
           <div class="flex flex-wrap items-center justify-between gap-2">
@@ -481,6 +515,9 @@
             <p class="text-sm" data-testid="audio-gate-summary-{stage.stage}">
               {views[stage.stage].gate}
             </p>
+          {/if}
+          {#if stage.stage === 5 && s5 && stage.mode !== 'off'}
+            <p class="text-sm" data-testid="audio-spend">{spendLine(s5)}</p>
           {/if}
           {#if stage.stage === 4 && s4 && stage.mode !== 'off'}
             {#if s4.fetcher && !s4.fetcher.online}
@@ -548,6 +585,17 @@
                   {/each}
                 </div>
               {/if}
+              {#if stage.stage === 5 && p5?.gate}
+                <div class="flex flex-col gap-1" data-testid="audio-meta-gate-card">
+                  <p class="font-medium">
+                    Checked on the labeled books: {p5.gate.passed ? '✓ passes' : '✗ not passed'}
+                  </p>
+                  {#each metaGateLines(p5.gate) as line}<p>{line}</p>{/each}
+                  {#each p5.gate.misses.slice(0, 10) as m (`${m.id}:${m.field}`)}
+                    <p class="font-bold">{metaMissLine(m)}</p>
+                  {/each}
+                </div>
+              {/if}
               {#if stage.stage === 3 && p3?.gate}
                 <div class="flex flex-col gap-1" data-testid="audio-gate">
                   <p class="font-medium">
@@ -592,6 +640,20 @@
       testid="audio-online-section"
     >
       <CleanupAudioOnline {api} analysis={analysis4} />
+    </CleanupSection>
+  {/if}
+
+  {#if stage5 && p5}
+    <CleanupSection
+      id="audio-meta"
+      jp="書誌"
+      title="Metadata"
+      summary={p5.counts?.title?.flagged !== undefined
+        ? `${n(p5.counts.title.flagged)} unconfirmed titles`
+        : ''}
+      testid="audio-meta-section"
+    >
+      <CleanupAudioMeta {api} analysis={analysis5} />
     </CleanupSection>
   {/if}
 

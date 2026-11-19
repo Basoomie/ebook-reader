@@ -32,6 +32,7 @@
   import { SITE_NAMES } from '$lib/cleanup/stage4-text';
   import { DUP_FIELDS } from '$lib/cleanup/audio-dup-text';
   import { ONLINE_FIELDS, SITE_LABELS, foldersFromText } from '$lib/cleanup/audio-online-text';
+  import type { AiStatus } from '$lib/cleanup/cleanup-api';
 
   export let api: CleanupApi;
   export let libraries: { id: string; name: string; folder: string }[] = [];
@@ -51,8 +52,46 @@
     'stage4.upgradePrimary': 'Online sources: upgrade, first model',
     'stage4.upgradeSecondary': 'Online sources: upgrade, second model',
     'stage5.primary': 'Genres and tags: first model',
-    'stage5.secondary': 'Genres and tags: second model'
+    'stage5.secondary': 'Genres and tags: second model',
+    'audio5.primary': 'Audiobook metadata: first model',
+    'audio5.secondary': 'Audiobook metadata: second model',
+    'audio5.upgradePrimary': 'Audiobook metadata: upgrade, first model',
+    'audio5.upgradeSecondary': 'Audiobook metadata: upgrade, second model'
   };
+
+  /** The AI's spending, the models' checks (WP21d); null on an older server. */
+  let ai: AiStatus | null = null;
+  let aiError = '';
+  let checking = false;
+  /** The spending limit as typed ('' = not set: nothing is asked). */
+  let limitText: number | '' = '';
+
+  async function loadAi() {
+    try {
+      ai = await api.aiStatus();
+      aiError = '';
+    } catch {
+      ai = null;
+    }
+  }
+
+  async function checkModels() {
+    checking = true;
+    aiError = '';
+    try {
+      ai = await api.checkAiModels();
+    } catch (err) {
+      aiError = (err as Error).message;
+    } finally {
+      checking = false;
+    }
+  }
+
+  function taskState(t: AiStatus['tasks'][number]): string {
+    const where = t.provider === 'anthropic' ? 'Anthropic' : 'OpenAI';
+    if (t.checked === null) return `${where}: not checked yet`;
+    return t.checked ? `${where}: offered ✓` : `${where}: NOT offered`;
+  }
 
   let settings: CleanupSettings | null = null;
   let secrets: Record<SecretName, SecretInfo> | null = null;
@@ -98,6 +137,8 @@
       serverLibrary = settings.calibreLibraryId;
       spreadKeepBoth = percentOf(settings.duplicates?.spreadKeepBoth);
       spreadIgnore = percentOf(settings.duplicates?.spreadIgnore);
+      limitText = settings.ai?.spendLimitUsd ?? '';
+      void loadAi();
       loadError = '';
     } catch (err) {
       loadError = (err as Error).message;
@@ -148,6 +189,9 @@
           duplicatePairsFile: settings.gate.duplicatePairsFile ?? '',
           ...(settings.gate.audiobookPairsFile !== undefined
             ? { audiobookPairsFile: settings.gate.audiobookPairsFile }
+            : {}),
+          ...(settings.gate.audiobookMetaPercent !== undefined
+            ? { audiobookMetaPercent: Number(settings.gate.audiobookMetaPercent) }
             : {})
         },
         reviewAlarmPercent: Number(settings.reviewAlarmPercent),
@@ -200,6 +244,10 @@
                       ),
                       noStoreRecordFolders: foldersFromText(noRecordText)
                     }
+                  : {}),
+                // Stage 5 (WP21d): only when the server knows it.
+                ...(settings.audiobooks.multiNarratorMin !== undefined
+                  ? { multiNarratorMin: Number(settings.audiobooks.multiNarratorMin) }
                   : {})
               }
             }
@@ -231,6 +279,27 @@
                 offlineSeconds: Number(settings.fetch.offlineSeconds)
               }
             }
+          : {}),
+        ...(settings.ai
+          ? {
+              ai: {
+                ...settings.ai,
+                spendLimitUsd: limitText === '' || limitText === null ? null : Number(limitText),
+                directWorkers: Number(settings.ai.directWorkers),
+                batchSize: Number(settings.ai.batchSize),
+                batchPollSeconds: Number(settings.ai.batchPollSeconds),
+                maxTokens: Number(settings.ai.maxTokens),
+                requestTimeoutSeconds: Number(settings.ai.requestTimeoutSeconds),
+                attempts: Number(settings.ai.attempts),
+                batchPriceFactor: Number(settings.ai.batchPriceFactor),
+                prices: Object.fromEntries(
+                  Object.entries(settings.ai.prices).map(([k, v]) => [
+                    k,
+                    { inputPerMTok: Number(v.inputPerMTok), outputPerMTok: Number(v.outputPerMTok) }
+                  ])
+                )
+              }
+            }
           : {})
       });
       settings = answer.settings;
@@ -240,6 +309,7 @@
       secrets = answer.secrets;
       customTagsText = settings.customTags.join('\n');
       noRecordText = (settings.audiobooks?.noStoreRecordFolders ?? []).join('\n');
+      limitText = settings.ai?.spendLimitUsd ?? '';
       for (const name of Object.keys(secretValues) as SecretName[]) {
         const value = secretValues[name];
         if (!value.trim()) continue;
@@ -500,6 +570,38 @@
                 data-testid="cleanup-audio-no-record-folders"
               />
             </label>
+          {/if}
+          {#if settings.audiobooks.multiNarratorMin !== undefined}
+            <p class="text-c-muted sm:col-span-2" data-testid="cleanup-audio-meta-settings">
+              Metadata (stage 5). A change decides again from the answers already given (the models
+              are not asked again).
+            </p>
+            <label class={field}>
+              <span class={label}>複数ナレーター from (narrators)</span>
+              <input
+                class="c-input"
+                type="number"
+                min="2"
+                max="20"
+                step="1"
+                bind:value={settings.audiobooks.multiNarratorMin}
+                data-testid="cleanup-audio-multiNarratorMin"
+              />
+            </label>
+            {#if settings.gate.audiobookMetaPercent !== undefined}
+              <label class={field}>
+                <span class={label}>Metadata: bar per field on the labeled books (%)</span>
+                <input
+                  class="c-input"
+                  type="number"
+                  min="50"
+                  max="100"
+                  step="0.5"
+                  bind:value={settings.gate.audiobookMetaPercent}
+                  data-testid="cleanup-audio-meta-percent"
+                />
+              </label>
+            {/if}
           {/if}
           {#if settings.gate.audiobookPairsFile !== undefined}
             <label class="{field} sm:col-span-2">
@@ -1070,7 +1172,7 @@
     {/if}
 
     <fieldset class="grid gap-4 sm:grid-cols-2" data-testid="cleanup-secrets">
-      <legend class={legend}>AI keys (for later stages)</legend>
+      <legend class={legend}>AI keys</legend>
       {#each KEYS as k (k.name)}
         <div class={field}>
           <label class={field}>
@@ -1105,8 +1207,176 @@
       </p>
     </fieldset>
 
+    {#if settings.ai}
+      <fieldset class="grid gap-4 sm:grid-cols-2" data-testid="cleanup-ai">
+        <legend class={legend}>AI</legend>
+        <p class="text-sm text-c-muted sm:col-span-2">
+          The models are asked only while the cleanup's AI spending stays under this limit (every
+          stage together); when it is reached the stage pauses and says so. Empty = no limit set:
+          nothing is asked.
+        </p>
+        <label class={field}>
+          <span class={label}>Spending limit (US$)</span>
+          <input
+            class="c-input"
+            type="number"
+            min="0"
+            max="10000"
+            step="0.01"
+            bind:value={limitText}
+            data-testid="cleanup-ai-limit"
+          />
+        </label>
+        <div class="flex flex-col gap-1 text-sm" data-testid="cleanup-ai-spent">
+          {#if ai}
+            <span>Spent so far: ${ai.spend.spentUsd.toFixed(4)}</span>
+            {#if ai.spend.reservedUsd > 0}
+              <span class="text-c-muted"
+                >Held for batches at the providers: ${ai.spend.reservedUsd.toFixed(4)}</span
+              >
+            {/if}
+          {/if}
+        </div>
+        <label class={field}>
+          <span class={label}>How the models are asked</span>
+          <select class="c-input" bind:value={settings.ai.mode} data-testid="cleanup-ai-mode">
+            <option value="batch">Batches (half price; answers within hours)</option>
+            <option value="direct">One call each (full price; answers at once)</option>
+          </select>
+        </label>
+        <label class="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            bind:checked={settings.ai.labeledOnly}
+            data-testid="cleanup-ai-labeled-only"
+          />
+          Ask only about the labeled books (a check before the whole library)
+        </label>
+        <label class={field}>
+          <span class={label}>Calls at the same time (one call each)</span>
+          <input
+            class="c-input"
+            type="number"
+            min="1"
+            max="20"
+            bind:value={settings.ai.directWorkers}
+          />
+        </label>
+        <label class={field}>
+          <span class={label}>Requests per batch</span>
+          <input
+            class="c-input"
+            type="number"
+            min="1"
+            max="10000"
+            bind:value={settings.ai.batchSize}
+          />
+        </label>
+        <label class={field}>
+          <span class={label}>Check a batch every (s)</span>
+          <input
+            class="c-input"
+            type="number"
+            min="5"
+            max="3600"
+            bind:value={settings.ai.batchPollSeconds}
+          />
+        </label>
+        <label class={field}>
+          <span class={label}>Claude max_tokens (thinking included)</span>
+          <input
+            class="c-input"
+            type="number"
+            min="1000"
+            max="64000"
+            bind:value={settings.ai.maxTokens}
+          />
+        </label>
+        <label class={field}>
+          <span class={label}>Time limit per call (s)</span>
+          <input
+            class="c-input"
+            type="number"
+            min="10"
+            max="900"
+            bind:value={settings.ai.requestTimeoutSeconds}
+          />
+        </label>
+        <label class={field}>
+          <span class={label}>Tries per call (busy or server errors only)</span>
+          <input class="c-input" type="number" min="1" max="10" bind:value={settings.ai.attempts} />
+        </label>
+        <label class={field}>
+          <span class={label}>Batch price (share of the list price)</span>
+          <input
+            class="c-input"
+            type="number"
+            min="0"
+            max="1"
+            step="0.05"
+            bind:value={settings.ai.batchPriceFactor}
+          />
+        </label>
+        <label class="flex items-center gap-2 text-sm">
+          <input type="checkbox" bind:checked={settings.ai.structuredOutputs} />
+          Ask for the answer in the stage's JSON format (structured outputs)
+        </label>
+        <div class="flex flex-col gap-2 text-sm sm:col-span-2" data-testid="cleanup-ai-prices">
+          <span class={label}>List prices (US$ per million tokens: input / output)</span>
+          {#each Object.keys(settings.ai.prices) as model (model)}
+            <div class="flex flex-wrap items-center gap-2">
+              <span class="w-44 break-all">{model}</span>
+              <input
+                class="c-input w-24"
+                type="number"
+                min="0"
+                step="0.01"
+                bind:value={settings.ai.prices[model].inputPerMTok}
+              />
+              <input
+                class="c-input w-24"
+                type="number"
+                min="0"
+                step="0.01"
+                bind:value={settings.ai.prices[model].outputPerMTok}
+              />
+            </div>
+          {/each}
+        </div>
+        <div class="flex flex-col gap-2 text-sm sm:col-span-2" data-testid="cleanup-ai-models">
+          <div class="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              class="c-btn c-btn-secondary"
+              disabled={checking}
+              on:click={checkModels}
+              data-testid="cleanup-ai-check"
+            >
+              {checking ? 'Checking…' : 'Check models'}
+            </button>
+            <span class="text-c-muted">Reads each provider's model list with the saved key.</span>
+          </div>
+          {#if aiError}<p class="c-notice" role="alert">{aiError}</p>{/if}
+          {#if ai}
+            {#each ai.tasks.filter((t) => MODEL_LABELS[t.task]) as t (t.task)}
+              <p data-testid="cleanup-ai-task-{t.task}">
+                {MODEL_LABELS[t.task]}: {t.model} · {taskState(t)}{t.price ? '' : ' · no price'}
+              </p>
+            {/each}
+            {#each Object.entries(ai.checks) as [provider, c] (provider)}
+              {#if c.error}
+                <p class="c-notice">
+                  {provider === 'anthropic' ? 'Anthropic' : 'OpenAI'}: {c.error}
+                </p>
+              {/if}
+            {/each}
+          {/if}
+        </div>
+      </fieldset>
+    {/if}
+
     <fieldset class="grid gap-4 sm:grid-cols-2">
-      <legend class={legend}>Models (for later stages)</legend>
+      <legend class={legend}>Models</legend>
       {#each Object.keys(MODEL_LABELS) as task (task)}
         <label class={field}>
           <span class={label}>{MODEL_LABELS[task]}</span>

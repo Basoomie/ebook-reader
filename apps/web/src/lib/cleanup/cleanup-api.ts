@@ -384,6 +384,8 @@ export interface GateSettings {
   duplicatePairsFile: string;
   /** Audiobooks stage 3's labeled pairs; empty = reference-sample/audio/labels.json (WP21b). */
   audiobookPairsFile?: string;
+  /** Audiobooks stage 5: the bar per field on automatic values (WP21d). */
+  audiobookMetaPercent?: number;
 }
 
 /** Stage 3: the thresholds of plan section 5 (shared settings, group "duplicates"). */
@@ -427,6 +429,8 @@ export interface CleanupSettings {
   audiobooks?: AudiobookSettings;
   /** Stage 4's online lookups (WP20d); missing on an older server. */
   fetch?: FetchSettings;
+  /** The AI models (WP21d); missing on an older server. */
+  ai?: AiSettings;
   backup: { path: string; verifiedOn: string; confirmedAt: number | null };
 }
 
@@ -489,6 +493,8 @@ export interface AudiobookSettings {
   onlineStorePages?: number;
   onlineOpeningSeconds?: number;
   noStoreRecordFolders?: string[];
+  /** Stage 5 (WP21d): 複数ナレーター from this many narrators. */
+  multiNarratorMin?: number;
 }
 
 export type SecretName = 'anthropicApiKey' | 'openaiApiKey' | 'calibrePassword' | 'absApiKey';
@@ -641,6 +647,152 @@ export interface AudioStatus {
   };
   /** Missing on an older server (WP21c). */
   stage4?: AudioStage4Status;
+  /** Missing on an older server (WP21d). */
+  stage5?: AudioStage5Status;
+}
+
+// ---------------------------------------------------------------- audiobooks stage 5 (WP21d)
+
+export type AudioStage5Phase = 'evidence' | 'models' | 'decide' | 'gate' | 'done';
+
+export interface AudioMetaGateField {
+  auto: number;
+  autoRight: number;
+  flagged: number;
+  flaggedRight: number;
+  percent: number | null;
+  passed: boolean;
+}
+
+export interface AudioMetaGateMiss {
+  id: string;
+  field: string;
+  expected: unknown;
+  got: unknown;
+  source: string;
+  unitKey: string | null;
+  name: string | null;
+  record: string | null;
+}
+
+export interface AudioMetaGate {
+  passed: boolean;
+  books: number;
+  notFound: string[];
+  fields: Record<string, AudioMetaGateField>;
+  misses: AudioMetaGateMiss[];
+  /** How many flagged values differ from their label (shown, not misses). */
+  flaggedWrong: number;
+  error: string | null;
+}
+
+export interface AiCounts {
+  queued: number;
+  sent: number;
+  answered: number;
+  blocked: number;
+  invalid: number;
+  failed: number;
+}
+
+export interface AudioStage5Progress {
+  analysisId: string;
+  phase: AudioStage5Phase;
+  startedAt: number;
+  finishedAt: number | null;
+  units: number;
+  labeledUnits: number;
+  decided: number;
+  phaseStartedAt: number;
+  phaseStartDone: number;
+  ai: AiCounts | null;
+  wait: string | null;
+  invented: number;
+  counts: Record<string, Record<string, number>> | null;
+  cost: {
+    costUsd: number;
+    items: number;
+    perItemUsd: number | null;
+    byModel: Record<string, number>;
+  } | null;
+  gate: AudioMetaGate | null;
+  error: string | null;
+}
+
+export interface AudioStage5Status {
+  available: boolean;
+  waiting: string | null;
+  progress: AudioStage5Progress | null;
+  secondsLeft: number | null;
+  spend: { spentUsd: number; reservedUsd: number; limitUsd: number | null };
+  batches: {
+    open: number;
+    collected: number;
+    failed: number;
+    turnaroundMs: { median: number | null; max: number | null };
+  };
+  mode: 'batch' | 'direct';
+  labeledOnly: boolean;
+}
+
+export interface AudioMetaField {
+  field: string;
+  value: unknown;
+  source: string;
+  flagged: boolean;
+  reason: string | null;
+  rules: unknown;
+  primary: unknown;
+  secondary: unknown;
+}
+
+export interface AudioMetaItem {
+  unitKey: string;
+  name: string;
+  labeled: boolean;
+  kind: 'record' | 'no_record' | 'ai' | 'radio';
+  stage4Class: string | null;
+  record: string | null;
+  state: string;
+  flagged: number;
+  error: string | null;
+  gateMisses: { id: string; field: string; expected: unknown; got: unknown; source: string }[];
+  fields: AudioMetaField[];
+}
+
+export interface AiPrice {
+  inputPerMTok: number;
+  outputPerMTok: number;
+}
+
+export interface AiSettings {
+  spendLimitUsd: number | null;
+  mode: 'batch' | 'direct';
+  directWorkers: number;
+  batchSize: number;
+  batchPollSeconds: number;
+  maxTokens: number;
+  requestTimeoutSeconds: number;
+  attempts: number;
+  batchPriceFactor: number;
+  prices: Record<string, AiPrice>;
+  structuredOutputs: boolean;
+  labeledOnly: boolean;
+}
+
+export interface AiStatus {
+  settings: AiSettings;
+  spend: { spentUsd: number; reservedUsd: number; limitUsd: number | null };
+  keys: { anthropic: boolean; openai: boolean };
+  checks: Record<string, { checkedAt: number; error: string | null; models: number | null }>;
+  tasks: {
+    task: string;
+    model: string;
+    provider: 'anthropic' | 'openai';
+    price: AiPrice | null;
+    /** true/false = in the provider's list when last checked; null = not checked. */
+    checked: boolean | null;
+  }[];
 }
 
 // ---------------------------------------------------------------- audiobooks stage 4 (WP21c)
@@ -1350,6 +1502,29 @@ export class CleanupApi {
       `/cleanup/audio/online/sites/${encodeURIComponent(site)}/retry`,
       {}
     ) as Promise<{ requests: number; units: number }>;
+  }
+
+  // ---------------------------------------------------------------- stage 5 and the AI (WP21d)
+
+  audioMeta(
+    list: string,
+    offset = 0,
+    limit = 50
+  ): Promise<{ total: number; items: AudioMetaItem[] }> {
+    const q = new URLSearchParams({ list, offset: String(offset), limit: String(limit) });
+    return this.request('GET', `/cleanup/audio/meta?${q}`) as Promise<{
+      total: number;
+      items: AudioMetaItem[];
+    }>;
+  }
+
+  aiStatus(): Promise<AiStatus> {
+    return this.request('GET', '/cleanup/ai/status') as Promise<AiStatus>;
+  }
+
+  /** Reads each provider's model list with the stored key. */
+  checkAiModels(): Promise<AiStatus> {
+    return this.request('POST', '/cleanup/ai/models/check', {}) as Promise<AiStatus>;
   }
 
   spotCheck(stage = 1): Promise<{ items: Proposal[] }> {
