@@ -360,7 +360,7 @@ describe('WP20d fetch queue', () => {
     expect(inNdlOutage(s, Date.UTC(2026, 10, 18, 19, 15))).toBe(false);
   });
 
-  it('takes decimal intervals down to 0.25 s and up to 4 requests at once, Amazon always 1', () => {
+  it('takes decimal intervals down to 0.25 s and up to 4 requests at once, for every site', () => {
     const s0 = getSettings(db).fetch;
     // Settings saved before the in-flight limit existed read as one at a time.
     expect(s0.sites.bookmeter.inFlight).toBe(1);
@@ -378,7 +378,14 @@ describe('WP20d fetch queue', () => {
     bad('bookmeter', { enabled: true, intervalSeconds: 0.2, inFlight: 1 });
     bad('bookmeter', { enabled: true, intervalSeconds: 1, inFlight: 5 });
     bad('bookmeter', { enabled: true, intervalSeconds: 1, inFlight: 1.5 });
-    bad('amazon-dp', { enabled: true, intervalSeconds: 2, inFlight: 2 });
+    // Every site may choose, Amazon's queues too.
+    updateSettings(db, {
+      fetch: {
+        ...s0,
+        sites: { ...s0.sites, 'amazon-dp': { enabled: true, intervalSeconds: 2, inFlight: 2 } },
+      },
+    });
+    expect(getSettings(db).fetch.sites['amazon-dp'].inFlight).toBe(2);
   });
 
   it('gives a site up to its requests at once, at its pace, only to a fetcher that handles them', () => {

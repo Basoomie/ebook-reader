@@ -33,6 +33,24 @@
   import { DUP_FIELDS } from '$lib/cleanup/audio-dup-text';
   import { ONLINE_FIELDS, SITE_LABELS, foldersFromText } from '$lib/cleanup/audio-online-text';
 
+  /** A site's name on the page. */
+  const siteName = (site: string) => SITE_NAMES[site] ?? SITE_LABELS[site] ?? site;
+  /** Online sources in two tables: the book cleanup's sites, then the audiobook cleanup's. */
+  $: siteGroups = settings?.fetch
+    ? [
+        {
+          name: 'Books',
+          sites: Object.keys(settings.fetch.sites).filter((s) => s in SITE_NAMES || s === 'sudachi')
+        },
+        {
+          name: 'Audiobooks',
+          sites: Object.keys(settings.fetch.sites).filter(
+            (s) => !(s in SITE_NAMES) && s !== 'sudachi'
+          )
+        }
+      ]
+    : [];
+
   export let api: CleanupApi;
   export let libraries: { id: string; name: string; folder: string }[] = [];
   /** The content server's libraries and the one in use (from the status). */
@@ -523,54 +541,91 @@
     {/if}
 
     {#if settings.fetch}
-      <fieldset class="grid gap-4 sm:grid-cols-2" data-testid="cleanup-fetch-settings">
+      <fieldset class="grid min-w-0 gap-4 sm:grid-cols-2" data-testid="cleanup-fetch-settings">
         <legend class={legend}>Online sources (stage 4)</legend>
         <p class="text-sm text-c-muted sm:col-span-2">
-          The fetch container asks each site at most once per the seconds below (from the start of
-          one request to the next), with at most the number of requests at once below (a site that
-          takes a second to answer can't go faster than a request a second with one at a time). When
-          Amazon refuses (a bot check page, or HTTP 503 or 429), the request is never pushed
-          through: every Amazon request waits, longer each time it refuses again, and is asked
-          again. Amazon's queues always ask one request at a time.
+          The fetch container asks each site at most once per its seconds (from the start of one
+          request to the next), with at most its number of requests at once (a site that takes a
+          second to answer can't go faster than a request a second with one at a time). When Amazon
+          refuses (a bot check page, or HTTP 503 or 429), the request is never pushed through: every
+          Amazon request waits, longer each time it refuses again, and is asked again.
         </p>
-        {#each Object.keys(settings.fetch.sites) as site (site)}
-          <div class="flex flex-wrap items-end gap-3" data-testid="cleanup-fetch-site-{site}">
-            <label class="flex items-center gap-2 text-sm">
-              <input type="checkbox" bind:checked={settings.fetch.sites[site].enabled} />
-              <span class={label}>{SITE_NAMES[site] ?? SITE_LABELS[site] ?? site}</span>
-            </label>
-            {#if site !== 'sudachi'}
-              <label class="flex flex-col gap-1 text-sm">
-                <span>Seconds between requests</span>
-                <input
-                  class="c-input w-28"
-                  type="number"
-                  min="0.25"
-                  step="any"
-                  bind:value={settings.fetch.sites[site].intervalSeconds}
-                  data-testid="cleanup-fetch-interval-{site}"
-                />
-              </label>
-              {#if !site.startsWith('amazon')}
-                <label class="flex flex-col gap-1 text-sm">
-                  <span>Requests at once</span>
-                  <input
-                    class="c-input w-20"
-                    type="number"
-                    min="1"
-                    max="4"
-                    step="1"
-                    bind:value={settings.fetch.sites[site].inFlight}
-                    data-testid="cleanup-fetch-inflight-{site}"
-                  />
-                </label>
-              {/if}
+        <div class="flex flex-col gap-4 sm:col-span-2">
+          {#each siteGroups as g (g.name)}
+            {#if g.sites.length}
+              <table
+                class="w-full max-w-xl table-fixed text-sm"
+                data-testid="cleanup-fetch-table-{g.name.toLowerCase()}"
+              >
+                <caption class="pb-1 text-left font-medium">{g.name}</caption>
+                <colgroup>
+                  <col />
+                  <col class="w-10" />
+                  <col class="w-24" />
+                  <col class="w-20" />
+                </colgroup>
+                <thead>
+                  <tr class="text-left text-xs text-c-muted">
+                    <th class="py-1 pr-2 font-normal">Site</th>
+                    <th class="py-1 pr-2 font-normal">On</th>
+                    <th class="py-1 pr-2 font-normal">Seconds between requests</th>
+                    <th class="py-1 font-normal">Requests at once</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {#each g.sites as site (site)}
+                    <tr
+                      class="border-t"
+                      style="border-color: var(--c-line)"
+                      data-testid="cleanup-fetch-site-{site}"
+                    >
+                      <td class="py-1 pr-2">{siteName(site)}</td>
+                      <td class="py-1 pr-2">
+                        <input
+                          type="checkbox"
+                          class="h-5 w-5"
+                          aria-label="{siteName(site)} on"
+                          bind:checked={settings.fetch.sites[site].enabled}
+                        />
+                      </td>
+                      <td class="py-1 pr-2">
+                        {#if site === 'sudachi'}
+                          <span class="text-c-muted" title="Runs inside the fetch container">–</span
+                          >
+                        {:else}
+                          <input
+                            class="c-input w-20"
+                            type="number"
+                            min="0.25"
+                            step="any"
+                            aria-label="{siteName(site)}: seconds between requests"
+                            bind:value={settings.fetch.sites[site].intervalSeconds}
+                            data-testid="cleanup-fetch-interval-{site}"
+                          />
+                        {/if}
+                      </td>
+                      <td class="py-1">
+                        <input
+                          class="c-input w-16"
+                          type="number"
+                          min="1"
+                          max="4"
+                          step="1"
+                          aria-label="{siteName(site)}: requests at once"
+                          bind:value={settings.fetch.sites[site].inFlight}
+                          data-testid="cleanup-fetch-inflight-{site}"
+                        />
+                      </td>
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
             {/if}
-          </div>
-        {/each}
-        <label class={field}>
+          {/each}
+        </div>
+        <label class="{field} min-w-0">
           <span class={label}>Amazon product pages and searches</span>
-          <select class="c-input" bind:value={settings.fetch.amazonPace}>
+          <select class="c-input w-full min-w-0" bind:value={settings.fetch.amazonPace}>
             <option value="trial"
               >Measure both on the labeled books (shared first, then separate)</option
             >

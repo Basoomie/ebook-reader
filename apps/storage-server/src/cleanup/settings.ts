@@ -166,10 +166,10 @@ export interface FetchSiteSettings {
   /** Seconds from the start of one request to the start of the next on this queue. */
   intervalSeconds: number;
   /**
-   * Requests of this site in flight at once (1-4; always 1 for Amazon's queues, which share
-   * Amazon's capped slot). A site answering in about a second can't go faster than one request
-   * a second with one in flight, whatever its interval (found 2026-11-19: Bookmeter at 1 s ran
-   * at 1.3 s).
+   * Requests of this site in flight at once (1-4, for every site: the user's choice, 2026-11-19).
+   * A site answering in about a second can't go faster than one request a second with one in
+   * flight, whatever its interval (found 2026-11-19: Bookmeter at 1 s ran at 1.3 s). The pace
+   * between starts holds either way (Amazon's shared slot included).
    */
   inFlight: number;
 }
@@ -740,7 +740,6 @@ function validate(key: Key, value: unknown, current: CleanupSettings): unknown {
         const o = got === undefined ? cur : group(`Site ${site}`, got, cur);
         if (typeof o.enabled !== 'boolean')
           throw new SettingsError(`${site}: on/off must be true or false`);
-        const amazon = site.startsWith('amazon');
         sites[site] = {
           enabled: o.enabled,
           intervalSeconds: num(
@@ -749,13 +748,7 @@ function validate(key: Key, value: unknown, current: CleanupSettings): unknown {
             site === 'sudachi' ? 0 : MIN_INTERVAL_SECONDS,
             3600,
           ),
-          inFlight: num(
-            `${site}: requests at once`,
-            o.inFlight ?? 1,
-            1,
-            amazon ? 1 : MAX_IN_FLIGHT,
-            true,
-          ),
+          inFlight: num(`${site}: requests at once`, o.inFlight ?? 1, 1, MAX_IN_FLIGHT, true),
         };
       }
       for (const k of Object.keys(v.sites as object)) {
