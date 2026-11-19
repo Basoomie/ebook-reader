@@ -136,6 +136,8 @@ export interface AudioStage4Progress {
   phaseTimes: Record<string, PhaseTime>;
   counts: Record<string, number> | null;
   gate: OnlineGateResult | null;
+  /** The labels the gate was scored with (a changed labels.json scores the gate again). */
+  gateLabelsKey?: string | null;
   error: string | null;
 }
 
@@ -290,6 +292,8 @@ export class AudioStage4 {
   private parsed = new Map<number, unknown>();
   private labelsCache: { at: number; books: LabeledBook[] | null; error: string | null } | null =
     null;
+  /** The labels file's content key, as last read. */
+  private labelsKey: string | null = null;
 
   constructor(private readonly deps: Stage4Deps) {}
 
@@ -1258,6 +1262,7 @@ export class AudioStage4 {
     const r = this.deps.readLabels?.() ?? { text: null, error: 'The labeled books are not set up' };
     let books: LabeledBook[] | null = null;
     let error: string | null = r.error;
+    this.labelsKey = r.text ? createHash('sha1').update(r.text).digest('hex').slice(0, 16) : null;
     if (r.text) {
       try {
         const j = JSON.parse(r.text) as { books?: unknown };
@@ -1311,8 +1316,27 @@ export class AudioStage4 {
     };
   }
 
+  /**
+   * A finished analysis scores its gate again when labels.json changed (a label corrected after
+   * the run): nothing is looked up again. True when the gate was scored again.
+   */
+  refreshGate(): boolean {
+    const p = this.progress();
+    if (!p || p.phase !== 'done' || p.error) return false;
+    this.labels();
+    if (!this.labelsKey || p.gateLabelsKey === this.labelsKey) return false;
+    if (p.gateLabelsKey === undefined && !p.gate) return false;
+    p.gate = this.evaluateGate(p);
+    this.save(p);
+    this.deps.log?.(
+      `Audiobooks stage 4: the labels changed, gate scored again (${p.gate.misses.length} misses)`,
+    );
+    return true;
+  }
+
   evaluateGate(p: AudioStage4Progress): OnlineGateResult {
     const l = this.labels();
+    p.gateLabelsKey = this.labelsKey;
     if (!l.books) {
       return { passed: false, checked: 0, misses: [], bySource: {}, results: [], error: l.error };
     }

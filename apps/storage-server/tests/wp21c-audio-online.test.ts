@@ -14,7 +14,7 @@ import fs from 'fs';
 import path from 'path';
 import request from 'supertest';
 import { gunzipSync } from 'zlib';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { allowedUrl } from '../../cleanup-fetch/src/hosts';
 import {
   getAudioStage,
@@ -882,6 +882,38 @@ describe('stage 4 on stage-3 rows with a stand-in internet', () => {
     expect(u).toMatchObject({ class: 'auto', store_id: 'B0EEEEEEE1' });
     // Only the product page the wider line made worth reading was asked; the search came from the cache.
     expect(asked.slice(before)).toEqual([audibleProduct('B0EEEEEEE1').url]);
+  });
+
+  it('a finished analysis scores its gate again when the labels change (nothing asked again)', async () => {
+    const db = freshDb();
+    const rel = 'TMW Japanese Audiobooks Collection (Part 1)/本G [B0GGGGGGG1].m4b';
+    seedStage3(db, [
+      { key: 'c1', rel, name: '本G [B0GGGGGGG1]', seconds: 60 * 60, asins: ['B0GGGGGGG1'] },
+    ]);
+    const pages = new Map<string, Buffer>([
+      [
+        audibleProduct('B0GGGGGGG1').url,
+        audibleJson('B0GGGGGGG1', { title: '本G', runtime_length_min: 60 }),
+      ],
+    ]);
+    const labels: LabeledBook[] = [{ id: 'G1', kind: 'book', src: null, torrent: rel }];
+    const { stage4, queue } = makeStage(db, labels);
+    stage4.restart();
+    const asked: string[] = [];
+    await runToEnd(db, stage4, queue, pages, asked);
+    // Labeled "no record" but matched: a miss.
+    expect(stage4.progress()!.gate).toMatchObject({ passed: false, misses: [{ id: 'G1' }] });
+    expect(stage4.refreshGate()).toBe(false); // the same labels: nothing to do
+    labels[0].src = 'audible:B0GGGGGGG1';
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(Date.now() + 61_000); // the labels are read again after a minute
+      expect(stage4.refreshGate()).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(stage4.progress()!.gate).toMatchObject({ passed: true, checked: 1, misses: [] });
+    expect(asked).toEqual([audibleProduct('B0GGGGGGG1').url]);
   });
 
   it('a switched-off site answers nothing: its requests are given up and the lookups go on', async () => {

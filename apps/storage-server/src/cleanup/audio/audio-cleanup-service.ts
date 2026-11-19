@@ -490,6 +490,8 @@ export class AudioCleanupService {
         this.stage4.redecide();
         p = this.stage4.progress()!;
       } else {
+        // A corrected labels.json scores the gate again (nothing is looked up again).
+        this.stage4.refreshGate();
         this.waiting4 = p.error ? `The analysis failed: ${p.error}` : 'Preview: nothing is changed';
         return;
       }

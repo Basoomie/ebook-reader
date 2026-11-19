@@ -66,6 +66,7 @@
   import CleanupSection from './cleanup-section.svelte';
   import CleanupAudioDups from './cleanup-audio-dups.svelte';
   import CleanupAudioOnline from './cleanup-audio-online.svelte';
+  import { diskBusy, gateSummary, stageSummary } from '$lib/cleanup/audio-card-text';
 
   export let api: CleanupApi;
 
@@ -110,6 +111,10 @@
     lines: string[];
     waiting: string | null;
     found: string[];
+    /** The stage's analysis has finished (the bar and the waiting line give way to the summary). */
+    done: boolean;
+    summary: string | null;
+    gate: string | null;
   }
   /** Per stage: its bars, lines, waiting text and what it found. */
   $: views = {
@@ -117,25 +122,37 @@
       bars: bars1,
       lines: audioStage1Lines(p1, Date.now()),
       waiting: status?.stage1.waiting ?? null,
-      found: identityLines(status?.stage1.counts ?? null)
+      found: identityLines(status?.stage1.counts ?? null),
+      done: p1?.phase === 'done',
+      summary: status ? stageSummary(1, status) : null,
+      gate: null
     },
     2: {
       bars: bars2,
       lines: audioStage2Lines(p2),
       waiting: status?.stage2.waiting ?? null,
-      found: booksLines(status?.stage2.counts ?? null)
+      found: booksLines(status?.stage2.counts ?? null),
+      done: p2?.phase === 'done',
+      summary: status ? stageSummary(2, status) : null,
+      gate: null
     },
     3: {
       bars: bars3,
       lines: audioStage3Lines(p3),
       waiting: status?.stage3?.waiting ?? null,
-      found: dupLines(status?.stage3?.counts ?? null)
+      found: dupLines(status?.stage3?.counts ?? null),
+      done: p3?.phase === 'done',
+      summary: status ? stageSummary(3, status) : null,
+      gate: gateSummary(3, p3?.gate)
     },
     4: {
       bars: bars4,
       lines: audioStage4Lines(s4),
       waiting: s4?.waiting ?? null,
-      found: onlineFoundLines(s4?.counts ?? null)
+      found: onlineFoundLines(s4?.counts ?? null),
+      done: p4?.phase === 'done',
+      summary: status ? stageSummary(4, status) : null,
+      gate: gateSummary(4, p4?.gate)
     }
   } as Record<number, StageView>;
   function hint(stage: AudioStageRow): string {
@@ -152,7 +169,30 @@
     (status?.stages.find((s) => s.stage === 0)?.progress as { error?: string | null } | undefined)
       ?.error ?? null;
 
+  /** Which cards have their details open (closed by default; remembered on this device). */
+  const DETAILS_KEY = 'ttsu.cleanup.audio.details';
+  let detailsOpen: Record<number, boolean> = {};
+
+  function toggleDetails(stage: number, e: Event) {
+    const open = (e.currentTarget as HTMLDetailsElement).open;
+    if (open === !!detailsOpen[stage]) return;
+    detailsOpen = { ...detailsOpen, [stage]: open };
+    try {
+      localStorage.setItem(DETAILS_KEY, JSON.stringify(detailsOpen));
+    } catch {
+      // Not remembered; still works.
+    }
+  }
+
   onMount(async () => {
+    try {
+      detailsOpen = JSON.parse(localStorage.getItem(DETAILS_KEY) ?? '{}') as Record<
+        number,
+        boolean
+      >;
+    } catch {
+      detailsOpen = {};
+    }
     await refresh();
     void loadFiles(0);
     void loadBooks(0);
@@ -315,52 +355,32 @@
   {#if error}<p class="c-notice mt-6" role="alert">{error}</p>{/if}
   {#if actionError}<p class="c-notice mt-6 font-bold" role="alert">{actionError}</p>{/if}
 
-  <section class="mt-6 flex flex-col gap-4" data-testid="audio-status">
+  <section class="mt-6 flex flex-col gap-3" data-testid="audio-status">
     <SettingsSection jp="状況" title="Audiobooks" />
-    <p class="max-w-prose text-sm">
-      The audiobook cleanup only looks for now: nothing in the torrents, the library folder or
-      Audiobookshelf is changed.
-    </p>
-    <p class="text-sm" data-testid="audio-disk">{diskLine(status.lock)}</p>
+    {#if diskBusy(status.lock)}
+      <p class="text-sm" data-testid="audio-disk">{diskLine(status.lock)}</p>
+    {/if}
     {#if status.available && !status.roots.ok}
       <p class="c-notice text-sm" role="alert" data-testid="audio-roots">
         {status.roots.problem}
       </p>
     {/if}
 
-    <div class="c-tile flex flex-col gap-3 rounded p-4" data-testid="audio-stage-0">
-      <div class="flex flex-wrap items-baseline justify-between gap-2">
-        <h3 class="font-mincho text-lg font-bold">0 · Audiobookshelf snapshot</h3>
-        <span class="text-sm text-c-muted"
-          >Read only: libraries, counts and listening progress.</span
-        >
-      </div>
-      <div class="flex flex-wrap gap-2">
+    <div class="c-tile flex flex-col gap-2 rounded p-3" data-testid="audio-stage-0">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <h3 class="font-mincho font-bold">0 · Audiobookshelf snapshot</h3>
         <button
-          class="c-btn c-btn-primary"
+          class="c-btn c-btn-secondary"
           disabled={status.stage0.snapshotting || !status.stage0.absUrlSet || !status.stage0.keySet}
           on:click={takeSnapshot}
           data-testid="audio-snapshot-take"
         >
           {status.stage0.snapshotting ? 'Taking a snapshot…' : 'Take a snapshot'}
         </button>
-        {#if latest}
-          <button
-            class="c-btn c-btn-secondary"
-            on:click={() => download('csv')}
-            data-testid="audio-snapshot-csv"
-          >
-            Download progress (CSV)
-          </button>
-          <button
-            class="c-btn c-btn-secondary"
-            on:click={() => download('json')}
-            data-testid="audio-snapshot-json"
-          >
-            Download everything (JSON)
-          </button>
-        {/if}
       </div>
+      <p class="text-sm text-c-muted" data-testid="audio-snapshot-when">
+        {latest ? `Taken ${formatWhen(latest.summary.takenAt)}.` : 'No snapshot yet.'}
+      </p>
       {#if !status.stage0.absUrlSet || !status.stage0.keySet}
         <p class="text-sm text-c-muted" data-testid="audio-snapshot-needs">
           Fill in Audiobookshelf’s address and API key in the Settings tab first.
@@ -371,128 +391,181 @@
           The last snapshot failed: {snapshotError}
         </p>
       {/if}
-      <p class="text-sm" data-testid="audio-snapshot-summary">
-        {#if latest}Taken {formatWhen(latest.summary.takenAt)}:
-        {/if}{snapshotLine(latest?.summary)}
-      </p>
+      {#if latest}
+        <details
+          open={detailsOpen[0]}
+          on:toggle={(e) => toggleDetails(0, e)}
+          data-testid="audio-details-0"
+        >
+          <summary class="cursor-pointer text-sm text-c-muted">Details</summary>
+          <div class="mt-2 flex flex-col gap-2 text-sm">
+            <p class="text-c-muted">Read only: libraries, counts and listening progress.</p>
+            <p data-testid="audio-snapshot-summary">{snapshotLine(latest?.summary)}</p>
+            <div class="flex flex-wrap gap-2">
+              <button
+                class="c-btn c-btn-secondary"
+                on:click={() => download('csv')}
+                data-testid="audio-snapshot-csv"
+              >
+                Download progress (CSV)
+              </button>
+              <button
+                class="c-btn c-btn-secondary"
+                on:click={() => download('json')}
+                data-testid="audio-snapshot-json"
+              >
+                Download everything (JSON)
+              </button>
+            </div>
+          </div>
+        </details>
+      {/if}
     </div>
 
     {#each [stage1, stage2, stage3, stage4] as stage (stage?.stage)}
       {#if stage}
-        <div class="c-tile flex flex-col gap-3 rounded p-4" data-testid="audio-stage-{stage.stage}">
-          <div class="flex flex-wrap items-baseline justify-between gap-2">
-            <h3 class="font-mincho text-lg font-bold">{stage.stage} · {stage.name}</h3>
-          </div>
-          <p class="text-sm text-c-muted">
-            {hint(stage)}
-          </p>
-          <div class="flex flex-wrap gap-2" role="radiogroup" aria-label="Stage {stage.stage}">
-            {#each MODES as mode (mode)}
-              <button
-                class="c-btn {stage.mode === mode ? 'c-btn-primary' : 'c-btn-secondary'}"
-                role="radio"
-                aria-checked={stage.mode === mode}
-                on:click={() => stage && setMode(stage, mode)}
-                data-testid="audio-stage-{stage.stage}-{mode}"
-              >
-                {AUDIO_MODE_LABELS[mode]}
-              </button>
-            {/each}
-            {#if stage.mode !== 'off'}
-              <button
-                class="c-btn c-btn-ghost"
-                on:click={() => stage && analyseAgain(stage.stage)}
-                data-testid="audio-analyse-again-{stage.stage}">Run the analysis again</button
-              >
-            {/if}
-          </div>
-          {#each views[stage.stage].bars as bar (bar.label)}
-            <div class="flex flex-col gap-1" data-testid="audio-progress-{stage.stage}">
-              <div class="flex flex-wrap justify-between gap-x-4 text-sm">
-                <span>{bar.label}</span>
-                <span>{Math.floor(bar.fraction * 100)} %{bar.eta ? ` · ${bar.eta}` : ''}</span>
-              </div>
-              <div
-                class="c-progress h-2 overflow-hidden rounded-full bg-c-track"
-                role="progressbar"
-                aria-label={bar.label}
-                aria-valuemin={0}
-                aria-valuemax={100}
-                aria-valuenow={Math.floor(bar.fraction * 100)}
-              >
-                <div class="h-full bg-c-fill" style="width: {bar.fraction * 100}%" />
-              </div>
+        <div class="c-tile flex flex-col gap-2 rounded p-3" data-testid="audio-stage-{stage.stage}">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <h3 class="font-mincho font-bold">{stage.stage} · {stage.name}</h3>
+            <div class="flex flex-wrap gap-2" role="radiogroup" aria-label="Stage {stage.stage}">
+              {#each MODES as mode (mode)}
+                <button
+                  class="c-btn {stage.mode === mode ? 'c-btn-primary' : 'c-btn-secondary'}"
+                  role="radio"
+                  aria-checked={stage.mode === mode}
+                  on:click={() => stage && setMode(stage, mode)}
+                  data-testid="audio-stage-{stage.stage}-{mode}"
+                >
+                  {AUDIO_MODE_LABELS[mode]}
+                </button>
+              {/each}
             </div>
-          {/each}
-          {#each views[stage.stage].lines as line}
-            <p class="text-sm">{line}</p>
-          {/each}
+          </div>
           {#if stage.pauseReason}
             <p class="c-notice text-sm" role="alert">
               <b>Paused:</b>
               {stage.pauseDetail ?? stage.pauseReason}
             </p>
-          {:else if stage.mode !== 'off' && views[stage.stage].waiting}
-            <p class="text-sm text-c-muted" data-testid="audio-waiting-{stage.stage}">
-              {views[stage.stage].waiting}
+          {/if}
+          {#if stage.mode !== 'off' && !views[stage.stage].done}
+            {#each views[stage.stage].bars as bar (bar.label)}
+              <div class="flex flex-col gap-1" data-testid="audio-progress-{stage.stage}">
+                <div class="flex flex-wrap justify-between gap-x-4 text-sm">
+                  <span>{bar.label}</span>
+                  <span>{Math.floor(bar.fraction * 100)} %{bar.eta ? ` · ${bar.eta}` : ''}</span>
+                </div>
+                <div
+                  class="c-progress h-2 overflow-hidden rounded-full bg-c-track"
+                  role="progressbar"
+                  aria-label={bar.label}
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={Math.floor(bar.fraction * 100)}
+                >
+                  <div class="h-full bg-c-fill" style="width: {bar.fraction * 100}%" />
+                </div>
+              </div>
+            {/each}
+            {#if !stage.pauseReason && views[stage.stage].waiting}
+              <p class="text-sm text-c-muted" data-testid="audio-waiting-{stage.stage}">
+                {views[stage.stage].waiting}
+              </p>
+            {/if}
+          {/if}
+          {#if stage.mode !== 'off' && views[stage.stage].summary}
+            <p class="text-sm" data-testid="audio-summary-{stage.stage}">
+              {views[stage.stage].summary}
             </p>
           {/if}
-          {#each views[stage.stage].found as line}
-            <p class="text-sm" data-testid="audio-found-{stage.stage}">{line}</p>
-          {/each}
+          {#if stage.mode !== 'off' && views[stage.stage].gate}
+            <p class="text-sm" data-testid="audio-gate-summary-{stage.stage}">
+              {views[stage.stage].gate}
+            </p>
+          {/if}
           {#if stage.stage === 4 && s4 && stage.mode !== 'off'}
-            <div class="flex flex-col gap-1 text-sm" data-testid="audio-sites">
-              {#if s4.fetcher && !s4.fetcher.online}
-                <p class="c-notice" role="alert" data-testid="audio-fetcher-offline">
-                  The fetch container is offline: nothing is asked until it is back.
-                </p>
-              {/if}
-              {#each s4.sites as site (site.site)}
-                <p data-testid="audio-site-{site.site}">
-                  {siteLine(site)}
-                  {#if site.pausedReason}
-                    <button class="c-btn c-btn-ghost" on:click={() => resumeSite(site.site)}
-                      >Resume</button
-                    >
-                  {/if}
-                  {#if site.failed > 0}
-                    <button
-                      class="c-btn c-btn-ghost"
-                      on:click={() => retrySite(site.site)}
-                      data-testid="audio-site-retry-{site.site}">Ask again</button
-                    >
-                  {/if}
-                </p>
-              {/each}
-            </div>
-          {/if}
-          {#if stage.stage === 4 && p4?.gate}
-            <div class="flex flex-col gap-1 text-sm" data-testid="audio-online-gate-card">
-              <p class="font-medium">
-                Checked on the labeled books: {p4.gate.passed ? '✓ passes' : '✗ not passed'}
+            {#if s4.fetcher && !s4.fetcher.online}
+              <p class="c-notice text-sm" role="alert" data-testid="audio-fetcher-offline">
+                The fetch container is offline: nothing is asked until it is back.
               </p>
-              {#each onlineGateLines(p4.gate) as line}<p>{line}</p>{/each}
-              {#each p4.gate.misses.slice(0, 10) as m (m.id)}
-                <p class="font-bold">{onlineMissLine(m)}</p>
-              {/each}
-            </div>
-          {/if}
-          {#if stage.stage === 3 && p3?.gate}
-            <div class="flex flex-col gap-1 text-sm" data-testid="audio-gate">
-              <p class="font-medium">
-                Checked on the labeled pairs: {p3.gate.passed ? '✓ passes' : '✗ not passed'}
+            {/if}
+            <!-- A site that needs you (paused, or requests given up) shows outside the fold. -->
+            {#each s4.sites.filter((x) => x.pausedReason || x.failed > 0) as site (site.site)}
+              <p class="text-sm" data-testid="audio-site-problem-{site.site}">
+                {siteLine(site)}
+                {#if site.pausedReason}
+                  <button class="c-btn c-btn-ghost" on:click={() => resumeSite(site.site)}
+                    >Resume</button
+                  >
+                {/if}
+                {#if site.failed > 0}
+                  <button
+                    class="c-btn c-btn-ghost"
+                    on:click={() => retrySite(site.site)}
+                    data-testid="audio-site-retry-{site.site}">Ask again</button
+                  >
+                {/if}
               </p>
-              {#each gateLines(p3.gate) as line}<p>{line}</p>{/each}
-              {#each p3.gate.misses.slice(0, 10) as m (m.n)}
-                <p class="font-bold">{missLine(m)}</p>
+            {/each}
+          {/if}
+          <details
+            open={detailsOpen[stage.stage]}
+            on:toggle={(e) => stage && toggleDetails(stage.stage, e)}
+            data-testid="audio-details-{stage.stage}"
+          >
+            <summary class="cursor-pointer text-sm text-c-muted">Details</summary>
+            <div class="mt-2 flex flex-col gap-2 text-sm">
+              <p class="text-c-muted">{hint(stage)}</p>
+              {#if stage.mode !== 'off'}
+                <div>
+                  <button
+                    class="c-btn c-btn-ghost"
+                    on:click={() => stage && analyseAgain(stage.stage)}
+                    data-testid="audio-analyse-again-{stage.stage}">Run the analysis again</button
+                  >
+                </div>
+              {/if}
+              {#each views[stage.stage].lines as line}
+                <p>{line}</p>
               {/each}
-              {#if p3.gate.misses.length > 10}
-                <p class="text-c-muted">
-                  And {n(p3.gate.misses.length - 10)} more (list “Checked on the labeled pairs” below).
-                </p>
+              {#each views[stage.stage].found as line}
+                <p data-testid="audio-found-{stage.stage}">{line}</p>
+              {/each}
+              {#if stage.stage === 4 && s4 && stage.mode !== 'off'}
+                <div class="flex flex-col gap-1" data-testid="audio-sites">
+                  {#each s4.sites as site (site.site)}
+                    <p data-testid="audio-site-{site.site}">{siteLine(site)}</p>
+                  {/each}
+                </div>
+              {/if}
+              {#if stage.stage === 4 && p4?.gate}
+                <div class="flex flex-col gap-1" data-testid="audio-online-gate-card">
+                  <p class="font-medium">
+                    Checked on the labeled books: {p4.gate.passed ? '✓ passes' : '✗ not passed'}
+                  </p>
+                  {#each onlineGateLines(p4.gate) as line}<p>{line}</p>{/each}
+                  {#each p4.gate.misses.slice(0, 10) as m (m.id)}
+                    <p class="font-bold">{onlineMissLine(m)}</p>
+                  {/each}
+                </div>
+              {/if}
+              {#if stage.stage === 3 && p3?.gate}
+                <div class="flex flex-col gap-1" data-testid="audio-gate">
+                  <p class="font-medium">
+                    Checked on the labeled pairs: {p3.gate.passed ? '✓ passes' : '✗ not passed'}
+                  </p>
+                  {#each gateLines(p3.gate) as line}<p>{line}</p>{/each}
+                  {#each p3.gate.misses.slice(0, 10) as m (m.n)}
+                    <p class="font-bold">{missLine(m)}</p>
+                  {/each}
+                  {#if p3.gate.misses.length > 10}
+                    <p class="text-c-muted">
+                      And {n(p3.gate.misses.length - 10)} more (list “Checked on the labeled pairs” below).
+                    </p>
+                  {/if}
+                </div>
               {/if}
             </div>
-          {/if}
+          </details>
         </div>
       {/if}
     {/each}
