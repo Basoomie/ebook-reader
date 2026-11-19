@@ -460,14 +460,26 @@ export class NotificationWatcher {
     }
   }
 
-  /** Stage 4 is not off and has fetch requests queued or out (index fetch_requests_lease). */
+  /**
+   * A stage 4 is not off (the Calibre cleanup's, or the audiobook cleanup's, WP21c: both ask
+   * through the one fetch helper) and fetch requests are queued or out (index
+   * fetch_requests_lease).
+   */
   private stage4HasWork(): boolean {
     const db = this.s.cleanupDb;
     if (!db) return false;
     const st = db.prepare('SELECT mode FROM stages WHERE stage = 4').get() as
       | { mode: string }
       | undefined;
-    if (!st || st.mode === 'off') return false;
+    let audio: { mode: string } | undefined;
+    try {
+      audio = db.prepare('SELECT mode FROM audio_stages WHERE stage = 4').get() as
+        | { mode: string }
+        | undefined;
+    } catch {
+      audio = undefined;
+    }
+    if ((!st || st.mode === 'off') && (!audio || audio.mode === 'off')) return false;
     return !!db
       .prepare("SELECT 1 FROM fetch_requests WHERE state IN ('queued', 'leased') LIMIT 1")
       .get();

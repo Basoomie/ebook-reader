@@ -78,7 +78,13 @@ export function authorFromName(name: string): string | null {
   const m = /^\[([^\]]+)\]\s/.exec(demojibake(name).normalize('NFKC'));
   if (!m) return null;
   const v = m[1].trim();
-  if (/\d|巻|弾|CD|上|中|下|編|話|版|kikubon|audiobook|dwango/i.test(v)) return null;
+  // Volume, part, edition and store tags, never a name (田中 has 中 but is a name).
+  if (
+    /\d|巻|弾|CD|kikubon|audiobook|dwango/i.test(v) ||
+    /^(上|中|下|前編|後編|新装版|完全版)$/.test(v) ||
+    /(編|話|版)$/.test(v)
+  )
+    return null;
   return KANA_KANJI.test(v) || /^[A-Za-z .'-]{3,}$/.test(v) ? v : null;
 }
 

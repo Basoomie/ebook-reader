@@ -1173,8 +1173,12 @@ export class AudioStage4 {
       else p.sampleErrors++;
     }
     if (r.opening) {
-      if (this.deps.calibreBusy?.()) return false;
-      if (!(await this.deps.lock.acquire(OWNER, 'audio', shouldStop))) return false;
+      // Calibre first: while one of its jobs uses the disk nothing is read (the step ends and
+      // the unit is read later); a wait for the lock gives up as soon as Calibre wants the disk.
+      const calibreBusy = () => this.deps.calibreBusy?.() ?? this.deps.lock.calibreBusy();
+      if (calibreBusy()) return false;
+      if (!(await this.deps.lock.acquire(OWNER, 'audio', () => shouldStop() || calibreBusy())))
+        return false;
       try {
         const seconds = this.openingSeconds(inputs, s);
         const key = openingKey(inputs.opening, seconds);

@@ -561,6 +561,22 @@ describe('the cleanup', () => {
     );
   });
 
+  it('the fetch helper also matters while the audiobook stage 4 has requests (WP21c)', async () => {
+    const e = await makeEnv();
+    await withDiscord(e);
+    e.fetcher = { online: false, lastSeenAt: e.clock.t - 2 * HOUR, problem: null };
+    e.cdb
+      .prepare(
+        `INSERT INTO fetch_requests (site, key, url, created_at, updated_at) VALUES ('audible', 'k', 'https://x', ?, ?)`,
+      )
+      .run(e.clock.t, e.clock.t);
+    await e.round();
+    expect(e.svc.store.getProblem('fetch_offline')).toBeUndefined(); // both stages 4 off
+    e.cdb.prepare("UPDATE audio_stages SET mode = 'analyse' WHERE stage = 4").run();
+    await e.round();
+    expect(e.discord.messages[0]).toMatch(/fetch helper is offline/);
+  });
+
   it('automatic field pauses and resumes are digest lines', async () => {
     const e = await makeEnv();
     await withDiscord(e);
