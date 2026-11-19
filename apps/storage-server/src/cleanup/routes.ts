@@ -514,6 +514,29 @@ function addAudioRoutes(router: Router, options: CleanupOptions): void {
       throw new ApiError(400, 'bad_request', (err as Error).message);
     }
   });
+
+  // Stage 5 (WP21d): the metadata lists (read only: no editing in WP21d).
+  router.get('/cleanup/audio/meta', (req, res) => {
+    const audio = audioOr503(options);
+    try {
+      res.json(audio.meta(String(req.query.list ?? ''), page(req)));
+    } catch (err) {
+      throw new ApiError(400, 'bad_request', (err as Error).message);
+    }
+  });
+
+  // The AI framework (WP21d): spending, models per task, the providers' model lists.
+  router.get('/cleanup/ai/status', (_req, res) => {
+    res.json(audioOr503(options).aiStatus());
+  });
+
+  router.post('/cleanup/ai/models/check', async (_req, res, next) => {
+    try {
+      res.json(await audioOr503(options).checkModels());
+    } catch (err) {
+      next(err);
+    }
+  });
 }
 
 /** /api/v1/cleanup/*: the /cleanup page. Behind requireUser. */

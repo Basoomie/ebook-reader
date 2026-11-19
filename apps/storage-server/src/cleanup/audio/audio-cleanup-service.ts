@@ -40,6 +40,12 @@ import {
   stage4StartsOver,
 } from './stage4-online';
 import { audioSiteLines, onlineList, unitStates } from './online-views';
+import { AiRunner } from '../ai/runner';
+import { providerOf, type ProviderClient } from '../ai/providers';
+import type { Provider } from '../ai/types';
+import { AudioStage5, stage5AskKey, stage5RulesKey } from './stage5-meta';
+import { spendNow } from '../ai/spend';
+import { metaList } from './meta-views';
 import type { FetchQueue } from '../stage4/queue';
 import { AUDIO_FETCH_SITES } from '../settings';
 import type { AudioRoots } from './walk';
@@ -68,6 +74,8 @@ export interface AudioCleanupOptions {
   /** Stage 4 (WP21c): the shared fetch queue (the Calibre cleanup's), and its fetcher's state. */
   fetchQueue?: FetchQueue | null;
   fetcherStatus?: () => unknown;
+  /** Stage 5 (WP21d): tests give their own AI provider clients. */
+  aiProviders?: (provider: Provider, key: string) => ProviderClient;
   log?: (m: string) => void;
   logError?: (m: string, err?: unknown) => void;
 }
@@ -134,6 +142,9 @@ export class AudioCleanupService {
   readonly stage2: AudioStage2 | null;
   readonly stage3: AudioStage3 | null;
   readonly stage4: AudioStage4 | null;
+  /** Stage 5 (WP21d): needs only cleanup.db (no folders, no disk, no fetching). */
+  readonly stage5: AudioStage5;
+  readonly ai: AiRunner;
   private roots: RootsCheck = { ok: false, problem: 'Not checked yet', checkedAt: 0 };
   private timer: NodeJS.Timeout | null = null;
   private ticking: Promise<void> | null = null;
@@ -141,12 +152,14 @@ export class AudioCleanupService {
   private running2: Promise<void> | null = null;
   private running3: Promise<void> | null = null;
   private running4: Promise<void> | null = null;
+  private running5: Promise<void> | null = null;
   private snapshotting: Promise<void> | null = null;
   private stopped = false;
   waiting1: string | null = null;
   waiting2: string | null = null;
   waiting3: string | null = null;
   waiting4: string | null = null;
+  waiting5: string | null = null;
   private readonly log: (m: string) => void;
   private readonly logError: (m: string, err?: unknown) => void;
 
@@ -198,6 +211,18 @@ export class AudioCleanupService {
             log: this.log,
           })
         : null;
+    this.ai = new AiRunner({
+      db: opts.db,
+      secrets: opts.secrets,
+      providers: opts.aiProviders,
+      log: this.log,
+    });
+    this.stage5 = new AudioStage5({
+      db: opts.db,
+      runner: this.ai,
+      readLabels: opts.readLabels,
+      log: this.log,
+    });
   }
 
   get db(): Database.Database {
@@ -220,6 +245,7 @@ export class AudioCleanupService {
     await this.running2;
     await this.running3;
     await this.running4;
+    await this.running5;
     await this.snapshotting;
     this.opts.lock.release(DISK_OWNERS.audio1);
     this.opts.lock.release(DISK_OWNERS.audio3);
@@ -249,6 +275,7 @@ export class AudioCleanupService {
     this.round2();
     this.round3();
     this.round4();
+    this.round5();
   }
 
   private round1(): void {
@@ -563,6 +590,94 @@ export class AudioCleanupService {
     })();
   }
 
+  /**
+   * Stage 5 (WP21d): decides the metadata of the recordings stage 4 looked up. It starts once
+   * stage 4 has finished, starts over when stage 4 runs again, decides again (nobody asked again)
+   * when its rules' settings change, and asks again (answers already given are kept) when the
+   * models, the prompt or the labeled-only setting change. It reads nothing but cleanup.db.
+   */
+  private round5(): void {
+    const st = getAudioStage(this.db, 5);
+    if (st.mode === 'off') {
+      this.waiting5 = null;
+      return;
+    }
+    const s4 = getAudioStage(this.db, 4).progress as {
+      analysisId?: string;
+      phase?: string;
+      error?: string | null;
+    };
+    if (!s4?.analysisId || s4.phase !== 'done' || s4.error) {
+      this.waiting5 = 'Waiting for stage 4 to finish (stage 5 decides from the records it found)';
+      return;
+    }
+    let p = this.stage5.progress();
+    if (!p || (p.stage4Id && p.stage4Id !== s4.analysisId)) {
+      if (this.running5) return;
+      if (p) this.log(`Audiobooks stage 5: starting over (stage 4 ${s4.analysisId})`);
+      p = this.stage5.restart();
+    }
+    if (p.phase === 'done') {
+      if (!p.error && !this.running5) {
+        if (p.askKey && p.askKey !== stage5AskKey(this.db)) this.stage5.reask();
+        else if (p.rulesKey && p.rulesKey !== stage5RulesKey(this.db)) this.stage5.redecide();
+        else {
+          this.stage5.refreshGate();
+          this.waiting5 = p.error
+            ? `The analysis failed: ${p.error}`
+            : 'Preview: nothing is changed';
+          return;
+        }
+        p = this.stage5.progress()!;
+      } else {
+        this.waiting5 = p.error ? `The analysis failed: ${p.error}` : 'Preview: nothing is changed';
+        return;
+      }
+    }
+    this.waiting5 = this.waiting5Text();
+    if (!this.running5) this.run5(s4.analysisId);
+  }
+
+  private waiting5Text(): string {
+    const p = this.stage5.progress();
+    if (p?.phase === 'models') return p.wait ?? 'Asking the models';
+    if (p?.phase === 'evidence') return 'Building the evidence records';
+    if (p?.phase === 'decide') return 'Deciding';
+    return 'Analysing';
+  }
+
+  private run5(stage4Id: string): void {
+    const stage = this.stage5;
+    const stop = () => {
+      if (this.stopped || getAudioStage(this.db, 5).mode === 'off') return true;
+      const s4 = getAudioStage(this.db, 4).progress as { analysisId?: string; phase?: string };
+      return s4?.analysisId !== stage4Id || s4.phase !== 'done';
+    };
+    this.running5 = (async () => {
+      try {
+        for (;;) {
+          if (stop()) break;
+          const p = stage.progress();
+          if (p && p.phase === 'decide' && p.rulesKey && p.rulesKey !== stage5RulesKey(this.db))
+            stage.redecide();
+          const r = await stage.step(stop, stage4Id);
+          this.waiting5 = this.waiting5Text();
+          if (r === 'done') break;
+          if (r === 'wait') {
+            // Waiting for the providers' batches, the limit or a key: check again in a moment.
+            for (let i = 0; i < 10 && !stop(); i++)
+              await new Promise((res) => setTimeout(res, 500));
+          } else await new Promise((res) => setImmediate(res));
+        }
+      } catch (err) {
+        this.logError('Audiobook cleanup: stage 5 failed:', err);
+      } finally {
+        this.running5 = null;
+        void this.tick();
+      }
+    })();
+  }
+
   /** An answer reached the shared queue: stage 4's loop takes it on its next step. */
   answerArrived(): void {
     if (!this.stopped && !this.running4 && getAudioStage(this.db, 4).mode !== 'off') {
@@ -578,6 +693,12 @@ export class AudioCleanupService {
 
   /** "Run the analysis again" (keeps the hashes and health of unchanged files). */
   reanalyse(stage: number): void {
+    if (stage === 5) {
+      if (this.running5) throw new Error('Stage 5 is analysing; switch it Off first');
+      this.stage5.restart();
+      void this.tick();
+      return;
+    }
     if (stage === 1 && this.stage1) this.stage1.restart();
     else if (stage === 2 && this.stage2) this.stage2.restart();
     else if (stage === 3 && this.stage3) {
@@ -691,6 +812,7 @@ export class AudioCleanupService {
         counts: p3?.counts ?? null,
       },
       stage4: this.stage4Status(),
+      stage5: { available: true, waiting: this.waiting5, ...this.stage5.status() },
     };
   }
 
@@ -709,6 +831,55 @@ export class AudioCleanupService {
       ratios: lines.ratios,
       counts: p4?.counts ?? null,
     };
+  }
+
+  /** Stage 5's lists (paged). */
+  meta(
+    list: string,
+    opts: { offset?: number; limit?: number } = {},
+  ): { total: number; items: Record<string, unknown>[] } {
+    const p = this.stage5.progress();
+    if (!p) return { total: 0, items: [] };
+    return metaList(this.db, p, list, opts, this.stage5);
+  }
+
+  /** The AI framework's state for Settings: spending, the models per task and their checks. */
+  aiStatus() {
+    const s = getSettings(this.db);
+    const checks = this.ai.modelChecks();
+    const tasks = Object.entries(s.models).map(([task, model]) => {
+      const provider = providerOf(model);
+      const c = checks[provider];
+      return {
+        task,
+        model,
+        provider,
+        price: s.ai.prices[model] ?? null,
+        checked: c ? (c.models ? c.models.includes(model) : null) : null,
+      };
+    });
+    return {
+      settings: s.ai,
+      spend: { ...spendNow(this.db), limitUsd: s.ai.spendLimitUsd },
+      keys: {
+        anthropic: this.opts.secrets.read('anthropicApiKey') !== null,
+        openai: this.opts.secrets.read('openaiApiKey') !== null,
+      },
+      checks: Object.fromEntries(
+        Object.entries(checks).map(([p, c]) => [
+          p,
+          { checkedAt: c.checkedAt, error: c.error, models: c.models?.length ?? null },
+        ]),
+      ),
+      tasks,
+    };
+  }
+
+  /** Settings: Check models (reads each provider's model list with the stored key). */
+  async checkModels() {
+    await this.ai.checkModels();
+    void this.tick();
+    return this.aiStatus();
   }
 
   /** Stage 4's lists (paged). */

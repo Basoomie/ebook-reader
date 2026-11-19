@@ -123,8 +123,8 @@ describe('cleanup.db migration 8', () => {
           mode: string;
         }[]
       ).map((r) => r.mode),
-      // Stages 0-2 (WP21a), 3 (WP21b), 4 (WP21c), all Off.
-    ).toEqual(['off', 'off', 'off', 'off', 'off']);
+      // Stages 0-2 (WP21a), 3 (WP21b), 4 (WP21c), 5 (WP21d), all Off.
+    ).toEqual(['off', 'off', 'off', 'off', 'off', 'off']);
     for (const t of [
       'audio_files',
       'audio_identity',

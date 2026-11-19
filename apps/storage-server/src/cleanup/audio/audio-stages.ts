@@ -1,6 +1,7 @@
 /**
  * The audiobook cleanup's stages (WP21a): 0 = the Audiobookshelf snapshot (taken on request),
- * 1 = identity, 2 = books and file health, 3 = duplicates (WP21b), 4 = online sources (WP21c).
+ * 1 = identity, 2 = books and file health, 3 = duplicates (WP21b), 4 = online sources (WP21c),
+ * 5 = metadata decisions (WP21d).
  * Stages 1-4 are Off (default)
  * or Preview (`analyse`: analysis only). Nothing applies anything yet, so On is refused.
  */
@@ -14,10 +15,11 @@ export const AUDIO_STAGE_NAMES: Record<number, string> = {
   2: 'Books and file health',
   3: 'Duplicates (same recording)',
   4: 'Online sources (Audible, kikubon, audiobook.jp)',
+  5: 'Metadata (rules and AI setup E)',
 };
 
 /** Stages with a mode in this build (stage 0 is taken on request). */
-export const AUDIO_ANALYSIS_STAGES: readonly number[] = [1, 2, 3, 4];
+export const AUDIO_ANALYSIS_STAGES: readonly number[] = [1, 2, 3, 4, 5];
 
 export interface AudioStageRow {
   stage: number;

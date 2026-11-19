@@ -49,6 +49,11 @@ export interface GateSettings {
    * <DB_DIR>/cleanup/reference-sample/audio/labels.json.
    */
   audiobookPairsFile: string;
+  /**
+   * Audiobooks stage 5 (WP21d): a field's automatic values (the rules', or both models agreeing)
+   * must be right on the labeled books at least this often (%).
+   */
+  audiobookMetaPercent: number;
 }
 
 export interface CoverSettings {
@@ -153,6 +158,51 @@ export interface AudiobookSettings {
    * radio bonus clips; user, 2026-11-18): looked up nowhere. AI books never are either.
    */
   noStoreRecordFolders: string[];
+  /**
+   * Stage 5 (WP21d): 複数ナレーター when the chosen record lists at least this many narrators
+   * (measured on the labeled books: every book with 2 or more is labeled multi-narrator).
+   */
+  multiNarratorMin: number;
+}
+
+/** A model's list price per million tokens (US$). */
+export interface AiPrice {
+  inputPerMTok: number;
+  outputPerMTok: number;
+}
+
+/**
+ * The cleanup's AI models (WP21d, shared by every stage that asks them: the audiobook stage 5,
+ * later the Calibre stage 4 of WP20e). Nothing is asked while the spending limit is not set.
+ */
+export interface AiSettings {
+  /** All AI spending of the cleanup may reach this (US$); null = not set (nothing is asked). */
+  spendLimitUsd: number | null;
+  /** batch: the providers' Batch APIs (half price, answers within hours); direct: one call each. */
+  mode: 'batch' | 'direct';
+  /** Direct mode: calls at the same time per model. */
+  directWorkers: number;
+  /** Batch mode: requests per batch. */
+  batchSize: number;
+  /** Batch mode: how often a batch at the provider is checked (s). */
+  batchPollSeconds: number;
+  /** Claude: max_tokens, which includes the adaptive thinking (leave room). */
+  maxTokens: number;
+  /** Direct mode: time limit for one call (s). */
+  requestTimeoutSeconds: number;
+  /** Busy (429), server errors and network errors are tried this many times in all. */
+  attempts: number;
+  /** The Batch APIs' price as a share of the list price. */
+  batchPriceFactor: number;
+  /** List prices per model id (models not listed are refused: their cost can't be counted). */
+  prices: Record<string, AiPrice>;
+  /** Ask for the answer in the stage's JSON schema (the providers' structured outputs). */
+  structuredOutputs: boolean;
+  /**
+   * Ask the models only about the labeled books (the gate's check before a library run); the
+   * other items are decided by the rules alone, with every open field flagged.
+   */
+  labeledOnly: boolean;
 }
 
 /** One site's queue in the fetch container (WP20d). */
@@ -271,6 +321,8 @@ export interface CleanupSettings {
   audiobooks: AudiobookSettings;
   /** Stage 4's online lookups (WP20d). */
   fetch: FetchSettings;
+  /** The AI models (WP21d). */
+  ai: AiSettings;
   backup: BackupRecord;
 }
 
@@ -281,6 +333,11 @@ export const MODEL_TASKS = [
   'stage4.upgradeSecondary',
   'stage5.primary',
   'stage5.secondary',
+  // The audiobook cleanup's stage 5 (WP21d).
+  'audio5.primary',
+  'audio5.secondary',
+  'audio5.upgradePrimary',
+  'audio5.upgradeSecondary',
 ] as const;
 
 export const DEFAULT_SETTINGS: CleanupSettings = {
@@ -295,6 +352,10 @@ export const DEFAULT_SETTINGS: CleanupSettings = {
     'stage4.upgradeSecondary': 'gpt-6.1-sol',
     'stage5.primary': 'claude-haiku-5-5',
     'stage5.secondary': 'gpt-6-luna',
+    'audio5.primary': 'claude-haiku-5-5',
+    'audio5.secondary': 'gpt-6-luna',
+    'audio5.upgradePrimary': 'claude-sonnet-5-5',
+    'audio5.upgradeSecondary': 'gpt-6.1-sol',
   },
   pacing: {
     readMbPerSecond: 40,
@@ -313,6 +374,7 @@ export const DEFAULT_SETTINGS: CleanupSettings = {
     labeledBooksFile: '',
     duplicatePairsFile: '',
     audiobookPairsFile: '',
+    audiobookMetaPercent: 95,
   },
   reviewAlarmPercent: 5,
   libraryChangedPausePercent: 5,
@@ -360,6 +422,27 @@ export const DEFAULT_SETTINGS: CleanupSettings = {
     onlineStorePages: 3,
     onlineOpeningSeconds: 240,
     noStoreRecordFolders: ['Discord/moved/山田じぇみ子の ざこざこお兄さん取締ラジオ'],
+    multiNarratorMin: 2,
+  },
+  ai: {
+    spendLimitUsd: null,
+    mode: 'batch',
+    directWorkers: 3,
+    batchSize: 500,
+    batchPollSeconds: 60,
+    maxTokens: 16000,
+    requestTimeoutSeconds: 180,
+    attempts: 4,
+    batchPriceFactor: 0.5,
+    // The bake-off's measured list prices (reference-sample.md, 2026-11-12).
+    prices: {
+      'claude-haiku-5-5': { inputPerMTok: 0.1, outputPerMTok: 0.5 },
+      'gpt-6-luna': { inputPerMTok: 0.1, outputPerMTok: 0.5 },
+      'claude-sonnet-5-5': { inputPerMTok: 2, outputPerMTok: 10 },
+      'gpt-6.1-sol': { inputPerMTok: 2, outputPerMTok: 10 },
+    },
+    structuredOutputs: true,
+    labeledOnly: false,
   },
   fetch: {
     // Paces of plan section 6 (Bookmeter and Natively as BookWalker; the cover images as decided
@@ -716,6 +799,53 @@ function validate(key: Key, value: unknown, current: CleanupSettings): unknown {
           true,
         ),
         noStoreRecordFolders: folderList(v.noStoreRecordFolders),
+        multiNarratorMin: num('Several narrators from', v.multiNarratorMin, 2, 20, true),
+      };
+    }
+    case 'ai': {
+      const v = group('AI', value, current.ai);
+      if (v.mode !== 'batch' && v.mode !== 'direct')
+        throw new SettingsError('AI: the mode must be batch or direct');
+      if (!isObj(v.prices)) throw new SettingsError('AI: prices must be an object');
+      const entries = Object.entries(v.prices);
+      if (entries.length > 30) throw new SettingsError('AI: at most 30 prices');
+      const prices: Record<string, AiPrice> = {};
+      for (const [model, p] of entries) {
+        const id = text('Model id', model, 100);
+        if (!id) continue;
+        if (!isObj(p)) throw new SettingsError(`AI: the price of ${id} must be an object`);
+        prices[id] = {
+          inputPerMTok: num(`${id}: input price ($ per million tokens)`, p.inputPerMTok, 0, 1000),
+          outputPerMTok: num(
+            `${id}: output price ($ per million tokens)`,
+            p.outputPerMTok,
+            0,
+            1000,
+          ),
+        };
+      }
+      return {
+        spendLimitUsd:
+          v.spendLimitUsd === null || (v.spendLimitUsd as unknown) === ''
+            ? null
+            : num('Spending limit ($)', v.spendLimitUsd, 0, 10000),
+        mode: v.mode,
+        directWorkers: num('Calls at the same time', v.directWorkers, 1, 20, true),
+        batchSize: num('Requests per batch', v.batchSize, 1, 10000, true),
+        batchPollSeconds: num('Batch check every (s)', v.batchPollSeconds, 5, 3600, true),
+        maxTokens: num('Claude max_tokens (thinking included)', v.maxTokens, 1000, 64000, true),
+        requestTimeoutSeconds: num(
+          'Time limit per call (s)',
+          v.requestTimeoutSeconds,
+          10,
+          900,
+          true,
+        ),
+        attempts: num('Tries per call', v.attempts, 1, 10, true),
+        batchPriceFactor: num('Batch price (share of the list price)', v.batchPriceFactor, 0, 1),
+        prices,
+        structuredOutputs: v.structuredOutputs === true,
+        labeledOnly: v.labeledOnly === true,
       };
     }
     case 'fetch': {
@@ -886,6 +1016,12 @@ function validate(key: Key, value: unknown, current: CleanupSettings): unknown {
         labeledBooksFile: text('Labeled books file', v.labeledBooksFile, 1000),
         duplicatePairsFile: text('Measured duplicate pairs file', v.duplicatePairsFile, 1000),
         audiobookPairsFile: text('Labeled audiobook pairs file', v.audiobookPairsFile, 1000),
+        audiobookMetaPercent: num(
+          'Audiobook metadata: bar per field (%)',
+          v.audiobookMetaPercent,
+          50,
+          100,
+        ),
       };
     }
     case 'reviewAlarmPercent':

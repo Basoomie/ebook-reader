@@ -946,6 +946,140 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
       );
     `,
   },
+  {
+    version: 13,
+    name: 'the shared AI framework and audiobook stage 5, metadata (WP21d)',
+    sql: `
+      -- The AI framework (src/cleanup/ai/, shared by every stage that asks the models; stage =
+      -- "audio5" here, "calibre4" for WP20e). Each item's evidence record, kept so an upgrade
+      -- (setups F/J) asks other models without fetching or reading anything again.
+      CREATE TABLE ai_items (
+        stage             TEXT NOT NULL,
+        item_key          TEXT NOT NULL,
+        evidence          BLOB NOT NULL,
+        evidence_version  INTEGER NOT NULL,
+        evidence_hash     TEXT NOT NULL,
+        labeled           INTEGER NOT NULL DEFAULT 0,
+        updated_at        INTEGER NOT NULL,
+        PRIMARY KEY (stage, item_key)
+      );
+
+      -- Every question to a model and its answer. One per item, model, prompt version and
+      -- evidence: a restart, a rules change or a new analysis with the same evidence never asks
+      -- again. state: queued -> sent -> answered | blocked (a content block: final, never asked
+      -- again) | invalid (no usable JSON) | failed (errors after every try).
+      CREATE TABLE ai_requests (
+        id                 INTEGER PRIMARY KEY,
+        stage              TEXT NOT NULL,
+        item_key           TEXT NOT NULL,
+        role               TEXT NOT NULL,
+        provider           TEXT NOT NULL CHECK (provider IN ('anthropic', 'openai')),
+        model              TEXT NOT NULL,
+        prompt_version     TEXT NOT NULL,
+        evidence_hash      TEXT NOT NULL,
+        state              TEXT NOT NULL
+                           CHECK (state IN ('queued', 'sent', 'answered', 'blocked', 'invalid', 'failed')),
+        mode               TEXT CHECK (mode IS NULL OR mode IN ('direct', 'batch')),
+        batch_id           TEXT,
+        attempts           INTEGER NOT NULL DEFAULT 0,
+        answer_json        TEXT CHECK (answer_json IS NULL OR json_valid(answer_json)),
+        raw_text           TEXT,
+        input_tokens       INTEGER,
+        output_tokens      INTEGER,
+        cache_read_tokens  INTEGER,
+        cost_usd           REAL,
+        error              TEXT,
+        run_id             TEXT,
+        labeled            INTEGER NOT NULL DEFAULT 0,
+        created_at         INTEGER NOT NULL,
+        sent_at            INTEGER,
+        answered_at        INTEGER,
+        UNIQUE (stage, item_key, model, prompt_version, evidence_hash)
+      );
+      CREATE INDEX ai_requests_state ON ai_requests (stage, state, model, labeled);
+      CREATE INDEX ai_requests_batch ON ai_requests (batch_id) WHERE batch_id IS NOT NULL;
+      CREATE INDEX ai_requests_run ON ai_requests (run_id);
+      CREATE INDEX ai_requests_model ON ai_requests (model, state);
+      CREATE INDEX ai_requests_item ON ai_requests (stage, item_key);
+
+      -- A batch at a provider (its id is the provider's). estimate_usd is held against the
+      -- spending limit until its answers are in.
+      CREATE TABLE ai_batches (
+        id               TEXT PRIMARY KEY,
+        provider         TEXT NOT NULL,
+        model            TEXT NOT NULL,
+        stage            TEXT NOT NULL,
+        state            TEXT NOT NULL CHECK (state IN ('submitted', 'collected', 'failed')),
+        requests         INTEGER NOT NULL,
+        estimate_usd     REAL NOT NULL,
+        cost_usd         REAL,
+        provider_status  TEXT,
+        input_file_id    TEXT,
+        error            TEXT,
+        submitted_at     INTEGER NOT NULL,
+        checked_at       INTEGER,
+        ended_at         INTEGER
+      );
+      CREATE INDEX ai_batches_state ON ai_batches (state, provider);
+
+      -- The model ids each provider offered when last checked (Settings: Check models).
+      CREATE TABLE ai_model_checks (
+        provider    TEXT PRIMARY KEY,
+        checked_at  INTEGER NOT NULL,
+        models_json TEXT CHECK (models_json IS NULL OR json_valid(models_json)),
+        error       TEXT
+      );
+
+      -- The value of every field and where it came from: rules | both_models (both agreed) |
+      -- secondary_guess (flagged: the second model's answer) | rules_guess (flagged: the rules')
+      -- | unknown (flagged, nobody knows) | user | upgrade_models (setups F/J). An upgrade
+      -- re-checks only both_models, secondary_guess and rules_guess; nothing replaces user.
+      CREATE TABLE ai_values (
+        stage           TEXT NOT NULL,
+        item_key        TEXT NOT NULL,
+        field           TEXT NOT NULL,
+        value_json      TEXT NOT NULL CHECK (json_valid(value_json)),
+        source          TEXT NOT NULL CHECK (source IN ('rules', 'both_models', 'secondary_guess',
+                          'rules_guess', 'unknown', 'user', 'upgrade_models')),
+        flagged         INTEGER NOT NULL DEFAULT 0,
+        reason          TEXT,
+        rules_json      TEXT CHECK (rules_json IS NULL OR json_valid(rules_json)),
+        rules_auto      INTEGER,
+        primary_json    TEXT CHECK (primary_json IS NULL OR json_valid(primary_json)),
+        secondary_json  TEXT CHECK (secondary_json IS NULL OR json_valid(secondary_json)),
+        design          TEXT NOT NULL DEFAULT 'E',
+        evidence_hash   TEXT,
+        decided_at      INTEGER NOT NULL,
+        user_at         INTEGER,
+        PRIMARY KEY (stage, item_key, field)
+      );
+      CREATE INDEX ai_values_field ON ai_values (stage, field, source, flagged);
+      CREATE INDEX ai_values_flagged ON ai_values (stage, flagged, item_key);
+
+      -- Audiobook stage 5: one row per recording (stage 4's units), its values in ai_values.
+      -- kind: record (a store record chosen or to judge) | no_record | ai | radio.
+      -- state: evidence (built) -> asking (models asked) -> decided | error.
+      INSERT INTO audio_stages (stage, updated_at) VALUES (5, 0);
+      CREATE TABLE audio_meta_units (
+        analysis_id   TEXT NOT NULL,
+        unit_key      TEXT NOT NULL,
+        name          TEXT NOT NULL,
+        labeled       INTEGER NOT NULL DEFAULT 0,
+        kind          TEXT NOT NULL CHECK (kind IN ('record', 'no_record', 'ai', 'radio')),
+        stage4_class  TEXT,
+        record        TEXT,
+        state         TEXT NOT NULL CHECK (state IN ('evidence', 'asking', 'decided', 'error')),
+        flagged       INTEGER NOT NULL DEFAULT 0,
+        error         TEXT,
+        updated_at    INTEGER NOT NULL,
+        PRIMARY KEY (analysis_id, unit_key)
+      );
+      CREATE INDEX audio_meta_units_state ON audio_meta_units (analysis_id, state, labeled);
+      CREATE INDEX audio_meta_units_flagged ON audio_meta_units (analysis_id, flagged, unit_key);
+      CREATE INDEX audio_meta_units_kind ON audio_meta_units (analysis_id, kind, unit_key);
+      CREATE INDEX audio_meta_units_labeled ON audio_meta_units (analysis_id, labeled, unit_key);
+    `,
+  },
 ];
 
 export const CLEANUP_SCHEMA_VERSION = CLEANUP_MIGRATIONS[CLEANUP_MIGRATIONS.length - 1].version;
