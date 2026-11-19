@@ -474,6 +474,11 @@ export interface AudiobookSettings {
   dupFingerprintWorkers?: number;
   dupDecodeWorkers?: number;
   dupClipSeconds?: number;
+  dupBrandingMaxSeconds?: number;
+  dupBrandingScore?: number;
+  dupNoticeableErrors?: number;
+  /** Stage 2: files of a folder this long (minutes) are separate books. */
+  fullBookMinutes?: number;
 }
 
 export type SecretName = 'anthropicApiKey' | 'openaiApiKey' | 'calibrePassword' | 'absApiKey';
@@ -539,6 +544,8 @@ export interface AudioStage2Progress {
   finishedAt: number | null;
   walk: WalkResult | null;
   books: number;
+  /** Folders split into one book per full-length file (missing on older servers). */
+  splitFolders?: number;
   healthTotal: number;
   healthDone: number;
   healthReused: number;
@@ -630,6 +637,7 @@ export type AudioStage3Phase =
   | 'fingerprints'
   | 'compare'
   | 'decode'
+  | 'verify'
   | 'decide'
   | 'done';
 
@@ -667,6 +675,10 @@ export interface AudioStage3Progress {
   decodeRateFrom?: { at: number; audio: number } | null;
   compareDone?: number;
   compareTotal?: number;
+  /** The frame-by-frame step (missing on a server before it). */
+  verifyDone?: number;
+  verifyLeft?: number;
+  verifyRateFrom?: { at: number; done: number } | null;
   yields: number;
   phaseStartedAt: number;
   phaseStartDone: number;

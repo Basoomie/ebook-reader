@@ -34,6 +34,8 @@ import {
   type RuleSettings,
 } from '../src/cleanup/audio/dup-rules';
 import { toolArgs, wavFormat } from '../src/cleanup/audio/probe';
+import { compareFrames, FrameCollector, type FrameList } from '../src/cleanup/audio/dup-frames';
+import { folderBooks } from '../src/cleanup/audio/book-units';
 import { pairVerdict, spansOf, windowKey } from '../src/cleanup/audio/stage3-dups';
 import { initCleanupDatabase } from '../src/cleanup/cleanup-db';
 import { DISK_OWNERS } from '../src/cleanup/disk-lock';
@@ -53,8 +55,7 @@ function hasTool(name: string, arg = '-version'): boolean {
     return (err as { status?: number }).status !== undefined && name === 'faad';
   }
 }
-const HAS_TOOLS =
-  hasTool('ffmpeg') && hasTool('ffprobe') && hasTool('fpcalc') && hasTool('faad', '-h');
+const HAS_TOOLS = hasTool('ffmpeg') && hasTool('ffprobe') && hasTool('fpcalc');
 if (!HAS_TOOLS)
   console.warn('WP21b real-tool tests SKIPPED: ffmpeg/ffprobe/fpcalc/faad not all on PATH');
 
@@ -411,7 +412,7 @@ describe('the gate on the labeled pairs', () => {
     expect(expected(labels.pairs[1] as never)).toEqual({ same: true, best: 'b' });
   });
 
-  it('lists every miss: a wrong best copy, an unsure pair labeled different, a file not found', () => {
+  it('lists every miss: a proven drop of the better copy, an unsure pair labeled different, a file not found; keeping both is never a miss', () => {
     const r = scoreGate(
       labels,
       look({
@@ -428,8 +429,7 @@ describe('the gate on the labeled pairs', () => {
     );
     expect(r.passed).toBe(false);
     expect(r.misses.map((m) => [m.n, m.got])).toEqual([
-      [0, 'best a'],
-      [1, 'best a'],
+      [1, 'a stays (proven)'],
       [2, 'unsure (both stay, review)'],
       [4, 'not found (J)'],
     ]);
@@ -617,19 +617,109 @@ function treeProof(dir: string): string {
   return out.join('\n');
 }
 
-describe.skipIf(!HAS_TOOLS)('stage 3 on fixture audio with ffmpeg, fpcalc and faad2', () => {
-  const tmp = () => makeTempDir('wp21b-src');
+describe('frames and folders (pure)', () => {
+  const list = (vals: number[], sec = 0.05): FrameList => ({
+    hashes: BigUint64Array.from(vals.map((v) => BigInt(v))),
+    seconds: Float32Array.from(vals.map(() => sec)),
+  });
+  const range = (from: number, n: number) => Array.from({ length: n }, (_, i) => from + i);
 
-  /** Encodes recordings to m4b with chapters (lengths in seconds). */
-  function m4b(
-    dir: string,
-    name: string,
-    parts: Int16Array[],
-    bitrate: string,
-    chapters: number[],
-  ) {
-    const w = path.join(dir, `${name}.wav`);
-    fs.writeFileSync(w, wav(parts));
+  it('proves identical, branding-shaped and one-inserted-stretch copies; refuses anything else', () => {
+    const book = range(1000, 2000);
+    expect(compareFrames(list(book), list(book))).toMatchObject({
+      identical: true,
+      contained: true,
+    });
+    // The longer copy has 156 frames before and 146 after (Audible's opening and closing).
+    const branded = [...range(1, 156), ...book, ...range(500, 146)];
+    const r = compareFrames(list(book), list(branded));
+    expect(r).toMatchObject({ contained: true, longer: 'b', middleExtra: 0, middleAt: null });
+    expect(r.startExtra).toBeCloseTo(7.8, 3);
+    expect(r.endExtra).toBeCloseTo(7.3, 3);
+    // 風花帖: one stretch more inside the longer copy.
+    const longer = [...book.slice(0, 1200), ...range(9000, 400), ...book.slice(1200)];
+    const m = compareFrames(list(longer), list(book));
+    expect(m).toMatchObject({ contained: true, longer: 'a', startExtra: 0, endExtra: 0 });
+    expect(m.middleExtra).toBeCloseTo(20, 3);
+    expect(m.middleAt).toBeCloseTo(60, 3);
+    // One frame different in the middle: not proof.
+    const changed = [...book];
+    changed[1500] = 7;
+    expect(compareFrames(list(book), list(changed)).contained).toBe(false);
+    // Two stretches inserted: not proof (only one is allowed).
+    const two = [
+      ...book.slice(0, 500),
+      77777,
+      ...book.slice(500, 1500),
+      88888,
+      ...book.slice(1500),
+    ];
+    expect(compareFrames(list(book), list(two)).contained).toBe(false);
+    // A re-encode shares no frames.
+    expect(compareFrames(list(book), list(range(50000, 2000))).contained).toBe(false);
+    expect(compareFrames(list([]), list(book)).detail).toMatch(/no frames/);
+  });
+
+  it('reads framemd5 output in chunks of any size, file after file', () => {
+    const text = [
+      '#format: frame checksums',
+      '#tb 0: 1/22050',
+      '#stream#, dts,        pts, duration,     size, hash',
+      '0,      -1024,      -1024,     1024,      260, 76420d419b70956e32764a7939e3f681, S=1,       10, f00904fd87b64e6bede38cfd77615dfc',
+      '0,          0,          0,     1024,      226, 0be451158f1d7988ed6b9c2577e38469',
+      '',
+    ].join('\n');
+    const c = new FrameCollector();
+    c.nextFile();
+    for (let i = 0; i < text.length; i += 7) c.push(text.slice(i, i + 7));
+    c.end();
+    c.nextFile();
+    c.push('#tb 0: 1/44100\n0, 0, 0, 1024, 100, 0123456789abcdef0123456789abcdef\n');
+    c.end();
+    const r = c.result();
+    expect(r.hashes.length).toBe(3);
+    expect(r.hashes[0]).toBe(BigInt('0x76420d419b70956e'));
+    expect(r.hashes[2]).toBe(BigInt('0x0123456789abcdef'));
+    expect(r.seconds[0]).toBeCloseTo(1024 / 22050, 6);
+    expect(r.seconds[2]).toBeCloseTo(1024 / 44100, 6);
+    expect(c.bad).toBe(0);
+    c.push('garbage line\n');
+    c.end();
+    expect(c.bad).toBe(1);
+  });
+
+  it('a folder is one book only when its files are short; full-length files are books of their own', () => {
+    const f = (min: number | null, disc: string | null = null) => ({
+      seconds: min === null ? null : min * 60,
+      disc,
+    });
+    expect(folderBooks([f(480), f(500), f(300)], 120)).toBe('split'); // AI series, 涼宮ハルヒ
+    expect(folderBooks([f(2), f(10), f(6)], 120)).toBe('parts'); // 藪の中 分割版
+    expect(folderBooks([f(480), f(20)], 120)).toBe('mixed');
+    expect(folderBooks([f(480), f(null)], 120)).toBe('mixed');
+    expect(folderBooks([f(480, '1'), f(500, '2')], 120)).toBe('parts'); // Disc folders
+  });
+});
+
+describe.skipIf(!HAS_TOOLS)('stage 3 on fixture audio with ffmpeg and fpcalc', () => {
+  const tmp = () => makeTempDir('wp21b-src');
+  const ff = (args: string[]) =>
+    execFileSync('ffmpeg', ['-v', 'error', '-y', ...args], { windowsHide: true });
+  const seconds = (file: string) =>
+    Number(
+      execFileSync('ffprobe', [
+        '-v',
+        'error',
+        '-show_entries',
+        'format=duration',
+        '-of',
+        'csv=p=0',
+        file,
+      ])
+        .toString()
+        .trim(),
+    );
+  function chaptersFile(dir: string, name: string, chapters: number[]): string {
     const meta = path.join(dir, `${name}.txt`);
     let t = 0;
     const lines = [';FFMETADATA1', 'title=本'];
@@ -639,87 +729,189 @@ describe.skipIf(!HAS_TOOLS)('stage 3 on fixture audio with ffmpeg, fpcalc and fa
       lines.push(`END=${Math.round(t * 1000)}`, `title=第${i + 1}章`);
     });
     fs.writeFileSync(meta, lines.join('\n') + '\n');
-    const out = path.join(dir, `${name}.m4b`);
-    execFileSync(
-      'ffmpeg',
-      [
-        '-v',
-        'error',
-        '-y',
-        '-i',
-        w,
-        '-i',
-        meta,
-        '-map_metadata',
-        '1',
-        '-map',
-        '0:a',
-        '-c:a',
-        'aac',
-        '-b:a',
-        bitrate,
-        out,
-      ],
-      { windowsHide: true },
-    );
-    // Checked before use (WP21 lessons: a fixture once came out 0.02 s long).
-    const d = Number(
-      execFileSync('ffprobe', [
-        '-v',
-        'error',
-        '-show_entries',
-        'format=duration',
-        '-of',
-        'csv=p=0',
-        out,
-      ])
-        .toString()
-        .trim(),
-    );
-    const want = parts.reduce((a, p) => a + p.length, 0) / 22050;
-    expect(Math.abs(d - want)).toBeLessThan(0.2);
-    return fs.readFileSync(out);
+    return meta;
   }
 
-  it('groups, decides, confirms damage with faad2, passes the gate, writes nothing; routes, clips, decisions and settings changes', async () => {
+  /** Encodes recordings to m4b with chapters (lengths in seconds); checked with ffprobe. */
+  function m4b(
+    dir: string,
+    name: string,
+    parts: Int16Array[],
+    bitrate: string,
+    chapters: number[],
+  ) {
+    const w = path.join(dir, `${name}.wav`);
+    fs.writeFileSync(w, wav(parts));
+    const meta = chaptersFile(dir, name, chapters);
+    const out = path.join(dir, `${name}.m4b`);
+    ff([
+      '-i',
+      w,
+      '-i',
+      meta,
+      '-map_metadata',
+      '1',
+      '-map',
+      '0:a',
+      '-c:a',
+      'aac',
+      '-b:a',
+      bitrate,
+      out,
+    ]);
+    const want = parts.reduce((a, p) => a + p.length, 0) / 22050;
+    expect(Math.abs(seconds(out) - want)).toBeLessThan(0.2);
+    return out;
+  }
+
+  /** A stretch of an m4b, frames copied (as TMW's copies were cut), with its own chapters. */
+  function cut(
+    dir: string,
+    src: string,
+    name: string,
+    from: number,
+    to: number,
+    chapters: number[],
+  ) {
+    const out = path.join(dir, `${name}.m4b`);
+    const meta = chaptersFile(dir, name, chapters);
+    ff([
+      '-ss',
+      String(from),
+      '-to',
+      String(to),
+      '-i',
+      src,
+      '-i',
+      meta,
+      '-map',
+      '0:a',
+      '-map_metadata',
+      '1',
+      '-map_chapters',
+      '1',
+      '-c',
+      'copy',
+      out,
+    ]);
+    return out;
+  }
+
+  /** Two stretches of an m4b joined, frames copied (one stretch in between left out). */
+  function joinCuts(
+    dir: string,
+    src: string,
+    name: string,
+    keep: [number, number][],
+    chapters: number[],
+  ) {
+    const parts = keep.map(([a, b], i) => cut(dir, src, `${name}-part${i}`, a, b, [b - a]));
+    const listFile = path.join(dir, `${name}.list`);
+    fs.writeFileSync(
+      listFile,
+      parts.map((p) => `file '${p.replace(/\\/g, '/')}'`).join('\n') + '\n',
+    );
+    const joined = path.join(dir, `${name}-joined.m4b`);
+    ff(['-f', 'concat', '-safe', '0', '-i', listFile, '-c', 'copy', joined]);
+    const out = path.join(dir, `${name}.m4b`);
+    const meta = chaptersFile(dir, name, chapters);
+    ff([
+      '-i',
+      joined,
+      '-i',
+      meta,
+      '-map',
+      '0:a',
+      '-map_metadata',
+      '1',
+      '-map_chapters',
+      '1',
+      '-c',
+      'copy',
+      out,
+    ]);
+    return out;
+  }
+
+  it('drops a copy only on proof (identical files, Audible branding, one extra stretch); keeps every other copy; writes nothing; routes, clips, choices, take-over', async () => {
     const src = tmp();
-    const A = samples(150, 1);
     const jingleIn = samples(7.8, 999);
     const jingleOut = samples(7.3, 998);
-    const fA = m4b(src, 'a', [A], '96k', [50, 50, 50]);
-    const fA15 = m4b(src, 'a15', [jingleIn, A, jingleOut], '96k', [57.8, 50, 57.3]);
+    // Three books with Audible's opening and closing in the long copy; the short copy is the
+    // same download with them cut off (frames copied), as the TMW copies.
+    const branded = (name: string, seed: number) => {
+      const long = m4b(
+        src,
+        `${name}-long`,
+        [jingleIn, samples(90, seed), jingleOut],
+        '96k',
+        [37.8, 30, 37.3],
+      );
+      const short = cut(src, long, `${name}-short`, 7.8, 97.8, [30, 30, 30]);
+      return { long: fs.readFileSync(long), short: fs.readFileSync(short) };
+    };
+    const A = branded('a', 1);
+    const K = branded('k', 21);
+    const L = branded('l', 22);
+    // 風花帖: the longer copy has 20 s more inside chapter 2.
+    const mLong = m4b(
+      src,
+      'm-long',
+      [samples(60, 23), samples(20, 24), samples(60, 25)],
+      '96k',
+      [60, 80],
+    );
+    const mShort = joinCuts(
+      src,
+      mLong,
+      'm-short',
+      [
+        [0, 60],
+        [80, 140],
+      ],
+      [60, 60],
+    );
     const B = samples(150, 2);
-    const fB64 = m4b(src, 'b64', [B], '64k', [50, 50, 50]);
-    const fB128 = m4b(src, 'b128', [B], '128k', [50, 50, 50]);
-    const fC1 = m4b(src, 'c1', [samples(150, 3)], '64k', [75, 75]);
-    const fC2 = m4b(src, 'c2', [samples(150, 4)], '64k', [75, 75]);
-    const fD1 = m4b(src, 'd1', [samples(150, 5)], '64k', [75, 75]);
-    const fD2 = m4b(src, 'd2', [samples(148, 6)], '64k', [74, 74]);
+    const fB64 = fs.readFileSync(m4b(src, 'b64', [B], '64k', [50, 50, 50]));
+    const fB128 = fs.readFileSync(m4b(src, 'b128', [B], '128k', [50, 50, 50]));
+    const fC1 = fs.readFileSync(m4b(src, 'c1', [samples(150, 3)], '64k', [75, 75]));
+    const fC2 = fs.readFileSync(m4b(src, 'c2', [samples(150, 4)], '64k', [75, 75]));
+    const fD1 = fs.readFileSync(m4b(src, 'd1', [samples(150, 5)], '64k', [75, 75]));
+    const fD2 = fs.readFileSync(m4b(src, 'd2', [samples(148, 6)], '64k', [74, 74]));
     const E = samples(150, 7);
-    const fE96 = m4b(src, 'e96', [E], '96k', [75, 75]);
-    const fE64 = m4b(src, 'e64', [E], '64k', [75, 75]);
-    const F = samples(150, 8);
-    const fF64 = m4b(src, 'f64', [F], '64k', [75, 75]);
-    const fF128 = Buffer.from(m4b(src, 'f128', [F], '128k', [75, 75]));
-    // Damage between the windows (the windows still read; a full decode finds it).
-    fF128.fill(0x55, Math.floor(fF128.length * 0.72), Math.floor(fF128.length * 0.72) + 3000);
+    const fE96 = fs.readFileSync(m4b(src, 'e96', [E], '96k', [75, 75]));
+    const fE64 = fs.readFileSync(m4b(src, 'e64', [E], '64k', [75, 75]));
     const G = samples(150, 9);
-    const fG96 = m4b(src, 'g96', [G], '96k', [75, 75]);
-    const fG64 = m4b(src, 'g64', [G], '64k', [75, 75]);
-    const fH = m4b(src, 'h', [samples(60, 10)], '64k', [60]);
+    const fG96 = fs.readFileSync(m4b(src, 'g96', [G], '96k', [75, 75]));
+    const fG64 = fs.readFileSync(m4b(src, 'g64', [G], '64k', [75, 75]));
+    const fH = fs.readFileSync(m4b(src, 'h', [samples(60, 10)], '64k', [60]));
+    const yabu = [26, 27, 28].map((seed, i) =>
+      fs.readFileSync(
+        m4b(src, `yabu${i}`, [samples([30, 45, 60][i], seed)], '64k', [[30, 45, 60][i]]),
+      ),
+    );
 
     const base = makeTempDir('wp21b-roots');
     const torrents = path.join(base, 'torrents');
     const library = path.join(base, 'library');
     const tmw = 'TMW Japanese Audiobooks Collection (Part 15) - Light Novels V';
     const tmw12 = 'TMW Japanese Audiobooks Collection (Part 12) - General Fiction (audiobook.jp)';
-    put(torrents, `${tmw}/[作者A] 本A/[01] 本A 1 [B0A0000001].m4b`, fA);
+    const aT = `${tmw}/[作者A] 本A/[01] 本A 1 [B0A0000001].m4b`;
+    const aD = 'Discord/moved/本A 1 [B0A0000001]/[1巻] 本A 1_ (KADOKAWA) [B0A0000001].m4b';
+    const aN = 'Discord/new/本A 1 copy/[1巻] 本A 1 [B0A0000001].m4b';
+    put(torrents, aT, A.short);
+    put(torrents, aD, A.long);
+    put(torrents, aN, A.short);
+    put(torrents, `${tmw}/[作者K] 本K/[01] 本K [B0A0000021].m4b`, K.short);
+    put(torrents, 'Discord/moved/本K [B0A0000021]/本K [B0A0000021].m4b', K.long);
+    put(torrents, `${tmw}/[作者L] 本L/[01] 本L [B0A0000022].m4b`, L.short);
+    put(torrents, 'Discord/moved/本L [B0A0000022]/本L [B0A0000022].m4b', L.long);
     put(
       torrents,
-      'Discord/moved/本A 1 [B0A0000001]/[1巻] 本A 1_ (KADOKAWA) [B0A0000001].m4b',
-      fA15,
+      `${tmw}/[葉室 麟] 風花帖M/風花帖M [audiobook.jp 241553].m4b`,
+      fs.readFileSync(mLong),
     );
-    put(torrents, 'Discord/new/本A 1 copy/[1巻] 本A 1 [B0A0000001].m4b', fA);
+    put(torrents, `${tmw12}/風花帖M/風花帖M.m4b`, fs.readFileSync(mShort));
     put(torrents, `${tmw}/[作者B] 本B/本B [audiobook.jp 123].m4b`, fB64);
     put(torrents, `${tmw12}/本B/本B.m4b`, fB128);
     put(torrents, `${tmw}/[作者C] 本C/[01] 本C 1.m4b`, fC1);
@@ -728,12 +920,11 @@ describe.skipIf(!HAS_TOOLS)('stage 3 on fixture audio with ffmpeg, fpcalc and fa
     put(torrents, 'MAM/本D/本D.m4b', fD2);
     put(torrents, 'Discord/moved/本E/本E (1).m4b', fE96);
     put(torrents, 'Discord/moved/本E/本E (2).m4b', fE64);
-    put(torrents, `${tmw}/[作者F] 本F/[01] 本F [B0A0000006].m4b`, fF64);
-    put(torrents, 'Discord/moved/本F [B0A0000006]/本F [B0A0000006].m4b', fF128);
     put(torrents, `${tmw}/[作者G] 本G/[01] 本G 1 [B0A0000009].m4b`, fG96);
-    put(torrents, 'AI/本A 1/本A 1.m4b', fA); // the same audio, but AI: never competes
-    put(library, '_Unknown/本A/[01] 本A 1 [B0A0000001].m4b', fA);
-    put(library, '_Unknown/本A_/[1巻] 本A 1_ (KADOKAWA) [B0A0000001].m4b', fA15);
+    yabu.forEach((b, i) => put(torrents, `Discord/moved/藪の中/藪の中 分割版00${i + 1}.m4b`, b));
+    put(torrents, 'AI/本A 1/本A 1.m4b', A.short); // the same audio, but AI: never competes
+    put(library, '_Unknown/本A/[01] 本A 1 [B0A0000001].m4b', A.short);
+    put(library, '_Unknown/本A_/[1巻] 本A 1_ (KADOKAWA) [B0A0000001].m4b', A.long);
     put(library, '_Unknown/本B jp/本B [audiobook.jp 123].m4b', fB64);
     put(library, '_Unknown/本B/本B.m4b', fB128);
     put(library, '_Unknown/本D/本D.m4b', fD1);
@@ -793,10 +984,11 @@ describe.skipIf(!HAS_TOOLS)('stage 3 on fixture audio with ffmpeg, fpcalc and fa
       updateSettings(db, {
         audiobooks: {
           decodeSeconds: 2,
-          copyHintMinMinutes: 0,
+          fullBookMinutes: 2,
           dupWindowSeconds: 20,
           dupShiftSeconds: 15,
           dupMiddleSearchMinutes: 2,
+          dupCandidatePercent: 20,
         },
       });
       for (const st of [audio.stage1!, audio.stage2!]) {
@@ -804,6 +996,32 @@ describe.skipIf(!HAS_TOOLS)('stage 3 on fixture audio with ffmpeg, fpcalc and fa
         for (let i = 0; i < 200; i++) if (await st.step(() => false)) break;
         expect(st.progress()!.error).toBeNull();
       }
+      // Stage 2: the folder of two full-length files became two books; 藪の中's short parts one.
+      const s2 = audio.stage2!.progress()!;
+      expect(s2.splitFolders).toBe(1);
+      const unit = (rel: string) =>
+        db
+          .prepare(
+            `SELECT b.unit_rel_path, b.unit_kind, b.file_count, b.multi_class FROM audio_books b
+             JOIN audio_book_files bf ON bf.book_id = b.id JOIN audio_files f ON f.id = bf.file_id
+             WHERE b.analysis_id = ? AND f.rel_path = ?`,
+          )
+          .get(s2.analysisId, rel) as {
+          unit_rel_path: string;
+          unit_kind: string;
+          file_count: number;
+          multi_class: string;
+        };
+      expect(unit('Discord/moved/本E/本E (1).m4b')).toMatchObject({
+        unit_kind: 'file',
+        file_count: 1,
+      });
+      expect(unit('Discord/moved/藪の中/藪の中 分割版002.m4b')).toMatchObject({
+        unit_rel_path: 'Discord/moved/藪の中',
+        file_count: 3,
+        multi_class: 'parts',
+      });
+
       const s3 = audio.stage3!;
       s3.restart();
       const phases: string[] = [];
@@ -820,21 +1038,16 @@ describe.skipIf(!HAS_TOOLS)('stage 3 on fixture audio with ffmpeg, fpcalc and fa
         'candidates',
         'fingerprints',
         'compare',
-        'decode',
+        'verify',
         'decide',
       ]);
       expect(p.windowErrors).toBe(0);
       expect(p.tools?.fpcalc).toMatch(/fpcalc/);
-      expect(p.tools?.faad).toMatch(/Decoder V\d/);
-      // Progress of the compare and decode steps (the page's bars and time left).
       expect(p.compareDone).toBe(p.compareTotal);
-      expect(p.compareTotal).toBeGreaterThan(0);
-      expect(p.decodesLeft).toBe(0);
-      expect(p.decodeAudioLeft).toBe(0);
-      expect(p.decodeAudioDone!).toBeGreaterThan(150 * (p.decodesDone - 1));
-      expect(p.decodeRateFrom?.at).toBeGreaterThan(0);
+      expect(p.verifyLeft).toBe(0);
+      expect(p.verifyDone!).toBeGreaterThanOrEqual(7);
+      expect(p.decodesDone).toBe(0); // no full decodes any more
 
-      // Lookups by torrent path.
       const copyOf = (rel: string) =>
         db
           .prepare(
@@ -859,71 +1072,49 @@ describe.skipIf(!HAS_TOOLS)('stage 3 on fixture audio with ffmpeg, fpcalc and fa
               members: number;
               review_reason: string | null;
               best_copy_id: number;
-              damaged: number;
               kind: string;
+              role: string;
+              group_key: string;
             }
           | undefined;
-      const pairOf = (x: string, y: string) => {
-        const a = copyOf(x)!.id;
-        const b = copyOf(y)!.id;
-        return db
-          .prepare('SELECT * FROM audio_dup_pairs WHERE analysis_id = ? AND a_id = ? AND b_id = ?')
-          .get(p.analysisId, Math.min(a, b), Math.max(a, b)) as
-          | { verdict: string; test: string; scores_json: string }
-          | undefined;
-      };
-      const aT = `${tmw}/[作者A] 本A/[01] 本A 1 [B0A0000001].m4b`;
-      const aD = 'Discord/moved/本A 1 [B0A0000001]/[1巻] 本A 1_ (KADOKAWA) [B0A0000001].m4b';
-      // 本A: identical copy + the 15 s copy: one group of three, review (as labeled).
-      const gA = groupOf(aT)!;
-      expect(gA).toMatchObject({ members: 3, outcome: 'review', first_test: 'identical' });
-      expect(gA.review_reason).toMatch(/lengths differ by 15\.\d s/);
-      const scores = JSON.parse(pairOf(aT, aD)!.scores_json) as { windows: WindowScore[] };
-      const start = scores.windows.find((w) => w.name === 'start')!;
-      expect(start.score!).toBeGreaterThan(0.85);
-      // 7.8 s apart at the start (the sign says which copy of the pair is first by id).
-      expect(Math.abs(Math.abs(start.shiftSeconds!) - 7.8)).toBeLessThan(0.3);
-      // 本B: same title, other bitrate: the 128 kbps copy (rule 5).
-      const gB = groupOf(`${tmw12}/本B/本B.m4b`)!;
-      expect(gB.review_reason).toBeNull();
-      expect(gB).toMatchObject({ outcome: 'auto', rule: '5', first_test: 'title' });
-      expect(gB.best_copy_id).toBe(copyOf(`${tmw12}/本B/本B.m4b`)!.id);
-      // 本C: other volumes are never paired; 本D: same title, other recording.
-      expect(
-        pairOf(`${tmw}/[作者C] 本C/[01] 本C 1.m4b`, `${tmw}/[作者C] 本C/[02] 本C 2.m4b`),
-      ).toBeUndefined();
-      expect(pairOf(`${tmw}/[作者D] 本D/本D.m4b`, 'MAM/本D/本D.m4b')).toMatchObject({
-        test: 'title',
-        verdict: 'different',
+      const roleOf = (rel: string) => groupOf(rel)!.role;
+      // 本A, 本K, 本L: the same frames apart from Audible's opening and closing, which are the
+      // same in all three books: the copy without them stays, the branded one goes.
+      const gA = groupOf(aD)!;
+      expect(gA).toMatchObject({ members: 3, outcome: 'auto', rule: 'branding' });
+      expect(gA.review_reason).toMatch(/opening \(7\.\d s\) and closing \(7\.\d s\)/);
+      expect(roleOf(aD)).toBe('drop');
+      expect(gA.best_copy_id).toBe(copyOf(aN)!.id); // identical twins: the first by path
+      expect(roleOf(aT)).toBe('drop');
+      expect(groupOf('Discord/moved/本K [B0A0000021]/本K [B0A0000021].m4b')).toMatchObject({
+        rule: 'branding',
+        role: 'drop',
       });
-      expect(groupOf('MAM/本D/本D.m4b')).toBeUndefined();
-      // 本E: two full copies in one folder.
-      expect(groupOf('Discord/moved/本E/本E (1).m4b')).toMatchObject({
-        first_test: 'in_folder',
-        outcome: 'auto',
-        rule: '5',
+      expect(groupOf(`${tmw}/[作者L] 本L/[01] 本L [B0A0000022].m4b`)).toMatchObject({
+        rule: 'branding',
+        role: 'keep',
       });
-      // 本F: the 128 kbps copy is damaged in the middle: ffmpeg reports it, faad2 stops early,
-      // so it loses (rule 0) although it wins on bitrate.
-      const fD = 'Discord/moved/本F [B0A0000006]/本F [B0A0000006].m4b';
-      const gF = groupOf(fD)!;
-      expect(gF).toMatchObject({ outcome: 'auto', rule: '0', damaged: 1 });
-      expect(gF.best_copy_id).toBe(copyOf(`${tmw}/[作者F] 本F/[01] 本F [B0A0000006].m4b`)!.id);
-      const dec = db
-        .prepare(
-          `SELECT d.decoder, d.ok, d.decoded_seconds FROM audio_full_decodes d JOIN audio_files f ON f.id = d.file_id
-           WHERE f.rel_path = ? ORDER BY d.decoder`,
-        )
-        .all(fD) as { decoder: string; ok: number; decoded_seconds: number | null }[];
-      expect(dec.map((d) => [d.decoder, d.ok])).toEqual([
-        ['faad', 0],
-        ['ffmpeg', 0],
-      ]);
-      expect(dec[0].decoded_seconds!).toBeLessThan(140);
-      // 本G: the library-only file competes with its torrent twin.
-      const gG = groupOf(`${tmw}/[作者G] 本G/[01] 本G 1 [B0A0000009].m4b`)!;
-      expect(gG).toMatchObject({ members: 2, outcome: 'auto', rule: '5' });
+      // 風花帖M: everything in the shorter copy is in the longer, which has 20 s more.
+      const gM = groupOf(`${tmw12}/風花帖M/風花帖M.m4b`)!;
+      expect(gM).toMatchObject({ outcome: 'auto', rule: 'extra', role: 'drop' });
+      expect(gM.review_reason).toMatch(/20\.\d s more audio/);
+      // 本B, 本E, 本G: the same recording but encoded separately: not proven, every copy stays.
+      for (const rel of [
+        `${tmw12}/本B/本B.m4b`,
+        'Discord/moved/本E/本E (1).m4b',
+        `${tmw}/[作者G] 本G/[01] 本G 1 [B0A0000009].m4b`,
+      ]) {
+        const g = groupOf(rel)!;
+        expect(g.outcome, rel).toBe('review');
+        expect(g.review_reason, rel).toMatch(
+          /not proven .* every copy stays: the audio is not the same frame by frame/,
+        );
+      }
+      expect(groupOf('Discord/moved/本E/本E (1).m4b')!.first_test).toBe('in_folder');
       expect(copyOf('_Unknown/本G/本G 1 [B0A0000009].m4b')!.kind).toBe('library_only');
+      // 本C: other volumes never paired; 本D: same title, other recording.
+      expect(groupOf(`${tmw}/[作者C] 本C/[02] 本C 2.m4b`)).toBeUndefined();
+      expect(groupOf('MAM/本D/本D.m4b')).toBeUndefined();
       // AI never competes; the reader's merge never takes part.
       const ai = copyOf('AI/本A 1/本A 1.m4b')!;
       expect(
@@ -932,39 +1123,42 @@ describe.skipIf(!HAS_TOOLS)('stage 3 on fixture audio with ffmpeg, fpcalc and fa
           .get(ai.id, ai.id),
       ).toEqual({ n: 0 });
       expect(copyOf('_Unknown/本H/本H (merged).m4b')!.excluded).toMatch(/reader/);
-      // The gate on the labeled pairs.
+      // The gate: no copy the labels call better is dropped; keeping both is never wrong.
       expect(p.gate).toMatchObject({ passed: true, checked: 3, skipped: 1 });
 
       // Routes through the app.
       const auth = { Authorization: `Bearer ${env.userToken()}` };
       const st = await request(env.app).get('/api/v1/cleanup/audio/status').set(auth).expect(200);
       expect(st.body.stage3.progress.phase).toBe('done');
-      expect(st.body.stage3.progress.gate.passed).toBe(true);
+      const auto = await request(env.app)
+        .get('/api/v1/cleanup/audio/dups?list=auto')
+        .set(auth)
+        .expect(200);
+      expect(auto.body.items.map((g: { rule: string }) => g.rule).sort()).toEqual([
+        'branding',
+        'branding',
+        'branding',
+        'extra',
+      ]);
       const review = await request(env.app)
         .get('/api/v1/cleanup/audio/dups?list=review')
         .set(auth)
         .expect(200);
-      const itemA = review.body.items.find((g: { id: number }) => g.id === gA.id);
-      expect(itemA.copies).toHaveLength(3);
-      expect(itemA.copies[0]).toMatchObject({ codec: 'aac', chapters: 3, cover: false });
-      expect(itemA.pairs.length).toBeGreaterThan(0);
-      const keepKey = itemA.copies[1].key as string;
+      const gB = groupOf(`${tmw12}/本B/本B.m4b`)!;
+      const itemB = review.body.items.find((g: { id: number }) => g.id === gB.id);
+      expect(itemB.copies).toHaveLength(2);
+      const keepKey = itemB.copies[1].key as string;
       await request(env.app)
-        .post(`/api/v1/cleanup/audio/dups/${gA.id}`)
+        .post(`/api/v1/cleanup/audio/dups/${gB.id}`)
         .set(auth)
         .send({ decision: `keep:${keepKey}` })
         .expect(200);
       await request(env.app)
-        .post(`/api/v1/cleanup/audio/dups/${gA.id}`)
+        .post(`/api/v1/cleanup/audio/dups/${gB.id}`)
         .set(auth)
         .send({ decision: 'keep:not-a-member' })
         .expect(400);
       await request(env.app).get('/api/v1/cleanup/audio/dups?list=nope').set(auth).expect(400);
-      const gate = await request(env.app)
-        .get('/api/v1/cleanup/audio/dups?list=gate')
-        .set(auth)
-        .expect(200);
-      expect(gate.body.total).toBe(3);
       const clip = await request(env.app)
         .get(`/api/v1/cleanup/audio/clip/${copyOf(aD)!.id}/end`)
         .set(auth)
@@ -977,7 +1171,6 @@ describe.skipIf(!HAS_TOOLS)('stage 3 on fixture audio with ffmpeg, fpcalc and fa
         .expect(200);
       expect(clip.headers['content-type']).toBe('audio/mpeg');
       expect((clip.body as Buffer).length).toBeGreaterThan(1000);
-      // While a Calibre job uses the disk the clip waits (503, try again).
       env.service.diskLock.tryAcquire(DISK_OWNERS.calibre3, 'calibre');
       const busy = await request(env.app)
         .get(`/api/v1/cleanup/audio/clip/${copyOf(aD)!.id}/start`)
@@ -986,68 +1179,33 @@ describe.skipIf(!HAS_TOOLS)('stage 3 on fixture audio with ffmpeg, fpcalc and fa
       expect(busy.headers['retry-after']).toBe('15');
       env.service.diskLock.release(DISK_OWNERS.calibre3);
 
-      // A new analysis takes every window and decode over (the tools are gone now) and the
-      // choice survives it (kept by the group's copies).
-      const fpRows = (
-        db.prepare('SELECT COUNT(*) AS n FROM audio_fingerprints').get() as { n: number }
-      ).n;
-      const decRows = (
-        db.prepare('SELECT COUNT(*) AS n FROM audio_full_decodes').get() as { n: number }
-      ).n;
-      const gone = {
-        ffprobePath: 'nope-ffprobe',
-        ffmpegPath: 'nope-ffmpeg',
-        fpcalcPath: 'nope',
-        faadPath: 'nope',
-      };
+      // A new analysis takes every window and frame comparison over (the tools are gone now)
+      // and the choice survives it.
+      const count = (t: string) =>
+        (db.prepare(`SELECT COUNT(*) AS n FROM ${t}`).get() as { n: number }).n;
+      const fpRows = count('audio_fingerprints');
+      const frameRows = count('audio_frame_checks');
       const { AudioStage3 } = await import('../src/cleanup/audio/stage3-dups');
       const again = new AudioStage3({
         db,
         roots: { torrents, library },
-        tools: gone,
+        tools: { ffprobePath: 'nope', ffmpegPath: 'nope', fpcalcPath: 'nope', faadPath: 'nope' },
         lock: env.service.diskLock,
         readLabels: () => ({ text: fs.readFileSync(labelsFile, 'utf8'), error: null }),
         readerWrittenFiles: () => ['_Unknown/本H/本H (merged).m4b'],
       });
-      (again as unknown as { versions: unknown }).versions = p.tools; // no version runs either
+      (again as unknown as { versions: unknown }).versions = p.tools;
       again.restart();
       for (let i = 0; i < 500; i++) if (await again.step(() => false)) break;
       const p2 = again.progress()!;
       expect(p2.error).toBeNull();
       expect(p2.windowsReused).toBe(p2.windowsTotal);
-      expect(
-        (db.prepare('SELECT COUNT(*) AS n FROM audio_fingerprints').get() as { n: number }).n,
-      ).toBe(fpRows);
-      expect(
-        (db.prepare('SELECT COUNT(*) AS n FROM audio_full_decodes').get() as { n: number }).n,
-      ).toBe(decRows);
-      const listed = audio.dups('review').items.find((g) => g.groupKey === itemA.groupKey)!;
+      expect(p2.verifyDone ?? 0).toBe(0);
+      expect(count('audio_fingerprints')).toBe(fpRows);
+      expect(count('audio_frame_checks')).toBe(frameRows);
+      expect(p2.counts).toEqual({ ...p.counts });
+      const listed = audio.dups('review').items.find((g) => g.groupKey === itemB.groupKey)!;
       expect((listed.decision as { decision: string }).decision).toBe(`keep:${keepKey}`);
-
-      // A settings change compares again from what is stored: no window is read again, and a
-      // file already decoded is never decoded again (only copies that newly went to review and
-      // were never decoded are). A stricter line turns re-encoded pairs into review items.
-      const decodedBefore = db
-        .prepare(
-          'SELECT file_id, decoder, checked_at FROM audio_full_decodes ORDER BY file_id, decoder',
-        )
-        .all();
-      updateSettings(db, { audiobooks: { dupSameScore: 0.995 } });
-      audio.stage3!.restart();
-      for (let i = 0; i < 500; i++) if (await audio.stage3!.step(() => false)) break;
-      const p3 = audio.stage3!.progress()!;
-      expect(p3.error).toBeNull();
-      expect(p3.windowsReused).toBe(p3.windowsTotal);
-      expect(p3.gate!.passed).toBe(false);
-      expect(
-        (db.prepare('SELECT COUNT(*) AS n FROM audio_fingerprints').get() as { n: number }).n,
-      ).toBe(fpRows);
-      const decodedAfter = db
-        .prepare(
-          'SELECT file_id, decoder, checked_at FROM audio_full_decodes ORDER BY file_id, decoder',
-        )
-        .all();
-      for (const d of decodedBefore) expect(decodedAfter).toContainEqual(d);
 
       // Nothing under the roots changed.
       expect(treeProof(base)).toBe(before);
@@ -1056,11 +1214,10 @@ describe.skipIf(!HAS_TOOLS)('stage 3 on fixture audio with ffmpeg, fpcalc and fa
     }
   }, 300_000);
 
-  it('a decode gives the disk to a Calibre job at once and is read again later', async () => {
+  it('a reading step gives the disk to a Calibre job at once and is read again later', async () => {
     const { DiskLock } = await import('../src/cleanup/disk-lock');
     const lock = new DiskLock(5);
     lock.tryAcquire(DISK_OWNERS.calibre1, 'calibre');
-    // An audio holder can't take it while Calibre holds it; acquire returns when told to stop.
     let stop = false;
     setTimeout(() => (stop = true), 100);
     expect(await lock.acquire(DISK_OWNERS.audio3, 'audio', () => stop)).toBe(false);

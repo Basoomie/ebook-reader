@@ -12,6 +12,7 @@
 import { spawn } from 'child_process';
 import os from 'os';
 import { openReadOnly } from './audio-source-fs';
+import { FrameCollector, type FrameList } from './dup-frames';
 import { parseFpcalc } from './dup-fingerprint';
 
 export interface ToolPaths {
@@ -78,7 +79,8 @@ export type ToolKind =
   | 'full-decode'
   | 'faad'
   | 'clip-start'
-  | 'clip-end';
+  | 'clip-end'
+  | 'frame-hashes';
 
 /** Seconds as tool arguments (three decimals). */
 function secs(x: number): string {
@@ -132,6 +134,10 @@ export function toolArgs(
     ];
   }
   if (kind === 'full-decode') return [...base, '-i', input, '-map', '0:a:0', '-f', 'null', '-'];
+  // Each audio frame's MD5 on stdout, frames copied as they are (nothing decoded).
+  if (kind === 'frame-hashes') {
+    return [...base, '-i', input, '-map', '0:a:0', '-c', 'copy', '-f', 'framemd5', '-'];
+  }
   if (kind === 'faad') return ['-w', input];
   if (kind === 'clip-start' || kind === 'clip-end') {
     const len = secs(Math.max(1, span.length));
@@ -831,4 +837,58 @@ export async function stage3ToolVersions(
     // Not installed.
   }
   return out;
+}
+
+/**
+ * Every audio frame's MD5 of a copy's files, in order (ffmpeg's framemd5, frames copied, nothing
+ * decoded). Reads each file whole. Null frames when stopped (read again later) or unreadable.
+ */
+export async function frameHashes(
+  files: (string | Buffer)[],
+  toolPaths: ToolPaths,
+  { timeoutMs, shouldStop }: { timeoutMs: number; shouldStop?: () => boolean },
+): Promise<{ frames: FrameList | null; stopped: boolean; error: string | null; tookMs: number }> {
+  const tools = allTools(toolPaths);
+  const t0 = Date.now();
+  const collector = new FrameCollector();
+  const problems: string[] = [];
+  let stopped = false;
+  for (const file of files) {
+    const refused = refuseRawName(file);
+    if (refused) return { frames: null, stopped: false, error: refused, tookMs: Date.now() - t0 };
+    const handle = process.platform === 'linux' ? await openReadOnly(file) : null;
+    try {
+      collector.nextFile();
+      const input = handle ? '/dev/fd/3' : (file as string);
+      const r = await run(
+        tools.ffmpegPath,
+        toolArgs('frame-hashes', input, 0),
+        handle ? handle.fd : null,
+        timeoutMs,
+        {
+          keepStdout: 0,
+          onStdout: (b) => collector.push(b),
+          shouldStop: () => {
+            if (shouldStop?.()) stopped = true;
+            return stopped;
+          },
+        },
+      );
+      collector.end();
+      if (stopped) return { frames: null, stopped: true, error: null, tookMs: Date.now() - t0 };
+      if (r.timedOut) problems.push('took too long');
+      else if (r.code !== 0) problems.push(short(audioProblems(r.stderr), 200) || `exit ${r.code}`);
+    } finally {
+      await handle?.close();
+    }
+  }
+  if (problems.length || collector.bad > 0) {
+    return {
+      frames: null,
+      stopped: false,
+      error: problems.join('; ') || `${collector.bad} frame lines could not be read`,
+      tookMs: Date.now() - t0,
+    };
+  }
+  return { frames: collector.result(), stopped: false, error: null, tookMs: Date.now() - t0 };
 }

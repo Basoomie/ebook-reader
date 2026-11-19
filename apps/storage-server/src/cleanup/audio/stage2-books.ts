@@ -21,7 +21,7 @@ import { randomUUID } from 'crypto';
 import { getSettings } from '../settings';
 import { insideRoot, readSmall } from './audio-source-fs';
 import { getAudioStage, updateAudioStage } from './audio-stages';
-import { buildUnits, classifyMulti, idsInNames, type RootName } from './book-units';
+import { buildUnits, classifyMulti, folderBooks, idsInNames, type RootName } from './book-units';
 import { decodeMojibake, decodePath } from './mojibake';
 import { checkHealth, toolVersion, type HealthResult, type ToolPaths } from './probe';
 import { walkRoots, type AudioRoots, type WalkResult } from './walk';
@@ -37,6 +37,8 @@ export interface AudioStage2Progress {
   books: number;
   /** Audiobookshelf items recorded (library folders that hold audio; not book units). */
   absItems?: number;
+  /** Folders whose full-length files became one book each (classify step). */
+  splitFolders?: number;
   healthTotal: number;
   healthDone: number;
   healthReused: number;
@@ -308,9 +310,88 @@ export class AudioStage2 {
     return p;
   }
 
+  /**
+   * Folders whose files are each full length become one book per file (`folderBooks`). Returns
+   * the folders kept as one book although their lengths are mixed (shown as unclear).
+   */
+  private splitFullLengthFolders(p: AudioStage2Progress, fullMinutes: number): Set<number> {
+    const db = this.deps.db;
+    const folders = db
+      .prepare(
+        `SELECT id, book_key, root, unit_rel_path, source FROM audio_books
+         WHERE analysis_id = ? AND unit_kind = 'folder' AND file_count > 1`,
+      )
+      .all(p.analysisId) as {
+      id: number;
+      book_key: string;
+      root: RootName;
+      unit_rel_path: string;
+      source: string;
+    }[];
+    const filesOf = db.prepare(
+      `SELECT f.id, f.rel_path, h.duration, bf.disc FROM audio_book_files bf
+       JOIN audio_files f ON f.id = bf.file_id LEFT JOIN audio_file_health h ON h.file_id = f.id
+       WHERE bf.book_id = ? ORDER BY bf.position`,
+    );
+    const putBook = db.prepare(
+      `INSERT INTO audio_books (analysis_id, book_key, root, unit_rel_path, unit_kind, source,
+         name_raw, name_decoded, file_count) VALUES (?, ?, ?, ?, 'file', ?, ?, ?, 1)`,
+    );
+    const putFile = db.prepare(
+      'INSERT INTO audio_book_files (book_id, file_id, position, disc) VALUES (?, ?, 0, NULL)',
+    );
+    const mixed = new Set<number>();
+    let split = 0;
+    db.transaction(() => {
+      for (const b of folders) {
+        const files = filesOf.all(b.id) as {
+          id: number;
+          rel_path: string;
+          duration: number | null;
+          disc: string | null;
+        }[];
+        const how = folderBooks(
+          files.map((f) => ({ seconds: f.duration, disc: f.disc })),
+          fullMinutes,
+        );
+        if (how === 'mixed') mixed.add(b.id);
+        if (how !== 'split') continue;
+        // ON DELETE CASCADE removes the folder's file rows.
+        db.prepare('DELETE FROM audio_books WHERE id = ?').run(b.id);
+        db.prepare(`DELETE FROM audio_evidence WHERE book_key = ? AND kind = 'files'`).run(
+          b.book_key,
+        );
+        for (const f of files) {
+          const name = (f.rel_path.split('/').pop() ?? f.rel_path).replace(/\.[^.]+$/, '');
+          const r = putBook.run(
+            p.analysisId,
+            `${b.root}:${f.rel_path}`,
+            b.root,
+            f.rel_path,
+            b.source,
+            name,
+            decodeMojibake(name),
+          );
+          putFile.run(Number(r.lastInsertRowid), f.id);
+        }
+        split++;
+      }
+    })();
+    p.splitFolders = split;
+    p.books = (
+      db
+        .prepare('SELECT COUNT(*) AS n FROM audio_books WHERE analysis_id = ?')
+        .get(p.analysisId) as {
+        n: number;
+      }
+    ).n;
+    return mixed;
+  }
+
   private async classifyStep(p: AudioStage2Progress): Promise<AudioStage2Progress> {
     const db = this.deps.db;
     const s = getSettings(db).audiobooks;
+    const mixed = this.splitFullLengthFolders(p, s.fullBookMinutes);
     const books = db
       .prepare('SELECT * FROM audio_books WHERE analysis_id = ? ORDER BY id')
       .all(p.analysisId) as {
@@ -361,7 +442,13 @@ export class AudioStage2 {
         disc: string | null;
       }[];
       const durations = files.map((f) => f.duration);
-      const { cls, reason } = classifyMulti(durations, s.copyHintMinMinutes, s.copyHintPercent);
+      const multi = mixed.has(b.id)
+        ? {
+            cls: 'unclear' as const,
+            reason: `Some files are full length and some are short: one book in parts, or several books? (${files.length} files)`,
+          }
+        : classifyMulti(durations, s.copyHintMinMinutes, s.copyHintPercent);
+      const { cls, reason } = multi;
       const total = durations.every((d) => typeof d === 'number')
         ? durations.reduce<number>((a, d) => a + (d ?? 0), 0)
         : null;

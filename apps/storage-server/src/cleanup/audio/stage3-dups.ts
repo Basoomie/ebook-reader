@@ -14,12 +14,14 @@
  *                 every non-identical pair (small reads, several at once; they wait while a
  *                 Calibre job uses the disk). Kept per stretch of file: never read twice.
  *   compare       scores and a verdict per pair (no reads).
- *   decode        full decodes for rule 0 (ffmpeg, then faad2 to confirm what ffmpeg reports):
- *                 every file stage 2 found damaged, the chosen copy of each group, every copy of
- *                 a review group. Holds the shared disk lock and gives it back at once when a
- *                 Calibre job waits (the file is decoded again later).
- *   decide        groups, the best copy by the decided order, review items; then the gate on the
- *                 labeled pairs.
+ *   verify        (follow-up, user 2026-11-18: no guessing) the copies of each group compared
+ *                 frame by frame (dup-frames.ts): a copy is dropped only when proven to be the
+ *                 same audio as the kept one, apart from Audible's opening/closing (the copy
+ *                 without them stays) or extra audio in the kept copy. Reads both copies whole;
+ *                 holds the shared disk lock and gives it back at once when a Calibre job waits.
+ *   decide        groups: proven ones decided, all others kept whole (both copies stay, shown
+ *                 for review with the best guess by the decided order 0-7); then the gate.
+ * (The earlier full-decode step, `decode`, is only finished for analyses started before.)
  *
  * A change to stage 3's settings goes back to `candidates` (no file is read again unless a
  * window it needs isn't stored yet).
@@ -32,9 +34,11 @@ import { insideRoot } from './audio-source-fs';
 import { getAudioStage, updateAudioStage } from './audio-stages';
 import { idsInNames, type RootName } from './book-units';
 import {
+  bestAlignment,
   fingerprintVerdict,
   fpFromBuffer,
   fpToBuffer,
+  secondsToItems,
   planWindows,
   scoreWindow,
   type Span,
@@ -51,10 +55,12 @@ import {
   type ChapterSpan,
 } from './dup-rules';
 import { decodeMojibake } from './mojibake';
+import { compareFrames, type FrameComparison } from './dup-frames';
 import {
   decodeWithFaad,
   decodeWithFfmpeg,
   fingerprintSpans,
+  frameHashes,
   stage3ToolVersions,
   type FileSpan,
   type ToolPaths,
@@ -72,6 +78,7 @@ export type Stage3Phase =
   | 'fingerprints'
   | 'compare'
   | 'decode'
+  | 'verify'
   | 'decide'
   | 'done';
 
@@ -109,6 +116,10 @@ export interface AudioStage3Progress {
   /** The compare step: pairs scored of those to score. */
   compareDone?: number;
   compareTotal?: number;
+  /** The verify step: copies compared frame by frame, and those left. */
+  verifyDone?: number;
+  verifyLeft?: number;
+  verifyRateFrom?: { at: number; done: number } | null;
   /** Times the decode phase gave the disk to a Calibre job. */
   yields: number;
   phaseStartedAt: number;
@@ -184,6 +195,9 @@ export function stage3SettingsKey(s: AudiobookSettings): string {
         s.dupIncompleteSeconds,
         s.dupBitrateMarginPercent,
         s.dupChapterToleranceSeconds,
+        s.dupBrandingMaxSeconds,
+        s.dupBrandingScore,
+        s.dupNoticeableErrors,
       ]),
     )
     .digest('hex')
@@ -285,6 +299,8 @@ export class AudioStage3 {
   private copiesCache: { analysisId: string; byId: Map<number, LoadedCopy> } | null = null;
   private windowsCache: { analysisId: string; rulesKey: string; keys: WindowNeed[] } | null = null;
   private versions: AudioStage3Progress['tools'] = null;
+  /** The verify pace is measured from this process's first verify step. */
+  private verifyRateReset = false;
   /** The decode pace is measured from this process's first decode step. */
   private rateReset = false;
 
@@ -326,7 +342,7 @@ export class AudioStage3 {
   /** True while this stage reads the audio files (windows or full decodes). */
   reading(): boolean {
     const p = this.progress();
-    return !!p && (p.phase === 'fingerprints' || p.phase === 'decode');
+    return !!p && (p.phase === 'fingerprints' || p.phase === 'decode' || p.phase === 'verify');
   }
 
   async step(shouldStop: () => boolean): Promise<boolean> {
@@ -341,6 +357,7 @@ export class AudioStage3 {
       else if (phase === 'fingerprints') items = await this.fingerprintsStep(p, shouldStop);
       else if (phase === 'compare') items = this.compareStep(p);
       else if (phase === 'decode') items = await this.decodeStep(p, shouldStop);
+      else if (phase === 'verify') items = await this.verifyStep(p, shouldStop);
       else if (phase === 'decide') items = this.decideStep(p);
       const pt = p.phaseTimes[phase] ?? { ms: 0, items: 0 };
       // Waiting for Calibre is not work: a step that handled nothing adds no time.
@@ -360,7 +377,7 @@ export class AudioStage3 {
       this.save(p, 'failed');
       return true;
     } finally {
-      if (phase !== 'decode') this.deps.lock.release(OWNER);
+      if (phase !== 'decode' && phase !== 'verify') this.deps.lock.release(OWNER);
     }
   }
 
@@ -746,10 +763,19 @@ export class AudioStage3 {
         for (let j = i + 1; j < list.length && near(list[i], list[j]); j++)
           add(list[i], list[j], 'title');
     }
-    // 5. files of one folder that look like full copies
-    // (A folder of full copies gave one 'file' copy per file, all with the folder's book key.)
-    for (const [, list] of groupsBy((c) => (c.kind === 'file' ? [c.bookKey] : []))) {
-      if (list.length > 1) pairUp(list, 'in_folder', any);
+    // 5. files of one folder that look like full copies: single-file books side by side in one
+    // folder (stage 2 makes each full-length file its own book), lengths within the copies hint.
+    // TMW's series folders hold one volume per file and are left out.
+    const similar = (x: LoadedCopy, y: LoadedCopy) =>
+      x.seconds !== null &&
+      y.seconds !== null &&
+      Math.abs(x.seconds - y.seconds) <= (Math.max(x.seconds, y.seconds) * s.copyHintPercent) / 100;
+    for (const [, list] of groupsBy((c) => {
+      if (c.files.length !== 1 || c.bookKey.startsWith('torrents:TMW ')) return [];
+      const rel = c.files[0].rel;
+      return [`${c.files[0].root}:${rel.slice(0, Math.max(0, rel.lastIndexOf('/')))}`];
+    })) {
+      if (list.length > 1) pairUp(list, 'in_folder', similar);
     }
     const rows = [...pairs.values()];
     db.transaction(() => {
@@ -933,7 +959,7 @@ export class AudioStage3 {
       )
       .all(p.analysisId, key0) as PairRow[];
     if (pairs.length === 0) {
-      this.nextPhase(p, 'decode');
+      this.nextPhase(p, 'verify');
       return 0;
     }
     const set = db.prepare(
@@ -1017,14 +1043,15 @@ export class AudioStage3 {
     ok: number | null;
     detail: string | null;
     decoded_seconds: number | null;
+    error_count: number | null;
   }[] {
     return this.deps.db
       .prepare(
-        `SELECT d.decoder, d.ok, d.detail, d.decoded_seconds FROM audio_full_decodes d
+        `SELECT d.decoder, d.ok, d.detail, d.decoded_seconds, d.error_count FROM audio_full_decodes d
          JOIN audio_files f2 ON f2.id = d.file_id
          WHERE d.file_id = @id AND d.size = @size AND d.mtime_ms = @mtime
          UNION ALL
-         SELECT d.decoder, d.ok, d.detail, d.decoded_seconds FROM audio_files f2
+         SELECT d.decoder, d.ok, d.detail, d.decoded_seconds, d.error_count FROM audio_files f2
          JOIN audio_full_decodes d ON d.file_id = f2.id
          WHERE @sha IS NOT NULL AND f2.sha256 = @sha AND f2.id <> @id AND f2.size = @size
            AND d.size = f2.size AND d.mtime_ms = f2.mtime_ms`,
@@ -1034,30 +1061,39 @@ export class AudioStage3 {
       ok: number | null;
       detail: string | null;
       decoded_seconds: number | null;
+      error_count: number | null;
     }[];
   }
 
-  /** What rule 0 knows about a copy now (stage 2's plays and the full decodes stored so far). */
+  /**
+   * Damage as the user hears it (2026-11-18: "damaged would mean I either can't listen to it or
+   * I would notice it's not good quality"): a full decode that reports more than
+   * `dupNoticeableErrors` bad frames, or doesn't get through the file. A few bad frames at the
+   * very start or end (the 37 AAC files stage 2 flagged: 2-31 each) are not damage. faad2 is not
+   * used: it stops at the first bad frame, so it can't tell these apart.
+   */
   private damageOf(c: LoadedCopy): { damage: CopyFacts['damage']; detail: string | null } {
+    const limit = getSettings(this.deps.db).audiobooks.dupNoticeableErrors;
     let worst: CopyFacts['damage'] = null;
     const details: string[] = [];
     const rank = { ok: 1, suspect: 2, damaged: 3 } as const;
     for (const f of c.files) {
-      const rows = this.storedDecodes(f).filter((r) => r.ok !== null);
-      const ff = rows.find((r) => r.decoder === 'ffmpeg');
-      const fa = rows.find((r) => r.decoder === 'faad');
+      const ff = this.storedDecodes(f).find((r) => r.decoder === 'ffmpeg' && r.ok !== null);
       let d: CopyFacts['damage'] = null;
-      const playFailed = f.startOk === 0 || f.endOk === 0;
+      const name = f.rel.split('/').pop();
       if (ff?.ok === 1) d = 'ok';
       else if (ff?.ok === 0) {
-        if (f.codec === 'aac') d = fa ? (fa.ok === 0 ? 'damaged' : 'suspect') : 'suspect';
-        else d = 'damaged';
-        details.push(
-          `${f.rel.split('/').pop()}: ffmpeg ${ff.detail ?? 'errors'}${fa ? `; faad2 ${fa.ok ? 'clean' : (fa.detail ?? 'failed')}` : ''}`,
-        );
-      } else if (playFailed) {
-        d = 'suspect';
-        details.push(`${f.rel.split('/').pop()}: the start or the end did not play (stage 2)`);
+        const bad = ff.error_count ?? 0;
+        const unfinished = /took too long|exit/.test(ff.detail ?? '') && bad === 0;
+        if (bad > limit || unfinished) {
+          d = 'damaged';
+          details.push(`${name}: ${bad} bad frames (${ff.detail ?? 'errors'})`);
+        } else {
+          d = 'ok';
+          details.push(`${name}: ${bad} bad frames at most, too few to hear`);
+        }
+      } else if (f.startOk === 0 || f.endOk === 0) {
+        details.push(`${name}: a short play at the start or the end reported bad frames (stage 2)`);
       }
       if (d && (!worst || rank[d] > rank[worst])) worst = d;
     }
@@ -1162,7 +1198,7 @@ export class AudioStage3 {
     }
     if (queue.length === 0) {
       this.deps.lock.release(OWNER);
-      this.nextPhase(p, 'decide');
+      this.nextPhase(p, 'verify');
       return 0;
     }
     if (!(await this.deps.lock.acquire(OWNER, 'audio', shouldStop))) return 0;
@@ -1225,6 +1261,243 @@ export class AudioStage3 {
   }
 
   // -------------------------------------------------------------------------------------------
+  // verify: frame by frame
+
+  /** A copy's content name: its files' SHA-256 (or, unhashed, the file as it is now). */
+  private contentKey(c: LoadedCopy): string {
+    return c.files.map((f) => f.sha256 ?? `${f.id}:${f.size}:${f.mtime}`).join(',');
+  }
+
+  /** The copy each group would keep if all others are inside it: the longest. */
+  private keeperOf(distinct: LoadedCopy[]): LoadedCopy {
+    return [...distinct].sort(
+      (x, y) => (y.seconds ?? 0) - (x.seconds ?? 0) || (canonical([x, y]) === x ? -1 : 1),
+    )[0];
+  }
+
+  private frameCheck(k: LoadedCopy, x: LoadedCopy): FrameComparison | null {
+    const r = this.deps.db
+      .prepare('SELECT result_json FROM audio_frame_checks WHERE pair_key = ?')
+      .get(`${this.contentKey(k)}|${this.contentKey(x)}`) as { result_json: string } | undefined;
+    return r ? (JSON.parse(r.result_json) as FrameComparison) : null;
+  }
+
+  /** The pairs still to compare: in each group, every other copy against the longest one. */
+  private verifyQueue(p: AudioStage3Progress): { k: LoadedCopy; x: LoadedCopy }[] {
+    const { copies, ids, g } = this.grouping(p);
+    const out: { k: LoadedCopy; x: LoadedCopy }[] = [];
+    for (const comp of g.components) {
+      if (comp.conflict) continue; // both stay anyway
+      const distinct = distinctContents(comp.members.map((i) => copies.get(ids[i])!));
+      if (distinct.length < 2) continue;
+      const k = this.keeperOf(distinct);
+      for (const x of distinct) if (x !== k && !this.frameCheck(k, x)) out.push({ k, x });
+    }
+    return out;
+  }
+
+  private async verifyStep(p: AudioStage3Progress, shouldStop: () => boolean): Promise<number> {
+    const db = this.deps.db;
+    const s = getSettings(db).audiobooks;
+    const queue = this.verifyQueue(p);
+    p.verifyLeft = queue.length;
+    p.verifyDone ??= 0;
+    if (!this.verifyRateReset || !p.verifyRateFrom) {
+      p.verifyRateFrom = { at: Date.now(), done: p.verifyDone };
+      this.verifyRateReset = true;
+    }
+    if (queue.length === 0) {
+      this.deps.lock.release(OWNER);
+      this.nextPhase(p, 'decide');
+      return 0;
+    }
+    if (!(await this.deps.lock.acquire(OWNER, 'audio', shouldStop))) return 0;
+    if (!this.versions) this.versions = await stage3ToolVersions(this.deps.tools);
+    p.tools = this.versions;
+    const yieldNow = () => shouldStop() || this.deps.lock.shouldYield(OWNER);
+    const { k, x } = queue[0];
+    const t0 = Date.now();
+    const read = async (c: LoadedCopy) => {
+      const bytes = c.files.reduce((a, f) => a + f.size, 0);
+      return frameHashes(
+        c.files.map((f) => insideRoot(this.deps.roots[f.root], f.rel, f.raw)),
+        this.deps.tools,
+        {
+          // Frames are copied, not decoded: disk speed; at least 5 MB/s before giving up.
+          timeoutMs: Math.max(s.toolTimeoutSeconds * 1000, (bytes / 5e6) * 1000),
+          shouldStop: yieldNow,
+        },
+      );
+    };
+    const fk = await read(k);
+    const fx = fk.stopped ? null : await read(x);
+    if (fk.stopped || fx?.stopped) {
+      p.yields++;
+      this.deps.lock.release(OWNER);
+      return 0;
+    }
+    const result: FrameComparison =
+      fk.frames && fx?.frames
+        ? compareFrames(fk.frames, fx.frames)
+        : {
+            identical: false,
+            contained: false,
+            longer: 'same',
+            framesA: 0,
+            framesB: 0,
+            startExtra: 0,
+            endExtra: 0,
+            middleExtra: 0,
+            middleAt: null,
+            detail: `could not be read frame by frame: ${(fk.error ?? fx?.error ?? 'unknown').slice(0, 300)}`,
+          };
+    db.prepare(
+      `INSERT INTO audio_frame_checks (pair_key, result_json, tool_version, took_ms, checked_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(pair_key) DO UPDATE SET result_json = excluded.result_json,
+         tool_version = excluded.tool_version, took_ms = excluded.took_ms, checked_at = excluded.checked_at`,
+    ).run(
+      `${this.contentKey(k)}|${this.contentKey(x)}`,
+      JSON.stringify(result),
+      this.versions?.ffmpeg ?? null,
+      Date.now() - t0,
+      Date.now(),
+    );
+    p.verifyDone = (p.verifyDone ?? 0) + 1;
+    p.verifyLeft = Math.max(0, queue.length - 1);
+    return 1;
+  }
+
+  /**
+   * Opening/closing extras of the kept copies that are the same audio as other books' (Audible's
+   * branding, not part of the book): measured on the kept copy's stored start and end windows,
+   * the first or last stretch of the extra's length. An extra counts as branding when it matches
+   * at least two other groups' extras at `dupBrandingScore`.
+   */
+  private brandingVerified(
+    candidates: { group: number; k: LoadedCopy; start: number; end: number }[],
+  ): { start: Set<number>; end: Set<number> } {
+    const s = getSettings(this.deps.db).audiobooks;
+    const edge = s.dupWindowSeconds + s.dupShiftSeconds;
+    const fpOf = this.deps.db.prepare('SELECT fp FROM audio_fingerprints WHERE win_key = ?');
+    const slice = (c: LoadedCopy, at: 'start' | 'end', seconds: number): Uint32Array | null => {
+      if (!c.seconds || seconds <= 0.5) return null;
+      const span =
+        at === 'start' ? { start: 0, length: edge } : { start: c.seconds - edge, length: edge };
+      const r = fpOf.get(windowKey(spansOf(c.files, span), shaOfFiles(c.files))) as
+        | { fp: Buffer | null }
+        | undefined;
+      if (!r?.fp) return null;
+      const fp = fpFromBuffer(r.fp);
+      const n = Math.max(4, secondsToItems(seconds) - 2);
+      if (at === 'start') return fp.subarray(0, Math.min(n, fp.length));
+      // Chromaprint leaves out the last few seconds of a window: compare what it holds of the
+      // extra (the window ends earlier than the file by the items it is short).
+      const missing = Math.max(0, secondsToItems(edge) - fp.length);
+      const take = Math.max(4, n - missing);
+      return fp.subarray(Math.max(0, fp.length - take));
+    };
+    const verify = (at: 'start' | 'end') => {
+      const list = candidates
+        .map((c, i) => ({
+          i,
+          group: c.group,
+          fp: slice(c.k, at, at === 'start' ? c.start : c.end),
+        }))
+        .filter((x) => x.fp && x.fp.length >= 4);
+      const ok = new Set<number>();
+      for (const a of list) {
+        let matches = 0;
+        for (const b of list) {
+          if (b.group === a.group) continue;
+          const n = Math.min(a.fp!.length, b.fp!.length);
+          const al = bestAlignment(
+            a.fp!.subarray(0, n),
+            b.fp!.subarray(0, n),
+            -2,
+            2,
+            Math.max(3, n - 2),
+          );
+          if (al.score !== null && al.score >= s.dupBrandingScore) matches++;
+          if (matches >= 2) break;
+        }
+        if (matches >= 2) ok.add(a.i);
+      }
+      return ok;
+    };
+    return { start: verify('start'), end: verify('end') };
+  }
+
+  /**
+   * A group's proof (frame checks, chapter titles, cover): which copy stays and why, or why both
+   * stay. `branding` holds the candidates whose opening/closing is proven to be branding.
+   */
+  private proveGroup(
+    distinct: LoadedCopy[],
+    branding: (k: LoadedCopy) => { start: boolean; end: boolean },
+  ): { keep: LoadedCopy; rule: 'frames' | 'branding' | 'extra'; detail: string } | { why: string } {
+    const s = getSettings(this.deps.db).audiobooks;
+    const k = this.keeperOf(distinct);
+    const others = distinct.filter((c) => c !== k);
+    const titles = (c: LoadedCopy) =>
+      c.files.flatMap((f) =>
+        (f.chapters as { title?: string | null }[]).map((ch) => ch.title ?? ''),
+      );
+    const checks: FrameComparison[] = [];
+    for (const x of others) {
+      const r = this.frameCheck(k, x);
+      if (!r) return { why: 'not compared frame by frame yet' };
+      if (!r.contained)
+        return { why: `the audio is not the same frame by frame: ${r.detail ?? 'it differs'}` };
+      if (JSON.stringify(titles(k)) !== JSON.stringify(titles(x))) {
+        return { why: 'the audio is the same, but the chapter lists differ' };
+      }
+      if ((k.files[0]?.hasCover ?? false) !== (x.files[0]?.hasCover ?? false)) {
+        return { why: 'the audio is the same, but only one copy has a cover picture' };
+      }
+      checks.push(r);
+    }
+    const sec = (v: number) => `${v.toFixed(1)} s`;
+    if (
+      checks.every(
+        (r) => r.identical || (r.startExtra === 0 && r.endExtra === 0 && r.middleExtra === 0),
+      )
+    ) {
+      return { keep: canonical(distinct), rule: 'frames', detail: 'the same audio frame by frame' };
+    }
+    const brandingShaped = checks.every(
+      (r) =>
+        r.middleExtra === 0 &&
+        r.startExtra <= s.dupBrandingMaxSeconds &&
+        r.endExtra <= s.dupBrandingMaxSeconds,
+    );
+    const sameExtras = checks.every(
+      (r) =>
+        Math.abs(r.startExtra - checks[0].startExtra) < 0.05 &&
+        Math.abs(r.endExtra - checks[0].endExtra) < 0.05,
+    );
+    if (brandingShaped && sameExtras) {
+      const b = branding(k);
+      const r = checks[0];
+      if ((r.startExtra === 0 || b.start) && (r.endExtra === 0 || b.end)) {
+        return {
+          keep: canonical(others),
+          rule: 'branding',
+          detail: `the same audio frame by frame, apart from Audible's opening (${sec(r.startExtra)}) and closing (${sec(r.endExtra)}) in the longer copy: the copy without them stays`,
+        };
+      }
+    }
+    const extra = checks
+      .map((r) => r.startExtra + r.middleExtra + r.endExtra)
+      .reduce((a, v) => Math.max(a, v), 0);
+    return {
+      keep: k,
+      rule: 'extra',
+      detail: `everything in the other ${others.length === 1 ? 'copy' : 'copies'} is in this one frame by frame; this one has ${sec(extra)} more audio`,
+    };
+  }
+
+  // -------------------------------------------------------------------------------------------
   // decide
 
   private decideStep(p: AudioStage3Progress): number {
@@ -1233,6 +1506,27 @@ export class AudioStage3 {
     const rs = ruleSettings(s);
     const { copies, ids, g } = this.grouping(p);
     const key = stage3SettingsKey(s);
+    // Opening/closing extras that look like branding, checked across groups.
+    const brandingCandidates: { group: number; k: LoadedCopy; start: number; end: number }[] = [];
+    g.components.forEach((comp, gi) => {
+      if (comp.conflict) return;
+      const distinct = distinctContents(comp.members.map((i) => copies.get(ids[i])!));
+      if (distinct.length < 2) return;
+      const k = this.keeperOf(distinct);
+      for (const x of distinct) {
+        if (x === k) continue;
+        const r = this.frameCheck(k, x);
+        if (r?.contained && r.middleExtra === 0 && (r.startExtra > 0 || r.endExtra > 0)) {
+          brandingCandidates.push({ group: gi, k, start: r.startExtra, end: r.endExtra });
+          return;
+        }
+      }
+    });
+    const verified = this.brandingVerified(brandingCandidates);
+    const brandingOf = (k: LoadedCopy) => {
+      const i = brandingCandidates.findIndex((c) => c.k === k);
+      return { start: i >= 0 && verified.start.has(i), end: i >= 0 && verified.end.has(i) };
+    };
     const groupRows: {
       key: string;
       kind: 'group' | 'unsure';
@@ -1255,17 +1549,31 @@ export class AudioStage3 {
       let rule: string;
       let review: string | null = null;
       let conflicts: unknown = null;
+      let proofDetail: string | null = null;
       const order: LoadedCopy[] = [];
       const against = new Map<string, unknown>();
       if (distinct.length < 2) {
         best = canonical(members);
         rule = 'identical';
+        proofDetail = 'identical files (byte for byte)';
         order.push(best, ...members.filter((m) => m !== best));
       } else {
         const d = decideGroup([...factsByKey.values()], rs);
-        best = distinct.find((c) => c.key === d.best)!;
-        rule = String(d.rule);
-        review = d.review;
+        // Dropped only on proof (user, 2026-11-18); otherwise every copy stays and the decided
+        // order gives the best guess shown for review.
+        const proof = comp.conflict
+          ? { why: 'two of these copies were measured as different recordings' }
+          : this.proveGroup(distinct, brandingOf);
+        if ('keep' in proof) {
+          best = proof.keep;
+          rule = proof.rule;
+          review = null;
+          proofDetail = proof.detail;
+        } else {
+          best = distinct.find((c) => c.key === d.best)!;
+          rule = String(d.rule);
+          review = `not proven to be the same in every respect, so every copy stays: ${proof.why}`;
+        }
         conflicts = d.against.map((r) => ({
           other: r.other,
           rule: r.rule,
@@ -1286,11 +1594,6 @@ export class AudioStage3 {
             if (m !== c && !order.includes(m) && sameContent(m, c)) order.push(m);
         }
       }
-      if (comp.conflict) {
-        review = [review, 'two of these copies were measured as different recordings']
-          .filter(Boolean)
-          .join('; ');
-      }
       const outcome: 'auto' | 'review' = review ? 'review' : 'auto';
       groupRows.push({
         key: groupKey(members.map((m) => m.key)),
@@ -1301,7 +1604,7 @@ export class AudioStage3 {
         best,
         rule,
         outcome,
-        review,
+        review: review ?? proofDetail,
         conflicts,
         damaged: [...factsByKey.values()].some((f) => f.damage === 'damaged'),
         ranks: order.map((c, i) => ({
@@ -1338,7 +1641,7 @@ export class AudioStage3 {
         best,
         rule: String(r.rule),
         outcome: 'review',
-        review: `not sure it is the same recording: ${detail || 'the windows disagree'}`,
+        review: `not sure it is the same recording, so both stay: ${detail || 'the windows disagree'}`,
         conflicts: [{ other: other.key, rule: r.rule, conflicts: r.conflicts, review: r.review }],
         damaged: false,
         ranks: [
