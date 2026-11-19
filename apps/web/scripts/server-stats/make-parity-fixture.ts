@@ -12,7 +12,7 @@
  * server's test checks it computes the same from its own database. Run after a deliberate
  * change to the Stats rules:
  *
- *   pnpm vite-node scripts/server-stats/make-parity-fixture.ts
+ *   npx vite-node scripts/server-stats/make-parity-fixture.ts   (in apps/web)
  */
 
 import { writeFile } from 'node:fs/promises';
