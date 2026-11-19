@@ -1214,6 +1214,48 @@ describe.skipIf(!HAS_TOOLS)('stage 3 on fixture audio with ffmpeg and fpcalc', (
     }
   }, 300_000);
 
+  it('stage 3 stops when stage 1 or 2 runs again, and takes no step until both are done', async () => {
+    const base = makeTempDir('wp21b-wait');
+    const { env, setup } = await makeCleanupEnv({
+      audio: {
+        roots: { torrents: path.join(base, 't'), library: path.join(base, 'l') },
+        tools: { ffprobePath: 'ffprobe', ffmpegPath: 'ffmpeg' },
+      },
+    });
+    try {
+      await setup();
+      const db = env.cleanupDb;
+      const audio = env.audio!;
+      setAudioStageMode(db, 3, 'analyse');
+      const setPhase = (stage: number, phase: string) =>
+        db
+          .prepare('UPDATE audio_stages SET progress_json = ? WHERE stage = ?')
+          .run(JSON.stringify({ analysisId: `s${stage}`, phase }), stage);
+      setPhase(1, 'done');
+      setPhase(2, 'walk'); // stage 2 runs again (found live 2026-11-18)
+      let steps = 0;
+      const s3 = audio.stage3!;
+      s3.step = async () => {
+        steps++;
+        return false;
+      };
+      const internal = audio as unknown as { run3: () => void; running3: Promise<void> | null };
+      internal.run3();
+      await internal.running3;
+      expect(steps).toBe(0);
+      setPhase(2, 'done');
+      s3.step = async () => {
+        steps++;
+        return true;
+      };
+      internal.run3();
+      await internal.running3;
+      expect(steps).toBe(1);
+    } finally {
+      await env.close();
+    }
+  });
+
   it('a reading step gives the disk to a Calibre job at once and is read again later', async () => {
     const { DiskLock } = await import('../src/cleanup/disk-lock');
     const lock = new DiskLock(5);

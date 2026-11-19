@@ -389,9 +389,19 @@ export class AudioCleanupService {
     return 'Analysing';
   }
 
+  /** Stages 1 and 2 have both finished (stage 3 works only on what they found). */
+  private stages12Done(): boolean {
+    const s1 = getAudioStage(this.db, 1).progress as { phase?: string };
+    const s2 = getAudioStage(this.db, 2).progress as { phase?: string };
+    return s1.phase === 'done' && s2.phase === 'done';
+  }
+
   private run3(): void {
     const stage = this.stage3!;
-    const stop = () => this.stopped || getAudioStage(this.db, 3).mode === 'off';
+    // Stage 3 also stops when stage 1 or 2 runs again (found live 2026-11-18: it kept reading
+    // while stage 2 listed the folders again); round3 then waits and starts it over.
+    const stop = () =>
+      this.stopped || getAudioStage(this.db, 3).mode === 'off' || !this.stages12Done();
     this.running3 = (async () => {
       try {
         for (;;) {
