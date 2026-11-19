@@ -734,6 +734,10 @@ describe('stage 4: online sources (Preview)', () => {
     // The pass: the queued search points at the plain index, book A asks it again (answered
     // from the cache: no new request to Bookmeter) and is proposed again with its Bookmeter id.
     const asked = seen.length;
+    const checks = () =>
+      env.logs.filter((m) => m.startsWith('Stage 4: labeled books checked')).length;
+    const firstChecks = checks();
+    expect(firstChecks).toBe(1);
     deadline = Date.now() + 30_000;
     while (Date.now() < deadline && phase() !== 'done') {
       await env.service.tick();
@@ -741,6 +745,9 @@ describe('stage 4: online sources (Preview)', () => {
     }
     expect(phase()).toBe('done');
     expect(seen.length).toBe(asked);
+    // The labeled book was reopened, so the labeled books were checked again in the lookups.
+    expect(env.logs.some((m) => m.includes('labeled books were reopened'))).toBe(true);
+    expect(checks()).toBe(2);
     expect(
       (
         env.cleanupDb.prepare('SELECT url FROM fetch_requests WHERE id = ?').get(queuedOld.id) as {

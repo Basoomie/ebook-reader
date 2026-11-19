@@ -123,6 +123,8 @@ export interface Stage4Progress {
   error: string | null;
   /** When the labeled books were all proposed (for the report's "time to the first gate"). */
   labeledDoneAt: number | null;
+  /** The gate ran at least once (the time left keeps the labeled books' ratios meanwhile). */
+  labeledCheckedOnce?: boolean;
   /** The answer time of the Natively sitemap whose pages are listed. */
   nativelyListedAt?: number | null;
   /**
@@ -1441,7 +1443,21 @@ export class Stage4Analysis {
     this.readings(p);
     addTime(p, 'lookups: readings', performance.now() - t);
 
-    // 5. The gate once the labeled books are proposed.
+    // 5. The gate once the labeled books are proposed. Labeled books back in the queue after
+    // the gate ran (a one-time pass asked a source again) are checked again once they are
+    // proposed again (user, 2026-11-19: every change is checked on the labeled books).
+    if (p.labeledDoneAt !== null && p.labeledIds.length) {
+      const reopened = db
+        .prepare(
+          `SELECT 1 FROM stage4_books WHERE analysis_id = ? AND labeled = 1 AND state IN ('read', 'waiting', 'ready') LIMIT 1`,
+        )
+        .get(p.analysisId);
+      if (reopened) {
+        p.labeledDoneAt = null;
+        p.labeledCheckedOnce = true;
+        this.log('Stage 4: labeled books were reopened; they are checked again once proposed');
+      }
+    }
     if (p.labeledDoneAt === null && p.labeledIds.length) {
       const open = db
         .prepare(
@@ -1450,7 +1466,9 @@ export class Stage4Analysis {
         .get(p.analysisId);
       if (!open && p.pass === 'all') {
         p.labeledDoneAt = Date.now();
+        p.labeledCheckedOnce = true;
         await this.gateNow(p);
+        this.log(`Stage 4: labeled books checked (${p.labeledIds.length})`);
       }
     }
 
