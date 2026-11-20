@@ -187,7 +187,9 @@ describe('stage 4: online sources (Preview)', () => {
     }
     if (u.startsWith('https://bookwalker.jp/search/?word=')) {
       const q = decodeURIComponent(u.split('word=')[1]);
-      if (!q.startsWith('魔法使いの旅')) return html('', 404);
+      // Like the real search, it misses the title with its volume number and finds the series
+      // name (live 2026-11-19: "鋼鉄の白兎騎士団10" 404, "鋼鉄の白兎騎士団" found).
+      if (!q.startsWith('魔法使いの旅') || q === '魔法使いの旅 1') return html('', 404);
       return html(
         bookwalkerList([
           ['https://bookwalker.jp/de11111111-2222-3333-4444-555555555555/', '魔法使いの旅 1'],
@@ -571,6 +573,12 @@ describe('stage 4: online sources (Preview)', () => {
     const ev = env.service.analysis4!.loadOnline(env.libraryId(), uuidA)!;
     expect(ev.amazon.product?.asin).toBe('B0TESTAAA1');
     expect(ev.bookmeter.accepted?.id).toBe('777');
+    // BookWalker missed "魔法使いの旅 1" and was asked once more by the series name.
+    expect(ev.bookwalker.retried).toBe('魔法使いの旅');
+    expect(seen).toContain(
+      `https://bookwalker.jp/search/?word=${encodeURIComponent('魔法使いの旅')}`,
+    );
+    expect(ev.bookwalker.detail?.title).toBe('魔法使いの旅 1');
     expect(Object.keys(ev.requests)).toEqual(
       expect.arrayContaining([
         'amazon-dp',
@@ -703,6 +711,14 @@ describe('stage 4: online sources (Preview)', () => {
     const evA = a4.loadOnline(env.libraryId(), uuidA)!;
     evA.bookmeter = { hits: [], accepted: null, reason: 'no results' };
     evA.requests['bookmeter-search'] = oldA.id;
+    // …and BookWalker's search as it ended before the retry existed: "not found", nothing else.
+    const bwFirst = env.cleanupDb
+      .prepare(
+        "SELECT id FROM fetch_requests WHERE site = 'bookwalker' AND key = 'search:魔法使いの旅 1'",
+      )
+      .get() as { id: number };
+    (evA as unknown as { bookwalker: Record<string, unknown> }).bookwalker = {};
+    evA.requests['bookwalker-search'] = bwFirst.id;
     a4.saveEvidence(env.libraryId(), uuidA, 'online', evA);
     env.cleanupDb
       .prepare(
@@ -711,12 +727,17 @@ describe('stage 4: online sources (Preview)', () => {
       .run(ids.A);
     const prog = getStage(env.cleanupDb, 4).progress as Record<string, unknown>;
     delete prog.bookmeterRedo;
+    delete prog.bookwalkerRetry;
     prog.phase = 'lookups';
     updateStage(env.cleanupDb, 4, { progress: prog, state: 'analysing' });
 
     // The pass: the queued search points at the plain index, book A asks it again (answered
     // from the cache: no new request to Bookmeter) and is proposed again with its Bookmeter id.
     const asked = seen.length;
+    const checks = () =>
+      env.logs.filter((m) => m.startsWith('Stage 4: labeled books checked')).length;
+    const firstChecks = checks();
+    expect(firstChecks).toBe(1);
     deadline = Date.now() + 30_000;
     while (Date.now() < deadline && phase() !== 'done') {
       await env.service.tick();
@@ -724,6 +745,9 @@ describe('stage 4: online sources (Preview)', () => {
     }
     expect(phase()).toBe('done');
     expect(seen.length).toBe(asked);
+    // The labeled book was reopened, so the labeled books were checked again in the lookups.
+    expect(env.logs.some((m) => m.includes('labeled books were reopened'))).toBe(true);
+    expect(checks()).toBe(2);
     expect(
       (
         env.cleanupDb.prepare('SELECT url FROM fetch_requests WHERE id = ?').get(queuedOld.id) as {
@@ -741,6 +765,19 @@ describe('stage 4: online sources (Preview)', () => {
     expect(
       (getStage(env.cleanupDb, 4).progress as { bookmeterRedo?: { phase: string; books: number } })
         .bookmeterRedo,
+    ).toMatchObject({ phase: 'done', books: 1 });
+    // The BookWalker pass asked the series name again (from the cache) and found the book.
+    const evA2 = a4.loadOnline(env.libraryId(), uuidA)! as unknown as {
+      bookwalker: { retried?: string; detail?: { title?: string } };
+    };
+    expect(evA2.bookwalker.retried).toBe('魔法使いの旅');
+    expect(evA2.bookwalker.detail?.title).toBe('魔法使いの旅 1');
+    expect(
+      (
+        getStage(env.cleanupDb, 4).progress as {
+          bookwalkerRetry?: { phase: string; books: number };
+        }
+      ).bookwalkerRetry,
     ).toMatchObject({ phase: 'done', books: 1 });
   }, 120_000);
 
@@ -832,6 +869,74 @@ describe('stage 4: online sources (Preview)', () => {
     }
     // The 10 answers woke stage 4 only: stages 1-3 ran in no round (no timer in the test).
     expect(otherRounds).toBe(0);
+  }, 60_000);
+
+  it('asks a slow site two at a time at its pace when set to, never more', async () => {
+    // Found 2026-11-19: Bookmeter answers in about a second, so one request at a time ran at
+    // 1.3 s whatever its interval. Two at once at 0.5 s: about 0.75 s each here.
+    const fetchToken = createApplyToken(env.cleanupDb, 'fetch', Date.now(), 'fetch').token;
+    const s0 = getSettings(env.cleanupDb).fetch;
+    await request(env.app)
+      .put('/api/v1/cleanup/settings')
+      .set(auth(user))
+      .send({
+        fetch: {
+          ...s0,
+          sites: { ...s0.sites, ranobedb: { enabled: true, intervalSeconds: 0.5, inFlight: 2 } },
+        },
+      })
+      .expect(200);
+    const q = env.service.fetchQueue;
+    for (let i = 0; i < 10; i++)
+      q.enqueue(
+        { site: 'ranobedb', key: `slow${i}`, url: `https://ranobedb.org/api/v0/book/s${i}` },
+        null,
+        Date.now(),
+      );
+    const starts: number[] = [];
+    let inFlight = 0;
+    let most = 0;
+    const fetcher = new TestFetcher(
+      {
+        serverUrl: url,
+        token: fetchToken,
+        serverTimeoutSeconds: 10,
+        sudachiPython: '',
+        sudachiScript: '',
+      },
+      () => {},
+      async (input, init) => {
+        const u = String(input);
+        if (u.startsWith(url)) return fetch(input, init);
+        starts.push(Date.now());
+        inFlight++;
+        most = Math.max(most, inFlight);
+        await sleep(1500);
+        inFlight--;
+        return new Response('{"book":{}}', { status: 200 });
+      },
+    );
+    const running = fetcher.run();
+    const open = () =>
+      (
+        env.cleanupDb
+          .prepare(
+            "SELECT COUNT(*) AS n FROM fetch_requests WHERE site = 'ranobedb' AND state IN ('queued', 'leased')",
+          )
+          .get() as { n: number }
+      ).n;
+    const deadline = Date.now() + 30_000;
+    while (open() > 0 && Date.now() < deadline) await sleep(100);
+    fetcher.stop();
+    await running;
+    expect(open()).toBe(0);
+    expect(starts).toHaveLength(10);
+    expect(most).toBe(2);
+    const gaps = starts.slice(1).map((x, i) => x - starts[i]);
+    // The pace holds between starts, and two at once beat one at a time (1.5 s each).
+    for (const g of gaps) expect(g).toBeGreaterThanOrEqual(490);
+    const mean = gaps.reduce((a, b) => a + b, 0) / gaps.length;
+    expect(mean).toBeLessThan(1000);
   }, 60_000);
 
   it('asks a restarted fetcher’s requests again at once, not after their leases', async () => {

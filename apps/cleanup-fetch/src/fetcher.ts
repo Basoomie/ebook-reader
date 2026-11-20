@@ -16,7 +16,7 @@ import { brotliCompressSync, constants as zc } from 'zlib';
 import type { FetchConfig } from './config';
 import { allowedUrl } from './hosts';
 
-export const VERSION = '1.3.0';
+export const VERSION = '1.4.0';
 /** The reference run's browser headers (ref4.py); RanobeDB refuses Python's default user agent. */
 const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36';
@@ -60,7 +60,8 @@ export class Fetcher {
   private requestTimeoutMs = 30_000;
   private maxPageBytes = 16 * 1024 * 1024;
   private sudachiVersion: string | null = null;
-  private readonly inFlight = new Set<string>();
+  /** Requests being asked now, by id: the server decides how many per site (1.4.0). */
+  private readonly inFlight = new Set<number>();
   /** Ends the claim loop's wait early (an answer was posted: its site may be due again now). */
   private wakeUp: (() => void) | null = null;
   /** An answer was posted since the last claim (also while that claim was on its way). */
@@ -256,7 +257,7 @@ export class Fetcher {
   }
 
   private async handle(c: Claimed): Promise<void> {
-    this.inFlight.add(c.site);
+    this.inFlight.add(c.id);
     try {
       const r = c.method === 'LOCAL' ? await this.runSudachi(c) : await this.fetchHttp(c);
       this.log(
@@ -264,7 +265,7 @@ export class Fetcher {
       );
       await this.report(c, r);
     } finally {
-      this.inFlight.delete(c.site);
+      this.inFlight.delete(c.id);
       this.answered = true;
       this.wakeUp?.();
     }
@@ -330,7 +331,7 @@ export class Fetcher {
         backoff = 2000;
         const requests = (Array.isArray(r.requests) ? r.requests : []) as Claimed[];
         for (const c of requests) {
-          if (this.inFlight.has(c.site)) continue;
+          if (this.inFlight.has(c.id)) continue;
           void this.handle(c);
         }
         // Until the next site is due (the server's exact wait), until an answer is posted (that

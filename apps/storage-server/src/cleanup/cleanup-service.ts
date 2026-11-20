@@ -1173,7 +1173,9 @@ export class CleanupService {
         : null;
     // This run's requests on the labeled books, once they are all proposed (10 minutes kept).
     let labeled: { site: string; n: number }[] = [];
-    if (p.labeledDoneAt !== null) {
+    // Also while reopened labeled books are checked again: their earlier ratios still hold.
+    const labeledKnown = p.labeledDoneAt !== null || p.labeledCheckedOnce === true;
+    if (labeledKnown) {
       if (!this.labeled4Cache || now - this.labeled4Cache.at > 600_000) {
         this.labeled4Cache = {
           at: now,
@@ -1204,7 +1206,7 @@ export class CleanupService {
       booksUnreadable: unreadable,
       readPerSecond,
       labeledBooks: p.labeledIds.length,
-      labeledDone: p.labeledDoneAt !== null,
+      labeledDone: labeledKnown,
       amazonShared: this.fetchQueue.amazonPace(now) === 'shared',
       amazonSlotSeconds: amazonSlot,
       ndlNames: readings.filter((r) => r.state === 'queued').reduce((a, b) => a + b.n, 0),

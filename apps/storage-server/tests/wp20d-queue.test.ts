@@ -10,7 +10,12 @@ import { brotliCompressSync } from 'zlib';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openCleanupDatabase } from '../src/cleanup/cleanup-db';
 import { getSettings, updateSettings } from '../src/cleanup/settings';
-import { FetchQueue, LABELED_PRIORITY, inNdlOutage } from '../src/cleanup/stage4/queue';
+import {
+  FetchQueue,
+  LABELED_PRIORITY,
+  inNdlOutage,
+  versionAtLeast,
+} from '../src/cleanup/stage4/queue';
 import { classifyResponse } from '../src/cleanup/stage4/challenge';
 import { makeTempDir } from './helpers/spawn-server';
 import { AMAZON_404, AMAZON_CHALLENGE, amazonDp } from './helpers/stage4-fixture';
@@ -353,5 +358,73 @@ describe('WP20d fetch queue', () => {
     expect(inNdlOutage(s, Date.UTC(2026, 10, 18, 18, 55))).toBe(true);
     expect(inNdlOutage(s, Date.UTC(2026, 10, 18, 19, 14))).toBe(true);
     expect(inNdlOutage(s, Date.UTC(2026, 10, 18, 19, 15))).toBe(false);
+  });
+
+  it('takes decimal intervals down to 0.25 s and up to 4 requests at once, for every site', () => {
+    const s0 = getSettings(db).fetch;
+    // Settings saved before the in-flight limit existed read as one at a time.
+    expect(s0.sites.bookmeter.inFlight).toBe(1);
+    const sites = { ...s0.sites, bookmeter: { enabled: true, intervalSeconds: 0.5, inFlight: 2 } };
+    updateSettings(db, { fetch: { ...s0, sites } });
+    expect(getSettings(db).fetch.sites.bookmeter).toEqual({
+      enabled: true,
+      intervalSeconds: 0.5,
+      inFlight: 2,
+    });
+    const bad = (site: string, v: object) =>
+      expect(() =>
+        updateSettings(db, { fetch: { ...s0, sites: { ...s0.sites, [site]: v } } }),
+      ).toThrow();
+    bad('bookmeter', { enabled: true, intervalSeconds: 0.2, inFlight: 1 });
+    bad('bookmeter', { enabled: true, intervalSeconds: 1, inFlight: 5 });
+    bad('bookmeter', { enabled: true, intervalSeconds: 1, inFlight: 1.5 });
+    // Every site may choose, Amazon's queues too.
+    updateSettings(db, {
+      fetch: {
+        ...s0,
+        sites: { ...s0.sites, 'amazon-dp': { enabled: true, intervalSeconds: 2, inFlight: 2 } },
+      },
+    });
+    expect(getSettings(db).fetch.sites['amazon-dp'].inFlight).toBe(2);
+  });
+
+  it('gives a site up to its requests at once, at its pace, only to a fetcher that handles them', () => {
+    const s0 = getSettings(db).fetch;
+    const sites = { ...s0.sites, ranobedb: { enabled: true, intervalSeconds: 1, inFlight: 2 } };
+    updateSettings(db, { fetch: { ...s0, sites } });
+    for (let i = 0; i < 4; i++)
+      q.enqueue(
+        { site: 'ranobedb', key: `r${i}`, url: `https://ranobedb.org/api/v0/book/${i}` },
+        null,
+        T0,
+      );
+    const ranobe = (now: number) => q.claim(now).requests.filter((r) => r.site === 'ranobedb');
+    const version = (v: string | null) =>
+      db.prepare('UPDATE fetcher_status SET version = ? WHERE id = 1').run(v);
+    // An older fetcher (or none known): one at a time, whatever the setting.
+    version('1.3.0');
+    expect(ranobe(T0)).toHaveLength(1);
+    expect(ranobe(T0 + 1000)).toHaveLength(0);
+    // 1.4.0: a second one once the pace allows, not a third while two are in flight.
+    version('1.4.0');
+    expect(ranobe(T0 + 1500)).toHaveLength(1);
+    expect(ranobe(T0 + 1600)).toHaveLength(0); // the pace: 1 s since the last start
+    expect(ranobe(T0 + 3000)).toHaveLength(0); // two in flight
+    const leased = db
+      .prepare(
+        "SELECT id, lease_token AS t FROM fetch_requests WHERE site = 'ranobedb' AND state = 'leased'",
+      )
+      .all() as { id: number; t: string }[];
+    expect(leased).toHaveLength(2);
+    q.report(leased[0].id, leased[0].t, page('{"book":{}}'), T0 + 3100);
+    expect(ranobe(T0 + 3200)).toHaveLength(1);
+  });
+
+  it('compares fetcher versions', () => {
+    expect(versionAtLeast('1.4.0', '1.4.0')).toBe(true);
+    expect(versionAtLeast('1.10.0', '1.4.0')).toBe(true);
+    expect(versionAtLeast('2.0.0', '1.4.0')).toBe(true);
+    expect(versionAtLeast('1.3.9', '1.4.0')).toBe(false);
+    expect(versionAtLeast(null, '1.4.0')).toBe(false);
   });
 });

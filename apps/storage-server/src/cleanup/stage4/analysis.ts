@@ -57,7 +57,7 @@ import {
   rdbCandidates,
   rdbSeries,
 } from './parse';
-import { bwAsAmazon, bwSettles, STANDIN } from './bw-standin';
+import { bwAsAmazon, bwSettles, STANDIN, titleStem } from './bw-standin';
 import { ASIN_RE, pickByVolume, pyQuote, queryTitle, sim } from './pick';
 import { proposeStage4, type Stage4Proposal } from './proposals';
 import { FetchQueue, LABELED_PRIORITY } from './queue';
@@ -123,6 +123,8 @@ export interface Stage4Progress {
   error: string | null;
   /** When the labeled books were all proposed (for the report's "time to the first gate"). */
   labeledDoneAt: number | null;
+  /** The gate ran at least once (the time left keeps the labeled books' ratios meanwhile). */
+  labeledCheckedOnce?: boolean;
   /** The answer time of the Natively sitemap whose pages are listed. */
   nativelyListedAt?: number | null;
   /**
@@ -133,6 +135,8 @@ export interface Stage4Progress {
   amazonSweep?: { phase: 'waiters' | 'requests' | 'books' | 'done'; cursor: string };
   /** Bookmeter asked again with its plain index (bookmeterRedoStep), once per analysis. */
   bookmeterRedo?: { phase: 'queued' | 'books' | 'done'; cursor: string; books: number };
+  /** BookWalker asked once more for books its search found nothing for (bookwalkerRetryStep). */
+  bookwalkerRetry?: { phase: 'books' | 'done'; cursor: string; books: number };
   /** Books the final pass has proposed again (for its time left). */
   finalDone?: number;
   /** Time per step (lessons 1-3: every stage times its steps from the first build). */
@@ -202,6 +206,8 @@ export interface OnlineEvidence {
     series_candidates?: [string, string][];
     detail?: ReturnType<typeof parseBwDetail> & { url: string };
     failed?: string;
+    /** The simpler query asked after the search found nothing (bookwalkerRetryQuery). */
+    retried?: string;
   };
   bookmeter: {
     hits?: BookmeterHit[];
@@ -249,6 +255,15 @@ const FINAL_CHUNK = 50;
 const NATIVELY_ENQUEUE_CHUNK = 2000;
 /** Rows per chunk of the one-time Amazon sweep (measured on a live copy: 42 ms typical, 82 ms p90). */
 const SWEEP_CHUNK = 500;
+
+/**
+ * BookWalker's second query when its search found nothing: the title up to its volume number
+ * (bw-standin.ts titleStem), or null when that is the same query or too short to search.
+ */
+export function bookwalkerRetryQuery(title: string): string | null {
+  const stem = titleStem(title);
+  return stem.length >= 2 && nfkc(stem) !== nfkc(title) ? stem : null;
+}
 /** The waiter "library" of Natively's pages (they belong to no book). */
 const NATIVELY_WAITER = 'natively';
 
@@ -958,6 +973,61 @@ export class Stage4Analysis {
     this.save(p);
   }
 
+  /**
+   * Once per analysis: books whose BookWalker search found nothing before the retry existed ask
+   * the simpler query (bookwalkerRetryQuery) and wait for it; everything else stays as answered
+   * (Amazon was already asked or settled for them). Chunked and sliced as the other passes.
+   */
+  private async bookwalkerRetryStep(p: Stage4Progress): Promise<void> {
+    const r0 = (p.bookwalkerRetry ??= { phase: 'books', cursor: '', books: 0 });
+    if (r0.phase === 'done') return;
+    const db = this.db;
+    const t = performance.now();
+    const rows = db
+      .prepare(
+        `SELECT calibre_uuid, labeled, state FROM stage4_books
+         WHERE library_id = ? AND calibre_uuid > ? ORDER BY calibre_uuid LIMIT 200`,
+      )
+      .all(p.libraryId, r0.cursor) as { calibre_uuid: string; labeled: number; state: string }[];
+    const stateOf = db.prepare('SELECT state FROM fetch_requests WHERE id = ?');
+    const slicer = new Slicer(p);
+    for (const r of rows) {
+      await slicer.maybeYield();
+      r0.cursor = r.calibre_uuid;
+      if (r.state !== 'waiting' && r.state !== 'ready' && r.state !== 'proposed') continue;
+      const ev = this.book(r.calibre_uuid) ? this.loadOnline(p.libraryId, r.calibre_uuid) : null;
+      const id = ev?.requests['bookwalker-search'];
+      if (!ev || !id || ev.bookwalker.retried || ev.bookwalker.search_candidates) continue;
+      if ((stateOf.get(id) as { state: string } | undefined)?.state !== 'gone') continue;
+      const retry = bookwalkerRetryQuery(ev.query.title);
+      if (!retry) continue;
+      ev.bookwalker.retried = retry;
+      if (!ev.open.includes('bookwalker')) ev.open.push('bookwalker');
+      ev.requests['bookwalker-search'] = this.deps.queue.enqueue(
+        {
+          site: 'bookwalker',
+          key: `search:${retry}`,
+          url: `https://bookwalker.jp/search/?word=${pyQuote(retry)}`,
+          priority: r.labeled === 1 ? LABELED_PRIORITY : 0,
+        },
+        { libraryId: p.libraryId, uuid: r.calibre_uuid, step: 'bookwalker-search' },
+      ).id;
+      db.transaction(() => {
+        this.saveEvidence(p.libraryId, r.calibre_uuid, ONLINE_KIND, ev);
+        db.prepare(
+          `UPDATE stage4_books SET state = 'waiting', pending = ?, updated_at = ? WHERE library_id = ? AND calibre_uuid = ?`,
+        ).run(ev.open.length, Date.now(), p.libraryId, r.calibre_uuid);
+      })();
+      r0.books++;
+    }
+    if (rows.length < 200) {
+      r0.phase = 'done';
+      this.log(`Stage 4: BookWalker asked again for ${r0.books} books (simpler query)`);
+    }
+    addTime(p, `bookwalker retry: ${r0.phase}`, performance.now() - t);
+    this.save(p);
+  }
+
   /** Moves a book on with one answer; returns the evidence (saved by the caller). */
   private onAnswer(
     p: Stage4Progress,
@@ -1067,6 +1137,27 @@ export class Stage4Analysis {
       }
       case 'bookwalker-search': {
         if (!body) {
+          // "Not found" (HTTP 404): once more with the title up to its volume number.
+          // BookWalker's search misses zero-padded or glued numbers and Roman numerals
+          // ("…騎士団10", "…D×D 06", "…パラディンI"), and finds the series by its name
+          // (proven 2026-11-19: 327 of 24,731 light novels RanobeDB knows).
+          const retry =
+            req.state === 'gone' && !ev.bookwalker.retried
+              ? bookwalkerRetryQuery(ev.query.title)
+              : null;
+          if (retry) {
+            ev.bookwalker.retried = retry;
+            q.enqueue(
+              {
+                site: 'bookwalker',
+                key: `search:${retry}`,
+                url: `https://bookwalker.jp/search/?word=${pyQuote(retry)}`,
+                priority: prio,
+              },
+              w('bookwalker-search'),
+            );
+            break;
+          }
           if (failed) ev.bookwalker.failed = failed;
           close('bookwalker');
           break;
@@ -1191,6 +1282,7 @@ export class Stage4Analysis {
     this.loadSnapshot(p.libraryId);
     await this.amazonSweepStep(p);
     if (p.amazonSweep?.phase === 'done') await this.bookmeterRedoStep(p);
+    if (p.bookmeterRedo?.phase === 'done') await this.bookwalkerRetryStep(p);
     const t0 = performance.now();
     // 0. A site switched off answers nothing: its queued requests are given up, so the books
     // go on without that source ("Ask again" on the page re-asks them once it is back on).
@@ -1351,7 +1443,21 @@ export class Stage4Analysis {
     this.readings(p);
     addTime(p, 'lookups: readings', performance.now() - t);
 
-    // 5. The gate once the labeled books are proposed.
+    // 5. The gate once the labeled books are proposed. Labeled books back in the queue after
+    // the gate ran (a one-time pass asked a source again) are checked again once they are
+    // proposed again (user, 2026-11-19: every change is checked on the labeled books).
+    if (p.labeledDoneAt !== null && p.labeledIds.length) {
+      const reopened = db
+        .prepare(
+          `SELECT 1 FROM stage4_books WHERE analysis_id = ? AND labeled = 1 AND state IN ('read', 'waiting', 'ready') LIMIT 1`,
+        )
+        .get(p.analysisId);
+      if (reopened) {
+        p.labeledDoneAt = null;
+        p.labeledCheckedOnce = true;
+        this.log('Stage 4: labeled books were reopened; they are checked again once proposed');
+      }
+    }
     if (p.labeledDoneAt === null && p.labeledIds.length) {
       const open = db
         .prepare(
@@ -1360,7 +1466,9 @@ export class Stage4Analysis {
         .get(p.analysisId);
       if (!open && p.pass === 'all') {
         p.labeledDoneAt = Date.now();
+        p.labeledCheckedOnce = true;
         await this.gateNow(p);
+        this.log(`Stage 4: labeled books checked (${p.labeledIds.length})`);
       }
     }
 
@@ -1372,7 +1480,10 @@ export class Stage4Analysis {
         )
         .get(p.analysisId);
       // Not before the one-time passes are through every book (they can reopen finished ones).
-      const passesDone = p.amazonSweep?.phase === 'done' && p.bookmeterRedo?.phase === 'done';
+      const passesDone =
+        p.amazonSweep?.phase === 'done' &&
+        p.bookmeterRedo?.phase === 'done' &&
+        p.bookwalkerRetry?.phase === 'done';
       if (!open && passesDone && this.nativelyDone() && this.readingsDone()) {
         p.phase = 'final';
         p.finalCursor = 0;

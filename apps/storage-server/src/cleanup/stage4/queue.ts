@@ -29,6 +29,21 @@ const REFUSED_MAX_BYTES = 256 * 1024;
 
 export const LABELED_PRIORITY = 10;
 
+/** The first fetcher that handles several requests of one site at once. */
+export const MULTI_IN_FLIGHT_VERSION = '1.4.0';
+
+/** True when version a.b.c is at least min (an unknown version counts as older). */
+export function versionAtLeast(v: string | null, min: string): boolean {
+  if (!v) return false;
+  const a = v.split('.').map((x) => parseInt(x, 10));
+  const b = min.split('.').map((x) => parseInt(x, 10));
+  for (let i = 0; i < 3; i++) {
+    const x = Number.isFinite(a[i]) ? a[i] : 0;
+    if (x !== b[i]) return x > b[i];
+  }
+  return true;
+}
+
 export interface RequestSpec {
   site: FetchSite;
   /** What makes two requests the same (the canonical URL, or the query). */
@@ -229,7 +244,7 @@ export class FetchQueue {
 
   // ------------------------------------------------------------ claims
 
-  /** Gives the fetcher one due request per site whose pace allows it. */
+  /** Gives the fetcher one due request per site whose pace and in-flight limit allow it. */
   claim(now = Date.now()): { requests: ClaimedRequest[]; waitSeconds: number; waitMs: number } {
     const s = this.settings();
     this.expireLeases(now);
@@ -250,6 +265,13 @@ export class FetchQueue {
     const stamp = this.db.prepare(
       'UPDATE fetch_sites SET last_claim_at = ?, updated_at = ? WHERE site = ?',
     );
+    const leasedOf = this.db.prepare(
+      "SELECT COUNT(*) AS n FROM fetch_requests WHERE site = ? AND state = 'leased'",
+    );
+    const fv = this.db.prepare('SELECT version FROM fetcher_status WHERE id = 1').get() as
+      | { version: string | null }
+      | undefined;
+    const multi = versionAtLeast(fv?.version ?? null, MULTI_IN_FLIGHT_VERSION);
     // Sites whose own last claim is oldest go first: where two share one slot (Amazon's product
     // pages and searches), they take turns. In a fixed order the product pages always won it
     // (found live 2026-11-18: 50 searches answered in a day, 30,103 waiting).
@@ -269,11 +291,12 @@ export class FetchQueue {
         if (b.until) soonest = Math.min(soonest, b.until);
         continue;
       }
-      // A site with an open lease waits for its answer (one request in flight per site).
-      const open = this.db
-        .prepare("SELECT 1 FROM fetch_requests WHERE site = ? AND state = 'leased' LIMIT 1")
-        .get(site);
-      if (open) continue;
+      // A site waits while it has as many requests in flight as it may: its setting, for a
+      // fetcher that handles several per site (1.4.0+); one for older fetchers, which skip a
+      // second request of a site they are already asking (it would wait out its lease).
+      const limit = multi ? Math.max(1, s.sites[site]?.inFlight ?? 1) : 1;
+      const open = (leasedOf.get(site) as { n: number }).n;
+      if (open >= limit) continue;
       const r = pick.get(site, now) as Omit<ClaimedRequest, 'leaseToken'> | undefined;
       if (!r) {
         const t = (next.get(site) as { t: number | null }).t;

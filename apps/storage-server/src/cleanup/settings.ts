@@ -216,11 +216,23 @@ export interface AiSettings {
   labeledOnly: boolean;
 }
 
+/** The shortest interval a site can be set to (seconds; Sudachi runs locally and has none). */
+export const MIN_INTERVAL_SECONDS = 0.25;
+/** The most requests one site may have in flight at once. */
+export const MAX_IN_FLIGHT = 4;
+
 /** One site's queue in the fetch container (WP20d). */
 export interface FetchSiteSettings {
   enabled: boolean;
   /** Seconds from the start of one request to the start of the next on this queue. */
   intervalSeconds: number;
+  /**
+   * Requests of this site in flight at once (1-4, for every site: the user's choice, 2026-11-19).
+   * A site answering in about a second can't go faster than one request a second with one in
+   * flight, whatever its interval (found 2026-11-19: Bookmeter at 1 s ran at 1.3 s). The pace
+   * between starts holds either way (Amazon's shared slot included).
+   */
+  inFlight: number;
 }
 
 /**
@@ -460,22 +472,22 @@ export const DEFAULT_SETTINGS: CleanupSettings = {
     // Paces of plan section 6 (Bookmeter and Natively as BookWalker; the cover images as decided
     // in the WP20d plan); Sudachi runs inside the fetch container, no network.
     sites: {
-      'amazon-dp': { enabled: true, intervalSeconds: 8 },
-      'amazon-search': { enabled: true, intervalSeconds: 8 },
-      'amazon-img': { enabled: true, intervalSeconds: 5 },
-      ranobedb: { enabled: true, intervalSeconds: 1 },
-      bookwalker: { enabled: true, intervalSeconds: 5 },
-      bookmeter: { enabled: true, intervalSeconds: 5 },
-      natively: { enabled: true, intervalSeconds: 5 },
-      ndl: { enabled: true, intervalSeconds: 30 },
-      sudachi: { enabled: true, intervalSeconds: 0 },
+      'amazon-dp': { enabled: true, intervalSeconds: 8, inFlight: 1 },
+      'amazon-search': { enabled: true, intervalSeconds: 8, inFlight: 1 },
+      'amazon-img': { enabled: true, intervalSeconds: 5, inFlight: 1 },
+      ranobedb: { enabled: true, intervalSeconds: 1, inFlight: 1 },
+      bookwalker: { enabled: true, intervalSeconds: 5, inFlight: 1 },
+      bookmeter: { enabled: true, intervalSeconds: 5, inFlight: 1 },
+      natively: { enabled: true, intervalSeconds: 5, inFlight: 1 },
+      ndl: { enabled: true, intervalSeconds: 30, inFlight: 1 },
+      sudachi: { enabled: true, intervalSeconds: 0, inFlight: 1 },
       // The audiobook cleanup (WP21c): its own sites, never paced or backed off with Amazon's.
       // Paces of the audiobook plan section 6 (the probes' and the reference sample's).
-      audible: { enabled: true, intervalSeconds: 3 },
-      'audible-sample': { enabled: true, intervalSeconds: 5 },
-      kikubon: { enabled: true, intervalSeconds: 5 },
-      audiobookjp: { enabled: true, intervalSeconds: 5 },
-      'audiobookjp-sample': { enabled: true, intervalSeconds: 5 },
+      audible: { enabled: true, intervalSeconds: 3, inFlight: 1 },
+      'audible-sample': { enabled: true, intervalSeconds: 5, inFlight: 1 },
+      kikubon: { enabled: true, intervalSeconds: 5, inFlight: 1 },
+      audiobookjp: { enabled: true, intervalSeconds: 5, inFlight: 1 },
+      'audiobookjp-sample': { enabled: true, intervalSeconds: 5, inFlight: 1 },
     },
     amazonPace: 'trial',
     challengeBackoffSeconds: 60,
@@ -889,9 +901,10 @@ function validate(key: Key, value: unknown, current: CleanupSettings): unknown {
           intervalSeconds: num(
             `${site}: seconds between requests`,
             o.intervalSeconds,
-            site === 'sudachi' ? 0 : 1,
+            site === 'sudachi' ? 0 : MIN_INTERVAL_SECONDS,
             3600,
           ),
+          inFlight: num(`${site}: requests at once`, o.inFlight ?? 1, 1, MAX_IN_FLIGHT, true),
         };
       }
       for (const k of Object.keys(v.sites as object)) {
