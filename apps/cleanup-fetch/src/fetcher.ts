@@ -104,7 +104,7 @@ export class Fetcher {
         body: null
       };
     const headers: Record<string, string> = {
-      'User-Agent': UA,
+      'User-Agent': process.env.FETCHER_USER_AGENT?.trim() || UA,
       'Accept-Language': 'ja,en;q=0.5',
       Accept: c.accept ?? DEFAULT_ACCEPT,
       'Accept-Encoding': 'gzip, deflate, br'
@@ -307,7 +307,11 @@ export class Fetcher {
           typeof r.waitMs === 'number'
             ? r.waitMs
             : (typeof r.waitSeconds === 'number' ? r.waitSeconds : 1) * 1000;
-        await this.waitOrWake(Math.max(20, Math.min(waitMs, 1000)));
+        const maxJitterMs = Math.max(
+          0,
+          Number.parseInt(process.env.FETCHER_MAX_JITTER_MS ?? '0', 10) || 0
+        );
+        await this.waitOrWake(Math.max(20, Math.min(waitMs, 1000)) + Math.random() * maxJitterMs);
       } catch (err) {
         this.log(`server not reachable: ${String((err as Error).message ?? err).slice(0, 200)}`);
         await sleep(backoff);
