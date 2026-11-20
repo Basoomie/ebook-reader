@@ -203,11 +203,18 @@ export function scheduleSnapshots({
   };
 
   const ready = (async () => {
+    let due: boolean;
     try {
-      if (await isSnapshotDue(dir, new Date(), prefix)) await run('catch-up');
+      due = await isSnapshotDue(dir, new Date(), prefix);
     } catch (err) {
-      logError('Snapshot catch-up check failed:', err);
+      // The folder can't be listed (EACCES, EIO, or ENOTDIR on Linux when the
+      // path runs through a file). Not knowing is treated as due: the attempt
+      // either works or fails and reports through onResult, so a broken
+      // snapshot folder is never skipped silently.
+      logError('Snapshot catch-up check failed; trying a snapshot anyway:', err);
+      due = true;
     }
+    if (due) await run('catch-up');
   })();
 
   scheduleNext();
