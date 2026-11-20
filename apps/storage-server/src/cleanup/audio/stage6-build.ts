@@ -1191,7 +1191,9 @@ export class AudioStage6 {
       // After the switch: Audiobookshelf's cover files are allowed; the AI area may hold the
       // reader's own TTS books (WP17), listed only.
       const aiArea = AREA_FOLDERS.ai;
-      const kept = ctx?.switched
+      // Audiobookshelf's files are allowed whenever the switch checks (a library on the new
+      // folders may have scanned them, also before an Undo).
+      const kept = ctx
         ? entries.filter(
             (e) =>
               !ABS_OWN_FILE.test(e.rel) &&
@@ -1214,7 +1216,7 @@ export class AudioStage6 {
           () => null,
         );
         // After the switch Audiobookshelf rewrites the file in its own form (values kept).
-        if (!got || (!ctx?.switched && !got.equals(want))) metadataWrong.push(o.dst);
+        if (!got || (!ctx && !got.equals(want))) metadataWrong.push(o.dst);
       }
       items.push({
         key: 'new_tree',

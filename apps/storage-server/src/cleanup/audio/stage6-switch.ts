@@ -1177,7 +1177,12 @@ export class AudioSwitch {
           sha256: null,
           is_dir: 0,
         });
+      // A metadata.json already there (an Audiobookshelf library rewrote it before an Undo) stays.
+
+      const present = new Set<string>();
       for (const m of extra.metadata)
+        if (await lstatEntry(path.join(media, ...m.dst.split('/')))) present.add(m.dst);
+      for (const m of extra.metadata.filter((x) => !present.has(x.dst)))
         ops.push({
           seq: ++seq,
           kind: 'metadata',

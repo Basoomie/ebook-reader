@@ -295,7 +295,8 @@ export class AudioCovers {
         const url = raw ? (JSON.parse(raw) as unknown) : null;
         let file: string | null = null;
         for (const d of oldDirs.get(b.folder) ?? []) {
-          const lib = d.replace(/^japanese\//, '');
+          // The move list's first part is the cleanup's mount name (`library/…` on the NAS).
+          const lib = d.slice(d.indexOf('/') + 1);
           for (const name of ['cover.jpg', 'cover.png']) {
             const hit = libFile.get(`${lib}/${name}`) as { rel_path: string } | undefined;
             if (hit) {
@@ -324,7 +325,7 @@ export class AudioCovers {
           item?.id ?? null,
           source,
           source === 'url' ? url : null,
-          source === 'file' ? file : null,
+          file,
           state,
           state === 'has_cover'
             ? `Audiobookshelf shows a cover already (${item!.media!.coverPath})`
@@ -387,8 +388,20 @@ export class AudioCovers {
       let state = 'set';
       let detail: string | null = null;
       try {
-        if (next.source === 'url') await writer.setCoverFromUrl(next.item_id, next.url!);
-        else {
+        let viaFile = next.source === 'file';
+        if (next.source === 'url') {
+          try {
+            await writer.setCoverFromUrl(next.item_id, next.url!);
+          } catch (err) {
+            // Audiobookshelf couldn't fetch the store's image: the old library's ABS cover, if
+            // there is one.
+            if (err instanceof AbsError && (err.status === 401 || err.status === 403)) throw err;
+            if (!next.file_rel) throw err;
+            detail = `The store cover failed (${(err as Error).message.slice(0, 120)}); the old library's cover used`;
+            viaFile = true;
+          }
+        }
+        if (viaFile) {
           const bytes = await readSmall(
             insideRoot(path.join(this.deps.media!, 'japanese-old'), next.file_rel!),
             MAX_COVER_BYTES,
@@ -404,9 +417,11 @@ export class AudioCovers {
       }
       this.db
         .prepare(
-          `UPDATE audio_covers SET state = ?, detail = ?, done_at = ? WHERE run_id = ? AND book_id = ?`,
+          `UPDATE audio_covers SET state = ?, detail = ?, done_at = ?,
+             source = CASE WHEN ? = 'set' AND ? IS NOT NULL AND source = 'url' THEN 'file' ELSE source END
+           WHERE run_id = ? AND book_id = ?`,
         )
-        .run(state, detail, Date.now(), p.runId, next.book_id);
+        .run(state, detail, Date.now(), state, detail, p.runId, next.book_id);
       if (pace > 0) await sleep(pace);
     }
   }
