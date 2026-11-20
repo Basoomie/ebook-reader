@@ -12,8 +12,8 @@
  *    The follow-up rules (2026-11-20): a store, publisher or company is never a narrator or an
  *    author, in the models' answers too; an imprint is never a series, in the models' answers
  *    too; the rules' title stands against a model that only drops an edition mark or adds a
- *    volume number; a printed volume number with no store series is "unknown" whatever the
- *    models say (the ebook pass, WP21g, fills it).
+ *    volume number; a printed volume number with no store series is "unknown" when the
+ *    models give none (their guess stays unconfirmed; the ebook pass, WP21g, fills the rest).
  * 4. 複数ナレーター from the narrators decided (their source and flag).
  * 5. Publisher, year, language, store id, description and cover from the record, by rules
  *    alone: unconfirmed with the record, unknown without one.
@@ -63,6 +63,8 @@ export interface SameBookUnit {
   series: { name: string; position: number | null; label?: string | null }[] | null;
   /** Its series value is the user's (never changed by a rule). */
   user?: boolean;
+  /** Its series is a models' guess kept for a printed volume number (the twin's still replaces it). */
+  volumeGuess?: boolean;
 }
 
 /**
@@ -144,6 +146,7 @@ export function sameBookSeries(
     }));
     if (
       u.series &&
+      !u.volumeGuess &&
       seriesKey(u.series.map((s) => ({ ...s, label: s.label ?? null }))) === seriesKey(series)
     )
       continue;
@@ -256,14 +259,15 @@ export function decideUnit(
     )
       t.decision = { value: rt.value, source: 'rules', flagged: false, reason: null };
   }
-  // A printed volume number and no store series: unknown, for the ebook pass.
+  // A printed volume number and no store series: the models' guess stays as an unconfirmed value
+  // (as every open field); only when they give none is it unknown, for the ebook pass
+  // (user, 2026-11-20).
+  const sd = fields.series!.decision;
+  const noGuess = sd.value === null || (Array.isArray(sd.value) && sd.value.length === 0);
   if (rules.series.reason === VOLUME_NO_SERIES && rules.series.value === null)
-    fields.series!.decision = {
-      value: null,
-      source: 'unknown',
-      flagged: true,
-      reason: VOLUME_NO_SERIES,
-    };
+    fields.series!.decision = noGuess
+      ? { value: null, source: 'unknown', flagged: true, reason: VOLUME_NO_SERIES }
+      : { ...sd, flagged: true, reason: VOLUME_NO_SERIES };
 
   // 4. 複数ナレーター follows the narrators
   const n = fields.narrators!.decision;

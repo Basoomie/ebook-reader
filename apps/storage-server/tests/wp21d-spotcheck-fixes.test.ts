@@ -6,7 +6,13 @@
  */
 import { describe, expect, it } from 'vitest';
 import { setUserValue, valuesOf } from '../src/cleanup/ai/values';
-import { decideUnit, sharedPositions, type SameBookUnit } from '../src/cleanup/audio/meta-decide';
+import {
+  decideUnit,
+  sameBookSeries,
+  sharedPositions,
+  type SameBookUnit,
+} from '../src/cleanup/audio/meta-decide';
+import { nameGroups, personKey, respell, respellAll } from '../src/cleanup/audio/meta-names';
 import type { MetaEvidence, RecordBrief } from '../src/cleanup/audio/meta-evidence';
 import { META_FIELDS, metaEvidenceText } from '../src/cleanup/audio/meta-prompt';
 import {
@@ -351,14 +357,30 @@ describe('7. a printed volume number and no store series: unknown', () => {
       expect(hasPrintedVolume(t), t).toBe(false);
   });
 
-  it('series is unknown whatever the models say; other cases are unchanged', () => {
+  it("the models' guess stays unconfirmed, unknown only when they give none; other cases are unchanged", () => {
     const e = ev({}, brief({ title: '淫靡な洞窟のその奥で 1' }));
     const r = metaRules(e, e.record, true);
     expect(r.series).toMatchObject({ value: null, auto: false, reason: VOLUME_NO_SERIES });
-    const f = decide(e, { series: [{ name: '淫靡な洞窟のその奥で', position: 1, label: null }] });
-    expect(f.series!.decision).toMatchObject({ value: null, source: 'unknown', flagged: true });
-    // The answers stay next to it.
-    expect(f.series!.primary).toEqual([{ name: '淫靡な洞窟のその奥で', position: 1, label: null }]);
+    const guess = [{ name: '淫靡な洞窟のその奥で', position: 1, label: null }];
+    // Both models give it: it stays, from the models, flagged (unconfirmed: the store has no series).
+    const f = decide(e, { series: guess });
+    expect(f.series!.decision).toMatchObject({
+      value: guess,
+      source: 'both_models',
+      flagged: true,
+      reason: VOLUME_NO_SERIES,
+    });
+    // Only Luna (the second model) gives it: its flagged guess, as for every open field.
+    const one = decide(e, null, { series: guess });
+    expect(one.series!.decision).toMatchObject({ value: guess, flagged: true });
+    // The models disagree: Luna's guess, flagged.
+    const dis = decide(e, { series: guess }, { series: [] });
+    expect(dis.series!.decision.flagged).toBe(true);
+    // Neither gives one (null, or "no series"): unknown.
+    for (const none of [null, { series: null }, { series: [] }]) {
+      const u = decide(e, none as Record<string, unknown> | null);
+      expect(u.series!.decision).toMatchObject({ value: null, source: 'unknown', flagged: true });
+    }
     // No printed number: still "no series" (a standalone book).
     const solo = ev({}, brief({ title: '栞と嘘の季節' }));
     expect(metaRules(solo, solo.record, true).series).toEqual({ value: [], auto: true });
@@ -442,3 +464,90 @@ describe("8. corrections are the user's own values", () => {
 // wp21d-audio-meta.test.ts ("a user value stays"); the corrections list itself is data.
 void setUserValue;
 void valuesOf;
+
+describe('one person, one spelling', () => {
+  const u = (key: string, authors: string[] | null, narrators: string[] | null, user = false) => ({
+    key,
+    authors,
+    narrators,
+    userNarrators: user,
+  });
+
+  it('keys by ・, spaces and case only', () => {
+    expect(personKey('エミリー・ロッダ')).toBe(personKey('エミリーロッダ'));
+    expect(personKey('ハマ・カズシ')).toBe(personKey('ハマカズシ'));
+    expect(personKey('TESTOSTERONE')).toBe(personKey('Testosterone'));
+    expect(personKey('미아키 스가루')).toBe(personKey('미아키스가루'));
+    expect(personKey('岡井 カツノリ')).toBe(personKey('岡井・カツノリ'));
+    // Different people stay different.
+    expect(personKey('山田太郎')).not.toBe(personKey('山田花子'));
+    expect(personKey('アーサー')).not.toBe(personKey('アーサ'));
+  });
+
+  it('takes the spelling most recordings have, on a tie the one with ・, then spaces, then code order', () => {
+    const units = [
+      ...Array.from({ length: 16 }, (_, i) => u(`a${i}`, null, ['ランズベリー・アーサー'])),
+      ...Array.from({ length: 13 }, (_, i) => u(`b${i}`, null, ['ランズベリーアーサー'])),
+      u('c', ['ハマカズシ'], null),
+      u('d', ['ハマ・カズシ'], null),
+      u('e', ['TESTOSTERONE'], null),
+      u('f', ['Testosterone'], null),
+      u('g', ['미아키스가루'], null),
+      u('h', ['미아키 스가루'], null),
+      u('i', ['山田太郎'], ['山田花子']),
+    ];
+    const groups = nameGroups(units);
+    expect([...groups.values()].map((g) => g.canonical).sort()).toEqual(
+      ['TESTOSTERONE', 'ハマ・カズシ', 'ランズベリー・アーサー', '미아키 스가루'].sort(),
+    );
+    const out = respellAll(units, groups);
+    expect(out.get('b0')).toEqual({ narrators: ['ランズベリー・アーサー'] });
+    expect(out.has('a0')).toBe(false);
+    expect(out.get('c')).toEqual({ authors: ['ハマ・カズシ'] });
+    expect(out.has('i')).toBe(false);
+    // The order of the library never changes the choice.
+    expect([...nameGroups([...units].reverse()).values()].map((g) => g.canonical).sort()).toEqual(
+      [...groups.values()].map((g) => g.canonical).sort(),
+    );
+  });
+
+  it('authors and narrators count together; a user value is counted and never changed; a person named twice stays once', () => {
+    const units = [
+      u('p', ['エミリー・ロッダ'], null),
+      u('q', ['エミリー・ロッダ'], null),
+      u('r', null, ['エミリーロッダ'], true),
+      u('s', null, ['エミリーロッダ', 'エミリー・ロッダ', '他の人']),
+    ];
+    const out = respellAll(units);
+    expect(out.has('r')).toBe(false);
+    expect(out.get('s')).toEqual({ narrators: ['エミリー・ロッダ', '他の人'] });
+    expect(respell(['x'], nameGroups(units))).toBeNull();
+  });
+});
+
+describe('7 (narrowed) with the same-book step', () => {
+  it("a kept guess is still replaced by the Audible twin's series", () => {
+    const base = {
+      name: 'x',
+      audibleSeries: false,
+      audibleRecord: false,
+      authors: ['著者'],
+    };
+    const twin = {
+      ...base,
+      key: 't',
+      audibleSeries: true,
+      audibleRecord: true,
+      title: 'ダンジョン 3',
+      series: [{ name: 'ダンジョン', position: 3, label: '3' }],
+    };
+    const me = {
+      ...base,
+      key: 'm',
+      title: 'ダンジョン 3',
+      series: [{ name: 'ダンジョン', position: 3, label: null }],
+    };
+    expect(sameBookSeries([twin, { ...me, volumeGuess: true }]).has('m')).toBe(true);
+    expect(sameBookSeries([twin, me]).has('m')).toBe(false);
+  });
+});

@@ -23,6 +23,7 @@ import {
   valuesOf,
   writeDecisions,
   type DecisionRow,
+  type StoredValue,
 } from '../ai/values';
 import { getSettings } from '../settings';
 import { getAudioStage, pauseAudioStage, resumeAudioStage, updateAudioStage } from './audio-stages';
@@ -33,7 +34,9 @@ import {
   sharedPositions,
   type SameBookUnit,
 } from './meta-decide';
+import { VOLUME_NO_SERIES } from './meta-rules';
 import { CORRECTIONS } from './meta-corrections';
+import { nameGroups, respellAll, type NameUnit } from './meta-names';
 import { EvidenceBuilder, META_EVIDENCE_VERSION, type MetaEvidence } from './meta-evidence';
 import { scoreMetaGate, type GateValue, type MetaGateResult, type MetaLabel } from './meta-gate';
 import { META_PROMPT_VERSION, META_SPEC, metaEvidenceText } from './meta-prompt';
@@ -41,7 +44,7 @@ import type { UnitInputs } from './stage4-online';
 
 const STAGE5 = 5;
 /** Raised when a code change can change the decisions (decided again, nobody asked again). */
-export const META_RULES_VERSION = 5;
+export const META_RULES_VERSION = 6;
 /** Units per synchronous slice (measured on the live copy: 200 held the event loop 112 ms). */
 const SLICE = 50;
 
@@ -259,6 +262,7 @@ export class AudioStage5 {
           await this.sameBookStep(p);
           await this.positionsStep(p);
           this.correctionsStep(p);
+          await this.namesStep(p);
           this.nextPhase(p, 'gate');
         } else this.save(p, 'analysing');
         return 'more';
@@ -331,6 +335,7 @@ export class AudioStage5 {
           authors: (v.authors?.value as string[] | null) ?? [],
           series: (series?.value as SameBookUnit['series']) ?? null,
           user: series?.source === 'user',
+          volumeGuess: series?.reason === VOLUME_NO_SERIES && series.source !== 'unknown',
         });
       }
       await new Promise((r) => setImmediate(r));
@@ -414,6 +419,79 @@ export class AudioStage5 {
     this.refreshFlagged(p, [...touched]);
     if (touched.size)
       this.deps.log?.(`Audiobooks stage 5: ${touched.size} recordings with a correction`);
+  }
+
+  /**
+   * After the corrections: one person, one spelling (see `meta-names.ts`; user, 2026-11-20).
+   * Authors and narrators of every recording that is not the user's own value take the
+   * spelling most recordings have; 複数ナレーター follows a narrators list that changed size.
+   */
+  private async namesStep(p: AudioStage5Progress): Promise<void> {
+    const runner = this.deps.runner;
+    const units: NameUnit[] = [];
+    const keys = this.unitKeys(p);
+    const cur = new Map<string, Record<string, StoredValue>>();
+    for (let at = 0; at < keys.length; at += SLICE) {
+      for (const key of keys.slice(at, at + SLICE)) {
+        const v = Object.fromEntries(valuesOf(this.db, 'audio5', key).map((x) => [x.field, x]));
+        cur.set(key, v);
+        units.push({
+          key,
+          authors: (v.authors?.value as string[] | null) ?? null,
+          narrators: (v.narrators?.value as string[] | null) ?? null,
+          userAuthors: v.authors?.source === 'user',
+          userNarrators: v.narrators?.source === 'user',
+        });
+      }
+      await new Promise((r) => setImmediate(r));
+    }
+    const found = respellAll(units, nameGroups(units));
+    if (!found.size) return;
+    const min = getSettings(this.db).audiobooks.multiNarratorMin;
+    const rows: DecisionRow[] = [];
+    const reason = 'Spelled as most recordings spell this person';
+    for (const [key, f] of found) {
+      const v = cur.get(key)!;
+      const hash = runner.evidenceOf(META_SPEC, key)?.hash ?? null;
+      for (const field of ['authors', 'narrators'] as const) {
+        const list = f[field];
+        const c = v[field];
+        if (!list || !c) continue;
+        rows.push({
+          itemKey: key,
+          field,
+          decision: {
+            value: list,
+            source: c.source,
+            flagged: c.flagged,
+            reason: c.reason ?? reason,
+          },
+          rules: { value: c.rules, auto: c.rulesAuto ?? false },
+          primary: c.primary,
+          secondary: c.secondary,
+          evidenceHash: hash,
+        });
+        const m = v.multi_narr;
+        if (field === 'narrators' && m && m.source !== 'user')
+          rows.push({
+            itemKey: key,
+            field: 'multi_narr',
+            decision: {
+              value: list.length >= min,
+              source: m.source,
+              flagged: m.flagged,
+              reason: m.reason,
+            },
+            rules: null,
+            primary: null,
+            secondary: null,
+            evidenceHash: hash,
+          });
+      }
+    }
+    writeDecisions(this.db, 'audio5', rows, 'E', Date.now());
+    this.refreshFlagged(p, [...found.keys()]);
+    this.deps.log?.(`Audiobooks stage 5: ${found.size} recordings with a name respelled`);
   }
 
   /**
