@@ -104,7 +104,26 @@ describe('stage 5 rules on the live cases', () => {
       value: [{ name: '源氏物語', position: 8 }],
       auto: true,
     });
-    expect(rules('u:sawazaki').series.auto).toBe(false);
+    // Only the printed label is odd and the torrent's [01] agrees: Audible's series stands.
+    expect(rules('u:sawazaki').series).toMatchObject({ auto: true, final: true });
+    const sawazaki = evidence(db, 'u:sawazaki');
+    const series = (ev: typeof sawazaki, rec = ev.record!) => metaRules(ev, rec, true).series;
+    // The torrent's [02] contradicts Audible's 1 (史上最強の哲学入門 東洋の哲人たち): open.
+    const second = { ...sawazaki, paths: sawazaki.paths.map((p) => p.replace('[01]', '[02]')) };
+    expect(series(second)).toMatchObject({
+      auto: false,
+      reason: expect.stringMatching(/differs from the torrent/),
+    });
+    expect(series(second).final).toBeFalsy();
+    // No Audible position: open (the models may give one, as on キノの旅).
+    const noSort = { ...sawazaki.record!, series: [{ ...sawazaki.record!.series[0], sort: null }] };
+    expect(series(sawazaki, noSort as never).final).toBeFalsy();
+    // Not from Audible, or the record not confirmed: never final.
+    expect(series(sawazaki, { ...sawazaki.record!, source: 'kikubon' }).final).toBeFalsy();
+    expect(metaRules(sawazaki, sawazaki.record!, false).series).toMatchObject({
+      auto: false,
+      final: false,
+    });
     expect(rules('u:hoshi').series).toMatchObject({
       auto: false,
       reason: expect.stringMatching(/short series name/),
@@ -340,9 +359,12 @@ describe('stage 5 through the service', () => {
       value: ['ユヴァル・ノア・ハラリ'],
       source: 'both_models',
     });
+    // Audible's series stands even though both stand-in models say 2 (only its printed label
+    // is odd, and the torrent's [01] agrees; decided 2026-11-19 after the random check).
     expect(value(db, 'u:sawazaki', 'series')).toMatchObject({
-      value: [{ name: '探偵・沢崎シリーズ', position: 2 }],
-      source: 'both_models',
+      value: [{ name: '探偵・沢崎シリーズ', position: 1 }],
+      source: 'rules',
+      flagged: false,
     });
     expect(value(db, 'u:hoshi', 'series')).toMatchObject({ source: 'both_models' });
     // A review unit: both picked kikubon 19, so the record and its fields are applied.
@@ -411,7 +433,10 @@ describe('stage 5 through the service', () => {
     // The gate: every field on the labeled books, automatic values only.
     expect(p.gate!.passed).toBe(true);
     expect(p.gate!.fields.title.auto).toBeGreaterThan(5);
-    expect(p.gate!.misses).toEqual([]);
+    // The one miss is 私が殺した少女's series: Audible's position 1 stands (as live, A052).
+    expect(p.gate!.misses.map((m) => `${m.id} ${m.field} ${m.source}`)).toEqual([
+      'L3 series rules',
+    ]);
     expect(p.cost!.costUsd).toBeGreaterThan(0);
     expect(p.cost!.items).toBe(13);
 

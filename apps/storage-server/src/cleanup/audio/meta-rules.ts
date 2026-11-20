@@ -266,6 +266,10 @@ function aiSeries(ev: MetaEvidence): SeriesEntry[] | null {
 export function recordSeries(r: RecordBrief, ev: MetaEvidence): RulesValue<SeriesEntry[]> {
   const out: SeriesEntry[] = [];
   const reasons: string[] = [];
+  // Reasons that leave Audible's own name and position standing (only the printed label is
+  // odd: 第8巻, 2巻・前編, 番外編2巻, ""); any other reason leaves the series to the models.
+  let labelOnly = 0;
+  let unsorted = false;
   const t = torrentSeries(ev.paths);
   for (const s of r.series) {
     const raw = nfkc(s.name).trim();
@@ -276,8 +280,11 @@ export function recordSeries(r: RecordBrief, ev: MetaEvidence): RulesValue<Serie
     );
     if (!base || IMPRINT_SERIES.test(base)) continue;
     const pos = num(s.sort) ?? (plainSequence(s.sequence) ? num(s.sequence) : null);
-    if (!plainSequence(s.sequence))
+    if (num(s.sort) === null) unsorted = true;
+    if (!plainSequence(s.sequence)) {
       reasons.push(`Audible's printed label "${s.sequence}" is not a plain volume number`);
+      labelOnly++;
+    }
     if (compact(base).length <= 2) reasons.push(`A very short series name ("${base}")`);
     if (drama) {
       out.push({ name: `${base} ドラマCD`, position: pos, label: s.sequence });
@@ -297,6 +304,12 @@ export function recordSeries(r: RecordBrief, ev: MetaEvidence): RulesValue<Serie
       t.nn !== main.position
     )
       reasons.push(`Audible's position ${main.position} differs from the torrent's [${t.nn}]`);
+    // Audible's series stands, even against both models, when only its printed label is odd
+    // and the torrent's [NN] doesn't contradict its position (user, 2026-11-19, after a random
+    // check of 30 unlabeled recordings: Audible right on 22 of the 23 with a reading order; the
+    // one error, 史上最強の哲学入門 東洋の哲人たち, is contradicted by its torrent's [02]).
+    if (r.source === 'audible' && reasons.length && reasons.length === labelOnly && !unsorted)
+      return { value: out, auto: true, final: true, reason: null };
     return { value: out, auto: reasons.length === 0, reason: reasons.join('; ') || null };
   }
   return fallbackSeries(r, ev);
@@ -410,7 +423,7 @@ export function metaRules(
       auto: confirmed && narr.length > 0,
       reason: unsure ?? (narr.length ? null : 'The record lists no narrators'),
     },
-    series: confirmed ? series : { ...series, auto: false, reason: unsure },
+    series: confirmed ? series : { ...series, auto: false, final: false, reason: unsure },
     drama,
   };
 }

@@ -89,6 +89,8 @@ export function combineE<V>(
   secondary: V | undefined,
 ): FieldDecision<V> {
   const agree = same(field, primary, secondary);
+  if (rules.final && rules.value !== null)
+    return { value: rules.value, source: 'rules', flagged: false, reason: null };
   if (rules.auto && rules.value !== null) {
     if (agree && !same(field, primary, rules.value))
       return guess(secondary, rules, 'Both models disagree with the rules');

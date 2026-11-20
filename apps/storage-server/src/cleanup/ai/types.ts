@@ -58,6 +58,11 @@ export interface RulesValue<V> {
   auto: boolean;
   /** Why the rules are not sure (shown with a flagged field). */
   reason?: string | null;
+  /**
+   * True: the value is the store's own structured data, which the models only see as well; it
+   * stands even when both models answer otherwise (never flagged, never upgraded). Implies auto.
+   */
+  final?: boolean;
 }
 
 /** One field as a stage defines it. */

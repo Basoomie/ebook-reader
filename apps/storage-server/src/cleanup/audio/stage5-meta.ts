@@ -33,7 +33,7 @@ import type { UnitInputs } from './stage4-online';
 
 const STAGE5 = 5;
 /** Raised when a code change can change the decisions (decided again, nobody asked again). */
-export const META_RULES_VERSION = 2;
+export const META_RULES_VERSION = 3;
 /** Units per synchronous slice (measured on the live copy: 200 held the event loop 112 ms). */
 const SLICE = 50;
 

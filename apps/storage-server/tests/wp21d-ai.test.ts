@@ -67,6 +67,15 @@ describe('setup E per field', () => {
       flagged: true,
       reason: 'Both models disagree with the rules',
     });
+    // A final rules value (the store's own data) stands even against both models.
+    const final = { value: 'A', auto: true, final: true };
+    expect(combineE(T, final, 'B', 'B')).toEqual({
+      value: 'A',
+      source: 'rules',
+      flagged: false,
+      reason: null,
+    });
+    expect(combineE(T, final, 'B', 'C')).toMatchObject({ value: 'A', flagged: false });
   });
   it('applies an open field when both models agree, otherwise the best guess (Luna, rules, unknown)', () => {
     expect(combineE(T, open, 'B', 'B ')).toMatchObject({
