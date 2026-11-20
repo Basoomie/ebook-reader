@@ -9,6 +9,7 @@
  *   `audio_writes`: they never compete in stage 3 (design section 7).
  */
 import type Database from 'better-sqlite3';
+import { createHash } from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { getSettings } from './settings';
@@ -64,6 +65,36 @@ export function readerWrittenFiles(mainDb: Database.Database, libraryDir: string
         .map((p) => p.slice(prefix.length));
     } catch {
       return [];
+    }
+  };
+}
+
+/**
+ * WP21e-1: a short hash of the reader's audio links and its audiobook folders (path, present or
+ * not, generated or not), taken before and after stage 6's build: the build must change neither.
+ * The scan's own bookkeeping (seen times, durations) is left out: it changes on every scan.
+ */
+export function readerAudioState(mainDb: Database.Database): () => string | null {
+  return () => {
+    try {
+      const links = mainDb
+        .prepare(
+          `SELECT user_id, book_id, state, folder_rel_path, file_name, subtitle_rel_path,
+                  subtitle_state, source FROM audio_links ORDER BY user_id, book_id`,
+        )
+        .all();
+      const folders = mainDb
+        .prepare(
+          `SELECT library_id, rel_path, missing_at IS NULL AS present, generated FROM audio_folders
+           ORDER BY library_id, rel_path`,
+        )
+        .all();
+      return createHash('sha256')
+        .update(JSON.stringify({ links, folders }))
+        .digest('hex')
+        .slice(0, 16);
+    } catch {
+      return null;
     }
   };
 }

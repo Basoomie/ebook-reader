@@ -715,6 +715,20 @@ export function analyseAgainCopy(stageName: string, detail: string): ConfirmCopy
   };
 }
 
+/** Audiobook stage 6 (WP21e-1): switching the build On. */
+export function buildOnCopy(plan: string | null): ConfirmCopy {
+  return {
+    title: 'Build japanese-new now?',
+    message: [
+      ...(plan ? [plan] : []),
+      'The linking sidecar makes new folders, hard links to the torrents’ files and each book’s metadata.json in media/audiobooks/japanese-new/ and japanese-generated-new/. The live library, the torrents, Audiobookshelf and the reader are not changed.',
+      'It waits for the Calibre cleanup whenever that uses the disk. The check runs when it is done.'
+    ],
+    confirmLabel: 'Build it',
+    irreversible: false
+  };
+}
+
 export function removeCleanupSecretCopy(label: string): ConfirmCopy {
   return {
     title: `Remove the saved ${label}?`,

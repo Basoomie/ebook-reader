@@ -31,6 +31,8 @@ export function skippedFolder(name: string): boolean {
 export interface AudioRoots {
   torrents: string;
   library: string;
+  /** WP21e-1: media/audiobooks, read-only (stage 6's check reads the new folders through it). */
+  media?: string | null;
 }
 
 export interface WalkResult {

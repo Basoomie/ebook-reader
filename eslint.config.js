@@ -44,6 +44,8 @@ module.exports = (async () => {
         'apps/cleanup-apply/dist/**',
         // WP20d: the cleanup fetch container's build output.
         'apps/cleanup-fetch/dist/**',
+        // WP21e-1: the audiobook linking sidecar's build output.
+        'apps/cleanup-link/dist/**',
         'apps/storage-server/tests/fixtures/wp20a/**',
         // Plain Node test tooling shared by the apps (the per-run temp folder for vitest).
         'tools/**'
@@ -158,6 +160,19 @@ module.exports = (async () => {
         parserOptions: {
           project: './tsconfig.eslint.json',
           tsconfigRootDir: './apps/cleanup-fetch/'
+        }
+      },
+      rules: {
+        'headers/header-format': 'off'
+      }
+    },
+    {
+      // WP21e-1: the audiobook cleanup's linking sidecar (the only writer of audiobook files).
+      files: ['apps/cleanup-link/**/*.ts'],
+      languageOptions: {
+        parserOptions: {
+          project: './tsconfig.eslint.json',
+          tsconfigRootDir: './apps/cleanup-link/'
         }
       },
       rules: {

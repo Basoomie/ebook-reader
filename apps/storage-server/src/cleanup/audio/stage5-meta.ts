@@ -732,7 +732,7 @@ export class AudioStage5 {
   }
 
   /** The unit a label's torrent file or folder belongs to (as stage 4's gate finds it). */
-  private unitFinder(p: AudioStage5Progress) {
+  unitFinder(p: AudioStage5Progress) {
     const rows = this.db
       .prepare(
         `SELECT m.unit_key, m.name, m.record, o.inputs_json FROM audio_meta_units m

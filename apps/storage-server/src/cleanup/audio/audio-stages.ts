@@ -1,9 +1,10 @@
 /**
  * The audiobook cleanup's stages (WP21a): 0 = the Audiobookshelf snapshot (taken on request),
  * 1 = identity, 2 = books and file health, 3 = duplicates (WP21b), 4 = online sources (WP21c),
- * 5 = metadata decisions (WP21d).
- * Stages 1-4 are Off (default)
- * or Preview (`analyse`: analysis only). Nothing applies anything yet, so On is refused.
+ * 5 = metadata decisions (WP21d), 6 = building japanese-new (WP21e-1).
+ * Stages 1-5 are Off (default) or Preview (`analyse`: analysis only); On is refused. Stage 6 can
+ * also be On (WP21e-1): it then builds the new library next to the live one (hard links only;
+ * the service checks its conditions first).
  */
 import type Database from 'better-sqlite3';
 
@@ -16,10 +17,13 @@ export const AUDIO_STAGE_NAMES: Record<number, string> = {
   3: 'Duplicates (same recording)',
   4: 'Online sources (Audible, kikubon, audiobook.jp)',
   5: 'Metadata (rules and AI setup E)',
+  6: 'Build the new library (japanese-new)',
 };
 
 /** Stages with a mode in this build (stage 0 is taken on request). */
-export const AUDIO_ANALYSIS_STAGES: readonly number[] = [1, 2, 3, 4, 5];
+export const AUDIO_ANALYSIS_STAGES: readonly number[] = [1, 2, 3, 4, 5, 6];
+/** Stages that can be switched On (WP21e-1: only the build). */
+export const AUDIO_ON_STAGES: readonly number[] = [6];
 
 export interface AudioStageRow {
   stage: number;
@@ -75,7 +79,8 @@ export function setAudioStageMode(
   now = Date.now(),
 ): void {
   if (!AUDIO_ANALYSIS_STAGES.includes(stage)) throw new Error('This stage has no mode');
-  if (mode === 'on') throw new Error('Nothing in the audiobook cleanup can be switched on yet');
+  if (mode === 'on' && !AUDIO_ON_STAGES.includes(stage))
+    throw new Error('Only stage 6 (the build) can be switched on');
   db.prepare('UPDATE audio_stages SET mode = ?, updated_at = ? WHERE stage = ?').run(
     mode,
     now,

@@ -364,24 +364,23 @@ function addAudioRoutes(router: Router, options: CleanupOptions): void {
     res.json({ available: true, ...options.audio.status() });
   });
 
-  router.put('/cleanup/audio/stages/:stage', (req, res) => {
-    const audio = audioOr503(options);
-    const stage = Number(req.params.stage);
-    const mode = (req.body as { mode?: unknown } | undefined)?.mode;
-    if (mode !== 'off' && mode !== 'analyse') {
-      throw new ApiError(
-        400,
-        'bad_request',
-        'mode must be off or analyse (nothing can be switched on yet)',
-      );
-    }
-    try {
-      audio.setMode(stage, mode);
-    } catch (err) {
-      throw new ApiError(409, 'not_available', (err as Error).message);
-    }
-    res.json(audio.status());
-  });
+  router.put(
+    '/cleanup/audio/stages/:stage',
+    asyncHandler(async (req, res) => {
+      const audio = audioOr503(options);
+      const stage = Number(req.params.stage);
+      const mode = (req.body as { mode?: unknown } | undefined)?.mode;
+      if (mode !== 'off' && mode !== 'analyse' && mode !== 'on') {
+        throw new ApiError(400, 'bad_request', 'mode must be off, analyse or on');
+      }
+      try {
+        await audio.setMode(stage, mode);
+      } catch (err) {
+        throw new ApiError(409, 'not_available', (err as Error).message);
+      }
+      res.json(audio.status());
+    }),
+  );
 
   router.post('/cleanup/audio/stages/:stage/analyse', (req, res) => {
     const audio = audioOr503(options);
@@ -523,6 +522,35 @@ function addAudioRoutes(router: Router, options: CleanupOptions): void {
     } catch (err) {
       throw new ApiError(400, 'bad_request', (err as Error).message);
     }
+  });
+
+  // Stage 6 (WP21e-1): the build's lists, the move list and the plan as CSV, "Check again".
+  router.get('/cleanup/audio/build', (req, res) => {
+    const audio = audioOr503(options);
+    res.json(audio.build(String(req.query.list ?? ''), page(req)));
+  });
+
+  router.get('/cleanup/audio/build/:file', (req, res) => {
+    const audio = audioOr503(options);
+    const file = req.params.file;
+    if (file !== 'moves.csv' && file !== 'plan.csv')
+      throw new ApiError(404, 'not_found', 'No such file');
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${file === 'moves.csv' ? 'audiobooks-move-list.csv' : 'audiobooks-build-plan.csv'}"`,
+    );
+    res.send(audio.buildCsv(file === 'moves.csv' ? 'moves' : 'plan'));
+  });
+
+  router.post('/cleanup/audio/build/check-again', (_req, res) => {
+    const audio = audioOr503(options);
+    try {
+      audio.buildCheckAgain();
+    } catch (err) {
+      throw new ApiError(409, 'not_available', (err as Error).message);
+    }
+    res.json(audio.status());
   });
 
   // The AI framework (WP21d): spending, models per task, the providers' model lists.

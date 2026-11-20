@@ -50,6 +50,9 @@ import { metaList } from './meta-views';
 import type { FetchQueue } from '../stage4/queue';
 import { AUDIO_FETCH_SITES } from '../settings';
 import type { AudioRoots } from './walk';
+import { AudioStage6, type LinkBatch, type LinkOpResult } from './stage6-build';
+import { AUDIO_ON_STAGES } from './audio-stages';
+import { stageIds } from './build-inputs';
 
 /** A clip can't be cut now (a Calibre job uses the disk): try again in a moment. */
 export class AudioBusyError extends Error {}
@@ -71,6 +74,8 @@ export interface AudioCleanupOptions {
   readLabels?: () => { text: string | null; error: string | null };
   /** Library paths of files the reader wrote (merges): they never compete in stage 3. */
   readerWrittenFiles?: () => string[];
+  /** Stage 6 (WP21e-1): a hash of the reader's audio links and folders (before vs after). */
+  readerState?: () => string | null;
   fetchImpl?: typeof fetch;
   /** Stage 4 (WP21c): the shared fetch queue (the Calibre cleanup's), and its fetcher's state. */
   fetchQueue?: FetchQueue | null;
@@ -145,6 +150,8 @@ export class AudioCleanupService {
   readonly stage4: AudioStage4 | null;
   /** Stage 5 (WP21d): needs only cleanup.db (no folders, no disk, no fetching). */
   readonly stage5: AudioStage5;
+  /** Stage 6 (WP21e-1): the build of japanese-new (needs the folders). */
+  readonly stage6: AudioStage6 | null;
   readonly ai: AiRunner;
   private roots: RootsCheck = { ok: false, problem: 'Not checked yet', checkedAt: 0 };
   private timer: NodeJS.Timeout | null = null;
@@ -154,6 +161,7 @@ export class AudioCleanupService {
   private running3: Promise<void> | null = null;
   private running4: Promise<void> | null = null;
   private running5: Promise<void> | null = null;
+  private running6: Promise<void> | null = null;
   private snapshotting: Promise<void> | null = null;
   private stopped = false;
   waiting1: string | null = null;
@@ -161,6 +169,7 @@ export class AudioCleanupService {
   waiting3: string | null = null;
   waiting4: string | null = null;
   waiting5: string | null = null;
+  waiting6: string | null = null;
   private readonly log: (m: string) => void;
   private readonly logError: (m: string, err?: unknown) => void;
 
@@ -224,6 +233,20 @@ export class AudioCleanupService {
       readLabels: opts.readLabels,
       log: this.log,
     });
+    this.stage6 = opts.roots
+      ? new AudioStage6({
+          db: opts.db,
+          roots: {
+            torrents: opts.roots.torrents,
+            library: opts.roots.library,
+            media: opts.roots.media ?? null,
+          },
+          lock: opts.lock,
+          stage5: this.stage5,
+          readerWritten: opts.readerWrittenFiles,
+          log: this.log,
+        })
+      : null;
   }
 
   get db(): Database.Database {
@@ -247,10 +270,12 @@ export class AudioCleanupService {
     await this.running3;
     await this.running4;
     await this.running5;
+    await this.running6;
     await this.snapshotting;
     this.opts.lock.release(DISK_OWNERS.audio1);
     this.opts.lock.release(DISK_OWNERS.audio3);
     this.opts.lock.release(DISK_OWNERS.audio4);
+    this.opts.lock.release(DISK_OWNERS.audio6);
   }
 
   tick(): Promise<void> {
@@ -277,6 +302,7 @@ export class AudioCleanupService {
     this.round3();
     this.round4();
     this.round5();
+    this.round6();
     // Settings > AI "Test batch" results (each checked at the batch poll pace).
     await this.ai.pollBatchTests().catch((err) => this.logError('AI: batch tests:', err));
   }
@@ -681,6 +707,158 @@ export class AudioCleanupService {
     })();
   }
 
+  /**
+   * Stage 6 (WP21e-1): plans the new library from stages 1-5 (Preview), then, when switched On,
+   * builds it through the linking sidecar and checks it. A new analysis of stages 1-5 plans
+   * again; after the build has started it pauses the stage instead.
+   */
+  private round6(): void {
+    const st = getAudioStage(this.db, 6);
+    if (st.mode === 'off' || !this.stage6) {
+      this.stage6?.giveBack();
+      this.waiting6 = st.mode === 'off' ? null : this.roots.problem;
+      return;
+    }
+    if (!this.roots.ok) {
+      this.waiting6 = this.roots.problem;
+      return;
+    }
+    this.waiting6 = this.waiting6Text();
+    if (!this.running6 && !st.pauseReason) this.run6(st.mode === 'on' ? 'on' : 'analyse');
+  }
+
+  /** What stage 6 does now, and what it waits for. */
+  private waiting6Text(): string {
+    const s6 = this.stage6;
+    if (!s6) return 'The audiobook folders are not set up';
+    const st = getAudioStage(this.db, 6);
+    if (st.pauseReason) return `Paused: ${st.pauseDetail ?? st.pauseReason}`;
+    const { ids, problem } = stageIds(this.db);
+    const p = s6.progress();
+    if (!ids && !s6.buildStarted(p)) return problem ?? 'Waiting for stages 1-5';
+    const lock = this.opts.lock.state();
+    const sidecar = s6.sidecar();
+    switch (p?.phase) {
+      case undefined:
+      case 'plan':
+        return 'Planning (reads only cleanup.db)';
+      case 'preflight':
+        if (!sidecar.online)
+          return 'Planned. Waiting for the linking sidecar to check the planned torrent files (start ttsu-cleanup-link)';
+        if (this.opts.lock.calibreBusy()) return 'Waiting while the Calibre cleanup uses the disk';
+        return 'The linking sidecar is checking the planned torrent files (read only)';
+      case 'planned':
+        return st.mode === 'on'
+          ? 'Starting the build'
+          : 'Preview: planned, nothing written. Switch On to build japanese-new';
+      case 'walk_before':
+      case 'walk_after':
+        if (st.mode !== 'on' && p.phase === 'walk_before')
+          return 'Preview: the build waits (switch On to continue)';
+        if (this.opts.lock.calibreBusy()) return 'Waiting while the Calibre cleanup uses the disk';
+        return p.phase === 'walk_before'
+          ? 'Listing the torrents and the live library (before the build)'
+          : 'Listing the torrents and the live library again (after the build)';
+      case 'build':
+        if (st.mode !== 'on') return 'Preview: the build waits (switch On to continue)';
+        if (!sidecar.online) return 'Waiting for the linking sidecar (it is offline)';
+        if (s6.isHanding())
+          return 'Building: the linking sidecar makes the folders, links and metadata files';
+        if (lock.calibreApplying) return `Waiting for the disk: ${lock.calibreApplying}`;
+        if (lock.holder && lock.holder.owner !== DISK_OWNERS.audio6)
+          return `Waiting for the disk: ${lock.holder.owner} is using it`;
+        if (lock.waiting.some((w) => w.side === 'calibre'))
+          return 'Giving the disk to the Calibre cleanup';
+        return 'Building';
+      case 'check':
+        if (this.opts.lock.calibreBusy()) return 'Waiting while the Calibre cleanup uses the disk';
+        return 'Checking the new folders, the torrents, the library, Audiobookshelf and the reader';
+      case 'done':
+        return p.check?.passed
+          ? 'Built and checked'
+          : 'Built; the check found problems (see Details)';
+    }
+    return 'Working';
+  }
+
+  private run6(mode: 'analyse' | 'on'): void {
+    const stage = this.stage6!;
+    const stop = () => {
+      if (this.stopped) return true;
+      const st = getAudioStage(this.db, 6);
+      return st.mode !== mode || st.pauseReason !== null;
+    };
+    const hooks = {
+      absSnapshot: async (): Promise<number | null> => {
+        const s = getSettings(this.db).audiobooks;
+        if (!s.absUrl || !this.opts.secrets.read('absApiKey')) return null;
+        await this.takeSnapshot();
+        const p0 = getAudioStage(this.db, 0).progress as { lastId?: number; error?: string | null };
+        return p0.error ? null : (p0.lastId ?? null);
+      },
+      readerState: () => this.opts.readerState?.() ?? null,
+      absCompare: (a: number, b: number) =>
+        compareAbsSnapshots(getSnapshot(this.db, a), getSnapshot(this.db, b)),
+    };
+    this.running6 = (async () => {
+      try {
+        for (;;) {
+          if (stop()) break;
+          const done = await stage.step(stop, mode, hooks);
+          this.waiting6 = this.waiting6Text();
+          if (done) break;
+          await new Promise((r) => setImmediate(r));
+        }
+      } catch (err) {
+        this.logError('Audiobook cleanup: stage 6 failed:', err);
+        const p = stage.progress();
+        if (p) {
+          p.error = (err as Error).message.slice(0, 500);
+          updateAudioStage(this.db, 6, { progress: p as unknown as Record<string, unknown> });
+        }
+      } finally {
+        stage.giveBack();
+        this.running6 = null;
+        void this.tick();
+      }
+    })();
+  }
+
+  /** The linking sidecar's routes (/api/v1/cleanup-link/*). */
+  linkHeartbeat(body: Parameters<AudioStage6['heartbeat']>[0]) {
+    if (!this.stage6) throw new Error('The audiobook folders are not set up');
+    return this.stage6.heartbeat(body);
+  }
+
+  linkClaim(): LinkBatch | null {
+    return this.stage6?.claim() ?? null;
+  }
+
+  linkReport(batchId: number, results: LinkOpResult[]) {
+    if (!this.stage6) throw new Error('The audiobook folders are not set up');
+    const r = this.stage6.report(batchId, results);
+    void this.tick();
+    return r;
+  }
+
+  /** Stage 6's lists and downloads. */
+  build(list: string, opts: { offset?: number; limit?: number } = {}) {
+    return this.stage6?.list(list, opts) ?? { total: 0, items: [] };
+  }
+
+  buildCsv(which: 'moves' | 'plan'): string {
+    if (!this.stage6) return '';
+    return which === 'moves' ? this.stage6.movesCsv() : this.stage6.planCsv();
+  }
+
+  /** "Check again": the after-walk and the check, once more (nothing is written). */
+  buildCheckAgain(): void {
+    if (!this.stage6) throw new Error('The audiobook folders are not set up');
+    if (this.running6) throw new Error('Stage 6 is working; switch it to Preview first');
+    this.stage6.checkAgain();
+    void this.tick();
+  }
+
   /** An answer reached the shared queue: stage 4's loop takes it on its next step. */
   answerArrived(): void {
     if (!this.stopped && !this.running4 && getAudioStage(this.db, 4).mode !== 'off') {
@@ -688,8 +866,21 @@ export class AudioCleanupService {
     }
   }
 
-  setMode(stage: number, mode: AudioStageMode): void {
+  async setMode(stage: number, mode: AudioStageMode): Promise<void> {
     if (!AUDIO_ANALYSIS_STAGES.includes(stage)) throw new Error('No such stage');
+    if (mode === 'on') {
+      if (!AUDIO_ON_STAGES.includes(stage))
+        throw new Error('Only stage 6 (the build) can be switched on');
+      if (!this.stage6) throw new Error('The audiobook folders are not set up');
+      const refusals = this.stage6.onRefusals();
+      const foreign = await this.stage6.foreignFolders();
+      if (foreign.length)
+        refusals.push(
+          `${foreign.join(' and ')} already exist (not made by this build): remove them first`,
+        );
+      if (refusals.length) throw new Error(refusals.join('; '));
+      this.log('Audiobooks stage 6: switched On (the build starts)');
+    }
     setAudioStageMode(this.db, stage, mode);
     void this.tick();
   }
@@ -697,6 +888,13 @@ export class AudioCleanupService {
   /** "Run the analysis again" (keeps the hashes and health of unchanged files). */
   reanalyse(stage: number): void {
     this.log(`Audiobooks stage ${stage}: run the analysis again (asked from the page)`);
+    if (stage === 6) {
+      if (!this.stage6) throw new Error('The audiobook folders are not set up');
+      if (this.running6) throw new Error('Stage 6 is working; switch it Off first');
+      this.stage6.restart();
+      void this.tick();
+      return;
+    }
     if (stage === 5) {
       if (this.running5) throw new Error('Stage 5 is analysing; switch it Off first');
       this.stage5.restart();
@@ -817,6 +1015,9 @@ export class AudioCleanupService {
       },
       stage4: this.stage4Status(),
       stage5: { available: true, waiting: this.waiting5, ...this.stage5.status() },
+      stage6: this.stage6
+        ? { available: true, waiting: this.waiting6, ...this.stage6.status() }
+        : { available: false, waiting: this.waiting6 },
     };
   }
 
@@ -1279,4 +1480,39 @@ export class AudioCleanupService {
     for (const it of items) it.files = files.all(it.id);
     return { total, items };
   }
+}
+
+/** Audiobookshelf before vs after (WP21e-1): libraries, their folders, item counts, progress. */
+export function compareAbsSnapshots(
+  a: AbsSnapshotData | null,
+  b: AbsSnapshotData | null,
+): { same: boolean; detail: string } {
+  if (!a || !b) return { same: false, detail: 'A snapshot is missing' };
+  const libs = (d: AbsSnapshotData) =>
+    JSON.stringify(
+      d.libraries
+        .map((l) => ({
+          id: l.id,
+          name: l.name,
+          folders: [...l.folders].sort(),
+          items: l.itemCount,
+        }))
+        .sort((x, y) => (x.id < y.id ? -1 : 1)),
+    );
+  const progress = (d: AbsSnapshotData) =>
+    JSON.stringify(
+      d.progress
+        .map((p) => [p.user, p.libraryItemId, p.isFinished, p.inAbs])
+        .sort((x, y) => (JSON.stringify(x) < JSON.stringify(y) ? -1 : 1)),
+    );
+  const diffs: string[] = [];
+  if (libs(a) !== libs(b)) diffs.push('libraries, folders or item counts changed');
+  if (progress(a) !== progress(b)) diffs.push('listening progress entries changed');
+  const items = b.libraries.reduce((n, l) => n + (l.itemCount ?? 0), 0);
+  return {
+    same: diffs.length === 0,
+    detail: diffs.length
+      ? diffs.join('; ')
+      : `${b.libraries.length} libraries, ${items} items, ${b.progress.length} progress entries: the same`,
+  };
 }

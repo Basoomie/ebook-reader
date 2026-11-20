@@ -1193,7 +1193,7 @@ describe('stage 4 on stage-3 rows with a stand-in internet', () => {
         .put('/api/v1/cleanup/audio/stages/4')
         .set(auth)
         .send({ mode: 'on' });
-      expect(on.status).toBe(400);
+      expect(on.status).toBe(409); // only stage 6 (the build, WP21e-1) can be On
       const pv = await request(env.app)
         .put('/api/v1/cleanup/audio/stages/4')
         .set(auth)

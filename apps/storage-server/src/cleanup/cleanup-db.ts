@@ -1098,6 +1098,140 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
       CREATE INDEX audio_meta_units_labeled ON audio_meta_units (analysis_id, labeled, unit_key);
     `,
   },
+  {
+    version: 14,
+    name: 'audiobook cleanup: stage 6 builds japanese-new with hard links (WP21e-1)',
+    sql: `
+      -- Tokens get the scope 'link' (the linking sidecar, cli token link): the table is rebuilt
+      -- because SQLite can't change a CHECK.
+      CREATE TABLE apply_tokens_v14 (
+        id            TEXT PRIMARY KEY,
+        label         TEXT NOT NULL,
+        token_hash    TEXT NOT NULL UNIQUE,
+        created_at    INTEGER NOT NULL,
+        last_used_at  INTEGER,
+        revoked_at    INTEGER,
+        scope         TEXT NOT NULL DEFAULT 'apply' CHECK (scope IN ('apply', 'fetch', 'link'))
+      );
+      INSERT INTO apply_tokens_v14 (id, label, token_hash, created_at, last_used_at, revoked_at, scope)
+        SELECT id, label, token_hash, created_at, last_used_at, revoked_at, scope FROM apply_tokens;
+      DROP TABLE apply_tokens;
+      ALTER TABLE apply_tokens_v14 RENAME TO apply_tokens;
+
+      -- The linking sidecar's last heartbeat (one row).
+      CREATE TABLE link_sidecar_status (
+        id            INTEGER PRIMARY KEY CHECK (id = 1),
+        sidecar_id    TEXT,
+        run_id        TEXT,
+        version       TEXT,
+        last_seen_at  INTEGER,
+        problem       TEXT,
+        info_json     TEXT CHECK (info_json IS NULL OR json_valid(info_json))
+      );
+
+      -- Stage 6: one row per book folder the build makes (or will make at the switch: the
+      -- library-only files, state pending). folder is relative to media/audiobooks.
+      INSERT INTO audio_stages (stage, updated_at) VALUES (6, 0);
+      CREATE TABLE audio_build_books (
+        id             INTEGER PRIMARY KEY,
+        analysis_id    TEXT NOT NULL,
+        unit_key       TEXT NOT NULL,
+        copy_key       TEXT NOT NULL,
+        area           TEXT NOT NULL CHECK (area IN ('main', 'ai')),
+        state          TEXT NOT NULL CHECK (state IN ('build', 'pending')),
+        folder         TEXT NOT NULL,
+        base_folder    TEXT NOT NULL,
+        author         TEXT NOT NULL,
+        series         TEXT,
+        title          TEXT NOT NULL,
+        notes_json     TEXT NOT NULL CHECK (json_valid(notes_json)),
+        files          INTEGER NOT NULL,
+        pdfs           INTEGER NOT NULL,
+        cover          INTEGER NOT NULL,
+        metadata       BLOB NOT NULL,
+        sample         INTEGER NOT NULL DEFAULT 0,
+        UNIQUE (analysis_id, folder)
+      );
+      CREATE INDEX audio_build_books_unit ON audio_build_books (analysis_id, unit_key);
+      CREATE INDEX audio_build_books_sample ON audio_build_books (analysis_id, sample, id);
+      CREATE INDEX audio_build_books_state ON audio_build_books (analysis_id, state, id);
+
+      -- Every operation of the build, in order (id): folder, link (audio), pdf (link), metadata.
+      -- dst is relative to media/audiobooks; src relative to torrents/audiobooks/japanese (src_raw:
+      -- the exact bytes as hex when the name is not UTF-8). state: planned -> claimed -> done |
+      -- failed. A claimed batch whose lease ran out goes back to planned (the sidecar's operations
+      -- are safe to repeat).
+      CREATE TABLE audio_build_ops (
+        id           INTEGER PRIMARY KEY,
+        analysis_id  TEXT NOT NULL,
+        book_id      INTEGER,
+        kind         TEXT NOT NULL CHECK (kind IN ('folder', 'link', 'pdf', 'metadata')),
+        dst          TEXT NOT NULL,
+        src_file_id  INTEGER,
+        src_rel      TEXT,
+        src_raw      TEXT,
+        size         INTEGER,
+        mtime_ms     INTEGER,
+        dev          INTEGER,
+        ino          INTEGER,
+        state        TEXT NOT NULL DEFAULT 'planned'
+                       CHECK (state IN ('planned', 'claimed', 'done', 'failed')),
+        batch_id     INTEGER,
+        preflight    TEXT,
+        result_json  TEXT CHECK (result_json IS NULL OR json_valid(result_json)),
+        done_at      INTEGER
+      );
+      CREATE INDEX audio_build_ops_state ON audio_build_ops (analysis_id, state, id);
+      CREATE INDEX audio_build_ops_batch ON audio_build_ops (batch_id);
+      CREATE INDEX audio_build_ops_book ON audio_build_ops (book_id);
+      CREATE INDEX audio_build_ops_src ON audio_build_ops (analysis_id, src_file_id);
+      CREATE INDEX audio_build_ops_preflight ON audio_build_ops (analysis_id, preflight, id);
+
+      -- A batch handed to the sidecar (kind preflight: read-only checks of the sources).
+      CREATE TABLE audio_build_batches (
+        id           INTEGER PRIMARY KEY,
+        analysis_id  TEXT NOT NULL,
+        kind         TEXT NOT NULL CHECK (kind IN ('preflight', 'build')),
+        state        TEXT NOT NULL CHECK (state IN ('claimed', 'reported', 'expired')),
+        ops          INTEGER NOT NULL,
+        claimed_at   INTEGER NOT NULL,
+        lease_until  INTEGER NOT NULL,
+        reported_at  INTEGER
+      );
+      CREATE INDEX audio_build_batches_state ON audio_build_batches (analysis_id, state, id);
+
+      -- The move list (WP21e-2's input for the reader's links): every audio file of the live
+      -- library (paths relative to media/audiobooks) and what became of it.
+      CREATE TABLE audio_build_moves (
+        analysis_id  TEXT NOT NULL,
+        file_id      INTEGER NOT NULL,
+        old_path     TEXT NOT NULL,
+        outcome      TEXT NOT NULL CHECK (outcome IN
+                       ('moved', 'ai', 'dropped', 'library_only_pending', 'reader_written', 'unaccounted')),
+        new_path     TEXT,
+        kept_path    TEXT,
+        detail       TEXT,
+        PRIMARY KEY (analysis_id, file_id)
+      );
+      CREATE INDEX audio_build_moves_outcome ON audio_build_moves (analysis_id, outcome, file_id);
+
+      -- The walks before and after the build (torrents and library): what the check compares.
+      CREATE TABLE audio_build_manifest (
+        analysis_id  TEXT NOT NULL,
+        phase        TEXT NOT NULL CHECK (phase IN ('before', 'after')),
+        root         TEXT NOT NULL CHECK (root IN ('torrents', 'library')),
+        rel          TEXT NOT NULL,
+        raw          TEXT,
+        is_dir       INTEGER NOT NULL,
+        size         INTEGER NOT NULL,
+        mtime_ms     INTEGER NOT NULL,
+        dev          INTEGER NOT NULL,
+        ino          INTEGER NOT NULL,
+        nlink        INTEGER NOT NULL,
+        PRIMARY KEY (analysis_id, phase, root, rel)
+      );
+    `,
+  },
 ];
 
 export const CLEANUP_SCHEMA_VERSION = CLEANUP_MIGRATIONS[CLEANUP_MIGRATIONS.length - 1].version;

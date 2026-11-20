@@ -20,6 +20,7 @@
   import { onDestroy, onMount } from 'svelte';
   import type {
     AbsSnapshot,
+    AudioBuildBook,
     AudioBookRow,
     AudioFileRow,
     AudioStageMode,
@@ -64,7 +65,18 @@
   import { LibraryApiError } from '$lib/library/api';
   import { formatWhen } from '$lib/notes/notes-format';
   import { confirmDestructive } from '$lib/confirm/confirm';
-  import { analyseAgainCopy } from '$lib/confirm/confirm-copy';
+  import { analyseAgainCopy, buildOnCopy } from '$lib/confirm/confirm-copy';
+  import {
+    MODE_LABEL_ON,
+    STAGE6_HINTS,
+    audioStage6Bar,
+    audioStage6Lines,
+    bookLine,
+    checkLines,
+    labelDiffLines,
+    metadataLine,
+    stage6Summary
+  } from '$lib/cleanup/audio-build-text';
   import SettingsSection from '$lib/components/settings/settings-section.svelte';
   import CleanupSection from './cleanup-section.svelte';
   import CleanupAudioDups from './cleanup-audio-dups.svelte';
@@ -91,6 +103,11 @@
   const POLL_MS = 5000;
   const PAGE = 50;
   const MODES: AudioStageMode[] = ['off', 'analyse'];
+  /** Stage 6 (WP21e-1) can also be On: it then builds japanese-new. */
+  const MODES_6: (AudioStageMode | 'on')[] = ['off', 'analyse', 'on'];
+  const modesOf = (stage: AudioStageRow) => (stage.stage === 6 ? MODES_6 : MODES);
+  const modeLabel = (mode: AudioStageMode | 'on') =>
+    mode === 'on' ? MODE_LABEL_ON : AUDIO_MODE_LABELS[mode];
 
   let status: AudioStatus | null = null;
   let error = '';
@@ -132,6 +149,27 @@
   $: analysis5 = p5
     ? `${p5.analysisId}:${p5.phase}:${p5.finishedAt ?? ''}:${Math.floor(p5.decided / 200)}`
     : '';
+  $: stage6 = status?.stages.find((s) => s.stage === 6) ?? null;
+  $: s6 = status?.stage6?.available ? status.stage6 : null;
+  $: p6 = s6?.progress ?? null;
+  $: bars6 = [audioStage6Bar(s6)].filter((b): b is ProgressBar => b !== null);
+  /** Stage 6's analysis and phase: the sample reloads when it changes. */
+  $: analysis6 = p6 ? `${p6.analysisId}:${p6.phase}` : '';
+  $: if (analysis6 !== sampleFor) void loadSample(analysis6);
+  let sample: AudioBuildBook[] = [];
+  let sampleFor = '';
+  async function loadSample(key: string) {
+    sampleFor = key;
+    if (!key) {
+      sample = [];
+      return;
+    }
+    try {
+      sample = (await api.audioBuild('sample', 0, 30)).items as unknown as AudioBuildBook[];
+    } catch {
+      sample = [];
+    }
+  }
   interface StageView {
     bars: ProgressBar[];
     lines: string[];
@@ -188,9 +226,19 @@
       done: p5?.phase === 'done',
       summary: status ? stageSummary(5, status) : null,
       gate: metaGateSummary(p5?.gate)
+    },
+    6: {
+      bars: bars6,
+      lines: audioStage6Lines(s6),
+      waiting: s6?.waiting ?? status?.stage6?.waiting ?? null,
+      found: [],
+      done: p6?.phase === 'done' || p6?.phase === 'planned',
+      summary: stage6Summary(s6),
+      gate: null
     }
   } as Record<number, StageView>;
   function hint(stage: AudioStageRow): string {
+    if (stage.stage === 6) return STAGE6_HINTS[stage.mode];
     const mode = stage.mode === 'on' ? 'analyse' : stage.mode;
     if (stage.stage === 5) return STAGE5_HINTS[mode];
     if (stage.stage === 4) return STAGE4_HINTS[mode];
@@ -282,8 +330,10 @@
     }
   }
 
-  async function setMode(stage: AudioStageRow, mode: AudioStageMode) {
+  async function setMode(stage: AudioStageRow, mode: AudioStageMode | 'on') {
     if (stage.mode === mode) return;
+    // On builds japanese-new on the NAS: it asks first.
+    if (mode === 'on' && !(await confirmDestructive(buildOnCopy(stage6Summary(s6))))) return;
     actionError = '';
     try {
       status = await api.setAudioStageMode(stage.stage, mode);
@@ -313,6 +363,33 @@
       actionError = describe(err);
     } finally {
       analysing = { ...analysing, [stage.stage]: false };
+    }
+  }
+
+  /** Stage 6: the move list or the plan as CSV. */
+  async function downloadBuild(file: 'moves.csv' | 'plan.csv') {
+    actionError = '';
+    try {
+      const blob = await api.audioBuildFile(file);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = file === 'moves.csv' ? 'audiobooks-move-list.csv' : 'audiobooks-build-plan.csv';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    } catch (err) {
+      actionError = describe(err);
+    }
+  }
+
+  async function checkAgain() {
+    actionError = '';
+    try {
+      status = await api.audioBuildCheckAgain();
+    } catch (err) {
+      actionError = describe(err);
     }
   }
 
@@ -473,13 +550,13 @@
       {/if}
     </div>
 
-    {#each [stage1, stage2, stage3, stage4, stage5] as stage (stage?.stage)}
+    {#each [stage1, stage2, stage3, stage4, stage5, stage6] as stage (stage?.stage)}
       {#if stage}
         <div class="c-tile flex flex-col gap-2 rounded p-3" data-testid="audio-stage-{stage.stage}">
           <div class="flex flex-wrap items-center justify-between gap-2">
             <h3 class="font-mincho font-bold">{stage.stage} · {stage.name}</h3>
             <div class="flex flex-wrap gap-2" role="radiogroup" aria-label="Stage {stage.stage}">
-              {#each MODES as mode (mode)}
+              {#each modesOf(stage) as mode (mode)}
                 <button
                   class="c-btn {stage.mode === mode ? 'c-btn-primary' : 'c-btn-secondary'}"
                   role="radio"
@@ -487,7 +564,7 @@
                   on:click={() => stage && setMode(stage, mode)}
                   data-testid="audio-stage-{stage.stage}-{mode}"
                 >
-                  {AUDIO_MODE_LABELS[mode]}
+                  {modeLabel(mode)}
                 </button>
               {/each}
             </div>
@@ -535,6 +612,22 @@
           {/if}
           {#if stage.stage === 5 && s5 && stage.mode !== 'off'}
             <p class="text-sm" data-testid="audio-spend">{spendLine(s5)}</p>
+          {/if}
+          {#if stage.stage === 6 && s6 && stage.mode !== 'off'}
+            {#if s6.waiting && views[6].done && !stage.pauseReason}
+              <p class="text-sm text-c-muted" data-testid="audio-waiting-6-done">{s6.waiting}</p>
+            {/if}
+            {#if stage.mode === 'analyse' && p6?.phase === 'planned' && s6.onRefusals?.length}
+              <p class="c-notice text-sm" data-testid="audio-build-refusals">
+                <b>Can’t build yet:</b>
+                {s6.onRefusals.join('; ')}
+              </p>
+            {/if}
+            {#if p6?.check}
+              <p class="text-sm" data-testid="audio-build-check">
+                Check: {p6.check.passed ? '✓ passed' : '✗ not passed (see Details)'}
+              </p>
+            {/if}
           {/if}
           {#if stage.stage === 4 && s4 && stage.mode !== 'off'}
             {#if s4.fetcher && !s4.fetcher.online}
@@ -617,6 +710,51 @@
                     <p class="font-bold">{metaMissLine(m)}</p>
                   {/each}
                 </div>
+              {/if}
+              {#if stage.stage === 6 && p6}
+                <div class="flex flex-wrap gap-2" data-testid="audio-build-downloads">
+                  <button class="c-btn c-btn-ghost" on:click={() => downloadBuild('moves.csv')}
+                    >Download the move list (CSV)</button
+                  >
+                  <button class="c-btn c-btn-ghost" on:click={() => downloadBuild('plan.csv')}
+                    >Download the plan (CSV)</button
+                  >
+                  {#if p6.phase === 'done' && stage.mode !== 'on'}
+                    <button
+                      class="c-btn c-btn-ghost"
+                      on:click={checkAgain}
+                      data-testid="audio-build-check-again">Check again</button
+                    >
+                  {/if}
+                </div>
+                {#if p6.check}
+                  <div class="flex flex-col gap-1" data-testid="audio-build-check-card">
+                    <p class="font-medium">
+                      The check: {p6.check.passed ? '✓ passed' : '✗ not passed'}
+                    </p>
+                    {#each checkLines(p6) as line}<p>{line}</p>{/each}
+                    {#each labelDiffLines(p6).slice(0, 20) as line}<p class="text-c-muted">
+                        {line}
+                      </p>{/each}
+                  </div>
+                {/if}
+                {#if sample.length}
+                  <div class="flex flex-col gap-2" data-testid="audio-build-sample">
+                    <p class="font-medium">{n(sample.length)} random books of the plan</p>
+                    {#each sample as b (b.id)}
+                      <div
+                        class="flex flex-col gap-0.5 border-b pb-2"
+                        style="border-color: var(--c-line)"
+                      >
+                        <span class="break-all font-medium">{bookLine(b)}</span>
+                        <span class="break-all text-c-muted">{metadataLine(b.metadata)}</span>
+                        {#each b.files.slice(0, 5) as f (f.to)}
+                          <span class="break-all text-xs text-c-muted">{f.from} → {f.to}</span>
+                        {/each}
+                      </div>
+                    {/each}
+                  </div>
+                {/if}
               {/if}
               {#if stage.stage === 3 && p3?.gate}
                 <div class="flex flex-col gap-1" data-testid="audio-gate">

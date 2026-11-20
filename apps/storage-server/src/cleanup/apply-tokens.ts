@@ -5,13 +5,15 @@
  * Only a SHA-256 hash is stored; the token is shown once.
  *
  * WP20d: every token has a scope. 'apply' tokens reach only /api/v1/cleanup-apply/* (the apply
- * sidecar), 'fetch' tokens only /api/v1/cleanup-fetch/* (the fetch container, `cli token fetch`).
+ * sidecar), 'fetch' tokens only /api/v1/cleanup-fetch/* (the fetch container, `cli token fetch`),
+ * 'link' tokens only /api/v1/cleanup-link/* (the audiobook linking sidecar, `cli token link`;
+ * WP21e-1).
  */
 import type Database from 'better-sqlite3';
 import { randomUUID } from 'crypto';
 import { generateToken, hashToken } from '../db/tokens';
 
-export type TokenScope = 'apply' | 'fetch';
+export type TokenScope = 'apply' | 'fetch' | 'link';
 
 export interface ApplyToken {
   id: string;

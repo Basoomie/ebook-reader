@@ -49,7 +49,7 @@ export interface ServerConfig {
    * media/audiobooks/japanese, both mounted from /mnt/disk1 so inode numbers are real.
    * Optional: without them only the audiobook part of /cleanup is off.
    */
-  cleanupAudio?: { torrentsDir: string; libraryDir: string } | null;
+  cleanupAudio?: { torrentsDir: string; libraryDir: string; mediaDir: string | null } | null;
 }
 
 export interface AudioConfig {
@@ -658,7 +658,7 @@ export function parseLogConfig(env: Env, warnings: string[]): LogConfig {
 export function parseCleanupAudio(
   env: Env,
   warnings: string[],
-): { torrentsDir: string; libraryDir: string } | null {
+): { torrentsDir: string; libraryDir: string; mediaDir: string | null } | null {
   const t = (env.CLEANUP_AUDIO_TORRENTS_DIR ?? '').trim();
   const l = (env.CLEANUP_AUDIO_LIBRARY_DIR ?? '').trim();
   if (!t && !l) return null;
@@ -668,7 +668,13 @@ export function parseCleanupAudio(
     );
     return null;
   }
-  return { torrentsDir: path.resolve(t), libraryDir: path.resolve(l) };
+  // WP21e-1: media/audiobooks read-only (stage 6 checks the new folders through it). Optional.
+  const m = (env.CLEANUP_AUDIO_MEDIA_DIR ?? '').trim();
+  return {
+    torrentsDir: path.resolve(t),
+    libraryDir: path.resolve(l),
+    mediaDir: m ? path.resolve(m) : null,
+  };
 }
 
 /** WP15 settings; like the other WP1+ settings, a bad value is reported and the default used. */

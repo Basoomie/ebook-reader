@@ -79,6 +79,8 @@ importers:
 
   apps/cleanup-fetch: {}
 
+  apps/cleanup-link: {}
+
   apps/gpu-worker: {}
 
   apps/storage-server:

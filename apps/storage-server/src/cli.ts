@@ -94,6 +94,8 @@ const USAGE = `Usage:
                                              /api/v1/cleanup-apply/*, kept in cleanup.db)
   cli token fetch <label>                    Create the cleanup fetch container's token (WP20d; only
                                              /api/v1/cleanup-fetch/*, kept in cleanup.db)
+  cli token link <label>                     Create the audiobook linking sidecar's token (WP21e-1;
+                                             only /api/v1/cleanup-link/*, kept in cleanup.db)
   cli token list                             List tokens
   cli token revoke <token-id>                Revoke a token
   cli library list                           List discovered Calibre libraries
@@ -788,6 +790,18 @@ function cleanupCommand(command: string, rest: string[], env: Record<string, str
         console.log(token);
         break;
       }
+      case 'token-link': {
+        const label = rest.join(' ').trim();
+        if (!label) fail('token link needs a label, e.g. token link "link sidecar"');
+        const { token, record } = createApplyToken(db, label, Date.now(), 'link');
+        console.log(`Created audiobook linking sidecar token "${record.label}" (id ${record.id}).`);
+        console.log(
+          'It works only for the linking sidecar (/api/v1/cleanup-link/*), not as a device.',
+        );
+        console.log("Copy it now into the linking sidecar's LINK_TOKEN; it cannot be shown again:");
+        console.log(token);
+        break;
+      }
       case 'token-fetch': {
         const label = rest.join(' ').trim();
         if (!label) fail('token fetch needs a label, e.g. token fetch "fetch container"');
@@ -931,10 +945,16 @@ export function main(argv: string[], env: Record<string, string | undefined>): v
   // The cleanup sidecar's tokens and the cleanup's state live in cleanup.db (WP20a).
   if (
     group === 'cleanup' ||
-    (group === 'token' && (command === 'cleanup' || command === 'fetch'))
+    (group === 'token' && (command === 'cleanup' || command === 'fetch' || command === 'link'))
   ) {
     cleanupCommand(
-      group === 'token' ? (command === 'fetch' ? 'token-fetch' : 'token') : command,
+      group === 'token'
+        ? command === 'fetch'
+          ? 'token-fetch'
+          : command === 'link'
+            ? 'token-link'
+            : 'token'
+        : command,
       rest,
       env,
     );

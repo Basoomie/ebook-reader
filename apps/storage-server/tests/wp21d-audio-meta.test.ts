@@ -364,7 +364,7 @@ describe('stage 5 through the service', () => {
     const api = (r: request.Test) => r.set('Authorization', `Bearer ${token}`);
     // On is refused; nothing is asked before a spending limit is set.
     const on = await api(request(e.app).put('/api/v1/cleanup/audio/stages/5')).send({ mode: 'on' });
-    expect(on.status).toBe(400);
+    expect(on.status).toBe(409); // only stage 6 (the build, WP21e-1) can be On
     updateSettings(db, {
       ai: {
         ...getSettings(db).ai,

@@ -655,6 +655,134 @@ export interface AudioStatus {
   stage4?: AudioStage4Status;
   /** Missing on an older server (WP21d). */
   stage5?: AudioStage5Status;
+  /** Missing on an older server (WP21e-1). */
+  stage6?: AudioStage6Status;
+}
+
+// ---------------------------------------------------------------- audiobooks stage 6 (WP21e-1)
+
+export type Stage6Phase =
+  | 'plan'
+  | 'preflight'
+  | 'planned'
+  | 'walk_before'
+  | 'build'
+  | 'walk_after'
+  | 'check'
+  | 'done';
+
+export interface Stage6Counts {
+  units: number;
+  books: { main: number; ai: number; pending: number };
+  shapes: { seriesVol: number; seriesNoVol: number; standalone: number };
+  unknownAuthor: number;
+  links: number;
+  pdfLinks: number;
+  pdfs: { placed: number; unplaced: number; otherCopy?: number; noBook?: number; total: number };
+  folders: number;
+  metadata: number;
+  ops: number;
+  collisions: { narrator: number; number: number };
+  namesCut: number;
+  namesReplaced: number;
+  noCover: number;
+  noValues: number;
+  droppedCopies: number;
+  keptReview: number;
+  moves: Record<
+    'moved' | 'ai' | 'dropped' | 'library_only_pending' | 'reader_written' | 'unaccounted',
+    number
+  >;
+}
+
+export interface Stage6CheckItem {
+  key: string;
+  name: string;
+  ok: boolean | null;
+  detail: string;
+}
+
+export interface Stage6Progress {
+  analysisId: string;
+  phase: Stage6Phase;
+  startedAt: number;
+  finishedAt: number | null;
+  counts: Stage6Counts | null;
+  archives: { count: number; bytes: number } | null;
+  libraryOther: { ext: string; kind: string; count: number; bytes: number }[] | null;
+  phaseTimes: Record<string, { ms: number; items: number }>;
+  preflight: {
+    total: number;
+    done: number;
+    problems: number;
+    byProblem: Record<string, number>;
+  };
+  build: {
+    startedAt: number | null;
+    finishedAt: number | null;
+    total: number;
+    done: number;
+    failed: number;
+    batches: number;
+    lockWaits: number;
+    lockWaitMs: number;
+    yields: number;
+    firstFailure: string | null;
+  };
+  walk: {
+    before: { entries: number; ms: number; pausedMs: number; errors: string[] } | null;
+    after: { entries: number; ms: number; pausedMs: number; errors: string[] } | null;
+    current: { done: number; expected: number } | null;
+  };
+  check: {
+    passed: boolean;
+    at: number;
+    items: Stage6CheckItem[];
+    labels: {
+      books: number;
+      notFound: string[];
+      folderRight: number;
+      folderWrong: { id: string; expected: string; got: string; why: string }[];
+      valuesWrong: { id: string; field: string; expected: unknown; got: unknown; why: string }[];
+      valuesChecked: number;
+      unexplained: number;
+    };
+  } | null;
+  error: string | null;
+}
+
+export interface AudioStage6Status {
+  available: boolean;
+  waiting: string | null;
+  progress?: Stage6Progress | null;
+  secondsLeft?: number | null;
+  sidecar?: {
+    online: boolean;
+    lastSeenAt: number | null;
+    version: string | null;
+    problem: string | null;
+    info: Record<string, unknown> | null;
+  };
+  handing?: boolean;
+  /** Why On can't be switched on now (empty: it can). */
+  onRefusals?: string[];
+}
+
+export interface AudioBuildBook {
+  id: number;
+  area: 'main' | 'ai';
+  state: 'build' | 'pending';
+  folder: string;
+  baseFolder: string;
+  author: string;
+  series: string | null;
+  title: string;
+  notes: string[];
+  files: { kind: string; from: string; to: string }[];
+  fileCount: number;
+  pdfs: number;
+  cover: boolean;
+  metadata: Record<string, unknown>;
 }
 
 // ---------------------------------------------------------------- audiobooks stage 5 (WP21d)
@@ -1426,7 +1554,7 @@ export class CleanupApi {
     return this.request('GET', '/cleanup/audio/status') as Promise<AudioStatus>;
   }
 
-  setAudioStageMode(stage: number, mode: AudioStageMode): Promise<AudioStatus> {
+  setAudioStageMode(stage: number, mode: AudioStageMode | 'on'): Promise<AudioStatus> {
     return this.request('PUT', `/cleanup/audio/stages/${stage}`, { mode }) as Promise<AudioStatus>;
   }
 
@@ -1540,6 +1668,35 @@ export class CleanupApi {
       `/cleanup/audio/online/sites/${encodeURIComponent(site)}/retry`,
       {}
     ) as Promise<{ requests: number; units: number }>;
+  }
+
+  // ---------------------------------------------------------------- stage 6 (WP21e-1)
+
+  audioBuild(
+    list: string,
+    offset = 0,
+    limit = 50
+  ): Promise<{ total: number; items: Record<string, unknown>[] }> {
+    const q = new URLSearchParams({ list, offset: String(offset), limit: String(limit) });
+    return this.request('GET', `/cleanup/audio/build?${q}`) as Promise<{
+      total: number;
+      items: Record<string, unknown>[];
+    }>;
+  }
+
+  async audioBuildFile(file: 'moves.csv' | 'plan.csv'): Promise<Blob> {
+    const response = await send(
+      this.fetchImpl,
+      `${this.serverUrl}/api/v1/cleanup/audio/build/${file}`,
+      { method: 'GET', headers: { Authorization: `Bearer ${this.token}` } },
+      { timeoutSeconds: this.timeoutSeconds }
+    );
+    if (!response.ok) throw await errorFrom(response);
+    return response.blob();
+  }
+
+  audioBuildCheckAgain(): Promise<AudioStatus> {
+    return this.request('POST', '/cleanup/audio/build/check-again', {}) as Promise<AudioStatus>;
   }
 
   // ---------------------------------------------------------------- stage 5 and the AI (WP21d)

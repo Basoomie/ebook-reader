@@ -1,0 +1,10 @@
+{
+  "name": "ttsu-cleanup-link",
+  "version": "1.0.0",
+  "private": true,
+  "description": "WP21e-1: the audiobook cleanup's linking sidecar, the only process that writes audiobook files. It makes the new library's folders, hard links and metadata.json files the reader's server hands out.",
+  "scripts": {
+    "build": "node ../../node_modules/typescript/bin/tsc -p tsconfig.json",
+    "test": "cd ../storage-server && npx vitest run tests/wp21e-link-sidecar"
+  }
+}

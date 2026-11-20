@@ -133,3 +133,30 @@ services:
       - FETCH_TOKEN=${TTSU_FETCH_TOKEN:-}
       # Kept across restarts, so a restarted fetcher takes over at once.
       - FETCHER_ID=ttsu-cleanup-fetch
+
+  # WP21e-1: the audiobook cleanup's linking sidecar, the only process that writes audiobook
+  # files. It mounts /mnt/disk1/data ONCE, read-write (a hard link can't cross two mounts; not
+  # /mnt/user: Unraid's FUSE layer), and creates only folders, hard links to the torrents' files
+  # and metadata.json under media/audiobooks/japanese-new/ and japanese-generated-new/, when
+  # audiobook stage 6 is On. Its token comes from
+  #   docker exec ttsu-storage node dist/cli.js token link "link sidecar"
+  # ttsu-storage also needs a read-only view of media/audiobooks from /mnt/disk1 for stage 6's
+  # check (CLEANUP_AUDIO_MEDIA_DIR, beside CLEANUP_AUDIO_TORRENTS_DIR / CLEANUP_AUDIO_LIBRARY_DIR).
+  ttsu-cleanup-link:
+    build:
+      context: ./apps/cleanup-link
+    container_name: ttsu-cleanup-link
+    restart: unless-stopped
+    user: '${TTSU_CLEANUP_UID:-99}:${TTSU_CLEANUP_GID:-100}'
+    read_only: true
+    depends_on:
+      - ttsu-storage
+    volumes:
+      - type: bind
+        source: ${TTSU_DISK1_DATA_PATH:-/mnt/disk1/data}
+        target: /data
+        bind:
+          create_host_path: false
+    environment:
+      - TTSU_URL=http://ttsu-storage:3001
+      - LINK_TOKEN=${TTSU_LINK_TOKEN:-}

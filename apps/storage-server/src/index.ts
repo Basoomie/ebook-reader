@@ -37,7 +37,11 @@ import { VoiceStore } from './voices/voice-store';
 import { initCleanupDatabase } from './cleanup/cleanup-db';
 import { CleanupService } from './cleanup/cleanup-service';
 import { AudioCleanupService } from './cleanup/audio/audio-cleanup-service';
-import { audioLabelsReader, readerWrittenFiles } from './cleanup/audio-stage3-inputs';
+import {
+  audioLabelsReader,
+  readerAudioState,
+  readerWrittenFiles,
+} from './cleanup/audio-stage3-inputs';
 import type { CleanupOptions } from './cleanup/routes';
 import { onStagePaused } from './cleanup/stages';
 import { onAudioStagePaused } from './cleanup/audio/audio-stages';
@@ -152,7 +156,11 @@ if (database.ok && cleanupDb?.ok) {
       secrets: cleanup.secrets,
       lock: cleanup.diskLock,
       roots: config.cleanupAudio
-        ? { torrents: config.cleanupAudio.torrentsDir, library: config.cleanupAudio.libraryDir }
+        ? {
+            torrents: config.cleanupAudio.torrentsDir,
+            library: config.cleanupAudio.libraryDir,
+            media: config.cleanupAudio.mediaDir,
+          }
         : null,
       tools: {
         ffprobePath: config.audio.merge.ffprobePath,
@@ -164,6 +172,8 @@ if (database.ok && cleanupDb?.ok) {
       readerWrittenFiles: config.cleanupAudio
         ? readerWrittenFiles(database.db, config.cleanupAudio.libraryDir)
         : undefined,
+      // Stage 6 (WP21e-1): the reader's audio links and folders before and after the build.
+      readerState: readerAudioState(database.db),
       // Stage 4 (WP21c) asks through the Calibre cleanup's fetch queue and container.
       fetchQueue: cleanup.fetchQueue,
       fetcherStatus: () => cleanup?.fetcher() ?? null,

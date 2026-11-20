@@ -1,4 +1,5 @@
 import { createCleanupFetchRouter } from '../cleanup/stage4/fetch-routes';
+import { createCleanupLinkRouter } from '../cleanup/audio/link-routes';
 import express, { Router } from 'express';
 import type { DatabaseState } from '../db/database';
 import { getSchemaVersion } from '../db/migrations';
@@ -219,6 +220,8 @@ export function createApiRouter({
     router.use(createCleanupApplyRouter(cleanup));
     // The cleanup's fetch container (WP20d): its own token (scope fetch), only /cleanup-fetch/*.
     router.use(createCleanupFetchRouter(cleanup));
+    // The audiobook linking sidecar (WP21e-1): its own token (scope link), only /cleanup-link/*.
+    router.use(createCleanupLinkRouter(cleanup));
 
     router.use(requireUser(db));
 

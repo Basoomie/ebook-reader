@@ -163,6 +163,14 @@ export interface AudiobookSettings {
    * (measured on the labeled books: every book with 2 or more is labeled multi-narrator).
    */
   multiNarratorMin: number;
+  /** Stage 6 (WP21e-1): links, folders and metadata files the linking sidecar makes per batch. */
+  buildBatchOps: number;
+  /** Stage 6: source files the sidecar checks per preflight batch (read only). */
+  buildPreflightOps: number;
+  /** Stage 6: seconds the sidecar has for a batch before it is handed out again. */
+  buildLeaseSeconds: number;
+  /** Stage 6's check: linked files read again and compared with stage 1's SHA-256. */
+  buildRehashSample: number;
 }
 
 /** A model's list price per million tokens (US$). */
@@ -455,6 +463,11 @@ export const DEFAULT_SETTINGS: CleanupSettings = {
     onlineOpeningSeconds: 240,
     noStoreRecordFolders: ['Discord/moved/山田じぇみ子の ざこざこお兄さん取締ラジオ'],
     multiNarratorMin: 2,
+    // Stage 6 (WP21e-1): a batch of 50 small operations is about a second of disk time.
+    buildBatchOps: 50,
+    buildPreflightOps: 500,
+    buildLeaseSeconds: 120,
+    buildRehashSample: 20,
   },
   ai: {
     spendLimitUsd: null,
@@ -835,6 +848,16 @@ function validate(key: Key, value: unknown, current: CleanupSettings): unknown {
         ),
         noStoreRecordFolders: folderList(v.noStoreRecordFolders),
         multiNarratorMin: num('Several narrators from', v.multiNarratorMin, 2, 20, true),
+        buildBatchOps: num('Operations per build batch', v.buildBatchOps, 1, 1000, true),
+        buildPreflightOps: num('Files per preflight batch', v.buildPreflightOps, 10, 5000, true),
+        buildLeaseSeconds: num('Seconds per build batch', v.buildLeaseSeconds, 15, 3600, true),
+        buildRehashSample: num(
+          'Linked files read again in the check',
+          v.buildRehashSample,
+          0,
+          1000,
+          true,
+        ),
       };
     }
     case 'ai': {

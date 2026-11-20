@@ -1,0 +1,124 @@
+/**
+ * /api/v1/cleanup-link/* (WP21e-1): the audiobook linking sidecar only, with its own token
+ * (`cli token link`, scope 'link' in cleanup.db). Mounted before requireUser, like the apply
+ * sidecar's and the fetch container's routes.
+ *
+ * - heartbeat: the sidecar's state (uid, protected_hardlinks, its mounts) and whether there is
+ *   work for it now;
+ * - claim: the next batch (a preflight batch of planned torrent files to check, or a build batch
+ *   of folders, links and metadata files: only while stage 6 holds the disk lock);
+ * - batches/:id/report: the results of a batch (safe to send twice).
+ */
+import express, { type NextFunction, type Request, type Response, Router } from 'express';
+import { sendError } from '../../api/errors';
+import { authenticateApplyToken } from '../apply-tokens';
+import type { CleanupService } from '../cleanup-service';
+import type { AudioCleanupService } from './audio-cleanup-service';
+import type { LinkOpResult } from './stage6-build';
+
+export interface LinkRouteOptions {
+  service: CleanupService | null;
+  audio?: AudioCleanupService | null;
+  error?: string;
+}
+
+function requireLinkToken(options: LinkRouteOptions) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    if (!options.service || !options.audio) {
+      sendError(
+        res,
+        503,
+        'cleanup_off',
+        `The audiobook cleanup is off: ${options.error ?? 'not set up'}`,
+      );
+      return;
+    }
+    const match = /^Bearer (.+)$/.exec(req.headers.authorization ?? '');
+    const auth = match
+      ? authenticateApplyToken(options.service.db, match[1], Date.now(), 'link')
+      : null;
+    if (!auth) {
+      sendError(res, 401, 'unauthorized', 'Missing, unknown or revoked link token');
+      return;
+    }
+    next();
+  };
+}
+
+const str = (v: unknown, max = 300) =>
+  typeof v === 'string' && v.trim() ? v.trim().slice(0, max) : null;
+
+export function createCleanupLinkRouter(options: LinkRouteOptions): Router {
+  const router = express.Router();
+  router.use('/cleanup-link', requireLinkToken(options));
+  const json = express.json({ limit: '4mb' });
+
+  router.post('/cleanup-link/heartbeat', json, (req, res) => {
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    const sidecarId = str(b.sidecarId, 100);
+    if (!sidecarId) {
+      sendError(res, 400, 'bad_heartbeat', 'sidecarId is required');
+      return;
+    }
+    try {
+      res.json(
+        options.audio!.linkHeartbeat({
+          sidecarId,
+          runId: str(b.runId, 100),
+          version: str(b.version, 40),
+          problem: str(b.problem, 500),
+          info:
+            typeof b.info === 'object' && b.info !== null && !Array.isArray(b.info)
+              ? (b.info as Record<string, unknown>)
+              : null,
+        }),
+      );
+    } catch (err) {
+      sendError(res, 409, 'not_available', (err as Error).message);
+    }
+  });
+
+  router.post('/cleanup-link/claim', json, (_req, res) => {
+    res.json({ batch: options.audio!.linkClaim() });
+  });
+
+  router.post('/cleanup-link/batches/:id/report', json, (req, res) => {
+    const id = Number(req.params.id);
+    const results = (req.body as { results?: unknown } | undefined)?.results;
+    if (!Number.isInteger(id) || !Array.isArray(results)) {
+      sendError(res, 400, 'bad_report', 'A batch id and a results list are required');
+      return;
+    }
+    const clean: LinkOpResult[] = [];
+    for (const r of results as Record<string, unknown>[]) {
+      if (
+        typeof r !== 'object' ||
+        r === null ||
+        !Number.isInteger(r.id) ||
+        typeof r.ok !== 'boolean'
+      ) {
+        sendError(res, 400, 'bad_report', 'Each result needs an id and ok');
+        return;
+      }
+      clean.push({
+        id: r.id as number,
+        ok: r.ok,
+        problem: str(r.problem, 300),
+        error: str(r.error, 500),
+        existed: r.existed === true,
+        dev: typeof r.dev === 'number' ? r.dev : undefined,
+        ino: typeof r.ino === 'number' ? r.ino : undefined,
+      });
+    }
+    try {
+      res.json(options.audio!.linkReport(id, clean));
+    } catch (err) {
+      sendError(res, 404, 'no_batch', (err as Error).message);
+    }
+  });
+
+  router.use('/cleanup-link', (_req, res) => {
+    sendError(res, 404, 'not_found', 'No such route');
+  });
+  return router;
+}
