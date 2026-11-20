@@ -82,6 +82,21 @@ describe('stage 5 rules on the live cases', () => {
         description: '',
       }),
     ).toEqual({ value: ['ヨースタイン・ゴルデル'], auto: true, reason: null });
+    // でじじ is Pan Rolling's store, never an author (T037 日本国憲法; アイヌ神話 keeps 中田千畝).
+    const panRolling = {
+      ...evidence(db, 'u:genji').record!,
+      publisher: 'パンローリング株式会社',
+      description: '',
+    };
+    expect(recordAuthors({ ...panRolling, authors: ['でじじ'] })).toMatchObject({
+      value: [],
+      auto: false,
+    });
+    expect(recordAuthors({ ...panRolling, authors: ['中田 千畝', 'でじじ'] })).toEqual({
+      value: ['中田千畝'],
+      auto: true,
+      reason: null,
+    });
   });
 
   it('series: Audible position, odd labels and short names open, drama CDs twice, imprints never', () => {

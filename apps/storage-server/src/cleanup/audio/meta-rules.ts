@@ -122,6 +122,14 @@ export function realSubtitle(r: RecordBrief): string | null {
 // people
 
 const KEEP_ROLES = /^(著|作|著者|作者|原作|原案|文|作・文|編著)$/u;
+
+/**
+ * Stores and production labels that stores list as an author, never one. でじじ (digigi) is
+ * Pan Rolling's own audiobook store: Audible lists it as the author on 4 recordings of the
+ * library (verified 2026-11-19: アイヌ神話 with its author 中田千畝; 竹取物語, an anthology and
+ * 日本国憲法 with no author).
+ */
+const STORE_NAMES = /^(でじじ|digigi)$/iu;
 const ROLE_PREFIX =
   /^\s*(著|作|著者|作者|原作|原案|文|作・文|訳|翻訳|監修|監訳|編|編集|編著|イラスト|絵|画|朗読|解説)\s*[/／:：]\s*/u;
 const ROLE_SUFFIX =
@@ -179,7 +187,7 @@ export function recordAuthors(r: RecordBrief): RulesValue<string[]> {
       dropped++;
       continue;
     }
-    if (r.publisher && NA(name) === NA(r.publisher)) {
+    if ((r.publisher && NA(name) === NA(r.publisher)) || STORE_NAMES.test(nfkc(name).trim())) {
       dropped++;
       continue;
     }
