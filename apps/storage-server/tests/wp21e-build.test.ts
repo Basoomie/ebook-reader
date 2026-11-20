@@ -762,9 +762,9 @@ describe('the writer (the only code that writes audiobook files)', () => {
     );
   });
 
-  it('only writer.ts writes, and it has exactly the three operations', () => {
+  it('only writer.ts writes (its operations: tests/wp21e-switch.test.ts since WP21e-2)', () => {
     const WRITES =
-      /\b(writeFile|writeFileSync|appendFile|appendFileSync|mkdir|mkdirSync|rename|renameSync|unlink|unlinkSync|rmdir|rmSync|rm\(|link\(|linkSync|symlink|copyFile|cp\(|cpSync|utimes|chmod|chown|truncate|createWriteStream|futimes|lchown|O_CREAT|O_WRONLY|O_RDWR)\b/;
+      /\b(writeFile|writeFileSync|appendFile|appendFileSync|mkdir|mkdirSync|rename|renameSync|unlink|unlinkSync|rmdir|rmSync|rm|link|linkSync|symlink|copyFile|cp|cpSync|utimes|chmod|chown|truncate|createWriteStream|futimes|lchown)\(|\b(O_CREAT|O_WRONLY|O_RDWR)\b/;
     for (const f of fs.readdirSync(LINK_SRC).filter((x) => x.endsWith('.ts'))) {
       const src = fs.readFileSync(path.join(LINK_SRC, f), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
       if (f === 'writer.ts') continue;
@@ -775,23 +775,12 @@ describe('the writer (the only code that writes audiobook files)', () => {
       .readFileSync(path.join(LINK_SRC, 'writer.ts'), 'utf8')
       .replace(/\/\*[\s\S]*?\*\//g, '')
       .replace(/\/\/.*$/gm, '');
-    // Its only removal is its own temporary name; no rename, no symlink, no copy.
-    expect(writer.match(/fs\.unlink\(/g)).toHaveLength(2);
+    // The build's own removal is its temporary name (WP21e-2 added the switch's operations,
+    // each checked in tests/wp21e-switch.test.ts); still no symlink, copyFile or chown.
     expect(writer).toMatch(/\.ttsu-link-\$\{tag\}\.partial/);
-    expect(writer).not.toMatch(
-      /\b(rename|symlink|copyFile|rm\(|rmSync|rmdir|truncate|utimes|chown)\b/,
-    );
-    const methods = Object.getOwnPropertyNames(LinkWriter.prototype).sort();
-    expect(methods).toEqual([
-      'constructor',
-      'linkFile',
-      'makeFolder',
-      'realFolders',
-      'source',
-      'writeMetadata',
-    ]);
-    // chmod only on what it made: a folder it created and its own temporary file.
-    expect(writer.match(/chmod\(/g)).toHaveLength(2);
+    expect(writer).not.toMatch(/\b(symlink|copyFile|rm\(|rmSync|truncate|utimes|chown)\b/);
+    for (const m of ['linkFile', 'makeFolder', 'writeMetadata'])
+      expect(Object.getOwnPropertyNames(LinkWriter.prototype)).toContain(m);
   });
 });
 

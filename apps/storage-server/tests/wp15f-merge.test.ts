@@ -141,6 +141,8 @@ const COVER = 'japanese/_Unknown/表紙つき';
 const MIXED = 'japanese/_Unknown/混合';
 const BROKEN = 'japanese/_Unknown/壊れた';
 const SINGLE = 'japanese/_Unknown/ひとつ';
+/** WP21e-2: a merge of `folder` goes to `japanese-merged/<the same path>`. */
+const merged = (folder: string) => folder.replace(/^japanese\//, 'japanese-merged/');
 const BOOKS = ['分割の本 1', '表紙つき', '混合', '壊れた', 'ひとつ'];
 
 let template = '';
@@ -370,7 +372,7 @@ describe.skipIf(!HAS_FFMPEG)('merging with ffmpeg', () => {
       outputName: 'Vol 1 - 分割の本 1.m4b',
       error: null,
     });
-    const outRel = `${SPLIT}/Vol 1 - 分割の本 1.m4b`;
+    const outRel = `${merged(SPLIT)}/Vol 1 - 分割の本 1.m4b`;
     const out = path.join(t.root, ...outRel.split('/'));
     expect(treeDiff(t.start, treeHashes(t.root))).toEqual({
       added: [outRel],
@@ -389,14 +391,16 @@ describe.skipIf(!HAS_FFMPEG)('merging with ffmpeg', () => {
     const boxes = topBoxes(out);
     expect(boxes.indexOf('moov')).toBeLessThan(boxes.indexOf('mdat'));
 
-    // The folder is re-indexed with the new file (and its length), and the book plays it.
-    const folder = t.folder(SPLIT);
-    expect(folder.files.map((f) => f.name)).toContain('Vol 1 - 分割の本 1.m4b');
+    // The merged folder is indexed with the new file (and its length), and the book plays it;
+    // the originals' folder is as it was.
+    expect(t.folder(SPLIT).files.map((f) => f.name)).not.toContain('Vol 1 - 分割の本 1.m4b');
+    const folder = t.folder(merged(SPLIT));
+    expect(folder.files.map((f) => f.name)).toEqual(['Vol 1 - 分割の本 1.m4b']);
     expect(folder.files.find((f) => f.name.endsWith('.m4b'))!.durationSeconds).toBeCloseTo(7, 0);
     const link = await t.link('分割の本 1');
     expect(link).toMatchObject({
       state: 'linked',
-      folderRelPath: SPLIT,
+      folderRelPath: merged(SPLIT),
       fileName: 'Vol 1 - 分割の本 1.m4b',
       playable: true,
       status: 'ok',
@@ -422,7 +426,7 @@ describe.skipIf(!HAS_FFMPEG)('merging with ffmpeg', () => {
     await t.merges.idle();
     const job = (await t.latest('表紙つき'))!;
     expect(job).toMatchObject({ state: 'done', mode: 'copy' });
-    const p = probeJson(path.join(t.root, ...COVER.split('/'), job.outputName!));
+    const p = probeJson(path.join(t.root, ...merged(COVER).split('/'), job.outputName!));
     expect(
       p.streams.some((s) => s.codec_type === 'video' && s.disposition?.attached_pic === 1),
     ).toBe(true);
@@ -436,7 +440,7 @@ describe.skipIf(!HAS_FFMPEG)('merging with ffmpeg', () => {
     await t.merges.idle();
     const job = (await t.latest('混合'))!;
     expect(job).toMatchObject({ state: 'done', mode: 'reencode', linked: true });
-    const p = probeJson(path.join(t.root, ...MIXED.split('/'), job.outputName!));
+    const p = probeJson(path.join(t.root, ...merged(MIXED).split('/'), job.outputName!));
     expect(p.streams.filter((s) => s.codec_type === 'audio').map((s) => s.codec_name)).toEqual([
       'aac',
     ]);
@@ -509,7 +513,7 @@ describe.skipIf(!HAS_FFMPEG)('merging with ffmpeg', () => {
       fileName: 'only.m4a',
     });
     expect(treeDiff(t.start, treeHashes(t.root)).added).toEqual([
-      `${SPLIT}/Vol 1 - 分割の本 1.m4b`,
+      `${merged(SPLIT)}/Vol 1 - 分割の本 1.m4b`,
     ]);
   });
 
@@ -544,7 +548,7 @@ describe.skipIf(!HAS_FFMPEG)('merging with ffmpeg', () => {
     expect((await t.latest('分割の本 1'))!.state).toBe('done');
     expect((await t.latest('表紙つき'))!.state).toBe('cancelled');
     expect(treeDiff(t.start, treeHashes(t.root)).added).toEqual([
-      `${SPLIT}/Vol 1 - 分割の本 1.m4b`,
+      `${merged(SPLIT)}/Vol 1 - 分割の本 1.m4b`,
     ]);
   });
 

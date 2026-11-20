@@ -108,6 +108,11 @@ export function createCleanupLinkRouter(options: LinkRouteOptions): Router {
         existed: r.existed === true,
         dev: typeof r.dev === 'number' ? r.dev : undefined,
         ino: typeof r.ino === 'number' ? r.ino : undefined,
+        // WP21e-2: what the switch's operations report (bytes freed, the re-read SHA-256).
+        freed: typeof r.freed === 'number' && r.freed >= 0 ? r.freed : undefined,
+        sha256:
+          typeof r.sha256 === 'string' && /^[0-9a-f]{64}$/.test(r.sha256) ? r.sha256 : undefined,
+        size: typeof r.size === 'number' && r.size >= 0 ? r.size : undefined,
       });
     }
     try {

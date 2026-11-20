@@ -44,6 +44,7 @@ import {
   upsertAudioFolder,
   upsertSubtitleFile,
 } from './audio-index';
+import { isHeld } from './audio-hold';
 import { audioDuration } from './media-duration';
 import {
   ARCHIVE_EXTENSIONS,
@@ -110,6 +111,15 @@ interface ScanCounts {
  */
 export function generatedAudioDir(lib: Pick<Library, 'audioDir'>): string | null {
   return lib.audioDir ? `${lib.audioDir.replace(/\/+$/, '')}-generated` : null;
+}
+
+/**
+ * WP21e-2: a library's folder of merged files, `<audio folder>-merged` (e.g.
+ * japanese-merged), next to its audio folder. Same rule as audio-write.ts. Indexed for the
+ * library like the audio folder (Audiobookshelf never sees it).
+ */
+export function mergedAudioDir(lib: Pick<Library, 'audioDir'>): string | null {
+  return lib.audioDir ? `${lib.audioDir.replace(/\/+$/, '')}-merged` : null;
 }
 
 export class AudioScanService {
@@ -203,15 +213,42 @@ export class AudioScanService {
     return this.now() - state.scannedAt >= this.config.scanHours * 3600_000;
   }
 
-  /** One pass: scan what is due, then measure durations still missing. */
+  /**
+   * Folders indexed by the scan running now (WP21e-2: the switch's rescan shows it as its
+   * progress); reset when a library's scan starts.
+   */
+  scanned = { folders: 0 };
+
+  /**
+   * One pass: scan what is due, then measure durations still missing. Nothing while the
+   * audiobook hold is on (WP21e-2: the folders are being renamed; the switch runs its own
+   * scan with scanForSwitch, and requested scans wait for the next pass after it).
+   */
   async tick(): Promise<void> {
+    if (isHeld(this.db, 'switch')) return;
     for (const lib of this.libraries()) {
       if (this.stopped) return;
       if (this.isDue(lib)) await this.scanLibrary(lib);
     }
     for (const lib of this.libraries()) {
-      if (this.stopped) return;
+      if (this.stopped || isHeld(this.db, 'switch')) return;
       await this.measureDurations(lib);
+    }
+  }
+
+  /**
+   * WP21e-2: the switch's own scan of every library while the hold is on (the regular
+   * passes do nothing then). Waits for a pass that is running first. Throws when a library's
+   * scan failed (the switch pauses and says why).
+   */
+  async scanForSwitch(): Promise<void> {
+    await this.idle();
+    for (const lib of this.libraries()) {
+      await this.scanLibrary(lib);
+      const state = getScanState(this.db, lib.id);
+      if (state.status === 'error') {
+        throw new Error(`The scan of "${lib.name}" failed: ${state.lastError ?? 'unknown error'}`);
+      }
     }
   }
 
@@ -224,7 +261,11 @@ export class AudioScanService {
       // WP17: generated audiobooks first, so the missing-marking below sees them as seen.
       // Their own counters: they never hide an empty audio or subtitle folder.
       const generated: ScanCounts = { folders: 0, subtitles: 0, archives: 0 };
+      this.scanned = { folders: 0 };
       await this.scanGenerated(lib, started, generated);
+      // WP21e-2: merged files (`<audio folder>-merged/`), seen before the missing-marking too.
+      const merged: ScanCounts = { folders: 0, subtitles: 0, archives: 0 };
+      await this.scanMerged(lib, started, merged);
       const previousFolders = countPresentOf(this.db, 'audio_folders', lib.id, false);
       const previousSubtitles = countPresentOf(this.db, 'subtitle_files', lib.id, false);
       if (lib.audioDir) await this.scanAudio(lib, lib.audioDir, started, counts, previousFolders);
@@ -245,7 +286,8 @@ export class AudioScanService {
       this.log(
         `Audiobooks: "${lib.name}": ${counts.folders} audiobook folder(s), ${counts.subtitles} subtitle file(s)` +
           (counts.archives ? `, ${counts.archives} archive(s) skipped` : '') +
-          (generated.folders ? `, ${generated.folders} generated audiobook(s)` : ''),
+          (generated.folders ? `, ${generated.folders} generated audiobook(s)` : '') +
+          (merged.folders ? `, ${merged.folders} folder(s) of merged files` : ''),
       );
     } catch (err) {
       const message = (err as Error).message ?? String(err);
@@ -297,6 +339,47 @@ export class AudioScanService {
       counts.folders += 1;
       counts.subtitles += await this.indexSubtitlesIn(lib, start, abs, entries, started);
     });
+  }
+
+  /**
+   * WP21e-2: walks `<audio folder>-merged/` (if it exists; made by the first merge after the
+   * switch): every folder with audio is indexed as an audiobook folder of the library.
+   */
+  private async scanMerged(lib: Library, started: number, counts: ScanCounts): Promise<void> {
+    const rel = mergedAudioDir(lib);
+    if (!rel) return;
+    const start = resolveInsideAudio(this.root, rel);
+    if (!(await isFolder(start))) return;
+    await this.walk(start, 0, async (abs, dirName, parentName, entries) => {
+      if (await this.indexFolder(lib, abs, dirName, parentName, entries, started)) {
+        counts.folders += 1;
+      }
+    });
+  }
+
+  /**
+   * WP21e-2: indexes one folder of merged files (just saved) and measures its durations.
+   * Returns the folder, or null when it is not under the library's merged folder or holds
+   * no audio.
+   */
+  async rescanMergedFolder(libraryId: string, relPath: string): Promise<AudioFolder | null> {
+    const lib = listLibraries(this.db).find((l) => l.id === libraryId);
+    const rel = lib ? mergedAudioDir(lib) : null;
+    if (!lib || !rel) return null;
+    const start = resolveInsideAudio(this.root, rel);
+    const abs = resolveInsideAudio(this.root, relPath);
+    if (!isInside(start, abs) || abs === start || !(await isFolder(abs))) return null;
+    const folder = await this.indexFolder(
+      lib,
+      abs,
+      path.basename(abs),
+      path.basename(path.dirname(abs)),
+      await readFolder(abs),
+      this.now(),
+    );
+    if (!folder) return null;
+    await this.measureFolder(folder);
+    return getAudioFolderByPath(this.db, lib.id, folder.relPath);
   }
 
   /** WP17: the subtitle files directly in a generated audiobook's folder. */
@@ -377,6 +460,7 @@ export class AudioScanService {
     const sequence = meta?.series?.sequence ?? null;
     const sequenceNumber =
       sequence !== null && /^\d+(\.\d+)?$/.test(sequence) ? Number(sequence) : null;
+    this.scanned.folders += 1;
     return upsertAudioFolder(this.db, {
       libraryId: lib.id,
       relPath,

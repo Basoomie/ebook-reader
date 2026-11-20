@@ -51,6 +51,13 @@ import type { FetchQueue } from '../stage4/queue';
 import { AUDIO_FETCH_SITES } from '../settings';
 import type { AudioRoots } from './walk';
 import { AudioStage6, type LinkBatch, type LinkOpResult } from './stage6-build';
+import {
+  AudioSwitch,
+  SWITCH_BATCH_BASE,
+  type SwitchAction,
+  type SwitchBatch,
+  type SwitchReader,
+} from './stage6-switch';
 import { AUDIO_ON_STAGES } from './audio-stages';
 import { stageIds } from './build-inputs';
 
@@ -152,6 +159,8 @@ export class AudioCleanupService {
   readonly stage5: AudioStage5;
   /** Stage 6 (WP21e-1): the build of japanese-new (needs the folders). */
   readonly stage6: AudioStage6 | null;
+  /** WP21e-2: the switch to the new library (after stage 6). */
+  readonly switcher: AudioSwitch | null;
   readonly ai: AiRunner;
   private roots: RootsCheck = { ok: false, problem: 'Not checked yet', checkedAt: 0 };
   private timer: NodeJS.Timeout | null = null;
@@ -162,6 +171,7 @@ export class AudioCleanupService {
   private running4: Promise<void> | null = null;
   private running5: Promise<void> | null = null;
   private running6: Promise<void> | null = null;
+  private runningSwitch: Promise<void> | null = null;
   private snapshotting: Promise<void> | null = null;
   private stopped = false;
   waiting1: string | null = null;
@@ -247,6 +257,38 @@ export class AudioCleanupService {
           log: this.log,
         })
       : null;
+    this.switcher =
+      this.stage6 && opts.roots
+        ? new AudioSwitch({
+            db: opts.db,
+            stage6: this.stage6,
+            roots: {
+              torrents: opts.roots.torrents,
+              library: opts.roots.library,
+              media: opts.roots.media ?? null,
+            },
+            lock: opts.lock,
+            absLibraries: () => this.absLibraries(),
+            log: this.log,
+          })
+        : null;
+  }
+
+  /** WP21e-2: the reader's side of the switch (the server gives it once its audio services exist). */
+  attachReader(reader: SwitchReader): void {
+    this.switcher?.attachReader(reader);
+    void this.tick();
+  }
+
+  /** Audiobookshelf's libraries and folders now (a GET-only snapshot), or null. */
+  private async absLibraries(): Promise<{ name: string | null; folders: string[] }[] | null> {
+    const s = getSettings(this.db).audiobooks;
+    if (!s.absUrl || !this.opts.secrets.read('absApiKey')) return null;
+    await this.takeSnapshot();
+    const p0 = getAudioStage(this.db, 0).progress as { lastId?: number; error?: string | null };
+    if (p0.error || !p0.lastId) return null;
+    const snap = getSnapshot(this.db, p0.lastId);
+    return snap ? snap.libraries.map((l) => ({ name: l.name, folders: l.folders })) : null;
   }
 
   get db(): Database.Database {
@@ -271,11 +313,13 @@ export class AudioCleanupService {
     await this.running4;
     await this.running5;
     await this.running6;
+    await this.runningSwitch;
     await this.snapshotting;
     this.opts.lock.release(DISK_OWNERS.audio1);
     this.opts.lock.release(DISK_OWNERS.audio3);
     this.opts.lock.release(DISK_OWNERS.audio4);
     this.opts.lock.release(DISK_OWNERS.audio6);
+    this.opts.lock.release(DISK_OWNERS.audio6switch);
   }
 
   tick(): Promise<void> {
@@ -303,6 +347,7 @@ export class AudioCleanupService {
     this.round4();
     this.round5();
     this.round6();
+    this.roundSwitch();
     // Settings > AI "Test batch" results (each checked at the batch poll pace).
     await this.ai.pollBatchTests().catch((err) => this.logError('AI: batch tests:', err));
   }
@@ -824,19 +869,70 @@ export class AudioCleanupService {
     })();
   }
 
+  /** WP21e-2: runs the switch's phases while it is running and not paused. */
+  private roundSwitch(): void {
+    const sw = this.switcher;
+    if (!sw || this.runningSwitch || !sw.isRunning() || sw.pause()) return;
+    if (!this.roots.ok) return;
+    const stop = () => this.stopped || !sw.isRunning() || sw.pause() !== null;
+    this.runningSwitch = (async () => {
+      try {
+        for (;;) {
+          if (stop()) break;
+          const done = await sw.step(stop);
+          if (done) break;
+          await new Promise((r) => setImmediate(r));
+        }
+      } catch (err) {
+        this.logError('Audiobook cleanup: the switch failed:', err);
+      } finally {
+        sw.giveBack();
+        this.runningSwitch = null;
+        void this.tick();
+      }
+    })();
+  }
+
+  /** The page's switch actions (each asked first on the page). */
+  async switchStart(action: SwitchAction): Promise<void> {
+    if (!this.switcher) throw new Error('The audiobook folders are not set up');
+    if (this.running6) throw new Error('Stage 6 is working; wait for it or switch it to Preview');
+    await this.switcher.start(action);
+    this.log(`Audiobooks: ${action} started from the page`);
+    void this.tick();
+  }
+
+  switchResume(): void {
+    if (!this.switcher) throw new Error('The audiobook folders are not set up');
+    this.switcher.resume();
+    void this.tick();
+  }
+
+  async switchCancel(): Promise<void> {
+    if (!this.switcher) throw new Error('The audiobook folders are not set up');
+    await this.runningSwitch;
+    this.switcher.cancel();
+    void this.tick();
+  }
+
   /** The linking sidecar's routes (/api/v1/cleanup-link/*). */
   linkHeartbeat(body: Parameters<AudioStage6['heartbeat']>[0]) {
     if (!this.stage6) throw new Error('The audiobook folders are not set up');
-    return this.stage6.heartbeat(body);
+    const r = this.stage6.heartbeat(body);
+    if (this.switcher?.active()) return { active: true, pollSeconds: 1 };
+    return r;
   }
 
-  linkClaim(): LinkBatch | null {
-    return this.stage6?.claim() ?? null;
+  linkClaim(): LinkBatch | SwitchBatch | null {
+    return this.switcher?.claim() ?? this.stage6?.claim() ?? null;
   }
 
   linkReport(batchId: number, results: LinkOpResult[]) {
     if (!this.stage6) throw new Error('The audiobook folders are not set up');
-    const r = this.stage6.report(batchId, results);
+    const r =
+      batchId >= SWITCH_BATCH_BASE && this.switcher
+        ? this.switcher.report(batchId, results)
+        : this.stage6.report(batchId, results);
     void this.tick();
     return r;
   }
@@ -1018,6 +1114,7 @@ export class AudioCleanupService {
       stage6: this.stage6
         ? { available: true, waiting: this.waiting6, ...this.stage6.status() }
         : { available: false, waiting: this.waiting6 },
+      switch: this.switcher ? { available: true, ...this.switcher.status() } : { available: false },
     };
   }
 

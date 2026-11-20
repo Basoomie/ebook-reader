@@ -1171,6 +1171,21 @@ export const MIGRATIONS: { version: number; name: string; sql: string }[] = [
       CREATE INDEX notification_log_pending ON notification_log (status, next_at);
     `,
   },
+  {
+    version: 27,
+    name: 'audio-hold',
+    // WP21e-2: the reader's audiobook hold (src/audio/audio-hold.ts). 'switch' while the
+    // audiobook cleanup renames the library's audio folder and remaps the links (scans,
+    // merges, PC jobs, link edits and writes wait); 'merge_wait' refuses merges until the
+    // switch is done. Kept here so a restart in the middle keeps it.
+    sql: `
+      CREATE TABLE audio_hold (
+        kind    TEXT PRIMARY KEY CHECK (kind IN ('switch', 'merge_wait')),
+        reason  TEXT NOT NULL,
+        since   INTEGER NOT NULL
+      );
+    `,
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

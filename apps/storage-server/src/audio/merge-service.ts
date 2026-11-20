@@ -25,6 +25,7 @@ import path from 'path';
 import type { AudioMergeConfig } from '../config';
 import { resolveInsideAudio, statAudioFile } from './audio-fs';
 import { type AudioFolder, getAudioFolderByRelPath } from './audio-index';
+import { getHold, HOLD_TEXT, isHeld } from './audio-hold';
 import { getLink, saveLink } from './audio-links';
 import { AudioWriter, WriteAborted } from './audio-write';
 import type { MergeWorkdir } from './merge-workdir';
@@ -369,6 +370,10 @@ export class MergeService {
       return no("The server's audiobooks folder is read-only, so merged files can't be saved");
     }
     if (this.toolsProblem) return no(this.toolsProblem);
+    // WP21e-2: the cleanup's switch is moving the audiobooks, or hasn't yet (merged files go
+    // to `<audio folder>-merged/<book path>/`, and before the switch that path is the old one).
+    const hold = getHold(this.db, 'switch') ?? getHold(this.db, 'merge_wait');
+    if (hold) return no(HOLD_TEXT[hold.kind]);
     return { available: true, reason: null };
   }
 
@@ -540,8 +545,15 @@ export class MergeService {
       });
   }
 
+  /** WP21e-2: runs merges that waited while the audiobook hold was on. */
+  resume(): void {
+    this.kick();
+  }
+
   private async loop(): Promise<void> {
     while (!this.stopped) {
+      // Queued merges wait while the audiobook hold is on (none can be queued then).
+      if (isHeld(this.db, 'switch') || isHeld(this.db, 'merge_wait')) return;
       const next = this.db
         .prepare("SELECT * FROM audio_merge_jobs WHERE state = 'queued' ORDER BY id LIMIT 1")
         .get() as JobRow | undefined;
@@ -651,8 +663,7 @@ export class MergeService {
       this.update(job.id, { state: 'saving', progress: 0.9 });
       if (this.beforeSave) await this.beforeSave(this.get(job.id)!);
       if (abort.signal.aborted) throw new WriteAborted();
-      const folderAbs = resolveInsideAudio(this.scan.root, folder.relPath);
-      await this.requireFree(folderAbs, outSize, 'the audiobooks folder');
+      await this.requireFree(this.scan.root, outSize, 'the audiobooks folder');
       let lastSaved = 0.9;
       const saved = await this.writer.createMergedFile({
         folderRelPath: folder.relPath,
@@ -667,7 +678,11 @@ export class MergeService {
         },
       });
       this.update(job.id, { output_name: saved.name });
-      const fresh = await this.scan.rescanFolder(folder);
+      // WP21e-2: the merged file is in `<audio folder>-merged/<book path>/`, its own folder.
+      const fresh = await this.scan.rescanMergedFolder(
+        folder.libraryId,
+        path.posix.dirname(saved.relPath),
+      );
       const linked = this.autoLink(job, linkConfirmedAt, saved.name, fresh);
       this.update(job.id, {
         state: 'done',

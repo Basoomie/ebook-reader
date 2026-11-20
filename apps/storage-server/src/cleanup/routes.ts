@@ -553,6 +553,62 @@ function addAudioRoutes(router: Router, options: CleanupOptions): void {
     res.json(audio.status());
   });
 
+  // The switch (WP21e-2): Switch, Undo, Delete japanese-old (each asked first on the page),
+  // Continue after a pause, Cancel before anything is renamed or deleted, the link report.
+  router.post(
+    '/cleanup/audio/switch/start',
+    asyncHandler(async (req, res) => {
+      const audio = audioOr503(options);
+      const action = (req.body as { action?: unknown } | undefined)?.action;
+      if (action !== 'switch' && action !== 'undo' && action !== 'delete')
+        throw new ApiError(400, 'invalid_body', 'action must be switch, undo or delete');
+      try {
+        await audio.switchStart(action);
+      } catch (err) {
+        throw new ApiError(409, 'not_available', (err as Error).message);
+      }
+      res.json(audio.status());
+    }),
+  );
+
+  router.post('/cleanup/audio/switch/resume', (_req, res) => {
+    const audio = audioOr503(options);
+    try {
+      audio.switchResume();
+    } catch (err) {
+      throw new ApiError(409, 'not_available', (err as Error).message);
+    }
+    res.json(audio.status());
+  });
+
+  router.post(
+    '/cleanup/audio/switch/cancel',
+    asyncHandler(async (_req, res) => {
+      const audio = audioOr503(options);
+      try {
+        await audio.switchCancel();
+      } catch (err) {
+        throw new ApiError(409, 'not_available', (err as Error).message);
+      }
+      res.json(audio.status());
+    }),
+  );
+
+  router.get('/cleanup/audio/switch/links', (req, res) => {
+    const audio = audioOr503(options);
+    const changed = req.query.changed === '1';
+    res.json(
+      audio.switcher?.links({ ...page(req), changedOnly: changed }) ?? { total: 0, items: [] },
+    );
+  });
+
+  router.get('/cleanup/audio/switch/links.csv', (_req, res) => {
+    const audio = audioOr503(options);
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="audiobooks-switch-links.csv"');
+    res.send(audio.switcher?.linksCsv() ?? '');
+  });
+
   // The AI framework (WP21d): spending, models per task, the providers' model lists.
   router.get('/cleanup/ai/status', (_req, res) => {
     res.json(audioOr503(options).aiStatus());

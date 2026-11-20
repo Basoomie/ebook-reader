@@ -94,12 +94,11 @@ export function seedBuild(db: Database.Database, dir: string, seed: BuildSeed): 
     fs.writeFileSync(p, bytes);
     const st = fs.lstatSync(p, { bigint: true });
     const ext = path.extname(f.rel).toLowerCase();
-    const kind =
-      ext === '.pdf' || ext === '.json' || ext === '.jpg'
-        ? 'other'
-        : ext === '.zip'
-          ? 'archive'
-          : 'audio';
+    const kind = ['.m4b', '.m4a', '.mp3', '.mp4', '.aac', '.flac', '.ogg', '.opus'].includes(ext)
+      ? 'audio'
+      : ext === '.zip' || ext === '.rar' || ext === '.7z'
+        ? 'archive'
+        : 'other';
     const id = Number(
       ins.run(
         f.root,

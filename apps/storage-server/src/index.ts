@@ -37,6 +37,7 @@ import { VoiceStore } from './voices/voice-store';
 import { initCleanupDatabase } from './cleanup/cleanup-db';
 import { CleanupService } from './cleanup/cleanup-service';
 import { AudioCleanupService } from './cleanup/audio/audio-cleanup-service';
+import { switchReader } from './cleanup/audio/switch-reader';
 import {
   audioLabelsReader,
   readerAudioState,
@@ -451,6 +452,16 @@ if (database.ok && config.audio.dir) {
     hideRoots: () => [scan.root],
     logError: (m, err) => console.error(`Error: ${m}`, err ?? ''),
   });
+  // WP21e-2: the audiobook cleanup's switch reaches the reader only through this (the hold is
+  // in ttsu.db, so a restart in the middle of the switch keeps scans and merges waiting).
+  cleanupOptions.audio?.attachReader(
+    switchReader({
+      db: database.db,
+      scan,
+      resumeMerges: () => mergeService.resume(),
+      dbDir: config.dbDir,
+    }),
+  );
   scan
     .start()
     .then(async () => {

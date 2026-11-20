@@ -12,6 +12,7 @@ import { getAuth } from '../api/auth';
 import path from 'path';
 import { ApiError, asyncHandler } from '../api/errors';
 import { type CatalogUser, getBookFor, summariesByIds } from '../catalog/queries';
+import { assertNotHeld } from './audio-hold';
 import { readSmallFile, resolveInsideAudio } from './audio-fs';
 import { getAudioFolder, getAudioFolderByRelPath, getSubtitleFile } from './audio-index';
 import {
@@ -237,6 +238,8 @@ export function createAudioLinkRouter(
     requireAudio(options);
     const { user } = getAuth(res);
     bookOr404(user.id, req.params.id);
+    // WP21e-2: links are being moved to the new folders by the cleanup's switch.
+    assertNotHeld(db, 'switch');
     const saved = db.transaction(() => {
       const next = applyLinkChange(
         db,
@@ -256,6 +259,7 @@ export function createAudioLinkRouter(
   router.delete('/books/:id/audio-link', (req, res) => {
     const { user } = getAuth(res);
     bookOr404(user.id, req.params.id);
+    assertNotHeld(db, 'switch');
     deleteLink(db, user.id, req.params.id, now());
     res.status(204).end();
   });

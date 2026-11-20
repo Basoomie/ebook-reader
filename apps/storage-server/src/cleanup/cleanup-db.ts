@@ -1232,6 +1232,101 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
       );
     `,
   },
+  {
+    version: 15,
+    name: 'audiobook cleanup: the switch to the new library (WP21e-2)',
+    // The switch (src/cleanup/audio/stage6-switch.ts): japanese -> japanese-old,
+    // japanese-new -> japanese, the reader's links remapped; Undo; covers; deleting
+    // japanese-old. One state row; the sidecar's operations and batches; every link the switch
+    // changed (also what Undo restores); the PDFs and archives re-checked before the deletion.
+    sql: `
+      CREATE TABLE audio_switch (
+        id            INTEGER PRIMARY KEY CHECK (id = 1),
+        state         TEXT NOT NULL CHECK (state IN ('none', 'running', 'switched', 'deleted')),
+        progress_json TEXT NOT NULL CHECK (json_valid(progress_json)),
+        pause_reason  TEXT,
+        pause_detail  TEXT,
+        updated_at    INTEGER NOT NULL
+      );
+      INSERT INTO audio_switch (id, state, progress_json, updated_at) VALUES (1, 'none', '{}', 0);
+
+      CREATE TABLE audio_switch_ops (
+        id           INTEGER PRIMARY KEY,
+        run_id       TEXT NOT NULL,
+        phase        TEXT NOT NULL,
+        seq          INTEGER NOT NULL,
+        kind         TEXT NOT NULL CHECK (kind IN
+                       ('rename', 'from_library', 'folder', 'link', 'metadata', 'inventory', 'delete')),
+        book_id      INTEGER,
+        src_rel      TEXT,
+        src_raw      TEXT,
+        dst          TEXT NOT NULL,
+        size         INTEGER,
+        mtime_ms     INTEGER,
+        dev          INTEGER,
+        ino          INTEGER,
+        sha256       TEXT,
+        is_dir       INTEGER NOT NULL DEFAULT 0,
+        state        TEXT NOT NULL DEFAULT 'planned'
+                       CHECK (state IN ('planned', 'claimed', 'done', 'failed')),
+        batch_id     INTEGER,
+        result_json  TEXT,
+        done_at      INTEGER
+      );
+      CREATE INDEX audio_switch_ops_next ON audio_switch_ops (run_id, phase, state, seq);
+      CREATE INDEX audio_switch_ops_batch ON audio_switch_ops (batch_id);
+
+      CREATE TABLE audio_switch_batches (
+        id           INTEGER PRIMARY KEY,
+        run_id       TEXT NOT NULL,
+        state        TEXT NOT NULL CHECK (state IN ('claimed', 'reported', 'expired')),
+        ops          INTEGER NOT NULL,
+        claimed_at   INTEGER NOT NULL,
+        lease_until  INTEGER NOT NULL,
+        reported_at  INTEGER
+      );
+      CREATE INDEX audio_switch_batches_state ON audio_switch_batches (run_id, state, id);
+
+      -- Every reader link the switch looked at (paths relative to the audiobooks root, as
+      -- ttsu.db stores them): before, after, why; Undo writes the old values back.
+      CREATE TABLE audio_switch_links (
+        run_id         TEXT NOT NULL,
+        user_id        TEXT NOT NULL,
+        book_id        TEXT NOT NULL,
+        old_folder     TEXT,
+        old_file       TEXT,
+        new_folder     TEXT,
+        new_file       TEXT,
+        outcome        TEXT NOT NULL,
+        detail         TEXT,
+        changed        INTEGER NOT NULL,
+        status_before  TEXT,
+        playable_before INTEGER,
+        status_after   TEXT,
+        playable_after INTEGER,
+        restored_at    INTEGER,
+        PRIMARY KEY (run_id, user_id, book_id)
+      );
+      CREATE INDEX audio_switch_links_outcome ON audio_switch_links (run_id, outcome);
+
+      -- Before deleting japanese-old: its PDFs and archives read again on both sides.
+      CREATE TABLE audio_switch_files (
+        run_id       TEXT NOT NULL,
+        kind         TEXT NOT NULL CHECK (kind IN ('pdf', 'archive')),
+        lib_rel      TEXT NOT NULL,
+        lib_raw      TEXT,
+        torrent_rel  TEXT,
+        torrent_raw  TEXT,
+        size         INTEGER NOT NULL,
+        lib_sha      TEXT,
+        torrent_sha  TEXT,
+        state        TEXT NOT NULL DEFAULT 'planned'
+                       CHECK (state IN ('planned', 'same', 'different', 'no_twin', 'unreadable')),
+        PRIMARY KEY (run_id, lib_rel)
+      );
+      CREATE INDEX audio_switch_files_state ON audio_switch_files (run_id, state);
+    `,
+  },
 ];
 
 export const CLEANUP_SCHEMA_VERSION = CLEANUP_MIGRATIONS[CLEANUP_MIGRATIONS.length - 1].version;

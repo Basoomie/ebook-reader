@@ -31,6 +31,7 @@ describe('migrations', () => {
     expect(tables).toEqual([
       'api_tokens',
       'audio_folders',
+      'audio_hold',
       'audio_links',
       'audio_merge_jobs',
       'audio_scan_state',

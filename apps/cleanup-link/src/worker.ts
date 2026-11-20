@@ -3,7 +3,10 @@
  *
  * - preflight batches: every planned torrent file checked (read only, inspect.ts);
  * - build batches: folders, links and metadata files made one after another through the writer
- *   (the only module that writes). The first operation that fails ends the batch; the server
+ *   (the only module that writes);
+ * - switch batches (WP21e-2): the folder renames, the library-only files' names under
+ *   _from-library, the old copy script's files kept, and the entries of japanese-old deleted,
+ *   each through the writer. The first operation that fails ends the batch; the server
  *   pauses the build and shows it. Operations are safe to repeat: a link or file already there
  *   as planned counts as done, so a batch handed out again after a restart does no harm.
  *
@@ -17,12 +20,18 @@ import type { LinkConfig } from './config';
 import { inspectSource, processInfo, type ProcessInfo } from './inspect';
 import { LinkWriter, WriteRefused } from './writer';
 
-export const VERSION = '1.0.0';
+export const VERSION = '1.1.0';
 const HEARTBEAT_MS = 30_000;
 
 interface BatchOp {
   id: number;
-  kind: 'folder' | 'link' | 'pdf' | 'metadata';
+  /**
+   * WP21e-1: folder, link, pdf, metadata (the build). WP21e-2 (the switch): rename (a root
+   * folder of media/audiobooks: `src.rel` -> `dst`, `ino` the folder's), from_library (`src.rel`
+   * in media/audiobooks/japanese -> `dst` under the torrents' _from-library), inventory (`dst`
+   * the file's name), delete (`src.rel` in media/audiobooks/japanese-old; `dir` for a folder).
+   */
+  kind: 'folder' | 'link' | 'pdf' | 'metadata' | 'rename' | 'from_library' | 'inventory' | 'delete';
   dst: string;
   src: { rel: string; raw: string | null } | null;
   size: number | null;
@@ -30,11 +39,13 @@ interface BatchOp {
   dev: number | null;
   ino: number | null;
   bytes: string | null;
+  sha256?: string | null;
+  dir?: boolean;
 }
 
 interface Batch {
   id: number;
-  kind: 'preflight' | 'build';
+  kind: 'preflight' | 'build' | 'switch';
   leaseSeconds: number;
   ops: BatchOp[];
 }
@@ -47,6 +58,9 @@ export interface OpResult {
   existed?: boolean;
   dev?: number;
   ino?: number;
+  sha256?: string;
+  freed?: number;
+  size?: number;
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -102,10 +116,13 @@ export class LinkWorker {
     else if (t.dev !== m.dev)
       problem =
         'The torrents and media/audiobooks are on different filesystems (mount /mnt/disk1/data once)';
+    // WP21e-2: the disk's free space, for the deletion's report.
+    const free = await fs.statfs(this.writer.media).catch(() => null);
     return {
       problem,
       info: {
         ...this.info,
+        freeBytes: free ? Number(free.bavail) * Number(free.bsize) : null,
         dataDir: this.config.dataDir,
         torrentsDev: t?.dev ?? null,
         mediaDev: m?.dev ?? null,
@@ -165,6 +182,52 @@ export class LinkWorker {
             op.id
           );
           results.push({ id: op.id, ok: true, existed: r.existed });
+        } else if (op.kind === 'rename') {
+          if (!op.src || op.ino === null) throw new WriteRefused('A rename needs a folder');
+          const r = await this.writer.renameRoot(op.src.rel, op.dst, op.ino);
+          results.push({ id: op.id, ok: true, existed: r.existed });
+        } else if (op.kind === 'from_library') {
+          if (!op.src || !op.sha256) throw new WriteRefused('A library-only file needs a source');
+          const r = await this.writer.linkToFromLibrary(
+            {
+              rel: op.src.rel,
+              raw: op.src.raw,
+              size: op.size ?? -1,
+              mtimeMs: op.mtimeMs ?? -1,
+              dev: op.dev ?? -1,
+              ino: op.ino ?? -1,
+              sha256: op.sha256
+            },
+            op.dst
+          );
+          results.push({
+            id: op.id,
+            ok: true,
+            existed: r.existed,
+            dev: r.dev,
+            ino: r.ino,
+            sha256: r.sha256
+          });
+        } else if (op.kind === 'inventory') {
+          const r = await this.writer.copyInventory(op.dst, {
+            size: op.size ?? -1,
+            mtimeMs: op.mtimeMs ?? -1,
+            dev: op.dev ?? -1,
+            ino: op.ino ?? -1
+          });
+          results.push({ id: op.id, ok: true, existed: r.existed, size: r.size });
+        } else if (op.kind === 'delete') {
+          if (!op.src) throw new WriteRefused('A delete needs an entry');
+          const r = await this.writer.deleteOld({
+            rel: op.src.rel,
+            raw: op.src.raw,
+            size: op.size ?? -1,
+            mtimeMs: op.mtimeMs ?? -1,
+            dev: op.dev ?? -1,
+            ino: op.ino ?? -1,
+            dir: op.dir === true
+          });
+          results.push({ id: op.id, ok: true, existed: r.existed, freed: r.freed });
         } else {
           if (!op.src) throw new WriteRefused('A link needs a source');
           const r = await this.writer.linkFile(
@@ -219,7 +282,7 @@ export class LinkWorker {
     const t = Date.now();
     const results = await this.process(batch);
     await this.report(batch, results);
-    const failed = results.filter((x) => !x.ok && batch.kind === 'build').length;
+    const failed = results.filter((x) => !x.ok && batch.kind !== 'preflight').length;
     this.log(
       `${batch.kind} batch ${batch.id}: ${results.length} of ${batch.ops.length} in ${Date.now() - t} ms` +
         (failed ? `, ${failed} failed` : '')

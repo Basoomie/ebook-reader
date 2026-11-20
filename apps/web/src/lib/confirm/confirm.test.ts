@@ -132,16 +132,15 @@ describe('confirmation words', () => {
     }
   });
 
-  it('words the merge: a new file next to the originals, which stay', () => {
+  it('words the merge: a new file in the folder for merged files, the originals stay', () => {
     const merge = mergeAudiobookCopy('Vol 3 - 悪役令嬢', 2, '1.2 GB');
     expect(merge.title).toBe('Merge into one file?');
     expect(merge.confirmLabel).toBe('Merge files');
     expect(merge.danger).toBe(false);
     expect(merge.message[0]).toBe(
-      'The 2 files of “Vol 3 - 悪役令嬢” are joined in the order shown into one new file of about 1.2 GB, saved next to them in the same folder. Each file becomes a chapter.'
+      "The 2 files of “Vol 3 - 悪役令嬢” are joined in the order shown into one new file of about 1.2 GB, saved in the reader's own folder for merged files (Audiobookshelf doesn't show it). Each file becomes a chapter."
     );
-    expect(merge.message[1]).toContain('The original files are not changed.');
-    expect(merge.message[1]).toContain('Audiobookshelf');
+    expect(merge.message[1]).toBe('The original files are not changed.');
     const stop = stopMergeCopy('Vol 3');
     expect(stop.title).toBe('Stop the merge?');
     expect(stop.message[0]).toContain('Nothing is added to the audiobooks folder');

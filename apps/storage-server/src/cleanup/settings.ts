@@ -171,6 +171,12 @@ export interface AudiobookSettings {
   buildLeaseSeconds: number;
   /** Stage 6's check: linked files read again and compared with stage 1's SHA-256. */
   buildRehashSample: number;
+  /** The switch (WP21e-2): seconds the sidecar has for a batch before it is handed out again. */
+  switchLeaseSeconds: number;
+  /** Deleting japanese-old (WP21e-2): entries the sidecar removes per batch. */
+  deleteBatchOps: number;
+  /** Covers (WP21e-2): milliseconds between two covers set through Audiobookshelf's API. */
+  coverPaceMs: number;
 }
 
 /** A model's list price per million tokens (US$). */
@@ -468,6 +474,11 @@ export const DEFAULT_SETTINGS: CleanupSettings = {
     buildPreflightOps: 500,
     buildLeaseSeconds: 120,
     buildRehashSample: 20,
+    // The switch (WP21e-2): the renames and the five library-only files are small batches; a
+    // batch of 200 deletions is about a second of disk time.
+    switchLeaseSeconds: 300,
+    deleteBatchOps: 200,
+    coverPaceMs: 1000,
   },
   ai: {
     spendLimitUsd: null,
@@ -858,6 +869,9 @@ function validate(key: Key, value: unknown, current: CleanupSettings): unknown {
           1000,
           true,
         ),
+        switchLeaseSeconds: num('Seconds per switch batch', v.switchLeaseSeconds, 30, 3600, true),
+        deleteBatchOps: num('Entries deleted per batch', v.deleteBatchOps, 1, 5000, true),
+        coverPaceMs: num('Milliseconds between covers', v.coverPaceMs, 0, 60000, true),
       };
     }
     case 'ai': {

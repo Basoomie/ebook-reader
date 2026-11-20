@@ -49,6 +49,7 @@ import type Database from 'better-sqlite3';
 import { getLibrary } from '../calibre/libraries';
 import { getBookFileFor } from '../catalog/queries';
 import type { WorkerConfig } from '../config';
+import { assertNotHeld, isHeld } from './audio-hold';
 import { getAudioFolderByRelPath, listSubtitleFiles, type AudioFolder } from './audio-index';
 import { getLink, resolveLink, saveLink } from './audio-links';
 import { type AudioWriter, subtitleNameCandidates } from './audio-write';
@@ -792,6 +793,8 @@ export class SubtitleJobService {
         );
       }
     }
+    // WP21e-2: a job stores the audiobook's path; none is queued while the paths change.
+    assertNotHeld(this.db, 'switch');
     const now = this.now();
     const id = this.db.transaction(() => {
       const busy = this.db
@@ -1007,6 +1010,8 @@ export class SubtitleJobService {
     this.recordEngine(engine);
     this.expireLeases();
     if (this.isPaused()) return null;
+    // WP21e-2: no job while the audiobook cleanup's switch moves the audiobooks.
+    if (isHeld(this.db, 'switch')) return null;
     // Read-aloud uses the PC now; while the voice is kept loaded only clips are read.
     if (this.live()) return null;
     if (this.warm()) kinds = (kinds ?? ALL_KINDS).filter((k) => k === 'sentence_audio');

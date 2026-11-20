@@ -31,6 +31,8 @@ afterEach(async () => {
 });
 
 const GUIN = 'japanese/_Unknown/グイン・サーガ';
+/** WP21e-2: where its merged files go (`<audio folder>-merged/<the same path>`). */
+const GUIN_MERGED = 'japanese-merged/_Unknown/グイン・サーガ';
 
 async function writerEnv(opts: Partial<ConstructorParameters<typeof AudioWriter>[0]> = {}) {
   const env = await audioEnv({ envs, services });
@@ -69,7 +71,7 @@ describe('names', () => {
 });
 
 describe('merged files', () => {
-  it('creates one new file next to the originals; everything else stays byte-identical', async () => {
+  it('creates one new file in japanese-merged/<the book path>/ (WP21e-2); everything else stays byte-identical', async () => {
     const t = await writerEnv();
     const progress: number[] = [];
     const result = await t.writer.createMergedFile({
@@ -77,7 +79,12 @@ describe('merged files', () => {
       source: Buffer.from('merged audio'),
       onProgress: (w, total) => progress.push(w / total),
     });
-    expect(result).toEqual({ name: 'グイン・サーガ.m4b', relPath: `${GUIN}/グイン・サーガ.m4b` });
+    expect(result).toEqual({
+      name: 'グイン・サーガ.m4b',
+      relPath: `${GUIN_MERGED}/グイン・サーガ.m4b`,
+    });
+    // Nothing next to the originals (the library Audiobookshelf sees).
+    expect(fs.existsSync(path.join(t.root, GUIN, 'グイン・サーガ.m4b'))).toBe(false);
     expect(fs.readFileSync(path.join(t.root, result.relPath), 'utf8')).toBe('merged audio');
     expect(treeDiff(t.start, treeHashes(t.root))).toEqual({
       added: [result.relPath],
@@ -89,14 +96,14 @@ describe('merged files', () => {
       expect.objectContaining({ state: 'done', final_rel_path: result.relPath, direct: 0 }),
     ]);
     expect(t.rows()[0].temp_rel_path).toMatch(
-      /^japanese\/_Unknown\/グイン・サーガ\/\.ttsu-write-[0-9a-f]{12}\.partial$/,
+      /^japanese-merged\/_Unknown\/グイン・サーガ\/\.ttsu-write-[0-9a-f]{12}\.partial$/,
     );
   });
 
   it('copies a source file in chunks and never replaces an existing name', async () => {
     const t = await writerEnv();
-    write(t.root, `${GUIN}/グイン・サーガ.m4b`, 'already here');
-    write(t.root, `${GUIN}/グイン・サーガ (merged).m4b`, 'also here');
+    write(t.root, `${GUIN_MERGED}/グイン・サーガ.m4b`, 'already here');
+    write(t.root, `${GUIN_MERGED}/グイン・サーガ (merged).m4b`, 'also here');
     const before = treeHashes(t.root);
     const src = path.join(makeTempDir('src'), 'big.m4b');
     fs.writeFileSync(src, Buffer.alloc(3 * 1024 * 1024 + 17, 5));
@@ -183,7 +190,7 @@ describe('merged files', () => {
         },
       },
     });
-    write(t.root, `${GUIN}/グイン・サーガ.m4b`, 'already here');
+    write(t.root, `${GUIN_MERGED}/グイン・サーガ.m4b`, 'already here');
     const before = treeHashes(t.root);
     const result = await t.writer.createMergedFile({
       folderRelPath: GUIN,

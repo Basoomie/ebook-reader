@@ -248,7 +248,47 @@ export interface LinkOpResult {
   existed?: boolean;
   dev?: number;
   ino?: number;
+  /** WP21e-2's operations: bytes freed by a deletion, a file's SHA-256 read again, its size. */
+  freed?: number;
+  sha256?: string;
+  size?: number;
 }
+
+/**
+ * WP21e-2: how the switch runs stage 6's check (`verify`). Before the renames the new trees are
+ * `japanese-new`/`japanese-generated-new` and the old library is the library root; after them the
+ * new trees are `japanese`/`japanese-generated` and the old library is `japanese-old`, all read
+ * through the read-only view of media/audiobooks.
+ */
+export interface CheckContext {
+  /** The folder on disk (under media/audiobooks) of each build area folder. */
+  areas: Record<string, string>;
+  /** The old library's folder (absolute; the walk's "library" root). */
+  libraryRoot: string;
+  /**
+   * Planned entries besides the build's operations: the library-only books' folders, their
+   * metadata.json and the links to their files.
+   */
+  extraOps: {
+    kind: 'folder' | 'link' | 'metadata';
+    dst: string;
+    dev: number | null;
+    ino: number | null;
+  }[];
+  /** Entries the switch adds under the torrents (`_from-library/…`): not counted as added. */
+  torrentsAdded: Map<string, { dev: number; ino: number } | null>;
+  /** Library files that gained links (rel -> how many). */
+  libraryLinks: Map<string, number>;
+  /**
+   * After the switch: Audiobookshelf's library rewrites metadata.json and adds cover files in the
+   * book folders, and the reader's TTS writes into japanese-generated. metadata.json is then
+   * checked for presence only, ABS's cover files are allowed, extras in the AI area are listed.
+   */
+  switched: boolean;
+}
+
+/** Audiobookshelf's own files in a book folder (store cover with item). */
+const ABS_OWN_FILE = /(^|\/)cover\.(jpe?g|png|webp)$/i;
 
 function mulberry32(seed: number): () => number {
   let a = seed >>> 0;
@@ -271,6 +311,8 @@ export class AudioStage6 {
   private planning: Promise<void> | null = null;
   /** When the build started waiting for the disk lock (null: not waiting). */
   private waitingSince: number | null = null;
+  /** WP21e-2: set while the switch runs the check (verify). */
+  private ctx: CheckContext | null = null;
 
   constructor(private readonly deps: Stage6Deps) {
     this.db = deps.db;
@@ -911,7 +953,8 @@ export class AudioStage6 {
       .prepare('DELETE FROM audio_build_manifest WHERE analysis_id = ? AND phase = ?')
       .run(p.analysisId, which);
     for (const root of ['torrents', 'library'] as const) {
-      const out = await walkTree(this.deps.roots[root], {
+      const rootDir = root === 'library' && this.ctx ? this.ctx.libraryRoot : this.deps.roots[root];
+      const out = await walkTree(rootDir, {
         shouldStop: stop,
         shouldPause: () => this.deps.lock.calibreBusy(),
         onEntries: (n) => {
@@ -1038,6 +1081,28 @@ export class AudioStage6 {
     if (p.phase === 'done') this.setPhase(p, 'walk_after');
   }
 
+  /**
+   * WP21e-2: the walk after and the check, run by the switch with `ctx` (where the new trees and
+   * the old library are now, what the switch added). The phase is not changed; the result is
+   * stored as the stage's check (the card shows it) and returned. null when stopped.
+   */
+  async verify(ctx: CheckContext, stop: () => boolean): Promise<Stage6Check | null> {
+    const p = this.progress();
+    if (!p || (p.phase !== 'done' && p.phase !== 'check'))
+      throw new Error('Stage 6 has not built and checked the new library');
+    this.ctx = ctx;
+    try {
+      if (!(await this.walkPhase(p, 'after', stop))) return null;
+      if (!(await this.checkPhase(p, stop, {}))) return null;
+      return p.check;
+    } finally {
+      this.ctx = null;
+      p.checking = null;
+      p.walk.current = null;
+      this.save(p);
+    }
+  }
+
   private async checkPhase(
     p: AudioStage6Progress,
     stop: () => boolean,
@@ -1050,6 +1115,14 @@ export class AudioStage6 {
     const items: CheckItem[] = [];
     const a = p.analysisId;
     const media = this.deps.roots.media;
+    const ctx = this.ctx;
+    /** Where a build path (`japanese-new/…`) is on disk now. */
+    const onDisk = (dst: string): string => {
+      if (!ctx) return dst;
+      const i = dst.indexOf('/');
+      const top = i < 0 ? dst : dst.slice(0, i);
+      return (ctx.areas[top] ?? top) + (i < 0 ? '' : dst.slice(i));
+    };
     const ops = this.db
       .prepare(
         `SELECT o.id, o.kind, o.dst, o.dev, o.ino, o.src_rel, o.src_file_id, o.state, o.book_id
@@ -1089,7 +1162,7 @@ export class AudioStage6 {
       const planned = ops.length;
       this.checking(p, 'the new folders', 0, planned);
       for (const area of Object.values(AREA_FOLDERS)) {
-        const top = path.join(media, area);
+        const top = path.join(media, ctx?.areas[area] ?? area);
         const st = await lstatEntry(top);
         if (!st) continue;
         entries.push({
@@ -1113,10 +1186,19 @@ export class AudioStage6 {
         if (!out) return false;
         for (const e of out.entries) entries.push({ ...e, rel: `${area}/${e.rel}` });
       }
-      newTree = compareNewTree(
-        entries,
-        ops.map((o) => ({ kind: o.kind, dst: o.dst, dev: o.dev, ino: o.ino })),
-      );
+      const plannedEntries = ops.map((o) => ({ kind: o.kind, dst: o.dst, dev: o.dev, ino: o.ino }));
+      if (ctx) plannedEntries.push(...ctx.extraOps);
+      // After the switch: Audiobookshelf's cover files are allowed; the AI area may hold the
+      // reader's own TTS books (WP17), listed only.
+      const aiArea = AREA_FOLDERS.ai;
+      const kept = ctx?.switched
+        ? entries.filter(
+            (e) =>
+              !ABS_OWN_FILE.test(e.rel) &&
+              !(e.rel.startsWith(`${aiArea}/`) && !plannedEntries.some((x) => x.dst === e.rel)),
+          )
+        : entries;
+      newTree = compareNewTree(kept, plannedEntries);
       // metadata.json: the planned bytes.
       const metaOf = this.db.prepare('SELECT metadata FROM audio_build_books WHERE id = ?');
       const metaTotal = ops.filter((o) => o.kind === 'metadata').length;
@@ -1128,8 +1210,11 @@ export class AudioStage6 {
         if (++metaDone % 250 === 0) this.checking(p, 'the metadata files', metaDone, metaTotal);
         while (this.deps.lock.calibreBusy() && !stop()) await sleep(1000);
         const want = (metaOf.get(o.book_id) as { metadata: Buffer }).metadata;
-        const got = await readSmall(insideRoot(media, o.dst), 4 * 1024 * 1024).catch(() => null);
-        if (!got || !got.equals(want)) metadataWrong.push(o.dst);
+        const got = await readSmall(insideRoot(media, onDisk(o.dst)), 4 * 1024 * 1024).catch(
+          () => null,
+        );
+        // After the switch Audiobookshelf rewrites the file in its own form (values kept).
+        if (!got || (!ctx?.switched && !got.equals(want))) metadataWrong.push(o.dst);
       }
       items.push({
         key: 'new_tree',
@@ -1152,19 +1237,45 @@ export class AudioStage6 {
     for (const o of ops)
       if ((o.kind === 'link' || o.kind === 'pdf') && o.state === 'done' && o.src_rel)
         linksTo.set(o.src_rel, (linksTo.get(o.src_rel) ?? 0) + 1);
+    // WP21e-2: the library-only files' names under _from-library are the switch's (checked
+    // here to be the planned files), not additions.
+    const torrentsAfter = this.manifest(a, 'after', 'torrents');
+    const fromLibraryWrong: string[] = [];
+    if (ctx) {
+      for (const [rel, want] of ctx.torrentsAdded) {
+        const e = torrentsAfter.find((x) => x.rel === rel);
+        if (!e || (want && (e.dev !== want.dev || e.ino !== want.ino || e.isDir)))
+          fromLibraryWrong.push(rel);
+      }
+    }
     const torrents = compareManifests(
       this.manifest(a, 'before', 'torrents'),
-      this.manifest(a, 'after', 'torrents'),
+      ctx ? torrentsAfter.filter((e) => !ctx.torrentsAdded.has(e.rel)) : torrentsAfter,
       linksTo,
     );
     const library = compareManifests(
       this.manifest(a, 'before', 'library'),
       this.manifest(a, 'after', 'library'),
-      new Map(),
+      ctx?.libraryLinks ?? new Map(),
     );
+    if (ctx && ctx.torrentsAdded.size)
+      items.push({
+        key: 'from_library',
+        name: 'The library-only files have their name under _from-library',
+        ok: fromLibraryWrong.length === 0,
+        detail:
+          `${ctx.torrentsAdded.size - fromLibraryWrong.length} of ${ctx.torrentsAdded.size}` +
+          (fromLibraryWrong.length
+            ? `; missing or different: ${fromLibraryWrong.slice(0, 5).join(', ')}`
+            : ''),
+      });
     for (const [k, name, d] of [
       ['torrents', 'The torrents unchanged (only link counts grew by the links made)', torrents],
-      ['library', 'The live library unchanged', library],
+      [
+        'library',
+        ctx?.switched ? 'The old library (japanese-old) unchanged' : 'The live library unchanged',
+        library,
+      ],
     ] as const) {
       const c = d.counts;
       items.push({
@@ -1203,7 +1314,7 @@ export class AudioStage6 {
           }
           if (!(await this.deps.lock.acquire(OWNER, 'audio', stop))) return false;
           const h = await hashFile(
-            insideRoot(media, c.dst),
+            insideRoot(media, onDisk(c.dst)),
             pacer,
             () => this.deps.lock.shouldYield(OWNER) || stop(),
           ).catch(() => ({ sha256: 'unreadable', bytes: 0 }));
@@ -1281,7 +1392,7 @@ export class AudioStage6 {
     });
 
     // 6. Audiobookshelf and the reader unchanged.
-    p.abs.after = (await hooks.absSnapshot?.().catch(() => null)) ?? null;
+    p.abs.after = ctx ? p.abs.after : ((await hooks.absSnapshot?.().catch(() => null)) ?? null);
     const abs = {
       before: p.abs.before,
       after: p.abs.after,
@@ -1292,19 +1403,34 @@ export class AudioStage6 {
       const c = hooks.absCompare(p.abs.before, p.abs.after);
       abs.same = c.same;
       abs.detail = c.detail;
-    } else abs.detail = 'Not compared (no Audiobookshelf address or key, or a snapshot failed)';
+    } else
+      abs.detail = ctx
+        ? 'Checked by the switch (no Audiobookshelf library on the folders)'
+        : 'Not compared (no Audiobookshelf address or key, or a snapshot failed)';
+    if (ctx) abs.same = null;
     items.push({ key: 'abs', name: 'Audiobookshelf unchanged', ok: abs.same, detail: abs.detail });
-    p.reader.after = hooks.readerState?.() ?? null;
+    p.reader.after = ctx ? p.reader.after : (hooks.readerState?.() ?? null);
     const reader = {
       before: p.reader.before,
       after: p.reader.after,
-      same: p.reader.before && p.reader.after ? p.reader.before === p.reader.after : null,
+      same: ctx
+        ? null
+        : p.reader.before && p.reader.after
+          ? p.reader.before === p.reader.after
+          : null,
     };
     items.push({
       key: 'reader',
       name: 'The reader’s audio links and audiobook folders unchanged',
       ok: reader.same,
-      detail: reader.same === null ? 'Not compared' : reader.same ? 'same' : 'changed',
+      detail:
+        reader.same === null
+          ? ctx
+            ? 'Checked by the switch (the links are remapped and checked there)'
+            : 'Not compared'
+          : reader.same
+            ? 'same'
+            : 'changed',
     });
 
     p.checking = null;

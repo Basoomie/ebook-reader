@@ -8,11 +8,15 @@
  *   file is never opened for writing. Nothing here renames, overwrites or deletes a file
  *   it did not create itself; there is no rename at all.
  * - Only three places:
- *   1. a merged `.m4b` directly inside a present, indexed audiobook folder;
+ *   1. a merged `.m4b` under `<library audio folder>-merged/<the book's folder path>/`
+ *      (WP21e-2, decided 2026-11-17: merged files never go into the library ABS sees; e.g.
+ *      japanese-merged/<Author>/<Title>/), for a present, indexed audiobook folder;
  *   2. anything under `<library subtitle folder>/_generated/` (e.g. japanese-srt/_generated/);
  *   3. anything under `<library audio folder>-generated/` (e.g. japanese-generated/).
  *   Checked on the real path (realpath), so a symlink can't lead elsewhere. Folders are
- *   created only inside 2 and 3.
+ *   created only inside 1-3.
+ * - Nothing is written while the audiobook hold is on (audio-hold.ts: the cleanup's switch
+ *   renames the folders).
  * - No partial file is ever visible under its final name. The bytes go into a hidden
  *   `.ttsu-write-<random>.partial` next to the target, recorded in `audio_writes` before
  *   it is created; once complete and fsynced it gets its final name with link() (which
@@ -29,6 +33,7 @@ import path from 'path';
 import { getLibrary } from '../calibre/libraries';
 import { isInside } from '../db/database';
 import { resolveInsideAudio } from './audio-fs';
+import { assertNotHeld } from './audio-hold';
 import { getAudioFolderByRelPath } from './audio-index';
 
 export class WriteRefused extends Error {
@@ -199,6 +204,12 @@ export class AudioWriter {
     };
   }
 
+  /** WP21e-2: the root-relative folder for a library's merged files (`<audio folder>-merged`). */
+  mergedRoot(libraryId: string): string | null {
+    const lib = getLibrary(this.db, libraryId);
+    return lib?.audioDir ? `${lib.audioDir.replace(/\/+$/, '')}-merged` : null;
+  }
+
   /** Throws unless `abs` (a folder that exists) really is inside the audiobooks root. */
   private async realInside(abs: string, within: string = this.root): Promise<string> {
     const realRoot = await fs.realpath(this.root);
@@ -211,8 +222,8 @@ export class AudioWriter {
   }
 
   /**
-   * The folder a merged file goes into: a present, indexed audiobook folder inside its
-   * library's audio folder. Returns its absolute path.
+   * The audiobook folder a merge is made from: a present, indexed audiobook folder inside
+   * its library's audio folder. Returns its absolute path.
    */
   async checkMergedTarget(folderRelPath: string): Promise<string> {
     const folder = getAudioFolderByRelPath(this.db, folderRelPath);
@@ -245,9 +256,28 @@ export class AudioWriter {
   // ---------------------------------------------------------------- what
 
   /**
-   * Saves a merged audiobook into its own folder, under the first free name of
-   * mergedNameCandidates(<folder name>). `source` is the finished file (outside the
-   * audiobooks folder) or its bytes.
+   * Where the merge of `folderRelPath` (an indexed audiobook folder) goes (WP21e-2):
+   * `<audio folder>-merged/<the folder's path inside the audio folder>`, root-relative.
+   */
+  mergedFolderFor(folderRelPath: string): string {
+    const folder = getAudioFolderByRelPath(this.db, folderRelPath);
+    const lib = folder ? getLibrary(this.db, folder.libraryId) : null;
+    const root = folder ? this.mergedRoot(folder.libraryId) : null;
+    if (!folder || !lib?.audioDir || !root) {
+      throw new WriteRefused(`Not an audiobook folder in the index: ${folderRelPath}`);
+    }
+    const audioDir = lib.audioDir.replace(/\/+$/, '');
+    if (!folder.relPath.startsWith(`${audioDir}/`)) {
+      throw new WriteRefused(`Not inside the library's audio folder: ${folderRelPath}`);
+    }
+    return toRel(root, folder.relPath.slice(audioDir.length + 1));
+  }
+
+  /**
+   * Saves a merged audiobook of `folderRelPath` (an indexed folder inside the library's
+   * audio folder) into `<audio folder>-merged/<the same path>/` (WP21e-2), under the first
+   * free name of mergedNameCandidates(<folder name>). The folders there are created as
+   * needed. `source` is the finished file (outside the audiobooks folder) or its bytes.
    */
   async createMergedFile({
     folderRelPath,
@@ -260,11 +290,34 @@ export class AudioWriter {
     onProgress?: WriteProgress;
     signal?: AbortSignal;
   }): Promise<WriteResult> {
-    const dirAbs = await this.checkMergedTarget(folderRelPath);
+    assertNotHeld(this.db, 'switch');
+    assertNotHeld(this.db, 'merge_wait');
+    await this.checkMergedTarget(folderRelPath);
+    const destRel = this.mergedFolderFor(folderRelPath);
+    const [rootRel, ...parts] = destRel.split('/');
+    // The library's own merged root: "<audio folder>-merged" (one path part) next to it.
+    const folder = getAudioFolderByRelPath(this.db, folderRelPath)!;
+    if (toRel(rootRel) !== this.mergedRoot(folder.libraryId)) {
+      throw new WriteRefused(`Not the library's merged folder: ${destRel}`);
+    }
+    parts.forEach(checkFileName);
+    let rootAbs: string;
+    try {
+      rootAbs = resolveInsideAudio(this.root, rootRel);
+    } catch {
+      throw new WriteRefused(`Not inside the audiobooks folder: ${rootRel}`);
+    }
+    await this.realInside(path.dirname(rootAbs));
+    await this.makeFolder(rootAbs, path.dirname(rootAbs));
+    let dirAbs = rootAbs;
+    for (const part of parts) {
+      dirAbs = path.join(dirAbs, part);
+      await this.makeFolder(dirAbs, rootAbs);
+    }
     const folderName = path.posix.basename(folderRelPath);
     const candidates = mergedNameCandidates(folderName);
     candidates.forEach(checkFileName);
-    return this.publish('merge', dirAbs, folderRelPath, candidates, source, onProgress, signal);
+    return this.publish('merge', dirAbs, destRel, candidates, source, onProgress, signal);
   }
 
   /**
@@ -290,6 +343,7 @@ export class AudioWriter {
     onProgress?: WriteProgress;
     signal?: AbortSignal;
   }): Promise<WriteResult> {
+    assertNotHeld(this.db, 'switch');
     const genRel = this.generatedRoots(libraryId)[area];
     if (!genRel) throw new WriteRefused(`This library has no ${area} folder`);
     const parts = relPath.split(/[/\\]/).filter((p) => p !== '' && p !== '.');
@@ -336,6 +390,7 @@ export class AudioWriter {
     parentParts: string[];
     folderNames: string[];
   }): Promise<string> {
+    assertNotHeld(this.db, 'switch');
     const genRel = this.generatedRoots(libraryId)[area];
     if (!genRel) throw new WriteRefused(`This library has no ${area} folder`);
     parentParts.forEach(checkFileName);
@@ -554,6 +609,7 @@ export class AudioWriter {
     onProgress?: WriteProgress,
     signal?: AbortSignal,
   ): Promise<WriteResult> {
+    assertNotHeld(this.db, 'switch');
     const tempName = `.ttsu-write-${randomBytes(6).toString('hex')}.partial`;
     const tempAbs = path.join(dirAbs, tempName);
     const rowId = this.insertRow(purpose, toRel(dirRel, tempName), false);
