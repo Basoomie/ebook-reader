@@ -16,7 +16,7 @@
 import { answerOf, combineE } from '../ai/combine';
 import type { FieldDecision, RulesValue } from '../ai/types';
 import type { MetaEvidence, RecordBrief } from './meta-evidence';
-import { META_FIELDS } from './meta-prompt';
+import { META_FIELDS, seriesKey, titleKey } from './meta-prompt';
 import { metaRules, storeFields, type MetaRules } from './meta-rules';
 
 export const META_VALUE_FIELDS = [
@@ -35,6 +35,63 @@ export const META_VALUE_FIELDS = [
   'cover',
 ] as const;
 export type MetaValueField = (typeof META_VALUE_FIELDS)[number];
+
+/** One recording as the same-book series rule sees it, after its own decision. */
+export interface SameBookUnit {
+  key: string;
+  name: string;
+  /** Its series came from Audible's own series data (and is confirmed). */
+  audibleSeries: boolean;
+  /** Its store record is Audible's with series data (its series is never replaced). */
+  audibleRecord: boolean;
+  title: string | null;
+  authors: string[];
+  series: { name: string; position: number | null; label?: string | null }[] | null;
+}
+
+/**
+ * The same book's series in Audible's name (user, 2026-11-20): a recording whose store has no
+ * series data takes the series of an Audible edition of the same book in the library (same
+ * title, an author in common), when that edition's series is confirmed. Measured on the live
+ * library first: 19 recordings, each matching Audible's data for the other edition (屍人荘,
+ * 成瀬, 伊良部, 十二国記, …); matching series names alone was wrong and is not done.
+ */
+export function sameBookSeries(
+  units: SameBookUnit[],
+): Map<string, { series: NonNullable<SameBookUnit['series']>; from: string }> {
+  const nameKey = (s: string) =>
+    s
+      .normalize('NFKC')
+      .replace(/[\s・･=＝]/gu, '')
+      .toLowerCase();
+  const byTitle = new Map<string, SameBookUnit[]>();
+  for (const u of units)
+    if (u.audibleSeries && u.title && u.series?.length) {
+      const k = titleKey(u.title);
+      byTitle.set(k, [...(byTitle.get(k) ?? []), u]);
+    }
+  const out = new Map<string, { series: NonNullable<SameBookUnit['series']>; from: string }>();
+  for (const u of units) {
+    if (u.audibleRecord || !u.title) continue;
+    const mine = u.authors.map(nameKey);
+    const twin = (byTitle.get(titleKey(u.title)) ?? []).find((a) =>
+      a.authors.map(nameKey).some((x) => mine.includes(x)),
+    );
+    if (!twin) continue;
+    const series = twin.series!.map((s) => ({
+      name: s.name,
+      position: s.position,
+      label: s.label ?? null,
+    }));
+    if (
+      u.series &&
+      seriesKey(u.series.map((s) => ({ ...s, label: s.label ?? null }))) === seriesKey(series)
+    )
+      continue;
+    out.set(u.key, { series, from: twin.name });
+  }
+  return out;
+}
 
 export interface FieldOutcome {
   decision: FieldDecision;

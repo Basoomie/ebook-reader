@@ -13,6 +13,7 @@ import { setUserValue, valuesOf } from '../src/cleanup/ai/values';
 import { onAudioStagePaused, getAudioStage } from '../src/cleanup/audio/audio-stages';
 import { EvidenceBuilder } from '../src/cleanup/audio/meta-evidence';
 import { cleanStoreTitle, metaRules, recordAuthors } from '../src/cleanup/audio/meta-rules';
+import { sameBookSeries } from '../src/cleanup/audio/meta-decide';
 import { META_SYSTEM, metaUserText } from '../src/cleanup/audio/meta-prompt';
 import { initCleanupDatabase } from '../src/cleanup/cleanup-db';
 import { getSettings, updateSettings } from '../src/cleanup/settings';
@@ -31,6 +32,64 @@ function evidence(db: Database.Database, key: string) {
   const u = EvidenceBuilder.units(db, 's4-test').find((x) => x.unit_key === key)!;
   return new EvidenceBuilder(db).build(u);
 }
+
+describe("the same book's series in Audible's name (2026-11-20)", () => {
+  const audible = (
+    key: string,
+    title: string,
+    authors: string[],
+    name: string,
+    position: number,
+    confirmed = true,
+  ) => ({
+    key,
+    name: key,
+    audibleRecord: true,
+    audibleSeries: confirmed,
+    title,
+    authors,
+    series: [{ name, position, label: String(position) }],
+  });
+  const other = (
+    key: string,
+    title: string,
+    authors: string[],
+    series: { name: string; position: number | null }[] | null,
+  ) => ({
+    key,
+    name: key,
+    audibleRecord: false,
+    audibleSeries: false,
+    title,
+    authors,
+    series,
+  });
+  it("takes the Audible edition's series for the same book only", () => {
+    const found = sameBookSeries([
+      audible('a1', '魔眼の匣の殺人', ['今村昌弘'], '「屍人荘の殺人」シリーズ', 2),
+      audible('a2', '教場', ['長岡弘樹'], '教場', 3, false),
+      other('j1', '魔眼の匣の殺人', ['今村 昌弘'], [{ name: '屍人荘の殺人', position: 2 }]),
+      // Another author's book of the same title: not the same book.
+      other('j2', '魔眼の匣の殺人', ['別人'], null),
+      // The Audible edition's own series is unconfirmed: nothing is copied.
+      other('j3', '教場', ['長岡弘樹'], [{ name: '教場', position: 1 }]),
+      // Only the series name is the same (another book): not done (measured wrong).
+      other('j4', '兇人邸の殺人', ['今村昌弘'], [{ name: '屍人荘の殺人', position: 3 }]),
+      // Already the same: nothing to change.
+      other(
+        'j5',
+        '魔眼の匣の殺人',
+        ['今村昌弘'],
+        [{ name: '「屍人荘の殺人」シリーズ', position: 2 }],
+      ),
+    ]);
+    expect([...found.keys()]).toEqual(['j1']);
+    expect(found.get('j1')).toEqual({
+      series: [{ name: '「屍人荘の殺人」シリーズ', position: 2, label: '2' }],
+      from: 'a1',
+    });
+  });
+});
 
 describe('stage 5 rules on the live cases', () => {
   const db = freshDb();

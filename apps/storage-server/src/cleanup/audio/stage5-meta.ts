@@ -25,7 +25,7 @@ import {
 } from '../ai/values';
 import { getSettings } from '../settings';
 import { getAudioStage, pauseAudioStage, resumeAudioStage, updateAudioStage } from './audio-stages';
-import { decideUnit, META_VALUE_FIELDS } from './meta-decide';
+import { decideUnit, META_VALUE_FIELDS, sameBookSeries, type SameBookUnit } from './meta-decide';
 import { EvidenceBuilder, META_EVIDENCE_VERSION, type MetaEvidence } from './meta-evidence';
 import { scoreMetaGate, type GateValue, type MetaGateResult, type MetaLabel } from './meta-gate';
 import { META_PROMPT_VERSION, META_SPEC, metaEvidenceText } from './meta-prompt';
@@ -33,7 +33,7 @@ import type { UnitInputs } from './stage4-online';
 
 const STAGE5 = 5;
 /** Raised when a code change can change the decisions (decided again, nobody asked again). */
-export const META_RULES_VERSION = 3;
+export const META_RULES_VERSION = 4;
 /** Units per synchronous slice (measured on the live copy: 200 held the event loop 112 ms). */
 const SLICE = 50;
 
@@ -244,8 +244,10 @@ export class AudioStage5 {
       if (p.phase === 'decide') {
         const r = await this.decideStep(p, shouldStop);
         this.addTime(p, 'decide', Date.now() - t0, r.items);
-        if (r.finished) this.nextPhase(p, 'gate');
-        else this.save(p, 'analysing');
+        if (r.finished) {
+          await this.sameBookStep(p);
+          this.nextPhase(p, 'gate');
+        } else this.save(p, 'analysing');
         return 'more';
       }
       if (p.phase === 'gate') {
@@ -292,6 +294,78 @@ export class AudioStage5 {
       out.costUsd += r.c;
     }
     return out;
+  }
+
+  /**
+   * After every recording is decided: the same book's series in Audible's name (see
+   * `sameBookSeries`). Reads cleanup.db only, in slices; a user value is never replaced.
+   */
+  private async sameBookStep(p: AudioStage5Progress): Promise<void> {
+    const runner = this.deps.runner;
+    const keys = this.unitKeys(p);
+    const units: SameBookUnit[] = [];
+    for (let at = 0; at < keys.length; at += SLICE) {
+      for (const key of keys.slice(at, at + SLICE)) {
+        const ev = runner.evidenceOf(META_SPEC, key);
+        const v = Object.fromEntries(valuesOf(this.db, 'audio5', key).map((x) => [x.field, x]));
+        const rec = ev?.evidence.record;
+        const audibleRecord = rec?.source === 'audible' && rec.series.length > 0;
+        const series = v.series;
+        units.push({
+          key,
+          name: ev?.evidence.name ?? key,
+          audibleRecord,
+          audibleSeries:
+            audibleRecord && !!series && !series.flagged && series.source !== 'unknown',
+          title: (v.title?.value as string | null) ?? null,
+          authors: (v.authors?.value as string[] | null) ?? [],
+          series: (series?.value as SameBookUnit['series']) ?? null,
+        });
+      }
+      await new Promise((r) => setImmediate(r));
+    }
+    const found = sameBookSeries(units);
+    if (!found.size) return;
+    const now = Date.now();
+    const rows: DecisionRow[] = [];
+    for (const [key, f] of found) {
+      const cur = valuesOf(this.db, 'audio5', key).find((x) => x.field === 'series');
+      if (cur?.source === 'user') continue;
+      rows.push({
+        itemKey: key,
+        field: 'series',
+        decision: {
+          value: f.series,
+          source: 'rules',
+          flagged: false,
+          reason: `The Audible edition of the same book (${f.from})`,
+        },
+        rules: cur ? { value: cur.rules, auto: cur.rulesAuto ?? false } : null,
+        primary: cur?.primary ?? null,
+        secondary: cur?.secondary ?? null,
+        evidenceHash: runner.evidenceOf(META_SPEC, key)?.hash ?? null,
+      });
+    }
+    writeDecisions(this.db, 'audio5', rows, 'E', now);
+    // A recording's count of unconfirmed fields follows its values.
+    const count = this.db.prepare(
+      `SELECT COUNT(*) AS n FROM ai_values WHERE stage = 'audio5' AND item_key = ? AND flagged = 1
+       AND field IN (${META_VALUE_FIELDS.map(() => '?').join(', ')})`,
+    );
+    const upd = this.db.prepare(
+      'UPDATE audio_meta_units SET flagged = ? WHERE analysis_id = ? AND unit_key = ?',
+    );
+    this.db.transaction(() => {
+      for (const r of rows)
+        upd.run(
+          (count.get(r.itemKey, ...META_VALUE_FIELDS) as { n: number }).n,
+          p.analysisId,
+          r.itemKey,
+        );
+    })();
+    this.deps.log?.(
+      `Audiobooks stage 5: ${rows.length} series from the Audible edition of the same book`,
+    );
   }
 
   private unitKeys(p: AudioStage5Progress): string[] {
