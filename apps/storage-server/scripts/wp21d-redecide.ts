@@ -112,6 +112,13 @@ const snapshot = () => {
   return m;
 };
 
+if (process.argv.includes('--copy-only')) {
+  // The working copy as the live server would find it (for the real-app run), nothing decided.
+  db.pragma('wal_checkpoint(TRUNCATE)');
+  db.close();
+  console.log(`working copy written: ${dbFile}`);
+  process.exit(0);
+}
 const before = snapshot();
 const askedBefore = (db.prepare('SELECT COUNT(*) AS n FROM ai_requests').get() as { n: number }).n;
 const labels = fs.readFileSync(arg('labels'), 'utf8');
