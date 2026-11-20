@@ -178,8 +178,19 @@ export interface AiPrice {
 export interface AiSettings {
   /** All AI spending of the cleanup may reach this (US$); null = not set (nothing is asked). */
   spendLimitUsd: number | null;
-  /** batch: the providers' Batch APIs (half price, answers within hours); direct: one call each. */
-  mode: 'batch' | 'direct';
+  /**
+   * Per model id: batch = its provider's Batch API (half price, answered when the provider runs
+   * it); direct = one call each (full price, answered at once). A model not listed: batch.
+   * Measured 2026-11-19: Anthropic answered a batch of 195 questions for claude-haiku-5-5 in 2 min;
+   * OpenAI ran no batch for gpt-6-luna (six batches, none answered in 15-75 min, on both of its
+   * endpoints) while a gpt-6.1-sol batch finished in 80 s and Luna answers one call in ~7 s.
+   */
+  modes: Record<string, 'batch' | 'direct'>;
+  /**
+   * A batch with nothing answered after this many minutes is cancelled (answers it has are kept)
+   * and its questions are sent directly. 0 = wait for the provider (up to its 24 h).
+   */
+  batchStallMinutes: number;
   /** Direct mode: calls at the same time per model. */
   directWorkers: number;
   /** Batch mode: requests per batch. */
@@ -426,7 +437,8 @@ export const DEFAULT_SETTINGS: CleanupSettings = {
   },
   ai: {
     spendLimitUsd: null,
-    mode: 'batch',
+    modes: { 'gpt-6-luna': 'direct' },
+    batchStallMinutes: 30,
     directWorkers: 3,
     batchSize: 500,
     batchPollSeconds: 60,
@@ -804,8 +816,15 @@ function validate(key: Key, value: unknown, current: CleanupSettings): unknown {
     }
     case 'ai': {
       const v = group('AI', value, current.ai);
-      if (v.mode !== 'batch' && v.mode !== 'direct')
-        throw new SettingsError('AI: the mode must be batch or direct');
+      if (!isObj(v.modes)) throw new SettingsError('AI: modes must be an object');
+      if (Object.keys(v.modes).length > 30) throw new SettingsError('AI: at most 30 model modes');
+      const modes: Record<string, 'batch' | 'direct'> = {};
+      for (const [model, m] of Object.entries(v.modes)) {
+        const id = text('Model id', model, 100);
+        if (m !== 'batch' && m !== 'direct')
+          throw new SettingsError(`AI: ${id} must be batch or direct`);
+        if (id) modes[id] = m;
+      }
       if (!isObj(v.prices)) throw new SettingsError('AI: prices must be an object');
       const entries = Object.entries(v.prices);
       if (entries.length > 30) throw new SettingsError('AI: at most 30 prices');
@@ -829,7 +848,14 @@ function validate(key: Key, value: unknown, current: CleanupSettings): unknown {
           v.spendLimitUsd === null || (v.spendLimitUsd as unknown) === ''
             ? null
             : num('Spending limit ($)', v.spendLimitUsd, 0, 10000),
-        mode: v.mode,
+        modes,
+        batchStallMinutes: num(
+          'Cancel a batch with no answers after (min; 0 = never)',
+          v.batchStallMinutes,
+          0,
+          1440,
+          true,
+        ),
         directWorkers: num('Calls at the same time', v.directWorkers, 1, 20, true),
         batchSize: num('Requests per batch', v.batchSize, 1, 10000, true),
         batchPollSeconds: num('Batch check every (s)', v.batchPollSeconds, 5, 3600, true),

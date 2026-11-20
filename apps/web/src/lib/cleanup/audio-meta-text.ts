@@ -114,7 +114,7 @@ export function audioStage5Lines(s: AudioStage5Status | null | undefined): strin
   if (!s || !p) return [];
   const out: string[] = [];
   out.push(
-    `${count(p.units, 'recording', 'recordings')} (${n(p.labeledUnits)} labeled); ${s.mode === 'batch' ? 'batches' : 'one call each'}${s.labeledOnly ? ', labeled books only' : ''}.`
+    `${count(p.units, 'recording', 'recordings')} (${n(p.labeledUnits)} labeled); ${s.models.primary} ${s.modes.primary === 'batch' ? 'by batch' : 'one call each'}, ${s.models.secondary} ${s.modes.secondary === 'batch' ? 'by batch' : 'one call each'}${s.labeledOnly ? ', labeled books only' : ''}.`
   );
   if (p.ai) {
     const a = p.ai;
@@ -127,6 +127,10 @@ export function audioStage5Lines(s: AudioStage5Status | null | undefined): strin
   if (p.cost && p.cost.items)
     out.push(
       `This run: ${usd(p.cost.costUsd)} for ${count(p.cost.items, 'recording', 'recordings')} (${usd(p.cost.perItemUsd ?? 0)} each).`
+    );
+  if (s.batches.stalled)
+    out.push(
+      `${count(s.batches.stalled, 'batch', 'batches')} answered nothing in ${n(s.batchStallMinutes)} min: cancelled, ${s.batches.stalled === 1 ? 'its' : 'their'} questions asked directly.`
     );
   if (s.batches.collected) {
     const med = s.batches.turnaroundMs.median;

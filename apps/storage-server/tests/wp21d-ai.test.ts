@@ -237,11 +237,16 @@ afterEach(async () => {
 });
 
 async function setup(
-  opts: { behaviour?: (title: string, provider: string) => Behaviour; batchPolls?: number } = {},
+  opts: {
+    behaviour?: (title: string, provider: string) => Behaviour;
+    batchPolls?: number;
+    stallModels?: string[];
+  } = {},
 ) {
   const tries = new Map<string, number>();
   standin = await startAiStandin({
     batchPolls: opts.batchPolls ?? 0,
+    stallModels: opts.stallModels ?? [],
     anthropicKey: 'ak',
     openaiKey: 'ok',
     answer: ({ provider, user }: { provider: string; user: string }) => {
@@ -317,7 +322,16 @@ describe('AI runner', () => {
   it('sends batches to both providers through the SDKs, collects them and counts the cost (half price)', async () => {
     const { db, runner, advance } = await setup({ batchPolls: 1 });
     updateSettings(db, {
-      ai: { ...(await import('../src/cleanup/settings')).getSettings(db).ai, spendLimitUsd: 1 },
+      ai: {
+        ...(await import('../src/cleanup/settings')).getSettings(db).ai,
+        spendLimitUsd: 1,
+        modes: {
+          'claude-haiku-5-5': 'batch',
+          'gpt-6-luna': 'batch',
+          'gpt-6.1-sol': 'batch',
+          'claude-sonnet-5-5': 'batch',
+        },
+      },
     });
     runner.putItems(SPEC, items(5, 2), 1);
     const keys = ['k0', 'k1', 'k2', 'k3', 'k4'];
@@ -368,7 +382,18 @@ describe('AI runner', () => {
       behaviour: (t) => (t === 'title0' ? 'refusal' : t === 'title1' ? 'bad_request' : 'answer'),
     });
     const { getSettings } = await import('../src/cleanup/settings');
-    updateSettings(db, { ai: { ...getSettings(db).ai, spendLimitUsd: 1, mode: 'direct' } });
+    updateSettings(db, {
+      ai: {
+        ...getSettings(db).ai,
+        spendLimitUsd: 1,
+        modes: {
+          'claude-haiku-5-5': 'direct',
+          'gpt-6-luna': 'direct',
+          'gpt-6.1-sol': 'direct',
+          'claude-sonnet-5-5': 'direct',
+        },
+      },
+    });
     runner.putItems(SPEC, items(3), 1);
     runner.enqueue(SPEC, 'primary', ['k0', 'k1', 'k2'], 'run1');
     await runToEnd(runner, 'run1', advance);
@@ -403,7 +428,18 @@ describe('AI runner', () => {
               : 'answer',
     });
     const { getSettings } = await import('../src/cleanup/settings');
-    updateSettings(db, { ai: { ...getSettings(db).ai, spendLimitUsd: 1, mode: 'direct' } });
+    updateSettings(db, {
+      ai: {
+        ...getSettings(db).ai,
+        spendLimitUsd: 1,
+        modes: {
+          'claude-haiku-5-5': 'direct',
+          'gpt-6-luna': 'direct',
+          'gpt-6.1-sol': 'direct',
+          'claude-sonnet-5-5': 'direct',
+        },
+      },
+    });
     runner.putItems(SPEC, items(3), 1);
     runner.enqueue(SPEC, 'primary', ['k0', 'k1', 'k2'], 'r');
     runner.enqueue(SPEC, 'secondary', ['k0', 'k1', 'k2'], 'r');
@@ -420,7 +456,18 @@ describe('AI runner', () => {
     const { db, runner, advance } = await setup();
     const { getSettings } = await import('../src/cleanup/settings');
     // 6 questions at about $0.0005 each (estimated from the prompt length): room for 2.
-    updateSettings(db, { ai: { ...getSettings(db).ai, spendLimitUsd: 0.001, mode: 'batch' } });
+    updateSettings(db, {
+      ai: {
+        ...getSettings(db).ai,
+        spendLimitUsd: 0.001,
+        modes: {
+          'claude-haiku-5-5': 'batch',
+          'gpt-6-luna': 'batch',
+          'gpt-6.1-sol': 'batch',
+          'claude-sonnet-5-5': 'batch',
+        },
+      },
+    });
     runner.putItems(SPEC, items(6), 1);
     runner.enqueue(SPEC, 'primary', ['k0', 'k1', 'k2', 'k3', 'k4', 'k5'], 'r');
     const r = await runner.step(SPEC, 'r', () => false);
@@ -442,7 +489,18 @@ describe('AI runner', () => {
   it('waits for a missing key, a refused key, an unknown model id and a model without a price', async () => {
     const { db, runner, keys } = await setup();
     const { getSettings } = await import('../src/cleanup/settings');
-    updateSettings(db, { ai: { ...getSettings(db).ai, spendLimitUsd: 1, mode: 'direct' } });
+    updateSettings(db, {
+      ai: {
+        ...getSettings(db).ai,
+        spendLimitUsd: 1,
+        modes: {
+          'claude-haiku-5-5': 'direct',
+          'gpt-6-luna': 'direct',
+          'gpt-6.1-sol': 'direct',
+          'claude-sonnet-5-5': 'direct',
+        },
+      },
+    });
     runner.putItems(SPEC, items(1), 1);
     keys.anthropicApiKey = null;
     runner.enqueue(SPEC, 'primary', ['k0'], 'r');
@@ -484,6 +542,97 @@ describe('AI runner', () => {
     expect(checked.openai.models).toContain('gpt-6-luna');
   });
 
+  it('asks each provider in its own mode: by default Anthropic by batch, OpenAI directly', async () => {
+    const { db, runner } = await setup();
+    const { getSettings } = await import('../src/cleanup/settings');
+    expect(getSettings(db).ai.modes).toEqual({ 'gpt-6-luna': 'direct' });
+    updateSettings(db, { ai: { ...getSettings(db).ai, spendLimitUsd: 1 } });
+    runner.putItems(SPEC, items(3), 1);
+    runner.enqueue(SPEC, 'primary', ['k0', 'k1', 'k2'], 'r');
+    runner.enqueue(SPEC, 'secondary', ['k0', 'k1', 'k2'], 'r');
+    await runner.step(SPEC, 'r', () => false);
+    const paths = standin!.calls.map((c: { path: string }) => c.path);
+    expect(paths.filter((x: string) => x === '/v1/messages/batches').length).toBe(1);
+    expect(paths.filter((x: string) => x === '/v1/chat/completions').length).toBe(3);
+    expect(paths).not.toContain('/v1/batches');
+    expect(runner.answerOf(SPEC, 'secondary', 'k2')).toMatchObject({ state: 'answered' });
+  });
+
+  for (const stuck of ['gpt-6-luna', 'claude-haiku-5-5']) {
+    it(`cancels a batch nothing in it answered in batchStallMinutes and asks its questions directly (${stuck})`, async () => {
+      const { db, runner, advance } = await setup({ stallModels: [stuck] });
+      const { getSettings } = await import('../src/cleanup/settings');
+      updateSettings(db, {
+        ai: {
+          ...getSettings(db).ai,
+          spendLimitUsd: 1,
+          modes: {
+            'claude-haiku-5-5': 'batch',
+            'gpt-6-luna': 'batch',
+            'gpt-6.1-sol': 'batch',
+            'claude-sonnet-5-5': 'batch',
+          },
+          batchStallMinutes: 2,
+        },
+      });
+      runner.putItems(SPEC, items(3), 1);
+      runner.enqueue(SPEC, 'primary', ['k0', 'k1', 'k2'], 'r');
+      runner.enqueue(SPEC, 'secondary', ['k0', 'k1', 'k2'], 'r');
+      expect((await runner.step(SPEC, 'r', () => false)).sent).toBe(6);
+      // One minute: the other provider's batch is in; the stuck one isn't cancelled yet.
+      advance(61_000);
+      await runner.step(SPEC, 'r', () => false);
+      expect(standin!.calls.some((c: { cancel?: boolean }) => c.cancel)).toBe(false);
+      // Two minutes with nothing answered: cancelled.
+      advance(61_000);
+      await runner.step(SPEC, 'r', () => false);
+      expect(standin!.calls.filter((c: { cancel?: boolean }) => c.cancel).length).toBe(1);
+      expect(runner.batches('test5').stalled).toBe(1);
+      // Next check: cancelled at the provider; its questions are asked directly at once.
+      advance(61_000);
+      const r = await runner.step(SPEC, 'r', () => false);
+      expect(r.pending).toBe(0);
+      const role = stuck === 'gpt-6-luna' ? 'secondary' : 'primary';
+      for (const k of ['k0', 'k1', 'k2'])
+        expect(runner.answerOf(SPEC, role, k)?.state).toBe('answered');
+      const direct = standin!.calls.filter(
+        (c: { path: string }) => c.path === '/v1/chat/completions' || c.path === '/v1/messages',
+      );
+      expect(direct.length).toBe(3);
+      const modes = db
+        .prepare(`SELECT DISTINCT mode FROM ai_requests WHERE model = ?`)
+        .all(stuck) as { mode: string }[];
+      expect(modes.map((m) => m.mode)).toEqual(['direct']);
+      // The stalled batch is kept out of the measured turnaround.
+      expect(runner.batches('test5')).toMatchObject({ collected: 1, stalled: 1, open: 0 });
+    });
+  }
+
+  it('"Test batch" shows whether and how fast a provider runs batches for a model', async () => {
+    const { db, runner, advance } = await setup({ stallModels: ['gpt-6-luna'] });
+    const { getSettings } = await import('../src/cleanup/settings');
+    await expect(runner.testBatch('claude-haiku-5-5')).rejects.toThrow(/spending limit/);
+    updateSettings(db, { ai: { ...getSettings(db).ai, spendLimitUsd: 1, batchStallMinutes: 2 } });
+    await runner.testBatch('claude-haiku-5-5');
+    await runner.testBatch('gpt-6-luna');
+    await expect(runner.testBatch('gpt-6-luna')).rejects.toThrow(/already running/);
+    expect(runner.batchTests()['gpt-6-luna'].state).toBe('open');
+    advance(61_000);
+    await runner.pollBatchTests();
+    expect(runner.batchTests()['claude-haiku-5-5']).toMatchObject({
+      state: 'answered',
+      detail: 'answered in 61 s',
+    });
+    expect(runner.batchTests()['gpt-6-luna'].state).toBe('open');
+    advance(61_000);
+    await runner.pollBatchTests();
+    expect(runner.batchTests()['gpt-6-luna']).toMatchObject({ state: 'nothing' });
+    expect(runner.batchTests()['gpt-6-luna'].detail).toMatch(/^nothing answered in 2 min/);
+    expect(standin!.calls.filter((c: { cancel?: boolean }) => c.cancel).length).toBe(1);
+    // The test's cost counts against the limit.
+    expect(spendNow(db).spentUsd).toBeGreaterThan(0);
+  });
+
   it('only labeled items are asked when labeledOnly is set', async () => {
     const { db, runner, advance } = await setup();
     const { getSettings } = await import('../src/cleanup/settings');
@@ -495,6 +644,12 @@ describe('AI runner', () => {
     await runner.step(SPEC, 'r', () => false);
     expect(runner.answerOf(SPEC, 'primary', 'k0')?.state).toBe('answered');
     expect(runner.answerOf(SPEC, 'primary', 'k1')).toBeNull();
+    // Unlabeled questions queued earlier never hold the stage (live stop 1, 2026-11-19).
+    const r = await runner.step(SPEC, 'r', () => false);
+    expect(r.pending).toBe(0);
+    expect(runner.counts(SPEC.stage, 'r')).toMatchObject({ queued: 0, answered: 1 });
+    updateSettings(db, { ai: { ...getSettings(db).ai, labeledOnly: false } });
+    expect(runner.pending(SPEC.stage, 'r')).toBe(3);
   });
 });
 

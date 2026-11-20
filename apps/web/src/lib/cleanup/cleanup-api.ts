@@ -729,9 +729,14 @@ export interface AudioStage5Status {
     open: number;
     collected: number;
     failed: number;
+    /** Cancelled by the stall guard (nothing answered in time). */
+    stalled?: number;
     turnaroundMs: { median: number | null; max: number | null };
   };
-  mode: 'batch' | 'direct';
+  /** How stage 5's two models are asked now. */
+  modes: { primary: 'batch' | 'direct'; secondary: 'batch' | 'direct' };
+  models: { primary: string; secondary: string };
+  batchStallMinutes: number;
   labeledOnly: boolean;
 }
 
@@ -767,7 +772,10 @@ export interface AiPrice {
 
 export interface AiSettings {
   spendLimitUsd: number | null;
-  mode: 'batch' | 'direct';
+  /** Per provider: its Batch API (half price) or one call each. */
+  modes: Record<string, 'batch' | 'direct'>;
+  /** A batch with nothing answered after this many minutes is cancelled and asked directly (0 = never). */
+  batchStallMinutes: number;
   directWorkers: number;
   batchSize: number;
   batchPollSeconds: number;
@@ -792,7 +800,18 @@ export interface AiStatus {
     price: AiPrice | null;
     /** true/false = in the provider's list when last checked; null = not checked. */
     checked: boolean | null;
+    mode: 'batch' | 'direct';
   }[];
+  /** The latest "Test batch" of each model. */
+  batchTests: Record<
+    string,
+    {
+      state: 'open' | 'answered' | 'nothing' | 'failed';
+      submittedAt: number;
+      endedAt: number | null;
+      detail: string | null;
+    }
+  >;
 }
 
 // ---------------------------------------------------------------- audiobooks stage 4 (WP21c)
@@ -1525,6 +1544,15 @@ export class CleanupApi {
   /** Reads each provider's model list with the stored key. */
   checkAiModels(): Promise<AiStatus> {
     return this.request('POST', '/cleanup/ai/models/check', {}) as Promise<AiStatus>;
+  }
+
+  /** One tiny question to a model as a batch: does its provider run batches for it? */
+  testAiBatch(model: string): Promise<AiStatus> {
+    return this.request(
+      'POST',
+      `/cleanup/ai/models/${encodeURIComponent(model)}/batch-test`,
+      {}
+    ) as Promise<AiStatus>;
   }
 
   spotCheck(stage = 1): Promise<{ items: Proposal[] }> {

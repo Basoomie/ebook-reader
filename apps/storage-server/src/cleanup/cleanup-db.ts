@@ -1022,6 +1022,24 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
       );
       CREATE INDEX ai_batches_state ON ai_batches (state, provider);
 
+      -- Settings > AI "Test batch": one tiny question sent to a model as a batch, to see whether
+      -- and how fast its provider runs batches for it (OpenAI ran none for gpt-6-luna on
+      -- 2026-11-19). state: open -> answered | nothing (cancelled after the stall time) | failed.
+      CREATE TABLE ai_batch_tests (
+        id            INTEGER PRIMARY KEY,
+        provider      TEXT NOT NULL,
+        model         TEXT NOT NULL,
+        batch_id      TEXT,
+        state         TEXT NOT NULL CHECK (state IN ('open', 'answered', 'nothing', 'failed')),
+        submitted_at  INTEGER NOT NULL,
+        checked_at    INTEGER,
+        ended_at      INTEGER,
+        cost_usd      REAL,
+        detail        TEXT
+      );
+      CREATE INDEX ai_batch_tests_model ON ai_batch_tests (model, id);
+      CREATE INDEX ai_batch_tests_open ON ai_batch_tests (state) WHERE state = 'open';
+
       -- The model ids each provider offered when last checked (Settings: Check models).
       CREATE TABLE ai_model_checks (
         provider    TEXT PRIMARY KEY,

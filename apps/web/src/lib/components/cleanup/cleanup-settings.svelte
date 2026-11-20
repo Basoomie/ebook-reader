@@ -18,7 +18,7 @@
    * The app compiles with `immutable: true`, so values the template shows are always
    * replaced, never changed in place.
    */
-  import { createEventDispatcher, onMount } from 'svelte';
+  import { createEventDispatcher, onDestroy, onMount } from 'svelte';
   import type {
     CleanupApi,
     CleanupSettings,
@@ -85,6 +85,50 @@
     } finally {
       checking = false;
     }
+  }
+
+  /** Every configured model once (the models map's values). */
+  $: aiModels = settings ? [...new Set(Object.values(settings.models).filter(Boolean))] : [];
+  let testing: Record<string, boolean> = {};
+  let testTimer: ReturnType<typeof setInterval> | undefined;
+  onDestroy(() => clearInterval(testTimer));
+
+  function setModelMode(model: string, mode: string) {
+    if (!settings?.ai) return;
+    settings = {
+      ...settings,
+      ai: { ...settings.ai, modes: { ...settings.ai.modes, [model]: mode as 'batch' | 'direct' } }
+    };
+    saved = false;
+  }
+
+  /** "Test batch": one tiny question as a batch; the result shows below (checked every 20 s). */
+  async function testBatch(model: string) {
+    testing = { ...testing, [model]: true };
+    aiError = '';
+    try {
+      ai = await api.testAiBatch(model);
+      clearInterval(testTimer);
+      testTimer = setInterval(async () => {
+        await loadAi();
+        if (!ai || !Object.values(ai.batchTests).some((t) => t.state === 'open'))
+          clearInterval(testTimer);
+      }, 20_000);
+    } catch (err) {
+      aiError = (err as Error).message;
+    } finally {
+      testing = { ...testing, [model]: false };
+    }
+  }
+
+  function batchTestText(status: AiStatus | null, model: string): string {
+    const t = status?.batchTests?.[model];
+    if (!t) return 'Batch not tested yet';
+    const when = formatWhen(t.submittedAt);
+    if (t.state === 'open') return `Batch test running since ${when}`;
+    if (t.state === 'answered') return `Batch test ${when}: ${t.detail ?? 'answered'} ✓`;
+    if (t.state === 'nothing') return `Batch test ${when}: ${t.detail ?? 'nothing answered'}`;
+    return `Batch test ${when}: failed (${t.detail ?? ''})`;
   }
 
   function taskState(t: AiStatus['tasks'][number]): string {
@@ -287,6 +331,7 @@
                 spendLimitUsd: limitText === '' || limitText === null ? null : Number(limitText),
                 directWorkers: Number(settings.ai.directWorkers),
                 batchSize: Number(settings.ai.batchSize),
+                batchStallMinutes: Number(settings.ai.batchStallMinutes),
                 batchPollSeconds: Number(settings.ai.batchPollSeconds),
                 maxTokens: Number(settings.ai.maxTokens),
                 requestTimeoutSeconds: Number(settings.ai.requestTimeoutSeconds),
@@ -1237,12 +1282,49 @@
             {/if}
           {/if}
         </div>
+        <div class="flex flex-col gap-2 text-sm sm:col-span-2" data-testid="cleanup-ai-modes">
+          <span class={label}>How each model is asked</span>
+          <p class="text-c-muted">
+            Batches cost half and are answered when the provider runs them; one call each is
+            answered at once at full price. Test batch sends one tiny question as a batch and shows
+            whether and how fast it was answered. Measured 2026-11-19: OpenAI ran no batch for
+            gpt-6-luna (nothing answered in over an hour), so it is asked one call each; Claude
+            Haiku's and gpt-6.1-sol's batches were answered in 2 min and 80 s.
+          </p>
+          {#each aiModels as model (model)}
+            <div class="flex flex-wrap items-center gap-2" data-testid="cleanup-ai-mode-{model}">
+              <span class="w-40 break-all">{model}</span>
+              <select
+                class="c-input w-44"
+                value={settings.ai.modes[model] ?? 'batch'}
+                on:change={(e) => setModelMode(model, e.currentTarget.value)}
+              >
+                <option value="batch">Batches (half price)</option>
+                <option value="direct">One call each</option>
+              </select>
+              <button
+                type="button"
+                class="c-btn c-btn-ghost"
+                disabled={testing[model]}
+                on:click={() => testBatch(model)}
+                data-testid="cleanup-ai-test-{model}">Test batch</button
+              >
+              <span class="text-c-muted" data-testid="cleanup-ai-test-result-{model}"
+                >{batchTestText(ai, model)}</span
+              >
+            </div>
+          {/each}
+        </div>
         <label class={field}>
-          <span class={label}>How the models are asked</span>
-          <select class="c-input" bind:value={settings.ai.mode} data-testid="cleanup-ai-mode">
-            <option value="batch">Batches (half price; answers within hours)</option>
-            <option value="direct">One call each (full price; answers at once)</option>
-          </select>
+          <span class={label}>Cancel a batch with no answers after (minutes; 0 = never)</span>
+          <input
+            class="c-input"
+            type="number"
+            min="0"
+            max="1440"
+            bind:value={settings.ai.batchStallMinutes}
+            data-testid="cleanup-ai-stall"
+          />
         </label>
         <label class="flex items-center gap-2 text-sm">
           <input

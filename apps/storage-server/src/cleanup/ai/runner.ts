@@ -42,6 +42,11 @@ export type AiWait =
   | { kind: 'model_check_failed'; provider: Provider; error: string }
   | { kind: 'provider_busy'; provider: Provider; until: number; error: string };
 
+/** How a model is asked (settings ai.modes; a model not listed: batch). */
+export function modeOf(s: AiSettings, model: string): 'batch' | 'direct' {
+  return s.modes[model] ?? 'batch';
+}
+
 /** US$ with cents, or four places below a cent ($0.0030). */
 const usd = (v: number) => (v > 0 && v < 0.1 ? `$${v.toFixed(4)}` : `$${v.toFixed(2)}`);
 
@@ -311,22 +316,30 @@ export class AiRunner {
     };
   }
 
+  /**
+   * The run's questions by state. With `labeledOnly` on, queued questions of unlabeled items
+   * are not counted: they are never sent while it is on (a question already at the provider
+   * still counts).
+   */
   counts(stage: string, runId: string): AiCounts {
     const out: AiCounts = { queued: 0, sent: 0, answered: 0, blocked: 0, invalid: 0, failed: 0 };
     for (const r of this.db
       .prepare(
-        `SELECT state, COUNT(*) AS n FROM ai_requests WHERE run_id = ? AND stage = ? GROUP BY state`,
+        `SELECT state, COUNT(*) AS n FROM ai_requests WHERE run_id = ? AND stage = ?
+           ${this.settings().labeledOnly ? "AND (labeled = 1 OR state <> 'queued')" : ''} GROUP BY state`,
       )
       .all(runId, stage) as { state: keyof AiCounts; n: number }[])
       out[r.state] = r.n;
     return out;
   }
 
+  /** Questions still to be answered (as `counts`: with `labeledOnly`, only those it sends). */
   pending(stage: string, runId: string): number {
     return (
       this.db
         .prepare(
-          `SELECT COUNT(*) AS n FROM ai_requests WHERE run_id = ? AND stage = ? AND state IN ('queued', 'sent')`,
+          `SELECT COUNT(*) AS n FROM ai_requests WHERE run_id = ? AND stage = ? AND
+             (state = 'sent' OR (state = 'queued' ${this.settings().labeledOnly ? 'AND labeled = 1' : ''}))`,
         )
         .get(runId, stage) as { n: number }
     ).n;
@@ -447,13 +460,25 @@ export class AiRunner {
           wait ??= why;
           continue;
         }
-        const r =
-          s.mode === 'batch'
-            ? await this.sendBatch(spec, runId, m.model, s)
-            : await this.sendDirect(spec, runId, m.model, s, shouldStop);
-        sent += r.sent;
-        answered += r.answered;
-        if (r.wait) wait ??= r.wait;
+        const batchMode = modeOf(s, m.model) === 'batch';
+        // Questions a stalled batch gave back are always asked directly.
+        const d = await this.sendDirect(
+          spec,
+          runId,
+          m.model,
+          s,
+          shouldStop,
+          batchMode ? 'returned' : 'all',
+        );
+        sent += d.sent;
+        answered += d.answered;
+        if (d.wait) wait ??= d.wait;
+        if (batchMode && !d.wait) {
+          const r = await this.sendBatch(spec, runId, m.model, s);
+          sent += r.sent;
+          answered += r.answered;
+          if (r.wait) wait ??= r.wait;
+        }
       }
     }
     return { pending: this.pending(spec.stage, runId), wait, sent, answered };
@@ -465,11 +490,19 @@ export class AiRunner {
     model: string,
     limit: number,
     labeledOnly: boolean,
+    which: 'all' | 'batchable' | 'returned' = 'all',
   ): ReqRow[] {
+    // returned = given back by a stalled batch (mode 'direct' while queued).
+    const only =
+      which === 'returned'
+        ? `AND mode = 'direct'`
+        : which === 'batchable'
+          ? `AND COALESCE(mode, '') <> 'direct'`
+          : '';
     return this.db
       .prepare(
         `SELECT id, item_key, role, provider, model, attempts, labeled FROM ai_requests
-         WHERE run_id = ? AND stage = ? AND state = 'queued' AND model = ? ${labeledOnly ? 'AND labeled = 1' : ''}
+         WHERE run_id = ? AND stage = ? AND state = 'queued' AND model = ? ${labeledOnly ? 'AND labeled = 1' : ''} ${only}
          ORDER BY labeled DESC, id LIMIT ?`,
       )
       .all(runId, spec.stage, model, limit) as ReqRow[];
@@ -502,7 +535,7 @@ export class AiRunner {
     model: string,
     s: AiSettings,
   ): Promise<{ sent: number; answered: number; wait: AiWait | null }> {
-    const rows = this.queuedRows(spec, runId, model, s.batchSize, s.labeledOnly);
+    const rows = this.queuedRows(spec, runId, model, s.batchSize, s.labeledOnly, 'batchable');
     if (!rows.length) return { sent: 0, answered: 0, wait: null };
     const inputs: { row: ReqRow; call: CallInput }[] = [];
     for (const row of rows) {
@@ -613,8 +646,9 @@ export class AiRunner {
     model: string,
     s: AiSettings,
     shouldStop: () => boolean,
+    which: 'all' | 'returned' = 'all',
   ): Promise<{ sent: number; answered: number; wait: AiWait | null }> {
-    const rows = this.queuedRows(spec, runId, model, s.directWorkers, s.labeledOnly);
+    const rows = this.queuedRows(spec, runId, model, s.directWorkers, s.labeledOnly, which);
     if (!rows.length) return { sent: 0, answered: 0, wait: null };
     const calls: { row: ReqRow; call: CallInput }[] = [];
     for (const row of rows) {
@@ -762,6 +796,7 @@ export class AiRunner {
       provider: Provider;
       model: string;
     }[];
+    const meta = this.db.prepare('SELECT submitted_at, error FROM ai_batches WHERE id = ?');
     let answered = 0;
     for (const b of due) {
       const client = this.client(b.provider);
@@ -771,25 +806,39 @@ export class AiRunner {
         this.db
           .prepare('UPDATE ai_batches SET checked_at = ?, provider_status = ? WHERE id = ?')
           .run(this.now(), st.status, b.id);
-        if (!st.ended) continue;
+        const m = meta.get(b.id) as { submitted_at: number; error: string | null };
+        const stalled = (m.error ?? '').startsWith('stalled');
+        if (!st.ended) {
+          // The stall guard: nothing answered after batchStallMinutes -> cancelled; the answers
+          // it has are kept and the rest asked directly (measured 2026-11-19: OpenAI ran no
+          // gpt-6-luna batch at all).
+          const limitMs = s.batchStallMinutes * 60_000;
+          if (limitMs > 0 && !stalled && st.done === 0 && this.now() - m.submitted_at >= limitMs) {
+            await client.cancelBatch(b.id);
+            const why = `stalled: nothing answered in ${s.batchStallMinutes} min; cancelled, its questions asked directly`;
+            this.db.prepare('UPDATE ai_batches SET error = ? WHERE id = ?').run(why, b.id);
+            this.deps.log?.(`AI: batch ${b.id} (${b.provider}) ${why}`);
+          }
+          continue;
+        }
         if (st.failed) {
           this.db.transaction(() => {
             this.db
               .prepare(
-                `UPDATE ai_requests SET state = 'queued', batch_id = NULL WHERE batch_id = ? AND state = 'sent'`,
+                `UPDATE ai_requests SET state = 'queued', batch_id = NULL${stalled ? `, mode = 'direct'` : ''} WHERE batch_id = ? AND state = 'sent'`,
               )
               .run(b.id);
             this.db
               .prepare(
                 `UPDATE ai_batches SET state = 'failed', ended_at = ?, cost_usd = 0, error = ? WHERE id = ?`,
               )
-              .run(this.now(), st.status, b.id);
+              .run(this.now(), stalled ? m.error : st.status, b.id);
           })();
           this.deps.log?.(`AI: batch ${b.id} ${st.status}: its questions go back to the queue`);
           continue;
         }
         const results = await client.batchResults(b.id);
-        answered += this.applyResults(spec, b.id, b.model, results, s);
+        answered += this.applyResults(spec, b.id, b.model, results, s, stalled);
       } catch (err) {
         this.deps.log?.(`AI: batch ${b.id}: ${(err as Error).message}`);
       }
@@ -803,8 +852,11 @@ export class AiRunner {
     model: string,
     results: Awaited<ReturnType<ProviderClient['batchResults']>>,
     s: AiSettings,
+    stalled = false,
   ): number {
     let answered = 0;
+    // A stalled batch's unanswered questions are asked directly next.
+    const back = stalled ? `, mode = 'direct'` : '';
     this.db.transaction(() => {
       const rows = new Map(
         (
@@ -821,10 +873,10 @@ export class AiRunner {
         if ('result' in o) {
           this.record(spec, id, model, o.result, true, s);
           answered++;
-        } else if (o.retryable && row.attempts < s.attempts) {
+        } else if (stalled || (o.retryable && row.attempts < s.attempts)) {
           this.db
             .prepare(
-              `UPDATE ai_requests SET state = 'queued', batch_id = NULL, error = ? WHERE id = ?`,
+              `UPDATE ai_requests SET state = 'queued', batch_id = NULL, error = ?${back} WHERE id = ?`,
             )
             .run(o.error.slice(0, 500), id);
         } else this.finish(id, 'failed', null, null, null, o.error, true, s);
@@ -832,7 +884,7 @@ export class AiRunner {
       // Questions the batch gave nothing for go back to the queue.
       for (const id of rows.keys())
         this.db
-          .prepare(`UPDATE ai_requests SET state = 'queued', batch_id = NULL WHERE id = ?`)
+          .prepare(`UPDATE ai_requests SET state = 'queued', batch_id = NULL${back} WHERE id = ?`)
           .run(id);
       const cost = this.db
         .prepare(`SELECT COALESCE(SUM(cost_usd), 0) AS c FROM ai_requests WHERE batch_id = ?`)
@@ -847,24 +899,161 @@ export class AiRunner {
     return answered;
   }
 
+  // -------------------------------------------------------------------------------------------
+  // Settings > AI "Test batch": does the provider run batches for this model, and how fast?
+
+  /**
+   * Sends one tiny question to a model as a batch (a fraction of a cent). Its outcome comes from
+   * `pollBatchTests`: answered (with the time), nothing within batchStallMinutes (cancelled), or
+   * failed. Needs the key, a price and a spending limit, like every question.
+   */
+  async testBatch(model: string): Promise<void> {
+    const s = this.settings();
+    const provider = providerOf(model);
+    if (s.spendLimitUsd === null) throw new Error(waitText({ kind: 'no_limit' }));
+    const why = await this.usable(model);
+    if (why) throw new Error(waitText(why));
+    const open = this.db
+      .prepare(`SELECT id FROM ai_batch_tests WHERE model = ? AND state = 'open'`)
+      .get(model);
+    if (open) throw new Error(`A batch test of ${model} is already running`);
+    const client = this.client(provider)!;
+    const b = await client.submitBatch([
+      {
+        customId: 'batch-test',
+        call: {
+          model,
+          system: 'You answer with one JSON object and nothing else.',
+          user: 'Reply with {"ok": true}.',
+          schema: null,
+          maxTokens: 1000,
+        },
+      },
+    ]);
+    this.db
+      .prepare(
+        `INSERT INTO ai_batch_tests (provider, model, batch_id, state, submitted_at) VALUES (?, ?, ?, 'open', ?)`,
+      )
+      .run(provider, model, b.id, this.now());
+    this.deps.log?.(`AI: batch test of ${model} sent (${b.id})`);
+  }
+
+  /** Checks the open batch tests (each at most every batchPollSeconds). */
+  async pollBatchTests(): Promise<void> {
+    const s = this.settings();
+    const rows = this.db
+      .prepare(
+        `SELECT id, provider, model, batch_id, submitted_at, checked_at FROM ai_batch_tests WHERE state = 'open'`,
+      )
+      .all() as {
+      id: number;
+      provider: Provider;
+      model: string;
+      batch_id: string;
+      submitted_at: number;
+      checked_at: number | null;
+    }[];
+    for (const t of rows) {
+      if (this.now() - (t.checked_at ?? t.submitted_at) < s.batchPollSeconds * 1000) continue;
+      const client = this.client(t.provider);
+      if (!client) continue;
+      const end = (state: string, detail: string, cost: number | null = null) =>
+        this.db
+          .prepare(
+            `UPDATE ai_batch_tests SET state = ?, detail = ?, cost_usd = ?, ended_at = ?, checked_at = ? WHERE id = ?`,
+          )
+          .run(state, detail, cost, this.now(), this.now(), t.id);
+      try {
+        const st = await client.batchStatus(t.batch_id);
+        this.db
+          .prepare('UPDATE ai_batch_tests SET checked_at = ? WHERE id = ?')
+          .run(this.now(), t.id);
+        const minutes = Math.max(1, s.batchStallMinutes || 30);
+        if (!st.ended) {
+          if (st.done === 0 && this.now() - t.submitted_at >= minutes * 60_000) {
+            await client.cancelBatch(t.batch_id);
+            end('nothing', `nothing answered in ${minutes} min (${st.status}); cancelled`);
+            this.deps.log?.(`AI: batch test of ${t.model}: nothing answered in ${minutes} min`);
+          }
+          continue;
+        }
+        if (st.failed) {
+          end('failed', st.status);
+          continue;
+        }
+        const out = (await client.batchResults(t.batch_id))[0];
+        if (out && 'result' in out && out.result.kind !== 'blocked') {
+          const price = priceOf(s, t.model);
+          const cost = price ? costOf(price, out.result.usage, true, s.batchPriceFactor) : null;
+          end(
+            'answered',
+            `answered in ${Math.round((this.now() - t.submitted_at) / 1000)} s`,
+            cost,
+          );
+        } else end('failed', out && 'error' in out ? out.error : 'no answer in the results');
+      } catch (err) {
+        this.deps.log?.(`AI: batch test of ${t.model}: ${(err as Error).message}`);
+      }
+    }
+  }
+
+  /** The latest batch test of each model. */
+  batchTests(): Record<
+    string,
+    { state: string; submittedAt: number; endedAt: number | null; detail: string | null }
+  > {
+    const out: Record<
+      string,
+      { state: string; submittedAt: number; endedAt: number | null; detail: string | null }
+    > = {};
+    for (const r of this.db
+      .prepare(
+        `SELECT model, state, submitted_at, ended_at, detail FROM ai_batch_tests t
+         WHERE id = (SELECT MAX(id) FROM ai_batch_tests WHERE model = t.model)`,
+      )
+      .all() as {
+      model: string;
+      state: string;
+      submitted_at: number;
+      ended_at: number | null;
+      detail: string | null;
+    }[])
+      out[r.model] = {
+        state: r.state,
+        submittedAt: r.submitted_at,
+        endedAt: r.ended_at,
+        detail: r.detail,
+      };
+    return out;
+  }
+
   /** Batches at the providers now, with how long the finished ones took (turnaround). */
   batches(stage: string): {
     open: number;
     collected: number;
     failed: number;
+    /** Cancelled by the stall guard (nothing answered in time). */
+    stalled: number;
     turnaroundMs: { median: number | null; max: number | null };
   } {
     const rows = this.db
-      .prepare(`SELECT state, submitted_at, ended_at FROM ai_batches WHERE stage = ?`)
-      .all(stage) as { state: string; submitted_at: number; ended_at: number | null }[];
+      .prepare(`SELECT state, submitted_at, ended_at, error FROM ai_batches WHERE stage = ?`)
+      .all(stage) as {
+      state: string;
+      submitted_at: number;
+      ended_at: number | null;
+      error: string | null;
+    }[];
+    const isStalled = (r: { error: string | null }) => (r.error ?? '').startsWith('stalled');
     const done = rows
-      .filter((r) => r.state === 'collected' && r.ended_at)
+      .filter((r) => r.state === 'collected' && r.ended_at && !isStalled(r))
       .map((r) => r.ended_at! - r.submitted_at)
       .sort((a, b) => a - b);
     return {
       open: rows.filter((r) => r.state === 'submitted').length,
       collected: done.length,
       failed: rows.filter((r) => r.state === 'failed').length,
+      stalled: rows.filter(isStalled).length,
       turnaroundMs: {
         median: done.length ? done[Math.floor(done.length / 2)] : null,
         max: done.length ? done[done.length - 1] : null,

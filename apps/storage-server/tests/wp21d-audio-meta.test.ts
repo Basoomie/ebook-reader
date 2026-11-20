@@ -271,7 +271,17 @@ describe('stage 5 through the service', () => {
     // On is refused; nothing is asked before a spending limit is set.
     const on = await api(request(e.app).put('/api/v1/cleanup/audio/stages/5')).send({ mode: 'on' });
     expect(on.status).toBe(400);
-    updateSettings(db, { ai: { ...getSettings(db).ai, mode: 'direct' } });
+    updateSettings(db, {
+      ai: {
+        ...getSettings(db).ai,
+        modes: {
+          'claude-haiku-5-5': 'direct',
+          'gpt-6-luna': 'direct',
+          'gpt-6.1-sol': 'direct',
+          'claude-sonnet-5-5': 'direct',
+        },
+      },
+    });
     expect(
       (await api(request(e.app).put('/api/v1/cleanup/audio/stages/5')).send({ mode: 'analyse' }))
         .status,
@@ -420,7 +430,18 @@ describe('stage 5 through the service', () => {
 
   it('a restart and a re-analysis ask nothing again; a rules change decides again; a user value stays', async () => {
     const { env: e, db } = await makeStage();
-    updateSettings(db, { ai: { ...getSettings(db).ai, mode: 'direct', spendLimitUsd: 1 } });
+    updateSettings(db, {
+      ai: {
+        ...getSettings(db).ai,
+        modes: {
+          'claude-haiku-5-5': 'direct',
+          'gpt-6-luna': 'direct',
+          'gpt-6.1-sol': 'direct',
+          'claude-sonnet-5-5': 'direct',
+        },
+        spendLimitUsd: 1,
+      },
+    });
     e.audio!.setMode(5, 'analyse');
     await untilDone(e);
     const asked = () =>
@@ -458,7 +479,18 @@ describe('stage 5 through the service', () => {
     const { env: e, db } = await makeStage();
     const paused: string[] = [];
     const off = onAudioStagePaused((stage, reason) => paused.push(`${stage}:${reason}`));
-    updateSettings(db, { ai: { ...getSettings(db).ai, mode: 'direct', spendLimitUsd: 0.002 } });
+    updateSettings(db, {
+      ai: {
+        ...getSettings(db).ai,
+        modes: {
+          'claude-haiku-5-5': 'direct',
+          'gpt-6-luna': 'direct',
+          'gpt-6.1-sol': 'direct',
+          'claude-sonnet-5-5': 'direct',
+        },
+        spendLimitUsd: 0.002,
+      },
+    });
     e.audio!.setMode(5, 'analyse');
     for (let i = 0; i < 60 && getAudioStage(db, 5).pauseReason !== 'ai'; i++) {
       await e.audio!.tick();
@@ -480,7 +512,17 @@ describe('stage 5 through the service', () => {
   it('asks only about the labeled books when labeledOnly is set (the others decided by the rules)', async () => {
     const { env: e, db } = await makeStage();
     updateSettings(db, {
-      ai: { ...getSettings(db).ai, mode: 'direct', spendLimitUsd: 1, labeledOnly: true },
+      ai: {
+        ...getSettings(db).ai,
+        modes: {
+          'claude-haiku-5-5': 'direct',
+          'gpt-6-luna': 'direct',
+          'gpt-6.1-sol': 'direct',
+          'claude-sonnet-5-5': 'direct',
+        },
+        spendLimitUsd: 1,
+        labeledOnly: true,
+      },
     });
     e.audio!.setMode(5, 'analyse');
     await untilDone(e);

@@ -40,7 +40,7 @@ import {
   stage4StartsOver,
 } from './stage4-online';
 import { audioSiteLines, onlineList, unitStates } from './online-views';
-import { AiRunner } from '../ai/runner';
+import { AiRunner, modeOf } from '../ai/runner';
 import { providerOf, type ProviderClient } from '../ai/providers';
 import type { Provider } from '../ai/types';
 import { AudioStage5, stage5AskKey, stage5RulesKey } from './stage5-meta';
@@ -276,6 +276,8 @@ export class AudioCleanupService {
     this.round3();
     this.round4();
     this.round5();
+    // Settings > AI "Test batch" results (each checked at the batch poll pace).
+    await this.ai.pollBatchTests().catch((err) => this.logError('AI: batch tests:', err));
   }
 
   private round1(): void {
@@ -856,6 +858,7 @@ export class AudioCleanupService {
         provider,
         price: s.ai.prices[model] ?? null,
         checked: c ? (c.models ? c.models.includes(model) : null) : null,
+        mode: modeOf(s.ai, model),
       };
     });
     return {
@@ -872,7 +875,17 @@ export class AudioCleanupService {
         ]),
       ),
       tasks,
+      batchTests: this.ai.batchTests(),
     };
+  }
+
+  /** Settings > AI "Test batch": one tiny question to the model as a batch. */
+  async testBatch(model: string) {
+    const s = getSettings(this.db);
+    if (!Object.values(s.models).includes(model))
+      throw new Error('Not one of the configured models');
+    await this.ai.testBatch(model);
+    return this.aiStatus();
   }
 
   /** Settings: Check models (reads each provider's model list with the stored key). */

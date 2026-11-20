@@ -77,8 +77,10 @@ export interface BatchStatus {
   ended: boolean;
   /** The provider's own word for it ("in_progress", "ended", "completed", "expired", ...). */
   status: string;
-  /** The batch can't give results (failed or expired as a whole): its requests go back. */
+  /** The batch can't give results (failed as a whole): its requests go back. */
   failed: boolean;
+  /** Requests the provider has finished so far (answered or errored). */
+  done: number;
 }
 
 export interface ProviderClient {
@@ -88,6 +90,8 @@ export interface ProviderClient {
   submitBatch(items: BatchItem[]): Promise<{ id: string; inputFileId: string | null }>;
   batchStatus(id: string): Promise<BatchStatus>;
   batchResults(id: string): Promise<BatchOutcome[]>;
+  /** Asks the provider to stop a batch; what it finished stays in its results. */
+  cancelBatch(id: string): Promise<void>;
 }
 
 export function providerOf(model: string): Provider {
@@ -229,7 +233,21 @@ export class AnthropicProvider implements ProviderClient {
   async batchStatus(id: string): Promise<BatchStatus> {
     try {
       const b = await this.client.messages.batches.retrieve(id);
-      return { ended: b.processing_status === 'ended', status: b.processing_status, failed: false };
+      const c = b.request_counts;
+      return {
+        ended: b.processing_status === 'ended',
+        status: b.processing_status,
+        failed: false,
+        done: c.succeeded + c.errored,
+      };
+    } catch (err) {
+      throw this.wrap(err);
+    }
+  }
+
+  async cancelBatch(id: string): Promise<void> {
+    try {
+      await this.client.messages.batches.cancel(id);
     } catch (err) {
       throw this.wrap(err);
     }
@@ -416,9 +434,23 @@ export class OpenAiProvider implements ProviderClient {
     try {
       const b = await this.client.batches.retrieve(id);
       const ended = ['completed', 'failed', 'expired', 'cancelled'].includes(b.status);
-      // An expired batch still has the answers it finished (its output file).
-      const failed = b.status === 'failed' || b.status === 'cancelled' ? true : false;
-      return { ended, status: b.status, failed };
+      // An expired or cancelled batch still has the answers it finished (its output file);
+      // only a failed one (its input refused) has none.
+      const c = b.request_counts;
+      return {
+        ended,
+        status: b.status,
+        failed: b.status === 'failed',
+        done: c ? c.completed + c.failed : 0,
+      };
+    } catch (err) {
+      throw this.wrap(err);
+    }
+  }
+
+  async cancelBatch(id: string): Promise<void> {
+    try {
+      await this.client.batches.cancel(id);
     } catch (err) {
       throw this.wrap(err);
     }

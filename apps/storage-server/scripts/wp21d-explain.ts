@@ -44,6 +44,16 @@ const queries: [string, string, unknown[]][] = [
     [a],
   ],
   [
+    'counts per state, labeled only (status)',
+    `SELECT state, COUNT(*) AS n FROM ai_requests WHERE run_id = ? AND stage = 'audio5' AND (labeled = 1 OR state <> 'queued') GROUP BY state`,
+    [a],
+  ],
+  [
+    'open questions, labeled only (step)',
+    `SELECT COUNT(*) AS n FROM ai_requests WHERE run_id = ? AND stage = 'audio5' AND (state = 'sent' OR (state = 'queued' AND labeled = 1))`,
+    [a],
+  ],
+  [
     "an item's answer (decide)",
     `SELECT state, answer_json FROM ai_requests WHERE stage = 'audio5' AND item_key = ? AND model = ? AND prompt_version = 'audio5-v1' AND evidence_hash = 'h'`,
     [anyKey, anyModel],

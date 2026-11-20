@@ -35,7 +35,13 @@ export function spendNow(db: Database.Database): { spentUsd: number; reservedUsd
   const reserved = db
     .prepare(`SELECT COALESCE(SUM(estimate_usd), 0) AS c FROM ai_batches WHERE state = 'submitted'`)
     .get() as { c: number };
-  return { spentUsd: spent.c, reservedUsd: reserved.c };
+  // Settings > AI "Test batch" questions count too.
+  const tests = db
+    .prepare(
+      `SELECT COALESCE(SUM(cost_usd), 0) AS c FROM ai_batch_tests WHERE cost_usd IS NOT NULL`,
+    )
+    .get() as { c: number };
+  return { spentUsd: spent.c + tests.c, reservedUsd: reserved.c };
 }
 
 /** Output tokens assumed per answer before any is measured (thinking included). */

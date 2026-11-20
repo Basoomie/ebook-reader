@@ -111,7 +111,8 @@ async function main() {
       ...s.ai,
       spendLimitUsd: Number(arg('limit') ?? 1),
       labeledOnly: true,
-      mode: has('smoke') ? 'direct' : 'batch',
+      modes: has('smoke') ? { anthropic: 'direct', openai: 'direct' } : { 'gpt-6-luna': 'direct' },
+      batchStallMinutes: 30,
       batchPollSeconds: 30,
     },
   });

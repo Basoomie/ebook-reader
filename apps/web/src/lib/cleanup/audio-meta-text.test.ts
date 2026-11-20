@@ -31,9 +31,12 @@ const s5 = (
       open: 1,
       collected: 2,
       failed: 0,
+      stalled: 1,
       turnaroundMs: { median: 20 * 60_000, max: 30 * 60_000 }
     },
-    mode: 'batch',
+    modes: { primary: 'batch', secondary: 'direct' },
+    models: { primary: 'claude-haiku-5-5', secondary: 'gpt-6-luna' },
+    batchStallMinutes: 30,
     labeledOnly: false,
     progress: {
       analysisId: 'a',
@@ -79,10 +82,11 @@ describe('stage 5 text', () => {
 
   it('lists answers, cost and batch turnaround', () => {
     expect(audioStage5Lines(s5())).toEqual([
-      '4,898 recordings (200 labeled); batches.',
+      '4,898 recordings (200 labeled); claude-haiku-5-5 by batch, gpt-6-luna one call each.',
       'Answers: 3,796 in, 5,000 to ask, 1,000 at the providers, 2 blocked by a provider (final), 1 unusable.',
       '3 answers not in the evidence (dropped).',
       'This run: $2.50 for 1,900 recordings ($0.0013 each).',
+      '1 batch answered nothing in 30 min: cancelled, its questions asked directly.',
       'Batches: 2 answered, typically within 20 min; 1 at the providers.'
     ]);
   });

@@ -530,6 +530,15 @@ function addAudioRoutes(router: Router, options: CleanupOptions): void {
     res.json(audioOr503(options).aiStatus());
   });
 
+  router.post('/cleanup/ai/models/:model/batch-test', async (req, res, next) => {
+    try {
+      res.json(await audioOr503(options).testBatch(req.params.model));
+    } catch (err) {
+      if (err instanceof ApiError) return next(err);
+      next(new ApiError(409, 'not_available', (err as Error).message));
+    }
+  });
+
   router.post('/cleanup/ai/models/check', async (_req, res, next) => {
     try {
       res.json(await audioOr503(options).checkModels());

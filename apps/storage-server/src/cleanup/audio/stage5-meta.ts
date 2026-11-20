@@ -14,7 +14,7 @@
  */
 import type Database from 'better-sqlite3';
 import { createHash, randomUUID } from 'crypto';
-import { AiRunner, waitNeedsUser, waitText, type AiCounts } from '../ai/runner';
+import { AiRunner, modeOf, waitNeedsUser, waitText, type AiCounts } from '../ai/runner';
 import { runSpend, spendNow } from '../ai/spend';
 import {
   dropOtherItems,
@@ -559,9 +559,26 @@ export class AudioStage5 {
       const s = getSettings(this.db).ai;
       const counts = p.ai;
       if (!counts) return null;
-      const open = counts.queued + counts.sent;
-      if (!open) return 0;
-      if (s.mode === 'direct') {
+      if (!counts.queued && !counts.sent) return 0;
+      // Questions asked directly (a direct provider's, or given back by a stalled batch) and
+      // questions for batches; the step's time is the longer of the two.
+      const groups = this.db
+        .prepare(
+          `SELECT model, mode, state, COUNT(*) AS n FROM ai_requests
+           WHERE run_id = ? AND stage = 'audio5' AND state IN ('queued', 'sent')
+           GROUP BY model, mode, state`,
+        )
+        .all(p.analysisId) as { model: string; mode: string | null; state: string; n: number }[];
+      let direct = 0;
+      let batchQueued = 0;
+      let batchOpen = 0;
+      for (const g of groups) {
+        if (modeOf(s, g.model) === 'direct' || g.mode === 'direct') direct += g.n;
+        else if (g.state === 'queued') batchQueued += g.n;
+        else batchOpen += g.n;
+      }
+      let secs = 0;
+      if (direct) {
         const r = this.db
           .prepare(
             `SELECT AVG(answered_at - sent_at) AS ms FROM ai_requests
@@ -569,18 +586,23 @@ export class AudioStage5 {
              AND run_id = ?`,
           )
           .get(p.analysisId) as { ms: number | null };
-        return r.ms ? (open * r.ms) / s.directWorkers / 2 / 1000 : null;
+        if (!r.ms) return null;
+        // Each provider asks directWorkers questions at a time, the providers side by side.
+        secs = (direct * r.ms) / s.directWorkers / 2 / 1000;
       }
-      const b = this.deps.runner.batches('audio5');
-      const oldest = this.db
-        .prepare(
-          `SELECT MIN(submitted_at) AS t FROM ai_batches WHERE stage = 'audio5' AND state = 'submitted'`,
-        )
-        .get() as { t: number | null };
-      if (b.turnaroundMs.median === null) return null;
-      const batchesLeft = Math.ceil(counts.queued / Math.max(1, s.batchSize));
-      const current = oldest.t ? Math.max(0, b.turnaroundMs.median - (now - oldest.t)) : 0;
-      return (current + batchesLeft * b.turnaroundMs.median) / 1000;
+      if (batchQueued || batchOpen) {
+        const b = this.deps.runner.batches('audio5');
+        if (b.turnaroundMs.median === null) return null;
+        const oldest = this.db
+          .prepare(
+            `SELECT MIN(submitted_at) AS t FROM ai_batches WHERE stage = 'audio5' AND state = 'submitted'`,
+          )
+          .get() as { t: number | null };
+        const batchesLeft = Math.ceil(batchQueued / Math.max(1, s.batchSize));
+        const current = oldest.t ? Math.max(0, b.turnaroundMs.median - (now - oldest.t)) : 0;
+        secs = Math.max(secs, (current + batchesLeft * b.turnaroundMs.median) / 1000);
+      }
+      return secs;
     }
     return null;
   }
@@ -605,7 +627,15 @@ export class AudioStage5 {
       secondsLeft: p ? this.secondsLeft(p, now) : null,
       spend: { ...spend, limitUsd: s.spendLimitUsd },
       batches: this.deps.runner.batches('audio5'),
-      mode: s.mode,
+      modes: {
+        primary: modeOf(s, getSettings(this.db).models[META_SPEC.tasks.primary] ?? ''),
+        secondary: modeOf(s, getSettings(this.db).models[META_SPEC.tasks.secondary] ?? ''),
+      },
+      models: {
+        primary: getSettings(this.db).models[META_SPEC.tasks.primary] ?? '',
+        secondary: getSettings(this.db).models[META_SPEC.tasks.secondary] ?? '',
+      },
+      batchStallMinutes: s.batchStallMinutes,
       labeledOnly: s.labeledOnly,
     };
   }

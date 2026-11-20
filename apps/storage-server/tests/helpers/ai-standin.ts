@@ -48,6 +48,12 @@ export async function startAiStandin(opts: any = {}): Promise<any> {
   const usage = opts.usage ?? USAGE;
   /** Batch polls answered "in progress" before a batch ends (read at each poll: adjustable). */
   const pollsBeforeEnd = () => opts.batchPolls ?? 0;
+  /** Models whose batches never run (as OpenAI did with gpt-6-luna on 2026-11-19). */
+  const stalls = (bt) => {
+    const r = bt.requests[0];
+    const model = r?.params?.model ?? r?.body?.model;
+    return (opts.stallModels ?? []).includes(model);
+  };
   const calls = [];
   const batches = new Map();
   const files = new Map();
@@ -189,6 +195,35 @@ export async function startAiStandin(opts: any = {}): Promise<any> {
             results_url: null,
           });
         }
+        const bc = /^\/v1\/messages\/batches\/([^/]+)\/cancel$/.exec(ap);
+        if (bc && req.method === 'POST') {
+          const bt = batches.get(bc[1]);
+          if (!bt)
+            return send(res, 404, {
+              type: 'error',
+              error: { type: 'not_found_error', message: 'no batch' },
+            });
+          bt.cancelled = true;
+          calls.push({ path: ap, provider: 'anthropic', batch: bc[1], cancel: true });
+          return send(res, 200, {
+            id: bc[1],
+            type: 'message_batch',
+            processing_status: 'canceling',
+            request_counts: {
+              processing: bt.requests.length,
+              succeeded: 0,
+              errored: 0,
+              canceled: 0,
+              expired: 0,
+            },
+            created_at: new Date(bt.created).toISOString(),
+            expires_at: new Date(bt.created + 86400000).toISOString(),
+            ended_at: null,
+            archived_at: null,
+            cancel_initiated_at: new Date().toISOString(),
+            results_url: null,
+          });
+        }
         const bm = /^\/v1\/messages\/batches\/([^/]+)(\/results)?$/.exec(ap);
         if (bm && req.method === 'GET') {
           const bt = batches.get(bm[1]);
@@ -199,6 +234,16 @@ export async function startAiStandin(opts: any = {}): Promise<any> {
             });
           if (bm[2]) {
             calls.push({ path: ap, provider: 'anthropic', batch: bm[1] });
+            if (bt.cancelled)
+              return send(
+                res,
+                200,
+                bt.requests
+                  .map((r) =>
+                    JSON.stringify({ custom_id: r.custom_id, result: { type: 'canceled' } }),
+                  )
+                  .join('\n') + '\n',
+              );
             const lines = bt.requests.map((r) => {
               const out = anthropicMessage(
                 r.params.model,
@@ -225,16 +270,17 @@ export async function startAiStandin(opts: any = {}): Promise<any> {
           }
           calls.push({ path: ap, provider: 'anthropic', batch: bm[1], poll: true });
           bt.polls++;
-          const ended = bt.polls > pollsBeforeEnd();
+          const ended = bt.cancelled || (!stalls(bt) && bt.polls > pollsBeforeEnd());
+          const n = bt.requests.length;
           return send(res, 200, {
             id: bm[1],
             type: 'message_batch',
             processing_status: ended ? 'ended' : 'in_progress',
             request_counts: {
-              processing: ended ? 0 : bt.requests.length,
-              succeeded: ended ? bt.requests.length : 0,
+              processing: ended ? 0 : n,
+              succeeded: ended && !bt.cancelled ? n : 0,
               errored: 0,
-              canceled: 0,
+              canceled: bt.cancelled ? n : 0,
               expired: 0,
             },
             created_at: new Date(bt.created).toISOString(),
@@ -320,13 +366,40 @@ export async function startAiStandin(opts: any = {}): Promise<any> {
           created_at: 1,
         });
       }
+      const oc = /^\/v1\/batches\/([^/]+)\/cancel$/.exec(op);
+      if (oc && req.method === 'POST') {
+        const bt = batches.get(oc[1]);
+        if (!bt) return send(res, 404, { error: { message: 'no batch' } });
+        bt.cancelled = true;
+        calls.push({ path: op, provider: 'openai', batch: oc[1], cancel: true });
+        return send(res, 200, {
+          id: oc[1],
+          object: 'batch',
+          endpoint: '/v1/chat/completions',
+          completion_window: '24h',
+          status: 'cancelling',
+          created_at: 1,
+        });
+      }
       const ob = /^\/v1\/batches\/([^/]+)$/.exec(op);
       if (ob && req.method === 'GET') {
         const bt = batches.get(ob[1]);
         if (!bt) return send(res, 404, { error: { message: 'no batch' } });
         calls.push({ path: op, provider: 'openai', batch: ob[1], poll: true });
         bt.polls++;
-        const ended = bt.polls > pollsBeforeEnd();
+        if (bt.cancelled)
+          return send(res, 200, {
+            id: ob[1],
+            object: 'batch',
+            endpoint: '/v1/chat/completions',
+            completion_window: '24h',
+            status: 'cancelled',
+            output_file_id: null,
+            error_file_id: null,
+            request_counts: { total: bt.requests.length, completed: 0, failed: 0 },
+            created_at: 1,
+          });
+        const ended = !stalls(bt) && bt.polls > pollsBeforeEnd();
         if (ended && !bt.output) {
           const out = bt.requests.map((r) => {
             const c = openaiCompletion(r.body.model, r.body.messages);
@@ -358,6 +431,11 @@ export async function startAiStandin(opts: any = {}): Promise<any> {
           status: ended ? 'completed' : 'in_progress',
           output_file_id: ended ? bt.output : null,
           error_file_id: null,
+          request_counts: {
+            total: bt.requests.length,
+            completed: ended ? bt.requests.length : 0,
+            failed: 0,
+          },
           created_at: 1,
         });
       }
