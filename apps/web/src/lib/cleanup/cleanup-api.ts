@@ -622,6 +622,97 @@ export interface AbsSnapshot {
   problems: string[];
 }
 
+/** WP21e-2: one step of the switch (its bar). */
+export interface SwitchStep {
+  step: string;
+  done: number;
+  total: number;
+  startedAt: number;
+}
+
+export type SwitchAction = 'switch' | 'undo' | 'delete';
+
+export interface SwitchProgress {
+  runId: string;
+  action: SwitchAction;
+  phase: string;
+  startedAt: number;
+  finishedAt: number | null;
+  phaseTimes: Record<string, number>;
+  current: SwitchStep | null;
+  waiting: string | null;
+  lateArrivals: string[];
+  fromLibrary: { rel: string; dst: string; link: string }[];
+  check: {
+    passed: boolean;
+    items: { key: string; name: string; ok: boolean | null; detail: string }[];
+  } | null;
+  links: Record<string, number> | null;
+  linksBefore: number | null;
+  snapshot: string | null;
+  renamed: { from: string; to: string }[];
+  rescan: { folders: number; ms: number } | null;
+  verify: {
+    links: number;
+    resolved: number;
+    notResolved: number;
+    playableLost: number;
+    countBefore: number;
+    countAfter: number;
+    passed: boolean;
+  } | null;
+  restored: { restored: number; listed: number } | null;
+  files: {
+    total: number;
+    same: number;
+    different: number;
+    noTwin: number;
+    unreadable: number;
+    bytes: number;
+  } | null;
+  inventory: { copied: string[] } | null;
+  deletion: {
+    entries: number;
+    files: number;
+    dirs: number;
+    bytes: number;
+    freed: number;
+    freeBefore: number | null;
+    freeAfter: number | null;
+    unknown: string[];
+  } | null;
+  history: { action: SwitchAction; startedAt: number; finishedAt: number; result: string }[];
+  error: string | null;
+}
+
+export interface CoversProgress {
+  runId: string;
+  phase: 'find' | 'set' | 'done';
+  startedAt: number;
+  finishedAt: number | null;
+  libraries: { main: string | null; ai: string | null };
+  current: SwitchStep | null;
+  counts: Record<string, number>;
+  coverPng: { total: number; ofTheseBooks: number; used: number } | null;
+  error: string | null;
+}
+
+export interface AudioSwitchStatus {
+  available: boolean;
+  state?: 'none' | 'running' | 'switched' | 'deleted';
+  pause?: { reason: string; detail: string | null } | null;
+  progress?: SwitchProgress | null;
+  refusals?: Record<SwitchAction, string[]>;
+  cancellable?: boolean;
+  phases?: string[];
+  covers?: {
+    state: 'none' | 'running' | 'done';
+    pause: { reason: string; detail: string | null } | null;
+    progress: CoversProgress | null;
+    refusals: string[];
+  } | null;
+}
+
 export interface AudioStatus {
   available: boolean;
   error?: string;
@@ -657,6 +748,8 @@ export interface AudioStatus {
   stage5?: AudioStage5Status;
   /** Missing on an older server (WP21e-1). */
   stage6?: AudioStage6Status;
+  /** WP21e-2: the switch to the new library, Undo, deleting japanese-old, and the covers. */
+  switch?: AudioSwitchStatus;
 }
 
 // ---------------------------------------------------------------- audiobooks stage 6 (WP21e-1)
@@ -1699,6 +1792,35 @@ export class CleanupApi {
 
   audioBuildCheckAgain(): Promise<AudioStatus> {
     return this.request('POST', '/cleanup/audio/build/check-again', {}) as Promise<AudioStatus>;
+  }
+
+  // ---------------------------------------------------------------- the switch (WP21e-2)
+
+  audioSwitchStart(action: SwitchAction): Promise<AudioStatus> {
+    return this.request('POST', '/cleanup/audio/switch/start', { action }) as Promise<AudioStatus>;
+  }
+
+  audioSwitchResume(): Promise<AudioStatus> {
+    return this.request('POST', '/cleanup/audio/switch/resume', {}) as Promise<AudioStatus>;
+  }
+
+  audioSwitchCancel(): Promise<AudioStatus> {
+    return this.request('POST', '/cleanup/audio/switch/cancel', {}) as Promise<AudioStatus>;
+  }
+
+  audioCovers(action: 'start' | 'resume'): Promise<AudioStatus> {
+    return this.request('POST', '/cleanup/audio/switch/covers', { action }) as Promise<AudioStatus>;
+  }
+
+  async audioSwitchLinksCsv(): Promise<Blob> {
+    const response = await send(
+      this.fetchImpl,
+      `${this.serverUrl}/api/v1/cleanup/audio/switch/links.csv`,
+      { method: 'GET', headers: { Authorization: `Bearer ${this.token}` } },
+      { timeoutSeconds: this.timeoutSeconds }
+    );
+    if (!response.ok) throw await errorFrom(response);
+    return response.blob();
   }
 
   // ---------------------------------------------------------------- stage 5 and the AI (WP21d)

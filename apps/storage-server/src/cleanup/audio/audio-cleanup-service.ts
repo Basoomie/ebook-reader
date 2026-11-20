@@ -51,6 +51,7 @@ import type { FetchQueue } from '../stage4/queue';
 import { AUDIO_FETCH_SITES } from '../settings';
 import type { AudioRoots } from './walk';
 import { AudioStage6, type LinkBatch, type LinkOpResult } from './stage6-build';
+import { AudioCovers } from './stage6-covers';
 import {
   AudioSwitch,
   SWITCH_BATCH_BASE,
@@ -161,6 +162,8 @@ export class AudioCleanupService {
   readonly stage6: AudioStage6 | null;
   /** WP21e-2: the switch to the new library (after stage 6). */
   readonly switcher: AudioSwitch | null;
+  /** WP21e-2: covers for the books without embedded art (stop 3). */
+  readonly covers: AudioCovers | null;
   readonly ai: AiRunner;
   private roots: RootsCheck = { ok: false, problem: 'Not checked yet', checkedAt: 0 };
   private timer: NodeJS.Timeout | null = null;
@@ -172,6 +175,7 @@ export class AudioCleanupService {
   private running5: Promise<void> | null = null;
   private running6: Promise<void> | null = null;
   private runningSwitch: Promise<void> | null = null;
+  private runningCovers: Promise<void> | null = null;
   private snapshotting: Promise<void> | null = null;
   private stopped = false;
   waiting1: string | null = null;
@@ -272,6 +276,25 @@ export class AudioCleanupService {
             log: this.log,
           })
         : null;
+    const switcher = this.switcher;
+    this.covers =
+      this.stage6 && switcher
+        ? new AudioCovers({
+            db: opts.db,
+            stage6: this.stage6,
+            media: opts.roots?.media ?? null,
+            switchState: () => switcher.state(),
+            abs: () => {
+              const s = getSettings(this.db).audiobooks;
+              const key = this.opts.secrets.read('absApiKey');
+              return s.absUrl && key
+                ? { baseUrl: s.absUrl, apiKey: key, timeoutMs: s.absTimeoutSeconds * 1000 }
+                : null;
+            },
+            fetchImpl: opts.fetchImpl,
+            log: this.log,
+          })
+        : null;
   }
 
   /** WP21e-2: the reader's side of the switch (the server gives it once its audio services exist). */
@@ -314,6 +337,7 @@ export class AudioCleanupService {
     await this.running5;
     await this.running6;
     await this.runningSwitch;
+    await this.runningCovers;
     await this.snapshotting;
     this.opts.lock.release(DISK_OWNERS.audio1);
     this.opts.lock.release(DISK_OWNERS.audio3);
@@ -871,6 +895,7 @@ export class AudioCleanupService {
 
   /** WP21e-2: runs the switch's phases while it is running and not paused. */
   private roundSwitch(): void {
+    this.roundCovers();
     const sw = this.switcher;
     if (!sw || this.runningSwitch || !sw.isRunning() || sw.pause()) return;
     if (!this.roots.ok) return;
@@ -891,6 +916,38 @@ export class AudioCleanupService {
         void this.tick();
       }
     })();
+  }
+
+  /** WP21e-2 stop 3: sets the covers while that run is on and not paused. */
+  private roundCovers(): void {
+    const c = this.covers;
+    if (!c || this.runningCovers || !c.isRunning() || c.pause()) return;
+    const stop = () => this.stopped || !c.isRunning() || c.pause() !== null;
+    this.runningCovers = (async () => {
+      try {
+        for (;;) {
+          if (stop()) break;
+          if (await c.step(stop)) break;
+          await new Promise((r) => setImmediate(r));
+        }
+      } catch (err) {
+        this.logError('Audiobook cleanup: covers failed:', err);
+      } finally {
+        this.runningCovers = null;
+      }
+    })();
+  }
+
+  coversStart(): void {
+    if (!this.covers) throw new Error('The audiobook folders are not set up');
+    this.covers.start();
+    void this.tick();
+  }
+
+  coversResume(): void {
+    if (!this.covers) throw new Error('The audiobook folders are not set up');
+    this.covers.resume();
+    void this.tick();
   }
 
   /** The page's switch actions (each asked first on the page). */
@@ -1114,7 +1171,9 @@ export class AudioCleanupService {
       stage6: this.stage6
         ? { available: true, waiting: this.waiting6, ...this.stage6.status() }
         : { available: false, waiting: this.waiting6 },
-      switch: this.switcher ? { available: true, ...this.switcher.status() } : { available: false },
+      switch: this.switcher
+        ? { available: true, ...this.switcher.status(), covers: this.covers?.status() ?? null }
+        : { available: false },
     };
   }
 

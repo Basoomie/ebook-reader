@@ -729,6 +729,56 @@ export function buildOnCopy(plan: string | null): ConfirmCopy {
   };
 }
 
+/** WP21e-2: the switch to the new audiobook library. */
+export function switchCopy(): ConfirmCopy {
+  return {
+    title: 'Switch to the new audiobook library now?',
+    message: [
+      'japanese is renamed japanese-old and japanese-new becomes japanese (and japanese-generated-new japanese-generated). The five library-only files get their name under the torrents’ _from-library first; the reader’s links are rewritten to the new folders (a copy of ttsu.db is made first).',
+      'While it runs the reader holds its audiobooks: no scans, merges, PC jobs or link changes. Downloaded copies on your devices will need downloading again.',
+      'Audiobookshelf must have no library on these folders (delete the old one first). Undo renames everything back until japanese-old is deleted.'
+    ],
+    confirmLabel: 'Switch',
+    irreversible: false
+  };
+}
+
+export function undoSwitchCopy(): ConfirmCopy {
+  return {
+    title: 'Undo the switch?',
+    message: [
+      'japanese goes back to japanese-new and japanese-old back to japanese; the reader’s links get their old folders again. The library-only files keep their extra name under _from-library (harmless).',
+      'Audiobookshelf must have no library on these folders (delete the new one first). Merging waits again until the next switch.'
+    ],
+    confirmLabel: 'Undo the switch',
+    irreversible: false
+  };
+}
+
+export function deleteOldCopy(size: string | null): ConfirmCopy {
+  return {
+    title: 'Delete japanese-old?',
+    message: [
+      `The old library is deleted${size ? ` (${size})` : ''}, after stage 6’s check runs again, its PDFs and archives are read again against their torrent twins and the old copy script’s files are kept in _inventory/old-copy-script. Anything not as the build listed it stops the deletion.`,
+      'Afterwards the switch can’t be undone either. The new library and the torrents are not touched.'
+    ],
+    confirmLabel: 'Delete japanese-old',
+    irreversible: true,
+    danger: true
+  };
+}
+
+export function setCoversCopy(): ConfirmCopy {
+  return {
+    title: 'Set the missing covers in Audiobookshelf?',
+    message: [
+      'For each book whose file has no cover and that Audiobookshelf shows without one: the store cover, else the old library’s cover file. Only covers are changed, one book at a time; books that have a cover are left alone.'
+    ],
+    confirmLabel: 'Set the covers',
+    irreversible: false
+  };
+}
+
 export function removeCleanupSecretCopy(label: string): ConfirmCopy {
   return {
     title: `Remove the saved ${label}?`,

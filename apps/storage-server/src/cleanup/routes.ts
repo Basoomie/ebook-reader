@@ -602,6 +602,26 @@ function addAudioRoutes(router: Router, options: CleanupOptions): void {
     );
   });
 
+  // Covers (WP21e-2 stop 3): set through Audiobookshelf's API, only when asked from the page.
+  router.post('/cleanup/audio/switch/covers', (req, res) => {
+    const audio = audioOr503(options);
+    const what = (req.body as { action?: unknown } | undefined)?.action;
+    try {
+      if (what === 'start') audio.coversStart();
+      else if (what === 'resume') audio.coversResume();
+      else throw new ApiError(400, 'invalid_body', 'action must be start or resume');
+    } catch (err) {
+      if (err instanceof ApiError) throw err;
+      throw new ApiError(409, 'not_available', (err as Error).message);
+    }
+    res.json(audio.status());
+  });
+
+  router.get('/cleanup/audio/switch/covers', (req, res) => {
+    const audio = audioOr503(options);
+    res.json(audio.covers?.list(page(req)) ?? { total: 0, items: [] });
+  });
+
   router.get('/cleanup/audio/switch/links.csv', (_req, res) => {
     const audio = audioOr503(options);
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');

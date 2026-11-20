@@ -1325,6 +1325,33 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
         PRIMARY KEY (run_id, lib_rel)
       );
       CREATE INDEX audio_switch_files_state ON audio_switch_files (run_id, state);
+
+      -- Covers (stop 3): the books without embedded art, their Audiobookshelf item and the
+      -- cover set through its API (stage5's store cover, else the old library's ABS cover).
+      CREATE TABLE audio_covers_state (
+        id            INTEGER PRIMARY KEY CHECK (id = 1),
+        state         TEXT NOT NULL CHECK (state IN ('none', 'running', 'done')),
+        progress_json TEXT NOT NULL CHECK (json_valid(progress_json)),
+        pause_reason  TEXT,
+        pause_detail  TEXT,
+        updated_at    INTEGER NOT NULL
+      );
+      INSERT INTO audio_covers_state (id, state, progress_json, updated_at) VALUES (1, 'none', '{}', 0);
+      CREATE TABLE audio_covers (
+        run_id     TEXT NOT NULL,
+        book_id    INTEGER NOT NULL,
+        folder     TEXT NOT NULL,
+        item_id    TEXT,
+        source     TEXT NOT NULL CHECK (source IN ('url', 'file', 'none')),
+        url        TEXT,
+        file_rel   TEXT,
+        state      TEXT NOT NULL CHECK (state IN
+                     ('planned', 'set', 'failed', 'has_cover', 'no_item', 'no_source')),
+        detail     TEXT,
+        done_at    INTEGER,
+        PRIMARY KEY (run_id, book_id)
+      );
+      CREATE INDEX audio_covers_state_idx ON audio_covers (run_id, state, book_id);
     `,
   },
 ];

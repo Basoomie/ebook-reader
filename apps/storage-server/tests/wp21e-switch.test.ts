@@ -10,6 +10,7 @@ import fs from 'fs';
 import http from 'http';
 import type { AddressInfo } from 'net';
 import path from 'path';
+import express from 'express';
 import request from 'supertest';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
@@ -802,7 +803,10 @@ function scenario(): BuildSeed {
         kind: 'record',
         name: 'シリーズX 2',
         copies: ['c-x2'],
-        values: v('シリーズX 2', { series: [{ name: 'シリーズX', position: 2, label: '2' }] }),
+        values: v('シリーズX 2', {
+          series: [{ name: 'シリーズX', position: 2, label: '2' }],
+          cover: 'https://img.example/x2.jpg',
+        }),
       },
       {
         key: 'u-ai',
@@ -1240,6 +1244,90 @@ describe('the switch through the linking sidecar and the reader', { timeout: 180
     await drive(env, worker, () => sw.state() === 'switched');
     expect(sw.progress()!.verify!.passed).toBe(true);
 
+    // 3b. Covers (stop 3), against a stand-in Audiobookshelf with the fresh library: the store
+    // cover by URL, the old library's ABS cover by upload, none for the rest; a book ABS shows a
+    // cover for is left alone. Only GET and POST /api/items/:id/cover reach it.
+    const books = env.cleanupDb
+      .prepare(
+        `SELECT folder FROM audio_build_books WHERE state IN ('build', 'pending') AND area = 'main'`,
+      )
+      .all() as { folder: string }[];
+    const items = books.map((b, i) => ({
+      id: `li_${i}`,
+      relPath: b.folder.replace(/^japanese-new\//, ''),
+      media: { coverPath: b.folder.includes('選択') ? '/metadata/items/x/cover.jpg' : null },
+    }));
+    const calls: { method: string; path: string; type: string; body: string }[] = [];
+    const abs = express();
+    abs.use(express.raw({ type: () => true, limit: '5mb' }));
+    abs.use((req, res) => {
+      calls.push({
+        method: req.method,
+        path: req.path,
+        type: String(req.headers['content-type'] ?? ''),
+        body: Buffer.isBuffer(req.body) ? req.body.toString('latin1') : '',
+      });
+      if (req.method === 'GET' && req.path === '/api/libraries')
+        return res.json({
+          libraries: [
+            {
+              id: 'lib1',
+              name: 'Japanese Audiobooks',
+              folders: [{ fullPath: '/audiobooks/japanese' }],
+            },
+          ],
+        });
+      if (req.method === 'GET' && req.path === '/api/libraries/lib1/items')
+        return res.json({ results: items, total: items.length });
+      if (req.method === 'POST' && /^\/api\/items\/li_\d+\/cover$/.test(req.path))
+        return res.json({ success: true });
+      res.status(404).json({});
+    });
+    const absServer = http.createServer(abs);
+    await new Promise<void>((r) => absServer.listen(0, '127.0.0.1', r));
+    try {
+      const absUrl = `http://127.0.0.1:${(absServer.address() as AddressInfo).port}`;
+      updateSettings(env.cleanupDb, { audiobooks: { absUrl, coverPaceMs: 0 } });
+      await request(env.app)
+        .put('/api/v1/cleanup/secrets/absApiKey')
+        .set(user)
+        .send({ value: 'abs-key-for-covers' })
+        .expect(200);
+      await request(env.app)
+        .post('/api/v1/cleanup/audio/switch/covers')
+        .set(user)
+        .send({ action: 'start' })
+        .expect(200);
+      const covers = env.audio!.covers!;
+      for (let i = 0; i < 50 && covers.isRunning(); i++) await covers.step(() => false);
+      expect(covers.pause()).toBeNull();
+      expect(covers.status().state).toBe('done');
+      const posts = calls.filter((c) => c.method === 'POST');
+      expect(
+        calls.every((c) => c.method === 'GET' || /^\/api\/items\/li_\d+\/cover$/.test(c.path)),
+      ).toBe(true);
+      const byFolder = (part: string) =>
+        `/api/items/${items.find((x) => x.relPath.includes(part))!.id}/cover`;
+      const urlPost = posts.find((c) => c.path === byFolder('Vol 2 - シリーズX 2'))!;
+      expect(urlPost.type).toMatch(/application\/json/);
+      expect(JSON.parse(urlPost.body)).toEqual({ url: 'https://img.example/x2.jpg' });
+      const filePost = posts.find((c) => c.path === byFolder('Vol 1 - シリーズX 1'))!;
+      expect(filePost.type).toMatch(/multipart\/form-data/);
+      expect(filePost.body).toContain('jpg');
+      expect(posts.some((c) => c.path === byFolder('選択'))).toBe(false);
+      expect(posts).toHaveLength(2);
+      const listed = await request(env.app)
+        .get('/api/v1/cleanup/audio/switch/covers')
+        .set(user)
+        .expect(200);
+      const states = (listed.body.items as { state: string }[]).map((x) => x.state).sort();
+      expect(states.filter((x) => x === 'set')).toHaveLength(2);
+      expect(states).toContain('has_cover');
+      expect(states).toContain('no_source');
+    } finally {
+      await new Promise<void>((r) => absServer.close(() => r()));
+    }
+
     // 4. Delete japanese-old: refused while Audiobookshelf uses it.
     setAbs([{ name: 'Old', folders: ['/audiobooks/japanese-old'] }]);
     expect(
@@ -1373,6 +1461,33 @@ describe('the switch through the linking sidecar and the reader', { timeout: 180
     expect(again.pause()).toBeNull();
     expect(again.state()).toBe('switched');
     expect(again.progress()!.verify!.passed).toBe(true);
+  });
+
+  it('the cover writer can send only POST /api/items/:id/cover; only the covers run uses it', () => {
+    const SRC = path.join(__dirname, '..', 'src');
+    const strip = (x: string) => x.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+    const w = strip(
+      fs.readFileSync(path.join(SRC, 'cleanup', 'audio', 'abs-cover-writer.ts'), 'utf8'),
+    );
+    expect(w.match(/fetchImpl\(/g)).toHaveLength(1);
+    expect(w.match(/method: '[A-Z]+'/g)).toEqual(["method: 'POST'"]);
+    expect(w.match(/\/api\/[^`'"]*/g)).toEqual(['/api/items/${itemId}/cover']);
+    expect(w).not.toMatch(/\b(PUT|PATCH|DELETE)\b/);
+    const users: string[] = [];
+    const walk = (d: string) => {
+      for (const n of fs.readdirSync(d)) {
+        const f = path.join(d, n);
+        if (fs.statSync(f).isDirectory()) walk(f);
+        else if (
+          n.endsWith('.ts') &&
+          /abs-cover-writer/.test(fs.readFileSync(f, 'utf8')) &&
+          n !== 'abs-cover-writer.ts'
+        )
+          users.push(path.relative(SRC, f).split(path.sep).join('/'));
+      }
+    };
+    walk(SRC);
+    expect(users).toEqual(['cleanup/audio/stage6-covers.ts']);
   });
 
   it('switch batches never meet a build batch’s id', () => {

@@ -82,6 +82,7 @@
   import CleanupAudioDups from './cleanup-audio-dups.svelte';
   import CleanupAudioOnline from './cleanup-audio-online.svelte';
   import CleanupAudioMeta from './cleanup-audio-meta.svelte';
+  import CleanupAudioSwitch from './cleanup-audio-switch.svelte';
   import {
     diskBusy,
     gateSummary,
@@ -628,6 +629,9 @@
                 Check: {p6.check.passed ? '✓ passed' : '✗ not passed (see Details)'}
               </p>
             {/if}
+          {/if}
+          {#if stage.stage === 6 && status?.switch?.available && (p6?.phase === 'done' || (status.switch.state ?? 'none') !== 'none')}
+            <CleanupAudioSwitch {api} sw={status.switch} onStatus={(next) => (status = next)} />
           {/if}
           {#if stage.stage === 4 && s4 && stage.mode !== 'off'}
             {#if s4.fetcher && !s4.fetcher.online}
