@@ -51,7 +51,7 @@ export function plural(n: number, one: string, many: string): string {
 
 export function render(m: Message, linkBase: string): string {
   const lines = m.lines.filter((l) => l).slice(0, m.link ? 2 : 3);
-  if (m.link) lines.push(`${linkBase}${m.link}`);
+  if (m.link) lines.push(`[Open](${linkBase}${m.link})`);
   return lines.join('\n');
 }
 

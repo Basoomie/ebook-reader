@@ -412,7 +412,7 @@ export class NotificationService {
       }
     };
     for (const l of lines)
-      add(l.event, l.link ? `${l.text} ${settings.linkBase}${l.link}` : l.text);
+      add(l.event, l.link ? `${l.text} [Open](${settings.linkBase}${l.link})` : l.text);
     for (const p of resolved)
       add(p.event, `Resolved: ${p.summary ?? getEvent(p.event)?.label ?? p.event}`);
     const now = this.now();
