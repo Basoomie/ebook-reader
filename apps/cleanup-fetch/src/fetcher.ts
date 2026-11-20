@@ -1,15 +1,3 @@
-/**
- * The fetch loop (WP20d). Stateless: the server owns the queue, the pace and the back-offs.
- *
- * Every 30 s a heartbeat (only one fetcher is active at a time); then claims: the server answers
- * with at most one due request per site and how long to wait. Each request is fetched (or, for
- * the local 'sudachi' site, read by Sudachi), compressed with brotli and posted back with its
- * lease token. While the server is away (its nightly stop) the answer is kept and posted again,
- * 2 s growing to 60 s apart; a lease that ran out meanwhile is refused and the server asks again.
- *
- * Challenge pages are never answered or worked around: the page is passed back as it came, and
- * the server backs the site off.
- */
 import { spawn } from 'child_process';
 import { randomUUID } from 'crypto';
 import { brotliCompressSync, constants as zc } from 'zlib';
@@ -17,7 +5,6 @@ import type { FetchConfig } from './config';
 import { allowedUrl } from './hosts';
 
 export const VERSION = '1.4.0';
-/** The reference run's browser headers (ref4.py); RanobeDB refuses Python's default user agent. */
 const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36';
 const DEFAULT_ACCEPT = 'text/html,application/json,application/xml;q=0.9,*/*;q=0.8';
@@ -43,28 +30,15 @@ export interface FetchResult {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export class Fetcher {
-  /**
-   * FETCHER_ID from the compose file (kept across restarts, so a restarted fetcher takes over at
-   * once), else a random id. Not the hostname: a container on gluetun's network has gluetun's.
-   * Whichever fetcher asks, the server gives one request per site at a time at the site's pace.
-   */
   readonly id = process.env.FETCHER_ID?.trim() || randomUUID();
-  /**
-   * This process's run: a restarted fetcher (same id) sends a new one, and the server puts the
-   * requests the old process had in flight back in the queue at once instead of after their
-   * leases (2 minutes), e.g. when a VPN switch restarts this container.
-   */
   readonly runId = randomUUID();
   private active = false;
   private stopped = false;
   private requestTimeoutMs = 30_000;
   private maxPageBytes = 16 * 1024 * 1024;
   private sudachiVersion: string | null = null;
-  /** Requests being asked now, by id: the server decides how many per site (1.4.0). */
   private readonly inFlight = new Set<number>();
-  /** Ends the claim loop's wait early (an answer was posted: its site may be due again now). */
   private wakeUp: (() => void) | null = null;
-  /** An answer was posted since the last claim (also while that claim was on its way). */
   private answered = false;
 
   constructor(
@@ -119,7 +93,6 @@ export class Fetcher {
     if (typeof r.maxPageBytes === 'number') this.maxPageBytes = r.maxPageBytes;
   }
 
-  /** Fetches one https request from an allowed host, following redirects only within the list. */
   async fetchHttp(c: Claimed): Promise<FetchResult> {
     const t0 = Date.now();
     let url = allowedUrl(c.url);
@@ -185,7 +158,6 @@ export class Fetcher {
     }
   }
 
-  /** The local 'sudachi' site: generated readings for names NDL doesn't know. */
   async runSudachi(c: Claimed): Promise<FetchResult> {
     const t0 = Date.now();
     if (!this.config.sudachiPython)
@@ -219,7 +191,6 @@ export class Fetcher {
     });
   }
 
-  /** Posts an answer until the server takes it (or says no); keeps trying while it is away. */
   async report(c: Claimed, r: FetchResult): Promise<void> {
     const body = r.body
       ? brotliCompressSync(r.body, { params: { [zc.BROTLI_PARAM_QUALITY]: 9 } })
@@ -292,7 +263,6 @@ export class Fetcher {
     if (!this.sudachiVersion) this.log(`Sudachi check failed: ${r.error ?? 'no version'}`);
   }
 
-  /** Sleeps up to `ms`, or until an in-flight request's answer has been posted. */
   private waitOrWake(ms: number): Promise<void> {
     if (this.answered) return Promise.resolve();
     return new Promise<void>((resolve) => {
@@ -306,7 +276,6 @@ export class Fetcher {
     });
   }
 
-  /** Runs until stopped. */
   async run(): Promise<void> {
     await this.sudachiCheck();
     let lastBeat = 0;
@@ -334,9 +303,6 @@ export class Fetcher {
           if (this.inFlight.has(c.id)) continue;
           void this.handle(c);
         }
-        // Until the next site is due (the server's exact wait), until an answer is posted (that
-        // site may be due at once), and at most 1 s: new requests appear as the books move on
-        // (the server can't tell the fetcher), and the server's own pause shows within a second.
         const waitMs =
           typeof r.waitMs === 'number'
             ? r.waitMs
@@ -345,8 +311,6 @@ export class Fetcher {
       } catch (err) {
         this.log(`server not reachable: ${String((err as Error).message ?? err).slice(0, 200)}`);
         await sleep(backoff);
-        // The server is on the home network: ask again within 10 s (a VPN switch or a server
-        // restart is over in seconds; a 60 s cap kept every site waiting up to a minute longer).
         backoff = Math.min(10_000, backoff * 2);
         lastBeat = 0;
       }
