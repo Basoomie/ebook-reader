@@ -11,12 +11,19 @@
  *   are never authors, even when Audible lists them without a role (ホモ・デウス 柴田裕之,
  *   源氏物語 与謝野晶子): role markers and the description find some, the models the rest.
  * - Narrators: the store record's; the composer tag is evidence only (stage 4 settled the
- *   differences by sample audio).
+ *   differences by sample audio). A publisher, a store or a production company is never a
+ *   narrator or an author (でじじ, パンローリング; 2026-11-20); what is left, or nothing, is the value.
  * - Series: Audible's name and reading-order position (sort); the position follows the real
  *   reading order (Audible's can be wrong: 私が殺した少女); fallback the torrent's [NN]; imprints
  *   are never series; drama CDs in "<series> ドラマCD" (numbered) and in the series without a
  *   number; anthology series kept as extra series.
- * - Unknown values are unknown (null), never "none".
+ * - Unknown values are unknown (null), never "none". A volume number in the title with no store
+ *   series is "unknown" (not "none"), left for the ebook pass (WP21g).
+ * - The WP21d follow-up (2026-11-20, from the 50-recording spot check): drama is true only when
+ *   the names, title or series say ドラマCD (the models cannot make it true); the rules' title
+ *   stands against a model that only drops an edition mark or adds a volume number; no store
+ *   record: the artist tag is the author and the composer tag the narrator (artist alone: the
+ *   narrators), unconfirmed.
  */
 import { NA, normalizeName, lightNormalize, cleanTitle, looksLikeMojibake } from '../title-rules';
 import type { RulesValue } from '../ai/types';
@@ -130,6 +137,36 @@ const KEEP_ROLES = /^(著|作|著者|作者|原作|原案|文|作・文|編著)$
  * 日本国憲法 with no author).
  */
 const STORE_NAMES = /^(でじじ|digigi)$/iu;
+
+/**
+ * Names that are never a narrator or an author: stores, publishers and production companies the
+ * stores list in a person's place (the 50-recording spot check, 2026-11-20): でじじ and
+ * パンローリング (Pan Rolling's own audiobook store and its publisher: Audible lists them as the
+ * narrator of its own titles, and on some as the author), いずみ書房, フロンティアワークス (the
+ * publisher of 名作文学(笑)), ジュピタースタジオ (a production company). Matched on the whole
+ * name, spaces and width ignored.
+ */
+const NOT_PEOPLE =
+  /^(でじじ|digigi|パンローリング(株式会社)?|panrolling|いずみ書房|フロンティアワークス|ジュピタースタジオ|オトバンク|otobank|audible(studios)?)$/iu;
+/** A publisher name that is a company (a person publishing under their own name is not). */
+const COMPANY = /株式会社|\(株\)|有限会社|出版|書房|書店|スタジオ|studios?$|社$/iu;
+
+/** True when a listed name is a store, a publisher or a company, not a person. */
+export function isNotPerson(listed: string, publisher: string | null): boolean {
+  const n = compact(nameRole(listed).name);
+  if (!n) return false;
+  if (NOT_PEOPLE.test(n)) return true;
+  return (
+    !!publisher &&
+    COMPANY.test(nfkc(publisher)) &&
+    n === compact(publisher).replace(/株式会社|\(株\)/gu, '')
+  );
+}
+
+/** A narrator or author list without the stores and companies. */
+export function peopleOnly(list: string[], publisher: string | null): string[] {
+  return list.filter((x) => !isNotPerson(x, publisher));
+}
 const ROLE_PREFIX =
   /^\s*(著|作|著者|作者|原作|原案|文|作・文|訳|翻訳|監修|監訳|編|編集|編著|イラスト|絵|画|朗読|解説)\s*[/／:：]\s*/u;
 const ROLE_SUFFIX =
@@ -187,7 +224,11 @@ export function recordAuthors(r: RecordBrief): RulesValue<string[]> {
       dropped++;
       continue;
     }
-    if ((r.publisher && NA(name) === NA(r.publisher)) || STORE_NAMES.test(nfkc(name).trim())) {
+    if (
+      (r.publisher && NA(name) === NA(r.publisher)) ||
+      STORE_NAMES.test(nfkc(name).trim()) ||
+      isNotPerson(name, r.publisher)
+    ) {
       dropped++;
       continue;
     }
@@ -222,7 +263,79 @@ export function recordAuthors(r: RecordBrief): RulesValue<string[]> {
 // ---------------------------------------------------------------------------------------------
 // series
 
-const IMPRINT_SERIES = /(文庫|新書|ノベルス|ノベルズ|ブックス|BOOKS|レーベル)$/iu;
+const IMPRINT_SERIES =
+  /(文庫|新書|ノベルス|ノベルズ|ブックス|BOOKS|レーベル|オーディオブックス|朗読全集)$|^小学館の名作文芸朗読/iu;
+
+/**
+ * A series name that is an imprint or a publisher's collection, never a series of books: the
+ * rules drop it from the store's series, the torrent's folder and the models' answers
+ * (幻冬舎新書, 週刊東洋経済eビジネス新書, 星新一オーディオブックス, 吉川英治朗読文庫,
+ * 小学館の名作文芸朗読 ~江戸川乱歩~, モバラジ研究会 江戸川乱歩朗読全集; 2026-11-20).
+ */
+export function isImprintSeries(name: string): boolean {
+  const base = lightNormalize(
+    nfkc(name)
+      .replace(/^\[CD\]\s*/iu, '')
+      .replace(/\s*ドラマ\s*CD\s*$/iu, ''),
+  );
+  return !!base && IMPRINT_SERIES.test(base);
+}
+
+/**
+ * Edition marks in store titles (counted on the live library, 2026-11-20): 新装版 48, 完全版 25,
+ * 新版 8, 新装改訂版 4, 新訳完全版 4, 新訳版 3, 文庫版 3, 特別版 2, 改訂版 2, 【通常版】 1. They stay
+ * in the title; a model that only drops one does not change the rules' title.
+ */
+export const EDITION_MARKS =
+  /新装改訂版|新装版|改訂新版|増補改訂版|増補版|改訂版|新訳完全版|新訳版|完全版|決定版|愛蔵版|文庫版|通常版|特別版|デジタル版|新版/gu;
+
+const titleForm = (s: string) =>
+  nfkc(s)
+    .toLowerCase()
+    .replace(/[\s\u3000・:：\-－~～〜〔〕[\]【】()（）〈〉《》<>＜＞「」『』]/gu, '');
+
+/**
+ * True when a model's title differs from the rules' only by a dropped edition mark and/or one
+ * volume number it added (the rules printed none): "フルメタル・パニック！ 3 … 新装版" →
+ * "… 3 …", "バチカン奇跡調査官 闇の黄金" → "バチカン奇跡調査官 3 闇の黄金".
+ */
+export function onlyEditionOrNumberChange(rules: string, model: string): boolean {
+  if (rules === model) return false;
+  const rMarks: string[] = nfkc(rules).match(EDITION_MARKS) ?? [];
+  const mMarks: string[] = nfkc(model).match(EDITION_MARKS) ?? [];
+  // A model may drop marks, never add or change one.
+  if (mMarks.some((m) => !rMarks.includes(m))) return false;
+  const r = titleForm(nfkc(rules).replace(EDITION_MARKS, ''));
+  const strippedModel = nfkc(model).replace(EDITION_MARKS, '');
+  if (titleForm(strippedModel) === r) return rMarks.length > mMarks.length;
+  // One added number token (3, 10, 1巻), anywhere.
+  const re = /\d+(?:\.\d+)?巻?/gu;
+  for (const m of strippedModel.matchAll(re)) {
+    const without = strippedModel.slice(0, m.index) + strippedModel.slice(m.index! + m[0].length);
+    if (titleForm(without) === r) return true;
+  }
+  return false;
+}
+
+/**
+ * A title with a printed volume number: the store title starts with "[3巻" (TMW's and Audible's
+ * marker), or the cleaned title ends with a 1-3 digit number set off by a space or punctuation
+ * (not glued to a word: ラブ&ポップ: トパーズ2, スローターハウス5 stay out), or has one before a
+ * 〜 subtitle (主従そろって出稼ぎライフ！ 1 〜…).
+ */
+export function hasPrintedVolume(storeTitle: string): boolean {
+  const raw = nfkc(storeTitle);
+  if (/^\s*[[［]\s*\d+(?:\.\d+)?\s*巻/u.test(raw)) return true;
+  const t = cleanStoreTitle(storeTitle);
+  const n = nfkc(t);
+  return (
+    /(?<=\S[\s!！?？。…)）」』】])\d{1,3}$/u.test(n) ||
+    /(?<=\S[\s!！?？。…)）」』】])\d{1,3}(?=\s*[〜～~])/u.test(n)
+  );
+}
+
+/** The reason a series is left unknown for a volume number without store series (stage 5 reads it). */
+export const VOLUME_NO_SERIES = 'A printed volume number and the store has no series data';
 const DRAMA = /ドラマ\s*CD|ドラマＣＤ|\[CD\d*\]|［CD\d*］/iu;
 
 function num(v: string | null | undefined): number | null {
@@ -318,11 +431,17 @@ export function recordSeries(r: RecordBrief, ev: MetaEvidence): RulesValue<Serie
 /** No series from the record: the torrent's "[Author] Series/[NN] …", kikubon's ＜…＞. */
 function fallbackSeries(r: RecordBrief | null, ev: MetaEvidence): RulesValue<SeriesEntry[]> {
   const t = torrentSeries(ev.paths);
-  if (t.folder && t.nn !== null)
+  if (t.folder && t.nn !== null && !isImprintSeries(t.folder))
     return { value: [{ name: t.folder, position: t.nn, label: String(t.nn) }], auto: true };
   const angle = r ? angleSeries(r.title) : null;
-  if (angle) return { value: [{ name: angle, position: null, label: null }], auto: true };
-  if (r?.source === 'audible' && !r.fromSearchPage) return { value: [], auto: true };
+  if (angle && !isImprintSeries(angle))
+    return { value: [{ name: angle, position: null, label: null }], auto: true };
+  if (r?.source === 'audible' && !r.fromSearchPage) {
+    // A printed volume number with no series in the store is not "no series": it is unknown,
+    // left for the ebook pass (WP21g) (user, 2026-11-20).
+    if (hasPrintedVolume(r.title)) return { value: null, auto: false, reason: VOLUME_NO_SERIES };
+    return { value: [], auto: true };
+  }
   return { value: null, auto: false, reason: 'The store has no series data' };
 }
 
@@ -337,6 +456,35 @@ export function isDramaEvidence(ev: MetaEvidence, r: RecordBrief | null): boolea
     DRAMA.test(nfkc(r.title)) ||
     r.series.some((s) => DRAMA.test(nfkc(s.name)) || /^\[CD\]/iu.test(nfkc(s.name)))
   );
+}
+
+/** A tag's people ("A, B; C"), without "ほか" and the stores and companies. */
+function tagPeople(tag: string | undefined): string[] {
+  if (!tag) return [];
+  return names(
+    tag
+      .split(/\s*[,;，、；]\s*/u)
+      .map((x) => x.trim())
+      .filter((x) => x && !/^(ほか|他|その他|and others)$/iu.test(x) && !isNotPerson(x, null)),
+  );
+}
+
+/**
+ * The people of a recording with no store record, from its tags (WP21d follow-up, 2026-11-20;
+ * measured on the labeled books: the composer tag was the narrator in 160 of 166, the artist tag
+ * the author in 150 of those): with a composer tag the artist is the author and the composer the
+ * narrator; with an artist tag alone the files are audiobook.jp's, where the artist tag lists
+ * the narrators (all 21 such recordings of the library), so the authors stay with the names.
+ */
+export function tagPeopleOf(ev: MetaEvidence): { authors: string[]; narrators: string[] } {
+  const artist = tagPeople(ev.tags?.artist);
+  const composer = tagPeople(ev.tags?.composer);
+  if (composer.length)
+    return { authors: artist.length ? artist : names(ev.nameAuthors), narrators: composer };
+  return {
+    authors: names(ev.nameAuthors),
+    narrators: artist.length ? artist : names(ev.tagNarrators),
+  };
 }
 
 /** The title of a recording with no store record: the file's own (stage 4's cleaned name). */
@@ -356,7 +504,13 @@ export function metaRules(
   record: RecordBrief | null,
   confirmed: boolean,
 ): MetaRules {
-  const drama: RulesValue<boolean> = { value: isDramaEvidence(ev, record), auto: true };
+  // True only when the names, title or series say ドラマCD; the models cannot make it true
+  // (user, 2026-11-20: 43 cast-read novels were guessed true).
+  const drama: RulesValue<boolean> = {
+    value: isDramaEvidence(ev, record),
+    auto: true,
+    final: true,
+  };
   const recordRule: RulesValue<string> | null =
     ev.kind === 'record' && ev.record
       ? {
@@ -375,16 +529,20 @@ export function metaRules(
     const series =
       ev.kind === 'ai' ? aiSeries(ev) : ev.kind === 'radio' ? null : fallbackSeries(null, ev).value;
     const t = torrentSeries(ev.paths);
+    const tagged =
+      ev.kind === 'no_record'
+        ? tagPeopleOf(ev)
+        : { authors: names(ev.nameAuthors), narrators: names(ev.tagNarrators) };
     return {
       record: recordRule,
       title: { value: fileTitle(ev), auto: false, reason: why },
       authors: {
-        value: ev.nameAuthors.length ? names(ev.nameAuthors) : null,
+        value: tagged.authors.length ? tagged.authors : null,
         auto: false,
         reason: why,
       },
       narrators: {
-        value: ev.tagNarrators.length ? names(ev.tagNarrators) : null,
+        value: tagged.narrators.length ? tagged.narrators : null,
         auto: false,
         reason: why,
       },
@@ -407,12 +565,17 @@ export function metaRules(
   let titleReason: string | null = unsure;
   if (!titleReason && (looksLikeMojibake(record.title) || !base))
     titleReason = 'The store title is damaged or empty';
-  if (!titleReason && /[[［【＜<]/u.test(base)) titleReason = 'A bracket is left in the title';
+  // A bracket that only holds an edition mark ([新版], 【通常版】) is part of the title.
+  const unmarked = base.replace(
+    new RegExp(String.raw`[\[［【〔]\s*(?:${EDITION_MARKS.source})\s*[\]］】〕]`, 'gu'),
+    '',
+  );
+  if (!titleReason && /[[［【＜<]/u.test(unmarked)) titleReason = 'A bracket is left in the title';
   if (!titleReason && sub)
     titleReason = `Audible's subtitle "${sub}" may or may not belong to the title`;
   // Authors, narrators, series
   const authors = recordAuthors(record);
-  const narr = names(record.narrators);
+  const narr = names(peopleOnly(record.narrators, record.publisher));
   const series = recordSeries(record, ev);
   return {
     record: recordRule,

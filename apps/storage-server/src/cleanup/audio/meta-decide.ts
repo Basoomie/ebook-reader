@@ -9,6 +9,11 @@
  *    best guess (Luna's pick, else stage 4's best guess), unconfirmed.
  * 2. The rules' values from that record (all open when the record is unconfirmed).
  * 3. Title, authors, narrators, series and drama by setup E.
+ *    The follow-up rules (2026-11-20): a store, publisher or company is never a narrator or an
+ *    author, in the models' answers too; an imprint is never a series, in the models' answers
+ *    too; the rules' title stands against a model that only drops an edition mark or adds a
+ *    volume number; a printed volume number with no store series is "unknown" whatever the
+ *    models say (the ebook pass, WP21g, fills it).
  * 4. 複数ナレーター from the narrators decided (their source and flag).
  * 5. Publisher, year, language, store id, description and cover from the record, by rules
  *    alone: unconfirmed with the record, unknown without one.
@@ -17,7 +22,16 @@ import { answerOf, combineE } from '../ai/combine';
 import type { FieldDecision, RulesValue } from '../ai/types';
 import type { MetaEvidence, RecordBrief } from './meta-evidence';
 import { META_FIELDS, seriesKey, titleKey } from './meta-prompt';
-import { metaRules, storeFields, type MetaRules } from './meta-rules';
+import {
+  isImprintSeries,
+  isNotPerson,
+  metaRules,
+  onlyEditionOrNumberChange,
+  storeFields,
+  VOLUME_NO_SERIES,
+  type MetaRules,
+  type SeriesEntry,
+} from './meta-rules';
 
 export const META_VALUE_FIELDS = [
   'record',
@@ -47,6 +61,51 @@ export interface SameBookUnit {
   title: string | null;
   authors: string[];
   series: { name: string; position: number | null; label?: string | null }[] | null;
+  /** Its series value is the user's (never changed by a rule). */
+  user?: boolean;
+}
+
+/**
+ * A position two different recordings of one Audible series share is contradicted by Audible
+ * itself (灼眼のシャナ X and XI both at 11; D県警's four stories at 1): every recording at it
+ * keeps the series without a number (user, 2026-11-20). Recordings with equal titles are copies
+ * of one book and don't count; a series with one recording is never touched. Evaluated over the
+ * whole library on every pass, so new arrivals are covered. Returns the new series values.
+ */
+export function sharedPositions(
+  units: SameBookUnit[],
+): Map<string, NonNullable<SameBookUnit['series']>> {
+  const key = (name: string, pos: number) => `${titleKey(name)}#${pos}`;
+  const groups = new Map<string, { keys: Set<string>; titles: Set<string> }>();
+  const usable = (u: SameBookUnit) => u.audibleRecord && !u.user && !!u.title && !!u.series;
+  for (const u of units) {
+    if (!usable(u)) continue;
+    const tk = titleKey(u.title!);
+    for (const s of u.series!) {
+      if (s.position === null || s.label === 'drama') continue;
+      const k = key(s.name, s.position);
+      const g = groups.get(k) ?? { keys: new Set<string>(), titles: new Set<string>() };
+      g.keys.add(u.key);
+      g.titles.add(tk);
+      groups.set(k, g);
+    }
+  }
+  const out = new Map<string, NonNullable<SameBookUnit['series']>>();
+  for (const u of units) {
+    if (!usable(u)) continue;
+    let changed = false;
+    const next = u.series!.map((s) => {
+      if (s.position === null || s.label === 'drama') return s;
+      const g = groups.get(key(s.name, s.position));
+      if (g && g.keys.size >= 2 && g.titles.size >= 2) {
+        changed = true;
+        return { ...s, position: null };
+      }
+      return s;
+    });
+    if (changed) out.set(u.key, next);
+  }
+  return out;
 }
 
 /**
@@ -157,11 +216,14 @@ export function decideUnit(
       : metaRules(ev, record, confirmed);
 
   // 3. setup E per field
-  const one = <V>(name: 'title' | 'authors' | 'narrators' | 'series' | 'drama') => {
+  const one = <V>(
+    name: 'title' | 'authors' | 'narrators' | 'series' | 'drama',
+    clean: (v: V | undefined) => V | undefined = (v) => v,
+  ) => {
     const f = META_FIELDS[name] as unknown as Parameters<typeof combineE<V>>[0];
     const r = rules[name] as unknown as RulesValue<V>;
-    const p = ans<V>(META_FIELDS[name], answers.primary);
-    const s = ans<V>(META_FIELDS[name], answers.secondary);
+    const p = clean(ans<V>(META_FIELDS[name], answers.primary));
+    const s = clean(ans<V>(META_FIELDS[name], answers.secondary));
     fields[name] = {
       decision: combineE(f, r, p, s) as FieldDecision,
       rules: rulesOut(r),
@@ -169,11 +231,39 @@ export function decideUnit(
       secondary: s ?? null,
     };
   };
+  const publisher = record?.publisher ?? null;
+  const people = (v: string[] | undefined) => v?.filter((x) => !isNotPerson(x, publisher));
   one<string>('title');
-  one<string[]>('authors');
-  one<string[]>('narrators');
-  one('series');
+  one<string[]>('authors', people);
+  // A model's narrators that were only a company leave no answer.
+  one<string[]>('narrators', (v) => {
+    const l = people(v);
+    return l?.length ? l : undefined;
+  });
+  one<SeriesEntry[]>('series', (v) => v?.filter((x) => !isImprintSeries(x.name)));
   one<boolean>('drama');
+
+  // The rules' title stands against a model that only drops an edition mark or adds a number.
+  {
+    const t = fields.title!;
+    const rt = rules.title;
+    if (
+      rt.auto &&
+      rt.value !== null &&
+      t.decision.source !== 'rules' &&
+      typeof t.decision.value === 'string' &&
+      onlyEditionOrNumberChange(rt.value, t.decision.value)
+    )
+      t.decision = { value: rt.value, source: 'rules', flagged: false, reason: null };
+  }
+  // A printed volume number and no store series: unknown, for the ebook pass.
+  if (rules.series.reason === VOLUME_NO_SERIES && rules.series.value === null)
+    fields.series!.decision = {
+      value: null,
+      source: 'unknown',
+      flagged: true,
+      reason: VOLUME_NO_SERIES,
+    };
 
   // 4. 複数ナレーター follows the narrators
   const n = fields.narrators!.decision;

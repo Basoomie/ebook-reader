@@ -14,6 +14,7 @@ import { onAudioStagePaused, getAudioStage } from '../src/cleanup/audio/audio-st
 import { EvidenceBuilder } from '../src/cleanup/audio/meta-evidence';
 import { cleanStoreTitle, metaRules, recordAuthors } from '../src/cleanup/audio/meta-rules';
 import { sameBookSeries } from '../src/cleanup/audio/meta-decide';
+import { CORRECTIONS } from '../src/cleanup/audio/meta-corrections';
 import { META_SYSTEM, metaUserText } from '../src/cleanup/audio/meta-prompt';
 import { initCleanupDatabase } from '../src/cleanup/cleanup-db';
 import { getSettings, updateSettings } from '../src/cleanup/settings';
@@ -195,7 +196,7 @@ describe('stage 5 rules on the live cases', () => {
       ],
     });
     expect(rules('u:cop').series).toEqual({ value: [], auto: true });
-    expect(rules('u:honzuki6').drama).toEqual({ value: true, auto: true });
+    expect(rules('u:honzuki6').drama).toEqual({ value: true, auto: true, final: true });
     expect(rules('u:melos').drama.value).toBe(true);
   });
 
@@ -658,6 +659,54 @@ describe('stage 5 through the service', () => {
     expect(users).toContain('私が殺した少女');
     expect(value(db, 'u:unsure', 'record')).toMatchObject({ source: 'rules_guess', flagged: true });
     expect(value(db, 'u:holmes', 'authors')).toMatchObject({ source: 'rules', flagged: false });
+  });
+});
+
+describe('stage 5 corrections (WP21d follow-up)', () => {
+  it('are written as the user own values once, kept by every later pass, never over a value the user set', async () => {
+    const { env: e, db } = await makeStage();
+    updateSettings(db, {
+      ai: {
+        ...getSettings(db).ai,
+        modes: { 'claude-haiku-5-5': 'direct', 'gpt-6-luna': 'direct' },
+        spendLimitUsd: 1,
+      },
+    });
+    CORRECTIONS.push(
+      { record: 'audible:B0G299R1XS', field: 'narrators', value: ['柚木尚子'] },
+      { record: 'audible:B0G299R1XS', field: 'multi_narr', value: false },
+      { record: 'audible:B0COPCRAFT', field: 'narrators', value: ['訂正 者'] },
+      { record: 'audible:NOSUCHRECORD', field: 'authors', value: ['誰'] },
+    );
+    try {
+      e.audio!.setMode(5, 'analyse');
+      await untilDone(e);
+      expect(value(db, 'u:hoshi', 'narrators')).toMatchObject({
+        value: ['柚木尚子'],
+        source: 'user',
+        flagged: false,
+      });
+      expect(value(db, 'u:hoshi', 'multi_narr')).toMatchObject({ value: false, source: 'user' });
+      // The user's own value is not replaced by the list.
+      setUserValue(db, 'audio5', 'u:cop', 'narrators', ['私の値'], Date.now());
+      // A rules change decides again: the corrections and the user's value both stay.
+      updateSettings(db, { audiobooks: { ...getSettings(db).audiobooks, multiNarratorMin: 3 } });
+      await e.audio!.tick();
+      await untilDone(e);
+      expect(value(db, 'u:hoshi', 'narrators')).toMatchObject({
+        value: ['柚木尚子'],
+        source: 'user',
+      });
+      expect(value(db, 'u:cop', 'narrators')).toMatchObject({ value: ['私の値'], source: 'user' });
+      // Nothing was written for a record the library does not have.
+      expect(
+        db
+          .prepare(`SELECT COUNT(*) AS n FROM ai_values WHERE stage = 'audio5' AND source = 'user'`)
+          .get(),
+      ).toEqual({ n: 3 });
+    } finally {
+      CORRECTIONS.length = 0;
+    }
   });
 });
 

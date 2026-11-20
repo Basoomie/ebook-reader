@@ -18,6 +18,7 @@ import { AiRunner, modeOf, waitNeedsUser, waitText, type AiCounts } from '../ai/
 import { runSpend, spendNow } from '../ai/spend';
 import {
   dropOtherItems,
+  setUserValue,
   valueCounts,
   valuesOf,
   writeDecisions,
@@ -25,7 +26,14 @@ import {
 } from '../ai/values';
 import { getSettings } from '../settings';
 import { getAudioStage, pauseAudioStage, resumeAudioStage, updateAudioStage } from './audio-stages';
-import { decideUnit, META_VALUE_FIELDS, sameBookSeries, type SameBookUnit } from './meta-decide';
+import {
+  decideUnit,
+  META_VALUE_FIELDS,
+  sameBookSeries,
+  sharedPositions,
+  type SameBookUnit,
+} from './meta-decide';
+import { CORRECTIONS } from './meta-corrections';
 import { EvidenceBuilder, META_EVIDENCE_VERSION, type MetaEvidence } from './meta-evidence';
 import { scoreMetaGate, type GateValue, type MetaGateResult, type MetaLabel } from './meta-gate';
 import { META_PROMPT_VERSION, META_SPEC, metaEvidenceText } from './meta-prompt';
@@ -33,7 +41,7 @@ import type { UnitInputs } from './stage4-online';
 
 const STAGE5 = 5;
 /** Raised when a code change can change the decisions (decided again, nobody asked again). */
-export const META_RULES_VERSION = 4;
+export const META_RULES_VERSION = 5;
 /** Units per synchronous slice (measured on the live copy: 200 held the event loop 112 ms). */
 const SLICE = 50;
 
@@ -249,6 +257,8 @@ export class AudioStage5 {
         this.addTime(p, 'decide', Date.now() - t0, r.items);
         if (r.finished) {
           await this.sameBookStep(p);
+          await this.positionsStep(p);
+          this.correctionsStep(p);
           this.nextPhase(p, 'gate');
         } else this.save(p, 'analysing');
         return 'more';
@@ -299,11 +309,8 @@ export class AudioStage5 {
     return out;
   }
 
-  /**
-   * After every recording is decided: the same book's series in Audible's name (see
-   * `sameBookSeries`). Reads cleanup.db only, in slices; a user value is never replaced.
-   */
-  private async sameBookStep(p: AudioStage5Progress): Promise<void> {
+  /** Every recording as the series rules after the decisions see it (cleanup.db only, in slices). */
+  private async seriesUnits(p: AudioStage5Progress): Promise<SameBookUnit[]> {
     const runner = this.deps.runner;
     const keys = this.unitKeys(p);
     const units: SameBookUnit[] = [];
@@ -323,11 +330,99 @@ export class AudioStage5 {
           title: (v.title?.value as string | null) ?? null,
           authors: (v.authors?.value as string[] | null) ?? [],
           series: (series?.value as SameBookUnit['series']) ?? null,
+          user: series?.source === 'user',
         });
       }
       await new Promise((r) => setImmediate(r));
     }
-    const found = sameBookSeries(units);
+    return units;
+  }
+
+  /** A recording's count of unconfirmed fields follows its values. */
+  private refreshFlagged(p: AudioStage5Progress, itemKeys: string[]): void {
+    const count = this.db.prepare(
+      `SELECT COUNT(*) AS n FROM ai_values WHERE stage = 'audio5' AND item_key = ? AND flagged = 1
+       AND field IN (${META_VALUE_FIELDS.map(() => '?').join(', ')})`,
+    );
+    const upd = this.db.prepare(
+      'UPDATE audio_meta_units SET flagged = ? WHERE analysis_id = ? AND unit_key = ?',
+    );
+    this.db.transaction(() => {
+      for (const k of itemKeys)
+        upd.run((count.get(k, ...META_VALUE_FIELDS) as { n: number }).n, p.analysisId, k);
+    })();
+  }
+
+  /**
+   * After every recording is decided: a position two recordings of one Audible series share is
+   * dropped (see `sharedPositions`; user, 2026-11-20). Runs before the same-book step so a
+   * recording taking its twin's series takes it without the dropped number.
+   */
+  private async positionsStep(p: AudioStage5Progress): Promise<void> {
+    const runner = this.deps.runner;
+    const found = sharedPositions(await this.seriesUnits(p));
+    if (!found.size) return;
+    const now = Date.now();
+    const rows: DecisionRow[] = [];
+    for (const [key, series] of found) {
+      const cur = valuesOf(this.db, 'audio5', key).find((x) => x.field === 'series');
+      if (!cur || cur.source === 'user') continue;
+      rows.push({
+        itemKey: key,
+        field: 'series',
+        decision: {
+          value: series,
+          source: cur.source,
+          flagged: cur.flagged,
+          reason: 'Audible gives the same position to another recording of the series: no number',
+        },
+        rules: { value: cur.rules, auto: cur.rulesAuto ?? false },
+        primary: cur.primary,
+        secondary: cur.secondary,
+        evidenceHash: runner.evidenceOf(META_SPEC, key)?.hash ?? null,
+      });
+    }
+    writeDecisions(this.db, 'audio5', rows, 'E', now);
+    this.refreshFlagged(
+      p,
+      rows.map((r) => r.itemKey),
+    );
+    this.deps.log?.(
+      `Audiobooks stage 5: ${rows.length} recordings share a position with another recording: no number`,
+    );
+  }
+
+  /**
+   * The one-off corrections of store errors (`meta-corrections.ts`): written as the user's own
+   * values, only where the user has no value yet, so no later pass overwrites them.
+   */
+  private correctionsStep(p: AudioStage5Progress): void {
+    if (!CORRECTIONS.length) return;
+    const now = Date.now();
+    const find = this.db.prepare(
+      'SELECT unit_key FROM audio_meta_units WHERE analysis_id = ? AND record = ?',
+    );
+    const touched = new Set<string>();
+    for (const c of CORRECTIONS) {
+      for (const { unit_key } of find.all(p.analysisId, c.record) as { unit_key: string }[]) {
+        const cur = valuesOf(this.db, 'audio5', unit_key).find((x) => x.field === c.field);
+        if (cur?.source === 'user') continue;
+        setUserValue(this.db, 'audio5', unit_key, c.field, c.value, now);
+        touched.add(unit_key);
+      }
+    }
+    this.refreshFlagged(p, [...touched]);
+    if (touched.size)
+      this.deps.log?.(`Audiobooks stage 5: ${touched.size} recordings with a correction`);
+  }
+
+  /**
+   * After every recording is decided: the same book's series in Audible's name (see
+   * `sameBookSeries`). Reads cleanup.db only, in slices; a user value is never replaced.
+   */
+  private async sameBookStep(p: AudioStage5Progress): Promise<void> {
+    const runner = this.deps.runner;
+    const found = sameBookSeries(await this.seriesUnits(p));
     if (!found.size) return;
     const now = Date.now();
     const rows: DecisionRow[] = [];
@@ -350,22 +445,10 @@ export class AudioStage5 {
       });
     }
     writeDecisions(this.db, 'audio5', rows, 'E', now);
-    // A recording's count of unconfirmed fields follows its values.
-    const count = this.db.prepare(
-      `SELECT COUNT(*) AS n FROM ai_values WHERE stage = 'audio5' AND item_key = ? AND flagged = 1
-       AND field IN (${META_VALUE_FIELDS.map(() => '?').join(', ')})`,
+    this.refreshFlagged(
+      p,
+      rows.map((r) => r.itemKey),
     );
-    const upd = this.db.prepare(
-      'UPDATE audio_meta_units SET flagged = ? WHERE analysis_id = ? AND unit_key = ?',
-    );
-    this.db.transaction(() => {
-      for (const r of rows)
-        upd.run(
-          (count.get(r.itemKey, ...META_VALUE_FIELDS) as { n: number }).n,
-          p.analysisId,
-          r.itemKey,
-        );
-    })();
     this.deps.log?.(
       `Audiobooks stage 5: ${rows.length} series from the Audible edition of the same book`,
     );
