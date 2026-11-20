@@ -677,6 +677,33 @@ describe('AI runner', () => {
     expect(spendNow(db).spentUsd).toBeGreaterThan(0);
   });
 
+  it('asks again a call a restart cut off (the nightly backup stopped the server, 2026-11-20)', async () => {
+    const { db, runner, advance } = await setup();
+    const { getSettings } = await import('../src/cleanup/settings');
+    const s = getSettings(db);
+    updateSettings(db, {
+      ai: {
+        ...s.ai,
+        spendLimitUsd: 1,
+        modes: Object.fromEntries(Object.values(s.models).map((m) => [m, 'direct' as const])),
+      },
+    });
+    runner.putItems(SPEC, items(1), 1);
+    runner.enqueue(SPEC, 'primary', ['k0'], 'r');
+    // In flight when the server stopped: sent one at a time, never answered.
+    db.prepare(`UPDATE ai_requests SET state = 'sent', mode = 'direct', sent_at = ?`).run(
+      1_800_000_000_000,
+    );
+    advance(7 * 60_000);
+    // The restarted server (a new runner) asks it again; its own calls in flight it leaves.
+    const restarted = new AiRunner(
+      (runner as unknown as { deps: ConstructorParameters<typeof AiRunner>[0] }).deps,
+    );
+    await restarted.step(SPEC, 'r', () => false);
+    expect(restarted.answerOf(SPEC, 'primary', 'k0')?.state).toBe('answered');
+    expect(restarted.pending(SPEC.stage, 'r')).toBe(0);
+  });
+
   it('only labeled items are asked when labeledOnly is set', async () => {
     const { db, runner, advance } = await setup();
     const { getSettings } = await import('../src/cleanup/settings');
