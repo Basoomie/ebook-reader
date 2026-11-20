@@ -1426,7 +1426,7 @@ describe('cleanup.db v12', () => {
       onlineTitleScore: 0.8,
       onlineOpeningSeconds: 240,
     });
-    expect(s.fetch.sites.audible).toEqual({ enabled: true, intervalSeconds: 3 });
+    expect(s.fetch.sites.audible).toEqual({ enabled: true, intervalSeconds: 3, inFlight: 1 });
     expect(s.fetch.sites.kikubon.intervalSeconds).toBe(5);
     expect(s.fetch.sites.audiobookjp.intervalSeconds).toBe(5);
     expect(() =>
