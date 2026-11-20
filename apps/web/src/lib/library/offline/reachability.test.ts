@@ -5,7 +5,7 @@
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { firstServerAnswer, Reachability } from './reachability';
+import { firstServerAnswer, Reachability, serverWorthAskingNow } from './reachability';
 
 afterEach(() => {
   vi.useRealTimers();
@@ -131,5 +131,42 @@ describe('firstServerAnswer', () => {
     expect(r.knownUnreachable()).toBe(true);
     const failed = await firstServerAnswer(r, 'u', 5, () => Promise.reject('500'), unreachable);
     expect(failed).toEqual({ status: 'error', error: '500' });
+  });
+});
+
+describe('serverWorthAskingNow (Enrich)', () => {
+  it('does not ask with no network', async () => {
+    const fetchImpl = vi.fn();
+    const r = new Reachability(fetchImpl);
+    await expect(serverWorthAskingNow(r, 'http://nas:3081', 5, false)).resolves.toBe(false);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('answers at once when the server is known not to answer, and asks again behind it', async () => {
+    const fetchImpl = vi.fn(async () => new Response('{}'));
+    const r = new Reachability(fetchImpl);
+    r.markUnreachable();
+    await expect(serverWorthAskingNow(r, 'http://nas:3081', 5, true)).resolves.toBe(false);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(r.knownUnreachable()).toBe(false));
+    // The next tap asks.
+    await expect(serverWorthAskingNow(r, 'http://nas:3081', 5, true)).resolves.toBe(true);
+  });
+
+  it('waits at most the quick check away from home', async () => {
+    vi.useFakeTimers();
+    const r = new Reachability(hangingFetch);
+    const asked = serverWorthAskingNow(r, 'http://nas:3081', 5, true);
+    await vi.advanceTimersByTimeAsync(5_100);
+    await expect(asked).resolves.toBe(false);
+    expect(r.knownUnreachable()).toBe(true);
+  });
+
+  it('asks when the server answers, and without a check when it is off', async () => {
+    const r = new Reachability(vi.fn(async () => new Response('{}')));
+    await expect(serverWorthAskingNow(r, 'http://nas:3081', 5, true)).resolves.toBe(true);
+    const off = vi.fn();
+    await expect(serverWorthAskingNow(new Reachability(off), 'u', 0, true)).resolves.toBe(true);
+    expect(off).not.toHaveBeenCalled();
   });
 });
