@@ -1053,7 +1053,16 @@ describe('the switch through the linking sidecar and the reader', { timeout: 180
       .set(user)
       .send({ action: 'switch' });
     expect(r.body.error.message).toMatch(/could not be asked/);
-    setAbs([{ name: 'Podcasts', folders: ['/audiobooks/podcasts'] }]);
+    // A library elsewhere with the same last name (live 2026-11-20: a podcasts library on
+    // /podcasts/japanese) is not one of the switch's folders; its own folders are refused even
+    // with a trailing slash.
+    setAbs([{ name: 'Japanese Audiobooks', folders: ['/audiobooks/japanese/'] }]);
+    r = await request(env.app)
+      .post('/api/v1/cleanup/audio/switch/start')
+      .set(user)
+      .send({ action: 'switch' });
+    expect(r.body.error.message).toMatch(/uses \/audiobooks\/japanese\/: delete that library/);
+    setAbs([{ name: 'Japanese Podcasts', folders: ['/podcasts/japanese'] }]);
     env.db
       .prepare(
         `INSERT INTO audio_merge_jobs (user_id, book_id, library_id, folder_rel_path, file_names, state, progress, created_at, updated_at)
@@ -1283,6 +1292,12 @@ describe('the switch through the linking sidecar and the reader', { timeout: 180
       if (req.method === 'GET' && req.path === '/api/libraries')
         return res.json({
           libraries: [
+            // Listed first: a podcasts library whose folder has the same last name.
+            {
+              id: 'pod1',
+              name: 'Japanese Podcasts',
+              folders: [{ fullPath: '/podcasts/japanese' }],
+            },
             {
               id: 'lib1',
               name: 'Japanese Audiobooks',

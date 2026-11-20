@@ -71,6 +71,13 @@ export interface CoverSettings {
 export interface AudiobookSettings {
   /** Audiobookshelf's address as the storage server reaches it, e.g. http://192.168.1.5:13378. */
   absUrl: string;
+  /**
+   * WP21e-2: where Audiobookshelf sees media/audiobooks (its container's path; the old library
+   * was on `/audiobooks/japanese`). The switch and the covers compare its libraries' folders
+   * against `<this>/japanese` etc. as whole paths (a podcasts library on /podcasts/japanese is
+   * not one of them: found live 2026-11-20).
+   */
+  absMediaFolder: string;
   /** Stage 1: how fast files are hashed (MB/s); 0 = no limit (it holds the disk lock alone). */
   readMbPerSecond: number;
   /**
@@ -429,6 +436,7 @@ export const DEFAULT_SETTINGS: CleanupSettings = {
   duplicates: { ...DEFAULT_DUPLICATE_SETTINGS },
   audiobooks: {
     absUrl: '',
+    absMediaFolder: '/audiobooks',
     readMbPerSecond: 0,
     healthWorkers: 4,
     decodeSeconds: 20,
@@ -655,6 +663,15 @@ export function getSettings(db: Database.Database): CleanupSettings {
   return s;
 }
 
+/** An absolute folder path inside Audiobookshelf's container, without a trailing slash. */
+export function absFolder(value: unknown): string {
+  if (typeof value !== 'string' || !/^\/[^\0]*$/.test(value.trim()) || value.length > 200)
+    throw new SettingsError(
+      'Audiobookshelf’s audiobooks folder must be an absolute path like /audiobooks',
+    );
+  return value.trim().replace(/\/+$/, '') || '/';
+}
+
 function num(name: string, value: unknown, min: number, max: number, integer = false): number {
   if (typeof value !== 'number' || !Number.isFinite(value) || value < min || value > max) {
     throw new SettingsError(`${name} must be a number from ${min} to ${max}`);
@@ -744,6 +761,7 @@ function validate(key: Key, value: unknown, current: CleanupSettings): unknown {
       const v = group('Audiobooks', value, current.audiobooks);
       return {
         absUrl: absAddress(v.absUrl),
+        absMediaFolder: absFolder(v.absMediaFolder),
         readMbPerSecond: num('Hashing speed (MB/s)', v.readMbPerSecond, 0, 2000),
         healthWorkers: num('Files checked at the same time', v.healthWorkers, 1, 16, true),
         decodeSeconds: num('Seconds decoded at each end', v.decodeSeconds, 1, 600, true),

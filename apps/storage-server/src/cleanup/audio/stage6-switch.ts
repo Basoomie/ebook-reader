@@ -475,11 +475,15 @@ export class AudioSwitch {
         'Audiobookshelf could not be asked which folders its libraries use (check the address and key in Settings)',
       ];
     const names = action === 'delete' ? ['japanese-old'] : SWITCH_FOLDERS;
+    // Whole paths: a library elsewhere with the same last name (a podcasts library on
+    // /podcasts/japanese, found live 2026-11-20) is not one of these folders.
+    const root = getSettings(this.db).audiobooks.absMediaFolder;
+    const paths = names.map((n) => `${root === '/' ? '' : root}/${n}`);
     const out: string[] = [];
     for (const l of libs)
       for (const f of l.folders) {
-        const last = f.replace(/\/+$/, '').split('/').pop() ?? '';
-        if (names.includes(last))
+        const full = f.replace(/\/+$/, '');
+        if (paths.includes(full))
           out.push(
             `Audiobookshelf’s library “${l.name ?? '?'}” uses ${f}: delete that library in Audiobookshelf first`,
           );

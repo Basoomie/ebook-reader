@@ -217,16 +217,18 @@ export class AudioCovers {
           libraries?: { id: string; name?: string; folders?: { fullPath?: string }[] }[];
         }>('/libraries')
       )?.libraries ?? [];
+    // Whole paths (a podcasts library on /podcasts/japanese is not the audiobooks' one).
+    const root = getSettings(this.db).audiobooks.absMediaFolder;
     const on = (name: string) =>
       libs.find((l) =>
         (l.folders ?? []).some(
-          (f) => (f.fullPath ?? '').replace(/\/+$/, '').split('/').pop() === name,
+          (f) => (f.fullPath ?? '').replace(/\/+$/, '') === `${root === '/' ? '' : root}/${name}`,
         ),
       );
     const main = on('japanese');
     if (!main)
       throw new Error(
-        'Audiobookshelf has no library on the folder …/japanese yet (make it first, then let its first scan finish)',
+        `Audiobookshelf has no library on the folder ${root === '/' ? '' : root}/japanese yet (make it first, then let its first scan finish)`,
       );
     const ai = on('japanese-generated');
     p.libraries = { main: main.name ?? main.id, ai: ai ? (ai.name ?? ai.id) : null };
