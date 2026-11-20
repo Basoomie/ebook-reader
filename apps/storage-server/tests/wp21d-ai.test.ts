@@ -425,6 +425,27 @@ describe('AI runner', () => {
     expect(runner.enqueue(SPEC, 'primary', ['k2'], 'run2')).toBe(1);
   });
 
+  it('a connection error keeps its cause (live 2026-11-19: the page said only "Connection error.")', async () => {
+    // A port nothing listens on: both SDKs fail to connect; the reason must survive.
+    const net = await import('node:net');
+    const port = await new Promise<number>((resolve) => {
+      const srv = net.createServer().listen(0, '127.0.0.1', () => {
+        const a = srv.address() as { port: number };
+        srv.close(() => resolve(a.port));
+      });
+    });
+    for (const p of [
+      new AnthropicProvider('k', `http://127.0.0.1:${port}`),
+      new OpenAiProvider('k', `http://127.0.0.1:${port}/v1`),
+    ]) {
+      const err = await p.listModels().then(
+        () => null,
+        (e: Error) => e,
+      );
+      expect(err?.message).toBe('Connection error. (ECONNREFUSED)');
+    }
+  });
+
   it('retries busy and server errors only, and records content blocks and bad answers as final', async () => {
     const { db, runner, advance, tries } = await setup({
       behaviour: (t) =>

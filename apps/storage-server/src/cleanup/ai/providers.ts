@@ -40,6 +40,27 @@ export type CallResult =
   | { kind: 'invalid'; detail: string; text: string | null; usage: Usage };
 
 /** A failure worth trying again later (busy, server error, network). */
+/**
+ * Why a connection failed, from the error's cause chain (the SDKs' "Connection error." hides
+ * it): the first code or message, e.g. UND_ERR_CONNECT_TIMEOUT, ETIMEDOUT, ENOTFOUND.
+ */
+export function causeOf(err: unknown): string | null {
+  let e = (err as { cause?: unknown } | null)?.cause;
+  for (let depth = 0; e && depth < 5; depth++) {
+    const x = e as { code?: unknown; message?: unknown; cause?: unknown };
+    if (typeof x.code === 'string' && x.code) return x.code;
+    if (!x.cause && typeof x.message === 'string' && x.message) return x.message;
+    e = x.cause;
+  }
+  return null;
+}
+
+/** A connection error's message with its cause, e.g. "Connection error. (ETIMEDOUT)". */
+function connectionMessage(err: Error): string {
+  const why = causeOf(err);
+  return why ? `${err.message} (${why})` : err.message;
+}
+
 export class RetryableError extends Error {
   constructor(
     message: string,
@@ -188,7 +209,8 @@ export class AnthropicProvider implements ProviderClient {
   }
 
   private wrap(err: unknown): Error {
-    if (err instanceof Anthropic.APIConnectionError) return new RetryableError(err.message);
+    if (err instanceof Anthropic.APIConnectionError)
+      return new RetryableError(connectionMessage(err));
     if (err instanceof Anthropic.APIError) {
       const h = err.headers as Headers | undefined;
       return statusError(
@@ -368,7 +390,7 @@ export class OpenAiProvider implements ProviderClient {
   }
 
   private wrap(err: unknown): Error {
-    if (err instanceof OpenAI.APIConnectionError) return new RetryableError(err.message);
+    if (err instanceof OpenAI.APIConnectionError) return new RetryableError(connectionMessage(err));
     if (err instanceof OpenAI.APIError) {
       const h = err.headers as Headers | undefined;
       return statusError(
