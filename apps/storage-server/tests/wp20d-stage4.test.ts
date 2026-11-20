@@ -418,7 +418,8 @@ describe('stage 4: online sources (Preview)', () => {
         return u.startsWith(url) ? fetch(input, init) : Promise.resolve(internet(u, init));
       },
     );
-    // A second fetcher is not active while the first one is.
+    // A second fetcher is active beside the first (temporary: parallel fetchers on their own
+    // VPN addresses, tests/wp20d-fetch-slots.test.ts); it only beats here, never claims.
     const second = new TestFetcher(
       config,
       () => {},
@@ -430,7 +431,7 @@ describe('stage 4: online sources (Preview)', () => {
     const running = fetcher.run();
     await sleep(300);
     await second.heartbeat();
-    expect((second as unknown as { active: boolean }).active).toBe(false);
+    expect((second as unknown as { active: boolean }).active).toBe(true);
 
     const deadline = Date.now() + 90_000;
     let phase = '';

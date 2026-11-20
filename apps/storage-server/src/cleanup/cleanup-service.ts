@@ -23,6 +23,7 @@ import { Stage3Worker, type Stage3Reader } from '../counts/book-text-worker';
 import { Stage4Analysis, type Stage4Progress } from './stage4/analysis';
 import { paceSeconds, stage4Eta, type SiteCounts } from './stage4/eta';
 import { FetchQueue, LABELED_PRIORITY, backoffKey } from './stage4/queue';
+import { FetcherSlots, slotStateRow, type FetcherSlot } from './stage4/fetch-slots';
 import { CALIBRE_FETCH_SITES, type FetchSite } from './settings';
 import {
   BUILT_STAGES,
@@ -287,6 +288,15 @@ export class CleanupService {
   /** The active fetcher's process (its run id), as last seen by this server process. */
   private fetcherRun: { fetcherId: string; runId: string } | null = null;
 
+  /** Parallel fetchers beside the usual one (temporary: stage4/fetch-slots.ts). */
+  private fetcherSlotsOnce: FetcherSlots | null = null;
+  private get fetcherSlots(): FetcherSlots {
+    return (this.fetcherSlotsOnce ??= new FetcherSlots(
+      (slot) => this.fetchQueue.releaseLeases(Date.now(), slot),
+      this.log,
+    ));
+  }
+
   /**
    * The fetch container's heartbeat; true when it is (or becomes) the one active fetcher.
    *
@@ -319,14 +329,15 @@ export class CleanupService {
       r.fetcher_id !== hb.fetcherId &&
       r.last_seen_at !== null &&
       now - r.last_seen_at < s.offlineSeconds * 1000;
-    if (other) return false;
+    if (other) return this.fetcherSlots.heartbeat(hb, now, s.offlineSeconds * 1000) !== null;
+    this.fetcherSlots.drop(hb.fetcherId);
     if (hb.runId) {
       const prev = this.fetcherRun;
       const restarted =
         prev !== null && (prev.fetcherId !== hb.fetcherId || prev.runId !== hb.runId);
       this.fetcherRun = { fetcherId: hb.fetcherId, runId: hb.runId };
       if (restarted) {
-        const n = this.fetchQueue.releaseLeases(now);
+        const n = this.fetchQueue.releaseLeases(now, 0);
         if (n > 0) this.log(`Cleanup: fetcher restarted; ${n} requests in flight asked again`);
       }
     }
@@ -352,6 +363,13 @@ export class CleanupService {
       r.last_seen_at !== null &&
       now - r.last_seen_at < s.offlineSeconds * 1000
     );
+  }
+
+  /** The fetcher's slot while it is active (0 = the usual one), else null. */
+  fetcherSlot(fetcherId: string, now = Date.now()): FetcherSlot | null {
+    if (this.isActiveFetcher(fetcherId, now)) return { slot: 0 };
+    const s = getSettings(this.db).fetch;
+    return this.fetcherSlots.slotOf(fetcherId, now, s.offlineSeconds * 1000);
   }
 
   fetcher(now = Date.now()) {
@@ -1009,9 +1027,7 @@ export class CleanupService {
       const by = (st: string) => counts.find((c) => c.site === site && c.state === st)?.n ?? 0;
       const r = recent.find((x) => x.site === site);
       const t = totals.find((x) => x.site === site);
-      const row = this.db
-        .prepare('SELECT * FROM fetch_sites WHERE site = ?')
-        .get(backoffKey(site)) as
+      const row = slotStateRow(this.db, backoffKey(site), now) as
         | {
             paused_reason: string | null;
             backoff_until: number | null;

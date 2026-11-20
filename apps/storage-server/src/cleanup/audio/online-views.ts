@@ -7,6 +7,7 @@ import type Database from 'better-sqlite3';
 import { getSettings, AUDIO_FETCH_SITES, type AudioFetchSite } from '../settings';
 import { paceSeconds } from '../stage4/eta';
 import { backoffKey } from '../stage4/queue';
+import { slotStateRow } from '../stage4/fetch-slots';
 import { ungzRecord, type AudioStage4Progress, type UnitInputs } from './stage4-online';
 
 /**
@@ -74,7 +75,6 @@ export function audioSiteLines(
   const oldestOpen = db.prepare(
     `SELECT MIN(created_at) AS m FROM fetch_requests WHERE site = ? AND state IN ('queued', 'leased')`,
   );
-  const siteRow = db.prepare('SELECT * FROM fetch_sites WHERE site = ?');
   const idleMs = (s.challengeBackoffMaxSeconds + 60) * 1000;
   // Units still to decide, and the requests per decided unit (the live run's own once enough
   // units are decided; the stand-in run's before).
@@ -109,7 +109,7 @@ export function audioSiteLines(
     const t = totals.get(site) as
       | { n: number; challenges: number; errors: number; busy: number }
       | undefined;
-    const row = siteRow.get(backoffKey(site)) as
+    const row = slotStateRow(db, backoffKey(site), now) as
       | {
           paused_reason: string | null;
           backoff_until: number | null;

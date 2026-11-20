@@ -22,6 +22,7 @@ import path from 'path';
 import { brotliCompressSync, brotliDecompressSync, constants as zc } from 'zlib';
 import type { FetchSettings, FetchSite } from '../settings';
 import { classifyResponse, type ResponseClass } from './challenge';
+import { LEASE_SLOT_SQL, MAX_FETCHERS, slotKey, slotToken, tokenSlot } from './fetch-slots';
 
 /** Refused pages kept per site, and the most kept of each (bot checks and 503s are a few KB). */
 const REFUSED_KEEP = 500;
@@ -223,19 +224,25 @@ export class FetchQueue {
   }
 
   /** Why a site can't have a request now (null = it can), and when it can at the earliest. */
-  blocked(site: FetchSite, now = Date.now()): { reason: string; until: number | null } | null {
+  blocked(
+    site: FetchSite,
+    now = Date.now(),
+    slot = 0,
+  ): { reason: string; until: number | null } | null {
     const s = this.settings();
     const conf = s.sites[site];
     if (!conf?.enabled) return { reason: 'switched off', until: null };
-    const back = this.site(backoffKey(site), now);
+    const back = this.site(slotKey(backoffKey(site), slot), now);
     if (back.paused_reason) return { reason: back.paused_reason, until: null };
     if (back.backoff_until && back.backoff_until > now) {
       return { reason: back.backoff_reason ?? 'backing off', until: back.backoff_until };
     }
     if (site === 'ndl' && inNdlOutage(s, now))
       return { reason: "NDL's daily outage", until: now + 60_000 };
-    const pace = this.site(this.paceKey(site, now), now);
-    const interval = conf.intervalSeconds * 1000 * (AMAZON.has(site) ? back.slow_factor : 1);
+    const pace = this.site(slotKey(this.paceKey(site, now), slot), now);
+    // Amazon's slow-down is one for every fetcher (kept on slot 0's row).
+    const slow = slot ? this.site(backoffKey(site), now).slow_factor : back.slow_factor;
+    const interval = conf.intervalSeconds * 1000 * (AMAZON.has(site) ? slow : 1);
     if (pace.last_claim_at && pace.last_claim_at + interval > now) {
       return { reason: 'pace', until: pace.last_claim_at + interval };
     }
@@ -244,8 +251,15 @@ export class FetchQueue {
 
   // ------------------------------------------------------------ claims
 
-  /** Gives the fetcher one due request per site whose pace and in-flight limit allow it. */
-  claim(now = Date.now()): { requests: ClaimedRequest[]; waitSeconds: number; waitMs: number } {
+  /**
+   * Gives the fetcher one due request per site whose pace and in-flight limit allow it. `slot`
+   * and `version`: a parallel fetcher's (stage4/fetch-slots.ts, temporary); slot 0 is as before.
+   */
+  claim(
+    now = Date.now(),
+    slot = 0,
+    version?: string | null,
+  ): { requests: ClaimedRequest[]; waitSeconds: number; waitMs: number } {
     const s = this.settings();
     this.expireLeases(now);
     const out: ClaimedRequest[] = [];
@@ -266,12 +280,15 @@ export class FetchQueue {
       'UPDATE fetch_sites SET last_claim_at = ?, updated_at = ? WHERE site = ?',
     );
     const leasedOf = this.db.prepare(
-      "SELECT COUNT(*) AS n FROM fetch_requests WHERE site = ? AND state = 'leased'",
+      `SELECT COUNT(*) AS n FROM fetch_requests WHERE site = ? AND state = 'leased' AND ${LEASE_SLOT_SQL} = ?`,
     );
     const fv = this.db.prepare('SELECT version FROM fetcher_status WHERE id = 1').get() as
       | { version: string | null }
       | undefined;
-    const multi = versionAtLeast(fv?.version ?? null, MULTI_IN_FLIGHT_VERSION);
+    const multi = versionAtLeast(
+      version !== undefined ? version : (fv?.version ?? null),
+      MULTI_IN_FLIGHT_VERSION,
+    );
     // Sites whose own last claim is oldest go first: where two share one slot (Amazon's product
     // pages and searches), they take turns. In a fixed order the product pages always won it
     // (found live 2026-11-18: 50 searches answered in a day, 30,103 waiting).
@@ -281,12 +298,13 @@ export class FetchQueue {
         site,
         i,
         last:
-          (lastOwn.get(site) as { last_claim_at: number | null } | undefined)?.last_claim_at ?? 0,
+          (lastOwn.get(slotKey(site, slot)) as { last_claim_at: number | null } | undefined)
+            ?.last_claim_at ?? 0,
       }))
       .sort((a, b) => a.last - b.last || a.i - b.i)
       .map((x) => x.site);
     for (const site of order) {
-      const b = this.blocked(site, now);
+      const b = this.blocked(site, now, slot);
       if (b) {
         if (b.until) soonest = Math.min(soonest, b.until);
         continue;
@@ -295,7 +313,7 @@ export class FetchQueue {
       // fetcher that handles several per site (1.4.0+); one for older fetchers, which skip a
       // second request of a site they are already asking (it would wait out its lease).
       const limit = multi ? Math.max(1, s.sites[site]?.inFlight ?? 1) : 1;
-      const open = (leasedOf.get(site) as { n: number }).n;
+      const open = (leasedOf.get(site, slot) as { n: number }).n;
       if (open >= limit) continue;
       const r = pick.get(site, now) as Omit<ClaimedRequest, 'leaseToken'> | undefined;
       if (!r) {
@@ -303,16 +321,17 @@ export class FetchQueue {
         if (t !== null) soonest = Math.min(soonest, Math.max(t, now + 20));
         continue;
       }
-      const token = randomUUID();
-      const paceKey = this.paceKey(site, now);
+      const token = slotToken(randomUUID(), slot);
+      const paceKey = slotKey(this.paceKey(site, now), slot);
+      const own = slotKey(site, slot);
       const ok = this.db.transaction(() => {
         if (take.run(token, now + s.leaseSeconds * 1000, now, r.id).changes !== 1) return false;
         this.site(paceKey, now);
         stamp.run(now, now, paceKey);
         // The site's own last claim too (its turn in a shared slot).
-        if (paceKey !== site) {
-          this.site(site, now);
-          stamp.run(now, now, site);
+        if (paceKey !== own) {
+          this.site(own, now);
+          stamp.run(now, now, own);
         }
         return true;
       })();
@@ -332,7 +351,14 @@ export class FetchQueue {
    * Every open lease goes back to the queue now (their attempt count unchanged): the fetcher that
    * held them restarted and can't answer them. The site's pace still applies at the next claim.
    */
-  releaseLeases(now = Date.now()): number {
+  releaseLeases(now = Date.now(), slot?: number): number {
+    if (slot !== undefined)
+      return this.db
+        .prepare(
+          `UPDATE fetch_requests SET state = 'queued', lease_token = NULL, lease_until = NULL, updated_at = ?
+           WHERE state = 'leased' AND ${LEASE_SLOT_SQL} = ?`,
+        )
+        .run(now, slot).changes;
     return this.db
       .prepare(
         `UPDATE fetch_requests SET state = 'queued', lease_token = NULL, lease_until = NULL, updated_at = ?
@@ -415,7 +441,8 @@ export class FetchQueue {
       answer.error && answer.status === null
         ? 'error'
         : classifyResponse(req.site, answer.status, raw);
-    const bkey = backoffKey(req.site);
+    // Back-off and pauses go to the fetcher (slot) that asked.
+    const bkey = slotKey(backoffKey(req.site), tokenSlot(leaseToken));
     const pace = AMAZON.has(req.site) ? this.amazonPace(now) : null;
     if (outcome !== 'ok' && outcome !== 'gone' && raw)
       this.keepRefused(req.site, id, answer.status, raw, now);
@@ -609,12 +636,14 @@ export class FetchQueue {
 
   /** Resumes a paused site (from the page). */
   resume(site: string, now = Date.now()): void {
-    this.db
-      .prepare(
-        `UPDATE fetch_sites SET paused_reason = NULL, paused_at = NULL, challenges_in_row = 0, backoff_until = NULL,
+    // Every fetcher's slot of the site (stage4/fetch-slots.ts).
+    for (let k = 0; k < MAX_FETCHERS; k++)
+      this.db
+        .prepare(
+          `UPDATE fetch_sites SET paused_reason = NULL, paused_at = NULL, challenges_in_row = 0, backoff_until = NULL,
            backoff_seconds = 0, backoff_reason = NULL, updated_at = ? WHERE site = ?`,
-      )
-      .run(now, backoffKey(site));
+        )
+        .run(now, slotKey(backoffKey(site), k));
   }
 
   /**

@@ -78,7 +78,9 @@ export function createCleanupFetchRouter(options: FetchRouteOptions): Router {
   router.post('/cleanup-fetch/claim', json, (req, res) => {
     const service = options.service!;
     const fetcherId = str(((req.body ?? {}) as Record<string, unknown>).fetcherId, 100);
-    if (!fetcherId || !service.isActiveFetcher(fetcherId)) {
+    // The usual fetcher is slot 0; parallel ones have their own (stage4/fetch-slots.ts).
+    const slot = fetcherId ? service.fetcherSlot(fetcherId) : null;
+    if (!slot) {
       res.json({
         requests: [],
         waitSeconds: 30,
@@ -87,7 +89,7 @@ export function createCleanupFetchRouter(options: FetchRouteOptions): Router {
       });
       return;
     }
-    res.json(service.fetchQueue.claim());
+    res.json(service.fetchQueue.claim(Date.now(), slot.slot, slot.version));
   });
 
   const raw = express.raw({ type: () => true, limit: '80mb' });
