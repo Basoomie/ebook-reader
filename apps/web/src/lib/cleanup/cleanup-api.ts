@@ -803,6 +803,13 @@ export interface AiStatus {
     checked: boolean | null;
     mode: 'batch' | 'direct';
   }[];
+  /** The steps that ask models today and the model tasks each uses. */
+  steps?: {
+    id: string;
+    name: string;
+    about: string;
+    models: { task: string; role: string }[];
+  }[];
   /** The latest "Test batch" of each model. */
   batchTests: Record<
     string,

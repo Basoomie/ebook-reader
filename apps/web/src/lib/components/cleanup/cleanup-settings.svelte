@@ -64,18 +64,10 @@
     { name: 'openaiApiKey', label: 'OpenAI API key' }
   ];
 
-  const MODEL_LABELS: Record<string, string> = {
-    'stage4.primary': 'Online sources: first model',
-    'stage4.secondary': 'Online sources: second model',
-    'stage4.upgradePrimary': 'Online sources: upgrade, first model',
-    'stage4.upgradeSecondary': 'Online sources: upgrade, second model',
-    'stage5.primary': 'Genres and tags: first model',
-    'stage5.secondary': 'Genres and tags: second model',
-    'audio5.primary': 'Audiobook metadata: first model',
-    'audio5.secondary': 'Audiobook metadata: second model',
-    'audio5.upgradePrimary': 'Audiobook metadata: upgrade, first model',
-    'audio5.upgradeSecondary': 'Audiobook metadata: upgrade, second model'
-  };
+  const PROVIDERS = [
+    { id: 'anthropic', name: 'Anthropic' },
+    { id: 'openai', name: 'OpenAI' }
+  ] as const;
 
   /** The AI's spending, the models' checks (WP21d); null on an older server. */
   let ai: AiStatus | null = null;
@@ -105,8 +97,84 @@
     }
   }
 
-  /** Every configured model once (the models map's values). */
-  $: aiModels = settings ? [...new Set(Object.values(settings.models).filter(Boolean))] : [];
+  /** The steps that ask models today (from the server), with the model tasks each uses. */
+  $: aiSteps = (ai?.steps ?? []).map((step) => ({
+    ...step,
+    models: step.models.map((m) => ({ ...m, model: settings?.models[m.task] ?? '' }))
+  }));
+  /** "Add model" under advanced settings. */
+  let newModel = '';
+  let newIn: number | '' = '';
+  let newOut: number | '' = '';
+
+  const providerName = (model: string) => (/^claude/i.test(model) ? 'Anthropic' : 'OpenAI');
+
+  /** The models one can choose: those with a price (a model without one is never asked). */
+  function modelChoices(current: string): string[] {
+    const list = Object.keys(settings?.ai?.prices ?? {});
+    return current && !list.includes(current) ? [current, ...list] : list;
+  }
+
+  function setTaskModel(task: string, model: string) {
+    if (!settings) return;
+    settings = { ...settings, models: { ...settings.models, [task]: model } };
+    saved = false;
+  }
+
+  /** A chosen model's price and whether its provider offers it. */
+  function modelLine(status: AiStatus | null, model: string): string {
+    const p = settings?.ai?.prices[model];
+    const price = p
+      ? `List price $${p.inputPerMTok} in / $${p.outputPerMTok} out per million tokens`
+      : 'No price: never asked (add it under advanced settings)';
+    const where = providerName(model);
+    const t = status?.tasks.find((x) => x.model === model);
+    const offered =
+      !t || t.checked === null
+        ? `${where}: not checked yet`
+        : t.checked
+          ? `offered by ${where} ✓`
+          : `NOT offered by ${where}: check the model id`;
+    return `${price} · ${offered}`;
+  }
+
+  /** One line per provider after Check models. */
+  function providerLine(status: AiStatus | null, id: 'anthropic' | 'openai', name: string): string {
+    if (!status) return `${name}: …`;
+    if (!status.keys[id]) return `${name}: no API key saved`;
+    const c = status.checks[id];
+    if (!c) return `${name}: key saved, not checked yet`;
+    if (c.error) return `${name}: ${c.error}`;
+    return `${name}: key works, ${c.models ?? 0} models offered (checked ${formatWhen(c.checkedAt)})`;
+  }
+
+  function canAddModel(id: string, input: number | '', output: number | ''): boolean {
+    const m = id.trim();
+    return (
+      !!m &&
+      !(m in (settings?.ai?.prices ?? {})) &&
+      typeof input === 'number' &&
+      typeof output === 'number'
+    );
+  }
+
+  function addModel() {
+    if (!settings?.ai || !canAddModel(newModel, newIn, newOut)) return;
+    settings = {
+      ...settings,
+      ai: {
+        ...settings.ai,
+        prices: {
+          ...settings.ai.prices,
+          [newModel.trim()]: { inputPerMTok: Number(newIn), outputPerMTok: Number(newOut) }
+        }
+      }
+    };
+    newModel = '';
+    newIn = '';
+    newOut = '';
+    saved = false;
+  }
   let testing: Record<string, boolean> = {};
   let testTimer: ReturnType<typeof setInterval> | undefined;
   onDestroy(() => clearInterval(testTimer));
@@ -147,12 +215,6 @@
     if (t.state === 'answered') return `Batch test ${when}: ${t.detail ?? 'answered'} ✓`;
     if (t.state === 'nothing') return `Batch test ${when}: ${t.detail ?? 'nothing answered'}`;
     return `Batch test ${when}: failed (${t.detail ?? ''})`;
-  }
-
-  function taskState(t: AiStatus['tasks'][number]): string {
-    const where = t.provider === 'anthropic' ? 'Anthropic' : 'OpenAI';
-    if (t.checked === null) return `${where}: not checked yet`;
-    return t.checked ? `${where}: offered ✓` : `${where}: NOT offered`;
   }
 
   let settings: CleanupSettings | null = null;
@@ -1330,11 +1392,10 @@
 
     {#if settings.ai}
       <fieldset class="grid gap-4 sm:grid-cols-2" data-testid="cleanup-ai">
-        <legend class={legend}>AI</legend>
+        <legend class={legend}>AI spending</legend>
         <p class="text-sm text-c-muted sm:col-span-2">
-          The models are asked only while the cleanup's AI spending stays under this limit (every
-          stage together); when it is reached the stage pauses and says so. Empty = no limit set:
-          nothing is asked.
+          One limit for all of the cleanup's AI. Nothing is sent to a model until a limit is set;
+          when it is reached, the step pauses and says so, and raising it lets the step go on.
         </p>
         <label class={field}>
           <span class={label}>Spending limit (US$)</span>
@@ -1353,155 +1414,92 @@
             <span>Spent so far: ${ai.spend.spentUsd.toFixed(4)}</span>
             {#if ai.spend.reservedUsd > 0}
               <span class="text-c-muted"
-                >Held for batches at the providers: ${ai.spend.reservedUsd.toFixed(4)}</span
+                >Held for batches still at the providers: ${ai.spend.reservedUsd.toFixed(4)}</span
               >
             {/if}
           {/if}
         </div>
-        <div class="flex flex-col gap-2 text-sm sm:col-span-2" data-testid="cleanup-ai-modes">
-          <span class={label}>How each model is asked</span>
-          <p class="text-c-muted">
-            Batches cost half and are answered when the provider runs them; one call each is
-            answered at once at full price. Test batch sends one tiny question as a batch and shows
-            whether and how fast it was answered. Measured 2026-11-19: OpenAI ran no batch for
-            gpt-6-luna (nothing answered in over an hour), so it is asked one call each; Claude
-            Haiku's and gpt-6.1-sol's batches were answered in 2 min and 80 s.
-          </p>
-          {#each aiModels as model (model)}
-            <div class="flex flex-wrap items-center gap-2" data-testid="cleanup-ai-mode-{model}">
-              <span class="w-40 break-all">{model}</span>
-              <select
-                class="c-input w-44"
-                value={settings.ai.modes[model] ?? 'batch'}
-                on:change={(e) => setModelMode(model, e.currentTarget.value)}
-              >
-                <option value="batch">Batches (half price)</option>
-                <option value="direct">One call each</option>
-              </select>
-              <button
-                type="button"
-                class="c-btn c-btn-ghost"
-                disabled={testing[model]}
-                on:click={() => testBatch(model)}
-                data-testid="cleanup-ai-test-{model}">Test batch</button
-              >
-              <span class="text-c-muted" data-testid="cleanup-ai-test-result-{model}"
-                >{batchTestText(ai, model)}</span
-              >
-            </div>
-          {/each}
-        </div>
-        <label class={field}>
-          <span class={label}>Cancel a batch with no answers after (minutes; 0 = never)</span>
-          <input
-            class="c-input"
-            type="number"
-            min="0"
-            max="1440"
-            bind:value={settings.ai.batchStallMinutes}
-            data-testid="cleanup-ai-stall"
-          />
-        </label>
-        <label class="flex items-center gap-2 text-sm">
+        <label class="flex items-start gap-2 text-sm sm:col-span-2">
           <input
             type="checkbox"
+            class="mt-1"
             bind:checked={settings.ai.labeledOnly}
             data-testid="cleanup-ai-labeled-only"
           />
-          Ask only about the labeled books (a check before the whole library)
+          <span
+            >Ask only about the labeled books
+            <span class="block text-c-muted"
+              >For a check before the whole library: the models read only the 200 books in the
+              reference sample; every other book is decided by the rules alone.</span
+            ></span
+          >
         </label>
-        <label class={field}>
-          <span class={label}>Calls at the same time (one call each)</span>
-          <input
-            class="c-input"
-            type="number"
-            min="1"
-            max="20"
-            bind:value={settings.ai.directWorkers}
-          />
-        </label>
-        <label class={field}>
-          <span class={label}>Requests per batch</span>
-          <input
-            class="c-input"
-            type="number"
-            min="1"
-            max="10000"
-            bind:value={settings.ai.batchSize}
-          />
-        </label>
-        <label class={field}>
-          <span class={label}>Check a batch every (s)</span>
-          <input
-            class="c-input"
-            type="number"
-            min="5"
-            max="3600"
-            bind:value={settings.ai.batchPollSeconds}
-          />
-        </label>
-        <label class={field}>
-          <span class={label}>Claude max_tokens (thinking included)</span>
-          <input
-            class="c-input"
-            type="number"
-            min="1000"
-            max="64000"
-            bind:value={settings.ai.maxTokens}
-          />
-        </label>
-        <label class={field}>
-          <span class={label}>Time limit per call (s)</span>
-          <input
-            class="c-input"
-            type="number"
-            min="10"
-            max="900"
-            bind:value={settings.ai.requestTimeoutSeconds}
-          />
-        </label>
-        <label class={field}>
-          <span class={label}>Tries per call (busy or server errors only)</span>
-          <input class="c-input" type="number" min="1" max="10" bind:value={settings.ai.attempts} />
-        </label>
-        <label class={field}>
-          <span class={label}>Batch price (share of the list price)</span>
-          <input
-            class="c-input"
-            type="number"
-            min="0"
-            max="1"
-            step="any"
-            bind:value={settings.ai.batchPriceFactor}
-          />
-        </label>
-        <label class="flex items-center gap-2 text-sm">
-          <input type="checkbox" bind:checked={settings.ai.structuredOutputs} />
-          Ask for the answer in the stage's JSON format (structured outputs)
-        </label>
-        <div class="flex flex-col gap-2 text-sm sm:col-span-2" data-testid="cleanup-ai-prices">
-          <span class={label}>List prices (US$ per million tokens: input / output)</span>
-          {#each Object.keys(settings.ai.prices) as model (model)}
-            <div class="flex flex-wrap items-center gap-2">
-              <span class="w-44 break-all">{model}</span>
-              <input
-                class="c-input w-24"
-                type="number"
-                min="0"
-                step="any"
-                bind:value={settings.ai.prices[model].inputPerMTok}
-              />
-              <input
-                class="c-input w-24"
-                type="number"
-                min="0"
-                step="any"
-                bind:value={settings.ai.prices[model].outputPerMTok}
-              />
+      </fieldset>
+
+      <fieldset class="flex flex-col gap-4" data-testid="cleanup-ai-models">
+        <legend class={legend}>Models in use</legend>
+        <p class="text-sm text-c-muted">
+          The steps that ask AI models today. <strong>Batches</strong> cost half and are answered
+          when the provider gets to them (minutes for Claude); <strong>one call each</strong> is
+          answered at once at the full price. <strong>Test batch</strong> sends one tiny question as
+          a batch and shows whether and how fast the provider answered it (OpenAI ran no batch for gpt-6-luna
+          on 2026-11-19, so it is asked one call each).
+        </p>
+        {#each aiSteps as step (step.id)}
+          <div class="flex flex-col gap-3" data-testid="cleanup-ai-step-{step.id}">
+            <div>
+              <h3 class="font-bold">{step.name}</h3>
+              <p class="text-sm text-c-muted">{step.about}</p>
             </div>
-          {/each}
-        </div>
-        <div class="flex flex-col gap-2 text-sm sm:col-span-2" data-testid="cleanup-ai-models">
+            {#each step.models as m (m.task)}
+              <div
+                class="flex flex-col gap-2 border-l-2 border-c-border pl-3 text-sm"
+                data-testid="cleanup-ai-task-{m.task}"
+              >
+                <label class="flex flex-wrap items-center gap-2">
+                  <span class="w-28 font-bold">{m.role}</span>
+                  <select
+                    class="c-input w-56"
+                    value={m.model}
+                    on:change={(e) => setTaskModel(m.task, e.currentTarget.value)}
+                    data-testid="cleanup-ai-model-{m.task}"
+                  >
+                    {#each modelChoices(m.model) as choice (choice)}
+                      <option value={choice}>{choice}</option>
+                    {/each}
+                  </select>
+                </label>
+                <span class="text-c-muted" data-testid="cleanup-ai-model-state-{m.task}"
+                  >{modelLine(ai, m.model)}</span
+                >
+                <div
+                  class="flex flex-wrap items-center gap-2"
+                  data-testid="cleanup-ai-mode-{m.model}"
+                >
+                  <select
+                    class="c-input w-64"
+                    value={settings.ai.modes[m.model] ?? 'batch'}
+                    on:change={(e) => setModelMode(m.model, e.currentTarget.value)}
+                  >
+                    <option value="batch">Batches (half price)</option>
+                    <option value="direct">One call each (full price)</option>
+                  </select>
+                  <button
+                    type="button"
+                    class="c-btn c-btn-ghost"
+                    disabled={testing[m.model]}
+                    on:click={() => testBatch(m.model)}
+                    data-testid="cleanup-ai-test-{m.model}">Test batch</button
+                  >
+                  <span class="text-c-muted" data-testid="cleanup-ai-test-result-{m.model}"
+                    >{batchTestText(ai, m.model)}</span
+                  >
+                </div>
+              </div>
+            {/each}
+          </div>
+        {/each}
+        <div class="flex flex-col gap-1 text-sm" data-testid="cleanup-ai-check-result">
           <div class="flex flex-wrap items-center gap-2">
             <button
               type="button"
@@ -1512,36 +1510,206 @@
             >
               {checking ? 'Checking…' : 'Check models'}
             </button>
-            <span class="text-c-muted">Reads each provider's model list with the saved key.</span>
+            <span class="text-c-muted"
+              >Asks each provider, with your key, which models it offers.</span
+            >
           </div>
           {#if aiError}<p class="c-notice" role="alert">{aiError}</p>{/if}
-          {#if ai}
-            {#each ai.tasks.filter((t) => MODEL_LABELS[t.task]) as t (t.task)}
-              <p data-testid="cleanup-ai-task-{t.task}">
-                {MODEL_LABELS[t.task]}: {t.model} · {taskState(t)}{t.price ? '' : ' · no price'}
-              </p>
-            {/each}
-            {#each Object.entries(ai.checks) as [provider, c] (provider)}
-              {#if c.error}
-                <p class="c-notice">
-                  {provider === 'anthropic' ? 'Anthropic' : 'OpenAI'}: {c.error}
-                </p>
-              {/if}
-            {/each}
-          {/if}
+          {#each PROVIDERS as p (p.id)}
+            <p data-testid="cleanup-ai-provider-{p.id}">{providerLine(ai, p.id, p.name)}</p>
+          {/each}
         </div>
       </fieldset>
-    {/if}
 
-    <fieldset class="grid gap-4 sm:grid-cols-2">
-      <legend class={legend}>Models</legend>
-      {#each Object.keys(MODEL_LABELS) as task (task)}
-        <label class={field}>
-          <span class={label}>{MODEL_LABELS[task]}</span>
-          <input class="c-input" bind:value={settings.models[task]} />
-        </label>
-      {/each}
-    </fieldset>
+      <details class="flex flex-col gap-4" data-testid="cleanup-ai-advanced">
+        <summary class="cursor-pointer font-bold">AI: advanced settings (rarely needed)</summary>
+        <div class="mt-4 grid gap-4 sm:grid-cols-2">
+          <label class={field}>
+            <span class={label}>Cancel a batch with no answers after (minutes)</span>
+            <input
+              class="c-input"
+              type="number"
+              min="0"
+              max="1440"
+              bind:value={settings.ai.batchStallMinutes}
+              data-testid="cleanup-ai-stall"
+            />
+            <span class="text-c-muted"
+              >If a provider hasn't answered anything in a batch by then, the batch is cancelled and
+              its questions are asked one call each. 0 = wait as long as the provider takes (up to
+              24 hours).</span
+            >
+          </label>
+          <label class={field}>
+            <span class={label}>Calls at the same time</span>
+            <input
+              class="c-input"
+              type="number"
+              min="1"
+              max="20"
+              bind:value={settings.ai.directWorkers}
+            />
+            <span class="text-c-muted"
+              >For a model asked one call each: how many questions run at once. More is faster (3 ≈
+              3½ hours for the whole library with gpt-6-luna); the cost is the same.</span
+            >
+          </label>
+          <label class={field}>
+            <span class={label}>Questions per batch</span>
+            <input
+              class="c-input"
+              type="number"
+              min="1"
+              max="10000"
+              bind:value={settings.ai.batchSize}
+            />
+            <span class="text-c-muted"
+              >The whole library is about 4,900 questions per model, so 500 makes about 10 batches.
+              Providers allow up to 50,000.</span
+            >
+          </label>
+          <label class={field}>
+            <span class={label}>Check a batch every (seconds)</span>
+            <input
+              class="c-input"
+              type="number"
+              min="5"
+              max="3600"
+              bind:value={settings.ai.batchPollSeconds}
+            />
+            <span class="text-c-muted"
+              >How often the server asks a provider whether a batch is done.</span
+            >
+          </label>
+          <label class={field}>
+            <span class={label}>Longest Claude answer (tokens, thinking included)</span>
+            <input
+              class="c-input"
+              type="number"
+              min="1000"
+              max="64000"
+              bind:value={settings.ai.maxTokens}
+            />
+            <span class="text-c-muted"
+              >Too low cuts answers off (8,000 starved one book in the tests); you pay only for what
+              is written.</span
+            >
+          </label>
+          <label class={field}>
+            <span class={label}>Time limit per call (seconds)</span>
+            <input
+              class="c-input"
+              type="number"
+              min="10"
+              max="900"
+              bind:value={settings.ai.requestTimeoutSeconds}
+            />
+            <span class="text-c-muted">A call that takes longer is tried again.</span>
+          </label>
+          <label class={field}>
+            <span class={label}>Tries per question</span>
+            <input
+              class="c-input"
+              type="number"
+              min="1"
+              max="10"
+              bind:value={settings.ai.attempts}
+            />
+            <span class="text-c-muted"
+              >Only when the provider is busy or has a server error. A refusal or an unusable answer
+              is never asked again.</span
+            >
+          </label>
+          <label class={field}>
+            <span class={label}>Batch price (share of the list price)</span>
+            <input
+              class="c-input"
+              type="number"
+              min="0"
+              max="1"
+              step="any"
+              bind:value={settings.ai.batchPriceFactor}
+            />
+            <span class="text-c-muted">0.5 = half price; used to count what batches cost.</span>
+          </label>
+          <label class="flex items-start gap-2 text-sm sm:col-span-2">
+            <input type="checkbox" class="mt-1" bind:checked={settings.ai.structuredOutputs} />
+            <span
+              >Ask for answers in the exact format
+              <span class="block text-c-muted"
+                >The providers then always answer in the shape the step reads. Turn off only if a
+                provider refuses it.</span
+              ></span
+            >
+          </label>
+          <div class="flex flex-col gap-2 text-sm sm:col-span-2" data-testid="cleanup-ai-prices">
+            <span class={label}>Models you can choose, with their list prices</span>
+            <span class="text-c-muted"
+              >US$ per million tokens, input / output, from the providers' price pages. A model
+              without a price is never asked. Add a new model here to choose it above.</span
+            >
+            {#each Object.keys(settings.ai.prices) as model (model)}
+              <div class="flex flex-wrap items-center gap-2">
+                <span class="w-44 break-all">{model}</span>
+                <input
+                  class="c-input w-24"
+                  type="number"
+                  min="0"
+                  step="any"
+                  aria-label="{model} input price"
+                  bind:value={settings.ai.prices[model].inputPerMTok}
+                />
+                <input
+                  class="c-input w-24"
+                  type="number"
+                  min="0"
+                  step="any"
+                  aria-label="{model} output price"
+                  bind:value={settings.ai.prices[model].outputPerMTok}
+                />
+              </div>
+            {/each}
+            <div class="flex flex-wrap items-center gap-2" data-testid="cleanup-ai-add-model">
+              <input
+                class="c-input w-44"
+                placeholder="New model id"
+                bind:value={newModel}
+                aria-label="New model id"
+              />
+              <input
+                class="c-input w-24"
+                type="number"
+                min="0"
+                step="any"
+                placeholder="Input"
+                aria-label="New model input price"
+                bind:value={newIn}
+              />
+              <input
+                class="c-input w-24"
+                type="number"
+                min="0"
+                step="any"
+                placeholder="Output"
+                aria-label="New model output price"
+                bind:value={newOut}
+              />
+              <button
+                type="button"
+                class="c-btn c-btn-ghost"
+                disabled={!canAddModel(newModel, newIn, newOut)}
+                on:click={addModel}>Add model</button
+              >
+            </div>
+          </div>
+          <p class="text-sm text-c-muted sm:col-span-2">
+            Models for steps that are not built yet (the book cleanup's AI steps and a later
+            re-check of unconfirmed values with stronger models) are kept and appear above once
+            their step exists.
+          </p>
+        </div>
+      </details>
+    {/if}
 
     <div class="flex flex-wrap items-center gap-4">
       <button

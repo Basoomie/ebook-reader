@@ -458,6 +458,13 @@ describe('stage 5 through the service', () => {
     expect(ai.body.keys).toEqual({ anthropic: true, openai: true });
     expect(ai.body.spend.limitUsd).toBe(1);
     expect(JSON.stringify(ai.body)).not.toContain('sk-ant-test');
+    // Settings > AI shows only the steps that ask models today, with the tasks they use.
+    expect(
+      ai.body.steps.map((s: { id: string; models: { task: string }[] }) => [
+        s.id,
+        s.models.map((m) => m.task),
+      ]),
+    ).toEqual([['audio5', ['audio5.primary', 'audio5.secondary']]]);
     const check = await api(request(e.app).post('/api/v1/cleanup/ai/models/check'));
     expect(check.status).toBe(200);
     expect(

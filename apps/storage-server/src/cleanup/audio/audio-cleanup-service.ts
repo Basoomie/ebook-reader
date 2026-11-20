@@ -41,6 +41,7 @@ import {
 } from './stage4-online';
 import { audioSiteLines, onlineList, unitStates } from './online-views';
 import { AiRunner, modeOf } from '../ai/runner';
+import { META_SPEC } from './meta-prompt';
 import { providerOf, type ProviderClient } from '../ai/providers';
 import type { Provider } from '../ai/types';
 import { AudioStage5, stage5AskKey, stage5RulesKey } from './stage5-meta';
@@ -875,6 +876,21 @@ export class AudioCleanupService {
         ]),
       ),
       tasks,
+      // The steps that ask models today, each with the model tasks it uses now (Settings > AI
+      // shows only these; other tasks stay saved until their step is built: WP20e, WP20f, the
+      // upgrade pass).
+      steps: [
+        {
+          id: META_SPEC.stage,
+          name: 'Audiobook metadata (stage 5)',
+          about:
+            "Both models read every recording. A value is confirmed when the rules are sure or both models agree; otherwise the second model's answer is kept as the best guess, marked unconfirmed.",
+          models: [
+            { task: META_SPEC.tasks.primary, role: 'First model' },
+            { task: META_SPEC.tasks.secondary, role: 'Second model' },
+          ],
+        },
+      ],
       batchTests: this.ai.batchTests(),
     };
   }
