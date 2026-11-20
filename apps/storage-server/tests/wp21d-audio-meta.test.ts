@@ -573,6 +573,8 @@ describe('stage 5 through the service', () => {
     const again = await untilDone(e);
     expect(again.analysisId).toBe(p.analysisId);
     expect(asked()).toBe(n);
+    // The dropped-answer count is the pass's own, not added to the last one's (it doubled live).
+    expect(again.invented).toBe(p.invented);
     expect(value(db, 'u:hoshi', 'multi_narr').value).toBe(false);
     // Changed models ask again (only the new model).
     updateSettings(db, { models: { 'audio5.secondary': 'gpt-6.1-sol' } });

@@ -203,6 +203,8 @@ export class AudioStage5 {
       .prepare(`UPDATE audio_meta_units SET state = 'asking' WHERE analysis_id = ?`)
       .run(p.analysisId);
     p.decided = 0;
+    // Counted while deciding: a new pass counts from zero (it doubled on each pass, 2026-11-20).
+    p.invented = 0;
     p.rulesKey = stage5RulesKey(this.db);
     p.finishedAt = null;
     p.gate = null;
@@ -215,6 +217,7 @@ export class AudioStage5 {
     if (!p || p.phase === 'evidence') return;
     p.askKey = null;
     p.decided = 0;
+    p.invented = 0;
     p.finishedAt = null;
     p.gate = null;
     this.nextPhase(p, 'models');
