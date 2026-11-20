@@ -364,7 +364,7 @@ describe('sending', () => {
         'Reading time: 30 min (no change)',
         'Speed: 22,000 / h (no change)',
         'Lookups: 7 (no change)',
-        `${LINK}/statistics?period=day:2026-11-16`,
+        `[View Stats](${LINK}/statistics?period=day:2026-11-16)`,
       ].join('\n'),
     ]);
     await e.at('2026-11-17T07:01:00Z');
@@ -395,7 +395,7 @@ describe('sending', () => {
         'Reading time: 1 h 21 min (+33 min, +69%)',
         'Speed: 16,164 / h (+11,198 / h, +225%)',
         'Lookups: 11 (+8, +267%)',
-        `${LINK}/statistics?period=week:2026-11-09`,
+        `[View Stats](${LINK}/statistics?period=week:2026-11-09)`,
       ].join('\n'),
     );
     e.discord.messages.length = 0;
@@ -409,7 +409,7 @@ describe('sending', () => {
         'Reading time: 3 h 20 min (+1 h 30 min, +82%)',
         'Speed: 15,600 / h (−4,037 / h, −21%)',
         'Lookups: 30 (+26, +650%)',
-        `${LINK}/statistics?period=month:2026-11-01`,
+        `[View Stats](${LINK}/statistics?period=month:2026-11-01)`,
       ].join('\n'),
     ]);
   });
@@ -430,7 +430,7 @@ describe('sending', () => {
       [
         'ッツ Reader: Tue 1 Dec 2026',
         'No reading.',
-        `${LINK}/statistics?period=day:2026-12-01`,
+        `[View Stats](${LINK}/statistics?period=day:2026-12-01)`,
       ].join('\n'),
     );
   });
@@ -446,7 +446,7 @@ describe('sending', () => {
         'Reading time: 10 min (+10 min, none then)',
         'Speed: 18,000 / h (no tracked reading then)',
         'Lookups: 1 (+1, none then)',
-        `${LINK}/statistics?period=day:2026-11-12`,
+        `[View Stats](${LINK}/statistics?period=day:2026-11-12)`,
       ].join('\n'),
     ]);
   });
