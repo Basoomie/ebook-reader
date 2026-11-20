@@ -59,6 +59,16 @@ export function audioStage6Bar(s: AudioStage6Status | null | undefined): Progres
       fraction: Math.min(1, p.walk.current.done / Math.max(1, p.walk.current.expected)),
       eta
     };
+  if (p.phase === 'check' && p.checking) {
+    const c = p.checking;
+    return c.total
+      ? {
+          label: `Checking ${c.step}: ${n(c.done)} of ${n(c.total)}`,
+          fraction: Math.min(1, c.done / c.total),
+          eta
+        }
+      : { label: `Checking ${c.step}`, fraction: 1, eta: null };
+  }
   return { label: PHASE_LABELS[p.phase] ?? p.phase, fraction: 0, eta: null };
 }
 

@@ -734,6 +734,8 @@ export interface Stage6Progress {
     after: { entries: number; ms: number; pausedMs: number; errors: string[] } | null;
     current: { done: number; expected: number } | null;
   };
+  /** The check's step now (missing on an older server). */
+  checking?: { step: string; done: number; total: number; startedAt: number } | null;
   check: {
     passed: boolean;
     at: number;

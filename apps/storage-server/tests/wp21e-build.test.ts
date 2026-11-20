@@ -908,7 +908,16 @@ describe('the build through the linking sidecar', { timeout: 120_000 }, () => {
       .expect(200);
     expect(csv.text).toMatch(/^.?old_path,outcome,new_path,kept_path,detail/);
     expect(csv.text.split('\r\n').filter(Boolean)).toHaveLength(8);
-    // On.
+    // On. The check's steps are recorded as they go (its progress bar).
+    const steps: string[] = [];
+    const check = s6 as unknown as {
+      checking: (p: unknown, step: string | null, done?: number, total?: number) => void;
+    };
+    const orig = check.checking.bind(s6);
+    check.checking = (p, step, done, total) => {
+      if (step && !steps.includes(step)) steps.push(step);
+      orig(p, step, done, total);
+    };
     await request(env.app)
       .put('/api/v1/cleanup/audio/stages/6')
       .set(user)
@@ -920,6 +929,22 @@ describe('the build through the linking sidecar', { timeout: 120_000 }, () => {
     expect(done.build.batches).toBeGreaterThan(3);
     expect(done.check!.items.filter((i) => i.ok === false)).toEqual([]);
     expect(done.check!.passed).toBe(true);
+    expect(steps).toEqual([
+      'the new folders',
+      'the metadata files',
+      'linked files read again',
+      'the move list, the labeled books, Audiobookshelf and the reader',
+    ]);
+    expect(done.checking).toBeNull();
+    // The walks' bar counts what a walk lists: files and their folders (it passed 100 % on the
+    // NAS when it counted files only); the walk after counts the walk before's entries.
+    const expectedOf = (w: 'before' | 'after') =>
+      (s6 as unknown as { expectedEntries: (p: unknown, w: string) => number }).expectedEntries(
+        done,
+        w,
+      );
+    expect(expectedOf('before')).toBe(done.walk.before!.entries);
+    expect(expectedOf('after')).toBe(done.walk.before!.entries);
     // Every audio file and PDF in the new folders is a hard link to its torrent file.
     const newTree = treeProof(path.join(disk.media, 'japanese-new'));
     const gen = treeProof(path.join(disk.media, 'japanese-generated-new'));

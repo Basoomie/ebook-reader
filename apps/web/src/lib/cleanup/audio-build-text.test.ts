@@ -101,6 +101,25 @@ describe('stage 6 on the page', () => {
     );
     expect(b?.label).toBe('Building: 8,402 of 16,804 folders, links and metadata files');
     expect(b?.fraction).toBe(0.5);
+    const c = audioStage6Bar(
+      s6(
+        p6({
+          phase: 'check',
+          checking: { step: 'the metadata files', done: 1000, total: 4000, startedAt: 0 }
+        })
+      )
+    );
+    expect(c?.label).toBe('Checking the metadata files: 1,000 of 4,000');
+    expect(c?.fraction).toBe(0.25);
+    const c2 = audioStage6Bar(
+      s6(
+        p6({
+          phase: 'check',
+          checking: { step: 'Audiobookshelf and the reader', done: 0, total: 0, startedAt: 0 }
+        })
+      )
+    );
+    expect(c2?.label).toBe('Checking Audiobookshelf and the reader');
   });
 
   it('summarizes the plan, the build and the check', () => {

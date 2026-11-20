@@ -160,6 +160,8 @@ export interface AudioStage6Progress {
     after: { entries: number; ms: number; pausedMs: number; errors: string[] } | null;
     current: { done: number; expected: number } | null;
   };
+  /** The check's step now (the new folders, the metadata files, the re-hash sample). */
+  checking?: { step: string; done: number; total: number; startedAt: number } | null;
   abs: { before: number | null; after: number | null };
   reader: { before: string | null; after: string | null };
   check: Stage6Check | null;
@@ -903,11 +905,7 @@ export class AudioStage6 {
     const started = Date.now();
     let pausedMs = 0;
     const errors: string[] = [];
-    const expected = (
-      this.db.prepare(`SELECT COUNT(*) AS n FROM audio_files WHERE gone_at IS NULL`).get() as {
-        n: number;
-      }
-    ).n;
+    const expected = this.expectedEntries(p, which);
     let total = 0;
     this.db
       .prepare('DELETE FROM audio_build_manifest WHERE analysis_id = ? AND phase = ?')
@@ -937,6 +935,33 @@ export class AudioStage6 {
     p.walk.current = null;
     this.save(p);
     return true;
+  }
+
+  /**
+   * How many entries a walk will list: the walk before's count for the walk after; otherwise
+   * stage 1's files plus the folders that hold them (the walk lists folders too: counting files
+   * alone, the bar passed 100 % on the NAS, 2026-11-20).
+   */
+  private expectedEntries(p: AudioStage6Progress, which: 'before' | 'after'): number {
+    if (which === 'after' && p.walk.before) return p.walk.before.entries;
+    const dirs = new Set<string>();
+    let files = 0;
+    for (const r of this.db
+      .prepare(`SELECT root, rel_path FROM audio_files WHERE gone_at IS NULL`)
+      .iterate() as Iterable<{ root: string; rel_path: string }>) {
+      files++;
+      const parts = r.rel_path.split('/');
+      for (let i = 1; i < parts.length; i++) dirs.add(`${r.root}/${parts.slice(0, i).join('/')}`);
+    }
+    return files + dirs.size;
+  }
+
+  /** The check's step and how far it is (shown as its progress bar). */
+  private checking(p: AudioStage6Progress, step: string | null, done = 0, total = 0): void {
+    if (step === null) p.checking = null;
+    else if (p.checking?.step === step) p.checking = { ...p.checking, done, total };
+    else p.checking = { step, done, total, startedAt: Date.now() };
+    this.save(p);
   }
 
   private storeManifest(
@@ -1061,6 +1086,8 @@ export class AudioStage6 {
       });
     } else {
       const entries: ManifestEntry[] = [];
+      const planned = ops.length;
+      this.checking(p, 'the new folders', 0, planned);
       for (const area of Object.values(AREA_FOLDERS)) {
         const top = path.join(media, area);
         const st = await lstatEntry(top);
@@ -1075,9 +1102,13 @@ export class AudioStage6 {
           ino: st.ino,
           nlink: st.nlink,
         });
+        const before = entries.length;
         const out = await walkTree(top, {
           shouldStop: stop,
           shouldPause: () => this.deps.lock.calibreBusy(),
+          onEntries: (n) => {
+            if (n % 1000 === 0) this.checking(p, 'the new folders', before + n, planned);
+          },
         });
         if (!out) return false;
         for (const e of out.entries) entries.push({ ...e, rel: `${area}/${e.rel}` });
@@ -1088,9 +1119,13 @@ export class AudioStage6 {
       );
       // metadata.json: the planned bytes.
       const metaOf = this.db.prepare('SELECT metadata FROM audio_build_books WHERE id = ?');
+      const metaTotal = ops.filter((o) => o.kind === 'metadata').length;
+      let metaDone = 0;
+      this.checking(p, 'the metadata files', 0, metaTotal);
       for (const o of ops) {
         if (o.kind !== 'metadata' || o.book_id === null) continue;
         if (stop()) return false;
+        if (++metaDone % 250 === 0) this.checking(p, 'the metadata files', metaDone, metaTotal);
         while (this.deps.lock.calibreBusy() && !stop()) await sleep(1000);
         const want = (metaOf.get(o.book_id) as { metadata: Buffer }).metadata;
         const got = await readSmall(insideRoot(media, o.dst), 4 * 1024 * 1024).catch(() => null);
@@ -1159,6 +1194,7 @@ export class AudioStage6 {
       while (picked.length < s.buildRehashSample && pool.length)
         picked.push(pool.splice(Math.floor(rand() * pool.length), 1)[0]);
       const pacer = new ReadPacer(0);
+      this.checking(p, 'linked files read again', 0, picked.length);
       for (const c of picked) {
         for (;;) {
           if (stop()) {
@@ -1177,6 +1213,7 @@ export class AudioStage6 {
             continue;
           }
           rehash.checked++;
+          this.checking(p, 'linked files read again', rehash.checked, picked.length);
           if (h.sha256 === c.sha256) rehash.same++;
           else rehash.different.push(c.dst);
           break;
@@ -1190,6 +1227,8 @@ export class AudioStage6 {
         detail: `${rehash.same} of ${rehash.checked}`,
       });
     }
+
+    this.checking(p, 'the move list, the labeled books, Audiobookshelf and the reader');
 
     // 4. The move list covers every audio file of the live library.
     const libCount = (
@@ -1268,6 +1307,7 @@ export class AudioStage6 {
       detail: reader.same === null ? 'Not compared' : reader.same ? 'same' : 'changed',
     });
 
+    p.checking = null;
     p.check = {
       passed: items.every(
         (i) => i.ok === true || (i.ok === null && (i.key === 'abs' || i.key === 'reader')),
@@ -1451,6 +1491,12 @@ export class AudioStage6 {
       case 'walk_before':
       case 'walk_after':
         return p.walk.current ? rate(p.walk.current.done, p.walk.current.expected) : null;
+      case 'check': {
+        // The step now (the steps differ in pace).
+        const c = p.checking;
+        if (!c || !c.total || c.done <= 0) return null;
+        return Math.max(0, ((c.total - c.done) * (now - c.startedAt)) / c.done / 1000);
+      }
       case 'done':
       case 'planned':
         return 0;
