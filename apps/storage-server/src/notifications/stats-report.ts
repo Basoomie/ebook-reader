@@ -302,7 +302,8 @@ export function reportText(o: {
   linkBase: string;
   noReadingMode: NoReadingMode;
 }): string | null {
-  const link = `${o.linkBase}${statsLink(o.period)}`;
+  const url = `${o.linkBase}${statsLink(o.period)}`;
+  const link = `[View Stats](${url})`;
   const title = periodTitle(o.kind, o.period);
   if (noReading(o.current)) {
     if (o.noReadingMode === 'skip') return null;
