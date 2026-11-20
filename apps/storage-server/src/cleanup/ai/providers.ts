@@ -376,26 +376,31 @@ export class OpenAiProvider implements ProviderClient {
 
   /** A blocked prompt (400 with a content code) is a result, not an error. */
   private blocked(err: unknown): CallResult | null {
-    if (err instanceof OpenAI.APIError && err.status === 400) {
-      const code = String((err as { code?: unknown }).code ?? '');
-      if (OPENAI_BLOCK_CODES.has(code))
-        return {
-          kind: 'blocked',
-          detail: `${code}: ${err.message}`.slice(0, 300),
-          text: null,
-          usage: ZERO,
-        };
+    if (err instanceof OpenAI.APIError) {
+      const e = err as InstanceType<typeof OpenAI.APIError>;
+      if (e.status === 400) {
+        const code = String((e as { code?: unknown }).code ?? '');
+        if (OPENAI_BLOCK_CODES.has(code))
+          return {
+            kind: 'blocked',
+            detail: `${code}: ${e.message}`.slice(0, 300),
+            text: null,
+            usage: ZERO,
+          };
+      }
     }
     return null;
   }
 
   private wrap(err: unknown): Error {
-    if (err instanceof OpenAI.APIConnectionError) return new RetryableError(connectionMessage(err));
+    if (err instanceof OpenAI.APIConnectionError)
+      return new RetryableError(connectionMessage(err as Error));
     if (err instanceof OpenAI.APIError) {
-      const h = err.headers as Headers | undefined;
+      const e = err as InstanceType<typeof OpenAI.APIError>;
+      const h = e.headers as Headers | undefined;
       return statusError(
-        err.status,
-        `${err.status ?? ''} ${err.message}`.trim(),
+        e.status,
+        `${e.status ?? ''} ${e.message}`.trim(),
         h?.get?.('retry-after'),
       );
     }
@@ -488,8 +493,8 @@ export class OpenAiProvider implements ProviderClient {
         const text = await res.text();
         return text
           .split('\n')
-          .filter((l) => l.trim())
-          .map((l) => JSON.parse(l) as Record<string, unknown>);
+          .filter((l: string) => l.trim())
+          .map((l: string) => JSON.parse(l) as Record<string, unknown>);
       };
       const seen = new Set<string>();
       for (const line of [...(await read(b.output_file_id)), ...(await read(b.error_file_id))]) {
