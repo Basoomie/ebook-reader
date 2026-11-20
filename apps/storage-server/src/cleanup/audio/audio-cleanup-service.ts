@@ -41,6 +41,7 @@ import {
 } from './stage4-online';
 import { audioSiteLines, onlineList, unitStates } from './online-views';
 import { AiRunner, modeOf } from '../ai/runner';
+import { STAGE4_SPEC } from '../stage4/ai-prompt';
 import { META_SPEC } from './meta-prompt';
 import { providerOf, type ProviderClient } from '../ai/providers';
 import type { Provider } from '../ai/types';
@@ -90,6 +91,11 @@ export interface AudioCleanupOptions {
   fetcherStatus?: () => unknown;
   /** Stage 5 (WP21d): tests give their own AI provider clients. */
   aiProviders?: (provider: Provider, key: string) => ProviderClient;
+  /**
+   * The runner shared with the Calibre cleanup (WP20e: one runner for every stage that asks the
+   * models); a runner of its own when not given (tests).
+   */
+  aiRunner?: AiRunner;
   log?: (m: string) => void;
   logError?: (m: string, err?: unknown) => void;
 }
@@ -235,12 +241,14 @@ export class AudioCleanupService {
             log: this.log,
           })
         : null;
-    this.ai = new AiRunner({
-      db: opts.db,
-      secrets: opts.secrets,
-      providers: opts.aiProviders,
-      log: this.log,
-    });
+    this.ai =
+      opts.aiRunner ??
+      new AiRunner({
+        db: opts.db,
+        secrets: opts.secrets,
+        providers: opts.aiProviders,
+        log: this.log,
+      });
     this.stage5 = new AudioStage5({
       db: opts.db,
       runner: this.ai,
@@ -1246,6 +1254,16 @@ export class AudioCleanupService {
           models: [
             { task: META_SPEC.tasks.primary, role: 'First model' },
             { task: META_SPEC.tasks.secondary, role: 'Second model' },
+          ],
+        },
+        {
+          id: STAGE4_SPEC.stage,
+          name: 'Calibre online sources (stage 4)',
+          about:
+            "Both models read every book. A value is confirmed when the rules are sure or both models agree; otherwise the second model's answer is kept as the best guess, marked unconfirmed.",
+          models: [
+            { task: STAGE4_SPEC.tasks.primary, role: 'First model' },
+            { task: STAGE4_SPEC.tasks.secondary, role: 'Second model' },
           ],
         },
       ],

@@ -170,6 +170,8 @@ if (database.ok && cleanupDb?.ok) {
         faadPath: (process.env.FAAD_PATH ?? '').trim() || 'faad',
       },
       readLabels: audioLabelsReader(cleanupDb.db, config.dbDir),
+      // One AI runner for every cleanup stage that asks the models (WP20e).
+      aiRunner: cleanup.aiRunner,
       readerWrittenFiles: config.cleanupAudio
         ? readerWrittenFiles(database.db, config.cleanupAudio.libraryDir)
         : undefined,

@@ -21,6 +21,8 @@ import { listFieldPauses, loadGold, resumeField } from './stage2-gate';
 import { STAGE3_WAITING_SQL, Stage3Analysis, type PairRow, type Stage3Progress } from './stage3';
 import { Stage3Worker, type Stage3Reader } from '../counts/book-text-worker';
 import { Stage4Analysis, type Stage4Progress } from './stage4/analysis';
+import { Stage4Ai } from './stage4/ai-step';
+import { AiRunner, type AiRunnerDeps } from './ai/runner';
 import { openLookups, paceSeconds, stage4Eta, type SiteCounts } from './stage4/eta';
 import { FetchQueue, LABELED_PRIORITY, backoffKey } from './stage4/queue';
 import { FetcherSlots, slotStateRow, type FetcherSlot } from './stage4/fetch-slots';
@@ -122,6 +124,8 @@ export interface CleanupServiceOptions {
   /** The disk lock shared with the audiobook cleanup (WP21a); a new one when not given. */
   diskLock?: DiskLock;
   leaseSeconds?: number;
+  /** Stand-in AI providers (tests). */
+  aiProviders?: AiRunnerDeps['providers'];
   log?: (m: string) => void;
   logError?: (m: string, err?: unknown) => void;
 }
@@ -161,6 +165,14 @@ export class CleanupService {
   /** Stage 4 (WP20d): the fetch queue and the online-sources analysis (Preview only). */
   readonly fetchQueue: FetchQueue;
   readonly analysis4: Stage4Analysis | null;
+  /**
+   * The AI framework's runner, one for every cleanup stage that asks the models (Calibre
+   * stage 4 here, audiobook stage 5 through AudioCleanupService): one spending limit, one
+   * provider back-off (WP20e).
+   */
+  readonly aiRunner: AiRunner;
+  /** Stage 4's AI check (WP20e), after the rules' analysis. */
+  readonly stage4Ai: Stage4Ai | null;
   private analysing4: Promise<void> | null = null;
   /** Why stage 4 is not working right now. */
   waiting4: string | null = null;
@@ -192,6 +204,12 @@ export class CleanupService {
     this.log = opts.log ?? console.log;
     this.logError = opts.logError ?? console.error;
     this.secrets = new SecretStore(opts.cleanup, opts.main);
+    this.aiRunner = new AiRunner({
+      db: opts.cleanup,
+      secrets: this.secrets,
+      providers: opts.aiProviders,
+      log: this.log,
+    });
     this.diskLock = opts.diskLock ?? new DiskLock();
     // A batch being applied is Calibre's own disk work: audiobook jobs wait for it too.
     // A Calibre stage that is On with work left counts as using the disk also between its
@@ -250,6 +268,14 @@ export class CleanupService {
           cacheDir: opts.cacheDir,
           dbDir: opts.dbDir ?? null,
           queue: this.fetchQueue,
+          log: this.log,
+        })
+      : null;
+    this.stage4Ai = this.analysis4
+      ? new Stage4Ai({
+          db: opts.cleanup,
+          runner: this.aiRunner,
+          analysis: this.analysis4,
           log: this.log,
         })
       : null;
@@ -806,7 +832,17 @@ export class CleanupService {
     if (!p || p.libraryId !== target) {
       this.analysis4.restart(target);
     } else if (p.phase === 'done') {
-      this.waiting4 = p.error ? `The analysis failed: ${p.error}` : 'Done';
+      if (p.error) {
+        this.waiting4 = `The analysis failed: ${p.error}`;
+        return;
+      }
+      // Bookmeter's edition check once, then the AI check (WP20e); neither needs the fetcher.
+      if (p.bookmeterEditions?.phase !== 'done' || this.stage4Ai?.needsWork()) {
+        this.waiting4 = null;
+        this.runAnalysis4();
+        return;
+      }
+      this.waiting4 = 'Done';
       return;
     }
     this.waiting4 = this.fetcher().online
@@ -827,7 +863,18 @@ export class CleanupService {
           if (!(await this.diskFor(4, analysis.progress()?.phase, stop4))) break;
           const before = analysis.progress();
           const done = await analysis.step(stop4);
-          if (done) break;
+          if (done) {
+            // The AI check after the rules (WP20e). It holds no disk: it reads cleanup.db.
+            const ai = this.stage4Ai;
+            if (!ai || !ai.needsWork()) break;
+            this.diskLock.release(DISK_OWNERS.calibre4);
+            const r = await ai.step(stop4);
+            if (r === 'wait') {
+              for (let i = 0; i < 10 && !stop4(); i++)
+                await new Promise((res) => setTimeout(res, 500));
+            } else await new Promise((res) => setImmediate(res));
+            continue;
+          }
           // Waiting on the fetcher: no busy loop; the next answer or round goes on. The step
           // times change on every step, so they don't count as progress (with them the loop
           // never saw "nothing changed" and spun without giving the server back).

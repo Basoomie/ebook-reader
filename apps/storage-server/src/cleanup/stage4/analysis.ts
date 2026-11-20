@@ -27,7 +27,9 @@ import { gunzipSync, gzipSync } from 'zlib';
 import { snapshotFile } from '../../calibre/indexer';
 import { getLibrary } from '../../calibre/libraries';
 import { resolveInside, statFile } from '../../calibre/source-fs';
-import { imageFacts, readFileMetadata } from '../file-metadata';
+import { differenceHash, imageFacts, readFileMetadata } from '../file-metadata';
+import { readSourceFile } from '../../calibre/source-fs';
+import { createHash } from 'node:crypto';
 import { CALIBRE_FETCH_SITES, getSettings, stage4Bar, type CleanupSettings } from '../settings';
 import { Pacer } from '../stage1';
 import { loadEvidence as loadFileEvidence } from '../stage2';
@@ -60,7 +62,8 @@ import {
 import { bwAsAmazon, bwSettles, STANDIN, titleStem } from './bw-standin';
 import { NEXT_STEPS, type FollowUps } from './eta';
 import { ASIN_RE, pickByVolume, pyQuote, queryTitle, sim } from './pick';
-import { proposeStage4, type Stage4Proposal } from './proposals';
+import { proposeStage4, type CalibreCoverNow, type Stage4Proposal } from './proposals';
+import { storedAiValues, type Stage4AiValues } from './ai-decide';
 import { FetchQueue, LABELED_PRIORITY } from './queue';
 import { readRefEpub, type RefFile } from './ref-epub';
 import { nfkc } from './ref-text';
@@ -76,7 +79,7 @@ import {
   type Stage4Gold,
 } from './score';
 import { readStage4Extras, type Stage4Extras } from './snapshot4';
-import { decideStage4, STAGE4_RULES_VERSION } from './stage4-rules';
+import { decideStage4, STAGE4_RULES_VERSION, type Stage4Decision } from './stage4-rules';
 import {
   NATIVELY_SITEMAP,
   NDL_SPARQL,
@@ -138,6 +141,17 @@ export interface Stage4Progress {
   bookmeterRedo?: { phase: 'queued' | 'books' | 'done'; cursor: string; books: number };
   /** BookWalker asked once more for books its search found nothing for (bookwalkerRetryStep). */
   bookwalkerRetry?: { phase: 'books' | 'done'; cursor: string; books: number };
+  /**
+   * WP20e: Bookmeter's edition check (acceptBookmeter) applied once to an analysis that
+   * accepted its matches before it existed, from the stored answers (nothing is asked again
+   * unless another hit is now the match: then only its store list).
+   */
+  bookmeterEditions?: {
+    phase: 'books' | 'done';
+    cursor: string;
+    changed: number;
+    reopened: number;
+  };
   /** Books the final pass has proposed again (for its time left). */
   finalDone?: number;
   /** Each step's answers and the new requests they led to (stage4/eta.ts, the time left). */
@@ -308,6 +322,8 @@ export function emptyStage4Progress(libraryId: string, now = Date.now()): Stage4
     labelsError: null,
     error: null,
     labeledDoneAt: null,
+    // A new analysis accepts Bookmeter's matches with the edition check from the start.
+    bookmeterEditions: { phase: 'done', cursor: '', changed: 0, reopened: 0 },
   };
 }
 
@@ -415,6 +431,11 @@ export class Stage4Analysis {
   /** One unit of work; true when finished (or failed). Never throws. */
   async step(shouldStop: () => boolean): Promise<boolean> {
     let p = this.progress();
+    if (p && p.phase === 'done' && !p.error && p.bookmeterEditions?.phase !== 'done') {
+      await this.bookmeterEditionsStep(p);
+      this.save(p, p.phase === 'done' ? 'ready' : 'analysing');
+      return p.phase === 'done' && (p.bookmeterEditions?.phase as string | undefined) === 'done';
+    }
     if (!p || p.phase === 'done') return true;
     try {
       const q = p;
@@ -1256,9 +1277,14 @@ export class Stage4Analysis {
     const prio = labeled ? LABELED_PRIORITY : 0;
     const w = (s: string) => ({ libraryId: p.libraryId, uuid: book.uuid, step: s });
     const s = getSettings(this.db);
-    const d = decideStage4(this.record(book, ref, ev));
+    const rec = this.record(book, ref, ev);
+    const d = decideStage4(rec);
     if (ev.bookmeter.hits && ev.bookmeter.accepted === undefined) {
-      const acc = acceptBookmeter(ev.bookmeter.hits, { title: d.values.t, authors: d.values.au });
+      const acc = acceptBookmeter(ev.bookmeter.hits, {
+        title: d.values.t,
+        authors: d.values.au,
+        own: bookmeterOwnTexts(book, ref, d, rec.amazon?.product?.title),
+      });
       ev.bookmeter.accepted = acc.hit ? { id: acc.hit.id, reason: acc.reason } : null;
       ev.bookmeter.reason = acc.reason;
       if (acc.hit) {
@@ -1469,7 +1495,7 @@ export class Stage4Analysis {
     for (const r of done) {
       await slicer.maybeYield();
       const tb = performance.now();
-      this.proposeBook(p, r.calibre_uuid);
+      await this.proposeBook(p, r.calibre_uuid);
       addTime(p, 'propose: book', performance.now() - tb);
     }
     if (done.length) addTime(p, 'lookups: propose', performance.now() - t);
@@ -1539,6 +1565,9 @@ export class Stage4Analysis {
     p: Stage4Progress,
     uuid: string,
     settings: CleanupSettings,
+    calibreCover?: CalibreCoverNow | null,
+    /** The AI's values; undefined = read the stored ones (when the AI step decided this book). */
+    ai?: (Stage4AiValues & { asked: boolean }) | null,
   ): { proposals: Stage4Proposal[]; decision: ReturnType<typeof decideStage4> } | null {
     const book = this.book(uuid);
     const ref = this.loadRef(p.libraryId, uuid);
@@ -1547,12 +1576,18 @@ export class Stage4Analysis {
     const record = this.record(book, ref.file, ev);
     const decision = decideStage4(record);
     const applied = new Map<string, unknown>();
+    const appliedLastModified = new Map<string, string | null>();
     for (const a of this.db
       .prepare(
-        'SELECT field, value_json FROM applied_values WHERE library_id = ? AND calibre_uuid = ?',
+        'SELECT field, value_json, last_modified_after FROM applied_values WHERE library_id = ? AND calibre_uuid = ?',
       )
-      .all(p.libraryId, uuid) as { field: string; value_json: string }[]) {
+      .all(p.libraryId, uuid) as {
+      field: string;
+      value_json: string;
+      last_modified_after: string | null;
+    }[]) {
       applied.set(a.field, JSON.parse(a.value_json));
+      appliedLastModified.set(a.field, a.last_modified_after);
     }
     const readings = new Map<string, { reading: string; source: 'ndl' | 'generated' }>();
     for (const n of new Set([...decision.values.au, ...book.authors])) {
@@ -1591,6 +1626,9 @@ export class Stage4Analysis {
       readings,
       cover,
       applied,
+      appliedLastModified,
+      calibreCover,
+      ai: ai === undefined ? storedAiValues(this.db, `${p.libraryId}:${uuid}`) : ai,
       spelling: this.snapshot ? spellingLookup(this.snapshot.names) : undefined,
       sameDistance: settings.covers.sameDistance,
       smallCoverPx: settings.fetch.smallCoverPx,
@@ -1659,11 +1697,43 @@ export class Stage4Analysis {
     }
   }
 
-  private proposeBook(p: Stage4Progress, uuid: string): void {
+  /**
+   * Calibre's cover.jpg as it is now, read only for a book whose cover the cleanup wrote and
+   * that has a store cover to consider (WP20e: the check "changed in Calibre after the cleanup
+   * wrote it" compares the cover's bytes). null when it can't be read; undefined = not needed.
+   */
+  async calibreCoverNow(
+    p: Stage4Progress,
+    book: Stage2Book,
+  ): Promise<CalibreCoverNow | null | undefined> {
+    if (!book.hasCover) return undefined;
+    const written = this.db
+      .prepare(
+        "SELECT 1 FROM applied_values WHERE library_id = ? AND calibre_uuid = ? AND field = 'cover'",
+      )
+      .get(p.libraryId, book.uuid);
+    if (!written) return undefined;
+    const ev = this.loadOnline(p.libraryId, book.uuid);
+    if (!ev?.cover?.width) return undefined;
+    try {
+      const bytes = await readSourceFile(
+        path.join(this.libraryDir(p.libraryId), book.path, 'cover.jpg'),
+      );
+      return {
+        sha256: createHash('sha256').update(bytes).digest('hex'),
+        dhash: await differenceHash(bytes),
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private async proposeBook(p: Stage4Progress, uuid: string): Promise<void> {
     const db = this.db;
     const settings = getSettings(db);
     const book = this.book(uuid);
-    const res = book ? this.proposalsFor(p, uuid, settings) : null;
+    const cover = book ? await this.calibreCoverNow(p, book) : undefined;
+    const res = book ? this.proposalsFor(p, uuid, settings, cover) : null;
     db.transaction(() => {
       if (book && res) {
         this.writeProposals(p, book, res.proposals);
@@ -2005,6 +2075,135 @@ export class Stage4Analysis {
   // ------------------------------------------------------------ gate
 
   /** Grades the labeled books per field (the 600 and check D apart) and pauses a field below its bar. */
+  /**
+   * Once, for an analysis finished before the edition check (WP20e): every book's Bookmeter
+   * match is accepted again from its stored hits. A book whose match is gone is proposed again
+   * (its store links); a book with another hit now waits for that hit's store list (the
+   * analysis goes back to its lookups for those few).
+   */
+  private async bookmeterEditionsStep(p: Stage4Progress): Promise<void> {
+    const r0 = (p.bookmeterEditions ??= { phase: 'books', cursor: '', changed: 0, reopened: 0 });
+    if (r0.phase === 'done') return;
+    const db = this.db;
+    const t = performance.now();
+    this.loadSnapshot(p.libraryId);
+    const rows = db
+      .prepare(
+        `SELECT calibre_uuid, labeled FROM stage4_books
+         WHERE library_id = ? AND state = 'proposed' AND calibre_uuid > ? ORDER BY calibre_uuid LIMIT 200`,
+      )
+      .all(p.libraryId, r0.cursor) as { calibre_uuid: string; labeled: number }[];
+    const slicer = new Slicer(p);
+    for (const r of rows) {
+      await slicer.maybeYield();
+      r0.cursor = r.calibre_uuid;
+      const book = this.book(r.calibre_uuid);
+      const ref = book ? this.loadRef(p.libraryId, r.calibre_uuid)?.file : null;
+      const ev = book && ref ? this.loadOnline(p.libraryId, r.calibre_uuid) : null;
+      if (!book || !ref || !ev?.bookmeter.hits) continue;
+      const rec = this.record(book, ref, ev);
+      const d = decideStage4(rec);
+      const acc = acceptBookmeter(ev.bookmeter.hits, {
+        title: d.values.t,
+        authors: d.values.au,
+        own: bookmeterOwnTexts(book, ref, d, rec.amazon?.product?.title),
+      });
+      if ((acc.hit?.id ?? null) === (ev.bookmeter.accepted?.id ?? null)) continue;
+      r0.changed++;
+      ev.bookmeter.accepted = acc.hit ? { id: acc.hit.id, reason: acc.reason } : null;
+      ev.bookmeter.reason = acc.reason;
+      ev.bookmeter.stores = {};
+      if (acc.hit) {
+        ev.open.push('stores');
+        this.deps.queue.enqueue(
+          {
+            site: 'bookmeter',
+            key: `stores:${acc.hit.id}`,
+            url: bookmeterStoresUrl(acc.hit.id),
+            accept: 'application/json, text/javascript, */*; q=0.01',
+            priority: r.labeled === 1 ? LABELED_PRIORITY : 0,
+          },
+          { libraryId: p.libraryId, uuid: r.calibre_uuid, step: 'bookmeter-stores' },
+        );
+        db.transaction(() => {
+          this.saveEvidence(p.libraryId, r.calibre_uuid, ONLINE_KIND, ev);
+          db.prepare(
+            `UPDATE stage4_books SET state = 'waiting', pending = ?, updated_at = ? WHERE library_id = ? AND calibre_uuid = ?`,
+          ).run(ev.open.length, Date.now(), p.libraryId, r.calibre_uuid);
+        })();
+        r0.reopened++;
+      } else {
+        this.saveEvidence(p.libraryId, r.calibre_uuid, ONLINE_KIND, ev);
+        await this.proposeBook(p, r.calibre_uuid);
+      }
+    }
+    if (rows.length < 200) {
+      r0.phase = 'done';
+      this.log(
+        `Stage 4: Bookmeter's edition check changed ${r0.changed} matches (${r0.reopened} wait for another hit's store list)`,
+      );
+      if (r0.reopened > 0) {
+        p.phase = 'lookups';
+        p.finishedAt = null;
+      }
+    }
+    addTime(p, 'bookmeter editions', performance.now() - t);
+  }
+
+  // ------------------------------------------------------------ the AI step (WP20e)
+
+  /** A book's inputs for the AI step: its sources as fetched, the rules' record and decision. */
+  aiInputs(
+    p: Stage4Progress,
+    uuid: string,
+  ): {
+    book: Stage2Book;
+    base: RefRecord;
+    record: RefRecord;
+    decision: Stage4Decision;
+  } | null {
+    this.loadSnapshot(p.libraryId);
+    const book = this.book(uuid);
+    const ref = this.loadRef(p.libraryId, uuid);
+    const ev = this.loadOnline(p.libraryId, uuid);
+    if (!book || !ref?.file || !ev) return null;
+    const base = this.baseRecord(book, ref.file, ev);
+    const record = this.record(book, ref.file, ev);
+    return { book, base, record, decision: decideStage4(record) };
+  }
+
+  /** Proposes a book again with the AI's decided values (from ai_values). */
+  async proposeWithAi(
+    p: Stage4Progress,
+    uuid: string,
+    ai: (Stage4AiValues & { asked: boolean }) | null,
+  ): Promise<boolean> {
+    this.loadSnapshot(p.libraryId);
+    const book = this.book(uuid);
+    if (!book) return false;
+    const settings = getSettings(this.db);
+    const cover = await this.calibreCoverNow(p, book);
+    const res = this.proposalsFor(p, uuid, settings, cover, ai);
+    if (!res) return false;
+    this.db.transaction(() => this.writeProposals(p, book, res.proposals))();
+    return true;
+  }
+
+  /** The labeled books in the library now: label id, the book's uuid and its label. */
+  labeledBooks(p: Stage4Progress): { gid: string; uuid: string; gold: Stage4Gold }[] {
+    const file = this.referenceFile();
+    if (!file) return [];
+    const { gold } = loadGold(file);
+    if (!gold) return [];
+    const snap = this.loadSnapshot(p.libraryId);
+    const out: { gid: string; uuid: string; gold: Stage4Gold }[] = [];
+    for (const [gid, calibreId] of mapLabeledIds(this.db, p.libraryId, Object.keys(gold))) {
+      const book = snap.books.get(calibreId);
+      if (book) out.push({ gid, uuid: book.uuid, gold: (gold as Record<string, Stage4Gold>)[gid] });
+    }
+    return out;
+  }
+
   async gateNow(p: Stage4Progress): Promise<Record<string, unknown> | null> {
     const file = this.referenceFile();
     if (!file) return null;
@@ -2079,4 +2278,20 @@ export class Stage4Analysis {
     updateStage(this.db, STAGE, { precision });
     return precision;
   }
+}
+
+/** The texts that are the book's own for Bookmeter's edition check (acceptBookmeter). */
+export function bookmeterOwnTexts(
+  book: { title: string },
+  ref: { opf_title?: string | null; front_text?: string | null; colophon_text?: string | null },
+  d: { trace: { amazonIdentified: boolean } },
+  amazonTitle?: string | null,
+): (string | null | undefined)[] {
+  return [
+    ref.opf_title,
+    book.title,
+    d.trace.amazonIdentified ? amazonTitle : null,
+    ref.front_text,
+    ref.colophon_text,
+  ];
 }

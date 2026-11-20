@@ -725,6 +725,37 @@ describe('AI runner', () => {
     expect(restarted.pending(SPEC.stage, 'r')).toBe(0);
   });
 
+  it('asks again the cut-off calls of every stage one runner serves (WP20e: one runner for all)', async () => {
+    const { db, runner, advance } = await setup();
+    const { getSettings } = await import('../src/cleanup/settings');
+    const s = getSettings(db);
+    updateSettings(db, {
+      ai: {
+        ...s.ai,
+        spendLimitUsd: 1,
+        modes: Object.fromEntries(Object.values(s.models).map((m) => [m, 'direct' as const])),
+      },
+    });
+    const SPEC2: AiStageSpec<Ev> = { ...SPEC, stage: 'test4' };
+    runner.putItems(SPEC, items(1), 1);
+    runner.putItems(SPEC2, items(1), 1);
+    runner.enqueue(SPEC, 'primary', ['k0'], 'r');
+    runner.enqueue(SPEC2, 'primary', ['k0'], 'r');
+    db.prepare(`UPDATE ai_requests SET state = 'sent', mode = 'direct', sent_at = ?`).run(
+      1_800_000_000_000,
+    );
+    advance(7 * 60_000);
+    const restarted = new AiRunner(
+      (runner as unknown as { deps: ConstructorParameters<typeof AiRunner>[0] }).deps,
+    );
+    // The first stage to step must not use up the second stage's requeue (one flag did).
+    await restarted.step(SPEC, 'r', () => false);
+    await restarted.step(SPEC2, 'r', () => false);
+    expect(restarted.answerOf(SPEC, 'primary', 'k0')?.state).toBe('answered');
+    expect(restarted.answerOf(SPEC2, 'primary', 'k0')?.state).toBe('answered');
+    expect(restarted.pending(SPEC2.stage, 'r')).toBe(0);
+  });
+
   it('only labeled items are asked when labeledOnly is set', async () => {
     const { db, runner, advance } = await setup();
     const { getSettings } = await import('../src/cleanup/settings');

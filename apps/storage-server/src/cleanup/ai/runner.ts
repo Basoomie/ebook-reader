@@ -164,7 +164,11 @@ export class AiRunner {
 
   /** When this runner (the server process) started: calls sent before it were cut off. */
   private readonly startedAt: number;
-  private orphansRequeued = false;
+  /**
+   * The stages whose cut-off calls were asked again in this process. Per stage (WP20e): one
+   * runner serves every stage, and a single flag left the second stage's calls "sent" for good.
+   */
+  private orphansRequeued = new Set<string>();
 
   constructor(private readonly deps: AiRunnerDeps) {
     this.startedAt = this.now();
@@ -176,8 +180,8 @@ export class AiRunner {
    * again: queued with the tries it had. Batches are not touched (they survive by their id).
    */
   private requeueOrphans(stage: string): void {
-    if (this.orphansRequeued) return;
-    this.orphansRequeued = true;
+    if (this.orphansRequeued.has(stage)) return;
+    this.orphansRequeued.add(stage);
     const n = this.db
       .prepare(
         `UPDATE ai_requests SET state = 'queued', sent_at = NULL

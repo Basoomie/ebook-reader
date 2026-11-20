@@ -131,15 +131,43 @@ export function parseBookmeterStores(body: Buffer | string): StoreIds {
   return out;
 }
 
+const VOLUME_NOTE = /^(?:第?[0-9一二三四五六七八九十百]+[巻話部]?|[上中下]|前編|中編|後編)$/u;
+/** A store bonus of the e-book itself (【電子特典付き】, 【イラスト特典付き】, 【電子書籍限定短編】). */
+const BONUS_NOTE = /特典|限定|SS|書き下ろし|書下ろし|イラスト付|イラスト入|短編/u;
+/** Still an edition when a bonus is named with it (【新装版・イラスト三枚入り】). */
+const EDITION_NOTE = /特別版|新装版|特装|完全版|増補|改訂|大活字|横書き|合本|総集編|愛蔵版|復刻/u;
+
+/**
+ * The 【…】 notes of a title that name an edition or a collection (【大活字シリーズ】,
+ * 【新装版】, 【合本版】): not a volume number (【3】, 【第3巻】, 【上】) and not a store bonus,
+ * which marks the e-book itself (measured on the library, WP20e: 【イラスト特典付き】 and
+ * 【電子書籍限定書き下ろしSS付き】 hits were the books' own e-book editions, by their ASIN).
+ */
+export function editionNotes(title: string): string[] {
+  return [...nfkc(title).matchAll(/【([^】]*)】/gu)]
+    .map((m) => m[1].trim())
+    .filter(
+      (x) => x !== '' && !VOLUME_NOTE.test(x) && (EDITION_NOTE.test(x) || !BONUS_NOTE.test(x)),
+    );
+}
+
 /**
  * Match acceptance for Bookmeter (plan section 6): the title, an author and the volume must all
  * agree with the book's decided values. Bookmeter's titles carry the label ("(GAノベル)"), so
- * both sides go through rules v3's clean().
+ * both sides go through rules v3's clean(), which drops 【…】 notes. WP20e: a hit whose title
+ * holds an edition note (editionNotes) the book itself doesn't have is another edition:
+ * rejected, and the next hit is tried. The book's own texts are its titles (file, Calibre), the
+ * title of the Amazon record the rules identified, and the file's first and last pages (the
+ * colophon prints the edition: 【大活字シリーズ】悪の説得術 is that edition's own e-book).
  */
 export function acceptBookmeter(
   hits: BookmeterHit[],
-  book: { title: string; authors: string[] },
+  book: { title: string; authors: string[]; own?: (string | null | undefined)[] },
 ): { hit: BookmeterHit; reason: string } | { hit: null; reason: string } {
+  const own = (book.own ?? [book.title])
+    .filter((t): t is string => typeof t === 'string')
+    .map((t) => nfkc(t));
+  let edition = false;
   const want = N(clean(book.title)) ?? '';
   if (!want) return { hit: null, reason: 'no title to compare' };
   const authors = new Set(book.authors.map((a) => NA(a)));
@@ -148,11 +176,19 @@ export function acceptBookmeter(
     if ((N(clean(h.title)) ?? '') !== want) continue;
     if (!h.authors.some((a) => authors.has(NA(a)))) continue;
     if ([...nums(h.title)].sort().join(',') !== wantNums) continue;
+    if (editionNotes(h.title).some((n) => !own.some((t) => t.includes(n)))) {
+      edition = true;
+      continue;
+    }
     return { hit: h, reason: 'title, author and volume agree' };
   }
   return {
     hit: null,
-    reason: hits.length ? 'no result with the same title, author and volume' : 'no results',
+    reason: edition
+      ? 'only another edition (a 【…】 edition note the book itself does not have)'
+      : hits.length
+        ? 'no result with the same title, author and volume'
+        : 'no results',
   };
 }
 
