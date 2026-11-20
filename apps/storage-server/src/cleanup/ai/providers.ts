@@ -39,21 +39,40 @@ export type CallResult =
   | { kind: 'blocked'; detail: string; text: string | null; usage: Usage }
   | { kind: 'invalid'; detail: string; text: string | null; usage: Usage };
 
-/** A failure worth trying again later (busy, server error, network). */
+interface ErrLike {
+  code?: unknown;
+  message?: unknown;
+  cause?: unknown;
+  address?: unknown;
+  port?: unknown;
+  errors?: unknown;
+}
+
+/** One low-level error: its code and the address it was connecting to, if any. */
+function errDetail(x: ErrLike): string {
+  const code = typeof x.code === 'string' && x.code ? x.code : null;
+  const where = typeof x.address === 'string' ? ` ${x.address}:${String(x.port ?? '')}` : '';
+  return code ? code + where : typeof x.message === 'string' ? x.message + where : 'unknown';
+}
+
 /**
  * Why a connection failed, from the error's cause chain (the SDKs' "Connection error." hides
- * it): the first code or message, e.g. UND_ERR_CONNECT_TIMEOUT, ETIMEDOUT, ENOTFOUND.
+ * it): the code with the address it was connecting to (e.g. "ETIMEDOUT 160.79.104.10:443"),
+ * and for an attempt over several addresses each address's own error.
  */
 export function causeOf(err: unknown): string | null {
-  let e = (err as { cause?: unknown } | null)?.cause;
+  let e = (err as ErrLike | null)?.cause;
   for (let depth = 0; e && depth < 5; depth++) {
-    const x = e as { code?: unknown; message?: unknown; cause?: unknown };
-    if (typeof x.code === 'string' && x.code) return x.code;
-    if (!x.cause && typeof x.message === 'string' && x.message) return x.message;
+    const x = e as ErrLike;
+    if (Array.isArray(x.errors) && x.errors.length)
+      return `${errDetail(x)} [${(x.errors as ErrLike[]).map(errDetail).join('; ')}]`;
+    if ((typeof x.code === 'string' && x.code) || !x.cause) return errDetail(x);
     e = x.cause;
   }
   return null;
 }
+
+/** A failure worth trying again later (busy, server error, network). */
 
 /** A connection error's message with its cause, e.g. "Connection error. (ETIMEDOUT)". */
 function connectionMessage(err: Error): string {

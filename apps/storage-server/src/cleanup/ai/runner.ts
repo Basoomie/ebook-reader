@@ -12,6 +12,7 @@
  */
 import type Database from 'better-sqlite3';
 import { createHash } from 'crypto';
+import dns from 'dns';
 import { gunzipSync, gzipSync } from 'zlib';
 import { getSettings, type AiSettings } from '../settings';
 import {
@@ -366,10 +367,21 @@ export class AiRunner {
     let error: string | null = null;
     const id = this.keyId(p);
     if (id) this.checkedWith.set(p, id);
+    const t0 = Date.now();
     try {
       models = (await c.listModels()).sort();
     } catch (err) {
-      error = (err as Error).message.slice(0, 300);
+      // What the server saw: the error with its addresses, how long it took, and what DNS
+      // answers now (a connection error the live server alone got, stop 2, 2026-11-19).
+      const host = p === 'anthropic' ? 'api.anthropic.com' : 'api.openai.com';
+      const dnsNow = await dns.promises
+        .lookup(host, { all: true })
+        .then((a) => a.map((x) => x.address).join(', '))
+        .catch((e: NodeJS.ErrnoException) => e.code ?? 'lookup failed');
+      error = `${(err as Error).message} after ${Date.now() - t0} ms; DNS ${host}: ${dnsNow}`.slice(
+        0,
+        600,
+      );
     }
     this.db
       .prepare(

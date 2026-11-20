@@ -442,8 +442,22 @@ describe('AI runner', () => {
         () => null,
         (e: Error) => e,
       );
-      expect(err?.message).toBe('Connection error. (ECONNREFUSED)');
+      expect(err?.message).toBe(`Connection error. (ECONNREFUSED 127.0.0.1:${port})`);
     }
+    // An attempt over several addresses lists each address's error.
+    const { causeOf } = await import('../src/cleanup/ai/providers');
+    const multi = Object.assign(new Error('fetch failed'), {
+      cause: Object.assign(new Error(''), {
+        code: 'ETIMEDOUT',
+        errors: [
+          { code: 'ETIMEDOUT', address: '160.79.104.10', port: 443 },
+          { code: 'ENETUNREACH', address: '2607:6bc0::10', port: 443 },
+        ],
+      }),
+    });
+    expect(causeOf(multi)).toBe(
+      'ETIMEDOUT [ETIMEDOUT 160.79.104.10:443; ENETUNREACH 2607:6bc0::10:443]',
+    );
   });
 
   it('retries busy and server errors only, and records content blocks and bad answers as final', async () => {
