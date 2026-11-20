@@ -705,6 +705,16 @@ export function removeNotificationSecretCopy(label: string): ConfirmCopy {
   };
 }
 
+/** Audiobook cleanup: a stage's "Run the analysis again" (starts the stage over). */
+export function analyseAgainCopy(stageName: string, detail: string): ConfirmCopy {
+  return {
+    title: `Run “${stageName}” again?`,
+    message: [detail, 'Nothing is written anywhere: this is a Preview.'],
+    confirmLabel: 'Run it again',
+    irreversible: false
+  };
+}
+
 export function removeCleanupSecretCopy(label: string): ConfirmCopy {
   return {
     title: `Remove the saved ${label}?`,

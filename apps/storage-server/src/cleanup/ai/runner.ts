@@ -455,7 +455,13 @@ export class AiRunner {
     // The model list is read before a model is first used, and again at most hourly while a
     // model is missing from it or the last read failed (Settings: Check models reads it now).
     let check = this.modelChecks()[provider];
-    const stale = !check || this.now() - check.checkedAt > MODEL_RECHECK_MS;
+    // A read that failed (not a refused key) is tried again at the batch poll pace: one that
+    // failed while the server was starting left stage 5 paused for an hour (stop 2).
+    const recheckMs =
+      check?.error && !/^40[13]\b/.test(check.error)
+        ? this.settings().batchPollSeconds * 1000
+        : MODEL_RECHECK_MS;
+    const stale = !check || this.now() - check.checkedAt > recheckMs;
     const newKey = this.checkedWith.get(provider) !== this.keyId(provider);
     if (!check || ((stale || newKey) && (check.error || !check.models?.includes(model)))) {
       await this.checkProvider(provider);

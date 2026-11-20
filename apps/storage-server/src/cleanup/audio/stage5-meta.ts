@@ -67,6 +67,12 @@ export interface AudioStage5Progress {
   wait: string | null;
   invented: number;
   counts: Record<string, Record<string, number>> | null;
+  /**
+   * The answers the decisions use (this run's and earlier runs' with the same evidence, prompt
+   * and models), with their cost: a run again asks only what is missing, so its own counts
+   * alone read as "0 in, $0.00".
+   */
+  inUse?: { answered: number; failed: number; blocked: number; invalid: number; costUsd: number };
   cost: {
     costUsd: number;
     items: number;
@@ -247,6 +253,7 @@ export class AudioStage5 {
         p.counts = valueCounts(this.db, 'audio5', this.unitKeys(p));
         const cost = runSpend(this.db, 'audio5', p.analysisId);
         p.cost = cost;
+        p.inUse = this.answersInUse();
         p.finishedAt = Date.now();
         this.addTime(p, 'gate', Date.now() - t0, p.gate.books);
         this.nextPhase(p, 'done');
@@ -262,6 +269,29 @@ export class AudioStage5 {
       this.nextPhase(p, 'done');
       throw err;
     }
+  }
+
+  /** The answers the current decisions read, whatever run asked them, with their cost. */
+  private answersInUse(): NonNullable<AudioStage5Progress['inUse']> {
+    const s = getSettings(this.db);
+    const models = [s.models[META_SPEC.tasks.primary], s.models[META_SPEC.tasks.secondary]];
+    const out = { answered: 0, failed: 0, blocked: 0, invalid: 0, costUsd: 0 };
+    for (const r of this.db
+      .prepare(
+        `SELECT r.state, COUNT(*) AS n, COALESCE(SUM(r.cost_usd), 0) AS c
+         FROM ai_items i JOIN ai_requests r ON r.stage = i.stage AND r.item_key = i.item_key
+           AND r.evidence_hash = i.evidence_hash AND r.prompt_version = ? AND r.model IN (?, ?)
+         WHERE i.stage = 'audio5' GROUP BY r.state`,
+      )
+      .all(META_SPEC.promptVersion, models[0], models[1]) as {
+      state: string;
+      n: number;
+      c: number;
+    }[]) {
+      if (r.state in out) (out as Record<string, number>)[r.state] = r.n;
+      out.costUsd += r.c;
+    }
+    return out;
   }
 
   private unitKeys(p: AudioStage5Progress): string[] {

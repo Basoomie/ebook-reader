@@ -116,7 +116,14 @@ export function audioStage5Lines(s: AudioStage5Status | null | undefined): strin
   out.push(
     `${count(p.units, 'recording', 'recordings')} (${n(p.labeledUnits)} labeled); ${s.models.primary} ${s.modes.primary === 'batch' ? 'by batch' : 'one call each'}, ${s.models.secondary} ${s.modes.secondary === 'batch' ? 'by batch' : 'one call each'}${s.labeledOnly ? ', labeled books only' : ''}.`
   );
-  if (p.ai) {
+  if (p.phase === 'done' && p.inUse) {
+    // A run again asks only what is missing: the totals are the answers the decisions use.
+    const u = p.inUse;
+    const asked = p.ai?.answered ?? 0;
+    out.push(
+      `Answers in use: ${n(u.answered)}${asked && asked < u.answered ? ` (${n(asked)} asked in this run, the rest from earlier runs)` : ''}${u.failed ? `, ${n(u.failed)} failed` : ''}${u.blocked ? `, ${n(u.blocked)} blocked by a provider` : ''}${u.invalid ? `, ${n(u.invalid)} unusable` : ''}. AI cost of these answers: ${usd(u.costUsd)}.`
+    );
+  } else if (p.ai) {
     const a = p.ai;
     out.push(
       `Answers: ${n(a.answered)} in${a.queued ? `, ${n(a.queued)} to ask` : ''}${a.sent ? `, ${n(a.sent)} at the providers` : ''}${a.blocked ? `, ${n(a.blocked)} blocked by a provider (final)` : ''}${a.invalid ? `, ${n(a.invalid)} unusable` : ''}${a.failed ? `, ${n(a.failed)} failed` : ''}.`
@@ -176,8 +183,14 @@ export function valueText(field: string, v: unknown): string {
   if (typeof v === 'boolean') return v ? 'yes' : 'no';
   if (field === 'series' && Array.isArray(v)) {
     if (!v.length) return 'no series';
-    return (v as { name: string; position: number | null }[])
-      .map((s) => (s.position === null ? s.name : `${s.name} #${s.position}`))
+    // A decided value is [{name, position}]; a label is [[name, position, printed label]].
+    return (v as unknown[])
+      .map((x) => {
+        const [name, position] = Array.isArray(x)
+          ? [String(x[0]), x[1] === null || x[1] === undefined || x[1] === '' ? null : x[1]]
+          : [(x as { name: string }).name, (x as { position: number | null }).position];
+        return position === null ? name : `${name} #${position}`;
+      })
       .join(' · ');
   }
   if (Array.isArray(v)) return v.length ? v.join(', ') : 'none credited';

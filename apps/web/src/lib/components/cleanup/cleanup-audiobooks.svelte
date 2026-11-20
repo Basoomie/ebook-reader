@@ -63,6 +63,8 @@
   import { bytesText, n, type ProgressBar } from '$lib/cleanup/cleanup-text';
   import { LibraryApiError } from '$lib/library/api';
   import { formatWhen } from '$lib/notes/notes-format';
+  import { confirmDestructive } from '$lib/confirm/confirm';
+  import { analyseAgainCopy } from '$lib/confirm/confirm-copy';
   import SettingsSection from '$lib/components/settings/settings-section.svelte';
   import CleanupSection from './cleanup-section.svelte';
   import CleanupAudioDups from './cleanup-audio-dups.svelte';
@@ -290,12 +292,27 @@
     }
   }
 
-  async function analyseAgain(stage: number) {
+  /** Stages whose "Run the analysis again" was sent and has not come back yet. */
+  let analysing: Record<number, boolean> = {};
+
+  /**
+   * "Run the analysis again" starts the stage over, so it asks first (a second press on a slow
+   * page started stage 5 over again on 2026-11-20) and can't be pressed while it is sent.
+   */
+  async function analyseAgain(stage: AudioStageRow) {
+    const detail =
+      stage.stage === 5
+        ? 'Every recording is decided again from the answers already given; only questions without an answer are asked (a few cents at most).'
+        : 'The stage starts over and can take as long as its first run.';
+    if (!(await confirmDestructive(analyseAgainCopy(stage.name, detail)))) return;
     actionError = '';
+    analysing = { ...analysing, [stage.stage]: true };
     try {
-      status = await api.audioAnalyseAgain(stage);
+      status = await api.audioAnalyseAgain(stage.stage);
     } catch (err) {
       actionError = describe(err);
+    } finally {
+      analysing = { ...analysing, [stage.stage]: false };
     }
   }
 
@@ -556,8 +573,13 @@
                 <div>
                   <button
                     class="c-btn c-btn-ghost"
-                    on:click={() => stage && analyseAgain(stage.stage)}
-                    data-testid="audio-analyse-again-{stage.stage}">Run the analysis again</button
+                    disabled={analysing[stage.stage] || stage.state === 'analysing'}
+                    title={stage.state === 'analysing'
+                      ? 'The stage is running; switch it Off first to start over'
+                      : null}
+                    on:click={() => stage && analyseAgain(stage)}
+                    data-testid="audio-analyse-again-{stage.stage}"
+                    >{analysing[stage.stage] ? 'Starting…' : 'Run the analysis again'}</button
                   >
                 </div>
               {/if}

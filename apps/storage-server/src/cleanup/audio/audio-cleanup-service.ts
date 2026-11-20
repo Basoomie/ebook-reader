@@ -696,6 +696,7 @@ export class AudioCleanupService {
 
   /** "Run the analysis again" (keeps the hashes and health of unchanged files). */
   reanalyse(stage: number): void {
+    this.log(`Audiobooks stage ${stage}: run the analysis again (asked from the page)`);
     if (stage === 5) {
       if (this.running5) throw new Error('Stage 5 is analysing; switch it Off first');
       this.stage5.restart();
