@@ -549,10 +549,23 @@ describe('stage 5 through the service', () => {
     const spent = (db.prepare('SELECT SUM(cost_usd) AS c FROM ai_requests').get() as { c: number })
       .c;
     expect(spent).toBeLessThanOrEqual(0.002);
+    // While asking, the card has time left: per model, from its measured time per answer.
+    const st5 = (
+      e.audio as unknown as {
+        stage5: { progress(): unknown; secondsLeft(p: unknown): number | null };
+      }
+    ).stage5;
+    expect(st5.secondsLeft(st5.progress())).toBeGreaterThan(0);
+    // Off ends the AI pause (it is judged again in Preview); nothing is lost.
+    e.audio!.setMode(5, 'off');
+    expect(getAudioStage(db, 5).pauseReason).toBeNull();
+    e.audio!.setMode(5, 'analyse');
     updateSettings(db, { ai: { ...getSettings(db).ai, spendLimitUsd: 1 } });
     const p = await untilDone(e);
     expect(p.error).toBeNull();
     expect(getAudioStage(db, 5).pauseReason).toBeNull();
+    // Each address gets the setting's connect wait, not Node's 250 ms (live 2026-11-19).
+    expect((await import('node:net')).getDefaultAutoSelectFamilyAttemptTimeout()).toBe(5000);
     off();
   });
 

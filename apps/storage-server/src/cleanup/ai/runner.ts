@@ -13,6 +13,7 @@
 import type Database from 'better-sqlite3';
 import { createHash } from 'crypto';
 import dns from 'dns';
+import net from 'net';
 import { gunzipSync, gzipSync } from 'zlib';
 import { getSettings, type AiSettings } from '../settings';
 import {
@@ -185,6 +186,11 @@ export class AiRunner {
   }
 
   private client(provider: Provider): ProviderClient | null {
+    // Node's per-address connect wait (250 ms by default) cut off every call from the busy live
+    // server: see ai.connectAttemptMs. Set before each use, so a changed setting applies.
+    const wait = this.settings().connectAttemptMs;
+    if (net.getDefaultAutoSelectFamilyAttemptTimeout() !== wait)
+      net.setDefaultAutoSelectFamilyAttemptTimeout(wait);
     const key = this.deps.secrets.read(KEY_NAME[provider]);
     if (!key) return null;
     const id = `${provider}:${createHash('sha1').update(key).digest('hex').slice(0, 8)}`;

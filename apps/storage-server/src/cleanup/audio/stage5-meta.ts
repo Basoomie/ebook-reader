@@ -569,38 +569,42 @@ export class AudioStage5 {
            GROUP BY model, mode, state`,
         )
         .all(p.analysisId) as { model: string; mode: string | null; state: string; n: number }[];
-      let direct = 0;
+      const direct = new Map<string, number>();
       let batchQueued = 0;
       let batchOpen = 0;
       for (const g of groups) {
-        if (modeOf(s, g.model) === 'direct' || g.mode === 'direct') direct += g.n;
+        if (modeOf(s, g.model) === 'direct' || g.mode === 'direct')
+          direct.set(g.model, (direct.get(g.model) ?? 0) + g.n);
         else if (g.state === 'queued') batchQueued += g.n;
         else batchOpen += g.n;
       }
       let secs = 0;
-      if (direct) {
+      // One call each: per model, its own measured time per answer, directWorkers at a time;
+      // the models run side by side, so the step takes as long as the slowest.
+      for (const [model, n] of direct) {
         const r = this.db
           .prepare(
             `SELECT AVG(answered_at - sent_at) AS ms FROM ai_requests
-             WHERE stage = 'audio5' AND mode = 'direct' AND answered_at IS NOT NULL AND sent_at IS NOT NULL
-             AND run_id = ?`,
+             WHERE stage = 'audio5' AND model = ? AND mode = 'direct' AND state = 'answered'
+             AND answered_at IS NOT NULL AND sent_at IS NOT NULL`,
           )
-          .get(p.analysisId) as { ms: number | null };
+          .get(model) as { ms: number | null };
         if (!r.ms) return null;
-        // Each provider asks directWorkers questions at a time, the providers side by side.
-        secs = (direct * r.ms) / s.directWorkers / 2 / 1000;
+        secs = Math.max(secs, (n * r.ms) / s.directWorkers / 1000);
       }
       if (batchQueued || batchOpen) {
         const b = this.deps.runner.batches('audio5');
-        if (b.turnaroundMs.median === null) return null;
+        // Until this stage has a batch back, the setting's starting figure (stop 1 measured
+        // 2.6 min for Claude Haiku's batch of 195).
+        const turnaround = b.turnaroundMs.median ?? s.batchTurnaroundMinutes * 60_000;
         const oldest = this.db
           .prepare(
             `SELECT MIN(submitted_at) AS t FROM ai_batches WHERE stage = 'audio5' AND state = 'submitted'`,
           )
           .get() as { t: number | null };
         const batchesLeft = Math.ceil(batchQueued / Math.max(1, s.batchSize));
-        const current = oldest.t ? Math.max(0, b.turnaroundMs.median - (now - oldest.t)) : 0;
-        secs = Math.max(secs, (current + batchesLeft * b.turnaroundMs.median) / 1000);
+        const current = oldest.t ? Math.max(0, turnaround - (now - oldest.t)) : 0;
+        secs = Math.max(secs, (current + batchesLeft * turnaround) / 1000);
       }
       return secs;
     }

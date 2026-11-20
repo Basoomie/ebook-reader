@@ -191,6 +191,15 @@ export interface AiSettings {
    * and its questions are sent directly. 0 = wait for the provider (up to its 24 h).
    */
   batchStallMinutes: number;
+  /**
+   * How long one address may take to connect before the next is tried (ms). Node's default,
+   * 250, failed every call from the live server on 2026-11-19: the NAS's DNS answers with IPv6
+   * addresses it has no route to, so the IPv4 attempt was cut off after 250 ms (the busy
+   * server took longer) and the IPv6 one failed at once. Process-wide while the AI is used.
+   */
+  connectAttemptMs: number;
+  /** Time left before a stage has a batch back: the expected batch turnaround (minutes). */
+  batchTurnaroundMinutes: number;
   /** Direct mode: calls at the same time per model. */
   directWorkers: number;
   /** Batch mode: requests per batch. */
@@ -451,6 +460,8 @@ export const DEFAULT_SETTINGS: CleanupSettings = {
     spendLimitUsd: null,
     modes: { 'gpt-6-luna': 'direct' },
     batchStallMinutes: 30,
+    connectAttemptMs: 5000,
+    batchTurnaroundMinutes: 3,
     directWorkers: 3,
     batchSize: 500,
     batchPollSeconds: 60,
@@ -867,6 +878,19 @@ function validate(key: Key, value: unknown, current: CleanupSettings): unknown {
           0,
           1440,
           true,
+        ),
+        connectAttemptMs: num(
+          'Wait for each address when connecting (ms)',
+          v.connectAttemptMs ?? 5000,
+          250,
+          60000,
+          true,
+        ),
+        batchTurnaroundMinutes: num(
+          'Expected batch time before one is measured (min)',
+          v.batchTurnaroundMinutes ?? 3,
+          0.1,
+          1440,
         ),
         directWorkers: num('Calls at the same time', v.directWorkers, 1, 20, true),
         batchSize: num('Requests per batch', v.batchSize, 1, 10000, true),

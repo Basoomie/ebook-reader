@@ -416,6 +416,8 @@
                 directWorkers: Number(settings.ai.directWorkers),
                 batchSize: Number(settings.ai.batchSize),
                 batchStallMinutes: Number(settings.ai.batchStallMinutes),
+                connectAttemptMs: Number(settings.ai.connectAttemptMs ?? 5000),
+                batchTurnaroundMinutes: Number(settings.ai.batchTurnaroundMinutes ?? 3),
                 batchPollSeconds: Number(settings.ai.batchPollSeconds),
                 maxTokens: Number(settings.ai.maxTokens),
                 requestTimeoutSeconds: Number(settings.ai.requestTimeoutSeconds),
@@ -1538,6 +1540,37 @@
               >If a provider hasn't answered anything in a batch by then, the batch is cancelled and
               its questions are asked one call each. 0 = wait as long as the provider takes (up to
               24 hours).</span
+            >
+          </label>
+          <label class={field}>
+            <span class={label}>Expected batch time before one is measured (minutes)</span>
+            <input
+              class="c-input"
+              type="number"
+              min="0.1"
+              max="1440"
+              step="any"
+              bind:value={settings.ai.batchTurnaroundMinutes}
+            />
+            <span class="text-c-muted"
+              >Only for the time left until the run's first batch comes back (Claude Haiku's took
+              2.6 minutes on 2026-11-19); after that, the measured time is used.</span
+            >
+          </label>
+          <label class={field}>
+            <span class={label}>Wait for each address when connecting (ms)</span>
+            <input
+              class="c-input"
+              type="number"
+              min="250"
+              max="60000"
+              bind:value={settings.ai.connectAttemptMs}
+              data-testid="cleanup-ai-connect-wait"
+            />
+            <span class="text-c-muted"
+              >A provider can have several addresses (IPv4 and IPv6). If one takes longer than this
+              to connect, the next is tried. Your network has no IPv6 route, so a short wait (250 ms
+              is Node's own) cut off the working IPv4 connection on 2026-11-19.</span
             >
           </label>
           <label class={field}>

@@ -777,6 +777,10 @@ export interface AiSettings {
   modes: Record<string, 'batch' | 'direct'>;
   /** A batch with nothing answered after this many minutes is cancelled and asked directly (0 = never). */
   batchStallMinutes: number;
+  /** How long one address may take to connect before the next is tried (ms). */
+  connectAttemptMs: number;
+  /** Time left before a batch is measured: the expected batch time (minutes). */
+  batchTurnaroundMinutes: number;
   directWorkers: number;
   batchSize: number;
   batchPollSeconds: number;

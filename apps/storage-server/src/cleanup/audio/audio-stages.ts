@@ -81,6 +81,13 @@ export function setAudioStageMode(
     now,
     stage,
   );
+  // Off ends a stage's AI wait (no limit, a key, a model check): it is judged again when the
+  // stage is switched back to Preview, so the card shows no old pause while it is off.
+  if (mode === 'off')
+    db.prepare(
+      `UPDATE audio_stages SET pause_reason = NULL, pause_detail = NULL, paused_at = NULL
+       WHERE stage = ? AND pause_reason = 'ai'`,
+    ).run(stage);
 }
 
 export function updateAudioStage(
