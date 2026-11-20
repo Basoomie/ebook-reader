@@ -28,9 +28,16 @@ const MODIFIER_COLON = String.fromCharCode(0xa789);
  * track number, `[3巻]` volume tags and a leading `05 - ` chapter number.
  * `Special N - ` (short-story extras) loses its prefix like `Bonus`. The colon
  * substitute some tools put in folder names (U+A789 `꞉`) becomes a colon.
+ *
+ * WP21e-2, the new library's names (cleanup stage 6): the collision suffixes at the end,
+ * ` {first narrator}` and the copy number ` (2)`, ` (3)` (in that order when both), are
+ * dropped. The full-width forms stage 6 writes for `\ / : * ? " < > |` (`＼／：＊？＂＜＞｜`)
+ * and a leading or trailing dot (`．`) need nothing here: NFKC folds them back to ASCII.
  */
 export function stripAudioName(name: string): string {
   let s = name.split(MODIFIER_COLON).join(':').normalize('NFKC');
+  s = s.replace(/\s\(\d{1,3}\)\s*$/, '');
+  s = s.replace(/\s\{[^{}]*\}\s*$/, '');
   s = s.replace(
     /^\s*(?:vol(?:ume)?\.?\s*\d+(?:\.\d+)?|bonus(?:\s*\d+)?|special(?:\s*\d+)?)\s*-\s*/i,
     '',
@@ -76,8 +83,18 @@ export function extractVolume(name: string): number | null {
   return null;
 }
 
-/** ABS metadata.json `series`: `["Name #2"]` or `[{ name, sequence }]`. */
+/**
+ * ABS metadata.json `series`: `["Name #2"]` or `[{ name, sequence }]`. With several
+ * series, the first one with a number (the one a new-library folder is named after, WP21e-2;
+ * ABS may reorder the list when it rewrites the file), else the first.
+ */
 export function parseAbsSeries(value: unknown): { name: string; sequence: string | null } | null {
+  if (Array.isArray(value) && value.length > 1) {
+    const all = value.map((v) => parseAbsSeries([v]));
+    return (
+      all.find((p) => p !== null && p.sequence !== null) ?? all.find((p) => p !== null) ?? null
+    );
+  }
   const first = Array.isArray(value) ? value[0] : value;
   if (typeof first === 'string') {
     const m = /^(.*?)\s*#\s*([\d.]+)\s*$/.exec(first.trim());
@@ -133,7 +150,9 @@ const contains = (a: string, b: string) =>
  * Ranks `entries` for one book. Tiers (score): exact key 100, loose key 90,
  * contains with an agreeing or unknown volume 80/75, same series and volume
  * 70 (unknown volume 50), contains with a different volume 40 (shown last).
- * Ties: single-file folders first (they can play), then by name.
+ * Ties: an agreeing volume first, then an unknown one, then a different one (WP21e-2: a
+ * series whose volumes share one title, `教場/Vol 1 - 教場` and `Vol 3 - 教場`), then
+ * single-file folders (they can play), then by name.
  */
 export function rankEntries<T extends NamedEntry & { fileCount?: number }>(
   book: BookForMatch,
@@ -145,6 +164,8 @@ export function rankEntries<T extends NamedEntry & { fileCount?: number }>(
   const bookVolume = book.seriesIndex ?? extractVolume(book.title);
   const seriesKey = book.seriesName ? titleKey(book.seriesName) : null;
   const out: Scored<T>[] = [];
+  /** 0 the volume agrees, 1 unknown, 2 different (the tie-break). */
+  const volumeRank = new Map<Scored<T>, number>();
 
   for (const entry of entries) {
     const keys = [entry.titleKey];
@@ -186,12 +207,16 @@ export function rankEntries<T extends NamedEntry & { fileCount?: number }>(
         scored = { entry, score: volumeAgrees ? 70 : 50, tier: 'series' };
       }
     }
-    if (scored) out.push(scored);
+    if (scored) {
+      out.push(scored);
+      volumeRank.set(scored, volumeAgrees === null ? 1 : volumeAgrees ? 0 : 2);
+    }
   }
 
   out.sort(
     (a, b) =>
       b.score - a.score ||
+      volumeRank.get(a)! - volumeRank.get(b)! ||
       Number((a.entry.fileCount ?? 1) !== 1) - Number((b.entry.fileCount ?? 1) !== 1) ||
       a.entry.name.localeCompare(b.entry.name),
   );

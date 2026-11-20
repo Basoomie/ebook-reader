@@ -1,0 +1,1089 @@
+{
+  "source": "WP21e-1 dry run on a copy of the live cleanup.db (.tmp-e2e/wp21e/dry-live), audio_build_books (state build); seeded sample (mulberry32 2112), drawn by .tmp-e2e/wp21e2m/gen.cjs. Folders as they will be after the switch (japanese-new -> japanese, japanese-generated-new -> japanese-generated).",
+  "entries": [
+    {
+      "folder": "japanese/長岡弘樹/教場/教場2",
+      "categories": ["author-series-title"],
+      "firstFile": "[02] 教場２ [B084Z341ZW].m4b",
+      "fileCount": 1,
+      "metadata": {
+        "title": "教場2",
+        "series": ["教場"]
+      },
+      "book": {
+        "title": "教場2",
+        "seriesName": "教場",
+        "seriesIndex": null
+      }
+    },
+    {
+      "folder": "japanese/御堂乱/三人の人妻社員【再就職の罠】",
+      "categories": ["author-title"],
+      "firstFile": "三人の人妻社員【再就職の罠】 [B01E3DAD4C].m4b",
+      "fileCount": 1,
+      "metadata": {
+        "title": "三人の人妻社員【再就職の罠】",
+        "series": []
+      },
+      "book": {
+        "title": "三人の人妻社員【再就職の罠】",
+        "seriesName": null,
+        "seriesIndex": null
+      }
+    },
+    {
+      "folder": "japanese/嶽本野ばら/鱗姫 {佐藤真尋}",
+      "categories": ["narrator", "author-title"],
+      "firstFile": "鱗姫.m4b",
+      "fileCount": 1,
+      "metadata": {
+        "title": "鱗姫",
+        "series": []
+      },
+      "book": {
+        "title": "鱗姫",
+        "seriesName": null,
+        "seriesIndex": null
+      }
+    },
+    {
+      "folder": "japanese/ハンス・クリスチャン・アンデルセン/赤いくつ",
+      "categories": ["author-title"],
+      "firstFile": "赤いくつ [B002V0JV8E].m4b",
+      "fileCount": 1,
+      "metadata": {
+        "title": "赤いくつ",
+        "series": []
+      },
+      "book": {
+        "title": "赤いくつ",
+        "seriesName": null,
+        "seriesIndex": null
+      }
+    },
+    {
+      "folder": "japanese-generated/_Unknown/Re：ゼロから始める異世界生活/Vol 10 - Re：ゼロから始める異世界生活10",
+      "categories": ["fullwidth", "vol-integer", "unknown-author", "ai"],
+      "firstFile": "Ｒｅゼロから始める異世界生活10.mp3",
+      "fileCount": 1,
+      "metadata": {
+        "title": "Re:ゼロから始める異世界生活10",
+        "series": ["Re:ゼロから始める異世界生活 #10"]
+      },
+      "book": {
+        "title": "Re:ゼロから始める異世界生活10",
+        "seriesName": "Re:ゼロから始める異世界生活",
+        "seriesIndex": 10
+      }
+    },
+    {
+      "folder": "japanese-generated/くまなの/くま クマ 熊 ベアー/Vol 20.5 - くま クマ 熊 ベアー 20.5",
+      "categories": ["vol-decimal", "ai"],
+      "firstFile": "くまなの_くま_クマ_熊_ベアー20.5.mp3",
+      "fileCount": 1,
+      "metadata": {
+        "title": "くま クマ 熊 ベアー 20.5",
+        "series": ["くま クマ 熊 ベアー #20.5"]
+      },
+      "book": {
+        "title": "くま クマ 熊 ベアー 20.5",
+        "seriesName": "くま クマ 熊 ベアー",
+        "seriesIndex": 20.5
+      }
+    },
+    {
+      "folder": "japanese/篠原悠希/金椛国春秋/Vol 10 - 比翼は万里を翔る 金椛国春秋",
+      "categories": ["vol-integer"],
+      "firstFile": "[10] 比翼は万里を翔る 金椛国春秋 [B0BVF3H7GC].m4b",
+      "fileCount": 1,
+      "metadata": {
+        "title": "比翼は万里を翔る 金椛国春秋",
+        "series": ["金椛国春秋 #10"]
+      },
+      "book": {
+        "title": "比翼は万里を翔る 金椛国春秋",
+        "seriesName": "金椛国春秋",
+        "seriesIndex": 10
+      }
+    },
+    {
+      "folder": "japanese/硝子町玻璃/出雲のあやかしホテルに就職します/Vol 8 - 出雲のあやかしホテルに就職します ： 8",
+      "categories": ["fullwidth", "vol-integer"],
+      "firstFile": "[08] 出雲のあやかしホテルに就職します ： 8 [B09Z2647CC].m4b",
+      "fileCount": 1,
+      "metadata": {
+        "title": "出雲のあやかしホテルに就職します ： 8",
+        "series": ["出雲のあやかしホテルに就職します #8"]
+      },
+      "book": {
+        "title": "出雲のあやかしホテルに就職します ： 8",
+        "seriesName": "出雲のあやかしホテルに就職します",
+        "seriesIndex": 8
+      }
+    },
+    {
+      "folder": "japanese-generated/_Unknown/薬屋のひとりごと/Vol 13 - 薬屋のひとりごと13",
+      "categories": ["vol-integer", "unknown-author", "ai"],
+      "firstFile": "薬屋のひとりごと１３.mp3",
+      "fileCount": 1,
+      "metadata": {
+        "title": "薬屋のひとりごと13",
+        "series": ["薬屋のひとりごと #13"]
+      },
+      "book": {
+        "title": "薬屋のひとりごと13",
+        "seriesName": "薬屋のひとりごと",
+        "seriesIndex": 13
+      }
+    },
+    {
+      "folder": "japanese-generated/_Unknown/Re：ゼロから始める異世界生活/Vol 37 - Re：ゼロから始める異世界生活37",
+      "categories": ["fullwidth", "vol-integer", "unknown-author", "ai"],
+      "firstFile": "Ｒｅゼロから始める異世界生活37.mp3",
+      "fileCount": 1,
+      "metadata": {
+        "title": "Re:ゼロから始める異世界生活37",
+        "series": ["Re:ゼロから始める異世界生活 #37"]
+      },
+      "book": {
+        "title": "Re:ゼロから始める異世界生活37",
+        "seriesName": "Re:ゼロから始める異世界生活",
+        "seriesIndex": 37
+      }
+    },
+    {
+      "folder": "japanese/ほのぼのる500/最弱テイマーはゴミ拾いの旅を始めました。/Vol 7 - 最弱テイマーはゴミ拾いの旅を始めました。7 (2)",
+      "categories": ["number", "vol-integer"],
+      "firstFile": "[07] 最弱テイマーはゴミ拾いの旅を始めました。7 [B0D6G6H42X].m4b",
+      "fileCount": 1,
+      "metadata": {
+        "title": "最弱テイマーはゴミ拾いの旅を始めました。7",
+        "series": ["最弱テイマーはゴミ拾いの旅を始めました。 #7"]
+      },
+      "book": {
+        "title": "最弱テイマーはゴミ拾いの旅を始めました。7",
+        "seriesName": "最弱テイマーはゴミ拾いの旅を始めました。",
+        "seriesIndex": 7
+      }
+    },
+    {
+      "folder": "japanese/望月麻衣/わが家は祇園の拝み屋さん/Vol 16 - わが家は祇園の拝み屋さんEX 愛しき回顧録",
+      "categories": ["vol-integer"],
+      "firstFile": "[16] [番外編] わが家は祇園の拝み屋さんEX 愛しき回顧録 [B0C8SX2SHT].m4b",
+      "fileCount": 1,
+      "metadata": {
+        "title": "わが家は祇園の拝み屋さんEX 愛しき回顧録",
+        "series": ["わが家は祇園の拝み屋さん #16"]
+      },
+      "book": {
+        "title": "わが家は祇園の拝み屋さんEX 愛しき回顧録",
+        "seriesName": "わが家は祇園の拝み屋さん",
+        "seriesIndex": 16
+      }
+    },
+    {
+      "folder": "japanese/_Unknown/山田じぇみ子のざこざこお兄さん取締ラジオ/音泉ざこラジ第13回〜第26回",
+      "categories": ["author-series-title", "unknown-author"],
+      "firstFile": null,
+      "fileCount": 0,
+      "metadata": {
+        "title": "音泉ざこラジ第13回〜第26回",
+        "series": ["山田じぇみ子のざこざこお兄さん取締ラジオ"]
+      },
+      "book": {
+        "title": "音泉ざこラジ第13回〜第26回",
+        "seriesName": "山田じぇみ子のざこざこお兄さん取締ラジオ",
+        "seriesIndex": null
+      }
+    },
+    {
+      "folder": "japanese/坂岡真/はぐれ又兵衛例繰控/Vol 1 - はぐれ又兵衛例繰控 ： 1 駆込み女",
+      "categories": ["fullwidth", "vol-integer"],
+      "firstFile": "[01] はぐれ又兵衛例繰控 ： 1 駆込み女 [B0B4NMNCRQ].m4b",
+      "fileCount": 1,
+      "metadata": {
+        "title": "はぐれ又兵衛例繰控 ： 1 駆込み女",
+        "series": ["はぐれ又兵衛例繰控 #1"]
+      },
+      "book": {
+        "title": "はぐれ又兵衛例繰控 ： 1 駆込み女",
+        "seriesName": "はぐれ又兵衛例繰控",
+        "seriesIndex": 1
+      }
+    },
+    {
+      "folder": "japanese/澄守彩/実は俺、最強でした？/Vol 2 - 実は俺、最強でした？2",
+      "categories": ["fullwidth", "vol-integer"],
+      "firstFile": "実は俺、最強でした？２： Ｋラノベブックス [B0F2T7T17T].m4b",
+      "fileCount": 1,
+      "metadata": {
+        "title": "実は俺、最強でした？2",
+        "series": ["実は俺、最強でした? #2"]
+      },
+      "book": {
+        "title": "実は俺、最強でした？2",
+        "seriesName": "実は俺、最強でした?",
+        "seriesIndex": 2
+      }
+    },
+    {
+      "folder": "japanese/河﨑秋子/ともぐい {林和良}",
+      "categories": ["narrator", "author-title"],
+      "firstFile": "ともぐい [B0CXX4556Q].m4b",
+      "fileCount": 1,
+      "metadata": {
+        "title": "ともぐい",
+        "series": []
+      },
+      "book": {
+        "title": "ともぐい",
+        "seriesName": null,
+        "seriesIndex": null
+      }
+    },
+    {
+      "folder": "japanese/望月麻衣/京都寺町三条のホームズ/Vol 21 - 京都寺町三条のホームズ ： 19 拝み屋さんと鑑定士",
+      "categories": ["fullwidth", "vol-integer"],
+      "firstFile": "[21] 京都寺町三条のホームズ ： 19 拝み屋さんと鑑定士 [B0BWPVY6JF].m4b",
+      "fileCount": 1,
+      "metadata": {
+        "title": "京都寺町三条のホームズ ： 19 拝み屋さんと鑑定士",
+        "series": ["京都寺町三条のホームズ #21"]
+      },
+      "book": {
+        "title": "京都寺町三条のホームズ ： 19 拝み屋さんと鑑定士",
+        "seriesName": "京都寺町三条のホームズ",
+        "seriesIndex": 21
+      }
+    },
+    {
+      "folder": "japanese/吉田修一/悪人（下）",
+      "categories": ["author-title"],
+      "firstFile": "悪人（下）.m4b",
+      "fileCount": 1,
+      "metadata": {
+        "title": "悪人（下）",
+        "series": []
+      },
+      "book": {
+        "title": "悪人（下）",
+        "seriesName": null,
+        "seriesIndex": null
+      }
+    },
+    {
+      "folder": "japanese/三上延/ビブリア古書堂の事件手帖「栞子」/Vol 1 - ビブリア古書堂の事件手帖 ～栞子さんと奇妙な客人たち～ (2)",
+      "categories": ["number", "vol-integer"],
+      "firstFile": "ビブリア古書堂の事件手帖～栞子さんと奇妙な客人たち～.m4b",
+      "fileCount": 1,
+      "metadata": {
+        "title": "ビブリア古書堂の事件手帖 ～栞子さんと奇妙な客人たち～",
+        "series": ["ビブリア古書堂の事件手帖「栞子」 #1"]
+      },
+      "book": {
+        "title": "ビブリア古書堂の事件手帖 ～栞子さんと奇妙な客人たち～",
+        "seriesName": "ビブリア古書堂の事件手帖「栞子」",
+        "seriesIndex": 1
+      }
+    },
+    {
+      "folder": "japanese/_Unknown/invert 番外編 城塚翡翠の渓流釣り",
+      "categories": ["author-title", "unknown-author"],
+      "firstFile": "invert 番外編 城塚翡翠の渓流釣り.m4b",
+      "fileCount": 1,
+      "metadata": {
+        "title": "invert 番外編 城塚翡翠の渓流釣り",
+        "series": []
+      },
+      "book": {
+        "title": "invert 番外編 城塚翡翠の渓流釣り",
+        "seriesName": null,
+        "seriesIndex": null
+      }
+    },
+    {
+      "folder": "japanese/奥田英朗/ララピポ (2)",
+      "categories": ["number", "author-title"],
+      "firstFile": "ララピポ [audiobook.jp 247346].m4b",
+      "fileCount": 1,
+      "metadata": {
+        "title": "ララピポ",
+        "series": []
+      },
+      "book": {
+        "title": "ララピポ",
+        "seriesName": null,
+        "seriesIndex": null
+      }
+    },
+    {
+      "folder": "japanese/上橋菜穂子/「守り人」シリーズ/Vol 7 - 7．蒼路の旅人",
+      "categories": ["fullwidth", "vol-integer"],
+      "firstFile": "[07] ７．蒼路の旅人 [B0BQ9HWQK6].m4b",
+      "fileCount": 1,
+      "metadata": {
+        "title": "7．蒼路の旅人",
+        "series": ["「守り人」シリーズ #7"]
+      },
+      "book": {
+        "title": "7．蒼路の旅人",
+        "seriesName": "「守り人」シリーズ",
+        "seriesIndex": 7
+      }
+    },
+    {
+      "folder": "japanese/宮島未奈/「成瀬」シリーズ/Vol 2 - 成瀬は信じた道をいく {山根綺} (2)",
+      "categories": ["narrator", "number", "vol-integer"],
+      "firstFile": "成瀬は信じた道をいく.m4b",
+      "fileCount": 1,
+      "metadata": {
+        "title": "成瀬は信じた道をいく",
+        "series": ["「成瀬」シリーズ #2"]
+      },
+      "book": {
+        "title": "成瀬は信じた道をいく",
+        "seriesName": "「成瀬」シリーズ",
+        "seriesIndex": 2
+      }
+    },
+    {
+      "folder": "japanese/水沢夢/俺、ツインテールになります。/俺、ツインテールになります。 6",
+      "categories": ["author-series-title"],
+      "firstFile": "[6巻] 俺、ツインテールになります。　6 （ガガガ文庫） （小学館）.m4b",
+      "fileCount": 1,
+      "metadata": {
+        "title": "俺、ツインテールになります。 6",
+        "series": ["俺、ツインテールになります。"]
+      },
+      "book": {
+        "title": "俺、ツインテールになります。 6",
+        "seriesName": "俺、ツインテールになります。",
+        "seriesIndex": null
+      }
+    },
+    {
+      "folder": "japanese/太宰治/美少女 {呉羽藍依}",
+      "categories": ["narrator", "author-title"],
+      "firstFile": "美少女 [B093Q22Q9P].m4b",
+      "fileCount": 1,
+      "metadata": {
+        "title": "美少女",
+        "series": []
+      },
+      "book": {
+        "title": "美少女",
+        "seriesName": null,
+        "seriesIndex": null
+      }
+    },
+    {
+      "folder": "japanese/赤城大空/【悲報】お嬢様系底辺ダンジョン配信者、配信切り忘れに気づかず同業者をボコってしまうけど相手が若手最強の迷惑系配信者だったらしくアホ程バズって伝説になってますわ!？/Vol 2 - 【悲報】お嬢様系底辺ダンジョン配信者、配信切り忘れに気づかず同業者をボコってしまうけど相手が若手最強の迷惑系配信者だったらしくアホ程バズって伝説になってますわ！？ 2",
+      "categories": ["fullwidth", "vol-integer"],
+      "firstFile": "[02] 【悲報】お嬢様系底辺ダンジョン配信者、配信切り忘れに気づかず同業者をボコってしまう ２ [B0FBM6LJ97].m4b",
+      "fileCount": 1,
+      "metadata": {
+        "title": "【悲報】お嬢様系底辺ダンジョン配信者、配信切り忘れに気づかず同業者をボコってしまうけど相手が若手最強の迷惑系配信者だったらしくアホ程バズって伝説になってますわ！？ 2",
+        "series": [
+          "【悲報】お嬢様系底辺ダンジョン配信者、配信切り忘れに気づかず同業者をボコってしまうけど相手が若手最強の迷惑系配信者だったらしくアホ程バズって伝説になってますわ!? #2"
+        ]
+      },
+      "book": {
+        "title": "【悲報】お嬢様系底辺ダンジョン配信者、配信切り忘れに気づかず同業者をボコってしまうけど相手が若手最強の迷惑系配信者だったらしくアホ程バズって伝説になってますわ！？ 2",
+        "seriesName": "【悲報】お嬢様系底辺ダンジョン配信者、配信切り忘れに気づかず同業者をボコってしまうけど相手が若手最強の迷惑系配信者だったらしくアホ程バズって伝説になってますわ!?",
+        "seriesIndex": 2
+      }
+    },
+    {
+      "folder": "japanese/望月麻衣/京都寺町三条のホームズ/Vol 10 - 京都寺町三条のホームズ ： 10 見習い鑑定士の決意と旅立ち",
+      "categories": ["fullwidth", "vol-integer"],
+      "firstFile": "[11] 京都寺町三条のホームズ ： 10 見習い鑑定士の決意と旅立ち [B09MRQBF7J].m4b",
+      "fileCount": 1,
+      "metadata": {
+        "title": "京都寺町三条のホームズ ： 10 見習い鑑定士の決意と旅立ち",
+        "series": ["京都寺町三条のホームズ #10"]
+      },
+      "book": {
+        "title": "京都寺町三条のホームズ ： 10 見習い鑑定士の決意と旅立ち",
+        "seriesName": "京都寺町三条のホームズ",
+        "seriesIndex": 10
+      }
+    },
+    {
+      "folder": "japanese/望月麻衣/京都寺町三条のホームズ/Vol 11 - 京都寺町三条のホームズ ： 11 あの頃の想いと優しい夏休み",
+      "categories": ["fullwidth", "vol-integer"],
+      "firstFile": "[12] 京都寺町三条のホームズ ： 11 あの頃の想いと優しい夏休み [B09MRQWDJ3].m4b",
+      "fileCount": 1,
+      "metadata": {
+        "title": "京都寺町三条のホームズ ： 11 あの頃の想いと優しい夏休み",
+        "series": ["京都寺町三条のホームズ #11"]
+      },
+      "book": {
+        "title": "京都寺町三条のホームズ ： 11 あの頃の想いと優しい夏休み",
+        "seriesName": "京都寺町三条のホームズ",
+        "seriesIndex": 11
+      }
+    },
+    {
+      "folder": "japanese/香月美夜/本好きの下剋上 ドラマCD/Vol 12 - 本好きの下剋上 ハンネローレの貴族院五年生 ドラマCD2 (2)",
+      "categories": ["number", "vol-integer"],
+      "firstFile": "[CD12]本好きの下剋上　ハンネローレの貴族院五年生　ドラマCD2 [B0GLP2CRHN].m4b",
+      "fileCount": 1,
+      "metadata": {
+        "title": "本好きの下剋上 ハンネローレの貴族院五年生 ドラマCD2",
+        "series": ["本好きの下剋上 ドラマCD #12", "本好きの下剋上"]
+      },
+      "book": {
+        "title": "本好きの下剋上 ハンネローレの貴族院五年生 ドラマCD2",
+        "seriesName": "本好きの下剋上 ドラマCD",
+        "seriesIndex": 12
+      }
+    },
+    {
+      "folder": "japanese/吉川英治/宮本武蔵/Vol 10 - 宮本武蔵（10） わすれ貝／旧約／物干竿／山川無限",
+      "categories": ["fullwidth", "vol-integer"],
+      "firstFile": "宮本武蔵（10） わすれ貝／旧約／物干竿／山川無限.m4b",
+      "fileCount": 1,
+      "metadata": {
+        "title": "宮本武蔵（10） わすれ貝／旧約／物干竿／山川無限",
+        "series": ["宮本武蔵 #10"]
+      },
+      "book": {
+        "title": "宮本武蔵（10） わすれ貝／旧約／物干竿／山川無限",
+        "seriesName": "宮本武蔵",
+        "seriesIndex": 10
+      }
+    },
+    {
+      "folder": "japanese/村上春樹/女のいない男たち",
+      "categories": ["author-title"],
+      "firstFile": "女のいない男たち [B0C3M2T2TT].m4b",
+      "fileCount": 1,
+      "metadata": {
+        "title": "女のいない男たち",
+        "series": []
+      },
+      "book": {
+        "title": "女のいない男たち",
+        "seriesName": null,
+        "seriesIndex": null
+      }
+    },
+    {
+      "folder": "japanese/市川沙央/ハンチバック {笠原あきら}",
+      "categories": ["narrator", "author-title"],
+      "firstFile": "ハンチバック.m4b",
+      "fileCount": 1,
+      "metadata": {
+        "title": "ハンチバック",
+        "series": []
+      },
+      "book": {
+        "title": "ハンチバック",
+        "seriesName": null,
+        "seriesIndex": null
+      }
+    },
+    {
+      "folder": "japanese/長岡弘樹/教場/Vol 2 - 教場2",
+      "categories": ["vol-integer"],
+      "firstFile": "教場2.m4b",
+      "fileCount": 1,
+      "metadata": {
+        "title": "教場2",
+        "series": ["教場 #2"]
+      },
+      "book": {
+        "title": "教場2",
+        "seriesName": "教場",
+        "seriesIndex": 2
+      }
+    },
+    {
+      "folder": "japanese/川口俊和/コーヒーが冷めないうちに/Vol 2 - この嘘がばれないうちに {白川周作}",
+      "categories": ["narrator", "vol-integer"],
+      "firstFile": "この嘘がばれないうちに.m4b",
+      "fileCount": 1,
+      "metadata": {
+        "title": "この嘘がばれないうちに",
+        "series": ["コーヒーが冷めないうちに #2"]
+      },
+      "book": {
+        "title": "この嘘がばれないうちに",
+        "seriesName": "コーヒーが冷めないうちに",
+        "seriesIndex": 2
+      }
+    },
+    {
+      "folder": "japanese/綺羅光/人妻・藤平潤子 魔辱の麗囚",
+      "categories": ["author-title"],
+      "firstFile": "人妻・藤平潤子　魔辱の麗囚 [B01CXNZ38K].m4b",
+      "fileCount": 1,
+      "metadata": {
+        "title": "人妻・藤平潤子 魔辱の麗囚",
+        "series": []
+      },
+      "book": {
+        "title": "人妻・藤平潤子 魔辱の麗囚",
+        "seriesName": null,
+        "seriesIndex": null
+      }
+    },
+    {
+      "folder": "japanese/金原ひとみ/YABUNONAKAーヤブノナカー",
+      "categories": ["author-title"],
+      "firstFile": "YABUNONAKAーヤブノナカー_ 文藝春秋 [B0F52VZLR9].m4b",
+      "fileCount": 1,
+      "metadata": {
+        "title": "YABUNONAKAーヤブノナカー",
+        "series": []
+      },
+      "book": {
+        "title": "YABUNONAKAーヤブノナカー",
+        "seriesName": null,
+        "seriesIndex": null
+      }
+    },
+    {
+      "folder": "japanese/万城目学/八月の御所グラウンド {高坂篤志}",
+      "categories": ["narrator", "author-title"],
+      "firstFile": "八月の御所グラウンド [B0CF8BCX9V].m4b",
+      "fileCount": 1,
+      "metadata": {
+        "title": "八月の御所グラウンド",
+        "series": []
+      },
+      "book": {
+        "title": "八月の御所グラウンド",
+        "seriesName": null,
+        "seriesIndex": null
+      }
+    },
+    {
+      "folder": "japanese/西村京太郎/十津川警部/十津川警部 海の見える駅――愛ある伊予灘線",
+      "categories": ["author-series-title"],
+      "firstFile": "十津川警部 海の見える駅――愛ある伊予灘線.m4b",
+      "fileCount": 1,
+      "metadata": {
+        "title": "十津川警部 海の見える駅――愛ある伊予灘線",
+        "series": ["十津川警部"]
+      },
+      "book": {
+        "title": "十津川警部 海の見える駅――愛ある伊予灘線",
+        "seriesName": "十津川警部",
+        "seriesIndex": null
+      }
+    },
+    {
+      "folder": "japanese/奥田英朗/伊良部シリーズ/Vol 3 - 町長選挙 {つきねこ座}",
+      "categories": ["narrator", "vol-integer"],
+      "firstFile": "町長選挙.m4b",
+      "fileCount": 1,
+      "metadata": {
+        "title": "町長選挙",
+        "series": ["伊良部シリーズ #3"]
+      },
+      "book": {
+        "title": "町長選挙",
+        "seriesName": "伊良部シリーズ",
+        "seriesIndex": 3
+      }
+    },
+    {
+      "folder": "japanese/雨音恵/両親の借金を肩代わりしてもらう条件は日本一可愛い女子高生と一緒に暮らすことでした。/Vol 2 - 両親の借金を肩代わりしてもらう条件は日本一可愛い女子高生と一緒に暮らすことでした。2",
+      "categories": ["vol-integer"],
+      "firstFile": "[02] 両親の借金を肩代わりしてもらう条件は日本一可愛い女子高生と一緒に暮らすことでした。2 [B0DQCZ4QG3].m4b",
+      "fileCount": 1,
+      "metadata": {
+        "title": "両親の借金を肩代わりしてもらう条件は日本一可愛い女子高生と一緒に暮らすことでした。2",
+        "series": [
+          "両親の借金を肩代わりしてもらう条件は日本一可愛い女子高生と一緒に暮らすことでした。 #2"
+        ]
+      },
+      "book": {
+        "title": "両親の借金を肩代わりしてもらう条件は日本一可愛い女子高生と一緒に暮らすことでした。2",
+        "seriesName": "両親の借金を肩代わりしてもらう条件は日本一可愛い女子高生と一緒に暮らすことでした。",
+        "seriesIndex": 2
+      }
+    },
+    {
+      "folder": "japanese/宇野朴人/七つの魔剣が支配する/七つの魔剣が支配するXII",
+      "categories": ["author-series-title"],
+      "firstFile": "[13] 七つの魔剣が支配するXII [B0CLN2H3RS].m4b",
+      "fileCount": 1,
+      "metadata": {
+        "title": "七つの魔剣が支配するXII",
+        "series": ["七つの魔剣が支配する"]
+      },
+      "book": {
+        "title": "七つの魔剣が支配するXII",
+        "seriesName": "七つの魔剣が支配する",
+        "seriesIndex": null
+      }
+    },
+    {
+      "folder": "japanese/青山美智子/赤と青とエスキース {織田優成} (2)",
+      "categories": ["narrator", "number", "author-title"],
+      "firstFile": "赤と青とエスキース.m4b",
+      "fileCount": 1,
+      "metadata": {
+        "title": "赤と青とエスキース",
+        "series": []
+      },
+      "book": {
+        "title": "赤と青とエスキース",
+        "seriesName": null,
+        "seriesIndex": null
+      }
+    },
+    {
+      "folder": "japanese/西尾維新/＜物語＞シリーズ/Vol 14 - 憑物語",
+      "categories": ["fullwidth", "vol-integer"],
+      "firstFile": "憑物語.m4b",
+      "fileCount": 1,
+      "metadata": {
+        "title": "憑物語",
+        "series": ["<物語>シリーズ #14"]
+      },
+      "book": {
+        "title": "憑物語",
+        "seriesName": "<物語>シリーズ",
+        "seriesIndex": 14
+      }
+    },
+    {
+      "folder": "japanese/大森藤ノ/ダンジョンに出会いを求めるのは間違っているだろうか/Vol 3 - ダンジョンに出会いを求めるのは間違っているだろうか 3 (2)",
+      "categories": ["number", "vol-integer"],
+      "firstFile": "[03] ダンジョンに出会いを求めるのは間違っているだろうか 3 [B0F2SSPMHT].m4b",
+      "fileCount": 1,
+      "metadata": {
+        "title": "ダンジョンに出会いを求めるのは間違っているだろうか 3",
+        "series": ["ダンジョンに出会いを求めるのは間違っているだろうか #3"]
+      },
+      "book": {
+        "title": "ダンジョンに出会いを求めるのは間違っているだろうか 3",
+        "seriesName": "ダンジョンに出会いを求めるのは間違っているだろうか",
+        "seriesIndex": 3
+      }
+    },
+    {
+      "folder": "japanese/森博嗣/Wシリーズ/Vol 10 - 人間のように泣いたのか？ Did She Cry Humanly？",
+      "categories": ["fullwidth", "vol-integer"],
+      "firstFile": "人間のように泣いたのか？　Ｄｉｄ　Ｓｈｅ　Ｃｒｙ　Ｈｕｍａｎｌｙ？.m4b",
+      "fileCount": 1,
+      "metadata": {
+        "title": "人間のように泣いたのか？ Did She Cry Humanly？",
+        "series": ["Wシリーズ #10"]
+      },
+      "book": {
+        "title": "人間のように泣いたのか？ Did She Cry Humanly？",
+        "seriesName": "Wシリーズ",
+        "seriesIndex": 10
+      }
+    },
+    {
+      "folder": "japanese/長岡弘樹/教場/Vol 3 - 教場",
+      "categories": ["vol-integer"],
+      "firstFile": "教場.m4b",
+      "fileCount": 1,
+      "metadata": {
+        "title": "教場",
+        "series": ["教場 #3"]
+      },
+      "book": {
+        "title": "教場",
+        "seriesName": "教場",
+        "seriesIndex": 3
+      }
+    },
+    {
+      "folder": "japanese-generated/_Unknown/Reゼロから始める異世界生活/Vol 36 - Reゼロから始める異世界生活36",
+      "categories": ["vol-integer", "unknown-author", "ai"],
+      "firstFile": "Ｒｅゼロから始める異世界生活36.mp3",
+      "fileCount": 1,
+      "metadata": {
+        "title": "Reゼロから始める異世界生活36",
+        "series": ["Reゼロから始める異世界生活 #36"]
+      },
+      "book": {
+        "title": "Reゼロから始める異世界生活36",
+        "seriesName": "Reゼロから始める異世界生活",
+        "seriesIndex": 36
+      }
+    },
+    {
+      "folder": "japanese/屋久ユウキ/弱キャラ友崎くん/Vol 12 - 弱キャラ友崎くん Lv．10",
+      "categories": ["fullwidth", "vol-integer"],
+      "firstFile": "[10巻] 弱キャラ友崎くん　Ｌｖ．１０.m4b",
+      "fileCount": 1,
+      "metadata": {
+        "title": "弱キャラ友崎くん Lv．10",
+        "series": ["弱キャラ友崎くん #12"]
+      },
+      "book": {
+        "title": "弱キャラ友崎くん Lv．10",
+        "seriesName": "弱キャラ友崎くん",
+        "seriesIndex": 12
+      }
+    },
+    {
+      "folder": "japanese/望月麻衣/京都寺町三条のホームズ/Vol 6.5 - 京都寺町三条のホームズ ： 6.5 ホームズと歩く京都",
+      "categories": ["fullwidth", "vol-decimal"],
+      "firstFile": "[07] 京都寺町三条のホームズ ： 6.5 ホームズと歩く京都 [B09MRPSXZP].m4b",
+      "fileCount": 1,
+      "metadata": {
+        "title": "京都寺町三条のホームズ ： 6.5 ホームズと歩く京都",
+        "series": ["京都寺町三条のホームズ #6.5"]
+      },
+      "book": {
+        "title": "京都寺町三条のホームズ ： 6.5 ホームズと歩く京都",
+        "seriesName": "京都寺町三条のホームズ",
+        "seriesIndex": 6.5
+      }
+    },
+    {
+      "folder": "japanese/奥田英朗/伊良部シリーズ/Vol 3 - 町長選挙 {難波優馬}",
+      "categories": ["narrator", "vol-integer"],
+      "firstFile": "町長選挙： 文藝春秋 [B0FNWC5P9Z].m4b",
+      "fileCount": 1,
+      "metadata": {
+        "title": "町長選挙",
+        "series": ["伊良部シリーズ #3"]
+      },
+      "book": {
+        "title": "町長選挙",
+        "seriesName": "伊良部シリーズ",
+        "seriesIndex": 3
+      }
+    },
+    {
+      "folder": "japanese/アネコ・ユサギ/盾の勇者の成り上がり/Vol 8 - 盾の勇者の成り上がり 8",
+      "categories": ["vol-integer"],
+      "firstFile": "[8巻] 盾の勇者の成り上がり 8.m4b",
+      "fileCount": 1,
+      "metadata": {
+        "title": "盾の勇者の成り上がり 8",
+        "series": ["盾の勇者の成り上がり #8"]
+      },
+      "book": {
+        "title": "盾の勇者の成り上がり 8",
+        "seriesName": "盾の勇者の成り上がり",
+        "seriesIndex": 8
+      }
+    },
+    {
+      "folder": "japanese-generated/くまなの/くま クマ 熊 ベアー/Vol 11.5 - くま クマ 熊 ベアー 11.5",
+      "categories": ["vol-decimal", "ai"],
+      "firstFile": "くまなの_くま_クマ_熊_ベアー11.5.mp3",
+      "fileCount": 1,
+      "metadata": {
+        "title": "くま クマ 熊 ベアー 11.5",
+        "series": ["くま クマ 熊 ベアー #11.5"]
+      },
+      "book": {
+        "title": "くま クマ 熊 ベアー 11.5",
+        "seriesName": "くま クマ 熊 ベアー",
+        "seriesIndex": 11.5
+      }
+    },
+    {
+      "folder": "japanese/長岡弘樹/教場/Vol 1 - 教場",
+      "categories": ["vol-integer"],
+      "firstFile": "教場.m4b",
+      "fileCount": 1,
+      "metadata": {
+        "title": "教場",
+        "series": ["教場 #1"]
+      },
+      "book": {
+        "title": "教場",
+        "seriesName": "教場",
+        "seriesIndex": 1
+      }
+    },
+    {
+      "folder": "japanese/誉田哲也/姫川玲子シリーズ/ノーマンズランド",
+      "categories": ["author-series-title"],
+      "firstFile": "ノーマンズランド.m4b",
+      "fileCount": 1,
+      "metadata": {
+        "title": "ノーマンズランド",
+        "series": ["姫川玲子シリーズ"]
+      },
+      "book": {
+        "title": "ノーマンズランド",
+        "seriesName": "姫川玲子シリーズ",
+        "seriesIndex": null
+      }
+    },
+    {
+      "folder": "japanese-generated/時雨沢恵一/キノの旅/Vol 7 - キノの旅VII the Beautiful World",
+      "categories": ["vol-integer", "ai"],
+      "firstFile": "時雨沢_恵一_キノの旅VII_the_Beautiful_World.mp3",
+      "fileCount": 1,
+      "metadata": {
+        "title": "キノの旅VII the Beautiful World",
+        "series": ["キノの旅 #7"]
+      },
+      "book": {
+        "title": "キノの旅VII the Beautiful World",
+        "seriesName": "キノの旅",
+        "seriesIndex": 7
+      }
+    },
+    {
+      "folder": "japanese-generated/_Unknown/Re：ゼロから始める異世界生活/Vol 35 - Re：ゼロから始める異世界生活35",
+      "categories": ["fullwidth", "vol-integer", "unknown-author", "ai"],
+      "firstFile": "Ｒｅゼロから始める異世界生活35.mp3",
+      "fileCount": 1,
+      "metadata": {
+        "title": "Re:ゼロから始める異世界生活35",
+        "series": ["Re:ゼロから始める異世界生活 #35"]
+      },
+      "book": {
+        "title": "Re:ゼロから始める異世界生活35",
+        "seriesName": "Re:ゼロから始める異世界生活",
+        "seriesIndex": 35
+      }
+    },
+    {
+      "folder": "japanese/市川沙央/ハンチバック {くわばらあきら}",
+      "categories": ["narrator", "author-title"],
+      "firstFile": "ハンチバック [B0C9T8Z6HZ].m4b",
+      "fileCount": 1,
+      "metadata": {
+        "title": "ハンチバック",
+        "series": []
+      },
+      "book": {
+        "title": "ハンチバック",
+        "seriesName": null,
+        "seriesIndex": null
+      }
+    },
+    {
+      "folder": "japanese/奥田英朗/伊良部シリーズ/Vol 4 - コメンテーター",
+      "categories": ["vol-integer"],
+      "firstFile": "コメンテーター_ 文藝春秋 [B0GMHSH59C].m4b",
+      "fileCount": 1,
+      "metadata": {
+        "title": "コメンテーター",
+        "series": ["伊良部シリーズ #4"]
+      },
+      "book": {
+        "title": "コメンテーター",
+        "seriesName": "伊良部シリーズ",
+        "seriesIndex": 4
+      }
+    },
+    {
+      "folder": "japanese/森絵都/無限大ガール",
+      "categories": ["author-title"],
+      "firstFile": "無限大ガール [B07GNGSGC6].m4b",
+      "fileCount": 1,
+      "metadata": {
+        "title": "無限大ガール",
+        "series": []
+      },
+      "book": {
+        "title": "無限大ガール",
+        "seriesName": null,
+        "seriesIndex": null
+      }
+    },
+    {
+      "folder": "japanese/川口俊和/コーヒーが冷めないうちに/Vol 2 - この嘘がばれないうちに {高田憂希}",
+      "categories": ["narrator", "vol-integer"],
+      "firstFile": "この嘘がばれないうちに.m4b",
+      "fileCount": 1,
+      "metadata": {
+        "title": "この嘘がばれないうちに",
+        "series": ["コーヒーが冷めないうちに #2"]
+      },
+      "book": {
+        "title": "この嘘がばれないうちに",
+        "seriesName": "コーヒーが冷めないうちに",
+        "seriesIndex": 2
+      }
+    },
+    {
+      "folder": "japanese/西尾維新/＜物語＞シリーズ/Vol 10 - 花物語",
+      "categories": ["fullwidth", "vol-integer"],
+      "firstFile": "花物語.m4b",
+      "fileCount": 1,
+      "metadata": {
+        "title": "花物語",
+        "series": ["<物語>シリーズ #10"]
+      },
+      "book": {
+        "title": "花物語",
+        "seriesName": "<物語>シリーズ",
+        "seriesIndex": 10
+      }
+    },
+    {
+      "folder": "japanese/嶽本野ばら/ミシン {長屋和彰}",
+      "categories": ["narrator", "author-title"],
+      "firstFile": "ミシン.m4b",
+      "fileCount": 1,
+      "metadata": {
+        "title": "ミシン",
+        "series": []
+      },
+      "book": {
+        "title": "ミシン",
+        "seriesName": null,
+        "seriesIndex": null
+      }
+    },
+    {
+      "folder": "japanese/西尾維新/＜物語＞シリーズ/Vol 18 - 終物語 下",
+      "categories": ["fullwidth", "vol-integer"],
+      "firstFile": "終物語　下.m4b",
+      "fileCount": 1,
+      "metadata": {
+        "title": "終物語 下",
+        "series": ["<物語>シリーズ #18"]
+      },
+      "book": {
+        "title": "終物語 下",
+        "seriesName": "<物語>シリーズ",
+        "seriesIndex": 18
+      }
+    },
+    {
+      "folder": "japanese/三月叶姫/昨日まで名前も呼んでくれなかった公爵様が、急に溺愛してくるのですが？/Vol 1 - 昨日まで名前も呼んでくれなかった公爵様が、急に溺愛してくるのですが？1",
+      "categories": ["fullwidth", "vol-integer"],
+      "firstFile": "[01] 昨日まで名前も呼んでくれなかった公爵様が、急に溺愛してくるのですが？1 [B0G12SP3XQ].m4b",
+      "fileCount": 1,
+      "metadata": {
+        "title": "昨日まで名前も呼んでくれなかった公爵様が、急に溺愛してくるのですが？1",
+        "series": ["昨日まで名前も呼んでくれなかった公爵様が、急に溺愛してくるのですが? #1"]
+      },
+      "book": {
+        "title": "昨日まで名前も呼んでくれなかった公爵様が、急に溺愛してくるのですが？1",
+        "seriesName": "昨日まで名前も呼んでくれなかった公爵様が、急に溺愛してくるのですが?",
+        "seriesIndex": 1
+      }
+    },
+    {
+      "folder": "japanese/ほのぼのる500/最弱テイマーはゴミ拾いの旅を始めました。/Vol 11 - 最弱テイマーはゴミ拾いの旅を始めました。11",
+      "categories": ["vol-integer"],
+      "firstFile": "[11巻]最弱テイマーはゴミ拾いの旅を始めました。11 [B0FBGJQJYR].m4b",
+      "fileCount": 1,
+      "metadata": {
+        "title": "最弱テイマーはゴミ拾いの旅を始めました。11",
+        "series": ["最弱テイマーはゴミ拾いの旅を始めました。 #11"]
+      },
+      "book": {
+        "title": "最弱テイマーはゴミ拾いの旅を始めました。11",
+        "seriesName": "最弱テイマーはゴミ拾いの旅を始めました。",
+        "seriesIndex": 11
+      }
+    },
+    {
+      "folder": "japanese/成田良悟/Fate／strange Fake/Vol 8 - Fate／strange Fake(8)",
+      "categories": ["fullwidth", "vol-integer"],
+      "firstFile": "[8巻] Fate∕strange Fake(8)： (KADOKAWA) [B0D6NN6NRH].m4b",
+      "fileCount": 1,
+      "metadata": {
+        "title": "Fate/strange Fake(8)",
+        "series": ["Fate/strange Fake #8"]
+      },
+      "book": {
+        "title": "Fate/strange Fake(8)",
+        "seriesName": "Fate/strange Fake",
+        "seriesIndex": 8
+      }
+    },
+    {
+      "folder": "japanese-generated/_Unknown/Re：ゼロから始める異世界生活/Vol 5 - Re：ゼロから始める異世界生活5",
+      "categories": ["fullwidth", "vol-integer", "unknown-author", "ai"],
+      "firstFile": "Ｒｅゼロから始める異世界生活5.mp3",
+      "fileCount": 1,
+      "metadata": {
+        "title": "Re:ゼロから始める異世界生活5",
+        "series": ["Re:ゼロから始める異世界生活 #5"]
+      },
+      "book": {
+        "title": "Re:ゼロから始める異世界生活5",
+        "seriesName": "Re:ゼロから始める異世界生活",
+        "seriesIndex": 5
+      }
+    },
+    {
+      "folder": "japanese/三枝零一/ウィザーズ・ブレイン/Vol 8 - ウィザーズ・ブレインVI 再会の天地＜上＞",
+      "categories": ["fullwidth", "vol-integer"],
+      "firstFile": "[6巻・上] ウィザーズ・ブレインVI 再会の天地＜上＞： (KADOKAWA) [B0DHZR4Y6L].m4b",
+      "fileCount": 1,
+      "metadata": {
+        "title": "ウィザーズ・ブレインVI 再会の天地＜上＞",
+        "series": ["ウィザーズ・ブレイン #8"]
+      },
+      "book": {
+        "title": "ウィザーズ・ブレインVI 再会の天地＜上＞",
+        "seriesName": "ウィザーズ・ブレイン",
+        "seriesIndex": 8
+      }
+    },
+    {
+      "folder": "japanese/星新一/星新一 名作セレクション/おかしな先祖",
+      "categories": ["author-series-title"],
+      "firstFile": "おかしな先祖 [B0D7QXVJ6B].m4b",
+      "fileCount": 1,
+      "metadata": {
+        "title": "おかしな先祖",
+        "series": ["星新一 名作セレクション"]
+      },
+      "book": {
+        "title": "おかしな先祖",
+        "seriesName": "星新一 名作セレクション",
+        "seriesIndex": null
+      }
+    },
+    {
+      "folder": "japanese/塩田武士/罪の声 {三好翼}",
+      "categories": ["narrator", "author-title"],
+      "firstFile": "罪の声.m4b",
+      "fileCount": 1,
+      "metadata": {
+        "title": "罪の声",
+        "series": []
+      },
+      "book": {
+        "title": "罪の声",
+        "seriesName": null,
+        "seriesIndex": null
+      }
+    },
+    {
+      "folder": "japanese-generated/_Unknown/Re：ゼロから始める異世界生活/Vol 3 - Re：ゼロから始める異世界生活3",
+      "categories": ["fullwidth", "vol-integer", "unknown-author", "ai"],
+      "firstFile": "Ｒｅゼロから始める異世界生活3.mp3",
+      "fileCount": 1,
+      "metadata": {
+        "title": "Re:ゼロから始める異世界生活3",
+        "series": ["Re:ゼロから始める異世界生活 #3"]
+      },
+      "book": {
+        "title": "Re:ゼロから始める異世界生活3",
+        "seriesName": "Re:ゼロから始める異世界生活",
+        "seriesIndex": 3
+      }
+    },
+    {
+      "folder": "japanese/塩田武士/罪の声 {津田健次郎}",
+      "categories": ["narrator", "author-title"],
+      "firstFile": "罪の声.m4b",
+      "fileCount": 1,
+      "metadata": {
+        "title": "罪の声",
+        "series": []
+      },
+      "book": {
+        "title": "罪の声",
+        "seriesName": null,
+        "seriesIndex": null
+      }
+    }
+  ]
+}
