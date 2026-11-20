@@ -715,6 +715,8 @@ export interface AudioStage5Progress {
   wait: string | null;
   invented: number;
   counts: Record<string, Record<string, number>> | null;
+  /** The answers the decisions use, whatever run asked them, with their cost. */
+  inUse?: { answered: number; failed: number; blocked: number; invalid: number; costUsd: number };
   cost: {
     costUsd: number;
     items: number;

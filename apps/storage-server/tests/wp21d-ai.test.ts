@@ -677,6 +677,54 @@ describe('AI runner', () => {
     expect(spendNow(db).spentUsd).toBeGreaterThan(0);
   });
 
+  it('a model list that could not be read is read again within a minute, not an hour', async () => {
+    const { db, runner, advance } = await setup();
+    const { getSettings } = await import('../src/cleanup/settings');
+    updateSettings(db, { ai: { ...getSettings(db).ai, spendLimitUsd: 1 } });
+    runner.putItems(SPEC, items(2), 1);
+    runner.enqueue(SPEC, 'primary', ['k0'], 'r');
+    await runToEnd(runner, 'r', advance);
+    // Then a read fails (as at the server's start on 2026-11-19: a connection error).
+    db.prepare(
+      "UPDATE ai_model_checks SET error = 'Connection error. (ETIMEDOUT)', models_json = NULL, checked_at = ?",
+    ).run((runner as unknown as { now(): number }).now());
+    advance(1000);
+    runner.enqueue(SPEC, 'primary', ['k1'], 'r');
+    const w = await runner.step(SPEC, 'r', () => false);
+    expect(w.wait).toMatchObject({ kind: 'model_check_failed' });
+    advance(61_000);
+    await runToEnd(runner, 'r', advance);
+    expect(runner.modelChecks().anthropic.error).toBeNull();
+    expect(runner.answerOf(SPEC, 'primary', 'k1')?.state).toBe('answered');
+  });
+
+  it('asks again a call a restart cut off (the nightly backup stopped the server, 2026-11-20)', async () => {
+    const { db, runner, advance } = await setup();
+    const { getSettings } = await import('../src/cleanup/settings');
+    const s = getSettings(db);
+    updateSettings(db, {
+      ai: {
+        ...s.ai,
+        spendLimitUsd: 1,
+        modes: Object.fromEntries(Object.values(s.models).map((m) => [m, 'direct' as const])),
+      },
+    });
+    runner.putItems(SPEC, items(1), 1);
+    runner.enqueue(SPEC, 'primary', ['k0'], 'r');
+    // In flight when the server stopped: sent one at a time, never answered.
+    db.prepare(`UPDATE ai_requests SET state = 'sent', mode = 'direct', sent_at = ?`).run(
+      1_800_000_000_000,
+    );
+    advance(7 * 60_000);
+    // The restarted server (a new runner) asks it again; its own calls in flight it leaves.
+    const restarted = new AiRunner(
+      (runner as unknown as { deps: ConstructorParameters<typeof AiRunner>[0] }).deps,
+    );
+    await restarted.step(SPEC, 'r', () => false);
+    expect(restarted.answerOf(SPEC, 'primary', 'k0')?.state).toBe('answered');
+    expect(restarted.pending(SPEC.stage, 'r')).toBe(0);
+  });
+
   it('only labeled items are asked when labeledOnly is set', async () => {
     const { db, runner, advance } = await setup();
     const { getSettings } = await import('../src/cleanup/settings');

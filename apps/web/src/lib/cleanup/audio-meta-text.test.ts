@@ -180,4 +180,31 @@ describe('stage 5 text', () => {
       '4,898 recordings decided; 2 titles unconfirmed. AI cost $2.50.'
     );
   });
+
+  it('after a run again: the answers in use and their cost, not "0 in, $0.00" (2026-11-20)', () => {
+    const p = {
+      phase: 'done' as const,
+      counts: { title: { rules: 10, flagged: 2 } },
+      ai: { queued: 0, sent: 0, answered: 0, blocked: 0, invalid: 0, failed: 0 },
+      cost: { costUsd: 0, items: 0, perItemUsd: null, byModel: {} },
+      inUse: { answered: 9796, failed: 0, blocked: 0, invalid: 0, costUsd: 2.66 }
+    };
+    const lines = audioStage5Lines(s5(p));
+    expect(lines).toContain('Answers in use: 9,796. AI cost of these answers: $2.66.');
+    expect(lines.join('\n')).not.toMatch(/Answers: 0 in|This run: \$0\.00/);
+    expect(stageSummary(5, { stage5: s5(p) } as unknown as AudioStatus)).toBe(
+      '4,898 recordings decided; 2 titles unconfirmed. AI cost $2.66.'
+    );
+    const partly = audioStage5Lines(
+      s5({ ...p, ai: { ...p.ai, answered: 6 }, inUse: { ...p.inUse, failed: 0 } })
+    );
+    expect(partly[1]).toBe(
+      'Answers in use: 9,796 (6 asked in this run, the rest from earlier runs). AI cost of these answers: $2.66.'
+    );
+  });
+
+  it("writes a label's series like a decided one (it said undefined #undefined)", () => {
+    expect(valueText('series', [['探偵・沢崎シリーズ', '2', '2']])).toBe('探偵・沢崎シリーズ #2');
+    expect(valueText('series', [['本好きの下剋上', null, 'drama']])).toBe('本好きの下剋上');
+  });
 });

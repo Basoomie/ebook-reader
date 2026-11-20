@@ -162,7 +162,30 @@ export class AiRunner {
     return key ? createHash('sha1').update(key).digest('hex').slice(0, 8) : null;
   }
 
-  constructor(private readonly deps: AiRunnerDeps) {}
+  /** When this runner (the server process) started: calls sent before it were cut off. */
+  private readonly startedAt: number;
+  private orphansRequeued = false;
+
+  constructor(private readonly deps: AiRunnerDeps) {
+    this.startedAt = this.now();
+  }
+
+  /**
+   * A call asked one at a time that was in flight when the server stopped (the nightly backup
+   * stops ttsu-storage: stop 2, 2026-11-20 1:00 am, left 3 questions "sent" for good) is asked
+   * again: queued with the tries it had. Batches are not touched (they survive by their id).
+   */
+  private requeueOrphans(stage: string): void {
+    if (this.orphansRequeued) return;
+    this.orphansRequeued = true;
+    const n = this.db
+      .prepare(
+        `UPDATE ai_requests SET state = 'queued', sent_at = NULL
+         WHERE stage = ? AND state = 'sent' AND batch_id IS NULL AND (sent_at IS NULL OR sent_at < ?)`,
+      )
+      .run(stage, this.startedAt).changes;
+    if (n) this.deps.log?.(`AI: ${n} questions cut off by a restart are asked again`);
+  }
 
   private get db(): Database.Database {
     return this.deps.db;
@@ -432,7 +455,13 @@ export class AiRunner {
     // The model list is read before a model is first used, and again at most hourly while a
     // model is missing from it or the last read failed (Settings: Check models reads it now).
     let check = this.modelChecks()[provider];
-    const stale = !check || this.now() - check.checkedAt > MODEL_RECHECK_MS;
+    // A read that failed (not a refused key) is tried again at the batch poll pace: one that
+    // failed while the server was starting left stage 5 paused for an hour (stop 2).
+    const recheckMs =
+      check?.error && !/^40[13]\b/.test(check.error)
+        ? this.settings().batchPollSeconds * 1000
+        : MODEL_RECHECK_MS;
+    const stale = !check || this.now() - check.checkedAt > recheckMs;
     const newKey = this.checkedWith.get(provider) !== this.keyId(provider);
     if (!check || ((stale || newKey) && (check.error || !check.models?.includes(model)))) {
       await this.checkProvider(provider);
@@ -459,6 +488,7 @@ export class AiRunner {
     runId: string,
     shouldStop: () => boolean,
   ): Promise<AiStepResult> {
+    this.requeueOrphans(spec.stage);
     let answered = await this.collect(spec);
     let sent = 0;
     let wait: AiWait | null = null;

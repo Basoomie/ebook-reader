@@ -439,6 +439,10 @@ describe('stage 5 through the service', () => {
     ]);
     expect(p.cost!.costUsd).toBeGreaterThan(0);
     expect(p.cost!.items).toBe(13);
+    // The answers in use, whatever run asked them (a run again shows these, not its own 0).
+    const inUse = (p as unknown as { inUse: { answered: number; costUsd: number } }).inUse;
+    expect(inUse.answered).toBeGreaterThan(20);
+    expect(inUse.costUsd).toBeCloseTo(p.cost!.costUsd, 6);
 
     // The lists and the AI status.
     const flagged = await api(request(e.app).get('/api/v1/cleanup/audio/meta?list=flagged'));

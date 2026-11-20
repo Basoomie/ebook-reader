@@ -61,7 +61,8 @@ export function stageSummary(stage: number, status: AudioStatus): string | null 
     const p = status.stage5?.progress;
     if (!p || p.phase !== 'done' || !p.counts) return null;
     const flagged = p.counts.title?.flagged ?? 0;
-    const spent = p.cost ? ` AI cost $${p.cost.costUsd.toFixed(2)}.` : '';
+    const cost = p.inUse?.costUsd ?? p.cost?.costUsd;
+    const spent = cost !== undefined ? ` AI cost $${cost.toFixed(2)}.` : '';
     return `${count(p.units, 'recording', 'recordings')} decided; ${count(flagged, 'title', 'titles')} unconfirmed.${spent}`;
   }
   return null;
