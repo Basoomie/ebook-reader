@@ -3,13 +3,25 @@
  *
  * A book's requests are queued one step at a time (a search, then the book it picked, then its
  * series), so a site's queue never holds the whole run's requests. The requests still to come
- * are estimated from requests per book: the reference run's (measured on the same 800 labeled
- * books, plan section 8) until this run's labeled books are all proposed, then this run's own
- * on them. Shared pages (a series page used by many volumes) are asked once, so at the
- * library's size the estimate is an upper bound. Each site's time is what is left times its
- * measured seconds per request; the sites run side by side, so the lookups take as long as the
- * slowest one. Amazon's two queues count together while they share one slot.
+ * are the open ones, plus what their next steps will ask, plus requests per book for the books
+ * whose lookups haven't started yet:
+ * - each open lookup (a request waiting or in flight, or an answer not handled yet) leads to
+ *   its step's next steps, at the rate measured on this run's answers of that step (new
+ *   requests only: a series page another volume already asked costs nothing). Until a step has
+ *   MIN_FOLLOW_UP_ANSWERS answers, each possible next step counts once (an upper bound);
+ * - a book whose BookWalker or RanobeDB lookup is open still has its Amazon decision to come,
+ *   and a book with any core lookup open its Bookmeter store list and cover, each at the rate
+ *   measured on this run's decisions;
+ * - a book not started yet asks requests per book: the reference run's (measured on the same 800
+ *   labeled books, plan section 8) until this run's labeled books are all proposed, then this
+ *   run's own on them.
+ * Found live 2026-11-20: requests per book applied to every book counted 28,450 BookWalker
+ * requests (42 h) with BookWalker's queue empty and every book past it.
+ * Each site's time is what is left times its measured seconds per request; the sites run side by
+ * side, so the lookups take as long as the slowest one. Amazon's two queues count together while
+ * they share one slot.
  */
+import type Database from 'better-sqlite3';
 import type { FetchSite } from '../settings';
 
 /** Requests per book in the reference run (source-probe/out3/log.jsonl, 800 books). */
@@ -65,13 +77,103 @@ export function paceSeconds(
  */
 export const MEASURED_POLICY = new Set<FetchSite>(['amazon-dp', 'amazon-search']);
 
+/**
+ * Each lookup step's possible next steps (analysis.ts onAnswer; a BookWalker search is asked once
+ * more after a "not found"), and the two book events that ask requests of their own: the Amazon
+ * decision once BookWalker and RanobeDB have answered ('decide') and the store list and cover
+ * once the core sites are through ('after-core').
+ */
+export const NEXT_STEPS: Record<string, string[]> = {
+  'amazon-search': ['amazon-dp'],
+  'amazon-dp': [],
+  'ranobedb-search': ['ranobedb-book'],
+  'ranobedb-book': ['ranobedb-series'],
+  'ranobedb-series': [],
+  'bookwalker-search': ['bookwalker-search', 'bookwalker-series', 'bookwalker-detail'],
+  'bookwalker-series': ['bookwalker-detail'],
+  'bookwalker-detail': [],
+  'bookmeter-search': [],
+  'bookmeter-stores': [],
+  cover: [],
+  decide: ['amazon-dp', 'amazon-search'],
+  'after-core': ['bookmeter-stores', 'cover'],
+};
+
+/** The site each lookup step asks. */
+export const STEP_SITE: Record<string, FetchSite> = {
+  'amazon-search': 'amazon-search',
+  'amazon-dp': 'amazon-dp',
+  'ranobedb-search': 'ranobedb',
+  'ranobedb-book': 'ranobedb',
+  'ranobedb-series': 'ranobedb',
+  'bookwalker-search': 'bookwalker',
+  'bookwalker-series': 'bookwalker',
+  'bookwalker-detail': 'bookwalker',
+  'bookmeter-search': 'bookmeter',
+  'bookmeter-stores': 'bookmeter',
+  cover: 'amazon-img',
+};
+
+/** Answers of a step (or decisions) before its measured rate replaces the upper bound. */
+export const MIN_FOLLOW_UP_ANSWERS = 30;
+
+/**
+ * This run's answers handled per step (and the decide / after-core events), and the new requests
+ * each led to, per next step (key `from>to`). Kept in the stage's progress.
+ */
+export interface FollowUps {
+  answers: Record<string, number>;
+  made: Record<string, number>;
+}
+
+/** The lookups open now. */
+export interface OpenLookups {
+  /** Open lookups per step: waiting or in flight, or answered and not handled yet. */
+  steps: Record<string, number>;
+  /** Books whose BookWalker or RanobeDB lookup is open (their Amazon decision is still to come). */
+  undecided: number;
+  /** Books with a core lookup open (Amazon, RanobeDB, BookWalker, Bookmeter's search). */
+  coreOpen: number;
+}
+
+type PerSite = Partial<Record<FetchSite, number>>;
+
+/** New requests per site that one answer of `step` will still lead to, and whether a bound was used. */
+function makeTails(f: FollowUps | null): (step: string) => { sites: PerSite; bound: boolean } {
+  const memo = new Map<string, { sites: PerSite; bound: boolean }>();
+  const tail = (step: string, skipSelf: boolean): { sites: PerSite; bound: boolean } => {
+    const k = `${step}|${skipSelf}`;
+    const hit = memo.get(k);
+    if (hit) return hit;
+    const sites: PerSite = {};
+    let bound = false;
+    const answers = f?.answers[step] ?? 0;
+    for (const next of NEXT_STEPS[step] ?? []) {
+      if (skipSelf && next === step) continue;
+      let rate = 1;
+      if (answers >= MIN_FOLLOW_UP_ANSWERS) rate = (f!.made[`${step}>${next}`] ?? 0) / answers;
+      else bound = true;
+      if (!rate) continue;
+      const site = STEP_SITE[next];
+      sites[site] = (sites[site] ?? 0) + rate;
+      // A step asked again (BookWalker's second search) is asked once more at most.
+      const sub = tail(next, next === step);
+      bound ||= sub.bound;
+      for (const [s, n] of Object.entries(sub.sites))
+        sites[s as FetchSite] = (sites[s as FetchSite] ?? 0) + rate * n!;
+    }
+    const out = { sites, bound };
+    memo.set(k, out);
+    return out;
+  };
+  return (step) => tail(step, false);
+}
+
 export interface SiteCounts {
   site: FetchSite;
   enabled: boolean;
   /** Requests waiting or in flight now. */
   open: number;
-  /** Requests finished (answered, gone or given up). */
-  finished: number;
   /** Measured seconds from one request to the next (the interval when nothing is measured yet). */
   secondsPerRequest: number;
   /** This run's labeled requests (counted when the labeled books are all proposed). */
@@ -85,6 +187,11 @@ export interface EtaInput {
   booksRead: number;
   /** Books that couldn't be read: they have no lookups. */
   booksUnreadable: number;
+  /** Books whose lookups have started (waiting, ready or proposed). */
+  booksStarted: number;
+  /** The lookups open now, and this run's measured follow-ups (null before any). */
+  open: OpenLookups;
+  followUps: FollowUps | null;
   /** Books read per second, measured (null while not measured yet). */
   readPerSecond: number | null;
   /** The labeled books, and whether they are all proposed (then their own ratios count). */
@@ -115,13 +222,34 @@ export interface EtaResult {
   final: number | null;
   /** All of it: reading, then the slowest site, then the final pass (null while unknown). */
   total: number | null;
-  /** Where the requests per book come from. */
+  /** Books whose lookups haven't started (requests per book), and where that rate comes from. */
+  notStarted: number;
   basis: 'labeled' | 'reference';
+  /** The open lookups' next steps: measured on this run's answers, or an upper bound for a step
+   * not measured yet ('none' when no lookup is open). */
+  followUps: 'measured' | 'bound' | 'none';
 }
 
 export function stage4Eta(i: EtaInput): EtaResult {
   const basis = i.labeledDone && i.labeledBooks > 0 ? 'labeled' : 'reference';
   const books = Math.max(0, i.booksTotal - i.booksUnreadable);
+  const notStarted = Math.max(0, books - i.booksStarted);
+  // The requests the open lookups will still lead to, per site.
+  const tailOf = makeTails(i.followUps);
+  const coming: PerSite = {};
+  let bound = false;
+  let anyOpen = false;
+  const add = (count: number, step: string) => {
+    if (count <= 0) return;
+    anyOpen = true;
+    const t = tailOf(step);
+    if (Object.keys(t.sites).length) bound ||= t.bound;
+    for (const [s, n] of Object.entries(t.sites))
+      coming[s as FetchSite] = (coming[s as FetchSite] ?? 0) + count * n!;
+  };
+  for (const [step, n] of Object.entries(i.open.steps)) if (STEP_SITE[step]) add(n, step);
+  add(i.open.undecided, 'decide');
+  add(i.open.coreOpen, 'after-core');
   const sites: Partial<Record<FetchSite, number>> = {};
   const left: Partial<Record<FetchSite, number>> = {};
   for (const s of i.sites) {
@@ -130,9 +258,7 @@ export function stage4Eta(i: EtaInput): EtaResult {
       basis === 'labeled' && !MEASURED_POLICY.has(s.site)
         ? s.labeledRequests / i.labeledBooks
         : (REFERENCE_PER_BOOK[s.site] ?? 0);
-    const expected = perBook * books;
-    // Never less than what is queued now.
-    left[s.site] = Math.max(s.open, expected - s.finished);
+    left[s.site] = s.open + (coming[s.site] ?? 0) + perBook * notStarted;
     sites[s.site] = Math.round(left[s.site]! * s.secondsPerRequest);
   }
   const ndl = Math.ceil(i.ndlNames / Math.max(1, i.ndlBatch)) * i.ndlSecondsPerQuery;
@@ -166,5 +292,49 @@ export function stage4Eta(i: EtaInput): EtaResult {
   // Lookups start as books are read, so the reading only adds where it outlasts the sites.
   const total =
     read === null || final === null ? null : Math.max(read, slowest?.seconds ?? 0) + final;
-  return { read, sites, amazonSlot, slowest, final, total, basis };
+  return {
+    read,
+    sites,
+    amazonSlot,
+    slowest,
+    final,
+    total,
+    notStarted,
+    basis,
+    followUps: anyOpen ? (bound ? 'bound' : 'measured') : 'none',
+  };
 }
+
+/**
+ * The lookups open now, from the fetch queue: each waiting book's open step (its request waiting
+ * or in flight, by the queue's site/state index, or answered and not handled yet, by the ready
+ * index). One row per waiting book and step (~20,000 mid-run).
+ */
+export function openLookups(db: Database.Database): OpenLookups {
+  const sites = [...new Set(Object.values(STEP_SITE))];
+  const rows: { uuid: string; step: string }[] = [];
+  const open = db.prepare(
+    `SELECT w.calibre_uuid AS uuid, w.step FROM fetch_requests r
+     JOIN fetch_waiters w ON w.request_id = r.id
+     WHERE r.site = ? AND r.state IN ('queued', 'leased')`,
+  );
+  for (const site of sites) rows.push(...(open.all(site) as { uuid: string; step: string }[]));
+  rows.push(
+    ...(db
+      .prepare('SELECT calibre_uuid AS uuid, step FROM fetch_waiters WHERE ready = 1')
+      .all() as { uuid: string; step: string }[]),
+  );
+  const steps: Record<string, number> = {};
+  const undecided = new Set<string>();
+  const coreOpen = new Set<string>();
+  for (const r of rows) {
+    if (!STEP_SITE[r.step]) continue;
+    steps[r.step] = (steps[r.step] ?? 0) + 1;
+    if (/^(bookwalker|ranobedb)-/.test(r.step)) undecided.add(r.uuid);
+    if (CORE_STEP.test(r.step)) coreOpen.add(r.uuid);
+  }
+  return { steps, undecided: undecided.size, coreOpen: coreOpen.size };
+}
+
+/** The core sites' steps: a book with one open hasn't reached its store list and cover yet. */
+const CORE_STEP = /^(amazon-search|amazon-dp|ranobedb-|bookwalker-|bookmeter-search)/;

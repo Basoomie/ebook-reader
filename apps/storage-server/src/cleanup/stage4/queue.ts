@@ -124,6 +124,11 @@ export class FetchQueue {
   /** The Amazon pace of the trial, decided at most every 30 s. */
   private trialAt = 0;
   private trialMode: 'shared' | 'separate' = 'shared';
+  /**
+   * New requests made per waiter step since the server started (a request another book already
+   * made isn't counted): the analysis counts each answer's follow-ups from it (stage4/eta.ts).
+   */
+  readonly created: Record<string, number> = {};
 
   constructor(
     private readonly db: Database.Database,
@@ -144,6 +149,11 @@ export class FetchQueue {
     now = Date.now(),
   ): { id: number; state: string } {
     const prio = spec.priority ?? 0;
+    const existed =
+      waiter !== null &&
+      this.db
+        .prepare('SELECT 1 FROM fetch_requests WHERE site = ? AND key = ?')
+        .get(spec.site, spec.key) !== undefined;
     this.db
       .prepare(
         `INSERT INTO fetch_requests (site, key, method, url, body, accept, priority, created_at, updated_at)
@@ -173,6 +183,7 @@ export class FetchQueue {
            ON CONFLICT DO UPDATE SET ready = excluded.ready`,
         )
         .run(row.id, waiter.libraryId, waiter.uuid, waiter.step, ready);
+      if (!existed) this.created[waiter.step] = (this.created[waiter.step] ?? 0) + 1;
     }
     return row;
   }

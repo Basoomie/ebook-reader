@@ -141,8 +141,13 @@ export interface Stage4TimeLeft {
   slowest: { site: string; seconds: number } | null;
   final: number | null;
   total: number | null;
-  /** Requests per book from the reference run, or from this run's labeled books once done. */
+  /** Books not started yet (requests per book), and where that rate comes from: the reference
+   * run, or this run's labeled books once done. Missing on an older server. */
+  notStarted?: number;
   basis: 'labeled' | 'reference';
+  /** What the open lookups ask next: at this run's measured rates, or an upper bound until a
+   * step is measured ('none' when nothing is open). Missing on an older server. */
+  followUps?: 'measured' | 'bound' | 'none';
 }
 
 /** One field of the stage-4 gate (the server's precision.gate.fields). */

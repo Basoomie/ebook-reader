@@ -58,6 +58,7 @@ import {
   rdbSeries,
 } from './parse';
 import { bwAsAmazon, bwSettles, STANDIN, titleStem } from './bw-standin';
+import { NEXT_STEPS, type FollowUps } from './eta';
 import { ASIN_RE, pickByVolume, pyQuote, queryTitle, sim } from './pick';
 import { proposeStage4, type Stage4Proposal } from './proposals';
 import { FetchQueue, LABELED_PRIORITY } from './queue';
@@ -139,6 +140,8 @@ export interface Stage4Progress {
   bookwalkerRetry?: { phase: 'books' | 'done'; cursor: string; books: number };
   /** Books the final pass has proposed again (for its time left). */
   finalDone?: number;
+  /** Each step's answers and the new requests they led to (stage4/eta.ts, the time left). */
+  followUps?: FollowUps;
   /** PROPOSE_TIMES_VERSION the 'propose: book' time was measured under. */
   proposeTimesVersion?: number;
   /** Time per step (lessons 1-3: every stage times its steps from the first build). */
@@ -1289,6 +1292,27 @@ export class Stage4Analysis {
 
   private core = ['amazon', 'ranobedb', 'bookwalker', 'bookmeter'];
 
+  /**
+   * One handled answer of `from` (a lookup step, or the 'decide' / 'after-core' event) and the
+   * new requests it made since `before`, per step, into the progress (the time left's rates).
+   * Returns the counts now, for the next event of the same answer.
+   */
+  private countFollowUps(
+    p: Stage4Progress,
+    from: string,
+    before: Record<string, number>,
+  ): Record<string, number> {
+    const now = { ...this.deps.queue.created };
+    if (!(from in NEXT_STEPS)) return now;
+    const f = (p.followUps ??= { answers: {}, made: {} });
+    f.answers[from] = (f.answers[from] ?? 0) + 1;
+    for (const [step, n] of Object.entries(now)) {
+      const d = n - (before[step] ?? 0);
+      if (d > 0) f.made[`${from}>${step}`] = (f.made[`${from}>${step}`] ?? 0) + d;
+    }
+    return now;
+  }
+
   private async lookupStep(p: Stage4Progress): Promise<Stage4Progress> {
     const db = this.db;
     this.loadSnapshot(p.libraryId);
@@ -1385,9 +1409,12 @@ export class Stage4Analysis {
       }
       const ref = this.loadRef(wr.library_id, wr.calibre_uuid)!.file!;
       const labeled = row.labeled === 1;
+      let made = { ...this.deps.queue.created };
       this.onAnswer(p, book, ev, wr.step, wr.request_id, labeled);
+      made = this.countFollowUps(p, wr.step, made);
       // BookWalker and RanobeDB have answered: BookWalker settles the book, or Amazon is asked.
-      this.decideAmazon(p, book, ref, ev, labeled);
+      if (this.decideAmazon(p, book, ref, ev, labeled))
+        made = this.countFollowUps(p, 'decide', made);
       if (wr.step === 'cover' && ev.cover) {
         const img = this.deps.queue.readAnswer(wr.request_id);
         const facts = img ? await imageFacts(img).catch(() => null) : null;
@@ -1398,6 +1425,7 @@ export class Stage4Analysis {
       if (this.core.every((s) => !ev.open.includes(s)) && !ev.requests['core-done']) {
         ev.requests['core-done'] = 1;
         this.afterCore(p, book, ref, ev, labeled);
+        this.countFollowUps(p, 'after-core', made);
       }
       db.transaction(() => {
         this.saveEvidence(wr.library_id, wr.calibre_uuid, ONLINE_KIND, ev);
