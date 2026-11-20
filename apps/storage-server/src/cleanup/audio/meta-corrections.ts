@@ -12,4 +12,27 @@ export interface Correction {
   value: string[] | boolean;
 }
 
-export const CORRECTIONS: Correction[] = [];
+/** Approved by the user, 2026-11-20 (evidence in decisions.md, "WP21d follow-up"). */
+const MARK_BOOK = ['audiobookjp:90310', 'audiobookjp:132097', 'audiobookjp:109881'];
+const ANIMA = [
+  'audible:B0GHXFN2KW',
+  'audible:B0GHX95FH1',
+  'audible:B0GHX3P41Y',
+  'audible:B0GHXNGM34',
+  'audible:B0GHXNHH9D',
+];
+
+export const CORRECTIONS: Correction[] = [
+  // マーク・ブック is the 朗読執事 app's character, voiced by 近藤隆: one narrator.
+  ...MARK_BOOK.flatMap((record): Correction[] => [
+    { record, field: 'narrators', value: ['近藤隆'] },
+    { record, field: 'multi_narr', value: false },
+  ]),
+  // エヴァンゲリオン ANIMA 1-5: 企画・執筆 山下いくと, 原作 カラー (counts), 企画・編集 柏原康雄 (not).
+  ...ANIMA.map(
+    (record): Correction => ({ record, field: 'authors', value: ['山下いくと', 'カラー'] }),
+  ),
+  // 君の話: 岡井 カツノリ listed under two spellings, one person.
+  { record: 'audible:B0HHY712SG', field: 'narrators', value: ['岡井カツノリ'] },
+  { record: 'audible:B0HHY712SG', field: 'multi_narr', value: false },
+];
