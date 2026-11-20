@@ -139,6 +139,8 @@ export interface Stage4Progress {
   bookwalkerRetry?: { phase: 'books' | 'done'; cursor: string; books: number };
   /** Books the final pass has proposed again (for its time left). */
   finalDone?: number;
+  /** PROPOSE_TIMES_VERSION the 'propose: book' time was measured under. */
+  proposeTimesVersion?: number;
   /** Time per step (lessons 1-3: every stage times its steps from the first build). */
   times?: Record<string, StepTime>;
 }
@@ -251,6 +253,12 @@ const READ_CHUNK = 20;
 const PLAN_CHUNK = 500;
 const ANSWER_CHUNK = 200;
 const PROPOSE_CHUNK = 100;
+/**
+ * Bumped when a proposal's cost changes: its time ('propose: book', the final pass's time left)
+ * starts over (2: the per-book delete by the book index, 2026-11-20; the mean of the slow ones
+ * would have kept the final pass at 8 h on the page).
+ */
+const PROPOSE_TIMES_VERSION = 2;
 const FINAL_CHUNK = 50;
 const NATIVELY_ENQUEUE_CHUNK = 2000;
 /** Rows per chunk of the one-time Amazon sweep (measured on a live copy: 42 ms typical, 82 ms p90). */
@@ -407,6 +415,10 @@ export class Stage4Analysis {
     if (!p || p.phase === 'done') return true;
     try {
       const q = p;
+      if (q.proposeTimesVersion !== PROPOSE_TIMES_VERSION) {
+        if (q.times) delete q.times['propose: book'];
+        q.proposeTimesVersion = PROPOSE_TIMES_VERSION;
+      }
       if (q.phase === 'read') {
         const r = await timed(q, 'read', () => this.readStep(q, shouldStop));
         // Books already read start their lookups while the rest of the library is read.
@@ -1566,8 +1578,14 @@ export class Stage4Analysis {
   ): void {
     const db = this.db;
     const now = Date.now();
+    // The book's own rows by the book index. Left to itself SQLite takes proposed_changes_counts
+    // (four equal columns) and walks every stage-4 proposal of the field: found live 2026-11-20,
+    // ~0.6 s per book mid-run and 1.9 s per book at the library's size (10 fields, PC), against
+    // 0.1 ms by the book index; the final pass (8 h 38 min on the page) and every proposal during
+    // the lookups blocked the server that long.
     const del = db.prepare(
-      `DELETE FROM proposed_changes WHERE stage = 4 AND library_id = ? AND calibre_uuid = ? AND state = 'proposed' AND field = ?`,
+      `DELETE FROM proposed_changes INDEXED BY proposed_changes_book
+       WHERE stage = 4 AND library_id = ? AND calibre_uuid = ? AND state = 'proposed' AND field = ?`,
     );
     const ins = db.prepare(
       `INSERT INTO proposed_changes (stage, library_id, calibre_id, calibre_uuid, field, old_json, new_json, source,
