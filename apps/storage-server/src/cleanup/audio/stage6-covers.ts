@@ -166,7 +166,20 @@ export class AudioCovers {
   }
 
   /** One step. True: nothing more now. */
+  /** True while a step runs: steps never overlap (the service's loop and a caller's). */
+  private stepping = false;
+
   async step(stop: () => boolean): Promise<boolean> {
+    if (this.stepping) return true;
+    this.stepping = true;
+    try {
+      return await this.stepOnce(stop);
+    } finally {
+      this.stepping = false;
+    }
+  }
+
+  private async stepOnce(stop: () => boolean): Promise<boolean> {
     const p = this.progress();
     if (!p || !this.isRunning() || this.pause()) return true;
     try {

@@ -1500,7 +1500,12 @@ describe('nothing in the audiobook cleanup writes under the audiobook roots', ()
       if (f === 'audio-source-fs.ts' || f === 'dry-run.ts') continue;
       const s = fs.readFileSync(path.join(dir, f), 'utf8');
       expect(s, f).not.toMatch(/from 'fs'|from 'fs\/promises'|require\('fs'\)/);
-      expect(s.replace(/\/\*[\s\S]*?\*\//g, ''), f).not.toMatch(WRITES);
+      // Code only: WP21e-2's switch names the sidecar's operations ('rename', …) in strings.
+      const code = s
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/(['"`])(?:\\.|(?!\1)[^\\])*\1/g, "''")
+        .replace(/\/\/.*$/gm, '');
+      expect(code, f).not.toMatch(WRITES);
     }
   });
 
