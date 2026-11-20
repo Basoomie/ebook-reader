@@ -35,6 +35,9 @@ function arg(name: string, fallback?: string): string {
 
 const out = arg('out');
 const libraryFolder = arg('library-folder', 'japanese');
+// The move list's first path part (stage 6 names it after CLEANUP_AUDIO_LIBRARY_DIR: `library`
+// on the NAS); read from the copy itself.
+let moveFolder: string | null = null;
 fs.mkdirSync(out, { recursive: true });
 const t0 = Date.now();
 
@@ -94,7 +97,12 @@ const links = ttsu
   .all() as (SwitchLink & AudioLink)[];
 const loadMs = Date.now() - tq;
 const tr = Date.now();
-const results = remapLinks(links, moves, { libraryFolder, plannedFiles });
+moveFolder = moves[0]?.oldPath.split('/')[0] ?? null;
+const results = remapLinks(links, moves, {
+  libraryFolder,
+  moveFolder: moveFolder ?? undefined,
+  plannedFiles,
+});
 const remapMs = Date.now() - tr;
 const counts = remapCounts(results);
 
@@ -235,6 +243,7 @@ const report = {
   at: new Date().toISOString(),
   ttsuSchema: { before: versionBefore, after: versionAfter, migrateMs },
   analysis,
+  moveFolder,
   moves: moves.reduce<Record<string, number>>(
     (c, m) => ((c[m.outcome] = (c[m.outcome] ?? 0) + 1), c),
     {},

@@ -22,6 +22,20 @@ const HOLD_REASON = {
  */
 export function readerBusy(db: Database.Database): string[] {
   const out: string[] = [];
+  // Merged files the reader wrote into the library itself (before WP21e-2): the switch would
+  // leave them in japanese-old. Read from ttsu.db, independent of stage 6's move list.
+  const merged = (
+    db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM audio_writes WHERE state = 'done' AND purpose = 'merge'
+         AND final_rel_path LIKE 'japanese/%'`,
+      )
+      .get() as { n: number }
+  ).n;
+  if (merged)
+    out.push(
+      `${merged} merged file(s) the reader saved in the library itself: they would stay in japanese-old (decide first)`,
+    );
   const n = (sql: string) => (db.prepare(sql).get() as { n: number }).n;
   const merges = n(
     `SELECT COUNT(*) AS n FROM audio_merge_jobs WHERE state IN ('queued', 'running', 'saving')`,
@@ -62,6 +76,12 @@ export function switchReader(opts: {
       else clearHold(db, kind);
     },
     held: (kind) => isHeld(db, kind),
+    audioFolders: () =>
+      (
+        db.prepare(`SELECT audio_dir FROM libraries WHERE audio_dir IS NOT NULL`).all() as {
+          audio_dir: string;
+        }[]
+      ).map((r) => r.audio_dir.replace(/\/+$/, '')),
     scanIdle: () => scan.idle(),
     scanForSwitch: () => scan.scanForSwitch(),
     scanned: () => scan.scanned.folders,

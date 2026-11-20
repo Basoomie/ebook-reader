@@ -254,6 +254,19 @@ describe('the remap of the reader’s links (switch-remap.ts)', () => {
     });
   });
 
+  it('reads the move list’s first folder as the reader’s (stage 6 names it after the mount: `library` on the NAS)', () => {
+    const r = remapLinks(
+      [link('moved', 'japanese/A', 'a.m4b')],
+      moves.map((m) => ({ ...m, oldPath: m.oldPath.replace(/^japanese\//, 'library/') })),
+      { libraryFolder: 'japanese', moveFolder: 'library', plannedFiles },
+    );
+    expect(r[0]).toMatchObject({
+      outcome: 'moved',
+      newFolder: 'japanese/作者/A',
+      newFile: 'a.m4b',
+    });
+  });
+
   it('reads only the two build folders as renamed', () => {
     expect(afterRenames('japanese-new/a/b.m4b')).toBe('japanese/a/b.m4b');
     expect(afterRenames('japanese-generated-new/a')).toBe('japanese-generated/a');
@@ -1402,6 +1415,51 @@ describe('the switch through the linking sidecar and the reader', { timeout: 180
       ).toBe(409);
     for (const [book] of Object.entries(L))
       expect(resolveLink(env.db, getLink(env.db, uid, book)!).status, book).toBe('ok');
+  });
+
+  it('accepts Audiobookshelf rewriting its own files in the old library, and stops on any other change', async () => {
+    const { env, disk, worker, user, setAbs } = await setup();
+    const sw = env.audio!.switcher!;
+    await build(env, worker, user);
+    setAbs([]);
+    // ABS rewrote a metadata.json (the same file); the switch's check counts it and goes on.
+    const meta = path.join(disk.library, '_Unknown/シリーズX/Vol 1 - シリーズX 1/metadata.json');
+    const ino0 = fs.lstatSync(meta).ino;
+    fs.writeFileSync(meta, '{"title":"rewritten by ABS"}');
+    fs.utimesSync(meta, new Date(), new Date(Date.now() + 5000));
+    expect(fs.lstatSync(meta).ino).toBe(ino0);
+    // …and added a cover file of its own to another old folder.
+    fs.writeFileSync(path.join(disk.library, '_Unknown/シリーズX 2/cover.jpg'), 'abs');
+    await request(env.app)
+      .post('/api/v1/cleanup/audio/switch/start')
+      .set(user)
+      .send({ action: 'switch' })
+      .expect(200);
+    for (let i = 0; i < 400 && sw.progress()!.phase !== 'links' && !sw.pause(); i++) {
+      await sw.step(() => false);
+      await worker.cycle().catch(() => undefined);
+    }
+    expect(sw.pause()).toBeNull();
+    const lib = sw.progress()!.check!.items.find((x) => x.key === 'library')!;
+    expect(lib).toMatchObject({ ok: true });
+    expect(lib.detail).toMatch(/2 of Audiobookshelf's own files rewritten or added/);
+    await request(env.app).post('/api/v1/cleanup/audio/switch/cancel').set(user).expect(200);
+    // An audio file of the old library changed: the check stops the switch before any rename.
+    fs.appendFileSync(path.join(disk.library, '_Unknown/シリーズX 2/c.m4b'), 'x');
+    await request(env.app)
+      .post('/api/v1/cleanup/audio/switch/start')
+      .set(user)
+      .send({ action: 'switch' })
+      .expect(200);
+    for (let i = 0; i < 400 && !sw.pause(); i++) {
+      await sw.step(() => false);
+      await worker.cycle().catch(() => undefined);
+    }
+    expect(sw.pause()).toMatchObject({ reason: 'check_failed' });
+    expect(sw.pause()!.detail).toMatch(/The live library unchanged: 0 added, 0 removed, 1 changed/);
+    expect(fs.existsSync(path.join(disk.media, 'japanese-old'))).toBe(false);
+    await request(env.app).post('/api/v1/cleanup/audio/switch/cancel').set(user).expect(200);
+    expect(isHeld(env.db, 'switch')).toBe(false);
   });
 
   it('pauses on a late arrival before anything changes; Cancel lets go of the hold', async () => {

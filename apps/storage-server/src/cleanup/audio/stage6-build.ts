@@ -1253,11 +1253,41 @@ export class AudioStage6 {
       ctx ? torrentsAfter.filter((e) => !ctx.torrentsAdded.has(e.rel)) : torrentsAfter,
       linksTo,
     );
-    const library = compareManifests(
-      this.manifest(a, 'before', 'library'),
-      this.manifest(a, 'after', 'library'),
-      ctx?.libraryLinks ?? new Map(),
-    );
+    // WP21e-2: Audiobookshelf's own files of the old library (metadata.json, cover.*) may have
+    // been rewritten by it before its library was deleted; they go with japanese-old. For the
+    // switch they count as unchanged when they are the same file (inode); they are counted.
+    const libBefore = this.manifest(a, 'before', 'library');
+    let libAfter = this.manifest(a, 'after', 'library');
+    let absRewritten = 0;
+    if (ctx) {
+      const byRel = new Map(libBefore.map((e) => [e.rel, e]));
+      const own = /(^|\/)(metadata\.json|cover\.(jpe?g|png|webp))$/i;
+      const touched = new Set<string>();
+      const dirOf = (r: string) => (r.includes('/') ? r.slice(0, r.lastIndexOf('/')) : '');
+      libAfter = libAfter.flatMap((e) => {
+        if (e.isDir || !own.test(e.rel)) return [e];
+        const b = byRel.get(e.rel);
+        // A file of its own it added (a scan writes metadata.json and cover.jpg): not counted.
+        if (!b) {
+          absRewritten++;
+          touched.add(dirOf(e.rel));
+          return [];
+        }
+        if (b.size === e.size && b.mtimeMs === e.mtimeMs && b.ino === e.ino) return [e];
+        // Rewritten in place, or replaced (a new inode: written to a temporary name, renamed).
+        absRewritten++;
+        if (b.ino !== e.ino) touched.add(dirOf(e.rel));
+        return [{ ...e, size: b.size, mtimeMs: b.mtimeMs, ino: b.ino, dev: b.dev, nlink: b.nlink }];
+      });
+      // The folders it wrote into have a new mtime; only that is allowed for them.
+      libAfter = libAfter.map((e) => {
+        const b = byRel.get(e.rel);
+        return e.isDir && b && touched.has(e.rel) && b.ino === e.ino
+          ? { ...e, mtimeMs: b.mtimeMs }
+          : e;
+      });
+    }
+    const library = compareManifests(libBefore, libAfter, ctx?.libraryLinks ?? new Map());
     if (ctx && ctx.torrentsAdded.size)
       items.push({
         key: 'from_library',
@@ -1284,7 +1314,10 @@ export class AudioStage6 {
         ok: c.added + c.removed + c.changed + c.nlinkWrong === 0,
         detail:
           `${c.added} added, ${c.removed} removed, ${c.changed} changed, ${c.nlinkWrong} link counts off` +
-          (k === 'torrents' ? `; ${d.linkedAsPlanned} files linked as planned` : ''),
+          (k === 'torrents' ? `; ${d.linkedAsPlanned} files linked as planned` : '') +
+          (k === 'library' && absRewritten
+            ? `; ${absRewritten} of Audiobookshelf's own files rewritten or added by it (deleted with japanese-old)`
+            : ''),
       });
     }
 

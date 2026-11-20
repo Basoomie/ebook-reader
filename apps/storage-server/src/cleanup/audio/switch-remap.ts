@@ -70,6 +70,12 @@ export interface RemapResult {
 export interface RemapOptions {
   /** The library's audio folder before the switch (libraries.audio_dir), e.g. `japanese`. */
   libraryFolder: string;
+  /**
+   * The first part of the move list's old paths when it differs from `libraryFolder` (stage 6
+   * names it after CLEANUP_AUDIO_LIBRARY_DIR's last part: `library` on the NAS, found
+   * 2026-11-20): read as `libraryFolder`.
+   */
+  moveFolder?: string;
   /** The planned audio files of every new folder (paths as in the move list, before renames). */
   plannedFiles: Map<string, string[]>;
 }
@@ -153,6 +159,14 @@ export function remapLinks(
   moves: SwitchMove[],
   opts: RemapOptions,
 ): RemapResult[] {
+  const from =
+    opts.moveFolder && opts.moveFolder !== opts.libraryFolder ? `${opts.moveFolder}/` : null;
+  if (from)
+    moves = moves.map((m) =>
+      m.oldPath.startsWith(from)
+        ? { ...m, oldPath: `${opts.libraryFolder}/${m.oldPath.slice(from.length)}` }
+        : m,
+    );
   const byOld = new Map(moves.map((m) => [m.oldPath, m]));
   // The move list's files per old folder (for folder links).
   const byOldFolder = new Map<string, SwitchMove[]>();

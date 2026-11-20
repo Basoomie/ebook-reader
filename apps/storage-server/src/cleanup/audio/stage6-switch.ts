@@ -114,6 +114,8 @@ export interface SwitchReader {
   db: Database.Database;
   setHold(kind: 'switch' | 'merge_wait', on: boolean): void;
   held(kind: 'switch' | 'merge_wait'): boolean;
+  /** The reader's libraries' audio folders (libraries.audio_dir). */
+  audioFolders(): string[];
   /** Waits for a scan pass that is running. */
   scanIdle(): Promise<void>;
   /** The hold's own scan of every library. Throws when a library's scan failed. */
@@ -402,8 +404,19 @@ export class AudioSwitch {
     return { ok: true, why: null, check: p6.check };
   }
 
-  /** The library's folder name (the last part of CLEANUP_AUDIO_LIBRARY_DIR). */
+  /**
+   * The library's audio folder as the reader stores its links (libraries.audio_dir): always
+   * `japanese` here (the renames are of that folder).
+   */
   private libraryFolder(): string {
+    return 'japanese';
+  }
+
+  /**
+   * The first part of the move list's old paths: stage 6 named it after
+   * CLEANUP_AUDIO_LIBRARY_DIR's last part (`library` on the NAS: /cleanup-audio/library).
+   */
+  private moveFolder(): string {
     return path.basename(this.deps.roots.library);
   }
 
@@ -420,8 +433,10 @@ export class AudioSwitch {
       if (st !== 'none') out.push('Already switched');
       const r = this.stage6Ready();
       if (!r.ok) out.push(r.why!);
-      if (this.libraryFolder() !== 'japanese')
-        out.push(`The library folder is ${this.libraryFolder()}, not japanese`);
+      if (this.reader && !this.reader.audioFolders().includes('japanese'))
+        out.push(
+          'No reader library has the audio folder japanese (cli library set … --audio-dir japanese)',
+        );
       const moves = this.moveCounts();
       if (moves.unaccounted)
         out.push(`${moves.unaccounted} audio files of the library are unaccounted for`);
@@ -1330,6 +1345,7 @@ export class AudioSwitch {
       }
     return remapLinks(this.linkRows(), moves, {
       libraryFolder: this.libraryFolder(),
+      moveFolder: this.moveFolder(),
       plannedFiles,
     });
   }
@@ -1915,6 +1931,10 @@ export class AudioSwitch {
     const absOwn = /(^|\/)(metadata\.json|cover\.(jpe?g|png|webp))$/i;
     for (const e of out.entries) {
       const b = before.get(e.rel);
+      // A file of Audiobookshelf's own it added after the build's walk: deleted too.
+      if (!b && !e.isDir && absOwn.test(e.rel)) continue;
+      // …or one it replaced (a new inode in the same place).
+      if (b && b.is_dir === 0 && !e.isDir && absOwn.test(e.rel)) continue;
       if (
         !b ||
         (b.is_dir === 1) !== e.isDir ||
