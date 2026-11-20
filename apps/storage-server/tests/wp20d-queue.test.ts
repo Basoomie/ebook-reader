@@ -83,6 +83,8 @@ describe('WP20d fetch queue', () => {
       n: 3,
     });
     expect(q.readAnswer(c.id)?.toString()).toContain('B000000001');
+    // One new request made for three books (the time left counts new requests per step).
+    expect(q.created).toEqual({ 'amazon-dp': 1 });
     // The second report of the same lease is refused (the first counted).
     expect(q.report(c.id, c.leaseToken, page('again'), T0 + 3000).accepted).toBe(false);
   });

@@ -21,7 +21,7 @@ import { listFieldPauses, loadGold, resumeField } from './stage2-gate';
 import { STAGE3_WAITING_SQL, Stage3Analysis, type PairRow, type Stage3Progress } from './stage3';
 import { Stage3Worker, type Stage3Reader } from '../counts/book-text-worker';
 import { Stage4Analysis, type Stage4Progress } from './stage4/analysis';
-import { paceSeconds, stage4Eta, type SiteCounts } from './stage4/eta';
+import { openLookups, paceSeconds, stage4Eta, type SiteCounts } from './stage4/eta';
 import { FetchQueue, LABELED_PRIORITY, backoffKey } from './stage4/queue';
 import { FetcherSlots, slotStateRow, type FetcherSlot } from './stage4/fetch-slots';
 import { CALIBRE_FETCH_SITES, type FetchSite } from './settings';
@@ -1212,7 +1212,6 @@ export class CleanupService {
           site: x.site,
           enabled: x.enabled,
           open: x.queued + x.leased,
-          finished: x.done + x.gone + x.failed,
           secondsPerRequest: x.secondsPerRequest,
           labeledRequests: labeled.find((l) => l.site === x.site)?.n ?? 0,
         }),
@@ -1220,6 +1219,9 @@ export class CleanupService {
       booksTotal: p.readTotal,
       booksRead: p.phase === 'read' ? booksRead : p.readTotal,
       booksUnreadable: unreadable,
+      booksStarted: count(['waiting', 'ready', 'proposed']),
+      open: openLookups(this.db),
+      followUps: p.followUps ?? null,
       readPerSecond,
       labeledBooks: p.labeledIds.length,
       labeledDone: labeledKnown,

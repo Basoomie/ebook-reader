@@ -111,7 +111,9 @@ describe('stage 4 wording', () => {
         slowest: { site: 'bookwalker', seconds: 690000 },
         final: 900,
         total: 690900,
-        basis: 'reference'
+        notStarted: 50162,
+        basis: 'reference',
+        followUps: 'bound'
       }
     } as unknown as Stage4Status;
     expect(booksLine(reading)).toBe(
@@ -121,7 +123,25 @@ describe('stage 4 wording', () => {
       'Reading the files: 2,002 of 52,164 · 9.3 books a second · about 1 h 30 min left'
     );
     expect(timeLeftLine(reading)).toBe(
-      'Time left for the whole Preview: about 7 days 23 h · the slowest site is BOOK☆WALKER, about 7 days 23 h · then the final pass, about 15 min · requests per book from the reference run until the labeled books are done; shared series pages make it an upper bound'
+      'Time left for the whole Preview: about 7 days 23 h · the slowest site is BOOK☆WALKER, about 7 days 23 h · then the final pass, about 15 min · 50,162 books not started yet at requests per book from the reference run until the labeled books are done; shared series pages make it an upper bound · what the open lookups ask next counted at most until measured'
+    );
+    // Every book started (live 2026-11-20): only the open lookups and what they ask next.
+    expect(
+      timeLeftLine({
+        ...reading,
+        timeLeft: {
+          ...reading.timeLeft!,
+          read: 0,
+          slowest: { site: 'amazon', seconds: 41000 },
+          final: 150,
+          total: 41150,
+          notStarted: 0,
+          basis: 'labeled',
+          followUps: 'measured'
+        }
+      })
+    ).toBe(
+      'Time left for the whole Preview: about 11 h 26 min · the slowest site is Amazon (product pages and searches share one slot), about 11 h 23 min · then the final pass, about 3 min · what the open lookups ask next at the rates measured in this run'
     );
     expect(
       readingLine({

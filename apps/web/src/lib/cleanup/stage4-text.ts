@@ -160,11 +160,17 @@ export function timeLeftLine(status: Stage4Status, now = Date.now()): string {
       `${name} is held up by refusals right now; this assumes it answers again at its pace`
     );
   }
-  parts.push(
+  const perBook =
     t.basis === 'labeled'
       ? "requests per book measured on this run's labeled books (Amazon's measured on the same books with today's rules)"
-      : 'requests per book from the reference run until the labeled books are done; shared series pages make it an upper bound'
-  );
+      : 'requests per book from the reference run until the labeled books are done; shared series pages make it an upper bound';
+  // An older server: requests per book for every book.
+  if (t.notStarted === undefined) parts.push(perBook);
+  else if (t.notStarted > 0) parts.push(`${n(t.notStarted)} books not started yet at ${perBook}`);
+  if (t.followUps === 'measured')
+    parts.push('what the open lookups ask next at the rates measured in this run');
+  else if (t.followUps === 'bound')
+    parts.push('what the open lookups ask next counted at most until measured');
   return parts.join(' · ');
 }
 

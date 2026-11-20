@@ -447,8 +447,22 @@ describe('stage 4: online sources (Preview)', () => {
     expect(phase).toBe('done');
     // Each book is counted once (the labeled books were counted twice: read first, then again
     // when the library pass skipped them), and the page's numbers come from the database.
-    const prog = getStage(env.cleanupDb, 4).progress as { readDone: number; readTotal: number };
+    const prog = getStage(env.cleanupDb, 4).progress as {
+      readDone: number;
+      readTotal: number;
+      followUps?: { answers: Record<string, number>; made: Record<string, number> };
+    };
     expect(prog.readDone).toBe(prog.readTotal);
+    // Each answer's follow-ups are counted for the time left (stage4/eta.ts): every core step
+    // answered, the Amazon decisions and the after-core events, and never more new requests
+    // along an edge than answers (each answer asks a next step once at most).
+    const fu = prog.followUps!;
+    for (const step of ['ranobedb-search', 'bookwalker-search', 'bookmeter-search', 'decide'])
+      expect(fu.answers[step]).toBeGreaterThan(0);
+    expect(fu.answers['after-core']).toBeGreaterThan(0);
+    for (const [edge, n] of Object.entries(fu.made))
+      expect(n).toBeLessThanOrEqual(fu.answers[edge.split('>')[0]]);
+    expect(fu.made['decide>amazon-search'] ?? fu.made['decide>amazon-dp']).toBeGreaterThan(0);
     const st4 = env.service.stage4Status(env.libraryId(), Date.now() + 60_000) as {
       read: { done: number; total: number };
       timeLeft: { read: number | null; basis: string } | null;
