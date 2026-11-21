@@ -973,13 +973,25 @@ describe.skipIf(!BSDTAR)('archives with the real bsdtar (Linux image)', () => {
     expect(lu).toMatchObject({ encoding: 'utf8', problem: null });
     expect(lu.entries.map((e) => [e.name, e.kind, e.size])).toEqual([
       ['本/[B0AAAA] 一.m4b', 'file', 5],
-      ['link', 'link', 1],
+      ['link', 'link', 0],
     ]);
     const lj = await listArchive('bsdtar', await open(jp));
     expect(lj).toMatchObject({ encoding: 'cp932', problem: null });
     expect(lj.entries[0].name).toBe('本/あ.m4b');
+    // A name marked UTF-8 stays UTF-8 while the unmarked one is read as CP932: both right.
     const lm = await listArchive('bsdtar', await open(mixed));
-    expect(lm.problem).toMatch(/two encodings/);
+    expect(lm).toMatchObject({ encoding: 'cp932', problem: null });
+    expect(lm.entries.map((e) => e.name)).toEqual(['本/あ.m4b', '本/二.m4b']);
+    // Two unmarked names, one UTF-8 and one CP932: CP932 would garble the UTF-8 one.
+    const ambiguous = archive(
+      dir,
+      'a.zip',
+      makeZip([
+        { name: cp932, data: 'a' },
+        { name: Buffer.from('本/二.m4b', 'utf8'), data: 'b' },
+      ]),
+    );
+    expect((await listArchive('bsdtar', await open(ambiguous))).problem).toMatch(/two encodings/);
     // One entry to stdout, by its exact name (its [ ] are pattern characters).
     const read = async (p: string, name: string, enc: 'utf8' | 'cp932') => {
       const h = await open(p);
@@ -1011,7 +1023,9 @@ describe.skipIf(!BSDTAR)('archives with the real bsdtar (Linux image)', () => {
     expect(done.code).not.toBe(0);
     expect(listProblemState('p.zip', done.stderr)).toBe('password');
     const bad = archive(dir, '._x.rar', Buffer.alloc(4096, 0));
-    await expect(listArchive('bsdtar', await fs.promises.open(bad, 'r'))).rejects.toThrow();
+    // A file of zeros lists as an empty archive (bsdtar exits 0); the run reads that as 'not an
+    // archive' for a ._ name, else 'no audio'.
+    expect((await listArchive('bsdtar', await fs.promises.open(bad, 'r'))).entries).toEqual([]);
   });
 });
 

@@ -2031,7 +2031,14 @@ export class AudioStage7 {
       };
     });
     const audio = rows.filter((x) => x.audio && !x.skip);
-    const state = audio.length ? 'listed' : 'no_audio';
+    // An empty listing: bsdtar reads a file of zeros as an empty archive (found in the Linux
+    // image); macOS's `._` metadata files are not archives at all.
+    const base = a.rel.split('/').pop() ?? a.rel;
+    const state = audio.length
+      ? 'listed'
+      : rows.length === 0 && base.startsWith('._')
+        ? 'not_archive'
+        : 'no_audio';
     this.db.prepare('DELETE FROM audio_archive_entries WHERE archive_id = ?').run(archiveId);
     const put = this.db.prepare(
       `INSERT INTO audio_archive_entries (archive_id, seq, name, kind, size, audio, skip, dst, state) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -2060,13 +2067,18 @@ export class AudioStage7 {
         audio.length,
         rows.filter((x) => !x.skip).reduce((s, x) => s + x.size, 0),
         audio.reduce((s, x) => s + x.size, 0),
-        state === 'no_audio' ? 'No audio file inside' : null,
+        state === 'no_audio'
+          ? rows.length
+            ? 'No audio file inside'
+            : 'Empty, or not an archive bsdtar can read'
+          : state === 'not_archive'
+            ? 'macOS metadata (._ file), not an archive'
+            : null,
         now,
         now,
         archiveId,
       );
-    if (state === 'no_audio')
-      this.review('archive', `archive:${archiveId}`, null, archiveId, runId);
+    if (state !== 'listed') this.review('archive', `archive:${archiveId}`, null, archiveId, runId);
     return 1;
   }
 
