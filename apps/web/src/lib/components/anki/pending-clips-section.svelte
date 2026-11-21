@@ -8,6 +8,8 @@
   import { onDestroy, onMount } from 'svelte';
   import { pendingStatus, type PendingClip } from '$lib/anki/pending/pending-clip';
   import InlineConfirm from '$lib/components/confirm/inline-confirm.svelte';
+  import PagedList from '$lib/components/settings/paged-list.svelte';
+  import SettingsGroup from '$lib/components/settings/settings-group.svelte';
   import { cancelPendingClipCopy } from '$lib/confirm/confirm-copy';
   import { formatWhen } from '$lib/sync/position-prompt';
 
@@ -97,83 +99,104 @@
   $: waitingCount = clips.filter((c) => c.state !== 'failed').length;
 </script>
 
-<section class="mt-8" data-testid="anki-pending">
-  <h4 class="font-bold">
-    Waiting sentence audio{#if waitingCount}&nbsp;({waitingCount}){/if}
-  </h4>
-  <p class="mt-1 max-w-prose text-sm text-c-muted">
-    When the library server can't be reached, or the PC reads the sentence for a book without an
-    audiobook, Enrich adds everything else and keeps the sentence audio here. It is added to its
-    card by itself once it is ready and Anki answers (when the app starts or comes back to the
-    front, after a sync, or with Try now), as the field was set up when you enriched the card.
-  </p>
-
-  {#if !loaded}
-    <p class="mt-2 text-sm text-c-muted">Loading…</p>
-  {:else if loadError}
-    <p class="mt-2" role="status">{loadError}</p>
-  {:else if !clips.length}
-    <p class="mt-2" data-testid="anki-pending-empty">Nothing waiting.</p>
-  {:else}
-    <ul class="mt-2 space-y-3" data-testid="anki-pending-list">
-      {#each clips as clip (clip.id)}
-        <li class="border-c-line border-t pt-3" data-testid="anki-pending-row">
-          <p class="break-words">
-            <span class="font-medium">「{clip.word || 'card'}」</span>
-            · {clip.bookTitle}
-          </p>
-          <p class="break-words text-sm text-c-muted">{sentence(clip)}</p>
-          <p class="text-sm text-c-muted">Since {formatWhen(clip.createdAt, now)}</p>
-          <p class="mt-1 break-words" data-testid="anki-pending-status">{pendingStatus(clip)}</p>
-          {#if clip.state !== 'failed' && clip.problem}
-            <p class="break-words text-sm text-c-muted" data-testid="anki-pending-problem">
-              Last try: {clip.problem}.
-            </p>
-          {/if}
-          {#if confirming?.id === clip.id}
-            <div class="mt-2">
-              <InlineConfirm
-                {...cancelPendingClipCopy(clip.word)}
-                {busy}
-                testid="anki-pending-cancel-confirm"
-                confirmTestid="anki-pending-cancel-confirm-button"
-                on:confirm={() => remove(clip)}
-                on:cancel={() => (confirming = undefined)}
-              />
-            </div>
-          {:else if clip.state === 'failed'}
-            <button
-              class="c-btn c-btn-secondary mt-2 min-h-[2.75rem]"
-              data-testid="anki-pending-dismiss"
-              disabled={busy}
-              on:click={() => remove(clip)}
-            >
-              Dismiss
-            </button>
-          {:else}
-            <button
-              class="c-btn c-btn-secondary mt-2 min-h-[2.75rem]"
-              data-testid="anki-pending-cancel"
-              on:click={() => (confirming = clip)}
-            >
-              Cancel
-            </button>
-          {/if}
-        </li>
-      {/each}
-    </ul>
+<SettingsGroup
+  id="anki-pending"
+  testid="anki-pending"
+  description="When the library server can't be reached, or the PC reads the sentence for a book without an audiobook, Enrich adds everything else and keeps the sentence audio here. It is added to its card by itself once it is ready and Anki answers (when the app starts or comes back to the front, after a sync, or with Try now), as the field was set up when you enriched the card."
+>
+  <svelte:fragment slot="actions">
     {#if waitingCount}
-      <button
-        class="c-btn c-btn-secondary mt-4 min-h-[3rem]"
-        data-testid="anki-pending-try"
-        disabled={trying}
-        on:click={tryNow}
-      >
-        {trying ? 'Trying…' : 'Try now'}
-      </button>
+      <span class="c-count">{waitingCount} waiting</span>
     {/if}
-    {#if tryMessage}
-      <p class="mt-2" role="status" data-testid="anki-pending-try-message">{tryMessage}</p>
+  </svelte:fragment>
+  {#if !loaded}
+    <p class="px-5 py-4 text-sm text-c-muted">Loading…</p>
+  {:else if loadError}
+    <p class="px-5 py-4" role="status">{loadError}</p>
+  {:else if !clips.length}
+    <p class="px-5 py-4" data-testid="anki-pending-empty">Nothing waiting.</p>
+  {:else}
+    <PagedList
+      items={clips}
+      pageSize={5}
+      text={(c) => `${c.word} ${c.bookTitle} ${c.source.text}`}
+      searchLabel="Search waiting audio"
+      label="Waiting sentence audio"
+      let:rows
+    >
+      <ul data-testid="anki-pending-list">
+        {#each rows as clip (clip.id)}
+          <li class="s-item" data-testid="anki-pending-row">
+            <div class="s-item-main">
+              <p class="break-words">
+                <span class="font-medium">「{clip.word || 'card'}」</span>
+                · {clip.bookTitle}
+              </p>
+              <p class="s-item-meta break-words">{sentence(clip)}</p>
+              <p class="s-item-meta">Since {formatWhen(clip.createdAt, now)}</p>
+              <p class="mt-1 break-words text-sm" data-testid="anki-pending-status">
+                {pendingStatus(clip)}
+              </p>
+              {#if clip.state !== 'failed' && clip.problem}
+                <p class="s-item-meta break-words" data-testid="anki-pending-problem">
+                  Last try: {clip.problem}.
+                </p>
+              {/if}
+              {#if confirming?.id === clip.id}
+                <div class="mt-2">
+                  <InlineConfirm
+                    {...cancelPendingClipCopy(clip.word)}
+                    {busy}
+                    testid="anki-pending-cancel-confirm"
+                    confirmTestid="anki-pending-cancel-confirm-button"
+                    on:confirm={() => remove(clip)}
+                    on:cancel={() => (confirming = undefined)}
+                  />
+                </div>
+              {/if}
+            </div>
+            {#if confirming?.id !== clip.id}
+              <div class="s-item-actions">
+                {#if clip.state === 'failed'}
+                  <button
+                    class="c-btn c-btn-secondary min-h-[2.75rem]"
+                    data-testid="anki-pending-dismiss"
+                    disabled={busy}
+                    on:click={() => remove(clip)}
+                  >
+                    Dismiss
+                  </button>
+                {:else}
+                  <button
+                    class="c-btn c-btn-secondary min-h-[2.75rem]"
+                    data-testid="anki-pending-cancel"
+                    on:click={() => (confirming = clip)}
+                  >
+                    Cancel…
+                  </button>
+                {/if}
+              </div>
+            {/if}
+          </li>
+        {/each}
+      </ul>
+    </PagedList>
+    {#if waitingCount || tryMessage}
+      <div class="flex flex-wrap items-center gap-3 px-4 py-3 sm:px-5">
+        {#if waitingCount}
+          <button
+            class="c-btn c-btn-secondary"
+            data-testid="anki-pending-try"
+            disabled={trying}
+            on:click={tryNow}
+          >
+            {trying ? 'Trying…' : 'Try now'}
+          </button>
+        {/if}
+        {#if tryMessage}
+          <p role="status" data-testid="anki-pending-try-message">{tryMessage}</p>
+        {/if}
+      </div>
     {/if}
   {/if}
-</section>
+</SettingsGroup>

@@ -13,10 +13,16 @@
 </script>
 
 <Popover bind:this={element} placement="bottom">
-  <div slot="icon" class="mx-2" title="Show available default Fonts">
+  <div
+    slot="icon"
+    class="flex h-12 w-12 items-center justify-center"
+    title="Pick a font"
+    aria-label="Pick a font"
+  >
     <Fa icon={faFont} />
   </div>
-  <div slot="content">
+  <!-- Many custom fonts: the list scrolls instead of running off the screen. -->
+  <div slot="content" class="max-h-72 overflow-y-auto">
     {#each availableFonts as font (font)}
       <div
         tabindex="0"

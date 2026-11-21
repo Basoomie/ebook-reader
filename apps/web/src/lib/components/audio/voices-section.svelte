@@ -12,7 +12,11 @@
    * a voice described in words: the PC makes a short sample, the user listens and keeps it
    * or tries again. Also the pauses used in made audiobooks (for every device).
    */
-  import SettingsSection from '$lib/components/settings/settings-section.svelte';
+  import SettingsGroup from '$lib/components/settings/settings-group.svelte';
+  import SettingRow from '$lib/components/settings/setting-row.svelte';
+  import SettingField from '$lib/components/settings/setting-field.svelte';
+  import PagedList from '$lib/components/settings/paged-list.svelte';
+  import { compareText, type ListSort } from '$lib/settings/paged-list';
   import type { GpuWorkerStatus } from '$lib/audio/audio-types';
   import {
     ttsChapterPauseMs$,
@@ -36,6 +40,12 @@
   export let api: LibraryApi;
 
   const POLL_MS = 2000;
+
+  // The server's order first (as the list was), or by name.
+  const voiceSorts: ListSort<VoicePreset>[] = [
+    { id: 'server', label: 'As added', compare: () => 0 },
+    { id: 'name', label: 'Name', compare: (a, b) => compareText(a.name, b.name) }
+  ];
 
   let list: VoiceList | null = null;
   let models: TtsModel[] = [];
@@ -266,70 +276,75 @@
   }
 </script>
 
-<section class="mt-10" aria-label="Voices" data-testid="voices">
-  <SettingsSection
-    jp="声"
-    title="Voices"
-    tooltip="The voices your PC can read a book aloud in (a book's page > Audiobook section > Text-to-speech: its TTS voice, Read aloud and Make an audiobook with this voice). Stored on the server, so every device has them."
-  />
-  {#if error}
-    <p class="c-notice mt-4" role="alert" data-testid="voices-error">{error}</p>
-  {/if}
+<SettingsGroup id="audio-voices" testid="voices">
+  <svelte:fragment slot="before">
+    {#if error}
+      <p class="c-notice mb-3" role="alert" data-testid="voices-error">{error}</p>
+    {/if}
+  </svelte:fragment>
   {#if list && !list.available}
-    <p class="mt-4 text-[15px]" data-testid="voices-off">This server can't make audiobooks.</p>
+    <p class="px-5 py-4" data-testid="voices-off">This server can't make audiobooks.</p>
   {:else if list}
     {#if list.voices.length === 0}
-      <p class="mt-4 text-[15px]" data-testid="voices-empty">
+      <p class="px-5 py-4" data-testid="voices-empty">
         No voices yet. Add your own recording, or describe a voice below.
       </p>
     {:else}
-      <ul class="mt-2 max-w-3xl" data-testid="voices-list">
-        {#each list.voices as v (v.id)}
-          <li
-            class="c-vrow flex flex-wrap items-center gap-x-4 gap-y-2 py-3"
-            data-testid="voice"
-            data-name={v.name}
-          >
-            <div class="min-w-0 grow basis-52">
-              <div class="break-words font-mincho text-[15px] font-bold">{v.name}</div>
-              <div class="text-sm text-c-muted" data-testid="voice-details">{voiceDetails(v)}</div>
-              {#if v.description}
-                <div class="break-words text-sm text-c-muted">“{v.description}”</div>
+      <PagedList
+        items={list.voices}
+        pageSize={8}
+        text={(v) => `${v.name} ${v.description ?? ''}`}
+        searchLabel="Search voices"
+        sorts={voiceSorts}
+        label="Voices"
+        let:rows
+      >
+        <ul data-testid="voices-list">
+          {#each rows as v (v.id)}
+            <li class="s-item" data-testid="voice" data-name={v.name}>
+              <div class="s-item-main">
+                <div class="s-item-title font-mincho text-[15px]">{v.name}</div>
+                <div class="s-item-meta" data-testid="voice-details">{voiceDetails(v)}</div>
+                {#if v.description}
+                  <div class="s-item-meta">“{v.description}”</div>
+                {/if}
+              </div>
+              <div class="s-item-actions">
+                <button
+                  class="c-btn c-btn-secondary min-h-[2.75rem]"
+                  data-testid="voice-play"
+                  on:click={() => play(v)}
+                >
+                  Listen
+                </button>
+                <button
+                  class="c-btn c-btn-secondary min-h-[2.75rem]"
+                  data-testid="voice-delete"
+                  on:click={() => remove(v)}
+                >
+                  Delete…
+                </button>
+              </div>
+              {#if playingId === v.id && playUrl}
+                <!-- svelte-ignore a11y-media-has-caption -->
+                <audio class="w-full" controls autoplay src={playUrl} data-testid="voice-audio" />
               {/if}
-            </div>
-            <button
-              class="c-btn c-btn-secondary c-round"
-              data-testid="voice-play"
-              on:click={() => play(v)}
-            >
-              Listen
-            </button>
-            <button
-              class="c-btn c-btn-secondary c-round"
-              data-testid="voice-delete"
-              on:click={() => remove(v)}
-            >
-              Delete
-            </button>
-            {#if playingId === v.id && playUrl}
-              <!-- svelte-ignore a11y-media-has-caption -->
-              <audio class="w-full" controls autoplay src={playUrl} data-testid="voice-audio" />
-            {/if}
-          </li>
-        {/each}
-      </ul>
+            </li>
+          {/each}
+        </ul>
+      </PagedList>
     {/if}
 
-    <div class="c-vpanel mt-6 max-w-3xl rounded px-5 py-4" data-testid="voice-upload">
-      <h3 class="font-mincho text-lg font-bold">Add your own recording</h3>
-      <p class="mt-1 text-sm text-c-muted">
-        One clear speaker without music,
-        {list.limits
-          ? `${list.limits.minSeconds}–${list.limits.maxSeconds} seconds`
-          : 'up to two minutes'}
-        (about 30 seconds works well). The PC copies how this voice sounds.
-      </p>
-      <div class="mt-3 grid gap-3">
+    <details class="s-fold" data-testid="voice-upload">
+      <summary id="setting-voice-upload">Add your own recording</summary>
+      <div class="s-fold-body">
+        <p class="text-sm text-c-muted">
+          One clear speaker without music,
+          {list.limits
+            ? `${list.limits.minSeconds}–${list.limits.maxSeconds} seconds`
+            : 'up to two minutes'}
+          (about 30 seconds works well). The PC copies how this voice sounds.
+        </p>
         <input
           bind:this={fileInput}
           type="file"
@@ -340,7 +355,7 @@
         <label class="grid gap-1 text-sm">
           <span class="text-c-muted">Name</span>
           <input
-            class="c-input max-w-sm text-base"
+            class="c-input w-full text-base sm:w-80"
             maxlength="60"
             bind:value={clipName}
             data-testid="voice-name"
@@ -358,81 +373,86 @@
             model's terms forbid copying anyone's voice without their consent.
           </span>
         </label>
-      </div>
-      {#if uploadError}
-        <p class="c-notice mt-3" role="alert" data-testid="voice-upload-error">{uploadError}</p>
-      {/if}
-      <div class="mt-3 flex flex-wrap items-center gap-3">
-        <button
-          class="c-btn c-btn-secondary c-round"
-          data-testid="voice-upload-button"
-          disabled={!file || !clipName.trim() || !consent || uploading}
-          on:click={upload}
-        >
-          {uploading ? `Uploading… ${Math.floor(uploadProgress * 100)} %` : 'Add this voice'}
-        </button>
-      </div>
-    </div>
-
-    <div class="c-vpanel mt-4 max-w-3xl rounded px-5 py-4" data-testid="voice-describe">
-      <h3 class="font-mincho text-lg font-bold">Describe a voice</h3>
-      <p class="mt-1 text-sm text-c-muted">
-        Write what the voice should sound like, in Japanese works best (e.g.
-        「落ち着いた声の大人の女性が、丁寧に本を朗読している。」). The PC makes a short sample; keep
-        it if you like it, or try again for another one.
-      </p>
-      {#if sample && sample.state !== 'cancelled' && sample.state !== 'failed'}
-        <div class="mt-3" data-testid="voice-sample" data-state={sample.state}>
-          <div class="font-mincho text-[15px] font-bold">
-            {jobVoices(sample.params)?.narration ?? ''}
-          </div>
-          <p class="text-sm" role="status" aria-live="polite" data-testid="voice-sample-text">
-            {audiobookJobText(sample, worker, now)}
-          </p>
-          {#if sampleUrl}
-            <!-- svelte-ignore a11y-media-has-caption -->
-            <audio class="mt-2 w-full" controls src={sampleUrl} data-testid="voice-sample-audio" />
-          {/if}
-          <div class="mt-3 flex flex-wrap gap-2">
-            {#if sampleActive}
-              <button
-                class="c-btn c-btn-secondary c-round"
-                data-testid="voice-sample-stop"
-                on:click={stopSample}
-              >
-                Stop
-              </button>
-            {:else}
-              <button
-                class="c-btn c-btn-secondary c-round"
-                data-testid="voice-sample-keep"
-                disabled={keeping}
-                on:click={keep}
-              >
-                Keep this voice
-              </button>
-              <button
-                class="c-btn c-btn-secondary c-round"
-                data-testid="voice-sample-again"
-                disabled={describing}
-                on:click={makeSample}
-              >
-                Try again
-              </button>
-            {/if}
-          </div>
-        </div>
-      {:else}
-        {#if sample?.state === 'failed' || sample?.state === 'cancelled'}
-          <p class="c-notice mt-3" role="alert" data-testid="voice-sample-failed">
-            {audiobookJobText(sample, worker, now)}
-          </p>
+        {#if uploadError}
+          <p class="c-notice" role="alert" data-testid="voice-upload-error">{uploadError}</p>
         {/if}
-        <div class="mt-3 grid gap-3">
+        <div>
+          <button
+            class="c-btn c-btn-secondary"
+            data-testid="voice-upload-button"
+            disabled={!file || !clipName.trim() || !consent || uploading}
+            on:click={upload}
+          >
+            {uploading ? `Uploading… ${Math.floor(uploadProgress * 100)} %` : 'Add this voice'}
+          </button>
+        </div>
+      </div>
+    </details>
+
+    <details class="s-fold" data-testid="voice-describe" open={!!sample}>
+      <summary id="setting-voice-describe">Describe a voice</summary>
+      <div class="s-fold-body">
+        <p class="text-sm text-c-muted">
+          Write what the voice should sound like, in Japanese works best (e.g.
+          「落ち着いた声の大人の女性が、丁寧に本を朗読している。」). The PC makes a short sample;
+          keep it if you like it, or try again for another one.
+        </p>
+        {#if sample && sample.state !== 'cancelled' && sample.state !== 'failed'}
+          <div data-testid="voice-sample" data-state={sample.state}>
+            <div class="font-mincho text-[15px] font-bold">
+              {jobVoices(sample.params)?.narration ?? ''}
+            </div>
+            <p class="text-sm" role="status" aria-live="polite" data-testid="voice-sample-text">
+              {audiobookJobText(sample, worker, now)}
+            </p>
+            {#if sampleUrl}
+              <!-- svelte-ignore a11y-media-has-caption -->
+              <audio
+                class="mt-2 w-full"
+                controls
+                src={sampleUrl}
+                data-testid="voice-sample-audio"
+              />
+            {/if}
+            <div class="mt-3 flex flex-wrap gap-2">
+              {#if sampleActive}
+                <button
+                  class="c-btn c-btn-secondary"
+                  data-testid="voice-sample-stop"
+                  on:click={stopSample}
+                >
+                  Stop
+                </button>
+              {:else}
+                <button
+                  class="c-btn c-btn-secondary"
+                  data-testid="voice-sample-keep"
+                  disabled={keeping}
+                  on:click={keep}
+                >
+                  Keep this voice
+                </button>
+                <button
+                  class="c-btn c-btn-secondary"
+                  data-testid="voice-sample-again"
+                  disabled={describing}
+                  on:click={makeSample}
+                >
+                  Try again
+                </button>
+              {/if}
+            </div>
+          </div>
+        {:else}
+          {#if sample?.state === 'failed' || sample?.state === 'cancelled'}
+            <p class="c-notice" role="alert" data-testid="voice-sample-failed">
+              {audiobookJobText(sample, worker, now)}
+            </p>
+          {/if}
           <label class="grid gap-1 text-sm">
             <span class="text-c-muted">Name</span>
             <input
-              class="c-input max-w-sm text-base"
+              class="c-input w-full text-base sm:w-80"
               maxlength="60"
               bind:value={describeName}
               data-testid="voice-describe-name"
@@ -451,7 +471,7 @@
             <label class="grid gap-1 text-sm">
               <span class="text-c-muted">Model</span>
               <select
-                class="c-input block w-full max-w-sm text-base"
+                class="c-input block w-full text-base sm:w-80"
                 bind:value={describeModelId}
                 data-testid="voice-describe-model"
               >
@@ -461,99 +481,129 @@
               </select>
             </label>
           {/if}
-        </div>
-      {/if}
-      {#if describeError}
-        <p class="c-notice mt-3" role="alert" data-testid="voice-describe-error">{describeError}</p>
-      {/if}
-      {#if !sample || sample.state === 'failed' || sample.state === 'cancelled'}
-        <div class="mt-3">
-          <button
-            class="c-btn c-btn-secondary c-round"
-            data-testid="voice-describe-button"
-            disabled={!describeName.trim() || !description.trim() || describing}
-            on:click={makeSample}
-          >
-            Make a sample
-          </button>
-        </div>
-      {/if}
-    </div>
-
-    <div class="c-vpanel mt-4 max-w-3xl rounded px-5 py-4" data-testid="tts-pauses">
-      <h3 class="font-mincho text-lg font-bold">Pauses in made audiobooks</h3>
-      <p class="mt-1 text-sm text-c-muted">
-        In milliseconds (1000 = one second). Used for audiobooks and previews started from now on.
-      </p>
-      <div class="mt-3 grid gap-3 sm:grid-cols-2 md:grid-cols-4">
-        <label class="grid gap-1 text-sm">
-          <span class="text-c-muted">After a sentence</span>
-          <input
-            class="c-input text-base"
-            type="number"
-            min="0"
-            max="10000"
-            step="50"
-            bind:value={$ttsSentencePauseMs$}
-            data-testid="tts-pause-sentence"
-          />
-        </label>
-        <label class="grid gap-1 text-sm">
-          <span class="text-c-muted">After a paragraph</span>
-          <input
-            class="c-input text-base"
-            type="number"
-            min="0"
-            max="10000"
-            step="50"
-            bind:value={$ttsParagraphPauseMs$}
-            data-testid="tts-pause-paragraph"
-          />
-        </label>
-        <label class="grid gap-1 text-sm">
-          <span class="text-c-muted">After a chapter</span>
-          <input
-            class="c-input text-base"
-            type="number"
-            min="0"
-            max="10000"
-            step="100"
-            bind:value={$ttsChapterPauseMs$}
-            data-testid="tts-pause-chapter"
-          />
-        </label>
-        <label class="grid gap-1 text-sm">
-          <span class="text-c-muted">Between narration and dialogue</span>
-          <input
-            class="c-input text-base"
-            type="number"
-            min="0"
-            max="10000"
-            step="50"
-            bind:value={$ttsDialoguePauseMs$}
-            data-testid="tts-pause-dialogue"
-          />
-        </label>
+        {/if}
+        {#if describeError}
+          <p class="c-notice" role="alert" data-testid="voice-describe-error">{describeError}</p>
+        {/if}
+        {#if !sample || sample.state === 'failed' || sample.state === 'cancelled'}
+          <div>
+            <button
+              class="c-btn c-btn-secondary"
+              data-testid="voice-describe-button"
+              disabled={!describeName.trim() || !description.trim() || describing}
+              on:click={makeSample}
+            >
+              Make a sample
+            </button>
+          </div>
+        {/if}
       </div>
-      <p class="mt-2 text-xs text-c-muted">
-        The last one is used inside a sentence like 「行こう」と彼は言った。 when the dialogue has a
-        voice of its own (also for read-aloud and Anki's sentence audio).
-      </p>
-    </div>
+    </details>
   {/if}
-</section>
+</SettingsGroup>
+
+{#if list?.available}
+  <SettingsGroup id="audio-pauses" testid="tts-pauses">
+    <SettingRow id="pause-sentence" settingKey="ttsSentencePauseMs" let:labelId>
+      <SettingField unit="ms">
+        <input
+          type="number"
+          min="0"
+          max="10000"
+          step="50"
+          aria-labelledby={labelId}
+          bind:value={$ttsSentencePauseMs$}
+          data-testid="tts-pause-sentence"
+        />
+      </SettingField>
+    </SettingRow>
+    <SettingRow id="pause-paragraph" settingKey="ttsParagraphPauseMs" let:labelId>
+      <SettingField unit="ms">
+        <input
+          type="number"
+          min="0"
+          max="10000"
+          step="50"
+          aria-labelledby={labelId}
+          bind:value={$ttsParagraphPauseMs$}
+          data-testid="tts-pause-paragraph"
+        />
+      </SettingField>
+    </SettingRow>
+    <SettingRow id="pause-chapter" settingKey="ttsChapterPauseMs" let:labelId>
+      <SettingField unit="ms">
+        <input
+          type="number"
+          min="0"
+          max="10000"
+          step="100"
+          aria-labelledby={labelId}
+          bind:value={$ttsChapterPauseMs$}
+          data-testid="tts-pause-chapter"
+        />
+      </SettingField>
+    </SettingRow>
+    <SettingRow id="pause-dialogue" settingKey="ttsDialoguePauseMs" let:labelId>
+      <SettingField unit="ms">
+        <input
+          type="number"
+          min="0"
+          max="10000"
+          step="50"
+          aria-labelledby={labelId}
+          bind:value={$ttsDialoguePauseMs$}
+          data-testid="tts-pause-dialogue"
+        />
+      </SettingField>
+    </SettingRow>
+  </SettingsGroup>
+{/if}
 
 <style>
-  .c-vpanel {
-    background-color: var(--c-raised);
-    border: var(--c-border-width) solid var(--c-line);
+  .s-fold > summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    min-height: 3rem;
+    padding: 0.75rem 1rem;
+    font-weight: 600;
+    cursor: pointer;
+    list-style: none;
   }
 
-  .c-vrow + .c-vrow {
-    border-top: 1px dashed var(--c-line);
+  @media (min-width: 640px) {
+    .s-fold > summary {
+      padding: 0.75rem 1.25rem;
+    }
+
+    .s-fold-body {
+      padding: 0 1.25rem 1.25rem;
+    }
   }
 
-  .c-round {
-    border-radius: 0.75rem;
+  .s-fold > summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .s-fold > summary::after {
+    content: '+';
+    font-size: 1.25rem;
+    font-weight: 400;
+    color: var(--c-muted);
+  }
+
+  .s-fold[open] > summary::after {
+    content: '−';
+  }
+
+  .s-fold > summary:focus-visible {
+    outline: 2px solid var(--c-link);
+    outline-offset: -2px;
+  }
+
+  .s-fold-body {
+    display: grid;
+    gap: 0.75rem;
+    padding: 0 1rem 1rem;
   }
 </style>

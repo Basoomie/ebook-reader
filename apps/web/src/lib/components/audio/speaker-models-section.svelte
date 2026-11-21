@@ -13,7 +13,9 @@
    * checksum, so the PC can check its download. The PC deletes a removed model's file.
    * Also the bar under which a quote's speaker counts as unsure (every device).
    */
-  import SettingsSection from '$lib/components/settings/settings-section.svelte';
+  import SettingsGroup from '$lib/components/settings/settings-group.svelte';
+  import SettingRow from '$lib/components/settings/setting-row.svelte';
+  import SettingField from '$lib/components/settings/setting-field.svelte';
   import type { SpeakerModel } from '$lib/audio/speakers/speaker-types';
   import { speakerUnsureBelow$ } from '$lib/audio/tts-settings';
   import { confirmDestructive } from '$lib/confirm/confirm';
@@ -101,114 +103,99 @@
 </script>
 
 {#if available}
-  <section class="mt-10" aria-label="Speaker models on the PC" data-testid="speaker-models">
-    <SettingsSection
-      jp="話者"
-      title="Speaker models on the PC"
-      tooltip="The models your PC uses to work out who speaks each quote, so characters can have voices of their own. You choose one each time on a book's page (Characters). The PC downloads a model the first time it is used, into one folder shared by every Windows account."
-    />
-    {#if error}
-      <p class="c-notice mt-4" role="alert" data-testid="speaker-models-error">{error}</p>
-    {/if}
+  <SettingsGroup id="audio-speakers" testid="speaker-models">
+    <svelte:fragment slot="before">
+      {#if error}
+        <p class="c-notice mb-3" role="alert" data-testid="speaker-models-error">{error}</p>
+      {/if}
+    </svelte:fragment>
     {#if models.length === 0}
-      <p class="mt-4 text-[15px]" data-testid="speaker-models-empty">No models. Add one below.</p>
+      <p class="px-5 py-4" data-testid="speaker-models-empty">No models. Add one below.</p>
     {:else}
-      <ul class="mt-2 max-w-3xl" data-testid="speaker-models-list">
+      <ul data-testid="speaker-models-list">
         {#each models as m (m.id)}
-          <li
-            class="c-mrow flex flex-wrap items-center gap-x-4 gap-y-2 py-3"
-            data-testid="speaker-model"
-            data-repo={m.repo}
-          >
-            <div class="min-w-0 grow basis-60">
-              <div class="break-words font-mincho text-[15px] font-bold">
-                {m.label}{m.isDefault ? ' · default' : ''}
+          <li class="s-item" data-testid="speaker-model" data-repo={m.repo}>
+            <div class="s-item-main">
+              <div class="flex flex-wrap items-center gap-2 font-mincho text-[15px] font-bold">
+                {m.label}
+                {#if m.isDefault}<span class="c-count font-sans">Default</span>{/if}
               </div>
               <div class="break-all text-xs text-c-muted">
                 {m.repo} · {m.file} · {m.revision.slice(0, 8)}{sizeText(m.size)}
               </div>
             </div>
-            {#if !m.isDefault}
+            <div class="s-item-actions">
+              {#if !m.isDefault}
+                <button
+                  class="c-btn c-btn-secondary min-h-[2.75rem]"
+                  data-testid="speaker-model-default"
+                  on:click={() => makeDefault(m)}
+                >
+                  Make default
+                </button>
+              {/if}
               <button
-                class="c-btn c-btn-secondary c-round"
-                data-testid="speaker-model-default"
-                on:click={() => makeDefault(m)}
+                class="c-btn c-btn-secondary min-h-[2.75rem]"
+                data-testid="speaker-model-remove"
+                on:click={() => remove(m)}
               >
-                Make default
+                Remove…
               </button>
-            {/if}
-            <button
-              class="c-btn c-btn-secondary c-round"
-              data-testid="speaker-model-remove"
-              on:click={() => remove(m)}
-            >
-              Remove
-            </button>
+            </div>
           </li>
         {/each}
       </ul>
     {/if}
-    <div class="mt-4 grid max-w-3xl gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
-      <label class="grid min-w-0 gap-1 text-sm">
-        <span class="text-c-muted">Hugging Face repo</span>
+    <SettingRow
+      title="Add a model"
+      description="Any chat model in GGUF form that llama.cpp runs. It must fit the PC: Gemma 4 26B A4B uses nearly all of a 12 GB graphics card and about 16 GB of Docker's memory. You choose one each time on a book's page (Characters)."
+      layout="stack"
+    >
+      <div class="grid gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
+        <label class="grid min-w-0 gap-1 text-sm">
+          <span class="text-c-muted">Hugging Face repo</span>
+          <input
+            class="c-input text-base"
+            placeholder="unsloth/gemma-4-26B-A4B-it-GGUF"
+            bind:value={repo}
+            data-testid="speaker-model-repo"
+          />
+        </label>
+        <label class="grid min-w-0 gap-1 text-sm">
+          <span class="text-c-muted">File (.gguf)</span>
+          <input
+            class="c-input text-base"
+            placeholder="gemma-4-26B-A4B-it-UD-IQ4_XS.gguf"
+            bind:value={file}
+            data-testid="speaker-model-file"
+            on:keydown={(e) => e.key === 'Enter' && add()}
+          />
+        </label>
+        <button
+          class="c-btn c-btn-secondary"
+          data-testid="speaker-model-add"
+          disabled={adding || !repo.trim() || !file.trim()}
+          on:click={add}
+        >
+          {adding ? 'Adding…' : 'Add'}
+        </button>
+      </div>
+      {#if addError}
+        <p class="c-notice mt-3" role="alert" data-testid="speaker-model-add-error">{addError}</p>
+      {/if}
+    </SettingRow>
+    <SettingRow id="speaker-unsure" settingKey="speakerUnsureBelow" let:labelId>
+      <SettingField unit="%">
         <input
-          class="c-input text-base"
-          placeholder="unsloth/gemma-4-26B-A4B-it-GGUF"
-          bind:value={repo}
-          data-testid="speaker-model-repo"
+          type="number"
+          min="1"
+          max="100"
+          step="1"
+          aria-labelledby={labelId}
+          bind:value={$speakerUnsureBelow$}
+          data-testid="speaker-unsure-below"
         />
-      </label>
-      <label class="grid min-w-0 gap-1 text-sm">
-        <span class="text-c-muted">File (.gguf)</span>
-        <input
-          class="c-input text-base"
-          placeholder="gemma-4-26B-A4B-it-UD-IQ4_XS.gguf"
-          bind:value={file}
-          data-testid="speaker-model-file"
-          on:keydown={(e) => e.key === 'Enter' && add()}
-        />
-      </label>
-      <button
-        class="c-btn c-btn-secondary c-round"
-        data-testid="speaker-model-add"
-        disabled={adding || !repo.trim() || !file.trim()}
-        on:click={add}
-      >
-        {adding ? 'Adding…' : 'Add'}
-      </button>
-    </div>
-    {#if addError}
-      <p class="c-notice mt-3" role="alert" data-testid="speaker-model-add-error">{addError}</p>
-    {/if}
-    <p class="mt-2 max-w-3xl text-sm text-c-muted">
-      Any chat model in GGUF form that llama.cpp runs. It must fit the PC: Gemma 4 26B A4B uses
-      nearly all of a 12 GB graphics card and about 16 GB of Docker's memory.
-    </p>
-    <label class="mt-4 grid max-w-xs gap-1 text-sm">
-      <span class="text-c-muted">A speaker is unsure below (%)</span>
-      <input
-        class="c-input text-base"
-        type="number"
-        min="1"
-        max="100"
-        step="1"
-        bind:value={$speakerUnsureBelow$}
-        data-testid="speaker-unsure-below"
-      />
-    </label>
-    <p class="mt-1 max-w-3xl text-xs text-c-muted">
-      Quotes whose speaker the PC was less sure of are listed under “To check” on a book's “Check
-      quotes” page.
-    </p>
-  </section>
+      </SettingField>
+    </SettingRow>
+  </SettingsGroup>
 {/if}
-
-<style>
-  .c-mrow + .c-mrow {
-    border-top: 1px dashed var(--c-line);
-  }
-
-  .c-round {
-    border-radius: 0.75rem;
-  }
-</style>
