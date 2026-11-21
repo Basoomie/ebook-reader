@@ -19,13 +19,18 @@
    * "Discard your changes?". Focus stays inside while it is open and goes back afterwards;
    * the page behind doesn't scroll.
    *
+   * On phones a downward swipe from the header, or from the body while it is at its top,
+   * drags the sheet down; a long enough swipe closes it like an outside click
+   * (`sheet-swipe.ts`).
+   *
    * on:close fires when the modal should go away (the dialog closes itself: the modal never
-   * unmounts on its own). Its detail says why: 'escape', 'outside', 'close-button' or
-   * 'discard'.
+   * unmounts on its own). Its detail says why: 'escape', 'outside', 'close-button', 'swipe'
+   * or 'discard'.
    */
   import { createEventDispatcher, onDestroy, onMount, tick } from 'svelte';
   import { FOCUSABLE_SELECTOR, nextFocusIndex } from '$lib/confirm/confirm-state';
   import { decideDismiss, isBackdropClick, pushLayer, type DismissReason } from './modal-stack';
+  import { sheetSwipe } from './sheet-swipe';
 
   export let title = '';
   export let subtitle = '';
@@ -110,6 +115,13 @@
     }
   }
 
+  const swipe = {
+    enabled: () => layer.isTop(),
+    canClose: () => decideDismiss({ dirty, askingDiscard }, 'swipe') === 'close',
+    close: () => dispatch('close', 'swipe'),
+    refused: () => request('swipe')
+  };
+
   function onBackdropClick(ev: MouseEvent) {
     if (isBackdropClick(downTarget, ev.target, backdrop) && layer.isTop()) request('outside');
   }
@@ -142,6 +154,7 @@
     tabindex="-1"
     data-testid={testid}
     on:keydown={onKeydown}
+    use:sheetSwipe={{ ...swipe, backdrop }}
   >
     <header class="c-modal-head">
       <div class="c-modal-titles">

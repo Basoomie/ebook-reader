@@ -15,10 +15,15 @@
     batchCountsText,
     batchKindText,
     batchStateText,
-    canUndo
+    canUndo,
+    writesFields
   } from '$lib/cleanup/cleanup-text';
   import { confirmDestructive } from '$lib/confirm/confirm';
-  import { undoCleanupBatchCopy, undoFileMetadataBatchCopy } from '$lib/confirm/confirm-copy';
+  import {
+    undoCleanupBatchCopy,
+    undoFileMetadataBatchCopy,
+    undoOnlineSourcesBatchCopy
+  } from '$lib/confirm/confirm-copy';
   import { formatWhen } from '$lib/notes/notes-format';
   import CopyRow from './cleanup-copy-row.svelte';
   import FieldRow from './cleanup-field-row.svelte';
@@ -53,8 +58,13 @@
   async function undo(batch: CleanupBatch) {
     undoError = '';
     const count =
-      (batch.stage === 2 ? batch.counts?.written : batch.counts?.removed) ?? batch.itemCount;
-    const copy = batch.stage === 2 ? undoFileMetadataBatchCopy(count) : undoCleanupBatchCopy(count);
+      (writesFields(batch) ? batch.counts?.written : batch.counts?.removed) ?? batch.itemCount;
+    const copy =
+      batch.stage === 4
+        ? undoOnlineSourcesBatchCopy(count)
+        : batch.stage === 2
+          ? undoFileMetadataBatchCopy(count)
+          : undoCleanupBatchCopy(count);
     if (!(await confirmDestructive({ ...copy, testid: 'cleanup-undo-confirm' }))) {
       return;
     }
@@ -94,10 +104,10 @@
               aria-expanded={open === batch.id}
             >
               {open === batch.id
-                ? batch.stage === 2
+                ? writesFields(batch)
                   ? 'Hide changes'
                   : 'Hide copies'
-                : batch.stage === 2
+                : writesFields(batch)
                   ? 'Show changes'
                   : 'Show copies'}
             </button>
@@ -120,7 +130,7 @@
           {:else}
             <ul class="flex flex-col gap-2">
               {#each items as item (item.id)}
-                {#if openStage === 2}
+                {#if openStage === 2 || openStage === 4}
                   <FieldRow {item} state={item.state} detail={item.detail ?? null} />
                 {:else}
                   <CopyRow {item} state={item.state} />

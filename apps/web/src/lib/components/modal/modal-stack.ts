@@ -11,7 +11,8 @@
  * whispersync menu closes alone, and Esc on an in-place "Delete …?" cancels only that.
  */
 
-export type DismissReason = 'escape' | 'outside' | 'close-button';
+/** 'swipe': swiped down on a phone (sheet-swipe.ts); it closes like an outside click. */
+export type DismissReason = 'escape' | 'outside' | 'close-button' | 'swipe';
 
 export interface ModalLayer {
   readonly id: number;
