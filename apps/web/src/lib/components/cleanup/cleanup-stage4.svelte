@@ -33,6 +33,7 @@
     aiGateRows,
     aiBar,
     writeBar,
+    writtenLine,
     aiLine,
     booksLine,
     fieldCounts,
@@ -59,6 +60,7 @@
   $: aiDone = status?.ai?.phase === 'done' && !status.ai.error;
   $: aiProgress = aiBar(status?.ai);
   $: writeProgress = writeBar(status?.write, stage.mode);
+  $: written = writtenLine(status?.write, stage.mode);
   $: unconfirmedTotal = (status?.unconfirmed ?? []).reduce((a, u) => a + u.n, 0);
 
   $: gate = ((stage.precision as { gate?: Stage4Gate }).gate ?? null) as Stage4Gate | null;
@@ -173,6 +175,9 @@
     {#if status}
       {#if status.waiting}
         <p class="text-sm text-c-muted" data-testid="cleanup-waiting-4">{status.waiting}</p>
+      {/if}
+      {#if written}
+        <p class="text-sm" data-testid="cleanup-stage-4-written">{written}</p>
       {/if}
       {#if writeProgress}
         <div class="flex flex-col gap-1" data-testid="cleanup-stage-4-write-progress">
