@@ -54,6 +54,10 @@ export interface NotesFilter {
   unplacedOnly: boolean;
   /** The search box's text (as typed). */
   query: string;
+  /** Made on or after this day ("YYYY-MM-DD", local), or null. */
+  from: string | null;
+  /** Made on or before this day ("YYYY-MM-DD", local), or null. */
+  to: string | null;
 }
 
 export type NotesViewMode = 'books' | 'highlights';
@@ -98,10 +102,83 @@ export const EMPTY_FILTER: NotesFilter = {
   colors: new Set(),
   withNote: false,
   unplacedOnly: false,
-  query: ''
+  query: '',
+  from: null,
+  to: null
 };
 
-/** Reads `?book=&series=&noseries=1&color=1,3&note=1&unplaced=1&q=` (unknown values are ignored). */
+const DAY = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+/** "YYYY-MM-DD" when it is a real day, else null. */
+export function validDay(text: string | null | undefined): string | null {
+  const m = DAY.exec(text ?? '');
+  if (!m) return null;
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  return d.getFullYear() === Number(m[1]) &&
+    d.getMonth() === Number(m[2]) - 1 &&
+    d.getDate() === Number(m[3])
+    ? (text as string)
+    : null;
+}
+
+/** The start of a local day in ms. */
+function dayStart(day: string): number {
+  const [y, m, d] = day.split('-').map(Number);
+  return new Date(y, m - 1, d).getTime();
+}
+
+/** "YYYY-MM-DD" of a moment, local time. */
+export function dayOf(ms: number): string {
+  const d = new Date(ms);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+export type DatePreset = 'week' | 'month' | 'year';
+
+/** Quick picks: the last 7 or 30 days (today included), or this year so far. */
+export function presetRange(preset: DatePreset, now = Date.now()): { from: string; to: string } {
+  const today = new Date(now);
+  const to = dayOf(now);
+  if (preset === 'year') return { from: `${today.getFullYear()}-01-01`, to };
+  const back = preset === 'week' ? 6 : 29;
+  const start = new Date(today.getFullYear(), today.getMonth(), today.getDate() - back);
+  return { from: dayOf(start.getTime()), to };
+}
+
+/** The date filter in words: "Nov 1, 2026 – Nov 20, 2026", "Since …", "Until …". */
+export function dateRangeLabel(filter: Pick<NotesFilter, 'from' | 'to'>, locale?: string) {
+  const fmt = (day: string) =>
+    new Date(dayStart(day)).toLocaleDateString(locale, { dateStyle: 'medium' });
+  if (filter.from && filter.to) {
+    return filter.from === filter.to
+      ? fmt(filter.from)
+      : `${fmt(filter.from <= filter.to ? filter.from : filter.to)} – ${fmt(filter.from <= filter.to ? filter.to : filter.from)}`;
+  }
+  if (filter.from) return `Since ${fmt(filter.from)}`;
+  if (filter.to) return `Until ${fmt(filter.to)}`;
+  return '';
+}
+
+/**
+ * The time span of the date filter: [start of "from", start of the day after "to"). A
+ * reversed range is read the right way round.
+ */
+export function dateBounds(filter: Pick<NotesFilter, 'from' | 'to'>): [number, number] | null {
+  if (!filter.from && !filter.to) return null;
+  let lo = filter.from ? dayStart(filter.from) : Number.NEGATIVE_INFINITY;
+  let hi = filter.to ? dayStart(filter.to) + 86_400_000 : Number.POSITIVE_INFINITY;
+  if (filter.from && filter.to && lo >= hi) {
+    lo = dayStart(filter.to);
+    hi = dayStart(filter.from) + 86_400_000;
+  }
+  return [lo, hi];
+}
+
+/**
+ * Reads `?book=&series=&noseries=1&color=1,3&note=1&unplaced=1&q=&from=&to=` (unknown
+ * values are ignored; days are "YYYY-MM-DD").
+ */
 export function parseNotesFilter(params: URLSearchParams): NotesFilter {
   const colors = new Set<HighlightColor>();
 
@@ -122,7 +199,9 @@ export function parseNotesFilter(params: URLSearchParams): NotesFilter {
     colors,
     withNote: params.get('note') === '1',
     unplacedOnly: params.get('unplaced') === '1',
-    query: params.get('q') ?? ''
+    query: params.get('q') ?? '',
+    from: validDay(params.get('from')),
+    to: validDay(params.get('to'))
   };
 }
 
@@ -138,6 +217,8 @@ function filterParams(filter: NotesFilter): URLSearchParams {
   }
   if (filter.withNote) params.set('note', '1');
   if (filter.unplacedOnly) params.set('unplaced', '1');
+  if (filter.from) params.set('from', filter.from);
+  if (filter.to) params.set('to', filter.to);
 
   return params;
 }
@@ -187,7 +268,8 @@ export function activeFilterCount(filter: NotesFilter) {
     (filter.series || filter.noSeries ? 1 : 0) +
     filter.colors.size +
     (filter.withNote ? 1 : 0) +
-    (filter.unplacedOnly ? 1 : 0)
+    (filter.unplacedOnly ? 1 : 0) +
+    (filter.from || filter.to ? 1 : 0)
   );
 }
 
@@ -298,7 +380,8 @@ function bookComparator(sort: SortValue): (a: NotesBookGroup, b: NotesBookGroup)
  * The books with highlights or notes that pass the filter and the search, each with its
  * highlights in place order (and their notes) and its book notes. A color, "With a note"
  * or "couldn't place" filter leaves out notes about the book (they have no color, are
- * notes themselves, and have no place). When the search matches a book's title, author or
+ * notes themselves, and have no place); a date range keeps the items made in it, book
+ * notes included. When the search matches a book's title, author or
  * series, all of its (filtered) items show; otherwise only the items that match.
  */
 export function buildNotesView(
@@ -311,6 +394,8 @@ export function buildNotesView(
   const groups: NotesBookGroup[] = [];
   const onlyHighlights = filter.colors.size > 0 || filter.unplacedOnly || filter.withNote;
   const words = queryWords(filter.query);
+  const span = dateBounds(filter);
+  const inSpan = (ms: number) => !span || (ms >= span[0] && ms < span[1]);
 
   for (const [bookId, entry] of all) {
     if (filter.book && bookId !== filter.book) continue;
@@ -323,9 +408,10 @@ export function buildNotesView(
     let highlights = entry.highlights
       .filter((h) => !filter.colors.size || filter.colors.has(h.color))
       .filter((h) => !filter.withNote || !!h.note)
+      .filter((h) => inSpan(h.createdAt))
       .map((item) => ({ item, unplaced: unplaced.has(item.id) }))
       .filter((row) => !filter.unplacedOnly || row.unplaced);
-    let notes = onlyHighlights ? [] : entry.notes;
+    let notes = onlyHighlights ? [] : entry.notes.filter((n) => inSpan(n.createdAt));
     let hit: NotesBookGroup['hit'] = null;
 
     if (words.length) {

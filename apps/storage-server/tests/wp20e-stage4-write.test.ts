@@ -286,6 +286,17 @@ describe('stage 4 On: written through the field-write path', () => {
       format: 'proposed',
       kind: 'proposed',
     });
+    // The card's progress: changes written, books written, all of them (stage-4 status).
+    const st = env.service.stage4Status(env.libraryId(), Date.now() + 120_000) as {
+      write: {
+        changes: { done: number; total: number };
+        books: { done: number };
+        batches: number;
+      } | null;
+    };
+    expect(st.write).toMatchObject({ books: { done: 1 }, batches: 1 });
+    expect(st.write!.changes.done).toBeGreaterThan(0);
+    expect(st.write!.changes.done).toBe(st.write!.changes.total);
     // Recorded so that a later check tells Calibre's own value from a user's change.
     const applied = new Map(
       (

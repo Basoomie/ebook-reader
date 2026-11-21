@@ -32,6 +32,7 @@
     aiBooksLine,
     aiGateRows,
     aiBar,
+    writeBar,
     aiLine,
     booksLine,
     fieldCounts,
@@ -57,6 +58,7 @@
   // On waits for the AI check (WP20e): the confirmed values and best guesses come from it.
   $: aiDone = status?.ai?.phase === 'done' && !status.ai.error;
   $: aiProgress = aiBar(status?.ai);
+  $: writeProgress = writeBar(status?.write, stage.mode);
   $: unconfirmedTotal = (status?.unconfirmed ?? []).reduce((a, u) => a + u.n, 0);
 
   $: gate = ((stage.precision as { gate?: Stage4Gate }).gate ?? null) as Stage4Gate | null;
@@ -171,6 +173,28 @@
     {#if status}
       {#if status.waiting}
         <p class="text-sm text-c-muted" data-testid="cleanup-waiting-4">{status.waiting}</p>
+      {/if}
+      {#if writeProgress}
+        <div class="flex flex-col gap-1" data-testid="cleanup-stage-4-write-progress">
+          <div class="flex flex-wrap justify-between gap-x-4 text-sm">
+            <span>{writeProgress.label}</span>
+            <span
+              >{Math.floor(writeProgress.fraction * 100)} %{writeProgress.eta
+                ? ` · ${writeProgress.eta}`
+                : ''}</span
+            >
+          </div>
+          <div
+            class="c-progress h-2 overflow-hidden rounded-full bg-c-track"
+            role="progressbar"
+            aria-label={writeProgress.label}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={Math.floor(writeProgress.fraction * 100)}
+          >
+            <div class="h-full bg-c-fill" style="width: {writeProgress.fraction * 100}%" />
+          </div>
+        </div>
       {/if}
       {#if !status.fetcher.online}
         <p class="c-notice text-sm" role="alert" data-testid="cleanup-fetcher-offline">

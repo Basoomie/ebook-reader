@@ -19,18 +19,27 @@
       >{:else}{part.text}{/if}{/each}{:else}{text}{/if}
 
 <style>
+  /*
+   * A solid marker color that stands out from the page and the cards in each look
+   * (user, 2026-11-21: the tint blended into the background), with dark text on it.
+   * E-ink: black with white text.
+   */
   .c-search-hit {
-    background-color: var(--c-tint);
-    color: inherit;
+    background-color: #ffd23f;
+    color: #1a1406;
     border-radius: 2px;
-    box-shadow: inset 0 -2px 0 var(--c-gold);
+    padding: 0 1px;
+    box-decoration-break: clone;
+    -webkit-box-decoration-break: clone;
+  }
+
+  :global(html.catalogue-dark:not(.eink)) .c-search-hit {
+    background-color: #f5c542;
+    color: #0e1524;
   }
 
   :global(html.eink) .c-search-hit {
-    background-color: transparent;
-    box-shadow: none;
-    text-decoration: underline;
-    text-decoration-thickness: 2px;
-    font-weight: 700;
+    background-color: #000;
+    color: #fff;
   }
 </style>

@@ -7,10 +7,15 @@
 
   /**
    * WP19d: one highlight as a card, its color on the left edge (E-ink: black, with the
-   * color's underline mark). The text, note and place are one button that opens the book
-   * there; the rest is in the ⋮ menu. Moved out of notes-list.svelte (Notes at scale,
-   * 2026-11-21) so the Highlights view uses the same card, with the book's title on it
-   * (`showBook`) and the search's words marked.
+   * color's underline mark); the rest is in the ⋮ menu. Moved out of notes-list.svelte
+   * (Notes at scale, 2026-11-21) so the Highlights view uses the same card, with the book's
+   * title on it (`showBook`) and the search's words marked.
+   *
+   * 2026-11-21 (user): the text is plain, selectable text (a whole-card button opened the
+   * book when text was selected to copy it). The book opens from "Open ›" at the end of the
+   * place line (a 44 px target that adds no height; a button of its own under ⋮ made every
+   * card taller: user). ⋮ has Copy text (and Copy note); the menu item itself says
+   * "Copied ✓" until the menu closes (no banner to dismiss, no timer).
    */
   import { createEventDispatcher } from 'svelte';
   import Fa from 'svelte-fa';
@@ -33,6 +38,7 @@
   import { formatWhen } from '$lib/notes/notes-format';
   import { cardBookLine, percentOf, type NotesBookInfo } from '$lib/notes/notes-view';
   import { HIGHLIGHT_SOLIDS, swatchStyle } from '$lib/notes/swatch';
+  import { copyText } from '$lib/functions/copy-text';
   import type { NotesListState } from './notes-list-state';
 
   export let item: HighlightItem;
@@ -49,7 +55,16 @@
   const menuItem = 'c-btn c-btn-ghost w-full justify-start px-3 text-left text-sm';
   const dotsButton = 'c-btn c-btn-ghost h-11 min-h-0 w-11 p-0';
 
+  /** What the open menu just copied ('' until a copy; reset when the menu closes). */
+  let copied: '' | 'text' | 'note' | 'failed' = '';
+  let menuOpen = false;
+
+  $: if (!menuOpen) copied = '';
   $: editing = $list.editing?.key === item.id;
+
+  async function copy(what: 'text' | 'note', text: string) {
+    copied = (await copyText(text)) ? what : 'failed';
+  }
   $: edge = eink ? '#000' : HIGHLIGHT_SOLIDS[item.color];
   $: place = [
     item.chapter ? `「${item.chapter}」` : '',
@@ -85,13 +100,7 @@
   data-testid="notes-page-highlight"
 >
   <div class="flex items-start">
-    <button
-      type="button"
-      class="c-hl-open flex min-w-0 flex-1 items-center gap-2 rounded-r py-3 pl-4 pr-1 text-left"
-      title="Open in book"
-      data-testid="notes-page-open"
-      on:click={() => dispatch('open')}
-    >
+    <div class="c-hl-body flex min-w-0 flex-1 py-3 pl-4 pr-1">
       <span class="flex min-w-0 flex-1 flex-col">
         {#if showBook}
           <span
@@ -116,27 +125,36 @@
             >
           </span>
         {/if}
-        <span
-          class="mt-2 flex flex-wrap items-center gap-x-2 text-xs text-c-muted"
-          data-testid="notes-page-place"
-        >
-          {#if eink}
-            <span
-              class="font-bold text-black"
-              style={swatchStyle(item.color, true)}
-              title={HIGHLIGHT_COLOR_NAMES[item.color]}>あ</span
-            >
-          {/if}
-          <span><MarkedText text={place} {words} /></span>
-          {#if unplaced}
-            <b data-testid="notes-page-unplaced">· Not found in this copy of the book</b>
-          {/if}
+        <span class="mt-2 flex items-center gap-2">
+          <span
+            class="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 text-xs text-c-muted"
+            data-testid="notes-page-place"
+          >
+            {#if eink}
+              <span
+                class="font-bold text-black"
+                style={swatchStyle(item.color, true)}
+                title={HIGHLIGHT_COLOR_NAMES[item.color]}>あ</span
+              >
+            {/if}
+            <span><MarkedText text={place} {words} /></span>
+            {#if unplaced}
+              <b data-testid="notes-page-unplaced">· Not found in this copy of the book</b>
+            {/if}
+          </span>
+          <button
+            type="button"
+            class="c-open -my-3 inline-flex min-h-[2.75rem] shrink-0 items-center gap-1 rounded px-2 text-xs font-medium"
+            title="Open in book"
+            aria-label="Open in book"
+            data-testid="notes-page-open"
+            on:click={() => dispatch('open')}
+          >
+            Open <Fa icon={faChevronRight} size="xs" />
+          </button>
         </span>
       </span>
-      <span class="shrink-0 px-1 text-c-muted" aria-hidden="true">
-        <Fa icon={faChevronRight} />
-      </span>
-    </button>
+    </div>
     <div class="shrink-0 p-1">
       <DropdownMenu
         buttonClass={dotsButton}
@@ -145,6 +163,7 @@
         testid="notes-page-menu"
         panelWidth="w-60"
         floating
+        bind:open={menuOpen}
         let:close
       >
         <span slot="button" class="flex items-center justify-center" title="More">
@@ -152,6 +171,29 @@
           <span class="sr-only">More</span>
         </span>
         <div class="flex flex-col gap-1">
+          <button
+            type="button"
+            class={menuItem}
+            data-testid="notes-page-copy"
+            on:click={() => copy('text', item.text)}
+          >
+            <span aria-live="polite">{copied === 'text' ? 'Copied ✓' : 'Copy text'}</span>
+          </button>
+          {#if item.note}
+            <button
+              type="button"
+              class={menuItem}
+              data-testid="notes-page-copy-note"
+              on:click={() => item.note && copy('note', item.note.body)}
+            >
+              <span aria-live="polite">{copied === 'note' ? 'Copied ✓' : 'Copy note'}</span>
+            </button>
+          {/if}
+          {#if copied === 'failed'}
+            <p class="px-3 text-xs text-c-muted" role="alert" data-testid="notes-copy-failed">
+              This browser didn't allow copying: select the text and copy it.
+            </p>
+          {/if}
           <button
             type="button"
             class={menuItem}
@@ -237,24 +279,30 @@
     border-left: 3px solid var(--c-gold);
   }
 
-  .c-hl-open {
+  .c-hl-body {
     color: var(--c-ink);
     user-select: text;
   }
 
-  .c-hl-open:focus-visible {
+  /* "Open ›": link-colored, 44 px tall to tap, pulled into the line so it adds no height. */
+  .c-open {
+    color: var(--c-link);
+  }
+
+  .c-open:focus-visible {
     outline: 2px solid var(--c-link);
     outline-offset: -2px;
   }
 
   @media (hover: hover) {
-    .c-hl-open:hover {
+    :global(html:not(.eink)) .c-open:hover {
       background-color: var(--c-tint);
     }
   }
 
-  .c-hl-open:active {
-    background-color: var(--c-sec-active);
+  :global(html.eink) .c-open {
+    color: #000;
+    text-decoration: underline;
   }
 
   .c-danger {
@@ -263,14 +311,5 @@
 
   :global(html.eink) .c-hl-card {
     border-left-color: #000 !important;
-  }
-
-  :global(html.eink) .c-hl-open:hover {
-    background-color: transparent;
-  }
-
-  :global(html.eink) .c-hl-open:active {
-    background-color: #000;
-    color: #fff;
   }
 </style>

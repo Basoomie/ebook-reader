@@ -9,6 +9,7 @@ import type {
   Stage4Gate,
   Stage4Site,
   Stage4Status,
+  Stage4Write,
   StageMode
 } from './cleanup-api';
 import { etaText, n, type ProgressBar } from './cleanup-text';
@@ -38,6 +39,29 @@ const AI_BAR_LABELS: Record<string, string> = {
   spelling: 'Giving each series one spelling',
   gate: 'Checking the labeled books'
 };
+
+/**
+ * Stage 4 On's progress bar (WP20e): changes written of all, the books written, and the time
+ * left at the pace of the last batches. Shown while On, and after a run until all is written.
+ */
+export function writeBar(
+  w: Stage4Write | null | undefined,
+  mode: StageMode | undefined
+): ProgressBar | null {
+  if (!w || w.changes.total <= 0) return null;
+  if (mode !== 'on' && w.changes.done === 0) return null;
+  const done = w.changes.done >= w.changes.total;
+  return {
+    label: done
+      ? `Written to Calibre: ${n(w.changes.done)} changes in ${n(w.books.done)} books`
+      : `Writing to Calibre: ${n(w.changes.done)} of ${n(w.changes.total)} changes · ${n(w.books.done)} books written`,
+    fraction: Math.min(1, w.changes.done / w.changes.total),
+    eta:
+      !done && w.secondsLeft !== null && w.secondsLeft > 0
+        ? `${etaText(w.secondsLeft * 1000)} (estimate)`
+        : null
+  };
+}
 
 /** The AI check's progress bar with the time left (as the audiobook card's). */
 export function aiBar(ai: Stage4AiStatus | null | undefined): ProgressBar | null {

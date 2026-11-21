@@ -5,6 +5,7 @@
  * of it can affect reading (it only reads Calibre, and writes cleanup.db plus the
  * handoff's book_sources rows in ttsu.db).
  */
+import { stage4Write, type Stage4Write, type WriteBatchRow } from './stage4/write-progress';
 import type Database from 'better-sqlite3';
 import { existsSync } from 'fs';
 import { snapshotFile } from '../calibre/indexer';
@@ -178,6 +179,8 @@ export class CleanupService {
   /** Why stage 4 is not working right now. */
   waiting4: string | null = null;
   private status4Cache: { at: number; value: unknown } | null = null;
+  /** Books written per finished stage-4 batch (counted once each; write-progress.ts). */
+  private batchBooks = new Map<string, number>();
   /** Books read at each status (the reading's measured rate over the last minutes). */
   private readMarks: { at: number; n: number; analysisId: string }[] = [];
   private labeled4Cache: { at: number; value: { site: string; n: number }[] } | null = null;
@@ -970,6 +973,65 @@ export class CleanupService {
       .reduce((a, r) => a + r.n, 0);
   }
 
+  /**
+   * Stage 4 On's progress (write-progress.ts): the writable automatic changes written (applied)
+   * and still to write, by change and by book, and the pace of the last batches. Read from the
+   * proposals' count index (EXPLAINed and timed on a copy of the live cleanup.db at the run's
+   * size); the page's status caches it 30 s.
+   */
+  private write4(target: string, analysisId: string, now: number): Stage4Write | null {
+    const fields = [...STAGE4_WRITTEN_FIELDS];
+    const inList = fields.map(() => '?').join(', ');
+    const n = (state: string, cls: string | null) =>
+      (
+        this.db
+          .prepare(
+            `SELECT COUNT(*) AS n FROM proposed_changes WHERE stage = 4 AND library_id = ? AND state = ?
+             AND field IN (${inList}) ${cls ? 'AND class = ?' : ''} AND analysis_id = ?`,
+          )
+          .get(target, state, ...fields, ...(cls ? [cls] : []), analysisId) as { n: number }
+      ).n;
+    const doneChanges = n('applied', null);
+    const leftChanges = n('proposed', 'auto');
+    if (doneChanges === 0 && getStage(this.db, 4).mode !== 'on') return null;
+    // Books per finished batch, counted once each (a few ms by the batch's items): counting
+    // distinct books over all proposals held the server 1.4 s at the run's size (measured).
+    const finished = this.db
+      .prepare(
+        `SELECT id, claimed_at AS claimedAt, finished_at AS finishedAt, item_count AS items FROM batches
+         WHERE stage = 4 AND kind = 'apply' AND state IN ('applied', 'partial') ORDER BY created_at DESC`,
+      )
+      .all() as (WriteBatchRow & { id: string })[];
+    let doneBooks = 0;
+    for (const bt of finished) {
+      let k = this.batchBooks.get(bt.id);
+      if (k === undefined) {
+        k = (
+          this.db
+            .prepare(
+              `SELECT COUNT(DISTINCT p.calibre_id) AS n FROM batch_items i JOIN proposed_changes p ON p.id = i.change_id
+               WHERE i.batch_id = ? AND p.state = 'applied' AND p.analysis_id = ?`,
+            )
+            .get(bt.id, analysisId) as { n: number }
+        ).n;
+        this.batchBooks.set(bt.id, k);
+      }
+      doneBooks += k;
+    }
+    const batchCount = finished.length;
+    const batches = finished.slice(0, 10);
+    return stage4Write(
+      {
+        doneChanges,
+        leftChanges,
+        doneBooks,
+        batches,
+        batchCount,
+      },
+      now,
+    );
+  }
+
   /** Stage 4 work that needs no answer from the fetcher (answered requests, books to plan or propose). */
   private stage4HasWork(): boolean {
     const p = this.analysis4?.progress();
@@ -1299,6 +1361,8 @@ export class CleanupService {
           }
         : null,
       fieldPauses: listFieldPauses(this.db, 4),
+      // Stage 4 On: books and changes written, what is left, the time left (WP20e).
+      write: target && p ? this.write4(target, p.analysisId, now) : null,
       read: p
         ? {
             done: books.reduce((a, b) => a + b.n, 0),

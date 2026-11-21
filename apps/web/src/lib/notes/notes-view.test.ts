@@ -26,6 +26,10 @@ import {
   seriesHighlightCounts,
   unplacedCount,
   viewTotals,
+  dateBounds,
+  dateRangeLabel,
+  presetRange,
+  validDay,
   type NotesBookInfo
 } from './notes-view';
 import { clearPendingJump, setPendingJump, takePendingJump } from './pending-jump';
@@ -110,7 +114,9 @@ describe('notes filter', () => {
       colors: new Set([3, 1]),
       withNote: false,
       unplacedOnly: true,
-      query: ''
+      query: '',
+      from: null,
+      to: null
     });
     expect(notesFilterQuery(filter)).toBe('?book=b1&series=%E3%82%B7&color=1%2C3&unplaced=1');
     expect(notesFilterQuery(EMPTY_FILTER)).toBe('');
@@ -334,6 +340,65 @@ describe('notes sorts, views and pages', () => {
     );
     expect(unplacedCount(BIG, new Set(['x:h2', 'gone:h1']))).toBe(1);
     expect(unplacedCount(BIG, new Set())).toBe(0);
+  });
+});
+
+describe('notes date range', () => {
+  const at = (y: number, m: number, d: number, h = 12) => new Date(y, m - 1, d, h).getTime();
+  const DATED = new Map<string, BookNotes>([
+    [
+      'd1',
+      {
+        highlights: [
+          hl('d1', 1, 1, at(2026, 11, 1)),
+          hl('d1', 2, 2, at(2026, 11, 10, 23)),
+          hl('d1', 3, 3, at(2026, 11, 20, 0))
+        ],
+        notes: [bookNote('d1', at(2026, 11, 5))]
+      }
+    ],
+    ['d2', { highlights: [hl('d2', 1, 4, at(2026, 10, 1))], notes: [] }]
+  ]);
+  const shown = (from: string | null, to: string | null) =>
+    buildNotesView(DATED, new Map(), new Set(), { ...EMPTY_FILTER, from, to }).flatMap((g) => [
+      ...g.highlights.map((r) => r.item.id),
+      ...g.notes.map((n) => n.id)
+    ]);
+
+  it('keeps what was made in the range, whole days, book notes included', () => {
+    expect(shown('2026-11-05', '2026-11-10').sort()).toEqual(
+      ['d1:h2', `d1:n${at(2026, 11, 5)}`].sort()
+    );
+    expect(shown('2026-11-20', null)).toEqual(['d1:h3']);
+    expect(shown(null, '2026-10-31')).toEqual(['d2:h1']);
+    // A reversed range is read the right way round.
+    expect(shown('2026-11-10', '2026-11-05')).toEqual(shown('2026-11-05', '2026-11-10'));
+    expect(shown(null, null)).toHaveLength(5);
+    expect(dateBounds({ from: null, to: null })).toBeNull();
+  });
+
+  it('reads, writes and words the range; drops days that do not exist', () => {
+    const f = parseNotesFilter(new URLSearchParams('from=2026-11-01&to=2026-02-30'));
+    expect([f.from, f.to]).toEqual(['2026-11-01', null]);
+    expect(notesFilterQuery({ ...EMPTY_FILTER, from: '2026-11-01', to: '2026-11-20' })).toBe(
+      '?from=2026-11-01&to=2026-11-20'
+    );
+    expect(activeFilterCount({ ...EMPTY_FILTER, from: '2026-11-01', to: '2026-11-20' })).toBe(1);
+    expect(validDay('2026-13-01')).toBeNull();
+    expect(validDay('2024-02-29')).toBe('2024-02-29');
+    expect(dateRangeLabel({ from: '2026-11-01', to: '2026-11-20' }, 'en-US')).toBe(
+      'Nov 1, 2026 – Nov 20, 2026'
+    );
+    expect(dateRangeLabel({ from: '2026-11-01', to: null }, 'en-US')).toBe('Since Nov 1, 2026');
+    expect(dateRangeLabel({ from: null, to: '2026-11-20' }, 'en-US')).toBe('Until Nov 20, 2026');
+    expect(dateRangeLabel({ from: '2026-11-20', to: '2026-11-20' }, 'en-US')).toBe('Nov 20, 2026');
+  });
+
+  it('quick picks: last 7 or 30 days, this year', () => {
+    const now = at(2026, 11, 21, 9);
+    expect(presetRange('week', now)).toEqual({ from: '2026-11-15', to: '2026-11-21' });
+    expect(presetRange('month', now)).toEqual({ from: '2026-10-23', to: '2026-11-21' });
+    expect(presetRange('year', now)).toEqual({ from: '2026-01-01', to: '2026-11-21' });
   });
 });
 
