@@ -233,7 +233,7 @@ export function subtitleJobText(
     case 'done':
       return job.linked
         ? `Subtitles made: ${name}. This book now uses them.`
-        : `Subtitles made: ${name}. The audiobook or subtitles of this book were changed meanwhile, so they were not chosen. Pick them under “Change subtitles”.`;
+        : `Subtitles made: ${name}. The audiobook or subtitles of this book were changed meanwhile, so they were not chosen. Pick them with Change in the Subtitles row.`;
     case 'cancelled':
       return 'Making subtitles was stopped. Nothing was added to the subtitle folder.';
     case 'failed':

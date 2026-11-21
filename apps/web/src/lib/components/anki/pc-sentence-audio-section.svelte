@@ -6,7 +6,7 @@
    */
 
   /**
-   * Season 2 Phase 12: Settings > Anki, "Sentence audio from the PC": the voice and model the
+   * Season 2 Phase 12: Settings > Anki, "Sentence audio read by TTS": the voice and model the
    * PC reads Enrich's sentence with when a book has no audiobook (one choice for every book;
    * a book's page can choose its own). Off until a voice is chosen (decided with the user,
    * 2026-11-15).

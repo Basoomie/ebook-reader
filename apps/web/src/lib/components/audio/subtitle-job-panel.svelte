@@ -15,6 +15,7 @@
    */
   import { createEventDispatcher, onDestroy } from 'svelte';
   import AudioChoiceRow from '$lib/components/audio/audio-choice-row.svelte';
+  import PagedList from '$lib/components/paged-list.svelte';
   import {
     linkView,
     linkedSubtitleName,
@@ -40,6 +41,11 @@
   export let audioEnabled: boolean;
   /** Something else in the section is busy (a link change, a merge). */
   export let busy = false;
+  /** The Subtitles row is closed (2026-11-20 redesign): only a job's status shows. */
+  export let compact = false;
+
+  /** Subtitle files already there, shown a page at a time. */
+  const PAGE_SIZE = 5;
 
   const dispatch = createEventDispatcher<{
     linked: SubtitleJob;
@@ -205,11 +211,17 @@
   }
 </script>
 
-{#if link?.state === 'linked' && (job || archiveMatches || canStart || message)}
-  <div class="c-apanel mt-4 rounded px-5 py-4" data-testid="subtitle-job">
-    <div class="text-xs text-c-muted">Subtitles made on your PC</div>
+{#if link?.state === 'linked' && (compact ? !!job : job || archiveMatches || canStart || message)}
+  <div
+    class={compact ? 'mt-2' : 'c-sub mt-4 pt-3'}
+    data-testid="subtitle-job"
+    data-compact={compact ? 'true' : 'false'}
+  >
+    {#if !compact}
+      <h4 class="font-medium">Make subtitles on your PC</h4>
+    {/if}
 
-    {#if message}
+    {#if message && !compact}
       <p class="c-notice mt-2" role="alert" data-testid="subtitle-job-message">{message}</p>
     {/if}
 
@@ -222,7 +234,7 @@
         data-state={job.state}
         data-stage={job.stage ?? ''}
       >
-        {subtitleJobText(job, worker, now)}
+        {compact ? 'Subtitles on the PC: ' : ''}{subtitleJobText(job, worker, now)}
       </p>
       {#if barValue !== null}
         <div
@@ -237,7 +249,9 @@
           <div style="width: {barValue}%" />
         </div>
       {/if}
-      {#if active}
+      {#if compact}
+        <!-- The row is closed: the status is enough. -->
+      {:else if active}
         <p class="mt-2 text-sm text-c-muted">
           This goes on when you leave this page, and waits while the PC is off. A long audiobook can
           take an hour or more.
@@ -276,17 +290,25 @@
       <p class="mt-1 text-sm" data-testid="subtitle-job-archive">
         Your subtitle folder may already have subtitles for this book:
       </p>
-      <ul class="mt-2 divide-y divide-dashed divide-c-line" data-testid="subtitle-job-matches">
-        {#each archiveMatches as file (file.id)}
-          <AudioChoiceRow
-            name={file.name}
-            details={subtitleDetails(file)}
-            disabled={busy}
-            testid="subtitle-job-match"
-            on:choose={() => useArchived(file)}
-          />
-        {/each}
-      </ul>
+      <PagedList
+        items={archiveMatches}
+        size={PAGE_SIZE}
+        label="Subtitles already there"
+        testid="subtitle-job-matches-pages"
+        let:pageItems
+      >
+        <ul class="mt-2 divide-y divide-dashed divide-c-line" data-testid="subtitle-job-matches">
+          {#each pageItems as file (file.id)}
+            <AudioChoiceRow
+              name={file.name}
+              details={subtitleDetails(file)}
+              disabled={busy}
+              testid="subtitle-job-match"
+              on:choose={() => useArchived(file)}
+            />
+          {/each}
+        </ul>
+      </PagedList>
       <div class="mt-3 flex flex-wrap gap-2">
         <button
           class="c-btn c-btn-secondary c-round"
@@ -304,10 +326,10 @@
           Cancel
         </button>
       </div>
-    {:else if canStart}
-      <p class="mt-1 text-sm text-c-muted">
+    {:else if canStart && !compact}
+      <p class="mt-1 max-w-3xl text-sm text-c-muted">
         SubPlz on your PC matches this audiobook to the book's text and saves the subtitles in the
-        subtitle folder. {hasSubtitles ? 'This book then uses the new subtitles.' : ''}
+        subtitle folder; this book then uses them. A long audiobook takes an hour or more.
       </p>
       <div class="mt-3">
         <button
@@ -324,9 +346,8 @@
 {/if}
 
 <style>
-  .c-apanel {
-    background-color: var(--c-raised);
-    border: var(--c-border-width) solid var(--c-line);
+  .c-sub {
+    border-top: var(--c-border-width) dashed var(--c-line);
   }
 
   .c-round {

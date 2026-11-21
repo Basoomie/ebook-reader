@@ -189,7 +189,7 @@ export const SETTINGS_SECTIONS: CatalogSection[] = [
     jp: '字幕作成',
     title: 'The PC',
     description:
-      'The PC makes subtitles, audiobooks and sentence audio. Jobs wait while it is off.',
+      'The PC makes subtitles, audiobooks and sentence audio. Ask for them in a book’s Audiobook section (Subtitles, Text-to-speech); jobs wait while the PC is off.',
     keywords: 'subtitles worker jobs pause gpu'
   },
   {
@@ -198,7 +198,7 @@ export const SETTINGS_SECTIONS: CatalogSection[] = [
     jp: '声',
     title: 'Voices',
     description:
-      'The voices the PC can read a book aloud in. Stored on the server, so every device has them.',
+      'The TTS voices the PC can read a book aloud in (a book’s Audiobook section > Text-to-speech). Stored on the server, so every device has them.',
     keywords: 'recording describe'
   },
   {
@@ -232,7 +232,7 @@ export const SETTINGS_SECTIONS: CatalogSection[] = [
     jp: '読み方',
     title: 'Pronunciation fixes',
     description:
-      'How the PC voices read a word, in every book. A book’s own list (on its page) wins over this one, and the book’s own furigana wins over both.',
+      'How text-to-speech reads a word, in every book. A book’s own list (on its page) wins over this one, and the book’s own furigana wins over both.',
     keywords: 'reading furigana'
   },
   // Anki
@@ -1112,9 +1112,9 @@ export const SETTINGS_CATALOG: CatalogSetting[] = [
   {
     id: 'anki-pc-audio',
     section: 'anki-audio',
-    title: 'Sentence audio from the PC',
+    title: 'Sentence audio read by TTS',
     description:
-      'For a book without an audiobook, the PC reads the sentence with this voice, and the audio is added to the card once the PC has read it (it waits under Waiting sentence audio on the device you used). The pronunciation fixes in Audiobooks apply; a book’s page can choose its own voice.',
+      'For a book without an audiobook, the PC reads the sentence with this TTS voice, and the audio is added to the card once the PC has read it (it waits under Waiting sentence audio on the device you used). The pronunciation fixes in Audiobooks apply; a book’s page can choose its own voice.',
     keywords: 'voice model dialogue'
   },
   { id: 'anki-note-type', section: 'anki-fields', title: 'Note type' },

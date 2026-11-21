@@ -44,7 +44,7 @@
     {/if}
   </div>
   {#if current}
-    <span class="text-sm text-c-muted" data-testid="audio-choice-current">Linked now</span>
+    <span class="text-sm text-c-muted" data-testid="audio-choice-current">In use</span>
   {:else}
     <button
       class="c-btn c-btn-secondary c-round shrink-0 px-5"

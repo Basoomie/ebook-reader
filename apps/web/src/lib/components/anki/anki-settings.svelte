@@ -144,9 +144,11 @@
 <p class="s-anki-intro" data-testid="anki-settings">
   <strong>Enrich last Anki card</strong> adds to the note you added to Anki most recently: the
   book's title as a tag and, in the fields chosen under Card fields, the card's sentence (the one in
-  its Sentence field, or the text you select after making the card), its audio, the cover and a link
-  back to the passage. The card's own sentence is never replaced unless you select text. In a book:
-  the Anki button in the menu at the top, the bottom bar button, or <kbd>E</kbd>.
+  its Sentence field, or the text you select after making the card), its audio (from the linked
+  audiobook's subtitles, or for a book without one read by the PC when a TTS voice is chosen under
+  Sentence audio read by TTS), the cover and a link back to the passage. The card's own sentence is
+  never replaced unless you select text. In a book: the Anki button in the menu at the top, the
+  bottom bar button, or <kbd>E</kbd>.
 </p>
 
 <SettingsGroup id="anki-connection">

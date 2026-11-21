@@ -12,6 +12,10 @@
    * on when the page is closed, waits while the PC is off, and continues where it stopped);
    * the server then saves the audiobook and its subtitles in the generated audiobooks folder
    * and this book uses them (`linked` fires). Stop throws away what was read so far.
+   *
+   * 2026-11-20 (Audiobook section redesign, decided with the user): it reads with the book's
+   * TTS voice (`choice`, chosen once in the Text-to-speech row) and has no voice or model
+   * choice of its own. `compact` (the row closed) shows only a running job's status.
    */
   import { createEventDispatcher, onDestroy } from 'svelte';
   import { linkedFolderName } from '$lib/audio/audio-link';
@@ -21,10 +25,9 @@
     audioLengthText,
     audiobookJobText,
     jobVoicesText,
-    modelsForVoices,
     ttsJobActive
   } from '$lib/audio/tts-text';
-  import type { AudiobookJob, BookChapters, TtsModel, VoicePreset } from '$lib/audio/tts-types';
+  import type { AudiobookJob, BookChapters, BookVoiceChoices } from '$lib/audio/tts-types';
   import { jobFixesText } from '$lib/audio/pronunciation/fix-text';
   import { confirmDestructive } from '$lib/confirm/confirm';
   import {
@@ -45,24 +48,23 @@
   export let link: AudioLink | null;
   export let audioEnabled: boolean;
   export let busy = false;
+  /** The book's TTS voice (its own, else the one in Settings > Anki); null = none chosen. */
+  export let choice: BookVoiceChoices['effective'] = null;
+  /** The Text-to-speech row is closed: only a running job's status shows. */
+  export let compact = false;
+  /** Bound up: the PC can make audiobooks (worker, voices and models set up). */
+  export let available = false;
 
   const dispatch = createEventDispatcher<{ linked: AudiobookJob }>();
   const POLL_MS = 2000;
 
   let worker: GpuWorkerStatus | null = null;
-  let models: TtsModel[] = [];
-  let voices: VoicePreset[] = [];
-  let available = false;
   let job: AudiobookJob | null = null;
   let preview: AudiobookJob | null = null;
   let previewUrl = '';
   let chapters: BookChapters | null = null;
   let chaptersError = '';
   let open = false;
-  let voiceId = '';
-  /** Session 4: the dialogue's own voice ('' = the same voice). */
-  let dialogueVoiceId = '';
-  let modelId: number | null = null;
   let chapterIndex = 0;
   let message = '';
   let starting = false;
@@ -71,8 +73,14 @@
   let timer: ReturnType<typeof setTimeout> | undefined;
   let now = Date.now();
 
-  $: usable = modelsForVoices(models);
-  $: model = usable.find((m) => m.id === modelId) ?? null;
+  $: usableChoice = choice && !choice.problem ? choice : null;
+  $: choiceText = usableChoice
+    ? `${usableChoice.voiceName ?? 'a deleted voice'}${
+        usableChoice.dialogueVoiceId
+          ? `, dialogue ${usableChoice.dialogueVoiceName ?? 'a deleted voice'}`
+          : ''
+      }, ${usableChoice.modelLabel ?? 'a removed model'}`
+    : '';
   $: active = ttsJobActive(job);
   $: previewActive = ttsJobActive(preview);
   $: fixesUsed = jobFixesText(job?.params?.fixes);
@@ -80,7 +88,7 @@
     job && active && job.progress !== null && !job.cancelRequested
       ? Math.floor(Math.max(0, Math.min(1, job.progress)) * 100)
       : null;
-  $: canStart = audioEnabled && available && !active && !!voiceId && !!model;
+  $: canStart = audioEnabled && available && !active && !!usableChoice;
   $: if (bookId && bookId !== loadedFor) void load(bookId);
 
   onDestroy(() => {
@@ -94,22 +102,6 @@
       return 'The library server cannot be reached (offline, or the server is down).';
     }
     return (err as Error).message;
-  }
-
-  /**
-   * Season 2 Phase 12: start from the book's PC voice (its own, else the one in Settings >
-   * Anki), when it can still be used. Changing it here doesn't change that choice.
-   */
-  export function usePreferred(
-    choice: { voiceId: string; dialogueVoiceId?: string | null; modelId: number } | null
-  ) {
-    if (!choice || active) return;
-    if (voices.some((v) => v.id === choice.voiceId)) voiceId = choice.voiceId;
-    dialogueVoiceId =
-      choice.dialogueVoiceId && voices.some((v) => v.id === choice.dialogueVoiceId)
-        ? choice.dialogueVoiceId
-        : '';
-    if (modelsForVoices(models).some((m) => m.id === choice.modelId)) modelId = choice.modelId;
   }
 
   function setPreviewUrl(url: string) {
@@ -127,22 +119,16 @@
     setPreviewUrl('');
     clearTimeout(timer);
     try {
-      const [status, modelList, voiceList, latest, latestPreview, choices] = await Promise.all([
+      const [status, modelList, voiceList, latest, latestPreview] = await Promise.all([
         api.gpuWorker().catch(() => null),
         api.ttsModels().catch(() => ({ available: false, models: [] })),
         api.voices().catch(() => ({ available: false, voices: [], limits: null })),
         api.audiobookJob(id).catch(() => null),
-        api.audiobookPreview(id).catch(() => null),
-        api.bookVoiceChoice(id).catch(() => null)
+        api.audiobookPreview(id).catch(() => null)
       ]);
       if (destroyed || loadedFor !== id) return;
       worker = status;
-      models = modelList.models;
-      voices = voiceList.voices;
       available = !!status?.available && modelList.available && voiceList.available;
-      modelId = modelsForVoices(models)[0]?.id ?? null;
-      voiceId = voices[0]?.id ?? '';
-      usePreferred(choices?.effective ?? null);
       now = Date.now();
       if (
         latest &&
@@ -177,7 +163,8 @@
     }
   }
 
-  async function openForm() {
+  /** Opens the form ("Make one with text-to-speech" in the Audiobook row). */
+  export async function openForm() {
     open = true;
     message = '';
     void loadSpeakers();
@@ -236,16 +223,16 @@
 
   function request(withChapter: boolean) {
     return {
-      voiceId,
-      dialogueVoiceId: dialogueVoiceId && dialogueVoiceId !== voiceId ? dialogueVoiceId : null,
-      modelId: model?.id,
+      voiceId: usableChoice?.voiceId ?? '',
+      dialogueVoiceId: usableChoice?.dialogueVoiceId ?? null,
+      modelId: usableChoice?.modelId,
       pauses: currentPauses(),
       ...(withChapter ? { chapterIndex } : {})
     };
   }
 
   async function startPreview() {
-    if (starting || !voiceId) return;
+    if (starting || !usableChoice) return;
     starting = true;
     message = '';
     setPreviewUrl('');
@@ -329,11 +316,36 @@
   }
 </script>
 
-{#if available && audioEnabled}
-  <div class="c-apanel mt-4 rounded px-5 py-4" data-testid="audiobook-job">
-    <div class="text-xs text-c-muted">Audiobook made on your PC</div>
+{#if available && audioEnabled && (!compact || job || previewActive)}
+  <div
+    class={compact ? 'mt-2' : 'c-sub mt-4 pt-3'}
+    data-testid="audiobook-job"
+    data-compact={compact ? 'true' : 'false'}
+  >
+    {#if !compact}
+      <div class="flex flex-wrap items-start justify-between gap-3">
+        <div class="min-w-0">
+          <h4 class="font-medium">Make an audiobook with this voice</h4>
+          <p class="max-w-3xl text-sm text-c-muted">
+            Your PC reads the whole book aloud and saves it, with subtitles that match it exactly,
+            in the generated audiobooks folder; this book then uses it.
+          </p>
+        </div>
+        {#if !job}
+          <button
+            class="c-btn c-btn-secondary c-round shrink-0"
+            aria-expanded={open}
+            data-testid={open ? 'audiobook-job-cancel' : 'audiobook-job-open'}
+            disabled={busy && !open}
+            on:click={() => (open ? (open = false) : openForm())}
+          >
+            {open ? 'Close' : 'Set up'}
+          </button>
+        {/if}
+      </div>
+    {/if}
 
-    {#if message}
+    {#if message && !compact}
       <p class="c-notice mt-2" role="alert" data-testid="audiobook-job-message">{message}</p>
     {/if}
 
@@ -346,9 +358,9 @@
         data-state={job.state}
         data-stage={job.stage ?? ''}
       >
-        {audiobookJobText(job, worker, now)}
+        {compact ? 'Audiobook on the PC: ' : ''}{audiobookJobText(job, worker, now)}
       </p>
-      {#if job.params}
+      {#if job.params && !compact}
         <p class="mt-1 text-sm text-c-muted" data-testid="audiobook-job-voice">
           {jobVoicesText(job.params)}, {job.params.model.label}{fixesUsed ? ` · ${fixesUsed}` : ''}
         </p>
@@ -366,89 +378,62 @@
           <div style="width: {barValue}%" />
         </div>
       {/if}
-      {#if active}
-        <p class="mt-2 text-sm text-c-muted">
-          This goes on when you leave this page and waits while the PC is off; it continues with the
-          next chapter. A long book takes an hour or more.
-        </p>
-        <div class="mt-3">
-          <button
-            class="c-btn c-btn-secondary c-round"
-            data-testid="audiobook-job-stop"
-            disabled={job.cancelRequested || job.stage === 'assembling' || job.stage === 'saving'}
-            on:click={stop}
-          >
-            Stop
-          </button>
-        </div>
-      {:else}
-        {#if job.state === 'failed' && job.logTail}
-          <details class="mt-2 text-sm" data-testid="audiobook-job-log">
-            <summary class="min-h-[2.75rem] cursor-pointer leading-[2.75rem]">
-              What the PC said last
-            </summary>
-            <pre
-              class="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-words text-xs">{job.logTail}</pre>
-          </details>
+      {#if !compact}
+        {#if active}
+          <p class="mt-2 text-sm text-c-muted">
+            This goes on when you leave this page and waits while the PC is off; it continues with
+            the next chapter. A long book takes an hour or more.
+          </p>
+          <div class="mt-3">
+            <button
+              class="c-btn c-btn-secondary c-round"
+              data-testid="audiobook-job-stop"
+              disabled={job.cancelRequested || job.stage === 'assembling' || job.stage === 'saving'}
+              on:click={stop}
+            >
+              Stop
+            </button>
+          </div>
+        {:else}
+          {#if job.state === 'failed' && job.logTail}
+            <details class="mt-2 text-sm" data-testid="audiobook-job-log">
+              <summary class="min-h-[2.75rem] cursor-pointer leading-[2.75rem]">
+                What the PC said last
+              </summary>
+              <pre
+                class="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-words text-xs">{job.logTail}</pre>
+            </details>
+          {/if}
+          <div class="mt-3">
+            <button
+              class="c-btn c-btn-secondary c-round"
+              data-testid="audiobook-job-dismiss"
+              on:click={() => (job = null)}
+            >
+              OK
+            </button>
+          </div>
         {/if}
-        <div class="mt-3">
-          <button
-            class="c-btn c-btn-secondary c-round"
-            data-testid="audiobook-job-dismiss"
-            on:click={() => (job = null)}
-          >
-            OK
-          </button>
-        </div>
       {/if}
-    {:else if !open}
-      <p class="mt-1 text-sm text-c-muted">
-        Your PC reads this book aloud with a voice you choose and saves the audiobook, with
-        subtitles that match it exactly, in the generated audiobooks folder.
-      </p>
-      <div class="mt-3">
-        <button
-          class="c-btn c-btn-secondary c-round"
-          data-testid="audiobook-job-open"
-          disabled={busy}
-          on:click={openForm}
-        >
-          Make an audiobook on the PC
-        </button>
-      </div>
-    {:else}
-      {#if voices.length === 0}
+    {:else if compact}
+      {#if preview}
+        <p class="mt-1 text-sm" role="status" data-testid="audiobook-preview-text">
+          Preview on the PC: {audiobookJobText(preview, worker, now)}
+        </p>
+      {/if}
+    {:else if open}
+      {#if !usableChoice}
         <p class="mt-2 text-sm" data-testid="audiobook-job-no-voice">
-          Add a voice first: your own recording, or a voice described in words.
-          <a class="c-link" href={settingsTabHref(pagePath, 'Audiobooks')}>Voices in Settings</a>
+          {choice?.problem
+            ? `The TTS voice can't be used (${choice.problem}): choose it again above.`
+            : 'Choose a TTS voice above first.'}
+          No voices yet? Make one in
+          <a class="c-link" href={settingsTabHref(pagePath, 'Audiobooks')}>Settings > Audiobooks</a
+          >.
         </p>
       {:else}
         <div class="mt-2 grid max-w-xl gap-3">
-          <label class="grid gap-1 text-sm">
-            <span class="text-c-muted">Voice</span>
-            <select
-              class="c-input block w-full text-base"
-              bind:value={voiceId}
-              data-testid="audiobook-job-voice-select"
-            >
-              {#each voices as v (v.id)}
-                <option value={v.id}>{v.name}</option>
-              {/each}
-            </select>
-          </label>
-          <label class="grid gap-1 text-sm">
-            <span class="text-c-muted">Dialogue voice (quotes in 「」)</span>
-            <select
-              class="c-input block w-full text-base"
-              bind:value={dialogueVoiceId}
-              data-testid="audiobook-job-dialogue-select"
-            >
-              <option value="">Same as the voice</option>
-              {#each voices.filter((v) => v.id !== voiceId) as v (v.id)}
-                <option value={v.id}>{v.name}</option>
-              {/each}
-            </select>
-          </label>
+          <p class="text-sm" data-testid="audiobook-job-reads-with">Reads with {choiceText}.</p>
           {#if speakers?.run}
             <p class="text-sm" data-testid="audiobook-job-characters">
               {#if voiced}
@@ -460,21 +445,6 @@
               {/if}
             </p>
           {/if}
-          <label class="grid gap-1 text-sm">
-            <span class="text-c-muted">Model</span>
-            <select
-              class="c-input block w-full text-base"
-              bind:value={modelId}
-              data-testid="audiobook-job-model-select"
-            >
-              {#each usable as m (m.id)}
-                <option value={m.id}>{m.label}{m.isDefault ? ' (default)' : ''}</option>
-              {/each}
-            </select>
-            {#if model?.note}
-              <span class="text-c-muted" data-testid="audiobook-job-model-note">{model.note}</span>
-            {/if}
-          </label>
           {#if chapters}
             <p class="text-sm" data-testid="audiobook-job-length">
               {chapters.chapters.length === 1
@@ -536,10 +506,10 @@
           <button
             class="c-btn c-btn-secondary c-round"
             data-testid="audiobook-preview-start"
-            disabled={starting || busy || previewActive || !voiceId || !model}
+            disabled={starting || busy || previewActive || !usableChoice}
             on:click={startPreview}
           >
-            {preview?.state === 'done' ? 'Another preview' : 'Preview'}
+            {preview?.state === 'done' ? 'Another preview' : 'Preview a minute'}
           </button>
           <button
             class="c-btn c-btn-secondary c-round"
@@ -548,13 +518,6 @@
             on:click={start}
           >
             Make the audiobook
-          </button>
-          <button
-            class="c-btn c-btn-secondary c-round"
-            data-testid="audiobook-job-cancel"
-            on:click={() => (open = false)}
-          >
-            Cancel
           </button>
         </div>
         <p class="mt-2 text-sm text-c-muted">
@@ -566,9 +529,8 @@
 {/if}
 
 <style>
-  .c-apanel {
-    background-color: var(--c-raised);
-    border: var(--c-border-width) solid var(--c-line);
+  .c-sub {
+    border-top: var(--c-border-width) dashed var(--c-line);
   }
 
   .c-round {

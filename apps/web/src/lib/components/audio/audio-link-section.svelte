@@ -6,30 +6,25 @@
    */
 
   /**
-   * The book details page's "Audiobook" section (WP15b): the confirmation picker.
+   * The book details page's "Audiobook" section.
    *
-   * Never links anything by itself: ranked suggestions and a search over the whole
-   * audiobooks folder are shown, and only a tap on "Use this" links one. Then a separate
-   * subtitle step ("No subtitles" possible). "No audiobook" stops the suggestions.
-   * Unlinking, replacing and removing ask first; the link is the same on every device.
-   * Loads after the page and never blocks it; its problems show only in here.
+   * Redesigned with the user (2026-11-20): one box with three rows, one open at a time:
+   * - Audiobook: what is linked, a merge's progress, the offline copy on this device; open,
+   *   the chooser (suggestions, search, "No audiobook for this book", "Make one with
+   *   text-to-speech") or the file step of an audiobook in several files (WP15f).
+   * - Subtitles: the subtitle file; open, its chooser and "Make subtitles on your PC" (WP16).
+   * - Text-to-speech: the book's TTS voice (Season 2 Phase 12), "Make an audiobook with this
+   *   voice" (WP17), Characters and Pronunciation fixes.
+   * A closed row shows a short summary and the status of its running jobs. The next thing to
+   * choose opens by itself (the audiobook, then its subtitles: WP15b's separate subtitle step).
    *
-   * WP15f: an audiobook in several files opens a file step (audio-files-step.svelte):
-   * use one file, or merge files into one. A merge runs on the server; its progress shows
-   * here (also after a reload), and when it is done the book uses the merged file and the
-   * subtitle step asks.
-   *
-   * WP16: "Make subtitles on the PC" (subtitle-job-panel.svelte) under the linked audiobook.
-   *
-   * `link` is bindable so the page's Download menu follows every change made here.
-   *
-   * Season 2 Phase 9: the book's audio on this device (audio-device-panel.svelte):
-   * download, remove, and what is stored, also while the server can't be reached.
+   * WP15b rules kept: nothing is linked until "Use this"; replacing and removing ask first;
+   * the link is the same on every device. Loads after the page and never blocks it; its
+   * problems show only in here. `link` is bindable so the page's Download menu follows every
+   * change made here.
    */
-  import { faMagnifyingGlass } from '@fortawesome/free-solid-svg-icons';
-  import Fa from 'svelte-fa';
-  import { onDestroy } from 'svelte';
-  import AudioChoiceRow from '$lib/components/audio/audio-choice-row.svelte';
+  import { tick, onDestroy } from 'svelte';
+  import AudioChooser from '$lib/components/audio/audio-chooser.svelte';
   import AudioFilesStep from '$lib/components/audio/audio-files-step.svelte';
   import SubtitleJobPanel from '$lib/components/audio/subtitle-job-panel.svelte';
   import AudiobookJobPanel from '$lib/components/audio/audiobook-job-panel.svelte';
@@ -52,9 +47,16 @@
     linkedSubtitleName,
     splitNotice,
     subtitleDetails,
-    subtitleView,
-    withoutIds
+    subtitleView
   } from '$lib/audio/audio-link';
+  import {
+    audioRowButton,
+    rowToOpen,
+    subtitleRowButton,
+    ttsCountsText,
+    ttsVoiceText,
+    type SectionRow
+  } from '$lib/audio/audio-section-text';
   import type {
     AudioCandidates,
     AudioFolderSummary,
@@ -64,14 +66,14 @@
     AudioStatus,
     SubtitleFileSummary
   } from '$lib/audio/audio-types';
+  import type { BookVoiceChoices } from '$lib/audio/tts-types';
   import { confirmDestructive } from '$lib/confirm/confirm';
   import {
     noAudiobookCopy,
     removeSubtitlesCopy,
     replaceAudiobookCopy,
     replaceSubtitlesCopy,
-    stopMergeCopy,
-    unlinkAudiobookCopy
+    stopMergeCopy
   } from '$lib/confirm/confirm-copy';
   import { pagePath } from '$lib/data/env';
   import { settingsTabHref } from '$lib/settings/settings-tab';
@@ -82,79 +84,76 @@
   export let bookId: string;
   /** Season 2 Phase 9: the book's own copy is on this device (audio downloads need it). */
   export let bookOnDevice = false;
-  /** Season 2 Phase 9: audio of this book is stored on this device (shows the section). */
-  let hasAudioCopy = false;
+  /** Bound up (read-only for the parent): the book page's Download menu uses it. */
+  export let link: AudioLink | null = null;
 
-  /** Suggestions shown before "Show more". */
-  const FIRST_SUGGESTIONS = 5;
+  /** Suggestions asked for (the chooser shows them 5 a page). */
   const MAX_SUGGESTIONS = 10;
-  /** Search as you type, once typing pauses this long. */
-  const SEARCH_SETTLE_MS = 300;
   /** How often a running merge is asked about. */
   const MERGE_POLL_MS = 2000;
 
+  /** Season 2 Phase 9: audio of this book is stored on this device (shows the section). */
+  let hasAudioCopy = false;
   let loaded = false;
   let audioEnabled = false;
-  /** Season 2 Phase 12: starts from the book's PC voice when that changes. */
-  let jobPanel: AudiobookJobPanel | undefined;
-  /** Bound up (read-only for the parent): the book page's Download menu uses it. */
-  export let link: AudioLink | null = null;
   let candidates: AudioCandidates | null = null;
   let candidatesError = '';
   let loadError = '';
   let message = '';
   let busy = false;
-  let showMore = false;
-  /** "Change audiobook" / "Change subtitles" reopen their step. */
-  let changingAudio = false;
-  let changingSubtitles = false;
-
-  let audioQuery = '';
-  let audioResults: AudioFolderSummary[] = [];
-  let audioSearched = '';
-  let subtitleQuery = '';
-  let subtitleResults: SubtitleFileSummary[] = [];
-  let subtitleSearched = '';
-  let audioTimer: ReturnType<typeof setTimeout> | undefined;
-  let subtitleTimer: ReturnType<typeof setTimeout> | undefined;
-  let searchTurn = 0;
   let loadedFor = '';
   let destroyed = false;
+  /** The open row; null = all closed. */
+  let open: SectionRow | null = null;
   /** WP15f: merging on this server, from /audio/status. */
   let mergeInfo: AudioStatus['merge'] = undefined;
-  /** WP15f: the folder of several files whose file step is open. */
+  /** WP15f: the folder of several files whose file step is open (in the Audiobook row). */
   let filesFolder: AudioFolderSummary | null = null;
   /** WP15f: the merge shown here (running, or finished while this page was open). */
   let mergeJob: AudioMergeJob | null = null;
   let mergeTimer: ReturnType<typeof setTimeout> | undefined;
+  /** The book's TTS voice; null = text-to-speech isn't set up (the row is left out). */
+  let voiceChoices: BookVoiceChoices | null = null;
+  let jobPanel: AudiobookJobPanel | undefined;
+  /** The PC can make an audiobook (bound up from the job panel). */
+  let canMakeAudiobook = false;
+  let characterCount: number | null = null;
+  let fixCount: number | null = null;
 
   $: view = linkView(link);
   $: subView = subtitleView(link);
   $: visible = loaded && (audioEnabled || link !== null || loadError !== '' || hasAudioCopy);
-  $: showAudioPicker = !filesFolder && (view === 'choose' || changingAudio);
-  $: showSubtitlePicker =
-    !filesFolder && !showAudioPicker && (subView === 'choose' || changingSubtitles);
   $: merging = mergeActive(mergeJob);
-  $: suggestions = (candidates?.audio ?? []).slice(
-    0,
-    showMore ? MAX_SUGGESTIONS : FIRST_SUGGESTIONS
-  );
-  $: moreSuggestions = (candidates?.audio.length ?? 0) > FIRST_SUGGESTIONS && !showMore;
-  $: audioExtra = withoutIds(audioResults, suggestions);
-  $: subtitleSuggestions = candidates?.subtitles ?? [];
-  $: subtitleExtra = withoutIds(subtitleResults, subtitleSuggestions);
+  $: linked = link?.state === 'linked';
   $: currentFolderPath = link?.state === 'linked' ? link.folderRelPath : null;
   $: currentSubtitlePath = link?.subtitleState === 'linked' ? link.subtitleRelPath : null;
   $: folderName = link ? linkedFolderName(link) : '';
   $: subtitleName = link ? linkedSubtitleName(link) : '';
   $: changesOff = !audioEnabled;
+  $: ttsCounts = ttsCountsText(characterCount, fixCount);
+
+  /**
+   * A row in the audiobook chooser. "In use" instead of "Use this" only for a single-file
+   * folder: a folder of several files keeps its button, so another of its files can be
+   * chosen (its file step marks the linked file).
+   */
+  $: audioRow = (f: AudioFolderSummary) => ({
+    name: f.name,
+    parent: f.parentName,
+    details: folderDetails(f),
+    note: f.playable ? '' : severalFilesNote(f.fileCount),
+    current: f.playable && f.relPath === currentFolderPath
+  });
+  $: subtitleRow = (f: SubtitleFileSummary) => ({
+    name: f.name,
+    details: subtitleDetails(f),
+    current: f.relPath === currentSubtitlePath
+  });
 
   $: if (bookId && bookId !== loadedFor) void load(bookId);
 
   onDestroy(() => {
     destroyed = true;
-    clearTimeout(audioTimer);
-    clearTimeout(subtitleTimer);
     clearTimeout(mergeTimer);
   });
 
@@ -177,15 +176,13 @@
     message = '';
     link = null;
     candidates = null;
-    changingAudio = false;
-    changingSubtitles = false;
-    showMore = false;
-    audioQuery = subtitleQuery = '';
-    audioResults = subtitleResults = [];
+    open = null;
     filesFolder = null;
     mergeJob = null;
+    voiceChoices = null;
     clearTimeout(mergeTimer);
     hasAudioCopy = !!(await storedAudio(id));
+    void loadVoiceChoices(id);
     try {
       const [status, current, merge] = await Promise.all([
         api.audioStatus(),
@@ -219,9 +216,23 @@
       return;
     }
     loaded = true;
-    if (audioEnabled && (linkView(link) === 'choose' || subtitleView(link) === 'choose')) {
-      await loadCandidates();
+    if (audioEnabled) await openNext();
+  }
+
+  /** The book's TTS voice, for the Text-to-speech row (absent: the row is left out). */
+  async function loadVoiceChoices(id: string) {
+    try {
+      const choices = await api.bookVoiceChoice(id);
+      if (!destroyed && id === loadedFor) voiceChoices = choices;
+    } catch {
+      // Not set up on this server (503), or an older one (404): no Text-to-speech row.
     }
+  }
+
+  /** Opens the next thing to choose, if any (the audiobook, then its subtitles). */
+  async function openNext() {
+    open = audioEnabled ? rowToOpen(linkView(link), subtitleView(link)) : null;
+    if (open === 'audio' || open === 'subs') await loadCandidates();
   }
 
   async function loadCandidates() {
@@ -236,54 +247,16 @@
     }
   }
 
-  function scheduleAudioSearch() {
-    clearTimeout(audioTimer);
-    audioTimer = setTimeout(() => void searchAudio(), SEARCH_SETTLE_MS);
-  }
-
-  function scheduleSubtitleSearch() {
-    clearTimeout(subtitleTimer);
-    subtitleTimer = setTimeout(() => void searchSubtitles(), SEARCH_SETTLE_MS);
-  }
-
-  async function searchAudio() {
-    clearTimeout(audioTimer);
-    const q = audioQuery.trim();
-    const turn = ++searchTurn;
-    if (!q) {
-      audioResults = [];
-      audioSearched = '';
+  function toggle(row: SectionRow) {
+    message = '';
+    if (open === row) {
+      open = null;
+      filesFolder = null;
       return;
     }
-    try {
-      const results = await api.searchAudiobooks(q);
-      if (!destroyed && turn === searchTurn) {
-        audioResults = results;
-        audioSearched = q;
-      }
-    } catch (err) {
-      if (!destroyed && turn === searchTurn) message = describe(err);
-    }
-  }
-
-  async function searchSubtitles() {
-    clearTimeout(subtitleTimer);
-    const q = subtitleQuery.trim();
-    const turn = ++searchTurn;
-    if (!q) {
-      subtitleResults = [];
-      subtitleSearched = '';
-      return;
-    }
-    try {
-      const results = await api.searchSubtitles(q);
-      if (!destroyed && turn === searchTurn) {
-        subtitleResults = results;
-        subtitleSearched = q;
-      }
-    } catch (err) {
-      if (!destroyed && turn === searchTurn) message = describe(err);
-    }
+    open = row;
+    filesFolder = null;
+    if ((row === 'audio' || row === 'subs') && !candidates) void loadCandidates();
   }
 
   async function save(change: AudioLinkChange | 'delete'): Promise<boolean> {
@@ -309,6 +282,13 @@
     }
   }
 
+  /** After the audiobook changed: its subtitles are next when they aren't chosen. */
+  async function afterAudioChange() {
+    filesFolder = null;
+    candidates = null;
+    await openNext();
+  }
+
   async function chooseFolder(folder: AudioFolderSummary) {
     // WP15f: several files: choose one, or merge them (the file step).
     if (!folder.playable) {
@@ -323,11 +303,7 @@
       });
       if (!ok) return;
     }
-    if (await save({ audio: { state: 'linked', folderId: folder.id } })) {
-      changingAudio = false;
-      resetSearches();
-      if (subtitleView(link) === 'choose' && !candidates) await loadCandidates();
-    }
+    if (await save({ audio: { state: 'linked', folderId: folder.id } })) await afterAudioChange();
   }
 
   /** WP15f: links one file of a folder of several. */
@@ -348,21 +324,15 @@
       }
     }
     if (await save({ audio: { state: 'linked', folderId: folder.id, fileName } })) {
-      filesFolder = null;
-      changingAudio = false;
-      resetSearches();
-      if (subtitleView(link) === 'choose' && !candidates) await loadCandidates();
+      await afterAudioChange();
     }
   }
 
+  /** The split notice's "Choose a file or merge": the Audiobook row at its file step. */
   function openFiles(folder: AudioFolderSummary | null) {
     if (!folder) return;
+    open = 'audio';
     filesFolder = folder;
-    changingSubtitles = false;
-  }
-
-  function closeFiles() {
-    filesFolder = null;
   }
 
   // ---- WP15f: merges
@@ -370,8 +340,7 @@
   function onMergeStarted(job: AudioMergeJob) {
     mergeJob = job;
     filesFolder = null;
-    changingAudio = false;
-    resetSearches();
+    open = null;
     scheduleMergePoll();
   }
 
@@ -405,7 +374,7 @@
       } catch (err) {
         message = describe(err);
       }
-      if (subtitleView(link) === 'choose' && !candidates) await loadCandidates();
+      if (open === null) await openNext();
     }
   }
 
@@ -435,27 +404,17 @@
       if (!ok) return;
     }
     if (await save({ audio: { state: 'none' } })) {
-      changingAudio = false;
-      resetSearches();
+      open = null;
+      filesFolder = null;
     }
   }
 
-  /** From "No audiobook": not destructive (it only brings the suggestions back). */
-  async function findAgain() {
-    if (await save('delete')) await loadCandidates();
-  }
-
-  async function unlink() {
-    const ok = await confirmDestructive({
-      ...unlinkAudiobookCopy(folderName),
-      testid: 'audio-unlink-confirm',
-      confirmTestid: 'audio-unlink-confirm-button'
-    });
-    if (!ok) return;
-    if (await save('delete')) {
-      changingAudio = changingSubtitles = false;
-      await loadCandidates();
-    }
+  /** "Make one with text-to-speech": the Text-to-speech row with the form open. */
+  async function makeWithTts() {
+    open = 'tts';
+    filesFolder = null;
+    await tick();
+    await jobPanel?.openForm();
   }
 
   async function chooseSubtitle(file: SubtitleFileSummary) {
@@ -467,10 +426,7 @@
       });
       if (!ok) return;
     }
-    if (await save({ subtitle: { state: 'linked', subtitleId: file.id } })) {
-      changingSubtitles = false;
-      resetSearches();
-    }
+    if (await save({ subtitle: { state: 'linked', subtitleId: file.id } })) open = null;
   }
 
   async function chooseNoSubtitles() {
@@ -482,68 +438,26 @@
       });
       if (!ok) return;
     }
-    if (await save({ subtitle: { state: 'none' } })) {
-      changingSubtitles = false;
-      resetSearches();
-    }
+    if (await save({ subtitle: { state: 'none' } })) open = null;
   }
 
   /**
    * WP16: the subtitles made on the PC are ready and the server linked them.
    * WP17: also an audiobook made on the PC (with its subtitles).
    */
-  async function onSubtitlesMade() {
+  async function onMade() {
     const id = bookId;
     try {
       const fresh = await api.audioLink(id);
       if (!destroyed && id === bookId) {
         link = fresh;
-        changingSubtitles = false;
-        changingAudio = false;
+        if (open !== 'tts') open = null;
+        filesFolder = null;
       }
     } catch (err) {
       message = describe(err);
     }
   }
-
-  function startChangingAudio() {
-    changingAudio = true;
-    changingSubtitles = false;
-    resetSearches();
-    if (!candidates) void loadCandidates();
-  }
-
-  function startChangingSubtitles() {
-    changingSubtitles = true;
-    resetSearches();
-    if (!candidates) void loadCandidates();
-  }
-
-  function cancelChange() {
-    changingAudio = changingSubtitles = false;
-    resetSearches();
-  }
-
-  function resetSearches() {
-    clearTimeout(audioTimer);
-    clearTimeout(subtitleTimer);
-    searchTurn++;
-    audioQuery = subtitleQuery = '';
-    audioResults = subtitleResults = [];
-    audioSearched = subtitleSearched = '';
-  }
-
-  function folderNote(f: AudioFolderSummary): string {
-    return f.playable ? '' : severalFilesNote(f.fileCount);
-  }
-
-  /**
-   * "Linked now" instead of "Use this": only for a single-file folder. A folder of several
-   * files keeps its button, so another of its files can be chosen (its file step marks the
-   * linked file).
-   */
-  $: isCurrentFolder = (f: AudioFolderSummary): boolean =>
-    f.playable && f.relPath === currentFolderPath;
 </script>
 
 {#if visible}
@@ -566,108 +480,85 @@
         {loadError}
         <button class="c-link ml-2 min-h-[2.75rem]" on:click={() => load(bookId)}>Try again</button>
       </p>
-      <AudioDevicePanel
-        {bookId}
-        link={null}
-        linkKnown={false}
-        {bookOnDevice}
-        bind:hasCopy={hasAudioCopy}
-      />
+      <div class="c-apanel mt-4 rounded px-5 pb-4">
+        <AudioDevicePanel
+          {bookId}
+          link={null}
+          linkKnown={false}
+          {bookOnDevice}
+          bind:hasCopy={hasAudioCopy}
+        />
+      </div>
     {:else}
       {#if message}
         <p class="c-notice mt-4" role="alert" data-testid="audio-message">{message}</p>
       {/if}
 
-      <!-- WP15f: a merge running on the server, or how it ended -->
-      {#if mergeJob}
+      <div class="c-apanel mt-4 rounded" data-testid="audio-rows">
+        <!-- The audiobook -->
         <div
-          class="c-apanel mt-4 rounded px-5 py-4"
-          data-testid="audio-merge"
-          data-state={mergeJob.state}
+          class="c-arow px-5 py-4"
+          data-testid="audio-row-audio"
+          data-open={open === 'audio' ? 'true' : 'false'}
         >
-          <div class="text-xs text-c-muted">Merge into one file</div>
-          <div class="break-words font-mincho text-lg font-bold leading-snug">
-            {mergeJob.folderName}
+          <div class="flex items-start justify-between gap-3">
+            <div class="min-w-0">
+              <h3 class="text-xs text-c-muted">Audiobook</h3>
+              {#if view === 'choose'}
+                <p class="text-[15px]" data-testid="audio-choose">
+                  {open === 'audio'
+                    ? 'Choose the audiobook for this book. Nothing is linked until you press “Use this”.'
+                    : 'No audiobook chosen yet.'}
+                </p>
+              {:else if view === 'none'}
+                <p class="text-[15px]" data-testid="audio-none">No audiobook for this book.</p>
+              {:else if link && link.state === 'linked'}
+                <div data-testid="audio-linked">
+                  <div
+                    class="break-words font-mincho text-lg font-bold leading-snug"
+                    data-testid="audio-linked-name"
+                  >
+                    {folderName}
+                  </div>
+                  {#if link.folder?.parentName}
+                    <div class="break-words text-xs text-c-muted">in {link.folder.parentName}</div>
+                  {/if}
+                  {#if link.fileName && link.folder && link.folder.fileCount > 1 && view !== 'missing'}
+                    <div class="break-all text-sm font-medium" data-testid="audio-linked-file">
+                      File: {link.fileName}
+                    </div>
+                  {/if}
+                  {#if link.folder && view !== 'missing'}
+                    <div class="mt-0.5 text-sm text-c-muted" data-testid="audio-linked-details">
+                      {linkDetails(link)}
+                    </div>
+                  {/if}
+                </div>
+              {/if}
+            </div>
+            {#if open === 'audio'}
+              <button
+                class="c-btn c-btn-secondary c-round shrink-0"
+                aria-expanded="true"
+                data-testid="audio-row-audio-toggle"
+                on:click={() => toggle('audio')}
+              >
+                Close
+              </button>
+            {:else}
+              <button
+                class="c-btn c-btn-secondary c-round shrink-0"
+                aria-expanded="false"
+                data-testid="audio-row-audio-toggle"
+                disabled={busy || changesOff}
+                on:click={() => toggle('audio')}
+              >
+                {audioRowButton(view)}
+              </button>
+            {/if}
           </div>
-          <p class="mt-1 text-sm" role="status" aria-live="polite" data-testid="audio-merge-text">
-            {mergeStatusText(mergeJob)}
-          </p>
-          {#if merging}
-            <div
-              class="c-mbar mt-2"
-              role="progressbar"
-              aria-label="Merge progress"
-              aria-valuemin={0}
-              aria-valuemax={100}
-              aria-valuenow={Math.floor(mergeJob.progress * 100)}
-            >
-              <div style="width: {Math.floor(mergeJob.progress * 100)}%" />
-            </div>
-            <p class="mt-2 text-sm text-c-muted">
-              The merge goes on when you leave this page. Joining a long audiobook can take a few
-              minutes.
-            </p>
-            <div class="mt-3">
-              <button
-                class="c-btn c-btn-secondary c-round"
-                data-testid="audio-merge-stop"
-                on:click={stopMerge}
-              >
-                Stop merge
-              </button>
-            </div>
-          {:else}
-            <div class="mt-3">
-              <button
-                class="c-btn c-btn-secondary c-round"
-                data-testid="audio-merge-dismiss"
-                on:click={() => (mergeJob = null)}
-              >
-                OK
-              </button>
-            </div>
-          {/if}
-        </div>
-      {/if}
 
-      <!-- The current link -->
-      {#if view === 'none' && !changingAudio}
-        <div class="c-apanel mt-4 rounded px-5 py-4" data-testid="audio-none">
-          <p class="text-[15px]">No audiobook for this book.</p>
-          <div class="mt-3 flex flex-wrap gap-2">
-            <button
-              class="c-btn c-btn-secondary c-round"
-              data-testid="audio-find-again"
-              disabled={busy || changesOff}
-              on:click={findAgain}
-            >
-              Find an audiobook
-            </button>
-          </div>
-        </div>
-      {:else if link && link.state === 'linked'}
-        <div class="c-apanel mt-4 rounded px-5 py-4" data-testid="audio-linked">
-          <div class="text-xs text-c-muted">Linked audiobook</div>
-          <div
-            class="break-words font-mincho text-lg font-bold leading-snug"
-            data-testid="audio-linked-name"
-          >
-            {folderName}
-          </div>
-          {#if link.folder?.parentName}
-            <div class="break-words text-xs text-c-muted">in {link.folder.parentName}</div>
-          {/if}
-          {#if link.fileName && link.folder && link.folder.fileCount > 1 && view !== 'missing'}
-            <div class="break-all text-sm font-medium" data-testid="audio-linked-file">
-              File: {link.fileName}
-            </div>
-          {/if}
-          {#if link.folder && view !== 'missing'}
-            <div class="mt-0.5 text-sm text-c-muted" data-testid="audio-linked-details">
-              {linkDetails(link)}
-            </div>
-          {/if}
-          {#if view === 'split' && link.folder}
+          {#if view === 'split' && link?.folder && open !== 'audio'}
             <p class="mt-2 text-sm font-medium" data-testid="audio-split">
               {splitNotice(link.folder.fileCount)}
             </p>
@@ -675,360 +566,308 @@
               <button
                 class="c-btn c-btn-secondary c-round"
                 data-testid="audio-split-choose"
-                disabled={busy || changesOff || !!filesFolder}
+                disabled={busy || changesOff}
                 on:click={() => openFiles(link?.folder ?? null)}
               >
                 Choose a file or merge
               </button>
             </div>
           {:else if view === 'missing'}
-            <p class="mt-2 text-sm font-semibold" data-testid="audio-missing">
-              {MISSING_NOTICE}
-            </p>
+            <p class="mt-2 text-sm font-semibold" data-testid="audio-missing">{MISSING_NOTICE}</p>
           {:else if view === 'changed'}
-            <p class="mt-2 text-sm font-semibold" data-testid="audio-changed">
-              {CHANGED_NOTICE}
-            </p>
+            <p class="mt-2 text-sm font-semibold" data-testid="audio-changed">{CHANGED_NOTICE}</p>
           {/if}
-
-          <div class="mt-3 border-t border-dashed pt-3" style="border-color: var(--c-line)">
-            <div class="text-xs text-c-muted">Subtitles</div>
-            {#if subView === 'linked' || subView === 'missing'}
-              <div class="break-words text-sm font-medium" data-testid="audio-subtitle-name">
-                {subtitleName}
-              </div>
-              {#if subView === 'missing'}
-                <p class="text-sm font-semibold" data-testid="audio-subtitle-missing">
-                  {SUBTITLE_MISSING_NOTICE}
-                </p>
-              {/if}
-            {:else if subView === 'none'}
-              <div class="text-sm" data-testid="audio-subtitle-none">No subtitles</div>
-            {:else}
-              <div class="text-sm text-c-muted" data-testid="audio-subtitle-pending">
-                Not chosen yet
-              </div>
-            {/if}
-          </div>
-
-          <div class="mt-4 flex flex-wrap gap-2">
-            <button
-              class="c-btn c-btn-secondary c-round"
-              data-testid="audio-change"
-              disabled={busy || changesOff || changingAudio}
-              on:click={startChangingAudio}
-            >
-              Change audiobook
-            </button>
-            {#if subView !== 'choose'}
-              <button
-                class="c-btn c-btn-secondary c-round"
-                data-testid="audio-change-subtitles"
-                disabled={busy || changesOff || changingSubtitles}
-                on:click={startChangingSubtitles}
-              >
-                Change subtitles
-              </button>
-            {/if}
-            <button
-              class="c-btn c-btn-secondary c-round"
-              data-testid="audio-unlink"
-              disabled={busy}
-              on:click={unlink}
-            >
-              Unlink
-            </button>
-          </div>
-          {#if changesOff}
+          {#if changesOff && open !== 'audio'}
             <p class="mt-2 text-sm text-c-muted" data-testid="audio-changes-off">
               The server's audiobooks folder isn't available right now, so the audiobook can't be
               changed.
             </p>
           {/if}
-        </div>
-      {/if}
 
-      <!-- Season 2 Phase 9: the audio on this device -->
-      {#if !changingAudio && !filesFolder}
-        <AudioDevicePanel {bookId} {link} linkKnown {bookOnDevice} bind:hasCopy={hasAudioCopy} />
-      {/if}
-
-      <!-- WP16: subtitles made on the PC (SubPlz) -->
-      {#if link && link.state === 'linked' && !changingAudio && !filesFolder}
-        <SubtitleJobPanel
-          {api}
-          {bookId}
-          {link}
-          {audioEnabled}
-          busy={busy || merging}
-          on:linked={onSubtitlesMade}
-          on:chooseSubtitle={(ev) => chooseSubtitle(ev.detail)}
-        />
-      {/if}
-
-      <!-- WP15f: an audiobook in several files: one file, or a merge -->
-      {#if filesFolder && audioEnabled}
-        <AudioFilesStep
-          {api}
-          {bookId}
-          folder={filesFolder}
-          currentFileName={link?.state === 'linked' && link.folderRelPath === filesFolder.relPath
-            ? link.fileName
-            : null}
-          merge={mergeInfo}
-          busy={busy || merging}
-          on:useFile={(ev) => useFile(ev.detail.folder, ev.detail.fileName)}
-          on:mergeStarted={(ev) => onMergeStarted(ev.detail)}
-          on:cancel={closeFiles}
-        />
-      {/if}
-
-      <!-- Step 1: the audiobook -->
-      {#if showAudioPicker && audioEnabled}
-        <div class="mt-4" data-testid="audio-picker">
-          <div class="flex flex-wrap items-baseline justify-between gap-2">
-            <h3 class="font-mincho text-lg font-bold">
-              {changingAudio ? 'Choose another audiobook' : 'Choose the audiobook for this book'}
-            </h3>
-            {#if changingAudio}
-              <button
-                class="c-link min-h-[2.75rem] text-sm"
-                data-testid="audio-cancel-change"
-                on:click={cancelChange}>Cancel</button
-              >
-            {/if}
-          </div>
-          <p class="text-sm text-c-muted">
-            Nothing is linked until you press “Use this”. The link is the same on every device.
-          </p>
-          {#if candidatesError}
-            <p class="c-notice mt-3" role="alert">{candidatesError}</p>
-          {:else if !candidates}
-            <p class="mt-3 text-sm text-c-muted">Looking for suggestions…</p>
-          {:else if suggestions.length === 0}
-            <p class="mt-3 text-sm" data-testid="audio-no-suggestions">
-              {candidates.libraryHasAudio
-                ? 'No suggestions for this book. Search below.'
-                : "This book's library has no audiobooks folder. Search below."}
-            </p>
-          {:else}
-            <ul class="mt-2 divide-y divide-dashed divide-c-line" data-testid="audio-suggestions">
-              {#each suggestions as folder (folder.id)}
-                <AudioChoiceRow
-                  name={folder.name}
-                  parent={folder.parentName}
-                  details={folderDetails(folder)}
-                  note={folderNote(folder)}
-                  current={isCurrentFolder(folder)}
-                  disabled={busy}
-                  testid="audio-suggestion"
-                  on:choose={() => chooseFolder(folder)}
-                />
-              {/each}
-            </ul>
-            {#if moreSuggestions}
-              <button
-                class="c-link min-h-[2.75rem] text-sm"
-                data-testid="audio-show-more"
-                on:click={() => (showMore = true)}>Show more</button
-              >
-            {/if}
-          {/if}
-
-          <form
-            class="mt-4 flex w-full max-w-xl items-stretch gap-2"
-            role="search"
-            on:submit|preventDefault={searchAudio}
-          >
-            <label class="c-input flex min-w-0 grow items-center gap-2">
-              <span class="text-c-muted" aria-hidden="true"><Fa icon={faMagnifyingGlass} /></span>
-              <span class="sr-only">Search all audiobooks</span>
-              <input
-                class="w-full min-w-0 border-0 bg-transparent p-0 text-sm focus:ring-0"
-                type="search"
-                enterkeyhint="search"
-                autocapitalize="off"
-                spellcheck="false"
-                placeholder="Search all audiobooks"
-                data-testid="audio-search"
-                bind:value={audioQuery}
-                on:input={scheduleAudioSearch}
-              />
-            </label>
-            <button class="c-btn c-btn-secondary px-4" type="submit" title="Search">
-              <Fa icon={faMagnifyingGlass} />
-              <span class="sr-only">Search</span>
-            </button>
-          </form>
-          {#if audioSearched}
-            {#if audioExtra.length}
-              <ul class="mt-2 divide-y divide-dashed divide-c-line" data-testid="audio-results">
-                {#each audioExtra as folder (folder.id)}
-                  <AudioChoiceRow
-                    name={folder.name}
-                    parent={folder.parentName}
-                    details={folderDetails(folder)}
-                    note={folderNote(folder)}
-                    current={isCurrentFolder(folder)}
-                    disabled={busy}
-                    testid="audio-result"
-                    on:choose={() => chooseFolder(folder)}
-                  />
-                {/each}
-              </ul>
-            {:else}
-              <p class="mt-2 text-sm text-c-muted" data-testid="audio-no-results">
-                {audioResults.length
-                  ? 'Only the suggestions above match.'
-                  : `No audiobook matches “${audioSearched}”.`}
+          <!-- WP15f: a merge running on the server, or how it ended -->
+          {#if mergeJob}
+            <div class="mt-3" data-testid="audio-merge" data-state={mergeJob.state}>
+              <p class="text-sm" role="status" aria-live="polite" data-testid="audio-merge-text">
+                Merging {mergeJob.folderName}: {mergeStatusText(mergeJob)}
               </p>
-            {/if}
-          {/if}
-
-          {#if view !== 'none'}
-            <div class="mt-4">
-              <button
-                class="c-btn c-btn-secondary c-round"
-                data-testid="audio-choose-none"
-                disabled={busy}
-                on:click={chooseNoAudiobook}
-              >
-                No audiobook
-              </button>
+              {#if merging}
+                <div
+                  class="c-mbar mt-2"
+                  role="progressbar"
+                  aria-label="Merge progress"
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={Math.floor(mergeJob.progress * 100)}
+                >
+                  <div style="width: {Math.floor(mergeJob.progress * 100)}%" />
+                </div>
+                <p class="mt-2 text-sm text-c-muted">
+                  The merge goes on when you leave this page. Joining a long audiobook can take a
+                  few minutes.
+                </p>
+                <div class="mt-2">
+                  <button
+                    class="c-btn c-btn-secondary c-round"
+                    data-testid="audio-merge-stop"
+                    on:click={stopMerge}
+                  >
+                    Stop merge
+                  </button>
+                </div>
+              {:else}
+                <div class="mt-2">
+                  <button
+                    class="c-btn c-btn-secondary c-round"
+                    data-testid="audio-merge-dismiss"
+                    on:click={() => (mergeJob = null)}
+                  >
+                    OK
+                  </button>
+                </div>
+              {/if}
             </div>
           {/if}
-        </div>
-      {/if}
 
-      <!-- Step 2: the subtitles -->
-      {#if showSubtitlePicker && audioEnabled}
-        <div class="mt-4" data-testid="subtitle-picker">
-          <div class="flex flex-wrap items-baseline justify-between gap-2">
-            <h3 class="font-mincho text-lg font-bold">Subtitles for this audiobook</h3>
-            {#if changingSubtitles}
-              <button
-                class="c-link min-h-[2.75rem] text-sm"
-                data-testid="subtitle-cancel-change"
-                on:click={cancelChange}>Cancel</button
+          {#if open === 'audio'}
+            {#if filesFolder && audioEnabled}
+              <!-- WP15f: an audiobook in several files: one file, or a merge -->
+              <AudioFilesStep
+                {api}
+                {bookId}
+                folder={filesFolder}
+                currentFileName={link?.state === 'linked' &&
+                link.folderRelPath === filesFolder.relPath
+                  ? link.fileName
+                  : null}
+                merge={mergeInfo}
+                busy={busy || merging}
+                on:useFile={(ev) => useFile(ev.detail.folder, ev.detail.fileName)}
+                on:mergeStarted={(ev) => onMergeStarted(ev.detail)}
+                on:cancel={() => (filesFolder = null)}
+              />
+            {:else if audioEnabled}
+              <AudioChooser
+                suggestions={candidates?.audio ?? null}
+                suggestionsError={candidatesError}
+                suggestionsTitle="Suggested for this book"
+                noSuggestionsText={candidates?.libraryHasAudio === false
+                  ? "This book's library has no audiobooks folder."
+                  : 'No suggestions for this book.'}
+                searchLabel="Search all audiobooks"
+                noun="audiobook"
+                search={(q) => api.searchAudiobooks(q)}
+                row={audioRow}
+                disabled={busy}
+                testid="audio"
+                showOr={view !== 'none' || canMakeAudiobook}
+                on:choose={(ev) => chooseFolder(ev.detail)}
+                on:error={(ev) => (message = ev.detail)}
               >
+                {#if view !== 'none'}
+                  <button
+                    class="c-btn c-btn-secondary c-round"
+                    data-testid="audio-choose-none"
+                    disabled={busy}
+                    on:click={chooseNoAudiobook}
+                  >
+                    No audiobook for this book
+                  </button>
+                {/if}
+                {#if canMakeAudiobook}
+                  <button
+                    class="c-btn c-btn-secondary c-round"
+                    data-testid="audio-make-tts"
+                    disabled={busy}
+                    on:click={makeWithTts}
+                  >
+                    Make one with text-to-speech
+                  </button>
+                {/if}
+              </AudioChooser>
+            {/if}
+          {:else}
+            <!-- Season 2 Phase 9: the audio on this device -->
+            <AudioDevicePanel
+              {bookId}
+              {link}
+              linkKnown
+              {bookOnDevice}
+              bind:hasCopy={hasAudioCopy}
+            />
+          {/if}
+        </div>
+
+        <!-- The subtitles (for a linked audiobook) -->
+        {#if linked || view === 'choose'}
+          <div
+            class="c-arow px-5 py-4"
+            data-testid="audio-row-subs"
+            data-open={open === 'subs' ? 'true' : 'false'}
+          >
+            <div class="flex items-start justify-between gap-3">
+              <div class="min-w-0">
+                <h3 class="text-xs text-c-muted">Subtitles</h3>
+                {#if !linked}
+                  <p class="text-sm text-c-muted" data-testid="audio-subtitle-later">
+                    Choose the audiobook first.
+                  </p>
+                {:else if subView === 'linked' || subView === 'missing'}
+                  <div class="break-words text-sm font-medium" data-testid="audio-subtitle-name">
+                    {subtitleName}
+                  </div>
+                  {#if subView === 'missing'}
+                    <p class="text-sm font-semibold" data-testid="audio-subtitle-missing">
+                      {SUBTITLE_MISSING_NOTICE}
+                    </p>
+                  {/if}
+                {:else if subView === 'none'}
+                  <div class="text-sm" data-testid="audio-subtitle-none">No subtitles</div>
+                {:else}
+                  <div class="text-sm" data-testid="audio-subtitle-pending">
+                    {open === 'subs'
+                      ? 'Choose the subtitle file that goes with the audiobook.'
+                      : 'Not chosen yet'}
+                  </div>
+                {/if}
+              </div>
+              {#if linked}
+                {#if open === 'subs'}
+                  <button
+                    class="c-btn c-btn-secondary c-round shrink-0"
+                    aria-expanded="true"
+                    data-testid="audio-row-subs-toggle"
+                    on:click={() => toggle('subs')}
+                  >
+                    Close
+                  </button>
+                {:else}
+                  <button
+                    class="c-btn c-btn-secondary c-round shrink-0"
+                    aria-expanded="false"
+                    data-testid="audio-row-subs-toggle"
+                    disabled={busy || changesOff}
+                    on:click={() => toggle('subs')}
+                  >
+                    {subtitleRowButton(subView)}
+                  </button>
+                {/if}
+              {/if}
+            </div>
+
+            {#if open === 'subs' && audioEnabled}
+              <AudioChooser
+                suggestions={candidates?.subtitles ?? null}
+                suggestionsError={candidatesError}
+                suggestionsTitle="Suggested for this audiobook"
+                noSuggestionsText={candidates?.libraryHasSubtitles === false
+                  ? "This book's library has no subtitle folder."
+                  : 'No suggestions.'}
+                searchLabel="Search all subtitle files"
+                noun="subtitle file"
+                search={(q) => api.searchSubtitles(q)}
+                row={subtitleRow}
+                disabled={busy}
+                testid="subtitle"
+                showOr={subView !== 'none'}
+                on:choose={(ev) => chooseSubtitle(ev.detail)}
+                on:error={(ev) => (message = ev.detail)}
+              >
+                <button
+                  class="c-btn c-btn-secondary c-round"
+                  data-testid="subtitle-choose-none"
+                  disabled={busy}
+                  on:click={chooseNoSubtitles}
+                >
+                  No subtitles
+                </button>
+              </AudioChooser>
+            {/if}
+
+            <!-- WP16: subtitles made on the PC (SubPlz); its status also with the row closed -->
+            {#if linked}
+              <SubtitleJobPanel
+                {api}
+                {bookId}
+                {link}
+                {audioEnabled}
+                compact={open !== 'subs'}
+                busy={busy || merging}
+                on:linked={onMade}
+                on:chooseSubtitle={(ev) => chooseSubtitle(ev.detail)}
+              />
             {/if}
           </div>
-          <p class="text-sm text-c-muted">
-            Choose the subtitle file that goes with the audiobook, or “No subtitles”.
-          </p>
-          {#if candidatesError}
-            <p class="c-notice mt-3" role="alert">{candidatesError}</p>
-          {:else if !candidates}
-            <p class="mt-3 text-sm text-c-muted">Looking for suggestions…</p>
-          {:else if subtitleSuggestions.length === 0}
-            <p class="mt-3 text-sm" data-testid="subtitle-no-suggestions">
-              {candidates.libraryHasSubtitles
-                ? 'No suggestions. Search below.'
-                : "This book's library has no subtitle folder. Search below."}
-            </p>
-          {:else}
-            <ul
-              class="mt-2 divide-y divide-dashed divide-c-line"
-              data-testid="subtitle-suggestions"
-            >
-              {#each subtitleSuggestions as file (file.id)}
-                <AudioChoiceRow
-                  name={file.name}
-                  details={subtitleDetails(file)}
-                  current={file.relPath === currentSubtitlePath}
-                  disabled={busy}
-                  testid="subtitle-suggestion"
-                  on:choose={() => chooseSubtitle(file)}
-                />
-              {/each}
-            </ul>
-          {/if}
+        {/if}
 
-          <form
-            class="mt-4 flex w-full max-w-xl items-stretch gap-2"
-            role="search"
-            on:submit|preventDefault={searchSubtitles}
+        <!-- Text-to-speech: the book's TTS voice, audiobooks made on the PC, characters, fixes -->
+        {#if voiceChoices}
+          <div
+            class="c-arow px-5 py-4"
+            data-testid="audio-row-tts"
+            data-open={open === 'tts' ? 'true' : 'false'}
           >
-            <label class="c-input flex min-w-0 grow items-center gap-2">
-              <span class="text-c-muted" aria-hidden="true"><Fa icon={faMagnifyingGlass} /></span>
-              <span class="sr-only">Search all subtitle files</span>
-              <input
-                class="w-full min-w-0 border-0 bg-transparent p-0 text-sm focus:ring-0"
-                type="search"
-                enterkeyhint="search"
-                autocapitalize="off"
-                spellcheck="false"
-                placeholder="Search all subtitle files"
-                data-testid="subtitle-search"
-                bind:value={subtitleQuery}
-                on:input={scheduleSubtitleSearch}
-              />
-            </label>
-            <button class="c-btn c-btn-secondary px-4" type="submit" title="Search">
-              <Fa icon={faMagnifyingGlass} />
-              <span class="sr-only">Search</span>
-            </button>
-          </form>
-          {#if subtitleSearched}
-            {#if subtitleExtra.length}
-              <ul class="mt-2 divide-y divide-dashed divide-c-line" data-testid="subtitle-results">
-                {#each subtitleExtra as file (file.id)}
-                  <AudioChoiceRow
-                    name={file.name}
-                    details={subtitleDetails(file)}
-                    current={file.relPath === currentSubtitlePath}
-                    disabled={busy}
-                    testid="subtitle-result"
-                    on:choose={() => chooseSubtitle(file)}
-                  />
-                {/each}
-              </ul>
-            {:else}
-              <p class="mt-2 text-sm text-c-muted" data-testid="subtitle-no-results">
-                {subtitleResults.length
-                  ? 'Only the suggestions above match.'
-                  : `No subtitle file matches “${subtitleSearched}”.`}
-              </p>
-            {/if}
-          {/if}
-
-          {#if subView !== 'none'}
-            <div class="mt-4">
+            <div class="flex items-start justify-between gap-3">
+              <div class="min-w-0">
+                <h3 class="text-xs text-c-muted">Text-to-speech</h3>
+                {#if open !== 'tts'}
+                  <p class="break-words text-sm" data-testid="audio-tts-voice">
+                    {ttsVoiceText(voiceChoices)}
+                  </p>
+                  {#if ttsCounts}
+                    <p class="text-sm text-c-muted" data-testid="audio-tts-counts">{ttsCounts}</p>
+                  {/if}
+                {:else}
+                  <p class="max-w-3xl text-sm" data-testid="audio-tts-about">
+                    Your PC reads this book aloud with its TTS voice: Read aloud in the reader,
+                    {linked
+                      ? 'and audiobooks made below (Anki sentence audio comes from the linked audiobook).'
+                      : 'Anki sentence audio while the book has no audiobook, and audiobooks made below.'}
+                  </p>
+                {/if}
+              </div>
               <button
-                class="c-btn c-btn-secondary c-round"
-                data-testid="subtitle-choose-none"
-                disabled={busy}
-                on:click={chooseNoSubtitles}
+                class="c-btn c-btn-secondary c-round shrink-0"
+                aria-expanded={open === 'tts'}
+                data-testid="audio-row-tts-toggle"
+                on:click={() => toggle('tts')}
               >
-                No subtitles
+                {open === 'tts' ? 'Close' : 'Open'}
               </button>
             </div>
-          {/if}
-        </div>
-      {/if}
 
-      <!-- WP17: an audiobook made on the PC (also for books without one) -->
-      {#if !filesFolder}
-        <AudiobookJobPanel
-          bind:this={jobPanel}
-          {api}
-          {bookId}
-          {link}
-          {audioEnabled}
-          busy={busy || merging}
-          on:linked={onSubtitlesMade}
-        />
-        <!-- Season 2 Phase 12: how the PC voices read this book -->
-        <BookVoiceChoice
-          {api}
-          {bookId}
-          {link}
-          on:changed={(e) => jobPanel?.usePreferred(e.detail.effective)}
-        />
-        <!-- Session 5: who speaks each quote, and each character's voice -->
-        <BookSpeakersPanel {api} {bookId} />
-        <BookPronunciationPanel {api} {bookId} {link} />
-      {/if}
+            {#if open === 'tts'}
+              <BookVoiceChoice {api} {bookId} on:changed={(e) => (voiceChoices = e.detail)} />
+            {/if}
+            <!-- WP17: an audiobook made on the PC with the book's TTS voice -->
+            <AudiobookJobPanel
+              bind:this={jobPanel}
+              bind:available={canMakeAudiobook}
+              {api}
+              {bookId}
+              {link}
+              {audioEnabled}
+              choice={voiceChoices.effective}
+              compact={open !== 'tts'}
+              busy={busy || merging}
+              on:linked={onMade}
+            />
+            <!-- Session 5: who speaks each quote, and each character's voice -->
+            <BookSpeakersPanel
+              {api}
+              {bookId}
+              compact={open !== 'tts'}
+              bind:count={characterCount}
+            />
+            <BookPronunciationPanel
+              {api}
+              {bookId}
+              {link}
+              compact={open !== 'tts'}
+              bind:count={fixCount}
+            />
+          </div>
+        {/if}
+      </div>
     {/if}
   </section>
 {/if}
@@ -1037,6 +876,10 @@
   .c-apanel {
     background-color: var(--c-raised);
     border: var(--c-border-width) solid var(--c-line);
+  }
+
+  .c-arow + .c-arow {
+    border-top: var(--c-border-width) solid var(--c-line);
   }
 
   .c-round {
