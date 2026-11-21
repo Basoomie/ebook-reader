@@ -6,8 +6,15 @@
    */
 
   import { version } from '$app/environment';
-  import SettingsSection from '$lib/components/settings/settings-section.svelte';
-  import { fetchDiagnostics, type DiagnosticsResponse } from '$lib/diagnostics/diagnostics-api';
+  import SettingsGroup from '$lib/components/settings/settings-group.svelte';
+  import SettingRow from '$lib/components/settings/setting-row.svelte';
+  import PagedList from '$lib/components/settings/paged-list.svelte';
+  import { compareText, type ListFilter, type ListSort } from '$lib/settings/paged-list';
+  import {
+    fetchDiagnostics,
+    type DiagnosticsNotificationLog,
+    type DiagnosticsResponse
+  } from '$lib/diagnostics/diagnostics-api';
   import {
     buildDate,
     currentJobText,
@@ -140,289 +147,393 @@
       window.removeEventListener('online', onOnline);
     }
   });
+
+  type Device = DiagnosticsResponse['devices'][number];
+  type LogRow = DiagnosticsNotificationLog;
+
+  const deviceSorts: ListSort<Device>[] = [
+    {
+      id: 'seen',
+      label: 'Last seen',
+      compare: (a, b) => (b.lastSeenAt ?? 0) - (a.lastSeenAt ?? 0)
+    },
+    {
+      id: 'name',
+      label: 'Name',
+      compare: (a, b) => compareText(deviceName(a.name), deviceName(b.name))
+    },
+    { id: 'added', label: 'Added', compare: (a, b) => b.createdAt - a.createdAt }
+  ];
+  const WEEK_MS = 7 * 86_400_000;
+  const MONTH_MS = 30 * 86_400_000;
+  $: deviceFilters = [
+    { id: 'all', label: 'All', test: () => true },
+    {
+      id: 'week',
+      label: 'Seen this week',
+      test: (d: Device) => !!d.lastSeenAt && now - d.lastSeenAt < WEEK_MS
+    },
+    {
+      id: 'old',
+      label: 'Not seen for a month',
+      test: (d: Device) => !d.lastSeenAt || now - d.lastSeenAt > MONTH_MS
+    }
+  ] as ListFilter<Device>[];
+
+  const logFilters: ListFilter<LogRow>[] = [
+    { id: 'all', label: 'All', test: () => true },
+    { id: 'failed', label: 'Failed', test: (r) => r.status === 'failed' }
+  ];
 </script>
 
-<div class="col-span-full" data-testid="diagnostics-panel">
-  <div class="mb-6 flex flex-wrap items-center gap-x-4 gap-y-2">
-    <button
-      type="button"
-      class="c-btn c-btn-secondary"
-      disabled={loading}
-      on:click={refresh}
-      data-testid="diag-refresh"
-    >
-      {loading ? 'Refreshing…' : 'Refresh'}
-    </button>
-    {#if diag}
-      <span class="text-sm text-c-muted" data-testid="diag-as-of">
-        Server figures as of {new Date(diagAt).toLocaleTimeString()}
-      </span>
+<div class="flex flex-col gap-10" data-testid="diagnostics-panel">
+  <div>
+    <div class="flex flex-wrap items-center gap-x-4 gap-y-2">
+      <button
+        type="button"
+        class="c-btn c-btn-secondary"
+        disabled={loading}
+        on:click={refresh}
+        data-testid="diag-refresh"
+        id="setting-diag-refresh"
+      >
+        {loading ? 'Refreshing…' : 'Refresh'}
+      </button>
+      {#if diag}
+        <span class="text-sm text-c-muted" data-testid="diag-as-of">
+          Server figures as of {new Date(diagAt).toLocaleTimeString()}
+        </span>
+      {/if}
+      <span class="text-sm text-c-muted">Read-only: nothing here changes a setting.</span>
+    </div>
+    {#if serverError}
+      <p class="c-notice mt-3" role="alert" data-testid="diag-error">{serverError}</p>
     {/if}
   </div>
-  {#if serverError}
-    <p class="c-notice mb-6" role="alert" data-testid="diag-error">{serverError}</p>
-  {/if}
-</div>
 
-<SettingsSection jp="この端末" title="This device" testid="diag-section-device" />
-<dl class="diag-list col-span-full">
-  <dt>Opened at</dt>
-  <dd class="break-all" data-testid="diag-origin">{origin}</dd>
-  <dt>Library server</dt>
-  <dd class="break-all" data-testid="diag-server-url">
-    {connection ? connection.serverUrl : connection === null ? 'Not connected' : '…'}
-  </dd>
-  {#if thisName}
-    <dt>Name</dt>
-    <dd data-testid="diag-device-name">{thisName}</dd>
-  {/if}
-  <dt>Sync</dt>
-  <dd data-testid="diag-sync">
-    {#if sync}
-      {SYNC_STATE_TEXT[sync.state]}
-    {:else}
-      {SYNC_STATE_TEXT.disconnected}
+  <SettingsGroup id="diag-device" testid="diag-section-device">
+    <SettingRow title="Opened at" layout="info">
+      <span class="break-all" data-testid="diag-origin">{origin}</span>
+    </SettingRow>
+    <SettingRow title="Library server" layout="info">
+      <span class="break-all" data-testid="diag-server-url">
+        {connection ? connection.serverUrl : connection === null ? 'Not connected' : '…'}
+      </span>
+    </SettingRow>
+    {#if thisName}
+      <SettingRow title="Name" layout="info">
+        <span data-testid="diag-device-name">{thisName}</span>
+      </SettingRow>
     {/if}
-  </dd>
-  <dt>Changes waiting</dt>
-  <dd data-testid="diag-pending">{sync ? sync.pending : 0}</dd>
-  <dt>Last successful sync</dt>
-  <dd data-testid="diag-last-sync">
-    {#if sync?.lastSyncAt}
-      {formatTime(sync.lastSyncAt)}
-      <span class="text-c-muted">({lastSeenText(sync.lastSyncAt, now)})</span>
-    {:else}
-      Never
-    {/if}
-  </dd>
-  <dt>Storage used</dt>
-  <dd data-testid="diag-storage">
-    {#if !estimateAvailable}
-      <span class="text-c-muted">{NOT_OVER_HTTP}</span>
-    {:else if storageUsed === undefined}
-      …
-    {:else}
-      {storageUsed ?? 'The browser gave no figure.'}
-    {/if}
-  </dd>
-  <dt>Persistent storage</dt>
-  <dd data-testid="diag-persist">
-    {#if !persistAvailable}
-      <span class="text-c-muted">{NOT_OVER_HTTP}</span>
-    {:else if persisted === undefined}
-      …
-    {:else}
-      {persisted ? 'Granted' : 'Not granted'}
-    {/if}
-  </dd>
-  <dt>App version</dt>
-  <dd data-testid="diag-app-version">
-    {#if appBuilt}
-      Built {appBuilt.toLocaleString()}
-      <span class="break-all text-c-muted">({version})</span>
-    {:else}
-      {version}
-    {/if}
-  </dd>
-</dl>
-
-<SettingsSection
-  jp="端末一覧"
-  title="All devices"
-  tooltip="Every device that has synced with the library server. Last seen is the last time it synced; a new pairing or a new address counts as a new device."
-  testid="diag-section-devices"
-/>
-<div class="col-span-full">
-  {#if connection === null}
-    <p class="text-c-muted">{NOT_CONNECTED}</p>
-  {:else if diag}
-    {#if diag.devices.length}
-      <dl class="diag-list" data-testid="diag-devices">
-        {#each diag.devices as d (d.id)}
-          <dt data-testid="diag-device">
-            <span class="text-c-ink">{deviceName(d.name)}</span>{#if d.current}<span
-                class="text-c-muted">{' (this device)'}</span
-              >{/if}
-            <span class="block text-xs" data-testid="diag-device-added">
-              added {formatDate(d.createdAt)}
-            </span>
-          </dt>
-          <dd>
-            {#if d.lastSeenAt}
-              {formatTime(d.lastSeenAt)}
-              <span class="text-c-muted">({lastSeenText(d.lastSeenAt, now)})</span>
-            {:else}
-              Never
-            {/if}
-          </dd>
-        {/each}
-      </dl>
-    {:else}
-      <p class="text-c-muted">No devices yet.</p>
-    {/if}
-  {:else if !serverError}
-    <p class="text-c-muted">Loading…</p>
-  {/if}
-</div>
-
-<SettingsSection jp="パソコン" title="PC worker" testid="diag-section-worker" />
-<div class="col-span-full">
-  {#if connection === null}
-    <p class="text-c-muted">{NOT_CONNECTED}</p>
-  {:else if diag}
-    <dl class="diag-list">
-      <dt>State</dt>
-      <dd data-testid="diag-worker-state">{pcWorkerStateText(diag.pcWorker)}</dd>
-      {#if diag.pcWorker.available}
-        <dt>Last seen</dt>
-        <dd data-testid="diag-worker-last-seen">
-          {#if diag.pcWorker.lastSeenAt}
-            {formatTime(diag.pcWorker.lastSeenAt)}
-            <span class="text-c-muted">({lastSeenText(diag.pcWorker.lastSeenAt, now)})</span>
-          {:else}
-            Never
-          {/if}
-        </dd>
-        <dt>Current job</dt>
-        <dd data-testid="diag-worker-job">{currentJobText(diag.pcWorker)}</dd>
-        <dt>Waiting</dt>
-        <dd data-testid="diag-worker-waiting">{diag.pcWorker.waiting}</dd>
-        {#if diag.pcWorker.version}
-          <dt>Worker version</dt>
-          <dd>{diag.pcWorker.version}</dd>
+    <SettingRow title="Sync" layout="info">
+      <span data-testid="diag-sync">
+        {#if sync}
+          {SYNC_STATE_TEXT[sync.state]}
+        {:else}
+          {SYNC_STATE_TEXT.disconnected}
         {/if}
-      {/if}
-    </dl>
-  {:else if !serverError}
-    <p class="text-c-muted">Loading…</p>
-  {/if}
-</div>
-
-<SettingsSection jp="蔵書整理" title="Cleanup helper" testid="diag-section-helper" />
-<div class="col-span-full">
-  {#if connection === null}
-    <p class="text-c-muted">{NOT_CONNECTED}</p>
-  {:else if diag}
-    <dl class="diag-list">
-      <dt>Last seen</dt>
-      <dd data-testid="diag-helper">
-        {#if !diag.cleanupHelper.available}
-          <span class="text-c-muted">The cleanup is off on the server.</span>
-        {:else if diag.cleanupHelper.lastSeenAt}
-          {formatTime(diag.cleanupHelper.lastSeenAt)}
-          <span class="text-c-muted">({lastSeenText(diag.cleanupHelper.lastSeenAt, now)})</span>
+      </span>
+    </SettingRow>
+    <SettingRow title="Changes waiting" layout="info">
+      <span data-testid="diag-pending">{sync ? sync.pending : 0}</span>
+    </SettingRow>
+    <SettingRow title="Last successful sync" layout="info">
+      <span data-testid="diag-last-sync">
+        {#if sync?.lastSyncAt}
+          {formatTime(sync.lastSyncAt)}
+          <span class="text-c-muted">({lastSeenText(sync.lastSyncAt, now)})</span>
         {:else}
           Never
         {/if}
-      </dd>
-    </dl>
-  {:else if !serverError}
-    <p class="text-c-muted">Loading…</p>
-  {/if}
-</div>
-
-<SettingsSection
-  jp="通知"
-  title="Notifications"
-  tooltip="Problems the server has told you about that are still there, and the last messages it sent (Settings > Notifications)."
-  testid="diag-section-notifications"
-/>
-<div class="col-span-full">
-  {#if connection === null}
-    <p class="text-c-muted">{NOT_CONNECTED}</p>
-  {:else if diag}
-    {#if !diag.notifications?.available}
-      <p class="pb-8 text-c-muted" data-testid="diag-notify-off">
-        Notifications are off on the server{diag.notifications ? '' : ' (update the server)'}.
-      </p>
-    {:else}
-      {#if diag.notifications.secretsUnreadable}
-        <p class="c-notice mb-4" role="alert">
-          A saved webhook address or app password can’t be read on the server any more: enter it
-          again in Settings, Notifications.
-        </p>
-      {/if}
-      <h3 class="mt-2 font-bold">Open problems</h3>
-      {#if diag.notifications.openProblems.length}
-        <ul class="flex max-w-3xl flex-col gap-3 py-3" data-testid="diag-open-problems">
-          {#each diag.notifications.openProblems as p (p.event + p.since + (p.summary ?? ''))}
-            <li data-testid="diag-open-problem">
-              <span class="block">{p.summary ?? p.label}</span>
-              <span class="block text-sm text-c-muted">since {formatTime(p.since)}</span>
-              {#if p.detail}
-                <span class="block break-words text-sm text-c-muted">{p.detail}</span>
-              {/if}
-            </li>
-          {/each}
-        </ul>
-      {:else}
-        <p class="py-3 text-c-muted" data-testid="diag-open-problems-none">None.</p>
-      {/if}
-      <h3 class="mt-4 font-bold">Sent</h3>
-      {#if diag.notifications.log.length}
-        <ul class="flex max-w-3xl flex-col gap-3 pb-8 pt-3" data-testid="diag-notify-log">
-          {#each diag.notifications.log as row (row.id)}
-            <li data-testid="diag-notify-log-row">
-              <span class="block text-sm text-c-muted"
-                >{formatTime(row.at)} · {CHANNEL_NAMES[row.channel]} · {logKindText(row.kind)}</span
-              >
-              <span class="block break-words">{firstLine(row.text)}</span>
-              <span
-                class="block break-words text-sm {row.status === 'failed'
-                  ? 'text-c-seal'
-                  : 'text-c-muted'}"
-                data-testid="diag-notify-status">{logStatusText(row)}</span
-              >
-            </li>
-          {/each}
-        </ul>
-      {:else}
-        <p class="pb-8 pt-3 text-c-muted">Nothing sent yet.</p>
-      {/if}
-    {/if}
-  {:else if !serverError}
-    <p class="text-c-muted">Loading…</p>
-  {/if}
-</div>
-
-<SettingsSection jp="サーバー" title="Server" testid="diag-section-server" />
-<div class="col-span-full pb-8">
-  {#if connection === null}
-    <p class="text-c-muted">{NOT_CONNECTED}</p>
-  {:else if diag}
-    <dl class="diag-list">
-      <dt>Version</dt>
-      <dd data-testid="diag-server-version">
-        {#if diag.server.builtAt}
-          Built {formatTime(diag.server.builtAt)}
+      </span>
+    </SettingRow>
+    <SettingRow title="Storage used" layout="info">
+      <span data-testid="diag-storage">
+        {#if !estimateAvailable}
+          <span class="text-c-muted">{NOT_OVER_HTTP}</span>
+        {:else if storageUsed === undefined}
+          …
         {:else}
-          {diag.server.version}
+          {storageUsed ?? 'The browser gave no figure.'}
         {/if}
-      </dd>
-      <dt>Database version</dt>
-      <dd data-testid="diag-schema">{diag.server.schemaVersion}</dd>
-    </dl>
-  {:else if !serverError}
-    <p class="text-c-muted">Loading…</p>
-  {/if}
+      </span>
+    </SettingRow>
+    <SettingRow title="Persistent storage" layout="info">
+      <span data-testid="diag-persist">
+        {#if !persistAvailable}
+          <span class="text-c-muted">{NOT_OVER_HTTP}</span>
+        {:else if persisted === undefined}
+          …
+        {:else}
+          {persisted ? 'Granted' : 'Not granted'}
+        {/if}
+      </span>
+    </SettingRow>
+    <SettingRow title="App version" layout="info">
+      <span data-testid="diag-app-version">
+        {#if appBuilt}
+          Built {appBuilt.toLocaleString()}
+          <span class="break-all text-c-muted">({version})</span>
+        {:else}
+          {version}
+        {/if}
+      </span>
+    </SettingRow>
+  </SettingsGroup>
+
+  <SettingsGroup id="diag-devices" testid="diag-section-devices">
+    {#if connection === null}
+      <p class="s-note">{NOT_CONNECTED}</p>
+    {:else if diag}
+      {#if diag.devices.length}
+        <PagedList
+          items={diag.devices}
+          pageSize={10}
+          text={(d) => deviceName(d.name)}
+          searchLabel="Search devices"
+          sorts={deviceSorts}
+          filters={deviceFilters}
+          label="Devices"
+          testid="diag-devices-pages"
+          let:rows
+        >
+          <ul data-testid="diag-devices">
+            {#each rows as d (d.id)}
+              <li class="s-item" data-testid="diag-device">
+                <div class="s-item-main">
+                  <span class="s-item-title">{deviceName(d.name)}</span>
+                  {#if d.current}<span class="c-count ml-2">This device</span>{/if}
+                  <span class="s-item-meta block" data-testid="diag-device-added">
+                    added {formatDate(d.createdAt)}
+                  </span>
+                </div>
+                <div class="text-sm">
+                  {#if d.lastSeenAt}
+                    <span class="block sm:text-right">{lastSeenText(d.lastSeenAt, now)}</span>
+                    <span class="block text-xs text-c-muted sm:text-right"
+                      >{formatTime(d.lastSeenAt)}</span
+                    >
+                  {:else}
+                    Never seen
+                  {/if}
+                </div>
+              </li>
+            {/each}
+          </ul>
+        </PagedList>
+      {:else}
+        <p class="s-note">No devices yet.</p>
+      {/if}
+    {:else if !serverError}
+      <p class="s-note">Loading…</p>
+    {/if}
+  </SettingsGroup>
+
+  <SettingsGroup id="diag-worker" testid="diag-section-worker">
+    {#if connection === null}
+      <p class="s-note">{NOT_CONNECTED}</p>
+    {:else if diag}
+      <SettingRow title="State" layout="info">
+        <span data-testid="diag-worker-state">{pcWorkerStateText(diag.pcWorker)}</span>
+      </SettingRow>
+      {#if diag.pcWorker.available}
+        <SettingRow title="Last seen" layout="info">
+          <span data-testid="diag-worker-last-seen">
+            {#if diag.pcWorker.lastSeenAt}
+              {formatTime(diag.pcWorker.lastSeenAt)}
+              <span class="text-c-muted">({lastSeenText(diag.pcWorker.lastSeenAt, now)})</span>
+            {:else}
+              Never
+            {/if}
+          </span>
+        </SettingRow>
+        <SettingRow title="Current job" layout="info">
+          <span data-testid="diag-worker-job">{currentJobText(diag.pcWorker)}</span>
+        </SettingRow>
+        <SettingRow title="Waiting" layout="info">
+          <span data-testid="diag-worker-waiting">{diag.pcWorker.waiting}</span>
+        </SettingRow>
+        {#if diag.pcWorker.version}
+          <SettingRow title="Worker version" layout="info">
+            <span>{diag.pcWorker.version}</span>
+          </SettingRow>
+        {/if}
+      {/if}
+    {:else if !serverError}
+      <p class="s-note">Loading…</p>
+    {/if}
+  </SettingsGroup>
+
+  <SettingsGroup id="diag-helper" testid="diag-section-helper">
+    {#if connection === null}
+      <p class="s-note">{NOT_CONNECTED}</p>
+    {:else if diag}
+      <SettingRow title="Last seen" layout="info">
+        <span data-testid="diag-helper">
+          {#if !diag.cleanupHelper.available}
+            <span class="text-c-muted">The cleanup is off on the server.</span>
+          {:else if diag.cleanupHelper.lastSeenAt}
+            {formatTime(diag.cleanupHelper.lastSeenAt)}
+            <span class="text-c-muted">({lastSeenText(diag.cleanupHelper.lastSeenAt, now)})</span>
+          {:else}
+            Never
+          {/if}
+        </span>
+      </SettingRow>
+    {:else if !serverError}
+      <p class="s-note">Loading…</p>
+    {/if}
+  </SettingsGroup>
+
+  <SettingsGroup id="diag-notify" testid="diag-section-notifications">
+    {#if connection === null}
+      <p class="s-note">{NOT_CONNECTED}</p>
+    {:else if diag}
+      {#if !diag.notifications?.available}
+        <p class="s-note" data-testid="diag-notify-off">
+          Notifications are off on the server{diag.notifications ? '' : ' (update the server)'}.
+        </p>
+      {:else}
+        {#if diag.notifications.secretsUnreadable}
+          <p class="c-notice mx-4 sm:mx-5" role="alert">
+            A saved webhook address or app password can’t be read on the server any more: enter it
+            again in Settings, Notifications.
+          </p>
+        {/if}
+        <div id="setting-diag-open-problems">
+          <p class="s-subhead">
+            Open problems
+            {#if diag.notifications.openProblems.length}
+              <span class="c-count">{diag.notifications.openProblems.length}</span>
+            {/if}
+          </p>
+          {#if diag.notifications.openProblems.length}
+            <PagedList
+              items={diag.notifications.openProblems}
+              pageSize={5}
+              label="Open problems"
+              let:rows
+            >
+              <ul data-testid="diag-open-problems">
+                {#each rows as p (p.event + p.since + (p.summary ?? ''))}
+                  <li class="s-item" data-testid="diag-open-problem">
+                    <div class="s-item-main">
+                      <span class="block">{p.summary ?? p.label}</span>
+                      <span class="s-item-meta block">since {formatTime(p.since)}</span>
+                      {#if p.detail}
+                        <details class="s-detail">
+                          <summary>Details</summary>
+                          <p class="whitespace-pre-wrap break-words text-sm text-c-muted">
+                            {p.detail}
+                          </p>
+                        </details>
+                      {/if}
+                    </div>
+                  </li>
+                {/each}
+              </ul>
+            </PagedList>
+          {:else}
+            <p class="s-note pt-0" data-testid="diag-open-problems-none">None.</p>
+          {/if}
+        </div>
+        <div id="setting-diag-sent">
+          <p class="s-subhead">Sent messages</p>
+          {#if diag.notifications.log.length}
+            <PagedList
+              items={diag.notifications.log}
+              pageSize={10}
+              text={(row) => `${firstLine(row.text)} ${logKindText(row.kind)}`}
+              searchLabel="Search sent messages"
+              filters={logFilters}
+              label="Sent messages"
+              testid="diag-notify-log-pages"
+              let:rows
+            >
+              <ul data-testid="diag-notify-log">
+                {#each rows as row (row.id)}
+                  <li class="s-item" data-testid="diag-notify-log-row">
+                    <div class="s-item-main">
+                      <span class="s-item-meta block"
+                        >{formatTime(row.at)} · {CHANNEL_NAMES[row.channel]} · {logKindText(
+                          row.kind
+                        )}</span
+                      >
+                      <span class="block">{firstLine(row.text)}</span>
+                      <!-- Failed: bold ink with a mark (the red was under 4.5:1 on the dark card). -->
+                      <span
+                        class="block text-sm {row.status === 'failed'
+                          ? 'font-semibold text-c-ink'
+                          : 'text-c-muted'}"
+                        data-testid="diag-notify-status"
+                        >{row.status === 'failed' ? '⚠ ' : ''}{logStatusText(row)}</span
+                      >
+                    </div>
+                  </li>
+                {/each}
+              </ul>
+            </PagedList>
+          {:else}
+            <p class="s-note pt-0">Nothing sent yet.</p>
+          {/if}
+        </div>
+      {/if}
+    {:else if !serverError}
+      <p class="s-note">Loading…</p>
+    {/if}
+  </SettingsGroup>
+
+  <SettingsGroup id="diag-server" testid="diag-section-server">
+    {#if connection === null}
+      <p class="s-note">{NOT_CONNECTED}</p>
+    {:else if diag}
+      <SettingRow title="Version" layout="info">
+        <span data-testid="diag-server-version">
+          {#if diag.server.builtAt}
+            Built {formatTime(diag.server.builtAt)}
+          {:else}
+            {diag.server.version}
+          {/if}
+        </span>
+      </SettingRow>
+      <SettingRow title="Database version" layout="info">
+        <span data-testid="diag-schema">{diag.server.schemaVersion}</span>
+      </SettingRow>
+    {:else if !serverError}
+      <p class="s-note">Loading…</p>
+    {/if}
+  </SettingsGroup>
 </div>
 
 <style>
-  .diag-list {
-    display: grid;
-    grid-template-columns: minmax(8rem, max-content) minmax(0, 1fr);
-    column-gap: 1.5rem;
-    row-gap: 0.5rem;
-    max-width: 48rem;
-    padding: 1rem 0 2rem;
-  }
-
-  .diag-list :global(dt) {
+  .s-note {
+    padding: 0.875rem 1rem;
+    font-size: 0.875rem;
     color: var(--c-muted);
   }
 
-  .diag-list :global(dd) {
-    margin: 0;
-    min-width: 0;
+  .s-subhead {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.875rem 1rem 0.5rem;
+    font-weight: 600;
+  }
+
+  @media (min-width: 640px) {
+    .s-note,
+    .s-subhead {
+      padding-left: 1.25rem;
+      padding-right: 1.25rem;
+    }
+  }
+
+  .s-detail > summary {
+    display: inline-flex;
+    align-items: center;
+    min-height: 2.75rem;
+    color: var(--c-link);
+    font-size: 0.8125rem;
+    cursor: pointer;
   }
 </style>

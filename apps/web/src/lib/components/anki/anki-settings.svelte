@@ -30,14 +30,20 @@
   } from '$lib/anki/settings';
   import PcSentenceAudioSection from './pc-sentence-audio-section.svelte';
   import PendingClipsSection from './pending-clips-section.svelte';
+  import SettingsGroup from '$lib/components/settings/settings-group.svelte';
+  import SettingRow from '$lib/components/settings/setting-row.svelte';
+  import SettingSwitch from '$lib/components/settings/setting-switch.svelte';
+  import SettingField from '$lib/components/settings/setting-field.svelte';
 
   /**
-   * WP14: Settings > Anki (its own tab since 2026-11-12). AnkiConnect on this device, and (the same on every
-   * device) which fields of each note type "Enrich last card" fills.
+   * WP14: Settings > Anki (its own tab since 2026-11-12), in sections: the connection to
+   * AnkiConnect (this device), enriching cards and sentence audio (the same on every device,
+   * tagged), the fields of each note type, the reader's Anki button, and the sentence audio
+   * still waiting to be added.
    */
 
-  const fieldClasses = 'c-input mt-1 block w-full max-w-[18rem] text-base';
-  const selectClasses = 'c-input mt-1 block min-h-[3rem] w-full max-w-[18rem] text-base';
+  const fieldClasses = 'c-input block w-full sm:w-72';
+  const selectClasses = 'c-input block min-h-[3rem] w-full';
   const MODE_LABELS: Record<FieldMode, string> = {
     'fill-if-empty': 'Fill if empty',
     append: 'Add to the end',
@@ -135,89 +141,58 @@
   }
 </script>
 
-<div class="c-tile rounded-lg p-4 sm:px-7 sm:py-6" data-testid="anki-settings">
-  <p class="mb-4">
-    <strong>Enrich last Anki card</strong> adds to the note you added to Anki most recently: the
-    book's title as a tag, and, in the fields chosen below, the card's sentence (the one in its
-    Sentence field, or the text you select after making the card), its audio when the book has a
-    linked audiobook with subtitles (for a book without one, read by the PC when a voice is chosen
-    under "Sentence audio from the PC"), the cover and a link back to the passage. The card's own
-    sentence is never replaced unless you select text. A field is filled only if it is empty, added
-    to at the end, or overwritten, as chosen for each field below. In a book: the Anki button in the
-    menu at the top, the bottom bar button, or <kbd>E</kbd>.
-  </p>
+<p class="s-anki-intro" data-testid="anki-settings">
+  <strong>Enrich last Anki card</strong> adds to the note you added to Anki most recently: the
+  book's title as a tag and, in the fields chosen under Card fields, the card's sentence (the one in
+  its Sentence field, or the text you select after making the card), its audio, the cover and a link
+  back to the passage. The card's own sentence is never replaced unless you select text. In a book:
+  the Anki button in the menu at the top, the bottom bar button, or <kbd>E</kbd>.
+</p>
 
-  <div class="grid grid-cols-1 gap-y-6 lg:grid-cols-2 lg:gap-x-12">
-    <div>
-      <h3 class="font-mincho text-lg font-bold">This device</h3>
-      <label class="mt-2 block text-sm text-c-muted">
-        AnkiConnect address
-        <input
-          class={fieldClasses}
-          type="url"
-          inputmode="url"
-          spellcheck="false"
-          data-testid="anki-url"
-          bind:value={$ankiConnectUrl$}
-        />
-      </label>
-      <p class="mt-1 max-w-prose text-sm text-c-muted">
-        Anki on this device: http://127.0.0.1:8765. Another device's Anki works too if AnkiConnect
-        listens on the network. AnkiConnect's <code>webCorsOriginList</code> must include this
-        reader's address ({origin}).
-      </p>
-      <label class="mt-4 block text-sm text-c-muted">
-        AnkiConnect key (only if AnkiConnect asks for one; stays on this device)
-        <input
-          class={fieldClasses}
-          type="password"
-          autocomplete="off"
-          data-testid="anki-key"
-          bind:value={$ankiConnectKey$}
-        />
-      </label>
-      <label class="mt-4 block text-sm text-c-muted">
-        Wait for Anki (seconds)
-        <input
-          class={fieldClasses}
-          type="number"
-          min="1"
-          step="1"
-          data-testid="anki-timeout"
-          bind:value={$ankiConnectTimeoutSeconds$}
-        />
-      </label>
-      <label class="mt-4 block text-sm text-c-muted">
-        Close the message after enriching a card after (seconds, 0 = keep it open)
-        <input
-          class={fieldClasses}
-          type="number"
-          min="0"
-          step="1"
-          data-testid="anki-notice-seconds"
-          bind:value={$ankiNoticeSeconds$}
-        />
-      </label>
-      <label class="mt-4 flex min-h-[3rem] items-center gap-3">
-        <input
-          type="checkbox"
-          class="h-6 w-6"
-          data-testid="anki-bottom-bar"
-          bind:checked={$ankiBottomBarButton$}
-        />
-        <span>Anki button in the reader's bottom bar</span>
-      </label>
-      <button
-        class="c-btn c-btn-secondary mt-4 min-h-[3rem]"
-        data-testid="anki-check"
-        disabled={checking}
-        on:click={check}
-      >
-        {checking ? 'Connecting…' : 'Connect to Anki'}
-      </button>
+<SettingsGroup id="anki-connection">
+  <SettingRow id="anki-url" let:labelId>
+    <p slot="description" class="mt-1 max-w-prose text-sm text-c-muted">
+      Anki on this device: http://127.0.0.1:8765. Another device's Anki works too if AnkiConnect
+      listens on the network. AnkiConnect's <code>webCorsOriginList</code> must include this
+      reader's address ({origin}).
+    </p>
+    <input
+      class={fieldClasses}
+      type="url"
+      inputmode="url"
+      spellcheck="false"
+      aria-labelledby={labelId}
+      data-testid="anki-url"
+      bind:value={$ankiConnectUrl$}
+    />
+  </SettingRow>
+  <SettingRow id="anki-key" let:labelId>
+    <input
+      class={fieldClasses}
+      type="password"
+      autocomplete="off"
+      aria-labelledby={labelId}
+      data-testid="anki-key"
+      bind:value={$ankiConnectKey$}
+    />
+  </SettingRow>
+  <SettingRow id="anki-timeout" settingKey="ankiConnectTimeoutSeconds" let:labelId>
+    <SettingField unit="seconds">
+      <input
+        type="number"
+        min="1"
+        step="1"
+        aria-labelledby={labelId}
+        data-testid="anki-timeout"
+        bind:value={$ankiConnectTimeoutSeconds$}
+      />
+    </SettingField>
+  </SettingRow>
+  <SettingRow id="anki-check" layout="inline">
+    <svelte:fragment slot="description">
       {#if status}
         <p
-          class="mt-2 max-w-prose"
+          class="mt-1 max-w-prose text-sm"
           class:font-bold={statusIsError}
           role="status"
           data-testid="anki-status"
@@ -225,99 +200,109 @@
           {status}
         </p>
       {/if}
-      <PendingClipsSection />
-    </div>
+    </svelte:fragment>
+    <button
+      class="c-btn c-btn-secondary"
+      data-testid="anki-check"
+      disabled={checking}
+      on:click={check}
+    >
+      {checking ? 'Connecting…' : 'Connect'}
+    </button>
+  </SettingRow>
+</SettingsGroup>
 
-    <div class="border-c-line border-t pt-6 lg:border-l lg:border-t-0 lg:pl-10 lg:pt-0">
-      <h3 class="font-mincho text-lg font-bold">Every device</h3>
-      <label class="mt-2 flex min-h-[3rem] items-center gap-3">
+<SettingsGroup id="anki-enrich">
+  <SettingRow id="anki-auto-enrich" layout="inline" settingKey="ankiAutoEnrich" let:labelId>
+    <SettingSwitch bind:checked={$ankiAutoEnrich$} labelledby={labelId} testid="anki-auto-enrich" />
+  </SettingRow>
+  {#if $ankiAutoEnrich$}
+    <SettingRow id="anki-auto-enrich-seconds" child let:labelId>
+      <SettingField unit="seconds">
         <input
-          type="checkbox"
-          class="h-6 w-6"
-          data-testid="anki-auto-enrich"
-          bind:checked={$ankiAutoEnrich$}
-        />
-        <span>Enrich new cards automatically</span>
-      </label>
-      <p class="mt-1 max-w-prose text-sm text-c-muted">
-        When you make a card in Yomitan while reading, it gets the sentence audio, cover and link as
-        Enrich would. While a book is open, the reader asks Anki for new cards; a card is enriched
-        when the sentence in its Sentence field is in the open book, so the note type needs its
-        Sentence field set up below.
-      </p>
-      <label class="mt-4 block text-sm text-c-muted">
-        Ask Anki for new cards every … seconds
-        <input
-          class={fieldClasses}
           type="number"
           min="1"
           step="1"
+          aria-labelledby={labelId}
           data-testid="anki-auto-enrich-seconds"
           bind:value={$ankiAutoEnrichSeconds$}
         />
-      </label>
-      <label class="mt-4 block text-sm text-c-muted">
-        Enrich the newest note added in the last … days
-        <input
-          class={fieldClasses}
-          type="number"
-          min="1"
-          step="1"
-          data-testid="anki-days"
-          bind:value={$ankiLookBackDays$}
-        />
-      </label>
-      <label class="mt-4 block text-sm text-c-muted">
-        Before the title tag (e.g. book::, empty for the title alone)
-        <input
-          class={fieldClasses}
-          type="text"
-          spellcheck="false"
-          data-testid="anki-tag-prefix"
-          bind:value={$ankiTagPrefix$}
-        />
-      </label>
-      <label class="mt-4 block text-sm text-c-muted">
-        Longest sentence audio (seconds)
-        <input
-          class={fieldClasses}
-          type="number"
-          min="1"
-          step="1"
-          data-testid="anki-audio-max"
-          bind:value={$ankiAudioMaxSeconds$}
-        />
-      </label>
-      <label class="mt-4 block text-sm text-c-muted">
-        Sentence audio: how closely the subtitles must match the book (0-1)
-        <input
-          class={fieldClasses}
-          type="number"
-          min="0"
-          max="1"
-          step="0.05"
-          data-testid="anki-audio-threshold"
-          bind:value={$ankiAudioMatchThreshold$}
-        />
-      </label>
-      <p class="mt-1 text-sm text-c-muted">
-        To find a sentence's audio, its text is looked for in the subtitles. When the subtitles word
-        it a little differently (kana instead of kanji, a missing word), the closest lines are used
-        if they are at least this similar: 0.6 = 60 %. Higher is stricter (less audio, fewer wrong
-        clips); lower finds more.
-      </p>
-      <PcSentenceAudioSection />
-    </div>
-  </div>
+      </SettingField>
+    </SettingRow>
+  {/if}
+  <SettingRow id="anki-days" settingKey="ankiLookBackDays" let:labelId>
+    <SettingField unit="days">
+      <input
+        type="number"
+        min="1"
+        step="1"
+        aria-labelledby={labelId}
+        data-testid="anki-days"
+        bind:value={$ankiLookBackDays$}
+      />
+    </SettingField>
+  </SettingRow>
+  <SettingRow id="anki-tag-prefix" settingKey="ankiTagPrefix" let:labelId>
+    <input
+      class={fieldClasses}
+      type="text"
+      spellcheck="false"
+      aria-labelledby={labelId}
+      data-testid="anki-tag-prefix"
+      bind:value={$ankiTagPrefix$}
+    />
+  </SettingRow>
+</SettingsGroup>
 
-  <h3 class="mt-8 font-mincho text-lg font-bold">Fields per note type (every device)</h3>
+<SettingsGroup id="anki-audio">
+  <SettingRow id="anki-audio-max" settingKey="ankiAudioMaxSeconds" let:labelId>
+    <SettingField unit="seconds">
+      <input
+        type="number"
+        min="1"
+        step="1"
+        aria-labelledby={labelId}
+        data-testid="anki-audio-max"
+        bind:value={$ankiAudioMaxSeconds$}
+      />
+    </SettingField>
+  </SettingRow>
+  <SettingRow id="anki-audio-threshold" settingKey="ankiAudioMatchThreshold" let:labelId>
+    <SettingField unit="0–1">
+      <input
+        type="number"
+        min="0"
+        max="1"
+        step="0.05"
+        aria-labelledby={labelId}
+        data-testid="anki-audio-threshold"
+        bind:value={$ankiAudioMatchThreshold$}
+      />
+    </SettingField>
+  </SettingRow>
+  <PcSentenceAudioSection />
+</SettingsGroup>
+
+<SettingsGroup id="anki-fields">
   {#if !knownTypes.length}
-    <p class="mt-2">Connect to Anki above to choose a note type.</p>
+    <p class="px-5 py-4">Connect to Anki under Connection to choose a note type.</p>
   {:else}
-    <label class="mt-2 block text-sm text-c-muted">
-      Note type
+    <SettingRow id="anki-note-type" let:labelId>
+      <svelte:fragment slot="description">
+        <p class="mt-1 text-sm text-c-muted">✓ marks note types already set up.</p>
+        {#if noteType && !noteTypes.includes(noteType)}
+          <p class="mt-1 text-sm text-c-muted">
+            Anki on this device doesn't have this note type (or isn't connected); its fields are
+            kept.
+          </p>
+        {/if}
+        {#if loadingFields}
+          <p class="mt-1 text-sm">Loading fields…</p>
+        {/if}
+      </svelte:fragment>
       <select
-        class={selectClasses}
+        class="{selectClasses} sm:w-72"
+        aria-labelledby={labelId}
         data-testid="anki-note-type"
         bind:value={noteType}
         on:change={loadFields}
@@ -328,21 +313,14 @@
           </option>
         {/each}
       </select>
-    </label>
+    </SettingRow>
     {#if noteType}
-      {#if !noteTypes.includes(noteType)}
-        <p class="mt-2 text-sm text-c-muted">
-          Anki on this device doesn't have this note type (or isn't connected); its fields are kept.
-        </p>
-      {/if}
-      {#if loadingFields}
-        <p class="mt-2">Loading fields…</p>
-      {/if}
-      <div class="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2" data-testid="anki-roles">
+      <div data-testid="anki-roles">
         {#each ENRICH_ROLES as role (role)}
-          <fieldset class="rounded border border-c-line p-3" data-testid="anki-role-{role}">
-            <legend class="px-1 font-bold">{ROLE_LABELS[role]}</legend>
-            <label class="block text-sm text-c-muted">
+          <fieldset class="s-anki-role" data-testid="anki-role-{role}">
+            <legend class="sr-only">{ROLE_LABELS[role]}</legend>
+            <span class="font-semibold" aria-hidden="true">{ROLE_LABELS[role]}</span>
+            <label class="grid gap-1 text-sm text-c-muted">
               Field
               <select
                 class={selectClasses}
@@ -356,9 +334,9 @@
                 {/each}
               </select>
             </label>
-            {#if current[role]}
-              <label class="mt-2 block text-sm text-c-muted">
-                When the field has something already
+            <label class="grid gap-1 text-sm text-c-muted">
+              When the field has something already
+              {#if current[role]}
                 <select
                   class={selectClasses}
                   data-testid="anki-mode-{role}"
@@ -369,12 +347,15 @@
                     <option value={mode}>{MODE_LABELS[mode]}</option>
                   {/each}
                 </select>
-              </label>
-            {/if}
+              {:else}
+                <span class="flex min-h-[3rem] items-center text-c-muted">Choose a field first</span
+                >
+              {/if}
+            </label>
           </fieldset>
         {/each}
       </div>
-      <p class="mt-4 text-sm text-c-muted">
+      <p class="px-4 py-3 text-sm text-c-muted sm:px-5">
         The link field gets only the book and place, such as <code>/open?book=…&amp;pos=…</code>.
         Add the reader's address in the card template, for example
         <code
@@ -383,4 +364,62 @@
       </p>
     {/if}
   {/if}
-</div>
+</SettingsGroup>
+
+<SettingsGroup id="anki-reader">
+  <SettingRow id="anki-bottom-bar" layout="inline" settingKey="ankiBottomBarButton" let:labelId>
+    <SettingSwitch
+      bind:checked={$ankiBottomBarButton$}
+      labelledby={labelId}
+      testid="anki-bottom-bar"
+    />
+  </SettingRow>
+  <SettingRow id="anki-notice-seconds" settingKey="ankiNoticeSeconds" let:labelId>
+    <SettingField unit="seconds">
+      <input
+        type="number"
+        min="0"
+        step="1"
+        aria-labelledby={labelId}
+        data-testid="anki-notice-seconds"
+        bind:value={$ankiNoticeSeconds$}
+      />
+    </SettingField>
+  </SettingRow>
+</SettingsGroup>
+
+<PendingClipsSection />
+
+<style>
+  .s-anki-intro {
+    padding: 0.75rem 1rem;
+    border: var(--c-border-width) solid var(--c-line);
+    border-left: 3px solid var(--c-gold);
+    border-radius: 0.375rem;
+    background-color: var(--c-raised);
+    font-size: 0.875rem;
+  }
+
+  .s-anki-role {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.5rem 1rem;
+    align-items: end;
+    padding: 0.875rem 1rem;
+  }
+
+  .s-anki-role + .s-anki-role {
+    border-top: 1px solid var(--c-line);
+  }
+
+  @media (min-width: 640px) {
+    .s-anki-role {
+      grid-template-columns: 9rem minmax(0, 1fr) minmax(0, 1fr);
+      padding: 0.875rem 1.25rem;
+    }
+
+    .s-anki-role > span {
+      align-self: center;
+    }
+  }
+</style>
