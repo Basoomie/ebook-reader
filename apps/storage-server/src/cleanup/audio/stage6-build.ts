@@ -54,6 +54,7 @@ import {
 import { GATE_FIELDS, labelAgrees, type MetaLabel } from './meta-gate';
 import { titleKey } from './meta-prompt';
 import type { AudioStage5 } from './stage5-meta';
+import { librarySwitched } from './switch-state';
 import type { SeriesEntry } from './meta-rules';
 
 export const STAGE6 = 6;
@@ -252,6 +253,12 @@ export interface LinkOpResult {
   freed?: number;
   sha256?: string;
   size?: number;
+  /** WP21f-1 (stage 7): an archive's listing, an unpacked entry's bytes, ABS's own rewrite. */
+  entries?: { name: string; kind: 'file' | 'dir' | 'link' | 'other'; size: number }[];
+  encoding?: 'utf8' | 'cp932';
+  listProblem?: string | null;
+  bytes?: number;
+  absRewrote?: boolean;
 }
 
 /**
@@ -353,6 +360,8 @@ export class AudioStage6 {
 
   /** A fresh analysis (only before a build has started). */
   restart(): AudioStage6Progress {
+    if (librarySwitched(this.db))
+      throw new Error('The library is switched; new books are added by stage 7');
     if (this.buildStarted()) throw new Error('The build has started; it can only be continued');
     const p = emptyStage6();
     this.clearOld(p.analysisId);
@@ -808,6 +817,9 @@ export class AudioStage6 {
       absCompare?: (before: number, after: number) => { same: boolean; detail: string };
     } = {},
   ): Promise<boolean> {
+    // WP21f-1: after the switch the build is history; stages 1-5 run again every day for
+    // stage 7, and that must neither plan again nor pause this stage.
+    if (librarySwitched(this.db)) return true;
     let p = this.progress() ?? this.restart();
     const { ids, problem } = stageIds(this.db);
     if (!ids) {

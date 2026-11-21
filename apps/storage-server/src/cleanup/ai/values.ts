@@ -36,6 +36,8 @@ export interface DecisionRow {
   primary: unknown;
   secondary: unknown;
   evidenceHash: string | null;
+  /** WP21f-1: the design this row was decided with (else the call's). */
+  design?: string;
 }
 
 const json = (v: unknown) => (v === undefined ? null : JSON.stringify(v));
@@ -79,7 +81,7 @@ export function writeDecisions(
         r.rules ? (r.rules.auto ? 1 : 0) : null,
         json(r.primary),
         json(r.secondary),
-        design,
+        r.design ?? design,
         r.evidenceHash,
         now,
       );
@@ -148,26 +150,91 @@ export function valuesOf(db: Database.Database, stage: string, itemKey: string):
   ).map(toValue);
 }
 
+/** How strong a design is: E < F < J (an upgrade never repeats itself or a weaker one). */
+export const DESIGN_RANK: Record<string, number> = { E: 0, F: 1, J: 2 };
+
+/** The designs at least as strong as `design` (their values an upgrade to it skips). */
+export function designsAtLeast(design: UpgradeDesign): string[] {
+  return Object.keys(DESIGN_RANK).filter((d) => DESIGN_RANK[d] >= DESIGN_RANK[design]);
+}
+
 /**
  * The fields an upgrade re-checks (requirement 3): F only what E flagged; J also every open
  * field both of E's models agreed on. Never a user value, never a rules value E kept.
+ *
+ * WP21f-1: a value already decided by the requested design or a stronger one is skipped (for F:
+ * F and J; for J: J), so a later library-wide J upgrade doesn't ask again about the new arrivals
+ * stage 7 decided with J. `includeDecided` (setting `ai.upgradeIncludeDecided`, off) takes them
+ * too.
  */
 export function upgradeTargets(
   db: Database.Database,
   stage: string,
   design: UpgradeDesign,
+  opts: { includeDecided?: boolean } = {},
 ): { itemKey: string; field: string }[] {
-  const where =
+  const what =
     design === 'F'
       ? `flagged = 1 AND source <> 'user'`
       : `(flagged = 1 OR source = 'both_models') AND source <> 'user'`;
+  const skip = opts.includeDecided ? [] : designsAtLeast(design);
+  const where = skip.length
+    ? `${what} AND design NOT IN (${skip.map(() => '?').join(', ')})`
+    : what;
   return (
     db
       .prepare(
         `SELECT item_key, field FROM ai_values WHERE stage = ? AND ${where} ORDER BY item_key, field`,
       )
-      .all(stage) as { item_key: string; field: string }[]
+      .all(stage, ...skip) as { item_key: string; field: string }[]
   ).map((r) => ({ itemKey: r.item_key, field: r.field }));
+}
+
+/**
+ * Items by the design their values were decided with (user values aside), for the page: how many
+ * recordings are at E, F and J. An item counts at the strongest design any of its fields has.
+ */
+export function designCounts(db: Database.Database, stage: string): Record<string, number> {
+  const out: Record<string, number> = { E: 0, F: 0, J: 0 };
+  for (const r of db
+    .prepare(
+      `SELECT strongest, COUNT(*) AS n FROM (
+         SELECT item_key,
+           MAX(CASE ai_values.design WHEN 'J' THEN 2 WHEN 'F' THEN 1 ELSE 0 END) AS strongest
+         FROM ai_values WHERE stage = ? AND source <> 'user' GROUP BY item_key)
+       GROUP BY strongest`,
+    )
+    .all(stage) as { strongest: number; n: number }[])
+    out[['E', 'F', 'J'][r.strongest] ?? 'E'] += r.n;
+  return out;
+}
+
+/** WP21f-1: the design each item is to be decided with (none = E). */
+export function itemDesigns(db: Database.Database, stage: string): Map<string, string> {
+  return new Map(
+    (
+      db.prepare('SELECT item_key, design FROM ai_item_designs WHERE stage = ?').all(stage) as {
+        item_key: string;
+        design: string;
+      }[]
+    ).map((r) => [r.item_key, r.design]),
+  );
+}
+
+/** Replaces a stage's item designs (only E rows are left out: E is the default). */
+export function setItemDesigns(
+  db: Database.Database,
+  stage: string,
+  designs: Map<string, string>,
+  now: number,
+): void {
+  db.transaction(() => {
+    db.prepare('DELETE FROM ai_item_designs WHERE stage = ?').run(stage);
+    const put = db.prepare(
+      'INSERT INTO ai_item_designs (stage, item_key, design, set_at) VALUES (?, ?, ?, ?)',
+    );
+    for (const [k, d] of designs) if (d !== 'E') put.run(stage, k, d, now);
+  })();
 }
 
 /** Counts per field and source (and flagged), for the page and the reports. */

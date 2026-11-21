@@ -18,7 +18,7 @@
  * 5. Publisher, year, language, store id, description and cover from the record, by rules
  *    alone: unconfirmed with the record, unknown without one.
  */
-import { answerOf, combineE } from '../ai/combine';
+import { answerOf, combineE, combineUpgrade, type UpgradeDesign } from '../ai/combine';
 import type { FieldDecision, RulesValue } from '../ai/types';
 import type { MetaEvidence, RecordBrief } from './meta-evidence';
 import { META_FIELDS, seriesKey, titleKey } from './meta-prompt';
@@ -172,6 +172,20 @@ export interface UnitOutcome {
 
 type Answer = Record<string, unknown> | null;
 
+/**
+ * WP21f-1: whether an item decided with F or J has anything for the stronger pair (the same
+ * fields `upgradeTargets` returns): F a flagged field; J also an open field E's pair agreed on.
+ * A user's value and a rules value E kept never are.
+ */
+export function needsUpgrade(out: UnitOutcome, design: 'F' | 'J'): boolean {
+  // Only the fields the models answer (the record's other fields follow the record).
+  return (['record', 'title', 'authors', 'narrators', 'series', 'drama'] as const).some((f) => {
+    const d = out.fields[f]?.decision;
+    if (!d || d.source === 'user') return false;
+    return d.flagged || (design === 'J' && d.source === 'both_models');
+  });
+}
+
 const rulesOut = <V>(r: RulesValue<V> | null) => (r ? { value: r.value, auto: r.auto } : null);
 
 export function decideUnit(
@@ -179,6 +193,11 @@ export function decideUnit(
   answers: { primary: Answer; secondary: Answer },
   evidenceText: string,
   opts: { multiNarratorMin: number },
+  /**
+   * WP21f-1: an upgrade (F or J) with the stronger pair's answers. Without any answer of the
+   * stronger pair the item is decided as E (an item with nothing to re-check is never asked).
+   */
+  upgrade?: { design: UpgradeDesign; primary: Answer; secondary: Answer },
 ): UnitOutcome {
   const fields: UnitOutcome['fields'] = {};
   let invented = 0;
@@ -187,6 +206,25 @@ export function decideUnit(
     if (r.invented) invented++;
     return r.value as V | undefined;
   };
+  const strong = upgrade && (upgrade.primary || upgrade.secondary) ? upgrade : null;
+  /** Setup E, or the upgrade when the stronger pair answered. */
+  const combine = <V>(
+    f: Parameters<typeof combineE<V>>[0],
+    r: RulesValue<V>,
+    p: V | undefined,
+    s: V | undefined,
+    sp: V | undefined,
+    ss: V | undefined,
+  ): FieldDecision<V> =>
+    strong
+      ? combineUpgrade(
+          strong.design,
+          f,
+          r,
+          { primary: p, secondary: s },
+          { primary: sp, secondary: ss },
+        )
+      : combineE(f, r, p, s);
 
   // 1. the record
   let record: RecordBrief | null = ev.kind === 'record' ? ev.record : null;
@@ -201,7 +239,14 @@ export function decideUnit(
     };
     const p = pick(answers.primary);
     const s = pick(answers.secondary);
-    const d = combineE(META_FIELDS.record, first.record, p, s);
+    const d = combine(
+      META_FIELDS.record as never,
+      first.record,
+      p,
+      s,
+      strong ? pick(strong.primary) : undefined,
+      strong ? pick(strong.secondary) : undefined,
+    ) as FieldDecision;
     fields.record = {
       decision: d,
       rules: rulesOut(first.record),
@@ -227,8 +272,10 @@ export function decideUnit(
     const r = rules[name] as unknown as RulesValue<V>;
     const p = clean(ans<V>(META_FIELDS[name], answers.primary));
     const s = clean(ans<V>(META_FIELDS[name], answers.secondary));
+    const sp = strong ? clean(ans<V>(META_FIELDS[name], strong.primary)) : undefined;
+    const ss = strong ? clean(ans<V>(META_FIELDS[name], strong.secondary)) : undefined;
     fields[name] = {
-      decision: combineE(f, r, p, s) as FieldDecision,
+      decision: combine(f, r, p, s, sp, ss) as FieldDecision,
       rules: rulesOut(r),
       primary: p ?? null,
       secondary: s ?? null,

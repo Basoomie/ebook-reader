@@ -553,6 +553,14 @@ export interface AudiobookSettings {
   noStoreRecordFolders?: string[];
   /** Stage 5 (WP21d): 複数ナレーター from this many narrators. */
   multiNarratorMin?: number;
+  /** Stage 7 (WP21f-1): the daily new arrivals; missing on an older server. */
+  arrivalsTime?: string;
+  arrivalsQuietStart?: string;
+  arrivalsQuietEnd?: string;
+  arrivalsSettleMinutes?: number;
+  arrivalsAbsWaitMinutes?: number;
+  arrivalsAbsNudge?: boolean;
+  extractLeaseSeconds?: number;
 }
 
 export type SecretName = 'anthropicApiKey' | 'openaiApiKey' | 'calibrePassword' | 'absApiKey';
@@ -802,6 +810,124 @@ export interface AudioStatus {
   stage6?: AudioStage6Status;
   /** WP21e-2: the switch to the new library, Undo, deleting japanese-old, and the covers. */
   switch?: AudioSwitchStatus;
+  /** WP21f-1: the daily new arrivals. */
+  stage7?: AudioStage7Status;
+}
+
+// ---------------------------------------------------------------- audiobooks stage 7 (WP21f-1)
+
+export type Stage7Phase =
+  | 'stage1'
+  | 'archives'
+  | 'stage1b'
+  | 'stages'
+  | 'classify'
+  | 'plan'
+  | 'walk_before'
+  | 'build'
+  | 'walk_after'
+  | 'check'
+  | 'abs'
+  | 'report'
+  | 'done';
+
+export interface AudioStage7Run {
+  runId: number;
+  trigger: 'schedule' | 'now';
+  mode: 'analyse' | 'on';
+  phase: Stage7Phase;
+  startedAt: number;
+  finishedAt: number | null;
+  phaseStartedAt: number;
+  phaseStartDone: number;
+  phaseTimes: Record<string, { ms: number; items: number }>;
+  archives: {
+    total: number;
+    waiting: number;
+    toList: number;
+    listed: number;
+    entries: number;
+    bytes: number;
+    extracted: number;
+    extractedBytes: number;
+    thisRun: number;
+    problems: Record<string, number>;
+  };
+  classify: Record<string, number> | null;
+  plan: {
+    books: number;
+    main: number;
+    ai: number;
+    links: number;
+    pdfs: number;
+    folders: number;
+    collisions: { narrator: number; number: number; series: number };
+    newAuthors: number;
+  } | null;
+  build: {
+    total: number;
+    done: number;
+    failed: number;
+    batches: number;
+    startedAt: number | null;
+    lockWaitMs: number;
+    yields: number;
+    firstFailure: string | null;
+  };
+  walks: Record<string, { entries: number; ms: number; pausedMs: number }>;
+  walk?: { root: string; done: number; total: number; startedAt: number } | null;
+  check: { passed: boolean; lines: string[] } | null;
+  abs: {
+    library: string | null;
+    before: number | null;
+    after: number | null;
+    found: number;
+    missing: number;
+    valuesOk: number;
+    valuesDiffer: number;
+    nudged: number;
+    waitingSince: number | null;
+    error: string | null;
+    precedence: string | null;
+  };
+  waiting: string | null;
+  error: string | null;
+}
+
+export interface AudioStage7Report {
+  mode: 'analyse' | 'on';
+  added: number;
+  planned: number;
+  outcomes: Record<string, number>;
+  newReview: number;
+  openReview: number;
+  aiCostUsd: number;
+  designs: Record<'E' | 'F' | 'J', number>;
+  times: Record<string, { ms: number; items: number }>;
+  lockWaitMs: number;
+  yields: number;
+  changedExisting: { differ: number; same: number; rekeyed: number };
+}
+
+export interface AudioStage7Status {
+  available: boolean;
+  mode?: AudioStageMode | 'on';
+  pause?: { reason: string; detail: string | null } | null;
+  running?: boolean;
+  nextRunAt?: number | null;
+  run?: AudioStage7Run | null;
+  report?: AudioStage7Report | null;
+  sidecarReady?: boolean;
+  switched?: boolean;
+  designs?: Record<'E' | 'F' | 'J', number>;
+  upgrade?: {
+    F: { items: number; fields: number; costUsd: number | null };
+    J: { items: number; fields: number; costUsd: number | null };
+    includeDecided: boolean;
+    models: string[];
+  };
+  openReviews?: Record<string, number>;
+  absWaitMinutes?: number;
 }
 
 // ---------------------------------------------------------------- audiobooks stage 6 (WP21e-1)
@@ -1073,6 +1199,10 @@ export interface AiSettings {
   prices: Record<string, AiPrice>;
   structuredOutputs: boolean;
   labeledOnly: boolean;
+  /** WP21f-1: the new arrivals' AI setup (default J); missing on an older server. */
+  arrivalsDesign?: 'E' | 'F' | 'J';
+  /** WP21f-1: an upgrade also re-checks values already decided by that setup or a stronger one. */
+  upgradeIncludeDecided?: boolean;
 }
 
 export interface AiStatus {
@@ -1844,6 +1974,41 @@ export class CleanupApi {
 
   audioBuildCheckAgain(): Promise<AudioStatus> {
     return this.request('POST', '/cleanup/audio/build/check-again', {}) as Promise<AudioStatus>;
+  }
+
+  // ---------------------------------------------------------------- stage 7 (WP21f-1)
+
+  audioArrivals(
+    list: string,
+    offset = 0,
+    limit = 50
+  ): Promise<{ total: number; items: Record<string, unknown>[] }> {
+    const q = new URLSearchParams({ list, offset: String(offset), limit: String(limit) });
+    return this.request('GET', `/cleanup/audio/arrivals?${q}`) as Promise<{
+      total: number;
+      items: Record<string, unknown>[];
+    }>;
+  }
+
+  audioArrivalsDecide(reviewId: number, decision: string): Promise<{ ok: boolean }> {
+    return this.request('POST', `/cleanup/audio/arrivals/reviews/${reviewId}`, {
+      decision
+    }) as Promise<{ ok: boolean }>;
+  }
+
+  audioArrivalsResume(): Promise<AudioStatus> {
+    return this.request('POST', '/cleanup/audio/arrivals/resume', {}) as Promise<AudioStatus>;
+  }
+
+  async audioArrivalsPlanFile(): Promise<Blob> {
+    const response = await send(
+      this.fetchImpl,
+      `${this.serverUrl}/api/v1/cleanup/audio/arrivals/plan.csv`,
+      { method: 'GET', headers: { Authorization: `Bearer ${this.token}` } },
+      { timeoutSeconds: this.timeoutSeconds }
+    );
+    if (!response.ok) throw await errorFrom(response);
+    return response.blob();
   }
 
   // ---------------------------------------------------------------- the switch (WP21e-2)

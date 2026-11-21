@@ -147,4 +147,5 @@ export const DISK_OWNERS = {
   audio4: 'Audiobooks stage 4 (reading openings to compare with store samples)',
   audio6: 'Audiobooks stage 6 (building japanese-new)',
   audio6switch: 'Audiobooks stage 6 (the switch to the new library)',
+  audio7: 'Audiobooks stage 7 (new arrivals: unpacking archives and adding books)',
 } as const;

@@ -18,6 +18,8 @@ import { AiRunner, modeOf, waitNeedsUser, waitText, type AiCounts } from '../ai/
 import { runSpend, spendNow } from '../ai/spend';
 import {
   dropOtherItems,
+  itemDesigns,
+  setItemDesigns,
   setUserValue,
   valueCounts,
   valuesOf,
@@ -30,6 +32,7 @@ import { getAudioStage, pauseAudioStage, resumeAudioStage, updateAudioStage } fr
 import {
   decideUnit,
   META_VALUE_FIELDS,
+  needsUpgrade,
   sameBookSeries,
   sharedPositions,
   type SameBookUnit,
@@ -73,6 +76,10 @@ export interface AudioStage5Progress {
   phaseStartedAt: number;
   phaseStartDone: number;
   phaseTimes: Record<string, Stage5PhaseTime>;
+  /** WP21f-1: recordings per design (E, F, J) in this analysis. */
+  designs?: Record<'E' | 'F' | 'J', number>;
+  /** WP21f-1: F/J recordings asked of the stronger pair. */
+  upgradeAsked?: number;
   ai: AiCounts | null;
   /** What the models step waits for (shown on the card). */
   wait: string | null;
@@ -126,6 +133,11 @@ export interface Stage5Deps {
   runner: AiRunner;
   /** labels.json as text, or why it can't be read. */
   readLabels?: () => { text: string | null; error: string | null };
+  /**
+   * WP21f-1: the design each recording is decided with (stage 7: the new arrivals get the
+   * arrivals' setup, default J). Missing = E for every recording.
+   */
+  designs?: (stage4Id: string) => Map<string, 'E' | 'F' | 'J'>;
   log?: (m: string) => void;
 }
 
@@ -146,6 +158,9 @@ export function stage5AskKey(db: Database.Database): string {
         s.models[META_SPEC.tasks.primary],
         s.models[META_SPEC.tasks.secondary],
         s.ai.labeledOnly,
+        // WP21f-1: the stronger pair of the upgrades (asked only about F and J items).
+        s.models[META_SPEC.tasks.upgradePrimary],
+        s.models[META_SPEC.tasks.upgradeSecondary],
       ]),
     )
     .digest('hex')
@@ -293,16 +308,21 @@ export class AudioStage5 {
   /** The answers the current decisions read, whatever run asked them, with their cost. */
   private answersInUse(): NonNullable<AudioStage5Progress['inUse']> {
     const s = getSettings(this.db);
-    const models = [s.models[META_SPEC.tasks.primary], s.models[META_SPEC.tasks.secondary]];
+    const models = [
+      s.models[META_SPEC.tasks.primary],
+      s.models[META_SPEC.tasks.secondary],
+      s.models[META_SPEC.tasks.upgradePrimary],
+      s.models[META_SPEC.tasks.upgradeSecondary],
+    ];
     const out = { answered: 0, failed: 0, blocked: 0, invalid: 0, costUsd: 0 };
     for (const r of this.db
       .prepare(
         `SELECT r.state, COUNT(*) AS n, COALESCE(SUM(r.cost_usd), 0) AS c
          FROM ai_items i JOIN ai_requests r ON r.stage = i.stage AND r.item_key = i.item_key
-           AND r.evidence_hash = i.evidence_hash AND r.prompt_version = ? AND r.model IN (?, ?)
+           AND r.evidence_hash = i.evidence_hash AND r.prompt_version = ? AND r.model IN (?, ?, ?, ?)
          WHERE i.stage = 'audio5' GROUP BY r.state`,
       )
-      .all(META_SPEC.promptVersion, models[0], models[1]) as {
+      .all(META_SPEC.promptVersion, ...models) as {
       state: string;
       n: number;
       c: number;
@@ -385,6 +405,7 @@ export class AudioStage5 {
         primary: cur.primary,
         secondary: cur.secondary,
         evidenceHash: runner.evidenceOf(META_SPEC, key)?.hash ?? null,
+        design: cur.design,
       });
     }
     writeDecisions(this.db, 'audio5', rows, 'E', now);
@@ -470,6 +491,7 @@ export class AudioStage5 {
           primary: c.primary,
           secondary: c.secondary,
           evidenceHash: hash,
+          design: c.design,
         });
         const m = v.multi_narr;
         if (field === 'narrators' && m && m.source !== 'user')
@@ -486,6 +508,7 @@ export class AudioStage5 {
             primary: null,
             secondary: null,
             evidenceHash: hash,
+            design: m.design,
           });
       }
     }
@@ -520,6 +543,7 @@ export class AudioStage5 {
         primary: cur?.primary ?? null,
         secondary: cur?.secondary ?? null,
         evidenceHash: runner.evidenceOf(META_SPEC, key)?.hash ?? null,
+        ...(cur ? { design: cur.design } : {}),
       });
     }
     writeDecisions(this.db, 'audio5', rows, 'E', now);
@@ -579,6 +603,11 @@ export class AudioStage5 {
       await new Promise((r) => setImmediate(r));
     }
     dropOtherItems(db, 'audio5', new Set(units.map((u) => u.unit_key)));
+    // WP21f-1: which recordings are decided with a stronger design (the new arrivals).
+    const designs = this.deps.designs?.(stage4Id) ?? new Map<string, 'E' | 'F' | 'J'>();
+    setItemDesigns(db, 'audio5', designs, now);
+    p.designs = { E: 0, F: 0, J: 0 };
+    for (const u of units) p.designs[designs.get(u.unit_key) ?? 'E']++;
     p.units = units.length;
     p.labeledUnits = units.filter((u) => u.labeled === 1).length;
     return units.length;
@@ -625,8 +654,51 @@ export class AudioStage5 {
     }
     p.wait = null;
     this.unpause();
-    if (r.pending === 0) return 'done';
+    if (r.pending === 0) {
+      // WP21f-1: E's answers are in; the F and J items now get the stronger pair's questions
+      // (only those with a field E decided or guessed).
+      if (this.queueUpgrades(p) > 0) return 'more';
+      return 'done';
+    }
     return r.sent > 0 || r.answered > 0 ? 'more' : 'wait';
+  }
+
+  /**
+   * WP21f-1: the stronger pair's questions for the items decided with F or J: an item is asked
+   * when E would leave one of its fields for the upgrade (F: a flagged field; J: also an open
+   * field both cheap models agreed on). Returns how many questions were added.
+   */
+  private queueUpgrades(p: AudioStage5Progress): number {
+    const designs = itemDesigns(this.db, 'audio5');
+    if (!designs.size) return 0;
+    const runner = this.deps.runner;
+    const s = getSettings(this.db);
+    const opts = { multiNarratorMin: s.audiobooks.multiNarratorMin };
+    const live = new Set(this.unitKeys(p));
+    const keys: string[] = [];
+    for (const [key, design] of designs) {
+      if ((design !== 'F' && design !== 'J') || !live.has(key)) continue;
+      const ev = runner.evidenceOf(META_SPEC, key);
+      if (!ev) continue;
+      const a = runner.answerOf(META_SPEC, 'primary', key);
+      const b = runner.answerOf(META_SPEC, 'secondary', key);
+      const out = decideUnit(
+        ev.evidence,
+        {
+          primary: a?.state === 'answered' ? a.answer : null,
+          secondary: b?.state === 'answered' ? b.answer : null,
+        },
+        metaEvidenceText(ev.evidence),
+        opts,
+      );
+      if (needsUpgrade(out, design)) keys.push(key);
+    }
+    p.upgradeAsked = keys.length;
+    if (!keys.length) return 0;
+    return (
+      runner.enqueue(META_SPEC, 'upgradePrimary', keys, p.analysisId) +
+      runner.enqueue(META_SPEC, 'upgradeSecondary', keys, p.analysisId)
+    );
   }
 
   // -------------------------------------------------------------------------------------------
@@ -650,6 +722,7 @@ export class AudioStage5 {
     const decisions: DecisionRow[] = [];
     const done: { key: string; flagged: number; record: string | null; error: string | null }[] =
       [];
+    const designs = itemDesigns(db, 'audio5');
     for (const { unit_key } of rows) {
       if (shouldStop()) break;
       const ev = runner.evidenceOf(META_SPEC, unit_key);
@@ -659,6 +732,17 @@ export class AudioStage5 {
       }
       const a = runner.answerOf(META_SPEC, 'primary', unit_key);
       const b = runner.answerOf(META_SPEC, 'secondary', unit_key);
+      const design = designs.get(unit_key) ?? 'E';
+      let upgrade: Parameters<typeof decideUnit>[4];
+      if (design === 'F' || design === 'J') {
+        const sa = runner.answerOf(META_SPEC, 'upgradePrimary', unit_key);
+        const sb = runner.answerOf(META_SPEC, 'upgradeSecondary', unit_key);
+        upgrade = {
+          design,
+          primary: sa?.state === 'answered' ? sa.answer : null,
+          secondary: sb?.state === 'answered' ? sb.answer : null,
+        };
+      }
       const out = decideUnit(
         ev.evidence,
         {
@@ -667,6 +751,7 @@ export class AudioStage5 {
         },
         metaEvidenceText(ev.evidence),
         opts,
+        upgrade,
       );
       p.invented += out.invented;
       let flagged = 0;
@@ -682,6 +767,7 @@ export class AudioStage5 {
           primary: o.primary,
           secondary: o.secondary,
           evidenceHash: ev.hash,
+          design,
         });
       }
       done.push({ key: unit_key, flagged, record: out.record?.id ?? null, error: null });

@@ -24,6 +24,19 @@
  *                              still exactly what the deletion's list says (size, mtime, device,
  *                              inode), a folder only when empty (rmdir). Nothing outside it.
  *
+ * WP21f-1 (the daily new arrivals; decided with the user 2026-11-20), each create-only:
+ *   makeArrivalFolder(dst, book, planned)  a new book's folder (and its Disc folders) under
+ *                              media/audiobooks/japanese/ or japanese-generated/; missing author or
+ *                              series folders are made, existing ones only entered;
+ *   linkArrival(src, dst, book, planned)   a hard link in that new book's folder to the planned,
+ *                              unchanged torrent file;
+ *   writeArrivalMetadata(...)  the new book's metadata.json.
+ *     A book folder that holds anything not planned for it (an existing book) is refused, so an
+ *     existing book's folder or files are never touched.
+ *   extractEntry(archive, dst, size, tag, open)  one archive entry unpacked into a new file under
+ *                              torrents/audiobooks/japanese/_extracted/ (the only new place in the
+ *                              torrents besides _from-library); the archive is only read.
+ *
  * Nothing else: no other rename, move or delete (the build's one other removal is this module's
  * own temporary `.ttsu-link-<n>.partial` file, which never has another name), no chmod or chown of
  * a link (that would change the torrent's file), nothing in the Calibre libraries or anywhere else
@@ -32,7 +45,7 @@
  */
 import { createHash } from 'crypto';
 import { constants, createReadStream } from 'fs';
-import fs from 'fs/promises';
+import fs, { type FileHandle } from 'fs/promises';
 import path from 'path';
 
 /** The two folders the build may create things in (relative to media/audiobooks). */
@@ -63,6 +76,17 @@ export const INVENTORY_NAMES: readonly string[] = [
   '.processed_files.json'
 ];
 export const INVENTORY_DIR = ['_inventory', 'old-copy-script'] as const;
+/**
+ * WP21f-1: the library folders new books are added to after the switch (new folders only; a
+ * book folder that holds anything not planned for it, i.e. an existing book, is refused).
+ */
+export const ARRIVAL_ROOTS: readonly string[] = ['japanese', 'japanese-generated'];
+/** WP21f-1: the only new folder in the torrents: archives are unpacked under it. */
+export const EXTRACTED = '_extracted';
+/** Files Audiobookshelf writes into a book folder itself ("store metadata/cover with item"). */
+const ABS_OWN = /^(metadata\.json|cover\.(jpe?g|png|webp))$/i;
+/** This module's own temporary names. */
+const OWN_TEMP = /^\.ttsu-(link|x)-\d+\.partial$/;
 const MAX_NAME_BYTES = 255;
 const MAX_METADATA_BYTES = 1024 * 1024;
 
@@ -164,13 +188,28 @@ export async function sha256Of(file: string | Buffer): Promise<string> {
 }
 
 /** A destination's parts: inside one of the two build folders, every part an allowed name. */
-function destination(dst: string): string[] {
+function destination(dst: string, roots: readonly string[] = BUILD_ROOTS): string[] {
   const parts = dst.split('/');
-  if (!BUILD_ROOTS.includes(parts[0])) {
-    throw new WriteRefused(`Not inside ${BUILD_ROOTS.join(' or ')}: ${JSON.stringify(dst)}`);
+  if (!roots.includes(parts[0])) {
+    throw new WriteRefused(`Not inside ${roots.join(' or ')}: ${JSON.stringify(dst)}`);
   }
   for (const p of parts) checkName(p);
   return parts;
+}
+
+/** WP21f-1: a new book's path: a root of ARRIVAL_ROOTS, then at least the book folder. */
+function arrivalDestination(dst: string, minParts: number): string[] {
+  const parts = destination(dst, ARRIVAL_ROOTS);
+  if (parts.length < minParts) throw new WriteRefused(`Not inside a book folder: ${dst}`);
+  return parts;
+}
+
+/** The planned names of a book folder (each an allowed name). */
+function plannedNames(planned: string[] | undefined): Set<string> {
+  if (!Array.isArray(planned) || planned.length === 0 || planned.length > 10000)
+    throw new WriteRefused('A new book needs the list of its planned files');
+  for (const n of planned) checkName(n);
+  return new Set(planned);
 }
 
 export class LinkWriter {
@@ -530,5 +569,304 @@ export class LinkWriter {
     const freed = st.nlink === 1n && st.isFile() ? Number(st.size) : 0;
     await fs.unlink(abs);
     return { existed: false, freed };
+  }
+
+  // ------------------------------------------------------- WP21f-1: the daily new arrivals
+
+  /**
+   * A new book's folder must hold nothing but what is planned for it (plus Audiobookshelf's own
+   * metadata.json/cover and this module's temporary files): an existing book's folder never does,
+   * so nothing is ever added to one. `sub` is the planned subfolder written into (a Disc folder),
+   * whose entries are checked the same way.
+   */
+  private async checkBook(bookAbs: string, planned: Set<string>, sub: string[]): Promise<void> {
+    const check = async (dir: string, prefix: string) => {
+      for (const name of await fs.readdir(dir)) {
+        const rel = prefix ? `${prefix}/${name}` : name;
+        if (planned.has(rel) || OWN_TEMP.test(name) || (!prefix && ABS_OWN.test(name))) continue;
+        throw new WriteRefused(`The folder holds something that isn't this new book's: ${rel}`);
+      }
+    };
+    await check(bookAbs, '');
+    let cur = bookAbs;
+    for (let i = 0; i < sub.length; i++) {
+      cur = path.join(cur, sub[i]);
+      await check(cur, sub.slice(0, i + 1).join('/'));
+    }
+  }
+
+  /**
+   * A new book's folder (or a folder inside it, a Disc folder) under ARRIVAL_ROOTS. Parent
+   * folders (author, series) are made when missing and only entered when they exist; the book
+   * folder itself must be new, or, made by an earlier try of this run, hold only planned names.
+   * `book` is the book folder (relative to media/audiobooks), `planned` its planned entries.
+   */
+  async makeArrivalFolder(
+    dst: string,
+    book: string,
+    planned: string[]
+  ): Promise<{ existed: boolean }> {
+    const parts = arrivalDestination(dst, 2);
+    const bparts = arrivalDestination(book, 3);
+    // dst is the book's folder, one of its planned folders (Disc), or a folder above it (its
+    // author or series folder).
+    const above = book.startsWith(dst + '/');
+    if (!above && dst !== book && !dst.startsWith(book + '/'))
+      throw new WriteRefused(`Not the book's folder or a folder above it: ${dst}`);
+    const names = plannedNames(planned);
+    const inner = above ? [] : parts.slice(bparts.length);
+    if (inner.length && !names.has(inner.join('/')))
+      throw new WriteRefused(`Not a planned folder of the book: ${dst}`);
+    let cur = await this.realFolders(parts.slice(0, 1));
+    let existed = false;
+    for (let i = 1; i < parts.length; i++) {
+      cur = path.join(cur, parts[i]);
+      const st = await fs.lstat(cur).catch(() => null);
+      if (st) {
+        if (st.isSymbolicLink() || !st.isDirectory())
+          throw new WriteRefused(`Not a real folder: ${parts.slice(0, i + 1).join('/')}`);
+        existed = i === parts.length - 1;
+        // A folder above the new book that holds a file is an existing book: never used.
+        if (i < bparts.length - 1) {
+          for (const e of await fs.readdir(cur, { withFileTypes: true }))
+            if (!e.isDirectory() && !e.name.startsWith('.'))
+              throw new WriteRefused(
+                `An existing book's folder can't hold a new book: ${parts.slice(0, i + 1).join('/')}`
+              );
+        }
+        continue;
+      }
+      try {
+        await fs.mkdir(cur, { mode: this.dirMode });
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+      }
+      await fs.chmod(cur, this.dirMode);
+    }
+    await this.inside(this.media, cur, 'media/audiobooks');
+    if (!above) await this.checkBook(path.join(this.media, ...bparts), names, inner);
+    return { existed };
+  }
+
+  /** The book folder and the folder a file goes into, both checked real and new-book only. */
+  private async arrivalParent(
+    dst: string,
+    book: string,
+    planned: string[]
+  ): Promise<{ parent: string; name: string }> {
+    const parts = arrivalDestination(dst, 3);
+    const bparts = arrivalDestination(book, 2);
+    if (!dst.startsWith(book + '/')) throw new WriteRefused(`Not inside the book's folder: ${dst}`);
+    const names = plannedNames(planned);
+    const inner = parts.slice(bparts.length);
+    if (!names.has(inner.join('/')))
+      throw new WriteRefused(`Not a planned file of the book: ${dst}`);
+    const parent = await this.realFolders(parts.slice(0, -1));
+    // The folders above the book hold no file (an existing book is never under a new one).
+    let cur = path.join(this.media, bparts[0]);
+    for (let i = 1; i < bparts.length - 1; i++) {
+      cur = path.join(cur, bparts[i]);
+      for (const e of await fs.readdir(cur, { withFileTypes: true }))
+        if (!e.isDirectory() && !e.name.startsWith('.'))
+          throw new WriteRefused(
+            `An existing book's folder can't hold a new book: ${bparts.slice(0, i + 1).join('/')}`
+          );
+    }
+    await this.checkBook(path.join(this.media, ...bparts), names, inner.slice(0, -1));
+    return { parent, name: parts[parts.length - 1] };
+  }
+
+  /**
+   * A hard link in a new book's folder to the planned, unchanged torrent file (or a file this
+   * module unpacked under _extracted). Never over an existing name; the same file already there
+   * counts as done.
+   */
+  async linkArrival(
+    src: PlannedSource,
+    dst: string,
+    book: string,
+    planned: string[]
+  ): Promise<{ existed: boolean; dev: number; ino: number }> {
+    const s = await this.source(src);
+    const { parent, name } = await this.arrivalParent(dst, book, planned);
+    const abs = path.join(parent, name);
+    let existed = false;
+    try {
+      await fs.link(s.file, abs);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+      existed = true;
+    }
+    const st = await fs.lstat(abs, { bigint: true });
+    if (!st.isFile() || st.dev !== s.dev || st.ino !== s.ino) {
+      throw new WriteRefused(
+        existed
+          ? `A different file is already there: ${dst}`
+          : `The new link is not the source: ${dst}`
+      );
+    }
+    return { existed, dev: Number(st.dev), ino: Number(st.ino) };
+  }
+
+  /**
+   * A new book's metadata.json (temporary name, fsync, link into place). When a different
+   * metadata.json is already there and every planned audio file of the book is already linked,
+   * it is Audiobookshelf's rewrite after its scan (it writes the file in its own form): done.
+   */
+  async writeArrivalMetadata(
+    dst: string,
+    bytes: Buffer,
+    tag: number,
+    book: string,
+    planned: string[]
+  ): Promise<{ existed: boolean; absRewrote: boolean }> {
+    if (dst !== `${book}/${METADATA_NAME}`)
+      throw new WriteRefused(`Only the book's ${METADATA_NAME} can be written: ${dst}`);
+    if (!Number.isSafeInteger(tag) || tag < 0) throw new WriteRefused('Bad temporary name');
+    if (bytes.length > MAX_METADATA_BYTES) throw new WriteRefused('metadata.json too large');
+    const { parent } = await this.arrivalParent(dst, book, planned);
+    const abs = path.join(parent, METADATA_NAME);
+    const there = await fs.lstat(abs).catch(() => null);
+    if (there) {
+      if (!there.isFile()) throw new WriteRefused(`Something else is already there: ${dst}`);
+      if ((await fs.readFile(abs)).equals(bytes)) return { existed: true, absRewrote: false };
+      const audio = planned.filter(
+        (n) => n !== METADATA_NAME && !n.includes('/') && /\.[^.]+$/.test(n)
+      );
+      for (const n of audio) {
+        const st = await fs.lstat(path.join(parent, n)).catch(() => null);
+        if (!st || !st.isFile())
+          throw new WriteRefused(`A different file is already there: ${dst}`);
+      }
+      return { existed: true, absRewrote: true };
+    }
+    const temp = path.join(parent, `.ttsu-link-${tag}.partial`);
+    const left = await fs.lstat(temp).catch(() => null);
+    if (left) {
+      if (!left.isFile()) throw new WriteRefused(`Something else is at ${temp}`);
+      await fs.unlink(temp);
+    }
+    const handle = await fs.open(
+      temp,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL,
+      this.fileMode
+    );
+    try {
+      await handle.writeFile(bytes);
+      await handle.chmod(this.fileMode);
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    try {
+      await fs.link(temp, abs);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+    } finally {
+      await fs.unlink(temp);
+    }
+    if (!(await fs.readFile(abs)).equals(bytes))
+      throw new WriteRefused(`A different file is already there: ${dst}`);
+    return { existed: false, absRewrote: false };
+  }
+
+  /** An archive under the torrents (planned, unchanged), opened read only for listing. */
+  async openArchive(src: PlannedSource): Promise<FileHandle> {
+    if (!/\.(zip|rar|7z)$/i.test(src.rel)) throw new WriteRefused(`Not an archive: ${src.rel}`);
+    const s = await this.source(src);
+    return fs.open(s.file, constants.O_RDONLY);
+  }
+
+  /**
+   * One archive entry unpacked into torrents/audiobooks/japanese/_extracted/<dst> (folders
+   * made on the way, only under _extracted). The archive (a planned, unchanged torrent file)
+   * is opened read only and handed to `open`, which starts bsdtar writing that one entry to a
+   * stream; its bytes go into a new temporary file (O_EXCL), are counted against the listed
+   * size and synced, then the file is linked into place. Never over an existing name: a file
+   * already there with the listed size was put there by this method (nothing else writes under
+   * _extracted) and counts as done. The archive is checked unchanged before and after.
+   */
+  async extractEntry(
+    archive: PlannedSource,
+    dst: string,
+    size: number,
+    tag: number,
+    open: (handle: FileHandle) => {
+      stream: NodeJS.ReadableStream;
+      done: Promise<{ code: number | null; stderr: string }>;
+      kill: () => void;
+    }
+  ): Promise<{ existed: boolean; bytes: number }> {
+    const parts = dst.split('/');
+    if (parts[0] !== EXTRACTED || parts.length < 3)
+      throw new WriteRefused(`Not inside ${EXTRACTED}: ${dst}`);
+    for (const p of parts) checkName(p);
+    if (!Number.isSafeInteger(size) || size < 0) throw new WriteRefused('Bad entry size');
+    if (!Number.isSafeInteger(tag) || tag < 0) throw new WriteRefused('Bad temporary name');
+    const s = await this.source(archive);
+    const dir = await this.torrentFolders(parts.slice(0, -1));
+    const abs = path.join(dir, parts[parts.length - 1]);
+    const there = await fs.lstat(abs).catch(() => null);
+    if (there) {
+      if (there.isFile() && there.size === size) return { existed: true, bytes: size };
+      throw new WriteRefused(`A different file is already there: ${dst}`);
+    }
+    const temp = path.join(dir, `.ttsu-x-${tag}.partial`);
+    const left = await fs.lstat(temp).catch(() => null);
+    if (left) {
+      if (!left.isFile()) throw new WriteRefused(`Something else is at ${temp}`);
+      await fs.unlink(temp);
+    }
+    const input = await fs.open(s.file, constants.O_RDONLY);
+    let bytes = 0;
+    try {
+      const out = await fs.open(
+        temp,
+        constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL,
+        this.fileMode
+      );
+      try {
+        const run = open(input);
+        let tooLong = false;
+        let streamError: unknown = null;
+        try {
+          for await (const chunk of run.stream as AsyncIterable<Buffer>) {
+            bytes += chunk.length;
+            if (bytes > size) {
+              tooLong = true;
+              run.kill();
+              break;
+            }
+            await out.write(chunk);
+          }
+        } catch (err) {
+          streamError = err;
+        }
+        // bsdtar's exit code and messages (a passphrase, a damaged entry) once its output ended.
+        const r = await run.done.catch((e: Error) => ({ code: -1, stderr: e.message }));
+        if (tooLong) throw new WriteRefused(`The entry is longer than listed: ${dst}`);
+        if (r.code !== 0)
+          throw new WriteRefused(`bsdtar: ${r.stderr.trim().slice(0, 300) || `exit ${r.code}`}`);
+        if (streamError) throw streamError;
+        if (bytes !== size) throw new WriteRefused(`Unpacked ${bytes} of ${size} bytes: ${dst}`);
+        await out.chmod(this.fileMode);
+        await out.sync();
+      } finally {
+        await out.close();
+      }
+      const again = await fs.lstat(s.file, { bigint: true });
+      if (again.ino !== s.ino || again.dev !== s.dev || Number(again.size) !== archive.size)
+        throw new WriteRefused(`The archive changed while it was read: ${archive.rel}`);
+      try {
+        await fs.link(temp, abs);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+        throw new WriteRefused(`Something appeared at ${dst}`);
+      }
+    } finally {
+      await input.close();
+      await fs.unlink(temp).catch(() => undefined);
+    }
+    return { existed: false, bytes };
   }
 }

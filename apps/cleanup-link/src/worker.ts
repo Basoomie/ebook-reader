@@ -17,10 +17,12 @@ import { randomUUID } from 'crypto';
 import fs from 'fs/promises';
 import os from 'os';
 import type { LinkConfig } from './config';
+import { entryStream, extractArgs, listArchive, type ArchiveEntry } from './archive';
 import { inspectSource, processInfo, type ProcessInfo } from './inspect';
-import { LinkWriter, WriteRefused } from './writer';
+import { LinkWriter, WriteRefused, type PlannedSource } from './writer';
 
-export const VERSION = '1.1.0';
+/** 1.2.0 (WP21f-1): new books after the switch (arrival batches) and archives (list, extract). */
+export const VERSION = '1.2.0';
 const HEARTBEAT_MS = 30_000;
 
 interface BatchOp {
@@ -41,11 +43,17 @@ interface BatchOp {
   bytes: string | null;
   sha256?: string | null;
   dir?: boolean;
+  /** WP21f-1 (arrival batches): the new book's folder and its planned entries. */
+  book?: string | null;
+  planned?: string[] | null;
+  /** WP21f-1 (extract batches): the entry inside the archive (`src` is the archive). */
+  entry?: { name: string; size: number; encoding: 'utf8' | 'cp932' } | null;
 }
 
 interface Batch {
   id: number;
-  kind: 'preflight' | 'build' | 'switch';
+  /** arrival (WP21f-1): a new book's folder, links and metadata; list/extract: archives. */
+  kind: 'preflight' | 'build' | 'switch' | 'arrival' | 'list' | 'extract';
   leaseSeconds: number;
   ops: BatchOp[];
 }
@@ -61,6 +69,12 @@ export interface OpResult {
   sha256?: string;
   freed?: number;
   size?: number;
+  absRewrote?: boolean;
+  /** list batches: the archive's entries, its names' encoding, or why it can't be read. */
+  entries?: ArchiveEntry[];
+  encoding?: 'utf8' | 'cp932';
+  listProblem?: string | null;
+  bytes?: number;
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -169,6 +183,8 @@ export class LinkWorker {
       }
       return results;
     }
+    if (batch.kind === 'list') return this.listBatch(batch);
+    if (batch.kind === 'arrival' || batch.kind === 'extract') return this.arrivalBatch(batch);
     for (const op of batch.ops) {
       if (this.stopped) break;
       try {
@@ -243,6 +259,98 @@ export class LinkWorker {
           );
           results.push({ id: op.id, ok: true, existed: r.existed, dev: r.dev, ino: r.ino });
         }
+      } catch (err) {
+        results.push({
+          id: op.id,
+          ok: false,
+          error: `${op.kind} ${op.dst}: ${(err as Error).message}`.slice(0, 500)
+        });
+        break;
+      }
+    }
+    return results;
+  }
+
+  private planned(op: BatchOp): PlannedSource {
+    if (!op.src) throw new WriteRefused('A source is needed');
+    return {
+      rel: op.src.rel,
+      raw: op.src.raw,
+      size: op.size ?? -1,
+      mtimeMs: op.mtimeMs ?? -1,
+      dev: op.dev ?? -1,
+      ino: op.ino ?? -1
+    };
+  }
+
+  /** WP21f-1: archives listed (read only): every entry, or why the archive can't be read. */
+  private async listBatch(batch: Batch): Promise<OpResult[]> {
+    const results: OpResult[] = [];
+    for (const op of batch.ops) {
+      if (this.stopped) break;
+      try {
+        const handle = await this.writer.openArchive(this.planned(op));
+        try {
+          const l = await listArchive(this.config.bsdtar, handle, this.config.archiveCharset);
+          results.push({
+            id: op.id,
+            ok: true,
+            entries: l.entries,
+            encoding: l.encoding,
+            listProblem: l.problem
+          });
+        } finally {
+          await handle.close();
+        }
+      } catch (err) {
+        results.push({
+          id: op.id,
+          ok: true,
+          entries: [],
+          listProblem: (err as Error).message.slice(0, 500)
+        });
+      }
+    }
+    return results;
+  }
+
+  /** WP21f-1: a new book's operations, or archive entries unpacked; stops at the first failure. */
+  private async arrivalBatch(batch: Batch): Promise<OpResult[]> {
+    const results: OpResult[] = [];
+    for (const op of batch.ops) {
+      if (this.stopped) break;
+      try {
+        if (batch.kind === 'extract') {
+          if (!op.entry) throw new WriteRefused('An entry is needed');
+          const e = op.entry;
+          const r = await this.writer.extractEntry(this.planned(op), op.dst, e.size, op.id, (h) =>
+            entryStream(
+              this.config.bsdtar,
+              h,
+              extractArgs(e.name, e.encoding, this.config.archiveCharset)
+            )
+          );
+          results.push({ id: op.id, ok: true, existed: r.existed, bytes: r.bytes });
+          continue;
+        }
+        const book = op.book ?? '';
+        const planned = op.planned ?? [];
+        if (op.kind === 'folder') {
+          const r = await this.writer.makeArrivalFolder(op.dst, book, planned);
+          results.push({ id: op.id, ok: true, existed: r.existed });
+        } else if (op.kind === 'metadata') {
+          const r = await this.writer.writeArrivalMetadata(
+            op.dst,
+            Buffer.from(op.bytes ?? '', 'base64'),
+            op.id,
+            book,
+            planned
+          );
+          results.push({ id: op.id, ok: true, existed: r.existed, absRewrote: r.absRewrote });
+        } else if (op.kind === 'link' || op.kind === 'pdf') {
+          const r = await this.writer.linkArrival(this.planned(op), op.dst, book, planned);
+          results.push({ id: op.id, ok: true, existed: r.existed, dev: r.dev, ino: r.ino });
+        } else throw new WriteRefused(`Not an operation of a new book: ${op.kind}`);
       } catch (err) {
         results.push({
           id: op.id,

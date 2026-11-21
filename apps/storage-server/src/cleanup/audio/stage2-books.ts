@@ -24,6 +24,7 @@ import { getAudioStage, updateAudioStage } from './audio-stages';
 import { buildUnits, classifyMulti, folderBooks, idsInNames, type RootName } from './book-units';
 import { decodeMojibake, decodePath } from './mojibake';
 import { checkHealth, toolVersion, type HealthResult, type ToolPaths } from './probe';
+import { librarySwitched } from './switch-state';
 import { walkRoots, type AudioRoots, type WalkResult } from './walk';
 
 export type Stage2Phase = 'walk' | 'units' | 'health' | 'classify' | 'done';
@@ -39,9 +40,13 @@ export interface AudioStage2Progress {
   absItems?: number;
   /** Folders whose full-length files became one book each (classify step). */
   splitFolders?: number;
+  /** WP21f-1: folders of full-length files kept as one book, named as its parts. */
+  namedPartsFolders?: number;
   healthTotal: number;
   healthDone: number;
   healthReused: number;
+  /** WP21f-1: checks taken from a hard link's twin (same inode) instead of playing the file. */
+  healthTwins?: number;
   phaseStartedAt: number;
   phaseStartDone: number;
   counts: Record<string, number> | null;
@@ -80,6 +85,58 @@ export interface Stage2Deps {
    */
   calibreBusy?: () => boolean;
   log?: (m: string) => void;
+}
+
+const HEALTH_COLUMNS = [
+  'format',
+  'format_long',
+  'codec',
+  'profile',
+  'bitrate',
+  'sample_rate',
+  'channels',
+  'duration',
+  'chapter_count',
+  'chapters_json',
+  'has_cover',
+  'tags_json',
+  'header_ok',
+  'start_decode_ok',
+  'end_decode_ok',
+  'decode_error',
+  'error',
+  'tool_version',
+  'checked_ms',
+  'checked_at',
+];
+
+/**
+ * WP21f-1: a file without a current check that is a hard link of a checked file (same device
+ * and inode, same size and mtime: the same bytes) takes that file's row instead of being
+ * played again. After the switch every library file is such a link (about 5,000), so this
+ * keeps a new analysis from checking them all again. Returns how many rows were taken.
+ */
+export function reuseTwinHealth(db: Database.Database): number {
+  const cols = HEALTH_COLUMNS.join(', ');
+  const fromTwin = HEALTH_COLUMNS.map((c) => `h.${c}`).join(', ');
+  const update = HEALTH_COLUMNS.map((c) => `${c} = excluded.${c}`).join(', ');
+  return db
+    .prepare(
+      `INSERT INTO audio_file_health (file_id, size, mtime_ms, ${cols})
+       SELECT f.id, f.size, f.mtime_ms, ${fromTwin}
+       FROM audio_files f
+       JOIN audio_file_health h ON h.file_id = (
+         SELECT t.id FROM audio_files t
+         JOIN audio_file_health th ON th.file_id = t.id AND th.size = t.size AND th.mtime_ms = t.mtime_ms
+         WHERE t.dev = f.dev AND t.ino = f.ino AND t.id <> f.id AND t.size = f.size
+           AND t.mtime_ms = f.mtime_ms AND t.kind = 'audio'
+         ORDER BY t.id LIMIT 1)
+       LEFT JOIN audio_file_health fh ON fh.file_id = f.id
+       WHERE f.kind = 'audio' AND f.gone_at IS NULL
+         AND (fh.file_id IS NULL OR fh.size <> f.size OR fh.mtime_ms <> f.mtime_ms)
+       ON CONFLICT(file_id) DO UPDATE SET size = excluded.size, mtime_ms = excluded.mtime_ms, ${update}`,
+    )
+    .run().changes;
 }
 
 /** Audio files whose health is missing or stale (size or mtime changed). */
@@ -191,6 +248,7 @@ export class AudioStage2 {
       }
       p.books = n;
     })();
+    p.healthTwins = reuseTwinHealth(db);
     const stale = (
       db.prepare(`SELECT COUNT(*) AS n FROM (${STALE_SQL})`).get({ since: p.startedAt }) as {
         n: number;
@@ -351,10 +409,14 @@ export class AudioStage2 {
           disc: string | null;
         }[];
         const how = folderBooks(
-          files.map((f) => ({ seconds: f.duration, disc: f.disc })),
+          files.map((f) => {
+            const base = (f.rel_path.split('/').pop() ?? f.rel_path).replace(/\.[^.]+$/, '');
+            return { seconds: f.duration, disc: f.disc, name: decodeMojibake(base) ?? base };
+          }),
           fullMinutes,
         );
         if (how === 'mixed') mixed.add(b.id);
+        if (how === 'named_parts') this.namedParts.add(b.id);
         if (how !== 'split') continue;
         // ON DELETE CASCADE removes the folder's file rows.
         db.prepare('DELETE FROM audio_books WHERE id = ?').run(b.id);
@@ -388,10 +450,15 @@ export class AudioStage2 {
     return mixed;
   }
 
+  /** Folders the parts rule kept as one book (filled by splitFullLengthFolders). */
+  private namedParts = new Set<number>();
+
   private async classifyStep(p: AudioStage2Progress): Promise<AudioStage2Progress> {
     const db = this.deps.db;
     const s = getSettings(db).audiobooks;
+    this.namedParts = new Set();
     const mixed = this.splitFullLengthFolders(p, s.fullBookMinutes);
+    p.namedPartsFolders = this.namedParts.size;
     const books = db
       .prepare('SELECT * FROM audio_books WHERE analysis_id = ? ORDER BY id')
       .all(p.analysisId) as {
@@ -447,7 +514,12 @@ export class AudioStage2 {
             cls: 'unclear' as const,
             reason: `Some files are full length and some are short: one book in parts, or several books? (${files.length} files)`,
           }
-        : classifyMulti(durations, s.copyHintMinMinutes, s.copyHintPercent);
+        : this.namedParts.has(b.id)
+          ? {
+              cls: 'parts' as const,
+              reason: `${files.length} full-length files named as parts of one book (Part, Disc, CD or track numbers, no store id of their own)`,
+            }
+          : classifyMulti(durations, s.copyHintMinMinutes, s.copyHintPercent);
       const { cls, reason } = multi;
       const total = durations.every((d) => typeof d === 'number')
         ? durations.reduce<number>((a, d) => a + (d ?? 0), 0)
@@ -513,6 +585,15 @@ export class AudioStage2 {
    */
   private async recordAbsItems(analysisId: string): Promise<number> {
     const db = this.deps.db;
+    // WP21f-1: after the switch the library's metadata.json files are the cleanup's own output
+    // (stage 5's values). Reading them back would make stage 3 and 4 use our own decisions as
+    // "what Audiobookshelf had" (ABS ASINs), so the old library's items stay as recorded.
+    if (librarySwitched(db))
+      return (
+        db.prepare(`SELECT COUNT(*) AS n FROM audio_evidence WHERE kind = 'abs_item'`).get() as {
+          n: number;
+        }
+      ).n;
     const files = db
       .prepare(
         `SELECT f.id, f.rel_path, f.decoded_path, f.size, h.duration, h.format, h.codec,

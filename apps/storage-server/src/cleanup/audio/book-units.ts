@@ -152,6 +152,60 @@ export function idsInNames(names: string[]): NameIds {
 
 export type MultiClass = 'single' | 'parts' | 'likely_copies' | 'unclear';
 
+/** A mark that numbers the files of one book (never a volume: 上/下/前編/第N部/N巻 are sold apart). */
+const FILE_MARK =
+  /(?:^|[\s_\-.(（[［【])(?:part|pt|disc|disk|cd|track|ディスク|パート)[\s_\-.]*0*([0-9]{1,3})(?=$|[\s_\-.)）\]］】])/i;
+/** `(1/3)`, `【2／3】`. */
+const OF_MARK = /[(（[［【]\s*0*([0-9]{1,3})\s*[/／]\s*0*([0-9]{1,3})\s*[)）\]］】]/;
+/** A leading track number: `01 `, `02_`. */
+const LEAD_MARK = /^0*([0-9]{1,3})[\s._-]+(?=\S)/;
+
+/** The comparison form of what is left of a name: NFKC, lower case, no spaces or punctuation. */
+function restKey(s: string): string {
+  return s
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/[\s\p{P}\p{S}]/gu, '');
+}
+
+/**
+ * WP21f-1: are these full-length files the parts of ONE book (the known weak spot of the
+ * "every file 2 h or longer = one book each" rule)? Only when both hold:
+ *   1. no file names its own store id (ASIN, [kikubon N], [audiobook.jp N]): the TMW torrents'
+ *      前編/後編 files each carry their own ASIN because Audible sells them apart;
+ *   2. the names differ only in a mark that numbers files: Part/Disc/Disk/CD/Track/ディスク/パート
+ *      N, (N/M), or a leading track number among numbered siblings; what is left is the same
+ *      text and the numbers differ.
+ * Measured on the live library (2026-11-20): no folder meets it (the 涼宮ハルヒ `01 涼宮ハルヒの
+ * 憂鬱` / `02 涼宮ハルヒの溜息` tracks leave different titles), so no existing book changes.
+ */
+export function filesLookLikeParts(names: string[]): boolean {
+  if (names.length < 2) return false;
+  const ids = (n: string) => {
+    const i = idsInNames([n]);
+    return i.asins.length > 0 || i.kikubon !== null || i.audiobookJp !== null;
+  };
+  if (names.some(ids)) return false;
+  for (const mark of [FILE_MARK, OF_MARK, LEAD_MARK]) {
+    const nums: number[] = [];
+    const rests = new Set<string>();
+    let all = true;
+    for (const raw of names) {
+      const n = toHalfWidth(raw);
+      const m = mark.exec(n);
+      if (!m) {
+        all = false;
+        break;
+      }
+      nums.push(Number(m[1]));
+      rests.add(restKey(n.slice(0, m.index) + ' ' + n.slice(m.index + m[0].length)));
+    }
+    if (!all) continue;
+    if (rests.size === 1 && new Set(nums).size === nums.length) return true;
+  }
+  return false;
+}
+
 /**
  * Is a folder of several audio files one book or several? (Measured on the live data
  * 2026-11-18: of the 20 non-TMW folders with more than one file, every file of 10 was 2 h or
@@ -164,13 +218,18 @@ export type MultiClass = 'single' | 'parts' | 'likely_copies' | 'unclear';
  * Disc/CD subfolders always belong to one book.
  */
 export function folderBooks(
-  files: { seconds: number | null; disc: string | null }[],
+  files: { seconds: number | null; disc: string | null; name?: string }[],
   fullMinutes: number,
-): 'split' | 'parts' | 'mixed' {
+): 'split' | 'parts' | 'named_parts' | 'mixed' {
   if (files.some((f) => f.disc !== null)) return 'parts';
   if (files.some((f) => typeof f.seconds !== 'number')) return 'mixed';
   const full = files.filter((f) => (f.seconds as number) >= fullMinutes * 60).length;
-  if (full === files.length) return 'split';
+  if (full === files.length) {
+    // WP21f-1: full-length files named as parts of one book stay one book in parts.
+    const names = files.map((f) => f.name ?? '');
+    if (names.every((n) => n !== '') && filesLookLikeParts(names)) return 'named_parts';
+    return 'split';
+  }
   if (full === 0) return 'parts';
   return 'mixed';
 }

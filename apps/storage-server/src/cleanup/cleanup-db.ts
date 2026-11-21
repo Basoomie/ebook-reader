@@ -1354,6 +1354,205 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
       CREATE INDEX audio_covers_state_idx ON audio_covers (run_id, state, book_id);
     `,
   },
+  {
+    version: 16,
+    name: 'audiobook cleanup: stage 7, the daily new arrivals (WP21f-1)',
+    // Stage 7 (src/cleanup/audio/stage7-arrivals.ts): once a day (or Run now) it runs stages 1-5
+    // again and adds the recordings that are not in the library yet as new books in
+    // media/audiobooks/japanese through the linking sidecar. The archives are unpacked into
+    // torrents/audiobooks/japanese/_extracted/ first. ai_item_designs: the design (E/F/J) each
+    // recording's values are decided with (the new arrivals: the setting, default J).
+    sql: `
+      INSERT INTO audio_stages (stage, updated_at) VALUES (7, 0);
+
+      -- One row per run (daily or Run now): its phase, progress and report.
+      CREATE TABLE audio_arrival_runs (
+        id             INTEGER PRIMARY KEY,
+        trigger        TEXT NOT NULL CHECK (trigger IN ('schedule', 'now')),
+        mode           TEXT NOT NULL CHECK (mode IN ('analyse', 'on')),
+        state          TEXT NOT NULL CHECK (state IN ('running', 'done', 'failed', 'stopped')),
+        phase          TEXT NOT NULL,
+        started_at     INTEGER NOT NULL,
+        finished_at    INTEGER,
+        progress_json  TEXT NOT NULL CHECK (json_valid(progress_json)),
+        report_json    TEXT CHECK (report_json IS NULL OR json_valid(report_json)),
+        error          TEXT
+      );
+      CREATE INDEX audio_arrival_runs_state ON audio_arrival_runs (state, id);
+
+      -- What a run found for each recording that is not simply in the library already (those are
+      -- only counted): new (planned or added), identical, duplicate, better copy, waiting, held,
+      -- removed by hand.
+      CREATE TABLE audio_arrivals (
+        run_id       INTEGER NOT NULL REFERENCES audio_arrival_runs(id) ON DELETE CASCADE,
+        unit_key     TEXT NOT NULL,
+        name         TEXT NOT NULL,
+        outcome      TEXT NOT NULL CHECK (outcome IN
+                       ('new', 'identical', 'duplicate', 'better', 'waiting', 'held', 'removed')),
+        reason       TEXT,
+        folder       TEXT,
+        design       TEXT,
+        detail_json  TEXT CHECK (detail_json IS NULL OR json_valid(detail_json)),
+        PRIMARY KEY (run_id, unit_key)
+      );
+      CREATE INDEX audio_arrivals_outcome ON audio_arrivals (run_id, outcome, name);
+
+      -- The books stage 7 plans (Preview) and builds (On); built rows are the manifest of what it
+      -- added (with audio_arrival_ops). folder is relative to media/audiobooks.
+      CREATE TABLE audio_arrival_books (
+        id             INTEGER PRIMARY KEY,
+        run_id         INTEGER NOT NULL,
+        unit_key       TEXT NOT NULL,
+        copy_key       TEXT NOT NULL,
+        area           TEXT NOT NULL CHECK (area IN ('main', 'ai')),
+        state          TEXT NOT NULL CHECK (state IN ('planned', 'built')),
+        folder         TEXT NOT NULL,
+        base_folder    TEXT NOT NULL,
+        author         TEXT NOT NULL,
+        series         TEXT,
+        title          TEXT NOT NULL,
+        notes_json     TEXT NOT NULL CHECK (json_valid(notes_json)),
+        files          INTEGER NOT NULL,
+        pdfs           INTEGER NOT NULL,
+        metadata       BLOB NOT NULL,
+        design         TEXT NOT NULL,
+        abs_item_id    TEXT,
+        abs_json       TEXT CHECK (abs_json IS NULL OR json_valid(abs_json)),
+        built_at       INTEGER,
+        UNIQUE (run_id, folder)
+      );
+      CREATE INDEX audio_arrival_books_state ON audio_arrival_books (state, run_id, id);
+      CREATE INDEX audio_arrival_books_unit ON audio_arrival_books (unit_key);
+
+      -- Every operation of a run's build (folder, link, pdf, metadata), as stage 6's.
+      CREATE TABLE audio_arrival_ops (
+        id           INTEGER PRIMARY KEY,
+        run_id       INTEGER NOT NULL,
+        book_id      INTEGER,
+        kind         TEXT NOT NULL CHECK (kind IN ('folder', 'link', 'pdf', 'metadata')),
+        dst          TEXT NOT NULL,
+        book_folder  TEXT,
+        src_file_id  INTEGER,
+        src_rel      TEXT,
+        src_raw      TEXT,
+        size         INTEGER,
+        mtime_ms     INTEGER,
+        dev          INTEGER,
+        ino          INTEGER,
+        state        TEXT NOT NULL DEFAULT 'planned'
+                       CHECK (state IN ('planned', 'claimed', 'done', 'failed')),
+        batch_id     INTEGER,
+        result_json  TEXT CHECK (result_json IS NULL OR json_valid(result_json)),
+        done_at      INTEGER
+      );
+      CREATE INDEX audio_arrival_ops_state ON audio_arrival_ops (run_id, state, id);
+      CREATE INDEX audio_arrival_ops_batch ON audio_arrival_ops (batch_id);
+      CREATE INDEX audio_arrival_ops_book ON audio_arrival_ops (book_id);
+      CREATE INDEX audio_arrival_ops_done ON audio_arrival_ops (state, kind);
+
+      -- Batches handed to the linking sidecar (ids from 2,000,000,000: never a build's or the
+      -- switch's). kind archive: listing or unpacking archives.
+      CREATE TABLE audio_arrival_batches (
+        id           INTEGER PRIMARY KEY,
+        run_id       INTEGER NOT NULL,
+        kind         TEXT NOT NULL CHECK (kind IN ('build', 'list', 'extract')),
+        state        TEXT NOT NULL CHECK (state IN ('claimed', 'reported', 'expired')),
+        ops          INTEGER NOT NULL,
+        claimed_at   INTEGER NOT NULL,
+        lease_until  INTEGER NOT NULL,
+        reported_at  INTEGER
+      );
+      INSERT INTO audio_arrival_batches (id, run_id, kind, state, ops, claimed_at, lease_until)
+        VALUES (2000000000, 0, 'build', 'expired', 0, 0, 0);
+      CREATE INDEX audio_arrival_batches_state ON audio_arrival_batches (state, id);
+
+      -- The archives under the torrents (.zip/.rar/.7z) and what became of them. An archive is
+      -- keyed by its path; a changed one (size, mtime or inode) is handled again.
+      CREATE TABLE audio_archives (
+        id            INTEGER PRIMARY KEY,
+        rel           TEXT NOT NULL UNIQUE,
+        raw           TEXT,
+        size          INTEGER NOT NULL,
+        mtime_ms      INTEGER NOT NULL,
+        dev           INTEGER NOT NULL,
+        ino           INTEGER NOT NULL,
+        state         TEXT NOT NULL CHECK (state IN ('new', 'listed', 'extracted', 'failed',
+                        'password', 'no_audio', 'not_archive', 'names')),
+        detail        TEXT,
+        encoding      TEXT,
+        entries       INTEGER,
+        audio_entries INTEGER,
+        bytes         INTEGER,
+        audio_bytes   INTEGER,
+        listed_at     INTEGER,
+        extracted_at  INTEGER,
+        updated_at    INTEGER NOT NULL
+      );
+      CREATE INDEX audio_archives_state ON audio_archives (state, id);
+
+      -- An archive's entries (name: the path inside the archive as text, after the archive's
+      -- name encoding; dst: relative to torrents/audiobooks/japanese, under _extracted/).
+      CREATE TABLE audio_archive_entries (
+        archive_id   INTEGER NOT NULL REFERENCES audio_archives(id) ON DELETE CASCADE,
+        seq          INTEGER NOT NULL,
+        name         TEXT NOT NULL,
+        kind         TEXT NOT NULL CHECK (kind IN ('file', 'dir', 'link', 'other')),
+        size         INTEGER NOT NULL,
+        audio        INTEGER NOT NULL DEFAULT 0,
+        skip         TEXT,
+        dst          TEXT,
+        state        TEXT NOT NULL DEFAULT 'planned'
+                       CHECK (state IN ('planned', 'claimed', 'done', 'failed', 'skipped')),
+        batch_id     INTEGER,
+        result_json  TEXT CHECK (result_json IS NULL OR json_valid(result_json)),
+        done_at      INTEGER,
+        PRIMARY KEY (archive_id, seq)
+      );
+      CREATE INDEX audio_archive_entries_next ON audio_archive_entries (state, archive_id, seq);
+      CREATE INDEX audio_archive_entries_batch ON audio_archive_entries (batch_id);
+
+      -- Review items of stage 7 (better copies of books already in Audiobookshelf, archives
+      -- that can't be unpacked, held arrivals, books Audiobookshelf doesn't show). review_key is
+      -- stable across runs, so a choice survives; a choice is only recorded (WP21f-2 applies the
+      -- better copies) except "Add anyway", which the next run applies.
+      CREATE TABLE audio_arrival_reviews (
+        id            INTEGER PRIMARY KEY,
+        review_key    TEXT NOT NULL UNIQUE,
+        kind          TEXT NOT NULL CHECK (kind IN ('better_copy', 'archive', 'held', 'abs_missing')),
+        unit_key      TEXT,
+        title         TEXT NOT NULL,
+        detail_json   TEXT NOT NULL CHECK (json_valid(detail_json)),
+        first_run_id  INTEGER NOT NULL,
+        last_run_id   INTEGER NOT NULL,
+        decision      TEXT,
+        decided_at    INTEGER,
+        resolved_at   INTEGER
+      );
+      CREATE INDEX audio_arrival_reviews_open ON audio_arrival_reviews (resolved_at, kind, id);
+      CREATE INDEX audio_arrival_reviews_run ON audio_arrival_reviews (first_run_id);
+
+      -- A run's walks of the torrents and the library before and after its build (gzip JSON of
+      -- the entries: what its check compares), kept for the run's report.
+      CREATE TABLE audio_arrival_walks (
+        run_id   INTEGER NOT NULL,
+        phase    TEXT NOT NULL CHECK (phase IN ('before', 'after')),
+        root     TEXT NOT NULL CHECK (root IN ('torrents', 'library', 'generated')),
+        entries  INTEGER NOT NULL,
+        data     BLOB NOT NULL,
+        PRIMARY KEY (run_id, phase, root)
+      );
+
+      -- The design (E, F or J) each item of a stage is decided with; none = E.
+      CREATE TABLE ai_item_designs (
+        stage     TEXT NOT NULL,
+        item_key  TEXT NOT NULL,
+        design    TEXT NOT NULL CHECK (design IN ('E', 'F', 'J')),
+        set_at    INTEGER NOT NULL,
+        PRIMARY KEY (stage, item_key)
+      );
+      CREATE INDEX ai_values_design ON ai_values (stage, design);
+    `,
+  },
 ];
 
 export const CLEANUP_SCHEMA_VERSION = CLEANUP_MIGRATIONS[CLEANUP_MIGRATIONS.length - 1].version;

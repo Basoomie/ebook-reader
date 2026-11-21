@@ -754,6 +754,35 @@ export function buildOnCopy(plan: string | null): ConfirmCopy {
   };
 }
 
+/** Audiobook stage 7 (WP21f-1): switching the daily new arrivals On. */
+export function arrivalsOnCopy(lastPlan: string | null): ConfirmCopy {
+  return {
+    title: 'Add new audiobooks to the library every day?',
+    message: [
+      ...(lastPlan ? [lastPlan] : []),
+      'From the next run on (daily, or Run now), the linking sidecar adds each new book to media/audiobooks/japanese as new folders with hard links to the torrents’ files and its metadata.json. Audiobookshelf then shows them. Books already in the library are never changed.',
+      'Pause qBittorrent and Sonarr before a large first run (they slow the disk).'
+    ],
+    confirmLabel: 'Switch it On',
+    irreversible: false
+  };
+}
+
+/** Audiobook stage 7 (WP21f-1): Run now. */
+export function arrivalsRunNowCopy(mode: 'analyse' | 'on'): ConfirmCopy {
+  return {
+    title: 'Run the new arrivals now?',
+    message: [
+      'Stages 1-5 run again (hashes, checks and answers already there are kept), new archives are unpacked into torrents/…/_extracted/, and the new books are planned.',
+      mode === 'on'
+        ? 'Stage 7 is On: the new books are added to the library.'
+        : 'Stage 7 is in Preview: nothing is added to the library.'
+    ],
+    confirmLabel: 'Run now',
+    irreversible: false
+  };
+}
+
 /** WP21e-2: the switch to the new audiobook library. */
 export function switchCopy(): ConfirmCopy {
   return {

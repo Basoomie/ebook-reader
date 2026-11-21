@@ -13,6 +13,10 @@ export interface LinkConfig {
   fileMode: number;
   /** Requests to the server time out after this long (s). */
   serverTimeoutSeconds: number;
+  /** WP21f-1: libarchive's bsdtar (reads archives; never writes files itself). */
+  bsdtar: string;
+  /** WP21f-1: the iconv name of the encoding zips without UTF-8 names use (CP932). */
+  archiveCharset: string;
 }
 
 export class ConfigError extends Error {}
@@ -42,6 +46,8 @@ export function loadConfig(env: Record<string, string | undefined>): LinkConfig 
     dataDir: (env.DATA_DIR ?? '/data').trim() || '/data',
     dirMode: mode(env.DIR_MODE, 0o777, 'DIR_MODE'),
     fileMode: mode(env.FILE_MODE, 0o666, 'FILE_MODE'),
-    serverTimeoutSeconds: Number.isFinite(t) && t > 0 ? t : 60
+    serverTimeoutSeconds: Number.isFinite(t) && t > 0 ? t : 60,
+    bsdtar: (env.BSDTAR ?? 'bsdtar').trim() || 'bsdtar',
+    archiveCharset: (env.ARCHIVE_CHARSET ?? 'CP932').trim() || 'CP932'
   };
 }

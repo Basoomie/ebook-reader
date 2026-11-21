@@ -46,13 +46,35 @@ export function audioLabelsReader(
 /**
  * Library paths (relative to the cleanup's library root, e.g. `作者/本/本 (merged).m4b`) of
  * audio files the reader wrote. The reader's paths are relative to AUDIOBOOKS_DIR
- * (media/audiobooks), so only those under the library's folder (`libraryFolder`, the last part
- * of `libraryDir`, CLEANUP_AUDIO_LIBRARY_DIR, e.g. `japanese`) count, without that first part.
+ * (media/audiobooks), so only those under the library's folder count, without that first part.
+ *
+ * The library's folder is the reader's own name for it (`libraries.audio_dir`, `japanese`), not
+ * the mount's (WP21f-1, known bug from WP21e-2: CLEANUP_AUDIO_LIBRARY_DIR is
+ * `/cleanup-audio/library` on the NAS, so the mount's last part `library` never matched).
  */
+export function readerLibraryFolder(mainDb: Database.Database, libraryDir: string): string {
+  const mount = path.basename(libraryDir);
+  try {
+    const dirs = (
+      mainDb.prepare(`SELECT audio_dir FROM libraries WHERE audio_dir IS NOT NULL`).all() as {
+        audio_dir: string;
+      }[]
+    )
+      .map((r) => r.audio_dir.replace(/^\/+|\/+$/g, ''))
+      .filter((d) => d && !d.includes('/'));
+    if (dirs.includes(mount)) return mount;
+    if (dirs.length === 1) return dirs[0];
+    if (dirs.includes('japanese')) return 'japanese';
+  } catch {
+    // no libraries table (tests): the mount's name
+  }
+  return mount;
+}
+
 export function readerWrittenFiles(mainDb: Database.Database, libraryDir: string): () => string[] {
-  const libraryFolder = path.basename(libraryDir);
   return () => {
     try {
+      const libraryFolder = readerLibraryFolder(mainDb, libraryDir);
       const rows = mainDb
         .prepare(
           `SELECT final_rel_path FROM audio_writes WHERE state = 'done' AND final_rel_path IS NOT NULL`,

@@ -372,6 +372,18 @@
                 // Stage 5 (WP21d): only when the server knows it.
                 ...(settings.audiobooks.multiNarratorMin !== undefined
                   ? { multiNarratorMin: Number(settings.audiobooks.multiNarratorMin) }
+                  : {}),
+                // Stage 7 (WP21f-1): only when the server knows them.
+                ...(settings.audiobooks.arrivalsTime !== undefined
+                  ? {
+                      arrivalsTime: settings.audiobooks.arrivalsTime,
+                      arrivalsQuietStart: settings.audiobooks.arrivalsQuietStart,
+                      arrivalsQuietEnd: settings.audiobooks.arrivalsQuietEnd,
+                      arrivalsSettleMinutes: Number(settings.audiobooks.arrivalsSettleMinutes),
+                      arrivalsAbsWaitMinutes: Number(settings.audiobooks.arrivalsAbsWaitMinutes),
+                      arrivalsAbsNudge: settings.audiobooks.arrivalsAbsNudge === true,
+                      extractLeaseSeconds: Number(settings.audiobooks.extractLeaseSeconds)
+                    }
                   : {})
               }
             }
@@ -733,6 +745,93 @@
                 />
               </label>
             {/if}
+          {/if}
+          {#if settings.audiobooks.arrivalsTime !== undefined}
+            <p class="text-c-muted sm:col-span-2" data-testid="cleanup-audio-arrivals-settings">
+              New arrivals (stage 7). Once a day at this time (the server's clock), never inside the
+              backup window (the nightly appdata backup stops the server at 00:00). A file counts
+              once it hasn't changed for the minutes below.
+            </p>
+            <label class={field}>
+              <span class={label}>Time of the daily run</span>
+              <input
+                class="c-input"
+                type="time"
+                bind:value={settings.audiobooks.arrivalsTime}
+                data-testid="cleanup-audio-arrivalsTime"
+              />
+            </label>
+            <label class={field}>
+              <span class={label}>A file counts once unchanged for (minutes)</span>
+              <input
+                class="c-input"
+                type="number"
+                min="0"
+                max="10080"
+                step="1"
+                bind:value={settings.audiobooks.arrivalsSettleMinutes}
+                data-testid="cleanup-audio-arrivalsSettleMinutes"
+              />
+            </label>
+            <label class={field}>
+              <span class={label}>No run from (backup window)</span>
+              <input
+                class="c-input"
+                type="time"
+                bind:value={settings.audiobooks.arrivalsQuietStart}
+                data-testid="cleanup-audio-arrivalsQuietStart"
+              />
+            </label>
+            <label class={field}>
+              <span class={label}>No run until</span>
+              <input
+                class="c-input"
+                type="time"
+                bind:value={settings.audiobooks.arrivalsQuietEnd}
+                data-testid="cleanup-audio-arrivalsQuietEnd"
+              />
+            </label>
+            <label class={field}>
+              <span class={label}>Wait for Audiobookshelf to show a new book (minutes)</span>
+              <input
+                class="c-input"
+                type="number"
+                min="0"
+                max="1440"
+                step="1"
+                bind:value={settings.audiobooks.arrivalsAbsWaitMinutes}
+                data-testid="cleanup-audio-arrivalsAbsWaitMinutes"
+              />
+            </label>
+            <label class={field}>
+              <span class={label}>Seconds to unpack one archive entry</span>
+              <input
+                class="c-input"
+                type="number"
+                min="60"
+                max="86400"
+                step="1"
+                bind:value={settings.audiobooks.extractLeaseSeconds}
+                data-testid="cleanup-audio-extractLeaseSeconds"
+              />
+            </label>
+            <label class="flex items-start gap-2 text-sm sm:col-span-2">
+              <input
+                type="checkbox"
+                class="mt-1"
+                bind:checked={settings.audiobooks.arrivalsAbsNudge}
+                data-testid="cleanup-audio-arrivalsAbsNudge"
+              />
+              <span
+                >Tell Audiobookshelf about a new book it doesn't show yet
+                <span class="block text-c-muted"
+                  >After the wait above, the run tells Audiobookshelf "look at this new folder"
+                  (like pressing scan for that one folder; no Audiobookshelf setting is changed).
+                  Off: the report lists the books it doesn't show, and you press Scan in
+                  Audiobookshelf.</span
+                ></span
+              >
+            </label>
           {/if}
           {#if settings.gate.audiobookPairsFile !== undefined}
             <label class="{field} sm:col-span-2">
@@ -1436,6 +1535,36 @@
             ></span
           >
         </label>
+        {#if settings.ai.arrivalsDesign !== undefined}
+          <label class={field}>
+            <span class={label}>New audiobooks: AI setup</span>
+            <select
+              class="c-input"
+              bind:value={settings.ai.arrivalsDesign}
+              data-testid="cleanup-ai-arrivals-design"
+            >
+              <option value="J">J: both models, then two stronger models look again</option>
+              <option value="F">F: stronger models look again only at the unconfirmed values</option
+              >
+              <option value="E">E: both models only (as the library)</option>
+            </select>
+          </label>
+          <label class="flex items-start gap-2 text-sm">
+            <input
+              type="checkbox"
+              class="mt-1"
+              bind:checked={settings.ai.upgradeIncludeDecided}
+              data-testid="cleanup-ai-upgrade-include"
+            />
+            <span
+              >A later upgrade also looks again at values already decided by that setup
+              <span class="block text-c-muted"
+                >Off (recommended): a library-wide J upgrade leaves out the new audiobooks already
+                decided with J.</span
+              ></span
+            >
+          </label>
+        {/if}
       </fieldset>
 
       <fieldset class="flex flex-col gap-4" data-testid="cleanup-ai-models">

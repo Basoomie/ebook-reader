@@ -62,6 +62,13 @@ import {
 } from './stage6-switch';
 import { AUDIO_ON_STAGES } from './audio-stages';
 import { stageIds } from './build-inputs';
+import { librarySwitched } from './switch-state';
+import {
+  ARRIVAL_BATCH_BASE,
+  AudioStage7,
+  type ArrivalBatch,
+  type ArrivalOpResult,
+} from './stage7-arrivals';
 
 /** A clip can't be cut now (a Calibre job uses the disk): try again in a moment. */
 export class AudioBusyError extends Error {}
@@ -182,6 +189,9 @@ export class AudioCleanupService {
   private running6: Promise<void> | null = null;
   private runningSwitch: Promise<void> | null = null;
   private runningCovers: Promise<void> | null = null;
+  private running7: Promise<void> | null = null;
+  /** Stage 7 (WP21f-1): the daily new arrivals (after the switch). */
+  readonly stage7: AudioStage7 | null;
   private snapshotting: Promise<void> | null = null;
   private stopped = false;
   waiting1: string | null = null;
@@ -253,8 +263,31 @@ export class AudioCleanupService {
       db: opts.db,
       runner: this.ai,
       readLabels: opts.readLabels,
+      // WP21f-1: the new arrivals are decided with the arrivals' setup (default J).
+      designs: (stage4Id) => this.stage7?.designsFor(stage4Id) ?? new Map(),
       log: this.log,
     });
+    this.stage7 = opts.roots
+      ? new AudioStage7({
+          db: opts.db,
+          roots: {
+            torrents: opts.roots.torrents,
+            library: opts.roots.library,
+            media: opts.roots.media ?? null,
+          },
+          lock: opts.lock,
+          reanalyse: (n) => this.reanalyse(n),
+          abs: () => {
+            const s = getSettings(this.db).audiobooks;
+            const key = this.opts.secrets.read('absApiKey');
+            return s.absUrl && key
+              ? { baseUrl: s.absUrl, apiKey: key, timeoutMs: s.absTimeoutSeconds * 1000 }
+              : null;
+          },
+          fetchImpl: opts.fetchImpl,
+          log: this.log,
+        })
+      : null;
     this.stage6 = opts.roots
       ? new AudioStage6({
           db: opts.db,
@@ -346,7 +379,9 @@ export class AudioCleanupService {
     await this.running6;
     await this.runningSwitch;
     await this.runningCovers;
+    await this.running7;
     await this.snapshotting;
+    this.opts.lock.release(DISK_OWNERS.audio7);
     this.opts.lock.release(DISK_OWNERS.audio1);
     this.opts.lock.release(DISK_OWNERS.audio3);
     this.opts.lock.release(DISK_OWNERS.audio4);
@@ -380,6 +415,7 @@ export class AudioCleanupService {
     this.round5();
     this.round6();
     this.roundSwitch();
+    this.round7();
     // Settings > AI "Test batch" results (each checked at the batch poll pace).
     await this.ai.pollBatchTests().catch((err) => this.logError('AI: batch tests:', err));
   }
@@ -810,6 +846,8 @@ export class AudioCleanupService {
     if (!s6) return 'The audiobook folders are not set up';
     const st = getAudioStage(this.db, 6);
     if (st.pauseReason) return `Paused: ${st.pauseDetail ?? st.pauseReason}`;
+    if (librarySwitched(this.db))
+      return 'Built, checked and switched: new books are added by stage 7';
     const { ids, problem } = stageIds(this.db);
     const p = s6.progress();
     if (!ids && !s6.buildStarted(p)) return problem ?? 'Waiting for stages 1-5';
@@ -901,6 +939,45 @@ export class AudioCleanupService {
     })();
   }
 
+  /**
+   * Stage 7 (WP21f-1): starts the daily run when it is due (or Run now) and runs its phases while
+   * it isn't paused. Off stops a run (setMode).
+   */
+  private round7(): void {
+    const s7 = this.stage7;
+    if (!s7 || this.running7) return;
+    const st = getAudioStage(this.db, 7);
+    if (st.mode === 'off' || st.pauseReason) {
+      s7.giveBack();
+      return;
+    }
+    if (!this.roots.ok) return;
+    if (!s7.maybeStart()) return;
+    const stop = () => {
+      if (this.stopped) return true;
+      const x = getAudioStage(this.db, 7);
+      return x.mode === 'off' || x.pauseReason !== null;
+    };
+    this.running7 = (async () => {
+      try {
+        for (;;) {
+          if (stop()) break;
+          const r = await s7.step(stop);
+          if (r === 'done') break;
+          if (r === 'wait') {
+            for (let i = 0; i < 4 && !stop(); i++) await new Promise((res) => setTimeout(res, 500));
+          } else await new Promise((res) => setImmediate(res));
+        }
+      } catch (err) {
+        this.logError('Audiobook cleanup: stage 7 failed:', err);
+      } finally {
+        s7.giveBack();
+        this.running7 = null;
+        void this.tick();
+      }
+    })();
+  }
+
   /** WP21e-2: runs the switch's phases while it is running and not paused. */
   private roundSwitch(): void {
     this.roundCovers();
@@ -984,22 +1061,44 @@ export class AudioCleanupService {
   linkHeartbeat(body: Parameters<AudioStage6['heartbeat']>[0]) {
     if (!this.stage6) throw new Error('The audiobook folders are not set up');
     const r = this.stage6.heartbeat(body);
-    if (this.switcher?.active()) return { active: true, pollSeconds: 1 };
+    if (this.switcher?.active() || this.stage7?.active()) return { active: true, pollSeconds: 1 };
     return r;
   }
 
-  linkClaim(): LinkBatch | SwitchBatch | null {
-    return this.switcher?.claim() ?? this.stage6?.claim() ?? null;
+  linkClaim(): LinkBatch | SwitchBatch | ArrivalBatch | null {
+    return this.switcher?.claim() ?? this.stage7?.claim() ?? this.stage6?.claim() ?? null;
   }
 
   linkReport(batchId: number, results: LinkOpResult[]) {
     if (!this.stage6) throw new Error('The audiobook folders are not set up');
     const r =
-      batchId >= SWITCH_BATCH_BASE && this.switcher
-        ? this.switcher.report(batchId, results)
-        : this.stage6.report(batchId, results);
+      batchId >= ARRIVAL_BATCH_BASE && this.stage7
+        ? this.stage7.report(batchId, results as unknown as ArrivalOpResult[])
+        : batchId >= SWITCH_BATCH_BASE && this.switcher
+          ? this.switcher.report(batchId, results)
+          : this.stage6.report(batchId, results);
     void this.tick();
     return r;
+  }
+
+  /** Stage 7's lists, review choices, Resume and the plan's CSV. */
+  arrivals(list: string, opts: { offset?: number; limit?: number } = {}) {
+    return this.stage7?.list(list, opts) ?? { total: 0, items: [] };
+  }
+
+  arrivalsDecide(reviewId: number, decision: string): void {
+    if (!this.stage7) throw new Error('The audiobook folders are not set up');
+    this.stage7.decide(reviewId, decision);
+  }
+
+  arrivalsResume(): void {
+    if (!this.stage7) throw new Error('The audiobook folders are not set up');
+    this.stage7.resume();
+    void this.tick();
+  }
+
+  arrivalsCsv(): string {
+    return this.stage7?.planCsv() ?? '';
   }
 
   /** Stage 6's lists and downloads. */
@@ -1029,6 +1128,19 @@ export class AudioCleanupService {
 
   async setMode(stage: number, mode: AudioStageMode): Promise<void> {
     if (!AUDIO_ANALYSIS_STAGES.includes(stage)) throw new Error('No such stage');
+    if (stage === 7) {
+      if (!this.stage7) throw new Error('The audiobook folders are not set up');
+      if (mode === 'on') {
+        const refusals = this.stage7.onRefusals();
+        if (refusals.length) throw new Error(refusals.join('; '));
+        this.log('Audiobooks stage 7: switched On (new books are added to the library)');
+      }
+      // A run going on keeps its mode; Off stops it.
+      if (mode === 'off') this.stage7.stopRun('Switched Off');
+      setAudioStageMode(this.db, stage, mode);
+      void this.tick();
+      return;
+    }
     if (mode === 'on') {
       if (!AUDIO_ON_STAGES.includes(stage))
         throw new Error('Only stage 6 (the build) can be switched on');
@@ -1049,6 +1161,13 @@ export class AudioCleanupService {
   /** "Run the analysis again" (keeps the hashes and health of unchanged files). */
   reanalyse(stage: number): void {
     this.log(`Audiobooks stage ${stage}: run the analysis again (asked from the page)`);
+    if (stage === 7) {
+      // Stage 7's "Run now".
+      if (!this.stage7) throw new Error('The audiobook folders are not set up');
+      this.stage7.requestRun();
+      void this.tick();
+      return;
+    }
     if (stage === 6) {
       if (!this.stage6) throw new Error('The audiobook folders are not set up');
       if (this.running6) throw new Error('Stage 6 is working; switch it Off first');
@@ -1179,6 +1298,7 @@ export class AudioCleanupService {
       stage6: this.stage6
         ? { available: true, waiting: this.waiting6, ...this.stage6.status() }
         : { available: false, waiting: this.waiting6 },
+      stage7: this.stage7 ? { available: true, ...this.stage7.status() } : { available: false },
       switch: this.switcher
         ? { available: true, ...this.switcher.status(), covers: this.covers?.status() ?? null }
         : { available: false },
@@ -1254,6 +1374,17 @@ export class AudioCleanupService {
           models: [
             { task: META_SPEC.tasks.primary, role: 'First model' },
             { task: META_SPEC.tasks.secondary, role: 'Second model' },
+          ],
+        },
+        {
+          // WP21f-1: the new arrivals' setup J (default): E, then the stronger pair.
+          id: `${META_SPEC.stage}.upgrade`,
+          name: 'New audiobooks: the second look (setup J)',
+          about:
+            'After both models above, two stronger models look again at what they decided or guessed, for the new audiobooks of the daily run only. A value both stronger models agree on is confirmed.',
+          models: [
+            { task: META_SPEC.tasks.upgradePrimary, role: 'First stronger model' },
+            { task: META_SPEC.tasks.upgradeSecondary, role: 'Second stronger model' },
           ],
         },
         {

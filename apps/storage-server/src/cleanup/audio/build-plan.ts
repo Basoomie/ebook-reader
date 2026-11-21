@@ -279,6 +279,48 @@ function baseOf(name: string): string {
   return (i > 0 ? name.slice(0, i) : name).normalize('NFKC').toLowerCase().trim();
 }
 
+/**
+ * The copies that are not linked, each with the copy it gives way to: in a proven group (stage
+ * 3's outcome auto) every copy but the kept one; a review-page choice applied; unproven groups
+ * and unsure pairs keep every copy. Shared by stage 6's plan and stage 7 (WP21f-1).
+ */
+export function droppedCopies(
+  copies: Iterable<PlanCopy>,
+  decisions: Map<string, string>,
+): Map<string, { kept: string; why: string }> {
+  const groups = new Map<number, { g: PlanCopyGroup; members: PlanCopy[] }>();
+  for (const c of copies) {
+    if (!c.group) continue;
+    const e = groups.get(c.group.id) ?? { g: c.group, members: [] };
+    e.members.push(c);
+    groups.set(c.group.id, e);
+  }
+  const droppedBy = new Map<string, { kept: string; why: string }>();
+  for (const { g, members } of groups.values()) {
+    const decision = decisions.get(g.key) ?? null;
+    const chosen = decision?.startsWith('keep:') ? decision.slice(5) : null;
+    const chosenCopy = chosen ? members.find((m) => m.key === chosen) : undefined;
+    let kept: PlanCopy[];
+    let why: string;
+    if (chosenCopy) {
+      kept = [chosenCopy];
+      why = 'your choice on the review page';
+    } else if (decision === 'keep_all' || g.kind !== 'group' || g.outcome !== 'auto') {
+      kept = members;
+      why = '';
+    } else {
+      kept = members.filter((m) => m.group?.role === 'keep');
+      why = 'proven duplicate';
+      if (kept.length === 0) kept = members; // never lose every copy
+    }
+    const keptKeys = new Set(kept.map((k) => k.key));
+    const first = [...kept].sort((a, b) => (a.group?.rank ?? 0) - (b.group?.rank ?? 0))[0];
+    for (const m of members)
+      if (!keptKeys.has(m.key)) droppedBy.set(m.key, { kept: first.key, why });
+  }
+  return droppedBy;
+}
+
 /** The plan in one go (tests, scripts). */
 export function planBuild(inputs: PlanInputs): PlanResult {
   const g = planSteps(inputs);
@@ -331,36 +373,7 @@ function* planSteps(inputs: PlanInputs): Generator<void, PlanResult> {
   };
 
   // 1. Which copies are linked, and which copy each dropped one gives way to.
-  const groups = new Map<number, { g: PlanCopyGroup; members: PlanCopy[] }>();
-  for (const c of inputs.copies.values()) {
-    if (!c.group) continue;
-    const e = groups.get(c.group.id) ?? { g: c.group, members: [] };
-    e.members.push(c);
-    groups.set(c.group.id, e);
-  }
-  const droppedBy = new Map<string, { kept: string; why: string }>();
-  for (const { g, members } of groups.values()) {
-    const decision = inputs.decisions.get(g.key) ?? null;
-    const chosen = decision?.startsWith('keep:') ? decision.slice(5) : null;
-    const chosenCopy = chosen ? members.find((m) => m.key === chosen) : undefined;
-    let kept: PlanCopy[];
-    let why: string;
-    if (chosenCopy) {
-      kept = [chosenCopy];
-      why = 'your choice on the review page';
-    } else if (decision === 'keep_all' || g.kind !== 'group' || g.outcome !== 'auto') {
-      kept = members;
-      why = '';
-    } else {
-      kept = members.filter((m) => m.group?.role === 'keep');
-      why = 'proven duplicate';
-      if (kept.length === 0) kept = members; // never lose every copy
-    }
-    const keptKeys = new Set(kept.map((k) => k.key));
-    const first = [...kept].sort((a, b) => (a.group?.rank ?? 0) - (b.group?.rank ?? 0))[0];
-    for (const m of members)
-      if (!keptKeys.has(m.key)) droppedBy.set(m.key, { kept: first.key, why });
-  }
+  const droppedBy = droppedCopies(inputs.copies.values(), inputs.decisions);
   counts.droppedCopies = droppedBy.size;
 
   // 2. One draft per linked copy.

@@ -57,6 +57,19 @@ const EVENTS: EventDef[] = [
     label: 'A field paused or resumed by the accuracy checks',
     kind: 'digest',
   },
+  // WP21f-1: the audiobook cleanup's daily new arrivals (stage 7).
+  {
+    id: 'audio_arrivals_review',
+    section: 'cleanup',
+    label: 'New audiobooks need a look (once per daily run with new review items)',
+    kind: 'now',
+  },
+  {
+    id: 'audio_arrivals_summary',
+    section: 'cleanup',
+    label: 'Audiobook daily summary (books added, duplicates, waiting, review)',
+    kind: 'digest',
+  },
   {
     id: 'index_refused',
     section: 'data',

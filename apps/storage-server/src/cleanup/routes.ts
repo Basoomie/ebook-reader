@@ -550,6 +550,42 @@ function addAudioRoutes(router: Router, options: CleanupOptions): void {
     res.json(audio.status());
   });
 
+  // Stage 7 (WP21f-1): the new arrivals' lists, review choices, Resume and the plan as CSV.
+  // Run now is POST /cleanup/audio/stages/7/analyse.
+  router.get('/cleanup/audio/arrivals', (req, res) => {
+    const audio = audioOr503(options);
+    res.json(audio.arrivals(String(req.query.list ?? 'new'), page(req)));
+  });
+
+  router.get('/cleanup/audio/arrivals/plan.csv', (_req, res) => {
+    const audio = audioOr503(options);
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="audiobooks-new-arrivals-plan.csv"');
+    res.send(audio.arrivalsCsv());
+  });
+
+  router.post('/cleanup/audio/arrivals/reviews/:id', (req, res) => {
+    const audio = audioOr503(options);
+    const decision = (req.body as { decision?: unknown } | undefined)?.decision;
+    if (typeof decision !== 'string') throw new ApiError(400, 'bad_request', 'decision is missing');
+    try {
+      audio.arrivalsDecide(Number(req.params.id), decision);
+    } catch (err) {
+      throw new ApiError(400, 'bad_request', (err as Error).message);
+    }
+    res.json({ ok: true });
+  });
+
+  router.post('/cleanup/audio/arrivals/resume', (_req, res) => {
+    const audio = audioOr503(options);
+    try {
+      audio.arrivalsResume();
+    } catch (err) {
+      throw new ApiError(409, 'not_available', (err as Error).message);
+    }
+    res.json(audio.status());
+  });
+
   // The switch (WP21e-2): Switch, Undo, Delete japanese-old (each asked first on the page),
   // Continue after a pause, Cancel before anything is renamed or deleted, the link report.
   router.post(

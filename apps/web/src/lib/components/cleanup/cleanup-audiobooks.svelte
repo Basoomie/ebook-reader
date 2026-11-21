@@ -83,6 +83,8 @@
   import CleanupAudioOnline from './cleanup-audio-online.svelte';
   import CleanupAudioMeta from './cleanup-audio-meta.svelte';
   import CleanupAudioSwitch from './cleanup-audio-switch.svelte';
+  import CleanupAudioArrivals from './cleanup-audio-arrivals.svelte';
+  import CleanupAudioArrivalsLists from './cleanup-audio-arrivals-lists.svelte';
   import {
     diskBusy,
     gateSummary,
@@ -156,6 +158,15 @@
   $: bars6 = [audioStage6Bar(s6)].filter((b): b is ProgressBar => b !== null);
   /** Stage 6's analysis and phase: the sample reloads when it changes. */
   $: analysis6 = p6 ? `${p6.analysisId}:${p6.phase}` : '';
+  /** Stage 7 (WP21f-1): the daily new arrivals. */
+  $: stage7 = status?.stages.find((s) => s.stage === 7) ?? null;
+  $: run7 = status?.stage7?.available ? (status.stage7.run ?? null) : null;
+  $: analysis7 = run7 ? `${run7.runId}:${run7.phase}` : '';
+  /** While a run waits for stages 1-5, the bar of the one that is working. */
+  $: activeStage = [1, 2, 3, 4, 5].find(
+    (k) => status?.stages.find((s) => s.stage === k)?.state === 'analysing'
+  );
+  $: stage7Bars = activeStage ? (views[activeStage]?.bars ?? []) : [];
   $: if (analysis6 !== sampleFor) void loadSample(analysis6);
   let sample: AudioBuildBook[] = [];
   let sampleFor = '';
@@ -781,7 +792,33 @@
         </div>
       {/if}
     {/each}
+
+    {#if stage7 && status.stage7?.available}
+      <CleanupAudioArrivals
+        {api}
+        {status}
+        stage={stage7}
+        stageBars={stage7Bars}
+        detailsOpen={detailsOpen[7]}
+        onToggle={(e) => toggleDetails(7, e)}
+        onStatus={(next) => (status = next)}
+      />
+    {/if}
   </section>
+
+  {#if stage7 && run7}
+    <CleanupSection
+      id="audio-arrivals"
+      jp="新着"
+      title="New arrivals"
+      summary={status.stage7?.openReviews
+        ? `${n(Object.values(status.stage7.openReviews).reduce((a, b) => a + b, 0))} to look at`
+        : ''}
+      testid="audio-arrivals-section"
+    >
+      <CleanupAudioArrivalsLists {api} run={analysis7} />
+    </CleanupSection>
+  {/if}
 
   {#if stage3 && p3}
     <CleanupSection

@@ -48,6 +48,36 @@ function requireLinkToken(options: LinkRouteOptions) {
 const str = (v: unknown, max = 300) =>
   typeof v === 'string' && v.trim() ? v.trim().slice(0, max) : null;
 
+const KINDS = new Set(['file', 'dir', 'link', 'other']);
+
+/** WP21f-1: an archive listing from the sidecar, checked (at most 100,000 entries). */
+function listing(r: Record<string, unknown>): {
+  entries?: { name: string; kind: 'file' | 'dir' | 'link' | 'other'; size: number }[];
+  encoding?: 'utf8' | 'cp932';
+  listProblem?: string | null;
+} {
+  const out: ReturnType<typeof listing> = {};
+  if (Array.isArray(r.entries) && r.entries.length <= 100_000) {
+    out.entries = [];
+    for (const e of r.entries as Record<string, unknown>[]) {
+      if (
+        typeof e !== 'object' ||
+        e === null ||
+        typeof e.name !== 'string' ||
+        e.name.length > 4096 ||
+        !KINDS.has(e.kind as string) ||
+        typeof e.size !== 'number' ||
+        !(e.size >= 0)
+      )
+        continue;
+      out.entries.push({ name: e.name, kind: e.kind as 'file', size: e.size });
+    }
+  }
+  if (r.encoding === 'utf8' || r.encoding === 'cp932') out.encoding = r.encoding;
+  if ('listProblem' in r) out.listProblem = str(r.listProblem, 500);
+  return out;
+}
+
 export function createCleanupLinkRouter(options: LinkRouteOptions): Router {
   const router = express.Router();
   router.use('/cleanup-link', requireLinkToken(options));
@@ -113,6 +143,10 @@ export function createCleanupLinkRouter(options: LinkRouteOptions): Router {
         sha256:
           typeof r.sha256 === 'string' && /^[0-9a-f]{64}$/.test(r.sha256) ? r.sha256 : undefined,
         size: typeof r.size === 'number' && r.size >= 0 ? r.size : undefined,
+        // WP21f-1: an archive's listing, an unpacked entry's bytes, ABS's rewrite of metadata.json.
+        ...listing(r),
+        bytes: typeof r.bytes === 'number' && r.bytes >= 0 ? r.bytes : undefined,
+        absRewrote: r.absRewrote === true,
       });
     }
     try {

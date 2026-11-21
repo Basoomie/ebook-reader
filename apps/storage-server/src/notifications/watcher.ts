@@ -65,6 +65,13 @@ const FIELD_PAUSE_TEXT: Record<string, string> = {
   review_alarm: 'too many books sent to review',
 };
 
+interface ArrivalReport {
+  added: number;
+  planned: number;
+  newReview: number;
+  outcomes?: Record<string, number>;
+}
+
 interface FinishedRow {
   id: number;
   kind?: string;
@@ -100,6 +107,7 @@ export class NotificationWatcher {
     this.part('audiobook cleanup stages', () => this.audioStages());
     this.part('the cleanup helpers', () => this.helpers(settings, now));
     this.part('field pauses', () => this.fieldPauses());
+    this.part('new audiobooks', () => this.arrivalRuns());
     this.part('refused changes', () => this.refusalsQuiet(settings, now));
     for (const m of this.messages) this.service.notify(m, settings);
   }
@@ -523,6 +531,58 @@ export class NotificationWatcher {
         `Calibre cleanup stage ${p.stage}: "${p.field}" resumed`,
         LINKS.cleanup,
       );
+    }
+  }
+
+  /**
+   * WP21f-1: each finished run of the audiobook cleanup's daily new arrivals (stage 7) gives
+   * one digest line (the audiobook daily summary) and, when it added new review items, one
+   * alert. The first look only remembers the last run.
+   */
+  private arrivalRuns(): void {
+    const db = this.s.cleanupDb;
+    if (!db) return;
+    let rows: { id: number; mode: string; report_json: string | null }[];
+    try {
+      rows = db
+        .prepare(
+          `SELECT id, mode, report_json FROM audio_arrival_runs WHERE state = 'done' AND id > ? ORDER BY id`,
+        )
+        .all(this.service.store.getState<number>('arrival_runs') ?? 0) as typeof rows;
+    } catch {
+      return; // cleanup.db before WP21f-1
+    }
+    const first = this.service.store.getState<number>('arrival_runs') === undefined;
+    if (rows.length) this.service.store.setState('arrival_runs', rows[rows.length - 1].id);
+    else if (first) this.service.store.setState('arrival_runs', 0);
+    if (first) return;
+    for (const r of rows) {
+      const rep = r.report_json ? (JSON.parse(r.report_json) as ArrivalReport) : null;
+      if (!rep) continue;
+      const o = rep.outcomes ?? {};
+      const parts = [
+        r.mode === 'on' ? `${rep.added} added` : `${rep.planned} would be added (Preview)`,
+        o.duplicate || o.identical
+          ? `${(o.duplicate ?? 0) + (o.identical ?? 0)} copies recorded`
+          : null,
+        o.waiting ? `${o.waiting} waiting` : null,
+        o.held ? `${o.held} held` : null,
+        rep.newReview ? `${rep.newReview} new to look at` : null,
+      ].filter((x): x is string => x !== null);
+      this.service.addDigestLine(
+        'audio_arrivals_summary',
+        `New audiobooks: ${parts.join(', ')}`,
+        LINKS.audioCleanup,
+      );
+      if (rep.newReview > 0)
+        this.messages.push({
+          event: 'audio_arrivals_review',
+          lines: [
+            `New audiobooks: ${rep.newReview} ${plural(rep.newReview, 'item', 'items')} to look at (better copies, held files, archives)`,
+            r.mode === 'on' ? `${rep.added} added in this run` : 'Preview run: nothing was added',
+          ],
+          link: LINKS.audioCleanup,
+        });
     }
   }
 

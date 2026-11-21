@@ -184,6 +184,27 @@ export interface AudiobookSettings {
   deleteBatchOps: number;
   /** Covers (WP21e-2): milliseconds between two covers set through Audiobookshelf's API. */
   coverPaceMs: number;
+  /**
+   * Stage 7 (WP21f-1): the daily run's time of day (HH:MM in the server's time zone). It never
+   * starts inside the backup window below (CA Appdata Backup stops ttsu-storage at 00:00).
+   */
+  arrivalsTime: string;
+  /** Stage 7: no run starts from this time (HH:MM) ... */
+  arrivalsQuietStart: string;
+  /** ... until this time (HH:MM; may be after midnight). */
+  arrivalsQuietEnd: string;
+  /** Stage 7: a file counts once its size and mtime have been unchanged this long (minutes). */
+  arrivalsSettleMinutes: number;
+  /** Stage 7: how long to wait for Audiobookshelf to show a new book (minutes). */
+  arrivalsAbsWaitMinutes: number;
+  /**
+   * Stage 7: when Audiobookshelf hasn't shown a new book after the wait, tell it the new folder
+   * (its watcher API, one folder; no setting is changed). Off until stop 3 shows it is needed
+   * (user, 2026-11-20).
+   */
+  arrivalsAbsNudge: boolean;
+  /** Stage 7: seconds the sidecar has to unpack one archive entry before it is handed out again. */
+  extractLeaseSeconds: number;
 }
 
 /** A model's list price per million tokens (US$). */
@@ -244,6 +265,16 @@ export interface AiSettings {
    * other items are decided by the rules alone, with every open field flagged.
    */
   labeledOnly: boolean;
+  /**
+   * WP21f-1: the setup the daily new arrivals are decided with (default J: E, then the stronger
+   * pair re-checks what E decided or guessed; user, 2026-11-17).
+   */
+  arrivalsDesign: 'E' | 'F' | 'J';
+  /**
+   * WP21f-1: a library-wide F or J upgrade also re-checks values already decided by that design
+   * or a stronger one (the new arrivals decided with J). Off: they are skipped.
+   */
+  upgradeIncludeDecided: boolean;
 }
 
 /** The shortest interval a site can be set to (seconds; Sudachi runs locally and has none). */
@@ -487,6 +518,14 @@ export const DEFAULT_SETTINGS: CleanupSettings = {
     switchLeaseSeconds: 300,
     deleteBatchOps: 200,
     coverPaceMs: 1000,
+    // Stage 7 (WP21f-1): after the backup (00:00-00:07 NAS time) and before the day starts.
+    arrivalsTime: '05:00',
+    arrivalsQuietStart: '23:30',
+    arrivalsQuietEnd: '00:30',
+    arrivalsSettleMinutes: 30,
+    arrivalsAbsWaitMinutes: 30,
+    arrivalsAbsNudge: false,
+    extractLeaseSeconds: 1800,
   },
   ai: {
     spendLimitUsd: null,
@@ -510,6 +549,8 @@ export const DEFAULT_SETTINGS: CleanupSettings = {
     },
     structuredOutputs: true,
     labeledOnly: false,
+    arrivalsDesign: 'J',
+    upgradeIncludeDecided: false,
   },
   fetch: {
     // Paces of plan section 6 (Bookmeter and Natively as BookWalker; the cover images as decided
@@ -679,6 +720,18 @@ function num(name: string, value: unknown, min: number, max: number, integer = f
   if (integer && !Number.isInteger(value))
     throw new SettingsError(`${name} must be a whole number`);
   return value;
+}
+
+function bool(name: string, value: unknown): boolean {
+  if (typeof value !== 'boolean') throw new SettingsError(`${name} must be on or off`);
+  return value;
+}
+
+/** A time of day, HH:MM (24 h). */
+function clock(name: string, value: unknown): string {
+  if (typeof value !== 'string' || !/^([01]\d|2[0-3]):[0-5]\d$/.test(value.trim()))
+    throw new SettingsError(`${name} must be a time like 05:00`);
+  return value.trim();
 }
 
 function text(name: string, value: unknown, max = 500): string {
@@ -890,6 +943,29 @@ function validate(key: Key, value: unknown, current: CleanupSettings): unknown {
         switchLeaseSeconds: num('Seconds per switch batch', v.switchLeaseSeconds, 30, 3600, true),
         deleteBatchOps: num('Entries deleted per batch', v.deleteBatchOps, 1, 5000, true),
         coverPaceMs: num('Milliseconds between covers', v.coverPaceMs, 0, 60000, true),
+        arrivalsTime: clock('Time of the daily run', v.arrivalsTime),
+        arrivalsQuietStart: clock('No run from', v.arrivalsQuietStart),
+        arrivalsQuietEnd: clock('No run until', v.arrivalsQuietEnd),
+        arrivalsSettleMinutes: num(
+          'A file counts once unchanged for (minutes)',
+          v.arrivalsSettleMinutes,
+          0,
+          10080,
+        ),
+        arrivalsAbsWaitMinutes: num(
+          'Wait for Audiobookshelf to show a new book (minutes)',
+          v.arrivalsAbsWaitMinutes,
+          0,
+          1440,
+        ),
+        arrivalsAbsNudge: bool('Tell Audiobookshelf the new folder', v.arrivalsAbsNudge),
+        extractLeaseSeconds: num(
+          'Seconds to unpack one archive entry',
+          v.extractLeaseSeconds,
+          60,
+          86400,
+          true,
+        ),
       };
     }
     case 'ai': {
@@ -963,6 +1039,13 @@ function validate(key: Key, value: unknown, current: CleanupSettings): unknown {
         prices,
         structuredOutputs: v.structuredOutputs === true,
         labeledOnly: v.labeledOnly === true,
+        arrivalsDesign:
+          v.arrivalsDesign === 'E' || v.arrivalsDesign === 'F' || v.arrivalsDesign === 'J'
+            ? v.arrivalsDesign
+            : (() => {
+                throw new SettingsError('The new arrivals’ AI setup must be E, F or J');
+              })(),
+        upgradeIncludeDecided: v.upgradeIncludeDecided === true,
       };
     }
     case 'fetch': {

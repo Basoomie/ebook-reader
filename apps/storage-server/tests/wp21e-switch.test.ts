@@ -492,7 +492,12 @@ describe('the linking sidecar’s switch abilities (writer.ts)', () => {
   });
 
   it('only writer.ts writes; its switch abilities are exactly these, each in its own method', () => {
-    const strip = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+    // Line ends normalized: a Windows checkout has CRLF (the method bodies end at "\n  }\n").
+    const strip = (s: string) =>
+      s
+        .replace(/\r\n/g, '\n')
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/\/\/.*$/gm, '');
     const WRITES =
       /\b(writeFile|writeFileSync|appendFile|appendFileSync|mkdir|mkdirSync|rename|renameSync|unlink|unlinkSync|rmdir|rmSync|rm|link|linkSync|symlink|copyFile|cp|cpSync|utimes|chmod|chown|truncate|createWriteStream|futimes|lchown)\(|\b(O_CREAT|O_WRONLY|O_RDWR)\b/;
     for (const f of fs
@@ -505,17 +510,26 @@ describe('the linking sidecar’s switch abilities (writer.ts)', () => {
     const writer = strip(fs.readFileSync(path.join(LINK_SRC, 'writer.ts'), 'utf8'));
     const methods = Object.getOwnPropertyNames(LinkWriter.prototype).sort();
     expect(methods).toEqual([
+      // WP21f-1: the new arrivals (new books' folders, links and metadata.json under japanese/
+      // and japanese-generated/; archive entries under the torrents' _extracted/).
+      'arrivalParent',
+      'checkBook',
       'constructor',
       'copyInventory',
       'deleteOld',
+      'extractEntry',
       'inside',
+      'linkArrival',
       'linkFile',
       'linkToFromLibrary',
+      'makeArrivalFolder',
       'makeFolder',
+      'openArchive',
       'realFolders',
       'renameRoot',
       'source',
       'torrentFolders',
+      'writeArrivalMetadata',
       'writeMetadata',
     ]);
     /** The body of one method (to its closing brace at two spaces). */
@@ -532,27 +546,49 @@ describe('the linking sidecar’s switch abilities (writer.ts)', () => {
     expect(body('renameRoot').indexOf('RENAME_PAIRS')).toBeLessThan(
       body('renameRoot').indexOf('fs.rename('),
     );
-    // Removals: the build's temporary file (twice in writeMetadata) and deleteOld's one file;
-    // the one rmdir is deleteOld's (an empty folder), after its japanese-old check.
-    expect(count(/fs\.unlink\(/g)).toBe(3);
+    // Removals: the build's temporary file (twice in writeMetadata, twice in
+    // writeArrivalMetadata, twice in extractEntry: its own `.ttsu-*-<n>.partial` names) and
+    // deleteOld's one file; the one rmdir is deleteOld's (an empty folder), after its
+    // japanese-old check.
+    expect(count(/fs\.unlink\(/g)).toBe(7);
     expect(count(/fs\.unlink\(/g, body('writeMetadata'))).toBe(2);
+    expect(count(/fs\.unlink\(/g, body('writeArrivalMetadata'))).toBe(2);
+    expect(count(/fs\.unlink\(/g, body('extractEntry'))).toBe(2);
+    for (const m of ['writeArrivalMetadata', 'extractEntry'])
+      for (const line of body(m)
+        .split('\n')
+        .filter((l) => l.includes('fs.unlink(')))
+        expect(line, m).toMatch(/fs\.unlink\((temp|temp\)\.catch)/);
     expect(count(/fs\.unlink\(/g, body('deleteOld'))).toBe(1);
     expect(count(/fs\.rmdir\(/g)).toBe(1);
     expect(count(/fs\.rmdir\(/g, body('deleteOld'))).toBe(1);
     expect(body('deleteOld').indexOf('OLD_ROOT')).toBeLessThan(
       body('deleteOld').indexOf('fs.unlink('),
     );
-    // New names: links (the build's two, _from-library's one), folders, the copied files.
-    expect(count(/fs\.link\(/g)).toBe(3);
+    // New names: links (the build's two, _from-library's one; WP21f-1: a new book's link and its
+    // metadata.json, an unpacked entry), folders, the copied files.
+    expect(count(/fs\.link\(/g)).toBe(6);
     expect(count(/fs\.link\(/g, body('linkToFromLibrary'))).toBe(1);
     expect(body('linkToFromLibrary').indexOf('FROM_LIBRARY')).toBeLessThan(
       body('linkToFromLibrary').indexOf('fs.link('),
     );
-    expect(count(/fs\.mkdir\(/g)).toBe(3);
-    expect(count(/fs\.open\(/g)).toBe(2);
+    // WP21f-1: a new book's writes only after the checks of its folder (only under japanese/ or
+    // japanese-generated/, holding nothing that isn't planned for it); unpacked entries only
+    // under _extracted/.
+    for (const m of ['linkArrival', 'writeArrivalMetadata'])
+      expect(body(m).indexOf('arrivalParent(')).toBeLessThan(body(m).indexOf('fs.link('));
+    expect(body('arrivalParent').indexOf('checkBook(')).toBeGreaterThan(0);
+    expect(body('makeArrivalFolder').indexOf('arrivalDestination(')).toBeLessThan(
+      body('makeArrivalFolder').indexOf('fs.mkdir('),
+    );
+    expect(body('extractEntry').indexOf('EXTRACTED')).toBeLessThan(
+      body('extractEntry').indexOf('fs.link('),
+    );
+    expect(count(/fs\.mkdir\(/g)).toBe(4);
+    expect(count(/fs\.open\(/g)).toBe(6);
     expect(writer).not.toMatch(/\b(symlink|copyFile|rm\(|rmSync|truncate|utimes|chown)\b/);
     // chmod only on what it made: new folders and its own new files.
-    expect(count(/chmod\(/g)).toBe(5);
+    expect(count(/chmod\(/g)).toBe(8);
   });
 });
 
