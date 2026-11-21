@@ -80,6 +80,9 @@ function childrenOf(tree: ExistingTree, parent: string): Map<string, string> {
   return out;
 }
 
+/** What may follow a book's name in its editions' folders: ` {narrator}`, ` (n)`, or both. */
+const FAMILY_REST = /^( {[^}]*})?( (d+))?$/;
+
 export function planArrivals(books: PlannedBook[], tree: ExistingTree): ArrivalPlan {
   const counts: ArrivalPlan['counts'] = {
     books: 0,
@@ -150,9 +153,20 @@ export function planArrivals(books: PlannedBook[], tree: ExistingTree): ArrivalP
     const notes = b.notes.filter((n) => n !== 'narrator' && n !== 'number');
     let suffix = '';
     const k0 = nameKey(fitName(base).name);
-    if (t.has(k0)) {
-      const theirs = t.get(k0) ?? null;
-      if (narrator && theirs !== null && theirs !== narrator) {
+    // The editions already under this name: `base`, `base {narrator}`, `base (n)` and
+    // `base {narrator} (n)` (stage 6 names every edition with its narrator when they differ).
+    // The new one takes its narrator when the others carry theirs or one of them differs.
+    const family = [...t].filter(
+      ([k]) => k === k0 || (k.startsWith(k0) && FAMILY_REST.test(k.slice(k0.length))),
+    );
+    if (family.length && narrator) {
+      const mine = nameKey(narrator);
+      const differs = family.some(([k, theirs]) => {
+        const braced = /{([^}]*)}/.exec(k.slice(k0.length));
+        const who = theirs !== null ? nameKey(theirs) : braced ? braced[1] : null;
+        return braced !== null || (who !== null && who !== mine);
+      });
+      if (differs) {
         suffix = ` {${fitName(narrator).name}}`;
         notes.push('narrator');
         counts.collisions.narrator++;

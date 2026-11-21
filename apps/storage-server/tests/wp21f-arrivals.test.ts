@@ -576,6 +576,51 @@ describe('the plan against the existing library', () => {
     expect(p.books[0].files[0].dst).toBe('japanese/作者A/同じ題 {読み手Z}/同じ題.m4b');
   });
 
+  it('editions stage 6 named with their narrators: the new one takes its own (the replay test found this)', () => {
+    // As built live: 変な家 {小林裕介} / {河西健吾}; 赤と青とエスキース {井上悟} / {織田優成} / {織田優成} (2).
+    const fam = {
+      dirs: new Set([
+        'japanese',
+        'japanese/雨穴',
+        'japanese/雨穴/変な家 {小林裕介}',
+        'japanese/青山美智子',
+        'japanese/青山美智子/赤と青とエスキース {井上悟}',
+        'japanese/青山美智子/赤と青とエスキース {織田優成}',
+        'japanese/青山美智子/赤と青とエスキース {織田優成} (2)',
+        'japanese/作者C',
+        'japanese/作者C/本',
+        'japanese/作者C/本 (2)',
+        'japanese/作者C/本の続き',
+      ]),
+      bookDirs: new Set<string>(),
+      narrators: new Map<string, string | null>([
+        ['japanese/雨穴/変な家 {小林裕介}', '小林裕介'],
+        ['japanese/青山美智子/赤と青とエスキース {井上悟}', '井上悟'],
+        ['japanese/青山美智子/赤と青とエスキース {織田優成}', '織田優成'],
+        ['japanese/青山美智子/赤と青とエスキース {織田優成} (2)', '織田優成'],
+        ['japanese/作者C/本', '読み手'],
+        ['japanese/作者C/本 (2)', '読み手'],
+        ['japanese/作者C/本の続き', '別の人'],
+      ]),
+    };
+    for (const d of fam.dirs) if (d.split('/').length === 3) fam.bookDirs.add(d);
+    const p = planArrivals(
+      [
+        book({ title: '変な家', author: '雨穴', narrator: '河西健吾' }),
+        book({ title: '赤と青とエスキース', author: '青山美智子', narrator: '織田優成' }),
+        // Same narrator, no braces in the family: the next number; 本の続き is another book.
+        book({ title: '本', author: '作者C', narrator: '読み手' }),
+      ],
+      fam,
+    );
+    expect(p.books.map((b) => b.folder)).toEqual([
+      'japanese/雨穴/変な家 {河西健吾}',
+      'japanese/青山美智子/赤と青とエスキース {織田優成} (3)',
+      'japanese/作者C/本 (3)',
+    ]);
+    expect(p.counts.collisions).toMatchObject({ narrator: 2, number: 2 });
+  });
+
   it('a series goes into the existing series folder; a book folder is never used as a series folder', () => {
     const p = planArrivals(
       [
