@@ -64,6 +64,7 @@ import { readerLibraryFolder } from '../src/cleanup/audio-stage3-inputs';
 import { getAudioStage, setAudioStageMode } from '../src/cleanup/audio/audio-stages';
 import { initCleanupDatabase } from '../src/cleanup/cleanup-db';
 import { DiskLock } from '../src/cleanup/disk-lock';
+import { AudioStage3 } from '../src/cleanup/audio/stage3-dups';
 import { getSettings, updateSettings } from '../src/cleanup/settings';
 import { liveCases, seedStage4 } from './helpers/audio-meta-seed';
 import { IDS, seedBuild, type BuildSeed } from './helpers/build-seed';
@@ -1144,6 +1145,58 @@ describe('post-switch fixes', () => {
     );
     expect(readerLibraryFolder(main, '/cleanup-audio/library')).toBe('japanese');
     expect(readerLibraryFolder(main, '/x/english')).toBe('english');
+  });
+
+  it('stage 3’s gate follows a labeled file of the deleted old library by its content (the diff found this)', () => {
+    const db = freshDb('wp21f-gate3');
+    const ins = db.prepare(
+      `INSERT INTO audio_files (root, rel_path, ext, kind, size, mtime_ms, dev, ino, nlink, sha256, first_seen_at, seen_at, gone_at)
+       VALUES (?, ?, '.m4b', 'audio', ?, 5, 1, ?, 1, ?, 0, 0, ?)`,
+    );
+    // The old library: a byte copy of a torrent file, and a library-only file (never hashed) that
+    // the switch linked under _from-library (the same inode). Both are gone now.
+    ins.run('library', '_Unknown/本/本.m4b', 100, 10, 'sha-a', 50);
+    ins.run('library', '_Unknown/他/他.m4b', 200, 11, null, 50);
+    const t1 = Number(ins.run('torrents', 'TMW/本.m4b', 100, 20, 'sha-a', null).lastInsertRowid);
+    const t2 = Number(
+      ins.run('torrents', '_from-library/他/他.m4b', 200, 11, null, null).lastInsertRowid,
+    );
+    const copy = db.prepare(
+      `INSERT INTO audio_dup_copies (analysis_id, copy_key, book_key, kind, file_ids, name)
+       VALUES ('a3', ?, ?, 'file', ?, 'n')`,
+    );
+    copy.run('c1', 'torrents:TMW/本.m4b', JSON.stringify([t1]));
+    copy.run('c2', 'torrents:_from-library/他', JSON.stringify([t2]));
+    const stage = new AudioStage3({
+      db,
+      roots: { torrents: '/none', library: '/none' },
+      tools: { ffprobePath: 'x', ffmpegPath: 'x' },
+      lock: new DiskLock(5),
+    });
+    const look = (p: { analysisId: string; stage1Id: string }) =>
+      (
+        stage as unknown as {
+          gateLookups: (p: unknown) => { copyIdsOf: (rel: string) => number[] };
+        }
+      ).gateLookups(p);
+    const p = { analysisId: 'a3', stage1Id: 's1' };
+    // Before the switch a gone file is not followed (as before WP21f-1).
+    expect(look(p).copyIdsOf('_Unknown/本/本.m4b')).toEqual([]);
+    db.prepare(`UPDATE audio_switch SET state = 'deleted' WHERE id = 1`).run();
+    const ids = (rel: string) =>
+      look(p)
+        .copyIdsOf(rel)
+        .map(
+          (id) =>
+            (
+              db.prepare('SELECT copy_key FROM audio_dup_copies WHERE id = ?').get(id) as {
+                copy_key: string;
+              }
+            ).copy_key,
+        );
+    expect(ids('_Unknown/本/本.m4b')).toEqual(['c1']);
+    expect(ids('_Unknown/他/他.m4b')).toEqual(['c2']);
+    expect(ids('_Unknown/無い.m4b')).toEqual([]);
   });
 });
 

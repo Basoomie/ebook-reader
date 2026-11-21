@@ -26,6 +26,7 @@
  * A change to stage 3's settings goes back to `candidates` (no file is read again unless a
  * window it needs isn't stored yet).
  */
+import { librarySwitched } from './switch-state';
 import type Database from 'better-sqlite3';
 import { createHash, randomUUID } from 'crypto';
 import { DISK_OWNERS, type DiskLock } from '../disk-lock';
@@ -1757,11 +1758,36 @@ export class AudioStage3 {
        LEFT JOIN audio_identity c ON c.file_id = f.id AND c.analysis_id = ?
        WHERE f.root = 'library' AND f.rel_path = ? AND f.gone_at IS NULL`,
     );
+    // After the switch (WP21e-2) the labeled files of the old library are gone: each is followed
+    // by its stored content (SHA-256, or the inode the switch linked under _from-library) to the
+    // torrent files that hold it now, as stage 1 followed it to its originals before (WP21f-1).
+    const switched = librarySwitched(db);
+    const gone = db.prepare(
+      `SELECT sha256, dev, ino, size FROM audio_files
+       WHERE root = 'library' AND rel_path = ? AND gone_at IS NOT NULL ORDER BY gone_at DESC LIMIT 1`,
+    );
+    const bySha = db.prepare(
+      `SELECT id FROM audio_files WHERE sha256 = ? AND root = 'torrents' AND gone_at IS NULL`,
+    );
+    const byInode = db.prepare(
+      `SELECT id FROM audio_files WHERE dev = ? AND ino = ? AND size = ? AND root = 'torrents' AND gone_at IS NULL`,
+    );
+    const followGone = (rel: string): number[] => {
+      const g = gone.get(rel) as
+        | { sha256: string | null; dev: number; ino: number; size: number }
+        | undefined;
+      if (!g) return [];
+      const ids = [
+        ...(g.sha256 ? (bySha.all(g.sha256) as { id: number }[]) : []),
+        ...(byInode.all(g.dev, g.ino, g.size) as { id: number }[]),
+      ].map((x) => x.id);
+      return [...new Set(ids.flatMap((id) => byFile.get(id) ?? []))];
+    };
     const copyIdsOf = (rel: string): number[] => {
       const r = lib.get(p.stage1Id, rel) as
         | { id: number; class: string | null; original_file_ids: string | null }
         | undefined;
-      if (!r) return [];
+      if (!r) return switched ? followGone(rel) : [];
       const files = r.original_file_ids ? (JSON.parse(r.original_file_ids) as number[]) : [r.id];
       return [...new Set(files.flatMap((id) => byFile.get(id) ?? []))];
     };
