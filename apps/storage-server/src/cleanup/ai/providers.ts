@@ -84,6 +84,12 @@ export class RetryableError extends Error {
   constructor(
     message: string,
     readonly retryAfterMs: number | null = null,
+    /**
+     * The provider's own rate limit (429, Anthropic's 529 overloaded): not the question's fault,
+     * so it uses up none of its tries (WP20e stop 2: 536 of Luna's questions were given up on
+     * "Rate limit reached … tokens per min" with 60 calls at the same time).
+     */
+    readonly busy = false,
   ) {
     super(message);
   }
@@ -173,10 +179,17 @@ export function firstJson(text: string): unknown {
   return undefined;
 }
 
-function statusError(status: number | undefined, message: string, retryAfter?: string | null) {
+export function statusError(
+  status: number | undefined,
+  message: string,
+  retryAfter?: string | null,
+) {
   const ms = retryAfter && /^\d+(\.\d+)?$/.test(retryAfter) ? Number(retryAfter) * 1000 : null;
+  // A spent quota or billing limit also answers 429; waiting does not end it, so it keeps its
+  // tries and is given up as before.
+  const busy = (status === 429 && !/quota|billing/i.test(message)) || status === 529;
   if (status === undefined || status === 408 || status === 409 || status === 429 || status >= 500)
-    return new RetryableError(message, ms);
+    return new RetryableError(message, ms, busy);
   return new FinalError(message, status);
 }
 

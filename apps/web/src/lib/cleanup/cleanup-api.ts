@@ -1695,6 +1695,11 @@ export class CleanupApi {
     }>;
   }
 
+  /** Stage 4's AI questions that were given up, asked again. */
+  askAiAgain(): Promise<{ questions: number }> {
+    return this.request('POST', '/cleanup/stage4/ai/ask-again') as Promise<{ questions: number }>;
+  }
+
   // ---------------------------------------------------------------- audiobooks (WP21a)
 
   audioStatus(): Promise<AudioStatus> {

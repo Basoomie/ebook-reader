@@ -256,3 +256,130 @@ describe('AI calls one at a time: the pool', () => {
     expect(runner.counts(SPEC.stage, 'r')).toMatchObject({ answered: 2, queued: 2 });
   });
 });
+
+describe('the rate limit and given-up questions (WP20e stop 2: 536 of Luna given up on 429)', () => {
+  /** A provider whose calls fail with the given error until `ok` is set. */
+  function failing(err: () => Error) {
+    const state = { ok: false, calls: 0 };
+    const client: ProviderClient = {
+      provider: 'openai',
+      listModels: async () => ['gpt-6-luna', 'claude-haiku-5-5'],
+      call: async (input: CallInput) => {
+        state.calls++;
+        if (!state.ok) throw err();
+        const title = input.user.replace(/^ITEM /, '');
+        return {
+          kind: 'answered',
+          text: `{"title":"${title}"}`,
+          json: { title },
+          usage: { input: 100, output: 20, cacheRead: 0, cacheWrite: 0 },
+        } as CallResult;
+      },
+      submitBatch: async () => {
+        throw new Error('no batches here');
+      },
+      batchStatus: async () => {
+        throw new Error('no batches here');
+      },
+      batchResults: async () => [],
+      cancelBatch: async () => {},
+    };
+    return { client, state };
+  }
+
+  function make(err: () => Error, n = 3) {
+    const s0 = initCleanupDatabase(makeTempDir('ai-pool-429'));
+    if (!s0.ok) throw new Error(s0.error);
+    const db = s0.db;
+    const p = failing(err);
+    let now = 1_000_000;
+    const runner = new AiRunner({
+      db,
+      secrets: { read: () => 'key' },
+      providers: () => p.client,
+      sleep: async () => {},
+      now: () => now,
+    } as never);
+    const s = getSettings(db);
+    updateSettings(db, {
+      ai: {
+        ...s.ai,
+        spendLimitUsd: 5,
+        directWorkers: 3,
+        attempts: 2,
+        modes: Object.fromEntries(Object.values(s.models).map((m) => [m, 'direct' as const])),
+      },
+    });
+    const keys = Array.from({ length: n }, (_, i) => `k${i}`);
+    runner.putItems(
+      SPEC,
+      keys.map((k) => ({ key: k, evidence: { title: k }, labeled: false })),
+      1,
+    );
+    runner.enqueue(SPEC, 'secondary', keys, 'r');
+    const attempts = () =>
+      db.prepare(`SELECT state, attempts FROM ai_requests ORDER BY id`).all() as {
+        state: string;
+        attempts: number;
+      }[];
+    return { db, runner, p, attempts, later: (ms: number) => (now += ms) };
+  }
+
+  it('a rate-limit 429 uses no try: the question goes back and the model waits', async () => {
+    const { RetryableError } = await import('../src/cleanup/ai/providers');
+    const t = make(
+      () =>
+        new RetryableError(
+          '429 Rate limit reached for gpt-6-luna on tokens per min (TPM)',
+          null,
+          true,
+        ),
+    );
+    for (let i = 0; i < 5; i++) {
+      await t.runner.step(SPEC, 'r', () => false);
+      await t.runner.settle();
+    }
+    // Five steps: the first sent three calls, all refused; the others waited (busy).
+    expect(t.p.state.calls).toBe(3);
+    expect(t.attempts()).toEqual(Array(3).fill({ state: 'queued', attempts: 0 }));
+    const r = await t.runner.step(SPEC, 'r', () => false);
+    expect(r.wait).toMatchObject({ kind: 'provider_busy', provider: 'openai' });
+    // When the wait is over the questions are asked and answered.
+    t.p.state.ok = true;
+    t.later(61_000);
+    await t.runner.step(SPEC, 'r', () => false);
+    await t.runner.settle();
+    expect(t.runner.counts(SPEC.stage, 'r')).toMatchObject({ answered: 3, failed: 0 });
+  });
+
+  it('tells a rate limit from a spent quota and a server error by the answer', async () => {
+    const { statusError } = await import('../src/cleanup/ai/providers');
+    const busy = (st: number, m: string) =>
+      (statusError(st, m) as { busy?: boolean }).busy === true;
+    expect(busy(429, '429 Rate limit reached for gpt-6-luna')).toBe(true);
+    expect(busy(529, '529 Overloaded')).toBe(true);
+    expect(busy(429, '429 You exceeded your current quota, check your billing')).toBe(false);
+    expect(busy(500, '500 Server error')).toBe(false);
+  });
+
+  it('a server error still uses its tries and is given up; asking again queues it afresh', async () => {
+    const { RetryableError } = await import('../src/cleanup/ai/providers');
+    const t = make(() => new RetryableError('500 Server error'));
+    await t.runner.step(SPEC, 'r', () => false);
+    await t.runner.settle();
+    expect(t.attempts()).toEqual(Array(3).fill({ state: 'failed', attempts: 2 }));
+    // A given-up question of another run is not touched.
+    t.db.prepare(`UPDATE ai_requests SET run_id = 'other' WHERE id = 3`).run();
+    expect(t.runner.askAgain(SPEC.stage, 'r')).toBe(2);
+    expect(t.attempts()).toEqual([
+      { state: 'queued', attempts: 0 },
+      { state: 'queued', attempts: 0 },
+      { state: 'failed', attempts: 2 },
+    ]);
+    t.p.state.ok = true;
+    await t.runner.step(SPEC, 'r', () => false);
+    await t.runner.settle();
+    expect(t.runner.counts(SPEC.stage, 'r')).toMatchObject({ answered: 2, failed: 0 });
+    expect(t.runner.askAgain(SPEC.stage, 'r')).toBe(0);
+  });
+});

@@ -1008,6 +1008,14 @@ export class CleanupService {
     return { requests, books };
   }
 
+  /** Stage 4's AI questions that were given up, asked again (the stage-4 card's button). */
+  askStage4AiAgain(): { questions: number } {
+    const questions = this.stage4Ai?.askAgain() ?? 0;
+    this.status4Cache = null;
+    if (questions > 0) void this.tick();
+    return { questions };
+  }
+
   /** Stage 4's proposals for the page's list (paged). */
   stage4Proposals(f: {
     field: string | null;
