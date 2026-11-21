@@ -980,7 +980,7 @@ export class LinkWriter {
       throw new WriteRefused(`Not a book folder: ${from} -> ${to}`);
     if (to === from || to.startsWith(from + '/'))
       throw new WriteRefused(`Not a move: ${from} -> ${to}`);
-    if (!Number.isSafeInteger(ino) || ino <= 0) throw new WriteRefused('Bad inode');
+    if (!Number.isFinite(ino) || ino <= 0) throw new WriteRefused('Bad inode');
     const src = path.join(this.media, ...fparts);
     const dst = path.join(this.media, ...tparts);
     const d = await fs.lstat(dst, { bigint: true }).catch(() => null);
@@ -990,9 +990,9 @@ export class LinkWriter {
     if (!s) throw new WriteRefused(`The folder to move is missing: ${from}`);
     if (s.isSymbolicLink() || !s.isDirectory())
       throw new WriteRefused(`Not a real folder: ${from}`);
+    await this.libraryBook(fparts, [LIBRARY_ROOT]);
     if (Number(s.ino) !== ino) throw new WriteRefused(`Not the planned folder (inode): ${from}`);
     if (d) throw new WriteRefused(`Something is already there: ${to}`);
-    await this.libraryBook(fparts, [LIBRARY_ROOT]);
     // The new parents: made when missing; an existing one must be a plain folder (no file).
     let cur = await this.realFolders(tparts.slice(0, 1));
     for (let i = 1; i < tparts.length - 1; i++) {
@@ -1116,7 +1116,7 @@ export class LinkWriter {
     if (fparts.length > 2) throw new WriteRefused(`Too deep inside the book: ${from}`);
     for (const n of [fparts[fparts.length - 1], tparts[tparts.length - 1]])
       if (ABS_OWN.test(n) || n === METADATA_NAME) throw new WriteRefused(`Not an audio link: ${n}`);
-    if (!Number.isSafeInteger(ino) || ino <= 0) throw new WriteRefused('Bad inode');
+    if (!Number.isFinite(ino) || ino <= 0) throw new WriteRefused('Bad inode');
     const parent =
       fparts.length === 2
         ? await this.realFolders([...destination(book, [LIBRARY_ROOT]), fparts[0]])

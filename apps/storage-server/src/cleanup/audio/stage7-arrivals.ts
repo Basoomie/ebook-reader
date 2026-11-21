@@ -24,7 +24,6 @@
  * progress with time left, and waits while a Calibre job uses the disk.
  */
 import type Database from 'better-sqlite3';
-import { createHash } from 'crypto';
 import path from 'path';
 import { gunzipSync, gzipSync } from 'zlib';
 import { DISK_OWNERS, type DiskLock } from '../disk-lock';
@@ -53,9 +52,16 @@ import { clockNow, nextScheduledRun, scheduledRunDue } from './arrivals-schedule
 import { compareManifests, compareNewTree, walkTree, type ManifestEntry } from './build-check';
 import { gatesPassed, loadPlanInputs, stageIds } from './build-inputs';
 import { planBuildSliced } from './build-plan';
-import { bookValues, metadataBytes } from './build-metadata';
 import { AUDIO_EXTS } from './walk';
 import { librarySwitched } from './switch-state';
+import {
+  LIBRARY_BATCH_BASE,
+  LibraryChanges,
+  type ChangesProgress,
+  type LibraryBatch,
+  type LibraryOpResult,
+} from './library-changes';
+import type { SwitchReader } from './stage6-switch';
 
 export const STAGE7 = 7;
 /** Batch ids of stage 7 start here (never a build's or the switch's). */
@@ -76,6 +82,7 @@ export type Stage7Phase =
   | 'build'
   | 'walk_after'
   | 'check'
+  | 'changes'
   | 'abs'
   | 'report'
   | 'done';
@@ -96,6 +103,8 @@ export interface Stage7Progress {
    * time line counted it). Missing in runs saved before.
    */
   phaseWaitMs?: number;
+  /** WP21f-2: the changes to books already in the library (library-changes.ts), once begun. */
+  changes?: ChangesProgress;
   /** When the current wait for Calibre started (closed by `waitForCalibre(p, false)`). */
   calibreWaitSince?: number | null;
   /** Analysis ids of stages 1/2 when the run asked them to run again. */
@@ -359,9 +368,73 @@ export class AudioStage7 {
   private running: Promise<void> | null = null;
   private handing = false;
   private nextCache: { at: number; value: number } | null = null;
+  private reader: SwitchReader | null = null;
+  /** WP21f-2: changes to books already in the library (a step of every run, after the arrivals). */
+  readonly changes: LibraryChanges;
 
-  constructor(private readonly deps: Stage7Deps) {}
+  constructor(private readonly deps: Stage7Deps) {
+    this.changes = new LibraryChanges({
+      db: deps.db,
+      media: deps.roots.media,
+      lock: deps.lock,
+      abs: deps.abs,
+      fetchImpl: deps.fetchImpl,
+      reader: () => this.reader,
+      tree: () => this.existingTree(),
+      plan: () => this.currentPlan(),
+      sidecarVersion: () => {
+        const r = deps.db
+          .prepare('SELECT version, last_seen_at FROM link_sidecar_status WHERE id = 1')
+          .get() as { version: string | null; last_seen_at: number | null } | undefined;
+        return { version: r?.version ?? null, lastSeen: r?.last_seen_at ?? null };
+      },
+      now: deps.now,
+      log: deps.log,
+    });
+  }
 
+  /** WP21f-2: the reader's side (its hold, scan, links and a ttsu.db snapshot), from the server. */
+  attachReader(reader: SwitchReader): void {
+    this.reader = reader;
+  }
+
+  /** Every unit's plan now (stage 6's plan code on the current analysis). */
+  private async currentPlan() {
+    const { ids } = stageIds(this.db);
+    if (!ids) throw new Error('Stages 1-5 are not done');
+    const inputs = await loadPlanInputs(this.db, ids, {
+      readerWritten: [],
+      libraryFolder: ARRIVAL_AREA_FOLDERS.main,
+    });
+    return (await planBuildSliced(inputs)).books.filter(
+      (b) => b.state === 'build' || b.state === 'pending',
+    );
+  }
+
+  /** The library changes of this run (their own mode: off skips them). */
+  private async changesStep(p: Stage7Progress, stop: () => boolean): Promise<'wait' | 'more'> {
+    const next = p.mode === 'on' ? 'abs' : 'report';
+    const s = getSettings(this.db).audiobooks;
+    if (s.libraryChanges === 'off' || !this.deps.roots.media) {
+      this.setPhase(p, next);
+      return 'more';
+    }
+    p.changes ??= this.changes.start(
+      p.mode === 'on' && s.libraryChanges === 'on' ? 'on' : 'analyse',
+    );
+    const r = await this.changes.step(p.runId, p.changes, stop);
+    this.save(p);
+    if (r === 'done') {
+      this.setPhase(p, next);
+      return 'more';
+    }
+    if (typeof r === 'object') {
+      this.save(p);
+      pauseAudioStage(this.db, STAGE7, 'failed', r.pause);
+      return 'wait';
+    }
+    return r;
+  }
   private get db(): Database.Database {
     return this.deps.db;
   }
@@ -580,6 +653,8 @@ export class AudioStage7 {
         case 'check':
           await this.checkStep(p, stop);
           return 'more';
+        case 'changes':
+          return await this.changesStep(p, stop);
         case 'abs':
           return await this.absStep(p);
         case 'report':
@@ -1097,7 +1172,7 @@ export class AudioStage7 {
         bookDirs: new Set(),
         narrators: new Map(),
       }).counts;
-      this.setPhase(p, p.mode === 'on' ? 'abs' : 'report');
+      this.setPhase(p, 'changes');
       return;
     }
     const inputs = await loadPlanInputs(db, ids, {
@@ -1203,8 +1278,8 @@ export class AudioStage7 {
       p.classify.waiting += changed.size;
     }
     // Preview ends with the plan; On builds (when there is anything to build).
-    if (p.mode !== 'on') this.setPhase(p, 'report', kept.length);
-    else if (p.build.total === 0) this.setPhase(p, 'abs', 0);
+    if (p.mode !== 'on') this.setPhase(p, 'changes', kept.length);
+    else if (p.build.total === 0) this.setPhase(p, 'changes', 0);
     else {
       p.abs.before = await this.absItemCount(p).catch(() => null);
       this.setPhase(p, 'walk_before', kept.length);
@@ -1473,9 +1548,23 @@ export class AudioStage7 {
       const after = this.walkOf(p.runId, 'after', root);
       const d = compareManifests(before, after, new Map());
       const plannedPaths = new Set(ops.map((o) => o.dst));
-      const badAdded = d.added.filter((a) => !plannedPaths.has(`${prefix}/${a}`) && !isAbsOwn(a));
+      // WP21f-2: the reader writes its AI books into japanese-generated/ at any time: a new file
+      // there with no other name (link count 1: never one of ours, which are hard links to the
+      // torrents) is the reader's, and so are the folders it made for it and their mtimes.
+      const readerOwn = new Set<string>();
+      if (root === 'generated')
+        for (const e of after)
+          if (!e.isDir && e.nlink === 1) {
+            const parts = e.rel.split('/');
+            for (let i = 1; i <= parts.length; i++) readerOwn.add(parts.slice(0, i).join('/'));
+          }
+      const badAdded = d.added.filter(
+        (a) => !plannedPaths.has(`${prefix}/${a}`) && !isAbsOwn(a) && !readerOwn.has(a),
+      );
       const badChanged = d.changed.filter(
-        (c) => !(c.what === 'mtime' && madeIn.has(`${prefix}/${c.path}`)) && !isAbsOwn(c.path),
+        (c) =>
+          !(c.what === 'mtime' && (madeIn.has(`${prefix}/${c.path}`) || readerOwn.has(c.path))) &&
+          !isAbsOwn(c.path),
       );
       lines.push(
         `${prefix}: ${d.counts.added} added (${badAdded.length} not planned), ${d.counts.removed} removed, ${badChanged.length} changed`,
@@ -1508,7 +1597,7 @@ export class AudioStage7 {
       this.save(p);
       pauseAudioStage(this.db, STAGE7, 'check', lines.join('; '));
     }
-    this.setPhase(p, 'abs', books.length);
+    this.setPhase(p, 'changes', books.length);
   }
 
   // Audiobookshelf ----------------------------------------------------------------------------
@@ -1729,7 +1818,21 @@ export class AudioStage7 {
       lockWaitMs: p.build.lockWaitMs,
       yields: p.build.yields,
       check: p.check,
-      changedExisting: this.changedExisting(),
+      // WP21f-2: the changes to books already in the library (planned in Preview, made in On).
+      changes: p.changes
+        ? {
+            mode: p.changes.mode,
+            ledger: p.changes.ledger,
+            candidates: p.changes.candidates,
+            counts: p.changes.counts,
+            apply: p.changes.apply,
+            snapshot: p.changes.snapshot,
+            remap: p.changes.remap,
+            abs: p.changes.abs,
+            times: p.changes.phaseTimes,
+            error: p.changes.error,
+          }
+        : null,
     };
     db.prepare('UPDATE audio_arrival_runs SET report_json = ? WHERE id = ?').run(
       JSON.stringify(report),
@@ -1737,39 +1840,6 @@ export class AudioStage7 {
     );
     this.setPhase(p, 'done');
     this.finish(p, 'done', null);
-  }
-
-  /**
-   * Existing books whose decided values now differ from the metadata.json they were built
-   * with (not applied in WP21f-1: WP21f-2 and the ebook pass write them).
-   */
-  private changedExisting(): { differ: number; same: number; rekeyed: number } {
-    const out = { differ: 0, same: 0, rekeyed: 0 };
-    const p6 = getAudioStage(this.db, 6).progress as { analysisId?: string };
-    if (!p6.analysisId) return out;
-    const hash = (b: Buffer) => createHash('sha1').update(b).digest('hex');
-    const values = new Map<string, Record<string, unknown>>();
-    for (const r of this.db
-      .prepare(`SELECT item_key, field, value_json FROM ai_values WHERE stage = 'audio5'`)
-      .all() as { item_key: string; field: string; value_json: string | null }[]) {
-      const v = values.get(r.item_key) ?? {};
-      v[r.field] = r.value_json === null ? null : (JSON.parse(r.value_json) as unknown);
-      values.set(r.item_key, v);
-    }
-    for (const r of this.db
-      .prepare(
-        `SELECT unit_key, title, metadata FROM audio_build_books WHERE analysis_id = ? AND state = 'build'`,
-      )
-      .all(p6.analysisId) as { unit_key: string; title: string; metadata: Buffer }[]) {
-      const v = values.get(r.unit_key);
-      if (!v) {
-        out.rekeyed++;
-        continue;
-      }
-      if (hash(metadataBytes(bookValues(v, r.title))) === hash(r.metadata)) out.same++;
-      else out.differ++;
-    }
-    return out;
   }
 
   // the sidecar -------------------------------------------------------------------------------
@@ -1788,7 +1858,13 @@ export class AudioStage7 {
   /** The sidecar should poll fast (a run lists, unpacks or builds). */
   active(): boolean {
     const p = this.current();
-    return !!p && (p.phase === 'archives' || p.phase === 'build');
+    return (
+      !!p &&
+      (p.phase === 'archives' ||
+        p.phase === 'build' ||
+        (p.phase === 'changes' &&
+          (p.changes?.phase === 'preflight' || p.changes?.phase === 'apply')))
+    );
   }
 
   giveBack(): void {
@@ -1850,11 +1926,12 @@ export class AudioStage7 {
   }
 
   /** The sidecar's next batch of stage 7, or null. */
-  claim(): ArrivalBatch | null {
+  claim(): ArrivalBatch | LibraryBatch | null {
     this.expireLeases();
     const p = this.current();
     const st = getAudioStage(this.db, STAGE7);
     if (!p || st.mode === 'off' || st.pauseReason) return null;
+    if (p.phase === 'changes' && p.changes) return this.changes.claim(p.runId, p.changes);
     if (!this.sidecarReady() || this.inFlight()) return null;
     const s = getSettings(this.db).audiobooks;
     if (p.phase === 'archives') {
@@ -1980,6 +2057,8 @@ export class AudioStage7 {
 
   /** The sidecar's results of a batch of stage 7. */
   report(batchId: number, results: ArrivalOpResult[]): { accepted: number } {
+    if (batchId >= LIBRARY_BATCH_BASE)
+      return this.changes.report(batchId, results as unknown as LibraryOpResult[]);
     const batch = this.db
       .prepare('SELECT * FROM audio_arrival_batches WHERE id = ?')
       .get(batchId) as
@@ -2297,6 +2376,10 @@ export class AudioStage7 {
     const p = this.current();
     if (p) {
       p.build.firstFailure = null;
+      if (p.changes) {
+        this.changes.retryFailed(p.runId);
+        p.changes.error = null;
+      }
       this.save(p);
     }
     resumeAudioStage(this.db, STAGE7);
@@ -2307,6 +2390,19 @@ export class AudioStage7 {
     const limit = Math.min(Math.max(opts.limit ?? 50, 1), 200);
     const offset = Math.max(opts.offset ?? 0, 0);
     const run = this.row().currentRun ?? this.row().lastRun ?? 0;
+    // WP21f-2: the library changes' lists (of the current run, else the last one).
+    const changesList = {
+      library_changes: 'changes',
+      library_review: 'review',
+      library_reader: 'reader',
+      library_links: 'links',
+      library_kept: 'kept',
+    } as const;
+    if (which in changesList)
+      return this.changes.list(run, changesList[which as keyof typeof changesList], {
+        offset,
+        limit,
+      });
     if (which === 'archives') {
       const total = (
         this.db.prepare('SELECT COUNT(*) AS n FROM audio_archives').get() as { n: number }

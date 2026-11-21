@@ -576,6 +576,22 @@ function addAudioRoutes(router: Router, options: CleanupOptions): void {
     res.json({ ok: true });
   });
 
+  // WP21f-2: a review choice for a book of the library changes: a field 'mine' | 'ours' (your
+  // ABS edit or the cleanup's value), or 'rename' 'now' (rename its links although someone is
+  // listening: the place moves). Applied at the next run.
+  router.post('/cleanup/audio/library-changes/:bookId/choice', (req, res) => {
+    const audio = audioOr503(options);
+    const body = (req.body ?? {}) as { field?: unknown; choice?: unknown };
+    if (typeof body.field !== 'string' || typeof body.choice !== 'string')
+      throw new ApiError(400, 'bad_request', 'field and choice are needed');
+    try {
+      audio.libraryChoice(Number(req.params.bookId), body.field, body.choice);
+    } catch (err) {
+      throw new ApiError(400, 'bad_request', (err as Error).message);
+    }
+    res.json({ ok: true });
+  });
+
   router.post('/cleanup/audio/arrivals/resume', (_req, res) => {
     const audio = audioOr503(options);
     try {

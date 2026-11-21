@@ -210,6 +210,12 @@ export interface AudiobookSettings {
   arrivalsAbsNudge: boolean;
   /** Stage 7: seconds the sidecar has to unpack one archive entry before it is handed out again. */
   extractLeaseSeconds: number;
+  /**
+   * Stage 7 (WP21f-2): changes to books already in the library (metadata.json, folders, link
+   * names, reader-written files' originals). Its own mode, so a stage 7 that is On adds new books
+   * while these stay a Preview until approved (user, 2026-11-21): off | analyse (Preview) | on.
+   */
+  libraryChanges: 'off' | 'analyse' | 'on';
 }
 
 /** A model's list price per million tokens (US$). */
@@ -532,6 +538,7 @@ export const DEFAULT_SETTINGS: CleanupSettings = {
     arrivalsAbsWaitMinutes: 30,
     arrivalsAbsNudge: false,
     extractLeaseSeconds: 1800,
+    libraryChanges: 'analyse',
   },
   ai: {
     spendLimitUsd: null,
@@ -986,6 +993,12 @@ function validate(key: Key, value: unknown, current: CleanupSettings): unknown {
           86400,
           true,
         ),
+        libraryChanges: (() => {
+          const m = v.libraryChanges ?? 'analyse';
+          if (m !== 'off' && m !== 'analyse' && m !== 'on')
+            throw new Error('Changes to books in the library: off, Preview or On');
+          return m;
+        })(),
       };
     }
     case 'ai': {

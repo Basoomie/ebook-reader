@@ -216,7 +216,15 @@ export class LinkWorker {
       for (const op of batch.ops) {
         const problem = await inspectLibraryOp(
           this.writer,
-          { kind: op.kind, src: op.src?.rel ?? op.book ?? null, dst: op.dst },
+          {
+            kind: op.kind,
+            // A rename or replacement inside a book is checked on the book's folder.
+            src:
+              op.kind === 'rename_file' || op.kind === 'replace_metadata'
+                ? (op.book ?? null)
+                : (op.src?.rel ?? null),
+            dst: op.dst
+          },
           this.info
         );
         results.push({ id: op.id, ok: problem === null, problem });

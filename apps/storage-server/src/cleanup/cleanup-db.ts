@@ -1597,8 +1597,126 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
     name: 'audiobook cleanup: story order and changes to books in the library (WP21f-2)',
     // Which tags a health row holds (2: with track and disc); the files of multi-file books
     // checked before are checked again once, so their story order can use the track numbers.
+    // The library ledger: one row per book now in media/audiobooks/japanese*, what was built
+    // and last written there (folder, links, metadata.json); the changes stage 7 plans and
+    // applies to them (field changes, a move, numbered link names), their sidecar operations
+    // and batches (ids from 3,000,000,000), the reader links they remap, and the files the
+    // reader wrote that get their original name under the torrents' AI/ or _merged/.
     sql: `
       ALTER TABLE audio_file_health ADD COLUMN tags_version INTEGER;
+
+      CREATE TABLE audio_library_books (
+        id           INTEGER PRIMARY KEY,
+        folder       TEXT NOT NULL UNIQUE,
+        base_folder  TEXT NOT NULL,
+        area         TEXT NOT NULL CHECK (area IN ('main', 'ai')),
+        origin_ref   TEXT NOT NULL UNIQUE,
+        unit_key     TEXT,
+        files_json   TEXT NOT NULL CHECK (json_valid(files_json)),
+        metadata     BLOB NOT NULL,
+        decided      BLOB NOT NULL,
+        folder_ino   INTEGER,
+        updated_at   INTEGER NOT NULL
+      );
+
+      CREATE TABLE audio_library_changes (
+        id                 INTEGER PRIMARY KEY,
+        run_id             INTEGER NOT NULL,
+        book_id            INTEGER NOT NULL REFERENCES audio_library_books(id),
+        state              TEXT NOT NULL CHECK (state IN ('planned', 'applied', 'failed', 'skipped', 'review')),
+        folder_from        TEXT NOT NULL,
+        folder_to          TEXT,
+        base_to            TEXT,
+        fields_json        TEXT NOT NULL CHECK (json_valid(fields_json)),
+        user_fields_json   TEXT NOT NULL CHECK (json_valid(user_fields_json)),
+        conflicts_json     TEXT NOT NULL CHECK (json_valid(conflicts_json)),
+        renames_json       TEXT NOT NULL CHECK (json_valid(renames_json)),
+        renames_held       INTEGER NOT NULL DEFAULT 0,
+        reviews_json       TEXT NOT NULL CHECK (json_valid(reviews_json)),
+        skipped            TEXT,
+        metadata_new       BLOB,
+        decided_new        BLOB,
+        metadata_sha_read  TEXT,
+        abs_item_id        TEXT,
+        abs_before_json    TEXT,
+        abs_after_json     TEXT,
+        created_at         INTEGER NOT NULL
+      );
+      CREATE INDEX audio_library_changes_run ON audio_library_changes (run_id, state);
+      CREATE INDEX audio_library_changes_book ON audio_library_changes (book_id, run_id);
+
+      CREATE TABLE audio_library_choices (
+        book_id     INTEGER NOT NULL REFERENCES audio_library_books(id),
+        field       TEXT NOT NULL,
+        choice      TEXT NOT NULL,
+        decided_at  INTEGER NOT NULL,
+        PRIMARY KEY (book_id, field)
+      );
+
+      CREATE TABLE audio_library_ops (
+        id           INTEGER PRIMARY KEY,
+        run_id       INTEGER NOT NULL,
+        change_id    INTEGER,
+        seq          INTEGER NOT NULL,
+        kind         TEXT NOT NULL CHECK (kind IN ('replace_metadata', 'move_book', 'rmdir', 'reader_link', 'rename_file')),
+        book         TEXT,
+        src_rel      TEXT,
+        dst          TEXT NOT NULL,
+        size         INTEGER,
+        mtime_ms     INTEGER,
+        dev          INTEGER,
+        ino          INTEGER,
+        bytes        BLOB,
+        sha256       TEXT,
+        state        TEXT NOT NULL DEFAULT 'planned' CHECK (state IN ('planned', 'claimed', 'done', 'failed')),
+        batch_id     INTEGER,
+        preflight    TEXT,
+        result_json  TEXT,
+        done_at      INTEGER
+      );
+      CREATE INDEX audio_library_ops_run ON audio_library_ops (run_id, state, seq);
+      CREATE INDEX audio_library_ops_batch ON audio_library_ops (batch_id);
+
+      CREATE TABLE audio_library_batches (
+        id           INTEGER PRIMARY KEY,
+        run_id       INTEGER NOT NULL,
+        kind         TEXT NOT NULL,
+        state        TEXT NOT NULL,
+        ops          INTEGER NOT NULL DEFAULT 0,
+        claimed_at   INTEGER,
+        lease_until  INTEGER
+      );
+      INSERT INTO audio_library_batches (id, run_id, kind, state) VALUES (3000000000, 0, 'seed', 'done');
+      CREATE INDEX audio_library_batches_state ON audio_library_batches (state, lease_until);
+
+      CREATE TABLE audio_library_links (
+        id          INTEGER PRIMARY KEY,
+        run_id      INTEGER NOT NULL,
+        user_id     TEXT NOT NULL,
+        book_id     TEXT NOT NULL,
+        old_folder  TEXT NOT NULL,
+        old_file    TEXT,
+        new_folder  TEXT NOT NULL,
+        new_file    TEXT,
+        status      TEXT NOT NULL,
+        playable_before INTEGER
+      );
+      CREATE INDEX audio_library_links_run ON audio_library_links (run_id);
+
+      CREATE TABLE audio_library_reader_files (
+        rel        TEXT PRIMARY KEY,
+        size       INTEGER NOT NULL,
+        mtime_ms   INTEGER NOT NULL,
+
+        dev        INTEGER NOT NULL,
+        ino        INTEGER NOT NULL,
+        dst        TEXT NOT NULL,
+        state      TEXT NOT NULL CHECK (state IN ('waiting', 'planned', 'linked', 'review')),
+        note       TEXT,
+        seen_at    INTEGER NOT NULL,
+        linked_at  INTEGER
+      );
+      CREATE INDEX audio_library_reader_files_state ON audio_library_reader_files (state);
     `,
   },
 ];

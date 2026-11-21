@@ -5,6 +5,7 @@
  * (read-only mounts, the read-only file module, a GET-only ABS client). Every failure is
  * caught and logged; reading is never affected.
  */
+import type { LibraryBatch } from './library-changes';
 import type Database from 'better-sqlite3';
 import type { DiskLock } from '../disk-lock';
 import { DISK_OWNERS } from '../disk-lock';
@@ -341,6 +342,7 @@ export class AudioCleanupService {
   /** WP21e-2: the reader's side of the switch (the server gives it once its audio services exist). */
   attachReader(reader: SwitchReader): void {
     this.switcher?.attachReader(reader);
+    this.stage7?.attachReader(reader);
     void this.tick();
   }
 
@@ -1071,7 +1073,7 @@ export class AudioCleanupService {
     return r;
   }
 
-  linkClaim(): LinkBatch | SwitchBatch | ArrivalBatch | null {
+  linkClaim(): LinkBatch | SwitchBatch | ArrivalBatch | LibraryBatch | null {
     return this.switcher?.claim() ?? this.stage7?.claim() ?? this.stage6?.claim() ?? null;
   }
 
@@ -1090,6 +1092,13 @@ export class AudioCleanupService {
   /** Stage 7's lists, review choices, Resume and the plan's CSV. */
   arrivals(list: string, opts: { offset?: number; limit?: number } = {}) {
     return this.stage7?.list(list, opts) ?? { total: 0, items: [] };
+  }
+
+  /** WP21f-2: a review choice of the library changes (applied at the next run). */
+  libraryChoice(bookId: number, field: string, choice: string): void {
+    if (!this.stage7) throw new Error('The audiobook folders are not set up');
+    if (!Number.isSafeInteger(bookId) || bookId <= 0) throw new Error('Not a book');
+    this.stage7.changes.choose(bookId, field, choice);
   }
 
   arrivalsDecide(reviewId: number, decision: string): void {
