@@ -11,3 +11,8 @@ apps/web/tests/parity/.out/
 
 # Local Claude Code settings and launch configs
 /.claude/
+
+# e2e browser profiles (Playwright / Windows lockout fix: see CLAUDE.md); normally under ../.tmp-e2e
+/.tmp-e2e/
+pw-profiles/
+playwright_chromiumdev_profile-*/
