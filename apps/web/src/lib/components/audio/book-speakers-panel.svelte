@@ -12,6 +12,9 @@
    * run, like the TTS models); each character can then have a voice preset. Quotes without
    * a speaker, or whose speaker has no voice, are read with the dialogue voice. Corrections,
    * renames, merges and voices stay through a new run. "Check quotes" is a page of its own.
+   *
+   * 2026-11-20 redesign: a folded part of the Text-to-speech row (no box of its own); with the
+   * row closed (`compact`) only a running job's status shows; the list is shown 10 a page.
    */
   import { onDestroy } from 'svelte';
   import type { GpuWorkerStatus } from '$lib/audio/audio-types';
@@ -37,10 +40,18 @@
   import { logger } from '$lib/data/logger';
   import { LibraryApiError, type LibraryApi } from '$lib/library/api';
   import { settingsTabHref } from '$lib/settings/settings-tab';
+  import PagedList from '$lib/components/paged-list.svelte';
 
   export let api: LibraryApi;
   export let bookId: string;
   export let bookTitle = '';
+  /** The Text-to-speech row is closed: only a running job's status shows. */
+  export let compact = false;
+  /** Bound up: the characters shown (not "not a character"), null until known. */
+  export let count: number | null = null;
+
+  /** Characters shown a page at a time. */
+  const PAGE_SIZE = 10;
 
   const selectClasses = 'c-input mt-1 block min-h-[3rem] w-full max-w-[18rem] text-base';
 
@@ -70,6 +81,7 @@
   $: quiet = characters.filter(isQuiet).length;
   $: listed = showQuiet ? characters : characters.filter((c) => !isQuiet(c));
   $: shown = characters.filter((c) => !c.hidden);
+  $: count = overview ? shown.length : null;
   $: narrator = overview?.characters.find((c) => c.narrator && !c.hidden) ?? null;
   $: note = overview ? pcProgramNote(overview, worker) : '';
   $: if (overview && modelId === null) {
@@ -194,20 +206,28 @@
     act(() => api.setNarrationBy(bookId, by === 'narrator' ? 'narrator' : 'narration'));
 </script>
 
-{#if overview}
-  <div class="c-spanel mt-4 rounded px-5 py-4" data-testid="book-speakers">
-    <button
-      class="flex min-h-[2.75rem] w-full items-center justify-between gap-3 text-left"
-      aria-expanded={open}
-      data-testid="book-speakers-toggle"
-      on:click={() => (open = !open)}
-    >
-      <span>
-        <span class="block text-xs text-c-muted">How the PC voices read this book</span>
-        <span class="font-medium">Characters{shown.length ? ` (${shown.length})` : ''}</span>
-      </span>
-      <span aria-hidden="true">{open ? '▴' : '▾'}</span>
-    </button>
+{#if overview && compact}
+  {#if active && job}
+    <p class="mt-1 text-sm" role="status" data-testid="book-speakers-status-closed">
+      Characters on the PC: {speakerJobText(job, worker, now)}
+    </p>
+  {/if}
+{:else if overview}
+  <div class="c-sub mt-4 pt-3" data-testid="book-speakers">
+    <div class="flex flex-wrap items-start justify-between gap-3">
+      <div class="min-w-0">
+        <h4 class="font-medium">Characters{shown.length ? ` (${shown.length})` : ''}</h4>
+        <p class="max-w-3xl text-sm text-c-muted">Give a character a voice of their own.</p>
+      </div>
+      <button
+        class="c-btn c-btn-secondary c-round shrink-0"
+        aria-expanded={open}
+        data-testid="book-speakers-toggle"
+        on:click={() => (open = !open)}
+      >
+        {open ? 'Close' : 'Open'}
+      </button>
+    </div>
     {#if active && job && !open}
       <p class="mt-1 text-sm" role="status" data-testid="book-speakers-status-closed">
         {speakerJobText(job, worker, now)}
@@ -316,7 +336,7 @@
             disabled={busy}
             on:change={(e) => setNarration(e.currentTarget.value)}
           >
-            <option value="narration">The book's PC voice</option>
+            <option value="narration">The book's TTS voice</option>
             <option value="narrator">{narrator.name}'s voice</option>
           </select>
           {#if overview.narrationBy === 'narrator' && !narrator.voiceId}
@@ -326,140 +346,149 @@
       {/if}
 
       {#if characters.length}
-        <ul class="mt-3 max-w-3xl" data-testid="book-speakers-list">
-          {#each listed as c (c.id)}
-            <li class="c-crow py-3" data-testid="book-speaker" data-name={c.name}>
-              <div class="flex flex-wrap items-center gap-x-4 gap-y-2">
-                <div class="min-w-0 grow basis-48">
-                  <div class="break-words text-[15px]" lang="ja">
-                    <span class="font-bold" class:text-c-muted={c.hidden}>{c.name}</span>
-                    {#if c.narrator}<span class="text-xs text-c-muted"> · narrator</span>{/if}
+        <PagedList
+          items={listed}
+          size={PAGE_SIZE}
+          resetKey={showQuiet}
+          label="Characters"
+          testid="book-speakers-pages"
+          let:pageItems
+        >
+          <ul class="mt-3 max-w-3xl" data-testid="book-speakers-list">
+            {#each pageItems as c (c.id)}
+              <li class="c-crow py-3" data-testid="book-speaker" data-name={c.name}>
+                <div class="flex flex-wrap items-center gap-x-4 gap-y-2">
+                  <div class="min-w-0 grow basis-48">
+                    <div class="break-words text-[15px]" lang="ja">
+                      <span class="font-bold" class:text-c-muted={c.hidden}>{c.name}</span>
+                      {#if c.narrator}<span class="text-xs text-c-muted"> · narrator</span>{/if}
+                    </div>
+                    <div class="text-xs text-c-muted" lang="ja">
+                      {c.aliases.length ? `${c.aliases.slice(0, 4).join('、')} · ` : ''}{c.quotes}
+                      {c.quotes === 1 ? 'quote' : 'quotes'}{c.hidden ? ' · not a character' : ''}
+                    </div>
                   </div>
-                  <div class="text-xs text-c-muted" lang="ja">
-                    {c.aliases.length ? `${c.aliases.slice(0, 4).join('、')} · ` : ''}{c.quotes}
-                    {c.quotes === 1 ? 'quote' : 'quotes'}{c.hidden ? ' · not a character' : ''}
-                  </div>
+                  {#if !c.hidden}
+                    <label class="block text-sm text-c-muted">
+                      <span class="sr-only">Voice of {c.name}</span>
+                      <select
+                        class="c-input block min-h-[3rem] w-48 text-base"
+                        data-testid="book-speaker-voice"
+                        value={c.voiceId ?? ''}
+                        disabled={busy}
+                        on:change={(e) => setVoice(c, e.currentTarget.value)}
+                      >
+                        <option value="">Dialogue voice</option>
+                        {#each voices as v (v.id)}
+                          <option value={v.id}>{v.name}</option>
+                        {/each}
+                        {#if c.voiceId && !voices.some((v) => v.id === c.voiceId)}
+                          <option value={c.voiceId}>A deleted voice</option>
+                        {/if}
+                      </select>
+                    </label>
+                  {/if}
                 </div>
-                {#if !c.hidden}
-                  <label class="block text-sm text-c-muted">
-                    <span class="sr-only">Voice of {c.name}</span>
-                    <select
-                      class="c-input block min-h-[3rem] w-48 text-base"
-                      data-testid="book-speaker-voice"
-                      value={c.voiceId ?? ''}
-                      disabled={busy}
-                      on:change={(e) => setVoice(c, e.currentTarget.value)}
-                    >
-                      <option value="">Dialogue voice</option>
-                      {#each voices as v (v.id)}
-                        <option value={v.id}>{v.name}</option>
-                      {/each}
-                      {#if c.voiceId && !voices.some((v) => v.id === c.voiceId)}
-                        <option value={c.voiceId}>A deleted voice</option>
-                      {/if}
-                    </select>
-                  </label>
-                {/if}
-              </div>
-              <div class="mt-2 flex flex-wrap gap-2">
-                <button
-                  class="c-btn c-btn-secondary c-round"
-                  data-testid="book-speaker-rename"
-                  disabled={busy}
-                  on:click={() => {
-                    renaming = c.id;
-                    renameTo = c.name;
-                    merging = null;
-                  }}>Rename</button
-                >
-                {#if characters.length > 1}
+                <div class="mt-2 flex flex-wrap gap-2">
                   <button
                     class="c-btn c-btn-secondary c-round"
-                    data-testid="book-speaker-merge"
+                    data-testid="book-speaker-rename"
                     disabled={busy}
                     on:click={() => {
-                      merging = c.id;
-                      mergeInto = '';
-                      renaming = null;
-                    }}>Merge into…</button
+                      renaming = c.id;
+                      renameTo = c.name;
+                      merging = null;
+                    }}>Rename</button
                   >
-                {/if}
-                <button
-                  class="c-btn c-btn-secondary c-round"
-                  data-testid="book-speaker-hide"
-                  disabled={busy}
-                  on:click={() => setHidden(c, !c.hidden)}
-                >
-                  {c.hidden ? 'It is a character' : 'Not a character'}
-                </button>
-                {#if c.quotes}
-                  <a
-                    class="c-btn c-btn-secondary c-round"
-                    data-testid="book-speaker-quotes"
-                    href={`${reviewHref}&character=${c.id}`}>Quotes</a
-                  >
-                {/if}
-              </div>
-              {#if renaming === c.id}
-                <form
-                  class="mt-2 flex flex-wrap items-center gap-2"
-                  on:submit|preventDefault={() => rename(c)}
-                >
-                  <label class="text-sm text-c-muted">
-                    New name
-                    <input
-                      class="c-input mt-1 block min-h-[3rem] w-56 text-base"
-                      lang="ja"
-                      maxlength="40"
-                      data-testid="book-speaker-rename-input"
-                      bind:value={renameTo}
-                    />
-                  </label>
-                  <button
-                    class="c-btn c-btn-primary c-round"
-                    data-testid="book-speaker-rename-save"
-                    disabled={busy}
-                  >
-                    Save
-                  </button>
-                  <button
-                    type="button"
-                    class="c-btn c-btn-secondary c-round"
-                    on:click={() => (renaming = null)}
-                  >
-                    Cancel
-                  </button>
-                </form>
-              {/if}
-              {#if merging === c.id}
-                <div class="mt-2 flex flex-wrap items-end gap-2">
-                  <label class="text-sm text-c-muted">
-                    Merge {c.name} into
-                    <select
-                      class="c-input mt-1 block min-h-[3rem] w-56 text-base"
-                      data-testid="book-speaker-merge-into"
-                      bind:value={mergeInto}
+                  {#if characters.length > 1}
+                    <button
+                      class="c-btn c-btn-secondary c-round"
+                      data-testid="book-speaker-merge"
+                      disabled={busy}
+                      on:click={() => {
+                        merging = c.id;
+                        mergeInto = '';
+                        renaming = null;
+                      }}>Merge into…</button
                     >
-                      <option value="">Choose a character</option>
-                      {#each characters.filter((x) => x.id !== c.id) as x (x.id)}
-                        <option value={String(x.id)}>{characterLabel(x)}</option>
-                      {/each}
-                    </select>
-                  </label>
+                  {/if}
                   <button
-                    class="c-btn c-btn-primary c-round"
-                    data-testid="book-speaker-merge-save"
-                    disabled={busy || !mergeInto}
-                    on:click={() => merge(c)}>Merge</button
+                    class="c-btn c-btn-secondary c-round"
+                    data-testid="book-speaker-hide"
+                    disabled={busy}
+                    on:click={() => setHidden(c, !c.hidden)}
                   >
-                  <button class="c-btn c-btn-secondary c-round" on:click={() => (merging = null)}>
-                    Cancel
+                    {c.hidden ? 'It is a character' : 'Not a character'}
                   </button>
+                  {#if c.quotes}
+                    <a
+                      class="c-btn c-btn-secondary c-round"
+                      data-testid="book-speaker-quotes"
+                      href={`${reviewHref}&character=${c.id}`}>Quotes</a
+                    >
+                  {/if}
                 </div>
-              {/if}
-            </li>
-          {/each}
-        </ul>
+                {#if renaming === c.id}
+                  <form
+                    class="mt-2 flex flex-wrap items-center gap-2"
+                    on:submit|preventDefault={() => rename(c)}
+                  >
+                    <label class="text-sm text-c-muted">
+                      New name
+                      <input
+                        class="c-input mt-1 block min-h-[3rem] w-56 text-base"
+                        lang="ja"
+                        maxlength="40"
+                        data-testid="book-speaker-rename-input"
+                        bind:value={renameTo}
+                      />
+                    </label>
+                    <button
+                      class="c-btn c-btn-primary c-round"
+                      data-testid="book-speaker-rename-save"
+                      disabled={busy}
+                    >
+                      Save
+                    </button>
+                    <button
+                      type="button"
+                      class="c-btn c-btn-secondary c-round"
+                      on:click={() => (renaming = null)}
+                    >
+                      Cancel
+                    </button>
+                  </form>
+                {/if}
+                {#if merging === c.id}
+                  <div class="mt-2 flex flex-wrap items-end gap-2">
+                    <label class="text-sm text-c-muted">
+                      Merge {c.name} into
+                      <select
+                        class="c-input mt-1 block min-h-[3rem] w-56 text-base"
+                        data-testid="book-speaker-merge-into"
+                        bind:value={mergeInto}
+                      >
+                        <option value="">Choose a character</option>
+                        {#each characters.filter((x) => x.id !== c.id) as x (x.id)}
+                          <option value={String(x.id)}>{characterLabel(x)}</option>
+                        {/each}
+                      </select>
+                    </label>
+                    <button
+                      class="c-btn c-btn-primary c-round"
+                      data-testid="book-speaker-merge-save"
+                      disabled={busy || !mergeInto}
+                      on:click={() => merge(c)}>Merge</button
+                    >
+                    <button class="c-btn c-btn-secondary c-round" on:click={() => (merging = null)}>
+                      Cancel
+                    </button>
+                  </div>
+                {/if}
+              </li>
+            {/each}
+          </ul>
+        </PagedList>
         {#if quiet}
           <button
             class="c-btn c-btn-secondary c-round mt-2"
@@ -500,9 +529,8 @@
 {/if}
 
 <style>
-  .c-spanel {
-    background-color: var(--c-raised);
-    border: var(--c-border-width) solid var(--c-line);
+  .c-sub {
+    border-top: var(--c-border-width) dashed var(--c-line);
   }
   .c-crow + .c-crow {
     border-top: var(--c-border-width) solid var(--c-line);

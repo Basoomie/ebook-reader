@@ -155,12 +155,12 @@
     <p data-testid="read-aloud-voice">
       {view.voice}
       <span class="text-sm"
-        >({view.voiceFrom === 'book' ? "this book's PC voice" : 'from Settings > Anki'})</span
+        >({view.voiceFrom === 'book' ? "this book's TTS voice" : 'from Settings > Anki'})</span
       >
     </p>
   {:else}
     <p class="text-sm">
-      The book's PC voice, else the one in Settings > Anki (the same voice Enrich uses).
+      The book's TTS voice, else the one in Settings > Anki (the same voice Enrich uses).
     </p>
   {/if}
   {#if api && bookId}
@@ -173,11 +173,11 @@
       <button
         class="{button} mt-2"
         data-testid="read-aloud-change-voice"
-        on:click={() => (showVoice = true)}>Change this book's PC voice</button
+        on:click={() => (showVoice = true)}>Change this book's TTS voice</button
       >
     {/if}
   {:else if view.needsVoice}
-    <p class="mt-2 text-sm">Choose a PC voice in Settings > Anki.</p>
+    <p class="mt-2 text-sm">Choose a TTS voice in Settings > Anki.</p>
   {/if}
 
   {#if !highlightSupported}

@@ -34,9 +34,9 @@
 </script>
 
 <div class="mt-6" data-testid="anki-pc-audio">
-  <h4 class="font-bold">Sentence audio from the PC</h4>
+  <h4 class="font-bold">Sentence audio read by TTS</h4>
   <p class="mt-1 max-w-prose text-sm text-c-muted">
-    For a book without an audiobook, the PC reads the sentence with this voice, and the audio is
+    For a book without an audiobook, the PC reads the sentence with this TTS voice, and the audio is
     added to the card once the PC has read it (it waits under "Waiting sentence audio" on the device
     you used). The pronunciation fixes in Settings > Audiobooks apply. A book's page can choose its
     own voice.

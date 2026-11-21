@@ -48,7 +48,7 @@
       jp="読み方"
       title="Pronunciation fixes"
       note={list.entries.length ? String(list.entries.length) : ''}
-      tooltip="How the PC voices should read a word, in every book. A book's own list (on its page) wins over this one, and the book's own furigana wins over both."
+      tooltip="How text-to-speech should read a word, in every book. A book's own list (on its page) wins over this one, and the book's own furigana wins over both."
     />
     <p class="mt-2 max-w-3xl text-sm text-c-muted">
       Used for every book the PC reads aloud. A word is fixed wherever it appears; when two fixes

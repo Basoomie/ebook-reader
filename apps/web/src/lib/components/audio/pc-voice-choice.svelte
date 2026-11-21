@@ -149,14 +149,14 @@
 
 <div data-testid={testid}>
   {#if !loaded}
-    <p class="mt-2 text-sm text-c-muted">Loading the PC voices…</p>
+    <p class="mt-2 text-sm text-c-muted">Loading the TTS voices…</p>
   {:else if !available}
     <p class="mt-2 text-sm text-c-muted" data-testid="{testid}-unavailable">
-      The library server can't read with the PC (voices and models aren't set up there).
+      Text-to-speech isn't set up on the library server (no voices or models there).
     </p>
   {:else}
     <label class="mt-2 block text-sm text-c-muted">
-      {bookId ? 'PC voice for this book' : 'Voice'}
+      TTS voice
       <select
         class={selectClasses}
         data-testid="{testid}-voice"

@@ -397,7 +397,7 @@ export class ReadAloudController {
     this.needsVoice = e?.code === 'voice_choice_off' || e?.code === 'bad_choice';
     this.status =
       e?.code === 'voice_choice_off'
-        ? 'Choose a PC voice for this book (or one for every book in Settings > Anki).'
+        ? 'Choose a TTS voice for this book (or one for every book in Settings > Anki).'
         : e?.kind === 'unreachable' || e?.kind === 'timeout'
           ? "The library server can't be reached. Read-aloud needs it and the PC."
           : (e?.message ?? String(error));
