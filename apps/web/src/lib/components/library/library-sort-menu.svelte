@@ -16,7 +16,7 @@
   } from '$lib/library/sort';
   import { createEventDispatcher } from 'svelte';
 
-  /** WP19a: the Sort button of the Library and collections (lib/library/sort.ts). */
+  /** WP19a: the Sort button of the Library, collections and the Notes page (lib/library/sort.ts). */
   export let context: SortContext;
   export let value: SortValue;
 
@@ -33,8 +33,13 @@
     list: '並べた順',
     newest: '追加日',
     name: '名前',
-    count: '冊数'
+    count: '冊数',
+    // The Notes page (its own `count` is highlights, not books).
+    changed: '更新日',
+    created: '作成日',
+    book: '本順'
   };
+  const NOTES_JP: Record<string, string> = { count: '件数' };
 
   $: choices = sortChoices(context);
   $: current = choices.find((c) => c.key === value.key);
@@ -74,7 +79,10 @@
         on:click={() => pick(choice.key)}
       >
         <span>{choice.label}</span>
-        <span class="font-mincho text-xs opacity-80" aria-hidden="true">{JP[choice.key] ?? ''}</span
+        <span class="font-mincho text-xs opacity-80" aria-hidden="true"
+          >{(context.startsWith('notes') ? NOTES_JP[choice.key] : undefined) ??
+            JP[choice.key] ??
+            ''}</span
         >
       </button>
     {/each}

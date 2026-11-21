@@ -94,4 +94,27 @@ describe('library sorts', () => {
       dir: 'desc'
     });
   });
+
+  it('offers the Notes page its own sorts, read and written like the others', () => {
+    expect(sortChoices('notes-books').map((c) => c.key)).toEqual([
+      'changed',
+      'title',
+      'author',
+      'series',
+      'count'
+    ]);
+    expect(sortChoices('notes-highlights').map((c) => c.key)).toEqual(['created', 'book']);
+    expect(parseSort('count-desc', 'notes-books')).toEqual({ key: 'count', dir: 'desc' });
+    // The other view's keys and the Library's are not Notes sorts.
+    expect(parseSort('created-desc', 'notes-books')).toBeNull();
+    expect(parseSort('added-desc', 'notes-highlights')).toBeNull();
+    expect(formatSort({ key: 'series', dir: 'asc' }, 'notes-books')).toBe('series-asc');
+    expect(sortLabel({ key: 'created', dir: 'desc' }, 'notes-highlights')).toBe(
+      'Date highlighted · Newest first'
+    );
+    expect(pickKey({ key: 'changed', dir: 'desc' }, 'title', 'notes-books')).toEqual({
+      key: 'title',
+      dir: 'asc'
+    });
+  });
 });

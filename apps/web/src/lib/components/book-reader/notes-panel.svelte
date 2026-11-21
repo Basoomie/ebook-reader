@@ -326,7 +326,7 @@
               <span class="block text-sm">
                 {place(at ?? item.pos)}
                 {#if at === null}
-                  · <b data-testid="bookmark-unplaced">Couldn't place in the current file</b>
+                  · <b data-testid="bookmark-unplaced">Not found in this copy of the book</b>
                 {/if}
               </span>
             </button>
@@ -416,7 +416,7 @@
             <span class="block text-sm">
               {place(at ?? item.start)}
               {#if at === null}
-                · <b data-testid="notes-unplaced">Couldn't place in the current file</b>
+                · <b data-testid="notes-unplaced">Not found in this copy of the book</b>
               {/if}
             </span>
             <span class="mt-1 block">

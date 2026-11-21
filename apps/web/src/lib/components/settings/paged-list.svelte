@@ -13,6 +13,7 @@
    * one page). No scroll box inside the page: that is awkward on phones and e-readers.
    */
   import { tick } from 'svelte';
+  import ListPager from '$lib/components/list-pager.svelte';
   import { pageOf, rangeText, type ListFilter, type ListSort } from '$lib/settings/paged-list';
 
   type Item = T;
@@ -147,39 +148,13 @@
   {/if}
 
   {#if result.pages > 1}
-    <nav class="s-list-pager" aria-label="{label}: pages">
-      <button
-        type="button"
-        class="c-btn c-btn-secondary min-h-[2.75rem] px-3"
-        disabled={result.page <= 1}
-        on:click={() => goTo(result.page - 1)}
-        data-testid={testid ? `${testid}-previous` : undefined}
-      >
-        ‹ Previous
-      </button>
-      <span class="flex items-center gap-2 text-sm text-c-muted">
-        Page
-        <input
-          class="s-page-input"
-          type="number"
-          min="1"
-          max={result.pages}
-          value={result.page}
-          aria-label="Page"
-          on:change={(e) => goTo(Number(e.currentTarget.value) || 1)}
-        />
-        of {result.pages.toLocaleString('en-US')}
-      </span>
-      <button
-        type="button"
-        class="c-btn c-btn-secondary min-h-[2.75rem] px-3"
-        disabled={result.page >= result.pages}
-        on:click={() => goTo(result.page + 1)}
-        data-testid={testid ? `${testid}-next` : undefined}
-      >
-        Next ›
-      </button>
-    </nav>
+    <ListPager
+      page={result.page}
+      pages={result.pages}
+      {label}
+      {testid}
+      on:go={(e) => goTo(e.detail)}
+    />
   {/if}
 </div>
 
@@ -326,27 +301,5 @@
     text-align: center;
     color: var(--c-muted);
     font-size: 0.875rem;
-  }
-
-  .s-list-pager {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    justify-content: space-between;
-    gap: 0.5rem;
-    padding: 0.625rem 1rem;
-    border-top: 1px solid var(--c-line);
-  }
-
-  .s-page-input {
-    width: 4.25rem;
-    min-height: 2.5rem;
-    padding: 0 0.25rem;
-    text-align: center;
-    border: var(--c-border-width) solid var(--c-line-strong);
-    border-radius: 0.375rem;
-    background-color: var(--c-raised);
-    color: var(--c-ink);
-    font-variant-numeric: tabular-nums;
   }
 </style>

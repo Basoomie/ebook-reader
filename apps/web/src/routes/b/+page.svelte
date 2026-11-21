@@ -2323,7 +2323,8 @@
       const place = id ? controller.placeOf(id) : undefined;
 
       if (id && place === null) {
-        openNotice = "Couldn't place this highlight in the current file; opened at its old place.";
+        openNotice =
+          "This highlight wasn't found in this copy of the book; opened at its old place.";
       } else if (id && place === undefined) {
         openNotice = 'This highlight was removed; opened at its old place.';
       }

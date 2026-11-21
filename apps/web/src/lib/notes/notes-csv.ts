@@ -24,7 +24,7 @@ export const NOTES_CSV_COLUMNS = [
   'Volume',
   'Chapter',
   'Position',
-  'Colour',
+  'Color',
   'Text',
   'Note',
   'Created',

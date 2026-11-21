@@ -58,6 +58,8 @@ const group = (over: Partial<NotesBookGroup> = {}): NotesBookGroup => ({
   highlights: [{ item: highlight(), unplaced: false }],
   notes: [],
   lastChange: 0,
+  total: 1,
+  hit: null,
   ...over
 });
 
@@ -105,6 +107,9 @@ describe('buildNotesCsv', () => {
     ]);
     const lines = rows(csv);
     expect(lines[0]).toBe(NOTES_CSV_COLUMNS.join(','));
+    expect(lines[0]).toBe(
+      'Type,Book,Author,Series,Volume,Chapter,Position,Color,Text,Note,Created,Updated'
+    );
     expect(csv).toContain(
       'Highlight,週に一度クラスメイトを買う話５,羽田宇佐 & U35,週に一度,5,第一章,25.0%,Pink,宮と外で適当,' +
         '"line one\nline ""two""",2026-11-11 07:25,2026-11-13 10:00'

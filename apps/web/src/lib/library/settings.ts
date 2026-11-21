@@ -54,6 +54,14 @@ export const librarySort$ = writableStringLocalStorageSubject()('librarySort', '
 export const libraryGroupSort$ = writableStringLocalStorageSubject()('libraryGroupSort', '');
 
 /**
+ * Notes at scale (2026-11-21): the last sort picked on the Notes page, per view ("title-asc";
+ * '' = recently changed / newest highlight first). A series filter still opens in series
+ * order. See lib/notes/notes-view.ts.
+ */
+export const notesBookSort$ = writableStringLocalStorageSubject()('notesBookSort', '');
+export const notesHighlightSort$ = writableStringLocalStorageSubject()('notesHighlightSort', '');
+
+/**
  * WP19a: cover width in the grids, in px (Library, collections, the Collections page, Home
  * rows). 0 = automatic (columns by screen width, as before WP19a).
  */

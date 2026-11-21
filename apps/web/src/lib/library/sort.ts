@@ -14,6 +14,8 @@
  * - list: a manual collection; its own order ("Collection order") comes first and is the
  *   default (the device's order, with Reorder).
  * - groups: the Series, Authors and Tags tabs.
+ * - notes-books, notes-highlights: the Notes page's two views (sorted on the device; the
+ *   last pick per view is remembered there, `notesBookSort` / `notesHighlightSort`).
  *
  * The last book sort picked outside a series or list is remembered per device
  * (`librarySort`), the last group sort too (`libraryGroupSort`). A series or a list always
@@ -30,7 +32,13 @@ export interface ServerSort<K extends string> {
   dir: SortDir;
 }
 
-export type SortContext = 'books' | 'series' | 'list' | 'groups';
+export type SortContext =
+  | 'books'
+  | 'series'
+  | 'list'
+  | 'groups'
+  | 'notes-books'
+  | 'notes-highlights';
 
 /** One entry of the Sort menu; `own` is the series or collection order (no server sort). */
 export interface SortChoice {
@@ -82,6 +90,46 @@ const GROUP_CHOICES: SortChoice[] = [
   }
 ];
 
+/** The Notes page's Books view (lib/notes/notes-view.ts sorts by these keys). */
+const NOTES_BOOK_CHOICES: SortChoice[] = [
+  {
+    key: 'changed',
+    label: 'Recently changed',
+    dirLabels: { asc: 'Oldest first', desc: 'Newest first' },
+    defaultDir: 'desc'
+  },
+  { key: 'title', label: 'Title', dirLabels: { asc: 'A → Z', desc: 'Z → A' }, defaultDir: 'asc' },
+  { key: 'author', label: 'Author', dirLabels: { asc: 'A → Z', desc: 'Z → A' }, defaultDir: 'asc' },
+  {
+    key: 'series',
+    label: 'Series',
+    dirLabels: { asc: 'A → Z', desc: 'Z → A' },
+    defaultDir: 'asc'
+  },
+  {
+    key: 'count',
+    label: 'Number of highlights',
+    dirLabels: { asc: 'Fewest first', desc: 'Most first' },
+    defaultDir: 'desc'
+  }
+];
+
+/** The Notes page's Highlights view. */
+const NOTES_HIGHLIGHT_CHOICES: SortChoice[] = [
+  {
+    key: 'created',
+    label: 'Date highlighted',
+    dirLabels: { asc: 'Oldest first', desc: 'Newest first' },
+    defaultDir: 'desc'
+  },
+  {
+    key: 'book',
+    label: 'Book',
+    dirLabels: { asc: 'A → Z', desc: 'Z → A' },
+    defaultDir: 'asc'
+  }
+];
+
 const OWN_LABEL: Record<'series' | 'list', string> = {
   series: 'Series order',
   list: 'Collection order'
@@ -91,6 +139,8 @@ const OWN_LABEL: Record<'series' | 'list', string> = {
 export function sortChoices(context: SortContext): SortChoice[] {
   if (context === 'groups') return GROUP_CHOICES;
   if (context === 'books') return BOOK_CHOICES;
+  if (context === 'notes-books') return NOTES_BOOK_CHOICES;
+  if (context === 'notes-highlights') return NOTES_HIGHLIGHT_CHOICES;
   return [
     {
       key: context,
