@@ -7,7 +7,8 @@
 import { browser } from '$app/environment';
 import { LibraryApi, LibraryApiError } from '$lib/library/api';
 import { getLibraryStore } from '$lib/library/library-db';
-import { libraryRequestTimeoutSeconds$ } from '$lib/library/settings';
+import { libraryRequestTimeoutSeconds$, serverCheckSeconds } from '$lib/library/settings';
+import { serverReachability, serverWorthAskingNow } from '$lib/library/offline/reachability';
 import { bookIdForLocalBook } from '$lib/sync/sync-service';
 import { AnkiConnect, type NoteInfo } from './anki-connect';
 import { coverFileName, coverJpegBase64 } from './cover';
@@ -136,6 +137,23 @@ function browserOnline(): boolean {
   return !browser || typeof navigator === 'undefined' || navigator.onLine !== false;
 }
 
+/**
+ * Whether this Enrich asks the library server (sentence audio, a cover the book lacks).
+ * Away from home the phone stays "online" and a request to the server gets no answer until
+ * the request timeout, with the banner up all that time. So, as the offline Library
+ * (reachability.ts): not asked when the server is known not to answer, else at most the
+ * quick server check is waited for. Started with the tap, beside Anki's own requests.
+ */
+function serverAsked(api: LibraryApi | null, bookId: string | null): Promise<boolean> {
+  if (!api || !bookId) return Promise.resolve(false);
+  return serverWorthAskingNow(
+    serverReachability,
+    api.serverUrl,
+    serverCheckSeconds(),
+    browserOnline()
+  );
+}
+
 /** "Sentence audio will be added …" for a clip the PC reads (Season 2 Phase 12). */
 export const WAIT_FOR_PC = 'once the PC has read it';
 
@@ -163,13 +181,14 @@ async function sentenceAudio(
   bookId: string | null,
   ctx: ReaderEnrichContext,
   sentence: LookupSentence,
-  from: { pc: boolean }
+  from: { pc: boolean },
+  asked: Promise<boolean>
 ): Promise<MediaFile | Unavailable | Waiting> {
   if (!api || !bookId) {
     return { skip: 'the book is not in the library' };
   }
 
-  if (!browserOnline()) {
+  if (!(await asked)) {
     return { wait: WAIT_FOR_SERVER };
   }
 
@@ -191,7 +210,10 @@ async function sentenceAudio(
       return await pcSentenceAudio(api, bookId, from);
     }
   } catch (error) {
-    if (serverUnreachable(error)) return { wait: WAIT_FOR_SERVER };
+    if (serverUnreachable(error)) {
+      serverReachability.markUnreachable();
+      return { wait: WAIT_FOR_SERVER };
+    }
     throw error;
   }
 
@@ -226,7 +248,8 @@ async function offlineCover(bookId: string): Promise<Blob | null> {
 async function coverBlob(
   api: LibraryApi | null,
   bookId: string | null,
-  coverImage: Blob | string | undefined
+  coverImage: Blob | string | undefined,
+  asked: Promise<boolean>
 ): Promise<Blob | null> {
   if (coverImage instanceof Blob && coverImage.size) return coverImage;
 
@@ -240,11 +263,9 @@ async function coverBlob(
   }
 
   if (api && bookId) {
-    try {
-      if (!browserOnline()) {
-        throw new LibraryApiError('unreachable', SERVER_UNREACHABLE);
-      }
+    if (!(await asked)) return offlineCoverOrThrow(bookId);
 
+    try {
       const book = await api.book(bookId);
       const thumbnail = (book as { thumbnail?: string | null }).thumbnail;
 
@@ -254,14 +275,20 @@ async function coverBlob(
       }
     } catch (error) {
       if (!serverUnreachable(error)) throw error;
-
-      const copy = await offlineCover(bookId);
-      if (copy) return copy;
-      throw new Error(SERVER_UNREACHABLE);
+      // No answer after all: the next tap doesn't ask.
+      serverReachability.markUnreachable();
+      return offlineCoverOrThrow(bookId);
     }
   }
 
   return null;
+}
+
+/** The server can't be asked: the offline Library's cover, else the reason. */
+async function offlineCoverOrThrow(bookId: string): Promise<Blob> {
+  const copy = await offlineCover(bookId);
+  if (copy) return copy;
+  throw new Error(SERVER_UNREACHABLE);
 }
 
 /**
@@ -353,6 +380,7 @@ export async function enrichFromReader(
   try {
     const bookId = await bookIdForLocalBook(ctx.localId, ctx.localTitle).catch(() => null);
     const api = await libraryApi().catch(() => null);
+    const asked = serverAsked(api, bookId);
     const libraryLink = bookId
       ? await getLibraryStore()
           .getLink(bookId)
@@ -382,7 +410,7 @@ export async function enrichFromReader(
           ? readerLinkPath(bookId, sentence?.position ?? ctx.readingPosition)
           : { skip: 'the book is not in the library' },
       cover: async () => {
-        const blob = await coverBlob(api, bookId, ctx.coverImage);
+        const blob = await coverBlob(api, bookId, ctx.coverImage, asked);
 
         if (!blob) return { skip: 'the book has no cover' };
 
@@ -391,7 +419,7 @@ export async function enrichFromReader(
           load: () => coverJpegBase64(blob)
         };
       },
-      audio: (s) => sentenceAudio(api, bookId, ctx, s as LookupSentence, audioFrom),
+      audio: (s) => sentenceAudio(api, bookId, ctx, s as LookupSentence, audioFrom, asked),
       days: Math.max(1, Math.round(Number(ankiLookBackDays$.getValue()) || 1)),
       mapping,
       titleTag

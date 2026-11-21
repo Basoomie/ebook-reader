@@ -1563,6 +1563,81 @@ describe('the switch through the linking sidecar and the reader', { timeout: 180
     expect(users).toEqual(['cleanup/audio/stage6-covers.ts']);
   });
 
+  it('Continue after a failed deletion tries the failed operation again and finishes', async () => {
+    const { env, disk, worker, user, setAbs } = await setup();
+    const sw = env.audio!.switcher!;
+    await build(env, worker, user);
+    setAbs([]);
+    await request(env.app)
+      .post('/api/v1/cleanup/audio/switch/start')
+      .set(user)
+      .send({ action: 'switch' })
+      .expect(200);
+    for (let i = 0; i < 800 && sw.state() !== 'switched'; i++) {
+      await sw.step(() => false);
+      await worker.cycle().catch(() => undefined);
+    }
+    expect(sw.state()).toBe('switched');
+    await request(env.app)
+      .post('/api/v1/cleanup/audio/switch/start')
+      .set(user)
+      .send({ action: 'delete' })
+      .expect(200);
+    for (let i = 0; i < 400 && sw.progress()!.phase !== 'delete'; i++) {
+      await sw.step(() => false);
+      await worker.cycle().catch(() => undefined);
+    }
+    // As on the NAS: the first deletion refused (a folder the sidecar can't write), the run
+    // paused with it failed.
+    const run = sw.progress()!.runId;
+    env.cleanupDb
+      .prepare(
+        `UPDATE audio_switch_ops SET state = 'failed', result_json = '{"error":"EACCES"}'
+         WHERE id = (SELECT MIN(id) FROM audio_switch_ops WHERE run_id = ? AND phase = 'delete')`,
+      )
+      .run(run);
+    await sw.step(() => false);
+    expect(sw.pause()).toMatchObject({ reason: 'sidecar_failed' });
+    // The pause's start is kept (a deploy while paused keeps it), and a save while paused
+    // doesn't drop it. Then, as on the NAS, the pause lasts an hour.
+    const pausedAt = sw.progress()!.pausedAt!;
+    expect(pausedAt).toBeGreaterThan(0);
+    await sw.step(() => false);
+    expect(sw.progress()!.pausedAt).toBe(pausedAt);
+    const hour = 3_600_000;
+    const earlier = { ...sw.progress()! };
+    earlier.pausedAt = pausedAt - hour;
+    earlier.phaseStartedAt -= hour;
+    earlier.current = { ...earlier.current!, startedAt: earlier.current!.startedAt - hour };
+    earlier.startedAt -= hour;
+    env.cleanupDb
+      .prepare('UPDATE audio_switch SET progress_json = ? WHERE id = 1')
+      .run(JSON.stringify(earlier));
+    const before = sw.progress()!;
+    expect(before.current).not.toBeNull();
+    await request(env.app).post('/api/v1/cleanup/audio/switch/resume').set(user).expect(200);
+    // Continue moves the phase's and the bar's start past the pause: the hour counts toward
+    // neither the step's time nor the time left (found live: 23 h left after a pause).
+    const after = sw.progress()!;
+    expect(after.pausedAt ?? null).toBeNull();
+    expect(after.phaseStartedAt - before.phaseStartedAt).toBeGreaterThanOrEqual(hour);
+    expect(after.current!.startedAt - before.current!.startedAt).toBeGreaterThanOrEqual(hour);
+    expect(Date.now() - after.phaseStartedAt).toBeLessThan(hour);
+    expect(
+      env.cleanupDb
+        .prepare(`SELECT COUNT(*) AS n FROM audio_switch_ops WHERE run_id = ? AND state = 'failed'`)
+        .get(run),
+    ).toEqual({ n: 0 });
+    for (let i = 0; i < 800 && sw.state() !== 'deleted' && !sw.pause(); i++) {
+      await sw.step(() => false);
+      await worker.cycle().catch(() => undefined);
+    }
+    expect(sw.pause()).toBeNull();
+    expect(sw.state()).toBe('deleted');
+    expect(sw.progress()!.phaseTimes.delete).toBeLessThan(hour);
+    expect(fs.existsSync(path.join(disk.media, 'japanese-old'))).toBe(false);
+  });
+
   it('switch batches never meet a build batch’s id', () => {
     expect(SWITCH_BATCH_BASE).toBeGreaterThan(1e8);
   });
