@@ -150,8 +150,9 @@ export const STAGE4_RULES_VERSION = 2;
  * 2: file-describing folders, track numbers, series folders (WP21c follow-up (2)).
  * 3: archive extensions out of the titles, the album tag's title (WP21f-1 stop 2).
  * 4: the subtitle in a bracket at the end of the title (WP21c follow-up (3)).
+ * 5: narrators from audiobook.jp's bare tag form (artist = the narrators; WP21f-2).
  */
-export const STAGE4_UNITS_VERSION = 4;
+export const STAGE4_UNITS_VERSION = 5;
 
 export type Stage4Phase = 'units' | 'lookups' | 'records' | 'gate' | 'done';
 
@@ -767,6 +768,7 @@ export class AudioStage4 {
         seriesTitles: series,
         authors: [...new Set([...nameAuthors, ...people.authors])],
         narrators: people.narrators,
+        ...(people.narratorsFromArtist ? { narratorsFromArtist: true } : {}),
         volume: printedVolume(repName),
         drama,
         seconds: rep.seconds,

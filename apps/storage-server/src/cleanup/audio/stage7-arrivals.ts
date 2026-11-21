@@ -90,6 +90,14 @@ export interface Stage7Progress {
   phaseStartedAt: number;
   phaseStartDone: number;
   phaseTimes: Record<string, { ms: number; items: number }>;
+  /**
+   * Time the current phase spent waiting for Calibre (the disk lock, a walk's pauses, the
+   * check's waits): not work, so `setPhase` leaves it out of `phaseTimes` (WP21f-2; the card's
+   * time line counted it). Missing in runs saved before.
+   */
+  phaseWaitMs?: number;
+  /** When the current wait for Calibre started (closed by `waitForCalibre(p, false)`). */
+  calibreWaitSince?: number | null;
   /** Analysis ids of stages 1/2 when the run asked them to run again. */
   asked: { s1?: string | null; s1b?: string | null; s2?: string | null };
   archives: {
@@ -411,10 +419,12 @@ export class AudioStage7 {
   }
 
   private setPhase(p: Stage7Progress, phase: Stage7Phase, items = 0): void {
+    this.waitForCalibre(p, false);
     const now = this.now();
     const t = (p.phaseTimes[p.phase] ??= { ms: 0, items: 0 });
-    t.ms += now - p.phaseStartedAt;
+    t.ms += Math.max(0, now - p.phaseStartedAt - (p.phaseWaitMs ?? 0));
     t.items += items;
+    p.phaseWaitMs = 0;
     p.phase = phase;
     p.phaseStartedAt = now;
     p.phaseStartDone = 0;
@@ -754,6 +764,7 @@ export class AudioStage7 {
       if (stop()) return 'wait';
       await this.holdTurn(p, stop);
     } else this.giveBack();
+    this.waitForCalibre(p, listing && this.deps.lock.calibreBusy());
     p.waiting = listing
       ? this.deps.lock.calibreBusy()
         ? 'Waiting while the Calibre cleanup uses the disk'
@@ -1251,6 +1262,7 @@ export class AudioStage7 {
         ms: this.now() - t,
         pausedMs: w.pausedMs,
       };
+      p.phaseWaitMs = (p.phaseWaitMs ?? 0) + w.pausedMs;
       this.save(p);
     }
     this.setPhase(p, phase === 'before' ? 'build' : 'check');
@@ -1290,6 +1302,19 @@ export class AudioStage7 {
     return r ? ungz<ManifestEntry[]>(r.data) : [];
   }
 
+  /**
+   * Opens (`waiting` true) or closes the current phase's wait for Calibre; a closed wait is left
+   * out of the phase's time. Safe to call repeatedly with the same answer.
+   */
+  private waitForCalibre(p: Stage7Progress, waiting: boolean): void {
+    const now = this.now();
+    if (waiting) p.calibreWaitSince ??= now;
+    else if (p.calibreWaitSince != null) {
+      p.phaseWaitMs = (p.phaseWaitMs ?? 0) + (now - p.calibreWaitSince);
+      p.calibreWaitSince = null;
+    }
+  }
+
   /** Takes the disk lock for a turn (Calibre first); counts the wait. */
   private async holdTurn(p: Stage7Progress, stop: () => boolean): Promise<void> {
     const lock = this.deps.lock;
@@ -1309,7 +1334,9 @@ export class AudioStage7 {
       if (!got && !lock.holds(OWNER)) return;
     }
     if (p.build.waitSince) {
-      p.build.lockWaitMs += this.now() - p.build.waitSince;
+      const waited = this.now() - p.build.waitSince;
+      p.build.lockWaitMs += waited;
+      p.phaseWaitMs = (p.phaseWaitMs ?? 0) + waited;
       p.build.waitSince = null;
     }
     this.handing = lock.holds(OWNER) && !lock.shouldYield(OWNER);
@@ -1468,7 +1495,9 @@ export class AudioStage7 {
     for (const x of sample) {
       p.walk.done++;
       this.save(p);
+      const waitedFrom = this.now();
       while (this.deps.lock.calibreBusy() && !stop()) await sleep(1000);
+      p.phaseWaitMs = (p.phaseWaitMs ?? 0) + (this.now() - waitedFrom);
       const h = await hashFile(insideRoot(media, x.dst), new ReadPacer(0), stop);
       if (h?.sha256 === x.sha256) same++;
     }

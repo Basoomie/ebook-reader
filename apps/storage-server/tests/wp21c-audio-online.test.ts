@@ -278,9 +278,41 @@ describe('names', () => {
     expect(peopleFromTags({ artist: '宮部 みゆき', composer: '井上 悟' })).toEqual({
       authors: ['宮部 みゆき'],
       narrators: ['井上 悟'],
+      narratorsFromArtist: false,
     });
     // Without a composer the artist may be the narrator: neither is used.
-    expect(peopleFromTags({ artist: '住谷哲栄' })).toEqual({ authors: [], narrators: [] });
+    expect(peopleFromTags({ artist: '住谷哲栄' })).toEqual({
+      authors: [],
+      narrators: [],
+      narratorsFromArtist: false,
+    });
+    // audiobook.jp's bare form (genre "Audiobook", no album_artist, no date): the narrators,
+    // as stage 5 reads it (WP21f-2; the TMW ひと's tags).
+    expect(
+      peopleFromTags({
+        artist: '広瀬裕也, 鈴代紗弓, 佐藤晴男, 大西弘祐',
+        genre: 'Audiobook',
+        album: 'ひと',
+      }),
+    ).toEqual({
+      authors: [],
+      narrators: ['広瀬裕也', '鈴代紗弓', '佐藤晴男', '大西弘祐'],
+      narratorsFromArtist: true,
+    });
+    // Any other form keeps the artist out (the app's downloads, Audible's form).
+    expect(peopleFromTags({ artist: '辻村深月', genre: 'オーディオブック' })).toEqual({
+      authors: [],
+      narrators: [],
+      narratorsFromArtist: false,
+    });
+    expect(
+      peopleFromTags({
+        artist: '住野よる',
+        genre: 'Audiobook',
+        album_artist: '住野よる',
+        date: '2020',
+      }),
+    ).toEqual({ authors: [], narrators: [], narratorsFromArtist: false });
   });
 });
 
@@ -305,6 +337,56 @@ describe('accepting a match (all four checks; the sample’s runtime-only traps)
       M,
     );
     expect(e.failed).toEqual([]);
+  });
+
+  it("audiobook.jp's bare-form narrators: another edition's narrator fails; the author in the artist tag doesn't (WP21f-2)", () => {
+    // ST 黄の調査ファイル (TMW Part 12): the file's artist tag 篠原孝太朗, 瀬戸歩; Audible B074LY992T's 遠藤 純平.
+    const st = evaluate(
+      unit({
+        title: 'ST 警視庁科学特捜班 黄の調査ファイル',
+        narrators: ['篠原孝太朗', '瀬戸歩'],
+        narratorsFromArtist: true,
+        seconds: 422 * 60,
+      }),
+      rec({
+        title: 'ST 警視庁科学特捜班　黄の調査ファイル',
+        authors: ['今野 敏'],
+        narrators: ['遠藤 純平'],
+        seconds: 424 * 60,
+      }),
+      M,
+    );
+    expect(st.failed).toEqual(['narrator']);
+    // 鬼物語 (TMW Part 3): the artist tag 西尾 維新 is the record's author: the narrator is unknown.
+    const oni = evaluate(
+      unit({
+        title: '鬼物語',
+        narrators: ['西尾 維新'],
+        narratorsFromArtist: true,
+        seconds: 604 * 60,
+      }),
+      rec({
+        title: '鬼物語',
+        authors: ['西尾 維新'],
+        narrators: ['喜多村 英梨'],
+        seconds: 604 * 60,
+      }),
+      M,
+    );
+    expect(oni.failed).toEqual([]);
+    expect(oni.checks.narrator.unknown).toBe(true);
+    // A composer that names the author is still a narrator (only the bare form is guarded).
+    const comp = evaluate(
+      unit({ title: '鬼物語', narrators: ['西尾 維新'], seconds: 604 * 60 }),
+      rec({
+        title: '鬼物語',
+        authors: ['西尾 維新'],
+        narrators: ['喜多村 英梨'],
+        seconds: 604 * 60,
+      }),
+      M,
+    );
+    expect(comp.failed).toEqual(['narrator']);
   });
 
   it('kikubon 兇人邸の殺人 for 魔眼の匣の殺人 (0.5 min apart, same author): the title differs', () => {

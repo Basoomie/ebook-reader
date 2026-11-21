@@ -278,7 +278,10 @@ export class EvidenceBuilder {
       drama: f.drama !== null,
       dramaNumber: f.drama?.number ?? null,
       nameAuthors: f.authors,
-      tagNarrators: f.narrators,
+      // The composer tag's names only: stage 4 also reads audiobook.jp's bare form (the artist
+      // tag) as narrators (WP21f-2), which stage 5 reads from `tags` itself (`tagPeopleOf`), so
+      // the evidence (and every stored answer for it) stays as it was.
+      tagNarrators: f.narratorsFromArtist ? [] : f.narrators,
       paths,
       tags,
       record,

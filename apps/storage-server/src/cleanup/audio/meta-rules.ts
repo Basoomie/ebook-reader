@@ -27,6 +27,7 @@
  */
 import { NA, normalizeName, lightNormalize, cleanTitle, looksLikeMojibake } from '../title-rules';
 import type { RulesValue } from '../ai/types';
+import { artistIsNarrator } from './online-names';
 import type { MetaEvidence, RecordBrief } from './meta-evidence';
 
 export interface SeriesEntry {
@@ -492,12 +493,8 @@ export function tagPeopleOf(ev: MetaEvidence): { authors: string[]; narrators: s
   };
 }
 
-/** audiobook.jp's bare tag form, where an artist tag without a composer names the narrators. */
-export function artistIsNarrator(tags: Record<string, string> | null): boolean {
-  if (!tags) return false;
-  const genre = (tags.genre ?? '').normalize('NFKC').trim().toLowerCase();
-  return genre === 'audiobook' && !tags.album_artist?.trim() && !tags.date?.trim();
-}
+/** audiobook.jp's bare tag form: shared with stage 4 (`online-names.ts`). */
+export { artistIsNarrator };
 
 /** The title of a recording with no store record: the file's own (stage 4's cleaned name). */
 function fileTitle(ev: MetaEvidence): string | null {

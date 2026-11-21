@@ -81,7 +81,7 @@ function childrenOf(tree: ExistingTree, parent: string): Map<string, string> {
 }
 
 /** What may follow a book's name in its editions' folders: ` {narrator}`, ` (n)`, or both. */
-const FAMILY_REST = /^( {[^}]*})?( (d+))?$/;
+const FAMILY_REST = /^( \{[^}]*\})?( \(\d+\))?$/;
 
 export function planArrivals(books: PlannedBook[], tree: ExistingTree): ArrivalPlan {
   const counts: ArrivalPlan['counts'] = {

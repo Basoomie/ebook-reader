@@ -64,7 +64,7 @@ import { reuseTwinHealth } from '../src/cleanup/audio/stage2-books';
 import { readerLibraryFolder } from '../src/cleanup/audio-stage3-inputs';
 import { getAudioStage, setAudioStageMode } from '../src/cleanup/audio/audio-stages';
 import { initCleanupDatabase } from '../src/cleanup/cleanup-db';
-import { DiskLock } from '../src/cleanup/disk-lock';
+import { DiskLock, DISK_OWNERS } from '../src/cleanup/disk-lock';
 import { AudioStage3 } from '../src/cleanup/audio/stage3-dups';
 import { getSettings, updateSettings } from '../src/cleanup/settings';
 import { liveCases, seedStage4 } from './helpers/audio-meta-seed';
@@ -683,6 +683,20 @@ describe('the plan against the existing library', () => {
       'japanese/作者C/本 (3)',
     ]);
     expect(p.counts.collisions).toMatchObject({ narrator: 2, number: 2 });
+  });
+
+  it('an edition numbered " (2)" counts as the family: another narrator there gives {narrator} (WP21f-2)', () => {
+    // The family test lost its backslashes (` (d+)`), so `本 (2)` was never seen as an edition.
+    const fam = {
+      dirs: new Set(['japanese', 'japanese/作者D', 'japanese/作者D/本', 'japanese/作者D/本 (2)']),
+      bookDirs: new Set(['japanese/作者D/本', 'japanese/作者D/本 (2)']),
+      narrators: new Map<string, string | null>([
+        ['japanese/作者D/本', '読み手'],
+        ['japanese/作者D/本 (2)', '別の読み手'],
+      ]),
+    };
+    const p = planArrivals([book({ title: '本', author: '作者D', narrator: '読み手' })], fam);
+    expect(p.books.map((b) => b.folder)).toEqual(['japanese/作者D/本 {読み手}']);
   });
 
   it('a series goes into the existing series folder; a book folder is never used as a series folder', () => {
@@ -1557,6 +1571,31 @@ describe('a run of stage 7 (Preview, then On)', () => {
     t.stage7.maybeStart();
     await drive(t);
     expect(t.stage7.lastRun()!.report).toMatchObject({ added: 0, planned: 0 });
+  });
+
+  it('waiting for Calibre is not work: the build’s time leaves out the disk wait (WP21f-2)', async () => {
+    const t = setup({ absShows: true });
+    setAudioStageMode(t.db, 7, 'on');
+    t.stage7.requestRun();
+    t.stage7.maybeStart();
+    const lock = (t.stage7 as unknown as { deps: { lock: DiskLock } }).deps.lock;
+    let held = false;
+    for (let i = 0; i < 400; i++) {
+      if (!held && t.stage7.current()?.phase === 'build') {
+        // Calibre takes the disk as the build starts and keeps it for 1.5 s.
+        expect(lock.tryAcquire(DISK_OWNERS.calibre3, 'calibre')).toBe(true);
+        held = true;
+        setTimeout(() => lock.release(DISK_OWNERS.calibre3), 1500);
+      }
+      const b = t.stage7.claim();
+      if (b) t.stage7.report(b.id, (await t.worker.process(b as never)) as never);
+      if ((await t.stage7.step(() => false)) === 'done') break;
+    }
+    const run = t.stage7.lastRun()!;
+    expect(run.report).toMatchObject({ mode: 'on', added: 1 });
+    const waited = run.progress.build.lockWaitMs;
+    expect(waited).toBeGreaterThanOrEqual(1000);
+    expect(run.progress.phaseTimes.build.ms).toBeLessThan(waited);
   });
 
   it('when ABS doesn’t show the book: listed for review with the nudge off; told with it on', async () => {

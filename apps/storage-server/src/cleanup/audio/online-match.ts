@@ -45,6 +45,12 @@ export interface UnitFacts {
   seriesTitles?: string[];
   authors: string[];
   narrators: string[];
+  /**
+   * The narrators came from audiobook.jp's bare tag form (the artist tag, no composer): a few
+   * files of that form name the author there (鬼物語: 西尾維新), so when they agree with the
+   * record's authors the narrator is unknown (WP21f-2). Missing in units built before.
+   */
+  narratorsFromArtist?: boolean;
   /** The printed volume from the names (`[4巻]`, `上`, a trailing number), or null. */
   volume: string | null;
   /** A drama CD and its number ("CD3", "ドラマCD3"), or null. */
@@ -401,8 +407,13 @@ export function evaluate(
     };
   }
 
-  // Narrator: only when the file's tags name one.
-  if (unit.narrators.length === 0 || r.narrators.length === 0) {
+  // Narrator: only when the file's tags name one. An artist tag of audiobook.jp's bare form that
+  // names the record's author named the author, not a narrator (鬼物語).
+  const artistIsAuthor =
+    unit.narratorsFromArtist === true &&
+    r.authors.length > 0 &&
+    peopleAgree(unit.narrators, r.authors);
+  if (unit.narrators.length === 0 || r.narrators.length === 0 || artistIsAuthor) {
     checks.narrator = { ok: true, unknown: true, file: unit.narrators, store: r.narrators };
   } else {
     checks.narrator = {

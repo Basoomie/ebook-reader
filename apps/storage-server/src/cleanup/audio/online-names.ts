@@ -11,7 +11,8 @@
  *   or `[CD]`. From the tags: `artist` names the author when `composer` names the narrator
  *   (measured on the 193 labeled books: composer = narrator in 165 of the 168 files that have
  *   one; artist = author in 172, a narrator in 11 (none of them with a composer), someone else
- *   in 7).
+ *   in 7). Without a composer, audiobook.jp's bare form (genre "Audiobook", no album_artist,
+ *   no date) names the narrators in `artist` (WP21f-2, as stage 5 reads it).
  */
 import { decodeMojibake } from './mojibake';
 
@@ -219,10 +220,38 @@ export interface FileTags {
   [k: string]: string | undefined;
 }
 
-/** What the tags say about the people: authors only when a composer names the narrators. */
-export function peopleFromTags(tags: FileTags | null): { authors: string[]; narrators: string[] } {
-  if (!tags) return { authors: [], narrators: [] };
-  const narrators = tagPeople(tags.composer);
-  const authors = narrators.length ? tagPeople(tags.artist ?? tags.album_artist) : [];
-  return { authors, narrators };
+/**
+ * audiobook.jp's bare tag form (genre "Audiobook", no album_artist, no date), where an artist
+ * tag without a composer names the narrators (328 of 330 recordings with a store record; every
+ * other form names the author there). Shared by stage 4 and stage 5.
+ */
+export function artistIsNarrator(tags: Record<string, string | undefined> | null): boolean {
+  if (!tags) return false;
+  const genre = (tags.genre ?? '').normalize('NFKC').trim().toLowerCase();
+  return genre === 'audiobook' && !tags.album_artist?.trim() && !tags.date?.trim();
+}
+
+/**
+ * What the tags say about the people: authors only when a composer names the narrators; in
+ * audiobook.jp's bare form (`artistIsNarrator`) the artist tag names the narrators, as stage 5
+ * reads it (WP21f-2).
+ */
+export function peopleFromTags(tags: FileTags | null): {
+  authors: string[];
+  narrators: string[];
+  narratorsFromArtist: boolean;
+} {
+  const none = { authors: [], narrators: [], narratorsFromArtist: false };
+  if (!tags) return none;
+  const composer = tagPeople(tags.composer);
+  if (composer.length)
+    return {
+      authors: tagPeople(tags.artist ?? tags.album_artist),
+      narrators: composer,
+      narratorsFromArtist: false,
+    };
+  const artist = tagPeople(tags.artist);
+  if (artist.length && artistIsNarrator(tags))
+    return { authors: [], narrators: artist, narratorsFromArtist: true };
+  return none;
 }

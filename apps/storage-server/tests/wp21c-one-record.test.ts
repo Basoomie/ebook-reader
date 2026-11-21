@@ -182,7 +182,8 @@ describe('the subtitle at the end of a title (the cause: (妄想) and (入門) w
     // A unit built before (no titleBracket) passes as it did: the units version makes the stage
     // build them again.
     expect(evaluate({ ...mousou, titleBracket: undefined }, nyumon, M).pass).toBe(true);
-    expect(STAGE4_UNITS_VERSION).toBe(4);
+    // 4 added the bracket; later versions (5: the bare tag form, WP21f-2) keep it.
+    expect(STAGE4_UNITS_VERSION).toBeGreaterThanOrEqual(4);
   });
 
   it('exactTitle: the file’s own title with its subtitle is the store’s title, nothing cleaned away', () => {
