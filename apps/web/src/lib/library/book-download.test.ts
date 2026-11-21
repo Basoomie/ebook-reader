@@ -10,7 +10,9 @@ import {
   audioDownloadUrl,
   coverFileName,
   downloadChoices,
+  downloadSizes,
   epubFileName,
+  formatDownloadSize,
   subtitleFileName
 } from './book-download';
 
@@ -99,6 +101,48 @@ describe('downloadChoices', () => {
     expect(downloadChoices({ thumbnail }, null).cover).toBe(true);
     expect(downloadChoices({ thumbnail: null }, null).cover).toBe(false);
     expect(downloadChoices({ thumbnail, missing: true }, null).cover).toBe(false);
+  });
+});
+
+describe('downloadSizes', () => {
+  const source = (fileSize: number | null, missingAt: number | null = null) => ({
+    fileSize,
+    missingAt
+  });
+  const sub = {
+    id: 3,
+    libraryId: 'lib',
+    relPath: 'japanese-srt/本.srt',
+    name: '本.srt',
+    parentName: null,
+    size: 52_000,
+    missing: false
+  };
+
+  it('takes the EPUB from the first source that is there, the audio and SRT from the link', () => {
+    const book = { sources: [source(1, 5), source(2_200_000)] };
+    expect(downloadSizes(book, link({ subtitle: sub }))).toEqual({
+      book: 2_200_000,
+      audio: 100,
+      subtitles: 52_000
+    });
+  });
+
+  it('leaves unknown sizes null', () => {
+    expect(downloadSizes({ sources: [] }, null)).toEqual({
+      book: null,
+      audio: null,
+      subtitles: null
+    });
+    expect(downloadSizes({}, link({ file: null })).audio).toBeNull();
+  });
+
+  it('writes sizes in KB, MB and GB', () => {
+    expect(formatDownloadSize(2.1 * 1024 * 1024)).toBe('2.1 MB');
+    expect(formatDownloadSize(250 * 1024 * 1024)).toBe('250.0 MB');
+    expect(formatDownloadSize(1.4 * 1024 * 1024 * 1024)).toBe('1.4 GB');
+    expect(formatDownloadSize(52_000)).toBe('51 KB');
+    expect(formatDownloadSize(null)).toBe('');
   });
 });
 
