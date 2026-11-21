@@ -982,7 +982,8 @@ describe.skipIf(!BSDTAR)('archives with the real bsdtar (Linux image)', () => {
     const lm = await listArchive('bsdtar', await open(mixed));
     expect(lm).toMatchObject({ encoding: 'cp932', problem: null });
     expect(lm.entries.map((e) => e.name)).toEqual(['本/あ.m4b', '本/二.m4b']);
-    // Two unmarked names, one UTF-8 and one CP932: CP932 would garble the UTF-8 one.
+    // Two unmarked names, one UTF-8 and one CP932: refused (bsdtar can't convert the UTF-8 one
+    // from CP932, or it would come out garbled).
     const ambiguous = archive(
       dir,
       'a.zip',
@@ -991,7 +992,9 @@ describe.skipIf(!BSDTAR)('archives with the real bsdtar (Linux image)', () => {
         { name: Buffer.from('本/二.m4b', 'utf8'), data: 'b' },
       ]),
     );
-    expect((await listArchive('bsdtar', await open(ambiguous))).problem).toMatch(/two encodings/);
+    expect((await listArchive('bsdtar', await open(ambiguous))).problem).toMatch(
+      /two encodings|can't be read as CP932/,
+    );
     // One entry to stdout, by its exact name (its [ ] are pattern characters).
     const read = async (p: string, name: string, enc: 'utf8' | 'cp932') => {
       const h = await open(p);
