@@ -1502,6 +1502,43 @@ function db_reset_stage1(db: Database.Database, disk: { library: string }) {
   ).run(st.size, Math.floor(st.mtimeMs), st.dev, st.ino, st.nlink);
 }
 
+describe('the page’s E/F/J line (polled)', () => {
+  it('reads the stage-5 values only when stage 5 or the AI settings changed, or after 10 minutes', () => {
+    const db = freshDb('wp21f-est');
+    let now = 1_000_000;
+    let reads = 0;
+    const prepare = db.prepare.bind(db);
+    (db as unknown as { prepare: (sql: string) => unknown }).prepare = (sql: string) => {
+      if (/FROM ai_values/.test(sql)) reads++;
+      return prepare(sql);
+    };
+    const stage = new AudioStage7({
+      db,
+      roots: { torrents: '/none', library: '/none', media: null },
+      lock: new DiskLock(5),
+      reanalyse: () => undefined,
+      abs: () => null,
+      now: () => now,
+    });
+    stage.status();
+    const once = reads;
+    expect(once).toBeGreaterThan(0);
+    now += 5 * 60_000;
+    stage.status();
+    stage.status();
+    expect(reads).toBe(once);
+    // Stage 5 decided again: computed again.
+    db.prepare(`UPDATE audio_stages SET progress_json = ? WHERE stage = 5`).run(
+      JSON.stringify({ analysisId: 'x', phase: 'done', decided: 7 }),
+    );
+    stage.status();
+    expect(reads).toBe(2 * once);
+    now += 11 * 60_000;
+    stage.status();
+    expect(reads).toBe(3 * once);
+  });
+});
+
 describe("Audiobookshelf's values against our metadata.json", () => {
   const ours = {
     title: '新しい本 1',

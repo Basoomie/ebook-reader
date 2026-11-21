@@ -2096,8 +2096,7 @@ export class AudioStage7 {
       report: last?.report ?? null,
       sidecarReady: this.sidecarReady(),
       switched: librarySwitched(this.db),
-      designs: this.upgradeEstimate().designs,
-      upgrade: this.upgradeEstimate(),
+      ...((u) => ({ designs: u.designs, upgrade: u }))(this.upgradeEstimate()),
       absWaitMinutes: getSettings(this.db).audiobooks.arrivalsAbsWaitMinutes,
       openReviews: Object.fromEntries(
         (
@@ -2111,20 +2110,45 @@ export class AudioStage7 {
     };
   }
 
-  private upgradeCache: { at: number; value: ReturnType<AudioStage7['computeUpgrade']> } | null =
-    null;
+  private upgradeCache: {
+    at: number;
+    key: string;
+    value: ReturnType<AudioStage7['computeUpgrade']>;
+  } | null = null;
 
   /**
    * What a library-wide F or J upgrade of stage 5 would re-check (recordings and fields) and its
    * expected cost at the stronger pair's prices (their measured answers, else the prompt's
    * length). Values already decided by that design or a stronger one are left out unless the
-   * setting includes them. Cached a minute (the page polls).
+   * setting includes them. It reads every stage-5 value (about 120 ms on the PC at the live
+   * library's size, measured at stop 1): computed again only when stage 5's decisions or the AI
+   * settings change, and at most every 10 minutes otherwise (the page polls every few seconds).
    */
   upgradeEstimate() {
     const now = this.now();
-    if (this.upgradeCache && now - this.upgradeCache.at < 60_000) return this.upgradeCache.value;
+    const s5 = getAudioStage(this.db, 5).progress as {
+      analysisId?: string;
+      phase?: string;
+      decided?: number;
+      finishedAt?: number | null;
+    };
+    const ai = getSettings(this.db);
+    const key = JSON.stringify([
+      s5.analysisId,
+      s5.phase,
+      s5.decided,
+      s5.finishedAt,
+      ai.ai.upgradeIncludeDecided,
+      ai.ai.prices,
+      ai.ai.modes,
+      ai.ai.batchPriceFactor,
+      ai.models['audio5.upgradePrimary'],
+      ai.models['audio5.upgradeSecondary'],
+    ]);
+    if (this.upgradeCache && this.upgradeCache.key === key && now - this.upgradeCache.at < 600_000)
+      return this.upgradeCache.value;
     const value = this.computeUpgrade();
-    this.upgradeCache = { at: now, value };
+    this.upgradeCache = { at: now, key, value };
     return value;
   }
 
