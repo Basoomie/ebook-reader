@@ -9,6 +9,7 @@ import type { CleanupBatch, CleanupStage } from './cleanup-api';
 import { CleanupApi } from './cleanup-api';
 import {
   batchCountsText,
+  batchKindText,
   canUndo,
   precisionLine,
   restoreText,
@@ -235,6 +236,11 @@ describe('cleanup wording', () => {
     expect(canUndo(batch({ kind: 'undo' }), [])).toBe(false);
     expect(canUndo(batch({ state: 'undone' }), [])).toBe(false);
     expect(canUndo(batch({ counts: { skipped: 3 } }), [])).toBe(false);
+    // Stage 4 writes fields like stage 2 (WP20e): its own name, counted as changes, with Undo.
+    const s4 = batch({ stage: 4, counts: { written: 2155 } });
+    expect(batchKindText(s4)).toBe('Metadata from the online sources');
+    expect(batchCountsText(s4)).toBe('2,155 changes written');
+    expect(canUndo(s4, [s4])).toBe(true);
   });
 
   it('asks before turning stage 1 on and before Undo', () => {

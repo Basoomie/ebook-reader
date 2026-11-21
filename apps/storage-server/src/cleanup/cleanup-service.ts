@@ -992,8 +992,10 @@ export class CleanupService {
           .get(target, state, ...fields, ...(cls ? [cls] : []), analysisId) as { n: number }
       ).n;
     const doneChanges = n('applied', null);
-    const leftChanges = n('proposed', 'auto');
-    if (doneChanges === 0 && getStage(this.db, 4).mode !== 'on') return null;
+    // A planned batch's changes are queued until written: still to write.
+    const queued = n('queued', null);
+    const leftChanges = n('proposed', 'auto') + queued;
+    if (doneChanges === 0 && queued === 0 && getStage(this.db, 4).mode !== 'on') return null;
     // Books per finished batch, counted once each (a few ms by the batch's items): counting
     // distinct books over all proposals held the server 1.4 s at the run's size (measured).
     const finished = this.db

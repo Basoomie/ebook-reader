@@ -719,6 +719,19 @@ export function undoFileMetadataBatchCopy(count: number): ConfirmCopy {
   };
 }
 
+/** Undo of a stage-4 batch (values from the online sources). */
+export function undoOnlineSourcesBatchCopy(count: number): ConfirmCopy {
+  return {
+    title: `Put back the old values of ${count.toLocaleString('en-US')} ${count === 1 ? 'change' : 'changes'} in this batch?`,
+    message: [
+      'Titles, authors and their readings, illustrators, series and numbers, descriptions and store links get their old values again, and replaced covers their old picture (kept in the quarantine folder).',
+      'A cover added where Calibre had none stays: the content server can’t remove a cover. A value changed in Calibre since is left as it is.'
+    ],
+    confirmLabel: 'Undo this batch',
+    danger: false
+  };
+}
+
 /** Removing a saved API key or the Calibre password. */
 /** Settings > Notifications: removing the webhook address or the app password. */
 export function removeNotificationSecretCopy(label: string): ConfirmCopy {
