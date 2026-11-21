@@ -12,7 +12,8 @@
    * finished jobs (Now / Digest / Off), the wait times, and per section a switch for the
    * whole section plus a switch per event and set-up channel. A channel's column shows only
    * once it is set up. Each change is saved at once. N2 adds the Stats section (daily,
-   * weekly and monthly stats messages, off by default) with its "no reading" choice.
+   * weekly and monthly stats messages, off by default) with its "no reading" choice and,
+   * per message, whether it compares with the previous period.
    */
   import SettingsGroup from '$lib/components/settings/settings-group.svelte';
   import SettingRow from '$lib/components/settings/setting-row.svelte';
@@ -27,7 +28,8 @@
     type NotificationChannel,
     type NotificationSecretName,
     type NotificationsView,
-    type SettingsPatch
+    type SettingsPatch,
+    type StatsReportKind
   } from '$lib/notifications/notifications-api';
   import {
     CHANNEL_NAMES,
@@ -197,6 +199,16 @@
 
   function setNoReading(value: string) {
     if (value === 'skip' || value === 'send') void save({ stats: { noReading: value } });
+  }
+
+  const COMPARE_KINDS: { kind: StatsReportKind; label: string }[] = [
+    { kind: 'day', label: 'Daily' },
+    { kind: 'week', label: 'Weekly' },
+    { kind: 'month', label: 'Monthly' }
+  ];
+
+  function setCompare(kind: StatsReportKind, on: boolean) {
+    if (view) void save({ stats: { compare: { ...view.settings.stats.compare, [kind]: on } } });
   }
 
   function toggleEvent(id: string, channel: NotificationChannel, on: boolean) {
@@ -485,6 +497,32 @@
                 <option value="skip">Skip</option>
                 <option value="send">Send “No reading”</option>
               </select>
+            </SettingRow>
+            <SettingRow
+              title="Compare with the previous period"
+              description="Shows each number's change from the day, week or month before, e.g. (+2,140, +13%)."
+              let:labelId
+            >
+              <div
+                class="flex flex-wrap gap-x-5 gap-y-2 text-sm"
+                role="group"
+                aria-labelledby={labelId}
+                data-testid="notify-stats-compare"
+              >
+                {#each COMPARE_KINDS as { kind, label } (kind)}
+                  <label class="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      class="h-5 w-5 disabled:opacity-40"
+                      disabled={!view.settings.sections.stats}
+                      checked={view.settings.stats.compare[kind]}
+                      on:change={(e) => setCompare(kind, e.currentTarget.checked)}
+                      data-testid="notify-stats-compare-{kind}"
+                    />
+                    {label}
+                  </label>
+                {/each}
+              </div>
             </SettingRow>
           {/if}
           {#if channels.length === 0}
