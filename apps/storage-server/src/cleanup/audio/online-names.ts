@@ -16,6 +16,7 @@
 import { decodeMojibake } from './mojibake';
 
 const AUDIO_EXT = /\.(m4b|m4a|mp3|mp4|wav|ogg|opus|flac|aac)$/i;
+const ARCHIVE_EXT = /\.(zip|rar|7z)$/i;
 const ASIN_IN_NAME = /\[(B0[0-9A-Z]{8}|\d{9}[\dX])\]/g;
 const STORE_IN_NAME = /\[(audiobook\.jp|kikubon|dwango)\s+(\d+)\]/g;
 const KANA_KANJI = /[\u3040-\u30ff\u4e00-\u9fff]/;
@@ -34,6 +35,9 @@ function demojibake(s: string): string {
 export function searchTitle(name: string): string {
   let n = demojibake(name);
   let t = AUDIO_EXT.test(n) ? n.slice(0, n.lastIndexOf('.')) : n;
+  // Stage 7 unpacks an archive into a folder named after it (`_extracted/…/かがみの孤城.zip/`):
+  // the extension is not part of the title (WP21f-1 stop 2).
+  t = t.replace(ARCHIVE_EXT, '');
   t = t.replace(ASIN_IN_NAME, '').replace(STORE_IN_NAME, '');
   t = t.replace(/^(Vol [\d.]+|Bonus|CD \d+) - /, '');
   t = t.replace(/^\[\d+\]\s*/, '');
@@ -51,7 +55,7 @@ export function meaningless(q: string): boolean {
   return (
     q.length < 2 ||
     /^[\d\-\s]+$/.test(q) ||
-    /^(new|moved|Discord|MAM|_?Unknown|Unknown|AI|audiobooks?)$/i.test(q) ||
+    /^(new|moved|Discord|MAM|_?Unknown|Unknown|AI|audiobooks?|_extracted)$/i.test(q) ||
     /^TMW Japanese Audiobooks Collection/i.test(q)
   );
 }

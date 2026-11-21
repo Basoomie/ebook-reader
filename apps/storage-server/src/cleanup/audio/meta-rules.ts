@@ -23,7 +23,7 @@
  *   the names, title or series say ドラマCD (the models cannot make it true); the rules' title
  *   stands against a model that only drops an edition mark or adds a volume number; no store
  *   record: the artist tag is the author and the composer tag the narrator (artist alone: the
- *   narrators), unconfirmed.
+ *   narrators in audiobook.jp's bare tag form, else the author; WP21f-1 stop 2), unconfirmed.
  */
 import { NA, normalizeName, lightNormalize, cleanTitle, looksLikeMojibake } from '../title-rules';
 import type { RulesValue } from '../ai/types';
@@ -473,18 +473,30 @@ function tagPeople(tag: string | undefined): string[] {
  * The people of a recording with no store record, from its tags (WP21d follow-up, 2026-11-20;
  * measured on the labeled books: the composer tag was the narrator in 160 of 166, the artist tag
  * the author in 150 of those): with a composer tag the artist is the author and the composer the
- * narrator; with an artist tag alone the files are audiobook.jp's, where the artist tag lists
- * the narrators (all 21 such recordings of the library), so the authors stay with the names.
+ * narrator. With an artist tag alone it depends on the form of the tags (WP21f-1 stop 2,
+ * measured on every recording of the library with a store record): in audiobook.jp's bare form
+ * (genre "Audiobook", no album_artist, no date) the artist tag lists the narrators (328 of 330),
+ * so the authors stay with the names; in every other form it is the author (the app's
+ * downloads with genre "オーディオブック" 15 of 15, Audible's form 229 of 229).
  */
 export function tagPeopleOf(ev: MetaEvidence): { authors: string[]; narrators: string[] } {
   const artist = tagPeople(ev.tags?.artist);
   const composer = tagPeople(ev.tags?.composer);
   if (composer.length)
     return { authors: artist.length ? artist : names(ev.nameAuthors), narrators: composer };
+  if (artist.length && !artistIsNarrator(ev.tags))
+    return { authors: artist, narrators: names(ev.tagNarrators) };
   return {
     authors: names(ev.nameAuthors),
     narrators: artist.length ? artist : names(ev.tagNarrators),
   };
+}
+
+/** audiobook.jp's bare tag form, where an artist tag without a composer names the narrators. */
+export function artistIsNarrator(tags: Record<string, string> | null): boolean {
+  if (!tags) return false;
+  const genre = (tags.genre ?? '').normalize('NFKC').trim().toLowerCase();
+  return genre === 'audiobook' && !tags.album_artist?.trim() && !tags.date?.trim();
 }
 
 /** The title of a recording with no store record: the file's own (stage 4's cleaned name). */
