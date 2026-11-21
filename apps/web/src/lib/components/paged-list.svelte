@@ -10,9 +10,11 @@
    * without bound). The slot gets `pageItems` and draws the list itself; "‹ 1–5 of 23 ›"
    * shows under it only when there is more than one page. The page goes back to the first
    * when `resetKey` changes (a new search); otherwise a list that changes (an edit, a
-   * refresh) stays on its page, clamped when it shrank.
+   * refresh) stays on its page, clamped when it shrank. `page` fires after a page button
+   * changed the page (the Notes page then keeps the book's top in view).
    */
   import { faChevronLeft, faChevronRight } from '@fortawesome/free-solid-svg-icons';
+  import { createEventDispatcher } from 'svelte';
   import Fa from 'svelte-fa';
   import { pageOf, pageRangeText } from '$lib/functions/paginate';
 
@@ -22,8 +24,15 @@
   export let label = 'List';
   export let testid = 'paged-list';
 
+  const dispatch = createEventDispatcher<{ page: number }>();
+
   let page = 0;
   let lastKey = resetKey;
+
+  function go(next: number) {
+    page = next;
+    dispatch('page', next);
+  }
 
   $: if (resetKey !== lastKey) {
     lastKey = resetKey;
@@ -51,7 +60,7 @@
       aria-label="Previous page"
       disabled={view.page === 0}
       data-testid="paged-list-prev"
-      on:click={() => (page = view.page - 1)}
+      on:click={() => go(view.page - 1)}
     >
       <Fa icon={faChevronLeft} />
     </button>
@@ -62,7 +71,7 @@
       aria-label="Next page"
       disabled={view.page >= view.pages - 1}
       data-testid="paged-list-next"
-      on:click={() => (page = view.page + 1)}
+      on:click={() => go(view.page + 1)}
     >
       <Fa icon={faChevronRight} />
     </button>

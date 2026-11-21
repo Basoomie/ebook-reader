@@ -19,6 +19,8 @@
   /** WP19a: the Sort button of the Library, collections and the Notes page (lib/library/sort.ts). */
   export let context: SortContext;
   export let value: SortValue;
+  /** On a phone the button shows the sort's name only (the direction is in the menu). */
+  export let shortOnPhone = false;
 
   const dispatch = createEventDispatcher<{ change: SortValue }>();
   const DIRS: SortDir[] = ['asc', 'desc'];
@@ -65,7 +67,16 @@
       >並び順</span
     >
     <span data-testid="sort-label"
-      ><span class="sr-only">Sort: </span>{sortLabel(value, context)}</span
+      ><span class="sr-only"
+        >Sort:
+      </span>{#if shortOnPhone && current && !current.own}{current.label}<span
+          class="hidden sm:inline"
+        >
+          · {current.dirLabels[value.dir]}</span
+        ><span class="sr-only sm:hidden">, {current.dirLabels[value.dir]}</span>{:else}{sortLabel(
+          value,
+          context
+        )}{/if}</span
     >
   </span>
   <div class="flex flex-col gap-1" role="group" aria-label="Sort by">

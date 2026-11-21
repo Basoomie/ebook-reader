@@ -652,11 +652,6 @@
           Highlights
         </button>
       </div>
-      <LibrarySortMenu
-        context={state.view === 'books' ? 'notes-books' : 'notes-highlights'}
-        value={sortValue}
-        on:change={(e) => onSort(e.detail)}
-      />
       <button
         type="button"
         class="c-btn c-btn-secondary min-h-[2.75rem] gap-2 px-3 text-sm"
@@ -670,17 +665,24 @@
             >{filterCount}</span
           >{/if}
       </button>
+      <!-- Phones: [Books | Highlights] [Filters] on one row, Sort and CSV on the next. -->
+      <LibrarySortMenu
+        context={state.view === 'books' ? 'notes-books' : 'notes-highlights'}
+        value={sortValue}
+        shortOnPhone
+        on:change={(e) => onSort(e.detail)}
+      />
       {#if groups.length}
         <button
           type="button"
-          class="c-btn c-btn-secondary ml-auto min-h-[2.75rem] gap-2 px-3 text-sm"
+          class="c-btn c-btn-secondary ml-auto min-h-[2.75rem] min-w-[2.75rem] gap-2 px-3 text-sm"
           title="Download what the search and filters show as a spreadsheet (CSV)"
+          aria-label="Export CSV"
           data-testid="notes-export-csv"
           on:click={exportCsv}
         >
           <Fa icon={faFileCsv} />
           <span class="hidden sm:inline">Export CSV</span>
-          <span class="sm:hidden">CSV</span>
         </button>
       {/if}
     </div>

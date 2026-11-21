@@ -14,7 +14,7 @@
    * book-note-card; shared with the Highlights view), an opened book shows 20 items at a
    * time ("‹ 1–20 of 340 ›"), and the search's words are marked.
    */
-  import { createEventDispatcher } from 'svelte';
+  import { createEventDispatcher, tick } from 'svelte';
   import Fa from 'svelte-fa';
   import {
     faChevronDown,
@@ -100,6 +100,17 @@
       .join(' · ');
   }
 
+  /** After paging inside a book, its top (the row and the first card) back in view. */
+  async function keepBookInView(id: string) {
+    await tick();
+    const section = [...document.querySelectorAll<HTMLElement>('[data-notes-book]')].find(
+      (el) => el.dataset.notesBook === id
+    );
+    if (section && section.getBoundingClientRect().top < 64) {
+      section.scrollIntoView({ block: 'start' });
+    }
+  }
+
   function detailsHref(book: NotesBookInfo) {
     return book.unknown ? '' : `${pagePath}/library/book?id=${encodeURIComponent(book.id)}`;
   }
@@ -112,7 +123,11 @@
 <NotesListStatus {list} />
 
 {#each groups as group (group.info.id)}
-  <section class="c-notes-book mb-3 rounded" data-testid="notes-book">
+  <section
+    class="c-notes-book mb-3 rounded"
+    data-testid="notes-book"
+    data-notes-book={group.info.id}
+  >
     {#if bookHeadings}
       <div class="flex items-center gap-1 p-1 sm:pr-2">
         {#if collapsible}
@@ -227,6 +242,7 @@
           resetKey={searchKey}
           label="Highlights in {group.info.title}"
           testid="notes-book-pager"
+          on:page={() => keepBookInView(group.info.id)}
           let:pageItems
         >
           {#each pageItems as entry, i (entry.key)}
@@ -256,6 +272,7 @@
 
 <style>
   .c-notes-book {
+    scroll-margin-top: 4.5rem;
     background-color: var(--c-raised);
     border: var(--c-border-width) solid var(--c-line);
   }
