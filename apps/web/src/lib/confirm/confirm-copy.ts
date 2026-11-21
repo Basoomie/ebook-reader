@@ -760,8 +760,7 @@ export function arrivalsOnCopy(lastPlan: string | null): ConfirmCopy {
     title: 'Add new audiobooks to the library every day?',
     message: [
       ...(lastPlan ? [lastPlan] : []),
-      'From the next run on (daily, or Run now), the linking sidecar adds each new book to media/audiobooks/japanese as new folders with hard links to the torrents’ files and its metadata.json. Audiobookshelf then shows them. Books already in the library are never changed.',
-      'Pause qBittorrent and Sonarr before a large first run (they slow the disk).'
+      'From the next run on (daily, or Run now), the linking sidecar adds each new book to media/audiobooks/japanese as new folders with hard links to the torrents’ files and its metadata.json. Audiobookshelf then shows them. Books already in the library are never changed.'
     ],
     confirmLabel: 'Switch it On',
     irreversible: false
