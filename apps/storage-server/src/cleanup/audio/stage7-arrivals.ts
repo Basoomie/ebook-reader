@@ -25,6 +25,7 @@
  */
 import type Database from 'better-sqlite3';
 import { createHash } from 'crypto';
+import fs from 'fs';
 import path from 'path';
 import { gunzipSync, gzipSync } from 'zlib';
 import { DISK_OWNERS, type DiskLock } from '../disk-lock';
@@ -273,6 +274,32 @@ export class Stage7Stop extends Error {
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Whether the cleanup's library mount (CLEANUP_AUDIO_LIBRARY_DIR, media/audiobooks/japanese
+ * mounted by itself) is the folder named japanese now. A mount keeps the folder it was given when
+ * the container started: after the switch renamed japanese to japanese-old (and deleted it), the
+ * mount still shows that folder until ttsu-storage is restarted, and stage 1 would read the old
+ * library (found by the e2e). Compared with japanese seen through the media mount (the parent,
+ * which follows the renames). Null when they agree or there is no media mount.
+ */
+export function staleLibraryMount(roots: { library: string; media: string | null }): string | null {
+  if (!roots.media) return null;
+  let lib: fs.Stats;
+  let cur: fs.Stats;
+  try {
+    lib = fs.statSync(roots.library);
+  } catch {
+    return `The library folder ${roots.library} can't be read: restart ttsu-storage`;
+  }
+  try {
+    cur = fs.statSync(path.join(roots.media, ARRIVAL_AREA_FOLDERS.main));
+  } catch {
+    return `media/audiobooks/${ARRIVAL_AREA_FOLDERS.main} can't be read through ${roots.media}`;
+  }
+  if (lib.dev === cur.dev && lib.ino === cur.ino && lib.nlink > 0) return null;
+  return `The library mount (${roots.library}) still shows the folder from before the switch (renamed or deleted since): restart ttsu-storage, then run again`;
+}
 const gz = (v: unknown) => gzipSync(Buffer.from(JSON.stringify(v)));
 const ungz = <T>(b: Buffer): T => JSON.parse(gunzipSync(b).toString('utf8')) as T;
 
@@ -542,6 +569,10 @@ export class AudioStage7 {
 
   private stage1Step(p: Stage7Progress): 'wait' | 'more' {
     const key = p.phase === 'stage1' ? 's1' : 's1b';
+    if (p.asked[key] === undefined) {
+      const stale = staleLibraryMount(this.deps.roots);
+      if (stale) throw new Stage7Stop('library_mount', stale);
+    }
     const s1 = getAudioStage(this.db, 1);
     const prog = s1.progress as { analysisId?: string; phase?: string; error?: string | null };
     if (s1.mode === 'off') {
@@ -2188,6 +2219,10 @@ export class AudioStage7 {
     const out: string[] = [];
     if (!librarySwitched(this.db)) out.push('The library is not switched yet (WP21e-2)');
     if (!this.deps.roots.media) out.push('CLEANUP_AUDIO_MEDIA_DIR is not set');
+    else {
+      const stale = staleLibraryMount(this.deps.roots);
+      if (stale) out.push(stale);
+    }
     if (!this.sidecarReady())
       out.push(`The linking sidecar ${ARRIVAL_SIDECAR_VERSION} or newer is not online`);
     return out;

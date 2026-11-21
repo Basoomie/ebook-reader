@@ -54,6 +54,7 @@ import { bookValues, metadataBytes } from '../src/cleanup/audio/build-metadata';
 import {
   AudioStage7,
   absValuesAgree,
+  staleLibraryMount,
   entrySkip,
   listProblemState,
   versionAtLeast,
@@ -1145,6 +1146,25 @@ describe('post-switch fixes', () => {
     );
     expect(readerLibraryFolder(main, '/cleanup-audio/library')).toBe('japanese');
     expect(readerLibraryFolder(main, '/x/english')).toBe('english');
+  });
+
+  it('a library mount from before the switch is found (the e2e found this)', () => {
+    const media = makeTempDir('wp21f-mount');
+    fs.mkdirSync(path.join(media, 'japanese'));
+    const library = path.join(media, 'japanese');
+    expect(staleLibraryMount({ library, media })).toBeNull();
+    expect(staleLibraryMount({ library, media: null })).toBeNull();
+    // What a mount of the old folder sees after the renames: another folder than japanese now.
+    const held = path.join(media, 'japanese-old');
+    fs.renameSync(library, held);
+    fs.mkdirSync(library);
+    expect(staleLibraryMount({ library: held, media })).toMatch(
+      /still shows the folder from before the switch.*restart ttsu-storage/,
+    );
+    fs.rmSync(held, { recursive: true });
+    expect(staleLibraryMount({ library: held, media })).toMatch(
+      /can't be read: restart ttsu-storage/,
+    );
   });
 
   it('stage 3’s gate follows a labeled file of the deleted old library by its content (the diff found this)', () => {
