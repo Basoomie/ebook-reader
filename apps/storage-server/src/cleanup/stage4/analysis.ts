@@ -2231,6 +2231,12 @@ export class Stage4Analysis {
     return this.extras?.get(calibreId) ?? null;
   }
 
+  /** Every book's extras at once (one look at the snapshot file, not one per book). */
+  extrasAll(p: Stage4Progress): ReadonlyMap<number, Stage4Extras> {
+    this.loadSnapshot(p.libraryId);
+    return this.extras ?? new Map();
+  }
+
   /** Proposes a book again with the AI's decided values (from ai_values). */
   async proposeWithAi(
     p: Stage4Progress,

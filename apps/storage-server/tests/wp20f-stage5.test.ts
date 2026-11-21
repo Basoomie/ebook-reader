@@ -467,6 +467,17 @@ describe('stage 5 from evidence to proposals', () => {
     const analysis = {
       progress: () => p4,
       loadSnapshot: () => ({ books, names: {}, illustratorColumn: true }),
+      extrasAll: () =>
+        new Map(
+          [...books.keys()].map((id) => [
+            id,
+            {
+              series: series.get(id) ?? null,
+              seriesIndex: null,
+              comments: comments.get(id) ?? null,
+            },
+          ]),
+        ),
       extrasOf: (_p: unknown, id: number) => ({
         series: series.get(id) ?? null,
         seriesIndex: null,

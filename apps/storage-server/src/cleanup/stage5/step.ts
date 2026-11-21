@@ -415,6 +415,7 @@ export class Stage5 {
   }
 
   async step(libraryId: string, shouldStop: () => boolean): Promise<Stage5StepResult> {
+    this.extrasNow = null;
     if (!this.stage4Ready()) return 'wait';
     const p4 = this.stage4();
     if (!p4) return 'wait';
@@ -566,6 +567,17 @@ export class Stage5 {
     return this.formats.map;
   }
 
+  /** Calibre's series and description per book (the snapshot's extras, one map per snapshot). */
+  private extras(p4: Stage4Progress) {
+    // Once per step: loadSnapshot looks at the snapshot file on every call (52,000 looks held
+    // the server about 6 s on the PC, measured at stop 1).
+    return (this.extrasNow ??= this.deps.analysis.extrasAll(p4));
+  }
+  private extrasNow: ReadonlyMap<
+    number,
+    { series: string | null; comments: string | null }
+  > | null = null;
+
   /** Every Calibre book of the snapshot in id order (stage 5 also removes tags of the others). */
   private allBooks(p4: Stage4Progress): { calibre_id: number; book: Stage2Book }[] {
     const snap = this.deps.analysis.loadSnapshot(p4.libraryId);
@@ -609,12 +621,12 @@ export class Stage5 {
     const ids = new Set<number>(gids.values());
     const series = new Set<string>();
     for (const id of ids) {
-      const s = this.deps.analysis.extrasOf(p4, id)?.series;
+      const s = this.extras(p4).get(id)?.series;
       if (s) series.add(s);
     }
     if (series.size) {
       for (const b of this.books(p4)) {
-        const s = this.deps.analysis.extrasOf(p4, b.calibre_id)?.series;
+        const s = this.extras(p4).get(b.calibre_id)?.series;
         if (s && series.has(s)) ids.add(b.calibre_id);
       }
     }
@@ -654,7 +666,7 @@ export class Stage5 {
         if (!inp) continue;
         const key = this.itemKey(p4.libraryId, r.calibre_uuid);
         const s4 = storedAiValues(this.db, key);
-        const ex = this.deps.analysis.extrasOf(p4, r.calibre_id);
+        const ex = this.extras(p4).get(r.calibre_id);
         items.push({
           key,
           evidence: stage5Evidence({
@@ -798,7 +810,7 @@ export class Stage5 {
         ? [
             {
               calibreId: b.calibre_id,
-              series: this.deps.analysis.extrasOf(p4, b.calibre_id)?.series ?? null,
+              series: this.extras(p4).get(b.calibre_id)?.series ?? null,
               own: o,
             },
           ]
@@ -812,7 +824,9 @@ export class Stage5 {
   private async gateStep(p4: Stage4Progress, p: Stage5Progress): Promise<void> {
     const settings = getSettings(this.db);
     const union = this.unionNow(p4, p);
+    await new Promise((r) => setImmediate(r));
     const own = this.ownTermsAll(p4);
+    await new Promise((r) => setImmediate(r));
     const L = this.labels() ?? { genres: {}, tags: {} };
     const { gids } = this.labeledSet(p4);
     const snap = this.deps.analysis.loadSnapshot(p4.libraryId);
@@ -856,7 +870,7 @@ export class Stage5 {
         return [
           {
             calibreId: b.calibre_id,
-            series: this.deps.analysis.extrasOf(p4, b.calibre_id)?.series ?? null,
+            series: this.extras(p4).get(b.calibre_id)?.series ?? null,
             own: { ...o, terms },
           },
         ];
@@ -995,7 +1009,7 @@ export class Stage5 {
             ids: ids ? byKind(ids) : null,
             format,
             sources,
-            series: inside ? (this.deps.analysis.extrasOf(p4, b.calibreId)?.series ?? null) : null,
+            series: inside ? (this.extras(p4).get(b.calibreId)?.series ?? null) : null,
             rules: STAGE5_RULES_VERSION,
           }),
           p.analysisId,
