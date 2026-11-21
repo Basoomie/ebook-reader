@@ -291,7 +291,15 @@ export class AiRunner {
     const again = this.db.prepare(
       `UPDATE ai_requests SET state = 'queued', attempts = 0, error = NULL, run_id = ?, labeled = ?
        WHERE stage = ? AND item_key = ? AND model = ? AND prompt_version = ? AND evidence_hash = ?
-         AND ((state = 'failed' AND COALESCE(run_id, '') <> ?) OR state IN ('queued', 'sent'))`,
+         AND ((state = 'failed' AND COALESCE(run_id, '') <> ?) OR state = 'queued')`,
+    );
+    // A question already sent (in a batch at the provider, or a call in flight) joins the new
+    // run as it is: queued again it was asked and paid twice, and its batch was left open
+    // (WP20e, found in the stop-1 smoke test). A restart's cut-off calls: requeueOrphans.
+    const join = this.db.prepare(
+      `UPDATE ai_requests SET run_id = ?, labeled = ?
+       WHERE stage = ? AND item_key = ? AND model = ? AND prompt_version = ? AND evidence_hash = ?
+         AND state = 'sent'`,
     );
     let n = 0;
     this.db.transaction(() => {
@@ -322,6 +330,7 @@ export class AiRunner {
           it.evidence_hash,
           runId,
         );
+        join.run(runId, it.labeled, spec.stage, key, model, spec.promptVersion, it.evidence_hash);
       }
     })();
     return n;

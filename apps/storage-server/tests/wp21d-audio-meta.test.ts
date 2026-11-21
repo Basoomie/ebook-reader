@@ -528,7 +528,10 @@ describe('stage 5 through the service', () => {
         s.id,
         s.models.map((m) => m.task),
       ]),
-    ).toEqual([['audio5', ['audio5.primary', 'audio5.secondary']]]);
+    ).toEqual([
+      ['audio5', ['audio5.primary', 'audio5.secondary']],
+      ['calibre4', ['stage4.primary', 'stage4.secondary']],
+    ]);
     const check = await api(request(e.app).post('/api/v1/cleanup/ai/models/check'));
     expect(check.status).toBe(200);
     expect(

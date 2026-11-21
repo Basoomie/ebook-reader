@@ -386,6 +386,31 @@ describe('AI runner', () => {
     expect('temperature' in anth.body.requests[0].params).toBe(false);
   });
 
+  it('a question in a batch still at the provider joins a new run without being asked again (WP20e)', async () => {
+    const { db, runner, advance } = await setup({ batchPolls: 1 });
+    updateSettings(db, {
+      ai: {
+        ...(await import('../src/cleanup/settings')).getSettings(db).ai,
+        spendLimitUsd: 1,
+        modes: { 'claude-haiku-5-5': 'batch' },
+      },
+    });
+    runner.putItems(SPEC, items(2), 1);
+    runner.enqueue(SPEC, 'primary', ['k0', 'k1'], 'run1');
+    expect((await runner.step(SPEC, 'run1', () => false)).sent).toBe(2);
+    // Queued again (a new run: the models' or the scope's setting changed while it was out).
+    runner.enqueue(SPEC, 'primary', ['k0', 'k1'], 'run2');
+    expect(runner.counts('test5', 'run2')).toMatchObject({ sent: 2, queued: 0 });
+    const end = await runToEnd(runner, 'run2', advance);
+    expect(end.pending).toBe(0);
+    expect(runner.answerOf(SPEC, 'primary', 'k1')?.state).toBe('answered');
+    // One batch, nothing asked one at a time, nothing left open.
+    const calls = standin!.calls as { path: string; poll?: boolean }[];
+    expect(calls.filter((c) => c.path === '/v1/messages/batches').length).toBe(1);
+    expect(calls.filter((c) => c.path === '/v1/messages').length).toBe(0);
+    expect(runner.batches('test5')).toMatchObject({ open: 0, collected: 1 });
+  });
+
   it('never asks the same evidence twice; failed questions again only in a later run; blocked never', async () => {
     const { db, runner, advance } = await setup({
       behaviour: (t) => (t === 'title0' ? 'refusal' : t === 'title1' ? 'bad_request' : 'answer'),

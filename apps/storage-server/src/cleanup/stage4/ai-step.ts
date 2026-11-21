@@ -41,6 +41,18 @@ import { STAGE4_RULES_VERSION } from './stage4-rules';
 
 const STAGE = 4;
 const SLICE = 50;
+/** The longest stretch the step keeps the server (lessons 3: a blocking step froze it). */
+const YIELD_MS = 30;
+
+/** Gives the server back whenever the step has run YIELD_MS since it last did. */
+class Yielder {
+  private last = performance.now();
+  async maybe(): Promise<void> {
+    if (performance.now() - this.last < YIELD_MS) return;
+    await new Promise((r) => setImmediate(r));
+    this.last = performance.now();
+  }
+}
 
 export type Stage4AiPhase = 'evidence' | 'models' | 'decide' | 'gate' | 'done';
 
@@ -297,7 +309,9 @@ export class Stage4Ai {
         return { finished: true, items: n };
       }
       const items = [];
+      const y = new Yielder();
       for (const r of rows) {
+        await y.maybe();
         const inp = this.deps.analysis.aiInputs(p, r.calibre_uuid);
         if (!inp) continue;
         items.push({
@@ -368,7 +382,9 @@ export class Stage4Ai {
     }
     const now = Date.now();
     let n = 0;
+    const y = new Yielder();
     for (const r of rows) {
+      await y.maybe();
       if (shouldStop()) return { finished: false, items: n };
       const key = this.itemKey(p.libraryId, r.calibre_uuid);
       const inp = this.deps.analysis.aiInputs(p, r.calibre_uuid);

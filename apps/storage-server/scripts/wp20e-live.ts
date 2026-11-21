@@ -67,8 +67,12 @@ async function main() {
       ...s.ai,
       spendLimitUsd: Number(arg('limit') ?? 10),
       labeledOnly: true,
-      modes: has('smoke') ? { anthropic: 'direct', openai: 'direct' } : { 'gpt-6-luna': 'direct' },
-      batchStallMinutes: 30,
+      // Modes are per model id (not per provider).
+      modes: has('smoke')
+        ? { 'claude-haiku-5-5': 'direct', 'gpt-6-luna': 'direct' }
+        : { 'gpt-6-luna': 'direct' },
+      // The smoke test cancels a stalled batch (OpenAI runs no Luna batch here) at once.
+      batchStallMinutes: has('smoke') ? 1 : 30,
       batchPollSeconds: 30,
     },
     gate: { ...s.gate, labeledBooksFile: arg('labels')! },
@@ -99,9 +103,15 @@ async function main() {
     last = now;
   }, 10);
   const times: Record<string, number> = {};
+  /** The longest event-loop delay per phase (lessons 3: no step may block the server). */
+  const delays: Record<string, number> = {};
   const timeIt = async (name: string, fn: () => Promise<unknown>) => {
     const t0 = Date.now();
+    const before = longest;
+    longest = 0;
     await fn();
+    delays[name] = Math.max(delays[name] ?? 0, longest);
+    longest = Math.max(before, longest);
     times[name] = (times[name] ?? 0) + (Date.now() - t0);
   };
 
@@ -124,7 +134,7 @@ async function main() {
   });
   const a1 = ai.progress()!;
   log(
-    `evidence: ${a1.items} books (${a1.labeledItems} labeled) in ${times.evidence} ms; longest event-loop delay ${longest} ms`,
+    `evidence: ${a1.items} books (${a1.labeledItems} labeled) in ${times.evidence} ms; longest event-loop delay ${delays.evidence} ms (Bookmeter pass with the snapshot load: ${delays['bookmeter editions']} ms)`,
   );
 
   // The estimate from the real prompts of the labeled books.
@@ -133,22 +143,35 @@ async function main() {
       item_key: string;
     }[]
   ).map((r) => r.item_key);
+  // Tokens: about 1 per Japanese character, about 1 per 4 other characters (the system
+  // prompt is English). The smoke test measures the real numbers.
+  const tokens = (s: string) => {
+    let wide = 0;
+    for (const ch of s) if (ch.codePointAt(0)! > 0x2e7f) wide++;
+    return wide + (s.length - wide) / 4;
+  };
+  let tok = 0;
   let chars = 0;
-  for (const k of labeled)
-    chars +=
-      STAGE4_SPEC.system.length +
-      STAGE4_SPEC.userText(runner.evidenceOf(STAGE4_SPEC, k)!.evidence).length;
+  for (const k of labeled) {
+    const text =
+      STAGE4_SPEC.system + STAGE4_SPEC.userText(runner.evidenceOf(STAGE4_SPEC, k)!.evidence);
+    tok += tokens(text);
+    chars += text.length;
+  }
   const avg = chars / labeled.length;
+  const avgTok = tok / labeled.length;
   const est = (outTok: number, batch: boolean) =>
     costOf(
       { inputPerMTok: 0.1, outputPerMTok: 0.5 },
-      { input: avg * 1.2, output: outTok, cacheRead: 0, cacheWrite: 0 },
+      { input: avgTok, output: outTok, cacheRead: 0, cacheWrite: 0 },
       batch,
       0.5,
     );
-  log(`prompt: ${Math.round(avg)} characters on average (system ${STAGE4_SPEC.system.length})`);
   log(
-    `estimate per book and model (~1.2 tokens per character in, 750 out): list $${est(750, false).toFixed(5)}, batch $${est(750, true).toFixed(5)}`,
+    `prompt: ${Math.round(avg)} characters, about ${Math.round(avgTok)} tokens (system ${STAGE4_SPEC.system.length} characters, about ${Math.round(tokens(STAGE4_SPEC.system))} tokens)`,
+  );
+  log(
+    `estimate per book and model (750 tokens out, the bake-off's): list $${est(750, false).toFixed(5)}, batch $${est(750, true).toFixed(5)}`,
   );
   log(
     `estimate for the library (${a1.items} books, Haiku by batch + Luna one call each): $${((est(750, true) + est(750, false)) * a1.items).toFixed(2)}; labeled ${labeled.length}: $${((est(750, true) + est(750, false)) * labeled.length).toFixed(3)}`,
@@ -163,10 +186,12 @@ async function main() {
     const keys = labeled.slice(0, n);
     runner.enqueue(STAGE4_SPEC, 'primary', keys, 'smoke');
     runner.enqueue(STAGE4_SPEC, 'secondary', keys, 'smoke');
-    for (let i = 0; i < 20; i++) {
+    for (let i = 0; i < 60; i++) {
       const r = await runner.step(STAGE4_SPEC, 'smoke', () => false);
       if (r.wait) log(`wait ${JSON.stringify(r.wait)}`);
       if (r.pending === 0) break;
+      log(`smoke: ${r.pending} pending ${JSON.stringify(runner.batches('calibre4'))}`);
+      await sleep(20_000);
     }
     for (const r of db
       .prepare(
@@ -181,7 +206,10 @@ async function main() {
   const t0 = Date.now();
   for (;;) {
     const before = ai.progress()?.phase;
-    const r = await ai.step(() => false);
+    let r: Awaited<ReturnType<typeof ai.step>> = 'more';
+    await timeIt(before ?? 'none', async () => {
+      r = await ai.step(() => false);
+    });
     const a = ai.progress()!;
     if (before !== a.phase) log(`phase ${before} -> ${a.phase}`);
     if (r === 'done' && a.phase === 'done') break;
@@ -204,7 +232,7 @@ async function main() {
   const report = {
     minutes: (Date.now() - t0) / 60000,
     times: { ...times, ...a.times },
-    longestDelayMs: longest,
+    longestDelayMs: delays,
     bookmeterEditions: pb.bookmeterEditions,
     gate: a.gate,
     ai: a.ai,
@@ -227,7 +255,9 @@ async function main() {
   );
 }
 
-void main().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+void main()
+  .then(() => process.exit(0))
+  .catch((e) => {
+    console.error(e);
+    process.exit(1);
+  });
