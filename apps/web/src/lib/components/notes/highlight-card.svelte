@@ -12,10 +12,9 @@
    * title on it (`showBook`) and the search's words marked.
    *
    * 2026-11-21 (user): the text is plain, selectable text (a whole-card button opened the
-   * book when text was selected to copy it). The book opens from "Open ›" at the end of the
-   * place line (a 44 px target that adds no height; a button of its own under ⋮ made every
-   * card taller: user). ⋮ has Copy text (and Copy note); the menu item itself says
-   * "Copied ✓" until the menu closes (no banner to dismiss, no timer).
+   * book when text was selected to copy it). The › looks and sits exactly as it did when
+   * the card was the button; only it opens the book now. ⋮ has Copy text (and Copy note);
+   * the menu item itself says "Copied ✓" until the menu closes (no banner, no timer).
    */
   import { createEventDispatcher } from 'svelte';
   import Fa from 'svelte-fa';
@@ -100,7 +99,7 @@
   data-testid="notes-page-highlight"
 >
   <div class="flex items-start">
-    <div class="c-hl-body flex min-w-0 flex-1 py-3 pl-4 pr-1">
+    <div class="c-hl-body flex min-w-0 flex-1 items-center gap-2 py-3 pl-4 pr-1">
       <span class="flex min-w-0 flex-1 flex-col">
         {#if showBook}
           <span
@@ -125,35 +124,33 @@
             >
           </span>
         {/if}
-        <span class="mt-2 flex items-center gap-2">
-          <span
-            class="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 text-xs text-c-muted"
-            data-testid="notes-page-place"
-          >
-            {#if eink}
-              <span
-                class="font-bold text-black"
-                style={swatchStyle(item.color, true)}
-                title={HIGHLIGHT_COLOR_NAMES[item.color]}>あ</span
-              >
-            {/if}
-            <span><MarkedText text={place} {words} /></span>
-            {#if unplaced}
-              <b data-testid="notes-page-unplaced">· Not found in this copy of the book</b>
-            {/if}
-          </span>
-          <button
-            type="button"
-            class="c-open -my-3 inline-flex min-h-[2.75rem] shrink-0 items-center gap-1 rounded px-2 text-xs font-medium"
-            title="Open in book"
-            aria-label="Open in book"
-            data-testid="notes-page-open"
-            on:click={() => dispatch('open')}
-          >
-            Open <Fa icon={faChevronRight} size="xs" />
-          </button>
+        <span
+          class="mt-2 flex flex-wrap items-center gap-x-2 text-xs text-c-muted"
+          data-testid="notes-page-place"
+        >
+          {#if eink}
+            <span
+              class="font-bold text-black"
+              style={swatchStyle(item.color, true)}
+              title={HIGHLIGHT_COLOR_NAMES[item.color]}>あ</span
+            >
+          {/if}
+          <span><MarkedText text={place} {words} /></span>
+          {#if unplaced}
+            <b data-testid="notes-page-unplaced">· Not found in this copy of the book</b>
+          {/if}
         </span>
       </span>
+      <button
+        type="button"
+        class="c-open -mx-3 -my-3 flex shrink-0 items-center self-stretch px-4 text-c-muted"
+        title="Open in book"
+        aria-label="Open in book"
+        data-testid="notes-page-open"
+        on:click={() => dispatch('open')}
+      >
+        <Fa icon={faChevronRight} />
+      </button>
     </div>
     <div class="shrink-0 p-1">
       <DropdownMenu
@@ -284,9 +281,13 @@
     user-select: text;
   }
 
-  /* "Open ›": link-colored, 44 px tall to tap, pulled into the line so it adds no height. */
+  /*
+   * The › looks and sits as it did when the whole card was the button (px-1, muted,
+   * centered in the card); only the clickable area is its own: the card's full height and
+   * a little wider than the arrow, through padding offset by negative margins.
+   */
   .c-open {
-    color: var(--c-link);
+    border-radius: 0.25rem;
   }
 
   .c-open:focus-visible {
@@ -298,11 +299,6 @@
     :global(html:not(.eink)) .c-open:hover {
       background-color: var(--c-tint);
     }
-  }
-
-  :global(html.eink) .c-open {
-    color: #000;
-    text-decoration: underline;
   }
 
   .c-danger {
