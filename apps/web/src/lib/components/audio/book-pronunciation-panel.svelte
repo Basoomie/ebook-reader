@@ -12,6 +12,9 @@
    * the server reads the book and says where each fix matches, with the reading the PC
    * will be given. When the linked audiobook was made on the PC before the fixes that
    * match this book changed, a note says so (checked at once for such a book).
+   *
+   * 2026-11-20 redesign: a folded part of the Text-to-speech row (no box of its own); with the
+   * row closed (`compact`) only that note shows.
    */
   import { onDestroy } from 'svelte';
   import { globalHere, versionNote } from '$lib/audio/pronunciation/fix-text';
@@ -31,6 +34,10 @@
   export let api: LibraryApi;
   export let bookId: string;
   export let link: AudioLink | null;
+  /** The Text-to-speech row is closed: only the "made before the fixes changed" note. */
+  export let compact = false;
+  /** Bound up: this book's fixes, null until known. */
+  export let count: number | null = null;
 
   let book: FixList | null = null;
   let global: PronunciationFix[] = [];
@@ -51,7 +58,7 @@
   $: checks = check ? new Map<number, FixCheck>(check.entries.map((c) => [c.id, c])) : null;
   $: shownGlobal = globalHere(global, check);
   $: note = versionNote(check);
-  $: count = book?.entries.length ?? 0;
+  $: count = book?.available ? book.entries.length : null;
 
   onDestroy(() => (destroyed = true));
 
@@ -115,30 +122,33 @@
   }
 </script>
 
-{#if book?.available}
-  <div class="c-ppanel mt-4 rounded px-5 py-4" data-testid="book-pron-fixes">
+{#if book?.available && compact}
+  {#if note}
+    <p class="c-notice mt-2 text-sm" role="status" data-testid="book-pron-fixes-note">{note}</p>
+  {/if}
+{:else if book?.available}
+  <div class="c-sub mt-4 pt-3" data-testid="book-pron-fixes">
     {#if note}
       <p class="c-notice mb-3 text-sm" role="status" data-testid="book-pron-fixes-note">{note}</p>
     {/if}
-    <button
-      class="flex min-h-[2.75rem] w-full items-center justify-between gap-3 text-left"
-      aria-expanded={open}
-      data-testid="book-pron-fixes-toggle"
-      on:click={toggle}
-    >
-      <span>
-        <span class="block text-xs text-c-muted">How the PC voices read this book</span>
-        <span class="font-medium">
-          Pronunciation fixes{count ? ` (${count})` : ''}
-        </span>
-      </span>
-      <span aria-hidden="true">{open ? '▴' : '▾'}</span>
-    </button>
+    <div class="flex flex-wrap items-start justify-between gap-3">
+      <div class="min-w-0">
+        <h4 class="font-medium">Pronunciation fixes{count ? ` (${count})` : ''}</h4>
+        <p class="max-w-3xl text-sm text-c-muted">How a word should be read, for this book only.</p>
+      </div>
+      <button
+        class="c-btn c-btn-secondary c-round shrink-0"
+        aria-expanded={open}
+        data-testid="book-pron-fixes-toggle"
+        on:click={toggle}
+      >
+        {open ? 'Close' : 'Open'}
+      </button>
+    </div>
     {#if open}
       <p class="mt-2 max-w-3xl text-sm text-c-muted">
-        For this book only; they win over the fixes in Settings, and the book's own furigana wins
-        over both. A word is fixed wherever it appears, the longer fix first. Audiobooks already
-        made stay as they are.
+        They win over the fixes in Settings, and the book's own furigana wins over both. A word is
+        fixed wherever it appears, the longer fix first. Audiobooks already made stay as they are.
       </p>
       {#if checking}
         <p class="mt-2 text-sm" role="status" data-testid="book-pron-fixes-checking">
@@ -184,8 +194,10 @@
 {/if}
 
 <style>
-  .c-ppanel {
-    background-color: var(--c-raised);
-    border: var(--c-border-width) solid var(--c-line);
+  .c-sub {
+    border-top: var(--c-border-width) dashed var(--c-line);
+  }
+  .c-round {
+    border-radius: 0.75rem;
   }
 </style>

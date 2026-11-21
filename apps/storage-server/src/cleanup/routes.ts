@@ -960,6 +960,11 @@ export function createCleanupRouter(options: CleanupOptions): Router {
     res.json({ ok: true });
   });
 
+  router.post('/cleanup/stage4/ai/ask-again', (_req, res) => {
+    const service = serviceOr503(options);
+    res.json(service.askStage4AiAgain());
+  });
+
   router.post('/cleanup/stage4/sites/:site/retry', (req, res) => {
     const service = serviceOr503(options);
     res.json({ retried: service.retryStage4Site(req.params.site) });

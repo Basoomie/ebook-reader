@@ -840,6 +840,19 @@ export class AiRunner {
     return { sent: take.length, answered: 0, wait: null };
   }
 
+  /**
+   * Questions of a run that were given up (failed after their tries) go back to the queue with
+   * fresh tries; the stage's next step asks them. Returns how many.
+   */
+  askAgain(stage: string, runId: string): number {
+    return this.db
+      .prepare(
+        `UPDATE ai_requests SET state = 'queued', attempts = 0, error = NULL
+         WHERE stage = ? AND run_id = ? AND state = 'failed'`,
+      )
+      .run(stage, runId).changes;
+  }
+
   /** One call with its tries; records the result (never throws). */
   private async runCall<E>(
     spec: AiStageSpec<E>,
@@ -876,6 +889,19 @@ export class AiRunner {
             return;
           }
           const e = err as RetryableError;
+          if (e.busy) {
+            // The provider's rate limit: this model's calls wait (the step reports the wait and
+            // sends nothing until it ends), and the question goes back to the queue with the
+            // try not counted. Calls in flight end on their own.
+            const until = this.now() + Math.max(BUSY_WAIT_MS, e.retryAfterMs ?? 0);
+            const cur = this.busyUntil.get(provider);
+            if (!cur || cur.until < until)
+              this.busyUntil.set(provider, { until, error: (e.message ?? '').slice(0, 200) });
+            this.db
+              .prepare(`UPDATE ai_requests SET state = 'queued', attempts = ? WHERE id = ?`)
+              .run(attempts - 1, row.id);
+            return;
+          }
           if (attempts >= s.attempts || shouldStop()) {
             if (attempts >= s.attempts)
               this.finish(row.id, 'failed', null, null, null, e.message, false, s);

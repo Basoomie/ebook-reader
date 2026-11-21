@@ -6,6 +6,9 @@
    */
 
   import LibrarySyncStatus from '$lib/components/library/library-sync-status.svelte';
+  import SettingsGroup from '$lib/components/settings/settings-group.svelte';
+  import SettingRow from '$lib/components/settings/setting-row.svelte';
+  import SettingField from '$lib/components/settings/setting-field.svelte';
   import { pagePath } from '$lib/data/env';
   import { LibraryApi } from '$lib/library/api';
   import { summarizeCharCounts } from '$lib/library/char-counts';
@@ -17,14 +20,13 @@
   import { onMount } from 'svelte';
 
   /**
-   * The library server connection (WP19a: moved here from the bottom of the Library page):
-   * server, this device's name, character counts, the request timeout, record sync and
-   * Disconnect. Connecting stays on the Library page (it asks for a pairing code).
+   * Settings > Data, "Library server" and "Record sync" (WP19a: moved here from the bottom
+   * of the Library page): the server, this device's name, character counts, the request
+   * timeout, the quick server check and Disconnect; then record sync. Connecting stays on
+   * the Library page (it asks for a pairing code).
    */
 
   const store = getLibraryStore();
-  // The catalogue's field (no transition, so E-ink stays plain).
-  const fieldClasses = 'c-input mt-1 block w-full max-w-[15rem] text-base';
 
   let connection: LibraryConnection | null | undefined;
   let charCounts = '';
@@ -57,60 +59,65 @@
   }
 </script>
 
-<!-- Settings page, "Archive" look: a panel, two columns on wide screens (the connection |
-     record sync), stacked on narrower ones. -->
-<div class="c-tile rounded-lg p-4 sm:px-7 sm:py-6" data-testid="connection-settings">
-  {#if connection === undefined}
-    <p>Loading…</p>
-  {:else if connection === null}
-    <p>
-      This device isn't connected to a library server.
-      <a class="c-link underline" href="{pagePath}/library">Connect on the Library page</a>.
-    </p>
-  {:else}
-    <div class="grid grid-cols-1 gap-y-6 lg:grid-cols-2 lg:gap-x-12">
-      <div>
-        <p>Server: {connection.serverUrl}</p>
-        <p>This device: {connection.label}</p>
-        {#if charCounts}
-          <p data-testid="connection-char-counts">{charCounts}</p>
-        {/if}
-        <label class="mt-4 block text-sm text-c-muted">
-          Request timeout (seconds, 0 = none)
+<SettingsGroup id="data-server" testid="settings-section-server">
+  <div data-testid="connection-settings">
+    {#if connection === undefined}
+      <p class="px-5 py-4 text-c-muted">Loading…</p>
+    {:else if connection === null}
+      <p class="px-5 py-4">
+        This device isn't connected to a library server.
+        <a class="c-link underline" href="{pagePath}/library">Connect on the Library page</a>.
+      </p>
+    {:else}
+      <SettingRow id="server-address" layout="info">
+        <span class="break-all">{connection.serverUrl}</span>
+      </SettingRow>
+      <SettingRow title="This device" layout="info">
+        <span>{connection.label}</span>
+      </SettingRow>
+      {#if charCounts}
+        <SettingRow title="Characters counted" layout="info">
+          <!-- The row's title already says what the figure is. -->
+          <span data-testid="connection-char-counts"
+            >{charCounts.replace(/^Character counts:\s*/, '')}</span
+          >
+        </SettingRow>
+      {/if}
+      <SettingRow id="request-timeout" settingKey="libraryRequestTimeoutSeconds" let:labelId>
+        <SettingField unit="seconds">
           <input
-            class={fieldClasses}
             type="number"
             min="0"
             step="1"
+            aria-labelledby={labelId}
             data-testid="request-timeout"
             bind:value={$libraryRequestTimeoutSeconds$}
           />
-        </label>
-        <label class="mt-4 block text-sm text-c-muted">
-          Quick server check (seconds, 0 = off)
+        </SettingField>
+      </SettingRow>
+      <SettingRow id="server-check" settingKey="libraryServerCheckSeconds" let:labelId>
+        <SettingField unit="seconds">
           <input
-            class={fieldClasses}
             type="number"
             min="0"
             step="1"
+            aria-labelledby={labelId}
             data-testid="server-check-seconds"
             bind:value={$libraryServerCheckSeconds$}
           />
-        </label>
-        <p class="mt-1 text-sm text-c-muted">
-          If the server doesn't answer within this time, the Library shows the books on this device.
-        </p>
-        <p class="mt-6 text-sm text-c-muted">
-          Disconnecting forgets the token on this device. To block it on the server too, run
-          <code>token revoke</code> there.
-        </p>
-        <button class="c-btn c-btn-secondary mt-2" data-testid="disconnect" on:click={disconnect}>
-          Disconnect
+        </SettingField>
+      </SettingRow>
+      <SettingRow id="disconnect" layout="inline">
+        <button class="c-btn c-btn-secondary" data-testid="disconnect" on:click={disconnect}>
+          Disconnect…
         </button>
-      </div>
-      <div class="border-c-line border-t pt-6 lg:border-l lg:border-t-0 lg:pl-10 lg:pt-0">
-        <LibrarySyncStatus />
-      </div>
-    </div>
-  {/if}
-</div>
+      </SettingRow>
+    {/if}
+  </div>
+</SettingsGroup>
+
+{#if connection}
+  <SettingsGroup id="data-sync">
+    <LibrarySyncStatus />
+  </SettingsGroup>
+{/if}

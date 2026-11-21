@@ -593,6 +593,35 @@ html.catalogue.eink .mdc-elevation--z24 button.border-current:not(:disabled):act
     outline: 3px solid var(--c-link);
     outline-offset: 2px;
   }
+
+  /* Rows of the Settings page's lists (settings/paged-list.svelte and the short lists):
+     <li class="s-item"> with .s-item-main (text) and .s-item-actions (buttons). */
+  .s-item {
+    @apply flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3 sm:px-5;
+  }
+
+  .s-item + .s-item {
+    border-top: 1px solid var(--c-line);
+  }
+
+  .s-item-main {
+    flex: 1 1 14rem;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .s-item-title {
+    font-weight: 600;
+  }
+
+  .s-item-meta {
+    font-size: 0.8125rem;
+    color: var(--c-muted);
+  }
+
+  .s-item-actions {
+    @apply flex flex-wrap items-center gap-2;
+  }
 }
 
 /* WP10c: matches of the last in-book search on the page you jumped to (CSS Custom

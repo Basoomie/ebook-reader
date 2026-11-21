@@ -1,4 +1,7 @@
 <script lang="ts">
+  import SettingRow from '$lib/components/settings/setting-row.svelte';
+  import SettingSwitch from '$lib/components/settings/setting-switch.svelte';
+  import SettingField from '$lib/components/settings/setting-field.svelte';
   import {
     recordSyncEnabled$,
     syncDebounceSeconds$,
@@ -10,14 +13,9 @@
   import { onDestroy } from 'svelte';
 
   /**
-   * Record sync status and per-device settings (WP4), shown under Settings > Data >
-   * Library server (WP19a; before, the Library page's Connection panel). In this phase sync only carries device names,
-   * published device settings and positions for Calibre books; reading data
-   * still uses the existing file sync.
+   * Record sync status and per-device settings (WP4), shown under Settings > Data, "Record
+   * sync" (WP19a; before, the Library page's Connection panel): rows of the section card.
    */
-
-  // The catalogue's field (Settings page, "Archive" look).
-  const fieldClasses = 'c-input mt-1 block w-full max-w-[15rem] text-base';
 
   const runner = getSyncRunner();
   let status: RunnerStatus | null = null;
@@ -43,38 +41,56 @@
   }
 </script>
 
-<div>
-  <h3 class="mb-1 font-mincho text-lg font-bold">Record sync</h3>
-  {#if status}
-    <p>
-      {stateText[status.state]}{#if status.pending}, {status.pending} change(s) waiting{/if}
-    </p>
-    <p>Last sync: {formatTime(status.lastSyncAt)}</p>
-    {#if status.lastError}
-      <p role="alert">Error: {status.lastError}</p>
+<SettingRow id="sync-status" layout="inline">
+  <svelte:fragment slot="description">
+    {#if status}
+      <p class="mt-0.5 text-sm">
+        {stateText[status.state]}{#if status.pending}, {status.pending} change(s) waiting{/if}
+      </p>
+      <p class="text-sm text-c-muted">Last sync: {formatTime(status.lastSyncAt)}</p>
+      {#if status.lastError}
+        <p class="text-sm font-semibold" role="alert">Error: {status.lastError}</p>
+      {/if}
+      {#if status.rejected}
+        <p class="text-sm text-c-muted">
+          {status.rejected} change(s) refused by the server (kept for the bug report).
+        </p>
+      {/if}
     {/if}
-    {#if status.rejected}
-      <p>{status.rejected} change(s) refused by the server (kept for the bug report).</p>
-    {/if}
-  {/if}
-  <div class="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1">
-    <button class="c-btn c-btn-secondary" disabled={syncing || !runner} on:click={syncNow}>
-      Sync now
-    </button>
-    <label class="flex min-h-[3rem] items-center gap-2">
-      <input type="checkbox" bind:checked={$recordSyncEnabled$} />
-      Sync records on this device
-    </label>
-  </div>
-  <label class="mt-3 block text-sm text-c-muted">
-    Wait after a change before syncing (seconds)
-    <input class={fieldClasses} type="number" min="0" step="1" bind:value={$syncDebounceSeconds$} />
-  </label>
-  <label class="mt-3 block text-sm text-c-muted">
-    Check for other devices' changes every (minutes, 0 = only on changes)
-    <input class={fieldClasses} type="number" min="0" step="1" bind:value={$syncIntervalMinutes$} />
-  </label>
-  {#if status?.deviceId}
-    <p class="mt-3 break-all text-xs text-c-muted">Device id: {status.deviceId}</p>
-  {/if}
-</div>
+  </svelte:fragment>
+  <button class="c-btn c-btn-secondary" disabled={syncing || !runner} on:click={syncNow}>
+    Sync now
+  </button>
+</SettingRow>
+<SettingRow id="record-sync" layout="inline" let:labelId>
+  <SettingSwitch bind:checked={$recordSyncEnabled$} labelledby={labelId} />
+</SettingRow>
+{#if $recordSyncEnabled$}
+  <SettingRow id="sync-debounce" child let:labelId>
+    <SettingField unit="seconds">
+      <input
+        type="number"
+        min="0"
+        step="1"
+        aria-labelledby={labelId}
+        bind:value={$syncDebounceSeconds$}
+      />
+    </SettingField>
+  </SettingRow>
+  <SettingRow id="sync-interval" child let:labelId>
+    <SettingField unit="minutes">
+      <input
+        type="number"
+        min="0"
+        step="1"
+        aria-labelledby={labelId}
+        bind:value={$syncIntervalMinutes$}
+      />
+    </SettingField>
+  </SettingRow>
+{/if}
+{#if status?.deviceId}
+  <SettingRow title="Device id" layout="info">
+    <span class="break-all text-sm">{status.deviceId}</span>
+  </SettingRow>
+{/if}

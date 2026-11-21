@@ -89,6 +89,18 @@
     }
   }
 
+  let askingAgain = false;
+  async function askAiAgain() {
+    askingAgain = true;
+    try {
+      const r = await api.askAiAgain();
+      message = `AI check: ${n(r.questions)} given-up questions asked again; every book is then decided again.`;
+      dispatch('changed');
+    } finally {
+      askingAgain = false;
+    }
+  }
+
   // What it would change: one field and class at a time, 50 per page.
   let field = 'title';
   let cls = '';
@@ -195,7 +207,17 @@
       <p class="text-sm" data-testid="cleanup-gate-summary-4">{stage4GateSummary(gate)}</p>
     {/if}
     {#if status?.ai}
-      <p class="text-sm" data-testid="cleanup-stage-4-ai">{aiLine(status.ai)}</p>
+      <p class="text-sm" data-testid="cleanup-stage-4-ai">
+        {aiLine(status.ai)}
+        {#if (status.ai.answers?.failed ?? 0) > 0}
+          <button
+            class="c-btn c-btn-ghost"
+            data-testid="cleanup-stage-4-ai-ask-again"
+            disabled={askingAgain}
+            on:click={askAiAgain}>Ask the given-up questions again</button
+          >
+        {/if}
+      </p>
       {#if aiProgress}
         <div class="flex flex-col gap-1" data-testid="cleanup-stage-4-ai-progress">
           <div class="flex flex-wrap justify-between gap-x-4 text-sm">

@@ -14,7 +14,10 @@
    * once it is set up. Each change is saved at once. N2 adds the Stats section (daily,
    * weekly and monthly stats messages, off by default) with its "no reading" choice.
    */
-  import SettingsSection from '$lib/components/settings/settings-section.svelte';
+  import SettingsGroup from '$lib/components/settings/settings-group.svelte';
+  import SettingRow from '$lib/components/settings/setting-row.svelte';
+  import SettingSwitch from '$lib/components/settings/setting-switch.svelte';
+  import SettingField from '$lib/components/settings/setting-field.svelte';
   import { confirmDestructive } from '$lib/confirm/confirm';
   import { removeNotificationSecretCopy } from '$lib/confirm/confirm-copy';
   import { getLibraryStore, type LibraryConnection } from '$lib/library/library-db';
@@ -200,332 +203,376 @@
     void save({ events: { [id]: { [channel]: on } } } as SettingsPatch);
   }
 
-  const field = 'flex flex-col gap-1 text-sm';
-  const labelCls = 'font-medium';
+  const textField = 'c-input block w-full sm:w-80';
 </script>
 
-<div class="col-span-full" data-testid="notifications-panel">
-  {#if connection === null}
-    <p class="text-c-muted">
-      This device isn’t connected to a library server. Notifications are sent by the server.
-    </p>
-  {:else if loadError}
-    <p class="c-notice" role="alert" data-testid="notify-load-error">{loadError}</p>
-  {:else if !view}
-    <p class="text-c-muted">Loading…</p>
+<div class="flex flex-col gap-10" data-testid="notifications-panel">
+  {#if connection === null || loadError || !view || saveError}
+    <div>
+      {#if connection === null}
+        <p class="c-notice">
+          This device isn’t connected to a library server. Notifications are sent by the server.
+        </p>
+      {:else if loadError}
+        <p class="c-notice" role="alert" data-testid="notify-load-error">{loadError}</p>
+      {:else if !view}
+        <p class="text-c-muted">Loading…</p>
+      {/if}
+      {#if saveError}
+        <p class="c-notice" role="alert" data-testid="notify-save-error">{saveError}</p>
+      {/if}
+    </div>
   {/if}
-  {#if saveError}
-    <p class="c-notice mb-4" role="alert" data-testid="notify-save-error">{saveError}</p>
+
+  {#if view}
+    <p class="s-intro">
+      The server sends these messages, so they arrive even when no device is open. Each change is
+      saved at once.
+      <span class="ml-1 font-medium" aria-live="polite" data-testid="notify-saved">
+        {#if saving}
+          Saving…
+        {:else if savedAt}
+          Saved.
+        {/if}
+      </span>
+    </p>
+
+    <SettingsGroup id="notify-channels" testid="notify-section-channels">
+      <div data-testid="notify-discord">
+        <SettingRow id="notify-discord" layout="stack">
+          <svelte:fragment slot="description">
+            <p class="mt-1 text-sm text-c-muted">
+              In Discord: the channel’s settings, Integrations, Webhooks, New Webhook, Copy Webhook
+              URL.
+            </p>
+            <p class="mt-1 text-sm" data-testid="notify-webhook-state">
+              {secretStateText(view.secrets.discordWebhookUrl)}
+            </p>
+          </svelte:fragment>
+          <div class="flex flex-col gap-3">
+            <label class="grid gap-1 text-sm">
+              <span class="font-medium">Webhook address</span>
+              <input
+                class={textField}
+                type="password"
+                autocomplete="new-password"
+                placeholder={view.secrets.discordWebhookUrl.set
+                  ? 'Saved; paste a new one to change it'
+                  : 'https://discord.com/api/webhooks/…'}
+                bind:value={webhook}
+                on:change={() => saveSecret('discordWebhookUrl', webhook)}
+                data-testid="notify-webhook"
+              />
+            </label>
+            <div class="flex flex-wrap items-center gap-x-3 gap-y-2 text-sm">
+              <button
+                type="button"
+                class="c-btn c-btn-secondary"
+                disabled={!view.channels.discord || testState.discord.busy}
+                on:click={() => sendTest('discord')}
+                data-testid="notify-test-discord">Send test</button
+              >
+              {#if view.secrets.discordWebhookUrl.set}
+                <button
+                  type="button"
+                  class="c-btn c-btn-ghost"
+                  on:click={() => removeSecret('discordWebhookUrl', 'Discord webhook address')}
+                  >Remove…</button
+                >
+              {/if}
+              {#if testState.discord.text}
+                <span
+                  class={testState.discord.ok ? 'text-c-ink' : 'font-semibold text-c-ink'}
+                  role="status"
+                  data-testid="notify-test-discord-result">{testState.discord.text}</span
+                >
+              {/if}
+            </div>
+          </div>
+        </SettingRow>
+      </div>
+      <div data-testid="notify-email">
+        <SettingRow id="notify-email" layout="stack">
+          <svelte:fragment slot="description">
+            <p class="mt-1 text-sm text-c-muted">
+              Not your Google password: an app password, made at myaccount.google.com/apppasswords
+              (needs 2-Step Verification on the account).
+            </p>
+            <p class="mt-1 text-sm" data-testid="notify-app-password-state">
+              {secretStateText(view.secrets.gmailAppPassword)}
+            </p>
+          </svelte:fragment>
+          <div class="flex flex-col gap-3">
+            <div class="grid gap-3 sm:grid-cols-2">
+              <label class="grid gap-1 text-sm">
+                <span class="font-medium">Gmail address</span>
+                <input
+                  class="c-input w-full"
+                  type="email"
+                  autocomplete="off"
+                  placeholder="you@gmail.com"
+                  bind:value={emailFrom}
+                  on:change={() => save({ email: { from: emailFrom } })}
+                  data-testid="notify-email-from"
+                />
+              </label>
+              <label class="grid gap-1 text-sm">
+                <span class="font-medium">Send to</span>
+                <input
+                  class="c-input w-full"
+                  type="email"
+                  autocomplete="off"
+                  placeholder="you@gmail.com"
+                  bind:value={emailTo}
+                  on:change={() => save({ email: { to: emailTo } })}
+                  data-testid="notify-email-to"
+                />
+              </label>
+            </div>
+            <label class="grid gap-1 text-sm">
+              <span class="font-medium">App password</span>
+              <input
+                class={textField}
+                type="password"
+                autocomplete="new-password"
+                placeholder={view.secrets.gmailAppPassword.set
+                  ? 'Saved; type a new one to change it'
+                  : 'abcd efgh ijkl mnop'}
+                bind:value={appPassword}
+                on:change={() => saveSecret('gmailAppPassword', appPassword)}
+                data-testid="notify-app-password"
+              />
+            </label>
+            <div class="flex flex-wrap items-center gap-x-3 gap-y-2 text-sm">
+              <button
+                type="button"
+                class="c-btn c-btn-secondary"
+                disabled={!view.channels.email || testState.email.busy}
+                on:click={() => sendTest('email')}
+                data-testid="notify-test-email">Send test</button
+              >
+              {#if view.secrets.gmailAppPassword.set}
+                <button
+                  type="button"
+                  class="c-btn c-btn-ghost"
+                  on:click={() => removeSecret('gmailAppPassword', 'Gmail app password')}
+                  >Remove…</button
+                >
+              {/if}
+              {#if testState.email.text}
+                <span
+                  class={testState.email.ok ? 'text-c-ink' : 'font-semibold text-c-ink'}
+                  role="status"
+                  data-testid="notify-test-email-result">{testState.email.text}</span
+                >
+              {/if}
+            </div>
+          </div>
+        </SettingRow>
+      </div>
+    </SettingsGroup>
+
+    <SettingsGroup id="notify-general" testid="notify-section-general">
+      <SettingRow id="notify-digest-time" let:labelId>
+        <input
+          class="c-input"
+          type="time"
+          aria-labelledby={labelId}
+          bind:value={digestTime}
+          on:change={() => digestTime && save({ digest: { time: digestTime } })}
+          data-testid="notify-digest-time"
+        />
+      </SettingRow>
+      <SettingRow id="notify-zone" let:labelId>
+        <select
+          class={textField}
+          aria-labelledby={labelId}
+          bind:value={digestZone}
+          on:change={() => save({ digest: { timeZone: digestZone || null } })}
+          data-testid="notify-digest-zone"
+        >
+          <option value="">The server’s ({view.serverTimeZone})</option>
+          {#if showDeviceZone}
+            <option value={deviceZone}>This device’s ({deviceZone})</option>
+          {/if}
+          {#each zoneList as z (z)}
+            <option value={z}>{z}</option>
+          {/each}
+        </select>
+      </SettingRow>
+      <SettingRow id="notify-link-base" let:labelId>
+        <input
+          class={textField}
+          type="url"
+          aria-labelledby={labelId}
+          bind:value={linkBase}
+          on:change={() => save({ linkBase })}
+          data-testid="notify-link-base"
+        />
+      </SettingRow>
+      <SettingRow id="notify-finished" let:labelId>
+        <select
+          class={textField}
+          aria-labelledby={labelId}
+          value={view.settings.finishedJobs}
+          on:change={(e) => setFinished(e.currentTarget.value)}
+          data-testid="notify-finished"
+        >
+          <option value="now">A message for each</option>
+          <option value="digest">In the daily summary</option>
+          <option value="off">Off</option>
+        </select>
+      </SettingRow>
+    </SettingsGroup>
+
+    <SettingsGroup id="notify-waits" testid="notify-section-waits">
+      {#each WAIT_FIELDS as w (w.key)}
+        <SettingRow title={w.label} let:labelId>
+          <SettingField unit={w.unit}>
+            <input
+              type="number"
+              min={w.min}
+              max={w.max}
+              step="1"
+              aria-labelledby={labelId}
+              value={view.settings.waits[w.key]}
+              on:change={(e) => setWait(w.key, e.currentTarget)}
+              data-testid="notify-wait-{w.key}"
+            />
+          </SettingField>
+        </SettingRow>
+      {/each}
+    </SettingsGroup>
+
+    {#each view.sections as section (section.id)}
+      <SettingsGroup
+        id="notify-events-{section.id}"
+        jp="通知"
+        title={section.label}
+        testid="notify-section-{section.id}"
+      >
+        <div data-testid="notify-events-{section.id}">
+          <SettingRow
+            title="Send these messages"
+            description={section.id === 'stats'
+              ? ''
+              : 'Off: nothing from this section is sent. Choose each message and where it goes below.'}
+            layout="inline"
+            let:labelId
+          >
+            <SettingSwitch
+              checked={view.settings.sections[section.id]}
+              labelledby={labelId}
+              testid="notify-section-switch-{section.id}"
+              on:change={({ detail }) => save({ sections: { [section.id]: detail } })}
+            />
+          </SettingRow>
+          {#if section.id === 'stats'}
+            <SettingRow title="When" layout="info">
+              <span class="text-sm" data-testid="notify-stats-when">
+                Sent when a day, week or month ends: at the day start set in Settings &gt;
+                Statistics, in the time zone above.
+              </span>
+            </SettingRow>
+            <SettingRow title="Periods with no reading" let:labelId>
+              <select
+                class={textField}
+                aria-labelledby={labelId}
+                value={view.settings.stats.noReading}
+                on:change={(e) => setNoReading(e.currentTarget.value)}
+                data-testid="notify-stats-no-reading"
+              >
+                <option value="skip">Skip</option>
+                <option value="send">Send “No reading”</option>
+              </select>
+            </SettingRow>
+          {/if}
+          {#if channels.length === 0}
+            <p class="s-note">Set up Discord or email above to choose what goes where.</p>
+          {:else}
+            <div class="s-matrix">
+              <table class="notify-table w-full text-sm">
+                <thead>
+                  <tr>
+                    <th class="text-left">Message</th>
+                    {#each channels as ch (ch)}
+                      <th class="w-20 text-center">{CHANNEL_NAMES[ch]}</th>
+                    {/each}
+                  </tr>
+                </thead>
+                <tbody>
+                  {#each view.events.filter((e) => e.section === section.id) as ev (ev.id)}
+                    <tr data-testid="notify-event-{ev.id}">
+                      <td class={view.settings.sections[section.id] ? '' : 'text-c-muted'}>
+                        {ev.label}{#if ev.kind === 'digest'}<span class="text-c-muted"
+                            >{' (daily summary)'}</span
+                          >{/if}
+                      </td>
+                      {#each channels as ch (ch)}
+                        <td class="text-center">
+                          <input
+                            type="checkbox"
+                            class="h-5 w-5 disabled:opacity-40"
+                            aria-label="{ev.label}: {CHANNEL_NAMES[ch]}"
+                            disabled={!view.settings.sections[section.id]}
+                            checked={view.settings.events[ev.id]?.[ch] ?? true}
+                            on:change={(e) => toggleEvent(ev.id, ch, e.currentTarget.checked)}
+                            data-testid="notify-switch-{ev.id}-{ch}"
+                          />
+                        </td>
+                      {/each}
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
+            </div>
+          {/if}
+        </div>
+      </SettingsGroup>
+    {/each}
   {/if}
 </div>
 
-{#if view}
-  <SettingsSection
-    jp="送信先"
-    title="Channels"
-    tooltip="Where messages go. Both are optional. The webhook address and the app password are kept encrypted on the server and never shown again."
-    testid="notify-section-channels"
-  />
-  <div class="col-span-full grid max-w-3xl gap-8 pb-8 pt-4">
-    <fieldset class="grid gap-3" data-testid="notify-discord">
-      <legend class="mb-2 font-mincho text-lg font-bold">Discord</legend>
-      <label class={field}>
-        <span class={labelCls}>Webhook address</span>
-        <input
-          class="c-input"
-          type="password"
-          autocomplete="new-password"
-          placeholder={view.secrets.discordWebhookUrl.set
-            ? 'Saved; paste a new one to change it'
-            : 'https://discord.com/api/webhooks/…'}
-          bind:value={webhook}
-          on:change={() => saveSecret('discordWebhookUrl', webhook)}
-          data-testid="notify-webhook"
-        />
-      </label>
-      <span class="text-sm text-c-muted">
-        In Discord: the channel’s settings, Integrations, Webhooks, New Webhook, Copy Webhook URL.
-      </span>
-      <div class="flex flex-wrap items-center gap-x-3 gap-y-2 text-sm">
-        <span class="text-c-muted" data-testid="notify-webhook-state"
-          >{secretStateText(view.secrets.discordWebhookUrl)}</span
-        >
-        {#if view.secrets.discordWebhookUrl.set}
-          <button
-            type="button"
-            class="c-btn c-btn-ghost"
-            on:click={() => removeSecret('discordWebhookUrl', 'Discord webhook address')}
-            >Remove</button
-          >
-        {/if}
-        <button
-          type="button"
-          class="c-btn c-btn-secondary"
-          disabled={!view.channels.discord || testState.discord.busy}
-          on:click={() => sendTest('discord')}
-          data-testid="notify-test-discord">Send test</button
-        >
-        {#if testState.discord.text}
-          <span
-            class={testState.discord.ok ? 'text-c-ink' : 'text-c-seal'}
-            role="status"
-            data-testid="notify-test-discord-result">{testState.discord.text}</span
-          >
-        {/if}
-      </div>
-    </fieldset>
-
-    <fieldset class="grid gap-3 sm:grid-cols-2" data-testid="notify-email">
-      <legend class="mb-2 font-mincho text-lg font-bold">Email (Gmail)</legend>
-      <label class={field}>
-        <span class={labelCls}>Gmail address</span>
-        <input
-          class="c-input"
-          type="email"
-          autocomplete="off"
-          placeholder="you@gmail.com"
-          bind:value={emailFrom}
-          on:change={() => save({ email: { from: emailFrom } })}
-          data-testid="notify-email-from"
-        />
-      </label>
-      <label class={field}>
-        <span class={labelCls}>Send to</span>
-        <input
-          class="c-input"
-          type="email"
-          autocomplete="off"
-          placeholder="you@gmail.com"
-          bind:value={emailTo}
-          on:change={() => save({ email: { to: emailTo } })}
-          data-testid="notify-email-to"
-        />
-      </label>
-      <label class="{field} sm:col-span-2">
-        <span class={labelCls}>App password</span>
-        <input
-          class="c-input"
-          type="password"
-          autocomplete="new-password"
-          placeholder={view.secrets.gmailAppPassword.set
-            ? 'Saved; type a new one to change it'
-            : 'abcd efgh ijkl mnop'}
-          bind:value={appPassword}
-          on:change={() => saveSecret('gmailAppPassword', appPassword)}
-          data-testid="notify-app-password"
-        />
-      </label>
-      <span class="text-sm text-c-muted sm:col-span-2">
-        Not your Google password: an app password, made at myaccount.google.com/apppasswords (needs
-        2-Step Verification on the account).
-      </span>
-      <div class="flex flex-wrap items-center gap-x-3 gap-y-2 text-sm sm:col-span-2">
-        <span class="text-c-muted" data-testid="notify-app-password-state"
-          >{secretStateText(view.secrets.gmailAppPassword)}</span
-        >
-        {#if view.secrets.gmailAppPassword.set}
-          <button
-            type="button"
-            class="c-btn c-btn-ghost"
-            on:click={() => removeSecret('gmailAppPassword', 'Gmail app password')}>Remove</button
-          >
-        {/if}
-        <button
-          type="button"
-          class="c-btn c-btn-secondary"
-          disabled={!view.channels.email || testState.email.busy}
-          on:click={() => sendTest('email')}
-          data-testid="notify-test-email">Send test</button
-        >
-        {#if testState.email.text}
-          <span
-            class={testState.email.ok ? 'text-c-ink' : 'text-c-seal'}
-            role="status"
-            data-testid="notify-test-email-result">{testState.email.text}</span
-          >
-        {/if}
-      </div>
-    </fieldset>
-  </div>
-
-  <SettingsSection
-    jp="一般"
-    title="When and how"
-    tooltip="Alerts go out at once, at most one per problem. Everything else waits for one daily summary, sent only on days with something to say."
-    testid="notify-section-general"
-  />
-  <div class="col-span-full grid max-w-3xl gap-6 pb-8 pt-4 sm:grid-cols-2">
-    <label class={field}>
-      <span class={labelCls}>Daily summary at</span>
-      <input
-        class="c-input"
-        type="time"
-        bind:value={digestTime}
-        on:change={() => digestTime && save({ digest: { time: digestTime } })}
-        data-testid="notify-digest-time"
-      />
-    </label>
-    <label class={field}>
-      <span class={labelCls}>Time zone</span>
-      <select
-        class="c-input"
-        bind:value={digestZone}
-        on:change={() => save({ digest: { timeZone: digestZone || null } })}
-        data-testid="notify-digest-zone"
-      >
-        <option value="">The server’s ({view.serverTimeZone})</option>
-        {#if showDeviceZone}
-          <option value={deviceZone}>This device’s ({deviceZone})</option>
-        {/if}
-        {#each zoneList as z (z)}
-          <option value={z}>{z}</option>
-        {/each}
-      </select>
-    </label>
-    <label class="{field} sm:col-span-2">
-      <span class={labelCls}>Link address</span>
-      <input
-        class="c-input"
-        type="url"
-        bind:value={linkBase}
-        on:change={() => save({ linkBase })}
-        data-testid="notify-link-base"
-      />
-      <span class="text-c-muted">Messages link here, to the page where a problem is fixed.</span>
-    </label>
-    <label class={field}>
-      <span class={labelCls}>Finished jobs</span>
-      <select
-        class="c-input"
-        value={view.settings.finishedJobs}
-        on:change={(e) => setFinished(e.currentTarget.value)}
-        data-testid="notify-finished"
-      >
-        <option value="now">A message for each</option>
-        <option value="digest">In the daily summary</option>
-        <option value="off">Off</option>
-      </select>
-      <span class="text-c-muted">Subtitles and audiobooks made on the PC, merges on the NAS.</span>
-    </label>
-  </div>
-
-  <SettingsSection
-    jp="待ち時間"
-    title="Wait before an alert"
-    tooltip="Some problems fix themselves (the PC starting up, a helper restarting). These alert only after they have lasted this long."
-    testid="notify-section-waits"
-  />
-  <div class="col-span-full grid max-w-3xl gap-4 pb-8 pt-4">
-    {#each WAIT_FIELDS as w (w.key)}
-      <label class="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 text-sm">
-        <span class="min-w-0 flex-1">{w.label}</span>
-        <span class="flex items-center gap-2">
-          <input
-            class="c-input w-24"
-            type="number"
-            min={w.min}
-            max={w.max}
-            step="1"
-            value={view.settings.waits[w.key]}
-            on:change={(e) => setWait(w.key, e.currentTarget)}
-            data-testid="notify-wait-{w.key}"
-          />
-          <span class="w-16 text-c-muted">{w.unit}</span>
-        </span>
-      </label>
-    {/each}
-  </div>
-
-  {#each view.sections as section (section.id)}
-    <SettingsSection jp="通知" title={section.label} testid="notify-section-{section.id}" />
-    <div class="col-span-full max-w-3xl pb-8 pt-4" data-testid="notify-events-{section.id}">
-      <label class="mb-4 flex items-center gap-3 text-sm">
-        <input
-          type="checkbox"
-          class="h-5 w-5"
-          checked={view.settings.sections[section.id]}
-          on:change={(e) => save({ sections: { [section.id]: e.currentTarget.checked } })}
-          data-testid="notify-section-switch-{section.id}"
-        />
-        <span class={labelCls}>Notify about this section</span>
-      </label>
-      {#if section.id === 'stats'}
-        <p class="mb-4 text-sm text-c-muted" data-testid="notify-stats-when">
-          Sent when a day, week or month ends: at the day start set in Settings &gt; Statistics, in
-          the time zone above.
-        </p>
-        <label class="{field} mb-4 max-w-xs">
-          <span class={labelCls}>Periods with no reading</span>
-          <select
-            class="c-input"
-            value={view.settings.stats.noReading}
-            on:change={(e) => setNoReading(e.currentTarget.value)}
-            data-testid="notify-stats-no-reading"
-          >
-            <option value="skip">Skip</option>
-            <option value="send">Send “No reading”</option>
-          </select>
-        </label>
-      {/if}
-      {#if channels.length === 0}
-        <p class="text-sm text-c-muted">Set up Discord or email above to choose what goes where.</p>
-      {:else}
-        <table class="notify-table w-full text-sm">
-          <thead>
-            <tr>
-              <th class="text-left font-normal text-c-muted">Event</th>
-              {#each channels as ch (ch)}
-                <th class="w-20 text-center font-normal text-c-muted">{CHANNEL_NAMES[ch]}</th>
-              {/each}
-            </tr>
-          </thead>
-          <tbody>
-            {#each view.events.filter((e) => e.section === section.id) as ev (ev.id)}
-              <tr data-testid="notify-event-{ev.id}">
-                <td class={view.settings.sections[section.id] ? '' : 'text-c-muted'}>
-                  {ev.label}{#if ev.kind === 'digest'}<span class="text-c-muted"
-                      >{' (daily summary)'}</span
-                    >{/if}
-                </td>
-                {#each channels as ch (ch)}
-                  <td class="text-center">
-                    <input
-                      type="checkbox"
-                      class="h-5 w-5 disabled:opacity-40"
-                      aria-label="{ev.label}: {CHANNEL_NAMES[ch]}"
-                      disabled={!view.settings.sections[section.id]}
-                      checked={view.settings.events[ev.id]?.[ch] ?? true}
-                      on:change={(e) => toggleEvent(ev.id, ch, e.currentTarget.checked)}
-                      data-testid="notify-switch-{ev.id}-{ch}"
-                    />
-                  </td>
-                {/each}
-              </tr>
-            {/each}
-          </tbody>
-        </table>
-      {/if}
-    </div>
-  {/each}
-
-  <div
-    class="col-span-full pb-8 text-sm text-c-muted"
-    aria-live="polite"
-    data-testid="notify-saved"
-  >
-    {#if saving}
-      Saving…
-    {:else if savedAt}
-      Saved.
-    {/if}
-  </div>
-{/if}
-
 <style>
-  .notify-table td,
+  .s-intro {
+    padding: 0.75rem 1rem;
+    border: var(--c-border-width) solid var(--c-line);
+    border-left: 3px solid var(--c-gold);
+    border-radius: 0.375rem;
+    background-color: var(--c-raised);
+    font-size: 0.875rem;
+  }
+
+  .s-note {
+    padding: 0.875rem 1.25rem;
+    border-top: 1px solid var(--c-line);
+    font-size: 0.875rem;
+    color: var(--c-muted);
+  }
+
+  .s-matrix {
+    overflow-x: auto;
+    border-top: 1px solid var(--c-line);
+  }
+
   .notify-table th {
-    padding: 0.5rem 0.25rem;
-    border-bottom: 1px solid var(--c-rule, rgba(127, 127, 127, 0.25));
+    padding: 0.625rem 1rem;
+    color: var(--c-muted);
+    font-size: 0.8125rem;
+    font-weight: 600;
+  }
+
+  .notify-table td {
+    padding: 0.625rem 1rem;
+    border-top: 1px solid var(--c-line);
     vertical-align: middle;
+  }
+
+  @media (min-width: 640px) {
+    .notify-table th,
+    .notify-table td {
+      padding-left: 1.25rem;
+      padding-right: 1.25rem;
+    }
   }
 </style>

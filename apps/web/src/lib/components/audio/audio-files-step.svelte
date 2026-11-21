@@ -12,6 +12,9 @@
    *   server into one new file next to them (asks first).
    * Shows a hint when the files look like copies of one audiobook. Nothing happens until a
    * button is pressed; the parent links the file or follows the merge.
+   *
+   * 2026-11-20 redesign: part of the open Audiobook row; the file list is shown a page at a
+   * time and the merge order list has a fixed height (it is reordered, so it scrolls).
    */
   import { faArrowDown, faArrowUp } from '@fortawesome/free-solid-svg-icons';
   import { createEventDispatcher, onDestroy } from 'svelte';
@@ -34,11 +37,12 @@
   import { formatFileSize } from '$lib/library/book-details';
   import { LibraryApiError, type LibraryApi } from '$lib/library/api';
   import { logger } from '$lib/data/logger';
+  import PagedList from '$lib/components/paged-list.svelte';
 
   export let api: LibraryApi;
   export let bookId: string;
   export let folder: AudioFolderSummary;
-  /** The linked file when it is in this folder, shown as "Linked now". */
+  /** The linked file when it is in this folder, shown as "In use". */
   export let currentFileName: string | null = null;
   /** Merging on this server: available, or why not. */
   export let merge: { available: boolean; reason: string | null } | undefined;
@@ -50,6 +54,8 @@
     cancel: void;
   }>();
 
+  /** Files shown a page at a time. */
+  const PAGE_SIZE = 10;
   const iconButton = 'c-btn c-btn-secondary h-12 w-12 shrink-0 p-0';
 
   let detail: AudioFolderDetail | null = null;
@@ -162,41 +168,52 @@
       <p class="mt-3 text-sm font-semibold" data-testid="audio-copies-hint">{COPIES_HINT}</p>
     {/if}
 
-    <ul class="mt-2 divide-y divide-dashed divide-c-line" data-testid="audio-files">
-      {#each detail.files as file (file.name)}
-        <li
-          class="flex flex-wrap items-center gap-x-4 gap-y-2 py-3"
-          data-testid="audio-file"
-          data-name={file.name}
-        >
-          <div class="min-w-0 grow basis-60">
-            <div class="break-all text-[15px] font-bold leading-snug">{file.name}</div>
-            <div class="mt-0.5 text-sm text-c-muted" data-testid="audio-file-details">
-              {fileDetails(file)}
+    <PagedList
+      items={detail.files}
+      size={PAGE_SIZE}
+      label="Files"
+      testid="audio-files-pages"
+      let:pageItems
+    >
+      <ul class="mt-2 divide-y divide-dashed divide-c-line" data-testid="audio-files">
+        {#each pageItems as file (file.name)}
+          <li
+            class="flex flex-wrap items-center gap-x-4 gap-y-2 py-3"
+            data-testid="audio-file"
+            data-name={file.name}
+          >
+            <div class="min-w-0 grow basis-60">
+              <div class="break-all text-[15px] font-bold leading-snug">{file.name}</div>
+              <div class="mt-0.5 text-sm text-c-muted" data-testid="audio-file-details">
+                {fileDetails(file)}
+              </div>
             </div>
-          </div>
-          {#if currentFileName === file.name}
-            <span class="text-sm text-c-muted" data-testid="audio-file-current">Linked now</span>
-          {:else}
-            <button
-              class="c-btn c-btn-secondary c-round shrink-0 px-5"
-              data-testid="audio-file-use"
-              disabled={busy || starting}
-              on:click={() => dispatch('useFile', { folder, fileName: file.name })}
-            >
-              Use this file
-            </button>
-          {/if}
-        </li>
-      {/each}
-    </ul>
+            {#if currentFileName === file.name}
+              <span class="text-sm text-c-muted" data-testid="audio-file-current">In use</span>
+            {:else}
+              <button
+                class="c-btn c-btn-secondary c-round shrink-0 px-5"
+                data-testid="audio-file-use"
+                disabled={busy || starting}
+                on:click={() => dispatch('useFile', { folder, fileName: file.name })}
+              >
+                Use this file
+              </button>
+            {/if}
+          </li>
+        {/each}
+      </ul>
+    </PagedList>
 
     <h4 class="mt-6 font-mincho text-base font-bold">Merge into one file</h4>
     <p class="text-sm text-c-muted">
       Tick the files to join and put them in order. Each file becomes a chapter of a new file saved
       next to them; the originals are not changed.
     </p>
-    <ol class="mt-2 divide-y divide-dashed divide-c-line" data-testid="audio-merge-list">
+    <ol
+      class="mt-2 max-h-[24rem] divide-y divide-dashed divide-c-line overflow-y-auto pr-1"
+      data-testid="audio-merge-list"
+    >
       {#each order as name, i (name)}
         <li class="flex items-center gap-2 py-2" data-testid="audio-merge-item" data-name={name}>
           <label class="flex min-h-[3rem] min-w-0 grow items-center gap-3">

@@ -61,6 +61,7 @@ export function aiLine(ai: Stage4AiStatus): string {
   const all = a ? asked + a.queued + a.sent : 0;
   const parts = [`AI check: ${AI_PHASES[ai.phase] ?? ai.phase}`];
   if (a && all > 0) parts.push(`${n(a.answered)} of ${n(all)} answers in`);
+  if (a && a.failed > 0) parts.push(`${n(a.failed)} given up`);
   if (ai.phase === 'decide') parts.push(`${n(ai.decided)} of ${n(ai.items)} books decided`);
   if (ai.costUsd !== null) parts.push(`$${ai.costUsd.toFixed(2)} spent`);
   return parts.join(' · ');

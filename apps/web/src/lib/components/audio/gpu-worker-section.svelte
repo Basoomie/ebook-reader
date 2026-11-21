@@ -15,7 +15,10 @@
    * Season 2 Phase 12 session 3: the voice the PC keeps loaded for read-aloud and Enrich
    * clips, and how long it keeps it after its last use (stored on the server, every device).
    */
-  import SettingsSection from '$lib/components/settings/settings-section.svelte';
+  import SettingsGroup from '$lib/components/settings/settings-group.svelte';
+  import SettingRow from '$lib/components/settings/setting-row.svelte';
+  import SettingField from '$lib/components/settings/setting-field.svelte';
+  import PagedList from '$lib/components/settings/paged-list.svelte';
   import { subtitleJobText, timeAgo } from '$lib/audio/audio-link';
   import { audiobookJobText, isTtsJob, workerJobTitle } from '$lib/audio/tts-text';
   import type { GpuWorkerStatus } from '$lib/audio/audio-types';
@@ -147,45 +150,45 @@
   }
 </script>
 
-<section class="mt-10" aria-label="Subtitles made on the PC" data-testid="gpu-worker">
-  <SettingsSection
-    jp="字幕作成"
-    title="Subtitles made on the PC"
-    tooltip="SubPlz on your PC makes subtitles for an audiobook when you ask for them on a book's page (Audiobook > Make subtitles on the PC). The PC also makes audiobooks read aloud from a book (Audiobook > Make an audiobook on the PC). Jobs wait while the PC is off. Pausing lets a long audiobook finish its current chapter and continue later."
-  />
-  {#if error}
-    <p class="c-notice mt-4" role="alert" data-testid="gpu-worker-error">{error}</p>
-  {/if}
+<SettingsGroup id="audio-pc" testid="gpu-worker">
+  <svelte:fragment slot="before">
+    {#if error}
+      <p class="c-notice mb-3" role="alert" data-testid="gpu-worker-error">{error}</p>
+    {/if}
+  </svelte:fragment>
   {#if status && !status.available}
-    <p class="mt-4 text-[15px]" data-testid="gpu-worker-off">
+    <p class="px-5 py-4" data-testid="gpu-worker-off">
       This server can't make subtitles: it has no audiobooks folder.
     </p>
   {:else if status}
-    <div class="c-gwpanel mt-4 max-w-3xl rounded px-5 py-4">
-      <dl class="grid grid-cols-[minmax(0,8rem)_minmax(0,1fr)] gap-y-1 text-sm">
-        <dt class="text-c-muted">The PC</dt>
-        <dd class="break-words font-medium" data-testid="gpu-worker-state">{stateText(status)}</dd>
-        {#if programText(status)}
-          <dt class="text-c-muted">Program</dt>
-          <dd class="break-words" data-testid="gpu-worker-program">{programText(status)}</dd>
-        {/if}
-        {#if status.keepLoadedMinutes !== undefined}
-          <dt class="text-c-muted">Voice</dt>
-          <dd class="break-words" data-testid="gpu-worker-voice">{voiceText(status)}</dd>
-        {/if}
-      </dl>
-      {#if status.keepLoadedMinutes !== undefined}
-        <label class="mt-4 block text-sm" for="gpu-worker-keep">
-          Keep the voice loaded after read-aloud or an Enrich clip (minutes)
-        </label>
-        <div class="mt-1 flex flex-wrap items-center gap-3">
+    <SettingRow id="pc-state" layout="info">
+      <span class="font-medium" data-testid="gpu-worker-state">{stateText(status)}</span>
+    </SettingRow>
+    {#if programText(status)}
+      <SettingRow title="Program" layout="info">
+        <span data-testid="gpu-worker-program">{programText(status)}</span>
+      </SettingRow>
+    {/if}
+    {#if status.keepLoadedMinutes !== undefined}
+      <SettingRow title="Voice" layout="info">
+        <span data-testid="gpu-worker-voice">{voiceText(status)}</span>
+      </SettingRow>
+      <SettingRow id="pc-keep-loaded" shared>
+        <svelte:fragment slot="description">
+          {#if keepError}
+            <p class="c-notice mt-2" role="alert" data-testid="gpu-worker-keep-error">
+              {keepError}
+            </p>
+          {/if}
+        </svelte:fragment>
+        <SettingField unit="minutes">
           <input
             id="gpu-worker-keep"
             type="number"
             min="0"
             max="1440"
             step="1"
-            class="c-input min-h-[3rem] w-28 text-base"
+            aria-label="Keep the voice loaded (minutes)"
             data-testid="gpu-worker-keep"
             value={keepInput}
             on:change={(e) => {
@@ -193,69 +196,68 @@
               void saveKeep();
             }}
           />
-          <span class="text-sm text-c-muted">
-            Loading the voice takes about 2 minutes. While it is kept, audiobooks and subtitles
-            wait; 0 lets it go at once.
-          </span>
-        </div>
-        {#if keepError}
-          <p class="c-notice mt-2" role="alert" data-testid="gpu-worker-keep-error">{keepError}</p>
-        {/if}
-      {/if}
-      <div class="mt-4 flex flex-wrap items-center gap-3">
-        <button
-          class="c-btn c-btn-secondary"
-          aria-pressed={status.paused}
-          data-testid="gpu-worker-pause"
-          disabled={switching}
-          on:click={togglePause}
-        >
-          {status.paused ? 'Resume' : 'Pause'}
-        </button>
-        <span class="text-sm text-c-muted">
-          {status.paused
-            ? 'Jobs wait until you resume.'
-            : 'While paused, the PC takes no new jobs; a job already running finishes.'}
-        </span>
-      </div>
-    </div>
-
-    <h3 class="mt-6 font-mincho text-lg font-bold">Waiting and running</h3>
-    {#if jobs.length === 0}
-      <p class="mt-1 text-[15px]" data-testid="gpu-worker-no-jobs">Nothing to do.</p>
-    {:else}
-      <ul class="mt-1" data-testid="gpu-worker-jobs">
-        {#each jobs as job (job.id)}
-          <li class="c-gwrow flex flex-col gap-1 py-3" data-testid="gpu-worker-job">
-            {#if job.bookId}
-              <a
-                class="c-link self-start break-words font-mincho text-[15px] font-bold"
-                href={bookHref(job.bookId)}>{workerJobTitle(job)}</a
-              >
-            {:else}
-              <span class="break-words font-mincho text-[15px] font-bold"
-                >{workerJobTitle(job)}</span
-              >
-            {/if}
-            <div class="break-words text-sm" data-testid="gpu-worker-job-text">
-              {isTtsJob(job)
-                ? audiobookJobText(job, status, now)
-                : subtitleJobText(job, status, now)}
-            </div>
-          </li>
-        {/each}
-      </ul>
+        </SettingField>
+      </SettingRow>
     {/if}
+    <SettingRow
+      id="pc-pause"
+      layout="inline"
+      description={status.paused
+        ? 'Paused: jobs wait until you resume.'
+        : 'While paused, the PC takes no new jobs; a job already running finishes. A long audiobook stops after its current chapter and goes on later.'}
+    >
+      <button
+        class="c-btn c-btn-secondary"
+        aria-pressed={status.paused}
+        data-testid="gpu-worker-pause"
+        disabled={switching}
+        on:click={togglePause}
+      >
+        {status.paused ? 'Resume' : 'Pause'}
+      </button>
+    </SettingRow>
+    <div id="setting-pc-jobs">
+      <p class="px-4 pb-1 pt-3 font-semibold sm:px-5">
+        Waiting and running{#if jobs.length}<span class="font-normal text-c-muted">
+            · {jobs.length}</span
+          >{/if}
+      </p>
+      {#if jobs.length === 0}
+        <p class="px-4 pb-3 text-sm text-c-muted sm:px-5" data-testid="gpu-worker-no-jobs">
+          Nothing to do.
+        </p>
+      {:else}
+        <PagedList
+          items={jobs}
+          pageSize={5}
+          text={(job) => workerJobTitle(job)}
+          searchLabel="Search jobs"
+          label="Jobs"
+          let:rows
+        >
+          <ul data-testid="gpu-worker-jobs">
+            {#each rows as job (job.id)}
+              <li class="s-item" data-testid="gpu-worker-job">
+                <div class="s-item-main flex flex-col gap-0.5">
+                  {#if job.bookId}
+                    <a
+                      class="c-link self-start font-mincho text-[15px] font-bold"
+                      href={bookHref(job.bookId)}>{workerJobTitle(job)}</a
+                    >
+                  {:else}
+                    <span class="font-mincho text-[15px] font-bold">{workerJobTitle(job)}</span>
+                  {/if}
+                  <div class="text-sm" data-testid="gpu-worker-job-text">
+                    {isTtsJob(job)
+                      ? audiobookJobText(job, status, now)
+                      : subtitleJobText(job, status, now)}
+                  </div>
+                </div>
+              </li>
+            {/each}
+          </ul>
+        </PagedList>
+      {/if}
+    </div>
   {/if}
-</section>
-
-<style>
-  .c-gwpanel {
-    background-color: var(--c-raised);
-    border: var(--c-border-width) solid var(--c-line);
-  }
-
-  .c-gwrow + .c-gwrow {
-    border-top: 1px dashed var(--c-line);
-  }
-</style>
+</SettingsGroup>

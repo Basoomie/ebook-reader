@@ -11,6 +11,8 @@
    * and what is stored when the server can't be reached. The download itself lives in the
    * app-wide manager (audio-offline.ts), so it goes on when this page is left. Nothing is
    * removed without a tap; removing asks first.
+   *
+   * 2026-11-20 redesign: a part of the Audiobook row (no box of its own).
    */
   import { onDestroy } from 'svelte';
   import type { AudioLink } from '$lib/audio/audio-types';
@@ -95,8 +97,8 @@
 </script>
 
 {#if view.state !== 'hidden' || view.note || message}
-  <div class="c-apanel mt-4 rounded px-5 py-4" data-testid="audio-device" data-state={view.state}>
-    <div class="text-xs text-c-muted">On this device</div>
+  <div class="c-dev mt-3 pt-3" data-testid="audio-device" data-state={view.state}>
+    <div class="text-xs text-c-muted">Offline copy on this device</div>
     {#if view.state === 'ready'}
       <p class="text-sm">Download the audio to listen without the library server.</p>
     {:else if view.text}
@@ -196,9 +198,8 @@
 {/if}
 
 <style>
-  .c-apanel {
-    background-color: var(--c-raised);
-    border: var(--c-border-width) solid var(--c-line);
+  .c-dev {
+    border-top: var(--c-border-width) dashed var(--c-line);
   }
 
   .c-round {

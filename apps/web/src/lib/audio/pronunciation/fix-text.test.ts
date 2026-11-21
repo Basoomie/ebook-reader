@@ -49,7 +49,7 @@ describe('pronunciation fix words', () => {
     expect(versionNote(check(null))).toBe('');
     expect(versionNote(check({ version: 2, madeWithCurrentFixes: true }))).toBe('');
     expect(versionNote(check({ version: 1, madeWithCurrentFixes: false }))).toBe(
-      'This audiobook was made before the current pronunciation fixes for this book. Make an audiobook on the PC to use them.'
+      'This audiobook was made before the current pronunciation fixes for this book. Make it again (Text-to-speech > Make an audiobook with this voice) to use them.'
     );
   });
 

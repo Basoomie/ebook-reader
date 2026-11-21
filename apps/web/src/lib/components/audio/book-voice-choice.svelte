@@ -6,38 +6,26 @@
    */
 
   /**
-   * Season 2 Phase 12: the book page's "PC voice for this book" (Audiobook section): the voice
-   * and model the PC reads this book with: Enrich's sentence audio while the book has no
-   * audiobook, and where "Make an audiobook on the PC" starts (decided with the user,
-   * 2026-11-15: one choice for both). Default: the one in Settings > Anki.
+   * Season 2 Phase 12: the book's TTS voice (called "PC voice" until the 2026-11-20 redesign),
+   * in the Text-to-speech row of the book page's Audiobook section: the voice and model the PC
+   * reads this book with: Read aloud, Enrich's sentence audio while the book has no audiobook,
+   * and "Make an audiobook with this voice", which has no voice choice of its own (decided with
+   * the user, 2026-11-15 and 2026-11-20: one choice for all). Default: the one in Settings >
+   * Anki. `changed` fires with the new choices after each save. The row's header says what
+   * the voice is used for.
    */
   import { createEventDispatcher } from 'svelte';
   import PcVoiceChoice from '$lib/components/audio/pc-voice-choice.svelte';
-  import type { AudioLink } from '$lib/audio/audio-types';
   import type { BookVoiceChoices } from '$lib/audio/tts-types';
   import type { LibraryApi } from '$lib/library/api';
 
   export let api: LibraryApi;
   export let bookId: string;
-  export let link: AudioLink | null;
 
   const dispatch = createEventDispatcher<{ changed: BookVoiceChoices }>();
-
-  $: hasAudiobook = link?.state === 'linked';
 </script>
 
-<div class="c-vpanel mt-4 rounded px-5 py-4" data-testid="book-pc-voice">
-  <p class="text-xs text-c-muted">How the PC voices read this book</p>
-  <p class="font-medium">PC voice</p>
-  <p class="mt-1 max-w-3xl text-sm text-c-muted">
-    {#if hasAudiobook}
-      "Make an audiobook on the PC" starts with it. Sentence audio for Anki comes from the linked
-      audiobook.
-    {:else}
-      Enrich's sentence audio for Anki is read by the PC with it while the book has no audiobook,
-      and "Make an audiobook on the PC" starts with it.
-    {/if}
-  </p>
+<div data-testid="book-pc-voice">
   {#key bookId}
     <PcVoiceChoice
       {api}
@@ -47,10 +35,3 @@
     />
   {/key}
 </div>
-
-<style>
-  .c-vpanel {
-    background-color: var(--c-raised);
-    border: var(--c-border-width) solid var(--c-line);
-  }
-</style>

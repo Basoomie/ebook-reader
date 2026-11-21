@@ -12,6 +12,14 @@
   import { customFontNames$ } from '$lib/fonts/server-fonts-browser';
   import { planSettingsCopy, type DeviceSettings } from '$lib/sync/copy-device-settings';
   import { formatWhen } from '$lib/sync/position-prompt';
+  import PagedList from '$lib/components/settings/paged-list.svelte';
+  import { compareText, type ListSort } from '$lib/settings/paged-list';
+
+  // Newest settings first (the order the list comes in), or by name.
+  const deviceSorts: ListSort<DeviceSettings>[] = [
+    { id: 'newest', label: 'Newest', compare: () => 0 },
+    { id: 'name', label: 'Name', compare: (a, b) => compareText(deviceLabel(a), deviceLabel(b)) }
+  ];
 
   let devices: DeviceSettings[] | undefined;
   let loading = false;
@@ -75,34 +83,45 @@
   {:else if !devices.length}
     <p data-testid="copy-device-settings-none">No other device has synced its settings yet.</p>
   {:else}
-    <p class="text-sm">
+    <p class="text-sm text-c-muted">
       A device's latest changes are here only after it has synced (its Settings > Data shows 0
       changes waiting).
     </p>
-    <ul class="w-full">
-      {#each devices as device (device.deviceId)}
-        <li
-          class="flex items-center justify-between gap-2 border-t border-current py-2"
-          data-testid="copy-device-settings-device"
-        >
-          <span>
-            <span class="block font-medium">{deviceLabel(device)}</span>
-            <span class="block text-sm">settings saved {savedWhen(device)}</span>
-          </span>
-          <button
-            class="c-btn c-btn-secondary"
-            disabled={busy}
-            data-testid="copy-device-settings-copy"
-            on:click={() => {
-              message = '';
-              confirming = device;
-            }}
-          >
-            Copy
-          </button>
-        </li>
-      {/each}
-    </ul>
+    <div class="s-devices w-full">
+      <PagedList
+        items={devices}
+        pageSize={6}
+        text={deviceLabel}
+        searchLabel="Search devices"
+        sorts={deviceSorts}
+        label="Devices"
+        let:rows
+      >
+        <ul>
+          {#each rows as device (device.deviceId)}
+            <li class="s-item" data-testid="copy-device-settings-device">
+              <div class="s-item-main">
+                <span class="s-item-title block">{deviceLabel(device)}</span>
+                <span class="s-item-meta block">settings saved {savedWhen(device)}</span>
+              </div>
+              <div class="s-item-actions">
+                <button
+                  class="c-btn c-btn-secondary min-h-[2.75rem]"
+                  disabled={busy}
+                  data-testid="copy-device-settings-copy"
+                  on:click={() => {
+                    message = '';
+                    confirming = device;
+                  }}
+                >
+                  Copy…
+                </button>
+              </div>
+            </li>
+          {/each}
+        </ul>
+      </PagedList>
+    </div>
   {/if}
   {#if confirming}
     <div class="w-full">
@@ -120,3 +139,11 @@
     <p role="status" data-testid="copy-device-settings-message">{message}</p>
   {/if}
 </div>
+
+<style>
+  .s-devices {
+    border: var(--c-border-width) solid var(--c-line);
+    border-radius: 0.375rem;
+    overflow: hidden;
+  }
+</style>

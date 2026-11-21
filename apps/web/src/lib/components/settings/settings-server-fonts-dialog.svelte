@@ -19,6 +19,7 @@
   import { FONT_KIND, type FontStatus, type ServerFontState } from '$lib/fonts/server-fonts';
   import { LibraryApiError } from '$lib/library/api';
   import InlineConfirm from '$lib/components/confirm/inline-confirm.svelte';
+  import PagedList from '$lib/components/settings/paged-list.svelte';
   import { deleteFontCopy } from '$lib/confirm/confirm-copy';
 
   const dispatch = createEventDispatcher<{ close: void }>();
@@ -217,59 +218,73 @@
     </p>
 
     {#if $fonts$.length}
-      <ul class="mb-4" data-testid="server-font-list">
-        {#each $fonts$ as font (font.id)}
-          <li
-            class="flex items-center gap-3 border-t border-gray-400 py-2"
-            data-testid="server-font"
-          >
-            <div class="min-w-0 flex-1">
-              <!-- Shown in its own font once it is on this device. -->
-              <div class="break-words font-medium" style:font-family={`'${font.name}', sans-serif`}>
-                {font.name}
-              </div>
-              {#if font.source === 'google'}
-                <div class="break-words text-sm" data-testid="server-font-google">
-                  Google Fonts{licenseName(font.licenseUrl)
-                    ? ` · ${licenseName(font.licenseUrl)}`
-                    : ''} · {weightsLabel(font.weights)} · {formatFontSize(font.size)} ·
-                  <span data-testid="server-font-status">{statusText[font.status]}</span>
-                </div>
-                {#if font.copyright}
-                  <div class="break-words text-xs" data-testid="server-font-copyright">
-                    {font.copyright}
-                  </div>
-                {/if}
-              {:else}
-                <div class="break-words text-sm">
-                  {font.fileName} · {formatFontSize(font.size)} ·
-                  <span data-testid="server-font-status">{statusText[font.status]}</span>
-                </div>
-              {/if}
-            </div>
-            {#if confirmDelete?.id !== font.id}
-              <button
-                class={button}
-                data-testid="server-font-delete"
-                on:click={() => (confirmDelete = font)}
+      <div class="mb-4">
+        <PagedList
+          items={$fonts$}
+          pageSize={8}
+          text={(f) => f.name}
+          searchLabel="Search fonts"
+          label="Fonts"
+          let:rows
+        >
+          <ul data-testid="server-font-list">
+            {#each rows as font (font.id)}
+              <li
+                class="flex items-center gap-3 border-t border-gray-400 py-2"
+                data-testid="server-font"
               >
-                Delete…
-              </button>
-            {/if}
-          </li>
-          {#if confirmDelete?.id === font.id}
-            <li class="pb-3">
-              <InlineConfirm
-                {...deleteFontCopy(font.name)}
-                testid="server-font-delete-confirm"
-                confirmTestid="server-font-delete-confirm-button"
-                on:confirm={() => deleteFont(font)}
-                on:cancel={() => (confirmDelete = null)}
-              />
-            </li>
-          {/if}
-        {/each}
-      </ul>
+                <div class="min-w-0 flex-1">
+                  <!-- Shown in its own font once it is on this device. -->
+                  <div
+                    class="break-words font-medium"
+                    style:font-family={`'${font.name}', sans-serif`}
+                  >
+                    {font.name}
+                  </div>
+                  {#if font.source === 'google'}
+                    <div class="break-words text-sm" data-testid="server-font-google">
+                      Google Fonts{licenseName(font.licenseUrl)
+                        ? ` · ${licenseName(font.licenseUrl)}`
+                        : ''} · {weightsLabel(font.weights)} · {formatFontSize(font.size)} ·
+                      <span data-testid="server-font-status">{statusText[font.status]}</span>
+                    </div>
+                    {#if font.copyright}
+                      <div class="break-words text-xs" data-testid="server-font-copyright">
+                        {font.copyright}
+                      </div>
+                    {/if}
+                  {:else}
+                    <div class="break-words text-sm">
+                      {font.fileName} · {formatFontSize(font.size)} ·
+                      <span data-testid="server-font-status">{statusText[font.status]}</span>
+                    </div>
+                  {/if}
+                </div>
+                {#if confirmDelete?.id !== font.id}
+                  <button
+                    class={button}
+                    data-testid="server-font-delete"
+                    on:click={() => (confirmDelete = font)}
+                  >
+                    Delete…
+                  </button>
+                {/if}
+              </li>
+              {#if confirmDelete?.id === font.id}
+                <li class="pb-3">
+                  <InlineConfirm
+                    {...deleteFontCopy(font.name)}
+                    testid="server-font-delete-confirm"
+                    confirmTestid="server-font-delete-confirm-button"
+                    on:confirm={() => deleteFont(font)}
+                    on:cancel={() => (confirmDelete = null)}
+                  />
+                </li>
+              {/if}
+            {/each}
+          </ul>
+        </PagedList>
+      </div>
     {:else}
       <p class="mb-4">No custom fonts yet.</p>
     {/if}

@@ -526,3 +526,57 @@ describe("the AI check's progress bar (WP20e follow-up)", () => {
     });
   });
 });
+
+describe('asking the given-up questions again (WP20e stop 2)', () => {
+  it('queues them, sends a finished AI check back to asking and clears its gate', async () => {
+    const { Stage4Ai } = await import('../src/cleanup/stage4/ai-step');
+    const { AiRunner } = await import('../src/cleanup/ai/runner');
+    const s = initCleanupDatabase(makeTempDir('wp20e-again'));
+    if (!s.ok) throw new Error(s.error);
+    const db = s.db;
+    const put = db.prepare(
+      `INSERT INTO ai_requests (stage, item_key, role, provider, model, prompt_version, evidence_hash, state, run_id, attempts, error, created_at)
+       VALUES ('calibre4', ?, 'secondary', 'openai', 'gpt-6-luna', 'v', 'h', ?, 'run1', ?, ?, 1)`,
+    );
+    put.run('k0', 'answered', 1, null);
+    put.run('k1', 'failed', 4, '429 Rate limit reached');
+    put.run('k2', 'failed', 4, '429 Rate limit reached');
+    const ai = {
+      analysisId: 'run1',
+      rulesFinishedAt: 5,
+      phase: 'done',
+      items: 3,
+      decided: 3,
+      invented: 1,
+      finishedAt: 9,
+      gate: { passed: true, below: [] },
+      times: {},
+    };
+    const progress = {
+      analysisId: 'run1',
+      phase: 'done',
+      finishedAt: 5,
+      bookmeterEditions: { phase: 'done' },
+      ai,
+    };
+    const runner = new AiRunner({ db, secrets: { read: () => null } });
+    const step = new Stage4Ai({
+      db,
+      runner,
+      analysis: { progress: () => progress } as never,
+    });
+    expect(step.askAgain()).toBe(2);
+    expect(ai).toMatchObject({ phase: 'models', decided: 0, finishedAt: null, gate: null });
+    expect(db.prepare(`SELECT state, attempts, error FROM ai_requests ORDER BY id`).all()).toEqual([
+      { state: 'answered', attempts: 1, error: null },
+      { state: 'queued', attempts: 0, error: null },
+      { state: 'queued', attempts: 0, error: null },
+    ]);
+    // The service's loop runs the step while it has work.
+    expect(step.needsWork()).toBe(true);
+    // Nothing given up: nothing changes.
+    Object.assign(ai, { phase: 'done', decided: 3 });
+    expect(step.askAgain()).toBe(0);
+    expect(ai.phase).toBe('done');
+  });
+});

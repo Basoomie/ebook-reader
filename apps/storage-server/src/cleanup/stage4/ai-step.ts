@@ -271,6 +271,26 @@ export class Stage4Ai {
     if (getStage(this.db, STAGE).pauseReason === 'ai') resumeStage(this.db, STAGE);
   }
 
+  /**
+   * The given-up questions asked again (the page's button): they go back to the queue, and the
+   * step returns to asking, then decides every book again (the stored answers of the others give
+   * the same values) and runs the gate. Returns how many questions were queued.
+   */
+  askAgain(): number {
+    const ai = this.progress();
+    if (!ai) return 0;
+    const n = this.deps.runner.askAgain('calibre4', ai.analysisId);
+    if (n > 0 && ai.phase !== 'evidence' && ai.phase !== 'models') {
+      ai.decided = 0;
+      ai.invented = 0;
+      ai.finishedAt = null;
+      ai.gate = null;
+      this.next(ai, 'models');
+    }
+    if (n > 0) this.deps.log?.(`Stage 4: ${n} given-up AI questions asked again`);
+    return n;
+  }
+
   /** Whether the step has work: the rules are done and its decisions are not current. */
   needsWork(): boolean {
     const p = this.stage4();
