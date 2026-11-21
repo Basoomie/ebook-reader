@@ -533,3 +533,51 @@ describe('tag-blur kind', () => {
     expect(del[0].status).toBe('applied');
   });
 });
+
+describe('blur-rule kind', () => {
+  it('stores, rejects and deletes author, series and collection blur rules', async () => {
+    const t = makeTestApp();
+    const auth = { Authorization: `Bearer ${t.newUserToken('d')}` };
+    const reg = await request(t.app)
+      .post('/api/v1/devices/register')
+      .set(auth)
+      .send({ deviceId: randomUUID() });
+    expect(reg.status).toBe(200);
+    const push = async (changes: unknown[]) =>
+      (await request(t.app).post('/api/v1/sync').set(auth).send({ changes })).body.results as {
+        status: string;
+        reason?: string;
+      }[];
+    const now = Date.now();
+    const rule = (id: string, data: unknown = { blur: true }) => ({
+      kind: 'blur-rule',
+      id,
+      updatedAt: now,
+      data,
+    });
+    const results = await push([
+      rule('author:著者 一'),
+      rule('series:シリーズ: 副題'),
+      rule('collection:favorites'),
+      rule('tag:x'),
+      rule('author:'),
+      rule('author: padded'),
+      rule('noprefix'),
+      rule('series:S', { blur: false }),
+    ]);
+    expect(results.map((r) => r.status)).toEqual([
+      'applied',
+      'applied',
+      'applied',
+      'rejected',
+      'rejected',
+      'rejected',
+      'rejected',
+      'rejected',
+    ]);
+    const del = await push([
+      { kind: 'blur-rule', id: 'author:著者 一', updatedAt: now + 1, deletedAt: now + 1 },
+    ]);
+    expect(del[0].status).toBe('applied');
+  });
+});

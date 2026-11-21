@@ -85,7 +85,7 @@
   <div class="flex flex-wrap gap-2">
     <button
       type="submit"
-      class="c-btn c-btn-secondary c-round"
+      class="c-btn c-btn-secondary"
       disabled={!ready}
       data-testid="{testid}-submit"
     >
@@ -94,7 +94,7 @@
     {#if cancellable}
       <button
         type="button"
-        class="c-btn c-btn-secondary c-round"
+        class="c-btn c-btn-secondary"
         data-testid="{testid}-cancel"
         on:click={() => dispatch('cancel')}
       >
@@ -103,9 +103,3 @@
     {/if}
   </div>
 </form>
-
-<style>
-  .c-round {
-    border-radius: 0.75rem;
-  }
-</style>

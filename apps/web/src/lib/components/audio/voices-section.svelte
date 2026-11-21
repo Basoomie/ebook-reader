@@ -311,14 +311,14 @@
               </div>
               <div class="s-item-actions">
                 <button
-                  class="c-btn c-btn-secondary min-h-[2.75rem]"
+                  class="c-btn c-btn-secondary c-btn-sm"
                   data-testid="voice-play"
                   on:click={() => play(v)}
                 >
                   Listen
                 </button>
                 <button
-                  class="c-btn c-btn-secondary min-h-[2.75rem]"
+                  class="c-btn c-btn-secondary c-btn-sm"
                   data-testid="voice-delete"
                   on:click={() => remove(v)}
                 >

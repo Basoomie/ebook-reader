@@ -28,7 +28,8 @@ import {
   timeLeftLine,
   sourceName,
   valueText,
-  writeBar
+  writeBar,
+  writtenLine
 } from './stage4-text';
 
 const site = (o: Partial<Stage4Site>): Stage4Site => ({
@@ -336,14 +337,20 @@ describe("stage 4 On's progress bar (WP20e)", () => {
     });
     expect(writeBar(w(0, 206_140, null), 'on')?.eta).toBeNull();
   });
-  it('stays after a run until everything is written, and is gone before one', () => {
-    expect(writeBar(w(6000, 206_140, 7200), 'analyse')?.label).toMatch(/^Writing to Calibre/);
-    expect(writeBar(w(0, 206_140, null), 'analyse')).toBeNull();
-    expect(writeBar(w(206_140, 206_140, 0), 'on')).toEqual({
-      label: 'Written to Calibre: 206,140 changes in 51,535 books',
-      fraction: 1,
-      eta: null
-    });
+  it('is a plain line when done or stopped, as the other stages show their results', () => {
+    // Done: no bar, the totals as a line.
+    expect(writeBar(w(206_140, 206_140, 0), 'on')).toBeNull();
+    expect(writtenLine(w(206_140, 206_140, 0), 'on')).toBe(
+      'Written to Calibre: 206,140 changes in 51,535 books'
+    );
+    // Stopped part way (Preview): no bar, how far it got.
+    expect(writeBar(w(6000, 206_140, 7200), 'analyse')).toBeNull();
+    expect(writtenLine(w(6000, 206_140, 7200), 'analyse')).toBe(
+      'Written to Calibre: 6,000 of 206,140 changes in 1,500 books'
+    );
+    // While writing: the bar, no line; nothing written: neither.
+    expect(writtenLine(w(6000, 206_140, 7200), 'on')).toBeNull();
+    expect(writtenLine(w(0, 206_140, null), 'analyse')).toBeNull();
     expect(writeBar(null, 'on')).toBeNull();
   });
 });

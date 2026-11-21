@@ -52,7 +52,7 @@
 
   const dispatch = createEventDispatcher<{ open: void }>();
   const menuItem = 'c-btn c-btn-ghost w-full justify-start px-3 text-left text-sm';
-  const dotsButton = 'c-btn c-btn-ghost h-11 min-h-0 w-11 p-0';
+  const dotsButton = 'c-btn c-btn-ghost c-btn-icon c-btn-sm';
 
   /** What the open menu just copied ('' until a copy; reset when the menu closes). */
   let copied: '' | 'text' | 'note' | 'failed' = '';

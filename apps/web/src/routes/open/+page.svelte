@@ -130,7 +130,7 @@
 <main class="mx-auto max-w-xl p-6 sm:p-8" data-testid="open-link-page">
   {#if message}
     <p class="mb-4" role="status" data-testid="open-link-message">{message}</p>
-    <a class="c-btn c-btn-secondary min-h-[3rem]" href="{pagePath}/library">Go to the Library</a>
+    <a class="c-btn c-btn-secondary" href="{pagePath}/library">Go to the Library</a>
   {:else}
     <p class="text-c-muted" role="status">Opening the book…</p>
   {/if}

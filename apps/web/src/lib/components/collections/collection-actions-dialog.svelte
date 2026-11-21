@@ -1,11 +1,19 @@
 <script lang="ts" context="module">
-  export type CollectionAction = 'rename' | 'search' | 'delete' | 'pin' | 'unpin';
+  export type CollectionAction =
+    | 'rename'
+    | 'search'
+    | 'delete'
+    | 'pin'
+    | 'unpin'
+    | 'blur'
+    | 'unblur';
 </script>
 
 <script lang="ts">
   /**
    * The "⋯" of a collection (WP8b): rename, change the search, delete; and (WP7b) pin
-   * to or unpin from Home. A built-in list has only the pin action. A list of actions,
+   * to or unpin from Home, and (2026-11-21) blur its covers everywhere. A built-in list has
+   * only the pin and blur actions. A list of actions,
    * Delete last in red; ✕, Esc or a click outside cancel (modal.svelte).
    */
   import Modal from '$lib/components/modal/modal.svelte';
@@ -16,6 +24,8 @@
   export let type: CollectionType | 'builtin';
   /** Whether it is on this device's Home (null: no pin action). */
   export let pinned: boolean | null = null;
+  /** Whether its covers are blurred by a rule (null: no blur action). */
+  export let blurred: boolean | null = null;
   export let resolver: (action: CollectionAction | undefined) => void;
 
   const dispatch = createEventDispatcher<{ close: void }>();
@@ -50,6 +60,25 @@
             {pinned
               ? 'Its row leaves Home on this device.'
               : 'Shows it as a row on Home on this device.'}
+          </span>
+        </span>
+      </button>
+    {/if}
+    {#if blurred !== null}
+      <button
+        type="button"
+        class="c-modal-action"
+        data-testid="collection-blur"
+        on:click={() => answer(blurred ? 'unblur' : 'blur')}
+      >
+        <span class="c-modal-action-text">
+          <span class="c-modal-action-label"
+            >{blurred ? 'Stop blurring its covers' : 'Blur its covers'}</span
+          >
+          <span class="c-modal-action-hint">
+            {blurred
+              ? 'Its books show their covers again, unless another rule blurs them.'
+              : 'Blurs the covers of its books everywhere. A book’s own setting still wins.'}
           </span>
         </span>
       </button>

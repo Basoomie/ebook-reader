@@ -1,6 +1,13 @@
 <script lang="ts">
+  import { faRotateRight } from '@fortawesome/free-solid-svg-icons';
+  import Fa from 'svelte-fa';
   import { BUILTIN_COLLECTIONS } from '$lib/collections/builtins';
-  import { builtinMenu, collectionMenu, newCollection } from '$lib/collections/collection-dialogs';
+  import {
+    builtinMenu,
+    collectionMenu,
+    newCollection,
+    type CollectionCoverRule
+  } from '$lib/collections/collection-dialogs';
   import type { Collection, CollectionItem } from '$lib/collections/collections';
   import CollectionCard from '$lib/components/collections/collection-card.svelte';
   import AppBottomBar from '$lib/components/app-nav/app-bottom-bar.svelte';
@@ -11,7 +18,16 @@
   import { pagePath } from '$lib/data/env';
   import { formatPageTitle } from '$lib/functions/format-page-title';
   import { LibraryApi, LibraryApiError } from '$lib/library/api';
-  import { isCoverBlurred } from '$lib/library/cover-blur';
+  import {
+    collectionMembership,
+    coverBlurDefault,
+    hasCoverRule,
+    isCoverBlurred,
+    NO_COVER_RULES,
+    tileBlurBook,
+    type CoverBlurContext,
+    type CoverRules
+  } from '$lib/library/cover-blur';
   import { plural } from '$lib/library/format';
   import { getLibraryStore, type LibraryConnection } from '$lib/library/library-db';
   import {
@@ -29,6 +45,7 @@
   import LibraryDisplayMenu from '$lib/components/library/library-display-menu.svelte';
   import { coverGrid } from '$lib/library/cover-size';
   import {
+    libraryCoverBlur$,
     libraryCoverSize$,
     libraryRequestTimeoutSeconds$,
     libraryView$
@@ -62,7 +79,7 @@
   let offline = false;
   let staleNote = false;
   let states = new Map<string, BookState>();
-  let tagRules = new Set<string>();
+  let coverRules: CoverRules = NO_COVER_RULES;
   let revealed = new Set<string>();
   let stopListeners: (() => void)[] = [];
   let destroyed = false;
@@ -120,12 +137,12 @@
     const [v, s, rules] = await Promise.all([
       collections.view(),
       bookState.getAll().catch(() => new Map<string, BookState>()),
-      view.tagBlurRules()
+      view.coverRules()
     ]);
     mine = v.collections;
     items = v.items;
     states = s;
-    tagRules = rules;
+    coverRules = rules;
   }
 
   async function loadCards() {
@@ -191,11 +208,18 @@
     if (!destroyed && offline && connection === conn) tryServerAgain();
   }
 
+  let blurCtx: CoverBlurContext;
+  $: blurCtx = {
+    rules: coverRules,
+    fallback: coverBlurDefault($libraryCoverBlur$),
+    inCollection: collectionMembership({ rules: coverRules, collections: mine, items, states })
+  };
+
   function tilesOf(
     id: string,
     data: Map<string, CollectionCardData>,
     s: Map<string, BookState>,
-    rules: Set<string>,
+    ctx: CoverBlurContext,
     shown: Set<string>
   ) {
     const card = data.get(id);
@@ -203,7 +227,7 @@
     const open = shown.has(id);
     return card.tiles.map((t) => ({
       src: t.thumbnail && api ? api.absolute(t.thumbnail) : '',
-      blurred: !open && isCoverBlurred(s.get(t.bookId)?.blur, t.tags, rules)
+      blurred: !open && isCoverBlurred(s.get(t.bookId)?.blur, tileBlurBook(t), ctx)
     }));
   }
 
@@ -232,15 +256,34 @@
     if (id) await loadMirror();
   }
 
+  /** A collection's cover rule for its ⋯ (2026-11-21). */
+  function coverRule(id: string): CollectionCoverRule {
+    return {
+      blurred: hasCoverRule(coverRules, 'collection', id),
+      set: async (blur) => {
+        await view.setCoverRule('collection', id, blur);
+        coverRules = await view.coverRules();
+      }
+    };
+  }
+
   async function menu(id: string) {
     const c = mine.find((x) => x.id === id);
     if (!c) return;
     try {
-      await collectionMenu(collections, c);
+      await collectionMenu(collections, c, coverRule(id));
     } catch (error) {
       showMessage('Not saved', (error as Error).message);
     }
     await loadMirror();
+  }
+
+  async function menuOfBuiltin(b: (typeof BUILTIN_COLLECTIONS)[number]) {
+    try {
+      await builtinMenu(b, coverRule(b.id));
+    } catch (error) {
+      showMessage('Not saved', (error as Error).message);
+    }
   }
 
   function reveal(id: string) {
@@ -282,9 +325,9 @@
     <p class="c-notice flex flex-wrap items-center gap-x-3 gap-y-2" data-testid="offline-notice">
       <span role="status">{OFFLINE_NOTICE}</span>
       <button
-        class="c-btn c-btn-secondary px-3"
+        class="c-btn c-btn-ghost c-btn-sm -my-1 gap-1.5 px-2.5"
         data-testid="offline-retry"
-        on:click={tryServerAgain}>Try again</button
+        on:click={tryServerAgain}><Fa icon={faRotateRight} />Try again</button
       >
     </p>
   {/if}
@@ -310,11 +353,11 @@
         name={b.name}
         href={hrefFor(b.id)}
         details={[countLine(b.id, cards)].filter(Boolean)}
-        tiles={tilesOf(b.id, cards, states, tagRules, revealed)}
+        tiles={tilesOf(b.id, cards, states, blurCtx, revealed)}
         layout={grid ? 'grid' : 'list'}
         menu
         on:reveal={(ev) => reveal(ev.detail)}
-        on:menu={() => builtinMenu(b)}
+        on:menu={() => menuOfBuiltin(b)}
       />
     {/each}
   </ul>
@@ -336,7 +379,7 @@
             countLine(c.id, cards, c.type === 'manual' ? (items.get(c.id) ?? []) : undefined),
             c.type === 'smart' ? 'Smart' : 'Manual'
           ].filter(Boolean)}
-          tiles={tilesOf(c.id, cards, states, tagRules, revealed)}
+          tiles={tilesOf(c.id, cards, states, blurCtx, revealed)}
           layout={grid ? 'grid' : 'list'}
           menu
           on:reveal={(ev) => reveal(ev.detail)}

@@ -92,7 +92,7 @@
       </span>
       <button
         type="button"
-        class="c-btn c-btn-secondary min-h-[2.75rem]"
+        class="c-btn c-btn-secondary c-btn-sm"
         data-testid="theme-edit"
         on:click={() => picked && dispatch('edit', picked.id)}
       >
@@ -100,7 +100,7 @@
       </button>
       <button
         type="button"
-        class="c-btn c-btn-secondary min-h-[2.75rem]"
+        class="c-btn c-btn-secondary c-btn-sm"
         data-testid="theme-delete"
         on:click={() => picked && dispatch('delete', picked.id)}
       >

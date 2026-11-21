@@ -258,7 +258,7 @@
         </p>
         <div class="mt-3">
           <button
-            class="c-btn c-btn-secondary c-round"
+            class="c-btn c-btn-secondary"
             data-testid="subtitle-job-stop"
             disabled={job.cancelRequested}
             on:click={stop}
@@ -278,7 +278,7 @@
         {/if}
         <div class="mt-3 flex flex-wrap gap-2">
           <button
-            class="c-btn c-btn-secondary c-round"
+            class="c-btn c-btn-secondary"
             data-testid="subtitle-job-dismiss"
             on:click={() => (job = null)}
           >
@@ -311,7 +311,7 @@
       </PagedList>
       <div class="mt-3 flex flex-wrap gap-2">
         <button
-          class="c-btn c-btn-secondary c-round"
+          class="c-btn c-btn-secondary"
           data-testid="subtitle-job-force"
           disabled={starting || busy}
           on:click={() => start(true)}
@@ -319,7 +319,7 @@
           Make new subtitles anyway
         </button>
         <button
-          class="c-btn c-btn-secondary c-round"
+          class="c-btn c-btn-secondary"
           data-testid="subtitle-job-archive-cancel"
           on:click={() => (archiveMatches = null)}
         >
@@ -333,7 +333,7 @@
       </p>
       <div class="mt-3">
         <button
-          class="c-btn c-btn-secondary c-round"
+          class="c-btn c-btn-secondary"
           data-testid="subtitle-job-start"
           disabled={starting || busy}
           on:click={() => start(false)}
@@ -348,10 +348,6 @@
 <style>
   .c-sub {
     border-top: var(--c-border-width) dashed var(--c-line);
-  }
-
-  .c-round {
-    border-radius: 0.75rem;
   }
 
   .c-mbar {

@@ -1186,6 +1186,17 @@ export const MIGRATIONS: { version: number; name: string; sql: string }[] = [
       );
     `,
   },
+  {
+    version: 28,
+    name: 'length sort: zero counts last',
+    // "Shortest first" puts books counted as 0 characters (a count that failed, or a book
+    // of pictures only) after the counted ones, with the books not counted yet, so they
+    // don't fill the top of the list. The expression must match catalog/sort.ts.
+    sql: `
+      DROP INDEX books_sort_chars_asc;
+      CREATE INDEX books_sort_chars_asc ON books (IFNULL(NULLIF(char_count, 0), 9000000000000000), id);
+    `,
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

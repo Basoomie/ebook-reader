@@ -127,7 +127,7 @@
             <div class="s-item-actions">
               {#if !m.isDefault}
                 <button
-                  class="c-btn c-btn-secondary min-h-[2.75rem]"
+                  class="c-btn c-btn-secondary c-btn-sm"
                   data-testid="speaker-model-default"
                   on:click={() => makeDefault(m)}
                 >
@@ -135,7 +135,7 @@
                 </button>
               {/if}
               <button
-                class="c-btn c-btn-secondary min-h-[2.75rem]"
+                class="c-btn c-btn-secondary c-btn-sm"
                 data-testid="speaker-model-remove"
                 on:click={() => remove(m)}
               >

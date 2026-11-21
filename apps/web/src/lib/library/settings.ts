@@ -74,6 +74,13 @@ export const libraryCoverSize$ = writableNumberLocalStorageSubject()('libraryCov
 export const libraryLook$ = writableStringLocalStorageSubject()('libraryLook', 'auto');
 
 /**
+ * Hidden covers on this device (2026-11-21, per device): 'rules' (blur what a tag, author,
+ * series or collection rule says), 'all' or 'none'. A book's own setting still wins. See
+ * lib/library/cover-blur.ts.
+ */
+export const libraryCoverBlur$ = writableStringLocalStorageSubject()('libraryCoverBlur', 'rules');
+
+/**
  * Season 2 §6: where the book page shows the book's illustrations: 'description' (a
  * full-width strip under the description and About this book, the default) or 'cover' (in
  * the cover's column, under the cover). Per device (decided 2026-11-15).

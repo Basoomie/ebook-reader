@@ -171,6 +171,7 @@ export const SETTINGS_REGISTRY: Record<string, SettingSpec> = {
   libraryBulkDownloadMode: d('String'),
   libraryDownloadConfirmGb: d('Number'),
   libraryLook: d('String'),
+  libraryCoverBlur: d('String'),
   bookIllustrationsPosition: d('String'),
 
   // --- lib/sync/settings.ts (per device) ---

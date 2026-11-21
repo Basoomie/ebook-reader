@@ -43,30 +43,48 @@ export function newCollection(
   });
 }
 
-/** The "⋯" of a built-in list (WP7b): only "Pin to Home" / "Unpin from Home". */
-export async function builtinMenu(builtin: BuiltinCollection): Promise<void> {
+/**
+ * A collection's cover rule (2026-11-21): whether its covers are blurred now, and how to
+ * switch it (rejects when it could not be saved).
+ */
+export interface CollectionCoverRule {
+  blurred: boolean;
+  set(blur: boolean): Promise<void>;
+}
+
+/** The "⋯" of a built-in list (WP7b): "Pin to Home" / "Unpin from Home", and its cover rule. */
+export async function builtinMenu(
+  builtin: BuiltinCollection,
+  cover?: CollectionCoverRule
+): Promise<void> {
   const pin = { type: 'builtin', ref: builtin.id } as const;
   const action = await ask<CollectionAction | undefined>(CollectionActionsDialog, {
     name: builtin.name,
     type: 'builtin',
-    pinned: isPinnedToHome(homeRows$.getValue(), pin)
+    pinned: isPinnedToHome(homeRows$.getValue(), pin),
+    blurred: cover ? cover.blurred : null
   });
   if (action === 'pin' || action === 'unpin') setPinnedToHome(pin, action === 'pin');
+  else if ((action === 'blur' || action === 'unblur') && cover) await cover.set(action === 'blur');
 }
 
 /** The "⋯" of a collection. Resolves to 'deleted' when it was deleted. */
 export async function collectionMenu(
   api: CollectionsApi,
-  collection: Collection
+  collection: Collection,
+  cover?: CollectionCoverRule
 ): Promise<CollectionAction | 'deleted' | undefined> {
   const pin = { type: 'collection', ref: collection.id } as const;
   const action = await ask<CollectionAction | undefined>(CollectionActionsDialog, {
     name: collection.name,
     type: collection.type,
-    pinned: isPinnedToHome(homeRows$.getValue(), pin)
+    pinned: isPinnedToHome(homeRows$.getValue(), pin),
+    blurred: cover ? cover.blurred : null
   });
   if (action === 'pin' || action === 'unpin') {
     setPinnedToHome(pin, action === 'pin');
+  } else if ((action === 'blur' || action === 'unblur') && cover) {
+    await cover.set(action === 'blur');
   } else if (action === 'rename') {
     await ask(CollectionEditDialog, {
       mode: 'rename',

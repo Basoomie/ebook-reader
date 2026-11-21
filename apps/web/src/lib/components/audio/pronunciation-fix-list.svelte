@@ -153,14 +153,14 @@
                 {#if !readonly}
                   <div class="flex shrink-0 gap-2">
                     <button
-                      class="c-btn c-btn-secondary c-round"
+                      class="c-btn c-btn-secondary"
                       data-testid="pron-fix-edit-button"
                       on:click={() => startEdit(fix)}
                     >
                       Edit
                     </button>
                     <button
-                      class="c-btn c-btn-secondary c-round"
+                      class="c-btn c-btn-secondary"
                       data-testid="pron-fix-remove"
                       on:click={() => ((confirming = fix.id), (editing = null))}
                     >
@@ -219,9 +219,5 @@
 <style>
   .c-frow + .c-frow {
     border-top: 1px dashed var(--c-line);
-  }
-
-  .c-round {
-    border-radius: 0.75rem;
   }
 </style>

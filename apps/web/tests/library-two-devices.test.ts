@@ -21,7 +21,7 @@ import {
   setBooksStatus,
   type BookStateDeps
 } from '$lib/sync/book-state-service';
-import { getTagBlurRules, setTagBlur } from '$lib/sync/tag-blur';
+import { getCoverRules, getTagBlurRules, setCoverRule, setTagBlur } from '$lib/sync/tag-blur';
 import { Device, TestServer, seedServer } from './helpers/sync-harness';
 
 function deps(device: Device): BookStateDeps {
@@ -59,17 +59,27 @@ describe('library state between two devices (real server)', () => {
   it('a tag rule and bulk changes on A reach B and its searches', async () => {
     const [book1, book2, book3] = books;
     await setTagBlur(a.engine, 'ホラー', true);
+    // 2026-11-21: an author rule reaches the other device the same way.
+    await setCoverRule(a.engine, 'author', '著者 二', true);
     expect(await setBooksFavorite([book1, book2], true, deps(a))).toEqual([]);
     expect(await setBooksStatus([book2, book3], 'reading', deps(a))).toEqual([]);
     expect(await setBooksBlur([book3], 'never', deps(a))).toEqual([]);
     await a.sync();
     await b.sync();
 
-    const rules = await getTagBlurRules(b.engine);
-    expect([...rules]).toEqual(['ホラー']);
+    const rules = await getCoverRules(b.engine);
+    expect([...rules.tags]).toEqual(['ホラー']);
+    expect([...rules.authors]).toEqual(['著者 二']);
+    const ctx = { rules, fallback: 'rules' as const };
     const states = await getAllBookStates(deps(b));
-    expect(isCoverBlurred(states.get(book1)?.blur, ['ホラー'], rules)).toBe(true);
-    expect(isCoverBlurred(states.get(book3)?.blur, ['ホラー'], rules)).toBe(false);
+    expect(isCoverBlurred(states.get(book1)?.blur, { id: book1, tags: ['ホラー'] }, ctx)).toBe(
+      true
+    );
+    expect(isCoverBlurred(states.get(book3)?.blur, { id: book3, tags: ['ホラー'] }, ctx)).toBe(
+      false
+    );
+    const byAuthor = { id: book2, tags: [], authors: [{ name: '著者 二' }] };
+    expect(isCoverBlurred(states.get(book2)?.blur, byAuthor, ctx)).toBe(true);
 
     const api = new LibraryApi(server.url, tokens[1]);
     const ids = async (q: string) => (await api.books({ q })).books.map((x) => x.id).sort();

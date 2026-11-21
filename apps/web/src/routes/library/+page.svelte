@@ -27,7 +27,7 @@
   import { canLoadWhenVisible, loadWhenVisible } from '$lib/components/load-when-visible';
   import MarkCompletedDialog from '$lib/components/library/mark-completed-dialog.svelte';
   import SearchHelpDialog from '$lib/components/library/search-help-dialog.svelte';
-  import TagCoverDialog from '$lib/components/library/tag-cover-dialog.svelte';
+  import CoverRuleDialog from '$lib/components/library/cover-rule-dialog.svelte';
   import UploadDuplicateDialog from '$lib/components/library/upload-duplicate-dialog.svelte';
   import UploadLibraryDialog from '$lib/components/library/upload-library-dialog.svelte';
   import UploadProgressOverlay from '$lib/components/library/upload-progress-overlay.svelte';
@@ -68,7 +68,18 @@
     startsOffline
   } from '$lib/library/offline/offline-source';
   import { removeFromThisDevice } from '$lib/library/remove-from-device';
-  import { isCoverBlurred } from '$lib/library/cover-blur';
+  import {
+    collectionMembership,
+    coverBlurDefault,
+    hasCoverRule,
+    isCoverBlurred,
+    NO_COVER_RULES,
+    tileBlurBook,
+    type BlurBook,
+    type BlurRuleTarget,
+    type CoverBlurContext,
+    type CoverRules
+  } from '$lib/library/cover-blur';
   import { coverGrid } from '$lib/library/cover-size';
   import { authorHref, formatGroupChars, groupCount, plural } from '$lib/library/format';
   import {
@@ -110,6 +121,7 @@
   } from '$lib/library/selection';
   import {
     libraryAutoLoad$,
+    libraryCoverBlur$,
     libraryCoverSize$,
     libraryFilter$,
     libraryGroupSort$,
@@ -134,7 +146,17 @@
     libraryViewApi,
     notifySyncConnectionChanged
   } from '$lib/sync/sync-service';
-  import { faMagnifyingGlass } from '@fortawesome/free-solid-svg-icons';
+  import {
+    faArrowUpFromBracket,
+    faArrowsUpDown,
+    faCheck,
+    faEyeSlash,
+    faMagnifyingGlass,
+    faPen,
+    faRotateRight,
+    faSquareCheck,
+    faThumbtack
+  } from '@fortawesome/free-solid-svg-icons';
   import { onDestroy, onMount, tick } from 'svelte';
   import Fa from 'svelte-fa';
 
@@ -166,6 +188,12 @@
     tag: 'Back to Tags'
   };
   const FIELD_OF: Record<GroupBy, string> = { series: 'series', author: 'author', tag: 'tag' };
+  const HEADER_RULE_LABEL: Record<BlurRuleTarget, string> = {
+    tag: 'Blur covers with this tag',
+    author: "Blur this author's covers",
+    series: "Blur this series' covers",
+    collection: 'Blur covers'
+  };
   // The search box without the shared input's transition (e-ink).
   /** Book ids looked up per request for a list (server limit 200). */
   const LOOKUP_CHUNK = 100;
@@ -214,6 +242,8 @@
   let sideCountsController: AbortController | undefined;
   let tabCountsPending = false;
   let sideCountsTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Opened from a Home row's "See all" (`from=home`): the back link goes to Home. */
+  let fromHome = false;
   let searchInput: HTMLInputElement | undefined;
   /** WP19c: how the page was last reached ('popstate' = back/forward). */
   let lastNavigation: string | null = null;
@@ -269,7 +299,8 @@
   let collectionsLoaded = false;
   let collectionsTimer: ReturnType<typeof setTimeout> | undefined;
   let states = new Map<string, BookState>();
-  let tagRules = new Set<string>();
+  /** Cover blur rules: tags, authors, series and collections (cover-blur.ts). */
+  let coverRules: CoverRules = NO_COVER_RULES;
   let positions = new Map<string, LocalRecord[]>();
   let stopListeners: (() => void)[] = [];
   let destroyed = false;
@@ -335,7 +366,9 @@
     .filter((l) => !appliedLibrary || l.id === appliedLibrary)
     .reduce((n, l) => n + (l.counts ? l.counts.pending + l.counts.errors : 0), 0);
   $: bookIds = books.map((b) => b.id);
-  $: headerTag = group?.by === 'tag' ? group.name : null;
+  /** The open tag, author or series (not "No series"): its cover rule in the header. */
+  $: headerRule =
+    group && group.name !== null ? { target: group.by as BlurRuleTarget, name: group.name } : null;
   // WP7b: "Pin to Home" for an open collection, series, author or tag ("No series" can't be).
   let pinTarget: PinTarget | null = null;
   $: pinTarget =
@@ -586,8 +619,8 @@
   }
 
   async function loadViewData() {
-    const [rules, records] = await Promise.all([view.tagBlurRules(), view.positions()]);
-    tagRules = rules;
+    const [rules, records] = await Promise.all([view.coverRules(), view.positions()]);
+    coverRules = rules;
     positions = positionsByBook(records);
   }
 
@@ -619,13 +652,29 @@
 
   // ---- covers -------------------------------------------------------------
 
+  // A collection rule needs the collection's members: lists from the mirror, searches
+  // evaluated on the device (cover-blur.ts).
+  let blurCtx: CoverBlurContext;
+  $: blurCtx = {
+    rules: coverRules,
+    fallback: coverBlurDefault($libraryCoverBlur$),
+    inCollection: collectionMembership({
+      rules: coverRules,
+      collections: collectionList,
+      items: collectionItems,
+      states,
+      onDevice: (id) => onDevice.has(id),
+      audioOnDevice: (id) => audioOnDevice.has(id)
+    })
+  };
+
   function bookBlurred(
-    book: Pick<CatalogBook, 'id' | 'tags'>,
+    book: BlurBook,
+    ctx: CoverBlurContext,
     s: Map<string, BookState>,
-    rules: Set<string>,
     shown: Set<string>
   ) {
-    return !shown.has(book.id) && isCoverBlurred(s.get(book.id)?.blur, book.tags, rules);
+    return !shown.has(book.id) && isCoverBlurred(s.get(book.id)?.blur, book, ctx);
   }
 
   function groupKey(g: CatalogGroup) {
@@ -634,15 +683,15 @@
 
   function groupTiles(
     g: CatalogGroup,
+    ctx: CoverBlurContext,
     s: Map<string, BookState>,
-    rules: Set<string>,
     shown: Set<string>
   ) {
     const list: GroupTile[] = g.cover ? [g.cover] : g.cover === null ? [] : (g.tiles ?? []);
     const groupShown = shown.has(groupKey(g));
     return list.map((t) => ({
       src: t.thumbnail && api ? api.absolute(t.thumbnail) : '',
-      blurred: !groupShown && bookBlurred({ id: t.bookId, tags: t.tags }, s, rules, shown)
+      blurred: !groupShown && bookBlurred(tileBlurBook(t), ctx, s, shown)
     }));
   }
 
@@ -650,17 +699,19 @@
     revealed = withAll(revealed, [key]);
   }
 
-  async function editTagCover(tag: string) {
+  /** A tag's, author's, series' or collection's cover rule; `label` names it on screen. */
+  async function editCoverRule(target: BlurRuleTarget, key: string, label = key) {
     await new Promise<void>((resolve) => {
       dialogManager.dialogs$.next([
         {
-          component: TagCoverDialog,
+          component: CoverRuleDialog,
           props: {
-            tag,
-            blurred: tagRules.has(tag),
+            target,
+            name: label,
+            blurred: hasCoverRule(coverRules, target, key),
             save: async (blur: boolean) => {
-              await view.setTagBlur(tag, blur);
-              tagRules = await view.tagBlurRules();
+              await view.setCoverRule(target, key, blur);
+              coverRules = await view.coverRules();
             },
             resolver: resolve
           }
@@ -1067,6 +1118,7 @@
   async function readUrlAndLoad() {
     const params = $page.url.searchParams;
     appliedQuery = params.get('q') ?? '';
+    fromHome = params.get('from') === 'home';
     appliedLibrary = params.has('lib') ? (params.get('lib') ?? '') : $libraryFilter$;
     const requested = TABS.find((t) => t.id === params.get('tab')) ?? TABS[0];
     const nextCollection = params.get('collection') || null;
@@ -1179,7 +1231,14 @@
     const by = TABS.find((t) => t.id === tab)?.by ?? null;
     const openGroup = by ? group : null;
     const tabsKey = JSON.stringify([appliedLibrary, appliedQuery]);
-    return { by, openGroup, tabsKey, chipsKey: JSON.stringify([tabsKey, by, openGroup]) };
+    // In a collection the chips count inside it (its own search or list).
+    const list = collectionId !== null ? currentListQuery() : null;
+    return {
+      by,
+      openGroup,
+      tabsKey,
+      chipsKey: JSON.stringify([tabsKey, by, openGroup, collectionId, list?.query ?? null])
+    };
   }
 
   /**
@@ -1201,7 +1260,11 @@
 
   async function loadSideCounts() {
     const a = source();
-    if (!a || collectionId !== null || !parseQuery(appliedQuery).ok) return;
+    if (!a || !parseQuery(appliedQuery).ok) return;
+    if (collectionId !== null) {
+      await loadCollectionChipCounts(a);
+      return;
+    }
     const library = appliedLibrary || undefined;
     const q = appliedQuery || undefined;
     const { by, openGroup, tabsKey, chipsKey } = sideCountKeys();
@@ -1262,6 +1325,35 @@
       }
     );
     await Promise.all([tabsDone, chipsDone]);
+  }
+
+  /**
+   * In a collection there are no tabs; each chip counts the collection's books with that
+   * chip as the only one on (a built-in's or smart collection's search, or the list).
+   */
+  async function loadCollectionChipCounts(a: LibraryApi | OfflineCatalog) {
+    const list = currentListQuery();
+    const { chipsKey } = sideCountKeys();
+    if (!list || chipsKey === chipCountsKey) return;
+    sideCountsController?.abort();
+    const controller = new AbortController();
+    sideCountsController = controller;
+    chipCountsKey = chipsKey;
+    chipCounts = new Map();
+    const current = () => sideCountsController === controller;
+    try {
+      const entries = await Promise.all(
+        CHIPS.map(async (c) => {
+          const q = chipOnlyQuery(appliedQuery, c.id) ?? undefined;
+          const n = await a.count({ ...list.query, q }, { signal: controller.signal });
+          return [c.id, n] as const;
+        })
+      );
+      if (current()) chipCounts = new Map(entries);
+    } catch {
+      // No numbers on the chips; asked again with the next search.
+      if (current()) chipCountsKey = null;
+    }
   }
 
   function onStatesChangedForCounts() {
@@ -1348,6 +1440,7 @@
       if (reset) void loadCount(scope);
       if (collectionId !== null) {
         await loadCollectionPage(reset, scope, minBooks, controller.signal);
+        if (reset && listController === controller) void loadSideCounts();
         return;
       }
       const common = {
@@ -1555,10 +1648,20 @@
     sort?: string | null;
   }) {
     const params = new URLSearchParams();
+    // Opened from Home's "See all": a search or sort in the same list keeps "← Home".
+    const keepFromHome =
+      fromHome &&
+      (target.collection
+        ? target.collection === collectionId
+        : !!target.group &&
+          !!group &&
+          target.group.by === group.by &&
+          target.group.name === group.name);
     if (target.collection) {
       params.set('collection', target.collection);
       if (target.q) params.set('q', target.q);
       if (target.sort) params.set('sort', target.sort);
+      if (keepFromHome) params.set('from', 'home');
       return `${pagePath}/library?${params.toString()}`;
     }
     if (target.tab !== 'all') params.set('tab', target.tab);
@@ -1569,6 +1672,7 @@
     if (target.q) params.set('q', target.q);
     if (target.lib) params.set('lib', target.lib);
     if (target.sort) params.set('sort', target.sort);
+    if (keepFromHome) params.set('from', 'home');
     const qs = params.toString();
     return `${pagePath}/library${qs ? `?${qs}` : ''}`;
   }
@@ -1644,6 +1748,49 @@
     const input = ev.currentTarget as HTMLInputElement;
     const files = [...(input.files ?? [])];
     input.value = '';
+    await uploadPicked(files);
+  }
+
+  /**
+   * Files dragged onto the page (where the Upload button is) go through the same steps as
+   * picked ones; files that aren't EPUBs are listed as not uploaded in the summary.
+   */
+  $: canUpload = !!uploadInfo?.enabled && collectionId === null && !selectMode;
+  let dragDepth = 0;
+  let dropping = false;
+
+  function draggingFiles(ev: DragEvent): boolean {
+    return !!ev.dataTransfer && [...ev.dataTransfer.types].includes('Files');
+  }
+
+  function onWindowDragEnter(ev: DragEvent) {
+    if (!canUpload || uploading || !draggingFiles(ev)) return;
+    ev.preventDefault();
+    dragDepth++;
+    dropping = true;
+  }
+
+  function onWindowDragOver(ev: DragEvent) {
+    if (!dropping || !ev.dataTransfer) return;
+    ev.preventDefault();
+    ev.dataTransfer.dropEffect = 'copy';
+  }
+
+  function onWindowDragLeave() {
+    if (!dropping) return;
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (dragDepth === 0) dropping = false;
+  }
+
+  function onWindowDrop(ev: DragEvent) {
+    if (!dropping) return;
+    ev.preventDefault();
+    dragDepth = 0;
+    dropping = false;
+    void uploadPicked([...(ev.dataTransfer?.files ?? [])]);
+  }
+
+  async function uploadPicked(files: File[]) {
     if (!files.length || !api || uploading) return;
     // Asked on every upload; nothing preselected or remembered (decided with the user).
     const libraryId = await ask<string | undefined>(UploadLibraryDialog, {
@@ -1760,6 +1907,10 @@
 </svelte:head>
 
 <svelte:window
+  on:dragenter={onWindowDragEnter}
+  on:dragover={onWindowDragOver}
+  on:dragleave={onWindowDragLeave}
+  on:drop={onWindowDrop}
   on:pointermove={onWindowPointerMove}
   on:pointerup={onWindowPointerUp}
   on:pointercancel={onWindowPointerUp}
@@ -1796,7 +1947,15 @@
         {/if}
       </span>
       <svelte:fragment slot="back">
-        {#if collectionId !== null}
+        {#if fromHome && (collectionId !== null || group)}
+          <a
+            class="c-link inline-flex min-h-[2.75rem] items-center"
+            href="{pagePath}/home"
+            data-testid="back-home"
+          >
+            ← Home
+          </a>
+        {:else if collectionId !== null}
           <a class="c-link inline-flex min-h-[2.75rem] items-center" href="{pagePath}/collections">
             ← Collections
           </a>
@@ -1850,25 +2009,32 @@
             {:else if group.name === null}
               <p class="text-sm text-c-muted">Books that are not part of a series.</p>
             {/if}
-            {#if pinTarget || headerTag !== null}
+            {#if pinTarget || headerRule}
               <div class="flex flex-wrap gap-2">
                 {#if pinTarget}
                   <button
-                    class="c-btn c-btn-secondary min-h-[2.75rem] px-3 text-sm"
+                    class="c-btn c-btn-secondary c-btn-sm px-3 text-sm"
+                    aria-pressed={pinnedHere}
                     data-testid="pin-home"
                     on:click={togglePin}
                   >
-                    {pinnedHere ? 'Unpin from Home' : 'Pin to Home'}
+                    <Fa icon={faThumbtack} />
+                    {pinnedHere ? 'Pinned to Home' : 'Pin to Home'}
                   </button>
                 {/if}
-                {#if headerTag !== null}
+                {#if headerRule}
                   <button
-                    class="c-btn c-btn-secondary min-h-[2.75rem] px-3 text-sm"
-                    aria-pressed={tagRules.has(headerTag)}
-                    data-testid="tag-blur-header"
-                    on:click={() => headerTag !== null && editTagCover(headerTag)}
+                    class="c-btn c-btn-secondary c-btn-sm px-3 text-sm"
+                    aria-pressed={hasCoverRule(coverRules, headerRule.target, headerRule.name)}
+                    data-testid="cover-rule-header"
+                    on:click={() => headerRule && editCoverRule(headerRule.target, headerRule.name)}
                   >
-                    Blur covers with this tag
+                    <Fa
+                      icon={hasCoverRule(coverRules, headerRule.target, headerRule.name)
+                        ? faCheck
+                        : faEyeSlash}
+                    />
+                    {HEADER_RULE_LABEL[headerRule.target]}
                   </button>
                 {/if}
               </div>
@@ -1984,31 +2150,59 @@
           {/each}
         </nav>
       {:else if !collectionGone}
+        <!-- The collection's own actions (soft); Sort, Display and Select on the right are
+             quiet view controls. Pin and Blur are toggles that look on; Reorder and Select turn
+             into a filled Done while their mode is on. -->
         <div class="flex flex-wrap gap-2" data-testid="collection-actions">
           {#if pinTarget}
-            <button class="c-btn c-btn-secondary px-3" data-testid="pin-home" on:click={togglePin}>
-              {pinnedHere ? 'Unpin from Home' : 'Pin to Home'}
+            <button
+              class="c-btn c-btn-secondary px-3"
+              aria-pressed={pinnedHere}
+              data-testid="pin-home"
+              on:click={togglePin}
+            >
+              <Fa icon={faThumbtack} />
+              {pinnedHere ? 'Pinned to Home' : 'Pin to Home'}
+            </button>
+          {/if}
+          {#if collectionId !== null && collectionName}
+            <button
+              class="c-btn c-btn-secondary px-3"
+              aria-pressed={hasCoverRule(coverRules, 'collection', collectionId)}
+              data-testid="cover-rule-collection"
+              on:click={() =>
+                collectionId !== null &&
+                editCoverRule('collection', collectionId, collectionName ?? '')}
+            >
+              <Fa
+                icon={hasCoverRule(coverRules, 'collection', collectionId) ? faCheck : faEyeSlash}
+              />
+              Blur covers
             </button>
           {/if}
           {#if userCollection}
             {#if isList}
               <button
-                class="c-btn c-btn-secondary px-3"
-                aria-pressed={reorderMode}
+                class="c-btn {reorderMode ? 'c-btn-primary' : 'c-btn-secondary'} px-3"
                 disabled={!canReorder || selectMode}
                 title={appliedQuery ? 'Clear the search to reorder' : undefined}
                 data-testid="reorder-mode"
                 on:click={() => (reorderMode = !reorderMode)}
               >
+                <Fa icon={reorderMode ? faCheck : faArrowsUpDown} />
                 {reorderMode ? 'Done' : 'Reorder'}
               </button>
             {/if}
             <button
               class="c-btn c-btn-secondary px-3"
+              title={userCollection.type === 'smart'
+                ? 'Rename, change the search or delete'
+                : 'Rename or delete'}
               data-testid="collection-header-menu"
               on:click={editCollection}
             >
-              {userCollection.type === 'smart' ? 'Rename, change search…' : 'Rename, delete…'}
+              <Fa icon={faPen} />
+              Edit
             </button>
           {/if}
         </div>
@@ -2020,17 +2214,18 @@
           <LibrarySortMenu
             context={sortContext}
             value={sortValue}
+            shortOnPhone
             on:change={(ev) => onSort(ev.detail)}
           />
         {/if}
         <LibraryDisplayMenu />
         {#if !showingGroups && !reorderMode}
           <button
-            class="c-btn c-btn-secondary px-3"
-            aria-pressed={selectMode}
+            class="c-btn {selectMode ? 'c-btn-primary' : 'c-btn-ghost'} px-3"
             data-testid="select-mode"
             on:click={toggleSelectMode}
           >
+            <Fa icon={selectMode ? faCheck : faSquareCheck} />
             {selectMode ? 'Done' : 'Select'}
           </button>
         {/if}
@@ -2040,6 +2235,7 @@
             data-testid="upload-button"
             on:click={() => uploadInput?.click()}
           >
+            <Fa icon={faArrowUpFromBracket} />
             Upload
           </button>
           <input
@@ -2063,14 +2259,15 @@
       >
         {#each CHIPS as chip (chip.id)}
           <button
-            class="c-btn c-btn-secondary min-h-[2.75rem] shrink-0 rounded-full px-4 text-sm"
+            class="c-chip px-4"
             aria-pressed={chips.has(chip.id)}
             disabled={chipsDisabled}
             data-testid="chip-{chip.id}"
             on:click={() => onChip(chip.id)}
           >
+            {#if chips.has(chip.id)}<Fa icon={faCheck} size="xs" />{/if}
             {chip.label}
-            {#if chipCounts.has(chip.id) && collectionId === null}
+            {#if chipCounts.has(chip.id)}
               <span class="text-xs opacity-80" data-testid="chip-count-{chip.id}"
                 >{chipCounts.get(chip.id)?.toLocaleString('en')}</span
               >
@@ -2095,9 +2292,9 @@
       <p class="c-notice flex flex-wrap items-center gap-x-3 gap-y-2" data-testid="offline-notice">
         <span role="status">{OFFLINE_NOTICE}</span>
         <button
-          class="c-btn c-btn-secondary px-3"
+          class="c-btn c-btn-ghost c-btn-sm -my-1 gap-1.5 px-2.5"
           data-testid="offline-retry"
-          on:click={tryServerAgain}>Try again</button
+          on:click={tryServerAgain}><Fa icon={faRotateRight} />Try again</button
         >
       </p>
     {/if}
@@ -2134,13 +2331,14 @@
             <LibraryGroupCard
               group={g}
               href={groupHref(g)}
-              tiles={groupTiles(g, states, tagRules, revealed)}
+              tiles={groupTiles(g, blurCtx, states, revealed)}
               readCount={g.bookIds ? seriesReadCount(g.bookIds, states) : 0}
               layout={grid ? 'grid' : 'list'}
               {infoLine}
-              menu={g.by === 'tag' && g.name !== null}
+              menu={g.name !== null}
               on:reveal={(ev) => reveal(groupKey(ev.detail))}
-              on:menu={(ev) => ev.detail.name !== null && editTagCover(ev.detail.name)}
+              on:menu={(ev) =>
+                ev.detail.name !== null && editCoverRule(ev.detail.by, ev.detail.name)}
             />
           {/each}
         </ul>
@@ -2152,7 +2350,7 @@
         {books}
         busy={savingOrder}
         thumbnailUrl={(book) => (book.thumbnail && api ? api.absolute(book.thumbnail) : '')}
-        blurred={(book) => bookBlurred(book, states, tagRules, revealed)}
+        blurred={(book) => bookBlurred(book, blurCtx, states, revealed)}
         on:move={(ev) => moveInList(ev.detail.book, ev.detail.delta)}
         on:drop={(ev) => dropInList(ev.detail.book, ev.detail.index)}
         on:more={(ev) => listBookMenu(ev.detail)}
@@ -2181,7 +2379,7 @@
                 book.charCount
               )}
               {infoLine}
-              blurred={bookBlurred(book, states, tagRules, revealed)}
+              blurred={bookBlurred(book, blurCtx, states, revealed)}
               onDevice={onDevice.has(book.id)}
               audioOnDevice={audioOnDevice.has(book.id)}
               {selectMode}
@@ -2214,7 +2412,7 @@
                 book.charCount
               )}
               {infoLine}
-              blurred={bookBlurred(book, states, tagRules, revealed)}
+              blurred={bookBlurred(book, blurCtx, states, revealed)}
               {selectMode}
               selected={selected.has(book.id)}
               libraryName={enabledLibraries.length > 1
@@ -2344,13 +2542,20 @@
           on:error={(e) => showMessage('Download failed', describe(e.detail))}
           on:notice={(e) => showMessage(e.detail.title, e.detail.message)}
         />
-        <button class="c-btn c-btn-secondary" on:click={toggleSelectMode}> Done </button>
+        <button class="c-btn c-btn-primary" on:click={toggleSelectMode}> Done </button>
       </div>
     </div>
   </div>
 {/if}
 
 <AppBottomBar hidden={selectMode && !!connection && !showingGroups} />
+
+{#if dropping}
+  <!-- Plain for e-ink: a frame and a line of text, no animation. -->
+  <div class="c-drop-target" aria-hidden="true" data-testid="upload-drop-target">
+    <p class="c-drop-target-text">Drop EPUB files to upload</p>
+  </div>
+{/if}
 
 {#if uploading}
   <UploadProgressOverlay

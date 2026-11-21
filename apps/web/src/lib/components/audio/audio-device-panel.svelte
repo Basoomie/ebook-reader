@@ -140,7 +140,7 @@
       <div class="mt-3 flex flex-wrap gap-2">
         {#if view.canDownload}
           <button
-            class="c-btn c-btn-primary c-round"
+            class="c-btn c-btn-primary"
             data-testid="audio-device-download"
             on:click={() => start()}
           >
@@ -149,7 +149,7 @@
         {/if}
         {#if view.canStop}
           <button
-            class="c-btn c-btn-secondary c-round"
+            class="c-btn c-btn-secondary"
             data-testid="audio-device-stop"
             on:click={() => downloads.stop(bookId)}
           >
@@ -158,7 +158,7 @@
         {/if}
         {#if view.canContinue}
           <button
-            class="c-btn c-btn-primary c-round"
+            class="c-btn c-btn-primary"
             data-testid="audio-device-continue"
             on:click={() => start()}
           >
@@ -167,7 +167,7 @@
         {/if}
         {#if view.canRestart}
           <button
-            class="c-btn c-btn-primary c-round"
+            class="c-btn c-btn-primary"
             data-testid="audio-device-restart"
             on:click={() => start('replace')}
           >
@@ -176,7 +176,7 @@
         {/if}
         {#if view.canReplace}
           <button
-            class="c-btn c-btn-secondary c-round"
+            class="c-btn c-btn-secondary"
             data-testid="audio-device-replace"
             on:click={replace}
           >
@@ -184,11 +184,7 @@
           </button>
         {/if}
         {#if view.canRemove}
-          <button
-            class="c-btn c-btn-secondary c-round"
-            data-testid="audio-device-remove"
-            on:click={remove}
-          >
+          <button class="c-btn c-btn-secondary" data-testid="audio-device-remove" on:click={remove}>
             Remove audio from this device
           </button>
         {/if}
@@ -200,10 +196,6 @@
 <style>
   .c-dev {
     border-top: var(--c-border-width) dashed var(--c-line);
-  }
-
-  .c-round {
-    border-radius: 0.75rem;
   }
 
   .c-mbar {
