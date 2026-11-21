@@ -17,6 +17,15 @@
    * Download (book-download-menu.svelte): the EPUB, and the linked audiobook file and
    * subtitles when there are any (the link comes up from the Audiobook section).
    */
+  import {
+    faBookOpen,
+    faEllipsis,
+    faHighlighter,
+    faPlus,
+    faTrashCan,
+    faRotateRight
+  } from '@fortawesome/free-solid-svg-icons';
+  import Fa from 'svelte-fa';
   import { afterNavigate, goto } from '$app/navigation';
   import { browser } from '$app/environment';
   import { page } from '$app/stores';
@@ -28,6 +37,7 @@
   import BookIllustrations from '$lib/components/library/book-illustrations.svelte';
   import BookStateDialog from '$lib/components/library/book-state-dialog.svelte';
   import CoverImage from '$lib/components/library/cover-image.svelte';
+  import DropdownMenu from '$lib/components/dropdown-menu.svelte';
   import LibraryBookCard from '$lib/components/library/library-book-card.svelte';
   import LibraryOpenOverlay from '$lib/components/library/library-open-overlay.svelte';
   import MessageDialog from '$lib/components/message-dialog.svelte';
@@ -149,6 +159,8 @@
     .filter(Boolean)
     .join(' · ');
   $: readLabel = fraction !== null ? 'Continue reading' : 'Read';
+  /** The status button shows the book's status ("Set status" while unread). */
+  $: statusName = state && state.status !== 'unread' ? STATUS_LABELS[state.status] : '';
   let blurCtx: CoverBlurContext;
   $: blurCtx = {
     rules: coverRules,
@@ -499,9 +511,9 @@
     <p class="c-notice flex flex-wrap items-center gap-x-3 gap-y-2" data-testid="offline-notice">
       <span role="status">{OFFLINE_NOTICE}</span>
       <button
-        class="c-btn c-btn-secondary px-3"
+        class="c-btn c-btn-ghost c-btn-sm -my-1 gap-1.5 px-2.5"
         data-testid="offline-retry"
-        on:click={tryServerAgain}>Try again</button
+        on:click={tryServerAgain}><Fa icon={faRotateRight} />Try again</button
       >
     </p>
   {/if}
@@ -578,57 +590,98 @@
             <span class="text-sm text-c-muted" data-testid="details-status">{statusText}</span>
           </div>
         {/if}
-        <div class="mt-1 flex flex-wrap gap-2">
-          {#if !book.missing}
+        <!-- The actions (2026-11-21): Read (the one filled button) and the status button, then
+             the soft ones; Remove from this device in ⋯. Phones: Read beside a Status tile, the
+             rest as tiles in one row. -->
+        <div class="c-dactions" data-testid="details-actions">
+          <div class="c-dactions-main">
+            {#if !book.missing}
+              <button
+                class="c-btn c-btn-primary c-dread"
+                data-testid="details-read"
+                on:click={() => book && open(book)}
+              >
+                <Fa icon={faBookOpen} />
+                {readLabel}
+              </button>
+            {/if}
             <button
-              class="c-btn c-btn-primary c-round px-6"
-              data-testid="details-read"
-              on:click={() => book && open(book)}
+              class="c-btn c-btn-secondary c-dstatus"
+              aria-label={statusName ? `Book status: ${statusName}` : 'Set book status'}
+              data-testid="details-state"
+              on:click={() => book && openBookState(book)}
             >
-              {readLabel}
+              <span class="c-dstatus-cap" aria-hidden="true">Status</span>
+              <span class="c-dstatus-val" aria-hidden="true">
+                {#if statusName}<span class="c-dstatus-dot" />{/if}
+                {statusName || 'Set status'}
+              </span>
             </button>
-          {/if}
-          <button
-            class="c-btn c-btn-secondary c-round"
-            data-testid="details-state"
-            on:click={() => book && openBookState(book)}
-          >
-            Book status…
-          </button>
-          <button
-            class="c-btn c-btn-secondary c-round"
-            data-testid="details-collect"
-            on:click={() => book && openAddToCollection(book)}
-          >
-            Add to collection
-          </button>
-          {#if api}
-            <BookDownloadMenu
-              {api}
-              {book}
-              link={audioLink}
-              buttonClass="c-btn c-btn-secondary c-round"
-              on:error={(ev) => showMessage('Not downloaded', describe(ev.detail))}
-            />
-          {/if}
-          {#if onDeviceHere}
+          </div>
+          <div class="c-dactions-more">
             <button
-              class="c-btn c-btn-secondary c-round"
-              data-testid="details-remove-device"
-              on:click={() => book && removeFromDevice(book)}
+              class="c-btn c-btn-secondary c-dtile"
+              data-testid="details-collect"
+              on:click={() => book && openAddToCollection(book)}
             >
-              Remove from this device…
+              <Fa icon={faPlus} />
+              <span class="c-dlong">Add to collection</span><span
+                class="c-dshort"
+                aria-hidden="true">Collection</span
+              >
             </button>
-          {/if}
-          {#if highlights > 0}
-            <a
-              class="c-btn c-btn-secondary c-round"
-              href="{pagePath}/notes?book={encodeURIComponent(book.id)}"
-              data-testid="details-highlights"
-            >
-              Highlights ({highlights})
-            </a>
-          {/if}
+            {#if api}
+              <BookDownloadMenu
+                {api}
+                {book}
+                link={audioLink}
+                buttonClass="c-btn c-btn-secondary c-dtile"
+                rootClass="c-dtile-wrap"
+                on:error={(ev) => showMessage('Not downloaded', describe(ev.detail))}
+              />
+            {/if}
+            {#if highlights > 0}
+              <a
+                class="c-btn c-btn-secondary c-dtile"
+                href="{pagePath}/notes?book={encodeURIComponent(book.id)}"
+                aria-label="Highlights ({highlights})"
+                data-testid="details-highlights"
+              >
+                <Fa icon={faHighlighter} />
+                Highlights
+                <span class="c-count c-dtile-count" aria-hidden="true">{highlights}</span>
+              </a>
+            {/if}
+            {#if onDeviceHere}
+              <DropdownMenu
+                buttonClass="c-btn c-btn-secondary c-dtile c-dmore"
+                rootClass="c-dtile-wrap"
+                align="right"
+                label="More actions"
+                testid="details-more-actions"
+                panelWidth="w-64"
+                let:close
+              >
+                <span slot="button" class="flex items-center gap-2">
+                  <Fa icon={faEllipsis} />
+                  <span class="c-dshort">More</span>
+                  <span class="sr-only">More actions</span>
+                </span>
+                <button
+                  type="button"
+                  class="c-btn c-btn-ghost w-full justify-start gap-3 px-3 text-left text-c-seal"
+                  data-testid="details-remove-device"
+                  on:click={() => {
+                    close();
+                    if (book) void removeFromDevice(book);
+                  }}
+                >
+                  <Fa icon={faTrashCan} />
+                  Remove from this device
+                </button>
+              </DropdownMenu>
+            {/if}
+          </div>
         </div>
       </div>
 
@@ -687,7 +740,7 @@
             <div class="flex flex-wrap gap-2">
               {#each book.tags as tag (tag)}
                 <a
-                  class="c-btn c-btn-secondary min-h-[2.5rem] rounded-full px-3 text-sm"
+                  class="c-chip c-chip-sm"
                   href={libraryHref('tags', tag)}
                   data-testid="details-tag">{tag}</a
                 >
@@ -923,8 +976,147 @@
     mask-image: none;
   }
 
-  /* The details page's buttons are rounded (decided with the user). */
-  .c-round {
-    border-radius: 0.75rem;
+  /* The actions: [Read][Status]   [Add to collection][Download][Highlights][⋯], the two
+     groups apart by a wider gap (no rule, which was left dangling when the row wrapped). */
+  .c-dactions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.625rem 1.25rem;
+    margin-top: 0.25rem;
+  }
+
+  .c-dactions-main,
+  .c-dactions-more {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .c-dread {
+    min-height: calc(var(--c-btn-h) + 0.375rem);
+    padding: 0 1.35rem 0 1.15rem;
+    font-size: 0.9375rem;
+  }
+
+  .c-dstatus {
+    min-height: calc(var(--c-btn-h) + 0.375rem);
+  }
+
+  .c-dstatus-cap,
+  .c-dshort {
+    display: none;
+  }
+
+  .c-dstatus-val {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .c-dstatus-dot {
+    width: 0.5rem;
+    height: 0.5rem;
+    flex: none;
+    border-radius: 9999px;
+    background-color: var(--c-fill);
+  }
+
+  .c-dtile-count {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Phones: Read across three quarters beside the Status tile; the rest share one row of
+     tiles, icon over label. */
+  @media (max-width: 599px) {
+    .c-dactions {
+      flex-direction: column;
+      align-items: stretch;
+      gap: 0.5rem;
+    }
+
+    .c-dactions-main {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+
+    .c-dread {
+      grid-column: span 3;
+    }
+
+    .c-dstatus:first-child {
+      grid-column: 1 / -1;
+    }
+
+    .c-dstatus {
+      flex-direction: column;
+      gap: 0.1875rem;
+      padding: 0 0.25rem;
+    }
+
+    .c-dstatus-cap {
+      display: block;
+      font-size: 0.6875rem;
+      font-weight: 500;
+      line-height: 1;
+      letter-spacing: 0.04em;
+      color: var(--c-muted);
+    }
+
+    .c-dstatus-val {
+      gap: 0.3125rem;
+      font-size: 0.8125rem;
+      font-weight: 600;
+      line-height: 1;
+    }
+
+    .c-dactions-more {
+      flex-wrap: nowrap;
+    }
+
+    .c-dactions-more > :global(*) {
+      flex: 1 1 0;
+      min-width: 0;
+    }
+
+    :global(.c-dtile-wrap) {
+      display: flex;
+    }
+
+    .c-dactions :global(.c-dtile) {
+      position: relative;
+      width: 100%;
+      min-height: 4.25rem;
+      flex-direction: column;
+      gap: 0.375rem;
+      padding: 0 0.25rem;
+      font-size: 0.75rem;
+    }
+
+    .c-dactions :global(.c-dtile > span) {
+      flex-direction: column;
+      gap: 0.375rem;
+    }
+
+    /* svelte-fa sizes its icon at 1em. */
+    .c-dactions :global(.c-dtile svg) {
+      font-size: 1.125rem;
+    }
+
+    .c-dlong,
+    .c-dactions :global(.c-download-chevron) {
+      display: none;
+    }
+
+    .c-dactions :global(.c-dshort) {
+      display: inline;
+    }
+
+    .c-dtile-count {
+      position: absolute;
+      top: 0.375rem;
+      right: 0.5rem;
+    }
   }
 </style>

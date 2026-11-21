@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { faRotateRight } from '@fortawesome/free-solid-svg-icons';
+  import Fa from 'svelte-fa';
   import { BUILTIN_COLLECTIONS } from '$lib/collections/builtins';
   import {
     builtinMenu,
@@ -323,9 +325,9 @@
     <p class="c-notice flex flex-wrap items-center gap-x-3 gap-y-2" data-testid="offline-notice">
       <span role="status">{OFFLINE_NOTICE}</span>
       <button
-        class="c-btn c-btn-secondary px-3"
+        class="c-btn c-btn-ghost c-btn-sm -my-1 gap-1.5 px-2.5"
         data-testid="offline-retry"
-        on:click={tryServerAgain}>Try again</button
+        on:click={tryServerAgain}><Fa icon={faRotateRight} />Try again</button
       >
     </p>
   {/if}

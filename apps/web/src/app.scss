@@ -47,6 +47,19 @@
   --c-sec-hover: #efe5d0;
   --c-sec-hover-border: #b89766;
   --c-sec-active: #e4d8be;
+  /* Buttons (2026-11-21): soft-filled secondary buttons with no outline (`soft`), pressed
+     toggles in a tint (`on`), filter chips with a hairline (`chip`), a lifted primary. */
+  --c-soft-bg: #ebe3d0;
+  --c-soft-hover: #e2d6bd;
+  --c-soft-active: #d8c9aa;
+  --c-soft-border: transparent;
+  --c-on-bg: #dbe2f2;
+  --c-on-ink: #1f3b7e;
+  --c-on-hover: #cfd8ee;
+  --c-chip-border: #d2c4a6;
+  --c-btn-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.1), 0 1px 2px rgba(26, 34, 51, 0.22),
+    0 6px 14px -6px rgba(26, 34, 51, 0.45);
   --c-sel-bg: #1a2233;
   --c-sel-ink: #f3ede0;
   --c-tint: #efe5d0;
@@ -109,6 +122,17 @@ html.eink {
   --c-sec-hover: #22314f;
   --c-sec-hover-border: #d9be8c;
   --c-sec-active: #2a3b5e;
+  --c-soft-bg: #213050;
+  --c-soft-hover: #293a5e;
+  --c-soft-active: #31456d;
+  --c-soft-border: #2c3d61;
+  --c-on-bg: #3a3220;
+  --c-on-ink: #f0d7a4;
+  --c-on-hover: #463c26;
+  --c-chip-border: #3a4a6b;
+  --c-btn-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.25), 0 1px 2px rgba(0, 0, 0, 0.4),
+    0 8px 18px -8px rgba(217, 190, 140, 0.55);
   --c-sel-bg: #d9be8c;
   --c-sel-ink: #0e1524;
   --c-tint: #22314f;
@@ -173,6 +197,15 @@ html.eink {
   --c-sec-hover: #fff;
   --c-sec-hover-border: #000;
   --c-sec-active: #000;
+  --c-soft-bg: #fff;
+  --c-soft-hover: #fff;
+  --c-soft-active: #000;
+  --c-soft-border: #000;
+  --c-on-bg: #000;
+  --c-on-ink: #fff;
+  --c-on-hover: #000;
+  --c-chip-border: #000;
+  --c-btn-shadow: none;
   --c-sel-bg: #000;
   --c-sel-ink: #fff;
   --c-tint: #fff;
@@ -184,6 +217,24 @@ html.eink {
   --c-cover-hover-shadow: none;
   --c-pop-shadow: none;
   --c-border-width: 2px;
+}
+
+/* Button sizes: 48 px (touch screens, E-ink), 40 px with a mouse; the small ones 44 / 36 px;
+   filter chips 44 / 36 px and tags 40 / 32 px. */
+:root {
+  --c-btn-h: 3rem;
+  --c-btn-h-sm: 2.75rem;
+  --c-chip-h: 2.75rem;
+  --c-chip-h-sm: 2.5rem;
+}
+
+@media (pointer: fine) {
+  html:not(.eink) {
+    --c-btn-h: 2.5rem;
+    --c-btn-h-sm: 2.25rem;
+    --c-chip-h: 2.25rem;
+    --c-chip-h-sm: 2rem;
+  }
 }
 
 /* The catalogue pages set `html.catalogue` (AppHeader) so the page behind them takes the
@@ -286,15 +337,61 @@ html.catalogue.eink .mdc-elevation--z24 button.border-current:not(:disabled):act
 }
 
 @layer components {
-  /* Buttons: filled (primary), outlined (secondary) and plain rows (ghost). 48 px. */
+  /* Buttons: filled and lifted (primary, one per screen or dialog), soft-filled with no
+     outline (secondary), plain (ghost: view controls, rows in lists). 48 px on touch screens
+     and E-ink, 40 px with a mouse (--c-btn-h); 10 px corners; a 1 px press. */
   .c-btn {
-    @apply inline-flex min-h-[3rem] items-center justify-center gap-2 rounded px-4 font-medium;
+    @apply inline-flex items-center justify-center gap-2 px-4 font-medium;
+    min-height: var(--c-btn-h);
+    border-radius: 0.625rem;
+    font-size: 0.875rem;
+    line-height: 1.25rem;
+    letter-spacing: 0.01em;
     border-width: var(--c-border-width);
     border-style: solid;
+    -webkit-tap-highlight-color: transparent;
     transition:
-      background-color 0.12s ease,
-      border-color 0.12s ease,
-      color 0.12s ease;
+      background-color 0.15s ease,
+      border-color 0.15s ease,
+      color 0.15s ease,
+      box-shadow 0.15s ease,
+      transform 0.08s ease;
+  }
+
+  html:not(.eink) .c-btn:not(:disabled):active {
+    transform: translateY(1px);
+  }
+
+  html.eink .c-btn {
+    transition: none;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .c-btn {
+      transition: none;
+    }
+
+    html:not(.eink) .c-btn:not(:disabled):active {
+      transform: none;
+    }
+  }
+
+  /* The smaller size (44 px touch, 36 px mouse) and square icon buttons of either size. */
+  .c-btn-sm {
+    min-height: var(--c-btn-h-sm);
+  }
+
+  .c-btn-icon {
+    width: var(--c-btn-h);
+    height: var(--c-btn-h);
+    min-height: 0;
+    flex-shrink: 0;
+    padding: 0;
+  }
+
+  .c-btn-icon.c-btn-sm {
+    width: var(--c-btn-h-sm);
+    height: var(--c-btn-h-sm);
   }
 
   .c-btn:focus-visible,
@@ -311,11 +408,17 @@ html.catalogue.eink .mdc-elevation--z24 button.border-current:not(:disabled):act
     background-color: var(--c-btn-bg);
     border-color: var(--c-btn-bg);
     color: var(--c-btn-ink);
+    font-weight: 600;
+    box-shadow: var(--c-btn-shadow);
+  }
+
+  .c-btn-primary:disabled {
+    box-shadow: none;
   }
 
   .c-btn-secondary {
-    background-color: var(--c-sec-bg);
-    border-color: var(--c-sec-border);
+    background-color: var(--c-soft-bg);
+    border-color: var(--c-soft-border);
     color: var(--c-sec-ink);
   }
 
@@ -325,12 +428,14 @@ html.catalogue.eink .mdc-elevation--z24 button.border-current:not(:disabled):act
     color: var(--c-ink);
   }
 
-  /* A pressed toggle (aria-pressed) or the picked option looks filled. */
+  /* A pressed toggle (aria-pressed) or the picked option: a tint, not the primary's fill
+     (black in E-ink). */
   .c-btn[aria-pressed='true'],
   .c-btn.c-selected {
-    background-color: var(--c-sel-bg);
-    border-color: var(--c-sel-bg);
-    color: var(--c-sel-ink);
+    background-color: var(--c-on-bg);
+    border-color: var(--c-on-bg);
+    color: var(--c-on-ink);
+    font-weight: 600;
   }
 
   @media (hover: hover) {
@@ -340,12 +445,17 @@ html.catalogue.eink .mdc-elevation--z24 button.border-current:not(:disabled):act
     }
 
     .c-btn-secondary:not(:disabled):not([aria-pressed='true']):hover {
-      background-color: var(--c-sec-hover);
-      border-color: var(--c-sec-hover-border);
+      background-color: var(--c-soft-hover);
     }
 
     .c-btn-ghost:not(:disabled):not([aria-pressed='true']):not(.c-selected):hover {
       background-color: var(--c-tint);
+    }
+
+    html:not(.eink) .c-btn[aria-pressed='true']:not(:disabled):hover,
+    html:not(.eink) .c-btn.c-selected:not(:disabled):hover {
+      background-color: var(--c-on-hover);
+      border-color: var(--c-on-hover);
     }
   }
 
@@ -356,7 +466,7 @@ html.catalogue.eink .mdc-elevation--z24 button.border-current:not(:disabled):act
 
   .c-btn-secondary:not(:disabled):not([aria-pressed='true']):active,
   .c-btn-ghost:not(:disabled):not([aria-pressed='true']):not(.c-selected):active {
-    background-color: var(--c-sec-active);
+    background-color: var(--c-soft-active);
   }
 
   /* E-ink has no hover; pressing fills a button solid (the filled one turns white). */
@@ -368,6 +478,66 @@ html.catalogue.eink .mdc-elevation--z24 button.border-current:not(:disabled):act
   html.eink .c-btn-primary:not(:disabled):active {
     color: #000;
     border-color: #000;
+  }
+
+  /* Filter chips and tags: pills with a hairline; a picked filter fills (navy, gold in dark,
+     black in E-ink). 36 px with a mouse, 44 px on touch; tags (c-chip-sm) 32 / 40 px. */
+  .c-chip {
+    @apply inline-flex shrink-0 items-center justify-center gap-1.5 rounded-full px-3.5 text-sm font-medium;
+    min-height: var(--c-chip-h);
+    border: var(--c-border-width) solid var(--c-chip-border);
+    background-color: transparent;
+    color: var(--c-ink);
+    -webkit-tap-highlight-color: transparent;
+    transition:
+      background-color 0.15s ease,
+      border-color 0.15s ease,
+      color 0.15s ease;
+  }
+
+  .c-chip-sm {
+    @apply px-3;
+    min-height: var(--c-chip-h-sm);
+    font-size: 0.8125rem;
+  }
+
+  .c-chip[aria-pressed='true'] {
+    background-color: var(--c-sel-bg);
+    border-color: var(--c-sel-bg);
+    color: var(--c-sel-ink);
+  }
+
+  @media (hover: hover) {
+    .c-chip:not(:disabled):not([aria-pressed='true']):hover {
+      background-color: var(--c-tint);
+    }
+  }
+
+  .c-chip:not(:disabled):not([aria-pressed='true']):active {
+    background-color: var(--c-soft-active);
+  }
+
+  html.eink .c-chip {
+    transition: none;
+  }
+
+  html.eink .c-chip:not(:disabled):not([aria-pressed='true']):active {
+    color: #fff;
+  }
+
+  .c-chip:focus-visible {
+    outline: 2px solid var(--c-link);
+    outline-offset: 2px;
+  }
+
+  .c-chip:disabled {
+    @apply cursor-default opacity-50;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .c-chip {
+      transition: none;
+    }
   }
 
   /* The action of a destructive confirmation ("Delete 3 books"): red fill (light), a
@@ -472,20 +642,30 @@ html.catalogue.eink .mdc-elevation--z24 button.border-current:not(:disabled):act
 
   /* One style for the Stats page's buttons, fields and selects (`control`). */
   .c-ctl {
-    @apply min-h-[3rem] rounded px-3;
+    @apply px-3;
+    min-height: var(--c-btn-h);
+    border-radius: 0.625rem;
     background-color: var(--c-sec-bg);
     border: var(--c-border-width) solid var(--c-sec-border);
     color: var(--c-sec-ink);
   }
 
+  /* Its buttons look like the soft buttons (c-btn-secondary). */
   button.c-ctl {
     @apply inline-flex items-center justify-center gap-2 font-medium;
+    font-size: 0.875rem;
+    background-color: var(--c-soft-bg);
+    border-color: var(--c-soft-border);
+    transition:
+      background-color 0.15s ease,
+      color 0.15s ease;
   }
 
   button.c-ctl[aria-pressed='true'] {
-    background-color: var(--c-sel-bg);
-    border-color: var(--c-sel-bg);
-    color: var(--c-sel-ink);
+    background-color: var(--c-on-bg);
+    border-color: var(--c-on-bg);
+    color: var(--c-on-ink);
+    font-weight: 600;
   }
 
   button.c-ctl:disabled {
@@ -494,13 +674,12 @@ html.catalogue.eink .mdc-elevation--z24 button.border-current:not(:disabled):act
 
   @media (hover: hover) {
     button.c-ctl:not(:disabled):not([aria-pressed='true']):hover {
-      background-color: var(--c-sec-hover);
-      border-color: var(--c-sec-hover-border);
+      background-color: var(--c-soft-hover);
     }
   }
 
   button.c-ctl:not(:disabled):not([aria-pressed='true']):active {
-    background-color: var(--c-sec-active);
+    background-color: var(--c-soft-active);
   }
 
   html.eink button.c-ctl:not(:disabled):active {
@@ -513,9 +692,11 @@ html.catalogue.eink .mdc-elevation--z24 button.border-current:not(:disabled):act
     border: var(--c-border-width) solid var(--c-line);
   }
 
-  /* Text fields and selects of the catalogue pages. */
+  /* Text fields and selects of the catalogue pages: the buttons' height and corners. */
   .c-input {
-    @apply min-h-[3rem] rounded px-3;
+    @apply px-3;
+    min-height: var(--c-btn-h);
+    border-radius: 0.625rem;
     background-color: var(--c-raised);
     border: var(--c-border-width) solid var(--c-line-strong);
     color: var(--c-ink);

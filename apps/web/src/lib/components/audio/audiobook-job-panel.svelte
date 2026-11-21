@@ -333,7 +333,7 @@
         </div>
         {#if !job}
           <button
-            class="c-btn c-btn-secondary c-round shrink-0"
+            class="c-btn c-btn-secondary shrink-0"
             aria-expanded={open}
             data-testid={open ? 'audiobook-job-cancel' : 'audiobook-job-open'}
             disabled={busy && !open}
@@ -386,7 +386,7 @@
           </p>
           <div class="mt-3">
             <button
-              class="c-btn c-btn-secondary c-round"
+              class="c-btn c-btn-secondary"
               data-testid="audiobook-job-stop"
               disabled={job.cancelRequested || job.stage === 'assembling' || job.stage === 'saving'}
               on:click={stop}
@@ -406,7 +406,7 @@
           {/if}
           <div class="mt-3">
             <button
-              class="c-btn c-btn-secondary c-round"
+              class="c-btn c-btn-secondary"
               data-testid="audiobook-job-dismiss"
               on:click={() => (job = null)}
             >
@@ -504,7 +504,7 @@
 
         <div class="mt-4 flex flex-wrap gap-2">
           <button
-            class="c-btn c-btn-secondary c-round"
+            class="c-btn c-btn-secondary"
             data-testid="audiobook-preview-start"
             disabled={starting || busy || previewActive || !usableChoice}
             on:click={startPreview}
@@ -512,7 +512,7 @@
             {preview?.state === 'done' ? 'Another preview' : 'Preview a minute'}
           </button>
           <button
-            class="c-btn c-btn-secondary c-round"
+            class="c-btn c-btn-secondary"
             data-testid="audiobook-job-start"
             disabled={starting || busy || !canStart || !chapters}
             on:click={start}
@@ -531,10 +531,6 @@
 <style>
   .c-sub {
     border-top: var(--c-border-width) dashed var(--c-line);
-  }
-
-  .c-round {
-    border-radius: 0.75rem;
   }
 
   .c-mbar {

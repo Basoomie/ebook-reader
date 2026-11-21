@@ -332,7 +332,7 @@
     {#if total > PAGE}
       <div class="mt-4 flex flex-wrap items-center gap-3" data-testid="speakers-pages">
         <button
-          class="c-btn c-btn-secondary c-round"
+          class="c-btn c-btn-secondary"
           disabled={offset === 0 || loading}
           on:click={() => go(offset - PAGE)}>Previous</button
         >
@@ -340,7 +340,7 @@
           {offset + 1}–{Math.min(total, offset + PAGE)} of {total.toLocaleString('en-US')}
         </span>
         <button
-          class="c-btn c-btn-secondary c-round"
+          class="c-btn c-btn-secondary"
           data-testid="speakers-next"
           disabled={offset + PAGE >= total || loading}
           on:click={() => go(offset + PAGE)}>Next</button
@@ -361,8 +361,5 @@
     background-color: var(--c-sel-bg);
     color: var(--c-sel-ink);
     border-radius: 2px;
-  }
-  .c-round {
-    border-radius: 0.75rem;
   }
 </style>

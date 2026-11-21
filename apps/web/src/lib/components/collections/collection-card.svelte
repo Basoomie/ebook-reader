@@ -45,7 +45,7 @@
       </div>
       {#if menu}
         <button
-          class="c-btn c-btn-ghost -mr-2 h-12 w-12 shrink-0 p-0"
+          class="c-btn c-btn-ghost -mr-2 c-btn-icon"
           title="Rename or delete"
           aria-label="More: {name}"
           data-testid="collection-menu"
@@ -76,7 +76,7 @@
     </a>
     {#if menu}
       <button
-        class="c-btn c-btn-ghost h-12 w-12 shrink-0 p-0"
+        class="c-btn c-btn-ghost c-btn-icon"
         title="Rename or delete"
         aria-label="More: {name}"
         data-testid="collection-menu"

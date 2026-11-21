@@ -159,7 +159,7 @@
               <div class="s-item-actions">
                 {#if clip.state === 'failed'}
                   <button
-                    class="c-btn c-btn-secondary min-h-[2.75rem]"
+                    class="c-btn c-btn-secondary c-btn-sm"
                     data-testid="anki-pending-dismiss"
                     disabled={busy}
                     on:click={() => remove(clip)}
@@ -168,7 +168,7 @@
                   </button>
                 {:else}
                   <button
-                    class="c-btn c-btn-secondary min-h-[2.75rem]"
+                    class="c-btn c-btn-secondary c-btn-sm"
                     data-testid="anki-pending-cancel"
                     on:click={() => (confirming = clip)}
                   >

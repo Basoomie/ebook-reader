@@ -5,6 +5,8 @@
    * All rights reserved.
    */
 
+  import { faChevronDown } from '@fortawesome/free-solid-svg-icons';
+  import Fa from 'svelte-fa';
   import DropdownMenu from '$lib/components/dropdown-menu.svelte';
   import {
     pickKey,
@@ -56,12 +58,7 @@
   }
 </script>
 
-<DropdownMenu
-  buttonClass="c-btn c-btn-secondary px-3"
-  align="right"
-  label="Sort"
-  testid="sort-menu"
->
+<DropdownMenu buttonClass="c-btn c-btn-ghost px-3" align="right" label="Sort" testid="sort-menu">
   <span slot="button" class="flex items-center gap-2">
     <span class="hidden font-mincho font-bold text-c-label sm:inline" aria-hidden="true"
       >並び順</span
@@ -78,6 +75,7 @@
           context
         )}{/if}</span
     >
+    <span class="opacity-70" aria-hidden="true"><Fa icon={faChevronDown} size="xs" /></span>
   </span>
   <div class="flex flex-col gap-1" role="group" aria-label="Sort by">
     {#each choices as choice (choice.key)}

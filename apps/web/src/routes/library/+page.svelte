@@ -146,7 +146,17 @@
     libraryViewApi,
     notifySyncConnectionChanged
   } from '$lib/sync/sync-service';
-  import { faMagnifyingGlass } from '@fortawesome/free-solid-svg-icons';
+  import {
+    faArrowUpFromBracket,
+    faArrowsUpDown,
+    faCheck,
+    faEyeSlash,
+    faMagnifyingGlass,
+    faPen,
+    faRotateRight,
+    faSquareCheck,
+    faThumbtack
+  } from '@fortawesome/free-solid-svg-icons';
   import { onDestroy, onMount, tick } from 'svelte';
   import Fa from 'svelte-fa';
 
@@ -2003,20 +2013,27 @@
               <div class="flex flex-wrap gap-2">
                 {#if pinTarget}
                   <button
-                    class="c-btn c-btn-secondary min-h-[2.75rem] px-3 text-sm"
+                    class="c-btn c-btn-secondary c-btn-sm px-3 text-sm"
+                    aria-pressed={pinnedHere}
                     data-testid="pin-home"
                     on:click={togglePin}
                   >
-                    {pinnedHere ? 'Unpin from Home' : 'Pin to Home'}
+                    <Fa icon={faThumbtack} />
+                    {pinnedHere ? 'Pinned to Home' : 'Pin to Home'}
                   </button>
                 {/if}
                 {#if headerRule}
                   <button
-                    class="c-btn c-btn-secondary min-h-[2.75rem] px-3 text-sm"
+                    class="c-btn c-btn-secondary c-btn-sm px-3 text-sm"
                     aria-pressed={hasCoverRule(coverRules, headerRule.target, headerRule.name)}
                     data-testid="cover-rule-header"
                     on:click={() => headerRule && editCoverRule(headerRule.target, headerRule.name)}
                   >
+                    <Fa
+                      icon={hasCoverRule(coverRules, headerRule.target, headerRule.name)
+                        ? faCheck
+                        : faEyeSlash}
+                    />
                     {HEADER_RULE_LABEL[headerRule.target]}
                   </button>
                 {/if}
@@ -2133,10 +2150,19 @@
           {/each}
         </nav>
       {:else if !collectionGone}
+        <!-- The collection's own actions (soft); Sort, Display and Select on the right are
+             quiet view controls. Pin and Blur are toggles that look on; Reorder and Select turn
+             into a filled Done while their mode is on. -->
         <div class="flex flex-wrap gap-2" data-testid="collection-actions">
           {#if pinTarget}
-            <button class="c-btn c-btn-secondary px-3" data-testid="pin-home" on:click={togglePin}>
-              {pinnedHere ? 'Unpin from Home' : 'Pin to Home'}
+            <button
+              class="c-btn c-btn-secondary px-3"
+              aria-pressed={pinnedHere}
+              data-testid="pin-home"
+              on:click={togglePin}
+            >
+              <Fa icon={faThumbtack} />
+              {pinnedHere ? 'Pinned to Home' : 'Pin to Home'}
             </button>
           {/if}
           {#if collectionId !== null && collectionName}
@@ -2148,28 +2174,35 @@
                 collectionId !== null &&
                 editCoverRule('collection', collectionId, collectionName ?? '')}
             >
+              <Fa
+                icon={hasCoverRule(coverRules, 'collection', collectionId) ? faCheck : faEyeSlash}
+              />
               Blur covers
             </button>
           {/if}
           {#if userCollection}
             {#if isList}
               <button
-                class="c-btn c-btn-secondary px-3"
-                aria-pressed={reorderMode}
+                class="c-btn {reorderMode ? 'c-btn-primary' : 'c-btn-secondary'} px-3"
                 disabled={!canReorder || selectMode}
                 title={appliedQuery ? 'Clear the search to reorder' : undefined}
                 data-testid="reorder-mode"
                 on:click={() => (reorderMode = !reorderMode)}
               >
+                <Fa icon={reorderMode ? faCheck : faArrowsUpDown} />
                 {reorderMode ? 'Done' : 'Reorder'}
               </button>
             {/if}
             <button
               class="c-btn c-btn-secondary px-3"
+              title={userCollection.type === 'smart'
+                ? 'Rename, change the search or delete'
+                : 'Rename or delete'}
               data-testid="collection-header-menu"
               on:click={editCollection}
             >
-              {userCollection.type === 'smart' ? 'Rename, change search…' : 'Rename, delete…'}
+              <Fa icon={faPen} />
+              Edit
             </button>
           {/if}
         </div>
@@ -2181,17 +2214,18 @@
           <LibrarySortMenu
             context={sortContext}
             value={sortValue}
+            shortOnPhone
             on:change={(ev) => onSort(ev.detail)}
           />
         {/if}
         <LibraryDisplayMenu />
         {#if !showingGroups && !reorderMode}
           <button
-            class="c-btn c-btn-secondary px-3"
-            aria-pressed={selectMode}
+            class="c-btn {selectMode ? 'c-btn-primary' : 'c-btn-ghost'} px-3"
             data-testid="select-mode"
             on:click={toggleSelectMode}
           >
+            <Fa icon={selectMode ? faCheck : faSquareCheck} />
             {selectMode ? 'Done' : 'Select'}
           </button>
         {/if}
@@ -2201,6 +2235,7 @@
             data-testid="upload-button"
             on:click={() => uploadInput?.click()}
           >
+            <Fa icon={faArrowUpFromBracket} />
             Upload
           </button>
           <input
@@ -2224,12 +2259,13 @@
       >
         {#each CHIPS as chip (chip.id)}
           <button
-            class="c-btn c-btn-secondary min-h-[2.75rem] shrink-0 rounded-full px-4 text-sm"
+            class="c-chip px-4"
             aria-pressed={chips.has(chip.id)}
             disabled={chipsDisabled}
             data-testid="chip-{chip.id}"
             on:click={() => onChip(chip.id)}
           >
+            {#if chips.has(chip.id)}<Fa icon={faCheck} size="xs" />{/if}
             {chip.label}
             {#if chipCounts.has(chip.id)}
               <span class="text-xs opacity-80" data-testid="chip-count-{chip.id}"
@@ -2256,9 +2292,9 @@
       <p class="c-notice flex flex-wrap items-center gap-x-3 gap-y-2" data-testid="offline-notice">
         <span role="status">{OFFLINE_NOTICE}</span>
         <button
-          class="c-btn c-btn-secondary px-3"
+          class="c-btn c-btn-ghost c-btn-sm -my-1 gap-1.5 px-2.5"
           data-testid="offline-retry"
-          on:click={tryServerAgain}>Try again</button
+          on:click={tryServerAgain}><Fa icon={faRotateRight} />Try again</button
         >
       </p>
     {/if}
@@ -2506,7 +2542,7 @@
           on:error={(e) => showMessage('Download failed', describe(e.detail))}
           on:notice={(e) => showMessage(e.detail.title, e.detail.message)}
         />
-        <button class="c-btn c-btn-secondary" on:click={toggleSelectMode}> Done </button>
+        <button class="c-btn c-btn-primary" on:click={toggleSelectMode}> Done </button>
       </div>
     </div>
   </div>

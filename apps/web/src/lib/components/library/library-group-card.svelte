@@ -58,7 +58,7 @@
       {/if}
       {#if menu}
         <button
-          class="c-btn c-btn-ghost -mr-2 h-10 min-h-0 w-10 shrink-0 p-0"
+          class="c-btn c-btn-ghost -mr-2 c-btn-icon c-btn-sm"
           title="Cover settings"
           aria-label="Cover settings: {groupTitle(group)}"
           data-testid="group-menu"
@@ -96,7 +96,7 @@
     </a>
     {#if menu}
       <button
-        class="c-btn c-btn-ghost h-12 w-12 shrink-0 p-0"
+        class="c-btn c-btn-ghost c-btn-icon"
         title="Cover settings"
         aria-label="Cover settings: {groupTitle(group)}"
         data-testid="group-menu"

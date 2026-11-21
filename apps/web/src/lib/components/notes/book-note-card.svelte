@@ -33,7 +33,7 @@
 
   const dispatch = createEventDispatcher<{ open: void }>();
   const menuItem = 'c-btn c-btn-ghost w-full justify-start px-3 text-left text-sm';
-  const dotsButton = 'c-btn c-btn-ghost h-11 min-h-0 w-11 p-0';
+  const dotsButton = 'c-btn c-btn-ghost c-btn-icon c-btn-sm';
 
   let copied: '' | 'note' | 'failed' = '';
   let menuOpen = false;

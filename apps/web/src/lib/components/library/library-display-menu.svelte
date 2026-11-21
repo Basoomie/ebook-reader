@@ -21,7 +21,7 @@
     libraryInfoLine$,
     libraryView$
   } from '$lib/library/settings';
-  import { faTableCellsLarge } from '@fortawesome/free-solid-svg-icons';
+  import { faChevronDown, faTableCellsLarge } from '@fortawesome/free-solid-svg-icons';
   import Fa from 'svelte-fa';
 
   /**
@@ -50,13 +50,17 @@
 </script>
 
 <DropdownMenu
-  buttonClass="c-btn c-btn-secondary px-3"
+  buttonClass="c-btn c-btn-ghost px-3"
   align="right"
   label="Display"
   testid="display-menu"
   panelWidth="w-80"
 >
-  <span slot="button" class="flex items-center gap-2"><Fa icon={faTableCellsLarge} />Display</span>
+  <span slot="button" class="flex items-center gap-2"
+    ><Fa icon={faTableCellsLarge} />Display<span class="opacity-70" aria-hidden="true"
+      ><Fa icon={faChevronDown} size="xs" /></span
+    ></span
+  >
   <div class="flex flex-col gap-3 p-1">
     <div class="grid grid-cols-2 gap-1" role="group" aria-label="View">
       <button
@@ -103,7 +107,7 @@
         <span>Small</span>
         <button
           type="button"
-          class="c-btn c-btn-secondary min-h-[2.75rem] px-3 text-sm"
+          class="c-btn c-btn-secondary c-btn-sm px-3 text-sm"
           aria-pressed={size === 0}
           disabled={!grid}
           data-testid="cover-size-auto"

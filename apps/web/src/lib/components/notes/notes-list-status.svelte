@@ -10,7 +10,7 @@
 
   export let list: NotesListState;
 
-  const smallButton = 'c-btn c-btn-secondary min-h-[2.75rem] min-w-[2.75rem] px-3 text-sm';
+  const smallButton = 'c-btn c-btn-secondary c-btn-sm min-w-[var(--c-btn-h-sm)] px-3 text-sm';
 </script>
 
 {#if $list.undo}
