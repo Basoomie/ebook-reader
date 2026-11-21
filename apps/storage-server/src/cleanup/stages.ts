@@ -9,7 +9,7 @@ import type Database from 'better-sqlite3';
 export type StageMode = 'off' | 'analyse' | 'on';
 
 /** Stages that can be switched on in this build. */
-export const BUILT_STAGES: readonly number[] = [1, 2, 3, 4];
+export const BUILT_STAGES: readonly number[] = [1, 2, 3, 4, 5];
 /** Stages built for Preview only (WP20d: stage 4's writes come with WP20e). */
 /** Stages with Off and Preview only (none since WP20e: stage 4 writes after its AI check). */
 export const PREVIEW_ONLY_STAGES: readonly number[] = [];

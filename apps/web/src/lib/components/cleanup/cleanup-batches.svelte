@@ -22,7 +22,8 @@
   import {
     undoCleanupBatchCopy,
     undoFileMetadataBatchCopy,
-    undoOnlineSourcesBatchCopy
+    undoOnlineSourcesBatchCopy,
+    undoGenresTagsBatchCopy
   } from '$lib/confirm/confirm-copy';
   import { formatWhen } from '$lib/notes/notes-format';
   import CopyRow from './cleanup-copy-row.svelte';
@@ -60,11 +61,13 @@
     const count =
       (writesFields(batch) ? batch.counts?.written : batch.counts?.removed) ?? batch.itemCount;
     const copy =
-      batch.stage === 4
-        ? undoOnlineSourcesBatchCopy(count)
-        : batch.stage === 2
-          ? undoFileMetadataBatchCopy(count)
-          : undoCleanupBatchCopy(count);
+      batch.stage === 5
+        ? undoGenresTagsBatchCopy(count)
+        : batch.stage === 4
+          ? undoOnlineSourcesBatchCopy(count)
+          : batch.stage === 2
+            ? undoFileMetadataBatchCopy(count)
+            : undoCleanupBatchCopy(count);
     if (!(await confirmDestructive({ ...copy, testid: 'cleanup-undo-confirm' }))) {
       return;
     }

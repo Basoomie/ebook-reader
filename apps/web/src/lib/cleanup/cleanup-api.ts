@@ -85,6 +85,112 @@ export interface CleanupStatus {
   stage3?: Stage3Status;
   /** Stage 4 (WP20d): online sources, Preview only. Missing on an older server. */
   stage4?: Stage4Status;
+  /** Stage 5 (WP20f): genres and tags. Missing on an older server. */
+  stage5?: Stage5Status;
+}
+
+/** One view of stage 5's gate: a label set scored as the genre test was. */
+export interface Stage5SetScore {
+  books: number;
+  core: number;
+  found: number;
+  applied: number;
+  right: number;
+  full: number;
+  foundPercent: number | null;
+  rightPercent: number | null;
+  wrong: { gid: string; id: string }[];
+  missed: { gid: string; id: string }[];
+}
+
+export interface Stage5GateView {
+  genres: Stage5SetScore;
+  tags: Stage5SetScore;
+}
+
+export interface Stage5Gate {
+  at: number;
+  books: { genres: number; tags: number };
+  models: Stage5GateView;
+  own: Stage5GateView;
+  noRanobedb: Stage5GateView;
+  final: Stage5GateView;
+  test: {
+    genres: { found: number; right: number; full: number; books: number };
+    tags: { found: number; right: number; full: number; books: number };
+  };
+  below: string[];
+  held: { genres: boolean; tags: boolean };
+  passed: boolean;
+  notAsked: number;
+}
+
+export interface Stage5Counts {
+  terms: Record<string, number>;
+  formats: Record<string, number>;
+  noGenre: number;
+  removals: Record<string, number>;
+  books: number;
+  added: number;
+  removed: number;
+  outside: number;
+  outsideChanged: number;
+  inBatch: number;
+}
+
+export interface Stage5Progress {
+  phase: string;
+  bar: { phase: string; done: number; total: number; secondsLeft: number | null } | null;
+  startedAt: number;
+  finishedAt: number | null;
+  total: number;
+  items: number;
+  labeledItems: number;
+  decided: number;
+  asked: number;
+  oneModel: number;
+  droppedTerms: number;
+  marks: number | null;
+  answers: {
+    queued: number;
+    sent: number;
+    answered: number;
+    failed: number;
+    blocked: number;
+    invalid: number;
+  } | null;
+  wait: string | null;
+  costUsd: number | null;
+  gate: Stage5Gate | null;
+  counts: Stage5Counts | null;
+  error: string | null;
+}
+
+export interface Stage5Status {
+  waiting: string | null;
+  /** Stage 4's analysis and AI check are done. */
+  ready: boolean;
+  progress: Stage5Progress | null;
+  fieldPauses: FieldPause[];
+  write?: Stage4Write | null;
+  terms: { id: string; ja: string; en: string; kind: string }[];
+  cachedAt: number;
+}
+
+/** One book's change in stage 5's list. */
+export interface Stage5Proposal {
+  id: number;
+  calibreId: number;
+  title: string;
+  series: string | null;
+  format: string | null;
+  before: string[];
+  change: { add: string[]; remove: string[] };
+  sources: Record<string, { from: string[]; books: number }>;
+  outside: boolean;
+  cls: string;
+  reason: string | null;
+  state: string;
 }
 
 /** One site's queue in the fetch container (WP20d). */
@@ -132,6 +238,8 @@ export interface Stage4Status {
   /** The AI check after the rules (WP20e); null before it starts. */
   ai?: Stage4AiStatus | null;
   fieldPauses: FieldPause[];
+  /** Books whose changes were all undone (the test batches), written on the card's button (WP20f). */
+  undoneBooks?: number;
   /** Stage 4 On (WP20e): books and changes written, the changes left, the time left. */
   write?: Stage4Write | null;
   /** The reading: books read (each once, from the database), the books with an EPUB, the pace. */
@@ -1853,6 +1961,35 @@ export class CleanupApi {
   /** Stage 4's AI questions that were given up, asked again. */
   askAiAgain(): Promise<{ questions: number }> {
     return this.request('POST', '/cleanup/stage4/ai/ask-again') as Promise<{ questions: number }>;
+  }
+
+  /** Stage 4's books whose changes were all undone (the test batches), proposed again (WP20f). */
+  reproposeStage4Undone(): Promise<{ books: number }> {
+    return this.request('POST', '/cleanup/stage4/repropose-undone') as Promise<{ books: number }>;
+  }
+
+  // ---------------------------------------------------------------- stage 5 (WP20f)
+
+  stage5Proposals({
+    state = 'proposed',
+    outside,
+    offset = 0,
+    limit = 50
+  }: { state?: string; outside?: boolean; offset?: number; limit?: number } = {}): Promise<{
+    total: number;
+    rows: Stage5Proposal[];
+  }> {
+    const q = new URLSearchParams({ state, offset: String(offset), limit: String(limit) });
+    if (outside !== undefined) q.set('outside', outside ? '1' : '0');
+    return this.request('GET', `/cleanup/stage5/proposals?${q}`) as Promise<{
+      total: number;
+      rows: Stage5Proposal[];
+    }>;
+  }
+
+  /** Stage 5's AI questions that were given up, asked again. */
+  askStage5AiAgain(): Promise<{ questions: number }> {
+    return this.request('POST', '/cleanup/stage5/ai/ask-again') as Promise<{ questions: number }>;
   }
 
   // ---------------------------------------------------------------- audiobooks (WP21a)

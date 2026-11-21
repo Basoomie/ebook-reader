@@ -965,6 +965,34 @@ export function createCleanupRouter(options: CleanupOptions): Router {
     res.json(service.askStage4AiAgain());
   });
 
+  router.post('/cleanup/stage4/repropose-undone', async (_req, res, next) => {
+    try {
+      const service = serviceOr503(options);
+      res.json(await service.reproposeStage4Undone());
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // ---------------------------------------------------------------- stage 5 (WP20f)
+
+  router.get('/cleanup/stage5/proposals', (req, res) => {
+    const service = serviceOr503(options);
+    const q = req.query as Record<string, string | undefined>;
+    const offset = Math.max(0, Number(q.offset ?? 0) || 0);
+    const limit = Math.min(200, Math.max(1, Number(q.limit ?? 50) || 50));
+    const state = ['proposed', 'queued', 'applied', 'skipped', 'undone'].includes(q.state ?? '')
+      ? (q.state as string)
+      : 'proposed';
+    const outside = q.outside === '1' ? true : q.outside === '0' ? false : null;
+    res.json(service.stage5Proposals({ state, outside, offset, limit }));
+  });
+
+  router.post('/cleanup/stage5/ai/ask-again', (_req, res) => {
+    const service = serviceOr503(options);
+    res.json(service.askStage5AiAgain());
+  });
+
   router.post('/cleanup/stage4/sites/:site/retry', (req, res) => {
     const service = serviceOr503(options);
     res.json({ retried: service.retryStage4Site(req.params.site) });

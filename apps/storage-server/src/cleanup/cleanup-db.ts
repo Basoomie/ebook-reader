@@ -1592,6 +1592,22 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
         CHECK (json_valid(excluded_json));
     `,
   },
+  {
+    version: 19,
+    name: 'stage 5: the Google run workflow marks recorded before stage 5 removes them (WP20f)',
+    // Stage 2 and stage 4 rules read the tag metadata-processed; stage 5 removes it from Calibre
+    // (decided with the user 2026-11-21), so which books had each of the four Google-run marks
+    // is recorded first and the rules read the record too. Filled once, never cleared.
+    sql: `
+      CREATE TABLE calibre_marks (
+        library_id   TEXT NOT NULL,
+        calibre_uuid TEXT NOT NULL,
+        tag          TEXT NOT NULL,
+        recorded_at  INTEGER NOT NULL,
+        PRIMARY KEY (library_id, calibre_uuid, tag)
+      ) WITHOUT ROWID;
+    `,
+  },
 ];
 
 export const CLEANUP_SCHEMA_VERSION = CLEANUP_MIGRATIONS[CLEANUP_MIGRATIONS.length - 1].version;

@@ -54,6 +54,13 @@ export interface GateSettings {
    * must be right on the labeled books at least this often (%).
    */
   audiobookMetaPercent: number;
+  /**
+   * Stage 5 (WP20f): the genre test's blind labels (genre-labels.json); empty =
+   * <DB_DIR>/cleanup/reference-sample/genre-labels.json.
+   */
+  genreLabelsFile: string;
+  /** Stage 5's bars on those labels (%): right share and found share, genres and tags apart. */
+  stage5: { genresRight: number; tagsRight: number; genresFound: number; tagsFound: number };
 }
 
 export interface CoverSettings {
@@ -464,6 +471,8 @@ export const DEFAULT_SETTINGS: CleanupSettings = {
     duplicatePairsFile: '',
     audiobookPairsFile: '',
     audiobookMetaPercent: 95,
+    genreLabelsFile: '',
+    stage5: { genresRight: 95, tagsRight: 95, genresFound: 85, tagsFound: 70 },
   },
   reviewAlarmPercent: 5,
   libraryChangedPausePercent: 5,
@@ -693,6 +702,17 @@ export function fromLegacy(raw: Map<string, unknown>): Map<string, unknown> {
   }
   for (const k of LEGACY_KEYS) out.delete(k);
   return out;
+}
+
+function stage5Bars(value: unknown): GateSettings['stage5'] {
+  if (!isObj(value)) throw new SettingsError('Genre and tag bars must be an object');
+  const v = value as Record<string, unknown>;
+  return {
+    genresRight: num('Genres: right at least (%)', v.genresRight, 50, 100),
+    tagsRight: num('Tags: right at least (%)', v.tagsRight, 50, 100),
+    genresFound: num('Genres: found at least (%)', v.genresFound, 0, 100),
+    tagsFound: num('Tags: found at least (%)', v.tagsFound, 0, 100),
+  };
 }
 
 export function getSettings(db: Database.Database): CleanupSettings {
@@ -1243,6 +1263,8 @@ function validate(key: Key, value: unknown, current: CleanupSettings): unknown {
           50,
           100,
         ),
+        genreLabelsFile: text('Genre labels file', v.genreLabelsFile ?? '', 1000),
+        stage5: stage5Bars(v.stage5 ?? current.gate.stage5),
       };
     }
     case 'reviewAlarmPercent':

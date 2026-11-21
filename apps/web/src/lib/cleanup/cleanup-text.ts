@@ -259,13 +259,14 @@ export function batchStateText(batch: CleanupBatch): string {
 
 /** Stages whose batches write fields (several per book) rather than remove copies. */
 export function writesFields(batch: CleanupBatch): boolean {
-  return batch.stage === 2 || batch.stage === 4;
+  return batch.stage === 2 || batch.stage === 4 || batch.stage === 5;
 }
 
 export function batchKindText(batch: CleanupBatch): string {
   if (batch.kind === 'undo') return 'Undo';
   if (batch.stage === 2) return 'Metadata from the files';
   if (batch.stage === 4) return 'Metadata from the online sources';
+  if (batch.stage === 5) return 'Genres and tags';
   return batch.stage === 3 ? 'Remove copies with the same text' : 'Remove identical copies';
 }
 

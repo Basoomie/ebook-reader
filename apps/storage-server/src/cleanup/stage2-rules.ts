@@ -98,6 +98,8 @@ export interface CalibreFacts {
   languages: string[];
   /** #illustrator values, or null when the library has no such column. */
   illustrators: string[] | null;
+  /** The Google run's marks recorded before stage 5 removed them (marks.ts). */
+  marks?: readonly string[];
 }
 
 export interface FieldProposal {
@@ -132,8 +134,9 @@ export const PROCESSED_TAG = 'metadata-processed';
 /** Amazon JP identifier key in Calibre. */
 export const AMAZON_JP = 'amazon_jp';
 
-export function isProcessed(tags: readonly string[]): boolean {
-  return tags.some((t) => t.trim().toLowerCase() === PROCESSED_TAG);
+/** Calibre's record came from the Google Books run: tagged so, or recorded so (marks.ts). */
+export function isProcessed(tags: readonly string[], marks: readonly string[] = []): boolean {
+  return [...tags, ...marks].some((t) => t.trim().toLowerCase() === PROCESSED_TAG);
 }
 
 export function calibreAuthorsUnknown(authors: readonly string[]): boolean {
@@ -174,7 +177,7 @@ const sameList = (a: readonly string[], b: readonly string[]) =>
 /** The title group of the measurement (also used for authors when Calibre is Unknown/processed). */
 export function titleGroup(cal: CalibreFacts, file: FileFacts): ApplyGroup {
   if (calibreAuthorsUnknown(cal.authors)) return 'unknown';
-  if (isProcessed(cal.tags)) return 'processed';
+  if (isProcessed(cal.tags, cal.marks)) return 'processed';
   const names = [...fileAuthors(file), ...cal.authors];
   return N(cleanTitle(file.title, names)) === N(cleanTitle(cal.title, names))
     ? 'agree'
@@ -183,7 +186,7 @@ export function titleGroup(cal: CalibreFacts, file: FileFacts): ApplyGroup {
 
 export function authorGroup(cal: CalibreFacts, file: FileFacts): ApplyGroup {
   if (calibreAuthorsUnknown(cal.authors)) return 'unknown';
-  if (isProcessed(cal.tags)) return 'processed';
+  if (isProcessed(cal.tags, cal.marks)) return 'processed';
   const first = fileAuthors(file)[0];
   if (first === undefined) return 'agree';
   // "Already the same after normalization": Calibre's names are exactly the file's first author.
@@ -367,7 +370,7 @@ function coverProposal(
   if (!cc) return null; // Calibre lists a cover we couldn't read: leave it.
   const longest = (c: CoverFacts) => Math.max(c.width, c.height);
   if (longest(fc) >= longest(cc) * o.coverLargerFactor) return make("The file's cover is larger");
-  if (isProcessed(cal.tags)) {
+  if (isProcessed(cal.tags, cal.marks)) {
     const d = hammingHex(fc.dhash, cc.dhash);
     if (d !== null && d > o.coverSameDistance)
       return make("Calibre's cover is a different picture");

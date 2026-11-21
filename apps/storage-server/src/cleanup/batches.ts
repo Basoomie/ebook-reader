@@ -286,10 +286,12 @@ export class BatchService {
   readonly stage2: Stage2Batches;
   /** Stage 4's writes (WP20e): stage 2's field-write path with stage 4's fields. */
   readonly stage4: Stage2Batches;
+  /** Stage 5's writes (WP20f): the tags, the same path with one change per book. */
+  readonly stage5: Stage2Batches;
 
-  /** The field-write path of a stage (2 or 4). */
+  /** The field-write path of a stage (2, 4 or 5). */
   fieldWriter(stage: number): Stage2Batches {
-    return stage === 4 ? this.stage4 : this.stage2;
+    return stage === 5 ? this.stage5 : stage === 4 ? this.stage4 : this.stage2;
   }
 
   /** The field-write path of a batch, by its id. */
@@ -301,6 +303,7 @@ export class BatchService {
     this.leaseSeconds = deps.leaseSeconds ?? DEFAULT_LEASE_SECONDS;
     this.stage2 = new Stage2Batches(this, deps);
     this.stage4 = new Stage2Batches(this, deps, 4);
+    this.stage5 = new Stage2Batches(this, deps, 5);
   }
 
   private get db() {
@@ -787,16 +790,18 @@ export class BatchService {
       .get() as RawBatch | undefined;
     if (!raw) return { batch: null, wait: null };
     const batch = toBatch(raw);
-    if (batch.stage === 4) {
-      // A sidecar before 1.1.0 knows stage 4's batches as removals: it never gets one (WP20e).
+    if (batch.stage === 4 || batch.stage === 5) {
+      // A sidecar before 1.1.0 knows stage 4's batches as removals (WP20e); one before 1.2.0
+      // can't write tags as a field (WP20f): neither ever gets such a batch.
+      const need = batch.stage === 5 ? 2 : 1;
       const sc = this.db.prepare('SELECT version FROM sidecar_status WHERE id = 1').get() as
         | { version: string | null }
         | undefined;
       const [a, b] = (sc?.version ?? '0.0.0').split('.').map((x) => parseInt(x, 10) || 0);
-      if (a < 1 || (a === 1 && b < 1))
+      if (a < 1 || (a === 1 && b < need))
         return {
           batch: null,
-          wait: 'The cleanup sidecar is older than 1.1.0: rebuild ttsu-cleanup-apply before stage 4 writes',
+          wait: `The cleanup sidecar is older than 1.${need}.0: rebuild ttsu-cleanup-apply before stage ${batch.stage} writes`,
         };
     }
     if (!batch.snapshotSaved) {

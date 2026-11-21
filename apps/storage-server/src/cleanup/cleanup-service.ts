@@ -23,6 +23,8 @@ import { STAGE3_WAITING_SQL, Stage3Analysis, type PairRow, type Stage3Progress }
 import { Stage3Worker, type Stage3Reader } from '../counts/book-text-worker';
 import { Stage4Analysis, type Stage4Progress } from './stage4/analysis';
 import { Stage4Ai } from './stage4/ai-step';
+import { Stage5, type Stage5Progress } from './stage5/step';
+import { BY_ID as STAGE5_TERMS } from './stage5/vocab';
 import { STAGE4_WRITTEN_FIELDS } from './stage2-batches';
 import { AiRunner, type AiRunnerDeps } from './ai/runner';
 import { openLookups, paceSeconds, stage4Eta, type SiteCounts } from './stage4/eta';
@@ -175,6 +177,14 @@ export class CleanupService {
   readonly aiRunner: AiRunner;
   /** Stage 4's AI check (WP20e), after the rules' analysis. */
   readonly stage4Ai: Stage4Ai | null;
+  /** Stage 5 (WP20f): genres and tags, after stage 4's AI check. */
+  readonly stage5: Stage5 | null;
+  private analysing5: Promise<void> | null = null;
+  /** Why stage 5 is not working right now. */
+  waiting5: string | null = null;
+  private status5Cache: { at: number; value: unknown } | null = null;
+  /** Books written per finished stage-5 batch (counted once each). */
+  private batchBooks5 = new Map<string, number>();
   private analysing4: Promise<void> | null = null;
   /** Why stage 4 is not working right now. */
   waiting4: string | null = null;
@@ -283,6 +293,17 @@ export class CleanupService {
           log: this.log,
         })
       : null;
+    this.stage5 =
+      this.analysis4 && this.stage4Ai
+        ? new Stage5({
+            db: opts.cleanup,
+            runner: this.aiRunner,
+            analysis: this.analysis4,
+            stage4Ai: this.stage4Ai,
+            dbDir: opts.dbDir ?? null,
+            log: this.log,
+          })
+        : null;
     // Stage 4's covers are the stores' pictures, read from the fetch cache.
     this.batches.stage4.setStoreCover((url) => {
       const r = opts.cleanup
@@ -767,8 +788,19 @@ export class CleanupService {
   }
 
   /** "Analyse again". */
-  reanalyse(stage = 1): Stage1Progress | Stage2Progress | Stage3Progress | Stage4Progress {
+  reanalyse(
+    stage = 1,
+  ): Stage1Progress | Stage2Progress | Stage3Progress | Stage4Progress | Stage5Progress {
     const target = this.targetLibrary();
+    if (stage === 5) {
+      if (!target) throw new Error('Choose the library first');
+      const p5 = this.stage5?.restart(target);
+      if (!p5) throw new Error("Stage 5 starts after stage 4's analysis");
+      if (getStage(this.db, 5).pauseReason === 'library_changed') resumeStage(this.db, 5);
+      this.status5Cache = null;
+      void this.tick();
+      return p5;
+    }
     const analysis =
       stage === 4
         ? this.analysis4
@@ -827,6 +859,290 @@ export class CleanupService {
     await this.round2(target);
     await this.round3(target);
     await this.round4(target);
+    await this.round5(target);
+  }
+
+  /**
+   * Stage 5 (WP20f): genres and tags. Works once stage 4's AI check is done; reads cleanup.db and
+   * the reader's snapshot only (no disk lock). On writes its proposals through stage 2's
+   * field-write path after stages 1-4 have nothing left to write.
+   */
+  private async round5(target: string | null): Promise<void> {
+    const stage = getStage(this.db, 5);
+    if (stage.mode === 'off' || !target || !this.stage5) {
+      this.waiting5 =
+        stage.mode === 'off'
+          ? null
+          : target
+            ? 'The Calibre folder is not set up'
+            : 'Choose the library';
+      return;
+    }
+    if (!this.stage5.stage4Ready()) {
+      this.waiting5 = "Waiting for stage 4's analysis and AI check";
+      return;
+    }
+    if (this.stage5.needsWork(target)) {
+      this.waiting5 = null;
+      this.runAnalysis5(target);
+      return;
+    }
+    const p = this.stage5.progress();
+    if (p?.error) {
+      this.waiting5 = `Stage 5 failed: ${p.error}`;
+      return;
+    }
+    await this.apply5(target, stage.mode);
+  }
+
+  private runAnalysis5(target: string): void {
+    if (this.analysing5 || !this.stage5) return;
+    const s5 = this.stage5;
+    this.analysing5 = (async () => {
+      try {
+        for (;;) {
+          const stop5 = () => this.stopped || getStage(this.db, 5).mode === 'off';
+          if (stop5() || !s5.needsWork(target)) break;
+          const r = await s5.step(target, stop5);
+          this.status5Cache = null;
+          if (r === 'wait') {
+            for (let i = 0; i < 10 && !stop5(); i++)
+              await new Promise((res) => setTimeout(res, 500));
+          } else await new Promise((res) => setImmediate(res));
+        }
+      } catch (err) {
+        this.logError('Cleanup: stage 5 failed:', err);
+      } finally {
+        this.analysing5 = null;
+      }
+    })();
+  }
+
+  private async apply5(target: string, mode: StageMode): Promise<void> {
+    if (mode !== 'on') {
+      this.waiting5 = 'Preview: nothing is changed in Calibre';
+      return;
+    }
+    if (getStage(this.db, 5).pauseReason) {
+      this.waiting5 = null;
+      return;
+    }
+    const p = this.stage5?.progress();
+    if (!p?.gate || (p.gate.books.genres === 0 && p.gate.books.tags === 0)) {
+      this.waiting5 = 'No labeled books for the gate: nothing is written';
+      return;
+    }
+    if (this.batches.open()) {
+      this.waiting5 = 'A batch is being applied';
+      return;
+    }
+    for (const [s, left] of [
+      [1, () => this.remaining(target)],
+      [2, () => this.remaining2(target)],
+      [3, () => this.remaining3(target)],
+      [4, () => this.remaining4(target)],
+    ] as [number, () => number][]) {
+      if (getStage(this.db, s).mode === 'on' && left() > 0) {
+        this.waiting5 = `Waiting for stage ${s} to finish writing`;
+        return;
+      }
+    }
+    const checks = this.checksPass();
+    if (!checks.ok) {
+      this.waiting5 = `Waiting for the safety checks: ${checks.failing.join('; ')}`;
+      return;
+    }
+    const { batch, reason } = await this.batches.stage5.plan(target);
+    this.waiting5 = batch
+      ? 'A batch is being applied'
+      : (reason ?? (this.remaining5(target) === 0 ? 'Done: nothing left to write' : null));
+  }
+
+  /** Stage 5's automatic changes still to write (one per book). */
+  private remaining5(target: string): number {
+    const id = currentAnalysisId(this.db, 5);
+    if (!id) return 0;
+    return (
+      this.db
+        .prepare(
+          `SELECT COUNT(*) AS n FROM proposed_changes INDEXED BY proposed_changes_counts
+           WHERE stage = 5 AND library_id = ? AND state = 'proposed' AND field = 'tags'
+             AND class = 'auto' AND analysis_id = ?`,
+        )
+        .get(target, id) as { n: number }
+    ).n;
+  }
+
+  /** Stage 5 On's progress: books written, still to write, the time left (as stage 4's). */
+  private write5(target: string, analysisId: string, now: number): Stage4Write | null {
+    const n = (state: string, cls: string | null) =>
+      (
+        this.db
+          .prepare(
+            `SELECT COUNT(*) AS n FROM proposed_changes INDEXED BY proposed_changes_counts
+             WHERE stage = 5 AND library_id = ? AND state = ? AND field = 'tags'
+             ${cls ? 'AND class = ?' : ''} AND analysis_id = ?`,
+          )
+          .get(target, state, ...(cls ? [cls] : []), analysisId) as { n: number }
+      ).n;
+    const doneChanges = n('applied', null);
+    const queued = n('queued', null);
+    const leftChanges = n('proposed', 'auto') + queued;
+    if (doneChanges === 0 && queued === 0 && getStage(this.db, 5).mode !== 'on') return null;
+    const finished = this.db
+      .prepare(
+        `SELECT id, claimed_at AS claimedAt, finished_at AS finishedAt, item_count AS items FROM batches
+         WHERE stage = 5 AND kind = 'apply' AND state IN ('applied', 'partial') ORDER BY created_at DESC`,
+      )
+      .all() as (WriteBatchRow & { id: string })[];
+    let doneBooks = 0;
+    for (const bt of finished) {
+      let k = this.batchBooks5.get(bt.id);
+      if (k === undefined) {
+        k = (
+          this.db
+            .prepare(
+              `SELECT COUNT(*) AS n FROM batch_items i JOIN proposed_changes p ON p.id = i.change_id
+               WHERE i.batch_id = ? AND p.state = 'applied' AND p.analysis_id = ?`,
+            )
+            .get(bt.id, analysisId) as { n: number }
+        ).n;
+        this.batchBooks5.set(bt.id, k);
+      }
+      doneBooks += k;
+    }
+    return stage4Write(
+      {
+        doneChanges,
+        leftChanges,
+        doneBooks,
+        batches: finished.slice(0, 10),
+        batchCount: finished.length,
+      },
+      now,
+    );
+  }
+
+  /** Stage 5's card (cached 10 s: the bar's per-model count reads ai_requests' run index). */
+  stage5Status(target: string | null, now = Date.now()): unknown {
+    if (this.status5Cache && now - this.status5Cache.at < 10_000) return this.status5Cache.value;
+    const p = this.stage5?.progress() ?? null;
+    const value = {
+      waiting: this.waiting5,
+      ready: this.stage5?.stage4Ready() ?? false,
+      progress: p
+        ? {
+            phase: p.phase,
+            bar: this.stage5?.bar(now) ?? null,
+            startedAt: p.startedAt,
+            finishedAt: p.finishedAt,
+            total: p.total,
+            items: p.items,
+            labeledItems: p.labeledItems,
+            decided: p.decided,
+            asked: p.asked,
+            oneModel: p.oneModel,
+            droppedTerms: p.droppedTerms,
+            marks: p.marks,
+            answers: p.ai,
+            wait: p.wait,
+            costUsd: p.cost?.costUsd ?? null,
+            gate: p.gate,
+            counts: p.counts,
+            error: p.error,
+            times: p.times,
+          }
+        : null,
+      fieldPauses: listFieldPauses(this.db, 5),
+      write: target && p ? this.write5(target, p.analysisId, now) : null,
+      // The vocabulary's labels (the page shows counts by id with these).
+      terms: [...STAGE5_TERMS.entries()].map(([id, t]) => ({
+        id,
+        ja: t.ja,
+        en: t.en,
+        kind: t.kind,
+      })),
+      cachedAt: now,
+    };
+    this.status5Cache = { at: now, value };
+    return value;
+  }
+
+  /** Stage 4's books whose changes were all undone, proposed again (the stage-4 card's button). */
+  async reproposeStage4Undone(): Promise<{ books: number }> {
+    const books = (await this.stage4Ai?.reproposeUndone()) ?? 0;
+    this.status4Cache = null;
+    if (books > 0) void this.tick();
+    return { books };
+  }
+
+  /** Stage 5's given-up AI questions asked again (the card's button). */
+  askStage5AiAgain(): { questions: number } {
+    const questions = this.stage5?.askAgain() ?? 0;
+    this.status5Cache = null;
+    if (questions > 0) void this.tick();
+    return { questions };
+  }
+
+  /** Stage 5's proposals for the page (paged, in the order they were made). */
+  stage5Proposals(f: { state: string; outside: boolean | null; offset: number; limit: number }) {
+    const target = this.targetLibrary();
+    const id = currentAnalysisId(this.db, 5);
+    if (!target || !id) return { total: 0, rows: [] };
+    const where = `stage = 5 AND library_id = ? AND state = ? AND field = 'tags' AND analysis_id = ?${
+      f.outside === null
+        ? ''
+        : f.outside
+          ? ` AND source = 'stage5-removals'`
+          : ` AND source = 'stage5'`
+    }`;
+    const total = (
+      this.db
+        .prepare(
+          `SELECT COUNT(*) AS n FROM proposed_changes INDEXED BY proposed_changes_counts WHERE ${where}`,
+        )
+        .get(target, f.state, id) as { n: number }
+    ).n;
+    const rows = (
+      this.db
+        .prepare(
+          `SELECT id, calibre_id, old_json, new_json, source, evidence_json, class, review_reason, state
+           FROM proposed_changes INDEXED BY proposed_changes_stage WHERE ${where} ORDER BY id LIMIT ? OFFSET ?`,
+        )
+        .all(target, f.state, id, f.limit, f.offset) as {
+        id: number;
+        calibre_id: number;
+        old_json: string;
+        new_json: string;
+        source: string;
+        evidence_json: string;
+        class: string;
+        review_reason: string | null;
+        state: string;
+      }[]
+    ).map((r) => {
+      const ev = JSON.parse(r.evidence_json) as {
+        title?: string;
+        series?: string | null;
+        format?: string | null;
+        sources?: Record<string, { from: string[]; books: number }>;
+      };
+      return {
+        id: r.id,
+        calibreId: r.calibre_id,
+        title: ev.title ?? '',
+        series: ev.series ?? null,
+        format: ev.format ?? null,
+        before: JSON.parse(r.old_json) as string[],
+        change: JSON.parse(r.new_json) as { add: string[]; remove: string[] },
+        sources: ev.sources ?? {},
+        outside: r.source === 'stage5-removals',
+        cls: r.class,
+        reason: r.review_reason,
+        state: r.state,
+      };
+    });
+    return { total, rows };
   }
 
   /** Stage 4 (WP20d): Preview only; the analysis (reading, lookups, proposals) runs while not Off. */
@@ -1363,6 +1679,8 @@ export class CleanupService {
           }
         : null,
       fieldPauses: listFieldPauses(this.db, 4),
+      // Books whose changes were all undone (the test batches): written on the card's button.
+      undoneBooks: this.stage4Ai?.isDone() ? this.stage4Ai.undoneBooks().length : 0,
       // Stage 4 On: books and changes written, what is left, the time left (WP20e).
       write: target && p ? this.write4(target, p.analysisId, now) : null,
       read: p
@@ -1559,6 +1877,7 @@ export class CleanupService {
       [2, () => this.remaining2(target)],
       [3, () => this.remaining3(target)],
       [4, () => this.remaining4(target)],
+      [5, () => this.remaining5(target)],
     ];
     for (const [stage, count] of left) {
       const st = getStage(this.db, stage);
@@ -2203,6 +2522,7 @@ export class CleanupService {
       },
       stage3: this.stage3Status(target, now),
       stage4: this.stage4Status(target, now),
+      stage5: this.stage5Status(target, now),
       stage2: {
         waiting: this.waiting2,
         counts: this.stage2Counts(target),

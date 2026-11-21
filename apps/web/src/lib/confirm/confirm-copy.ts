@@ -775,6 +775,29 @@ export function turnOnOnlineSourcesCopy(counts: {
   };
 }
 
+/** Stage 5 On (WP20f): the genres, tags and format added to each book's tags, old tags taken off. */
+export function turnOnGenresTagsCopy(counts: {
+  books: number | null;
+  added: number | null;
+  removed: number | null;
+}): ConfirmCopy {
+  const books =
+    typeof counts.books !== 'number' || counts.books <= 0
+      ? 'the books'
+      : `${counts.books.toLocaleString('en-US')} ${counts.books === 1 ? 'book' : 'books'}`;
+  return {
+    title: `Write genres and tags into ${books} in Calibre?`,
+    message: [
+      'From now on this runs on its own, in batches: each book’s genres, tags and format are added to its own tags (in Japanese), and the Google Books categories and the old workflow tags (needs-metadata, metadata-processed, …) are taken off.',
+      typeof counts.added === 'number' && typeof counts.removed === 'number'
+        ? `${counts.added.toLocaleString('en-US')} tags are added and ${counts.removed.toLocaleString('en-US')} taken off.`
+        : 'Tags are added and old ones taken off as listed.',
+      'Your own tags (PeepoHappyBooks, alpindale, TMW-collection-…) and any tag you add in Calibre stay. A tag you take off a book later is never added again. Each batch can be undone on this page.'
+    ],
+    confirmLabel: 'Turn on and write'
+  };
+}
+
 /** Undo of one stage-2 batch: the old values go back into Calibre. */
 export function undoFileMetadataBatchCopy(count: number): ConfirmCopy {
   return {
@@ -795,6 +818,19 @@ export function undoOnlineSourcesBatchCopy(count: number): ConfirmCopy {
     message: [
       'Titles, authors and their readings, illustrators, series and numbers, descriptions and store links get their old values again, and replaced covers their old picture (kept in the quarantine folder).',
       'A cover added where Calibre had none stays: the content server can’t remove a cover. A value changed in Calibre since is left as it is.'
+    ],
+    confirmLabel: 'Undo this batch',
+    danger: false
+  };
+}
+
+/** Undo of a stage-5 batch (genres and tags, WP20f). */
+export function undoGenresTagsBatchCopy(count: number): ConfirmCopy {
+  return {
+    title: `Put back the old tags of ${count.toLocaleString('en-US')} ${count === 1 ? 'book' : 'books'} in this batch?`,
+    message: [
+      'The genres, tags and format this batch added are taken off again, and the old tags it took off are put back.',
+      'Tags added or taken off in Calibre since stay as they are.'
     ],
     confirmLabel: 'Undo this batch',
     danger: false

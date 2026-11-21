@@ -79,6 +79,7 @@ import {
   type Stage4Gold,
 } from './score';
 import { readStage4Extras, type Stage4Extras } from './snapshot4';
+import { attachMarks } from '../marks';
 import { decideStage4, STAGE4_RULES_VERSION, type Stage4Decision } from './stage4-rules';
 import {
   NATIVELY_SITEMAP,
@@ -420,6 +421,8 @@ export class Stage4Analysis {
     this.withEpubCache = null;
     const t = performance.now();
     this.snapshot = readStage2Snapshot(file);
+    // The Google run's marks stage 5 removed from Calibre still count for the rules (WP20f).
+    attachMarks(this.db, libraryId, this.snapshot.books.values());
     this.extras = readStage4Extras(file);
     this.byUuid = new Map([...this.snapshot.books.values()].map((b) => [b.uuid, b]));
     this.snapshotFor = file;
@@ -2220,6 +2223,12 @@ export class Stage4Analysis {
     const base = this.baseRecord(book, ref.file, ev);
     const record = this.record(book, ref.file, ev);
     return { book, base, record, decision: decideStage4(record) };
+  }
+
+  /** Stage 5 (WP20f): Calibre's series, number and description now (the snapshot's extras). */
+  extrasOf(p: Stage4Progress, calibreId: number): Stage4Extras | null {
+    this.loadSnapshot(p.libraryId);
+    return this.extras?.get(calibreId) ?? null;
   }
 
   /** Proposes a book again with the AI's decided values (from ai_values). */

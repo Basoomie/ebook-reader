@@ -35,6 +35,7 @@ import { illustratorIsNames, readStage2Snapshot, type Stage2Book } from './stage
 import { readStage4Extras, type Stage4Extras } from './stage4/snapshot4';
 import { NAME_MAX_BYTES, calibreNameBytes } from './stage2-rules';
 import { currentAnalysisId, pauseStage } from './stages';
+import { applyTagChange, sameTags, undoTagChange, type TagChange } from './stage5/decide';
 
 export const STAGE2_TERMINAL_APPLY: ItemState[] = ['written', 'failed', 'skipped'];
 
@@ -54,11 +55,12 @@ export interface ListedBook {
   series?: unknown;
   series_index?: unknown;
   comments?: unknown;
+  tags?: unknown;
 }
 
-/** Also series, series_index and comments: stage 4 writes them (WP20e). */
+/** Also series, series_index and comments (stage 4, WP20e) and tags (stage 5, WP20f). */
 export const LIST_FIELDS =
-  'uuid,title,authors,author_sort,identifiers,publisher,languages,cover,last_modified,*illustrator,series,series_index,comments';
+  'uuid,title,authors,author_sort,identifiers,publisher,languages,cover,last_modified,*illustrator,series,series_index,comments,tags';
 
 interface Current {
   uuid: string | null;
@@ -74,6 +76,7 @@ interface Current {
   series?: string | null;
   seriesIndex?: number | null;
   comments?: string;
+  tags?: string[];
 }
 
 const strList = (v: unknown): string[] =>
@@ -115,6 +118,7 @@ export function parseListed(b: ListedBook): Current {
           ? Number(b.series_index)
           : null,
     comments: typeof b.comments === 'string' ? b.comments : '',
+    tags: strList(b.tags),
   };
 }
 
@@ -310,6 +314,9 @@ export const STAGE4_WRITTEN_FIELDS = [
   'cover',
 ] as const;
 
+/** The field stage 5 writes: the book's tags, as a change (add / remove) applied to Calibre's own. */
+export const STAGE5_WRITTEN_FIELDS = ['tags'] as const;
+
 /** The stage-4 gate pauses by its field names; the proposals' fields they hold back. */
 const STAGE4_PAUSED_FIELDS: Record<string, string[]> = {
   title: ['title'],
@@ -331,8 +338,8 @@ export class Stage2Batches {
       calibreDir: string | null;
       cacheDir: string;
     },
-    /** 2: the files' metadata; 4: the online sources (WP20e), the same path. */
-    readonly stage: 2 | 4 = 2,
+    /** 2: the files' metadata; 4: the online sources (WP20e); 5: genres and tags (WP20f). */
+    readonly stage: 2 | 4 | 5 = 2,
   ) {}
 
   /** Stage 4: where the store covers are read (the fetch queue's cached answers). */
@@ -402,7 +409,11 @@ export class Stage2Batches {
       ),
     );
     const written: ReadonlySet<string> | null =
-      this.stage === 4 ? new Set<string>(STAGE4_WRITTEN_FIELDS) : null;
+      this.stage === 4
+        ? new Set<string>(STAGE4_WRITTEN_FIELDS)
+        : this.stage === 5
+          ? new Set<string>(STAGE5_WRITTEN_FIELDS)
+          : null;
     const rows = this.db
       .prepare(
         `SELECT id, calibre_id, calibre_uuid, field, old_json, new_json, evidence_json FROM proposed_changes
@@ -412,7 +423,9 @@ export class Stage2Batches {
              // with only those left says Done, not that its fields are paused.
              this.stage === 4
                ? ` AND field IN (${STAGE4_WRITTEN_FIELDS.map((x) => `'${x}'`).join(', ')})`
-               : ''
+               : this.stage === 5
+                 ? ` AND field = 'tags'`
+                 : ''
            }
          ORDER BY calibre_id, id`,
       )
@@ -495,7 +508,8 @@ export class Stage2Batches {
     const byUuid = new Map([...snap.books.values()].map((b) => [b.uuid, b]));
     // Stage 4 also checks series, number and description against Calibre now.
     const extras = this.stage === 4 ? readStage4Extras(snapFile) : null;
-    if (this.stage === 4) this.reviewLongNames(byBook, byUuid);
+    // Every write makes Calibre rebuild the folder and file names (lessons 2): stages 4 and 5.
+    if (this.stage === 4 || this.stage === 5) this.reviewLongNames(byBook, byUuid);
     const libDir = this.libDir(libraryId);
     const skip: { id: number; reason: string }[] = [];
     const keep: number[] = [];
@@ -579,6 +593,9 @@ export class Stage2Batches {
     extras: Map<number, Stage4Extras> | null = null,
   ): Promise<string | null> {
     if (!book || book.calibreId !== r.calibre_id) return 'The book is no longer in Calibre';
+    // Stage 5's tags: a change applied to what Calibre holds at the write (a tag added since
+    // stays), also on books without an EPUB (removals only): nothing to compare here.
+    if (r.field === 'tags') return null;
     if (!book.filePath) return 'The book has no EPUB in Calibre any more';
     const old = JSON.parse(r.old_json) as unknown;
     const ex = extras?.get(book.calibreId);
@@ -814,6 +831,28 @@ export class Stage2Batches {
     const oldV = JSON.parse(r.old_json) as unknown;
     const newV = JSON.parse(r.new_json) as unknown;
     const seen = { lastModified: cur.lastModified, hasCover: cur.hasCover };
+    if (r.field === 'tags') {
+      // Stage 5 (WP20f): the change is applied to the tags Calibre holds now, so a tag added in
+      // Calibre since the proposal stays; a custom tag is never removed.
+      const before = cur.tags ?? [];
+      const prior =
+        r.state === 'verified' ? (JSON.parse(r.stage2_json ?? '{}') as { final?: string[] }) : null;
+      if (prior?.final && sameTags(before, prior.final)) {
+        // Written before the sidecar restarted: the record verified then stands.
+        this.written(batch, r, cur, oldCoverPath, now);
+        return push('written', null);
+      }
+      const final = applyTagChange(before, newV as TagChange, getSettings(this.db).customTags);
+      const verified = { ...seen, oldValue: before, final };
+      this.setItem(r.item_id, 'verified', null, verified, now);
+      r.stage2_json = JSON.stringify(verified);
+      if (sameTags(final, before)) {
+        this.written(batch, r, cur, oldCoverPath, now);
+        return push('written', null);
+      }
+      answer.fields.push(`tags:${final.join(',')}`);
+      return push('verified', null);
+    }
     if (r.field === 'cover') {
       // Stage 4's evidence holds hadCover itself (the store's picture, not the EPUB's).
       const cv =
@@ -893,6 +932,30 @@ export class Stage2Batches {
       return push('skipped', 'The book is no longer in Calibre');
     }
     const cur = current!;
+    if (r.field === 'tags') {
+      // Stage 5: the cleanup's additions taken off and its removals put back, whatever else the
+      // book's tags hold now (the user's later tags stay).
+      const prior =
+        r.state === 'verified'
+          ? (JSON.parse(r.stage2_json ?? '{}') as { target?: string[] })
+          : null;
+      const now0 = cur.tags ?? [];
+      if (prior?.target && sameTags(now0, prior.target)) {
+        this.restored(batch, r, cur, null, now);
+        return push('restored', null);
+      }
+      const target = undoTagChange(
+        now0,
+        JSON.parse(rec.new_json) as { added: string[]; removed: string[] },
+      );
+      if (sameTags(target, now0)) {
+        this.restored(batch, r, cur, null, now);
+        return push('restored', null);
+      }
+      answer.fields.push(`tags:${target.join(',')}`);
+      this.setItem(r.item_id, 'verified', null, { lastModified: cur.lastModified, target }, now);
+      return push('verified', null);
+    }
     const oldV = JSON.parse(rec.old_json) as unknown;
     const newV = JSON.parse(rec.new_json) as unknown;
     const extraOld = Object.fromEntries(
@@ -981,9 +1044,16 @@ export class Stage2Batches {
           out.push({ itemId: r.item_id, field: r.field, state: r.state });
           continue;
         }
-        const before = JSON.parse(r.stage2_json ?? '{}') as { lastModified?: string | null };
+        const before = JSON.parse(r.stage2_json ?? '{}') as {
+          lastModified?: string | null;
+          final?: string[];
+          target?: string[];
+        };
         let ok = false;
-        if (current && current.uuid === r.calibre_uuid) {
+        if (current && current.uuid === r.calibre_uuid && r.field === 'tags') {
+          const want = batch.kind === 'apply' ? before.final : before.target;
+          ok = !!want && sameTags(current.tags ?? [], want);
+        } else if (current && current.uuid === r.calibre_uuid) {
           if (batch.kind === 'apply') {
             ok =
               r.field === 'cover'
@@ -1045,8 +1115,34 @@ export class Stage2Batches {
   ) {
     const ev = JSON.parse(r.evidence_json) as Evidence2;
     // The value Calibre had when the sidecar verified the book (normally the analysed one).
-    const seen = JSON.parse(r.stage2_json ?? '{}') as { oldValue?: unknown };
+    const seen = JSON.parse(r.stage2_json ?? '{}') as { oldValue?: unknown; final?: string[] };
     const oldJson = 'oldValue' in seen ? JSON.stringify(seen.oldValue ?? null) : r.old_json;
+    // Stage 5: the undo record is exactly what this write added and removed, and the applied
+    // value every tag the cleanup has added to the book (one gone later was removed by the user).
+    let undoNew = r.new_json;
+    let appliedNew = r.new_json;
+    if (r.field === 'tags') {
+      const before = (seen.oldValue as string[] | undefined) ?? [];
+      const final = seen.final ?? before;
+      const low = (l: string[]) => new Set(l.map((t) => t.toLowerCase()));
+      const b = low(before);
+      const f = low(final);
+      const added = final.filter((t) => !b.has(t.toLowerCase()));
+      const removed = before.filter((t) => !f.has(t.toLowerCase()));
+      undoNew = JSON.stringify({ added, removed });
+      const prev = this.db
+        .prepare(
+          `SELECT value_json FROM applied_values WHERE library_id = ? AND calibre_uuid = ? AND field = 'tags'`,
+        )
+        .get(batch.libraryId, r.calibre_uuid) as { value_json: string } | undefined;
+      const prevAdded = prev
+        ? ((JSON.parse(prev.value_json) as { added?: string[] }).added ?? [])
+        : [];
+      const all = [...prevAdded];
+      const seenAll = low(all);
+      for (const t of added) if (!seenAll.has(t.toLowerCase())) all.push(t);
+      appliedNew = JSON.stringify({ added: all });
+    }
     this.db
       .prepare(
         `INSERT OR IGNORE INTO field_undo (batch_id, change_id, library_id, calibre_id, calibre_uuid, field,
@@ -1061,7 +1157,7 @@ export class Stage2Batches {
         r.calibre_uuid,
         r.field,
         oldJson,
-        r.new_json,
+        undoNew,
         JSON.stringify(ev.extra ?? {}),
         current.lastModified,
         r.field === 'cover' ? oldCoverPath : null,
@@ -1080,7 +1176,7 @@ export class Stage2Batches {
         batch.libraryId,
         r.calibre_uuid,
         r.field,
-        r.new_json,
+        appliedNew,
         r.source,
         batch.id,
         now,

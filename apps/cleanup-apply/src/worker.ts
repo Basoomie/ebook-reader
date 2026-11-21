@@ -46,11 +46,14 @@ import type { SidecarConfig } from './config';
 import { CalibredbHelper } from './calibredb-helper';
 import { exists, Quarantine, sha256File } from './quarantine';
 
-/** 1.1.0 (WP20e): stage 4 batches write fields as stage 2's do (series, series_index, comments). */
-export const SIDECAR_VERSION = '1.1.0';
+/**
+ * 1.1.0 (WP20e): stage 4 batches write fields as stage 2's do (series, series_index, comments).
+ * 1.2.0 (WP20f): stage 5 batches write the tags the same way.
+ */
+export const SIDECAR_VERSION = '1.2.0';
 
 /** The stages whose batches write fields per book (verify / written), not remove copies. */
-const fieldStage = (stage: number) => stage === 2 || stage === 4;
+const fieldStage = (stage: number) => stage === 2 || stage === 4 || stage === 5;
 /** calibredb's `trash restore` exists from this version on. */
 export const TRASH_RESTORE_VERSION = '9.18.0';
 /** Heartbeats while a check or a batch runs (the server calls a sidecar silent for 90 s offline). */

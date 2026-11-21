@@ -91,6 +91,19 @@
     }
   }
 
+  // The books whose changes were all undone (the test batches before the run): written too (WP20f).
+  let reproposing = false;
+  async function reproposeUndone() {
+    reproposing = true;
+    try {
+      const r = await api.reproposeStage4Undone();
+      message = `${n(r.books)} books proposed again; they are written with the next batch while stage 4 is On.`;
+      dispatch('changed');
+    } finally {
+      reproposing = false;
+    }
+  }
+
   let askingAgain = false;
   async function askAiAgain() {
     askingAgain = true;
@@ -225,6 +238,18 @@
           {/if}
         </p>
       {/each}
+      {#if (status.undoneBooks ?? 0) > 0}
+        <p class="text-sm" data-testid="cleanup-stage-4-undone">
+          {n(status.undoneBooks ?? 0)} books were left out: their changes were written in a test batch
+          and undone.
+          <button
+            class="c-btn c-btn-ghost"
+            data-testid="cleanup-stage-4-repropose"
+            disabled={reproposing}
+            on:click={reproposeUndone}>Write them too</button
+          >
+        </p>
+      {/if}
       {#if message}<p class="text-sm">{message}</p>{/if}
     {/if}
     {#if stage4GateSummary(gate)}

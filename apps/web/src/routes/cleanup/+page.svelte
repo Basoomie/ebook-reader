@@ -27,6 +27,7 @@
   import CleanupSettings from '$lib/components/cleanup/cleanup-settings.svelte';
   import Stage3Lists from '$lib/components/cleanup/cleanup-stage3-lists.svelte';
   import Stage4Card from '$lib/components/cleanup/cleanup-stage4.svelte';
+  import Stage5Card from '$lib/components/cleanup/cleanup-stage5.svelte';
   import CleanupDetails from '$lib/components/cleanup/cleanup-details.svelte';
   import {
     checksSummary,
@@ -81,7 +82,8 @@
     turnOnContentDuplicatesCopy,
     turnOnFileMetadataCopy,
     turnOnIdenticalFilesCopy,
-    turnOnOnlineSourcesCopy
+    turnOnOnlineSourcesCopy,
+    turnOnGenresTagsCopy
   } from '$lib/confirm/confirm-copy';
   import { pxScreen } from '$lib/css-classes';
   import { pagePath } from '$lib/data/env';
@@ -149,6 +151,7 @@
   $: stage2 = stages.find((s) => s.stage === 2 && s.built);
   $: stage3 = stages.find((s) => s.stage === 3 && s.built);
   $: stage4 = stages.find((s) => s.stage === 4 && s.built);
+  $: stage5 = stages.find((s) => s.stage === 5 && s.built);
   $: bars3 = [
     stage3 ? stage3Progress(stage3, status?.stage3, Date.now()) : null,
     stage3 ? stage3ApplyProgress(status?.stage3, stage3, Date.now()) : null
@@ -294,6 +297,18 @@
       const ok = await confirmDestructive({
         ...turnOnOnlineSourcesCopy({ changes: auto || null, unconfirmed: unconfirmed || null }),
         testid: 'cleanup-turn-on-4-confirm'
+      });
+      if (!ok) return;
+    }
+    if (stage.stage === 5 && mode === 'on') {
+      const c = status?.stage5?.progress?.counts ?? null;
+      const ok = await confirmDestructive({
+        ...turnOnGenresTagsCopy({
+          books: c ? c.books : null,
+          added: c ? c.added : null,
+          removed: c ? c.removed : null
+        }),
+        testid: 'cleanup-turn-on-5-confirm'
       });
       if (!ok) return;
     }
@@ -752,6 +767,16 @@
             {api}
             stage={stage4}
             status={status.stage4 ?? null}
+            {setMode}
+            {analyseAgain}
+            on:changed={refresh}
+          />
+        {/if}
+        {#if stage5 && api}
+          <Stage5Card
+            {api}
+            stage={stage5}
+            status={status.stage5 ?? null}
             {setMode}
             {analyseAgain}
             on:changed={refresh}

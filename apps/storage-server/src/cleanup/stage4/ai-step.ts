@@ -306,6 +306,50 @@ export class Stage4Ai {
     return n;
   }
 
+  /**
+   * Books whose stage-4 changes were all undone (the test batches before the run, WP20e: written,
+   * checked against Calibre and undone; deciding again never proposes them by itself because
+   * their rows stay 'undone'). WP20f: they are written with the rest before stage 5.
+   */
+  undoneBooks(): string[] {
+    const p = this.stage4();
+    if (!p) return [];
+    const undone = this.db
+      .prepare(
+        `SELECT DISTINCT calibre_uuid FROM proposed_changes INDEXED BY proposed_changes_counts
+         WHERE stage = 4 AND library_id = ? AND state = 'undone' AND analysis_id = ?`,
+      )
+      .all(p.libraryId, p.analysisId) as { calibre_uuid: string }[];
+    const other = this.db.prepare(
+      `SELECT 1 FROM proposed_changes INDEXED BY proposed_changes_book
+       WHERE library_id = ? AND calibre_uuid = ? AND stage = 4 AND analysis_id = ?
+         AND state IN ('proposed', 'queued', 'applied') AND field NOT IN ('format', 'kind') LIMIT 1`,
+    );
+    return undone
+      .map((r) => r.calibre_uuid)
+      .filter((u) => !other.get(p.libraryId, u, p.analysisId))
+      .sort();
+  }
+
+  /** Proposes those books again from their stored decisions (no AI call). Returns how many. */
+  async reproposeUndone(): Promise<number> {
+    const p = this.stage4();
+    if (!p || !this.isDone()) return 0;
+    let n = 0;
+    for (const uuid of this.undoneBooks()) {
+      if (
+        await this.deps.analysis.proposeWithAi(
+          p,
+          uuid,
+          storedAiValues(this.db, this.itemKey(p.libraryId, uuid)),
+        )
+      )
+        n++;
+    }
+    if (n) this.deps.log?.(`Stage 4: ${n} books whose changes were undone proposed again`);
+    return n;
+  }
+
   /** Whether the step has work: the rules are done and its decisions are not current. */
   needsWork(): boolean {
     const p = this.stage4();
