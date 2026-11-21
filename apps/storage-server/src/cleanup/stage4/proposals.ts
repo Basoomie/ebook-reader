@@ -17,6 +17,7 @@ import {
   cleanTitle,
   cleanTitleV3,
   lightNormalize,
+  looksLikeMojibake,
   normalizeName,
   nfkc,
   pyStrip,
@@ -46,6 +47,16 @@ const AI_SOURCE_TEXT: Record<string, string> = {
   upgrade_models: 'the stronger models',
 };
 const aiSourceText = (src: string) => AI_SOURCE_TEXT[src] ?? src;
+
+const GARBLE_FIELDS = new Set(['title', 'authors', 'illustrator', 'series']);
+const garbled = (v: unknown): boolean =>
+  typeof v === 'string'
+    ? looksLikeMojibake(v)
+    : Array.isArray(v)
+      ? v.some((x) => typeof x === 'string' && looksLikeMojibake(x))
+      : !!v && typeof v === 'object' && typeof (v as { name?: unknown }).name === 'string'
+        ? looksLikeMojibake((v as { name: string }).name)
+        : false;
 import type { StoreIds } from './store-links';
 import type { Stage4Extras } from './snapshot4';
 
@@ -232,6 +243,12 @@ export function proposeStage4(input: ProposalInput): Stage4Proposal[] {
 
   const push = (p: Stage4Proposal, current: unknown, appliedField = p.field) => {
     if (JSON.stringify(p.old) === JSON.stringify(p.new)) return;
+    // Garbled text (a file read in the wrong encoding) never goes into Calibre (lessons 2),
+    // whichever source gave it: the AI's fallback to the rules' guess found one (WP20e stop 1).
+    if (p.class === 'auto' && GARBLE_FIELDS.has(p.field) && garbled(p.new)) {
+      p.class = 'review';
+      p.reason = 'The value is garbled (wrong text encoding)';
+    }
     if (
       p.class === 'auto' &&
       input.applied.has(appliedField) &&

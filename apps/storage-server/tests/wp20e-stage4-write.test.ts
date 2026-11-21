@@ -55,6 +55,12 @@ describe('stage 4 On: written through the field-write path', () => {
         comments: '古いあらすじ',
         epub: makeMetaEpub({ title: '新しい題名 2', creators: [{ name: '作者', role: 'aut' }] }),
       }),
+      S3: await env.lib.addBook({
+        title: '短い題名',
+        authors: ['作者三'],
+        cover: 'none',
+        epub: makeMetaEpub({ title: '短い題名', creators: [{ name: '作者三', role: 'aut' }] }),
+      }),
       S2: await env.lib.addBook({
         title: '別の本',
         authors: ['別の作者'],
@@ -156,6 +162,9 @@ describe('stage 4 On: written through the field-write path', () => {
     p(ids.S1, 'format', null, 'light novel');
     p(ids.S1, 'kind', null, 'full');
     p(ids.S2, 'title', '別の本', '直さない題名', 'review');
+    // A title whose folder name would not fit in 255 bytes: the book's other fields wait too.
+    p(ids.S3, 'title', '短い題名', '長'.repeat(100));
+    p(ids.S3, 'description', null, 'あらすじ');
   });
 
   afterEach(async () => {
@@ -248,13 +257,25 @@ describe('stage 4 On: written through the field-write path', () => {
     expect(fs.readFileSync(path.join(folder, 'cover.jpg')).equals(storeCover)).toBe(true);
     // Review items and the fields stage 5 carries stay out.
     expect(calibreRecord(env.lib, ids.S2)!.title).toBe('別の本');
+    expect(calibreRecord(env.lib, ids.S3)!.title).toBe('短い題名');
+    expect(comments(ids.S3)).toBeNull();
+    const long = env.cleanupDb
+      .prepare(
+        `SELECT field, class, review_reason FROM proposed_changes WHERE calibre_id = ? ORDER BY field`,
+      )
+      .all(ids.S3) as { field: string; class: string; review_reason: string }[];
+    expect(
+      long.every((x) => x.class === 'review' && /Too long for a folder name/.test(x.review_reason)),
+    ).toBe(true);
     const calls = setCalls();
     expect(calls).toHaveLength(1);
     expect(calls[0].some((a) => /^(format|kind|tags):/.test(a))).toBe(false);
     expect(calls[0].filter((a) => a.startsWith('author_sort:'))).toEqual(['author_sort:サクシャ']);
     const states = env.cleanupDb
-      .prepare(`SELECT field, state FROM proposed_changes WHERE stage = 4 ORDER BY field`)
-      .all() as { field: string; state: string }[];
+      .prepare(
+        `SELECT field, state FROM proposed_changes WHERE stage = 4 AND calibre_id = ? ORDER BY field`,
+      )
+      .all(ids.S1) as { field: string; state: string }[];
     expect(
       Object.fromEntries(states.filter((s) => s.field !== 'title').map((s) => [s.field, s.state])),
     ).toMatchObject({

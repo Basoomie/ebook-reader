@@ -377,6 +377,15 @@ describe('proposals from the decided values', () => {
       new: ['絵描き'],
     });
   });
+  it('sends a garbled value to review whatever its source (a file read in the wrong encoding)', () => {
+    // Mojibake of UTF-8 Japanese read as Shift_JIS, as stage 2's check knows it.
+    const bad = '縺匃縺輔繧譚繧〃繝・';
+    const ps = proposeStage4(input({ asked: true, au: v([bad], 'rules_guess', true) }));
+    expect(ps.find((p) => p.field === 'authors')).toMatchObject({
+      class: 'review',
+      reason: 'The value is garbled (wrong text encoding)',
+    });
+  });
   it('still sends a name with "&" to review', () => {
     const ps = proposeStage4(input({ asked: true, au: v(['A&B'], 'both_models') }));
     expect(ps.find((p) => p.field === 'authors')).toMatchObject({ class: 'review' });

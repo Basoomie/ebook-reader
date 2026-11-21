@@ -97,9 +97,14 @@ async function main() {
 
   let longest = 0;
   let last = Date.now();
+  /** Every stretch over 200 ms that held the event loop, with the phase it happened in. */
+  const stalls: { at: string; phase: string; ms: number }[] = [];
+  let phaseNow = 'start';
   const lag = setInterval(() => {
     const now = Date.now();
-    longest = Math.max(longest, now - last - 10);
+    const d = now - last - 10;
+    longest = Math.max(longest, d);
+    if (d > 200) stalls.push({ at: new Date(now).toLocaleTimeString(), phase: phaseNow, ms: d });
     last = now;
   }, 10);
   const times: Record<string, number> = {};
@@ -109,6 +114,7 @@ async function main() {
     const t0 = Date.now();
     const before = longest;
     longest = 0;
+    phaseNow = name;
     await fn();
     delays[name] = Math.max(delays[name] ?? 0, longest);
     longest = Math.max(before, longest);
@@ -126,7 +132,7 @@ async function main() {
 
   // The evidence of every proposed book.
   await timeIt('evidence', async () => {
-    while (ai.progress()?.phase !== 'models') {
+    while ((ai.progress()?.phase ?? 'evidence') === 'evidence') {
       await ai.step(() => false);
       const a = ai.progress();
       if (a && a.items % 5000 < 50) log(`evidence: ${a.items} books`);
@@ -202,6 +208,14 @@ async function main() {
     return;
   }
 
+  // --redecide: decide again from the stored answers (nothing is asked), to time it.
+  if (has('redecide')) {
+    const st = getStage(db, 4).progress as unknown as Stage4Progress & {
+      ai?: { rulesKey: string | null };
+    };
+    if (st.ai) st.ai.rulesKey = 'redecide';
+    db.prepare('UPDATE stages SET progress_json = ? WHERE stage = 4').run(JSON.stringify(st));
+  }
   // The labeled books: models, then decide (every book) and the gate.
   const t0 = Date.now();
   for (;;) {
@@ -233,6 +247,7 @@ async function main() {
     minutes: (Date.now() - t0) / 60000,
     times: { ...times, ...a.times },
     longestDelayMs: delays,
+    stalls,
     bookmeterEditions: pb.bookmeterEditions,
     gate: a.gate,
     ai: a.ai,

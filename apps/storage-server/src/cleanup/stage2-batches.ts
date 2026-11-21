@@ -33,6 +33,7 @@ import { listFieldPauses } from './stage2-gate';
 import { titleSort } from './title-rules';
 import { illustratorIsNames, readStage2Snapshot, type Stage2Book } from './stage2-snapshot';
 import { readStage4Extras, type Stage4Extras } from './stage4/snapshot4';
+import { NAME_MAX_BYTES, calibreNameBytes } from './stage2-rules';
 import { currentAnalysisId, pauseStage } from './stages';
 
 export const STAGE2_TERMINAL_APPLY: ItemState[] = ['written', 'failed', 'skipped'];
@@ -292,6 +293,7 @@ export function sameTime(a: string | null | undefined, b: string | null | undefi
 }
 
 export const SPLIT_NAME_REASON = 'A name contains &, which Calibre splits into two names';
+export const LONG_NAME_REASON = "Too long for a folder name in Calibre's library";
 export const PROPOSED_TWICE_REASON = 'The same change was proposed twice; it is written once';
 export const TWO_VALUES_REASON =
   'Two different changes were proposed for this field; run the analysis again';
@@ -487,6 +489,7 @@ export class Stage2Batches {
     const byUuid = new Map([...snap.books.values()].map((b) => [b.uuid, b]));
     // Stage 4 also checks series, number and description against Calibre now.
     const extras = this.stage === 4 ? readStage4Extras(snapFile) : null;
+    if (this.stage === 4) this.reviewLongNames(byBook, byUuid);
     const libDir = this.libDir(libraryId);
     const skip: { id: number; reason: string }[] = [];
     const keep: number[] = [];
@@ -529,6 +532,37 @@ export class Stage2Batches {
       batch: this.batches.createBatch(this.stage, libraryId, 'apply', null, keep),
       reason: null,
     };
+  }
+
+  /**
+   * Stage 4: every write makes Calibre rebuild the book's folder and file names from its title
+   * and first author (lessons 2), so a book whose names would not fit in 255 bytes after this
+   * batch gets none of its fields written: they go to review with the reason, checked now with
+   * Calibre's current values, not only when they were proposed.
+   */
+  private reviewLongNames(
+    byBook: Map<string, { id: number; field: string; new_json: string }[]>,
+    byUuid: Map<string, Stage2Book>,
+  ): void {
+    const now = Date.now();
+    const mark = this.db.prepare(
+      `UPDATE proposed_changes SET class = 'review', review_reason = ?, updated_at = ? WHERE id = ?`,
+    );
+    for (const [uuid, items] of [...byBook]) {
+      const book = byUuid.get(uuid);
+      if (!book) continue;
+      const t = items.find((x) => x.field === 'title');
+      const a = items.find((x) => x.field === 'authors');
+      const title = t ? (JSON.parse(t.new_json) as string) : book.title;
+      const first = a
+        ? ((JSON.parse(a.new_json) as string[])[0] ?? 'Unknown')
+        : (book.authors[0] ?? 'Unknown');
+      if (calibreNameBytes(book.calibreId, title, first) <= NAME_MAX_BYTES) continue;
+      this.db.transaction(() => {
+        for (const x of items) mark.run(LONG_NAME_REASON, now, x.id);
+      })();
+      byBook.delete(uuid);
+    }
   }
 
   private async planCheck(
