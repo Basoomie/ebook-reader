@@ -8,8 +8,9 @@
   /**
    * WP19d: a note about a book (or one whose highlight is gone) as a card with a gold
    * edge and ⋮ (Copy note, Edit note, Delete note). Moved out of notes-list.svelte (Notes at
-   * scale, 2026-11-21); in the Highlights view it shows the book's title and a › that opens
-   * the book (the text itself stays selectable).
+   * scale, 2026-11-21); in the Highlights view it shows the book's title and "Open ›" at the
+   * end of the date line (the text itself stays selectable). Copy note says "Copied ✓" in
+   * the menu until it closes.
    */
   import { createEventDispatcher } from 'svelte';
   import Fa from 'svelte-fa';
@@ -20,6 +21,7 @@
   import type { NoteItem } from '$lib/notes/highlights';
   import { formatWhen } from '$lib/notes/notes-format';
   import { cardBookLine, type NotesBookInfo } from '$lib/notes/notes-view';
+  import { copyText } from '$lib/functions/copy-text';
   import type { NotesListState } from './notes-list-state';
 
   export let note: NoteItem;
@@ -33,7 +35,15 @@
   const menuItem = 'c-btn c-btn-ghost w-full justify-start px-3 text-left text-sm';
   const dotsButton = 'c-btn c-btn-ghost h-11 min-h-0 w-11 p-0';
 
+  let copied: '' | 'note' | 'failed' = '';
+  let menuOpen = false;
+
+  $: if (!menuOpen) copied = '';
   $: editing = $list.editing?.key === note.id;
+
+  async function copy() {
+    copied = (await copyText(note.body)) ? 'note' : 'failed';
+  }
 </script>
 
 <article class="c-hl-card c-book-note rounded" data-testid="notes-page-book-note">
@@ -53,9 +63,23 @@
       {#if !editing}
         <p class="mt-1 whitespace-pre-wrap break-words"><MarkedText text={note.body} {words} /></p>
       {/if}
-      <p class="mt-2 text-xs text-c-muted">{formatWhen(note.createdAt)}</p>
+      <div class="mt-2 flex items-center gap-2">
+        <p class="min-w-0 flex-1 text-xs text-c-muted">{formatWhen(note.createdAt)}</p>
+        {#if showBook}
+          <button
+            type="button"
+            class="c-open -my-3 inline-flex min-h-[2.75rem] shrink-0 items-center gap-1 rounded px-2 text-xs font-medium"
+            title="Open book"
+            aria-label="Open book"
+            data-testid="notes-page-book-note-open"
+            on:click={() => dispatch('open')}
+          >
+            Open <Fa icon={faChevronRight} size="xs" />
+          </button>
+        {/if}
+      </div>
     </div>
-    <div class="flex shrink-0 flex-col items-center p-1">
+    <div class="shrink-0 p-1">
       <DropdownMenu
         buttonClass={dotsButton}
         align="right"
@@ -63,6 +87,7 @@
         testid="notes-page-note-menu"
         panelWidth="w-48"
         floating
+        bind:open={menuOpen}
         let:close
       >
         <span slot="button" class="flex items-center justify-center" title="More">
@@ -70,17 +95,14 @@
           <span class="sr-only">More</span>
         </span>
         <div class="flex flex-col gap-1">
-          <button
-            type="button"
-            class={menuItem}
-            data-testid="notes-page-copy-note"
-            on:click={() => {
-              close();
-              list.copy(note.body);
-            }}
-          >
-            Copy note
+          <button type="button" class={menuItem} data-testid="notes-page-copy-note" on:click={copy}>
+            <span aria-live="polite">{copied === 'note' ? 'Copied ✓' : 'Copy note'}</span>
           </button>
+          {#if copied === 'failed'}
+            <p class="px-3 text-xs text-c-muted" role="alert" data-testid="notes-copy-failed">
+              This browser didn't allow copying: select the text and copy it.
+            </p>
+          {/if}
           <button
             type="button"
             class={menuItem}
@@ -107,18 +129,6 @@
           </button>
         </div>
       </DropdownMenu>
-      {#if showBook}
-        <button
-          type="button"
-          class="c-btn c-btn-ghost h-11 min-h-0 w-11 p-0 text-c-muted"
-          title="Open book"
-          aria-label="Open book"
-          data-testid="notes-page-book-note-open"
-          on:click={() => dispatch('open')}
-        >
-          <Fa icon={faChevronRight} />
-        </button>
-      {/if}
     </div>
   </div>
   {#if editing && $list.editing}
@@ -148,6 +158,26 @@
   .c-note-body {
     color: var(--c-ink);
     user-select: text;
+  }
+
+  .c-open {
+    color: var(--c-link);
+  }
+
+  .c-open:focus-visible {
+    outline: 2px solid var(--c-link);
+    outline-offset: -2px;
+  }
+
+  @media (hover: hover) {
+    :global(html:not(.eink)) .c-open:hover {
+      background-color: var(--c-tint);
+    }
+  }
+
+  :global(html.eink) .c-open {
+    color: #000;
+    text-decoration: underline;
   }
 
   .c-danger {
