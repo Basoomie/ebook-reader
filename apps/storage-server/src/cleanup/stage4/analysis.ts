@@ -1630,10 +1630,60 @@ export class Stage4Analysis {
       calibreCover,
       ai: ai === undefined ? storedAiValues(this.db, `${p.libraryId}:${uuid}`) : ai,
       spelling: this.snapshot ? spellingLookup(this.snapshot.names) : undefined,
+      seriesSpelling: this.seriesSpelling(p),
       sameDistance: settings.covers.sameDistance,
       smallCoverPx: settings.fetch.smallCoverPx,
     });
     return { proposals, decision };
+  }
+
+  private spellingCache: { at: number; map: Map<string, string> } | null = null;
+  /** The AI step's chosen spelling per series (series-spelling.ts), or null before it chose. */
+  private seriesSpelling(p: Stage4Progress): Map<string, string> | null {
+    const s = (
+      p as { ai?: { seriesSpelling?: { at: number; names: Record<string, string> } | null } }
+    ).ai?.seriesSpelling;
+    if (!s) return null;
+    if (this.spellingCache?.at !== s.at)
+      this.spellingCache = { at: s.at, map: new Map(Object.entries(s.names)) };
+    return this.spellingCache.map;
+  }
+
+  /**
+   * Every Calibre book's series as stage 4 On would leave it, before the one-spelling choice:
+   * an automatic series proposal's decided name, else Calibre's name now (WP20e).
+   */
+  seriesAfterOn(p: Stage4Progress): { uuid: string; after: string | null; now: string | null }[] {
+    const snap = this.loadSnapshot(p.libraryId);
+    const extras = this.extras;
+    const proposed = new Map<string, string | null>();
+    for (const r of this.db
+      .prepare(
+        `SELECT calibre_uuid, new_json, evidence_json FROM proposed_changes
+         WHERE stage = 4 AND library_id = ? AND field = 'series' AND state = 'proposed' AND class = 'auto'`,
+      )
+      .all(p.libraryId) as {
+      calibre_uuid: string;
+      new_json: string;
+      evidence_json: string | null;
+    }[]) {
+      const v = JSON.parse(r.new_json) as { name?: string | null } | null;
+      const ev = r.evidence_json
+        ? (JSON.parse(r.evidence_json) as { spelling?: { asDecided?: string | null } })
+        : {};
+      proposed.set(
+        r.calibre_uuid,
+        ev.spelling && 'asDecided' in ev.spelling
+          ? (ev.spelling.asDecided ?? null)
+          : (v?.name ?? null),
+      );
+    }
+    const out: { uuid: string; after: string | null; now: string | null }[] = [];
+    for (const b of snap.books.values()) {
+      const now = extras?.get(b.calibreId)?.series ?? null;
+      out.push({ uuid: b.uuid, after: proposed.has(b.uuid) ? proposed.get(b.uuid)! : now, now });
+    }
+    return out;
   }
 
   private writeProposals(

@@ -79,6 +79,8 @@ export function kanaNumber(kana: string): number | null {
 
 const OPEN = '(（[［【〈《「『<＜';
 const CLOSE = ')）]］】〉》」』>＞';
+/** A dash subtitle opened after a space and not closed: 「喰 -kuu」. */
+export const OPEN_DASH = /(?:^|\s)[-‐―][^-‐―\s][^-‐―]*$/u;
 /** Cuts a name back to before an unclosed bracket and drops trailing 第 / の / vol. and spaces. */
 function tidy(p: string): string {
   let s = p;
@@ -91,7 +93,18 @@ function tidy(p: string): string {
     if (cut < 0) break;
     s = s.slice(0, cut);
   }
-  return s.replace(/(?:[\s・\-‐―~～:：]|第|の|vol\.?|Vol\.?)+$/u, '').trim();
+  const cut = s.replace(/(?:[\s・\-‐―~～〜:：]|第|の|vol\.?|Vol\.?)+$/u, '');
+  // A closing wave dash that pairs with an opening one belongs to the name (「無職転生 ~異世界
+  // 行ったら本気だす~」): cutting it left 324 series without their closing dash (WP20e, the
+  // stage-4 On preparation, 2026-11-20).
+  const waves = (x: string) => (x.match(/[~～〜]/gu) ?? []).length;
+  const removed = s.slice(cut.length);
+  const closing = /[~～〜]/u.exec(removed);
+  if (closing && waves(cut) % 2 === 1) return (cut + closing[0]).trim();
+  // The same for a dash subtitle opened after a space (「喰 -kuu-」).
+  const dash = /[-‐―]/u.exec(removed);
+  if (dash && OPEN_DASH.test(cut)) return (cut + dash[0]).trim();
+  return cut.trim();
 }
 
 /** The book's title up to its volume number (or the whole title when it has none). */

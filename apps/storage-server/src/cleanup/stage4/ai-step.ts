@@ -38,6 +38,7 @@ import {
 import type { Stage4Analysis, Stage4Progress } from './analysis';
 import { SCORED_FIELDS, FIELD_NAMES } from './score';
 import { STAGE4_RULES_VERSION } from './stage4-rules';
+import { chooseSpellings, seriesKey } from './series-spelling';
 
 const STAGE = 4;
 const SLICE = 50;
@@ -54,7 +55,7 @@ class Yielder {
   }
 }
 
-export type Stage4AiPhase = 'evidence' | 'models' | 'decide' | 'gate' | 'done';
+export type Stage4AiPhase = 'evidence' | 'models' | 'decide' | 'spelling' | 'gate' | 'done';
 
 export interface Stage4AiProgress {
   /** The stage-4 analysis these decisions belong to (also the runner's run id). */
@@ -94,6 +95,13 @@ export interface Stage4AiProgress {
   total?: number;
   /** When the asking started, and each model's answers then (its measured rate since). */
   modelsStart?: { at: number; done: Record<string, number> } | null;
+  /**
+   * One spelling per series (series-spelling.ts): the chosen spelling by series key, set after
+   * deciding; the books whose series proposals it changes are proposed again.
+   */
+  seriesSpelling?: { at: number; names: Record<string, string> } | null;
+  /** The spelling phase: series with more than one spelling, and books proposed again. */
+  spelling?: { series: number; books: number; total: number } | null;
   error: string | null;
   times: Record<string, { ms: number; items: number }>;
 }
@@ -155,6 +163,9 @@ export class Stage4Ai {
     key: string;
     rows: { calibre_uuid: string; calibre_id: number; labeled: number }[];
   } | null = null;
+
+  /** The books the spelling phase proposes again, in uuid order (rebuilt after a restart). */
+  private respell: { key: string; uuids: string[] } | null = null;
 
   constructor(private readonly deps: Stage4AiDeps) {}
 
@@ -240,6 +251,10 @@ export class Stage4Ai {
     if (ai.phase === 'decide') {
       const total = ai.items;
       return { phase: ai.phase, done: ai.decided, total, secondsLeft: since(ai.decided, total) };
+    }
+    if (ai.phase === 'spelling') {
+      const total = ai.spelling?.total ?? 0;
+      return { phase: ai.phase, done: ai.cursor, total, secondsLeft: since(ai.cursor, total) };
     }
     if (ai.phase === 'models') {
       const models = this.byModel(ai.analysisId);
@@ -353,8 +368,19 @@ export class Stage4Ai {
       if (ai.phase === 'decide') {
         const r = await this.decideStep(p, ai, shouldStop);
         this.time(ai, 'decide', Date.now() - t0, r.items);
-        if (r.finished) this.next(ai, 'gate');
+        if (r.finished) this.next(ai, 'spelling');
         else this.save(ai);
+        return 'more';
+      }
+      if (ai.phase === 'spelling') {
+        const r = await this.spellingStep(p, ai, shouldStop);
+        this.time(ai, 'spelling', Date.now() - t0, r.items);
+        if (r.finished) {
+          this.deps.log?.(
+            `Stage 4: one spelling per series (${ai.spelling?.series ?? 0} series, ${ai.spelling?.books ?? 0} books proposed again)`,
+          );
+          this.next(ai, 'gate');
+        } else this.save(ai);
         return 'more';
       }
       if (ai.phase === 'gate') {
@@ -526,6 +552,59 @@ export class Stage4Ai {
       n++;
     }
     return { finished: false, items: n };
+  }
+
+  /**
+   * One spelling per series (decided with the user 2026-11-21): after every book is decided,
+   * the spelling of each series with more than one is chosen from the names the books would
+   * have after On, and the books of those series (and of the last choice's) are proposed again
+   * with it. Resumable: the books are walked in uuid order by position.
+   */
+  private async spellingStep(
+    p: Stage4Progress,
+    ai: Stage4AiProgress,
+    shouldStop: () => boolean,
+  ): Promise<{ finished: boolean; items: number }> {
+    const runKey = `${ai.analysisId}|${ai.phaseStartedAt ?? 0}`;
+    if (ai.cursor === 0 || this.respell?.key !== runKey) {
+      const books = this.deps.analysis.seriesAfterOn(p);
+      const map = chooseSpellings(books);
+      const keys = new Set([...map.keys(), ...Object.keys(ai.seriesSpelling?.names ?? {})]);
+      const uuids = books
+        .filter(
+          (b) =>
+            (b.after !== null && keys.has(seriesKey(b.after))) ||
+            (b.now !== null && keys.has(seriesKey(b.now))),
+        )
+        .map((b) => b.uuid)
+        .sort();
+      this.respell = { key: runKey, uuids };
+      if (ai.cursor === 0) {
+        ai.seriesSpelling = { at: Date.now(), names: Object.fromEntries(map) };
+        ai.spelling = { series: map.size, books: 0, total: uuids.length };
+        this.save(ai);
+      }
+    }
+    const fresh = this.stage4() ?? p;
+    const uuids = this.respell.uuids;
+    let n = 0;
+    const y = new Yielder();
+    while (ai.cursor < uuids.length && n < SLICE) {
+      await y.maybe();
+      if (shouldStop()) return { finished: false, items: n };
+      const uuid = uuids[ai.cursor];
+      if (
+        await this.deps.analysis.proposeWithAi(
+          fresh,
+          uuid,
+          storedAiValues(this.db, this.itemKey(p.libraryId, uuid)),
+        )
+      )
+        if (ai.spelling) ai.spelling.books++;
+      ai.cursor++;
+      n++;
+    }
+    return { finished: ai.cursor >= uuids.length, items: n };
   }
 
   private gateStep(p: Stage4Progress, ai: Stage4AiProgress): void {

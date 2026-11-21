@@ -58,6 +58,7 @@ const garbled = (v: unknown): boolean =>
         ? looksLikeMojibake((v as { name: string }).name)
         : false;
 import type { StoreIds } from './store-links';
+import { spellingOf } from './series-spelling';
 import type { Stage4Extras } from './snapshot4';
 
 export const STAGE4_FIELDS = [
@@ -117,6 +118,8 @@ export interface ProposalInput {
    */
   calibreCover?: CalibreCoverNow | null;
   spelling?: SpellingLookup;
+  /** The chosen spelling per series key (series-spelling.ts); none = names as decided. */
+  seriesSpelling?: ReadonlyMap<string, string> | null;
   sameDistance: number;
   smallCoverPx: number;
 }
@@ -450,14 +453,27 @@ export function proposeStage4(input: ProposalInput): Stage4Proposal[] {
       : 'The online sources do not confirm the number',
   );
   const seName = fse.value?.name ?? null;
-  const series = seName ? pyStrip(lightNormalize(seName)) : null;
+  const decidedSeries = seName ? pyStrip(lightNormalize(seName)) : null;
+  // One spelling per series across the library (series-spelling.ts); a value the user set is
+  // never changed.
+  const respell = (n: string | null) =>
+    n && input.seriesSpelling && fse.ai?.source !== 'user'
+      ? spellingOf(input.seriesSpelling, n)
+      : n;
+  const series = respell(decidedSeries);
+  const spelling =
+    series !== decidedSeries ? { spelling: { asDecided: decidedSeries } } : undefined;
   const index = fix.value?.n ?? null;
   const oldSeries = { name: extras?.series ?? null, index: extras?.seriesIndex ?? null };
   const newSeries = { name: series, index: series ? index : null };
+  let seriesProposed = false;
   if (
     fse.value !== null &&
-    (N(newSeries.name ?? '') !== N(oldSeries.name ?? '') || newSeries.index !== oldSeries.index)
+    (N(newSeries.name ?? '') !== N(oldSeries.name ?? '') ||
+      newSeries.index !== oldSeries.index ||
+      (newSeries.name !== null && newSeries.name !== oldSeries.name && spelling !== undefined))
   ) {
+    seriesProposed = true;
     const auto = fse.auto && (newSeries.name === null || fix.auto);
     const unconfirmed = fse.unconfirmed || (newSeries.name !== null && fix.unconfirmed);
     const both = {
@@ -481,9 +497,27 @@ export function proposeStage4(input: ProposalInput): Stage4Proposal[] {
           ),
           reason:
             auto && !unconfirmed ? null : fse.unconfirmed || !fse.auto ? fse.reason : fix.reason,
+          evidence: spelling,
         },
         both,
       ),
+      oldSeries,
+    );
+  }
+  // Calibre's own name kept (no change proposed) but spelled another way than the series' chosen
+  // spelling: only the spelling changes, the number stays.
+  const chosenNow = respell(oldSeries.name);
+  if (!seriesProposed && oldSeries.name && chosenNow && chosenNow !== oldSeries.name) {
+    push(
+      {
+        field: 'series',
+        old: oldSeries,
+        new: { name: chosenNow, index: oldSeries.index },
+        class: 'auto',
+        source: 'spelling',
+        reason: null,
+        evidence: { spelling: { asDecided: oldSeries.name } },
+      },
       oldSeries,
     );
   }

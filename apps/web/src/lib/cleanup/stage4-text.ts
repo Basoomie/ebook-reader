@@ -26,6 +26,7 @@ const AI_PHASES: Record<string, string> = {
   evidence: 'gathering what the models read',
   models: 'asking both models',
   decide: 'deciding every field',
+  spelling: 'giving each series one spelling',
   gate: 'checking the labeled books',
   done: 'done'
 };
@@ -34,6 +35,7 @@ const AI_BAR_LABELS: Record<string, string> = {
   evidence: 'Gathering what the models read',
   models: 'Asking both models',
   decide: 'Deciding every field',
+  spelling: 'Giving each series one spelling',
   gate: 'Checking the labeled books'
 };
 
@@ -141,7 +143,8 @@ export const SOURCE_NAMES: Record<string, string> = {
   file: 'The file',
   ndl: 'Web NDL Authorities',
   generated: 'Generated (spot check)',
-  rules: 'The rules'
+  rules: 'The rules',
+  spelling: 'The series’ spelling on most books'
 };
 
 export function sourceName(source: string): string {
