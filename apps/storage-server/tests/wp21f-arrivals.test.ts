@@ -1732,4 +1732,21 @@ describe("Audiobookshelf's values against our metadata.json", () => {
     );
     expect(absValuesAgree(null, ours)).toBe(false);
   });
+
+  it('a field we leave empty is ABS’s to fill (the e2e: an unknown author shows as _Unknown)', () => {
+    const blank = { title: '新しい本Z', authors: [], narrators: [], series: [], asin: null };
+    expect(
+      absValuesAgree(
+        { title: '新しい本Z', authorName: '_Unknown', narratorName: '', series: [] },
+        blank,
+      ),
+    ).toBe(true);
+    // A value we set still has to be there.
+    expect(
+      absValuesAgree(
+        { title: '新しい本Z', authorName: '_Unknown' },
+        { ...blank, authors: ['作者Z'] },
+      ),
+    ).toBe(false);
+  });
 });

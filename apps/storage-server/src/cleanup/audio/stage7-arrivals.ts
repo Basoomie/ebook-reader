@@ -113,6 +113,8 @@ export interface Stage7Progress {
     batches: number;
     startedAt: number | null;
     lockWaitMs: number;
+    /** When the build started waiting for the disk (its wait counts until it gets it). */
+    waitSince?: number | null;
     yields: number;
     firstFailure: string | null;
   };
@@ -1297,13 +1299,18 @@ export class AudioStage7 {
       p.build.yields++;
     }
     if (!lock.holds(OWNER)) {
-      const t = this.now();
+      // The wait counts from its start to the turn that gets the disk (the loop's pauses
+      // between turns included).
+      p.build.waitSince ??= this.now();
       const got = await Promise.race([
         lock.acquire(OWNER, 'audio', stop),
         sleep(HOLD_MS).then(() => false),
       ]);
-      p.build.lockWaitMs += this.now() - t;
       if (!got && !lock.holds(OWNER)) return;
+    }
+    if (p.build.waitSince) {
+      p.build.lockWaitMs += this.now() - p.build.waitSince;
+      p.build.waitSince = null;
     }
     this.handing = lock.holds(OWNER) && !lock.shouldYield(OWNER);
   }
@@ -2468,11 +2475,15 @@ export function absValuesAgree(
   const a1 = names(
     abs.authors ?? (typeof abs.authorName === 'string' ? abs.authorName.split(', ') : []),
   );
-  if (names(ours.authors).join('|') !== a1.join('|')) return false;
+  // A field our metadata.json leaves empty is left to ABS's other sources (an unknown author's
+  // book is under _Unknown/, which ABS shows as its author): only the values we set are compared.
+  const mine = names(ours.authors);
+  if (mine.length && mine.join('|') !== a1.join('|')) return false;
   const n1 = names(
     abs.narrators ?? (typeof abs.narratorName === 'string' ? abs.narratorName.split(', ') : []),
   );
-  if (names(ours.narrators).join('|') !== n1.join('|')) return false;
+  const myNarrators = names(ours.narrators);
+  if (myNarrators.length && myNarrators.join('|') !== n1.join('|')) return false;
   const ourSeries = Array.isArray(ours.series) ? (ours.series as string[]) : [];
   const absSeries = Array.isArray(abs.series)
     ? (abs.series as { name?: string; sequence?: string | null }[]).map((s) =>
@@ -2480,7 +2491,7 @@ export function absValuesAgree(
       )
     : [];
   const sk = (l: string[]) => l.map(norm).sort().join('|');
-  if (sk(ourSeries) !== sk(absSeries)) return false;
+  if (ourSeries.length && sk(ourSeries) !== sk(absSeries)) return false;
   if ((ours.asin ?? null) !== null && norm(abs.asin) !== norm(ours.asin)) return false;
   return true;
 }
