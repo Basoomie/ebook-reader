@@ -47,8 +47,8 @@
       </a>
       <div class="flex h-full items-center">
         <slot />
-        <AppNavLinks />
         <AppThemeToggle />
+        <AppNavLinks />
       </div>
     </div>
   </div>

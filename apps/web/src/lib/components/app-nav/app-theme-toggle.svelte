@@ -33,7 +33,7 @@
 <svelte:window on:keydown={onWindowKeydown} />
 
 {#if !$einkMode$}
-  <div class="hidden h-full shrink-0 items-center pl-2 sm:flex">
+  <div class="hidden h-full shrink-0 items-center pr-1 sm:flex">
     <button
       type="button"
       class="c-focus t-toggle flex h-8 w-8 items-center justify-center rounded-full font-mincho text-sm font-bold leading-none"
