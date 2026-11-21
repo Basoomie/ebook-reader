@@ -21,6 +21,7 @@ import { AbsClient, AbsError } from './abs-client';
 import { AbsCoverWriter } from './abs-cover-writer';
 import { insideRoot, lstatEntry, readSmall } from './audio-source-fs';
 import { AREA_FOLDERS } from './build-plan';
+import { KEEP_PAUSED_AT, MARK_PAUSED_AT, shiftPastPause } from './pause-time';
 import type { AudioStage6 } from './stage6-build';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -34,6 +35,8 @@ export interface CoversProgress {
   finishedAt: number | null;
   libraries: { main: string | null; ai: string | null };
   current: { step: string; done: number; total: number; startedAt: number } | null;
+  /** When the pause now on began (pause-time.ts), else null. */
+  pausedAt?: number | null;
   counts: Record<string, number>;
   /** The old library's cover.png files, and how many belong to the books without art. */
   coverPng: { total: number; ofTheseBooks: number; used: number } | null;
@@ -101,21 +104,36 @@ export class AudioCovers {
     if (state)
       this.db
         .prepare(
-          'UPDATE audio_covers_state SET state = ?, progress_json = ?, updated_at = ? WHERE id = 1',
+          `UPDATE audio_covers_state SET state = ?, progress_json = ${KEEP_PAUSED_AT}, updated_at = ? WHERE id = 1`,
         )
         .run(state, JSON.stringify(p), Date.now());
     else
       this.db
-        .prepare('UPDATE audio_covers_state SET progress_json = ?, updated_at = ? WHERE id = 1')
+        .prepare(
+          `UPDATE audio_covers_state SET progress_json = ${KEEP_PAUSED_AT}, updated_at = ? WHERE id = 1`,
+        )
         .run(JSON.stringify(p), Date.now());
   }
 
   private setPause(reason: string | null, detail: string | null = null): void {
-    this.db
-      .prepare(
-        'UPDATE audio_covers_state SET pause_reason = ?, pause_detail = ?, updated_at = ? WHERE id = 1',
-      )
-      .run(reason, detail, Date.now());
+    const now = Date.now();
+    if (reason)
+      this.db
+        .prepare(
+          `UPDATE audio_covers_state SET pause_reason = ?, pause_detail = ?,
+             progress_json = ${MARK_PAUSED_AT}, updated_at = ? WHERE id = 1`,
+        )
+        .run(reason, detail, now, now);
+    else {
+      // The pause's time doesn't count toward the bar's time left.
+      const p = this.progress();
+      this.db
+        .prepare(
+          `UPDATE audio_covers_state SET pause_reason = NULL, pause_detail = NULL,
+             progress_json = coalesce(?, progress_json), updated_at = ? WHERE id = 1`,
+        )
+        .run(p ? JSON.stringify(shiftPastPause(p, now)) : null, now);
+    }
     if (reason) this.deps.log?.(`Audiobooks covers: paused (${reason}): ${detail ?? ''}`);
   }
 

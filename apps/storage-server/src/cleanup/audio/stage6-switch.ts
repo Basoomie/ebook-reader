@@ -39,6 +39,7 @@ import { getSettings } from '../settings';
 import { hashFile, insideRoot, lstatEntry, ReadPacer } from './audio-source-fs';
 import { walkTree, type ManifestEntry } from './build-check';
 import { AREA_FOLDERS } from './build-plan';
+import { KEEP_PAUSED_AT, MARK_PAUSED_AT, shiftPastPause } from './pause-time';
 import type {
   AudioStage6,
   BuildRoots,
@@ -152,6 +153,8 @@ export interface SwitchProgress {
   startedAt: number;
   finishedAt: number | null;
   phaseStartedAt: number;
+  /** When the pause now on began (pause-time.ts), else null. */
+  pausedAt?: number | null;
   phaseTimes: Record<string, number>;
   /** The step now and how far it is (the card's bar and time left). */
   current: { step: string; done: number; total: number; startedAt: number } | null;
@@ -356,21 +359,36 @@ export class AudioSwitch {
     if (state)
       this.db
         .prepare(
-          'UPDATE audio_switch SET state = ?, progress_json = ?, updated_at = ? WHERE id = 1',
+          `UPDATE audio_switch SET state = ?, progress_json = ${KEEP_PAUSED_AT}, updated_at = ? WHERE id = 1`,
         )
         .run(state, JSON.stringify(p), Date.now());
     else
       this.db
-        .prepare('UPDATE audio_switch SET progress_json = ?, updated_at = ? WHERE id = 1')
+        .prepare(
+          `UPDATE audio_switch SET progress_json = ${KEEP_PAUSED_AT}, updated_at = ? WHERE id = 1`,
+        )
         .run(JSON.stringify(p), Date.now());
   }
 
   private setPause(reason: string | null, detail: string | null = null): void {
-    this.db
-      .prepare(
-        'UPDATE audio_switch SET pause_reason = ?, pause_detail = ?, updated_at = ? WHERE id = 1',
-      )
-      .run(reason, detail ? detail.slice(0, 2000) : null, Date.now());
+    const now = Date.now();
+    if (reason)
+      this.db
+        .prepare(
+          `UPDATE audio_switch SET pause_reason = ?, pause_detail = ?,
+             progress_json = ${MARK_PAUSED_AT}, updated_at = ? WHERE id = 1`,
+        )
+        .run(reason, detail ? detail.slice(0, 2000) : null, now, now);
+    else {
+      // The pause's time doesn't count toward the phase's time or the bar's time left.
+      const p = this.progress();
+      this.db
+        .prepare(
+          `UPDATE audio_switch SET pause_reason = NULL, pause_detail = NULL,
+             progress_json = coalesce(?, progress_json), updated_at = ? WHERE id = 1`,
+        )
+        .run(p ? JSON.stringify(shiftPastPause(p, now)) : null, now);
+    }
     if (reason) this.deps.log?.(`Audiobooks switch: paused (${reason}): ${detail ?? ''}`);
   }
 

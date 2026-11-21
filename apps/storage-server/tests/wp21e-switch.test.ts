@@ -1596,12 +1596,33 @@ describe('the switch through the linking sidecar and the reader', { timeout: 180
          WHERE id = (SELECT MIN(id) FROM audio_switch_ops WHERE run_id = ? AND phase = 'delete')`,
       )
       .run(run);
-    env.cleanupDb
-      .prepare(`UPDATE audio_switch SET pause_reason = 'sidecar_failed', pause_detail = 'EACCES'`)
-      .run();
     await sw.step(() => false);
     expect(sw.pause()).toMatchObject({ reason: 'sidecar_failed' });
+    // The pause's start is kept (a deploy while paused keeps it), and a save while paused
+    // doesn't drop it. Then, as on the NAS, the pause lasts an hour.
+    const pausedAt = sw.progress()!.pausedAt!;
+    expect(pausedAt).toBeGreaterThan(0);
+    await sw.step(() => false);
+    expect(sw.progress()!.pausedAt).toBe(pausedAt);
+    const hour = 3_600_000;
+    const earlier = { ...sw.progress()! };
+    earlier.pausedAt = pausedAt - hour;
+    earlier.phaseStartedAt -= hour;
+    earlier.current = { ...earlier.current!, startedAt: earlier.current!.startedAt - hour };
+    earlier.startedAt -= hour;
+    env.cleanupDb
+      .prepare('UPDATE audio_switch SET progress_json = ? WHERE id = 1')
+      .run(JSON.stringify(earlier));
+    const before = sw.progress()!;
+    expect(before.current).not.toBeNull();
     await request(env.app).post('/api/v1/cleanup/audio/switch/resume').set(user).expect(200);
+    // Continue moves the phase's and the bar's start past the pause: the hour counts toward
+    // neither the step's time nor the time left (found live: 23 h left after a pause).
+    const after = sw.progress()!;
+    expect(after.pausedAt ?? null).toBeNull();
+    expect(after.phaseStartedAt - before.phaseStartedAt).toBeGreaterThanOrEqual(hour);
+    expect(after.current!.startedAt - before.current!.startedAt).toBeGreaterThanOrEqual(hour);
+    expect(Date.now() - after.phaseStartedAt).toBeLessThan(hour);
     expect(
       env.cleanupDb
         .prepare(`SELECT COUNT(*) AS n FROM audio_switch_ops WHERE run_id = ? AND state = 'failed'`)
@@ -1613,6 +1634,7 @@ describe('the switch through the linking sidecar and the reader', { timeout: 180
     }
     expect(sw.pause()).toBeNull();
     expect(sw.state()).toBe('deleted');
+    expect(sw.progress()!.phaseTimes.delete).toBeLessThan(hour);
     expect(fs.existsSync(path.join(disk.media, 'japanese-old'))).toBe(false);
   });
 
