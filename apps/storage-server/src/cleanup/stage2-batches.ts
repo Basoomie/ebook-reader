@@ -407,7 +407,13 @@ export class Stage2Batches {
       .prepare(
         `SELECT id, calibre_id, calibre_uuid, field, old_json, new_json, evidence_json FROM proposed_changes
          WHERE stage = ${this.stage} AND library_id = ? AND state = 'proposed' AND class = 'auto'
-           AND (analysis_id = ? OR decided_by IS NOT NULL)
+           AND (analysis_id = ? OR decided_by IS NOT NULL)${
+             // Stage 4: only the fields it writes (format and edition wait for stage 5), so a stage
+             // with only those left says Done, not that its fields are paused.
+             this.stage === 4
+               ? ` AND field IN (${STAGE4_WRITTEN_FIELDS.map((x) => `'${x}'`).join(', ')})`
+               : ''
+           }
          ORDER BY calibre_id, id`,
       )
       .all(libraryId, currentAnalysisId(this.db, this.stage)) as {
