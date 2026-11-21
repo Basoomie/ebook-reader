@@ -83,6 +83,19 @@ export const INVENTORY_DIR = ['_inventory', 'old-copy-script'] as const;
 export const ARRIVAL_ROOTS: readonly string[] = ['japanese', 'japanese-generated'];
 /** WP21f-1: the only new folder in the torrents: archives are unpacked under it. */
 export const EXTRACTED = '_extracted';
+/** WP21f-2: the library root whose book folders and links may be renamed (no other root). */
+export const LIBRARY_ROOT = 'japanese';
+/**
+ * WP21f-2: the reader's own folders in media/audiobooks and where their files get their
+ * original name under the torrents (the only other new places there besides _from-library and
+ * _extracted).
+ */
+export const READER_ROOTS: Readonly<Record<string, string>> = {
+  'japanese-generated': 'AI',
+  'japanese-merged': '_merged'
+};
+/** WP21f-2: the temporary name of a book folder in a cycle of renames (same parent only). */
+const MOVE_TEMP = /^\.ttsu-move-\d+$/;
 /** Files Audiobookshelf writes into a book folder itself ("store metadata/cover with item"). */
 const ABS_OWN = /^(metadata\.json|cover\.(jpe?g|png|webp))$/i;
 /** This module's own temporary names. */
@@ -210,6 +223,16 @@ function plannedNames(planned: string[] | undefined): Set<string> {
     throw new WriteRefused('A new book needs the list of its planned files');
   for (const n of planned) checkName(n);
   return new Set(planned);
+}
+
+/** WP21f-2: a path of a book folder in LIBRARY_ROOT, the last part an allowed name or MOVE_TEMP. */
+function movePath(p: string): string[] {
+  const parts = p.split('/');
+  if (parts[0] !== LIBRARY_ROOT)
+    throw new WriteRefused(`Not inside ${LIBRARY_ROOT}: ${JSON.stringify(p)}`);
+  for (const x of parts.slice(0, -1)) checkName(x);
+  if (!MOVE_TEMP.test(parts[parts.length - 1])) checkName(parts[parts.length - 1]);
+  return parts;
 }
 
 export class LinkWriter {
@@ -868,5 +891,248 @@ export class LinkWriter {
       await fs.unlink(temp).catch(() => undefined);
     }
     return { existed: false, bytes };
+  }
+
+  // ---- WP21f-2: changes to books already in the library -------------------------------------
+
+  /**
+   * A book folder of the library (`japanese/…` or `japanese-generated/…`, at least the root,
+   * an author and the book), checked real and inside media/audiobooks, and holding at least one
+   * file that is not Audiobookshelf's own (an author or series folder is never a book).
+   */
+  private async libraryBook(book: string | string[], roots: readonly string[]): Promise<string> {
+    const parts = Array.isArray(book) ? book : destination(book, roots);
+    if (!roots.includes(parts[0]) || parts.length < 3)
+      throw new WriteRefused(`Not a book folder: ${parts.join('/')}`);
+    const abs = await this.realFolders(parts);
+    const entries = await fs.readdir(abs, { withFileTypes: true });
+    if (!entries.some((e) => e.isFile() && !ABS_OWN.test(e.name) && !e.name.startsWith('.')))
+      throw new WriteRefused(`Not a book folder (no file of its own): ${book}`);
+    return abs;
+  }
+
+  /**
+   * A built book's metadata.json replaced with new bytes: only when the file there is still the
+   * one the server read when it planned the change (`expectSha256`: what we wrote, or
+   * Audiobookshelf's rewrite of it, or your edit through ABS), so an edit made since is never
+   * overwritten. The new bytes go to a temporary file (O_EXCL, fsync) that is renamed over it in
+   * one step. The same bytes already there count as done.
+   */
+  async replaceBookMetadata(
+    book: string,
+    bytes: Buffer,
+    expectSha256: string,
+    tag: number
+  ): Promise<{ existed: boolean }> {
+    if (!Number.isSafeInteger(tag) || tag < 0) throw new WriteRefused('Bad temporary name');
+    if (bytes.length > MAX_METADATA_BYTES) throw new WriteRefused('metadata.json too large');
+    if (!/^[0-9a-f]{64}$/.test(expectSha256)) throw new WriteRefused('Bad expected hash');
+    const dir = await this.libraryBook(book, ARRIVAL_ROOTS);
+    const abs = path.join(dir, METADATA_NAME);
+    const st = await fs.lstat(abs).catch(() => null);
+    if (!st || !st.isFile()) throw new WriteRefused(`No ${METADATA_NAME} to replace: ${book}`);
+    const now = await fs.readFile(abs);
+    if (now.equals(bytes)) return { existed: true };
+    if (createHash('sha256').update(now).digest('hex') !== expectSha256)
+      throw new WriteRefused(`${METADATA_NAME} changed since it was read (an edit?): ${book}`);
+    const temp = path.join(dir, `.ttsu-link-${tag}.partial`);
+    const left = await fs.lstat(temp).catch(() => null);
+    if (left) {
+      if (!left.isFile()) throw new WriteRefused(`Something else is at ${temp}`);
+      await fs.unlink(temp);
+    }
+    const handle = await fs.open(
+      temp,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL,
+      this.fileMode
+    );
+    try {
+      await handle.writeFile(bytes);
+      await handle.chmod(this.fileMode);
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await fs.rename(temp, abs);
+    if (!(await fs.readFile(abs)).equals(bytes))
+      throw new WriteRefused(`${METADATA_NAME} is not the new bytes: ${book}`);
+    return { existed: false };
+  }
+
+  /**
+   * A book folder of `japanese/` moved to another path in `japanese/` (another author, series,
+   * volume number or title): `from` must be the planned folder (inode), a book; `to` must not
+   * exist. Missing parents of `to` are made; an existing parent that holds a file (a book) is
+   * never used. Never across to another root, never over an existing name. `to` may be this
+   * module's temporary name `.ttsu-move-<n>` in the same parent (a cycle of renames). `to`
+   * already the planned folder and `from` gone counts as done.
+   */
+  async renameBookFolder(from: string, to: string, ino: number): Promise<{ existed: boolean }> {
+    const fparts = movePath(from);
+    const tparts = movePath(to);
+    const temp = (ps: string[]) => MOVE_TEMP.test(ps[ps.length - 1]);
+    if (
+      (temp(fparts) || temp(tparts)) &&
+      fparts.slice(0, -1).join('/') !== tparts.slice(0, -1).join('/')
+    )
+      throw new WriteRefused(`A temporary name stays in the same folder: ${from} -> ${to}`);
+    if (fparts.length < 3 || tparts.length < 3)
+      throw new WriteRefused(`Not a book folder: ${from} -> ${to}`);
+    if (to === from || to.startsWith(from + '/'))
+      throw new WriteRefused(`Not a move: ${from} -> ${to}`);
+    if (!Number.isSafeInteger(ino) || ino <= 0) throw new WriteRefused('Bad inode');
+    const src = path.join(this.media, ...fparts);
+    const dst = path.join(this.media, ...tparts);
+    const d = await fs.lstat(dst, { bigint: true }).catch(() => null);
+    const s = await fs.lstat(src, { bigint: true }).catch(() => null);
+    if (d && !d.isSymbolicLink() && d.isDirectory() && Number(d.ino) === ino && !s)
+      return { existed: true };
+    if (!s) throw new WriteRefused(`The folder to move is missing: ${from}`);
+    if (s.isSymbolicLink() || !s.isDirectory())
+      throw new WriteRefused(`Not a real folder: ${from}`);
+    if (Number(s.ino) !== ino) throw new WriteRefused(`Not the planned folder (inode): ${from}`);
+    if (d) throw new WriteRefused(`Something is already there: ${to}`);
+    await this.libraryBook(fparts, [LIBRARY_ROOT]);
+    // The new parents: made when missing; an existing one must be a plain folder (no file).
+    let cur = await this.realFolders(tparts.slice(0, 1));
+    for (let i = 1; i < tparts.length - 1; i++) {
+      cur = path.join(cur, tparts[i]);
+      const st = await fs.lstat(cur).catch(() => null);
+      if (st) {
+        if (st.isSymbolicLink() || !st.isDirectory())
+          throw new WriteRefused(`Not a real folder: ${tparts.slice(0, i + 1).join('/')}`);
+        for (const e of await fs.readdir(cur, { withFileTypes: true }))
+          if (!e.isDirectory() && !e.name.startsWith('.'))
+            throw new WriteRefused(
+              `A book's folder can't hold another book: ${tparts.slice(0, i + 1).join('/')}`
+            );
+        continue;
+      }
+      try {
+        await fs.mkdir(cur, { mode: this.dirMode });
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+      }
+      await fs.chmod(cur, this.dirMode);
+    }
+    await this.inside(this.media, cur, 'media/audiobooks');
+    await fs.rename(src, dst);
+    const after = await fs.lstat(dst, { bigint: true });
+    if (Number(after.ino) !== ino)
+      throw new WriteRefused(`The moved folder is not the planned one: ${to}`);
+    return { existed: false };
+  }
+
+  /**
+   * An author or series folder of `japanese/` that a move left empty, removed (rmdir: only an
+   * empty folder; never the root, never a book). Already gone counts as done; a folder that
+   * holds anything stays (returned as not removed).
+   */
+  async removeEmptyFolder(dir: string): Promise<{ removed: boolean; existed: boolean }> {
+    const parts = destination(dir, [LIBRARY_ROOT]);
+    if (parts.length < 2) throw new WriteRefused(`Not a folder inside ${LIBRARY_ROOT}: ${dir}`);
+    const abs = path.join(this.media, ...parts);
+    const st = await fs.lstat(abs).catch(() => null);
+    if (!st) return { removed: false, existed: false };
+    if (st.isSymbolicLink() || !st.isDirectory())
+      throw new WriteRefused(`Not a real folder: ${dir}`);
+    await this.realFolders(parts);
+    if ((await fs.readdir(abs)).length > 0) return { removed: false, existed: true };
+    try {
+      await fs.rmdir(abs);
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'ENOTEMPTY' || code === 'EEXIST') return { removed: false, existed: true };
+      throw err;
+    }
+    return { removed: true, existed: true };
+  }
+
+  /**
+   * A file the reader wrote in `japanese-generated/` (an AI book) or `japanese-merged/` (a merge)
+   * gets its original name under torrents/audiobooks/japanese/AI/ or _merged/ at the same path
+   * inside: link() of the planned, unchanged file (size, mtime, device, inode), its folders made
+   * on the way, never over a name. The reader's own path stays as it is. The same file already
+   * there counts as done.
+   */
+  async linkReaderFile(
+    src: PlannedMediaEntry
+  ): Promise<{ existed: boolean; dst: string; dev: number; ino: number }> {
+    const sparts = relParts(src.rel, src.raw);
+    const into = READER_ROOTS[sparts[0]];
+    if (!into || sparts.length < 2) throw new WriteRefused(`Not a reader-written file: ${src.rel}`);
+    for (const p of sparts) checkName(p);
+    const file = below(this.media, src.rel, src.raw);
+    await this.realFolders(sparts.slice(0, -1));
+    const st = await fs.lstat(file, { bigint: true }).catch(() => null);
+    if (!st || !st.isFile()) throw new WriteRefused(`Not a file: ${src.rel}`);
+    const changed = differences(st, src);
+    if (changed.length) throw new WriteRefused(`changed (${changed.join(', ')}): ${src.rel}`);
+    const dparts = [into, ...sparts.slice(1)];
+    const dir = await this.torrentFolders(dparts.slice(0, -1));
+    const abs = path.join(dir, dparts[dparts.length - 1]);
+    let existed = false;
+    try {
+      await fs.link(file, abs);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+      existed = true;
+    }
+    const d = await fs.lstat(abs, { bigint: true });
+    if (!d.isFile() || d.dev !== st.dev || d.ino !== st.ino)
+      throw new WriteRefused(
+        existed
+          ? `A different file is already there: ${dparts.join('/')}`
+          : `The new name is not the file: ${dparts.join('/')}`
+      );
+    const again = await fs.lstat(file, { bigint: true });
+    if (differences(again, src).length)
+      throw new WriteRefused(`The file changed while it was linked: ${src.rel}`);
+    return { existed, dst: dparts.join('/'), dev: Number(d.dev), ino: Number(d.ino) };
+  }
+
+  /**
+   * One audio link inside a book folder of `japanese/` renamed in the same folder (the story
+   * order's numbered names, `01 タイトル.mp3`): `from` must be the planned file (inode), `to` a
+   * new name; never metadata.json or a cover, never another folder, never over a name. The
+   * torrents' own name of the file is not touched (a hard link has its own names). `to` already
+   * the planned file and `from` gone counts as done.
+   */
+  async renameBookFile(
+    book: string,
+    from: string,
+    to: string,
+    ino: number
+  ): Promise<{ existed: boolean }> {
+    const dir = await this.libraryBook(book, [LIBRARY_ROOT]);
+    const fparts = from.split('/');
+    const tparts = to.split('/');
+    for (const p of [...fparts, ...tparts]) checkName(p);
+    if (
+      fparts.length !== tparts.length ||
+      fparts.slice(0, -1).join('/') !== tparts.slice(0, -1).join('/')
+    )
+      throw new WriteRefused(`A file is renamed in its own folder only: ${from} -> ${to}`);
+    if (fparts.length > 2) throw new WriteRefused(`Too deep inside the book: ${from}`);
+    for (const n of [fparts[fparts.length - 1], tparts[tparts.length - 1]])
+      if (ABS_OWN.test(n) || n === METADATA_NAME) throw new WriteRefused(`Not an audio link: ${n}`);
+    if (!Number.isSafeInteger(ino) || ino <= 0) throw new WriteRefused('Bad inode');
+    const parent =
+      fparts.length === 2
+        ? await this.realFolders([...destination(book, [LIBRARY_ROOT]), fparts[0]])
+        : dir;
+    const src = path.join(parent, fparts[fparts.length - 1]);
+    const dst = path.join(parent, tparts[tparts.length - 1]);
+    const s = await fs.lstat(src, { bigint: true }).catch(() => null);
+    const d = await fs.lstat(dst, { bigint: true }).catch(() => null);
+    if (d && d.isFile() && Number(d.ino) === ino && !s) return { existed: true };
+    if (!s || !s.isFile()) throw new WriteRefused(`The file to rename is missing: ${from}`);
+    if (Number(s.ino) !== ino) throw new WriteRefused(`Not the planned file (inode): ${from}`);
+    if (d) throw new WriteRefused(`Something is already there: ${to}`);
+    await fs.rename(src, dst);
+    const after = await fs.lstat(dst, { bigint: true });
+    if (Number(after.ino) !== ino)
+      throw new WriteRefused(`The renamed file is not the planned one: ${to}`);
+    return { existed: false };
   }
 }

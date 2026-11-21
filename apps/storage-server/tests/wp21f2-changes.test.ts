@@ -2,6 +2,7 @@
  * WP21f-2: the story order of multi-file books (stop A, decided with the user) and, later in this
  * file, the changes to books already in the library.
  */
+import { createHash } from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -12,6 +13,7 @@ import {
   storyOrders,
   type OrderFile,
 } from '../src/cleanup/audio/story-order';
+import { LinkWriter } from '../../cleanup-link/src/writer';
 import { AudioStage3 } from '../src/cleanup/audio/stage3-dups';
 import { planBuild } from '../src/cleanup/audio/build-plan';
 import { loadPlanInputs, stageIds } from '../src/cleanup/audio/build-inputs';
@@ -365,5 +367,247 @@ describe('stage 3 orders a multi-file copy’s files; the plan numbers its links
     const files = book.files.map((f) => path.posix.basename(f.dst));
     expect(files).toEqual(['01 タイトル.mp3', '02 プロローグ.mp3', '03 ～１敗目～ 本編.mp3']);
     expect(book.notes).toContain('numbered in story order');
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+describe('the linking sidecar’s WP21f-2 abilities (tree proofs and refusals)', () => {
+  function disk() {
+    const dir = makeTempDir('wp21f2-writer');
+    cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const data = path.join(dir, 'data');
+    const torrents = path.join(data, 'torrents', 'audiobooks', 'japanese');
+    const media = path.join(data, 'media', 'audiobooks');
+    const put = (abs: string, bytes: string) => {
+      fs.mkdirSync(path.dirname(abs), { recursive: true });
+      fs.writeFileSync(abs, bytes);
+    };
+    put(path.join(torrents, 'TMW', 'a.m4b'), 'audio a');
+    put(path.join(torrents, 'Discord', '本P', 'タイトル.mp3'), 'title');
+    put(path.join(torrents, 'Discord', '本P', 'プロローグ.mp3'), 'prologue');
+    const lib = path.join(media, 'japanese');
+    fs.mkdirSync(path.join(lib, '作者', 'シリーズ', 'Vol 3 - 本A'), { recursive: true });
+    fs.linkSync(
+      path.join(torrents, 'TMW', 'a.m4b'),
+      path.join(lib, '作者', 'シリーズ', 'Vol 3 - 本A', 'a.m4b'),
+    );
+    fs.writeFileSync(
+      path.join(lib, '作者', 'シリーズ', 'Vol 3 - 本A', 'metadata.json'),
+      '{"title":"本A"}\n',
+    );
+    fs.mkdirSync(path.join(lib, '作者', '本P'), { recursive: true });
+    for (const n of ['タイトル.mp3', 'プロローグ.mp3'])
+      fs.linkSync(path.join(torrents, 'Discord', '本P', n), path.join(lib, '作者', '本P', n));
+    fs.writeFileSync(path.join(lib, '作者', '本P', 'metadata.json'), '{"title":"本P"}\n');
+    put(path.join(media, 'japanese-generated', '作者G', '本G (v1)', '本G.m4b'), 'tts');
+    put(path.join(media, 'japanese-generated', '作者G', '本G (v1)', '本G.srt'), '1\n');
+    put(path.join(media, 'japanese-merged', '作者', '本M', '本M (merged).m4b'), 'merged');
+    const writer = new LinkWriter({ dataDir: data });
+    const ino = (abs: string) => fs.lstatSync(abs).ino;
+    const tree = (root: string) => {
+      const out: Record<string, string> = {};
+      const walk = (d: string) => {
+        for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+          const p = path.join(d, e.name);
+          if (e.isDirectory()) walk(p);
+          else {
+            const st = fs.lstatSync(p);
+            out[path.relative(root, p).replace(/\\/g, '/')] =
+              `${st.ino}|${st.size}|${fs.readFileSync(p, 'utf8')}`;
+          }
+        }
+      };
+      walk(root);
+      return out;
+    };
+    return { data, torrents, media, lib, writer, ino, tree };
+  }
+  const sha = (s: string) => createHash('sha256').update(s).digest('hex');
+  const stat = (abs: string) => {
+    const st = fs.lstatSync(abs);
+    return { size: st.size, mtimeMs: Math.floor(st.mtimeMs), dev: st.dev, ino: st.ino };
+  };
+
+  it('replaceBookMetadata: only over the file read (its hash), in one rename; never an author folder', async () => {
+    const d = disk();
+    const book = 'japanese/作者/シリーズ/Vol 3 - 本A';
+    const file = path.join(d.lib, '作者', 'シリーズ', 'Vol 3 - 本A', 'metadata.json');
+    const torrents = d.tree(d.torrents);
+    const next = Buffer.from('{"title":"新"}\n');
+    await expect(
+      d.writer.replaceBookMetadata(book, next, sha('something else'), 1),
+    ).rejects.toThrow(/changed since it was read/);
+    expect(fs.readFileSync(file, 'utf8')).toBe('{"title":"本A"}\n');
+    expect(await d.writer.replaceBookMetadata(book, next, sha('{"title":"本A"}\n'), 2)).toEqual({
+      existed: false,
+    });
+    expect(fs.readFileSync(file, 'utf8')).toBe('{"title":"新"}\n');
+    expect(fs.readdirSync(path.dirname(file)).sort()).toEqual(['a.m4b', 'metadata.json']);
+    // Repeated: the same bytes are there.
+    expect(await d.writer.replaceBookMetadata(book, next, sha('x'), 3)).toEqual({ existed: true });
+    await expect(
+      d.writer.replaceBookMetadata('japanese/作者/シリーズ', Buffer.from('{}'), sha('x'), 4),
+    ).rejects.toThrow(/Not a book folder/);
+    await expect(
+      d.writer.replaceBookMetadata('japanese-old/作者/本', Buffer.from('{}'), sha('x'), 5),
+    ).rejects.toThrow(/Not inside/);
+    expect(d.tree(d.torrents)).toEqual(torrents);
+  });
+
+  it('renameBookFolder: a book of japanese/ to a new path there (parents made), never over a name or across roots', async () => {
+    const d = disk();
+    const from = 'japanese/作者/シリーズ/Vol 3 - 本A';
+    const abs = path.join(d.lib, '作者', 'シリーズ', 'Vol 3 - 本A');
+    const ino = d.ino(abs);
+    const torrents = d.tree(d.torrents);
+    const inside = d.tree(abs);
+    await expect(d.writer.renameBookFolder(from, 'japanese/作者/本P', ino)).rejects.toThrow(
+      /already there/,
+    );
+    await expect(
+      d.writer.renameBookFolder(from, 'japanese-generated/作者/本A', ino),
+    ).rejects.toThrow(/Not inside japanese/);
+    await expect(d.writer.renameBookFolder(from, 'japanese/作者/本P/中', ino)).rejects.toThrow(
+      /can't hold another book/,
+    );
+    await expect(d.writer.renameBookFolder(from, 'japanese/作者/本A', ino + 1)).rejects.toThrow(
+      /inode/,
+    );
+    const series = path.join(d.lib, '作者', 'シリーズ');
+    await expect(
+      d.writer.renameBookFolder('japanese/作者/シリーズ', 'japanese/作者/別', d.ino(series)),
+    ).rejects.toThrow(/Not a book folder/);
+    expect(await d.writer.renameBookFolder(from, 'japanese/新しい作者/本A', ino)).toEqual({
+      existed: false,
+    });
+    const moved = path.join(d.lib, '新しい作者', '本A');
+    expect(d.ino(moved)).toBe(ino);
+    expect(d.tree(moved)).toEqual(inside);
+    expect(fs.existsSync(abs)).toBe(false);
+    expect(await d.writer.renameBookFolder(from, 'japanese/新しい作者/本A', ino)).toEqual({
+      existed: true,
+    });
+    // A cycle goes through a temporary name in the same folder only.
+    await expect(
+      d.writer.renameBookFolder('japanese/新しい作者/本A', 'japanese/作者/.ttsu-move-1', ino),
+    ).rejects.toThrow(/same folder/);
+    expect(
+      await d.writer.renameBookFolder(
+        'japanese/新しい作者/本A',
+        'japanese/新しい作者/.ttsu-move-1',
+        ino,
+      ),
+    ).toEqual({ existed: false });
+    expect(
+      await d.writer.renameBookFolder(
+        'japanese/新しい作者/.ttsu-move-1',
+        'japanese/新しい作者/本B',
+        ino,
+      ),
+    ).toEqual({ existed: false });
+    expect(d.tree(d.torrents)).toEqual(torrents);
+  });
+
+  it('removeEmptyFolder: only an empty folder inside japanese/; never the root', async () => {
+    const d = disk();
+    fs.mkdirSync(path.join(d.lib, '空', '空のシリーズ'), { recursive: true });
+    expect(await d.writer.removeEmptyFolder('japanese/作者/シリーズ')).toEqual({
+      removed: false,
+      existed: true,
+    });
+    expect(await d.writer.removeEmptyFolder('japanese/空/空のシリーズ')).toEqual({
+      removed: true,
+      existed: true,
+    });
+    expect(await d.writer.removeEmptyFolder('japanese/空')).toEqual({
+      removed: true,
+      existed: true,
+    });
+    expect(await d.writer.removeEmptyFolder('japanese/空')).toEqual({
+      removed: false,
+      existed: false,
+    });
+    await expect(d.writer.removeEmptyFolder('japanese')).rejects.toThrow(/Not a folder inside/);
+    await expect(d.writer.removeEmptyFolder('japanese-generated/作者G')).rejects.toThrow(
+      /Not inside japanese/,
+    );
+    expect(fs.existsSync(path.join(d.lib, '作者', 'シリーズ', 'Vol 3 - 本A', 'a.m4b'))).toBe(true);
+  });
+
+  it('linkReaderFile: a reader-written file gets its name under AI/ or _merged/, the same file; nothing else', async () => {
+    const d = disk();
+    const torrents = d.tree(d.torrents);
+    const gen = 'japanese-generated/作者G/本G (v1)/本G.m4b';
+    const genAbs = path.join(d.media, ...gen.split('/'));
+    const r = await d.writer.linkReaderFile({ rel: gen, raw: null, ...stat(genAbs) });
+    expect(r).toMatchObject({ existed: false, dst: 'AI/作者G/本G (v1)/本G.m4b' });
+    expect(d.ino(path.join(d.torrents, 'AI', '作者G', '本G (v1)', '本G.m4b'))).toBe(d.ino(genAbs));
+    expect(fs.lstatSync(genAbs).nlink).toBe(2);
+    const merged = 'japanese-merged/作者/本M/本M (merged).m4b';
+    const mAbs = path.join(d.media, ...merged.split('/'));
+    expect((await d.writer.linkReaderFile({ rel: merged, raw: null, ...stat(mAbs) })).dst).toBe(
+      '_merged/作者/本M/本M (merged).m4b',
+    );
+    // Repeated: done. Changed since planned: refused. Not a reader folder: refused.
+    expect((await d.writer.linkReaderFile({ rel: gen, raw: null, ...stat(genAbs) })).existed).toBe(
+      true,
+    );
+    const srt = 'japanese-generated/作者G/本G (v1)/本G.srt';
+    const srtAbs = path.join(d.media, ...srt.split('/'));
+    const planned = stat(srtAbs);
+    fs.appendFileSync(srtAbs, 'more');
+    await expect(d.writer.linkReaderFile({ rel: srt, raw: null, ...planned })).rejects.toThrow(
+      /changed/,
+    );
+    const title = path.join(d.lib, '作者', '本P', 'タイトル.mp3');
+    await expect(
+      d.writer.linkReaderFile({ rel: 'japanese/作者/本P/タイトル.mp3', raw: null, ...stat(title) }),
+    ).rejects.toThrow(/Not a reader-written file/);
+    // A different file already at the name: refused, nothing replaced.
+    fs.mkdirSync(path.join(d.torrents, '_merged', '作者', '本X'), { recursive: true });
+    fs.writeFileSync(path.join(d.torrents, '_merged', '作者', '本X', 'x.m4b'), 'other');
+    const xAbs = path.join(d.media, 'japanese-merged', '作者', '本X', 'x.m4b');
+    fs.mkdirSync(path.dirname(xAbs), { recursive: true });
+    fs.writeFileSync(xAbs, 'mine');
+    await expect(
+      d.writer.linkReaderFile({ rel: 'japanese-merged/作者/本X/x.m4b', raw: null, ...stat(xAbs) }),
+    ).rejects.toThrow(/different file/);
+    expect(fs.readFileSync(path.join(d.torrents, '_merged', '作者', '本X', 'x.m4b'), 'utf8')).toBe(
+      'other',
+    );
+    // Every torrent file that was there is as it was.
+    const after = d.tree(d.torrents);
+    for (const [k, v] of Object.entries(torrents)) expect(after[k], k).toBe(v);
+  });
+
+  it('renameBookFile: a link inside its book folder only; the torrent’s own name stays', async () => {
+    const d = disk();
+    const book = 'japanese/作者/本P';
+    const abs = path.join(d.lib, '作者', '本P', 'タイトル.mp3');
+    const ino = d.ino(abs);
+    const torrents = d.tree(d.torrents);
+    await expect(
+      d.writer.renameBookFile(book, 'タイトル.mp3', 'プロローグ.mp3', ino),
+    ).rejects.toThrow(/already there/);
+    await expect(
+      d.writer.renameBookFile(book, 'タイトル.mp3', 'Disc 1/01 タイトル.mp3', ino),
+    ).rejects.toThrow(/own folder/);
+    await expect(d.writer.renameBookFile(book, 'metadata.json', 'x.json', ino)).rejects.toThrow(
+      /Not an audio link/,
+    );
+    await expect(
+      d.writer.renameBookFile(book, 'タイトル.mp3', '01 タイトル.mp3', ino + 1),
+    ).rejects.toThrow(/inode/);
+    await expect(
+      d.writer.renameBookFile('japanese-generated/作者G/本G (v1)', '本G.m4b', '01 本G.m4b', 1),
+    ).rejects.toThrow(/Not inside japanese/);
+    expect(await d.writer.renameBookFile(book, 'タイトル.mp3', '01 タイトル.mp3', ino)).toEqual({
+      existed: false,
+    });
+    expect(d.ino(path.join(d.lib, '作者', '本P', '01 タイトル.mp3'))).toBe(ino);
+    expect(await d.writer.renameBookFile(book, 'タイトル.mp3', '01 タイトル.mp3', ino)).toEqual({
+      existed: true,
+    });
+    expect(d.tree(d.torrents)).toEqual(torrents);
   });
 });

@@ -5,7 +5,9 @@
  * may link only files it owns, or regular files it may read and write (no setuid, no setgid with
  * group execute); root may link anything. Nothing here writes.
  */
+import { constants } from 'fs';
 import fs from 'fs/promises';
+import path from 'path';
 import { LinkWriter, WriteRefused, type PlannedSource } from './writer';
 
 export interface ProcessInfo {
@@ -55,6 +57,79 @@ export async function inspectSource(
     return null;
   } catch (err) {
     if (err instanceof WriteRefused) return err.message;
+    return `unreadable: ${(err as Error).message}`.slice(0, 300);
+  }
+}
+
+/** WP21f-2: one operation of a library-changes batch, as the preflight sees it. */
+export interface LibraryOpCheck {
+  kind: string;
+  /** media/audiobooks-relative: the book folder, the folder moved, the file linked. */
+  src: string | null;
+  /** The target: a move's new folder (media), a reader file's name under the torrents. */
+  dst: string;
+}
+
+/** The nearest folder of `abs` that exists (itself, or a parent), never above `stop`. */
+async function nearestFolder(abs: string, stop: string): Promise<string> {
+  let cur = abs;
+  for (;;) {
+    const st = await fs.lstat(cur).catch(() => null);
+    if (st && st.isDirectory()) return cur;
+    const up = path.dirname(cur);
+    if (up === cur || !up.startsWith(stop)) return stop;
+    cur = up;
+  }
+}
+
+async function writable(abs: string, what: string): Promise<string | null> {
+  try {
+    await fs.access(abs, constants.W_OK);
+    return null;
+  } catch {
+    const st = await fs.lstat(abs).catch(() => null);
+    return `cannot write in ${what}${st ? ` (owner ${st.uid}:${st.gid}, mode ${(st.mode & 0o7777).toString(8)})` : ''}`;
+  }
+}
+
+/**
+ * WP21f-2 preflight (read only): whether this process may make a planned change: write access to
+ * every folder a move, rename, replacement or removal changes, and, for a reader-written file,
+ * that the kernel lets it hard-link the file and that it may write where its name goes.
+ */
+export async function inspectLibraryOp(
+  writer: LinkWriter,
+  op: LibraryOpCheck,
+  info: ProcessInfo
+): Promise<string | null> {
+  const media = (rel: string) => path.join(writer.media, ...rel.split('/'));
+  try {
+    if (op.kind === 'reader_link' && op.src) {
+      const st = await fs.lstat(media(op.src)).catch(() => null);
+      if (!st || !st.isFile()) return `missing: ${op.src}`;
+      if (!mayLink(info, { uid: st.uid, gid: st.gid, mode: st.mode }))
+        return `cannot link (owner ${st.uid}:${st.gid}, mode ${(st.mode & 0o7777).toString(8)}): ${op.src}`;
+      const target = path.join(writer.torrents, ...op.dst.split('/'));
+      const near = await nearestFolder(path.dirname(target), writer.torrents);
+      return writable(near, path.relative(writer.torrents, near) || 'the torrents');
+    }
+    if (op.kind === 'move_book' && op.src) {
+      const from = media(op.src);
+      for (const [p, w] of [
+        [path.dirname(from), path.dirname(op.src)],
+        [from, op.src]
+      ] as const) {
+        const e = await writable(p, w);
+        if (e) return e;
+      }
+      const near = await nearestFolder(path.dirname(media(op.dst)), writer.media);
+      return writable(near, path.relative(writer.media, near));
+    }
+    if ((op.kind === 'rename_file' || op.kind === 'replace_metadata') && op.src)
+      return writable(media(op.src), op.src);
+    if (op.kind === 'rmdir') return writable(path.dirname(media(op.dst)), path.dirname(op.dst));
+    return `not a library operation: ${op.kind}`;
+  } catch (err) {
     return `unreadable: ${(err as Error).message}`.slice(0, 300);
   }
 }

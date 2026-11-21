@@ -519,14 +519,23 @@ describe('the linking sidecar’s switch abilities (writer.ts)', () => {
       'deleteOld',
       'extractEntry',
       'inside',
+      // WP21f-2: changes to books in the library (metadata.json replaced, a book folder or a
+      // link renamed in japanese/, an emptied folder removed, a reader-written file's name
+      // under the torrents' AI/ or _merged/).
+      'libraryBook',
       'linkArrival',
       'linkFile',
+      'linkReaderFile',
       'linkToFromLibrary',
       'makeArrivalFolder',
       'makeFolder',
       'openArchive',
       'realFolders',
+      'removeEmptyFolder',
+      'renameBookFile',
+      'renameBookFolder',
       'renameRoot',
+      'replaceBookMetadata',
       'source',
       'torrentFolders',
       'writeArrivalMetadata',
@@ -540,9 +549,22 @@ describe('the linking sidecar’s switch abilities (writer.ts)', () => {
       return writer.slice(i, end);
     };
     const count = (re: RegExp, s = writer) => (s.match(re) ?? []).length;
-    // The one rename: in renameRoot, after the pair check.
-    expect(count(/fs\.rename\(/g)).toBe(1);
+    // Renames: renameRoot's (after the pair check) and WP21f-2's three, each after its guard:
+    // a book folder or a link only inside japanese/ (movePath, libraryBook), and metadata.json
+    // only over the file the server read (its hash) with this module's own temporary file.
+    expect(count(/fs\.rename\(/g)).toBe(4);
     expect(count(/fs\.rename\(/g, body('renameRoot'))).toBe(1);
+    for (const [m, guard] of [
+      ['renameBookFolder', 'movePath('],
+      ['renameBookFile', 'libraryBook('],
+      ['replaceBookMetadata', 'expectSha256'],
+    ] as const) {
+      expect(count(/fs\.rename\(/g, body(m)), m).toBe(1);
+      expect(body(m).indexOf(guard), m).toBeGreaterThan(0);
+      expect(body(m).indexOf(guard), m).toBeLessThan(body(m).indexOf('fs.rename('));
+    }
+    expect(body('replaceBookMetadata')).toMatch(/fs\.rename\(temp, abs\)/);
+    expect(body('libraryBook').indexOf('destination(')).toBeGreaterThan(0);
     expect(body('renameRoot').indexOf('RENAME_PAIRS')).toBeLessThan(
       body('renameRoot').indexOf('fs.rename('),
     );
@@ -550,24 +572,35 @@ describe('the linking sidecar’s switch abilities (writer.ts)', () => {
     // writeArrivalMetadata, twice in extractEntry: its own `.ttsu-*-<n>.partial` names) and
     // deleteOld's one file; the one rmdir is deleteOld's (an empty folder), after its
     // japanese-old check.
-    expect(count(/fs\.unlink\(/g)).toBe(7);
+    expect(count(/fs\.unlink\(/g)).toBe(8);
+    expect(count(/fs\.unlink\(/g, body('replaceBookMetadata'))).toBe(1);
     expect(count(/fs\.unlink\(/g, body('writeMetadata'))).toBe(2);
     expect(count(/fs\.unlink\(/g, body('writeArrivalMetadata'))).toBe(2);
     expect(count(/fs\.unlink\(/g, body('extractEntry'))).toBe(2);
-    for (const m of ['writeArrivalMetadata', 'extractEntry'])
+    for (const m of ['writeArrivalMetadata', 'extractEntry', 'replaceBookMetadata'])
       for (const line of body(m)
         .split('\n')
         .filter((l) => l.includes('fs.unlink(')))
         expect(line, m).toMatch(/fs\.unlink\((temp|temp\)\.catch)/);
     expect(count(/fs\.unlink\(/g, body('deleteOld'))).toBe(1);
-    expect(count(/fs\.rmdir\(/g)).toBe(1);
+    expect(count(/fs\.rmdir\(/g)).toBe(2);
     expect(count(/fs\.rmdir\(/g, body('deleteOld'))).toBe(1);
+    // WP21f-2: an emptied author or series folder of japanese/ only (rmdir: only when empty).
+    expect(count(/fs\.rmdir\(/g, body('removeEmptyFolder'))).toBe(1);
+    expect(body('removeEmptyFolder').indexOf('LIBRARY_ROOT')).toBeLessThan(
+      body('removeEmptyFolder').indexOf('fs.rmdir('),
+    );
     expect(body('deleteOld').indexOf('OLD_ROOT')).toBeLessThan(
       body('deleteOld').indexOf('fs.unlink('),
     );
     // New names: links (the build's two, _from-library's one; WP21f-1: a new book's link and its
     // metadata.json, an unpacked entry), folders, the copied files.
-    expect(count(/fs\.link\(/g)).toBe(6);
+    expect(count(/fs\.link\(/g)).toBe(7);
+    // WP21f-2: a reader-written file's name only under the torrents' AI/ or _merged/.
+    expect(count(/fs\.link\(/g, body('linkReaderFile'))).toBe(1);
+    expect(body('linkReaderFile').indexOf('READER_ROOTS')).toBeLessThan(
+      body('linkReaderFile').indexOf('fs.link('),
+    );
     expect(count(/fs\.link\(/g, body('linkToFromLibrary'))).toBe(1);
     expect(body('linkToFromLibrary').indexOf('FROM_LIBRARY')).toBeLessThan(
       body('linkToFromLibrary').indexOf('fs.link('),
@@ -584,11 +617,12 @@ describe('the linking sidecar’s switch abilities (writer.ts)', () => {
     expect(body('extractEntry').indexOf('EXTRACTED')).toBeLessThan(
       body('extractEntry').indexOf('fs.link('),
     );
-    expect(count(/fs\.mkdir\(/g)).toBe(4);
-    expect(count(/fs\.open\(/g)).toBe(6);
+    expect(count(/fs\.mkdir\(/g)).toBe(5);
+    expect(count(/fs\.mkdir\(/g, body('renameBookFolder'))).toBe(1);
+    expect(count(/fs\.open\(/g)).toBe(7);
     expect(writer).not.toMatch(/\b(symlink|copyFile|rm\(|rmSync|truncate|utimes|chown)\b/);
     // chmod only on what it made: new folders and its own new files.
-    expect(count(/chmod\(/g)).toBe(8);
+    expect(count(/chmod\(/g)).toBe(10);
   });
 });
 

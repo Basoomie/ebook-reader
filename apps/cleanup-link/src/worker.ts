@@ -18,11 +18,11 @@ import fs from 'fs/promises';
 import os from 'os';
 import type { LinkConfig } from './config';
 import { entryStream, extractArgs, listArchive, type ArchiveEntry } from './archive';
-import { inspectSource, processInfo, type ProcessInfo } from './inspect';
+import { inspectLibraryOp, inspectSource, processInfo, type ProcessInfo } from './inspect';
 import { LinkWriter, WriteRefused, type PlannedSource } from './writer';
 
 /** 1.2.0 (WP21f-1): new books after the switch (arrival batches) and archives (list, extract). */
-export const VERSION = '1.2.0';
+export const VERSION = '1.3.0';
 const HEARTBEAT_MS = 30_000;
 
 interface BatchOp {
@@ -33,7 +33,24 @@ interface BatchOp {
    * in media/audiobooks/japanese -> `dst` under the torrents' _from-library), inventory (`dst`
    * the file's name), delete (`src.rel` in media/audiobooks/japanese-old; `dir` for a folder).
    */
-  kind: 'folder' | 'link' | 'pdf' | 'metadata' | 'rename' | 'from_library' | 'inventory' | 'delete';
+  kind:
+    | 'folder'
+    | 'link'
+    | 'pdf'
+    | 'metadata'
+    | 'rename'
+    | 'from_library'
+    | 'inventory'
+    | 'delete'
+    // WP21f-2 (library batches): `book` the book folder; replace_metadata (`bytes`, `sha256` the
+    // file as read), move_book (`src.rel` -> `dst`, `ino` the folder's), rmdir (`dst`),
+    // reader_link (`src` + stat: a reader-written file), rename_file (`src.rel` -> `dst` inside
+    // `book`, `ino` the file's).
+    | 'replace_metadata'
+    | 'move_book'
+    | 'rmdir'
+    | 'reader_link'
+    | 'rename_file';
   dst: string;
   src: { rel: string; raw: string | null } | null;
   size: number | null;
@@ -53,7 +70,15 @@ interface BatchOp {
 interface Batch {
   id: number;
   /** arrival (WP21f-1): a new book's folder, links and metadata; list/extract: archives. */
-  kind: 'preflight' | 'build' | 'switch' | 'arrival' | 'list' | 'extract';
+  kind:
+    | 'preflight'
+    | 'build'
+    | 'switch'
+    | 'arrival'
+    | 'list'
+    | 'extract'
+    | 'library_preflight'
+    | 'library';
   leaseSeconds: number;
   ops: BatchOp[];
 }
@@ -70,6 +95,8 @@ export interface OpResult {
   freed?: number;
   size?: number;
   absRewrote?: boolean;
+  /** WP21f-2 rmdir: whether the folder was removed (false: it held something, kept). */
+  removed?: boolean;
   /** list batches: the archive's entries, its names' encoding, or why it can't be read. */
   entries?: ArchiveEntry[];
   encoding?: 'utf8' | 'cp932';
@@ -184,6 +211,19 @@ export class LinkWorker {
       return results;
     }
     if (batch.kind === 'list') return this.listBatch(batch);
+    if (batch.kind === 'library_preflight') {
+      this.info ??= await processInfo();
+      for (const op of batch.ops) {
+        const problem = await inspectLibraryOp(
+          this.writer,
+          { kind: op.kind, src: op.src?.rel ?? op.book ?? null, dst: op.dst },
+          this.info
+        );
+        results.push({ id: op.id, ok: problem === null, problem });
+      }
+      return results;
+    }
+    if (batch.kind === 'library') return this.libraryBatch(batch);
     if (batch.kind === 'arrival' || batch.kind === 'extract') return this.arrivalBatch(batch);
     for (const op of batch.ops) {
       if (this.stopped) break;
@@ -351,6 +391,57 @@ export class LinkWorker {
           const r = await this.writer.linkArrival(this.planned(op), op.dst, book, planned);
           results.push({ id: op.id, ok: true, existed: r.existed, dev: r.dev, ino: r.ino });
         } else throw new WriteRefused(`Not an operation of a new book: ${op.kind}`);
+      } catch (err) {
+        results.push({
+          id: op.id,
+          ok: false,
+          error: `${op.kind} ${op.dst}: ${(err as Error).message}`.slice(0, 500)
+        });
+        break;
+      }
+    }
+    return results;
+  }
+
+  /** WP21f-2: one batch of changes to books in the library, stopping at its first failure. */
+  private async libraryBatch(batch: Batch): Promise<OpResult[]> {
+    const results: OpResult[] = [];
+    for (const op of batch.ops) {
+      if (this.stopped) break;
+      try {
+        const book = op.book ?? '';
+        if (op.kind === 'replace_metadata') {
+          if (!op.sha256) throw new WriteRefused('A replacement needs the hash of the file read');
+          const r = await this.writer.replaceBookMetadata(
+            book,
+            Buffer.from(op.bytes ?? '', 'base64'),
+            op.sha256,
+            op.id
+          );
+          results.push({ id: op.id, ok: true, existed: r.existed });
+        } else if (op.kind === 'move_book') {
+          if (!op.src || op.ino === null) throw new WriteRefused('A move needs a folder');
+          const r = await this.writer.renameBookFolder(op.src.rel, op.dst, op.ino);
+          results.push({ id: op.id, ok: true, existed: r.existed });
+        } else if (op.kind === 'rmdir') {
+          const r = await this.writer.removeEmptyFolder(op.dst);
+          results.push({ id: op.id, ok: true, existed: r.existed, removed: r.removed });
+        } else if (op.kind === 'reader_link') {
+          if (!op.src) throw new WriteRefused('A reader file needs its path');
+          const r = await this.writer.linkReaderFile({
+            rel: op.src.rel,
+            raw: op.src.raw,
+            size: op.size ?? -1,
+            mtimeMs: op.mtimeMs ?? -1,
+            dev: op.dev ?? -1,
+            ino: op.ino ?? -1
+          });
+          results.push({ id: op.id, ok: true, existed: r.existed, dev: r.dev, ino: r.ino });
+        } else if (op.kind === 'rename_file') {
+          if (!op.src || op.ino === null) throw new WriteRefused('A rename needs a file');
+          const r = await this.writer.renameBookFile(book, op.src.rel, op.dst, op.ino);
+          results.push({ id: op.id, ok: true, existed: r.existed });
+        } else throw new WriteRefused(`Not an operation of the library changes: ${op.kind}`);
       } catch (err) {
         results.push({
           id: op.id,
