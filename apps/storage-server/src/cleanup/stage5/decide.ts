@@ -5,8 +5,11 @@
  *                 (accepted matches only, mapped by vocab.ts), the store rules (BL, TL, adult
  *                 imprints), and the adaptation tags (RanobeDB's tie-ins, or both models AND the
  *                 statement in the text: never guessed)
- *   series union  every book of a Calibre series gets what any of its volumes has (decided
- *                 2026-11-13); a book without a series keeps its own
+ *   per book      each book keeps its own terms (decided with the user 2026-11-21 at stop 1:
+ *                 the union per series of 2026-11-13 put genres at 86.4 % and tags at 77.4 %
+ *                 right on the blind labels; per book 96.2 % / 96.5 %). `seriesUnion` with no
+ *                 series gives exactly that; a series name groups volumes where a union is
+ *                 wanted again
  *   change        the labels to add (and the format tag) and the tags to remove (the approved
  *                 list; never a custom tag), against the book's tags in Calibre now
  */
@@ -26,7 +29,7 @@ import {
 import type { Format } from '../stage4/rules-v3';
 
 /** Raised when a decision rule or the mapping changes (decided again, nobody asked). */
-export const STAGE5_RULES_VERSION = 1;
+export const STAGE5_RULES_VERSION = 2;
 
 export type Source = 'models' | 'ranobedb' | 'store';
 

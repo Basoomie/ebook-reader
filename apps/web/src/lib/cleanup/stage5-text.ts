@@ -19,7 +19,7 @@ import { etaText, n, type ProgressBar } from './cleanup-text';
 export const STAGE5_MODE_HINTS: Record<StageMode, string> = {
   off: 'Nothing runs.',
   analyse:
-    'Both AI models read every book; a genre or tag is kept only when both give it, RanobeDB and the store categories add theirs, and every book of a series gets what any of its volumes has. Lists what it would change; nothing in Calibre is changed.',
+    'Both AI models read every book; a genre or tag is kept only when both give it, and RanobeDB and the store categories add theirs. Each book gets its own. Lists what it would change; nothing in Calibre is changed.',
   on: 'Adds the genres, tags and format to each book’s own tags in Calibre, in batches, and takes off the Google Books categories and the old workflow tags. Your own tags stay.'
 };
 
@@ -83,17 +83,16 @@ export function setLine(
   return `${name}: ${pct(s.foundPercent)} found (test ${test.found} %), ${pct(s.rightPercent)} right (test ${test.right} %), ${n(s.full)} of ${n(s.books)} books fully right (test ${test.full} of ${test.books})`;
 }
 
-/** The gate's lines: as written (the union per series), and both models alone per book. */
+/** The gate's lines: as written (every source, per book), and both models alone. */
 export function stage5GateLines(g: Stage5Gate): { title: string; lines: string[] }[] {
   const view = (v: Stage5Gate['final']) => [
     setLine('Genres', v.genres, g.test.genres),
     setLine('Tags', v.tags, g.test.tags)
   ];
   return [
-    { title: 'As written (every source, the union per series)', lines: view(g.final) },
-    { title: 'Both models alone, per book (as the genre test measured)', lines: view(g.models) },
-    { title: 'Every source per book, no union', lines: view(g.own) },
-    { title: 'The union without RanobeDB', lines: view(g.noRanobedb) }
+    { title: 'As written (every source, per book)', lines: view(g.final) },
+    { title: 'Both models alone (as the genre test measured)', lines: view(g.models) },
+    { title: 'Without RanobeDB', lines: view(g.noRanobedb) }
   ];
 }
 

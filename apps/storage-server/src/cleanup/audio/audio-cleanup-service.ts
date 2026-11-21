@@ -1408,7 +1408,7 @@ export class AudioCleanupService {
           id: STAGE5_SPEC.stage,
           name: 'Calibre genres and tags (stage 5)',
           about:
-            'Both models read every book. A genre or tag is applied only when both models give it; RanobeDB and the store categories add theirs, and every book of a series gets what any of its volumes has.',
+            'Both models read every book. A genre or tag is applied only when both models give it; RanobeDB and the store categories add theirs. Each book gets its own.',
           models: [
             { task: STAGE5_SPEC.tasks.primary, role: 'First model' },
             { task: STAGE5_SPEC.tasks.secondary, role: 'Second model' },

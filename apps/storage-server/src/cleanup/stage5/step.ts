@@ -7,7 +7,7 @@
  *   models    Haiku and Luna asked about every book (labeled first; only them with labeledOnly)
  *   decide    each book's own terms: both models per id, RanobeDB, the store rules (decide.ts),
  *             into ai_values 'calibre5'
- *   gate      the union per series built, the labeled books scored (gate.ts); a set below its
+ *   gate      each book's terms (per book, decided 2026-11-21), the labeled books scored (gate.ts); a set below its
  *             bar is held back (nothing of it is applied)
  *   propose   one change per Calibre book (stage 5, field 'tags'): the labels to add with the
  *             format tag, the approved removals; books stage 4 never read get the removals only
@@ -85,11 +85,11 @@ export interface Stage5Gate {
   books: { genres: number; tags: number };
   /** Both models, per book (comparable with the genre test). */
   models: GateView;
-  /** Every source per book, no series union. */
+  /** Every source per book (as written: per book, decided 2026-11-21). */
   own: GateView;
-  /** The union per series without RanobeDB (its effect). */
+  /** Per book without RanobeDB (its effect). */
   noRanobedb: GateView;
-  /** As it would be written: series union of every source. */
+  /** As it would be written: every source, per book. */
   final: GateView;
   test: typeof TEST_SCORES;
   /** Sets below their bars (held back). */
@@ -101,7 +101,7 @@ export interface Stage5Gate {
 }
 
 export interface Stage5Counts {
-  /** Books that get each term (after the union), and each format tag. */
+  /** Books that get each term, and each format tag. */
   terms: Record<string, number>;
   formats: Record<string, number>;
   /** Stage-4 books with no genre and no subject. */
@@ -209,10 +209,10 @@ export class Stage5 {
   } | null = null;
   /** Stage 4's decided format per book (its format proposals). */
   private formats: { key: string; map: Map<string, Format> } | null = null;
-  /** The union per series (built in the gate phase, kept for proposing). */
+  /** Each book's terms (built in the gate phase, kept for proposing). */
   private union: { key: string; map: Map<number, Record<string, UnionTerm>> } | null = null;
   private all: { snap: object; rows: { calibre_id: number; book: Stage2Book }[] } | null = null;
-  /** Books whose series holds a labeled book: asked first, and alone with labeledOnly. */
+  /** The labeled books: asked first, and alone with labeledOnly. */
   private labeled: { key: string; ids: Set<number>; gids: Map<string, number> } | null = null;
 
   constructor(private readonly deps: Stage5Deps) {}
@@ -604,11 +604,7 @@ export class Stage5 {
     return f ? loadGenreLabels(f) : null;
   }
 
-  /**
-   * The labeled books (their Calibre ids now) and every book of their series: the gate scores
-   * the union, so the volumes of a labeled book's series are asked first (and alone with
-   * labeledOnly).
-   */
+  /** The labeled books (their Calibre ids now): asked first, and alone with labeledOnly. */
   private labeledSet(p4: Stage4Progress): { ids: Set<number>; gids: Map<string, number> } {
     const key = `${p4.analysisId}|${p4.finishedAt}`;
     if (this.labeled?.key === key) return this.labeled;
@@ -619,17 +615,6 @@ export class Stage5 {
         ])
       : new Map<string, number>();
     const ids = new Set<number>(gids.values());
-    const series = new Set<string>();
-    for (const id of ids) {
-      const s = this.extras(p4).get(id)?.series;
-      if (s) series.add(s);
-    }
-    if (series.size) {
-      for (const b of this.books(p4)) {
-        const s = this.extras(p4).get(b.calibre_id)?.series;
-        if (s && series.has(s)) ids.add(b.calibre_id);
-      }
-    }
     this.labeled = { key, ids, gids };
     return this.labeled;
   }
@@ -810,7 +795,8 @@ export class Stage5 {
         ? [
             {
               calibreId: b.calibre_id,
-              series: this.extras(p4).get(b.calibre_id)?.series ?? null,
+              // Per book (decided with the user 2026-11-21): no union across a series.
+              series: null,
               own: o,
             },
           ]
@@ -856,7 +842,7 @@ export class Stage5 {
       if (o && !o.asked && !asked.has(gid)) notAsked += 1;
       asked.add(gid);
     }
-    // The union without RanobeDB: the same series union, RanobeDB's terms left out.
+    // Per book without RanobeDB's terms (its effect).
     const books4 = this.books(p4);
     const noRdb = seriesUnion(
       books4.flatMap((b) => {
@@ -870,7 +856,7 @@ export class Stage5 {
         return [
           {
             calibreId: b.calibre_id,
-            series: this.extras(p4).get(b.calibre_id)?.series ?? null,
+            series: null,
             own: { ...o, terms },
           },
         ];

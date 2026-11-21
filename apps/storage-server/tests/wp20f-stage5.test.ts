@@ -361,7 +361,7 @@ describe('stage 5 from evidence to proposals', () => {
     standin = null;
   });
 
-  it('asks both models, decides per id, unions per series, gates and proposes one change per book', async () => {
+  it('asks both models, decides per id and per book, gates and proposes one change per book', async () => {
     // What each model answers, by title (Luna answers with labels, as in the genre test).
     const H: Record<string, Partial<Record<string, unknown>>> = {
       'シリーズ 1': { genres: ['fantasy', 'comedy'], tags: ['magic'] },
@@ -554,12 +554,13 @@ describe('stage 5 from evidence to proposals', () => {
         { ...(JSON.parse(r.new_json) as { add: string[]; remove: string[] }), source: r.source },
       ]),
     );
-    // The series: fantasy and magic (both models, vol. 1), dragons (vol. 2), isekai and アニメ化
-    // (RanobeDB, vol. 2): every volume gets all of them; comedy (Haiku only) never.
-    expect(rows.get(1)!.add).toEqual(
-      ['アニメ化', 'ドラゴン', 'ファンタジー', 'ライトノベル', '異世界', '魔法'].sort(),
+    // Per book (decided 2026-11-21): volume 1 keeps fantasy and magic (both models; comedy,
+    // Haiku only, never); volume 2 its own: fantasy and dragons (both models), isekai and アニメ化
+    // (its RanobeDB match). Nothing of one volume goes to the other.
+    expect(rows.get(1)!.add).toEqual(['ファンタジー', 'ライトノベル', '魔法'].sort());
+    expect(rows.get(2)!.add).toEqual(
+      ['アニメ化', 'ドラゴン', 'ファンタジー', 'ライトノベル', '異世界'].sort(),
     );
-    expect(rows.get(2)!.add).toEqual(rows.get(1)!.add);
     expect(rows.get(1)!.remove).toEqual(['metadata-processed', 'Young Adult Fiction']);
     expect(rows.get(2)!.remove).toEqual([]);
     // The standalone: its own; アニメ化 from both models with the statement in the description.
@@ -574,7 +575,7 @@ describe('stage 5 from evidence to proposals', () => {
     // The gate on the labeled books.
     expect(p.gate?.final.genres).toMatchObject({ books: 2, core: 2, found: 2 });
     expect(p.gate?.final.tags).toMatchObject({ books: 2, found: 2 });
-    expect(p.gate?.final.genres).toMatchObject({ right: 3, applied: 3 });
+    expect(p.gate?.final.genres).toMatchObject({ right: 2, applied: 2 });
     expect(p.gate?.held).toEqual({ genres: false, tags: false });
     expect(p.gate?.passed).toBe(true);
     expect(p.counts).toMatchObject({ books: 4, outside: 1, outsideChanged: 1, noGenre: 0 });
