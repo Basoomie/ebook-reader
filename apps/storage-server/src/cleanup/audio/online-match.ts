@@ -25,7 +25,13 @@
 import { norm, sim } from '../stage4/pick';
 import { printedVolume } from './dup-names';
 import type { StoreRecord } from './online-pages';
-import { hasOwnTitle, personKey, searchTitle } from './online-names';
+import {
+  hasOwnTitle,
+  personKey,
+  searchTitle,
+  titleBracket,
+  titleWithoutLabel,
+} from './online-names';
 
 export interface UnitFacts {
   /** The title searched for (from the torrent names). */
@@ -46,6 +52,14 @@ export interface UnitFacts {
   seconds: number | null;
   /** Number of files (half and third lengths are tried only for several). */
   files: number;
+  /**
+   * The subtitle in a bracket attached to the end of the file's own title (`(妄想)`), which
+   * `title` has lost (`searchTitle` drops trailing brackets): a record whose title carries
+   * another one is another book (WP21c follow-up (3)). Missing in units built before.
+   */
+  titleBracket?: string | null;
+  /** The file's own title with that bracket (`fullTitle`), for the exact-title tie-break. */
+  fullTitle?: string;
 }
 
 export interface MatchSettings {
@@ -153,6 +167,27 @@ export function seriesFolderTitles(own: string, folders: string[]): string[] {
   });
 }
 
+/**
+ * The file's subtitle and the store title's differ (`(妄想)` / `(入門)`): another book, whatever
+ * the rest of the title says (WP21c follow-up (3)). Null when they don't, or one side has none.
+ */
+export function subtitlesDiffer(unit: UnitFacts, store: string): string | null {
+  const f = unit.titleBracket ?? null;
+  const s = titleBracket(store);
+  if (!f || !s || norm(f) === norm(s)) return null;
+  return `different subtitle: (${f}) / (${s})`;
+}
+
+/**
+ * The file's own title, with its subtitle, is the store's title exactly (no containment, no
+ * pair share; an imprint, publisher or reader in a last bracket doesn't count on either side):
+ * the tie-break of the one-record rule (WP21c follow-up (3)).
+ */
+export function exactTitle(unit: UnitFacts, store: string): boolean {
+  const f = norm(titleWithoutLabel(unit.fullTitle ?? unit.title));
+  return f !== '' && f === norm(titleWithoutLabel(store));
+}
+
 /** The file's own title says nothing once cleaned (`[B09YY1LQRS].m4b`, `【ア】【イ】`). */
 export function noOwnTitle(title: string): boolean {
   return !hasOwnTitle(norm(storeTitle(searchTitle(title))));
@@ -250,16 +285,20 @@ export function evaluate(
         ? null
         : { minChars: s.titleMinChars, minShare: s.titleMinShare };
     const t = titlesAgree(titles, r.title, s.titleScore, guard);
-    titlePartial = !t.ok && t.partial !== null;
+    // Even a record the id in the name chose: the id doesn't make (妄想) into (入門).
+    const sub = subtitlesDiffer(unit, r.title);
+    titlePartial = !sub && !t.ok && t.partial !== null;
     checks.title = {
-      ok: t.ok,
+      ok: t.ok && !sub,
       file: unit.title,
       store: r.title,
-      detail: t.ok
-        ? undefined
-        : t.partial
-          ? `only inside a longer title: ${t.partial}`
-          : `score ${t.best}`,
+      detail: sub
+        ? sub
+        : t.ok
+          ? undefined
+          : t.partial
+            ? `only inside a longer title: ${t.partial}`
+            : `score ${t.best}`,
     };
   }
 
@@ -391,6 +430,7 @@ export function hitWorthReading(
 ): boolean {
   if (!titlesAgree([unit.title, ...unit.otherTitles], hit.title, s.titleScore, searchGuard(s)).ok)
     return false;
+  if (subtitlesDiffer(unit, hit.title)) return false;
   if (hit.seconds === null || unit.seconds === null) return true;
   const tol = s.runtimeMinutes * 60;
   const tries = unit.files > 1 ? [1, 2, 3] : [1];

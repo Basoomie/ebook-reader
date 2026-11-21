@@ -606,6 +606,22 @@ export class LibraryApi {
   }
 
   /**
+   * The full-size cover's size in bytes (a HEAD request: the image isn't sent), or null
+   * when the server doesn't say.
+   */
+  async coverSize(id: string, options: RequestOptions = {}): Promise<number | null> {
+    const response = await send(
+      this.fetchImpl,
+      `${this.serverUrl}/api/v1/books/${encodeURIComponent(id)}/cover`,
+      { method: 'HEAD', headers: { Authorization: `Bearer ${this.token}` } },
+      { timeoutSeconds: this.timeoutSeconds, ...options }
+    );
+    if (!response.ok) return null;
+    const size = Number(response.headers.get('Content-Length'));
+    return Number.isFinite(size) && size > 0 ? size : null;
+  }
+
+  /**
    * Downloads the EPUB. No timeout (large books on slow Wi-Fi); the caller
    * cancels through `signal`. Reports progress when the size is known.
    */
