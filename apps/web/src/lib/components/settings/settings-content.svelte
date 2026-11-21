@@ -40,7 +40,12 @@
   import NotificationsPanel from '$lib/components/settings/notifications-panel.svelte';
   import { NOT_OVER_HTTP } from '$lib/diagnostics/diagnostics-text';
   import { canPersistStorage } from '$lib/functions/secure-context';
-  import { bookIllustrationsPosition$, libraryLook$ } from '$lib/library/settings';
+  import {
+    bookIllustrationsPosition$,
+    libraryBulkDownloadMode$,
+    libraryDownloadConfirmGb$,
+    libraryLook$
+  } from '$lib/library/settings';
   import {
     readAloudAheadSeconds$,
     readAloudBottomBarButton$,
@@ -1016,6 +1021,31 @@
           </p>
         </SettingRow>
       {/if}
+    </SettingsGroup>
+    <SettingsGroup id="data-downloads">
+      <SettingRow id="bulk-download-mode" let:labelId>
+        <SettingChoice
+          options={[
+            { id: 'zip', text: 'One ZIP file' },
+            { id: 'files', text: 'Separate files' }
+          ]}
+          bind:value={$libraryBulkDownloadMode$}
+          labelledby={labelId}
+          testid="bulk-download-mode"
+        />
+      </SettingRow>
+      <SettingRow id="download-confirm-size" let:labelId>
+        <SettingField unit="GB">
+          <input
+            type="number"
+            min="0"
+            step="0.5"
+            aria-labelledby={labelId}
+            data-testid="download-confirm-size"
+            bind:value={$libraryDownloadConfirmGb$}
+          />
+        </SettingField>
+      </SettingRow>
     </SettingsGroup>
     <SettingsGroup id="data-import">
       <SettingRow id="epub-fixes" description={importHTMLFixModeTooltip} let:labelId>

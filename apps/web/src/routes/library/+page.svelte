@@ -23,6 +23,7 @@
   import LibraryDisplayMenu from '$lib/components/library/library-display-menu.svelte';
   import LibraryOpenOverlay from '$lib/components/library/library-open-overlay.svelte';
   import LibrarySortMenu from '$lib/components/library/library-sort-menu.svelte';
+  import SelectDownloadMenu from '$lib/components/library/select-download-menu.svelte';
   import { canLoadWhenVisible, loadWhenVisible } from '$lib/components/load-when-visible';
   import MarkCompletedDialog from '$lib/components/library/mark-completed-dialog.svelte';
   import SearchHelpDialog from '$lib/components/library/search-help-dialog.svelte';
@@ -50,7 +51,7 @@
   import { audioBookIdsOnDevice } from '$lib/audio/offline/audio-offline';
   import { database, einkMode$ } from '$lib/data/store';
   import { formatPageTitle } from '$lib/functions/format-page-title';
-  import { LibraryApi, LibraryApiError } from '$lib/library/api';
+  import { LibraryApi, LibraryApiError, type BookListQuery } from '$lib/library/api';
   import { existingLocalIds } from '$lib/library/browser-open-deps';
   import type { OfflineCatalog } from '$lib/library/offline/offline-catalog';
   import {
@@ -282,6 +283,11 @@
   let drag: { x: number; y: number; active: boolean; base: Set<string> } | null = null;
   let dragBox: { left: number; top: number; width: number; height: number } | null = null;
   let suppressClick = false;
+  /** Select all: the server is listing every matching book. */
+  let selectingAll = false;
+  let selectAllController: AbortController | undefined;
+  /** Change… on books not loaded yet: looking them up ("Loading 400 of 2,000 books"). */
+  let selectBusy = '';
 
   $: timeoutSeconds = Math.max(0, Number($libraryRequestTimeoutSeconds$) || 0);
   // A changed timeout setting applies to the next request.
@@ -670,6 +676,7 @@
 
   function toggleSelectMode() {
     selectMode = !selectMode;
+    selectAllController?.abort();
     selected = new Set();
     lastClicked = null;
   }
@@ -684,8 +691,87 @@
     lastClicked = book.id;
   }
 
-  function selectAllShown() {
-    selected = withAll(selected, bookIds);
+  /** The open list as a book-list query (what loadPage asks for); null for none. */
+  function currentListQuery(): { query: BookListQuery; scope: string | null } | null {
+    const q = appliedQuery || undefined;
+    if (collectionId === null) {
+      return {
+        query: { q, library: appliedLibrary || undefined, group: group ?? undefined },
+        scope: null
+      };
+    }
+    const scope = builtinCollection(collectionId)?.query ?? smartQuery();
+    if (scope) return { query: { q, scope }, scope };
+    const c = collectionList.find((x) => x.id === collectionId);
+    return c?.type === 'manual' ? { query: { q, collection: c.id }, scope: null } : null;
+  }
+
+  /**
+   * Select all: every book of the list, also the ones not loaded yet (the server lists
+   * their ids; offline, this device's books). Added to what is already selected.
+   */
+  async function selectAll() {
+    const a = source();
+    const list = currentListQuery();
+    if (!a || !list || selectingAll) return;
+    const asked = offline;
+    const controller = new AbortController();
+    selectAllController = controller;
+    selectingAll = true;
+    try {
+      // The server only knows book-state changes that reached it (as loadPage).
+      const parsed = parseQuery(appliedQuery);
+      const parsedScope = list.scope ? parseQuery(list.scope) : null;
+      if (
+        !asked &&
+        ((parsed.ok && usesBookState(parsed.query)) ||
+          (parsedScope?.ok && usesBookState(parsedScope.query)))
+      ) {
+        await view.sendPendingChanges(timeoutSeconds);
+      }
+      const ids = await a.bookIds(list.query, { signal: controller.signal });
+      if (controller.signal.aborted || !selectMode) return;
+      // Loaded books too (a list being changed right now may have one the answer lacks).
+      selected = withAll(withAll(selected, bookIds), ids);
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      if (error instanceof LibraryApiError && error.kind === 'aborted') return;
+      if (handleAuthError(error)) return;
+      selected = withAll(selected, bookIds);
+      showMessage(
+        'Only the loaded books were selected',
+        `The full list couldn't be fetched: ${describe(error)}`
+      );
+    } finally {
+      if (selectAllController === controller) selectingAll = false;
+    }
+  }
+
+  function deselectAll() {
+    selectAllController?.abort();
+    selected = new Set();
+    lastClicked = null;
+  }
+
+  /**
+   * The selected books as catalog entries, in selection order: the loaded ones, the
+   * others looked up (a Select all can reach books never scrolled to). Books the catalog
+   * no longer shows are left out.
+   */
+  async function selectedBooks(ids: string[]): Promise<CatalogBook[]> {
+    const byId = new Map(books.map((b) => [b.id, b]));
+    const missing = ids.filter((id) => !byId.has(id));
+    const a = source();
+    try {
+      for (let i = 0; a && i < missing.length; i += LOOKUP_CHUNK) {
+        selectBusy = `Loading ${i.toLocaleString('en-US')} of ${missing.length.toLocaleString('en-US')} books…`;
+        const result = await a.lookup(missing.slice(i, i + LOOKUP_CHUNK));
+        result.books.forEach((b) => byId.set(b.id, b));
+      }
+    } finally {
+      selectBusy = '';
+    }
+    return ids.flatMap((id) => byId.get(id) ?? []);
   }
 
   function onListPointerDown(ev: PointerEvent) {
@@ -741,7 +827,7 @@
       toggleSelectMode();
     } else if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 'a') {
       ev.preventDefault();
-      selectAllShown();
+      void selectAll();
     }
   }
 
@@ -756,16 +842,17 @@
   }
 
   async function bulkChange() {
+    const ids = [...selected];
+    if (!ids.length || selectBusy) return;
+    // The loaded ones (titles for the questions); Select all may reach unloaded books.
     const chosen = books.filter((b) => selected.has(b.id));
-    if (!chosen.length) return;
-    const change = await ask<BulkChange | undefined>(BulkEditDialog, { count: chosen.length });
+    const change = await ask<BulkChange | undefined>(BulkEditDialog, { count: ids.length });
     if (!change) return;
-    const ids = chosen.map((b) => b.id);
     let failed: string[];
     if (change.kind === 'collection') {
       const pick = await ask<CollectionPick | undefined>(CollectionPickDialog, {
         action: change.action,
-        count: chosen.length,
+        count: ids.length,
         collections: collectionList.filter((c) => c.type === 'manual')
       });
       if (!pick) return;
@@ -775,7 +862,8 @@
         'id' in pick &&
         !(await confirmRemoveFromCollection(
           chosen,
-          collectionList.find((c) => c.id === pick.id)?.name ?? 'the collection'
+          collectionList.find((c) => c.id === pick.id)?.name ?? 'the collection',
+          ids.length
         ))
       ) {
         return;
@@ -793,11 +881,19 @@
       }
     } else if (change.kind === 'status' && change.status === 'completed') {
       const finishedOn = await ask<string | null | undefined>(MarkCompletedDialog, {
-        count: chosen.length
+        count: ids.length
       });
       if (finishedOn === undefined) return;
+      let completed: CatalogBook[];
+      try {
+        // Completing needs each book's character count.
+        completed = await selectedBooks(ids);
+      } catch (error) {
+        showMessage('Not saved', describe(error));
+        return;
+      }
       failed = await bookState.markCompleted(
-        chosen.map((b) => ({ bookId: b.id, charCount: b.charCount })),
+        completed.map((b) => ({ bookId: b.id, charCount: b.charCount })),
         finishedOn
       );
     } else if (change.kind === 'status') {
@@ -806,7 +902,7 @@
         change.status === 'unread' &&
         (await Promise.all(ids.map((id) => bookState.currentReadHasPlace(id)))).some(Boolean) &&
         !(await confirmDestructive({
-          ...unreadManyCopy(chosen.length),
+          ...unreadManyCopy(ids.length),
           testid: 'unread-many-confirm',
           confirmTestid: 'unread-many-confirm-button'
         }))
@@ -818,7 +914,7 @@
       if (
         !change.favorite &&
         !(await confirmDestructive({
-          ...removeFavoritesCopy(chosen.length),
+          ...removeFavoritesCopy(ids.length),
           testid: 'remove-favorites-confirm',
           confirmTestid: 'remove-favorites-confirm-button'
         }))
@@ -833,7 +929,7 @@
     if (failed.length) {
       showMessage(
         'Not all saved',
-        `${failed.length} of ${chosen.length} books could not be changed. Try again.`
+        `${failed.length} of ${ids.length} books could not be changed. Try again.`
       );
       selected = new Set(failed);
       return;
@@ -2200,10 +2296,26 @@
 {#if selectMode && connection && !showingGroups}
   <div class="c-select-bar fixed inset-x-0 bottom-0 z-10" data-testid="select-bar">
     <div class="{pxScreen} flex flex-wrap items-center justify-between gap-2 py-2">
-      <span class="font-medium" data-testid="selected-count">{selected.size} selected</span>
+      <span class="font-medium" data-testid="selected-count" aria-live="polite"
+        >{selectBusy || `${selected.size.toLocaleString('en-US')} selected`}</span
+      >
       <div class="flex flex-wrap gap-2">
-        <button class="c-btn c-btn-secondary" data-testid="select-all" on:click={selectAllShown}>
-          All shown
+        <button
+          class="c-btn c-btn-secondary"
+          disabled={selectingAll}
+          aria-busy={selectingAll}
+          data-testid="select-all"
+          on:click={selectAll}
+        >
+          {selectingAll ? 'Selecting…' : 'Select all'}
+        </button>
+        <button
+          class="c-btn c-btn-secondary"
+          disabled={!selected.size}
+          data-testid="deselect-all"
+          on:click={deselectAll}
+        >
+          Deselect all
         </button>
         {#if isList}
           <button
@@ -2225,12 +2337,18 @@
         {/if}
         <button
           class="c-btn c-btn-secondary"
-          disabled={!selected.size}
+          disabled={!selected.size || !!selectBusy}
           data-testid="bulk-change"
           on:click={bulkChange}
         >
           Change…
         </button>
+        <SelectDownloadMenu
+          api={offline ? null : (api ?? null)}
+          selection={selected}
+          on:error={(e) => showMessage('Download failed', describe(e.detail))}
+          on:notice={(e) => showMessage(e.detail.title, e.detail.message)}
+        />
         <button class="c-btn c-btn-secondary" on:click={toggleSelectMode}> Done </button>
       </div>
     </div>

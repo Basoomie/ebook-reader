@@ -82,5 +82,21 @@ export const bookIllustrationsPosition$ = writableStringLocalStorageSubject<
   'description' | 'cover'
 >()('bookIllustrationsPosition', 'description');
 
+/**
+ * Select mode's Download menu: how the files of several books arrive. 'zip' = one ZIP per
+ * download (made by the server as it is sent, into the browser's downloads); 'files' =
+ * each file on its own, like the book page's Download menu.
+ */
+export const libraryBulkDownloadMode$ = writableStringLocalStorageSubject<'zip' | 'files'>()(
+  'libraryBulkDownloadMode',
+  'zip'
+);
+
+/** Select mode's Download menu asks first above this many GB (0 = never asks). */
+export const libraryDownloadConfirmGb$ = writableNumberLocalStorageSubject()(
+  'libraryDownloadConfirmGb',
+  5
+);
+
 /** WP19a: load the next page when the end of a list comes near (else a "Load more" button). */
 export const libraryAutoLoad$ = writableBooleanLocalStorageSubject()('libraryAutoLoad', true);

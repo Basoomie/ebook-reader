@@ -16,6 +16,7 @@ import type {
   UploadInfo
 } from '$lib/library/types';
 import type { ServerSort } from '$lib/library/sort';
+import type { DownloadKind, DownloadPlan, ZipStatus } from '$lib/library/bulk-download';
 import type {
   QuoteFilter,
   SpeakerCharacter,
@@ -517,6 +518,64 @@ export class LibraryApi {
       count: number;
     };
     return body.count;
+  }
+
+  /** Every book id of a list (select mode's Select All: also the books not loaded yet). */
+  async bookIds(query: BookListQuery, options?: RequestOptions): Promise<string[]> {
+    const qs = listParams(query).toString();
+    const body = (await (await this.get(`/books/ids${qs ? `?${qs}` : ''}`, options)).json()) as {
+      ids: string[];
+    };
+    return body.ids;
+  }
+
+  /**
+   * Select mode's Download menu: what these books offer per kind, with the sizes the server
+   * has stored (no disk reads). `items` adds each book's files (for "Separate files").
+   */
+  async downloadPlan(
+    ids: readonly string[],
+    opts: { items?: boolean } = {},
+    options?: RequestOptions
+  ): Promise<DownloadPlan> {
+    return (
+      await this.post(
+        '/books/download-plan',
+        { ids, ...(opts.items ? { items: true } : {}) },
+        options
+      )
+    ).json();
+  }
+
+  /**
+   * Starts preparing one ZIP of one kind of these books on the server (every file is looked
+   * up, so its exact size is known). Ask `zipStatus` how far it is; once ready, its `url`
+   * is fetched by the browser itself.
+   */
+  async startZip(
+    ids: readonly string[],
+    kind: DownloadKind,
+    signal?: AbortSignal
+  ): Promise<string> {
+    const body = (await (
+      await this.post('/books/download-zip', { ids, kind }, { signal })
+    ).json()) as { token: string };
+    return body.token;
+  }
+
+  async zipStatus(token: string, options?: RequestOptions): Promise<ZipStatus> {
+    return (await this.get(`/books/download-zip/${encodeURIComponent(token)}`, options)).json();
+  }
+
+  /** Stops preparing a ZIP (or ends its address). */
+  async cancelZip(token: string): Promise<void> {
+    const response = await send(
+      this.fetchImpl,
+      `${this.serverUrl}/api/v1/books/download-zip/${encodeURIComponent(token)}`,
+      { method: 'DELETE', headers: { Authorization: `Bearer ${this.token}` } },
+      { timeoutSeconds: this.timeoutSeconds }
+    );
+    if (!response.ok && response.status !== 404) throw await errorFrom(response);
   }
 
   /** Browse tabs (WP7a): one card per series, author or tag with a matching book. */

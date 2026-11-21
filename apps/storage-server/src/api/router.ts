@@ -29,6 +29,13 @@ import { FontService } from '../fonts/service';
 import { DEFAULT_MAX_CLOCK_SKEW_SECONDS, SyncStore } from '../sync/store';
 import { audioStreamRoute, type AudioOptions, createAudioRouter } from '../audio/routes';
 import { createAudioLinkRouter } from '../audio/link-routes';
+import {
+  BULK_DOWNLOAD_BODY_LIMIT,
+  BULK_DOWNLOAD_PATHS,
+  BulkDownloads,
+  bulkDownloadFileRoute,
+  createBulkDownloadRouter,
+} from './bulk-download-routes';
 import { createAudioClipRouter } from '../audio/clip-routes';
 import { createMergeRouter } from '../audio/merge-routes';
 import {
@@ -151,6 +158,8 @@ export function createApiRouter({
   // Pushes can carry many records; everything else keeps the small default limit.
   const smallJson = express.json();
   const syncJson = express.json({ limit: SYNC_BODY_LIMIT });
+  // The library's bulk downloads take every selected id (a whole library fits).
+  const bulkJson = express.json({ limit: BULK_DOWNLOAD_BODY_LIMIT });
   router.use((req, res, next) => {
     // An upload's body is the EPUB itself, streamed by the upload route (WP7b); a
     // font upload's body is the font file (WP13).
@@ -170,6 +179,7 @@ export function createApiRouter({
     ) {
       return next();
     }
+    if (BULK_DOWNLOAD_PATHS.includes(req.path)) return bulkJson(req, res, next);
     (req.path === '/sync' ? syncJson : smallJson)(req, res, next);
   });
 
@@ -209,6 +219,10 @@ export function createApiRouter({
     router.use(illustrationImageRoute(db, catalog));
     // Audio streams: signed URL or token (an <audio> element can't send the token, WP15).
     router.use(audioStreamRoute(db, audio));
+    // A prepared bulk-download ZIP: its unguessable address is the permission (a plain
+    // link can't send the token, like the audio streams).
+    const bulkDownloads = new BulkDownloads();
+    router.use(bulkDownloadFileRoute(bulkDownloads));
     // The GPU worker (WP16): its own token, only /worker/*, only its job's files.
     // WP17's worker routes first (the WP16 router answers 404 for any other /worker path).
     router.use(createTtsWorkerRouter(db, audio));
@@ -234,6 +248,7 @@ export function createApiRouter({
     router.use(createLogsRouter(logs));
 
     router.use(createCatalogRouter(db, catalog));
+    router.use(createBulkDownloadRouter(db, catalog, audio, bulkDownloads));
     router.use(createIllustrationRouter(db, catalog));
     router.use(createAudioRouter(db, audio));
     router.use(createAudioLinkRouter(db, audio));

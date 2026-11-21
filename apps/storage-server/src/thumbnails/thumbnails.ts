@@ -24,7 +24,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import sharp from 'sharp';
 import { fileIdentity, FileIdentity, sameFile } from '../calibre/file-identity';
-import { readSourceFile, resolveInside } from '../calibre/source-fs';
+import { readSourceFile, resolveInside, statFile } from '../calibre/source-fs';
 import { readEpubCover } from '../uploads/epub-meta';
 import type { UploadStore } from '../uploads/upload-store';
 
@@ -437,6 +437,30 @@ export class ThumbnailService {
     } catch (err) {
       return { status: 'error', error: coverError(src, err) };
     }
+  }
+
+  /**
+   * The full-size cover for the library's bulk downloads: a Calibre book's cover.jpg as a
+   * file (stat only; the caller streams it read-only), an uploaded book's image read
+   * from its EPUB. null when the book is unknown, has no cover or it can't be found.
+   */
+  async coverForDownload(
+    bookId: string,
+  ): Promise<
+    | { kind: 'file'; file: string; size: number }
+    | { kind: 'data'; data: Buffer; type: string }
+    | null
+  > {
+    const src = this.coverSource(bookId);
+    if (!src || !src.hasCover) return null;
+    if (src.kind === 'calibre') {
+      if (!src.calibrePath) return null;
+      const file = this.coverFile(src);
+      const st = await statFile(file);
+      return st ? { kind: 'file', file, size: st.size } : null;
+    }
+    const cover = await this.original(bookId);
+    return cover?.status === 'ok' ? { kind: 'data', data: cover.data, type: cover.type } : null;
   }
 
   /** The cover image's bytes: Calibre's cover.jpg, or the image inside an uploaded EPUB. */

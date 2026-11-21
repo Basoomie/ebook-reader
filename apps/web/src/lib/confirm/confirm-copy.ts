@@ -197,6 +197,30 @@ export function unreadResetCopy(): ConfirmCopy {
 }
 
 /** Unread for a library selection. */
+/**
+ * Select mode's Download menu, above Settings > Data > "Ask before downloads larger than".
+ * Removes nothing: the plain filled button.
+ */
+export function largeDownloadCopy(opts: {
+  /** "audiobooks", "books", "covers", "SRT files". */
+  what: string;
+  count: number;
+  size: string;
+  zip: boolean;
+}): ConfirmCopy {
+  return {
+    title: `Download ${opts.size}?`,
+    message: [
+      `${opts.count.toLocaleString('en-US')} ${opts.what}, ${opts.size} in all. ${
+        opts.zip ? 'They arrive as one ZIP file.' : 'Each file is saved on its own.'
+      }`,
+      'You can change the size that asks first in Settings > Data > Downloading books.'
+    ],
+    confirmLabel: `Download ${opts.size}`,
+    danger: false
+  };
+}
+
 export function unreadManyCopy(count: number): ConfirmCopy {
   return {
     title: `Set ${books(count)} to Unread?`,
