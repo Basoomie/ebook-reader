@@ -82,8 +82,12 @@ export function openCatalogBook(
     askPlaceholderBook
   );
   return openCalibreBook(book, deps, signal, onStage).then((outcome) => {
-    // WP15e: a new copy on this device shows in "On this device".
-    if (outcome.status === 'opened') {
+    // WP15e: a new copy on this device shows in "On this device" (also one stored before
+    // its audiobook step was cancelled).
+    if (
+      outcome.status === 'opened' ||
+      (outcome.status === 'cancelled' && outcome.storedLocalId !== undefined)
+    ) {
       void import('$lib/sync/sync-service')
         .then(({ publishDeviceBooks }) => publishDeviceBooks())
         .catch(() => {});

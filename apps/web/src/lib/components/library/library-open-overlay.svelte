@@ -20,7 +20,9 @@
         : `Downloading ${mb(stage.loaded)} MB`
       : stage.stage === 'prepare'
         ? 'Preparing the book…'
-        : 'Saving on this device…';
+        : stage.stage === 'audiobook'
+          ? 'Getting audiobook data…'
+          : 'Saving on this device…';
 </script>
 
 <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/40" role="dialog">

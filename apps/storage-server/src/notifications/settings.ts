@@ -6,7 +6,7 @@
 import type Database from 'better-sqlite3';
 import { listEvents, SECTIONS, SectionId } from './events';
 // Registers N2's stats events before any defaults are made.
-import './stats-events';
+import { REPORT_KINDS, ReportKind } from './stats-events';
 
 export type Channel = 'discord' | 'email';
 export const CHANNELS: Channel[] = ['discord', 'email'];
@@ -35,8 +35,15 @@ export interface NotificationSettings {
   finishedJobs: FinishedMode;
   waits: Waits;
   sections: Record<SectionId, boolean>;
-  /** N2: a period without reading: skip its message, or send "No reading" (user: skip). */
-  stats: { noReading: NoReadingMode };
+  stats: {
+    /** N2: a period without reading: skip its message, or send "No reading" (user: skip). */
+    noReading: NoReadingMode;
+    /**
+     * Per message (daily, weekly, monthly): show each number's change from the previous
+     * period (user, 2026-11-21: configurable per message, on by default as before).
+     */
+    compare: Record<ReportKind, boolean>;
+  };
   /** Per event, per channel. Kept when its section is off, so switching it on restores them. */
   events: Record<string, Record<Channel, boolean>>;
 }
@@ -66,7 +73,7 @@ export function defaultSettings(): NotificationSettings {
     },
     // Stats is off by default (approved layout); its three messages start on once it is on.
     sections: { jobs: true, cleanup: true, data: true, stats: false },
-    stats: { noReading: 'skip' },
+    stats: { noReading: 'skip', compare: { day: true, week: true, month: true } },
     events,
   };
 }
@@ -148,6 +155,14 @@ export function mergeSettings(base: NotificationSettings, input: unknown): Notif
         throw new SettingsError('A period with no reading must be skip or send');
       }
       out.stats.noReading = s.noReading;
+    }
+    if (s.compare !== undefined) {
+      const c = obj(s.compare);
+      for (const kind of REPORT_KINDS) {
+        if (c[kind] === undefined) continue;
+        if (typeof c[kind] !== 'boolean') throw new SettingsError('A switch must be on or off');
+        out.stats.compare[kind] = c[kind] as boolean;
+      }
     }
   }
   if (i.waits !== undefined) {

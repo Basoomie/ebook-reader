@@ -209,10 +209,20 @@ describe('settings and events', () => {
     ]);
     const d = defaultSettings();
     expect(d.sections.stats).toBe(false);
-    expect(d.stats).toEqual({ noReading: 'skip' });
+    expect(d.stats).toEqual({
+      noReading: 'skip',
+      compare: { day: true, week: true, month: true },
+    });
     for (const e of ev) expect(d.events[e.id]).toEqual({ discord: true, email: true });
     expect(mergeSettings(d, { stats: { noReading: 'send' } }).stats.noReading).toBe('send');
     expect(() => mergeSettings(d, { stats: { noReading: 'maybe' } })).toThrow(/skip or send/);
+    // The comparison is switched per message; the others keep theirs.
+    expect(mergeSettings(d, { stats: { compare: { day: false } } }).stats.compare).toEqual({
+      day: false,
+      week: true,
+      month: true,
+    });
+    expect(() => mergeSettings(d, { stats: { compare: { week: 'no' } } })).toThrow(/on or off/);
   });
 
   it('reads the day start and week start the settings source synced, else the defaults', async () => {
@@ -359,12 +369,12 @@ describe('sending', () => {
     await e.at('2026-11-17T07:00:30Z'); // 00:00 on Tue 17 Nov
     expect(sent(e)).toEqual([
       [
-        'ッツ Reader: Mon 16 Nov 2026 (vs Sun 15 Nov)',
-        'Characters: 11,000 (no change)',
-        'Reading time: 30 min (no change)',
-        'Speed: 22,000 / h (no change)',
-        'Lookups: 7 (no change)',
-        `[View Stats](${LINK}/statistics?period=day:2026-11-16)`,
+        '### ッツ Reader · Mon 16 Nov 2026',
+        '- **Characters:** 11,000 *(no change)*',
+        '- **Reading time:** 30 min *(no change)*',
+        '- **Speed:** 22,000 / h *(no change)*',
+        '- **Lookups:** 7 *(no change)*',
+        `-# vs Sun 15 Nov · [View Stats](${LINK}/statistics?period=day:2026-11-16)`,
       ].join('\n'),
     ]);
     await e.at('2026-11-17T07:01:00Z');
@@ -380,7 +390,7 @@ describe('sending', () => {
     expect(sent(e)).toEqual([]);
     await e.at('2026-11-17T11:00:30Z'); // 04:00
     expect(sent(e)).toHaveLength(1);
-    expect(sent(e)[0]).toMatch(/^ッツ Reader: Mon 16 Nov 2026 /);
+    expect(sent(e)[0]).toMatch(/^### ッツ Reader · Mon 16 Nov 2026\n/);
   });
 
   it('the weekly and monthly messages, with the changes worked out as on the Stats page', async () => {
@@ -390,12 +400,12 @@ describe('sending', () => {
     expect(sent(e)).toHaveLength(2); // Sunday's day, then the week
     expect(sent(e)[1]).toBe(
       [
-        'ッツ Reader: week 9 – 15 Nov 2026 (vs 2 – 8 Nov)',
-        'Characters: 84,000 (+10,000, +14%)',
-        'Reading time: 1 h 21 min (+33 min, +69%)',
-        'Speed: 16,164 / h (+11,198 / h, +225%)',
-        'Lookups: 11 (+8, +267%)',
-        `[View Stats](${LINK}/statistics?period=week:2026-11-09)`,
+        '### ッツ Reader · week 9 – 15 Nov 2026',
+        '- **Characters:** 84,000 *(+10,000, +14%)*',
+        '- **Reading time:** 1 h 21 min *(+33 min, +69%)*',
+        '- **Speed:** 16,164 / h *(+11,198 / h, +225%)*',
+        '- **Lookups:** 11 *(+8, +267%)*',
+        `-# vs 2 – 8 Nov · [View Stats](${LINK}/statistics?period=week:2026-11-09)`,
       ].join('\n'),
     );
     e.discord.messages.length = 0;
@@ -404,12 +414,12 @@ describe('sending', () => {
     // 30 Nov had no reading (skipped by default); the month goes.
     expect(sent(e)).toEqual([
       [
-        'ッツ Reader: November 2026 (vs October)',
-        'Characters: 184,000 (+148,000, +411%)',
-        'Reading time: 3 h 20 min (+1 h 30 min, +82%)',
-        'Speed: 15,600 / h (−4,037 / h, −21%)',
-        'Lookups: 30 (+26, +650%)',
-        `[View Stats](${LINK}/statistics?period=month:2026-11-01)`,
+        '### ッツ Reader · November 2026',
+        '- **Characters:** 184,000 *(+148,000, +411%)*',
+        '- **Reading time:** 3 h 20 min *(+1 h 30 min, +82%)*',
+        '- **Speed:** 15,600 / h *(−4,037 / h, −21%)*',
+        '- **Lookups:** 30 *(+26, +650%)*',
+        `-# vs October · [View Stats](${LINK}/statistics?period=month:2026-11-01)`,
       ].join('\n'),
     ]);
   });
@@ -428,9 +438,9 @@ describe('sending', () => {
     await e.at('2026-12-02T00:00:30Z'); // 1 Dec: no reading, sent; Nov's month too
     expect(sent(e)[0]).toBe(
       [
-        'ッツ Reader: Tue 1 Dec 2026',
+        '### ッツ Reader · Tue 1 Dec 2026',
         'No reading.',
-        `[View Stats](${LINK}/statistics?period=day:2026-12-01)`,
+        `-# [View Stats](${LINK}/statistics?period=day:2026-12-01)`,
       ].join('\n'),
     );
   });
@@ -441,14 +451,34 @@ describe('sending', () => {
     await e.at('2026-11-13T00:00:30Z');
     expect(sent(e)).toEqual([
       [
-        'ッツ Reader: Thu 12 Nov 2026 (vs Wed 11 Nov)',
-        'Characters: 15,000 (+15,000, none then)',
-        'Reading time: 10 min (+10 min, none then)',
-        'Speed: 18,000 / h (no tracked reading then)',
-        'Lookups: 1 (+1, none then)',
-        `[View Stats](${LINK}/statistics?period=day:2026-11-12)`,
+        '### ッツ Reader · Thu 12 Nov 2026',
+        '- **Characters:** 15,000 *(+15,000, none then)*',
+        '- **Reading time:** 10 min *(+10 min, none then)*',
+        '- **Speed:** 18,000 / h *(no tracked reading then)*',
+        '- **Lookups:** 1 *(+1, none then)*',
+        `-# vs Wed 11 Nov · [View Stats](${LINK}/statistics?period=day:2026-11-12)`,
       ].join('\n'),
     ]);
+  });
+
+  it('a message with its comparison off shows only the numbers; the others still compare', async () => {
+    const e = await makeEnv();
+    e.svc.updateSettings({ stats: { compare: { day: false } } });
+    await e.at('2026-11-15T23:00:00Z');
+    await e.at('2026-11-16T00:00:30Z');
+    expect(sent(e)).toHaveLength(2); // Sunday's day, then the week
+    const day = sent(e)[0].split('\n');
+    expect(day[0]).toBe('### ッツ Reader · Sun 15 Nov 2026');
+    expect(day.slice(1, 5).map((l) => l.replace(/ [^ ]+( \/ h| min)?$/, ''))).toEqual([
+      '- **Characters:**',
+      '- **Reading time:**',
+      '- **Speed:**',
+      '- **Lookups:**',
+    ]);
+    for (const line of day.slice(1, 5)) expect(line).not.toMatch(/[()]/);
+    expect(day.slice(5)).toEqual([`-# [View Stats](${LINK}/statistics?period=day:2026-11-15)`]);
+    expect(sent(e)[1]).toContain('- **Characters:** 84,000 *(+10,000, +14%)*');
+    expect(sent(e)[1]).toContain('\n-# vs 2 – 8 Nov · [View Stats]');
   });
 
   it('a missed period goes once when the server is back; older ones are skipped; a restart repeats nothing', async () => {
@@ -458,7 +488,7 @@ describe('sending', () => {
     // Off from then until 13 Nov 12:00: 10, 11 and 12 Nov ended meanwhile.
     await e.at('2026-11-13T12:00:00Z');
     expect(sent(e)).toHaveLength(1);
-    expect(sent(e)[0]).toMatch(/^ッツ Reader: Thu 12 Nov 2026 /);
+    expect(sent(e)[0]).toMatch(/^### ッツ Reader · Thu 12 Nov 2026\n/);
     await e.svc.stop();
     // A restart of the server on the same database.
     const svc2 = new NotificationService({
@@ -484,8 +514,8 @@ describe('sending', () => {
     await e.at('2026-11-16T12:00:00Z');
     expect(sent(e)).toEqual([]);
     await e.at('2026-11-22T00:00:30Z'); // Sun 22 Nov: the week 15-21 Nov ended
-    expect(sent(e).filter((m) => m.startsWith('ッツ Reader: week'))).toEqual([
-      expect.stringMatching(/^ッツ Reader: week 15 – 21 Nov 2026 \(vs 8 – 14 Nov\)\n/),
+    expect(sent(e).filter((m) => m.startsWith('### ッツ Reader · week'))).toEqual([
+      expect.stringMatching(/^### ッツ Reader · week 15 – 21 Nov 2026\n[^]*\n-# vs 8 – 14 Nov · /),
     ]);
   });
 
@@ -499,10 +529,10 @@ describe('sending', () => {
     expect(sent(e)).toEqual([]);
     await e.at('2026-11-17T00:00:30Z');
     expect(sent(e)).toHaveLength(1);
-    expect(sent(e)[0]).toMatch(/^ッツ Reader: Mon 16 Nov 2026 /);
+    expect(sent(e)[0]).toMatch(/^### ッツ Reader · Mon 16 Nov 2026\n/);
   });
 
-  it('per message and channel switches; the email subject is the first line', async () => {
+  it('per message and channel switches; email gets the plain form, its subject the first line', async () => {
     const smtp = await fakeSmtp('abcdefghijklmnop');
     closers.push(() => smtp.close());
     const e = await makeEnv({
@@ -516,10 +546,21 @@ describe('sending', () => {
     await e.at('2026-11-15T12:00:00Z');
     await e.at('2026-11-16T00:00:30Z');
     expect(sent(e)).toHaveLength(1);
-    expect(sent(e)[0]).toMatch(/^ッツ Reader: Sun 15 Nov 2026 /);
+    expect(sent(e)[0]).toMatch(/^### ッツ Reader · Sun 15 Nov 2026\n/);
     expect(smtp.mails).toHaveLength(1);
     const body = quotedPrintable(smtp.mails[0].data);
-    expect(body).toContain('ッツ Reader: week 9 – 15 Nov 2026 (vs 2 – 8 Nov)\nCharacters: 84,000');
-    expect(subjectOf(smtp.mails[0].data)).toBe('ッツ Reader: week 9 – 15 Nov 2026 (vs 2 – 8 Nov)');
+    expect(body).toContain(
+      [
+        'ッツ Reader · week 9 – 15 Nov 2026',
+        '• Characters: 84,000 (+10,000, +14%)',
+        '• Reading time: 1 h 21 min (+33 min, +69%)',
+        '• Speed: 16,164 / h (+11,198 / h, +225%)',
+        '• Lookups: 11 (+8, +267%)',
+        'vs 2 – 8 Nov',
+        `View Stats: ${LINK}/statistics?period=week:2026-11-09`,
+      ].join('\n'),
+    );
+    expect(body).not.toMatch(/\*\*|###|-#/);
+    expect(subjectOf(smtp.mails[0].data)).toBe('ッツ Reader · week 9 – 15 Nov 2026');
   });
 });

@@ -16,6 +16,8 @@ export type NotificationSectionId = 'jobs' | 'cleanup' | 'data' | 'stats';
 export type FinishedMode = 'now' | 'digest' | 'off';
 /** N2: a period with no reading: skip its stats message, or send "No reading". */
 export type NoReadingMode = 'skip' | 'send';
+/** N2: the three stats messages (daily, weekly, monthly). */
+export type StatsReportKind = 'day' | 'week' | 'month';
 
 export interface NotificationWaits {
   pcWaitingHours: number;
@@ -32,7 +34,11 @@ export interface NotificationSettings {
   finishedJobs: FinishedMode;
   waits: NotificationWaits;
   sections: Record<NotificationSectionId, boolean>;
-  stats: { noReading: NoReadingMode };
+  stats: {
+    noReading: NoReadingMode;
+    /** Per message: show each number's change from the previous period. */
+    compare: Record<StatsReportKind, boolean>;
+  };
   events: Record<string, Record<NotificationChannel, boolean>>;
 }
 
