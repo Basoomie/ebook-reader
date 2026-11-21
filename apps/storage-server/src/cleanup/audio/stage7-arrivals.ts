@@ -1112,7 +1112,7 @@ export class AudioStage7 {
     // Narrators of the books built by stage 6 (named japanese-new/… then) and stage 7.
     const narrators = new Map<string, string | null>();
     const p6 = getAudioStage(this.db, 6).progress as { analysisId?: string };
-    const rename = (f: string) =>
+    const liveFolder = (f: string) =>
       f
         .replace(/^japanese-new\//, 'japanese/')
         .replace(/^japanese-generated-new\//, 'japanese-generated/');
@@ -1134,9 +1134,9 @@ export class AudioStage7 {
     for (const r of rows) {
       try {
         const m = JSON.parse(r.metadata.toString('utf8')) as { narrators?: string[] };
-        narrators.set(rename(r.folder), m.narrators?.[0] ?? null);
+        narrators.set(liveFolder(r.folder), m.narrators?.[0] ?? null);
       } catch {
-        narrators.set(rename(r.folder), null);
+        narrators.set(liveFolder(r.folder), null);
       }
     }
     return { dirs, bookDirs, narrators };

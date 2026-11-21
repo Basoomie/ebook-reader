@@ -533,6 +533,8 @@ describe('stage 5 through the service', () => {
       // WP21f-1: the new arrivals' second look (setup J).
       ['audio5.upgrade', ['audio5.upgradePrimary', 'audio5.upgradeSecondary']],
       ['calibre4', ['stage4.primary', 'stage4.secondary']],
+      // WP20f: Calibre stage 5's genre and tag step.
+      ['calibre5', ['stage5.primary', 'stage5.secondary']],
     ]);
     const check = await api(request(e.app).post('/api/v1/cleanup/ai/models/check'));
     expect(check.status).toBe(200);
