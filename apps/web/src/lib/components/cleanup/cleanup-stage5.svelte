@@ -20,7 +20,7 @@
     StageMode
   } from '$lib/cleanup/cleanup-api';
   import { n } from '$lib/cleanup/cleanup-text';
-  import { writeBar } from '$lib/cleanup/stage4-text';
+  import { writeBar, writtenLine } from '$lib/cleanup/stage4-text';
   import {
     STAGE5_MODE_HINTS,
     formatCounts,
@@ -47,6 +47,8 @@
   $: done = p?.phase === 'done' && !p.error;
   $: bar = stage5Bar(p);
   $: writeProgress = writeBar(status?.write, stage.mode);
+  // Once nothing is being written: what was written, in one line (as stage 4's card).
+  $: written = writtenLine(status?.write, stage.mode);
   $: labelOf = new Map((status?.terms ?? []).map((t) => [t.ja, t]));
 
   let message = '';
@@ -146,6 +148,9 @@
             <div class="h-full bg-c-fill" style="width: {bar.fraction * 100}%" />
           </div>
         </div>
+      {/if}
+      {#if written}
+        <p class="text-sm" data-testid="cleanup-stage-5-written">{written}</p>
       {/if}
       {#if writeProgress}
         <div class="flex flex-col gap-1" data-testid="cleanup-stage-5-write-progress">
