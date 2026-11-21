@@ -676,7 +676,7 @@ describe('stage 4: the subtitle fix and the one-record rule on stage-3 rows', ()
       ],
       [],
     );
-    const { stage4, queue } = makeStage(db);
+    const { stage4, queue, lock } = makeStage(db);
     const hits = Buffer.from(
       JSON.stringify({
         products: [{ asin: 'B0TABIDROP', title: '旅ドロップ', runtime_length_min: 145 }],
@@ -693,7 +693,19 @@ describe('stage 4: the subtitle fix and the one-record rule on stage-3 rows', ()
         ),
       ],
     ]);
+    // While a Calibre job holds the disk the phase waits, and the waiting is not work time.
+    lock.tryAcquire('Calibre stage 4 (applying a batch)', 'calibre');
     stage4.restart();
+    for (let i = 0; i < 40 && stage4.progress()!.phase !== 'records'; i++) {
+      answerAll(db, queue, pages, []);
+      await stage4.step(() => false);
+    }
+    const t0 = Date.now();
+    for (let i = 0; i < 3; i++) await stage4.step(() => false);
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(2500);
+    expect(stage4.progress()!.phase).toBe('records');
+    expect(stage4.progress()!.phaseTimes.records?.ms ?? 0).toBeLessThan(500);
+    lock.release('Calibre stage 4 (applying a batch)');
     await runToEnd(db, stage4, queue, pages, []);
     expect(units(db).map((u) => [u.class, u.review_reason])).toEqual([
       ['review', 'shared'],

@@ -1709,6 +1709,7 @@ export class AudioStage4 {
     b: RecordUnit,
     s: AudiobookSettings,
     shouldStop: () => boolean,
+    timing: { waitMs: number } = { waitMs: 0 },
   ): Promise<boolean> {
     const db = this.db;
     const key = this.pairCheckKey(a, b, s);
@@ -1754,8 +1755,11 @@ export class AudioStage4 {
     if (need.length) {
       const calibreBusy = () => this.deps.calibreBusy?.() ?? this.deps.lock.calibreBusy();
       if (calibreBusy()) return false;
-      if (!(await this.deps.lock.acquire(OWNER, 'audio', () => shouldStop() || calibreBusy())))
-        return false;
+      // Waiting for the disk is not work (the card's work time leaves it out).
+      const w0 = Date.now();
+      const got = await this.deps.lock.acquire(OWNER, 'audio', () => shouldStop() || calibreBusy());
+      timing.waitMs += Date.now() - w0;
+      if (!got) return false;
       try {
         const putFp = db.prepare(
           `INSERT INTO audio_fingerprints (win_key, files_sig, fp, items, error, tool_version, took_ms, made_at)
@@ -1874,10 +1878,18 @@ export class AudioStage4 {
     if (rec.rounds === 0) rec.shared = groups.size;
     rec.toCompare = toCompare.length;
     if (toCompare.length) {
+      // The work time counts reading and comparing only: a step that waits for the disk
+      // (Calibre first) adds nothing, and neither does the wait for the lock (the live run
+      // waited 2 h for Calibre and read for 6 s).
+      let ms = Date.now() - t0;
       let items = 0;
+      const windowsBefore = (rec.windows ?? 0) + (rec.windowErrors ?? 0);
       for (const [a, b] of toCompare.slice(0, 2)) {
         if (shouldStop()) break;
-        const done = await this.comparePair(p, a, b, s, shouldStop);
+        const c0 = Date.now();
+        const timing = { waitMs: 0 };
+        const done = await this.comparePair(p, a, b, s, shouldStop, timing);
+        ms += Date.now() - c0 - timing.waitMs;
         if (!done) {
           // Calibre has the disk (or the stage stops): try again shortly.
           await sleep(1000);
@@ -1886,7 +1898,8 @@ export class AudioStage4 {
         rec.toCompare--;
         items++;
       }
-      return { next: null, ms: Date.now() - t0, items };
+      const read = (rec.windows ?? 0) + (rec.windowErrors ?? 0) > windowsBefore;
+      return { next: null, ms: items || read ? Math.max(0, ms) : 0, items };
     }
     rec.rounds++;
     // Pairs found different leave the automatic matches, so later rounds never count them again.
