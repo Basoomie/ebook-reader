@@ -538,7 +538,7 @@
             </div>
             {#if open === 'audio'}
               <button
-                class="c-btn c-btn-secondary c-round shrink-0"
+                class="c-btn c-btn-ghost shrink-0"
                 aria-expanded="true"
                 data-testid="audio-row-audio-toggle"
                 on:click={() => toggle('audio')}
@@ -547,7 +547,7 @@
               </button>
             {:else}
               <button
-                class="c-btn c-btn-secondary c-round shrink-0"
+                class="c-btn c-btn-secondary shrink-0"
                 aria-expanded="false"
                 data-testid="audio-row-audio-toggle"
                 disabled={busy || changesOff}
@@ -564,7 +564,7 @@
             </p>
             <div class="mt-2">
               <button
-                class="c-btn c-btn-secondary c-round"
+                class="c-btn c-btn-secondary"
                 data-testid="audio-split-choose"
                 disabled={busy || changesOff}
                 on:click={() => openFiles(link?.folder ?? null)}
@@ -607,7 +607,7 @@
                 </p>
                 <div class="mt-2">
                   <button
-                    class="c-btn c-btn-secondary c-round"
+                    class="c-btn c-btn-secondary"
                     data-testid="audio-merge-stop"
                     on:click={stopMerge}
                   >
@@ -617,7 +617,7 @@
               {:else}
                 <div class="mt-2">
                   <button
-                    class="c-btn c-btn-secondary c-round"
+                    class="c-btn c-btn-ghost"
                     data-testid="audio-merge-dismiss"
                     on:click={() => (mergeJob = null)}
                   >
@@ -665,7 +665,7 @@
               >
                 {#if view !== 'none'}
                   <button
-                    class="c-btn c-btn-secondary c-round"
+                    class="c-btn c-btn-ghost"
                     data-testid="audio-choose-none"
                     disabled={busy}
                     on:click={chooseNoAudiobook}
@@ -675,7 +675,7 @@
                 {/if}
                 {#if canMakeAudiobook}
                   <button
-                    class="c-btn c-btn-secondary c-round"
+                    class="c-btn c-btn-secondary"
                     data-testid="audio-make-tts"
                     disabled={busy}
                     on:click={makeWithTts}
@@ -733,7 +733,7 @@
               {#if linked}
                 {#if open === 'subs'}
                   <button
-                    class="c-btn c-btn-secondary c-round shrink-0"
+                    class="c-btn c-btn-ghost shrink-0"
                     aria-expanded="true"
                     data-testid="audio-row-subs-toggle"
                     on:click={() => toggle('subs')}
@@ -742,7 +742,7 @@
                   </button>
                 {:else}
                   <button
-                    class="c-btn c-btn-secondary c-round shrink-0"
+                    class="c-btn c-btn-secondary shrink-0"
                     aria-expanded="false"
                     data-testid="audio-row-subs-toggle"
                     disabled={busy || changesOff}
@@ -773,7 +773,7 @@
                 on:error={(ev) => (message = ev.detail)}
               >
                 <button
-                  class="c-btn c-btn-secondary c-round"
+                  class="c-btn c-btn-ghost"
                   data-testid="subtitle-choose-none"
                   disabled={busy}
                   on:click={chooseNoSubtitles}
@@ -826,7 +826,7 @@
                 {/if}
               </div>
               <button
-                class="c-btn c-btn-secondary c-round shrink-0"
+                class="c-btn c-btn-secondary shrink-0"
                 aria-expanded={open === 'tts'}
                 data-testid="audio-row-tts-toggle"
                 on:click={() => toggle('tts')}
@@ -880,10 +880,6 @@
 
   .c-arow + .c-arow {
     border-top: var(--c-border-width) solid var(--c-line);
-  }
-
-  .c-round {
-    border-radius: 0.75rem;
   }
 
   .c-mbar {

@@ -14,7 +14,14 @@
   import BookStateDialog from '$lib/components/library/book-state-dialog.svelte';
   import AddToCollectionDialog from '$lib/components/collections/add-to-collection-dialog.svelte';
   import CataloguePageHeader from '$lib/components/catalogue-page-header.svelte';
-  import { faMagnifyingGlass } from '@fortawesome/free-solid-svg-icons';
+  import {
+    faArrowDown,
+    faArrowUp,
+    faCheck,
+    faMagnifyingGlass,
+    faPen,
+    faRotateRight
+  } from '@fortawesome/free-solid-svg-icons';
   import Fa from 'svelte-fa';
   import LibraryOpenOverlay from '$lib/components/library/library-open-overlay.svelte';
   import MessageDialog from '$lib/components/message-dialog.svelte';
@@ -58,7 +65,14 @@
     startsOffline
   } from '$lib/library/offline/offline-source';
   import { removeFromThisDevice } from '$lib/library/remove-from-device';
-  import { isCoverBlurred } from '$lib/library/cover-blur';
+  import {
+    collectionMembership,
+    coverBlurDefault,
+    isCoverBlurred,
+    NO_COVER_RULES,
+    type CoverBlurContext,
+    type CoverRules
+  } from '$lib/library/cover-blur';
   import { getLibraryStore, type LibraryConnection } from '$lib/library/library-db';
   import type { OpenStage } from '$lib/library/open-calibre-book';
   import { openCatalogBook } from '$lib/library/open-from-catalog';
@@ -71,7 +85,11 @@
   import { timeLeftMinMinutes$, timeLeftRecentMinutes$ } from '$lib/data/store';
   import type { StatEntry } from '$lib/stats/aggregate';
   import { formatTimeLeft, secondsLeft, speedEstimate } from '$lib/stats/time-left';
-  import { libraryInfoLine$, libraryRequestTimeoutSeconds$ } from '$lib/library/settings';
+  import {
+    libraryCoverBlur$,
+    libraryInfoLine$,
+    libraryRequestTimeoutSeconds$
+  } from '$lib/library/settings';
   import type { CatalogBook, CatalogLibrary } from '$lib/library/types';
   import type { BookState } from '$lib/sync/book-state';
   import type { LocalRecord } from '$lib/sync/sync-db';
@@ -89,7 +107,7 @@
   let offline = false;
   let libraries: CatalogLibrary[] = [];
   let states = new Map<string, BookState>();
-  let tagRules = new Set<string>();
+  let coverRules: CoverRules = NO_COVER_RULES;
   let positions = new Map<string, LocalRecord[]>();
   let collectionList: Collection[] = [];
   let collectionItems = new Map<string, CollectionItem[]>();
@@ -201,12 +219,12 @@
   async function loadMirror() {
     const [s, rules, records, coll] = await Promise.all([
       bookState.getAll().catch(() => new Map<string, BookState>()),
-      view.tagBlurRules(),
+      view.coverRules(),
       view.positions(),
       collections.view()
     ]);
     states = s;
-    tagRules = rules;
+    coverRules = rules;
     positions = positionsByBook(records);
     collectionList = coll.collections;
     collectionItems = coll.items;
@@ -376,8 +394,21 @@
     }
   }
 
+  let blurCtx: CoverBlurContext;
+  $: blurCtx = {
+    rules: coverRules,
+    fallback: coverBlurDefault($libraryCoverBlur$),
+    inCollection: collectionMembership({
+      rules: coverRules,
+      collections: collectionList,
+      items: collectionItems,
+      states,
+      onDevice: (id) => onDevice.has(id),
+      audioOnDevice: (id) => audioOnDevice.has(id)
+    })
+  };
   $: blurredOf = (book: CatalogBook) =>
-    !revealed.has(book.id) && isCoverBlurred(states.get(book.id)?.blur, book.tags, tagRules);
+    !revealed.has(book.id) && isCoverBlurred(states.get(book.id)?.blur, book, blurCtx);
 
   function reveal(book: CatalogBook) {
     revealed = new Set([...revealed, book.id]);
@@ -495,7 +526,7 @@
   <CataloguePageHeader jp="ホーム" title="Home">
     <div class="flex items-center gap-2">
       <a
-        class="c-btn c-btn-secondary w-12 px-0"
+        class="c-btn c-btn-ghost c-btn-icon"
         href="{pagePath}/library?search=1"
         title="Search the library"
         data-testid="home-search"
@@ -504,8 +535,7 @@
         <span class="sr-only">Search the library</span>
       </a>
       <button
-        class="c-btn c-btn-secondary"
-        aria-pressed={editing}
+        class="c-btn {editing ? 'c-btn-primary' : 'c-btn-secondary'} px-3.5"
         data-testid="home-edit"
         on:click={() => {
           editing = !editing;
@@ -513,6 +543,7 @@
           if (!editing && api && ready) void loadAllRows(true);
         }}
       >
+        <Fa icon={editing ? faCheck : faPen} />
         {editing ? 'Done' : 'Edit'}
       </button>
     </div>
@@ -559,20 +590,20 @@
               {/if}
             </span>
             <button
-              class="c-btn c-btn-secondary w-12 px-0"
+              class="c-btn c-btn-ghost c-btn-icon"
               aria-label="Move up"
               disabled={i === 0}
               on:click={() => save(moveRow(rows, i, -1))}
             >
-              ↑
+              <Fa icon={faArrowUp} />
             </button>
             <button
-              class="c-btn c-btn-secondary w-12 px-0"
+              class="c-btn c-btn-ghost c-btn-icon"
               aria-label="Move down"
               disabled={i === rows.length - 1}
               on:click={() => save(moveRow(rows, i, 1))}
             >
-              ↓
+              <Fa icon={faArrowDown} />
             </button>
             <button
               class="c-btn c-btn-secondary px-3"
@@ -583,7 +614,7 @@
             </button>
             {#if isPinnedRow(row)}
               <button
-                class="c-btn c-btn-secondary px-3"
+                class="c-btn c-btn-ghost px-3"
                 data-testid="home-row-remove"
                 on:click={() => removeRow(row, i)}
               >
@@ -617,9 +648,9 @@
       >
         <span role="status">{OFFLINE_NOTICE}</span>
         <button
-          class="c-btn c-btn-secondary px-3"
+          class="c-btn c-btn-ghost c-btn-sm -my-1 gap-1.5 px-2.5"
           data-testid="offline-retry"
-          on:click={tryServerAgain}>Try again</button
+          on:click={tryServerAgain}><Fa icon={faRotateRight} />Try again</button
         >
       </p>
     {/if}

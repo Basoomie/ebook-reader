@@ -106,7 +106,7 @@
               </div>
               <div class="s-item-actions">
                 <button
-                  class="c-btn c-btn-secondary min-h-[2.75rem]"
+                  class="c-btn c-btn-secondary c-btn-sm"
                   disabled={busy}
                   data-testid="copy-device-settings-copy"
                   on:click={() => {

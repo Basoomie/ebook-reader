@@ -1594,6 +1594,22 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
   },
   {
     version: 19,
+    name: 'stage 5: the Google run workflow marks recorded before stage 5 removes them (WP20f)',
+    // Stage 2 and stage 4 rules read the tag metadata-processed; stage 5 removes it from Calibre
+    // (decided with the user 2026-11-21), so which books had each of the four Google-run marks
+    // is recorded first and the rules read the record too. Filled once, never cleared.
+    sql: `
+      CREATE TABLE calibre_marks (
+        library_id   TEXT NOT NULL,
+        calibre_uuid TEXT NOT NULL,
+        tag          TEXT NOT NULL,
+        recorded_at  INTEGER NOT NULL,
+        PRIMARY KEY (library_id, calibre_uuid, tag)
+      ) WITHOUT ROWID;
+    `,
+  },
+  {
+    version: 20,
     name: 'audiobook cleanup: story order and changes to books in the library (WP21f-2)',
     // Which tags a health row holds (2: with track and disc); the files of multi-file books
     // checked before are checked again once, so their story order can use the track numbers.

@@ -991,7 +991,7 @@ describe('tokens, secrets and the routes', () => {
     expect(status.body.calibre).toMatchObject({ id: 'other', auto: false });
   });
 
-  it('stage 5 cannot be switched on; every stage starts off', async () => {
+  it('every stage starts off and every stage can be switched on (stage 5 since WP20f)', async () => {
     const user = { Authorization: `Bearer ${env.userToken()}` };
     const status = await request(env.app).get('/api/v1/cleanup/status').set(user).expect(200);
     expect(status.body.available).toBe(true);
@@ -1003,12 +1003,17 @@ describe('tokens, secrets and the routes', () => {
       'off',
       'off',
     ]);
-    // Stage 2 is built since WP20b, stage 3 since WP20c, stage 4's writes since WP20e; 5 is not.
+    // Stage 2 is built since WP20b, stage 3 since WP20c, stage 4's writes since WP20e, 5 since WP20f.
     await request(env.app)
       .put('/api/v1/cleanup/stages/5')
       .set(user)
       .send({ mode: 'on' })
-      .expect(409);
+      .expect(200);
+    await request(env.app)
+      .put('/api/v1/cleanup/stages/5')
+      .set(user)
+      .send({ mode: 'off' })
+      .expect(200);
     await request(env.app)
       .put('/api/v1/cleanup/stages/4')
       .set(user)

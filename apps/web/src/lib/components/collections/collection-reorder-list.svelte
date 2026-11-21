@@ -29,7 +29,7 @@
     more: CatalogBook;
   }>();
   // WP19b: the catalogue buttons.
-  const iconButton = 'c-btn c-btn-secondary h-12 w-12 shrink-0 p-0';
+  const iconButton = 'c-btn c-btn-secondary c-btn-icon';
 
   let list: HTMLElement | undefined;
   let sortable: Sortable | null = null;

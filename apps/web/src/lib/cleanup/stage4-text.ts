@@ -42,25 +42,35 @@ const AI_BAR_LABELS: Record<string, string> = {
 
 /**
  * Stage 4 On's progress bar (WP20e): changes written of all, the books written, and the time
- * left at the pace of the last batches. Shown while On, and after a run until all is written.
+ * left at the pace of the last batches. Only while On and something is left to write: a finished
+ * or stopped run is a plain line (writtenLine), as the other stages show their results.
  */
 export function writeBar(
   w: Stage4Write | null | undefined,
   mode: StageMode | undefined
 ): ProgressBar | null {
-  if (!w || w.changes.total <= 0) return null;
-  if (mode !== 'on' && w.changes.done === 0) return null;
-  const done = w.changes.done >= w.changes.total;
+  if (!w || w.changes.total <= 0 || mode !== 'on') return null;
+  if (w.changes.done >= w.changes.total) return null;
   return {
-    label: done
-      ? `Written to Calibre: ${n(w.changes.done)} changes in ${n(w.books.done)} books`
-      : `Writing to Calibre: ${n(w.changes.done)} of ${n(w.changes.total)} changes · ${n(w.books.done)} books written`,
+    label: `Writing to Calibre: ${n(w.changes.done)} of ${n(w.changes.total)} changes · ${n(w.books.done)} books written`,
     fraction: Math.min(1, w.changes.done / w.changes.total),
     eta:
-      !done && w.secondsLeft !== null && w.secondsLeft > 0
+      w.secondsLeft !== null && w.secondsLeft > 0
         ? `${etaText(w.secondsLeft * 1000)} (estimate)`
         : null
   };
+}
+
+/** What stage 4 has written, when no bar shows: "Written to Calibre: 206,111 changes in 51,988 books". */
+export function writtenLine(
+  w: Stage4Write | null | undefined,
+  mode: StageMode | undefined
+): string | null {
+  if (!w || w.changes.done <= 0 || writeBar(w, mode)) return null;
+  const all = w.changes.done >= w.changes.total;
+  return all
+    ? `Written to Calibre: ${n(w.changes.done)} changes in ${n(w.books.done)} books`
+    : `Written to Calibre: ${n(w.changes.done)} of ${n(w.changes.total)} changes in ${n(w.books.done)} books`;
 }
 
 /** The AI check's progress bar with the time left (as the audiobook card's). */

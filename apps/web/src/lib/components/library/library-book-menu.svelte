@@ -41,7 +41,7 @@
 <DropdownMenu
   buttonClass={variant === 'cover'
     ? 'c-btn c-btn-secondary h-9 min-h-0 w-9 rounded-full p-0'
-    : 'c-btn c-btn-ghost h-12 w-12 p-0'}
+    : 'c-btn c-btn-ghost c-btn-icon'}
   align="right"
   label="Book: {title}"
   testid="book-menu"

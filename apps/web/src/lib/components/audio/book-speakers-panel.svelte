@@ -220,7 +220,7 @@
         <p class="max-w-3xl text-sm text-c-muted">Give a character a voice of their own.</p>
       </div>
       <button
-        class="c-btn c-btn-secondary c-round shrink-0"
+        class="c-btn c-btn-secondary shrink-0"
         aria-expanded={open}
         data-testid="book-speakers-toggle"
         on:click={() => (open = !open)}
@@ -247,7 +247,7 @@
           </p>
           {#if active && !job.cancelRequested}
             <button
-              class="c-btn c-btn-secondary c-round"
+              class="c-btn c-btn-secondary"
               data-testid="book-speakers-stop"
               disabled={busy}
               on:click={stop}
@@ -303,7 +303,7 @@
             </label>
           {/if}
           <button
-            class="c-btn {overview.run ? 'c-btn-secondary' : 'c-btn-primary'} c-round"
+            class="c-btn {overview.run ? 'c-btn-secondary' : 'c-btn-primary'}"
             data-testid="book-speakers-run-button"
             disabled={busy || !overview.models.length}
             on:click={run}
@@ -391,7 +391,7 @@
                 </div>
                 <div class="mt-2 flex flex-wrap gap-2">
                   <button
-                    class="c-btn c-btn-secondary c-round"
+                    class="c-btn c-btn-secondary"
                     data-testid="book-speaker-rename"
                     disabled={busy}
                     on:click={() => {
@@ -402,7 +402,7 @@
                   >
                   {#if characters.length > 1}
                     <button
-                      class="c-btn c-btn-secondary c-round"
+                      class="c-btn c-btn-secondary"
                       data-testid="book-speaker-merge"
                       disabled={busy}
                       on:click={() => {
@@ -413,7 +413,7 @@
                     >
                   {/if}
                   <button
-                    class="c-btn c-btn-secondary c-round"
+                    class="c-btn c-btn-secondary"
                     data-testid="book-speaker-hide"
                     disabled={busy}
                     on:click={() => setHidden(c, !c.hidden)}
@@ -422,7 +422,7 @@
                   </button>
                   {#if c.quotes}
                     <a
-                      class="c-btn c-btn-secondary c-round"
+                      class="c-btn c-btn-secondary"
                       data-testid="book-speaker-quotes"
                       href={`${reviewHref}&character=${c.id}`}>Quotes</a
                     >
@@ -444,7 +444,7 @@
                       />
                     </label>
                     <button
-                      class="c-btn c-btn-primary c-round"
+                      class="c-btn c-btn-primary"
                       data-testid="book-speaker-rename-save"
                       disabled={busy}
                     >
@@ -452,7 +452,7 @@
                     </button>
                     <button
                       type="button"
-                      class="c-btn c-btn-secondary c-round"
+                      class="c-btn c-btn-secondary"
                       on:click={() => (renaming = null)}
                     >
                       Cancel
@@ -475,12 +475,12 @@
                       </select>
                     </label>
                     <button
-                      class="c-btn c-btn-primary c-round"
+                      class="c-btn c-btn-primary"
                       data-testid="book-speaker-merge-save"
                       disabled={busy || !mergeInto}
                       on:click={() => merge(c)}>Merge</button
                     >
-                    <button class="c-btn c-btn-secondary c-round" on:click={() => (merging = null)}>
+                    <button class="c-btn c-btn-secondary" on:click={() => (merging = null)}>
                       Cancel
                     </button>
                   </div>
@@ -491,7 +491,7 @@
         </PagedList>
         {#if quiet}
           <button
-            class="c-btn c-btn-secondary c-round mt-2"
+            class="c-btn c-btn-secondary mt-2"
             data-testid="book-speakers-quiet"
             aria-expanded={showQuiet}
             on:click={() => (showQuiet = !showQuiet)}
@@ -514,7 +514,7 @@
             />
           </label>
           <button
-            class="c-btn c-btn-secondary c-round"
+            class="c-btn c-btn-secondary"
             data-testid="book-speakers-add"
             disabled={busy || !addName.trim()}>Add</button
           >
@@ -534,8 +534,5 @@
   }
   .c-crow + .c-crow {
     border-top: var(--c-border-width) solid var(--c-line);
-  }
-  .c-round {
-    border-radius: 0.75rem;
   }
 </style>

@@ -53,7 +53,7 @@
   const dispatch = createEventDispatcher<{ close: void }>();
   /** On screen at most half size (drawn at full size: shrunk text measures differently). */
   const PREVIEW_SCALE = 0.5;
-  const toggle = 'c-btn c-btn-secondary min-h-[2.75rem] flex-1 px-2 text-sm';
+  const toggle = 'c-btn c-btn-secondary c-btn-sm flex-1 px-2 text-sm';
   const action = 'c-btn c-btn-secondary';
   const legend = 'mb-1 font-medium text-c-muted';
   const marks: QuoteMark[] = ['line', 'quotes', 'corner', 'none'];
@@ -276,7 +276,7 @@
         <div class="flex min-h-[2.75rem] items-center gap-3">
           <button
             type="button"
-            class="c-btn c-btn-secondary min-h-[2.75rem] shrink-0 px-3 text-sm"
+            class="c-btn c-btn-secondary c-btn-sm shrink-0 px-3 text-sm"
             aria-pressed={options.quoteSize === null}
             title="Fit the quote to the image"
             data-testid="quote-fontsize-auto"

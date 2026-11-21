@@ -48,7 +48,10 @@ export const ALLOWED: readonly CalibredbCommand[] = [
   'set_fields'
 ];
 
-/** The only fields set_fields may set (stage 2; series, series_index and comments: stage 4). */
+/**
+ * The only fields set_fields may set (stage 2; series, series_index and comments: stage 4;
+ * tags: stage 5, the book's whole tag list as the server worked it out from Calibre's own).
+ */
 export const SET_FIELDS = [
   'title',
   'sort',
@@ -61,7 +64,8 @@ export const SET_FIELDS = [
   'cover',
   'series',
   'series_index',
-  'comments'
+  'comments',
+  'tags'
 ] as const;
 
 /** Options never allowed, whatever the subcommand. */

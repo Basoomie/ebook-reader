@@ -7,7 +7,15 @@
 import 'fake-indexeddb/auto';
 import { describe, expect, it } from 'vitest';
 import { LibraryApi, LibraryApiError } from './api';
-import { isCoverBlurred } from './cover-blur';
+import {
+  collectionMembership,
+  isCoverBlurred,
+  NO_COVER_RULES,
+  tileBlurBook,
+  type BlurBook,
+  type CoverBlurContext,
+  type CoverRules
+} from './cover-blur';
 import { bookProgressLabel, furthestPosition, positionsByBook, seriesReadCount } from './progress';
 import { bookStateFrom, type BookState } from '$lib/sync/book-state';
 import {
@@ -19,25 +27,111 @@ import {
 } from '$lib/sync/book-state-service';
 import { openSyncDb, type LocalRecord } from '$lib/sync/sync-db';
 import { SyncEngine } from '$lib/sync/sync-engine';
-import { getTagBlurRules, setTagBlur, TAG_BLUR_KIND } from '$lib/sync/tag-blur';
+import {
+  BLUR_RULE_KIND,
+  getCoverRules,
+  getTagBlurRules,
+  setCoverRule,
+  setTagBlur,
+  TAG_BLUR_KIND
+} from '$lib/sync/tag-blur';
+import type { Collection, CollectionItem } from '$lib/collections/collections';
 
 const A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const DEVICE = '11111111-1111-4111-8111-111111111111';
 
 describe('cover blur', () => {
-  const rules = new Set(['BL', 'ホラー']);
+  const rules: CoverRules = { ...NO_COVER_RULES, tags: new Set(['BL', 'ホラー']) };
+  const ctx: CoverBlurContext = { rules, fallback: 'rules' };
+  const tagged = (...tags: string[]): BlurBook => ({ id: A, tags });
 
   it("lets the book's own setting win over tag rules", () => {
-    expect(isCoverBlurred('always', [], rules)).toBe(true);
-    expect(isCoverBlurred('never', ['BL'], rules)).toBe(false);
+    expect(isCoverBlurred('always', tagged(), ctx)).toBe(true);
+    expect(isCoverBlurred('never', tagged('BL'), ctx)).toBe(false);
   });
 
   it('follows tag rules otherwise', () => {
-    expect(isCoverBlurred('inherit', ['SF', 'ホラー'], rules)).toBe(true);
-    expect(isCoverBlurred(undefined, ['BL'], rules)).toBe(true);
-    expect(isCoverBlurred(undefined, ['SF'], rules)).toBe(false);
-    expect(isCoverBlurred('inherit', [], new Set())).toBe(false);
+    expect(isCoverBlurred('inherit', tagged('SF', 'ホラー'), ctx)).toBe(true);
+    expect(isCoverBlurred(undefined, tagged('BL'), ctx)).toBe(true);
+    expect(isCoverBlurred(undefined, tagged('SF'), ctx)).toBe(false);
+    expect(isCoverBlurred('inherit', tagged(), { rules: NO_COVER_RULES, fallback: 'rules' })).toBe(
+      false
+    );
+  });
+
+  it("follows the device's default: blur all or show all; the book's own setting still wins", () => {
+    const all: CoverBlurContext = { rules, fallback: 'all' };
+    const none: CoverBlurContext = { rules, fallback: 'none' };
+    expect(isCoverBlurred(undefined, tagged('SF'), all)).toBe(true);
+    expect(isCoverBlurred('never', tagged('SF'), all)).toBe(false);
+    expect(isCoverBlurred('inherit', tagged('BL'), none)).toBe(false);
+    expect(isCoverBlurred('always', tagged('SF'), none)).toBe(true);
+  });
+
+  it('blurs by author and series rules, also on collage tiles', () => {
+    const r: CoverRules = {
+      ...NO_COVER_RULES,
+      authors: new Set(['著者 一']),
+      series: new Set(['魔法学園'])
+    };
+    const c: CoverBlurContext = { rules: r, fallback: 'rules' };
+    const book = (authors: string[], series: string | null): BlurBook => ({
+      id: A,
+      tags: [],
+      authors: authors.map((name) => ({ name })),
+      series: series ? { name: series } : null
+    });
+    expect(isCoverBlurred(undefined, book(['他', '著者 一'], null), c)).toBe(true);
+    expect(isCoverBlurred(undefined, book(['他'], '魔法学園'), c)).toBe(true);
+    expect(isCoverBlurred(undefined, book(['他'], '別'), c)).toBe(false);
+    const tile = tileBlurBook({
+      bookId: A,
+      thumbnail: null,
+      tags: [],
+      title: 'T',
+      authors: ['著者 一'],
+      series: null,
+      charCount: 10
+    });
+    expect(isCoverBlurred(undefined, tile, c)).toBe(true);
+    // A tile from an older server (tags only) is judged by its tags.
+    const old = tileBlurBook({ bookId: A, thumbnail: null, tags: [] });
+    expect(isCoverBlurred(undefined, old, c)).toBe(false);
+  });
+
+  it('blurs by collection rules: a list by its items, a smart or built-in one by its search', () => {
+    const collections: Collection[] = [
+      { id: 'list', name: 'List', type: 'manual', query: null, updatedAt: 1 },
+      { id: 'smart', name: 'Short', type: 'smart', query: 'chars:<1000 tag:SF', updatedAt: 1 },
+      { id: 'broken', name: 'Broken', type: 'smart', query: 'tag:"', updatedAt: 1 }
+    ];
+    const items = new Map<string, CollectionItem[]>([
+      ['list', [{ collectionId: 'list', bookId: A, key: 'a' } as CollectionItem]]
+    ]);
+    const states = new Map<string, BookState>([
+      [B, { ...bookStateFrom(B, []), status: 'completed' }]
+    ]);
+    const r: CoverRules = {
+      ...NO_COVER_RULES,
+      collections: new Set(['list', 'smart', 'broken', 'completed', 'gone'])
+    };
+    const c: CoverBlurContext = {
+      rules: r,
+      fallback: 'rules',
+      inCollection: collectionMembership({ rules: r, collections, items, states })
+    };
+    const C = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    const D = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+    // In the list.
+    expect(isCoverBlurred(undefined, { id: A, tags: [] }, c)).toBe(true);
+    // Completed: the built-in "Completed".
+    expect(isCoverBlurred(undefined, { id: B, tags: [] }, c)).toBe(true);
+    // Matches the smart search.
+    expect(isCoverBlurred(undefined, { id: C, tags: ['SF'], charCount: 500 }, c)).toBe(true);
+    // Doesn't: too long, or no count.
+    expect(isCoverBlurred(undefined, { id: C, tags: ['SF'], charCount: 5000 }, c)).toBe(false);
+    expect(isCoverBlurred(undefined, { id: D, tags: ['SF'], charCount: null }, c)).toBe(false);
   });
 });
 
@@ -214,6 +308,28 @@ describe('tag blur rules', () => {
     const records = await d.engine.getAll(TAG_BLUR_KIND);
     expect(records.find((r) => r.id === 'BL')?.deletedAt).not.toBeNull();
     expect((await d.engine.status()).pending).toBe(2);
+  });
+});
+
+describe('author, series and collection blur rules', () => {
+  it('switches rules on and off as synced records, beside the tag rules', async () => {
+    const d = await deps();
+    await setCoverRule(d.engine, 'tag', 'BL', true);
+    await setCoverRule(d.engine, 'author', '著者 一', true);
+    await setCoverRule(d.engine, 'series', 'S: 副題', true);
+    await setCoverRule(d.engine, 'collection', 'favorites', true);
+    await setCoverRule(d.engine, 'series', 'S: 副題', false);
+    const rules = await getCoverRules(d.engine);
+    expect([...rules.tags]).toEqual(['BL']);
+    expect([...rules.authors]).toEqual(['著者 一']);
+    expect([...rules.series]).toEqual([]);
+    expect([...rules.collections]).toEqual(['favorites']);
+    const records = await d.engine.getAll(BLUR_RULE_KIND);
+    expect(records.map((r) => r.id).sort()).toEqual([
+      'author:著者 一',
+      'collection:favorites',
+      'series:S: 副題'
+    ]);
   });
 });
 

@@ -137,7 +137,7 @@
         <p class="max-w-3xl text-sm text-c-muted">How a word should be read, for this book only.</p>
       </div>
       <button
-        class="c-btn c-btn-secondary c-round shrink-0"
+        class="c-btn c-btn-secondary shrink-0"
         aria-expanded={open}
         data-testid="book-pron-fixes-toggle"
         on:click={toggle}
@@ -196,8 +196,5 @@
 <style>
   .c-sub {
     border-top: var(--c-border-width) dashed var(--c-line);
-  }
-  .c-round {
-    border-radius: 0.75rem;
   }
 </style>

@@ -144,7 +144,7 @@
       {#if value}
         <button
           type="button"
-          class="c-btn c-btn-ghost h-11 min-h-0 w-11 shrink-0 p-0"
+          class="c-btn c-btn-ghost c-btn-icon c-btn-sm"
           title="Show {allLabel.toLowerCase()}"
           aria-label="Clear {label}"
           data-testid="{testid}-clear"

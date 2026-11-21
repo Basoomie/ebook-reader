@@ -528,6 +528,38 @@ const tagBlurKind: KindSpec = {
   },
 };
 
+/**
+ * kind "blur-rule" (2026-11-21): cover blur rules for an author, a series or a collection,
+ * beside the tag rules. id = "author:<name>", "series:<name>" (names as Calibre spells them)
+ * or "collection:<collection or built-in id>"; data { blur: true }, lww. Deleting the record
+ * removes the rule. Like tag rules, the device decides what is blurred (the book's own
+ * "book-blur" wins); the name or collection need not exist.
+ */
+export const BLUR_RULE_TARGETS = ['author', 'series', 'collection'] as const;
+const blurRuleKind: KindSpec = {
+  policy: () => 'lww',
+  deletable: true,
+  validate(id, data, deleted) {
+    const colon = id.indexOf(':');
+    const target = colon > 0 ? id.slice(0, colon) : '';
+    const name = colon > 0 ? id.slice(colon + 1) : '';
+    if (
+      !(BLUR_RULE_TARGETS as readonly string[]).includes(target) ||
+      name.trim() === '' ||
+      name !== name.trim()
+    ) {
+      throw new RecordError(
+        'invalid_id',
+        'blur-rule ids are "author:<name>", "series:<name>" or "collection:<id>"',
+      );
+    }
+    if (deleted) return { bookId: null, data: {} };
+    const obj = requireObject(data);
+    if (obj.blur !== true) throw new RecordError('invalid_data', 'blur must be true');
+    return { bookId: null, data: { blur: true } };
+  },
+};
+
 // ---------------------------------------------------------------------------
 // WP8b: collections
 // ---------------------------------------------------------------------------
@@ -1226,6 +1258,7 @@ export const DEFAULT_KINDS: KindRegistry = {
   'book-blur': perBookKind('blur', (v) => oneOf(v, BOOK_BLURS, 'blur')),
   'read-through': readThroughKind,
   'tag-blur': tagBlurKind,
+  'blur-rule': blurRuleKind,
   collection: collectionKind(parserCheck),
   'collection-item': collectionItemKind,
   highlight: highlightKind,

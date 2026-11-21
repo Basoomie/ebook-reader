@@ -16,7 +16,7 @@
    * signed URL with `download=1` goes to the browser's own downloads, so it is never held
    * in memory.
    */
-  import { faChevronDown, faChevronUp } from '@fortawesome/free-solid-svg-icons';
+  import { faChevronDown, faChevronUp, faDownload } from '@fortawesome/free-solid-svg-icons';
   import { createEventDispatcher, onDestroy } from 'svelte';
   import Fa from 'svelte-fa';
   import DropdownMenu from '$lib/components/dropdown-menu.svelte';
@@ -39,6 +39,8 @@
   export let link: AudioLink | null = null;
   /** Classes of the menu button (the page's rounded buttons). */
   export let buttonClass = 'c-btn c-btn-secondary';
+  /** Classes of the wrapper (DropdownMenu's rootClass). */
+  export let rootClass = '';
 
   const dispatch = createEventDispatcher<{ error: Error }>();
   const item = 'c-btn c-btn-ghost w-full justify-start px-3 text-left';
@@ -139,12 +141,16 @@
   label="Download: {book.title}"
   testid="details-download"
   panelWidth="w-56"
+  {rootClass}
   bind:open
   let:close
 >
-  <span slot="button" class="flex items-center gap-2" aria-busy={busy !== ''}>
+  <span slot="button" class="c-download-label flex items-center gap-2" aria-busy={busy !== ''}>
+    <Fa icon={faDownload} />
     {busy ? 'Downloading…' : 'Download'}
-    <Fa icon={open ? faChevronUp : faChevronDown} size="xs" />
+    <span class="c-download-chevron opacity-70"
+      ><Fa icon={open ? faChevronUp : faChevronDown} size="xs" /></span
+    >
   </span>
   <div class="flex flex-col gap-1">
     <button

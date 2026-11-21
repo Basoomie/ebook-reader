@@ -29,6 +29,8 @@
   export let open = false;
   /** Fixed positioning at the button (see above). */
   export let floating = false;
+  /** Classes of the wrapper around the button and the panel (a tile that fills its cell). */
+  export let rootClass = '';
 
   let root: HTMLElement;
   let button: HTMLButtonElement;
@@ -123,7 +125,7 @@
 <svelte:document on:scroll|capture={onScroll} />
 
 <!-- data-own-escape: Esc inside an open menu closes the menu, not the modal or panel around it. -->
-<div class="relative" bind:this={root} data-own-escape={open || undefined}>
+<div class="relative {rootClass}" bind:this={root} data-own-escape={open || undefined}>
   <button
     type="button"
     class={buttonClass}

@@ -999,7 +999,7 @@ describe('set_fields arguments', () => {
     username: 'u',
     password: 'pw',
   };
-  it('only the stage-2 and stage-4 fields, each once, remote, password on stdin', () => {
+  it('only the stage-2, stage-4 and stage-5 fields, each once, remote, password on stdin', () => {
     const a = buildArgs('set_fields', login, [
       '5',
       'title:題名',
@@ -1011,7 +1011,9 @@ describe('set_fields arguments', () => {
     expect(a.slice(0, 2)).toEqual(['set_metadata', '--with-library']);
     expect(a).toContain('<stdin>');
     expect(a).not.toContain('pw');
-    expect(() => buildArgs('set_fields', login, ['5', 'tags:x'])).toThrow(/can't set tags/);
+    // Stage 5 (WP20f) adds exactly tags (the whole list the server worked out).
+    expect(buildArgs('set_fields', login, ['5', 'tags:a,b'])).toContain('tags:a,b');
+    expect(() => buildArgs('set_fields', login, ['5', 'rating:1'])).toThrow(/can't set rating/);
     // Stage 4 (WP20e) adds exactly series, series_index and comments.
     expect(() =>
       buildArgs('set_fields', login, ['5', 'series:S', 'series_index:1.5', 'comments:あらすじ']),

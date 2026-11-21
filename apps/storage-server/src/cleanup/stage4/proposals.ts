@@ -583,7 +583,7 @@ export function proposeStage4(input: ProposalInput): Stage4Proposal[] {
         'description',
       );
     }
-  } else if (isProcessed(book.tags) && extras?.comments) {
+  } else if (isProcessed(book.tags, book.marks) && extras?.comments) {
     push(
       {
         field: 'description',

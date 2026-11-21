@@ -47,7 +47,7 @@
     <span class="text-sm text-c-muted" data-testid="audio-choice-current">In use</span>
   {:else}
     <button
-      class="c-btn c-btn-secondary c-round shrink-0 px-5"
+      class="c-btn c-btn-secondary shrink-0 px-5"
       data-testid="audio-choice-use"
       {disabled}
       on:click={() => dispatch('choose')}
@@ -56,9 +56,3 @@
     </button>
   {/if}
 </li>
-
-<style>
-  .c-round {
-    border-radius: 0.75rem;
-  }
-</style>

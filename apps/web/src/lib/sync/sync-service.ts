@@ -149,7 +149,15 @@ import { SyncApi } from '$lib/sync/sync-api';
 import type { LocalRecord } from '$lib/sync/sync-db';
 import { SyncEngine } from '$lib/sync/sync-engine';
 import { SyncRunner, type RunnerEnv } from '$lib/sync/sync-runner';
-import { getTagBlurRules, setTagBlur, TAG_BLUR_KIND } from '$lib/sync/tag-blur';
+import {
+  BLUR_RULE_KIND,
+  getCoverRules,
+  getTagBlurRules,
+  setCoverRule,
+  setTagBlur,
+  TAG_BLUR_KIND,
+  type CoverRuleSets
+} from '$lib/sync/tag-blur';
 import {
   addBooks,
   collectionsOfBook,
@@ -748,6 +756,23 @@ export function libraryViewApi() {
     async setTagBlur(tag: string, blur: boolean): Promise<void> {
       await setTagBlur(await getSyncEngine(), tag, blur);
     },
+    /** Every cover rule: tags, authors, series and collections. Never rejects. */
+    async coverRules(): Promise<CoverRuleSets> {
+      try {
+        return await getCoverRules(await getSyncEngine());
+      } catch (error) {
+        warn(`Library: ${(error as Error)?.message ?? error}`);
+        return { tags: new Set(), authors: new Set(), series: new Set(), collections: new Set() };
+      }
+    },
+    /** Rejects when the rule could not be saved. */
+    async setCoverRule(
+      target: 'tag' | 'author' | 'series' | 'collection',
+      name: string,
+      blur: boolean
+    ): Promise<void> {
+      await setCoverRule(await getSyncEngine(), target, name, blur);
+    },
     /** Every position record (all devices), for progress. Never rejects. */
     async positions(): Promise<LocalRecord[]> {
       try {
@@ -761,7 +786,8 @@ export function libraryViewApi() {
     async onChanged(callback: () => void): Promise<() => void> {
       try {
         const engine = await getSyncEngine();
-        const relevant = (r: LocalRecord) => r.kind === TAG_BLUR_KIND || r.kind === 'position';
+        const relevant = (r: LocalRecord) =>
+          r.kind === TAG_BLUR_KIND || r.kind === BLUR_RULE_KIND || r.kind === 'position';
         const offRemote = engine.onRemoteChange((records) => {
           if (records.some(relevant)) callback();
         });

@@ -27,6 +27,8 @@ export interface Stage2Book {
   languages: string[];
   /** null when the library has no #illustrator column. */
   illustrators: string[] | null;
+  /** The Google run's marks recorded before stage 5 removed them (marks.ts; not Calibre's). */
+  marks?: string[];
 }
 
 export interface Stage2Snapshot {
@@ -198,6 +200,7 @@ export function calibreFactsOf(book: Stage2Book, cover: CoverFacts | null): Cali
     publisher: book.publisher,
     languages: book.languages,
     illustrators: book.illustrators,
+    marks: book.marks ?? [],
   };
 }
 

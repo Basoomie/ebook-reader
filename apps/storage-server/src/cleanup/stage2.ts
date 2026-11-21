@@ -52,6 +52,7 @@ import {
   type Stage2Snapshot,
 } from './stage2-snapshot';
 import { getStage, updateStage } from './stages';
+import { attachMarks } from './marks';
 
 export const EVIDENCE_KIND = 'file';
 export const EVIDENCE_VERSION = 1;
@@ -241,6 +242,8 @@ export class Stage2Analysis {
     const file = snapshotFile(this.deps.cacheDir, libraryId);
     if (this.snapshot && this.snapshotFor === file) return this.snapshot;
     this.snapshot = readStage2Snapshot(file);
+    // The Google run's marks stage 5 removed from Calibre still count for the rules (WP20f).
+    attachMarks(this.deps.cleanup, libraryId, this.snapshot.books.values());
     this.snapshotFor = file;
     return this.snapshot;
   }

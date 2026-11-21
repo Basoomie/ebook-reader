@@ -117,7 +117,7 @@
     removeHighlight: notes.removeHighlight,
     removeNote: notes.removeNote
   };
-  const chip = 'c-btn c-btn-secondary min-h-[2.75rem] shrink-0 gap-2 rounded-full px-3 text-sm';
+  const chip = 'c-chip gap-2 px-3';
 
   let all = new Map<string, BookNotes>();
   let catalog = new Map<string, NotesBookInfo>();
@@ -642,7 +642,7 @@
           {#if queryText}
             <button
               type="button"
-              class="c-btn c-btn-ghost -my-2 -mr-3 h-11 min-h-0 w-11 shrink-0 p-0"
+              class="c-btn c-btn-ghost -my-2 -mr-3 c-btn-icon c-btn-sm"
               title="Clear the search"
               aria-label="Clear the search"
               data-testid="notes-search-clear"
@@ -661,7 +661,7 @@
       <div class="c-segmented flex" role="group" aria-label="Show">
         <button
           type="button"
-          class="c-btn c-btn-secondary min-h-[2.75rem] rounded-r-none px-4 text-sm"
+          class="c-btn c-btn-secondary c-btn-sm rounded-r-none px-4 text-sm"
           aria-pressed={state.view === 'books'}
           data-testid="notes-view-books"
           on:click={() => setView('books')}
@@ -670,7 +670,7 @@
         </button>
         <button
           type="button"
-          class="c-btn c-btn-secondary -ml-px min-h-[2.75rem] rounded-l-none px-4 text-sm"
+          class="c-btn c-btn-secondary -ml-px c-btn-sm rounded-l-none px-4 text-sm"
           aria-pressed={state.view === 'highlights'}
           data-testid="notes-view-highlights"
           on:click={() => setView('highlights')}
@@ -680,7 +680,7 @@
       </div>
       <button
         type="button"
-        class="c-btn c-btn-secondary min-h-[2.75rem] gap-2 px-3 text-sm"
+        class="c-btn c-btn-secondary c-btn-sm gap-2 px-3 text-sm"
         aria-expanded={filtersOpen}
         aria-controls="notes-filters"
         data-testid="notes-filters-toggle"
@@ -701,7 +701,7 @@
       {#if groups.length}
         <button
           type="button"
-          class="c-btn c-btn-secondary ml-auto min-h-[2.75rem] min-w-[2.75rem] gap-2 px-3 text-sm"
+          class="c-btn c-btn-secondary ml-auto c-btn-sm min-w-[var(--c-btn-h-sm)] gap-2 px-3 text-sm"
           title="Download what the search and filters show as a spreadsheet (CSV)"
           aria-label="Export CSV"
           data-testid="notes-export-csv"
@@ -759,7 +759,7 @@
           </div>
           <button
             type="button"
-            class="c-btn c-btn-secondary min-h-[2.75rem] rounded-full px-4 text-sm"
+            class="c-chip px-4"
             aria-pressed={filter.withNote}
             data-testid="notes-filter-note"
             on:click={() => setFilter({ ...filter, withNote: !filter.withNote })}
@@ -769,7 +769,7 @@
           {#if unplacedTotal > 0 || filter.unplacedOnly}
             <button
               type="button"
-              class="c-btn c-btn-secondary min-h-[2.75rem] gap-2 rounded-full px-4 text-sm"
+              class="c-chip gap-2 px-4"
               aria-pressed={filter.unplacedOnly}
               title="Highlights this device couldn't find in its copy of the book"
               data-testid="notes-filter-unplaced"
@@ -810,7 +810,7 @@
             {#each DATE_PRESETS as preset (preset.id)}
               <button
                 type="button"
-                class="c-btn c-btn-secondary min-h-[2.75rem] rounded-full px-3 text-sm"
+                class="c-chip"
                 aria-pressed={isPreset(preset.id, filter)}
                 data-testid="notes-date-{preset.id}"
                 on:click={() => pickPreset(preset.id)}

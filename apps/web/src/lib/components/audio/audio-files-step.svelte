@@ -56,7 +56,7 @@
 
   /** Files shown a page at a time. */
   const PAGE_SIZE = 10;
-  const iconButton = 'c-btn c-btn-secondary h-12 w-12 shrink-0 p-0';
+  const iconButton = 'c-btn c-btn-secondary c-btn-icon';
 
   let detail: AudioFolderDetail | null = null;
   let loadError = '';
@@ -192,7 +192,7 @@
               <span class="text-sm text-c-muted" data-testid="audio-file-current">In use</span>
             {:else}
               <button
-                class="c-btn c-btn-secondary c-round shrink-0 px-5"
+                class="c-btn c-btn-secondary shrink-0 px-5"
                 data-testid="audio-file-use"
                 disabled={busy || starting}
                 on:click={() => dispatch('useFile', { folder, fileName: file.name })}
@@ -265,7 +265,7 @@
     {/if}
     <div class="mt-3">
       <button
-        class="c-btn c-btn-secondary c-round"
+        class="c-btn c-btn-secondary"
         data-testid="audio-merge-start"
         disabled={busy || starting || !mergeAvailable || selection.length < 2}
         on:click={startMerge}
@@ -277,9 +277,3 @@
     </div>
   {/if}
 </div>
-
-<style>
-  .c-round {
-    border-radius: 0.75rem;
-  }
-</style>

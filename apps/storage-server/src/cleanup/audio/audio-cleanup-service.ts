@@ -43,6 +43,7 @@ import {
 import { audioSiteLines, onlineList, unitStates } from './online-views';
 import { AiRunner, modeOf } from '../ai/runner';
 import { STAGE4_SPEC } from '../stage4/ai-prompt';
+import { STAGE5_SPEC } from '../stage5/prompt';
 import { META_SPEC } from './meta-prompt';
 import { providerOf, type ProviderClient } from '../ai/providers';
 import type { Provider } from '../ai/types';
@@ -1410,6 +1411,16 @@ export class AudioCleanupService {
           models: [
             { task: STAGE4_SPEC.tasks.primary, role: 'First model' },
             { task: STAGE4_SPEC.tasks.secondary, role: 'Second model' },
+          ],
+        },
+        {
+          id: STAGE5_SPEC.stage,
+          name: 'Calibre genres and tags (stage 5)',
+          about:
+            'Both models read every book. A genre or tag is applied only when both models give it; RanobeDB and the store categories add theirs. Each book gets its own.',
+          models: [
+            { task: STAGE5_SPEC.tasks.primary, role: 'First model' },
+            { task: STAGE5_SPEC.tasks.secondary, role: 'Second model' },
           ],
         },
       ],

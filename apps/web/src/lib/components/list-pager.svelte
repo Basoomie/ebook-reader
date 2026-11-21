@@ -33,7 +33,7 @@
 >
   <button
     type="button"
-    class="c-btn c-btn-secondary min-h-[2.75rem] min-w-[2.75rem] px-3"
+    class="c-btn c-btn-secondary c-btn-sm min-w-[var(--c-btn-h-sm)] px-3"
     disabled={page <= 1}
     on:click={() => go(page - 1)}
     aria-label="Previous page"
@@ -60,7 +60,7 @@
   </span>
   <button
     type="button"
-    class="c-btn c-btn-secondary min-h-[2.75rem] min-w-[2.75rem] px-3"
+    class="c-btn c-btn-secondary c-btn-sm min-w-[var(--c-btn-h-sm)] px-3"
     disabled={page >= pages}
     on:click={() => go(page + 1)}
     aria-label="Next page"

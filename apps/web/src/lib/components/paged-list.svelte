@@ -55,7 +55,7 @@
     data-testid={testid}
   >
     <button
-      class="c-btn c-btn-secondary h-11 w-11 shrink-0 p-0"
+      class="c-btn c-btn-secondary c-btn-icon c-btn-sm"
       title="Previous page"
       aria-label="Previous page"
       disabled={view.page === 0}
@@ -66,7 +66,7 @@
     </button>
     <span aria-live="polite" data-testid="paged-list-range">{pageRangeText(view)}</span>
     <button
-      class="c-btn c-btn-secondary h-11 w-11 shrink-0 p-0"
+      class="c-btn c-btn-secondary c-btn-icon c-btn-sm"
       title="Next page"
       aria-label="Next page"
       disabled={view.page >= view.pages - 1}

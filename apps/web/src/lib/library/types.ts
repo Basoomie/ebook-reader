@@ -105,8 +105,13 @@ export type GroupBy = 'series' | 'author' | 'tag';
 export interface GroupTile {
   bookId: string;
   thumbnail: string | null;
-  /** For tag blur rules. */
+  /** For the cover blur rules (lib/library/cover-blur.ts). */
   tags: string[];
+  /** Since 2026-11-21 (older servers send only the tags): for author, series and collection rules. */
+  title?: string;
+  authors?: string[];
+  series?: string | null;
+  charCount?: number | null;
 }
 
 export interface GroupChars {

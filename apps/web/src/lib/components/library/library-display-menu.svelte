@@ -13,13 +13,15 @@
     COVER_SIZE_STEP,
     coverSize
   } from '$lib/library/cover-size';
+  import { coverBlurDefault, type CoverBlurDefault } from '$lib/library/cover-blur';
   import {
     libraryAutoLoad$,
+    libraryCoverBlur$,
     libraryCoverSize$,
     libraryInfoLine$,
     libraryView$
   } from '$lib/library/settings';
-  import { faTableCellsLarge } from '@fortawesome/free-solid-svg-icons';
+  import { faChevronDown, faTableCellsLarge } from '@fortawesome/free-solid-svg-icons';
   import Fa from 'svelte-fa';
 
   /**
@@ -34,6 +36,13 @@
 
   $: grid = $libraryView$ !== 'list';
   $: size = coverSize($libraryCoverSize$);
+  $: blurDefault = coverBlurDefault($libraryCoverBlur$);
+
+  const BLUR_CHOICES: { value: CoverBlurDefault; label: string }[] = [
+    { value: 'rules', label: 'By rules' },
+    { value: 'all', label: 'Blur all' },
+    { value: 'none', label: 'Show all' }
+  ];
 
   function onSlider(ev: Event) {
     $libraryCoverSize$ = coverSize((ev.currentTarget as HTMLInputElement).value);
@@ -41,13 +50,17 @@
 </script>
 
 <DropdownMenu
-  buttonClass="c-btn c-btn-secondary px-3"
+  buttonClass="c-btn c-btn-ghost px-3"
   align="right"
   label="Display"
   testid="display-menu"
   panelWidth="w-80"
 >
-  <span slot="button" class="flex items-center gap-2"><Fa icon={faTableCellsLarge} />Display</span>
+  <span slot="button" class="flex items-center gap-2"
+    ><Fa icon={faTableCellsLarge} />Display<span class="opacity-70" aria-hidden="true"
+      ><Fa icon={faChevronDown} size="xs" /></span
+    ></span
+  >
   <div class="flex flex-col gap-3 p-1">
     <div class="grid grid-cols-2 gap-1" role="group" aria-label="View">
       <button
@@ -94,7 +107,7 @@
         <span>Small</span>
         <button
           type="button"
-          class="c-btn c-btn-secondary min-h-[2.75rem] px-3 text-sm"
+          class="c-btn c-btn-secondary c-btn-sm px-3 text-sm"
           aria-pressed={size === 0}
           disabled={!grid}
           data-testid="cover-size-auto"
@@ -104,6 +117,30 @@
         </button>
         <span>Large</span>
       </div>
+    </div>
+    <div>
+      <span class="text-sm font-medium" id="library-cover-blur">Hidden covers</span>
+      <div class="mt-1 grid grid-cols-3 gap-1" role="group" aria-labelledby="library-cover-blur">
+        {#each BLUR_CHOICES as choice (choice.value)}
+          <button
+            type="button"
+            class="c-btn c-btn-secondary px-2 text-sm"
+            aria-pressed={blurDefault === choice.value}
+            data-testid="cover-blur-{choice.value}"
+            on:click={() => ($libraryCoverBlur$ = choice.value)}
+          >
+            {choice.label}
+          </button>
+        {/each}
+      </div>
+      <p class="mt-1 text-xs text-c-muted" data-testid="cover-blur-hint">
+        {blurDefault === 'rules'
+          ? 'Blurs covers by your tag, author, series and collection rules.'
+          : blurDefault === 'all'
+            ? 'Blurs every cover on this device.'
+            : 'Shows every cover on this device; the rules are ignored here.'}
+        A book's own setting still wins.
+      </p>
     </div>
     {#if details}
       <label class="flex min-h-[3rem] items-center gap-3 text-sm">
