@@ -357,7 +357,16 @@ const TAG_KEYS = [
   'asin',
   'audible_asin',
   'publisher',
+  // WP21f-2: a multi-file book's story order starts with its track numbers.
+  'track',
+  'disc',
 ];
+
+/**
+ * What the stored tags hold: 2 = with `track` and `disc` (WP21f-2). Rows of files in multi-file
+ * books checked before (null) are checked again once, so their story order can use the tags.
+ */
+export const HEALTH_TAGS_VERSION = 2;
 
 /** Parses ffprobe's JSON (stdout as bytes: chapter titles may not be valid UTF-8). */
 export function parseProbe(

@@ -48,6 +48,7 @@ import {
 import { scoreGate, type GateResult, type LabelsFile } from './dup-gate';
 import { groupCopies, groupKey, type DupTest, type Edge } from './dup-groups';
 import { printedVolume, titleKey } from './dup-names';
+import { differsFromNames, orderParts, type OrderSource } from './story-order';
 import {
   decideGroup,
   comparePair,
@@ -123,6 +124,11 @@ export interface AudioStage3Progress {
   verifyRateFrom?: { at: number; done: number } | null;
   /** Times the decode phase gave the disk to a Calibre job. */
   yields: number;
+  /**
+   * The story order of the multi-file copies (WP21f-2): how many each source ordered, and the
+   * copies whose story order is not their name order. Missing in progress saved before.
+   */
+  storyOrder?: { bySource: Partial<Record<OrderSource, number>>; outOfNameOrder: string[] };
   phaseStartedAt: number;
   phaseStartDone: number;
   /** Per phase: work time (not waiting) and items handled. */
@@ -428,14 +434,16 @@ export class AudioStage3 {
       number,
       { id: number; rel_path: string; decoded_path: string | null }[]
     >();
+    const discOf = new Map<number, string | null>();
     for (const r of db
       .prepare(
-        `SELECT bf.book_id, f.id, f.rel_path, f.decoded_path FROM audio_books b
+        `SELECT bf.book_id, bf.disc, f.id, f.rel_path, f.decoded_path FROM audio_books b
          JOIN audio_book_files bf ON bf.book_id = b.id JOIN audio_files f ON f.id = bf.file_id
          WHERE b.analysis_id = ? AND b.root = 'torrents' ORDER BY bf.book_id, bf.position`,
       )
       .all(p.stage2Id) as {
       book_id: number;
+      disc: string | null;
       id: number;
       rel_path: string;
       decoded_path: string | null;
@@ -443,6 +451,7 @@ export class AudioStage3 {
       let l = filesByBook.get(r.book_id);
       if (!l) filesByBook.set(r.book_id, (l = []));
       l.push({ id: r.id, rel_path: r.rel_path, decoded_path: r.decoded_path });
+      discOf.set(r.id, r.disc);
     }
     const durations = new Map<number, number | null>();
     for (const r of db.prepare('SELECT file_id, duration FROM audio_file_health').all() as {
@@ -569,6 +578,43 @@ export class AudioStage3 {
           : null,
       });
     }
+    // WP21f-2: a multi-file copy's files in their story order (track tags, a twin's chapter
+    // names, the section words, else the names). The key stays its first file by name, so a
+    // new order is not a new copy; its windows, openings and links follow the order.
+    const relById = new Map<number, string>();
+    for (const l of filesByBook.values())
+      for (const f of l) relById.set(f.id, f.decoded_path ?? f.rel_path);
+    const healthOf = db.prepare(
+      'SELECT tags_json, chapters_json FROM audio_file_health WHERE file_id = ?',
+    );
+    const health = (id: number) =>
+      healthOf.get(id) as { tags_json: string | null; chapters_json: string | null } | undefined;
+    const orders = orderParts(rows, {
+      name: (id) => baseName(relById.get(id) ?? ''),
+      disc: (id) => discOf.get(id) ?? null,
+      tags: (id) => {
+        const t = health(id)?.tags_json;
+        const tags = t ? (JSON.parse(t) as Record<string, string>) : {};
+        return tags.track ? { track: tags.track, disc: tags.disc ?? null } : null;
+      },
+      chapters: (id) => {
+        const c = health(id)?.chapters_json;
+        return c ? (JSON.parse(c) as { title?: string }[]).map((x) => x.title ?? '') : null;
+      },
+    });
+    const storyOrder: NonNullable<AudioStage3Progress['storyOrder']> = {
+      bySource: {},
+      outOfNameOrder: [],
+    };
+    for (const r of rows) {
+      const o = orders.get(r.key);
+      if (!o) continue;
+      storyOrder.bySource[o.source] = (storyOrder.bySource[o.source] ?? 0) + 1;
+      if (!differsFromNames(o.order)) continue;
+      r.fileIds = o.order.map((i) => r.fileIds[i]);
+      storyOrder.outOfNameOrder.push(`${r.name} (${o.source})`);
+    }
+    p.storyOrder = storyOrder;
     db.transaction(() => {
       db.prepare('DELETE FROM audio_dup_copies WHERE analysis_id = ?').run(p.analysisId);
       const put = db.prepare(

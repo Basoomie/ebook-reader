@@ -29,6 +29,7 @@ import {
   withFileSuffix,
 } from './build-names';
 import type { SeriesEntry } from './meta-rules';
+import { linkNumbers } from './story-order';
 
 export const BUILD_PLAN_VERSION = 1;
 
@@ -547,7 +548,7 @@ function* planSteps(inputs: PlanInputs): Generator<void, PlanResult> {
       return `${fo.folder}/${rel}`;
     };
     const unitBook = inputs.books.get(d.copy.bookKey);
-    const files: PlannedFile[] = [];
+    const subs: { id: number; sub: string[] }[] = [];
     for (const id of d.copy.fileIds) {
       const f = inputs.files.get(id);
       if (!f) continue;
@@ -556,7 +557,18 @@ function* planSteps(inputs: PlanInputs): Generator<void, PlanResult> {
         unitBook && unitBook.kind === 'folder' && d.copy.kind !== 'library_only'
           ? seg.slice(unitBook.rel.split('/').length)
           : [seg[seg.length - 1]];
-      files.push({ fileId: id, dst: place(sub.length ? sub : [seg[seg.length - 1]]) });
+      subs.push({ id, sub: sub.length ? sub : [seg[seg.length - 1]] });
+    }
+    // WP21f-2: a multi-file book whose story order (stage 3's file order) is not its name order
+    // gets numbered link names (`01 タイトル-著者-登場人物.mp3`), so every player plays it in
+    // order; the torrents' files keep their names. Only new books are planned here: an existing
+    // book's links are renamed by stage 7's library changes.
+    const numbers = d.copy.kind === 'parts' ? linkNumbers(subs.map((x) => x.sub.join('/'))) : null;
+    if (numbers) notes.push('numbered in story order');
+    const files: PlannedFile[] = [];
+    for (const [i, x] of subs.entries()) {
+      const sub = numbers ? [...x.sub.slice(0, -1), numbers[i] + x.sub[x.sub.length - 1]] : x.sub;
+      files.push({ fileId: x.id, dst: place(sub) });
     }
     // PDFs: the linked copy's, else the recording's other copies' (same name and size once).
     const pdfs: PlannedFile[] = [];

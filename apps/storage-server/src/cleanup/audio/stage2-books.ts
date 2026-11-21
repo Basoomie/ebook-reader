@@ -23,7 +23,13 @@ import { insideRoot, readSmall } from './audio-source-fs';
 import { getAudioStage, updateAudioStage } from './audio-stages';
 import { buildUnits, classifyMulti, folderBooks, idsInNames, type RootName } from './book-units';
 import { decodeMojibake, decodePath } from './mojibake';
-import { checkHealth, toolVersion, type HealthResult, type ToolPaths } from './probe';
+import {
+  checkHealth,
+  HEALTH_TAGS_VERSION,
+  toolVersion,
+  type HealthResult,
+  type ToolPaths,
+} from './probe';
 import { librarySwitched } from './switch-state';
 import { walkRoots, type AudioRoots, type WalkResult } from './walk';
 
@@ -108,6 +114,7 @@ const HEALTH_COLUMNS = [
   'tool_version',
   'checked_ms',
   'checked_at',
+  'tags_version',
 ];
 
 /**
@@ -145,7 +152,12 @@ const STALE_SQL = `
   LEFT JOIN audio_file_health h ON h.file_id = f.id
   WHERE f.kind = 'audio' AND f.gone_at IS NULL
     AND (h.file_id IS NULL OR h.size <> f.size OR h.mtime_ms <> f.mtime_ms
-      OR ((h.start_decode_ok = 0 OR h.end_decode_ok = 0) AND h.checked_at < @since))`;
+      OR ((h.start_decode_ok = 0 OR h.end_decode_ok = 0) AND h.checked_at < @since)
+      OR (h.tags_version IS NULL AND f.id IN (
+        SELECT bf.file_id FROM audio_book_files bf JOIN audio_books b ON b.id = bf.book_id
+        WHERE b.analysis_id = @analysis AND b.file_count > 1)))`;
+// A file of a multi-file book checked before its tags held track and disc (WP21f-2) is checked
+// once more (183 files in the live library), so its book's story order can use them.
 // A file whose play failed is checked again once in every analysis (@since = the analysis's
 // start; few files: 77 of 11,651 in the live run), so a change in what counts as a problem
 // reaches the results already stored.
@@ -250,7 +262,9 @@ export class AudioStage2 {
     })();
     p.healthTwins = reuseTwinHealth(db);
     const stale = (
-      db.prepare(`SELECT COUNT(*) AS n FROM (${STALE_SQL})`).get({ since: p.startedAt }) as {
+      db
+        .prepare(`SELECT COUNT(*) AS n FROM (${STALE_SQL})`)
+        .get({ since: p.startedAt, analysis: p.analysisId }) as {
         n: number;
       }
     ).n;
@@ -278,7 +292,7 @@ export class AudioStage2 {
       .prepare(
         `${STALE_SQL} ORDER BY f.root, f.rel_path LIMIT ${Math.max(HEALTH_CHUNK, s.healthWorkers * 4)}`,
       )
-      .all({ since: p.startedAt }) as {
+      .all({ since: p.startedAt, analysis: p.analysisId }) as {
       id: number;
       root: RootName;
       rel_path: string;
@@ -294,10 +308,12 @@ export class AudioStage2 {
     const put = db.prepare(
       `INSERT INTO audio_file_health (file_id, size, mtime_ms, format, format_long, codec, profile,
          bitrate, sample_rate, channels, duration, chapter_count, chapters_json, has_cover, tags_json,
-         header_ok, start_decode_ok, end_decode_ok, decode_error, error, tool_version, checked_ms, checked_at)
+         header_ok, start_decode_ok, end_decode_ok, decode_error, error, tool_version, checked_ms, checked_at,
+         tags_version)
        VALUES (@file_id, @size, @mtime_ms, @format, @format_long, @codec, @profile, @bitrate,
          @sample_rate, @channels, @duration, @chapter_count, @chapters_json, @has_cover, @tags_json,
-         @header_ok, @start_ok, @end_ok, @decode_error, @error, @tool_version, @checked_ms, @checked_at)
+         @header_ok, @start_ok, @end_ok, @decode_error, @error, @tool_version, @checked_ms, @checked_at,
+         @tags_version)
        ON CONFLICT(file_id) DO UPDATE SET size = excluded.size, mtime_ms = excluded.mtime_ms,
          format = excluded.format, format_long = excluded.format_long, codec = excluded.codec,
          profile = excluded.profile, bitrate = excluded.bitrate, sample_rate = excluded.sample_rate,
@@ -307,7 +323,8 @@ export class AudioStage2 {
          header_ok = excluded.header_ok, start_decode_ok = excluded.start_decode_ok,
          end_decode_ok = excluded.end_decode_ok, decode_error = excluded.decode_error,
          error = excluded.error, tool_version = excluded.tool_version,
-         checked_ms = excluded.checked_ms, checked_at = excluded.checked_at`,
+         checked_ms = excluded.checked_ms, checked_at = excluded.checked_at,
+         tags_version = excluded.tags_version`,
     );
     const busy = () => this.deps.calibreBusy?.() ?? false;
     const checkOne = async (f: (typeof next)[number]): Promise<number> => {
@@ -344,6 +361,7 @@ export class AudioStage2 {
         tool_version: this.version ?? null,
         checked_ms: took,
         checked_at: Date.now(),
+        tags_version: h ? HEALTH_TAGS_VERSION : null,
       });
       p.healthDone++;
       this.save(p, 'analysing');

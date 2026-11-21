@@ -1592,6 +1592,15 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
         CHECK (json_valid(excluded_json));
     `,
   },
+  {
+    version: 19,
+    name: 'audiobook cleanup: story order and changes to books in the library (WP21f-2)',
+    // Which tags a health row holds (2: with track and disc); the files of multi-file books
+    // checked before are checked again once, so their story order can use the track numbers.
+    sql: `
+      ALTER TABLE audio_file_health ADD COLUMN tags_version INTEGER;
+    `,
+  },
 ];
 
 export const CLEANUP_SCHEMA_VERSION = CLEANUP_MIGRATIONS[CLEANUP_MIGRATIONS.length - 1].version;
