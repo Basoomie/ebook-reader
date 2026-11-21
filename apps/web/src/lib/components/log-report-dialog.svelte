@@ -3,15 +3,16 @@
    * Bug report (WP18): "Download report" saves one file with this device's report and the
    * server's recent log, tokens and pairing codes removed. Nothing is sent anywhere.
    */
-  import DialogTemplate from '$lib/components/dialog-template.svelte';
-  import Ripple from '$lib/components/ripple.svelte';
-  import { buttonClasses } from '$lib/css-classes';
+  import Modal from '$lib/components/modal/modal.svelte';
   import { collectBugReport } from '$lib/data/bug-report-browser';
   import { downloadBlob, localStamp } from '$lib/functions/download-blob';
+  import { createEventDispatcher } from 'svelte';
 
   export let title = 'Error';
 
   export let message: string;
+
+  const dispatch = createEventDispatcher<{ close: void }>();
 
   let busy = false;
   let notice = '';
@@ -39,36 +40,36 @@
   }
 </script>
 
-<DialogTemplate>
-  <svelte:fragment slot="header">{title}</svelte:fragment>
-  <svelte:fragment slot="content">
-    <p>{message}</p>
-    <p class="mt-4" data-testid="bug-report-about">
+<Modal {title} size="md" testid="bug-report-dialog" on:close={() => dispatch('close')}>
+  <div class="space-y-3 pt-3">
+    {#if message}
+      <p class="whitespace-pre-line [overflow-wrap:anywhere]">{message}</p>
+    {/if}
+    <p class="text-sm text-c-muted" data-testid="bug-report-about">
       The report has this device's log and the server's recent log. Tokens and pairing codes are
       removed. Nothing is sent anywhere; you choose who gets the file.
     </p>
-    {#if notice}
-      <p class="mt-4" data-testid="bug-report-notice">{notice}</p>
-    {/if}
+  </div>
+  <svelte:fragment slot="status">
+    {#if notice}<span data-testid="bug-report-notice">{notice}</span>{/if}
   </svelte:fragment>
   <svelte:fragment slot="footer">
     <a
-      class={buttonClasses}
+      class="c-btn c-btn-secondary"
       href="https://github.com/Basoomie/ebook-reader"
       target="_blank"
       rel="noreferrer"
     >
-      Open Repository
-      <Ripple />
+      Open repository
     </a>
     <button
-      class={buttonClasses}
+      type="button"
+      class="c-btn c-btn-primary"
       disabled={busy}
       data-testid="bug-report-download"
       on:click={download}
     >
-      {busy ? 'Preparing…' : 'Download Report'}
-      <Ripple />
+      {busy ? 'Preparing…' : 'Download report'}
     </button>
   </svelte:fragment>
-</DialogTemplate>
+</Modal>

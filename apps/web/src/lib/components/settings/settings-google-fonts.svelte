@@ -7,7 +7,6 @@
    * is open. Plain for e-ink: no transitions, 48 px controls.
    */
   import { createEventDispatcher, onDestroy } from 'svelte';
-  import { inputClasses } from '$lib/css-classes';
   import { googleCategory, weightsLabel } from '$lib/fonts/font-names';
   import { GooglePreviews, PREVIEW_TEXT } from '$lib/fonts/google-preview';
   import { fontApi } from '$lib/fonts/server-fonts-browser';
@@ -126,17 +125,12 @@
     name_taken: 'Name in use'
   };
 
-  const button =
-    'flex min-h-[3rem] items-center justify-center rounded border-2 border-current px-4 font-medium disabled:opacity-50';
+  const button = 'c-btn c-btn-secondary';
 </script>
 
+<!-- Its heading and intro are the Custom fonts dialog's section ("From Google Fonts"). -->
 <div data-testid="google-fonts">
-  <h3 class="mb-2 font-medium">Add from Google Fonts</h3>
   {#if families === null}
-    <p class="mb-3 text-sm">
-      Free Japanese fonts. The library server downloads the one you choose, then every device gets
-      it like an added font.
-    </p>
     <button class={button} on:click={show} data-testid="google-fonts-show">Show Google Fonts</button
     >
   {:else if families === 'loading'}
@@ -149,20 +143,16 @@
     <input
       id="google-font-search"
       type="search"
-      class="{inputClasses} mb-3 w-full"
+      class="c-input mb-3 w-full"
       bind:value={query}
       data-testid="google-fonts-search"
     />
     {#if shown.length}
       <ul class="mb-2" data-testid="google-font-list">
         {#each shown as family (family.family)}
-          <li
-            class="flex items-center gap-3 border-t border-gray-400 py-2"
-            data-testid="google-font"
-            data-family={family.family}
-          >
+          <li class="c-modal-row" data-testid="google-font" data-family={family.family}>
             <div class="min-w-0 flex-1">
-              <div class="break-words font-medium">{family.family}</div>
+              <div class="c-modal-row-title">{family.family}</div>
               <div
                 class="break-words text-lg"
                 use:sample={family.family}
@@ -174,7 +164,7 @@
               >
                 {PREVIEW_TEXT}
               </div>
-              <div class="break-words text-sm">
+              <div class="c-modal-row-meta">
                 {googleCategory(family.category)} · {weightsLabel(family.weights)}
               </div>
             </div>
@@ -192,7 +182,7 @@
                 </button>
               {/if}
             {:else}
-              <span class="text-sm" data-testid="google-font-status"
+              <span class="text-sm text-c-muted" data-testid="google-font-status"
                 >{statusText[family.status]}</span
               >
             {/if}
@@ -202,7 +192,9 @@
           {:else if messageFor === family.family && (problem || notice)}
             <li class="pb-2">
               {#if problem}
-                <p class="text-red-700" role="alert" data-testid="google-font-problem">{problem}</p>
+                <p class="c-modal-error" role="alert" data-testid="google-font-problem">
+                  <span aria-hidden="true">⚠</span>{problem}
+                </p>
               {/if}
               {#if notice}
                 <p role="status" data-testid="google-font-notice">{notice}</p>
@@ -218,7 +210,9 @@
 
   {#if messageFor === null || !shown.some((f) => f.family === messageFor)}
     {#if problem}
-      <p class="mt-3 text-red-700" role="alert" data-testid="google-font-problem">{problem}</p>
+      <p class="c-modal-error mt-3" role="alert" data-testid="google-font-problem">
+        <span aria-hidden="true">⚠</span>{problem}
+      </p>
     {/if}
     {#if notice}
       <p class="mt-3" role="status" data-testid="google-font-notice">{notice}</p>

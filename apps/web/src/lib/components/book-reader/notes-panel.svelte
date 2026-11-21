@@ -1,13 +1,14 @@
 <script lang="ts">
   /**
-   * WP11a: this book's highlights and notes. Plain for e-ink like the search dialog: no
-   * transitions, 48 px bordered controls, inert backdrop, Esc closes. Choosing an item
-   * closes the panel and jumps there (recorded in the jump history, not saved). Notes are
-   * written inline; removing offers Undo (WP19: until it is dismissed, the next removal or
-   * the panel closing; other actions no longer clear it).
+   * WP11a: this book's highlights and notes. Choosing an item closes the panel and jumps
+   * there (recorded in the jump history, not saved). Notes are written inline; removing
+   * offers Undo (WP19: until it is dismissed, the next removal or the panel closing; other
+   * actions no longer clear it). ✕, Esc or a click outside close it, asking first when a
+   * note or name being edited was changed (modal.svelte).
    *
-   * WP11b: a Bookmarks tab (jump, rename, remove, add) and, while set, the return marker
-   * ("Where you were reading") above both tabs.
+   * Tabs (2026-11-21): Highlights, Bookmarks (WP11b: jump, rename, remove, add) and About
+   * this book (notes about the whole book); the return marker ("Where you were reading")
+   * shows above them while set.
    */
   import { createEventDispatcher } from 'svelte';
   import type { Readable } from 'svelte/store';
@@ -25,6 +26,8 @@
   import type { HighlightsView, NotesPanelAnswer } from './reader-highlights';
   import { MAX_BOOKMARK_NAME, type BookmarkItem } from '$lib/notes/bookmarks';
   import UndoNotice from '$lib/components/confirm/undo-notice.svelte';
+  import Modal from '$lib/components/modal/modal.svelte';
+  import ModalSection from '$lib/components/modal/modal-section.svelte';
 
   export let view: Readable<HighlightsView>;
   export let bookId: string | null;
@@ -47,15 +50,10 @@
   export let resolver: (answer: NotesPanelAnswer) => void;
 
   const dispatch = createEventDispatcher<{ close: void }>();
-  const buttonClass =
-    'flex min-h-[3rem] items-center justify-center rounded border-2 border-current px-4 font-medium';
-  const smallButton =
-    'flex min-h-[2.75rem] min-w-[2.75rem] items-center justify-center rounded border-2 border-current px-3 text-sm';
-
-  let tab = initialTab;
+  let tab: 'notes' | 'bookmarks' | 'about' = initialTab;
   let marker = returnMarker;
   let colors = new Set<HighlightColor>();
-  let editing: { key: string; target: NoteTarget; text: string } | undefined;
+  let editing: { key: string; target: NoteTarget; text: string; original: string } | undefined;
   let undo: { message: string; run: Undo } | undefined;
   let error = '';
   let busy = false;
@@ -66,22 +64,15 @@
     .map((h) => ({ item: h, place: $view.places.get(h.id) ?? null }))
     .sort((a, b) => (a.place ?? a.item.start) - (b.place ?? b.item.start));
   $: bookNotes = $view.notes.notes;
-  $: empty = !$view.notes.highlights.length && !bookNotes.length;
   $: bookmarks = $view.bookmarks;
+  /** A note or bookmark name being edited was changed: a close request asks first. */
+  $: dirty = !done && !!editing && editing.text !== editing.original;
 
   function close(answer: Parameters<typeof resolver>[0]) {
     if (done) return;
     done = true;
     resolver(answer);
     dispatch('close');
-  }
-
-  function onKeydown(ev: KeyboardEvent) {
-    if (ev.key === 'Escape') {
-      ev.preventDefault();
-      if (editing) editing = undefined;
-      else close(null);
-    }
   }
 
   function toggleColor(color: HighlightColor) {
@@ -120,7 +111,7 @@
   }
 
   function startNote(key: string, target: NoteTarget, text: string) {
-    editing = { key, target, text };
+    editing = { key, target, text, original: text };
   }
 
   function saveEditing() {
@@ -161,7 +152,12 @@
   }
 
   function startRename(item: BookmarkItem) {
-    editing = { key: item.id, target: { bookId: item.bookId }, text: item.name };
+    editing = {
+      key: item.id,
+      target: { bookId: item.bookId },
+      text: item.name,
+      original: item.name
+    };
   }
 
   function saveRename(item: BookmarkItem) {
@@ -194,338 +190,440 @@
     marker = null;
   }
 
-  function showTab(next: 'notes' | 'bookmarks') {
+  function showTab(next: 'notes' | 'bookmarks' | 'about') {
     tab = next;
     editing = undefined;
     error = '';
   }
 </script>
 
-<svelte:window on:keydown={onKeydown} />
-
-<section
-  class="mdc-elevation--z24 flex max-h-[85vh] w-[44rem] max-w-full flex-col rounded bg-white p-6"
-  data-testid="notes-panel"
+<Modal
+  title="Notes in this book"
+  size="lg"
+  {dirty}
+  testid="notes-panel"
+  on:close={() => close(null)}
 >
-  <h2 class="weight-medium mb-3 text-xl">Notes in this book</h2>
+  <svelte:fragment slot="tabs">
+    {#if bookId}
+      <div class="c-modal-tabs" role="tablist">
+        <button
+          type="button"
+          class="c-modal-tab"
+          role="tab"
+          aria-selected={tab === 'notes'}
+          data-testid="notes-tab-notes"
+          on:click={() => showTab('notes')}
+        >
+          Highlights <span class="c-count">{$view.notes.highlights.length}</span>
+        </button>
+        <button
+          type="button"
+          class="c-modal-tab"
+          role="tab"
+          aria-selected={tab === 'bookmarks'}
+          data-testid="notes-tab-bookmarks"
+          on:click={() => showTab('bookmarks')}
+        >
+          Bookmarks <span class="c-count">{bookmarks.length}</span>
+        </button>
+        <button
+          type="button"
+          class="c-modal-tab"
+          role="tab"
+          aria-selected={tab === 'about'}
+          data-testid="notes-tab-about"
+          on:click={() => showTab('about')}
+        >
+          About this book <span class="c-count">{bookNotes.length}</span>
+        </button>
+      </div>
+    {/if}
+  </svelte:fragment>
 
-  {#if marker !== null}
-    <div
-      class="mb-3 flex flex-wrap items-center gap-2 border-b border-gray-400 pb-3"
-      data-testid="notes-return-marker"
-    >
-      <span class="flex-1">Where you were reading: {place(marker)}</span>
-      <button
-        class={smallButton}
-        data-testid="notes-return"
-        on:click={() => close({ kind: 'return' })}
-      >
-        Return
-      </button>
-      <button
-        class={smallButton}
-        aria-label="Forget where you were reading"
-        title="Forget where you were reading"
-        data-testid="notes-return-clear"
-        on:click={clearMarker}
-      >
-        ✕
-      </button>
+  {#if marker !== null || undo || error}
+    <div class="grid gap-2 pt-3">
+      {#if marker !== null}
+        <div
+          class="c-notice !my-0 flex flex-wrap items-center gap-2"
+          data-testid="notes-return-marker"
+        >
+          <span class="min-w-[10rem] flex-1">
+            Where you were reading: <b>{place(marker)}</b>
+          </span>
+          <button
+            type="button"
+            class="c-btn c-btn-secondary c-btn-sm"
+            data-testid="notes-return"
+            on:click={() => close({ kind: 'return' })}
+          >
+            Return there
+          </button>
+          <button
+            type="button"
+            class="c-btn c-btn-ghost c-btn-sm"
+            aria-label="Forget where you were reading"
+            title="Forget where you were reading"
+            data-testid="notes-return-clear"
+            on:click={clearMarker}
+          >
+            Forget
+          </button>
+        </div>
+      {/if}
+      {#if undo}
+        <div class="c-notice !my-0">
+          <UndoNotice
+            message={undo.message}
+            buttonClass="c-btn c-btn-secondary c-btn-sm"
+            testid="notes-undo-notice"
+            undoTestid="notes-undo"
+            on:undo={runUndo}
+            on:dismiss={() => (undo = undefined)}
+          />
+        </div>
+      {/if}
+      {#if error}
+        <p class="c-modal-error" role="alert"><span aria-hidden="true">⚠</span>{error}</p>
+      {/if}
     </div>
   {/if}
 
   {#if !bookId}
-    <p class="mb-3">Highlights, notes and bookmarks need this book in the library.</p>
-  {:else}
-    <div class="mb-3 flex gap-2" role="tablist">
-      <button
-        class={smallButton}
-        role="tab"
-        aria-selected={tab === 'notes'}
-        class:outline={tab === 'notes'}
-        class:outline-4={tab === 'notes'}
-        data-testid="notes-tab-notes"
-        on:click={() => showTab('notes')}
-      >
-        Highlights and notes
-      </button>
-      <button
-        class={smallButton}
-        role="tab"
-        aria-selected={tab === 'bookmarks'}
-        class:outline={tab === 'bookmarks'}
-        class:outline-4={tab === 'bookmarks'}
-        data-testid="notes-tab-bookmarks"
-        on:click={() => showTab('bookmarks')}
-      >
-        Bookmarks ({bookmarks.length})
-      </button>
-    </div>
-
-    {#if undo}
-      <div class="mb-2">
-        <UndoNotice
-          message={undo.message}
-          buttonClass={smallButton}
-          testid="notes-undo-notice"
-          undoTestid="notes-undo"
-          on:undo={runUndo}
-          on:dismiss={() => (undo = undefined)}
-        />
-      </div>
-    {/if}
-    {#if error}
-      <p class="mb-2 text-sm" role="alert">{error}</p>
-    {/if}
-  {/if}
-
-  {#if bookId && tab === 'bookmarks'}
-    <div class="flex">
-      <button
-        class="{smallButton} ml-auto"
-        disabled={busy}
-        data-testid="notes-add-bookmark"
-        on:click={() => close({ kind: 'add-bookmark' })}
-      >
-        Add bookmark here
-      </button>
-    </div>
-    <div class="mt-3 min-h-0 overflow-y-auto" data-testid="bookmarks-list">
-      {#if !bookmarks.length}
-        <p>
-          No bookmarks yet. "Add bookmark here" (or K) keeps the page you are on under a name; it
-          never moves your saved place.
-        </p>
-      {/if}
-      {#each bookmarks as { item, place: at } (item.id)}
-        <article class="border-t border-gray-400 py-2" data-testid="notes-bookmark">
-          {#if editing?.key === item.id}
-            <input
-              bind:value={editing.text}
-              aria-label="Bookmark name"
-              class="min-h-[2.75rem] w-full rounded border-2 border-current px-2"
-              data-testid="bookmark-rename-input"
-            />
-            <div class="mt-2 flex justify-end gap-2">
-              <button class={smallButton} on:click={() => (editing = undefined)}>Cancel</button>
-              <button
-                class={smallButton}
-                data-testid="bookmark-rename-save"
-                on:click={() => saveRename(item)}
-              >
-                Save
-              </button>
-            </div>
-          {:else}
-            <button
-              class="block min-h-[3rem] w-full text-left"
-              data-testid="notes-bookmark-jump"
-              on:click={() => close({ kind: 'jump', position: at ?? item.pos, highlightId: null })}
-            >
-              <span class="block font-medium">{item.name}</span>
-              <span class="block text-sm">
-                {place(at ?? item.pos)}
-                {#if at === null}
-                  · <b data-testid="bookmark-unplaced">Not found in this copy of the book</b>
-                {/if}
-              </span>
-            </button>
-          {/if}
-          <div class="mt-2 flex gap-2">
-            <button
-              class={smallButton}
-              disabled={busy}
-              data-testid="bookmark-rename"
-              on:click={() => startRename(item)}
-            >
-              Rename
-            </button>
-            <button
-              class={smallButton}
-              disabled={busy}
-              data-testid="bookmark-remove"
-              on:click={() => removeBookmark(item)}
-            >
-              Remove
-            </button>
-          </div>
-        </article>
-      {/each}
-    </div>
-  {:else if bookId}
-    <div class="flex flex-wrap items-center gap-2" role="group" aria-label="Show colors">
-      {#each HIGHLIGHT_COLORS as color}
+    <p class="py-4">Highlights, notes and bookmarks need this book in the library.</p>
+  {:else if tab === 'bookmarks'}
+    <ModalSection
+      title="Bookmarks"
+      hint="A bookmark keeps a page under a name. It never moves your saved place."
+    >
+      <svelte:fragment slot="aside">
         <button
-          class={smallButton}
-          aria-pressed={colors.has(color)}
-          class:outline={colors.has(color)}
-          class:outline-4={colors.has(color)}
-          title="Only {HIGHLIGHT_COLOR_NAMES[color]}"
-          aria-label="Only {HIGHLIGHT_COLOR_NAMES[color]}"
-          data-testid="notes-filter-{color}"
-          on:click={() => toggleColor(color)}
+          type="button"
+          class="c-btn c-btn-primary c-btn-sm"
+          disabled={busy}
+          data-testid="notes-add-bookmark"
+          on:click={() => close({ kind: 'add-bookmark' })}
         >
-          <span class="block h-5 w-5 rounded-sm" style={swatch(color)}>{eink ? 'あ' : ''}</span>
+          + Add bookmark here
         </button>
-      {/each}
-      <button
-        class="{smallButton} ml-auto"
-        disabled={busy}
-        data-testid="notes-add-book-note"
-        on:click={() => startNote('new', { bookId: bookId ?? '' }, '')}
-      >
-        Add note to this book
-      </button>
-    </div>
-
-    {#if !canPaint}
-      <p class="mt-2 text-sm">This browser can't show highlight colors on the page.</p>
-    {/if}
-
-    {#if editing?.key === 'new'}
-      <div class="mt-3">
-        <textarea
-          bind:value={editing.text}
-          rows="4"
-          aria-label="Note about this book"
-          class="w-full rounded border-2 border-current p-2"
-          data-testid="notes-edit-text"
-        />
-        <div class="mt-2 flex justify-end gap-2">
-          <button class={smallButton} on:click={() => (editing = undefined)}>Cancel</button>
-          <button class={smallButton} data-testid="notes-edit-save" on:click={saveEditing}>
-            Save
-          </button>
-        </div>
-      </div>
-    {/if}
-
-    <div class="mt-3 min-h-0 overflow-y-auto" data-testid="notes-list">
-      {#if empty && editing?.key !== 'new'}
-        <p>No highlights yet. Long-press text (or select it with the mouse) to highlight it.</p>
-      {/if}
-
-      {#each highlights as { item, place: at } (item.id)}
-        <article class="border-t border-gray-400 py-2" data-testid="notes-highlight">
-          <button
-            class="block min-h-[3rem] w-full text-left"
-            data-testid="notes-highlight-jump"
-            on:click={() =>
-              close({ kind: 'jump', position: at ?? item.start, highlightId: item.id })}
-          >
-            <span class="block text-sm">
-              {place(at ?? item.start)}
-              {#if at === null}
-                · <b data-testid="notes-unplaced">Not found in this copy of the book</b>
-              {/if}
-            </span>
-            <span class="mt-1 block">
-              <span class="px-0.5" style={swatch(item.color)}>{item.text}</span>
-            </span>
-          </button>
-          {#if editing?.key === item.id}
-            <textarea
-              bind:value={editing.text}
-              rows="4"
-              aria-label="Note"
-              class="mt-2 w-full rounded border-2 border-current p-2"
-              data-testid="notes-edit-text"
-            />
-            <div class="mt-2 flex justify-end gap-2">
-              <button class={smallButton} on:click={() => (editing = undefined)}>Cancel</button>
-              <button class={smallButton} data-testid="notes-edit-save" on:click={saveEditing}>
-                Save
-              </button>
-            </div>
-          {:else if item.note}
-            <p class="mt-1 whitespace-pre-wrap border-l-4 border-gray-500 pl-2 text-sm">
-              {item.note.body}
-            </p>
-          {/if}
-          <div class="mt-2 flex flex-wrap items-center gap-2">
-            {#each HIGHLIGHT_COLORS as color}
-              <button
-                class={smallButton}
-                aria-label={HIGHLIGHT_COLOR_NAMES[color]}
-                title={HIGHLIGHT_COLOR_NAMES[color]}
-                aria-pressed={item.color === color}
-                disabled={busy}
-                on:click={() => setColor(item, color)}
+      </svelte:fragment>
+      <div data-testid="bookmarks-list">
+        {#if !bookmarks.length}
+          <p class="text-sm text-c-muted">No bookmarks yet. Press K in the book to add one.</p>
+        {/if}
+        {#each bookmarks as { item, place: at } (item.id)}
+          <article class="c-modal-row" data-testid="notes-bookmark">
+            {#if editing?.key === item.id}
+              <form
+                class="flex w-full flex-wrap gap-2 py-1"
+                on:submit|preventDefault={() => saveRename(item)}
               >
-                <span class="block h-4 w-4 rounded-sm" style={swatch(color)}
-                  >{eink ? 'あ' : ''}</span
-                >
+                <input
+                  bind:value={editing.text}
+                  aria-label="Bookmark name"
+                  class="c-input min-w-[12rem] flex-1"
+                  data-testid="bookmark-rename-input"
+                />
+                <div class="flex gap-2">
+                  <button
+                    type="button"
+                    class="c-btn c-btn-ghost c-btn-sm"
+                    on:click={() => (editing = undefined)}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    class="c-btn c-btn-secondary c-btn-sm"
+                    data-testid="bookmark-rename-save"
+                  >
+                    Save
+                  </button>
+                </div>
+              </form>
+            {:else}
+              <button
+                type="button"
+                class="c-modal-row-button"
+                data-testid="notes-bookmark-jump"
+                on:click={() =>
+                  close({ kind: 'jump', position: at ?? item.pos, highlightId: null })}
+              >
+                <span class="c-modal-row-title block">{item.name}</span>
+                <span class="c-modal-row-meta block">
+                  {place(at ?? item.pos)}
+                  {#if at === null}
+                    · <b data-testid="bookmark-unplaced">Not found in this copy of the book</b>
+                  {/if}
+                </span>
               </button>
-            {/each}
+              <div class="c-modal-row-actions">
+                <button
+                  type="button"
+                  class="c-btn c-btn-ghost c-btn-sm"
+                  disabled={busy}
+                  data-testid="bookmark-rename"
+                  on:click={() => startRename(item)}
+                >
+                  Rename
+                </button>
+                <button
+                  type="button"
+                  class="c-btn c-btn-ghost c-btn-sm"
+                  disabled={busy}
+                  data-testid="bookmark-remove"
+                  on:click={() => removeBookmark(item)}
+                >
+                  Remove
+                </button>
+              </div>
+            {/if}
+          </article>
+        {/each}
+      </div>
+    </ModalSection>
+  {:else if tab === 'about'}
+    <ModalSection
+      title="Notes about this book"
+      hint="Your own notes about the whole book, not one passage."
+    >
+      <svelte:fragment slot="aside">
+        <button
+          type="button"
+          class="c-btn c-btn-primary c-btn-sm"
+          disabled={busy || editing?.key === 'new'}
+          data-testid="notes-add-book-note"
+          on:click={() => startNote('new', { bookId: bookId ?? '' }, '')}
+        >
+          + Add note
+        </button>
+      </svelte:fragment>
+      {#if editing?.key === 'new'}
+        <div class="c-modal-inline">
+          <textarea
+            bind:value={editing.text}
+            rows="4"
+            aria-label="Note about this book"
+            class="c-input w-full py-2.5"
+            data-testid="notes-edit-text"
+          />
+          <div class="c-modal-inline-btns">
             <button
-              class={smallButton}
-              disabled={busy}
-              data-testid="notes-edit-note"
-              on:click={() =>
-                startNote(
-                  item.id,
-                  { bookId: item.bookId, highlight: item, noteId: item.note?.id },
-                  item.note?.body ?? ''
-                )}
+              type="button"
+              class="c-btn c-btn-ghost c-btn-sm"
+              on:click={() => (editing = undefined)}
             >
-              {item.note ? 'Edit note' : 'Add note'}
+              Cancel
             </button>
             <button
-              class={smallButton}
-              disabled={busy}
-              data-testid="notes-remove-highlight"
-              on:click={() => removeHighlight(item)}
+              type="button"
+              class="c-btn c-btn-primary c-btn-sm"
+              data-testid="notes-edit-save"
+              on:click={saveEditing}
             >
-              Remove
+              Save note
             </button>
           </div>
-        </article>
-      {/each}
-
-      {#if bookNotes.length}
-        <h3 class="mt-4 border-t border-gray-400 pt-3 font-medium">Notes about this book</h3>
+        </div>
+      {/if}
+      {#if !bookNotes.length && editing?.key !== 'new'}
+        <p class="text-sm text-c-muted">No notes about this book yet.</p>
+      {/if}
+      <div>
         {#each bookNotes as note (note.id)}
-          <article class="py-2" data-testid="notes-book-note">
+          <article class="c-modal-row !block py-3" data-testid="notes-book-note">
             {#if note.quote}
-              <p class="border-l-4 border-gray-500 pl-2 text-sm">{note.quote}</p>
+              <p class="border-l-4 border-c-strong pl-2 font-serif text-sm text-c-muted">
+                {note.quote}
+              </p>
             {/if}
             {#if editing?.key === note.id}
               <textarea
                 bind:value={editing.text}
                 rows="4"
                 aria-label="Note"
-                class="mt-2 w-full rounded border-2 border-current p-2"
+                class="c-input mt-2 w-full py-2.5"
                 data-testid="notes-edit-text"
               />
-              <div class="mt-2 flex justify-end gap-2">
-                <button class={smallButton} on:click={() => (editing = undefined)}>Cancel</button>
-                <button class={smallButton} data-testid="notes-edit-save" on:click={saveEditing}>
+              <div class="c-modal-inline-btns mt-2">
+                <button
+                  type="button"
+                  class="c-btn c-btn-ghost c-btn-sm"
+                  on:click={() => (editing = undefined)}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  class="c-btn c-btn-secondary c-btn-sm"
+                  data-testid="notes-edit-save"
+                  on:click={saveEditing}
+                >
                   Save
                 </button>
               </div>
             {:else}
-              <p class="mt-1 whitespace-pre-wrap">{note.body}</p>
+              <div class="flex flex-wrap items-start gap-2">
+                <p class="mt-1 min-w-0 flex-1 whitespace-pre-wrap">{note.body}</p>
+                <div class="c-modal-row-actions">
+                  <button
+                    type="button"
+                    class="c-btn c-btn-ghost c-btn-sm"
+                    disabled={busy}
+                    on:click={() =>
+                      startNote(note.id, { bookId: note.bookId, noteId: note.id }, note.body)}
+                  >
+                    Edit
+                  </button>
+                  <button
+                    type="button"
+                    class="c-btn c-btn-ghost c-btn-sm"
+                    disabled={busy}
+                    on:click={() => removeNote(note)}
+                  >
+                    Remove
+                  </button>
+                </div>
+              </div>
             {/if}
-            <div class="mt-2 flex gap-2">
-              <button
-                class={smallButton}
-                disabled={busy}
-                on:click={() =>
-                  startNote(note.id, { bookId: note.bookId, noteId: note.id }, note.body)}
-              >
-                Edit
-              </button>
-              <button class={smallButton} disabled={busy} on:click={() => removeNote(note)}>
-                Remove
-              </button>
+          </article>
+        {/each}
+      </div>
+    </ModalSection>
+  {:else}
+    <section class="c-modal-section">
+      <div class="flex flex-wrap items-center gap-2" role="group" aria-label="Show colors">
+        <span class="mr-1 text-sm text-c-muted">Show</span>
+        {#each HIGHLIGHT_COLORS as color}
+          <button
+            type="button"
+            class="c-swatch"
+            aria-pressed={colors.has(color)}
+            title="Only {HIGHLIGHT_COLOR_NAMES[color]}"
+            aria-label="Only {HIGHLIGHT_COLOR_NAMES[color]}"
+            data-testid="notes-filter-{color}"
+            on:click={() => toggleColor(color)}
+          >
+            <span class="c-swatch-dot" style={swatch(color)}>{eink ? 'あ' : ''}</span>
+          </button>
+        {/each}
+        {#if colors.size}
+          <button
+            type="button"
+            class="c-btn c-btn-ghost c-btn-sm"
+            on:click={() => (colors = new Set())}
+          >
+            Show all
+          </button>
+        {/if}
+      </div>
+      {#if !canPaint}
+        <p class="mt-2 text-sm text-c-muted">
+          This browser can't show highlight colors on the page.
+        </p>
+      {/if}
+
+      <div class="pt-2" data-testid="notes-list">
+        {#if !$view.notes.highlights.length}
+          <p class="text-sm text-c-muted">
+            No highlights yet. Long-press text (or select it with the mouse) to highlight it.
+          </p>
+        {:else if !highlights.length}
+          <p class="text-sm text-c-muted">No highlights in these colors.</p>
+        {/if}
+
+        {#each highlights as { item, place: at } (item.id)}
+          <article class="c-modal-row !block py-3" data-testid="notes-highlight">
+            <button
+              type="button"
+              class="c-modal-row-button w-full"
+              data-testid="notes-highlight-jump"
+              on:click={() =>
+                close({ kind: 'jump', position: at ?? item.start, highlightId: item.id })}
+            >
+              <span class="c-modal-row-meta block">
+                {place(at ?? item.start)}
+                {#if at === null}
+                  · <b data-testid="notes-unplaced">Not found in this copy of the book</b>
+                {/if}
+              </span>
+              <span class="mt-1 block font-serif">
+                <span class="px-0.5" style={swatch(item.color)}>{item.text}</span>
+              </span>
+            </button>
+            {#if editing?.key === item.id}
+              <textarea
+                bind:value={editing.text}
+                rows="4"
+                aria-label="Note"
+                class="c-input mt-2 w-full py-2.5"
+                data-testid="notes-edit-text"
+              />
+              <div class="c-modal-inline-btns mt-2">
+                <button
+                  type="button"
+                  class="c-btn c-btn-ghost c-btn-sm"
+                  on:click={() => (editing = undefined)}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  class="c-btn c-btn-secondary c-btn-sm"
+                  data-testid="notes-edit-save"
+                  on:click={saveEditing}
+                >
+                  Save
+                </button>
+              </div>
+            {:else if item.note}
+              <p class="mt-1 whitespace-pre-wrap border-l-4 border-c-strong pl-2 text-sm">
+                {item.note.body}
+              </p>
+            {/if}
+            <div class="mt-2 flex flex-wrap items-center gap-1.5">
+              {#each HIGHLIGHT_COLORS as color}
+                <button
+                  type="button"
+                  class="c-swatch c-swatch-sm"
+                  aria-label={HIGHLIGHT_COLOR_NAMES[color]}
+                  title={HIGHLIGHT_COLOR_NAMES[color]}
+                  aria-pressed={item.color === color}
+                  disabled={busy}
+                  on:click={() => setColor(item, color)}
+                >
+                  <span class="c-swatch-dot" style={swatch(color)}>{eink ? 'あ' : ''}</span>
+                </button>
+              {/each}
+              <span class="c-modal-row-actions">
+                <button
+                  type="button"
+                  class="c-btn c-btn-ghost c-btn-sm"
+                  disabled={busy}
+                  data-testid="notes-edit-note"
+                  on:click={() =>
+                    startNote(
+                      item.id,
+                      { bookId: item.bookId, highlight: item, noteId: item.note?.id },
+                      item.note?.body ?? ''
+                    )}
+                >
+                  {item.note ? 'Edit note' : 'Add note'}
+                </button>
+                <button
+                  type="button"
+                  class="c-btn c-btn-ghost c-btn-sm"
+                  disabled={busy}
+                  data-testid="notes-remove-highlight"
+                  on:click={() => removeHighlight(item)}
+                >
+                  Remove
+                </button>
+              </span>
             </div>
           </article>
         {/each}
-      {/if}
-    </div>
+      </div>
+    </section>
   {/if}
-
-  <footer class="flex justify-end pt-5">
-    <button class={buttonClass} on:click={() => close(null)}>Close</button>
-  </footer>
-</section>
+</Modal>

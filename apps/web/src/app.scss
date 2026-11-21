@@ -20,7 +20,7 @@
  * E-ink (`html.eink`: pure black on white, wins over dark). Tailwind names them `c-*`
  * (tailwind.config.cjs). The reader never uses them.
  */
-:root {
+@mixin c-tokens-light {
   --c-bg: #f3ede0;
   --c-raised: #fcf9f2;
   --c-ink: #1a2233;
@@ -68,7 +68,7 @@
 
 /* Dark only where dialogs take the dark look (catalogue pages); navy text, since white on
    the lighter red is under 4.5:1. */
-html.catalogue.catalogue-dark:not(.eink) {
+@mixin c-danger-dark {
   --c-danger: #e07a63;
   --c-danger-ink: #0e1524;
   --c-danger-hover: #ea957f;
@@ -82,7 +82,7 @@ html.eink {
   --c-danger-active: #fff;
 }
 
-html.catalogue-dark {
+@mixin c-tokens-dark {
   --c-bg: #0e1524;
   --c-raised: #1a2740;
   --c-ink: #ede6d6;
@@ -119,6 +119,30 @@ html.catalogue-dark {
   --c-cover-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
   --c-cover-hover-shadow: 0 14px 30px rgba(0, 0, 0, 0.6);
   --c-pop-shadow: 0 16px 40px rgba(0, 0, 0, 0.55);
+}
+
+:root {
+  @include c-tokens-light;
+}
+
+html.catalogue.catalogue-dark:not(.eink) {
+  @include c-danger-dark;
+}
+
+html.catalogue-dark {
+  @include c-tokens-dark;
+}
+
+/* Modals over the reader (no catalogue look) follow the reader theme: dark tokens on a
+   dark theme (html.reader-dark, appearance-effects), light ones on a light theme, whatever
+   the Library Look. E-ink keeps its own. */
+html:not(.catalogue):not(.eink).reader-dark .c-modal-layer {
+  @include c-tokens-dark;
+  @include c-danger-dark;
+}
+
+html:not(.catalogue):not(.eink):not(.reader-dark) .c-modal-layer {
+  @include c-tokens-light;
 }
 
 /* Listed after dark, so E-ink wins when both are on. */
@@ -1071,4 +1095,600 @@ body.ttu-reader-body {
     local(''),
     url('$lib/assets/fonts/ShipporiMincho-Bold.woff2') format('woff2'),
     url('$lib/assets/fonts/ShipporiMincho-Bold.woff') format('woff');
+}
+
+/*
+ * Modals (2026-11-21): one frame for every dialog (lib/components/modal/modal.svelte).
+ * Header (title, subtitle, ✕), optional tabs, a body that alone scrolls, and a footer only
+ * when there is something to do. A centred card from 640 px, a sheet from the bottom on
+ * phones. Colours from the --c-* tokens (over the reader they follow the reader theme).
+ */
+/* Near the top rather than centred: when a modal grows (a tab, a panel opening) it grows
+   downwards instead of jumping. */
+.c-modal-layer {
+  @apply fixed inset-0 flex items-start justify-center p-6;
+  padding-top: min(10vh, 5rem);
+  z-index: 50;
+  writing-mode: horizontal-tb;
+}
+
+.c-modal-backdrop {
+  @apply absolute inset-0;
+  background-color: rgb(0 0 0 / 0.32);
+  -webkit-tap-highlight-color: transparent;
+}
+
+html.catalogue-dark .c-modal-backdrop,
+html.reader-dark .c-modal-backdrop {
+  background-color: rgb(0 0 0 / 0.5);
+}
+
+.c-modal {
+  @apply relative flex w-full flex-col font-sans text-base;
+  max-height: calc(100vh - min(10vh, 5rem) - 1.5rem);
+  max-height: calc(100dvh - min(10vh, 5rem) - 1.5rem);
+  line-height: 1.5;
+  background-color: var(--c-raised);
+  color: var(--c-ink);
+  border: var(--c-border-width) solid var(--c-line-strong);
+  border-radius: 0.75rem;
+  box-shadow: var(--c-pop-shadow);
+  outline: none;
+  animation: c-modal-in 0.15s ease-out;
+  text-align: left;
+}
+
+/* Whispersync's dialogs keep the reader theme's own background and text. */
+.c-modal-surface-inherit .c-modal {
+  background-color: var(--background-color);
+  color: var(--font-color);
+}
+
+.c-modal-sm {
+  max-width: 26rem;
+}
+
+.c-modal-md {
+  max-width: 34rem;
+}
+
+.c-modal-lg {
+  max-width: 44rem;
+}
+
+.c-modal-xl {
+  max-width: 64rem;
+}
+
+@keyframes c-modal-in {
+  from {
+    opacity: 0;
+    transform: translateY(0.5rem);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes c-sheet-in {
+  from {
+    transform: translateY(100%);
+  }
+
+  to {
+    transform: none;
+  }
+}
+
+@media (max-width: 639.98px) {
+  .c-modal-layer {
+    align-items: flex-end;
+    padding: 0;
+  }
+
+  .c-modal {
+    max-width: none;
+    max-height: 92vh;
+    max-height: 92dvh;
+    border-radius: 1rem 1rem 0 0;
+    border-bottom-width: 0;
+    animation: c-sheet-in 0.18s ease-out;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .c-modal {
+    animation: none;
+  }
+}
+
+.c-modal-head {
+  @apply flex flex-none items-start gap-3;
+  padding: 1rem 0.75rem 0.75rem 1.375rem;
+}
+
+.c-modal-titles {
+  @apply min-w-0 flex-1;
+  padding-top: 0.375rem;
+}
+
+.c-modal-title {
+  margin: 0;
+  font-size: 1.125rem;
+  font-weight: 650;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+  text-wrap: balance;
+}
+
+.c-modal-sub {
+  @apply truncate;
+  margin: 0.125rem 0 0;
+  font-size: 0.875rem;
+  color: var(--c-muted);
+}
+
+.c-modal-x {
+  @apply grid flex-none place-items-center rounded-lg;
+  width: 2.75rem;
+  height: 2.75rem;
+  color: var(--c-muted);
+}
+
+@media (hover: hover) {
+  .c-modal-x:hover {
+    background-color: var(--c-tint);
+    color: var(--c-ink);
+  }
+}
+
+.c-modal-x:focus-visible,
+.c-modal-tab:focus-visible {
+  outline: 2px solid var(--c-link);
+  outline-offset: -2px;
+}
+
+.c-modal-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0.25rem 1.375rem 1.125rem;
+  border-top: 1px solid var(--c-line);
+  /* A thin bar in the line colour, no arrow buttons. */
+  scrollbar-width: thin;
+  scrollbar-color: var(--c-line-strong) transparent;
+}
+
+/* Chromium and Safari draw it with the ::-webkit-scrollbar rules below; they ignore those
+   while scrollbar-width/-color are set (also inherited from :root), and then show the
+   native bar with arrows. */
+@supports selector(::-webkit-scrollbar) {
+  .c-modal-body {
+    scrollbar-width: auto;
+    scrollbar-color: auto;
+  }
+}
+
+.c-modal-body::-webkit-scrollbar {
+  width: 6px;
+}
+
+.c-modal-body::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.c-modal-body::-webkit-scrollbar-thumb {
+  background-color: var(--c-line-strong);
+  border-radius: 999px;
+}
+
+.c-modal-body::-webkit-scrollbar-button {
+  display: none;
+  height: 0;
+}
+
+.c-modal-tabs + .c-modal-body {
+  border-top: 0;
+}
+
+.c-modal-body-last {
+  padding-bottom: calc(1.25rem + env(safe-area-inset-bottom, 0px));
+}
+
+.c-modal-foot {
+  @apply flex flex-none flex-wrap items-center gap-2.5;
+  padding: 0.75rem 1rem 0.75rem 1.375rem;
+  border-top: 1px solid var(--c-line);
+}
+
+.c-modal-foot-discard {
+  background-color: var(--c-tint);
+}
+
+.c-modal-status {
+  @apply min-w-0 flex-1 text-sm;
+  margin: 0;
+  color: var(--c-muted);
+}
+
+.c-modal-status:empty {
+  display: none;
+}
+
+.c-modal-foot-discard .c-modal-status {
+  font-weight: 600;
+  color: var(--c-ink);
+}
+
+.c-modal-btns {
+  @apply ml-auto flex flex-wrap justify-end gap-2;
+}
+
+/* Tabs under the header (Notes in this book). */
+.c-modal-tabs {
+  @apply flex flex-none gap-1;
+  padding: 0 1.375rem;
+  border-bottom: 1px solid var(--c-line);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.c-modal-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.c-modal-tab {
+  @apply inline-flex items-center gap-1.5 whitespace-nowrap text-sm font-semibold;
+  min-height: 2.75rem;
+  padding: 0.625rem 0.625rem 0.6875rem;
+  margin-bottom: -1px;
+  color: var(--c-muted);
+  border-bottom: 3px solid transparent;
+}
+
+.c-modal-tab[aria-selected='true'] {
+  color: var(--c-ink);
+  border-bottom-color: var(--c-ink);
+}
+
+@media (max-width: 639.98px) {
+  .c-modal-foot {
+    padding: 0.625rem 0.875rem calc(0.75rem + env(safe-area-inset-bottom, 0px));
+  }
+
+  .c-modal-btns {
+    width: 100%;
+  }
+
+  .c-modal-btns > * {
+    flex: 1 1 0;
+  }
+
+  .c-modal-head {
+    padding: 0.875rem 0.5rem 0.625rem 1.125rem;
+  }
+
+  .c-modal-body {
+    padding: 0.25rem 1.125rem 1rem;
+  }
+
+  .c-modal-tabs {
+    padding: 0 0.875rem;
+  }
+}
+
+/* Sections of a body. */
+.c-modal-section {
+  padding: 1rem 0;
+}
+
+.c-modal-section + .c-modal-section {
+  border-top: 1px solid var(--c-line);
+}
+
+.c-modal-section-head {
+  @apply flex items-center gap-2.5;
+  margin-bottom: 0.25rem;
+  min-height: 1.5rem;
+}
+
+.c-modal-section-head h3 {
+  @apply flex items-center gap-2;
+  margin: 0;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--c-muted);
+}
+
+.c-modal-section-head h3 .c-count {
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.c-modal-section-aside {
+  @apply ml-auto flex items-center gap-2;
+}
+
+.c-modal-hint {
+  margin: 0 0 0.625rem;
+  font-size: 0.875rem;
+  color: var(--c-muted);
+}
+
+.c-modal-section-body {
+  @apply grid gap-2.5;
+  min-width: 0;
+}
+
+/* Rows of a list in a modal: text on the left, the row's own actions on the right. */
+.c-modal-row {
+  @apply flex flex-wrap items-center gap-x-3 gap-y-1.5;
+  min-height: 3.25rem;
+  padding: 0.375rem 0;
+}
+
+.c-modal-row + .c-modal-row {
+  border-top: 1px solid var(--c-line);
+}
+
+.c-modal-row-main {
+  flex: 1 1 12rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.c-modal-row-title {
+  font-weight: 600;
+}
+
+.c-modal-row-meta {
+  font-size: 0.8125rem;
+  color: var(--c-muted);
+}
+
+.c-modal-row-actions {
+  @apply ml-auto flex flex-wrap items-center justify-end gap-1.5;
+}
+
+/* Ghost buttons line their text up with the edge of the rows around them. */
+.c-modal-row-actions > .c-btn-ghost:last-child {
+  margin-right: -0.75rem;
+}
+
+.c-btn-ghost.c-btn-flush-start {
+  margin-left: -0.75rem;
+}
+
+/* A row that is itself a button (jump to a note, pick an action). */
+.c-modal-row-button {
+  @apply -mx-1.5 block flex-1 rounded-md px-1.5 py-1 text-left;
+  min-width: 0;
+  min-height: 2.75rem;
+}
+
+@media (hover: hover) {
+  .c-modal-row-button:not(:disabled):hover {
+    background-color: var(--c-tint);
+  }
+}
+
+.c-modal-row-button:focus-visible {
+  outline: 2px solid var(--c-link);
+  outline-offset: 0;
+}
+
+/* A labelled field. */
+.c-modal-field {
+  @apply grid gap-1.5;
+  min-width: 0;
+}
+
+.c-modal-label {
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.c-modal-error {
+  @apply flex gap-2 text-sm font-semibold;
+  margin: 0;
+}
+
+/* A panel opened in place (finish date, an in-place "Delete …?"). */
+.c-modal-inline {
+  @apply grid gap-2.5 rounded-lg;
+  padding: 0.75rem 0.875rem;
+  background-color: var(--c-bg);
+  border: var(--c-border-width) solid var(--c-line-strong);
+  color: var(--c-ink);
+}
+
+.c-modal-inline.is-danger {
+  border-color: var(--c-danger);
+}
+
+.c-modal-inline-title {
+  margin: 0;
+  font-weight: 650;
+}
+
+.c-modal-inline-btns {
+  @apply flex flex-wrap items-center justify-end gap-2;
+}
+
+/* Smaller buttons for rows and in-place panels; a red outline for the button that opens a
+   destructive question ("Start over…"). */
+.c-btn.c-btn-sm {
+  min-height: 2.5rem;
+  padding: 0 0.75rem;
+  font-size: 0.875rem;
+}
+
+.c-btn-danger-line {
+  background-color: transparent;
+  border-color: var(--c-danger);
+  color: var(--c-danger);
+}
+
+@media (hover: hover) {
+  .c-btn-danger-line:not(:disabled):hover {
+    background-color: var(--c-tint);
+  }
+}
+
+html.eink .c-modal-backdrop {
+  background-color: transparent;
+}
+
+html.eink .c-modal {
+  border: 2px solid #000;
+  box-shadow: none;
+  animation: none;
+}
+
+html.eink .c-modal-tab[aria-selected='true'] {
+  border-bottom-color: #000;
+}
+
+html.eink .c-modal-body::-webkit-scrollbar-thumb {
+  background-color: #000;
+}
+
+/* One connected row of choices inside a modal (a book's Status): the picked one filled. Full
+   width on phones, its own width from 640 px (like settings/setting-choice.svelte). */
+.c-choice {
+  @apply flex w-full overflow-hidden rounded-lg;
+  border: var(--c-border-width) solid var(--c-sec-border);
+  background-color: var(--c-sec-bg);
+}
+
+@media (min-width: 640px) {
+  .c-choice {
+    display: inline-flex;
+    width: auto;
+  }
+}
+
+.c-choice > button {
+  @apply text-sm font-semibold;
+  flex: 1 1 0;
+  min-height: 2.75rem;
+  padding: 0 0.5rem;
+  color: var(--c-sec-ink);
+  white-space: nowrap;
+}
+
+@media (min-width: 640px) {
+  .c-choice > button {
+    padding: 0 1rem;
+  }
+}
+
+.c-choice > button + button {
+  border-left: var(--c-border-width) solid var(--c-sec-border);
+}
+
+.c-choice > button[aria-pressed='true'],
+.c-choice > button[aria-checked='true'] {
+  background-color: var(--c-sel-bg);
+  color: var(--c-sel-ink);
+}
+
+@media (hover: hover) {
+  .c-choice > button:not(:disabled):not([aria-pressed='true']):not([aria-checked='true']):hover {
+    background-color: var(--c-sec-hover);
+  }
+}
+
+.c-choice > button:focus-visible {
+  outline: 2px solid var(--c-link);
+  outline-offset: -3px;
+}
+
+.c-choice > button:disabled {
+  cursor: default;
+}
+
+/* A modal that is a list of actions (a collection's ⋯): each row a button with a label and an
+   optional hint; destructive ones last, in red. */
+.c-modal-actions {
+  @apply -mx-2 grid gap-0.5 py-2;
+}
+
+.c-modal-action {
+  @apply flex w-full items-center gap-3 rounded-lg px-2 text-left;
+  min-height: 3.25rem;
+  padding-top: 0.375rem;
+  padding-bottom: 0.375rem;
+}
+
+.c-modal-action-text {
+  @apply min-w-0 flex-1;
+}
+
+.c-modal-action-label {
+  @apply block font-semibold;
+}
+
+.c-modal-action-hint {
+  @apply block;
+  font-size: 0.8125rem;
+  color: var(--c-muted);
+}
+
+.c-modal-action.is-danger .c-modal-action-label {
+  color: var(--c-danger);
+}
+
+@media (hover: hover) {
+  .c-modal-action:not(:disabled):hover {
+    background-color: var(--c-tint);
+  }
+}
+
+.c-modal-action:focus-visible {
+  outline: 2px solid var(--c-link);
+  outline-offset: -2px;
+}
+
+.c-modal-action:disabled {
+  @apply cursor-default opacity-50;
+}
+
+/* Highlight colour buttons (Notes in this book): a round swatch, a ring when picked. */
+.c-swatch {
+  @apply inline-grid flex-none place-items-center rounded-full;
+  width: 2.5rem;
+  height: 2.5rem;
+  border: var(--c-border-width) solid var(--c-line-strong);
+  background-color: var(--c-sec-bg);
+}
+
+.c-swatch.c-swatch-sm {
+  width: 2.25rem;
+  height: 2.25rem;
+}
+
+.c-swatch[aria-pressed='true'] {
+  outline: 3px solid var(--c-link);
+  outline-offset: 1px;
+}
+
+.c-swatch:focus-visible {
+  outline: 2px solid var(--c-link);
+  outline-offset: 2px;
+}
+
+.c-swatch:disabled {
+  cursor: default;
+}
+
+.c-swatch-dot {
+  @apply grid place-items-center rounded-full text-xs;
+  width: 1.25rem;
+  height: 1.25rem;
 }

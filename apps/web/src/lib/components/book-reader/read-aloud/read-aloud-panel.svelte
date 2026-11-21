@@ -11,6 +11,7 @@
    * ">") keep working; 48 px bordered controls, plain for e-ink; Esc or Close closes it and
    * read-aloud goes on.
    */
+  import PanelDismiss from '$lib/components/modal/panel-dismiss.svelte';
   import { createEventDispatcher, onMount } from 'svelte';
   import PcVoiceChoice from '$lib/components/audio/pc-voice-choice.svelte';
   import { viewMode$, writingMode$ } from '$lib/data/store';
@@ -55,16 +56,10 @@
   onMount(() => {
     panelEl?.focus();
   });
-
-  function onKeydown(ev: KeyboardEvent) {
-    if (ev.key === 'Escape') {
-      ev.preventDefault();
-      dispatch('close');
-    }
-  }
 </script>
 
-<svelte:window on:keydown={onKeydown} />
+<!-- A tap outside the panel (or Esc) closes it without turning the page. -->
+<PanelDismiss on:close={() => dispatch('close')} />
 
 <section
   bind:this={panelEl}

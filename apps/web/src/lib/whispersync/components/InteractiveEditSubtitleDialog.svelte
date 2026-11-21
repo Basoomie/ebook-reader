@@ -125,7 +125,7 @@
 	}
 </script>
 
-<DialogTemplate on:close={close}>
+<DialogTemplate size="lg" on:close={close}>
 	<svelte:fragment slot="header">Edit Subtitle</svelte:fragment>
 	<div class="interactive-edit-dialog">
 		{#if loadError}
@@ -139,11 +139,12 @@
 			<span>End: {editedSubtitle.endTime}</span>
 		</div>
 		<div class="subtitle-text">{activeSubtitle.text}</div>
-		<div class="dialog-actions">
-			<button on:click={save} disabled={isLoading || !!loadError}>Save</button>
-			<button on:click={close}>Cancel</button>
-		</div>
 	</div>
+	<svelte:fragment slot="footer">
+		<button type="button" class="c-btn c-btn-primary" on:click={save} disabled={isLoading || !!loadError}>
+			Save
+		</button>
+	</svelte:fragment>
 </DialogTemplate>
 
 <style>
@@ -173,12 +174,6 @@
 		font-style: italic;
 		opacity: 0.75;
 		white-space: pre-wrap;
-	}
-
-	.dialog-actions {
-		display: flex;
-		gap: 0.5rem;
-		justify-content: flex-end;
 	}
 
 	.load-error {

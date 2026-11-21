@@ -1,5 +1,9 @@
 <script lang="ts">
-  /** What happened to each uploaded file (WP7b), with "Open" for the books. E-ink plain. */
+  /**
+   * What happened to each uploaded file (WP7b), with "Open" on the books' rows. Nothing
+   * to save: ✕, Esc or a click outside close (modal.svelte).
+   */
+  import Modal from '$lib/components/modal/modal.svelte';
   import type { CatalogBook } from '$lib/library/types';
   import type { UploadResult } from '$lib/library/upload-flow';
   import { createEventDispatcher } from 'svelte';
@@ -9,8 +13,6 @@
   export let resolver: (book: CatalogBook | undefined) => void;
 
   const dispatch = createEventDispatcher<{ close: void }>();
-  const buttonClass =
-    'flex min-h-[3rem] items-center justify-center rounded border-2 border-current px-4 font-medium';
   let done = false;
 
   function answer(value: CatalogBook | undefined) {
@@ -18,13 +20,6 @@
     done = true;
     resolver(value);
     dispatch('close');
-  }
-
-  function onKeydown(ev: KeyboardEvent) {
-    if (ev.key === 'Escape') {
-      ev.preventDefault();
-      answer(undefined);
-    }
   }
 
   const LABELS: Record<UploadResult['status'], string> = {
@@ -35,35 +30,36 @@
   };
 </script>
 
-<svelte:window on:keydown={onKeydown} />
-
-<section
-  class="mdc-elevation--z24 w-full max-w-lg rounded bg-white p-6"
-  data-testid="upload-summary-dialog"
+<Modal
+  title="Upload"
+  subtitle={results.length === 1 ? '1 file' : `${results.length} files`}
+  size="md"
+  testid="upload-summary-dialog"
+  closeTestid="upload-summary-close"
+  on:close={() => answer(undefined)}
 >
-  <h2 class="weight-medium mb-4 text-xl">Upload</h2>
-  <ul class="flex max-h-[55vh] flex-col gap-3 overflow-y-auto">
+  <ul class="py-2">
     {#each results as r, i (i)}
-      <li class="flex flex-wrap items-center justify-between gap-2" data-testid="upload-result">
-        <div class="min-w-0">
-          <div class="break-all font-medium">{r.name}</div>
-          <div class="text-sm" data-testid="upload-result-status">
+      <li class="c-modal-row" data-testid="upload-result">
+        <div class="c-modal-row-main">
+          <div class="c-modal-row-title [overflow-wrap:anywhere]">{r.name}</div>
+          <div class="c-modal-row-meta" data-testid="upload-result-status">
             {LABELS[r.status]}{r.status === 'failed' ? `: ${r.message}` : ''}
           </div>
         </div>
         {#if r.status === 'added' || r.status === 'used-copy'}
-          <button class={buttonClass} data-testid="upload-open" on:click={() => answer(r.book)}>
-            Open
-          </button>
+          <div class="c-modal-row-actions">
+            <button
+              type="button"
+              class="c-btn c-btn-secondary c-btn-sm"
+              data-testid="upload-open"
+              on:click={() => answer(r.book)}
+            >
+              Open
+            </button>
+          </div>
         {/if}
       </li>
     {/each}
   </ul>
-  <footer class="flex justify-end pt-5">
-    <button
-      class={buttonClass}
-      data-testid="upload-summary-close"
-      on:click={() => answer(undefined)}>Close</button
-    >
-  </footer>
-</section>
+</Modal>

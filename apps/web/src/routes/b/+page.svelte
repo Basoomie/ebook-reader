@@ -205,9 +205,8 @@
     type SectionWithProgress
   } from '$lib/components/book-reader/book-toc/book-toc';
   import BookToc from '$lib/components/book-reader/book-toc/book-toc.svelte';
-  import ConfirmDialog from '$lib/components/confirm-dialog.svelte';
   import { confirmDestructive } from '$lib/confirm/confirm';
-  import { completeBookCopy } from '$lib/confirm/confirm-copy';
+  import { completeBookCopy, leaveUnbookmarkedCopy } from '$lib/confirm/confirm-copy';
   import NumberDialog from '$lib/components/number-dialog.svelte';
   import PositionPromptDialog from '$lib/components/book-reader/position-prompt-dialog.svelte';
   import {
@@ -1360,7 +1359,6 @@
       dialogManager.dialogs$.next([
         {
           component: BookmarkNameDialog,
-          disableCloseOnClick: true,
           props: { place: placeLabel, name: name || chapter || 'Bookmark', resolver }
         }
       ]);
@@ -2103,7 +2101,6 @@
         dialogManager.dialogs$.next([
           {
             component: BookSearchDialog,
-            disableCloseOnClick: true,
             props: {
               state: searchState,
               total: bookCharCount,
@@ -2379,7 +2376,6 @@
       dialogManager.dialogs$.next([
         {
           component: NoteEditorDialog,
-          disableCloseOnClick: true,
           props: {
             heading: item.note ? 'Edit note' : 'Note',
             quote: quoteOf(item.text),
@@ -2515,7 +2511,6 @@
         dialogManager.dialogs$.next([
           {
             component: NotesPanel,
-            disableCloseOnClick: true,
             props: {
               view: controller.view,
               bookId: controller.bookId,
@@ -2646,7 +2641,6 @@
       dialogManager.dialogs$.next([
         {
           component: ShortcutsDialog,
-          disableCloseOnClick: true,
           props: {
             groups: readerShortcutGroups({
               keybindMap: bookReaderKeybindMap$.getValue(),
@@ -2814,21 +2808,17 @@
     pauseTracker();
     skipKeyDownListener$.next(true);
 
-    const target = await new Promise<number | undefined>((resolver) => {
-      dialogManager.dialogs$.next([
-        {
-          component: NumberDialog,
-          props: {
-            dialogHeader: 'Jump to Position',
-            minValue: 1,
-            maxValue: bookCharCount || 1,
-            resolver
-          }
-        }
-      ]);
-    });
-
-    skipKeyDownListener$.next(false);
+    let target: number | undefined;
+    try {
+      // Settles however the dialog closes (Go, Esc, ✕, a click outside).
+      target = await dialogManager.open<number>(NumberDialog, {
+        dialogHeader: 'Jump to position',
+        minValue: 1,
+        maxValue: bookCharCount || 1
+      });
+    } finally {
+      skipKeyDownListener$.next(false);
+    }
 
     if (typeof target !== 'number') {
       restartTrackerAfterCharacterChangeOrTime(1);
@@ -2888,8 +2878,7 @@
 
     dialogManager.dialogs$.next([
       {
-        component: '<div/>',
-        disableCloseOnClick: true
+        component: '<div/>'
       }
     ]);
 
@@ -3439,8 +3428,7 @@
               restorePromptKeys?.();
               resolve(row);
             }
-          },
-          disableCloseOnClick: true
+          }
         }
       ]);
     });
@@ -3545,7 +3533,6 @@
         dialogManager.dialogs$.next([
           {
             component: AddToCollectionDialog,
-            disableCloseOnClick: true,
             props: {
               bookId,
               title: $rawBookData$?.title ?? '',
@@ -3576,7 +3563,6 @@
         dialogManager.dialogs$.next([
           {
             component: BookStateDialog,
-            disableCloseOnClick: true,
             props: {
               bookId,
               title: $rawBookData$?.title ?? '',
@@ -3690,8 +3676,7 @@
           title: 'Old Domain',
           message:
             'You are currently using the old domain of ッツ Reader - consider switching to https://reader.ttsu.app to prevent issues and to ensure full features'
-        },
-        disableCloseOnClick: true
+        }
       }
     ]);
   }
@@ -3726,8 +3711,7 @@
   function openActionBackdrop() {
     dialogManager.dialogs$.next([
       {
-        component: '<div/>',
-        disableCloseOnClick: true
+        component: '<div/>'
       }
     ]);
   }
@@ -3747,22 +3731,12 @@
       isTrackerPaused$.next(true);
 
       if ($confirmClose$ && storedExploredCharacter !== exploredCharCount) {
-        const wasCanceled = await new Promise((resolver) => {
-          dialogManager.dialogs$.next([
-            {
-              component: ConfirmDialog,
-              props: {
-                dialogHeader: 'Confirm Exit',
-                dialogMessage: 'Your current location was not bookmarked. Continue leaving?',
-                resolver
-              },
-
-              disableCloseOnClick: true
-            }
-          ]);
+        const leave = await confirmDestructive({
+          ...leaveUnbookmarkedCopy(),
+          testid: 'leave-unbookmarked-dialog'
         });
 
-        if (wasCanceled) {
+        if (!leave) {
           blockDataUpdates = false;
           return;
         }
@@ -3805,8 +3779,7 @@
           props: {
             title: 'Error',
             message
-          },
-          disableCloseOnClick: true
+          }
         }
       ]);
     }

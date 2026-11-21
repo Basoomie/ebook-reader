@@ -1,10 +1,10 @@
 <script lang="ts">
   /**
    * Book state (WP8a): status, favorite, cover blur (shown by the library, WP7a) and
-   * read-throughs of one catalog book. Plain on purpose for e-ink (like the
-   * WP9 prompt): no transitions, full-size bordered buttons, inert backdrop;
-   * closes with its Close button or Esc. Every change is saved at once to the
-   * local sync mirror (works offline) and synced later.
+   * read-throughs of one catalog book, in sections: Status, Options, Times read,
+   * Collections, Start over (last). Closes with ✕, Esc or a click outside (modal.svelte);
+   * there is nothing to save: every change is saved at once to the local sync mirror
+   * (works offline) and synced later.
    */
   import {
     BOOK_BLURS,
@@ -20,6 +20,9 @@
   } from '$lib/sync/book-state';
   import CollectionToggles from '$lib/components/collections/collection-toggles.svelte';
   import InlineConfirm from '$lib/components/confirm/inline-confirm.svelte';
+  import Modal from '$lib/components/modal/modal.svelte';
+  import ModalSection from '$lib/components/modal/modal-section.svelte';
+  import SettingSwitch from '$lib/components/settings/setting-switch.svelte';
   import { removeReadCopy, startOverCopy, unreadResetCopy } from '$lib/confirm/confirm-copy';
   import type { BookStateApi, CollectionsApi } from '$lib/sync/sync-service';
   import { createEventDispatcher, onDestroy, onMount } from 'svelte';
@@ -37,9 +40,7 @@
   export let resolver: (result: 'start-over' | null) => void;
 
   const dispatch = createEventDispatcher<{ close: void }>();
-  const buttonClass =
-    'flex min-h-[3rem] items-center justify-center rounded border-2 border-current px-4 font-medium';
-  const pressedClass = 'bg-gray-700 text-white border-gray-700';
+  const id = `book-state-${Math.random().toString(36).slice(2, 10)}`;
   const statuses: BookStatus[] = ['unread', 'reading', 'completed', 'dropped'];
   const blurLabels: Record<BookBlur, string> = {
     inherit: 'Follow tag rules',
@@ -181,118 +182,140 @@
     return `${n}${suffix}`;
   }
 
-  /**
-   * One reading of the book in plain words, e.g. "1st read · finished 2026-11-01" or
-   * "Current read · started 2026-11-14". Finished reads are numbered among themselves.
-   */
-  function describe(rt: ReadThrough, finishedNumber: ReadThroughLine['finishedNumber']): string {
-    const parts: string[] = [finishedNumber ? `${ordinal(finishedNumber)} read` : 'Current read'];
+  /** "1st read" (finished reads are numbered among themselves) or "Current read". */
+  function readName(finishedNumber: ReadThroughLine['finishedNumber']): string {
+    return finishedNumber ? `${ordinal(finishedNumber)} read` : 'Current read';
+  }
+
+  /** The rest in plain words, e.g. "Started 2026-10-02 · finished 2026-11-01 · read in the app". */
+  function describe(rt: ReadThrough): string {
+    const parts: string[] = [];
     if (rt.startedOn) parts.push(`started ${rt.startedOn}`);
     if (rt.finished) {
       parts.push(rt.finishedOn ? `finished ${rt.finishedOn}` : 'finished (no date)');
       parts.push(rt.manual ? 'marked as read by you' : 'read in the app');
     }
-    return parts.join(' · ');
-  }
-
-  function onKeydown(ev: KeyboardEvent) {
-    if (ev.key === 'Escape') {
-      ev.preventDefault();
-      close();
-    }
+    const text = parts.join(' · ');
+    return text ? text.charAt(0).toUpperCase() + text.slice(1) : '';
   }
 
   $: readCount = state ? finishedReadThroughs(state) : 0;
   $: lines = state ? readThroughLines(state) : [];
 </script>
 
-<svelte:window on:keydown={onKeydown} />
-
-<section
-  class="mdc-elevation--z24 max-h-[90vh] overflow-y-auto rounded bg-white p-6"
-  data-testid="book-state-dialog"
+<Modal
+  title="Book status"
+  subtitle={title}
+  size="lg"
+  testid="book-state-dialog"
+  closeTestid="book-state-close"
+  on:close={() => close()}
 >
-  <h2 class="weight-medium mb-1 text-xl">Book status</h2>
-  <p class="mb-4 line-clamp-2">{title}</p>
+  {#if error && state}
+    <p class="c-notice c-modal-error sticky top-0 z-10" role="alert">
+      <span aria-hidden="true">⚠</span>{error}
+    </p>
+  {/if}
 
   {#if !state}
-    <p>{error || 'Loading…'}</p>
+    <p class="py-4">{error || 'Loading…'}</p>
   {:else}
-    <div class="max-w-xl">
-      <h3 class="mb-2 font-medium">Status</h3>
-      <div class="flex flex-wrap gap-2" role="group" aria-label="Status">
-        {#each statuses as status (status)}
-          <button
-            class="{buttonClass} {state.status === status ? pressedClass : ''}"
-            aria-pressed={state.status === status}
-            disabled={busy}
-            data-testid="status-{status}"
-            on:click={() => pickStatus(status)}
-          >
-            {STATUS_LABELS[status]}
-          </button>
-        {/each}
+    <ModalSection title="Status" testid="book-state-status">
+      <svelte:fragment slot="hint">
+        {#if state.statusAuto && state.status === 'reading'}
+          Set automatically on the first page turn.
+        {/if}
+      </svelte:fragment>
+      <div>
+        <div class="c-choice" role="group" aria-label="Status">
+          {#each statuses as status (status)}
+            <button
+              type="button"
+              aria-pressed={state.status === status}
+              disabled={busy}
+              data-testid="status-{status}"
+              on:click={() => pickStatus(status)}
+            >
+              {STATUS_LABELS[status]}
+            </button>
+          {/each}
+        </div>
       </div>
-      {#if state.statusAuto && state.status === 'reading'}
-        <p class="pt-1 text-sm">Set automatically on the first page turn.</p>
-      {/if}
 
       {#if confirmUnread}
-        <div class="mt-3">
-          <InlineConfirm
-            {...unreadResetCopy()}
-            {busy}
-            testid="unread-confirm"
-            confirmTestid="confirm-unread"
-            on:confirm={setUnread}
-            on:cancel={() => (confirmUnread = false)}
-          />
-        </div>
+        <InlineConfirm
+          {...unreadResetCopy()}
+          {busy}
+          testid="unread-confirm"
+          confirmTestid="confirm-unread"
+          on:confirm={setUnread}
+          on:cancel={() => (confirmUnread = false)}
+        />
       {/if}
 
       {#if completing}
-        <div class="mt-3 border-t border-gray-400 pt-3" data-testid="complete-panel">
-          <label class="block max-w-xs">
-            Finish date (optional)
+        <form
+          class="c-modal-inline"
+          data-testid="complete-panel"
+          on:submit|preventDefault={markCompleted}
+        >
+          <p class="c-modal-inline-title">Mark as completed</p>
+          <label class="c-modal-field">
+            <span class="c-modal-label">
+              Finish date <span class="font-normal text-c-muted">(optional)</span>
+            </span>
             <input
-              class="mt-1 block w-full border-0 border-b-2 border-gray-400/50 px-0.5"
+              class="c-input w-full max-w-[14rem]"
               type="date"
               bind:value={finishDate}
               data-testid="finish-date"
             />
           </label>
-          <div class="mt-3 flex flex-wrap gap-2">
+          <div class="c-modal-inline-btns">
             <button
-              class={buttonClass}
+              type="button"
+              class="c-btn c-btn-secondary c-btn-sm"
+              disabled={busy}
+              on:click={() => (completing = false)}
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              class="c-btn c-btn-primary c-btn-sm"
               disabled={busy}
               data-testid="mark-completed"
-              on:click={markCompleted}
             >
               Mark completed
             </button>
-            <button class={buttonClass} disabled={busy} on:click={() => (completing = false)}>
-              Cancel
-            </button>
           </div>
-        </div>
+        </form>
       {/if}
+    </ModalSection>
 
-      <div class="mt-5 flex flex-wrap items-center gap-x-6 gap-y-3">
-        <label class="flex min-h-[3rem] items-center gap-3">
-          <input
-            type="checkbox"
-            class="h-6 w-6"
+    <ModalSection title="Options">
+      <div>
+        <div class="c-modal-row">
+          <div class="c-modal-row-main">
+            <div class="c-modal-row-title" id="{id}-favorite">Favorite</div>
+            <div class="c-modal-row-meta">Shows in the Favorites collection.</div>
+          </div>
+          <SettingSwitch
             checked={state.favorite}
+            labelledby="{id}-favorite"
             disabled={busy}
-            data-testid="favorite"
-            on:change={(ev) => setFavorite(ev.currentTarget.checked)}
+            testid="favorite"
+            on:change={(ev) => setFavorite(ev.detail)}
           />
-          Favorite
-        </label>
-        <label class="flex items-center gap-2">
-          Cover
+        </div>
+        <div class="c-modal-row">
+          <label class="c-modal-row-main" for="{id}-blur">
+            <span class="c-modal-row-title block">Blur the cover</span>
+            <span class="c-modal-row-meta block">For covers you'd rather not show.</span>
+          </label>
           <select
-            class="min-h-[3rem] border-2 border-current bg-transparent px-2"
+            id="{id}-blur"
+            class="c-input pr-10"
             value={state.blur}
             disabled={busy}
             data-testid="blur"
@@ -302,29 +325,21 @@
               <option value={blur}>{blurLabels[blur]}</option>
             {/each}
           </select>
-        </label>
+        </div>
       </div>
+    </ModalSection>
 
-      <h3 class="mt-5 font-medium">
-        Times read: {readCount}
-      </h3>
+    <ModalSection
+      title="Times read"
+      count={readCount}
+      hint={lines.length ? '' : 'Not finished yet. Marking the book completed counts it as read.'}
+    >
       {#if lines.length}
         <ul>
           {#each lines as { readThrough: rt, finishedNumber } (rt.id)}
-            <li class="border-t border-gray-400 py-2" data-testid="read-through">
-              <p>{describe(rt, finishedNumber)}</p>
-              {#if editingId === rt.id}
-                <div class="mt-2 flex flex-wrap items-end gap-2">
-                  <input
-                    class="border-0 border-b-2 border-gray-400/50 px-0.5"
-                    type="date"
-                    bind:value={editDate}
-                  />
-                  <button class={buttonClass} disabled={busy} on:click={saveEdit}>Save</button>
-                  <button class={buttonClass} on:click={() => (editingId = '')}>Cancel</button>
-                </div>
-              {:else if confirmRemoveId === rt.id}
-                <div class="mt-2">
+            <li class="c-modal-row" data-testid="read-through">
+              {#if confirmRemoveId === rt.id}
+                <div class="w-full py-1">
                   <InlineConfirm
                     {...removeReadCopy(ordinal(finishedNumber ?? rt.number))}
                     {busy}
@@ -334,53 +349,89 @@
                     on:cancel={() => (confirmRemoveId = '')}
                   />
                 </div>
-              {:else if rt.finished || canRemoveReadThrough(rt)}
-                <div class="mt-2 flex flex-wrap gap-2">
-                  {#if rt.finished}
-                    <button class={buttonClass} disabled={busy} on:click={() => beginEdit(rt)}>
-                      Change date
-                    </button>
-                  {/if}
-                  {#if canRemoveReadThrough(rt)}
-                    <button
-                      class={buttonClass}
-                      disabled={busy}
-                      data-testid="remove-read"
-                      on:click={() => {
-                        editingId = '';
-                        confirmRemoveId = rt.id;
-                      }}
-                    >
-                      Remove…
-                    </button>
-                  {/if}
+              {:else}
+                <div class="c-modal-row-main">
+                  <div class="c-modal-row-title">{readName(finishedNumber)}</div>
+                  <div class="c-modal-row-meta">{describe(rt)}</div>
                 </div>
+                {#if editingId === rt.id}
+                  <form class="c-modal-row-actions" on:submit|preventDefault={saveEdit}>
+                    <input
+                      class="c-input"
+                      type="date"
+                      aria-label="Finish date"
+                      bind:value={editDate}
+                    />
+                    <button
+                      type="button"
+                      class="c-btn c-btn-ghost c-btn-sm"
+                      on:click={() => (editingId = '')}
+                    >
+                      Cancel
+                    </button>
+                    <button type="submit" class="c-btn c-btn-secondary c-btn-sm" disabled={busy}>
+                      Save
+                    </button>
+                  </form>
+                {:else if rt.finished || canRemoveReadThrough(rt)}
+                  <div class="c-modal-row-actions">
+                    {#if rt.finished}
+                      <button
+                        type="button"
+                        class="c-btn c-btn-ghost c-btn-sm"
+                        disabled={busy}
+                        on:click={() => beginEdit(rt)}
+                      >
+                        Change date
+                      </button>
+                    {/if}
+                    {#if canRemoveReadThrough(rt)}
+                      <button
+                        type="button"
+                        class="c-btn c-btn-ghost c-btn-sm"
+                        disabled={busy}
+                        data-testid="remove-read"
+                        on:click={() => {
+                          editingId = '';
+                          confirmRemoveId = rt.id;
+                        }}
+                      >
+                        Remove…
+                      </button>
+                    {/if}
+                  </div>
+                {/if}
               {/if}
             </li>
           {/each}
         </ul>
-      {:else}
-        <p class="text-sm">Not finished yet. Marking the book completed counts it as read.</p>
       {/if}
+    </ModalSection>
 
-      {#if collections}
-        <h3 class="mb-2 mt-5 font-medium">Collections</h3>
+    {#if collections}
+      <ModalSection title="Collections" hint="Tap a collection to add or remove this book.">
         <CollectionToggles {bookId} api={collections} />
-      {/if}
+      </ModalSection>
+    {/if}
 
-      <div class="mt-4 border-t border-gray-400 pt-3">
-        {#if confirmStartOver}
-          <InlineConfirm
-            {...startOverCopy()}
-            {busy}
-            testid="start-over-confirm"
-            confirmTestid="confirm-start-over"
-            on:confirm={startOver}
-            on:cancel={() => (confirmStartOver = false)}
-          />
-        {:else}
+    <ModalSection
+      title="Start over"
+      hint="Read the book again from the beginning. Earlier reads and their stats are kept."
+    >
+      {#if confirmStartOver}
+        <InlineConfirm
+          {...startOverCopy()}
+          {busy}
+          testid="start-over-confirm"
+          confirmTestid="confirm-start-over"
+          on:confirm={startOver}
+          on:cancel={() => (confirmStartOver = false)}
+        />
+      {:else}
+        <div>
           <button
-            class={buttonClass}
+            type="button"
+            class="c-btn c-btn-danger-line"
             disabled={busy}
             data-testid="start-over"
             on:click={() => {
@@ -391,18 +442,8 @@
           >
             Start over…
           </button>
-        {/if}
-      </div>
-    </div>
+        </div>
+      {/if}
+    </ModalSection>
   {/if}
-
-  {#if error && state}
-    <p class="pt-3 font-medium" role="alert">{error}</p>
-  {/if}
-
-  <footer class="flex flex-wrap items-center justify-end pt-5">
-    <button class={buttonClass} data-testid="book-state-close" on:click={() => close()}>
-      Close
-    </button>
-  </footer>
-</section>
+</Modal>

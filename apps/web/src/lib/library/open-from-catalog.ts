@@ -4,8 +4,8 @@
  * All rights reserved.
  */
 
-import ConfirmDialog from '$lib/components/confirm-dialog.svelte';
-import { dialogManager } from '$lib/data/dialog-manager';
+import { confirmDestructive } from '$lib/confirm/confirm';
+import { openLibraryCopyCopy, openOwnCopyCopy } from '$lib/confirm/confirm-copy';
 import type { LibraryApi } from './api';
 import { browserOpenDeps } from './browser-open-deps';
 import type { LibraryStore } from './library-db';
@@ -25,44 +25,14 @@ import type { CatalogLibrary } from './types';
  */
 
 export function askExistingBook(question: ExistingBookQuestion): Promise<boolean> {
-  return new Promise((resolve) => {
-    dialogManager.dialogs$.next([
-      {
-        component: ConfirmDialog,
-        disableCloseOnClick: true,
-        props: {
-          dialogHeader: 'Already on this device',
-          dialogMessage:
-            `You already have "${question.title}" on this device ` +
-            `(${question.localCharacters.toLocaleString()} characters). The library copy has ` +
-            `${question.calibreCharacters.toLocaleString()} characters, so it may be a different ` +
-            'edition. Confirm opens your copy and remembers it as this library book; your copy ' +
-            'and its progress are not changed.',
-          resolver: (canceled: boolean) => resolve(!canceled)
-        }
-      }
-    ]);
-  });
+  return confirmDestructive({ ...openOwnCopyCopy(question), testid: 'open-own-copy-dialog' });
 }
 
 /** WP7b: before a migrated placeholder becomes the library copy with another count. */
 export function askPlaceholderBook(question: ExistingBookQuestion): Promise<boolean> {
-  return new Promise((resolve) => {
-    dialogManager.dialogs$.next([
-      {
-        component: ConfirmDialog,
-        disableCloseOnClick: true,
-        props: {
-          dialogHeader: 'Open the library copy?',
-          dialogMessage:
-            `Your old copy of "${question.title}" had ${question.localCharacters.toLocaleString()} ` +
-            `characters; the library copy has ${question.calibreCharacters.toLocaleString()}, so ` +
-            'your place may move a little. Confirm opens the library copy from now on; your ' +
-            'reading place, bookmark and stats are kept.',
-          resolver: (canceled: boolean) => resolve(!canceled)
-        }
-      }
-    ]);
+  return confirmDestructive({
+    ...openLibraryCopyCopy(question),
+    testid: 'open-library-copy-dialog'
   });
 }
 

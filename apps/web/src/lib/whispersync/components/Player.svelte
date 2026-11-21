@@ -388,7 +388,8 @@
         component: ConfirmDialog,
         props: {
           dialogHeader: 'Audio',
-          dialogMessage: 'Start audio session',
+          dialogMessage: 'Start the audio session.',
+          confirmLabel: 'Start audio',
           showCancel: false,
           resolver
         }

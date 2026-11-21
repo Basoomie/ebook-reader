@@ -1,9 +1,9 @@
 <script lang="ts">
   /**
-   * "Continue from...?" (WP9). Plain on purpose for e-ink: no transitions, no
-   * ripple, no timer, full-size bordered buttons. Closes only through its
-   * buttons, Enter (one row) or Esc; the backdrop is inert. Same frame as
-   * dialog-template.svelte, written out (that file has no types).
+   * "Continue from...?" (WP9). A question (modal.svelte, role="alertdialog"): "Stay here"
+   * beside "Continue there" (one place) or a "Continue there" on each place's row. Enter
+   * continues (one place); Esc or a click outside stay here. No timer, no transitions on
+   * e-ink.
    */
   import {
     chapterLabelAt,
@@ -14,6 +14,7 @@
   } from '$lib/sync/position-prompt';
   import type { PositionPrompt, PromptRow } from '$lib/sync/position-prompt-service';
   import { createEventDispatcher } from 'svelte';
+  import Modal from '$lib/components/modal/modal.svelte';
 
   export let prompt: PositionPrompt;
   export let livePos: number;
@@ -23,8 +24,6 @@
 
   const dispatch = createEventDispatcher<{ close: void }>();
   const now = Date.now();
-  const buttonClass =
-    'flex min-h-[3rem] items-center justify-center rounded border-2 border-current px-5 font-medium';
 
   let done = false;
 
@@ -41,10 +40,7 @@
   }
 
   function onKeydown(ev: KeyboardEvent) {
-    if (ev.key === 'Escape') {
-      ev.preventDefault();
-      answer(null);
-    } else if (ev.key === 'Enter' && prompt.rows.length === 1) {
+    if (ev.key === 'Enter' && prompt.rows.length === 1) {
       ev.preventDefault();
       answer(prompt.rows[0]);
     }
@@ -63,16 +59,22 @@
 
 <svelte:window on:keydown={onKeydown} />
 
-<section class="mdc-elevation--z24 rounded bg-white p-6" data-testid="position-prompt">
-  <h2 class="weight-medium mb-5 text-xl">{header}</h2>
-  <div class="max-w-xl">
-    <ul>
-      {#each prompt.rows as row (row.recordId)}
-        <li class="border-t border-gray-400 py-3" data-testid="position-prompt-row">
-          <p class="font-medium">
+<Modal
+  title={header}
+  size="md"
+  role="alertdialog"
+  testid="position-prompt"
+  initialFocus="[data-prompt-continue]"
+  on:close={() => answer(null)}
+>
+  <ul class="pt-2">
+    {#each prompt.rows as row (row.recordId)}
+      <li class="c-modal-row" data-testid="position-prompt-row">
+        <div class="c-modal-row-main">
+          <p class="c-modal-row-title">
             {deviceLabel(row)} · {formatWhen(row.localAt, now)} ({formatAge(now - row.localAt)})
           </p>
-          <p class="mb-2" data-testid="position-prompt-place">
+          <p class="c-modal-row-meta" data-testid="position-prompt-place">
             {row.approximate ? '≈ ' : ''}{formatPlace(
               row.target,
               total,
@@ -80,16 +82,39 @@
             )}
             {#if row.approximate}<span>(different copy of the book)</span>{/if}
           </p>
-          <button class={buttonClass} on:click={() => answer(row)}>Continue there</button>
-        </li>
-      {/each}
-    </ul>
-    <p class="border-t border-gray-400 pt-3">
-      You are here: {formatPlace(livePos, total, chapterLabelAt(sections, livePos))}
-    </p>
-    <p class="pt-2 text-sm">{syncNote}</p>
+        </div>
+        {#if !single}
+          <div class="c-modal-row-actions">
+            <button
+              type="button"
+              class="c-btn c-btn-secondary c-btn-sm"
+              data-prompt-continue
+              on:click={() => answer(row)}
+            >
+              Continue there
+            </button>
+          </div>
+        {/if}
+      </li>
+    {/each}
+  </ul>
+  <div class="mt-1 border-t border-c-line pt-3">
+    <p>You are here: {formatPlace(livePos, total, chapterLabelAt(sections, livePos))}</p>
+    <p class="pt-1 text-sm text-c-muted">{syncNote}</p>
   </div>
-  <footer class="flex flex-wrap items-center justify-end pt-5">
-    <button class={buttonClass} on:click={() => answer(null)}>Stay here</button>
-  </footer>
-</section>
+  <svelte:fragment slot="footer">
+    <button type="button" class="c-btn c-btn-secondary" on:click={() => answer(null)}>
+      Stay here
+    </button>
+    {#if single}
+      <button
+        type="button"
+        class="c-btn c-btn-primary"
+        data-prompt-continue
+        on:click={() => single && answer(single)}
+      >
+        Continue there
+      </button>
+    {/if}
+  </svelte:fragment>
+</Modal>

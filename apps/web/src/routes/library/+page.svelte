@@ -595,7 +595,6 @@
     dialogManager.dialogs$.next([
       {
         component: BookStateDialog,
-        disableCloseOnClick: true,
         props: {
           bookId: book.id,
           title: book.title,
@@ -613,7 +612,6 @@
     dialogManager.dialogs$.next([
       {
         component: AddToCollectionDialog,
-        disableCloseOnClick: true,
         props: { bookId: book.id, title: book.title, api: collections, resolver: () => {} }
       }
     ]);
@@ -657,7 +655,6 @@
       dialogManager.dialogs$.next([
         {
           component: TagCoverDialog,
-          disableCloseOnClick: true,
           props: {
             tag,
             blurred: tagRules.has(tag),
@@ -835,9 +832,7 @@
 
   function ask<T>(component: Dialog['component'], props: Record<string, unknown>): Promise<T> {
     return new Promise<T>((resolve) => {
-      dialogManager.dialogs$.next([
-        { component, disableCloseOnClick: true, props: { ...props, resolver: resolve } }
-      ]);
+      dialogManager.dialogs$.next([{ component, props: { ...props, resolver: resolve } }]);
     });
   }
 

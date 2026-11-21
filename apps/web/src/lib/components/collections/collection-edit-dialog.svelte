@@ -11,9 +11,10 @@
 <script lang="ts">
   /**
    * New collection, rename, or change a saved search (WP8b). `save` stores the values and
-   * resolves to the collection id; its error is shown here. Plain for e-ink: no
-   * transitions, 48 px bordered buttons, inert backdrop, Esc cancels.
+   * resolves to the collection id; its error is shown here. The footer holds the one action
+   * (Create / Save); ✕, Esc or a click outside cancel, asking first when something was typed.
    */
+  import Modal from '$lib/components/modal/modal.svelte';
   import { checkName, checkQuery } from '$lib/collections/collections';
   import { createEventDispatcher } from 'svelte';
 
@@ -28,15 +29,23 @@
   export let resolver: (id: string | undefined) => void;
 
   const dispatch = createEventDispatcher<{ close: void }>();
-  const buttonClass =
-    'flex min-h-[3rem] items-center justify-center rounded border-2 border-current px-4 font-medium';
-  const pressedClass = 'bg-gray-700 text-white border-gray-700';
-  const inputClass = 'block w-full border-0 border-b-2 border-gray-400/50 px-0.5 py-2';
-  const titles = { new: 'New collection', rename: 'Rename', search: 'Change the search' };
+  const titles = {
+    new: 'New collection',
+    rename: 'Rename collection',
+    search: 'Change the search'
+  };
+  const formId = `collection-edit-${Math.random().toString(36).slice(2, 10)}`;
+  const initial = { name, type, query };
 
   let error = '';
   let busy = false;
   let done = false;
+
+  $: dirty =
+    !done &&
+    (name.trim() !== initial.name.trim() ||
+      query.trim() !== initial.query.trim() ||
+      type !== initial.type);
 
   function answer(id: string | undefined) {
     if (done) return;
@@ -64,29 +73,23 @@
       busy = false;
     }
   }
-
-  function onKeydown(ev: KeyboardEvent) {
-    if (ev.key === 'Escape') {
-      ev.preventDefault();
-      answer(undefined);
-    }
-  }
 </script>
 
-<svelte:window on:keydown={onKeydown} />
-
-<section
-  class="mdc-elevation--z24 max-h-[90vh] w-full max-w-lg overflow-y-auto rounded bg-white p-6"
-  data-testid="collection-edit-dialog"
+<Modal
+  title={titles[mode]}
+  subtitle={mode === 'new' ? '' : initial.name}
+  size="md"
+  {dirty}
+  testid="collection-edit-dialog"
+  on:close={() => answer(undefined)}
 >
-  <h2 class="weight-medium mb-4 text-xl">{titles[mode]}</h2>
-  <form on:submit|preventDefault={submit}>
+  <form id={formId} class="grid gap-4 pb-1 pt-4" on:submit|preventDefault={submit}>
     {#if mode !== 'search'}
-      <label class="block">
-        Name
+      <label class="c-modal-field">
+        <span class="c-modal-label">Name</span>
         <!-- svelte-ignore a11y-autofocus -->
         <input
-          class={inputClass}
+          class="c-input w-full"
           maxlength="200"
           autofocus
           bind:value={name}
@@ -95,38 +98,41 @@
       </label>
     {/if}
     {#if mode === 'new' && chooseType}
-      <div class="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2" role="group" aria-label="Kind">
-        <button
-          type="button"
-          class="{buttonClass} {type === 'manual' ? pressedClass : ''}"
-          aria-pressed={type === 'manual'}
-          data-testid="collection-type-manual"
-          on:click={() => (type = 'manual')}
-        >
-          Manual
-        </button>
-        <button
-          type="button"
-          class="{buttonClass} {type === 'smart' ? pressedClass : ''}"
-          aria-pressed={type === 'smart'}
-          data-testid="collection-type-smart"
-          on:click={() => (type = 'smart')}
-        >
-          Smart
-        </button>
+      <div class="c-modal-field">
+        <span class="c-modal-label" id="{formId}-kind">Kind</span>
+        <div>
+          <div class="c-choice" role="group" aria-labelledby="{formId}-kind">
+            <button
+              type="button"
+              aria-pressed={type === 'manual'}
+              data-testid="collection-type-manual"
+              on:click={() => (type = 'manual')}
+            >
+              Manual
+            </button>
+            <button
+              type="button"
+              aria-pressed={type === 'smart'}
+              data-testid="collection-type-smart"
+              on:click={() => (type = 'smart')}
+            >
+              Smart
+            </button>
+          </div>
+        </div>
+        <p class="c-modal-hint !mb-0">
+          {type === 'manual'
+            ? 'Books you add yourself, in your own order, like a reading queue. Add them from the Library or the reader.'
+            : 'Always shows the books that match a search right now.'}
+        </p>
       </div>
-      <p class="pt-2 text-sm">
-        {type === 'manual'
-          ? 'Books you add yourself, in your own order, like a reading queue. Add them from the Library or the reader.'
-          : 'Always shows the books that match a search right now.'}
-      </p>
     {/if}
     {#if type === 'smart' && mode !== 'rename'}
-      <label class="mt-4 block">
-        Search
+      <label class="c-modal-field">
+        <span class="c-modal-label">Search</span>
         <!-- svelte-ignore a11y-autofocus -->
         <input
-          class={inputClass}
+          class="c-input w-full"
           type="search"
           autocapitalize="off"
           spellcheck="false"
@@ -136,19 +142,26 @@
           bind:value={query}
           data-testid="collection-query"
         />
+        <span class="c-modal-hint !mb-0">
+          The same search as the Library's search box (see Search help there).
+        </span>
       </label>
-      <p class="pt-1 text-sm">
-        The same search as the Library's search box (see Search help there).
-      </p>
     {/if}
     {#if error}
-      <p class="pt-3 font-medium" role="alert" data-testid="collection-edit-error">{error}</p>
+      <p class="c-modal-error" role="alert" data-testid="collection-edit-error">
+        <span aria-hidden="true">⚠</span>{error}
+      </p>
     {/if}
-    <footer class="flex flex-wrap items-center justify-end gap-2 pt-5">
-      <button type="button" class={buttonClass} on:click={() => answer(undefined)}>Cancel</button>
-      <button type="submit" class={buttonClass} disabled={busy} data-testid="collection-save">
-        {mode === 'new' ? 'Create' : 'Save'}
-      </button>
-    </footer>
   </form>
-</section>
+  <svelte:fragment slot="footer">
+    <button
+      type="submit"
+      form={formId}
+      class="c-btn c-btn-primary"
+      disabled={busy}
+      data-testid="collection-save"
+    >
+      {mode === 'new' ? 'Create collection' : 'Save'}
+    </button>
+  </svelte:fragment>
+</Modal>

@@ -1,60 +1,56 @@
 <script lang="ts">
-  import DialogTemplate from '$lib/components/dialog-template.svelte';
-  import Ripple from '$lib/components/ripple.svelte';
-  import { buttonClasses } from '$lib/css-classes';
+  /**
+   * Jump to position: a character number between `minValue` and `maxValue`. Enter or "Go"
+   * jumps; ✕, Esc or a click outside resolve `undefined` (dialogManager.open).
+   */
+  import Modal from '$lib/components/modal/modal.svelte';
   import { createEventDispatcher } from 'svelte';
 
   export let dialogHeader: string;
-  export let showCancel = true;
   export let minValue = 1;
   export let maxValue = 1;
   export let resolver: (arg0: number | undefined) => void;
 
-  let target = 1;
+  let target = minValue;
   let error = '';
 
-  const dispatch = createEventDispatcher<{
-    close: void;
-  }>();
+  const dispatch = createEventDispatcher<{ close: void }>();
+  const id = `number-${Math.random().toString(36).slice(2, 10)}`;
 
-  function closeDialog(position?: number) {
-    if (typeof position === 'number' && (position < minValue || position > maxValue)) {
-      error = `Must be between ${minValue} and ${maxValue}`;
+  function go() {
+    if (typeof target !== 'number' || target < minValue || target > maxValue) {
+      error = `Enter a number from ${minValue.toLocaleString()} to ${maxValue.toLocaleString()}.`;
       return;
     }
-    resolver(position);
+    resolver(target);
+    dispatch('close');
+  }
+
+  function cancel() {
+    resolver(undefined);
     dispatch('close');
   }
 </script>
 
-<DialogTemplate>
-  <svelte:fragment slot="header">{dialogHeader}</svelte:fragment>
-  <div class="flex flex-col text-sm sm:text-base" slot="content">
+<Modal title={dialogHeader} size="sm" testid="number-dialog" initialFocus="input" on:close={cancel}>
+  <form class="c-modal-field pt-3" on:submit|preventDefault={go}>
+    <label class="c-modal-label" for={id}>
+      Character ({minValue.toLocaleString()}–{maxValue.toLocaleString()})
+    </label>
     <input
+      {id}
+      class="c-input w-full"
       type="number"
+      inputmode="numeric"
       min={minValue}
       max={maxValue}
       bind:value={target}
-      on:keyup={(evt) => {
-        if (evt.key === 'Enter') {
-          closeDialog(target);
-        }
-      }}
     />
-    <div class="text-red-500 mt-4">{error}</div>
-  </div>
-  <div class="flex grow justify-between" slot="footer">
-    <button
-      class={buttonClasses}
-      class:invisible={!showCancel}
-      on:click={() => closeDialog(undefined)}
-    >
-      Cancel
-      <Ripple />
-    </button>
-    <button class={buttonClasses} on:click={() => closeDialog(target)}>
-      Confirm
-      <Ripple />
-    </button>
-  </div>
-</DialogTemplate>
+    {#if error}
+      <p class="c-modal-error" role="alert"><span aria-hidden="true">⚠</span>{error}</p>
+    {/if}
+  </form>
+  <svelte:fragment slot="footer">
+    <button type="button" class="c-btn c-btn-primary" on:click={go}>Go</button>
+  </svelte:fragment>
+</Modal>

@@ -26,21 +26,19 @@
 	}
 </script>
 
+<!-- 2026-11-21: each dialog draws the app's modal frame itself (DialogTemplate.svelte), with
+	its own backdrop, Esc, ✕ and click outside. -->
 {#if dialog}
-	<div
-		class="ttu-whispersync-dialog writing-horizontal-tb fixed inset-0 w-full h-full"
-		style:z-index={zIndex}
-		on:wheel|passive|stopPropagation
-	>
-		<div tabindex="0" role="button" class="absolute inset-0 tap-highlight-transparent bg-black/[.32]" />
+	{#if typeof dialog.component === 'string'}
 		<div
-			class="ttu-whispersync-container dialog-container relative top-1/2 left-1/2 inline-block -translate-x-1/2 -translate-y-1/2"
+			class="ttu-whispersync-dialog writing-horizontal-tb fixed inset-0 w-full h-full"
+			style:z-index={zIndex}
+			on:wheel|passive|stopPropagation
 		>
-			{#if typeof dialog.component === 'string'}
-				{@html dialog.component}
-			{:else}
-				<svelte:component this={dialog.component} {...dialog.props} on:close={closeDialog} />
-			{/if}
+			<div class="absolute inset-0 tap-highlight-transparent bg-black/[.32]" />
+			{@html dialog.component}
 		</div>
-	</div>
+	{:else}
+		<svelte:component this={dialog.component} {...dialog.props} on:close={closeDialog} />
+	{/if}
 {/if}
