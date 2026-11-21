@@ -11,6 +11,7 @@
 
 import type { AudioLink } from '$lib/audio/audio-types';
 import { fileTitle } from '$lib/functions/download-blob';
+import { formatFileSize } from './book-details';
 
 export interface DownloadChoices {
   /** The EPUB: listed always, downloadable unless the book left the library. */
@@ -40,6 +41,38 @@ export function downloadChoices(
     subtitles: linked && link.subtitleState === 'linked' && link.subtitleStatus === 'ok',
     cover: !book.missing && !!book.thumbnail
   };
+}
+
+export interface DownloadSizes {
+  book: number | null;
+  audio: number | null;
+  subtitles: number | null;
+}
+
+/**
+ * The sizes the page already knows, in bytes (null = unknown): the EPUB from the same
+ * source as the "File size" row, the linked audio file, the linked subtitle file. The
+ * cover's size isn't in the book's data: the menu asks the server for it.
+ */
+export function downloadSizes(
+  book: { sources?: { fileSize: number | null; missingAt: number | null }[] },
+  link: AudioLink | null
+): DownloadSizes {
+  const sources = book.sources ?? [];
+  const source = sources.find((s) => !s.missingAt) ?? sources[0];
+  return {
+    book: source?.fileSize ?? null,
+    audio: link?.file?.size ?? null,
+    subtitles: link?.subtitle?.size ?? null
+  };
+}
+
+const GB = 1024 * 1024 * 1024;
+
+/** "2.1 MB", "820 KB", "1.4 GB" (audiobooks), or '' when unknown. */
+export function formatDownloadSize(bytes: number | null | undefined): string {
+  if (typeof bytes === 'number' && bytes >= GB) return `${(bytes / GB).toFixed(1)} GB`;
+  return formatFileSize(bytes);
 }
 
 /** `<title>.epub`, made safe for a file name. */
