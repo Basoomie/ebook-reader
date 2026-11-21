@@ -3,8 +3,6 @@
   import { pagePath } from '$lib/data/env';
   import { onDestroy, onMount } from 'svelte';
   import AppNavLinks from './app-nav-links.svelte';
-  import AppThemeToggle from './app-theme-toggle.svelte';
-
   /**
    * A catalogue page's fixed header (WP19b: the navy bar of the "Archive" look) with the
    * app navigation on wider screens. Pages put <AppBottomBar /> at their end for phones
@@ -47,7 +45,6 @@
       </a>
       <div class="flex h-full items-center">
         <slot />
-        <AppThemeToggle />
         <AppNavLinks />
       </div>
     </div>
