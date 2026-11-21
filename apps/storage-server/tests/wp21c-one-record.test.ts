@@ -261,6 +261,33 @@ describe('the one-record rule (pure)', () => {
     expect(applyOneRecord([u(1, true), u(2, false)], all('unknown')).review.size).toBe(2);
   });
 
+  it('the ASIN in the name first, then the exact title; the same ASIN in both: the title decides', () => {
+    const v = (id: number, exact: boolean, asinInName: boolean): SharingUnit => ({
+      id,
+      name: `v${id}`,
+      exact,
+      asinInName,
+    });
+    // The record's ASIN in one name: it keeps, even against the exact title (ひと, 負けヒロイン).
+    expect([
+      ...applyOneRecord([v(1, true, false), v(2, true, true)], all('different')).exclude,
+    ]).toEqual([[1, 'v2']]);
+    expect([
+      ...applyOneRecord([v(1, true, false), v(2, false, true)], all('different')).exclude,
+    ]).toEqual([[1, 'v2']]);
+    // The same ASIN in both names (or in neither): the exact title decides, else review.
+    expect([
+      ...applyOneRecord([v(1, true, true), v(2, false, true)], all('different')).exclude,
+    ]).toEqual([[2, 'v1']]);
+    expect(applyOneRecord([v(1, true, true), v(2, true, true)], all('different')).review.size).toBe(
+      2,
+    );
+    // Windows that couldn't be read: both to review whatever the names say.
+    expect(applyOneRecord([v(1, false, false), v(2, true, true)], all('unknown')).review.size).toBe(
+      2,
+    );
+  });
+
   it('three on one record: looked up again wins over review, review over keeping', () => {
     // 1 exact, 2 and 3 not; 1-2 different, 1-3 alike, 2-3 different.
     const look = (a: SharingUnit, b: SharingUnit): PairLook =>
@@ -493,7 +520,7 @@ describe('stage 4: the subtitle fix and the one-record rule on stage-3 rows', ()
     expect(stage4.progress()!.records).toMatchObject({ shared: 0, review: 0, lookedUpAgain: 0 });
   });
 
-  it('different by fingerprints: one exact title keeps, the other is looked up again without the record; both exact (an imprint aside): review', async () => {
+  it('different by fingerprints: the ASIN in the name keeps, else the exact title; the other is looked up again without the record; unreadable windows: review', async () => {
     const db = freshDb();
     seedStage3(
       db,
@@ -517,6 +544,14 @@ describe('stage 4: the subtitle fix and the one-record rule on stage-3 rows', ()
           seconds: 30000,
         },
         { key: 's2', rel: 'TMW/罪の声 完全収録版.m4b', name: '罪の声 完全収録版', seconds: 30010 },
+        // Neither name has the ASIN: the exact title decides.
+        { key: 'e1', rel: 'TMW/一瞬の風になれ.m4b', name: '一瞬の風になれ', seconds: 30000 },
+        {
+          key: 'e2',
+          rel: 'Discord/一瞬の風になれ 完全版.m4b',
+          name: '一瞬の風になれ 完全版',
+          seconds: 30000,
+        },
         {
           key: 'h1',
           rel: 'Discord/ひと [B0GXYRJ43N].m4b',
@@ -544,6 +579,7 @@ describe('stage 4: the subtitle fix and the one-record rule on stage-3 rows', ()
       [
         { a: 'm1', b: 'm2', test: 'title', verdict: 'different', fp: 'different' },
         { a: 's1', b: 's2', test: 'title', verdict: 'different', fp: 'different' },
+        { a: 'e1', b: 'e2', test: 'title', verdict: 'different', fp: 'different' },
         { a: 'h1', b: 'h2', test: 'title', verdict: 'different', fp: 'different' },
         { a: 'a1', b: 'a2', test: 'title', verdict: 'same', fp: 'same' },
         { a: 'k1', b: 'k2', test: 'title', verdict: 'unsure', fp: 'unknown' },
@@ -565,6 +601,9 @@ describe('stage 4: the subtitle fix and the one-record rule on stage-3 rows', ()
       ],
       [audibleProduct('B0TSUMINO0').url, plain('B0TSUMINO0', '罪の声', 500)],
       [audibleSearch('罪の声 完全収録版').url, hits('B0TSUMINO0', '罪の声', 500)],
+      [audibleSearch('一瞬の風になれ').url, hits('B0ISSHUN00', '一瞬の風になれ', 500)],
+      [audibleSearch('一瞬の風になれ 完全版').url, hits('B0ISSHUN00', '一瞬の風になれ', 500)],
+      [audibleProduct('B0ISSHUN00').url, plain('B0ISSHUN00', '一瞬の風になれ', 500)],
       [audibleProduct('B0GXYRJ43N').url, plain('B0GXYRJ43N', 'ひと', 533)],
       [audibleSearch('ひと').url, hits('B0GXYRJ43N', 'ひと', 533)],
       [audibleProduct('B0DQ69693N').url, plain('B0DQ69693N', '地面師たち', 583)],
@@ -577,29 +616,24 @@ describe('stage 4: the subtitle fix and the one-record rule on stage-3 rows', ()
     await runToEnd(db, stage4, queue, pages, asked);
     const u = units(db);
     const by = (n: string) => u.find((x) => x.name === n)!;
-    // 罪の声: the exact title keeps; the other looked up again without the record: not found.
-    expect(by('罪の声 [B0TSUMINO0]')).toMatchObject({ class: 'auto', store_id: 'B0TSUMINO0' });
-    const lost = by('罪の声 完全収録版');
-    expect(lost).toMatchObject({ class: 'unknown', excluded_json: '["audible:B0TSUMINO0"]' });
-    expect(lost.detail).toMatch(/without audible:B0TSUMINO0/);
-    // 負けヒロイン: both exact once the store's imprint is set aside: both to review.
-    for (const n of [
-      '[01] 負けヒロインが多すぎる！ [B0CGJ583HH]',
-      '負けヒロインが多すぎる！（ガガガ文庫）',
-    ])
-      expect(by(n)).toMatchObject({
-        class: 'review',
-        review_reason: 'shared',
-        store_id: 'B0CGJ583HH',
-      });
-    // ひと: both exact: both to review, each naming the other.
-    for (const n of ['ひと [B0GXYRJ43N]', 'ひと'])
-      expect(by(n)).toMatchObject({
-        class: 'review',
-        review_reason: 'shared',
-        store_id: 'B0GXYRJ43N',
-      });
-    expect(by('ひと').detail).toMatch(/ひと \[B0GXYRJ43N\]/);
+    // The record's ASIN in one name keeps it (罪の声, 負けヒロイン and ひと, the last two against
+    // an exact title on the other side); the other is looked up again without it: not found.
+    for (const [keep, lose, rec] of [
+      ['罪の声 [B0TSUMINO0]', '罪の声 完全収録版', 'B0TSUMINO0'],
+      [
+        '[01] 負けヒロインが多すぎる！ [B0CGJ583HH]',
+        '負けヒロインが多すぎる！（ガガガ文庫）',
+        'B0CGJ583HH',
+      ],
+      ['ひと [B0GXYRJ43N]', 'ひと', 'B0GXYRJ43N'],
+      // Neither name has the ASIN: the exact title keeps.
+      ['一瞬の風になれ', '一瞬の風になれ 完全版', 'B0ISSHUN00'],
+    ]) {
+      expect(by(keep), keep).toMatchObject({ class: 'auto', store_id: rec });
+      const lost = by(lose);
+      expect(lost, lose).toMatchObject({ class: 'unknown', excluded_json: `["audible:${rec}"]` });
+      expect(lost.detail).toMatch(new RegExp(`without audible:${rec}`));
+    }
     // 地面師たち: alike, both keep. ララピポ: unknown windows, both to review.
     expect(by('地面師たち')).toMatchObject({ class: 'auto', store_id: 'B0DQ69693N' });
     expect(by('[01] 地面師たち [B0DQ69693N]')).toMatchObject({
@@ -610,13 +644,13 @@ describe('stage 4: the subtitle fix and the one-record rule on stage-3 rows', ()
     const p = stage4.progress()!;
     expect(p.phase).toBe('done');
     expect(p.records).toMatchObject({
-      shared: 5,
-      different: 3,
-      review: 6,
-      lookedUpAgain: 1,
+      shared: 6,
+      different: 4,
+      review: 2,
+      lookedUpAgain: 4,
       compared: 0,
     });
-    expect(p.counts).toMatchObject({ 'review:shared': 6 });
+    expect(p.counts).toMatchObject({ 'review:shared': 2 });
     // The excluded record was never asked again for the unit that lost it: one product request.
     expect(asked.filter((x) => x === audibleProduct('B0TSUMINO0').url)).toHaveLength(1);
     // Deciding again (a settings change) starts the rule from scratch and comes out the same.

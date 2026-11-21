@@ -26,8 +26,9 @@
  *            recordings matched automatically to one record must be alike by their fingerprints
  *            (stage 3's, or compared here with stage 3's windows when stage 3 never compared
  *            them, under the shared disk lock, Calibre first); a different pair goes to review,
- *            or, when only one of them has the record's exact title, the other is looked up
- *            again without that record (back to the lookups, then here again).
+ *            or, when only one of them has the record's ASIN in its name (else: the record's
+ *            exact title), the other is looked up again without that record (back to the
+ *            lookups, then here again).
  *   gate     the labeled books (labels.json "books").
  */
 import type Database from 'better-sqlite3';
@@ -1070,7 +1071,7 @@ export class AudioStage4 {
         r.best?.rec.id ?? null,
         r.reason,
         excluded.length
-          ? `${r.detail ? `${r.detail} · ` : ''}without ${excluded.join(', ')} (another recording that isn't the same has its exact title)`
+          ? `${r.detail ? `${r.detail} · ` : ''}without ${excluded.join(', ')} (another recording that isn't the same keeps it: the record's ASIN is in its name, or it has the exact title)`
           : r.detail,
         p.rulesKey,
         now,
@@ -1606,6 +1607,7 @@ export class AudioStage4 {
         id: r.id,
         name: r.name,
         exact: exactTitle(inputs.facts, titles.get(record)!),
+        asinInName: r.source === 'audible' && inputs.asins.includes(r.store_id),
         copyKeys: JSON.parse(r.copy_keys) as string[],
         inputs,
         record,

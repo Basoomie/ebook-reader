@@ -9,10 +9,14 @@
  *     send both to review;
  *   - stage 3 never compared them: stage 4 compares them now with stage 3's own windows (the
  *     caller), then as above.
- * The rule for a different pair: when exactly one of the two has the store's title exactly
- * (`exactTitle`), that one keeps the record and the other is looked up again without it;
- * otherwise both go to review ("shared"). A unit that loses in any pair loses: looked up again
- * wins over review (another recording has the record's exact title), review over keeping.
+ * The rule for a different pair, tie-breaks in this order (user, 2026-11-21):
+ *   1. exactly one of the two has the record's ASIN in its file name (`asinInName`: that ASIN
+ *      chose the record): it keeps the record;
+ *   2. else exactly one has the store's title exactly (`exactTitle`): it keeps the record;
+ * the other is looked up again without it. Otherwise both go to review ("shared"). A unit that
+ * loses in any pair loses: looked up again wins over review (another recording keeps the
+ * record), review over keeping. Windows that couldn't be read send both to review whatever
+ * their names say.
  */
 
 export type PairLook = 'alike' | 'different' | 'unknown';
@@ -22,6 +26,8 @@ export interface SharingUnit {
   name: string;
   /** The file's own title is the record's title exactly. */
   exact: boolean;
+  /** The ASIN in the file's name is this record's (Audible; the name chose it). */
+  asinInName?: boolean;
 }
 
 export interface RecordOutcome {
@@ -82,10 +88,23 @@ export function applyOneRecord(
       const b = units[j];
       const l = look(a, b);
       if (l === 'alike') continue;
-      if (l === 'different' && a.exact !== b.exact) {
-        const [keep, lose] = a.exact ? [a, b] : [b, a];
-        if (!exclude.has(lose.id)) exclude.set(lose.id, keep.name);
-        continue;
+      if (l === 'different') {
+        const winner = (x: SharingUnit, y: SharingUnit): SharingUnit | null =>
+          !!x.asinInName !== !!y.asinInName
+            ? x.asinInName
+              ? x
+              : y
+            : x.exact !== y.exact
+              ? x.exact
+                ? x
+                : y
+              : null;
+        const keep = winner(a, b);
+        if (keep) {
+          const lose = keep === a ? b : a;
+          if (!exclude.has(lose.id)) exclude.set(lose.id, keep.name);
+          continue;
+        }
       }
       toReview(a, b);
       toReview(b, a);
