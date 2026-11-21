@@ -12,6 +12,7 @@ import {
   type NoteItem
 } from '$lib/notes/highlights';
 import type { NoteTarget, Undo } from '$lib/notes/notes-service';
+import { copyText } from '$lib/functions/copy-text';
 
 /**
  * What a list of highlight and note cards shares (the Notes page's Books and Highlights
@@ -33,6 +34,8 @@ export interface NotesListView {
   undo: { message: string; run: Undo } | undefined;
   error: string;
   busy: boolean;
+  /** "Copied." after Copy text (until the next action, like Undo). */
+  notice: string;
 }
 
 export interface NotesListState extends Readable<NotesListView> {
@@ -43,10 +46,18 @@ export interface NotesListState extends Readable<NotesListView> {
   removeHighlight(item: HighlightItem): void;
   removeNote(note: NoteItem): void;
   runUndo(): void;
+  /** Copies a highlight's or note's text (Notes page, 2026-11-21). */
+  copy(text: string): void;
 }
 
 export function createNotesListState(actions: () => NotesListActions): NotesListState {
-  let view: NotesListView = { editing: undefined, undo: undefined, error: '', busy: false };
+  let view: NotesListView = {
+    editing: undefined,
+    undo: undefined,
+    error: '',
+    busy: false,
+    notice: ''
+  };
   const store = writable(view);
   const set = (patch: Partial<NotesListView>) => {
     view = { ...view, ...patch };
@@ -55,7 +66,7 @@ export function createNotesListState(actions: () => NotesListActions): NotesList
 
   async function act(run: () => Promise<void>) {
     if (view.busy) return;
-    set({ busy: true, error: '' });
+    set({ busy: true, error: '', notice: '' });
     try {
       await run();
     } catch (e) {
@@ -68,7 +79,7 @@ export function createNotesListState(actions: () => NotesListActions): NotesList
   return {
     subscribe: store.subscribe,
     startNote(key, target, text) {
-      set({ undo: undefined, error: '', editing: { key, target, text } });
+      set({ undo: undefined, error: '', notice: '', editing: { key, target, text } });
     },
     cancelEdit() {
       set({ editing: undefined });
@@ -105,6 +116,16 @@ export function createNotesListState(actions: () => NotesListActions): NotesList
       const current = view.undo;
       set({ undo: undefined });
       if (current) void act(current.run);
+    },
+    copy(text) {
+      set({ undo: undefined, error: '', notice: '' });
+      void copyText(text).then((ok) =>
+        set(
+          ok
+            ? { notice: 'Copied.' }
+            : { error: "This browser didn't allow copying: select the text and copy it." }
+        )
+      );
     }
   };
 }

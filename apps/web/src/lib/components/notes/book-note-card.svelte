@@ -7,12 +7,13 @@
 
   /**
    * WP19d: a note about a book (or one whose highlight is gone) as a card with a gold
-   * edge and ⋮ (Edit note, Delete note). Moved out of notes-list.svelte (Notes at scale,
-   * 2026-11-21); in the Highlights view it shows the book's title and opens the book.
+   * edge and ⋮ (Copy note, Edit note, Delete note). Moved out of notes-list.svelte (Notes at
+   * scale, 2026-11-21); in the Highlights view it shows the book's title and a › that opens
+   * the book (the text itself stays selectable).
    */
   import { createEventDispatcher } from 'svelte';
   import Fa from 'svelte-fa';
-  import { faEllipsisVertical } from '@fortawesome/free-solid-svg-icons';
+  import { faChevronRight, faEllipsisVertical } from '@fortawesome/free-solid-svg-icons';
   import DropdownMenu from '$lib/components/dropdown-menu.svelte';
   import MarkedText from '$lib/components/notes/marked-text.svelte';
   import NoteEditor from '$lib/components/notes/note-editor.svelte';
@@ -37,44 +38,24 @@
 
 <article class="c-hl-card c-book-note rounded" data-testid="notes-page-book-note">
   <div class="flex items-start">
-    {#if showBook}
-      <button
-        type="button"
-        class="c-note-open min-w-0 flex-1 rounded-r py-3 pl-4 pr-1 text-left"
-        title="Open book"
-        data-testid="notes-page-book-note-open"
-        on:click={() => dispatch('open')}
-      >
-        <span
-          class="mb-1 block truncate font-mincho text-sm font-bold text-c-muted"
-          data-testid="notes-card-book">{cardBookLine(book)} · Note about the book</span
+    <div class="c-note-body min-w-0 flex-1 py-3 pl-4 pr-1">
+      {#if showBook}
+        <p
+          class="mb-1 truncate font-mincho text-sm font-bold text-c-muted"
+          data-testid="notes-card-book"
         >
-        {#if note.quote}
-          <span class="c-quote block pl-2 font-mincho text-sm"
-            ><MarkedText text={note.quote} {words} /></span
-          >
-        {/if}
-        {#if !editing}
-          <span class="mt-1 block whitespace-pre-wrap break-words"
-            ><MarkedText text={note.body} {words} /></span
-          >
-        {/if}
-        <span class="mt-2 block text-xs text-c-muted">{formatWhen(note.createdAt)}</span>
-      </button>
-    {:else}
-      <div class="min-w-0 flex-1 py-3 pl-4 pr-1">
-        {#if note.quote}
-          <p class="c-quote pl-2 font-mincho text-sm"><MarkedText text={note.quote} {words} /></p>
-        {/if}
-        {#if !editing}
-          <p class="mt-1 whitespace-pre-wrap break-words">
-            <MarkedText text={note.body} {words} />
-          </p>
-        {/if}
-        <p class="mt-2 text-xs text-c-muted">{formatWhen(note.createdAt)}</p>
-      </div>
-    {/if}
-    <div class="shrink-0 p-1">
+          {cardBookLine(book)} · Note about the book
+        </p>
+      {/if}
+      {#if note.quote}
+        <p class="c-quote pl-2 font-mincho text-sm"><MarkedText text={note.quote} {words} /></p>
+      {/if}
+      {#if !editing}
+        <p class="mt-1 whitespace-pre-wrap break-words"><MarkedText text={note.body} {words} /></p>
+      {/if}
+      <p class="mt-2 text-xs text-c-muted">{formatWhen(note.createdAt)}</p>
+    </div>
+    <div class="flex shrink-0 flex-col items-center p-1">
       <DropdownMenu
         buttonClass={dotsButton}
         align="right"
@@ -89,6 +70,17 @@
           <span class="sr-only">More</span>
         </span>
         <div class="flex flex-col gap-1">
+          <button
+            type="button"
+            class={menuItem}
+            data-testid="notes-page-copy-note"
+            on:click={() => {
+              close();
+              list.copy(note.body);
+            }}
+          >
+            Copy note
+          </button>
           <button
             type="button"
             class={menuItem}
@@ -115,6 +107,18 @@
           </button>
         </div>
       </DropdownMenu>
+      {#if showBook}
+        <button
+          type="button"
+          class="c-btn c-btn-ghost h-11 min-h-0 w-11 p-0 text-c-muted"
+          title="Open book"
+          aria-label="Open book"
+          data-testid="notes-page-book-note-open"
+          on:click={() => dispatch('open')}
+        >
+          <Fa icon={faChevronRight} />
+        </button>
+      {/if}
     </div>
   </div>
   {#if editing && $list.editing}
@@ -141,20 +145,9 @@
     border-left: 4px solid var(--c-gold);
   }
 
-  .c-note-open {
+  .c-note-body {
     color: var(--c-ink);
     user-select: text;
-  }
-
-  .c-note-open:focus-visible {
-    outline: 2px solid var(--c-link);
-    outline-offset: -2px;
-  }
-
-  @media (hover: hover) {
-    :global(html:not(.eink)) .c-note-open:hover {
-      background-color: var(--c-tint);
-    }
   }
 
   .c-danger {

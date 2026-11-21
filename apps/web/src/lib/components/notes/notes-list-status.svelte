@@ -21,6 +21,11 @@
     >
   </p>
 {/if}
+{#if $list.notice}
+  <p class="c-notice sticky top-14 z-10 mb-2" role="status" data-testid="notes-copied">
+    {$list.notice}
+  </p>
+{/if}
 {#if $list.error}
   <p class="mb-2 text-sm" role="alert">{$list.error}</p>
 {/if}
