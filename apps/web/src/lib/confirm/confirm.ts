@@ -10,17 +10,11 @@ import type { ConfirmOptions } from './confirm-state';
 
 /**
  * Asks before a destructive action (WP19). Resolves true only when the action button was
- * pressed; Cancel, Esc, a backdrop tap or another dialog taking its place resolve false.
+ * pressed; Cancel, Esc, a click outside or another dialog taking its place resolve false.
  * Replaces any open dialog, so call it from a page, not from inside a dialog (use
  * inline-confirm.svelte there).
  */
-export function confirmDestructive(options: ConfirmOptions): Promise<boolean> {
-  return new Promise<boolean>((resolve) => {
-    dialogManager.dialogs$.next([
-      {
-        component: ConfirmDestructiveDialog,
-        props: { ...options, resolver: resolve }
-      }
-    ]);
-  });
+export async function confirmDestructive(options: ConfirmOptions): Promise<boolean> {
+  const confirmed = await dialogManager.open<boolean>(ConfirmDestructiveDialog, { ...options });
+  return confirmed === true;
 }

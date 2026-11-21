@@ -27,7 +27,9 @@
     audioDownloadUrl,
     coverFileName,
     downloadChoices,
+    downloadSizes,
     epubFileName,
+    formatDownloadSize,
     subtitleFileName
   } from '$lib/library/book-download';
   import type { CatalogBookDetail } from '$lib/library/types';
@@ -40,14 +42,41 @@
 
   const dispatch = createEventDispatcher<{ error: Error }>();
   const item = 'c-btn c-btn-ghost w-full justify-start px-3 text-left';
+  /** The size beside an item's name, on the same line (no added height). */
+  const sizeClass = 'ml-auto pl-3 text-xs text-c-muted tabular-nums';
 
   let busy: '' | 'book' | 'cover' | 'subtitles' = '';
   let controller: AbortController | undefined;
   let open = false;
 
   $: choices = downloadChoices(book, link);
+  $: sizes = downloadSizes(book, link);
 
-  onDestroy(() => controller?.abort());
+  // The cover's size: asked once per book, when the menu first opens (a HEAD request).
+  let coverSize: number | null = null;
+  let coverSizeFor = '';
+  let sizeController: AbortController | undefined;
+  $: if (open && choices.cover && coverSizeFor !== book.id) loadCoverSize(book.id);
+
+  function loadCoverSize(id: string) {
+    coverSizeFor = id;
+    coverSize = null;
+    sizeController?.abort();
+    const ctl = new AbortController();
+    sizeController = ctl;
+    api
+      .coverSize(id, { signal: ctl.signal })
+      .then((size) => {
+        if (coverSizeFor === id) coverSize = size;
+      })
+      // Only a hint: without it the item shows no size.
+      .catch(() => undefined);
+  }
+
+  onDestroy(() => {
+    controller?.abort();
+    sizeController?.abort();
+  });
 
   async function run(
     kind: 'book' | 'cover' | 'subtitles',
@@ -130,6 +159,11 @@
     >
       {#if choices.book}
         Book
+        {#if sizes.book}
+          <span class={sizeClass} data-testid="details-download-book-size"
+            >{formatDownloadSize(sizes.book)}</span
+          >
+        {/if}
       {:else}
         <span class="flex flex-col items-start">
           Book
@@ -148,6 +182,11 @@
         }}
       >
         Cover
+        {#if coverSize}
+          <span class={sizeClass} data-testid="details-download-cover-size"
+            >{formatDownloadSize(coverSize)}</span
+          >
+        {/if}
       </button>
     {/if}
     {#if choices.audio}
@@ -161,6 +200,11 @@
         }}
       >
         Audiobook
+        {#if sizes.audio}
+          <span class={sizeClass} data-testid="details-download-audio-size"
+            >{formatDownloadSize(sizes.audio)}</span
+          >
+        {/if}
       </button>
     {/if}
     {#if choices.subtitles}
@@ -174,6 +218,11 @@
         }}
       >
         SRT
+        {#if sizes.subtitles}
+          <span class={sizeClass} data-testid="details-download-srt-size"
+            >{formatDownloadSize(sizes.subtitles)}</span
+          >
+        {/if}
       </button>
     {/if}
   </div>

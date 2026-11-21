@@ -174,6 +174,18 @@ export function startAppearanceEffects(
       s.einkMode.subscribe((on) => guard('e-ink', () => root.classList.toggle('eink', !!on)))
     );
 
+    // Modals over the reader follow the reader theme's own brightness (app.scss, Modals),
+    // whatever the Library Look.
+    const applyReaderDark = () =>
+      guard('reader look', () =>
+        root.classList.toggle(
+          'reader-dark',
+          isCatalogueDark('auto', s.theme.getValue(), s.customThemes.getValue())
+        )
+      );
+    subscriptions.push(s.theme.subscribe(applyReaderDark));
+    subscriptions.push(s.customThemes.subscribe(applyReaderDark));
+
     // WP19b: the catalogue pages' dark look, from "Library Look" or the reader theme.
     const look = s.libraryLook;
     if (look) {

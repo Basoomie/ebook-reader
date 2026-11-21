@@ -6,6 +6,7 @@
    * no text fields. Plain for e-ink like the Aa panel: 48 px bordered controls, Esc or
    * Close closes.
    */
+  import PanelDismiss from '$lib/components/modal/panel-dismiss.svelte';
   import { createEventDispatcher, onMount } from 'svelte';
   import ButtonToggleGroup from '$lib/components/button-toggle-group/button-toggle-group.svelte';
   import { optionsForToggle } from '$lib/components/button-toggle-group/toggle-option';
@@ -84,16 +85,10 @@
         estimate = null;
       });
   });
-
-  function onKeydown(ev: KeyboardEvent) {
-    if (ev.key === 'Escape') {
-      ev.preventDefault();
-      dispatch('close');
-    }
-  }
 </script>
 
-<svelte:window on:keydown={onKeydown} />
+<!-- A tap outside the panel (or Esc) closes it without turning the page. -->
+<PanelDismiss on:close={() => dispatch('close')} />
 
 <section
   bind:this={panelEl}

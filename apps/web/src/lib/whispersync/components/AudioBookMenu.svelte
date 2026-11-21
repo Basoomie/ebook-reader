@@ -1,5 +1,6 @@
 <script lang="ts">
   // vendored from ttu-whispersync — MIT License — https://github.com/Renji-XD/ttu-whispersync
+  import PanelDismiss from '$lib/components/modal/panel-dismiss.svelte';
   import ActionButtonList from './ActionButtonList.svelte';
   import Audiobook from './Audiobook.svelte';
   import Chapters from './Chapters.svelte';
@@ -679,7 +680,8 @@
             component: ConfirmDialog,
             props: {
               dialogHeader: 'Reopen files',
-              dialogMessage: 'Click confirm to reopen files',
+              dialogMessage: 'The audio and subtitle files need to be opened again.',
+              confirmLabel: 'Reopen files',
               isFileReopen: supportsFileSystem,
               resolver
             }
@@ -1048,6 +1050,11 @@
   bind:this={readerMenuElement}
   on:close={() => resetReaderMenu()}
 />
+
+<!-- 2026-11-21: a tap outside the open menu (or Esc) closes it without turning the page. -->
+{#if showMenu}
+  <PanelDismiss zIndex={59} on:close={() => (showMenu = false)} />
+{/if}
 
 <div
   class="ttu-whispersync-container side-menu flex-col justify-between fixed top-0 left-0 h-full writing-horizontal-tb z-[60]"

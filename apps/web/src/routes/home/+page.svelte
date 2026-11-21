@@ -388,7 +388,6 @@
     dialogManager.dialogs$.next([
       {
         component: AddToCollectionDialog,
-        disableCloseOnClick: true,
         props: { bookId: book.id, title: book.title, api: collections, resolver: () => {} }
       }
     ]);
@@ -398,7 +397,6 @@
     dialogManager.dialogs$.next([
       {
         component: BookStateDialog,
-        disableCloseOnClick: true,
         props: {
           bookId: book.id,
           title: book.title,

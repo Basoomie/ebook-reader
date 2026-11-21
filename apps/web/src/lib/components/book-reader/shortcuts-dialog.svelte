@@ -1,10 +1,11 @@
 <script lang="ts">
   /**
-   * WP10a: the `?` cheat sheet. Plain for e-ink like the WP9 prompt: no transitions, a
-   * bordered 48 px Close button, inert backdrop, Esc or `?` closes. The rows come from
-   * `readerShortcutGroups` (shortcuts.ts).
+   * WP10a: the `?` cheat sheet, one section per group. `?`, ✕, Esc or a click outside
+   * close it (modal.svelte). The rows come from `readerShortcutGroups` (shortcuts.ts).
    */
   import { createEventDispatcher } from 'svelte';
+  import Modal from '$lib/components/modal/modal.svelte';
+  import ModalSection from '$lib/components/modal/modal-section.svelte';
   import type { ShortcutGroup } from './shortcuts';
 
   export let groups: ShortcutGroup[];
@@ -22,7 +23,7 @@
   }
 
   function onKeydown(ev: KeyboardEvent) {
-    if (ev.key === 'Escape' || ev.key === '?') {
+    if (ev.key === '?') {
       ev.preventDefault();
       close();
     }
@@ -31,22 +32,17 @@
 
 <svelte:window on:keydown={onKeydown} />
 
-<section
-  class="mdc-elevation--z24 flex max-h-[85vh] w-[36rem] max-w-full flex-col rounded bg-white p-6"
-  data-testid="shortcuts-dialog"
->
-  <h2 class="weight-medium mb-3 text-xl">Shortcuts</h2>
-  <div class="min-h-0 overflow-y-auto">
-    {#each groups as group (group.title)}
-      <h3 class="mt-3 mb-1 font-medium">{group.title}</h3>
+<Modal title="Keyboard shortcuts" size="md" testid="shortcuts-dialog" on:close={close}>
+  {#each groups as group (group.title)}
+    <ModalSection title={group.title}>
       <table class="w-full text-sm">
         <tbody>
           {#each group.rows as row}
-            <tr class="border-t border-gray-400" data-testid="shortcut-row">
+            <tr class="border-t border-c-line first:border-t-0" data-testid="shortcut-row">
               <td class="w-2/5 py-2 pr-3 align-top">
                 {#each row.keys as key, index}
-                  {#if index > 0}<span class="mx-1">or</span>{/if}<kbd
-                    class="whitespace-nowrap rounded border border-current px-1 font-sans"
+                  {#if index > 0}<span class="mx-1 text-c-muted">or</span>{/if}<kbd
+                    class="whitespace-nowrap rounded border border-c-strong px-1.5 py-0.5 font-sans"
                     >{key}</kbd
                   >
                 {/each}
@@ -56,14 +52,6 @@
           {/each}
         </tbody>
       </table>
-    {/each}
-  </div>
-  <footer class="flex justify-end pt-5">
-    <button
-      class="flex min-h-[3rem] items-center justify-center rounded border-2 border-current px-5 font-medium"
-      on:click={close}
-    >
-      Close
-    </button>
-  </footer>
-</section>
+    </ModalSection>
+  {/each}
+</Modal>

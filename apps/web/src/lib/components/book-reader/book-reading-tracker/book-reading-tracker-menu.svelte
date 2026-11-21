@@ -109,8 +109,7 @@
     $skipKeyDownListener$ = true;
     dialogManager.dialogs$.next([
       {
-        component: '<div/>',
-        disableCloseOnClick: true
+        component: '<div/>'
       }
     ]);
 

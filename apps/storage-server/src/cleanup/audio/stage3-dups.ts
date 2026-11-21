@@ -1869,11 +1869,13 @@ function filesSig(w: WindowNeed): string {
     .join(',');
 }
 
-function shaOfFiles(files: CopyFile[]): (id: number) => string | null {
+export function shaOfFiles(
+  files: { id: number; sha256: string | null }[],
+): (id: number) => string | null {
   return (id) => files.find((f) => f.id === id)?.sha256 ?? null;
 }
 
-function windowSettings(s: AudiobookSettings) {
+export function windowSettings(s: AudiobookSettings) {
   return {
     windowSeconds: s.dupWindowSeconds,
     shiftSeconds: s.dupShiftSeconds,

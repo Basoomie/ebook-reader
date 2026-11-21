@@ -205,11 +205,15 @@
     type SectionWithProgress
   } from '$lib/components/book-reader/book-toc/book-toc';
   import BookToc from '$lib/components/book-reader/book-toc/book-toc.svelte';
-  import ConfirmDialog from '$lib/components/confirm-dialog.svelte';
   import { confirmDestructive } from '$lib/confirm/confirm';
-  import { completeBookCopy } from '$lib/confirm/confirm-copy';
+  import { completeBookCopy, leaveUnbookmarkedCopy } from '$lib/confirm/confirm-copy';
   import NumberDialog from '$lib/components/number-dialog.svelte';
   import PositionPromptDialog from '$lib/components/book-reader/position-prompt-dialog.svelte';
+  import {
+    keepPlaceForReload,
+    tabStorage,
+    takePlaceAfterReload
+  } from '$lib/components/book-reader/reload-place';
   import BookStateDialog from '$lib/components/library/book-state-dialog.svelte';
   import AddToCollectionDialog from '$lib/components/collections/add-to-collection-dialog.svelte';
   import { readingStatusSettleSeconds$ } from '$lib/sync/settings';
@@ -384,6 +388,12 @@
     stopWhispersyncWatch = ws.watch(() => {
       if (whispersync === ws) whispersyncNotice = true;
     });
+  }
+
+  /** The notice's Reload: the book opens again at the page showing now (not saved). */
+  function reloadForWhispersync() {
+    if ($rawBookData$) keepPlaceForReload(tabStorage(), $rawBookData$.id, exploredCharCount);
+    window.location.reload();
   }
   let exploredCharCount = 0;
   let bookCharCount = 0;
@@ -1349,7 +1359,6 @@
       dialogManager.dialogs$.next([
         {
           component: BookmarkNameDialog,
-          disableCloseOnClick: true,
           props: { place: placeLabel, name: name || chapter || 'Bookmark', resolver }
         }
       ]);
@@ -2092,7 +2101,6 @@
         dialogManager.dialogs$.next([
           {
             component: BookSearchDialog,
-            disableCloseOnClick: true,
             props: {
               state: searchState,
               total: bookCharCount,
@@ -2368,7 +2376,6 @@
       dialogManager.dialogs$.next([
         {
           component: NoteEditorDialog,
-          disableCloseOnClick: true,
           props: {
             heading: item.note ? 'Edit note' : 'Note',
             quote: quoteOf(item.text),
@@ -2504,7 +2511,6 @@
         dialogManager.dialogs$.next([
           {
             component: NotesPanel,
-            disableCloseOnClick: true,
             props: {
               view: controller.view,
               bookId: controller.bookId,
@@ -2635,7 +2641,6 @@
       dialogManager.dialogs$.next([
         {
           component: ShortcutsDialog,
-          disableCloseOnClick: true,
           props: {
             groups: readerShortcutGroups({
               keybindMap: bookReaderKeybindMap$.getValue(),
@@ -2803,21 +2808,17 @@
     pauseTracker();
     skipKeyDownListener$.next(true);
 
-    const target = await new Promise<number | undefined>((resolver) => {
-      dialogManager.dialogs$.next([
-        {
-          component: NumberDialog,
-          props: {
-            dialogHeader: 'Jump to Position',
-            minValue: 1,
-            maxValue: bookCharCount || 1,
-            resolver
-          }
-        }
-      ]);
-    });
-
-    skipKeyDownListener$.next(false);
+    let target: number | undefined;
+    try {
+      // Settles however the dialog closes (Go, Esc, ✕, a click outside).
+      target = await dialogManager.open<number>(NumberDialog, {
+        dialogHeader: 'Jump to position',
+        minValue: 1,
+        maxValue: bookCharCount || 1
+      });
+    } finally {
+      skipKeyDownListener$.next(false);
+    }
 
     if (typeof target !== 'number') {
       restartTrackerAfterCharacterChangeOrTime(1);
@@ -2877,8 +2878,7 @@
 
     dialogManager.dialogs$.next([
       {
-        component: '<div/>',
-        disableCloseOnClick: true
+        component: '<div/>'
       }
     ]);
 
@@ -3355,8 +3355,17 @@
 
       // WP8a: a Start over not applied on this device yet opens the book at the
       // start, before "Continue from...?" looks at other devices' places.
-      if (await startOverOnOpen(localId, title, restoredPos)) restoredPos = 0;
+      const startedOver = await startOverOnOpen(localId, title, restoredPos);
+      if (startedOver) restoredPos = 0;
       if (positionPromptStopped) return;
+
+      // The reader's own reload (newer audiobook data) comes back to the page that was
+      // showing, without saving it ("Only save my place by hand" still holds).
+      const reloadPlace = takePlaceAfterReload(tabStorage(), localId);
+      if (reloadPlace !== null && !startedOver && reloadPlace !== restoredPos) {
+        jumpToPosition(reloadPlace, { save: false, record: false });
+        restoredPos = reloadPlace;
+      }
 
       positionPrompt = new ReaderPositionPrompt(positionPromptApi(), {
         livePos: () => exploredCharCount,
@@ -3419,8 +3428,7 @@
               restorePromptKeys?.();
               resolve(row);
             }
-          },
-          disableCloseOnClick: true
+          }
         }
       ]);
     });
@@ -3525,7 +3533,6 @@
         dialogManager.dialogs$.next([
           {
             component: AddToCollectionDialog,
-            disableCloseOnClick: true,
             props: {
               bookId,
               title: $rawBookData$?.title ?? '',
@@ -3556,7 +3563,6 @@
         dialogManager.dialogs$.next([
           {
             component: BookStateDialog,
-            disableCloseOnClick: true,
             props: {
               bookId,
               title: $rawBookData$?.title ?? '',
@@ -3579,9 +3585,12 @@
     }
   }
 
-  /** The prompt's one jump ("Back" in the jump history undoes it). */
+  /**
+   * The prompt's one jump ("Back" in the jump history undoes it). Saved also with
+   * Manual Bookmark on: answering "Continue there" is an explicit choice, like Start over.
+   */
   function jumpToPromptedPosition(row: PromptRow) {
-    jumpToPosition(row.target, { save: !$manualBookmark$, record: true });
+    jumpToPosition(row.target, { save: true, record: true });
   }
 
   /**
@@ -3667,8 +3676,7 @@
           title: 'Old Domain',
           message:
             'You are currently using the old domain of ッツ Reader - consider switching to https://reader.ttsu.app to prevent issues and to ensure full features'
-        },
-        disableCloseOnClick: true
+        }
       }
     ]);
   }
@@ -3703,8 +3711,7 @@
   function openActionBackdrop() {
     dialogManager.dialogs$.next([
       {
-        component: '<div/>',
-        disableCloseOnClick: true
+        component: '<div/>'
       }
     ]);
   }
@@ -3724,22 +3731,12 @@
       isTrackerPaused$.next(true);
 
       if ($confirmClose$ && storedExploredCharacter !== exploredCharCount) {
-        const wasCanceled = await new Promise((resolver) => {
-          dialogManager.dialogs$.next([
-            {
-              component: ConfirmDialog,
-              props: {
-                dialogHeader: 'Confirm Exit',
-                dialogMessage: 'Your current location was not bookmarked. Continue leaving?',
-                resolver
-              },
-
-              disableCloseOnClick: true
-            }
-          ]);
+        const leave = await confirmDestructive({
+          ...leaveUnbookmarkedCopy(),
+          testid: 'leave-unbookmarked-dialog'
         });
 
-        if (wasCanceled) {
+        if (!leave) {
           blockDataUpdates = false;
           return;
         }
@@ -3782,8 +3779,7 @@
           props: {
             title: 'Error',
             message
-          },
-          disableCloseOnClick: true
+          }
         }
       ]);
     }
@@ -4186,7 +4182,7 @@
     <button
       class="min-h-[2.75rem] rounded border-2 border-gray-700 px-3 font-medium"
       data-testid="whispersync-reload"
-      on:click={() => window.location.reload()}
+      on:click={reloadForWhispersync}
     >
       Reload
     </button>

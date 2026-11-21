@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest';
 import {
   ONLINE_LISTS,
   audioStage4Bar,
+  audioStage4Lines,
   checkLine,
   foldersFromText,
   onlineFoundLines,
@@ -76,6 +77,44 @@ describe('audiobook stage 4 words', () => {
     ]);
   });
 
+  it('one record per recording (WP21c follow-up (3)): the review reason and the stage line', () => {
+    expect(onlineFoundLines({ review: 2, 'review:shared': 2 })).toEqual([
+      'To review: 2 (another recording that isn’t the same matched this record too: 2).'
+    ]);
+    const s = {
+      progress: {
+        phase: 'records',
+        units: 10,
+        lookupUnits: 10,
+        noRecordUnits: 0,
+        labeledUnits: 0,
+        openingsRead: 0,
+        samplesRead: 0,
+        openingErrors: 0,
+        sampleErrors: 0,
+        yields: 0,
+        phaseTimes: {},
+        records: {
+          rounds: 1,
+          shared: 9,
+          compared: 2,
+          toCompare: 4,
+          different: 3,
+          review: 4,
+          lookedUpAgain: 1,
+          windows: 12,
+          windowErrors: 0
+        }
+      },
+      units: {}
+    } as unknown as AudioStage4Status;
+    const lines = audioStage4Lines(s);
+    expect(lines).toContain('Checking recordings that share a store record.');
+    expect(lines).toContain(
+      'One record per recording: 9 store records matched by more than one recording, 2 pairs compared by their audio (12 windows read), 4 still to compare, 3 not the same recording, 4 to review, 1 looked up again without the record.'
+    );
+  });
+
   it('the progress bar uses the server’s time left; the gate per labeled source', () => {
     const s = {
       progress: { phase: 'lookups', units: 200, decided: 50 },
@@ -105,6 +144,7 @@ describe('audiobook stage 4 words', () => {
       'Author: file –, store 岬 (not known on one side)'
     );
     expect(ONLINE_LISTS.map((l) => l.id)).toContain('review:fraction');
+    expect(ONLINE_LISTS.map((l) => l.id)).toContain('review:shared');
     expect(foldersFromText(' a/b \n\n c ')).toEqual(['a/b', 'c']);
   });
 });

@@ -448,6 +448,27 @@ export function planCount(
   };
 }
 
+/**
+ * Every book id of a list, in no particular order (the library's Select All: every
+ * matching book, also the ones not loaded yet). The same filters as planCount.
+ */
+export function planIds(
+  db: Database.Database,
+  user: CatalogUser,
+  opts: ListFilter = {},
+): PlannedQuery<{ ids: string[] }> {
+  const { conds, regex } = listConditions(db, user, opts);
+  const where = conds.length ? `WHERE ${conds.map((c) => c.sql).join(' AND ')}` : '';
+  return {
+    sql: `SELECT b.id ${SQL_BOOK_FROM} ${where}`,
+    params: conds.flatMap((c) => c.params),
+    regex,
+    finish(raw) {
+      return { ids: (raw as { id: string }[]).map((r) => r.id) };
+    },
+  };
+}
+
 /** planBooks run on this connection (regexes unprotected; the API uses SearchRunner). */
 export function listBooksFor(
   db: Database.Database,

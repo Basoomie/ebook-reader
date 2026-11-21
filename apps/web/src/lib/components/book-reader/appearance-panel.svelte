@@ -5,6 +5,7 @@
    * when one changes (routes/b/+page.svelte). Plain for e-ink: no transitions, 48 px bordered
    * controls, Esc or Close closes; reader keys are suspended while it is open.
    */
+  import PanelDismiss from '$lib/components/modal/panel-dismiss.svelte';
   import { createEventDispatcher, onMount } from 'svelte';
   import ButtonToggleGroup from '$lib/components/button-toggle-group/button-toggle-group.svelte';
   import { optionsForToggle } from '$lib/components/button-toggle-group/toggle-option';
@@ -165,20 +166,10 @@
       copyMessage = `Could not copy: ${(error as Error)?.message ?? error}`;
     }
   }
-
-  function onKeydown(ev: KeyboardEvent) {
-    if (ev.key === 'Escape') {
-      ev.preventDefault();
-      if (confirming) {
-        confirming = undefined;
-      } else {
-        dispatch('close');
-      }
-    }
-  }
 </script>
 
-<svelte:window on:keydown={onKeydown} />
+<!-- A tap outside the panel (or Esc) closes it without turning the page. -->
+<PanelDismiss on:close={() => dispatch('close')} />
 
 <section
   bind:this={panelEl}

@@ -268,6 +268,14 @@ export class OfflineCatalog {
     return { books: items.map(summaryOf), nextCursor };
   }
 
+  /** Every book id of a list (select mode's Select All), from this device's books. */
+  async bookIds(query: BookListQuery, options?: RequestOptions): Promise<string[]> {
+    const data = await this.data();
+    const ids = this.listed(data, query).map((b) => b.id);
+    checkAborted(options);
+    return ids;
+  }
+
   async count(query: BookListQuery, options?: RequestOptions): Promise<number> {
     const data = await this.data();
     const n = this.listed(data, query).length;

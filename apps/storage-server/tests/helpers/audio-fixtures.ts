@@ -204,7 +204,7 @@ export async function audioEnv(
   const auth = { Authorization: `Bearer ${e.token()}` };
   const bookId = (title: string) =>
     (e.db.prepare('SELECT id FROM books WHERE title = ?').get(title) as { id: string }).id;
-  return { e, root, service, libId, auth, before, bookId, audio };
+  return { e, root, service, libId, auth, before, bookId, audio, calibreDir: calibre.dir };
 }
 
 /**

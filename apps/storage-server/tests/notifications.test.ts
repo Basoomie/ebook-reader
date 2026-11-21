@@ -17,6 +17,7 @@ import { createToken } from '../src/db/tokens';
 import { listUsers } from '../src/db/users';
 import { DEFAULT_NOTIFICATIONS_CONFIG, NotificationsConfig } from '../src/notifications/config';
 import { checkWebhookUrl } from '../src/notifications/channels';
+import { escapeMarkdown, render } from '../src/notifications/messages';
 import { NotificationService, zonedClock } from '../src/notifications/service';
 import { defaultSettings, mergeSettings } from '../src/notifications/settings';
 import { NOTIFICATION_KEY_FILE } from '../src/notifications/secrets';
@@ -257,7 +258,7 @@ describe('channels', () => {
     expect(smtp.mails[0].to).toContain('me+reader@gmail.com');
     expect(smtp.mails[0].data).toMatch(/Subject: =\?UTF-8\?/);
     expect(quotedPrintable(smtp.mails[0].data)).toContain(
-      'Test message from ッツ Reader: notifications on this channel work.\n[Open](http://192.168.1.5:3080/settings?tab=notifications)',
+      'Test message from ッツ Reader: notifications on this channel work.\nOpen: http://192.168.1.5:3080/settings?tab=notifications',
     );
 
     smtp.password = 'something else';
@@ -268,7 +269,7 @@ describe('channels', () => {
 
     e.svc.putSecret('discordWebhookUrl', e.discord.url);
     expect(await e.svc.test('discord')).toEqual({ ok: true });
-    expect(e.discord.messages[0]).toMatch(/^Test message from ッツ Reader/);
+    expect(e.discord.messages[0]).toMatch(/^\*\*Test message from ッツ Reader/);
     const log = e.svc.diagnostics().log;
     expect(log[0]).toMatchObject({ kind: 'test', channel: 'discord', status: 'sent' });
   });
@@ -287,7 +288,7 @@ describe('channels', () => {
     // A later message goes through.
     e.svc.notify({ event: 'snapshot_failed', lines: ['y'], link: null });
     await e.svc.sendDue();
-    expect(e.discord.messages).toEqual(['y']);
+    expect(e.discord.messages).toEqual(['**y**']);
   });
 });
 
@@ -314,8 +315,8 @@ describe('PC jobs and merges', () => {
     await e.round();
     expect(e.expired).toBeGreaterThan(0);
     expect(e.discord.messages).toEqual([
-      'Subtitles failed on the PC: SubPlz ran longer than 8 hours and was stopped\n' +
-        '最後は臼が笑う\n[Open](http://192.168.1.5:3080/library/book?id=b1)',
+      '**Subtitles failed on the PC: SubPlz ran longer than 8 hours and was stopped**\n' +
+        '最後は臼が笑う\n-# [Open](http://192.168.1.5:3080/library/book?id=b1)',
     ]);
 
     // Nothing again for the same rows.
@@ -332,8 +333,8 @@ describe('PC jobs and merges', () => {
     });
     await e.round();
     expect(e.discord.messages[1]).toBe(
-      '2 PC jobs failed (Audiobook, Sentence audio): Docker Desktop is not running on the PC\n' +
-        '最後は臼が笑う and 星を継ぐもの\n[Open](http://192.168.1.5:3080/settings?tab=audiobooks)',
+      '**2 PC jobs failed (Audiobook, Sentence audio): Docker Desktop is not running on the PC**\n' +
+        '最後は臼が笑う and 星を継ぐもの\n-# [Open](http://192.168.1.5:3080/settings?tab=audiobooks)',
     );
   });
 
@@ -367,15 +368,15 @@ describe('PC jobs and merges', () => {
     addJob(e, 'preview_audiobook', 'done');
     await e.round();
     expect(e.discord.messages).toEqual([
-      'Audiobook merge failed: Interrupted: the server restarted during the merge. Start it again.\n' +
-        '最後は臼が笑う\n[Open](http://192.168.1.5:3080/library/book?id=b1)',
+      '**Audiobook merge failed: Interrupted: the server restarted during the merge. Start it again.**\n' +
+        '最後は臼が笑う\n-# [Open](http://192.168.1.5:3080/library/book?id=b1)',
     ]);
     e.svc.sendDigest();
     await e.svc.sendDue();
     expect(e.discord.messages[1]).toBe(
-      'ッツ Reader: daily summary\n' +
-        '• Subtitles finished: 最後は臼が笑う [Open](http://192.168.1.5:3080/library/book?id=b1)\n' +
-        '• Audiobook merge finished: 最後は臼が笑う [Open](http://192.168.1.5:3080/library/book?id=b1)',
+      '### ッツ Reader: daily summary\n' +
+        '- Subtitles finished: 最後は臼が笑う · [Open](http://192.168.1.5:3080/library/book?id=b1)\n' +
+        '- Audiobook merge finished: 最後は臼が笑う · [Open](http://192.168.1.5:3080/library/book?id=b1)',
     );
 
     // Now: a message each; Off: nothing.
@@ -384,7 +385,7 @@ describe('PC jobs and merges', () => {
     addJob(e, 'generate_audiobook', 'done');
     await e.round();
     expect(e.discord.messages[2]).toBe(
-      'Audiobook finished\n最後は臼が笑う\n[Open](http://192.168.1.5:3080/library/book?id=b1)',
+      '**Audiobook finished**\n最後は臼が笑う\n-# [Open](http://192.168.1.5:3080/library/book?id=b1)',
     );
     e.svc.updateSettings({ finishedJobs: 'off' });
     e.clock.t += MIN;
@@ -419,8 +420,8 @@ describe('the PC', () => {
     heartbeat(e, { problem: 'Docker Desktop is not running on the PC' });
     await e.round();
     expect(e.discord.messages).toEqual([
-      'Problem on the PC: Docker Desktop is not running on the PC\n' +
-        'Jobs that need it wait until it is fixed.\n[Open](http://192.168.1.5:3080/settings?tab=audiobooks)',
+      '**Problem on the PC: Docker Desktop is not running on the PC**\n' +
+        'Jobs that need it wait until it is fixed.\n-# [Open](http://192.168.1.5:3080/settings?tab=audiobooks)',
     ]);
     e.clock.t += 30 * MIN;
     heartbeat(e, { problem: 'Docker Desktop is not running on the PC' });
@@ -432,7 +433,7 @@ describe('the PC', () => {
     e.svc.sendDigest();
     await e.svc.sendDue();
     expect(e.discord.messages[1]).toBe(
-      'ッツ Reader: daily summary\n• Resolved: Problem on the PC: Docker Desktop is not running on the PC',
+      '### ッツ Reader: daily summary\n- Resolved: Problem on the PC: Docker Desktop is not running on the PC',
     );
     // The PC off with a stale problem: not a Docker problem.
     heartbeat(e, { problem: 'x', at: e.clock.t - HOUR });
@@ -453,7 +454,7 @@ describe('the PC', () => {
     e.clock.t += HOUR;
     await e.round();
     expect(e.discord.messages).toEqual([
-      '1 PC job has waited 24 h: the PC is off\n最後は臼が笑う\n[Open](http://192.168.1.5:3080/settings?tab=audiobooks)',
+      '**1 PC job has waited 24 h: the PC is off**\n最後は臼が笑う\n-# [Open](http://192.168.1.5:3080/settings?tab=audiobooks)',
     ]);
     // Back on: resolved.
     heartbeat(e);
@@ -483,9 +484,9 @@ describe('the cleanup', () => {
     await new Promise((r) => setTimeout(r, 800));
     await e.svc.sendDue();
     expect(e.discord.messages).toEqual([
-      'The Calibre index of "ja" was not updated: 3700 of 65000 books (5.7%) are no longer in metadata.db\n' +
+      '**The Calibre index of "ja" was not updated: 3700 of 65000 books (5.7%) are no longer in metadata.db**\n' +
         "The Calibre cleanup's stages 1 and 3 paused because of it. No book was marked missing.\n" +
-        '[Open](http://192.168.1.5:3080/settings?tab=diagnostics)',
+        '-# [Open](http://192.168.1.5:3080/settings?tab=diagnostics)',
     ]);
     const open = e.svc
       .diagnostics()
@@ -504,8 +505,8 @@ describe('the cleanup', () => {
     await new Promise((r) => setTimeout(r, 800));
     await e.svc.sendDue();
     expect(e.discord.messages[1]).toBe(
-      'Calibre cleanup stage 2 (Metadata and covers from the files) paused: books changed in Calibre since the analysis\n' +
-        '3 of the next 40 books changed in Calibre.\n[Open](http://192.168.1.5:3080/cleanup)',
+      '**Calibre cleanup stage 2 (Metadata and covers from the files) paused: books changed in Calibre since the analysis**\n' +
+        '3 of the next 40 books changed in Calibre.\n-# [Open](http://192.168.1.5:3080/cleanup)',
     );
 
     // Resumed by the user: one "Resolved" line in the next digest.
@@ -514,7 +515,7 @@ describe('the cleanup', () => {
     e.svc.sendDigest();
     await e.svc.sendDue();
     expect(e.discord.messages[2]).toContain(
-      '• Resolved: Calibre cleanup stage 2 (Metadata and covers from the files) paused',
+      '- Resolved: Calibre cleanup stage 2 (Metadata and covers from the files) paused',
     );
   });
 
@@ -524,8 +525,8 @@ describe('the cleanup', () => {
     pauseAudioStage(e.cdb, 3, 'disk_busy', 'Calibre used the disk.');
     await e.round();
     expect(e.discord.messages).toEqual([
-      'Audiobook cleanup stage 3 (Duplicates (same recording)) paused: disk busy\n' +
-        'Calibre used the disk.\n[Open](http://192.168.1.5:3080/cleanup?tab=audiobooks)',
+      '**Audiobook cleanup stage 3 (Duplicates (same recording)) paused: disk busy**\n' +
+        'Calibre used the disk.\n-# [Open](http://192.168.1.5:3080/cleanup?tab=audiobooks)',
     ]);
   });
 
@@ -538,8 +539,8 @@ describe('the cleanup', () => {
     e.clock.t += MIN;
     await e.round();
     expect(e.discord.messages).toEqual([
-      "The cleanup's apply helper is offline (last seen 30 min ago)\n" +
-        'Calibre cleanup batches wait until it is back.\n[Open](http://192.168.1.5:3080/cleanup)',
+      "**The cleanup's apply helper is offline (last seen 30 min ago)**\n" +
+        'Calibre cleanup batches wait until it is back.\n-# [Open](http://192.168.1.5:3080/cleanup)',
     ]);
     // Never seen (not set up): no alert.
     e.sidecar = { online: false, lastSeenAt: null };
@@ -556,8 +557,8 @@ describe('the cleanup', () => {
       .run(e.clock.t, e.clock.t);
     await e.round();
     expect(e.discord.messages[1]).toBe(
-      "The cleanup's fetch helper is offline while stage 4 has requests waiting\n" +
-        'Online sources (stage 4) wait until it is back.\n[Open](http://192.168.1.5:3080/cleanup)',
+      "**The cleanup's fetch helper is offline while stage 4 has requests waiting**\n" +
+        'Online sources (stage 4) wait until it is back.\n-# [Open](http://192.168.1.5:3080/cleanup)',
     );
   });
 
@@ -592,9 +593,9 @@ describe('the cleanup', () => {
     e.svc.sendDigest();
     await e.svc.sendDue();
     expect(e.discord.messages).toEqual([
-      'ッツ Reader: daily summary\n' +
-        '• Calibre cleanup stage 2: "title" paused (below its accuracy bar on the labeled books) [Open](http://192.168.1.5:3080/cleanup)\n' +
-        '• Calibre cleanup stage 2: "title" resumed [Open](http://192.168.1.5:3080/cleanup)',
+      '### ッツ Reader: daily summary\n' +
+        '- Calibre cleanup stage 2: "title" paused (below its accuracy bar on the labeled books) · [Open](http://192.168.1.5:3080/cleanup)\n' +
+        '- Calibre cleanup stage 2: "title" resumed · [Open](http://192.168.1.5:3080/cleanup)',
     ]);
   });
 });
@@ -622,7 +623,7 @@ describe('library and data', () => {
     bad.stop();
     expect(results).toEqual([false]);
     await e.svc.sendDue();
-    expect(e.discord.messages[0]).toMatch(/^The nightly copy of ttsu.db failed: /);
+    expect(e.discord.messages[0]).toMatch(/^\*\*The nightly copy of ttsu\.db failed: /);
     expect(e.discord.messages[0]).toMatch(/settings\?tab=diagnostics\)$/);
     e.svc.snapshotResult('ttsu', false, new Error('again'));
     await e.svc.sendDue();
@@ -685,7 +686,7 @@ describe('library and data', () => {
     expect(r1.results.map((r) => r.status)).toEqual(['rejected', 'rejected']);
     await svc.sendDue();
     expect(discord.messages).toHaveLength(1);
-    expect(discord.messages[0]).toMatch(/^2 changes from Boox refused by the server: /);
+    expect(discord.messages[0]).toMatch(/^\*\*2 changes from Boox refused by the server: /);
     expect(discord.messages[0]).toMatch(/Kind: stat-day\./);
     expect(discord.messages[0]).toMatch(/settings\?tab=data\)$/);
 
@@ -702,7 +703,7 @@ describe('library and data', () => {
     svc.sendDigest();
     await svc.sendDue();
     expect(discord.messages[1]).toMatch(
-      /• Resolved: Changes from Boox refused by the server \(stat_day_frozen\)/,
+      /- Resolved: Changes from Boox refused by the server \(stat\\_day\\_frozen\)/,
     );
     // Later again: a new alert.
     await push([statDay('d')]);
@@ -742,14 +743,14 @@ describe('switches, digest time, restarts', () => {
     expect(e.discord.messages).toEqual([]);
     e.clock.t += MIN;
     await e.round();
-    expect(e.discord.messages).toEqual(['ッツ Reader: daily summary\n• Subtitles finished: A']);
+    expect(e.discord.messages).toEqual(['### ッツ Reader: daily summary\n- Subtitles finished: A']);
     e.svc.addDigestLine('jobs_finished', 'Subtitles finished: B');
     e.clock.t += HOUR;
     await e.round();
     expect(e.discord.messages).toHaveLength(1); // once a day
     e.clock.t += 24 * HOUR;
     await e.round();
-    expect(e.discord.messages[1]).toBe('ッツ Reader: daily summary\n• Subtitles finished: B');
+    expect(e.discord.messages[1]).toBe('### ッツ Reader: daily summary\n- Subtitles finished: B');
     e.clock.t += 24 * HOUR;
     await e.round();
     expect(e.discord.messages).toHaveLength(2); // nothing to say
@@ -844,5 +845,62 @@ describe('switches, digest time, restarts', () => {
     expect(d2.body.notifications).toEqual({ available: false });
     await svc.stop();
     database.db.close();
+  });
+});
+
+describe('message forms (Discord markdown, plain email)', () => {
+  const m = {
+    event: 'jobs_failed',
+    lines: ['Subtitles failed on the PC: no *audio* in my_book_[1].m4b', '# 2 – 8 Nov'],
+    link: '/library/book?id=b1',
+  };
+
+  it('Discord: the first line bold, text that is not ours escaped, the link small', () => {
+    expect(render(m, 'http://x', 'markdown')).toBe(
+      [
+        '**Subtitles failed on the PC: no \\*audio\\* in my\\_book\\_\\[1\\].m4b**',
+        '\\# 2 – 8 Nov',
+        '-# [Open](http://x/library/book?id=b1)',
+      ].join('\n'),
+    );
+  });
+
+  it('email: the same lines as typed, the link written out', () => {
+    expect(render(m, 'http://x', 'plain')).toBe(
+      [
+        'Subtitles failed on the PC: no *audio* in my_book_[1].m4b',
+        '# 2 – 8 Nov',
+        'Open: http://x/library/book?id=b1',
+      ].join('\n'),
+    );
+  });
+
+  it('escapes only what Discord would read as marks', () => {
+    expect(escapeMarkdown('最後は臼が笑う (2) 5.7% a-b')).toBe('最後は臼が笑う (2) 5.7% a-b');
+    expect(escapeMarkdown('- item')).toBe('\\- item');
+    expect(escapeMarkdown('1. item')).toBe('1\\. item');
+    expect(escapeMarkdown('> quote ~~x~~ `y` ||z||')).toBe(
+      '\\> quote \\~\\~x\\~\\~ \\`y\\` \\|\\|z\\|\\|',
+    );
+  });
+
+  it('the digest: a heading and a list in Discord, bullets with the address in email', async () => {
+    const smtp = await fakeSmtp('abcdefghijklmnop');
+    closers.push(() => smtp.close());
+    const e = await makeEnv({ smtp: { host: '127.0.0.1', port: smtp.port, secure: false } });
+    await withDiscord(e);
+    e.svc.putSecret('gmailAppPassword', 'abcdefghijklmnop');
+    e.svc.updateSettings({ email: { from: 'me@gmail.com', to: 'me+reader@gmail.com' } });
+    e.svc.addDigestLine('jobs_finished', 'Subtitles finished: my_book', '/library/book?id=b1');
+    e.svc.sendDigest();
+    await e.svc.sendDue();
+    expect(e.discord.messages).toEqual([
+      '### ッツ Reader: daily summary\n' +
+        '- Subtitles finished: my\\_book · [Open](http://192.168.1.5:3080/library/book?id=b1)',
+    ]);
+    expect(quotedPrintable(smtp.mails[0].data)).toContain(
+      'ッツ Reader: daily summary\n' +
+        '• Subtitles finished: my_book (http://192.168.1.5:3080/library/book?id=b1)',
+    );
   });
 });

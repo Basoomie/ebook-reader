@@ -121,6 +121,13 @@ export const SETTINGS_SECTIONS: CatalogSection[] = [
       'Places, highlights, notes, statistics and settings shared with your other devices.'
   },
   { id: 'data-device', tab: 'Data', jp: 'この端末', title: 'This device' },
+  {
+    id: 'data-downloads',
+    tab: 'Data',
+    jp: '保存',
+    title: 'Downloading books',
+    description: 'Downloading several books at once with Select in the Library.'
+  },
   { id: 'data-import', tab: 'Data', jp: '取込', title: 'Importing books' },
   {
     id: 'data-tools',
@@ -811,6 +818,21 @@ export const SETTINGS_CATALOG: CatalogSetting[] = [
     description:
       'Asks the browser not to clear the books and data saved on this device when space runs low.',
     keywords: 'persistent storage quota'
+  },
+  {
+    id: 'bulk-download-mode',
+    section: 'data-downloads',
+    title: 'Several files arrive as',
+    description:
+      'One ZIP file per download, or each file on its own (the browser may ask once to allow several downloads).',
+    keywords: 'zip select multiple bulk'
+  },
+  {
+    id: 'download-confirm-size',
+    section: 'data-downloads',
+    title: 'Ask before downloads larger than',
+    description: '0: never ask.',
+    keywords: 'size confirm gb warning'
   },
   {
     id: 'epub-fixes',

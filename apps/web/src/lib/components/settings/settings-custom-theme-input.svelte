@@ -1,4 +1,5 @@
 <script lang="ts">
+  /** One colour of a custom theme: its name, a colour picker and its opacity (0-1). */
   import type { CustomThemeValue, ThemeOption } from '$lib/data/theme-option';
   import { createEventDispatcher } from 'svelte';
 
@@ -31,15 +32,18 @@
   }
 </script>
 
-<span>{label}</span>
+<span class="min-w-0 text-sm">{label}</span>
 <input
   type="color"
-  class="border border-black"
+  class="h-10 w-14 cursor-pointer rounded border border-c-strong bg-transparent p-0.5"
+  aria-label="{label} colour"
   value={values.hexExpression}
   on:change={handleColorChange}
 />
 <input
   type="number"
+  class="c-input w-full !min-h-[2.5rem] px-2"
+  aria-label="{label} opacity"
   step="0.1"
   min="0"
   max="1"

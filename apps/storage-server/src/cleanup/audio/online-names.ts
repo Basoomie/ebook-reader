@@ -50,6 +50,68 @@ export function searchTitle(name: string): string {
   return n;
 }
 
+/**
+ * The title as the name prints it, with a bracket attached to its end kept
+ * (`モテモテな僕は 世界まで救っちゃうんだぜ(妄想)`): `searchTitle` without its last step, which
+ * drops any trailing bracket (WP21c follow-up (3): `(妄想)` and the store's `(入門)` both vanished,
+ * so two different books agreed). TMW's publisher after the title (`_ (KADOKAWA)`, `꞉ (小学館)`,
+ * `. (講談社文庫)`, or after a space) is dropped. Used for the comparison only, never searched
+ * (search URLs stay `searchTitle`'s, so the fetch cache answers them).
+ */
+export function fullTitle(name: string): string {
+  const n = demojibake(name);
+  let t = AUDIO_EXT.test(n) ? n.slice(0, n.lastIndexOf('.')) : n;
+  t = t.replace(ARCHIVE_EXT, '');
+  t = t.replace(ASIN_IN_NAME, '').replace(STORE_IN_NAME, '');
+  t = t.replace(/^(Vol [\d.]+|Bonus|CD \d+) - /, '');
+  t = t.replace(/^\[\d+\]\s*/, '');
+  t = t.replace(/^\[[\d.]+巻[^\]]*\]\s*/, '');
+  t = t.replace(/^\[[^\]]+\]\s+/, '');
+  t = t.replace(/[_\s]+$/u, '');
+  t = t.replace(/(?:\s*[_꞉:：.]\s*|\s+)[（(][^()（）]*[)）]$/u, '');
+  t = t.replace(/【[^】]*】/g, '');
+  t = t.split('꞉').join('：').split('_').join(' ');
+  return t.normalize('NFKC').replace(/\s+/g, ' ').trim();
+}
+
+/** Brackets that name an imprint or publisher, or a reader: never part of the book's title. */
+const LABEL =
+  /文庫|新書|ブックス|ノベルス|コミックス|BOOKS|NOVELS|出版|書房|書店|KADOKAWA|講談社|小学館|集英社|新潮社|角川|朗読|読み手|ナレーション|^CV|^cv/i;
+/** Brackets that are not a subtitle: a volume, an imprint or publisher, a reader. */
+const VOLUME_MARK = /\d|^[一二三四五六七八九十百]+$|^(上|中|下|前|後|前編|中編|後編)$/;
+const NOT_SUBTITLE = { test: (c: string) => VOLUME_MARK.test(c) || LABEL.test(c) };
+const READING = /^[\p{Script=Hiragana}ー・\s]+$/u;
+
+/**
+ * `fullTitle` without a last bracket that names an imprint, a publisher or a reader, or gives a
+ * reading (`負けヒロインが多すぎる！（ガガガ文庫）` → `負けヒロインが多すぎる!`): what the exact-title
+ * tie-break compares, on both sides (WP21c follow-up (3): Audible's title carried the imprint, the
+ * TMW name didn't).
+ */
+export function titleWithoutLabel(name: string): string {
+  const t = fullTitle(name);
+  const m = /\s*[（(]([^()（）]+)[)）]$/u.exec(t);
+  if (!m) return t;
+  const c = m[1].trim();
+  return LABEL.test(c) || READING.test(c) ? t.slice(0, m.index).trim() : t;
+}
+
+/**
+ * The subtitle a title carries in a bracket attached to its end (`(妄想)` → "妄想"), or null:
+ * no bracket, a bracket after a space or separator (a publisher), or one that is a volume
+ * (the volume check decides those), an imprint, a reader, or a reading in hiragana (卍（まんじ）).
+ * Two titles whose subtitles differ name different books.
+ */
+export function titleBracket(name: string): string | null {
+  const t = fullTitle(name);
+  // A volume number may follow it: `…(泣)2` is volume 2 of `…(泣)`, not of `…(妄想)`.
+  const m = /[^\s(（][（(]([^()（）]+)[)）]\s*[0-9]*$/u.exec(t);
+  if (!m) return null;
+  const c = m[1].trim();
+  if (!c || NOT_SUBTITLE.test(c) || READING.test(c)) return null;
+  return c;
+}
+
 /** A name that says nothing about the book (never searched). */
 export function meaningless(q: string): boolean {
   return (

@@ -48,7 +48,8 @@ export const REASON_LABELS: Record<string, string> = {
   runtime: 'the length differs (another edition?)',
   narrator: 'the narrator differs from the file’s tags',
   editions: 'several editions fit and their sample audio didn’t decide',
-  fraction: 'matches only half or a third of the files’ total length (the files may be copies)'
+  fraction: 'matches only half or a third of the files’ total length (the files may be copies)',
+  shared: 'another recording that isn’t the same matched this record too'
 };
 
 export const ONLINE_LISTS: { id: string; label: string }[] = [
@@ -115,6 +116,7 @@ export function siteLine(l: AudioSiteLine, now = Date.now()): string {
 const PHASES: Record<string, string> = {
   units: 'Finding the recordings',
   lookups: 'Looking up',
+  records: 'Checking recordings that share a store record',
   gate: 'Checking the labeled books',
   done: 'Done'
 };
@@ -143,6 +145,20 @@ export function audioStage4Lines(s: AudioStage4Status | null | undefined): strin
     out.push(
       `Sample audio: ${count(p.openingsRead, 'opening', 'openings')} and ${count(p.samplesRead, 'store sample', 'store samples')} compared${p.openingErrors + p.sampleErrors ? `, ${n(p.openingErrors + p.sampleErrors)} unreadable` : ''}${p.yields ? `; gave the disk to the Calibre cleanup ${count(p.yields, 'time', 'times')}` : ''}.`
     );
+  }
+  const r = p.records;
+  if (r && (r.shared || r.compared || r.review || r.lookedUpAgain)) {
+    const bits = [
+      `${count(r.shared, 'store record', 'store records')} matched by more than one recording`,
+      r.compared
+        ? `${count(r.compared, 'pair', 'pairs')} compared by their audio (${count(r.windows ?? 0, 'window', 'windows')} read${r.windowErrors ? `, ${n(r.windowErrors)} unreadable` : ''})`
+        : null,
+      r.toCompare && p.phase === 'records' ? `${n(r.toCompare)} still to compare` : null,
+      r.different ? `${n(r.different)} not the same recording` : null,
+      r.review ? `${n(r.review)} to review` : null,
+      r.lookedUpAgain ? `${n(r.lookedUpAgain)} looked up again without the record` : null
+    ].filter(Boolean);
+    out.push(`One record per recording: ${bits.join(', ')}.`);
   }
   const times = Object.entries(p.phaseTimes ?? {})
     .filter(([, t]) => t.ms > 0)

@@ -81,7 +81,19 @@ export function browserOpenDeps(
     },
     fillPlaceholder: (content, signal) =>
       saveLikeManualImport(content, signal, ReplicationSaveBehavior.Overwrite),
-    confirmPlaceholder
+    confirmPlaceholder,
+    // Its whispersync data before the reader opens (no "Newer audiobook data" reload).
+    prepareCopy: async (copy, signal) => {
+      try {
+        const [{ syncWhispersyncForNewCopy }, db] = await Promise.all([
+          import('$lib/audio/whispersync-reader'),
+          database.db
+        ]);
+        await syncWhispersyncForNewCopy(copy, db, signal);
+      } catch {
+        // never in the way of opening: the reader's opening sync brings it later
+      }
+    }
   };
 }
 

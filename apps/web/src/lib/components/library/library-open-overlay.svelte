@@ -1,5 +1,8 @@
 <script lang="ts">
-  import { buttonClasses } from '$lib/css-classes';
+  /**
+   * "Opening the book…" progress: the modal frame's look (modal.svelte) without its closing
+   * rules: a stray tap outside never cancels the download; Cancel does.
+   */
   import type { OpenStage } from '$lib/library/open-calibre-book';
   import { createEventDispatcher } from 'svelte';
 
@@ -20,17 +23,26 @@
         : `Downloading ${mb(stage.loaded)} MB`
       : stage.stage === 'prepare'
         ? 'Preparing the book…'
-        : 'Saving on this device…';
+        : stage.stage === 'audiobook'
+          ? 'Getting audiobook data…'
+          : 'Saving on this device…';
 </script>
 
-<div class="fixed inset-0 z-50 flex items-center justify-center bg-black/40" role="dialog">
-  <div class="c-panel mx-4 w-full max-w-md rounded p-6" aria-live="polite">
-    <div class="mb-2 line-clamp-2 font-medium">{title}</div>
-    <div class="mb-6">{text}</div>
-    <div class="flex justify-end">
-      <button class="{buttonClasses} border border-current" on:click={() => dispatch('cancel')}>
-        Cancel
-      </button>
-    </div>
-  </div>
+<div class="c-modal-layer">
+  <div class="c-modal-backdrop" />
+  <section class="c-modal c-modal-sm" role="dialog" aria-modal="true" aria-label={title}>
+    <header class="c-modal-head">
+      <div class="c-modal-titles">
+        <h2 class="c-modal-title line-clamp-2">{title}</h2>
+        <p class="c-modal-sub" aria-live="polite">{text}</p>
+      </div>
+    </header>
+    <footer class="c-modal-foot">
+      <div class="c-modal-btns">
+        <button type="button" class="c-btn c-btn-secondary" on:click={() => dispatch('cancel')}>
+          Cancel
+        </button>
+      </div>
+    </footer>
+  </section>
 </div>

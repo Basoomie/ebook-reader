@@ -24,6 +24,7 @@ import {
   MAX_LOOKUP_IDS,
   planBooks,
   planCount,
+  planIds,
   planLookup,
   PlannedQuery,
   verifyThumbnailUrl,
@@ -227,6 +228,20 @@ export function createCatalogRouter(db: Database.Database, catalog: CatalogOptio
           countCache.delete(countCache.keys().next().value as string);
         }
         res.json({ count });
+      } catch (err) {
+        searchErrors(err);
+      }
+    }),
+  );
+
+  // Every book id of a list (the library's Select All), with the filters of /books/count.
+  router.get(
+    '/books/ids',
+    asyncHandler(async (req, res) => {
+      const user = askingUser(res);
+      const filter = listFilter(req);
+      try {
+        res.json(await run(planIds(db, user, filter)));
       } catch (err) {
         searchErrors(err);
       }

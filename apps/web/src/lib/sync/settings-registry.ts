@@ -168,6 +168,8 @@ export const SETTINGS_REGISTRY: Record<string, SettingSpec> = {
   notesHighlightSort: d('String'),
   libraryCoverSize: d('Number'),
   libraryAutoLoad: d('Boolean'),
+  libraryBulkDownloadMode: d('String'),
+  libraryDownloadConfirmGb: d('Number'),
   libraryLook: d('String'),
   bookIllustrationsPosition: d('String'),
 

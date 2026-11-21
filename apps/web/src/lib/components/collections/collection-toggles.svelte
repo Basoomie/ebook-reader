@@ -13,11 +13,6 @@
   export let bookId: string;
   export let api: CollectionsApi;
 
-  const buttonClass =
-    'flex min-h-[3rem] items-center justify-center rounded border-2 border-current px-4 font-medium';
-  const pressedClass = 'bg-gray-700 text-white border-gray-700';
-  const inputClass = 'block w-full border-0 border-b-2 border-gray-400/50 px-0.5 py-2';
-
   let lists: Collection[] = [];
   let member = new Set<string>();
   let loaded = false;
@@ -79,63 +74,78 @@
   }
 </script>
 
-<div data-testid="collection-toggles">
+<div class="grid gap-3" data-testid="collection-toggles">
   {#if !loaded}
-    <p>Loading…</p>
+    <p class="text-sm text-c-muted">Loading…</p>
   {:else}
     {#if lists.length}
       <div class="flex flex-wrap gap-2" role="group" aria-label="Collections">
         {#each lists as c (c.id)}
           <button
-            class="{buttonClass} {member.has(c.id) ? pressedClass : ''}"
+            type="button"
+            class="c-btn c-btn-secondary c-btn-sm"
             aria-pressed={member.has(c.id)}
             disabled={busy}
             data-testid="collection-toggle"
             data-collection={c.id}
             on:click={() => toggle(c)}
           >
-            {member.has(c.id) ? '✓ ' : ''}{c.name}
+            <span aria-hidden="true">{member.has(c.id) ? '✓' : '+'}</span>{c.name}
           </button>
         {/each}
       </div>
     {:else}
-      <p class="text-sm">You have no manual collections yet.</p>
+      <p class="text-sm text-c-muted">You have no manual collections yet.</p>
     {/if}
     {#if creating}
-      <form class="mt-3 flex flex-wrap items-end gap-2" on:submit|preventDefault={create}>
-        <label class="min-w-[12rem] grow">
-          Name
+      <form class="c-modal-inline" on:submit|preventDefault={create}>
+        <label class="c-modal-field">
+          <span class="c-modal-label">New collection</span>
           <!-- svelte-ignore a11y-autofocus -->
           <input
-            class={inputClass}
+            class="c-input w-full"
             maxlength="200"
             autofocus
             bind:value={newName}
             data-testid="new-collection-name"
           />
         </label>
-        <button class={buttonClass} type="submit" disabled={busy} data-testid="new-collection-save">
-          Create and add
-        </button>
-        <button class={buttonClass} type="button" on:click={() => (creating = false)}>
-          Cancel
-        </button>
+        <div class="c-modal-inline-btns">
+          <button
+            class="c-btn c-btn-secondary c-btn-sm"
+            type="button"
+            on:click={() => (creating = false)}
+          >
+            Cancel
+          </button>
+          <button
+            class="c-btn c-btn-primary c-btn-sm"
+            type="submit"
+            disabled={busy}
+            data-testid="new-collection-save"
+          >
+            Create and add
+          </button>
+        </div>
       </form>
     {:else}
-      <button
-        class="{buttonClass} mt-3"
-        disabled={busy}
-        data-testid="new-collection"
-        on:click={() => {
-          creating = true;
-          error = '';
-        }}
-      >
-        New collection…
-      </button>
+      <div>
+        <button
+          type="button"
+          class="c-btn c-btn-ghost c-btn-sm c-btn-flush-start"
+          disabled={busy}
+          data-testid="new-collection"
+          on:click={() => {
+            creating = true;
+            error = '';
+          }}
+        >
+          + New collection…
+        </button>
+      </div>
     {/if}
   {/if}
   {#if error}
-    <p class="pt-2 font-medium" role="alert">{error}</p>
+    <p class="c-modal-error" role="alert"><span aria-hidden="true">⚠</span>{error}</p>
   {/if}
 </div>

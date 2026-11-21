@@ -20,7 +20,16 @@ import {
   sendEmail,
 } from './channels';
 import type { NotificationsConfig } from './config';
-import { clip, LINKS, Message, plural, render } from './messages';
+import {
+  clip,
+  escapeMarkdown,
+  formatFor,
+  LINKS,
+  linkText,
+  Message,
+  plural,
+  render,
+} from './messages';
 import {
   CHANNELS,
   Channel,
@@ -176,9 +185,8 @@ export class NotificationService {
   /** Queues an alert on every channel it is switched on for. */
   notify(m: Message, settings = this.settings()): void {
     const now = this.now();
-    const text = render(m, settings.linkBase);
     for (const ch of this.channelsFor(m.event, settings)) {
-      this.store.queue(m.event, 'now', ch, text, now);
+      this.store.queue(m.event, 'now', ch, render(m, settings.linkBase, formatFor(ch)), now);
     }
     this.log(`Notifications: ${m.lines[0] ?? m.event}`);
   }
@@ -294,6 +302,7 @@ export class NotificationService {
         link: LINKS.notifications,
       },
       settings.linkBase,
+      formatFor(channel),
     );
     // Not picked up by the sender (no next_at): it is tried once, right here.
     const id = this.store.queue('test', 'test', channel, text, this.now(), null);
@@ -405,22 +414,31 @@ export class NotificationService {
   sendDigest(settings = this.settings()): void {
     const lines = this.store.digestLines();
     const resolved = this.store.resolvedProblems();
-    const perChannel = new Map<Channel, string[]>();
-    const add = (event: string, text: string) => {
+    type Item = { text: string; link: string | null };
+    const perChannel = new Map<Channel, Item[]>();
+    const add = (event: string, item: Item) => {
       for (const ch of this.channelsFor(event, settings)) {
-        perChannel.set(ch, [...(perChannel.get(ch) ?? []), text]);
+        perChannel.set(ch, [...(perChannel.get(ch) ?? []), item]);
       }
     };
-    for (const l of lines)
-      add(l.event, l.link ? `${l.text} [Open](${settings.linkBase}${l.link})` : l.text);
+    for (const l of lines) add(l.event, { text: l.text, link: l.link });
     for (const p of resolved)
-      add(p.event, `Resolved: ${p.summary ?? getEvent(p.event)?.label ?? p.event}`);
+      add(p.event, {
+        text: `Resolved: ${p.summary ?? getEvent(p.event)?.label ?? p.event}`,
+        link: null,
+      });
     const now = this.now();
+    // A heading and a list in Discord (user, 2026-11-21); bullets with the address in email.
+    const bullet = (ch: Channel, { text, link }: Item) => {
+      const url = link ? `${settings.linkBase}${link}` : null;
+      if (formatFor(ch) === 'plain') return `• ${text}${url ? ` (${url})` : ''}`;
+      return `- ${escapeMarkdown(text)}${url ? ` · ${linkText('Open', url, 'markdown')}` : ''}`;
+    };
     for (const [ch, items] of perChannel) {
       const head = 'ッツ Reader: daily summary';
       for (const text of this.chunks(
-        head,
-        items.map((t) => `• ${t}`),
+        formatFor(ch) === 'markdown' ? `### ${head}` : head,
+        items.map((item) => bullet(ch, item)),
         ch,
       )) {
         this.store.queue('digest', 'digest', ch, text, now);
@@ -480,20 +498,17 @@ export class NotificationService {
         const channels = this.channelsFor(event, settings);
         if (channels.length === 0) return;
         input ??= loadStatsInput(db, userId);
-        const text = buildReport(
-          input,
-          kind,
-          ended,
-          calendar.weekStart,
-          settings.linkBase,
-          settings.stats.noReading,
-        );
-        if (text === null) {
+        const texts = buildReport(input, kind, ended, calendar.weekStart, {
+          linkBase: settings.linkBase,
+          noReadingMode: settings.stats.noReading,
+          compare: settings.stats.compare[kind],
+        });
+        if (texts === null) {
           this.log(`Notifications: no reading ${ended.from}–${ended.to}, ${kind} stats skipped`);
           return;
         }
         const now = this.now();
-        for (const ch of channels) this.store.queue(event, 'report', ch, text, now);
+        for (const ch of channels) this.store.queue(event, 'report', ch, texts[formatFor(ch)], now);
         queued += channels.length;
         this.log(`Notifications: ${kind} stats for ${ended.from}–${ended.to}`);
       });

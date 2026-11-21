@@ -197,6 +197,30 @@ export function unreadResetCopy(): ConfirmCopy {
 }
 
 /** Unread for a library selection. */
+/**
+ * Select mode's Download menu, above Settings > Data > "Ask before downloads larger than".
+ * Removes nothing: the plain filled button.
+ */
+export function largeDownloadCopy(opts: {
+  /** "audiobooks", "books", "covers", "SRT files". */
+  what: string;
+  count: number;
+  size: string;
+  zip: boolean;
+}): ConfirmCopy {
+  return {
+    title: `Download ${opts.size}?`,
+    message: [
+      `${opts.count.toLocaleString('en-US')} ${opts.what}, ${opts.size} in all. ${
+        opts.zip ? 'They arrive as one ZIP file.' : 'Each file is saved on its own.'
+      }`,
+      'You can change the size that asks first in Settings > Data > Downloading books.'
+    ],
+    confirmLabel: `Download ${opts.size}`,
+    danger: false
+  };
+}
+
 export function unreadManyCopy(count: number): ConfirmCopy {
   return {
     title: `Set ${books(count)} to Unread?`,
@@ -219,6 +243,51 @@ export function removeReadCopy(ordinal: string): ConfirmCopy {
 }
 
 // ---- Reader ------------------------------------------------------------------------------------
+
+/** Leaving the reader when the current place isn't bookmarked ("Confirm close" on). */
+export function leaveUnbookmarkedCopy(): ConfirmCopy {
+  return {
+    title: 'Leave without a bookmark?',
+    message: ['Your current place is not bookmarked.'],
+    confirmLabel: 'Leave',
+    cancelLabel: 'Stay',
+    danger: false
+  };
+}
+
+/** Opening a library book that is already on this device under another count (WP6). */
+export function openOwnCopyCopy(q: {
+  title: string;
+  localCharacters: number;
+  calibreCharacters: number;
+}): ConfirmCopy {
+  return {
+    title: 'Open your own copy?',
+    message: [
+      `You already have "${q.title}" on this device (${Number(q.localCharacters).toLocaleString()} characters). The library copy has ${Number(q.calibreCharacters).toLocaleString()} characters, so it may be a different edition.`,
+      'Your copy opens and is remembered as this library book. Your copy and its progress are not changed.'
+    ],
+    confirmLabel: 'Open my copy',
+    danger: false
+  };
+}
+
+/** WP7b: a migrated placeholder becomes the library copy with another count. */
+export function openLibraryCopyCopy(q: {
+  title: string;
+  localCharacters: number;
+  calibreCharacters: number;
+}): ConfirmCopy {
+  return {
+    title: 'Open the library copy?',
+    message: [
+      `Your old copy of "${q.title}" had ${Number(q.localCharacters).toLocaleString()} characters; the library copy has ${Number(q.calibreCharacters).toLocaleString()}, so your place may move a little.`,
+      'The library copy opens from now on. Your reading place, bookmark and stats are kept.'
+    ],
+    confirmLabel: 'Open the library copy',
+    danger: false
+  };
+}
 
 export function removeNoteCopy(): ConfirmCopy {
   return {
@@ -773,8 +842,7 @@ export function arrivalsOnCopy(lastPlan: string | null): ConfirmCopy {
     title: 'Add new audiobooks to the library every day?',
     message: [
       ...(lastPlan ? [lastPlan] : []),
-      'From the next run on (daily, or Run now), the linking sidecar adds each new book to media/audiobooks/japanese as new folders with hard links to the torrents’ files and its metadata.json. Audiobookshelf then shows them. Books already in the library are never changed.',
-      'Pause qBittorrent and Sonarr before a large first run (they slow the disk).'
+      'From the next run on (daily, or Run now), the linking sidecar adds each new book to media/audiobooks/japanese as new folders with hard links to the torrents’ files and its metadata.json. Audiobookshelf then shows them. Books already in the library are never changed.'
     ],
     confirmLabel: 'Switch it On',
     irreversible: false

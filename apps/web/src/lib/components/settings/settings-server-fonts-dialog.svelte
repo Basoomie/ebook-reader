@@ -2,11 +2,13 @@
   /**
    * WP13: custom fonts on the server. Upload a font once from any device; every device
    * downloads it and keeps it for offline use. Which font a device uses stays its own
-   * setting (the font pickers). Plain for e-ink: no transitions, 48 px controls, Esc
-   * closes.
+   * setting (the font pickers). Sections: Your fonts, From Google Fonts, Upload a font
+   * file. ✕, Esc or a click outside close it, asking first when a name or file was chosen
+   * (modal.svelte); closing stops an upload.
    */
   import { createEventDispatcher, onDestroy, onMount } from 'svelte';
-  import { inputClasses } from '$lib/css-classes';
+  import Modal from '$lib/components/modal/modal.svelte';
+  import ModalSection from '$lib/components/modal/modal-section.svelte';
   import {
     fontNameProblem,
     formatFontSize,
@@ -67,14 +69,6 @@
   function close() {
     if (busy) abort?.abort();
     dispatch('close');
-  }
-
-  function onKeydown(ev: KeyboardEvent) {
-    if (ev.key === 'Escape') {
-      ev.preventDefault();
-      if (confirmDelete) confirmDelete = null;
-      else close();
-    }
   }
 
   /** A name from the file name, when it makes a valid one. */
@@ -199,79 +193,48 @@
       problem = `Could not delete "${font.name}": ${(error as Error)?.message ?? error}`;
     }
   }
-
-  const button =
-    'flex min-h-[3rem] items-center justify-center rounded border-2 border-current px-4 font-medium disabled:opacity-50';
 </script>
 
-<svelte:window on:keydown={onKeydown} />
-
-<section
-  class="mdc-elevation--z24 flex max-h-[85vh] w-[36rem] max-w-full flex-col rounded bg-white p-6"
-  data-testid="server-fonts-dialog"
+<Modal
+  title="Custom fonts"
+  subtitle="Every device gets them and keeps them for reading offline."
+  size="lg"
+  dirty={!!(name.trim() || file)}
+  testid="server-fonts-dialog"
+  on:close={close}
 >
-  <h2 class="weight-medium mb-3 text-xl">Custom Fonts</h2>
-  <div class="min-h-0 overflow-y-auto">
-    <p class="mb-3 text-sm">
-      Add a font once; every device gets it and keeps it for reading offline. Each device chooses
-      its own font in the font lists.
-    </p>
+  {#if problem || notice}
+    <div class="sticky top-0 z-10 pt-3">
+      {#if problem}
+        <p class="c-notice c-modal-error !my-0" role="alert" data-testid="server-font-problem">
+          <span aria-hidden="true">⚠</span>{problem}
+        </p>
+      {/if}
+      {#if notice}
+        <p class="c-notice !my-0" role="status" data-testid="server-font-notice">{notice}</p>
+      {/if}
+    </div>
+  {/if}
 
+  <ModalSection
+    title="Your fonts"
+    count={$fonts$.length}
+    hint="Each device chooses its own font in the font lists."
+  >
     {#if $fonts$.length}
-      <div class="mb-4">
-        <PagedList
-          items={$fonts$}
-          pageSize={8}
-          text={(f) => f.name}
-          searchLabel="Search fonts"
-          label="Fonts"
-          let:rows
-        >
-          <ul data-testid="server-font-list">
-            {#each rows as font (font.id)}
-              <li
-                class="flex items-center gap-3 border-t border-gray-400 py-2"
-                data-testid="server-font"
-              >
-                <div class="min-w-0 flex-1">
-                  <!-- Shown in its own font once it is on this device. -->
-                  <div
-                    class="break-words font-medium"
-                    style:font-family={`'${font.name}', sans-serif`}
-                  >
-                    {font.name}
-                  </div>
-                  {#if font.source === 'google'}
-                    <div class="break-words text-sm" data-testid="server-font-google">
-                      Google Fonts{licenseName(font.licenseUrl)
-                        ? ` · ${licenseName(font.licenseUrl)}`
-                        : ''} · {weightsLabel(font.weights)} · {formatFontSize(font.size)} ·
-                      <span data-testid="server-font-status">{statusText[font.status]}</span>
-                    </div>
-                    {#if font.copyright}
-                      <div class="break-words text-xs" data-testid="server-font-copyright">
-                        {font.copyright}
-                      </div>
-                    {/if}
-                  {:else}
-                    <div class="break-words text-sm">
-                      {font.fileName} · {formatFontSize(font.size)} ·
-                      <span data-testid="server-font-status">{statusText[font.status]}</span>
-                    </div>
-                  {/if}
-                </div>
-                {#if confirmDelete?.id !== font.id}
-                  <button
-                    class={button}
-                    data-testid="server-font-delete"
-                    on:click={() => (confirmDelete = font)}
-                  >
-                    Delete…
-                  </button>
-                {/if}
-              </li>
-              {#if confirmDelete?.id === font.id}
-                <li class="pb-3">
+      <PagedList
+        items={$fonts$}
+        pageSize={8}
+        text={(f) => f.name}
+        searchLabel="Search fonts"
+        label="Fonts"
+        let:rows
+      >
+        <ul data-testid="server-font-list">
+          {#each rows as font (font.id)}
+            {#if confirmDelete?.id === font.id}
+              <li class="c-modal-row">
+                <div class="w-full py-1">
                   <InlineConfirm
                     {...deleteFontCopy(font.name)}
                     testid="server-font-delete-confirm"
@@ -279,25 +242,69 @@
                     on:confirm={() => deleteFont(font)}
                     on:cancel={() => (confirmDelete = null)}
                   />
-                </li>
-              {/if}
-            {/each}
-          </ul>
-        </PagedList>
-      </div>
+                </div>
+              </li>
+            {:else}
+              <li class="c-modal-row" data-testid="server-font">
+                <div class="c-modal-row-main">
+                  <!-- Shown in its own font once it is on this device. -->
+                  <div
+                    class="c-modal-row-title text-base"
+                    style:font-family={`'${font.name}', sans-serif`}
+                  >
+                    {font.name}
+                  </div>
+                  {#if font.source === 'google'}
+                    <div class="c-modal-row-meta" data-testid="server-font-google">
+                      Google Fonts{licenseName(font.licenseUrl)
+                        ? ` · ${licenseName(font.licenseUrl)}`
+                        : ''} · {weightsLabel(font.weights)} · {formatFontSize(font.size)} ·
+                      <span data-testid="server-font-status">{statusText[font.status]}</span>
+                    </div>
+                    {#if font.copyright}
+                      <div class="c-modal-row-meta text-xs" data-testid="server-font-copyright">
+                        {font.copyright}
+                      </div>
+                    {/if}
+                  {:else}
+                    <div class="c-modal-row-meta">
+                      {font.fileName} · {formatFontSize(font.size)} ·
+                      <span data-testid="server-font-status">{statusText[font.status]}</span>
+                    </div>
+                  {/if}
+                </div>
+                <div class="c-modal-row-actions">
+                  <button
+                    type="button"
+                    class="c-btn c-btn-ghost c-btn-sm"
+                    data-testid="server-font-delete"
+                    on:click={() => (confirmDelete = font)}
+                  >
+                    Delete…
+                  </button>
+                </div>
+              </li>
+            {/if}
+          {/each}
+        </ul>
+      </PagedList>
     {:else}
-      <p class="mb-4">No custom fonts yet.</p>
+      <p class="text-sm text-c-muted">No custom fonts yet.</p>
     {/if}
+  </ModalSection>
 
-    {#if server && server !== 'off' && server.google}
-      <div class="mb-5">
-        <SettingsGoogleFonts on:added={() => void syncSoon()} />
-      </div>
-    {/if}
+  {#if server && server !== 'off' && server.google}
+    <ModalSection
+      title="From Google Fonts"
+      hint="Free Japanese fonts. The library server downloads the one you choose, then every device gets it."
+    >
+      <SettingsGoogleFonts on:added={() => void syncSoon()} />
+    </ModalSection>
+  {/if}
 
-    <h3 class="mb-2 font-medium">Add a font</h3>
+  <ModalSection title="Upload a font file" hint="From this device. Every device gets it.">
     {#if server === null}
-      <p>Checking the library server…</p>
+      <p class="text-sm text-c-muted">Checking the library server…</p>
     {:else if server === false}
       <p data-testid="server-fonts-not-connected">
         Connect to your library server (Settings > Library) to add fonts. Fonts already on this
@@ -306,52 +313,56 @@
     {:else if server === 'off'}
       <p>The library server doesn't take fonts. Update the server to add fonts.</p>
     {:else}
-      <label class="mb-1 block" for="server-font-name">Name</label>
-      <input
-        id="server-font-name"
-        type="text"
-        class="{inputClasses} mb-3 w-full"
-        bind:value={name}
-        disabled={busy}
-        maxlength="64"
-        data-testid="server-font-name"
-      />
-      <div class="mb-3 flex flex-wrap items-center gap-3">
-        <label class="{button} cursor-pointer">
-          <input
-            type="file"
-            class="hidden"
-            accept=".woff2,.woff,.ttf,.otf,font/woff2,font/woff,font/ttf,font/otf"
-            bind:this={fileInput}
-            on:change={onFileChange}
-            disabled={busy}
-            data-testid="server-font-file"
-          />
-          Choose File
-        </label>
-        <span class="min-w-0 break-words text-sm"
-          >{file ? file.name : 'woff2, woff, ttf or otf'}</span
-        >
+      <label class="c-modal-field" for="server-font-name">
+        <span class="c-modal-label">Name</span>
+        <input
+          id="server-font-name"
+          type="text"
+          class="c-input w-full"
+          placeholder="As it should appear in the font lists"
+          bind:value={name}
+          disabled={busy}
+          maxlength="64"
+          data-testid="server-font-name"
+        />
+      </label>
+      <div class="c-modal-field">
+        <span class="c-modal-label">File</span>
+        <div class="flex flex-wrap items-center gap-3">
+          <label class="c-btn c-btn-secondary cursor-pointer">
+            <input
+              type="file"
+              class="hidden"
+              accept=".woff2,.woff,.ttf,.otf,font/woff2,font/woff,font/ttf,font/otf"
+              bind:this={fileInput}
+              on:change={onFileChange}
+              disabled={busy}
+              data-testid="server-font-file"
+            />
+            Choose file…
+          </label>
+          <span class="min-w-0 break-words text-sm text-c-muted"
+            >{file ? file.name : 'woff2, woff, ttf or otf'}</span
+          >
+        </div>
       </div>
-      <div class="flex items-center gap-3">
-        <button class={button} on:click={upload} disabled={busy} data-testid="server-font-upload">
-          Upload
+      <div class="flex flex-wrap items-center gap-3">
+        <button
+          type="button"
+          class="c-btn c-btn-primary"
+          on:click={upload}
+          disabled={busy}
+          data-testid="server-font-upload"
+        >
+          Upload font
         </button>
         {#if busy}
-          <button class={button} on:click={() => abort?.abort()}>Cancel</button>
-          <span class="text-sm">{progress}</span>
+          <button type="button" class="c-btn c-btn-ghost" on:click={() => abort?.abort()}>
+            Stop upload
+          </button>
+          <span class="text-sm text-c-muted">{progress}</span>
         {/if}
       </div>
     {/if}
-
-    {#if problem}
-      <p class="mt-3 text-red-700" role="alert" data-testid="server-font-problem">{problem}</p>
-    {/if}
-    {#if notice}
-      <p class="mt-3" role="status" data-testid="server-font-notice">{notice}</p>
-    {/if}
-  </div>
-  <footer class="flex justify-end pt-5">
-    <button class={button} on:click={close}>Close</button>
-  </footer>
-</section>
+  </ModalSection>
+</Modal>

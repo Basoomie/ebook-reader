@@ -1,9 +1,14 @@
 <script lang="ts">
+  /**
+   * New or edit a custom reader theme: sections Start from, Colours, Font, Name, and
+   * "Save theme" in the footer. ✕, Esc or a click outside cancel, asking first when
+   * something was changed (modal.svelte).
+   */
   import type { ToggleOption } from '$lib/components/button-toggle-group/toggle-option';
-  import DialogTemplate from '$lib/components/dialog-template.svelte';
-  import Ripple from '$lib/components/ripple.svelte';
+  import Modal from '$lib/components/modal/modal.svelte';
+  import ModalSection from '$lib/components/modal/modal-section.svelte';
+  import SettingSwitch from '$lib/components/settings/setting-switch.svelte';
   import SettingsCustomThemeInput from '$lib/components/settings/settings-custom-theme-input.svelte';
-  import { buttonClasses } from '$lib/css-classes';
   import {
     customThemes$,
     fontFamilyGroupOne$,
@@ -63,6 +68,9 @@
     }
   };
 
+  const id = `custom-theme-${Math.random().toString(36).slice(2, 10)}`;
+  const editing = !!selectedTheme && !!$customThemes$[selectedTheme];
+
   let themeToCopy = existingThemes[0].id;
   let themeName = '';
   let themeNameElm: HTMLInputElement;
@@ -91,12 +99,34 @@
   $: fontChoicesOne = fontsOne.includes(fontOne) ? fontsOne : [fontOne, ...fontsOne];
   $: fontChoicesTwo = fontsTwo.includes(fontTwo) ? fontsTwo : [fontTwo, ...fontsTwo];
 
+  /** What the form holds, to tell whether anything was changed since it opened. */
+  function snapshot() {
+    return JSON.stringify([
+      customTheme,
+      themeName,
+      includeFont,
+      fontOne,
+      fontTwo,
+      includeSize,
+      size
+    ]);
+  }
+
+  let initial = '';
+  let saved = false;
+  $: dirty =
+    !saved &&
+    !!initial &&
+    initial !==
+      JSON.stringify([customTheme, themeName, includeFont, fontOne, fontTwo, includeSize, size]);
+
   $: themeStyle = `color: ${customTheme.fontColor.rgbaExpression}; background-color: ${customTheme.backgroundColor.rgbaExpression}`;
 
   onMount(() => {
     const existingThemeObject = $customThemes$[selectedTheme];
 
     if (!existingThemeObject) {
+      initial = snapshot();
       return;
     }
 
@@ -113,6 +143,7 @@
       includeSize = true;
       size = existingThemeObject.fontSize;
     }
+    initial = snapshot();
   });
 
   function getThemeData(referenceObject: ThemeOption): Record<keyof ThemeOption, CustomThemeValue> {
@@ -232,6 +263,7 @@
         $fontSize$ = Number(size);
       }
     }
+    saved = true;
     dispatch('close');
   }
 
@@ -262,25 +294,38 @@
   }
 </script>
 
-<DialogTemplate>
-  <div slot="content">
-    <div
-      class="grid grid-cols-1 gap-2 items-center overflow-auto max-h-[60vh] sm:grid-cols-[auto_auto_5rem] sm:gap-4"
-    >
-      <select class="sm:col-span-2" bind:value={themeToCopy}>
+<Modal
+  title={editing ? 'Edit theme' : 'New theme'}
+  subtitle={editing ? selectedTheme : ''}
+  size="md"
+  {dirty}
+  testid="custom-theme-dialog"
+  on:close={() => dispatch('close')}
+>
+  <ModalSection title="Start from" hint="Copy the colours of a theme, then change them below.">
+    <div class="flex flex-wrap gap-2">
+      <select
+        class="c-input min-w-0 flex-1 pr-10"
+        aria-label="Theme to copy"
+        bind:value={themeToCopy}
+      >
         {#each existingThemes as theme (theme.id)}
           <option value={theme.id}>
             {theme.id}
           </option>
         {/each}
       </select>
-      <button class={buttonClasses} on:click={handleCopyTheme}
-        >Copy
-        <Ripple />
+      <button type="button" class="c-btn c-btn-secondary" on:click={handleCopyTheme}>
+        Copy colours
       </button>
-      <span class="hidden sm:block">Attribute</span>
-      <span class="hidden sm:block">Color</span>
-      <span class="hidden sm:block">Alpha</span>
+    </div>
+  </ModalSection>
+
+  <ModalSection title="Colours">
+    <div class="grid grid-cols-[minmax(0,1fr)_3.5rem_4.5rem] items-center gap-x-3 gap-y-2">
+      <span />
+      <span class="text-xs text-c-muted">Colour</span>
+      <span class="text-xs text-c-muted">Opacity</span>
       <SettingsCustomThemeInput
         label="Font"
         attribute="fontColor"
@@ -316,64 +361,85 @@
         on:color={handleColorValueChange}
         on:alpha={handleAlphaValueChange}
       />
-      <label class="flex items-center gap-2 sm:col-span-3" data-testid="theme-include-font">
-        <input type="checkbox" bind:checked={includeFont} />
-        Include font (applied when you switch to this theme)
-      </label>
-      {#if includeFont}
-        <span>Font (Group 1)</span>
-        <select class="sm:col-span-2" bind:value={fontOne} data-testid="theme-font-one">
-          {#each fontChoicesOne as font (font)}
-            <option value={font}>{font}</option>
-          {/each}
-        </select>
-        <span>Font (Group 2)</span>
-        <select class="sm:col-span-2" bind:value={fontTwo} data-testid="theme-font-two">
-          {#each fontChoicesTwo as font (font)}
-            <option value={font}>{font}</option>
-          {/each}
-        </select>
-      {/if}
-      <label class="flex items-center gap-2 sm:col-span-3" data-testid="theme-include-size">
-        <input type="checkbox" bind:checked={includeSize} />
-        Include font size
-      </label>
-      {#if includeSize}
-        <span>Font size</span>
-        <input
-          class="sm:col-span-2"
-          type="number"
-          min="1"
-          step="1"
-          bind:value={size}
-          data-testid="theme-font-size"
+    </div>
+  </ModalSection>
+
+  <ModalSection title="Font" hint="Applied when you switch to this theme.">
+    <div>
+      <div class="c-modal-row">
+        <div class="c-modal-row-main c-modal-row-title" id="{id}-font">Include a font</div>
+        <SettingSwitch
+          bind:checked={includeFont}
+          labelledby="{id}-font"
+          testid="theme-include-font"
         />
+      </div>
+      {#if includeFont}
+        <div class="grid gap-2 pb-3 sm:grid-cols-2">
+          <label class="c-modal-field">
+            <span class="c-modal-label">Font (Group 1)</span>
+            <select class="c-input w-full pr-10" bind:value={fontOne} data-testid="theme-font-one">
+              {#each fontChoicesOne as font (font)}
+                <option value={font}>{font}</option>
+              {/each}
+            </select>
+          </label>
+          <label class="c-modal-field">
+            <span class="c-modal-label">Font (Group 2)</span>
+            <select class="c-input w-full pr-10" bind:value={fontTwo} data-testid="theme-font-two">
+              {#each fontChoicesTwo as font (font)}
+                <option value={font}>{font}</option>
+              {/each}
+            </select>
+          </label>
+        </div>
       {/if}
+      <div class="c-modal-row">
+        <div class="c-modal-row-main c-modal-row-title" id="{id}-size">Include a font size</div>
+        <SettingSwitch
+          bind:checked={includeSize}
+          labelledby="{id}-size"
+          testid="theme-include-size"
+        />
+      </div>
+      {#if includeSize}
+        <label class="c-modal-field pb-1">
+          <span class="c-modal-label">Font size</span>
+          <input
+            class="c-input w-32"
+            type="number"
+            min="1"
+            step="1"
+            bind:value={size}
+            data-testid="theme-font-size"
+          />
+        </label>
+      {/if}
+    </div>
+  </ModalSection>
+
+  <ModalSection title="Name">
+    <div class="flex flex-wrap items-center gap-2">
       <input
-        class="sm:col-span-2"
+        class="c-input min-w-[12rem] flex-1"
         type="text"
-        placeholder="Theme Name"
+        aria-label="Theme name"
+        placeholder="Theme name"
         bind:value={themeName}
         bind:this={themeNameElm}
       />
-      <button
-        class="flex justify-center items-center rounded-md border-2 border-gray-400 p-2 text-lg"
+      <span
+        class="flex h-12 w-20 items-center justify-center rounded-lg border border-c-strong text-lg"
         style={themeStyle}
+        aria-label="Preview"
+        title="Preview"
       >
         ぁあ
-        <Ripple />
-      </button>
+      </span>
     </div>
-    <div class="flex mt-4" />
-  </div>
-  <div class="mt-2 flex grow justify-between" slot="footer">
-    <button class={buttonClasses} on:click={() => dispatch('close')}>
-      Cancel
-      <Ripple />
-    </button>
-    <button class={buttonClasses} on:click={handleSave}>
-      Save
-      <Ripple />
-    </button>
-  </div>
-</DialogTemplate>
+  </ModalSection>
+
+  <svelte:fragment slot="footer">
+    <button type="button" class="c-btn c-btn-primary" on:click={handleSave}>Save theme</button>
+  </svelte:fragment>
+</Modal>

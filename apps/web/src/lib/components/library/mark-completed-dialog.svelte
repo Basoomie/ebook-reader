@@ -1,8 +1,9 @@
 <script lang="ts">
   /**
-   * Bulk "Mark completed" (WP8a): one optional finish date for every selected
-   * book. Plain for e-ink like the Book status dialog; Esc cancels.
+   * Bulk "Mark completed" (WP8a): one optional finish date for every selected book. The
+   * footer holds the action; ✕, Esc or a click outside cancel (modal.svelte).
    */
+  import Modal from '$lib/components/modal/modal.svelte';
   import { createEventDispatcher } from 'svelte';
 
   export let count: number;
@@ -10,8 +11,7 @@
   export let resolver: (finishedOn: string | null | undefined) => void;
 
   const dispatch = createEventDispatcher<{ close: void }>();
-  const buttonClass =
-    'flex min-h-[3rem] items-center justify-center rounded border-2 border-current px-5 font-medium';
+  const id = `mark-completed-${Math.random().toString(36).slice(2, 10)}`;
 
   let finishDate = '';
   let done = false;
@@ -22,44 +22,40 @@
     resolver(value);
     dispatch('close');
   }
-
-  function onKeydown(ev: KeyboardEvent) {
-    if (ev.key === 'Escape') {
-      ev.preventDefault();
-      answer(undefined);
-    }
-  }
 </script>
 
-<svelte:window on:keydown={onKeydown} />
-
-<section class="mdc-elevation--z24 rounded bg-white p-6" data-testid="mark-completed-dialog">
-  <h2 class="weight-medium mb-4 text-xl">
-    Mark {count === 1 ? '1 book' : `${count} books`} completed
-  </h2>
-  <div class="max-w-xl">
-    <p class="mb-3">
+<Modal
+  title="Mark {count === 1 ? '1 book' : `${count.toLocaleString()} books`} completed"
+  size="md"
+  testid="mark-completed-dialog"
+  on:close={() => answer(undefined)}
+>
+  <div class="grid gap-4 pb-1 pt-3">
+    <p>
       Each book is counted as read once more. Its character count joins your character totals; no
       reading time is added.
     </p>
-    <label class="block max-w-xs">
-      Finish date for all (optional)
+    <label class="c-modal-field" for={id}>
+      <span class="c-modal-label">
+        Finish date for all <span class="font-normal text-c-muted">(optional)</span>
+      </span>
       <input
-        class="mt-1 block w-full border-0 border-b-2 border-gray-400/50 px-0.5"
+        {id}
+        class="c-input w-full max-w-[14rem]"
         type="date"
         bind:value={finishDate}
         data-testid="bulk-finish-date"
       />
     </label>
   </div>
-  <footer class="flex flex-wrap items-center justify-end gap-2 pt-5">
-    <button class={buttonClass} on:click={() => answer(undefined)}>Cancel</button>
+  <svelte:fragment slot="footer">
     <button
-      class={buttonClass}
+      type="button"
+      class="c-btn c-btn-primary"
       data-testid="bulk-mark-completed"
       on:click={() => answer(finishDate || null)}
     >
       Mark completed
     </button>
-  </footer>
-</section>
+  </svelte:fragment>
+</Modal>
