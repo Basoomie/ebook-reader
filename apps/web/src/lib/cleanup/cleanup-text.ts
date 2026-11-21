@@ -257,9 +257,15 @@ export function batchStateText(batch: CleanupBatch): string {
   return BATCH_STATE[batch.state] ?? batch.state;
 }
 
+/** Stages whose batches write fields (several per book) rather than remove copies. */
+export function writesFields(batch: CleanupBatch): boolean {
+  return batch.stage === 2 || batch.stage === 4;
+}
+
 export function batchKindText(batch: CleanupBatch): string {
   if (batch.kind === 'undo') return 'Undo';
   if (batch.stage === 2) return 'Metadata from the files';
+  if (batch.stage === 4) return 'Metadata from the online sources';
   return batch.stage === 3 ? 'Remove copies with the same text' : 'Remove identical copies';
 }
 
@@ -267,7 +273,7 @@ export function batchKindText(batch: CleanupBatch): string {
 export function batchCountsText(batch: CleanupBatch): string {
   const c = batch.counts ?? {};
   const parts: string[] = [];
-  const stage2 = batch.stage === 2;
+  const stage2 = writesFields(batch);
   const done = batch.kind === 'undo' ? c.restored : stage2 ? c.written : c.removed;
   const doneWord =
     batch.kind === 'undo'
@@ -289,7 +295,7 @@ export function batchCountsText(batch: CleanupBatch): string {
 export function canUndo(batch: CleanupBatch, all: CleanupBatch[]): boolean {
   if (batch.kind !== 'apply') return false;
   if (!['applied', 'partial', 'failed'].includes(batch.state)) return false;
-  if (!((batch.stage === 2 ? batch.counts?.written : batch.counts?.removed) > 0)) return false;
+  if (!((writesFields(batch) ? batch.counts?.written : batch.counts?.removed) > 0)) return false;
   // One batch at a time.
   return !all.some((b) => b.state === 'planned' || b.state === 'claimed');
 }

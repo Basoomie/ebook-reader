@@ -237,8 +237,22 @@ describe('stage 4 On: written through the field-write path', () => {
       .filter((a) => a[0] === 'set_metadata');
 
   it('writes the fields in one call per book, never format, kind or review items; Undo puts them back', async () => {
+    const before = (
+      env.service.stage4Status(env.libraryId(), Date.now()) as {
+        write: { changes: { done: number; total: number } } | null;
+      }
+    ).write;
     const plan = await env.service.batches.stage4.plan(env.libraryId());
     expect(plan.batch).not.toBeNull();
+    // A planned batch's changes (queued) still count as to write: the total stays.
+    const planned = (
+      env.service.stage4Status(env.libraryId(), Date.now() + 60_000) as {
+        write: { changes: { done: number; total: number } } | null;
+      }
+    ).write;
+    if (before) expect(planned?.changes.total).toBe(before.changes.total);
+    expect(planned?.changes).toMatchObject({ done: 0 });
+    expect(planned!.changes.total).toBeGreaterThan(0);
     const w = worker();
     await runBatch(w);
     const r = calibreRecord(env.lib, ids.S1)!;
