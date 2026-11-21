@@ -115,5 +115,26 @@ export async function firstServerAnswer<T>(
   return first;
 }
 
+/**
+ * Whether an action that only needs the server for part of its work (Enrich's sentence
+ * audio and cover) asks it now, so it never waits for the request timeout while away from
+ * home. No network, or the server known not to answer: false at once (with the quick check
+ * on, it is asked again in the background for the next time). Otherwise the quick check
+ * (true without asking when it is off). Never rejects.
+ */
+export function serverWorthAskingNow(
+  reachability: Reachability,
+  serverUrl: string,
+  checkSeconds: number,
+  online: boolean
+): Promise<boolean> {
+  if (!online) return Promise.resolve(false);
+  if (reachability.knownUnreachable()) {
+    if (checkSeconds > 0) void reachability.check(serverUrl, checkSeconds);
+    return Promise.resolve(false);
+  }
+  return reachability.check(serverUrl, checkSeconds);
+}
+
 /** The app's shared state (browser). */
 export const serverReachability = new Reachability();

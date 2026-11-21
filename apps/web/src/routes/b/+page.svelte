@@ -4217,16 +4217,15 @@
         Set up fields
       </button>
     {/if}
-    {#if !ankiBusy}
-      <button
-        class="min-h-[2.75rem] shrink-0 px-3"
-        aria-label="Close"
-        data-testid="anki-notice-close"
-        on:click={closeAnkiNotice}
-      >
-        ✕
-      </button>
-    {/if}
+    <!-- Also while sending: closing only hides it (the result still shows when done). -->
+    <button
+      class="min-h-[2.75rem] shrink-0 px-3"
+      aria-label="Close"
+      data-testid="anki-notice-close"
+      on:click={closeAnkiNotice}
+    >
+      ✕
+    </button>
   </div>
 {/if}
 
