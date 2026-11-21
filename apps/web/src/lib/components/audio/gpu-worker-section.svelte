@@ -151,7 +151,7 @@
   <SettingsSection
     jp="字幕作成"
     title="Subtitles made on the PC"
-    tooltip="SubPlz on your PC makes subtitles for an audiobook when you ask for them on a book's page (Audiobook > Make subtitles on the PC). The PC also makes audiobooks read aloud from a book (Audiobook > Make an audiobook on the PC). Jobs wait while the PC is off. Pausing lets a long audiobook finish its current chapter and continue later."
+    tooltip="SubPlz on your PC makes subtitles for an audiobook when you ask for them on a book's page (Audiobook section > Subtitles > Make subtitles on your PC). The PC also makes audiobooks read aloud from a book (Audiobook section > Text-to-speech > Make an audiobook with this voice). Jobs wait while the PC is off. Pausing lets a long audiobook finish its current chapter and continue later."
   />
   {#if error}
     <p class="c-notice mt-4" role="alert" data-testid="gpu-worker-error">{error}</p>

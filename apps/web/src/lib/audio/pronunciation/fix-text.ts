@@ -27,7 +27,7 @@ export function kindText(fix: Pick<PronunciationFix, 'kind'>): string {
 export function versionNote(check: PronunciationCheck | null): string {
   const a = check?.audiobook;
   if (!a || a.madeWithCurrentFixes) return '';
-  return 'This audiobook was made before the current pronunciation fixes for this book. Make an audiobook on the PC to use them.';
+  return 'This audiobook was made before the current pronunciation fixes for this book. Make it again (Text-to-speech > Make an audiobook with this voice) to use them.';
 }
 
 /** "2 pronunciation fixes" for a job's settings line; '' when none were used. */

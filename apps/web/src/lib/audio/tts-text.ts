@@ -113,7 +113,7 @@ export function audiobookJobText(
         return 'The sample is ready. Listen, then keep it or try again.';
       return job.linked
         ? `Audiobook made${job.version && job.version > 1 ? ` (version ${job.version})` : ''}. This book now uses it, with its subtitles.`
-        : 'Audiobook made, but this book’s audiobook was changed meanwhile, so it was not chosen. Pick it under “Change audiobook” (it is marked Generated).';
+        : 'Audiobook made, but this book’s audiobook was changed meanwhile, so it was not chosen. Pick it with Change in the Audiobook row (it is marked Generated).';
     case 'cancelled':
       return job.kind === 'generate_audiobook'
         ? 'Making the audiobook was stopped. Nothing was added to the audiobooks folder.'

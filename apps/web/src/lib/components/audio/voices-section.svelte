@@ -270,7 +270,7 @@
   <SettingsSection
     jp="声"
     title="Voices"
-    tooltip="The voices your PC can read a book aloud in (a book's page > Audiobook > Make an audiobook on the PC). Stored on the server, so every device has them."
+    tooltip="The voices your PC can read a book aloud in (a book's page > Audiobook section > Text-to-speech: its TTS voice, Read aloud and Make an audiobook with this voice). Stored on the server, so every device has them."
   />
   {#if error}
     <p class="c-notice mt-4" role="alert" data-testid="voices-error">{error}</p>
