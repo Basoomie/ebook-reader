@@ -8,9 +8,9 @@
   /**
    * WP19d: a note about a book (or one whose highlight is gone) as a card with a gold
    * edge and ⋮ (Copy note, Edit note, Delete note). Moved out of notes-list.svelte (Notes at
-   * scale, 2026-11-21); in the Highlights view it shows the book's title and "Open ›" at the
-   * end of the date line (the text itself stays selectable). Copy note says "Copied ✓" in
-   * the menu until it closes.
+   * scale, 2026-11-21); in the Highlights view it shows the book's title and the same › as
+   * highlight cards, which opens the book (the text itself stays selectable). Copy note says
+   * "Copied ✓" in the menu until it closes.
    */
   import { createEventDispatcher } from 'svelte';
   import Fa from 'svelte-fa';
@@ -48,36 +48,39 @@
 
 <article class="c-hl-card c-book-note rounded" data-testid="notes-page-book-note">
   <div class="flex items-start">
-    <div class="c-note-body min-w-0 flex-1 py-3 pl-4 pr-1">
-      {#if showBook}
-        <p
-          class="mb-1 truncate font-mincho text-sm font-bold text-c-muted"
-          data-testid="notes-card-book"
-        >
-          {cardBookLine(book)} · Note about the book
-        </p>
-      {/if}
-      {#if note.quote}
-        <p class="c-quote pl-2 font-mincho text-sm"><MarkedText text={note.quote} {words} /></p>
-      {/if}
-      {#if !editing}
-        <p class="mt-1 whitespace-pre-wrap break-words"><MarkedText text={note.body} {words} /></p>
-      {/if}
-      <div class="mt-2 flex items-center gap-2">
-        <p class="min-w-0 flex-1 text-xs text-c-muted">{formatWhen(note.createdAt)}</p>
+    <div class="c-note-body flex min-w-0 flex-1 items-center gap-2 py-3 pl-4 pr-1">
+      <div class="min-w-0 flex-1">
         {#if showBook}
-          <button
-            type="button"
-            class="c-open -my-3 inline-flex min-h-[2.75rem] shrink-0 items-center gap-1 rounded px-2 text-xs font-medium"
-            title="Open book"
-            aria-label="Open book"
-            data-testid="notes-page-book-note-open"
-            on:click={() => dispatch('open')}
+          <p
+            class="mb-1 truncate font-mincho text-sm font-bold text-c-muted"
+            data-testid="notes-card-book"
           >
-            Open <Fa icon={faChevronRight} size="xs" />
-          </button>
+            {cardBookLine(book)} · Note about the book
+          </p>
         {/if}
+        {#if note.quote}
+          <p class="c-quote pl-2 font-mincho text-sm"><MarkedText text={note.quote} {words} /></p>
+        {/if}
+        {#if !editing}
+          <span
+            class="mt-1 block whitespace-pre-wrap break-words"
+            data-testid="notes-page-book-note-body"><MarkedText text={note.body} {words} /></span
+          >
+        {/if}
+        <p class="mt-2 text-xs text-c-muted">{formatWhen(note.createdAt)}</p>
       </div>
+      {#if showBook}
+        <button
+          type="button"
+          class="c-open -mx-3 -my-3 flex shrink-0 items-center self-stretch px-4 text-c-muted"
+          title="Open book"
+          aria-label="Open book"
+          data-testid="notes-page-book-note-open"
+          on:click={() => dispatch('open')}
+        >
+          <Fa icon={faChevronRight} />
+        </button>
+      {/if}
     </div>
     <div class="shrink-0 p-1">
       <DropdownMenu
@@ -160,8 +163,13 @@
     user-select: text;
   }
 
+  /*
+   * The › looks and sits as it did when the whole card was the button (px-1, muted,
+   * centered in the card); only the clickable area is its own: the card's full height and
+   * a little wider than the arrow, through padding offset by negative margins.
+   */
   .c-open {
-    color: var(--c-link);
+    border-radius: 0.25rem;
   }
 
   .c-open:focus-visible {
@@ -173,11 +181,6 @@
     :global(html:not(.eink)) .c-open:hover {
       background-color: var(--c-tint);
     }
-  }
-
-  :global(html.eink) .c-open {
-    color: #000;
-    text-decoration: underline;
   }
 
   .c-danger {
