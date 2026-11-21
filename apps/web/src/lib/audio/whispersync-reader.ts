@@ -102,6 +102,56 @@ export function localStores(db: IDBPDatabase<any>): LocalStores {
   };
 }
 
+/** The server calls of one book's whispersync sync (`signal` cancels them). */
+function syncDeps(
+  engine: SyncDeps['engine'],
+  local: LocalStores,
+  api: LibraryApi,
+  signal?: AbortSignal
+): SyncDeps {
+  const options = signal ? { signal } : {};
+  return {
+    engine,
+    local,
+    api: {
+      upload: (id, name, body, modifiedAt) =>
+        api.uploadAttachment(id, name, body, modifiedAt, options),
+      download: (id, name) => api.downloadAttachment(id, name, options)
+    }
+  };
+}
+
+/**
+ * A library book was just stored on this device (or linked to a copy here): its
+ * whispersync data (saved match, subtitles, listening position) comes into whispersync's
+ * rows now, before the reader shows its text, so the first open needs no reload. Fetches
+ * the latest records first (as the reader does on open), at most for the library request
+ * time; a record that comes later still is found by the reader's opening sync. Never
+ * throws; problems are logged.
+ */
+export async function syncWhispersyncForNewCopy(
+  copy: { bookId: string; localId: number; title: string; fileSha256: string | null },
+  db: IDBPDatabase<any>,
+  signal?: AbortSignal
+): Promise<void> {
+  try {
+    const api = await libraryApi();
+    if (!api || signal?.aborted) return;
+    await withinRequestTime(getSyncRunner()?.syncNow() ?? Promise.resolve(null), null);
+    if (signal?.aborted) return;
+    const engine = await getSyncEngine();
+    const result = await syncBook(syncDeps(engine, localStores(db), api, signal), {
+      bookId: copy.bookId,
+      localId: copy.localId,
+      title: copy.title,
+      fileSha256: copy.fileSha256
+    });
+    for (const problem of result.problems) warn(`new copy: ${problem}`);
+  } catch (error) {
+    warn(`new copy: ${(error as Error)?.message ?? error}`);
+  }
+}
+
 function changedAnything(result: SyncResult): boolean {
   return result.changed.position || result.changed.subtitles || result.changed.match;
 }
@@ -133,14 +183,7 @@ export function createReaderWhispersync(options: {
     return {
       book: { bookId, localId: options.localId, title: options.title, fileSha256 },
       api,
-      deps: {
-        engine,
-        local,
-        api: {
-          upload: (id, name, body, modifiedAt) => api.uploadAttachment(id, name, body, modifiedAt),
-          download: (id, name) => api.downloadAttachment(id, name)
-        }
-      }
+      deps: syncDeps(engine, local, api)
     };
   }
 

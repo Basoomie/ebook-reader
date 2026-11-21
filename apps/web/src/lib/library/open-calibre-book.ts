@@ -46,17 +46,33 @@ export interface OpenDeps {
   fillPlaceholder?(content: LoadData, signal: AbortSignal): Promise<number>;
   /** WP7b: asked before filling a migrated placeholder whose character count differs. */
   confirmPlaceholder?(question: ExistingBookQuestion): Promise<boolean>;
+  /**
+   * A copy was just stored here or linked to one here: brings the book's whispersync data
+   * into this device's rows before the reader opens (whispersync-reader.ts). Never rejects.
+   */
+  prepareCopy?(copy: NewCopy, signal: AbortSignal): Promise<void>;
   now?: () => number;
+}
+
+/** A library book's copy on this device, just stored or linked. */
+export interface NewCopy {
+  bookId: string;
+  localId: number;
+  title: string;
+  /** The file it was imported from (null: linked to a copy made elsewhere, or unknown). */
+  fileSha256: string | null;
 }
 
 export type OpenStage =
   | { stage: 'download'; loaded: number; total: number | null }
   | { stage: 'prepare' }
-  | { stage: 'save' };
+  | { stage: 'save' }
+  | { stage: 'audiobook' };
 
 export type OpenOutcome =
   | { status: 'opened'; localId: number; how: 'cached' | 'imported' | 'matched' }
-  | { status: 'cancelled' }
+  /** `storedLocalId`: cancelled after the copy was stored and linked here (it stays). */
+  | { status: 'cancelled'; storedLocalId?: number }
   /** Nothing was changed; `message` tells the user why. */
   | { status: 'refused'; message: string };
 
@@ -203,6 +219,7 @@ export async function openCalibreBook(
     }
 
     // 4. Remember the link for the migration.
+    const copyFile = how === 'imported' ? fileSha256 : null;
     await deps.store.putLink({
       bookId: book.id,
       libraryId: detail.libraryId,
@@ -216,11 +233,22 @@ export async function openCalibreBook(
       characters,
       fileEtag: etag,
       // Only a copy made from this file is updated when the file changes later.
-      fileSha256: how === 'imported' ? fileSha256 : null,
+      fileSha256: copyFile,
       linkedAt: now(),
       how,
       authors: authorNames(detail.authors) ?? []
     });
+
+    // 5. Its audiobook data, so the first open shows the matched text without a reload.
+    // Cancelled here, the copy stays (the reader's opening sync brings the data later).
+    if (deps.prepareCopy) {
+      onStage({ stage: 'audiobook' });
+      await deps.prepareCopy(
+        { bookId: book.id, localId, title: content.title, fileSha256: copyFile },
+        signal
+      );
+      if (signal.aborted) return { status: 'cancelled', storedLocalId: localId };
+    }
     return { status: 'opened', localId, how };
   } catch (error) {
     if (signal.aborted || (error instanceof LibraryApiError && error.kind === 'aborted')) {
