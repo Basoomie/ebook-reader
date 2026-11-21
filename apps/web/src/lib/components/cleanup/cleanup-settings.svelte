@@ -1579,12 +1579,13 @@
               class="c-input"
               type="number"
               min="1"
-              max="20"
+              max="100"
               bind:value={settings.ai.directWorkers}
             />
             <span class="text-c-muted"
-              >For a model asked one call each: how many questions run at once. More is faster (3 ≈
-              3½ hours for the whole library with gpt-6-luna); the cost is the same.</span
+              >For a model asked one call each: how many questions run at once (a new one starts as
+              each ends). More is faster and costs the same; past the provider's own limit it
+              answers "busy" and the stage waits and tries again.</span
             >
           </label>
           <label class={field}>

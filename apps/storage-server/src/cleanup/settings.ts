@@ -947,7 +947,7 @@ function validate(key: Key, value: unknown, current: CleanupSettings): unknown {
           0.1,
           1440,
         ),
-        directWorkers: num('Calls at the same time', v.directWorkers, 1, 20, true),
+        directWorkers: num('Calls at the same time', v.directWorkers, 1, 100, true),
         batchSize: num('Requests per batch', v.batchSize, 1, 10000, true),
         batchPollSeconds: num('Batch check every (s)', v.batchPollSeconds, 5, 3600, true),
         maxTokens: num('Claude max_tokens (thinking included)', v.maxTokens, 1000, 64000, true),

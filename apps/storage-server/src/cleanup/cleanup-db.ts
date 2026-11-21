@@ -1354,6 +1354,24 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
       CREATE INDEX audio_covers_state_idx ON audio_covers (run_id, state, book_id);
     `,
   },
+  {
+    version: 16,
+    name: 'AI: indexes for the queries every step runs (the call pool)',
+    // Timed on a copy at stop 2's end size (114,036 questions, 2.6 GB): the step's queries took
+    // 475 ms of the server (the spending total scanned every row, the run's cost per model and
+    // its items sorted, the "returned" questions scanned Haiku's 52,120 queued ones); with these
+    // and the queued-rows query without a sort, 20 ms. The call pool steps several times a
+    // second, so each step must stay this cheap.
+    sql: `
+      CREATE INDEX ai_requests_cost ON ai_requests (cost_usd) WHERE cost_usd IS NOT NULL;
+      CREATE INDEX ai_requests_run_cost ON ai_requests (stage, run_id, model, item_key, cost_usd)
+        WHERE cost_usd IS NOT NULL;
+      CREATE INDEX ai_requests_run_items ON ai_requests (stage, run_id, item_key)
+        WHERE cost_usd IS NOT NULL;
+      CREATE INDEX ai_requests_returned ON ai_requests (run_id, stage, model, labeled)
+        WHERE state = 'queued' AND mode = 'direct';
+    `,
+  },
 ];
 
 export const CLEANUP_SCHEMA_VERSION = CLEANUP_MIGRATIONS[CLEANUP_MIGRATIONS.length - 1].version;

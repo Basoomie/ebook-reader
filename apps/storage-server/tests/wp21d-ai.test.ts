@@ -620,6 +620,7 @@ describe('AI runner', () => {
     runner.enqueue(SPEC, 'primary', ['k0', 'k1', 'k2'], 'r');
     runner.enqueue(SPEC, 'secondary', ['k0', 'k1', 'k2'], 'r');
     await runner.step(SPEC, 'r', () => false);
+    await runner.settle();
     const paths = standin!.calls.map((c: { path: string }) => c.path);
     expect(paths.filter((x: string) => x === '/v1/messages/batches').length).toBe(1);
     expect(paths.filter((x: string) => x === '/v1/chat/completions').length).toBe(3);
@@ -659,8 +660,9 @@ describe('AI runner', () => {
       expect(runner.batches('test5').stalled).toBe(1);
       // Next check: cancelled at the provider; its questions are asked directly at once.
       advance(61_000);
-      const r = await runner.step(SPEC, 'r', () => false);
-      expect(r.pending).toBe(0);
+      await runner.step(SPEC, 'r', () => false);
+      await runner.settle();
+      expect(runner.pending('test5', 'r')).toBe(0);
       const role = stuck === 'gpt-6-luna' ? 'secondary' : 'primary';
       for (const k of ['k0', 'k1', 'k2'])
         expect(runner.answerOf(SPEC, role, k)?.state).toBe('answered');
