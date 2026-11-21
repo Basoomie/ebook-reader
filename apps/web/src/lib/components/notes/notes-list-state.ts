@@ -46,7 +46,12 @@ export interface NotesListState extends Readable<NotesListView> {
 }
 
 export function createNotesListState(actions: () => NotesListActions): NotesListState {
-  let view: NotesListView = { editing: undefined, undo: undefined, error: '', busy: false };
+  let view: NotesListView = {
+    editing: undefined,
+    undo: undefined,
+    error: '',
+    busy: false
+  };
   const store = writable(view);
   const set = (patch: Partial<NotesListView>) => {
     view = { ...view, ...patch };

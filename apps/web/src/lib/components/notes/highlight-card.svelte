@@ -7,10 +7,14 @@
 
   /**
    * WP19d: one highlight as a card, its color on the left edge (E-ink: black, with the
-   * color's underline mark). The text, note and place are one button that opens the book
-   * there; the rest is in the ⋮ menu. Moved out of notes-list.svelte (Notes at scale,
-   * 2026-11-21) so the Highlights view uses the same card, with the book's title on it
-   * (`showBook`) and the search's words marked.
+   * color's underline mark); the rest is in the ⋮ menu. Moved out of notes-list.svelte
+   * (Notes at scale, 2026-11-21) so the Highlights view uses the same card, with the book's
+   * title on it (`showBook`) and the search's words marked.
+   *
+   * 2026-11-21 (user): the text is plain, selectable text (a whole-card button opened the
+   * book when text was selected to copy it). The › looks and sits exactly as it did when
+   * the card was the button; only it opens the book now. ⋮ has Copy text (and Copy note);
+   * the menu item itself says "Copied ✓" until the menu closes (no banner, no timer).
    */
   import { createEventDispatcher } from 'svelte';
   import Fa from 'svelte-fa';
@@ -33,6 +37,7 @@
   import { formatWhen } from '$lib/notes/notes-format';
   import { cardBookLine, percentOf, type NotesBookInfo } from '$lib/notes/notes-view';
   import { HIGHLIGHT_SOLIDS, swatchStyle } from '$lib/notes/swatch';
+  import { copyText } from '$lib/functions/copy-text';
   import type { NotesListState } from './notes-list-state';
 
   export let item: HighlightItem;
@@ -49,7 +54,16 @@
   const menuItem = 'c-btn c-btn-ghost w-full justify-start px-3 text-left text-sm';
   const dotsButton = 'c-btn c-btn-ghost h-11 min-h-0 w-11 p-0';
 
+  /** What the open menu just copied ('' until a copy; reset when the menu closes). */
+  let copied: '' | 'text' | 'note' | 'failed' = '';
+  let menuOpen = false;
+
+  $: if (!menuOpen) copied = '';
   $: editing = $list.editing?.key === item.id;
+
+  async function copy(what: 'text' | 'note', text: string) {
+    copied = (await copyText(text)) ? what : 'failed';
+  }
   $: edge = eink ? '#000' : HIGHLIGHT_SOLIDS[item.color];
   $: place = [
     item.chapter ? `「${item.chapter}」` : '',
@@ -85,13 +99,7 @@
   data-testid="notes-page-highlight"
 >
   <div class="flex items-start">
-    <button
-      type="button"
-      class="c-hl-open flex min-w-0 flex-1 items-center gap-2 rounded-r py-3 pl-4 pr-1 text-left"
-      title="Open in book"
-      data-testid="notes-page-open"
-      on:click={() => dispatch('open')}
-    >
+    <div class="c-hl-body flex min-w-0 flex-1 items-center gap-2 py-3 pl-4 pr-1">
       <span class="flex min-w-0 flex-1 flex-col">
         {#if showBook}
           <span
@@ -133,10 +141,17 @@
           {/if}
         </span>
       </span>
-      <span class="shrink-0 px-1 text-c-muted" aria-hidden="true">
+      <button
+        type="button"
+        class="c-open -mx-3 -my-3 flex shrink-0 items-center self-stretch px-4 text-c-muted"
+        title="Open in book"
+        aria-label="Open in book"
+        data-testid="notes-page-open"
+        on:click={() => dispatch('open')}
+      >
         <Fa icon={faChevronRight} />
-      </span>
-    </button>
+      </button>
+    </div>
     <div class="shrink-0 p-1">
       <DropdownMenu
         buttonClass={dotsButton}
@@ -145,6 +160,7 @@
         testid="notes-page-menu"
         panelWidth="w-60"
         floating
+        bind:open={menuOpen}
         let:close
       >
         <span slot="button" class="flex items-center justify-center" title="More">
@@ -152,6 +168,29 @@
           <span class="sr-only">More</span>
         </span>
         <div class="flex flex-col gap-1">
+          <button
+            type="button"
+            class={menuItem}
+            data-testid="notes-page-copy"
+            on:click={() => copy('text', item.text)}
+          >
+            <span aria-live="polite">{copied === 'text' ? 'Copied ✓' : 'Copy text'}</span>
+          </button>
+          {#if item.note}
+            <button
+              type="button"
+              class={menuItem}
+              data-testid="notes-page-copy-note"
+              on:click={() => item.note && copy('note', item.note.body)}
+            >
+              <span aria-live="polite">{copied === 'note' ? 'Copied ✓' : 'Copy note'}</span>
+            </button>
+          {/if}
+          {#if copied === 'failed'}
+            <p class="px-3 text-xs text-c-muted" role="alert" data-testid="notes-copy-failed">
+              This browser didn't allow copying: select the text and copy it.
+            </p>
+          {/if}
           <button
             type="button"
             class={menuItem}
@@ -237,24 +276,29 @@
     border-left: 3px solid var(--c-gold);
   }
 
-  .c-hl-open {
+  .c-hl-body {
     color: var(--c-ink);
     user-select: text;
   }
 
-  .c-hl-open:focus-visible {
+  /*
+   * The › looks and sits as it did when the whole card was the button (px-1, muted,
+   * centered in the card); only the clickable area is its own: the card's full height and
+   * a little wider than the arrow, through padding offset by negative margins.
+   */
+  .c-open {
+    border-radius: 0.25rem;
+  }
+
+  .c-open:focus-visible {
     outline: 2px solid var(--c-link);
     outline-offset: -2px;
   }
 
   @media (hover: hover) {
-    .c-hl-open:hover {
+    :global(html:not(.eink)) .c-open:hover {
       background-color: var(--c-tint);
     }
-  }
-
-  .c-hl-open:active {
-    background-color: var(--c-sec-active);
   }
 
   .c-danger {
@@ -263,14 +307,5 @@
 
   :global(html.eink) .c-hl-card {
     border-left-color: #000 !important;
-  }
-
-  :global(html.eink) .c-hl-open:hover {
-    background-color: transparent;
-  }
-
-  :global(html.eink) .c-hl-open:active {
-    background-color: #000;
-    color: #fff;
   }
 </style>

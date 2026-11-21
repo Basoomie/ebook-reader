@@ -10,7 +10,8 @@
  *   device's sessions, corrections, frozen days and read-throughs, no filter (all devices
  *   and libraries). Each session's day was set by the device that recorded it; the server
  *   only decides which period has ended. Reading synced after the message isn't in it.
- * - A finished period is compared whole with the whole previous one (as the Stats page does).
+ * - A finished period is compared whole with the whole previous one (as the Stats page does),
+ *   when that message's "compare" setting is on (per message, on by default).
  * - Only the latest ended period of each kind is ever sent, once: a period missed while the
  *   server was off goes when it is back unless the next one has ended too (user, 2026-11-18).
  *
@@ -29,6 +30,7 @@ import {
   StatsSummary,
 } from './stats-bundle';
 import type { NoReadingMode } from './settings';
+import { linkText, TextFormat } from './messages';
 
 export { REPORT_KINDS, STATS_EVENT } from './stats-events';
 export type { ReportKind } from './stats-events';
@@ -247,23 +249,41 @@ export function changeOf(key: LineKey, cur: number, prev: number): Change {
   return { kind: 'percent', sign, amount, percent: pct < 1 ? '<1' : String(Math.round(pct)) };
 }
 
-/** "Characters: 182,340 (+21,400, +13%)" (approved shape, user 2026-11-18). */
-export function reportLine(key: LineKey, cur: StatsSummary, prev: StatsSummary): string {
-  const value = formatValue(key, cur[key]);
-  const c = changeOf(key, cur[key], prev[key]);
-  const label = LINE_LABEL[key];
+/** "+21,400, +13%", "no change", "none then" …, or null when no change is shown. */
+export function changeText(key: LineKey, cur: number, prev: number): string | null {
+  const c = changeOf(key, cur, prev);
   switch (c.kind) {
     case 'none':
-      return `${label}: ${value}`;
+      return null;
     case 'speed-new':
-      return `${label}: ${value} (no tracked reading then)`;
+      return 'no tracked reading then';
     case 'same':
-      return `${label}: ${value} (no change)`;
+      return 'no change';
     case 'new':
-      return `${label}: ${value} (${c.sign}${c.amount}, none then)`;
+      return `${c.sign}${c.amount}, none then`;
     case 'percent':
-      return `${label}: ${value} (${c.sign}${c.amount}, ${c.sign}${c.percent}%)`;
+      return `${c.sign}${c.amount}, ${c.sign}${c.percent}%`;
   }
+}
+
+/**
+ * One number of the message (user, 2026-11-21): "- **Characters:** 182,340 *(+21,400, +13%)*"
+ * in Discord, "• Characters: 182,340 (+21,400, +13%)" in email; without the change when the
+ * message doesn't compare (`prev` null).
+ */
+export function reportLine(
+  key: LineKey,
+  cur: StatsSummary,
+  prev: StatsSummary | null,
+  format: TextFormat,
+): string {
+  const label = LINE_LABEL[key];
+  const value = formatValue(key, cur[key]);
+  const change = prev ? changeText(key, cur[key], prev[key]) : null;
+  if (format === 'markdown') {
+    return `- **${label}:** ${value}${change ? ` *(${change})*` : ''}`;
+  }
+  return `• ${label}: ${value}${change ? ` (${change})` : ''}`;
 }
 
 const YEAR_END = / (\d{4})$/;
@@ -289,50 +309,73 @@ export function statsLink(period: StatsPeriod): string {
   return `/statistics?period=${stats.periodToParam(period)}`;
 }
 
-/**
- * The message of one ended period, or null when it had no reading and the setting skips
- * such periods.
- */
-export function reportText(o: {
-  kind: ReportKind;
-  period: StatsPeriod;
-  previous: StatsPeriod;
-  current: StatsSummary;
-  before: StatsSummary;
+export interface ReportOptions {
   linkBase: string;
   noReadingMode: NoReadingMode;
-}): string | null {
-  const url = `${o.linkBase}${statsLink(o.period)}`;
-  const link = `[View Stats](${url})`;
-  const title = periodTitle(o.kind, o.period);
-  if (noReading(o.current)) {
-    if (o.noReadingMode === 'skip') return null;
-    return [`ッツ Reader: ${title}`, 'No reading.', link].join('\n');
-  }
-  return [
-    `ッツ Reader: ${title} (vs ${previousTitle(o.period, o.previous)})`,
-    ...LINE_KEYS.map((k) => reportLine(k, o.current, o.before)),
-    link,
-  ].join('\n');
+  /** Show each number's change from the previous period (the message's own setting). */
+  compare: boolean;
 }
 
-/** Everything about one ended period's message, for the service (and tests). */
+/**
+ * The message of one ended period in one channel's form, or null when it had no reading
+ * and the setting skips such periods. The layout (user, 2026-11-21): the period as a
+ * heading (the email subject), one line per number, then a small line with what it is
+ * compared with and the link.
+ *
+ *   ### ッツ Reader · week 9 – 15 Nov 2026
+ *   - **Characters:** 182,340 *(+21,400, +13%)*
+ *   …
+ *   -# vs 2 – 8 Nov · [View Stats](http://…/statistics?period=week:2026-11-09)
+ */
+export function reportText(
+  o: {
+    kind: ReportKind;
+    period: StatsPeriod;
+    previous: StatsPeriod;
+    current: StatsSummary;
+    /** The previous period's totals; null when the message doesn't compare. */
+    before: StatsSummary | null;
+  } & Omit<ReportOptions, 'compare'>,
+  format: TextFormat,
+): string | null {
+  const url = `${o.linkBase}${statsLink(o.period)}`;
+  const link = linkText('View Stats', url, format);
+  const heading = `ッツ Reader · ${periodTitle(o.kind, o.period)}`;
+  const md = format === 'markdown';
+  const head = md ? `### ${heading}` : heading;
+  if (noReading(o.current)) {
+    if (o.noReadingMode === 'skip') return null;
+    return [head, 'No reading.', md ? `-# ${link}` : link].join('\n');
+  }
+  const vs = o.before ? `vs ${previousTitle(o.period, o.previous)}` : null;
+  const foot = md ? [`-# ${vs ? `${vs} · ` : ''}${link}`] : [...(vs ? [vs] : []), link];
+  return [head, ...LINE_KEYS.map((k) => reportLine(k, o.current, o.before, format)), ...foot].join(
+    '\n',
+  );
+}
+
+/**
+ * Everything about one ended period's message, for the service (and tests): its text in
+ * each channel's form, or null when it isn't sent (no reading, skipped).
+ */
 export function buildReport(
   input: StatsInput,
   kind: ReportKind,
   period: StatsPeriod,
   weekStart: number,
-  linkBase: string,
-  noReadingMode: NoReadingMode,
-): string | null {
+  options: ReportOptions,
+): Record<TextFormat, string> | null {
   const previous = stats.stepPeriod(period, -1, weekStart);
-  return reportText({
+  const parts = {
     kind,
     period,
     previous,
     current: periodSummary(input, period),
-    before: periodSummary(input, previous),
-    linkBase,
-    noReadingMode,
-  });
+    before: options.compare ? periodSummary(input, previous) : null,
+    linkBase: options.linkBase,
+    noReadingMode: options.noReadingMode,
+  };
+  const markdown = reportText(parts, 'markdown');
+  const plain = reportText(parts, 'plain');
+  return markdown === null || plain === null ? null : { markdown, plain };
 }

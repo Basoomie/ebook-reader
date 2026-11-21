@@ -195,6 +195,67 @@ describe('openCalibreBook', () => {
     expect((await store.getLink('b'))?.fileSha256).toBeNull();
   });
 
+  it("brings a new copy's audiobook data before opening; never for a copy already here", async () => {
+    const prepared: unknown[] = [];
+    const stages: string[] = [];
+    const prepareCopy = vi.fn(async (copy: unknown) => {
+      // The copy and its link are stored first (the reader's rows are found by its id).
+      expect(await store.getLink('a')).toBeTruthy();
+      prepared.push(copy);
+    });
+    const hashed = deps({ a: EPUB, b: OTHER_EPUB }, { prepareCopy });
+    hashed.d.api = {
+      ...hashed.d.api,
+      fileHashes: async (ids) => ({
+        books: ids.map((id) => ({ id, sha256: `sha-${id}`, etag: `"etag-${id}"` }))
+      })
+    };
+    const first = await openCalibreBook({ id: 'a', title: 'A' }, hashed.d, signal(), (s) =>
+      stages.push(s.stage)
+    );
+    expect(first).toMatchObject({ status: 'opened', how: 'imported' });
+    expect(stages).toEqual(['download', 'download', 'prepare', 'save', 'audiobook']);
+    const [stored] = await allBooks();
+    expect(prepared).toEqual([
+      { bookId: 'a', localId: stored.id, title: stored.title, fileSha256: 'sha-a' }
+    ]);
+
+    // Opened again: already on this device, nothing asked.
+    await openCalibreBook({ id: 'a', title: 'A' }, hashed.d, signal());
+    expect(prepareCopy).toHaveBeenCalledTimes(1);
+
+    // A copy this device had, linked now: its data too (no file of its own).
+    const manual = await manualImport(OTHER_EPUB, 'other.epub');
+    await openCalibreBook({ id: 'b', title: 'B' }, hashed.d, signal());
+    expect(prepareCopy).toHaveBeenCalledTimes(2);
+    expect(prepared[1]).toEqual({
+      bookId: 'b',
+      localId: manual.id,
+      title: manual.title,
+      fileSha256: null
+    });
+  });
+
+  it('cancelled during the audiobook step: the copy and its link stay', async () => {
+    const controller = new AbortController();
+    const { d } = deps(
+      { a: EPUB },
+      {
+        prepareCopy: async () => {
+          controller.abort();
+        }
+      }
+    );
+    const result = await openCalibreBook({ id: 'a', title: 'A' }, d, controller.signal);
+    const [stored] = await allBooks();
+    expect(result).toEqual({ status: 'cancelled', storedLocalId: stored.id });
+    expect((await store.getLink('a'))?.localId).toBe(stored.id);
+
+    // The next open uses the copy (the reader's opening sync brings the data).
+    const again = await openCalibreBook({ id: 'a', title: 'A' }, d, signal());
+    expect(again).toEqual({ status: 'opened', localId: stored.id, how: 'cached' });
+  });
+
   it('remembers the authors on the link and keeps them current (WP19d)', async () => {
     const { d } = deps(
       { w: EPUB },

@@ -132,11 +132,21 @@ export interface Stage4Status {
   /** The AI check after the rules (WP20e); null before it starts. */
   ai?: Stage4AiStatus | null;
   fieldPauses: FieldPause[];
+  /** Stage 4 On (WP20e): books and changes written, the changes left, the time left. */
+  write?: Stage4Write | null;
   /** The reading: books read (each once, from the database), the books with an EPUB, the pace. */
   read: { done: number; total: number; perSecond: number | null } | null;
   /** Time left (seconds; null while not measured yet). */
   timeLeft: Stage4TimeLeft | null;
   cachedAt: number;
+}
+
+/** Stage 4 On's progress: changes written of all, books written, seconds left (null: not measured yet). */
+export interface Stage4Write {
+  books: { done: number };
+  changes: { done: number; total: number };
+  secondsLeft: number | null;
+  batches: number;
 }
 
 /** One field of the AI check's gate: confirmed values against the bar, and every value. */

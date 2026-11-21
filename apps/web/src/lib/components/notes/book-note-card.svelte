@@ -7,18 +7,21 @@
 
   /**
    * WP19d: a note about a book (or one whose highlight is gone) as a card with a gold
-   * edge and ⋮ (Edit note, Delete note). Moved out of notes-list.svelte (Notes at scale,
-   * 2026-11-21); in the Highlights view it shows the book's title and opens the book.
+   * edge and ⋮ (Copy note, Edit note, Delete note). Moved out of notes-list.svelte (Notes at
+   * scale, 2026-11-21); in the Highlights view it shows the book's title and the same › as
+   * highlight cards, which opens the book (the text itself stays selectable). Copy note says
+   * "Copied ✓" in the menu until it closes.
    */
   import { createEventDispatcher } from 'svelte';
   import Fa from 'svelte-fa';
-  import { faEllipsisVertical } from '@fortawesome/free-solid-svg-icons';
+  import { faChevronRight, faEllipsisVertical } from '@fortawesome/free-solid-svg-icons';
   import DropdownMenu from '$lib/components/dropdown-menu.svelte';
   import MarkedText from '$lib/components/notes/marked-text.svelte';
   import NoteEditor from '$lib/components/notes/note-editor.svelte';
   import type { NoteItem } from '$lib/notes/highlights';
   import { formatWhen } from '$lib/notes/notes-format';
   import { cardBookLine, type NotesBookInfo } from '$lib/notes/notes-view';
+  import { copyText } from '$lib/functions/copy-text';
   import type { NotesListState } from './notes-list-state';
 
   export let note: NoteItem;
@@ -32,48 +35,53 @@
   const menuItem = 'c-btn c-btn-ghost w-full justify-start px-3 text-left text-sm';
   const dotsButton = 'c-btn c-btn-ghost h-11 min-h-0 w-11 p-0';
 
+  let copied: '' | 'note' | 'failed' = '';
+  let menuOpen = false;
+
+  $: if (!menuOpen) copied = '';
   $: editing = $list.editing?.key === note.id;
+
+  async function copy() {
+    copied = (await copyText(note.body)) ? 'note' : 'failed';
+  }
 </script>
 
 <article class="c-hl-card c-book-note rounded" data-testid="notes-page-book-note">
   <div class="flex items-start">
-    {#if showBook}
-      <button
-        type="button"
-        class="c-note-open min-w-0 flex-1 rounded-r py-3 pl-4 pr-1 text-left"
-        title="Open book"
-        data-testid="notes-page-book-note-open"
-        on:click={() => dispatch('open')}
-      >
-        <span
-          class="mb-1 block truncate font-mincho text-sm font-bold text-c-muted"
-          data-testid="notes-card-book">{cardBookLine(book)} · Note about the book</span
-        >
-        {#if note.quote}
-          <span class="c-quote block pl-2 font-mincho text-sm"
-            ><MarkedText text={note.quote} {words} /></span
+    <div class="c-note-body flex min-w-0 flex-1 items-center gap-2 py-3 pl-4 pr-1">
+      <div class="min-w-0 flex-1">
+        {#if showBook}
+          <p
+            class="mb-1 truncate font-mincho text-sm font-bold text-c-muted"
+            data-testid="notes-card-book"
           >
+            {cardBookLine(book)} · Note about the book
+          </p>
         {/if}
-        {#if !editing}
-          <span class="mt-1 block whitespace-pre-wrap break-words"
-            ><MarkedText text={note.body} {words} /></span
-          >
-        {/if}
-        <span class="mt-2 block text-xs text-c-muted">{formatWhen(note.createdAt)}</span>
-      </button>
-    {:else}
-      <div class="min-w-0 flex-1 py-3 pl-4 pr-1">
         {#if note.quote}
           <p class="c-quote pl-2 font-mincho text-sm"><MarkedText text={note.quote} {words} /></p>
         {/if}
         {#if !editing}
-          <p class="mt-1 whitespace-pre-wrap break-words">
-            <MarkedText text={note.body} {words} />
-          </p>
+          <span
+            class="mt-1 block whitespace-pre-wrap break-words"
+            data-testid="notes-page-book-note-body"><MarkedText text={note.body} {words} /></span
+          >
         {/if}
         <p class="mt-2 text-xs text-c-muted">{formatWhen(note.createdAt)}</p>
       </div>
-    {/if}
+      {#if showBook}
+        <button
+          type="button"
+          class="c-open -mx-3 -my-3 flex shrink-0 items-center self-stretch px-4 text-c-muted"
+          title="Open book"
+          aria-label="Open book"
+          data-testid="notes-page-book-note-open"
+          on:click={() => dispatch('open')}
+        >
+          <Fa icon={faChevronRight} />
+        </button>
+      {/if}
+    </div>
     <div class="shrink-0 p-1">
       <DropdownMenu
         buttonClass={dotsButton}
@@ -82,6 +90,7 @@
         testid="notes-page-note-menu"
         panelWidth="w-48"
         floating
+        bind:open={menuOpen}
         let:close
       >
         <span slot="button" class="flex items-center justify-center" title="More">
@@ -89,6 +98,14 @@
           <span class="sr-only">More</span>
         </span>
         <div class="flex flex-col gap-1">
+          <button type="button" class={menuItem} data-testid="notes-page-copy-note" on:click={copy}>
+            <span aria-live="polite">{copied === 'note' ? 'Copied ✓' : 'Copy note'}</span>
+          </button>
+          {#if copied === 'failed'}
+            <p class="px-3 text-xs text-c-muted" role="alert" data-testid="notes-copy-failed">
+              This browser didn't allow copying: select the text and copy it.
+            </p>
+          {/if}
           <button
             type="button"
             class={menuItem}
@@ -141,18 +158,27 @@
     border-left: 4px solid var(--c-gold);
   }
 
-  .c-note-open {
+  .c-note-body {
     color: var(--c-ink);
     user-select: text;
   }
 
-  .c-note-open:focus-visible {
+  /*
+   * The › looks and sits as it did when the whole card was the button (px-1, muted,
+   * centered in the card); only the clickable area is its own: the card's full height and
+   * a little wider than the arrow, through padding offset by negative margins.
+   */
+  .c-open {
+    border-radius: 0.25rem;
+  }
+
+  .c-open:focus-visible {
     outline: 2px solid var(--c-link);
     outline-offset: -2px;
   }
 
   @media (hover: hover) {
-    :global(html:not(.eink)) .c-note-open:hover {
+    :global(html:not(.eink)) .c-open:hover {
       background-color: var(--c-tint);
     }
   }
