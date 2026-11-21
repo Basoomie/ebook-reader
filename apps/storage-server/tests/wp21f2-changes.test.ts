@@ -1100,6 +1100,13 @@ describe(
           `INSERT INTO audio_links (user_id, book_id, state, folder_rel_path, file_name, source, confirmed_at) VALUES (?, 'book-a', 'linked', ?, '本A.m4b', 'library', 1234)`,
         )
         .run(uid, 'japanese/作者/シリーズ/Vol 3 - 本A');
+      // The reader's own record of the merge it wrote.
+      env.db
+        .prepare(
+          `INSERT INTO audio_writes (purpose, temp_rel_path, final_rel_path, direct, state, created_at, updated_at)
+           VALUES ('merge', 'japanese-merged/作者/本P/.tmp', 'japanese-merged/作者/本P/本P (merged).m4b', 0, 'done', 1, 1)`,
+        )
+        .run();
       const reader = switchReader({
         db: env.db,
         scan,
@@ -1351,5 +1358,90 @@ describe('the library scan is the one ABS call the library changes make', () => 
     expect(importers.filter((f) => f !== 'cleanup/audio/abs-library-scan.ts')).toEqual([
       'cleanup/audio/library-changes.ts',
     ]);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+describe('ABS’s own fills are not your edits (the live Preview on a copy, 芥川龍之介 03/04)', () => {
+  const v = (over: Record<string, unknown> = {}) =>
+    bookValues(
+      { title: '芥川龍之介 04', authors: ['芥川龍之介'], narrators: ['読み手'], ...over },
+      '芥川龍之介 04',
+    );
+  const folder = 'japanese-new/芥川龍之介/芥川龍之介 04';
+  const book: LedgerBook = {
+    id: 1,
+    folder: 'japanese/芥川龍之介/芥川龍之介 04',
+    baseFolder: 'japanese/芥川龍之介/芥川龍之介 04',
+    area: 'main',
+    files: [{ fileId: 1, name: 'a.m4b', ino: 1 }],
+    metadata: metadataBytes(v()),
+    decided: metadataBytes(v()),
+    folderIno: 9,
+  };
+  const cur = {
+    unitKey: 'u',
+    copyKey: 'c',
+    area: 'main',
+    state: 'build',
+    folder,
+    baseFolder: folder,
+    author: '芥川龍之介',
+    series: null,
+    title: '芥川龍之介 04',
+    notes: [],
+    files: [{ fileId: 1, dst: `${folder}/a.m4b` }],
+    pdfs: [],
+    cover: true,
+    rank: 0,
+    values: v({ publisher: 'パンローリング', year: 2015 }),
+    metadata: metadataBytes(v({ publisher: 'パンローリング', year: 2015 })),
+  } as unknown as PlannedBook;
+  const plan = (disk: Record<string, unknown>, tags: Record<string, string> | null) =>
+    planLibraryChanges({
+      books: [book],
+      current: () => cur,
+      disk: () => Buffer.from(JSON.stringify(disk)),
+      abs: () => null,
+      keep: () => null,
+      tree: {
+        dirs: new Set(['japanese', 'japanese/芥川龍之介']),
+        bookDirs: new Set(),
+        narrators: new Map(),
+      },
+      choices: () => ({}),
+      fileTags: () => tags,
+    });
+  const built = JSON.parse(metadataBytes(v()).toString('utf8')) as Record<string, unknown>;
+
+  it('a field we wrote empty that ABS filled from the file’s own tag: ABS’s; our decided value replaces it', () => {
+    const disk = { ...built, publisher: 'Pan Rolling', publishedYear: '2014', genres: ['朗読'] };
+    const [c] = plan(disk, { publisher: 'Pan Rolling', date: '2014-05-01', genre: '朗読' });
+    expect(c.userFields).toEqual([]);
+    expect(c.conflicts).toEqual([]);
+    const m = JSON.parse(c.metadataNew!.toString('utf8'));
+    expect(m).toMatchObject({
+      publisher: 'パンローリング',
+      publishedYear: '2015',
+      genres: ['朗読'],
+    });
+  });
+
+  it('a value in an empty field that is not the file’s tag is yours: kept, and it conflicts with ours', () => {
+    const disk = { ...built, publisher: 'あなたの出版社' };
+    const [c] = plan(disk, { publisher: 'Pan Rolling' });
+    expect(c.userFields).toEqual(['publisher']);
+    expect(c.conflicts.map((x) => x.field)).toEqual(['publisher']);
+    expect(JSON.parse(c.metadataNew!.toString('utf8')).publisher).toBe('あなたの出版社');
+  });
+
+  it('fields we never decide (genres, isbn, …) stay as ABS has them and are never yours', () => {
+    const disk = { ...built, genres: ['文学'], isbn: '978-4' };
+    const [c] = plan(disk, null);
+    expect(c.userFields).toEqual([]);
+    expect(JSON.parse(c.metadataNew!.toString('utf8'))).toMatchObject({
+      genres: ['文学'],
+      isbn: '978-4',
+    });
   });
 });

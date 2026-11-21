@@ -33,7 +33,7 @@ import { getLink, resolveLink } from '../../audio/audio-links';
 import { AbsClient } from './abs-client';
 import { AbsLibraryScan } from './abs-library-scan';
 import { ARRIVAL_AREA_FOLDERS, type ExistingTree } from './arrivals-plan';
-import { insideRoot, lstatEntry, readDir, readSmall } from './audio-source-fs';
+import { insideRoot, lstatEntry, readSmall } from './audio-source-fs';
 import type { PlannedBook } from './build-plan';
 import { keptAsBuilt } from './library-keep';
 import {
@@ -52,6 +52,8 @@ export const LIBRARY_SIDECAR_VERSION = '1.3.0';
 const OWNER = DISK_OWNERS.audio7;
 const HOLD_MS = 2000;
 const SLICE = 200;
+/** metadata.json and covers in a book folder: ours or Audiobookshelf's, never the reader's. */
+const ABS_OR_OURS = /^(metadata\.json|cover\.(jpe?g|png|webp))$/i;
 const READER_ROOTS: Record<string, string> = {
   'japanese-generated': 'AI',
   'japanese-merged': '_merged',
@@ -547,7 +549,18 @@ export class LibraryChanges {
       'SELECT field, choice FROM audio_library_choices WHERE book_id = ?',
     );
     const rels = this.db.prepare('SELECT rel_path FROM audio_files WHERE id = ?');
+    const tagsOf = this.db.prepare('SELECT tags_json FROM audio_file_health WHERE file_id = ?');
     const changes = planLibraryChanges({
+      fileTags: (b) => {
+        const r = b.files[0]
+          ? (tagsOf.get(b.files[0].fileId) as { tags_json: string | null } | undefined)
+          : undefined;
+        try {
+          return r?.tags_json ? (JSON.parse(r.tags_json) as Record<string, string>) : null;
+        } catch {
+          return null;
+        }
+      },
       books: w.candidates,
       current: (b) => w.plans.get(b.id) ?? null,
       disk: (b) => w.disk!.get(b.id) ?? null,
@@ -945,35 +958,39 @@ export class LibraryChanges {
         if (r.temp_rel_path) writing.add(r.temp_rel_path);
       }
     const now = this.now();
-    const walk = async (rel: string): Promise<void> => {
-      const dir = insideRoot(media, rel);
-      const st = await lstatEntry(dir);
-      if (!st || !st.isDir) return;
-      for (const e of await readDir(dir)) {
-        if (e.rawHex !== null || e.name.startsWith('.')) continue;
-        const child = `${rel}/${e.name}`;
-        const s = await lstatEntry(e.fullPath);
-        if (!s) continue;
-        if (s.isDir) await walk(child);
-        else if (s.isFile && s.nlink === 1) {
-          const root = child.split('/')[0];
-          const inner = child.split('/').slice(1).join('/');
-          if (writing.has(child) || writing.has(inner) || now - s.mtimeMs < settle) {
-            waiting++;
-            continue;
-          }
-          out.push({
-            rel: child,
-            dst: `${READER_ROOTS[root]}/${inner}`,
-            size: s.size,
-            mtimeMs: Math.floor(s.mtimeMs),
-            dev: s.dev,
-            ino: s.ino,
-          });
-        }
+    // The reader's own record of the files it wrote (never our own files there: the AI books'
+    // links and their metadata.json). Over SMB every file shows link count 1; the server reads
+    // through the disk's own mount, where a file with another name shows 2.
+    const written = reader
+      ? (
+          reader.db
+            .prepare(
+              `SELECT DISTINCT final_rel_path AS rel FROM audio_writes WHERE state = 'done' AND final_rel_path IS NOT NULL`,
+            )
+            .all() as { rel: string }[]
+        ).map((r) => r.rel)
+      : [];
+    for (const rel of written) {
+      const parts = rel.split('/');
+      const root = parts[0];
+      const name = parts[parts.length - 1];
+      if (!READER_ROOTS[root] || parts.length < 2) continue;
+      if (name.startsWith('.') || ABS_OR_OURS.test(name)) continue;
+      const s = await lstatEntry(insideRoot(media, rel));
+      if (!s || !s.isFile || s.nlink !== 1) continue;
+      if (writing.has(rel) || now - s.mtimeMs < settle) {
+        waiting++;
+        continue;
       }
-    };
-    for (const root of Object.keys(READER_ROOTS)) await walk(root);
+      out.push({
+        rel,
+        dst: `${READER_ROOTS[root]}/${parts.slice(1).join('/')}`,
+        size: s.size,
+        mtimeMs: Math.floor(s.mtimeMs),
+        dev: s.dev,
+        ino: s.ino,
+      });
+    }
     void c;
     return { ready: out, waiting };
   }

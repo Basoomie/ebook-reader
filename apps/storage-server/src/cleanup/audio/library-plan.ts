@@ -110,6 +110,66 @@ export interface LibraryPlanInput {
   tree: ExistingTree;
   /** Review choices recorded for the book: field -> 'mine' | 'ours'; 'rename' -> 'now'. */
   choices: (b: LedgerBook) => Record<string, string>;
+  /** The book's first audio file's tags (stage 2's), to tell ABS's own fills from your edits. */
+  fileTags?: (b: LedgerBook) => Record<string, string> | null;
+}
+
+/**
+ * The fields stage 5 decides and metadata.json carries. The others (genres, subtitle, isbn, …)
+ * we always leave as ABS has them: never written, never counted as yours.
+ */
+const OUR_FIELDS = new Set([
+  'tags',
+  'title',
+  'authors',
+  'narrators',
+  'series',
+  'publishedYear',
+  'publisher',
+  'description',
+  'asin',
+  'language',
+]);
+
+const isEmpty = (v: unknown) =>
+  v === null || v === undefined || v === '' || (Array.isArray(v) && v.length === 0);
+
+/**
+ * ABS fills a field we left empty from the audio file's own tags on its scan (WP21f-1 stop 1),
+ * and writes it into metadata.json: that is ABS's, not your edit, when it equals the tag.
+ */
+function absFilled(field: string, value: unknown, tags: Record<string, string> | null): boolean {
+  if (!tags) return false;
+  const k = (s: unknown) => (typeof s === 'string' ? s.normalize('NFKC').trim() : '');
+  const list = (s: string | undefined) =>
+    (s ?? '')
+      .split(/[,、，/／;；]/)
+      .map((x) => x.normalize('NFKC').trim())
+      .filter(Boolean)
+      .sort()
+      .join('|');
+  switch (field) {
+    case 'publisher':
+      return k(value) !== '' && k(value) === k(tags.publisher);
+    case 'publishedYear':
+      return k(value) !== '' && k(value) === k((tags.date ?? '').slice(0, 4));
+    case 'description':
+      return k(value) !== '' && (k(value) === k(tags.comment) || k(value) === k(tags.description));
+    case 'asin':
+      return k(value) !== '' && (k(value) === k(tags.asin) || k(value) === k(tags.audible_asin));
+    case 'authors':
+      return (
+        Array.isArray(value) && list(value.join(',')) === list(tags.artist ?? tags.album_artist)
+      );
+    case 'narrators':
+      return Array.isArray(value) && list(value.join(',')) === list(tags.composer);
+    case 'title':
+      return k(value) !== '' && (k(value) === k(tags.album) || k(value) === k(tags.title));
+    case 'language':
+      return true;
+    default:
+      return false;
+  }
 }
 
 /** Stage 6's staging folders read as the library's (the switch renamed them). */
@@ -196,9 +256,17 @@ export function planLibraryChanges(input: LibraryPlanInput): PlannedChange[] {
     const disk = parse(diskBytes) ?? last;
     const result: Record<string, unknown> = {};
     let write = false;
+    const tags = input.fileTags?.(b) ?? null;
     for (const field of Object.keys(ours)) {
+      if (!OUR_FIELDS.has(field)) {
+        // Never ours to decide: as ABS has it (ours when ABS has nothing).
+        result[field] = field in disk ? disk[field] : ours[field];
+        continue;
+      }
       const weChange = norm(field, ours[field]) !== norm(field, lastOurs[field]);
-      const edited = norm(field, disk[field]) !== norm(field, last[field]);
+      const edited =
+        norm(field, disk[field]) !== norm(field, last[field]) &&
+        !(isEmpty(last[field]) && absFilled(field, disk[field], tags));
       if (edited) change.userFields.push(field);
       if (edited && weChange && norm(field, disk[field]) !== norm(field, ours[field])) {
         const c: FieldChange = { field, from: lastOurs[field], to: ours[field], mine: disk[field] };
