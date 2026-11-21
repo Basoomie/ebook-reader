@@ -46,7 +46,11 @@ import type { SidecarConfig } from './config';
 import { CalibredbHelper } from './calibredb-helper';
 import { exists, Quarantine, sha256File } from './quarantine';
 
-export const SIDECAR_VERSION = '1.0.0';
+/** 1.1.0 (WP20e): stage 4 batches write fields as stage 2's do (series, series_index, comments). */
+export const SIDECAR_VERSION = '1.1.0';
+
+/** The stages whose batches write fields per book (verify / written), not remove copies. */
+const fieldStage = (stage: number) => stage === 2 || stage === 4;
 /** calibredb's `trash restore` exists from this version on. */
 export const TRASH_RESTORE_VERSION = '9.18.0';
 /** Heartbeats while a check or a batch runs (the server calls a sidecar silent for 90 s offline). */
@@ -438,26 +442,28 @@ export class Worker {
         )
       );
       if (!batch.snapshotSaved) await this.saveSnapshot(batch);
-      if (batch.stage === 2) {
+      if (fieldStage(batch.stage)) {
         await this.stage2Books(batch);
         if (this.stopped) return;
       }
       const plan =
-        batch.kind === 'undo' && batch.stage !== 2 ? await this.requestTrashRestore(batch) : null;
+        batch.kind === 'undo' && !fieldStage(batch.stage)
+          ? await this.requestTrashRestore(batch)
+          : null;
       // Stage 1's step timing: every calibredb call by command, plus the server's reports,
       // one log line per 25 copies (decided 2026-11-15, like stage 2's per chunk).
       let timed = 0;
-      if (batch.stage !== 2) {
+      if (!fieldStage(batch.stage)) {
         this.steps = new StepTimes();
         this.calibredb.onCall = (cmd, ms, viaHelper) =>
           this.steps?.add(`calibre ${cmd}${viaHelper ? '' : ' (program)'}`, ms);
       }
       const logTiming = () => {
         if (this.steps && timed > 0) this.log.info(`Timing: ${this.steps.summary(timed)}`);
-        this.steps = batch.stage !== 2 ? new StepTimes() : null;
+        this.steps = !fieldStage(batch.stage) ? new StepTimes() : null;
         timed = 0;
       };
-      for (const item of batch.stage === 2 ? [] : batch.items) {
+      for (const item of fieldStage(batch.stage) ? [] : batch.items) {
         if (this.stopped) return;
         const final =
           batch.kind === 'apply'
@@ -479,7 +485,7 @@ export class Worker {
         timed += 1;
         if (timed >= 25) logTiming();
       }
-      if (batch.stage !== 2) logTiming();
+      if (!fieldStage(batch.stage)) logTiming();
     } catch (err) {
       error = (err as Error).message;
       this.log.error(`Batch ${batch.id}: ${error}`);
@@ -487,7 +493,7 @@ export class Worker {
     } finally {
       clearInterval(lease);
       this.calibredb.onCall = null;
-      if (batch.stage !== 2) this.steps = null;
+      if (!fieldStage(batch.stage)) this.steps = null;
     }
     if (this.stopped) return;
     const sentError = error === null ? null : shorten(error, 1500);

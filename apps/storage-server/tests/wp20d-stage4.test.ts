@@ -377,13 +377,19 @@ describe('stage 4: online sources (Preview)', () => {
       .send({ fetcherId: 'x' })
       .expect(401);
     await request(env.app).post('/api/v1/cleanup-apply/claim').set(auth(fetchToken)).expect(401);
-    // Stage 4 is Preview only.
-    const on = await request(env.app)
+    // Stage 4 can be On since WP20e; it writes nothing before its analysis and AI check are done.
+    await request(env.app)
       .put('/api/v1/cleanup/stages/4')
       .set(auth(user))
-      .send({ mode: 'on' });
-    expect(on.status).toBeGreaterThanOrEqual(400);
-    expect(JSON.stringify(on.body)).toMatch(/Preview only/);
+      .send({ mode: 'on' })
+      .expect(200);
+    await env.service.tick();
+    expect(env.service.batches.list().filter((b) => b.stage === 4)).toHaveLength(0);
+    await request(env.app)
+      .put('/api/v1/cleanup/stages/4')
+      .set(auth(user))
+      .send({ mode: 'analyse' })
+      .expect(200);
     const old = env.service.fetchQueue.enqueue(
       {
         site: 'amazon-search',

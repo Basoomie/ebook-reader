@@ -562,7 +562,7 @@ export function proposeStage4(input: ProposalInput): Stage4Proposal[] {
           class: 'auto',
           source: src,
           reason: null,
-          evidence: { ...c },
+          evidence: { ...c, hadCover: book.hasCover, lastModified: book.lastModified },
         },
         book.hasCover,
       );
@@ -577,7 +577,7 @@ export function proposeStage4(input: ProposalInput): Stage4Proposal[] {
           reason: same
             ? 'The store cover is not larger'
             : 'The store cover is another picture (a 帯 version or another edition)',
-          evidence: { ...c },
+          evidence: { ...c, hadCover: book.hasCover, lastModified: book.lastModified },
         },
         book.hasCover,
       );

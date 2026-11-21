@@ -127,12 +127,62 @@ export interface Stage4Status {
   readings: { state: string; n: number }[];
   natively: { listed: number; read: number | null; withIsbn: number | null; asins: number };
   fields: { field: string; class: string; n: number }[];
+  /** Automatic values that are the AI's best guess, marked unconfirmed (WP20e). */
+  unconfirmed?: { field: string; n: number }[];
+  /** The AI check after the rules (WP20e); null before it starts. */
+  ai?: Stage4AiStatus | null;
   fieldPauses: FieldPause[];
   /** The reading: books read (each once, from the database), the books with an EPUB, the pace. */
   read: { done: number; total: number; perSecond: number | null } | null;
   /** Time left (seconds; null while not measured yet). */
   timeLeft: Stage4TimeLeft | null;
   cachedAt: number;
+}
+
+/** One field of the AI check's gate: confirmed values against the bar, and every value. */
+export interface Stage4AiGateField {
+  scored: number;
+  auto: number;
+  autoRight: number;
+  autoPercent: number | null;
+  allRight: number;
+  allPercent: number | null;
+  wrong: string[];
+}
+export interface Stage4AiGateGroup {
+  books: number;
+  everyFieldRight: number;
+  everyFieldPercent: number | null;
+  fields: Record<string, Stage4AiGateField>;
+}
+export interface Stage4AiStatus {
+  phase: 'evidence' | 'models' | 'decide' | 'gate' | 'done';
+  items: number;
+  labeledItems: number;
+  decided: number;
+  answers: {
+    queued: number;
+    sent: number;
+    answered: number;
+    failed: number;
+    blocked: number;
+    invalid: number;
+  } | null;
+  wait: string | null;
+  costUsd: number | null;
+  invented: number;
+  flaggedAgainstRules: Record<string, number> | null;
+  gate: {
+    passed: boolean;
+    below: string[];
+    books: number;
+    notAsked: number;
+    all: Stage4AiGateGroup;
+    the600: Stage4AiGateGroup;
+    checkD: Stage4AiGateGroup;
+  } | null;
+  error: string | null;
+  finishedAt: number | null;
 }
 
 export interface Stage4TimeLeft {

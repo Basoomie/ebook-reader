@@ -218,12 +218,9 @@ export function createCleanupApplyRouter(options: CleanupOptions): Router {
     const body = (req.body ?? {}) as Record<string, unknown>;
     try {
       res.json(
-        service.batches.stage2.verify(
-          batchId,
-          calibreId,
-          listed(body.current),
-          quarantinePath(body.oldCoverPath),
-        ),
+        service.batches
+          .writerOf(batchId)
+          .verify(batchId, calibreId, listed(body.current), quarantinePath(body.oldCoverPath)),
       );
     } catch (err) {
       rethrow(err);
@@ -243,7 +240,7 @@ export function createCleanupApplyRouter(options: CleanupOptions): Router {
       coverSkipped: typeof b.coverSkipped === 'string' ? b.coverSkipped.slice(0, 500) : null,
     };
     try {
-      res.json(service.batches.stage2.writtenReport(batchId, calibreId, report));
+      res.json(service.batches.writerOf(batchId).writtenReport(batchId, calibreId, report));
     } catch (err) {
       rethrow(err);
     }
@@ -256,7 +253,7 @@ export function createCleanupApplyRouter(options: CleanupOptions): Router {
       const service = serviceOr503(options);
       const { batchId, calibreId } = bookParams(req);
       try {
-        const cover = await service.batches.stage2.coverFor(batchId, calibreId);
+        const cover = await service.batches.writerOf(batchId).coverFor(batchId, calibreId);
         res.setHeader('Content-Type', cover.ext === 'png' ? 'image/png' : 'image/jpeg');
         res.setHeader('X-Cover-Ext', cover.ext);
         res.setHeader('X-Cover-Sha256', cover.sha256);
@@ -274,7 +271,7 @@ export function createCleanupApplyRouter(options: CleanupOptions): Router {
       const service = serviceOr503(options);
       const { batchId, calibreId } = bookParams(req);
       try {
-        const bytes = await service.batches.stage2.oldCover(batchId, calibreId);
+        const bytes = await service.batches.writerOf(batchId).oldCover(batchId, calibreId);
         res.setHeader('Content-Type', 'image/jpeg');
         res.end(bytes);
       } catch (err) {

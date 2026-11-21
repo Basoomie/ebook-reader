@@ -85,6 +85,8 @@ export interface Stage4AiProgress {
   counts: Record<string, Record<string, number>> | null;
   /** Automatic rules values both models agreed against (flagged), per field. */
   flaggedAgainstRules: Record<string, number> | null;
+  /** Best guesses (flagged values of books both models answered), per field: written at On. */
+  unconfirmed?: Record<string, number> | null;
   error: string | null;
   times: Record<string, { ms: number; items: number }>;
 }
@@ -141,6 +143,12 @@ export function emptyStage4Ai(analysisId: string, now = Date.now()): Stage4AiPro
 }
 
 export class Stage4Ai {
+  /** The analysis' proposed books in calibre_id order (see books()). */
+  private list: {
+    key: string;
+    rows: { calibre_uuid: string; calibre_id: number; labeled: number }[];
+  } | null = null;
+
   constructor(private readonly deps: Stage4AiDeps) {}
 
   private get db(): Database.Database {
@@ -275,16 +283,27 @@ export class Stage4Ai {
     after: number,
     limit: number,
   ): { calibre_uuid: string; calibre_id: number; labeled: number }[] {
-    return this.db
-      .prepare(
-        `SELECT calibre_uuid, calibre_id, labeled FROM stage4_books
-         WHERE analysis_id = ? AND state = 'proposed' AND calibre_id > ? ORDER BY calibre_id LIMIT ?`,
-      )
-      .all(p.analysisId, after, limit) as {
-      calibre_uuid: string;
-      calibre_id: number;
-      labeled: number;
-    }[];
+    // Read once per analysis and finish, sorted here: the ordered query per slice sorted all
+    // 52,000 books each time (345 ms on a copy of the live cleanup.db; once: 62 ms).
+    const key = `${p.analysisId}|${p.finishedAt}`;
+    if (this.list?.key !== key) {
+      const rows = this.db
+        .prepare(
+          `SELECT calibre_uuid, calibre_id, labeled FROM stage4_books WHERE analysis_id = ? AND state = 'proposed'`,
+        )
+        .all(p.analysisId) as { calibre_uuid: string; calibre_id: number; labeled: number }[];
+      rows.sort((a, b) => a.calibre_id - b.calibre_id);
+      this.list = { key, rows };
+    }
+    const rows = this.list.rows;
+    let lo = 0;
+    let hi = rows.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (rows[mid].calibre_id <= after) lo = mid + 1;
+      else hi = mid;
+    }
+    return rows.slice(lo, lo + limit);
   }
 
   private async evidenceStep(
@@ -297,13 +316,7 @@ export class Stage4Ai {
       const rows = this.books(p, ai.cursor, SLICE);
       if (!rows.length) {
         const keys = new Set(
-          (
-            this.db
-              .prepare(
-                `SELECT calibre_uuid FROM stage4_books WHERE analysis_id = ? AND state = 'proposed'`,
-              )
-              .all(p.analysisId) as { calibre_uuid: string }[]
-          ).map((r) => this.itemKey(p.libraryId, r.calibre_uuid)),
+          (this.list?.rows ?? []).map((r) => this.itemKey(p.libraryId, r.calibre_uuid)),
         );
         dropOtherItems(this.db, 'calibre4', keys);
         return { finished: true, items: n };
@@ -447,6 +460,17 @@ export class Stage4Ai {
       .all() as { field: string; n: number }[])
       flagged[r.field] = r.n;
     ai.flaggedAgainstRules = flagged;
+    // The best guesses that are written at On: flagged values of books both models answered.
+    const unconfirmed: Record<string, number> = {};
+    for (const r of this.db
+      .prepare(
+        `SELECT v.field, COUNT(*) AS n FROM ai_values v
+         JOIN ai_values a ON a.stage = v.stage AND a.item_key = v.item_key AND a.field = 'asked'
+         WHERE v.stage = 'calibre4' AND v.flagged = 1 AND a.value_json = 'true' GROUP BY v.field`,
+      )
+      .all() as { field: string; n: number }[])
+      unconfirmed[r.field] = r.n;
+    ai.unconfirmed = unconfirmed;
     ai.cost = runSpend(this.db, 'calibre4', ai.analysisId) as Stage4AiProgress['cost'];
   }
 }

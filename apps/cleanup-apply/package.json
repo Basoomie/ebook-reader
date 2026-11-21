@@ -1,6 +1,6 @@
 {
   "name": "ttsu-cleanup-apply",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "description": "WP20a: the Calibre library cleanup's apply sidecar. Writes to Calibre only through the running content server with calibredb, only for applied cleanup batches.",
   "scripts": {

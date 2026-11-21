@@ -5,8 +5,19 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import type { Stage4Gate, Stage4Site, Stage4Status } from './cleanup-api';
+import type {
+  Stage4AiGateField,
+  Stage4AiGateGroup,
+  Stage4AiStatus,
+  Stage4Gate,
+  Stage4Site,
+  Stage4Status
+} from './cleanup-api';
+import { turnOnOnlineSourcesCopy } from '$lib/confirm/confirm-copy';
 import {
+  aiBooksLine,
+  aiGateRows,
+  aiLine,
   booksLine,
   duration,
   gateRows,
@@ -201,5 +212,75 @@ describe('stage 4 wording', () => {
       percent: '98.0 % right (bar 95 %)',
       the600: 'the 600: 98.3 % (measured 98.2 %)'
     });
+  });
+});
+
+describe('the AI check on the stage-4 card (WP20e)', () => {
+  const field = (o: Partial<Stage4AiGateField> = {}): Stage4AiGateField => ({
+    scored: 200,
+    auto: 190,
+    autoRight: 188,
+    autoPercent: 98.9,
+    allRight: 196,
+    allPercent: 98,
+    wrong: [],
+    ...o
+  });
+  const group = (books: number): Stage4AiGateGroup => ({
+    books,
+    everyFieldRight: Math.round(books * 0.95),
+    everyFieldPercent: 95,
+    fields: { t: field(), au: field({ allPercent: 99.5 }) }
+  });
+  const ai = (o: Partial<Stage4AiStatus> = {}): Stage4AiStatus => ({
+    phase: 'models',
+    items: 52120,
+    labeledItems: 789,
+    decided: 0,
+    answers: { queued: 300, sent: 3, answered: 1270, failed: 0, blocked: 0, invalid: 0 },
+    wait: null,
+    costUsd: 0.4123,
+    invented: 12,
+    flaggedAgainstRules: null,
+    gate: null,
+    error: null,
+    finishedAt: null,
+    ...o
+  });
+  it('says what the AI check is doing, the answers in and the spend', () => {
+    expect(aiLine(ai())).toBe(
+      'AI check: asking both models · 1,270 of 1,573 answers in · $0.41 spent'
+    );
+    expect(aiLine(ai({ phase: 'decide', decided: 500 }))).toContain('500 of 52,120 books decided');
+  });
+  it('shows the gate per field and the books with every field right', () => {
+    const g = ai({
+      phase: 'done',
+      gate: {
+        passed: false,
+        below: ['authors'],
+        books: 789,
+        notAsked: 0,
+        all: group(789),
+        the600: group(589),
+        checkD: group(200)
+      }
+    });
+    const rows = aiGateRows(g);
+    expect(rows[0]).toMatchObject({ field: 'Title', below: false });
+    expect(rows[0].confirmed).toBe('98.9 % of 190 confirmed right');
+    expect(rows[1]).toMatchObject({ field: 'Authors', below: true });
+    expect(aiBooksLine(g)).toBe(
+      'Books with every field right, no review: the 600 95.0 % (589), check D 95.0 % (200)'
+    );
+  });
+  it('asks before stage 4 writes, with the changes and the best guesses', () => {
+    const c = turnOnOnlineSourcesCopy({ changes: 120000, unconfirmed: 9000 });
+    expect(c.title).toBe('Write 120,000 changes from the online sources into Calibre?');
+    expect(c.message.join(' ')).toContain('9,000 values are the best guess');
+    expect(c.message.join(' ')).toContain('Format and edition are not written');
+    expect(turnOnOnlineSourcesCopy({ changes: null, unconfirmed: null }).title).toBe(
+      'Write the changes from the online sources into Calibre?'
+    );
   });
 });

@@ -4,7 +4,13 @@
  * All rights reserved.
  */
 
-import type { Stage4Gate, Stage4Site, Stage4Status, StageMode } from './cleanup-api';
+import type {
+  Stage4AiStatus,
+  Stage4Gate,
+  Stage4Site,
+  Stage4Status,
+  StageMode
+} from './cleanup-api';
 import { n } from './cleanup-text';
 
 /** Plain wording for stage 4 on the /cleanup page (WP20d): the online sources, Preview only. */
@@ -13,8 +19,64 @@ export const STAGE4_MODE_HINTS: Record<StageMode, string> = {
   off: 'Nothing runs.',
   analyse:
     'Looks every book up online through the VPN and lists what it would change, with where each value came from; nothing in Calibre is changed.',
-  on: 'Not available yet: stage 4 writes come with the AI check.'
+  on: 'Writes the confirmed values and the best guesses into Calibre in batches, after the AI check; format and edition wait for stage 5.'
 };
+
+const AI_PHASES: Record<string, string> = {
+  evidence: 'gathering what the models read',
+  models: 'asking both models',
+  decide: 'deciding every field',
+  gate: 'checking the labeled books',
+  done: 'done'
+};
+
+/** The AI check's progress in one line (WP20e). */
+export function aiLine(ai: Stage4AiStatus): string {
+  const a = ai.answers;
+  const asked = a ? a.answered + a.failed + a.blocked + a.invalid : 0;
+  const all = a ? asked + a.queued + a.sent : 0;
+  const parts = [`AI check: ${AI_PHASES[ai.phase] ?? ai.phase}`];
+  if (a && all > 0) parts.push(`${n(a.answered)} of ${n(all)} answers in`);
+  if (ai.phase === 'decide') parts.push(`${n(ai.decided)} of ${n(ai.items)} books decided`);
+  if (ai.costUsd !== null) parts.push(`$${ai.costUsd.toFixed(2)} spent`);
+  return parts.join(' · ');
+}
+
+/** The AI check's gate per field: confirmed values against the bar, every value with no review. */
+export function aiGateRows(ai: Stage4AiStatus): {
+  field: string;
+  confirmed: string;
+  all: string;
+  checkD: string;
+  below: boolean;
+}[] {
+  const g = ai.gate;
+  if (!g) return [];
+  return Object.entries(g.all.fields).map(([f, s]) => ({
+    field: GATE_LABELS[FIELD_KEY[f] ?? f] ?? f,
+    confirmed: `${pct(s.autoPercent)} of ${n(s.auto)} confirmed right`,
+    all: `${pct(s.allPercent)} right with no review (${n(s.scored)})`,
+    checkD: `check D: ${pct(g.checkD.fields[f]?.allPercent ?? null)}`,
+    below: g.below.includes(FIELD_KEY[f] ?? f)
+  }));
+}
+
+/** The gate's short field ids (score.ts) and the gate's names. */
+const FIELD_KEY: Record<string, string> = {
+  t: 'title',
+  au: 'authors',
+  il: 'illustrators',
+  se: 'series',
+  ix: 'number',
+  fmt: 'format'
+};
+
+/** "Books with every field right" for the 600 and check D. */
+export function aiBooksLine(ai: Stage4AiStatus): string | null {
+  const g = ai.gate;
+  if (!g) return null;
+  return `Books with every field right, no review: the 600 ${pct(g.the600.everyFieldPercent)} (${n(g.the600.books)}), check D ${pct(g.checkD.everyFieldPercent)} (${n(g.checkD.books)})`;
+}
 
 export const SITE_NAMES: Record<string, string> = {
   'amazon-dp': 'Amazon product pages',

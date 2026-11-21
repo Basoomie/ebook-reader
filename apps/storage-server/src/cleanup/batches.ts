@@ -25,6 +25,7 @@
  * in its edits like any edit made in Calibre (the index only checks them afterwards).
  */
 import type Database from 'better-sqlite3';
+import { isFieldStage } from './field-stages';
 import { createHash, randomUUID } from 'crypto';
 import fs from 'fs/promises';
 import path from 'path';
@@ -283,9 +284,23 @@ export class BatchService {
   snapshotAnswerMs = 30_000;
   /** Stage 2's batches (WP20b): writing fields instead of removing copies. */
   readonly stage2: Stage2Batches;
+  /** Stage 4's writes (WP20e): stage 2's field-write path with stage 4's fields. */
+  readonly stage4: Stage2Batches;
+
+  /** The field-write path of a stage (2 or 4). */
+  fieldWriter(stage: number): Stage2Batches {
+    return stage === 4 ? this.stage4 : this.stage2;
+  }
+
+  /** The field-write path of a batch, by its id. */
+  writerOf(batchId: string): Stage2Batches {
+    const b = this.get(batchId);
+    return this.fieldWriter(b?.stage ?? 2);
+  }
   constructor(private readonly deps: BatchDeps) {
     this.leaseSeconds = deps.leaseSeconds ?? DEFAULT_LEASE_SECONDS;
     this.stage2 = new Stage2Batches(this, deps);
+    this.stage4 = new Stage2Batches(this, deps, 4);
   }
 
   private get db() {
@@ -345,14 +360,15 @@ export class BatchService {
     this.checkIngestedStage(1, now);
     this.checkIngestedStage(2, now);
     this.checkIngestedStage(3, now);
+    this.checkIngestedStage(4, now);
   }
 
   private checkIngestedStage(stage: number, now: number): void {
     for (;;) {
       const batch = this.awaitingIngest(stage);
       if (!batch) return;
-      if (batch.stage === 2) {
-        if (this.stage2.ingested(batch)) {
+      if (isFieldStage(batch.stage)) {
+        if (this.fieldWriter(batch.stage).ingested(batch)) {
           this.db
             .prepare('UPDATE batches SET ingested_at = ?, updated_at = ? WHERE id = ?')
             .run(now, now, batch.id);
@@ -771,6 +787,18 @@ export class BatchService {
       .get() as RawBatch | undefined;
     if (!raw) return { batch: null, wait: null };
     const batch = toBatch(raw);
+    if (batch.stage === 4) {
+      // A sidecar before 1.1.0 knows stage 4's batches as removals: it never gets one (WP20e).
+      const sc = this.db.prepare('SELECT version FROM sidecar_status WHERE id = 1').get() as
+        | { version: string | null }
+        | undefined;
+      const [a, b] = (sc?.version ?? '0.0.0').split('.').map((x) => parseInt(x, 10) || 0);
+      if (a < 1 || (a === 1 && b < 1))
+        return {
+          batch: null,
+          wait: 'The cleanup sidecar is older than 1.1.0: rebuild ttsu-cleanup-apply before stage 4 writes',
+        };
+    }
     if (!batch.snapshotSaved) {
       // One copy per batch at a time, and the sidecar gets an answer within its request time:
       // a copy still running answers "being made" and is asked about again on the next claim.
@@ -875,18 +903,18 @@ export class BatchService {
   sidecarView(batchId: string): SidecarBatch {
     const batch = this.get(batchId)!;
     const settings = getSettings(this.db);
-    if (batch.stage === 2) {
+    if (isFieldStage(batch.stage)) {
       return {
         id: batch.id,
         kind: batch.kind,
-        stage: 2,
+        stage: batch.stage,
         createdAt: batch.createdAt,
         leaseSeconds: this.leaseSeconds,
         itemDelaySeconds: settings.pacing.itemDelaySeconds,
         snapshotSha256: batch.snapshotSha256,
         snapshotSaved: batch.snapshotSaved,
         items: [],
-        books: this.stage2.sidecarBooks(batch),
+        books: this.fieldWriter(batch.stage).sidecarBooks(batch),
         chunkSize: settings.pacing.lookupChunk,
         listFields: LIST_FIELDS,
       };
@@ -1004,7 +1032,7 @@ export class BatchService {
     now = Date.now(),
   ): { state: ItemState } {
     const batch = this.requireClaimed(batchId);
-    if (batch.stage === 2) {
+    if (isFieldStage(batch.stage)) {
       throw new BatchError(
         409,
         'bad_step',
@@ -1214,14 +1242,15 @@ export class BatchService {
     ).map((r) => r.state);
     const terminal =
       batch.kind === 'apply'
-        ? batch.stage === 2
+        ? isFieldStage(batch.stage)
           ? STAGE2_TERMINAL_APPLY
           : TERMINAL_APPLY
         : TERMINAL_UNDO;
     if (!error && states.some((s) => !terminal.includes(s))) {
       throw new BatchError(409, 'not_done', 'Some items are not finished');
     }
-    const good = batch.kind === 'apply' ? (batch.stage === 2 ? 'written' : 'removed') : 'restored';
+    const good =
+      batch.kind === 'apply' ? (isFieldStage(batch.stage) ? 'written' : 'removed') : 'restored';
     const failed = states.filter((s) => s === 'failed' || !terminal.includes(s)).length;
     const doneCount = states.filter((s) => s === good).length;
     const state: BatchState =
@@ -1247,7 +1276,7 @@ export class BatchService {
           )
           .run(
             batch.kind === 'apply'
-              ? batch.stage === 2
+              ? isFieldStage(batch.stage)
                 ? 'Not finished: the batch stopped; the book is tried again in a later batch'
                 : 'Not finished: the batch stopped; the copy is tried again in a later batch'
               : 'Not finished: the Undo stopped',
@@ -1268,7 +1297,7 @@ export class BatchService {
         const left = (
           this.db
             .prepare(
-              batch.stage === 2
+              isFieldStage(batch.stage)
                 ? `SELECT COUNT(*) AS n FROM field_undo WHERE batch_id = ? AND restored_at IS NULL`
                 : `SELECT COUNT(*) AS n FROM undo_records WHERE batch_id = ? AND restored_at IS NULL`,
             )
@@ -1317,7 +1346,7 @@ export class BatchService {
     }
     if (this.open())
       throw new BatchError(409, 'busy', 'Another batch is being applied; try again after it');
-    if (batch.stage === 2) return this.stage2.undo(batch, now);
+    if (isFieldStage(batch.stage)) return this.fieldWriter(batch.stage).undo(batch, now);
     const records = this.db
       .prepare(
         `SELECT change_id, removed_uuid, kept_uuid FROM undo_records

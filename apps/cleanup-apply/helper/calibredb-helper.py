@@ -31,6 +31,8 @@ from calibre.db.cli.main import DBCtx, option_parser_for, run_cmd  # noqa: E402
 ALLOWED_FIELDS = {
     'title', 'sort', 'authors', 'author_sort', 'identifiers', 'publisher', 'languages',
     '#illustrator', 'cover', 'tags',
+    # stage 4 (WP20e)
+    'series', 'series_index', 'comments',
 }
 GLOBAL = {'--with-library', '--library-path', '--username', '--password', '--timeout'}
 CONTEXTS = {}

@@ -80,7 +80,8 @@
   import {
     turnOnContentDuplicatesCopy,
     turnOnFileMetadataCopy,
-    turnOnIdenticalFilesCopy
+    turnOnIdenticalFilesCopy,
+    turnOnOnlineSourcesCopy
   } from '$lib/confirm/confirm-copy';
   import { pxScreen } from '$lib/css-classes';
   import { pagePath } from '$lib/data/env';
@@ -279,6 +280,20 @@
           review: p && p.phase === 'done' ? p.review : null
         }),
         testid: 'cleanup-turn-on-3-confirm'
+      });
+      if (!ok) return;
+    }
+    if (stage.stage === 4 && mode === 'on') {
+      const s4 = status?.stage4;
+      const auto = (s4?.fields ?? [])
+        .filter((f) => f.class === 'auto' && f.field !== 'format' && f.field !== 'kind')
+        .reduce((a, f) => a + f.n, 0);
+      const unconfirmed = (s4?.unconfirmed ?? [])
+        .filter((f) => f.field !== 'format')
+        .reduce((a, f) => a + f.n, 0);
+      const ok = await confirmDestructive({
+        ...turnOnOnlineSourcesCopy({ changes: auto || null, unconfirmed: unconfirmed || null }),
+        testid: 'cleanup-turn-on-4-confirm'
       });
       if (!ok) return;
     }

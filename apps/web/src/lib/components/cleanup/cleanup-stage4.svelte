@@ -6,11 +6,11 @@
    */
 
   /**
-   * Stage 4 on /cleanup (WP20d): the online sources, Preview only. The fetch container's queues
+   * Stage 4 on /cleanup (WP20d; On and the AI check from WP20e): the online sources. The fetch container's queues
    * (per site: answered, left, challenge pages, measured pace, time left, back-off or pause), the
    * books looked up, the author readings and Natively, the check on the labeled books per field
    * beside the measured numbers, and what it would change, field by field, with each value's
-   * source. Nothing here changes Calibre: stage 4's writes come with the AI check (WP20e).
+   * source; the AI check (both models, setup E) and its gate; On once the AI check is done.
    */
   import { createEventDispatcher } from 'svelte';
   import type {
@@ -29,6 +29,9 @@
     readingLine,
     timeLeftLine,
     STAGE4_MODE_HINTS,
+    aiBooksLine,
+    aiGateRows,
+    aiLine,
     booksLine,
     fieldCounts,
     gateRows,
@@ -49,6 +52,10 @@
   export let analyseAgain: (stage: number) => void;
 
   const dispatch = createEventDispatcher<{ changed: void }>();
+
+  // On waits for the AI check (WP20e): the confirmed values and best guesses come from it.
+  $: aiDone = status?.ai?.phase === 'done' && !status.ai.error;
+  $: unconfirmedTotal = (status?.unconfirmed ?? []).reduce((a, u) => a + u.n, 0);
 
   $: gate = ((stage.precision as { gate?: Stage4Gate }).gate ?? null) as Stage4Gate | null;
   $: progress = stage.progress as {
@@ -120,20 +127,19 @@
   <div class="flex flex-wrap items-center justify-between gap-2">
     <h3 class="font-mincho font-bold">4 · {stage.name}</h3>
     <div class="flex flex-wrap gap-2" role="radiogroup" aria-label="Stage 4">
-      {#each ['off', 'analyse'] as mode (mode)}
+      {#each ['off', 'analyse', 'on'] as mode (mode)}
         <button
           class="c-btn {stage.mode === mode ? 'c-btn-primary' : 'c-btn-secondary'}"
           role="radio"
           aria-checked={stage.mode === mode}
-          on:click={() => setMode(stage, mode === 'off' ? 'off' : 'analyse')}
+          disabled={mode === 'on' && stage.mode !== 'on' && !aiDone}
+          title={mode === 'on' && !aiDone ? 'Waits for the AI check' : undefined}
+          on:click={() => setMode(stage, mode === 'off' ? 'off' : mode === 'on' ? 'on' : 'analyse')}
           data-testid="cleanup-stage-4-{mode}"
         >
-          {mode === 'off' ? 'Off' : 'Preview'}
+          {mode === 'off' ? 'Off' : mode === 'on' ? 'On' : 'Preview'}
         </button>
       {/each}
-      <button class="c-btn c-btn-secondary" disabled title="Comes with the AI check (WP20e)"
-        >On</button
-      >
     </div>
   </div>
   {#if stage.mode !== 'off'}
@@ -186,6 +192,25 @@
     {#if stage4GateSummary(gate)}
       <p class="text-sm" data-testid="cleanup-gate-summary-4">{stage4GateSummary(gate)}</p>
     {/if}
+    {#if status?.ai}
+      <p class="text-sm" data-testid="cleanup-stage-4-ai">{aiLine(status.ai)}</p>
+      {#if status.ai.wait}
+        <p class="c-notice text-sm" role="alert" data-testid="cleanup-stage-4-ai-wait">
+          {status.ai.wait}
+        </p>
+      {/if}
+      {#if status.ai.error}
+        <p class="c-notice text-sm" role="alert">The AI check failed: {status.ai.error}</p>
+      {/if}
+      {#if status.ai.gate}
+        <p class="text-sm" data-testid="cleanup-stage-4-ai-gate">
+          {status.ai.gate.passed
+            ? 'The AI check passes on the labeled books'
+            : `Paused after the AI check: ${status.ai.gate.below.join(', ') || 'no labeled books'}`}
+          {#if unconfirmedTotal}· {n(unconfirmedTotal)} values are best guesses, marked unconfirmed{/if}
+        </p>
+      {/if}
+    {/if}
     <CleanupDetails id="stage-4" testid="cleanup-details-4">
       <p class="text-c-muted">{STAGE4_MODE_HINTS[stage.mode]}</p>
       <div>
@@ -222,6 +247,32 @@
             {/each}
           </p>
         {/if}
+      {/if}
+      {#if status?.ai?.gate}
+        <div class="flex flex-col gap-1" data-testid="cleanup-ai-gate-4">
+          <p class="font-medium">
+            After the AI check, on {n(status.ai.gate.books)} labeled books
+          </p>
+          <ul class="flex flex-col gap-1">
+            {#each aiGateRows(status.ai) as row (row.field)}
+              <li class={row.below ? 'font-bold' : ''}>
+                {row.field}: {row.confirmed} · {row.all} · {row.checkD}{row.below
+                  ? ' · paused'
+                  : ''}
+              </li>
+            {/each}
+            {#if aiBooksLine(status.ai)}<li>{aiBooksLine(status.ai)}</li>{/if}
+            <li>
+              Answers not in the evidence (dropped): {n(status.ai.invented)}
+              {#if status.ai.flaggedAgainstRules}
+                · both models against the rules:
+                {Object.entries(status.ai.flaggedAgainstRules)
+                  .map(([k, v]) => `${k} ${n(v)}`)
+                  .join(', ') || 'none'}
+              {/if}
+            </li>
+          </ul>
+        </div>
       {/if}
       {#if gate}
         <div class="flex flex-col gap-1" data-testid="cleanup-gate-4">
@@ -276,9 +327,13 @@
             <span class="font-medium">{p.title ?? `Calibre ${p.calibreId}`}</span>
             <span>{valueText(p.old)} → <b>{valueText(p.new)}</b></span>
             <span class="text-c-muted"
-              >{p.class === 'auto' ? 'Automatic' : 'For review'} · from {sourceName(
-                p.source
-              )}{p.reason ? ` · ${p.reason}` : ''}</span
+              >{p.class === 'auto'
+                ? p.evidence?.unconfirmed
+                  ? 'Unconfirmed (written as the best guess)'
+                  : 'Automatic'
+                : 'For review'} · from {sourceName(p.source)}{p.reason
+                ? ` · ${p.reason}`
+                : ''}</span
             >
           </li>
         {/each}

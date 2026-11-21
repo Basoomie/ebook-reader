@@ -22,6 +22,7 @@ import { STAGE3_WAITING_SQL, Stage3Analysis, type PairRow, type Stage3Progress }
 import { Stage3Worker, type Stage3Reader } from '../counts/book-text-worker';
 import { Stage4Analysis, type Stage4Progress } from './stage4/analysis';
 import { Stage4Ai } from './stage4/ai-step';
+import { STAGE4_WRITTEN_FIELDS } from './stage2-batches';
 import { AiRunner, type AiRunnerDeps } from './ai/runner';
 import { openLookups, paceSeconds, stage4Eta, type SiteCounts } from './stage4/eta';
 import { FetchQueue, LABELED_PRIORITY, backoffKey } from './stage4/queue';
@@ -279,6 +280,15 @@ export class CleanupService {
           log: this.log,
         })
       : null;
+    // Stage 4's covers are the stores' pictures, read from the fetch cache.
+    this.batches.stage4.setStoreCover((url) => {
+      const r = opts.cleanup
+        .prepare(
+          `SELECT id FROM fetch_requests WHERE site = 'amazon-img' AND key = ? AND state = 'done'`,
+        )
+        .get(url) as { id: number } | undefined;
+      return r ? this.fetchQueue.readAnswer(r.id) : null;
+    });
   }
 
   /**
@@ -813,11 +823,11 @@ export class CleanupService {
     await this.round1(target);
     await this.round2(target);
     await this.round3(target);
-    this.round4(target);
+    await this.round4(target);
   }
 
   /** Stage 4 (WP20d): Preview only; the analysis (reading, lookups, proposals) runs while not Off. */
-  private round4(target: string | null): void {
+  private async round4(target: string | null): Promise<void> {
     const stage = getStage(this.db, 4);
     if (stage.mode === 'off' || !target || !this.analysis4) {
       this.waiting4 =
@@ -842,7 +852,7 @@ export class CleanupService {
         this.runAnalysis4();
         return;
       }
-      this.waiting4 = 'Done';
+      await this.apply4(target, stage.mode);
       return;
     }
     this.waiting4 = this.fetcher().online
@@ -893,6 +903,71 @@ export class CleanupService {
         this.analysing4 = null;
       }
     })();
+  }
+
+  /**
+   * Stage 4 On (WP20e): its proposals are written through stage 2's field-write path, after the
+   * rules, Bookmeter's edition pass and the AI check are done for the current analysis.
+   */
+  private async apply4(target: string, mode: StageMode): Promise<void> {
+    if (mode !== 'on') {
+      this.waiting4 = 'Preview: nothing is changed in Calibre';
+      return;
+    }
+    if (getStage(this.db, 4).pauseReason) {
+      this.waiting4 = null;
+      return;
+    }
+    if (!this.stage4Ai?.isDone()) {
+      this.waiting4 = 'Waiting for the AI check';
+      return;
+    }
+    if (this.batches.open()) {
+      this.waiting4 = 'A batch is being applied';
+      return;
+    }
+    for (const [s, left] of [
+      [1, () => this.remaining(target)],
+      [2, () => this.remaining2(target)],
+      [3, () => this.remaining3(target)],
+    ] as [number, () => number][]) {
+      if (getStage(this.db, s).mode === 'on' && left() > 0) {
+        this.waiting4 = `Waiting for stage ${s} to finish writing`;
+        return;
+      }
+    }
+    const checks = this.checksPass();
+    if (!checks.ok) {
+      this.waiting4 = `Waiting for the safety checks: ${checks.failing.join('; ')}`;
+      return;
+    }
+    const { batch, reason } = await this.batches.stage4.plan(target);
+    this.waiting4 = batch
+      ? 'A batch is being applied'
+      : (reason ?? (this.remaining4(target) === 0 ? 'Done: nothing left to write' : null));
+  }
+
+  /** Stage 4's automatic changes still to write (the fields it writes, not paused). */
+  private remaining4(target: string): number {
+    const paused = new Set(
+      listFieldPauses(this.db, 4).flatMap((p) =>
+        p.field === 'illustrators'
+          ? ['illustrator']
+          : p.field === 'number'
+            ? ['series']
+            : [p.field],
+      ),
+    );
+    const rows = this.db
+      .prepare(
+        `SELECT field, COUNT(*) AS n FROM proposed_changes WHERE stage = 4 AND library_id = ?
+         AND state = 'proposed' AND class = 'auto' AND analysis_id = ? GROUP BY field`,
+      )
+      .all(target, currentAnalysisId(this.db, 4)) as { field: string; n: number }[];
+    const written = new Set<string>(STAGE4_WRITTEN_FIELDS);
+    return rows
+      .filter((r) => written.has(r.field) && !paused.has(r.field))
+      .reduce((a, r) => a + r.n, 0);
   }
 
   /** Stage 4 work that needs no answer from the fetcher (answered requests, books to plan or propose). */
@@ -1173,6 +1248,7 @@ export class CleanupService {
       };
     }
     const fields = this.fields4Cache.value;
+    const ai = this.stage4Ai?.progress() ?? null;
     const value = {
       waiting: this.waiting4,
       fetcher: this.fetcher(now),
@@ -1183,6 +1259,35 @@ export class CleanupService {
       readings,
       natively: { ...natively, asins: nativelyAsins },
       fields,
+      // Counted once when the AI check finished (reading the proposals' evidence took 5 s).
+      unconfirmed: Object.entries(ai?.unconfirmed ?? {}).map(([field, n]) => ({ field, n })),
+      // The AI check (WP20e): its phase, the answers, the wait, the cost and the gate.
+      ai: ai
+        ? {
+            phase: ai.phase,
+            items: ai.items,
+            labeledItems: ai.labeledItems,
+            decided: ai.decided,
+            answers: ai.ai,
+            wait: ai.wait,
+            costUsd: ai.cost?.costUsd ?? null,
+            invented: ai.invented,
+            flaggedAgainstRules: ai.flaggedAgainstRules,
+            gate: ai.gate
+              ? {
+                  passed: ai.gate.passed,
+                  below: ai.gate.below,
+                  books: ai.gate.books,
+                  notAsked: ai.gate.notAsked,
+                  all: ai.gate.all,
+                  the600: ai.gate.the600,
+                  checkD: ai.gate.checkD,
+                }
+              : null,
+            error: ai.error,
+            finishedAt: ai.finishedAt,
+          }
+        : null,
       fieldPauses: listFieldPauses(this.db, 4),
       read: p
         ? {
@@ -1377,6 +1482,7 @@ export class CleanupService {
       [1, () => this.remaining(target)],
       [2, () => this.remaining2(target)],
       [3, () => this.remaining3(target)],
+      [4, () => this.remaining4(target)],
     ];
     for (const [stage, count] of left) {
       const st = getStage(this.db, stage);

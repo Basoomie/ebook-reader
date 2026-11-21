@@ -681,6 +681,31 @@ export function turnOnContentDuplicatesCopy(counts: {
   };
 }
 
+/**
+ * Turning stage 4 on (WP20e): from then on it writes what the online sources and the AI check
+ * decided into Calibre on its own.
+ */
+export function turnOnOnlineSourcesCopy(counts: {
+  changes: number | null;
+  unconfirmed: number | null;
+}): ConfirmCopy {
+  const what =
+    typeof counts.changes !== 'number' || counts.changes <= 0
+      ? 'the changes'
+      : `${counts.changes.toLocaleString('en-US')} ${counts.changes === 1 ? 'change' : 'changes'}`;
+  return {
+    title: `Write ${what} from the online sources into Calibre?`,
+    message: [
+      'From now on this runs on its own, in batches: titles, authors with their readings, illustrators, series and numbers, descriptions, store links and covers are written where the rules are sure or both AI models agree.',
+      typeof counts.unconfirmed === 'number' && counts.unconfirmed > 0
+        ? `${counts.unconfirmed.toLocaleString('en-US')} values are the best guess where the sources or the models don’t agree; they are written too and stay marked “unconfirmed” in the list.`
+        : 'Where the sources or the models don’t agree, the best guess is written and stays marked “unconfirmed” in the list.',
+      'Calibre moves a book’s folder when its title or first author changes; the reader follows. A value you change in Calibre afterwards is left alone. Format and edition are not written (stage 5 makes them tags). Each batch can be undone on this page; a cover added where Calibre had none stays.'
+    ],
+    confirmLabel: 'Turn on and write'
+  };
+}
+
 /** Undo of one stage-2 batch: the old values go back into Calibre. */
 export function undoFileMetadataBatchCopy(count: number): ConfirmCopy {
   return {

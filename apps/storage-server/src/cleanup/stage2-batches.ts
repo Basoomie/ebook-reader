@@ -32,6 +32,7 @@ import { getSettings } from './settings';
 import { listFieldPauses } from './stage2-gate';
 import { titleSort } from './title-rules';
 import { illustratorIsNames, readStage2Snapshot, type Stage2Book } from './stage2-snapshot';
+import { readStage4Extras, type Stage4Extras } from './stage4/snapshot4';
 import { currentAnalysisId, pauseStage } from './stages';
 
 export const STAGE2_TERMINAL_APPLY: ItemState[] = ['written', 'failed', 'skipped'];
@@ -49,10 +50,14 @@ export interface ListedBook {
   cover?: unknown;
   last_modified?: unknown;
   '*illustrator'?: unknown;
+  series?: unknown;
+  series_index?: unknown;
+  comments?: unknown;
 }
 
+/** Also series, series_index and comments: stage 4 writes them (WP20e). */
 export const LIST_FIELDS =
-  'uuid,title,authors,author_sort,identifiers,publisher,languages,cover,last_modified,*illustrator';
+  'uuid,title,authors,author_sort,identifiers,publisher,languages,cover,last_modified,*illustrator,series,series_index,comments';
 
 interface Current {
   uuid: string | null;
@@ -64,6 +69,10 @@ interface Current {
   illustrators: string[];
   hasCover: boolean;
   lastModified: string | null;
+  authorSort?: string;
+  series?: string | null;
+  seriesIndex?: number | null;
+  comments?: string;
 }
 
 const strList = (v: unknown): string[] =>
@@ -96,6 +105,15 @@ export function parseListed(b: ListedBook): Current {
     illustrators: strList(b['*illustrator']),
     hasCover: b.cover === 1 || b.cover === true || b.cover === '1',
     lastModified: typeof b.last_modified === 'string' ? b.last_modified : null,
+    authorSort: typeof b.author_sort === 'string' ? b.author_sort : '',
+    series: typeof b.series === 'string' && b.series !== '' ? b.series : null,
+    seriesIndex:
+      typeof b.series_index === 'number'
+        ? b.series_index
+        : typeof b.series_index === 'string' && b.series_index !== ''
+          ? Number(b.series_index)
+          : null,
+    comments: typeof b.comments === 'string' ? b.comments : '',
   };
 }
 
@@ -138,6 +156,19 @@ export function fieldEquals(
         lowerList(current.illustrators),
         lowerList(Array.isArray(value) ? (value as string[]) : []),
       );
+    case 'series': {
+      // Calibre keeps a series_index without a series: the number counts only with a name.
+      const v = (value ?? {}) as { name?: string | null; index?: number | null };
+      const name = v.name ?? null;
+      if ((current.series ?? null) !== name) return false;
+      return name === null || v.index === null || v.index === undefined
+        ? true
+        : current.seriesIndex === v.index;
+    }
+    case 'description':
+      return (current.comments ?? '').trim() === ((value as string | null) ?? '').trim();
+    case 'author_sort':
+      return (current.authorSort ?? '') === ((value as string | null) ?? '');
     default:
       return false;
   }
@@ -174,6 +205,16 @@ export function fieldArgs(
       return [`languages:${((value as string[] | null) ?? []).join(',')}`];
     case 'illustrator':
       return [`#illustrator:${((value as string[] | null) ?? []).join(illustratorSeparator)}`];
+    case 'series': {
+      const v = (value ?? {}) as { name?: string | null; index?: number | null };
+      return v.name && v.index !== null && v.index !== undefined
+        ? [`series:${v.name}`, `series_index:${v.index}`]
+        : [`series:${v.name ?? ''}`];
+    }
+    case 'description':
+      return [`comments:${(value as string | null) ?? ''}`];
+    case 'author_sort':
+      return [`author_sort:${(value as string | null) ?? ''}`];
     default:
       throw new BatchError(500, 'bad_field', `No such field: ${field}`);
   }
@@ -255,7 +296,31 @@ export const PROPOSED_TWICE_REASON = 'The same change was proposed twice; it is 
 export const TWO_VALUES_REASON =
   'Two different changes were proposed for this field; run the analysis again';
 
+/** The fields stage 4 writes to Calibre (format and edition kind wait for stage 5). */
+export const STAGE4_WRITTEN_FIELDS = [
+  'title',
+  'authors',
+  'author_sort',
+  'illustrator',
+  'series',
+  'description',
+  'identifiers',
+  'cover',
+] as const;
+
+/** The stage-4 gate pauses by its field names; the proposals' fields they hold back. */
+const STAGE4_PAUSED_FIELDS: Record<string, string[]> = {
+  title: ['title'],
+  authors: ['authors'],
+  illustrators: ['illustrator'],
+  series: ['series'],
+  number: ['series'],
+};
+
 export class Stage2Batches {
+  /** Stage 4's cover pictures come from the fetch cache (the store's image by its address). */
+  private storeCover: ((url: string) => Buffer | null) | null = null;
+
   constructor(
     private readonly batches: BatchService,
     private readonly deps: {
@@ -264,7 +329,14 @@ export class Stage2Batches {
       calibreDir: string | null;
       cacheDir: string;
     },
+    /** 2: the files' metadata; 4: the online sources (WP20e), the same path. */
+    readonly stage: 2 | 4 = 2,
   ) {}
+
+  /** Stage 4: where the store covers are read (the fetch queue's cached answers). */
+  setStoreCover(read: (url: string) => Buffer | null): void {
+    this.storeCover = read;
+  }
 
   private get db() {
     return this.deps.cleanup;
@@ -303,7 +375,7 @@ export class Stage2Batches {
     const rows = this.db
       .prepare(
         `SELECT id, new_json FROM proposed_changes
-         WHERE stage = 2 AND library_id = ? AND state = 'proposed' AND class = 'auto'
+         WHERE stage = ${this.stage} AND library_id = ? AND state = 'proposed' AND class = 'auto'
            AND field IN ('authors', 'illustrator') AND new_json LIKE '%&%'`,
       )
       .all(libraryId) as { id: number; new_json: string }[];
@@ -322,15 +394,21 @@ export class Stage2Batches {
     if (this.batches.open()) return { batch: null, reason: 'A batch is being applied' };
     this.reviewSplitNames(libraryId);
     const settings = getSettings(this.db);
-    const paused = new Set(listFieldPauses(this.db, 2).map((p) => p.field));
+    const paused = new Set(
+      listFieldPauses(this.db, this.stage).flatMap((p) =>
+        this.stage === 4 ? (STAGE4_PAUSED_FIELDS[p.field] ?? [p.field]) : [p.field],
+      ),
+    );
+    const written: ReadonlySet<string> | null =
+      this.stage === 4 ? new Set<string>(STAGE4_WRITTEN_FIELDS) : null;
     const rows = this.db
       .prepare(
         `SELECT id, calibre_id, calibre_uuid, field, old_json, new_json, evidence_json FROM proposed_changes
-         WHERE stage = 2 AND library_id = ? AND state = 'proposed' AND class = 'auto'
+         WHERE stage = ${this.stage} AND library_id = ? AND state = 'proposed' AND class = 'auto'
            AND (analysis_id = ? OR decided_by IS NOT NULL)
          ORDER BY calibre_id, id`,
       )
-      .all(libraryId, currentAnalysisId(this.db, 2)) as {
+      .all(libraryId, currentAnalysisId(this.db, this.stage)) as {
       id: number;
       calibre_id: number;
       calibre_uuid: string;
@@ -356,6 +434,7 @@ export class Stage2Batches {
     const twoValues = new Set<string>();
     for (const r of rows) {
       if (paused.has(r.field)) continue;
+      if (written && !written.has(r.field)) continue;
       const key = `${r.calibre_uuid}|${r.field}`;
       if (twoValues.has(key)) {
         twice.push({ id: r.id, reason: TWO_VALUES_REASON });
@@ -403,8 +482,11 @@ export class Stage2Batches {
       };
     }
     // Check every book against Calibre now (the indexer's latest snapshot).
-    const snap = readStage2Snapshot(snapshotFile(this.deps.cacheDir, libraryId));
+    const snapFile = snapshotFile(this.deps.cacheDir, libraryId);
+    const snap = readStage2Snapshot(snapFile);
     const byUuid = new Map([...snap.books.values()].map((b) => [b.uuid, b]));
+    // Stage 4 also checks series, number and description against Calibre now.
+    const extras = this.stage === 4 ? readStage4Extras(snapFile) : null;
     const libDir = this.libDir(libraryId);
     const skip: { id: number; reason: string }[] = [];
     const keep: number[] = [];
@@ -414,7 +496,7 @@ export class Stage2Batches {
       let changed = false;
       for (const r of items) {
         const ev = JSON.parse(r.evidence_json) as Evidence2;
-        const reason = await this.planCheck(book, r, ev, libDir);
+        const reason = await this.planCheck(book, r, ev, libDir, extras);
         if (reason) {
           skip.push({ id: r.id, reason });
           changed = true;
@@ -426,7 +508,7 @@ export class Stage2Batches {
     if (changedBooks > 0 && share > settings.libraryChangedPausePercent) {
       pauseStage(
         this.db,
-        2,
+        this.stage,
         'library_changed',
         `${changedBooks} of the next ${byBook.size} books changed in Calibre since the analysis. Nothing was written or skipped. Run the analysis again: writing goes on by itself after it.`,
       );
@@ -443,7 +525,10 @@ export class Stage2Batches {
       })();
     }
     if (keep.length === 0) return { batch: null, reason: null };
-    return { batch: this.batches.createBatch(2, libraryId, 'apply', null, keep), reason: null };
+    return {
+      batch: this.batches.createBatch(this.stage, libraryId, 'apply', null, keep),
+      reason: null,
+    };
   }
 
   private async planCheck(
@@ -451,11 +536,17 @@ export class Stage2Batches {
     r: { calibre_id: number; field: string; old_json: string },
     ev: Evidence2,
     libDir: string,
+    extras: Map<number, Stage4Extras> | null = null,
   ): Promise<string | null> {
     if (!book || book.calibreId !== r.calibre_id) return 'The book is no longer in Calibre';
     if (!book.filePath) return 'The book has no EPUB in Calibre any more';
     const old = JSON.parse(r.old_json) as unknown;
+    const ex = extras?.get(book.calibreId);
     const current: Current = {
+      authorSort: book.authorSort ?? '',
+      series: ex?.series ?? null,
+      seriesIndex: ex?.seriesIndex ?? null,
+      comments: ex?.comments ?? '',
       uuid: book.uuid,
       title: book.title,
       authors: book.authors,
@@ -466,6 +557,13 @@ export class Stage2Batches {
       hasCover: book.hasCover,
       lastModified: book.lastModified,
     };
+    if (r.field === 'cover' && this.stage === 4) {
+      // The store's picture: Calibre's cover as the analysis saw it (has one or not, untouched).
+      if (book.hasCover !== old) return EDITED;
+      if (book.hasCover && ev.lastModified && !sameTime(book.lastModified, ev.lastModified))
+        return EDITED;
+      return null;
+    }
     if (r.field === 'cover') {
       if (!ev.epub || !ev.cover) return 'No cover facts';
       const st = book.filePath ? await statFile(resolveInside(libDir, book.filePath)) : null;
@@ -595,7 +693,8 @@ export class Stage2Batches {
 
   private requireBook(batchId: string, calibreId: number): { batch: BatchRow; rows: ItemRow[] } {
     const batch = this.batches.requireClaimed(batchId);
-    if (batch.stage !== 2) throw new BatchError(409, 'bad_batch', 'Not a stage 2 batch');
+    if (batch.stage !== this.stage)
+      throw new BatchError(409, 'bad_batch', `Not a stage ${this.stage} batch`);
     if (batch.kind === 'apply' && !batch.snapshotSaved) {
       throw new BatchError(
         409,
@@ -637,8 +736,8 @@ export class Stage2Batches {
         }
         const gone = !current || current.uuid !== r.calibre_uuid;
         if (batch.kind === 'apply')
-          this.verifyApply(batch, r, current, gone, answer, oldCoverPath, now);
-        else this.verifyUndo(batch, r, current, gone, answer, now);
+          this.verifyApply(batch, r, current, gone, answer, oldCoverPath, now, rows);
+        else this.verifyUndo(batch, r, current, gone, answer, now, rows);
       }
     })();
     answer.action = answer.fields.length > 0 || answer.cover ? 'write' : 'none';
@@ -653,6 +752,7 @@ export class Stage2Batches {
     answer: VerifyAnswer,
     oldCoverPath: string | null,
     now: number,
+    siblings: ItemRow[] = [],
   ) {
     const push = (state: ItemState, detail: string | null) =>
       answer.items.push({ itemId: r.item_id, field: r.field, state, detail });
@@ -661,13 +761,25 @@ export class Stage2Batches {
       this.skipChange(r.change_id, 'The book is no longer in Calibre', now);
       return push('skipped', 'The book is no longer in Calibre');
     }
+    const open = (field: string) =>
+      siblings.find(
+        (x) =>
+          x.field === field &&
+          x.state !== 'written' &&
+          x.state !== 'skipped' &&
+          x.state !== 'failed',
+      );
     const cur = current!;
     const ev = JSON.parse(r.evidence_json) as Evidence2;
     const oldV = JSON.parse(r.old_json) as unknown;
     const newV = JSON.parse(r.new_json) as unknown;
     const seen = { lastModified: cur.lastModified, hasCover: cur.hasCover };
     if (r.field === 'cover') {
-      const cv = ev.cover;
+      // Stage 4's evidence holds hadCover itself (the store's picture, not the EPUB's).
+      const cv =
+        this.stage === 4
+          ? { hadCover: (ev as { hadCover?: boolean }).hadCover === true }
+          : ev.cover;
       // A cover can't be compared through `list`: a book that had one and changed since the
       // analysis is left alone; one that had none must still have none.
       // Verified before (the sidecar restarted): a write since then shows as a new last_modified.
@@ -704,6 +816,18 @@ export class Stage2Batches {
       return push('skipped', EDITED);
     }
     const extra = Object.fromEntries(Object.entries(ev.extra ?? {}).map(([k, v]) => [k, v.new]));
+    if (this.stage === 4) {
+      // calibredb takes a field once per write: the reading goes with the authors (sent empty
+      // without one, so Calibre computes its own instead of keeping a stale sort: lessons 2).
+      if (r.field === 'author_sort' && open('authors')) {
+        this.setItem(r.item_id, 'verified', null, { ...seen, oldValue: matched.value }, now);
+        return push('verified', null);
+      }
+      if (r.field === 'authors') {
+        const s = open('author_sort');
+        extra.author_sort = s ? (JSON.parse(s.new_json) as string) : '';
+      }
+    }
     answer.fields.push(
       ...fieldArgs(r.field, newV, extra, this.illustratorSeparator(batch.libraryId)),
     );
@@ -718,6 +842,7 @@ export class Stage2Batches {
     gone: boolean,
     answer: VerifyAnswer,
     now: number,
+    siblings: ItemRow[] = [],
   ) {
     const push = (state: ItemState, detail: string | null) =>
       answer.items.push({ itemId: r.item_id, field: r.field, state, detail });
@@ -738,7 +863,9 @@ export class Stage2Batches {
     if (r.field === 'cover') {
       if (!rec.old_cover_path) {
         const detail =
-          "The cover from the book's own file stays: the content server can't remove a cover";
+          this.stage === 4
+            ? "The store's cover stays: the content server can't remove a cover"
+            : "The cover from the book's own file stays: the content server can't remove a cover";
         this.restored(batch, r, cur, detail, now);
         return push('restored', detail);
       }
@@ -767,6 +894,28 @@ export class Stage2Batches {
     if (!fieldEquals(r.field, cur, newV, false)) {
       this.setItem(r.item_id, 'skipped', EDITED_AFTER, null, now);
       return push('skipped', EDITED_AFTER);
+    }
+    if (this.stage === 4) {
+      // As on the way in: the old reading goes back with the old authors, in one argument.
+      const open = (field: string) =>
+        siblings.find(
+          (x) =>
+            x.field === field &&
+            x.state !== 'restored' &&
+            x.state !== 'skipped' &&
+            x.state !== 'failed',
+        );
+      if (r.field === 'author_sort' && open('authors')) {
+        this.setItem(r.item_id, 'verified', null, { lastModified: cur.lastModified }, now);
+        return push('verified', null);
+      }
+      if (r.field === 'authors') {
+        const s = open('author_sort');
+        const sortRec = s ? this.undoRecord(batch, s.change_id) : undefined;
+        extraOld.author_sort = sortRec
+          ? ((JSON.parse(sortRec.old_json) as string | null) ?? '')
+          : '';
+      }
     }
     answer.fields.push(
       ...fieldArgs(
@@ -939,6 +1088,25 @@ export class Stage2Batches {
     const r = rows.find((x) => x.field === 'cover');
     if (!r || batch.kind !== 'apply')
       throw new BatchError(404, 'not_found', 'No cover for this book in this batch');
+    if (this.stage === 4) {
+      const url = (JSON.parse(r.new_json) as { url?: string } | null)?.url;
+      const bytes = url && this.storeCover ? this.storeCover(url) : null;
+      if (!bytes) throw new BatchError(409, 'cover_gone', "The store's cover is not in the cache");
+      const s4 = getSettings(this.db).covers;
+      const out4 = await coverForCalibre(bytes, {
+        maxBytes: s4.maxMb * 1024 * 1024,
+        maxSide: s4.maxSide,
+      });
+      // What Calibre will hold: the check "changed in Calibre after the cleanup wrote it"
+      // compares cover.jpg with it later (applied_values takes the proposal's new value).
+      const nv = { ...(JSON.parse(r.new_json) as Record<string, unknown>) };
+      nv.sha256 = out4.sha256;
+      nv.mediaType = out4.ext === 'jpg' ? 'image/jpeg' : 'image/png';
+      this.db
+        .prepare('UPDATE proposed_changes SET new_json = ?, updated_at = ? WHERE id = ?')
+        .run(JSON.stringify(nv), Date.now(), r.change_id);
+      return { bytes: out4.bytes, ext: out4.ext, sha256: out4.sha256 };
+    }
     const ev = JSON.parse(r.evidence_json) as Evidence2;
     if (!ev.cover || !ev.epub) throw new BatchError(404, 'not_found', 'No cover facts');
     const libDir = this.libDir(batch.libraryId);
@@ -1037,7 +1205,7 @@ export class Stage2Batches {
       );
     }
     return this.batches.createBatch(
-      2,
+      this.stage,
       batch.libraryId,
       'undo',
       batch.id,

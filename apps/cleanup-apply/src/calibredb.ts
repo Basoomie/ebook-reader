@@ -48,7 +48,7 @@ export const ALLOWED: readonly CalibredbCommand[] = [
   'set_fields'
 ];
 
-/** The only fields set_fields may set (stage 2). */
+/** The only fields set_fields may set (stage 2; series, series_index and comments: stage 4). */
 export const SET_FIELDS = [
   'title',
   'sort',
@@ -58,7 +58,10 @@ export const SET_FIELDS = [
   'publisher',
   'languages',
   '#illustrator',
-  'cover'
+  'cover',
+  'series',
+  'series_index',
+  'comments'
 ] as const;
 
 /** Options never allowed, whatever the subcommand. */

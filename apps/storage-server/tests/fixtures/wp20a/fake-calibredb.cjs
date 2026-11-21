@@ -249,6 +249,28 @@ function nameId(table, column, name, extra = {}) {
   );
 }
 
+function seriesOf(id) {
+  try {
+    const r = db
+      .prepare(
+        'SELECT s.name FROM books_series_link l JOIN series s ON s.id = l.series WHERE l.book = ?',
+      )
+      .get(id);
+    return r ? r.name : null;
+  } catch {
+    return null;
+  }
+}
+
+function commentsOf(id) {
+  try {
+    const r = db.prepare('SELECT text FROM comments WHERE book = ?').get(id);
+    return r ? r.text : null;
+  } catch {
+    return null;
+  }
+}
+
 function setFields(fields) {
   const [id] = ids();
   const b = bookRow(id);
@@ -272,6 +294,10 @@ function setFields(fields) {
     'languages',
     '#illustrator',
     'cover',
+    // Stage 4 (WP20e).
+    'series',
+    'series_index',
+    'comments',
   ];
   for (const n of names) if (!allowed.includes(n)) fail(`Unknown field: ${n}`);
   const oldTitle = b.title;
@@ -369,6 +395,20 @@ function setFields(fields) {
           'INSERT OR IGNORE INTO books_custom_column_1_link (book, value) VALUES (?, ?)',
         ).run(id, vid);
       }
+    } else if (k === 'series') {
+      db.prepare('DELETE FROM books_series_link WHERE book = ?').run(id);
+      if (v !== '') {
+        const sid = nameId('series', 'name', v, { sort: v });
+        db.prepare('INSERT INTO books_series_link (book, series) VALUES (?, ?)').run(id, sid);
+      }
+      db.prepare('DELETE FROM series WHERE id NOT IN (SELECT series FROM books_series_link)').run();
+    } else if (k === 'series_index') {
+      const n = Number(v);
+      if (!Number.isFinite(n)) fail(`Not a number: ${v}`);
+      db.prepare('UPDATE books SET series_index = ? WHERE id = ?').run(n, id);
+    } else if (k === 'comments') {
+      db.prepare('DELETE FROM comments WHERE book = ?').run(id);
+      if (v !== '') db.prepare('INSERT INTO comments (book, text) VALUES (?, ?)').run(id, v);
     } else if (k === 'cover') {
       if (!fs.existsSync(v)) fail(`No such file: ${v}`);
       const folder = path.join(lib, ...bookRow(id).path.split('/'));
@@ -437,6 +477,9 @@ switch (sub) {
         languages: languagesOf(b.id),
         cover: b.has_cover ? 1 : 0,
         '*illustrator': illustratorsOf(b.id),
+        series: seriesOf(b.id),
+        series_index: b.series_index,
+        comments: commentsOf(b.id),
       };
       const p = publisherOf(b.id);
       if (p !== null) row.publisher = p;
