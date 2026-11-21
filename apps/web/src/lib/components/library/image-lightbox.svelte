@@ -10,16 +10,32 @@
    * picture fits the screen; ‹ › , a swipe or ←/→ go to the others. It closes on ✕, Esc,
    * the phone's Back (opening adds a history entry) or a tap anywhere outside the picture,
    * but not at the end of a swipe. A hidden picture stays blurred until its ネタバレ is tapped.
+   *
+   * On a touch screen, dragging up or down moves the picture with the finger and fades the
+   * background, like a phone's photo viewer: let go far enough (or flick) and it closes,
+   * otherwise it springs back (2026-11-21). The view takes every touch (`touch-action:
+   * none`), so the page behind never scrolls or pulls to refresh.
    */
   import { pushState } from '$app/navigation';
   import { page } from '$app/stores';
   import { createEventDispatcher, onDestroy, onMount } from 'svelte';
+  import { releaseSpeed } from '$lib/components/modal/sheet-swipe';
 
   export let pictures: { src: string; hidden: boolean; caption: string }[];
   export let index: number;
 
   const dispatch = createEventDispatcher<{ close: void; reveal: number }>();
   const SWIPE_PX = 50;
+  /** Movement before a drag has a direction. */
+  const SLOP_PX = 8;
+  /** Let go this far up or down (share of the screen, within the px bounds) and it closes. */
+  const DISMISS_SHARE = 0.15;
+  const DISMISS_MIN_PX = 80;
+  const DISMISS_MAX_PX = 160;
+  /** A flick: this fast (px/ms) and at least this far also closes. */
+  const FLICK_SPEED = 0.55;
+  const FLICK_MIN_PX = 32;
+  const ANIMATION_MS = 200;
 
   let closeButton: HTMLButtonElement;
   let returnFocus: Element | null = null;
@@ -29,6 +45,20 @@
   let pushed = false;
   let seenEntry = false;
   let closing = false;
+  let pointerId: number | null = null;
+  let axis: 'x' | 'y' | null = null;
+  let dismissable = false;
+  let samples: { t: number; y: number }[] = [];
+  /** The picture's offset while it is dragged up or down. */
+  let dragX = 0;
+  let dragY = 0;
+  let animating = false;
+  let leaving = false;
+
+  $: dragShare = Math.min(
+    1,
+    Math.abs(dragY) / (typeof innerHeight === 'number' ? innerHeight / 2 : 400)
+  );
 
   $: current = pictures[index];
   $: hasPrev = index > 0;
@@ -77,21 +107,94 @@
     ev.stopPropagation();
   }
 
+  function reducedMotion() {
+    return matchMedia('(prefers-reduced-motion: reduce)').matches;
+  }
+
   function pointerDown(ev: PointerEvent) {
+    if (pointerId !== null || leaving) {
+      // A second finger (a pinch): no swipe at all.
+      cancelDrag();
+      return;
+    }
+    pointerId = ev.pointerId;
     startX = ev.clientX;
     startY = ev.clientY;
+    axis = null;
+    dismissable = ev.pointerType !== 'mouse';
+    samples = [];
     swiped = false;
   }
 
-  function pointerUp(ev: PointerEvent) {
-    if (startX === null) return;
+  function pointerMove(ev: PointerEvent) {
+    if (ev.pointerId !== pointerId || startX === null) return;
     const dx = ev.clientX - startX;
     const dy = ev.clientY - startY;
+    if (!axis) {
+      if (Math.abs(dx) < SLOP_PX && Math.abs(dy) < SLOP_PX) return;
+      axis = Math.abs(dx) > Math.abs(dy) || !dismissable ? 'x' : 'y';
+      // A drag never ends in a tap that closes.
+      swiped = true;
+      animating = false;
+    }
+    if (axis !== 'y') return;
+    dragX = dx;
+    dragY = dy;
+    samples.push({ t: ev.timeStamp, y: ev.clientY });
+    if (samples.length > 12) samples.shift();
+  }
+
+  function pointerUp(ev: PointerEvent) {
+    if (ev.pointerId !== pointerId || startX === null) return;
+    const dx = ev.clientX - startX;
+    const dy = ev.clientY - startY;
+    const lockedAxis = axis;
+    pointerId = null;
     startX = null;
-    if (Math.abs(dx) >= SWIPE_PX && Math.abs(dx) > Math.abs(dy)) {
+    axis = null;
+    if (lockedAxis === 'y') {
+      endVerticalDrag(dy, releaseSpeed(samples));
+    } else if (Math.abs(dx) >= SWIPE_PX && Math.abs(dx) > Math.abs(dy)) {
       swiped = true;
       go(dx < 0 ? 1 : -1);
     }
+  }
+
+  function cancelDrag() {
+    pointerId = null;
+    startX = null;
+    if (axis === 'y') springBack();
+    axis = null;
+  }
+
+  function endVerticalDrag(dy: number, speed: number) {
+    const distance = Math.min(
+      DISMISS_MAX_PX,
+      Math.max(DISMISS_MIN_PX, innerHeight * DISMISS_SHARE)
+    );
+    const flick = Math.abs(speed) >= FLICK_SPEED && Math.abs(dy) >= FLICK_MIN_PX;
+    // A flick back towards the middle at the end means "never mind".
+    const backwards = Math.sign(speed) === -Math.sign(dy) && Math.abs(speed) > FLICK_SPEED / 2;
+    const away =
+      !backwards && (Math.abs(dy) >= distance || (flick && Math.sign(speed) === Math.sign(dy)));
+    if (!away) {
+      springBack();
+      return;
+    }
+    leaving = true;
+    if (reducedMotion()) {
+      close();
+      return;
+    }
+    animating = true;
+    dragY = Math.sign(dy) * innerHeight;
+    setTimeout(close, ANIMATION_MS);
+  }
+
+  function springBack() {
+    animating = !reducedMotion();
+    dragX = 0;
+    dragY = 0;
   }
 
   function backdropClick() {
@@ -113,8 +216,13 @@
   aria-modal="true"
   aria-label="Illustrations"
   data-testid="illustrations-lightbox"
+  class:c-lb-dragging={dragY !== 0 || leaving}
+  class:c-lb-settling={animating || leaving}
+  style:--lb-fade={leaving ? 0 : 1 - dragShare}
   on:pointerdown={pointerDown}
+  on:pointermove={pointerMove}
   on:pointerup={pointerUp}
+  on:pointercancel={cancelDrag}
   on:click={backdropClick}
 >
   <div class="c-lb-top">
@@ -144,6 +252,11 @@
       <div
         class="c-lb-pic"
         class:c-lb-hidden={current.hidden}
+        class:c-lb-animating={animating}
+        style:transform={dragX || dragY
+          ? `translate(${dragX}px, ${dragY}px) scale(${1 - 0.25 * dragShare})`
+          : undefined}
+        on:transitionend={() => (animating = false)}
         data-testid="lightbox-picture"
         on:click|stopPropagation
       >
@@ -210,10 +323,39 @@
     z-index: 70;
     display: flex;
     flex-direction: column;
-    background-color: rgba(8, 11, 20, 0.95);
+    background-color: rgba(8, 11, 20, calc(0.95 * var(--lb-fade, 1)));
     color: #f3ede0;
-    touch-action: pan-y;
+    /* Every touch is the view's own (swipes); the page behind never scrolls or refreshes. */
+    touch-action: none;
+    overscroll-behavior: none;
     user-select: none;
+  }
+
+  /* Sliding away or back (never while the finger moves it). */
+  .c-lb-settling {
+    transition: background-color 0.2s ease-out;
+  }
+
+  /* While the picture is dragged away, the controls step back. */
+  .c-lb-top,
+  .c-lb-nav {
+    transition: opacity 0.15s ease-out;
+  }
+
+  .c-lb-dragging .c-lb-top,
+  .c-lb-dragging .c-lb-nav {
+    opacity: 0;
+  }
+
+  .c-lb-animating {
+    transition: transform 0.2s ease-out;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .c-lb-settling,
+    .c-lb-animating {
+      transition: none;
+    }
   }
 
   .c-lb-top {
@@ -323,6 +465,6 @@
   }
 
   :global(html.eink) .c-lightbox {
-    background-color: #000;
+    background-color: rgb(0 0 0 / var(--lb-fade, 1));
   }
 </style>
