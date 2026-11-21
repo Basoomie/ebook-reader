@@ -23,6 +23,7 @@ import {
   onlyEditionOrNumberChange,
   recordAuthors,
   tagPeopleOf,
+  artistIsNarrator,
   VOLUME_NO_SERIES,
 } from '../src/cleanup/audio/meta-rules';
 
@@ -293,8 +294,16 @@ describe('6. no store record: the tags', () => {
     expect(r.narrators).toMatchObject({ value: ['佐々木健'], auto: false });
   });
 
+  // audiobook.jp's bare tag form (title, artist, album, genre "Audiobook"; WP21f-1 stop 2).
+  const abjp = (artist: string) => ({
+    title: '灰色のピーターパン',
+    artist,
+    album: '灰色のピーターパン',
+    genre: 'Audiobook',
+  });
+
   it('an artist tag alone lists the narrators (audiobook.jp files); the authors stay unknown', () => {
-    const e = none({ artist: '遠藤大輔, あいざわゆりか, 臼木健士朗, 加藤優里' });
+    const e = none(abjp('遠藤大輔, あいざわゆりか, 臼木健士朗, 加藤優里'));
     expect(tagPeopleOf(e)).toEqual({
       authors: [],
       narrators: ['遠藤大輔', 'あいざわゆりか', '臼木健士朗', '加藤優里'],
@@ -303,7 +312,7 @@ describe('6. no store record: the tags', () => {
     expect(r.authors.value).toBeNull();
     expect(r.narrators.value).toHaveLength(4);
     // "ほか" is no one.
-    expect(tagPeopleOf(none({ artist: '山根綺, 佐藤榛夏, ほか' })).narrators).toEqual([
+    expect(tagPeopleOf(none(abjp('山根綺, 佐藤榛夏, ほか'))).narrators).toEqual([
       '山根綺',
       '佐藤榛夏',
     ]);
@@ -311,8 +320,39 @@ describe('6. no store record: the tags', () => {
     expect(metaRules(none({}), null, false).narrators.value).toBeNull();
   });
 
+  it("an artist tag alone in any other form is the author (the app's downloads, Audible's form): WP21f-1 stop 2", () => {
+    // The three mp3 books unpacked at stop 2 (the tags as stage 2 stored them).
+    const app = none({
+      title: '第一部 五月【1】',
+      album: 'かがみの孤城',
+      artist: '辻村深月',
+      genre: 'オーディオブック',
+    });
+    expect(artistIsNarrator(app.tags)).toBe(false);
+    expect(tagPeopleOf(app)).toEqual({ authors: ['辻村深月'], narrators: [] });
+    const r = metaRules(app, null, false);
+    expect(r.authors.value).toEqual(['辻村深月']);
+    expect(r.narrators.value).toBeNull();
+    // Audible's form (album_artist, date) and a file without a genre: the author.
+    for (const tags of [
+      {
+        title: '告白',
+        artist: '湊 かなえ',
+        album_artist: '湊 かなえ',
+        album: '告白',
+        genre: 'Audiobook',
+        date: '2019',
+      },
+      { title: '終電の神様', artist: '阿川大樹', album: '終電の神様', comment: 'x' },
+    ])
+      expect(tagPeopleOf(none(tags)).narrators, tags.title).toEqual([]);
+    // The bare form, whatever the width or case of its genre: the narrators.
+    expect(artistIsNarrator({ artist: 'x', genre: ' ＡＵＤＩＯＢＯＯＫ ' })).toBe(true);
+    expect(artistIsNarrator(null)).toBe(false);
+  });
+
   it('unconfirmed: a rules guess when the models give nothing, and AI books are not touched', () => {
-    const e = none({ artist: '古賀葵, 田澤茉純' });
+    const e = none(abjp('古賀葵, 田澤茉純'));
     const f = decide(e, null);
     expect(f.narrators!.decision).toMatchObject({
       value: ['古賀葵', '田澤茉純'],

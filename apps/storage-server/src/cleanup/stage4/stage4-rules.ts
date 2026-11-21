@@ -26,7 +26,12 @@ import {
   type V3Values,
 } from './rules-v3';
 
-export const STAGE4_RULES_VERSION = 1;
+/**
+ * 2 (WP20e, the stage-4 On preparation): BookWalker's series keeps a closing wave dash that
+ * pairs with an opening one; the AI step then decides every book again from the stored answers
+ * and gives each series one spelling.
+ */
+export const STAGE4_RULES_VERSION = 2;
 
 /** The gold labels' names for the kinds. */
 export type Kind = 'full' | 'sample' | 'bonus' | 'special edition' | 'omnibus';

@@ -52,6 +52,7 @@ import {
 import {
   authorFromName,
   describesFiles,
+  hasOwnTitle,
   leadingNumber,
   meaningless,
   peopleFromTags,
@@ -113,8 +114,9 @@ export const STAGE4_RULES_VERSION = 2;
  * The version of how units are built (titles, search titles, folders): raised when that code
  * changes, so a finished stage starts over from the units (every answer comes from the cache).
  * 2: file-describing folders, track numbers, series folders (WP21c follow-up (2)).
+ * 3: archive extensions out of the titles, the album tag's title (WP21f-1 stop 2).
  */
-export const STAGE4_UNITS_VERSION = 2;
+export const STAGE4_UNITS_VERSION = 3;
 
 export type Stage4Phase = 'units' | 'lookups' | 'gate' | 'done';
 
@@ -249,6 +251,12 @@ export interface UnitInputs {
   absAsins: string[];
   kikubon: string | null;
   audiobookJp: string | null;
+  /**
+   * The album tag's title, only when it is none of the names' titles (a misspelt folder:
+   * `また、同じ夢見ていた/` holds 「また、同じ夢を見ていた」; WP21f-1 stop 2). Searched last, only
+   * when no record passed. Missing for every other unit (their inputs stay as they were).
+   */
+  tagTitle?: string;
   paths: string[];
   opening: OpeningFile[];
 }
@@ -650,6 +658,17 @@ export class AudioStage4 {
         c.files.some((f) => noRecord.some((nr) => f.rel.startsWith(nr))),
       );
       const ai = cs.every((c) => c.ai);
+      const album = tags?.album ? searchTitle(tags.album) : '';
+      const tagTitle =
+        album &&
+        hasOwnTitle(album) &&
+        !meaningless(album) &&
+        !describesFiles(album) &&
+        ![facts.title, ...facts.otherTitles, ...(facts.seriesTitles ?? []), ...queries].includes(
+          album,
+        )
+          ? album
+          : null;
       rows.push({
         // Stable while the same copies form the recording (a new analysis keeps the key).
         key: `u:${createHash('sha1')
@@ -670,6 +689,7 @@ export class AudioStage4 {
           absAsins,
           kikubon: ids.kikubon,
           audiobookJp: ids.audiobookJp,
+          ...(tagTitle ? { tagTitle } : {}),
           paths: paths.slice(0, 20),
           opening: rep.files.map((f) => ({
             id: f.id,
@@ -959,20 +979,18 @@ export class AudioStage4 {
     };
     const cands: Cand[] = [];
     const have = new Set<string>();
-    const facts = inputs.facts;
+    // The album tag's title joins the titles only for the last step (step 6).
+    let facts = inputs.facts;
+    const evaluateNow = (rec: StoreRecord, via: string) =>
+      evaluate(facts, rec, m, {
+        viaNameAsin: via === 'asin_name',
+        viaNameId: via === 'name_id',
+      });
     const add = (rec: StoreRecord, via: string, requestId: number | null) => {
       const k = recordName(rec);
       if (have.has(k)) return;
       have.add(k);
-      cands.push({
-        rec,
-        via,
-        requestId,
-        ev: evaluate(facts, rec, m, {
-          viaNameAsin: via === 'asin_name',
-          viaNameId: via === 'name_id',
-        }),
-      });
+      cands.push({ rec, via, requestId, ev: evaluateNow(rec, via) });
     };
     const waiting = (): Advance => ({ kind: 'waiting', waits: ctx.waits });
     const product = (asin: string, via: string, fallback?: StoreRecord) => {
@@ -1080,7 +1098,38 @@ export class AudioStage4 {
       }
     }
     if (ctx.waits.length) return waiting();
-    return this.decide(unitKey, inputs, cands, ctx, true, s)!;
+
+    // 6. The album tag's title (a misspelt folder name; WP21f-1 stop 2), only when the names
+    //    found nothing worth showing (the unit would be "not found"): Audible's title search and
+    //    audiobook.jp's search are asked with it, and only the records they find may agree with
+    //    it. A record the names found is never checked again with it (the stop-2 measure:
+    //    `[08] 86‐エイティシックス‐Ep.7` carries the album tag of Ep.8, so names and tags disagree).
+    const end = this.decide(unitKey, inputs, cands, ctx, true, s)!;
+    if (inputs.tagTitle && end.kind === 'decided' && end.cls === 'unknown') {
+      const tq = inputs.tagTitle;
+      facts = { ...inputs.facts, otherTitles: [...inputs.facts.otherTitles, tq] };
+      for (const v of titleVariants(tq)) {
+        const r = this.need(ctx, audibleSearch(v), 'search');
+        if (r.pending) return waiting();
+        const hits = r.ok ? (this.parse(r.id, parseAudibleSearch) ?? []) : [];
+        if (readHits(hits, `tag_search:${v}`)) break;
+      }
+      const r = this.need(ctx, abjpSearch(tq), 'audiobookjp');
+      if (!r.pending) {
+        const hits = r.ok ? (this.parse(r.id, parseAbjpSearch) ?? []) : [];
+        const worth = hits.filter((h) => hitWorthReading(facts, h, m)).slice(0, s.onlineStorePages);
+        for (const h of worth) {
+          const rp = this.need(ctx, abjpProduct(h.id), 'audiobookjp-product');
+          if (rp.pending) continue;
+          const rec = rp.ok ? this.parse(rp.id, (b) => parseAbjpProduct(b, h.id)) : null;
+          if (rec) add(rec, 'tag_abjp_search', rp.id);
+          else add(hitRecord(h), 'tag_abjp_search', r.id);
+        }
+      }
+      if (ctx.waits.length) return waiting();
+      return this.decide(unitKey, inputs, cands, ctx, true, s)!;
+    }
+    return end;
   }
 
   /**

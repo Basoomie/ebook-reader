@@ -39,6 +39,26 @@ describe('BookWalker standing in for Amazon', () => {
     expect(titleStem('獄門撫子此処ニ在リ　３　修羅の巷で宴する')).toBe('獄門撫子此処ニ在リ');
   });
 
+  it('keeps a closing wave dash that pairs with an opening one (WP20e)', () => {
+    expect(titleStem('無職転生 ～異世界行ったら本気だす～ 21')).toBe(
+      '無職転生 ~異世界行ったら本気だす~',
+    );
+    expect(titleStem('フェアリーテイル・クロニクル ～空気読まない異世界ライフ～ 3')).toBe(
+      'フェアリーテイル・クロニクル ~空気読まない異世界ライフ~',
+    );
+    expect(titleStem('転生したらスライムだった件 〜魔国暮らしのトリニティ〜 第3巻')).toBe(
+      '転生したらスライムだった件 〜魔国暮らしのトリニティ〜',
+    );
+    expect(titleStem('喰 -kuu- 3')).toBe('喰 -kuu-');
+    expect(titleStem('ソード-アート - 3')).toBe('ソード-アート');
+    // An unpaired dash before the number is still cut.
+    expect(titleStem('ソードアート・オンライン ～ 3')).toBe('ソードアート・オンライン');
+    const vols = ['無職転生 ~異世界行ったら本気だす~ 1', '無職転生 ~異世界行ったら本気だす~ 2'];
+    expect(commonSeries(vols, '無職転生 ～異世界行ったら本気だす～ 21')).toBe(
+      '無職転生 ~異世界行ったら本気だす~',
+    );
+  });
+
   it('takes the title stem only when more than half the volumes start with it', () => {
     const vols = ['最強の悪役が往く２　～副題～', '最強の悪役が往く　～副題～'];
     // One of two volumes is not a majority: the volumes' common start.

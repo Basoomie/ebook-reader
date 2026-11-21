@@ -156,7 +156,7 @@ export interface Stage4AiGateGroup {
   fields: Record<string, Stage4AiGateField>;
 }
 export interface Stage4AiStatus {
-  phase: 'evidence' | 'models' | 'decide' | 'gate' | 'done';
+  phase: 'evidence' | 'models' | 'decide' | 'spelling' | 'gate' | 'done';
   /** The running phase: how far, and the seconds left (null: not measured yet). */
   bar?: { phase: string; done: number; total: number; secondsLeft: number | null } | null;
   items: number;

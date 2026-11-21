@@ -1386,6 +1386,148 @@ describe('follow-up (2) on stage-3 rows: folders, track numbers, series folders,
   });
 });
 
+describe('unpacked archives (WP21f-1 stop 2): no archive extension, the album tag searched last', () => {
+  it('names: an archive extension is not part of a title; "_extracted" says nothing', () => {
+    expect(searchTitle('かがみの孤城.zip')).toBe('かがみの孤城');
+    expect(searchTitle('また、同じ夢見ていた.rar')).toBe('また、同じ夢見ていた');
+    expect(searchTitle('本.7Z')).toBe('本');
+    expect(searchTitle('本.zip.m4b')).toBe('本');
+    expect(meaningless('_extracted')).toBe(true);
+  });
+
+  it('the stop-2 books: the title without ".zip"; the misspelt folder found by its album tag; other units unchanged', async () => {
+    const db = freshDb();
+    const x = '_extracted/TMW Japanese Audiobooks Collection (Part 2)';
+    const app = (album: string, title: string) => ({
+      title,
+      album,
+      artist: '辻村深月',
+      genre: 'オーディオブック',
+    });
+    seedStage3(db, [
+      {
+        key: 'k1',
+        rel: `${x}/かがみの孤城.zip/001 第一部 五月【1】.mp3`,
+        name: 'かがみの孤城.zip',
+        kind: 'parts',
+        seconds: 1147 * 60,
+        tags: app('かがみの孤城', '第一部 五月【1】'),
+      },
+      {
+        key: 'm1',
+        rel: `${x}/また、同じ夢見ていた.rar/また、同じ夢見ていた/001 1【1】.mp3`,
+        name: 'また、同じ夢見ていた',
+        kind: 'parts',
+        seconds: 516 * 60,
+        tags: app('また、同じ夢を見ていた', '01／21　また、同じ夢を見ていた　1【1】'),
+      },
+      // The ASIN in its name chose a record whose title differs (review), the album tag agrees
+      // with that record (the live 86 Ep.7 file carries Ep.8's tags): it stays in review, the
+      // record is never checked again with the album, and the album is never searched.
+      {
+        key: 'r1',
+        rel: 'TMW Japanese Audiobooks Collection (Part 5) - Light Novels I/[安里 アサト] 86/[08] 86 Ep.7 ミスト [B0EIGHTY08].m4b',
+        name: '[08] 86 Ep.7 ミスト [B0EIGHTY08]',
+        asins: ['B0EIGHTY08'],
+        seconds: 600 * 60,
+        tags: { album: '86 Ep.8 ガンスモーク・オン・ザ・ウォーター', artist: '安里 アサト' },
+      },
+      // Matched by its name: the album tag (another form of the title) is never searched.
+      {
+        key: 'g1',
+        rel: 'TMW Japanese Audiobooks Collection (Part 3)/源氏物語 第一帖 桐壺.m4b',
+        name: '源氏物語 第一帖 桐壺',
+        seconds: 60 * 60,
+        tags: { album: '源氏物語(一) 桐壺', artist: '紫式部' },
+      },
+    ]);
+    const search = (products: object[]) => Buffer.from(JSON.stringify({ products }));
+    const pages = new Map<string, Buffer>([
+      [
+        audibleSearch('かがみの孤城').url,
+        search([{ asin: 'B0KAGAMI01', title: 'かがみの孤城', runtime_length_min: 1147 }]),
+      ],
+      [
+        audibleProduct('B0KAGAMI01').url,
+        audibleJson('B0KAGAMI01', { title: 'かがみの孤城', runtime_length_min: 1147 }),
+      ],
+      [
+        audibleSearch('また、同じ夢を見ていた').url,
+        search([{ asin: 'B0YUMEYUME', title: 'また、同じ夢を見ていた', runtime_length_min: 516 }]),
+      ],
+      [
+        audibleProduct('B0YUMEYUME').url,
+        audibleJson('B0YUMEYUME', { title: 'また、同じ夢を見ていた', runtime_length_min: 516 }),
+      ],
+      [
+        audibleProduct('B0EIGHTY08').url,
+        audibleJson('B0EIGHTY08', {
+          title: '86 Ep.8 ガンスモーク・オン・ザ・ウォーター',
+          runtime_length_min: 600,
+        }),
+      ],
+      [
+        audibleSearch('源氏物語 第一帖 桐壺').url,
+        search([{ asin: 'B0070YLNFK', title: '源氏物語 第一帖 桐壺', runtime_length_min: 60 }]),
+      ],
+      [
+        audibleProduct('B0070YLNFK').url,
+        audibleJson('B0070YLNFK', { title: '源氏物語 第一帖 桐壺', runtime_length_min: 60 }),
+      ],
+    ]);
+    const { stage4, queue } = makeStage(db);
+    stage4.restart();
+    const asked: string[] = [];
+    await runToEnd(db, stage4, queue, pages, asked);
+    expect(stage4.progress()).toMatchObject({ error: null, unitsVersion: STAGE4_UNITS_VERSION });
+    const rows = db
+      .prepare('SELECT name, class, store_id, detail, inputs_json FROM audio_online_units')
+      .all() as {
+      name: string;
+      class: string;
+      store_id: string | null;
+      detail: string | null;
+      inputs_json: string;
+    }[];
+    const by = (n: string) => {
+      const r = rows.find((y) => y.name === n)!;
+      return { ...r, inputs: JSON.parse(r.inputs_json) as UnitInputs };
+    };
+    const decoded = asked.map((u) => decodeURIComponent(u.replace(/\+/g, ' ')));
+    expect(decoded.some((u) => u.includes('.zip') || u.includes('.rar'))).toBe(false);
+    const k1 = by('かがみの孤城.zip');
+    expect(k1).toMatchObject({ class: 'auto', store_id: 'B0KAGAMI01' });
+    expect(k1.inputs.facts.title).toBe('かがみの孤城');
+    expect(k1.inputs.queries).toEqual(['かがみの孤城']);
+    // The album is the title already: nothing to add.
+    expect('tagTitle' in k1.inputs).toBe(false);
+    const m1 = by('また、同じ夢見ていた');
+    expect(m1.inputs.queries).toEqual(['また、同じ夢見ていた']);
+    expect(m1.inputs.tagTitle).toBe('また、同じ夢を見ていた');
+    expect(m1).toMatchObject({
+      class: 'auto',
+      store_id: 'B0YUMEYUME',
+      detail: 'tag_search:また、同じ夢を見ていた',
+    });
+    // The name's own searches came first and found nothing.
+    const first = decoded.findIndex((u) => u.includes('同じ夢見ていた'));
+    const tag = decoded.findIndex((u) => u.includes('同じ夢を見ていた'));
+    expect(first).toBeGreaterThanOrEqual(0);
+    expect(tag).toBeGreaterThan(first);
+    // A unit in review keeps its review and never asks for its album.
+    const r1 = by('[08] 86 Ep.7 ミスト [B0EIGHTY08]');
+    expect(r1).toMatchObject({ class: 'review', store_id: 'B0EIGHTY08' });
+    expect(r1.inputs.tagTitle).toBe('86 Ep.8 ガンスモーク・オン・ザ・ウォーター');
+    expect(decoded.some((u) => u.includes('Ep.8') && !u.includes('B0EIGHTY08'))).toBe(false);
+    // A unit its name matched never asks for its album.
+    const g1 = by('源氏物語 第一帖 桐壺');
+    expect(g1).toMatchObject({ class: 'auto', store_id: 'B0070YLNFK' });
+    expect(g1.inputs.tagTitle).toBe('源氏物語(一) 桐壺');
+    expect(decoded.some((u) => u.includes('源氏物語(一)'))).toBe(false);
+    expect(new Set(asked).size).toBe(asked.length);
+  });
+});
+
 // ---------------------------------------------------------------------------------------
 describe('cleanup.db v12', () => {
   it('adds stage 4 and its tables; every polled query uses an index', () => {
