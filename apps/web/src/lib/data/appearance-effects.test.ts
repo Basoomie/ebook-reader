@@ -190,6 +190,19 @@ describe('startAppearanceEffects', () => {
     stop();
   });
 
+  it('marks a dark reader theme for modals over the reader, whatever the Library Look', () => {
+    const s = { ...settings(), libraryLook: new BehaviorSubject('light') };
+    const r = root();
+    const stop = startAppearanceEffects(s, undefined, r);
+    expect(r.classes.has('reader-dark')).toBe(false);
+    s.theme.next('dark-theme');
+    expect(r.classes.has('reader-dark')).toBe(true);
+    expect(r.classes.has('catalogue-dark')).toBe(false);
+    s.theme.next('light-theme');
+    expect(r.classes.has('reader-dark')).toBe(false);
+    stop();
+  });
+
   it('never throws into the app', () => {
     const s = settings({ followSystemTheme: true });
     const bad = {

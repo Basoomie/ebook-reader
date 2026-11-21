@@ -1,11 +1,12 @@
 <script lang="ts">
   /**
-   * WP10c: search in the open book. Plain for e-ink like the WP9 prompt: no transitions,
-   * 48 px bordered controls, inert backdrop, Esc closes. Searches on Enter or the button,
-   * never per keystroke. Choosing a result closes the dialog and jumps there.
+   * WP10c: search in the open book. Searches on Enter or the button, never per keystroke.
+   * Choosing a result closes the dialog and jumps there; ✕, Esc or a click outside close it
+   * (modal.svelte).
    */
   import { onMount, tick } from 'svelte';
   import { createEventDispatcher } from 'svelte';
+  import Modal from '$lib/components/modal/modal.svelte';
   import { chapterLabelAt, type SectionLike } from '$lib/sync/position-prompt';
   import type { SearchResult, SearchState } from './book-search';
 
@@ -17,8 +18,6 @@
   export let resolver: (answer: { state: SearchState; result: SearchResult | null }) => void;
 
   const dispatch = createEventDispatcher<{ close: void }>();
-  const buttonClass =
-    'flex min-h-[3rem] items-center justify-center rounded border-2 border-current px-5 font-medium';
 
   let query = state.query;
   let results = state.results;
@@ -58,13 +57,6 @@
     }
   }
 
-  function onKeydown(ev: KeyboardEvent) {
-    if (ev.key === 'Escape') {
-      ev.preventDefault();
-      close(null);
-    }
-  }
-
   function place(result: SearchResult) {
     const parts: string[] = [];
     const chapter = chapterLabelAt(sections, result.position);
@@ -87,39 +79,36 @@
               : `${results.length} results`);
 </script>
 
-<svelte:window on:keydown={onKeydown} />
-
-<section
-  class="mdc-elevation--z24 flex max-h-[85vh] w-[40rem] max-w-full flex-col rounded bg-white p-6"
-  data-testid="book-search"
->
-  <h2 class="weight-medium mb-3 text-xl">Search in this book</h2>
-  <form class="flex gap-2" on:submit|preventDefault={run}>
-    <input
-      bind:this={inputEl}
-      bind:value={query}
-      type="search"
-      enterkeyhint="search"
-      aria-label="Search in this book"
-      class="min-h-[3rem] min-w-0 flex-1 rounded border-2 border-current px-3"
-      data-testid="book-search-input"
-    />
-    <button class={buttonClass} type="submit" disabled={busy}>Search</button>
-  </form>
-  <p class="mt-3 min-h-[1.5rem] text-sm" role="status" data-testid="book-search-status">
-    {status}
-  </p>
+<Modal title="Search in this book" size="lg" testid="book-search" on:close={() => close(null)}>
+  <div class="grid gap-2 pt-4">
+    <form class="flex gap-2" on:submit|preventDefault={run}>
+      <input
+        bind:this={inputEl}
+        bind:value={query}
+        type="search"
+        enterkeyhint="search"
+        aria-label="Search in this book"
+        class="c-input min-w-0 flex-1"
+        data-testid="book-search-input"
+      />
+      <button class="c-btn c-btn-primary" type="submit" disabled={busy}>Search</button>
+    </form>
+    <p class="min-h-[1.5rem] text-sm text-c-muted" role="status" data-testid="book-search-status">
+      {status}
+    </p>
+  </div>
   {#if results.length}
-    <ul class="mt-2 min-h-0 overflow-y-auto" data-testid="book-search-results">
+    <ul class="pb-1" data-testid="book-search-results">
       {#each results as result (result.displayStart)}
-        <li class="border-t border-gray-400">
+        <li class="c-modal-row">
           <button
-            class="block min-h-[3rem] w-full py-2 text-left"
+            type="button"
+            class="c-modal-row-button"
             data-testid="book-search-result"
             on:click={() => close(result)}
           >
-            <span class="block text-sm">{place(result)}</span>
-            <span class="block">
+            <span class="c-modal-row-meta block">{place(result)}</span>
+            <span class="block font-serif">
               {result.before}<b class="underline">{result.match}</b>{result.after}
             </span>
           </button>
@@ -127,7 +116,4 @@
       {/each}
     </ul>
   {/if}
-  <footer class="flex justify-end pt-5">
-    <button class={buttonClass} on:click={() => close(null)}>Close</button>
-  </footer>
-</section>
+</Modal>

@@ -1,13 +1,14 @@
 <script lang="ts">
   /**
-   * WP11a: writes the note on a highlight or a note about the book. Plain for e-ink like
-   * the search dialog: no transitions, 48 px bordered controls, inert backdrop, Esc
-   * cancels. Saving an empty note removes it.
+   * WP11a: writes the note on a highlight or a note about the book. "Save note" (or
+   * Ctrl+Enter) saves; ✕, Esc or a click outside cancel, asking first when the text was
+   * changed (modal.svelte). Saving an empty note removes it.
    * WP19: removing a note (Remove note, or saving it empty) asks first, in place.
    */
   import { createEventDispatcher, onMount } from 'svelte';
   import { MAX_NOTE_BODY } from '$lib/notes/highlights';
   import InlineConfirm from '$lib/components/confirm/inline-confirm.svelte';
+  import Modal from '$lib/components/modal/modal.svelte';
   import { removeNoteCopy } from '$lib/confirm/confirm-copy';
 
   export let heading: string;
@@ -19,8 +20,7 @@
   ) => void;
 
   const dispatch = createEventDispatcher<{ close: void }>();
-  const buttonClass =
-    'flex min-h-[3rem] items-center justify-center rounded border-2 border-current px-5 font-medium';
+  const id = `note-editor-${Math.random().toString(36).slice(2, 10)}`;
 
   let text = body;
   let done = false;
@@ -46,46 +46,43 @@
   }
 
   function onKeydown(ev: KeyboardEvent) {
-    if (pendingRemoval) return;
-    if (ev.key === 'Escape') {
-      ev.preventDefault();
-      close(null);
-    } else if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) {
+    if (pendingRemoval || tooLong) return;
+    if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) {
       ev.preventDefault();
       save();
     }
   }
 
   $: tooLong = Array.from(text).length > MAX_NOTE_BODY;
+  $: dirty = !done && text !== body;
 </script>
 
 <svelte:window on:keydown={onKeydown} />
 
-<section
-  class="mdc-elevation--z24 flex max-h-[85vh] w-[40rem] max-w-full flex-col rounded bg-white p-6"
-  data-testid="note-editor"
->
-  <h2 class="weight-medium mb-3 text-xl">{heading}</h2>
-  {#if quote}
-    <blockquote class="mb-3 max-h-24 overflow-y-auto border-l-4 border-gray-500 pl-3 text-sm">
-      {quote}
-    </blockquote>
-  {/if}
-  <textarea
-    bind:this={textareaEl}
-    bind:value={text}
-    rows="6"
-    aria-label="Note"
-    class="min-h-[8rem] w-full rounded border-2 border-current p-3"
-    data-testid="note-editor-text"
-  />
-  {#if tooLong}
-    <p class="mt-2 text-sm" role="alert">
-      A note can be at most {MAX_NOTE_BODY.toLocaleString()} characters.
-    </p>
-  {/if}
-  {#if pendingRemoval}
-    <div class="pt-5">
+<Modal title={heading} size="md" {dirty} testid="note-editor" on:close={() => close(null)}>
+  <div class="grid gap-3 pb-1 pt-4">
+    {#if quote}
+      <blockquote
+        class="max-h-24 overflow-y-auto border-l-4 border-c-strong pl-3 font-serif text-sm text-c-muted"
+      >
+        {quote}
+      </blockquote>
+    {/if}
+    <label class="c-modal-label" for="{id}-text">Note</label>
+    <textarea
+      id="{id}-text"
+      bind:this={textareaEl}
+      bind:value={text}
+      rows="6"
+      class="c-input min-h-[8rem] w-full py-2.5"
+      data-testid="note-editor-text"
+    />
+    {#if tooLong}
+      <p class="c-modal-error" role="alert">
+        <span aria-hidden="true">⚠</span>A note can be at most {MAX_NOTE_BODY.toLocaleString()} characters.
+      </p>
+    {/if}
+    {#if pendingRemoval}
       <InlineConfirm
         {...removeNoteCopy()}
         testid="note-remove-confirm"
@@ -96,22 +93,28 @@
           textareaEl?.focus();
         }}
       />
-    </div>
-  {:else}
-    <footer class="flex flex-wrap justify-end gap-2 pt-5">
-      {#if canRemove}
+    {:else if canRemove}
+      <div>
         <button
-          class="{buttonClass} mr-auto"
+          type="button"
+          class="c-btn c-btn-danger-line c-btn-sm"
           data-testid="note-editor-remove"
           on:click={() => (pendingRemoval = { action: 'remove' })}
         >
-          Remove note
+          Remove note…
         </button>
-      {/if}
-      <button class={buttonClass} on:click={() => close(null)}>Cancel</button>
-      <button class={buttonClass} disabled={tooLong} data-testid="note-editor-save" on:click={save}>
-        Save
-      </button>
-    </footer>
-  {/if}
-</section>
+      </div>
+    {/if}
+  </div>
+  <svelte:fragment slot="footer">
+    <button
+      type="button"
+      class="c-btn c-btn-primary"
+      disabled={tooLong || !!pendingRemoval}
+      data-testid="note-editor-save"
+      on:click={save}
+    >
+      Save note
+    </button>
+  </svelte:fragment>
+</Modal>

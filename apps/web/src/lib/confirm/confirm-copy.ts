@@ -220,6 +220,51 @@ export function removeReadCopy(ordinal: string): ConfirmCopy {
 
 // ---- Reader ------------------------------------------------------------------------------------
 
+/** Leaving the reader when the current place isn't bookmarked ("Confirm close" on). */
+export function leaveUnbookmarkedCopy(): ConfirmCopy {
+  return {
+    title: 'Leave without a bookmark?',
+    message: ['Your current place is not bookmarked.'],
+    confirmLabel: 'Leave',
+    cancelLabel: 'Stay',
+    danger: false
+  };
+}
+
+/** Opening a library book that is already on this device under another count (WP6). */
+export function openOwnCopyCopy(q: {
+  title: string;
+  localCharacters: number;
+  calibreCharacters: number;
+}): ConfirmCopy {
+  return {
+    title: 'Open your own copy?',
+    message: [
+      `You already have "${q.title}" on this device (${Number(q.localCharacters).toLocaleString()} characters). The library copy has ${Number(q.calibreCharacters).toLocaleString()} characters, so it may be a different edition.`,
+      'Your copy opens and is remembered as this library book. Your copy and its progress are not changed.'
+    ],
+    confirmLabel: 'Open my copy',
+    danger: false
+  };
+}
+
+/** WP7b: a migrated placeholder becomes the library copy with another count. */
+export function openLibraryCopyCopy(q: {
+  title: string;
+  localCharacters: number;
+  calibreCharacters: number;
+}): ConfirmCopy {
+  return {
+    title: 'Open the library copy?',
+    message: [
+      `Your old copy of "${q.title}" had ${Number(q.localCharacters).toLocaleString()} characters; the library copy has ${Number(q.calibreCharacters).toLocaleString()}, so your place may move a little.`,
+      'The library copy opens from now on. Your reading place, bookmark and stats are kept.'
+    ],
+    confirmLabel: 'Open the library copy',
+    danger: false
+  };
+}
+
 export function removeNoteCopy(): ConfirmCopy {
   return {
     title: 'Remove this note?',

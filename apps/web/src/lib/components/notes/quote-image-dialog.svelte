@@ -17,6 +17,7 @@
    * `refreshAuthor` (the reader): asks the library server for the book's authors after the
    * dialog opens; a different answer replaces the remembered one.
    */
+  import Modal from '$lib/components/modal/modal.svelte';
   import { createEventDispatcher, onDestroy, onMount } from 'svelte';
   import Fa from 'svelte-fa';
   import { faCopy, faDownload, faShareNodes } from '@fortawesome/free-solid-svg-icons';
@@ -53,7 +54,7 @@
   /** On screen at most half size (drawn at full size: shrunk text measures differently). */
   const PREVIEW_SCALE = 0.5;
   const toggle = 'c-btn c-btn-secondary min-h-[2.75rem] flex-1 px-2 text-sm';
-  const action = 'c-btn c-btn-secondary min-h-[2.75rem] px-4 text-sm';
+  const action = 'c-btn c-btn-secondary';
   const legend = 'mb-1 font-medium text-c-muted';
   const marks: QuoteMark[] = ['line', 'quotes', 'corner', 'none'];
   const frames: QuoteFrame[] = ['none', 'line', 'card'];
@@ -206,13 +207,6 @@
     });
   }
 
-  function onKeydown(ev: KeyboardEvent) {
-    if (ev.key === 'Escape') {
-      ev.preventDefault();
-      dispatch('close');
-    }
-  }
-
   function swatchStyle(background: QuoteBackground) {
     if (background === 'cover') {
       return content.coverUrl
@@ -224,16 +218,15 @@
   }
 </script>
 
-<svelte:window on:keydown={onKeydown} />
-
-<section
-  class="c-quote-dialog mdc-elevation--z24 max-h-[calc(100vh-8rem)] w-[min(64rem,80vw)] overflow-y-auto rounded px-4 pt-4 sm:px-6 sm:pt-6"
-  role="dialog"
-  aria-label="Quote image"
-  data-testid="quote-image-dialog"
+<Modal
+  title="Quote image"
+  subtitle={content.title}
+  size="xl"
+  testid="quote-image-dialog"
+  closeTestid="quote-image-close"
+  on:close={() => dispatch('close')}
 >
-  <h2 class="mb-4 font-mincho text-xl font-bold">Quote image</h2>
-  <div class="grid gap-5 md:grid-cols-[minmax(0,1fr)_19rem]">
+  <div class="grid gap-5 py-4 md:grid-cols-[minmax(0,1fr)_19rem]">
     <div class="flex items-start justify-center md:sticky md:top-0 md:self-start">
       <canvas
         bind:this={canvas}
@@ -477,20 +470,10 @@
     </div>
   </div>
 
-  <footer
-    class="c-quote-actions sticky bottom-0 mt-3 flex flex-wrap items-center justify-end gap-2 py-3 sm:py-4"
-  >
-    <p class="mr-auto text-sm text-c-muted" role="status" data-testid="quote-image-status">
-      {status}
-    </p>
-    <button
-      type="button"
-      class={action}
-      data-testid="quote-image-close"
-      on:click={() => dispatch('close')}
-    >
-      Close
-    </button>
+  <svelte:fragment slot="status">
+    <span role="status" data-testid="quote-image-status">{status}</span>
+  </svelte:fragment>
+  <svelte:fragment slot="footer">
     {#if canShare}
       <button
         type="button"
@@ -515,28 +498,17 @@
     {/if}
     <button
       type="button"
-      class="c-btn c-btn-primary min-h-[2.75rem] px-4 text-sm"
+      class="c-btn c-btn-primary"
       disabled={busy}
       data-testid="quote-image-download"
       on:click={download}
     >
       <Fa icon={faDownload} /> Download
     </button>
-  </footer>
-</section>
+  </svelte:fragment>
+</Modal>
 
 <style>
-  /* Its own colours, so it reads the same over the catalogue and the reader. */
-  .c-quote-dialog {
-    background-color: var(--c-raised);
-    color: var(--c-ink);
-  }
-
-  /* The buttons stay in view while the choices scroll (phones). */
-  .c-quote-actions {
-    background-color: var(--c-raised);
-  }
-
   /* Exactly the image: only a hairline to show where it ends. */
   .c-quote-canvas {
     outline: 1px solid var(--c-line);

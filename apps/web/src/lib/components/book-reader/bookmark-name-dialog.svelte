@@ -1,9 +1,10 @@
 <script lang="ts">
   /**
-   * WP11b: names a new bookmark (pre-filled with the first sentence of the page). Plain for
-   * e-ink like the search dialog: no transitions, 48 px bordered controls, inert backdrop,
-   * Enter saves, Esc cancels. Saving a bookmark never moves the saved place.
+   * WP11b: names a new bookmark (pre-filled with the first sentence of the page). Enter or
+   * "Save bookmark" saves; ✕, Esc or a click outside cancel, asking first when the name was
+   * changed (modal.svelte). Saving a bookmark never moves the saved place.
    */
+  import Modal from '$lib/components/modal/modal.svelte';
   import { createEventDispatcher, onMount } from 'svelte';
   import { MAX_BOOKMARK_NAME } from '$lib/notes/bookmarks';
 
@@ -12,8 +13,7 @@
   export let resolver: (name: string | null) => void;
 
   const dispatch = createEventDispatcher<{ close: void }>();
-  const buttonClass =
-    'flex min-h-[3rem] items-center justify-center rounded border-2 border-current px-5 font-medium';
+  const formId = `bookmark-name-${Math.random().toString(36).slice(2, 10)}`;
 
   let text = name;
   let done = false;
@@ -31,51 +31,52 @@
     dispatch('close');
   }
 
-  function onKeydown(ev: KeyboardEvent) {
-    if (ev.key === 'Escape') {
-      ev.preventDefault();
-      close(null);
-    }
-  }
-
   $: empty = !text.trim();
   $: tooLong = Array.from(text.trim()).length > MAX_BOOKMARK_NAME;
+  $: dirty = !done && text !== name;
 </script>
 
-<svelte:window on:keydown={onKeydown} />
-
-<section
-  class="mdc-elevation--z24 flex max-h-[85vh] w-[36rem] max-w-full flex-col rounded bg-white p-6"
-  data-testid="bookmark-name-dialog"
+<Modal
+  title="Add a bookmark"
+  subtitle={place}
+  size="md"
+  {dirty}
+  testid="bookmark-name-dialog"
+  on:close={() => close(null)}
 >
-  <h2 class="weight-medium mb-1 text-xl">Add bookmark</h2>
-  {#if place}
-    <p class="mb-3 text-sm">{place}</p>
-  {/if}
-  <form on:submit|preventDefault={() => !empty && !tooLong && close(text.trim())}>
+  <form
+    id={formId}
+    class="c-modal-field pb-1 pt-4"
+    on:submit|preventDefault={() => !empty && !tooLong && close(text.trim())}
+  >
+    <label class="c-modal-label" for="{formId}-name">Name</label>
     <input
+      id="{formId}-name"
       bind:this={inputEl}
       bind:value={text}
-      aria-label="Bookmark name"
       enterkeyhint="done"
-      class="min-h-[3rem] w-full rounded border-2 border-current px-3"
+      class="c-input w-full"
       data-testid="bookmark-name-input"
     />
     {#if tooLong}
-      <p class="mt-2 text-sm" role="alert">
-        A bookmark name can be at most {MAX_BOOKMARK_NAME} characters.
+      <p class="c-modal-error" role="alert">
+        <span aria-hidden="true">⚠</span>A bookmark name can be at most {MAX_BOOKMARK_NAME} characters.
+      </p>
+    {:else}
+      <p class="c-modal-hint !mb-0">
+        A bookmark keeps this page under a name. It never moves your saved place.
       </p>
     {/if}
-    <footer class="flex justify-end gap-2 pt-5">
-      <button type="button" class={buttonClass} on:click={() => close(null)}>Cancel</button>
-      <button
-        type="submit"
-        class={buttonClass}
-        disabled={empty || tooLong}
-        data-testid="bookmark-name-save"
-      >
-        Save
-      </button>
-    </footer>
   </form>
-</section>
+  <svelte:fragment slot="footer">
+    <button
+      type="submit"
+      form={formId}
+      class="c-btn c-btn-primary"
+      disabled={empty || tooLong}
+      data-testid="bookmark-name-save"
+    >
+      Save bookmark
+    </button>
+  </svelte:fragment>
+</Modal>

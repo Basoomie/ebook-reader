@@ -75,6 +75,11 @@
 
 	$: currentEndSeconds = endHours * 3600 + endMinutes * 60 + endSeconds + endMiliseconds / 1000;
 
+	// Unsaved: the times differ from the subtitle's (a close request asks first).
+	$: dirty =
+		Math.abs(currentStartSeconds - activeSubtitle.startSeconds) > 0.0005 ||
+		Math.abs(currentEndSeconds - activeSubtitle.endSeconds) > 0.0005;
+
 	$: durationHours = $currentAudioSourceUrl$ ? Math.floor(duration / 3600) : 999;
 
 	function onKeyDown(event: KeyboardEvent) {
@@ -344,7 +349,7 @@
 
 <svelte:window on:keydown={onKeyDown} />
 
-<DialogTemplate>
+<DialogTemplate size="lg" {dirty} on:close={onCancel}>
 	<svelte:fragment slot="header">Edit Subtitle</svelte:fragment>
 	<div slot="content">
 		<div class="m-b-s">
@@ -499,10 +504,9 @@
 			</div>
 		</div>
 	</div>
-	<div class="flex grow justify-between" slot="footer">
-		<button on:click={onCancel}>Cancel</button>
-		<button on:click={onSaveNewTime}>Save</button>
-	</div>
+	<svelte:fragment slot="footer">
+		<button type="button" class="c-btn c-btn-primary" on:click={onSaveNewTime}>Save</button>
+	</svelte:fragment>
 </DialogTemplate>
 <div class:hidden={!isLoading && !$exportCancelController$} class="backdrop">
 	<span class="spinner"></span>

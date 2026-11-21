@@ -9,6 +9,8 @@
 	export let contentStyles: string;
 	export let showCancel = true;
 	export let isFileReopen = false;
+	/** The action button's words ("Reopen files"); ✕, Esc or a click outside cancel. */
+	export let confirmLabel = 'Continue';
 	export let resolver: (arg0: boolean) => void;
 
 	const { readerEnableFilesystemApi$ } = settings$;
@@ -24,19 +26,18 @@
 	}
 </script>
 
-<DialogTemplate>
+<DialogTemplate size="sm" on:close={() => closeDialog(true)}>
 	<svelte:fragment slot="header">{dialogHeader}</svelte:fragment>
 	<svelte:fragment slot="content">
 		<p style={contentStyles}>{dialogMessage}</p>
 		{#if isFileReopen}
-			<div class="mt-4">
-				<label for="fs-state">Enable filesystem api</label>
-				<input id="fs-state" type="checkbox" bind:checked={$readerEnableFilesystemApi$} />
-			</div>
+			<label class="mt-4 flex min-h-[2.75rem] items-center gap-3">
+				<input id="fs-state" class="h-5 w-5" type="checkbox" bind:checked={$readerEnableFilesystemApi$} />
+				Enable filesystem api
+			</label>
 		{/if}
 	</svelte:fragment>
-	<div class="flex grow justify-between" slot="footer">
-		<button class:invisible={!showCancel} on:click={() => closeDialog(true)}>Cancel</button>
-		<button on:click={() => closeDialog()}>Confirm</button>
-	</div>
+	<svelte:fragment slot="footer">
+		<button type="button" class="c-btn c-btn-primary" on:click={() => closeDialog()}>{confirmLabel}</button>
+	</svelte:fragment>
 </DialogTemplate>

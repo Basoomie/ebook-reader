@@ -3,15 +3,17 @@
 </script>
 
 <script lang="ts">
-  /** A book's "⋯" while reordering a list (WP8b). Plain for e-ink; Esc cancels. */
+  /**
+   * A book's "⋯" while reordering a list (WP8b): a list of actions, Remove last in red;
+   * ✕, Esc or a click outside cancel (modal.svelte).
+   */
+  import Modal from '$lib/components/modal/modal.svelte';
   import { createEventDispatcher } from 'svelte';
 
   export let title: string;
   export let resolver: (action: CollectionBookAction | undefined) => void;
 
   const dispatch = createEventDispatcher<{ close: void }>();
-  const buttonClass =
-    'flex min-h-[3rem] items-center justify-center rounded border-2 border-current px-4 font-medium';
   let done = false;
 
   function answer(action: CollectionBookAction | undefined) {
@@ -20,34 +22,46 @@
     resolver(action);
     dispatch('close');
   }
-
-  function onKeydown(ev: KeyboardEvent) {
-    if (ev.key === 'Escape') {
-      ev.preventDefault();
-      answer(undefined);
-    }
-  }
 </script>
 
-<svelte:window on:keydown={onKeydown} />
-
-<section
-  class="mdc-elevation--z24 w-full max-w-sm rounded bg-white p-6"
-  data-testid="collection-book-actions-dialog"
+<Modal
+  {title}
+  subtitle="In this collection"
+  size="sm"
+  testid="collection-book-actions-dialog"
+  on:close={() => answer(undefined)}
 >
-  <h2 class="weight-medium mb-4 line-clamp-2 break-words text-xl">{title}</h2>
-  <div class="grid grid-cols-1 gap-2">
-    <button class={buttonClass} data-testid="book-move-top" on:click={() => answer('top')}>
-      Move to top
+  <div class="c-modal-actions">
+    <button
+      type="button"
+      class="c-modal-action"
+      data-testid="book-move-top"
+      on:click={() => answer('top')}
+    >
+      <span class="c-modal-action-text">
+        <span class="c-modal-action-label">Move to top</span>
+      </span>
     </button>
-    <button class={buttonClass} data-testid="book-move-bottom" on:click={() => answer('bottom')}>
-      Move to bottom
+    <button
+      type="button"
+      class="c-modal-action"
+      data-testid="book-move-bottom"
+      on:click={() => answer('bottom')}
+    >
+      <span class="c-modal-action-text">
+        <span class="c-modal-action-label">Move to bottom</span>
+      </span>
     </button>
-    <button class={buttonClass} data-testid="book-remove" on:click={() => answer('remove')}>
-      Remove from collection
+    <button
+      type="button"
+      class="c-modal-action is-danger"
+      data-testid="book-remove"
+      on:click={() => answer('remove')}
+    >
+      <span class="c-modal-action-text">
+        <span class="c-modal-action-label">Remove from collection</span>
+        <span class="c-modal-action-hint">The book stays in your library.</span>
+      </span>
     </button>
   </div>
-  <footer class="flex justify-end pt-5">
-    <button class={buttonClass} on:click={() => answer(undefined)}>Cancel</button>
-  </footer>
-</section>
+</Modal>

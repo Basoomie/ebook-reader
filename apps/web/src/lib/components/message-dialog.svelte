@@ -1,27 +1,19 @@
 <script lang="ts">
+  /**
+   * A short message (an error, a notice): title and text, closed with ✕, Esc or a click
+   * outside (modal.svelte).
+   */
+  import Modal from '$lib/components/modal/modal.svelte';
   import { createEventDispatcher } from 'svelte';
-  import { buttonClasses } from '$lib/css-classes';
-  import DialogTemplate from '$lib/components/dialog-template.svelte';
-  import Ripple from '$lib/components/ripple.svelte';
 
   export let title: string;
-
   export let message: string;
 
-  const dispatch = createEventDispatcher<{
-    close: void;
-  }>();
+  const dispatch = createEventDispatcher<{ close: void }>();
 </script>
 
-<DialogTemplate>
-  <svelte:fragment slot="header">{title}</svelte:fragment>
-  <svelte:fragment slot="content">
-    <p>{message}</p>
-  </svelte:fragment>
-  <svelte:fragment slot="footer">
-    <button class={buttonClasses} on:click={() => dispatch('close')}>
-      Close
-      <Ripple />
-    </button>
-  </svelte:fragment>
-</DialogTemplate>
+<Modal {title} size="sm" testid="message-dialog" on:close={() => dispatch('close')}>
+  <p class="whitespace-pre-line pt-3 [overflow-wrap:anywhere]" data-testid="message-dialog-text">
+    {message}
+  </p>
+</Modal>

@@ -24,9 +24,7 @@ import type { Collection, CollectionType } from './collections';
 
 function ask<T>(component: Dialog['component'], props: Record<string, unknown>): Promise<T> {
   return new Promise<T>((resolve) => {
-    dialogManager.dialogs$.next([
-      { component, disableCloseOnClick: true, props: { ...props, resolver: resolve } }
-    ]);
+    dialogManager.dialogs$.next([{ component, props: { ...props, resolver: resolve } }]);
   });
 }
 

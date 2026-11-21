@@ -11,7 +11,7 @@
 	}>();
 </script>
 
-<DialogTemplate>
+<DialogTemplate size="lg" on:close={() => dispatch('close')}>
 	<svelte:fragment slot="header">Differences</svelte:fragment>
 	<svelte:fragment slot="content">
 		<div class="overflow-auto p-s">
@@ -27,7 +27,4 @@
 			</div>
 		</div>
 	</svelte:fragment>
-	<div slot="footer">
-		<button on:click={() => dispatch('close')}>Close</button>
-	</div>
 </DialogTemplate>

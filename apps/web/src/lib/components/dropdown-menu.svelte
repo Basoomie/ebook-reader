@@ -122,7 +122,8 @@
 />
 <svelte:document on:scroll|capture={onScroll} />
 
-<div class="relative" bind:this={root}>
+<!-- data-own-escape: Esc inside an open menu closes the menu, not the modal or panel around it. -->
+<div class="relative" bind:this={root} data-own-escape={open || undefined}>
   <button
     type="button"
     class={buttonClass}

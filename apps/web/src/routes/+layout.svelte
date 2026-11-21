@@ -21,15 +21,13 @@
   } from '$lib/data/store';
   import { startAppearanceEffects } from '$lib/data/appearance-effects';
   import { libraryLook$ } from '$lib/library/settings';
-  import { dummyFn, isMobile, isMobile$ } from '$lib/functions/utils';
+  import { isMobile, isMobile$ } from '$lib/functions/utils';
   import { MetaTags } from 'svelte-meta-tags';
   import { onMount } from 'svelte';
   import '../app.scss';
 
   let path = '';
   let dialogs: Dialog[] = [];
-  let clickOnCloseDisabled = false;
-  let zIndex = '';
   let appUpdate: AppUpdate | undefined;
 
   $: if (browser) {
@@ -109,14 +107,10 @@
   }
 
   function closeAllDialogs() {
-    dialogManager.dialogs$.next([]);
-    clickOnCloseDisabled = false;
-    zIndex = '';
+    dialogManager.close();
   }
 
   dialogManager.dialogs$.subscribe((d) => {
-    clickOnCloseDisabled = d[0]?.disableCloseOnClick ?? false;
-    zIndex = d[0]?.zIndex ?? '';
     dialogs = d;
   });
 
@@ -143,33 +137,19 @@
 
 <slot />
 
-{#if dialogs.length > 0}
-  <div class="writing-horizontal-tb fixed inset-0 z-50 h-full w-full" style:z-index={zIndex}>
-    <div
-      tabindex="0"
-      role="button"
-      class="tap-highlight-transparent absolute inset-0 bg-black/[.32]"
-      on:click={() => {
-        if (!clickOnCloseDisabled) {
-          closeAllDialogs();
-        }
-      }}
-      on:keyup={dummyFn}
-    />
-
-    <div
-      class="relative top-1/2 left-1/2 inline-block max-w-[80vw] -translate-x-1/2 -translate-y-1/2"
-    >
-      {#each dialogs as dialog}
-        {#if typeof dialog.component === 'string'}
-          {@html dialog.component}
-        {:else}
-          <svelte:component this={dialog.component} {...dialog.props} on:close={closeAllDialogs} />
-        {/if}
-      {/each}
+<!-- Dialogs draw their own frame (lib/components/modal/modal.svelte: backdrop, Esc, ✕, a
+     click outside). A string is only a backdrop that blocks the page while the reader runs an
+     action or a side menu is open; it never closes on a click. -->
+{#each dialogs as dialog}
+  {#if typeof dialog.component === 'string'}
+    <div class="writing-horizontal-tb fixed inset-0 z-50 h-full w-full">
+      <div class="tap-highlight-transparent absolute inset-0 bg-black/[.32]" />
+      {@html dialog.component}
     </div>
-  </div>
-{/if}
+  {:else}
+    <svelte:component this={dialog.component} {...dialog.props} on:close={closeAllDialogs} />
+  {/if}
+{/each}
 
 <span style={`font-family: ${$fontFamilyGroupOne$ || 'Noto Serif JP'}`} />
 
