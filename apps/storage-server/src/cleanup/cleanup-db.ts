@@ -1356,6 +1356,24 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
   },
   {
     version: 16,
+    name: 'AI: indexes for the queries every step runs (the call pool)',
+    // Timed on a copy at stop 2's end size (114,036 questions, 2.6 GB): the step's queries took
+    // 475 ms of the server (the spending total scanned every row, the run's cost per model and
+    // its items sorted, the "returned" questions scanned Haiku's 52,120 queued ones); with these
+    // and the queued-rows query without a sort, 20 ms. The call pool steps several times a
+    // second, so each step must stay this cheap.
+    sql: `
+      CREATE INDEX ai_requests_cost ON ai_requests (cost_usd) WHERE cost_usd IS NOT NULL;
+      CREATE INDEX ai_requests_run_cost ON ai_requests (stage, run_id, model, item_key, cost_usd)
+        WHERE cost_usd IS NOT NULL;
+      CREATE INDEX ai_requests_run_items ON ai_requests (stage, run_id, item_key)
+        WHERE cost_usd IS NOT NULL;
+      CREATE INDEX ai_requests_returned ON ai_requests (run_id, stage, model, labeled)
+        WHERE state = 'queued' AND mode = 'direct';
+    `,
+  },
+  {
+    version: 17,
     name: 'audiobook cleanup: stage 7, the daily new arrivals (WP21f-1)',
     // Stage 7 (src/cleanup/audio/stage7-arrivals.ts): once a day (or Run now) it runs stages 1-5
     // again and adds the recordings that are not in the library yet as new books in

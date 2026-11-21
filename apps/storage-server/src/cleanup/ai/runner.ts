@@ -169,6 +169,18 @@ export class AiRunner {
    * runner serves every stage, and a single flag left the second stage's calls "sent" for good.
    */
   private orphansRequeued = new Set<string>();
+  /**
+   * Calls asked one at a time that are in flight, by question id (a pool per model, as wide as
+   * ai.directWorkers). A call that ends gives its slot to the next question at once, instead of
+   * a group of calls waiting for its slowest one (stop 2, 2026-11-20: 8 calls a group gave
+   * gpt-6-luna about 50 answers a minute; each group took as long as its slowest call).
+   */
+  private inFlight = new Map<number, { model: string; stage: string; estimate: number }>();
+  /** Answers recorded by calls that ended since each stage's last step. */
+  private endedSince = new Map<string, number>();
+  /** What a call that ended found in the way (a refused key), for its stage's next step. */
+  private callWaits = new Map<string, AiWait>();
+  private waiters = new Set<() => void>();
 
   constructor(private readonly deps: AiRunnerDeps) {
     this.startedAt = this.now();
@@ -542,7 +554,61 @@ export class AiRunner {
         }
       }
     }
+    // Calls one at a time run on after the step: it waits until one of this stage's ends (its
+    // slot is filled again by the next step) or the batches' check is due, and gives the
+    // server back meanwhile.
+    if (!wait && this.inFlightOf(spec.stage) > 0)
+      await this.nextEnd(spec.stage, s.batchPollSeconds * 1000, shouldStop);
+    answered += this.endedSince.get(spec.stage) ?? 0;
+    this.endedSince.delete(spec.stage);
+    const cw = this.callWaits.get(spec.stage);
+    if (cw) {
+      this.callWaits.delete(spec.stage);
+      wait ??= cw;
+    }
     return { pending: this.pending(spec.stage, runId), wait, sent, answered };
+  }
+
+  private inFlightOf(stage: string): number {
+    let n = 0;
+    for (const c of this.inFlight.values()) if (c.stage === stage) n++;
+    return n;
+  }
+
+  private inFlightUsd(): number {
+    let usd = 0;
+    for (const c of this.inFlight.values()) usd += c.estimate;
+    return usd;
+  }
+
+  /** Until a call of the stage ends, at most `ms` (checked each second for a stop). */
+  private async nextEnd(stage: string, ms: number, shouldStop: () => boolean): Promise<void> {
+    const until = Date.now() + ms;
+    const start = this.endedSince.get(stage) ?? 0;
+    while (Date.now() < until && !shouldStop() && this.inFlightOf(stage) > 0) {
+      if ((this.endedSince.get(stage) ?? 0) > start) return;
+      await new Promise<void>((res) => {
+        const done = () => {
+          clearTimeout(t);
+          this.waiters.delete(done);
+          res();
+        };
+        const t = setTimeout(done, Math.min(1000, Math.max(1, until - Date.now())));
+        this.waiters.add(done);
+      });
+    }
+  }
+
+  /** Until every call in flight has ended (tests; a stage's own waits go through `step`). */
+  async settle(): Promise<void> {
+    while (this.inFlight.size)
+      await new Promise<void>((res) => {
+        const done = () => {
+          this.waiters.delete(done);
+          res();
+        };
+        this.waiters.add(done);
+      });
   }
 
   private queuedRows(
@@ -560,13 +626,21 @@ export class AiRunner {
         : which === 'batchable'
           ? `AND COALESCE(mode, '') <> 'direct'`
           : '';
-    return this.db
-      .prepare(
-        `SELECT id, item_key, role, provider, model, attempts, labeled FROM ai_requests
-         WHERE run_id = ? AND stage = ? AND state = 'queued' AND model = ? ${labeledOnly ? 'AND labeled = 1' : ''} ${only}
-         ORDER BY labeled DESC, id LIMIT ?`,
-      )
-      .all(runId, spec.stage, model, limit) as ReqRow[];
+    // Labeled first, each in id order: one query per value reads the index in its order (with
+    // "ORDER BY labeled DESC, id" SQLite sorted every queued question: 94 ms for Luna's 49,500,
+    // on every step). "state = 'queued' AND mode = 'direct'" as written is what lets the
+    // returned questions use their own index (cleanup.db v16).
+    const st = this.db.prepare(
+      `SELECT id, item_key, role, provider, model, attempts, labeled FROM ai_requests
+       WHERE run_id = ? AND stage = ? AND state = 'queued' AND model = ? AND labeled = ? ${only}
+       ORDER BY id LIMIT ?`,
+    );
+    const out: ReqRow[] = [];
+    for (const labeled of labeledOnly ? [1] : [1, 0]) {
+      if (out.length >= limit) break;
+      out.push(...(st.all(runId, spec.stage, model, labeled, limit - out.length) as ReqRow[]));
+    }
+    return out;
   }
 
   private callInput<E>(spec: AiStageSpec<E>, row: ReqRow, s: AiSettings): CallInput | null {
@@ -584,7 +658,10 @@ export class AiRunner {
   /** How many of `n` requests fit under the limit, and what one is expected to cost. */
   private fits(model: string, n: number, promptChars: number, batch: boolean, s: AiSettings) {
     const one = expectedListCost(this.db, s, model, promptChars) * (batch ? s.batchPriceFactor : 1);
-    const { spentUsd, reservedUsd } = spendNow(this.db);
+    const spend = spendNow(this.db);
+    // Calls in flight hold their expected cost until they are recorded.
+    const reservedUsd = spend.reservedUsd + this.inFlightUsd();
+    const spentUsd = spend.spentUsd;
     const room = (s.spendLimitUsd ?? 0) - spentUsd - reservedUsd;
     const fit = one > 0 ? Math.max(0, Math.min(n, Math.floor(room / one))) : n;
     return { fit, one, spentUsd, reservedUsd };
@@ -701,6 +778,11 @@ export class AiRunner {
     return { kind: 'provider_busy', provider, until, error: (e.message ?? '').slice(0, 200) };
   }
 
+  /**
+   * Fills this model's free slots (ai.directWorkers less its calls in flight) with queued
+   * questions. Each call runs on its own and records its result when it ends; `step` waits
+   * for one to end.
+   */
   private async sendDirect<E>(
     spec: AiStageSpec<E>,
     runId: string,
@@ -709,7 +791,11 @@ export class AiRunner {
     shouldStop: () => boolean,
     which: 'all' | 'returned' = 'all',
   ): Promise<{ sent: number; answered: number; wait: AiWait | null }> {
-    const rows = this.queuedRows(spec, runId, model, s.directWorkers, s.labeledOnly, which);
+    let busy = 0;
+    for (const c of this.inFlight.values()) if (c.model === model) busy++;
+    const free = s.directWorkers - busy;
+    if (free <= 0) return { sent: 0, answered: 0, wait: null };
+    const rows = this.queuedRows(spec, runId, model, free, s.labeledOnly, which);
     if (!rows.length) return { sent: 0, answered: 0, wait: null };
     const calls: { row: ReqRow; call: CallInput }[] = [];
     for (const row of rows) {
@@ -721,7 +807,9 @@ export class AiRunner {
     const avgChars =
       calls.reduce((a, x) => a + x.call.system.length + x.call.user.length, 0) / calls.length;
     const f = this.fits(model, calls.length, avgChars, false, s);
-    if (f.fit === 0)
+    if (f.fit === 0) {
+      // Room held by calls in flight comes back when they are recorded: no pause for it.
+      if (this.inFlight.size) return { sent: 0, answered: 0, wait: null };
       return {
         sent: 0,
         answered: 0,
@@ -733,50 +821,83 @@ export class AiRunner {
           nextUsd: f.one,
         },
       };
+    }
     const take = calls.slice(0, f.fit);
     const provider = providerOf(model);
     const client = this.client(provider)!;
-    let answered = 0;
-    let wait: AiWait | null = null;
     const now = this.now();
     const mark = this.db.prepare(
       `UPDATE ai_requests SET state = 'sent', mode = 'direct', sent_at = ? WHERE id = ?`,
     );
-    for (const x of take) mark.run(now, x.row.id);
-    await Promise.all(
-      take.map(async ({ row, call }) => {
-        let attempts = row.attempts;
-        for (;;) {
-          attempts++;
-          this.db.prepare('UPDATE ai_requests SET attempts = ? WHERE id = ?').run(attempts, row.id);
-          try {
-            const res = await client.call(call, s.requestTimeoutSeconds * 1000);
-            this.record(spec, row.id, model, res, false, s);
-            answered++;
+    for (const x of take) {
+      mark.run(now, x.row.id);
+      this.inFlight.set(x.row.id, { model, stage: spec.stage, estimate: f.one });
+      void this.runCall(spec, x.row, x.call, client, provider, model, s, shouldStop).finally(() => {
+        this.inFlight.delete(x.row.id);
+        for (const w of [...this.waiters]) w();
+      });
+    }
+    return { sent: take.length, answered: 0, wait: null };
+  }
+
+  /** One call with its tries; records the result (never throws). */
+  private async runCall<E>(
+    spec: AiStageSpec<E>,
+    row: ReqRow,
+    call: CallInput,
+    client: ProviderClient,
+    provider: Provider,
+    model: string,
+    s: AiSettings,
+    shouldStop: () => boolean,
+  ): Promise<void> {
+    const ended = () => this.endedSince.set(spec.stage, (this.endedSince.get(spec.stage) ?? 0) + 1);
+    let attempts = row.attempts;
+    try {
+      for (;;) {
+        attempts++;
+        this.db.prepare('UPDATE ai_requests SET attempts = ? WHERE id = ?').run(attempts, row.id);
+        try {
+          const res = await client.call(call, s.requestTimeoutSeconds * 1000);
+          this.record(spec, row.id, model, res, false, s);
+          ended();
+          return;
+        } catch (err) {
+          if (err instanceof FinalError) {
+            if (err.auth) {
+              if (!this.callWaits.has(spec.stage))
+                this.callWaits.set(spec.stage, {
+                  kind: 'auth_failed',
+                  provider,
+                  error: err.message.slice(0, 300),
+                });
+              this.db.prepare(`UPDATE ai_requests SET state = 'queued' WHERE id = ?`).run(row.id);
+            } else this.finish(row.id, 'failed', null, null, null, err.message, false, s);
             return;
-          } catch (err) {
-            if (err instanceof FinalError) {
-              if (err.auth) {
-                wait ??= { kind: 'auth_failed', provider, error: err.message.slice(0, 300) };
-                this.db.prepare(`UPDATE ai_requests SET state = 'queued' WHERE id = ?`).run(row.id);
-              } else this.finish(row.id, 'failed', null, null, null, err.message, false, s);
-              return;
-            }
-            const e = err as RetryableError;
-            if (attempts >= s.attempts || shouldStop()) {
-              if (attempts >= s.attempts)
-                this.finish(row.id, 'failed', null, null, null, e.message, false, s);
-              else
-                this.db.prepare(`UPDATE ai_requests SET state = 'queued' WHERE id = ?`).run(row.id);
-              return;
-            }
-            const backoff = Math.min(120_000, e.retryAfterMs ?? 5000 * 4 ** (attempts - 1));
-            await this.sleep(backoff);
           }
+          const e = err as RetryableError;
+          if (attempts >= s.attempts || shouldStop()) {
+            if (attempts >= s.attempts)
+              this.finish(row.id, 'failed', null, null, null, e.message, false, s);
+            else
+              this.db.prepare(`UPDATE ai_requests SET state = 'queued' WHERE id = ?`).run(row.id);
+            return;
+          }
+          const backoff = Math.min(120_000, e.retryAfterMs ?? 5000 * 4 ** (attempts - 1));
+          await this.sleep(backoff);
         }
-      }),
-    );
-    return { sent: take.length, answered, wait };
+      }
+    } catch (err) {
+      // A database error while recording: the question goes back to the queue.
+      this.deps.log?.(`AI: a call to ${model} could not be recorded: ${(err as Error).message}`);
+      try {
+        this.db
+          .prepare(`UPDATE ai_requests SET state = 'queued' WHERE id = ? AND state = 'sent'`)
+          .run(row.id);
+      } catch {
+        /* the restart's requeue asks it again */
+      }
+    }
   }
 
   /** Records a provider's result for a question (answered, blocked or invalid), with its cost. */
