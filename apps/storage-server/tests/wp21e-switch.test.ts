@@ -1563,6 +1563,59 @@ describe('the switch through the linking sidecar and the reader', { timeout: 180
     expect(users).toEqual(['cleanup/audio/stage6-covers.ts']);
   });
 
+  it('Continue after a failed deletion tries the failed operation again and finishes', async () => {
+    const { env, disk, worker, user, setAbs } = await setup();
+    const sw = env.audio!.switcher!;
+    await build(env, worker, user);
+    setAbs([]);
+    await request(env.app)
+      .post('/api/v1/cleanup/audio/switch/start')
+      .set(user)
+      .send({ action: 'switch' })
+      .expect(200);
+    for (let i = 0; i < 800 && sw.state() !== 'switched'; i++) {
+      await sw.step(() => false);
+      await worker.cycle().catch(() => undefined);
+    }
+    expect(sw.state()).toBe('switched');
+    await request(env.app)
+      .post('/api/v1/cleanup/audio/switch/start')
+      .set(user)
+      .send({ action: 'delete' })
+      .expect(200);
+    for (let i = 0; i < 400 && sw.progress()!.phase !== 'delete'; i++) {
+      await sw.step(() => false);
+      await worker.cycle().catch(() => undefined);
+    }
+    // As on the NAS: the first deletion refused (a folder the sidecar can't write), the run
+    // paused with it failed.
+    const run = sw.progress()!.runId;
+    env.cleanupDb
+      .prepare(
+        `UPDATE audio_switch_ops SET state = 'failed', result_json = '{"error":"EACCES"}'
+         WHERE id = (SELECT MIN(id) FROM audio_switch_ops WHERE run_id = ? AND phase = 'delete')`,
+      )
+      .run(run);
+    env.cleanupDb
+      .prepare(`UPDATE audio_switch SET pause_reason = 'sidecar_failed', pause_detail = 'EACCES'`)
+      .run();
+    await sw.step(() => false);
+    expect(sw.pause()).toMatchObject({ reason: 'sidecar_failed' });
+    await request(env.app).post('/api/v1/cleanup/audio/switch/resume').set(user).expect(200);
+    expect(
+      env.cleanupDb
+        .prepare(`SELECT COUNT(*) AS n FROM audio_switch_ops WHERE run_id = ? AND state = 'failed'`)
+        .get(run),
+    ).toEqual({ n: 0 });
+    for (let i = 0; i < 800 && sw.state() !== 'deleted' && !sw.pause(); i++) {
+      await sw.step(() => false);
+      await worker.cycle().catch(() => undefined);
+    }
+    expect(sw.pause()).toBeNull();
+    expect(sw.state()).toBe('deleted');
+    expect(fs.existsSync(path.join(disk.media, 'japanese-old'))).toBe(false);
+  });
+
   it('switch batches never meet a build batch’s id', () => {
     expect(SWITCH_BATCH_BASE).toBeGreaterThan(1e8);
   });

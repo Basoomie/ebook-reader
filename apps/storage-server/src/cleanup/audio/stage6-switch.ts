@@ -523,6 +523,17 @@ export class AudioSwitch {
   /** Clears a pause (the page's "Continue"); the phase runs again from its start. */
   resume(): void {
     if (!this.isRunning()) throw new Error('Nothing is paused');
+    // The sidecar's failed operations of this phase are tried again (each is safe to repeat:
+    // done counts as done). Found live 2026-11-20: a folder of japanese-old the sidecar couldn't
+    // write paused the deletion, and Continue only paused it again.
+    const p = this.progress();
+    if (p)
+      this.db
+        .prepare(
+          `UPDATE audio_switch_ops SET state = 'planned', batch_id = NULL, result_json = NULL,
+             done_at = NULL WHERE run_id = ? AND phase = ? AND state = 'failed'`,
+        )
+        .run(p.runId, p.phase);
     this.setPause(null);
   }
 
