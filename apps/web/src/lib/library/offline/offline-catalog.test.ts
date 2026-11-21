@@ -231,6 +231,14 @@ describe('offline sorts', () => {
       [x, y, z].sort(bookComparator({ key, dir })).map((b) => b.id);
     expect(ids('chars', 'asc')).toEqual(['y', 'z', 'x']);
     expect(ids('chars', 'desc')).toEqual(['z', 'y', 'x']);
+    // A count of 0 (a failed count) sorts with the books not counted.
+    const w = book('w', { charCount: 0 });
+    expect(
+      [w, x, y, z].sort(bookComparator({ key: 'chars', dir: 'asc' })).map((b) => b.id)
+    ).toEqual(['y', 'z', 'w', 'x']);
+    expect(
+      [w, x, y, z].sort(bookComparator({ key: 'chars', dir: 'desc' })).map((b) => b.id)
+    ).toEqual(['z', 'y', 'w', 'x']);
     expect(ids('author', 'asc')).toEqual(['z', 'y', 'x']);
     expect(ids('author', 'desc')).toEqual(['y', 'z', 'x']);
     expect(ids('published', 'desc')).toEqual(['z', 'y', 'x']);

@@ -50,7 +50,8 @@ function sortValue(book: CatalogBook, key: BookSortKey, dir: SortDir): number | 
     case 'author':
       return book.authorSort ?? (asc ? HIGH_TEXT : '');
     case 'chars':
-      return book.charCount ?? (asc ? HIGH_NUMBER : -1);
+      // A count of 0 goes with the books not counted (the server's migration 28).
+      return asc ? book.charCount || HIGH_NUMBER : (book.charCount ?? -1);
     case 'published':
       return book.publishedAt ?? (asc ? HIGH_NUMBER : -HIGH_NUMBER);
   }

@@ -39,7 +39,15 @@
   import { formatPageTitle } from '$lib/functions/format-page-title';
   import { LibraryApi, LibraryApiError } from '$lib/library/api';
   import { detailRows } from '$lib/library/book-details';
-  import { isCoverBlurred } from '$lib/library/cover-blur';
+  import {
+    collectionMembership,
+    coverBlurDefault,
+    isCoverBlurred,
+    NO_COVER_RULES,
+    type CoverBlurContext,
+    type CoverRules
+  } from '$lib/library/cover-blur';
+  import type { Collection, CollectionItem } from '$lib/collections/collections';
   import { coverGrid } from '$lib/library/cover-size';
   import { descriptionParagraphs } from '$lib/library/description';
   import { authorHref, formatSeriesIndex } from '$lib/library/format';
@@ -65,6 +73,7 @@
   import { bookProgressFraction, bookProgressLabel, positionsByBook } from '$lib/library/progress';
   import {
     bookIllustrationsPosition$,
+    libraryCoverBlur$,
     libraryCoverSize$,
     libraryRequestTimeoutSeconds$
   } from '$lib/library/settings';
@@ -107,7 +116,9 @@
   /** The book's audiobook link, from the Audiobook section (for the Download menu). */
   let audioLink: AudioLink | null = null;
   let states = new Map<string, BookState>();
-  let tagRules = new Set<string>();
+  let coverRules: CoverRules = NO_COVER_RULES;
+  let collectionList: Collection[] = [];
+  let collectionItems = new Map<string, CollectionItem[]>();
   let positions = new Map<string, LocalRecord[]>();
   let revealed = new Set<string>();
   let descriptionOpen = false;
@@ -138,8 +149,19 @@
     .filter(Boolean)
     .join(' · ');
   $: readLabel = fraction !== null ? 'Continue reading' : 'Read';
+  let blurCtx: CoverBlurContext;
+  $: blurCtx = {
+    rules: coverRules,
+    fallback: coverBlurDefault($libraryCoverBlur$),
+    inCollection: collectionMembership({
+      rules: coverRules,
+      collections: collectionList,
+      items: collectionItems,
+      states
+    })
+  };
   $: coverBlurred = book
-    ? !revealed.has(book.id) && isCoverBlurred(state?.blur, book.tags, tagRules)
+    ? !revealed.has(book.id) && isCoverBlurred(state?.blur, book, blurCtx)
     : false;
   $: gridLayout = coverGrid($libraryCoverSize$);
   // Season 2 §6: the device's setting (anything unknown counts as the default).
@@ -241,8 +263,16 @@
   }
 
   async function loadViewData() {
-    const [rules, records] = await Promise.all([view.tagBlurRules(), view.positions()]);
-    tagRules = rules;
+    const [rules, records, coll] = await Promise.all([
+      view.coverRules(),
+      view.positions(),
+      collections.view().catch(() => null)
+    ]);
+    coverRules = rules;
+    if (coll) {
+      collectionList = coll.collections;
+      collectionItems = coll.items;
+    }
     positions = positionsByBook(records);
   }
 
@@ -429,8 +459,8 @@
     return b.thumbnail && api ? api.absolute(b.thumbnail) : '';
   }
 
-  function blurred(b: CatalogBook) {
-    return !revealed.has(b.id) && isCoverBlurred(states.get(b.id)?.blur, b.tags, tagRules);
+  function blurred(b: CatalogBook, ctx: CoverBlurContext) {
+    return !revealed.has(b.id) && isCoverBlurred(states.get(b.id)?.blur, b, ctx);
   }
 
   function reveal(b: CatalogBook) {
@@ -715,7 +745,7 @@
                 positions.get(b.id) ?? [],
                 b.charCount
               )}
-              blurred={blurred(b)}
+              blurred={blurred(b, blurCtx)}
               selected={b.id === book.id}
               on:open={(ev) => open(ev.detail)}
               on:reveal={(ev) => reveal(ev.detail)}
@@ -758,7 +788,7 @@
                 positions.get(b.id) ?? [],
                 b.charCount
               )}
-              blurred={blurred(b)}
+              blurred={blurred(b, blurCtx)}
               on:open={(ev) => open(ev.detail)}
               on:reveal={(ev) => reveal(ev.detail)}
               on:state={(ev) => openBookState(ev.detail)}

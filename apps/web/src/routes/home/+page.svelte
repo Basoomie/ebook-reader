@@ -58,7 +58,14 @@
     startsOffline
   } from '$lib/library/offline/offline-source';
   import { removeFromThisDevice } from '$lib/library/remove-from-device';
-  import { isCoverBlurred } from '$lib/library/cover-blur';
+  import {
+    collectionMembership,
+    coverBlurDefault,
+    isCoverBlurred,
+    NO_COVER_RULES,
+    type CoverBlurContext,
+    type CoverRules
+  } from '$lib/library/cover-blur';
   import { getLibraryStore, type LibraryConnection } from '$lib/library/library-db';
   import type { OpenStage } from '$lib/library/open-calibre-book';
   import { openCatalogBook } from '$lib/library/open-from-catalog';
@@ -71,7 +78,11 @@
   import { timeLeftMinMinutes$, timeLeftRecentMinutes$ } from '$lib/data/store';
   import type { StatEntry } from '$lib/stats/aggregate';
   import { formatTimeLeft, secondsLeft, speedEstimate } from '$lib/stats/time-left';
-  import { libraryInfoLine$, libraryRequestTimeoutSeconds$ } from '$lib/library/settings';
+  import {
+    libraryCoverBlur$,
+    libraryInfoLine$,
+    libraryRequestTimeoutSeconds$
+  } from '$lib/library/settings';
   import type { CatalogBook, CatalogLibrary } from '$lib/library/types';
   import type { BookState } from '$lib/sync/book-state';
   import type { LocalRecord } from '$lib/sync/sync-db';
@@ -89,7 +100,7 @@
   let offline = false;
   let libraries: CatalogLibrary[] = [];
   let states = new Map<string, BookState>();
-  let tagRules = new Set<string>();
+  let coverRules: CoverRules = NO_COVER_RULES;
   let positions = new Map<string, LocalRecord[]>();
   let collectionList: Collection[] = [];
   let collectionItems = new Map<string, CollectionItem[]>();
@@ -201,12 +212,12 @@
   async function loadMirror() {
     const [s, rules, records, coll] = await Promise.all([
       bookState.getAll().catch(() => new Map<string, BookState>()),
-      view.tagBlurRules(),
+      view.coverRules(),
       view.positions(),
       collections.view()
     ]);
     states = s;
-    tagRules = rules;
+    coverRules = rules;
     positions = positionsByBook(records);
     collectionList = coll.collections;
     collectionItems = coll.items;
@@ -376,8 +387,21 @@
     }
   }
 
+  let blurCtx: CoverBlurContext;
+  $: blurCtx = {
+    rules: coverRules,
+    fallback: coverBlurDefault($libraryCoverBlur$),
+    inCollection: collectionMembership({
+      rules: coverRules,
+      collections: collectionList,
+      items: collectionItems,
+      states,
+      onDevice: (id) => onDevice.has(id),
+      audioOnDevice: (id) => audioOnDevice.has(id)
+    })
+  };
   $: blurredOf = (book: CatalogBook) =>
-    !revealed.has(book.id) && isCoverBlurred(states.get(book.id)?.blur, book.tags, tagRules);
+    !revealed.has(book.id) && isCoverBlurred(states.get(book.id)?.blur, book, blurCtx);
 
   function reveal(book: CatalogBook) {
     revealed = new Set([...revealed, book.id]);

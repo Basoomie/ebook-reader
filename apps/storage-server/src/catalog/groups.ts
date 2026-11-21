@@ -50,8 +50,28 @@ export interface GroupChars {
 export interface GroupTile {
   bookId: string;
   thumbnail: string | null;
-  /** For tag blur rules (the client decides what is blurred). */
+  /**
+   * For the cover blur rules (the client decides what is blurred): tags, authors, series,
+   * and the title and length a smart collection's search may test (2026-11-21).
+   */
   tags: string[];
+  title: string;
+  authors: string[];
+  series: string | null;
+  charCount: number | null;
+}
+
+/** A collage tile of a book (groups and collection cards). */
+export function tileOfSummary(summary: BookSummary): GroupTile {
+  return {
+    bookId: summary.id,
+    thumbnail: summary.thumbnail,
+    tags: summary.tags,
+    title: summary.title,
+    authors: [...new Set(summary.authors.map((a) => a.name))],
+    series: summary.series?.name ?? null,
+    charCount: summary.charCount,
+  };
 }
 
 export interface GroupCard {
@@ -325,7 +345,7 @@ function decodeGroupCursor(cursor: string): { newest: number; n: number; name: s
 }
 
 function tileOf(summary: BookSummary | undefined): GroupTile | null {
-  return summary ? { bookId: summary.id, thumbnail: summary.thumbnail, tags: summary.tags } : null;
+  return summary ? tileOfSummary(summary) : null;
 }
 
 const TILE_COUNT = 4;

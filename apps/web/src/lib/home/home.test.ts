@@ -109,12 +109,14 @@ describe('Home rows', () => {
       'Deleted collection'
     );
     expect(rowTitle({ type: 'builtin', ref: 'reading', hidden: false })).toBe('Reading');
-    expect(rowHref({ type: 'continue', hidden: false }, '')).toBe('/library?collection=reading');
+    expect(rowHref({ type: 'continue', hidden: false }, '')).toBe(
+      '/library?collection=reading&from=home'
+    );
     expect(rowHref({ type: 'author', ref: '著者 一', hidden: false }, '/x')).toBe(
-      '/x/library?tab=authors&group=%E8%91%97%E8%80%85+%E4%B8%80'
+      '/x/library?tab=authors&group=%E8%91%97%E8%80%85+%E4%B8%80&from=home'
     );
     expect(rowHref({ type: 'builtin', ref: 'favorites', hidden: false }, '')).toBe(
-      '/library?collection=favorites'
+      '/library?collection=favorites&from=home'
     );
   });
 });

@@ -13,8 +13,10 @@
     COVER_SIZE_STEP,
     coverSize
   } from '$lib/library/cover-size';
+  import { coverBlurDefault, type CoverBlurDefault } from '$lib/library/cover-blur';
   import {
     libraryAutoLoad$,
+    libraryCoverBlur$,
     libraryCoverSize$,
     libraryInfoLine$,
     libraryView$
@@ -34,6 +36,13 @@
 
   $: grid = $libraryView$ !== 'list';
   $: size = coverSize($libraryCoverSize$);
+  $: blurDefault = coverBlurDefault($libraryCoverBlur$);
+
+  const BLUR_CHOICES: { value: CoverBlurDefault; label: string }[] = [
+    { value: 'rules', label: 'By rules' },
+    { value: 'all', label: 'Blur all' },
+    { value: 'none', label: 'Show all' }
+  ];
 
   function onSlider(ev: Event) {
     $libraryCoverSize$ = coverSize((ev.currentTarget as HTMLInputElement).value);
@@ -104,6 +113,30 @@
         </button>
         <span>Large</span>
       </div>
+    </div>
+    <div>
+      <span class="text-sm font-medium" id="library-cover-blur">Hidden covers</span>
+      <div class="mt-1 grid grid-cols-3 gap-1" role="group" aria-labelledby="library-cover-blur">
+        {#each BLUR_CHOICES as choice (choice.value)}
+          <button
+            type="button"
+            class="c-btn c-btn-secondary px-2 text-sm"
+            aria-pressed={blurDefault === choice.value}
+            data-testid="cover-blur-{choice.value}"
+            on:click={() => ($libraryCoverBlur$ = choice.value)}
+          >
+            {choice.label}
+          </button>
+        {/each}
+      </div>
+      <p class="mt-1 text-xs text-c-muted" data-testid="cover-blur-hint">
+        {blurDefault === 'rules'
+          ? 'Blurs covers by your tag, author, series and collection rules.'
+          : blurDefault === 'all'
+            ? 'Blurs every cover on this device.'
+            : 'Shows every cover on this device; the rules are ignored here.'}
+        A book's own setting still wins.
+      </p>
     </div>
     {#if details}
       <label class="flex min-h-[3rem] items-center gap-3 text-sm">

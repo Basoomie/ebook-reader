@@ -122,6 +122,27 @@ describe('book sorts (GET /books?sort=&dir=)', () => {
     expect(await t('published', 'desc')).toEqual(['Date', 'Cherry', 'apple', 'Elder', 'Banana']);
   });
 
+  it('sorts a count of 0 with the books not counted, across pages', async () => {
+    const c = await sortedEnv();
+    c.setCount('Date', 0);
+    // Shortest first: Date (0) and Banana (no count) tie, broken by id.
+    const last = c.id('Date') < c.id('Banana') ? ['Date', 'Banana'] : ['Banana', 'Date'];
+    expect(await c.allTitles({ sort: 'chars', dir: 'asc' }, 1)).toEqual([
+      'apple',
+      'Elder',
+      'Cherry',
+      ...last,
+    ]);
+    // Longest first: 0 already comes after every counted book, before the uncounted.
+    expect(await c.allTitles({ sort: 'chars', dir: 'desc' }, 1)).toEqual([
+      'Cherry',
+      'Elder',
+      'apple',
+      'Date',
+      'Banana',
+    ]);
+  });
+
   it('defaults the direction per key and keeps the old cursor for newest first', async () => {
     const c = await sortedEnv();
     expect(await c.allTitles({ sort: 'title' })).toEqual(

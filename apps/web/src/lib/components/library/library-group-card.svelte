@@ -59,7 +59,7 @@
       {#if menu}
         <button
           class="c-btn c-btn-ghost -mr-2 h-10 min-h-0 w-10 shrink-0 p-0"
-          title="Cover settings for this tag"
+          title="Cover settings"
           aria-label="Cover settings: {groupTitle(group)}"
           data-testid="group-menu"
           on:click={() => dispatch('menu', group)}
@@ -97,7 +97,7 @@
     {#if menu}
       <button
         class="c-btn c-btn-ghost h-12 w-12 shrink-0 p-0"
-        title="Cover settings for this tag"
+        title="Cover settings"
         aria-label="Cover settings: {groupTitle(group)}"
         data-testid="group-menu"
         on:click={() => dispatch('menu', group)}

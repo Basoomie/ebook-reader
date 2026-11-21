@@ -1097,6 +1097,22 @@ body.ttu-reader-body {
     url('$lib/assets/fonts/ShipporiMincho-Bold.woff') format('woff');
 }
 
+/* The Library's drop target while EPUB files are dragged over the page (upload). It lets
+   the drag events through to the page, which counts them. */
+.c-drop-target {
+  @apply pointer-events-none fixed inset-3 flex items-center justify-center rounded-xl;
+  z-index: 45;
+  border: 3px dashed var(--c-line-strong);
+  background-color: rgb(0 0 0 / 0.12);
+}
+
+.c-drop-target-text {
+  @apply rounded-lg px-6 py-4 text-lg font-medium;
+  background-color: var(--c-raised);
+  color: var(--c-ink);
+  border: var(--c-border-width) solid var(--c-line-strong);
+}
+
 /*
  * Modals (2026-11-21): one frame for every dialog (lib/components/modal/modal.svelte).
  * Header (title, subtitle, ✕), optional tabs, a body that alone scrolls, and a footer only

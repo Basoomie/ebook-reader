@@ -99,8 +99,17 @@ function page<T>(all: T[], cursor: string | undefined, limit: number | undefined
   };
 }
 
+/** As the server's tileOfSummary (catalog/groups.ts). */
 function tileOf(book: CatalogBook): GroupTile {
-  return { bookId: book.id, thumbnail: book.thumbnail, tags: book.tags };
+  return {
+    bookId: book.id,
+    thumbnail: book.thumbnail,
+    tags: book.tags,
+    title: book.title,
+    authors: [...new Set(book.authors.map((a) => a.name))],
+    series: book.series?.name ?? null,
+    charCount: book.charCount
+  };
 }
 
 /** Book ids with a live position record, most recently saved first (any device). */

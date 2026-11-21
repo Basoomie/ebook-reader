@@ -3,7 +3,8 @@
  * ascending or descending, keyset-paginated like the date-added list.
  *
  * Books without a value (no character count yet, no publication date, an upload without
- * an author sort) always come last, whichever the direction. That needs a different
+ * an author sort) always come last, whichever the direction. A count of 0 sorts with the
+ * books not counted (migration 28): shortest first starts at the shortest counted book. That needs a different
  * sort expression per direction (a high or a low stand-in for NULL), so each such sort
  * has two indexes (migration 9); title and date added have no NULLs and one index each,
  * which SQLite also walks backwards.
@@ -68,10 +69,10 @@ const COLUMNS: Record<BookSortKey, SortColumn> = {
   chars: {
     type: 'number',
     sql: {
-      asc: `IFNULL(b.char_count, ${HIGH_NUMBER})`,
+      asc: `IFNULL(NULLIF(b.char_count, 0), ${HIGH_NUMBER})`,
       desc: 'IFNULL(b.char_count, -1)',
     },
-    value: (r, dir) => r.char_count ?? (dir === 'asc' ? HIGH_NUMBER : -1),
+    value: (r, dir) => (dir === 'asc' ? r.char_count || HIGH_NUMBER : (r.char_count ?? -1)),
   },
   published: {
     type: 'number',

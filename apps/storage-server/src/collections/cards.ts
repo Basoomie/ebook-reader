@@ -18,7 +18,7 @@
  */
 import type Database from 'better-sqlite3';
 import { catalogVersion } from '../catalog/catalog-version';
-import type { GroupTile } from '../catalog/groups';
+import { tileOfSummary, type GroupTile } from '../catalog/groups';
 import {
   type CatalogUser,
   SQL_BOOK_FROM,
@@ -260,7 +260,7 @@ export async function collectionCards(
     tiles: tileIds
       .map((id) => summaries.get(id))
       .filter((s) => s !== undefined)
-      .map((s) => ({ bookId: s.id, thumbnail: s.thumbnail, tags: s.tags })),
+      .map((s) => tileOfSummary(s)),
   }));
   // Only cache a complete answer (a timed-out pattern may work next time).
   if (!cards.some((c) => c.error && c.error.code !== 'invalid_query')) {
