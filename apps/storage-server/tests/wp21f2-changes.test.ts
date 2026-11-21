@@ -1121,6 +1121,7 @@ describe(
         { id: 'i3', relPath: '作者/本C' },
       ];
       const calls: string[] = [];
+      const patched: unknown[] = [];
       const fetchImpl = (async (url: string | URL, init?: RequestInit) => {
         const u = new URL(String(url));
         const method = init?.method ?? 'GET';
@@ -1153,6 +1154,18 @@ describe(
           items[0].relPath = '作者/本A';
           return new Response('OK', { status: 200 });
         }
+        // ABS's edit call clears the series it kept (B1's finding); the item reads back cleared.
+        if (u.pathname === '/api/items/i1/media' && method === 'PATCH') {
+          patched.push(JSON.parse(String(init?.body)));
+          return json({ updated: true });
+        }
+        if (/^\/api\/items\/i\d$/.test(u.pathname))
+          return json({
+            media: {
+              metadata: { series: patched.length ? [] : [{ name: 'シリーズ', sequence: '3' }] },
+              tags: [],
+            },
+          });
         return new Response('{}', { status: 404 });
       }) as typeof fetch;
       const stage7 = env.audio!.stage7! as unknown as {
@@ -1187,7 +1200,7 @@ describe(
         await scan.stop();
         await env.close();
       };
-      return { env, db, roots, changes, worker, reader, uid, calls, items, scan };
+      return { env, db, roots, changes, worker, reader, uid, calls, items, scan, patched };
     }
 
     async function drive(
@@ -1317,7 +1330,10 @@ describe(
       expect(t.calls.filter((x) => x.startsWith('POST'))).toEqual([
         'POST /api/libraries/lib1/scan',
       ]);
-      expect(c.abs).toMatchObject({ verified: 3, notYet: 0, problems: [] });
+      // The series 本A lost: cleared through ABS's edit call (only that field), read back empty.
+      expect(t.patched).toEqual([{ metadata: { series: [] } }]);
+      expect(t.calls.filter((x) => x.startsWith('PATCH'))).toEqual(['PATCH /api/items/i1/media']);
+      expect(c.abs).toMatchObject({ verified: 3, notYet: 0, problems: [], cleared: 1 });
       // The ledger follows: nothing more to change at the next run.
       const again = await drive(t, 'on', 3);
       expect(again.counts.changes).toBe(0);
@@ -1327,7 +1343,36 @@ describe(
 );
 
 // ---------------------------------------------------------------------------------------------
-describe('the library scan is the one ABS call the library changes make', () => {
+describe('the two ABS calls the library changes make', () => {
+  it('abs-clear-fields.ts: one request, PATCH …/items/:id/media, only empty values; only library-changes.ts imports it', () => {
+    const srcDir = path.join(__dirname, '..', 'src');
+    const strip = (s: string) =>
+      s
+        .replace(/\r\n/g, '\n')
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/\/\/.*$/gm, '');
+    const code = strip(
+      fs.readFileSync(path.join(srcDir, 'cleanup', 'audio', 'abs-clear-fields.ts'), 'utf8'),
+    );
+    expect((code.match(/fetchImpl\(/g) ?? []).length).toBe(1);
+    expect(code.match(/method: '([A-Z]+)'/g)).toEqual(["method: 'PATCH'"]);
+    expect(code).toMatch(/\/api\/items\/\$\{itemId\}\/media`/);
+    expect(code).not.toMatch(/POST|DELETE|PUT|\/scan|\/settings|watcher|\/cover/);
+    // Only null or [] goes into the body.
+    expect(code).toMatch(/metadata\[f\] = list\.has\(f\) \? \[\] : null;/);
+    const importers: string[] = [];
+    const walk = (d: string) => {
+      for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+        const p = path.join(d, e.name);
+        if (e.isDirectory()) walk(p);
+        else if (p.endsWith('.ts') && /abs-clear-fields'/.test(fs.readFileSync(p, 'utf8')))
+          importers.push(path.relative(srcDir, p).replace(/\\/g, '/'));
+      }
+    };
+    walk(srcDir);
+    expect(importers).toEqual(['cleanup/audio/library-changes.ts']);
+  });
+
   it('abs-library-scan.ts: one request, POST …/scan, no other route; only library-changes.ts imports it', () => {
     const srcDir = path.join(__dirname, '..', 'src');
     const strip = (s: string) =>

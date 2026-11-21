@@ -891,6 +891,7 @@ export interface LibraryChangesProgress {
     scannedAt: number | null;
     verified: number;
     notYet: number;
+    cleared?: number;
     problems: string[];
     error: string | null;
   };

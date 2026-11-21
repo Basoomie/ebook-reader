@@ -1676,6 +1676,7 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
       );
       CREATE INDEX audio_library_ops_run ON audio_library_ops (run_id, state, seq);
       CREATE INDEX audio_library_ops_batch ON audio_library_ops (batch_id);
+      CREATE INDEX audio_library_ops_change ON audio_library_ops (change_id);
 
       CREATE TABLE audio_library_batches (
         id           INTEGER PRIMARY KEY,

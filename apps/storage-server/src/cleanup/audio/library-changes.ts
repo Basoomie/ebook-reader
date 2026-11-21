@@ -32,6 +32,7 @@ import { getSettings } from '../settings';
 import { getLink, resolveLink } from '../../audio/audio-links';
 import { AbsClient } from './abs-client';
 import { AbsLibraryScan } from './abs-library-scan';
+import { AbsClearFields, CLEARABLE, type Clearable } from './abs-clear-fields';
 import { ARRIVAL_AREA_FOLDERS, type ExistingTree } from './arrivals-plan';
 import { insideRoot, lstatEntry, readSmall } from './audio-source-fs';
 import type { PlannedBook } from './build-plan';
@@ -122,6 +123,8 @@ export interface ChangesProgress {
     scannedAt: number | null;
     verified: number;
     notYet: number;
+    /** Books whose emptied fields were cleared through ABS's edit call (missing before B1's fix). */
+    cleared?: number;
     problems: string[];
     error: string | null;
   };
@@ -1436,6 +1439,47 @@ export class LibraryChanges {
       return 'wait';
     }
     this.waitFor(c, null);
+    // The fields a change emptied: ABS keeps its own value when its metadata file has an empty
+    // one (found at stop B1), so they are cleared through its edit call, never a field you
+    // edited, then read back.
+    const a = this.deps.abs();
+    if (a) {
+      const clearer = new AbsClearFields({ ...a, fetchImpl: this.deps.fetchImpl });
+      const fieldsOf = this.db.prepare(
+        'SELECT fields_json, user_fields_json FROM audio_library_changes WHERE id = ?',
+      );
+      const empty = (v: unknown) =>
+        v === null || v === undefined || v === '' || (Array.isArray(v) && v.length === 0);
+      for (const r of rows) {
+        const id = items.get((r.folder_to ?? r.folder_from).slice('japanese/'.length));
+        if (!id) continue;
+        const f = fieldsOf.get(r.id) as { fields_json: string; user_fields_json: string };
+        const mine = new Set(JSON.parse(f.user_fields_json) as string[]);
+        const emptied = (JSON.parse(f.fields_json) as { field: string; to: unknown }[]).filter(
+          (x) => empty(x.to) && !mine.has(x.field),
+        );
+        const fields = emptied
+          .map((x) => x.field)
+          .filter((x): x is Clearable => (CLEARABLE as readonly string[]).includes(x));
+        const tags = emptied.some((x) => x.field === 'tags');
+        if (!fields.length && !tags) continue;
+        try {
+          await clearer.clear(id, fields, tags);
+          c.abs.cleared = (c.abs.cleared ?? 0) + 1;
+          const now = await client.get<{
+            media?: { metadata?: Record<string, unknown>; tags?: unknown[] };
+          }>(`/items/${encodeURIComponent(id)}`);
+          const m = now?.media?.metadata ?? {};
+          const left = fields.filter((x) => !empty(m[x]));
+          if (left.length || (tags && !empty(now?.media?.tags)))
+            problems.push(
+              `${r.folder_to ?? r.folder_from}: Audiobookshelf still shows ${[...left, ...(tags && !empty(now?.media?.tags) ? ['tags'] : [])].join(', ')}`,
+            );
+        } catch (err) {
+          problems.push(`${r.folder_to ?? r.folder_from}: ${(err as Error).message}`);
+        }
+      }
+    }
     // Progress and bookmarks of every changed book's item as before the changes.
     const before = rows[0]?.abs_before_json
       ? (JSON.parse(rows[0].abs_before_json) as Record<

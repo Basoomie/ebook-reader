@@ -90,7 +90,7 @@ export function changesLines(c: AudioStage7Report['changes'] | null | undefined)
     );
   if (made && (c.abs.scannedAt || c.abs.error))
     out.push(
-      `Audiobookshelf: ${c.abs.before ?? '?'} → ${c.abs.after ?? '?'} items after one library scan; ${n(c.abs.verified)} changed books seen at their folders, ${n(c.abs.notYet)} not yet${c.abs.problems.length ? `; ${c.abs.problems.join('; ')}` : '; progress and bookmarks as before'}${c.abs.error ? `; ${c.abs.error}` : ''}`
+      `Audiobookshelf: ${c.abs.before ?? '?'} → ${c.abs.after ?? '?'} items after one library scan; ${n(c.abs.verified)} changed books seen at their folders, ${n(c.abs.notYet)} not yet${c.abs.cleared ? `, ${n(c.abs.cleared)} with emptied fields cleared through its edit call` : ''}${c.abs.problems.length ? `; ${c.abs.problems.join('; ')}` : '; progress and bookmarks as before'}${c.abs.error ? `; ${c.abs.error}` : ''}`
     );
   else if (c.abs.error) out.push(`Audiobookshelf: ${c.abs.error}`);
   const times = Object.entries(c.times ?? {})
