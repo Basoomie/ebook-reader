@@ -1243,7 +1243,7 @@ export interface AiStatus {
 
 // ---------------------------------------------------------------- audiobooks stage 4 (WP21c)
 
-export type AudioStage4Phase = 'units' | 'lookups' | 'gate' | 'done';
+export type AudioStage4Phase = 'units' | 'lookups' | 'records' | 'gate' | 'done';
 
 export interface AudioOnlineGateBook {
   id: string;
@@ -1279,6 +1279,18 @@ export interface AudioStage4Progress {
   samplesRead: number;
   sampleErrors: number;
   yields: number;
+  /** One store record per recording (WP21c follow-up (3)); missing before it. */
+  records?: {
+    rounds: number;
+    shared: number;
+    compared: number;
+    toCompare: number;
+    different: number;
+    review: number;
+    lookedUpAgain: number;
+    windows?: number;
+    windowErrors?: number;
+  };
   phaseStartedAt: number;
   phaseStartDone: number;
   phaseTimes: Record<string, { ms: number; items: number }>;

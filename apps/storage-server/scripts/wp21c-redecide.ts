@@ -12,6 +12,13 @@
  * until only units waiting on new requests are left. Reports: counts before and after, every unit
  * whose class or record changes, the new requests by site and kind, the units waiting on them,
  * the gate, and the longest synchronous stretch.
+ *
+ * WP21c follow-up (3): the records phase (one store record per recording) reads no audio here
+ * (Calibre counts as busy, so a pair stage 3 never compared waits): the pairs it still has to
+ * compare go to `pairs-to-compare.json`; `--pair-checks <file>` gives their verdicts, measured
+ * elsewhere (`scripts/wp21c3-compare.ts`), and the run then goes on to the end.
+ * `--answers <json>` ({url: file}) answers new requests with pages fetched by hand (a store
+ * record checked in the browser), so a walk can finish here.
  */
 import Database from 'better-sqlite3';
 import fs from 'fs';
@@ -128,7 +135,68 @@ const tools = {
 };
 const queue = new FetchQueue(db, cacheDir, () => getSettings(db).fetch);
 const stage3 = new AudioStage3({ db, roots, tools, lock, readLabels });
-const stage4 = new AudioStage4({ db, roots, tools, lock, queue, stage3, readLabels });
+// No audio is read here: a pair stage 3 never compared waits as if Calibre had the disk.
+const stage4 = new AudioStage4({
+  db,
+  roots,
+  tools,
+  lock,
+  queue,
+  stage3,
+  readLabels,
+  calibreBusy: () => true,
+});
+{
+  const i = process.argv.indexOf('--pair-checks');
+  if (i >= 0) {
+    const checks = JSON.parse(fs.readFileSync(process.argv[i + 1], 'utf8')) as {
+      key: string;
+      a: string;
+      b: string;
+      verdict: string;
+      scores: unknown;
+    }[];
+    const put = db.prepare(
+      `INSERT OR REPLACE INTO audio_online_pair_checks (pair_key, a_name, b_name, verdict, scores_json, made_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    );
+    for (const c of checks)
+      put.run(c.key, c.a, c.b, c.verdict, JSON.stringify(c.scores), Date.now());
+    console.log(`pair checks given: ${checks.length}`);
+  }
+}
+
+// Pages fetched by hand for new requests (--answers): given as the fetcher would.
+const known: Record<string, string> = (() => {
+  const i = process.argv.indexOf('--answers');
+  return i >= 0
+    ? (JSON.parse(fs.readFileSync(process.argv[i + 1], 'utf8')) as Record<string, string>)
+    : {};
+})();
+function answerKnown(): number {
+  let n = 0;
+  for (const r of db.prepare(`SELECT id, url FROM fetch_requests WHERE state = 'queued'`).all() as {
+    id: number;
+    url: string;
+  }[]) {
+    const file = known[r.url];
+    if (!file) continue;
+    const token = `by-hand-${r.id}`;
+    db.prepare(
+      `UPDATE fetch_requests SET state = 'leased', lease_token = ?, lease_until = ? WHERE id = ?`,
+    ).run(token, Date.now() + 60_000, r.id);
+    queue.report(r.id, token, {
+      status: 200,
+      ms: 1,
+      error: null,
+      body: fs.readFileSync(file),
+      encoding: 'identity',
+    });
+    console.log(`      answered by hand: ${r.url}`);
+    n++;
+  }
+  return n;
+}
 
 interface UnitRow {
   unit_key: string;
@@ -199,6 +267,7 @@ async function run(): Promise<void> {
   let still = 0;
   for (let i = 0; i < 5000; i++) {
     await new Promise((r) => setTimeout(r, 5));
+    if (answerKnown()) still = 0;
     lag.reset();
     const done = await stage4.step(() => false);
     stepLag = Math.max(stepLag, lag.max / 1e6);
@@ -219,8 +288,9 @@ async function run(): Promise<void> {
         `      ${decided}/${p.lookupUnits} decided, ${open} to advance; ${fmt(Date.now() - tl)} so far, about ${fmt(left)} left`,
       );
     }
-    // Only units waiting on requests the cache lacks are left: nothing more can happen here.
-    if (open === 0 && p.phase === 'lookups') {
+    // Only units waiting on requests the cache lacks, or pairs waiting to be compared, are left:
+    // nothing more can happen here.
+    if (open === 0 && (p.phase === 'lookups' || p.phase === 'records')) {
       if (decided === last) still++;
       else still = 0;
       last = decided;
@@ -294,6 +364,29 @@ async function run(): Promise<void> {
           .all(u.unit_key) as { site: string; url: string }[]
       ).map((w) => `${w.site} ${decodeURIComponent(w.url.replace(/\+/g, ' '))}`),
     }));
+  const toCompare = stage4.pairsToCompare();
+  {
+    const a = getSettings(db).audiobooks;
+    fs.writeFileSync(
+      path.join(out, 'pairs-to-compare.json'),
+      JSON.stringify(
+        {
+          windows: {
+            windowSeconds: a.dupWindowSeconds,
+            shiftSeconds: a.dupShiftSeconds,
+            middleSearchMinutes: a.dupMiddleSearchMinutes,
+          },
+          same: a.dupSameScore,
+          pairs: toCompare,
+        },
+        null,
+        1,
+      ),
+    );
+  }
+  console.log(`pairs still to compare (no audio read here): ${toCompare.length}`);
+  for (const t of toCompare) console.log(`   ${t.a.name}  <>  ${t.b.name}`);
+  console.log(`records phase: ${JSON.stringify(p.records ?? null)}`);
   const labels = JSON.parse(fs.readFileSync(labelsFile, 'utf8')) as { books: LabeledBook[] };
   const gate = scoreOnlineGate(labels.books, stage4.unitFinder(p));
 
@@ -339,7 +432,8 @@ async function run(): Promise<void> {
       unitsVersion: before.unitsVersion ?? 1,
       counts: beforeCounts,
     },
-    after: { analysisId: p.analysisId, phase: p.phase, counts: afterCounts },
+    after: { analysisId: p.analysisId, phase: p.phase, counts: afterCounts, records: p.records },
+    pairsToCompare: toCompare.map((t) => [t.a.name, t.b.name]),
     timing: {
       unitsMs: p.phaseTimes.units?.ms ?? null,
       lookupsWallMs: Date.now() - tl,

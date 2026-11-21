@@ -22,6 +22,12 @@
  *            Editions that only the narrator or the audio tells apart: the recording's opening
  *            (read under the shared disk lock, giving way to Calibre) is fingerprinted and
  *            compared with each store's sample audio.
+ *   records  one store record per recording (WP21c follow-up (3), online-records.ts): two
+ *            recordings matched automatically to one record must be alike by their fingerprints
+ *            (stage 3's, or compared here with stage 3's windows when stage 3 never compared
+ *            them, under the shared disk lock, Calibre first); a different pair goes to review,
+ *            or, when only one of them has the record's exact title, the other is looked up
+ *            again without that record (back to the lookups, then here again).
  *   gate     the labeled books (labels.json "books").
  */
 import type Database from 'better-sqlite3';
@@ -33,17 +39,28 @@ import { LABELED_PRIORITY, type FetchQueue } from '../stage4/queue';
 import { insideRoot } from './audio-source-fs';
 import { getAudioStage, updateAudioStage } from './audio-stages';
 import { idsInNames, type RootName } from './book-units';
-import { bestAlignment, fpFromBuffer, fpToBuffer, secondsToItems } from './dup-fingerprint';
+import {
+  bestAlignment,
+  fingerprintVerdict,
+  fpFromBuffer,
+  fpToBuffer,
+  planWindows,
+  scoreWindow,
+  secondsToItems,
+  type WindowScore,
+} from './dup-fingerprint';
 import { printedVolume } from './dup-names';
 import {
   dramaNumber,
   evaluate,
+  exactTitle,
   hitWorthReading,
   isDrama,
   rankEvaluation,
   reviewReason,
   searchGuard,
   seriesFolderTitles,
+  subtitlesDiffer,
   titlesAgree,
   type Evaluation,
   type MatchSettings,
@@ -52,11 +69,13 @@ import {
 import {
   authorFromName,
   describesFiles,
+  fullTitle,
   hasOwnTitle,
   leadingNumber,
   meaningless,
   peopleFromTags,
   searchTitle,
+  titleBracket,
   titleVariants,
   withoutTrackNumber,
   type FileTags,
@@ -91,8 +110,22 @@ import {
   type OnlineGateResult,
   type UnitOutcome,
 } from './online-gate';
+import {
+  applyOneRecord,
+  combineLooks,
+  stage3Look,
+  type PairLook,
+  type SharingUnit,
+} from './online-records';
 import { fingerprintBytes, fingerprintSpans, type FileSpan, type ToolPaths } from './probe';
-import { spansOf, windowKey, type AudioStage3, type LoadedCopy } from './stage3-dups';
+import {
+  shaOfFiles,
+  spansOf,
+  windowKey,
+  windowSettings,
+  type AudioStage3,
+  type LoadedCopy,
+} from './stage3-dups';
 import type { AudioRoots } from './walk';
 
 export const STAGE4 = 4;
@@ -115,10 +148,14 @@ export const STAGE4_RULES_VERSION = 2;
  * changes, so a finished stage starts over from the units (every answer comes from the cache).
  * 2: file-describing folders, track numbers, series folders (WP21c follow-up (2)).
  * 3: archive extensions out of the titles, the album tag's title (WP21f-1 stop 2).
+ * 4: the subtitle in a bracket at the end of the title (WP21c follow-up (3)).
  */
-export const STAGE4_UNITS_VERSION = 3;
+export const STAGE4_UNITS_VERSION = 4;
 
-export type Stage4Phase = 'units' | 'lookups' | 'gate' | 'done';
+export type Stage4Phase = 'units' | 'lookups' | 'records' | 'gate' | 'done';
+
+/** A unit's record is looked up again at most this many times before review decides. */
+const MAX_RECORD_ROUNDS = 5;
 
 export interface PhaseTime {
   ms: number;
@@ -147,6 +184,8 @@ export interface AudioStage4Progress {
   sampleErrors: number;
   /** Times the opening reads gave the disk to a Calibre job. */
   yields: number;
+  /** The one-record rule (WP21c follow-up (3)); missing before it. */
+  records?: RecordsProgress;
   phaseStartedAt: number;
   phaseStartDone: number;
   phaseTimes: Record<string, PhaseTime>;
@@ -155,6 +194,28 @@ export interface AudioStage4Progress {
   /** The labels the gate was scored with (a changed labels.json scores the gate again). */
   gateLabelsKey?: string | null;
   error: string | null;
+}
+
+export interface RecordsProgress {
+  rounds: number;
+  /** Store records matched automatically by more than one recording (first round). */
+  shared: number;
+  /**
+   * Pairs of recordings stage 3 never compared, compared by this stage (their windows read now,
+   * or their verdict stored from an earlier run), each counted once (`comparedKeys`).
+   */
+  compared: number;
+  comparedKeys?: string[];
+  /** Pairs still to compare in this round. */
+  toCompare: number;
+  /** Pairs found different (stage 3's or compared here), all rounds. */
+  different: number;
+  /** Recordings sent to review, and looked up again without the record (all rounds). */
+  review: number;
+  lookedUpAgain: number;
+  /** Windows read for the comparisons (and those that couldn't be read); missing before. */
+  windows?: number;
+  windowErrors?: number;
 }
 
 export function emptyStage4(now = Date.now()): AudioStage4Progress {
@@ -232,7 +293,7 @@ export interface Stage4Deps {
 }
 
 /** One file of the recording whose opening is read (the representative copy's). */
-interface OpeningFile {
+export interface OpeningFile {
   id: number;
   root: RootName;
   rel: string;
@@ -259,6 +320,12 @@ export interface UnitInputs {
   tagTitle?: string;
   paths: string[];
   opening: OpeningFile[];
+  /**
+   * Records this unit may not take (`audible:B00WK0IARS`): another recording that isn't the same
+   * has their exact title (WP21c follow-up (3)). Read from the unit's `excluded_json`, never
+   * stored in inputs_json.
+   */
+  excluded?: string[];
 }
 
 export type UnitClass = 'auto' | 'review' | 'unknown' | 'none_expected';
@@ -324,6 +391,51 @@ function openingSig(files: OpeningFile[]): string {
 
 const sampleKey = (url: string) => `sample:${url}`;
 
+/** A unit's inputs with the records the one-record rule took away from it. */
+function withExcluded(inputsJson: string, excludedJson: string | null | undefined): UnitInputs {
+  const inputs = JSON.parse(inputsJson) as UnitInputs;
+  try {
+    const ex = excludedJson ? (JSON.parse(excludedJson) as unknown) : [];
+    if (Array.isArray(ex) && ex.length) inputs.excluded = ex.map(String);
+  } catch {
+    // An unreadable list takes nothing away.
+  }
+  return inputs;
+}
+
+/** What a stored window was read from (stage 3's `filesSig`: the content, else the file). */
+function windowSig(
+  files: OpeningFile[],
+  spans: { fileId: number; start: number; length: number }[],
+): string {
+  return spans
+    .map((sp) => {
+      const f = files.find((x) => x.id === sp.fileId)!;
+      return f.sha256 ? `sha:${f.sha256}` : `${f.id}:${f.size}:${f.mtime}`;
+    })
+    .join(',');
+}
+
+/** The key of a pair check: the window settings and both recordings' files by content. */
+export function pairCheckKey(a: OpeningFile[], b: OpeningFile[], s: AudiobookSettings): string {
+  const [x, y] = [filesKey(a), filesKey(b)].sort();
+  return `${JSON.stringify(windowSettings(s))}|${x}|${y}`;
+}
+
+/** A recording's files by content (the pair check's key halves). */
+function filesKey(files: OpeningFile[]): string {
+  return files
+    .map((f) => (f.sha256 ? `sha:${f.sha256}` : `${f.id}:${f.size}:${f.mtime}`))
+    .join(',');
+}
+
+interface RecordUnit extends SharingUnit {
+  copyKeys: string[];
+  inputs: UnitInputs;
+  record: string;
+  excluded: string[];
+}
+
 export class AudioStage4 {
   /** Parsed answers by request id (the cache files are brotli: parse each once). */
   private parsed = new Map<number, unknown>();
@@ -365,7 +477,8 @@ export class AudioStage4 {
     this.db
       .prepare(
         `UPDATE audio_online_units SET state = 'planned', class = NULL, source = NULL, store_id = NULL,
-           review_reason = NULL, detail = NULL, updated_at = ? WHERE analysis_id = ? AND kind = 'lookup'`,
+           review_reason = NULL, detail = NULL, excluded_json = '[]', updated_at = ?
+         WHERE analysis_id = ? AND kind = 'lookup'`,
       )
       .run(now, p.analysisId);
     p.phase = 'lookups';
@@ -373,6 +486,7 @@ export class AudioStage4 {
     p.gate = null;
     p.counts = null;
     p.decided = this.count(p, `kind = 'none_expected'`);
+    p.records = undefined;
     p.rulesKey = stage4SettingsKey(getSettings(this.db).audiobooks);
     this.nextPhase(p, 'lookups');
   }
@@ -420,8 +534,16 @@ export class AudioStage4 {
         this.addTime(p, 'lookups', r.ms, r.items);
         if (r.finished) {
           p.counts = stage4Counts(this.db, p.analysisId);
-          this.nextPhase(p, 'gate');
+          this.nextPhase(p, 'records');
         } else this.save(p, 'analysing');
+        return false;
+      }
+      if (p.phase === 'records') {
+        const r = await this.recordsStep(p, shouldStop);
+        this.addTime(p, 'records', r.ms, r.items);
+        p.counts = stage4Counts(this.db, p.analysisId);
+        if (r.next) this.nextPhase(p, r.next);
+        else this.save(p, 'analysing');
         return false;
       }
       if (p.phase === 'gate') {
@@ -648,6 +770,8 @@ export class AudioStage4 {
         drama,
         seconds: rep.seconds,
         files: rep.files.length,
+        titleBracket: titleBracket(repName),
+        fullTitle: fullTitle(repName),
       };
       const isLabeled = paths.some((pth) => {
         const rel = pth.slice(pth.indexOf(':') + 1);
@@ -798,7 +922,7 @@ export class AudioStage4 {
     ).run(p.analysisId);
     const todo = db
       .prepare(
-        `SELECT id, unit_key, labeled, inputs_json FROM audio_online_units
+        `SELECT id, unit_key, labeled, inputs_json, excluded_json FROM audio_online_units
          WHERE analysis_id = ? AND state IN ('planned', 'ready') ORDER BY labeled DESC, id LIMIT ?`,
       )
       .all(p.analysisId, ADVANCE_CHUNK) as {
@@ -806,14 +930,21 @@ export class AudioStage4 {
       unit_key: string;
       labeled: number;
       inputs_json: string;
+      excluded_json: string;
     }[];
     let items = 0;
     let slice = Date.now();
     for (const u of todo) {
       if (shouldStop()) break;
-      const inputs = JSON.parse(u.inputs_json) as UnitInputs;
+      const inputs = withExcluded(u.inputs_json, u.excluded_json);
       try {
-        this.applyAdvance(p, u.id, u.unit_key, this.advance(u.unit_key, inputs, u.labeled === 1));
+        this.applyAdvance(
+          p,
+          u.id,
+          u.unit_key,
+          this.advance(u.unit_key, inputs, u.labeled === 1),
+          inputs.excluded,
+        );
       } catch (err) {
         // One unit's problem is its own: listed, never stopping the others.
         db.prepare(
@@ -830,7 +961,7 @@ export class AudioStage4 {
     // The disk part (openings; samples come from the fetch cache) for units that need it.
     const needDisk = db
       .prepare(
-        `SELECT id, unit_key, labeled, inputs_json FROM audio_online_units
+        `SELECT id, unit_key, labeled, inputs_json, excluded_json FROM audio_online_units
          WHERE analysis_id = ? AND state = 'audio' ORDER BY labeled DESC, id LIMIT 4`,
       )
       .all(p.analysisId) as {
@@ -838,11 +969,12 @@ export class AudioStage4 {
       unit_key: string;
       labeled: number;
       inputs_json: string;
+      excluded_json: string;
     }[];
     let diskItems = 0;
     for (const u of needDisk) {
       if (shouldStop()) break;
-      const inputs = JSON.parse(u.inputs_json) as UnitInputs;
+      const inputs = withExcluded(u.inputs_json, u.excluded_json);
       const done = await this.readAudio(p, u.unit_key, inputs, u.labeled === 1, shouldStop);
       if (!done) break;
       db.prepare(
@@ -860,11 +992,19 @@ export class AudioStage4 {
   /** True while units wait to read audio and a Calibre job uses the disk (for the page). */
   waitingForDisk(): boolean {
     const p = this.progress();
+    if (p?.phase === 'records')
+      return (p.records?.toCompare ?? 0) > 0 && !this.deps.lock.holds(OWNER);
     if (!p || p.phase !== 'lookups') return false;
     return this.count(p, `state = 'audio'`) > 0 && !this.deps.lock.holds(OWNER);
   }
 
-  private applyAdvance(p: AudioStage4Progress, id: number, unitKey: string, r: Advance): void {
+  private applyAdvance(
+    p: AudioStage4Progress,
+    id: number,
+    unitKey: string,
+    r: Advance,
+    excluded: string[] = [],
+  ): void {
     const db = this.db;
     const now = Date.now();
     db.transaction(() => {
@@ -929,7 +1069,9 @@ export class AudioStage4 {
         r.best?.rec.source ?? null,
         r.best?.rec.id ?? null,
         r.reason,
-        r.detail,
+        excluded.length
+          ? `${r.detail ? `${r.detail} · ` : ''}without ${excluded.join(', ')} (another recording that isn't the same has its exact title)`
+          : r.detail,
         p.rulesKey,
         now,
         id,
@@ -978,7 +1120,9 @@ export class AudioStage4 {
       prio: labeled ? LABELED_PRIORITY : 0,
     };
     const cands: Cand[] = [];
-    const have = new Set<string>();
+    // Records the one-record rule took away count as seen: never a candidate, never read again,
+    // and a search's next hits take their place (WP21c follow-up (3)).
+    const have = new Set<string>(inputs.excluded ?? []);
     // The album tag's title joins the titles only for the last step (step 6).
     let facts = inputs.facts;
     const evaluateNow = (rec: StoreRecord, via: string) =>
@@ -1064,7 +1208,7 @@ export class AudioStage4 {
                 h.title,
                 m.titleScore,
                 searchGuard(m),
-              ).ok,
+              ).ok && !subtitlesDiffer(facts, h.title),
           )
           .slice(0, s.onlineStorePages);
         for (const h of worth) {
@@ -1420,6 +1564,376 @@ export class AudioStage4 {
       }
     }
     return true;
+  }
+
+  // -------------------------------------------------------------------------------------------
+  // records: one store record per recording (WP21c follow-up (3))
+
+  /** The automatic units of every store record more than one unit matched. */
+  private sharingUnits(p: AudioStage4Progress): Map<string, RecordUnit[]> {
+    const rows = this.db
+      .prepare(
+        `SELECT id, name, copy_keys, inputs_json, excluded_json, source, store_id
+         FROM audio_online_units
+         WHERE analysis_id = ? AND class = 'auto' AND (source, store_id) IN (
+           SELECT source, store_id FROM audio_online_units
+           WHERE analysis_id = ? AND class = 'auto' AND source IS NOT NULL
+           GROUP BY source, store_id HAVING COUNT(*) > 1)
+         ORDER BY source, store_id, id`,
+      )
+      .all(p.analysisId, p.analysisId) as {
+      id: number;
+      name: string;
+      copy_keys: string;
+      inputs_json: string;
+      excluded_json: string;
+      source: StoreSource;
+      store_id: string;
+    }[];
+    const recordOf = this.db.prepare(
+      'SELECT record FROM audio_online_records WHERE source = ? AND store_id = ?',
+    );
+    const titles = new Map<string, string>();
+    const out = new Map<string, RecordUnit[]>();
+    for (const r of rows) {
+      const record = recordName({ source: r.source, id: r.store_id });
+      if (!titles.has(record)) {
+        const b = recordOf.get(r.source, r.store_id) as { record: Buffer } | undefined;
+        titles.set(record, b ? ungzRecord(b.record).title : '');
+      }
+      const inputs = withExcluded(r.inputs_json, r.excluded_json);
+      const u: RecordUnit = {
+        id: r.id,
+        name: r.name,
+        exact: exactTitle(inputs.facts, titles.get(record)!),
+        copyKeys: JSON.parse(r.copy_keys) as string[],
+        inputs,
+        record,
+        excluded: inputs.excluded ?? [],
+      };
+      const l = out.get(record) ?? [];
+      l.push(u);
+      out.set(record, l);
+    }
+    return out;
+  }
+
+  private pairCheckKey(a: RecordUnit, b: RecordUnit, s: AudiobookSettings): string {
+    return pairCheckKey(a.inputs.opening, b.inputs.opening, s);
+  }
+
+  /**
+   * The pairs the records phase still has to compare (tools: the live-copy measurements read
+   * their windows elsewhere and store the verdicts under `key`).
+   */
+  pairsToCompare(): {
+    key: string;
+    a: { name: string; seconds: number | null; files: OpeningFile[] };
+    b: { name: string; seconds: number | null; files: OpeningFile[] };
+  }[] {
+    const p = this.progress();
+    if (!p) return [];
+    const { s } = this.settingsNow();
+    const out: ReturnType<AudioStage4['pairsToCompare']> = [];
+    for (const us of this.sharingUnits(p).values())
+      for (let i = 0; i < us.length; i++)
+        for (let j = i + 1; j < us.length; j++)
+          if (!this.pairLook(us[i], us[j], s, p.stage3Id)) {
+            const side = (u: RecordUnit) => ({
+              name: u.name,
+              seconds: u.inputs.facts.seconds,
+              files: u.inputs.opening,
+            });
+            out.push({ key: this.pairCheckKey(us[i], us[j], s), a: side(us[i]), b: side(us[j]) });
+          }
+    return out;
+  }
+
+  /**
+   * How two units' recordings compare: stage 3's measure of any of their copy pairs, else this
+   * stage's own comparison; null while it hasn't been made.
+   */
+  private pairLook(
+    a: RecordUnit,
+    b: RecordUnit,
+    s: AudiobookSettings,
+    stage3Id: string | null,
+    src: { own: boolean } = { own: false },
+  ): PairLook | null {
+    const db = this.db;
+    const copyId = db.prepare(
+      'SELECT id FROM audio_dup_copies WHERE analysis_id = ? AND copy_key = ?',
+    );
+    const pair = db.prepare(
+      `SELECT test, verdict, fp_verdict FROM audio_dup_pairs
+       WHERE analysis_id = ? AND a_id = ? AND b_id = ?`,
+    );
+    const looks: (PairLook | null)[] = [];
+    if (stage3Id) {
+      const ids = (keys: string[]) =>
+        keys
+          .map((k) => (copyId.get(stage3Id, k) as { id: number } | undefined)?.id)
+          .filter((x): x is number => x !== undefined);
+      const ia = ids(a.copyKeys);
+      const ib = ids(b.copyKeys);
+      for (const x of ia)
+        for (const y of ib) {
+          const r = (pair.get(stage3Id, x, y) ?? pair.get(stage3Id, y, x)) as
+            | { test: string; verdict: string; fp_verdict: string | null }
+            | undefined;
+          if (r) looks.push(stage3Look(r));
+        }
+    }
+    const fromStage3 = combineLooks(looks);
+    if (fromStage3) return fromStage3;
+    const own = db
+      .prepare('SELECT verdict FROM audio_online_pair_checks WHERE pair_key = ?')
+      .get(this.pairCheckKey(a, b, s)) as { verdict: string } | undefined;
+    if (!own) return null;
+    src.own = true;
+    return stage3Look({ test: 'fingerprint', verdict: own.verdict, fp_verdict: own.verdict });
+  }
+
+  /**
+   * Compares two recordings stage 3 never compared, with stage 3's windows (start, middle, end)
+   * read from each one's representative files under the shared disk lock (Calibre first: it
+   * gives the disk back as soon as a Calibre job wants it). The windows go into
+   * audio_fingerprints under stage 3's keys; the verdict into audio_online_pair_checks.
+   * False when it has to wait for the disk (read again later).
+   */
+  private async comparePair(
+    p: AudioStage4Progress,
+    a: RecordUnit,
+    b: RecordUnit,
+    s: AudiobookSettings,
+    shouldStop: () => boolean,
+  ): Promise<boolean> {
+    const db = this.db;
+    const key = this.pairCheckKey(a, b, s);
+    const seconds = (u: RecordUnit) =>
+      u.inputs.facts.seconds ??
+      (u.inputs.opening.every((f) => f.duration !== null)
+        ? u.inputs.opening.reduce((t, f) => t + (f.duration ?? 0), 0)
+        : null);
+    const da = seconds(a);
+    const dbs = seconds(b);
+    const put = db.prepare(
+      `INSERT INTO audio_online_pair_checks (pair_key, a_name, b_name, verdict, scores_json, made_at)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(pair_key) DO UPDATE SET verdict = excluded.verdict,
+         scores_json = excluded.scores_json, made_at = excluded.made_at`,
+    );
+    if (!da || !dbs) {
+      put.run(
+        key,
+        a.name,
+        b.name,
+        'unknown',
+        JSON.stringify({ reason: 'length unknown' }),
+        Date.now(),
+      );
+      return true;
+    }
+    const plan = planWindows(da, dbs, windowSettings(s));
+    const side = (u: RecordUnit, span: { start: number; length: number }) => {
+      const spans = spansOf(u.inputs.opening, span);
+      return {
+        u,
+        spans,
+        key: windowKey(spans, shaOfFiles(u.inputs.opening)),
+        sig: windowSig(u.inputs.opening, spans),
+      };
+    };
+    const windows = plan.plans.map((w) => ({ w, a: side(a, w.a), b: side(b, w.b) }));
+    const stored = db.prepare('SELECT files_sig, fp FROM audio_fingerprints WHERE win_key = ?');
+    const have = (x: { key: string; sig: string }) =>
+      (stored.get(x.key) as { files_sig: string } | undefined)?.files_sig === x.sig;
+    const need = windows.flatMap((x) => [x.a, x.b]).filter((x) => !have(x));
+    if (need.length) {
+      const calibreBusy = () => this.deps.calibreBusy?.() ?? this.deps.lock.calibreBusy();
+      if (calibreBusy()) return false;
+      if (!(await this.deps.lock.acquire(OWNER, 'audio', () => shouldStop() || calibreBusy())))
+        return false;
+      try {
+        const putFp = db.prepare(
+          `INSERT INTO audio_fingerprints (win_key, files_sig, fp, items, error, tool_version, took_ms, made_at)
+           VALUES (?, ?, ?, ?, ?, NULL, ?, ?)
+           ON CONFLICT(win_key) DO UPDATE SET files_sig = excluded.files_sig, fp = excluded.fp,
+             items = excluded.items, error = excluded.error, took_ms = excluded.took_ms,
+             made_at = excluded.made_at`,
+        );
+        const yieldNow = () => shouldStop() || this.deps.lock.shouldYield(OWNER);
+        const done = new Set<string>();
+        for (const x of need) {
+          if (done.has(x.key)) continue;
+          if (yieldNow()) {
+            p.yields++;
+            return false;
+          }
+          const t0 = Date.now();
+          const files: FileSpan[] = x.spans.map((sp) => {
+            const f = x.u.inputs.opening.find((y) => y.id === sp.fileId)!;
+            return {
+              file: insideRoot(this.deps.roots[f.root], f.rel, f.raw),
+              start: sp.start,
+              length: sp.length,
+            };
+          });
+          const total = x.spans.reduce((t, sp) => t + sp.length, 0);
+          const r = await fingerprintSpans(files, this.deps.tools, {
+            timeoutMs: Math.max(s.toolTimeoutSeconds * 1000, total * 200),
+            shouldStop: yieldNow,
+          }).catch((err: Error) => ({ fp: null, error: err.message }));
+          if (yieldNow() && !r.fp) {
+            p.yields++;
+            return false; // read again later
+          }
+          putFp.run(
+            x.key,
+            x.sig,
+            r.fp ? fpToBuffer(r.fp) : null,
+            r.fp?.length ?? 0,
+            r.error ? r.error.slice(0, 500) : null,
+            Date.now() - t0,
+            Date.now(),
+          );
+          done.add(x.key);
+          const rec = p.records!;
+          if (r.fp) rec.windows = (rec.windows ?? 0) + 1;
+          else rec.windowErrors = (rec.windowErrors ?? 0) + 1;
+        }
+      } finally {
+        this.deps.lock.release(OWNER);
+      }
+    }
+    const fpOf = (k: string) => {
+      const r = stored.get(k) as { fp: Buffer | null } | undefined;
+      return r?.fp ? fpFromBuffer(r.fp) : null;
+    };
+    const scores: WindowScore[] = windows.map(({ w, a: wa, b: wb }) => {
+      const fa = fpOf(wa.key);
+      const fb = fpOf(wb.key);
+      return fa && fb
+        ? scoreWindow(w, fa, fb)
+        : { name: w.name, score: null, shiftSeconds: null, reason: 'not read' };
+    });
+    const verdict = fingerprintVerdict(scores, s.dupSameScore);
+    put.run(
+      key,
+      a.name,
+      b.name,
+      verdict,
+      JSON.stringify({ windows: scores, skipped: plan.skipped }),
+      Date.now(),
+    );
+    return true;
+  }
+
+  /**
+   * One round of the one-record rule. Compares (a few pairs per step) what stage 3 never
+   * compared; once every pair has a look, sends different pairs to review or looks the losing
+   * unit up again without the record (`next: 'lookups'`), else goes on to the gate.
+   */
+  private async recordsStep(
+    p: AudioStage4Progress,
+    shouldStop: () => boolean,
+  ): Promise<{ next: Stage4Phase | null; ms: number; items: number }> {
+    const t0 = Date.now();
+    const { s } = this.settingsNow();
+    const rec = (p.records ??= {
+      rounds: 0,
+      shared: 0,
+      compared: 0,
+      toCompare: 0,
+      different: 0,
+      review: 0,
+      lookedUpAgain: 0,
+      windows: 0,
+      windowErrors: 0,
+    });
+    const groups = this.sharingUnits(p);
+    const looks = new Map<string, PairLook>();
+    const toCompare: [RecordUnit, RecordUnit][] = [];
+    for (const us of groups.values())
+      for (let i = 0; i < us.length; i++)
+        for (let j = i + 1; j < us.length; j++) {
+          const src = { own: false };
+          const l = this.pairLook(us[i], us[j], s, p.stage3Id, src);
+          if (l) looks.set(`${us[i].id}:${us[j].id}`, l);
+          else toCompare.push([us[i], us[j]]);
+          if (l && src.own) {
+            const k = this.pairCheckKey(us[i], us[j], s);
+            rec.comparedKeys ??= [];
+            if (!rec.comparedKeys.includes(k)) rec.comparedKeys.push(k);
+          }
+        }
+    rec.compared = rec.comparedKeys?.length ?? 0;
+    // The first round's records (later rounds only see the recordings looked up again).
+    if (rec.rounds === 0) rec.shared = groups.size;
+    rec.toCompare = toCompare.length;
+    if (toCompare.length) {
+      let items = 0;
+      for (const [a, b] of toCompare.slice(0, 2)) {
+        if (shouldStop()) break;
+        const done = await this.comparePair(p, a, b, s, shouldStop);
+        if (!done) {
+          // Calibre has the disk (or the stage stops): try again shortly.
+          await sleep(1000);
+          break;
+        }
+        rec.toCompare--;
+        items++;
+      }
+      return { next: null, ms: Date.now() - t0, items };
+    }
+    rec.rounds++;
+    // Pairs found different leave the automatic matches, so later rounds never count them again.
+    rec.different += [...looks.values()].filter((l) => l === 'different').length;
+    const review = new Map<number, string[]>();
+    const exclude = new Map<number, { record: string; keep: string; excluded: string[] }>();
+    for (const [record, us] of groups) {
+      const r = applyOneRecord(
+        us,
+        (a, b) => looks.get(`${a.id}:${b.id}`) ?? looks.get(`${b.id}:${a.id}`)!,
+      );
+      for (const [id, others] of r.review) review.set(id, others);
+      for (const [id, keep] of r.exclude) {
+        const u = us.find((x) => x.id === id)!;
+        // Looked up again too often: review decides (the walk can't go on for ever).
+        if (rec.rounds >= MAX_RECORD_ROUNDS) review.set(id, [keep]);
+        else exclude.set(id, { record, keep, excluded: u.excluded });
+      }
+    }
+    const now = Date.now();
+    this.db.transaction(() => {
+      const toReview = this.db.prepare(
+        `UPDATE audio_online_units SET class = 'review', review_reason = 'shared', detail = ?,
+           updated_at = ? WHERE id = ?`,
+      );
+      for (const [id, others] of review)
+        toReview.run(
+          `the same store record as ${others.join(', ')}, which isn't the same recording`,
+          now,
+          id,
+        );
+      const again = this.db.prepare(
+        `UPDATE audio_online_units SET state = 'planned', class = NULL, source = NULL,
+           store_id = NULL, review_reason = NULL, detail = NULL, excluded_json = ?, updated_at = ?
+         WHERE id = ?`,
+      );
+      for (const [id, x] of exclude)
+        again.run(JSON.stringify([...new Set([...x.excluded, x.record])]), now, id);
+    })();
+    rec.review += review.size;
+    rec.lookedUpAgain += exclude.size;
+    if (exclude.size) {
+      this.deps.log?.(
+        `Audiobooks stage 4: ${exclude.size} recording(s) looked up again without a record another recording has the exact title of`,
+      );
+      p.decided = this.count(p, `state = 'decided'`);
+      return { next: 'lookups', ms: Date.now() - t0, items: groups.size };
+    }
+    return { next: 'gate', ms: Date.now() - t0, items: groups.size };
   }
 
   // -------------------------------------------------------------------------------------------

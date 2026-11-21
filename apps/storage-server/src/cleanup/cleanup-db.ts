@@ -1571,6 +1571,27 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
       CREATE INDEX ai_values_design ON ai_values (stage, design);
     `,
   },
+  {
+    version: 18,
+    name: 'audiobook cleanup: stage 4, one store record per recording (WP21c follow-up (3))',
+    // Two recordings that are not the same never both match one store record automatically.
+    // Pairs stage 3 never compared are compared here with stage 3's windows (the fingerprints
+    // themselves go into audio_fingerprints under stage 3's keys); keyed by the two openings'
+    // contents, so nothing is read twice. A unit looked up again without a record keeps the
+    // records it may not take in excluded_json (recomputed whenever stage 4 decides again).
+    sql: `
+      CREATE TABLE audio_online_pair_checks (
+        pair_key     TEXT PRIMARY KEY,
+        a_name       TEXT NOT NULL,
+        b_name       TEXT NOT NULL,
+        verdict      TEXT NOT NULL CHECK (verdict IN ('same', 'different', 'partly', 'unknown')),
+        scores_json  TEXT NOT NULL CHECK (json_valid(scores_json)),
+        made_at      INTEGER NOT NULL
+      );
+      ALTER TABLE audio_online_units ADD COLUMN excluded_json TEXT NOT NULL DEFAULT '[]'
+        CHECK (json_valid(excluded_json));
+    `,
+  },
 ];
 
 export const CLEANUP_SCHEMA_VERSION = CLEANUP_MIGRATIONS[CLEANUP_MIGRATIONS.length - 1].version;

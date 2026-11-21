@@ -686,7 +686,7 @@ export class AudioCleanupService {
   /** What stage 4 is doing now, and what it waits for. */
   private waiting4Text(): string {
     const p = this.stage4?.progress();
-    if (p?.phase === 'lookups' && this.stage4?.waitingForDisk()) {
+    if ((p?.phase === 'lookups' || p?.phase === 'records') && this.stage4?.waitingForDisk()) {
       const lock = this.opts.lock.state();
       if (lock.calibreApplying) return `Waiting for the disk: ${lock.calibreApplying}`;
       if (this.opts.lock.calibreBusy()) return 'Waiting while the Calibre cleanup uses the disk';
@@ -696,6 +696,7 @@ export class AudioCleanupService {
       if (f && f.online === false) return 'Waiting for the fetch container (it is offline)';
       return 'Looking up';
     }
+    if (p?.phase === 'records') return 'Checking recordings that share a store record';
     return 'Analysing';
   }
 
