@@ -25,7 +25,6 @@
  */
 import type Database from 'better-sqlite3';
 import { createHash } from 'crypto';
-import fs from 'fs';
 import path from 'path';
 import { gunzipSync, gzipSync } from 'zlib';
 import { DISK_OWNERS, type DiskLock } from '../disk-lock';
@@ -283,20 +282,16 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
  * library (found by the e2e). Compared with japanese seen through the media mount (the parent,
  * which follows the renames). Null when they agree or there is no media mount.
  */
-export function staleLibraryMount(roots: { library: string; media: string | null }): string | null {
+export async function staleLibraryMount(roots: {
+  library: string;
+  media: string | null;
+}): Promise<string | null> {
   if (!roots.media) return null;
-  let lib: fs.Stats;
-  let cur: fs.Stats;
-  try {
-    lib = fs.statSync(roots.library);
-  } catch {
-    return `The library folder ${roots.library} can't be read: restart ttsu-storage`;
-  }
-  try {
-    cur = fs.statSync(path.join(roots.media, ARRIVAL_AREA_FOLDERS.main));
-  } catch {
+  const lib = await lstatEntry(roots.library).catch(() => null);
+  if (!lib) return `The library folder ${roots.library} can't be read: restart ttsu-storage`;
+  const cur = await lstatEntry(path.join(roots.media, ARRIVAL_AREA_FOLDERS.main)).catch(() => null);
+  if (!cur)
     return `media/audiobooks/${ARRIVAL_AREA_FOLDERS.main} can't be read through ${roots.media}`;
-  }
   if (lib.dev === cur.dev && lib.ino === cur.ino && lib.nlink > 0) return null;
   return `The library mount (${roots.library}) still shows the folder from before the switch (renamed or deleted since): restart ttsu-storage, then run again`;
 }
@@ -426,6 +421,11 @@ export class AudioStage7 {
     this.log(phase);
   }
 
+  /** The schedule's time zone: the setting, else the server's (tests: deps.timeZone). */
+  zone(): string | undefined {
+    return getSettings(this.db).audiobooks.arrivalsTimeZone || this.deps.timeZone;
+  }
+
   isRunning(): boolean {
     return this.current() !== null;
   }
@@ -444,7 +444,7 @@ export class AudioStage7 {
     const now = this.now();
     if (this.nextCache && now - this.nextCache.at < 60_000) return this.nextCache.value;
     const s = getSettings(this.db).audiobooks;
-    const value = nextScheduledRun(now, s, this.row().lastScheduledDay ?? null, this.deps.timeZone);
+    const value = nextScheduledRun(now, s, this.row().lastScheduledDay ?? null, this.zone());
     this.nextCache = { at: now, value };
     return value;
   }
@@ -460,7 +460,7 @@ export class AudioStage7 {
     const s = getSettings(this.db).audiobooks;
     let trigger: Stage7Progress['trigger'] | null = null;
     if (row.runNow) trigger = 'now';
-    else if (scheduledRunDue(now, s, row.lastScheduledDay ?? null, this.deps.timeZone))
+    else if (scheduledRunDue(now, s, row.lastScheduledDay ?? null, this.zone()))
       trigger = 'schedule';
     if (!trigger) return null;
     const mode = st.mode === 'on' ? 'on' : 'analyse';
@@ -479,9 +479,7 @@ export class AudioStage7 {
       runNow: false,
       currentRun: id,
       lastScheduledDay:
-        trigger === 'schedule'
-          ? clockNow(now, this.deps.timeZone).day
-          : (row.lastScheduledDay ?? null),
+        trigger === 'schedule' ? clockNow(now, this.zone()).day : (row.lastScheduledDay ?? null),
     });
     this.nextCache = null;
     this.log(`run ${id} started (${trigger}, ${mode === 'on' ? 'On' : 'Preview'})`);
@@ -523,13 +521,35 @@ export class AudioStage7 {
    * 'done' when the run ended, 'wait' when it waits for something (sleep a little), 'more'.
    */
   async step(stop: () => boolean): Promise<'done' | 'wait' | 'more'> {
+    // Steps never overlap: a second caller while one runs waits (and says who it was).
+    if (this.stepping) {
+      this.log(
+        `a step was asked while one runs (it waits): ${(new Error().stack ?? '')
+          .split(/\r?\n/)
+          .slice(2, 7)
+          .map((l) => l.trim())
+          .join(' < ')}`,
+      );
+      return 'wait';
+    }
+    this.stepping = true;
+    try {
+      return await this.stepOnce(stop);
+    } finally {
+      this.stepping = false;
+    }
+  }
+
+  private stepping = false;
+
+  private async stepOnce(stop: () => boolean): Promise<'done' | 'wait' | 'more'> {
     const p = this.current();
     if (!p) return 'done';
     try {
       switch (p.phase) {
         case 'stage1':
         case 'stage1b':
-          return this.stage1Step(p);
+          return await this.stage1Step(p);
         case 'archives':
           return await this.archivesStep(p, stop);
         case 'stages':
@@ -567,10 +587,10 @@ export class AudioStage7 {
 
   // stage 1 (twice when archives were unpacked) -----------------------------------------------
 
-  private stage1Step(p: Stage7Progress): 'wait' | 'more' {
+  private async stage1Step(p: Stage7Progress): Promise<'wait' | 'more'> {
     const key = p.phase === 'stage1' ? 's1' : 's1b';
     if (p.asked[key] === undefined) {
-      const stale = staleLibraryMount(this.deps.roots);
+      const stale = await staleLibraryMount(this.deps.roots);
       if (stale) throw new Stage7Stop('library_mount', stale);
     }
     const s1 = getAudioStage(this.db, 1);
@@ -2123,6 +2143,7 @@ export class AudioStage7 {
       pause: st.pauseReason ? { reason: st.pauseReason, detail: st.pauseDetail } : null,
       running: this.current() !== null,
       nextRunAt: this.current() ? null : this.nextRunAt(),
+      timeZone: this.zone() ?? (Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'),
       run: last?.progress ?? null,
       report: last?.report ?? null,
       sidecarReady: this.sidecarReady(),
@@ -2215,12 +2236,12 @@ export class AudioStage7 {
   }
 
   /** Why stage 7 can't be switched On now (empty: it can). */
-  onRefusals(): string[] {
+  async onRefusals(): Promise<string[]> {
     const out: string[] = [];
     if (!librarySwitched(this.db)) out.push('The library is not switched yet (WP21e-2)');
     if (!this.deps.roots.media) out.push('CLEANUP_AUDIO_MEDIA_DIR is not set');
     else {
-      const stale = staleLibraryMount(this.deps.roots);
+      const stale = await staleLibraryMount(this.deps.roots);
       if (stale) out.push(stale);
     }
     if (!this.sidecarReady())

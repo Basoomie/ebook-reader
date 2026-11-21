@@ -318,6 +318,29 @@ describe('the parts rule (full-length files named as parts of one book)', () => 
 describe('the schedule', () => {
   const s = { arrivalsTime: '05:00', arrivalsQuietStart: '23:30', arrivalsQuietEnd: '00:30' };
   const at = (iso: string) => Date.parse(iso);
+  it('its time zone: a setting (blank: the server’s), checked by name; the next run follows it', () => {
+    const db = freshDb('wp21f-zone');
+    const cur = getSettings(db).audiobooks;
+    expect(cur.arrivalsTimeZone).toBe('');
+    expect(() =>
+      updateSettings(db, { audiobooks: { ...cur, arrivalsTimeZone: 'Mars/Olympus' } }),
+    ).toThrow('time zone name like America/Los_Angeles');
+    updateSettings(db, { audiobooks: { ...cur, arrivalsTimeZone: 'America/Los_Angeles' } });
+    const stage = new AudioStage7({
+      db,
+      roots: { torrents: '/none', library: '/none', media: null },
+      lock: new DiskLock(5),
+      reanalyse: () => undefined,
+      abs: () => null,
+      timeZone: 'UTC',
+      now: () => Date.parse('2026-11-21T12:00:00Z'),
+    });
+    setAudioStageMode(db, 7, 'analyse');
+    // 05:00 in Los Angeles is 13:00 UTC (PST), not 05:00 UTC.
+    expect(stage.nextRunAt()).toBe(Date.parse('2026-11-21T13:00:00Z'));
+    expect(stage.status().timeZone).toBe('America/Los_Angeles');
+  });
+
   it('once a day from the set time, never in the backup window', () => {
     expect(scheduledRunDue(at('2026-11-21T04:59:00Z'), s, null, 'UTC')).toBe(false);
     expect(scheduledRunDue(at('2026-11-21T05:00:00Z'), s, null, 'UTC')).toBe(true);
@@ -459,6 +482,45 @@ describe('the classifier', () => {
     });
     expect(r.unlinkedKnown).toBe(1);
     expect(r.outcomes.find((o) => o.unitKey === 'uD')!.link).toEqual(['D']);
+  });
+
+  it('the e2e’s cases: stage 3 keeps a byte-identical arrival; an unpacked file settles with its archive', () => {
+    const files = new Map<number, ArrivalFile>([
+      [1, file(1, 'old/b.m4b', 11)], // in the library
+      [2, file(2, 'new/b copy.m4b', 12, { sha: 's1' })], // byte-identical to 1, kept by stage 3
+      [3, file(3, 'new/b short.m4b', 13)], // proven inside 1
+      [4, file(4, '_extracted/x/z.zip/z/z.mp3', 14, { mtimeMs: NOW - 1000, settledFrom: 0 })],
+      [5, file(5, 'new/w.m4b', 15, { mtimeMs: NOW - 1000 })], // still downloading
+      [21, { ...file(21, 'japanese/b/b.m4b', 11), root: 'library' }],
+    ]);
+    const copies = new Map<string, PlanCopy>(
+      [
+        copy('B', [1], g(1, 'drop')),
+        copy('B2', [2], g(1, 'keep')),
+        copy('B3', [3], g(1, 'drop')),
+        copy('Z', [4]),
+        copy('W', [5]),
+      ].map((c) => [c.key, c]),
+    );
+    const r = classifyArrivals({
+      units: [
+        { key: 'uB', name: 'b', copyKeys: ['B', 'B2', 'B3'] },
+        { key: 'uZ', name: 'z', copyKeys: ['Z'] },
+        { key: 'uW', name: 'w', copyKeys: ['W'] },
+      ],
+      copies,
+      files,
+      decisions: new Map(),
+      baseline: new Set(['old/b.m4b']),
+      present: new Set(['1:11']),
+      everLinked: new Set(['1:11']),
+      addAnyway: new Set(),
+      now: NOW,
+      settleMs: 30 * 60_000,
+    });
+    const by = Object.fromEntries(r.outcomes.map((o) => [o.unitKey, o.outcome]));
+    // Not "better": the copy stage 3 kept is the library's own bytes; the short one is proven.
+    expect(by).toEqual({ uB: 'duplicate', uZ: 'new', uW: 'waiting' });
   });
 
   it('a proven group of two arrivals links only the kept copy; unproven copies each stay', () => {
@@ -1148,21 +1210,21 @@ describe('post-switch fixes', () => {
     expect(readerLibraryFolder(main, '/x/english')).toBe('english');
   });
 
-  it('a library mount from before the switch is found (the e2e found this)', () => {
+  it('a library mount from before the switch is found (the e2e found this)', async () => {
     const media = makeTempDir('wp21f-mount');
     fs.mkdirSync(path.join(media, 'japanese'));
     const library = path.join(media, 'japanese');
-    expect(staleLibraryMount({ library, media })).toBeNull();
-    expect(staleLibraryMount({ library, media: null })).toBeNull();
+    expect(await staleLibraryMount({ library, media })).toBeNull();
+    expect(await staleLibraryMount({ library, media: null })).toBeNull();
     // What a mount of the old folder sees after the renames: another folder than japanese now.
     const held = path.join(media, 'japanese-old');
     fs.renameSync(library, held);
     fs.mkdirSync(library);
-    expect(staleLibraryMount({ library: held, media })).toMatch(
+    expect(await staleLibraryMount({ library: held, media })).toMatch(
       /still shows the folder from before the switch.*restart ttsu-storage/,
     );
     fs.rmSync(held, { recursive: true });
-    expect(staleLibraryMount({ library: held, media })).toMatch(
+    expect(await staleLibraryMount({ library: held, media })).toMatch(
       /can't be read: restart ttsu-storage/,
     );
   });
@@ -1574,6 +1636,38 @@ function db_reset_stage1(db: Database.Database, disk: { library: string }) {
      VALUES ('library', '作者A/新しい本/新しい本.m4b', '.m4b', 'audio', ?, ?, ?, ?, ?, 0, 0)`,
   ).run(st.size, Math.floor(st.mtimeMs), st.dev, st.ino, st.nlink);
 }
+
+describe('steps never overlap (the e2e found two loops on one run)', () => {
+  it('a second step while one runs waits and says who asked', async () => {
+    const db = freshDb('wp21f-overlap');
+    const logs: string[] = [];
+    const stage = new AudioStage7({
+      db,
+      roots: { torrents: '/none', library: '/none', media: null },
+      lock: new DiskLock(5),
+      reanalyse: () => undefined,
+      abs: () => null,
+      log: (m) => logs.push(m),
+    });
+    let calls = 0;
+    let release!: () => void;
+    (stage as unknown as { stepOnce: () => Promise<string> }).stepOnce = () => {
+      calls++;
+      return new Promise((r) => (release = () => r('more')));
+    };
+    const first = stage.step(() => false);
+    expect(await stage.step(() => false)).toBe('wait');
+    release();
+    expect(await first).toBe('more');
+    expect(calls).toBe(1);
+    expect(logs.join('\n')).toMatch(/a step was asked while one runs \(it waits\)/);
+    // After it ended the next step runs.
+    const again = stage.step(() => false);
+    release();
+    expect(await again).toBe('more');
+    expect(calls).toBe(2);
+  });
+});
 
 describe('the page’s E/F/J line (polled)', () => {
   it('reads the stage-5 values only when stage 5 or the AI settings changed, or after 10 minutes', () => {

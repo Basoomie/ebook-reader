@@ -379,6 +379,7 @@
                       arrivalsTime: settings.audiobooks.arrivalsTime,
                       arrivalsQuietStart: settings.audiobooks.arrivalsQuietStart,
                       arrivalsQuietEnd: settings.audiobooks.arrivalsQuietEnd,
+                      arrivalsTimeZone: settings.audiobooks.arrivalsTimeZone ?? '',
                       arrivalsSettleMinutes: Number(settings.audiobooks.arrivalsSettleMinutes),
                       arrivalsAbsWaitMinutes: Number(settings.audiobooks.arrivalsAbsWaitMinutes),
                       arrivalsAbsNudge: settings.audiobooks.arrivalsAbsNudge === true,
@@ -748,9 +749,10 @@
           {/if}
           {#if settings.audiobooks.arrivalsTime !== undefined}
             <p class="text-c-muted sm:col-span-2" data-testid="cleanup-audio-arrivals-settings">
-              New arrivals (stage 7). Once a day at this time (the server's clock), never inside the
-              backup window (the nightly appdata backup stops the server at 00:00). A file counts
-              once it hasn't changed for the minutes below.
+              New arrivals (stage 7). Once a day at this time, never inside the backup window (the
+              nightly appdata backup stops the server at 00:00 NAS time). The times are in the time
+              zone below (blank: the server's, which is UTC when its container has no TZ). A file
+              counts once it hasn't changed for the minutes below.
             </p>
             <label class={field}>
               <span class={label}>Time of the daily run</span>
@@ -789,6 +791,16 @@
                 type="time"
                 bind:value={settings.audiobooks.arrivalsQuietEnd}
                 data-testid="cleanup-audio-arrivalsQuietEnd"
+              />
+            </label>
+            <label class={field}>
+              <span class={label}>Time zone of these times (blank: the server's)</span>
+              <input
+                class="c-input"
+                type="text"
+                placeholder="America/Los_Angeles"
+                bind:value={settings.audiobooks.arrivalsTimeZone}
+                data-testid="cleanup-audio-arrivalsTimeZone"
               />
             </label>
             <label class={field}>

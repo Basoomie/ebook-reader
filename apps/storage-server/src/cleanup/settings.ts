@@ -193,6 +193,11 @@ export interface AudiobookSettings {
   arrivalsQuietStart: string;
   /** ... until this time (HH:MM; may be after midnight). */
   arrivalsQuietEnd: string;
+  /**
+   * Stage 7: the time zone of the three times above (IANA name, e.g. America/Los_Angeles); empty:
+   * the server's (its TZ, UTC when the container has none). The backup runs at 00:00 NAS time.
+   */
+  arrivalsTimeZone: string;
   /** Stage 7: a file counts once its size and mtime have been unchanged this long (minutes). */
   arrivalsSettleMinutes: number;
   /** Stage 7: how long to wait for Audiobookshelf to show a new book (minutes). */
@@ -522,6 +527,7 @@ export const DEFAULT_SETTINGS: CleanupSettings = {
     arrivalsTime: '05:00',
     arrivalsQuietStart: '23:30',
     arrivalsQuietEnd: '00:30',
+    arrivalsTimeZone: '',
     arrivalsSettleMinutes: 30,
     arrivalsAbsWaitMinutes: 30,
     arrivalsAbsNudge: false,
@@ -732,6 +738,19 @@ function clock(name: string, value: unknown): string {
   if (typeof value !== 'string' || !/^([01]\d|2[0-3]):[0-5]\d$/.test(value.trim()))
     throw new SettingsError(`${name} must be a time like 05:00`);
   return value.trim();
+}
+
+/** An IANA time zone name, or empty (the server's). */
+function zone(name: string, value: unknown): string {
+  const v = typeof value === 'string' ? value.trim() : '';
+  if (typeof value !== 'string') throw new SettingsError(`${name} must be a time zone name`);
+  if (!v) return '';
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: v }).format(0);
+  } catch {
+    throw new SettingsError(`${name} must be a time zone name like America/Los_Angeles`);
+  }
+  return v;
 }
 
 function text(name: string, value: unknown, max = 500): string {
@@ -946,6 +965,7 @@ function validate(key: Key, value: unknown, current: CleanupSettings): unknown {
         arrivalsTime: clock('Time of the daily run', v.arrivalsTime),
         arrivalsQuietStart: clock('No run from', v.arrivalsQuietStart),
         arrivalsQuietEnd: clock('No run until', v.arrivalsQuietEnd),
+        arrivalsTimeZone: zone('Time zone of the daily run', v.arrivalsTimeZone),
         arrivalsSettleMinutes: num(
           'A file counts once unchanged for (minutes)',
           v.arrivalsSettleMinutes,

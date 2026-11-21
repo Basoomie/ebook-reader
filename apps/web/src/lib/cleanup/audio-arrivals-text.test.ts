@@ -7,6 +7,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   designLines,
+  inZone,
   phaseLabel,
   reportLines,
   stage7Bar,
@@ -119,6 +120,13 @@ describe('stage 7 texts', () => {
     expect(stage7Summary({ available: true, switched: false }, NOW)).toBe(
       'Starts after the switch to the new library'
     );
+    // The schedule's own clock when its zone is not this browser's (a container without TZ).
+    const t = Date.parse('2026-11-22T05:00:00Z');
+    expect(inZone(t, 'UTC')).toBe(
+      Intl.DateTimeFormat().resolvedOptions().timeZone === 'UTC' ? '' : ' (05:00 UTC)'
+    );
+    expect(inZone(t, Intl.DateTimeFormat().resolvedOptions().timeZone)).toBe('');
+    expect(inZone(t, undefined)).toBe('');
     expect(reportLines(s).some((l) => l.includes('Archives: 93'))).toBe(true);
     expect(reportLines(s).some((l) => l.includes('2 need a password'))).toBe(true);
   });

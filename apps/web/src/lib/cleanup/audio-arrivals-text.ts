@@ -103,13 +103,37 @@ function when(t: number, now: number): string {
   return `${d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })} ${hm}`;
 }
 
+/** " (05:00 UTC)": the schedule's own clock, when its zone is not this browser's. */
+export function inZone(t: number, zone: string | undefined): string {
+  if (!zone) return '';
+  let mine = '';
+  try {
+    mine = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  } catch {
+    return '';
+  }
+  if (zone === mine) return '';
+  try {
+    const hm = new Date(t).toLocaleTimeString('en-GB', {
+      hour: '2-digit',
+      minute: '2-digit',
+      timeZone: zone
+    });
+    return ` (${hm} ${zone})`;
+  } catch {
+    return '';
+  }
+}
+
 /** One line under the card's title. */
 export function stage7Summary(s: AudioStage7Status | null | undefined, now: number): string {
   if (!s?.available) return 'Needs the audiobook folders (not set up)';
   if (!s.switched) return 'Starts after the switch to the new library';
   if (s.running && s.run)
     return `Running (${s.run.mode === 'on' ? 'On' : 'Preview'}): ${phaseLabel(s.run.phase)}`;
-  const next = s.nextRunAt ? `Next run ${when(s.nextRunAt, now)}` : 'No run planned';
+  const next = s.nextRunAt
+    ? `Next run ${when(s.nextRunAt, now)}${inZone(s.nextRunAt, s.timeZone)}`
+    : 'No run planned';
   const r = s.report;
   if (!r || !s.run) return `${next}.`;
   const o = r.outcomes ?? {};

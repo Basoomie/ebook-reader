@@ -393,6 +393,9 @@ export class AudioCleanupService {
     if (this.stopped) return Promise.resolve();
     if (this.ticking) return this.ticking;
     this.ticking = (async () => {
+      // Set before the round runs: a step that asks a stage to run again calls tick() from
+      // inside the round (WP21f-1: stage 7's first step started a second stage-7 loop).
+      await Promise.resolve();
       try {
         await this.round();
       } catch (err) {
@@ -959,6 +962,8 @@ export class AudioCleanupService {
       return x.mode === 'off' || x.pauseReason !== null;
     };
     this.running7 = (async () => {
+      // Set before the first step (it calls tick() through reanalyse()).
+      await Promise.resolve();
       try {
         for (;;) {
           if (stop()) break;
@@ -1131,7 +1136,7 @@ export class AudioCleanupService {
     if (stage === 7) {
       if (!this.stage7) throw new Error('The audiobook folders are not set up');
       if (mode === 'on') {
-        const refusals = this.stage7.onRefusals();
+        const refusals = await this.stage7.onRefusals();
         if (refusals.length) throw new Error(refusals.join('; '));
         this.log('Audiobooks stage 7: switched On (new books are added to the library)');
       }

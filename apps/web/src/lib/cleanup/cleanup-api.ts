@@ -557,6 +557,7 @@ export interface AudiobookSettings {
   arrivalsTime?: string;
   arrivalsQuietStart?: string;
   arrivalsQuietEnd?: string;
+  arrivalsTimeZone?: string;
   arrivalsSettleMinutes?: number;
   arrivalsAbsWaitMinutes?: number;
   arrivalsAbsNudge?: boolean;
@@ -915,6 +916,8 @@ export interface AudioStage7Status {
   pause?: { reason: string; detail: string | null } | null;
   running?: boolean;
   nextRunAt?: number | null;
+  /** The schedule's time zone (the setting, else the server's). */
+  timeZone?: string;
   run?: AudioStage7Run | null;
   report?: AudioStage7Report | null;
   sidecarReady?: boolean;

@@ -22,6 +22,9 @@ import type Database from 'better-sqlite3';
 import { droppedCopies, type PlanCopy, type PlanCopyGroup } from './build-plan';
 import { getAudioStage } from './audio-stages';
 
+/** Where stage 7 unpacks archives, under the torrents (the sidecar's EXTRACTED). */
+export const EXTRACTED_DIR = '_extracted';
+
 export type ArrivalOutcomeKind =
   | 'existing'
   | 'identical'
@@ -44,6 +47,12 @@ export interface ArrivalFile {
   /** Stage 2's short plays at both ends (null: not checked). */
   startOk: boolean | null;
   endOk: boolean | null;
+  /**
+   * When the file counts as changed for the settle rule (default its mtime): a file unpacked
+   * from an archive takes the archive's mtime (it appears only when complete: the sidecar links
+   * it into place after checking its size).
+   */
+  settledFrom?: number;
 }
 
 export interface ClassifyUnit {
@@ -113,6 +122,11 @@ export function classifyArrivals(input: ClassifyInput): ClassifyResult {
   const librarySha = new Set<string>();
   for (const f of input.files.values())
     if (f.sha && input.present.has(inode(f))) librarySha.add(f.sha);
+  /** Every file byte-identical to one in the library (whichever copy stage 3 keeps). */
+  const identicalToLibrary = (c: PlanCopy) => {
+    const fs = filesOf(c);
+    return fs.length > 0 && fs.every((f) => f.sha !== null && librarySha.has(f.sha));
+  };
 
   const outcomes: ArrivalOutcome[] = [];
   let unlinkedKnown = 0;
@@ -140,7 +154,10 @@ export function classifyArrivals(input: ClassifyInput): ClassifyResult {
         continue;
       }
       // An arrival in a recording the library has: identical, a proven worse copy, or better.
-      const better = arrivals.filter((c) => !dropped.has(c.key) && provenGroup(c.group));
+      // Byte-identical copies are the library's own: stage 3 may keep either of them.
+      const better = arrivals.filter(
+        (c) => !dropped.has(c.key) && provenGroup(c.group) && !identicalToLibrary(c),
+      );
       if (better.length && linked.every((c) => dropped.get(c.key)?.kept !== undefined)) {
         put(
           'better',
@@ -148,10 +165,7 @@ export function classifyArrivals(input: ClassifyInput): ClassifyResult {
         );
         continue;
       }
-      const identical = arrivals.every((c) => {
-        const fs = filesOf(c);
-        return fs.length > 0 && fs.every((f) => f.sha && librarySha.has(f.sha));
-      });
+      const identical = arrivals.every(identicalToLibrary);
       put(
         identical ? 'identical' : 'duplicate',
         identical
@@ -175,7 +189,9 @@ export function classifyArrivals(input: ClassifyInput): ClassifyResult {
     }
     const link = copies.filter((c) => !dropped.has(c.key));
     const linkFiles = link.flatMap(filesOf);
-    const fresh = linkFiles.filter((f) => input.now - f.mtimeMs < input.settleMs);
+    const fresh = linkFiles.filter(
+      (f) => input.now - (f.settledFrom ?? f.mtimeMs) < input.settleMs,
+    );
     if (fresh.length) {
       put(
         'waiting',
@@ -244,6 +260,26 @@ export function loadClassifyInputs(
 ): ClassifyInput {
   const files = new Map<number, ArrivalFile>();
   const present = new Set<string>(extra.generatedInodes);
+  // Unpacked archives: _extracted/<archive path>/… settles with the archive (stage 7's table;
+  // missing before WP21f-1's migration in tests that build cleanup.db by hand).
+  const archiveMtime = new Map<string, number>();
+  try {
+    for (const r of db
+      .prepare(`SELECT rel, mtime_ms FROM audio_archives WHERE state = 'extracted'`)
+      .all() as { rel: string; mtime_ms: number }[])
+      archiveMtime.set(r.rel, r.mtime_ms);
+  } catch {
+    /* no stage 7 tables */
+  }
+  const settledFrom = (rel: string): number | undefined => {
+    if (!rel.startsWith(`${EXTRACTED_DIR}/`) || archiveMtime.size === 0) return undefined;
+    const parts = rel.slice(EXTRACTED_DIR.length + 1).split('/');
+    for (let i = 1; i < parts.length; i++) {
+      const m = archiveMtime.get(parts.slice(0, i).join('/'));
+      if (m !== undefined) return m;
+    }
+    return undefined;
+  };
   for (const r of db
     .prepare(
       `SELECT f.id, f.root, f.rel_path, f.size, f.mtime_ms, f.dev, f.ino, f.sha256,
@@ -275,6 +311,10 @@ export function loadClassifyInputs(
       startOk: r.start_decode_ok === null ? null : r.start_decode_ok === 1,
       endOk: r.end_decode_ok === null ? null : r.end_decode_ok === 1,
     };
+    if (r.root === 'torrents') {
+      const s = settledFrom(r.rel_path);
+      if (s !== undefined) f.settledFrom = s;
+    }
     files.set(r.id, f);
     if (r.root === 'library') present.add(inode(f));
   }
