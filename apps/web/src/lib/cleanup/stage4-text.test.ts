@@ -27,7 +27,8 @@ import {
   siteLine,
   timeLeftLine,
   sourceName,
-  valueText
+  valueText,
+  writeBar
 } from './stage4-text';
 
 const site = (o: Partial<Stage4Site>): Stage4Site => ({
@@ -317,5 +318,32 @@ describe("the AI check's progress bar (WP20e follow-up)", () => {
       aiBar({ ...base, bar: { phase: 'decide', done: 0, total: 52120, secondsLeft: null } })?.eta
     ).toBeNull();
     expect(aiBar({ ...base, phase: 'done', bar: null })).toBeNull();
+  });
+});
+
+describe("stage 4 On's progress bar (WP20e)", () => {
+  const w = (done: number, total: number, secondsLeft: number | null) => ({
+    books: { done: Math.round(done / 4) },
+    changes: { done, total },
+    secondsLeft,
+    batches: 3
+  });
+  it('shows changes written of all, the books written and the time left while On', () => {
+    expect(writeBar(w(6000, 206_140, 7200), 'on')).toEqual({
+      label: 'Writing to Calibre: 6,000 of 206,140 changes · 1,500 books written',
+      fraction: 6000 / 206_140,
+      eta: 'about 2 h left (estimate)'
+    });
+    expect(writeBar(w(0, 206_140, null), 'on')?.eta).toBeNull();
+  });
+  it('stays after a run until everything is written, and is gone before one', () => {
+    expect(writeBar(w(6000, 206_140, 7200), 'analyse')?.label).toMatch(/^Writing to Calibre/);
+    expect(writeBar(w(0, 206_140, null), 'analyse')).toBeNull();
+    expect(writeBar(w(206_140, 206_140, 0), 'on')).toEqual({
+      label: 'Written to Calibre: 206,140 changes in 51,535 books',
+      fraction: 1,
+      eta: null
+    });
+    expect(writeBar(null, 'on')).toBeNull();
   });
 });
