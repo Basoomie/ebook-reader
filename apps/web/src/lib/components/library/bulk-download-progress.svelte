@@ -8,7 +8,7 @@
   /**
    * Select mode's downloads: how far the server is with a ZIP, or which file of several is
    * being saved, with a bar, the time left from the pace so far, and Cancel. No animation
-   * (e-ink); the look of the upload progress.
+   * (e-ink); the modal frame's look, as the upload progress.
    */
   import { createEventDispatcher, onDestroy } from 'svelte';
   import { progressView } from '$lib/library/bulk-download';
@@ -34,41 +34,55 @@
   $: view = progressView(done, total, startedAt, now);
 </script>
 
-<div class="fixed inset-0 z-50 flex items-center justify-center bg-black/40" role="dialog">
-  <div
-    class="c-panel mx-4 w-full max-w-md rounded p-6"
-    aria-live="polite"
+<!-- The modal frame's look (modal.svelte) without its closing rules, like the upload
+     progress: a stray tap outside never cancels a download. -->
+<div class="c-modal-layer">
+  <div class="c-modal-backdrop" />
+  <section
+    class="c-modal c-modal-sm"
+    role="dialog"
+    aria-modal="true"
+    aria-label="Downloading"
     data-testid="bulk-download-progress"
   >
-    <div class="mb-1 font-medium" data-testid="bulk-download-heading">{heading}</div>
-    {#if detail}
-      <div class="mb-1 line-clamp-2 break-all text-sm">{detail}</div>
-    {/if}
-    <div
-      class="c-mbar mt-2"
-      role="progressbar"
-      aria-label="Download progress"
-      aria-valuemin={0}
-      aria-valuemax={100}
-      aria-valuenow={view.percent}
-      data-testid="bulk-download-bar"
-    >
-      <div style="width: {view.percent}%" />
-    </div>
-    <div class="mb-6 mt-2 flex justify-between gap-3 text-sm text-c-muted">
-      <span data-testid="bulk-download-count">{countText}</span>
-      <span data-testid="bulk-download-time-left">{view.timeLeft}</span>
-    </div>
-    <div class="flex justify-end">
-      <button
-        class="flex min-h-[3rem] items-center rounded border-2 border-current px-5 font-medium"
-        data-testid="bulk-download-cancel"
-        on:click={() => dispatch('cancel')}
+    <header class="c-modal-head">
+      <div class="c-modal-titles">
+        <h2 class="c-modal-title" data-testid="bulk-download-heading">{heading}</h2>
+        {#if detail}
+          <p class="c-modal-sub line-clamp-2 break-all">{detail}</p>
+        {/if}
+      </div>
+    </header>
+    <div class="c-modal-body" aria-live="polite">
+      <div
+        class="c-mbar"
+        role="progressbar"
+        aria-label="Download progress"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={view.percent}
+        data-testid="bulk-download-bar"
       >
-        Cancel
-      </button>
+        <div style="width: {view.percent}%" />
+      </div>
+      <div class="mt-2 flex justify-between gap-3 text-sm text-c-muted">
+        <span data-testid="bulk-download-count">{countText}</span>
+        <span data-testid="bulk-download-time-left">{view.timeLeft}</span>
+      </div>
     </div>
-  </div>
+    <footer class="c-modal-foot">
+      <div class="c-modal-btns">
+        <button
+          type="button"
+          class="c-btn c-btn-secondary"
+          data-testid="bulk-download-cancel"
+          on:click={() => dispatch('cancel')}
+        >
+          Cancel
+        </button>
+      </div>
+    </footer>
+  </section>
 </div>
 
 <style>
