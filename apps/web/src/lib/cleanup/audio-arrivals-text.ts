@@ -7,7 +7,12 @@
 /**
  * Texts of the Audiobooks tab's stage 7 card (WP21f-1: the daily new arrivals). Pure.
  */
-import type { AudioStage7Run, AudioStage7Status } from './cleanup-api';
+import type {
+  AudioStage7Report,
+  AudioStage7Run,
+  AudioStage7Status,
+  LibraryChangeItem
+} from './cleanup-api';
 import { bytesText, eta, etaText, n, type ProgressBar } from './cleanup-text';
 
 export const STAGE7_HINTS: Record<'off' | 'analyse' | 'on', string> = {
@@ -30,6 +35,7 @@ const PHASES: Record<string, string> = {
   build: 'Adding the new books',
   walk_after: 'Listing the torrents and the library (after)',
   check: 'Checking the new books',
+  changes: 'Changes to books in the library',
   abs: 'Audiobookshelf: showing the new books?',
   report: 'The report',
   done: 'Done'
@@ -37,6 +43,67 @@ const PHASES: Record<string, string> = {
 
 export function phaseLabel(phase: string): string {
   return PHASES[phase] ?? phase;
+}
+
+/** WP21f-2: the steps of the library changes. */
+const CHANGE_STEPS: Record<string, string> = {
+  sync: 'the books built so far',
+  plan: 'comparing every book with its decisions now',
+  read: 'reading the books that differ (metadata.json, Audiobookshelf)',
+  preflight: 'the sidecar checks each change can be made',
+  hold: 'pausing the reader’s audiobooks',
+  snapshot: 'a copy of the reader’s database',
+  apply: 'making the changes',
+  remap: 'moving the reader’s links',
+  rescan: 'the reader’s scan',
+  release: 'the reader goes on',
+  abs_scan: 'Audiobookshelf: scanning the library',
+  abs_verify: 'Audiobookshelf: checking every changed book',
+  done: 'done'
+};
+
+export function changeStep(phase: string): string {
+  return CHANGE_STEPS[phase] ?? phase;
+}
+
+/** The library changes' lines for Details (planned in Preview, made in On). */
+export function changesLines(c: AudioStage7Report['changes'] | null | undefined): string[] {
+  if (!c) return [];
+  const k = c.counts;
+  const made = c.mode === 'on';
+  const out: string[] = [];
+  out.push(
+    `Books in the library: ${n(c.ledger)}; ${n(c.candidates)} differ from their decisions now; ${n(k.changes)} change${k.changes === 1 ? '' : 's'} ${made ? 'made' : 'planned (Preview)'}, ${n(k.kept)} kept as built`
+  );
+  out.push(
+    `${n(k.metadata)} metadata.json ${made ? 'written' : 'to write'}, ${n(k.moves)} folders ${made ? 'moved' : 'to move'}, ${n(k.renames)} files ${made ? 'numbered' : 'to number'} in story order${k.renamesHeld ? ` (${n(k.renamesHeld)} held: someone is listening)` : ''}, ${n(k.rmdirs)} emptied folders`
+  );
+  out.push(
+    `Your edits in Audiobookshelf kept: ${n(k.userFields)} field${k.userFields === 1 ? '' : 's'}; to look at: ${n(k.reviews)}`
+  );
+  out.push(
+    `Files the reader wrote: ${n(k.readerFiles)} ${made ? 'given' : 'to give'} their original name under the torrents${k.readerWaiting ? ` (${n(k.readerWaiting)} still settling)` : ''}`
+  );
+  if (k.links || c.remap)
+    out.push(
+      `Reader links: ${n(c.remap?.changed ?? k.links)} ${made ? 'moved' : 'to move'}${c.remap ? `; ${n(c.remap.resolveAfter)} of ${n(c.remap.resolveBefore)} that played still play` : ''}${c.snapshot ? `; copy of ttsu.db ${c.snapshot}` : ''}`
+    );
+  if (made && (c.abs.scannedAt || c.abs.error))
+    out.push(
+      `Audiobookshelf: ${c.abs.before ?? '?'} → ${c.abs.after ?? '?'} items after one library scan; ${n(c.abs.verified)} changed books seen at their folders, ${n(c.abs.notYet)} not yet${c.abs.problems.length ? `; ${c.abs.problems.join('; ')}` : '; progress and bookmarks as before'}${c.abs.error ? `; ${c.abs.error}` : ''}`
+    );
+  else if (c.abs.error) out.push(`Audiobookshelf: ${c.abs.error}`);
+  const times = Object.entries(c.times ?? {})
+    .filter(([, t]) => t.ms >= 1000)
+    .map(
+      ([key, t]) =>
+        `${changeStep(key)} ${etaText(t.ms)
+          .replace(/^about /, '')
+          .replace(/ left$/, '')}`
+    );
+  if (times.length) out.push(`Time (waiting left out): ${times.join(' · ')}`);
+  if (c.error) out.push(`Stopped: ${c.error}`);
+  return out;
 }
 
 /** The bar of the run's current step (with time left), or null. */
@@ -79,6 +146,21 @@ export function stage7Bar(
       label: `${label}: ${n(w.done)}${total ? ` of ${n(total)}` : ''}`,
       fraction: total ? Math.min(1, w.done / total) : 0,
       eta: total ? eta(w.done, total, w.startedAt, 0, now) : null
+    };
+  }
+  if (run.phase === 'changes' && run.changes) {
+    const c = run.changes;
+    const step = changeStep(c.phase);
+    if (c.waiting)
+      return {
+        label: `${label}: ${c.waiting}`,
+        fraction: c.total ? c.done / c.total : 0,
+        eta: null
+      };
+    return {
+      label: `${label}: ${step}${c.total ? ` (${n(c.done)} of ${n(c.total)})` : ''}`,
+      fraction: c.total ? Math.min(1, c.done / c.total) : 0,
+      eta: c.total ? eta(c.done, c.total, c.phaseStartedAt, 0, now) : null
     };
   }
   if (run.phase === 'abs' && run.abs.waitingSince) {
@@ -182,9 +264,10 @@ export function reportLines(s: AudioStage7Status | null | undefined): string[] {
   if (run.abs.precedence) out.push(`Audiobookshelf reads (low → high): ${run.abs.precedence}`);
   out.push(`To look at: ${n(r.newReview)} new in this run, ${n(r.openReview)} open in all`);
   out.push(`AI cost of this run's analysis: $${r.aiCostUsd.toFixed(4)}`);
-  if (r.changedExisting)
+  if (r.changes) out.push(...changesLines(r.changes));
+  else if (r.changedExisting)
     out.push(
-      `Existing books whose decided values now differ from what was built: ${n(r.changedExisting.differ)} (not changed: WP21f-2), ${n(r.changedExisting.rekeyed)} recordings with a new key`
+      `Existing books whose decided values now differ from what was built: ${n(r.changedExisting.differ)}, ${n(r.changedExisting.rekeyed)} recordings with a new key`
     );
   const times = Object.entries(r.times ?? {})
     .filter(([, t]) => t.ms >= 1000)
@@ -246,8 +329,70 @@ export const ARRIVAL_LISTS: { id: string; label: string }[] = [
   { id: 'plan', label: 'The plan (folders)' },
   { id: 'archives', label: 'Archives' },
   { id: 'review', label: 'To look at (all)' },
+  // WP21f-2: the changes to books already in the library (of the current or last run).
+  { id: 'library_changes', label: 'Library changes (this run)' },
+  { id: 'library_review', label: 'Library changes to look at' },
+  { id: 'library_reader', label: 'Files the reader wrote (original name under the torrents)' },
+  { id: 'library_links', label: 'Reader links moved' },
+  { id: 'library_kept', label: 'Kept as built' },
   { id: 'runs', label: 'Runs' }
 ];
+
+/** A metadata value as one short line ("—" for none). */
+export function fieldValue(v: unknown): string {
+  if (v === null || v === undefined || v === '' || (Array.isArray(v) && v.length === 0)) return '—';
+  const text = Array.isArray(v) ? v.map(String).join('、') : String(v);
+  return text.length > 80 ? `${text.slice(0, 79)}…` : text;
+}
+
+const FIELD_LABEL: Record<string, string> = {
+  title: 'Title',
+  authors: 'Authors',
+  narrators: 'Narrators',
+  series: 'Series',
+  publisher: 'Publisher',
+  publishedYear: 'Year',
+  description: 'Description',
+  asin: 'ASIN',
+  tags: 'Tags',
+  language: 'Language'
+};
+
+export function fieldLabel(f: string): string {
+  return FIELD_LABEL[f] ?? f;
+}
+
+/** One book's change as lines (what is written, what stays yours, the move, the names). */
+export function changeLines(it: LibraryChangeItem): string[] {
+  const out: string[] = [];
+  if (it.skipped) out.push(it.skipped);
+  if (it.folderTo) out.push(`Folder → ${it.folderTo}`);
+  for (const f of it.fields)
+    out.push(`${fieldLabel(f.field)}: ${fieldValue(f.from)} → ${fieldValue(f.to)}`);
+  if (it.userFields.length)
+    out.push(`Yours in Audiobookshelf, kept: ${it.userFields.map(fieldLabel).join(', ')}`);
+  for (const c of it.conflicts)
+    out.push(
+      `${fieldLabel(c.field)}: yours ${fieldValue(c.mine)} · the cleanup’s ${fieldValue(c.to)} (was ${fieldValue(c.from)})`
+    );
+  if (it.renames.length)
+    out.push(
+      `${it.renamesHeld ? 'Not yet numbered' : 'Numbered in story order'}: ${it.renames
+        .slice(0, 3)
+        .map((r) => `${r.from} → ${r.to}`)
+        .join('; ')}${it.renames.length > 3 ? `; … ${n(it.renames.length - 3)} more` : ''}`
+    );
+  for (const r of it.reviews) out.push(r.text);
+  return out;
+}
+
+export const LIBRARY_STATE: Record<string, string> = {
+  planned: 'Planned',
+  applied: 'Done',
+  failed: 'Failed',
+  skipped: 'Kept as built',
+  review: 'To look at'
+};
 
 export const REVIEW_CHOICES: Record<string, { id: string; label: string }[]> = {
   better_copy: [

@@ -383,6 +383,7 @@
                       arrivalsSettleMinutes: Number(settings.audiobooks.arrivalsSettleMinutes),
                       arrivalsAbsWaitMinutes: Number(settings.audiobooks.arrivalsAbsWaitMinutes),
                       arrivalsAbsNudge: settings.audiobooks.arrivalsAbsNudge === true,
+                      libraryChanges: settings.audiobooks.libraryChanges ?? 'analyse',
                       extractLeaseSeconds: Number(settings.audiobooks.extractLeaseSeconds)
                     }
                   : {})
@@ -842,6 +843,25 @@
                   Off: the report lists the books it doesn't show, and you press Scan in
                   Audiobookshelf.</span
                 ></span
+              >
+            </label>
+            <label class="flex flex-col gap-1">
+              <span class="font-medium">Changes to books already in the library</span>
+              <select
+                class="c-input"
+                bind:value={settings.audiobooks.libraryChanges}
+                data-testid="cleanup-audio-libraryChanges"
+              >
+                <option value="off">Off</option>
+                <option value="analyse">Preview</option>
+                <option value="on">On</option>
+              </select>
+              <span class="text-c-muted"
+                >After the new arrivals, each daily run compares every book in the library with its
+                decisions now: new values go into its metadata.json (fields you edited in
+                Audiobookshelf stay yours), a book moves when its author, series, volume or title
+                changes, and files the reader wrote get their original name under the torrents.
+                Preview lists every change; On makes them, while stage 7 is On too.</span
               >
             </label>
           {/if}

@@ -571,6 +571,8 @@ export interface AudiobookSettings {
   arrivalsSettleMinutes?: number;
   arrivalsAbsWaitMinutes?: number;
   arrivalsAbsNudge?: boolean;
+  /** WP21f-2: changes to books already in the library: off, Preview (analyse) or On. */
+  libraryChanges?: 'off' | 'analyse' | 'on';
   extractLeaseSeconds?: number;
 }
 
@@ -838,9 +840,78 @@ export type Stage7Phase =
   | 'build'
   | 'walk_after'
   | 'check'
+  | 'changes'
   | 'abs'
   | 'report'
   | 'done';
+
+/** WP21f-2: the changes to books already in the library (a step of every stage-7 run). */
+export interface LibraryChangesProgress {
+  mode: 'analyse' | 'on';
+  phase: string;
+  startedAt: number;
+  phaseStartedAt: number;
+  phaseTimes: Record<string, { ms: number; items: number }>;
+  waitMs: number;
+  waitSince: number | null;
+  waiting: string | null;
+  done: number;
+  total: number;
+  ledger: number;
+  candidates: number;
+  counts: {
+    changes: number;
+    metadata: number;
+    moves: number;
+    renames: number;
+    renamesHeld: number;
+    rmdirs: number;
+    readerFiles: number;
+    readerWaiting: number;
+    links: number;
+    reviews: number;
+    kept: number;
+    userFields: number;
+  };
+  apply: {
+    total: number;
+    done: number;
+    failed: number;
+    batches: number;
+    lockWaitMs: number;
+    yields: number;
+  };
+  preflightProblems: string[];
+  snapshot: string | null;
+  remap: { changed: number; resolveBefore: number; resolveAfter: number } | null;
+  abs: {
+    library: string | null;
+    before: number | null;
+    after: number | null;
+    scannedAt: number | null;
+    verified: number;
+    notYet: number;
+    problems: string[];
+    error: string | null;
+  };
+  error: string | null;
+}
+
+/** One book's change in a run's lists. */
+export interface LibraryChangeItem {
+  id: number;
+  bookId: number;
+  state: 'planned' | 'applied' | 'failed' | 'skipped' | 'review';
+  folderFrom: string;
+  folderTo: string | null;
+  fields: { field: string; from: unknown; to: unknown; mine?: unknown }[];
+  userFields: string[];
+  conflicts: { field: string; from: unknown; to: unknown; mine?: unknown }[];
+  renames: { from: string; to: string }[];
+  renamesHeld: boolean;
+  reviews: { kind: string; text: string }[];
+  skipped: string | null;
+}
 
 export interface AudioStage7Run {
   runId: number;
@@ -903,6 +974,7 @@ export interface AudioStage7Run {
   };
   waiting: string | null;
   error: string | null;
+  changes?: LibraryChangesProgress;
 }
 
 export interface AudioStage7Report {
@@ -917,7 +989,23 @@ export interface AudioStage7Report {
   times: Record<string, { ms: number; items: number }>;
   lockWaitMs: number;
   yields: number;
-  changedExisting: { differ: number; same: number; rekeyed: number };
+  /** WP21f-1 reports only (replaced by `changes`). */
+  changedExisting?: { differ: number; same: number; rekeyed: number };
+  /** WP21f-2: the changes to books already in the library. */
+  changes?:
+    | (Pick<
+        LibraryChangesProgress,
+        | 'mode'
+        | 'ledger'
+        | 'candidates'
+        | 'counts'
+        | 'apply'
+        | 'snapshot'
+        | 'remap'
+        | 'abs'
+        | 'error'
+      > & { times: Record<string, { ms: number; items: number }> })
+    | null;
 }
 
 export interface AudioStage7Status {
@@ -2018,6 +2106,14 @@ export class CleanupApi {
       total: number;
       items: Record<string, unknown>[];
     }>;
+  }
+
+  /** WP21f-2: a review choice for a book of the library changes (applied at the next run). */
+  audioLibraryChoice(bookId: number, field: string, choice: string): Promise<{ ok: boolean }> {
+    return this.request('POST', `/cleanup/audio/library-changes/${bookId}/choice`, {
+      field,
+      choice
+    }) as Promise<{ ok: boolean }>;
   }
 
   audioArrivalsDecide(reviewId: number, decision: string): Promise<{ ok: boolean }> {

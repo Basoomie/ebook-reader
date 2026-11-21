@@ -6,6 +6,8 @@
 
 import { describe, expect, it } from 'vitest';
 import {
+  changeLines,
+  changesLines,
   designLines,
   inZone,
   phaseLabel,
@@ -145,5 +147,128 @@ describe('stage 7 texts', () => {
     expect(lines[0]).toBe('Recordings by AI setup: E 4,898 · F 0 · J 12');
     expect(lines[1]).toContain('a J upgrade 3,000 fields of 1,200 recordings (about $12.00)');
     expect(lines[2]).toContain('are left out');
+  });
+});
+
+describe('WP21f-2: the library changes on the card', () => {
+  const counts = {
+    changes: 13,
+    metadata: 13,
+    moves: 11,
+    renames: 0,
+    renamesHeld: 0,
+    rmdirs: 7,
+    readerFiles: 0,
+    readerWaiting: 0,
+    links: 0,
+    reviews: 0,
+    kept: 1,
+    userFields: 0
+  };
+  const changes = {
+    mode: 'analyse' as const,
+    ledger: 4909,
+    candidates: 14,
+    counts,
+    apply: { total: 0, done: 0, failed: 0, batches: 0, lockWaitMs: 0, yields: 0 },
+    snapshot: null,
+    remap: null,
+    abs: {
+      library: null,
+      before: null,
+      after: null,
+      scannedAt: null,
+      verified: 0,
+      notYet: 0,
+      problems: [],
+      error: null
+    },
+    error: null,
+    times: { plan: { ms: 4000, items: 4909 } }
+  };
+
+  it('Preview says what would change (the live copy’s counts)', () => {
+    const lines = changesLines(changes);
+    expect(lines[0]).toBe(
+      'Books in the library: 4,909; 14 differ from their decisions now; 13 changes planned (Preview), 1 kept as built'
+    );
+    expect(lines[1]).toBe(
+      '13 metadata.json to write, 11 folders to move, 0 files to number in story order, 7 emptied folders'
+    );
+    expect(lines.some((l) => l.startsWith('Time (waiting left out): comparing every book'))).toBe(
+      true
+    );
+  });
+
+  it('On reports ABS: one scan, every changed book seen, progress kept', () => {
+    const lines = changesLines({
+      ...changes,
+      mode: 'on',
+      remap: { changed: 1, resolveBefore: 1, resolveAfter: 1 },
+      snapshot: 'pre-wp21e2-library-changes-x.db',
+      abs: { ...changes.abs, before: 4787, after: 4787, scannedAt: 1, verified: 13 }
+    });
+    expect(lines.join('\n')).toContain('Reader links: 1 moved; 1 of 1 that played still play');
+    expect(lines.join('\n')).toContain(
+      'Audiobookshelf: 4787 → 4787 items after one library scan; 13 changed books seen at their folders, 0 not yet; progress and bookmarks as before'
+    );
+  });
+
+  it('one change as lines: the move, each field old → new, yours kept, the names', () => {
+    expect(
+      changeLines({
+        id: 1,
+        bookId: 1,
+        state: 'planned',
+        folderFrom: 'japanese/芥川龍之介/芥川龍之介/Vol 3 - x',
+        folderTo: 'japanese/芥川龍之介/芥川龍之介 03',
+        fields: [{ field: 'series', from: ['芥川龍之介 #3'], to: [] }],
+        userFields: ['title'],
+        conflicts: [],
+        renames: [{ from: 'a.mp3', to: '01 a.mp3' }],
+        renamesHeld: true,
+        reviews: [{ kind: 'rename_progress', text: 'Someone is listening' }],
+        skipped: null
+      })
+    ).toEqual([
+      'Folder → japanese/芥川龍之介/芥川龍之介 03',
+      'Series: 芥川龍之介 #3 → —',
+      'Yours in Audiobookshelf, kept: Title',
+      'Not yet numbered: a.mp3 → 01 a.mp3',
+      'Someone is listening'
+    ]);
+  });
+
+  it('the bar of the changes step, and its waiting line', () => {
+    const c = {
+      ...changes,
+      phase: 'read',
+      phaseStartedAt: NOW - 120_000,
+      startedAt: NOW - 20_000,
+      phaseTimes: {},
+      waitMs: 0,
+      waitSince: null,
+      waiting: null,
+      done: 5,
+      total: 10,
+      preflightProblems: []
+    };
+    const bar = stage7Bar(run({ phase: 'changes', changes: c }), NOW)!;
+    expect(bar.label).toBe(
+      'Changes to books in the library: reading the books that differ (metadata.json, Audiobookshelf) (5 of 10)'
+    );
+    expect(bar.fraction).toBe(0.5);
+    expect(bar.eta).not.toBeNull();
+    const waiting = stage7Bar(
+      run({
+        phase: 'changes',
+        changes: { ...c, waiting: 'Waiting while the Calibre cleanup uses the disk' }
+      }),
+      NOW
+    )!;
+    expect(waiting.label).toBe(
+      'Changes to books in the library: Waiting while the Calibre cleanup uses the disk'
+    );
+    expect(phaseLabel('changes')).toBe('Changes to books in the library');
   });
 });

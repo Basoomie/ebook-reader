@@ -14,9 +14,13 @@
   import {
     ARCHIVE_STATE,
     ARRIVAL_LISTS,
+    LIBRARY_STATE,
     REVIEW_CHOICES,
-    REVIEW_KIND
+    REVIEW_KIND,
+    changeLines,
+    fieldLabel
   } from '$lib/cleanup/audio-arrivals-text';
+  import type { LibraryChangeItem } from '$lib/cleanup/cleanup-api';
   import { bytesText, n } from '$lib/cleanup/cleanup-text';
   import { formatWhen } from '$lib/notes/notes-format';
 
@@ -56,6 +60,19 @@
       error = (err as Error).message;
     }
   }
+
+  /** WP21f-2: a review choice for a book of the library changes (applied at the next run). */
+  async function choose(bookId: number, field: string, choice: string) {
+    error = '';
+    try {
+      await api.audioLibraryChoice(bookId, field, choice);
+      await load(offset);
+    } catch (err) {
+      error = (err as Error).message;
+    }
+  }
+
+  const change = (it: Record<string, unknown>) => it as unknown as LibraryChangeItem;
 
   const s = (v: unknown) =>
     typeof v === 'string' ? v : v === null || v === undefined ? '' : String(v);
@@ -122,6 +139,50 @@
               >
             {/if}
           </span>
+        {:else if list === 'library_changes' || list === 'library_review' || list === 'library_kept'}
+          <span class="break-all font-medium">{s(it.folderFrom)}</span>
+          <span class="text-c-muted">{LIBRARY_STATE[s(it.state)] ?? s(it.state)}</span>
+          {#each changeLines(change(it)) as line, j (j)}
+            <span class="break-all text-c-muted">{line}</span>
+          {/each}
+          {#if list === 'library_review'}
+            <span class="flex flex-wrap gap-2">
+              {#each change(it).conflicts as c (c.field)}
+                <button
+                  class="c-btn c-btn-ghost"
+                  on:click={() => choose(change(it).bookId, c.field, 'mine')}
+                  data-testid="library-choice-mine">Keep yours ({fieldLabel(c.field)})</button
+                >
+                <button
+                  class="c-btn c-btn-ghost"
+                  on:click={() => choose(change(it).bookId, c.field, 'ours')}
+                  data-testid="library-choice-ours"
+                  >Use the cleanup’s ({fieldLabel(c.field)})</button
+                >
+              {/each}
+              {#if change(it).renamesHeld}
+                <button
+                  class="c-btn c-btn-ghost"
+                  on:click={() => choose(change(it).bookId, 'rename', 'now')}
+                  data-testid="library-choice-rename">Rename now (the place moves)</button
+                >
+              {/if}
+            </span>
+          {/if}
+        {:else if list === 'library_reader'}
+          <span class="break-all font-medium">{s(it.rel)}</span>
+          <span class="break-all text-c-muted"
+            >→ torrents/…/{s(it.dst)} · {bytesText(it.size)} · {s(it.state) === 'done'
+              ? 'Done'
+              : 'Planned'}</span
+          >
+        {:else if list === 'library_links'}
+          <span class="break-all font-medium">{s(it.old_folder)}/{s(it.old_file)}</span>
+          <span class="break-all text-c-muted"
+            >→ {s(it.new_folder)}/{s(it.new_file)} · {s(it.status) === 'remapped'
+              ? 'Moved'
+              : 'Planned'}</span
+          >
         {:else if list === 'plan'}
           <span class="break-all font-medium">{s(it.folder)}</span>
           <span class="text-c-muted">
