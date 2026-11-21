@@ -68,6 +68,11 @@
     seriesHighlightCounts,
     seriesLine,
     unknownBookInfo,
+    dateRangeLabel,
+    dayOf,
+    presetRange,
+    validDay,
+    type DatePreset,
     unplacedCount,
     viewTotals,
     type NotesBookGroup,
@@ -315,6 +320,27 @@
 
   function clearFilters() {
     setFilter({ ...EMPTY_FILTER, query: filter.query });
+  }
+
+  const DATE_PRESETS: { id: DatePreset; label: string }[] = [
+    { id: 'week', label: 'Last 7 days' },
+    { id: 'month', label: 'Last 30 days' },
+    { id: 'year', label: 'This year' }
+  ];
+
+  /** Today's date for the date inputs' limit (local). */
+  $: today = browser ? dayOf(Date.now()) : undefined;
+
+  /** `f` is passed in so the buttons' pressed state follows the filter. */
+  function isPreset(preset: DatePreset, f: NotesFilter) {
+    const r = presetRange(preset);
+    return f.from === r.from && f.to === r.to;
+  }
+
+  /** A quick pick sets the range; tapping the one that is on clears it. */
+  function pickPreset(preset: DatePreset) {
+    const r = presetRange(preset);
+    setFilter(isPreset(preset, filter) ? { ...filter, from: null, to: null } : { ...filter, ...r });
   }
 
   function toggleColor(color: HighlightColor) {
@@ -754,6 +780,46 @@
             </button>
           {/if}
         </div>
+        <fieldset class="flex flex-wrap items-end gap-x-3 gap-y-2 sm:col-span-2">
+          <legend class="pb-1 text-xs font-medium uppercase tracking-wider text-c-muted">
+            Date highlighted
+          </legend>
+          <label class="flex flex-col gap-1 text-sm text-c-muted">
+            From
+            <input
+              class="c-input min-h-[2.75rem]"
+              type="date"
+              value={filter.from ?? ''}
+              max={filter.to ?? today}
+              data-testid="notes-filter-from"
+              on:change={(e) => setFilter({ ...filter, from: validDay(e.currentTarget.value) })}
+            />
+          </label>
+          <label class="flex flex-col gap-1 text-sm text-c-muted">
+            To
+            <input
+              class="c-input min-h-[2.75rem]"
+              type="date"
+              value={filter.to ?? ''}
+              min={filter.from ?? undefined}
+              data-testid="notes-filter-to"
+              on:change={(e) => setFilter({ ...filter, to: validDay(e.currentTarget.value) })}
+            />
+          </label>
+          <div class="flex flex-wrap gap-2" role="group" aria-label="Quick dates">
+            {#each DATE_PRESETS as preset (preset.id)}
+              <button
+                type="button"
+                class="c-btn c-btn-secondary min-h-[2.75rem] rounded-full px-3 text-sm"
+                aria-pressed={isPreset(preset.id, filter)}
+                data-testid="notes-date-{preset.id}"
+                on:click={() => pickPreset(preset.id)}
+              >
+                {preset.label}
+              </button>
+            {/each}
+          </div>
+        </fieldset>
       </div>
     {/if}
 
@@ -818,6 +884,17 @@
             on:click={() => setFilter({ ...filter, unplacedOnly: false })}
           >
             Not found in book <Fa icon={faXmark} /><span class="sr-only">Remove</span>
+          </button>
+        {/if}
+        {#if filter.from || filter.to}
+          <button
+            type="button"
+            class={chip}
+            data-testid="notes-chip"
+            on:click={() => setFilter({ ...filter, from: null, to: null })}
+          >
+            <span class="max-w-[16rem] truncate">{dateRangeLabel(filter)}</span>
+            <Fa icon={faXmark} /><span class="sr-only">Remove</span>
           </button>
         {/if}
         <button

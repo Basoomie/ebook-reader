@@ -7,10 +7,13 @@
 
   /**
    * WP19d: one highlight as a card, its color on the left edge (E-ink: black, with the
-   * color's underline mark). The text, note and place are one button that opens the book
-   * there; the rest is in the ⋮ menu. Moved out of notes-list.svelte (Notes at scale,
-   * 2026-11-21) so the Highlights view uses the same card, with the book's title on it
-   * (`showBook`) and the search's words marked.
+   * color's underline mark); the rest is in the ⋮ menu. Moved out of notes-list.svelte
+   * (Notes at scale, 2026-11-21) so the Highlights view uses the same card, with the book's
+   * title on it (`showBook`) and the search's words marked.
+   *
+   * 2026-11-21 (user): the text is plain, selectable text (a whole-card button opened the
+   * book when text was selected to copy it); the book opens from the › button, and ⋮ has
+   * Copy text (and Copy note).
    */
   import { createEventDispatcher } from 'svelte';
   import Fa from 'svelte-fa';
@@ -85,13 +88,7 @@
   data-testid="notes-page-highlight"
 >
   <div class="flex items-start">
-    <button
-      type="button"
-      class="c-hl-open flex min-w-0 flex-1 items-center gap-2 rounded-r py-3 pl-4 pr-1 text-left"
-      title="Open in book"
-      data-testid="notes-page-open"
-      on:click={() => dispatch('open')}
-    >
+    <div class="c-hl-body flex min-w-0 flex-1 py-3 pl-4 pr-1">
       <span class="flex min-w-0 flex-1 flex-col">
         {#if showBook}
           <span
@@ -133,11 +130,8 @@
           {/if}
         </span>
       </span>
-      <span class="shrink-0 px-1 text-c-muted" aria-hidden="true">
-        <Fa icon={faChevronRight} />
-      </span>
-    </button>
-    <div class="shrink-0 p-1">
+    </div>
+    <div class="flex shrink-0 flex-col items-center p-1">
       <DropdownMenu
         buttonClass={dotsButton}
         align="right"
@@ -152,6 +146,30 @@
           <span class="sr-only">More</span>
         </span>
         <div class="flex flex-col gap-1">
+          <button
+            type="button"
+            class={menuItem}
+            data-testid="notes-page-copy"
+            on:click={() => {
+              close();
+              list.copy(item.text);
+            }}
+          >
+            Copy text
+          </button>
+          {#if item.note}
+            <button
+              type="button"
+              class={menuItem}
+              data-testid="notes-page-copy-note"
+              on:click={() => {
+                close();
+                if (item.note) list.copy(item.note.body);
+              }}
+            >
+              Copy note
+            </button>
+          {/if}
           <button
             type="button"
             class={menuItem}
@@ -214,6 +232,16 @@
           </button>
         </div>
       </DropdownMenu>
+      <button
+        type="button"
+        class="c-btn c-btn-ghost h-11 min-h-0 w-11 p-0 text-c-muted"
+        title="Open in book"
+        aria-label="Open in book"
+        data-testid="notes-page-open"
+        on:click={() => dispatch('open')}
+      >
+        <Fa icon={faChevronRight} />
+      </button>
     </div>
   </div>
   {#if editing && $list.editing}
@@ -237,24 +265,9 @@
     border-left: 3px solid var(--c-gold);
   }
 
-  .c-hl-open {
+  .c-hl-body {
     color: var(--c-ink);
     user-select: text;
-  }
-
-  .c-hl-open:focus-visible {
-    outline: 2px solid var(--c-link);
-    outline-offset: -2px;
-  }
-
-  @media (hover: hover) {
-    .c-hl-open:hover {
-      background-color: var(--c-tint);
-    }
-  }
-
-  .c-hl-open:active {
-    background-color: var(--c-sec-active);
   }
 
   .c-danger {
@@ -263,14 +276,5 @@
 
   :global(html.eink) .c-hl-card {
     border-left-color: #000 !important;
-  }
-
-  :global(html.eink) .c-hl-open:hover {
-    background-color: transparent;
-  }
-
-  :global(html.eink) .c-hl-open:active {
-    background-color: #000;
-    color: #fff;
   }
 </style>
