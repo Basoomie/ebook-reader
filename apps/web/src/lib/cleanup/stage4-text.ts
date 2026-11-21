@@ -11,7 +11,7 @@ import type {
   Stage4Status,
   StageMode
 } from './cleanup-api';
-import { n } from './cleanup-text';
+import { etaText, n, type ProgressBar } from './cleanup-text';
 
 /** Plain wording for stage 4 on the /cleanup page (WP20d): the online sources, Preview only. */
 
@@ -29,6 +29,30 @@ const AI_PHASES: Record<string, string> = {
   gate: 'checking the labeled books',
   done: 'done'
 };
+
+const AI_BAR_LABELS: Record<string, string> = {
+  evidence: 'Gathering what the models read',
+  models: 'Asking both models',
+  decide: 'Deciding every field',
+  gate: 'Checking the labeled books'
+};
+
+/** The AI check's progress bar with the time left (as the audiobook card's). */
+export function aiBar(ai: Stage4AiStatus | null | undefined): ProgressBar | null {
+  const b = ai?.bar;
+  if (!ai || !b || ai.phase === 'done') return null;
+  const what = b.phase === 'models' ? 'answers in' : 'books';
+  return {
+    label: b.total
+      ? `${AI_BAR_LABELS[b.phase] ?? b.phase}: ${n(b.done)} of ${n(b.total)} ${what}`
+      : (AI_BAR_LABELS[b.phase] ?? b.phase),
+    fraction: b.total ? Math.min(1, b.done / b.total) : 0,
+    eta:
+      b.secondsLeft !== null && b.secondsLeft > 0
+        ? `${etaText(b.secondsLeft * 1000)} (estimate)`
+        : null
+  };
+}
 
 /** The AI check's progress in one line (WP20e). */
 export function aiLine(ai: Stage4AiStatus): string {

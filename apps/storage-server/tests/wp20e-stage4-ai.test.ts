@@ -471,3 +471,58 @@ describe('the AI gate', () => {
     expect(g.the600.books).toBe(0);
   });
 });
+
+describe("the AI check's progress bar (WP20e follow-up)", () => {
+  it('measures each model from when the asking started; the slowest model decides the time left', async () => {
+    const { Stage4Ai } = await import('../src/cleanup/stage4/ai-step');
+    const s = initCleanupDatabase(makeTempDir('wp20e-bar'));
+    if (!s.ok) throw new Error(s.error);
+    const db = s.db;
+    const put = db.prepare(
+      `INSERT INTO ai_requests (stage, item_key, role, provider, model, prompt_version, evidence_hash, state, run_id, created_at)
+       VALUES ('calibre4', ?, ?, ?, ?, 'v', 'h', ?, 'run1', 1)`,
+    );
+    // Claude Haiku (by batch): 600 in, 400 left; Luna (one call each): 200 in, 800 left.
+    for (let i = 0; i < 1000; i++) {
+      put.run(`k${i}`, 'primary', 'anthropic', 'claude-haiku-5-5', i < 600 ? 'answered' : 'queued');
+      put.run(
+        `k${i}`,
+        'secondary',
+        'openai',
+        'gpt-6-luna',
+        i < 200 ? 'answered' : i < 208 ? 'sent' : 'queued',
+      );
+    }
+    const t0 = 1_000_000;
+    // The asking started 10 minutes ago with 100 and 0 answers in.
+    const ai = {
+      analysisId: 'run1',
+      rulesFinishedAt: 5,
+      phase: 'models',
+      items: 1000,
+      decided: 0,
+      modelsStart: { at: t0, done: { 'claude-haiku-5-5': 100, 'gpt-6-luna': 0 } },
+    };
+    const progress = { analysisId: 'run1', phase: 'done', finishedAt: 5, ai };
+    const step = new Stage4Ai({
+      db,
+      runner: {} as never,
+      analysis: { progress: () => progress } as never,
+    });
+    const b = step.bar(t0 + 600_000)!;
+    expect(b).toMatchObject({ phase: 'models', done: 800, total: 2000 });
+    // Haiku: 500 in 10 min, 400 left = 8 min; Luna: 200 in 10 min, 800 left = 40 min.
+    expect(b.secondsLeft).toBe(2400);
+    // Before any model has answered since the start: no estimate.
+    ai.modelsStart = { at: t0, done: { 'claude-haiku-5-5': 600, 'gpt-6-luna': 200 } };
+    expect(step.bar(t0 + 600_000)!.secondsLeft).toBeNull();
+    // Deciding: books per minute since the phase started.
+    Object.assign(ai, { phase: 'decide', decided: 250, phaseStartedAt: t0, phaseStartDone: 0 });
+    expect(step.bar(t0 + 60_000)).toMatchObject({
+      phase: 'decide',
+      done: 250,
+      total: 1000,
+      secondsLeft: 180,
+    });
+  });
+});

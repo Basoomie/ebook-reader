@@ -15,6 +15,7 @@ import type {
 } from './cleanup-api';
 import { turnOnOnlineSourcesCopy } from '$lib/confirm/confirm-copy';
 import {
+  aiBar,
   aiBooksLine,
   aiGateRows,
   aiLine,
@@ -282,5 +283,39 @@ describe('the AI check on the stage-4 card (WP20e)', () => {
     expect(turnOnOnlineSourcesCopy({ changes: null, unconfirmed: null }).title).toBe(
       'Write the changes from the online sources into Calibre?'
     );
+  });
+});
+
+describe("the AI check's progress bar (WP20e follow-up)", () => {
+  const base = {
+    phase: 'models' as const,
+    items: 52120,
+    labeledItems: 789,
+    decided: 0,
+    answers: null,
+    wait: null,
+    costUsd: 1,
+    invented: 0,
+    flaggedAgainstRules: null,
+    gate: null,
+    error: null,
+    finishedAt: null
+  };
+  it('shows the answers in, the share and the time left', () => {
+    const b = aiBar({
+      ...base,
+      bar: { phase: 'models', done: 26060, total: 104240, secondsLeft: 5400 }
+    });
+    expect(b).toEqual({
+      label: 'Asking both models: 26,060 of 104,240 answers in',
+      fraction: 0.25,
+      eta: 'about 1 h 30 min left (estimate)'
+    });
+  });
+  it('says nothing about time until a rate is measured, and has no bar when done', () => {
+    expect(
+      aiBar({ ...base, bar: { phase: 'decide', done: 0, total: 52120, secondsLeft: null } })?.eta
+    ).toBeNull();
+    expect(aiBar({ ...base, phase: 'done', bar: null })).toBeNull();
   });
 });

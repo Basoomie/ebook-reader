@@ -31,6 +31,7 @@
     STAGE4_MODE_HINTS,
     aiBooksLine,
     aiGateRows,
+    aiBar,
     aiLine,
     booksLine,
     fieldCounts,
@@ -55,6 +56,7 @@
 
   // On waits for the AI check (WP20e): the confirmed values and best guesses come from it.
   $: aiDone = status?.ai?.phase === 'done' && !status.ai.error;
+  $: aiProgress = aiBar(status?.ai);
   $: unconfirmedTotal = (status?.unconfirmed ?? []).reduce((a, u) => a + u.n, 0);
 
   $: gate = ((stage.precision as { gate?: Stage4Gate }).gate ?? null) as Stage4Gate | null;
@@ -194,6 +196,28 @@
     {/if}
     {#if status?.ai}
       <p class="text-sm" data-testid="cleanup-stage-4-ai">{aiLine(status.ai)}</p>
+      {#if aiProgress}
+        <div class="flex flex-col gap-1" data-testid="cleanup-stage-4-ai-progress">
+          <div class="flex flex-wrap justify-between gap-x-4 text-sm">
+            <span>{aiProgress.label}</span>
+            <span
+              >{Math.floor(aiProgress.fraction * 100)} %{aiProgress.eta
+                ? ` · ${aiProgress.eta}`
+                : ''}</span
+            >
+          </div>
+          <div
+            class="c-progress h-2 overflow-hidden rounded-full bg-c-track"
+            role="progressbar"
+            aria-label={aiProgress.label}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={Math.floor(aiProgress.fraction * 100)}
+          >
+            <div class="h-full bg-c-fill" style="width: {aiProgress.fraction * 100}%" />
+          </div>
+        </div>
+      {/if}
       {#if status.ai.wait}
         <p class="c-notice text-sm" role="alert" data-testid="cleanup-stage-4-ai-wait">
           {status.ai.wait}

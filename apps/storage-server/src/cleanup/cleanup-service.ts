@@ -1265,6 +1265,8 @@ export class CleanupService {
       ai: ai
         ? {
             phase: ai.phase,
+            // The progress bar and the time left of the running phase (WP20e follow-up).
+            bar: this.stage4Ai?.bar(now) ?? null,
             items: ai.items,
             labeledItems: ai.labeledItems,
             decided: ai.decided,
