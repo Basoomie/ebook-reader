@@ -57,6 +57,13 @@ const EVENTS: EventDef[] = [
     label: 'A field paused or resumed by the accuracy checks',
     kind: 'digest',
   },
+  // Series-order follow-up: every value written as a best guess is counted in the digest.
+  {
+    id: 'cleanup_best_guesses',
+    section: 'cleanup',
+    label: 'Values written to Calibre as best guesses (listed under Best guesses)',
+    kind: 'digest',
+  },
   // WP21f-1: the audiobook cleanup's daily new arrivals (stage 7).
   {
     id: 'audio_arrivals_review',

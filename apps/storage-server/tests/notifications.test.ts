@@ -598,6 +598,44 @@ describe('the cleanup', () => {
         '- Calibre cleanup stage 2: "title" resumed · [Open](http://192.168.1.5:3080/cleanup)',
     ]);
   });
+
+  it('values stage 4 writes as best guesses are one digest line per check', async () => {
+    const e = await makeEnv();
+    await withDiscord(e);
+    await e.round(); // the first look only remembers where it is
+    const t = e.clock.t;
+    e.cdb
+      .prepare(
+        `INSERT INTO batches (id, stage, library_id, kind, state, item_count, created_at, finished_at, updated_at)
+         VALUES ('b1', 4, 'L', 'apply', 'applied', 3, ?, ?, ?)`,
+      )
+      .run(t, t + 1, t);
+    const ins = e.cdb.prepare(
+      `INSERT INTO proposed_changes (id, stage, library_id, calibre_id, calibre_uuid, field, old_json, new_json,
+         source, evidence_json, class, state, batch_id, created_at, updated_at)
+       VALUES (?, 4, 'L', 1, 'u', ?, '1', '2', 'x', ?, 'auto', 'applied', 'b1', ?, ?)`,
+    );
+    const undo = e.cdb.prepare(
+      `INSERT INTO field_undo (batch_id, change_id, library_id, calibre_id, calibre_uuid, field, old_json, new_json, created_at)
+       VALUES ('b1', ?, 'L', 1, 'u', ?, '1', '2', ?)`,
+    );
+    for (const [id, field, ev] of [
+      [1, 'series', '{"unconfirmed":true}'],
+      [2, 'title', '{"unconfirmed":true}'],
+      [3, 'authors', '{}'],
+    ] as const) {
+      ins.run(id, field, ev, t, t);
+      undo.run(id, field, t);
+    }
+    await e.round();
+    await e.round(); // counted once
+    e.svc.sendDigest();
+    await e.svc.sendDue();
+    expect(e.discord.messages).toEqual([
+      '### ッツ Reader: daily summary\n' +
+        '- Calibre cleanup stage 4: 2 values written as best guesses (1 series number): listed under Best guesses · [Open](http://192.168.1.5:3080/cleanup)',
+    ]);
+  });
 });
 
 describe('library and data', () => {
