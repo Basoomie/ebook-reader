@@ -519,6 +519,15 @@ describe('one person, one spelling', () => {
     expect(personKey('TESTOSTERONE')).toBe(personKey('Testosterone'));
     expect(personKey('미아키 스가루')).toBe(personKey('미아키스가루'));
     expect(personKey('岡井 カツノリ')).toBe(personKey('岡井・カツノリ'));
+    // WP21f-2 stop B3: a full stop in the place of ・ (思い出のマーニー 上 and 下).
+    expect(personKey('ジョーン・G.ロビンソン')).toBe(personKey('ジョーン・G・ロビンソン'));
+    expect(personKey('ジョーン・G．ロビンソン')).toBe(personKey('ジョーン・G・ロビンソン'));
+    const marnie = nameGroups([
+      u('m1', ['ジョーン・G・ロビンソン'], null),
+      u('m2', ['ジョーン・G.ロビンソン'], null),
+    ]);
+    // On a tie the spelling with ・ stands.
+    expect([...marnie.values()].map((g) => g.canonical)).toEqual(['ジョーン・G・ロビンソン']);
     // Different people stay different.
     expect(personKey('山田太郎')).not.toBe(personKey('山田花子'));
     expect(personKey('アーサー')).not.toBe(personKey('アーサ'));

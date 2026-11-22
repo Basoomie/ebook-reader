@@ -1,17 +1,18 @@
 /**
  * One person, one spelling (WP21d follow-up (2), user 2026-11-20), pure. Names that differ only
- * by ・, spaces or letter case are the same person (エミリー・ロッダ / エミリーロッダ,
+ * by ・ (or a full stop in its place: ジョーン・G.ロビンソン / ジョーン・G・ロビンソン, WP21f-2
+ * stop B3), spaces or letter case are the same person (エミリー・ロッダ / エミリーロッダ,
  * TESTOSTERONE / Testosterone): every recording gets the spelling most recordings in the library
  * have, on a tie the one with ・, then the one with spaces, then the first in code order (so the
  * choice never depends on the order of the library). Authors and narrators count together (a
  * person who is both has one spelling). A user's own value is counted but never changed.
  */
 
-/** The identity of a name: no ・ (or ･ · ･), no spaces, one case, full-width folded. */
+/** The identity of a name: no ・ (or ･ · • or a full stop), no spaces, one case, full-width folded. */
 export function personKey(name: string): string {
   return name
     .normalize('NFKC')
-    .replace(/[\s\u00a0\u3000・･·•]/gu, '')
+    .replace(/[\s\u00a0\u3000・･·•.]/gu, '')
     .toLowerCase();
 }
 
