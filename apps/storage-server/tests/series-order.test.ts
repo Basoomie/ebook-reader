@@ -240,7 +240,13 @@ describe('the order of a series', () => {
         index: 10,
         indexFrom: 'store',
       }),
-      book({ name, title: `${name} 10`, index: 10, indexFrom: 'store', own: [`${name}10 別の巻`] }),
+      book({
+        name,
+        title: `${name} 10 別の巻`,
+        index: 10,
+        indexFrom: 'store',
+        own: [`${name}10 別の巻`],
+      }),
     ];
     const r = orderSeries(books);
     expect(r.every((x) => x.index === 10)).toBe(true);

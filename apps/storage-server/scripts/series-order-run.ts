@@ -12,7 +12,13 @@ import { writeFileSync } from 'fs';
 import path from 'path';
 import { getStage } from '../src/cleanup/stages';
 import { Stage4Analysis, type Stage4Progress } from '../src/cleanup/stage4/analysis';
-import { orderLibrary, type SeriesBook } from '../src/cleanup/stage4/series-order';
+import {
+  addSeriesChecks,
+  emptyChecks,
+  orderLibrary,
+  type SeriesBook,
+} from '../src/cleanup/stage4/series-order';
+import { seriesKey } from '../src/cleanup/stage4/series-spelling';
 import type { FetchQueue } from '../src/cleanup/stage4/queue';
 
 const arg = (n: string) => {
@@ -29,6 +35,22 @@ if (arg('from-facts')) {
   const t1 = Date.now();
   const choices = orderLibrary(books);
   log(`order: ${choices.length} choices (${Date.now() - t1} ms)`);
+  // The library-wide checks (gate 2), per series as the server's step counts them.
+  const checks = emptyChecks();
+  const groups = new Map<string, SeriesBook[]>();
+  for (const b of books) {
+    const k = seriesKey(b.name);
+    if (k) groups.set(k, [...(groups.get(k) ?? []), b]);
+  }
+  const cBy = new Map(choices.map((c) => [c.uuid, c]));
+  for (const g of groups.values())
+    addSeriesChecks(
+      checks,
+      g,
+      g.map((b) => cBy.get(b.uuid)).filter((c): c is NonNullable<typeof c> => !!c),
+    );
+  log(`checks: ${JSON.stringify({ ...checks, examples: undefined })}`);
+  for (const x of checks.examples) console.log(`   ${x}`);
   const choiceBy = new Map(choices.map((c) => [c.uuid, c]));
   const byId: Record<string, unknown> = {};
   for (const b of books)

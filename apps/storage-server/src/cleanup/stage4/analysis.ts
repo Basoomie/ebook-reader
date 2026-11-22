@@ -1761,18 +1761,15 @@ export class Stage4Analysis {
         proposed.set(r.calibre_uuid, { name: s?.name ?? null, index: s?.index ?? null });
       }
     }
-    const applied = new Map<string, { name: string | null; index: number | null }>();
-    for (const r of this.db
-      .prepare(
-        `SELECT calibre_uuid, value_json FROM applied_values WHERE library_id = ? AND field = 'series'`,
-      )
-      .all(p.libraryId) as { calibre_uuid: string; value_json: string }[]) {
-      const s = JSON.parse(r.value_json) as { name?: string | null; index?: number | null } | null;
-      applied.set(r.calibre_uuid, { name: s?.name ?? null, index: s?.index ?? null });
-    }
     const out = new Map<
       string,
-      { name: string | null; index: number | null; title: string; proposed: boolean }
+      {
+        name: string | null;
+        index: number | null;
+        title: string;
+        proposed: boolean;
+        proposedSeries?: boolean;
+      }
     >();
     for (const b of snap.books.values()) {
       const ex = extras?.get(b.calibreId);
@@ -1780,16 +1777,21 @@ export class Stage4Analysis {
       const pr = proposed.get(b.uuid);
       if (pr) {
         const name = pr.name && spell ? spellingOf(spell, pr.name) : pr.name;
-        out.set(b.uuid, { name, index: name ? pr.index : null, title, proposed: true });
+        out.set(b.uuid, {
+          name,
+          index: name ? pr.index : null,
+          title,
+          proposed: true,
+          proposedSeries: true,
+        });
         continue;
       }
+      // Calibre's number here; seriesBook reads what the cleanup wrote (one book by its key:
+      // reading every written value at once took 677 ms of the server at the live size).
       const now = ex?.series ?? null;
-      const ap = applied.get(b.uuid);
-      const index =
-        ap && ap.name && now && N(ap.name) === N(now) ? ap.index : (ex?.seriesIndex ?? null);
       out.set(b.uuid, {
         name: now,
-        index: now ? index : null,
+        index: now ? (ex?.seriesIndex ?? null) : null,
         title,
         proposed: titles.has(b.uuid),
       });
@@ -1804,10 +1806,24 @@ export class Stage4Analysis {
   seriesBook(
     p: Stage4Progress,
     uuid: string,
-    after: { name: string | null; index: number | null; title: string },
+    after: { name: string | null; index: number | null; title: string; proposedSeries?: boolean },
   ): SeriesBook | null {
     if (!after.name) return null;
     const book = this.book(uuid);
+    // A number the cleanup wrote empty shows as 1 in Calibre: the written value counts (not
+    // when a proposal is pending: its number is the one after On).
+    const written = after.proposedSeries
+      ? undefined
+      : (this.db
+          .prepare(
+            `SELECT value_json FROM applied_values WHERE library_id = ? AND calibre_uuid = ? AND field = 'series'`,
+          )
+          .get(p.libraryId, uuid) as { value_json: string } | undefined);
+    const seriesName = after.name;
+    if (written) {
+      const s = JSON.parse(written.value_json) as { name?: string | null; index?: number | null };
+      if (s?.name && N(s.name) === N(seriesName)) after = { ...after, index: s.index ?? null };
+    }
     const ref = this.loadRef(p.libraryId, uuid)?.file ?? null;
     const ev = book && ref ? this.loadOnline(p.libraryId, uuid) : null;
     const ai = storedAiValues(this.db, `${p.libraryId}:${uuid}`);
@@ -1824,7 +1840,7 @@ export class Stage4Analysis {
       return {
         uuid,
         calibreId: book.calibreId,
-        name: after.name,
+        name: seriesName,
         index: after.index,
         indexFrom: 'calibre',
         nameFrom: 'calibre',
@@ -1898,7 +1914,7 @@ export class Stage4Analysis {
     return {
       uuid,
       calibreId: book.calibreId,
-      name: after.name,
+      name: seriesName,
       index: after.index,
       indexFrom: ours ? fromAi('ix', d.auto.ix) : 'calibre',
       nameFrom: ours ? fromAi('se', d.auto.se) : 'calibre',

@@ -210,7 +210,13 @@ export class Stage4Ai {
     uuids: string[];
     after: Map<
       string,
-      { name: string | null; index: number | null; title: string; proposed: boolean }
+      {
+        name: string | null;
+        index: number | null;
+        title: string;
+        proposed: boolean;
+        proposedSeries?: boolean;
+      }
     >;
     facts: SeriesBook[];
     groups: SeriesBook[][];
@@ -833,7 +839,7 @@ export class Stage4Ai {
           if (!c) continue;
           so.choices++;
           if (
-            c.index !== a.index ||
+            c.index !== b.index ||
             c.title !== undefined ||
             c.review !== undefined ||
             (c.guess && a.proposed)
