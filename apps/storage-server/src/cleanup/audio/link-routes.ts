@@ -92,7 +92,7 @@ export function createCleanupLinkRouter(options: LinkRouteOptions): Router {
       return;
     }
     try {
-      const answer = options.audio!.linkHeartbeat({
+      const hb = {
         sidecarId,
         runId: str(b.runId, 100),
         version: str(b.version, 40),
@@ -101,7 +101,15 @@ export function createCleanupLinkRouter(options: LinkRouteOptions): Router {
           typeof b.info === 'object' && b.info !== null && !Array.isArray(b.info)
             ? (b.info as Record<string, unknown>)
             : null,
-      }) as Record<string, unknown>;
+      };
+      let answer: Record<string, unknown>;
+      try {
+        answer = options.audio!.linkHeartbeat(hb) as Record<string, unknown>;
+      } catch (err) {
+        // WP20g: without the audiobook folders the Calibre import still uses the sidecar.
+        if (!options.service) throw err;
+        answer = options.service.arrivals.linkHeartbeat(hb);
+      }
       // WP20g: the Calibre import's archives keep the sidecar polling quickly too.
       res.json(
         options.service?.arrivals.archivesActive()

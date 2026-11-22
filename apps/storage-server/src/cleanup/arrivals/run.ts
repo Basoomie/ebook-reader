@@ -2132,6 +2132,37 @@ export class BookArrivals {
     return a > 1 || (a === 1 && b >= 4);
   }
 
+  /**
+   * The linking sidecar's heartbeat when the audiobook cleanup isn't set up (its stage 6 records
+   * it otherwise): the same row, so the import's archives know the sidecar is there.
+   */
+  linkHeartbeat(body: {
+    sidecarId: string;
+    runId: string | null;
+    version: string | null;
+    problem: string | null;
+    info: Record<string, unknown> | null;
+  }): { active: boolean; pollSeconds: number } {
+    this.db
+      .prepare(
+        `INSERT INTO link_sidecar_status (id, sidecar_id, run_id, version, last_seen_at, problem, info_json)
+         VALUES (1, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET sidecar_id = excluded.sidecar_id, run_id = excluded.run_id,
+           version = excluded.version, last_seen_at = excluded.last_seen_at,
+           problem = excluded.problem, info_json = excluded.info_json`,
+      )
+      .run(
+        body.sidecarId,
+        body.runId,
+        body.version,
+        Date.now(),
+        body.problem,
+        body.info ? JSON.stringify(body.info) : null,
+      );
+    const active = this.archivesActive();
+    return { active, pollSeconds: active ? 1 : 15 };
+  }
+
   /** The run is unpacking archives (the sidecar should poll quickly). */
   archivesActive(): boolean {
     const run = this.currentRun();
