@@ -401,14 +401,34 @@ export class LlamaServerEngine implements LocalEngine {
       models: [LOCAL_MODEL],
       madeAt: this.now(),
     });
-    const mine = this.timings.slice(t0);
+    // The stored answers' times (a run started again is answered from the store: its time stays).
+    void t0;
+    const mine = (
+      this.db
+        .prepare(
+          `SELECT stage, ms, prompt_tokens, output_tokens FROM local_answers
+           WHERE model = ? AND prompt_version = ? AND (item_key = ? OR item_key LIKE ?)`,
+        )
+        .all(LOCAL_MODEL, this.promptVersion, inp.key, `${inp.key}#%`) as {
+        stage: string;
+        ms: number;
+        prompt_tokens: number | null;
+        output_tokens: number | null;
+      }[]
+    ).map((r) => ({
+      stage: r.stage,
+      ms: r.ms,
+      promptTokens: r.prompt_tokens,
+      outputTokens: r.output_tokens,
+    }));
     const ms = mine.reduce((a, x) => a + x.ms, 0);
     const metrics: RunMetrics = {
       costUsd: 0,
       requests: mine.length,
       inputTokens: mine.reduce((a, x) => a + (x.promptTokens ?? 0), 0),
       outputTokens: mine.reduce((a, x) => a + (x.outputTokens ?? 0), 0),
-      seconds: (this.now() - started) / 1000,
+      // The model's own time (its requests run one at a time).
+      seconds: ms / 1000 || (this.now() - started) / 1000,
       modelSeconds: ms / 1000,
       byStage: {},
       extracted: {

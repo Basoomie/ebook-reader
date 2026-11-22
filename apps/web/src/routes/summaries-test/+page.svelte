@@ -233,6 +233,17 @@
     filter === 'all' ? true : filter === 'unmarked' ? g.mark === null : g.mark === filter
   );
   $: marked = (judging?.groups ?? []).filter((g) => g.mark !== null).length;
+  // A claim shows its summary item's quote only when the item made just this one claim (an
+  // item's quote may support another part of a longer item).
+  $: single = (() => {
+    const n = new Map<string, number>();
+    for (const g of judging?.groups ?? [])
+      for (const c of g.claims) {
+        const k = `${c.run_id}|${c.ref.split('#')[0]}`;
+        n.set(k, (n.get(k) ?? 0) + 1);
+      }
+    return new Set([...n].filter(([, v]) => v === 1).map(([k]) => k));
+  })();
   $: runningRuns = (overview?.runs ?? []).filter((r) => r.state === 'running');
   $: bookRuns = (overview?.runs ?? []).filter((r) => r.bookKey === book && r.state === 'done');
 </script>
@@ -429,7 +440,9 @@
                   <li data-testid="st-claim" data-claim={c.id}>
                     <p class="text-xs text-c-muted">{label(c.run_id)}</p>
                     <p lang="ja">{c.text}</p>
-                    {#if c.quote}<p class="text-xs text-c-muted" lang="ja">「{c.quote}」</p>{/if}
+                    {#if c.quote && single.has(`${c.run_id}|${c.ref.split('#')[0]}`)}
+                      <p class="text-xs text-c-muted" lang="ja">「{c.quote}」</p>
+                    {/if}
                     {#if g.claims.length > 1}
                       <div class="mt-1 flex flex-wrap items-center gap-2">
                         <button
