@@ -207,6 +207,44 @@
   $: if (browser && current && tab) remember();
   $: tabNotes = (current?.notes ?? []).filter((n) => (n.section ?? 'overview') === tab);
   $: runningRuns = (overview?.runs ?? []).filter((r) => r.state === 'running');
+
+  // English under each item (the engine's own translation), on or off; remembered on this device.
+  const ENGLISH_KEY = 'summaries-test.english';
+  let showEnglish = false;
+  try {
+    showEnglish = browser && localStorage.getItem(ENGLISH_KEY) === '1';
+  } catch {
+    // no storage: off
+  }
+  let englishOf: Record<string, Record<string, { head: string | null; text: string }> | 'none'> =
+    {};
+  function toggleEnglish() {
+    showEnglish = !showEnglish;
+    try {
+      localStorage.setItem(ENGLISH_KEY, showEnglish ? '1' : '0');
+    } catch {
+      // not kept
+    }
+  }
+  async function loadEnglish(id: string) {
+    if (!api || englishOf[id]) return;
+    try {
+      const page = await api.summary(id, 'en');
+      const lines: Record<string, { head: string | null; text: string }> = {};
+      for (const sec of page.summary.sections)
+        for (const g of sec.groups)
+          for (const it of g.items)
+            lines[it.ref] = {
+              head: it.heading ?? (it.between ? `${it.between[0]} – ${it.between[1]}` : null),
+              text: it.text
+            };
+      englishOf = { ...englishOf, [id]: lines };
+    } catch {
+      englishOf = { ...englishOf, [id]: 'none' };
+    }
+  }
+  $: if (showEnglish && current) void loadEnglish(current.id);
+  $: english = showEnglish && current ? (englishOf[current.id] ?? null) : null;
 </script>
 
 <AppHeader title="Summary accuracy test" />
@@ -278,10 +316,22 @@
         {/each}
       </div>
       <p class="mt-3 text-sm text-c-muted">
-        Mark every item: <b>Right</b> (correct and worth keeping), <b>Has a mistake</b> (anything in
-        it is wrong or made up), <b>Not needed</b> (vague, filler, or not important enough for a
-        summary), <b>Unsure</b>. Tapping a pressed button clears it.
+        Mark every item: <b>Right</b> (correct and worth keeping), <b>Has a mistake</b> (it needs a
+        change: something wrong, made up, or missing), <b>Not needed</b> (vague, filler, or not
+        important enough for a summary), <b>Unsure</b>. Tapping a pressed button clears it.
       </p>
+      <button
+        type="button"
+        class="c-btn c-btn-secondary c-btn-sm mt-3"
+        aria-pressed={showEnglish}
+        data-testid="st-english"
+        on:click={toggleEnglish}>English under each item</button
+      >
+      {#if showEnglish && english === 'none'}
+        <p class="mt-2 text-sm text-c-muted" data-testid="st-english-none">
+          This summary has no English yet.
+        </p>
+      {/if}
     </section>
 
     {#if current}
@@ -293,6 +343,7 @@
           characters={judging.characters}
           marks={current.marks}
           copied={current.copied}
+          english={english && english !== 'none' ? english : null}
           bind:tab
           on:mark={onMark}
         />

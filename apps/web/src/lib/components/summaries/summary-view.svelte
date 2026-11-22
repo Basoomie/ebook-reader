@@ -16,6 +16,7 @@
   import { createEventDispatcher } from 'svelte';
   import { readerLinkPath } from '$lib/anki/reader-link';
   import ItemMarks from './item-marks.svelte';
+  import EnglishLine from './english-line.svelte';
   import { pagePath } from '$lib/data/env';
   import {
     SUMMARY_TABS,
@@ -38,6 +39,8 @@
   export let marks: Record<string, ItemMark> | null = null;
   /** Judging: items whose mark was copied from the same item in another summary (ref → label). */
   export let copied: Record<string, string> | null = null;
+  /** Judging: the English translation of each item, shown under the original (ref → line). */
+  export let english: Record<string, { head: string | null; text: string }> | null = null;
 
   const dispatch = createEventDispatcher<{ mark: { ref: string; mark: ItemMark | null } }>();
   function counted(key: SummarySectionKey, marks: Record<string, ItemMark> | null): string {
@@ -93,6 +96,7 @@
       {#if section.key === 'overview'}
         {#each section.groups[0]?.items ?? [] as it (it.ref)}
           <p class="leading-relaxed" data-ref={it.ref}>{it.text}</p>
+          {#if english?.[it.ref]}<EnglishLine line={english[it.ref]} />{/if}
           {#if marks}<ItemMarks
               ref={it.ref}
               mark={marks[it.ref] ?? null}
@@ -107,6 +111,7 @@
             {#each g.items as it (it.ref)}
               <li class="mt-1" data-ref={it.ref}>
                 {it.text}
+                {#if english?.[it.ref]}<EnglishLine line={english[it.ref]} />{/if}
                 {#if it.showQuote && it.quote}
                   <blockquote class="quote">
                     「{it.quote}」
@@ -133,6 +138,7 @@
             <article class="card" data-ref={it.ref} data-testid="summary-character">
               <h3 class="font-bold">{it.heading}</h3>
               <p class="mt-1">{it.text}</p>
+              {#if english?.[it.ref]}<EnglishLine line={english[it.ref]} />{/if}
               {#if it.showQuote && it.quote}
                 <blockquote class="quote">
                   「{it.quote}」
@@ -164,6 +170,7 @@
               {#if it.heading}<span class="font-bold">{it.heading}</span>{/if}
               {#if it.between}<span class="font-bold">{it.between[0]} – {it.between[1]}</span>{/if}
               <p class:mt-1={!!(it.heading || it.between)}>{it.text}</p>
+              {#if english?.[it.ref]}<EnglishLine line={english[it.ref]} />{/if}
               {#if it.showQuote && it.quote}
                 <blockquote class="quote">
                   「{it.quote}」
