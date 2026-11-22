@@ -1375,6 +1375,56 @@ describe('stage 0: Audiobookshelf, read only', () => {
     ).rejects.toThrow(/not an admin/);
   });
 
+  it('a key Audiobookshelf refuses is never saved over the working one (2026-11-22)', async () => {
+    const { url, methods } = await stubAbs();
+    const { env, setup } = await makeCleanupEnv({ audio: {} });
+    try {
+      await setup();
+      const request = (await import('supertest')).default;
+      const auth = { Authorization: `Bearer ${env.userToken()}` };
+      const put = (value: string) =>
+        request(env.app).put('/api/v1/cleanup/secrets/absApiKey').set(auth).send({ value });
+      await request(env.app)
+        .put('/api/v1/cleanup/settings')
+        .set(auth)
+        .send({ audiobooks: { absUrl: url } })
+        .expect(200);
+      await put('key-1').expect(200);
+      expect(methods).toContain('GET /api/users');
+      // The 14-character value that paused stage 7: refused, the working key kept.
+      const refused = await put('xxxxxxxxxx5XQ*').expect(400);
+      expect(refused.body.error.code).toBe('abs_key_refused');
+      expect(refused.body.error.message).toMatch(/refused this API key \(401\).*not saved/);
+      expect(JSON.stringify(refused.body)).not.toContain('5XQ*');
+      expect(env.service.secrets.read('absApiKey')).toBe('key-1');
+      // No answer: not checked, so not saved either.
+      updateSettings(env.cleanupDb, { audiobooks: { absUrl: 'http://127.0.0.1:9' } });
+      const down = await put('key-2').expect(400);
+      expect(down.body.error.message).toMatch(/could not be checked, so it was not saved/);
+      expect(env.service.secrets.read('absApiKey')).toBe('key-1');
+    } finally {
+      await env.close();
+    }
+    // A key whose user is not an admin is refused too.
+    server?.close();
+    const nonAdmin = await stubAbs({ admin: false });
+    const second = await makeCleanupEnv({ audio: {} });
+    try {
+      await second.setup();
+      const request = (await import('supertest')).default;
+      updateSettings(second.env.cleanupDb, { audiobooks: { absUrl: nonAdmin.url } });
+      const r = await request(second.env.app)
+        .put('/api/v1/cleanup/secrets/absApiKey')
+        .set({ Authorization: `Bearer ${second.env.userToken()}` })
+        .send({ value: 'key-1' })
+        .expect(400);
+      expect(r.body.error.message).toMatch(/\(403\).*not an admin/);
+      expect(second.env.service.secrets.read('absApiKey')).toBeNull();
+    } finally {
+      await second.env.close();
+    }
+  });
+
   it('through the /cleanup/audio routes: settings, snapshot, downloads, modes and lists', async () => {
     const { url } = await stubAbs();
     const { env, setup } = await makeCleanupEnv({ audio: {} });
