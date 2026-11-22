@@ -22,7 +22,7 @@ import { Stage2Analysis, type Stage2Progress } from './stage2';
 import { listFieldPauses, loadGold, resumeField } from './stage2-gate';
 import { STAGE3_WAITING_SQL, Stage3Analysis, type PairRow, type Stage3Progress } from './stage3';
 import { Stage3Worker, type Stage3Reader } from '../counts/book-text-worker';
-import { Stage4Analysis, type Stage4Progress } from './stage4/analysis';
+import { oneTimePassesDone, Stage4Analysis, type Stage4Progress } from './stage4/analysis';
 import { Stage4Ai } from './stage4/ai-step';
 import { Stage5, type Stage5Progress } from './stage5/step';
 import { BY_ID as STAGE5_TERMS } from './stage5/vocab';
@@ -1194,8 +1194,10 @@ export class CleanupService {
         this.waiting4 = `The analysis failed: ${p.error}`;
         return;
       }
-      // Bookmeter's edition check once, then the AI check (WP20e); neither needs the fetcher.
-      if (p.bookmeterEditions?.phase !== 'done' || this.stage4Ai?.needsWork()) {
+      // The one-time passes (Bookmeter's edition check, the fixed picker's picks), then the AI
+      // check (WP20e). A pass that reopens books sends the analysis back to its lookups, which
+      // wait for the fetcher like any lookup (the round above, next time).
+      if (!oneTimePassesDone(p) || this.stage4Ai?.needsWork()) {
         this.waiting4 = null;
         this.runAnalysis4();
         return;

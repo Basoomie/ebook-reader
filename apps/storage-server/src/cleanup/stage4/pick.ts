@@ -141,13 +141,47 @@ export type Pick = [string, string];
 export const BUNDLED_BONUS =
   /【[^】]*(?:特典SS付き?|特典SS付|特典ショートストーリー(?:つき|付き?))[^】]*】/gu;
 
-/** ref4 pick_by_volume(): comic editions last for text books, then the volume, then similarity. */
+/**
+ * A title with its volume number, store markers (【…】), imprint and punctuation set aside: two
+ * volumes of one series that share a subtitle compare equal (「事情3 ～離婚できずに新婚旅行～
+ * (ビーズログ文庫)」 and the file's 「事情～離婚できずに新婚旅行!?～」).
+ */
+export function titleKey(s: string): string {
+  // Only volume-like numbers go (as nums(): under 500): 「Another 2001（下）」 is another book.
+  const t = queryTitle(nfkc(s).replace(/【[^】]*】/gu, ' ')).replace(
+    /\p{Nd}+(?:\.\p{Nd}+)?/gu,
+    (m) => (parseFloat(asciiDigits(m)) < 500 ? '' : m),
+  );
+  return norm(t);
+}
+
+/** Whether a title has words of its own after its last volume number (a volume's subtitle). */
+export function subtitleAfterNumber(s: string): boolean {
+  const t = queryTitle(nfkc(s).replace(/【[^】]*】/gu, ' '));
+  const m = [...t.matchAll(/\p{Nd}+(?:\.\p{Nd}+)?/gu)].pop();
+  if (!m || m.index === undefined) return false;
+  return norm(t.slice(m.index + m[0].length)).length >= 2;
+}
+
+/**
+ * ref4 pick_by_volume(): comic editions last for text books, then the volume, then similarity.
+ *
+ * Series-order follow-up (2026-11-22, measured on the live copy: 437 books): a query without a
+ * number ranked volume 1 or an unnumbered result above the result that IS the book, so a
+ * volume whose file title has no number (「(仮)花嫁のやんごとなき事情～離婚できずに新婚旅行!?～」,
+ * volume 3) took volume 1's record even when Amazon listed volume 3 first. Now, for such a
+ * query, a result whose title equals the query's once the number, imprint and punctuation are
+ * set aside (titleKey) comes first; "volume 1 or unnumbered" only breaks ties among those (a
+ * shared subtitle: 「時魔術士の強くてニューゲーム ～…～」 and its 「２ ～…～」). A query with a number
+ * picks as before.
+ */
 export function pickByVolume<T extends [unknown, string]>(
   qtitle: string,
   cands: T[],
   textBook = true,
 ): T | null {
   const qn = nums(qtitle);
+  const qkey = qn.size ? '' : titleKey(qtitle);
   let list = cands;
   if (!EXTRA.test(nfkc(qtitle))) {
     const plain = list.filter((c) => !EXTRA.test(nfkc(c[1])));
@@ -158,21 +192,41 @@ export function pickByVolume<T extends [unknown, string]>(
       ? plain
       : list.filter((c) => !EXTRA.test(nfkc(c[1]).replace(BUNDLED_BONUS, '')));
   }
+  // A numbered result counts as the book only when its own subtitle follows the number (「事情3
+  // ～離婚できずに新婚旅行～」; not 「…楽しくなりました２」, whose title is the series name) and no
+  // other volume among the results shares that subtitle (「時魔術士の…２ ～過去に戻って…～」 shares
+  // volume 1's: then only volume 1 or an unnumbered result counts).
+  const keyNums = new Map<string, Set<string>>();
+  if (qkey)
+    for (const c of list) {
+      const k = titleKey(c[1]);
+      if (k !== qkey) continue;
+      const s = keyNums.get(k) ?? new Set<string>();
+      s.add([...nums(c[1])].sort().join(','));
+      keyNums.set(k, s);
+    }
+  const sameTitle = (c: T, tn: Set<number>) => {
+    if (!qkey || titleKey(c[1]) !== qkey) return 0;
+    // Volume 1 only by itself: 「冰剣の…２～…～（１）」 (a manga's first part of novel 2) is not.
+    if (!tn.size || (tn.size === 1 && tn.has(1))) return 1;
+    if ((keyNums.get(qkey)?.size ?? 0) > 1) return 0;
+    return subtitleAfterNumber(c[1]) ? 1 : 0;
+  };
   let best: T | null = null;
-  let bestKey: [number, number, number] | null = null;
+  let bestKey: number[] | null = null;
+  const better = (a: number[], b: number[]) => {
+    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return a[i] > b[i];
+    return false;
+  };
   for (const c of list) {
     const fmt = textBook && COMIC.test(nfkc(c[1])) ? 0 : 1;
     const tn = nums(c[1]);
     let vol: number;
     if (qn.size) vol = [...qn].some((x) => tn.has(x)) ? 2 : tn.size ? 0 : 1;
     else vol = !tn.size || tn.has(1) ? 2 : 0;
-    const key: [number, number, number] = [fmt, vol, sim(qtitle, c[1])];
-    if (
-      !bestKey ||
-      key[0] > bestKey[0] ||
-      (key[0] === bestKey[0] &&
-        (key[1] > bestKey[1] || (key[1] === bestKey[1] && key[2] > bestKey[2])))
-    ) {
+    const same = sameTitle(c, tn);
+    const key = [fmt, same, vol, sim(qtitle, c[1])];
+    if (!bestKey || better(key, bestKey)) {
       best = c;
       bestKey = key;
     }

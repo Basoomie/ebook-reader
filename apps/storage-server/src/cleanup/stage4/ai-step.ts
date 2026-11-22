@@ -36,7 +36,7 @@ import {
   stage4Evidence,
   stage4EvidenceText,
 } from './ai-prompt';
-import type { Stage4Analysis, Stage4Progress } from './analysis';
+import { oneTimePassesDone, type Stage4Analysis, type Stage4Progress } from './analysis';
 import { SCORED_FIELDS, FIELD_NAMES } from './score';
 import { STAGE4_RULES_VERSION } from './stage4-rules';
 import { chooseSpellings, seriesKey } from './series-spelling';
@@ -354,7 +354,7 @@ export class Stage4Ai {
   /** Whether the step has work: the rules are done and its decisions are not current. */
   needsWork(): boolean {
     const p = this.stage4();
-    if (!p || p.phase !== 'done' || p.error || p.bookmeterEditions?.phase !== 'done') return false;
+    if (!p || p.phase !== 'done' || p.error || !oneTimePassesDone(p)) return false;
     const ai = this.progress();
     if (!ai) return true;
     if (ai.phase !== 'done') return true;
@@ -369,7 +369,7 @@ export class Stage4Ai {
 
   async step(shouldStop: () => boolean): Promise<Stage4AiStep> {
     const p = this.stage4();
-    if (!p || p.phase !== 'done' || p.error || p.bookmeterEditions?.phase !== 'done') return 'done';
+    if (!p || p.phase !== 'done' || p.error || !oneTimePassesDone(p)) return 'done';
     let ai = this.progress();
     if (!ai) {
       ai = emptyStage4Ai(p.analysisId);
