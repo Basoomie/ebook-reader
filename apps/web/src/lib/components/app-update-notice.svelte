@@ -19,13 +19,13 @@
 
 {#if $available}
   <div
-    class="writing-horizontal-tb fixed inset-x-4 top-4 z-30 mx-auto flex max-w-md items-center gap-2 rounded border-2 border-gray-700 bg-white p-2 text-black"
+    class="c-reader-notice writing-horizontal-tb fixed inset-x-4 top-4 z-30 mx-auto flex max-w-md items-center gap-2 p-2"
     role="status"
     data-testid="app-update-notice"
   >
     <span class="grow px-1">New version available.</span>
     <button
-      class="min-h-[2.75rem] rounded border-2 border-gray-700 px-3 font-medium"
+      class="c-btn c-btn-secondary c-btn-sm shrink-0 px-3"
       data-testid="app-update-reload"
       disabled={reloading}
       on:click={reload}
@@ -33,7 +33,7 @@
       Reload
     </button>
     <button
-      class="min-h-[2.75rem] px-3"
+      class="c-btn c-btn-ghost c-btn-icon c-btn-sm"
       aria-label="Close"
       data-testid="app-update-close"
       on:click={() => appUpdate.dismiss()}
