@@ -34,7 +34,9 @@ const SETTINGS_FILES = [
   // WP17: pauses in audiobooks made on the PC
   'lib/audio/tts-settings.ts',
   // Season 2 Phase 12 session 3: read-aloud
-  'lib/read-aloud/settings.ts'
+  'lib/read-aloud/settings.ts',
+  // Reader toolbars session 1: the two bar lists
+  'lib/reader-toolbar/settings.ts'
 ];
 
 /** Keys and value types declared with writable*LocalStorageSubject()('key', ...). */
@@ -114,7 +116,9 @@ describe('settings registry', () => {
       expect(settingScope(key), key).toBe('local');
     }
     expect(keysWithScope('global')).toHaveLength(19); // 15 + ankiAutoEnrich (Phase 8) + ankiAutoEnrichSeconds + ttsDialoguePauseMs (Phase 12 session 4) + speakerUnsureBelow (session 5)
-    expect(keysWithScope('device')).toHaveLength(95 + 2 + 77 + 1 + 8 + 1 + 2 + 4 + 2 + 2 + 1); // + libraryServerCheckSeconds, + 8 pacer (Phase 10), + bookIllustrationsPosition (Season 2 §6), + 2 on-track dot (Season 2 §9), + 4 read-aloud (Phase 12), + 2 Notes sorts (notesBookSort, notesHighlightSort), + 2 select-mode downloads (libraryBulkDownloadMode, libraryDownloadConfirmGb), + libraryCoverBlur (Hidden covers)
+    expect(keysWithScope('device')).toHaveLength(
+      95 + 2 + 77 + 1 + 8 + 1 + 2 + 4 + 2 + 2 + 1 + 2 - 3
+    ); // + libraryServerCheckSeconds, + 8 pacer (Phase 10), + bookIllustrationsPosition (Season 2 §6), + 2 on-track dot (Season 2 §9), + 4 read-aloud (Phase 12), + 2 Notes sorts (notesBookSort, notesHighlightSort), + 2 select-mode downloads (libraryBulkDownloadMode, libraryDownloadConfirmGb), + libraryCoverBlur (Hidden covers), + readerToolbar and readerBottomBar - the 3 bottom-bar switches they replace (reader toolbars session 1)
     expect(keysWithScope('local')).toHaveLength(5);
   });
 

@@ -36,10 +36,19 @@ import {
   stage4Evidence,
   stage4EvidenceText,
 } from './ai-prompt';
-import type { Stage4Analysis, Stage4Progress } from './analysis';
+import { oneTimePassesDone, type Stage4Analysis, type Stage4Progress } from './analysis';
 import { SCORED_FIELDS, FIELD_NAMES } from './score';
 import { STAGE4_RULES_VERSION } from './stage4-rules';
 import { chooseSpellings, seriesKey } from './series-spelling';
+import {
+  addSeriesChecks,
+  emptyChecks,
+  orderSeries,
+  type SeriesBook,
+  type SeriesChecks,
+  type SeriesChoice,
+} from './series-order';
+import { clearSeriesOrder, writeSeriesOrder, type SeriesOrderRow } from './series-order-store';
 
 const STAGE = 4;
 const SLICE = 50;
@@ -56,7 +65,32 @@ class Yielder {
   }
 }
 
-export type Stage4AiPhase = 'evidence' | 'models' | 'decide' | 'spelling' | 'gate' | 'done';
+export type Stage4AiPhase =
+  | 'evidence'
+  | 'models'
+  | 'decide'
+  | 'spelling'
+  | 'series'
+  | 'gate'
+  | 'done';
+
+/** The series step's progress (series-order.ts): facts, then the order, then proposals again. */
+export interface SeriesOrderProgress {
+  part: 'facts' | 'order' | 'propose';
+  cursor: number;
+  /** Books of a series (facts), series (order), books proposed again (propose). */
+  total: number;
+  /** Across the three parts, for the bar's time left. */
+  done: number;
+  books: number;
+  series: number;
+  choices: number;
+  changed: number;
+  guesses: number;
+  reviews: number;
+  /** The library-wide checks after the order (gate 2 of the plan). */
+  checks?: SeriesChecks | null;
+}
 
 export interface Stage4AiProgress {
   /** The stage-4 analysis these decisions belong to (also the runner's run id). */
@@ -71,6 +105,8 @@ export interface Stage4AiProgress {
   labeledItems: number;
   askKey: string | null;
   rulesKey: string | null;
+  /** How the evidence was built (STAGE4_EVIDENCE_BUILD; absent = 1). */
+  evidenceBuild?: number;
   decided: number;
   invented: number;
   ai: {
@@ -103,6 +139,8 @@ export interface Stage4AiProgress {
   seriesSpelling?: { at: number; names: Record<string, string> } | null;
   /** The spelling phase: series with more than one spelling, and books proposed again. */
   spelling?: { series: number; books: number; total: number } | null;
+  /** The series step (series-order follow-up). */
+  seriesOrder?: SeriesOrderProgress | null;
   error: string | null;
   times: Record<string, { ms: number; items: number }>;
 }
@@ -129,6 +167,18 @@ export function stage4AskKey(db: Database.Database): string {
     s.ai.labeledOnly,
   ]);
 }
+/**
+ * How each book's evidence is built from its records. When it changes, the evidence is built
+ * again (answers kept: a book whose evidence comes out as before keeps its answers) without
+ * changing the evidence format (STAGE4_EVIDENCE_VERSION would change every book's hash).
+ * 2: Calibre's title and authors as stage 4 found them, not its own writes read back (stop 2 of
+ * the series-order follow-up: 11,991 books were asked again for nothing).
+ * 3: the same evidence, built again so the questions build 2 never queued are asked (its
+ * restart kept the ask key: 503 books' new evidence went unasked).
+ */
+export const STAGE4_EVIDENCE_BUILD = 3;
+const evidenceBuildOf = (ai: Stage4AiProgress) => ai.evidenceBuild ?? 1;
+
 /** What the decisions depend on besides the answers: decided again when it changes. */
 export function stage4AiRulesKey(): string {
   return sha([STAGE4_AI_DECIDE_VERSION, STAGE4_RULES_VERSION]);
@@ -145,6 +195,7 @@ export function emptyStage4Ai(analysisId: string, now = Date.now()): Stage4AiPro
     labeledItems: 0,
     askKey: null,
     rulesKey: null,
+    evidenceBuild: STAGE4_EVIDENCE_BUILD,
     decided: 0,
     invented: 0,
     ai: null,
@@ -163,6 +214,29 @@ export class Stage4Ai {
   private list: {
     key: string;
     rows: { calibre_uuid: string; calibre_id: number; labeled: number }[];
+  } | null = null;
+
+  /**
+   * The series step's work in memory (facts of every book of a series, the series, the books to
+   * propose again). After a restart the step starts over from the facts (about a minute).
+   */
+  private seriesRun: {
+    key: string;
+    uuids: string[];
+    after: Map<
+      string,
+      {
+        name: string | null;
+        index: number | null;
+        title: string;
+        proposed: boolean;
+        proposedSeries?: boolean;
+      }
+    >;
+    facts: SeriesBook[];
+    groups: SeriesBook[][];
+    changed: string[];
+    checks: SeriesChecks;
   } | null = null;
 
   /** The books the spelling phase proposes again, in uuid order (rebuilt after a restart). */
@@ -256,6 +330,17 @@ export class Stage4Ai {
     if (ai.phase === 'spelling') {
       const total = ai.spelling?.total ?? 0;
       return { phase: ai.phase, done: ai.cursor, total, secondsLeft: since(ai.cursor, total) };
+    }
+    if (ai.phase === 'series') {
+      const so = ai.seriesOrder;
+      // Facts, order and proposals counted together: the proposals are about as many as the
+      // books with a choice until the order says how many.
+      const books = so?.books || so?.total || 0;
+      const total = so
+        ? books + (so.series || books / 3) + (so.part === 'propose' ? so.total : books)
+        : 0;
+      const done = so?.done ?? 0;
+      return { phase: ai.phase, done, total: Math.round(total), secondsLeft: since(done, total) };
     }
     if (ai.phase === 'models') {
       const models = this.byModel(ai.analysisId);
@@ -354,11 +439,15 @@ export class Stage4Ai {
   /** Whether the step has work: the rules are done and its decisions are not current. */
   needsWork(): boolean {
     const p = this.stage4();
-    if (!p || p.phase !== 'done' || p.error || p.bookmeterEditions?.phase !== 'done') return false;
+    if (!p || p.phase !== 'done' || p.error || !oneTimePassesDone(p)) return false;
     const ai = this.progress();
     if (!ai) return true;
     if (ai.phase !== 'done') return true;
-    return ai.askKey !== stage4AskKey(this.db) || ai.rulesKey !== stage4AiRulesKey();
+    return (
+      evidenceBuildOf(ai) !== STAGE4_EVIDENCE_BUILD ||
+      ai.askKey !== stage4AskKey(this.db) ||
+      ai.rulesKey !== stage4AiRulesKey()
+    );
   }
 
   /** Done for the current analysis, with the current prompt, models and rules. */
@@ -369,13 +458,30 @@ export class Stage4Ai {
 
   async step(shouldStop: () => boolean): Promise<Stage4AiStep> {
     const p = this.stage4();
-    if (!p || p.phase !== 'done' || p.error || p.bookmeterEditions?.phase !== 'done') return 'done';
+    if (!p || p.phase !== 'done' || p.error || !oneTimePassesDone(p)) return 'done';
     let ai = this.progress();
     if (!ai) {
       ai = emptyStage4Ai(p.analysisId);
       ai.rulesFinishedAt = p.finishedAt;
       this.save(ai);
       this.deps.log?.('Stage 4: the AI check starts');
+    } else if (evidenceBuildOf(ai) !== STAGE4_EVIDENCE_BUILD) {
+      // Built again in any phase (a run in its models phase would otherwise send the questions
+      // the old evidence queued); questions never sent at an old evidence are dropped by
+      // putItems, answers are kept.
+      ai.evidenceBuild = STAGE4_EVIDENCE_BUILD;
+      // The models phase queues questions only when its ask key changes: without this a book
+      // whose evidence came out new was never asked (stop 2: 503 books, decided by the rules
+      // alone, ~300 of them proposing to remove a series).
+      ai.askKey = null;
+      ai.items = 0;
+      ai.labeledItems = 0;
+      ai.decided = 0;
+      ai.invented = 0;
+      ai.finishedAt = null;
+      clearSeriesOrder(this.db, p.libraryId);
+      this.next(ai, 'evidence');
+      this.deps.log?.("Stage 4: the AI check's evidence is built again (answers kept)");
     } else if (ai.phase === 'done') {
       if (ai.askKey !== stage4AskKey(this.db)) {
         // Asked again: answers already given are kept by the runner (same evidence and prompt).
@@ -388,6 +494,7 @@ export class Stage4Ai {
         ai.decided = 0;
         ai.invented = 0;
         ai.finishedAt = null;
+        clearSeriesOrder(this.db, p.libraryId);
         this.next(ai, 'decide');
       } else return 'done';
     }
@@ -404,6 +511,7 @@ export class Stage4Ai {
         const r = await this.modelsStep(ai, shouldStop);
         this.time(ai, 'models', Date.now() - t0, 0);
         if (r === 'done') {
+          clearSeriesOrder(this.db, p.libraryId);
           this.next(ai, 'decide');
           return 'more';
         }
@@ -423,6 +531,19 @@ export class Stage4Ai {
         if (r.finished) {
           this.deps.log?.(
             `Stage 4: one spelling per series (${ai.spelling?.series ?? 0} series, ${ai.spelling?.books ?? 0} books proposed again)`,
+          );
+          ai.seriesOrder = null;
+          this.next(ai, 'series');
+        } else this.save(ai);
+        return 'more';
+      }
+      if (ai.phase === 'series') {
+        const r = await this.seriesStep(p, ai, shouldStop);
+        this.time(ai, 'series', Date.now() - t0, r.items);
+        if (r.finished) {
+          const so = ai.seriesOrder;
+          this.deps.log?.(
+            `Stage 4: series order (${so?.series ?? 0} series, ${so?.changed ?? 0} books changed, ${so?.guesses ?? 0} best guesses, ${so?.reviews ?? 0} to review)`,
           );
           this.next(ai, 'gate');
         } else this.save(ai);
@@ -652,6 +773,149 @@ export class Stage4Ai {
     return { finished: ai.cursor >= uuids.length, items: n };
   }
 
+  /**
+   * The order of each series (series-order.ts; plan approved 2026-11-22), after the one spelling
+   * is chosen: the facts of every book of a series, then each series ordered and its choices
+   * written (stage4_series_order), then the books whose number, title, best guess or review the
+   * order changes are proposed again. Sliced like the other phases (lessons 3).
+   */
+  private async seriesStep(
+    p: Stage4Progress,
+    ai: Stage4AiProgress,
+    shouldStop: () => boolean,
+  ): Promise<{ finished: boolean; items: number }> {
+    const runKey = `${ai.analysisId}|${ai.phaseStartedAt ?? 0}`;
+    if (!ai.seriesOrder || this.seriesRun?.key !== runKey) {
+      const after = this.deps.analysis.seriesStateAfterOn(p);
+      const uuids = [...after]
+        .filter(([, a]) => a.name)
+        .map(([u]) => u)
+        .sort();
+      this.seriesRun = {
+        key: runKey,
+        uuids,
+        after,
+        facts: [],
+        groups: [],
+        changed: [],
+        checks: emptyChecks(),
+      };
+      ai.seriesOrder = {
+        part: 'facts',
+        cursor: 0,
+        total: uuids.length,
+        done: 0,
+        books: uuids.length,
+        series: 0,
+        choices: 0,
+        changed: 0,
+        guesses: 0,
+        reviews: 0,
+        checks: null,
+      };
+      // The run key holds the phase's start: a restart (facts in memory only) starts over.
+      this.save(ai);
+    }
+    const so = ai.seriesOrder;
+    const run = this.seriesRun;
+    const y = new Yielder();
+    let n = 0;
+    if (so.part === 'facts') {
+      while (so.cursor < run.uuids.length && n < SLICE * 20) {
+        await y.maybe();
+        if (shouldStop()) return { finished: false, items: n };
+        const uuid = run.uuids[so.cursor];
+        const b = this.deps.analysis.seriesBook(p, uuid, run.after.get(uuid)!);
+        if (b) run.facts.push(b);
+        so.cursor++;
+        so.done++;
+        n++;
+      }
+      if (so.cursor >= run.uuids.length) {
+        const by = new Map<string, SeriesBook[]>();
+        for (const b of run.facts) {
+          const k = seriesKey(b.name);
+          if (k) by.set(k, [...(by.get(k) ?? []), b]);
+        }
+        run.groups = [...by.values()];
+        clearSeriesOrder(this.db, p.libraryId);
+        so.part = 'order';
+        so.cursor = 0;
+        so.total = run.groups.length;
+        so.series = run.groups.length;
+      }
+      return { finished: false, items: n };
+    }
+    if (so.part === 'order') {
+      const rows: SeriesOrderRow[] = [];
+      while (so.cursor < run.groups.length && n < SLICE * 4) {
+        await y.maybe();
+        if (shouldStop()) break;
+        const g = run.groups[so.cursor];
+        const choices = orderSeries(g);
+        addSeriesChecks(run.checks, g, choices);
+        const by = new Map<string, SeriesChoice>(choices.map((c) => [c.uuid, c]));
+        const key = seriesKey(g[0].name);
+        for (const b of g) {
+          const c = by.get(b.uuid);
+          const a = run.after.get(b.uuid)!;
+          rows.push({
+            calibreUuid: b.uuid,
+            calibreId: b.calibreId,
+            series: b.name,
+            seriesKey: key,
+            index: c ? c.index : b.index,
+            src: c ? c.from : 'calibre',
+            guess: !!c?.guess,
+            reason: c?.reason ?? null,
+            title: c?.title ?? a.title,
+            titleSrc: c?.title !== undefined ? (c.titleFrom ?? null) : null,
+            review: c?.review ?? null,
+          });
+          if (!c) continue;
+          so.choices++;
+          if (
+            c.index !== b.index ||
+            c.title !== undefined ||
+            c.review !== undefined ||
+            (c.guess && a.proposed)
+          )
+            run.changed.push(b.uuid);
+        }
+        so.cursor++;
+        so.done++;
+        n++;
+      }
+      if (rows.length) writeSeriesOrder(this.db, p.libraryId, rows);
+      if (so.cursor >= run.groups.length) {
+        so.checks = run.checks;
+        so.guesses = run.checks.guesses;
+        so.reviews = run.checks.reviews;
+        so.changed = run.changed.length;
+        run.changed.sort();
+        so.part = 'propose';
+        so.cursor = 0;
+        so.total = run.changed.length;
+      }
+      return { finished: false, items: n };
+    }
+    const fresh = this.stage4() ?? p;
+    while (so.cursor < run.changed.length && n < SLICE) {
+      await y.maybe();
+      if (shouldStop()) return { finished: false, items: n };
+      const uuid = run.changed[so.cursor];
+      await this.deps.analysis.proposeWithAi(
+        fresh,
+        uuid,
+        storedAiValues(this.db, this.itemKey(p.libraryId, uuid)),
+      );
+      so.cursor++;
+      so.done++;
+      n++;
+    }
+    return { finished: so.cursor >= run.changed.length, items: n };
+  }
+
   private gateStep(p: Stage4Progress, ai: Stage4AiProgress): void {
     const settings = getSettings(this.db);
     const books = this.deps.analysis.labeledBooks(p).map((b) => ({
@@ -699,6 +963,8 @@ export class Stage4Ai {
       )
       .all() as { field: string; n: number }[])
       unconfirmed[r.field] = r.n;
+    // The series numbers' best guesses are the series step's (it decides every number again).
+    if (ai.seriesOrder) unconfirmed.ix = ai.seriesOrder.guesses;
     ai.unconfirmed = unconfirmed;
     ai.cost = runSpend(this.db, 'calibre4', ai.analysisId) as Stage4AiProgress['cost'];
   }

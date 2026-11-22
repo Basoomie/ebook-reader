@@ -49,6 +49,19 @@ describe('changed in Calibre after the cleanup wrote it', () => {
   });
   it('compares names ignoring case, as the write path does', () => {
     expect(stillAsWritten('authors', ['Abc'], ['abc'])).toBe(true);
+    // A series written with no number reads back as number 1 (series-order stop 2, 花嫁 vol 8).
+    expect(stillAsWritten('series', { name: 'S', index: null }, { name: 'S', index: 1 })).toBe(
+      true,
+    );
+    expect(stillAsWritten('series', { name: 'S', index: null }, { name: 'S', index: 2 })).toBe(
+      false,
+    );
+    expect(stillAsWritten('series', { name: 'S', index: 1 }, { name: 'S', index: null })).toBe(
+      false,
+    );
+    expect(stillAsWritten('series', { name: null, index: null }, { name: 'S', index: 1 })).toBe(
+      false,
+    );
     expect(stillAsWritten('authors', ['A', 'B'], ['B', 'A'])).toBe(false);
     expect(stillAsWritten('title', 'X', 'X')).toBe(true);
   });
@@ -371,6 +384,29 @@ describe('proposals from the decided values', () => {
       source: 'ai:both_models',
     });
   });
+  it('never proposes again a cover the cleanup wrote that is still as written (series-order stop 1)', () => {
+    const storeCover = {
+      url: 'https://m.media-amazon.com/x.jpg',
+      fileSide: 600,
+      fileDhash: '0000000000000000',
+      storeSide: 1500,
+      storeDhash: '0000000000000001',
+      distance: 1,
+    };
+    const base = { ...input({ asked: false }), cover: storeCover };
+    expect(proposeStage4(base).some((p) => p.field === 'cover')).toBe(true);
+    const written = {
+      ...base,
+      applied: new Map<string, unknown>([['cover', { sha256: 'aa', mediaType: 'image/jpeg' }]]),
+    };
+    // Calibre's cover is the one written, the store's picture the same: nothing to write.
+    const same = { ...written, calibreCover: { sha256: 'aa', dhash: '0000000000000001' } };
+    expect(proposeStage4(same).some((p) => p.field === 'cover')).toBe(false);
+    // Changed in Calibre since: proposed, for review.
+    const changed = { ...written, calibreCover: { sha256: 'zz', dhash: 'ffffffffffffffff' } };
+    expect(proposeStage4(changed).find((p) => p.field === 'cover')?.class).toBe('review');
+  });
+
   it('keeps the rules alone when the models were not both asked', () => {
     const ps = proposeStage4(input({ asked: false, il: v(['別の人'], 'secondary_guess', true) }));
     expect(ps.find((p) => p.field === 'illustrator')).toMatchObject({
@@ -557,6 +593,7 @@ describe('asking the given-up questions again (WP20e stop 2)', () => {
       phase: 'done',
       finishedAt: 5,
       bookmeterEditions: { phase: 'done' },
+      repick: { phase: 'done' },
       ai,
     };
     const runner = cleanupRunner(db, makeAiCore().core);

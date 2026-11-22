@@ -414,7 +414,7 @@ export function mergeAudiobookCopy(
   return {
     title: 'Merge into one file?',
     message: [
-      `The ${fileCount} files of ${quoted(String(folderName))} are joined in the order shown into one new file of about ${approxSize}, saved in the reader's own folder for merged files (Audiobookshelf doesn't show it). Each file becomes a chapter.`,
+      `The ${fileCount} files of ${quoted(String(folderName))} are joined in the order shown into one new file of about ${approxSize}, saved in the reader's own folder for merged files (Audiobookshelf doesn't show it). Each file's chapters are kept; a file without chapters becomes one chapter.`,
       'The original files are not changed.',
       'When it is done, this book uses the new file and you choose the subtitles. Its audiobook match and saved subtitles are reset then; the listening position stays.'
     ],

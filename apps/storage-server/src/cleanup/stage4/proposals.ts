@@ -58,7 +58,8 @@ const garbled = (v: unknown): boolean =>
         ? looksLikeMojibake((v as { name: string }).name)
         : false;
 import type { StoreIds } from './store-links';
-import { spellingOf } from './series-spelling';
+import { seriesKey, spellingOf } from './series-spelling';
+import type { SeriesChoice } from './series-order';
 import type { Stage4Extras } from './snapshot4';
 
 export const STAGE4_FIELDS = [
@@ -120,6 +121,11 @@ export interface ProposalInput {
   spelling?: SpellingLookup;
   /** The chosen spelling per series key (series-spelling.ts); none = names as decided. */
   seriesSpelling?: ReadonlyMap<string, string> | null;
+  /**
+   * The series step's choice for this book (series-order.ts, stage4_series_order): its number,
+   * a title with its number, a best guess with its reason, or a problem for review.
+   */
+  seriesOrder?: SeriesChoice | null;
   sameDistance: number;
   smallCoverPx: number;
 }
@@ -230,7 +236,12 @@ export function stillAsWritten(
     case 'series': {
       const a = (written ?? {}) as { name?: string | null; index?: number | null };
       const b = (current ?? {}) as { name?: string | null; index?: number | null };
-      return (a.name ?? null) === (b.name ?? null) && (a.index ?? null) === (b.index ?? null);
+      if ((a.name ?? null) !== (b.name ?? null)) return false;
+      // Calibre stores a series written with no number as number 1 (series-order stop 2:
+      // (仮)花嫁 vol 8, written with none, went to review as "changed in Calibre").
+      const ai = a.index ?? null;
+      const bi = b.index ?? null;
+      return ai === bi || (ai === null && a.name != null && bi === 1);
     }
     default:
       return JSON.stringify(written ?? null) === JSON.stringify(current ?? null);
@@ -244,8 +255,33 @@ export function proposeStage4(input: ProposalInput): Stage4Proposal[] {
   const v = d.values;
   const src = sourceOf(d, record);
 
+  const coverNow = {
+    hasCover: book.hasCover,
+    now: input.calibreCover,
+    fileDhash: input.cover?.fileDhash ?? null,
+    sameDistance: input.sameDistance,
+    lastModified: book.lastModified,
+  };
   const push = (p: Stage4Proposal, current: unknown, appliedField = p.field) => {
     if (JSON.stringify(p.old) === JSON.stringify(p.new)) return;
+    // Written already and still as written: not proposed again. A cover's "before" is only "has
+    // a cover", never the value written (series-order stop 1: deciding again proposed all 1,290
+    // written covers once more).
+    if (
+      input.applied.has(appliedField) &&
+      stillAsWritten(appliedField, input.applied.get(appliedField), current, {
+        ...coverNow,
+        writtenLastModified: input.appliedLastModified?.get(appliedField) ?? null,
+      })
+    ) {
+      if (JSON.stringify(input.applied.get(appliedField)) === JSON.stringify(p.new)) return;
+      // A cover is stored as the file written: the same store picture as Calibre's cover now.
+      const d =
+        p.field === 'cover' && input.calibreCover
+          ? hammingHex(input.cover?.storeDhash ?? null, input.calibreCover.dhash)
+          : null;
+      if (d !== null && d <= input.sameDistance) return;
+    }
     // Garbled text (a file read in the wrong encoding) never goes into Calibre (lessons 2),
     // whichever source gave it: the AI's fallback to the rules' guess found one (WP20e stop 1).
     if (p.class === 'auto' && GARBLE_FIELDS.has(p.field) && garbled(p.new)) {
@@ -317,8 +353,12 @@ export function proposeStage4(input: ProposalInput): Stage4Proposal[] {
   // Title
   const ft = field<string>('t', v.t, d.auto.t, 'The online sources do not confirm the title');
   const amazonTitle = record.amazon?.product?.title ?? null;
-  const title =
-    ft.ai && ft.ai.source !== 'rules'
+  // The series step's title (the store's form with the volume number, or the file's own when
+  // the models added a number no source prints).
+  const soTitle = input.seriesOrder?.title ?? null;
+  const title = soTitle
+    ? soTitle
+    : ft.ai && ft.ai.source !== 'rules'
       ? ft.value
         ? pyStrip(lightNormalize(ft.value))
         : null
@@ -354,18 +394,25 @@ export function proposeStage4(input: ProposalInput): Stage4Proposal[] {
       cls = 'review';
       reason = "Too long for a folder name in Calibre's library";
     }
+    if (soTitle && !tooLong) {
+      cls = 'auto';
+      reason = null;
+    }
+    const titleProposal: Stage4Proposal = {
+      field: 'title',
+      old: book.title,
+      new: title,
+      class: cls,
+      source: soTitle ? 'series-order' : srcOf(ft, ft.auto && !ft.unconfirmed ? src : 'file'),
+      reason,
+    };
     push(
-      withAi(
-        {
-          field: 'title',
-          old: book.title,
-          new: title,
-          class: cls,
-          source: srcOf(ft, ft.auto && !ft.unconfirmed ? src : 'file'),
-          reason,
-        },
-        ft,
-      ),
+      soTitle
+        ? {
+            ...titleProposal,
+            evidence: { seriesOrder: { title: input.seriesOrder?.titleFrom ?? null } },
+          }
+        : withAi(titleProposal, ft),
       book.title,
     );
   }
@@ -460,10 +507,34 @@ export function proposeStage4(input: ProposalInput): Stage4Proposal[] {
     n && input.seriesSpelling && fse.ai?.source !== 'user'
       ? spellingOf(input.seriesSpelling, n)
       : n;
-  const series = respell(decidedSeries);
-  const spelling =
-    series !== decidedSeries ? { spelling: { asDecided: decidedSeries } } : undefined;
-  const index = fix.value?.n ?? null;
+  const oldName = extras?.series ?? null;
+  // A series name stage 4 wrote and Calibre still holds keeps its spelling when the decision
+  // names the same series: only its number may change (series-order stop 2: index-only changes
+  // counted with the decided spelling flipped the one-spelling choice of 21 series and respelled
+  // 346 books, 〈Infinite Dendrogram〉 to <Infinite Dendrogram>, ！ to !).
+  const writtenName =
+    oldName &&
+    fse.ai?.source !== 'user' &&
+    input.applied.has('series') &&
+    stillAsWritten('series', input.applied.get('series'), {
+      name: oldName,
+      index: extras?.seriesIndex ?? null,
+    }) &&
+    ((input.applied.get('series') ?? {}) as { name?: string | null }).name === oldName
+      ? oldName
+      : null;
+  const keepWritten =
+    !!writtenName && !!decidedSeries && seriesKey(decidedSeries) === seriesKey(writtenName);
+  const series = keepWritten ? writtenName : respell(decidedSeries);
+  const spelling = keepWritten
+    ? { spelling: { asDecided: writtenName } }
+    : series !== decidedSeries
+      ? { spelling: { asDecided: decidedSeries } }
+      : undefined;
+  // The series step's choice (series-order.ts): the number from what the series' sources print,
+  // a best guess marked with its reason, or a problem for review.
+  const so = series ? (input.seriesOrder ?? null) : null;
+  const index = so ? so.index : (fix.value?.n ?? null);
   const oldSeries = { name: extras?.series ?? null, index: extras?.seriesIndex ?? null };
   const newSeries = { name: series, index: series ? index : null };
   let seriesProposed = false;
@@ -474,8 +545,10 @@ export function proposeStage4(input: ProposalInput): Stage4Proposal[] {
       (newSeries.name !== null && newSeries.name !== oldSeries.name && spelling !== undefined))
   ) {
     seriesProposed = true;
-    const auto = fse.auto && (newSeries.name === null || fix.auto);
-    const unconfirmed = fse.unconfirmed || (newSeries.name !== null && fix.unconfirmed);
+    const auto = so ? fse.auto && !so.review : fse.auto && (newSeries.name === null || fix.auto);
+    const unconfirmed = so
+      ? fse.unconfirmed || so.guess
+      : fse.unconfirmed || (newSeries.name !== null && fix.unconfirmed);
     const both = {
       unconfirmed,
       ai: fse.ai || fix.ai ? { series: fse.ai, number: fix.ai } : null,
@@ -495,9 +568,25 @@ export function proposeStage4(input: ProposalInput): Stage4Proposal[] {
                 ? 'ranobedb'
                 : 'rules',
           ),
-          reason:
-            auto && !unconfirmed ? null : fse.unconfirmed || !fse.auto ? fse.reason : fix.reason,
-          evidence: spelling,
+          reason: so
+            ? (so.review ??
+              (fse.unconfirmed || !fse.auto ? fse.reason : so.guess ? so.reason : null))
+            : auto && !unconfirmed
+              ? null
+              : fse.unconfirmed || !fse.auto
+                ? fse.reason
+                : fix.reason,
+          evidence:
+            so || spelling
+              ? {
+                  ...(spelling ?? {}),
+                  ...(so
+                    ? {
+                        seriesOrder: { from: so.from, ...(so.reason ? { reason: so.reason } : {}) },
+                      }
+                    : {}),
+                }
+              : undefined,
         },
         both,
       ),
@@ -507,7 +596,13 @@ export function proposeStage4(input: ProposalInput): Stage4Proposal[] {
   // Calibre's own name kept (no change proposed) but spelled another way than the series' chosen
   // spelling: only the spelling changes, the number stays.
   const chosenNow = respell(oldSeries.name);
-  if (!seriesProposed && oldSeries.name && chosenNow && chosenNow !== oldSeries.name) {
+  if (
+    !seriesProposed &&
+    !writtenName &&
+    oldSeries.name &&
+    chosenNow &&
+    chosenNow !== oldSeries.name
+  ) {
     push(
       {
         field: 'series',

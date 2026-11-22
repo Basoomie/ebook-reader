@@ -276,6 +276,14 @@ export class AiRunner {
          evidence_version = excluded.evidence_version, evidence_hash = excluded.evidence_hash,
          labeled = excluded.labeled, updated_at = excluded.updated_at`,
     );
+    // A question queued for evidence the item no longer has is never sent: it cost nothing yet,
+    // and its answer would belong to evidence nobody reads (series-order follow-up, stop 2: a
+    // run's questions at the old evidence were still sent after the evidence was built again).
+    // A question already at the provider stays (it is collected and paid as it is).
+    const stale = this.db.prepare(
+      `DELETE FROM ai_requests WHERE stage = ? AND item_key = ? AND state = 'queued'
+         AND evidence_hash <> ?`,
+    );
     let changed = 0;
     this.db.transaction(() => {
       for (const it of items) {
@@ -285,6 +293,7 @@ export class AiRunner {
           | undefined;
         if (cur && cur.evidence_hash === hash && cur.labeled === (it.labeled ? 1 : 0)) continue;
         put.run(spec.stage, it.key, gz(it.evidence), version, hash, it.labeled ? 1 : 0, now);
+        if (cur && cur.evidence_hash !== hash) stale.run(spec.stage, it.key, hash);
         changed++;
       }
     })();

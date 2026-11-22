@@ -1,8 +1,13 @@
 /**
  * WP15f: "Merge into one file". Joins the files of one audiobook folder, in the order
- * the user set, into one .m4b with a chapter marker per original file, saved next to the
- * originals. Decided with the user (2026-11-12): a merge button instead of multi-file
- * playback, so whispersync keeps playing one file.
+ * the user set, into one .m4b, saved next to the originals. Decided with the user
+ * (2026-11-12): a merge button instead of multi-file playback, so whispersync keeps playing
+ * one file.
+ *
+ * - Chapters (2026-11-21, "Merge keeps the original chapters"): every original file's own
+ *   chapters, shifted by the file's start in the merged file, titles unchanged; a file
+ *   without chapters gets one chapter for the whole file, titled with its name
+ *   (`mergedChapters`). The merged file's chapters are read back and compared.
  *
  * - One merge at a time; requests wait in a queue (audio_merge_jobs).
  * - ffprobe reads each file. Stream copy when every file is AAC with the same layout,
@@ -117,13 +122,43 @@ export interface ProbeStream {
   channels: number | null;
   profile: string | null;
   attachedPic: boolean;
+  /** The stream's own length in seconds (NaN when ffprobe gives none). */
+  duration: number;
+}
+
+/** One chapter of a file as ffprobe reads it (seconds). */
+export interface ProbeChapter {
+  start: number;
+  end: number;
+  /** null when the chapter has no title. */
+  title: string | null;
 }
 
 export interface ProbeResult {
   duration: number;
   streams: ProbeStream[];
   tags: Record<string, string>;
-  chapters: number;
+  chapters: ProbeChapter[];
+}
+
+interface RawChapter {
+  time_base?: string;
+  start?: number;
+  end?: number;
+  start_time?: string;
+  end_time?: string;
+  tags?: Record<string, string>;
+}
+
+/** A chapter time in seconds: start/end × time_base when given (exact), else *_time. */
+function chapterSeconds(c: RawChapter, which: 'start' | 'end'): number {
+  const ticks = c[which];
+  const m = /^(\d+)\/(\d+)$/.exec(c.time_base ?? '');
+  if (typeof ticks === 'number' && m && Number(m[2]) > 0) {
+    return (ticks * Number(m[1])) / Number(m[2]);
+  }
+  const t = Number(c[`${which}_time`]);
+  return Number.isFinite(t) ? t : NaN;
 }
 
 export function parseProbe(json: string): ProbeResult {
@@ -136,9 +171,10 @@ export function parseProbe(json: string): ProbeResult {
       sample_rate?: string;
       channels?: number;
       profile?: string;
+      duration?: string;
       disposition?: { attached_pic?: number };
     }[];
-    chapters?: unknown[];
+    chapters?: RawChapter[];
   };
   const duration = Number(data.format?.duration);
   return {
@@ -151,11 +187,21 @@ export function parseProbe(json: string): ProbeResult {
       channels: typeof s.channels === 'number' ? s.channels : null,
       profile: s.profile ?? null,
       attachedPic: s.disposition?.attached_pic === 1,
+      duration: s.duration !== undefined && s.duration !== '' ? Number(s.duration) : NaN,
     })),
     tags: Object.fromEntries(
       Object.entries(data.format?.tags ?? {}).map(([k, v]) => [k.toLowerCase(), String(v)]),
     ),
-    chapters: (data.chapters ?? []).length,
+    chapters: (data.chapters ?? []).map((c) => {
+      const tags = Object.fromEntries(
+        Object.entries(c.tags ?? {}).map(([k, v]) => [k.toLowerCase(), String(v)]),
+      );
+      return {
+        start: chapterSeconds(c, 'start'),
+        end: chapterSeconds(c, 'end'),
+        title: tags.title ?? null,
+      };
+    }),
   };
 }
 
@@ -222,9 +268,79 @@ const KEPT_TAGS = [
   'description',
 ];
 
-/** The chapter file: one chapter per original file, titled with its name. */
+/** A chapter of the merged file (milliseconds from its start). */
+export interface MergeChapter {
+  title: string | null;
+  startMs: number;
+  endMs: number;
+}
+
+/** An original chapter left out: it starts at or after its file's end (no audio). */
+export interface DroppedChapter {
+  file: string;
+  title: string | null;
+  start: number;
+}
+
+/**
+ * The merged file's chapters: for every file in the given order, its own chapters shifted
+ * by the file's start in the merged file, titles unchanged. Fixed rules (decisions.md,
+ * "Merge keeps the original chapters"):
+ * - a file's chapters are taken in time order (ties keep the file's order);
+ * - a chapter starting at or after its file's end has no audio and is dropped (reported);
+ * - the file's first chapter starts at 0:00 (no audio before the first chapter);
+ * - each chapter ends where the file's next chapter starts, the last at the file's end
+ *   (so a chapter running past the end is cut there; no overlaps, no gaps);
+ * - a file without chapters (or with only dropped ones) gets one chapter for the whole
+ *   file, titled with its name without the extension.
+ * Offsets are rounded once from the running total, so rounding never adds up.
+ */
+export function mergedChapters(
+  files: { name: string; duration: number; chapters: ProbeChapter[] }[],
+): { chapters: MergeChapter[]; dropped: DroppedChapter[] } {
+  const chapters: MergeChapter[] = [];
+  const dropped: DroppedChapter[] = [];
+  const ms = (seconds: number) => Math.round(seconds * 1000);
+  let offset = 0;
+  for (const f of files) {
+    const fileStart = offset;
+    offset += f.duration;
+    const fileStartMs = ms(fileStart);
+    const fileEndMs = Math.max(ms(offset), fileStartMs + 1);
+    const kept: ProbeChapter[] = [];
+    const ordered = f.chapters
+      .map((c, i) => ({ c, i }))
+      .sort((a, b) => (a.c.start || 0) - (b.c.start || 0) || a.i - b.i)
+      .map((x) => x.c);
+    for (const c of ordered) {
+      if (Number.isFinite(c.start) && c.start < f.duration) kept.push(c);
+      else dropped.push({ file: f.name, title: c.title, start: c.start });
+    }
+    if (kept.length === 0) {
+      chapters.push({
+        title: f.name.replace(/\.[^.]+$/, ''),
+        startMs: fileStartMs,
+        endMs: fileEndMs,
+      });
+      continue;
+    }
+    const starts = kept.map((c, i) =>
+      i === 0 ? fileStartMs : Math.min(ms(fileStart + Math.max(0, c.start)), fileEndMs),
+    );
+    kept.forEach((c, i) => {
+      chapters.push({
+        title: c.title,
+        startMs: starts[i],
+        endMs: i + 1 < kept.length ? starts[i + 1] : fileEndMs,
+      });
+    });
+  }
+  return { chapters, dropped };
+}
+
+/** The ffmetadata file: the first file's tags and the merged file's chapters. */
 export function buildFfmetadata(
-  files: { name: string; duration: number }[],
+  chapters: MergeChapter[],
   firstTags: Record<string, string>,
   folderName: string,
 ): string {
@@ -233,15 +349,39 @@ export function buildFfmetadata(
   for (const key of KEPT_TAGS) {
     if (firstTags[key]) lines.push(`${key}=${metaEscape(firstTags[key])}`);
   }
-  let start = 0;
-  for (const f of files) {
-    const end = start + Math.max(1, Math.round(f.duration * 1000));
-    const title = f.name.replace(/\.[^.]+$/, '');
-    lines.push('[CHAPTER]', 'TIMEBASE=1/1000', `START=${start}`, `END=${end}`);
-    lines.push(`title=${metaEscape(title)}`);
-    start = end;
+  for (const c of chapters) {
+    lines.push('[CHAPTER]', 'TIMEBASE=1/1000', `START=${c.startMs}`, `END=${c.endMs}`);
+    // Always a title line: ffmpeg's mp4 muxer folds a chapter without one into the one
+    // before it (found 2026-11-21); an empty title keeps it as its own chapter.
+    lines.push(`title=${metaEscape(c.title ?? '')}`);
   }
   return lines.join('\n') + '\n';
+}
+
+/**
+ * Compares the chapters read back from the merged file with the expected list: the same
+ * number, every title the same (no title = an empty one) and every start within
+ * `toleranceMs`. Returns what differs first, or null.
+ */
+export function chapterMismatch(
+  actual: ProbeChapter[],
+  expected: MergeChapter[],
+  toleranceMs: number,
+): string | null {
+  if (actual.length !== expected.length) {
+    return `The merged file has ${actual.length} chapters, expected ${expected.length}`;
+  }
+  for (const [i, e] of expected.entries()) {
+    const a = actual[i];
+    if ((a.title ?? '') !== (e.title ?? '')) {
+      return `Chapter ${i + 1} of the merged file is titled "${a.title ?? ''}", expected "${e.title ?? ''}"`;
+    }
+    const startMs = a.start * 1000;
+    if (!(Math.abs(startMs - e.startMs) <= toleranceMs)) {
+      return `Chapter ${i + 1} of the merged file starts at ${(startMs / 1000).toFixed(3)} s, expected ${(e.startMs / 1000).toFixed(3)} s`;
+    }
+  }
+  return null;
 }
 
 /** The concat demuxer's list; paths with forward slashes, quotes escaped. */
@@ -618,15 +758,24 @@ export class MergeService {
         probes.push(p);
       }
       const total = probes.reduce((n, p) => n + p.duration, 0);
+      // One chapter list for both modes (and for the re-encode after a refused copy).
+      const { chapters, dropped } = mergedChapters(
+        job.files.map((name, i) => ({
+          name,
+          duration: probes[i].duration,
+          chapters: probes[i].chapters,
+        })),
+      );
+      for (const d of dropped) {
+        this.log(
+          `Audiobooks: merge of "${job.folderRelPath}": chapter "${d.title ?? ''}" of ${d.file} starts at ${d.start} s, at or after the file's end, so it is left out`,
+        );
+      }
       const listFile = await workdir.writeText(job.id, 'files.txt', buildConcatList(inputs));
       const metaFile = await workdir.writeText(
         job.id,
         'chapters.txt',
-        buildFfmetadata(
-          job.files.map((name, i) => ({ name, duration: probes[i].duration })),
-          probes[0].tags,
-          path.posix.basename(folder.relPath),
-        ),
+        buildFfmetadata(chapters, probes[0].tags, path.posix.basename(folder.relPath)),
       );
       const output = workdir.outputPath(job.id);
       const attempt = async (mode: MergeMode) => {
@@ -645,7 +794,7 @@ export class MergeService {
           total,
           abort.signal,
         );
-        await this.verify(output, total, job.files.length, abort.signal);
+        await this.verify(output, total, chapters, abort.signal);
       };
       if (canStreamCopy(probes)) {
         try {
@@ -757,7 +906,7 @@ export class MergeService {
         '-v',
         'error',
         '-show_entries',
-        'format=duration:format_tags:stream=index,codec_type,codec_name,sample_rate,channels,profile:stream_disposition=attached_pic:chapter=id',
+        'format=duration:format_tags:stream=index,codec_type,codec_name,sample_rate,channels,profile,duration:stream_disposition=attached_pic:chapter=id,time_base,start,end,start_time,end_time:chapter_tags=title',
         '-of',
         'json',
         file,
@@ -768,11 +917,11 @@ export class MergeService {
     return parseProbe(out);
   }
 
-  /** Checks ffmpeg's result: playable audio, the expected length, one chapter per file. */
+  /** Checks ffmpeg's result: playable audio, the expected length, the expected chapters. */
   private async verify(
     output: string,
     expectedSeconds: number,
-    chapters: number,
+    chapters: MergeChapter[],
     signal: AbortSignal,
   ): Promise<void> {
     const p = await this.probe(output, signal);
@@ -783,9 +932,8 @@ export class MergeService {
         `The merged file is ${Math.round(p.duration)} s long, expected ${Math.round(expectedSeconds)} s`,
       );
     }
-    if (p.chapters !== chapters) {
-      throw new Error(`The merged file has ${p.chapters} chapters, expected ${chapters}`);
-    }
+    const mismatch = chapterMismatch(p.chapters, chapters, this.config.chapterToleranceMs);
+    if (mismatch) throw new Error(mismatch);
   }
 
   /** Runs ffmpeg, reporting progress (0-0.9) and stopping it when it stalls or is aborted. */

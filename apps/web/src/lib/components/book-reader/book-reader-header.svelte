@@ -1,34 +1,30 @@
 <script lang="ts">
   import { browser } from '$app/environment';
   import { faBookmark as farBookmark } from '@fortawesome/free-regular-svg-icons';
-  import {
-    faBookmark as fasBookmark,
-    faArrowLeft,
-    faArrowRight,
-    faCrosshairs,
-    faExpand,
-    faFlag,
-    faFont,
-    faReply,
-    faHighlighter,
-    faList,
-    faMagnifyingGlass,
-    faRotateLeft,
-    type IconDefinition
-  } from '@fortawesome/free-solid-svg-icons';
+  import { faBookmark as fasBookmark } from '@fortawesome/free-solid-svg-icons';
   import { readerImageGalleryPictures$ } from '$lib/components/book-reader/book-reader-image-gallery/book-reader-image-gallery';
-  import { mergeEntries } from '$lib/components/merged-header-icon/merged-entries';
-  import MergedHeaderIcon from '$lib/components/merged-header-icon/merged-header-icon.svelte';
   import Popover from '$lib/components/popover/popover.svelte';
-  import {
-    baseHeaderClasses,
-    baseIconClasses,
-    nTranslateXHeaderFa,
-    translateXHeaderFa
-  } from '$lib/css-classes';
-  import { customReadingPointEnabled$, viewMode$ } from '$lib/data/store';
+  import { baseHeaderClasses, baseIconClasses } from '$lib/css-classes';
+  import { customReadingPointEnabled$, readerToolbar$, viewMode$ } from '$lib/data/store';
   import { ViewMode } from '$lib/data/view-mode';
   import { dummyFn, isMobile$, isOnOldUrl } from '$lib/functions/utils';
+  import {
+    DOMAIN_HINT,
+    JUMP_BACK,
+    JUMP_FORWARD,
+    MENU_ICON,
+    MENU_TITLE,
+    READING_POINT_ICON,
+    READING_POINT_TITLE,
+    SAVE_PLACE_LABEL,
+    SAVE_PLACE_TITLE,
+    STATISTICS,
+    TOOLBAR_ACTIONS,
+    type HeaderEvent,
+    type ToolbarAction
+  } from '$lib/reader-toolbar/toolbar-entries';
+  import { resolveTopBar, visibleTopBar, type TopId } from '$lib/reader-toolbar/toolbar-layout';
+  import type { Placement } from '@popperjs/core';
   import { createEventDispatcher } from 'svelte';
   import Fa from 'svelte-fa';
 
@@ -51,367 +47,332 @@
   /** WP11b: a return marker (where you were reading before jumping) is set. */
   export let canReturnToMarker = false;
 
-  const dispatch = createEventDispatcher<{
-    tocClick: void;
-    bookmarkClick: void;
-    scrollToBookmarkClick: void;
-    jumpClick: void;
-    completeBook: void;
-    bookStateClick: void;
-    addToCollectionClick: void;
-    fullscreenClick: void;
-    showCustomReadingPoint: void;
-    setCustomReadingPoint: void;
-    resetCustomReadingPoint: void;
-    statisticsClick: void;
-    readerImageGalleryClick: void;
-    settingsClick: void;
-    domainHintClick: void;
-    homeClick: void;
-    libraryClick: void;
-    zenClick: void;
-    shortcutsClick: void;
-    searchClick: void;
-    appearanceClick: void;
-    notesClick: void;
-    returnMarkerClick: void;
-    addBookmarkClick: void;
-    jumpBackClick: void;
-    jumpForwardClick: void;
-    ankiEnrichClick: void;
-    pacerClick: void;
-    readAloudClick: void;
-  }>();
+  const dispatch = createEventDispatcher<Record<HeaderEvent, void>>();
 
-  const customReadingPointMenuItems: {
+  /** A labelled menu entry (one top-bar entry can give several, e.g. Back and Forward). */
+  interface MenuItem {
+    key: string;
     label: string;
-    action: any;
-  }[] = [
-    ...(hasCustomReadingPoint ? [{ label: 'Show Point', action: 'showCustomReadingPoint' }] : []),
-    { label: 'Set Point', action: 'setCustomReadingPoint' },
-    ...(hasCustomReadingPoint ? [{ label: 'Reset Point', action: 'resetCustomReadingPoint' }] : [])
-  ];
-
-  let customReadingPointMenuElm: Popover;
-
-  let menuItems: {
-    routeId: string;
-    label: string;
-    icon: IconDefinition;
     title: string;
-  }[] = [];
+    event: HeaderEvent;
+  }
 
   $: isOldUrl = browser && isOnOldUrl(window);
 
-  $: {
-    const items = [];
-
-    if (isOldUrl) {
-      items.push(mergeEntries.DOMAIN_HINT);
-    } else {
-      items.push(mergeEntries.STATISTICS);
-    }
-
-    if (hasText) {
-      items.push(mergeEntries.JUMP_TO_POSITION);
-      // WP11b
-      items.push(mergeEntries.ADD_BOOKMARK);
-      // WP14: on every device, with or without an audiobook.
-      items.push(mergeEntries.ANKI_ENRICH);
-      // Season 2 pacer
-      items.push(mergeEntries.PACER);
-      // Season 2 Phase 12 session 3
-      items.push(mergeEntries.READ_ALOUD);
-    }
-
-    if (hasBookState) {
-      items.push(mergeEntries.BOOK_STATUS);
-      items.push(mergeEntries.ADD_TO_COLLECTION);
-    }
-
-    if ($readerImageGalleryPictures$.length) {
-      items.push(mergeEntries.READER_IMAGE_GALLERY);
-    }
-
-    // WP10a: the touch fallback for Zen mode, and the cheat sheet.
-    items.push(mergeEntries.ZEN_MODE, mergeEntries.SHORTCUTS);
-
-    // WP7b: back to Home or the Library (the Manager is reached from Settings).
-    items.push(mergeEntries.SETTINGS, mergeEntries.HOME, mergeEntries.LIBRARY);
-
-    menuItems = items;
-  }
-
-  /**
-   * Below `sm` (phones) the header has room for about seven icons, so the
-   * less-used controls are hidden there and offered at the top of the
-   * collapsed menu instead (event the header control sends -> menu entry).
-   */
-  const compactEvents = {
-    notesClick: { label: 'Highlights and notes', title: 'Highlights and notes in this book (L)' },
-    scrollToBookmarkClick: {
-      label: 'Return to saved place',
-      title: 'Return to saved place (R)'
-    },
-    jumpForwardClick: { label: 'Forward again', title: 'Forward again (])' },
-    completeBook: { label: 'Complete book', title: 'Complete Book' },
-    showCustomReadingPoint: { label: 'Show reading point', title: 'Show Point' },
-    setCustomReadingPoint: { label: 'Set reading point', title: 'Set Point' },
-    resetCustomReadingPoint: { label: 'Reset reading point', title: 'Reset Point' },
-    fullscreenClick: { label: 'Fullscreen', title: 'Toggle Fullscreen' }
-  } as const;
-
-  const compactActions: Record<string, keyof typeof compactEvents> = {};
-
-  for (const [event, { label }] of Object.entries(compactEvents)) {
-    compactActions[label] = event as keyof typeof compactEvents;
-  }
+  $: customReadingPointMenuItems = [
+    ...(hasCustomReadingPoint
+      ? [{ label: 'Show Point', menuLabel: 'Show reading point', event: 'showCustomReadingPoint' }]
+      : []),
+    { label: 'Set Point', menuLabel: 'Set reading point', event: 'setCustomReadingPoint' },
+    ...(hasCustomReadingPoint
+      ? [
+          {
+            label: 'Reset Point',
+            menuLabel: 'Reset reading point',
+            event: 'resetCustomReadingPoint'
+          }
+        ]
+      : [])
+  ] as { label: string; menuLabel: string; event: HeaderEvent }[];
 
   $: showCustomReadingPointMenu = $customReadingPointEnabled$ || $viewMode$ === ViewMode.Paginated;
 
-  $: compactOnlyItems = [
-    ...(canNote ? [compactEvents.notesClick] : []),
-    ...(hasBookmarkData ? [compactEvents.scrollToBookmarkClick] : []),
-    ...(canJumpForward ? [compactEvents.jumpForwardClick] : []),
-    compactEvents.completeBook,
-    ...(showCustomReadingPointMenu
-      ? customReadingPointMenuItems.map(
-          ({ action }) => compactEvents[action as keyof typeof compactEvents]
-        )
-      : []),
-    ...(showFullscreenButton ? [compactEvents.fullscreenClick] : [])
-  ];
+  $: statistics = isOldUrl ? DOMAIN_HINT : STATISTICS;
 
-  /** A header icon that is only shown from `sm` up (it is in the menu below). */
-  const wideOnlyIconClasses = baseIconClasses.replace(/^flex /, 'hidden sm:flex ');
+  /**
+   * Reader toolbars session 1: each entry shows only when the device's list puts it in the
+   * bar or the menu AND its condition (unchanged from before) holds now.
+   */
+  let availability: Record<TopId, boolean>;
+  $: availability = {
+    toc: hasChapterData,
+    appearance: true,
+    search: canSearch,
+    notes: canNote,
+    jumpBackForward: canJumpBack || canJumpForward,
+    returnMarker: canReturnToMarker,
+    speed: $viewMode$ === ViewMode.Continuous && !$isMobile$,
+    gap: true,
+    images: $readerImageGalleryPictures$.length > 0,
+    jump: hasText,
+    addBookmark: hasText,
+    pacer: hasText,
+    readAloud: hasText,
+    shortcuts: true,
+    fullscreen: showFullscreenButton,
+    settings: true,
+    home: true,
+    menu: true,
+    savePlace: true,
+    returnToSaved: hasBookmarkData,
+    readingPoint: showCustomReadingPointMenu,
+    completeBook: true,
+    statistics: true,
+    ankiEnrich: hasText,
+    bookStatus: hasBookState,
+    addToCollection: hasBookState,
+    zen: true,
+    library: true
+  };
 
-  function dispatchCustomReadingPointAction(action: any) {
-    dispatch(action);
-    customReadingPointMenuElm.toggleOpen();
+  $: visible = visibleTopBar(resolveTopBar($readerToolbar$), (id) => availability[id]);
+  $: barIds = visible.bar;
+
+  /** A plain button's control (only called for ids in TOOLBAR_ACTIONS). */
+  const act = (id: TopId) => TOOLBAR_ACTIONS[id] as ToolbarAction;
+
+  function buildMenuItems(
+    ids: TopId[],
+    back: boolean,
+    forward: boolean,
+    pointItems: typeof customReadingPointMenuItems,
+    stats: ToolbarAction
+  ): MenuItem[] {
+    return ids.flatMap((id) => menuItemsFor(id, back, forward, pointItems, stats));
+  }
+
+  function menuItemsFor(
+    id: TopId,
+    back: boolean,
+    forward: boolean,
+    pointItems: typeof customReadingPointMenuItems,
+    stats: ToolbarAction
+  ): MenuItem[] {
+    switch (id) {
+      case 'jumpBackForward':
+        return [
+          ...(back ? [{ key: 'jumpBack', ...JUMP_BACK }] : []),
+          ...(forward ? [{ key: 'jumpForward', ...JUMP_FORWARD }] : [])
+        ];
+      case 'readingPoint':
+        return pointItems.map(({ label, menuLabel, event }) => ({
+          key: event,
+          label: menuLabel,
+          title: label,
+          event
+        }));
+      case 'savePlace':
+        return [
+          { key: id, label: SAVE_PLACE_LABEL, title: SAVE_PLACE_TITLE, event: 'bookmarkClick' }
+        ];
+      case 'statistics':
+        return [{ key: id, ...stats }];
+      default: {
+        const action = TOOLBAR_ACTIONS[id];
+        return action ? [{ key: id, ...action }] : [];
+      }
+    }
+  }
+
+  $: menuItems = buildMenuItems(
+    visible.menu,
+    canJumpBack,
+    canJumpForward,
+    customReadingPointMenuItems,
+    statistics
+  );
+
+  // The menu opens towards the middle of the screen, so it stays inside it (the phone fix of
+  // 2026-11-14: no fallback placements, so Popper's flip never picks the side).
+  let menuPlacement: Placement = 'bottom-end';
+  $: menuPlacement = barIds.indexOf('menu') >= barIds.length / 2 ? 'bottom-end' : 'bottom-start';
+
+  /** Test ids the e2e checks already use. */
+  const TEST_IDS: Partial<Record<TopId, string>> = {
+    notes: 'reader-notes-button',
+    returnMarker: 'reader-return-marker'
+  };
+
+  let buttons: Partial<Record<TopId, HTMLElement>> = {};
+  let menuPopover: Popover | undefined;
+  let readingPointPopover: Popover | undefined;
+
+  function runMenuItem(event: HeaderEvent) {
+    dispatch(event);
+    menuPopover?.toggleOpen();
+  }
+
+  function runReadingPointAction(event: HeaderEvent) {
+    dispatch(event);
+    readingPointPopover?.toggleOpen();
   }
 </script>
 
-<div class="flex justify-between bg-gray-700 px-4 md:px-8 {baseHeaderClasses}">
-  <div
-    class="header-icons -mr-8 flex min-w-0 transform-gpu overflow-x-auto xl:-mr-6 {nTranslateXHeaderFa}"
-  >
-    {#if hasChapterData}
-      <div
-        tabindex="0"
-        role="button"
-        title="Open Table of Contents"
-        class={baseIconClasses}
-        on:click={() => dispatch('tocClick')}
-        on:keyup={dummyFn}
-      >
-        <Fa icon={faList} />
-      </div>
-    {/if}
-    <div
-      tabindex="0"
-      role="button"
-      title="Appearance: theme, font, size, page"
-      class={baseIconClasses}
-      on:click={() => dispatch('appearanceClick')}
-      on:keyup={dummyFn}
-    >
-      <Fa icon={faFont} />
-    </div>
-    {#if canSearch}
-      <div
-        tabindex="0"
-        role="button"
-        title="Search in this book (/)"
-        class={baseIconClasses}
-        on:click={() => dispatch('searchClick')}
-        on:keyup={dummyFn}
-      >
-        <Fa icon={faMagnifyingGlass} />
-      </div>
-    {/if}
-    {#if canNote}
-      <div
-        tabindex="0"
-        role="button"
-        title="Highlights and notes in this book (L)"
-        class={wideOnlyIconClasses}
-        data-testid="reader-notes-button"
-        on:click={() => dispatch('notesClick')}
-        on:keyup={dummyFn}
-      >
-        <Fa icon={faHighlighter} />
-      </div>
-    {/if}
-    <div
-      tabindex="0"
-      role="button"
-      title="Save my place (B)"
-      class={baseIconClasses}
-      on:click={() => dispatch('bookmarkClick')}
-      on:keyup={dummyFn}
-    >
-      <Fa icon={isBookmarkScreen ? fasBookmark : farBookmark} />
-    </div>
-    {#if hasBookmarkData}
-      <div
-        tabindex="0"
-        role="button"
-        title="Return to saved place (R)"
-        class={wideOnlyIconClasses}
-        on:click={() => dispatch('scrollToBookmarkClick')}
-        on:keyup={dummyFn}
-      >
-        <Fa icon={faRotateLeft} />
-      </div>
-    {/if}
-    {#if canJumpBack}
-      <div
-        tabindex="0"
-        role="button"
-        title="Back to where you were before the jump ([)"
-        class={baseIconClasses}
-        on:click={() => dispatch('jumpBackClick')}
-        on:keyup={dummyFn}
-      >
-        <Fa icon={faArrowLeft} />
-      </div>
-    {/if}
-    {#if canJumpForward}
-      <div
-        tabindex="0"
-        role="button"
-        title="Forward again (])"
-        class={wideOnlyIconClasses}
-        on:click={() => dispatch('jumpForwardClick')}
-        on:keyup={dummyFn}
-      >
-        <Fa icon={faArrowRight} />
-      </div>
-    {/if}
-    {#if canReturnToMarker}
-      <div
-        tabindex="0"
-        role="button"
-        title="Back to where you were reading"
-        class={baseIconClasses}
-        data-testid="reader-return-marker"
-        on:click={() => dispatch('returnMarkerClick')}
-        on:keyup={dummyFn}
-      >
-        <Fa icon={faReply} />
-      </div>
-    {/if}
-    {#if $viewMode$ === ViewMode.Continuous && !$isMobile$}
-      <div
-        class="flex items-center px-4 text-xl xl:px-3 xl:text-lg"
-        title="Current Autoscroll Speed"
-      >
-        {autoScrollMultiplier}x
-      </div>
-    {/if}
+<div class="flex bg-gray-700 px-4 md:px-8 {baseHeaderClasses}">
+  <!-- One row in the device's order; it scrolls sideways when the icons don't fit. The gap
+       entry grows to push what follows it to the right edge (and shrinks to nothing when
+       the row is full). The negative margins keep the first and last icons where they were. -->
+  <div class="header-icons -mx-4 flex min-w-0 flex-1 overflow-x-auto xl:-mx-3">
+    {#each barIds as id (id)}
+      {#if id === 'gap'}
+        <div class="header-gap" aria-hidden="true" data-toolbar-id="gap" />
+      {:else if id === 'speed'}
+        <div
+          class="flex items-center px-4 text-xl xl:px-3 xl:text-lg"
+          title="Current Autoscroll Speed"
+          data-toolbar-id="speed"
+        >
+          {autoScrollMultiplier}x
+        </div>
+      {:else if id === 'jumpBackForward'}
+        {#if canJumpBack}
+          <div
+            tabindex="0"
+            role="button"
+            title={JUMP_BACK.title}
+            class={baseIconClasses}
+            data-toolbar-id="jumpBack"
+            on:click={() => dispatch('jumpBackClick')}
+            on:keyup={dummyFn}
+          >
+            <Fa icon={JUMP_BACK.icon} />
+          </div>
+        {/if}
+        {#if canJumpForward}
+          <div
+            tabindex="0"
+            role="button"
+            title={JUMP_FORWARD.title}
+            class={baseIconClasses}
+            data-toolbar-id="jumpForward"
+            on:click={() => dispatch('jumpForwardClick')}
+            on:keyup={dummyFn}
+          >
+            <Fa icon={JUMP_FORWARD.icon} />
+          </div>
+        {/if}
+      {:else if id === 'savePlace'}
+        <div
+          tabindex="0"
+          role="button"
+          title={SAVE_PLACE_TITLE}
+          class={baseIconClasses}
+          data-toolbar-id="savePlace"
+          on:click={() => dispatch('bookmarkClick')}
+          on:keyup={dummyFn}
+        >
+          <Fa icon={isBookmarkScreen ? fasBookmark : farBookmark} />
+        </div>
+      {:else if id === 'readingPoint'}
+        <div
+          tabindex="0"
+          role="button"
+          title={READING_POINT_TITLE}
+          class={baseIconClasses}
+          data-popover
+          data-toolbar-id="readingPoint"
+          bind:this={buttons.readingPoint}
+          on:click={() => readingPointPopover?.toggleOpen(buttons.readingPoint)}
+          on:keyup={dummyFn}
+        >
+          <Fa icon={READING_POINT_ICON} />
+        </div>
+      {:else if id === 'menu'}
+        <div
+          tabindex="0"
+          role="button"
+          title={MENU_TITLE}
+          aria-label="Menu"
+          class={baseIconClasses}
+          data-popover
+          data-toolbar-id="menu"
+          bind:this={buttons.menu}
+          on:click={() => menuPopover?.toggleOpen(buttons.menu)}
+          on:keyup={dummyFn}
+        >
+          <Fa icon={MENU_ICON} />
+        </div>
+      {:else if id === 'statistics'}
+        <div
+          tabindex="0"
+          role="button"
+          title={statistics.title}
+          class={baseIconClasses}
+          data-toolbar-id="statistics"
+          on:click={() => dispatch(statistics.event)}
+          on:keyup={dummyFn}
+        >
+          <Fa icon={statistics.icon} />
+        </div>
+      {:else if TOOLBAR_ACTIONS[id]}
+        <div
+          tabindex="0"
+          role="button"
+          title={act(id).title}
+          class={baseIconClasses}
+          data-toolbar-id={id}
+          data-testid={TEST_IDS[id]}
+          on:click={() => dispatch(act(id).event)}
+          on:keyup={dummyFn}
+        >
+          <Fa icon={act(id).icon} />
+        </div>
+      {/if}
+    {/each}
   </div>
 
-  <div class="flex shrink-0 transform-gpu {translateXHeaderFa}">
-    <div
-      tabindex="0"
-      role="button"
-      title="Complete Book"
-      class={wideOnlyIconClasses}
-      on:click={() => dispatch('completeBook')}
-      on:keyup={dummyFn}
-    >
-      <Fa icon={faFlag} />
-    </div>
-    {#if showCustomReadingPointMenu}
-      <div class="hidden sm:flex">
+  <!-- The two popovers live outside the scrolling row, which would clip them; the row's
+       buttons open them at their own place. -->
+  <div class="absolute left-0 top-0 h-0 w-0">
+    {#if barIds.includes('readingPoint')}
+      <Popover
+        placement="bottom"
+        fallbackPlacements={['bottom-end', 'bottom-start']}
+        yOffset={0}
+        bind:this={readingPointPopover}
+      >
+        <div class="w-40 bg-gray-700 md:w-32" slot="content">
+          {#each customReadingPointMenuItems as actionItem (actionItem.label)}
+            <div
+              tabindex="0"
+              role="button"
+              class="px-4 py-2 text-sm hover:bg-white hover:text-gray-700"
+              on:click={() => runReadingPointAction(actionItem.event)}
+              on:keyup={dummyFn}
+            >
+              {actionItem.label}
+            </div>
+          {/each}
+        </div>
+      </Popover>
+    {/if}
+    {#if barIds.includes('menu')}
+      {#key menuPlacement}
         <Popover
-          placement="bottom"
-          fallbackPlacements={['bottom-end', 'bottom-start']}
+          placement={menuPlacement}
+          fallbackPlacements={[]}
           yOffset={0}
-          bind:this={customReadingPointMenuElm}
+          bind:this={menuPopover}
         >
-          <div slot="icon" title="Open Custom Point Actions" class={baseIconClasses}>
-            <Fa icon={faCrosshairs} />
-          </div>
-          <div class="w-40 bg-gray-700 md:w-32" slot="content">
-            {#each customReadingPointMenuItems as actionItem (actionItem.label)}
+          <div
+            class="w-40 overflow-y-auto bg-gray-700 md:w-32"
+            style="max-height: calc(100vh - 4rem); max-height: calc(100dvh - 4rem)"
+            data-testid="reader-toolbar-menu"
+            slot="content"
+          >
+            {#each menuItems as item (item.key)}
               <div
                 tabindex="0"
                 role="button"
                 class="px-4 py-2 text-sm hover:bg-white hover:text-gray-700"
-                on:click={() => dispatchCustomReadingPointAction(actionItem.action)}
+                title={item.title}
+                data-toolbar-menu-item={item.key}
+                on:click={() => runMenuItem(item.event)}
                 on:keyup={dummyFn}
               >
-                {actionItem.label}
+                {item.label}
               </div>
             {/each}
           </div>
         </Popover>
-      </div>
+      {/key}
     {/if}
-    {#if showFullscreenButton}
-      <div
-        tabindex="0"
-        role="button"
-        title="Toggle Fullscreen"
-        class={wideOnlyIconClasses}
-        on:click={() => dispatch('fullscreenClick')}
-        on:keyup={dummyFn}
-      >
-        <Fa icon={faExpand} />
-      </div>
-    {/if}
-    <!-- The menu button is the header's last control: open leftwards from its right edge. -->
-    <MergedHeaderIcon
-      disableRouteNavigation
-      items={menuItems}
-      {compactOnlyItems}
-      placement="bottom-end"
-      fallbackPlacements={[]}
-      on:action={({ detail }) => {
-        if (compactActions[detail]) {
-          dispatch(compactActions[detail]);
-        } else if (detail === mergeEntries.STATISTICS.label) {
-          dispatch('statisticsClick');
-        } else if (detail === mergeEntries.JUMP_TO_POSITION.label) {
-          dispatch('jumpClick');
-        } else if (detail === mergeEntries.BOOK_STATUS.label) {
-          dispatch('bookStateClick');
-        } else if (detail === mergeEntries.ADD_TO_COLLECTION.label) {
-          dispatch('addToCollectionClick');
-        } else if (detail === mergeEntries.READER_IMAGE_GALLERY.label) {
-          dispatch('readerImageGalleryClick');
-        } else if (detail === mergeEntries.SETTINGS.label) {
-          dispatch('settingsClick');
-        } else if (detail === mergeEntries.DOMAIN_HINT.label) {
-          dispatch('domainHintClick');
-        } else if (detail === mergeEntries.HOME.label) {
-          dispatch('homeClick');
-        } else if (detail === mergeEntries.LIBRARY.label) {
-          dispatch('libraryClick');
-        } else if (detail === mergeEntries.ZEN_MODE.label) {
-          dispatch('zenClick');
-        } else if (detail === mergeEntries.SHORTCUTS.label) {
-          dispatch('shortcutsClick');
-        } else if (detail === mergeEntries.ADD_BOOKMARK.label) {
-          dispatch('addBookmarkClick');
-        } else if (detail === mergeEntries.ANKI_ENRICH.label) {
-          dispatch('ankiEnrichClick');
-        } else if (detail === mergeEntries.PACER.label) {
-          dispatch('pacerClick');
-        } else if (detail === mergeEntries.READ_ALOUD.label) {
-          dispatch('readAloudClick');
-        }
-      }}
-    />
   </div>
 </div>
 
 <style>
-  /* Safety net for screens narrower than the icons: the left row scrolls
-     sideways (no visible scrollbar) instead of pushing the menu off-screen.
-     Its negative right margin (-mr-8 / xl:-mr-6, twice the header translate)
-     lets it use the space the two translated groups leave between them. */
+  /* Safety net for screens narrower than the icons: the row scrolls sideways (no visible
+     scrollbar) instead of pushing icons off-screen. */
   .header-icons {
     scrollbar-width: none;
   }
@@ -423,5 +384,11 @@
   /* Icons keep their 48 px touch target rather than shrinking. */
   .header-icons > div {
     flex-shrink: 0;
+  }
+
+  /* The gap takes the free space, and none when the row is full. */
+  .header-icons > .header-gap {
+    flex: 1 1 0;
+    min-width: 0;
   }
 </style>
