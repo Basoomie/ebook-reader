@@ -22,6 +22,7 @@
   import { startAppearanceEffects } from '$lib/data/appearance-effects';
   import { libraryLook$ } from '$lib/library/settings';
   import { isMobile, isMobile$ } from '$lib/functions/utils';
+  import { startKeyboardInset } from '$lib/functions/on-screen-keyboard';
   import { MetaTags } from 'svelte-meta-tags';
   import { onMount } from 'svelte';
   import '../app.scss';
@@ -56,6 +57,16 @@
       );
     } catch (error) {
       console.warn('Appearance: not started', error);
+      return undefined;
+    }
+  });
+
+  // The on-screen keyboard: sheets and reader panels sit on top of it (on-screen-keyboard.ts).
+  onMount(() => {
+    try {
+      return startKeyboardInset(window);
+    } catch (error) {
+      console.warn('Keyboard inset: not started', error);
       return undefined;
     }
   });
