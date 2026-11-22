@@ -173,8 +173,10 @@ export function stage4AskKey(db: Database.Database): string {
  * changing the evidence format (STAGE4_EVIDENCE_VERSION would change every book's hash).
  * 2: Calibre's title and authors as stage 4 found them, not its own writes read back (stop 2 of
  * the series-order follow-up: 11,991 books were asked again for nothing).
+ * 3: the same evidence, built again so the questions build 2 never queued are asked (its
+ * restart kept the ask key: 503 books' new evidence went unasked).
  */
-export const STAGE4_EVIDENCE_BUILD = 2;
+export const STAGE4_EVIDENCE_BUILD = 3;
 const evidenceBuildOf = (ai: Stage4AiProgress) => ai.evidenceBuild ?? 1;
 
 /** What the decisions depend on besides the answers: decided again when it changes. */
@@ -468,6 +470,10 @@ export class Stage4Ai {
       // the old evidence queued); questions never sent at an old evidence are dropped by
       // putItems, answers are kept.
       ai.evidenceBuild = STAGE4_EVIDENCE_BUILD;
+      // The models phase queues questions only when its ask key changes: without this a book
+      // whose evidence came out new was never asked (stop 2: 503 books, decided by the rules
+      // alone, ~300 of them proposing to remove a series).
+      ai.askKey = null;
       ai.items = 0;
       ai.labeledItems = 0;
       ai.decided = 0;
