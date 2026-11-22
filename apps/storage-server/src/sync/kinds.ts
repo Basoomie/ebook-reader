@@ -1037,9 +1037,10 @@ const statSessionKind: KindSpec = {
 /**
  * kind "stat-session-fix": id = the session's id, a correction any device may make
  * (decided with the user, WP12 plan): `{excluded: true}` leaves the session out of
- * every total; `seconds` / `chars` replace its numbers. The session itself is never
- * changed. Deleting the record undoes the correction. The session need not have
- * arrived yet (records of one push come in any order).
+ * every total; `seconds` / `chars` replace its numbers; `{deleted: true}` (the Stats
+ * page's Delete, 2026-11-22) hides the session from the log and every total. The
+ * session itself is never changed. Deleting the record undoes the correction. The
+ * session need not have arrived yet (records of one push come in any order).
  */
 const statSessionFixKind: KindSpec = {
   policy: () => 'lww',
@@ -1059,12 +1060,16 @@ const statSessionFixKind: KindSpec = {
       if (obj.excluded !== true) throw new RecordError('invalid_data', 'excluded must be true');
       out.excluded = true;
     }
+    if (obj.deleted !== undefined) {
+      if (obj.deleted !== true) throw new RecordError('invalid_data', 'deleted must be true');
+      out.deleted = true;
+    }
     if (obj.seconds !== undefined) {
       out.seconds = boundedWhole(obj.seconds, 'seconds', MAX_SESSION_SECONDS);
     }
     if (obj.chars !== undefined) out.chars = boundedWhole(obj.chars, 'chars', MAX_SESSION_CHARS);
     if (!Object.keys(out).length) {
-      throw new RecordError('invalid_data', 'a fix needs excluded, seconds or chars');
+      throw new RecordError('invalid_data', 'a fix needs excluded, deleted, seconds or chars');
     }
     return { bookId: parsed.bookId, data: out };
   },

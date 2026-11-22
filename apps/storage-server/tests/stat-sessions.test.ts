@@ -213,6 +213,26 @@ describe('stat-session-fix kind', () => {
       ),
     ).toEqual(['invalid_data', 'invalid_data', 'invalid_data', 'invalid_id', 'unknown_book']);
   });
+
+  it('lets any device delete a session (Delete on the Stats page), only as deleted: true', async () => {
+    const t = await setup();
+    const book = insertBook(t.db);
+    const a = await t.device('A');
+    const b = await t.device('B');
+    const id = `${book}:${a.id}:${randomUUID()}`;
+    expect(
+      codes(
+        await b.push([
+          { kind: 'stat-session-fix', id, updatedAt: 1, data: { deleted: false } },
+          { kind: 'stat-session-fix', id, updatedAt: 2, data: { deleted: true, junk: 1 } },
+        ]),
+      ),
+    ).toEqual(['invalid_data', 'applied']);
+    const stored = t.db
+      .prepare(`SELECT data FROM sync_records WHERE kind = 'stat-session-fix' AND id = ?`)
+      .get(id) as { data: string };
+    expect(JSON.parse(stored.data)).toEqual({ deleted: true });
+  });
 });
 
 describe('stat-goal kind (WP12c)', () => {

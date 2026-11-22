@@ -2,7 +2,7 @@
  * GENERATED FILE, DO NOT EDIT. The storage server copy of the Stats page code, bundled
  * from the web app (apps/web/src/lib/stats/server-entry.ts).
  * Rebuild with `pnpm build:server-stats` in apps/web after changing that code.
- * build: 93f205ef019227b1
+ * build: 498931e088698832
  */
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
@@ -162,6 +162,7 @@ function statEntriesFromRecords(records) {
       const seconds = source === "completion" ? 0 : count(d.seconds);
       const chars = count(d.chars);
       const fix = fixes.get(r.id);
+      if (fix?.deleted === true) continue;
       const corrected = !!fix && (typeof fix.seconds === "number" || typeof fix.chars === "number");
       out.push({
         id: r.id,
