@@ -51,16 +51,32 @@ export function expectedListCost(
   s: AiSettings,
   model: string,
   promptChars: number,
+  /**
+   * A stage with its own request options: the average of this stage's answers only, and its
+   * expected output before it has any (whole-book answers are nothing like short questions).
+   */
+  own?: { stage: string; expectedOutputTokens?: number },
 ): number {
   const price = priceOf(s, model);
   if (!price) return Infinity;
-  const rows = db
-    .prepare(
-      `SELECT input_tokens, output_tokens, cache_read_tokens FROM ai_requests
+  const rows = (
+    own
+      ? db
+          .prepare(
+            `SELECT input_tokens, output_tokens, cache_read_tokens FROM ai_requests
+             WHERE model = ? AND stage = ? AND state IN ('answered', 'invalid', 'blocked')
+               AND input_tokens IS NOT NULL
+             ORDER BY id DESC LIMIT 50`,
+          )
+          .all(model, own.stage)
+      : db
+          .prepare(
+            `SELECT input_tokens, output_tokens, cache_read_tokens FROM ai_requests
        WHERE model = ? AND state IN ('answered', 'invalid', 'blocked') AND input_tokens IS NOT NULL
        ORDER BY id DESC LIMIT 50`,
-    )
-    .all(model) as {
+          )
+          .all(model)
+  ) as {
     input_tokens: number;
     output_tokens: number;
     cache_read_tokens: number | null;
@@ -90,7 +106,7 @@ export function expectedListCost(
     price,
     {
       input: Math.ceil(promptChars * 1.2),
-      output: ASSUMED_OUTPUT_TOKENS,
+      output: own?.expectedOutputTokens ?? ASSUMED_OUTPUT_TOKENS,
       cacheRead: 0,
       cacheWrite: 0,
     },

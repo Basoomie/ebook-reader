@@ -593,18 +593,33 @@ export class AiRunner {
   private callInput<E>(spec: AiStageSpec<E>, row: ReqRow, s: AiSettings): CallInput | null {
     const ev = this.evidenceOf(spec, row.item_key);
     if (!ev) return null;
+    const o = spec.request;
     return {
       model: row.model,
       system: spec.system,
       user: spec.userText(ev.evidence),
       schema: s.structuredOutputs ? { name: spec.schemaName, schema: spec.schema } : null,
-      maxTokens: s.maxTokens,
+      maxTokens: o?.maxTokens ?? s.maxTokens,
+      ...(o?.effort ? { effort: o.effort } : {}),
+      ...(o?.maxTokens ? { outputLimit: o.maxTokens } : {}),
+      ...(o?.stream ? { stream: true } : {}),
     };
   }
 
   /** How many of `n` requests fit under the limit, and what one is expected to cost. */
-  private fits(model: string, n: number, promptChars: number, batch: boolean, s: AiSettings) {
-    const one = expectedListCost(this.db, s, model, promptChars) * (batch ? s.batchPriceFactor : 1);
+  private fits(
+    model: string,
+    n: number,
+    promptChars: number,
+    batch: boolean,
+    s: AiSettings,
+    spec?: AiStageSpec<never>,
+  ) {
+    const est = spec?.request
+      ? { stage: spec.stage, expectedOutputTokens: spec.request.expectedOutputTokens }
+      : undefined;
+    const one =
+      expectedListCost(this.db, s, model, promptChars, est) * (batch ? s.batchPriceFactor : 1);
     // This month's spending of every feature, their batches' holds and calls in flight.
     const r = this.core.room();
     const room = (s.spendLimitUsd ?? 0) - r.spentUsd - r.reservedUsd;
@@ -632,7 +647,7 @@ export class AiRunner {
     if (!inputs.length) return { sent: 0, answered: 0, wait: null };
     const avgChars =
       inputs.reduce((a, x) => a + x.call.system.length + x.call.user.length, 0) / inputs.length;
-    const f = this.fits(model, inputs.length, avgChars, true, s);
+    const f = this.fits(model, inputs.length, avgChars, true, s, spec);
     if (f.fit === 0) return { sent: 0, answered: 0, wait: this.limitWait(f.one) };
     const take = inputs.slice(0, f.fit);
     const provider = providerOf(model);
@@ -739,7 +754,7 @@ export class AiRunner {
     if (!calls.length) return { sent: 0, answered: 0, wait: null };
     const avgChars =
       calls.reduce((a, x) => a + x.call.system.length + x.call.user.length, 0) / calls.length;
-    const f = this.fits(model, calls.length, avgChars, false, s);
+    const f = this.fits(model, calls.length, avgChars, false, s, spec);
     if (f.fit === 0) {
       // Room held by calls in flight comes back when they are recorded: no pause for it.
       if (this.core.callsInFlight() > 0) return { sent: 0, answered: 0, wait: null };
@@ -796,7 +811,10 @@ export class AiRunner {
         attempts++;
         this.db.prepare('UPDATE ai_requests SET attempts = ? WHERE id = ?').run(attempts, row.id);
         try {
-          const res = await client.call(call, s.requestTimeoutSeconds * 1000);
+          const res = await client.call(
+            call,
+            (spec.request?.timeoutSeconds ?? s.requestTimeoutSeconds) * 1000,
+          );
           this.record(spec, row.id, model, res, false, s);
           ended();
           return;

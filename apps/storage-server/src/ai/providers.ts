@@ -30,6 +30,13 @@ export interface CallInput {
   schema: { name: string; schema: Record<string, unknown> } | null;
   /** Claude: max_tokens (thinking included). */
   maxTokens: number;
+  /**
+   * Request options of a stage that sets them (AiStageSpec.request); absent = the request as
+   * before. `outputLimit`: GPT's max_completion_tokens; `stream`: direct calls stream.
+   */
+  effort?: import('./types').AiEffort;
+  outputLimit?: number;
+  stream?: boolean;
 }
 
 export interface Usage {
@@ -241,10 +248,17 @@ function anthropicParams(input: CallInput): Anthropic.MessageCreateParamsNonStre
     max_tokens: input.maxTokens,
     system: input.system,
     messages: [{ role: 'user', content: input.user }],
-    ...(input.schema
-      ? { output_config: { format: { type: 'json_schema', schema: input.schema.schema } } }
+    ...(input.schema || input.effort
+      ? {
+          output_config: {
+            ...(input.effort ? { effort: input.effort } : {}),
+            ...(input.schema
+              ? { format: { type: 'json_schema' as const, schema: input.schema.schema } }
+              : {}),
+          },
+        }
       : {}),
-  };
+  } as Anthropic.MessageCreateParamsNonStreaming;
 }
 
 export class AnthropicProvider implements ProviderClient {
@@ -281,6 +295,12 @@ export class AnthropicProvider implements ProviderClient {
 
   async call(input: CallInput, timeoutMs: number): Promise<CallResult> {
     try {
+      if (input.stream) {
+        const stream = this.client.messages.stream(anthropicParams(input), {
+          timeout: timeoutMs,
+        });
+        return anthropicResult(await stream.finalMessage());
+      }
       const m = await this.client.messages.create(anthropicParams(input), { timeout: timeoutMs });
       return anthropicResult(m);
     } catch (err) {
@@ -419,6 +439,35 @@ function openaiBody(input: CallInput) {
           json_schema: { name: input.schema.name, schema: input.schema.schema, strict: true },
         }
       : { type: 'json_object' as const },
+    ...(input.effort ? { reasoning_effort: input.effort } : {}),
+    ...(input.outputLimit ? { max_completion_tokens: input.outputLimit } : {}),
+  };
+}
+
+/** A streamed chat completion put back together (content, refusal, finish reason, usage). */
+async function collectStream(
+  chunks: AsyncIterable<{
+    choices?: {
+      finish_reason?: string | null;
+      delta?: { content?: string | null; refusal?: string | null };
+    }[];
+    usage?: ChatCompletionLike['usage'];
+  }>,
+): Promise<ChatCompletionLike> {
+  let content = '';
+  let refusal = '';
+  let finish: string | null = null;
+  let usage: ChatCompletionLike['usage'] = null;
+  for await (const c of chunks) {
+    const ch = c.choices?.[0];
+    if (ch?.delta?.content) content += ch.delta.content;
+    if (ch?.delta?.refusal) refusal += ch.delta.refusal;
+    if (ch?.finish_reason) finish = ch.finish_reason;
+    if (c.usage) usage = c.usage;
+  }
+  return {
+    choices: [{ finish_reason: finish, message: { content, refusal: refusal || null } }],
+    usage,
   };
 }
 
@@ -475,9 +524,22 @@ export class OpenAiProvider implements ProviderClient {
 
   async call(input: CallInput, timeoutMs: number): Promise<CallResult> {
     try {
-      const c = await this.client.chat.completions.create(openaiBody(input), {
-        timeout: timeoutMs,
-      });
+      if (input.stream) {
+        const body = {
+          ...openaiBody(input),
+          stream: true as const,
+          stream_options: { include_usage: true },
+        };
+        const chunks = await this.client.chat.completions.create(
+          body as unknown as OpenAI.ChatCompletionCreateParamsStreaming,
+          { timeout: timeoutMs },
+        );
+        return openaiResult(await collectStream(chunks as never));
+      }
+      const c = await this.client.chat.completions.create(
+        openaiBody(input) as OpenAI.ChatCompletionCreateParamsNonStreaming,
+        { timeout: timeoutMs },
+      );
       return openaiResult(c as unknown as ChatCompletionLike);
     } catch (err) {
       const b = this.blocked(err);
