@@ -187,6 +187,11 @@ export interface AudioMergeConfig {
   minFreeMb: number;
   /** A merge that makes no progress this long is stopped (minutes). */
   stallMinutes: number;
+  /**
+   * The check after a merge: how far (ms) a chapter of the merged file may start from where
+   * it was written (the chapter list is otherwise compared exactly).
+   */
+  chapterToleranceMs: number;
   /** Owner, group and mode given to new files; null = left as created. */
   fileUid: number | null;
   fileGid: number | null;
@@ -199,6 +204,7 @@ export const DEFAULT_AUDIO_MERGE: AudioMergeConfig = {
   bitrate: '128k',
   minFreeMb: 2048,
   stallMinutes: 10,
+  chapterToleranceMs: 5,
   fileUid: null,
   fileGid: null,
   fileMode: null,
@@ -777,6 +783,15 @@ export function parseAudioConfig(env: Env, warnings: string[]): AudioConfig {
         m.stallMinutes,
         0.05,
         24 * 60,
+        false,
+        warnings,
+      ),
+      chapterToleranceMs: parseNumber(
+        'AUDIO_MERGE_CHAPTER_TOLERANCE_MS',
+        env.AUDIO_MERGE_CHAPTER_TOLERANCE_MS,
+        m.chapterToleranceMs,
+        0,
+        60_000,
         false,
         warnings,
       ),
