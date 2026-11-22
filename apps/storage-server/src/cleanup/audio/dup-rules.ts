@@ -44,9 +44,10 @@ export interface CopyFacts {
   hasCover: boolean;
   asinInName: boolean;
   /**
-   * Rule 0 from the file checks: 'damaged' only when confirmed (ffmpeg and, for AAC, faad2
-   * both fail), 'suspect' when only one decoder failed or nothing confirmed it yet, 'ok' when a
-   * full decode was clean, null when only the short plays at the ends were checked and passed.
+   * Rule 0 from the file checks (`damageOf` in stage3-dups.ts): 'damaged' when the full ffmpeg
+   * decode reports more than `dupNoticeableErrors` bad frames or doesn't get through the file;
+   * 'ok' when it gets through with none or a few (they play normally); null when no full decode
+   * ran. faad2 decides nothing (it stops at the first bad frame). 'suspect' is no longer given.
    */
   damage: 'damaged' | 'suspect' | 'ok' | null;
   damageDetail?: string | null;

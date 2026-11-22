@@ -130,8 +130,8 @@ describe('the Audiobooks tab, stage 3 wording', () => {
       review: 20,
       'pairs.title.different': 41,
       damaged_groups: 3,
-      'decodes.ffmpeg.errors': 37,
-      'decodes.faad.errors': 5
+      'decodes.fewBadFrames': 37,
+      'decodes.undecodable': 1
     });
     expect(lines[0]).toBe(
       '592 recordings have more than one copy (found by identical files 400, same ASIN in the names 162, same title and volume 30).'
@@ -144,8 +144,23 @@ describe('the Audiobooks tab, stage 3 wording', () => {
     );
     expect(lines).toContain('41 pairs with the same name turned out to be different recordings.');
     expect(lines).toContain(
-      'Played all the way through: 37 with errors in ffmpeg, of which 5 also failed in the second player (faad2).'
+      'Played all the way through: 37 files have a few bad frames at the very start or end and play normally (not damaged).'
     );
+    expect(lines).toContain(
+      '1 file uses xHE-AAC, which this ffmpeg can’t decode, so it wasn’t played through.'
+    );
+    expect(lines.join(' ')).not.toContain('faad2');
+  });
+
+  it('a copy with a few bad frames plays normally; nothing says "possibly damaged"', () => {
+    const copy = { damage: 'ok', damageDetail: 'a.m4b: 7 bad frames at most, too few to hear' };
+    expect(damageLine(copy as never)).toBe(
+      'Played all the way through, plays normally: a.m4b: 7 bad frames at most, too few to hear'
+    );
+    expect(damageLine({ damage: 'ok', damageDetail: null } as never)).toBe(
+      'Played all the way through without errors.'
+    );
+    expect(damageLine({ damage: 'suspect', damageDetail: 'x' } as never)).toBeNull();
   });
 
   it('the gate: the score and each miss', () => {
@@ -194,7 +209,6 @@ describe('the Audiobooks tab, stage 3 wording', () => {
     expect(damageLine(copy({ damage: 'damaged', damageDetail: 'a.m4b: ffmpeg errors' }))).toBe(
       'Damaged: a.m4b: ffmpeg errors'
     );
-    expect(damageLine(copy({ damage: 'suspect', damageDetail: 'x' }))).toMatch(/not confirmed/);
     expect(damageLine(copy())).toBeNull();
     expect(
       scoresLine({

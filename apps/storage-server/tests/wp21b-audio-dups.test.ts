@@ -36,7 +36,7 @@ import {
 import { toolArgs, wavFormat } from '../src/cleanup/audio/probe';
 import { compareFrames, FrameCollector, type FrameList } from '../src/cleanup/audio/dup-frames';
 import { folderBooks } from '../src/cleanup/audio/book-units';
-import { pairVerdict, spansOf, windowKey } from '../src/cleanup/audio/stage3-dups';
+import { pairVerdict, spansOf, stage3Counts, windowKey } from '../src/cleanup/audio/stage3-dups';
 import { initCleanupDatabase } from '../src/cleanup/cleanup-db';
 import { DISK_OWNERS } from '../src/cleanup/disk-lock';
 import { getSettings, updateSettings } from '../src/cleanup/settings';
@@ -103,6 +103,10 @@ describe('title keys', () => {
       titleKey('[3巻] マジック・ツリーハウス 第3巻 アマゾン大脱出_ (KADOKAWA) [B07MFS71CF]'),
     );
     expect(titleKey('風花帖 [audiobook.jp 241553]')).toBe(titleKey('風花帖'));
+    // A copy number (stage 6 writes ` (2)` on a name clash) is not part of the title, so
+    // `X (1)` and `X (2)` are found by the title test (rank 3) before the in-folder test.
+    expect(titleKey('本E (1)')).toBe(titleKey('本E (2)'));
+    expect(printedVolume('本E (2)')).toBeNull();
     expect(titleKey('双血の墓碑銘 ３ ガガガ文庫_ (小学館) [B0DPQHMHFV]')).toBe(
       titleKey('[03] 双血の墓碑銘 ３ [B0DPQHMHFV]'),
     );
@@ -477,6 +481,50 @@ describe('cleanup.db v10', () => {
     expect(getSettings(db).audiobooks.dupSameScore).toBe(0.8);
     expect(() => updateSettings(db, { audiobooks: { dupSameScore: 2 } })).toThrow(/0\.5 to 1/);
     expect(getSettings(db).gate.audiobookPairsFile).toBe('');
+  });
+
+  it('the card’s decode counts: files on disk only, a few bad frames vs damaged vs xHE-AAC, no faad2', () => {
+    const db = freshDb();
+    const file = db.prepare(
+      `INSERT INTO audio_files (root, rel_path, ext, kind, size, mtime_ms, dev, ino, nlink, first_seen_at, seen_at, gone_at)
+       VALUES ('torrents', ?, 'm4b', 'audio', 1, 1, 1, ?, 1, 1, 1, ?)`,
+    );
+    const health = db.prepare(
+      `INSERT INTO audio_file_health (file_id, size, mtime_ms, codec, profile, checked_at) VALUES (?, 1, 1, 'aac', ?, 1)`,
+    );
+    const decode = db.prepare(
+      `INSERT INTO audio_full_decodes (file_id, decoder, size, mtime_ms, ok, error_count, detail, checked_at)
+       VALUES (?, ?, 1, 1, ?, ?, ?, 1)`,
+    );
+    const add = (
+      name: string,
+      profile: string,
+      ok: number,
+      errors: number,
+      opts: { gone?: boolean; faad?: boolean; detail?: string } = {},
+    ) => {
+      const id = Number(
+        file.run(name, Math.floor(Math.random() * 1e9), opts.gone ? 2 : null).lastInsertRowid,
+      );
+      health.run(id, profile);
+      decode.run(id, 'ffmpeg', ok, errors, opts.detail ?? null);
+      if (opts.faad) decode.run(id, 'faad', 0, 1, null);
+    };
+    add('clean.m4b', 'LC', 1, 0);
+    add('edges1.m4b', 'LC', 0, 31, { faad: true });
+    add('edges2.m4b', 'LC', 0, 2, { faad: true });
+    add('noisy.m4b', 'LC', 0, 500);
+    add('stuck.m4b', 'LC', 0, 0, { detail: 'took too long' });
+    add('xhe.m4b', 'xHE-AAC', 0, 2, { faad: true });
+    add('deleted-copy.m4b', 'LC', 0, 31, { gone: true });
+    const counts = stage3Counts(db, 'none');
+    expect(counts).toMatchObject({
+      'decodes.clean': 1,
+      'decodes.fewBadFrames': 2,
+      'decodes.damaged': 2,
+      'decodes.undecodable': 1,
+    });
+    expect(Object.keys(counts).some((k) => k.includes('faad'))).toBe(false);
   });
 });
 
@@ -936,8 +984,10 @@ describe.skipIf(!HAS_TOOLS)('stage 3 on fixture audio with ffmpeg and fpcalc', (
     put(torrents, `${tmw}/[作者C] 本C/[02] 本C 2.m4b`, fC2);
     put(torrents, `${tmw}/[作者D] 本D/本D.m4b`, fD1);
     put(torrents, 'MAM/本D/本D.m4b', fD2);
-    put(torrents, 'Discord/moved/本E/本E (1).m4b', fE96);
-    put(torrents, 'Discord/moved/本E/本E (2).m4b', fE64);
+    // Two names with their own titles (not a copy number, not parts), so only the in-folder
+    // test pairs them: `本E (1)`/`本E (2)` read as one title since copy numbers are stripped.
+    put(torrents, 'Discord/moved/本E/本E 甲.m4b', fE96);
+    put(torrents, 'Discord/moved/本E/本E 乙.m4b', fE64);
     put(torrents, `${tmw}/[作者G] 本G/[01] 本G 1 [B0A0000009].m4b`, fG96);
     put(torrents, `${tmw}/[作者N] 本N/本N.m4b`, fs.readFileSync(nNested));
     put(torrents, 'Discord/moved/本N/本N.m4b', fs.readFileSync(nPlain));
@@ -1032,7 +1082,7 @@ describe.skipIf(!HAS_TOOLS)('stage 3 on fixture audio with ffmpeg and fpcalc', (
           file_count: number;
           multi_class: string;
         };
-      expect(unit('Discord/moved/本E/本E (1).m4b')).toMatchObject({
+      expect(unit('Discord/moved/本E/本E 甲.m4b')).toMatchObject({
         unit_kind: 'file',
         file_count: 1,
       });
@@ -1129,7 +1179,7 @@ describe.skipIf(!HAS_TOOLS)('stage 3 on fixture audio with ffmpeg and fpcalc', (
       // 本B, 本E, 本G: the same recording but encoded separately: not proven, every copy stays.
       for (const rel of [
         `${tmw12}/本B/本B.m4b`,
-        'Discord/moved/本E/本E (1).m4b',
+        'Discord/moved/本E/本E 甲.m4b',
         `${tmw}/[作者G] 本G/[01] 本G 1 [B0A0000009].m4b`,
       ]) {
         const g = groupOf(rel)!;
@@ -1138,7 +1188,7 @@ describe.skipIf(!HAS_TOOLS)('stage 3 on fixture audio with ffmpeg and fpcalc', (
           /not proven .* every copy stays: the audio is not the same frame by frame/,
         );
       }
-      expect(groupOf('Discord/moved/本E/本E (1).m4b')!.first_test).toBe('in_folder');
+      expect(groupOf('Discord/moved/本E/本E 甲.m4b')!.first_test).toBe('in_folder');
       expect(copyOf('_Unknown/本G/本G 1 [B0A0000009].m4b')!.kind).toBe('library_only');
       // 本C: other volumes never paired; 本D: same title, other recording.
       expect(groupOf(`${tmw}/[作者C] 本C/[02] 本C 2.m4b`)).toBeUndefined();
