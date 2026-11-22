@@ -12,6 +12,7 @@ import { execFileSync } from 'child_process';
 import { randomUUID } from 'crypto';
 import fs from 'fs';
 import path from 'path';
+import { gunzipSync } from 'zlib';
 import { describe, expect, it } from 'vitest';
 import { updateAudioStage } from '../src/cleanup/audio/audio-stages';
 import { evaluate, exactTitle, type UnitFacts } from '../src/cleanup/audio/online-match';
@@ -24,7 +25,13 @@ import {
   type PairLook,
   type SharingUnit,
 } from '../src/cleanup/audio/online-records';
-import { audibleProduct, audibleSearch } from '../src/cleanup/audio/online-requests';
+import { RECORD_CORRECTIONS } from '../src/cleanup/audio/online-corrections';
+import {
+  abjpProduct,
+  abjpSearch,
+  audibleProduct,
+  audibleSearch,
+} from '../src/cleanup/audio/online-requests';
 import { AudioStage3 } from '../src/cleanup/audio/stage3-dups';
 import { AudioStage4, STAGE4_UNITS_VERSION } from '../src/cleanup/audio/stage4-online';
 import { initCleanupDatabase } from '../src/cleanup/cleanup-db';
@@ -866,6 +873,68 @@ describe.skipIf(!HAS_TOOLS)('never compared by stage 3: compared here with the r
     ).toEqual(before);
     expect(units(db).map((x) => x.class)).toEqual(['auto', 'auto', 'review', 'review']);
   }, 240_000);
+});
+
+describe('a record you chose (WP21f-2 stop B2, online-corrections.ts)', () => {
+  const FIX = path.join(__dirname, 'fixtures', 'wp21f2');
+  const stored = (name: string) => gunzipSync(fs.readFileSync(path.join(FIX, `${name}.gz`)));
+
+  it('影踏み: the chosen audiobook.jp record decides past the length check; the proven same copy keeps it too', async () => {
+    const db = freshDb();
+    const chosen = RECORD_CORRECTIONS.find((c) => c.id === '235405')!;
+    // audiobook.jp's bare tag form (as the live files): the artist names the cast.
+    const tags = { artist: '池田秀一, 関智一, 河西健吾, 斉藤佑圭', genre: 'Audiobook' };
+    seedStage3(
+      db,
+      [
+        // 8:43:00, 5.6 min shorter than the record: the search alone never reads it.
+        { key: 'c1', rel: chosen.torrent, name: '影踏み', seconds: 31380, tags },
+        {
+          key: 'c2',
+          rel: 'TMW Part 17/[横山 秀夫] 影踏み/影踏み [audiobook.jp 235139].m4b',
+          name: '影踏み [audiobook.jp 235139]',
+          seconds: 31713,
+          tags,
+        },
+      ],
+      // Stage 3's live measure: start 1.00, end 0.992 shifted 333 s, middle 0.93.
+      [{ a: 'c1', b: 'c2', test: 'title', verdict: 'same', fp: 'same' }],
+    );
+    const { stage4, queue } = makeStage(db);
+    // The stored live pages (the search finds 235405 at 8:48:37; 235139 is not a page).
+    const pages = new Map<string, Buffer>([
+      [abjpSearch('影踏み').url, stored('abjp-search-kagefumi')],
+      [abjpProduct('235405').url, stored('abjp-product-235405')],
+    ]);
+    stage4.restart();
+    const asked: string[] = [];
+    await runToEnd(db, stage4, queue, pages, asked);
+    expect(units(db).map((u) => [u.name, u.class, u.store_id, u.detail])).toEqual([
+      ['影踏み', 'auto', '235405', 'correction'],
+      ['影踏み [audiobook.jp 235139]', 'auto', '235405', 'abjp_search'],
+    ]);
+    // The chosen record's own checks are kept (the length fails; it decides all the same).
+    const cand = db
+      .prepare(
+        `SELECT c.via, c.verdict FROM audio_online_candidates c JOIN audio_online_units u ON u.id = c.unit_id
+         WHERE u.name = '影踏み' AND c.store_id = '235405'`,
+      )
+      .get() as { via: string; verdict: string };
+    expect(cand.via).toBe('correction');
+    expect(cand.verdict).toContain('runtime');
+    // The one-record rule: stage 3 proved them the same recording, so both keep the record.
+    expect(stage4.progress()!.records).toMatchObject({ shared: 1, review: 0, lookedUpAgain: 0 });
+    // The chosen unit asked only for its record; nothing was searched for it.
+    expect(asked.filter((u) => u === abjpProduct('235405').url)).toHaveLength(1);
+  }, 120_000);
+
+  it('every entry names a torrent file, a store and an id', () => {
+    for (const c of RECORD_CORRECTIONS) {
+      expect(c.torrent).not.toMatch(/^(torrents:|\/)/);
+      expect(['audible', 'kikubon', 'audiobookjp']).toContain(c.source);
+      expect(c.id).toMatch(/^[0-9A-Z]+$/);
+    }
+  });
 });
 
 describe('cleanup.db v18', () => {
