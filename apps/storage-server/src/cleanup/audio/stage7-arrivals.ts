@@ -1838,6 +1838,7 @@ export class AudioStage7 {
             mode: p.changes.mode,
             ledger: p.changes.ledger,
             candidates: p.changes.candidates,
+            seen: p.changes.seen,
             counts: p.changes.counts,
             apply: p.changes.apply,
             snapshot: p.changes.snapshot,

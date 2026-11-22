@@ -7,8 +7,11 @@
  * Per book:
  *  - metadata: our fields (absMetadata's keys) whose decided value changed since we wrote them.
  *    A field whose metadata.json value now differs from what we wrote is yours (ABS writes your
- *    edit there, proven at B0): it keeps your value; where your edit and our new value differ for
- *    the same field, that field goes to review ("write the rest, review conflicts": user).
+ *    edit there, proven at B0) unless the evidence says Audiobookshelf changed it (`fieldState`:
+ *    its own form or fill since its scan of our write, or an older value it kept, which goes to
+ *    review); a field once yours stays yours. Yours keeps your value; where your edit and our new
+ *    value differ for the same field, that field goes to review ("write the rest, review
+ *    conflicts": user).
  *  - folder: the layout (author, series, volume, title) differs from the one built: the book
  *    moves, named against the library as it is (stage 7's own collision rules; never over a
  *    name). Only in japanese/ (an AI book's move goes to review), never when you edited a field
@@ -46,7 +49,31 @@ export interface LedgerBook {
   decided: Buffer;
   /** The book folder's inode (null: not known yet). */
   folderIno: number | null;
+  /** The metadata.json just before our last write (null or absent: none known). */
+  before?: Buffer | null;
+  /**
+   * The metadata.json as Audiobookshelf left it after its scan of our last write, proven by
+   * time (null or absent: not proven): its own form of our values and the values it kept.
+   */
+  seen?: Buffer | null;
+  /** Fields that are yours since an earlier run: every later write keeps them. */
+  yours?: Set<string>;
 }
+
+/**
+ * What a field's value in metadata.json now is, against what we last wrote (item 6 of the
+ * audiobook cleanup leftovers, approved by the user 2026-11-21: a field is yours only when no
+ * evidence says Audiobookshelf changed it; your edits are never overwritten):
+ *  - ours       the file holds what we wrote
+ *  - abs_form   Audiobookshelf's own form of what we wrote, in the file since its scan of our
+ *               write (`seen`): "&" as "&amp;", the authors in its order (the survey's 82 fields)
+ *  - abs_fill   we wrote it empty and Audiobookshelf filled it from the file's tags or its
+ *               placeholder (_Unknown)
+ *  - abs_kept   Audiobookshelf kept the value the file had before our write (its scan of our
+ *               write left it: ST 黄's `STシリーズ #6`): to review, never counted as yours
+ *  - yours      anything else, and every field that was yours before
+ */
+export type FieldState = 'ours' | 'abs_form' | 'abs_fill' | 'abs_kept' | 'yours';
 
 export interface AbsBookState {
   /** ABS has the book (found by its folder). */
@@ -68,7 +95,13 @@ export interface FieldChange {
   mine?: unknown;
 }
 
-export type ReviewKind = 'conflict' | 'rename_progress' | 'ai_path' | 'move_edited' | 'abs_unknown';
+export type ReviewKind =
+  | 'conflict'
+  | 'abs_kept'
+  | 'rename_progress'
+  | 'ai_path'
+  | 'move_edited'
+  | 'abs_unknown';
 
 export interface PlannedChange {
   bookId: number;
@@ -82,6 +115,15 @@ export interface PlannedChange {
   userFields: string[];
   /** Fields where your edit and our new value differ (review). */
   conflicts: FieldChange[];
+  /**
+   * Fields where Audiobookshelf kept an older value after its scan of our write (review): `from`
+   * what we wrote, `to` ours now, `mine` Audiobookshelf's value. Nothing changes until you choose.
+   */
+  absKept: FieldChange[];
+  /** Fields set through Audiobookshelf's edit call after its scan (your "Use the cleanup's"). */
+  absSet: string[];
+  /** The metadata.json read now (the ledger's `before` once a write is applied). */
+  metadataRead: Buffer | null;
   /** Link renames inside the book folder (applied or held). */
   renames: { from: string; to: string; ino: number }[];
   renamesHeld: boolean;
@@ -139,6 +181,9 @@ const isEmpty = (v: unknown) =>
  * and writes it into metadata.json: that is ABS's, not your edit, when it equals the tag.
  */
 function absFilled(field: string, value: unknown, tags: Record<string, string> | null): boolean {
+  // Its placeholder for a book without an author (the survey: 20 books under _Unknown/).
+  if (field === 'authors' && Array.isArray(value) && value.length === 1 && value[0] === '_Unknown')
+    return true;
   if (!tags) return false;
   const k = (s: unknown) => (typeof s === 'string' ? s.normalize('NFKC').trim() : '');
   const list = (s: string | undefined) =>
@@ -152,7 +197,11 @@ function absFilled(field: string, value: unknown, tags: Record<string, string> |
     case 'publisher':
       return k(value) !== '' && k(value) === k(tags.publisher);
     case 'publishedYear':
-      return k(value) !== '' && k(value) === k((tags.date ?? '').slice(0, 4));
+      // ABS takes the tag's whole date (`2024-12-17`, the survey's 5 books), or its year.
+      return (
+        k(value) !== '' &&
+        (k(value) === k((tags.date ?? '').slice(0, 4)) || k(value) === k(tags.date))
+      );
     case 'description':
       return k(value) !== '' && (k(value) === k(tags.comment) || k(value) === k(tags.description));
     case 'asin':
@@ -170,6 +219,74 @@ function absFilled(field: string, value: unknown, tags: Record<string, string> |
     default:
       return false;
   }
+}
+
+/**
+ * Audiobookshelf's own form of a value we wrote, as its scan writes it back (proven on a scratch
+ * ABS 2.37.1 and seen on the live library, 2026-11-21): a description's "&" and "<" as HTML
+ * entities and `<br>` as `<br />`; the authors or narrators in its own order.
+ */
+function absForm(field: string, value: unknown, written: unknown): boolean {
+  if (field === 'description' && typeof value === 'string' && typeof written === 'string') {
+    const plain = (s: string) =>
+      s
+        .replace(/<br\s*\/?>/gi, '<br>')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&quot;/g, '"')
+        .replace(/&#39;/g, "'")
+        .replace(/&amp;/g, '&')
+        .normalize('NFC');
+    return plain(value) === plain(written);
+  }
+  if (
+    (field === 'authors' || field === 'narrators') &&
+    Array.isArray(value) &&
+    Array.isArray(written)
+  )
+    return norm('series', value) === norm('series', written);
+  return false;
+}
+
+/** A field's state now (see FieldState): pure, also used by the leftovers survey and tests. */
+export function fieldState(f: {
+  field: string;
+  disk: Record<string, unknown>;
+  written: Record<string, unknown>;
+  seen: Record<string, unknown> | null;
+  before: Record<string, unknown> | null;
+  yours: boolean;
+  tags: Record<string, string> | null;
+}): FieldState {
+  const { field } = f;
+  if (f.yours) return 'yours';
+  const d = f.disk[field];
+  const w = f.written[field];
+  if (norm(field, d) === norm(field, w)) return 'ours';
+  if (f.seen && norm(field, d) === norm(field, f.seen[field])) {
+    // Unchanged since Audiobookshelf's scan of our write: its doing, not yours.
+    if (f.before && norm(field, f.seen[field]) === norm(field, f.before[field])) return 'abs_kept';
+    if (absForm(field, d, w) || (isEmpty(w) && absFilled(field, d, f.tags))) return 'abs_form';
+  }
+  if (isEmpty(w) && absFilled(field, d, f.tags)) return 'abs_fill';
+  return 'yours';
+}
+
+/**
+ * Audiobookshelf kept an older value of one of our fields after its scan of our write: the
+ * book is planned (and its field reviewed) even when nothing of ours changed since.
+ */
+export function absKeptSomething(b: LedgerBook): boolean {
+  if (!b.seen || !b.before || b.seen.equals(b.metadata)) return false;
+  const seen = parse(b.seen) ?? {};
+  const before = parse(b.before) ?? {};
+  const written = parse(b.metadata) ?? {};
+  return [...OUR_FIELDS].some(
+    (f) =>
+      !b.yours?.has(f) &&
+      norm(f, seen[f]) !== norm(f, written[f]) &&
+      norm(f, seen[f]) === norm(f, before[f]),
+  );
 }
 
 /** Stage 6's staging folders read as the library's (the switch renamed them). */
@@ -239,6 +356,9 @@ export function planLibraryChanges(input: LibraryPlanInput): PlannedChange[] {
       fields: [],
       userFields: [],
       conflicts: [],
+      absKept: [],
+      absSet: [],
+      metadataRead: null,
       renames: [],
       renamesHeld: false,
       metadataNew: null,
@@ -253,7 +373,10 @@ export function planLibraryChanges(input: LibraryPlanInput): PlannedChange[] {
     const last = parse(b.metadata) ?? {};
     const lastOurs = parse(b.decided) ?? last;
     const diskBytes = input.disk(b);
+    change.metadataRead = diskBytes;
     const disk = parse(diskBytes) ?? last;
+    const seen = b.seen ? parse(b.seen) : null;
+    const before = b.before ? parse(b.before) : null;
     const result: Record<string, unknown> = {};
     let write = false;
     const tags = input.fileTags?.(b) ?? null;
@@ -264,9 +387,40 @@ export function planLibraryChanges(input: LibraryPlanInput): PlannedChange[] {
         continue;
       }
       const weChange = norm(field, ours[field]) !== norm(field, lastOurs[field]);
-      const edited =
-        norm(field, disk[field]) !== norm(field, last[field]) &&
-        !(isEmpty(last[field]) && absFilled(field, disk[field], tags));
+      const state = fieldState({
+        field,
+        disk,
+        written: last,
+        seen,
+        before,
+        yours: b.yours?.has(field) === true,
+        tags,
+      });
+      if (state === 'abs_kept') {
+        // Audiobookshelf kept the file's older value: never yours; nothing changes until you
+        // choose (user, 2026-11-21: a review list, not an automatic correction).
+        const c: FieldChange = { field, from: last[field], to: ours[field], mine: disk[field] };
+        if (norm(field, ours[field]) === norm(field, disk[field])) {
+          // Our value now is the one ABS kept (ST 黄 with its #6 correction): ours, written once
+          // so the ledger follows.
+          result[field] = ours[field];
+          if (weChange) {
+            change.fields.push({ field, from: lastOurs[field], to: ours[field] });
+            write = true;
+          }
+        } else if (choices[field] === 'ours') {
+          result[field] = ours[field];
+          change.fields.push(c);
+          change.absSet.push(field);
+          write = true;
+        } else {
+          result[field] = disk[field];
+          if (choices[field] === 'mine') change.userFields.push(field);
+          else change.absKept.push(c);
+        }
+        continue;
+      }
+      const edited = state === 'yours';
       if (edited) change.userFields.push(field);
       if (edited && weChange && norm(field, disk[field]) !== norm(field, ours[field])) {
         const c: FieldChange = { field, from: lastOurs[field], to: ours[field], mine: disk[field] };
@@ -295,6 +449,11 @@ export function planLibraryChanges(input: LibraryPlanInput): PlannedChange[] {
       change.reviews.push({
         kind: 'conflict',
         text: `You edited ${change.conflicts.map((c) => c.field).join(', ')} in Audiobookshelf, and the cleanup's value changed too: yours is kept until you choose`,
+      });
+    if (change.absKept.length)
+      change.reviews.push({
+        kind: 'abs_kept',
+        text: `Audiobookshelf kept an older value of ${change.absKept.map((c) => c.field).join(', ')} when it scanned the cleanup's metadata.json: it stays as it is until you choose`,
       });
     // ---- the folder
     const baseNow = libraryFolder(cur.baseFolder);
@@ -359,6 +518,8 @@ export function planLibraryChanges(input: LibraryPlanInput): PlannedChange[] {
       change.skipped = keep;
       change.fields = [];
       change.conflicts = [];
+      change.absKept = [];
+      change.absSet = [];
       change.reviews = [];
       change.folderTo = null;
       change.baseTo = null;

@@ -48,6 +48,7 @@ export function phaseLabel(phase: string): string {
 /** WP21f-2: the steps of the library changes. */
 const CHANGE_STEPS: Record<string, string> = {
   sync: 'the books built so far',
+  seen: 'what Audiobookshelf made of the cleanup’s metadata.json',
   plan: 'comparing every book with its decisions now',
   read: 'reading the books that differ (metadata.json, Audiobookshelf)',
   preflight: 'the sidecar checks each change can be made',
@@ -79,8 +80,23 @@ export function changesLines(c: AudioStage7Report['changes'] | null | undefined)
     `${n(k.metadata)} metadata.json ${made ? 'written' : 'to write'}, ${n(k.moves)} folders ${made ? 'moved' : 'to move'}, ${n(k.renames)} files ${made ? 'numbered' : 'to number'} in story order${k.renamesHeld ? ` (${n(k.renamesHeld)} held: someone is listening)` : ''}, ${n(k.rmdirs)} emptied folders`
   );
   out.push(
-    `Your edits in Audiobookshelf kept: ${n(k.userFields)} field${k.userFields === 1 ? '' : 's'}; to look at: ${n(k.reviews)}`
+    `Your edits in Audiobookshelf kept: ${n(k.userFields)} field${k.userFields === 1 ? '' : 's'}; to look at: ${n(k.reviews)}${k.absKept ? ` (${n(k.absKept)} field${k.absKept === 1 ? '' : 's'} where Audiobookshelf kept an older value)` : ''}`
   );
+  const s = c.seen;
+  if (s?.skipped) out.push(`What Audiobookshelf made of the cleanup’s metadata.json: ${s.skipped}`);
+  else if (s && s.checked) {
+    const parts = [
+      s.proven
+        ? `${n(s.proven)} book${s.proven === 1 ? '' : 's'} proven (changed only by its own scan of the cleanup’s write)`
+        : null,
+      s.unproven
+        ? `${n(s.unproven)} not provable (a value there that differs from the cleanup’s counts as yours)`
+        : null,
+      s.notInAbs ? `${n(s.notInAbs)} not in Audiobookshelf yet (asked again next run)` : null
+    ].filter((x): x is string => x !== null);
+    if (parts.length)
+      out.push(`What Audiobookshelf made of the cleanup’s metadata.json: ${parts.join(', ')}`);
+  }
   out.push(
     `Files the reader wrote: ${n(k.readerFiles)} ${made ? 'given' : 'to give'} their original name under the torrents${k.readerWaiting ? ` (${n(k.readerWaiting)} still settling)` : ''}`
   );
@@ -90,7 +106,7 @@ export function changesLines(c: AudioStage7Report['changes'] | null | undefined)
     );
   if (made && (c.abs.scannedAt || c.abs.error))
     out.push(
-      `Audiobookshelf: ${c.abs.before ?? '?'} → ${c.abs.after ?? '?'} items after one library scan; ${n(c.abs.verified)} changed books seen at their folders, ${n(c.abs.notYet)} not yet${c.abs.cleared ? `, ${n(c.abs.cleared)} with emptied fields cleared through its edit call` : ''}${c.abs.problems.length ? `; ${c.abs.problems.join('; ')}` : '; progress and bookmarks as before'}${c.abs.error ? `; ${c.abs.error}` : ''}`
+      `Audiobookshelf: ${c.abs.before ?? '?'} → ${c.abs.after ?? '?'} items after one library scan; ${n(c.abs.verified)} changed books seen at their folders, ${n(c.abs.notYet)} not yet${c.abs.cleared ? `, ${n(c.abs.cleared)} with emptied fields cleared through its edit call` : ''}${c.abs.set ? `, ${n(c.abs.set)} with the cleanup’s value set through its edit call where it had kept an older one` : ''}${c.abs.problems.length ? `; ${c.abs.problems.join('; ')}` : '; progress and bookmarks as before'}${c.abs.error ? `; ${c.abs.error}` : ''}`
     );
   else if (c.abs.error) out.push(`Audiobookshelf: ${c.abs.error}`);
   const times = Object.entries(c.times ?? {})
@@ -396,6 +412,10 @@ export function changeLines(it: LibraryChangeItem): string[] {
   for (const c of it.conflicts)
     out.push(
       `${fieldLabel(c.field)}: yours ${fieldValue(c.mine)} · the cleanup’s ${fieldValue(c.to)} (was ${fieldValue(c.from)})`
+    );
+  for (const c of it.absKept ?? [])
+    out.push(
+      `${fieldLabel(c.field)}: Audiobookshelf kept ${fieldValue(c.mine)} · the cleanup wrote ${fieldValue(c.from)}${JSON.stringify(c.to) !== JSON.stringify(c.from) ? `, now decides ${fieldValue(c.to)}` : ''}`
     );
   if (it.renames.length)
     out.push(

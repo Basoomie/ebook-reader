@@ -1759,6 +1759,45 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
         WHERE state <> 'submitted' AND files_deleted_at IS NULL;
     `,
   },
+  {
+    version: 22,
+    name: 'audiobook library changes: what we wrote and when, what Audiobookshelf made of it, your fields',
+    // Audiobook cleanup leftovers, item 6 (approved by the user 2026-11-21): a field whose
+    // metadata.json value differs from what we wrote is yours only when no evidence says
+    // Audiobookshelf changed it. Per ledger book: when we last wrote metadata.json (or changed
+    // its folder or links) and in which run; the file just before that write; the file as
+    // Audiobookshelf left it after its scan of that write (`seen`, proven by time: the file's
+    // last change at the item's import or at a library scan we asked for). Fields once yours stay
+    // yours (a later write never takes them back) until you choose the cleanup's value. A change
+    // records the file it read, the fields where Audiobookshelf kept an older value (review) and
+    // the fields to set through Audiobookshelf's edit call (your "Use the cleanup's" on those).
+    sql: `
+      ALTER TABLE audio_library_books ADD COLUMN written_at INTEGER;
+      ALTER TABLE audio_library_books ADD COLUMN written_run INTEGER;
+      ALTER TABLE audio_library_books ADD COLUMN before BLOB;
+      ALTER TABLE audio_library_books ADD COLUMN seen BLOB;
+      ALTER TABLE audio_library_books ADD COLUMN seen_at INTEGER;
+      ALTER TABLE audio_library_books ADD COLUMN seen_state TEXT
+        CHECK (seen_state IS NULL OR seen_state IN ('seen', 'unproven'));
+      ALTER TABLE audio_library_books ADD COLUMN seen_detail TEXT;
+      CREATE INDEX audio_library_books_seen ON audio_library_books (area, seen_state);
+
+      CREATE TABLE audio_library_owners (
+        book_id   INTEGER NOT NULL REFERENCES audio_library_books(id),
+        field     TEXT NOT NULL,
+        since     INTEGER NOT NULL,
+        run_id    INTEGER,
+        evidence  TEXT NOT NULL,
+        PRIMARY KEY (book_id, field)
+      );
+
+      ALTER TABLE audio_library_changes ADD COLUMN metadata_read BLOB;
+      ALTER TABLE audio_library_changes ADD COLUMN abs_kept_json TEXT NOT NULL DEFAULT '[]'
+        CHECK (json_valid(abs_kept_json));
+      ALTER TABLE audio_library_changes ADD COLUMN abs_set_json TEXT NOT NULL DEFAULT '[]'
+        CHECK (json_valid(abs_set_json));
+    `,
+  },
 ];
 
 export const CLEANUP_SCHEMA_VERSION = CLEANUP_MIGRATIONS[CLEANUP_MIGRATIONS.length - 1].version;

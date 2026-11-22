@@ -278,6 +278,9 @@
                       arrivalsTimeZone: settings.audiobooks.arrivalsTimeZone ?? '',
                       arrivalsSettleMinutes: Number(settings.audiobooks.arrivalsSettleMinutes),
                       arrivalsAbsWaitMinutes: Number(settings.audiobooks.arrivalsAbsWaitMinutes),
+                      librarySeenSlackSeconds: Number(
+                        settings.audiobooks.librarySeenSlackSeconds ?? 600
+                      ),
                       arrivalsAbsNudge: settings.audiobooks.arrivalsAbsNudge === true,
                       libraryChanges: settings.audiobooks.libraryChanges ?? 'analyse',
                       extractLeaseSeconds: Number(settings.audiobooks.extractLeaseSeconds)
@@ -738,6 +741,26 @@
                 Audiobookshelf stay yours), a book moves when its author, series, volume or title
                 changes, and files the reader wrote get their original name under the torrents.
                 Preview lists every change; On makes them, while stage 7 is On too.</span
+              >
+            </label>
+            <label class={field}>
+              <span class={label}
+                >Seconds after Audiobookshelf’s scan that its rewrite of metadata.json may come</span
+              >
+              <input
+                class="c-input"
+                type="number"
+                min="1"
+                max="3600"
+                step="1"
+                bind:value={settings.audiobooks.librarySeenSlackSeconds}
+                data-testid="cleanup-audio-librarySeenSlackSeconds"
+              />
+              <span class="text-c-muted"
+                >A value in a book’s metadata.json that differs from the cleanup’s counts as
+                Audiobookshelf’s own (its form of the value, or an older value it kept) only when
+                the file last changed this soon after Audiobookshelf scanned the book; otherwise it
+                counts as yours and is never overwritten.</span
               >
             </label>
           {/if}
