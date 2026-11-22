@@ -32,6 +32,10 @@
   import BookVoiceChoice from '$lib/components/audio/book-voice-choice.svelte';
   import BookSpeakersPanel from '$lib/components/audio/book-speakers-panel.svelte';
   import AudioDevicePanel from '$lib/components/audio/audio-device-panel.svelte';
+  import WhispersyncMatchPanel from '$lib/components/audio/whispersync-match-panel.svelte';
+  import type { LibraryStore } from '$lib/library/library-db';
+  import type { OpenTarget } from '$lib/library/open-calibre-book';
+  import type { CatalogLibrary } from '$lib/library/types';
   import { storedAudio } from '$lib/audio/offline/audio-offline';
   import {
     CHANGED_NOTICE,
@@ -82,8 +86,15 @@
 
   export let api: LibraryApi;
   export let bookId: string;
-  /** Season 2 Phase 9: the book's own copy is on this device (audio downloads need it). */
+  /**
+   * Season 2 Phase 9: the book's own copy is on this device (audio downloads need it). Bound:
+   * Whispersync Match stores the book here when it isn't (2026-11-21).
+   */
   export let bookOnDevice = false;
+  /** Whispersync Match on the book page: what it needs to store the book on this device. */
+  export let book: OpenTarget | null = null;
+  export let store: LibraryStore | null = null;
+  export let libraries: readonly CatalogLibrary[] = [];
   /** Bound up (read-only for the parent): the book page's Download menu uses it. */
   export let link: AudioLink | null = null;
 
@@ -131,6 +142,10 @@
   $: subtitleName = link ? linkedSubtitleName(link) : '';
   $: changesOff = !audioEnabled;
   $: ttsCounts = ttsCountsText(characterCount, fixCount);
+  /** Whispersync Match: when an audiobook and a subtitle file are linked (user, 2026-11-21). */
+  $: canMatch = linked && subView === 'linked' && !!book && !!store;
+  /** The saved match on the server (bound up from the Match panel). */
+  let matchState: 'matched' | 'not-matched' | 'pending' | null = null;
 
   /**
    * A row in the audiobook chooser. "In use" instead of "Use this" only for a single-file
@@ -720,6 +735,15 @@
                       {SUBTITLE_MISSING_NOTICE}
                     </p>
                   {/if}
+                  {#if canMatch && matchState}
+                    <div
+                      class="text-sm text-c-muted"
+                      data-testid="ws-match-state"
+                      data-state={matchState}
+                    >
+                      {matchState === 'not-matched' ? 'Not matched yet' : 'Matched'}
+                    </div>
+                  {/if}
                 {:else if subView === 'none'}
                   <div class="text-sm" data-testid="audio-subtitle-none">No subtitles</div>
                 {:else}
@@ -753,6 +777,19 @@
                 {/if}
               {/if}
             </div>
+
+            <!-- Whispersync Match: the reader's matcher, from the book page (2026-11-21) -->
+            {#if canMatch && book && store && open !== 'subs'}
+              <WhispersyncMatchPanel
+                {api}
+                {bookId}
+                {book}
+                {store}
+                {libraries}
+                bind:state={matchState}
+                on:stored={() => (bookOnDevice = true)}
+              />
+            {/if}
 
             {#if open === 'subs' && audioEnabled}
               <AudioChooser

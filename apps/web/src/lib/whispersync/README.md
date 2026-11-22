@@ -41,7 +41,7 @@ The following references are isolated behind TODO comments so the project compil
 |------|-----------|-----------|---------------|--------------|
 | Playback position | `Player.svelte` | `audioBook` | record `audiobook-position` (`<bookId>`) `{position, modifiedAt}` | `ttu-action` `syncType:'audioBook'` → `onPositionSaved` |
 | Subtitle data | `actions.ts` `persistSubtitles` | `subtitle` | attachment `whispersync-subtitles` + record `book-attachment` | `ttu-action` `syncType:'subtitle'` → `onSubtitlesSaved` |
-| Matched book HTML | `Match.svelte` `onSaveMatch` | `data` | attachment `whispersync-match` + record `book-attachment` | `ttu-action` `type:'syncAndReload'` → `onMatchSaved` (waits at most the library request time) → reload |
+| Matched book HTML | `Match.svelte` `onSaveMatch`; the book page's Match (`$lib/audio/whispersync-book-match.ts` `saveMatch`) | `data` | attachment `whispersync-match` + record `book-attachment` | `ttu-action` `type:'syncAndReload'` → `onMatchSaved` (waits at most the library request time) → reload; the book page uploads the same way (`pushMatch`) and doesn't reload |
 | Audio file | the library's audiobooks folder | — | `audio_links` (picker) | streamed with Range from `/api/v1/audio/files/...` |
 
 Attachments are files in `DATA_DIR/.uploads/attachments/<user>/<bookId>/`; the
@@ -69,3 +69,14 @@ Another device that finds that deletion newer than its own matched copy restores
 subtitles and the position on the server. On the device itself nothing else changes.
 
 **Re-match conflict:** the later save wins (by `modifiedAt`); no merge.
+
+### Match on the book page (2026-11-22)
+
+The matcher (`onMatchSubtitles` and its helpers) lives in `lib/match.ts`, moved out of
+`Match.svelte` unchanged; the reader's Match tab and the book page's Audiobook section
+(Subtitles row, when an audiobook and a subtitle file are linked) both call it. The book page
+uses the reader's lines (saved subtitles, else the linked file), matches this device's copy after
+the reader's opening sync (downloading the book first when it isn't here), and saves and resets
+with the reader's rows (`matchedRow`, `resetRow`) and the same upload and removal. "Match again"
+matches from the original text (the backup), as the reader's Reset + Match does; the start point
+is reader-only. No reload: the row shows "Matched" or "Not matched yet" from the server's record.

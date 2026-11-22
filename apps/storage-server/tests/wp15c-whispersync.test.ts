@@ -280,6 +280,25 @@ describe('the linked audiobook for whispersync', () => {
     expect(subtitle.text).toContain('テスト');
     expect(subtitle.headers['content-disposition']).toContain(encodeURIComponent(sub.name));
 
+    // The web app is on another origin (the NAS, every e2e stack): it reads the file's real
+    // name from Content-Disposition, so CORS must expose it, as filename*=UTF-8''… for
+    // Japanese names (else whispersync's "Matched by" says subtitles.srt).
+    expect(sub.name).toMatch(/[぀-ヿ一-鿿]/);
+    const crossOrigin = await request(t.e.app)
+      .get(`/api/v1/books/${id}/subtitle-file`)
+      .set(t.auth)
+      .set('Origin', 'http://tower:3080');
+    expect(crossOrigin.status).toBe(200);
+    expect(crossOrigin.headers['access-control-expose-headers']).toContain('Content-Disposition');
+    expect(crossOrigin.headers['content-disposition']).toBe(
+      `inline; filename*=UTF-8''${encodeURIComponent(sub.name)}`,
+    );
+    // The app's own reading of it (LibraryApi.linkedSubtitleFile) gives the name back.
+    const encoded = /filename\*=UTF-8''([^;]+)/i.exec(
+      crossOrigin.headers['content-disposition'],
+    )?.[1];
+    expect(decodeURIComponent(encoded!)).toBe(sub.name);
+
     // A split folder has no play URL.
     const guin = listAudioFolders(t.e.db, t.libId).find((f) => f.name === GUIN)!;
     const guinUrl = `/api/v1/books/${t.bookId(GUIN)}/audio-link`;

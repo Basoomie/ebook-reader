@@ -718,22 +718,30 @@ export function createCleanupRouter(options: CleanupOptions): Router {
     }
   });
 
-  router.put('/cleanup/secrets/:name', (req, res) => {
-    const service = serviceOr503(options);
-    const name = req.params.name;
-    if (!isSecretName(name)) throw new ApiError(404, 'not_found', 'No such secret');
-    const value = (req.body as { value?: unknown } | undefined)?.value;
-    if (typeof value !== 'string' || value.trim() === '') {
-      throw new ApiError(400, 'bad_request', 'value must be non-empty text');
-    }
-    try {
-      service.secrets.put(name, value);
-    } catch (err) {
-      throw new ApiError(400, 'bad_request', (err as Error).message);
-    }
-    // Never echoes the value back.
-    res.json({ secrets: service.secrets.info() });
-  });
+  router.put(
+    '/cleanup/secrets/:name',
+    asyncHandler(async (req, res) => {
+      const service = serviceOr503(options);
+      const name = req.params.name;
+      if (!isSecretName(name)) throw new ApiError(404, 'not_found', 'No such secret');
+      const value = (req.body as { value?: unknown } | undefined)?.value;
+      if (typeof value !== 'string' || value.trim() === '') {
+        throw new ApiError(400, 'bad_request', 'value must be non-empty text');
+      }
+      // Audiobookshelf's key is asked about first: a value it refuses never replaces a working key.
+      if (name === 'absApiKey' && options.audio) {
+        const refusal = await options.audio.absKeyRefusal(value);
+        if (refusal) throw new ApiError(400, 'abs_key_refused', refusal);
+      }
+      try {
+        service.secrets.put(name, value);
+      } catch (err) {
+        throw new ApiError(400, 'bad_request', (err as Error).message);
+      }
+      // Never echoes the value back.
+      res.json({ secrets: service.secrets.info() });
+    }),
+  );
 
   router.delete('/cleanup/secrets/:name', (req, res) => {
     const service = serviceOr503(options);

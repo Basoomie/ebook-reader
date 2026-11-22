@@ -589,11 +589,17 @@ export function removePronunciationFixCopy(match: string, global: boolean): Conf
 
 // ---- Whispersync (audiobook menu) -----------------------------------------------------------------
 
-export function resetMatchCopy(): ConfirmCopy {
+/**
+ * Reset match: the reader's (the page reloads), and the book page's (Whispersync Match on the
+ * book page, `reload: false`: the page stays, the reset applies on every device).
+ */
+export function resetMatchCopy(options: { reload?: boolean } = {}): ConfirmCopy {
   return {
     title: 'Reset the audiobook match?',
     message: [
-      'The book goes back to how it was before matching, and the page reloads. The linked audio and subtitle files stay.'
+      options.reload === false
+        ? 'The book goes back to how it was before matching, on every device. The linked audio and subtitle files stay.'
+        : 'The book goes back to how it was before matching, and the page reloads. The linked audio and subtitle files stay.'
     ],
     confirmLabel: 'Reset match',
     irreversible: true

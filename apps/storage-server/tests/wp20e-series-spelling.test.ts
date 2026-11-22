@@ -295,6 +295,7 @@ describe('the evidence built again (series-order follow-up, stop 2)', () => {
       phase: 'models',
       cursor: 0,
       items: 4,
+      askKey: 'asked-before',
       decided: 4,
       invented: 0,
       finishedAt: null,
@@ -319,6 +320,58 @@ describe('the evidence built again (series-order follow-up, stop 2)', () => {
     await step.step(() => false);
     // Built again (no books here), then on to the models with nothing decided yet.
     expect(ai).toMatchObject({ evidenceBuild: STAGE4_EVIDENCE_BUILD, decided: 0, phase: 'models' });
+    // The models phase queues again for the new evidence (stop 2: 503 books went unasked).
+    expect(ai.askKey).toBeNull();
     expect((ai.times as Record<string, unknown>).evidence).toBeDefined();
+  });
+});
+
+describe('a series name stage 4 wrote keeps its spelling (series-order stop 2)', () => {
+  const written = (name: string, index: number | null, ix: number) => ({
+    ...input('〈小市民〉シリーズ', { series: name, seriesIndex: ix }),
+    // The chosen spelling would be the other one.
+    seriesSpelling: new Map([[seriesKey('小市民シリーズ'), '小市民シリーズ']]),
+    applied: new Map<string, unknown>([['series', { name, index }]]),
+  });
+  it('only the number changes', () => {
+    // Written with no number (Calibre shows 1); the decision gives 3 with the other spelling.
+    const d = written('〈小市民〉シリーズ', null, 1);
+    const p = seriesOf(proposeStage4({ ...d, decision: decision('小市民シリーズ') }));
+    expect(p).toMatchObject({
+      class: 'auto',
+      new: { name: '〈小市民〉シリーズ', index: 3 },
+      evidence: { spelling: { asDecided: '〈小市民〉シリーズ' } },
+    });
+  });
+  it('no respelling of its own when the number is the same', () => {
+    const d = written('〈小市民〉シリーズ', 3, 3);
+    expect(seriesOf(proposeStage4({ ...d, decision: decision('小市民シリーズ') }))).toBeUndefined();
+  });
+  it('another series is still proposed', () => {
+    const d = written('〈小市民〉シリーズ', 3, 3);
+    expect(
+      seriesOf(proposeStage4({ ...d, decision: decision('古典部シリーズ') }))?.new,
+    ).toMatchObject({ name: '古典部シリーズ' });
+  });
+});
+
+describe('a series stage 4 wrote is never removed automatically (series-order stop 2)', () => {
+  it('goes to review', () => {
+    const d = {
+      ...input('〈小市民〉シリーズ', { series: '〈小市民〉シリーズ', seriesIndex: 3 }),
+      applied: new Map<string, unknown>([['series', { name: '〈小市民〉シリーズ', index: 3 }]]),
+    };
+    expect(seriesOf(proposeStage4({ ...d, decision: decision(null) }))).toMatchObject({
+      class: 'review',
+      new: { name: null },
+      reason: 'Would remove a series the cleanup wrote',
+    });
+  });
+  it('a series from before the cleanup follows the rules as before', () => {
+    const d = input('〈小市民〉シリーズ', { series: '〈小市民〉シリーズ', seriesIndex: 3 });
+    expect(seriesOf(proposeStage4({ ...d, decision: decision(null) }))).toMatchObject({
+      class: 'auto',
+      new: { name: null },
+    });
   });
 });

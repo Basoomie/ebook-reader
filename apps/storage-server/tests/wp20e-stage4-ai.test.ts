@@ -49,6 +49,19 @@ describe('changed in Calibre after the cleanup wrote it', () => {
   });
   it('compares names ignoring case, as the write path does', () => {
     expect(stillAsWritten('authors', ['Abc'], ['abc'])).toBe(true);
+    // A series written with no number reads back as number 1 (series-order stop 2, 花嫁 vol 8).
+    expect(stillAsWritten('series', { name: 'S', index: null }, { name: 'S', index: 1 })).toBe(
+      true,
+    );
+    expect(stillAsWritten('series', { name: 'S', index: null }, { name: 'S', index: 2 })).toBe(
+      false,
+    );
+    expect(stillAsWritten('series', { name: 'S', index: 1 }, { name: 'S', index: null })).toBe(
+      false,
+    );
+    expect(stillAsWritten('series', { name: null, index: null }, { name: 'S', index: 1 })).toBe(
+      false,
+    );
     expect(stillAsWritten('authors', ['A', 'B'], ['B', 'A'])).toBe(false);
     expect(stillAsWritten('title', 'X', 'X')).toBe(true);
   });

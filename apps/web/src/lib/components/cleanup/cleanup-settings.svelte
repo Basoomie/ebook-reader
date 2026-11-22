@@ -120,6 +120,8 @@
   let secrets: Record<SecretName, SecretInfo> | null = null;
   let loadError = '';
   let saveError = '';
+  /** Why Audiobookshelf's key was not saved (the server asks Audiobookshelf first). */
+  let absKeyError = '';
   let saved = false;
   let saving = false;
   let secretValues: Record<SecretName, string> = {
@@ -167,6 +169,7 @@
 
   function setSecretValue(name: SecretName, value: string) {
     secretValues = { ...secretValues, [name]: value };
+    if (name === 'absApiKey') absKeyError = '';
     saved = false;
   }
 
@@ -181,6 +184,7 @@
     if (!settings) return;
     saving = true;
     saveError = '';
+    absKeyError = '';
     saved = false;
     try {
       const answer = await api.saveSettings({
@@ -334,7 +338,12 @@
       for (const name of Object.keys(secretValues) as SecretName[]) {
         const value = secretValues[name];
         if (!value.trim()) continue;
-        secrets = (await api.saveSecret(name, value)).secrets;
+        try {
+          secrets = (await api.saveSecret(name, value)).secrets;
+        } catch (err) {
+          if (name === 'absApiKey') absKeyError = (err as Error).message;
+          throw err;
+        }
         secretValues = { ...secretValues, [name]: '' };
       }
       saved = true;
@@ -466,6 +475,11 @@
               >
             {/if}
           </span>
+          {#if absKeyError}
+            <span class="font-bold" role="alert" data-testid="cleanup-abs-key-error"
+              >{absKeyError}</span
+            >
+          {/if}
           <span class="text-c-muted">
             Make the key in Audiobookshelf (Settings › API Keys) for an admin user, so every user’s
             listening progress can be read. Audiobookshelf is only read, never changed.
