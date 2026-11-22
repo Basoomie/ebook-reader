@@ -928,6 +928,57 @@ export function arrivalsOnCopy(lastPlan: string | null): ConfirmCopy {
   };
 }
 
+/** WP20g: the Calibre library's new arrivals switched On. */
+export function booksArrivalsOnCopy(lastRun: string | null): ConfirmCopy {
+  return {
+    title: 'Add new books to Calibre and run them through stages 1-5?',
+    message: [
+      ...(lastRun ? [lastRun] : []),
+      'From the next run on (daily, Run now, or a book you add in Calibre), new EPUBs from the source folders that are not copies of library books are added to Calibre with calibredb add (copies; nothing under /torrents changes but _extracted/), and every new book goes through stages 1-5 with their changes written. A folder adds only after its first run’s Preview and your “Add these”. Each batch can be undone.'
+    ],
+    confirmLabel: 'Switch it On',
+    irreversible: false
+  };
+}
+
+/** WP20g: Run now of the Calibre library's new arrivals. */
+export function booksArrivalsRunNowCopy(mode: 'analyse' | 'on'): ConfirmCopy {
+  return {
+    title: 'Run the new arrivals now?',
+    message: [
+      mode === 'on'
+        ? 'The source folders are checked, new books are added to Calibre (from folders you approved) and go through stages 1-5, their changes written.'
+        : 'Preview: the source folders are checked and new books compared with the library; nothing is added or written.'
+    ],
+    confirmLabel: 'Run now',
+    irreversible: false
+  };
+}
+
+/** WP20g: a source folder's first run approved. */
+export function booksArrivalsApproveCopy(source: string, books: number): ConfirmCopy {
+  return {
+    title: `Add the ${books} new books from ${source}?`,
+    message: [
+      'They are added at the next run (On, daily or Run now), each checked again just before it is added; copies of library books found since are not added. After this, only new files in the folder are looked at.'
+    ],
+    confirmLabel: 'Add these',
+    irreversible: false
+  };
+}
+
+/** WP20g: Undo of an add batch. */
+export function booksArrivalsUndoCopy(books: number): ConfirmCopy {
+  return {
+    title: `Take the ${books} added books out of Calibre again?`,
+    message: [
+      'Each is exported into the quarantine first, then moved to Calibre’s trash (14 days). Their files are not added again by themselves.'
+    ],
+    confirmLabel: 'Undo',
+    irreversible: false
+  };
+}
+
 /** Audiobook stage 7 (WP21f-1): Run now; with the changes to books in the library (WP21f-2). */
 export function arrivalsRunNowCopy(
   mode: 'analyse' | 'on',

@@ -325,7 +325,25 @@
               }
             }
           : {}),
-        ...(settings.ai ? { ai: { ...settings.ai } } : {})
+        ...(settings.ai ? { ai: { ...settings.ai } } : {}),
+        // WP20g: only when the server knows them.
+        ...(settings.arrivals
+          ? {
+              arrivals: {
+                pairs: settings.arrivals.pairs
+                  .map((p) => ({ id: p.id, source: p.source.trim(), libraryId: p.libraryId }))
+                  .filter((p) => p.source !== ''),
+                time: settings.arrivals.time,
+                quietStart: settings.arrivals.quietStart,
+                quietEnd: settings.arrivals.quietEnd,
+                timeZone: settings.arrivals.timeZone ?? '',
+                settleMinutes: Number(settings.arrivals.settleMinutes),
+                handCheckMinutes: Number(settings.arrivals.handCheckMinutes),
+                addBatchSize: Number(settings.arrivals.addBatchSize),
+                addLeaseSeconds: Number(settings.arrivals.addLeaseSeconds)
+              }
+            }
+          : {})
       });
       settings = answer.settings;
       titleBar = settings.gate.fieldPercent.title ?? '';
@@ -1018,6 +1036,161 @@
       </fieldset>
     {/if}
 
+    {#if settings.arrivals}
+      <fieldset
+        class="grid min-w-0 grid-cols-1 gap-4 sm:grid-cols-2"
+        data-testid="cleanup-arrivals-settings"
+      >
+        <legend class={legend}>New arrivals (books)</legend>
+        <p class="text-c-muted sm:col-span-2">
+          Source folders whose EPUBs are added to Calibre (under the server's source folders mount,
+          e.g. books/japanese). Changing a folder makes it a new one: its first run is a Preview
+          again. Only Japanese rules exist, so every folder is treated as Japanese; stages 1-5 run
+          in the library the cleanup cleans (another library waits for the English follow-up).
+        </p>
+        {#each settings.arrivals.pairs as pair, i (pair.id)}
+          <div
+            class="flex min-w-0 flex-wrap items-end gap-2 sm:col-span-2"
+            data-testid="cleanup-arrivals-pair"
+          >
+            <label class="{field} min-w-0 flex-1">
+              <span class={label}>Source folder</span>
+              <input
+                class="c-input"
+                type="text"
+                placeholder="books/japanese"
+                bind:value={pair.source}
+                data-testid="cleanup-arrivals-source"
+              />
+            </label>
+            <label class="{field} min-w-0 flex-1">
+              <span class={label}>Calibre library</span>
+              <select class="c-input w-full min-w-0" bind:value={pair.libraryId}>
+                {#each libraries as lib (lib.id)}
+                  <option value={lib.id}>{lib.name} ({lib.folder || 'root'})</option>
+                {/each}
+              </select>
+            </label>
+            <button
+              type="button"
+              class="c-btn c-btn-ghost"
+              on:click={() => {
+                if (settings?.arrivals)
+                  settings = {
+                    ...settings,
+                    arrivals: {
+                      ...settings.arrivals,
+                      pairs: settings.arrivals.pairs.filter((_, j) => j !== i)
+                    }
+                  };
+              }}>Remove</button
+            >
+          </div>
+        {/each}
+        <div class="sm:col-span-2">
+          <button
+            type="button"
+            class="c-btn c-btn-secondary c-btn-sm"
+            data-testid="cleanup-arrivals-add-pair"
+            on:click={() => {
+              if (!settings?.arrivals) return;
+              const lib =
+                settings.targetLibraryId ??
+                libraries.find((l) => l.folder === 'japanese-library')?.id ??
+                libraries[0]?.id ??
+                '';
+              settings = {
+                ...settings,
+                arrivals: {
+                  ...settings.arrivals,
+                  pairs: [
+                    ...settings.arrivals.pairs,
+                    {
+                      id: `p${Date.now().toString(36)}`,
+                      source: settings.arrivals.pairs.length ? '' : 'books/japanese',
+                      libraryId: lib
+                    }
+                  ]
+                }
+              };
+            }}>Add a source folder</button
+          >
+        </div>
+        <label class={field}>
+          <span class={label}>Time of the daily run</span>
+          <input
+            class="c-input"
+            type="time"
+            bind:value={settings.arrivals.time}
+            data-testid="cleanup-arrivals-time"
+          />
+        </label>
+        <label class={field}>
+          <span class={label}>Time zone of these times (blank: the server's)</span>
+          <input
+            class="c-input"
+            type="text"
+            placeholder="America/Los_Angeles"
+            bind:value={settings.arrivals.timeZone}
+            data-testid="cleanup-arrivals-timeZone"
+          />
+        </label>
+        <label class={field}>
+          <span class={label}>No run from (backup window)</span>
+          <input class="c-input" type="time" bind:value={settings.arrivals.quietStart} />
+        </label>
+        <label class={field}>
+          <span class={label}>No run until</span>
+          <input class="c-input" type="time" bind:value={settings.arrivals.quietEnd} />
+        </label>
+        <label class={field}>
+          <span class={label}>A file counts once unchanged for (minutes)</span>
+          <input
+            class="c-input"
+            type="number"
+            min="0"
+            max="10080"
+            step="1"
+            bind:value={settings.arrivals.settleMinutes}
+            data-testid="cleanup-arrivals-settle"
+          />
+        </label>
+        <label class={field}>
+          <span class={label}>A book added in Calibre waits until unchanged for (minutes)</span>
+          <input
+            class="c-input"
+            type="number"
+            min="0"
+            max="10080"
+            step="1"
+            bind:value={settings.arrivals.handCheckMinutes}
+          />
+        </label>
+        <label class={field}>
+          <span class={label}>Books added per batch</span>
+          <input
+            class="c-input"
+            type="number"
+            min="1"
+            max="500"
+            step="1"
+            bind:value={settings.arrivals.addBatchSize}
+          />
+        </label>
+        <label class={field}>
+          <span class={label}>Seconds per add batch</span>
+          <input
+            class="c-input"
+            type="number"
+            min="30"
+            max="3600"
+            step="1"
+            bind:value={settings.arrivals.addLeaseSeconds}
+          />
+        </label>
+      </fieldset>
+    {/if}
+
     <fieldset class="grid min-w-0 grid-cols-1 gap-4 sm:grid-cols-2">
       <legend class={legend}>Library</legend>
       <label class={field}>
@@ -1441,6 +1614,21 @@
             ></span
           >
         </label>
+        {#if settings.ai.booksArrivalsDesign !== undefined}
+          <label class={field}>
+            <span class={label}>New books (Calibre): AI setup</span>
+            <select
+              class="c-input w-full min-w-0"
+              bind:value={settings.ai.booksArrivalsDesign}
+              data-testid="cleanup-ai-books-arrivals-design"
+            >
+              <option value="J">J: both models, then two stronger models look again</option>
+              <option value="F">F: stronger models look again only at the unconfirmed values</option
+              >
+              <option value="E">E: both models only (as the library)</option>
+            </select>
+          </label>
+        {/if}
         {#if settings.ai.arrivalsDesign !== undefined}
           <label class={field}>
             <span class={label}>New audiobooks: AI setup</span>
