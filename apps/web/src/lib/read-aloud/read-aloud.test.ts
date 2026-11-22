@@ -306,9 +306,15 @@ class FakeApi {
   polls: { after: number; playing: boolean }[] = [];
   stopped = 0;
   endWith: string | null = null;
+  /** The voice a new session reads with (the server picks it when a session starts). */
+  voice = 'Narrator';
+  starts = 0;
+  private sessionVoice = 'Narrator';
   private wake: (() => void) | null = null;
 
   async startReadAloud(): Promise<ReadAloudSession> {
+    this.starts += 1;
+    this.sessionVoice = this.voice;
     return this.view();
   }
   async readAloudBatch(
@@ -368,7 +374,7 @@ class FakeApi {
       bookId: 'book',
       state: 'open',
       ended: null,
-      voice: { name: 'Narrator', model: 'v4.1 Small', from: 'global' },
+      voice: { name: this.sessionVoice, model: 'v4.1 Small', from: 'global' },
       batches: this.batches
         .filter((b) => b.seq > after && b.state !== 'dropped')
         .map((b) => ({
@@ -528,6 +534,47 @@ describe('the read-aloud controller', () => {
     t.api.changed();
     await until(() => t.view().status === 'Read-aloud moved to another device.');
     expect(t.lines[t.lines.length - 1]).toBeNull();
+  });
+
+  it('reads with a newly chosen voice from the next Play or Read from here', async () => {
+    const t = setup();
+    await t.controller.play();
+    await until(() => t.api.batches.length === 2);
+    t.api.read();
+    await until(() => t.view().phase === 'playing');
+    t.player().time = 2.1;
+    await until(() => t.view().line === 2);
+    t.controller.pause();
+    expect(t.view().voice).toBe('Narrator · v4.1 Small');
+
+    // A new voice while paused: Play starts a new session at the sentence it paused at.
+    t.api.voice = 'Mahito';
+    t.controller.noteVoiceChanged();
+    const before = t.api.batches.length;
+    await t.controller.play();
+    expect(t.api.starts).toBe(2);
+    expect(t.api.stopped).toBe(1);
+    expect(t.view().voice).toBe('Mahito · v4.1 Small');
+    await until(() => t.api.batches.length > before);
+    expect(t.api.batches[before]).toMatchObject({
+      replace: true,
+      lines: [t.script.lines[2].text]
+    });
+
+    // Without a change, Play goes on in the same session.
+    t.controller.pause();
+    await t.controller.play();
+    expect(t.api.starts).toBe(2);
+
+    // Read from here after a change: a new session there too.
+    t.api.voice = 'Makima';
+    t.controller.noteVoiceChanged();
+    await t.controller.readFrom(t.script.lines[10].position);
+    expect(t.api.starts).toBe(3);
+    expect(t.view().voice).toBe('Makima · v4.1 Small');
+    await until(() =>
+      t.api.batches.some((b) => b.replace && b.lines[0] === t.script.lines[10].text)
+    );
   });
 
   it('needs a voice: the panel shows the choice', async () => {

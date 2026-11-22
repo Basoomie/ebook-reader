@@ -4139,6 +4139,7 @@
     on:skip={({ detail }) => void readAloud?.skip(detail)}
     on:here={() => void readAloudFromHere()}
     on:back={() => readAloudFollow?.back()}
+    on:voiceChanged={() => readAloud?.noteVoiceChanged()}
     on:close={() => (showReadAloudPanel = false)}
   />
 {/if}

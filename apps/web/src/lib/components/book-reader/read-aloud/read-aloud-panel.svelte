@@ -36,6 +36,7 @@
     skip: 1 | -1;
     here: void;
     back: void;
+    voiceChanged: void;
   }>();
 
   const stepButton =
@@ -161,7 +162,12 @@
   {#if api && bookId}
     {#if showVoice}
       <div class="mt-2" data-testid="read-aloud-voice-choice">
-        <PcVoiceChoice {api} {bookId} testid="read-aloud-pc-voice" />
+        <PcVoiceChoice
+          {api}
+          {bookId}
+          testid="read-aloud-pc-voice"
+          on:changed={() => dispatch('voiceChanged')}
+        />
         <p class="mt-1 text-sm">A new voice is used from the next Play (or Read from here).</p>
       </div>
     {:else}
