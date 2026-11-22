@@ -54,6 +54,15 @@ export const SUMMARY_TABS: { key: SummarySectionKey; label: string }[] = [
   { key: 'threads', label: 'Open threads' }
 ];
 
+/** The accuracy test's marks on a summary item (session 2). */
+export type ItemMark = 'right' | 'mistake' | 'not_needed' | 'unsure';
+export const ITEM_MARKS: { value: ItemMark; label: string }[] = [
+  { value: 'right', label: 'Right' },
+  { value: 'mistake', label: 'Has a mistake' },
+  { value: 'not_needed', label: 'Not needed' },
+  { value: 'unsure', label: 'Unsure' }
+];
+
 /** "Chapter 3 · 41 %": where a quote is, from its reader position. */
 export function quotePlace(
   position: number,

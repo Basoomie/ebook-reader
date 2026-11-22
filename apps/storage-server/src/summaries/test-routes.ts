@@ -86,6 +86,32 @@ export function createSummaryTestRouter(
     }),
   );
 
+  router.get(
+    '/summaries-test/items',
+    asyncHandler(async (req, res) => {
+      const book = need(req.query.book as string, 'book');
+      const j = svc.itemJudging(book, (req.query.scope as string) || 'round1');
+      const map = await svc.chapters(book).catch(() => ({ chapters: [], characters: 0 }));
+      res.json({ ...j, ...map });
+    }),
+  );
+
+  router.put('/summaries-test/items/mark', (req, res) => {
+    const b = req.body as { run?: string; ref?: string; mark?: string | null };
+    if (b.mark !== null && !['right', 'mistake', 'not_needed', 'unsure'].includes(b.mark as string))
+      throw new ApiError(
+        400,
+        'bad_request',
+        'mark must be right, mistake, not_needed, unsure or null',
+      );
+    try {
+      svc.markItem(need(b.run, 'run'), need(b.ref, 'ref'), (b.mark ?? null) as never);
+    } catch (e) {
+      throw new ApiError(404, 'not_found', (e as Error).message);
+    }
+    res.json({ ok: true });
+  });
+
   router.get('/summaries-test/judging', (req, res) => {
     const book = need(req.query.book as string, 'book');
     const scope = (req.query.scope as string) || 'round1';

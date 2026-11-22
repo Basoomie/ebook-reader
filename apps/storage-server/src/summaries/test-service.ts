@@ -30,6 +30,7 @@ import type { Summary } from './types';
 import type { LocalEngine } from './local-llm';
 
 export type SetupId = CloudSetup | 'local';
+export type ItemMark = 'right' | 'mistake' | 'not_needed' | 'unsure';
 export const SETUP_LABELS: Record<SetupId, string> = {
   two: SETUPS.two.label,
   opus: SETUPS.opus.label,
@@ -732,6 +733,76 @@ export class SummaryTestService {
         metrics: run?.metrics ?? null,
       };
     });
+  }
+
+  // -------------------------------------------------------------------------------------------
+  // judging whole items (the page since 2026-11-22)
+
+  /** Marks one item of a run's summary; null clears it. */
+  markItem(runId: string, ref: string, mark: ItemMark | null): void {
+    const s = this.summary(runId);
+    if (!s || !summaryItems(s).some((x) => x.item.ref === ref)) throw new Error('no such item');
+    if (mark === null)
+      this.db.prepare('DELETE FROM test_item_marks WHERE run_id = ? AND ref = ?').run(runId, ref);
+    else
+      this.db
+        .prepare(
+          `INSERT INTO test_item_marks (run_id, ref, mark, marked_at) VALUES (?, ?, ?, ?)
+           ON CONFLICT(run_id, ref) DO UPDATE SET mark = excluded.mark, marked_at = excluded.marked_at`,
+        )
+        .run(runId, ref, mark, this.now());
+  }
+
+  /** A book's finished runs with their summaries and item marks, the missing notes and scores. */
+  itemJudging(bookKey: string, scope = 'round1') {
+    const runs = this.runs().filter(
+      (r) =>
+        r.bookKey === bookKey &&
+        r.state === 'done' &&
+        (scope === 'round1' ? r.round === 'round1' : true),
+    );
+    const marksOf = this.db.prepare('SELECT ref, mark FROM test_item_marks WHERE run_id = ?');
+    const missing = this.db
+      .prepare(
+        'SELECT id, text, added_at FROM test_missing WHERE book_key = ? AND scope = ? ORDER BY id',
+      )
+      .all(bookKey, scope) as { id: number; text: string; added_at: number }[];
+    const out = runs
+      .map((r) => {
+        const summary = this.summary(r.id);
+        if (!summary) return null;
+        const marks = Object.fromEntries(
+          (marksOf.all(r.id) as { ref: string; mark: ItemMark }[]).map((m) => [m.ref, m.mark]),
+        ) as Record<string, ItemMark>;
+        const refs = summaryItems(summary).map((x) => x.item.ref);
+        const count = (m: ItemMark) => refs.filter((ref) => marks[ref] === m).length;
+        return {
+          id: r.id,
+          setup: r.setup,
+          background: r.background,
+          label: `${SETUP_LABELS[r.setup]}${r.background ? ' · with earlier volumes' : ''}`,
+          summary,
+          marks,
+          score: {
+            items: refs.length,
+            right: count('right'),
+            mistake: count('mistake'),
+            notNeeded: count('not_needed'),
+            unsure: count('unsure'),
+            unmarked: refs.filter((ref) => !marks[ref]).length,
+            missedByAll: missing.length,
+          },
+          metrics: r.metrics,
+        };
+      })
+      .filter((x): x is NonNullable<typeof x> => x !== null);
+    const order: SetupId[] = ['two', 'opus', 'local'];
+    out.sort(
+      (a, b) =>
+        order.indexOf(a.setup) - order.indexOf(b.setup) ||
+        Number(a.background) - Number(b.background),
+    );
+    return { book: this.book(bookKey), runs: out, missing };
   }
 
   // -------------------------------------------------------------------------------------------

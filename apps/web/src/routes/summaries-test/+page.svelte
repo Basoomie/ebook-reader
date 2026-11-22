@@ -7,56 +7,31 @@
 
   /**
    * Book summaries session 2: the accuracy test's judging page (its own address, not in the
-   * navigation; only on the PC's test copy). Per book, every distinct claim of every setup's
-   * summary (the same claim written differently grouped by a model; the grouping can be
-   * corrected), marked once right / wrong / unsure, plus what's missing; each setup's scores
-   * from those marks, with its cost, time, dropped quotes, cross-checks and refusals.
+   * navigation; only on the PC's test copy). Per book, each setup's summary as the app shows
+   * it, every item marked Right / Has a mistake / Not needed / Unsure (decided with the user
+   * 2026-11-22: whole items keep their context; split-up claims were too many and too vague),
+   * plus what's missing; each setup's scores from those marks, with its cost, time, dropped
+   * quotes, cross-checks and refusals.
    */
   import { onDestroy, onMount } from 'svelte';
   import { browser } from '$app/environment';
   import { page } from '$app/stores';
   import AppHeader from '$lib/components/app-nav/app-header.svelte';
+  import SummaryView from '$lib/components/summaries/summary-view.svelte';
   import { pxScreen } from '$lib/css-classes';
-  import { pagePath } from '$lib/data/env';
+  import type { ItemMark } from '$lib/summaries/summary-types';
   import {
     SummaryTestApi,
-    type Claim,
-    type ClaimGroup,
-    type Judging,
+    type ItemJudging,
     type TestOverview,
     type TestRun
   } from '$lib/summaries/test-api';
 
-  type Filter = 'all' | 'unmarked' | 'wrong' | 'unsure' | 'right';
-  type Mark = 'right' | 'wrong' | 'unsure';
-  const MARKS: { value: Mark; label: string }[] = [
-    { value: 'right', label: 'Right' },
-    { value: 'wrong', label: 'Wrong' },
-    { value: 'unsure', label: 'Unsure' }
-  ];
-  const FILTERS: { value: Filter; label: string }[] = [
-    { value: 'unmarked', label: 'Not marked' },
-    { value: 'all', label: 'All' },
-    { value: 'wrong', label: 'Wrong' },
-    { value: 'unsure', label: 'Unsure' },
-    { value: 'right', label: 'Right' }
-  ];
-  const SECTIONS: Record<string, string> = {
-    overview: 'Overview',
-    chapters: 'Chapter by chapter',
-    characters: 'Characters',
-    relationships: 'Relationships',
-    terms: 'Terms',
-    threads: 'Open threads'
-  };
-
   let api: SummaryTestApi | null = null;
   let overview: TestOverview | null = null;
-  let judging: Judging | null = null;
+  let judging: ItemJudging | null = null;
   let book = '';
-  let scope = 'round1';
-  let filter: Filter = 'unmarked';
-  let open = new Set<number>();
+  let runId = '';
   let error = '';
   let loading = true;
   let missingText = '';
@@ -67,7 +42,7 @@
   onMount(async () => {
     if (!browser) return;
     book = $page.url.searchParams.get('book') ?? '';
-    scope = $page.url.searchParams.get('scope') ?? 'round1';
+    runId = $page.url.searchParams.get('run') ?? '';
     api = await SummaryTestApi.connect();
     if (!api) {
       error = 'Connect this device to the library server first (Settings > Data).';
@@ -87,15 +62,21 @@
     }
   }
 
+  function booksDone(): string[] {
+    if (!overview) return [];
+    const done = new Set(overview.runs.filter((r) => r.state === 'done').map((r) => r.bookKey));
+    return overview.books.filter((b) => done.has(b.key)).map((b) => b.key);
+  }
+
   async function refresh() {
     if (!api) return;
     loading = true;
     error = '';
     try {
       overview = await api.overview();
-      const judged = booksWithClaims();
-      if (!book && judged.length) book = judged[0];
-      judging = book ? await api.judging(book, scope) : null;
+      if (!book && booksDone().length) book = booksDone()[0];
+      judging = book ? await api.items(book) : null;
+      if (judging && !judging.runs.some((r) => r.id === runId)) runId = judging.runs[0]?.id ?? '';
     } catch (e) {
       error = (e as Error).message;
     } finally {
@@ -103,87 +84,68 @@
     }
   }
 
-  function booksWithClaims(): string[] {
-    if (!overview) return [];
-    const done = new Set(overview.runs.filter((r) => r.state === 'done').map((r) => r.bookKey));
-    return overview.books.filter((b) => done.has(b.key)).map((b) => b.key);
+  function remember() {
+    history.replaceState(
+      history.state,
+      '',
+      `?book=${encodeURIComponent(book)}&run=${encodeURIComponent(runId)}`
+    );
   }
 
   async function pickBook(key: string) {
     book = key;
-    open = new Set();
-    history.replaceState(history.state, '', `?book=${encodeURIComponent(book)}&scope=${scope}`);
+    runId = '';
     await refresh();
+    remember();
   }
 
-  async function setMark(g: ClaimGroup, mark: ClaimGroup['mark']) {
-    if (!api) return;
-    const next = g.mark === mark ? null : mark;
-    const before = g.mark;
-    const put = (m: ClaimGroup['mark']) => {
-      if (judging)
-        judging = {
-          ...judging,
-          groups: judging.groups.map((x) => (x.id === g.id ? { ...x, mark: m } : x))
-        };
+  function pickRun(id: string) {
+    runId = id;
+    remember();
+  }
+
+  async function onMark(e: CustomEvent<{ ref: string; mark: ItemMark | null }>) {
+    if (!api || !judging || !current) return;
+    const { ref, mark } = e.detail;
+    const id = current.id;
+    const put = (m: ItemMark | null) => {
+      if (!judging) return;
+      judging = {
+        ...judging,
+        runs: judging.runs.map((r) => {
+          if (r.id !== id) return r;
+          const marks = { ...r.marks };
+          if (m) marks[ref] = m;
+          else delete marks[ref];
+          return { ...r, marks };
+        })
+      };
     };
-    put(next);
+    const before = current.marks[ref] ?? null;
+    put(mark);
     try {
-      await api.mark(g.id, next);
-      const scores = (await api.judging(book, scope)).scores;
-      if (judging) judging = { ...judging, scores };
-    } catch (e) {
+      await api.markItem(id, ref, mark);
+      const fresh = await api.items(book);
+      if (judging) judging = { ...judging, runs: fresh.runs };
+    } catch (err) {
       put(before);
-      error = (e as Error).message;
-    }
-  }
-
-  async function reload() {
-    if (!api || !book) return;
-    judging = await api.judging(book, scope);
-  }
-
-  /** One setup's version marked on its own (it overrides the group's mark for that version). */
-  async function markVersion(g: ClaimGroup, c: Claim, mark: Mark) {
-    if (!api) return;
-    const next = (c.mark ?? g.mark) === mark ? null : mark;
-    try {
-      await api.markClaim(c.id, next);
-      await reload();
-    } catch (e) {
-      error = (e as Error).message;
+      error = (err as Error).message;
     }
   }
 
   async function addMissing() {
     if (!api || !missingText.trim()) return;
-    await api.addMissing(book, scope, missingText.trim());
+    await api.addMissing(book, 'round1', missingText.trim());
     missingText = '';
-    await reload();
+    judging = await api.items(book);
   }
 
   async function removeMissing(id: number) {
     if (!api) return;
     await api.removeMissing(id);
-    await reload();
+    judging = await api.items(book);
   }
 
-  function toggle(id: number) {
-    const next = new Set(open);
-    if (next.has(id)) next.delete(id);
-    else next.add(id);
-    open = next;
-  }
-
-  function label(runId: string): string {
-    return judging?.runs.find((r) => r.id === runId)?.label ?? runId;
-  }
-  function short(runId: string): string {
-    const r = judging?.runs.find((x) => x.id === runId);
-    if (!r) return '?';
-    const s = r.setup === 'two' ? 'Sonnet+Sol' : r.setup === 'opus' ? 'Opus' : 'gemma';
-    return r.background ? `${s} · bg` : s;
-  }
   function bookTitle(key: string): string {
     return overview?.books.find((b) => b.key === key)?.title ?? key;
   }
@@ -211,25 +173,8 @@
     return ((m?.refusals as unknown[]) ?? []).length;
   }
 
-  const done = (g: ClaimGroup) => g.mark !== null || g.claims.every((c) => c.mark !== null);
-  const has = (g: ClaimGroup, m: Mark) => g.mark === m || g.claims.some((c) => c.mark === m);
-  $: groups = (judging?.groups ?? []).filter((g) =>
-    filter === 'all' ? true : filter === 'unmarked' ? !done(g) : has(g, filter)
-  );
-  $: marked = (judging?.groups ?? []).filter(done).length;
-  // A claim shows its summary item's quote only when the item made just this one claim (an
-  // item's quote may support another part of a longer item).
-  $: single = (() => {
-    const n = new Map<string, number>();
-    for (const g of judging?.groups ?? [])
-      for (const c of g.claims) {
-        const k = `${c.run_id}|${c.ref.split('#')[0]}`;
-        n.set(k, (n.get(k) ?? 0) + 1);
-      }
-    return new Set([...n].filter(([, v]) => v === 1).map(([k]) => k));
-  })();
+  $: current = judging?.runs.find((r) => r.id === runId) ?? null;
   $: runningRuns = (overview?.runs ?? []).filter((r) => r.state === 'running');
-  $: bookRuns = (overview?.runs ?? []).filter((r) => r.bookKey === book && r.state === 'done');
 </script>
 
 <AppHeader title="Summary accuracy test" />
@@ -242,44 +187,33 @@
   {/if}
 
   {#if overview}
-    <section class="mt-4" data-testid="st-runs">
-      <h2 class="font-bold">Runs</h2>
-      {#if overview.budget}
-        <p class="mt-1 text-sm text-c-muted" data-testid="st-budget">
-          Spent {usd(overview.budget.spentUsd)} of the test's {usd(
-            overview.budget.limitUsd
-          )}{overview.budget.reservedUsd > 0
-            ? ` (${usd(overview.budget.reservedUsd)} in requests now)`
-            : ''}
-          {#if overview.wait?.kind === 'limit_reached'}
-            · waiting: the budget is used up{/if}
+    {#if overview.budget}
+      <p class="mt-1 text-sm text-c-muted" data-testid="st-budget">
+        Spent {usd(overview.budget.spentUsd)} of the test's {usd(overview.budget.limitUsd)}{overview
+          .budget.reservedUsd > 0
+          ? ` (${usd(overview.budget.reservedUsd)} in requests now)`
+          : ''}
+        {#if overview.wait?.kind === 'limit_reached'}
+          · waiting: the budget is used up{/if}
+      </p>
+    {/if}
+    {#each runningRuns as r (r.id)}
+      <div class="mt-2 max-w-3xl" data-testid="st-run-running">
+        <p class="text-sm" lang="ja">
+          {bookTitle(r.bookKey)} — {overview.setups[r.setup]}{r.background
+            ? ' · with earlier volumes'
+            : ''}: {r.phase ?? ''}, {left(r)}
         </p>
-      {/if}
-      {#each runningRuns as r (r.id)}
-        <div class="mt-2 max-w-3xl" data-testid="st-run-running">
-          <p class="text-sm" lang="ja">
-            {bookTitle(r.bookKey)} — {overview.setups[r.setup]}{r.background
-              ? ' · with earlier volumes'
-              : ''}: {r.phase ?? ''}, {left(r)}
-          </p>
-          <div class="bar" role="progressbar" aria-valuenow={Math.round(r.progress.done * 100)}>
-            <div style="width: {Math.round(r.progress.done * 100)}%" />
-          </div>
+        <div class="bar" role="progressbar" aria-valuenow={Math.round(r.progress.done * 100)}>
+          <div style="width: {Math.round(r.progress.done * 100)}%" />
         </div>
-      {/each}
-      {#each (overview.runs ?? []).filter((r) => r.state === 'refused' || r.state === 'failed') as r (r.id)}
-        <p class="mt-1 text-sm" data-testid="st-run-problem" lang="ja">
-          {bookTitle(r.bookKey)} — {overview.setups[r.setup]}: {r.state === 'refused'
-            ? 'refused'
-            : 'failed'} ({r.error})
-        </p>
-      {/each}
-    </section>
+      </div>
+    {/each}
 
-    <section class="mt-6">
+    <section class="mt-4">
       <h2 class="font-bold">Book</h2>
       <div class="mt-2 flex flex-wrap gap-2">
-        {#each booksWithClaims() as key (key)}
+        {#each booksDone() as key (key)}
           <button
             type="button"
             class="c-chip book-chip"
@@ -297,168 +231,44 @@
   {#if loading}
     <p class="mt-4 text-sm" role="status">Loading</p>
   {:else if judging}
-    <section class="mt-6" data-testid="st-summaries">
-      <h2 class="font-bold">Each setup's summary</h2>
-      <ul class="mt-2 space-y-1 text-sm">
-        {#each bookRuns as r (r.id)}
-          <li>
-            <a
-              class="c-link"
-              href="{pagePath}/summaries-test/summary?run={encodeURIComponent(r.id)}&lang=ja"
-              data-testid="st-summary-link"
-              >{overview?.setups[r.setup]}{r.background ? ' · with earlier volumes' : ''}</a
-            >
-            {#if r.languages.includes('en')}
-              ·
-              <a
-                class="c-link"
-                href="{pagePath}/summaries-test/summary?run={encodeURIComponent(r.id)}&lang=en"
-                data-testid="st-summary-link-en">English</a
-              >
-            {/if}
-          </li>
-        {/each}
-      </ul>
-    </section>
-
-    <section class="mt-6" data-testid="st-scores">
-      <h2 class="font-bold">Scores</h2>
-      <p class="mt-1 text-sm text-c-muted">
-        {marked} of {judging.groups.length} claims marked. Missed = right claims only other setups made,
-        plus what you added as missing.
-      </p>
-      <div class="mt-2 overflow-x-auto">
-        <table class="scores text-sm">
-          <thead>
-            <tr>
-              <th>Setup</th><th>Claims</th><th>Right</th><th>Wrong</th><th>Unsure</th><th
-                >Not marked</th
-              ><th>Missed</th><th>Cost</th><th>Time</th><th>Quotes dropped</th><th>Cross-checked</th
-              ><th>Refusals</th>
-            </tr>
-          </thead>
-          <tbody>
-            {#each judging.scores as s (s.runId)}
-              <tr data-testid="st-score">
-                <td>{s.label}</td>
-                <td>{s.claims}</td>
-                <td>{s.right}</td>
-                <td>{s.wrong}</td>
-                <td>{s.unsure}</td>
-                <td>{s.unmarked}</td>
-                <td>{s.missed}</td>
-                <td>{usd(metric(s.metrics, 'costUsd'))}</td>
-                <td>{mins(metric(s.metrics, 'seconds'))}</td>
-                <td>{dropped(s.metrics)}</td>
-                <td>{metric(s.metrics, 'crossChecked')}</td>
-                <td>{refusals(s.metrics)}</td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
-      </div>
-    </section>
-
-    <section class="mt-6" data-testid="st-claims">
-      <h2 class="font-bold">Claims</h2>
-      <div class="mt-2 flex flex-wrap gap-2" role="group" aria-label="Show">
-        {#each FILTERS as f (f.value)}
+    <section class="mt-5 max-w-3xl">
+      <h2 class="font-bold">Summary</h2>
+      <div class="mt-2 flex flex-wrap gap-2">
+        {#each judging.runs as r (r.id)}
           <button
             type="button"
-            class="c-chip c-chip-sm"
-            aria-pressed={filter === f.value}
-            data-testid="st-filter-{f.value}"
-            on:click={() => (filter = f.value)}>{f.label}</button
+            class="c-chip"
+            aria-pressed={runId === r.id}
+            data-testid="st-run"
+            on:click={() => pickRun(r.id)}
+            >{r.label} · {r.score.items - r.score.unmarked}/{r.score.items}</button
           >
         {/each}
       </div>
-      {#if !groups.length}
-        <p class="mt-3 text-sm" data-testid="st-claims-empty">Nothing here.</p>
-      {/if}
-      <ol class="mt-3 max-w-3xl">
-        {#each groups as g (g.id)}
-          <li class="group py-3" data-testid="st-group" data-group={g.id}>
-            <div class="flex flex-wrap items-start gap-2">
-              <p class="min-w-0 flex-1" lang="ja">{g.text}</p>
-            </div>
-            <div class="mt-1 flex flex-wrap items-center gap-1 text-xs text-c-muted">
-              <span>{SECTIONS[g.claims[0]?.section] ?? ''}</span>
-              {#each [...new Set(g.claims.map((c) => c.run_id))] as runId (runId)}
-                <span class="c-chip c-chip-sm" title={label(runId)}>{short(runId)}</span>
-              {/each}
-            </div>
-            <div class="mt-2 flex flex-wrap gap-2" role="group" aria-label="Mark">
-              <button
-                type="button"
-                class="c-btn c-btn-secondary c-btn-sm"
-                aria-pressed={g.mark === 'right'}
-                data-testid="st-mark-right"
-                on:click={() => setMark(g, 'right')}>Right</button
-              >
-              <button
-                type="button"
-                class="c-btn c-btn-secondary c-btn-sm"
-                aria-pressed={g.mark === 'wrong'}
-                data-testid="st-mark-wrong"
-                on:click={() => setMark(g, 'wrong')}>Wrong</button
-              >
-              <button
-                type="button"
-                class="c-btn c-btn-secondary c-btn-sm"
-                aria-pressed={g.mark === 'unsure'}
-                data-testid="st-mark-unsure"
-                on:click={() => setMark(g, 'unsure')}>Unsure</button
-              >
-              {#if g.claims.length > 1}
-                <button
-                  type="button"
-                  class="c-btn c-btn-ghost c-btn-sm"
-                  aria-expanded={open.has(g.id)}
-                  data-testid="st-wordings"
-                  on:click={() => toggle(g.id)}
-                  >{open.has(g.id)
-                    ? 'Hide versions'
-                    : `One setup said it differently? (${g.claims.length} versions)`}</button
-                >
-              {/if}
-            </div>
-            {#if open.has(g.id)}
-              <ul class="mt-2 space-y-3 border-l pl-3 text-sm" data-testid="st-wording-list">
-                {#each g.claims as c (c.id)}
-                  <li data-testid="st-claim" data-claim={c.id}>
-                    <p class="text-xs text-c-muted">{label(c.run_id)}</p>
-                    <p lang="ja">{c.text}</p>
-                    {#if c.quote && single.has(`${c.run_id}|${c.ref.split('#')[0]}`)}
-                      <p class="text-xs text-c-muted" lang="ja">「{c.quote}」</p>
-                    {/if}
-                    <div
-                      class="mt-1 flex flex-wrap gap-2"
-                      role="group"
-                      aria-label="Mark this version"
-                    >
-                      {#each MARKS as m (m.value)}
-                        <button
-                          type="button"
-                          class="c-btn c-btn-secondary c-btn-sm"
-                          aria-pressed={(c.mark ?? g.mark) === m.value}
-                          data-testid="st-claim-mark-{m.value}"
-                          on:click={() => markVersion(g, c, m.value)}>{m.label}</button
-                        >
-                      {/each}
-                    </div>
-                  </li>
-                {/each}
-              </ul>
-            {/if}
-          </li>
-        {/each}
-      </ol>
+      <p class="mt-3 text-sm text-c-muted">
+        Mark every item: <b>Right</b> (correct and worth keeping), <b>Has a mistake</b> (anything in
+        it is wrong or made up), <b>Not needed</b> (vague, filler, or not important enough for a
+        summary), <b>Unsure</b>. Tapping a pressed button clears it.
+      </p>
     </section>
 
-    <section class="mt-6 max-w-3xl" data-testid="st-missing">
+    {#if current}
+      <div class="mt-4 max-w-3xl" data-testid="st-summary">
+        <SummaryView
+          summary={current.summary}
+          bookId={judging.book.readerId}
+          chapters={judging.chapters}
+          characters={judging.characters}
+          marks={current.marks}
+          on:mark={onMark}
+        />
+      </div>
+    {/if}
+
+    <section class="mt-8 max-w-3xl" data-testid="st-missing">
       <h2 class="font-bold">What's missing</h2>
       <p class="mt-1 text-sm text-c-muted">
-        Anything important about this book that no summary has.
+        Anything important about this book that the summaries left out (one note per thing).
       </p>
       <textarea
         class="c-input mt-2 block w-full"
@@ -488,6 +298,45 @@
         {/each}
       </ul>
     </section>
+
+    <section class="mt-8" data-testid="st-scores">
+      <h2 class="font-bold">Scores</h2>
+      <div class="mt-2 overflow-x-auto">
+        <table class="scores text-sm">
+          <thead>
+            <tr>
+              <th>Setup</th><th>Items</th><th>Right</th><th>Has a mistake</th><th>Not needed</th><th
+                >Unsure</th
+              ><th>Not marked</th><th>Cost</th><th>Time</th><th>Quotes dropped</th><th
+                >Cross-checked</th
+              ><th>Refusals</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each judging.runs as r (r.id)}
+              <tr data-testid="st-score">
+                <td>{r.label}</td>
+                <td>{r.score.items}</td>
+                <td>{r.score.right}</td>
+                <td>{r.score.mistake}</td>
+                <td>{r.score.notNeeded}</td>
+                <td>{r.score.unsure}</td>
+                <td>{r.score.unmarked}</td>
+                <td>{usd(metric(r.metrics, 'costUsd'))}</td>
+                <td>{mins(metric(r.metrics, 'seconds'))}</td>
+                <td>{dropped(r.metrics)}</td>
+                <td>{metric(r.metrics, 'crossChecked')}</td>
+                <td>{refusals(r.metrics)}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+      <p class="mt-2 text-xs text-c-muted">
+        What each setup missed (your notes above, plus right items only other setups have) is
+        counted after you finish judging.
+      </p>
+    </section>
   {/if}
 </div>
 
@@ -510,9 +359,6 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-  .group + .group {
-    border-top: 1px solid rgba(127, 127, 127, 0.2);
   }
   .scores th,
   .scores td {

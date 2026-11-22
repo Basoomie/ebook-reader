@@ -9,7 +9,7 @@
  * the PC's test copy of the app).
  */
 import { getLibraryStore } from '$lib/library/library-db';
-import type { Summary } from './summary-types';
+import type { ItemMark, Summary } from './summary-types';
 
 export interface TestRun {
   id: string;
@@ -87,6 +87,33 @@ export interface Judging {
   runs: { id: string; setup: string; background: boolean; label: string; state: string }[];
 }
 
+export interface ItemRun {
+  id: string;
+  setup: string;
+  background: boolean;
+  label: string;
+  summary: Summary;
+  marks: Record<string, ItemMark>;
+  score: {
+    items: number;
+    right: number;
+    mistake: number;
+    notNeeded: number;
+    unsure: number;
+    unmarked: number;
+    missedByAll: number;
+  };
+  metrics: Record<string, unknown> | null;
+}
+
+export interface ItemJudging {
+  book: TestBook;
+  runs: ItemRun[];
+  missing: { id: number; text: string }[];
+  chapters: { index: number; title: string; start: number }[];
+  characters: number;
+}
+
 export interface SummaryPage {
   run: TestRun & { label: string };
   book: TestBook;
@@ -136,6 +163,15 @@ export class SummaryTestApi {
       'GET',
       `/judging?book=${encodeURIComponent(book)}&scope=${encodeURIComponent(scope)}`
     );
+  }
+  items(book: string, scope = 'round1') {
+    return this.call<ItemJudging>(
+      'GET',
+      `/items?book=${encodeURIComponent(book)}&scope=${encodeURIComponent(scope)}`
+    );
+  }
+  markItem(run: string, ref: string, mark: ItemMark | null) {
+    return this.call('PUT', '/items/mark', { run, ref, mark });
   }
   mark(group: number, mark: ClaimGroup['mark'], note: string | null = null) {
     return this.call('PUT', `/marks/${group}`, { mark, note });

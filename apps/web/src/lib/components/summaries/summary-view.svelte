@@ -13,11 +13,14 @@
    * Session 2 shows it on the accuracy test's page; session 4 puts it on the book page with
    * the per-device layouts and the spoiler blur.
    */
+  import { createEventDispatcher } from 'svelte';
   import { readerLinkPath } from '$lib/anki/reader-link';
+  import ItemMarks from './item-marks.svelte';
   import { pagePath } from '$lib/data/env';
   import {
     SUMMARY_TABS,
     quotePlace,
+    type ItemMark,
     type Summary,
     type SummaryItem,
     type SummarySectionKey
@@ -28,6 +31,20 @@
   export let bookId: string | null = null;
   export let chapters: { index: number; title?: string; start: number }[] = [];
   export let characters = 0;
+  /**
+   * The accuracy test's judging (session 2): each item's mark, by ref; null = no judging. Each
+   * item gets the mark buttons and each tab says how many of its items are marked.
+   */
+  export let marks: Record<string, ItemMark> | null = null;
+
+  const dispatch = createEventDispatcher<{ mark: { ref: string; mark: ItemMark | null } }>();
+  function counted(key: SummarySectionKey, marks: Record<string, ItemMark> | null): string {
+    if (!marks) return '';
+    const refs = (summary.sections.find((s) => s.key === key)?.groups ?? []).flatMap((g) =>
+      g.items.map((i) => i.ref)
+    );
+    return ` ${refs.filter((r) => marks[r]).length}/${refs.length}`;
+  }
 
   $: present = SUMMARY_TABS.filter((t) => summary.sections.some((s) => s.key === t.key));
   let tab: SummarySectionKey = 'overview';
@@ -63,7 +80,7 @@
         data-testid="summary-tab-{t.key}"
         on:click={() => (tab = t.key)}
       >
-        {t.label}
+        {t.label}{counted(t.key, marks)}
       </button>
     {/each}
   </div>
@@ -73,6 +90,11 @@
       {#if section.key === 'overview'}
         {#each section.groups[0]?.items ?? [] as it (it.ref)}
           <p class="leading-relaxed" data-ref={it.ref}>{it.text}</p>
+          {#if marks}<ItemMarks
+              ref={it.ref}
+              mark={marks[it.ref] ?? null}
+              on:mark={(e) => dispatch('mark', e.detail)}
+            />{/if}
         {/each}
       {:else if section.key === 'chapters'}
         {#each section.groups as g (g.chapter)}
@@ -91,6 +113,11 @@
                     {/if}
                   </blockquote>
                 {/if}
+                {#if marks}<ItemMarks
+                    ref={it.ref}
+                    mark={marks[it.ref] ?? null}
+                    on:mark={(e) => dispatch('mark', e.detail)}
+                  />{/if}
               </li>
             {/each}
           </ul>
@@ -111,6 +138,11 @@
                   {/if}
                 </blockquote>
               {/if}
+              {#if marks}<ItemMarks
+                  ref={it.ref}
+                  mark={marks[it.ref] ?? null}
+                  on:mark={(e) => dispatch('mark', e.detail)}
+                />{/if}
             </article>
           {/each}
         </div>
@@ -136,6 +168,11 @@
                   {/if}
                 </blockquote>
               {/if}
+              {#if marks}<ItemMarks
+                  ref={it.ref}
+                  mark={marks[it.ref] ?? null}
+                  on:mark={(e) => dispatch('mark', e.detail)}
+                />{/if}
             </li>
           {/each}
         </ul>

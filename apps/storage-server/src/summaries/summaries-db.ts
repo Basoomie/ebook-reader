@@ -203,6 +203,21 @@ export const SUMMARIES_MIGRATIONS: { version: number; name: string; sql: string 
       ALTER TABLE test_claims ADD COLUMN mark TEXT CHECK (mark IS NULL OR mark IN ('right', 'wrong', 'unsure'));
     `,
   },
+  {
+    version: 3,
+    name: 'the accuracy test: marks on whole summary items',
+    sql: `
+      -- The user judges each setup's summary item by item (decided 2026-11-22: split-up claims
+      -- lost their context and were too many). not_needed = vague, filler or unimportant.
+      CREATE TABLE test_item_marks (
+        run_id     TEXT NOT NULL REFERENCES test_runs(id),
+        ref        TEXT NOT NULL,
+        mark       TEXT NOT NULL CHECK (mark IN ('right', 'mistake', 'not_needed', 'unsure')),
+        marked_at  INTEGER NOT NULL,
+        PRIMARY KEY (run_id, ref)
+      );
+    `,
+  },
 ];
 
 export const SUMMARIES_SCHEMA_VERSION =
