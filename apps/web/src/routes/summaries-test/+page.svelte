@@ -19,7 +19,11 @@
   import AppHeader from '$lib/components/app-nav/app-header.svelte';
   import SummaryView from '$lib/components/summaries/summary-view.svelte';
   import { pxScreen } from '$lib/css-classes';
-  import type { ItemMark } from '$lib/summaries/summary-types';
+  import {
+    SUMMARY_TABS,
+    type ItemMark,
+    type SummarySectionKey
+  } from '$lib/summaries/summary-types';
   import {
     SummaryTestApi,
     type ItemJudging,
@@ -43,6 +47,8 @@
     if (!browser) return;
     book = $page.url.searchParams.get('book') ?? '';
     runId = $page.url.searchParams.get('run') ?? '';
+    const t = $page.url.searchParams.get('tab');
+    if (t && SUMMARY_TABS.some((x) => x.key === t)) tab = t as SummarySectionKey;
     api = await SummaryTestApi.connect();
     if (!api) {
       error = 'Connect this device to the library server first (Settings > Data).';
@@ -88,7 +94,7 @@
     history.replaceState(
       history.state,
       '',
-      `?book=${encodeURIComponent(book)}&run=${encodeURIComponent(runId)}`
+      `?book=${encodeURIComponent(book)}&run=${encodeURIComponent(runId)}&tab=${tab}`
     );
   }
 
@@ -136,7 +142,7 @@
   async function addMissing() {
     if (!api || !missingText.trim() || !current) return;
     try {
-      await api.addMissing(book, 'round1', missingText.trim(), current.id);
+      await api.addMissing(book, 'round1', missingText.trim(), current.id, tab);
       missingText = '';
       judging = await api.items(book);
     } catch (e) {
@@ -195,6 +201,11 @@
   }
 
   $: current = judging?.runs.find((r) => r.id === runId) ?? null;
+  let tab: SummarySectionKey = 'overview';
+  $: tabLabel = SUMMARY_TABS.find((t) => t.key === tab)?.label ?? tab;
+  // The open tab stays in the address, so a reload keeps your place.
+  $: if (browser && current && tab) remember();
+  $: tabNotes = (current?.notes ?? []).filter((n) => (n.section ?? 'overview') === tab);
   $: runningRuns = (overview?.runs ?? []).filter((r) => r.state === 'running');
 </script>
 
@@ -281,6 +292,7 @@
           chapters={judging.chapters}
           characters={judging.characters}
           marks={current.marks}
+          bind:tab
           on:mark={onMark}
         />
       </div>
@@ -288,12 +300,13 @@
 
     {#if current}
       <section class="mt-8 max-w-3xl" data-testid="st-missing">
-        <h2 class="font-bold">Your notes on this summary</h2>
+        <h2 class="font-bold">Your notes on {tabLabel}</h2>
         <p class="mt-1 text-sm text-c-muted">
-          Mistakes, what it misses, what should go: anything about this summary ({current.label}).
+          Mistakes, what it misses, what should go: anything about this tab of {current.label}'s
+          summary. Each tab has its own notes.
         </p>
         <ul class="mt-3 space-y-3">
-          {#each current.notes as m (m.id)}
+          {#each tabNotes as m (m.id)}
             <li data-testid="st-missing-item">
               {#if editing === m.id}
                 <textarea

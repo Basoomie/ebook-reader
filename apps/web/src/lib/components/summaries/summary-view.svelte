@@ -47,7 +47,8 @@
   }
 
   $: present = SUMMARY_TABS.filter((t) => summary.sections.some((s) => s.key === t.key));
-  let tab: SummarySectionKey = 'overview';
+  /** The open tab (the accuracy test's page reads it for its notes). */
+  export let tab: SummarySectionKey = 'overview';
   $: if (!present.some((t) => t.key === tab) && present.length) tab = present[0].key;
   $: section = summary.sections.find((s) => s.key === tab) ?? null;
   $: lang = summary.lang;

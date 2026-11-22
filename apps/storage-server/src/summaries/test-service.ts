@@ -674,18 +674,26 @@ export class SummaryTestService {
   }
 
   /** A note on a book (runId null) or on one setup's summary of it. */
-  addMissing(bookKey: string, scope: string, text: string, runId: string | null = null): number {
+  addMissing(
+    bookKey: string,
+    scope: string,
+    text: string,
+    runId: string | null = null,
+    section: string | null = null,
+  ): number {
     return Number(
       this.db
         .prepare(
-          'INSERT INTO test_missing (book_key, scope, text, added_at, run_id) VALUES (?, ?, ?, ?, ?)',
+          'INSERT INTO test_missing (book_key, scope, text, added_at, run_id, section) VALUES (?, ?, ?, ?, ?, ?)',
         )
-        .run(bookKey, scope, text.trim(), this.now(), runId).lastInsertRowid,
+        .run(bookKey, scope, text.trim(), this.now(), runId, section).lastInsertRowid,
     );
   }
 
   /** A note's new text (kept as written, line breaks and all), and optionally its summary. */
-  updateMissing(id: number, text: string, runId?: string | null): void {
+  updateMissing(id: number, text: string, runId?: string | null, section?: string | null): void {
+    if (section !== undefined)
+      this.db.prepare('UPDATE test_missing SET section = ? WHERE id = ?').run(section, id);
     const r =
       runId === undefined
         ? this.db
@@ -780,13 +788,14 @@ export class SummaryTestService {
     const marksOf = this.db.prepare('SELECT ref, mark FROM test_item_marks WHERE run_id = ?');
     const missing = this.db
       .prepare(
-        'SELECT id, text, added_at, run_id FROM test_missing WHERE book_key = ? AND scope = ? ORDER BY id',
+        'SELECT id, text, added_at, run_id, section FROM test_missing WHERE book_key = ? AND scope = ? ORDER BY id',
       )
       .all(bookKey, scope) as {
       id: number;
       text: string;
       added_at: number;
       run_id: string | null;
+      section: string | null;
     }[];
     const out = runs
       .map((r) => {

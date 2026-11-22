@@ -228,6 +228,14 @@ export const SUMMARIES_MIGRATIONS: { version: number; name: string; sql: string 
       ALTER TABLE test_missing ADD COLUMN edited_at INTEGER;
     `,
   },
+  {
+    version: 5,
+    name: 'the accuracy test: notes on one tab of a summary',
+    sql: `
+      -- The summary's tab the note was written under (overview, chapters, characters, ...).
+      ALTER TABLE test_missing ADD COLUMN section TEXT;
+    `,
+  },
 ];
 
 export const SUMMARIES_SCHEMA_VERSION =
