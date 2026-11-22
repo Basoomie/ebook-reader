@@ -218,6 +218,16 @@ export const SUMMARIES_MIGRATIONS: { version: number; name: string; sql: string 
       );
     `,
   },
+  {
+    version: 4,
+    name: 'the accuracy test: notes on one summary, editable',
+    sql: `
+      -- The user's notes are feedback on one setup's summary (mistakes, what it misses, what
+      -- should go); null = on the book.
+      ALTER TABLE test_missing ADD COLUMN run_id TEXT REFERENCES test_runs(id);
+      ALTER TABLE test_missing ADD COLUMN edited_at INTEGER;
+    `,
+  },
 ];
 
 export const SUMMARIES_SCHEMA_VERSION =

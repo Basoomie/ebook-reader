@@ -673,12 +673,28 @@ export class SummaryTestService {
     })();
   }
 
-  addMissing(bookKey: string, scope: string, text: string): number {
+  /** A note on a book (runId null) or on one setup's summary of it. */
+  addMissing(bookKey: string, scope: string, text: string, runId: string | null = null): number {
     return Number(
       this.db
-        .prepare('INSERT INTO test_missing (book_key, scope, text, added_at) VALUES (?, ?, ?, ?)')
-        .run(bookKey, scope, text.trim(), this.now()).lastInsertRowid,
+        .prepare(
+          'INSERT INTO test_missing (book_key, scope, text, added_at, run_id) VALUES (?, ?, ?, ?, ?)',
+        )
+        .run(bookKey, scope, text.trim(), this.now(), runId).lastInsertRowid,
     );
+  }
+
+  /** A note's new text (kept as written, line breaks and all), and optionally its summary. */
+  updateMissing(id: number, text: string, runId?: string | null): void {
+    const r =
+      runId === undefined
+        ? this.db
+            .prepare('UPDATE test_missing SET text = ?, edited_at = ? WHERE id = ?')
+            .run(text.trim(), this.now(), id)
+        : this.db
+            .prepare('UPDATE test_missing SET text = ?, run_id = ?, edited_at = ? WHERE id = ?')
+            .run(text.trim(), runId, this.now(), id);
+    if (r.changes === 0) throw new Error('no such note');
   }
 
   removeMissing(id: number): void {
@@ -764,9 +780,14 @@ export class SummaryTestService {
     const marksOf = this.db.prepare('SELECT ref, mark FROM test_item_marks WHERE run_id = ?');
     const missing = this.db
       .prepare(
-        'SELECT id, text, added_at FROM test_missing WHERE book_key = ? AND scope = ? ORDER BY id',
+        'SELECT id, text, added_at, run_id FROM test_missing WHERE book_key = ? AND scope = ? ORDER BY id',
       )
-      .all(bookKey, scope) as { id: number; text: string; added_at: number }[];
+      .all(bookKey, scope) as {
+      id: number;
+      text: string;
+      added_at: number;
+      run_id: string | null;
+    }[];
     const out = runs
       .map((r) => {
         const summary = this.summary(r.id);
@@ -790,8 +811,9 @@ export class SummaryTestService {
             notNeeded: count('not_needed'),
             unsure: count('unsure'),
             unmarked: refs.filter((ref) => !marks[ref]).length,
-            missedByAll: missing.length,
+            notes: missing.filter((m) => m.run_id === r.id).length,
           },
+          notes: missing.filter((m) => m.run_id === r.id),
           metrics: r.metrics,
         };
       })
@@ -802,7 +824,11 @@ export class SummaryTestService {
         order.indexOf(a.setup) - order.indexOf(b.setup) ||
         Number(a.background) - Number(b.background),
     );
-    return { book: this.book(bookKey), runs: out, missing };
+    return {
+      book: this.book(bookKey),
+      runs: out,
+      missing: missing.filter((m) => m.run_id === null),
+    };
   }
 
   // -------------------------------------------------------------------------------------------

@@ -134,10 +134,31 @@
   }
 
   async function addMissing() {
-    if (!api || !missingText.trim()) return;
-    await api.addMissing(book, 'round1', missingText.trim());
-    missingText = '';
-    judging = await api.items(book);
+    if (!api || !missingText.trim() || !current) return;
+    try {
+      await api.addMissing(book, 'round1', missingText.trim(), current.id);
+      missingText = '';
+      judging = await api.items(book);
+    } catch (e) {
+      error = (e as Error).message;
+    }
+  }
+
+  let editing: number | null = null;
+  let editText = '';
+  function startEdit(id: number, text: string) {
+    editing = id;
+    editText = text;
+  }
+  async function saveNote(id: number) {
+    if (!api || !editText.trim()) return;
+    try {
+      await api.updateMissing(id, editText);
+      editing = null;
+      judging = await api.items(book);
+    } catch (e) {
+      error = (e as Error).message;
+    }
   }
 
   async function removeMissing(id: number) {
@@ -265,39 +286,75 @@
       </div>
     {/if}
 
-    <section class="mt-8 max-w-3xl" data-testid="st-missing">
-      <h2 class="font-bold">What's missing</h2>
-      <p class="mt-1 text-sm text-c-muted">
-        Anything important about this book that the summaries left out (one note per thing).
-      </p>
-      <textarea
-        class="c-input mt-2 block w-full"
-        rows="3"
-        lang="ja"
-        bind:value={missingText}
-        data-testid="st-missing-text"
-      />
-      <button
-        type="button"
-        class="c-btn c-btn-primary mt-2"
-        disabled={!missingText.trim()}
-        data-testid="st-missing-add"
-        on:click={addMissing}>Add</button
-      >
-      <ul class="mt-3 space-y-2">
-        {#each judging.missing as m (m.id)}
-          <li class="flex items-start gap-2" data-testid="st-missing-item">
-            <p class="flex-1" lang="ja">{m.text}</p>
-            <button
-              type="button"
-              class="c-btn c-btn-ghost c-btn-sm"
-              data-testid="st-missing-remove"
-              on:click={() => removeMissing(m.id)}>Remove</button
-            >
-          </li>
-        {/each}
-      </ul>
-    </section>
+    {#if current}
+      <section class="mt-8 max-w-3xl" data-testid="st-missing">
+        <h2 class="font-bold">Your notes on this summary</h2>
+        <p class="mt-1 text-sm text-c-muted">
+          Mistakes, what it misses, what should go: anything about this summary ({current.label}).
+        </p>
+        <ul class="mt-3 space-y-3">
+          {#each current.notes as m (m.id)}
+            <li data-testid="st-missing-item">
+              {#if editing === m.id}
+                <textarea
+                  class="c-input block w-full"
+                  rows="6"
+                  lang="ja"
+                  bind:value={editText}
+                  data-testid="st-note-edit-text"
+                />
+                <div class="mt-2 flex gap-2">
+                  <button
+                    type="button"
+                    class="c-btn c-btn-primary c-btn-sm"
+                    disabled={!editText.trim()}
+                    data-testid="st-note-save"
+                    on:click={() => saveNote(m.id)}>Save</button
+                  >
+                  <button
+                    type="button"
+                    class="c-btn c-btn-ghost c-btn-sm"
+                    data-testid="st-note-cancel"
+                    on:click={() => (editing = null)}>Cancel</button
+                  >
+                </div>
+              {:else}
+                <p class="whitespace-pre-wrap" lang="ja" data-testid="st-note-text">{m.text}</p>
+                <div class="mt-1 flex gap-2">
+                  <button
+                    type="button"
+                    class="c-btn c-btn-ghost c-btn-sm"
+                    data-testid="st-note-edit"
+                    on:click={() => startEdit(m.id, m.text)}>Edit</button
+                  >
+                  <button
+                    type="button"
+                    class="c-btn c-btn-ghost c-btn-sm"
+                    data-testid="st-missing-remove"
+                    on:click={() => removeMissing(m.id)}>Remove</button
+                  >
+                </div>
+              {/if}
+            </li>
+          {/each}
+        </ul>
+        <textarea
+          class="c-input mt-3 block w-full"
+          rows="4"
+          lang="ja"
+          placeholder="Add a note"
+          bind:value={missingText}
+          data-testid="st-missing-text"
+        />
+        <button
+          type="button"
+          class="c-btn c-btn-primary mt-2"
+          disabled={!missingText.trim()}
+          data-testid="st-missing-add"
+          on:click={addMissing}>Add note</button
+        >
+      </section>
+    {/if}
 
     <section class="mt-8" data-testid="st-scores">
       <h2 class="font-bold">Scores</h2>
@@ -309,7 +366,7 @@
                 >Unsure</th
               ><th>Not marked</th><th>Cost</th><th>Time</th><th>Quotes dropped</th><th
                 >Cross-checked</th
-              ><th>Refusals</th>
+              ><th>Refusals</th><th>Your notes</th>
             </tr>
           </thead>
           <tbody>
@@ -327,14 +384,15 @@
                 <td>{dropped(r.metrics)}</td>
                 <td>{metric(r.metrics, 'crossChecked')}</td>
                 <td>{refusals(r.metrics)}</td>
+                <td>{r.score.notes}</td>
               </tr>
             {/each}
           </tbody>
         </table>
       </div>
       <p class="mt-2 text-xs text-c-muted">
-        What each setup missed (your notes above, plus right items only other setups have) is
-        counted after you finish judging.
+        What each setup missed (from your notes, plus right items only other setups have) is counted
+        after you finish judging.
       </p>
     </section>
   {/if}

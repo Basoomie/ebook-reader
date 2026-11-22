@@ -173,9 +173,21 @@ export function createSummaryTestRouter(
   });
 
   router.post('/summaries-test/missing', (req, res) => {
-    const b = req.body as { book?: string; scope?: string; text?: string };
+    const b = req.body as { book?: string; scope?: string; text?: string; run?: string | null };
     const text = need(b.text?.trim(), 'text');
-    res.status(201).json({ id: svc.addMissing(need(b.book, 'book'), b.scope || 'round1', text) });
+    res
+      .status(201)
+      .json({ id: svc.addMissing(need(b.book, 'book'), b.scope || 'round1', text, b.run ?? null) });
+  });
+
+  router.put('/summaries-test/missing/:id', (req, res) => {
+    const b = req.body as { text?: string; run?: string | null };
+    try {
+      svc.updateMissing(Number(req.params.id), need(b.text?.trim(), 'text'), b.run);
+    } catch (e) {
+      throw new ApiError(404, 'not_found', (e as Error).message);
+    }
+    res.json({ ok: true });
   });
 
   router.delete('/summaries-test/missing/:id', (req, res) => {

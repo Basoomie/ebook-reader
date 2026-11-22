@@ -101,8 +101,10 @@ export interface ItemRun {
     notNeeded: number;
     unsure: number;
     unmarked: number;
-    missedByAll: number;
+    notes: number;
   };
+  /** The user's notes on this summary. */
+  notes: { id: number; text: string }[];
   metrics: Record<string, unknown> | null;
 }
 
@@ -185,8 +187,11 @@ export class SummaryTestApi {
   merge(from: number, into: number) {
     return this.call('POST', '/groups/merge', { from, into });
   }
-  addMissing(book: string, scope: string, text: string) {
-    return this.call<{ id: number }>('POST', '/missing', { book, scope, text });
+  addMissing(book: string, scope: string, text: string, run: string | null = null) {
+    return this.call<{ id: number }>('POST', '/missing', { book, scope, text, run });
+  }
+  updateMissing(id: number, text: string) {
+    return this.call('PUT', `/missing/${id}`, { text });
   }
   removeMissing(id: number) {
     return this.call('DELETE', `/missing/${id}`);
