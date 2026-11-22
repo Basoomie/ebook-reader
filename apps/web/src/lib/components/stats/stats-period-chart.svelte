@@ -13,8 +13,8 @@
 
   /**
    * Season 2 Phase 11: a week, month or year beside the one before it, as paired bars
-   * (this period filled, the previous one outlined) and as running totals (this period
-   * solid, the previous one dashed). Tap or click anywhere on a chart to read a day or
+   * (this period filled, the previous one outlined) or as running totals (this period
+   * solid, the previous one dashed), one at a time in one card (2026-11-22 redesign). Tap or click anywhere on a chart to read a day or
    * month; arrow keys move it when the chart has focus. Plain SVG drawn with the
    * catalogue colours (black and white in E-ink), no transitions.
    */
@@ -27,6 +27,8 @@
   const dispatch = createEventDispatcher<{ measure: ChartMeasure }>();
   const UNIT = { week: 'week', month: 'month', year: 'year' } as const;
 
+  /** 2026-11-22 redesign: one chart at a time (by day / month, or running total). */
+  let view: 'bars' | 'running' = 'bars';
   let bucket = 0;
   let day = 0;
   let shownKey = '';
@@ -111,168 +113,193 @@
   const setDay = (i: number) => (day = i);
 </script>
 
-<section class="pt-6" data-testid="stats-charts" data-kind={comparison.kind}>
-  <div class="flex items-center gap-4 pb-3">
-    <h2 class="font-mincho text-2xl font-bold">Compared with last {UNIT[comparison.kind]}</h2>
-    <span class="c-section-rule" />
-  </div>
-  <div class="flex flex-wrap gap-2" role="group" aria-label="Chart measure">
-    {#each CHART_MEASURES as choice (choice.measure)}
+<section class="c-stats-card" data-testid="stats-charts" data-kind={comparison.kind}>
+  <div class="c-stats-card-head">
+    <h2 class="font-mincho text-lg font-bold sm:text-xl">
+      Compared with last {UNIT[comparison.kind]}
+    </h2>
+    <div class="c-stats-seg" role="group" aria-label="Chart">
       <button
-        class="c-ctl"
-        aria-pressed={measure === choice.measure}
-        data-testid="stats-chart-measure-{choice.measure}"
-        on:click={() => dispatch('measure', choice.measure)}
+        type="button"
+        aria-pressed={view === 'bars'}
+        data-testid="stats-chart-view-bars"
+        on:click={() => (view = 'bars')}
       >
-        {choice.label}
+        {barsTitle}
       </button>
-    {/each}
+      <button
+        type="button"
+        aria-pressed={view === 'running'}
+        data-testid="stats-chart-view-running"
+        on:click={() => (view = 'running')}
+      >
+        {runTitle}
+      </button>
+    </div>
   </div>
-  {#if empty}
-    <p class="pt-2 text-sm" data-testid="stats-chart-empty">
-      No {measure === 'speed' ? 'tracked reading' : 'reading'} in either {UNIT[comparison.kind]}.
-    </p>
-  {/if}
+  <div class="px-4 pt-3 sm:px-5">
+    <div class="c-stats-seg" role="group" aria-label="Chart measure">
+      {#each CHART_MEASURES as choice (choice.measure)}
+        <button
+          type="button"
+          aria-pressed={measure === choice.measure}
+          data-testid="stats-chart-measure-{choice.measure}"
+          on:click={() => dispatch('measure', choice.measure)}
+        >
+          {choice.label}
+        </button>
+      {/each}
+    </div>
+    {#if empty}
+      <p class="pt-2 text-sm text-c-muted" data-testid="stats-chart-empty">
+        No {measure === 'speed' ? 'tracked reading' : 'reading'} in either {UNIT[comparison.kind]}.
+      </p>
+    {/if}
+  </div>
 
-  <!-- Paired bars -->
-  <div class="pt-4" data-testid="stats-chart-bars">
-    <div class="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-      <h3 class="font-mincho font-bold">{barsTitle}</h3>
-      <div class="flex flex-wrap gap-x-4 gap-y-1 text-xs">
-        <span class="flex items-center gap-1">
-          <span class="swatch-current inline-block h-3 w-3" />{thisLabel}
-        </span>
-        <span class="flex items-center gap-1">
-          <span class="swatch-previous inline-block h-3 w-3" />{previousLabel}
-        </span>
+  {#if view === 'bars'}
+    <!-- Paired bars -->
+    <div class="px-4 pb-4 pt-3 sm:px-5" data-testid="stats-chart-bars">
+      <div class="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+        <div class="flex flex-wrap gap-x-4 gap-y-1 text-xs">
+          <span class="flex items-center gap-1.5">
+            <span class="swatch-current inline-block h-3 w-3 rounded-sm" />{thisLabel}
+          </span>
+          <span class="flex items-center gap-1.5">
+            <span class="swatch-previous inline-block h-3 w-3 rounded-sm" />{previousLabel}
+          </span>
+        </div>
+        <div class="text-xs text-c-muted" data-testid="stats-chart-bars-max">
+          {formatMeasure(measure, barTop)}
+        </div>
       </div>
-    </div>
-    <div class="text-xs text-c-muted" data-testid="stats-chart-bars-max">
-      {formatMeasure(measure, barTop)}
-    </div>
-    <div
-      class="chart relative h-40 w-full cursor-pointer"
-      role="slider"
-      tabindex="0"
-      aria-label="{barsTitle}: choose a {comparison.kind === 'year' ? 'month' : 'day'}"
-      aria-valuemin={1}
-      aria-valuemax={buckets.length}
-      aria-valuenow={bucket + 1}
-      aria-valuetext={barText}
-      data-testid="stats-chart-bars-area"
-      on:click={(ev) => pick(ev, buckets.length, setBucket, false)}
-      on:keydown={(ev) => keys(ev, buckets.length, bucket, setBucket)}
-    >
-      <svg
-        class="block h-full w-full"
-        viewBox="0 0 {buckets.length} 100"
-        preserveAspectRatio="none"
+      <div
+        class="chart relative mt-1 h-44 w-full cursor-pointer"
+        role="slider"
+        tabindex="0"
+        aria-label="{barsTitle}: choose a {comparison.kind === 'year' ? 'month' : 'day'}"
+        aria-valuemin={1}
+        aria-valuemax={buckets.length}
+        aria-valuenow={bucket + 1}
+        aria-valuetext={barText}
+        data-testid="stats-chart-bars-area"
+        on:click={(ev) => pick(ev, buckets.length, setBucket, false)}
+        on:keydown={(ev) => keys(ev, buckets.length, bucket, setBucket)}
+      >
+        <svg
+          class="block h-full w-full"
+          viewBox="0 0 {buckets.length} 100"
+          preserveAspectRatio="none"
+          aria-hidden="true"
+        >
+          <line class="axis" x1="0" y1="100" x2={buckets.length} y2="100" />
+          <line class="grid" x1="0" y1="6" x2={buckets.length} y2="6" />
+          <line class="grid" x1="0" y1="53" x2={buckets.length} y2="53" />
+          <line class="marker" x1={bucket + 0.5} y1="0" x2={bucket + 0.5} y2="100" />
+          {#each buckets as b, i (i)}
+            {#if b.current}
+              <rect
+                class="bar-current"
+                x={i + 0.1}
+                y={y(b.current, barMax)}
+                width="0.38"
+                height={100 - y(b.current, barMax)}
+                data-testid="stats-chart-bar-current"
+              />
+            {/if}
+            {#if b.previous}
+              <rect
+                class="bar-previous"
+                x={i + 0.54}
+                y={y(b.previous, barMax)}
+                width="0.36"
+                height={100 - y(b.previous, barMax)}
+                data-testid="stats-chart-bar-previous"
+              />
+            {/if}
+          {/each}
+        </svg>
+      </div>
+      <div
+        class="grid pt-1 text-center text-xs text-c-muted"
+        style:grid-template-columns="repeat({buckets.length}, minmax(0, 1fr))"
         aria-hidden="true"
       >
-        <line class="axis" x1="0" y1="100" x2={buckets.length} y2="100" />
-        <line class="grid" x1="0" y1="6" x2={buckets.length} y2="6" />
-        <line class="marker" x1={bucket + 0.5} y1="0" x2={bucket + 0.5} y2="100" />
         {#each buckets as b, i (i)}
-          {#if b.current}
-            <rect
-              class="bar-current"
-              x={i + 0.1}
-              y={y(b.current, barMax)}
-              width="0.38"
-              height={100 - y(b.current, barMax)}
-              data-testid="stats-chart-bar-current"
-            />
+          <span class="overflow-visible whitespace-nowrap">{b.tick}</span>
+        {/each}
+      </div>
+      <p class="pt-2 text-sm" aria-live="polite" data-testid="stats-chart-bars-readout">
+        {barText}
+      </p>
+    </div>
+  {:else}
+    <!-- Running totals -->
+    <div class="px-4 pb-4 pt-3 sm:px-5" data-testid="stats-chart-running">
+      <div class="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+        <div class="flex flex-wrap gap-x-4 gap-y-1 text-xs">
+          <span class="flex items-center gap-1.5">
+            <svg class="h-3 w-6" viewBox="0 0 24 12" aria-hidden="true">
+              <line class="line-current" x1="0" y1="6" x2="24" y2="6" />
+            </svg>{thisLabel}
+          </span>
+          <span class="flex items-center gap-1.5">
+            <svg class="h-3 w-6" viewBox="0 0 24 12" aria-hidden="true">
+              <line class="line-previous" x1="0" y1="6" x2="24" y2="6" />
+            </svg>{previousLabel}
+          </span>
+        </div>
+        <div class="text-xs text-c-muted" data-testid="stats-chart-running-max">
+          {formatMeasure(measure, runTop)}
+        </div>
+      </div>
+      <div
+        class="chart relative mt-1 h-44 w-full cursor-pointer"
+        role="slider"
+        tabindex="0"
+        aria-label="{runTitle}: choose a day"
+        aria-valuemin={1}
+        aria-valuemax={runLength}
+        aria-valuenow={day + 1}
+        aria-valuetext={runText}
+        data-testid="stats-chart-running-area"
+        on:click={(ev) => pick(ev, runLength, setDay, true)}
+        on:keydown={(ev) => keys(ev, runLength, day, setDay)}
+      >
+        <svg
+          class="block h-full w-full overflow-visible"
+          viewBox="0 0 {runSpan} 100"
+          preserveAspectRatio="none"
+          aria-hidden="true"
+        >
+          <line class="axis" x1="0" y1="100" x2={runSpan} y2="100" />
+          <line class="grid" x1="0" y1="6" x2={runSpan} y2="6" />
+          <line class="grid" x1="0" y1="53" x2={runSpan} y2="53" />
+          <line class="marker" x1={day} y1="0" x2={day} y2="100" />
+          {#if previousPoints}
+            <polyline class="line-previous" points={previousPoints} />
           {/if}
-          {#if b.previous}
-            <rect
-              class="bar-previous"
-              x={i + 0.54}
-              y={y(b.previous, barMax)}
-              width="0.36"
-              height={100 - y(b.previous, barMax)}
-              data-testid="stats-chart-bar-previous"
-            />
+          {#if currentPoints}
+            <polyline class="line-current" points={currentPoints} />
+          {/if}
+        </svg>
+      </div>
+      <div class="relative h-5 pt-1 text-xs text-c-muted" aria-hidden="true">
+        {#each chart.running.ticks as tick, i (i)}
+          {#if tick}
+            <!-- The first and last labels stay inside the chart's edges. -->
+            <span
+              class="absolute whitespace-nowrap {tickShift(i, runSpan, runLength)}"
+              style:left="{runLength === 1 ? 50 : (i / runSpan) * 100}%">{tick}</span
+            >
           {/if}
         {/each}
-      </svg>
-    </div>
-    <div
-      class="grid text-center text-xs"
-      style:grid-template-columns="repeat({buckets.length}, minmax(0, 1fr))"
-      aria-hidden="true"
-    >
-      {#each buckets as b, i (i)}
-        <span class="overflow-visible whitespace-nowrap">{b.tick}</span>
-      {/each}
-    </div>
-    <p class="pt-1 text-sm" aria-live="polite" data-testid="stats-chart-bars-readout">{barText}</p>
-  </div>
-
-  <!-- Running totals -->
-  <div class="pt-4" data-testid="stats-chart-running">
-    <div class="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-      <h3 class="font-mincho font-bold">{runTitle}</h3>
-      <div class="flex flex-wrap gap-x-4 gap-y-1 text-xs">
-        <span class="flex items-center gap-1">
-          <svg class="h-3 w-6" viewBox="0 0 24 12" aria-hidden="true">
-            <line class="line-current" x1="0" y1="6" x2="24" y2="6" />
-          </svg>{thisLabel}
-        </span>
-        <span class="flex items-center gap-1">
-          <svg class="h-3 w-6" viewBox="0 0 24 12" aria-hidden="true">
-            <line class="line-previous" x1="0" y1="6" x2="24" y2="6" />
-          </svg>{previousLabel}
-        </span>
       </div>
+      <p class="pt-2 text-sm" aria-live="polite" data-testid="stats-chart-running-readout">
+        {runText}
+      </p>
     </div>
-    <div class="text-xs text-c-muted" data-testid="stats-chart-running-max">
-      {formatMeasure(measure, runTop)}
-    </div>
-    <div
-      class="chart relative h-36 w-full cursor-pointer"
-      role="slider"
-      tabindex="0"
-      aria-label="{runTitle}: choose a day"
-      aria-valuemin={1}
-      aria-valuemax={runLength}
-      aria-valuenow={day + 1}
-      aria-valuetext={runText}
-      data-testid="stats-chart-running-area"
-      on:click={(ev) => pick(ev, runLength, setDay, true)}
-      on:keydown={(ev) => keys(ev, runLength, day, setDay)}
-    >
-      <svg
-        class="block h-full w-full overflow-visible"
-        viewBox="0 0 {runSpan} 100"
-        preserveAspectRatio="none"
-        aria-hidden="true"
-      >
-        <line class="axis" x1="0" y1="100" x2={runSpan} y2="100" />
-        <line class="grid" x1="0" y1="6" x2={runSpan} y2="6" />
-        <line class="marker" x1={day} y1="0" x2={day} y2="100" />
-        {#if previousPoints}
-          <polyline class="line-previous" points={previousPoints} />
-        {/if}
-        {#if currentPoints}
-          <polyline class="line-current" points={currentPoints} />
-        {/if}
-      </svg>
-    </div>
-    <div class="relative h-4 text-xs" aria-hidden="true">
-      {#each chart.running.ticks as tick, i (i)}
-        {#if tick}
-          <!-- The first and last labels stay inside the chart's edges. -->
-          <span
-            class="absolute whitespace-nowrap {tickShift(i, runSpan, runLength)}"
-            style:left="{runLength === 1 ? 50 : (i / runSpan) * 100}%">{tick}</span
-          >
-        {/if}
-      {/each}
-    </div>
-    <p class="pt-1 text-sm" aria-live="polite" data-testid="stats-chart-running-readout">
-      {runText}
-    </p>
-  </div>
+  {/if}
 </section>
 
 <style>
