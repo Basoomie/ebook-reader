@@ -28,17 +28,17 @@ function memoryStorage(initial: Record<string, string> = {}) {
 }
 
 describe('top bar defaults', () => {
-  it("are the user's PC answers, with the speed readout and the gap where they are today", () => {
+  it("are the user's PC setup of 2026-11-22", () => {
     expect(TOP_DEFAULT.map(({ id, place }) => `${id}:${place}`)).toEqual([
       'toc:bar',
-      'appearance:bar',
+      'images:bar',
       'search:bar',
-      'notes:bar',
+      'appearance:bar',
       'jumpBackForward:bar',
       'returnMarker:bar',
       'speed:bar',
       'gap:bar',
-      'images:bar',
+      'notes:bar',
       'jump:bar',
       'addBookmark:bar',
       'pacer:bar',
@@ -76,14 +76,14 @@ describe('top bar defaults', () => {
 });
 
 describe('bottom bar defaults', () => {
-  it("are today's order with the old switches' defaults", () => {
+  it("are the user's PC setup of 2026-11-22", () => {
     expect(BOTTOM_DEFAULT).toEqual([
       { id: 'tracker', shown: true },
-      { id: 'anki', shown: false },
+      { id: 'anki', shown: true },
+      { id: 'audiobook', shown: true },
       { id: 'pacer', shown: true },
       { id: 'readAloud', shown: false },
-      { id: 'returnMarker', shown: false },
-      { id: 'audiobook', shown: true }
+      { id: 'returnMarker', shown: true }
     ]);
     expect(resolveBottomBar(undefined)).toEqual(BOTTOM_DEFAULT);
   });
