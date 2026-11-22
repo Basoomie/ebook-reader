@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { keyboardMayBeOpen } from '$lib/functions/on-screen-keyboard';
   import { browser } from '$app/environment';
   import { nextChapter$ } from '$lib/components/book-reader/book-toc/book-toc';
   import HtmlRenderer from '$lib/components/html-renderer.svelte';
@@ -795,7 +796,13 @@
   </div>
 {/if}
 
-<svelte:window on:keydown={onKeydown} on:resize={() => (isResizing = true)} />
+<!-- The on-screen keyboard's resize isn't one: the page keeps its size (on-screen-keyboard.ts). -->
+<svelte:window
+  on:keydown={onKeydown}
+  on:resize={() => {
+    if (!keyboardMayBeOpen(window)) isResizing = true;
+  }}
+/>
 
 <style lang="scss">
   @import '../styles';

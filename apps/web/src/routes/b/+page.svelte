@@ -12,6 +12,7 @@
     merge,
     NEVER,
     of,
+    scan,
     share,
     shareReplay,
     skip,
@@ -241,6 +242,11 @@
   import { readableToObservable } from '$lib/functions/rxjs/readable-to-observable';
   import { reduceToEmptyString } from '$lib/functions/rxjs/reduce-to-empty-string';
   import { takeWhenBrowser } from '$lib/functions/rxjs/take-when-browser';
+  import {
+    keyboardMayBeOpen,
+    nextReaderSize,
+    type ViewSize
+  } from '$lib/functions/on-screen-keyboard';
   import { tapDom } from '$lib/functions/rxjs/tap-dom';
   import { longPressHandler } from '$lib/functions/long-press-handler';
   import { clickOutside } from '$lib/functions/use-click-outside';
@@ -603,16 +609,29 @@
     visualViewport ? fromEvent(visualViewport, 'resize') : of()
   ).pipe(share());
 
-  const containerViewportWidth$ = resize$.pipe(
+  // The on-screen keyboard makes the visible area shorter: the book keeps its size while a
+  // text box is focused on a touch device (on-screen-keyboard.ts), so it doesn't re-lay out.
+  const containerViewportSize$ = resize$.pipe(
     startWith(0),
-    map(() => visualViewport?.width || 0),
+    map(() => ({ width: visualViewport?.width || 0, height: visualViewport?.height || 0 })),
+    scan(
+      (prev: ViewSize | undefined, current) =>
+        nextReaderSize(prev, current, keyboardMayBeOpen(window)),
+      undefined
+    ),
+    filter((size): size is ViewSize => !!size),
+    shareReplay({ refCount: true, bufferSize: 1 }),
     takeWhenBrowser()
   );
 
-  const containerViewportHeight$ = resize$.pipe(
-    startWith(0),
-    map(() => visualViewport?.height || 0),
-    takeWhenBrowser()
+  const containerViewportWidth$ = containerViewportSize$.pipe(
+    map((size) => size.width),
+    distinctUntilChanged()
+  );
+
+  const containerViewportHeight$ = containerViewportSize$.pipe(
+    map((size) => size.height),
+    distinctUntilChanged()
   );
 
   // WP10d: E-ink mode shows the book in pure black on white, whatever the theme.

@@ -184,6 +184,20 @@ html:not(.catalogue):not(.eink):not(.reader-dark) .c-reader-notice {
   overscroll-behavior: contain;
 }
 
+/* While the on-screen keyboard is up (only then are these set): the panel ends on top of it
+   and fits in what is still visible (lib/functions/on-screen-keyboard.ts). */
+html[style*='--c-kb-inset'] .c-reader-panel {
+  bottom: var(--c-kb-inset, 0);
+  max-height: min(65vh, calc(100vh - var(--c-kb-inset, 0px) - var(--c-vv-top, 0px) - 1rem));
+}
+
+@media (min-width: 768px) {
+  html[style*='--c-kb-inset'] .c-reader-panel {
+    top: var(--c-vv-top, 0);
+    max-height: none;
+  }
+}
+
 .c-reader-panel select {
   background-color: var(--c-raised);
   color: var(--c-ink);
@@ -1339,6 +1353,10 @@ body.ttu-reader-body {
    downwards instead of jumping. */
 .c-modal-layer {
   @apply fixed inset-0 flex items-start justify-center p-6;
+  /* While the on-screen keyboard is up the layer covers only the part still visible, so a
+     sheet sits on top of the keyboard (lib/functions/on-screen-keyboard.ts). */
+  top: var(--c-vv-top, 0);
+  bottom: var(--c-kb-inset, 0);
   padding-top: min(10vh, 5rem);
   z-index: 50;
   writing-mode: horizontal-tb;
@@ -1359,6 +1377,8 @@ html.reader-dark .c-modal-backdrop {
   @apply relative flex w-full flex-col font-sans text-base;
   max-height: calc(100vh - min(10vh, 5rem) - 1.5rem);
   max-height: calc(100dvh - min(10vh, 5rem) - 1.5rem);
+  /* Never taller than the layer (shorter while the keyboard is up). */
+  max-height: min(calc(100dvh - min(10vh, 5rem) - 1.5rem), 100%);
   line-height: 1.5;
   background-color: var(--c-raised);
   color: var(--c-ink);
@@ -1424,6 +1444,7 @@ html.reader-dark .c-modal-backdrop {
     max-width: none;
     max-height: 92vh;
     max-height: 92dvh;
+    max-height: min(92dvh, 92%);
     border-radius: 1rem 1rem 0 0;
     border-bottom-width: 0;
     animation: c-sheet-in 0.18s ease-out;
