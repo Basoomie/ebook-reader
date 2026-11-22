@@ -13,6 +13,7 @@
  *                                        with their prices when known (the Add dialog)
  *   POST   /ai/models                    add a model ({ model }): offered, priced, a test request
  *   DELETE /ai/models/:model             take a model off the list (refused while in use)
+ *   POST   /ai/models/:model/batch-retry a model whose batches failed: its next batch now
  *
  * Without the AI layer (ttsu.db unavailable) every answer is 503 ai_off.
  */
@@ -25,6 +26,21 @@ import { isAiSecretName } from './secrets';
 import { AiSettingsError } from './settings';
 import { providerOf } from './providers';
 import { priceOf } from './spend';
+import { waitText } from './waits';
+
+/** A model's failing batches for Settings > AI. */
+function batchFailing(core: AiCore, model: string) {
+  const w = core.batchFailingWait(model);
+  if (!w || w.kind !== 'batch_failing') return null;
+  return {
+    failures: w.failures,
+    paused: w.paused,
+    reason: w.reason,
+    nextAt: w.nextAt,
+    fallback: w.fallback,
+    text: waitText(w),
+  };
+}
 
 /** What Settings > AI shows. */
 export function aiStatus(core: AiCore) {
@@ -44,6 +60,10 @@ export function aiStatus(core: AiCore) {
       inUse: core.modelUses(model),
       mode: modeOf(s, model),
       offered: c ? (c.models ? c.models.includes(model) : null) : null,
+      /** Most estimated prompt tokens in batches at the provider (0 = no cap). */
+      batchQueueTokens: s.batchQueueTokens[model] ?? s.batchQueueTokensDefault,
+      /** Batches the provider refused lately (null: none), with the page's words. */
+      batchFailing: batchFailing(core, model),
     };
   });
   return {
@@ -179,6 +199,13 @@ export function createAiRouter(core: AiCore | null): Router {
       res.json({ ...aiStatus(c), test });
     }),
   );
+
+  router.post('/ai/models/:model/batch-retry', (req, res) => {
+    const c = ai();
+    if (!c.tryBatchesNow(req.params.model))
+      throw new ApiError(409, 'nothing_held', `${req.params.model} has no failing batches`);
+    res.json(aiStatus(c));
+  });
 
   router.delete('/ai/models/:model', (req, res) => {
     const c = ai();

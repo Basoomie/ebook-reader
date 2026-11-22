@@ -46,25 +46,50 @@ export const ASSUMED_OUTPUT_TOKENS = 1500;
  * last answers (at list price), else an estimate from the prompt's length (Japanese text: about
  * one token per character, rounded up).
  */
-export function expectedListCost(
-  db: Database.Database,
-  s: AiSettings,
-  model: string,
-  promptChars: number,
-): number {
-  const price = priceOf(s, model);
-  if (!price) return Infinity;
-  const rows = db
+export interface RecentUsage {
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number | null;
+}
+
+/** A model's last 50 answers' usage (the estimates below; read once per send). */
+export function recentUsage(db: Database.Database, model: string): RecentUsage[] {
+  return db
     .prepare(
       `SELECT input_tokens, output_tokens, cache_read_tokens FROM ai_requests
        WHERE model = ? AND state IN ('answered', 'invalid', 'blocked') AND input_tokens IS NOT NULL
        ORDER BY id DESC LIMIT 50`,
     )
-    .all(model) as {
-    input_tokens: number;
-    output_tokens: number;
-    cache_read_tokens: number | null;
-  }[];
+    .all(model) as RecentUsage[];
+}
+
+/**
+ * The prompt tokens one more question to a model is expected to have (a batch queue's cap):
+ * the average of its last answers' prompts, else from the prompt's length, with a margin.
+ * Null when it has too few answers and no length is given.
+ */
+export function expectedPromptTokens(
+  rows: RecentUsage[],
+  promptChars: number | null,
+): number | null {
+  if (rows.length >= 5)
+    return (
+      (rows.reduce((a, r) => a + r.input_tokens + (r.cache_read_tokens ?? 0), 0) / rows.length) *
+      1.2
+    );
+  return promptChars === null ? null : Math.ceil(promptChars * 1.2) * 1.2;
+}
+
+export function expectedListCost(
+  db: Database.Database,
+  s: AiSettings,
+  model: string,
+  promptChars: number,
+  recent?: RecentUsage[],
+): number {
+  const price = priceOf(s, model);
+  if (!price) return Infinity;
+  const rows = recent ?? recentUsage(db, model);
   if (rows.length >= 5) {
     const avg =
       rows.reduce(

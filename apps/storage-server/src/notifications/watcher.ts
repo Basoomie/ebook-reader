@@ -17,6 +17,8 @@
  */
 import type Database from 'better-sqlite3';
 import { AI_LIMIT_EVENT } from '../ai/limit-event';
+import { AI_BATCHES_EVENT } from '../ai/batch-event';
+import { BATCH_HEALTH_KEY, type ModelBatchHealth } from '../ai/batch-health';
 import { AUDIO_STAGE_NAMES } from '../cleanup/audio/audio-stages';
 import { STAGE_NAMES } from '../cleanup/stages';
 import {
@@ -112,6 +114,7 @@ export class NotificationWatcher {
     this.part('best guesses', () => this.stage4Guesses());
     this.part('refused changes', () => this.refusalsQuiet(settings, now));
     this.part('the AI spending limit', () => this.aiLimit());
+    this.part('failing AI batches', () => this.aiBatches());
     for (const m of this.messages) this.service.notify(m, settings);
   }
 
@@ -363,6 +366,32 @@ export class NotificationWatcher {
         });
     }
     this.service.clearOthers(AI_LIMIT_EVENT, active);
+  }
+
+  /**
+   * Models whose batches the provider keeps refusing (ttsu.db ai_state batchHealth): one alert
+   * per model while its batches are paused; "Resolved" once a batch is accepted again.
+   */
+  private aiBatches(): void {
+    const row = this.s.db
+      .prepare('SELECT value_json FROM ai_state WHERE key = ?')
+      .get(BATCH_HEALTH_KEY) as { value_json: string } | undefined;
+    const all = row ? (JSON.parse(row.value_json) as Record<string, ModelBatchHealth>) : {};
+    const active = new Set<string>();
+    for (const h of Object.values(all)) {
+      if (h.pausedSince === null) continue;
+      const key = `${AI_BATCHES_EVENT}:${h.model}`;
+      active.add(key);
+      const who = h.provider === 'anthropic' ? 'Anthropic' : 'OpenAI';
+      const summary = `${who} refused ${h.failures} ${h.model} batches in a row: its batches are paused`;
+      if (this.service.observe(key, AI_BATCHES_EVENT, { waitMs: 0, summary, detail: h.reason }))
+        this.messages.push({
+          event: AI_BATCHES_EVENT,
+          lines: [summary, clip(h.reason, 200)],
+          link: LINKS.ai,
+        });
+    }
+    this.service.clearOthers(AI_BATCHES_EVENT, active);
   }
 
   // ---- the cleanup ----

@@ -50,6 +50,30 @@ export interface AiSettings {
    */
   batchStallMinutes: number;
   /**
+   * After a batch the provider refused as a whole (its status "failed"), that model sends no
+   * batch for this many minutes, doubled with each failure in a row up to batchFailMaxWaitMinutes
+   * (2026-11-22: 926 gpt-6-luna batches failed in 31 minutes, a new one sent within seconds of
+   * each).
+   */
+  batchFailWaitMinutes: number;
+  /** The longest wait between batches while they fail (and the paused model's try interval). */
+  batchFailMaxWaitMinutes: number;
+  /** After this many failed batches in a row, the model's batches are paused (with an alert). */
+  batchFailPauseAfter: number;
+  /**
+   * While a model's batches are paused: wait (try one batch now and then), or ask its questions
+   * one call each (full price) for the rest of the run. The model's mode is not changed.
+   */
+  batchFailFallback: 'wait' | 'direct';
+  /**
+   * The most estimated prompt tokens one model may have in batches at its provider (0 = no
+   * cap), unless batchQueueTokens names the model. The provider's own limit (OpenAI's enqueued
+   * tokens per model, on the account's Limits page) is the user's to look up.
+   */
+  batchQueueTokensDefault: number;
+  /** Per model id: its own cap on tokens in batches at the provider (0 = no cap). */
+  batchQueueTokens: Record<string, number>;
+  /**
    * How long one address may take to connect before the next is tried (ms). Node's default,
    * 250, failed every call from the live server on 2026-11-19: the NAS's DNS answers with IPv6
    * addresses it has no route to, so the IPv4 attempt was cut off after 250 ms (the busy
@@ -87,6 +111,12 @@ export const DEFAULT_AI_SETTINGS: AiSettings = {
   modes: { 'gpt-6-luna': 'direct' },
   models: [...DEFAULT_MODELS],
   batchStallMinutes: 30,
+  batchFailWaitMinutes: 5,
+  batchFailMaxWaitMinutes: 60,
+  batchFailPauseAfter: 3,
+  batchFailFallback: 'wait',
+  batchQueueTokensDefault: 2_000_000,
+  batchQueueTokens: {},
   connectAttemptMs: 5000,
   batchTurnaroundMinutes: 3,
   directWorkers: 3,
@@ -150,6 +180,19 @@ export function validateAiSettings(value: unknown, current: AiSettings): AiSetti
     const id = modelId(m);
     if (id && !models.includes(id)) models.push(id);
   }
+  const queueRaw = v.batchQueueTokens ?? {};
+  if (!isObj(queueRaw)) throw new AiSettingsError('AI: batchQueueTokens must be an object');
+  if (Object.keys(queueRaw).length > 30)
+    throw new AiSettingsError('AI: at most 30 batch queue caps');
+  const batchQueueTokens: Record<string, number> = {};
+  for (const [model, n] of Object.entries(queueRaw)) {
+    const id = modelId(model);
+    if (id)
+      batchQueueTokens[id] = num(`${id}: most tokens in batches at the provider`, n, 0, 1e9, true);
+  }
+  const fallback = v.batchFailFallback ?? 'wait';
+  if (fallback !== 'wait' && fallback !== 'direct')
+    throw new AiSettingsError('AI: batchFailFallback must be wait or direct');
   if (!isObj(v.prices)) throw new AiSettingsError('AI: prices must be an object');
   const entries = Object.entries(v.prices);
   if (entries.length > 30) throw new AiSettingsError('AI: at most 30 prices');
@@ -177,6 +220,36 @@ export function validateAiSettings(value: unknown, current: AiSettings): AiSetti
       1440,
       true,
     ),
+    batchFailWaitMinutes: num(
+      'Wait after a failed batch (min)',
+      v.batchFailWaitMinutes ?? 5,
+      1,
+      1440,
+      true,
+    ),
+    batchFailMaxWaitMinutes: num(
+      'Longest wait between failing batches (min)',
+      v.batchFailMaxWaitMinutes ?? 60,
+      1,
+      1440,
+      true,
+    ),
+    batchFailPauseAfter: num(
+      'Pause batches after this many failures in a row',
+      v.batchFailPauseAfter ?? 3,
+      1,
+      100,
+      true,
+    ),
+    batchFailFallback: fallback,
+    batchQueueTokensDefault: num(
+      'Most tokens in batches at the provider, per model (0 = no cap)',
+      v.batchQueueTokensDefault ?? 2_000_000,
+      0,
+      1e9,
+      true,
+    ),
+    batchQueueTokens,
     connectAttemptMs: num(
       'Wait for each address when connecting (ms)',
       v.connectAttemptMs ?? 5000,

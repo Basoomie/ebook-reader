@@ -351,10 +351,13 @@ describe('AI runner', () => {
     expect(runner.enqueue(SPEC, 'secondary', keys, 'run1')).toBe(5);
     const first = await runner.step(SPEC, 'run1', () => false);
     expect(first.sent).toBe(10);
-    // Before the poll interval nothing is asked of the providers again.
+    // The next step checks each batch once, to know the provider took it (2026-11-22: failures
+    // were only seen a poll interval later); then nothing until the poll interval.
     const again = await runner.step(SPEC, 'run1', () => false);
     expect(again.sent).toBe(0);
-    expect(standin!.calls.filter((c: { poll?: boolean }) => c.poll).length).toBe(0);
+    expect(standin!.calls.filter((c: { poll?: boolean }) => c.poll).length).toBe(2);
+    await runner.step(SPEC, 'run1', () => false);
+    expect(standin!.calls.filter((c: { poll?: boolean }) => c.poll).length).toBe(2);
     const end = await runToEnd(runner, 'run1', advance);
     expect(end.pending).toBe(0);
     expect(runner.counts('test5', 'run1')).toMatchObject({ answered: 10, queued: 0, sent: 0 });
