@@ -68,7 +68,11 @@
   }
 
   async function runNow() {
-    if (!(await confirmDestructive(arrivalsRunNowCopy(stage.mode === 'on' ? 'on' : 'analyse'))))
+    if (
+      !(await confirmDestructive(
+        arrivalsRunNowCopy(stage.mode === 'on' ? 'on' : 'analyse', s7?.libraryChanges ?? 'off')
+      ))
+    )
       return;
     error = '';
     busy = true;

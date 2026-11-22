@@ -19,7 +19,7 @@ export const STAGE7_HINTS: Record<'off' | 'analyse' | 'on', string> = {
   off: 'Off: nothing runs. In Preview, the daily run finds the new audio under the torrents, unpacks new archives into _extracted/, runs stages 1-5 again and plans the new books; nothing is added to the library. On adds them.',
   analyse:
     'Preview: once a day (or Run now) the new audio is checked and planned; archives are unpacked into torrents/…/_extracted/ (new files only; the archives stay as they are). Nothing is added to the library or Audiobookshelf.',
-  on: 'On: once a day (or Run now) the new books are added to media/audiobooks/japanese as hard links with their metadata.json; Audiobookshelf picks them up. Existing books are never changed.'
+  on: 'On: once a day (or Run now) the new books are added to media/audiobooks/japanese as hard links with their metadata.json; Audiobookshelf picks them up. Books already in the library change only when Settings > Audiobooks > Changes to books already in the library is On.'
 };
 
 export const MODE_LABEL_ON_7 = 'On (add books)';
