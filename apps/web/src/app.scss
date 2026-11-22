@@ -180,6 +180,8 @@ html:not(.catalogue):not(.eink):not(.reader-dark) .c-reader-notice {
   color: var(--c-ink);
   border-color: var(--c-line);
   box-shadow: var(--c-pop-shadow);
+  /* Scrolling it to an end never scrolls the page or pulls it to refresh. */
+  overscroll-behavior: contain;
 }
 
 .c-reader-panel select {

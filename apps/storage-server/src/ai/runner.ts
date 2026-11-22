@@ -30,9 +30,16 @@ import {
   type ProviderClient,
 } from './providers';
 import type { AiSettings } from './settings';
-import { costOf, expectedListCost, priceOf } from './spend';
+import {
+  costOf,
+  expectedListCost,
+  expectedPromptTokens,
+  priceOf,
+  recentUsage,
+  type RecentUsage,
+} from './spend';
 import type { AiStageSpec, Provider, StoredAnswer } from './types';
-import { waitText, type AiWait } from './waits';
+import { waitIsNote, waitText, type AiWait } from './waits';
 
 export type { AiWait } from './waits';
 
@@ -100,6 +107,16 @@ function gz(v: unknown): Buffer {
 
 export function ungz<T>(b: Buffer): T {
   return JSON.parse(gunzipSync(b).toString('utf8')) as T;
+}
+
+/**
+ * The wait a step reports: the first found, except that a note on one model's batches gives
+ * way to a wait that stops the stage (a full limit found after it must still pause the stage).
+ */
+function firstWait(cur: AiWait | null, next: AiWait | null): AiWait | null {
+  if (!cur) return next;
+  if (next && waitIsNote(cur) && !waitIsNote(next)) return next;
+  return cur;
 }
 
 export function evidenceHash(version: number, evidence: unknown): string {
@@ -466,10 +483,13 @@ export class AiRunner {
         if (shouldStop()) break;
         const why = await this.core.usable(m.model);
         if (why) {
-          wait ??= why;
+          wait = firstWait(wait, why);
           continue;
         }
-        const batchMode = modeOf(s, m.model) === 'batch';
+        // Batches the provider keeps refusing: wait before the next (batch-health.ts), or with
+        // the fallback ask this run's questions one call each.
+        const hold = modeOf(s, m.model) === 'batch' ? this.core.batchHold(m.model, runId) : null;
+        const batchMode = modeOf(s, m.model) === 'batch' && !hold?.direct;
         // Questions a stalled batch gave back are always asked directly.
         const d = await this.sendDirect(
           spec,
@@ -481,26 +501,28 @@ export class AiRunner {
         );
         sent += d.sent;
         answered += d.answered;
-        if (d.wait) wait ??= d.wait;
-        if (batchMode && !d.wait) {
+        if (d.wait) wait = firstWait(wait, d.wait);
+        if (hold) wait = firstWait(wait, hold.wait);
+        if (batchMode && !d.wait && !hold) {
           const r = await this.sendBatch(spec, runId, m.model, s);
           sent += r.sent;
           answered += r.answered;
-          if (r.wait) wait ??= r.wait;
+          if (r.wait) wait = firstWait(wait, r.wait);
         }
       }
     }
     // Calls one at a time run on after the step: it waits until one of this stage's ends (its
     // slot is filled again by the next step) or the batches' check is due, and gives the
-    // server back meanwhile.
-    if (!wait && this.inFlightOf(spec.stage) > 0)
+    // server back meanwhile. A wait that is only a note on one model's batches doesn't stop
+    // the other calls.
+    if ((!wait || waitIsNote(wait)) && this.inFlightOf(spec.stage) > 0)
       await this.nextEnd(spec.stage, s.batchPollSeconds * 1000, shouldStop);
     answered += this.endedSince.get(spec.stage) ?? 0;
     this.endedSince.delete(spec.stage);
     const cw = this.callWaits.get(spec.stage);
     if (cw) {
       this.callWaits.delete(spec.stage);
-      wait ??= cw;
+      wait = firstWait(wait, cw);
     }
     // A feature that waits in its queue for room under the limit: one alert while it waits
     // (the notification watcher reads it), gone once anything is sent again.
@@ -612,8 +634,16 @@ export class AiRunner {
   }
 
   /** How many of `n` requests fit under the limit, and what one is expected to cost. */
-  private fits(model: string, n: number, promptChars: number, batch: boolean, s: AiSettings) {
-    const one = expectedListCost(this.db, s, model, promptChars) * (batch ? s.batchPriceFactor : 1);
+  private fits(
+    model: string,
+    n: number,
+    promptChars: number,
+    batch: boolean,
+    s: AiSettings,
+    recent?: RecentUsage[],
+  ) {
+    const one =
+      expectedListCost(this.db, s, model, promptChars, recent) * (batch ? s.batchPriceFactor : 1);
     // This month's spending of every feature, their batches' holds and calls in flight.
     const r = this.core.room();
     const room = (s.spendLimitUsd ?? 0) - r.spentUsd - r.reservedUsd;
@@ -627,8 +657,22 @@ export class AiRunner {
     model: string,
     s: AiSettings,
   ): Promise<{ sent: number; answered: number; wait: AiWait | null }> {
+    const none = { sent: 0, answered: 0, wait: null };
+    // One batch of a model at a time until the provider has taken it (2026-11-22: a new batch
+    // went out on every step while the last one's failure was not known yet, about 30 a
+    // minute). An unconfirmed batch is checked at the next step (collect).
+    if (this.unconfirmed(model)) return none;
+    const provider = providerOf(model);
+    // The provider's queue: at most the model's cap of estimated prompt tokens in batches at
+    // the provider. Checked before any evidence is read when the model's prompts are measured.
+    const cap = s.batchQueueTokens[model] ?? s.batchQueueTokensDefault;
+    const open = cap > 0 ? this.openQuestions(model) : 0;
+    const recent = recentUsage(this.db, model);
+    const measured = expectedPromptTokens(recent, null);
+    if (cap > 0 && open > 0 && measured !== null && open * measured >= cap)
+      return { ...none, wait: this.queueFull(provider, model, open * measured, cap) };
     const rows = this.queuedRows(spec, runId, model, s.batchSize, this.labeledOnly(), 'batchable');
-    if (!rows.length) return { sent: 0, answered: 0, wait: null };
+    if (!rows.length) return none;
     const inputs: { row: ReqRow; call: CallInput }[] = [];
     for (const row of rows) {
       const call = this.callInput(spec, row, s);
@@ -641,10 +685,20 @@ export class AiRunner {
     if (!inputs.length) return { sent: 0, answered: 0, wait: null };
     const avgChars =
       inputs.reduce((a, x) => a + x.call.system.length + x.call.user.length, 0) / inputs.length;
-    const f = this.fits(model, inputs.length, avgChars, true, s);
+    const f = this.fits(model, inputs.length, avgChars, true, s, recent);
     if (f.fit === 0) return { sent: 0, answered: 0, wait: this.limitWait(f.one) };
-    const take = inputs.slice(0, f.fit);
-    const provider = providerOf(model);
+    let take = inputs.slice(0, f.fit);
+    let queueWait: AiWait | null = null;
+    if (cap > 0) {
+      const per = expectedPromptTokens(recent, avgChars)!;
+      // With nothing at the provider one question always goes (a cap below one prompt).
+      const room = Math.max(open > 0 ? 0 : 1, Math.floor((cap - open * per) / per));
+      if (room <= 0) return { ...none, wait: this.queueFull(provider, model, open * per, cap) };
+      if (room < take.length) {
+        take = take.slice(0, room);
+        queueWait = this.queueFull(provider, model, (open + room) * per, cap);
+      }
+    }
     const client = this.client(provider)!;
     let batch: { id: string; inputFileId: string | null };
     try {
@@ -652,6 +706,19 @@ export class AiRunner {
         take.map((x) => ({ customId: `r${x.row.id}`, call: x.call })),
       );
     } catch (err) {
+      // Refused when sent for the provider's capacity (Anthropic's 429 for a full batch queue,
+      // OpenAI's on the upload): the model's batches wait as after a failed batch, and not the
+      // provider's other calls.
+      if (err instanceof RetryableError && err.busy) {
+        this.core.batchFailed({
+          provider,
+          model,
+          reason: `refused when sent: ${err.message}`.slice(0, 300),
+          capacity: true,
+          open: this.openBatches(model),
+        });
+        return { ...none, wait: this.core.batchHold(model, runId)?.wait ?? null };
+      }
       return {
         sent: 0,
         answered: 0,
@@ -698,8 +765,41 @@ export class AiRunner {
       `AI: batch ${batch.id} sent to ${provider} (${model}, ${take.length} questions, about $${(f.one * take.length).toFixed(3)})`,
     );
     // The hold of the batch just sent is in the room already.
-    const wait: AiWait | null = take.length < inputs.length ? this.limitWait(f.one) : null;
+    const wait: AiWait | null = f.fit < inputs.length ? this.limitWait(f.one) : queueWait;
     return { sent: take.length, answered: 0, wait };
+  }
+
+  /** A batch of the model the provider has not taken yet (no status, or still validating). */
+  private unconfirmed(model: string): boolean {
+    return !!this.db
+      .prepare(
+        `SELECT 1 FROM ai_batches WHERE state = 'submitted' AND model = ?
+           AND (provider_status IS NULL OR provider_status = 'validating') LIMIT 1`,
+      )
+      .get(model);
+  }
+
+  /** Questions in the model's batches at the provider. */
+  private openQuestions(model: string): number {
+    return (
+      this.db
+        .prepare(
+          `SELECT COALESCE(SUM(requests), 0) AS n FROM ai_batches WHERE state = 'submitted' AND model = ?`,
+        )
+        .get(model) as { n: number }
+    ).n;
+  }
+
+  private openBatches(model: string): number {
+    return (
+      this.db
+        .prepare(`SELECT COUNT(*) AS n FROM ai_batches WHERE state = 'submitted' AND model = ?`)
+        .get(model) as { n: number }
+    ).n;
+  }
+
+  private queueFull(provider: Provider, model: string, tokens: number, limit: number): AiWait {
+    return { kind: 'batch_queue_full', provider, model, tokens: Math.round(tokens), limit };
   }
 
   /** What a send error means: busy (wait), the key refused (wait), or final for these rows. */
@@ -948,7 +1048,8 @@ export class AiRunner {
     const due = this.db
       .prepare(
         `SELECT id, provider, model FROM ai_batches WHERE state = 'submitted' AND stage = ?
-         AND COALESCE(checked_at, submitted_at) <= ?`,
+         AND (COALESCE(checked_at, submitted_at) <= ? OR provider_status IS NULL
+           OR provider_status = 'validating')`,
       )
       .all(spec.stage, now - s.batchPollSeconds * 1000) as {
       id: string;
@@ -967,6 +1068,9 @@ export class AiRunner {
           .run(this.now(), st.status, b.id);
         const m = meta.get(b.id) as { submitted_at: number; error: string | null };
         const stalled = (m.error ?? '').startsWith('stalled');
+        // Taken by the provider: a run of failed batches ends with one sent after them.
+        if (!st.failed && st.status !== 'validating')
+          this.core.batchAccepted(b.model, m.submitted_at);
         if (!st.ended) {
           // The stall guard: nothing answered after batchStallMinutes -> cancelled; the answers
           // it has are kept and the rest asked directly (measured 2026-11-19: OpenAI ran no
@@ -981,26 +1085,68 @@ export class AiRunner {
           continue;
         }
         if (st.failed) {
-          this.db.transaction(() => {
-            this.db
-              .prepare(
-                `UPDATE ai_requests SET state = 'queued', batch_id = NULL${stalled ? `, mode = 'direct'` : ''} WHERE batch_id = ? AND state = 'sent'`,
-              )
-              .run(b.id);
+          // The provider's own reason is kept (2026-11-22: only "failed" was, for 926 batches).
+          const reason = st.reason ?? 'no reason given';
+          const capacity = st.capacity === true;
+          const n = this.db.transaction(() => {
+            let given = 0;
+            if (stalled)
+              this.db
+                .prepare(
+                  `UPDATE ai_requests SET state = 'queued', batch_id = NULL, mode = 'direct'
+                   WHERE batch_id = ? AND state = 'sent'`,
+                )
+                .run(b.id);
+            else if (capacity)
+              // Not the questions' fault (as a 429): the try sending them counted is given back.
+              this.db
+                .prepare(
+                  `UPDATE ai_requests SET state = 'queued', batch_id = NULL,
+                     attempts = MAX(0, attempts - 1) WHERE batch_id = ? AND state = 'sent'`,
+                )
+                .run(b.id);
+            else {
+              // Refused for what was sent (or no reason given): the try counts, and a question
+              // out of tries is given up with the reason.
+              given = this.db
+                .prepare(
+                  `UPDATE ai_requests SET state = 'failed', batch_id = NULL, error = ?, answered_at = ?
+                   WHERE batch_id = ? AND state = 'sent' AND attempts >= ?`,
+                )
+                .run(`batch failed: ${reason}`.slice(0, 500), this.now(), b.id, s.attempts).changes;
+              this.db
+                .prepare(
+                  `UPDATE ai_requests SET state = 'queued', batch_id = NULL, error = ?
+                   WHERE batch_id = ? AND state = 'sent'`,
+                )
+                .run(`batch failed: ${reason}`.slice(0, 500), b.id);
+            }
             this.db
               .prepare(
                 `UPDATE ai_batches SET state = 'failed', ended_at = ?, cost_usd = 0, error = ? WHERE id = ?`,
               )
-              .run(this.now(), stalled ? m.error : st.status, b.id);
+              .run(this.now(), stalled ? m.error : `failed: ${reason}`.slice(0, 300), b.id);
+            return given;
           })();
           dropHold(this.core.db, this.deps.source, b.id);
-          this.deps.log?.(`AI: batch ${b.id} ${st.status}: its questions go back to the queue`);
+          this.deps.log?.(
+            `AI: batch ${b.id} ${st.status} (${reason}): its questions go back to the queue${n ? ` (${n} out of tries given up)` : ''}`,
+          );
+          if (!stalled)
+            this.core.batchFailed({
+              provider: b.provider,
+              model: b.model,
+              reason,
+              capacity,
+              open: this.openBatches(b.model),
+            });
           await this.deleteBatchData(b.id, b.provider);
           continue;
         }
         const results = await client.batchResults(b.id);
         answered += this.applyResults(spec, b.id, b.model, results, s, stalled);
         dropHold(this.core.db, this.deps.source, b.id);
+        this.core.batchEnded(b.model);
         await this.deleteBatchData(b.id, b.provider);
       } catch (err) {
         this.deps.log?.(`AI: batch ${b.id}: ${(err as Error).message}`);

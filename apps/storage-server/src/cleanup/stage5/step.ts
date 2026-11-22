@@ -18,7 +18,7 @@ import type Database from 'better-sqlite3';
 import { createHash, randomUUID } from 'crypto';
 import path from 'path';
 import type { AiRunner } from '../../ai/runner';
-import { waitNeedsUser, waitText } from '../../ai/waits';
+import { waitIsNote, waitNeedsUser, waitText } from '../../ai/waits';
 import { runSpend } from '../../ai/spend';
 import { writeDecisions } from '../ai-decide/values';
 import { recordMarks } from '../marks';
@@ -712,7 +712,9 @@ export class Stage5 {
         pauseStage(this.db, STAGE, 'ai', p.wait);
         this.deps.log?.(`Stage 5: ${p.wait}`);
       }
-      return r.pending === 0 && !waitNeedsUser(r.wait) ? 'done' : 'wait';
+      if (r.pending === 0 && !waitNeedsUser(r.wait)) return 'done';
+      // A note on one model's batches: the rest goes on at its own pace.
+      return waitIsNote(r.wait) && (r.sent > 0 || r.answered > 0) ? 'more' : 'wait';
     }
     p.wait = null;
     if (getStage(this.db, STAGE).pauseReason === 'ai') resumeStage(this.db, STAGE);

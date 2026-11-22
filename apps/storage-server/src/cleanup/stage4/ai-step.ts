@@ -16,7 +16,7 @@
 import type Database from 'better-sqlite3';
 import { createHash } from 'crypto';
 import type { AiRunner } from '../../ai/runner';
-import { waitNeedsUser, waitText } from '../../ai/waits';
+import { waitIsNote, waitNeedsUser, waitText } from '../../ai/waits';
 import { runSpend } from '../../ai/spend';
 import { dropOtherItems, valueCounts, writeDecisions } from '../ai-decide/values';
 import { getSettings, stage4Bar } from '../settings';
@@ -671,7 +671,9 @@ export class Stage4Ai {
         pauseStage(this.db, STAGE, 'ai', ai.wait);
         this.deps.log?.(`Stage 4: ${ai.wait}`);
       }
-      return r.pending === 0 && !waitNeedsUser(r.wait) ? 'done' : 'wait';
+      if (r.pending === 0 && !waitNeedsUser(r.wait)) return 'done';
+      // A note on one model's batches: the rest goes on at its own pace.
+      return waitIsNote(r.wait) && (r.sent > 0 || r.answered > 0) ? 'more' : 'wait';
     }
     ai.wait = null;
     this.unpause();
