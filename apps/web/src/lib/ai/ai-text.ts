@@ -40,6 +40,41 @@ export function priceText(p: AiPrice): string {
   return `${base} (prompts over ${k} tokens: ${n(p.long.inputPerMTok)} in · ${n(p.long.outputPerMTok)} out)`;
 }
 
+const money = (v: number) => `$${Number.isInteger(v) ? String(v) : v.toFixed(2)}`;
+
+/** "$0.10 / $0.50" (in / out per million tokens). */
+export function priceShort(p: AiPrice): string {
+  return `${money(p.inputPerMTok)} / ${money(p.outputPerMTok)}`;
+}
+
+/** The long-prompt tier, for the price's tooltip ("" when the model has none). */
+export function longTierText(p: AiPrice): string {
+  if (!p.long || p.longAboveTokens === undefined) return '';
+  return `Prompts over ${Math.round(p.longAboveTokens / 1000)}K tokens: ${priceShort(p.long)}`;
+}
+
+/** "Anthropic ✓" / "OpenAI: no key" / "Anthropic: <error>" (the models toolbar). */
+export function providerShort(status: AiStatus, id: AiProvider): string {
+  const name = PROVIDER_NAMES[id];
+  const key = status.keys[id === 'anthropic' ? 'anthropicApiKey' : 'openaiApiKey'];
+  if (!key?.set) return `${name}: no key`;
+  const c = status.checks[id];
+  if (!c) return `${name}: not checked`;
+  if (c.error) return `${name}: ${c.error}`;
+  return `${name} ✓`;
+}
+
+/** A model's last batch test in a few words ("" when never tested). */
+export function batchTestShort(status: AiStatus, model: string): string {
+  const t = status.batchTests[model];
+  if (!t) return '';
+  if (t.state === 'open') return 'Batch test running';
+  if (t.state === 'answered')
+    return `Batches work (${(t.detail ?? 'answered').replace(/^answered in /, '')})`;
+  if (t.state === 'nothing') return 'Batches: no answer in the time allowed';
+  return 'Batch test failed';
+}
+
 export function keyStateText(info: AiKeyInfo | undefined): string {
   if (info?.unreadable) return 'Saved, but it can’t be read on the server any more: enter it again';
   if (!info?.set) return 'Not saved yet';

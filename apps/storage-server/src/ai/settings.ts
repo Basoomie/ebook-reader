@@ -5,6 +5,7 @@
  * Which models a feature uses for what stays with the feature (the cleanup's `models`).
  */
 import type Database from 'better-sqlite3';
+import { DEFAULT_MODELS, isBuiltIn } from './prices';
 
 /** A price tier per million tokens (US$). */
 export interface AiPriceTier {
@@ -37,6 +38,12 @@ export interface AiSettings {
    * endpoints) while a gpt-6.1-sol batch finished in 80 s and Luna answers one call in ~7 s.
    */
   modes: Record<string, 'batch' | 'direct'>;
+  /**
+   * The models listed in Settings > AI, the ones a feature can choose (in this order). Added
+   * there from the providers' own model lists (checked: offered to the key, a known price, one
+   * test request answered); any can be deleted unless a feature's task uses it.
+   */
+  models: string[];
   /**
    * A batch with nothing answered after this many minutes is cancelled (answers it has are kept)
    * and its questions are sent directly. 0 = wait for the provider (up to its 24 h).
@@ -78,6 +85,7 @@ export interface AiSettings {
 export const DEFAULT_AI_SETTINGS: AiSettings = {
   spendLimitUsd: null,
   modes: { 'gpt-6-luna': 'direct' },
+  models: [...DEFAULT_MODELS],
   batchStallMinutes: 30,
   connectAttemptMs: 5000,
   batchTurnaroundMinutes: 3,
@@ -134,6 +142,14 @@ export function validateAiSettings(value: unknown, current: AiSettings): AiSetti
       throw new AiSettingsError(`AI: ${id} must be batch or direct`);
     if (id) modes[id] = m;
   }
+  if (!Array.isArray(v.models) || v.models.length > 60)
+    throw new AiSettingsError('AI: models must be a list of at most 60 model ids');
+  const models: string[] = [];
+  for (const m of v.models) {
+    if (typeof m !== 'string') throw new AiSettingsError('AI: a model id must be text');
+    const id = modelId(m);
+    if (id && !models.includes(id)) models.push(id);
+  }
   if (!isObj(v.prices)) throw new AiSettingsError('AI: prices must be an object');
   const entries = Object.entries(v.prices);
   if (entries.length > 30) throw new AiSettingsError('AI: at most 30 prices');
@@ -153,6 +169,7 @@ export function validateAiSettings(value: unknown, current: AiSettings): AiSetti
         ? null
         : num('Monthly spending limit ($)', v.spendLimitUsd, 0, 10000),
     modes,
+    models,
     batchStallMinutes: num(
       'Cancel a batch with no answers after (min; 0 = never)',
       v.batchStallMinutes,
@@ -185,6 +202,17 @@ export function validateAiSettings(value: unknown, current: AiSettings): AiSetti
   };
 }
 
+/**
+ * The list of settings saved before the model list existed: the default models, then any model
+ * typed in Settings before the prices were built in (kept until deleted there).
+ */
+export function listBeforeModels(prices: unknown): string[] {
+  const typed = Object.keys(isObj(prices) ? prices : {}).filter(
+    (m) => !isBuiltIn(m) && !DEFAULT_MODELS.includes(m),
+  );
+  return [...DEFAULT_MODELS, ...typed];
+}
+
 const KEY = 'settings';
 
 /** The stored value laid over the defaults; a value that no longer fits: the defaults. */
@@ -195,7 +223,11 @@ export function readAiSettings(db: Database.Database): AiSettings {
   const defaults = structuredClone(DEFAULT_AI_SETTINGS);
   if (!row) return defaults;
   try {
-    return validateAiSettings(JSON.parse(row.value_json), defaults);
+    const raw = JSON.parse(row.value_json) as Obj;
+    // Saved before the model list existed: the default models, then any model typed in Settings
+    // before the prices were built in (kept until deleted there).
+    if (isObj(raw) && !Array.isArray(raw.models)) raw.models = listBeforeModels(raw.prices);
+    return validateAiSettings(raw, defaults);
   } catch {
     return defaults;
   }
