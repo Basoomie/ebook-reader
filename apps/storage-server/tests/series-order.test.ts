@@ -3,6 +3,8 @@
  * numbers a title prints, and the order of each series (series-order.ts), from cases found on
  * the live library.
  */
+import { readFileSync } from 'fs';
+import { join } from 'path';
 import { describe, expect, it } from 'vitest';
 import { calibreAsFound } from '../src/cleanup/stage4/as-found';
 import { pickByVolume, titleKey } from '../src/cleanup/stage4/pick';
@@ -756,5 +758,20 @@ describe('the second changed-series batch (build half)', () => {
     expect(got.get(ss.uuid)?.index).toBe(13.5);
     expect(got.get(ss2.uuid)?.index).toBe(16.5);
     expect(got.get(ss.uuid)?.guess).toBe(true);
+  });
+});
+
+describe('the live run of 2026-11-22', () => {
+  it('sub-series each numbered from 1 by the models follow the list as 1, 2, 3…', () => {
+    // 惑星ハシエラシリーズ's 32 books as the live run decided them (trimmed): six sub-series, each
+    // numbered from 1, Amazon's list 1-32 (薄明の来訪者4 has no place of its own).
+    const bs = JSON.parse(
+      readFileSync(join(__dirname, 'fixtures', 'series-order-hashiera.json'), 'utf8'),
+    ) as SeriesBook[];
+    const got = new Map(orderSeries(bs).map((c) => [c.uuid, c.index]));
+    const inList = [...bs].sort((a, c) => (a.lists?.amazon ?? 7.5) - (c.lists?.amazon ?? 7.5));
+    expect(inList.map((b) => got.get(b.uuid) ?? b.index)).toEqual(
+      Array.from({ length: 32 }, (_, i) => i + 1),
+    );
   });
 });

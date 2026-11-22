@@ -1493,7 +1493,21 @@ export function orderSeries(books: SeriesBook[]): SeriesChoice[] {
     const part = [...keyOf.keys()];
     const keys = part.map((w) => keyOf.get(w)!);
     if (part.length >= 2 && new Set(keys).size === keys.length) {
-      const nums = part.map((w) => w.index!).sort((a, c) => a - c);
+      // The numbers they hold, given out again in the list's order; but where the decided numbers
+      // collided (each sub-series counted from 1 by the models), the collision step has already
+      // moved them to leftover numbers: then 1, 2, 3… in the list's order, past the numbers others
+      // hold (惑星ハシエラ's 32 books were 13.5, 13.6… on the live run, 14-32 on a copy whose
+      // numbers were already apart: the live run of 2026-11-22).
+      const raw = part.map((w) => w.b.index);
+      const collided = new Set(raw).size !== raw.length;
+      const held = new Set(
+        works
+          .filter((w) => !part.includes(w) && w.index !== null && isMain(w))
+          .map((w) => w.index!),
+      );
+      const ranks: number[] = [];
+      for (let n = 1; ranks.length < part.length; n++) if (!held.has(n)) ranks.push(n);
+      const nums = collided ? ranks : part.map((w) => w.index!).sort((a, c) => a - c);
       if (new Set(nums).size === nums.length)
         [...part]
           .sort((a, c) => keyOf.get(a)! - keyOf.get(c)!)

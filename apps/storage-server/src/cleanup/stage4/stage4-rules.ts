@@ -34,8 +34,10 @@ import {
  * spelling; every book is decided again from the stored answers.
  * 4 (the changed-series measurements, 2026-11-22): store list places, arcs counted straight
  * through, the second batch's fixes; decided again from the stored answers.
+ * 5 (the live run of 2026-11-22): sub-series the models each numbered from 1 follow the list as
+ * 1, 2, 3… (惑星ハシエラ); decided again from the stored answers.
  */
-export const STAGE4_RULES_VERSION = 4;
+export const STAGE4_RULES_VERSION = 5;
 
 /** The gold labels' names for the kinds. */
 export type Kind = 'full' | 'sample' | 'bonus' | 'special edition' | 'omnibus';
