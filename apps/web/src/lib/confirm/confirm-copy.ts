@@ -677,6 +677,21 @@ export function restoreActionListCopy(): ConfirmCopy {
   };
 }
 
+/** Settings > Reader > Toolbars: "Reset to default" of one bar's list (this device only). */
+export function resetToolbarCopy(bar: 'top' | 'bottom'): ConfirmCopy {
+  const name = bar === 'top' ? 'top bar' : 'bottom bar';
+  return {
+    title: `Reset the ${name} to its default?`,
+    message: [
+      `The order of the ${name}’s buttons and where each one shows go back to the defaults on this device.`,
+      'Other devices keep their own toolbars.'
+    ],
+    confirmLabel: 'Reset',
+    // Nothing is deleted: the plain filled button.
+    danger: false
+  };
+}
+
 // ---- Library cleanup (WP20a) ----------------------------------------------------------
 
 /** Turning stage 1 on: from then on it removes identical copies from Calibre on its own. */

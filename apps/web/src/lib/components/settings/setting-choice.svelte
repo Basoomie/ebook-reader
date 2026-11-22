@@ -9,6 +9,8 @@
    * Two to four choices as one connected control (role="radiogroup"): the picked one
    * filled, arrow keys move between them. Full width on phones, its own width from 640 px.
    */
+  import { createEventDispatcher } from 'svelte';
+
   export let options: { id: any; text: string }[] = [];
   export let value: any;
   export let label = '';
@@ -16,11 +18,16 @@
   export let disabled = false;
   export let testid = '';
 
+  /** `change`: the picked id, for callers that don't bind `value` (reader toolbars). */
+  const dispatch = createEventDispatcher<{ change: any }>();
+
   let group: HTMLDivElement;
 
   function pick(id: any) {
     if (disabled) return;
+    const changed = value !== id;
     value = id;
+    if (changed) dispatch('change', id);
   }
 
   function onKeydown(event: KeyboardEvent) {

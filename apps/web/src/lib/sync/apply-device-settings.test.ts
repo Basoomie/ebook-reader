@@ -12,14 +12,16 @@ import {
   lastBlurredTrackerItems$,
   readerBottomBar$,
   readerToolbar$,
-  showReturnMarker$,
   theme$
 } from '$lib/data/store';
-import { get } from 'svelte/store';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { ankiBottomBarButton$, ankiConnectKey$ } from '$lib/anki/settings';
-import { readAloudBottomBarButton$ } from '$lib/read-aloud/settings';
-import { BOTTOM_DEFAULT, TOP_DEFAULT, resolveTopBar } from '$lib/reader-toolbar/toolbar-layout';
+import { ankiConnectKey$ } from '$lib/anki/settings';
+import {
+  BOTTOM_DEFAULT,
+  TOP_DEFAULT,
+  resolveBottomBar,
+  resolveTopBar
+} from '$lib/reader-toolbar/toolbar-layout';
 import { liveStorageSettings } from '$lib/data/internal/writable-storage-subject';
 import { localStorage } from '$lib/data/window/local-storage';
 import { homeRows$ } from '$lib/home/settings';
@@ -118,7 +120,7 @@ describe('applyDeviceSettings', () => {
     expect(applyDeviceSettings({ fontSize: '25', einkMode: null })).toEqual(['fontSize']);
   });
 
-  it('copies both toolbar lists exactly, and the old bottom-bar switches follow (session 1)', () => {
+  it('copies both toolbar lists exactly, the three old bottom-bar switches with them', () => {
     const toolbar = JSON.stringify([
       { id: 'home', place: 'bar' },
       { id: 'toc', place: 'menu' },
@@ -139,16 +141,18 @@ describe('applyDeviceSettings', () => {
       { id: 'toc', place: 'menu' },
       { id: 'menu', place: 'bar' }
     ]);
-    expect(get(ankiBottomBarButton$)).toBe(true);
-    expect(get(readAloudBottomBarButton$)).toBe(true);
-    expect(get(showReturnMarker$)).toBe(true);
+    const shown = (id: string) =>
+      resolveBottomBar(readerBottomBar$.getValue()).find((e) => e.id === id)?.shown;
+    expect(shown('anki')).toBe(true);
+    expect(shown('readAloud')).toBe(true);
+    expect(shown('returnMarker')).toBe(true);
 
     // A device that never set them: the defaults, nothing stored.
     applyDeviceSettings({ readerToolbar: null, readerBottomBar: null });
     expect(readerToolbar$.getValue()).toEqual(TOP_DEFAULT);
     expect(readerBottomBar$.getValue()).toEqual(BOTTOM_DEFAULT);
     expect(localStorage.getItem('readerBottomBar') ?? null).toBeNull();
-    expect(get(ankiBottomBarButton$)).toBe(false);
+    expect(shown('readAloud')).toBe(false);
   });
 
   it('never writes the AnkiConnect keys or a shared setting, whatever it is given', () => {

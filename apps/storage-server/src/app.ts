@@ -51,9 +51,18 @@ export function createApp({
   app.use(
     cors({
       origin: config.corsOrigins,
-      // Expose range-related headers so cross-origin <audio> can seek, and
-      // ETag so the Library page can store which version of an EPUB it saved.
-      exposedHeaders: ['Content-Range', 'Accept-Ranges', 'Content-Length', 'Last-Modified', 'ETag'],
+      // Expose range-related headers so cross-origin <audio> can seek, ETag so
+      // the Library page can store which version of an EPUB it saved, and
+      // Content-Disposition so the app reads a linked subtitle file's real name
+      // (whispersync's "Matched by" and its download names).
+      exposedHeaders: [
+        'Content-Range',
+        'Accept-Ranges',
+        'Content-Length',
+        'Last-Modified',
+        'ETag',
+        'Content-Disposition',
+      ],
     }),
   );
 

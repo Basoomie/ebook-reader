@@ -19,7 +19,6 @@
     ankiAudioMaxSeconds$,
     ankiAutoEnrich$,
     ankiAutoEnrichSeconds$,
-    ankiBottomBarButton$,
     ankiConnectKey$,
     ankiConnectTimeoutSeconds$,
     ankiConnectUrl$,
@@ -369,13 +368,6 @@
 </SettingsGroup>
 
 <SettingsGroup id="anki-reader">
-  <SettingRow id="anki-bottom-bar" layout="inline" settingKey="ankiBottomBarButton" let:labelId>
-    <SettingSwitch
-      bind:checked={$ankiBottomBarButton$}
-      labelledby={labelId}
-      testid="anki-bottom-bar"
-    />
-  </SettingRow>
   <SettingRow id="anki-notice-seconds" settingKey="ankiNoticeSeconds" let:labelId>
     <SettingField unit="seconds">
       <input

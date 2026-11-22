@@ -39,6 +39,7 @@
   import DiagnosticsPanel from '$lib/components/settings/diagnostics-panel.svelte';
   import NotificationsPanel from '$lib/components/settings/notifications-panel.svelte';
   import AiPanel from '$lib/components/settings/ai-panel.svelte';
+  import ToolbarSettings from '$lib/components/settings/toolbar-settings.svelte';
   import { NOT_OVER_HTTP } from '$lib/diagnostics/diagnostics-text';
   import { canPersistStorage } from '$lib/functions/secure-context';
   import {
@@ -47,11 +48,7 @@
     libraryDownloadConfirmGb$,
     libraryLook$
   } from '$lib/library/settings';
-  import {
-    readAloudAheadSeconds$,
-    readAloudBottomBarButton$,
-    readAloudLookupResume$
-  } from '$lib/read-aloud/settings';
+  import { readAloudAheadSeconds$, readAloudLookupResume$ } from '$lib/read-aloud/settings';
   import { customFontNames$ } from '$lib/fonts/server-fonts-browser';
   import { BlurMode } from '$lib/data/blur-mode';
   import { dialogManager } from '$lib/data/dialog-manager';
@@ -198,7 +195,6 @@
   export let jumpHistoryLimit: number;
   export let highlightRefindChars: number;
   export let highlightBarAnySelection: boolean;
-  export let showReturnMarker: boolean;
 
   export let positionPromptMinChars: number;
 
@@ -715,6 +711,11 @@
       </SettingRow>
     </SettingsGroup>
 
+    <!-- Reader toolbars session 2: this device's top bar and bottom bar buttons. -->
+    <SettingsGroup id="reader-toolbars" card={false}>
+      <ToolbarSettings />
+    </SettingsGroup>
+
     <SettingsGroup id="reader-bar">
       <SettingRow id="show-chars" layout="inline" let:labelId>
         <SettingSwitch bind:checked={showCharacterCounter} labelledby={labelId} />
@@ -727,9 +728,6 @@
       </SettingRow>
       <SettingRow id="show-chapter-percent" layout="inline" let:labelId>
         <SettingSwitch bind:checked={showFooterChapterPercentage} labelledby={labelId} />
-      </SettingRow>
-      <SettingRow id="return-marker" layout="inline" let:labelId>
-        <SettingSwitch bind:checked={showReturnMarker} labelledby={labelId} />
       </SettingRow>
     </SettingsGroup>
 
@@ -946,13 +944,6 @@
 
     <!-- Season 2 Phase 12 session 3: read-aloud's rarely changed settings (play and speed are in the reader). -->
     <SettingsGroup id="reader-readaloud">
-      <SettingRow id="read-aloud-button" layout="inline" let:labelId>
-        <SettingSwitch
-          bind:checked={$readAloudBottomBarButton$}
-          labelledby={labelId}
-          testid="settings-read-aloud-button"
-        />
-      </SettingRow>
       <SettingRow id="read-aloud-ahead" let:labelId>
         <SettingField unit="seconds">
           <input

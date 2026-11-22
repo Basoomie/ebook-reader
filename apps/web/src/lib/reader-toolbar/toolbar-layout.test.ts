@@ -4,14 +4,12 @@
  * All rights reserved.
  */
 
-import { BehaviorSubject } from 'rxjs';
 import { describe, expect, it } from 'vitest';
 import {
   BOTTOM_DEFAULT,
   BOTTOM_IDS,
   TOP_DEFAULT,
   TOP_IDS,
-  bottomBarSwitch,
   migrateBottomBarSwitches,
   resolveBottomBar,
   resolveTopBar,
@@ -30,17 +28,17 @@ function memoryStorage(initial: Record<string, string> = {}) {
 }
 
 describe('top bar defaults', () => {
-  it("are the user's PC answers, with the speed readout and the gap where they are today", () => {
+  it("are the user's PC setup of 2026-11-22", () => {
     expect(TOP_DEFAULT.map(({ id, place }) => `${id}:${place}`)).toEqual([
       'toc:bar',
-      'appearance:bar',
+      'images:bar',
       'search:bar',
-      'notes:bar',
+      'appearance:bar',
       'jumpBackForward:bar',
       'returnMarker:bar',
       'speed:bar',
       'gap:bar',
-      'images:bar',
+      'notes:bar',
       'jump:bar',
       'addBookmark:bar',
       'pacer:bar',
@@ -78,14 +76,14 @@ describe('top bar defaults', () => {
 });
 
 describe('bottom bar defaults', () => {
-  it("are today's order with the old switches' defaults", () => {
+  it("are the user's PC setup of 2026-11-22", () => {
     expect(BOTTOM_DEFAULT).toEqual([
       { id: 'tracker', shown: true },
-      { id: 'anki', shown: false },
+      { id: 'anki', shown: true },
+      { id: 'audiobook', shown: true },
       { id: 'pacer', shown: true },
       { id: 'readAloud', shown: false },
-      { id: 'returnMarker', shown: false },
-      { id: 'audiobook', shown: true }
+      { id: 'returnMarker', shown: true }
     ]);
     expect(resolveBottomBar(undefined)).toEqual(BOTTOM_DEFAULT);
   });
@@ -259,39 +257,5 @@ describe('migrating the three old bottom-bar switches', () => {
       removeItem: () => undefined
     };
     expect(migrateBottomBarSwitches(broken)).toBe(false);
-  });
-});
-
-describe('the old switches as views of readerBottomBar', () => {
-  it('read and write the entry, and follow changes to the list', () => {
-    const subject = new BehaviorSubject<unknown>([...BOTTOM_DEFAULT]);
-    const anki = bottomBarSwitch(subject, 'anki');
-    const seen: boolean[] = [];
-    const stop = anki.subscribe((value) => seen.push(value));
-
-    anki.set(true);
-    expect(resolveBottomBar(subject.getValue()).find(({ id }) => id === 'anki')?.shown).toBe(true);
-    // Order and the other entries are kept.
-    expect(resolveBottomBar(subject.getValue()).map(({ id }) => id)).toEqual(BOTTOM_IDS);
-
-    subject.next([{ id: 'anki', shown: false }]);
-    expect(anki.getValue()).toBe(false);
-    // Unrelated list changes don't re-emit the switch.
-    subject.next([
-      { id: 'anki', shown: false },
-      { id: 'pacer', shown: true }
-    ]);
-    expect(seen).toEqual([false, true, false]);
-
-    stop();
-    anki.set(true);
-    expect(seen).toEqual([false, true, false]);
-  });
-
-  it('does not rewrite the list when set to its current value', () => {
-    const stored = [{ id: 'anki', shown: true }];
-    const subject = new BehaviorSubject<unknown>(stored);
-    bottomBarSwitch(subject, 'anki').set(true);
-    expect(subject.getValue()).toBe(stored);
   });
 });

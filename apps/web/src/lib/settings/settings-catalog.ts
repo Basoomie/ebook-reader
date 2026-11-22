@@ -4,6 +4,8 @@
  * All rights reserved.
  */
 
+import { BOTTOM_IDS, TOP_IDS } from '$lib/reader-toolbar/toolbar-layout';
+import { BOTTOM_LABELS, TOP_LABELS } from '$lib/reader-toolbar/toolbar-labels';
 import type { SettingsTab } from './settings-tab';
 
 /**
@@ -65,12 +67,21 @@ export const SETTINGS_SECTIONS: CatalogSection[] = [
     description: 'Taps, swipes, the mouse and the wheel.'
   },
   {
+    id: 'reader-toolbars',
+    tab: 'Reader',
+    jp: '道具',
+    title: 'Toolbars',
+    description:
+      'Which buttons the reader’s top bar and bottom bar show on this device, and in what order. Keys work whether or not their button is shown.',
+    keywords: 'toolbar top bar bottom bar buttons menu order header footer'
+  },
+  {
     id: 'reader-bar',
     tab: 'Reader',
     jp: '表示',
     title: 'Bottom bar',
     description:
-      'What the reader’s bottom bar shows. Time left and the goals dot are under Statistics.'
+      'The progress text at the right of the reader’s bottom bar. Its buttons are under Toolbars; time left and the goals dot are under Statistics.'
   },
   {
     id: 'reader-place',
@@ -597,14 +608,6 @@ export const SETTINGS_CATALOG: CatalogSetting[] = [
     title: 'Percentage of the chapter',
     keywords: 'footer chapter'
   },
-  {
-    id: 'return-marker',
-    section: 'reader-bar',
-    title: 'Way back after a jump',
-    description:
-      'After a jump (search, contents, a highlight or bookmark), the bottom bar shows where you were reading; tap it to go back.',
-    keywords: 'return marker'
-  },
   // Reader › Your place
   {
     id: 'auto-save',
@@ -763,14 +766,7 @@ export const SETTINGS_CATALOG: CatalogSetting[] = [
     description:
       'On a page with only an illustration, turns the page after this long (when the pacer turns pages by itself).'
   },
-  // Reader › Read aloud
-  {
-    id: 'read-aloud-button',
-    section: 'reader-readaloud',
-    title: 'Read-aloud button in the bottom bar',
-    description:
-      'This device only. Play or pause from the reader’s bottom bar; it also shows while read-aloud is on.'
-  },
+  // Reader › Read aloud (its bottom-bar button is under Reader › Toolbars)
   {
     id: 'read-aloud-ahead',
     section: 'reader-readaloud',
@@ -1176,12 +1172,6 @@ export const SETTINGS_CATALOG: CatalogSetting[] = [
   },
   { id: 'anki-note-type', section: 'anki-fields', title: 'Note type' },
   {
-    id: 'anki-bottom-bar',
-    section: 'anki-reader',
-    title: 'Anki button in the bottom bar',
-    description: 'Enrich from the reader’s bottom bar. Also in the menu at the top, or the E key.'
-  },
-  {
     id: 'anki-notice-seconds',
     section: 'anki-reader',
     title: 'Close the message after',
@@ -1319,7 +1309,25 @@ export const SETTINGS_CATALOG: CatalogSetting[] = [
   // Diagnostics
   { id: 'diag-refresh', section: 'diag-device', title: 'Refresh', keywords: 'as of' },
   { id: 'diag-open-problems', section: 'diag-notify', title: 'Open problems' },
-  { id: 'diag-sent', section: 'diag-notify', title: 'Sent messages', keywords: 'log failed' }
+  { id: 'diag-sent', section: 'diag-notify', title: 'Sent messages', keywords: 'log failed' },
+
+  // Reader › Toolbars (reader toolbars session 2): one row per entry of each bar, with the
+  // screen's own words (toolbar-labels.ts). The bottom bar's Anki, Read aloud and return
+  // marker rows replace the old switches; their old titles are keywords, so old searches land.
+  ...TOP_IDS.map((id) => ({
+    id: `toolbar-top-${id}`,
+    section: 'reader-toolbars',
+    title: TOP_LABELS[id].name,
+    description: TOP_LABELS[id].description,
+    keywords: `top bar toolbar ${TOP_LABELS[id].keywords ?? ''}`.trim()
+  })),
+  ...BOTTOM_IDS.map((id) => ({
+    id: `toolbar-bottom-${id}`,
+    section: 'reader-toolbars',
+    title: BOTTOM_LABELS[id].name,
+    description: BOTTOM_LABELS[id].description,
+    keywords: `bottom bar toolbar footer ${BOTTOM_LABELS[id].keywords ?? ''}`.trim()
+  }))
 ];
 
 const SECTION_BY_ID = new Map(SETTINGS_SECTIONS.map((s) => [s.id, s]));
