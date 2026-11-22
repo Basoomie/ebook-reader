@@ -248,6 +248,7 @@ describe("the AI step's spelling phase", () => {
       phase: 'done',
       finishedAt: 5,
       bookmeterEditions: { phase: 'done' },
+      repick: { phase: 'done' },
       ai,
     };
     const proposed: string[] = [];
@@ -276,6 +277,7 @@ describe("the AI step's spelling phase", () => {
     // X's books, and the book of the last choice's series.
     expect(proposed).toEqual(['a', 'b', 'c', 'e']);
     expect(ai.spelling).toEqual({ series: 1, books: 4, total: 4 });
-    expect(ai.phase).toBe('gate');
+    // The series order follows the spelling (series-order follow-up).
+    expect(ai.phase).toBe('series');
   });
 });

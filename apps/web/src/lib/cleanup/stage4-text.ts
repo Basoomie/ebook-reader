@@ -28,6 +28,7 @@ const AI_PHASES: Record<string, string> = {
   models: 'asking both models',
   decide: 'deciding every field',
   spelling: 'giving each series one spelling',
+  series: 'putting each series in order',
   gate: 'checking the labeled books',
   done: 'done'
 };
@@ -37,6 +38,7 @@ const AI_BAR_LABELS: Record<string, string> = {
   models: 'Asking both models',
   decide: 'Deciding every field',
   spelling: 'Giving each series one spelling',
+  series: 'Putting each series in order',
   gate: 'Checking the labeled books'
 };
 
@@ -178,8 +180,44 @@ export const SOURCE_NAMES: Record<string, string> = {
   ndl: 'Web NDL Authorities',
   generated: 'Generated (spot check)',
   rules: 'The rules',
-  spelling: 'The series’ spelling on most books'
+  spelling: 'The series’ spelling on most books',
+  'series-order': 'The order of the series'
 };
+
+/** The AI check's names for the fields a best guess is in. */
+export const GUESS_FIELDS: Record<string, string> = {
+  t: 'Title',
+  au: 'Authors',
+  il: 'Illustrators',
+  fmt: 'Format',
+  se: 'Series',
+  ix: 'Number'
+};
+
+/** A series number as Calibre shows it (no number shows as 1). */
+export function seriesNumberText(index: number | null): string {
+  if (index === null) return 'no number (Calibre shows 1)';
+  return String(Math.round(index * 100) / 100);
+}
+
+/** The series step in one line: what it put in order, and what to look at. */
+export function seriesOrderLine(
+  so:
+    | {
+        series: number;
+        changed: number;
+        guesses: number;
+        reviews: number;
+      }
+    | null
+    | undefined
+): string | null {
+  if (!so) return null;
+  const parts = [`Series order: ${n(so.series)} series`, `${n(so.changed)} books changed`];
+  parts.push(`${n(so.guesses)} best guesses`);
+  if (so.reviews) parts.push(`${n(so.reviews)} for review`);
+  return parts.join(' · ');
+}
 
 export function sourceName(source: string): string {
   if (SOURCE_NAMES[source]) return SOURCE_NAMES[source];

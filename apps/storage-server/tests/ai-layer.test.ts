@@ -24,6 +24,7 @@ import { AI_MOVE_MARKER } from '../src/cleanup/ai-move';
 import {
   CLEANUP_MIGRATIONS,
   cleanupSchemaVersion,
+  CLEANUP_SCHEMA_VERSION,
   initCleanupDatabase,
 } from '../src/cleanup/cleanup-db';
 import { getSettings } from '../src/cleanup/settings';
@@ -173,7 +174,7 @@ describe('the one-time move out of cleanup.db', () => {
     cleanup.close();
     const st = initCleanupDatabase(dir, { mainDb: main, log: () => undefined });
     if (!st.ok) throw new Error(st.error);
-    expect(cleanupSchemaVersion(st.db)).toBeGreaterThanOrEqual(21);
+    expect(cleanupSchemaVersion(st.db)).toBe(CLEANUP_SCHEMA_VERSION);
     // Rollback copies of both, each a whole database at its pre-move state.
     const copies = fs
       .readdirSync(path.join(dir, 'snapshots'))
@@ -294,7 +295,7 @@ describe('the one-time move out of cleanup.db', () => {
     if (!main.ok) throw new Error(main.error);
     const st = initCleanupDatabase(dir, { mainDb: main.db });
     if (!st.ok) throw new Error(st.error);
-    expect(cleanupSchemaVersion(st.db)).toBeGreaterThanOrEqual(21);
+    expect(cleanupSchemaVersion(st.db)).toBe(CLEANUP_SCHEMA_VERSION);
     expect(fs.existsSync(path.join(dir, 'snapshots'))).toBe(false);
     st.db.close();
   });
