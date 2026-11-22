@@ -25,7 +25,7 @@ import {
   type EngineDeps,
 } from './engine';
 import { summaryItems } from './pipeline';
-import { CLAIMS_SPEC, GROUP_SPEC } from './specs';
+import { ALL_SPECS, CLAIMS_SPEC, GROUP_SPEC } from './specs';
 import type { Summary } from './types';
 import type { LocalEngine } from './local-llm';
 
@@ -252,6 +252,10 @@ export class SummaryTestService {
            round = excluded.round, started_at = excluded.started_at, ended_at = NULL`,
       )
       .run(id, bookKey, setup, background ? 1 : 0, round, this.now());
+    // Questions given up after their tries (network errors) are asked again when a run is
+    // started again; answered, refused and unusable ones never are.
+    for (const stage of new Set(ALL_SPECS.map((s) => s.stage)))
+      this.deps.runner.askAgain(stage, RUN_ID);
     this.pump.start();
     this.asked.set(id, []);
     const p = this.execute(id, b, setup, background).finally(() => this.running.delete(id));
@@ -294,7 +298,7 @@ export class SummaryTestService {
           ...m,
           // The stored request times, so a run started again (answered from the store) or
           // resumed after a stop keeps its time.
-          seconds: m.spanSeconds || (this.now() - started) / 1000,
+          seconds: m.busySeconds || m.spanSeconds || (this.now() - started) / 1000,
           extracted: Object.fromEntries(
             Object.entries(rep.extracted).map(([role, e]) => [
               role,
@@ -497,6 +501,29 @@ export class SummaryTestService {
       group_id: number | null;
     }[];
     if (claims.every((c) => c.group_id !== null)) return;
+    // A run added before anything is judged: group every claim again, so the new run's claims
+    // join the same claims of the others. Once a mark or a user's group exists, the groups stay
+    // (the new claims get groups of their own, to merge on the page).
+    const judged = this.db
+      .prepare(
+        `SELECT (SELECT COUNT(*) FROM test_marks m JOIN test_groups g ON g.id = m.group_id WHERE g.book_key = ? AND g.scope = ?)
+              + (SELECT COUNT(*) FROM test_groups WHERE book_key = ? AND scope = ? AND made_by = 'user') AS n`,
+      )
+      .get(bookKey, scope, bookKey, scope) as { n: number };
+    if (judged.n === 0) {
+      this.db.transaction(() => {
+        const ids = (
+          this.db
+            .prepare('SELECT id FROM test_groups WHERE book_key = ? AND scope = ?')
+            .all(bookKey, scope) as { id: number }[]
+        ).map((g) => g.id);
+        for (const id of ids) {
+          this.db.prepare('UPDATE test_claims SET group_id = NULL WHERE group_id = ?').run(id);
+          this.db.prepare('DELETE FROM test_groups WHERE id = ?').run(id);
+        }
+      })();
+      for (const c of claims) c.group_id = null;
+    }
     // The ids the model sees: stable (run index and ref), never database row ids.
     const label = (c: (typeof claims)[number]) => `${runIds.indexOf(c.run_id)}.${c.ref}`;
     const g = await ask(d, GROUP_SPEC, 'sonnet', `${bookKey}|${scope}`, {

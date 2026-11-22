@@ -425,6 +425,17 @@ export function askedMetrics(
   modelSeconds: number;
   /** From the first request sent to the last answer (stored times: the same after a restart). */
   spanSeconds: number;
+  /**
+   * The run's own time: each step's longest request, added up (a step's requests run side by
+   * side, the steps one after another). Unlike the span, a pause or an earlier failed try
+   * between steps doesn't count.
+   */
+  pathSeconds: number;
+  /**
+   * The time any request of the run was at a model (overlapping request times merged): the
+   * run's time without gaps between its requests (a stop, a restart, an earlier failed try).
+   */
+  busySeconds: number;
   byStage: Record<string, { costUsd: number; requests: number; seconds: number }>;
   refusals: number;
 } {
@@ -441,11 +452,15 @@ export function askedMetrics(
     outputTokens: 0,
     modelSeconds: 0,
     spanSeconds: 0,
+    pathSeconds: 0,
+    busySeconds: 0,
     byStage: {} as Record<string, { costUsd: number; requests: number; seconds: number }>,
     refusals: 0,
   };
   let first = Infinity;
   let last = 0;
+  const longest: Record<string, number> = {};
+  const spans: [number, number][] = [];
   for (const a of asked) {
     const k = `${a.stage}|${a.key}|${a.model}`;
     if (seen.has(k)) continue;
@@ -470,7 +485,9 @@ export function askedMetrics(
     out.inputTokens += (r.input_tokens ?? 0) + (r.cache_read_tokens ?? 0);
     out.outputTokens += r.output_tokens ?? 0;
     out.modelSeconds += secs;
+    longest[a.stage] = Math.max(longest[a.stage] ?? 0, secs);
     if (r.sent_at && r.answered_at) {
+      if (r.mode === 'direct') spans.push([r.sent_at, r.answered_at]);
       first = Math.min(first, r.sent_at);
       last = Math.max(last, r.answered_at);
     }
@@ -481,5 +498,17 @@ export function askedMetrics(
     s.seconds += secs;
   }
   out.spanSeconds = last > 0 && first < Infinity ? (last - first) / 1000 : 0;
+  out.pathSeconds = Object.values(longest).reduce((a, x) => a + x, 0);
+  spans.sort((x, y) => x[0] - y[0]);
+  let busy = 0;
+  let cur: [number, number] | null = null;
+  for (const s of spans) {
+    if (!cur || s[0] > cur[1]) {
+      if (cur) busy += cur[1] - cur[0];
+      cur = [s[0], s[1]];
+    } else cur[1] = Math.max(cur[1], s[1]);
+  }
+  if (cur) busy += cur[1] - cur[0];
+  out.busySeconds = busy / 1000;
   return out;
 }

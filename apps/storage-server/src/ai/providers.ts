@@ -444,31 +444,81 @@ function openaiBody(input: CallInput) {
   };
 }
 
-/** A streamed chat completion put back together (content, refusal, finish reason, usage). */
-async function collectStream(
-  chunks: AsyncIterable<{
-    choices?: {
-      finish_reason?: string | null;
-      delta?: { content?: string | null; refusal?: string | null };
-    }[];
-    usage?: ChatCompletionLike['usage'];
-  }>,
-): Promise<ChatCompletionLike> {
-  let content = '';
-  let refusal = '';
-  let finish: string | null = null;
-  let usage: ChatCompletionLike['usage'] = null;
-  for await (const c of chunks) {
-    const ch = c.choices?.[0];
-    if (ch?.delta?.content) content += ch.delta.content;
-    if (ch?.delta?.refusal) refusal += ch.delta.refusal;
-    if (ch?.finish_reason) finish = ch.finish_reason;
-    if (c.usage) usage = c.usage;
-  }
+/**
+ * A long GPT call (book summaries session 2): the Responses API, streamed, with reasoning
+ * summaries on. Chat Completions sends nothing while the model reasons, and whole-book requests
+ * to gpt-6.1-sol lost their connection after about 85 s of silence (2026-11-22, 8 of 8 tries);
+ * the Responses API sends progress events all through the reasoning (probe: 400+ events in 37 s,
+ * never silent). store: false (nothing kept at OpenAI beyond its abuse-monitoring logs).
+ */
+function responsesBody(input: CallInput) {
   return {
-    choices: [{ finish_reason: finish, message: { content, refusal: refusal || null } }],
-    usage,
+    model: input.model,
+    instructions: input.system,
+    input: [{ role: 'user' as const, content: input.user }],
+    stream: true as const,
+    store: false,
+    ...(input.effort ? { reasoning: { effort: input.effort, summary: 'auto' as const } } : {}),
+    ...(input.outputLimit ? { max_output_tokens: input.outputLimit } : {}),
+    text: {
+      format: input.schema
+        ? {
+            type: 'json_schema' as const,
+            name: input.schema.name,
+            schema: input.schema.schema,
+            strict: true,
+          }
+        : { type: 'json_object' as const },
+    },
   };
+}
+
+interface ResponseLike {
+  status?: string;
+  incomplete_details?: { reason?: string } | null;
+  error?: { code?: string; message?: string } | null;
+  output?: { type?: string; content?: { type?: string; text?: string; refusal?: string }[] }[];
+  usage?: {
+    input_tokens?: number;
+    output_tokens?: number;
+    input_tokens_details?: { cached_tokens?: number };
+  } | null;
+}
+
+/** A finished response as a call result (the same rules as Chat Completions). */
+export function responsesResult(r: ResponseLike): CallResult {
+  const u = r.usage ?? {};
+  const cached = u.input_tokens_details?.cached_tokens ?? 0;
+  const usage: Usage = {
+    input: Math.max(0, (u.input_tokens ?? 0) - cached),
+    output: u.output_tokens ?? 0,
+    cacheRead: cached,
+    cacheWrite: 0,
+  };
+  const parts = (r.output ?? [])
+    .filter((o) => o.type === 'message')
+    .flatMap((o) => o.content ?? []);
+  const refusal = parts.find((p) => p.type === 'refusal')?.refusal;
+  const text = parts
+    .filter((p) => p.type === 'output_text')
+    .map((p) => p.text ?? '')
+    .join('')
+    .trim();
+  if (refusal)
+    return { kind: 'blocked', detail: `refusal: ${refusal}`.slice(0, 300), text: null, usage };
+  if (r.status === 'incomplete' && r.incomplete_details?.reason === 'content_filter')
+    return { kind: 'blocked', detail: 'content_filter', text: text || null, usage };
+  if (r.status === 'incomplete')
+    return {
+      kind: 'invalid',
+      detail: `${r.incomplete_details?.reason ?? 'incomplete'} reached`,
+      text: text || null,
+      usage,
+    };
+  const json = firstJson(text);
+  if (json === undefined)
+    return { kind: 'invalid', detail: 'no JSON object', text: text || null, usage };
+  return { kind: 'answered', text, json, usage };
 }
 
 export class OpenAiProvider implements ProviderClient {
@@ -525,16 +575,47 @@ export class OpenAiProvider implements ProviderClient {
   async call(input: CallInput, timeoutMs: number): Promise<CallResult> {
     try {
       if (input.stream) {
-        const body = {
-          ...openaiBody(input),
-          stream: true as const,
-          stream_options: { include_usage: true },
-        };
-        const chunks = await this.client.chat.completions.create(
-          body as unknown as OpenAI.ChatCompletionCreateParamsStreaming,
+        const events = await this.client.responses.create(
+          responsesBody(input) as unknown as OpenAI.Responses.ResponseCreateParamsStreaming,
           { timeout: timeoutMs },
         );
-        return openaiResult(await collectStream(chunks as never));
+        let done: ResponseLike | null = null;
+        for await (const e of events as unknown as AsyncIterable<{
+          type: string;
+          response?: ResponseLike;
+          code?: string;
+          message?: string;
+        }>) {
+          if (
+            e.type === 'response.completed' ||
+            e.type === 'response.incomplete' ||
+            e.type === 'response.failed'
+          )
+            done = e.response ?? null;
+          else if (e.type === 'error') {
+            if (e.code && OPENAI_BLOCK_CODES.has(e.code))
+              return {
+                kind: 'blocked',
+                detail: `${e.code}: ${e.message ?? ''}`.slice(0, 300),
+                text: null,
+                usage: ZERO,
+              };
+            throw new RetryableError(`stream error: ${e.code ?? ''} ${e.message ?? ''}`.trim());
+          }
+        }
+        if (!done) throw new RetryableError('the answer stream ended without a result');
+        if (done.status === 'failed') {
+          const code = done.error?.code ?? '';
+          if (OPENAI_BLOCK_CODES.has(code))
+            return {
+              kind: 'blocked',
+              detail: `${code}: ${done.error?.message ?? ''}`.slice(0, 300),
+              text: null,
+              usage: ZERO,
+            };
+          throw new RetryableError(`failed: ${code} ${done.error?.message ?? ''}`.trim());
+        }
+        return responsesResult(done);
       }
       const c = await this.client.chat.completions.create(
         openaiBody(input) as OpenAI.ChatCompletionCreateParamsNonStreaming,

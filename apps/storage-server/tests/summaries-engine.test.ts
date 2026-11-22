@@ -758,3 +758,99 @@ describe('the setups through the shared layer', () => {
     expect(bg).not.toContain('第0章の出来事');
   });
 });
+
+// ---------------------------------------------------------------------------------------------
+// the local model (llama-server stand-in)
+
+describe('the local model', () => {
+  it('reads the book in windows, keeps only quotes from the book, writes section by section, and asks nothing twice', async () => {
+    const http = await import('node:http');
+    const prompts: string[] = [];
+    const server = http.createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on('data', (c: Buffer) => chunks.push(c));
+      req.on('end', () => {
+        const body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+        const send = (o: unknown) => {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify(o));
+        };
+        if (req.url === '/apply-template')
+          return send({
+            prompt: body.messages.map((m: { content: string }) => m.content).join('\n'),
+          });
+        const p: string = body.prompt;
+        prompts.push(p);
+        let answer: unknown;
+        if (p.includes('(part ')) {
+          answer = p.includes('第一章')
+            ? {
+                not_story: false,
+                items: [
+                  {
+                    kind: 'event',
+                    text: 'カイトが浜に倒れていた',
+                    quote: 'カイトという少年が浜に倒れていた',
+                    names: ['カイト'],
+                  },
+                  { kind: 'event', text: '作り話', quote: 'これは本にない文章です', names: [] },
+                ],
+              }
+            : p.includes('第二章')
+              ? {
+                  not_story: false,
+                  items: [
+                    {
+                      kind: 'term',
+                      text: '潮呪は一族の呪い',
+                      quote: '潮呪を受けた一族の最後の一人',
+                      names: [],
+                    },
+                  ],
+                }
+              : { not_story: true, items: [] };
+        } else if (p.includes('Write only the chapters section')) {
+          const id = /^(gemma:\d+:\d+)/m.exec(p.split('ITEMS:')[1].trim())?.[1] ?? '';
+          answer = {
+            items: [{ text: 'この章の出来事', cites: [id], quote_from: id, show_quote: true }],
+          };
+        } else if (p.includes('Write only the terms section')) {
+          const id = /^(gemma:\d+:\d+)/m.exec(p.split('ITEMS:')[1].trim())?.[1] ?? '';
+          answer = {
+            items: [
+              { term: '潮呪', text: '一族の呪い', cites: [id], quote_from: '', show_quote: false },
+            ],
+          };
+        } else if (p.includes('Write only the overview')) answer = { text: 'ナギとカイトの物語。' };
+        else if (p.includes('Write only the')) answer = { items: [] };
+        else answer = { text: 'ナギとカイトの物語。' };
+        send({ content: JSON.stringify(answer), tokens_evaluated: 100, tokens_predicted: 20 });
+      });
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+    const port = (server.address() as { port: number }).port;
+    try {
+      const { LlamaServerEngine } = await import('../src/summaries/local-llm');
+      const db = openSummariesDb(path.join(makeTempDir('sum-local'), 'summaries.db'));
+      const engine = new LlamaServerEngine(db, `http://127.0.0.1:${port}`, {
+        contextTokens: 16384,
+      });
+      const phases: string[] = [];
+      const r = await engine.run(INPUT, (p) => phases.push(p));
+      expect(phases).toEqual(['extract', 'write']);
+      expect(r.metrics.extracted.gemma).toMatchObject({ extracted: 3, quoteNotFound: 1, kept: 2 });
+      expect(r.summary.sections.map((s) => s.key)).toEqual(['overview', 'chapters', 'terms']);
+      expect(r.summary.sections[1].groups[0].items[0]).toMatchObject({
+        showQuote: true,
+        quote: 'カイトという少年が浜に倒れていた',
+      });
+      expect(r.metrics.costUsd).toBe(0);
+      const n = prompts.length;
+      const again = await engine.run(INPUT, () => undefined);
+      expect(prompts.length).toBe(n);
+      expect(JSON.stringify(again.summary.sections)).toBe(JSON.stringify(r.summary.sections));
+    } finally {
+      server.close();
+    }
+  });
+});

@@ -93,6 +93,42 @@ function openaiChunks(c) {
   return out;
 }
 
+/** The Responses API's stream events for a finished completion (book summaries' long GPT calls). */
+function responsesEvents(c) {
+  const ch = c.choices[0];
+  const text = ch.message.content ?? '';
+  const content = ch.message.refusal
+    ? [{ type: 'refusal', refusal: ch.message.refusal }]
+    : [{ type: 'output_text', text, annotations: [] }];
+  const filtered = ch.finish_reason === 'content_filter';
+  const response = {
+    id: `resp_${c.id}`,
+    object: 'response',
+    status: filtered ? 'incomplete' : 'completed',
+    incomplete_details: filtered ? { reason: 'content_filter' } : null,
+    model: c.model,
+    output: [
+      { type: 'reasoning', id: 'rs_1', summary: [] },
+      { type: 'message', id: 'msg_1', role: 'assistant', content },
+    ],
+    usage: {
+      input_tokens: c.usage.prompt_tokens,
+      output_tokens: c.usage.completion_tokens,
+      input_tokens_details: { cached_tokens: 0 },
+    },
+  };
+  const ev = (type, extra = {}) => ({ event: type, data: { type, ...extra } });
+  const half = Math.ceil(text.length / 2);
+  return [
+    ev('response.created', { response: { ...response, status: 'in_progress', output: [] } }),
+    ev('response.reasoning_summary_text.delta', { delta: 'thinking' }),
+    ...[text.slice(0, half), text.slice(half)]
+      .filter(Boolean)
+      .map((d) => ev('response.output_text.delta', { delta: d })),
+    ev(filtered ? 'response.incomplete' : 'response.completed', { response }),
+  ];
+}
+
 function readBody(req) {
   return new Promise((resolve) => {
     const chunks = [];
@@ -422,6 +458,24 @@ export async function startAiStandin(opts: any = {}): Promise<any> {
           });
         if (b.stream) return sse(res, openaiChunks(r.completion));
         return send(res, 200, r.completion);
+      }
+      if (req.method === 'POST' && op === '/v1/responses') {
+        const b = json();
+        const user = b.input?.find?.((m) => m.role === 'user')?.content ?? '';
+        calls.push({ path: op, provider: 'openai', model: b.model, user, body: b });
+        const r = openaiCompletion(b.model, [
+          { role: 'system', content: b.instructions ?? '' },
+          { role: 'user', content: user },
+        ]);
+        if (r.error)
+          return send(res, r.error.status, {
+            error: {
+              message: 'stand-in error',
+              type: 'invalid_request_error',
+              code: r.error.code ?? null,
+            },
+          });
+        return sse(res, responsesEvents(r.completion));
       }
       if (req.method === 'POST' && op === '/v1/files') {
         const text = multipartFile(raw, req.headers['content-type']);

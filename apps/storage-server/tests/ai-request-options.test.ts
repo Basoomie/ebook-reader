@@ -89,12 +89,16 @@ describe('request options', () => {
       max_tokens: 64000,
       output_config: { effort: 'high', format: { type: 'json_schema' } },
     });
+    // GPT's long calls go through the Responses API (it streams while the model reasons).
     expect(ob).toMatchObject({
       stream: true,
-      stream_options: { include_usage: true },
-      reasoning_effort: 'high',
-      max_completion_tokens: 64000,
+      store: false,
+      instructions: 'S',
+      reasoning: { effort: 'high', summary: 'auto' },
+      max_output_tokens: 64000,
+      text: { format: { type: 'json_schema', name: 't', strict: true } },
     });
+    expect(standin.calls.find((c: { path: string }) => c.path === '/v1/responses')).toBeTruthy();
   });
 
   it('a streamed refusal is still a refusal (final)', async () => {
