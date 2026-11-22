@@ -20,6 +20,7 @@
   import { pagePath } from '$lib/data/env';
   import {
     SummaryTestApi,
+    type Claim,
     type ClaimGroup,
     type Judging,
     type TestOverview,
@@ -27,6 +28,12 @@
   } from '$lib/summaries/test-api';
 
   type Filter = 'all' | 'unmarked' | 'wrong' | 'unsure' | 'right';
+  type Mark = 'right' | 'wrong' | 'unsure';
+  const MARKS: { value: Mark; label: string }[] = [
+    { value: 'right', label: 'Right' },
+    { value: 'wrong', label: 'Wrong' },
+    { value: 'unsure', label: 'Unsure' }
+  ];
   const FILTERS: { value: Filter; label: string }[] = [
     { value: 'unmarked', label: 'Not marked' },
     { value: 'all', label: 'All' },
@@ -53,7 +60,6 @@
   let error = '';
   let loading = true;
   let missingText = '';
-  let moveTo: Record<number, string> = {};
   let timer: ReturnType<typeof setInterval> | null = null;
 
   onDestroy(() => timer && clearInterval(timer));
@@ -137,36 +143,12 @@
     judging = await api.judging(book, scope);
   }
 
-  async function splitOut(claimId: number) {
+  /** One setup's version marked on its own (it overrides the group's mark for that version). */
+  async function markVersion(g: ClaimGroup, c: Claim, mark: Mark) {
     if (!api) return;
+    const next = (c.mark ?? g.mark) === mark ? null : mark;
     try {
-      await api.moveClaim(claimId, 'new');
-      await reload();
-    } catch (e) {
-      error = (e as Error).message;
-    }
-  }
-
-  async function move(claimId: number) {
-    if (!api) return;
-    const to = Number(moveTo[claimId]);
-    if (!Number.isInteger(to) || to <= 0) return;
-    try {
-      await api.moveClaim(claimId, to);
-      moveTo = { ...moveTo, [claimId]: '' };
-      await reload();
-    } catch (e) {
-      error = (e as Error).message;
-    }
-  }
-
-  async function mergeInto(g: ClaimGroup) {
-    if (!api) return;
-    const to = Number(moveTo[-g.id]);
-    if (!Number.isInteger(to) || to <= 0) return;
-    try {
-      await api.merge(g.id, to);
-      moveTo = { ...moveTo, [-g.id]: '' };
+      await api.markClaim(c.id, next);
       await reload();
     } catch (e) {
       error = (e as Error).message;
@@ -229,10 +211,12 @@
     return ((m?.refusals as unknown[]) ?? []).length;
   }
 
+  const done = (g: ClaimGroup) => g.mark !== null || g.claims.every((c) => c.mark !== null);
+  const has = (g: ClaimGroup, m: Mark) => g.mark === m || g.claims.some((c) => c.mark === m);
   $: groups = (judging?.groups ?? []).filter((g) =>
-    filter === 'all' ? true : filter === 'unmarked' ? g.mark === null : g.mark === filter
+    filter === 'all' ? true : filter === 'unmarked' ? !done(g) : has(g, filter)
   );
-  $: marked = (judging?.groups ?? []).filter((g) => g.mark !== null).length;
+  $: marked = (judging?.groups ?? []).filter(done).length;
   // A claim shows its summary item's quote only when the item made just this one claim (an
   // item's quote may support another part of a longer item).
   $: single = (() => {
@@ -395,7 +379,6 @@
         {#each groups as g (g.id)}
           <li class="group py-3" data-testid="st-group" data-group={g.id}>
             <div class="flex flex-wrap items-start gap-2">
-              <span class="text-xs text-c-muted">#{g.id}</span>
               <p class="min-w-0 flex-1" lang="ja">{g.text}</p>
             </div>
             <div class="mt-1 flex flex-wrap items-center gap-1 text-xs text-c-muted">
@@ -426,13 +409,18 @@
                 data-testid="st-mark-unsure"
                 on:click={() => setMark(g, 'unsure')}>Unsure</button
               >
-              <button
-                type="button"
-                class="c-btn c-btn-ghost c-btn-sm"
-                aria-expanded={open.has(g.id)}
-                data-testid="st-wordings"
-                on:click={() => toggle(g.id)}>Wording by setup ({g.claims.length})</button
-              >
+              {#if g.claims.length > 1}
+                <button
+                  type="button"
+                  class="c-btn c-btn-ghost c-btn-sm"
+                  aria-expanded={open.has(g.id)}
+                  data-testid="st-wordings"
+                  on:click={() => toggle(g.id)}
+                  >{open.has(g.id)
+                    ? 'Hide versions'
+                    : `One setup said it differently? (${g.claims.length} versions)`}</button
+                >
+              {/if}
             </div>
             {#if open.has(g.id)}
               <ul class="mt-2 space-y-3 border-l pl-3 text-sm" data-testid="st-wording-list">
@@ -443,52 +431,23 @@
                     {#if c.quote && single.has(`${c.run_id}|${c.ref.split('#')[0]}`)}
                       <p class="text-xs text-c-muted" lang="ja">「{c.quote}」</p>
                     {/if}
-                    {#if g.claims.length > 1}
-                      <div class="mt-1 flex flex-wrap items-center gap-2">
+                    <div
+                      class="mt-1 flex flex-wrap gap-2"
+                      role="group"
+                      aria-label="Mark this version"
+                    >
+                      {#each MARKS as m (m.value)}
                         <button
                           type="button"
-                          class="c-btn c-btn-ghost c-btn-sm"
-                          data-testid="st-split"
-                          on:click={() => splitOut(c.id)}>Not the same claim</button
+                          class="c-btn c-btn-secondary c-btn-sm"
+                          aria-pressed={(c.mark ?? g.mark) === m.value}
+                          data-testid="st-claim-mark-{m.value}"
+                          on:click={() => markVersion(g, c, m.value)}>{m.label}</button
                         >
-                      </div>
-                    {/if}
-                    <div class="mt-1 flex flex-wrap items-center gap-2">
-                      <label class="text-xs text-c-muted"
-                        >Same claim as #
-                        <input
-                          class="c-input w-20"
-                          inputmode="numeric"
-                          bind:value={moveTo[c.id]}
-                          data-testid="st-move-input"
-                        />
-                      </label>
-                      <button
-                        type="button"
-                        class="c-btn c-btn-ghost c-btn-sm"
-                        data-testid="st-move"
-                        on:click={() => move(c.id)}>Move</button
-                      >
+                      {/each}
                     </div>
                   </li>
                 {/each}
-                <li class="flex flex-wrap items-center gap-2">
-                  <label class="text-xs text-c-muted"
-                    >Whole group is the same claim as #
-                    <input
-                      class="c-input w-20"
-                      inputmode="numeric"
-                      bind:value={moveTo[-g.id]}
-                      data-testid="st-merge-input"
-                    />
-                  </label>
-                  <button
-                    type="button"
-                    class="c-btn c-btn-ghost c-btn-sm"
-                    data-testid="st-merge"
-                    on:click={() => mergeInto(g)}>Merge</button
-                  >
-                </li>
               </ul>
             {/if}
           </li>

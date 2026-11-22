@@ -507,9 +507,11 @@ export class SummaryTestService {
     const judged = this.db
       .prepare(
         `SELECT (SELECT COUNT(*) FROM test_marks m JOIN test_groups g ON g.id = m.group_id WHERE g.book_key = ? AND g.scope = ?)
-              + (SELECT COUNT(*) FROM test_groups WHERE book_key = ? AND scope = ? AND made_by = 'user') AS n`,
+              + (SELECT COUNT(*) FROM test_groups WHERE book_key = ? AND scope = ? AND made_by = 'user')
+              + (SELECT COUNT(*) FROM test_claims c JOIN test_groups g ON g.id = c.group_id
+                 WHERE g.book_key = ? AND g.scope = ? AND c.mark IS NOT NULL) AS n`,
       )
-      .get(bookKey, scope, bookKey, scope) as { n: number };
+      .get(bookKey, scope, bookKey, scope, bookKey, scope) as { n: number };
     if (judged.n === 0) {
       this.db.transaction(() => {
         const ids = (
@@ -576,7 +578,7 @@ export class SummaryTestService {
     }[];
     const claims = this.db
       .prepare(
-        `SELECT c.id, c.run_id, c.ref, c.text, c.section, c.quote, c.position, c.group_id FROM test_claims c
+        `SELECT c.id, c.run_id, c.ref, c.text, c.section, c.quote, c.position, c.group_id, c.mark FROM test_claims c
          JOIN test_groups g ON g.id = c.group_id WHERE g.book_key = ? AND g.scope = ? ORDER BY c.id`,
       )
       .all(bookKey, scope) as {
@@ -588,6 +590,7 @@ export class SummaryTestService {
       quote: string | null;
       position: number | null;
       group_id: number;
+      mark: string | null;
     }[];
     const missing = this.db
       .prepare(
@@ -613,6 +616,15 @@ export class SummaryTestService {
            ON CONFLICT(group_id) DO UPDATE SET mark = excluded.mark, note = excluded.note, marked_at = excluded.marked_at`,
         )
         .run(groupId, mark, note, this.now());
+  }
+
+  /**
+   * Marks one setup's version of a claim (when the setups said it differently): it overrides
+   * the group's mark for that version; null goes back to the group's mark.
+   */
+  markClaim(claimId: number, mark: 'right' | 'wrong' | 'unsure' | null): void {
+    const r = this.db.prepare('UPDATE test_claims SET mark = ? WHERE id = ?').run(mark, claimId);
+    if (r.changes === 0) throw new Error('no such claim');
   }
 
   /** Moves a claim to another group of the same book and scope, or to a new group of its own. */
@@ -679,12 +691,28 @@ export class SummaryTestService {
   scores(bookKey: string, scope: string) {
     const j = this.judging(bookKey, scope);
     const runIds = [...new Set(j.groups.flatMap((g) => g.claims.map((c) => c.run_id)))].sort();
+    // A setup's mark on a group: its versions' own marks where you marked them (the worst one
+    // counts: wrong, then unsure, then right), else the group's mark. Not marked when any of
+    // its versions has no mark at all.
+    const rank: Record<string, number> = { wrong: 3, unsure: 2, right: 1 };
+    const markOf = (g: (typeof j.groups)[number], runId: string): string | null => {
+      let worst: string | null = null;
+      for (const c of g.claims) {
+        if (c.run_id !== runId) continue;
+        const m = c.mark ?? g.mark;
+        if (!m) return null;
+        if (!worst || rank[m] > rank[worst]) worst = m;
+      }
+      return worst;
+    };
+    const anyRight = (g: (typeof j.groups)[number]) =>
+      g.mark === 'right' || g.claims.some((c) => c.mark === 'right');
     return runIds.map((runId) => {
       const run = this.run(runId);
       const mine = j.groups.filter((g) => g.claims.some((c) => c.run_id === runId));
-      const count = (m: string | null) => mine.filter((g) => g.mark === m).length;
+      const count = (m: string | null) => mine.filter((g) => markOf(g, runId) === m).length;
       const missedOthers = j.groups.filter(
-        (g) => g.mark === 'right' && !g.claims.some((c) => c.run_id === runId),
+        (g) => anyRight(g) && !g.claims.some((c) => c.run_id === runId),
       ).length;
       return {
         runId,

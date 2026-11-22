@@ -52,6 +52,8 @@ export interface Claim {
   quote: string | null;
   position: number | null;
   group_id: number;
+  /** This version's own mark (overrides the group's), or null. */
+  mark: 'right' | 'wrong' | 'unsure' | null;
 }
 
 export interface ClaimGroup {
@@ -137,6 +139,9 @@ export class SummaryTestApi {
   }
   mark(group: number, mark: ClaimGroup['mark'], note: string | null = null) {
     return this.call('PUT', `/marks/${group}`, { mark, note });
+  }
+  markClaim(claim: number, mark: Claim['mark']) {
+    return this.call('PUT', `/claims/${claim}/mark`, { mark });
   }
   moveClaim(claim: number, to: number | 'new') {
     return this.call<{ group: number }>('POST', `/claims/${claim}/move`, { to });

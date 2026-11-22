@@ -195,6 +195,14 @@ export const SUMMARIES_MIGRATIONS: { version: number; name: string; sql: string 
       );
     `,
   },
+  {
+    version: 2,
+    name: "the accuracy test: a mark on one setup's version of a claim",
+    sql: `
+      -- Overrides the group's mark for this one version (null: the group's mark counts).
+      ALTER TABLE test_claims ADD COLUMN mark TEXT CHECK (mark IS NULL OR mark IN ('right', 'wrong', 'unsure'));
+    `,
+  },
 ];
 
 export const SUMMARIES_SCHEMA_VERSION =

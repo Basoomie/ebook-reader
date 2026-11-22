@@ -113,6 +113,18 @@ export function createSummaryTestRouter(
     res.json({ ok: true });
   });
 
+  router.put('/summaries-test/claims/:id/mark', (req, res) => {
+    const b = req.body as { mark?: 'right' | 'wrong' | 'unsure' | null };
+    if (b.mark !== null && !['right', 'wrong', 'unsure'].includes(b.mark as string))
+      throw new ApiError(400, 'bad_request', 'mark must be right, wrong, unsure or null');
+    try {
+      svc.markClaim(Number(req.params.id), b.mark ?? null);
+      res.json({ ok: true });
+    } catch (e) {
+      throw new ApiError(404, 'not_found', (e as Error).message);
+    }
+  });
+
   router.post('/summaries-test/claims/:id/move', (req, res) => {
     const to = (req.body as { to?: number | 'new' }).to;
     try {
