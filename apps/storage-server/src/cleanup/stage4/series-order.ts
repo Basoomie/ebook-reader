@@ -123,28 +123,14 @@ const KANJI: Record<string, number> = {
   弐: 2,
   参: 3,
 };
-const ROMAN: Record<string, number> = {
-  I: 1,
-  II: 2,
-  III: 3,
-  IV: 4,
-  V: 5,
-  VI: 6,
-  VII: 7,
-  VIII: 8,
-  IX: 9,
-  X: 10,
-  XI: 11,
-  XII: 12,
-  XIII: 13,
-  XIV: 14,
-  XV: 15,
-  XVI: 16,
-  XVII: 17,
-  XVIII: 18,
-  XIX: 19,
-  XX: 20,
-};
+/** I-XXXIX (キノの旅XXIII: changed-series batch 2; the table ended at XX). */
+const ROMAN: Record<string, number> = (() => {
+  const units = ['', 'I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX'];
+  const r: Record<string, number> = {};
+  for (let t = 0; t < 4; t++)
+    for (let u = 0; u < 10; u++) if (t || u) r['X'.repeat(t) + units[u]] = t * 10 + u;
+  return r;
+})();
 
 function kanjiNumber(s: string): number | null {
   let total = 0;
@@ -194,7 +180,9 @@ function plain(t: string): string {
  */
 export function afterName(title: string, name: string): string | null {
   const t = plain(title);
-  for (const n of [name, nfkc(name).split(/[~～〜]/u)[0]]) {
+  // A name's own 【…】 is dropped from the title by plain() (ハズレ枠の【状態異常スキル】…: its
+  // 「… 11.5」 and 「… 12」 were read as no number, changed-series batch 2), so it is too.
+  for (const n of [name, nfkc(name).split(/[~～〜]/u)[0], plain(name)]) {
     const sn = squash(n);
     if (sn.length < 2) continue;
     const st = squash(t);
@@ -210,6 +198,36 @@ export function afterName(title: string, name: string): string | null {
     // Closing punctuation of the name belongs to it (「事情～…～」 keeps its own subtitle).
     return t.slice(i);
   }
+  return numberInsideName(t, name);
+}
+
+/**
+ * A title printing its number inside the series name: the name's head, the number, then the
+ * rest of the name (「Only Sense Online 22 ―オンリーセンス・オンライン―」, 「GENEZ―8 ジーンズ」,
+ * 「キノの旅V the Beautiful World」: changed-series batch 2). What follows the head, or null.
+ */
+function numberInsideName(t: string, name: string): string | null {
+  const nn = nfkc(name);
+  const st = squash(t);
+  for (const m of nn.matchAll(/[\s―─\-－~～〜（(【［「『]/gu)) {
+    const cut = m.index ?? 0;
+    const sh = squash(nn.slice(0, cut));
+    const stl = squash(nn.slice(cut));
+    if (sh.length < 2 || stl.length < 2) continue;
+    const at = st.indexOf(sh);
+    if (at < 0) continue;
+    const between = st.slice(at + sh.length).split(stl)[0];
+    if (between === st.slice(at + sh.length)) continue;
+    // Only a number between the two parts (vol/第 and the like with it).
+    if (!/^(?:vol|no|第)?(?:\d+(?:\.\d+)?|[ivx]{1,5}|[ⅰ-ⅻ])(?:巻)?$/u.test(between)) continue;
+    let i = 0;
+    let seen = 0;
+    while (i < t.length && seen < at + sh.length) {
+      if (squash(t[i]) !== '') seen++;
+      i++;
+    }
+    return t.slice(i);
+  }
   return null;
 }
 
@@ -218,7 +236,7 @@ const NOT_VOLUME =
   /^(?:人|禁|歳|才|年|月|日|時|分|秒|億|万|千|円|%|％|回|個|つ|名|匹|頭|世紀|階|号|度|倍|色|kg|km|cm|分の)/u;
 /** Words that make a book a side book of its series (after the series name only). */
 const SIDE =
-  /外伝|番外|短編集|短編|アンソロジー|画集|ARTWORKS|設定資料|ガイドブック|ファンブック|スピンオフ|アンコール|サイドストーリー|(?<![A-Za-z])(?:SS|SP\d*|EX|IF|Another|Encore|Extra ?Story|Side ?(?:of|story)|After ?story|Re[:：]IF)(?![A-Za-z])/iu;
+  /外伝|番外|別巻|短編集|短編|アンソロジー|画集|ARTWORKS|設定資料|ガイドブック|ファンブック|スピンオフ|アンコール|サイドストーリー|(?<![A-Za-z])(?:SSP|SS|SP\d*|EX|IF|Another|Encore|Extra ?Story|Side ?(?:of|story)|After ?story|Re[:：]IF)(?![A-Za-z])/iu;
 
 /**
  * 「第二部 西方諸国編4」, 「第1部 ネオサイタマ炎上1」: a part (部) followed by the part's own
@@ -234,7 +252,11 @@ export function leadingNumber(rest: string): number | null {
   const r = nfkc(rest).replace(/^[\s・:：\-‐―─~～〜,、?？!！]+/u, '');
   // 「13.暁の約束」: a full stop after the number is not a decimal point.
   // 「Lv.24 DLC(1)」: a level is the volume (changed-series measurement read the 1).
-  let m = /^(?:vol\.?|No\.?|Lv\.?|#|第)?\s*(\d+(?:\.\d+)?)(?!\d)(?!\.\d)/iu.exec(r);
+  // 「disc6」, 「Step2」: words of a volume (not season: 「season3～ 1」 is an arc's volume 1).
+  let m =
+    /^(?:vol\.?|No\.?|Lv\.?|#|第|disc|step|stage|act|phase|episode)?\s*(\d+(?:\.\d+)?)(?!\d)(?!\.\d)/iu.exec(
+      r,
+    );
   if (m) {
     const after = r.slice(m[0].length);
     const v = parseFloat(m[1]);
@@ -310,6 +332,21 @@ export function omnibusLast(title: string): number | null {
 }
 
 /**
+ * An omnibus' last volume from the book's own titles: the file's title, Calibre's, and colophon
+ * titles that name the series. A colophon also lists the author's other books (「新東亜大戦 全4巻」
+ * in ASEAN連合艦隊's made it 4.9: changed-series batch 2).
+ */
+function omnibusOf(b: SeriesBook, name: string): number | null {
+  const texts = [b.own[0], b.title, ...b.own.slice(1).filter((t) => afterName(t, name) !== null)];
+  for (const t of texts) {
+    if (!t) continue;
+    const last = omnibusLast(t);
+    if (last !== null) return last;
+  }
+  return null;
+}
+
+/**
  * Two parts of one volume (「…I＜上＞」 and 「…I＜下＞」, 「…1 「虚惑星の魔法使い」上巻」 and 「…下巻」):
  * the titles differ only by the part.
  */
@@ -349,6 +386,57 @@ export function editionOf(a: string, c: string): boolean {
   return long.startsWith(short) && !/^\d/u.test(long.slice(short.length));
 }
 
+/** Words of a 【…】 that marks an edition, not a title (【電子特別版】, 【イラスト付】, 【特典SS付き】). */
+const EDITION_MARK =
+  /版|特典|限定|付き|付|電子|イラスト|特装|特別|新装|完全|初回|記念|BOOK☆WALKER|書き下ろし|書下ろし|SS|カラー|挿絵|合本|セット/giu;
+/** A 【…】 that is only an edition mark: little is left once its edition words are set aside. */
+const onlyEditionMark = (x: string) => squash(x.replace(EDITION_MARK, '')).length <= 2;
+
+/**
+ * Two files of one book: the same title once labels and punctuation are set aside, or apart from
+ * a publisher's short Latin code before it (「er-理系男子の…」 and 「理系男子の…」: changed-series
+ * batch 2 had the copies on 1 and 2).
+ */
+export function copyTitles(a: string, c: string): boolean {
+  // A 【…】 that is no edition mark is part of the title (「…話。【水泳部顧問編】」 and 「日本編【法隆寺
+  // ・完全版】」 are books of their own).
+  const marks = (t: string) =>
+    [...nfkc(t).matchAll(/【([^】]*)】/gu)]
+      .map((m) => m[1])
+      .filter((x) => !/^\d+(?:\.\d+)?$/u.test(x) && !onlyEditionMark(x))
+      .map(squash)
+      .sort()
+      .join('|');
+  if (marks(a) !== marks(c)) return false;
+  const sa = squash(plain(a));
+  const sc = squash(plain(c));
+  if (sa === sc) return sa.length > 0;
+  const [short, long] = sa.length < sc.length ? [sa, sc] : [sc, sa];
+  return (
+    short.length >= 6 && long.endsWith(short) && /^[a-z]{1,4}$/u.test(long.slice(0, -short.length))
+  );
+}
+
+/** The numbers a book's own title prints (「王妃のプライド2【９】」: 2 and 9). */
+function digitsOf(b: SeriesBook): string {
+  return [...nfkc(plain(b.own[0] ?? b.title)).matchAll(/\d+(?:\.\d+)?/gu)]
+    .map((m) => String(parseFloat(m[0])))
+    .join(',');
+}
+
+/** Whether two books' own titles print the same numbers. */
+function sameDigits(a: SeriesBook, c: SeriesBook): boolean {
+  return digitsOf(a) === digitsOf(c);
+}
+
+/**
+ * Two files of one book: their own titles and their decided titles are each the same (a file
+ * titled only with the series name is no proof: メイジアン・カンパニー's volumes all are).
+ */
+export function copyBooks(a: SeriesBook, c: SeriesBook): boolean {
+  return copyTitles(a.own[0] ?? a.title, c.own[0] ?? c.title) && copyTitles(a.title, c.title);
+}
+
 /** Whether a title (after the series name) marks a side book. */
 export function isSideTitle(title: string, name: string): boolean {
   const rest = afterName(title, name);
@@ -364,7 +452,9 @@ export function isSideTitle(title: string, name: string): boolean {
  */
 function withoutName(title: string, name: string): string {
   const t = plain(title);
-  for (const n of [name, nfkc(name).split(/[~～〜]/u)[0]]) {
+  // A name's own 【…】 is dropped from the title by plain() (ハズレ枠の【状態異常スキル】…: its
+  // 「… 11.5」 and 「… 12」 were read as no number, changed-series batch 2), so it is too.
+  for (const n of [name, nfkc(name).split(/[~～〜]/u)[0], plain(name)]) {
     const sn = squash(n);
     if (sn.length < 2) continue;
     const at = squash(t).indexOf(sn);
@@ -508,7 +598,7 @@ export function orderSeries(books: SeriesBook[]): SeriesChoice[] {
   // Each result's subtitle once (lessons 3: per book against every result of a big series held
   // the server 1.6 s at stop 1): the numbers per subtitle, RanobeDB's place and kind per subtitle.
   const poolByKey = new Map<string, Set<number | null>>();
-  const rdbByKey = new Map<string, { order: number | null; side: boolean }>();
+  const rdbByKey = new Map<string, { order: number | null; side: boolean; mixed?: boolean }>();
   for (const e of poolList) {
     const k = subKey(e.title, name);
     const s = poolByKey.get(k) ?? new Set<number | null>();
@@ -516,6 +606,9 @@ export function orderSeries(books: SeriesBook[]): SeriesChoice[] {
     poolByKey.set(k, s);
     if (e.from === 'ranobedb' && k) {
       const r = rdbByKey.get(k) ?? { order: null, side: false };
+      // One subtitle at two places tells neither (「Chrome Closed Chronicle 2/3 ─…─」 are one key
+      // once numbers are set aside: all three took place 1, changed-series batch 2).
+      if (e.order != null && r.order !== null && r.order !== e.order) r.mixed = true;
       if (r.order === null && e.order != null) r.order = e.order;
       if (e.type && e.type !== 'main') r.side = true;
       rdbByKey.set(k, r);
@@ -567,7 +660,8 @@ export function orderSeries(books: SeriesBook[]): SeriesChoice[] {
       // Only the titles that are this book's: a colophon also lists the series' other books
       // (「僕は友達が少ない⑦」's names CONNECT, a side book: ⑦ was placed as one, 6.5).
       (own.some((t) => isSideTitle(t, name)) || (key !== '' && !!rdbByKey.get(key)?.side));
-    const rdbOrder: number | null = key ? (rdbByKey.get(key)?.order ?? null) : null;
+    const rdbEntry = key ? rdbByKey.get(key) : undefined;
+    const rdbOrder: number | null = rdbEntry && !rdbEntry.mixed ? rdbEntry.order : null;
     return {
       b,
       ours,
@@ -590,6 +684,7 @@ export function orderSeries(books: SeriesBook[]): SeriesChoice[] {
     };
   });
 
+  let listPick: 'ranobedb' | 'amazon' | null = null;
   // The series' store list (changed-series measurement): RanobeDB's when it places at least half
   // the books, else Amazon's. Only an order: it places books no number places (and side books),
   // before dates, which for e-books are often one day for the whole series.
@@ -612,6 +707,7 @@ export function orderSeries(books: SeriesBook[]): SeriesChoice[] {
     const rdb = main('ranobedb');
     const amz = rdb === null ? main('amazon') : null;
     const pick = rdb !== null ? 'ranobedb' : amz !== null ? 'amazon' : null;
+    listPick = pick;
     const list = rdb ?? amz;
     if (pick)
       for (const w of works) w.listOrder = listOf(w, pick) === list ? w.b.lists![pick] : null;
@@ -730,9 +826,9 @@ export function orderSeries(books: SeriesBook[]): SeriesChoice[] {
       (w.b.kind === 'omnibus' ||
         // A range in its own title is an omnibus whatever its kind was taken for
         // (「【全1-6セット】おおかみさんにおやすみ。」 was 5.9, before volume 6).
-        (w.printed === null && w.b.own.some((t) => omnibusLast(t) !== null)))
+        (w.printed === null && omnibusOf(w.b, name) !== null))
     ) {
-      const last = w.b.own.map(omnibusLast).find((x) => x !== null) ?? null;
+      const last = omnibusOf(w.b, name);
       if (last !== null && w.index !== last + 0.9)
         set(w, last + 0.9, `an omnibus of volumes up to ${last}`, false, null);
     }
@@ -757,15 +853,16 @@ export function orderSeries(books: SeriesBook[]): SeriesChoice[] {
   if (!anyPrinted && mains.length > 1) {
     let open = mains.filter((w) => w.ours && w.b.indexFrom !== 'store');
     // RanobeDB's list places the books it has; the others go by date between them (below).
-    const listed = open.filter((w) => w.rdbOrder !== null);
-    const listedAll = mains.filter((w) => w.rdbOrder !== null);
+    // The book's own RanobeDB entry first (its matched record), else its subtitle in the list.
+    const place = (w: Work) => (listPick === 'ranobedb' ? w.listOrder : null) ?? w.rdbOrder;
+    const listed = open.filter((w) => place(w) !== null);
+    const listedAll = mains.filter((w) => place(w) !== null);
     if (listedAll.length && listedAll.length * 2 >= mains.length) {
-      for (const w of listed)
-        set(w, w.rdbOrder, "its place in RanobeDB's series list", false, null);
+      for (const w of listed) set(w, place(w), "its place in RanobeDB's series list", false, null);
       for (const w of open)
-        if (w.rdbOrder === null)
+        if (place(w) === null)
           w.reason = 'Not in the series list: placed by first publication date';
-      open = open.filter((w) => w.rdbOrder === null);
+      open = open.filter((w) => place(w) === null);
       for (const w of open) w.unplaced = true;
     } else {
       const dated = open.filter((w) => w.b.date !== null);
@@ -891,7 +988,7 @@ export function orderSeries(books: SeriesBook[]): SeriesChoice[] {
           null,
         );
       if (w.b.kind === 'omnibus') {
-        const last = w.b.own.map(omnibusLast).find((x) => x !== null) ?? null;
+        const last = omnibusOf(w.b, name);
         if (last !== null)
           set(w, lastPlace(last) + 0.9, `an omnibus of volumes up to ${last}`, false, null);
       }
@@ -1039,11 +1136,15 @@ export function orderSeries(books: SeriesBook[]): SeriesChoice[] {
         let offset = 0;
         order.forEach(([, ws], k) => {
           let top = offset;
+          // An arc whose own numbers already go on after the arc before keeps them (「王妃の
+          // プライド2【７】」-【１０】 after 【6】: changed-series batch 2 had them at 13-16).
+          const lowest = Math.min(...ws.map((w) => arcs.get(w)!.n ?? Infinity));
+          const shift = k > 0 && lowest > offset ? 0 : offset;
           for (const w of ws) {
             // The first arc keeps its numbers as they are now (護樹騎士団物語 10 is 11 after its
             // volume 7 in parts): the next arc follows them.
             const n =
-              k === 0 ? w.index! : Math.round((offset + (arcs.get(w)!.n ?? w.index!)) * 100) / 100;
+              k === 0 ? w.index! : Math.round((shift + (arcs.get(w)!.n ?? w.index!)) * 100) / 100;
             top = Math.max(top, n, k === 0 ? w.index! : n);
             if (k > 0) plan.set(w, n);
           }
@@ -1072,7 +1173,16 @@ export function orderSeries(books: SeriesBook[]): SeriesChoice[] {
         (a.printed ?? a.sub?.n ?? Infinity) - (c.printed ?? c.sub?.n ?? Infinity) ||
         a.b.calibreId - c.b.calibreId,
     );
+    const placed: Work[] = [];
     for (const w of ordered) {
+      // A copy of a side book already placed shares its number (「アンコール4〈電子特別版〉」's two
+      // files were 22.6 and 22.7: changed-series batch 2).
+      const twin = placed.find((p) => copyBooks(p.b, w.b));
+      if (twin) {
+        set(w, twin.index, twin.from, twin.guess, twin.reason);
+        continue;
+      }
+      placed.push(w);
       let before: Work | null = null;
       let how = '';
       if (w.listOrder !== null) {
@@ -1101,6 +1211,34 @@ export function orderSeries(books: SeriesBook[]): SeriesChoice[] {
             before = m;
         how = 'listed';
       }
+      // Its own RanobeDB place, with the volumes on that list at their own numbers: the volumes
+      // before it are its place less the side books listed before it (禁書目録 SS at 14 and SS2 at
+      // 18 of the old list, with only volume 1 of the library on it: after 13 and 16, changed-
+      // series batch 2). A best guess: side books not in the library would shift it.
+      let counted = false;
+      const L = w.b.lists?.ranobedbList ?? null;
+      const P = w.b.lists?.ranobedb ?? null;
+      if (!before && L && P !== null) {
+        const onList = numbered.filter(
+          (m) => m.b.lists?.ranobedbList === L && m.b.lists.ranobedb != null,
+        );
+        if (onList.length && onList.every((m) => m.b.lists!.ranobedb === m.index)) {
+          const k = sides.filter(
+            (o) =>
+              o !== w &&
+              o.b.lists?.ranobedbList === L &&
+              o.b.lists.ranobedb != null &&
+              o.b.lists.ranobedb < P,
+          ).length;
+          const v = P - 1 - k;
+          for (const m of numbered)
+            if (m.index! <= v && (!before || m.index! > before.index!)) before = m;
+          if (before) {
+            how = "counted in RanobeDB's list";
+            counted = true;
+          }
+        }
+      }
       const known = !!before;
       const base = before
         ? Math.floor(before.index!)
@@ -1114,10 +1252,29 @@ export function orderSeries(books: SeriesBook[]): SeriesChoice[] {
         known
           ? `a side book ${how} after volume ${fmt(base)}`
           : 'a side book after the last volume',
-        !known,
-        known ? null : 'A side book: no date or list puts it between the volumes',
+        !known || counted,
+        !known
+          ? 'A side book: no date or list puts it between the volumes'
+          : counted
+            ? "A side book: placed by its place in RanobeDB's list, counting the volumes before it"
+            : null,
       );
     }
+  }
+
+  // A guessed copy of a book whose number is confirmed takes that number (「王とサーカス」's second
+  // file was guessed 4, its first is the store's 2: changed-series batch 2).
+  for (const w of works) {
+    if (!w.ours || !(w.guess || w.index === null)) continue;
+    const twin = works.find(
+      (c) =>
+        c !== w &&
+        c.index !== null &&
+        (!c.ours || !c.guess) &&
+        isMain(c) === isMain(w) &&
+        copyBooks(c.b, w.b),
+    );
+    if (twin) set(w, twin.index, `a copy of a book numbered ${fmt(twin.index!)}`, false, null);
   }
 
   // The checks: two different books on one number, a book without one.
@@ -1129,12 +1286,61 @@ export function orderSeries(books: SeriesBook[]): SeriesChoice[] {
     squash(plain(a.b.title)) === squash(plain(c.b.title)) ||
     (a.index === c.index && editionOf(a.b.title, c.b.title)) ||
     squash(plain(a.b.own[0] ?? a.b.title)) === squash(plain(c.b.own[0] ?? c.b.title)) ||
-    (a.key === c.key && a.index === c.index);
+    (a.key === c.key && a.index === c.index && sameDigits(a.b, c.b)) ||
+    copyBooks(a.b, c.b);
   const byIndex = new Map<number, Work[]>();
   for (const w of works)
     if (w.index !== null && (isMain(w) || w.side))
       byIndex.set(w.index, [...(byIndex.get(w.index) ?? []), w]);
   const movers: Work[] = [];
+  // A number its title prints, shared with a different book the store numbered, yields to the
+  // series list when the list agrees with every other confirmed number (「王妃のプライド2【７】」-
+  // 「【１０】」 all read 2, beside the store's 【2】; Amazon lists them 7-10: changed-series batch 2).
+  const storeKept = (w: Work) => !w.ours || w.b.indexFrom === 'store';
+  const yields = new Set<Work>();
+  for (const [, ws] of byIndex)
+    for (const w of ws)
+      if (
+        w.ours &&
+        !w.guess &&
+        !storeKept(w) &&
+        isMain(w) &&
+        w.listOrder !== null &&
+        ws.some((k) => k !== w && storeKept(k) && isMain(k) && !sameWork(k, w)) &&
+        // Only where the list puts it elsewhere: a store's number on another book can be the
+        // wrong one (ノーゲーム・ノーライフ's side book on 10 beside the printed 10).
+        works.some(
+          (c) =>
+            c !== w &&
+            isMain(c) &&
+            storeKept(c) &&
+            c.index !== null &&
+            c.listOrder !== null &&
+            c.listOrder !== w.listOrder &&
+            c.index !== w.index &&
+            c.listOrder < w.listOrder! !== c.index < w.index!,
+        )
+      )
+        yields.add(w);
+  if (yields.size) {
+    const others = works
+      .filter(
+        (w) =>
+          isMain(w) &&
+          !yields.has(w) &&
+          w.index !== null &&
+          (!w.ours || !w.guess) &&
+          w.listOrder !== null,
+      )
+      .sort((a, c) => a.listOrder! - c.listOrder!);
+    const agrees =
+      others.length >= 2 && others.every((w, i) => i === 0 || others[i - 1].index! < w.index!);
+    if (agrees)
+      for (const w of yields) {
+        w.guess = true;
+        movers.push(w);
+      }
+  }
   for (const [, ws] of byIndex) {
     if (ws.length < 2) continue;
     const distinct: Work[] = [];
@@ -1154,7 +1360,8 @@ export function orderSeries(books: SeriesBook[]): SeriesChoice[] {
       for (const w of confirmed)
         if (w.ours) w.review = `Another book of the series also prints number ${fmt(w.index!)}`;
     for (const w of ws)
-      if (!keep.includes(w) && w.ours && !keep.some((k) => sameWork(k, w))) movers.push(w);
+      if (!keep.includes(w) && w.ours && !keep.some((k) => sameWork(k, w)) && !movers.includes(w))
+        movers.push(w);
   }
   if (works.length > 1)
     for (const w of works)
@@ -1521,7 +1728,9 @@ export function addSeriesChecks(
       squash(plain(a.title)) === squash(plain(c.title)) ||
       editionOf(a.title, c.title) ||
       squash(plain(a.own[0] ?? a.title)) === squash(plain(c.own[0] ?? c.title)) ||
-      subKey(a.own[0] ?? a.title, a.name) === subKey(c.own[0] ?? c.title, c.name);
+      (subKey(a.own[0] ?? a.title, a.name) === subKey(c.own[0] ?? c.title, c.name) &&
+        sameDigits(a, c)) ||
+      copyBooks(a, c);
     const distinct: SeriesBook[] = [];
     for (const b of bs) if (!distinct.some((d) => copy(d, b))) distinct.push(b);
     if (distinct.length < 2) continue;

@@ -14,6 +14,7 @@ import {
   orderSeries,
   subSeriesNumber,
   arcOf,
+  copyBooks,
   printedNumber,
   type SeriesBook,
 } from '../src/cleanup/stage4/series-order';
@@ -576,5 +577,184 @@ describe('arcs that number again, counted straight through (the user, 2026-11-22
     ];
     const r = new Map(orderSeries(ed).map((c) => [c.uuid, c.index]));
     expect(ed.map((b) => r.get(b.uuid) ?? b.index)).toEqual([1, 2, 1, 2]);
+  });
+});
+
+describe('the second changed-series batch (build half)', () => {
+  const rdb = (n: number, list: string) => ({
+    amazon: null,
+    amazonTotal: null,
+    ranobedb: n,
+    ranobedbType: 'main',
+    amazonList: null,
+    ranobedbList: list,
+  });
+  const amz = (n: number, list: string) => ({
+    amazon: n,
+    amazonTotal: 10,
+    ranobedb: null,
+    ranobedbType: null,
+    amazonList: list,
+    ranobedbList: null,
+  });
+  it('reads numbers inside the name, after a name with 【…】, after disc/Step, Roman to XXXIX', () => {
+    const H = 'ハズレ枠の【状態異常スキル】で最強になった俺がすべてを蹂躙するまで';
+    expect(printedNumber(`${H} 11.5`, H)).toBe(11.5);
+    expect(printedNumber(`${H} 12`, H)).toBe(12);
+    const O = 'Only Sense Online ―オンリーセンス・オンライン―';
+    expect(printedNumber('Only Sense Online 22\u3000―オンリーセンス・オンライン―', O)).toBe(22);
+    expect(printedNumber('GENEZ―8\u3000ジーンズ', 'GENEZ ジーンズ')).toBe(8);
+    const K = 'キノの旅 the Beautiful World';
+    expect(printedNumber('キノの旅V the Beautiful World', K)).toBe(5);
+    expect(printedNumber('キノの旅XXIII\u3000the Beautiful World', K)).toBe(23);
+    expect(
+      printedNumber('ギャルゲヱの世界よ、ようこそ！ disc6', 'ギャルゲヱの世界よ、ようこそ!'),
+    ).toBe(6);
+    expect(printedNumber('陰キャになりたい陽乃森さん Step2', '陰キャになりたい陽乃森さん')).toBe(2);
+    // Not an arc's season.
+    expect(printedNumber('liar ～season3～ 1', 'liar')).toBe(1);
+    // 別巻 and SSP are side books.
+    expect(isSideTitle('吸血鬼ハンター別巻', '吸血鬼ハンター')).toBe(true);
+    expect(
+      isSideTitle('住めば都のコスモス荘SSP お久しぶりにドッコイ', '住めば都のコスモス荘'),
+    ).toBe(true);
+  });
+
+  it("an omnibus range only from the book's own titles, not the colophon's other books", () => {
+    const N = 'ASEAN連合艦隊';
+    const bs = [
+      book({
+        name: N,
+        title: 'ASEAN連合艦隊 南シナ海傭兵艦出撃！',
+        own: ['ＡＳＥＡＮ連合艦隊 南シナ海傭兵艦出撃！ (歴史群像新書)', '新東亜大戦 全4巻'],
+        index: 1,
+        indexFrom: 'store',
+      }),
+      book({ name: N, title: 'ASEAN連合艦隊2', index: 2, indexFrom: 'store' }),
+    ];
+    expect(orderSeries(bs).find((c) => c.uuid === bs[0].uuid)?.index ?? 1).toBe(1);
+  });
+
+  it('copies share a number: a guessed copy, two side copies, a publisher code', () => {
+    const N = '「ベルーフ」シリーズ';
+    const bs = [
+      book({ name: N, title: 'さよなら妖精', index: 1, indexFrom: 'store' }),
+      book({ name: N, title: '王とサーカス', index: 2, indexFrom: 'store' }),
+      book({ name: N, title: '真実の１０メートル手前', index: 3, indexFrom: 'store' }),
+      book({ name: N, title: '王とサーカス', index: 4, indexFrom: 'guess' }),
+    ];
+    const got = new Map(orderSeries(bs).map((c) => [c.uuid, c.index]));
+    expect(got.get(bs[3].uuid)).toBe(2);
+    const D = 'デート・ア・ライブ';
+    const ds = [
+      book({ name: D, title: `${D}1`, index: 1, indexFrom: 'store' }),
+      book({ name: D, title: `${D}2`, index: 2, indexFrom: 'store' }),
+      book({
+        name: D,
+        title: `${D}\u3000アンコール4〈電子特別版〉 (富士見ファンタジア文庫)`,
+        index: 2.6,
+        kind: 'special edition',
+      }),
+      book({
+        name: D,
+        title: `${D}\u3000アンコール4〈電子特別版〉`,
+        index: 2.7,
+        kind: 'special edition',
+      }),
+    ];
+    const dg = new Map(orderSeries(ds).map((c) => [c.uuid, c.index]));
+    expect(dg.get(ds[2].uuid) ?? 2.6).toBe(dg.get(ds[3].uuid) ?? 2.7);
+    const a = book({ title: 'er-理系男子の童貞を奪ったらたいへんなことになりました' });
+    const c = book({ title: '理系男子の童貞を奪ったらたいへんなことになりました' });
+    expect(copyBooks(a, c)).toBe(true);
+    // A title that is only the series name proves nothing; a 【subtitle】 is a book of its own.
+    const M = '続・魔法科高校の劣等生 メイジアン・カンパニー';
+    expect(copyBooks(book({ title: `${M}3`, own: [M] }), book({ title: `${M}4`, own: [M] }))).toBe(
+      false,
+    );
+    expect(
+      copyBooks(
+        book({ title: '日本編【法隆寺・完全版】' }),
+        book({ title: '日本編【紀伊山地の霊場と参詣道・完全版】' }),
+      ),
+    ).toBe(false);
+    expect(
+      copyBooks(book({ title: '話の題。' }), book({ title: '話の題。【水泳部顧問編】' })),
+    ).toBe(false);
+    expect(
+      copyBooks(book({ title: '作品の題3【電子特別版】' }), book({ title: '作品の題3' })),
+    ).toBe(true);
+  });
+
+  it('a printed number on a store-numbered book yields to a list that agrees elsewhere', () => {
+    const N = '王妃のプライド';
+    const L = '10|王妃のプライド';
+    const bs = [1, 2, 3, 4, 5, 6].map((i) =>
+      book({ name: N, title: `${N}【${i}】`, index: i, indexFrom: 'store', lists: amz(i, L) }),
+    );
+    const late = [7, 8, 9, 10].map((i) =>
+      book({ name: N, title: `${N}2【${i}】`, index: 2, indexFrom: 'models', lists: amz(i, L) }),
+    );
+    const got = new Map(orderSeries([...bs, ...late]).map((c) => [c.uuid, c.index]));
+    expect(late.map((b) => got.get(b.uuid))).toEqual([7, 8, 9, 10]);
+    // A store's number on another book, the list in agreement with the printed one: a person's call.
+    const G = 'ノーゲーム・ノーライフ';
+    const gl = '14|ノーゲーム・ノーライフ';
+    const gs = [8, 9].map((i) =>
+      book({
+        name: G,
+        title: `${G} ${i}\u3000副題${i}`,
+        index: i,
+        indexFrom: 'store',
+        lists: amz(i, gl),
+      }),
+    );
+    const side = book({
+      name: G,
+      title: `${G}\u3000プラクティカルウォーゲーム`,
+      index: 10,
+      indexFrom: 'store',
+      lists: amz(10, gl),
+    });
+    const ten = book({
+      name: G,
+      title: `${G} 10\u3000副題10`,
+      index: 10,
+      indexFrom: 'models',
+      lists: amz(11, gl),
+    });
+    const cs = new Map(orderSeries([...gs, side, ten]).map((c) => [c.uuid, c]));
+    expect(cs.get(ten.uuid)?.index ?? 10).toBe(10);
+    expect(cs.get(ten.uuid)?.review).toBeTruthy();
+  });
+
+  it("one RanobeDB subtitle at two places tells neither; the book's own entry places it", () => {
+    const N = 'クロム・クローズド・クロニクル';
+    const t = (i: number) => `Chrome Closed Chronicle${i === 1 ? '' : ` ${i}`}\u3000─${N}─`;
+    const pool = [1, 2, 3].map((i) => ({ title: t(i), from: 'ranobedb' as const, order: i }));
+    const bs = [1, 2, 3].map((i) =>
+      book({ name: N, title: t(i), index: 1, indexFrom: 'models', lists: rdb(i, N), pool }),
+    );
+    const got = new Map(orderSeries(bs).map((c) => [c.uuid, c.index]));
+    expect(bs.map((b) => got.get(b.uuid) ?? b.index)).toEqual([1, 2, 3]);
+  });
+
+  it("a side book counted in RanobeDB's list (only volume 1 on it)", () => {
+    const N = 'とある魔術の禁書目録';
+    const mains = Array.from({ length: 16 }, (_, i) =>
+      book({
+        name: N,
+        title: `${N}${i + 1}`,
+        index: i + 1,
+        indexFrom: i ? 'models' : 'store',
+        lists: i ? undefined : rdb(1, N),
+      }),
+    );
+    const ss = book({ name: N, title: `${N}SS`, index: 16.6, lists: rdb(14, N) });
+    const ss2 = book({ name: N, title: `${N}SS2`, index: 16.5, lists: rdb(18, N) });
+    const got = new Map(orderSeries([...mains, ss, ss2]).map((c) => [c.uuid, c]));
+    expect(got.get(ss.uuid)?.index).toBe(13.5);
+    expect(got.get(ss2.uuid)?.index).toBe(16.5);
+    expect(got.get(ss.uuid)?.guess).toBe(true);
   });
 });
