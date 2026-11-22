@@ -227,7 +227,7 @@ export function arrivalsReportLines(s: ArrivalsStatus | null): string[] {
     lines.push(
       `Held (a field is paused by its check): ${h.map(([k, v]) => `stage ${k.replace('s', '')} ${n(v)} changes`).join(', ')}; a later run writes them once the field is resumed.`
     );
-  if (r.check)
+  if (r.check && r.check.fields > 0)
     lines.push(
       r.check.differ.length
         ? `Checked against Calibre: ${n(r.check.same)} of ${n(r.check.fields)} as written; ${n(r.check.differ.length)} differ (listed in the run).`

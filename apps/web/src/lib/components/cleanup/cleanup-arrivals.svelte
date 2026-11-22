@@ -52,7 +52,7 @@
     { id: 'too_long', title: 'Too long for a folder name' },
     { id: 'waiting', title: 'Waiting or still downloading' },
     { id: 'archives', title: 'Archives' },
-    { id: 'removed', title: 'Removed by you' },
+    { id: 'removed', title: 'Removed by you or by Undo' },
     { id: 'hand', title: 'Books added in Calibre' },
     { id: 'batches', title: 'Add batches' },
     { id: 'runs', title: 'Runs' }
