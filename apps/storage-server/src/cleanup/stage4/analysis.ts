@@ -63,7 +63,7 @@ import {
 import { bwAsAmazon, bwSettles, STANDIN, titleStem } from './bw-standin';
 import { NEXT_STEPS, type FollowUps } from './eta';
 import { ASIN_RE, pickByVolume, pyQuote, queryTitle, sim } from './pick';
-import { amazonFacts, bwFacts, replaces, type BookFacts } from './record-judge';
+import { amazonFacts, bwFacts, isMangaRecord, replaces, type BookFacts } from './record-judge';
 import { proposeStage4, type CalibreCoverNow, type Stage4Proposal } from './proposals';
 import { storedAiValues, type Stage4AiValues } from './ai-decide';
 import { FetchQueue, LABELED_PRIORITY } from './queue';
@@ -173,6 +173,8 @@ export interface Stage4Progress {
     reopened: number;
     /** REPICK_VERSION it ran at (absent: 1). */
     version?: number;
+    /** Text books whose BookWalker manga edition was set aside (version 2). */
+    manga?: number;
   };
   /** Books the final pass has proposed again (for its time left). */
   finalDone?: number;
@@ -234,6 +236,8 @@ export interface OnlineEvidence {
     product?: ReturnType<typeof parseAmazonDp> | null;
     gone?: boolean;
     failed?: string;
+    /** Results whose product page was empty (passed over for the next one). */
+    empty?: string[];
     /** The record a pick made again may replace: kept unless the new one fits the book better. */
     previous?: { product: ReturnType<typeof parseAmazonDp> | null; request: number | null };
   };
@@ -262,6 +266,11 @@ export interface OnlineEvidence {
       detail: ReturnType<typeof parseBwDetail> & { url: string };
       request: number | null;
     };
+    /**
+     * Series and book pages set aside for a text book: their book page is manga. The next
+     * search result is read instead (MANGA_TRIES at most).
+     */
+    rejected?: string[];
   };
   bookmeter: {
     hits?: BookmeterHit[];
@@ -461,6 +470,63 @@ export const REPICK_VERSION = 2;
 
 /** A BookWalker result that is a book page (a volume), not a series. */
 const isBwBook = (c: [string, string]) => c[0].includes('/de');
+
+/** How many manga series a text book's BookWalker lookup sets aside before it gives up. */
+const MANGA_TRIES = 4;
+
+/** A text book holding a BookWalker manga edition (record-judge.ts isMangaRecord). */
+function bwMangaForText(ev: OnlineEvidence): boolean {
+  const d = ev.bookwalker.detail;
+  return !!d && ev.query.text_book && isMangaRecord(bwFacts(d));
+}
+
+/**
+ * A BookWalker book page the book can't use: empty (a page without its title: 「現代語訳 風姿花伝」
+ * kept being picked again) or a manga edition for a text book.
+ */
+function bwUnusable(ev: OnlineEvidence): boolean {
+  const d = ev.bookwalker.detail;
+  return !!d && (!d.title || bwMangaForText(ev));
+}
+
+/**
+ * Sets an unusable BookWalker page aside, with its series only when the page came from that
+ * series' list (a page straight from the search doesn't make the book's own series wrong:
+ * 口に関するアンケート's novel series was set aside with the manga page found by the search).
+ */
+function setAsideBw(ev: OnlineEvidence, seriesKey: string | null): void {
+  const d = ev.bookwalker.detail!;
+  const viaSeries =
+    !!seriesKey && (ev.bookwalker.series_candidates ?? []).some((c) => c[0] === d.url);
+  ev.bookwalker.rejected = [
+    ...(ev.bookwalker.rejected ?? []),
+    d.url,
+    ...(viaSeries ? [seriesKey!] : []),
+  ];
+  delete ev.bookwalker.detail;
+  if (viaSeries) delete ev.bookwalker.series_candidates;
+}
+
+/**
+ * The next BookWalker search result to read after pages were set aside: only one whose title is
+ * the book's (a similarity of 0.7, as RanobeDB's lookup asks; not 「週刊女性」 nor another book).
+ */
+function nextBw(ev: OnlineEvidence): [string, string] | null {
+  if ((ev.bookwalker.rejected ?? []).length >= MANGA_TRIES * 2) return null;
+  const close = notRejected(ev, ev.bookwalker.search_candidates ?? []).filter(
+    (c) => sim(ev.query.title, c[1].replace(/[(（][^()（）]*[)）]\s*$/u, '')) >= 0.7,
+  );
+  return pickByVolume(ev.query.title, close, ev.query.text_book, isBwBook);
+}
+
+/** How many empty Amazon product pages a lookup passes over before it gives up. */
+const AMAZON_EMPTY_TRIES = 3;
+
+/** BookWalker results not set aside for this book (their book page was manga). */
+function notRejected(ev: OnlineEvidence, list: [string, string][]): [string, string][] {
+  const r = new Set(ev.bookwalker.rejected ?? []);
+  return r.size ? list.filter((c) => !r.has(c[0])) : list;
+}
 
 function gz(v: unknown): Buffer {
   return gzipSync(Buffer.from(JSON.stringify(v), 'utf8'));
@@ -833,7 +899,9 @@ export class Stage4Analysis {
       file: ref,
       amazon: { ...ev.amazon } as RefRecord['amazon'],
       ranobedb: { ...ev.ranobedb } as RefRecord['ranobedb'],
-      bookwalker: { ...ev.bookwalker } as RefRecord['bookwalker'],
+      bookwalker: (bwMangaForText(ev)
+        ? { ...ev.bookwalker, detail: undefined, series_candidates: undefined }
+        : { ...ev.bookwalker }) as RefRecord['bookwalker'],
     };
   }
 
@@ -1278,6 +1346,24 @@ export class Stage4Analysis {
         if (body) ev.amazon.product = parseAmazonDp(body);
         else if (req.state === 'gone') ev.amazon.gone = true;
         else if (failed) ev.amazon.failed = failed;
+        // An empty page (another format: 「ハリー・ポッターと炎のゴブレット」 bare, no title read):
+        // the next search result instead.
+        if (body && !ev.amazon.product?.title && ev.amazon.picked_from_search) {
+          const next = this.nextAmazon(ev, this.requestKey(requestId));
+          if (next) {
+            delete ev.amazon.product;
+            ev.requests['amazon-dp'] = q.enqueue(
+              {
+                site: 'amazon-dp',
+                key: next[0],
+                url: `https://www.amazon.co.jp/dp/${next[0]}`,
+                priority: prio,
+              },
+              w('amazon-dp'),
+            ).id;
+            break;
+          }
+        }
         const prev = ev.amazon.previous;
         if (prev) {
           delete ev.amazon.previous;
@@ -1391,7 +1477,7 @@ export class Stage4Analysis {
         }
         const items = parseBwList(body);
         ev.bookwalker.search_candidates = items.slice(0, 8);
-        const pick = pickByVolume(ev.query.title, items.slice(0, 8), tb, isBwBook);
+        const pick = pickByVolume(ev.query.title, notRejected(ev, items.slice(0, 8)), tb, isBwBook);
         if (pick && pick[0].includes('/series/')) {
           q.enqueue(
             { site: 'bookwalker', key: pick[0], url: pick[0], priority: prio },
@@ -1416,7 +1502,7 @@ export class Stage4Analysis {
         // The whole list (it was cut at 40: the pass that picked again from it missed every older
         // volume of a long series, the live run of 2026-11-22). 400 keeps a record small.
         ev.bookwalker.series_candidates = vols.slice(0, 400);
-        const pick = pickByVolume(ev.query.title, vols, tb);
+        const pick = pickByVolume(ev.query.title, notRejected(ev, vols), tb);
         if (pick && pick[0] === ev.bookwalker.previous?.detail.url) {
           // The pick is the record the book has.
           this.keepPreviousBw(ev);
@@ -1440,6 +1526,23 @@ export class Stage4Analysis {
         ).url;
         if (body) ev.bookwalker.detail = { ...parseBwDetail(body), url };
         else if (failed) ev.bookwalker.failed = failed;
+        if (body && bwUnusable(ev)) {
+          // An empty page or a manga edition for a text book: set aside, the next result that is
+          // the book read.
+          setAsideBw(ev, this.requestKey(ev.requests['bookwalker-series']));
+          const next = nextBw(ev);
+          if (next) {
+            q.enqueue(
+              { site: 'bookwalker', key: next[0], url: next[0], priority: prio },
+              w(next[0].includes('/series/') ? 'bookwalker-series' : 'bookwalker-detail'),
+            );
+            break;
+          }
+          this.keepPreviousBw(ev);
+          if (bwUnusable(ev)) delete ev.bookwalker.detail;
+          close('bookwalker');
+          break;
+        }
         const prevB = ev.bookwalker.previous;
         if (prevB) {
           delete ev.bookwalker.previous;
@@ -2057,8 +2160,10 @@ export class Stage4Analysis {
     for (const [, t] of ev.amazon.search_candidates ?? []) pool.push({ title: t, from: 'amazon' });
     for (const [, t] of ev.bookwalker.search_candidates ?? [])
       pool.push({ title: t, from: 'bookwalker' });
-    for (const [, t] of ev.bookwalker.series_candidates ?? [])
-      pool.push({ title: t, from: 'bookwalker' });
+    // A manga series' volumes number the manga, not the book.
+    if (!bwMangaForText(ev))
+      for (const [, t] of ev.bookwalker.series_candidates ?? [])
+        pool.push({ title: t, from: 'bookwalker' });
     for (const x of ev.ranobedb.series?.books ?? [])
       pool.push({
         title: String(x.title_orig ?? ''),
@@ -2092,6 +2197,7 @@ export class Stage4Analysis {
       pool: pool.filter((e) => e.title),
       date: firstColophonDate(colophon),
       calibreName: this.extras?.get(book.calibreId)?.series ?? null,
+      calibreIndex: this.extras?.get(book.calibreId)?.seriesIndex ?? null,
       // A record the rules didn't take but whose title is the book's own is this book too
       // (神様ゲーム: RanobeDB's list placed its three side books, the rules took no record).
       lists: storeListPlaces(
@@ -2631,6 +2737,15 @@ ${f?.colophon_text ?? ''}`,
     };
   }
 
+  /** The next Amazon search result after an empty product page (AMAZON_EMPTY_TRIES at most). */
+  private nextAmazon(ev: OnlineEvidence, emptyAsin: string | null): [string, string] | null {
+    if (emptyAsin) ev.amazon.empty = [...(ev.amazon.empty ?? []), emptyAsin];
+    const empty = new Set(ev.amazon.empty ?? []);
+    if (empty.size >= AMAZON_EMPTY_TRIES) return null;
+    const cands = (ev.amazon.search_candidates ?? []).slice(0, 6).filter((c) => !empty.has(c[0]));
+    return pickByVolume(ev.query.title, cands, ev.query.text_book);
+  }
+
   /** A pick made again found nothing better: the book keeps its BookWalker record. */
   private keepPreviousBw(ev: OnlineEvidence): void {
     const prev = ev.bookwalker.previous;
@@ -2704,14 +2819,19 @@ ${f?.colophon_text ?? ''}`,
       const qt = ev.query.title;
       const tb = ev.query.text_book;
       const open = new Set(ev.open);
+      let changedBw = false;
       let facts: BookFacts | null = null;
       const bookFacts = () => (facts ??= this.bookFacts(p, { uuid: r.calibre_uuid }, ev));
 
       // Amazon: the product page of the pick among the search results, if it fits better.
       if (ev.amazon.picked_from_search && ev.amazon.search_candidates) {
-        const pick = pickByVolume(qt, ev.amazon.search_candidates.slice(0, 6), tb);
         const old = this.requestKey(ev.requests['amazon-dp']);
         const cur = ev.amazon.product ?? null;
+        // The page the book has is empty (the bare-titled result of another format): the next.
+        const pick =
+          cur && !cur.title && old
+            ? this.nextAmazon(ev, old)
+            : pickByVolume(qt, ev.amazon.search_candidates.slice(0, 6), tb);
         if (
           pick &&
           pick[0] !== old &&
@@ -2778,7 +2898,15 @@ ${f?.colophon_text ?? ''}`,
       // book page; the book keeps its record unless the new pick fits it better.
       const bwSearch = ev.bookwalker.search_candidates ?? [];
       if (bwSearch.length) {
-        const s = pickByVolume(qt, bwSearch.slice(0, 8), tb, isBwBook);
+        // An empty page or a manga edition held by a text book is not the book: set aside.
+        if (bwUnusable(ev)) {
+          if (bwMangaForText(ev)) r0.manga = (r0.manga ?? 0) + 1;
+          setAsideBw(ev, this.requestKey(ev.requests['bookwalker-series']));
+          changedBw = true;
+        }
+        const s = ev.bookwalker.rejected?.length
+          ? nextBw(ev)
+          : pickByVolume(qt, bwSearch.slice(0, 8), tb, isBwBook);
         const cur = ev.bookwalker.detail ?? null;
         const curUrl = cur?.url ?? null;
         const oldSeries = this.requestKey(ev.requests['bookwalker-series']);
@@ -2823,7 +2951,14 @@ ${f?.colophon_text ?? ''}`,
         }
       }
 
-      if (open.size === ev.open.length) continue;
+      if (open.size === ev.open.length) {
+        // Only a manga record set aside and nothing else to read: proposed again as it is.
+        if (changedBw) {
+          this.saveEvidence(p.libraryId, r.calibre_uuid, ONLINE_KIND, ev);
+          await this.proposeBook(p, r.calibre_uuid);
+        }
+        continue;
+      }
       ev.open = [...open];
       db.transaction(() => {
         this.saveEvidence(p.libraryId, r.calibre_uuid, ONLINE_KIND, ev);
@@ -2836,7 +2971,7 @@ ${f?.colophon_text ?? ''}`,
     if (rows.length < 200) {
       r0.phase = 'done';
       this.log(
-        `Stage 4: picks made again with the fixed picker (version ${REPICK_VERSION}): ${r0.reopened} books wait for another record (Amazon ${r0.amazon}, RanobeDB ${r0.ranobedb}, BookWalker ${r0.bookwalker})`,
+        `Stage 4: picks made again with the fixed picker (version ${REPICK_VERSION}): ${r0.reopened} books wait for another record (Amazon ${r0.amazon}, RanobeDB ${r0.ranobedb}, BookWalker ${r0.bookwalker}; BookWalker manga editions set aside for text books: ${r0.manga ?? 0})`,
       );
       if (r0.reopened > 0) {
         p.phase = 'lookups';

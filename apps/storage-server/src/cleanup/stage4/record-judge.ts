@@ -7,7 +7,7 @@
  * guide book 「Re：zeropedia」, and Amazon's book with an empty page of another format).
  */
 import { nfkc } from '../title-rules';
-import { COMIC, nums, subtitleAfterNumber, titleKey, titleMatch } from './pick';
+import { COMIC, EDITION, nums, subtitleAfterNumber, titleKey, titleMatch } from './pick';
 
 /** The book as its file shows it. */
 export interface BookFacts {
@@ -50,9 +50,17 @@ function mangaWord(words: string): boolean {
     );
 }
 
-/** Edition words a record may carry that the file doesn't (another edition of the book). */
-const EDITION =
-  /完全版|新装版|合本版|合本|愛蔵版|特装版|決定版|改訂版|増補版|分冊版|単話版|単話|マイクロ/u;
+/**
+ * A manga record (its title's label or its store words: BookWalker's 「マンガ」, a manga label in
+ * Amazon's categories). Never a text book's record (the live check of 2026-11-22: 3,882 text books
+ * held a BookWalker manga edition, 161 of them took its description).
+ */
+export function isMangaRecord(rec: RecordFacts): boolean {
+  return COMIC.test(nfkc(rec.title ?? '')) || mangaWord(nfkc(rec.words ?? ''));
+}
+
+/** Store words of an item that is no book (a CD, a video): 「ミュージック」, 「DVD」. */
+const NOT_A_BOOK = /ミュージック|DVD|Blu-ray|ブルーレイ|CD・レコード|ビデオ/u;
 
 /**
  * The record's fit, higher is better; null when it is not the book: another volume (the book's
@@ -63,7 +71,8 @@ export function recordFit(book: BookFacts, rec: RecordFacts): number | null {
   const title = nfkc(rec.title ?? '');
   if (!title.trim()) return null;
   const words = nfkc(rec.words ?? '');
-  if (book.textBook && (COMIC.test(title) || mangaWord(words))) return null;
+  if (book.textBook && isMangaRecord(rec)) return null;
+  if (NOT_A_BOOK.test(words)) return null;
   const qn = nums(book.title);
   const tn = nums(title);
   const qk = titleKey(book.title);

@@ -36,8 +36,11 @@ import {
  * through, the second batch's fixes; decided again from the stored answers.
  * 5 (the live run of 2026-11-22): sub-series the models each numbered from 1 follow the list as
  * 1, 2, 3… (惑星ハシエラ); decided again from the stored answers.
+ * 6 (the stop-3 hold, 2026-11-22): a best guess never overwrites a value Calibre has, the
+ * description's spacing, author readings for the authors written, BookWalker's manga editions
+ * never a text book's record; decided again from the stored answers.
  */
-export const STAGE4_RULES_VERSION = 5;
+export const STAGE4_RULES_VERSION = 6;
 
 /** The gold labels' names for the kinds. */
 export type Kind = 'full' | 'sample' | 'bonus' | 'special edition' | 'omnibus';

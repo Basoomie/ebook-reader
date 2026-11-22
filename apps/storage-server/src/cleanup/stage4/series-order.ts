@@ -90,6 +90,8 @@ export interface SeriesBook {
   };
   /** The series name Calibre holds now (null: none; absent in facts saved before). */
   calibreName?: string | null;
+  /** The series number Calibre holds now with that name (null: none; absent in facts saved before). */
+  calibreIndex?: number | null;
 }
 
 export interface SeriesChoice {

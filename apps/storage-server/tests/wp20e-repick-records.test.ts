@@ -5,8 +5,13 @@
  */
 import { describe, expect, it } from 'vitest';
 import { pickByVolume, titleKey, titleMatch } from '../src/cleanup/stage4/pick';
-import { recordFit, replaces, type BookFacts } from '../src/cleanup/stage4/record-judge';
-import { onlySpacing } from '../src/cleanup/stage4/proposals';
+import {
+  isMangaRecord,
+  recordFit,
+  replaces,
+  type BookFacts,
+} from '../src/cleanup/stage4/record-judge';
+import { emptyValue, onlySpacing } from '../src/cleanup/stage4/proposals';
 
 const c = (titles: string[]) => titles.map((t, i) => [`k${i}`, t] as [string, string]);
 const pick = (
@@ -157,5 +162,46 @@ describe('a description that differs only by its spacing', () => {
     expect(onlySpacing('一行目。二行目。', '一行目。\n\n二行目。')).toBe(false);
     expect(onlySpacing('一行目。', '別の文。')).toBe(false);
     expect(onlySpacing(null, '一行目。')).toBe(false);
+  });
+});
+
+describe('manga records, empty pages and other editions', () => {
+  const book = (title: string): BookFacts => ({ title, text: '', textBook: true });
+  it('a manga edition is no record for a text book; a music item is no book', () => {
+    expect(
+      isMangaRecord({
+        title: '転生したらスライムだった件（１１）',
+        words: '月刊少年シリウス,マンガ,電子書籍',
+      }),
+    ).toBe(true);
+    expect(
+      isMangaRecord({ title: '青春ブタ野郎', words: '本,コミック・ラノベ・BL,ライトノベル' }),
+    ).toBe(false);
+    expect(
+      recordFit(book('イヤって言ってもきかないで'), {
+        title: 'イヤって言ってもきかないで',
+        words: 'ミュージック,アニメ音楽',
+      }),
+    ).toBeNull();
+  });
+  it('another edition ranks below the book itself', () => {
+    const t = '幼女無双～仲間に裏切られた召喚師～（サーガフォレスト）';
+    expect(
+      pick(t, [
+        '幼女無双～仲間に裏切られた召喚師～【合本版】(サーガフォレスト)',
+        '幼女無双～仲間に裏切られた召喚師～（サーガフォレスト）',
+      ]),
+    ).toBe('幼女無双～仲間に裏切られた召喚師～（サーガフォレスト）');
+  });
+});
+
+describe('a best guess never overwrites a value Calibre has', () => {
+  it('only an empty field is filled by a guess', () => {
+    expect(emptyValue(null)).toBe(true);
+    expect(emptyValue([])).toBe(true);
+    expect(emptyValue({ name: null, index: null })).toBe(true);
+    expect(emptyValue({ name: '流血女神伝', index: 1 })).toBe(false);
+    expect(emptyValue(['ディケンズ'])).toBe(false);
+    expect(emptyValue('タイトル')).toBe(false);
   });
 });

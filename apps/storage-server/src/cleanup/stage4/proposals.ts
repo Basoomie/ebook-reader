@@ -288,6 +288,17 @@ export function proposeStage4(input: ProposalInput): Stage4Proposal[] {
       p.class = 'review';
       p.reason = 'The value is garbled (wrong text encoding)';
     }
+    // A best guess never overwrites a value Calibre has: it may only fill an empty field (the
+    // user, 2026-11-22: "must not overwrite a correct field with an incorrect one"; the live
+    // Preview's guessed series numbers made 10 right numbers of the labeled books wrong).
+    if (
+      p.class === 'auto' &&
+      (p.evidence as { unconfirmed?: unknown } | undefined)?.unconfirmed &&
+      !emptyValue(current)
+    ) {
+      p.class = 'review';
+      p.reason = 'A best guess would replace the value Calibre has';
+    }
     if (
       p.class === 'auto' &&
       input.applied.has(appliedField) &&
@@ -822,4 +833,16 @@ export function onlySpacing(now: string | null | undefined, next: string): boole
   if (bare(now) !== bare(next)) return false;
   const breaks = (s: string) => (s.match(/\n/gu) ?? []).length;
   return breaks(next) <= breaks(now);
+}
+
+/** A field without a value in Calibre (a series without its name counts as none). */
+export function emptyValue(v: unknown): boolean {
+  if (v === null || v === undefined || v === '') return true;
+  if (Array.isArray(v)) return v.length === 0;
+  if (typeof v === 'object') {
+    const o = v as Record<string, unknown>;
+    if ('name' in o && 'index' in o) return !o.name;
+    return Object.keys(o).length === 0;
+  }
+  return false;
 }

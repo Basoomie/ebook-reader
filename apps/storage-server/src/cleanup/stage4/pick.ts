@@ -129,6 +129,16 @@ export function queryTitle(t: string | null | undefined): string {
 }
 
 export const COMIC = /MFC|コミック|マンガ|漫画|COMIC|Comic|comic|ｺﾐｯｸ/u;
+
+/** Words of another edition (an omnibus, a re-issue, single chapters): not the book itself. */
+export const EDITION =
+  /完全版|新装版|合本版|合本|愛蔵版|特装版|決定版|改訂版|増補版|分冊版|単話版|単話|マイクロ/u;
+
+/** A result carrying an edition mark the query doesn't (【合本版】 for the volume). */
+export function otherEdition(qtitle: string, title: string): boolean {
+  const m = EDITION.exec(nfkc(title));
+  return !!m && !nfkc(qtitle).includes(m[0]);
+}
 export const EXTRA =
   /購入特典|特典SS|ショートストーリー|試し読み|無料|お試し|Prelude|特装版|special edition/iu;
 
@@ -254,7 +264,8 @@ export function pickByVolume<T extends [unknown, string]>(
     return false;
   };
   for (const c of list) {
-    const fmt = textBook && COMIC.test(nfkc(c[1])) ? 0 : 1;
+    // Comic editions last for text books, other editions (合本版, 完全版) before them.
+    const fmt = textBook && COMIC.test(nfkc(c[1])) ? 0 : otherEdition(qtitle, c[1]) ? 1 : 2;
     const tn = nums(c[1]);
     // A query with a volume number takes only a result with that number (or, for volume 1, an
     // unnumbered one): never a guide book or another volume because the right one is missing
