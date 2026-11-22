@@ -6,6 +6,7 @@
 
 import { describe, expect, it } from 'vitest';
 import {
+  absLine,
   changeLines,
   changesLines,
   designLines,
@@ -131,6 +132,23 @@ describe('stage 7 texts', () => {
     expect(inZone(t, undefined)).toBe('');
     expect(reportLines(s).some((l) => l.includes('Archives: 93'))).toBe(true);
     expect(reportLines(s).some((l) => l.includes('2 need a password'))).toBe(true);
+  });
+
+  it('the Audiobookshelf line shows the real item counts, also when no book was added', () => {
+    const abs = run().abs;
+    expect(absLine({ ...abs, before: 4787, after: 4787 })).toBe(
+      'Audiobookshelf: 4,787 → 4,787 items; no new books'
+    );
+    expect(absLine({ ...abs, before: 4787, after: 4790, found: 3, valuesOk: 3 })).toBe(
+      'Audiobookshelf: 4,787 → 4,790 items; 3 new books shown, 0 not shown; values as written: 3, different: 0'
+    );
+    expect(absLine({ ...abs, error: 'Audiobookshelf is not set up (address and API key)' })).toBe(
+      'Audiobookshelf: no new books; Audiobookshelf is not set up (address and API key)'
+    );
+    expect(absLine({ ...abs, before: 4787 })).toBe(
+      'Audiobookshelf: 4,787 items before the run (not read after); no new books'
+    );
+    expect(absLine(abs)).not.toContain('?');
   });
 
   it('the E/F/J line says what an upgrade would re-check and leave out', () => {

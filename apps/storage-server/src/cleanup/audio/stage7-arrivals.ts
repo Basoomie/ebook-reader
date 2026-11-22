@@ -1175,6 +1175,8 @@ export class AudioStage7 {
         bookDirs: new Set(),
         narrators: new Map(),
       }).counts;
+      // Nothing new: the report still shows ABS's item count before and after the run.
+      if (p.mode === 'on') p.abs.before = await this.absItemCount(p).catch(() => null);
       this.setPhase(p, 'changes');
       return;
     }
@@ -1282,8 +1284,11 @@ export class AudioStage7 {
     }
     // Preview ends with the plan; On builds (when there is anything to build).
     if (p.mode !== 'on') this.setPhase(p, 'changes', kept.length);
-    else if (p.build.total === 0) this.setPhase(p, 'changes', 0);
-    else {
+    else if (p.build.total === 0) {
+      // Nothing to build: the report still shows ABS's item count before and after the run.
+      p.abs.before = await this.absItemCount(p).catch(() => null);
+      this.setPhase(p, 'changes', 0);
+    } else {
       p.abs.before = await this.absItemCount(p).catch(() => null);
       this.setPhase(p, 'walk_before', kept.length);
     }
@@ -1650,9 +1655,15 @@ export class AudioStage7 {
       abs_item_id: string | null;
     }[];
     const client = this.absClient();
-    if (!books.length || !client) {
-      if (books.length && !client)
-        p.abs.error = 'Audiobookshelf is not set up (address and API key)';
+    if (!client) {
+      p.abs.error = 'Audiobookshelf is not set up (address and API key)';
+      this.setPhase(p, 'report');
+      return 'more';
+    }
+    if (!books.length) {
+      // No new book to look for: only the item count after the run (the library changes may
+      // have scanned it).
+      p.abs.after = await this.absItemCount(p).catch(() => null);
       this.setPhase(p, 'report');
       return 'more';
     }

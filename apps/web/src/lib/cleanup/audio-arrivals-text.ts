@@ -232,6 +232,31 @@ export function stage7Summary(s: AudioStage7Status | null | undefined, now: numb
   return `${last}. ${next}.`;
 }
 
+/** An On run's Audiobookshelf line: the real item counts, also when no book was added. */
+export function absLine(abs: AudioStage7Run['abs']): string {
+  const { before, after } = abs;
+  const items =
+    before !== null && after !== null
+      ? `${n(before)} → ${n(after)} items`
+      : before !== null
+        ? `${n(before)} items before the run (not read after)`
+        : after !== null
+          ? `${n(after)} items after the run (not read before)`
+          : abs.error
+            ? null
+            : 'the item count could not be read';
+  const added = abs.found + abs.missing;
+  const parts = [items].filter((x): x is string => x !== null);
+  if (added === 0) parts.push('no new books');
+  else
+    parts.push(
+      `${n(abs.found)} new books shown, ${n(abs.missing)} not shown${abs.nudged ? ` (told ABS about ${n(abs.nudged)})` : ''}`,
+      `values as written: ${n(abs.valuesOk)}, different: ${n(abs.valuesDiffer)}`
+    );
+  if (abs.error) parts.push(abs.error);
+  return `Audiobookshelf: ${parts.join('; ')}`;
+}
+
 /** The last run's report, for Details. */
 export function reportLines(s: AudioStage7Status | null | undefined): string[] {
   const r = s?.report;
@@ -257,10 +282,7 @@ export function reportLines(s: AudioStage7Status | null | undefined): string[] {
           .join(', ') || 'no problems'
       }`
     );
-  if (run.mode === 'on')
-    out.push(
-      `Audiobookshelf: ${run.abs.before ?? '?'} → ${run.abs.after ?? '?'} items; ${n(run.abs.found)} new books shown, ${n(run.abs.missing)} not shown${run.abs.nudged ? ` (told ABS about ${n(run.abs.nudged)})` : ''}; values as written: ${n(run.abs.valuesOk)}, different: ${n(run.abs.valuesDiffer)}${run.abs.error ? `; ${run.abs.error}` : ''}`
-    );
+  if (run.mode === 'on') out.push(absLine(run.abs));
   if (run.abs.precedence) out.push(`Audiobookshelf reads (low → high): ${run.abs.precedence}`);
   out.push(`To look at: ${n(r.newReview)} new in this run, ${n(r.openReview)} open in all`);
   out.push(`AI cost of this run's analysis: $${r.aiCostUsd.toFixed(4)}`);
