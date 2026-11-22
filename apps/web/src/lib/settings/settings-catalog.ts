@@ -307,7 +307,7 @@ export const SETTINGS_SECTIONS: CatalogSection[] = [
     jp: 'モデル',
     title: 'Models',
     description:
-      'The models a feature can choose, with the providers’ list prices (built in; they only count what is spent). Batches cost half and are answered when the provider gets to them; one call each is answered at once at the full price.',
+      'The models features can use. Batches cost half and take longer; one call each answers at once.',
     keywords: 'price batch test check haiku sonnet luna sol'
   },
   {

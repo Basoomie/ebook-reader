@@ -41,11 +41,11 @@
 
   const dispatch = createEventDispatcher<{ close: void }>();
 
-  const box = 'min-h-[3rem] rounded border-2 border-current px-3';
-  const stepButton =
-    'flex h-12 w-12 items-center justify-center rounded border-2 border-current text-xl font-medium';
-  const button =
-    'flex min-h-[3rem] items-center justify-center rounded border-2 border-current px-4 font-medium';
+  const box = 'c-input';
+  // The shared buttons (app.scss): soft for actions, ghost for Close, square ones for − and +.
+  const stepButton = 'c-btn c-btn-secondary c-btn-icon text-xl';
+  const button = 'c-btn c-btn-secondary';
+  const closeButton = 'c-btn c-btn-ghost -mr-2 px-3';
 
   let panelEl: HTMLElement;
 
@@ -174,36 +174,40 @@
 <section
   bind:this={panelEl}
   tabindex="-1"
-  class="writing-horizontal-tb fixed inset-x-0 bottom-0 z-[55] max-h-[65vh] overflow-y-auto border-t-2 border-black bg-white p-4 text-black outline-none md:inset-y-0 md:max-h-none md:w-[26rem] md:border-t-0"
+  class="c-reader-panel writing-horizontal-tb fixed inset-x-0 bottom-0 z-[55] max-h-[65vh] overflow-y-auto rounded-t-2xl border-t p-4 outline-none md:inset-y-0 md:max-h-none md:w-[26rem] md:rounded-none md:border-t-0"
   class:md:left-auto={!dockLeft}
   class:md:right-0={!dockLeft}
-  class:md:border-l-2={!dockLeft}
+  class:md:border-l={!dockLeft}
   class:md:right-auto={dockLeft}
   class:md:left-0={dockLeft}
-  class:md:border-r-2={dockLeft}
+  class:md:border-r={dockLeft}
   data-testid="appearance-panel"
   aria-label="Appearance"
 >
   <div class="mb-3 flex items-center justify-between">
     <h2 class="text-xl font-medium">Appearance</h2>
-    <button class={button} on:click={() => dispatch('close')}>Close</button>
+    <button class={closeButton} on:click={() => dispatch('close')}>Close</button>
   </div>
 
   <h3 class="mt-2 mb-1 font-medium">Theme</h3>
   {#if $followSystemTheme$}
     <p class="text-sm">When the device is light</p>
-    <ButtonToggleGroup options={optionsForTheme} bind:selectedOptionId={$lightTheme$} />
+    <ButtonToggleGroup archive options={optionsForTheme} bind:selectedOptionId={$lightTheme$} />
     <p class="mt-2 text-sm">When the device is dark</p>
-    <ButtonToggleGroup options={optionsForTheme} bind:selectedOptionId={$darkTheme$} />
+    <ButtonToggleGroup archive options={optionsForTheme} bind:selectedOptionId={$darkTheme$} />
   {:else}
-    <ButtonToggleGroup options={optionsForTheme} bind:selectedOptionId={$theme$} />
+    <ButtonToggleGroup archive options={optionsForTheme} bind:selectedOptionId={$theme$} />
   {/if}
   <div class="mt-3 grid grid-cols-[1fr_auto] items-center gap-2">
     <span>Follow the device's light/dark</span>
-    <ButtonToggleGroup options={optionsForToggle} bind:selectedOptionId={$followSystemTheme$} />
+    <ButtonToggleGroup
+      archive
+      options={optionsForToggle}
+      bind:selectedOptionId={$followSystemTheme$}
+    />
     <span>E-ink (black on white)</span>
     <div data-testid="appearance-eink">
-      <ButtonToggleGroup options={optionsForToggle} bind:selectedOptionId={$einkMode$} />
+      <ButtonToggleGroup archive options={optionsForToggle} bind:selectedOptionId={$einkMode$} />
     </div>
   </div>
 
@@ -274,11 +278,15 @@
   <div class="grid grid-cols-[1fr_auto] items-center gap-2">
     <span>Writing</span>
     <div data-testid="appearance-writing">
-      <ButtonToggleGroup options={optionsForWriting} bind:selectedOptionId={$writingMode$} />
+      <ButtonToggleGroup
+        archive
+        options={optionsForWriting}
+        bind:selectedOptionId={$writingMode$}
+      />
     </div>
     <span>Reading</span>
     <div data-testid="appearance-view">
-      <ButtonToggleGroup options={optionsForView} bind:selectedOptionId={$viewMode$} />
+      <ButtonToggleGroup archive options={optionsForView} bind:selectedOptionId={$viewMode$} />
     </div>
   </div>
   <div class="mt-2 grid grid-cols-[1fr_6rem] items-center gap-2">
@@ -308,12 +316,20 @@
   <div class="grid grid-cols-[1fr_auto] items-center gap-2">
     <span>Hide furigana</span>
     <div data-testid="appearance-furigana">
-      <ButtonToggleGroup options={optionsForToggle} bind:selectedOptionId={$hideFurigana$} />
+      <ButtonToggleGroup
+        archive
+        options={optionsForToggle}
+        bind:selectedOptionId={$hideFurigana$}
+      />
     </div>
   </div>
   {#if $hideFurigana$}
     <div class="mt-2">
-      <ButtonToggleGroup options={optionsForFurigana} bind:selectedOptionId={$furiganaStyle$} />
+      <ButtonToggleGroup
+        archive
+        options={optionsForFurigana}
+        bind:selectedOptionId={$furiganaStyle$}
+      />
     </div>
   {/if}
 
@@ -336,14 +352,14 @@
     <ul>
       {#each devices as device (device.deviceId)}
         <li
-          class="flex items-center justify-between gap-2 border-t border-black py-2"
+          class="flex items-center justify-between gap-2 border-t border-c-line py-2"
           data-testid="appearance-copy-device"
         >
           <span>
             <span class="block font-medium">{deviceLabel(device)}</span>
             <span class="block text-sm">changed {formatAge(Date.now() - device.updatedAt)}</span>
           </span>
-          <button class={button} on:click={() => (confirming = device)}>Copy</button>
+          <button class="{button} c-btn-sm" on:click={() => (confirming = device)}>Copy</button>
         </li>
       {/each}
     </ul>
