@@ -195,6 +195,18 @@ export async function startAiStandin(opts: any = {}): Promise<any> {
             results_url: null,
           });
         }
+        // Deleting an ended batch (once its answers are collected).
+        const bd = /^\/v1\/messages\/batches\/([^/]+)$/.exec(ap);
+        if (bd && req.method === 'DELETE') {
+          calls.push({ path: ap, provider: 'anthropic', batch: bd[1], delete: true });
+          if (!batches.has(bd[1]))
+            return send(res, 404, {
+              type: 'error',
+              error: { type: 'not_found_error', message: 'no batch' },
+            });
+          batches.delete(bd[1]);
+          return send(res, 200, { id: bd[1], type: 'message_batch_deleted' });
+        }
         const bc = /^\/v1\/messages\/batches\/([^/]+)\/cancel$/.exec(ap);
         if (bc && req.method === 'POST') {
           const bt = batches.get(bc[1]);
@@ -355,7 +367,13 @@ export async function startAiStandin(opts: any = {}): Promise<any> {
           .filter((l) => l.trim())
           .map((l) => JSON.parse(l));
         calls.push({ path: op, provider: 'openai', batch: id, n: lines.length });
-        batches.set(id, { provider: 'openai', requests: lines, polls: 0, created: Date.now() });
+        batches.set(id, {
+          provider: 'openai',
+          requests: lines,
+          polls: 0,
+          created: Date.now(),
+          input: b.input_file_id,
+        });
         return send(res, 200, {
           id,
           object: 'batch',
@@ -393,6 +411,7 @@ export async function startAiStandin(opts: any = {}): Promise<any> {
             object: 'batch',
             endpoint: '/v1/chat/completions',
             completion_window: '24h',
+            input_file_id: bt.input ?? null,
             status: 'cancelled',
             output_file_id: null,
             error_file_id: null,
@@ -428,6 +447,7 @@ export async function startAiStandin(opts: any = {}): Promise<any> {
           object: 'batch',
           endpoint: '/v1/chat/completions',
           completion_window: '24h',
+          input_file_id: bt.input ?? null,
           status: ended ? 'completed' : 'in_progress',
           output_file_id: ended ? bt.output : null,
           error_file_id: null,
@@ -438,6 +458,14 @@ export async function startAiStandin(opts: any = {}): Promise<any> {
           },
           created_at: 1,
         });
+      }
+      // Deleting a file (once a batch's answers are collected).
+      const fd = /^\/v1\/files\/([^/]+)$/.exec(op);
+      if (fd && req.method === 'DELETE') {
+        calls.push({ path: op, provider: 'openai', file: fd[1], delete: true });
+        if (!files.has(fd[1])) return send(res, 404, { error: { message: 'no such file' } });
+        files.delete(fd[1]);
+        return send(res, 200, { id: fd[1], object: 'file', deleted: true });
       }
       const fc = /^\/v1\/files\/([^/]+)\/content$/.exec(op);
       if (fc && req.method === 'GET') {
@@ -458,6 +486,7 @@ export async function startAiStandin(opts: any = {}): Promise<any> {
     openaiUrl: `${base}/openai/v1`,
     calls,
     batches,
+    files,
     close: () => new Promise((r) => server.close(r)),
   };
 }
