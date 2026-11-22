@@ -423,6 +423,8 @@ export function askedMetrics(
   inputTokens: number;
   outputTokens: number;
   modelSeconds: number;
+  /** From the first request sent to the last answer (stored times: the same after a restart). */
+  spanSeconds: number;
   byStage: Record<string, { costUsd: number; requests: number; seconds: number }>;
   refusals: number;
 } {
@@ -438,9 +440,12 @@ export function askedMetrics(
     inputTokens: 0,
     outputTokens: 0,
     modelSeconds: 0,
+    spanSeconds: 0,
     byStage: {} as Record<string, { costUsd: number; requests: number; seconds: number }>,
     refusals: 0,
   };
+  let first = Infinity;
+  let last = 0;
   for (const a of asked) {
     const k = `${a.stage}|${a.key}|${a.model}`;
     if (seen.has(k)) continue;
@@ -465,11 +470,16 @@ export function askedMetrics(
     out.inputTokens += (r.input_tokens ?? 0) + (r.cache_read_tokens ?? 0);
     out.outputTokens += r.output_tokens ?? 0;
     out.modelSeconds += secs;
+    if (r.sent_at && r.answered_at) {
+      first = Math.min(first, r.sent_at);
+      last = Math.max(last, r.answered_at);
+    }
     if (r.state === 'blocked') out.refusals++;
     const s = (out.byStage[a.stage] ??= { costUsd: 0, requests: 0, seconds: 0 });
     s.costUsd += r.cost_usd ?? 0;
     s.requests++;
     s.seconds += secs;
   }
+  out.spanSeconds = last > 0 && first < Infinity ? (last - first) / 1000 : 0;
   return out;
 }

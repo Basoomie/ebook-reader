@@ -181,6 +181,11 @@ export const SUMMARIES_MIGRATIONS: { version: number; name: string; sql: string 
         note       TEXT,
         marked_at  INTEGER NOT NULL
       );
+      -- Small test settings (e.g. which setup's summaries are the earlier volumes' background).
+      CREATE TABLE test_state (
+        key    TEXT PRIMARY KEY,
+        value  TEXT NOT NULL
+      );
       CREATE TABLE test_missing (
         id        INTEGER PRIMARY KEY,
         book_key  TEXT NOT NULL REFERENCES test_books(key),

@@ -58,6 +58,8 @@ import {
 } from '../audio/read-aloud-routes';
 import { createAttachmentRouter, type AttachmentOptions } from '../attachments/routes';
 import { createAiRouter } from '../ai/routes';
+import { createSummaryTestRouter } from '../summaries/test-routes';
+import type { SummaryTestService } from '../summaries/test-service';
 import type { AiCore } from '../ai/core';
 import { createNotificationsRouter } from '../notifications/routes';
 import type { NotificationService } from '../notifications/service';
@@ -122,6 +124,8 @@ export interface ApiOptions {
   notifications?: NotificationService | null;
   /** The shared AI layer (Settings > AI); default: the cleanup's (tests). */
   ai?: AiCore | null;
+  /** Book summaries session 2: the accuracy test (only on the PC's test copy). */
+  summariesTest?: SummaryTestService | null;
 }
 
 export interface FontOptions {
@@ -158,6 +162,7 @@ export function createApiRouter({
   cleanup = { service: null, error: 'not configured' },
   notifications = null,
   ai,
+  summariesTest = null,
 }: ApiOptions): Router {
   const router = express.Router();
   // Pushes can carry many records; everything else keeps the small default limit.
@@ -271,6 +276,8 @@ export function createApiRouter({
     router.use(createNotificationsRouter(notifications));
     // Settings > AI: the shared AI layer (works without cleanup.db).
     router.use(createAiRouter(ai === undefined ? (cleanup.service?.aiCore ?? null) : ai));
+    // Book summaries session 2: the accuracy test (only with SUMMARIES_TEST=1).
+    router.use(createSummaryTestRouter(summariesTest, ai ?? null));
     // Uploads (WP7b): a separate source adapter, mounted only when it is on.
     if (catalog.uploads) {
       router.use(
