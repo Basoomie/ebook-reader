@@ -14,7 +14,7 @@ import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
 import { migrateCleanup } from '../src/cleanup/cleanup-db';
-import { AiRunner } from '../src/cleanup/ai/runner';
+import { AiRunner } from '../src/ai/runner';
 import type { SecretStore } from '../src/cleanup/secrets';
 import { AudioStage5, stage5RulesKey } from '../src/cleanup/audio/stage5-meta';
 import { AudioStage6 } from '../src/cleanup/audio/stage6-build';

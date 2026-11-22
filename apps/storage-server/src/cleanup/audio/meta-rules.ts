@@ -26,7 +26,7 @@
  *   narrators in audiobook.jp's bare tag form, else the author; WP21f-1 stop 2), unconfirmed.
  */
 import { NA, normalizeName, lightNormalize, cleanTitle, looksLikeMojibake } from '../title-rules';
-import type { RulesValue } from '../ai/types';
+import type { RulesValue } from '../ai-decide/types';
 import { artistIsNarrator } from './online-names';
 import type { MetaEvidence, RecordBrief } from './meta-evidence';
 

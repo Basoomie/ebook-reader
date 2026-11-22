@@ -4,9 +4,10 @@
  * and the fields as the framework compares them.
  */
 import { NA, N, lightNormalize, normalizeName } from '../title-rules';
-import { evidenceForm } from '../ai/combine';
-import { systemPrompt } from '../ai/prompt-blocks';
-import type { AiField, AiStageSpec } from '../ai/types';
+import { evidenceForm } from '../../ai/evidence-check';
+import { systemPrompt } from '../ai-decide/prompt-blocks';
+import type { AiStageSpec } from '../../ai/types';
+import type { AiField } from '../ai-decide/types';
 import type { CandidateBrief, MetaEvidence, RecordBrief } from './meta-evidence';
 import type { SeriesEntry } from './meta-rules';
 

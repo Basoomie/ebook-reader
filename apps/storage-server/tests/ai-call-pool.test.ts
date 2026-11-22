@@ -5,12 +5,12 @@
  * cost under the spending limit, and a stop is seen within a second.
  */
 import { describe, expect, it } from 'vitest';
-import { AiRunner } from '../src/cleanup/ai/runner';
-import type { CallInput, CallResult, ProviderClient } from '../src/cleanup/ai/providers';
-import { expectedListCost } from '../src/cleanup/ai/spend';
-import type { AiStageSpec, Provider } from '../src/cleanup/ai/types';
+import type { CallInput, CallResult, ProviderClient } from '../src/ai/providers';
+import { expectedListCost } from '../src/ai/spend';
+import type { AiStageSpec, Provider } from '../src/ai/types';
 import { initCleanupDatabase } from '../src/cleanup/cleanup-db';
-import { getSettings, updateSettings } from '../src/cleanup/settings';
+import { getSettings } from '../src/cleanup/settings';
+import { cleanupRunner, makeAiCore } from './helpers/ai-env';
 import { makeTempDir } from './helpers/spawn-server';
 
 type Ev = { title: string };
@@ -81,20 +81,16 @@ function setup(directWorkers: number, n: number) {
   if (!s0.ok) throw new Error(s0.error);
   const db = s0.db;
   const p = heldProvider();
-  const runner = new AiRunner({
-    db,
-    secrets: { read: () => 'key' },
+  const { core } = makeAiCore({
+    keys: { read: () => 'key' },
     providers: (_p: Provider) => p.client,
-    sleep: async () => {},
   });
+  const runner = cleanupRunner(db, core, { sleep: async () => {} });
   const s = getSettings(db);
-  updateSettings(db, {
-    ai: {
-      ...s.ai,
-      spendLimitUsd: 5,
-      directWorkers,
-      modes: Object.fromEntries(Object.values(s.models).map((m) => [m, 'direct' as const])),
-    },
+  core.updateSettings({
+    spendLimitUsd: 5,
+    directWorkers,
+    modes: Object.fromEntries(Object.values(s.models).map((m) => [m, 'direct' as const])),
   });
   const keys = Array.from({ length: n }, (_, i) => `k${i}`);
   runner.putItems(
@@ -103,7 +99,7 @@ function setup(directWorkers: number, n: number) {
     1,
   );
   runner.enqueue(SPEC, 'secondary', keys, 'r');
-  return { db, runner, ...p };
+  return { db, core, runner, ...p };
 }
 
 const tick = () => new Promise((r) => setTimeout(r, 5));
@@ -162,11 +158,11 @@ describe('AI calls one at a time: the pool', () => {
   });
 
   it('calls in flight hold their cost under the limit (no pause while they do)', async () => {
-    const { db, runner, started, end } = setup(5, 4);
-    const s = getSettings(db).ai;
+    const { db, core, runner, started, end } = setup(5, 4);
+    const s = core.settings();
     const one = expectedListCost(db, s, 'gpt-6-luna', SPEC.system.length + 'ITEM k0'.length);
     // Room for two calls at the expected cost.
-    updateSettings(db, { ai: { ...s, spendLimitUsd: one * 2.5 } });
+    core.updateSettings({ spendLimitUsd: one * 2.5 });
     const step1 = runner.step(SPEC, 'r', () => false);
     await tick();
     expect(started).toEqual(['k0', 'k1']);
@@ -194,15 +190,10 @@ describe('AI calls one at a time: the pool', () => {
       return prepare(sql);
     };
     const p = heldProvider();
-    const runner = new AiRunner({
-      db,
-      secrets: { read: () => 'key' },
-      providers: () => p.client,
-      sleep: async () => {},
-    });
-    const s = getSettings(db);
+    const { core } = makeAiCore({ keys: { read: () => 'key' }, providers: () => p.client });
+    const runner = cleanupRunner(db, core, { sleep: async () => {} });
     // Haiku by batch (its "returned" and batchable queries), Luna one call each.
-    updateSettings(db, { ai: { ...s.ai, spendLimitUsd: 5, directWorkers: 2 } });
+    core.updateSettings({ spendLimitUsd: 5, directWorkers: 2 });
     runner.putItems(SPEC, [{ key: 'k0', evidence: { title: 'k0' }, labeled: false }], 1);
     runner.enqueue(SPEC, 'primary', ['k0'], 'r');
     runner.enqueue(SPEC, 'secondary', ['k0'], 'r');
@@ -211,9 +202,9 @@ describe('AI calls one at a time: the pool', () => {
     p.end('k0');
     await st;
     runner.counts(SPEC.stage, 'r');
-    const { runSpend, spendNow } = await import('../src/cleanup/ai/spend');
+    const { runSpend } = await import('../src/ai/spend');
     runSpend(db, SPEC.stage, 'r');
-    spendNow(db);
+    core.room();
     const selects = [...seen].filter((q) => /^\s*SELECT[\s\S]*FROM ai_requests/i.test(q));
     expect(selects.length).toBeGreaterThan(5);
     const bad: string[] = [];
@@ -293,22 +284,18 @@ describe('the rate limit and given-up questions (WP20e stop 2: 536 of Luna given
     const db = s0.db;
     const p = failing(err);
     let now = 1_000_000;
-    const runner = new AiRunner({
-      db,
-      secrets: { read: () => 'key' },
+    const { core } = makeAiCore({
+      keys: { read: () => 'key' },
       providers: () => p.client,
-      sleep: async () => {},
       now: () => now,
-    } as never);
+    });
+    const runner = cleanupRunner(db, core, { sleep: async () => {}, now: () => now });
     const s = getSettings(db);
-    updateSettings(db, {
-      ai: {
-        ...s.ai,
-        spendLimitUsd: 5,
-        directWorkers: 3,
-        attempts: 2,
-        modes: Object.fromEntries(Object.values(s.models).map((m) => [m, 'direct' as const])),
-      },
+    core.updateSettings({
+      spendLimitUsd: 5,
+      directWorkers: 3,
+      attempts: 2,
+      modes: Object.fromEntries(Object.values(s.models).map((m) => [m, 'direct' as const])),
     });
     const keys = Array.from({ length: n }, (_, i) => `k${i}`);
     runner.putItems(
@@ -326,7 +313,7 @@ describe('the rate limit and given-up questions (WP20e stop 2: 536 of Luna given
   }
 
   it('a rate-limit 429 uses no try: the question goes back and the model waits', async () => {
-    const { RetryableError } = await import('../src/cleanup/ai/providers');
+    const { RetryableError } = await import('../src/ai/providers');
     const t = make(
       () =>
         new RetryableError(
@@ -353,7 +340,7 @@ describe('the rate limit and given-up questions (WP20e stop 2: 536 of Luna given
   });
 
   it('tells a rate limit from a spent quota and a server error by the answer', async () => {
-    const { statusError } = await import('../src/cleanup/ai/providers');
+    const { statusError } = await import('../src/ai/providers');
     const busy = (st: number, m: string) =>
       (statusError(st, m) as { busy?: boolean }).busy === true;
     expect(busy(429, '429 Rate limit reached for gpt-6-luna')).toBe(true);
@@ -363,7 +350,7 @@ describe('the rate limit and given-up questions (WP20e stop 2: 536 of Luna given
   });
 
   it('a server error still uses its tries and is given up; asking again queues it afresh', async () => {
-    const { RetryableError } = await import('../src/cleanup/ai/providers');
+    const { RetryableError } = await import('../src/ai/providers');
     const t = make(() => new RetryableError('500 Server error'));
     await t.runner.step(SPEC, 'r', () => false);
     await t.runner.settle();

@@ -7,6 +7,7 @@ import type { DatabaseState } from './db/database';
 import type { RecentLogs } from './logs/recent-logs';
 import type { AudioOptions } from './audio/routes';
 import type { CleanupOptions } from './cleanup/routes';
+import type { AiCore } from './ai/core';
 import type { NotificationService } from './notifications/service';
 
 export interface AppOptions {
@@ -26,6 +27,8 @@ export interface AppOptions {
   cleanup?: CleanupOptions;
   /** Notifications (N1). */
   notifications?: NotificationService | null;
+  /** The shared AI layer (Settings > AI; default: the cleanup's, tests). */
+  ai?: AiCore | null;
 }
 
 export function createApp({
@@ -39,6 +42,7 @@ export function createApp({
   audio,
   cleanup,
   notifications,
+  ai,
 }: AppOptions): Express {
   const app = express();
 
@@ -79,6 +83,7 @@ export function createApp({
       audio,
       cleanup,
       notifications,
+      ai,
     }),
   );
 

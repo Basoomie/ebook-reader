@@ -14,6 +14,7 @@
 import Database from 'better-sqlite3';
 import { existsSync, statSync } from 'fs';
 import path from 'path';
+import { hasAiData, moveAiToShared } from './ai-move';
 
 export const CLEANUP_DB_FILENAME = 'cleanup.db';
 
@@ -1736,15 +1737,49 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
       CREATE INDEX audio_library_reader_files_state ON audio_library_reader_files (state);
     `,
   },
+  {
+    version: 21,
+    name: 'the shared AI layer: the keys, provider settings, model checks and batch tests moved to ttsu.db',
+    // Book summaries session 1: what every AI feature shares is in ttsu.db (src/ai/). Runs only
+    // after cleanup/ai-move.ts copied it there and checked it (AI_MOVE_VERSION below). The
+    // questions, answers, batches and values stay here; the cleanup's own AI choices
+    // (labeledOnly, arrivalsDesign, upgradeIncludeDecided) stay in its `ai` group. A batch's
+    // provider data is deleted once collected (files_deleted_at).
+    sql: `
+      DELETE FROM secrets WHERE name IN ('anthropicApiKey', 'openaiApiKey');
+      UPDATE settings SET value_json = json_remove(value_json, '$.spendLimitUsd', '$.modes',
+        '$.batchStallMinutes', '$.connectAttemptMs', '$.batchTurnaroundMinutes', '$.directWorkers',
+        '$.batchSize', '$.batchPollSeconds', '$.maxTokens', '$.requestTimeoutSeconds',
+        '$.attempts', '$.batchPriceFactor', '$.prices', '$.structuredOutputs')
+      WHERE key = 'ai';
+      DROP TABLE ai_model_checks;
+      DROP TABLE ai_batch_tests;
+      ALTER TABLE ai_batches ADD COLUMN files_deleted_at INTEGER;
+      CREATE INDEX ai_batches_files ON ai_batches (submitted_at)
+        WHERE state <> 'submitted' AND files_deleted_at IS NULL;
+    `,
+  },
 ];
 
 export const CLEANUP_SCHEMA_VERSION = CLEANUP_MIGRATIONS[CLEANUP_MIGRATIONS.length - 1].version;
+
+/** The migration that removes what the one-time AI move carried to ttsu.db. */
+export const AI_MOVE_VERSION = 21;
 
 export function cleanupSchemaVersion(db: Database.Database): number {
   return db.pragma('user_version', { simple: true }) as number;
 }
 
-export function migrateCleanup(db: Database.Database): number {
+export interface CleanupMigrateOptions {
+  /**
+   * Runs just before migration AI_MOVE_VERSION: the one-time move of the shared AI data to
+   * ttsu.db (cleanup/ai-move.ts). Throwing stops the migration (cleanup.db stays as it was).
+   * Without it, a cleanup.db that still has AI data is refused (nothing may be dropped unmoved).
+   */
+  beforeAiMove?: (db: Database.Database) => void;
+}
+
+export function migrateCleanup(db: Database.Database, opts: CleanupMigrateOptions = {}): number {
   const current = cleanupSchemaVersion(db);
   if (current > CLEANUP_SCHEMA_VERSION) {
     throw new Error(
@@ -1754,6 +1789,13 @@ export function migrateCleanup(db: Database.Database): number {
   }
   for (const migration of CLEANUP_MIGRATIONS) {
     if (migration.version <= current) continue;
+    if (migration.version === AI_MOVE_VERSION) {
+      if (opts.beforeAiMove) opts.beforeAiMove(db);
+      else if (hasAiData(db))
+        throw new Error(
+          'cleanup.db still holds the AI keys and spending: the server must move them to ttsu.db first',
+        );
+    }
     db.transaction(() => {
       db.exec(migration.sql);
       db.pragma(`user_version = ${migration.version}`);
@@ -1763,14 +1805,17 @@ export function migrateCleanup(db: Database.Database): number {
   return cleanupSchemaVersion(db);
 }
 
-export function openCleanupDatabase(file: string): Database.Database {
+export function openCleanupDatabase(
+  file: string,
+  opts: CleanupMigrateOptions = {},
+): Database.Database {
   const db = new Database(file);
   try {
     db.pragma('journal_mode = WAL');
     db.pragma('foreign_keys = ON');
     db.pragma('synchronous = NORMAL');
     db.pragma('busy_timeout = 5000');
-    migrateCleanup(db);
+    migrateCleanup(db, opts);
     return db;
   } catch (err) {
     db.close();
@@ -1782,14 +1827,27 @@ export type CleanupDbState =
   | { ok: true; db: Database.Database; file: string; schemaVersion: number }
   | { ok: false; error: string };
 
-/** Never throws: without cleanup.db only the cleanup routes are off. */
-export function initCleanupDatabase(dbDir: string): CleanupDbState {
+/**
+ * Never throws: without cleanup.db only the cleanup routes are off. `mainDb` (ttsu.db): the
+ * one-time move of the shared AI data runs before cleanup.db's v21 (cleanup/ai-move.ts); if it
+ * fails, cleanup.db stays at v20 and the cleanup is off until the next start.
+ */
+export function initCleanupDatabase(
+  dbDir: string,
+  opts: { mainDb?: Database.Database; log?: (m: string) => void } = {},
+): CleanupDbState {
   try {
     if (!existsSync(dbDir) || !statSync(dbDir).isDirectory()) {
       return { ok: false, error: `DB_DIR does not exist: ${dbDir}` };
     }
     const file = cleanupDbPath(dbDir);
-    const db = openCleanupDatabase(file);
+    const mainDb = opts.mainDb;
+    const db = openCleanupDatabase(
+      file,
+      mainDb
+        ? { beforeAiMove: (c) => void moveAiToShared(c, mainDb, dbDir, { log: opts.log }) }
+        : {},
+    );
     return { ok: true, db, file, schemaVersion: cleanupSchemaVersion(db) };
   } catch (err) {
     return { ok: false, error: `could not open cleanup.db: ${(err as Error).message}` };

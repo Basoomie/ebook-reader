@@ -8,7 +8,7 @@
  * The answer's terms are ids or labels (Luna answered with the Japanese labels in 174 of 235
  * books of the test): both are accepted; anything not on the lists is dropped and counted.
  */
-import type { AiStageSpec } from '../ai/types';
+import type { AiStageSpec } from '../../ai/types';
 import {
   GENRES,
   GENRE_IDS,

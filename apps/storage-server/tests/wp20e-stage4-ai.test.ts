@@ -6,7 +6,8 @@
  * written but marked; the guards still send a value to review; a user value wins).
  */
 import { describe, expect, it } from 'vitest';
-import { evidenceForm } from '../src/cleanup/ai/combine';
+import { cleanupRunner, makeAiCore } from './helpers/ai-env';
+import { evidenceForm } from '../src/ai/evidence-check';
 import { decideStage4Ai, decisionRows, storedAiValues } from '../src/cleanup/stage4/ai-decide';
 import { scoreAiGate } from '../src/cleanup/stage4/ai-gate';
 import {
@@ -20,7 +21,7 @@ import { proposeStage4, stillAsWritten } from '../src/cleanup/stage4/proposals';
 import type { RefRecord } from '../src/cleanup/stage4/rules-v3';
 import type { Stage4Decision } from '../src/cleanup/stage4/stage4-rules';
 import { acceptBookmeter, editionNotes } from '../src/cleanup/stage4/store-links';
-import { writeDecisions, setUserValue } from '../src/cleanup/ai/values';
+import { writeDecisions, setUserValue } from '../src/cleanup/ai-decide/values';
 import { initCleanupDatabase } from '../src/cleanup/cleanup-db';
 import type { Stage2Book } from '../src/cleanup/stage2-snapshot';
 import { makeTempDir } from './helpers/spawn-server';
@@ -530,7 +531,6 @@ describe("the AI check's progress bar (WP20e follow-up)", () => {
 describe('asking the given-up questions again (WP20e stop 2)', () => {
   it('queues them, sends a finished AI check back to asking and clears its gate', async () => {
     const { Stage4Ai } = await import('../src/cleanup/stage4/ai-step');
-    const { AiRunner } = await import('../src/cleanup/ai/runner');
     const s = initCleanupDatabase(makeTempDir('wp20e-again'));
     if (!s.ok) throw new Error(s.error);
     const db = s.db;
@@ -559,7 +559,7 @@ describe('asking the given-up questions again (WP20e stop 2)', () => {
       bookmeterEditions: { phase: 'done' },
       ai,
     };
-    const runner = new AiRunner({ db, secrets: { read: () => null } });
+    const runner = cleanupRunner(db, makeAiCore().core);
     const step = new Stage4Ai({
       db,
       runner,

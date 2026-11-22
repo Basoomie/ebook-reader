@@ -12,7 +12,7 @@
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
-import { AiRunner } from '../src/cleanup/ai/runner';
+import { AiRunner } from '../src/ai/runner';
 import type { SecretStore } from '../src/cleanup/secrets';
 import { AudioStage5 } from '../src/cleanup/audio/stage5-meta';
 import { getAudioStage } from '../src/cleanup/audio/audio-stages';

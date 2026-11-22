@@ -10,7 +10,7 @@ import Database from 'better-sqlite3';
 import OpenAI, { toFile } from 'openai';
 import { SecretStore } from '../src/cleanup/secrets';
 import { META_SPEC } from '../src/cleanup/audio/meta-prompt';
-import { AiRunner } from '../src/cleanup/ai/runner';
+import { AiRunner } from '../src/ai/runner';
 
 const arg = (n: string) => {
   const i = process.argv.indexOf(`--${n}`);

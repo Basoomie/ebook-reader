@@ -14,9 +14,9 @@
 import Database from 'better-sqlite3';
 import fs, { readFileSync, writeFileSync } from 'fs';
 import path from 'path';
-import { AiRunner } from '../src/cleanup/ai/runner';
-import { valueCounts } from '../src/cleanup/ai/values';
-import { costOf } from '../src/cleanup/ai/spend';
+import { AiRunner } from '../src/ai/runner';
+import { valueCounts } from '../src/cleanup/ai-decide/values';
+import { costOf } from '../src/ai/spend';
 import { AudioStage5 } from '../src/cleanup/audio/stage5-meta';
 import { META_SPEC } from '../src/cleanup/audio/meta-prompt';
 import { migrateCleanup } from '../src/cleanup/cleanup-db';

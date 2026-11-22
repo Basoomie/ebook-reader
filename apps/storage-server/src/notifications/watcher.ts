@@ -16,6 +16,7 @@
  * Every part runs on its own: one failing part is logged, the others go on.
  */
 import type Database from 'better-sqlite3';
+import { AI_LIMIT_EVENT } from '../ai/limit-event';
 import { AUDIO_STAGE_NAMES } from '../cleanup/audio/audio-stages';
 import { STAGE_NAMES } from '../cleanup/stages';
 import {
@@ -109,6 +110,7 @@ export class NotificationWatcher {
     this.part('field pauses', () => this.fieldPauses());
     this.part('new audiobooks', () => this.arrivalRuns());
     this.part('refused changes', () => this.refusalsQuiet(settings, now));
+    this.part('the AI spending limit', () => this.aiLimit());
     for (const m of this.messages) this.service.notify(m, settings);
   }
 
@@ -332,6 +334,34 @@ export class NotificationWatcher {
     }
     this.service.clearOthers('index_refused', active);
     return alert;
+  }
+
+  // ---- the AI layer ----
+
+  /**
+   * Features waiting in their queue for room under the monthly AI spending limit (ttsu.db
+   * ai_waits; the cleanup's stages pause and alert on their own instead). One alert per
+   * feature; "Resolved" in the digest once it goes on.
+   */
+  private aiLimit(): void {
+    const rows = this.s.db.prepare('SELECT feature, label, detail FROM ai_waits').all() as {
+      feature: string;
+      label: string;
+      detail: string;
+    }[];
+    const active = new Set<string>();
+    for (const r of rows) {
+      const key = `ai_limit_waiting:${r.feature}`;
+      active.add(key);
+      const summary = `${r.label} waits for the monthly AI spending limit`;
+      if (this.service.observe(key, AI_LIMIT_EVENT, { waitMs: 0, summary, detail: r.detail }))
+        this.messages.push({
+          event: AI_LIMIT_EVENT,
+          lines: [summary, clip(r.detail, 200)],
+          link: LINKS.ai,
+        });
+    }
+    this.service.clearOthers(AI_LIMIT_EVENT, active);
   }
 
   // ---- the cleanup ----

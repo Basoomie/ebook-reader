@@ -12,7 +12,7 @@
 import Database from 'better-sqlite3';
 import fs, { writeFileSync } from 'fs';
 import path from 'path';
-import { AiRunner } from '../src/cleanup/ai/runner';
+import { AiRunner } from '../src/ai/runner';
 import { SNAPSHOT_DIRNAME } from '../src/calibre/indexer';
 import { migrateCleanup } from '../src/cleanup/cleanup-db';
 import { getStage } from '../src/cleanup/stages';

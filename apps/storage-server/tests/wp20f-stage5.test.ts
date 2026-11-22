@@ -16,13 +16,9 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { Calibredb } from '../../cleanup-apply/src/calibredb';
 import type { SidecarConfig } from '../../cleanup-apply/src/config';
 import { Worker } from '../../cleanup-apply/src/worker';
-import {
-  AnthropicProvider,
-  OpenAiProvider,
-  type ProviderClient,
-} from '../src/cleanup/ai/providers';
-import { AiRunner } from '../src/cleanup/ai/runner';
-import type { Provider } from '../src/cleanup/ai/types';
+import { AnthropicProvider, OpenAiProvider, type ProviderClient } from '../src/ai/providers';
+import { cleanupRunner, makeAiCore } from './helpers/ai-env';
+import type { Provider } from '../src/ai/types';
 import { initCleanupDatabase } from '../src/cleanup/cleanup-db';
 import { attachMarks, recordMarks } from '../src/cleanup/marks';
 import { getSettings, updateSettings } from '../src/cleanup/settings';
@@ -408,11 +404,6 @@ describe('stage 5 from evidence to proposals', () => {
       }),
     );
     updateSettings(db, {
-      ai: {
-        ...getSettings(db).ai,
-        spendLimitUsd: 1,
-        modes: { 'claude-haiku-5-5': 'direct', 'gpt-6-luna': 'direct' },
-      },
       gate: { ...getSettings(db).gate, genreLabelsFile: labels },
     });
     // Calibre now: two volumes of a series (RanobeDB has the second), a standalone, a book stage
@@ -520,16 +511,19 @@ describe('stage 5 from evidence to proposals', () => {
       progress: () => ({ finishedAt: 7 }),
     } as unknown as Stage4Ai;
     let now = 1_800_000_000_000;
-    const runner = new AiRunner({
-      db,
-      secrets: { read: (n: string) => (n === 'anthropicApiKey' ? 'ak' : 'ok') },
+    const { core } = makeAiCore({
+      keys: { read: (n: string) => (n === 'anthropicApiKey' ? 'ak' : 'ok') },
       providers: (p: Provider, key: string): ProviderClient =>
         p === 'anthropic'
           ? new AnthropicProvider(key, standin!.anthropicUrl)
           : new OpenAiProvider(key, standin!.openaiUrl),
       now: () => now,
-      sleep: async () => {},
     });
+    core.updateSettings({
+      spendLimitUsd: 1,
+      modes: { 'claude-haiku-5-5': 'direct', 'gpt-6-luna': 'direct' },
+    });
+    const runner = cleanupRunner(db, core, { now: () => now, sleep: async () => {} });
     const s5 = new Stage5({ db, runner, analysis, stage4Ai });
     setStageMode(db, 5, 'analyse');
     expect(s5.needsWork(lib)).toBe(true);

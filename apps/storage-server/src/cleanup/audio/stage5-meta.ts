@@ -14,8 +14,9 @@
  */
 import type Database from 'better-sqlite3';
 import { createHash, randomUUID } from 'crypto';
-import { AiRunner, modeOf, waitNeedsUser, waitText, type AiCounts } from '../ai/runner';
-import { runSpend, spendNow } from '../ai/spend';
+import { AiRunner, modeOf, type AiCounts } from '../../ai/runner';
+import { waitNeedsUser, waitText } from '../../ai/waits';
+import { runSpend } from '../../ai/spend';
 import {
   dropOtherItems,
   itemDesigns,
@@ -26,7 +27,7 @@ import {
   writeDecisions,
   type DecisionRow,
   type StoredValue,
-} from '../ai/values';
+} from '../ai-decide/values';
 import { getSettings } from '../settings';
 import { getAudioStage, pauseAudioStage, resumeAudioStage, updateAudioStage } from './audio-stages';
 import {
@@ -910,7 +911,7 @@ export class AudioStage5 {
     };
     if (p.phase === 'decide') return rate(p.decided, p.units);
     if (p.phase === 'models') {
-      const s = getSettings(this.db).ai;
+      const s = this.deps.runner.settings();
       const counts = p.ai;
       if (!counts) return null;
       if (!counts.queued && !counts.sent) return 0;
@@ -967,8 +968,9 @@ export class AudioStage5 {
 
   status(now = Date.now()) {
     const p = this.progress();
-    const s = getSettings(this.db).ai;
-    const spend = spendNow(this.db);
+    const s = this.deps.runner.settings();
+    // This month's spending of every AI feature, under the one monthly limit.
+    const room = this.deps.runner.core.room();
     return {
       progress: p
         ? {
@@ -983,7 +985,7 @@ export class AudioStage5 {
           }
         : null,
       secondsLeft: p ? this.secondsLeft(p, now) : null,
-      spend: { ...spend, limitUsd: s.spendLimitUsd },
+      spend: { spentUsd: room.spentUsd, reservedUsd: room.reservedUsd, limitUsd: room.limitUsd },
       batches: this.deps.runner.batches('audio5'),
       modes: {
         primary: modeOf(s, getSettings(this.db).models[META_SPEC.tasks.primary] ?? ''),
@@ -994,7 +996,7 @@ export class AudioStage5 {
         secondary: getSettings(this.db).models[META_SPEC.tasks.secondary] ?? '',
       },
       batchStallMinutes: s.batchStallMinutes,
-      labeledOnly: s.labeledOnly,
+      labeledOnly: getSettings(this.db).ai.labeledOnly,
     };
   }
 }

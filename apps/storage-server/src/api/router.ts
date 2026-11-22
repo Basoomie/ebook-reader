@@ -57,6 +57,8 @@ import {
   READ_ALOUD_RAW_PATHS,
 } from '../audio/read-aloud-routes';
 import { createAttachmentRouter, type AttachmentOptions } from '../attachments/routes';
+import { createAiRouter } from '../ai/routes';
+import type { AiCore } from '../ai/core';
 import { createNotificationsRouter } from '../notifications/routes';
 import type { NotificationService } from '../notifications/service';
 import {
@@ -118,6 +120,8 @@ export interface ApiOptions {
   cleanup?: CleanupOptions;
   /** Notifications (N1). Without it its routes answer 503. */
   notifications?: NotificationService | null;
+  /** The shared AI layer (Settings > AI); default: the cleanup's (tests). */
+  ai?: AiCore | null;
 }
 
 export interface FontOptions {
@@ -153,6 +157,7 @@ export function createApiRouter({
   attachments,
   cleanup = { service: null, error: 'not configured' },
   notifications = null,
+  ai,
 }: ApiOptions): Router {
   const router = express.Router();
   // Pushes can carry many records; everything else keeps the small default limit.
@@ -264,6 +269,8 @@ export function createApiRouter({
     router.use(createCleanupRouter(cleanup));
     // Settings > Notifications (N1).
     router.use(createNotificationsRouter(notifications));
+    // Settings > AI: the shared AI layer (works without cleanup.db).
+    router.use(createAiRouter(ai === undefined ? (cleanup.service?.aiCore ?? null) : ai));
     // Uploads (WP7b): a separate source adapter, mounted only when it is on.
     if (catalog.uploads) {
       router.use(

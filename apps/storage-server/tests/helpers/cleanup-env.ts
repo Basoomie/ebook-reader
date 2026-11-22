@@ -100,6 +100,7 @@ export async function makeCleanupEnv({
         lock: service.diskLock,
         roots: null,
         tools: { ffprobePath: 'ffprobe', ffmpegPath: 'ffmpeg' },
+        aiRunner: service.aiRunner,
         log,
         logError,
         ...audioOptions,

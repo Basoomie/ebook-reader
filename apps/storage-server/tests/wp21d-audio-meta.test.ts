@@ -8,8 +8,8 @@
 import type Database from 'better-sqlite3';
 import request from 'supertest';
 import { afterEach, describe, expect, it } from 'vitest';
-import { AnthropicProvider, OpenAiProvider } from '../src/cleanup/ai/providers';
-import { setUserValue, valuesOf } from '../src/cleanup/ai/values';
+import { AnthropicProvider, OpenAiProvider } from '../src/ai/providers';
+import { setUserValue, valuesOf } from '../src/cleanup/ai-decide/values';
 import { onAudioStagePaused, getAudioStage } from '../src/cleanup/audio/audio-stages';
 import { EvidenceBuilder } from '../src/cleanup/audio/meta-evidence';
 import { cleanStoreTitle, metaRules, recordAuthors } from '../src/cleanup/audio/meta-rules';
@@ -327,11 +327,13 @@ async function makeStage(units: SeedUnit[] = liveCases()) {
   });
   const labels = JSON.stringify(liveLabels(units));
   const made = await makeCleanupEnv({
-    audio: {
+    service: {
       aiProviders: (p, key) =>
         p === 'anthropic'
           ? new AnthropicProvider(key, standin!.anthropicUrl)
           : new OpenAiProvider(key, standin!.openaiUrl),
+    },
+    audio: {
       readLabels: () => ({ text: labels, error: null }),
     },
   });
@@ -339,8 +341,8 @@ async function makeStage(units: SeedUnit[] = liveCases()) {
   env = made.env;
   const db = env.cleanupDb;
   seedStage4(db, units);
-  env.service.secrets.put('anthropicApiKey', 'sk-ant-test-0000', Date.now());
-  env.service.secrets.put('openaiApiKey', 'sk-openai-test-0000', Date.now());
+  env.service.aiCore.secrets.put('anthropicApiKey', 'sk-ant-test-0000', Date.now());
+  env.service.aiCore.secrets.put('openaiApiKey', 'sk-openai-test-0000', Date.now());
   return { env, db, token: env.userToken() };
 }
 
@@ -365,15 +367,12 @@ describe('stage 5 through the service', () => {
     // On is refused; nothing is asked before a spending limit is set.
     const on = await api(request(e.app).put('/api/v1/cleanup/audio/stages/5')).send({ mode: 'on' });
     expect(on.status).toBe(409); // only stage 6 (the build, WP21e-1) can be On
-    updateSettings(db, {
-      ai: {
-        ...getSettings(db).ai,
-        modes: {
-          'claude-haiku-5-5': 'direct',
-          'gpt-6-luna': 'direct',
-          'gpt-6.1-sol': 'direct',
-          'claude-sonnet-5-5': 'direct',
-        },
+    e.service.aiCore.updateSettings({
+      modes: {
+        'claude-haiku-5-5': 'direct',
+        'gpt-6-luna': 'direct',
+        'gpt-6.1-sol': 'direct',
+        'claude-sonnet-5-5': 'direct',
       },
     });
     expect(
@@ -390,13 +389,13 @@ describe('stage 5 through the service', () => {
     }
     const waiting = (await api(request(e.app).get('/api/v1/cleanup/audio/status'))).body.stage5;
     expect(waiting.progress.phase).toBe('models');
-    expect(waiting.waiting).toBe('Set a spending limit first (Settings > AI)');
+    expect(waiting.waiting).toBe('Set a monthly spending limit first (Settings > AI)');
     expect(getAudioStage(db, 5).pauseReason).toBe('ai');
     expect(
       standin!.calls.filter((c: { path: string }) => /messages|completions/.test(c.path)).length,
     ).toBe(0);
 
-    updateSettings(db, { ai: { ...getSettings(db).ai, spendLimitUsd: 1 } });
+    e.service.aiCore.updateSettings({ spendLimitUsd: 1 });
     const p = await untilDone(e);
     expect(p.error).toBeNull();
     expect(getAudioStage(db, 5).pauseReason).toBeNull();
@@ -536,10 +535,15 @@ describe('stage 5 through the service', () => {
       // WP20f: Calibre stage 5's genre and tag step.
       ['calibre5', ['stage5.primary', 'stage5.secondary']],
     ]);
-    const check = await api(request(e.app).post('/api/v1/cleanup/ai/models/check'));
+    // Check models is Settings > AI's (the shared layer); the cleanup's tasks show its result.
+    const check = await api(request(e.app).post('/api/v1/ai/models/check'));
     expect(check.status).toBe(200);
     expect(
-      check.body.tasks.find((t: { task: string }) => t.task === 'audio5.secondary'),
+      check.body.models.find((m: { model: string }) => m.model === 'gpt-6-luna'),
+    ).toMatchObject({ provider: 'openai', offered: true });
+    const after = await api(request(e.app).get('/api/v1/cleanup/ai/status'));
+    expect(
+      after.body.tasks.find((t: { task: string }) => t.task === 'audio5.secondary'),
     ).toMatchObject({ model: 'gpt-6-luna', checked: true });
     const status = (await api(request(e.app).get('/api/v1/cleanup/audio/status'))).body.stage5;
     expect(status.progress.phase).toBe('done');
@@ -548,17 +552,14 @@ describe('stage 5 through the service', () => {
 
   it('a restart and a re-analysis ask nothing again; a rules change decides again; a user value stays', async () => {
     const { env: e, db } = await makeStage();
-    updateSettings(db, {
-      ai: {
-        ...getSettings(db).ai,
-        modes: {
-          'claude-haiku-5-5': 'direct',
-          'gpt-6-luna': 'direct',
-          'gpt-6.1-sol': 'direct',
-          'claude-sonnet-5-5': 'direct',
-        },
-        spendLimitUsd: 1,
+    e.service.aiCore.updateSettings({
+      modes: {
+        'claude-haiku-5-5': 'direct',
+        'gpt-6-luna': 'direct',
+        'gpt-6.1-sol': 'direct',
+        'claude-sonnet-5-5': 'direct',
       },
+      spendLimitUsd: 1,
     });
     e.audio!.setMode(5, 'analyse');
     await untilDone(e);
@@ -599,17 +600,14 @@ describe('stage 5 through the service', () => {
     const { env: e, db } = await makeStage();
     const paused: string[] = [];
     const off = onAudioStagePaused((stage, reason) => paused.push(`${stage}:${reason}`));
-    updateSettings(db, {
-      ai: {
-        ...getSettings(db).ai,
-        modes: {
-          'claude-haiku-5-5': 'direct',
-          'gpt-6-luna': 'direct',
-          'gpt-6.1-sol': 'direct',
-          'claude-sonnet-5-5': 'direct',
-        },
-        spendLimitUsd: 0.002,
+    e.service.aiCore.updateSettings({
+      modes: {
+        'claude-haiku-5-5': 'direct',
+        'gpt-6-luna': 'direct',
+        'gpt-6.1-sol': 'direct',
+        'claude-sonnet-5-5': 'direct',
       },
+      spendLimitUsd: 0.002,
     });
     e.audio!.setMode(5, 'analyse');
     for (let i = 0; i < 60 && getAudioStage(db, 5).pauseReason !== 'ai'; i++) {
@@ -617,7 +615,7 @@ describe('stage 5 through the service', () => {
       await new Promise((r) => setTimeout(r, 30));
     }
     await new Promise((r) => setTimeout(r, 30));
-    expect(getAudioStage(db, 5).pauseDetail).toMatch(/^Spending limit reached/);
+    expect(getAudioStage(db, 5).pauseDetail).toMatch(/^Monthly spending limit reached/);
     expect(paused).toContain('5:ai');
     const spent = (db.prepare('SELECT SUM(cost_usd) AS c FROM ai_requests').get() as { c: number })
       .c;
@@ -633,7 +631,7 @@ describe('stage 5 through the service', () => {
     e.audio!.setMode(5, 'off');
     expect(getAudioStage(db, 5).pauseReason).toBeNull();
     e.audio!.setMode(5, 'analyse');
-    updateSettings(db, { ai: { ...getSettings(db).ai, spendLimitUsd: 1 } });
+    e.service.aiCore.updateSettings({ spendLimitUsd: 1 });
     const p = await untilDone(e);
     expect(p.error).toBeNull();
     expect(getAudioStage(db, 5).pauseReason).toBeNull();
@@ -644,19 +642,16 @@ describe('stage 5 through the service', () => {
 
   it('asks only about the labeled books when labeledOnly is set (the others decided by the rules)', async () => {
     const { env: e, db } = await makeStage();
-    updateSettings(db, {
-      ai: {
-        ...getSettings(db).ai,
-        modes: {
-          'claude-haiku-5-5': 'direct',
-          'gpt-6-luna': 'direct',
-          'gpt-6.1-sol': 'direct',
-          'claude-sonnet-5-5': 'direct',
-        },
-        spendLimitUsd: 1,
-        labeledOnly: true,
+    e.service.aiCore.updateSettings({
+      modes: {
+        'claude-haiku-5-5': 'direct',
+        'gpt-6-luna': 'direct',
+        'gpt-6.1-sol': 'direct',
+        'claude-sonnet-5-5': 'direct',
       },
+      spendLimitUsd: 1,
     });
+    updateSettings(db, { ai: { ...getSettings(db).ai, labeledOnly: true } });
     e.audio!.setMode(5, 'analyse');
     await untilDone(e);
     const users = standin!.calls
@@ -672,12 +667,9 @@ describe('stage 5 through the service', () => {
 describe('stage 5 corrections (WP21d follow-up)', () => {
   it('are written as the user own values once, kept by every later pass, never over a value the user set', async () => {
     const { env: e, db } = await makeStage();
-    updateSettings(db, {
-      ai: {
-        ...getSettings(db).ai,
-        modes: { 'claude-haiku-5-5': 'direct', 'gpt-6-luna': 'direct' },
-        spendLimitUsd: 1,
-      },
+    e.service.aiCore.updateSettings({
+      modes: { 'claude-haiku-5-5': 'direct', 'gpt-6-luna': 'direct' },
+      spendLimitUsd: 1,
     });
     CORRECTIONS.push(
       { record: 'audible:B0G299R1XS', field: 'narrators', value: ['柚木尚子'] },

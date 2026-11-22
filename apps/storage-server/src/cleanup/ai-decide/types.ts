@@ -1,14 +1,13 @@
 /**
- * The cleanup's AI framework (WP21d; decided design: library-cleanup-plan.md section 6, "AI
- * setup (decided 2026-11-12)"). Shared by every stage that asks the models: the audiobook
- * stage 5 now, the Calibre stage 4 (WP20e) later. Nothing in this folder knows about
- * audiobooks or Calibre: a stage plugs in through `AiStageSpec` and `AiField`.
+ * The cleanup's AI decisions (WP21d; decided design: library-cleanup-plan.md section 6, "AI
+ * setup (decided 2026-11-12)"): the rules' values weighed against two models per field
+ * (setup E and its upgrades F/J, combine.ts), and every value's source (values.ts). The
+ * questions themselves go through the shared AI layer (src/ai/).
  *
  * The models judge candidates and parse unclear values from the evidence; they never invent
  * values (a model's string that is not in the evidence is dropped).
  */
-
-export type Provider = 'anthropic' | 'openai';
+import type { AiStageSpec } from '../../ai/types';
 
 /**
  * The models of a setup. E: primary (Claude Haiku 5.5) and secondary (GPT-6 Luna) read every
@@ -22,6 +21,9 @@ export const ROLES: readonly Role[] = [
   'upgradePrimary',
   'upgradeSecondary',
 ];
+
+/** A cleanup stage's spec: its roles are setup E's and the upgrades'. */
+export type CleanupAiSpec<E = unknown> = AiStageSpec<E, Role>;
 
 /**
  * Where a value came from (cleanup.db ai_values.source):
@@ -89,36 +91,4 @@ export interface FieldDecision<V = unknown> {
   source: ValueSource;
   flagged: boolean;
   reason: string | null;
-}
-
-/**
- * How a stage asks the models. The prompt is the stage's: shared rule text from
- * `prompt-blocks.ts` plus its own rules (Calibre's bonus N.1 and omnibus rules belong in
- * WP20e's block, not in the audiobook prompt).
- */
-export interface AiStageSpec<E = unknown> {
-  /** cleanup.db key of the stage: "audio5", "calibre4", ... */
-  stage: string;
-  /** Raised when the prompt or the schema changes: answers to other versions are not used. */
-  promptVersion: string;
-  /** settings.models keys of each role (e.g. primary -> "audio5.primary"). */
-  tasks: Record<Role, string>;
-  /** The system prompt (identical for every item, so the providers can cache it). */
-  system: string;
-  /** The item's evidence as the user message. Labels are never in it. */
-  userText(evidence: E): string;
-  /** The answer's JSON schema (structured outputs; every object closed, every key required). */
-  schema: Record<string, unknown>;
-  schemaName: string;
-  /** Validates a parsed answer; null = unusable (counted as `invalid`). */
-  parseAnswer(raw: unknown): Record<string, unknown> | null;
-  /** The text the never-invent check searches (names, tags, records, ...). */
-  evidenceText(evidence: E): string;
-}
-
-/** A model's stored answer for an item. */
-export interface StoredAnswer {
-  model: string;
-  state: 'answered' | 'blocked' | 'invalid' | 'failed';
-  answer: Record<string, unknown> | null;
 }

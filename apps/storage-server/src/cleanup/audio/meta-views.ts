@@ -11,7 +11,7 @@
  *   field:<f>:<src>  recordings whose field f came from source src (e.g. field:authors:both_models)
  */
 import type Database from 'better-sqlite3';
-import { valuesOf } from '../ai/values';
+import { valuesOf } from '../ai-decide/values';
 import type { AudioStage5, AudioStage5Progress } from './stage5-meta';
 
 const LONG = new Set(['description']);

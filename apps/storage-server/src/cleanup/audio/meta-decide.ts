@@ -18,8 +18,8 @@
  * 5. Publisher, year, language, store id, description and cover from the record, by rules
  *    alone: unconfirmed with the record, unknown without one.
  */
-import { answerOf, combineE, combineUpgrade, type UpgradeDesign } from '../ai/combine';
-import type { FieldDecision, RulesValue } from '../ai/types';
+import { answerOf, combineE, combineUpgrade, type UpgradeDesign } from '../ai-decide/combine';
+import type { FieldDecision, RulesValue } from '../ai-decide/types';
 import type { MetaEvidence, RecordBrief } from './meta-evidence';
 import { META_FIELDS, seriesKey, titleKey } from './meta-prompt';
 import {

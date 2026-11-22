@@ -41,14 +41,12 @@ import {
   stage4StartsOver,
 } from './stage4-online';
 import { audioSiteLines, onlineList, unitStates } from './online-views';
-import { AiRunner, modeOf } from '../ai/runner';
+import { AiRunner, modeOf } from '../../ai/runner';
 import { STAGE4_SPEC } from '../stage4/ai-prompt';
 import { STAGE5_SPEC } from '../stage5/prompt';
 import { META_SPEC } from './meta-prompt';
-import { providerOf, type ProviderClient } from '../ai/providers';
-import type { Provider } from '../ai/types';
+import { providerOf } from '../../ai/providers';
 import { AudioStage5, stage5AskKey, stage5RulesKey } from './stage5-meta';
-import { spendNow } from '../ai/spend';
 import { metaList } from './meta-views';
 import type { FetchQueue } from '../stage4/queue';
 import { AUDIO_FETCH_SITES } from '../settings';
@@ -98,13 +96,11 @@ export interface AudioCleanupOptions {
   /** Stage 4 (WP21c): the shared fetch queue (the Calibre cleanup's), and its fetcher's state. */
   fetchQueue?: FetchQueue | null;
   fetcherStatus?: () => unknown;
-  /** Stage 5 (WP21d): tests give their own AI provider clients. */
-  aiProviders?: (provider: Provider, key: string) => ProviderClient;
   /**
    * The runner shared with the Calibre cleanup (WP20e: one runner for every stage that asks the
-   * models); a runner of its own when not given (tests).
+   * models), on the shared AI layer (src/ai/).
    */
-  aiRunner?: AiRunner;
+  aiRunner: AiRunner;
   log?: (m: string) => void;
   logError?: (m: string, err?: unknown) => void;
 }
@@ -253,14 +249,7 @@ export class AudioCleanupService {
             log: this.log,
           })
         : null;
-    this.ai =
-      opts.aiRunner ??
-      new AiRunner({
-        db: opts.db,
-        secrets: opts.secrets,
-        providers: opts.aiProviders,
-        log: this.log,
-      });
+    this.ai = opts.aiRunner;
     this.stage5 = new AudioStage5({
       db: opts.db,
       runner: this.ai,
@@ -272,6 +261,7 @@ export class AudioCleanupService {
     this.stage7 = opts.roots
       ? new AudioStage7({
           db: opts.db,
+          aiSettings: () => opts.aiRunner.settings(),
           roots: {
             torrents: opts.roots.torrents,
             library: opts.roots.library,
@@ -422,8 +412,9 @@ export class AudioCleanupService {
     this.round6();
     this.roundSwitch();
     this.round7();
-    // Settings > AI "Test batch" results (each checked at the batch poll pace).
-    await this.ai.pollBatchTests().catch((err) => this.logError('AI: batch tests:', err));
+    // What the providers still keep of collected batches (at the batch poll pace). Settings >
+    // AI's batch tests are polled by the shared AI layer itself.
+    await this.ai.sweepBatchData().catch((err: Error) => this.logError('AI: batch data:', err));
   }
 
   private round1(): void {
@@ -1348,10 +1339,17 @@ export class AudioCleanupService {
     return metaList(this.db, p, list, opts, this.stage5);
   }
 
-  /** The AI framework's state for Settings: spending, the models per task and their checks. */
+  /**
+   * The cleanup's AI choices for /cleanup: the model per task with its price, mode and whether
+   * its provider offers it, the steps that ask models, and this month's spending. The keys, the
+   * provider settings and the limit are Settings > AI (the shared layer, /ai/status).
+   */
   aiStatus() {
     const s = getSettings(this.db);
-    const checks = this.ai.modelChecks();
+    const core = this.ai.core;
+    const ps = core.settings();
+    const checks = core.modelChecks();
+    const room = core.room();
     const tasks = Object.entries(s.models).map(([task, model]) => {
       const provider = providerOf(model);
       const c = checks[provider];
@@ -1359,17 +1357,23 @@ export class AudioCleanupService {
         task,
         model,
         provider,
-        price: s.ai.prices[model] ?? null,
+        price: ps.prices[model] ?? null,
         checked: c ? (c.models ? c.models.includes(model) : null) : null,
-        mode: modeOf(s.ai, model),
+        mode: modeOf(ps, model),
       };
     });
     return {
       settings: s.ai,
-      spend: { ...spendNow(this.db), limitUsd: s.ai.spendLimitUsd },
+      prices: ps.prices,
+      spend: {
+        spentUsd: room.spentUsd,
+        reservedUsd: room.reservedUsd,
+        limitUsd: room.limitUsd,
+        resumesOn: room.resumesOn,
+      },
       keys: {
-        anthropic: this.opts.secrets.read('anthropicApiKey') !== null,
-        openai: this.opts.secrets.read('openaiApiKey') !== null,
+        anthropic: core.key('anthropic') !== null,
+        openai: core.key('openai') !== null,
       },
       checks: Object.fromEntries(
         Object.entries(checks).map(([p, c]) => [
@@ -1424,24 +1428,7 @@ export class AudioCleanupService {
           ],
         },
       ],
-      batchTests: this.ai.batchTests(),
     };
-  }
-
-  /** Settings > AI "Test batch": one tiny question to the model as a batch. */
-  async testBatch(model: string) {
-    const s = getSettings(this.db);
-    if (!Object.values(s.models).includes(model))
-      throw new Error('Not one of the configured models');
-    await this.ai.testBatch(model);
-    return this.aiStatus();
-  }
-
-  /** Settings: Check models (reads each provider's model list with the stored key). */
-  async checkModels() {
-    await this.ai.checkModels();
-    void this.tick();
-    return this.aiStatus();
   }
 
   /** Stage 4's lists (paged). */

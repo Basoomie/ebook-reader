@@ -1,11 +1,14 @@
 /**
- * The cleanup's secrets (AI provider keys, the Calibre password), decided with the user
+ * The cleanup's secrets (the Calibre password, Audiobookshelf's API key), decided with the user
  * 2026-11-13: AES-256-GCM in cleanup.db, with the key in ttsu.db (server_secrets
  * 'cleanup_secrets'). cleanup.db or its snapshots alone reveal nothing; whoever has both
  * files (e.g. the nightly appdata archive) can decrypt.
  *
  * The browser can only write them (PUT) and learn whether one is set (plus the last four
  * characters of an API key). Only the apply sidecar's token gets the Calibre password back.
+ *
+ * The AI provider keys were here too until cleanup.db v20; they moved to ttsu.db with v21 (the
+ * shared AI layer, src/ai/secrets.ts; cleanup/ai-move.ts carried them over).
  */
 import type Database from 'better-sqlite3';
 import { createCipheriv, createDecipheriv, randomBytes } from 'crypto';
@@ -14,8 +17,6 @@ import { getOrCreateSecret } from '../db/secrets';
 export const CLEANUP_SECRET_KEY_NAME = 'cleanup_secrets';
 
 export const SECRET_NAMES = [
-  'anthropicApiKey',
-  'openaiApiKey',
   'calibrePassword',
   // WP21a: Audiobookshelf's API key (an admin's, to read every user's progress). Only read.
   'absApiKey',
@@ -88,18 +89,31 @@ export class SecretStore {
 
   /** The plain value, for the server's own use (the sidecar's config). null when unset or unreadable. */
   read(name: SecretName): string | null {
-    const row = this.cleanupDb
-      .prepare('SELECT ciphertext, nonce, tag FROM secrets WHERE name = ?')
-      .get(name) as { ciphertext: Buffer; nonce: Buffer; tag: Buffer } | undefined;
-    if (!row) return null;
-    try {
-      const decipher = createDecipheriv('aes-256-gcm', this.key(), row.nonce);
-      decipher.setAAD(Buffer.from(name, 'utf8'));
-      decipher.setAuthTag(row.tag);
-      return Buffer.concat([decipher.update(row.ciphertext), decipher.final()]).toString('utf8');
-    } catch {
-      // A rotated key or a damaged row: treated as not set (the page asks for it again).
-      return null;
-    }
+    return readCleanupSecret(this.cleanupDb, this.mainDb, name);
+  }
+}
+
+/**
+ * A stored cleanup secret by name (also the AI keys stored here before v21, for the one-time
+ * move). null when unset or unreadable.
+ */
+export function readCleanupSecret(
+  cleanupDb: Database.Database,
+  mainDb: Database.Database,
+  name: string,
+): string | null {
+  const row = cleanupDb
+    .prepare('SELECT ciphertext, nonce, tag FROM secrets WHERE name = ?')
+    .get(name) as { ciphertext: Buffer; nonce: Buffer; tag: Buffer } | undefined;
+  if (!row) return null;
+  try {
+    const key = getOrCreateSecret(mainDb, CLEANUP_SECRET_KEY_NAME);
+    const decipher = createDecipheriv('aes-256-gcm', key, row.nonce);
+    decipher.setAAD(Buffer.from(name, 'utf8'));
+    decipher.setAuthTag(row.tag);
+    return Buffer.concat([decipher.update(row.ciphertext), decipher.final()]).toString('utf8');
+  } catch {
+    // A rotated key or a damaged row: treated as not set (the page asks for it again).
+    return null;
   }
 }

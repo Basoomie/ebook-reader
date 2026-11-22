@@ -24,9 +24,9 @@
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
-import { AiRunner } from '../src/cleanup/ai/runner';
-import { spendNow } from '../src/cleanup/ai/spend';
-import { valuesOf } from '../src/cleanup/ai/values';
+import { AiRunner } from '../src/ai/runner';
+import { spendNow } from '../src/ai/spend';
+import { valuesOf } from '../src/cleanup/ai-decide/values';
 import {
   classifyArrivals,
   everLinkedInodes,

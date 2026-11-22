@@ -5,7 +5,7 @@
  * database.
  */
 import { describe, expect, it } from 'vitest';
-import { setUserValue, valuesOf } from '../src/cleanup/ai/values';
+import { setUserValue, valuesOf } from '../src/cleanup/ai-decide/values';
 import {
   decideUnit,
   sameBookSeries,

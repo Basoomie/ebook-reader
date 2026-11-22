@@ -17,9 +17,9 @@
 import Database from 'better-sqlite3';
 import fs, { writeFileSync } from 'fs';
 import path from 'path';
-import { AiRunner } from '../src/cleanup/ai/runner';
-import { costOf } from '../src/cleanup/ai/spend';
-import { valueCounts } from '../src/cleanup/ai/values';
+import { AiRunner } from '../src/ai/runner';
+import { costOf } from '../src/ai/spend';
+import { valueCounts } from '../src/cleanup/ai-decide/values';
 import { SNAPSHOT_DIRNAME } from '../src/calibre/indexer';
 import { migrateCleanup } from '../src/cleanup/cleanup-db';
 import { SecretStore } from '../src/cleanup/secrets';

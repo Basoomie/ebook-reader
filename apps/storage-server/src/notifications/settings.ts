@@ -7,6 +7,8 @@ import type Database from 'better-sqlite3';
 import { listEvents, SECTIONS, SectionId } from './events';
 // Registers N2's stats events before any defaults are made.
 import { REPORT_KINDS, ReportKind } from './stats-events';
+// Registers the AI layer's limit alert before any defaults are made.
+import '../ai/limit-event';
 
 export type Channel = 'discord' | 'email';
 export const CHANNELS: Channel[] = ['discord', 'email'];

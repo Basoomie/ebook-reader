@@ -3,6 +3,7 @@
  * spelling", decided with the user).
  */
 import { describe, expect, it } from 'vitest';
+import { cleanupRunner, makeAiCore } from './helpers/ai-env';
 import {
   balanced,
   chooseSpellings,
@@ -225,7 +226,6 @@ describe('series proposals with the chosen spelling', () => {
 describe("the AI step's spelling phase", () => {
   it("chooses after deciding, proposes those series' books again, then runs the gate", async () => {
     const { Stage4Ai } = await import('../src/cleanup/stage4/ai-step');
-    const { AiRunner } = await import('../src/cleanup/ai/runner');
     const s = initCleanupDatabase(makeTempDir('wp20e-spell'));
     if (!s.ok) throw new Error(s.error);
     const db = s.db;
@@ -267,7 +267,7 @@ describe("the AI step's spelling phase", () => {
     };
     const step = new Stage4Ai({
       db,
-      runner: new AiRunner({ db, secrets: { read: () => null } }),
+      runner: cleanupRunner(db, makeAiCore().core),
       analysis: analysis as never,
     });
     await step.step(() => false);

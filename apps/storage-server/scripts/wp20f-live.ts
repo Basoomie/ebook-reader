@@ -15,8 +15,8 @@
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
-import { AiRunner } from '../src/cleanup/ai/runner';
-import { runSpend } from '../src/cleanup/ai/spend';
+import { AiRunner } from '../src/ai/runner';
+import { runSpend } from '../src/ai/spend';
 import { SNAPSHOT_DIRNAME } from '../src/calibre/indexer';
 import { migrateCleanup } from '../src/cleanup/cleanup-db';
 import { attachMarks } from '../src/cleanup/marks';

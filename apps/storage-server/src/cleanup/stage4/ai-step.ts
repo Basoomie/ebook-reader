@@ -15,9 +15,10 @@
  */
 import type Database from 'better-sqlite3';
 import { createHash } from 'crypto';
-import { waitNeedsUser, waitText, type AiRunner } from '../ai/runner';
-import { runSpend } from '../ai/spend';
-import { dropOtherItems, valueCounts, writeDecisions } from '../ai/values';
+import type { AiRunner } from '../../ai/runner';
+import { waitNeedsUser, waitText } from '../../ai/waits';
+import { runSpend } from '../../ai/spend';
+import { dropOtherItems, valueCounts, writeDecisions } from '../ai-decide/values';
 import { getSettings, stage4Bar } from '../settings';
 import { pauseField, resumeField } from '../stage2-gate';
 import { getStage, pauseStage, resumeStage, updateStage } from '../stages';
