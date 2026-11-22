@@ -250,8 +250,33 @@ export function proposeStage4(input: ProposalInput): Stage4Proposal[] {
   const v = d.values;
   const src = sourceOf(d, record);
 
+  const coverNow = {
+    hasCover: book.hasCover,
+    now: input.calibreCover,
+    fileDhash: input.cover?.fileDhash ?? null,
+    sameDistance: input.sameDistance,
+    lastModified: book.lastModified,
+  };
   const push = (p: Stage4Proposal, current: unknown, appliedField = p.field) => {
     if (JSON.stringify(p.old) === JSON.stringify(p.new)) return;
+    // Written already and still as written: not proposed again. A cover's "before" is only "has
+    // a cover", never the value written (series-order stop 1: deciding again proposed all 1,290
+    // written covers once more).
+    if (
+      input.applied.has(appliedField) &&
+      stillAsWritten(appliedField, input.applied.get(appliedField), current, {
+        ...coverNow,
+        writtenLastModified: input.appliedLastModified?.get(appliedField) ?? null,
+      })
+    ) {
+      if (JSON.stringify(input.applied.get(appliedField)) === JSON.stringify(p.new)) return;
+      // A cover is stored as the file written: the same store picture as Calibre's cover now.
+      const d =
+        p.field === 'cover' && input.calibreCover
+          ? hammingHex(input.cover?.storeDhash ?? null, input.calibreCover.dhash)
+          : null;
+      if (d !== null && d <= input.sameDistance) return;
+    }
     // Garbled text (a file read in the wrong encoding) never goes into Calibre (lessons 2),
     // whichever source gave it: the AI's fallback to the rules' guess found one (WP20e stop 1).
     if (p.class === 'auto' && GARBLE_FIELDS.has(p.field) && garbled(p.new)) {
