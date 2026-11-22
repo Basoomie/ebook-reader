@@ -639,6 +639,33 @@ describe('wp20g: a run end to end', () => {
     expect(o['Discord/renamed copy.epub']).toBe('removed_by_you');
   }, 300_000);
 
+  it('a pair already decided in stage 3’s review stays as decided', async () => {
+    env.service.arrivals.stopRun();
+    const H = await env.lib.addBook({ title: 'B (hand)', authors: ['作者'], epub: Bcopy });
+    await env.index();
+    env.cleanupDb
+      .prepare(
+        `INSERT INTO pair_decisions (library_id, a_uuid, b_uuid, decision, decided_at) VALUES (?, ?, ?, 'keep_both', 1)`,
+      )
+      .run(env.libraryId(), uuidOf(L.B), uuidOf(H));
+    env.service.arrivals.setMode('analyse');
+    env.service.arrivals.requestRun();
+    await steps();
+    const run = env.cleanupDb
+      .prepare('SELECT MAX(run_id) AS id FROM calibre_known_books WHERE calibre_id = ?')
+      .get(H) as { id: number | null };
+    expect(run.id).not.toBeNull();
+    expect(
+      env.cleanupDb
+        .prepare(
+          `SELECT COUNT(*) AS n FROM proposed_changes WHERE stage = 3 AND analysis_id = ?
+             AND calibre_uuid IN (?, ?)`,
+        )
+        .get(`arrivals:${run.id}`, uuidOf(L.B), uuidOf(H)),
+    ).toEqual({ n: 0 });
+    env.service.arrivals.stopRun();
+  }, 300_000);
+
   it('a change its paused field holds is reported, and a later run writes it once resumed', async () => {
     env.service.arrivals.stopRun();
     // The On test's stage-2 batch was never applied (no sidecar here): out of the way, as a

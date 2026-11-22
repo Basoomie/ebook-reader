@@ -1838,10 +1838,20 @@ export class BookArrivals {
         const pairs = await candidatePairsOf(cd, [...news.values()]);
         const measured = await measurePairs(cd, news, pairs);
         const quality = async (k: number) => libraryQuality(cd, k, pacer);
+        // A pair you or the review already decided in stage 3 stays as decided (stage 3's own
+        // waiting list leaves it out the same way; WP20g stop 1: 4 of 16 pairs).
+        // Two primary-key lookups (an OR here scanned every decision: lessons 3).
+        const decision = this.db.prepare(
+          'SELECT 1 FROM pair_decisions WHERE library_id = ? AND a_uuid = ? AND b_uuid = ?',
+        );
         for (const m of measured) {
           if (!m.m) continue;
           const k = news.has(m.pair.a) ? m.pair.a : m.pair.b;
           const other = k === m.pair.a ? m.pair.b : m.pair.a;
+          const ua = books.get(k)?.uuid;
+          const ub = books.get(other)?.uuid;
+          if (ua && ub && (decision.get(libraryId, ua, ub) || decision.get(libraryId, ub, ua)))
+            continue;
           const v = await judgePair(cd, k, other, m.m, news, quality);
           if (v.keep === null || goneBy1.has(other)) continue;
           const removed = books.get(v.keep === 'new' ? other : k);
