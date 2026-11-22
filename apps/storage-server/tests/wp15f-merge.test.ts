@@ -15,12 +15,16 @@ import {
   buildConcatList,
   buildFfmetadata,
   canStreamCopy,
+  chapterMismatch,
+  ffmpegArgs,
+  mergedChapters,
   type MergeJob,
   MergeService,
   type MergeServiceOptions,
   parseProbe,
   shortenPaths,
 } from '../src/audio/merge-service';
+import { measureMerge } from '../scripts/merge-chapter-drift';
 import { MergeWorkdir } from '../src/audio/merge-workdir';
 import { looksLikeCopies } from '../src/audio/match';
 import type { AudioScanService } from '../src/audio/scan-service';
@@ -58,10 +62,10 @@ describe('merge helpers', () => {
 
   it('writes the chapter file and the file list', () => {
     const meta = buildFfmetadata(
-      [
-        { name: '01 第一部.m4b', duration: 2.5 },
-        { name: 'b=c;d.m4a', duration: 1 },
-      ],
+      mergedChapters([
+        { name: '01 第一部.m4b', duration: 2.5, chapters: [] },
+        { name: 'b=c;d.m4a', duration: 1, chapters: [] },
+      ]).chapters,
       { album: 'アルバム', artist: '著者', title: 'part 1', encoder: 'x' },
       'フォルダ',
     );
@@ -85,6 +89,34 @@ describe('merge helpers', () => {
       ].join('\n'),
     );
     expect(buildConcatList([`a${path.sep}it's.m4b`])).toBe(`file 'a/it'\\''s.m4b'\n`);
+  });
+
+  it('reads each file’s chapters from ffprobe', () => {
+    const p = parseProbe(
+      JSON.stringify({
+        format: { duration: '10.0' },
+        streams: [{ index: 0, codec_type: 'audio', codec_name: 'aac', duration: '9.98' }],
+        chapters: [
+          // Exact from start × time_base, not the rounded start_time.
+          {
+            time_base: '1/44100',
+            start: 0,
+            end: 132301,
+            start_time: '0.000000',
+            tags: { title: '序' },
+          },
+          { time_base: '1/1000', start: 3000, end: 10000, tags: { TITLE: '一' } },
+          { start_time: '5.5', end_time: '6.0' },
+        ],
+      }),
+    );
+    expect(p.streams[0].duration).toBe(9.98);
+    expect(p.chapters).toEqual([
+      { start: 0, end: 132301 / 44100, title: '序' },
+      { start: 3, end: 10, title: '一' },
+      { start: 5.5, end: 6, title: null },
+    ]);
+    expect(parseProbe(JSON.stringify({ format: {}, streams: [] })).chapters).toEqual([]);
   });
 
   it('shows no server folders in messages', () => {
@@ -134,6 +166,206 @@ describe('merge helpers', () => {
   });
 });
 
+describe('the merged file’s chapters', () => {
+  const ch = (start: number, end: number, title: string | null = `c${start}`) => ({
+    start,
+    end,
+    title,
+  });
+  const list = (files: { name: string; duration: number; chapters: ReturnType<typeof ch>[] }[]) =>
+    mergedChapters(files).chapters.map((c) => [c.startMs, c.endMs, c.title]);
+
+  it('shifts each file’s own chapters by the file’s start, titles unchanged', () => {
+    expect(
+      list([
+        {
+          name: '01.m4b',
+          duration: 100.5,
+          chapters: [ch(0, 40, 'オープニング'), ch(40, 100.5, '第1章')],
+        },
+        { name: '02.m4b', duration: 60.25, chapters: [ch(0, 30, '第2章'), ch(30, 60.25, '第3章')] },
+      ]),
+    ).toEqual([
+      [0, 40_000, 'オープニング'],
+      [40_000, 100_500, '第1章'],
+      [100_500, 130_500, '第2章'],
+      [130_500, 160_750, '第3章'],
+    ]);
+  });
+
+  it('gives a file without chapters one chapter titled with its name', () => {
+    expect(
+      list([
+        { name: 'Disc 1.mp3', duration: 10, chapters: [] },
+        { name: 'Disc 2.part.mp3', duration: 5, chapters: [] },
+      ]),
+    ).toEqual([
+      [0, 10_000, 'Disc 1'],
+      [10_000, 15_000, 'Disc 2.part'],
+    ]);
+  });
+
+  it('mixes files with and without chapters in the user’s order', () => {
+    expect(
+      list([
+        { name: 'b.m4a', duration: 5, chapters: [] },
+        { name: 'a.m4b', duration: 10, chapters: [ch(0, 4, 'A1'), ch(4, 10, 'A2')] },
+        { name: 'c.mp3', duration: 2, chapters: [] },
+      ]),
+    ).toEqual([
+      [0, 5_000, 'b'],
+      [5_000, 9_000, 'A1'],
+      [9_000, 15_000, 'A2'],
+      [15_000, 17_000, 'c'],
+    ]);
+  });
+
+  it('starts a file’s first chapter at 0:00', () => {
+    expect(
+      list([
+        { name: 'a.m4a', duration: 3, chapters: [] },
+        { name: 'b.m4b', duration: 10, chapters: [ch(1.25, 6, 'B1'), ch(6, 10, 'B2')] },
+      ]),
+    ).toEqual([
+      [0, 3_000, 'a'],
+      [3_000, 9_000, 'B1'],
+      [9_000, 13_000, 'B2'],
+    ]);
+  });
+
+  it('cuts a chapter running past its file’s end at the end', () => {
+    expect(
+      list([
+        { name: 'a.m4b', duration: 10, chapters: [ch(0, 5, 'A1'), ch(5, 12.5, 'A2')] },
+        { name: 'b.m4b', duration: 4, chapters: [ch(0, 4.2, 'B1')] },
+      ]),
+    ).toEqual([
+      [0, 5_000, 'A1'],
+      [5_000, 10_000, 'A2'],
+      [10_000, 14_000, 'B1'],
+    ]);
+  });
+
+  it('drops (and reports) a chapter starting at or after its file’s end', () => {
+    const r = mergedChapters([
+      {
+        name: 'a.m4b',
+        duration: 10,
+        chapters: [ch(0, 9, 'A1'), ch(10, 11, 'end'), ch(12, 13, 'past')],
+      },
+      { name: 'b.m4b', duration: 2, chapters: [ch(2, 3, 'only past')] },
+    ]);
+    expect(r.chapters.map((c) => [c.startMs, c.endMs, c.title])).toEqual([
+      [0, 10_000, 'A1'],
+      [10_000, 12_000, 'b'], // nothing left: one chapter for the whole file
+    ]);
+    expect(r.dropped).toEqual([
+      { file: 'a.m4b', title: 'end', start: 10 },
+      { file: 'a.m4b', title: 'past', start: 12 },
+      { file: 'b.m4b', title: 'only past', start: 2 },
+    ]);
+  });
+
+  it('ends each chapter where the next starts (overlaps and gaps), in time order', () => {
+    expect(
+      list([
+        {
+          name: 'a.m4b',
+          duration: 20,
+          // Out of order, an overlap (c5 ends after c8 starts), a gap (c8 → c15).
+          chapters: [ch(15, 18), ch(0, 4), ch(8, 10), ch(5, 9)],
+        },
+      ]),
+    ).toEqual([
+      [0, 5_000, 'c0'],
+      [5_000, 8_000, 'c5'],
+      [8_000, 15_000, 'c8'],
+      [15_000, 20_000, 'c15'],
+    ]);
+  });
+
+  it('keeps the file’s order for chapters with the same start', () => {
+    expect(
+      list([
+        { name: 'a.m4b', duration: 10, chapters: [ch(0, 5, 'x'), ch(5, 5, 'y'), ch(5, 10, 'z')] },
+      ]),
+    ).toEqual([
+      [0, 5_000, 'x'],
+      [5_000, 5_000, 'y'],
+      [5_000, 10_000, 'z'],
+    ]);
+  });
+
+  it('keeps an untitled chapter untitled', () => {
+    expect(
+      list([{ name: 'a.m4b', duration: 4, chapters: [ch(0, 2, 'A'), ch(2, 4, null)] }]),
+    ).toEqual([
+      [0, 2_000, 'A'],
+      [2_000, 4_000, null],
+    ]);
+  });
+
+  it('rounds offsets from the running total, so rounding does not add up', () => {
+    const files = Array.from({ length: 1000 }, (_, i) => ({
+      name: `${i}.mp3`,
+      duration: 1.0004,
+      chapters: [],
+    }));
+    const last = mergedChapters(files).chapters.at(-1)!;
+    expect(last.startMs).toBe(Math.round(999 * 1.0004 * 1000));
+    expect(last.endMs).toBe(1000 * 1000 + 400);
+  });
+
+  it('escapes = ; # \\ and newlines in titles and always writes a title line', () => {
+    const meta = buildFfmetadata(
+      [
+        { title: 'a=b;c#d\\e\nf', startMs: 0, endMs: 1000 },
+        { title: null, startMs: 1000, endMs: 2000 },
+      ],
+      {},
+      'f',
+    );
+    expect(meta).toBe(
+      [
+        ';FFMETADATA1',
+        'title=f',
+        '[CHAPTER]',
+        'TIMEBASE=1/1000',
+        'START=0',
+        'END=1000',
+        'title=a\\=b\\;c\\#d\\\\e\\\nf',
+        '[CHAPTER]',
+        'TIMEBASE=1/1000',
+        'START=1000',
+        'END=2000',
+        'title=',
+        '',
+      ].join('\n'),
+    );
+  });
+
+  it('compares the read-back chapters with the expected ones', () => {
+    const expected = [
+      { title: 'A', startMs: 0, endMs: 1000 },
+      { title: null, startMs: 1000, endMs: 2000 },
+    ];
+    const ok = [
+      { start: 0, end: 1, title: 'A' },
+      { start: 1.004, end: 2, title: '' },
+    ];
+    expect(chapterMismatch(ok, expected, 5)).toBeNull();
+    expect(chapterMismatch(ok, expected, 3)).toBe(
+      'Chapter 2 of the merged file starts at 1.004 s, expected 1.000 s',
+    );
+    expect(chapterMismatch([ok[0]], expected, 5)).toBe(
+      'The merged file has 1 chapters, expected 2',
+    );
+    expect(chapterMismatch([{ ...ok[0], title: 'B' }, ok[1]], expected, 5)).toBe(
+      'Chapter 1 of the merged file is titled "B", expected "A"',
+    );
+  });
+});
+
 // ---------------------------------------------------------------- fixtures
 
 const SPLIT = 'japanese/_Unknown/分割の本/Vol 1 - 分割の本 1';
@@ -141,9 +373,13 @@ const COVER = 'japanese/_Unknown/表紙つき';
 const MIXED = 'japanese/_Unknown/混合';
 const BROKEN = 'japanese/_Unknown/壊れた';
 const SINGLE = 'japanese/_Unknown/ひとつ';
+/** Files with chapters of their own (stream copy), and the same kinds re-encoded. */
+const CHAPTERED = 'japanese/_Unknown/章つき';
+const CHAPTERED_MIX = 'japanese/_Unknown/章つき混合';
 /** WP21e-2: a merge of `folder` goes to `japanese-merged/<the same path>`. */
 const merged = (folder: string) => folder.replace(/^japanese\//, 'japanese-merged/');
-const BOOKS = ['分割の本 1', '表紙つき', '混合', '壊れた', 'ひとつ'];
+const BOOKS = ['分割の本 1', '表紙つき', '混合', '壊れた', 'ひとつ', '章つき', '章つき混合'];
+const ODD_TITLE = 'a=b;c#d\\e\nf';
 
 let template = '';
 
@@ -189,6 +425,57 @@ function aac(
   }
 }
 
+/**
+ * A file of noise (so the drift measure can find it) with chapters of its own:
+ * [startMs, endMs, title]. AAC in .m4a/.m4b, or MP3 with ID3 chapters.
+ */
+function withChapters(
+  file: string,
+  seconds: number,
+  chapters: [number, number, string][],
+  { rate = 22050, channels = 1, seed = 1 } = {},
+) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const esc = (s: string) => s.replace(/[=;#\\\n]/g, (c) => (c === '\n' ? '\\\n' : `\\${c}`));
+  const meta = `${file}.ffmeta.txt`;
+  fs.writeFileSync(
+    meta,
+    [
+      ';FFMETADATA1',
+      ...chapters.flatMap(([s, e, t]) => [
+        '[CHAPTER]',
+        'TIMEBASE=1/1000',
+        `START=${s}`,
+        `END=${e}`,
+        `title=${esc(t)}`,
+      ]),
+      '',
+    ].join('\n'),
+  );
+  const mp3 = file.endsWith('.mp3');
+  ffmpeg([
+    '-f',
+    'lavfi',
+    '-i',
+    `anoisesrc=color=pink:seed=${seed}:sample_rate=${rate}:duration=${seconds}:amplitude=0.3`,
+    '-f',
+    'ffmetadata',
+    '-i',
+    meta,
+    '-map',
+    '0:a',
+    '-map_chapters',
+    '1',
+    '-ac',
+    String(channels),
+    ...(mp3
+      ? ['-c:a', 'libmp3lame', '-b:a', '64k', '-id3v2_version', '3']
+      : ['-c:a', 'aac', '-b:a', '48k']),
+    file,
+  ]);
+  fs.rmSync(meta);
+}
+
 beforeAll(() => {
   if (!HAS_FFMPEG) return;
   template = makeTempDir('wp15f-template');
@@ -217,6 +504,49 @@ beforeAll(() => {
   aac(at(`${BROKEN}/a.m4a`), 2);
   write(template, `${BROKEN}/b.m4a`, 'this is not audio');
   aac(at(`${SINGLE}/only.m4a`), 2);
+  // Chapters: the last runs past the file's end; one starting after 0:00. Every file of the
+  // copy folder has chapters: a chapter track is a data stream, and files that differ in
+  // their streams are re-encoded (canStreamCopy); files without chapters are joined by copy
+  // in the first test below and re-encoded in the mixed folder.
+  withChapters(
+    at(`${CHAPTERED}/01.m4b`),
+    4,
+    [
+      [0, 1500, 'オープニング'],
+      [1500, 3000, ODD_TITLE],
+      [3000, 6000, '第2章'],
+    ],
+    { seed: 1 },
+  );
+  withChapters(at(`${CHAPTERED}/02.m4b`), 3, [[0, 3000, '間奏']], { seed: 2 });
+  withChapters(
+    at(`${CHAPTERED}/03.m4b`),
+    4,
+    [
+      [500, 2000, '後半'],
+      [2000, 4000, '終わり'],
+    ],
+    { seed: 3 },
+  );
+  withChapters(
+    at(`${CHAPTERED_MIX}/a.mp3`),
+    3,
+    [
+      [0, 1000, 'MP3 一'],
+      [1000, 3000, 'MP3 二'],
+    ],
+    { seed: 4 },
+  );
+  withChapters(at(`${CHAPTERED_MIX}/b.m4a`), 2, [], { rate: 44100, channels: 2, seed: 5 });
+  withChapters(
+    at(`${CHAPTERED_MIX}/c.m4b`),
+    3,
+    [
+      [0, 2000, 'M4B 一'],
+      [2000, 3000, 'M4B 二'],
+    ],
+    { rate: 44100, channels: 2, seed: 6 },
+  );
   write(template, 'japanese-srt/分割の本 1.srt', '1\n00:00:00,000 --> 00:00:01,000\nテスト\n');
 }, 120_000);
 
@@ -446,6 +776,139 @@ describe.skipIf(!HAS_FFMPEG)('merging with ffmpeg', () => {
     ]);
     expect(p.chapters).toHaveLength(2);
     expect(Number(p.format.duration)).toBeCloseTo(4, 0);
+  });
+
+  const chapterList = (file: string) =>
+    probeJson(file).chapters.map((c) => [
+      Math.round(Number(c.start_time) * 1000),
+      c.tags?.title ?? '',
+    ]);
+
+  it('keeps every original chapter, shifted by its file’s start (stream copy)', async () => {
+    const t = await mergeEnv();
+    await t.post('章つき', CHAPTERED, ['01.m4b', '02.m4b', '03.m4b']);
+    await t.merges.idle();
+    const job = (await t.latest('章つき'))!;
+    expect(job).toMatchObject({ state: 'done', mode: 'copy', linked: true });
+    const out = path.join(t.root, ...merged(CHAPTERED).split('/'), job.outputName!);
+    const p = probeJson(out);
+    expect(
+      p.chapters.map((c) => [Number(c.start_time), Number(c.end_time), c.tags?.title]),
+    ).toEqual([
+      [0, 1.5, 'オープニング'],
+      [1.5, 3, ODD_TITLE],
+      [3, 4, '第2章'], // cut at its file's end
+      [4, 7, '間奏'],
+      [7, 9, '後半'], // moved to 0:00 of its file
+      [9, 11, '終わり'],
+    ]);
+    const drift = measureMerge(
+      out,
+      ['01.m4b', '02.m4b', '03.m4b'].map((f) => path.join(t.root, ...CHAPTERED.split('/'), f)),
+    );
+    console.log(
+      'drift (copy, generated):',
+      JSON.stringify(
+        drift.files.map((f) => [f.name, f.driftMs, f.score, f.duration, f.streamDuration]),
+      ),
+      drift.chapters.maxStartDiffMs,
+      drift.durationDiffMs,
+    );
+    expect(drift.chapters).toMatchObject({ countEqual: true, titlesEqual: true });
+    expect(drift.chapters.maxStartDiffMs).toBeLessThanOrEqual(1);
+    // Where each file's audio really is: AAC priming and padding move it by up to about two
+    // AAC frames (46 ms each at 22 kHz) for every file up to it (measured; decisions.md
+    // "Merge keeps the original chapters"); never seconds.
+    expect(
+      drift.files.every((f, i) => Math.abs(f.driftMs!) <= (i + 1) * 100 && f.score! > 0.9),
+    ).toBe(true);
+  });
+
+  it('keeps the original chapters when it has to re-encode (MP3 ID3 chapters too)', async () => {
+    const t = await mergeEnv();
+    await t.post('章つき混合', CHAPTERED_MIX, ['c.m4b', 'a.mp3', 'b.m4a']);
+    await t.merges.idle();
+    const job = (await t.latest('章つき混合'))!;
+    expect(job).toMatchObject({ state: 'done', mode: 'reencode', linked: true });
+    const out = path.join(t.root, ...merged(CHAPTERED_MIX).split('/'), job.outputName!);
+    const list = chapterList(out);
+    expect(list.map((c) => c[1])).toEqual(['M4B 一', 'M4B 二', 'MP3 一', 'MP3 二', 'b']);
+    const drift = measureMerge(
+      out,
+      ['c.m4b', 'a.mp3', 'b.m4a'].map((f) => path.join(t.root, ...CHAPTERED_MIX.split('/'), f)),
+    );
+    console.log(
+      'drift (re-encode, generated):',
+      JSON.stringify(
+        drift.files.map((f) => [f.name, f.driftMs, f.score, f.duration, f.streamDuration]),
+      ),
+      drift.chapters.maxStartDiffMs,
+      drift.durationDiffMs,
+    );
+    expect(drift.chapters).toMatchObject({ countEqual: true, titlesEqual: true });
+    expect(drift.chapters.maxStartDiffMs).toBeLessThanOrEqual(1);
+    expect(
+      drift.files.every((f, i) => Math.abs(f.driftMs!) <= (i + 1) * 100 && f.score! > 0.9),
+    ).toBe(true);
+  });
+
+  it('writes the same chapter list in both modes', () => {
+    const dir = makeTempDir('wp15f-modes');
+    try {
+      const inputs = ['01.m4b', '02.m4b', '03.m4b'].map((f) =>
+        path.join(template, ...CHAPTERED.split('/'), f),
+      );
+      const probes = inputs.map((f) =>
+        parseProbe(
+          execFileSync(
+            'ffprobe',
+            [
+              '-v',
+              'error',
+              '-show_entries',
+              'format=duration:format_tags:stream=index,codec_type,codec_name,sample_rate,channels,profile,duration:stream_disposition=attached_pic:chapter=id,time_base,start,end,start_time,end_time:chapter_tags=title',
+              '-of',
+              'json',
+              f,
+            ],
+            { windowsHide: true },
+          ).toString('utf8'),
+        ),
+      );
+      const { chapters } = mergedChapters(
+        inputs.map((f, i) => ({
+          name: path.basename(f),
+          duration: probes[i].duration,
+          chapters: probes[i].chapters,
+        })),
+      );
+      const listFile = path.join(dir, 'files.txt');
+      const metaFile = path.join(dir, 'chapters.txt');
+      fs.writeFileSync(listFile, buildConcatList(inputs));
+      fs.writeFileSync(metaFile, buildFfmetadata(chapters, probes[0].tags, '章つき'));
+      const lists = (['copy', 'reencode'] as const).map((mode) => {
+        const output = path.join(dir, `${mode}.m4b`);
+        execFileSync(
+          'ffmpeg',
+          ffmpegArgs({ mode, inputs, listFile, metaFile, output, probes, bitrate: '64k' }).filter(
+            (a, i, all) => !(a === '-progress' || all[i - 1] === '-progress'),
+          ),
+          { windowsHide: true },
+        );
+        const back = parseProbe(
+          execFileSync(
+            'ffprobe',
+            ['-v', 'error', '-show_chapters', '-show_format', '-of', 'json', output],
+            { windowsHide: true },
+          ).toString('utf8'),
+        ).chapters;
+        expect(chapterMismatch(back, chapters, 1)).toBeNull();
+        return back.map((c) => [Math.round(c.start * 1000), c.title]);
+      });
+      expect(lists[1]).toEqual(lists[0]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('a file that is not audio fails and adds nothing', async () => {
