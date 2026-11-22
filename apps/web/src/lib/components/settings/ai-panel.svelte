@@ -83,6 +83,31 @@
   }[] = [
     { key: 'batchStallMinutes', id: 'ai-stall', unit: 'minutes', min: 0, max: 1440, step: 1 },
     {
+      key: 'batchFailWaitMinutes',
+      id: 'ai-fail-wait',
+      unit: 'minutes',
+      min: 1,
+      max: 1440,
+      step: 1
+    },
+    {
+      key: 'batchFailMaxWaitMinutes',
+      id: 'ai-fail-max-wait',
+      unit: 'minutes',
+      min: 1,
+      max: 1440,
+      step: 1
+    },
+    { key: 'batchFailPauseAfter', id: 'ai-fail-pause', unit: 'batches', min: 1, max: 100, step: 1 },
+    {
+      key: 'batchQueueTokensDefault',
+      id: 'ai-queue-default',
+      unit: 'tokens',
+      min: 0,
+      max: 1000000000,
+      step: 1
+    },
+    {
       key: 'batchTurnaroundMinutes',
       id: 'ai-turnaround',
       unit: 'minutes',
@@ -158,6 +183,26 @@
     void save({ [key]: n } as AiSettingsPatch).then(() => {
       // A refused value leaves the saved one: show it.
       if (status) input.value = String(status.settings[key]);
+    });
+  }
+
+  const QUEUE_HINT =
+    "The most of this model's prompts (estimated tokens) in batches at the provider at once; more is sent as its batches end. Your account's own limit is on the provider's Limits page (OpenAI: enqueued tokens per model). 0 = no cap.";
+
+  /** A model's batch queue cap, typed in millions of tokens. */
+  function setQueueCap(model: string, input: HTMLInputElement) {
+    const n = Number(input.value);
+    if (!status) return;
+    const cur = status.models.find((m) => m.model === model)?.batchQueueTokens ?? 0;
+    if (input.value.trim() === '' || !Number.isFinite(n) || n < 0) {
+      input.value = String(cur / 1e6);
+      return;
+    }
+    void save({
+      batchQueueTokens: { ...status.settings.batchQueueTokens, [model]: Math.round(n * 1e6) }
+    }).then(() => {
+      const now = status?.models.find((m) => m.model === model)?.batchQueueTokens;
+      if (now !== undefined) input.value = String(now / 1e6);
     });
   }
 
@@ -421,6 +466,23 @@
                 <option value="batch">Batches (half price)</option>
                 <option value="direct">One call each</option>
               </select>
+              {#if m.mode === 'batch'}
+                <label class="ai-queue" title={QUEUE_HINT}>
+                  <span>Queue cap</span>
+                  <input
+                    type="number"
+                    class="c-input"
+                    min="0"
+                    max="1000"
+                    step="0.1"
+                    value={m.batchQueueTokens / 1e6}
+                    aria-label="Most tokens of {m.model} in batches at the provider, in millions (0 = no cap)"
+                    on:change={(e) => setQueueCap(m.model, e.currentTarget)}
+                    data-testid="ai-queue-{m.model}"
+                  />
+                  <span>M tokens</span>
+                </label>
+              {/if}
             </div>
             <div class="ai-actions" role="cell">
               <button
@@ -439,6 +501,18 @@
                 data-testid="ai-delete-{m.model}">Delete</button
               >
             </div>
+            {#if m.batchFailing}
+              <div class="ai-failing" role="cell" data-testid="ai-failing-{m.model}">
+                <p class="c-notice text-sm" role="status">{m.batchFailing.text}</p>
+                <button
+                  type="button"
+                  class="c-btn c-btn-ghost c-btn-sm"
+                  disabled={saving}
+                  on:click={() => run((a) => a.retryBatches(m.model))}
+                  data-testid="ai-retry-{m.model}">Try now</button
+                >
+              </div>
+            {/if}
           </div>
         {/each}
       </div>
@@ -474,6 +548,21 @@
             </SettingField>
           </SettingRow>
         {/each}
+        <SettingRow id="ai-fail-fallback" let:labelId>
+          <select
+            class="c-input"
+            aria-labelledby={labelId}
+            value={status.settings.batchFailFallback}
+            on:change={(e) =>
+              save({
+                batchFailFallback: e.currentTarget.value === 'direct' ? 'direct' : 'wait'
+              })}
+            data-testid="ai-batchFailFallback"
+          >
+            <option value="wait">Wait and try a batch now and then</option>
+            <option value="direct">Ask one call each (full price)</option>
+          </select>
+        </SettingRow>
         <SettingRow id="ai-structured" let:labelId>
           <input
             type="checkbox"
@@ -552,6 +641,33 @@
 
   .ai-mode {
     width: 100%;
+  }
+
+  .ai-queue {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    margin-top: 0.375rem;
+    color: var(--c-muted);
+    font-size: 0.8125rem;
+    white-space: nowrap;
+  }
+
+  .ai-queue input {
+    width: 5rem;
+  }
+
+  .ai-failing {
+    grid-column: 1 / -1;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem 1rem;
+  }
+
+  .ai-failing p {
+    flex: 1 1 20rem;
+    margin: 0;
   }
 
   .ai-actions {

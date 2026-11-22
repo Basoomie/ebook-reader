@@ -15,7 +15,7 @@
 import type Database from 'better-sqlite3';
 import { createHash, randomUUID } from 'crypto';
 import { AiRunner, modeOf, type AiCounts } from '../../ai/runner';
-import { waitNeedsUser, waitText } from '../../ai/waits';
+import { waitIsNote, waitNeedsUser, waitText } from '../../ai/waits';
 import { runSpend } from '../../ai/spend';
 import {
   dropOtherItems,
@@ -651,7 +651,9 @@ export class AudioStage5 {
         pauseAudioStage(this.db, STAGE5, 'ai', p.wait);
         this.deps.log?.(`Audiobooks stage 5: ${p.wait}`);
       }
-      return r.pending === 0 && !waitNeedsUser(r.wait) ? 'done' : 'wait';
+      if (r.pending === 0 && !waitNeedsUser(r.wait)) return 'done';
+      // A note on one model's batches: the rest goes on at its own pace.
+      return waitIsNote(r.wait) && (r.sent > 0 || r.answered > 0) ? 'more' : 'wait';
     }
     p.wait = null;
     this.unpause();

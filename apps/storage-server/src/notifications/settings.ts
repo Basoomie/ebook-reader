@@ -9,6 +9,7 @@ import { listEvents, SECTIONS, SectionId } from './events';
 import { REPORT_KINDS, ReportKind } from './stats-events';
 // Registers the AI layer's limit alert before any defaults are made.
 import '../ai/limit-event';
+import '../ai/batch-event';
 
 export type Channel = 'discord' | 'email';
 export const CHANNELS: Channel[] = ['discord', 'email'];

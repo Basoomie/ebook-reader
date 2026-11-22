@@ -1212,6 +1212,42 @@ export const SETTINGS_CATALOG: CatalogSetting[] = [
       "If a provider hasn't answered anything in a batch by then, the batch is cancelled and its questions are asked one call each. 0 = wait as long as the provider takes (up to 24 hours)."
   },
   {
+    id: 'ai-fail-wait',
+    section: 'ai-advanced',
+    title: 'Wait after a failed batch',
+    description:
+      'When a provider refuses a whole batch, that model sends no batch for this long, twice as long after each further failure in a row.',
+    keywords: 'backoff refused batch'
+  },
+  {
+    id: 'ai-fail-max-wait',
+    section: 'ai-advanced',
+    title: 'Longest wait between failing batches',
+    description: 'Also how often a model whose batches are paused tries one batch.'
+  },
+  {
+    id: 'ai-fail-pause',
+    section: 'ai-advanced',
+    title: 'Pause batches after failures in a row',
+    description:
+      "Then the model's batches are paused and a notification goes out; it ends once a batch is accepted again."
+  },
+  {
+    id: 'ai-fail-fallback',
+    section: 'ai-advanced',
+    title: 'While batches are paused',
+    description:
+      "Wait (the model's questions wait for its batches), or ask its questions one call each for the rest of the run, at full price. The model's own setting is not changed."
+  },
+  {
+    id: 'ai-queue-default',
+    section: 'ai-advanced',
+    title: 'Batch queue cap per model',
+    description:
+      "The most estimated prompt tokens one model may have in batches at its provider, unless its row says otherwise. Your account's real limit is on the provider's Limits page (OpenAI: enqueued tokens per model). 0 = no cap.",
+    keywords: 'enqueued tokens limit'
+  },
+  {
     id: 'ai-turnaround',
     section: 'ai-advanced',
     title: 'Expected batch time before one is measured',
