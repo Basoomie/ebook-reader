@@ -15,8 +15,11 @@ import type { DecisionRow } from '../ai-decide/values';
 import { STAGE4_AI_FIELDS, type NumberValue, type SeriesValue } from './ai-prompt';
 import type { Stage4Decision } from './stage4-rules';
 
-/** Raised when the decision rules here change (decided again from the stored answers). */
-export const STAGE4_AI_DECIDE_VERSION = 1;
+/**
+ * Raised when the decision rules here change (decided again from the stored answers).
+ * 2: a series stage 4 wrote is never removed automatically (proposals.ts; series-order stop 2).
+ */
+export const STAGE4_AI_DECIDE_VERSION = 2;
 
 export const AI_FIELD_KEYS = ['t', 'au', 'il', 'se', 'ix', 'fmt'] as const;
 export type AiFieldKey = (typeof AI_FIELD_KEYS)[number];

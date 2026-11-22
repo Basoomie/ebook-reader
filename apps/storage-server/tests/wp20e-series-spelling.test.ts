@@ -354,3 +354,24 @@ describe('a series name stage 4 wrote keeps its spelling (series-order stop 2)',
     ).toMatchObject({ name: '古典部シリーズ' });
   });
 });
+
+describe('a series stage 4 wrote is never removed automatically (series-order stop 2)', () => {
+  it('goes to review', () => {
+    const d = {
+      ...input('〈小市民〉シリーズ', { series: '〈小市民〉シリーズ', seriesIndex: 3 }),
+      applied: new Map<string, unknown>([['series', { name: '〈小市民〉シリーズ', index: 3 }]]),
+    };
+    expect(seriesOf(proposeStage4({ ...d, decision: decision(null) }))).toMatchObject({
+      class: 'review',
+      new: { name: null },
+      reason: 'Would remove a series the cleanup wrote',
+    });
+  });
+  it('a series from before the cleanup follows the rules as before', () => {
+    const d = input('〈小市民〉シリーズ', { series: '〈小市民〉シリーズ', seriesIndex: 3 });
+    expect(seriesOf(proposeStage4({ ...d, decision: decision(null) }))).toMatchObject({
+      class: 'auto',
+      new: { name: null },
+    });
+  });
+});
