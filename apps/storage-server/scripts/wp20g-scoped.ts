@@ -101,6 +101,10 @@ async function main() {
   const snap = path.join(cacheDir, SNAPSHOT_DIRNAME, `${libraryId}.db`);
   fs.mkdirSync(path.dirname(snap), { recursive: true });
   if (!fs.existsSync(snap)) fs.copyFileSync(arg('metadata')!, snap);
+  // --fetch-pages: the stored answers' pages (plain files copied from the server's cache folder,
+  // <dir>/fetch/<site>/…): stage 4 reads a page from its file.
+  if (arg('fetch-pages'))
+    fs.cpSync(arg('fetch-pages')!, path.join(cacheDir, 'cleanup'), { recursive: true });
   // Stage 3's sketch store (the server's cache, a local copy): the candidate index reads it.
   if (arg('stage3-cache')) {
     const dst = path.join(cacheDir, 'cleanup', 'stage3.db');
@@ -131,8 +135,11 @@ async function main() {
     logError: (m, e) => log(`ERROR ${m} ${(e as Error)?.message ?? ''}`),
   });
   // Nothing is paid: the limit is this month's spend.
+  // --ai-cap: room for the questions of books whose evidence changed (the left-out ones); every
+  // compared book asked again is listed in the report.
   service.aiCore.updateSettings({
-    spendLimitUsd: Math.round(service.aiCore.room().spentUsd * 100) / 100,
+    spendLimitUsd:
+      Math.round((service.aiCore.room().spentUsd + Number(arg('ai-cap') ?? 0)) * 100) / 100,
   });
   const lib = getLibrary(main, libraryId)!;
   const libDir = path.join(arg('calibre')!, lib.folder);
@@ -382,6 +389,17 @@ async function main() {
       differences: diffs,
     };
   };
+  // The compared books the run asked a model about again (their evidence changed).
+  const askedAgain = (
+    cleanup
+      .prepare(`SELECT DISTINCT stage, item_key FROM ai_requests WHERE created_at >= ?`)
+      .all(started) as { stage: string; item_key: string }[]
+  ).filter((r) => {
+    const id = chosen.find((c) => keyOf(c) === r.item_key);
+    return id !== undefined && !leftOut.has(String(id));
+  });
+  report.askedAgain = askedAgain;
+  report.aiCost = service.aiCore.room().spentUsd;
   report.stage4 = cmpValues(before4, 'calibre4');
   report.stage5 = cmpValues(before5, 'calibre5');
   log(
