@@ -93,6 +93,7 @@ import {
   type StoreRecord,
   type StoreSource,
 } from './online-pages';
+import { recordCorrectionFor } from './online-corrections';
 import {
   abjpProduct,
   abjpSampleAudio,
@@ -151,8 +152,9 @@ export const STAGE4_RULES_VERSION = 2;
  * 3: archive extensions out of the titles, the album tag's title (WP21f-1 stop 2).
  * 4: the subtitle in a bracket at the end of the title (WP21c follow-up (3)).
  * 5: narrators from audiobook.jp's bare tag form (artist = the narrators; WP21f-2).
+ * 6: the records you chose for a recording (`online-corrections.ts`; WP21f-2 stop B2).
  */
-export const STAGE4_UNITS_VERSION = 5;
+export const STAGE4_UNITS_VERSION = 6;
 
 export type Stage4Phase = 'units' | 'lookups' | 'records' | 'gate' | 'done';
 
@@ -320,6 +322,11 @@ export interface UnitInputs {
    * when no record passed. Missing for every other unit (their inputs stay as they were).
    */
   tagTitle?: string;
+  /**
+   * The store record you chose for this recording (`online-corrections.ts`): read and taken as
+   * decided. Missing for every other unit (their inputs stay as they were).
+   */
+  record?: { source: StoreSource; id: string; reason: string };
   paths: string[];
   opening: OpeningFile[];
   /**
@@ -796,6 +803,9 @@ export class AudioStage4 {
         )
           ? album
           : null;
+      const chosen = recordCorrectionFor(
+        cs.flatMap((c) => c.files.filter((f) => f.root === 'torrents').map((f) => f.rel)),
+      );
       rows.push({
         // Stable while the same copies form the recording (a new analysis keeps the key).
         key: `u:${createHash('sha1')
@@ -817,6 +827,9 @@ export class AudioStage4 {
           kikubon: ids.kikubon,
           audiobookJp: ids.audiobookJp,
           ...(tagTitle ? { tagTitle } : {}),
+          ...(chosen
+            ? { record: { source: chosen.source, id: chosen.id, reason: chosen.reason } }
+            : {}),
           paths: paths.slice(0, 20),
           opening: rep.files.map((f) => ({
             id: f.id,
@@ -1147,6 +1160,33 @@ export class AudioStage4 {
       if (rec) add(rec, via, r.id);
       else if (fallback) add(fallback, via, null);
     };
+
+    // 0. The record you chose for this recording: read, and decided whatever its checks say.
+    if (inputs.record) {
+      const { source, id } = inputs.record;
+      const req =
+        source === 'audible'
+          ? audibleProduct(id)
+          : source === 'kikubon'
+            ? kikubonProduct(id)
+            : abjpProduct(id);
+      const r = this.need(ctx, req, 'correction');
+      if (r.pending) return waiting();
+      const rec = !r.ok
+        ? null
+        : source === 'audible'
+          ? this.parse(r.id, parseAudibleProduct)
+          : source === 'kikubon'
+            ? this.parse(r.id, (b) => parseKikubonProduct(b, id))
+            : this.parse(r.id, (b) => parseAbjpProduct(b, id));
+      if (rec) add(rec, 'correction', r.id);
+      const best = cands.find((c) => c.via === 'correction');
+      if (best) {
+        return { kind: 'decided', cls: 'auto', best, reason: null, detail: 'correction', cands };
+      }
+      // An unreadable record page (or one the one-record rule took away): the unit is looked up
+      // as any other.
+    }
 
     // 1. ASINs in the names.
     for (const a of inputs.asins.slice(0, MAX_ASINS)) product(a, 'asin_name');
