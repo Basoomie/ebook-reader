@@ -28,7 +28,7 @@ import { InProcessReader } from '../src/counts/book-text-worker';
 import type { BookTextModule } from '../src/cleanup/stage3-work';
 import { healthyHeartbeat, makeCleanupEnv, type CleanupEnv } from './helpers/cleanup-env';
 import { makeZip } from './helpers/epub-fixture';
-import { chaptersOf, makeTextEpub } from './helpers/stage3-fixture';
+import { chaptersOf, fakeText, makeTextEpub } from './helpers/stage3-fixture';
 
 const IMPORT = { importHTMLFixMode: 'Off', restrictImportFixToAnchor: true };
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -286,8 +286,14 @@ describe('wp20g: a run end to end', () => {
   const C = makeTextEpub({ title: 'C', chapters: chaptersOf(13) });
   const D = makeTextEpub({ title: 'D', chapters: chaptersOf(14) });
 
+  /** The stages' own analyses (a route's tick starts them) finish before the run goes on. */
+  const settle = async () => {
+    for (let i = 0; i < 600 && env.service.libraryBusy(); i++)
+      await new Promise((r) => setTimeout(r, 50));
+  };
   const steps = async (max = 200, archives = true) => {
     for (let i = 0; i < max; i++) {
+      await settle();
       if (archives) await playArchives();
       const r = await env.service.arrivals.step();
       if (r === 'idle') return;
@@ -441,6 +447,8 @@ describe('wp20g: a run end to end', () => {
       },
       ai: { ...getSettings(env.cleanupDb).ai, booksArrivalsDesign: 'E' },
     });
+    // Stages 1-5 in Preview (the run waits for a stage that is Off).
+    env.cleanupDb.prepare(`UPDATE stages SET mode = 'analyse' WHERE stage BETWEEN 1 AND 5`).run();
     fs.writeFileSync(path.join(src, 'Discord', 'same-as-A.epub'), A);
     fs.writeFileSync(path.join(src, 'Discord', 'B again.epub'), Bcopy);
     fs.writeFileSync(path.join(src, 'Discord', 'C.epub'), C);
@@ -590,6 +598,8 @@ describe('wp20g: a run end to end', () => {
     expect(
       env.cleanupDb.prepare(`SELECT origin FROM calibre_known_books WHERE calibre_id = ?`).get(H),
     ).toEqual({ origin: 'hand' });
+    // Stage 4 waits for its own analysis (no fetch container here): the run is stopped.
+    env.service.arrivals.stopRun();
   }, 300_000);
 
   it('a book you removed from Calibre is never added again', async () => {
@@ -707,4 +717,149 @@ describe('wp20g: the queries at the catalog’s end size (lessons 3-4)', () => {
     }
     db.close();
   }, 120_000);
+});
+
+describe('wp20g: better copies', () => {
+  let env: CleanupEnv;
+  let apply: string;
+  const auth = (t: string) => ({ Authorization: `Bearer ${t}` });
+  const E = makeTextEpub({ title: 'E', chapters: chaptersOf(15) });
+  const F = makeTextEpub({ title: 'F', chapters: chaptersOf(16) });
+  // The same books with a short extra story (under a quarter): stage 3 keeps the copy with it.
+  const Eplus = makeTextEpub({ title: 'E', chapters: [...chaptersOf(15), fakeText(77, 3000)] });
+  const Fplus = makeTextEpub({ title: 'F', chapters: [...chaptersOf(16), fakeText(78, 3000)] });
+  let ids: Record<string, number> = {};
+  const uuidOf = (id: number) =>
+    (env.lib.open().prepare('SELECT uuid FROM books WHERE id = ?').get(id) as { uuid: string })
+      .uuid;
+
+  beforeAll(async () => {
+    const sources = tmp();
+    const src = path.join(sources, 'books', 'japanese');
+    fs.mkdirSync(src, { recursive: true });
+    const made = await makeCleanupEnv({
+      service: {
+        stage3Reader: new InProcessReader(bundle, IMPORT),
+        counterBuild: 'test',
+        bookSourcesDir: sources,
+        bookSourcesReadOnly: false,
+      },
+    });
+    env = made.env;
+    ids = {
+      E: await env.lib.addBook({ title: 'E', authors: ['作者'], epub: E }),
+      F: await env.lib.addBook({ title: 'F', authors: ['作者'], epub: F }),
+    };
+    await made.setup();
+    apply = env.applyToken();
+    const user = env.userToken();
+    await request(env.app)
+      .put('/api/v1/cleanup/settings')
+      .set(auth(user))
+      .send({
+        contentServerUrl: 'http://calibre:8081',
+        calibreLibraryId: 'japanese-library',
+        calibreUsername: 'u',
+      })
+      .expect(200);
+    await request(env.app)
+      .put('/api/v1/cleanup/secrets/calibrePassword')
+      .set(auth(user))
+      .send({ value: 'pw' })
+      .expect(200);
+    await request(env.app)
+      .post('/api/v1/cleanup-apply/heartbeat')
+      .set(auth(apply))
+      .send(healthyHeartbeat())
+      .expect(200);
+    updateSettings(env.cleanupDb, {
+      arrivals: {
+        ...getSettings(env.cleanupDb).arrivals,
+        pairs: [{ id: 'ja', source: 'books/japanese', libraryId: env.libraryId() }],
+        settleMinutes: 0,
+        handCheckMinutes: 0,
+      },
+    });
+    env.cleanupDb.prepare(`UPDATE stages SET mode = 'analyse' WHERE stage BETWEEN 1 AND 5`).run();
+    // E has reading data in the reader; F has none.
+    env.addReaderData(env.readerBook(uuidOf(ids.E))!.bookId);
+    fs.writeFileSync(path.join(src, 'E plus.epub'), Eplus);
+    fs.writeFileSync(path.join(src, 'F plus.epub'), Fplus);
+  }, 120_000);
+
+  afterAll(async () => {
+    await env?.close();
+  });
+
+  const run = async () => {
+    for (let i = 0; i < 300; i++) {
+      for (let j = 0; j < 600 && env.service.libraryBusy(); j++)
+        await new Promise((r) => setTimeout(r, 50));
+      const r = await env.service.arrivals.step();
+      if (r !== 'more') return;
+    }
+  };
+  const outcome = (rel: string) =>
+    env.cleanupDb
+      .prepare(
+        'SELECT outcome, calibre_id FROM calibre_arrival_files WHERE rel_path = ? AND gone_at IS NULL',
+      )
+      .get(rel) as {
+      outcome: string;
+      calibre_id: number | null;
+    };
+
+  it('a better copy of a book with reading data goes to review; of one without, it is added and the old copy goes', async () => {
+    env.service.arrivals.setMode('analyse');
+    env.service.arrivals.requestRun();
+    await run();
+    expect(outcome('E plus.epub')).toEqual({ outcome: 'better_review', calibre_id: ids.E });
+    expect(outcome('F plus.epub')).toEqual({ outcome: 'better', calibre_id: ids.F });
+    const review = env.cleanupDb
+      .prepare(`SELECT kind, calibre_id FROM calibre_arrival_reviews`)
+      .all();
+    expect(review).toEqual([{ kind: 'better_copy', calibre_id: ids.E }]);
+    // On: F plus is added; stage 3 proposes the older F's removal under the run's id.
+    env.service.arrivals.approvePair('ja|books/japanese');
+    env.service.arrivals.setMode('on');
+    env.service.arrivals.requestRun();
+    for (let round = 0; round < 6; round++) {
+      await run();
+      const claim = await request(env.app)
+        .post('/api/v1/cleanup-apply/arrivals/claim')
+        .set(auth(apply))
+        .send({});
+      const batch = claim.body.batch as {
+        id: number;
+        items: { itemId: number; title: string }[];
+      } | null;
+      if (batch) {
+        for (const it of batch.items) {
+          const id = await env.lib.addBook({ title: it.title, authors: ['作者'], epub: Fplus });
+          await request(env.app)
+            .post(`/api/v1/cleanup-apply/arrivals/items/${it.itemId}`)
+            .set(auth(apply))
+            .send({ step: 'adding' });
+          await request(env.app)
+            .post(`/api/v1/cleanup-apply/arrivals/items/${it.itemId}`)
+            .set(auth(apply))
+            .send({ step: 'added', calibreId: id, uuid: uuidOf(id) });
+        }
+        await request(env.app)
+          .post(`/api/v1/cleanup-apply/arrivals/batches/${batch.id}/finish`)
+          .set(auth(apply))
+          .send({});
+      }
+      await env.index();
+    }
+    const p = env.cleanupDb
+      .prepare(
+        `SELECT calibre_id, json_extract(evidence_json, '$.kept.calibreId') AS kept FROM proposed_changes
+         WHERE stage = 3 AND analysis_id LIKE 'arrivals:%'`,
+      )
+      .all() as { calibre_id: number; kept: number }[];
+    expect(p.map((x) => x.calibre_id)).toEqual([ids.F]);
+    expect(p[0].kept).not.toBe(ids.F);
+    env.service.arrivals.stopRun();
+  }, 300_000);
 });

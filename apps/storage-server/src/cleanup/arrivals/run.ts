@@ -53,6 +53,7 @@ import type { Stage2Analysis } from '../stage2';
 import type { Stage2Batches } from '../stage2-batches';
 import type { BatchService } from '../batches';
 import { calibreNameBytes, NAME_MAX_BYTES } from '../stage2-rules';
+import { getStage } from '../stages';
 import type { Stage4Analysis, Stage4Progress } from '../stage4/analysis';
 import { arrivalAnalysisId } from '../stage4/analysis';
 import { clockNow, nextScheduledRun, scheduledRunDue } from '../audio/arrivals-schedule';
@@ -213,6 +214,8 @@ export interface ArrivalsDeps {
   linkSidecarOnline: () => boolean;
   /** The source folders must be mounted read-only (tests on a writable temp folder: false). */
   requireReadOnlySources?: boolean;
+  /** The safety checks (stage 0) every write waits for, as the stages' own writes do. */
+  checksPass?: () => { ok: boolean; failing: string[] };
   log?: (m: string) => void;
 }
 
@@ -667,6 +670,24 @@ export class BookArrivals {
       p.waiting = `Waiting for ${busy}`;
       return 'wait';
     }
+    // A stage set Off is not run for the arrivals either: the run waits for it (as the
+    // audiobooks' stage 7 waits for its stages).
+    const stageOf: Partial<Record<RunPhase, number>> = {
+      stage1: 1,
+      stage3: 3,
+      stage2: 2,
+      write2: 2,
+      stage4: 4,
+      ai: 4,
+      write4: 4,
+      stage5: 5,
+      write5: 5,
+    };
+    const st = stageOf[p.phase];
+    if (st !== undefined && getStage(this.db, st).mode === 'off') {
+      p.waiting = `Waiting: stage ${st} is Off (set it to Preview or On)`;
+      return 'wait';
+    }
     switch (p.phase) {
       case 'scan': {
         p.pairs = this.syncPairs();
@@ -773,6 +794,7 @@ export class BookArrivals {
           return 'more';
         }
         const id = arrivalAnalysisId(run.id);
+        if (this.checksWait(p)) return 'wait';
         for (const stage of [1, 3] as const) {
           const r =
             stage === 1
@@ -1338,12 +1360,14 @@ export class BookArrivals {
                 { pair, title: b.title },
               );
             } else {
+              // The pair stays with the file: the run that adds it (maybe a later one) proposes
+              // the older copy's removal from it.
               set.run(
                 'better',
                 `Better than Calibre book ${target.otherKey} (${target.reason}); added, then the older copy is removed`,
                 target.otherKey,
                 b.uuid,
-                factsPlus,
+                JSON.stringify({ ...JSON.parse(factsPlus), better: pair }),
                 Date.now(),
                 f.id,
               );
@@ -1453,12 +1477,23 @@ export class BookArrivals {
     ).map((r) => r.id);
   }
 
+  /** Why a write (an add, a removal, a field write) must wait: the safety checks. */
+  private checksWait(p: RunProgress): boolean {
+    const c = this.deps.checksPass?.();
+    if (c && !c.ok) {
+      p.waiting = `Waiting for the safety checks: ${c.failing.join('; ')}`;
+      return true;
+    }
+    return false;
+  }
+
   private addStep(
     run: RunRow & { p: RunProgress },
     p: RunProgress,
     libraryId: string,
   ): 'more' | 'wait' {
     const c = this.count(p, 'add');
+    if (c.total === 0 && this.checksWait(p)) return 'wait';
     if (c.total === 0 && !this.addBatches.busy(run.id)) {
       const ids = this.filesToAdd(run, p);
       if (!ids.length) {
@@ -1584,9 +1619,17 @@ export class BookArrivals {
         );
       }
     }
+    // The added files' sketches now live under their Calibre ids.
     dropNewSketches(
       cd,
-      Object.keys(p.betterOf).map((k) => -Number(k)),
+      p.scope.import.flatMap((id) => {
+        const f = this.db
+          .prepare(
+            `SELECT id FROM calibre_arrival_files WHERE json_extract(facts_json, '$.addedAs.calibreId') = ?`,
+          )
+          .get(id) as { id: number } | undefined;
+        return f ? [-f.id] : [];
+      }),
     );
     // The books added by hand, settled: in this run's scope.
     const hand = this.handSettled(libraryId);
@@ -1655,6 +1698,30 @@ export class BookArrivals {
       p,
       async () => {
         // The better imports: the older library copy goes (it has no reader data: checked again).
+        // The better copies this run added (compared in this run or an earlier Preview).
+        const added = new Set(p.scope.import);
+        const better = (
+          this.db
+            .prepare(
+              `SELECT id, calibre_id, calibre_uuid, facts_json FROM calibre_arrival_files INDEXED BY calibre_arrival_files_outcome
+               WHERE outcome = 'better' AND gone_at IS NULL`,
+            )
+            .all() as {
+            id: number;
+            calibre_id: number;
+            calibre_uuid: string;
+            facts_json: string | null;
+          }[]
+        ).filter((r) => {
+          const f = r.facts_json ? JSON.parse(r.facts_json) : {};
+          return f.addedAs && added.has(f.addedAs.calibreId);
+        });
+        for (const r of better)
+          p.betterOf[String(r.id)] = {
+            calibreId: r.calibre_id,
+            uuid: r.calibre_uuid,
+            pair: (JSON.parse(r.facts_json!).better ?? {}) as Record<string, unknown>,
+          };
         for (const [fileId, x] of Object.entries(p.betterOf)) {
           const row = this.db
             .prepare('SELECT facts_json FROM calibre_arrival_files WHERE id = ?')
@@ -1870,6 +1937,7 @@ export class BookArrivals {
           ? this.deps.stage4Batches
           : this.deps.stage5Batches;
     const w = (p.writes[`s${stage}`] ??= { batches: [], applied: 0, failed: 0 });
+    if (this.checksWait(p)) return 'wait';
     if (this.deps.batches.open()) {
       p.waiting = 'A batch is being applied';
       return 'wait';
@@ -2036,6 +2104,25 @@ export class BookArrivals {
     const run = this.db
       .prepare('SELECT mode FROM calibre_arrival_runs WHERE id = ?')
       .get(runId) as { mode: 'analyse' | 'on' };
+    // Sketches of source files that will not be added (copies, not imported) leave the cache;
+    // those that may still be added stay until they are.
+    try {
+      const decided = (
+        this.db
+          .prepare(
+            `SELECT id FROM calibre_arrival_files INDEXED BY calibre_arrival_files_run
+             WHERE run_id = ? AND outcome NOT IN ('new', 'better')`,
+          )
+          .all(runId) as { id: number }[]
+      ).map((r) => -r.id);
+      if (decided.length && p.libraryId && this.deps.calibreDir)
+        dropNewSketches(
+          { cleanup: this.db, cacheDir: this.deps.cacheDir, libraryId: p.libraryId } as CompareDeps,
+          decided,
+        );
+    } catch (err) {
+      this.log(`New arrivals: the cache's sketches were not tidied: ${(err as Error).message}`);
+    }
     const report = this.report(runId, p, run.mode);
     p.phase = 'done';
     this.db

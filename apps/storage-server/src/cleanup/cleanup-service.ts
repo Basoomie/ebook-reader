@@ -382,6 +382,7 @@ export class CleanupService {
       },
       linkSidecarOnline: () => this.linkSeen(),
       requireReadOnlySources: opts.bookSourcesReadOnly,
+      checksPass: () => this.checksPass(),
       log: this.log,
     });
     // Stage 4's covers are the stores' pictures, read from the fetch cache.
