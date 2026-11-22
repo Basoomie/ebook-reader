@@ -74,9 +74,11 @@ describe('stage 5 text', () => {
   });
 
   it('says what is spent against the limit, and when no limit is set', () => {
-    expect(spendLine(s5())).toBe('AI: $0.12 spent of the $1.00 limit ($0.05 held for batches).');
+    expect(spendLine(s5())).toBe(
+      'AI: $0.12 spent this month of the $1.00 monthly limit (every AI feature), $0.05 held for batches.'
+    );
     expect(spendLine(s5({}, { spend: { spentUsd: 0, reservedUsd: 0, limitUsd: null } }))).toBe(
-      'AI: no spending limit set yet (Settings > AI): the models are not asked.'
+      'AI: no monthly spending limit set yet (Settings > AI): the models are not asked.'
     );
   });
 

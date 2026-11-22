@@ -15,6 +15,7 @@ export const SETTINGS_TABS = [
   'Statistics',
   'Audiobooks',
   'Anki',
+  'AI',
   'Notifications',
   'Diagnostics'
 ] as const;

@@ -282,6 +282,41 @@ export const SETTINGS_SECTIONS: CatalogSection[] = [
     description: 'Sentence audio that couldn’t be added yet, waiting to be added to its card.',
     keywords: 'pending offline'
   },
+  // AI
+  {
+    id: 'ai-keys',
+    tab: 'AI',
+    jp: '鍵',
+    title: 'API keys',
+    description:
+      'Every AI feature uses these. They are kept encrypted on the server and never shown again.',
+    keywords: 'anthropic openai claude gpt secret'
+  },
+  {
+    id: 'ai-spending',
+    tab: 'AI',
+    jp: '費用',
+    title: 'Spending',
+    description:
+      'One monthly limit for every AI feature together. Nothing is sent to a model until it is set; when it is reached, AI work waits until the next month or a higher limit.',
+    keywords: 'limit cost money budget month'
+  },
+  {
+    id: 'ai-models',
+    tab: 'AI',
+    jp: 'モデル',
+    title: 'Models',
+    description:
+      'The models a feature can choose, with their list prices. Batches cost half and are answered when the provider gets to them; one call each is answered at once at the full price. A model without a price is never asked.',
+    keywords: 'price batch test check haiku sonnet luna sol'
+  },
+  {
+    id: 'ai-advanced',
+    tab: 'AI',
+    jp: '詳細',
+    title: 'Advanced',
+    description: 'Rarely needed tuning of how the models are asked.'
+  },
   // Notifications
   {
     id: 'notify-channels',
@@ -1151,6 +1186,104 @@ export const SETTINGS_CATALOG: CatalogSetting[] = [
     section: 'anki-reader',
     title: 'Close the message after',
     description: 'After enriching a card. 0 keeps it open.'
+  },
+
+  // AI
+  { id: 'ai-key-anthropic', section: 'ai-keys', title: 'Anthropic API key', keywords: 'claude' },
+  { id: 'ai-key-openai', section: 'ai-keys', title: 'OpenAI API key', keywords: 'gpt' },
+  {
+    id: 'ai-limit',
+    section: 'ai-spending',
+    title: 'Monthly spending limit',
+    description: 'For every AI feature together. Empty: nothing is sent to a model.',
+    keywords: 'budget'
+  },
+  { id: 'ai-month', section: 'ai-spending', title: 'This month', keywords: 'spent' },
+  { id: 'ai-history', section: 'ai-spending', title: 'Earlier months', keywords: 'history' },
+  {
+    id: 'ai-check',
+    section: 'ai-models',
+    title: 'Check models',
+    description: 'Asks each provider, with your key, which models it offers.'
+  },
+  {
+    id: 'ai-add-model',
+    section: 'ai-models',
+    title: 'Add a model',
+    description: 'Its id as the provider writes it, and its list price in US$ per million tokens.'
+  },
+  {
+    id: 'ai-stall',
+    section: 'ai-advanced',
+    title: 'Cancel a batch with no answers after',
+    description:
+      "If a provider hasn't answered anything in a batch by then, the batch is cancelled and its questions are asked one call each. 0 = wait as long as the provider takes (up to 24 hours)."
+  },
+  {
+    id: 'ai-turnaround',
+    section: 'ai-advanced',
+    title: 'Expected batch time before one is measured',
+    description:
+      "Only for the time left until a run's first batch comes back; after that, the measured time is used."
+  },
+  {
+    id: 'ai-connect',
+    section: 'ai-advanced',
+    title: 'Wait for each address when connecting',
+    description:
+      'A provider can have several addresses (IPv4 and IPv6). If one takes longer than this to connect, the next is tried. Your network has no IPv6 route, so a short wait (250 ms is Node’s own) cut off the working IPv4 connection on 2026-11-19.'
+  },
+  {
+    id: 'ai-workers',
+    section: 'ai-advanced',
+    title: 'Calls at the same time',
+    description:
+      'For a model asked one call each: how many questions run at once (a new one starts as each ends). More is faster and costs the same; past the provider’s own limit it answers “busy” and the work waits and tries again.'
+  },
+  {
+    id: 'ai-batch-size',
+    section: 'ai-advanced',
+    title: 'Questions per batch',
+    description: 'Providers allow up to 50,000.'
+  },
+  {
+    id: 'ai-poll',
+    section: 'ai-advanced',
+    title: 'Check a batch every',
+    description: 'How often the server asks a provider whether a batch is done.'
+  },
+  {
+    id: 'ai-max-tokens',
+    section: 'ai-advanced',
+    title: 'Longest Claude answer',
+    description:
+      'Thinking included. Too low cuts answers off (8,000 starved one book in the tests); you pay only for what is written.'
+  },
+  {
+    id: 'ai-timeout',
+    section: 'ai-advanced',
+    title: 'Time limit per call',
+    description: 'A call that takes longer is tried again.'
+  },
+  {
+    id: 'ai-attempts',
+    section: 'ai-advanced',
+    title: 'Tries per question',
+    description:
+      'Only when the provider is busy or has a server error. A refusal or an unusable answer is never asked again.'
+  },
+  {
+    id: 'ai-batch-price',
+    section: 'ai-advanced',
+    title: 'Batch price',
+    description: '0.5 = half price; used to count what batches cost.'
+  },
+  {
+    id: 'ai-structured',
+    section: 'ai-advanced',
+    title: 'Ask for answers in the exact format',
+    description:
+      'The providers then always answer in the shape the feature reads. Turn off only if a provider refuses it.'
   },
 
   // Notifications

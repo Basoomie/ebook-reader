@@ -848,6 +848,16 @@ export function removeNotificationSecretCopy(label: string): ConfirmCopy {
   };
 }
 
+/** Settings > AI: remove a saved API key. */
+export function removeAiKeyCopy(label: string): ConfirmCopy {
+  return {
+    title: `Remove the saved ${label}?`,
+    message: ['No feature can ask this provider’s models until you enter it again.'],
+    confirmLabel: `Remove ${label}`,
+    irreversible: true
+  };
+}
+
 /** Audiobook cleanup: a stage's "Run the analysis again" (starts the stage over). */
 export function analyseAgainCopy(stageName: string, detail: string): ConfirmCopy {
   return {

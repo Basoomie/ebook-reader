@@ -24,6 +24,7 @@
     Statistics: '計',
     Audiobooks: '音',
     Anki: '暗',
+    AI: '智',
     Notifications: '通',
     Diagnostics: '診'
   };
