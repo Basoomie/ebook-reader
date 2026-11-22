@@ -28,14 +28,15 @@
     type AiStatus
   } from '$lib/ai/ai-api';
   import {
-    batchTestText,
     describeAiError,
     featureSplit,
     keyStateText,
     monthName,
-    offeredText,
-    priceText,
-    providerLine,
+    batchTestShort,
+    longTierText,
+    priceShort,
+    PROVIDER_NAMES,
+    providerShort,
     spendText,
     usd
   } from '$lib/ai/ai-text';
@@ -353,87 +354,105 @@
     </SettingsGroup>
 
     <SettingsGroup id="ai-models" testid="ai-section-models">
-      <SettingRow id="ai-check" layout="stack">
-        <svelte:fragment slot="description">
-          {#each ['anthropic', 'openai'] as p (p)}
-            <p class="mt-1 text-sm" data-testid="ai-provider-{p}">
-              {providerLine(status, p === 'anthropic' ? 'anthropic' : 'openai')}
-            </p>
+      <div class="ai-toolbar">
+        <p class="text-sm">
+          {#each ['anthropic', 'openai'] as p, i (p)}
+            {#if i}<span class="text-c-muted">{' · '}</span>{/if}<span data-testid="ai-provider-{p}"
+              >{providerShort(status, p === 'anthropic' ? 'anthropic' : 'openai')}</span
+            >
           {/each}
-        </svelte:fragment>
-        <div>
-          <button
-            type="button"
-            class="c-btn c-btn-secondary"
-            disabled={checking}
-            on:click={checkModels}
-            data-testid="ai-check">{checking ? 'Checking…' : 'Check models'}</button
-          >
+        </p>
+        <button
+          type="button"
+          class="c-btn c-btn-secondary c-btn-sm"
+          disabled={checking}
+          on:click={checkModels}
+          data-testid="ai-check">{checking ? 'Checking…' : 'Check models'}</button
+        >
+      </div>
+      <div class="ai-table" role="table" aria-label="Models">
+        <div class="ai-row ai-head" role="row">
+          <span role="columnheader">Model</span>
+          <span role="columnheader">In / out per 1M</span>
+          <span role="columnheader">Asked</span>
+          <span role="columnheader"><span class="sr-only">Actions</span></span>
         </div>
-      </SettingRow>
-      {#each status.models as m (m.model)}
-        <SettingRow title={m.model} testid="ai-model-{m.model}">
-          <svelte:fragment slot="description">
-            <p class="mt-1 text-sm" data-testid="ai-price-{m.model}">
-              {m.price ? priceText(m.price) : 'Price not known'}{#if !m.builtIn}<span
-                  class="text-c-muted"
-                  >{' '}· typed in Settings before prices were built in, not checked</span
-                >{/if}
-            </p>
-            <p class="text-sm text-c-muted">
-              {offeredText(m.offered, m.provider)} · {batchTestText(status, m.model)}
-            </p>
-            {#if m.inUse.length}
-              <p class="text-sm text-c-muted" data-testid="ai-in-use-{m.model}">
-                Used by {m.inUse.join('; ')}. To delete it, choose another model there first.
-              </p>
-            {/if}
-          </svelte:fragment>
-          <div class="text-sm">
-            <div class="flex flex-wrap items-center gap-2">
+        {#each status.models as m (m.model)}
+          <div class="ai-row" role="row" data-testid="ai-model-{m.model}">
+            <div class="ai-name" role="cell">
+              <span class="font-medium">{m.model}</span>
+              {#if m.inUse.length}
+                <span
+                  class="ai-badge"
+                  title="Used by {m.inUse.join('; ')}"
+                  data-testid="ai-in-use-{m.model}">In use</span
+                >
+              {/if}
+              {#if m.offered === false}
+                <span
+                  class="ai-badge ai-warn"
+                  title="Not in {PROVIDER_NAMES[m.provider]}'s model list for your key"
+                  >Not offered</span
+                >
+              {/if}
+              {#if !m.builtIn}
+                <span class="ai-badge" title="Typed in Settings before models were checked"
+                  >Not verified</span
+                >
+              {/if}
+              {#if batchTestShort(status, m.model)}
+                <span class="ai-sub">{batchTestShort(status, m.model)}</span>
+              {/if}
+            </div>
+            <span
+              class="ai-price"
+              role="cell"
+              title={m.price ? longTierText(m.price) : ''}
+              data-testid="ai-price-{m.model}">{m.price ? priceShort(m.price) : '–'}</span
+            >
+            <div role="cell">
               <select
-                class="c-input w-64"
+                class="c-input ai-mode"
                 aria-label="How {m.model} is asked"
                 value={m.mode}
                 on:change={(e) => setMode(m.model, e.currentTarget.value)}
                 data-testid="ai-mode-{m.model}"
               >
                 <option value="batch">Batches (half price)</option>
-                <option value="direct">One call each (full price)</option>
+                <option value="direct">One call each</option>
               </select>
+            </div>
+            <div class="ai-actions" role="cell">
               <button
                 type="button"
-                class="c-btn c-btn-secondary"
+                class="c-btn c-btn-ghost c-btn-sm"
                 disabled={testing[m.model] || status.batchTests[m.model]?.state === 'open'}
                 on:click={() => testBatch(m.model)}
                 data-testid="ai-test-{m.model}">Test batch</button
               >
               <button
                 type="button"
-                class="c-btn c-btn-danger-line"
+                class="c-btn c-btn-danger-line c-btn-sm"
                 disabled={m.inUse.length > 0}
+                title={m.inUse.length ? `In use: ${m.inUse.join('; ')}` : undefined}
                 on:click={() => deleteModel(m.model)}
                 data-testid="ai-delete-{m.model}">Delete</button
               >
             </div>
           </div>
-        </SettingRow>
-      {/each}
-      <SettingRow id="ai-add-model" layout="stack">
-        <div>
-          <button
-            type="button"
-            class="c-btn c-btn-secondary"
-            on:click={openAdd}
-            data-testid="ai-add-model">Add a model</button
-          >
-        </div>
-      </SettingRow>
-      <p class="s-note" data-testid="ai-prices-note">
-        The providers’ list prices as of {status.pricesChecked}, built into the app. They only count
-        what is spent against the monthly limit; Anthropic and OpenAI bill their own prices. A model
-        the app doesn’t know the price of yet can be added once an app update brings it.
-      </p>
+        {/each}
+      </div>
+      <div class="ai-foot">
+        <button
+          type="button"
+          class="c-btn c-btn-secondary"
+          on:click={openAdd}
+          data-testid="ai-add-model">Add a model</button
+        >
+        <p class="text-sm text-c-muted" data-testid="ai-prices-note">
+          List prices as of {status.pricesChecked}, used only to count spending.
+        </p>
+      </div>
     </SettingsGroup>
 
     <SettingsGroup id="ai-advanced" testid="ai-section-advanced">
@@ -485,6 +504,104 @@
     border-top: 1px solid var(--c-line);
     font-size: 0.875rem;
     color: var(--c-muted);
+  }
+
+  .ai-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem 1rem;
+    padding: 0.75rem 1.25rem;
+  }
+
+  .ai-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 8rem 13rem 11rem;
+    align-items: center;
+    gap: 0.5rem 1rem;
+    padding: 0.625rem 1.25rem;
+    border-top: 1px solid var(--c-line);
+  }
+
+  .ai-head {
+    padding-block: 0.375rem;
+    color: var(--c-muted);
+    font-size: 0.8125rem;
+  }
+
+  .ai-name {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.25rem 0.5rem;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .ai-sub {
+    flex-basis: 100%;
+    color: var(--c-muted);
+    font-size: 0.8125rem;
+  }
+
+  .ai-price {
+    font-variant-numeric: tabular-nums;
+    font-size: 0.875rem;
+  }
+
+  .ai-mode {
+    width: 100%;
+  }
+
+  .ai-actions {
+    display: flex;
+    gap: 0.5rem;
+    justify-content: flex-end;
+  }
+
+  .ai-badge {
+    padding: 0.0625rem 0.5rem;
+    border: 1px solid var(--c-line-strong);
+    border-radius: 999px;
+    color: var(--c-muted);
+    font-size: 0.75rem;
+    line-height: 1.25rem;
+    white-space: nowrap;
+  }
+
+  .ai-warn {
+    border-color: var(--c-danger);
+    color: var(--c-danger);
+  }
+
+  .ai-foot {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem 1rem;
+    padding: 0.875rem 1.25rem;
+    border-top: 1px solid var(--c-line);
+  }
+
+  /* Phones: name and price on one line, the controls under them. */
+  @media (max-width: 640px) {
+    .ai-head {
+      display: none;
+    }
+
+    .ai-row {
+      grid-template-columns: minmax(0, 1fr) auto;
+    }
+
+    .ai-row > :nth-child(3) {
+      grid-column: 1 / -1;
+    }
+
+    .ai-actions {
+      grid-column: 1 / -1;
+      justify-content: flex-start;
+    }
   }
 
   .s-summary {
