@@ -308,7 +308,9 @@ export function editionOf(a: string, c: string): boolean {
 /** Whether a title (after the series name) marks a side book. */
 export function isSideTitle(title: string, name: string): boolean {
   const rest = afterName(title, name);
-  return rest !== null && SIDE.test(nfkc(rest));
+  // A title printing its volume number first is that volume, whatever it comes with (「英雄教室 6
+  // 画集＋キャラクター事典収録…特装版」: stop 1's test half).
+  return rest !== null && SIDE.test(nfkc(rest)) && leadingNumber(rest) === null;
 }
 
 /** The subtitle words after the series name with numbers set aside (for matching volumes). */
@@ -550,7 +552,19 @@ export function orderSeries(books: SeriesBook[]): SeriesChoice[] {
       for (const w of open) w.unplaced = true;
     } else {
       const dated = open.filter((w) => w.b.date !== null);
-      if (dated.length >= 2) {
+      // The models' numbers stay when they hold together: each book its own number, none
+      // missing, and not against the dates (stop 1's test half: 福音の少年 1, 5, 7 with the
+      // volumes between not in the library, and 四季 春夏秋冬 on one e-book date, were right).
+      const nums = open.map((w) => w.index);
+      const distinct = new Set(nums).size === nums.length && nums.every((x) => x !== null);
+      const byDate = [...dated].sort((a, c) => a.b.date! - c.b.date!);
+      const againstDates = byDate.some(
+        (w, i) => i > 0 && byDate[i - 1].b.date! < w.b.date! && byDate[i - 1].index! > w.index!,
+      );
+      const datesTell = new Set(dated.map((w) => w.b.date)).size === dated.length;
+      if (distinct && !againstDates) {
+        // Kept, as the best guesses they are (their reasons stay).
+      } else if (dated.length >= 2 && datesTell) {
         const taken = new Set(
           mains.filter((w) => !open.includes(w) && w.index !== null).map((w) => w.index!),
         );
@@ -715,9 +729,10 @@ export function orderSeries(books: SeriesBook[]): SeriesChoice[] {
   // books share the words before the number with another number. (A first volume titled as its
   // series, 「クーデレすぎる…7日間」 and its 「(2)」, is not.)
   const nm = /^(.*?\D)(\d+)(\D.*)$/u.exec(nfkc(name));
+  // (The book with that title need not be in the library: 「講談名作文庫25 国定忠治」 for 10 and 29.)
   const nameIsTitle =
     !!nm &&
-    books.some((b) => b.own.some((t) => squash(plain(t)) === nameKey)) &&
+    squash(nm[3]).length >= 2 &&
     books.some((b) =>
       b.own.some((t) => {
         const m = /^(.*?\D)(\d+)/u.exec(plain(t));
@@ -734,19 +749,27 @@ export function orderSeries(books: SeriesBook[]): SeriesChoice[] {
       ? 'No book and no store shows this series name'
       : null;
 
+  // A book whose series is not the cleanup's (Calibre's own or the user's) and has no number:
+  // never changed, but listed (stop 1: 「地にはマのつく星が降る！」, 「倫敦スコーンの謎」).
+  if (works.length > 1)
+    for (const w of works)
+      if (!w.ours && w.index === null && isMain(w))
+        w.review = "No number, and the cleanup did not decide this book's series";
+
   return works
-    .filter((w) => w.ours || nameProblem)
+    .filter((w) => w.ours || nameProblem || w.review)
     .map((w) => {
       const c: SeriesChoice = {
         uuid: w.b.uuid,
         index: w.index,
-        from: w.from,
+        // 'calibre': the step changes nothing of the book (the review only lists it).
+        from: w.ours ? w.from : 'calibre',
         guess: w.guess,
         reason: w.guess ? w.reason : null,
       };
       const review = nameProblem && w.b.nameFrom !== 'user' ? nameProblem : w.review;
       if (review) c.review = review;
-      const t = titleChoice(w, name);
+      const t = w.ours ? titleChoice(w, name) : null;
       if (t) {
         c.title = t.title;
         c.titleFrom = t.from;
