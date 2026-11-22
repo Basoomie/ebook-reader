@@ -11,7 +11,7 @@ import type { DiskLock } from '../disk-lock';
 import { DISK_OWNERS } from '../disk-lock';
 import type { SecretStore } from '../secrets';
 import { getSettings } from '../settings';
-import { AbsClient } from './abs-client';
+import { AbsClient, absKeyRefusal } from './abs-client';
 import {
   getSnapshot,
   listSnapshots,
@@ -1199,6 +1199,21 @@ export class AudioCleanupService {
       this.stage4.restart();
     } else throw new Error('The audiobook folders are not set up');
     void this.tick();
+  }
+
+  /**
+   * Whether Audiobookshelf takes a key before it is saved: the reason to refuse, or null. Without
+   * an address there is nothing to ask (the key is checked when it is first used).
+   */
+  async absKeyRefusal(key: string): Promise<string | null> {
+    const s = getSettings(this.db).audiobooks;
+    if (!s.absUrl) return null;
+    return absKeyRefusal({
+      baseUrl: s.absUrl,
+      apiKey: key,
+      timeoutMs: s.absTimeoutSeconds * 1000,
+      fetchImpl: this.opts.fetchImpl,
+    });
   }
 
   /** Stage 0: takes a read-only snapshot of Audiobookshelf now. */

@@ -17,7 +17,7 @@ import {
 	subtitleChange$,
 	subtitlesForMerge$,
 } from './stores';
-import { between, interactWithSandbox, toTimeStamp, toTimeString } from './util';
+import { between, toTimeStamp, toTimeString } from './util';
 import { getAudioMetadata, getMediaInfoCover } from './mediaInfo';
 import { getChapterData, initializeFFMPEG, putAudioFileInFFMPEG } from './ffmpeg';
 
@@ -28,10 +28,10 @@ import srtParser2 from 'srt-parser-2';
 
 async function verifyPermission(
 	handle: FileSystemFileHandle,
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	 
 	options: any = { mode: 'read' },
 ) {
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	 
 	const h = handle as any;
 
 	if ((await h.queryPermission(options)) === 'granted') {
@@ -84,7 +84,7 @@ function getVTTCues(url: string, document: Document) {
 
 export async function verifyPermissions(
 	handles: (FileSystemFileHandle | undefined)[],
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	 
 	options: any = { mode: 'read' },
 ) {
 	const checks: Promise<boolean>[] = [];
@@ -185,6 +185,42 @@ export async function updateSubtitles(file: File, document: Document, updateCont
 	}
 }
 
+/**
+ * ttsu (Whispersync Match on the book page): whispersync's saved subtitles as the lines it
+ * plays and matches, moved out of AudioBookMenu.loadPersistedSubtitles unchanged.
+ */
+export function persistedSubtitles(
+	saved: Subtitle[],
+	startPaddingMs: number,
+	endPaddingMs: number,
+	duration: number,
+): Map<string, Subtitle> {
+	const result = new Map<string, Subtitle>();
+	const subtitlesGlobalStartPadding = startPaddingMs / 1000;
+	const subtitlesGlobalEndPadding = endPaddingMs / 1000;
+
+	for (let index = 0, { length } = saved; index < length; index += 1) {
+		const subtitle = saved[index];
+		const startSeconds = Math.max(
+			0,
+			subtitle.adjustedStartSeconds ?? subtitle.originalStartSeconds + subtitlesGlobalStartPadding,
+		);
+		const endSeconds = duration
+			? between(0, duration, subtitle.adjustedEndSeconds ?? subtitle.originalEndSeconds + subtitlesGlobalEndPadding)
+			: Math.max(0, subtitle.adjustedEndSeconds ?? subtitle.originalEndSeconds + subtitlesGlobalEndPadding);
+
+		result.set(subtitle.id, {
+			...subtitle,
+			startSeconds,
+			startTime: toTimeStamp(startSeconds),
+			endSeconds,
+			endTime: toTimeStamp(endSeconds),
+		});
+	}
+
+	return result;
+}
+
 export function setSubtitleContext(
 	newSubtitleFile: File | undefined = undefined,
 	newSubtitles = new Map<string, Subtitle>(),
@@ -211,7 +247,7 @@ export async function updateAudio(
 	let coverUrl = '';
 	let isMP3VBR = false;
 	let audioSourceUrl = '';
-	let chapters: AudioChapter[] = [];
+	const chapters: AudioChapter[] = [];
 	let metadata: MediaInfoType | undefined;
 
 	if (!metadataOnly) {
@@ -230,7 +266,7 @@ export async function updateAudio(
 				throw new Error('No media metadata found');
 			}
 
-			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			 
 			const generalTrack = metadata.media.track.find((entry: any) => entry['@type'] === 'General');
 
 			if (!generalTrack) {
@@ -344,7 +380,7 @@ export async function getFileHandle(
 	allowedExtensions: FileExtension[],
 	oldHandle: FileSystemFileHandle | undefined,
 ) {
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	 
 	const [handle] = await (window as any).showOpenFilePicker({
 		excludeAcceptAllOption: true,
 		id: 'ttu-whispersync-file',

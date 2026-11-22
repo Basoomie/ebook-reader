@@ -73,3 +73,26 @@ export class AbsClient {
     }
   }
 }
+
+/**
+ * Asks Audiobookshelf whether it takes a key before the cleanup stores it (2026-11-22: a
+ * 14-character value saved over the key paused stage 7 with a 401). One GET of /api/users, the
+ * admin-only list the cleanup reads progress through: 401 = the key is refused, 403 = its user
+ * is not an admin; no answer = not checked, so not saved either (the old key stays). A 404 passes:
+ * ABS checks the key before it looks up the route. Returns the reason to refuse, or null.
+ */
+export async function absKeyRefusal(opts: AbsClientOptions): Promise<string | null> {
+  try {
+    await new AbsClient(opts).get('/users');
+    return null;
+  } catch (err) {
+    const e = err as AbsError;
+    if (e.status === 401) {
+      return 'Audiobookshelf refused this API key (401), so it was not saved. Copy the whole key from Audiobookshelf (Settings › API Keys); it is a long token, not a password.';
+    }
+    if (e.status === 403) {
+      return "Audiobookshelf refused this API key (403): the key's user is not an admin, so it was not saved.";
+    }
+    return `The key could not be checked, so it was not saved: ${e.message}`;
+  }
+}
