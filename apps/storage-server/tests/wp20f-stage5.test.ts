@@ -576,6 +576,27 @@ describe('stage 5 from evidence to proposals', () => {
     expect(p.counts!.removals).toMatchObject({ 'metadata-processed': 1, Manga: 1 });
     // The bar: done.
     expect(s5.bar()).toBeNull();
+    // The propose phase's bar counts books, not the cursor (a Calibre id: the live run showed
+    // "61,282 of 53,247").
+    const saved = s5.progress()!;
+    updateStage(db, 5, {
+      progress: {
+        ...saved,
+        phase: 'propose',
+        cursor: 61_282,
+        total: 53_247,
+        proposed: 1_000,
+        phaseStartedAt: now - 60_000,
+        phaseStartDone: 0,
+      } as unknown as Record<string, unknown>,
+    });
+    expect(s5.bar(now)).toEqual({
+      phase: 'propose',
+      done: 1_000,
+      total: 53_247,
+      secondsLeft: Math.round((52_247 * 60_000) / 1_000 / 1000),
+    });
+    updateStage(db, 5, { progress: saved as unknown as Record<string, unknown> });
     // Nothing asked again after a rules change; decided and proposed again.
     const calls = standin.calls.length;
     updateSettings(db, { customTags: [...CUSTOM, 'Manga'] });
