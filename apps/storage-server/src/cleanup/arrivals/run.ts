@@ -1651,7 +1651,8 @@ export class BookArrivals {
       if (b) ins.run(run.id, libraryId, id, b.uuid, 'import', null);
     }
     for (const b of hand) ins.run(run.id, libraryId, b.calibreId, b.uuid, 'hand', null);
-    this.next(run.id, p, 'stage1');
+    // No new book in Calibre: stages 1-5 have nothing to do (and nothing waits for them).
+    this.next(run.id, p, p.scope.import.length + p.scope.hand.length > 0 ? 'stage1' : 'check');
     return 'more';
   }
 
