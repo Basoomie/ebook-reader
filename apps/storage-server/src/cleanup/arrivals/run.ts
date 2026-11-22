@@ -599,6 +599,18 @@ export class BookArrivals {
          WHERE library_id = ? AND origin = 'hand' AND run_id IS NULL`,
       )
       .all(libraryId) as { calibre_id: number; added_at: number }[];
+    // Books a Preview run took in were only shown: the first On run takes them in again and
+    // analyses them as they are then (a Preview's proposals are never written later).
+    if (this.state().mode === 'on')
+      rows.push(
+        ...(this.db
+          .prepare(
+            `SELECT k.calibre_id, k.added_at FROM calibre_known_books k INDEXED BY calibre_known_books_waiting
+             JOIN calibre_arrival_runs r ON r.id = k.run_id
+             WHERE k.library_id = ? AND k.origin = 'hand' AND k.run_id IS NOT NULL AND r.mode = 'analyse'`,
+          )
+          .all(libraryId) as { calibre_id: number; added_at: number }[]),
+      );
     if (!rows.length) return [];
     const books = this.snapshotBooks(libraryId);
     return rows
@@ -2040,9 +2052,12 @@ export class BookArrivals {
     return p.scope.import.length + p.scope.hand.length === 0;
   }
 
-  /** Earlier arrival runs with stage changes still proposed (held by a paused field). */
+  /**
+   * Earlier On runs with stage changes still proposed (held by a paused field), oldest first. A
+   * Preview run's proposals are only shown, and a failed run's are never written later.
+   */
   private heldAnalyses(stage: number, libraryId: string, runId: number): string[] {
-    return (
+    const ids = (
       this.db
         .prepare(
           `SELECT DISTINCT analysis_id FROM proposed_changes INDEXED BY proposed_changes_counts
@@ -2050,7 +2065,18 @@ export class BookArrivals {
              AND analysis_id LIKE 'arrivals:%' AND analysis_id <> ?`,
         )
         .all(stage, libraryId, arrivalAnalysisId(runId)) as { analysis_id: string }[]
-    ).map((r) => r.analysis_id);
+    )
+      .map((r) => Number(r.analysis_id.slice('arrivals:'.length)))
+      .filter((n) => Number.isInteger(n))
+      .sort((a, b) => a - b);
+    // A failed run (a gate that failed, an error) is never written from later either.
+    const row = this.db.prepare('SELECT mode, state FROM calibre_arrival_runs WHERE id = ?');
+    return ids
+      .filter((id) => {
+        const r = row.get(id) as { mode: string; state: string } | undefined;
+        return r?.mode === 'on' && r.state !== 'failed';
+      })
+      .map((id) => arrivalAnalysisId(id));
   }
 
   /** Every field the run wrote compared with Calibre's metadata.db as the reader copied it. */
@@ -2255,9 +2281,10 @@ export class BookArrivals {
       mode === 'analyse'
         ? {
             books: toAdd,
-            // Measured per book (plan section 6 and WP20f stop 1): E $0.00067, J's stronger pair
-            // on about half the books ($0.0137 at list price), stage 5 $0.00057.
-            aiUsd: Math.round(toAdd * (0.00067 + 0.5 * 0.0137 + 0.00057) * 100) / 100,
+            // Measured per book: E $0.00067 (plan section 6), J's stronger pair on 44 % of the
+            // labeled books at $0.0105 each (WP20g stop 1: Sonnet by batch, Sol one call each),
+            // stage 5 $0.00057 (WP20f stop 1).
+            aiUsd: Math.round(toAdd * (0.00067 + 0.44 * 0.0105 + 0.00057) * 100) / 100,
             // About 1.5 s per add, 1 s per book of the stages' writes, Amazon's ~3,600 answers a
             // day at about 0.9 per book (lessons 4): the lookups decide.
             seconds: Math.round(toAdd * 1.5 + toAdd * 1 + (toAdd * 0.9 * 86400) / 3600),

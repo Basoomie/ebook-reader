@@ -23,6 +23,7 @@ import { stage2Pass } from '../src/cleanup/arrivals/stage-passes';
 import { runBar } from '../src/cleanup/arrivals/views';
 import { initCleanupDatabase } from '../src/cleanup/cleanup-db';
 import type { Stage2Analysis } from '../src/cleanup/stage2';
+import { pauseField, resumeField } from '../src/cleanup/stage2-gate';
 import { arrivalPairs, getSettings, SettingsError, updateSettings } from '../src/cleanup/settings';
 import { stage4NeedsUpgrade } from '../src/cleanup/stage4/ai-decide';
 import { COUNTER_BUNDLE } from '../src/counts/counter-bundle';
@@ -637,6 +638,84 @@ describe('wp20g: a run end to end', () => {
     expect(o[again.rel_path]).toBe('removed_by_you');
     expect(o['Discord/renamed copy.epub']).toBe('removed_by_you');
   }, 300_000);
+
+  it('a change its paused field holds is reported, and a later run writes it once resumed', async () => {
+    env.service.arrivals.stopRun();
+    // The On test's stage-2 batch was never applied (no sidecar here): out of the way, as a
+    // failed one, so the adds are handed out.
+    env.cleanupDb
+      .prepare(`UPDATE batches SET state = 'failed' WHERE state IN ('planned', 'claimed')`)
+      .run();
+    // The books added by hand that earlier Preview tests only showed would be this On run's too
+    // (taken in again): out of the library, so this test is about one held change.
+    env.service.arrivals.setMode('analyse');
+    expect(env.service.arrivals.handSettled(env.libraryId())).toHaveLength(0);
+    env.service.arrivals.setMode('on');
+    expect(env.service.arrivals.handSettled(env.libraryId()).length).toBeGreaterThan(0);
+    env.service.arrivals.stopRun();
+    for (const r of env.cleanupDb
+      .prepare(`SELECT calibre_id FROM calibre_known_books WHERE origin = 'hand'`)
+      .all() as { calibre_id: number }[])
+      env.lib.removeBook(r.calibre_id);
+    await env.index();
+    pauseField(env.cleanupDb, 2, 'title', 'library_changed', 'test');
+    fs.writeFileSync(
+      path.join(src, 'Discord', 'F.epub'),
+      makeTextEpub({ title: '[作者] F の本', chapters: chaptersOf(41) }),
+    );
+    env.service.arrivals.setMode('on');
+    env.service.arrivals.requestRun();
+    // The stage batches as the apply sidecar would leave them (its stage-2 steps: WP20b).
+    const applyOpen = () => {
+      const open = env.cleanupDb
+        .prepare(`SELECT id FROM batches WHERE state IN ('planned', 'claimed')`)
+        .all() as { id: string }[];
+      for (const b of open) {
+        env.cleanupDb
+          .prepare(
+            `UPDATE proposed_changes SET state = 'applied' WHERE batch_id = ? AND state = 'queued'`,
+          )
+          .run(b.id);
+        env.cleanupDb.prepare(`UPDATE batches SET state = 'applied' WHERE id = ?`).run(b.id);
+      }
+    };
+    for (let round = 0; round < 8; round++) {
+      await steps();
+      await playAdds();
+      applyOpen();
+      await env.index();
+    }
+    const first = env.service.arrivals.currentRun()!;
+    expect(outcomes()['Discord/F.epub']).toBe('added');
+    expect(first.p.phase).not.toMatch(
+      /^(scan|archives|identify|compare|plan|add|index|stage[123]|removals|write2)$/,
+    );
+    expect(first.p.writes.s2?.held).toBeGreaterThan(0);
+    expect(first.p.writes.s2?.heldWhy).toMatch(/paused/i);
+    const held = env.cleanupDb
+      .prepare(
+        `SELECT state FROM proposed_changes WHERE stage = 2 AND field = 'title' AND analysis_id = ?`,
+      )
+      .get(`arrivals:${first.id}`) as { state: string };
+    expect(held.state).toBe('proposed');
+    env.service.arrivals.stopRun();
+    // Resumed: the next run has no new book, and writes what the first one held.
+    resumeField(env.cleanupDb, 2, 'title');
+    env.service.arrivals.requestRun();
+    await steps();
+    const later = env.service.arrivals.currentRun()!;
+    expect(later.id).toBeGreaterThan(first.id);
+    expect(later.p.phase).toBe('write2');
+    expect(
+      env.cleanupDb
+        .prepare(
+          `SELECT COUNT(*) AS n FROM batch_items i JOIN proposed_changes p ON p.id = i.change_id
+           WHERE p.stage = 2 AND p.field = 'title' AND p.analysis_id = ?`,
+        )
+        .get(`arrivals:${first.id}`),
+    ).toEqual({ n: 1 });
+    env.service.arrivals.stopRun();
+  }, 300_000);
 });
 
 describe('wp20g: the queries at the catalog’s end size (lessons 3-4)', () => {
@@ -719,6 +798,27 @@ describe('wp20g: the queries at the catalog’s end size (lessons 3-4)', () => {
       ],
       [`SELECT sha256 FROM calibre_arrival_files WHERE sha256 = ?`, ['0'.repeat(64)]],
     ];
+    // The books added by hand a Preview run only showed (a year of them), for the first On run.
+    {
+      const k = db.prepare(
+        `INSERT INTO calibre_known_books (library_id, calibre_id, calibre_uuid, origin, added_at, run_id)
+         VALUES ('L', ?, ?, ?, 1, ?)`,
+      );
+      db.transaction(() => {
+        for (let i = 0; i < 60_000; i++)
+          k.run(i, `k${i}`, i < 5000 ? 'hand' : 'baseline', i < 5000 ? 1 + (i % 365) : null);
+      })();
+      db.exec('ANALYZE');
+      const sql = `SELECT k.calibre_id, k.added_at FROM calibre_known_books k INDEXED BY calibre_known_books_waiting
+         JOIN calibre_arrival_runs r ON r.id = k.run_id
+         WHERE k.library_id = ? AND k.origin = 'hand' AND k.run_id IS NOT NULL AND r.mode = 'analyse'`;
+      const p = plan(sql, 'L');
+      expect(p, sql).toMatch(/SEARCH k USING INDEX calibre_known_books_waiting/);
+      expect(p, sql).not.toMatch(/SCAN r(?! USING)/);
+      const t = performance.now();
+      db.prepare(sql).all('L');
+      expect(performance.now() - t, sql).toBeLessThan(400);
+    }
     for (const [sql, args] of hot) {
       const p = plan(sql, ...args);
       expect(p, sql).not.toMatch(/SCAN calibre_arrival_files(?! USING)/);
