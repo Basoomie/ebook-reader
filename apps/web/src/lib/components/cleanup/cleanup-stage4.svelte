@@ -38,6 +38,7 @@
     writtenLine,
     aiLine,
     booksLine,
+    lookupBar,
     fieldCounts,
     gateRows,
     nativelyLine,
@@ -66,6 +67,7 @@
   $: aiDone = status?.ai?.phase === 'done' && !status.ai.error;
   $: aiProgress = aiBar(status?.ai);
   $: writeProgress = writeBar(status?.write, stage.mode);
+  $: lookupProgress = status ? lookupBar(status) : null;
   $: written = writtenLine(status?.write, stage.mode);
   $: unconfirmedTotal = (status?.unconfirmed ?? []).reduce((a, u) => a + u.n, 0);
 
@@ -258,7 +260,28 @@
           The fetch container is not running: nothing is looked up until it is back.
         </p>
       {/if}
-      {#if booksLine(status)}
+      {#if lookupProgress}
+        <div class="flex flex-col gap-1" data-testid="cleanup-stage-4-lookup-progress">
+          <div class="flex flex-wrap justify-between gap-x-4 text-sm">
+            <span>{lookupProgress.label}</span>
+            <span
+              >{Math.floor(lookupProgress.fraction * 100)} %{lookupProgress.eta
+                ? ` · ${lookupProgress.eta}`
+                : ''}</span
+            >
+          </div>
+          <div
+            class="c-progress h-2 overflow-hidden rounded-full bg-c-track"
+            role="progressbar"
+            aria-label={lookupProgress.label}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={Math.floor(lookupProgress.fraction * 100)}
+          >
+            <div class="h-full bg-c-fill" style="width: {lookupProgress.fraction * 100}%" />
+          </div>
+        </div>
+      {:else if booksLine(status)}
         <p class="text-sm" data-testid="cleanup-stage-4-books">{booksLine(status)}</p>
       {/if}
       <!-- A site that needs you (paused, or requests given up) shows outside the fold. -->

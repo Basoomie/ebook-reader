@@ -291,6 +291,30 @@ export function booksLine(status: Stage4Status): string {
   return parts.join(' · ');
 }
 
+/**
+ * The lookups' progress bar (books looked up of every book that can be read, with the time left
+ * for the whole Preview): while any book waits for the sites. The lookups never had a bar, only
+ * booksLine (the user, 2026-11-22: "why do I not see the progress?").
+ */
+export function lookupBar(status: Stage4Status): ProgressBar | null {
+  const by = (states: string[]) =>
+    status.books.filter((b) => states.includes(b.state)).reduce((a, b) => a + b.n, 0);
+  const total = status.read?.total ?? by(['read', 'waiting', 'ready', 'proposed', 'error']);
+  const open = by(['read', 'waiting', 'ready']);
+  const unreadable = by(['error']);
+  const all = total - unreadable;
+  if (!total || !open || all <= 0) return null;
+  const done = by(['proposed']);
+  const parts = [`Looking up: ${n(done)} of ${n(all)} books`, `${n(open)} waiting for the sites`];
+  if (unreadable) parts.push(`${n(unreadable)} couldn’t be read`);
+  const t = status.timeLeft?.total;
+  return {
+    label: parts.join(' · '),
+    fraction: Math.min(1, done / all),
+    eta: t !== null && t !== undefined && t > 0 ? `${etaText(t * 1000)} (estimate)` : null
+  };
+}
+
 /** The whole Preview's time left: the reading, the slowest site, then the final pass. */
 export function timeLeftLine(status: Stage4Status, now = Date.now()): string {
   const t = status.timeLeft;

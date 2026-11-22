@@ -5,8 +5,12 @@
  * its measured pace, the slowest site sets the lookups, Amazon's shared slot counts both queues.
  */
 import { describe, expect, it } from 'vitest';
+import { gzipSync } from 'zlib';
+import { initCleanupDatabase } from '../src/cleanup/cleanup-db';
+import { makeTempDir } from './helpers/spawn-server';
 import {
   MIN_FOLLOW_UP_ANSWERS,
+  openLookups,
   paceSeconds,
   REFERENCE_PER_BOOK,
   stage4Eta,
@@ -295,5 +299,35 @@ describe('a site’s pace', () => {
     // Every second request made long before: each gap is spanned by one of them.
     const mixed = rows(ats, (at, k) => (k % 2 ? 0 : at - 100));
     expect(paceSeconds(mixed, () => null, IDLE)).toBeCloseTo(20, 5);
+  });
+});
+
+describe('the open lookups', () => {
+  it('a book whose Amazon lookup was asked has no Amazon decision to come', () => {
+    const s = initCleanupDatabase(makeTempDir('wp20e-eta-open'));
+    if (!s.ok) throw new Error(s.error);
+    const db = s.db;
+    const now = Date.now();
+    const req = db
+      .prepare(
+        `INSERT INTO fetch_requests (site, key, method, url, priority, state, created_at, updated_at)
+         VALUES ('bookwalker', ?, 'GET', ?, 0, 'queued', ?, ?)`,
+      )
+      .run('k', 'https://bookwalker.jp/dex/', now, now).lastInsertRowid;
+    for (const [uuid, asked] of [
+      ['asked', true],
+      ['not-asked', false],
+    ] as const) {
+      db.prepare(
+        `INSERT INTO fetch_waiters (request_id, library_id, calibre_uuid, step, ready) VALUES (?, 'L', ?, 'bookwalker-detail', 0)`,
+      ).run(req, uuid);
+      db.prepare(
+        `INSERT INTO evidence_records (library_id, calibre_uuid, kind, version, data, created_at) VALUES ('L', ?, 'online', 1, ?, ?)`,
+      ).run(uuid, gzipSync(Buffer.from(JSON.stringify({ amazon: { asked } }))), now);
+    }
+    const o = openLookups(db);
+    expect(o.steps['bookwalker-detail']).toBe(2);
+    expect(o.undecided).toBe(1);
+    expect(o.coreOpen).toBe(2);
   });
 });
