@@ -19,6 +19,7 @@ import {
  * buttons in order, each in the bar, the menu or hidden; and the bottom bar's left side in
  * order, each shown or hidden. The bars show `resolveTopBar` / `resolveBottomBar` of these
  * stored lists (toolbar-layout.ts). Copied by "Copy settings from another device".
+ * Edited in Settings > Reader > Toolbars (session 2, toolbar-settings.svelte / toolbar-edit.ts).
  */
 export const readerToolbar$ = writableArrayLocalStorageSubject<TopEntry>()('readerToolbar', [
   ...TOP_DEFAULT

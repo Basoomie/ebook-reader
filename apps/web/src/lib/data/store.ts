@@ -34,8 +34,6 @@ import { ViewMode } from './view-mode';
 import type { WritingMode } from './writing-mode';
 import { writableSetLocalStorageSubject } from './internal/writable-set-local-storage-subject';
 import { writableStringLocalStorageSubject } from './internal/writable-string-local-storage-subject';
-import { readerBottomBar$ } from '$lib/reader-toolbar/settings';
-import { bottomBarSwitch } from '$lib/reader-toolbar/toolbar-layout';
 
 // Reader toolbars session 1: the two per-device lists (see lib/reader-toolbar/settings.ts).
 export { readerBottomBar$, readerToolbar$ } from '$lib/reader-toolbar/settings';
@@ -205,12 +203,6 @@ export const highlightBarAnySelection$ = writableBooleanLocalStorageSubject()(
   'highlightBarAnySelection',
   false
 );
-
-/**
- * WP11b: the bottom bar shows where you were reading before a jump (opt-in per device).
- * Since reader toolbars session 1 this is the return marker's `shown` in readerBottomBar.
- */
-export const showReturnMarker$ = bottomBarSwitch(readerBottomBar$, 'returnMarker');
 
 export const confirmClose$ = writableBooleanLocalStorageSubject()('confirmClose', false);
 

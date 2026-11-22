@@ -4,14 +4,12 @@
  * All rights reserved.
  */
 
-import { BehaviorSubject } from 'rxjs';
 import { describe, expect, it } from 'vitest';
 import {
   BOTTOM_DEFAULT,
   BOTTOM_IDS,
   TOP_DEFAULT,
   TOP_IDS,
-  bottomBarSwitch,
   migrateBottomBarSwitches,
   resolveBottomBar,
   resolveTopBar,
@@ -259,39 +257,5 @@ describe('migrating the three old bottom-bar switches', () => {
       removeItem: () => undefined
     };
     expect(migrateBottomBarSwitches(broken)).toBe(false);
-  });
-});
-
-describe('the old switches as views of readerBottomBar', () => {
-  it('read and write the entry, and follow changes to the list', () => {
-    const subject = new BehaviorSubject<unknown>([...BOTTOM_DEFAULT]);
-    const anki = bottomBarSwitch(subject, 'anki');
-    const seen: boolean[] = [];
-    const stop = anki.subscribe((value) => seen.push(value));
-
-    anki.set(true);
-    expect(resolveBottomBar(subject.getValue()).find(({ id }) => id === 'anki')?.shown).toBe(true);
-    // Order and the other entries are kept.
-    expect(resolveBottomBar(subject.getValue()).map(({ id }) => id)).toEqual(BOTTOM_IDS);
-
-    subject.next([{ id: 'anki', shown: false }]);
-    expect(anki.getValue()).toBe(false);
-    // Unrelated list changes don't re-emit the switch.
-    subject.next([
-      { id: 'anki', shown: false },
-      { id: 'pacer', shown: true }
-    ]);
-    expect(seen).toEqual([false, true, false]);
-
-    stop();
-    anki.set(true);
-    expect(seen).toEqual([false, true, false]);
-  });
-
-  it('does not rewrite the list when set to its current value', () => {
-    const stored = [{ id: 'anki', shown: true }];
-    const subject = new BehaviorSubject<unknown>(stored);
-    bottomBarSwitch(subject, 'anki').set(true);
-    expect(subject.getValue()).toBe(stored);
   });
 });

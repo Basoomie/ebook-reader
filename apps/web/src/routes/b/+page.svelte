@@ -3274,13 +3274,30 @@
     return bookId;
   }
 
-  async function bookmarkPage() {
+  /** "Save my place" by hand (the bar's button, the B key): the bar closes, as before. */
+  function bookmarkPage() {
+    return savePlace(true);
+  }
+
+  /**
+   * Reader toolbars session 2: the automatic save ("Save my place automatically", a few
+   * seconds after a page turn or scroll) never closes the bar. It used to share
+   * bookmarkPage's `showHeader = false`, so on the PC a wheel turn under the open bar shut it
+   * 3 s later while the pointer was still on its buttons (known-bugs.md, the critical one).
+   */
+  function autoSavePlace() {
+    return savePlace(false);
+  }
+
+  async function savePlace(closeBar: boolean) {
     const bookId = getBookIdSync();
     if (!bookId || !bookmarkManager) return;
 
     let data: BooksDbBookmarkData;
 
-    showHeader = false;
+    if (closeBar) {
+      showHeader = false;
+    }
 
     if (isPaginated) {
       const userSelectedRange = $selectionToBookmarkEnabled$
@@ -4102,7 +4119,7 @@
       bind:customReadingPointScrollOffset
       bind:customReadingPointRange
       bind:showCustomReadingPoint
-      on:bookmark={bookmarkPage}
+      on:bookmark={autoSavePlace}
       on:trackerPause={() => pauseTracker(true)}
       on:positionRestored={onPositionRestored}
     />

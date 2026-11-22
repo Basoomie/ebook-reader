@@ -5,6 +5,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import { BOTTOM_IDS, TOP_IDS } from '$lib/reader-toolbar/toolbar-layout';
 import { catalogSection, SETTINGS_CATALOG, SETTINGS_SECTIONS } from './settings-catalog';
 import { searchSettings } from './settings-search';
 import { SETTINGS_TABS } from './settings-tab';
@@ -62,5 +63,28 @@ describe('searchSettings', () => {
     expect(searchSettings('font')[0].title.toLowerCase()).toContain('font');
     expect(searchSettings('zzzz-nothing')).toEqual([]);
     expect(searchSettings('   ')).toEqual([]);
+  });
+});
+
+describe('Reader › Toolbars (reader toolbars session 2)', () => {
+  it('is found as a section, and lists every entry of both bars', () => {
+    expect(
+      searchSettings('toolbar').some((r) => r.kind === 'section' && r.id === 'reader-toolbars')
+    ).toBe(true);
+    const rows = SETTINGS_CATALOG.filter((s) => s.section === 'reader-toolbars').map((s) => s.id);
+    for (const id of TOP_IDS) expect(rows).toContain(`toolbar-top-${id}`);
+    for (const id of BOTTOM_IDS) expect(rows).toContain(`toolbar-bottom-${id}`);
+    expect(searchSettings('zen').map((r) => r.id)).toContain('toolbar-top-zen');
+  });
+
+  it('the three old bottom-bar switches are gone; their old searches land on the new rows', () => {
+    const ids = SETTINGS_CATALOG.map((s) => s.id);
+    for (const old of ['anki-bottom-bar', 'read-aloud-button', 'return-marker']) {
+      expect(ids).not.toContain(old);
+    }
+    expect(searchSettings('Anki button in the bottom bar')[0]?.id).toBe('toolbar-bottom-anki');
+    expect(searchSettings('read-aloud button')[0]?.id).toBe('toolbar-bottom-readAloud');
+    expect(searchSettings('Way back after a jump')[0]?.id).toBe('toolbar-bottom-returnMarker');
+    expect(searchSettings('return marker')[0]?.id).toBe('toolbar-bottom-returnMarker');
   });
 });
