@@ -236,6 +236,23 @@ export const SUMMARIES_MIGRATIONS: { version: number; name: string; sql: string 
       ALTER TABLE test_missing ADD COLUMN section TEXT;
     `,
   },
+  {
+    version: 6,
+    name: 'the accuracy test: marks copied from the same item in another summary',
+    sql: `
+      -- An item that says the same as one the user already judged in another summary of the
+      -- book takes that mark (matched by hand, 2026-11-22). The row goes when the user marks the
+      -- item themself, so a copied mark is always told apart from the user's own.
+      CREATE TABLE test_item_copies (
+        run_id     TEXT NOT NULL REFERENCES test_runs(id),
+        ref        TEXT NOT NULL,
+        from_run   TEXT NOT NULL REFERENCES test_runs(id),
+        from_ref   TEXT NOT NULL,
+        copied_at  INTEGER NOT NULL,
+        PRIMARY KEY (run_id, ref)
+      );
+    `,
+  },
 ];
 
 export const SUMMARIES_SCHEMA_VERSION =

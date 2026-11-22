@@ -96,6 +96,22 @@ export function createSummaryTestRouter(
     }),
   );
 
+  router.post('/summaries-test/items/copy', (req, res) => {
+    const b = req.body as { run?: string; ref?: string; fromRun?: string; fromRef?: string };
+    try {
+      const mark = svc.copyMark(
+        need(b.run, 'run'),
+        need(b.ref, 'ref'),
+        need(b.fromRun, 'fromRun'),
+        need(b.fromRef, 'fromRef'),
+      );
+      res.json({ ok: true, mark });
+    } catch (e) {
+      if (e instanceof ApiError) throw e;
+      throw new ApiError(409, 'conflict', (e as Error).message);
+    }
+  });
+
   router.put('/summaries-test/items/mark', (req, res) => {
     const b = req.body as { run?: string; ref?: string; mark?: string | null };
     if (b.mark !== null && !['right', 'mistake', 'not_needed', 'unsure'].includes(b.mark as string))

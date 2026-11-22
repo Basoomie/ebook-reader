@@ -292,6 +292,7 @@
           chapters={judging.chapters}
           characters={judging.characters}
           marks={current.marks}
+          copied={current.copied}
           bind:tab
           on:mark={onMark}
         />

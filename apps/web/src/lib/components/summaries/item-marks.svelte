@@ -14,6 +14,8 @@
 
   export let mark: ItemMark | null = null;
   export let ref: string;
+  /** The summary this mark was copied from (the same item there), or null. */
+  export let copiedFrom: string | null = null;
 
   const dispatch = createEventDispatcher<{ mark: { ref: string; mark: ItemMark | null } }>();
 </script>
@@ -30,3 +32,8 @@
     >
   {/each}
 </div>
+{#if copiedFrom && mark}
+  <p class="mt-1 text-xs opacity-70" data-testid="item-mark-copied">
+    Copied from your mark on the same item in {copiedFrom}
+  </p>
+{/if}

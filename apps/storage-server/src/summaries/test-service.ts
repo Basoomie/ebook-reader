@@ -766,6 +766,7 @@ export class SummaryTestService {
   markItem(runId: string, ref: string, mark: ItemMark | null): void {
     const s = this.summary(runId);
     if (!s || !summaryItems(s).some((x) => x.item.ref === ref)) throw new Error('no such item');
+    this.db.prepare('DELETE FROM test_item_copies WHERE run_id = ? AND ref = ?').run(runId, ref);
     if (mark === null)
       this.db.prepare('DELETE FROM test_item_marks WHERE run_id = ? AND ref = ?').run(runId, ref);
     else
@@ -777,6 +778,45 @@ export class SummaryTestService {
         .run(runId, ref, mark, this.now());
   }
 
+  /**
+   * Gives an item the user's mark on the same item in another summary of the same book. Only
+   * items not marked yet; the source must be marked by the user themself (not copied).
+   */
+  copyMark(runId: string, ref: string, fromRun: string, fromRef: string): ItemMark {
+    const run = this.runs().find((r) => r.id === runId);
+    const from = this.runs().find((r) => r.id === fromRun);
+    if (!run || !from || run.bookKey !== from.bookKey || runId === fromRun)
+      throw new Error('the two summaries must be different summaries of one book');
+    const s = this.summary(runId);
+    if (!s || !summaryItems(s).some((x) => x.item.ref === ref)) throw new Error('no such item');
+    const source = this.db
+      .prepare('SELECT mark FROM test_item_marks WHERE run_id = ? AND ref = ?')
+      .get(fromRun, fromRef) as { mark: ItemMark } | undefined;
+    if (!source) throw new Error(`${fromRun} ${fromRef} is not marked`);
+    if (
+      this.db
+        .prepare('SELECT 1 FROM test_item_copies WHERE run_id = ? AND ref = ?')
+        .get(fromRun, fromRef)
+    )
+      throw new Error(`${fromRun} ${fromRef} has a copied mark`);
+    if (
+      this.db.prepare('SELECT 1 FROM test_item_marks WHERE run_id = ? AND ref = ?').get(runId, ref)
+    )
+      throw new Error(`${runId} ${ref} is already marked`);
+    const now = this.now();
+    this.db.transaction(() => {
+      this.db
+        .prepare('INSERT INTO test_item_marks (run_id, ref, mark, marked_at) VALUES (?, ?, ?, ?)')
+        .run(runId, ref, source.mark, now);
+      this.db
+        .prepare(
+          'INSERT INTO test_item_copies (run_id, ref, from_run, from_ref, copied_at) VALUES (?, ?, ?, ?, ?)',
+        )
+        .run(runId, ref, fromRun, fromRef, now);
+    })();
+    return source.mark;
+  }
+
   /** A book's finished runs with their summaries and item marks, the missing notes and scores. */
   itemJudging(bookKey: string, scope = 'round1') {
     const runs = this.runs().filter(
@@ -786,6 +826,11 @@ export class SummaryTestService {
         (scope === 'round1' ? r.round === 'round1' : true),
     );
     const marksOf = this.db.prepare('SELECT ref, mark FROM test_item_marks WHERE run_id = ?');
+    const copiesOf = this.db.prepare('SELECT ref, from_run FROM test_item_copies WHERE run_id = ?');
+    const labelOf = (id: string) => {
+      const r = this.runs().find((x) => x.id === id);
+      return r ? `${SETUP_LABELS[r.setup]}${r.background ? ' · with earlier volumes' : ''}` : id;
+    };
     const missing = this.db
       .prepare(
         'SELECT id, text, added_at, run_id, section FROM test_missing WHERE book_key = ? AND scope = ? ORDER BY id',
@@ -804,6 +849,11 @@ export class SummaryTestService {
         const marks = Object.fromEntries(
           (marksOf.all(r.id) as { ref: string; mark: ItemMark }[]).map((m) => [m.ref, m.mark]),
         ) as Record<string, ItemMark>;
+        const copied = Object.fromEntries(
+          (copiesOf.all(r.id) as { ref: string; from_run: string }[])
+            .filter((c) => marks[c.ref])
+            .map((c) => [c.ref, labelOf(c.from_run)]),
+        ) as Record<string, string>;
         const refs = summaryItems(summary).map((x) => x.item.ref);
         const count = (m: ItemMark) => refs.filter((ref) => marks[ref] === m).length;
         return {
@@ -813,6 +863,7 @@ export class SummaryTestService {
           label: `${SETUP_LABELS[r.setup]}${r.background ? ' · with earlier volumes' : ''}`,
           summary,
           marks,
+          copied,
           score: {
             items: refs.length,
             right: count('right'),
@@ -821,6 +872,7 @@ export class SummaryTestService {
             unsure: count('unsure'),
             unmarked: refs.filter((ref) => !marks[ref]).length,
             notes: missing.filter((m) => m.run_id === r.id).length,
+            copied: refs.filter((ref) => copied[ref]).length,
           },
           notes: missing.filter((m) => m.run_id === r.id),
           metrics: r.metrics,

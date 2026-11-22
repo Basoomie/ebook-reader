@@ -94,6 +94,8 @@ export interface ItemRun {
   label: string;
   summary: Summary;
   marks: Record<string, ItemMark>;
+  /** Items whose mark was copied from the same item in another summary: ref → that summary's label. */
+  copied: Record<string, string>;
   score: {
     items: number;
     right: number;
@@ -102,6 +104,7 @@ export interface ItemRun {
     unsure: number;
     unmarked: number;
     notes: number;
+    copied: number;
   };
   /** The user's notes on this summary. */
   notes: { id: number; text: string; section: string | null }[];

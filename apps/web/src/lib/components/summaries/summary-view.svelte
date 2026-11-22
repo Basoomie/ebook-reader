@@ -36,6 +36,8 @@
    * item gets the mark buttons and each tab says how many of its items are marked.
    */
   export let marks: Record<string, ItemMark> | null = null;
+  /** Judging: items whose mark was copied from the same item in another summary (ref → label). */
+  export let copied: Record<string, string> | null = null;
 
   const dispatch = createEventDispatcher<{ mark: { ref: string; mark: ItemMark | null } }>();
   function counted(key: SummarySectionKey, marks: Record<string, ItemMark> | null): string {
@@ -94,6 +96,7 @@
           {#if marks}<ItemMarks
               ref={it.ref}
               mark={marks[it.ref] ?? null}
+              copiedFrom={copied?.[it.ref] ?? null}
               on:mark={(e) => dispatch('mark', e.detail)}
             />{/if}
         {/each}
@@ -117,6 +120,7 @@
                 {#if marks}<ItemMarks
                     ref={it.ref}
                     mark={marks[it.ref] ?? null}
+                    copiedFrom={copied?.[it.ref] ?? null}
                     on:mark={(e) => dispatch('mark', e.detail)}
                   />{/if}
               </li>
@@ -142,6 +146,7 @@
               {#if marks}<ItemMarks
                   ref={it.ref}
                   mark={marks[it.ref] ?? null}
+                  copiedFrom={copied?.[it.ref] ?? null}
                   on:mark={(e) => dispatch('mark', e.detail)}
                 />{/if}
             </article>
@@ -172,6 +177,7 @@
               {#if marks}<ItemMarks
                   ref={it.ref}
                   mark={marks[it.ref] ?? null}
+                  copiedFrom={copied?.[it.ref] ?? null}
                   on:mark={(e) => dispatch('mark', e.detail)}
                 />{/if}
             </li>
