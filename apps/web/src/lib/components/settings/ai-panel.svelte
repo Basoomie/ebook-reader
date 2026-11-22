@@ -40,6 +40,8 @@
     usd
   } from '$lib/ai/ai-text';
   import { confirmDestructive } from '$lib/confirm/confirm';
+  import { dialogManager } from '$lib/data/dialog-manager';
+  import AddAiModelDialog from '$lib/components/settings/add-ai-model-dialog.svelte';
   import { removeAiKeyCopy, removeAiModelCopy } from '$lib/confirm/confirm-copy';
   import { getLibraryStore, type LibraryConnection } from '$lib/library/library-db';
   import { libraryRequestTimeoutSeconds$ } from '$lib/library/settings';
@@ -163,7 +165,15 @@
     void save({ modes: { ...status.settings.modes, [model]: mode } });
   }
 
-  /** Deletes a model added before prices were built in (asks first). */
+  /** Add a model: the dialog lists what the providers offer the keys now. */
+  async function openAdd() {
+    if (!api) return;
+    await dialogManager.open<AiStatus | null>(AddAiModelDialog, { api });
+    // However the dialog closed, show the list as the server has it now.
+    await run((a) => a.status());
+  }
+
+  /** Takes a model off the list (asks first). */
   async function deleteModel(model: string) {
     if (!(await confirmDestructive(removeAiModelCopy(model)))) return;
     await run((a) => a.deleteModel(model));
@@ -365,15 +375,21 @@
         <SettingRow title={m.model} testid="ai-model-{m.model}">
           <svelte:fragment slot="description">
             <p class="mt-1 text-sm" data-testid="ai-price-{m.model}">
-              {priceText(m.price)}{#if !m.builtIn}<span class="text-c-muted"
-                  >{' '}· added in Settings earlier, not one of the app's models</span
+              {m.price ? priceText(m.price) : 'Price not known'}{#if !m.builtIn}<span
+                  class="text-c-muted"
+                  >{' '}· typed in Settings before prices were built in, not checked</span
                 >{/if}
             </p>
             <p class="text-sm text-c-muted">
               {offeredText(m.offered, m.provider)} · {batchTestText(status, m.model)}
             </p>
+            {#if m.inUse.length}
+              <p class="text-sm text-c-muted" data-testid="ai-in-use-{m.model}">
+                Used by {m.inUse.join('; ')}. To delete it, choose another model there first.
+              </p>
+            {/if}
           </svelte:fragment>
-          <div class="flex flex-col gap-2 text-sm">
+          <div class="text-sm">
             <div class="flex flex-wrap items-center gap-2">
               <select
                 class="c-input w-64"
@@ -392,29 +408,31 @@
                 on:click={() => testBatch(m.model)}
                 data-testid="ai-test-{m.model}">Test batch</button
               >
-              {#if !m.builtIn}
-                <button
-                  type="button"
-                  class="c-btn c-btn-ghost"
-                  disabled={m.inUse.length > 0}
-                  title={m.inUse.length ? `In use: ${m.inUse.join(', ')}` : undefined}
-                  on:click={() => deleteModel(m.model)}
-                  data-testid="ai-delete-{m.model}">Delete</button
-                >
-              {/if}
+              <button
+                type="button"
+                class="c-btn c-btn-danger-line"
+                disabled={m.inUse.length > 0}
+                on:click={() => deleteModel(m.model)}
+                data-testid="ai-delete-{m.model}">Delete</button
+              >
             </div>
-            {#if !m.builtIn && m.inUse.length}
-              <p class="text-c-muted">
-                In use ({m.inUse.join(', ')}): choose another model there to delete it.
-              </p>
-            {/if}
           </div>
         </SettingRow>
       {/each}
+      <SettingRow id="ai-add-model" layout="stack">
+        <div>
+          <button
+            type="button"
+            class="c-btn c-btn-secondary"
+            on:click={openAdd}
+            data-testid="ai-add-model">Add a model</button
+          >
+        </div>
+      </SettingRow>
       <p class="s-note" data-testid="ai-prices-note">
         The providers’ list prices as of {status.pricesChecked}, built into the app. They only count
-        what is spent against the monthly limit; Anthropic and OpenAI bill their own prices. New
-        models come with app updates.
+        what is spent against the monthly limit; Anthropic and OpenAI bill their own prices. A model
+        the app doesn’t know the price of yet can be added once an app update brings it.
       </p>
     </SettingsGroup>
 

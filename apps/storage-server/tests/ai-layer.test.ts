@@ -738,14 +738,55 @@ describe("the providers' list prices, built in", () => {
     expect(priceOf(s, 'claude-opus-5.5')).toEqual({ inputPerMTok: 1, outputPerMTok: 1 });
   });
 
-  it('Settings > AI: prices read-only, the app’s models kept, an added model deleted unless in use', async () => {
+  it('Settings > AI: the list (with an entry typed before), prices read-only, add with three checks, delete unless in use', async () => {
+    standin = await startAiStandin({
+      anthropicKey: 'ak',
+      openaiKey: 'ok',
+      models: {
+        anthropic: [
+          'claude-haiku-5-5',
+          'claude-sonnet-5-5',
+          'claude-opus-5-5',
+          'claude-fable-5-2',
+          'claude-new-9',
+          'claude-3-5-sonnet-20241022',
+        ],
+        openai: [
+          'gpt-6-luna',
+          'gpt-6.1-sol',
+          'gpt-6.1-terra',
+          'text-embedding-3-small',
+          'tts-1',
+          'gpt-4o-2024-08-06',
+        ],
+      },
+      answer: ({ model }: { model: string }) =>
+        model === 'gpt-6.1-terra'
+          ? { kind: 'error', status: 404 }
+          : { kind: 'json', json: { ok: true } },
+    });
     const t = makeTestApp();
     if (!t.database.ok) throw new Error('no db');
-    const core = new AiCore({ db: t.database.db, dbDir: t.config.dbDir });
-    // As on the NAS: an entry typed before prices were built in.
-    core.updateSettings({ prices: { 'claude-opus-5.5': { inputPerMTok: 1, outputPerMTok: 1 } } });
+    // As on the NAS: settings saved before the list existed, with an entry typed in Settings.
+    t.database.db
+      .prepare(`INSERT INTO ai_settings (key, value_json, updated_at) VALUES ('settings', ?, 1)`)
+      .run(
+        JSON.stringify({
+          spendLimitUsd: 5,
+          prices: { 'claude-opus-5.5': { inputPerMTok: 1, outputPerMTok: 1 } },
+        }),
+      );
+    const core = new AiCore({
+      db: t.database.db,
+      dbDir: t.config.dbDir,
+      keys: { read: (n) => (n === 'anthropicApiKey' ? 'ak' : 'ok') },
+      providers: (pr, key) =>
+        pr === 'anthropic'
+          ? new AnthropicProvider(key, standin!.anthropicUrl)
+          : new OpenAiProvider(key, standin!.openaiUrl),
+    });
     let used = '';
-    core.registerModelUse((m) => (m === used ? ['library cleanup audio5.primary'] : []));
+    core.registerModelUse((m) => (m === used ? ['Audiobook metadata (stage 5), first model'] : []));
     const { createApp } = await import('../src/app');
     const app = createApp({ config: t.config, database: t.database, version: 't', ai: core });
     const auth = { Authorization: `Bearer ${t.newUserToken()}` };
@@ -761,27 +802,66 @@ describe("the providers' list prices, built in", () => {
       ['claude-opus-5.5', false],
     ]);
     expect(st.body.pricesChecked).toBe('2026-11-21');
-    // Prices can't be set.
-    await request(app)
-      .put('/api/v1/ai/settings')
-      .set(auth)
-      .send({ prices: { 'claude-haiku-5-5': { inputPerMTok: 0, outputPerMTok: 0 } } })
-      .expect(400);
-    // The app's own models can't be deleted; an added one in use can't either.
-    const own = await request(app).delete('/api/v1/ai/models/claude-haiku-5-5').set(auth);
-    expect(own.status).toBe(409);
-    used = 'claude-opus-5.5';
-    const busy = await request(app).delete('/api/v1/ai/models/claude-opus-5.5').set(auth);
+    // Prices and the list can't be set wholesale.
+    await request(app).put('/api/v1/ai/settings').set(auth).send({ prices: {} }).expect(400);
+    await request(app).put('/api/v1/ai/settings').set(auth).send({ models: [] }).expect(400);
+    // The Add dialog's list: the providers' chat models now, priced ones first; no embeddings,
+    // speech or dated snapshots.
+    const av = (await request(app).get('/api/v1/ai/models/available').set(auth).expect(200)).body
+      .providers;
+    expect(
+      av.anthropic.models.map((m: { model: string; price: unknown; listed: boolean }) => [
+        m.model,
+        !!m.price,
+        m.listed,
+      ]),
+    ).toEqual([
+      ['claude-fable-5-2', true, false],
+      ['claude-haiku-5-5', true, true],
+      ['claude-opus-5-5', true, true],
+      ['claude-sonnet-5-5', true, true],
+      ['claude-new-9', false, false],
+    ]);
+    expect(av.openai.models.map((m: { model: string }) => m.model)).toEqual([
+      'gpt-6-luna',
+      'gpt-6.1-sol',
+      'gpt-6.1-terra',
+    ]);
+    // Adding: each check says what failed.
+    const add = (model: string) => request(app).post('/api/v1/ai/models').set(auth).send({ model });
+    expect((await add('claude-unknown-1')).body.error.message).toMatch(
+      /Anthropic does not offer claude-unknown-1/,
+    );
+    expect((await add('claude-new-9')).body.error.message).toMatch(
+      /doesn't know claude-new-9's price yet/,
+    );
+    const failed = await add('gpt-6.1-terra');
+    expect(failed.status).toBe(409);
+    expect(failed.body.error.message).toMatch(/The test request to gpt-6.1-terra failed: 404/);
+    expect((await add('claude-haiku-5-5')).body.error.message).toMatch(/already in the list/);
+    const ok = await add('claude-fable-5-2').expect(200);
+    expect(ok.body.models.at(-1)).toMatchObject({ model: 'claude-fable-5-2', builtIn: true });
+    expect(ok.body.test.costUsd).toBeGreaterThan(0);
+    expect(core.spending()[0].byFeature['ai-settings']).toBeCloseTo(ok.body.test.costUsd, 9);
+    // Deleting: any model, the app's own too; never one in use.
+    used = 'claude-haiku-5-5';
+    const busy = await request(app).delete('/api/v1/ai/models/claude-haiku-5-5').set(auth);
     expect(busy.status).toBe(409);
-    expect(busy.body.error.message).toMatch(/in use \(library cleanup audio5\.primary\)/);
-    used = '';
+    expect(busy.body.error.message).toMatch(
+      /in use \(Audiobook metadata \(stage 5\), first model\)/,
+    );
+    await request(app).delete('/api/v1/ai/models/gpt-6.1-sol').set(auth).expect(200);
     const gone = await request(app)
       .delete('/api/v1/ai/models/claude-opus-5.5')
       .set(auth)
       .expect(200);
-    expect(gone.body.models.some((m: { model: string }) => m.model === 'claude-opus-5.5')).toBe(
-      false,
-    );
+    expect(gone.body.models.map((m: { model: string }) => m.model)).toEqual([
+      'claude-haiku-5-5',
+      'claude-sonnet-5-5',
+      'claude-opus-5-5',
+      'gpt-6-luna',
+      'claude-fable-5-2',
+    ]);
     expect(core.settings().prices).toEqual({});
     await request(app).delete('/api/v1/ai/models/claude-opus-5.5').set(auth).expect(409);
   });

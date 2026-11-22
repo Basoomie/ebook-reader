@@ -1207,6 +1207,14 @@ export const SETTINGS_CATALOG: CatalogSetting[] = [
     description: 'Asks each provider, with your key, which models it offers.'
   },
   {
+    id: 'ai-add-model',
+    section: 'ai-models',
+    title: 'Add a model',
+    description:
+      'From the models Anthropic and OpenAI offer your keys, checked with one tiny test request before it is added.',
+    keywords: 'new model'
+  },
+  {
     id: 'ai-stall',
     section: 'ai-advanced',
     title: 'Cancel a batch with no answers after',

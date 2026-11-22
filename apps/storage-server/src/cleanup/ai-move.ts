@@ -22,6 +22,7 @@ import {
   AI_SETTING_KEYS,
   aiSettingsSaved,
   DEFAULT_AI_SETTINGS,
+  listBeforeModels,
   updateAiSettings,
   validateAiSettings,
 } from '../ai/settings';
@@ -180,6 +181,7 @@ export function moveAiToShared(
       const old = JSON.parse(rawAi.value_json) as Record<string, unknown>;
       const provider: Record<string, unknown> = {};
       for (const k of AI_SETTING_KEYS) if (k in old) provider[k] = old[k];
+      provider.models = listBeforeModels(old.prices);
       try {
         validateAiSettings(provider, structuredClone(DEFAULT_AI_SETTINGS));
         updateAiSettings(mainDb, provider, now());

@@ -45,7 +45,6 @@ import { AiRunner, modeOf } from '../../ai/runner';
 import { STAGE4_SPEC } from '../stage4/ai-prompt';
 import { STAGE5_SPEC } from '../stage5/prompt';
 import { META_SPEC } from './meta-prompt';
-import { allPrices } from '../../ai/prices';
 import { providerOf } from '../../ai/providers';
 import { priceOf } from '../../ai/spend';
 import { AudioStage5, stage5AskKey, stage5RulesKey } from './stage5-meta';
@@ -1366,7 +1365,13 @@ export class AudioCleanupService {
     });
     return {
       settings: s.ai,
-      prices: allPrices(ps.prices),
+      // The models of Settings > AI's list (the ones a task can choose), with their prices.
+      prices: Object.fromEntries(
+        ps.models.flatMap((m) => {
+          const price = priceOf(ps, m);
+          return price ? [[m, price]] : [];
+        }),
+      ),
       spend: {
         spentUsd: room.spentUsd,
         reservedUsd: room.reservedUsd,
