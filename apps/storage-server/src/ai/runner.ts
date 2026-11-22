@@ -1,94 +1,58 @@
 /**
- * Asks the models (WP21d): a resumable queue of questions in cleanup.db, sent in batches (the
- * providers' Batch APIs, half price) or one by one, within the spending limit.
+ * Asks the models (WP21d; shared since book summaries session 1): a resumable queue of questions
+ * in the feature's own database, sent in batches (the providers' Batch APIs, half price) or one
+ * by one, within the one monthly spending limit (AiCore).
  *
  * - Each item's evidence record is kept (`ai_items`, gzip JSON with a hash).
  * - A question is one row per item, model, prompt version and evidence hash (`ai_requests`):
  *   a restart, a rules change or a new analysis with the same evidence never asks again.
  *   A failed question is asked again only in a later run; a blocked one never (final).
- * - Batches survive restarts (their ids are stored and checked every `batchPollSeconds`).
+ * - Batches survive restarts (their ids are stored and checked every `batchPollSeconds`); once
+ *   collected, what the provider keeps of them is deleted.
+ * - Every paid answer is also a row in the shared ledger (ttsu.db), with the feature it is for.
  * - Nothing is sent while: the spending limit is not set or would be passed, a key is missing
  *   or refused, a model id is not in its provider's list, a model has no price.
+ *
+ * The queue's tables (ai_items, ai_requests, ai_batches) live in the feature's database; the
+ * cleanup's are in cleanup.db (migrations 13, 16, 21).
  */
 import type Database from 'better-sqlite3';
 import { createHash } from 'crypto';
-import dns from 'dns';
-import net from 'net';
 import { gunzipSync, gzipSync } from 'zlib';
-import { getSettings, type AiSettings } from '../settings';
+import type { AiCore } from './core';
+import { dropHold, putHold, recordedRefs, recordSpendMany, resetHolds } from './ledger';
 import {
   FinalError,
-  makeProvider,
   providerOf,
   RetryableError,
   type CallInput,
   type CallResult,
   type ProviderClient,
 } from './providers';
-import { costOf, expectedListCost, priceOf, spendNow } from './spend';
-import type { AiStageSpec, Provider, Role, StoredAnswer } from './types';
+import type { AiSettings } from './settings';
+import { costOf, expectedListCost, priceOf } from './spend';
+import type { AiStageSpec, Provider, StoredAnswer } from './types';
+import { waitText, type AiWait } from './waits';
 
-export type AiWait =
-  | { kind: 'no_limit' }
-  | {
-      kind: 'limit_reached';
-      spentUsd: number;
-      reservedUsd: number;
-      limitUsd: number;
-      nextUsd: number;
-    }
-  | { kind: 'no_key'; provider: Provider }
-  | { kind: 'auth_failed'; provider: Provider; error: string }
-  | { kind: 'model_missing'; provider: Provider; model: string }
-  | { kind: 'no_price'; model: string }
-  | { kind: 'model_check_failed'; provider: Provider; error: string }
-  | { kind: 'provider_busy'; provider: Provider; until: number; error: string };
+export type { AiWait } from './waits';
 
 /** How a model is asked (settings ai.modes; a model not listed: batch). */
 export function modeOf(s: AiSettings, model: string): 'batch' | 'direct' {
   return s.modes[model] ?? 'batch';
 }
 
-/** US$ with cents, or four places below a cent ($0.0030). */
-const usd = (v: number) => (v > 0 && v < 0.1 ? `$${v.toFixed(4)}` : `$${v.toFixed(2)}`);
-
-/** The page's words for a wait. */
-export function waitText(w: AiWait): string {
-  const name = (p: Provider) => (p === 'anthropic' ? 'Anthropic' : 'OpenAI');
-  switch (w.kind) {
-    case 'no_limit':
-      return 'Set a spending limit first (Settings > AI)';
-    case 'limit_reached':
-      return `Spending limit reached (${usd(w.spentUsd)} spent, ${usd(w.reservedUsd)} held for batches, limit ${usd(w.limitUsd)})`;
-    case 'no_key':
-      return `The ${name(w.provider)} API key is missing (Settings > AI keys)`;
-    case 'auth_failed':
-      return `${name(w.provider)} refused the API key: ${w.error}`;
-    case 'model_missing':
-      return `${name(w.provider)} does not offer the model "${w.model}" (Settings > Models; Check models)`;
-    case 'no_price':
-      return `No price for the model "${w.model}" (Settings > AI): its cost can't be counted`;
-    case 'model_check_failed':
-      return `Can't read ${name(w.provider)}'s model list: ${w.error}`;
-    case 'provider_busy':
-      return `${name(w.provider)} is busy; trying again soon (${w.error})`;
-  }
-}
-
-/** Stops that need the user (the stage pauses and a notification goes out). */
-export function waitNeedsUser(w: AiWait): boolean {
-  return w.kind !== 'provider_busy';
-}
-
-export interface SecretsReader {
-  read(name: 'anthropicApiKey' | 'openaiApiKey'): string | null;
-}
-
 export interface AiRunnerDeps {
+  /** The feature's database with the queue's tables. */
   db: Database.Database;
-  secrets: SecretsReader;
-  /** Tests give their own clients. */
-  providers?: (provider: Provider, key: string) => ProviderClient;
+  core: AiCore;
+  /** The queue's name in the ledger ("cleanup"): a request is (source, its id). */
+  source: string;
+  /** The feature a stage's spending counts for ("calibre-cleanup", "audiobook-cleanup", ...). */
+  featureOf(stage: string): string;
+  /** The model the feature chose for a task (its own setting; '' = none). */
+  modelFor(task: string): string;
+  /** Ask only about labeled items (the cleanup's "labeled only"); default off. */
+  onlyLabeled?: () => boolean;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
   log?: (m: string) => void;
@@ -128,7 +92,6 @@ interface ReqRow {
   labeled: number;
 }
 
-const MODEL_RECHECK_MS = 3600_000;
 const BUSY_WAIT_MS = 60_000;
 
 function gz(v: unknown): Buffer {
@@ -146,22 +109,7 @@ export function evidenceHash(version: number, evidence: unknown): string {
     .slice(0, 20);
 }
 
-const KEY_NAME: Record<Provider, 'anthropicApiKey' | 'openaiApiKey'> = {
-  anthropic: 'anthropicApiKey',
-  openai: 'openaiApiKey',
-};
-
 export class AiRunner {
-  private busyUntil = new Map<Provider, { until: number; error: string }>();
-  private clients = new Map<string, ProviderClient>();
-  /** The key each provider's model list was last read with (a new key reads it again). */
-  private checkedWith = new Map<Provider, string>();
-
-  private keyId(provider: Provider): string | null {
-    const key = this.deps.secrets.read(KEY_NAME[provider]);
-    return key ? createHash('sha1').update(key).digest('hex').slice(0, 8) : null;
-  }
-
   /** When this runner (the server process) started: calls sent before it were cut off. */
   private readonly startedAt: number;
   /**
@@ -181,9 +129,88 @@ export class AiRunner {
   /** What a call that ended found in the way (a refused key), for its stage's next step. */
   private callWaits = new Map<string, AiWait>();
   private waiters = new Set<() => void>();
+  /** The last sweep of collected batches' provider data. */
+  private lastSweep = 0;
 
   constructor(private readonly deps: AiRunnerDeps) {
     this.startedAt = this.now();
+    this.repairLedger();
+    this.rebuildHolds();
+  }
+
+  get core(): AiCore {
+    return this.deps.core;
+  }
+
+  /**
+   * The ledger gets a paid answer right after the feature's database: a process stopped in
+   * between left the answer without its ledger row. Found here by id and added (cheap when the
+   * counts agree).
+   */
+  private repairLedger(): void {
+    const src = this.deps.source;
+    const mine = this.db
+      .prepare(`SELECT COUNT(*) AS n FROM ai_requests WHERE cost_usd IS NOT NULL`)
+      .get() as { n: number };
+    const led = this.core.db
+      .prepare(`SELECT COUNT(*) AS n FROM ai_spend WHERE source = ?`)
+      .get(src) as { n: number };
+    if (led.n >= mine.n) return;
+    const have = recordedRefs(this.core.db, src);
+    const rows = (
+      this.db
+        .prepare(
+          `SELECT id, stage, provider, model, mode, cost_usd, answered_at, created_at FROM ai_requests
+           WHERE cost_usd IS NOT NULL`,
+        )
+        .all() as {
+        id: number;
+        stage: string;
+        provider: string;
+        model: string;
+        mode: string | null;
+        cost_usd: number;
+        answered_at: number | null;
+        created_at: number;
+      }[]
+    ).filter((r) => !have.has(r.id));
+    const n = recordSpendMany(
+      this.core.db,
+      rows.map((r) => ({
+        source: src,
+        ref: r.id,
+        feature: this.deps.featureOf(r.stage),
+        stage: r.stage,
+        provider: r.provider,
+        model: r.model,
+        mode: r.mode,
+        costUsd: r.cost_usd,
+        at: r.answered_at ?? r.created_at,
+      })),
+    );
+    if (n) {
+      this.core.invalidateSpend();
+      this.deps.log?.(`AI: ${n} paid answers added to the spending record`);
+    }
+  }
+
+  /** The holds of this queue's batches still at a provider. */
+  private rebuildHolds(): void {
+    const open = this.db
+      .prepare(
+        `SELECT id, stage, estimate_usd, submitted_at FROM ai_batches WHERE state = 'submitted'`,
+      )
+      .all() as { id: string; stage: string; estimate_usd: number; submitted_at: number }[];
+    resetHolds(
+      this.core.db,
+      this.deps.source,
+      open.map((b) => ({
+        batchId: b.id,
+        feature: this.deps.featureOf(b.stage),
+        estimateUsd: b.estimate_usd,
+        since: b.submitted_at,
+      })),
+    );
   }
 
   /**
@@ -215,30 +242,22 @@ export class AiRunner {
     return this.deps.sleep?.(ms) ?? new Promise((r) => setTimeout(r, ms));
   }
 
-  private settings(): AiSettings {
-    return getSettings(this.db).ai;
+  /** The provider settings (shared). */
+  settings(): AiSettings {
+    return this.core.settings();
   }
 
-  /** The model a role of a stage uses now (settings.models). */
-  modelOf(spec: AiStageSpec<unknown>, role: Role): string {
-    return getSettings(this.db).models[spec.tasks[role]] ?? '';
+  private labeledOnly(): boolean {
+    return this.deps.onlyLabeled?.() ?? false;
+  }
+
+  /** The model a role of a stage uses now (the feature's choice). */
+  modelOf<R extends string>(spec: AiStageSpec<unknown, R>, role: R): string {
+    return this.deps.modelFor(spec.tasks[role]) ?? '';
   }
 
   private client(provider: Provider): ProviderClient | null {
-    // Node's per-address connect wait (250 ms by default) cut off every call from the busy live
-    // server: see ai.connectAttemptMs. Set before each use, so a changed setting applies.
-    const wait = this.settings().connectAttemptMs;
-    if (net.getDefaultAutoSelectFamilyAttemptTimeout() !== wait)
-      net.setDefaultAutoSelectFamilyAttemptTimeout(wait);
-    const key = this.deps.secrets.read(KEY_NAME[provider]);
-    if (!key) return null;
-    const id = `${provider}:${createHash('sha1').update(key).digest('hex').slice(0, 8)}`;
-    let c = this.clients.get(id);
-    if (!c) {
-      c = (this.deps.providers ?? makeProvider)(provider, key);
-      this.clients.set(id, c);
-    }
-    return c;
+    return this.core.client(provider);
   }
 
   // -------------------------------------------------------------------------------------------
@@ -286,7 +305,12 @@ export class AiRunner {
    * Queues the questions a role still needs for these items (one per item at its current
    * evidence). Failed questions of earlier runs are asked again; answered and blocked ones never.
    */
-  enqueue(spec: AiStageSpec<unknown>, role: Role, keys: string[], runId: string): number {
+  enqueue<R extends string>(
+    spec: AiStageSpec<unknown, R>,
+    role: R,
+    keys: string[],
+    runId: string,
+  ): number {
     const model = this.modelOf(spec, role);
     if (!model) return 0;
     const provider = providerOf(model);
@@ -349,7 +373,11 @@ export class AiRunner {
   }
 
   /** A role's stored answer for an item at its current evidence (null = not asked yet). */
-  answerOf(spec: AiStageSpec<unknown>, role: Role, key: string): StoredAnswer | null {
+  answerOf<R extends string>(
+    spec: AiStageSpec<unknown, R>,
+    role: R,
+    key: string,
+  ): StoredAnswer | null {
     const model = this.modelOf(spec, role);
     const it = this.db
       .prepare('SELECT evidence_hash FROM ai_items WHERE stage = ? AND item_key = ?')
@@ -381,7 +409,7 @@ export class AiRunner {
     for (const r of this.db
       .prepare(
         `SELECT state, COUNT(*) AS n FROM ai_requests WHERE run_id = ? AND stage = ?
-           ${this.settings().labeledOnly ? "AND (labeled = 1 OR state <> 'queued')" : ''} GROUP BY state`,
+           ${this.labeledOnly() ? "AND (labeled = 1 OR state <> 'queued')" : ''} GROUP BY state`,
       )
       .all(runId, stage) as { state: keyof AiCounts; n: number }[])
       out[r.state] = r.n;
@@ -394,111 +422,10 @@ export class AiRunner {
       this.db
         .prepare(
           `SELECT COUNT(*) AS n FROM ai_requests WHERE run_id = ? AND stage = ? AND
-             (state = 'sent' OR (state = 'queued' ${this.settings().labeledOnly ? 'AND labeled = 1' : ''}))`,
+             (state = 'sent' OR (state = 'queued' ${this.labeledOnly() ? 'AND labeled = 1' : ''}))`,
         )
         .get(runId, stage) as { n: number }
     ).n;
-  }
-
-  // -------------------------------------------------------------------------------------------
-  // models
-
-  /** Reads each provider's model list with the stored key (Settings: Check models). */
-  async checkModels(): Promise<
-    Record<Provider, { models: string[] | null; error: string | null }>
-  > {
-    const out = {} as Record<Provider, { models: string[] | null; error: string | null }>;
-    for (const p of ['anthropic', 'openai'] as const) out[p] = await this.checkProvider(p);
-    return out;
-  }
-
-  private async checkProvider(
-    p: Provider,
-  ): Promise<{ models: string[] | null; error: string | null }> {
-    const c = this.client(p);
-    if (!c) return { models: null, error: 'no API key' };
-    let models: string[] | null = null;
-    let error: string | null = null;
-    const id = this.keyId(p);
-    if (id) this.checkedWith.set(p, id);
-    const t0 = Date.now();
-    try {
-      models = (await c.listModels()).sort();
-    } catch (err) {
-      // What the server saw: the error with its addresses, how long it took, and what DNS
-      // answers now (a connection error the live server alone got, stop 2, 2026-11-19).
-      const host = p === 'anthropic' ? 'api.anthropic.com' : 'api.openai.com';
-      const dnsNow = await dns.promises
-        .lookup(host, { all: true })
-        .then((a) => a.map((x) => x.address).join(', '))
-        .catch((e: NodeJS.ErrnoException) => e.code ?? 'lookup failed');
-      error = `${(err as Error).message} after ${Date.now() - t0} ms; DNS ${host}: ${dnsNow}`.slice(
-        0,
-        600,
-      );
-    }
-    this.db
-      .prepare(
-        `INSERT INTO ai_model_checks (provider, checked_at, models_json, error) VALUES (?, ?, ?, ?)
-         ON CONFLICT(provider) DO UPDATE SET checked_at = excluded.checked_at,
-           models_json = excluded.models_json, error = excluded.error`,
-      )
-      .run(p, this.now(), models ? JSON.stringify(models) : null, error);
-    return { models, error };
-  }
-
-  modelChecks(): Record<
-    string,
-    { checkedAt: number; models: string[] | null; error: string | null }
-  > {
-    const out: Record<
-      string,
-      { checkedAt: number; models: string[] | null; error: string | null }
-    > = {};
-    for (const r of this.db.prepare('SELECT * FROM ai_model_checks').all() as {
-      provider: string;
-      checked_at: number;
-      models_json: string | null;
-      error: string | null;
-    }[])
-      out[r.provider] = {
-        checkedAt: r.checked_at,
-        models: r.models_json ? (JSON.parse(r.models_json) as string[]) : null,
-        error: r.error,
-      };
-    return out;
-  }
-
-  /** Null when the model can be asked; otherwise what stands in the way. */
-  private async usable(model: string): Promise<AiWait | null> {
-    const provider = providerOf(model);
-    if (!this.client(provider)) return { kind: 'no_key', provider };
-    if (!priceOf(this.settings(), model)) return { kind: 'no_price', model };
-    const busy = this.busyUntil.get(provider);
-    if (busy && busy.until > this.now())
-      return { kind: 'provider_busy', provider, until: busy.until, error: busy.error };
-    // The model list is read before a model is first used, and again at most hourly while a
-    // model is missing from it or the last read failed (Settings: Check models reads it now).
-    let check = this.modelChecks()[provider];
-    // A read that failed (not a refused key) is tried again at the batch poll pace: one that
-    // failed while the server was starting left stage 5 paused for an hour (stop 2).
-    const recheckMs =
-      check?.error && !/^40[13]\b/.test(check.error)
-        ? this.settings().batchPollSeconds * 1000
-        : MODEL_RECHECK_MS;
-    const stale = !check || this.now() - check.checkedAt > recheckMs;
-    const newKey = this.checkedWith.get(provider) !== this.keyId(provider);
-    if (!check || ((stale || newKey) && (check.error || !check.models?.includes(model)))) {
-      await this.checkProvider(provider);
-      check = this.modelChecks()[provider];
-    }
-    if (check?.error) {
-      if (/^40[13]\b/.test(check.error))
-        return { kind: 'auth_failed', provider, error: check.error };
-      return { kind: 'model_check_failed', provider, error: check.error };
-    }
-    if (!check?.models?.includes(model)) return { kind: 'model_missing', provider, model };
-    return null;
   }
 
   // -------------------------------------------------------------------------------------------
@@ -523,12 +450,12 @@ export class AiRunner {
       const models = this.db
         .prepare(
           `SELECT model, COUNT(*) AS n FROM ai_requests WHERE run_id = ? AND stage = ? AND state = 'queued'
-           ${s.labeledOnly ? 'AND labeled = 1' : ''} GROUP BY model`,
+           ${this.labeledOnly() ? 'AND labeled = 1' : ''} GROUP BY model`,
         )
         .all(runId, spec.stage) as { model: string; n: number }[];
       for (const m of models) {
         if (shouldStop()) break;
-        const why = await this.usable(m.model);
+        const why = await this.core.usable(m.model);
         if (why) {
           wait ??= why;
           continue;
@@ -566,19 +493,39 @@ export class AiRunner {
       this.callWaits.delete(spec.stage);
       wait ??= cw;
     }
+    // A feature that waits in its queue for room under the limit: one alert while it waits
+    // (the notification watcher reads it), gone once anything is sent again.
+    if (spec.onLimit === 'queue') {
+      const feature = this.deps.featureOf(spec.stage);
+      if (wait?.kind === 'limit_reached') this.core.setWaiting(feature, waitText(wait));
+      else if (sent > 0 || !wait) this.core.clearWaiting(feature);
+    }
     return { pending: this.pending(spec.stage, runId), wait, sent, answered };
+  }
+
+  /** The source-wide key of a call in flight (the core holds every feature's). */
+  private flightKey(id: number): string {
+    return `${this.deps.source}:${id}`;
+  }
+
+  /** The limit's wait from the room now. */
+  private limitWait(nextUsd: number, extraReserved = 0): AiWait {
+    const r = this.core.room();
+    return {
+      kind: 'limit_reached',
+      spentUsd: r.spentUsd,
+      reservedUsd: r.reservedUsd + extraReserved,
+      limitUsd: r.limitUsd ?? 0,
+      nextUsd,
+      resumesAt: r.resumesAt,
+      resumesOn: r.resumesOn,
+    };
   }
 
   private inFlightOf(stage: string): number {
     let n = 0;
     for (const c of this.inFlight.values()) if (c.stage === stage) n++;
     return n;
-  }
-
-  private inFlightUsd(): number {
-    let usd = 0;
-    for (const c of this.inFlight.values()) usd += c.estimate;
-    return usd;
   }
 
   /** Until a call of the stage ends, at most `ms` (checked each second for a stop). */
@@ -658,13 +605,11 @@ export class AiRunner {
   /** How many of `n` requests fit under the limit, and what one is expected to cost. */
   private fits(model: string, n: number, promptChars: number, batch: boolean, s: AiSettings) {
     const one = expectedListCost(this.db, s, model, promptChars) * (batch ? s.batchPriceFactor : 1);
-    const spend = spendNow(this.db);
-    // Calls in flight hold their expected cost until they are recorded.
-    const reservedUsd = spend.reservedUsd + this.inFlightUsd();
-    const spentUsd = spend.spentUsd;
-    const room = (s.spendLimitUsd ?? 0) - spentUsd - reservedUsd;
+    // This month's spending of every feature, their batches' holds and calls in flight.
+    const r = this.core.room();
+    const room = (s.spendLimitUsd ?? 0) - r.spentUsd - r.reservedUsd;
     const fit = one > 0 ? Math.max(0, Math.min(n, Math.floor(room / one))) : n;
-    return { fit, one, spentUsd, reservedUsd };
+    return { fit, one };
   }
 
   private async sendBatch<E>(
@@ -673,7 +618,7 @@ export class AiRunner {
     model: string,
     s: AiSettings,
   ): Promise<{ sent: number; answered: number; wait: AiWait | null }> {
-    const rows = this.queuedRows(spec, runId, model, s.batchSize, s.labeledOnly, 'batchable');
+    const rows = this.queuedRows(spec, runId, model, s.batchSize, this.labeledOnly(), 'batchable');
     if (!rows.length) return { sent: 0, answered: 0, wait: null };
     const inputs: { row: ReqRow; call: CallInput }[] = [];
     for (const row of rows) {
@@ -688,19 +633,7 @@ export class AiRunner {
     const avgChars =
       inputs.reduce((a, x) => a + x.call.system.length + x.call.user.length, 0) / inputs.length;
     const f = this.fits(model, inputs.length, avgChars, true, s);
-    if (f.fit === 0) {
-      return {
-        sent: 0,
-        answered: 0,
-        wait: {
-          kind: 'limit_reached',
-          spentUsd: f.spentUsd,
-          reservedUsd: f.reservedUsd,
-          limitUsd: s.spendLimitUsd ?? 0,
-          nextUsd: f.one,
-        },
-      };
-    }
+    if (f.fit === 0) return { sent: 0, answered: 0, wait: this.limitWait(f.one) };
     const take = inputs.slice(0, f.fit);
     const provider = providerOf(model);
     const client = this.client(provider)!;
@@ -744,19 +677,19 @@ export class AiRunner {
       );
       for (const x of take) upd.run(batch.id, now, x.row.id);
     })();
+    putHold(
+      this.core.db,
+      this.deps.source,
+      batch.id,
+      this.deps.featureOf(spec.stage),
+      f.one * take.length,
+      now,
+    );
     this.deps.log?.(
       `AI: batch ${batch.id} sent to ${provider} (${model}, ${take.length} questions, about $${(f.one * take.length).toFixed(3)})`,
     );
-    const wait: AiWait | null =
-      take.length < inputs.length
-        ? {
-            kind: 'limit_reached',
-            spentUsd: f.spentUsd,
-            reservedUsd: f.reservedUsd + f.one * take.length,
-            limitUsd: s.spendLimitUsd ?? 0,
-            nextUsd: f.one,
-          }
-        : null;
+    // The hold of the batch just sent is in the room already.
+    const wait: AiWait | null = take.length < inputs.length ? this.limitWait(f.one) : null;
     return { sent: take.length, answered: 0, wait };
   }
 
@@ -774,7 +707,7 @@ export class AiRunner {
     }
     const e = err as RetryableError;
     const until = this.now() + Math.max(BUSY_WAIT_MS, e.retryAfterMs ?? 0);
-    this.busyUntil.set(provider, { until, error: (e.message ?? String(err)).slice(0, 200) });
+    this.core.markBusy(provider, until, (e.message ?? String(err)).slice(0, 200));
     return { kind: 'provider_busy', provider, until, error: (e.message ?? '').slice(0, 200) };
   }
 
@@ -795,7 +728,7 @@ export class AiRunner {
     for (const c of this.inFlight.values()) if (c.model === model) busy++;
     const free = s.directWorkers - busy;
     if (free <= 0) return { sent: 0, answered: 0, wait: null };
-    const rows = this.queuedRows(spec, runId, model, free, s.labeledOnly, which);
+    const rows = this.queuedRows(spec, runId, model, free, this.labeledOnly(), which);
     if (!rows.length) return { sent: 0, answered: 0, wait: null };
     const calls: { row: ReqRow; call: CallInput }[] = [];
     for (const row of rows) {
@@ -809,18 +742,8 @@ export class AiRunner {
     const f = this.fits(model, calls.length, avgChars, false, s);
     if (f.fit === 0) {
       // Room held by calls in flight comes back when they are recorded: no pause for it.
-      if (this.inFlight.size) return { sent: 0, answered: 0, wait: null };
-      return {
-        sent: 0,
-        answered: 0,
-        wait: {
-          kind: 'limit_reached',
-          spentUsd: f.spentUsd,
-          reservedUsd: f.reservedUsd,
-          limitUsd: s.spendLimitUsd ?? 0,
-          nextUsd: f.one,
-        },
-      };
+      if (this.core.callsInFlight() > 0) return { sent: 0, answered: 0, wait: null };
+      return { sent: 0, answered: 0, wait: this.limitWait(f.one) };
     }
     const take = calls.slice(0, f.fit);
     const provider = providerOf(model);
@@ -832,8 +755,10 @@ export class AiRunner {
     for (const x of take) {
       mark.run(now, x.row.id);
       this.inFlight.set(x.row.id, { model, stage: spec.stage, estimate: f.one });
+      this.core.callStarted(this.flightKey(x.row.id), f.one);
       void this.runCall(spec, x.row, x.call, client, provider, model, s, shouldStop).finally(() => {
         this.inFlight.delete(x.row.id);
+        this.core.callEnded(this.flightKey(x.row.id));
         for (const w of [...this.waiters]) w();
       });
     }
@@ -894,9 +819,7 @@ export class AiRunner {
             // sends nothing until it ends), and the question goes back to the queue with the
             // try not counted. Calls in flight end on their own.
             const until = this.now() + Math.max(BUSY_WAIT_MS, e.retryAfterMs ?? 0);
-            const cur = this.busyUntil.get(provider);
-            if (!cur || cur.until < until)
-              this.busyUntil.set(provider, { until, error: (e.message ?? '').slice(0, 200) });
+            this.core.markBusy(provider, until, (e.message ?? '').slice(0, 200));
             this.db
               .prepare(`UPDATE ai_requests SET state = 'queued', attempts = ? WHERE id = ?`)
               .run(attempts - 1, row.id);
@@ -941,22 +864,41 @@ export class AiRunner {
       const parsed = spec.parseAnswer(res.json);
       if (parsed) {
         this.finish(id, 'answered', parsed, res.text, res.usage, null, batch, s, cost);
-        return;
+      } else {
+        this.finish(
+          id,
+          'invalid',
+          null,
+          res.text,
+          res.usage,
+          'the answer does not fit the format',
+          batch,
+          s,
+          cost,
+        );
       }
-      this.finish(
-        id,
-        'invalid',
-        null,
-        res.text,
-        res.usage,
-        'the answer does not fit the format',
-        batch,
-        s,
-        cost,
-      );
-      return;
+    } else this.finish(id, res.kind, null, res.text, res.usage, res.detail, batch, s, cost);
+    if (cost !== null) this.recordSpend(spec.stage, id, model, batch, cost);
+  }
+
+  /** The paid answer's row in the shared ledger (right after the feature's own record). */
+  private recordSpend(stage: string, id: number, model: string, batch: boolean, cost: number) {
+    try {
+      this.core.record({
+        source: this.deps.source,
+        ref: id,
+        feature: this.deps.featureOf(stage),
+        stage,
+        provider: providerOf(model),
+        model,
+        mode: batch ? 'batch' : 'direct',
+        costUsd: cost,
+        at: this.now(),
+      });
+    } catch (err) {
+      // The next start adds it (repairLedger).
+      this.deps.log?.(`AI: the spending record of question ${id}: ${(err as Error).message}`);
     }
-    this.finish(id, res.kind, null, res.text, res.usage, res.detail, batch, s, cost);
   }
 
   private finish(
@@ -1042,11 +984,15 @@ export class AiRunner {
               )
               .run(this.now(), stalled ? m.error : st.status, b.id);
           })();
+          dropHold(this.core.db, this.deps.source, b.id);
           this.deps.log?.(`AI: batch ${b.id} ${st.status}: its questions go back to the queue`);
+          await this.deleteBatchData(b.id, b.provider);
           continue;
         }
         const results = await client.batchResults(b.id);
         answered += this.applyResults(spec, b.id, b.model, results, s, stalled);
+        dropHold(this.core.db, this.deps.source, b.id);
+        await this.deleteBatchData(b.id, b.provider);
       } catch (err) {
         this.deps.log?.(`AI: batch ${b.id}: ${(err as Error).message}`);
       }
@@ -1108,131 +1054,48 @@ export class AiRunner {
   }
 
   // -------------------------------------------------------------------------------------------
-  // Settings > AI "Test batch": does the provider run batches for this model, and how fast?
+  // what the providers keep of ended batches
 
   /**
-   * Sends one tiny question to a model as a batch (a fraction of a cent). Its outcome comes from
-   * `pollBatchTests`: answered (with the time), nothing within batchStallMinutes (cancelled), or
-   * failed. Needs the key, a price and a spending limit, like every question.
+   * Deletes what the provider keeps of an ended batch (OpenAI's input, output and error files,
+   * Anthropic's batch: its prompts and answers), once its answers are in this database. A
+   * failed delete is left for `sweepBatchData`.
    */
-  async testBatch(model: string): Promise<void> {
-    const s = this.settings();
-    const provider = providerOf(model);
-    if (s.spendLimitUsd === null) throw new Error(waitText({ kind: 'no_limit' }));
-    const why = await this.usable(model);
-    if (why) throw new Error(waitText(why));
-    const open = this.db
-      .prepare(`SELECT id FROM ai_batch_tests WHERE model = ? AND state = 'open'`)
-      .get(model);
-    if (open) throw new Error(`A batch test of ${model} is already running`);
-    const client = this.client(provider)!;
-    const b = await client.submitBatch([
-      {
-        customId: 'batch-test',
-        call: {
-          model,
-          system: 'You answer with one JSON object and nothing else.',
-          user: 'Reply with {"ok": true}.',
-          schema: null,
-          maxTokens: 1000,
-        },
-      },
-    ]);
-    this.db
-      .prepare(
-        `INSERT INTO ai_batch_tests (provider, model, batch_id, state, submitted_at) VALUES (?, ?, ?, 'open', ?)`,
-      )
-      .run(provider, model, b.id, this.now());
-    this.deps.log?.(`AI: batch test of ${model} sent (${b.id})`);
-  }
-
-  /** Checks the open batch tests (each at most every batchPollSeconds). */
-  async pollBatchTests(): Promise<void> {
-    const s = this.settings();
-    const rows = this.db
-      .prepare(
-        `SELECT id, provider, model, batch_id, submitted_at, checked_at FROM ai_batch_tests WHERE state = 'open'`,
-      )
-      .all() as {
-      id: number;
-      provider: Provider;
-      model: string;
-      batch_id: string;
-      submitted_at: number;
-      checked_at: number | null;
-    }[];
-    for (const t of rows) {
-      if (this.now() - (t.checked_at ?? t.submitted_at) < s.batchPollSeconds * 1000) continue;
-      const client = this.client(t.provider);
-      if (!client) continue;
-      const end = (state: string, detail: string, cost: number | null = null) =>
-        this.db
-          .prepare(
-            `UPDATE ai_batch_tests SET state = ?, detail = ?, cost_usd = ?, ended_at = ?, checked_at = ? WHERE id = ?`,
-          )
-          .run(state, detail, cost, this.now(), this.now(), t.id);
-      try {
-        const st = await client.batchStatus(t.batch_id);
-        this.db
-          .prepare('UPDATE ai_batch_tests SET checked_at = ? WHERE id = ?')
-          .run(this.now(), t.id);
-        const minutes = Math.max(1, s.batchStallMinutes || 30);
-        if (!st.ended) {
-          if (st.done === 0 && this.now() - t.submitted_at >= minutes * 60_000) {
-            await client.cancelBatch(t.batch_id);
-            end('nothing', `nothing answered in ${minutes} min (${st.status}); cancelled`);
-            this.deps.log?.(`AI: batch test of ${t.model}: nothing answered in ${minutes} min`);
-          }
-          continue;
-        }
-        if (st.failed) {
-          end('failed', st.status);
-          continue;
-        }
-        const out = (await client.batchResults(t.batch_id))[0];
-        if (out && 'result' in out && out.result.kind !== 'blocked') {
-          const price = priceOf(s, t.model);
-          const cost = price ? costOf(price, out.result.usage, true, s.batchPriceFactor) : null;
-          end(
-            'answered',
-            `answered in ${Math.round((this.now() - t.submitted_at) / 1000)} s`,
-            cost,
-          );
-        } else end('failed', out && 'error' in out ? out.error : 'no answer in the results');
-      } catch (err) {
-        this.deps.log?.(`AI: batch test of ${t.model}: ${(err as Error).message}`);
-      }
+  private async deleteBatchData(id: string, provider: Provider): Promise<boolean> {
+    const client = this.client(provider);
+    if (!client) return false;
+    try {
+      await client.deleteBatchData?.(id);
+      this.db
+        .prepare('UPDATE ai_batches SET files_deleted_at = ? WHERE id = ?')
+        .run(this.now(), id);
+      return true;
+    } catch (err) {
+      this.deps.log?.(`AI: deleting batch ${id} at ${provider}: ${(err as Error).message}`);
+      return false;
     }
   }
 
-  /** The latest batch test of each model. */
-  batchTests(): Record<
-    string,
-    { state: string; submittedAt: number; endedAt: number | null; detail: string | null }
-  > {
-    const out: Record<
-      string,
-      { state: string; submittedAt: number; endedAt: number | null; detail: string | null }
-    > = {};
-    for (const r of this.db
+  /**
+   * Deletes what the providers still keep of batches already collected or failed (a delete that
+   * failed before, and once after the deploy the batches collected before deleting existed).
+   * At most `limit` per call, at most once per `batchPollSeconds` (`force`: now). Returns how
+   * many were deleted.
+   */
+  async sweepBatchData(limit = 20, force = false): Promise<number> {
+    const now = this.now();
+    if (!force && now - this.lastSweep < this.settings().batchPollSeconds * 1000) return 0;
+    this.lastSweep = now;
+    const rows = this.db
       .prepare(
-        `SELECT model, state, submitted_at, ended_at, detail FROM ai_batch_tests t
-         WHERE id = (SELECT MAX(id) FROM ai_batch_tests WHERE model = t.model)`,
+        `SELECT id, provider FROM ai_batches WHERE state <> 'submitted' AND files_deleted_at IS NULL
+         ORDER BY submitted_at LIMIT ?`,
       )
-      .all() as {
-      model: string;
-      state: string;
-      submitted_at: number;
-      ended_at: number | null;
-      detail: string | null;
-    }[])
-      out[r.model] = {
-        state: r.state,
-        submittedAt: r.submitted_at,
-        endedAt: r.ended_at,
-        detail: r.detail,
-      };
-    return out;
+      .all(limit) as { id: string; provider: Provider }[];
+    let n = 0;
+    for (const r of rows) if (await this.deleteBatchData(r.id, r.provider)) n++;
+    if (n) this.deps.log?.(`AI: deleted what the providers kept of ${n} collected batches`);
+    return n;
   }
 
   /** Batches at the providers now, with how long the finished ones took (turnaround). */

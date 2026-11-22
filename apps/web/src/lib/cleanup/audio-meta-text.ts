@@ -99,13 +99,13 @@ export function audioStage5Bar(s: AudioStage5Status | null | undefined): Progres
 
 const usd = (v: number) => (v < 0.01 && v > 0 ? `$${v.toFixed(4)}` : `$${v.toFixed(2)}`);
 
-/** "AI: $0.14 spent of the $1.00 limit ($0.02 held for batches)". */
+/** "AI: $0.14 spent this month of the $1.00 monthly limit ($0.02 held for batches)". */
 export function spendLine(s: AudioStage5Status | null | undefined): string | null {
   if (!s) return null;
   const { spentUsd, reservedUsd, limitUsd } = s.spend;
   if (limitUsd === null)
-    return 'AI: no spending limit set yet (Settings > AI): the models are not asked.';
-  return `AI: ${usd(spentUsd)} spent of the ${usd(limitUsd)} limit${reservedUsd > 0 ? ` (${usd(reservedUsd)} held for batches)` : ''}.`;
+    return 'AI: no monthly spending limit set yet (Settings > AI): the models are not asked.';
+  return `AI: ${usd(spentUsd)} spent this month of the ${usd(limitUsd)} monthly limit (every AI feature)${reservedUsd > 0 ? `, ${usd(reservedUsd)} held for batches` : ''}.`;
 }
 
 /** The details' lines: answers, cost, batches. */

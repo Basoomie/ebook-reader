@@ -11,7 +11,12 @@
  * - Only busy (429/529), server errors and network errors are tried again; everything else is
  *   final for this run.
  *
- * Test-only addresses: CLEANUP_AI_ANTHROPIC_URL and CLEANUP_AI_OPENAI_URL (the e2e's stand-in).
+ * Test-only addresses: CLEANUP_AI_ANTHROPIC_URL and CLEANUP_AI_OPENAI_URL (the e2e's stand-in;
+ * named when the layer was the cleanup's, kept so the existing e2e stacks keep their stand-ins).
+ *
+ * Once a batch's answers are collected, what the provider keeps of it is deleted
+ * (`deleteBatchData`): OpenAI keeps a batch's input, output and error files for 30 days,
+ * Anthropic a Message Batch's inputs and results for 29 days (both checked 2026-11-21).
  */
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI, { toFile } from 'openai';
@@ -138,6 +143,16 @@ export interface ProviderClient {
   batchResults(id: string): Promise<BatchOutcome[]>;
   /** Asks the provider to stop a batch; what it finished stays in its results. */
   cancelBatch(id: string): Promise<void>;
+  /**
+   * Deletes what the provider keeps of an ended batch (its prompts and answers): OpenAI's input,
+   * output and error files, Anthropic's batch. Already gone counts as done.
+   */
+  deleteBatchData?(id: string): Promise<void>;
+}
+
+/** A 404 from a delete: already gone. */
+function notFound(err: unknown): boolean {
+  return (err as { status?: unknown } | null)?.status === 404;
 }
 
 export function providerOf(model: string): Provider {
@@ -303,6 +318,15 @@ export class AnthropicProvider implements ProviderClient {
     try {
       await this.client.messages.batches.cancel(id);
     } catch (err) {
+      throw this.wrap(err);
+    }
+  }
+
+  async deleteBatchData(id: string): Promise<void> {
+    try {
+      await this.client.messages.batches.delete(id);
+    } catch (err) {
+      if (notFound(err)) return;
       throw this.wrap(err);
     }
   }
@@ -512,6 +536,25 @@ export class OpenAiProvider implements ProviderClient {
       await this.client.batches.cancel(id);
     } catch (err) {
       throw this.wrap(err);
+    }
+  }
+
+  async deleteBatchData(id: string): Promise<void> {
+    let files: (string | null | undefined)[];
+    try {
+      const b = await this.client.batches.retrieve(id);
+      files = [b.input_file_id, b.output_file_id, b.error_file_id];
+    } catch (err) {
+      if (notFound(err)) return;
+      throw this.wrap(err);
+    }
+    for (const f of files) {
+      if (!f) continue;
+      try {
+        await this.client.files.delete(f);
+      } catch (err) {
+        if (!notFound(err)) throw this.wrap(err);
+      }
     }
   }
 

@@ -38,6 +38,7 @@
   import AudiobooksPanel from '$lib/components/audio/audiobooks-panel.svelte';
   import DiagnosticsPanel from '$lib/components/settings/diagnostics-panel.svelte';
   import NotificationsPanel from '$lib/components/settings/notifications-panel.svelte';
+  import AiPanel from '$lib/components/settings/ai-panel.svelte';
   import { NOT_OVER_HTTP } from '$lib/diagnostics/diagnostics-text';
   import { canPersistStorage } from '$lib/functions/secure-context';
   import {
@@ -1086,6 +1087,11 @@
     <!-- WP15b: the server's audiobooks folder and the linked books. -->
     {#if browser}
       <AudiobooksPanel />
+    {/if}
+  {:else if activeSettings === 'AI'}
+    <!-- Book summaries session 1: the AI layer every feature shares, stored on the server. -->
+    {#if browser}
+      <AiPanel />
     {/if}
   {:else if activeSettings === 'Notifications'}
     <!-- Notifications N1: Discord and Gmail, stored on the server (it sends). -->

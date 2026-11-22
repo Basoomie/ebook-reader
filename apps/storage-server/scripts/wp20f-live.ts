@@ -15,12 +15,9 @@
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
-import { AiRunner } from '../src/cleanup/ai/runner';
-import { runSpend } from '../src/cleanup/ai/spend';
+import { runSpend } from '../src/ai/spend';
 import { SNAPSHOT_DIRNAME } from '../src/calibre/indexer';
-import { migrateCleanup } from '../src/cleanup/cleanup-db';
 import { attachMarks } from '../src/cleanup/marks';
-import { SecretStore } from '../src/cleanup/secrets';
 import { getSettings, updateSettings } from '../src/cleanup/settings';
 import { isProcessed } from '../src/cleanup/stage2-rules';
 import { readStage2Snapshot } from '../src/cleanup/stage2-snapshot';
@@ -30,6 +27,7 @@ import { Stage4Analysis, type Stage4Progress } from '../src/cleanup/stage4/analy
 import { FetchQueue } from '../src/cleanup/stage4/queue';
 import { getStage } from '../src/cleanup/stages';
 import { applyTagChange } from '../src/cleanup/stage5/decide';
+import { cleanupAi, migrateWorkingCopy, readAiSeed } from './lib/cleanup-ai';
 import { Stage5 } from '../src/cleanup/stage5/step';
 
 const arg = (n: string) => {
@@ -50,12 +48,14 @@ async function main() {
   const db = new Database(out);
   db.pragma('journal_mode = WAL');
   const t0m = Date.now();
-  migrateCleanup(db);
+  const main = new Database(arg('main')!, { readonly: true, fileMustExist: true });
+  // The keys and provider settings: from the ttsu.db copy (with --ai-key-dir, DB_DIR's
+  // ai-secrets.key), else from a cleanup.db copy from before v21.
+  const seed = readAiSeed(db, main, arg('ai-key-dir') ?? null);
+  migrateWorkingCopy(db);
   log(
     `working copy v${db.pragma('user_version', { simple: true })} (migration ${Date.now() - t0m} ms)`,
   );
-  const main = new Database(arg('main')!, { readonly: true, fileMustExist: true });
-  const secrets = new SecretStore(db, main);
   const p4 = getStage(db, 4).progress as unknown as Stage4Progress;
   const cacheDir = path.join(path.dirname(out), 'cache');
   const snap = path.join(cacheDir, SNAPSHOT_DIRNAME, `${p4.libraryId}.db`);
@@ -76,7 +76,7 @@ async function main() {
     queue,
     log,
   });
-  const runner = new AiRunner({ db, secrets, log });
+  const { core, runner } = cleanupAi(db, { seed, log });
   const real4 = new Stage4Ai({ db, runner, analysis, log });
   // labeledOnly is part of stage 4's key: as it was on the server (a rerun of this script set it).
   updateSettings(db, { ai: { ...getSettings(db).ai, labeledOnly: false } });
@@ -87,19 +87,15 @@ async function main() {
   const stage4Ai = { isDone: () => done4, progress: () => real4.progress() } as unknown as Stage4Ai;
 
   const s = getSettings(db);
+  core.updateSettings({
+    spendLimitUsd: has('no-models') ? null : Number(arg('limit') ?? 5),
+    modes: { 'claude-haiku-5-5': 'direct', 'gpt-6-luna': 'direct' },
+    directWorkers: 8,
+  });
   updateSettings(db, {
-    ai: {
-      ...s.ai,
-      spendLimitUsd: Number(arg('limit') ?? 5),
-      labeledOnly: true,
-      modes: { 'claude-haiku-5-5': 'direct', 'gpt-6-luna': 'direct' },
-      directWorkers: 8,
-    },
+    ai: { ...s.ai, labeledOnly: true },
     gate: { ...s.gate, genreLabelsFile: arg('labels')! },
   });
-  if (has('no-models')) {
-    updateSettings(db, { ai: { ...getSettings(db).ai, spendLimitUsd: null } });
-  }
   setStageMode(db, 5, 'analyse');
   if (has('fresh')) {
     // A clean stage 5 on the copy: its progress, proposals and decisions go; the evidence and

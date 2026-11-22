@@ -29,6 +29,14 @@ describe('migrations', () => {
       .all()
       .map((r: any) => r.name);
     expect(tables).toEqual([
+      'ai_batch_tests',
+      'ai_holds',
+      'ai_model_checks',
+      'ai_secrets',
+      'ai_settings',
+      'ai_spend',
+      'ai_state',
+      'ai_waits',
       'api_tokens',
       'audio_folders',
       'audio_hold',

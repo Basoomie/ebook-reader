@@ -1197,6 +1197,90 @@ export const MIGRATIONS: { version: number; name: string; sql: string }[] = [
       CREATE INDEX books_sort_chars_asc ON books (IFNULL(NULLIF(char_count, 0), 9000000000000000), id);
     `,
   },
+  {
+    version: 29,
+    name: 'the shared AI layer',
+    // Book summaries session 1 (src/ai/): what every AI feature shares, moved here from
+    // cleanup.db so a feature keeps working without it (as notifications keep theirs). The
+    // provider settings (one JSON row), the two API keys (AES-256-GCM, the key in its own file
+    // DB_DIR/ai-secrets.key), the model checks, the batch tests, the spending ledger (one row
+    // per paid request, the month's total for the one monthly limit), the holds of batches
+    // still at a provider, the features waiting for room under the limit, and the one-time
+    // move's marker. Each feature keeps its own questions and answers in its own database.
+    sql: `
+      CREATE TABLE ai_settings (
+        key         TEXT PRIMARY KEY,
+        value_json  TEXT NOT NULL CHECK (json_valid(value_json)),
+        updated_at  INTEGER NOT NULL
+      );
+      CREATE TABLE ai_secrets (
+        name        TEXT PRIMARY KEY,
+        ciphertext  BLOB NOT NULL,
+        nonce       BLOB NOT NULL,
+        tag         BLOB NOT NULL,
+        hint        TEXT,
+        updated_at  INTEGER NOT NULL
+      );
+      CREATE TABLE ai_model_checks (
+        provider     TEXT PRIMARY KEY,
+        checked_at   INTEGER NOT NULL,
+        models_json  TEXT,
+        error        TEXT
+      );
+      CREATE TABLE ai_batch_tests (
+        id                INTEGER PRIMARY KEY,
+        provider          TEXT NOT NULL CHECK (provider IN ('anthropic', 'openai')),
+        model             TEXT NOT NULL,
+        batch_id          TEXT NOT NULL,
+        state             TEXT NOT NULL CHECK (state IN ('open', 'answered', 'nothing', 'failed')),
+        submitted_at      INTEGER NOT NULL,
+        checked_at        INTEGER,
+        ended_at          INTEGER,
+        cost_usd          REAL,
+        detail            TEXT,
+        files_deleted_at  INTEGER
+      );
+      CREATE INDEX ai_batch_tests_model ON ai_batch_tests (model, id);
+      CREATE INDEX ai_batch_tests_open ON ai_batch_tests (state) WHERE state = 'open';
+      CREATE INDEX ai_batch_tests_files ON ai_batch_tests (id)
+        WHERE state <> 'open' AND files_deleted_at IS NULL;
+      CREATE TABLE ai_spend (
+        id        INTEGER PRIMARY KEY,
+        -- The queue the request came from ('cleanup': cleanup.db's ai_requests; 'ai': Settings'
+        -- batch tests) and its id there: one row per paid request.
+        source    TEXT NOT NULL,
+        ref       INTEGER NOT NULL,
+        feature   TEXT NOT NULL,
+        stage     TEXT NOT NULL,
+        provider  TEXT NOT NULL,
+        model     TEXT NOT NULL,
+        mode      TEXT,
+        cost_usd  REAL NOT NULL,
+        at        INTEGER NOT NULL,
+        UNIQUE (source, ref)
+      );
+      CREATE INDEX ai_spend_at ON ai_spend (at);
+      CREATE TABLE ai_holds (
+        source        TEXT NOT NULL,
+        batch_id      TEXT NOT NULL,
+        feature       TEXT NOT NULL,
+        estimate_usd  REAL NOT NULL,
+        since         INTEGER NOT NULL,
+        PRIMARY KEY (source, batch_id)
+      );
+      CREATE TABLE ai_waits (
+        feature  TEXT PRIMARY KEY,
+        label    TEXT NOT NULL,
+        detail   TEXT NOT NULL,
+        since    INTEGER NOT NULL
+      );
+      CREATE TABLE ai_state (
+        key         TEXT PRIMARY KEY,
+        value_json  TEXT NOT NULL CHECK (json_valid(value_json)),
+        updated_at  INTEGER NOT NULL
+      );
+    `,
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

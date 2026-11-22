@@ -10,6 +10,7 @@
  * through stage 7 with the real writer and a stand-in Audiobookshelf, and EXPLAIN of every polled
  * or claimed query.
  */
+import { DEFAULT_AI_SETTINGS } from '../src/ai/settings';
 import BetterSqlite3 from 'better-sqlite3';
 import type Database from 'better-sqlite3';
 import { Readable } from 'stream';
@@ -36,7 +37,7 @@ import {
   upgradeTargets,
   writeDecisions,
   type DecisionRow,
-} from '../src/cleanup/ai/values';
+} from '../src/cleanup/ai-decide/values';
 import { decideUnit, needsUpgrade } from '../src/cleanup/audio/meta-decide';
 import { metaEvidenceText } from '../src/cleanup/audio/meta-prompt';
 import { EvidenceBuilder } from '../src/cleanup/audio/meta-evidence';
@@ -328,6 +329,7 @@ describe('the schedule', () => {
     updateSettings(db, { audiobooks: { ...cur, arrivalsTimeZone: 'America/Los_Angeles' } });
     const stage = new AudioStage7({
       db,
+      aiSettings: () => structuredClone(DEFAULT_AI_SETTINGS),
       roots: { torrents: '/none', library: '/none', media: null },
       lock: new DiskLock(5),
       reanalyse: () => undefined,
@@ -1484,6 +1486,7 @@ describe('a run of stage 7 (Preview, then On)', () => {
     const lock = new DiskLock(5);
     const stage7 = new AudioStage7({
       db,
+      aiSettings: () => structuredClone(DEFAULT_AI_SETTINGS),
       roots: { torrents: disk.torrents, library: disk.library, media: disk.media },
       lock,
       reanalyse,
@@ -1682,6 +1685,7 @@ describe('steps never overlap (the e2e found two loops on one run)', () => {
     const logs: string[] = [];
     const stage = new AudioStage7({
       db,
+      aiSettings: () => structuredClone(DEFAULT_AI_SETTINGS),
       roots: { torrents: '/none', library: '/none', media: null },
       lock: new DiskLock(5),
       reanalyse: () => undefined,
@@ -1720,6 +1724,7 @@ describe('the page’s E/F/J line (polled)', () => {
     };
     const stage = new AudioStage7({
       db,
+      aiSettings: () => structuredClone(DEFAULT_AI_SETTINGS),
       roots: { torrents: '/none', library: '/none', media: null },
       lock: new DiskLock(5),
       reanalyse: () => undefined,

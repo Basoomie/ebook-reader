@@ -1,13 +1,10 @@
 /**
  * What the models cost (WP21d): every request's cost from its usage and the price table (a
- * setting), the spending limit, and estimates before anything is sent.
- *
- * The limit covers all of the cleanup's AI spending (every stage, every run). Not set = nothing
- * is asked. A batch's estimate is held against the limit until its answers are in; anything
- * that would pass the limit is not sent.
+ * provider setting), and estimates before anything is sent. The month's spending and the limit
+ * are in ledger.ts and core.ts.
  */
 import type Database from 'better-sqlite3';
-import type { AiPrice, AiSettings } from '../settings';
+import type { AiPrice, AiSettings } from './settings';
 import type { Usage } from './providers';
 
 /** Claude's prompt-cache writes cost 1.25x the input price, reads 0.1x (both providers' list). */
@@ -25,23 +22,6 @@ export function costOf(price: AiPrice, usage: Usage, batch: boolean, batchFactor
     price.inputPerMTok;
   const outUsd = usage.output * price.outputPerMTok;
   return ((inUsd + outUsd) / 1e6) * (batch ? batchFactor : 1);
-}
-
-/** What has been spent (answered requests) and what is held for batches still at a provider. */
-export function spendNow(db: Database.Database): { spentUsd: number; reservedUsd: number } {
-  const spent = db
-    .prepare(`SELECT COALESCE(SUM(cost_usd), 0) AS c FROM ai_requests WHERE cost_usd IS NOT NULL`)
-    .get() as { c: number };
-  const reserved = db
-    .prepare(`SELECT COALESCE(SUM(estimate_usd), 0) AS c FROM ai_batches WHERE state = 'submitted'`)
-    .get() as { c: number };
-  // Settings > AI "Test batch" questions count too.
-  const tests = db
-    .prepare(
-      `SELECT COALESCE(SUM(cost_usd), 0) AS c FROM ai_batch_tests WHERE cost_usd IS NOT NULL`,
-    )
-    .get() as { c: number };
-  return { spentUsd: spent.c + tests.c, reservedUsd: reserved.c };
 }
 
 /** Output tokens assumed per answer before any is measured (thinking included). */

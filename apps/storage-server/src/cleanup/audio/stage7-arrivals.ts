@@ -28,9 +28,10 @@ import path from 'path';
 import { gunzipSync, gzipSync } from 'zlib';
 import { DISK_OWNERS, type DiskLock } from '../disk-lock';
 import { getSettings } from '../settings';
-import { expectedListCost, runSpend } from '../ai/spend';
-import { designCounts, upgradeTargets } from '../ai/values';
-import { modeOf as modeOfModel } from '../ai/runner';
+import { expectedListCost, runSpend } from '../../ai/spend';
+import { designCounts, upgradeTargets } from '../ai-decide/values';
+import { modeOf as modeOfModel } from '../../ai/runner';
+import type { AiSettings } from '../../ai/settings';
 import { AbsClient } from './abs-client';
 import { AbsWatchNotifier } from './abs-watch-notifier';
 import { getAudioStage, pauseAudioStage, resumeAudioStage, updateAudioStage } from './audio-stages';
@@ -163,6 +164,8 @@ export interface Stage7Check {
 
 export interface Stage7Deps {
   db: Database.Database;
+  /** The shared AI provider settings (prices, modes: the upgrade's estimate). */
+  aiSettings: () => AiSettings;
   roots: { torrents: string; library: string; media: string | null };
   lock: DiskLock;
   /** Starts a stage's analysis again (the service's "Run the analysis again"). */
@@ -2301,15 +2304,16 @@ export class AudioStage7 {
       finishedAt?: number | null;
     };
     const ai = getSettings(this.db);
+    const ps = this.deps.aiSettings();
     const key = JSON.stringify([
       s5.analysisId,
       s5.phase,
       s5.decided,
       s5.finishedAt,
       ai.ai.upgradeIncludeDecided,
-      ai.ai.prices,
-      ai.ai.modes,
-      ai.ai.batchPriceFactor,
+      ps.prices,
+      ps.modes,
+      ps.batchPriceFactor,
       ai.models['audio5.upgradePrimary'],
       ai.models['audio5.upgradeSecondary'],
     ]);
@@ -2324,9 +2328,10 @@ export class AudioStage7 {
     const s = getSettings(this.db);
     const models = [s.models['audio5.upgradePrimary'], s.models['audio5.upgradeSecondary']];
     const chars = 2600; // the audiobook prompt with a typical record (measured in WP21d: ~2,030 tokens)
+    const ps = this.deps.aiSettings();
     const perItem = models.reduce((sum, m) => {
-      const c = expectedListCost(this.db, s.ai, m, chars);
-      return sum + c * (modeOfModel(s.ai, m) === 'batch' ? s.ai.batchPriceFactor : 1);
+      const c = expectedListCost(this.db, ps, m, chars);
+      return sum + c * (modeOfModel(ps, m) === 'batch' ? ps.batchPriceFactor : 1);
     }, 0);
     const out: Record<'F' | 'J', { items: number; fields: number; costUsd: number | null }> = {
       F: { items: 0, fields: 0, costUsd: 0 },

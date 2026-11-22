@@ -17,9 +17,10 @@
 import type Database from 'better-sqlite3';
 import { createHash, randomUUID } from 'crypto';
 import path from 'path';
-import { waitNeedsUser, waitText, type AiRunner } from '../ai/runner';
-import { runSpend } from '../ai/spend';
-import { writeDecisions } from '../ai/values';
+import type { AiRunner } from '../../ai/runner';
+import { waitNeedsUser, waitText } from '../../ai/waits';
+import { runSpend } from '../../ai/spend';
+import { writeDecisions } from '../ai-decide/values';
 import { recordMarks } from '../marks';
 import { getSettings } from '../settings';
 import { mapLabeledIds, pauseField, resumeField } from '../stage2-gate';

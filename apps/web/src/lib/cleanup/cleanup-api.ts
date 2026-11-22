@@ -684,7 +684,8 @@ export interface AudiobookSettings {
   extractLeaseSeconds?: number;
 }
 
-export type SecretName = 'anthropicApiKey' | 'openaiApiKey' | 'calibrePassword' | 'absApiKey';
+/** The cleanup's own secrets (the AI keys are Settings > AI's: $lib/ai/ai-api). */
+export type SecretName = 'calibrePassword' | 'absApiKey';
 
 // ---------------------------------------------------------------- the audiobook cleanup (WP21a)
 
@@ -1391,25 +1392,8 @@ export interface AiPrice {
   outputPerMTok: number;
 }
 
+/** The cleanup's own AI choices (the provider settings are Settings > AI's). */
 export interface AiSettings {
-  spendLimitUsd: number | null;
-  /** Per provider: its Batch API (half price) or one call each. */
-  modes: Record<string, 'batch' | 'direct'>;
-  /** A batch with nothing answered after this many minutes is cancelled and asked directly (0 = never). */
-  batchStallMinutes: number;
-  /** How long one address may take to connect before the next is tried (ms). */
-  connectAttemptMs: number;
-  /** Time left before a batch is measured: the expected batch time (minutes). */
-  batchTurnaroundMinutes: number;
-  directWorkers: number;
-  batchSize: number;
-  batchPollSeconds: number;
-  maxTokens: number;
-  requestTimeoutSeconds: number;
-  attempts: number;
-  batchPriceFactor: number;
-  prices: Record<string, AiPrice>;
-  structuredOutputs: boolean;
   labeledOnly: boolean;
   /** WP21f-1: the new arrivals' AI setup (default J); missing on an older server. */
   arrivalsDesign?: 'E' | 'F' | 'J';
@@ -1417,9 +1401,17 @@ export interface AiSettings {
   upgradeIncludeDecided?: boolean;
 }
 
+/** /cleanup's AI part: which model does what, with this month's spending of every AI feature. */
 export interface AiStatus {
   settings: AiSettings;
-  spend: { spentUsd: number; reservedUsd: number; limitUsd: number | null };
+  /** The models with a price (Settings > AI): the ones a task can choose. */
+  prices: Record<string, AiPrice>;
+  spend: {
+    spentUsd: number;
+    reservedUsd: number;
+    limitUsd: number | null;
+    resumesOn?: string;
+  };
   keys: { anthropic: boolean; openai: boolean };
   checks: Record<string, { checkedAt: number; error: string | null; models: number | null }>;
   tasks: {
@@ -1438,16 +1430,6 @@ export interface AiStatus {
     about: string;
     models: { task: string; role: string }[];
   }[];
-  /** The latest "Test batch" of each model. */
-  batchTests: Record<
-    string,
-    {
-      state: 'open' | 'answered' | 'nothing' | 'failed';
-      submittedAt: number;
-      endedAt: number | null;
-      detail: string | null;
-    }
-  >;
 }
 
 // ---------------------------------------------------------------- audiobooks stage 4 (WP21c)
@@ -2322,20 +2304,6 @@ export class CleanupApi {
 
   aiStatus(): Promise<AiStatus> {
     return this.request('GET', '/cleanup/ai/status') as Promise<AiStatus>;
-  }
-
-  /** Reads each provider's model list with the stored key. */
-  checkAiModels(): Promise<AiStatus> {
-    return this.request('POST', '/cleanup/ai/models/check', {}) as Promise<AiStatus>;
-  }
-
-  /** One tiny question to a model as a batch: does its provider run batches for it? */
-  testAiBatch(model: string): Promise<AiStatus> {
-    return this.request(
-      'POST',
-      `/cleanup/ai/models/${encodeURIComponent(model)}/batch-test`,
-      {}
-    ) as Promise<AiStatus>;
   }
 
   spotCheck(stage = 1): Promise<{ items: Proposal[] }> {

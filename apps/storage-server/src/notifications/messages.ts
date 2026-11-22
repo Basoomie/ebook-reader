@@ -20,6 +20,7 @@ export const LINKS = {
   data: '/settings?tab=data',
   diagnostics: '/settings?tab=diagnostics',
   notifications: '/settings?tab=notifications',
+  ai: '/settings?tab=ai',
 };
 
 export const JOB_KIND_LABEL: Record<string, string> = {

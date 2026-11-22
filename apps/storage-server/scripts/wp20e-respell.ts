@@ -12,13 +12,12 @@
 import Database from 'better-sqlite3';
 import fs, { writeFileSync } from 'fs';
 import path from 'path';
-import { AiRunner } from '../src/cleanup/ai/runner';
 import { SNAPSHOT_DIRNAME } from '../src/calibre/indexer';
-import { migrateCleanup } from '../src/cleanup/cleanup-db';
 import { getStage } from '../src/cleanup/stages';
 import { Stage4Ai } from '../src/cleanup/stage4/ai-step';
 import { Stage4Analysis, type Stage4Progress } from '../src/cleanup/stage4/analysis';
 import { FetchQueue } from '../src/cleanup/stage4/queue';
+import { cleanupAi, migrateWorkingCopy } from './lib/cleanup-ai';
 import { getSettings } from '../src/cleanup/settings';
 
 const arg = (n: string) => {
@@ -55,7 +54,7 @@ async function main() {
   const file = arg('db')!;
   const db = new Database(file);
   db.pragma('journal_mode = WAL');
-  migrateCleanup(db);
+  migrateWorkingCopy(db);
   const main = new Database(arg('main')!, { readonly: true, fileMustExist: true });
   const p0 = getStage(db, 4).progress as unknown as Stage4Progress;
   const cacheDir = path.join(path.dirname(file), 'cache');
@@ -79,7 +78,7 @@ async function main() {
     log,
   });
   // No secrets: a question could never be sent.
-  const runner = new AiRunner({ db, secrets: { read: () => null }, log });
+  const { runner } = cleanupAi(db, { log });
   const ai = new Stage4Ai({ db, runner, analysis, log });
 
   const before = rows(db);

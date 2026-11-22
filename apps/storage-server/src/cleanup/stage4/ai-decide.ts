@@ -9,9 +9,9 @@
  * store bonus N.1, omnibus), which v3 leaves open. Edition kind stays with the rules.
  */
 import type Database from 'better-sqlite3';
-import { answerOf, combineE } from '../ai/combine';
-import type { FieldDecision, RulesValue } from '../ai/types';
-import type { DecisionRow } from '../ai/values';
+import { answerOf, combineE } from '../ai-decide/combine';
+import type { FieldDecision, RulesValue } from '../ai-decide/types';
+import type { DecisionRow } from '../ai-decide/values';
 import { STAGE4_AI_FIELDS, type NumberValue, type SeriesValue } from './ai-prompt';
 import type { Stage4Decision } from './stage4-rules';
 

@@ -14,15 +14,13 @@
 import Database from 'better-sqlite3';
 import fs, { readFileSync, writeFileSync } from 'fs';
 import path from 'path';
-import { AiRunner } from '../src/cleanup/ai/runner';
-import { valueCounts } from '../src/cleanup/ai/values';
-import { costOf } from '../src/cleanup/ai/spend';
+import { valueCounts } from '../src/cleanup/ai-decide/values';
+import { costOf } from '../src/ai/spend';
 import { AudioStage5 } from '../src/cleanup/audio/stage5-meta';
 import { META_SPEC } from '../src/cleanup/audio/meta-prompt';
-import { migrateCleanup } from '../src/cleanup/cleanup-db';
-import { SecretStore } from '../src/cleanup/secrets';
 import { getSettings, updateSettings } from '../src/cleanup/settings';
 import { getAudioStage } from '../src/cleanup/audio/audio-stages';
+import { cleanupAi, migrateWorkingCopy, readAiSeed } from './lib/cleanup-ai';
 
 const arg = (n: string) => {
   const i = process.argv.indexOf(`--${n}`);
@@ -38,7 +36,7 @@ function workingCopy(src: string, out: string): Database.Database {
   for (const x of [out, out + '-wal', out + '-shm']) fs.rmSync(x, { force: true });
   const db = new Database(out);
   db.pragma('journal_mode = WAL');
-  migrateCleanup(db);
+  migrateWorkingCopy(db);
   const from = new Database(src, { readonly: true, fileMustExist: true });
   db.pragma('foreign_keys = OFF');
   const tables = (
@@ -100,28 +98,29 @@ async function main() {
     `working copy v${db.pragma('user_version', { simple: true })}: ${db.pragma('quick_check', { simple: true })}`,
   );
   const main = new Database(arg('main')!, { readonly: true, fileMustExist: true });
-  const secrets = new SecretStore(db, main);
+  // The copied secrets and settings tables still hold a pre-v21 copy's keys and settings.
+  const seed = readAiSeed(db, main, arg('ai-key-dir') ?? null);
   console.log(
-    `keys: anthropic ${secrets.read('anthropicApiKey') ? 'set' : 'MISSING'}, openai ${secrets.read('openaiApiKey') ? 'set' : 'MISSING'}`,
+    `keys: anthropic ${seed.keys.anthropicApiKey ? 'set' : 'MISSING'}, openai ${seed.keys.openaiApiKey ? 'set' : 'MISSING'}`,
   );
   const labelsText = readFileSync(arg('labels')!, 'utf8');
   const s = getSettings(db);
-  updateSettings(db, {
-    ai: {
-      ...s.ai,
-      spendLimitUsd: Number(arg('limit') ?? 1),
-      labeledOnly: true,
-      modes: has('smoke') ? { anthropic: 'direct', openai: 'direct' } : { 'gpt-6-luna': 'direct' },
-      batchStallMinutes: 30,
-      batchPollSeconds: 30,
-    },
-  });
+  // The copied settings row may still carry the provider settings: the cleanup's own choices only.
+  db.prepare(`DELETE FROM settings WHERE key = 'ai'`).run();
+  updateSettings(db, { ai: { ...s.ai, labeledOnly: true } });
   db.prepare(`UPDATE audio_stages SET mode = 'analyse' WHERE stage = 5`).run();
   const logs: string[] = [];
-  const runner = new AiRunner({
-    db,
-    secrets,
+  const { core, runner } = cleanupAi(db, {
+    seed,
     log: (m) => (logs.push(m), console.log(`${t()} ${m}`)),
+  });
+  core.updateSettings({
+    spendLimitUsd: Number(arg('limit') ?? 1),
+    modes: has('smoke')
+      ? { 'claude-haiku-5-5': 'direct', 'gpt-6-luna': 'direct' }
+      : { 'gpt-6-luna': 'direct' },
+    batchStallMinutes: 30,
+    batchPollSeconds: 30,
   });
   const stage = new AudioStage5({
     db,
@@ -181,7 +180,7 @@ async function main() {
 
   if (has('smoke')) {
     const n = Number(arg('smoke'));
-    const checks = await runner.checkModels();
+    const checks = await runner.core.checkModels();
     for (const [prov, c] of Object.entries(checks))
       console.log(
         `${prov}: ${c.error ?? `${c.models?.length} models`}; ${['claude-haiku-5-5', 'gpt-6-luna'].filter((m) => c.models?.includes(m)).join(', ') || 'neither configured model listed'}`,

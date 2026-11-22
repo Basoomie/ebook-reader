@@ -1,4 +1,5 @@
 import type { CatalogOptions } from './api/catalog-routes';
+import { AiCore } from './ai/core';
 import { createApp } from './app';
 import { CalibreIndexer } from './calibre/indexer';
 import { SearchRunner } from './catalog/search-runner';
@@ -76,9 +77,16 @@ for (const warning of warnings) console.warn(`Warning: ${warning}`);
 const database = initDatabase(config.dbDir, config.dataRoot);
 if (!database.ok) console.error(`Error: database unavailable: ${database.error}`);
 
+// The shared AI layer (book summaries session 1): the provider keys and settings, the model
+// checks, the batch tests and the one monthly spending limit, in ttsu.db. Works without
+// cleanup.db.
+const aiCore = database.ok ? new AiCore({ db: database.db, dbDir: config.dbDir }) : null;
+aiCore?.start();
+
 // The Calibre library cleanup (WP20a): its own database beside ttsu.db. Optional: when it
-// can't open, only the cleanup routes are off.
-const cleanupDb = database.ok ? initCleanupDatabase(config.dbDir) : null;
+// can't open, only the cleanup routes are off. Opening it the first time after the shared AI
+// layer moves its AI keys, settings and spending to ttsu.db first (cleanup/ai-move.ts).
+const cleanupDb = database.ok ? initCleanupDatabase(config.dbDir, { mainDb: database.db }) : null;
 if (cleanupDb && !cleanupDb.ok) console.error(`Error: library cleanup is off: ${cleanupDb.error}`);
 const cleanupOptions: CleanupOptions = { service: null, error: 'the database is unavailable' };
 
@@ -149,6 +157,7 @@ if (database.ok && cleanupDb?.ok) {
       indexerEnabled: () => catalog.indexer.enabled,
       dbDir: config.dbDir,
       countImport: countImportOptions(config.counts),
+      aiCore: aiCore ?? undefined,
     });
     cleanupOptions.service = cleanup;
     // The audiobook cleanup (WP21a): analysis only, shares the disk lock and the settings.
@@ -522,6 +531,7 @@ const app = createApp({
   },
   cleanup: cleanupOptions,
   notifications,
+  ai: aiCore,
 });
 cleanup?.start();
 cleanupOptions.audio?.start();
@@ -547,6 +557,7 @@ function shutdown(signal: string): void {
   console.log(`${signal} received, shutting down`);
   snapshots?.stop();
   cleanupSnapshots?.stop();
+  aiCore?.stop();
   void notifications?.stop();
   void cleanup?.stop();
   void cleanupOptions.audio?.stop();

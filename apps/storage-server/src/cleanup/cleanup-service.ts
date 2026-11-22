@@ -8,6 +8,7 @@
 import { stage4Write, type Stage4Write, type WriteBatchRow } from './stage4/write-progress';
 import type Database from 'better-sqlite3';
 import { existsSync } from 'fs';
+import path from 'path';
 import { snapshotFile } from '../calibre/indexer';
 import { getIndexState, getLibrary, listLibraries } from '../calibre/libraries';
 import { COUNTER_BUNDLE, readCounterInfo } from '../counts/counter-bundle';
@@ -26,7 +27,9 @@ import { Stage4Ai } from './stage4/ai-step';
 import { Stage5, type Stage5Progress } from './stage5/step';
 import { BY_ID as STAGE5_TERMS } from './stage5/vocab';
 import { STAGE4_WRITTEN_FIELDS } from './stage2-batches';
-import { AiRunner, type AiRunnerDeps } from './ai/runner';
+import { AiCore, type AiCoreDeps } from '../ai/core';
+import { AiRunner } from '../ai/runner';
+import { CLEANUP_AI_FEATURES, CLEANUP_AI_SOURCE, cleanupFeatureOf } from './ai-features';
 import { openLookups, paceSeconds, stage4Eta, type SiteCounts } from './stage4/eta';
 import { FetchQueue, LABELED_PRIORITY, backoffKey } from './stage4/queue';
 import { FetcherSlots, slotStateRow, type FetcherSlot } from './stage4/fetch-slots';
@@ -128,8 +131,13 @@ export interface CleanupServiceOptions {
   /** The disk lock shared with the audiobook cleanup (WP21a); a new one when not given. */
   diskLock?: DiskLock;
   leaseSeconds?: number;
-  /** Stand-in AI providers (tests). */
-  aiProviders?: AiRunnerDeps['providers'];
+  /**
+   * The shared AI layer (src/ai/core.ts; one per server). Tests may leave it out: a core on
+   * ttsu.db is made then, with `aiProviders` as its stand-in providers.
+   */
+  aiCore?: AiCore;
+  /** Stand-in AI providers (tests, when no aiCore is given). */
+  aiProviders?: AiCoreDeps['providers'];
   log?: (m: string) => void;
   logError?: (m: string, err?: unknown) => void;
 }
@@ -175,6 +183,8 @@ export class CleanupService {
    * provider back-off (WP20e).
    */
   readonly aiRunner: AiRunner;
+  /** The shared AI layer the runner asks through (keys, provider settings, the limit). */
+  readonly aiCore: AiCore;
   /** Stage 4's AI check (WP20e), after the rules' analysis. */
   readonly stage4Ai: Stage4Ai | null;
   /** Stage 5 (WP20f): genres and tags, after stage 4's AI check. */
@@ -218,10 +228,23 @@ export class CleanupService {
     this.log = opts.log ?? console.log;
     this.logError = opts.logError ?? console.error;
     this.secrets = new SecretStore(opts.cleanup, opts.main);
+    this.aiCore =
+      opts.aiCore ??
+      new AiCore({
+        db: opts.main,
+        dbDir: opts.dbDir ?? path.dirname(opts.main.name),
+        providers: opts.aiProviders,
+        log: this.log,
+      });
+    for (const [id, label] of Object.entries(CLEANUP_AI_FEATURES))
+      this.aiCore.registerFeature(id, label);
     this.aiRunner = new AiRunner({
       db: opts.cleanup,
-      secrets: this.secrets,
-      providers: opts.aiProviders,
+      core: this.aiCore,
+      source: CLEANUP_AI_SOURCE,
+      featureOf: cleanupFeatureOf,
+      modelFor: (task) => getSettings(opts.cleanup).models[task] ?? '',
+      onlyLabeled: () => getSettings(opts.cleanup).ai.labeledOnly,
       log: this.log,
     });
     this.diskLock = opts.diskLock ?? new DiskLock();

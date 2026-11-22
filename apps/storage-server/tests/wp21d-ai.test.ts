@@ -7,24 +7,30 @@
  */
 import type Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
-import {
-  answerOf,
-  combineE,
-  combineUpgrade,
-  evidenceForm,
-  inEvidence,
-} from '../src/cleanup/ai/combine';
+import { answerOf, combineE, combineUpgrade } from '../src/cleanup/ai-decide/combine';
+import { evidenceForm, inEvidence } from '../src/ai/evidence-check';
 import {
   AnthropicProvider,
   OpenAiProvider,
   firstJson,
   type ProviderClient,
-} from '../src/cleanup/ai/providers';
-import { AiRunner } from '../src/cleanup/ai/runner';
-import { costOf, runSpend, spendNow } from '../src/cleanup/ai/spend';
-import { NAME_FORM_RULE, VOLUME_MARKER_RULE, systemPrompt } from '../src/cleanup/ai/prompt-blocks';
-import type { AiField, AiStageSpec, Provider } from '../src/cleanup/ai/types';
-import { setUserValue, upgradeTargets, valuesOf, writeDecisions } from '../src/cleanup/ai/values';
+} from '../src/ai/providers';
+import { AiRunner } from '../src/ai/runner';
+import { costOf, runSpend } from '../src/ai/spend';
+import {
+  NAME_FORM_RULE,
+  VOLUME_MARKER_RULE,
+  systemPrompt,
+} from '../src/cleanup/ai-decide/prompt-blocks';
+import type { AiStageSpec, Provider } from '../src/ai/types';
+import type { AiField } from '../src/cleanup/ai-decide/types';
+import { cleanupRunner, makeAiCore } from './helpers/ai-env';
+import {
+  setUserValue,
+  upgradeTargets,
+  valuesOf,
+  writeDecisions,
+} from '../src/cleanup/ai-decide/values';
 import { initCleanupDatabase } from '../src/cleanup/cleanup-db';
 import { updateSettings } from '../src/cleanup/settings';
 import { makeTempDir } from './helpers/spawn-server';
@@ -278,18 +284,18 @@ async function setup(
   const db = freshDb();
   const keys: Record<string, string | null> = { anthropicApiKey: 'ak', openaiApiKey: 'ok' };
   let now = 1_800_000_000_000;
-  const runner = new AiRunner({
-    db,
-    secrets: { read: (n) => keys[n] ?? null },
+  const { core } = makeAiCore({
+    keys: { read: (n) => keys[n] ?? null },
     providers: (p: Provider, key: string): ProviderClient =>
       p === 'anthropic'
         ? new AnthropicProvider(key, standin!.anthropicUrl)
         : new OpenAiProvider(key, standin!.openaiUrl),
     now: () => now,
-    sleep: async () => {},
   });
+  const runner = cleanupRunner(db, core, { now: () => now, sleep: async () => {} });
   return {
     db,
+    core,
     runner,
     keys,
     advance: (ms: number) => {
@@ -329,17 +335,14 @@ describe('AI runner', () => {
   });
 
   it('sends batches to both providers through the SDKs, collects them and counts the cost (half price)', async () => {
-    const { db, runner, advance } = await setup({ batchPolls: 1 });
-    updateSettings(db, {
-      ai: {
-        ...(await import('../src/cleanup/settings')).getSettings(db).ai,
-        spendLimitUsd: 1,
-        modes: {
-          'claude-haiku-5-5': 'batch',
-          'gpt-6-luna': 'batch',
-          'gpt-6.1-sol': 'batch',
-          'claude-sonnet-5-5': 'batch',
-        },
+    const { db, core, runner, advance } = await setup({ batchPolls: 1 });
+    core.updateSettings({
+      spendLimitUsd: 1,
+      modes: {
+        'claude-haiku-5-5': 'batch',
+        'gpt-6-luna': 'batch',
+        'gpt-6.1-sol': 'batch',
+        'claude-sonnet-5-5': 'batch',
       },
     });
     runner.putItems(SPEC, items(5, 2), 1);
@@ -372,8 +375,8 @@ describe('AI runner', () => {
       0.5,
     );
     expect(one).toBeCloseTo(0.000325, 9);
-    expect(spendNow(db).spentUsd).toBeCloseTo(one * 10, 9);
-    expect(spendNow(db).reservedUsd).toBe(0);
+    expect(core.room().spentUsd).toBeCloseTo(one * 10, 9);
+    expect(core.room().reservedUsd).toBe(0);
     expect(runSpend(db, 'test5', 'run1')).toMatchObject({ items: 5 });
     expect(runner.batches('test5')).toMatchObject({ open: 0, collected: 2, failed: 0 });
     // The labeled items went first, in the structured-output format, without temperature.
@@ -387,13 +390,10 @@ describe('AI runner', () => {
   });
 
   it('a question in a batch still at the provider joins a new run without being asked again (WP20e)', async () => {
-    const { db, runner, advance } = await setup({ batchPolls: 1 });
-    updateSettings(db, {
-      ai: {
-        ...(await import('../src/cleanup/settings')).getSettings(db).ai,
-        spendLimitUsd: 1,
-        modes: { 'claude-haiku-5-5': 'batch' },
-      },
+    const { core, runner, advance } = await setup({ batchPolls: 1 });
+    core.updateSettings({
+      spendLimitUsd: 1,
+      modes: { 'claude-haiku-5-5': 'batch' },
     });
     runner.putItems(SPEC, items(2), 1);
     runner.enqueue(SPEC, 'primary', ['k0', 'k1'], 'run1');
@@ -412,20 +412,16 @@ describe('AI runner', () => {
   });
 
   it('never asks the same evidence twice; failed questions again only in a later run; blocked never', async () => {
-    const { db, runner, advance } = await setup({
+    const { core, runner, advance } = await setup({
       behaviour: (t) => (t === 'title0' ? 'refusal' : t === 'title1' ? 'bad_request' : 'answer'),
     });
-    const { getSettings } = await import('../src/cleanup/settings');
-    updateSettings(db, {
-      ai: {
-        ...getSettings(db).ai,
-        spendLimitUsd: 1,
-        modes: {
-          'claude-haiku-5-5': 'direct',
-          'gpt-6-luna': 'direct',
-          'gpt-6.1-sol': 'direct',
-          'claude-sonnet-5-5': 'direct',
-        },
+    core.updateSettings({
+      spendLimitUsd: 1,
+      modes: {
+        'claude-haiku-5-5': 'direct',
+        'gpt-6-luna': 'direct',
+        'gpt-6.1-sol': 'direct',
+        'claude-sonnet-5-5': 'direct',
       },
     });
     runner.putItems(SPEC, items(3), 1);
@@ -470,7 +466,7 @@ describe('AI runner', () => {
       expect(err?.message).toBe(`Connection error. (ECONNREFUSED 127.0.0.1:${port})`);
     }
     // An attempt over several addresses lists each address's error.
-    const { causeOf } = await import('../src/cleanup/ai/providers');
+    const { causeOf } = await import('../src/ai/providers');
     const multi = Object.assign(new Error('fetch failed'), {
       cause: Object.assign(new Error(''), {
         code: 'ETIMEDOUT',
@@ -486,7 +482,7 @@ describe('AI runner', () => {
   });
 
   it('retries busy and server errors only, and records content blocks and bad answers as final', async () => {
-    const { db, runner, advance, tries } = await setup({
+    const { core, runner, advance, tries } = await setup({
       behaviour: (t) =>
         t === 'title0'
           ? 'busy'
@@ -496,17 +492,13 @@ describe('AI runner', () => {
               ? 'bad'
               : 'answer',
     });
-    const { getSettings } = await import('../src/cleanup/settings');
-    updateSettings(db, {
-      ai: {
-        ...getSettings(db).ai,
-        spendLimitUsd: 1,
-        modes: {
-          'claude-haiku-5-5': 'direct',
-          'gpt-6-luna': 'direct',
-          'gpt-6.1-sol': 'direct',
-          'claude-sonnet-5-5': 'direct',
-        },
+    core.updateSettings({
+      spendLimitUsd: 1,
+      modes: {
+        'claude-haiku-5-5': 'direct',
+        'gpt-6-luna': 'direct',
+        'gpt-6.1-sol': 'direct',
+        'claude-sonnet-5-5': 'direct',
       },
     });
     runner.putItems(SPEC, items(3), 1);
@@ -522,19 +514,15 @@ describe('AI runner', () => {
   });
 
   it('stops before the spending limit and goes on when it is raised', async () => {
-    const { db, runner, advance } = await setup();
-    const { getSettings } = await import('../src/cleanup/settings');
+    const { core, runner, advance } = await setup();
     // 6 questions at about $0.0005 each (estimated from the prompt length): room for 2.
-    updateSettings(db, {
-      ai: {
-        ...getSettings(db).ai,
-        spendLimitUsd: 0.001,
-        modes: {
-          'claude-haiku-5-5': 'batch',
-          'gpt-6-luna': 'batch',
-          'gpt-6.1-sol': 'batch',
-          'claude-sonnet-5-5': 'batch',
-        },
+    core.updateSettings({
+      spendLimitUsd: 0.001,
+      modes: {
+        'claude-haiku-5-5': 'batch',
+        'gpt-6-luna': 'batch',
+        'gpt-6.1-sol': 'batch',
+        'claude-sonnet-5-5': 'batch',
       },
     });
     runner.putItems(SPEC, items(6), 1);
@@ -545,29 +533,25 @@ describe('AI runner', () => {
     expect(r.sent).toBeLessThan(6);
     advance(61_000);
     await runner.step(SPEC, 'r', () => false);
-    const spent = spendNow(db).spentUsd;
+    const spent = core.room().spentUsd;
     expect(spent).toBeLessThanOrEqual(0.001);
     const stuck = await runner.step(SPEC, 'r', () => false);
     expect(stuck.wait?.kind).toBe('limit_reached');
-    updateSettings(db, { ai: { ...getSettings(db).ai, spendLimitUsd: 1 } });
+    core.updateSettings({ spendLimitUsd: 1 });
     const end = await runToEnd(runner, 'r', advance);
     expect(end.pending).toBe(0);
     expect(runner.counts('test5', 'r').answered).toBe(6);
   });
 
   it('waits for a missing key, a refused key, an unknown model id and a model without a price', async () => {
-    const { db, runner, keys } = await setup();
-    const { getSettings } = await import('../src/cleanup/settings');
-    updateSettings(db, {
-      ai: {
-        ...getSettings(db).ai,
-        spendLimitUsd: 1,
-        modes: {
-          'claude-haiku-5-5': 'direct',
-          'gpt-6-luna': 'direct',
-          'gpt-6.1-sol': 'direct',
-          'claude-sonnet-5-5': 'direct',
-        },
+    const { db, core, runner, keys } = await setup();
+    core.updateSettings({
+      spendLimitUsd: 1,
+      modes: {
+        'claude-haiku-5-5': 'direct',
+        'gpt-6-luna': 'direct',
+        'gpt-6.1-sol': 'direct',
+        'claude-sonnet-5-5': 'direct',
       },
     });
     runner.putItems(SPEC, items(1), 1);
@@ -582,22 +566,19 @@ describe('AI runner', () => {
     expect(refused?.kind).toBe('auth_failed');
     keys.anthropicApiKey = 'ak';
     updateSettings(db, { models: { 'audio5.primary': 'claude-haiku-9-9' } });
-    updateSettings(db, {
-      ai: {
-        ...getSettings(db).ai,
-        prices: {
-          ...getSettings(db).ai.prices,
-          'claude-haiku-9-9': { inputPerMTok: 1, outputPerMTok: 1 },
-        },
+    core.updateSettings({
+      prices: {
+        ...core.settings().prices,
+        'claude-haiku-9-9': { inputPerMTok: 1, outputPerMTok: 1 },
       },
     });
     runner.enqueue(SPEC, 'primary', ['k0'], 'r');
     const missing = await runner.step(SPEC, 'r', () => false);
     expect(missing.wait).toMatchObject({ kind: 'model_missing', model: 'claude-haiku-9-9' });
     updateSettings(db, { models: { 'audio5.primary': 'claude-sonnet-5-5' } });
-    const { prices } = getSettings(db).ai;
+    const { prices } = core.settings();
     const { 'claude-sonnet-5-5': _drop, ...rest } = prices;
-    updateSettings(db, { ai: { ...getSettings(db).ai, prices: rest } });
+    core.updateSettings({ prices: rest });
     // (the question to the unknown model would be reported first)
     db.prepare(`DELETE FROM ai_requests WHERE model = 'claude-haiku-9-9'`).run();
     runner.enqueue(SPEC, 'primary', ['k0'], 'r');
@@ -606,16 +587,15 @@ describe('AI runner', () => {
       model: 'claude-sonnet-5-5',
     });
     // Model lists are read with the key and stored (Settings: Check models).
-    const checked = await runner.checkModels();
+    const checked = await core.checkModels();
     expect(checked.anthropic.models).toContain('claude-haiku-5-5');
     expect(checked.openai.models).toContain('gpt-6-luna');
   });
 
   it('asks each provider in its own mode: by default Anthropic by batch, OpenAI directly', async () => {
-    const { db, runner } = await setup();
-    const { getSettings } = await import('../src/cleanup/settings');
-    expect(getSettings(db).ai.modes).toEqual({ 'gpt-6-luna': 'direct' });
-    updateSettings(db, { ai: { ...getSettings(db).ai, spendLimitUsd: 1 } });
+    const { core, runner } = await setup();
+    expect(core.settings().modes).toEqual({ 'gpt-6-luna': 'direct' });
+    core.updateSettings({ spendLimitUsd: 1 });
     runner.putItems(SPEC, items(3), 1);
     runner.enqueue(SPEC, 'primary', ['k0', 'k1', 'k2'], 'r');
     runner.enqueue(SPEC, 'secondary', ['k0', 'k1', 'k2'], 'r');
@@ -630,20 +610,16 @@ describe('AI runner', () => {
 
   for (const stuck of ['gpt-6-luna', 'claude-haiku-5-5']) {
     it(`cancels a batch nothing in it answered in batchStallMinutes and asks its questions directly (${stuck})`, async () => {
-      const { db, runner, advance } = await setup({ stallModels: [stuck] });
-      const { getSettings } = await import('../src/cleanup/settings');
-      updateSettings(db, {
-        ai: {
-          ...getSettings(db).ai,
-          spendLimitUsd: 1,
-          modes: {
-            'claude-haiku-5-5': 'batch',
-            'gpt-6-luna': 'batch',
-            'gpt-6.1-sol': 'batch',
-            'claude-sonnet-5-5': 'batch',
-          },
-          batchStallMinutes: 2,
+      const { db, core, runner, advance } = await setup({ stallModels: [stuck] });
+      core.updateSettings({
+        spendLimitUsd: 1,
+        modes: {
+          'claude-haiku-5-5': 'batch',
+          'gpt-6-luna': 'batch',
+          'gpt-6.1-sol': 'batch',
+          'claude-sonnet-5-5': 'batch',
         },
+        batchStallMinutes: 2,
       });
       runner.putItems(SPEC, items(3), 1);
       runner.enqueue(SPEC, 'primary', ['k0', 'k1', 'k2'], 'r');
@@ -680,61 +656,58 @@ describe('AI runner', () => {
   }
 
   it('"Test batch" shows whether and how fast a provider runs batches for a model', async () => {
-    const { db, runner, advance } = await setup({ stallModels: ['gpt-6-luna'] });
-    const { getSettings } = await import('../src/cleanup/settings');
-    await expect(runner.testBatch('claude-haiku-5-5')).rejects.toThrow(/spending limit/);
-    updateSettings(db, { ai: { ...getSettings(db).ai, spendLimitUsd: 1, batchStallMinutes: 2 } });
-    await runner.testBatch('claude-haiku-5-5');
-    await runner.testBatch('gpt-6-luna');
-    await expect(runner.testBatch('gpt-6-luna')).rejects.toThrow(/already running/);
-    expect(runner.batchTests()['gpt-6-luna'].state).toBe('open');
+    const { core, advance } = await setup({ stallModels: ['gpt-6-luna'] });
+    await expect(core.testBatch('claude-haiku-5-5')).rejects.toThrow(/spending limit/);
+    core.updateSettings({ spendLimitUsd: 1, batchStallMinutes: 2 });
+    await core.testBatch('claude-haiku-5-5');
+    await core.testBatch('gpt-6-luna');
+    await expect(core.testBatch('gpt-6-luna')).rejects.toThrow(/already running/);
+    expect(core.batchTests()['gpt-6-luna'].state).toBe('open');
     advance(61_000);
-    await runner.pollBatchTests();
-    expect(runner.batchTests()['claude-haiku-5-5']).toMatchObject({
+    await core.pollBatchTests();
+    expect(core.batchTests()['claude-haiku-5-5']).toMatchObject({
       state: 'answered',
       detail: 'answered in 61 s',
     });
-    expect(runner.batchTests()['gpt-6-luna'].state).toBe('open');
+    expect(core.batchTests()['gpt-6-luna'].state).toBe('open');
     advance(61_000);
-    await runner.pollBatchTests();
-    expect(runner.batchTests()['gpt-6-luna']).toMatchObject({ state: 'nothing' });
-    expect(runner.batchTests()['gpt-6-luna'].detail).toMatch(/^nothing answered in 2 min/);
+    await core.pollBatchTests();
+    expect(core.batchTests()['gpt-6-luna']).toMatchObject({ state: 'nothing' });
+    expect(core.batchTests()['gpt-6-luna'].detail).toMatch(/^nothing answered in 2 min/);
     expect(standin!.calls.filter((c: { cancel?: boolean }) => c.cancel).length).toBe(1);
     // The test's cost counts against the limit.
-    expect(spendNow(db).spentUsd).toBeGreaterThan(0);
+    expect(core.room().spentUsd).toBeGreaterThan(0);
   });
 
   it('a model list that could not be read is read again within a minute, not an hour', async () => {
-    const { db, runner, advance } = await setup();
-    const { getSettings } = await import('../src/cleanup/settings');
-    updateSettings(db, { ai: { ...getSettings(db).ai, spendLimitUsd: 1 } });
+    const { core, runner, advance } = await setup();
+    core.updateSettings({ spendLimitUsd: 1 });
     runner.putItems(SPEC, items(2), 1);
     runner.enqueue(SPEC, 'primary', ['k0'], 'r');
     await runToEnd(runner, 'r', advance);
     // Then a read fails (as at the server's start on 2026-11-19: a connection error).
-    db.prepare(
-      "UPDATE ai_model_checks SET error = 'Connection error. (ETIMEDOUT)', models_json = NULL, checked_at = ?",
-    ).run((runner as unknown as { now(): number }).now());
+    core.db
+      .prepare(
+        "UPDATE ai_model_checks SET error = 'Connection error. (ETIMEDOUT)', models_json = NULL, checked_at = ?",
+      )
+      .run((runner as unknown as { now(): number }).now());
     advance(1000);
     runner.enqueue(SPEC, 'primary', ['k1'], 'r');
     const w = await runner.step(SPEC, 'r', () => false);
     expect(w.wait).toMatchObject({ kind: 'model_check_failed' });
     advance(61_000);
     await runToEnd(runner, 'r', advance);
-    expect(runner.modelChecks().anthropic.error).toBeNull();
+    expect(core.modelChecks().anthropic.error).toBeNull();
     expect(runner.answerOf(SPEC, 'primary', 'k1')?.state).toBe('answered');
   });
 
   it('asks again a call a restart cut off (the nightly backup stopped the server, 2026-11-20)', async () => {
-    const { db, runner, advance } = await setup();
+    const { db, core, runner, advance } = await setup();
     const { getSettings } = await import('../src/cleanup/settings');
     const s = getSettings(db);
-    updateSettings(db, {
-      ai: {
-        ...s.ai,
-        spendLimitUsd: 1,
-        modes: Object.fromEntries(Object.values(s.models).map((m) => [m, 'direct' as const])),
-      },
+    core.updateSettings({
+      spendLimitUsd: 1,
+      modes: Object.fromEntries(Object.values(s.models).map((m) => [m, 'direct' as const])),
     });
     runner.putItems(SPEC, items(1), 1);
     runner.enqueue(SPEC, 'primary', ['k0'], 'r');
@@ -753,15 +726,12 @@ describe('AI runner', () => {
   });
 
   it('asks again the cut-off calls of every stage one runner serves (WP20e: one runner for all)', async () => {
-    const { db, runner, advance } = await setup();
+    const { db, core, runner, advance } = await setup();
     const { getSettings } = await import('../src/cleanup/settings');
     const s = getSettings(db);
-    updateSettings(db, {
-      ai: {
-        ...s.ai,
-        spendLimitUsd: 1,
-        modes: Object.fromEntries(Object.values(s.models).map((m) => [m, 'direct' as const])),
-      },
+    core.updateSettings({
+      spendLimitUsd: 1,
+      modes: Object.fromEntries(Object.values(s.models).map((m) => [m, 'direct' as const])),
     });
     const SPEC2: AiStageSpec<Ev> = { ...SPEC, stage: 'test4' };
     runner.putItems(SPEC, items(1), 1);
@@ -784,9 +754,10 @@ describe('AI runner', () => {
   });
 
   it('only labeled items are asked when labeledOnly is set', async () => {
-    const { db, runner, advance } = await setup();
+    const { db, core, runner, advance } = await setup();
     const { getSettings } = await import('../src/cleanup/settings');
-    updateSettings(db, { ai: { ...getSettings(db).ai, spendLimitUsd: 1, labeledOnly: true } });
+    core.updateSettings({ spendLimitUsd: 1 });
+    updateSettings(db, { ai: { ...getSettings(db).ai, labeledOnly: true } });
     runner.putItems(SPEC, items(4, 1), 1);
     runner.enqueue(SPEC, 'primary', ['k0', 'k1', 'k2', 'k3'], 'r');
     await runner.step(SPEC, 'r', () => false);

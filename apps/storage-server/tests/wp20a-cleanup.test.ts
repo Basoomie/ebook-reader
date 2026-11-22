@@ -864,13 +864,24 @@ describe('tokens, secrets and the routes', () => {
     const user = { Authorization: `Bearer ${env.userToken()}` };
     const apply = { Authorization: `Bearer ${env.applyToken()}` };
     const key = 'sk-ant-api03-very-secret-key-1234';
-    const put = await request(env.app)
+    // The AI keys are Settings > AI's since the shared AI layer (ttsu.db); not cleanup secrets.
+    await request(env.app)
       .put('/api/v1/cleanup/secrets/anthropicApiKey')
+      .set(user)
+      .send({ value: key })
+      .expect(404);
+    const put = await request(env.app)
+      .put('/api/v1/ai/secrets/anthropicApiKey')
       .set(user)
       .send({ value: key })
       .expect(200);
     expect(JSON.stringify(put.body)).not.toContain('very-secret');
-    expect(put.body.secrets.anthropicApiKey).toMatchObject({ set: true, hint: '1234' });
+    expect(put.body.keys.anthropicApiKey).toMatchObject({ set: true, hint: '1234' });
+    const aiRaw = env.db.prepare('SELECT ciphertext FROM ai_secrets').all() as {
+      ciphertext: Buffer;
+    }[];
+    expect(aiRaw).toHaveLength(1);
+    expect(aiRaw[0].ciphertext.toString('utf8')).not.toContain('very-secret');
     await request(env.app)
       .put('/api/v1/cleanup/secrets/calibrePassword')
       .set(user)

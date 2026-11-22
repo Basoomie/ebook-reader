@@ -7,9 +7,10 @@
  * bake-off's `evidence()` line for line, so the measured accuracy carries over.
  */
 import { NA, N, lightNormalize, normalizeName, pyStrip } from '../title-rules';
-import { evidenceForm } from '../ai/combine';
-import { systemPrompt } from '../ai/prompt-blocks';
-import type { AiField, AiStageSpec } from '../ai/types';
+import { evidenceForm } from '../../ai/evidence-check';
+import { systemPrompt } from '../ai-decide/prompt-blocks';
+import type { AiStageSpec } from '../../ai/types';
+import type { AiField } from '../ai-decide/types';
 import type { RefRecord } from './rules-v3';
 
 /** Raised whenever the prompt, the evidence text or the schema changes. */

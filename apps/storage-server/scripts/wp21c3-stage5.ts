@@ -12,9 +12,8 @@
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
-import { AiRunner } from '../src/cleanup/ai/runner';
-import type { SecretStore } from '../src/cleanup/secrets';
 import { AudioStage5 } from '../src/cleanup/audio/stage5-meta';
+import { cleanupAi } from './lib/cleanup-ai';
 import { getAudioStage } from '../src/cleanup/audio/audio-stages';
 
 function arg(name: string): string {
@@ -37,11 +36,7 @@ const maxBefore = (
   db.prepare('SELECT COALESCE(MAX(id), 0) AS m FROM ai_requests').get() as { m: number }
 ).m;
 // No key: nothing can be sent (the runner waits for one).
-const runner = new AiRunner({
-  db,
-  secrets: { read: () => null } as unknown as SecretStore,
-  log: () => undefined,
-});
+const { runner } = cleanupAi(db, { log: () => undefined });
 const stage = new AudioStage5({
   db,
   runner,

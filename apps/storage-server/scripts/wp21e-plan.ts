@@ -13,13 +13,11 @@
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
-import { migrateCleanup } from '../src/cleanup/cleanup-db';
-import { AiRunner } from '../src/cleanup/ai/runner';
-import type { SecretStore } from '../src/cleanup/secrets';
 import { AudioStage5, stage5RulesKey } from '../src/cleanup/audio/stage5-meta';
 import { AudioStage6 } from '../src/cleanup/audio/stage6-build';
 import { DiskLock } from '../src/cleanup/disk-lock';
 import { stageIds, gatesPassed } from '../src/cleanup/audio/build-inputs';
+import { cleanupAi, migrateWorkingCopy } from './lib/cleanup-ai';
 
 function arg(name: string, fallback?: string): string {
   const i = process.argv.indexOf(`--${name}`);
@@ -40,7 +38,7 @@ for (const f of [dbFile, dbFile + '-wal', dbFile + '-shm']) fs.rmSync(f, { force
 const t0 = Date.now();
 const db = new Database(dbFile);
 db.pragma('journal_mode = WAL');
-migrateCleanup(db);
+migrateWorkingCopy(db);
 const from = new Database(src, { readonly: true, fileMustExist: true });
 db.pragma('foreign_keys = OFF');
 const tables = (
@@ -91,11 +89,7 @@ const copyMs = Date.now() - t0;
 
 // 2. The real plan phase.
 const log = (m: string) => console.log(m);
-const runner = new AiRunner({
-  db,
-  secrets: { read: () => null } as unknown as SecretStore,
-  log,
-});
+const { runner } = cleanupAi(db, { log });
 const labelsText = fs.readFileSync(labelsFile, 'utf8');
 const stage5 = new AudioStage5({
   db,

@@ -16,37 +16,8 @@
  * J (upgrade): the stronger pair also decides every open field E's pair agreed on, and an
  *   automatic rules field takes the answer all four models agree on against the rules.
  */
+import { inEvidence } from '../../ai/evidence-check';
 import type { AiField, FieldDecision, RulesValue } from './types';
-
-/** Characters ignored when looking for a model's string in the evidence. */
-const IGNORED =
-  /[\s\u3000・･.,，、。:：;；!！?？'"‘’“”「」『』【】〈〉《》<>＜＞()（）[\]［］{}｛｝~～〜\-‐–—―ー_＿/／\\＼|｜*＊#＃&＆+＋=＝]/g;
-
-/** The never-invent comparison form: NFKC, lower case, punctuation and spaces removed. */
-export function evidenceForm(s: string): string {
-  return s.normalize('NFKC').toLowerCase().replace(IGNORED, '');
-}
-
-/**
- * True when every string of the value appears in the evidence. A string that is not found
- * whole counts when each of its parts (split at spaces and punctuation, at least 2 characters
- * each, or the whole string when it has no parts) is found: a title the model joined from the
- * record's title and subtitle, a name the model wrote with ・.
- */
-export function inEvidence(strings: string[], evidence: string): boolean {
-  for (const s of strings) {
-    const whole = evidenceForm(s);
-    if (whole === '') continue;
-    if (evidence.includes(whole)) continue;
-    const parts = s
-      .normalize('NFKC')
-      .split(IGNORED)
-      .map((x) => evidenceForm(x))
-      .filter((x) => x.length >= 2);
-    if (parts.length < 2 || !parts.every((x) => evidence.includes(x))) return false;
-  }
-  return true;
-}
 
 /** A model's answer for a field, or undefined when it has none or it is not in the evidence. */
 export function answerOf<V>(
