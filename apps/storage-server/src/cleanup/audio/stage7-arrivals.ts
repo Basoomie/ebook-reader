@@ -2265,6 +2265,7 @@ export class AudioStage7 {
       switched: librarySwitched(this.db),
       ...((u) => ({ designs: u.designs, upgrade: u }))(this.upgradeEstimate()),
       absWaitMinutes: getSettings(this.db).audiobooks.arrivalsAbsWaitMinutes,
+      libraryChanges: getSettings(this.db).audiobooks.libraryChanges,
       openReviews: Object.fromEntries(
         (
           this.db

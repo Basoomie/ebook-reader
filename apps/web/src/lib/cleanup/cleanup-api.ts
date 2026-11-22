@@ -1138,6 +1138,8 @@ export interface AudioStage7Status {
   };
   openReviews?: Record<string, number>;
   absWaitMinutes?: number;
+  /** Settings > Audiobooks: changes to books already in the library (WP21f-2). */
+  libraryChanges?: 'off' | 'analyse' | 'on';
 }
 
 // ---------------------------------------------------------------- audiobooks stage 6 (WP21e-1)

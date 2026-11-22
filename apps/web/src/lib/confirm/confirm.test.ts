@@ -172,3 +172,19 @@ describe('confirmation words', () => {
     }
   });
 });
+
+describe('stage 7 Run now (WP21f-2: the changes to books in the library)', () => {
+  const text = (c: { message: string | string[] }) =>
+    Array.isArray(c.message) ? c.message.join('\n') : c.message;
+
+  it('says what happens to books already in the library, per mode', () => {
+    expect(text(copies.arrivalsRunNowCopy('on', 'on'))).toContain(
+      'Changes to books already in the library are On'
+    );
+    expect(text(copies.arrivalsRunNowCopy('on', 'analyse'))).toContain('only listed (Preview)');
+    // Stage 7 in Preview changes nothing, whatever the library changes' mode.
+    expect(text(copies.arrivalsRunNowCopy('analyse', 'on'))).toContain('only listed (Preview)');
+    expect(text(copies.arrivalsRunNowCopy('on', 'off'))).not.toContain('already in the library');
+    expect(text(copies.arrivalsRunNowCopy('on'))).not.toContain('already in the library');
+  });
+});
