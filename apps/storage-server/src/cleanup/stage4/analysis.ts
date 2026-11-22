@@ -108,6 +108,18 @@ import {
 } from './store-links';
 
 export const STAGE = 4;
+
+/**
+ * WP20g: the analysis id of a new-arrivals run's stage-4 work. The run drives this module's own
+ * steps on a copy of the library's progress with this id (arrivalView), so the new books are read,
+ * looked up and proposed by the same code, their proposals carry this id (the stage's own On never
+ * plans them: only the arrivals' On writes them) and the library's analysis is left as it is.
+ */
+export const ARRIVAL_ANALYSIS_PREFIX = 'arrivals:';
+export const isArrivalAnalysis = (id: string | null | undefined): boolean =>
+  typeof id === 'string' && id.startsWith(ARRIVAL_ANALYSIS_PREFIX);
+export const arrivalAnalysisId = (runId: number): string => `${ARRIVAL_ANALYSIS_PREFIX}${runId}`;
+
 export const REF_KIND = 'reffile';
 export const ONLINE_KIND = 'online';
 export const ONLINE_VERSION = 1;
@@ -560,9 +572,126 @@ export class Stage4Analysis {
   private readonly log: (m: string) => void;
   private timesLoggedAt = Date.now();
   private withEpubCache: Stage2Book[] | null = null;
+  /** WP20g: where an arrival view's progress is saved (the run's own progress), never stage 4's row. */
+  private arrivalSink: ((p: Stage4Progress) => void) | null = null;
 
   constructor(private readonly deps: Stage4Deps) {
     this.log = deps.log ?? (() => {});
+  }
+
+  /** WP20g: the arrivals run that holds an arrival view's progress. */
+  setArrivalSink(sink: ((p: Stage4Progress) => void) | null): void {
+    this.arrivalSink = sink;
+  }
+
+  /**
+   * WP20g: a new-arrivals run's view of the library's stage-4 progress: the same library, sources
+   * and one-time passes (all through), its own analysis id, no labeled books (the gate is the
+   * library's, scored on the labeled books), starting at the lookups. Saved by the run.
+   */
+  arrivalView(base: Stage4Progress, runId: number, now = Date.now()): Stage4Progress {
+    const done = { phase: 'done' as const, cursor: '' };
+    return {
+      ...structuredClone(base),
+      analysisId: arrivalAnalysisId(runId),
+      phase: 'lookups',
+      startedAt: now,
+      finishedAt: null,
+      pass: 'all',
+      labeledIds: [],
+      labeledDoneAt: now,
+      labeledCheckedOnce: true,
+      cursor: 0,
+      readTotal: 0,
+      readDone: 0,
+      filesRead: 0,
+      readErrors: 0,
+      finalCursor: 0,
+      finalDone: 0,
+      error: null,
+      times: {},
+      amazonSweep: base.amazonSweep?.phase === 'done' ? base.amazonSweep : { ...done },
+      bookmeterRedo:
+        base.bookmeterRedo?.phase === 'done' ? base.bookmeterRedo : { ...done, books: 0 },
+      bookwalkerRetry:
+        base.bookwalkerRetry?.phase === 'done' ? base.bookwalkerRetry : { ...done, books: 0 },
+      bookmeterEditions: { phase: 'done', cursor: '', changed: 0, reopened: 0 },
+      repick: {
+        phase: 'done',
+        cursor: '',
+        amazon: 0,
+        ranobedb: 0,
+        bookwalker: 0,
+        reopened: 0,
+        version: REPICK_VERSION,
+      },
+    } as Stage4Progress;
+  }
+
+  /**
+   * WP20g: reads the given books (as readStep does) into an arrival view; their stage4_books rows
+   * carry the view's analysis id. Returns how many were read or reused.
+   */
+  async arrivalRead(
+    p: Stage4Progress,
+    uuids: string[],
+    shouldStop: () => boolean,
+  ): Promise<number> {
+    if (!isArrivalAnalysis(p.analysisId)) throw new Error('Not an arrivals run');
+    this.loadSnapshot(p.libraryId);
+    const libDir = this.libraryDir(p.libraryId);
+    let n = 0;
+    for (const uuid of uuids) {
+      if (shouldStop()) break;
+      const book = this.book(uuid);
+      if (!book?.filePath) continue;
+      const { ev, read } = await this.readBook(p, libDir, p.libraryId, book);
+      p.readDone += 1;
+      p.readTotal = Math.max(p.readTotal, p.readDone);
+      if (read) p.filesRead += 1;
+      if (ev?.error) p.readErrors += 1;
+      this.db
+        .prepare(
+          `INSERT INTO stage4_books (library_id, calibre_uuid, calibre_id, analysis_id, labeled, state, updated_at)
+           VALUES (?, ?, ?, ?, 0, ?, ?)
+           ON CONFLICT(library_id, calibre_uuid) DO UPDATE SET calibre_id = excluded.calibre_id,
+             analysis_id = excluded.analysis_id, labeled = 0, state = excluded.state,
+             updated_at = excluded.updated_at`,
+        )
+        .run(
+          p.libraryId,
+          uuid,
+          book.calibreId,
+          p.analysisId,
+          ev?.file ? 'read' : 'error',
+          Date.now(),
+        );
+      n++;
+    }
+    this.save(p);
+    return n;
+  }
+
+  /**
+   * WP20g: one round of an arrival view's lookups (the same lookupStep: plan, answers, proposals,
+   * Natively, readings); then the final pass for its books. Returns true when its books are done.
+   */
+  async arrivalStep(p: Stage4Progress): Promise<boolean> {
+    if (!isArrivalAnalysis(p.analysisId)) throw new Error('Not an arrivals run');
+    if (p.phase === 'lookups') await this.lookupStep(p);
+    if (p.phase === 'final') await this.finalStep(p);
+    this.save(p);
+    return p.phase === 'done';
+  }
+
+  /** WP20g: the arrival view's books by state (for the run's bar). */
+  arrivalCounts(p: Stage4Progress): Record<string, number> {
+    const out: Record<string, number> = {};
+    for (const r of this.db
+      .prepare(`SELECT state, COUNT(*) AS n FROM stage4_books WHERE analysis_id = ? GROUP BY state`)
+      .all(p.analysisId) as { state: string; n: number }[])
+      out[r.state] = r.n;
+    return out;
   }
 
   private get db(): Database.Database {
@@ -575,6 +704,11 @@ export class Stage4Analysis {
   }
 
   private save(p: Stage4Progress, state?: string): void {
+    // WP20g: an arrivals run's view is its own: never written over the library's progress.
+    if (isArrivalAnalysis(p.analysisId)) {
+      this.arrivalSink?.(p);
+      return;
+    }
     updateStage(this.db, STAGE, {
       progress: p as unknown as Record<string, unknown>,
       ...(state ? { state } : {}),
@@ -2623,7 +2757,8 @@ export class Stage4Analysis {
       calibre_id: number;
     }[];
     if (!rows.length) {
-      await this.gateNow(p);
+      // An arrivals run's books are not the labeled books: the library's gate stands.
+      if (!isArrivalAnalysis(p.analysisId)) await this.gateNow(p);
       p.phase = 'done';
       p.finishedAt = Date.now();
       return p;

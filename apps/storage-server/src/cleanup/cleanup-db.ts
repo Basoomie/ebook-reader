@@ -1829,6 +1829,226 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
         WHERE guess = 1 OR review IS NOT NULL;
     `,
   },
+  {
+    version: 24,
+    name: 'the Calibre library new arrivals and the import from the torrents folders (WP20g)',
+    // WP20g (plan approved 2026-11-22): books added by hand in Calibre and EPUBs imported from
+    // source folders go through stages 1-5 with the cleanup's own rules (src/cleanup/arrivals/).
+    //
+    // calibre_arrivals_state  one row: the arrivals' mode (off / Preview / On), pause, schedule
+    //                         and the baseline of books present before the first run.
+    // calibre_arrival_pairs   a source folder -> library pair as first seen (a changed folder is
+    //                         a new pair): its first run (every file checked, a Preview) and
+    //                         whether its first run's adds were approved ("Add these").
+    // calibre_arrival_runs    one row per run (schedule, Run now, books added by hand).
+    // calibre_arrival_files   the catalog: one row per file version seen in a source folder (a
+    //                         file whose size or mtime changes is a new row), each looked at once,
+    //                         with its outcome and the book it was added as or duplicates.
+    // calibre_arrival_archives / _entries  archives (and split sets) listed and unpacked under
+    //                         <source folder>/_extracted/ by the linking sidecar.
+    // calibre_known_books     every Calibre book the arrivals know (the baseline at the first
+    //                         run, books added by the import, books added by hand, books Undo
+    //                         brought back): a book not here is new.
+    // calibre_arrival_books   the books of a run that go through stages 1-5 (the scope).
+    // calibre_arrival_batches / _items  add batches for the apply sidecar (calibredb add) and
+    //                         their Undo (export to the quarantine, then Calibre's trash).
+    // calibre_arrival_reviews review items with a stable key (a better copy of a book with
+    //                         reader data, an archive that can't be read, an add that failed).
+    sql: `
+      CREATE TABLE calibre_arrivals_state (
+        id                  INTEGER PRIMARY KEY CHECK (id = 1),
+        mode                TEXT NOT NULL DEFAULT 'off' CHECK (mode IN ('off', 'analyse', 'on')),
+        pause_reason        TEXT,
+        pause_detail        TEXT,
+        paused_at           INTEGER,
+        last_scheduled_day  TEXT,
+        run_now             INTEGER NOT NULL DEFAULT 0,
+        current_run         INTEGER,
+        baseline_at         INTEGER,
+        snapshot_seen       TEXT,
+        hand_checked_at     INTEGER,
+        updated_at          INTEGER NOT NULL
+      );
+      INSERT INTO calibre_arrivals_state (id, updated_at) VALUES (1, 0);
+
+      CREATE TABLE calibre_arrival_pairs (
+        pair_key      TEXT PRIMARY KEY,
+        pair_id       TEXT NOT NULL,
+        source        TEXT NOT NULL,
+        library_id    TEXT NOT NULL,
+        first_run_id  INTEGER,
+        first_done_at INTEGER,
+        approved_at   INTEGER,
+        created_at    INTEGER NOT NULL
+      );
+
+      CREATE TABLE calibre_arrival_runs (
+        id             INTEGER PRIMARY KEY,
+        trigger        TEXT NOT NULL CHECK (trigger IN ('schedule', 'now', 'hand')),
+        mode           TEXT NOT NULL CHECK (mode IN ('analyse', 'on')),
+        state          TEXT NOT NULL CHECK (state IN ('running', 'done', 'failed', 'stopped')),
+        phase          TEXT NOT NULL,
+        started_at     INTEGER NOT NULL,
+        finished_at    INTEGER,
+        progress_json  TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(progress_json)),
+        report_json    TEXT CHECK (report_json IS NULL OR json_valid(report_json)),
+        error          TEXT
+      );
+      CREATE INDEX calibre_arrival_runs_state ON calibre_arrival_runs (state, id);
+
+      CREATE TABLE calibre_arrival_archives (
+        id            INTEGER PRIMARY KEY,
+        pair_key      TEXT NOT NULL,
+        rel_path      TEXT NOT NULL,
+        volumes_json  TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(volumes_json)),
+        size          INTEGER NOT NULL,
+        mtime_ms      INTEGER NOT NULL,
+        dev           INTEGER,
+        ino           INTEGER,
+        state         TEXT NOT NULL DEFAULT 'new' CHECK (state IN ('new', 'waiting', 'listed',
+                        'unpacked', 'no_books', 'password', 'not_archive', 'names', 'failed')),
+        encoding      TEXT,
+        detail        TEXT,
+        books         INTEGER NOT NULL DEFAULT 0,
+        listed_at     INTEGER,
+        unpacked_at   INTEGER,
+        updated_at    INTEGER NOT NULL,
+        UNIQUE (pair_key, rel_path)
+      );
+      CREATE INDEX calibre_arrival_archives_state ON calibre_arrival_archives (state, id);
+
+      CREATE TABLE calibre_arrival_archive_entries (
+        archive_id  INTEGER NOT NULL REFERENCES calibre_arrival_archives(id),
+        name        TEXT NOT NULL,
+        size        INTEGER NOT NULL,
+        dst         TEXT NOT NULL,
+        state       TEXT NOT NULL CHECK (state IN ('planned', 'done', 'skipped', 'failed')),
+        detail      TEXT,
+        updated_at  INTEGER NOT NULL,
+        PRIMARY KEY (archive_id, name)
+      );
+      CREATE INDEX calibre_arrival_archive_entries_state
+        ON calibre_arrival_archive_entries (state, archive_id);
+
+      CREATE TABLE calibre_arrival_files (
+        id             INTEGER PRIMARY KEY,
+        pair_key       TEXT NOT NULL,
+        rel_path       TEXT NOT NULL,
+        size           INTEGER NOT NULL,
+        mtime_ms       INTEGER NOT NULL,
+        dev            INTEGER,
+        ino            INTEGER,
+        first_seen_at  INTEGER NOT NULL,
+        seen_at        INTEGER NOT NULL,
+        gone_at        INTEGER,
+        kind           TEXT NOT NULL CHECK (kind IN ('epub', 'book', 'archive', 'volume',
+                         'partial', 'other')),
+        format         TEXT,
+        archive_id     INTEGER REFERENCES calibre_arrival_archives(id),
+        sha256         TEXT,
+        hashed_at      INTEGER,
+        outcome        TEXT NOT NULL DEFAULT 'pending' CHECK (outcome IN ('pending', 'waiting',
+                         'downloading', 'new', 'added', 'identical', 'duplicate', 'better',
+                         'better_review', 'not_imported', 'unreadable', 'too_long', 'skipped',
+                         'removed_by_you', 'undone', 'failed')),
+        detail         TEXT,
+        calibre_id     INTEGER,
+        calibre_uuid   TEXT,
+        run_id         INTEGER,
+        decided_at     INTEGER,
+        facts_json     TEXT CHECK (facts_json IS NULL OR json_valid(facts_json)),
+        UNIQUE (pair_key, rel_path, size, mtime_ms)
+      );
+      CREATE INDEX calibre_arrival_files_path ON calibre_arrival_files (pair_key, rel_path);
+      CREATE INDEX calibre_arrival_files_outcome ON calibre_arrival_files (outcome, pair_key, id);
+      CREATE INDEX calibre_arrival_files_sha ON calibre_arrival_files (sha256) WHERE sha256 IS NOT NULL;
+      CREATE INDEX calibre_arrival_files_book ON calibre_arrival_files (calibre_uuid)
+        WHERE calibre_uuid IS NOT NULL;
+      CREATE INDEX calibre_arrival_files_run ON calibre_arrival_files (run_id, outcome);
+
+      CREATE TABLE calibre_known_books (
+        library_id   TEXT NOT NULL,
+        calibre_id   INTEGER NOT NULL,
+        calibre_uuid TEXT NOT NULL,
+        origin       TEXT NOT NULL CHECK (origin IN ('baseline', 'import', 'hand', 'undo')),
+        file_id      INTEGER,
+        added_at     INTEGER NOT NULL,
+        settled_at   INTEGER,
+        run_id       INTEGER,
+        gone_at      INTEGER,
+        PRIMARY KEY (library_id, calibre_id)
+      );
+      CREATE INDEX calibre_known_books_uuid ON calibre_known_books (calibre_uuid);
+      CREATE INDEX calibre_known_books_waiting ON calibre_known_books (library_id, origin)
+        WHERE run_id IS NULL AND origin IN ('import', 'hand');
+
+      CREATE TABLE calibre_arrival_books (
+        run_id        INTEGER NOT NULL REFERENCES calibre_arrival_runs(id),
+        library_id    TEXT NOT NULL,
+        calibre_id    INTEGER NOT NULL,
+        calibre_uuid  TEXT NOT NULL,
+        origin        TEXT NOT NULL CHECK (origin IN ('import', 'hand')),
+        file_id       INTEGER,
+        state         TEXT NOT NULL DEFAULT 'open',
+        detail        TEXT,
+        PRIMARY KEY (run_id, calibre_id)
+      );
+      CREATE INDEX calibre_arrival_books_book ON calibre_arrival_books (library_id, calibre_uuid);
+
+      CREATE TABLE calibre_arrival_batches (
+        id                INTEGER PRIMARY KEY,
+        run_id            INTEGER,
+        library_id        TEXT NOT NULL,
+        kind              TEXT NOT NULL CHECK (kind IN ('add', 'undo_add')),
+        state             TEXT NOT NULL CHECK (state IN ('planned', 'claimed', 'done', 'failed',
+                            'undone')),
+        undo_of           INTEGER REFERENCES calibre_arrival_batches(id),
+        item_count        INTEGER NOT NULL,
+        lease_expires_at  INTEGER,
+        attempts          INTEGER NOT NULL DEFAULT 0,
+        created_at        INTEGER NOT NULL,
+        claimed_at        INTEGER,
+        finished_at       INTEGER,
+        error             TEXT,
+        updated_at        INTEGER NOT NULL
+      );
+      CREATE INDEX calibre_arrival_batches_state ON calibre_arrival_batches (state, id);
+
+      CREATE TABLE calibre_arrival_batch_items (
+        id              INTEGER PRIMARY KEY,
+        batch_id        INTEGER NOT NULL REFERENCES calibre_arrival_batches(id),
+        file_id         INTEGER NOT NULL REFERENCES calibre_arrival_files(id),
+        position        INTEGER NOT NULL,
+        state           TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'fetched',
+                          'added', 'exported', 'removed', 'failed', 'skipped')),
+        max_id_before   INTEGER,
+        calibre_id      INTEGER,
+        calibre_uuid    TEXT,
+        quarantine_dir  TEXT,
+        detail          TEXT,
+        updated_at      INTEGER NOT NULL,
+        UNIQUE (batch_id, file_id)
+      );
+      CREATE INDEX calibre_arrival_batch_items_file ON calibre_arrival_batch_items (file_id);
+
+      CREATE TABLE calibre_arrival_reviews (
+        id          INTEGER PRIMARY KEY,
+        review_key  TEXT NOT NULL UNIQUE,
+        kind        TEXT NOT NULL CHECK (kind IN ('better_copy', 'archive', 'add_failed',
+                      'too_long')),
+        file_id     INTEGER,
+        calibre_id  INTEGER,
+        calibre_uuid TEXT,
+        detail_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(detail_json)),
+        run_id      INTEGER,
+        created_at  INTEGER NOT NULL,
+        decision    TEXT,
+        decided_at  INTEGER,
+        applied_at  INTEGER
+      );
+      CREATE INDEX calibre_arrival_reviews_open ON calibre_arrival_reviews (decision, id);
+    `,
+  },
 ];
 
 export const CLEANUP_SCHEMA_VERSION = CLEANUP_MIGRATIONS[CLEANUP_MIGRATIONS.length - 1].version;

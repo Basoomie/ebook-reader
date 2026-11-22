@@ -237,6 +237,29 @@ export function setItemDesigns(
   })();
 }
 
+/**
+ * WP20g: sets the design of the given items (others kept; E rows removed: E is the default). The
+ * Calibre library's new arrivals are decided with J and keep it when the library is decided again.
+ */
+export function addItemDesigns(
+  db: Database.Database,
+  stage: string,
+  designs: Map<string, string>,
+  now: number,
+): void {
+  db.transaction(() => {
+    const del = db.prepare('DELETE FROM ai_item_designs WHERE stage = ? AND item_key = ?');
+    const put = db.prepare(
+      `INSERT INTO ai_item_designs (stage, item_key, design, set_at) VALUES (?, ?, ?, ?)
+       ON CONFLICT(stage, item_key) DO UPDATE SET design = excluded.design, set_at = excluded.set_at`,
+    );
+    for (const [k, d] of designs) {
+      if (d === 'E') del.run(stage, k);
+      else put.run(stage, k, d, now);
+    }
+  })();
+}
+
 /** Counts per field and source (and flagged), for the page and the reports. */
 export function valueCounts(
   db: Database.Database,

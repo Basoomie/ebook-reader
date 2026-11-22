@@ -17,6 +17,8 @@ export interface LinkConfig {
   bsdtar: string;
   /** WP21f-1: the iconv name of the encoding zips without UTF-8 names use (CP932). */
   archiveCharset: string;
+  /** WP20g: 7-Zip (reads split archive sets; never writes files itself). */
+  sevenZip: string;
 }
 
 export class ConfigError extends Error {}
@@ -48,6 +50,7 @@ export function loadConfig(env: Record<string, string | undefined>): LinkConfig 
     fileMode: mode(env.FILE_MODE, 0o666, 'FILE_MODE'),
     serverTimeoutSeconds: Number.isFinite(t) && t > 0 ? t : 60,
     bsdtar: (env.BSDTAR ?? 'bsdtar').trim() || 'bsdtar',
-    archiveCharset: (env.ARCHIVE_CHARSET ?? 'CP932').trim() || 'CP932'
+    archiveCharset: (env.ARCHIVE_CHARSET ?? 'CP932').trim() || 'CP932',
+    sevenZip: (env.SEVENZIP ?? '7zz').trim() || '7zz'
   };
 }
