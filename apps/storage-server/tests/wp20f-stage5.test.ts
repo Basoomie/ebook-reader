@@ -849,6 +849,56 @@ describe('stage 5 On: the tags written through the field-write path', () => {
     expect(tagsOf(ids.B)).toEqual(['ln']);
   });
 
+  it('a book written twice (stage 5 decided again) counts once in the books written', async () => {
+    await env.service.batches.stage5.plan(env.libraryId());
+    const w = worker();
+    await runBatch(w);
+    type St = {
+      write: { changes: { done: number; total: number }; books: { done: number } } | null;
+    };
+    // Counted in full the first time.
+    expect(
+      (env.service.stage5Status(env.libraryId(), Date.now() + 60_000) as St).write,
+    ).toMatchObject({ changes: { done: 2, total: 2 }, books: { done: 2 } });
+    // Decided again after stage 4 changed: book A gets one more tag in a second change.
+    const a = env.cleanupDb
+      .prepare(`SELECT calibre_uuid FROM proposed_changes WHERE stage = 5 AND calibre_id = ?`)
+      .get(ids.A) as { calibre_uuid: string };
+    env.cleanupDb
+      .prepare(
+        `INSERT INTO proposed_changes (stage, library_id, calibre_id, calibre_uuid, field, old_json, new_json, source,
+           evidence_json, class, state, analysis_id, created_at, updated_at)
+         VALUES (5, ?, ?, ?, 'tags', ?, ?, 'stage5', '{}', 'auto', 'proposed', 'a5', 2, 2)`,
+      )
+      .run(
+        env.libraryId(),
+        ids.A,
+        a.calibre_uuid,
+        JSON.stringify(tagsOf(ids.A)),
+        JSON.stringify({ add: ['恋愛'], remove: [] }),
+      );
+    await env.service.batches.stage5.plan(env.libraryId());
+    await runBatch(w);
+    expect(tagsOf(ids.A)).toContain('恋愛');
+    // Then per finished batch: the second batch's book was written before.
+    expect(
+      (env.service.stage5Status(env.libraryId(), Date.now() + 120_000) as St).write,
+    ).toMatchObject({ changes: { done: 3, total: 3 }, books: { done: 2 } });
+    // Undone: counted in full again (book A's first write stays, its second is undone).
+    const second = (
+      env.cleanupDb
+        .prepare(
+          `SELECT id FROM batches WHERE stage = 5 AND kind = 'apply' ORDER BY created_at DESC`,
+        )
+        .get() as { id: string }
+    ).id;
+    env.service.batches.undo(second);
+    await runBatch(w);
+    expect(
+      (env.service.stage5Status(env.libraryId(), Date.now() + 180_000) as St).write,
+    ).toMatchObject({ changes: { done: 2 }, books: { done: 2 } });
+  });
+
   it('a sidecar older than 1.2.0 never gets a stage-5 batch', async () => {
     await env.service.batches.stage5.plan(env.libraryId());
     env.cleanupDb.prepare(`UPDATE sidecar_status SET version = '1.1.0' WHERE id = 1`).run();
