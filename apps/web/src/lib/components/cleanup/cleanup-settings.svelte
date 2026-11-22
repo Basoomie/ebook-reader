@@ -94,7 +94,7 @@
     const p = status?.prices?.[model];
     const price = p
       ? `List price $${p.inputPerMTok} in / $${p.outputPerMTok} out per million tokens`
-      : 'No price: never asked (add it in Settings > AI)';
+      : 'No price: never asked';
     const where = providerName(model);
     const t = status?.tasks.find((x) => x.model === model);
     const offered =

@@ -15,6 +15,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { AiCore } from '../src/ai/core';
 import { spentTotal } from '../src/ai/ledger';
 import { monthOf } from '../src/ai/month';
+import { costOf, priceOf } from '../src/ai/spend';
 import { AnthropicProvider, OpenAiProvider, type ProviderClient } from '../src/ai/providers';
 import { AiRunner } from '../src/ai/runner';
 import type { AiStageSpec, Provider } from '../src/ai/types';
@@ -694,5 +695,94 @@ describe('the ledger and Settings > AI', () => {
     expect(bad).toEqual([]);
     // And the old place is gone.
     expect(fs.existsSync(path.join(__dirname, '../src/cleanup/ai'))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// the built-in prices (asked by the user 2026-11-21: prices are information, not settings)
+
+describe("the providers' list prices, built in", () => {
+  const usage = (input: number, output: number, cacheRead = 0) => ({
+    input,
+    output,
+    cacheRead,
+    cacheWrite: 0,
+  });
+
+  it('counts each model at its own price, the long-prompt tier above its threshold, its own cache price', () => {
+    const s = makeAiCore().core.settings();
+    const haiku = priceOf(s, 'claude-haiku-5-5')!;
+    // 100K prompt tokens or fewer: $0.10 / $0.50; above: $0.50 / $2.50 (the whole request).
+    expect(costOf(haiku, usage(100_000, 1000), false, 0.5)).toBeCloseTo(0.0105, 9);
+    expect(costOf(haiku, usage(150_000, 1000), false, 0.5)).toBeCloseTo(0.0775, 9);
+    // Batches at half.
+    expect(costOf(haiku, usage(150_000, 1000), true, 0.5)).toBeCloseTo(0.03875, 9);
+    // Sol: cached input $0.10 (5 % of its input price), above 272K input tokens $4 / $15.
+    const sol = priceOf(s, 'gpt-6.1-sol')!;
+    expect(costOf(sol, usage(1000, 1000, 200_000), false, 0.5)).toBeCloseTo(0.032, 9);
+    expect(costOf(sol, usage(300_000, 1000), false, 0.5)).toBeCloseTo(1.215, 9);
+    // Opus 5.5 is one of the app's models.
+    expect(priceOf(s, 'claude-opus-5-5')).toMatchObject({ inputPerMTok: 4, outputPerMTok: 20 });
+  });
+
+  it('a built-in price always wins over a stored one; a stored added model keeps its price', () => {
+    const { core } = makeAiCore();
+    core.updateSettings({
+      prices: {
+        'claude-haiku-5-5': { inputPerMTok: 0, outputPerMTok: 0 },
+        'claude-opus-5.5': { inputPerMTok: 1, outputPerMTok: 1 },
+      },
+    });
+    const s = core.settings();
+    expect(priceOf(s, 'claude-haiku-5-5')).toMatchObject({ inputPerMTok: 0.1, outputPerMTok: 0.5 });
+    expect(priceOf(s, 'claude-opus-5.5')).toEqual({ inputPerMTok: 1, outputPerMTok: 1 });
+  });
+
+  it('Settings > AI: prices read-only, the app’s models kept, an added model deleted unless in use', async () => {
+    const t = makeTestApp();
+    if (!t.database.ok) throw new Error('no db');
+    const core = new AiCore({ db: t.database.db, dbDir: t.config.dbDir });
+    // As on the NAS: an entry typed before prices were built in.
+    core.updateSettings({ prices: { 'claude-opus-5.5': { inputPerMTok: 1, outputPerMTok: 1 } } });
+    let used = '';
+    core.registerModelUse((m) => (m === used ? ['library cleanup audio5.primary'] : []));
+    const { createApp } = await import('../src/app');
+    const app = createApp({ config: t.config, database: t.database, version: 't', ai: core });
+    const auth = { Authorization: `Bearer ${t.newUserToken()}` };
+    const st = await request(app).get('/api/v1/ai/status').set(auth).expect(200);
+    expect(
+      st.body.models.map((m: { model: string; builtIn: boolean }) => [m.model, m.builtIn]),
+    ).toEqual([
+      ['claude-haiku-5-5', true],
+      ['claude-sonnet-5-5', true],
+      ['claude-opus-5-5', true],
+      ['gpt-6-luna', true],
+      ['gpt-6.1-sol', true],
+      ['claude-opus-5.5', false],
+    ]);
+    expect(st.body.pricesChecked).toBe('2026-11-21');
+    // Prices can't be set.
+    await request(app)
+      .put('/api/v1/ai/settings')
+      .set(auth)
+      .send({ prices: { 'claude-haiku-5-5': { inputPerMTok: 0, outputPerMTok: 0 } } })
+      .expect(400);
+    // The app's own models can't be deleted; an added one in use can't either.
+    const own = await request(app).delete('/api/v1/ai/models/claude-haiku-5-5').set(auth);
+    expect(own.status).toBe(409);
+    used = 'claude-opus-5.5';
+    const busy = await request(app).delete('/api/v1/ai/models/claude-opus-5.5').set(auth);
+    expect(busy.status).toBe(409);
+    expect(busy.body.error.message).toMatch(/in use \(library cleanup audio5\.primary\)/);
+    used = '';
+    const gone = await request(app)
+      .delete('/api/v1/ai/models/claude-opus-5.5')
+      .set(auth)
+      .expect(200);
+    expect(gone.body.models.some((m: { model: string }) => m.model === 'claude-opus-5.5')).toBe(
+      false,
+    );
+    expect(core.settings().prices).toEqual({});
+    await request(app).delete('/api/v1/ai/models/claude-opus-5.5').set(auth).expect(409);
   });
 });

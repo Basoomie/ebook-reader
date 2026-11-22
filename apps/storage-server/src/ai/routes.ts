@@ -3,34 +3,42 @@
  *
  *   GET    /ai/status                    settings, keys (set or not), checks, models, this
  *                                        month's spending per feature, earlier months
- *   PUT    /ai/settings                  change provider settings (a partial object)
+ *   PUT    /ai/settings                  change provider settings (a partial object; never the
+ *                                        prices: they are built in, prices.ts)
  *   PUT    /ai/secrets/:name             save a key ({ value }); never echoed back
  *   DELETE /ai/secrets/:name
  *   POST   /ai/models/check              read each provider's model list now
  *   POST   /ai/models/:model/batch-test  send one tiny batch to the model
+ *   DELETE /ai/models/:model             delete a model added before prices were built in
  *
  * Without the AI layer (ttsu.db unavailable) every answer is 503 ai_off.
  */
 import express, { Router } from 'express';
 import { ApiError, asyncHandler } from '../api/errors';
 import type { AiCore } from './core';
+import { allPrices, isBuiltIn, PRICES_CHECKED } from './prices';
 import { modeOf } from './runner';
 import { isAiSecretName } from './secrets';
 import { AiSettingsError } from './settings';
 import { providerOf } from './providers';
+import { priceOf } from './spend';
 
 /** What Settings > AI shows. */
 export function aiStatus(core: AiCore) {
   const s = core.settings();
   const checks = core.modelChecks();
   const room = core.room();
-  const models = Object.entries(s.prices).map(([model, price]) => {
+  // The app's own models first (their prices built in), then models added earlier in Settings.
+  const models = Object.entries(allPrices(s.prices)).map(([model, price]) => {
     const provider = providerOf(model);
     const c = checks[provider];
     return {
       model,
       provider,
       price,
+      builtIn: isBuiltIn(model),
+      /** The features' tasks that use it (a model in use can't be deleted). */
+      inUse: core.modelUses(model),
       mode: modeOf(s, model),
       offered: c ? (c.models ? c.models.includes(model) : null) : null,
     };
@@ -45,6 +53,7 @@ export function aiStatus(core: AiCore) {
       ]),
     ),
     models,
+    pricesChecked: PRICES_CHECKED,
     spend: {
       spentUsd: room.spentUsd,
       reservedUsd: room.reservedUsd,
@@ -76,6 +85,12 @@ export function createAiRouter(core: AiCore | null): Router {
     const body = req.body as unknown;
     if (!body || typeof body !== 'object' || Array.isArray(body))
       throw new ApiError(400, 'bad_request', 'Send an object of settings');
+    if ('prices' in body)
+      throw new ApiError(
+        400,
+        'invalid_setting',
+        "Prices are the providers' list prices, built into the app; they can't be set here",
+      );
     try {
       c.updateSettings(body);
     } catch (err) {
@@ -123,7 +138,7 @@ export function createAiRouter(core: AiCore | null): Router {
     asyncHandler(async (req, res) => {
       const c = ai();
       const model = req.params.model;
-      if (!c.settings().prices[model])
+      if (!priceOf(c.settings(), model))
         throw new ApiError(409, 'not_available', 'Only a model with a price can be tested');
       try {
         await c.testBatch(model);
@@ -134,6 +149,17 @@ export function createAiRouter(core: AiCore | null): Router {
       res.json(aiStatus(c));
     }),
   );
+
+  router.delete('/ai/models/:model', (req, res) => {
+    const c = ai();
+    try {
+      c.deleteModel(req.params.model);
+    } catch (err) {
+      if (err instanceof AiSettingsError) throw new ApiError(409, 'not_deleted', err.message);
+      throw err;
+    }
+    res.json(aiStatus(c));
+  });
 
   return router;
 }

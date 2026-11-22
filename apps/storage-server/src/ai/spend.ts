@@ -4,23 +4,37 @@
  * are in ledger.ts and core.ts.
  */
 import type Database from 'better-sqlite3';
-import type { AiPrice, AiSettings } from './settings';
+import { BUILT_IN_PRICES } from './prices';
+import type { AiPrice, AiPriceTier, AiSettings } from './settings';
 import type { Usage } from './providers';
 
-/** Claude's prompt-cache writes cost 1.25x the input price, reads 0.1x (both providers' list). */
+/**
+ * Claude's prompt-cache writes cost 1.25x the input price; a cache read costs the model's own
+ * cached-input price, else a tenth of the input price.
+ */
 const CACHE_WRITE_FACTOR = 1.25;
 const CACHE_READ_FACTOR = 0.1;
 
+/** A model's price: built in (prices.ts), else a model added before prices were built in. */
 export function priceOf(s: AiSettings, model: string): AiPrice | null {
-  return s.prices[model] ?? null;
+  return BUILT_IN_PRICES[model] ?? s.prices[model] ?? null;
 }
 
-/** US$ of one request. */
+/**
+ * US$ of one request. A prompt over the model's long-context threshold (input, cache reads and
+ * cache writes together) is priced at its long tier, as the providers bill it.
+ */
 export function costOf(price: AiPrice, usage: Usage, batch: boolean, batchFactor: number): number {
+  const prompt = usage.input + usage.cacheRead + usage.cacheWrite;
+  const tier: AiPriceTier =
+    price.long && price.longAboveTokens !== undefined && prompt > price.longAboveTokens
+      ? price.long
+      : price;
+  const cacheRead = tier.cacheReadPerMTok ?? tier.inputPerMTok * CACHE_READ_FACTOR;
   const inUsd =
-    (usage.input + usage.cacheWrite * CACHE_WRITE_FACTOR + usage.cacheRead * CACHE_READ_FACTOR) *
-    price.inputPerMTok;
-  const outUsd = usage.output * price.outputPerMTok;
+    (usage.input + usage.cacheWrite * CACHE_WRITE_FACTOR) * tier.inputPerMTok +
+    usage.cacheRead * cacheRead;
+  const outUsd = usage.output * tier.outputPerMTok;
   return ((inUsd + outUsd) / 1e6) * (batch ? batchFactor : 1);
 }
 

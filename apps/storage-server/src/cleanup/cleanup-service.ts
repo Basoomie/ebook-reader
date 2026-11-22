@@ -238,6 +238,12 @@ export class CleanupService {
       });
     for (const [id, label] of Object.entries(CLEANUP_AI_FEATURES))
       this.aiCore.registerFeature(id, label);
+    // A model one of the cleanup's tasks uses can't be deleted in Settings > AI.
+    this.aiCore.registerModelUse((model) =>
+      Object.entries(getSettings(opts.cleanup).models)
+        .filter(([, m]) => m === model)
+        .map(([task]) => `library cleanup ${task}`),
+    );
     this.aiRunner = new AiRunner({
       db: opts.cleanup,
       core: this.aiCore,

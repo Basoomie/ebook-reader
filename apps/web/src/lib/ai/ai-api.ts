@@ -15,9 +15,16 @@ import { errorFrom, send } from '$lib/library/api';
 export type AiProvider = 'anthropic' | 'openai';
 export type AiKeyName = 'anthropicApiKey' | 'openaiApiKey';
 
-export interface AiPrice {
+export interface AiPriceTier {
   inputPerMTok: number;
   outputPerMTok: number;
+  cacheReadPerMTok?: number;
+}
+
+/** A model's list price; a higher tier for prompts over `longAboveTokens` tokens. */
+export interface AiPrice extends AiPriceTier {
+  longAboveTokens?: number;
+  long?: AiPriceTier;
 }
 
 export interface AiSettings {
@@ -62,9 +69,15 @@ export interface AiStatus {
     model: string;
     provider: AiProvider;
     price: AiPrice;
+    /** One of the app's own models (its price built in); false: added earlier, can be deleted. */
+    builtIn: boolean;
+    /** The features' tasks that use it (a model in use can't be deleted). */
+    inUse: string[];
     mode: 'batch' | 'direct';
     offered: boolean | null;
   }[];
+  /** When the built-in prices were taken from the providers' price pages. */
+  pricesChecked: string;
   spend: {
     spentUsd: number;
     reservedUsd: number;
@@ -83,7 +96,8 @@ export interface AiStatus {
   batchTests: Record<string, AiBatchTest>;
 }
 
-export type AiSettingsPatch = Partial<AiSettings>;
+/** Prices can't be set: they are built into the app. */
+export type AiSettingsPatch = Partial<Omit<AiSettings, 'prices'>>;
 
 export class AiApi {
   constructor(
@@ -130,6 +144,11 @@ export class AiApi {
   /** Reads each provider's model list (the server waits for both). */
   checkModels(): Promise<AiStatus> {
     return this.request('POST', '/ai/models/check', undefined, 0);
+  }
+
+  /** Deletes a model added before prices were built in. */
+  deleteModel(model: string): Promise<AiStatus> {
+    return this.request('DELETE', `/ai/models/${encodeURIComponent(model)}`);
   }
 
   testBatch(model: string): Promise<AiStatus> {

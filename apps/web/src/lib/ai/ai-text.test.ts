@@ -12,6 +12,7 @@ import {
   keyStateText,
   monthName,
   offeredText,
+  priceText,
   providerLine,
   spendText,
   usd
@@ -43,6 +44,22 @@ describe('Settings > AI text', () => {
     expect(spendText(spend({ spentUsd: 120 }))).toMatch(/\$0\.00 left until Dec 1\.$/);
     expect(spendText(spend({ limitUsd: null }))).toBe(
       '$12.40 spent this month. No limit set yet: nothing is sent to a model.'
+    );
+  });
+
+  it('prices as read-only text, with the long-prompt tier', () => {
+    expect(priceText({ inputPerMTok: 2, outputPerMTok: 10 })).toBe(
+      '$2 in · $10 out per million tokens'
+    );
+    expect(
+      priceText({
+        inputPerMTok: 0.1,
+        outputPerMTok: 0.5,
+        longAboveTokens: 100_000,
+        long: { inputPerMTok: 0.5, outputPerMTok: 2.5 }
+      })
+    ).toBe(
+      '$0.10 in · $0.50 out per million tokens (prompts over 100K tokens: $0.50 in · $2.50 out)'
     );
   });
 

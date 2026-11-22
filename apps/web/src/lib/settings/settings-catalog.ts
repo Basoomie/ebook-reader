@@ -307,7 +307,7 @@ export const SETTINGS_SECTIONS: CatalogSection[] = [
     jp: 'モデル',
     title: 'Models',
     description:
-      'The models a feature can choose, with their list prices. Batches cost half and are answered when the provider gets to them; one call each is answered at once at the full price. A model without a price is never asked.',
+      'The models a feature can choose, with the providers’ list prices (built in; they only count what is spent). Batches cost half and are answered when the provider gets to them; one call each is answered at once at the full price.',
     keywords: 'price batch test check haiku sonnet luna sol'
   },
   {
@@ -1205,12 +1205,6 @@ export const SETTINGS_CATALOG: CatalogSetting[] = [
     section: 'ai-models',
     title: 'Check models',
     description: 'Asks each provider, with your key, which models it offers.'
-  },
-  {
-    id: 'ai-add-model',
-    section: 'ai-models',
-    title: 'Add a model',
-    description: 'Its id as the provider writes it, and its list price in US$ per million tokens.'
   },
   {
     id: 'ai-stall',

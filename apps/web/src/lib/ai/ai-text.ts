@@ -6,7 +6,7 @@
 
 import { LibraryApiError } from '$lib/library/api';
 import { formatWhen } from '$lib/notes/notes-format';
-import type { AiKeyInfo, AiProvider, AiStatus } from './ai-api';
+import type { AiKeyInfo, AiPrice, AiProvider, AiStatus } from './ai-api';
 
 /** Settings > AI: the words. */
 
@@ -29,6 +29,15 @@ export function monthName(key: string): string {
     year: 'numeric',
     timeZone: 'UTC'
   });
+}
+
+/** "$0.10 in · $0.50 out per million tokens" (+ the long-prompt tier). */
+export function priceText(p: AiPrice): string {
+  const n = (v: number) => `$${Number.isInteger(v) ? String(v) : v.toFixed(2)}`;
+  const base = `${n(p.inputPerMTok)} in · ${n(p.outputPerMTok)} out per million tokens`;
+  if (!p.long || p.longAboveTokens === undefined) return base;
+  const k = `${Math.round(p.longAboveTokens / 1000)}K`;
+  return `${base} (prompts over ${k} tokens: ${n(p.long.inputPerMTok)} in · ${n(p.long.outputPerMTok)} out)`;
 }
 
 export function keyStateText(info: AiKeyInfo | undefined): string {

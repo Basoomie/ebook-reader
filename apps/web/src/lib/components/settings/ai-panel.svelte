@@ -9,9 +9,10 @@
    * Settings > AI (book summaries session 1): what every AI feature shares, kept on the
    * server. The two API keys (write-only), the one monthly spending limit for every feature
    * together with this month's spending per feature and the earlier months, the models with
-   * their prices, batch or one call each, Test batch and Check models, and the rarely needed
-   * tuning settings (folded). Which model does what stays with each feature (the library
-   * cleanup's on /cleanup). Each change is saved at once.
+   * their list prices (built into the app, shown read-only: they only count what is spent),
+   * batch or one call each, Test batch and Check models, Delete for a model added before the
+   * prices were built in, and the rarely needed tuning settings (folded). Which model does what
+   * stays with each feature (the library cleanup's on /cleanup). Each change is saved at once.
    *
    * The app compiles with `immutable: true`: a changed value is always a new object.
    */
@@ -33,12 +34,13 @@
     keyStateText,
     monthName,
     offeredText,
+    priceText,
     providerLine,
     spendText,
     usd
   } from '$lib/ai/ai-text';
   import { confirmDestructive } from '$lib/confirm/confirm';
-  import { removeAiKeyCopy } from '$lib/confirm/confirm-copy';
+  import { removeAiKeyCopy, removeAiModelCopy } from '$lib/confirm/confirm-copy';
   import { getLibraryStore, type LibraryConnection } from '$lib/library/library-db';
   import { libraryRequestTimeoutSeconds$ } from '$lib/library/settings';
 
@@ -56,9 +58,6 @@
 
   // Write-only: never filled from the server.
   let keyValues: Record<AiKeyName, string> = { anthropicApiKey: '', openaiApiKey: '' };
-  let newModel = '';
-  let newIn: number | '' = '';
-  let newOut: number | '' = '';
 
   const KEYS: { name: AiKeyName; label: string; id: string }[] = [
     { name: 'anthropicApiKey', label: 'Anthropic API key', id: 'ai-key-anthropic' },
@@ -164,41 +163,10 @@
     void save({ modes: { ...status.settings.modes, [model]: mode } });
   }
 
-  function setPrice(
-    model: string,
-    side: 'inputPerMTok' | 'outputPerMTok',
-    input: HTMLInputElement
-  ) {
-    if (!status) return;
-    const n = Number(input.value);
-    const cur = status.settings.prices[model];
-    if (!cur || input.value.trim() === '' || !Number.isFinite(n)) {
-      input.value = String(cur?.[side] ?? '');
-      return;
-    }
-    void save({ prices: { ...status.settings.prices, [model]: { ...cur, [side]: n } } });
-  }
-
-  $: canAdd =
-    !!status &&
-    !!newModel.trim() &&
-    !(newModel.trim() in status.settings.prices) &&
-    typeof newIn === 'number' &&
-    typeof newOut === 'number';
-
-  async function addModel() {
-    if (!status || !canAdd) return;
-    const ok = await save({
-      prices: {
-        ...status.settings.prices,
-        [newModel.trim()]: { inputPerMTok: Number(newIn), outputPerMTok: Number(newOut) }
-      }
-    });
-    if (ok) {
-      newModel = '';
-      newIn = '';
-      newOut = '';
-    }
+  /** Deletes a model added before prices were built in (asks first). */
+  async function deleteModel(model: string) {
+    if (!(await confirmDestructive(removeAiModelCopy(model)))) return;
+    await run((a) => a.deleteModel(model));
   }
 
   async function saveKey(name: AiKeyName) {
@@ -394,36 +362,18 @@
         </div>
       </SettingRow>
       {#each status.models as m (m.model)}
-        <SettingRow title={m.model} layout="stack" testid="ai-model-{m.model}">
+        <SettingRow title={m.model} testid="ai-model-{m.model}">
           <svelte:fragment slot="description">
-            <p class="mt-1 text-sm text-c-muted">
+            <p class="mt-1 text-sm" data-testid="ai-price-{m.model}">
+              {priceText(m.price)}{#if !m.builtIn}<span class="text-c-muted"
+                  >{' '}· added in Settings earlier, not one of the app's models</span
+                >{/if}
+            </p>
+            <p class="text-sm text-c-muted">
               {offeredText(m.offered, m.provider)} · {batchTestText(status, m.model)}
             </p>
           </svelte:fragment>
-          <div class="flex flex-col gap-3 text-sm">
-            <div class="flex flex-wrap items-center gap-2">
-              <SettingField unit="$ in">
-                <input
-                  type="number"
-                  min="0"
-                  step="any"
-                  aria-label="{m.model} input price per million tokens"
-                  value={m.price.inputPerMTok}
-                  on:change={(e) => setPrice(m.model, 'inputPerMTok', e.currentTarget)}
-                />
-              </SettingField>
-              <SettingField unit="$ out">
-                <input
-                  type="number"
-                  min="0"
-                  step="any"
-                  aria-label="{m.model} output price per million tokens"
-                  value={m.price.outputPerMTok}
-                  on:change={(e) => setPrice(m.model, 'outputPerMTok', e.currentTarget)}
-                />
-              </SettingField>
-              <span class="text-c-muted">per million tokens</span>
-            </div>
+          <div class="flex flex-col gap-2 text-sm">
             <div class="flex flex-wrap items-center gap-2">
               <select
                 class="c-input w-64"
@@ -442,41 +392,30 @@
                 on:click={() => testBatch(m.model)}
                 data-testid="ai-test-{m.model}">Test batch</button
               >
+              {#if !m.builtIn}
+                <button
+                  type="button"
+                  class="c-btn c-btn-ghost"
+                  disabled={m.inUse.length > 0}
+                  title={m.inUse.length ? `In use: ${m.inUse.join(', ')}` : undefined}
+                  on:click={() => deleteModel(m.model)}
+                  data-testid="ai-delete-{m.model}">Delete</button
+                >
+              {/if}
             </div>
+            {#if !m.builtIn && m.inUse.length}
+              <p class="text-c-muted">
+                In use ({m.inUse.join(', ')}): choose another model there to delete it.
+              </p>
+            {/if}
           </div>
         </SettingRow>
       {/each}
-      <SettingRow id="ai-add-model" layout="stack">
-        <div class="flex flex-wrap items-center gap-2" data-testid="ai-add-model">
-          <input
-            class="c-input w-44"
-            placeholder="Model id"
-            aria-label="New model id"
-            bind:value={newModel}
-          />
-          <SettingField unit="$ in">
-            <input
-              type="number"
-              min="0"
-              step="any"
-              aria-label="New model input price"
-              bind:value={newIn}
-            />
-          </SettingField>
-          <SettingField unit="$ out">
-            <input
-              type="number"
-              min="0"
-              step="any"
-              aria-label="New model output price"
-              bind:value={newOut}
-            />
-          </SettingField>
-          <button type="button" class="c-btn c-btn-ghost" disabled={!canAdd} on:click={addModel}
-            >Add model</button
-          >
-        </div>
-      </SettingRow>
+      <p class="s-note" data-testid="ai-prices-note">
+        The providers’ list prices as of {status.pricesChecked}, built into the app. They only count
+        what is spent against the monthly limit; Anthropic and OpenAI bill their own prices. New
+        models come with app updates.
+      </p>
     </SettingsGroup>
 
     <SettingsGroup id="ai-advanced" testid="ai-section-advanced">
@@ -521,6 +460,13 @@
     border-radius: 0.375rem;
     background-color: var(--c-raised);
     font-size: 0.875rem;
+  }
+
+  .s-note {
+    padding: 0.875rem 1.25rem;
+    border-top: 1px solid var(--c-line);
+    font-size: 0.875rem;
+    color: var(--c-muted);
   }
 
   .s-summary {

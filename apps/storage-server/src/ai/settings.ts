@@ -6,10 +6,21 @@
  */
 import type Database from 'better-sqlite3';
 
-/** A model's list price per million tokens (US$). */
-export interface AiPrice {
+/** A price tier per million tokens (US$). */
+export interface AiPriceTier {
   inputPerMTok: number;
   outputPerMTok: number;
+  /** Cached input read back (default: a tenth of the input price). */
+  cacheReadPerMTok?: number;
+}
+
+/**
+ * A model's list price (prices.ts): its tier for ordinary prompts, and a higher one for prompts
+ * over `longAboveTokens` (Haiku 5.5 above 100K, OpenAI's above 272K input tokens).
+ */
+export interface AiPrice extends AiPriceTier {
+  longAboveTokens?: number;
+  long?: AiPriceTier;
 }
 
 export interface AiSettings {
@@ -54,7 +65,11 @@ export interface AiSettings {
   attempts: number;
   /** The Batch APIs' price as a share of the list price. */
   batchPriceFactor: number;
-  /** List prices per model id (models not listed are refused: their cost can't be counted). */
+  /**
+   * Models added in Settings before the prices were built in (prices.ts), with the price typed
+   * then. Kept only until deleted in Settings > AI; nothing adds to it any more, and a built-in
+   * model's price always comes from prices.ts.
+   */
   prices: Record<string, AiPrice>;
   /** Ask for the answer in the stage's JSON schema (the providers' structured outputs). */
   structuredOutputs: boolean;
@@ -73,13 +88,8 @@ export const DEFAULT_AI_SETTINGS: AiSettings = {
   requestTimeoutSeconds: 180,
   attempts: 4,
   batchPriceFactor: 0.5,
-  // The bake-off's measured list prices (reference-sample.md, 2026-11-12).
-  prices: {
-    'claude-haiku-5-5': { inputPerMTok: 0.1, outputPerMTok: 0.5 },
-    'gpt-6-luna': { inputPerMTok: 0.1, outputPerMTok: 0.5 },
-    'claude-sonnet-5-5': { inputPerMTok: 2, outputPerMTok: 10 },
-    'gpt-6.1-sol': { inputPerMTok: 2, outputPerMTok: 10 },
-  },
+  // The known models' prices are built in (prices.ts).
+  prices: {},
   structuredOutputs: true,
 };
 

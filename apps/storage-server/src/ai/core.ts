@@ -21,7 +21,8 @@ import type { SpendRow } from './ledger';
 import { monthOf } from './month';
 import { makeProvider, providerOf, type ProviderClient } from './providers';
 import { AiSecretStore, KEY_NAME, type AiKeyReader } from './secrets';
-import { readAiSettings, updateAiSettings, type AiSettings } from './settings';
+import { isBuiltIn } from './prices';
+import { AiSettingsError, readAiSettings, updateAiSettings, type AiSettings } from './settings';
 import { costOf, priceOf } from './spend';
 import type { Provider } from './types';
 import { waitText, type AiWait } from './waits';
@@ -86,6 +87,7 @@ export class AiCore {
   /** Calls one at a time in flight, every feature's: their expected cost is held. */
   private inFlight = new Map<string, number>();
   private roomListeners = new Set<() => void>();
+  private modelUsers = new Set<(model: string) => string[]>();
   private timer: NodeJS.Timeout | null = null;
   private lastMonth: string | null = null;
   private spentCache: {
@@ -118,6 +120,46 @@ export class AiCore {
 
   settings(): AiSettings {
     return readAiSettings(this.db);
+  }
+
+  /**
+   * A feature says which of its tasks use a model (e.g. the cleanup's "audio5.primary"), so a
+   * model in use is never deleted from under it.
+   */
+  registerModelUse(uses: (model: string) => string[]): () => void {
+    this.modelUsers.add(uses);
+    return () => this.modelUsers.delete(uses);
+  }
+
+  modelUses(model: string): string[] {
+    const out: string[] = [];
+    for (const u of this.modelUsers) {
+      try {
+        out.push(...u(model));
+      } catch {
+        // a feature that can't answer now (its database closed) holds nothing
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Deletes a model added before prices were built in (its price and its batch-or-call mode).
+   * Built-in models stay (their prices come from prices.ts); a model a task uses is refused.
+   */
+  deleteModel(model: string): AiSettings {
+    const s = this.settings();
+    if (isBuiltIn(model))
+      throw new AiSettingsError(`${model} is one of the app's own models; it can't be deleted`);
+    if (!(model in s.prices)) throw new AiSettingsError(`No model ${model} to delete`);
+    const uses = this.modelUses(model);
+    if (uses.length)
+      throw new AiSettingsError(
+        `${model} is in use (${uses.join(', ')}); choose another model there first`,
+      );
+    const { [model]: _price, ...prices } = s.prices;
+    const { [model]: _mode, ...modes } = s.modes;
+    return updateAiSettings(this.db, { prices, modes }, this.now());
   }
 
   /** Saves provider settings; a raised limit lets waiting features go on at once. */

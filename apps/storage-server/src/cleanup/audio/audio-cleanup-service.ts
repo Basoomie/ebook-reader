@@ -45,7 +45,9 @@ import { AiRunner, modeOf } from '../../ai/runner';
 import { STAGE4_SPEC } from '../stage4/ai-prompt';
 import { STAGE5_SPEC } from '../stage5/prompt';
 import { META_SPEC } from './meta-prompt';
+import { allPrices } from '../../ai/prices';
 import { providerOf } from '../../ai/providers';
+import { priceOf } from '../../ai/spend';
 import { AudioStage5, stage5AskKey, stage5RulesKey } from './stage5-meta';
 import { metaList } from './meta-views';
 import type { FetchQueue } from '../stage4/queue';
@@ -1357,14 +1359,14 @@ export class AudioCleanupService {
         task,
         model,
         provider,
-        price: ps.prices[model] ?? null,
+        price: priceOf(ps, model),
         checked: c ? (c.models ? c.models.includes(model) : null) : null,
         mode: modeOf(ps, model),
       };
     });
     return {
       settings: s.ai,
-      prices: ps.prices,
+      prices: allPrices(ps.prices),
       spend: {
         spentUsd: room.spentUsd,
         reservedUsd: room.reservedUsd,

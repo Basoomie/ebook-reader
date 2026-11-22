@@ -575,16 +575,14 @@ describe('AI runner', () => {
     runner.enqueue(SPEC, 'primary', ['k0'], 'r');
     const missing = await runner.step(SPEC, 'r', () => false);
     expect(missing.wait).toMatchObject({ kind: 'model_missing', model: 'claude-haiku-9-9' });
-    updateSettings(db, { models: { 'audio5.primary': 'claude-sonnet-5-5' } });
-    const { prices } = core.settings();
-    const { 'claude-sonnet-5-5': _drop, ...rest } = prices;
-    core.updateSettings({ prices: rest });
+    // A model with no price (neither built in nor added earlier) is never asked.
+    updateSettings(db, { models: { 'audio5.primary': 'claude-unpriced-1' } });
     // (the question to the unknown model would be reported first)
     db.prepare(`DELETE FROM ai_requests WHERE model = 'claude-haiku-9-9'`).run();
     runner.enqueue(SPEC, 'primary', ['k0'], 'r');
     expect((await runner.step(SPEC, 'r', () => false)).wait).toEqual({
       kind: 'no_price',
-      model: 'claude-sonnet-5-5',
+      model: 'claude-unpriced-1',
     });
     // Model lists are read with the key and stored (Settings: Check models).
     const checked = await core.checkModels();

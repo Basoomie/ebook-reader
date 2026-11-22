@@ -1388,6 +1388,9 @@ export interface AudioMetaItem {
 export interface AiPrice {
   inputPerMTok: number;
   outputPerMTok: number;
+  cacheReadPerMTok?: number;
+  longAboveTokens?: number;
+  long?: { inputPerMTok: number; outputPerMTok: number; cacheReadPerMTok?: number };
 }
 
 /** The cleanup's own AI choices (the provider settings are Settings > AI's). */

@@ -858,6 +858,16 @@ export function removeAiKeyCopy(label: string): ConfirmCopy {
   };
 }
 
+/** Settings > AI: delete a model added before prices were built in. */
+export function removeAiModelCopy(model: string): ConfirmCopy {
+  return {
+    title: `Delete ${model}?`,
+    message: ['It goes from the list with its price and its batch setting.'],
+    confirmLabel: `Delete ${model}`,
+    irreversible: true
+  };
+}
+
 /** Audiobook cleanup: a stage's "Run the analysis again" (starts the stage over). */
 export function analyseAgainCopy(stageName: string, detail: string): ConfirmCopy {
   return {
