@@ -70,7 +70,7 @@ import { readRefEpub, type RefFile } from './ref-epub';
 import { nfkc } from './ref-text';
 import type { RefRecord } from './rules-v3';
 import { spellingOf } from './series-spelling';
-import type { PoolEntry, SeriesBook, ValueFrom } from './series-order';
+import { sameTitle, type PoolEntry, type SeriesBook, type ValueFrom } from './series-order';
 import { seriesChoiceOf } from './series-order-store';
 import { N } from '../title-rules';
 import {
@@ -366,6 +366,58 @@ export function firstColophonDate(text: string): number | null {
   for (const m of t.matchAll(/((?:19|20)\d\d)[./-](\d{1,2})[./-](\d{1,2})/gu))
     add(Number(m[1]), Number(m[2]), Number(m[3]));
   return best;
+}
+
+/**
+ * A book's place in its store's full series list (changed-series measurement): Amazon's
+ * 「全12冊中6番目の本」 / 「全10巻中第5巻」 on its own product page, RanobeDB's sort order of its own
+ * entry. Only from records matched to this book (the caller passes nothing otherwise).
+ */
+export function storeListPlaces(
+  amazonSeries: string,
+  ranobedb: OnlineEvidence['ranobedb'] | null,
+  own: string[] = [],
+): NonNullable<SeriesBook['lists']> {
+  const t = nfkc(amazonSeries || '');
+  const m = /全\s*(\d+)\s*(?:冊|巻)中\s*(?:第\s*)?(\d+)\s*(?:番目|巻)/u.exec(t);
+  const total = m ? Number(m[1]) : null;
+  const pos =
+    m && Number(m[2]) >= 1 && (total === null || Number(m[2]) <= total) ? Number(m[2]) : null;
+  let rdb: number | null = null;
+  let rdbType: string | null = null;
+  const rs = ranobedb?.series as { id?: unknown; title_orig?: unknown } | null | undefined;
+  const rdbList = rs ? String(rs.id ?? rs.title_orig ?? '') : null;
+  const id = (ranobedb?.book as { id?: unknown } | undefined)?.id;
+  if (id !== undefined && id !== null)
+    for (const x of ranobedb?.series?.books ?? []) {
+      const e = x as { id?: unknown; sort_order?: unknown; type?: unknown; title_orig?: unknown };
+      // The list entry must be this book (るるいえあかでみっく matched entry 1, another book).
+      if (
+        e.id === id &&
+        typeof e.sort_order === 'number' &&
+        (!own.length || sameTitle(e.title_orig, own))
+      ) {
+        rdb = e.sort_order;
+        rdbType = typeof e.type === 'string' ? e.type : null;
+        break;
+      }
+    }
+  // Amazon's list: its total and the series name after it (「全12冊中6番目の本 祠☆闘士シリーズ」).
+  const amazonList =
+    pos === null
+      ? null
+      : `${total}|${t
+          .replace(m![0], '')
+          .replace(/^\s*の本\s*/u, '')
+          .trim()}`;
+  return {
+    amazon: pos,
+    amazonTotal: pos === null ? null : total,
+    ranobedb: rdb,
+    ranobedbType: rdbType,
+    amazonList,
+    ranobedbList: rdb === null ? null : rdbList,
+  };
 }
 
 /** The one-time passes over a finished analysis are through (they can reopen books). */
@@ -1948,6 +2000,16 @@ export class Stage4Analysis {
       storeSeries,
       pool: pool.filter((e) => e.title),
       date: firstColophonDate(colophon),
+      calibreName: this.extras?.get(book.calibreId)?.series ?? null,
+      // A record the rules didn't take but whose title is the book's own is this book too
+      // (神様ゲーム: RanobeDB's list placed its three side books, the rules took no record).
+      lists: storeListPlaces(
+        d.trace.amazonIdentified || sameTitle(rec.amazon?.product?.title, own) ? amzSeries : '',
+        d.trace.ranobedbIdentified || sameTitle(ev.ranobedb.book?.title_orig, own)
+          ? ev.ranobedb
+          : null,
+        own,
+      ),
     };
   }
 

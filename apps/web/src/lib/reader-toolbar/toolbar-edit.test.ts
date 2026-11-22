@@ -27,25 +27,25 @@ describe('toolbar edits: moving', () => {
     expect(moveTop(undefined, 'toc', -1)).toEqual(TOP_DEFAULT);
     expect(moveTop(undefined, 'library', 1)).toEqual(TOP_DEFAULT);
     expect(moveBottom(undefined, 'tracker', -1)).toEqual(BOTTOM_DEFAULT);
-    expect(moveBottom(undefined, 'audiobook', 1)).toEqual(BOTTOM_DEFAULT);
+    expect(moveBottom(undefined, 'returnMarker', 1)).toEqual(BOTTOM_DEFAULT);
   });
 
   it('moves one step in the middle and keeps every place', () => {
-    const up = moveTop(undefined, 'search', -1);
-    expect(topIds(up).slice(0, 3)).toEqual(['toc', 'search', 'appearance']);
-    expect(up.find((e) => e.id === 'search')?.place).toBe('bar');
+    const up = moveTop(undefined, 'appearance', -1);
+    expect(topIds(up).slice(0, 4)).toEqual(['toc', 'images', 'appearance', 'search']);
+    expect(up.find((e) => e.id === 'appearance')?.place).toBe('bar');
     expect(up).toHaveLength(TOP_IDS.length);
 
-    const down = moveBottom(undefined, 'anki', 1);
+    const down = moveBottom(undefined, 'readAloud', 1);
     expect(topIds(down)).toEqual([
       'tracker',
-      'pacer',
       'anki',
-      'readAloud',
+      'audiobook',
+      'pacer',
       'returnMarker',
-      'audiobook'
+      'readAloud'
     ]);
-    expect(down.find((e) => e.id === 'anki')?.shown).toBe(false);
+    expect(down.find((e) => e.id === 'readAloud')?.shown).toBe(false);
   });
 
   it('a drop moves to the exact index, both ways; out of range changes nothing', () => {
@@ -54,11 +54,11 @@ describe('toolbar edits: moving', () => {
     expect(topIds(moveTopTo(undefined, last, 0))[0]).toBe('library');
     expect(topIds(moveBottomTo(undefined, 5, 1))).toEqual([
       'tracker',
-      'audiobook',
+      'returnMarker',
       'anki',
+      'audiobook',
       'pacer',
-      'readAloud',
-      'returnMarker'
+      'readAloud'
     ]);
     expect(moveTopTo(undefined, 0, 99)).toEqual(TOP_DEFAULT);
     expect(moveTopTo(undefined, -1, 2)).toEqual(TOP_DEFAULT);

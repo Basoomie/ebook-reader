@@ -32,8 +32,10 @@ import {
  * and gives each series one spelling.
  * 3 (series-order follow-up, 2026-11-22): the order of each series (series-order.ts) after the
  * spelling; every book is decided again from the stored answers.
+ * 4 (the changed-series measurements, 2026-11-22): store list places, arcs counted straight
+ * through, the second batch's fixes; decided again from the stored answers.
  */
-export const STAGE4_RULES_VERSION = 3;
+export const STAGE4_RULES_VERSION = 4;
 
 /** The gold labels' names for the kinds. */
 export type Kind = 'full' | 'sample' | 'bonus' | 'special edition' | 'omnibus';

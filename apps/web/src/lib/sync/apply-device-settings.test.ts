@@ -152,7 +152,7 @@ describe('applyDeviceSettings', () => {
     expect(readerToolbar$.getValue()).toEqual(TOP_DEFAULT);
     expect(readerBottomBar$.getValue()).toEqual(BOTTOM_DEFAULT);
     expect(localStorage.getItem('readerBottomBar') ?? null).toBeNull();
-    expect(shown('anki')).toBe(false);
+    expect(shown('readAloud')).toBe(false);
   });
 
   it('never writes the AnkiConnect keys or a shared setting, whatever it is given', () => {

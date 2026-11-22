@@ -27,22 +27,22 @@ export interface BottomEntry {
 }
 
 /**
- * The top bar's defaults: the user's PC answers (reader-toolbar.md, "Defaults"), plus the
- * speed readout and the gap where they sit today (decided with the user 2026-11-21).
+ * The top bar's defaults: the user's PC setup as of 2026-11-22 (reader-toolbar.md,
+ * "Defaults").
  *
  * A button added in a later version goes at the END of this list as `hidden` (decision 7),
  * so no device's bar changes on its own.
  */
 export const TOP_DEFAULT: readonly TopEntry[] = Object.freeze([
   { id: 'toc', place: 'bar' },
-  { id: 'appearance', place: 'bar' },
+  { id: 'images', place: 'bar' },
   { id: 'search', place: 'bar' },
-  { id: 'notes', place: 'bar' },
+  { id: 'appearance', place: 'bar' },
   { id: 'jumpBackForward', place: 'bar' },
   { id: 'returnMarker', place: 'bar' },
   { id: 'speed', place: 'bar' },
   { id: 'gap', place: 'bar' },
-  { id: 'images', place: 'bar' },
+  { id: 'notes', place: 'bar' },
   { id: 'jump', place: 'bar' },
   { id: 'addBookmark', place: 'bar' },
   { id: 'pacer', place: 'bar' },
@@ -66,14 +66,14 @@ export const TOP_DEFAULT: readonly TopEntry[] = Object.freeze([
 
 export type TopId =
   | 'toc'
-  | 'appearance'
+  | 'images'
   | 'search'
-  | 'notes'
+  | 'appearance'
   | 'jumpBackForward'
   | 'returnMarker'
   | 'speed'
   | 'gap'
-  | 'images'
+  | 'notes'
   | 'jump'
   | 'addBookmark'
   | 'pacer'
@@ -99,8 +99,22 @@ export const TOP_IDS: readonly TopId[] = TOP_DEFAULT.map(({ id }) => id);
 /** Entries that are never menu entries (the menu button itself, the readout, the gap). */
 export const BAR_ONLY_IDS: ReadonlySet<TopId> = new Set<TopId>(['menu', 'speed', 'gap']);
 
-/** The bottom bar's left side, in today's order with the old defaults (nothing changes). */
+/** The bottom bar's left side: the user's PC setup as of 2026-11-22 (reader-toolbar.md). */
 export const BOTTOM_DEFAULT: readonly BottomEntry[] = Object.freeze([
+  { id: 'tracker', shown: true },
+  { id: 'anki', shown: true },
+  { id: 'audiobook', shown: true },
+  { id: 'pacer', shown: true },
+  { id: 'readAloud', shown: false },
+  { id: 'returnMarker', shown: true }
+] as const satisfies readonly { id: string; shown: boolean }[]);
+
+/**
+ * The bottom bar as it was before session 1 (fixed order, the old switches off): what the
+ * one-time migration of the old switches starts from, so a migrated device keeps exactly
+ * what it showed. Never change it.
+ */
+const BOTTOM_BEFORE_TOOLBARS: readonly BottomEntry[] = Object.freeze([
   { id: 'tracker', shown: true },
   { id: 'anki', shown: false },
   { id: 'pacer', shown: true },
@@ -109,7 +123,7 @@ export const BOTTOM_DEFAULT: readonly BottomEntry[] = Object.freeze([
   { id: 'audiobook', shown: true }
 ] as const satisfies readonly { id: string; shown: boolean }[]);
 
-export type BottomId = 'tracker' | 'anki' | 'pacer' | 'readAloud' | 'returnMarker' | 'audiobook';
+export type BottomId = 'tracker' | 'anki' | 'audiobook' | 'pacer' | 'readAloud' | 'returnMarker';
 
 export const BOTTOM_IDS: readonly BottomId[] = BOTTOM_DEFAULT.map(({ id }) => id);
 
@@ -217,7 +231,7 @@ interface MigrationStorage {
 
 /**
  * Session 1's upgrade: a device's three old switches become the `shown` of their entries in
- * `readerBottomBar` (today's order), so nothing visible changes. Runs once: only while
+ * `readerBottomBar` (the order before session 1), so nothing visible changes. Runs once: only while
  * `readerBottomBar` isn't stored and at least one old key is (an unset key keeps its old
  * default, off). The old keys are then removed: they were moved, and a later copy from a
  * device that never stored `readerBottomBar` must not bring them back into play.
@@ -234,7 +248,7 @@ export function migrateBottomBarSwitches(storage: MigrationStorage): boolean {
     if (stored.every(([, raw]) => !raw)) return false;
 
     const values = new Map(stored);
-    const list = BOTTOM_DEFAULT.map(({ id, shown }) => {
+    const list = BOTTOM_BEFORE_TOOLBARS.map(({ id, shown }) => {
       const raw = values.get(id);
       // Same reading as the boolean subjects: '1'/'0', empty = never set.
       return { id, shown: raw ? !!+raw : shown };
