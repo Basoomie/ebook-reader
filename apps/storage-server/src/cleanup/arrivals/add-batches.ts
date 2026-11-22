@@ -227,6 +227,15 @@ export class ArrivalBatches {
           'UPDATE calibre_arrival_batches SET lease_expires_at = ?, updated_at = ? WHERE id = ?',
         )
         .run(now + lease * 1000, now, it.batch_id);
+      // An Undo's book is out of Calibre: its file is undone at once (the lists show it so, and it
+      // is never added again by itself), not only when the next run notices the book gone.
+      if (it.kind === 'undo_add' && r.step === 'removed')
+        this.db
+          .prepare(
+            `UPDATE calibre_arrival_files SET outcome = 'undone', detail = ?, decided_at = ?
+             WHERE id = ? AND outcome = 'added'`,
+          )
+          .run('Taken out again by Undo (not added again by itself)', now, it.file_id);
     })();
     return { state: r.step === 'adding' ? 'fetched' : r.step };
   }

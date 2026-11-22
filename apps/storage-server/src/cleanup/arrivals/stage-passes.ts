@@ -346,7 +346,8 @@ export async function stage2Pass(
   shouldStop: () => boolean,
 ): Promise<number> {
   const db = deps.cleanup;
-  const snap = analysis.loadSnapshot(deps.libraryId);
+  // The library now (books added in this run), not the analysis' snapshot from before them.
+  const snap = analysis.currentSnapshot(deps.libraryId);
   const settings = getSettings(db);
   const spelling = spellingLookup(snap.names);
   const byUuid = new Map([...snap.books.values()].map((b) => [b.uuid, b]));

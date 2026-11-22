@@ -19,8 +19,10 @@ import { buildArgs } from '../../cleanup-apply/src/calibredb';
 import { ArrivalBatches } from '../src/cleanup/arrivals/add-batches';
 import { entrySkip } from '../src/cleanup/arrivals/archives';
 import { classifyName, settled, sniffFormat, walkSource } from '../src/cleanup/arrivals/catalog';
+import { stage2Pass } from '../src/cleanup/arrivals/stage-passes';
 import { runBar } from '../src/cleanup/arrivals/views';
 import { initCleanupDatabase } from '../src/cleanup/cleanup-db';
+import type { Stage2Analysis } from '../src/cleanup/stage2';
 import { arrivalPairs, getSettings, SettingsError, updateSettings } from '../src/cleanup/settings';
 import { stage4NeedsUpgrade } from '../src/cleanup/stage4/ai-decide';
 import { COUNTER_BUNDLE } from '../src/counts/counter-bundle';
@@ -266,6 +268,13 @@ describe('wp20g: add batches', () => {
     expect(cu.id).toBe(u);
     expect(cu.kind).toBe('undo_add');
     expect(cu.items.map((i) => i.calibreId)).toEqual([7]);
+    // The Undo's book out of Calibre: its file is undone at once.
+    db.prepare(`UPDATE calibre_arrival_files SET outcome = 'added' WHERE id = ?`).run(f1);
+    b.report(cu.items[0].itemId, { step: 'exported' }, 2002);
+    b.report(cu.items[0].itemId, { step: 'removed' }, 2003);
+    expect(db.prepare('SELECT outcome FROM calibre_arrival_files WHERE id = ?').get(f1)).toEqual({
+      outcome: 'undone',
+    });
     db.close();
   });
 });
@@ -575,6 +584,35 @@ describe('wp20g: a run end to end', () => {
     // Stage 4 waits for its own analysis (no fetch container here): the run is stopped.
     env.service.arrivals.stopRun();
   }, 300_000);
+
+  it('stage 2 proposes for a book added after its own analysis read the library', async () => {
+    // On the server a finished stage-2 analysis keeps the snapshot it read (here a route's tick
+    // restarts it, which hid this): the arrival pass reads the library as it is now.
+    const a2 = (env.service as unknown as { analysis2: Stage2Analysis }).analysis2;
+    a2.loadSnapshot(env.libraryId());
+    const id = await env.lib.addBook({
+      title: '[作者] 新しい本',
+      authors: ['作者'],
+      epub: makeTextEpub({ title: '[作者] 新しい本', chapters: chaptersOf(31) }),
+    });
+    await env.index();
+    const deps = {
+      cleanup: env.cleanupDb,
+      main: env.db,
+      libraryId: env.libraryId(),
+      libDir: path.join(env.root.dir, 'japanese-library'),
+      analysisId: 'arrivals:9999',
+    };
+    expect(await stage2Pass(deps, a2, [uuidOf(id)], () => false)).toBeGreaterThan(0);
+    expect(
+      env.cleanupDb
+        .prepare(
+          `SELECT new_json FROM proposed_changes WHERE analysis_id = 'arrivals:9999' AND field = 'title'`,
+        )
+        .get(),
+    ).toEqual({ new_json: JSON.stringify('新しい本') });
+    env.cleanupDb.prepare(`DELETE FROM proposed_changes WHERE analysis_id = 'arrivals:9999'`).run();
+  }, 120_000);
 
   it('a book you removed from Calibre is never added again', async () => {
     const added = env.cleanupDb
