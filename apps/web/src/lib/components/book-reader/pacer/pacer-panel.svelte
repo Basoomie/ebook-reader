@@ -32,10 +32,10 @@
 
   const dispatch = createEventDispatcher<{ close: void; toggle: void }>();
 
-  const stepButton =
-    'flex h-12 w-12 items-center justify-center rounded border-2 border-current text-xl font-medium';
-  const button =
-    'flex min-h-[3rem] items-center justify-center rounded border-2 border-current px-4 font-medium';
+  // The shared buttons (app.scss): soft for actions, ghost for Close, square ones for − and +.
+  const stepButton = 'c-btn c-btn-secondary c-btn-icon text-xl';
+  const button = 'c-btn c-btn-secondary';
+  const closeButton = 'c-btn c-btn-ghost -mr-2 px-3';
 
   let panelEl: HTMLElement;
   let estimate: SpeedEstimate | null | undefined;
@@ -93,19 +93,19 @@
 <section
   bind:this={panelEl}
   tabindex="-1"
-  class="writing-horizontal-tb fixed inset-x-0 bottom-0 z-[55] max-h-[65vh] overflow-y-auto border-t-2 border-black bg-white p-4 text-black outline-none md:inset-y-0 md:max-h-none md:w-[26rem] md:border-t-0"
+  class="c-reader-panel writing-horizontal-tb fixed inset-x-0 bottom-0 z-[55] max-h-[65vh] overflow-y-auto rounded-t-2xl border-t p-4 outline-none md:inset-y-0 md:max-h-none md:w-[26rem] md:rounded-none md:border-t-0"
   class:md:left-auto={!dockLeft}
   class:md:right-0={!dockLeft}
-  class:md:border-l-2={!dockLeft}
+  class:md:border-l={!dockLeft}
   class:md:right-auto={dockLeft}
   class:md:left-0={dockLeft}
-  class:md:border-r-2={dockLeft}
+  class:md:border-r={dockLeft}
   data-testid="pacer-panel"
   aria-label="Pacer"
 >
   <div class="mb-3 flex items-center justify-between">
     <h2 class="text-xl font-medium">Pacer</h2>
-    <button class={button} on:click={() => dispatch('close')}>Close</button>
+    <button class={closeButton} on:click={() => dispatch('close')}>Close</button>
   </div>
 
   {#if !supported}
@@ -114,14 +114,14 @@
     </p>
   {:else}
     <div data-testid="pacer-mode">
-      <ButtonToggleGroup options={modes} bind:selectedOptionId={$pacerMode$} />
+      <ButtonToggleGroup archive options={modes} bind:selectedOptionId={$pacerMode$} />
     </div>
     <p class="mt-1 text-sm">{modeHelp[$pacerMode$] ?? ''}</p>
 
     {#if $pacerMode$ !== 'off'}
       <div class="mt-3 flex items-center gap-3">
         <button
-          class="{button} min-w-[7rem]"
+          class="c-btn c-btn-primary min-w-[7rem]"
           data-testid="pacer-toggle"
           on:click={() => dispatch('toggle')}>{running ? 'Pause' : 'Start'}</button
         >
@@ -173,7 +173,11 @@
         >{continuous ? 'Scroll by itself at the end of the screen' : 'Turn pages by itself'}</span
       >
       <div data-testid="pacer-turn-pages">
-        <ButtonToggleGroup options={optionsForToggle} bind:selectedOptionId={$pacerTurnPages$} />
+        <ButtonToggleGroup
+          archive
+          options={optionsForToggle}
+          bind:selectedOptionId={$pacerTurnPages$}
+        />
       </div>
     </div>
 

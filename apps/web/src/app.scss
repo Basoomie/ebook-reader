@@ -157,16 +157,49 @@ html.catalogue-dark {
   @include c-tokens-dark;
 }
 
-/* Modals over the reader (no catalogue look) follow the reader theme: dark tokens on a
-   dark theme (html.reader-dark, appearance-effects), light ones on a light theme, whatever
-   the Library Look. E-ink keeps its own. */
-html:not(.catalogue):not(.eink).reader-dark .c-modal-layer {
+/* Modals, the reader's side panels (Appearance, Pacer, Read aloud) and its notices over the
+   reader (no catalogue look) follow the reader theme: dark tokens on a dark theme
+   (html.reader-dark, appearance-effects), light ones on a light theme, whatever the Library
+   Look. E-ink keeps its own. */
+html:not(.catalogue):not(.eink).reader-dark .c-modal-layer,
+html:not(.catalogue):not(.eink).reader-dark .c-reader-panel,
+html:not(.catalogue):not(.eink).reader-dark .c-reader-notice {
   @include c-tokens-dark;
   @include c-danger-dark;
 }
 
-html:not(.catalogue):not(.eink):not(.reader-dark) .c-modal-layer {
+html:not(.catalogue):not(.eink):not(.reader-dark) .c-modal-layer,
+html:not(.catalogue):not(.eink):not(.reader-dark) .c-reader-panel,
+html:not(.catalogue):not(.eink):not(.reader-dark) .c-reader-notice {
   @include c-tokens-light;
+}
+
+/* A reader side panel: the modals' surface and edge, the shared buttons inside. */
+.c-reader-panel {
+  background-color: var(--c-raised);
+  color: var(--c-ink);
+  border-color: var(--c-line);
+  box-shadow: var(--c-pop-shadow);
+}
+
+.c-reader-panel select {
+  background-color: var(--c-raised);
+  color: var(--c-ink);
+  padding-right: 2.5rem;
+}
+
+html:not(.eink).reader-dark .c-reader-panel select {
+  background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%23a9b2c4' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e");
+}
+
+/* A notice at the top of the screen ("New version available.", "Newer audiobook data…"):
+   a small card with the shared buttons. */
+.c-reader-notice {
+  border-radius: 0.875rem;
+  background-color: var(--c-raised);
+  color: var(--c-ink);
+  border: var(--c-border-width) solid var(--c-line);
+  box-shadow: var(--c-pop-shadow);
 }
 
 /* Listed after dark, so E-ink wins when both are on. */

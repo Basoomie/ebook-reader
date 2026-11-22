@@ -4162,7 +4162,7 @@
 {#if startOverNotice}
   <!-- WP8a: one line after a Start over moved the book to the start (tap to close). -->
   <button
-    class="writing-horizontal-tb fixed inset-x-4 top-4 z-20 mx-auto max-w-md rounded border-2 border-gray-700 bg-white p-3 text-left text-black"
+    class="c-reader-notice writing-horizontal-tb fixed inset-x-4 top-4 z-20 mx-auto max-w-md p-3 text-left"
     role="status"
     data-testid="start-over-notice"
     on:click={() => (startOverNotice = '')}
@@ -4174,20 +4174,20 @@
 {#if whispersyncNotice}
   <!-- WP15c: newer audiobook data (position, subtitles or match) came from another device. -->
   <div
-    class="writing-horizontal-tb fixed inset-x-4 top-4 z-20 mx-auto flex max-w-md items-center gap-2 rounded border-2 border-gray-700 bg-white p-2 text-black"
+    class="c-reader-notice writing-horizontal-tb fixed inset-x-4 top-4 z-20 mx-auto flex max-w-md items-center gap-2 p-2"
     role="status"
     data-testid="whispersync-reload-notice"
   >
     <span class="grow px-1">Newer audiobook data from another device.</span>
     <button
-      class="min-h-[2.75rem] rounded border-2 border-gray-700 px-3 font-medium"
+      class="c-btn c-btn-secondary c-btn-sm shrink-0 px-3"
       data-testid="whispersync-reload"
       on:click={reloadForWhispersync}
     >
       Reload
     </button>
     <button
-      class="min-h-[2.75rem] px-3"
+      class="c-btn c-btn-ghost c-btn-icon c-btn-sm"
       aria-label="Close"
       data-testid="whispersync-reload-close"
       on:click={() => (whispersyncNotice = false)}
@@ -4200,14 +4200,14 @@
 {#if ankiNotice}
   <!-- WP14: what "Enrich last Anki card" did, or why it couldn't. -->
   <div
-    class="writing-horizontal-tb fixed inset-x-4 top-4 z-20 mx-auto flex max-w-md items-center gap-2 rounded border-2 border-gray-700 bg-white p-2 text-black"
+    class="c-reader-notice writing-horizontal-tb fixed inset-x-4 top-4 z-20 mx-auto flex max-w-md items-center gap-2 p-2"
     role="status"
     data-testid="anki-notice"
   >
     <span class="grow px-1" data-testid="anki-notice-text">{ankiNotice}</span>
     {#if ankiNoticeSetup}
       <button
-        class="min-h-[2.75rem] shrink-0 rounded border-2 border-gray-700 px-3 font-medium"
+        class="c-btn c-btn-secondary c-btn-sm shrink-0 px-3"
         data-testid="anki-notice-setup"
         on:click={() => leaveReader(`${mergeEntries.SETTINGS.routeId}?tab=anki`, false)}
       >
@@ -4216,7 +4216,7 @@
     {/if}
     <!-- Also while sending: closing only hides it (the result still shows when done). -->
     <button
-      class="min-h-[2.75rem] shrink-0 px-3"
+      class="c-btn c-btn-ghost c-btn-icon c-btn-sm"
       aria-label="Close"
       data-testid="anki-notice-close"
       on:click={closeAnkiNotice}
@@ -4228,7 +4228,7 @@
 
 {#if openNotice}
   <div
-    class="writing-horizontal-tb fixed inset-x-4 top-4 z-20 mx-auto max-w-md rounded border-2 border-gray-700 bg-white text-black"
+    class="c-reader-notice writing-horizontal-tb fixed inset-x-4 top-4 z-20 mx-auto max-w-md overflow-hidden"
     role="status"
     data-testid="open-notice"
   >
