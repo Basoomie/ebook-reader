@@ -17,17 +17,15 @@
 import Database from 'better-sqlite3';
 import fs, { writeFileSync } from 'fs';
 import path from 'path';
-import { AiRunner } from '../src/ai/runner';
 import { costOf } from '../src/ai/spend';
 import { valueCounts } from '../src/cleanup/ai-decide/values';
 import { SNAPSHOT_DIRNAME } from '../src/calibre/indexer';
-import { migrateCleanup } from '../src/cleanup/cleanup-db';
-import { SecretStore } from '../src/cleanup/secrets';
 import { getSettings, updateSettings } from '../src/cleanup/settings';
 import { getStage } from '../src/cleanup/stages';
 import { STAGE4_SPEC } from '../src/cleanup/stage4/ai-prompt';
 import { Stage4Ai } from '../src/cleanup/stage4/ai-step';
 import { Stage4Analysis, type Stage4Progress } from '../src/cleanup/stage4/analysis';
+import { cleanupAi, migrateWorkingCopy, readAiSeed } from './lib/cleanup-ai';
 import { FetchQueue } from '../src/cleanup/stage4/queue';
 
 const arg = (n: string) => {
@@ -48,13 +46,16 @@ async function main() {
   }
   const db = new Database(out);
   db.pragma('journal_mode = WAL');
-  migrateCleanup(db);
-  log(`working copy v${db.pragma('user_version', { simple: true })}`);
   const main = new Database(arg('main')!, { readonly: true, fileMustExist: true });
-  const secrets = new SecretStore(db, main);
+  // The keys and provider settings: from the ttsu.db copy (with --ai-key-dir, DB_DIR's
+  // ai-secrets.key), else from a cleanup.db copy from before v21.
+  const seed = readAiSeed(db, main, arg('ai-key-dir') ?? null);
+  migrateWorkingCopy(db);
+  log(`working copy v${db.pragma('user_version', { simple: true })}`);
   log(
-    `keys: anthropic ${secrets.read('anthropicApiKey') ? 'set' : 'MISSING'}, openai ${secrets.read('openaiApiKey') ? 'set' : 'MISSING'}`,
+    `keys: anthropic ${seed.keys.anthropicApiKey ? 'set' : 'MISSING'}, openai ${seed.keys.openaiApiKey ? 'set' : 'MISSING'}`,
   );
+  const { core, runner } = cleanupAi(db, { seed, log });
   const p0 = getStage(db, 4).progress as unknown as Stage4Progress;
   // The analysis reads the reader's snapshot of metadata.db: the copy given stands in for it.
   const cacheDir = path.join(path.dirname(out), 'cache');
@@ -62,19 +63,18 @@ async function main() {
   fs.mkdirSync(path.dirname(snap), { recursive: true });
   if (!fs.existsSync(snap)) fs.copyFileSync(arg('metadata')!, snap);
   const s = getSettings(db);
+  core.updateSettings({
+    spendLimitUsd: Number(arg('limit') ?? 10),
+    // Modes are per model id (not per provider).
+    modes: has('smoke')
+      ? { 'claude-haiku-5-5': 'direct', 'gpt-6-luna': 'direct' }
+      : { 'gpt-6-luna': 'direct' },
+    // The smoke test cancels a stalled batch (OpenAI runs no Luna batch here) at once.
+    batchStallMinutes: has('smoke') ? 1 : 30,
+    batchPollSeconds: 30,
+  });
   updateSettings(db, {
-    ai: {
-      ...s.ai,
-      spendLimitUsd: Number(arg('limit') ?? 10),
-      labeledOnly: true,
-      // Modes are per model id (not per provider).
-      modes: has('smoke')
-        ? { 'claude-haiku-5-5': 'direct', 'gpt-6-luna': 'direct' }
-        : { 'gpt-6-luna': 'direct' },
-      // The smoke test cancels a stalled batch (OpenAI runs no Luna batch here) at once.
-      batchStallMinutes: has('smoke') ? 1 : 30,
-      batchPollSeconds: 30,
-    },
+    ai: { ...s.ai, labeledOnly: true },
     gate: { ...s.gate, labeledBooksFile: arg('labels')! },
   });
   const queue = new FetchQueue(
@@ -92,7 +92,6 @@ async function main() {
     queue,
     log,
   });
-  const runner = new AiRunner({ db, secrets, log });
   const ai = new Stage4Ai({ db, runner, analysis, log });
 
   let longest = 0;
@@ -186,7 +185,7 @@ async function main() {
 
   if (has('smoke')) {
     const n = Number(arg('smoke'));
-    const checks = await runner.checkModels();
+    const checks = await runner.core.checkModels();
     for (const [prov, c] of Object.entries(checks))
       log(`${prov}: ${c.error ?? `${c.models?.length} models`}`);
     const keys = labeled.slice(0, n);

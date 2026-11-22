@@ -8,9 +8,9 @@
  */
 import Database from 'better-sqlite3';
 import OpenAI, { toFile } from 'openai';
-import { SecretStore } from '../src/cleanup/secrets';
+import { readCleanupSecret } from '../src/cleanup/secrets';
 import { META_SPEC } from '../src/cleanup/audio/meta-prompt';
-import { AiRunner } from '../src/ai/runner';
+import { cleanupAi } from './lib/cleanup-ai';
 
 const arg = (n: string) => {
   const i = process.argv.indexOf(`--${n}`);
@@ -18,8 +18,10 @@ const arg = (n: string) => {
 };
 const db = new Database(arg('db')!, { readonly: true, fileMustExist: true });
 const main = new Database(arg('main')!, { readonly: true, fileMustExist: true });
-const secrets = new SecretStore(db, main);
-const client = new OpenAI({ apiKey: secrets.read('openaiApiKey')!, maxRetries: 0 });
+const client = new OpenAI({
+  apiKey: readCleanupSecret(db, main, 'openaiApiKey')!,
+  maxRetries: 0,
+});
 const t = () => new Date().toLocaleTimeString();
 const when = (s: number | null | undefined) => (s ? new Date(s * 1000).toLocaleString() : '-');
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -42,7 +44,7 @@ async function run() {
   console.log(`${n} batches in the organization's list`);
 
   // 2. Two more one-question batches.
-  const runner = new AiRunner({ db, secrets: { read: () => null } });
+  const { runner } = cleanupAi(db);
   const key = (
     db
       .prepare(`SELECT item_key FROM ai_items WHERE stage = 'audio5' AND labeled = 1 LIMIT 1`)

@@ -24,8 +24,6 @@
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
-import { AiRunner } from '../src/ai/runner';
-import { spendNow } from '../src/ai/spend';
 import { valuesOf } from '../src/cleanup/ai-decide/values';
 import {
   classifyArrivals,
@@ -38,8 +36,8 @@ import { loadPlanInputs, stageIds } from '../src/cleanup/audio/build-inputs';
 import { planBuildSliced } from '../src/cleanup/audio/build-plan';
 import { AudioStage4, type Stage4Deps } from '../src/cleanup/audio/stage4-online';
 import { AudioStage5 } from '../src/cleanup/audio/stage5-meta';
-import { SecretStore } from '../src/cleanup/secrets';
 import { getSettings, updateSettings } from '../src/cleanup/settings';
+import { cleanupAi, readAiSeed } from './lib/cleanup-ai';
 import { workingCopy } from './wp21f-copy';
 
 const arg = (n: string) => {
@@ -149,20 +147,17 @@ async function main() {
   // --- 1. stage 5 with J for the 30 ----------------------------------------------------------
   const subsetText = JSON.stringify({ books: chosen });
   const main = new Database(arg('main')!, { readonly: true, fileMustExist: true });
-  const secrets = new SecretStore(db, main);
+  const seed = readAiSeed(db, main, arg('ai-key-dir') ?? null);
   const s = getSettings(db);
-  const spentBefore = spendNow(db).spentUsd;
+  const { core, runner } = cleanupAi(db, { seed, log: (m) => console.log(`${t()} ${m}`) });
+  const spentBefore = core.room().spentUsd;
   const budget = Number(arg('budget') ?? 2);
-  updateSettings(db, {
-    ai: {
-      ...s.ai,
-      spendLimitUsd: Math.round((spentBefore + budget) * 100) / 100,
-      labeledOnly: true,
-      modes: { anthropic: 'direct', openai: 'direct' },
-    },
+  core.updateSettings({
+    spendLimitUsd: Math.round((spentBefore + budget) * 100) / 100,
+    modes: { 'claude-haiku-5-5': 'direct', 'gpt-6-luna': 'direct' },
   });
+  updateSettings(db, { ai: { ...s.ai, labeledOnly: true } });
   db.prepare(`UPDATE audio_stages SET mode = 'analyse' WHERE stage = 5`).run();
-  const runner = new AiRunner({ db, secrets, log: (m) => console.log(`${t()} ${m}`) });
   const designs = new Map<string, 'E' | 'F' | 'J'>([...chosenUnits].map((u) => [u, 'J']));
   const stage5 = new AudioStage5({
     db,
@@ -190,7 +185,7 @@ async function main() {
     }
   }
   const p5 = stage5.progress()!;
-  const spentAfter = spendNow(db).spentUsd;
+  const spentAfter = core.room().spentUsd;
   console.log(
     `stage 5: ${p5.phase}, designs ${JSON.stringify(p5.designs)}, upgrade asked ${p5.upgradeAsked}, spent $${(spentAfter - spentBefore).toFixed(3)} in ${Math.round((Date.now() - t5) / 1000)} s`,
   );
