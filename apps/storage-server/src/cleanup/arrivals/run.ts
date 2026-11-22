@@ -166,7 +166,17 @@ export interface RunProgress {
   s5: Stage5PassProgress | null;
   jGate: JGate | null;
   /** Batches the run planned per stage (ids), and what they wrote. */
-  writes: Record<string, { batches: string[]; applied: number; failed: number }>;
+  writes: Record<
+    string,
+    {
+      batches: string[];
+      applied: number;
+      failed: number;
+      /** Proposed but not written: a field paused by its gate (held as for the cleanup). */
+      held?: number;
+      heldWhy?: string | null;
+    }
+  >;
   check: { fields: number; same: number; differ: { calibreId: number; field: string }[] } | null;
   cost: number;
 }
@@ -178,6 +188,7 @@ export interface RunReport {
   added: number;
   hand: number;
   written: Record<string, number>;
+  held?: Record<string, number>;
   reviews: number;
   newReview: number;
   bestGuesses: number;
@@ -279,6 +290,9 @@ function emptyProgress(): RunProgress {
 }
 
 const yieldNow = () => new Promise<void>((r) => setImmediate(r));
+
+/** A run without new books goes from one write to the next (the stages have no books). */
+const NEXT_WRITE = { write2: 'write4', write4: 'write5', write5: 'check' } as const;
 
 export class BookArrivals {
   readonly addBatches: ArrivalBatches;
@@ -684,7 +698,13 @@ export class BookArrivals {
       write5: 5,
     };
     const st = stageOf[p.phase];
-    if (st !== undefined && getStage(this.db, st).mode === 'off') {
+    // A run without new books only writes what earlier runs held: a stage that is Off is passed.
+    if (st !== undefined && this.emptyScope(p) && /^write/.test(p.phase)) {
+      if (getStage(this.db, st).mode === 'off') {
+        this.next(run.id, p, NEXT_WRITE[p.phase as 'write2' | 'write4' | 'write5']);
+        return 'more';
+      }
+    } else if (st !== undefined && getStage(this.db, st).mode === 'off') {
       p.waiting = `Waiting: stage ${st} is Off (set it to Preview or On)`;
       return 'wait';
     }
@@ -841,13 +861,13 @@ export class BookArrivals {
         return 'more';
       }
       case 'write2':
-        return this.writeStep(run, p, libraryId, 2, 'stage4');
+        return this.writeStep(run, p, libraryId, 2, this.emptyScope(p) ? 'write4' : 'stage4');
       case 'stage4':
         return this.stage4Step(run, p, libraryId, shouldStop);
       case 'ai':
         return this.aiStep(run, p, libraryId, shouldStop);
       case 'write4':
-        return this.writeStep(run, p, libraryId, 4, 'stage5');
+        return this.writeStep(run, p, libraryId, 4, this.emptyScope(p) ? 'write5' : 'stage5');
       case 'stage5': {
         const uuids = this.stage4Uuids(p);
         if (!this.s5 || !p.stage4 || !uuids.length) {
@@ -1651,8 +1671,18 @@ export class BookArrivals {
       if (b) ins.run(run.id, libraryId, id, b.uuid, 'import', null);
     }
     for (const b of hand) ins.run(run.id, libraryId, b.calibreId, b.uuid, 'hand', null);
-    // No new book in Calibre: stages 1-5 have nothing to do (and nothing waits for them).
-    this.next(run.id, p, p.scope.import.length + p.scope.hand.length > 0 ? 'stage1' : 'check');
+    // No new book in Calibre: stages 1-5 have nothing to do (and nothing waits for them); an On
+    // run still writes the changes earlier runs held (a field paused by its gate, resumed since).
+    this.next(
+      run.id,
+      p,
+      !this.emptyScope(p)
+        ? 'stage1'
+        : run.mode === 'on' &&
+            [2, 4, 5].some((st) => this.heldAnalyses(st, libraryId, run.id).length)
+          ? 'write2'
+          : 'check',
+    );
     return 'more';
   }
 
@@ -1967,12 +1997,24 @@ export class BookArrivals {
       p.waiting = `Writing stage ${stage}'s changes to Calibre`;
       return 'wait';
     }
+    // Changes an earlier run held (a field its gate paused, resumed since): written now, through
+    // the same planner and its checks (a book changed in Calibre since is skipped).
+    for (const older of this.heldAnalyses(stage, libraryId, run.id)) {
+      const o = await planner.plan(libraryId, { analysisId: older });
+      if (o.batch) {
+        w.batches.push(o.batch.id);
+        p.waiting = `Writing stage ${stage}'s changes an earlier run held`;
+        return 'wait';
+      }
+    }
+    let heldWhy: string | null = null;
     if (r.reason && r.reason !== 'A batch is being applied') {
       // Nothing left to write is no reason; a pause (a field, the library changed) waits.
       if (!/nothing|paused/i.test(r.reason)) {
         p.waiting = r.reason;
         return 'wait';
       }
+      if (/paused/i.test(r.reason)) heldWhy = r.reason;
     }
     const counts = this.db
       .prepare(
@@ -1982,9 +2024,33 @@ export class BookArrivals {
       .all(stage, libraryId, arrivalAnalysisId(run.id)) as { state: string; n: number }[];
     w.applied = counts.find((x) => x.state === 'applied')?.n ?? 0;
     w.failed = counts.find((x) => x.state === 'skipped')?.n ?? 0;
+    // What stays proposed is held (a field its gate paused): said in the run and its report.
+    w.held = counts.find((x) => x.state === 'proposed')?.n ?? 0;
+    w.heldWhy = w.held ? heldWhy : null;
+    if (w.held)
+      this.deps.log?.(
+        `New arrivals: run ${run.id}: ${w.held} stage-${stage} changes held${heldWhy ? ` (${heldWhy})` : ''}`,
+      );
     this.deps.wantIngest(libraryId);
     this.next(run.id, p, nextPhase);
     return 'more';
+  }
+
+  private emptyScope(p: RunProgress): boolean {
+    return p.scope.import.length + p.scope.hand.length === 0;
+  }
+
+  /** Earlier arrival runs with stage changes still proposed (held by a paused field). */
+  private heldAnalyses(stage: number, libraryId: string, runId: number): string[] {
+    return (
+      this.db
+        .prepare(
+          `SELECT DISTINCT analysis_id FROM proposed_changes INDEXED BY proposed_changes_counts
+           WHERE stage = ? AND library_id = ? AND state = 'proposed' AND class = 'auto'
+             AND analysis_id LIKE 'arrivals:%' AND analysis_id <> ?`,
+        )
+        .all(stage, libraryId, arrivalAnalysisId(runId)) as { analysis_id: string }[]
+    ).map((r) => r.analysis_id);
   }
 
   /** Every field the run wrote compared with Calibre's metadata.db as the reader copied it. */
@@ -2179,7 +2245,11 @@ export class BookArrivals {
         .get(runId) as { n: number }
     ).n;
     const written: Record<string, number> = {};
-    for (const [k, w] of Object.entries(p.writes)) written[k] = w.applied;
+    const held: Record<string, number> = {};
+    for (const [k, w] of Object.entries(p.writes)) {
+      written[k] = w.applied;
+      if (w.held) held[k] = w.held;
+    }
     const toAdd = (outcomes.new ?? 0) + (outcomes.better ?? 0);
     const est =
       mode === 'analyse'
@@ -2200,6 +2270,7 @@ export class BookArrivals {
       added: p.scope.import.length,
       hand: p.scope.hand.length,
       written,
+      held,
       reviews: (
         this.db
           .prepare('SELECT COUNT(*) AS n FROM calibre_arrival_reviews WHERE decision IS NULL')

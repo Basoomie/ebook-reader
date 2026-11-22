@@ -30,6 +30,8 @@ export interface ArrivalsReport {
   added: number;
   hand: number;
   written: Record<string, number>;
+  /** Proposed but not written: a field paused by its gate. */
+  held?: Record<string, number>;
   reviews: number;
   newReview: number;
   bestGuesses: number;
@@ -219,6 +221,11 @@ export function arrivalsReportLines(s: ArrivalsStatus | null): string[] {
   if (w.length)
     lines.push(
       `Written: ${w.map(([k, v]) => `stage ${k.replace('s', '')} ${n(v)} changes`).join(', ')}.`
+    );
+  const h = Object.entries(r.held ?? {}).filter(([, v]) => v > 0);
+  if (h.length)
+    lines.push(
+      `Held (a field is paused by its check): ${h.map(([k, v]) => `stage ${k.replace('s', '')} ${n(v)} changes`).join(', ')}; a later run writes them once the field is resumed.`
     );
   if (r.check)
     lines.push(
