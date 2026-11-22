@@ -616,3 +616,95 @@ describe('wp20g: a run end to end', () => {
     expect(o['Discord/renamed copy.epub']).toBe('removed_by_you');
   }, 300_000);
 });
+
+describe('wp20g: the queries at the catalog’s end size (lessons 3-4)', () => {
+  it('every polled or per-run query reads an index (300,000 files, a year of runs)', async () => {
+    const dir = tmp();
+    const state = initCleanupDatabase(dir);
+    if (!state.ok) throw new Error(state.error);
+    const db = state.db;
+    const outcomes = [
+      'skipped',
+      'identical',
+      'duplicate',
+      'not_imported',
+      'added',
+      'new',
+      'waiting',
+    ];
+    const ins = db.prepare(
+      `INSERT INTO calibre_arrival_files (pair_key, rel_path, size, mtime_ms, first_seen_at, seen_at, kind,
+         format, outcome, sha256, calibre_id, calibre_uuid, run_id)
+       VALUES (?, ?, ?, 1, 1, 1, 'epub', 'EPUB', ?, ?, ?, ?, ?)`,
+    );
+    db.transaction(() => {
+      for (let i = 0; i < 300_000; i++) {
+        const o = outcomes[i % outcomes.length];
+        ins.run(
+          i % 3 === 0 ? 'b|books/other' : 'a|books/japanese',
+          `f/${i}.epub`,
+          1000 + (i % 5000),
+          o,
+          i % 2 ? i.toString(16).padStart(64, '0') : null,
+          o === 'added' ? i : null,
+          o === 'added' ? `u${i}` : null,
+          1 + (i % 365),
+        );
+      }
+      const run = db.prepare(
+        `INSERT INTO calibre_arrival_runs (trigger, mode, state, phase, started_at, progress_json) VALUES ('schedule', 'on', 'done', 'done', ?, '{}')`,
+      );
+      for (let i = 0; i < 365; i++) run.run(i);
+    })();
+    db.exec('ANALYZE');
+    const plan = (sql: string, ...args: unknown[]) =>
+      (db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...args) as { detail: string }[])
+        .map((r) => r.detail)
+        .join(' | ');
+    const hot: [string, unknown[]][] = [
+      // The card's status (polled every 5 s): each folder's counts.
+      [
+        `SELECT COUNT(*) AS n FROM calibre_arrival_files INDEXED BY calibre_arrival_files_outcome
+         WHERE outcome IN (?, ?) AND pair_key = ? AND gone_at IS NULL`,
+        ['new', 'better', 'a|books/japanese'],
+      ],
+      // A folded list's page and count.
+      [
+        `SELECT id FROM calibre_arrival_files INDEXED BY calibre_arrival_files_outcome
+         WHERE outcome IN (?) AND gone_at IS NULL ORDER BY outcome, pair_key, id LIMIT 25 OFFSET 0`,
+        ['not_imported'],
+      ],
+      // The walk's look-up of a path's latest version (once per file).
+      [
+        `SELECT id, size, mtime_ms FROM calibre_arrival_files
+         WHERE pair_key = ? AND rel_path = ? AND archive_id IS NULL AND gone_at IS NULL ORDER BY id DESC LIMIT 1`,
+        ['a|books/japanese', 'f/1.epub'],
+      ],
+      // identify's next slice, the report, removed-by-you.
+      [
+        `SELECT id FROM calibre_arrival_files INDEXED BY calibre_arrival_files_outcome
+         WHERE outcome IN ('pending', 'waiting') AND pair_key IN (?) AND kind = 'epub' AND gone_at IS NULL
+           AND NOT (outcome = 'waiting' AND run_id IS ?) ORDER BY id LIMIT 50`,
+        ['a|books/japanese', 5],
+      ],
+      [
+        `SELECT outcome, COUNT(*) FROM calibre_arrival_files INDEXED BY calibre_arrival_files_run WHERE run_id = ? GROUP BY outcome`,
+        [5],
+      ],
+      [
+        `SELECT id FROM calibre_arrival_files INDEXED BY calibre_arrival_files_outcome WHERE outcome = 'added'`,
+        [],
+      ],
+      [`SELECT sha256 FROM calibre_arrival_files WHERE sha256 = ?`, ['0'.repeat(64)]],
+    ];
+    for (const [sql, args] of hot) {
+      const p = plan(sql, ...args);
+      expect(p, sql).not.toMatch(/SCAN calibre_arrival_files(?! USING)/);
+      const t = performance.now();
+      db.prepare(sql).all(...args);
+      // A list page may count many rows by its index; never seconds (lessons 3).
+      expect(performance.now() - t, sql).toBeLessThan(400);
+    }
+    db.close();
+  }, 120_000);
+});
