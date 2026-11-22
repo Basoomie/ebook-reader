@@ -1051,6 +1051,12 @@ export function createCleanupRouter(options: CleanupOptions): Router {
     res.json(arrivalsStatus(service.arrivals, service.db));
   });
 
+  router.post('/cleanup/arrivals/stop', (_req, res) => {
+    const service = serviceOr503(options);
+    service.arrivals.stopRun();
+    res.json(arrivalsStatus(service.arrivals, service.db));
+  });
+
   router.post('/cleanup/arrivals/resume', (_req, res) => {
     const service = serviceOr503(options);
     service.arrivals.resume();

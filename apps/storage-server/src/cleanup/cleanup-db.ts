@@ -1979,8 +1979,7 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
         PRIMARY KEY (library_id, calibre_id)
       );
       CREATE INDEX calibre_known_books_uuid ON calibre_known_books (calibre_uuid);
-      CREATE INDEX calibre_known_books_waiting ON calibre_known_books (library_id, origin)
-        WHERE run_id IS NULL AND origin IN ('import', 'hand');
+      CREATE INDEX calibre_known_books_waiting ON calibre_known_books (library_id, origin, run_id);
 
       CREATE TABLE calibre_arrival_books (
         run_id        INTEGER NOT NULL REFERENCES calibre_arrival_runs(id),

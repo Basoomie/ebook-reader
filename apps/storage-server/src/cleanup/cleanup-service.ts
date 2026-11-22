@@ -150,6 +150,8 @@ export interface CleanupServiceOptions {
    * only); null = the import is off (books added by hand still go through stages 1-5).
    */
   bookSourcesDir?: string | null;
+  /** Tests: the source folders are a writable temp folder. */
+  bookSourcesReadOnly?: boolean;
   log?: (m: string) => void;
   logError?: (m: string, err?: unknown) => void;
 }
@@ -379,6 +381,7 @@ export class CleanupService {
         this.arrivalsIngestUntil = Date.now() + 10 * 60_000;
       },
       linkSidecarOnline: () => this.linkSeen(),
+      requireReadOnlySources: opts.bookSourcesReadOnly,
       log: this.log,
     });
     // Stage 4's covers are the stores' pictures, read from the fetch cache.

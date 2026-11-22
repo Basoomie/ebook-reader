@@ -211,6 +211,8 @@ export interface ArrivalsDeps {
   wantIngest: (libraryId: string) => void;
   /** Whether the linking sidecar has been seen lately (archives wait for it). */
   linkSidecarOnline: () => boolean;
+  /** The source folders must be mounted read-only (tests on a writable temp folder: false). */
+  requireReadOnlySources?: boolean;
   log?: (m: string) => void;
 }
 
@@ -352,6 +354,14 @@ export class BookArrivals {
     if (s.mode === 'off') throw new Error('New arrivals are Off: set Preview or On first');
     if (s.current_run !== null) throw new Error('A run is going on');
     this.setState({ run_now: 1 });
+  }
+
+  /** Stops the current run where it is (its batches already handed out finish on their own). */
+  stopRun(): void {
+    const run = this.currentRun();
+    if (!run) return;
+    this.stopRequested = true;
+    this.finish(run.id, run.p, 'stopped', 'Stopped on the page');
   }
 
   resume(): void {
@@ -664,7 +674,11 @@ export class BookArrivals {
           this.next(run.id, p, 'identify');
           return 'more';
         }
-        if (this.deps.sourcesDir && (await sourcesWritable(this.deps.sourcesDir)))
+        if (
+          this.deps.requireReadOnlySources !== false &&
+          this.deps.sourcesDir &&
+          (await sourcesWritable(this.deps.sourcesDir))
+        )
           throw new RunStop(
             'setup',
             'The source folders are mounted writable: mount them read-only',
@@ -724,11 +738,8 @@ export class BookArrivals {
         return this.compareStep(run, p, libraryId, libDir, shouldStop);
       case 'plan': {
         this.planStep(run, p);
-        if (run.mode !== 'on') {
-          this.next(run.id, p, 'stage1');
-          return 'more';
-        }
-        this.next(run.id, p, 'add');
+        // Preview adds nothing; the books added by hand are taken in at the index step.
+        this.next(run.id, p, run.mode === 'on' ? 'add' : 'index');
         return 'more';
       }
       case 'add':
@@ -891,6 +902,10 @@ export class BookArrivals {
       return 'more';
     }
     const ph = keys.map(() => '?').join(', ');
+    if (p.phaseStartDone === 0) {
+      this.markRemovedByYou(libraryId);
+      p.phaseStartDone = 1;
+    }
     // Book formats and silent kinds first (no reading).
     const now = Date.now();
     this.db
@@ -900,14 +915,22 @@ export class BookArrivals {
          WHERE pair_key IN (${ph}) AND kind = 'book' AND outcome = 'pending' AND gone_at IS NULL`,
       )
       .run(run.id, now, ...keys);
+    this.db
+      .prepare(
+        `UPDATE calibre_arrival_files SET outcome = 'skipped', run_id = ?, decided_at = ?,
+           detail = 'An archive: its EPUBs are unpacked into _extracted/'
+         WHERE pair_key IN (${ph}) AND kind IN ('archive', 'volume') AND outcome = 'pending' AND gone_at IS NULL`,
+      )
+      .run(run.id, now, ...keys);
     const pending = this.db
       .prepare(
         `SELECT id, pair_key, rel_path, size, mtime_ms, first_seen_at, archive_id, outcome FROM calibre_arrival_files
          INDEXED BY calibre_arrival_files_outcome
          WHERE outcome IN ('pending', 'waiting') AND pair_key IN (${ph}) AND kind = 'epub' AND gone_at IS NULL
+           AND NOT (outcome = 'waiting' AND run_id IS ?)
          ORDER BY id LIMIT 50`,
       )
-      .all(...keys) as {
+      .all(...keys, run.id) as {
       id: number;
       pair_key: string;
       rel_path: string;
@@ -923,8 +946,9 @@ export class BookArrivals {
       `UPDATE calibre_arrival_files SET outcome = ?, sha256 = COALESCE(?, sha256), hashed_at = COALESCE(?, hashed_at),
          detail = ?, facts_json = COALESCE(?, facts_json), run_id = ?, decided_at = ? WHERE id = ?`,
     );
+    // Marked with this run, so the next slice reads the files after them.
     for (const f of pending)
-      if (!todo.includes(f) && f.outcome !== 'waiting')
+      if (!todo.includes(f))
         set.run(
           'waiting',
           null,
@@ -967,7 +991,8 @@ export class BookArrivals {
           if (shouldStop()) return false;
           const file = this.sourcePath(f.pair_key, f.rel_path);
           const st = await lstatSource(file);
-          if (!st || st.size !== f.size || st.mtimeMs !== f.mtime_ms) {
+          // An unpacked file's mtime is when the sidecar wrote it (its row settles with its archive).
+          if (!st || st.size !== f.size || (f.archive_id === null && st.mtimeMs !== f.mtime_ms)) {
             set.run(
               'waiting',
               null,
@@ -1058,6 +1083,55 @@ export class BookArrivals {
     return 'more';
   }
 
+  /**
+   * Deleted on purpose stays deleted (decided 2026-11-17): a book the import added that is gone
+   * from Calibre without the cleanup removing it (a stage-1/3 batch, an add's Undo) was removed
+   * by you; its file (and any file with the same SHA-256) is never added again.
+   */
+  markRemovedByYou(libraryId: string): number {
+    const file = snapshotFile(this.deps.cacheDir, libraryId);
+    if (!fs.existsSync(file)) return 0;
+    const presence = readSnapshotPresence(file);
+    const present = new Set([...presence.values()].map((x) => x.calibreId));
+    const rows = this.db
+      .prepare(
+        `SELECT id, calibre_id, calibre_uuid FROM calibre_arrival_files INDEXED BY calibre_arrival_files_outcome
+         WHERE outcome = 'added'`,
+      )
+      .all() as { id: number; calibre_id: number; calibre_uuid: string }[];
+    const byCleanup = this.db.prepare(
+      `SELECT 1 FROM proposed_changes INDEXED BY proposed_changes_book
+       WHERE library_id = ? AND calibre_uuid = ? AND field = 'book' AND state = 'applied' LIMIT 1`,
+    );
+    const undone = this.db.prepare(
+      `SELECT 1 FROM calibre_arrival_batch_items i JOIN calibre_arrival_batches b ON b.id = i.batch_id
+       WHERE b.kind = 'undo_add' AND i.calibre_uuid = ? AND i.state = 'removed' LIMIT 1`,
+    );
+    const set = this.db.prepare(
+      `UPDATE calibre_arrival_files SET outcome = ?, detail = ?, decided_at = ? WHERE id = ?`,
+    );
+    let n = 0;
+    const now = Date.now();
+    this.db.transaction(() => {
+      for (const r of rows) {
+        if (present.has(r.calibre_id)) continue;
+        if (byCleanup.get(libraryId, r.calibre_uuid)) continue;
+        if (undone.get(r.calibre_uuid)) {
+          set.run('undone', 'Taken out again by Undo (not added again by itself)', now, r.id);
+          continue;
+        }
+        set.run(
+          'removed_by_you',
+          'You removed this book from Calibre: it is never added again',
+          now,
+          r.id,
+        );
+        n++;
+      }
+    })();
+    return n;
+  }
+
   // ---------------------------------------------------------------- compare
 
   private async compareStep(
@@ -1107,6 +1181,9 @@ export class BookArrivals {
     const done = await this.withDisk(
       p,
       async () => {
+        // 0. Library books stage 1 or 3 never read (added since their analyses): their file
+        // facts and text first, as those stages would have read them.
+        if (!(await this.ensureLibraryFacts(cd, pd, books, srcPacer, shouldStop))) return false;
         // 1. Identical to a library EPUB (stage 1's facts, hashed now where unknown).
         const left: typeof files = [];
         for (const f of files) {
@@ -1286,6 +1363,53 @@ export class BookArrivals {
     return 'more';
   }
 
+  /**
+   * The library's books without stage 1's file facts or stage 3's text facts (books added since
+   * those stages' analyses) are stated and read now, so a new file is compared with every book.
+   * At most 2,000 a run (the rest the next run); false when stopped.
+   */
+  private async ensureLibraryFacts(
+    cd: CompareDeps,
+    pd: PassDeps,
+    books: Map<number, SnapshotBook>,
+    pacer: SourcePacer,
+    shouldStop: () => boolean,
+  ): Promise<boolean> {
+    const has = (table: string) =>
+      new Set(
+        (
+          this.db
+            .prepare(`SELECT calibre_id FROM ${table} WHERE library_id = ?`)
+            .all(pd.libraryId) as { calibre_id: number }[]
+        ).map((r) => r.calibre_id),
+      );
+    const facts = has('file_facts');
+    const noFacts = [...books.values()].filter((b) => !facts.has(b.calibreId)).slice(0, 2000);
+    if (noFacts.length) await statBooks(pd, noFacts);
+    const text = has('text_facts');
+    const noText = [...books.values()].filter((b) => !text.has(b.calibreId)).slice(0, 2000);
+    for (const b of noText) {
+      if (shouldStop()) return false;
+      const file = resolveInside(pd.libDir, b.filePath) as string;
+      const st = await statFile(file);
+      if (!st) continue;
+      const t = await readNewText(cd, b.calibreId, file, [b.title], pacer);
+      saveLibraryText(
+        cd,
+        {
+          calibreId: b.calibreId,
+          uuid: b.uuid,
+          filePath: b.filePath,
+          lastModified: b.lastModified,
+        },
+        st,
+        this.deps.counterBuild,
+        t,
+      );
+    }
+    return true;
+  }
+
   // ---------------------------------------------------------------- plan, add, index
 
   private planStep(run: RunRow & { p: RunProgress }, p: RunProgress): void {
@@ -1303,29 +1427,18 @@ export class BookArrivals {
   }
 
   /** The files a run adds: new and better copies of pairs whose first run was approved. */
-  private filesToAdd(run: RunRow & { p: RunProgress }, p: RunProgress): number[] {
-    const ok = p.pairs.filter((x) => !x.firstRun || x.approved).map((x) => x.key);
-    // A pair whose first run is this run is added from only once approved (the next run).
-    const approved = ok.filter(
-      (k) =>
-        (
-          this.db
-            .prepare(
-              'SELECT approved_at, first_run_id FROM calibre_arrival_pairs WHERE pair_key = ?',
-            )
-            .get(k) as {
-            approved_at: number | null;
-            first_run_id: number | null;
-          }
-        )?.approved_at !== null ||
-        (
-          this.db
-            .prepare('SELECT first_run_id FROM calibre_arrival_pairs WHERE pair_key = ?')
-            .get(k) as {
-            first_run_id: number | null;
-          }
-        ).first_run_id !== run.id,
-    );
+  private filesToAdd(_run: RunRow & { p: RunProgress }, p: RunProgress): number[] {
+    // Only from folders whose first run (a Preview) you approved with "Add these".
+    const approved = p.pairs
+      .map((x) => x.key)
+      .filter(
+        (k) =>
+          (
+            this.db
+              .prepare('SELECT approved_at FROM calibre_arrival_pairs WHERE pair_key = ?')
+              .get(k) as { approved_at: number | null } | undefined
+          )?.approved_at != null,
+      );
     if (!approved.length) return [];
     const ph = approved.map(() => '?').join(', ');
     return (
