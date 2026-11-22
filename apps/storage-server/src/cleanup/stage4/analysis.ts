@@ -175,6 +175,8 @@ export interface Stage4Progress {
     version?: number;
     /** Text books whose BookWalker manga edition was set aside (version 2). */
     manga?: number;
+    /** Books proposed again that version 2 had marked "evidence missing" (version 3). */
+    healed?: number;
   };
   /** Books the final pass has proposed again (for its time left). */
   finalDone?: number;
@@ -465,8 +467,9 @@ export function oneTimePassesDone(p: Stage4Progress): boolean {
 /**
  * The fixed picker's one-time pass (repickStep). 2 (2026-11-22): a record that is the book is
  * kept, BookWalker's series lists are read whole (version 1 replaced 142 records that were right).
+ * 3: the snapshot loaded first; the books version 2 marked "evidence missing" proposed again.
  */
-export const REPICK_VERSION = 2;
+export const REPICK_VERSION = 3;
 
 /** A BookWalker result that is a book page (a volume), not a series. */
 const isBwBook = (c: [string, string]) => c[0].includes('/de');
@@ -2801,6 +2804,22 @@ ${f?.colophon_text ?? ''}`,
     if (r0.phase === 'done') return;
     const db = this.db;
     const t = performance.now();
+    // The books are proposed against Calibre's snapshot: loaded first (version 2 ran before it
+    // was, right after a restart, and marked the 4,367 books it proposed again "evidence missing":
+    // the live run of 2026-11-22).
+    this.loadSnapshot(p.libraryId);
+    if (r0.cursor === '') {
+      // Those books proposed again, now the snapshot is there; the analysis then makes its final
+      // pass again, so the AI step decides them too.
+      const lost = db
+        .prepare(
+          `SELECT calibre_uuid FROM stage4_books WHERE library_id = ? AND state = 'error' AND error = 'evidence missing'`,
+        )
+        .all(p.libraryId) as { calibre_uuid: string }[];
+      for (const b of lost) await this.proposeBook(p, b.calibre_uuid);
+      r0.reopened += lost.length;
+      r0.healed = lost.length;
+    }
     const rows = db
       .prepare(
         `SELECT calibre_uuid, labeled FROM stage4_books
