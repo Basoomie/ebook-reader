@@ -483,7 +483,7 @@
                         · Best guess{b.reason ? `: ${b.reason}` : ''}</span
                       >{/if}
                     {#each b.fields as f (f.field)}
-                      <span> · {GUESS_FIELDS[f.field] ?? f.field} is a best guess</span>
+                      <span>{` · ${GUESS_FIELDS[f.field] ?? f.field} is a best guess`}</span>
                     {/each}
                   </li>
                 {/each}
