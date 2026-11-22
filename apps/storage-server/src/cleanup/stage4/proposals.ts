@@ -267,13 +267,13 @@ export function proposeStage4(input: ProposalInput): Stage4Proposal[] {
     // Written already and still as written: not proposed again. A cover's "before" is only "has
     // a cover", never the value written (series-order stop 1: deciding again proposed all 1,290
     // written covers once more).
-    if (
+    const asWritten =
       input.applied.has(appliedField) &&
       stillAsWritten(appliedField, input.applied.get(appliedField), current, {
         ...coverNow,
         writtenLastModified: input.appliedLastModified?.get(appliedField) ?? null,
-      })
-    ) {
+      });
+    if (asWritten) {
       if (JSON.stringify(input.applied.get(appliedField)) === JSON.stringify(p.new)) return;
       // A cover is stored as the file written: the same store picture as Calibre's cover now.
       const d =
@@ -288,16 +288,43 @@ export function proposeStage4(input: ProposalInput): Stage4Proposal[] {
       p.class = 'review';
       p.reason = 'The value is garbled (wrong text encoding)';
     }
-    // A best guess never overwrites a value Calibre has: it may only fill an empty field (the
-    // user, 2026-11-22: "must not overwrite a correct field with an incorrect one"; the live
-    // Preview's guessed series numbers made 10 right numbers of the labeled books wrong).
+    // A value the cleanup wrote and Calibre still holds is not changed automatically by deciding
+    // again (the user, 2026-11-22: "must not overwrite a correct field with an incorrect one"):
+    // the live Preview proposed 979 written descriptions replaced, most by another wording of the
+    // same text or another source's equally plausible one, and authors and illustrators that
+    // changed with the models' answers. To review, with the suggestion. The series order's own
+    // numbers and titles (measured on the labeled series) stay automatic.
     if (
       p.class === 'auto' &&
-      (p.evidence as { unconfirmed?: unknown } | undefined)?.unconfirmed &&
-      !emptyValue(current)
+      asWritten &&
+      WRITTEN_KEPT.has(p.field) &&
+      !(p.field === 'title' && p.source === 'series-order')
     ) {
       p.class = 'review';
-      p.reason = 'A best guess would replace the value Calibre has';
+      p.reason = 'Would replace a value the cleanup wrote';
+    }
+    // Absence is no evidence: a value Calibre has is never removed automatically (the live Preview
+    // of 2026-11-22: illustrators removed because a store page lists none, or because the models'
+    // answer changed when asked again: 安倍吉俊 for 僕らはどこにも開かない). The Google run's
+    // descriptions are the agreed exception.
+    if (
+      p.class === 'auto' &&
+      emptyValue(p.new) &&
+      !emptyValue(current) &&
+      !(p.field === 'description' && p.source === 'rules')
+    ) {
+      p.class = 'review';
+      p.reason = 'Would remove the value Calibre has';
+    }
+    // A best guess is never written automatically (the user, 2026-11-22: "must not introduce any
+    // new bugs or incorrect fields, and especially must not overwrite a correct field with an
+    // incorrect one"; the live Preview's guessed series numbers made 10 right numbers of the
+    // labeled books wrong). It is listed for review with its suggestion, also for an empty field.
+    if (p.class === 'auto' && (p.evidence as { unconfirmed?: unknown } | undefined)?.unconfirmed) {
+      p.class = 'review';
+      p.reason = emptyValue(current)
+        ? 'A best guess: listed, not written'
+        : 'A best guess would replace the value Calibre has';
     }
     if (
       p.class === 'auto' &&
@@ -406,8 +433,14 @@ export function proposeStage4(input: ProposalInput): Stage4Proposal[] {
       reason = "Too long for a folder name in Calibre's library";
     }
     if (soTitle && !tooLong) {
-      cls = 'auto';
-      reason = null;
+      // Only the number added: other words a store's title brings are no part of the decision.
+      if (onlyNumberAdded(book.title, soTitle)) {
+        cls = 'auto';
+        reason = null;
+      } else {
+        cls = 'review';
+        reason = "The store's title adds more than the volume number";
+      }
     }
     const titleProposal: Stage4Proposal = {
       field: 'title',
@@ -439,6 +472,9 @@ export function proposeStage4(input: ProposalInput): Stage4Proposal[] {
     } else if (tooLong) {
       cls = 'review';
       reason = "Too long for a folder name in Calibre's library";
+    } else if (authors.some((a) => COMPANY.test(a))) {
+      cls = 'review';
+      reason = "A company's name, not a person's";
     }
     if (cls === 'auto') authorsAfter = authors;
     push(
@@ -683,7 +719,11 @@ export function proposeStage4(input: ProposalInput): Stage4Proposal[] {
   );
   if (text) {
     const cleaned = cleanDescription(text);
-    if (cleaned.text !== (extras?.comments ?? '') && !onlySpacing(extras?.comments, cleaned.text)) {
+    if (
+      cleaned.text !== (extras?.comments ?? '') &&
+      !onlySpacing(extras?.comments, cleaned.text) &&
+      !sameText(extras?.comments, cleaned.text)
+    ) {
       push(
         {
           field: 'description',
@@ -700,7 +740,14 @@ export function proposeStage4(input: ProposalInput): Stage4Proposal[] {
         'description',
       );
     }
-  } else if (isProcessed(book.tags, book.marks) && extras?.comments) {
+  } else if (
+    isProcessed(book.tags, book.marks) &&
+    extras?.comments &&
+    // Only the Google run's description: never on a book the cleanup wrote one for (the live
+    // Preview of 2026-11-22 would have cleared 16 that stage 4 wrote from Amazon, after the
+    // models were asked again and disagreed about Amazon's record).
+    !input.applied.has('description')
+  ) {
     push(
       {
         field: 'description',
@@ -813,7 +860,12 @@ export function proposeStage4(input: ProposalInput): Stage4Proposal[] {
           class: 'auto',
           source: generated ? 'generated' : 'ndl',
           reason: generated ? 'Generated reading: listed for spot checks' : null,
-          evidence: { credit: 'Web NDL Authorities', names },
+          // A generated reading is a guess (植西聰 would be 「ウエニシ, ソウ」; it is Akira).
+          evidence: {
+            credit: 'Web NDL Authorities',
+            names,
+            ...(generated ? { unconfirmed: true } : {}),
+          },
         },
         book.authorSort,
       );
@@ -845,4 +897,41 @@ export function emptyValue(v: unknown): boolean {
     return Object.keys(o).length === 0;
   }
   return false;
+}
+
+/** Fields a value the cleanup wrote is kept in when deciding again (to review instead). */
+const WRITTEN_KEPT = new Set(['description', 'authors', 'illustrator', 'title', 'author_sort']);
+
+/** A company, not a person (「フランク出版」 as the author of a book Calibre had as Unknown). */
+const COMPANY = /出版|書房|株式会社|有限会社|\(株\)|（株）/u;
+
+/**
+ * Whether a store's title with the volume number only adds that number to the title Calibre has
+ * (「グラノール王国遊撃隊 紅玉の涙と奇跡の翼」 -> 「グラノール王国遊撃隊2 …」); not one that brings other words
+ * (「城の絵図面」 -> 「城の絵図面: 銭形平次捕物全集第62話 (銭形倶楽部)」, 「講談名作文庫17 寛永三馬術」).
+ */
+export function onlyNumberAdded(now: string, next: string): boolean {
+  const bare = (t: string) =>
+    t
+      .normalize('NFKC')
+      .replace(/[0-9０-９]+(?:\.[0-9]+)?|[(（][0-9]+[)）]|巻|第/gu, '')
+      .replace(/[\s、。,.:：!！?？「」『』…・\-—―~～()（）［］[\]]/gu, '');
+  return bare(now) === bare(next) && bare(now).length > 0;
+}
+
+/**
+ * The same description: equal once markup, spacing and punctuation are set aside, or one holding
+ * the other whole (a store adding a lead line: 「神獣ちゃんとドキドキ子育て生活！ ある日…」). No change.
+ */
+export function sameText(now: string | null | undefined, next: string): boolean {
+  if (!now) return false;
+  const bare = (t: string) =>
+    t
+      .normalize('NFKC')
+      .replace(/<[^>]+>/gu, '')
+      .replace(/[\s、。,.!！?？「」『』…・\-—―~～☆★]/gu, '');
+  const a = bare(now);
+  const b = bare(next);
+  if (!a || !b) return false;
+  return a === b || (a.length >= 40 && b.includes(a)) || (b.length >= 40 && a.includes(b));
 }

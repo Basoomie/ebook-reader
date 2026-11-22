@@ -368,10 +368,12 @@ describe('a series stage 4 wrote is never removed automatically (series-order st
       reason: 'Would remove a series the cleanup wrote',
     });
   });
-  it('a series from before the cleanup follows the rules as before', () => {
+  it('a series from before the cleanup is not removed automatically either', () => {
+    // Absence is no evidence (the user, 2026-11-22: "must not overwrite a correct field with an
+    // incorrect one"): the rules finding no series sends its removal to review.
     const d = input('〈小市民〉シリーズ', { series: '〈小市民〉シリーズ', seriesIndex: 3 });
     expect(seriesOf(proposeStage4({ ...d, decision: decision(null) }))).toMatchObject({
-      class: 'auto',
+      class: 'review',
       new: { name: null },
     });
   });
