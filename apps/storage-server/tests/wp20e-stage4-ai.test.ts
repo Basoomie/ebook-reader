@@ -557,6 +557,7 @@ describe('asking the given-up questions again (WP20e stop 2)', () => {
       phase: 'done',
       finishedAt: 5,
       bookmeterEditions: { phase: 'done' },
+      repick: { phase: 'done' },
       ai,
     };
     const runner = cleanupRunner(db, makeAiCore().core);

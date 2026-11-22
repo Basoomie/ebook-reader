@@ -23,6 +23,7 @@ import { listFieldPauses, loadGold, resumeField } from './stage2-gate';
 import { STAGE3_WAITING_SQL, Stage3Analysis, type PairRow, type Stage3Progress } from './stage3';
 import { Stage3Worker, type Stage3Reader } from '../counts/book-text-worker';
 import { oneTimePassesDone, Stage4Analysis, type Stage4Progress } from './stage4/analysis';
+import { listOtherGuesses, listSeriesGuesses } from './stage4/series-order-store';
 import { Stage4Ai } from './stage4/ai-step';
 import { Stage5, type Stage5Progress } from './stage5/step';
 import { BY_ID as STAGE5_TERMS } from './stage5/vocab';
@@ -1494,6 +1495,18 @@ export class CleanupService {
   }
 
   /** The author readings (NDL's and generated ones) for the page's list. */
+  /**
+   * The Best guesses list (series-order follow-up): series with a best guess or a problem for
+   * review, each whole and in order, or the books outside a series with a best guess.
+   */
+  stage4Guesses(kind: 'series' | 'other', offset: number, limit: number) {
+    const target = this.targetLibrary();
+    if (!target) return kind === 'series' ? { total: 0, series: [] } : { total: 0, books: [] };
+    return kind === 'series'
+      ? listSeriesGuesses(this.db, target, offset, limit)
+      : listOtherGuesses(this.db, target, offset, limit);
+  }
+
   stage4Readings(state: string | null, offset: number) {
     const where = state ? 'WHERE state = ?' : '';
     const args = state ? [state] : [];
@@ -1694,6 +1707,18 @@ export class CleanupService {
             costUsd: ai.cost?.costUsd ?? null,
             invented: ai.invented,
             flaggedAgainstRules: ai.flaggedAgainstRules,
+            // The series step (series-order follow-up): what it changed, its best guesses and
+            // review items, and the library-wide checks.
+            seriesOrder: ai.seriesOrder
+              ? {
+                  series: ai.seriesOrder.series,
+                  choices: ai.seriesOrder.choices,
+                  changed: ai.seriesOrder.changed,
+                  guesses: ai.seriesOrder.guesses,
+                  reviews: ai.seriesOrder.reviews,
+                  checks: ai.seriesOrder.checks ?? null,
+                }
+              : null,
             gate: ai.gate
               ? {
                   passed: ai.gate.passed,

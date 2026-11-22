@@ -1759,6 +1759,37 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
         WHERE state <> 'submitted' AND files_deleted_at IS NULL;
     `,
   },
+  {
+    version: 22,
+    name: 'stage 4: the order of each series, and best guesses listed',
+    // Series-order follow-up (plan approved 2026-11-22): the series step's choice per book of a
+    // series (stage4/series-order.ts): its number, where the number came from, whether it is a
+    // best guess and why, a title with its number, and a problem for review. Every book of a
+    // series has a row (src 'calibre' for books stage 4 doesn't change), so the Best guesses
+    // list shows each series whole, in order. The other fields' best guesses (the models' flagged
+    // values) are listed through v13's ai_values_flagged.
+    sql: `
+      CREATE TABLE stage4_series_order (
+        library_id    TEXT NOT NULL,
+        calibre_uuid  TEXT NOT NULL,
+        calibre_id    INTEGER NOT NULL,
+        series        TEXT NOT NULL,
+        series_key    TEXT NOT NULL,
+        idx           REAL,
+        src           TEXT NOT NULL,
+        guess         INTEGER NOT NULL DEFAULT 0,
+        reason        TEXT,
+        title         TEXT,
+        title_src     TEXT,
+        review        TEXT,
+        run_at        INTEGER NOT NULL,
+        PRIMARY KEY (library_id, calibre_uuid)
+      );
+      CREATE INDEX stage4_series_order_series ON stage4_series_order (library_id, series_key, idx);
+      CREATE INDEX stage4_series_order_flagged ON stage4_series_order (library_id, series_key)
+        WHERE guess = 1 OR review IS NOT NULL;
+    `,
+  },
 ];
 
 export const CLEANUP_SCHEMA_VERSION = CLEANUP_MIGRATIONS[CLEANUP_MIGRATIONS.length - 1].version;

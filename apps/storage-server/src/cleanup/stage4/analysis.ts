@@ -70,6 +70,7 @@ import { nfkc } from './ref-text';
 import type { RefRecord } from './rules-v3';
 import { spellingOf } from './series-spelling';
 import type { PoolEntry, SeriesBook, ValueFrom } from './series-order';
+import { seriesChoiceOf } from './series-order-store';
 import { N } from '../title-rules';
 import {
   MEASURED_V3,
@@ -1678,6 +1679,7 @@ export class Stage4Analysis {
       ai: ai === undefined ? storedAiValues(this.db, `${p.libraryId}:${uuid}`) : ai,
       spelling: this.snapshot ? spellingLookup(this.snapshot.names) : undefined,
       seriesSpelling: this.seriesSpelling(p),
+      seriesOrder: seriesChoiceOf(this.db, p.libraryId, uuid),
       sameDistance: settings.covers.sameDistance,
       smallCoverPx: settings.fetch.smallCoverPx,
     });
