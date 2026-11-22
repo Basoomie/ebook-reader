@@ -867,3 +867,47 @@ describe("the providers' list prices, built in", () => {
     await request(app).delete('/api/v1/ai/models/claude-opus-5.5').set(auth).expect(409);
   });
 });
+
+describe('evidence built again (series-order follow-up, stop 2)', () => {
+  it('drops questions never sent at the old evidence, keeps sent ones and old answers', () => {
+    const { core } = makeAiCore({ keys: { read: () => 'key' }, providers: () => quickProvider() });
+    const f = otherFeature(core, 'summaries');
+    const rows = () =>
+      f.db
+        .prepare(
+          `SELECT item_key, evidence_hash, state FROM ai_requests WHERE stage = ? ORDER BY item_key, id`,
+        )
+        .all(f.spec.stage) as { item_key: string; evidence_hash: string; state: string }[];
+    const put = (k0: string, k1: string) =>
+      f.runner.putItems(
+        f.spec,
+        [
+          { key: 'k0', evidence: { title: k0 }, labeled: false },
+          { key: 'k1', evidence: { title: k1 }, labeled: false },
+        ],
+        1,
+      );
+    put('a', 'a');
+    f.runner.enqueue(f.spec, 'secondary', ['k0', 'k1'], 'r');
+    // k0's question was answered; k1's is at the provider.
+    f.db
+      .prepare(
+        `UPDATE ai_requests SET state = 'answered', answer_json = '{}' WHERE item_key = 'k0'`,
+      )
+      .run();
+    f.db.prepare(`UPDATE ai_requests SET state = 'sent' WHERE item_key = 'k1'`).run();
+    const [a0, a1] = rows();
+    // The evidence changes: each gets a question at the new evidence.
+    put('b', 'b');
+    expect(f.runner.enqueue(f.spec, 'secondary', ['k0', 'k1'], 'r')).toBe(2);
+    // And back (built again the right way): the question queued at "b" is never sent, the
+    // answer at "a" stands, the question at the provider stays.
+    put('a', 'a');
+    expect(f.runner.enqueue(f.spec, 'secondary', ['k0', 'k1'], 'r')).toBe(0);
+    expect(rows()).toEqual([
+      { item_key: 'k0', evidence_hash: a0.evidence_hash, state: 'answered' },
+      { item_key: 'k1', evidence_hash: a1.evidence_hash, state: 'sent' },
+    ]);
+    expect(f.runner.answerOf(f.spec, 'secondary', 'k0')?.state).toBe('answered');
+  });
+});

@@ -225,7 +225,7 @@ describe('series proposals with the chosen spelling', () => {
 
 describe("the AI step's spelling phase", () => {
   it("chooses after deciding, proposes those series' books again, then runs the gate", async () => {
-    const { Stage4Ai } = await import('../src/cleanup/stage4/ai-step');
+    const { Stage4Ai, STAGE4_EVIDENCE_BUILD } = await import('../src/cleanup/stage4/ai-step');
     const s = initCleanupDatabase(makeTempDir('wp20e-spell'));
     if (!s.ok) throw new Error(s.error);
     const db = s.db;
@@ -233,6 +233,8 @@ describe("the AI step's spelling phase", () => {
       analysisId: 'run1',
       rulesFinishedAt: 5,
       phase: 'spelling',
+      // A run of the current code (an older build starts over at the evidence).
+      evidenceBuild: STAGE4_EVIDENCE_BUILD,
       cursor: 0,
       items: 4,
       decided: 4,
@@ -279,5 +281,44 @@ describe("the AI step's spelling phase", () => {
     expect(ai.spelling).toEqual({ series: 1, books: 4, total: 4 });
     // The series order follows the spelling (series-order follow-up).
     expect(ai.phase).toBe('series');
+  });
+});
+
+describe('the evidence built again (series-order follow-up, stop 2)', () => {
+  it('a run whose evidence was built the old way starts over at the evidence, in any phase', async () => {
+    const { Stage4Ai, STAGE4_EVIDENCE_BUILD } = await import('../src/cleanup/stage4/ai-step');
+    const s = initCleanupDatabase(makeTempDir('wp20e-evbuild'));
+    if (!s.ok) throw new Error(s.error);
+    const ai: Record<string, unknown> = {
+      analysisId: 'run1',
+      rulesFinishedAt: 5,
+      phase: 'models',
+      cursor: 0,
+      items: 4,
+      decided: 4,
+      invented: 0,
+      finishedAt: null,
+      gate: null,
+      times: {},
+    };
+    const progress = {
+      analysisId: 'run1',
+      libraryId: 'lib',
+      phase: 'done',
+      finishedAt: 5,
+      bookmeterEditions: { phase: 'done' },
+      repick: { phase: 'done' },
+      ai,
+    };
+    const step = new Stage4Ai({
+      db: s.db,
+      runner: cleanupRunner(s.db, makeAiCore().core),
+      analysis: { progress: () => progress } as never,
+    });
+    expect(step.needsWork()).toBe(true);
+    await step.step(() => false);
+    // Built again (no books here), then on to the models with nothing decided yet.
+    expect(ai).toMatchObject({ evidenceBuild: STAGE4_EVIDENCE_BUILD, decided: 0, phase: 'models' });
+    expect((ai.times as Record<string, unknown>).evidence).toBeDefined();
   });
 });

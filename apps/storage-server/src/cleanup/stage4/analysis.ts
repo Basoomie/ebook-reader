@@ -19,6 +19,7 @@
  * Writes nothing but cleanup.db and the fetch cache.
  */
 import type Database from 'better-sqlite3';
+import { calibreAsFound, type Stage4Write } from './as-found';
 import { randomUUID } from 'crypto';
 import fs from 'fs';
 import path from 'path';
@@ -396,6 +397,9 @@ export class Stage4Analysis {
   private snapshotFor: string | null = null;
   private snapshotMtime = 0;
   private byUuid: Map<string, Stage2Book> | null = null;
+  /** The library the loaded snapshot is of (stage 4's own writes are looked up in it). */
+  private snapshotLibrary: string | null = null;
+  private writesStmt: Database.Statement | null = null;
   private readPacer: Pacer | null = null;
   private readPacerBps = -1;
   private readonly log: (m: string) => void;
@@ -470,6 +474,7 @@ export class Stage4Analysis {
     this.extras = readStage4Extras(file);
     this.byUuid = new Map([...this.snapshot.books.values()].map((b) => [b.uuid, b]));
     this.snapshotFor = file;
+    this.snapshotLibrary = libraryId;
     const p = this.progress();
     if (p) addTime(p, 'snapshot load', performance.now() - t);
     return this.snapshot;
@@ -712,11 +717,27 @@ export class Stage4Analysis {
     return r;
   }
 
+  /** Stage 4's own writes of a book's title and authors, not undone, oldest first. */
+  private stage4Writes(uuid: string): Stage4Write[] {
+    if (!this.snapshotLibrary) return [];
+    // One book by field_undo_book (library, uuid, field): 0.02 ms at the live size; reading
+    // every book's at once scanned all 405,601 undo rows (614 ms in one block).
+    this.writesStmt ??= this.db.prepare(
+      `SELECT f.field, f.old_json, f.new_json FROM field_undo f JOIN batches b ON b.id = f.batch_id
+       WHERE f.library_id = ? AND f.calibre_uuid = ? AND f.field IN ('title', 'authors')
+         AND f.restored_at IS NULL AND b.stage = 4
+       ORDER BY f.created_at, f.rowid`,
+    );
+    return this.writesStmt.all(this.snapshotLibrary, uuid) as Stage4Write[];
+  }
+
   private baseRecord(book: Stage2Book, ref: RefFile, ev: OnlineEvidence): RefRecord {
+    // Calibre's title and authors as stage 4 found them, never its own writes read back.
+    const cal = calibreAsFound(book, this.stage4Writes(book.uuid));
     return {
       calibre: {
-        cal_title: book.title,
-        cal_authors: book.authors.join('&'),
+        cal_title: cal.title,
+        cal_authors: cal.authors.join('&'),
         cal_tags: book.tags.join('|'),
         has_cover: book.hasCover ? 1 : 0,
       },

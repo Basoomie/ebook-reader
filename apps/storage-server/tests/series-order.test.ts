@@ -4,6 +4,7 @@
  * the live library.
  */
 import { describe, expect, it } from 'vitest';
+import { calibreAsFound } from '../src/cleanup/stage4/as-found';
 import { pickByVolume, titleKey } from '../src/cleanup/stage4/pick';
 import {
   addSeriesChecks,
@@ -397,6 +398,51 @@ describe('the order of a series', () => {
       collisionsUnmarked: 1,
       missing: 1,
       missingUnmarked: 1,
+    });
+  });
+});
+
+describe("Calibre's title and authors as stage 4 found them (stop 2)", () => {
+  const w = (field: string, old: unknown, now: unknown) => ({
+    field,
+    old_json: JSON.stringify(old),
+    new_json: JSON.stringify(now),
+  });
+  it('a value stage 4 wrote and Calibre still holds reads as the value before the write', () => {
+    expect(
+      calibreAsFound({ title: '事情3', authors: ['A', 'B'] }, [
+        w('title', '事情', '事情3'),
+        w('authors', ['A'], ['A', 'B']),
+      ]),
+    ).toEqual({ title: '事情', authors: ['A'] });
+  });
+  it("a value changed in Calibre since the write is Calibre's own", () => {
+    expect(
+      calibreAsFound({ title: 'Your title', authors: ['C'] }, [
+        w('title', '事情', '事情3'),
+        w('authors', ['A'], ['A', 'B']),
+      ]),
+    ).toEqual({ title: 'Your title', authors: ['C'] });
+  });
+  it('written twice: the value before the first write', () => {
+    expect(
+      calibreAsFound({ title: 'v3', authors: [] }, [
+        w('title', 'v1', 'v2'),
+        w('title', 'v2', 'v3'),
+      ]),
+    ).toEqual({ title: 'v1', authors: [] });
+  });
+  it("Calibre's spelling of an existing author (case only) is still as written", () => {
+    expect(
+      calibreAsFound({ title: 't', authors: ['株式会社NewSpiral'] }, [
+        w('authors', ['Unknown'], ['株式会社newspiral']),
+      ]),
+    ).toEqual({ title: 't', authors: ['Unknown'] });
+  });
+  it('no write: Calibre as it is', () => {
+    expect(calibreAsFound({ title: 't', authors: ['A'] }, [])).toEqual({
+      title: 't',
+      authors: ['A'],
     });
   });
 });

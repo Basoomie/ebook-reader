@@ -84,7 +84,10 @@ async function main() {
     log,
   });
   // No secrets: a question could never be sent.
-  const { runner } = cleanupAi(db, { log });
+  const { core, runner } = cleanupAi(db, { log });
+  // The models phase checks for a limit before it looks for questions (none can be sent here;
+  // the evidence built again must leave nothing to ask).
+  core.updateSettings({ spendLimitUsd: 0.01 });
   const ai = new Stage4Ai({ db, runner, analysis, log });
 
   const before = rows(db);

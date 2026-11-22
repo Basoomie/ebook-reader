@@ -105,6 +105,8 @@ export interface Stage4AiProgress {
   labeledItems: number;
   askKey: string | null;
   rulesKey: string | null;
+  /** How the evidence was built (STAGE4_EVIDENCE_BUILD; absent = 1). */
+  evidenceBuild?: number;
   decided: number;
   invented: number;
   ai: {
@@ -165,6 +167,16 @@ export function stage4AskKey(db: Database.Database): string {
     s.ai.labeledOnly,
   ]);
 }
+/**
+ * How each book's evidence is built from its records. When it changes, the evidence is built
+ * again (answers kept: a book whose evidence comes out as before keeps its answers) without
+ * changing the evidence format (STAGE4_EVIDENCE_VERSION would change every book's hash).
+ * 2: Calibre's title and authors as stage 4 found them, not its own writes read back (stop 2 of
+ * the series-order follow-up: 11,991 books were asked again for nothing).
+ */
+export const STAGE4_EVIDENCE_BUILD = 2;
+const evidenceBuildOf = (ai: Stage4AiProgress) => ai.evidenceBuild ?? 1;
+
 /** What the decisions depend on besides the answers: decided again when it changes. */
 export function stage4AiRulesKey(): string {
   return sha([STAGE4_AI_DECIDE_VERSION, STAGE4_RULES_VERSION]);
@@ -181,6 +193,7 @@ export function emptyStage4Ai(analysisId: string, now = Date.now()): Stage4AiPro
     labeledItems: 0,
     askKey: null,
     rulesKey: null,
+    evidenceBuild: STAGE4_EVIDENCE_BUILD,
     decided: 0,
     invented: 0,
     ai: null,
@@ -428,7 +441,11 @@ export class Stage4Ai {
     const ai = this.progress();
     if (!ai) return true;
     if (ai.phase !== 'done') return true;
-    return ai.askKey !== stage4AskKey(this.db) || ai.rulesKey !== stage4AiRulesKey();
+    return (
+      evidenceBuildOf(ai) !== STAGE4_EVIDENCE_BUILD ||
+      ai.askKey !== stage4AskKey(this.db) ||
+      ai.rulesKey !== stage4AiRulesKey()
+    );
   }
 
   /** Done for the current analysis, with the current prompt, models and rules. */
@@ -446,6 +463,19 @@ export class Stage4Ai {
       ai.rulesFinishedAt = p.finishedAt;
       this.save(ai);
       this.deps.log?.('Stage 4: the AI check starts');
+    } else if (evidenceBuildOf(ai) !== STAGE4_EVIDENCE_BUILD) {
+      // Built again in any phase (a run in its models phase would otherwise send the questions
+      // the old evidence queued); questions never sent at an old evidence are dropped by
+      // putItems, answers are kept.
+      ai.evidenceBuild = STAGE4_EVIDENCE_BUILD;
+      ai.items = 0;
+      ai.labeledItems = 0;
+      ai.decided = 0;
+      ai.invented = 0;
+      ai.finishedAt = null;
+      clearSeriesOrder(this.db, p.libraryId);
+      this.next(ai, 'evidence');
+      this.deps.log?.("Stage 4: the AI check's evidence is built again (answers kept)");
     } else if (ai.phase === 'done') {
       if (ai.askKey !== stage4AskKey(this.db)) {
         // Asked again: answers already given are kept by the runner (same evidence and prompt).
