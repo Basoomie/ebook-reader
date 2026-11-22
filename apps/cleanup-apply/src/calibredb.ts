@@ -166,8 +166,23 @@ export function buildArgs(
       }
       return ['trash', 'restore', ...remote, args.join(',')];
     }
-    case 'add':
+    case 'add': {
+      // Exactly one of two forms (WP20g): Undo's re-add of a quarantined export
+      // (--duplicates --one-book-per-directory <folder>), and the import's add of one EPUB from
+      // this sidecar's own temporary folder (--duplicates <…/ttsu-arrival-<item>/<name>.epub>).
+      // Never -m/--automerge (FORBIDDEN_ARGS), never several files or a folder of files.
+      const readd =
+        args.length === 3 &&
+        args[0] === '--duplicates' &&
+        args[1] === '--one-book-per-directory' &&
+        /^(\/|[A-Za-z]:[\\/])/.test(args[2]);
+      const arrival =
+        args.length === 2 &&
+        args[0] === '--duplicates' &&
+        /^(\/|[A-Za-z]:[\\/]).*[\\/]ttsu-arrival-\d+[\\/][^\\/]+\.epub$/i.test(args[1]);
+      if (!readd && !arrival) throw new Error('add takes a quarantined folder or one arrival EPUB');
       return ['add', ...remote, ...args];
+    }
     case 'set_tags': {
       // Exactly: <book id> <the whole tag list, comma separated>. Nothing but the tags field.
       const [id, tags, ...rest] = args;
