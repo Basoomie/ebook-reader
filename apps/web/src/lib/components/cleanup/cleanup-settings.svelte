@@ -368,7 +368,7 @@
   <p class="c-notice" role="alert">{loadError}</p>
 {:else if settings && secrets}
   <form class="flex flex-col gap-10" on:submit|preventDefault={save} data-testid="cleanup-settings">
-    <fieldset class="grid gap-4 sm:grid-cols-2">
+    <fieldset class="grid min-w-0 grid-cols-1 gap-4 sm:grid-cols-2">
       <legend class={legend}>Calibre content server</legend>
       <label class="{field} sm:col-span-2">
         <span class={label}>Address</span>
@@ -422,7 +422,10 @@
     </fieldset>
 
     {#if settings.audiobooks}
-      <fieldset class="grid gap-4 sm:grid-cols-2" data-testid="cleanup-audiobooks-settings">
+      <fieldset
+        class="grid min-w-0 grid-cols-1 gap-4 sm:grid-cols-2"
+        data-testid="cleanup-audiobooks-settings"
+      >
         <legend class={legend}>Audiobooks</legend>
         <label class="{field} sm:col-span-2">
           <span class={label}>Audiobookshelf address</span>
@@ -721,7 +724,7 @@
             <label class="flex flex-col gap-1">
               <span class="font-medium">Changes to books already in the library</span>
               <select
-                class="c-input"
+                class="c-input w-full min-w-0"
                 bind:value={settings.audiobooks.libraryChanges}
                 data-testid="cleanup-audio-libraryChanges"
               >
@@ -756,7 +759,10 @@
     {/if}
 
     {#if settings.fetch}
-      <fieldset class="grid min-w-0 gap-4 sm:grid-cols-2" data-testid="cleanup-fetch-settings">
+      <fieldset
+        class="grid min-w-0 grid-cols-1 gap-4 sm:grid-cols-2"
+        data-testid="cleanup-fetch-settings"
+      >
         <legend class={legend}>Online sources (stage 4)</legend>
         <p class="text-sm text-c-muted sm:col-span-2">
           The fetch container asks each site at most once per its seconds (from the start of one
@@ -975,11 +981,15 @@
       </fieldset>
     {/if}
 
-    <fieldset class="grid gap-4 sm:grid-cols-2">
+    <fieldset class="grid min-w-0 grid-cols-1 gap-4 sm:grid-cols-2">
       <legend class={legend}>Library</legend>
       <label class={field}>
         <span class={label}>Library to clean</span>
-        <select class="c-input" bind:value={settings.targetLibraryId} data-testid="cleanup-target">
+        <select
+          class="c-input w-full min-w-0"
+          bind:value={settings.targetLibraryId}
+          data-testid="cleanup-target"
+        >
           <option value={null}>The library in “japanese-library”</option>
           {#each libraries as lib (lib.id)}
             <option value={lib.id}>{lib.name} ({lib.folder || 'root'})</option>
@@ -989,7 +999,11 @@
       <div class={field} data-testid="cleanup-server-library">
         <span class={label}>On the content server</span>
         {#if needsServerLibrary && calibre}
-          <select class="c-input" bind:value={serverLibrary} data-testid="cleanup-library-id">
+          <select
+            class="c-input w-full min-w-0"
+            bind:value={serverLibrary}
+            data-testid="cleanup-library-id"
+          >
             <option value="">Choose…</option>
             {#each calibre.libraries as id (id)}
               <option value={id}>{id}</option>
@@ -1007,7 +1021,7 @@
       </div>
     </fieldset>
 
-    <fieldset class="grid gap-4 sm:grid-cols-2">
+    <fieldset class="grid min-w-0 grid-cols-1 gap-4 sm:grid-cols-2">
       <legend class={legend}>Your tags</legend>
       <label class="{field} sm:col-span-2">
         <span class={label}
@@ -1025,7 +1039,7 @@
       </label>
     </fieldset>
 
-    <fieldset class="grid gap-4 sm:grid-cols-2" data-testid="cleanup-pacing">
+    <fieldset class="grid min-w-0 grid-cols-1 gap-4 sm:grid-cols-2" data-testid="cleanup-pacing">
       <legend class={legend}>Pace (all stages)</legend>
       <label class={field}>
         <span class={label}>Reading speed for book files (MB/s, 0 = no limit)</span>
@@ -1084,7 +1098,7 @@
       </label>
     </fieldset>
 
-    <fieldset class="grid gap-4 sm:grid-cols-2" data-testid="cleanup-checks">
+    <fieldset class="grid min-w-0 grid-cols-1 gap-4 sm:grid-cols-2" data-testid="cleanup-checks">
       <legend class={legend}>Checks (all stages)</legend>
       <label class={field}>
         <span class={label}>A field must be right on the labeled books at least (%)</span>
@@ -1180,7 +1194,7 @@
       </label>
     </fieldset>
 
-    <fieldset class="grid gap-4 sm:grid-cols-2" data-testid="cleanup-covers">
+    <fieldset class="grid min-w-0 grid-cols-1 gap-4 sm:grid-cols-2" data-testid="cleanup-covers">
       <legend class={legend}>Covers</legend>
       <label class={field}>
         <span class={label}>Covers passed on unchanged up to (MB)</span>
@@ -1229,7 +1243,10 @@
     </fieldset>
 
     {#if settings.duplicates}
-      <fieldset class="grid gap-4 sm:grid-cols-2" data-testid="cleanup-duplicates">
+      <fieldset
+        class="grid min-w-0 grid-cols-1 gap-4 sm:grid-cols-2"
+        data-testid="cleanup-duplicates"
+      >
         <legend class={legend}>Same text in other files (stage 3)</legend>
         <label class={field}>
           <span class={label}>Same text when both copies share at least (0-1)</span>
@@ -1361,7 +1378,7 @@
     {/if}
 
     {#if settings.ai}
-      <fieldset class="grid gap-4 sm:grid-cols-2" data-testid="cleanup-ai">
+      <fieldset class="grid min-w-0 grid-cols-1 gap-4 sm:grid-cols-2" data-testid="cleanup-ai">
         <legend class={legend}>AI</legend>
         <p class="text-sm text-c-muted sm:col-span-2">
           The AI keys, the models' prices, batches or one call each, Test batch and the one monthly
@@ -1391,7 +1408,7 @@
           <label class={field}>
             <span class={label}>New audiobooks: AI setup</span>
             <select
-              class="c-input"
+              class="c-input w-full min-w-0"
               bind:value={settings.ai.arrivalsDesign}
               data-testid="cleanup-ai-arrivals-design"
             >
@@ -1419,7 +1436,7 @@
         {/if}
       </fieldset>
 
-      <fieldset class="flex flex-col gap-4" data-testid="cleanup-ai-models">
+      <fieldset class="flex min-w-0 flex-col gap-4" data-testid="cleanup-ai-models">
         <legend class={legend}>Models in use</legend>
         <p class="text-sm text-c-muted">
           The steps that ask AI models today, and which model each uses. A model's price, whether it
