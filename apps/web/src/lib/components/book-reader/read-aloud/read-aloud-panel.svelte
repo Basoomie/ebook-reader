@@ -12,6 +12,7 @@
    * read-aloud goes on.
    */
   import PanelDismiss from '$lib/components/modal/panel-dismiss.svelte';
+  import { readerPanelSwipe, sheetSwipe } from '$lib/components/modal/sheet-swipe';
   import { createEventDispatcher, onMount } from 'svelte';
   import PcVoiceChoice from '$lib/components/audio/pc-voice-choice.svelte';
   import { viewMode$, writingMode$ } from '$lib/data/store';
@@ -64,6 +65,7 @@
 
 <section
   bind:this={panelEl}
+  use:sheetSwipe={readerPanelSwipe(() => dispatch('close'))}
   tabindex="-1"
   class="c-reader-panel writing-horizontal-tb fixed inset-x-0 bottom-0 z-[55] max-h-[65vh] overflow-y-auto rounded-t-2xl border-t p-4 outline-none md:inset-y-0 md:max-h-none md:w-[26rem] md:rounded-none md:border-t-0"
   class:md:left-auto={!dockLeft}

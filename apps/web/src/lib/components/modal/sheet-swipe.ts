@@ -5,7 +5,9 @@
  */
 
 /**
- * Swipe down to close a modal on phones, where it is a sheet from the bottom (2026-11-21).
+ * Swipe down to close a modal on phones, where it is a sheet from the bottom (2026-11-21),
+ * and the reader's side panels (Appearance, Pacer, Read aloud), which are sheets from the
+ * bottom below 768 px (2026-11-22).
  *
  * A downward drag that starts on the header, the tabs or the footer, or in the body while it
  * is scrolled to the top, moves the sheet with the finger and fades the backdrop. Let go
@@ -19,6 +21,8 @@
 
 /** The width below which a modal is a sheet (app.scss, "Modals"). */
 export const SHEET_MEDIA = '(max-width: 639.98px)';
+/** The width below which a reader side panel is a sheet (Tailwind's `md`). */
+export const PANEL_SHEET_MEDIA = '(max-width: 767.98px)';
 
 /** Movement (px) before a touch counts as a drag in some direction. */
 const SLOP_PX = 3;
@@ -76,11 +80,12 @@ export function releaseSpeed(samples: readonly { t: number; y: number }[]): numb
 
 /**
  * Whether a touch on `target` may move the sheet: not on a slider or a `data-no-swipe`
- * element, and nothing between it and the sheet is scrolled away from its top.
+ * element, and nothing from it up to the sheet itself (a reader panel scrolls as a whole) is
+ * scrolled away from its top.
  */
 export function swipeMayStart(target: EventTarget | null, panel: HTMLElement): boolean {
   if (!(target instanceof Element) || !panel.contains(target)) return false;
-  for (let el: Element | null = target; el && el !== panel; el = el.parentElement) {
+  for (let el: Element | null = target; el; el = el === panel ? null : el.parentElement) {
     if (el instanceof HTMLInputElement && el.type === 'range') return false;
     if (el.hasAttribute('data-no-swipe')) return false;
     if (el.scrollTop > 0 && el.scrollHeight > el.clientHeight) return false;
@@ -93,6 +98,8 @@ function prefersReducedMotion(): boolean {
 }
 
 export interface SheetSwipeOptions {
+  /** The widths at which it is a sheet (default: a modal's, `SHEET_MEDIA`). */
+  media?: string;
   /** The backdrop to fade with the drag. */
   backdrop?: HTMLElement;
   /** False while this modal shouldn't react (another one is above it). */
@@ -103,6 +110,17 @@ export interface SheetSwipeOptions {
   close: () => void;
   /** A long enough drag that may not close yet (it asks "Discard your changes?"). */
   refused: () => void;
+}
+
+/** A reader side panel's options: below 768 px a long swipe down closes it at once. */
+export function readerPanelSwipe(close: () => void): SheetSwipeOptions {
+  return {
+    media: PANEL_SHEET_MEDIA,
+    enabled: () => true,
+    canClose: () => true,
+    close,
+    refused: () => {}
+  };
 }
 
 interface Drag {
@@ -121,7 +139,8 @@ export function sheetSwipe(panel: HTMLElement, initial: SheetSwipeOptions) {
   let settling = false;
   let settleTimer: ReturnType<typeof setTimeout> | undefined;
 
-  const isSheet = () => typeof matchMedia === 'function' && matchMedia(SHEET_MEDIA).matches;
+  const isSheet = () =>
+    typeof matchMedia === 'function' && matchMedia(options.media ?? SHEET_MEDIA).matches;
 
   function place(dy: number) {
     panel.style.transform = dy > 0 ? `translateY(${dy}px)` : '';

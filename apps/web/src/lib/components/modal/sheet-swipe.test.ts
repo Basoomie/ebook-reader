@@ -47,3 +47,16 @@ describe('sheet swipe', () => {
     ).toBe(1);
   });
 });
+
+describe('reader panels', () => {
+  it('are sheets below 768 px and close at once on a long swipe', async () => {
+    const { readerPanelSwipe, PANEL_SHEET_MEDIA } = await import('./sheet-swipe');
+    let closed = 0;
+    const options = readerPanelSwipe(() => closed++);
+    expect(options.media).toBe(PANEL_SHEET_MEDIA);
+    expect(PANEL_SHEET_MEDIA).toBe('(max-width: 767.98px)');
+    expect(options.enabled() && options.canClose()).toBe(true);
+    options.close();
+    expect(closed).toBe(1);
+  });
+});
