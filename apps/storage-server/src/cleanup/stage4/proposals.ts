@@ -417,6 +417,8 @@ export function proposeStage4(input: ProposalInput): Stage4Proposal[] {
     );
   }
 
+  // The authors Calibre holds after the write: the decided ones only when written automatically.
+  let authorsAfter = book.authors;
   if (authors.length && !sameNames(authors, book.authors)) {
     let cls: 'auto' | 'review' = fau.auto ? 'auto' : 'review';
     let reason = fau.reason;
@@ -427,6 +429,7 @@ export function proposeStage4(input: ProposalInput): Stage4Proposal[] {
       cls = 'review';
       reason = "Too long for a folder name in Calibre's library";
     }
+    if (cls === 'auto') authorsAfter = authors;
     push(
       withAi(
         {
@@ -669,7 +672,7 @@ export function proposeStage4(input: ProposalInput): Stage4Proposal[] {
   );
   if (text) {
     const cleaned = cleanDescription(text);
-    if (cleaned.text !== (extras?.comments ?? '')) {
+    if (cleaned.text !== (extras?.comments ?? '') && !onlySpacing(extras?.comments, cleaned.text)) {
       push(
         {
           field: 'description',
@@ -783,7 +786,9 @@ export function proposeStage4(input: ProposalInput): Stage4Proposal[] {
   }
 
   // Author readings (author_sort), credited to Web NDL Authorities; generated ones marked.
-  const names = authors.length ? authors : book.authors;
+  // Of the authors Calibre holds after the write (a reading for authors left to review would not
+  // match the names Calibre shows).
+  const names = authorsAfter;
   const parts = names.map((n) => input.readings.get(n) ?? input.readings.get(nfkc(n)));
   if (names.length && parts.every((p) => p)) {
     const sort = parts.map((p) => p!.reading).join(' & ');
@@ -804,4 +809,17 @@ export function proposeStage4(input: ProposalInput): Stage4Proposal[] {
     }
   }
   return out;
+}
+
+/**
+ * A description that differs from Calibre's only by its spacing, without more paragraph breaks:
+ * no change (the live run of 2026-11-22 proposed 180 such, most taking the breaks away: the same
+ * store text formatted another way by another source).
+ */
+export function onlySpacing(now: string | null | undefined, next: string): boolean {
+  if (!now) return false;
+  const bare = (s: string) => s.replace(/\s+/gu, '');
+  if (bare(now) !== bare(next)) return false;
+  const breaks = (s: string) => (s.match(/\n/gu) ?? []).length;
+  return breaks(next) <= breaks(now);
 }

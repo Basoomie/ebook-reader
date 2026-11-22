@@ -169,6 +169,24 @@ export function subtitleAfterNumber(s: string): boolean {
 }
 
 /**
+ * Whether a result's title is the query's (both as titleKey gives them): equal, or with only a
+ * series name Amazon puts after it: words that end in シリーズ or repeat the title's own
+ * (「青春ブタ野郎はゆめみる少女の夢を見ない 青春ブタ野郎シリーズ (電撃文庫)」; 「ハリー・ポッターと謎のプリンス
+ * ハリー・ポッタ (Harry Potter)」, whose last bracket is the store's note). Other words after it are
+ * another book (「夜行堂奇譚 参 下」, 「… ［Colorful］」).
+ */
+export function titleMatch(qkey: string, title: string): boolean {
+  if (!qkey) return false;
+  for (const k of [titleKey(title), titleKey(title.replace(/\s*[(（][^()（）]*[)）]\s*$/u, ''))]) {
+    if (k === qkey) return true;
+    if (!k.startsWith(qkey)) continue;
+    const rest = k.slice(qkey.length);
+    if (rest.endsWith(norm('シリーズ')) || qkey.includes(rest)) return true;
+  }
+  return false;
+}
+
+/**
  * ref4 pick_by_volume(): comic editions last for text books, then the volume, then similarity.
  *
  * Series-order follow-up (2026-11-22, measured on the live copy: 437 books): a query without a
@@ -184,7 +202,14 @@ export function pickByVolume<T extends [unknown, string]>(
   qtitle: string,
   cands: T[],
   textBook = true,
+  /**
+   * The results are volumes (a series list, Amazon's or RanobeDB's results): a numbered query
+   * takes only one with its number. BookWalker's search mixes series (no number of their own)
+   * and book pages: a test per result (its book pages are volumes).
+   */
+  volumes: boolean | ((c: T) => boolean) = true,
 ): T | null {
+  const isVolume = typeof volumes === 'function' ? volumes : () => volumes;
   const qn = nums(qtitle);
   const qkey = qn.size ? '' : titleKey(qtitle);
   let list = cands;
@@ -201,17 +226,22 @@ export function pickByVolume<T extends [unknown, string]>(
   // ～離婚できずに新婚旅行～」; not 「…楽しくなりました２」, whose title is the series name) and no
   // other volume among the results shares that subtitle (「時魔術士の…２ ～過去に戻って…～」 shares
   // volume 1's: then only volume 1 or an unnumbered result counts).
+  // The query's title, the same once a series name Amazon puts after it is set aside: words that
+  // end in シリーズ or repeat the title's own (「青春ブタ野郎はゆめみる少女の夢を見ない 青春ブタ野郎シリーズ
+  // (電撃文庫)」 is the book; the bare 「…夢を見ない」 an empty page of another format, which the live
+  // run of 2026-11-22 took; 「ハリー・ポッターと謎のプリンス ハリー・ポッタ」). Other words after it are
+  // another book (「夜行堂奇譚 参 下」, 「… ［Colorful］」). Among equals the store's own order decides.
+  const titleOf = (t: string) => titleMatch(qkey, t);
   const keyNums = new Map<string, Set<string>>();
   if (qkey)
     for (const c of list) {
-      const k = titleKey(c[1]);
-      if (k !== qkey) continue;
-      const s = keyNums.get(k) ?? new Set<string>();
+      if (!titleOf(c[1])) continue;
+      const s = keyNums.get(qkey) ?? new Set<string>();
       s.add([...nums(c[1])].sort().join(','));
-      keyNums.set(k, s);
+      keyNums.set(qkey, s);
     }
   const sameTitle = (c: T, tn: Set<number>) => {
-    if (!qkey || titleKey(c[1]) !== qkey) return 0;
+    if (!qkey || !titleOf(c[1])) return 0;
     // Volume 1 only by itself: 「冰剣の…２～…～（１）」 (a manga's first part of novel 2) is not.
     if (!tn.size || (tn.size === 1 && tn.has(1))) return 1;
     if ((keyNums.get(qkey)?.size ?? 0) > 1) return 0;
@@ -226,8 +256,22 @@ export function pickByVolume<T extends [unknown, string]>(
   for (const c of list) {
     const fmt = textBook && COMIC.test(nfkc(c[1])) ? 0 : 1;
     const tn = nums(c[1]);
+    // A query with a volume number takes only a result with that number (or, for volume 1, an
+    // unnumbered one): never a guide book or another volume because the right one is missing
+    // from the results (the live run of 2026-11-22: 「…異世界生活6」 took 「Re：zeropedia」,
+    // 「スマートフォンとともに。2」 took 29).
+    if (isVolume(c) && qn.size && ![...qn].some((x) => tn.has(x)) && !(qn.has(1) && !tn.size))
+      continue;
     let vol: number;
-    if (qn.size) vol = [...qn].some((x) => tn.has(x)) ? 2 : tn.size ? 0 : 1;
+    // Every number of the query before some of them (「11月3日～11月7日生まれ」 is not 「11月13日～…」).
+    if (qn.size)
+      vol = [...qn].every((x) => tn.has(x))
+        ? 3
+        : [...qn].some((x) => tn.has(x))
+          ? 2
+          : tn.size
+            ? 0
+            : 1;
     else vol = !tn.size || tn.has(1) ? 2 : 0;
     const same = sameTitle(c, tn);
     const key = [fmt, same, vol, sim(qtitle, c[1])];

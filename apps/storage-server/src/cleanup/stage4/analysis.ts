@@ -63,6 +63,7 @@ import {
 import { bwAsAmazon, bwSettles, STANDIN, titleStem } from './bw-standin';
 import { NEXT_STEPS, type FollowUps } from './eta';
 import { ASIN_RE, pickByVolume, pyQuote, queryTitle, sim } from './pick';
+import { amazonFacts, bwFacts, replaces, type BookFacts } from './record-judge';
 import { proposeStage4, type CalibreCoverNow, type Stage4Proposal } from './proposals';
 import { storedAiValues, type Stage4AiValues } from './ai-decide';
 import { FetchQueue, LABELED_PRIORITY } from './queue';
@@ -170,6 +171,8 @@ export interface Stage4Progress {
     ranobedb: number;
     bookwalker: number;
     reopened: number;
+    /** REPICK_VERSION it ran at (absent: 1). */
+    version?: number;
   };
   /** Books the final pass has proposed again (for its time left). */
   finalDone?: number;
@@ -231,6 +234,8 @@ export interface OnlineEvidence {
     product?: ReturnType<typeof parseAmazonDp> | null;
     gone?: boolean;
     failed?: string;
+    /** The record a pick made again may replace: kept unless the new one fits the book better. */
+    previous?: { product: ReturnType<typeof parseAmazonDp> | null; request: number | null };
   };
   ranobedb: {
     search_candidates?: [unknown, string][];
@@ -238,6 +243,12 @@ export interface OnlineEvidence {
     author_match?: boolean;
     series?: ReturnType<typeof rdbSeries>;
     failed?: string;
+    /** The record a pick made again may replace (as amazon.previous). */
+    previous?: {
+      book: ReturnType<typeof rdbBook>;
+      series: ReturnType<typeof rdbSeries> | null;
+      author_match: boolean | null;
+    };
   };
   bookwalker: {
     search_candidates?: [string, string][];
@@ -246,6 +257,11 @@ export interface OnlineEvidence {
     failed?: string;
     /** The simpler query asked after the search found nothing (bookwalkerRetryQuery). */
     retried?: string;
+    /** The record a pick made again may replace (as amazon.previous). */
+    previous?: {
+      detail: ReturnType<typeof parseBwDetail> & { url: string };
+      request: number | null;
+    };
   };
   bookmeter: {
     hits?: BookmeterHit[];
@@ -344,7 +360,15 @@ export function emptyStage4Progress(libraryId: string, now = Date.now()): Stage4
     // A new analysis accepts Bookmeter's matches with the edition check from the start.
     bookmeterEditions: { phase: 'done', cursor: '', changed: 0, reopened: 0 },
     // ... and picks with the fixed picker from the start.
-    repick: { phase: 'done', cursor: '', amazon: 0, ranobedb: 0, bookwalker: 0, reopened: 0 },
+    repick: {
+      phase: 'done',
+      cursor: '',
+      amazon: 0,
+      ranobedb: 0,
+      bookwalker: 0,
+      reopened: 0,
+      version: REPICK_VERSION,
+    },
   };
 }
 
@@ -422,8 +446,21 @@ export function storeListPlaces(
 
 /** The one-time passes over a finished analysis are through (they can reopen books). */
 export function oneTimePassesDone(p: Stage4Progress): boolean {
-  return p.bookmeterEditions?.phase === 'done' && p.repick?.phase === 'done';
+  return (
+    p.bookmeterEditions?.phase === 'done' &&
+    p.repick?.phase === 'done' &&
+    (p.repick.version ?? 1) >= REPICK_VERSION
+  );
 }
+
+/**
+ * The fixed picker's one-time pass (repickStep). 2 (2026-11-22): a record that is the book is
+ * kept, BookWalker's series lists are read whole (version 1 replaced 142 records that were right).
+ */
+export const REPICK_VERSION = 2;
+
+/** A BookWalker result that is a book page (a volume), not a series. */
+const isBwBook = (c: [string, string]) => c[0].includes('/de');
 
 function gz(v: unknown): Buffer {
   return gzipSync(Buffer.from(JSON.stringify(v), 'utf8'));
@@ -1241,6 +1278,22 @@ export class Stage4Analysis {
         if (body) ev.amazon.product = parseAmazonDp(body);
         else if (req.state === 'gone') ev.amazon.gone = true;
         else if (failed) ev.amazon.failed = failed;
+        const prev = ev.amazon.previous;
+        if (prev) {
+          delete ev.amazon.previous;
+          if (
+            !replaces(
+              this.bookFacts(p, book, ev),
+              amazonFacts(prev.product),
+              amazonFacts(ev.amazon.product),
+            )
+          ) {
+            ev.amazon.product = prev.product;
+            delete ev.amazon.gone;
+            delete ev.amazon.failed;
+            if (prev.request !== null) ev.requests['amazon-dp'] = prev.request;
+          }
+        }
         close('amazon');
         break;
       }
@@ -1270,6 +1323,23 @@ export class Stage4Analysis {
         }
         const raw = jload(body);
         const book4 = rdbBook(raw);
+        const prevR = ev.ranobedb.previous;
+        if (prevR) {
+          delete ev.ranobedb.previous;
+          if (
+            !replaces(
+              this.bookFacts(p, book, ev),
+              { title: prevR.book.title_orig as string | null },
+              { title: book4.title_orig as string | null },
+            )
+          ) {
+            ev.ranobedb.book = prevR.book;
+            if (prevR.series) ev.ranobedb.series = prevR.series;
+            if (prevR.author_match !== null) ev.ranobedb.author_match = prevR.author_match;
+            close('ranobedb');
+            break;
+          }
+        }
         ev.ranobedb.book = book4;
         ev.ranobedb.author_match = rdbAuthorMatch(book4, ev.query.author);
         const sid = book4.series?.id;
@@ -1321,7 +1391,7 @@ export class Stage4Analysis {
         }
         const items = parseBwList(body);
         ev.bookwalker.search_candidates = items.slice(0, 8);
-        const pick = pickByVolume(ev.query.title, items.slice(0, 8), tb);
+        const pick = pickByVolume(ev.query.title, items.slice(0, 8), tb, isBwBook);
         if (pick && pick[0].includes('/series/')) {
           q.enqueue(
             { site: 'bookwalker', key: pick[0], url: pick[0], priority: prio },
@@ -1338,18 +1408,28 @@ export class Stage4Analysis {
       case 'bookwalker-series': {
         if (!body) {
           if (failed) ev.bookwalker.failed = failed;
+          this.keepPreviousBw(ev);
           close('bookwalker');
           break;
         }
         const vols = parseBwList(body).filter((v) => v[0].includes('/de'));
-        ev.bookwalker.series_candidates = vols.slice(0, 40);
+        // The whole list (it was cut at 40: the pass that picked again from it missed every older
+        // volume of a long series, the live run of 2026-11-22). 400 keeps a record small.
+        ev.bookwalker.series_candidates = vols.slice(0, 400);
         const pick = pickByVolume(ev.query.title, vols, tb);
-        if (pick)
+        if (pick && pick[0] === ev.bookwalker.previous?.detail.url) {
+          // The pick is the record the book has.
+          this.keepPreviousBw(ev);
+          close('bookwalker');
+        } else if (pick)
           q.enqueue(
             { site: 'bookwalker', key: pick[0], url: pick[0], priority: prio },
             w('bookwalker-detail'),
           );
-        else close('bookwalker');
+        else {
+          this.keepPreviousBw(ev);
+          close('bookwalker');
+        }
         break;
       }
       case 'bookwalker-detail': {
@@ -1360,6 +1440,21 @@ export class Stage4Analysis {
         ).url;
         if (body) ev.bookwalker.detail = { ...parseBwDetail(body), url };
         else if (failed) ev.bookwalker.failed = failed;
+        const prevB = ev.bookwalker.previous;
+        if (prevB) {
+          delete ev.bookwalker.previous;
+          if (
+            !replaces(
+              this.bookFacts(p, book, ev),
+              bwFacts(prevB.detail),
+              bwFacts(body ? ev.bookwalker.detail : null),
+            )
+          ) {
+            ev.bookwalker.detail = prevB.detail;
+            delete ev.bookwalker.failed;
+            if (prevB.request !== null) ev.requests['bookwalker-detail'] = prevB.request;
+          }
+        }
         close('bookwalker');
         break;
       }
@@ -1710,15 +1805,11 @@ export class Stage4Analysis {
       applied.set(a.field, JSON.parse(a.value_json));
       appliedLastModified.set(a.field, a.last_modified_after);
     }
-    const readings = new Map<string, { reading: string; source: 'ndl' | 'generated' }>();
-    for (const n of new Set([...decision.values.au, ...book.authors])) {
-      const r = this.db
-        .prepare('SELECT reading, state FROM author_readings WHERE name = ?')
-        .get(n) as { reading: string | null; state: string } | undefined;
-      if (r?.reading && (r.state === 'found' || r.state === 'generated')) {
-        readings.set(n, { reading: r.reading, source: r.state === 'found' ? 'ndl' : 'generated' });
-      }
-    }
+    // Every name the proposals ask for: the final authors too, which may be the models' (a book
+    // whose authors stage 4 changed got no reading: 487 books, among them 西尾維新's whose Calibre
+    // author was 「Desconhecido」; the live run of 2026-11-22 proposed them only once Calibre had
+    // the written name).
+    const readings = new ReadingLookup(this.db);
     const fc = ref.cover ?? null;
     const cover =
       ev.cover && ev.cover.width
@@ -2528,6 +2619,28 @@ export class Stage4Analysis {
   }
 
   /** The fetch key (ASIN, ranobedb book:id, BookWalker URL) a stored request id asked for. */
+  /** The book as its file shows it, for judging a record against (record-judge.ts). */
+  private bookFacts(p: Stage4Progress, book: { uuid: string }, ev: OnlineEvidence): BookFacts {
+    const f = this.loadRef(p.libraryId, book.uuid)?.file;
+    return {
+      // The file's own title (its volume mark), else the query's.
+      title: f?.opf_title || ev.query.title,
+      text: `${f?.front_text ?? ''}
+${f?.colophon_text ?? ''}`,
+      textBook: ev.query.text_book,
+    };
+  }
+
+  /** A pick made again found nothing better: the book keeps its BookWalker record. */
+  private keepPreviousBw(ev: OnlineEvidence): void {
+    const prev = ev.bookwalker.previous;
+    if (!prev) return;
+    delete ev.bookwalker.previous;
+    ev.bookwalker.detail = prev.detail;
+    delete ev.bookwalker.failed;
+    if (prev.request !== null) ev.requests['bookwalker-detail'] = prev.request;
+  }
+
   private requestKey(id: number | undefined): string | null {
     if (id === undefined) return null;
     const r = this.db.prepare('SELECT key FROM fetch_requests WHERE id = ?').get(id) as
@@ -2537,15 +2650,30 @@ export class Stage4Analysis {
   }
 
   /**
-   * Once per analysis (series-order follow-up, 2026-11-22): the Amazon, RanobeDB and BookWalker
-   * picks of every finished book made again from its stored search results with the fixed
-   * picker (pick.ts). Measured on a live copy: 1,051 books pick another record (273 Amazon, 16
-   * RanobeDB, 902 BookWalker), almost all the volume itself where the old picker took volume 1.
-   * A book whose pick changed loses the old record and waits for the new one (the analysis goes
-   * back to its lookups for those; most pages are cached); the AI step then starts over and asks
-   * only about books whose evidence changed.
+   * Once per analysis, at REPICK_VERSION: the Amazon, RanobeDB and BookWalker picks of every
+   * finished book made again with the fixed picker (pick.ts).
+   *
+   * Version 1 (series-order follow-up, 2026-11-22) picked from the stored search results and
+   * dropped the old record before the new one came: on the live run it replaced 118 BookWalker
+   * records that were the book (BookWalker's list had been stored cut at 40, so 「…異世界生活 6」
+   * took the guide book 「Re：zeropedia」) and 24 Amazon ones (the bare-titled result of another
+   * format, an empty page). Version 2: a book keeps its record unless the new pick fits it better
+   * (record-judge.ts); the record stays beside the request (previous) and comes back if the new
+   * page is no better or doesn't come; BookWalker's whole series list is read again (cached
+   * pages are answered from the cache, so a book picked wrong by version 1 gets its record back
+   * without a request to the store).
    */
   private async repickStep(p: Stage4Progress): Promise<void> {
+    if (p.repick && (p.repick.version ?? 1) < REPICK_VERSION)
+      p.repick = {
+        phase: 'books',
+        cursor: '',
+        amazon: 0,
+        ranobedb: 0,
+        bookwalker: 0,
+        reopened: 0,
+        version: REPICK_VERSION,
+      };
     const r0 = (p.repick ??= {
       phase: 'books',
       cursor: '',
@@ -2553,6 +2681,7 @@ export class Stage4Analysis {
       ranobedb: 0,
       bookwalker: 0,
       reopened: 0,
+      version: REPICK_VERSION,
     });
     if (r0.phase === 'done') return;
     const db = this.db;
@@ -2575,13 +2704,20 @@ export class Stage4Analysis {
       const qt = ev.query.title;
       const tb = ev.query.text_book;
       const open = new Set(ev.open);
-      let changed = false;
+      let facts: BookFacts | null = null;
+      const bookFacts = () => (facts ??= this.bookFacts(p, { uuid: r.calibre_uuid }, ev));
 
-      // Amazon: the product page of the pick among the search results (as askAmazon).
+      // Amazon: the product page of the pick among the search results, if it fits better.
       if (ev.amazon.picked_from_search && ev.amazon.search_candidates) {
         const pick = pickByVolume(qt, ev.amazon.search_candidates.slice(0, 6), tb);
         const old = this.requestKey(ev.requests['amazon-dp']);
-        if (pick && old && pick[0] !== old) {
+        const cur = ev.amazon.product ?? null;
+        if (
+          pick &&
+          pick[0] !== old &&
+          (!cur?.title || replaces(bookFacts(), amazonFacts(cur), { title: pick[1] }))
+        ) {
+          ev.amazon.previous = { product: cur, request: ev.requests['amazon-dp'] ?? null };
           delete ev.amazon.product;
           delete ev.amazon.gone;
           delete ev.amazon.failed;
@@ -2599,50 +2735,82 @@ export class Stage4Analysis {
         }
       }
 
-      // RanobeDB: the book (then its series) of the pick, when similar enough (as the lookup).
+      // RanobeDB: the book of the pick, when similar enough and it fits better; a record that is
+      // the book is never dropped because the pick now finds none.
       const hits = ev.ranobedb.search_candidates ?? [];
       if (hits.length) {
         const pick = pickByVolume(qt, hits, tb);
         const want = pick && sim(qt, pick[1]) >= 0.7 ? String(pick[0]) : null;
-        const old = ev.ranobedb.book ? String(ev.ranobedb.book.id) : null;
-        if (want !== old) {
-          changed = true;
+        const cur = ev.ranobedb.book ?? null;
+        const old = cur ? String(cur.id) : null;
+        if (
+          pick &&
+          want &&
+          want !== old &&
+          (!cur ||
+            replaces(bookFacts(), { title: cur.title_orig as string | null }, { title: pick[1] }))
+        ) {
+          if (cur)
+            ev.ranobedb.previous = {
+              book: cur,
+              series: ev.ranobedb.series ?? null,
+              author_match: ev.ranobedb.author_match ?? null,
+            };
           delete ev.ranobedb.book;
           delete ev.ranobedb.series;
           delete ev.ranobedb.author_match;
           delete ev.ranobedb.failed;
-          if (want) {
-            open.add('ranobedb');
-            q.enqueue(
-              {
-                site: 'ranobedb',
-                key: `book:${want}`,
-                url: `https://ranobedb.org/api/v0/book/${want}`,
-                priority: prio,
-              },
-              w('ranobedb-book'),
-            );
-          }
+          open.add('ranobedb');
+          q.enqueue(
+            {
+              site: 'ranobedb',
+              key: `book:${want}`,
+              url: `https://ranobedb.org/api/v0/book/${want}`,
+              priority: prio,
+            },
+            w('ranobedb-book'),
+          );
           r0.ranobedb++;
         }
       }
 
-      // BookWalker: the search's pick, a series list (then its pick) or a book page.
+      // BookWalker: the search's pick, its series list read whole again (from the cache), or a
+      // book page; the book keeps its record unless the new pick fits it better.
       const bwSearch = ev.bookwalker.search_candidates ?? [];
       if (bwSearch.length) {
-        const s = pickByVolume(qt, bwSearch.slice(0, 8), tb);
-        const oldDetail = ev.bookwalker.detail?.url ?? null;
+        const s = pickByVolume(qt, bwSearch.slice(0, 8), tb, isBwBook);
+        const cur = ev.bookwalker.detail ?? null;
+        const curUrl = cur?.url ?? null;
         const oldSeries = this.requestKey(ev.requests['bookwalker-series']);
+        const stored = ev.bookwalker.series_candidates ?? [];
         let fetch: { url: string; step: 'bookwalker-series' | 'bookwalker-detail' } | null = null;
         if (s && s[0].includes('/series/')) {
-          if (s[0] === oldSeries && ev.bookwalker.series_candidates) {
-            const v = pickByVolume(qt, ev.bookwalker.series_candidates, tb);
-            if (v && v[0] !== oldDetail) fetch = { url: v[0], step: 'bookwalker-detail' };
-          } else if (s[0] !== oldSeries) fetch = { url: s[0], step: 'bookwalker-series' };
-        } else if (s && s[0].includes('/de') && s[0] !== oldDetail) {
+          // A list stored cut (exactly 40) is read whole again; another series is read.
+          if (s[0] !== oldSeries || stored.length === 40)
+            fetch = { url: s[0], step: 'bookwalker-series' };
+          else {
+            const v = pickByVolume(qt, stored, tb);
+            if (
+              v &&
+              v[0] !== curUrl &&
+              (!cur || replaces(bookFacts(), bwFacts(cur), { title: v[1] }))
+            )
+              fetch = { url: v[0], step: 'bookwalker-detail' };
+          }
+        } else if (
+          s &&
+          s[0].includes('/de') &&
+          s[0] !== curUrl &&
+          (!cur || replaces(bookFacts(), bwFacts(cur), { title: s[1] }))
+        ) {
           fetch = { url: s[0], step: 'bookwalker-detail' };
         }
         if (fetch) {
+          if (cur)
+            ev.bookwalker.previous = {
+              detail: cur,
+              request: ev.requests['bookwalker-detail'] ?? null,
+            };
           delete ev.bookwalker.detail;
           delete ev.bookwalker.failed;
           if (fetch.step === 'bookwalker-series') delete ev.bookwalker.series_candidates;
@@ -2655,14 +2823,7 @@ export class Stage4Analysis {
         }
       }
 
-      if (open.size === ev.open.length) {
-        // Only a record dropped (RanobeDB's pick is now no match): proposed again as it is.
-        if (changed) {
-          this.saveEvidence(p.libraryId, r.calibre_uuid, ONLINE_KIND, ev);
-          await this.proposeBook(p, r.calibre_uuid);
-        }
-        continue;
-      }
+      if (open.size === ev.open.length) continue;
       ev.open = [...open];
       db.transaction(() => {
         this.saveEvidence(p.libraryId, r.calibre_uuid, ONLINE_KIND, ev);
@@ -2675,7 +2836,7 @@ export class Stage4Analysis {
     if (rows.length < 200) {
       r0.phase = 'done';
       this.log(
-        `Stage 4: picks made again with the fixed picker: ${r0.reopened} books wait for another record (Amazon ${r0.amazon}, RanobeDB ${r0.ranobedb}, BookWalker ${r0.bookwalker})`,
+        `Stage 4: picks made again with the fixed picker (version ${REPICK_VERSION}): ${r0.reopened} books wait for another record (Amazon ${r0.amazon}, RanobeDB ${r0.ranobedb}, BookWalker ${r0.bookwalker})`,
       );
       if (r0.reopened > 0) {
         p.phase = 'lookups';
@@ -2841,4 +3002,26 @@ export function bookmeterOwnTexts(
     ref.front_text,
     ref.colophon_text,
   ];
+}
+
+/** An author's reading by name, looked up when asked (found or generated readings only). */
+class ReadingLookup extends Map<string, { reading: string; source: 'ndl' | 'generated' }> {
+  private readonly asked = new Set<string>();
+  constructor(private readonly db: Database.Database) {
+    super();
+  }
+  override get(name: string): { reading: string; source: 'ndl' | 'generated' } | undefined {
+    if (!this.asked.has(name)) {
+      this.asked.add(name);
+      const r = this.db
+        .prepare('SELECT reading, state FROM author_readings WHERE name = ?')
+        .get(name) as { reading: string | null; state: string } | undefined;
+      if (r?.reading && (r.state === 'found' || r.state === 'generated'))
+        super.set(name, {
+          reading: r.reading,
+          source: r.state === 'found' ? 'ndl' : 'generated',
+        });
+    }
+    return super.get(name);
+  }
 }
