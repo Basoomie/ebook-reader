@@ -72,6 +72,24 @@ export interface SeriesBook {
   pool: PoolEntry[];
   /** The earliest date printed in the colophon, as yyyymmdd; null = none. */
   date: number | null;
+  /**
+   * The book's place in its store's full series list, from its own matched record (changed-series
+   * measurement: Amazon's 「全12冊中6番目」 was thrown away, and the dates of e-books are often one
+   * day for the whole series). Absent in facts saved before.
+   */
+  lists?: {
+    amazon: number | null;
+    amazonTotal: number | null;
+    ranobedb: number | null;
+    /** RanobeDB's kind of this book's entry (main, sub…). */
+    ranobedbType: string | null;
+    /** Which list each place is in (places from two lists are never compared: るるいえ's newer
+     * arc is another RanobeDB series where its books are 1 and 2). */
+    amazonList?: string | null;
+    ranobedbList?: string | null;
+  };
+  /** The series name Calibre holds now (null: none; absent in facts saved before). */
+  calibreName?: string | null;
 }
 
 export interface SeriesChoice {
@@ -149,6 +167,13 @@ const SQUASH =
   /[\s\u3000~～〜\-‐―—–─・:：!！?？、。,.'"“”‘’「」『』()（）[\]［］【】<>＜＞〈〉《》*＊#＃/／]/gu;
 const squash = (s: string) => nfkc(s).replace(SQUASH, '').toLowerCase();
 
+/** One title of the book's own and a record's title are the same, apart from spaces and punctuation. */
+export function sameTitle(record: unknown, own: string[]): boolean {
+  if (typeof record !== 'string' || !record.trim()) return false;
+  const r = squash(plain(record));
+  return r.length >= 2 && own.some((t) => squash(plain(t)) === r);
+}
+
 /** Store markers, bonus notes and the imprint at the end: not part of a title's words. */
 function plain(t: string): string {
   let s = nfkc(t);
@@ -205,9 +230,11 @@ const PART_THEN_VOLUME =
 
 /** A volume number in the text right after a series name, as printed. */
 export function leadingNumber(rest: string): number | null {
-  const r = nfkc(rest).replace(/^[\s・:：\-‐―─~～〜,、]+/u, '');
+  // A name's own closing ?/! can be left before the number (「…思った? Lv.24」).
+  const r = nfkc(rest).replace(/^[\s・:：\-‐―─~～〜,、?？!！]+/u, '');
   // 「13.暁の約束」: a full stop after the number is not a decimal point.
-  let m = /^(?:vol\.?|No\.?|#|第)?\s*(\d+(?:\.\d+)?)(?!\d)(?!\.\d)/iu.exec(r);
+  // 「Lv.24 DLC(1)」: a level is the volume (changed-series measurement read the 1).
+  let m = /^(?:vol\.?|No\.?|Lv\.?|#|第)?\s*(\d+(?:\.\d+)?)(?!\d)(?!\.\d)/iu.exec(r);
   if (m) {
     const after = r.slice(m[0].length);
     const v = parseFloat(m[1]);
@@ -242,7 +269,8 @@ export function onlyNumber(rest: string): number | null {
   r = r.replace(/(?:19|20)\d\d\s*年[\d\s/・月日号合併]*/gu, ' ');
   r = r.replace(/(?<![\d.])(?:19|20)\d\d(?![\d.])/gu, ' ');
   const found = new Set<number>();
-  for (const m of r.matchAll(/(?<![\d.])(\d+(?:\.\d+)?)(?!\d)(?!\.\d)/gu)) {
+  // A number glued to a Latin letter is no volume (「Level N4」 is a JLPT level, 「DLC(1)」).
+  for (const m of r.matchAll(/(?<![\d.A-Za-z])(\d+(?:\.\d+)?)(?!\d)(?!\.\d)/gu)) {
     const after = r.slice((m.index ?? 0) + m[0].length);
     const v = parseFloat(m[1]);
     if (v < 500 && !NOT_VOLUME.test(after)) found.add(v);
@@ -273,7 +301,8 @@ export function partOf(rest: string): 'first' | 'middle' | 'last' | null {
 /** An omnibus' last volume (「合本版 4－7」, 「全7巻」, 「1-3巻セット」), or null. */
 export function omnibusLast(title: string): number | null {
   const t = nfkc(title);
-  let m = /(\d+)\s*[-－~～〜]\s*(\d+)\s*(?:巻|】|\]|$|\s)/u.exec(t);
+  // 「【全1-6セット】」 too (changed-series measurement: placed at 5.9, before volume 6).
+  let m = /(\d+)\s*[-－~～〜]\s*(\d+)\s*(?:巻|セット|】|\]|$|\s)/u.exec(t);
   if (m && Number(m[2]) > Number(m[1]) && Number(m[2]) < 500) return Number(m[2]);
   m = /全\s*(\d+)\s*巻/u.exec(t);
   if (m && Number(m[1]) < 500) return Number(m[1]);
@@ -384,6 +413,31 @@ interface Work {
   review?: string;
   /** Not placed by any source yet: the checks place it by date. */
   unplaced?: boolean;
+  /** The book's place in the series' store list (RanobeDB's, else Amazon's), or null. */
+  listOrder: number | null;
+  /** A sub-series word and its own number printed before it (「闇の花３」, 「雅狼1」), or null. */
+  sub: { g: string; n: number } | null;
+}
+
+/**
+ * A sub-series in a title: a word with its own number right after it (「乱れる愛 闇の花３ ～祠☆闘士
+ * シリーズ～」 → 闇の花 3, 「安里咲２」 → 安里咲 2), the series name set aside. Changed-series
+ * measurement: books placed by date ran against these printed numbers (雅狼 3, 5, 2, 1, 4).
+ */
+export function subSeriesNumber(title: string, name: string): { g: string; n: number } | null {
+  const t = nfkc(withoutName(title, name)).replace(
+    /[(（[【<〈＜][^)）\]】>〉＞]*[)）\]】>〉＞]/gu,
+    ' ',
+  );
+  let found: { g: string; n: number } | null = null;
+  for (const tok of t.split(/[\s～~〜・:：、,]+/u)) {
+    const m = /^(.*?\D)(\d{1,3})$/u.exec(tok);
+    if (m && squash(m[1]).length >= 2 && !NOT_VOLUME.test(tok.slice(m[1].length + m[2].length))) {
+      if (found) return null; // two numbered words: not one sub-series number
+      found = { g: squash(m[1]), n: Number(m[2]) };
+    }
+  }
+  return found;
 }
 
 const fmt = (n: number) => String(Math.round(n * 100) / 100);
@@ -460,7 +514,9 @@ export function orderSeries(books: SeriesBook[]): SeriesChoice[] {
     }
     const side =
       (b.kind === 'full' || b.kind === 'special edition') &&
-      (b.own.some((t) => isSideTitle(t, name)) || (key !== '' && !!rdbByKey.get(key)?.side));
+      // Only the titles that are this book's: a colophon also lists the series' other books
+      // (「僕は友達が少ない⑦」's names CONNECT, a side book: ⑦ was placed as one, 6.5).
+      (own.some((t) => isSideTitle(t, name)) || (key !== '' && !!rdbByKey.get(key)?.side));
     const rdbOrder: number | null = key ? (rdbByKey.get(key)?.order ?? null) : null;
     return {
       b,
@@ -470,6 +526,8 @@ export function orderSeries(books: SeriesBook[]): SeriesChoice[] {
       side,
       rdbOrder,
       key,
+      listOrder: null,
+      sub: subSeriesNumber(b.own[0] ?? b.title, name),
       index: b.index,
       from: ours ? 'decided' : 'Calibre',
       guess: ours && (b.indexFrom === 'guess' || b.indexFrom === 'models'),
@@ -481,6 +539,48 @@ export function orderSeries(books: SeriesBook[]): SeriesChoice[] {
             : null,
     };
   });
+
+  // The series' store list (changed-series measurement): RanobeDB's when it places at least half
+  // the books, else Amazon's. Only an order: it places books no number places (and side books),
+  // before dates, which for e-books are often one day for the whole series.
+  {
+    const full = works.filter((w) => w.b.kind === 'full' || w.b.kind === 'special edition');
+    // Each store's most common list among the books: only its places count.
+    const listOf = (w: Work, k: 'ranobedb' | 'amazon') =>
+      w.b.lists?.[k] == null
+        ? null
+        : String((k === 'ranobedb' ? w.b.lists.ranobedbList : w.b.lists.amazonList) ?? '');
+    const main = (k: 'ranobedb' | 'amazon') => {
+      const n = new Map<string, number>();
+      for (const w of full) {
+        const l = listOf(w, k);
+        if (l !== null) n.set(l, (n.get(l) ?? 0) + 1);
+      }
+      const best = [...n].sort((a, c) => c[1] - a[1])[0];
+      return best && best[1] >= 2 && best[1] * 2 >= full.length ? best[0] : null;
+    };
+    const rdb = main('ranobedb');
+    const amz = rdb === null ? main('amazon') : null;
+    const pick = rdb !== null ? 'ranobedb' : amz !== null ? 'amazon' : null;
+    const list = rdb ?? amz;
+    if (pick)
+      for (const w of works) w.listOrder = listOf(w, pick) === list ? w.b.lists![pick] : null;
+    // A place two different books share tells neither apart (RanobeDB lists るるいえあんてぃーく
+    // and るるいえあかでみっく both at 1); copies of one book may share it.
+    const at = new Map<number, Work[]>();
+    for (const w of works)
+      if (w.listOrder !== null) at.set(w.listOrder, [...(at.get(w.listOrder) ?? []), w]);
+    for (const ws of at.values())
+      if (new Set(ws.map((w) => squash(plain(w.b.own[0] ?? w.b.title)))).size > 1)
+        for (const w of ws) w.listOrder = null;
+  }
+  // Only side books (「プリンスシリーズ番外編１」, ２, ４ and no main volume): their own numbers are
+  // the series' numbers (they were placed after a last volume that isn't there: 0.7, 0.6, 0.5).
+  if (
+    works.every((w) => w.side || (w.b.kind !== 'full' && w.b.kind !== 'special edition')) &&
+    works.some((w) => w.side && w.printed !== null)
+  )
+    for (const w of works) if (w.side && w.printed !== null) w.side = false;
 
   // Main volumes: full books and special editions (特装版, 電子特別版: the volume with extras).
   const isMain = (w: Work) => (w.b.kind === 'full' || w.b.kind === 'special edition') && !w.side;
@@ -575,7 +675,13 @@ export function orderSeries(books: SeriesBook[]): SeriesChoice[] {
 
   // Omnibus editions without their number: the last volume + 0.9 (the agreed rule).
   for (const w of works)
-    if (w.b.kind === 'omnibus' && w.ours) {
+    if (
+      w.ours &&
+      (w.b.kind === 'omnibus' ||
+        // A range in its own title is an omnibus whatever its kind was taken for
+        // (「【全1-6セット】おおかみさんにおやすみ。」 was 5.9, before volume 6).
+        (w.printed === null && w.b.own.some((t) => omnibusLast(t) !== null)))
+    ) {
       const last = w.b.own.map(omnibusLast).find((x) => x !== null) ?? null;
       if (last !== null && w.index !== last + 0.9)
         set(w, last + 0.9, `an omnibus of volumes up to ${last}`, false, null);
@@ -747,16 +853,30 @@ export function orderSeries(books: SeriesBook[]): SeriesChoice[] {
   if (sides.length) {
     const numbered = mains.filter((w) => w.index !== null);
     const used = new Set(works.filter((w) => !sides.includes(w)).map((w) => w.index));
+    // The series list first (dates of e-books are often one day for the series), then dates, then
+    // the side books' own numbers (「Girls Side 2」 before 「Girls Side 3」).
     const ordered = [...sides].sort(
       (a, c) =>
+        (a.listOrder ?? Infinity) - (c.listOrder ?? Infinity) ||
         (a.b.date ?? Infinity) - (c.b.date ?? Infinity) ||
         (a.rdbOrder ?? Infinity) - (c.rdbOrder ?? Infinity) ||
+        (a.printed ?? a.sub?.n ?? Infinity) - (c.printed ?? c.sub?.n ?? Infinity) ||
         a.b.calibreId - c.b.calibreId,
     );
     for (const w of ordered) {
       let before: Work | null = null;
       let how = '';
-      if (w.b.date !== null) {
+      if (w.listOrder !== null) {
+        for (const m of numbered)
+          if (
+            m.listOrder !== null &&
+            m.listOrder < w.listOrder &&
+            (!before || m.index! > before.index!)
+          )
+            before = m;
+        if (before) how = 'listed';
+      }
+      if (!before && w.b.date !== null) {
         for (const m of numbered)
           if (m.b.date !== null && m.b.date <= w.b.date && (!before || m.index! > before.index!))
             before = m;
@@ -831,25 +951,94 @@ export function orderSeries(books: SeriesBook[]): SeriesChoice[] {
     for (const w of works)
       if (w.ours && (w.index === null || w.unplaced) && isMain(w) && !movers.includes(w))
         movers.push(w);
+  // (B) A guessed number against the series list moves (changed-series measurement: 神様とゲーム,
+  // listed between ゲーム4 and ゲーム5, was 10). Only when the list agrees with every confirmed
+  // number it places (a list that doesn't is not trusted).
+  const confirmedListed = works
+    .filter((w) => isMain(w) && w.index !== null && (!w.ours || !w.guess) && w.listOrder !== null)
+    .sort((a, c) => a.listOrder! - c.listOrder!);
+  const listAgrees =
+    confirmedListed.length >= 2 &&
+    confirmedListed.every((w, i) => i === 0 || confirmedListed[i - 1].index! < w.index!);
+  if (listAgrees)
+    for (const w of works)
+      if (
+        w.ours &&
+        w.guess &&
+        isMain(w) &&
+        w.index !== null &&
+        w.listOrder !== null &&
+        !movers.includes(w) &&
+        confirmedListed.some(
+          (c) => c.listOrder !== w.listOrder && c.listOrder! < w.listOrder! !== c.index! < w.index!,
+        ) &&
+        // Only where the list leaves room (not before a book numbered 1).
+        Math.min(
+          Infinity,
+          ...confirmedListed.filter((c) => c.listOrder! > w.listOrder!).map((c) => c.index!),
+        ) > 1
+      )
+        movers.push(w);
   if (movers.length) {
     const taken = new Set(
       works.filter((w) => !movers.includes(w) && w.index !== null).map((w) => w.index!),
     );
     const fixed = works.filter((w) => !movers.includes(w) && w.index !== null && isMain(w));
+    // A sub-series moves together, in its own printed order (雅狼 1-5 after 闇の花 1-5): its place
+    // is its earliest book's in the list (else by date).
+    const groupAt = new Map<string, number>();
+    for (const w of movers)
+      if (w.sub) {
+        const at = w.listOrder ?? (w.b.date !== null ? 1e6 + w.b.date : Infinity);
+        groupAt.set(w.sub.g, Math.min(groupAt.get(w.sub.g) ?? Infinity, at));
+      }
+    const placed = new Set<Work>();
+    const placeOf = (w: Work) =>
+      w.sub
+        ? groupAt.get(w.sub.g)!
+        : (w.listOrder ?? (w.b.date !== null ? 1e6 + w.b.date : Infinity));
     for (const w of movers.sort(
-      (a, c) => (a.b.date ?? Infinity) - (c.b.date ?? Infinity) || a.b.calibreId - c.b.calibreId,
+      (a, c) =>
+        placeOf(a) - placeOf(c) ||
+        (a.sub && c.sub && a.sub.g === c.sub.g ? a.sub.n - c.sub.n : 0) ||
+        (a.b.date ?? Infinity) - (c.b.date ?? Infinity) ||
+        a.b.calibreId - c.b.calibreId,
     )) {
       const had = w.index;
-      // Between the volumes published before and after it, else after the last one.
+      // Between the volumes listed (else published) before and after it, else after the last one.
       let lo = 0;
       let hi = Infinity;
-      if (w.b.date !== null)
+      const listed = fixed.filter((f) => f.listOrder !== null);
+      let byList = w.listOrder !== null && listed.length > 0;
+      if (byList) {
+        for (const f of listed)
+          if (f.listOrder! < w.listOrder!) lo = Math.max(lo, f.index!);
+          else if (f.listOrder! > w.listOrder!) hi = Math.min(hi, f.index!);
+        // No room before the first volume (るるいえ: listed before a book numbered 1, the list
+        // and the numbers count differently): the list doesn't place it.
+        if (hi <= 1) {
+          byList = false;
+          lo = 0;
+          hi = Infinity;
+        }
+      }
+      if (byList) {
+        // The moved books before it in this order are placed already: after them too.
+        lo = Math.max(lo, ...movers.filter((m) => m !== w && placed.has(m)).map((m) => m.index!));
+      } else if (w.b.date !== null)
         for (const f of fixed) {
           if (f.b.date === null) continue;
           if (f.b.date <= w.b.date) lo = Math.max(lo, f.index!);
           else hi = Math.min(hi, f.index!);
         }
-      else lo = Math.max(0, ...[...taken]);
+      else if (!w.sub || !movers.some((m) => placed.has(m) && m.sub?.g === w.sub!.g))
+        lo = Math.max(0, ...[...taken]);
+      // After the books of its sub-series moved before it (雅狼3 has no list place of its own).
+      if (w.sub)
+        lo = Math.max(
+          lo,
+          ...movers.filter((m) => placed.has(m) && m.sub?.g === w.sub!.g).map((m) => m.index!),
+        );
       let n = Math.floor(lo) + 1;
       while (taken.has(n) && n < hi) n++;
       if (taken.has(n) || n >= hi) {
@@ -857,16 +1046,74 @@ export function orderSeries(books: SeriesBook[]): SeriesChoice[] {
         while (taken.has(n)) n = Math.round((n + 0.1) * 10) / 10;
       }
       taken.add(n);
+      placed.add(w);
       set(
         w,
         n,
         'moved to a free number',
         true,
         had === null
-          ? 'No number was found: placed by first publication date'
-          : `Number ${fmt(had)} belongs to another book of the series: moved by first publication date`,
+          ? `No number was found: placed by ${byList ? "the series' store list" : 'first publication date'}`
+          : `Number ${fmt(had)} ${byList ? "is against the series' store list" : 'belongs to another book of the series'}: moved by ${byList ? "the series' store list" : 'first publication date'}`,
       );
     }
+  }
+
+  // (C) Nothing confirmed for the list to agree with: the guessed books' numbers follow the list
+  // (祠☆闘士: 闇の花 1-5, 雅狼 1-5, 紅孔雀 1-2 by Amazon's list; 雅狼2/3 have no place of their
+  // own and go after their listed sub-series sibling). Not when two books share a list place.
+  if (confirmedListed.length < 2) {
+    const guessed = works.filter((w) => w.ours && w.guess && isMain(w) && w.index !== null);
+    const keyOf = new Map<Work, number>();
+    for (const w of guessed) if (w.listOrder !== null) keyOf.set(w, w.listOrder);
+    for (const w of guessed) {
+      if (keyOf.has(w) || !w.sub) continue;
+      const sibs = guessed.filter((o) => o.sub?.g === w.sub!.g && o.listOrder !== null);
+      const below = sibs.filter((o) => o.sub!.n < w.sub!.n).sort((a, c) => c.sub!.n - a.sub!.n)[0];
+      const above = sibs.filter((o) => o.sub!.n > w.sub!.n).sort((a, c) => a.sub!.n - c.sub!.n)[0];
+      if (below) keyOf.set(w, below.listOrder! + (w.sub.n - below.sub!.n) * 0.01);
+      else if (above) keyOf.set(w, above.listOrder! - (above.sub!.n - w.sub.n) * 0.01);
+    }
+    const part = [...keyOf.keys()];
+    const keys = part.map((w) => keyOf.get(w)!);
+    if (part.length >= 2 && new Set(keys).size === keys.length) {
+      const nums = part.map((w) => w.index!).sort((a, c) => a - c);
+      if (new Set(nums).size === nums.length)
+        [...part]
+          .sort((a, c) => keyOf.get(a)! - keyOf.get(c)!)
+          .forEach((w, i) => {
+            if (w.index !== nums[i])
+              set(
+                w,
+                nums[i],
+                "the series' store list",
+                true,
+                `${w.reason ?? 'A best guess'}; in the order of the series' store list`,
+              );
+          });
+    }
+  }
+
+  // A sub-series' guessed numbers follow its own printed numbers (「安里咲１」 was 5, 「安里咲２」 2):
+  // the numbers its guessed books hold, given out again in that order. Confirmed numbers stay.
+  const groups = new Map<string, Work[]>();
+  for (const w of works)
+    if (w.ours && w.guess && w.sub && w.index !== null && (isMain(w) || w.side))
+      groups.set(w.sub.g, [...(groups.get(w.sub.g) ?? []), w]);
+  for (const ws of groups.values()) {
+    if (ws.length < 2 || new Set(ws.map((w) => w.sub!.n)).size !== ws.length) continue;
+    const nums = ws.map((w) => w.index!).sort((a, c) => a - c);
+    const byPrinted = [...ws].sort((a, c) => a.sub!.n - c.sub!.n);
+    byPrinted.forEach((w, i) => {
+      if (w.index !== nums[i])
+        set(
+          w,
+          nums[i],
+          w.from,
+          true,
+          `${w.reason ?? 'A best guess'}; in its sub-series' printed order`,
+        );
+    });
   }
 
   // The series name: a book's own title, or shown by no book and no store.
@@ -913,8 +1160,15 @@ export function orderSeries(books: SeriesBook[]): SeriesChoice[] {
         guess: w.guess,
         reason: w.guess ? w.reason : null,
       };
-      const review = nameProblem && w.b.nameFrom !== 'user' ? nameProblem : w.review;
+      // A name Calibre holds already is listed, not held for review: holding the numbers back
+      // doesn't take the name out of Calibre (自薦短編シリーズ kept 15 books on 1).
+      const inCalibre = !!w.b.calibreName && squash(w.b.calibreName) === squash(name);
+      const review = nameProblem && w.b.nameFrom !== 'user' && !inCalibre ? nameProblem : w.review;
       if (review) c.review = review;
+      else if (nameProblem && inCalibre && w.ours) {
+        c.guess = true;
+        c.reason = c.reason ? `${c.reason}; ${nameProblem}` : nameProblem;
+      }
       const t = w.ours ? titleChoice(w, name) : null;
       if (t) {
         c.title = t.title;

@@ -12,10 +12,11 @@ import {
   isSideTitle,
   omnibusLast,
   orderSeries,
+  subSeriesNumber,
   printedNumber,
   type SeriesBook,
 } from '../src/cleanup/stage4/series-order';
-import { firstColophonDate } from '../src/cleanup/stage4/analysis';
+import { firstColophonDate, storeListPlaces } from '../src/cleanup/stage4/analysis';
 
 const HANAYOME = '(仮)花嫁のやんごとなき事情';
 const label = (t: string) => `${t} (ビーズログ文庫)`;
@@ -444,5 +445,100 @@ describe("Calibre's title and authors as stage 4 found them (stop 2)", () => {
       title: 't',
       authors: ['A'],
     });
+  });
+});
+
+describe('the changed-series measurement fixes (stop 2)', () => {
+  const lists = (amazon: number | null, ranobedb: number | null = null) => ({
+    amazon,
+    amazonTotal: amazon === null ? null : 12,
+    ranobedb,
+    ranobedbType: ranobedb === null ? null : 'main',
+    amazonList: amazon === null ? null : '12|S',
+    ranobedbList: ranobedb === null ? null : 'R',
+  });
+  it('a sub-series word with its own number', () => {
+    expect(
+      subSeriesNumber('乱れる愛 闇の花３ ～祠☆闘士シリーズ～ (夢中文庫)', '祠☆闘士シリーズ'),
+    ).toEqual({ g: '闇の花', n: 3 });
+    expect(subSeriesNumber('安里咲２', '亜由美シリーズ')).toEqual({ g: '安里咲', n: 2 });
+    expect(subSeriesNumber('砂漠幻想 イブン・サーディ＆景生', 'プリンスシリーズ')).toBeNull();
+  });
+  it('Amazon and RanobeDB list places, only for the entry that is the book', () => {
+    const rdb = {
+      book: { id: 7 },
+      series: {
+        id: 'R',
+        books: [
+          { id: 7, sort_order: 5, type: 'main', title_orig: '神様とゲーム ハレ/クモリ/アメ/ニジ' },
+        ],
+      },
+    };
+    expect(
+      storeListPlaces('全12冊中6番目の本 祠☆闘士シリーズ', rdb as never, [
+        '神様とゲーム　ハレ／クモリ／アメ／ニジ',
+      ]),
+    ).toMatchObject({ amazon: 6, amazonTotal: 12, ranobedb: 5 });
+    expect(storeListPlaces('', rdb as never, ['るるいえあかでみっく']).ranobedb).toBeNull();
+  });
+  it('a level is the volume, a number glued to a letter is not', () => {
+    expect(
+      printedNumber(
+        'ネトゲの嫁は女の子じゃないと思った? Lv.24 DLC(1)',
+        'ネトゲの嫁は女の子じゃないと思った?',
+      ),
+    ).toBe(24);
+    expect(
+      printedNumber(
+        'Learning to Read Japanese: Level N4: Japanese Ghost Stories ろくろ首',
+        'Learning to Read Japanese',
+      ),
+    ).toBeNull();
+  });
+  it('nothing confirmed: guesses follow the store list, a sub-series in its printed order', () => {
+    const S = '祠☆闘士シリーズ';
+    const t = (w: string, n: string) => `${w}${n} ～${S}～`;
+    const bs = [
+      book({ name: S, title: t('闇の花', '1'), index: 1, lists: lists(1) }),
+      book({ name: S, title: t('闇の花', '2'), index: 2, lists: lists(2) }),
+      book({ name: S, title: t('紅孔雀', '1'), index: 3, lists: lists(6) }),
+      book({ name: S, title: t('雅狼', '2'), index: 4, lists: lists(null) }),
+      book({ name: S, title: t('雅狼', '1'), index: 5, lists: lists(3) }),
+    ];
+    const got = new Map(orderSeries(bs).map((c) => [c.uuid, c.index]));
+    expect(bs.map((b) => got.get(b.uuid))).toEqual([1, 2, 5, 4, 3]);
+  });
+  it('a guessed book against the list of confirmed volumes moves between them', () => {
+    const N = '神様ゲーム';
+    const v = (n: number, l: number) =>
+      book({
+        name: N,
+        title: `神様ゲーム${n}`,
+        index: n,
+        indexFrom: 'store',
+        lists: lists(null, l),
+      });
+    const side = book({ name: N, title: '神様とゲーム ハレ', index: 6, lists: lists(null, 5) });
+    const bs = [v(1, 1), v(2, 2), v(3, 3), v(4, 4), v(5, 6), side];
+    const c = orderSeries(bs).find((x) => x.uuid === side.uuid)!;
+    expect(c.index).toBe(4.5);
+    expect(c.guess).toBe(true);
+  });
+  it('a series name Calibre holds already is listed, not held for review', () => {
+    const N = '自薦短編シリーズ';
+    const bs = [1, 2].map((i) =>
+      book({
+        name: N,
+        title: `短編${i === 1 ? 'あ' : 'い'}`,
+        index: null,
+        nameFrom: 'models',
+        storeSeries: [],
+        calibreName: N,
+        date: 20200101 + i,
+      }),
+    );
+    const cs = orderSeries(bs);
+    expect(cs.every((c) => !c.review && c.guess)).toBe(true);
+    expect(new Set(cs.map((c) => c.index)).size).toBe(2);
   });
 });
