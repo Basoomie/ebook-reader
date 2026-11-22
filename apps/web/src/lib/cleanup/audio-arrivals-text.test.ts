@@ -6,7 +6,9 @@
 
 import { describe, expect, it } from 'vitest';
 import {
+  absLine,
   changeLines,
+  changeStep,
   changesLines,
   designLines,
   inZone,
@@ -133,6 +135,23 @@ describe('stage 7 texts', () => {
     expect(reportLines(s).some((l) => l.includes('2 need a password'))).toBe(true);
   });
 
+  it('the Audiobookshelf line shows the real item counts, also when no book was added', () => {
+    const abs = run().abs;
+    expect(absLine({ ...abs, before: 4787, after: 4787 })).toBe(
+      'Audiobookshelf: 4,787 → 4,787 items; no new books'
+    );
+    expect(absLine({ ...abs, before: 4787, after: 4790, found: 3, valuesOk: 3 })).toBe(
+      'Audiobookshelf: 4,787 → 4,790 items; 3 new books shown, 0 not shown; values as written: 3, different: 0'
+    );
+    expect(absLine({ ...abs, error: 'Audiobookshelf is not set up (address and API key)' })).toBe(
+      'Audiobookshelf: no new books; Audiobookshelf is not set up (address and API key)'
+    );
+    expect(absLine({ ...abs, before: 4787 })).toBe(
+      'Audiobookshelf: 4,787 items before the run (not read after); no new books'
+    );
+    expect(absLine(abs)).not.toContain('?');
+  });
+
   it('the E/F/J line says what an upgrade would re-check and leave out', () => {
     const lines = designLines({
       available: true,
@@ -212,6 +231,75 @@ describe('WP21f-2: the library changes on the card', () => {
     expect(lines.join('\n')).toContain(
       'Audiobookshelf: 4787 → 4787 items after one library scan; 13 changed books seen at their folders, 0 not yet; progress and bookmarks as before'
     );
+  });
+
+  it('item 6: what ABS made of the writes, the older values it kept, the edit call', () => {
+    const lines = changesLines({
+      ...changes,
+      mode: 'on',
+      counts: { ...counts, reviews: 1, absKept: 1 },
+      seen: { checked: 4787, proven: 4782, unproven: 5, notInAbs: 0, cursor: 0, skipped: null },
+      abs: { ...changes.abs, before: 4787, after: 4787, scannedAt: 1, verified: 1, set: 1 }
+    }).join('\n');
+    expect(lines).toContain(
+      'Your edits in Audiobookshelf kept: 0 fields; to look at: 1 (1 field where Audiobookshelf kept an older value)'
+    );
+    expect(lines).toContain(
+      'What Audiobookshelf made of the cleanup’s metadata.json: 4,782 books proven (changed only by its own scan of the cleanup’s write), 5 not provable (a value there that differs from the cleanup’s counts as yours)'
+    );
+    expect(lines).toContain(
+      '1 with the cleanup’s value set through its edit call where it had kept an older one'
+    );
+    expect(
+      changesLines({
+        ...changes,
+        seen: {
+          checked: 0,
+          proven: 0,
+          unproven: 0,
+          notInAbs: 0,
+          cursor: 0,
+          skipped: 'Audiobookshelf is not set up'
+        }
+      }).join('\n')
+    ).toContain(
+      'What Audiobookshelf made of the cleanup’s metadata.json: Audiobookshelf is not set up'
+    );
+    expect(
+      changesLines({
+        ...changes,
+        seen: { checked: 1, proven: 0, unproven: 0, notInAbs: 1, cursor: 0, skipped: null }
+      }).join('\n')
+    ).toContain(
+      'What Audiobookshelf made of the cleanup’s metadata.json: 1 not in Audiobookshelf yet (asked again next run)'
+    );
+    expect(
+      changeLines({
+        id: 1,
+        bookId: 1,
+        state: 'review',
+        folderFrom: 'japanese/今野敏/色シリーズ/Vol 3 - ST 黄',
+        folderTo: null,
+        fields: [],
+        userFields: [],
+        conflicts: [],
+        absKept: [
+          {
+            field: 'series',
+            from: ['STシリーズ', '色シリーズ #3'],
+            to: ['STシリーズ', '色シリーズ #3'],
+            mine: ['色シリーズ #3', 'STシリーズ #6']
+          }
+        ],
+        renames: [],
+        renamesHeld: false,
+        reviews: [{ kind: 'abs_kept', text: 'Audiobookshelf kept an older value of series' }],
+        skipped: null
+      })[0]
+    ).toBe(
+      'Series: Audiobookshelf kept 色シリーズ #3、STシリーズ #6 · the cleanup wrote STシリーズ、色シリーズ #3'
+    );
+    expect(changeStep('seen')).toBe('what Audiobookshelf made of the cleanup’s metadata.json');
   });
 
   it('one change as lines: the move, each field old → new, yours kept, the names', () => {

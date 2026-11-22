@@ -7,8 +7,7 @@
   import { createEventDispatcher } from 'svelte';
 
   export let message: string;
-  export let buttonClass =
-    'flex min-h-[3rem] items-center justify-center rounded border-2 border-current px-4 font-medium';
+  export let buttonClass = 'c-btn c-btn-secondary';
   export let testid = 'undo-notice';
   export let undoTestid = 'undo-notice-undo';
 

@@ -858,11 +858,13 @@ export function removeAiKeyCopy(label: string): ConfirmCopy {
   };
 }
 
-/** Settings > AI: delete a model added before prices were built in. */
+/** Settings > AI: take a model off the list. */
 export function removeAiModelCopy(model: string): ConfirmCopy {
   return {
     title: `Delete ${model}?`,
-    message: ['It goes from the list with its price and its batch setting.'],
+    message: [
+      'It goes from the list with its batch setting; no feature can choose it until it is added again.'
+    ],
     confirmLabel: `Delete ${model}`,
     irreversible: true
   };

@@ -42,6 +42,8 @@ export interface AiSettings {
   batchPriceFactor: number;
   prices: Record<string, AiPrice>;
   structuredOutputs: boolean;
+  /** The models in Settings > AI's list, in order. */
+  models: string[];
 }
 
 export interface AiKeyInfo {
@@ -68,8 +70,9 @@ export interface AiStatus {
   models: {
     model: string;
     provider: AiProvider;
-    price: AiPrice;
-    /** One of the app's own models (its price built in); false: added earlier, can be deleted. */
+    /** Null only for a model whose price the app no longer knows. */
+    price: AiPrice | null;
+    /** The app knows its price (built in); false: typed in Settings before prices were built in. */
     builtIn: boolean;
     /** The features' tasks that use it (a model in use can't be deleted). */
     inUse: string[];
@@ -96,8 +99,14 @@ export interface AiStatus {
   batchTests: Record<string, AiBatchTest>;
 }
 
-/** Prices can't be set: they are built into the app. */
-export type AiSettingsPatch = Partial<Omit<AiSettings, 'prices'>>;
+/** Prices can't be set (built in); models are added and deleted one at a time. */
+export type AiSettingsPatch = Partial<Omit<AiSettings, 'prices' | 'models'>>;
+
+/** The Add dialog's list: per provider, the chat models it offers the key now. */
+export type AiAvailable = Record<
+  AiProvider,
+  { error: string | null; models: { model: string; price: AiPrice | null; listed: boolean }[] }
+>;
 
 export class AiApi {
   constructor(
@@ -146,7 +155,21 @@ export class AiApi {
     return this.request('POST', '/ai/models/check', undefined, 0);
   }
 
-  /** Deletes a model added before prices were built in. */
+  /** The chat models each provider offers the key, read from the providers now. */
+  async availableModels(): Promise<{ providers: AiAvailable }> {
+    return (await this.request('GET', '/ai/models/available', undefined, 0)) as unknown as {
+      providers: AiAvailable;
+    };
+  }
+
+  /** Adds a model after the server's checks (offered, priced, a test request answered). */
+  async addModel(model: string): Promise<AiStatus & { test: { ms: number; costUsd: number } }> {
+    return (await this.request('POST', '/ai/models', { model }, 0)) as AiStatus & {
+      test: { ms: number; costUsd: number };
+    };
+  }
+
+  /** Takes a model off the list (refused while a feature uses it). */
   deleteModel(model: string): Promise<AiStatus> {
     return this.request('DELETE', `/ai/models/${encodeURIComponent(model)}`);
   }

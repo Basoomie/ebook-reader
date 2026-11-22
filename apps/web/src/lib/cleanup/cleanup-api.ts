@@ -720,6 +720,7 @@ export interface AudiobookSettings {
   arrivalsTimeZone?: string;
   arrivalsSettleMinutes?: number;
   arrivalsAbsWaitMinutes?: number;
+  librarySeenSlackSeconds?: number;
   arrivalsAbsNudge?: boolean;
   /** WP21f-2: changes to books already in the library: off, Preview (analyse) or On. */
   libraryChanges?: 'off' | 'analyse' | 'on';
@@ -1023,6 +1024,16 @@ export interface LibraryChangesProgress {
     reviews: number;
     kept: number;
     userFields: number;
+    absKept?: number;
+  };
+  /** What Audiobookshelf made of the cleanup's writes (proven by time), per book not known yet. */
+  seen?: {
+    checked: number;
+    proven: number;
+    unproven: number;
+    notInAbs: number;
+    cursor: number;
+    skipped: string | null;
   };
   apply: {
     total: number;
@@ -1043,6 +1054,7 @@ export interface LibraryChangesProgress {
     verified: number;
     notYet: number;
     cleared?: number;
+    set?: number;
     problems: string[];
     error: string | null;
   };
@@ -1059,6 +1071,8 @@ export interface LibraryChangeItem {
   fields: { field: string; from: unknown; to: unknown; mine?: unknown }[];
   userFields: string[];
   conflicts: { field: string; from: unknown; to: unknown; mine?: unknown }[];
+  /** Fields where Audiobookshelf kept an older value: `mine` is its value (item 6). */
+  absKept?: { field: string; from: unknown; to: unknown; mine?: unknown }[];
   renames: { from: string; to: string }[];
   renamesHeld: boolean;
   reviews: { kind: string; text: string }[];
@@ -1150,6 +1164,7 @@ export interface AudioStage7Report {
         | 'mode'
         | 'ledger'
         | 'candidates'
+        | 'seen'
         | 'counts'
         | 'apply'
         | 'snapshot'

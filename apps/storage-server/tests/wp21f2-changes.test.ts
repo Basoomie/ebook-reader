@@ -19,6 +19,8 @@ import { planBuild, type PlannedBook } from '../src/cleanup/audio/build-plan';
 import { bookValues, metadataBytes } from '../src/cleanup/audio/build-metadata';
 import type { ExistingTree } from '../src/cleanup/audio/arrivals-plan';
 import {
+  absKeptSomething,
+  fieldState,
   leftBehind,
   orderMoves,
   planLibraryChanges,
@@ -31,6 +33,7 @@ import { initCleanupDatabase } from '../src/cleanup/cleanup-db';
 import { DiskLock } from '../src/cleanup/disk-lock';
 import { IDS, seedBuild, type BuildSeed } from './helpers/build-seed';
 import { LibraryChanges } from '../src/cleanup/audio/library-changes';
+import { setBody } from '../src/cleanup/audio/abs-set-fields';
 import { switchReader } from '../src/cleanup/audio/switch-reader';
 import { AudioScanService } from '../src/audio/scan-service';
 import { DEFAULT_AUDIO } from '../src/config';
@@ -922,7 +925,7 @@ describe(
       },
     };
 
-    async function setup() {
+    async function setup(opts: { absRewrites?: boolean } = {}) {
       const dir = makeTempDir('wp21f2-run');
       const data = path.join(dir, 'data');
       const roots = {
@@ -1115,13 +1118,14 @@ describe(
       });
       // A stand-in Audiobookshelf: three items; progress and a bookmark on 本A; a library scan
       // moves 本A's item to its new folder.
-      const items = [
-        { id: 'i1', relPath: '作者/シリーズ/Vol 3 - 本A' },
-        { id: 'i2', relPath: '作者/本P' },
-        { id: 'i3', relPath: '作者/本C' },
+      const items: { id: string; relPath: string; addedAt: number; lastScan?: number }[] = [
+        { id: 'i1', relPath: '作者/シリーズ/Vol 3 - 本A', addedAt: 1 },
+        { id: 'i2', relPath: '作者/本P', addedAt: 1 },
+        { id: 'i3', relPath: '作者/本C', addedAt: 1 },
       ];
       const calls: string[] = [];
       const patched: unknown[] = [];
+      const patchedBy: Record<string, unknown[]> = {};
       const fetchImpl = (async (url: string | URL, init?: RequestInit) => {
         const u = new URL(String(url));
         const method = init?.method ?? 'GET';
@@ -1152,15 +1156,34 @@ describe(
           });
         if (u.pathname === '/api/libraries/lib1/scan' && method === 'POST') {
           items[0].relPath = '作者/本A';
+          // As ABS 2.37.1 does: its scan rewrites every book's metadata.json (its own form).
+          if (opts.absRewrites)
+            for (const it of items) {
+              const f = path.join(roots.library, ...it.relPath.split('/'), 'metadata.json');
+              if (fs.existsSync(f)) fs.writeFileSync(f, fs.readFileSync(f));
+            }
           return new Response('OK', { status: 200 });
         }
         // ABS's edit call clears the series it kept (B1's finding); the item reads back cleared.
-        if (u.pathname === '/api/items/i1/media' && method === 'PATCH') {
-          patched.push(JSON.parse(String(init?.body)));
+        const edit = /^\/api\/items\/(i\d)\/media$/.exec(u.pathname);
+        if (edit && method === 'PATCH') {
+          const body = JSON.parse(String(init?.body));
+          if (edit[1] === 'i1') patched.push(body);
+          (patchedBy[edit[1]] ??= []).push(body);
           return json({ updated: true });
         }
+        if (u.pathname === '/api/items/i2')
+          return json({
+            media: {
+              metadata: (patchedBy.i2?.at(-1) as { metadata?: unknown } | undefined)?.metadata ?? {
+                publisher: '古い出版社',
+              },
+              tags: [],
+            },
+          });
         if (/^\/api\/items\/i\d$/.test(u.pathname))
           return json({
+            lastScan: items.find((it) => `/api/items/${it.id}` === u.pathname)?.lastScan ?? null,
             media: {
               metadata: { series: patched.length ? [] : [{ name: 'シリーズ', sequence: '3' }] },
               tags: [],
@@ -1200,7 +1223,20 @@ describe(
         await scan.stop();
         await env.close();
       };
-      return { env, db, roots, changes, worker, reader, uid, calls, items, scan, patched };
+      return {
+        env,
+        db,
+        roots,
+        changes,
+        worker,
+        reader,
+        uid,
+        calls,
+        items,
+        scan,
+        patched,
+        patchedBy,
+      };
     }
 
     async function drive(
@@ -1339,6 +1375,162 @@ describe(
       expect(again.counts.changes).toBe(0);
       expect(again.counts.readerFiles).toBe(0);
     });
+
+    it('item 6: what ABS made of our write is proven by its import of the book or its own last scan; a later change is not; a real edit stays yours in a proven file', async () => {
+      const t = await setup();
+      const now = Date.now();
+      t.items[1].addedAt = now; // 本P: imported by ABS just after we built it
+      t.items[0].lastScan = now; // 本A: ABS's own scan of it just now (imported long before)
+      t.items[2].addedAt = now; // 本C: imported now, with your title edit in its file
+      const c = await drive(t, 'analyse', 1);
+      expect(c.seen).toMatchObject({ checked: 3, proven: 3, unproven: 0, notInAbs: 0 });
+      expect(t.calls.filter((x) => x.startsWith('GET /api/items/'))).toEqual(['GET /api/items/i1']);
+      // Proven, yet your title is no form of ABS's: still yours.
+      const listed = t.changes.list(1, 'changes').items as {
+        folderFrom: string;
+        userFields: string[];
+      }[];
+      expect(listed.find((x) => x.folderFrom === 'japanese/作者/本C')!.userFields).toEqual([
+        'title',
+      ]);
+      // A file that changed long after every scan of the book: not provable.
+      const P = (
+        t.db
+          .prepare(`SELECT id FROM audio_library_books WHERE folder = 'japanese/作者/本P'`)
+          .get() as { id: number }
+      ).id;
+      t.db.prepare('UPDATE audio_library_books SET seen_state = NULL WHERE id = ?').run(P);
+      const later = new Date(now + 3_600_000);
+      fs.utimesSync(path.join(t.roots.library, '作者', '本P', 'metadata.json'), later, later);
+      const c2 = await drive(t, 'analyse', 2);
+      expect(c2.seen).toMatchObject({ checked: 1, proven: 0, unproven: 1 });
+      expect(
+        t.db.prepare('SELECT seen_state, seen FROM audio_library_books WHERE id = ?').get(P),
+      ).toEqual({ seen_state: 'unproven', seen: null });
+      // A book ABS doesn't show yet is asked again at the next run.
+      t.items.splice(1, 1);
+      t.db.prepare('UPDATE audio_library_books SET seen_state = NULL WHERE id = ?').run(P);
+      const c3 = await drive(t, 'analyse', 3);
+      expect(c3.seen).toMatchObject({ checked: 1, notInAbs: 1 });
+      expect(
+        (
+          t.db.prepare('SELECT seen_state FROM audio_library_books WHERE id = ?').get(P) as {
+            seen_state: string | null;
+          }
+        ).seen_state,
+      ).toBeNull();
+    });
+
+    it('item 6: a metadata-only run is applied and scanned; your edit stays yours at the next write; what ABS made of each write; the older value it kept, set on your word', async () => {
+      const t = await setup({ absRewrites: true });
+      // As stage 7 keeps each run's progress (the seen step reads the scans we asked for there).
+      const remember = (runId: number, c: { startedAt: number }) =>
+        t.db
+          .prepare(
+            `INSERT OR REPLACE INTO audio_arrival_runs (id, trigger, mode, state, phase, started_at, finished_at, progress_json)
+             VALUES (?, 'now', 'on', 'done', 'done', ?, ?, ?)`,
+          )
+          .run(runId, c.startedAt, Date.now(), JSON.stringify({ changes: c }));
+      const bookId = (folder: string) =>
+        (
+          t.db.prepare('SELECT id FROM audio_library_books WHERE folder = ?').get(folder) as {
+            id: number;
+          }
+        ).id;
+      const c2 = await drive(t, 'on', 2);
+      remember(2, c2);
+      expect(c2.error).toBeNull();
+      const C = bookId('japanese/作者/本C');
+      const P = bookId('japanese/作者/本P');
+      // Your title, kept by run 2's write, is recorded as yours.
+      expect(
+        t.db.prepare('SELECT field FROM audio_library_owners WHERE book_id = ?').all(C),
+      ).toEqual([{ field: 'title' }]);
+      // A later decision changes only 本C's publisher: a run with no move and no rename.
+      expect(
+        t.db
+          .prepare(
+            `UPDATE ai_values SET value_json = ? WHERE stage = 'audio5' AND item_key = 'uC' AND field = 'publisher'`,
+          )
+          .run(JSON.stringify('三番目の出版社')).changes,
+      ).toBe(1);
+      const scans = () => t.calls.filter((x) => x === 'POST /api/libraries/lib1/scan').length;
+      const scansBefore = scans();
+      const c3 = await drive(t, 'on', 3);
+      remember(3, c3);
+      expect(c3.counts).toMatchObject({ changes: 1, metadata: 1, moves: 0, renames: 0 });
+      // Bug A: the change is applied (the ledger updated) and ABS scans (both were skipped).
+      expect(
+        t.db.prepare('SELECT state FROM audio_library_changes WHERE run_id = 3').all(),
+      ).toEqual([{ state: 'applied' }]);
+      expect(scans()).toBe(scansBefore + 1);
+      // Bug B: your title is kept at this second write (it was taken back to the cleanup's).
+      const cFile = path.join(t.roots.library, '作者', '本C', 'metadata.json');
+      expect(JSON.parse(fs.readFileSync(cFile, 'utf8'))).toMatchObject({
+        title: 'あなたの題名',
+        publisher: '三番目の出版社',
+      });
+      // The next run: nothing to change; 本C's file since run 3's scan is ABS's (proven by time).
+      const c4 = await drive(t, 'on', 4);
+      remember(4, c4);
+      expect(c4.counts.changes).toBe(0);
+      expect(c4.seen).toMatchObject({ checked: 1, proven: 1, unproven: 0 });
+      const seenC = t.db
+        .prepare('SELECT seen_state, seen, written_run FROM audio_library_books WHERE id = ?')
+        .get(C) as { seen_state: string; seen: Buffer; written_run: number };
+      expect(seenC.seen_state).toBe('seen');
+      expect(seenC.written_run).toBe(3);
+      expect(seenC.seen.equals(fs.readFileSync(cFile))).toBe(true);
+      // 本P's file changed before any scan of ours could explain it: not provable, so a
+      // differing field would be yours.
+      expect(
+        (
+          t.db.prepare('SELECT seen_state FROM audio_library_books WHERE id = ?').get(P) as {
+            seen_state: string;
+          }
+        ).seen_state,
+      ).toBe('unproven');
+
+      // ABS kept an older value after our write (ST 黄's case, on 本P's publisher).
+      const pFile = path.join(t.roots.library, '作者', '本P', 'metadata.json');
+      const oldP = { ...JSON.parse(fs.readFileSync(pFile, 'utf8')), publisher: '古い出版社' };
+      const oldBytes = Buffer.from(JSON.stringify(oldP, null, 2));
+      fs.writeFileSync(pFile, oldBytes);
+      t.db
+        .prepare(
+          `UPDATE audio_library_books SET before = ?, seen = ?, seen_state = 'seen' WHERE id = ?`,
+        )
+        .run(oldBytes, oldBytes, P);
+      const c5 = await drive(t, 'on', 5);
+      remember(5, c5);
+      expect(c5.counts).toMatchObject({ changes: 1, absKept: 1, metadata: 0, userFields: 0 });
+      const review = t.changes.list(5, 'review').items as {
+        absKept: { field: string; mine: unknown }[];
+        reviews: { kind: string }[];
+      }[];
+      expect(review.map((r) => r.absKept.map((x) => [x.field, x.mine]))).toEqual([
+        [['publisher', '古い出版社']],
+      ]);
+      expect(review[0].reviews.map((r) => r.kind)).toEqual(['abs_kept']);
+      expect(JSON.parse(fs.readFileSync(pFile, 'utf8')).publisher).toBe('古い出版社');
+      expect(t.patchedBy.i2).toBeUndefined();
+      // "Use the cleanup's": written, then set through ABS's edit call; the choice is spent.
+      t.changes.choose(P, 'publisher', 'ours');
+      const c6 = await drive(t, 'on', 6);
+      remember(6, c6);
+      expect(c6.error).toBeNull();
+      expect(JSON.parse(fs.readFileSync(pFile, 'utf8')).publisher).toBe('出版社');
+      expect(t.patchedBy.i2).toEqual([{ metadata: { publisher: '出版社' } }]);
+      expect(c6.abs).toMatchObject({ set: 1, problems: [] });
+      expect(
+        t.db.prepare('SELECT COUNT(*) AS n FROM audio_library_choices WHERE book_id = ?').get(P),
+      ).toEqual({ n: 0 });
+      // Nothing left; your title still yours.
+      const c7 = await drive(t, 'on', 7);
+      expect(c7.counts.changes).toBe(0);
+      expect(c7.seen).toMatchObject({ proven: 1 });
+      expect(JSON.parse(fs.readFileSync(cFile, 'utf8')).title).toBe('あなたの題名');
+    });
   },
 );
 
@@ -1366,6 +1558,57 @@ describe('the two ABS calls the library changes make', () => {
         const p = path.join(d, e.name);
         if (e.isDirectory()) walk(p);
         else if (p.endsWith('.ts') && /abs-clear-fields'/.test(fs.readFileSync(p, 'utf8')))
+          importers.push(path.relative(srcDir, p).replace(/\\/g, '/'));
+      }
+    };
+    walk(srcDir);
+    expect(importers).toEqual(['cleanup/audio/library-changes.ts']);
+  });
+
+  it('abs-set-fields.ts (item 6): one request, PATCH …/items/:id/media, only our fields from the bytes written; only library-changes.ts imports it', () => {
+    const srcDir = path.join(__dirname, '..', 'src');
+    const strip = (s: string) =>
+      s
+        .replace(/\r\n/g, '\n')
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/\/\/.*$/gm, '');
+    const code = strip(
+      fs.readFileSync(path.join(srcDir, 'cleanup', 'audio', 'abs-set-fields.ts'), 'utf8'),
+    );
+    expect((code.match(/fetchImpl\(/g) ?? []).length).toBe(1);
+    expect(code.match(/method: '([A-Z]+)'/g)).toEqual(["method: 'PATCH'"]);
+    expect(code).toMatch(/\/api\/items\/\$\{itemId\}\/media`/);
+    expect(code).not.toMatch(/POST|DELETE|PUT|\/scan|\/settings|watcher|\/cover/);
+    // The body is built only from the metadata.json bytes passed in, for the listed fields.
+    expect(code).toMatch(/const body = setBody\(written, fields\);/);
+    expect(
+      setBody(
+        Buffer.from(
+          JSON.stringify({
+            series: ['色シリーズ #3', 'STシリーズ'],
+            authors: ['今野敏'],
+            publisher: '出版社',
+            title: 'x',
+          }),
+        ),
+        ['series', 'authors'],
+      ),
+    ).toEqual({
+      metadata: {
+        series: [
+          { name: '色シリーズ', sequence: '3' },
+          { name: 'STシリーズ', sequence: null },
+        ],
+        authors: [{ name: '今野敏' }],
+      },
+    });
+    expect(() => setBody(Buffer.from('{}'), ['genres' as never])).toThrow(/Not a field/);
+    const importers: string[] = [];
+    const walk = (d: string) => {
+      for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+        const p = path.join(d, e.name);
+        if (e.isDirectory()) walk(p);
+        else if (p.endsWith('.ts') && /abs-set-fields'/.test(fs.readFileSync(p, 'utf8')))
           importers.push(path.relative(srcDir, p).replace(/\\/g, '/'));
       }
     };
@@ -1488,5 +1731,196 @@ describe('ABS’s own fills are not your edits (the live Preview on a copy, 芥�
       genres: ['文学'],
       isbn: '978-4',
     });
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Audiobook cleanup leftovers, item 6 (approved by the user 2026-11-21): a field is yours only
+// when no evidence says Audiobookshelf changed it; your edits are never overwritten.
+describe('Audiobookshelf leftovers and its own form vs your edits (fieldState, library-plan.ts)', () => {
+  const v = (over: Record<string, unknown> = {}) =>
+    bookValues(
+      {
+        title: 'ST 黄',
+        authors: ['今野敏'],
+        narrators: ['読み手'],
+        publisher: '出版社',
+        description: 'King & Prince<br>映画',
+        year: 2020,
+        series: [
+          { name: 'STシリーズ', position: null, label: null },
+          { name: '色シリーズ', position: 3, label: null },
+        ],
+        ...over,
+      },
+      'ST 黄',
+    );
+  const obj = (b: Buffer) => JSON.parse(b.toString('utf8')) as Record<string, unknown>;
+  const buf = (o: Record<string, unknown>) => Buffer.from(JSON.stringify(o, null, 2));
+  const written = obj(metadataBytes(v()));
+  const folder = 'japanese-new/今野敏/色シリーズ/Vol 3 - ST 黄';
+  const planned = (vals = v()): PlannedBook =>
+    ({
+      unitKey: 'u1',
+      copyKey: 'c1',
+      area: 'main',
+      state: 'build',
+      folder,
+      baseFolder: folder,
+      author: '今野敏',
+      series: '色シリーズ',
+      title: 'Vol 3 - ST 黄',
+      notes: [],
+      files: [{ fileId: 1, dst: `${folder}/a.m4b` }],
+      pdfs: [],
+      cover: true,
+      metadata: metadataBytes(vals),
+      values: vals,
+      rank: 0,
+    }) as PlannedBook;
+  const ledger = (over: Partial<LedgerBook> = {}): LedgerBook => ({
+    id: 1,
+    folder: 'japanese/今野敏/色シリーズ/Vol 3 - ST 黄',
+    baseFolder: 'japanese/今野敏/色シリーズ/Vol 3 - ST 黄',
+    area: 'main',
+    files: [{ fileId: 1, name: 'a.m4b', ino: 1 }],
+    metadata: metadataBytes(v()),
+    decided: metadataBytes(v()),
+    folderIno: 9,
+    ...over,
+  });
+  const plan = (book: LedgerBook, disk: Buffer, cur = planned(), choices = {}) =>
+    planLibraryChanges({
+      books: [book],
+      current: () => cur,
+      disk: () => disk,
+      abs: () => null,
+      keep: () => null,
+      tree: {
+        dirs: new Set(['japanese', 'japanese/今野敏', 'japanese/今野敏/色シリーズ', book.folder]),
+        bookDirs: new Set([book.folder]),
+        narrators: new Map(),
+      },
+      choices: () => choices,
+      fileTags: () => ({ date: '2024-12-17' }),
+    });
+  // ST 黄 as on the live library: the file had #6 before our write; ABS's scan of our write
+  // (without the number) kept it, so the file (and `seen`) has it again.
+  const kept = { ...written, series: ['色シリーズ #3', 'STシリーズ #6'] };
+  const st = (over: Partial<LedgerBook> = {}) =>
+    ledger({ before: buf(kept), seen: buf(kept), ...over });
+
+  it('each state: ours, ABS’s form or fill, the older value ABS kept, yours', () => {
+    const s = (
+      field: string,
+      disk: Record<string, unknown>,
+      more: Partial<Parameters<typeof fieldState>[0]> = {},
+    ) =>
+      fieldState({
+        field,
+        disk,
+        written,
+        seen: null,
+        before: null,
+        yours: false,
+        tags: null,
+        ...more,
+      });
+    expect(s('title', written)).toBe('ours');
+    // The survey's 37 descriptions: "&" as "&amp;", "<br>" as "<br />" — ABS's only after its scan.
+    const amp = { ...written, description: 'King &amp; Prince<br />映画' };
+    expect(s('description', amp, { seen: amp })).toBe('abs_form');
+    expect(s('description', amp)).toBe('yours');
+    // The survey's 20 author lists in ABS's order.
+    const two = { ...written, authors: ['橘公司', '東出祐一郎'] };
+    const w2 = { ...written, authors: ['東出祐一郎', '橘公司'] };
+    expect(s('authors', two, { written: w2, seen: two })).toBe('abs_form');
+    // The survey's 20 `_Unknown` and 5 full dates: ABS's fill of a field we wrote empty.
+    const empty = { ...written, authors: [], publishedYear: null };
+    expect(s('authors', { ...empty, authors: ['_Unknown'] }, { written: empty })).toBe('abs_fill');
+    expect(
+      s(
+        'publishedYear',
+        { ...empty, publishedYear: '2024-12-17' },
+        { written: empty, tags: { date: '2024-12-17' } },
+      ),
+    ).toBe('abs_fill');
+    // ST 黄: the value the file had before our write, still there since ABS's scan.
+    expect(s('series', kept, { seen: kept, before: kept })).toBe('abs_kept');
+    // The same value without the proof (no `seen`): yours (never overwritten).
+    expect(s('series', kept, { before: kept })).toBe('yours');
+    // Changed after ABS's scan (the file differs from `seen`): yours.
+    expect(
+      s('series', { ...kept, series: ['あなたのシリーズ'] }, { seen: kept, before: kept }),
+    ).toBe('yours');
+    // Yours once, yours always: even when the file now holds what we wrote.
+    expect(s('title', written, { yours: true })).toBe('yours');
+  });
+
+  it('ST 黄: the older value ABS kept goes to review; nothing is written until you choose', () => {
+    const book = st();
+    expect(absKeptSomething(book)).toBe(true);
+    const [c] = plan(book, buf(kept));
+    expect(c.absKept).toEqual([
+      { field: 'series', from: written.series, to: written.series, mine: kept.series },
+    ]);
+    expect(c.reviews.map((r) => r.kind)).toEqual(['abs_kept']);
+    expect(c.userFields).toEqual([]);
+    expect(c.metadataNew).toBeNull();
+    expect(c.absSet).toEqual([]);
+  });
+
+  it('"Use the cleanup’s": ours is written and set through ABS’s edit call; "Keep Audiobookshelf’s": kept as yours', () => {
+    const [o] = plan(st(), buf(kept), planned(), { series: 'ours' });
+    expect(o.absKept).toEqual([]);
+    expect(o.absSet).toEqual(['series']);
+    expect(obj(o.metadataNew!).series).toEqual(written.series);
+    expect(o.metadataRead).toEqual(buf(kept));
+    const [m] = plan(st(), buf(kept), planned(), { series: 'mine' });
+    expect(m?.absKept ?? []).toEqual([]);
+    expect(m?.metadataNew ?? null).toBeNull();
+    // With another change, the kept value is written back as it is and counted as yours.
+    const [m2] = plan(st(), buf(kept), planned(v({ publisher: '新しい出版社' })), {
+      series: 'mine',
+    });
+    expect(m2.userFields).toEqual(['series']);
+    expect(obj(m2.metadataNew!)).toMatchObject({ series: kept.series, publisher: '新しい出版社' });
+  });
+
+  it('the #6 correction: our value is ABS’s, nothing to review', () => {
+    const six = v({
+      series: [
+        { name: 'STシリーズ', position: 6, label: null },
+        { name: '色シリーズ', position: 3, label: null },
+      ],
+    });
+    const [c] = plan(st(), buf(kept), planned(six));
+    expect(c.absKept).toEqual([]);
+    expect(c.reviews).toEqual([]);
+    expect(c.userFields).toEqual([]);
+    expect(obj(c.metadataNew!).series).toEqual(['STシリーズ #6', '色シリーズ #3']);
+  });
+
+  it('your edit kept by one write stays yours at the next (bug B: it was taken back to ours)', () => {
+    // After a write that kept your title, the ledger holds your title and our decided values.
+    const mine = obj(metadataBytes(v({ title: 'あなたの題名' })));
+    const book = ledger({
+      metadata: buf(mine),
+      decided: metadataBytes(v()),
+      yours: new Set(['title']),
+    });
+    const [c] = plan(book, buf(mine), planned(v({ publisher: '三番目の出版社' })));
+    expect(obj(c.metadataNew!)).toMatchObject({
+      title: 'あなたの題名',
+      publisher: '三番目の出版社',
+    });
+    expect(c.userFields).toEqual(['title']);
+    // Without the record the same file reads as ours, and ours would be written over it.
+    const [old] = plan(
+      { ...book, yours: new Set() },
+      buf(mine),
+      planned(v({ publisher: '三番目の出版社' })),
+    );
+    expect(obj(old.metadataNew!).title).toBe('ST 黄');
   });
 });

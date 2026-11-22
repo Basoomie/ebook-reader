@@ -36,12 +36,13 @@
     skip: 1 | -1;
     here: void;
     back: void;
+    voiceChanged: void;
   }>();
 
-  const stepButton =
-    'flex h-12 w-12 items-center justify-center rounded border-2 border-current text-xl font-medium';
-  const button =
-    'flex min-h-[3rem] items-center justify-center rounded border-2 border-current px-4 font-medium';
+  // The shared buttons (app.scss): soft for actions, ghost for Close, square ones for − and +.
+  const stepButton = 'c-btn c-btn-secondary c-btn-icon text-xl';
+  const button = 'c-btn c-btn-secondary';
+  const closeButton = 'c-btn c-btn-ghost -mr-2 px-3';
 
   let panelEl: HTMLElement;
   let showVoice = false;
@@ -64,26 +65,26 @@
 <section
   bind:this={panelEl}
   tabindex="-1"
-  class="writing-horizontal-tb fixed inset-x-0 bottom-0 z-[55] max-h-[65vh] overflow-y-auto border-t-2 border-black bg-white p-4 text-black outline-none md:inset-y-0 md:max-h-none md:w-[26rem] md:border-t-0"
+  class="c-reader-panel writing-horizontal-tb fixed inset-x-0 bottom-0 z-[55] max-h-[65vh] overflow-y-auto rounded-t-2xl border-t p-4 outline-none md:inset-y-0 md:max-h-none md:w-[26rem] md:rounded-none md:border-t-0"
   class:md:left-auto={!dockLeft}
   class:md:right-0={!dockLeft}
-  class:md:border-l-2={!dockLeft}
+  class:md:border-l={!dockLeft}
   class:md:right-auto={dockLeft}
   class:md:left-0={dockLeft}
-  class:md:border-r-2={dockLeft}
+  class:md:border-r={dockLeft}
   data-testid="read-aloud-panel"
   aria-label="Read aloud"
 >
   <div class="mb-3 flex items-center justify-between">
     <h2 class="text-xl font-medium">Read aloud</h2>
-    <button class={button} on:click={() => dispatch('close')}>Close</button>
+    <button class={closeButton} on:click={() => dispatch('close')}>Close</button>
   </div>
 
   <p class="text-sm">The PC reads the book with its voice. It works while the PC is on.</p>
 
   <div class="mt-3 flex flex-wrap items-center gap-2">
     <button
-      class="{button} min-w-[7rem]"
+      class="c-btn c-btn-primary min-w-[7rem]"
       data-testid="read-aloud-toggle"
       on:click={() => dispatch('toggle')}>{playing ? 'Pause' : 'Play'}</button
     >
@@ -161,7 +162,12 @@
   {#if api && bookId}
     {#if showVoice}
       <div class="mt-2" data-testid="read-aloud-voice-choice">
-        <PcVoiceChoice {api} {bookId} testid="read-aloud-pc-voice" />
+        <PcVoiceChoice
+          {api}
+          {bookId}
+          testid="read-aloud-pc-voice"
+          on:changed={() => dispatch('voiceChanged')}
+        />
         <p class="mt-1 text-sm">A new voice is used from the next Play (or Read from here).</p>
       </div>
     {:else}

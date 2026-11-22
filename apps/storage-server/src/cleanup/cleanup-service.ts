@@ -30,7 +30,12 @@ import { BY_ID as STAGE5_TERMS } from './stage5/vocab';
 import { STAGE4_WRITTEN_FIELDS } from './stage2-batches';
 import { AiCore, type AiCoreDeps } from '../ai/core';
 import { AiRunner } from '../ai/runner';
-import { CLEANUP_AI_FEATURES, CLEANUP_AI_SOURCE, cleanupFeatureOf } from './ai-features';
+import {
+  CLEANUP_AI_FEATURES,
+  CLEANUP_AI_SOURCE,
+  CLEANUP_AI_TASK_NAMES,
+  cleanupFeatureOf,
+} from './ai-features';
 import { openLookups, paceSeconds, stage4Eta, type SiteCounts } from './stage4/eta';
 import { FetchQueue, LABELED_PRIORITY, backoffKey } from './stage4/queue';
 import { FetcherSlots, slotStateRow, type FetcherSlot } from './stage4/fetch-slots';
@@ -239,11 +244,12 @@ export class CleanupService {
       });
     for (const [id, label] of Object.entries(CLEANUP_AI_FEATURES))
       this.aiCore.registerFeature(id, label);
-    // A model one of the cleanup's tasks uses can't be deleted in Settings > AI.
+    // A model one of the cleanup's steps uses can't be deleted in Settings > AI (the tasks of
+    // steps not built, kept in the settings but shown nowhere, don't hold one).
     this.aiCore.registerModelUse((model) =>
       Object.entries(getSettings(opts.cleanup).models)
-        .filter(([, m]) => m === model)
-        .map(([task]) => `library cleanup ${task}`),
+        .filter(([task, m]) => m === model && task in CLEANUP_AI_TASK_NAMES)
+        .map(([task]) => CLEANUP_AI_TASK_NAMES[task]),
     );
     this.aiRunner = new AiRunner({
       db: opts.cleanup,

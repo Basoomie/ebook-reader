@@ -1,5 +1,5 @@
 /**
- * The series step's choices in cleanup.db (stage4_series_order, v22) and the Best guesses list
+ * The series step's choices in cleanup.db (stage4_series_order, v23) and the Best guesses list
  * (series-order follow-up, 2026-11-22). Every book of a series has a row (src 'calibre' for books
  * stage 4 doesn't change), so the list shows each series whole, in order.
  */

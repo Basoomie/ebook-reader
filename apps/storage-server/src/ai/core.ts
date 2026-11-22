@@ -19,10 +19,16 @@ import {
 import { firstSpendAt, heldUsd, recordSpend, spentBetween, spentByFeature } from './ledger';
 import type { SpendRow } from './ledger';
 import { monthOf } from './month';
-import { makeProvider, providerOf, type ProviderClient } from './providers';
+import { makeProvider, providerOf, type CallResult, type ProviderClient } from './providers';
 import { AiSecretStore, KEY_NAME, type AiKeyReader } from './secrets';
-import { isBuiltIn } from './prices';
-import { AiSettingsError, readAiSettings, updateAiSettings, type AiSettings } from './settings';
+import { BUILT_IN_PRICES, isChatModel } from './prices';
+import {
+  AiSettingsError,
+  readAiSettings,
+  updateAiSettings,
+  type AiPrice,
+  type AiSettings,
+} from './settings';
 import { costOf, priceOf } from './spend';
 import type { Provider } from './types';
 import { waitText, type AiWait } from './waits';
@@ -144,22 +150,126 @@ export class AiCore {
   }
 
   /**
-   * Deletes a model added before prices were built in (its price and its batch-or-call mode).
-   * Built-in models stay (their prices come from prices.ts); a model a task uses is refused.
+   * Takes a model off the list in Settings > AI (its mode and any price typed before prices were
+   * built in go with it). Refused while a feature's task uses it.
    */
   deleteModel(model: string): AiSettings {
     const s = this.settings();
-    if (isBuiltIn(model))
-      throw new AiSettingsError(`${model} is one of the app's own models; it can't be deleted`);
-    if (!(model in s.prices)) throw new AiSettingsError(`No model ${model} to delete`);
+    if (!s.models.includes(model)) throw new AiSettingsError(`${model} is not in the list`);
     const uses = this.modelUses(model);
     if (uses.length)
       throw new AiSettingsError(
-        `${model} is in use (${uses.join(', ')}); choose another model there first`,
+        `${model} is in use (${uses.join('; ')}): choose another model there first`,
       );
     const { [model]: _price, ...prices } = s.prices;
     const { [model]: _mode, ...modes } = s.modes;
-    return updateAiSettings(this.db, { prices, modes }, this.now());
+    return updateAiSettings(
+      this.db,
+      { models: s.models.filter((m) => m !== model), prices, modes },
+      this.now(),
+    );
+  }
+
+  /**
+   * The chat models each provider offers to the stored key, read from the provider now, each
+   * with its price when the app knows it and whether it is already in the list (the Add dialog).
+   */
+  async availableModels(): Promise<
+    Record<
+      Provider,
+      {
+        error: string | null;
+        models: { model: string; price: AiPrice | null; listed: boolean }[];
+      }
+    >
+  > {
+    const s = this.settings();
+    const out = {} as Record<
+      Provider,
+      { error: string | null; models: { model: string; price: AiPrice | null; listed: boolean }[] }
+    >;
+    for (const p of ['anthropic', 'openai'] as const) {
+      const r = await this.checkProvider(p);
+      out[p] = {
+        error: r.error,
+        models: (r.models ?? [])
+          .filter((m) => isChatModel(m))
+          .map((m) => ({
+            model: m,
+            price: BUILT_IN_PRICES[m] ?? null,
+            listed: s.models.includes(m),
+          }))
+          .sort(
+            (x, y) => Number(!x.price) - Number(!y.price) || x.model.localeCompare(y.model, 'en'),
+          ),
+      };
+    }
+    return out;
+  }
+
+  /**
+   * Adds a model to the list after three checks: the provider offers it to the stored key (its
+   * model list read now), the app knows its price, and one tiny test request is answered (its
+   * cost counted as Settings' own). Throws AiSettingsError saying which check failed.
+   */
+  async addModel(model: string): Promise<{ settings: AiSettings; ms: number; costUsd: number }> {
+    const s = this.settings();
+    const id = model.trim();
+    if (!id) throw new AiSettingsError('Choose a model');
+    if (s.models.includes(id)) throw new AiSettingsError(`${id} is already in the list`);
+    const provider = providerOf(id);
+    const name = provider === 'anthropic' ? 'Anthropic' : 'OpenAI';
+    const client = this.client(provider);
+    if (!client) throw new AiSettingsError(`Save the ${name} API key first`);
+    const check = await this.checkProvider(provider);
+    if (check.error) throw new AiSettingsError(`Can't read ${name}'s model list: ${check.error}`);
+    if (!check.models?.includes(id))
+      throw new AiSettingsError(`${name} does not offer ${id} to your API key`);
+    const price = BUILT_IN_PRICES[id];
+    if (!price)
+      throw new AiSettingsError(
+        `The app doesn't know ${id}'s price yet, so its cost couldn't be counted; it can be added once an app update brings its price`,
+      );
+    if (s.spendLimitUsd === null)
+      throw new AiSettingsError(
+        'Set a monthly spending limit first: the test request costs a fraction of a cent',
+      );
+    const t0 = Date.now();
+    let res: CallResult;
+    try {
+      res = await client.call(
+        {
+          model: id,
+          system: 'You answer with one JSON object and nothing else.',
+          user: 'Reply with {"ok": true}.',
+          schema: null,
+          maxTokens: 2000,
+        },
+        Math.min(120, s.requestTimeoutSeconds) * 1000,
+      );
+    } catch (err) {
+      throw new AiSettingsError(`The test request to ${id} failed: ${(err as Error).message}`);
+    }
+    const ms = Date.now() - t0;
+    const costUsd = costOf(price, res.usage, false, s.batchPriceFactor);
+    const seq = this.state('modelTestSeq', 0) + 1;
+    this.setState('modelTestSeq', seq);
+    this.record({
+      source: SETTINGS_SOURCE,
+      ref: -seq,
+      feature: SETTINGS_FEATURE,
+      stage: 'model-test',
+      provider,
+      model: id,
+      mode: 'direct',
+      costUsd,
+      at: this.now(),
+    });
+    if (res.kind === 'blocked')
+      throw new AiSettingsError(`${id} refused the test request (${res.detail})`);
+    const settings = updateAiSettings(this.db, { models: [...s.models, id] }, this.now());
+    this.log(`AI: ${id} added after a test request (${ms} ms, $${costUsd.toFixed(5)})`);
+    return { settings, ms, costUsd };
   }
 
   /** Saves provider settings; a raised limit lets waiting features go on at once. */

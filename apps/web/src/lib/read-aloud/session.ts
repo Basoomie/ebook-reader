@@ -111,6 +111,11 @@ export class ReadAloudController {
   private status = '';
   private failure: { line: number; message: string } | null = null;
   private needsVoice = false;
+  /**
+   * The book's voice choice changed since the session started: the server picks the voice
+   * when a session starts, so the next Play or Read from here starts a new one.
+   */
+  private voiceChanged = false;
   private pollAbort: AbortController | null = null;
   private polling = false;
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -152,6 +157,16 @@ export class ReadAloudController {
   /** Play (from the screen's first sentence, or where it paused). */
   async play(): Promise<void> {
     if (this.destroyed) return;
+    if (this.voiceChanged && this.sessionId && this.script) {
+      // A new voice: a new session, from the sentence it paused at.
+      const line = this.failure?.line ?? this.currentLine() ?? this.lastLine;
+      const position =
+        line !== null
+          ? (this.script.lines[line]?.position ?? this.host.screenPosition())
+          : this.host.screenPosition();
+      await this.renew(position);
+      return;
+    }
     this.ensurePlayer();
     this.pauseOtherMedia();
     // Inside the tap: lets the element play once audio is there.
@@ -193,6 +208,10 @@ export class ReadAloudController {
 
   /** "Read aloud from here" / "Read from here": starts at a reader position. */
   async readFrom(position: number): Promise<void> {
+    if (this.voiceChanged && this.sessionId) {
+      await this.renew(position);
+      return;
+    }
     this.ensurePlayer();
     this.pauseOtherMedia();
     void this.player!.play().catch(() => undefined);
@@ -241,6 +260,14 @@ export class ReadAloudController {
       this.lookupTimer = null;
       if (this.pausedFor === 'lookup') void this.play();
     }, seconds * 1000);
+  }
+
+  /**
+   * The book's voice choice was changed (the panel's picker): the session in use keeps the
+   * voice it started with, so the next Play or Read from here starts a new session.
+   */
+  noteVoiceChanged() {
+    if (this.sessionId) this.voiceChanged = true;
   }
 
   /** Stop: the session ends on the server (the PC keeps the voice for the keep time). */
@@ -351,10 +378,31 @@ export class ReadAloudController {
     return this.script;
   }
 
+  /** Ends the session in use and starts a new one (with the current voice choice) at `position`. */
+  private async renew(position: number) {
+    const old = this.sessionId;
+    this.endLocal();
+    this.failure = null;
+    if (old)
+      void this.host
+        .api()
+        ?.stopReadAloud(old)
+        .catch(() => undefined);
+    this.ensurePlayer();
+    this.pauseOtherMedia();
+    // Inside the tap: lets the element play once audio is there.
+    void this.player!.play().catch(() => undefined);
+    this.wantPlay = true;
+    this.pausedFor = null;
+    await this.startAt(position);
+  }
+
   private async startAt(position: number) {
     this.phase = 'preparing';
     this.status = 'Getting the book ready…';
     this.needsVoice = false;
+    // The server picks the voice now.
+    this.voiceChanged = false;
     this.refresh();
     try {
       const script = await this.loadScript();

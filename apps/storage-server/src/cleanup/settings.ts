@@ -210,6 +210,13 @@ export interface AudiobookSettings {
   /** Stage 7: how long to wait for Audiobookshelf to show a new book (minutes). */
   arrivalsAbsWaitMinutes: number;
   /**
+   * Library changes (item 6): a book's metadata.json counts as Audiobookshelf's version of our
+   * write when its last change came within this many seconds after Audiobookshelf's own scan of
+   * the book (its import, or a library scan the cleanup asked for). Measured: 0.1 s on a scratch
+   * ABS 2.37.1, 32 s on the live library's scan of 4,787 books.
+   */
+  librarySeenSlackSeconds: number;
+  /**
    * Stage 7: when Audiobookshelf hasn't shown a new book after the wait, tell it the new folder
    * (its watcher API, one folder; no setting is changed). Off until stop 3 shows it is needed
    * (user, 2026-11-20).
@@ -498,6 +505,7 @@ export const DEFAULT_SETTINGS: CleanupSettings = {
     arrivalsTimeZone: '',
     arrivalsSettleMinutes: 30,
     arrivalsAbsWaitMinutes: 30,
+    librarySeenSlackSeconds: 600,
     arrivalsAbsNudge: false,
     extractLeaseSeconds: 1800,
     libraryChanges: 'analyse',
@@ -937,6 +945,12 @@ function validate(key: Key, value: unknown, current: CleanupSettings): unknown {
           v.arrivalsAbsWaitMinutes,
           0,
           1440,
+        ),
+        librarySeenSlackSeconds: num(
+          "Seconds after Audiobookshelf's scan that its rewrite of metadata.json may come",
+          v.librarySeenSlackSeconds,
+          1,
+          3600,
         ),
         arrivalsAbsNudge: bool('Tell Audiobookshelf the new folder', v.arrivalsAbsNudge),
         extractLeaseSeconds: num(

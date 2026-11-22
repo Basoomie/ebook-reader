@@ -2031,14 +2031,31 @@ export function stage3Counts(db: Database.Database, analysisId: string): Record<
     `SELECT COUNT(*) AS n FROM audio_dup_groups WHERE analysis_id = ? AND damaged = 1`,
     analysisId,
   );
+  // The full ffmpeg decodes of the files still on disk (a deleted file's decode doesn't count).
+  // faad2 is left out: it stops at the first bad frame, so its result says nothing (WP21b).
+  const limit = getSettings(db).audiobooks.dupNoticeableErrors;
   const dec = db
     .prepare(
-      `SELECT decoder, SUM(ok = 1) AS ok, SUM(ok = 0) AS bad, COUNT(*) AS n FROM audio_full_decodes GROUP BY decoder`,
+      `SELECT SUM(d.ok = 1) AS clean,
+              SUM(d.ok = 0 AND COALESCE(h.profile, '') = 'xHE-AAC') AS undecodable,
+              SUM(d.ok = 0 AND COALESCE(h.profile, '') <> 'xHE-AAC' AND COALESCE(d.error_count, 0) > 0
+                  AND d.error_count <= ?) AS few,
+              SUM(d.ok = 0 AND COALESCE(h.profile, '') <> 'xHE-AAC'
+                  AND (COALESCE(d.error_count, 0) = 0 OR d.error_count > ?)) AS bad
+         FROM audio_full_decodes d
+         JOIN audio_files f ON f.id = d.file_id
+         LEFT JOIN audio_file_health h ON h.file_id = d.file_id
+        WHERE d.decoder = 'ffmpeg' AND f.gone_at IS NULL`,
     )
-    .all() as { decoder: string; ok: number; bad: number; n: number }[];
-  for (const d of dec) {
-    out[`decodes.${d.decoder}.clean`] = d.ok ?? 0;
-    out[`decodes.${d.decoder}.errors`] = d.bad ?? 0;
-  }
+    .get(limit, limit) as {
+    clean: number | null;
+    undecodable: number | null;
+    few: number | null;
+    bad: number | null;
+  };
+  out['decodes.clean'] = dec.clean ?? 0;
+  out['decodes.fewBadFrames'] = dec.few ?? 0;
+  out['decodes.undecodable'] = dec.undecodable ?? 0;
+  out['decodes.damaged'] = dec.bad ?? 0;
   return out;
 }

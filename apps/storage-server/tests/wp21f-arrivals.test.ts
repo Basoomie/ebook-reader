@@ -1574,6 +1574,33 @@ describe('a run of stage 7 (Preview, then On)', () => {
     t.stage7.maybeStart();
     await drive(t);
     expect(t.stage7.lastRun()!.report).toMatchObject({ added: 0, planned: 0 });
+    // A run that adds no book still reads ABS's item count before and after (was "? → ?").
+    expect(t.stage7.lastRun()!.progress.abs).toMatchObject({
+      before: 2,
+      after: 2,
+      found: 0,
+      missing: 0,
+      error: null,
+    });
+    expect(t.calls.some((c) => c.startsWith('POST'))).toBe(false);
+  });
+
+  it('a run that adds no book with ABS not set up says so instead of "?"', async () => {
+    const t = setup({ absShows: true });
+    setAudioStageMode(t.db, 7, 'on');
+    t.stage7.requestRun();
+    t.stage7.maybeStart();
+    await drive(t);
+    db_reset_stage1(t.db, t.disk);
+    (t.stage7 as unknown as { deps: { abs: () => null } }).deps.abs = () => null;
+    t.stage7.requestRun();
+    t.stage7.maybeStart();
+    await drive(t);
+    expect(t.stage7.lastRun()!.progress.abs).toMatchObject({
+      before: null,
+      after: null,
+      error: 'Audiobookshelf is not set up (address and API key)',
+    });
   });
 
   it('waiting for Calibre is not work: the build’s time leaves out the disk wait (WP21f-2)', async () => {
