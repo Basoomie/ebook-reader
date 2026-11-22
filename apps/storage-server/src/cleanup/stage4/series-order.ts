@@ -282,8 +282,7 @@ export function omnibusLast(title: string): number | null {
 
 /**
  * Two parts of one volume (「…I＜上＞」 and 「…I＜下＞」, 「…1 「虚惑星の魔法使い」上巻」 and 「…下巻」):
- * the titles differ only by the part. They share the volume's number, as the library has them
- * (whether parts get numbers of their own is the user's call: asked at stop 1).
+ * the titles differ only by the part.
  */
 export function partsOfOne(a: string, c: string): boolean {
   const strip = (t: string) =>
@@ -291,6 +290,22 @@ export function partsOfOne(a: string, c: string): boolean {
   const sa = squash(plain(a));
   const sc = squash(plain(c));
   return sa !== sc && strip(a) === strip(c) && strip(a).length >= 2;
+}
+
+/**
+ * A part's place in its volume (1 上/前編, 2 中, 3 下/後編), from a part mark standing as a word
+ * of its own: 「＜上＞」, 「（下）」, 「〈中〉」, 「」下巻」, 「 前編」 (not the 上 of 「境界線上の」). 0: none.
+ */
+export function partRank(title: string): number {
+  const t = plain(title);
+  const re =
+    /(?:^|[\s(（〈＜<【［[「『」』〉＞>）)])(上巻|中巻|下巻|前編|中編|後編|上|中|下|前|後)(?=$|[\s)）〉＞>】］\]」』(（〈＜<])/gu;
+  let last = 0;
+  for (const m of t.matchAll(re)) {
+    const p = m[1];
+    last = /^(?:上|前)/u.test(p) ? 1 : /^中/u.test(p) ? 2 : 3;
+  }
+  return last;
 }
 
 /**
@@ -493,14 +508,60 @@ export function orderSeries(books: SeriesBook[]): SeriesChoice[] {
     else if (w.printed !== null) set(w, w.printed, w.printedFrom!, false, null);
 
   // 上/中/下 of one work, when every main book is a part (神獣聖戦 Perfect Edition 上 / 下).
-  const parts = mains.map((w) => partOf(afterName(w.b.own[0] ?? w.b.title, name) ?? ''));
+  // Also with a subtitle after the part (「徳川幕閣盛衰記（中）―吉宗の陰謀」), when no book prints a
+  // volume number.
+  // Only one work: every book has the same words before its part (「徳川幕閣盛衰記」; not
+  // 春夏秋冬代行者 「春の舞」 上/下 beside 「夏の舞」 上/下, several works each in parts).
+  // The words before the part mark (a mark standing as its own word, as partRank reads it: not
+  // the 下 of 「下馬将軍」).
+  const before = (t: string) => {
+    const m = [
+      ...plain(t).matchAll(
+        /(?:^|[\s(（〈＜<【［[「『」』〉＞>）)])(上巻|中巻|下巻|前編|中編|後編|上|中|下|前|後)(?=$|[\s)）〉＞>】］\]」』(（〈＜<])/gu,
+      ),
+    ].pop();
+    return m && m.index !== undefined ? squash(plain(t).slice(0, m.index + 1)) : null;
+  };
+  const bases = new Set(mains.map((w) => before(w.b.own[0] ?? w.b.title)));
+  const parts = mains.map((w) => {
+    const p = partOf(afterName(w.b.own[0] ?? w.b.title, name) ?? '');
+    if (p) return p;
+    if (w.printed !== null || bases.size !== 1) return null;
+    const r = partRank(w.b.own[0] ?? w.b.title);
+    return r === 1 ? 'first' : r === 2 ? 'middle' : r === 3 ? 'last' : null;
+  });
+  // Numbers that already read 上 → 中 → 下, each its own, stay (「…ホームズの帰還」 上 2 / 下 3: the
+  // series' first book is not in the library).
+  const rankOf = { first: 1, middle: 2, last: 3 } as const;
+  const inOrder =
+    mains.every((w) => w.index !== null) &&
+    new Set(mains.map((w) => w.index)).size === mains.length &&
+    mains.every((w, i) =>
+      mains.every(
+        (o, j) =>
+          !parts[i] || !parts[j] || rankOf[parts[i]!] >= rankOf[parts[j]!] || w.index! < o.index!,
+      ),
+    );
   if (mains.length > 1 && parts.every((x) => x !== null)) {
+    // Counted up from the lowest number among them (the work may be the series' second book);
+    // numbers already in order stay. Either way the parts' order is printed: dates never
+    // reorder them (オトナな副社長と秘密の恋: the 下 file's colophon has the earlier date).
     const hasMiddle = parts.includes('middle');
+    // The series is the work itself (「時の鳥籠」 上/下: 1, 2) or the work is one book of it
+    // (「女子高生探偵シャーロット・ホームズの帰還」 上/下 in its series: their place stays, 2, 3).
+    const known = mains.map((w) => w.index).filter((x): x is number => x !== null);
+    const workBase = [...bases][0] ?? '';
+    const isWholeSeries = !!workBase && workBase === squash(name);
+    const base = isWholeSeries || !known.length ? 1 : Math.max(1, Math.min(...known));
+    // A work that is the whole series is always 1, 2(, 3) (神なるオオカミ 上 1 / 下 3 had a gap).
+    const keep = inOrder && !isWholeSeries;
     mains.forEach((w, i) => {
-      const n = parts[i] === 'first' ? 1 : parts[i] === 'middle' ? 2 : hasMiddle ? 3 : 2;
+      const n = keep
+        ? w.index!
+        : base + (parts[i] === 'first' ? 0 : parts[i] === 'middle' ? 1 : hasMiddle ? 2 : 1);
       w.printed = n;
       w.printedFrom = 'its own title (上/中/下)';
-      set(w, n, w.printedFrom, false, null);
+      set(w, n, w.printedFrom, w.guess && keep, w.guess && keep ? w.reason : null);
     });
   }
 
@@ -595,6 +656,92 @@ export function orderSeries(books: SeriesBook[]): SeriesChoice[] {
     }
   }
 
+  // Volumes in parts (the user, 2026-11-22: "the same volume number means the same book"; 下 was
+  // shown before 上): a series with a volume split into 上/中/下 counts every book in reading
+  // order, 1, 2, 3… (境界線上のホライゾン I上 1, I下 2, II上 3…). Bonuses and omnibus editions follow
+  // the new numbers; side books are placed after them below.
+  const split = mains.some(
+    (w) =>
+      w.index !== null &&
+      partRank(w.b.title) > 0 &&
+      // Another book on the number with another part mark (each part may have its own subtitle:
+      // リビルドワールドI〈上〉 誘う亡霊 / I〈下〉 無理無茶無謀).
+      mains.some(
+        (o) =>
+          o !== w &&
+          o.index === w.index &&
+          partRank(o.b.title) > 0 &&
+          partRank(o.b.title) !== partRank(w.b.title),
+      ) &&
+      // Every book on the number is a part: 「転生したらスライムだった件 1」 beside a three-part
+      // 「1 最強のスライム誕生！？（上）（中）（下）」 is another edition, not volume 1 in parts.
+      mains.every((o) => o.index !== w.index || partRank(o.b.title) > 0),
+  );
+  if (split && mains.every((w) => w.index !== null)) {
+    // Positions in the whole series, not only the books in the library (adding a missing part
+    // later never moves the others): each volume takes one place, or as many as it has parts,
+    // known from the books and from every store result of the series (a 中 anywhere: three).
+    // A volume is in parts when two different parts carry its number (a part with a number of
+    // its own is a volume: 徳川幕閣盛衰記 （上） 1, （中） 2, （下） 3).
+    const ranksOf = new Map<number, Set<number>>();
+    const note = (v: number | null, rank: number) => {
+      if (v === null || rank === 0 || Math.floor(v) !== v) return;
+      ranksOf.set(v, (ranksOf.get(v) ?? new Set<number>()).add(rank));
+    };
+    for (const w of mains) note(w.index, partRank(w.b.title));
+    for (const e of poolList) note(printedNumber(e.title, name), partRank(e.title));
+    const places = (v: number) => {
+      const r = ranksOf.get(v);
+      return !r || r.size < 2 ? 1 : r.has(2) ? 3 : 2;
+    };
+    const start = (v: number) => {
+      let s = 0;
+      for (let u = 1; u < v; u++) s += places(u);
+      return s;
+    };
+
+    for (const w of mains) {
+      const v = w.index!;
+      const r = partRank(w.b.title);
+      let pos: number;
+      if (v < 1) pos = v;
+      else if (Math.floor(v) !== v)
+        pos = start(Math.floor(v)) + places(Math.floor(v)) + (v - Math.floor(v));
+      else if (places(v) === 1) pos = start(v) + 1;
+      else pos = start(v) + (r === 0 || r === 1 ? 1 : r === 2 ? 2 : places(v));
+
+      const parts = r > 0;
+      if (pos !== w.index)
+        set(
+          w,
+          pos,
+          parts
+            ? 'the reading order (a volume in parts)'
+            : 'the reading order (the series has volumes in parts)',
+          w.guess,
+          w.reason,
+        );
+    }
+    // Bonuses and omnibus editions after the last place of their volume.
+    const lastPlace = (v: number) => (v >= 1 ? start(v) + places(v) : v);
+    for (const w of works) {
+      if (!w.ours) continue;
+      if (w.b.kind === 'bonus' && w.printed !== null && Math.floor(w.printed) >= 1)
+        set(
+          w,
+          lastPlace(Math.floor(w.printed)) + 0.1,
+          'a store bonus, after its volume',
+          false,
+          null,
+        );
+      if (w.b.kind === 'omnibus') {
+        const last = w.b.own.map(omnibusLast).find((x) => x !== null) ?? null;
+        if (last !== null)
+          set(w, lastPlace(last) + 0.9, `an omnibus of volumes up to ${last}`, false, null);
+      }
+    }
+  }
+
   // 5. Side books: N.5 after the main volume published (or listed) just before them.
   const sides = works.filter((w) => w.side && w.ours);
   if (sides.length) {
@@ -651,7 +798,6 @@ export function orderSeries(books: SeriesBook[]): SeriesChoice[] {
   // the same number. 「≪婚礼編≫ …Ⅲ」 and 「≪婚約編≫ …Ⅲ」 are two books.
   const sameWork = (a: Work, c: Work) =>
     squash(plain(a.b.title)) === squash(plain(c.b.title)) ||
-    partsOfOne(a.b.title, c.b.title) ||
     (a.index === c.index && editionOf(a.b.title, c.b.title)) ||
     squash(plain(a.b.own[0] ?? a.b.title)) === squash(plain(c.b.own[0] ?? c.b.title)) ||
     (a.key === c.key && a.index === c.index);
@@ -806,7 +952,8 @@ function titleChoice(
     }
     return null;
   }
-  if (now !== null && idx !== null && now !== idx) {
+  // A reading-order number differs from the printed volume by design (IV is 7).
+  if (now !== null && idx !== null && now !== idx && !w.from.startsWith('the reading order')) {
     const printedByFile = b.own.some((t) => printedNumber(t, name) === now);
     const printedByStore = b.records.some((t) => printedNumber(t, name) === now);
     if (
@@ -909,7 +1056,6 @@ export function addSeriesChecks(
     // Copies of one volume: the same title, or the same subtitle and printed number.
     const copy = (a: SeriesBook, c: SeriesBook) =>
       squash(plain(a.title)) === squash(plain(c.title)) ||
-      partsOfOne(a.title, c.title) ||
       editionOf(a.title, c.title) ||
       squash(plain(a.own[0] ?? a.title)) === squash(plain(c.own[0] ?? c.title)) ||
       subKey(a.own[0] ?? a.title, a.name) === subKey(c.own[0] ?? c.title, c.name);

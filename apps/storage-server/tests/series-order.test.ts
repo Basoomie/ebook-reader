@@ -208,6 +208,77 @@ describe('the order of a series', () => {
     expect(c.get(books[1].uuid)?.index).toBe(1);
   });
 
+  it('a series with volumes in parts counts every book in reading order (the user, 2026-11-22)', () => {
+    const name = 'GENESISシリーズ 境界線上のホライゾン';
+    const t = (s: string) => `GENESISシリーズ 境界線上のホライゾン${s}`;
+    const books = [
+      book({ name, title: t('I＜下＞'), index: 1, indexFrom: 'models' }),
+      book({ name, title: t('I＜上＞'), index: 1, indexFrom: 'store' }),
+      book({ name, title: t('II＜上＞'), index: 2, indexFrom: 'models' }),
+      book({ name, title: t('II＜下＞'), index: 2, indexFrom: 'models' }),
+      book({ name, title: t('III＜下＞'), index: 3, indexFrom: 'models' }),
+      book({ name, title: t('III＜中＞'), index: 3, indexFrom: 'models' }),
+      book({ name, title: t('III＜上＞'), index: 3, indexFrom: 'models' }),
+      book({ name, title: t('IV'), index: 4, indexFrom: 'models' }),
+    ];
+    const c = new Map(orderSeries(books).map((x) => [x.uuid, x.index]));
+    expect(books.map((b) => c.get(b.uuid))).toEqual([2, 1, 3, 4, 7, 6, 5, 8]);
+  });
+
+  it('a missing part keeps its place; another edition beside volume 1 is not a split volume', () => {
+    const name = 'ゲート';
+    const g = (s: string, i: number) =>
+      book({ name, title: `ゲート〈${s}`, index: i, indexFrom: 'models' });
+    const books = [
+      g('1〉接触編〈上〉', 1),
+      g('1〉接触編〈下〉', 1),
+      g('3〉動乱編〈下〉', 3),
+      g('4〉総撃編〈上〉', 4),
+    ];
+    // A store result shows volume 3's other part.
+    books[2].pool = [{ title: 'ゲート〈3〉動乱編〈上〉', from: 'amazon' }];
+    const c = new Map(orderSeries(books).map((x) => [x.uuid, x.index]));
+    // 1上 1, 1下 2, (2) 3, 3上 4 (not in the library), 3下 5, 4上 6.
+    expect(books.map((b) => c.get(b.uuid))).toEqual([1, 2, 5, 6]);
+    const slime = '転生したらスライムだった件';
+    const s = [
+      book({ name: slime, title: `${slime} 1`, index: 1, indexFrom: 'store' }),
+      book({
+        name: slime,
+        title: `${slime} 1 最強のスライム誕生！？（上）`,
+        index: 1,
+        indexFrom: 'models',
+      }),
+      book({
+        name: slime,
+        title: `${slime} 1 最強のスライム誕生！？（下）`,
+        index: 1,
+        indexFrom: 'models',
+      }),
+      book({ name: slime, title: `${slime} 2`, index: 2, indexFrom: 'store' }),
+    ];
+    const cs = new Map(orderSeries(s).map((x) => [x.uuid, x]));
+    expect(cs.get(s[3].uuid)?.index).toBe(2);
+  });
+
+  it('one work in parts: 1, 2, 3 for the whole series; its place kept as a book of a series', () => {
+    const t = '徳川幕閣盛衰記';
+    const whole = [
+      book({ name: t, title: `${t}（上）―野望の下馬将軍`, index: 1, indexFrom: 'guess' }),
+      book({ name: t, title: `${t}（中）―吉宗の陰謀`, index: 2, indexFrom: 'guess' }),
+      book({ name: t, title: `${t}（下）―黒船擾乱`, index: 2, indexFrom: 'guess' }),
+    ];
+    const c = new Map(orderSeries(whole).map((x) => [x.uuid, x.index]));
+    expect(whole.map((b) => c.get(b.uuid))).toEqual([1, 2, 3]);
+    const s = '女子高生探偵シャーロット・ホームズ';
+    const part = [
+      book({ name: s, title: `${s}の帰還 〈消えた八月〉事件 上`, index: 2, indexFrom: 'guess' }),
+      book({ name: s, title: `${s}の帰還 〈消えた八月〉事件 下`, index: 2, indexFrom: 'guess' }),
+    ];
+    const cp = new Map(orderSeries(part).map((x) => [x.uuid, x.index]));
+    expect(part.map((b) => cp.get(b.uuid))).toEqual([2, 3]);
+  });
+
   it('a side book goes to N.5 after the volume before it, never on a main number', () => {
     const name = '痛いのは嫌なので防御力に極振りしたいと思います。';
     const books = [
