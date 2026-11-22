@@ -4,8 +4,9 @@
  * All rights reserved.
  */
 
-import { writableBooleanLocalStorageSubject } from '$lib/data/internal/writable-boolean-local-storage-subject';
 import { writableNumberLocalStorageSubject } from '$lib/data/internal/writable-number-local-storage-subject';
+import { readerBottomBar$ } from '$lib/reader-toolbar/settings';
+import { bottomBarSwitch } from '$lib/reader-toolbar/toolbar-layout';
 
 /**
  * Season 2 Phase 12 session 3: read-aloud's settings, all per device (copied by Settings >
@@ -29,11 +30,11 @@ export const readAloudLookupResume$ = writableNumberLocalStorageSubject()(
   1
 );
 
-/** A read-aloud button in the reader's bottom bar (it also shows while read-aloud is on). */
-export const readAloudBottomBarButton$ = writableBooleanLocalStorageSubject()(
-  'readAloudBottomBarButton',
-  false
-);
+/**
+ * A read-aloud button in the reader's bottom bar (it also shows while read-aloud is on).
+ * Since reader toolbars session 1 this is the Read aloud entry's `shown` in readerBottomBar.
+ */
+export const readAloudBottomBarButton$ = bottomBarSwitch(readerBottomBar$, 'readAloud');
 
 export const SPEED_MIN = 0.5;
 export const SPEED_MAX = 2;

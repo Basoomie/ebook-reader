@@ -9,6 +9,8 @@ import { writableNumberLocalStorageSubject } from '$lib/data/internal/writable-n
 import { writableObjectLocalStorageSubject } from '$lib/data/internal/writable-object-local-storage-subject';
 import { writableStringLocalStorageSubject } from '$lib/data/internal/writable-string-local-storage-subject';
 import type { EnrichMapping } from './mapping';
+import { readerBottomBar$ } from '$lib/reader-toolbar/settings';
+import { bottomBarSwitch } from '$lib/reader-toolbar/toolbar-layout';
 
 /** WP14 "Enrich last card" settings (Settings > Anki). */
 
@@ -26,11 +28,11 @@ export const ankiConnectTimeoutSeconds$ = writableNumberLocalStorageSubject()(
   10
 );
 
-/** An Anki button in the reader's bottom bar (off: new bottom-bar items are opt-in). */
-export const ankiBottomBarButton$ = writableBooleanLocalStorageSubject()(
-  'ankiBottomBarButton',
-  false
-);
+/**
+ * An Anki button in the reader's bottom bar (off: new bottom-bar items are opt-in). Since
+ * reader toolbars session 1 this is the Anki entry's `shown` in readerBottomBar.
+ */
+export const ankiBottomBarButton$ = bottomBarSwitch(readerBottomBar$, 'anki');
 
 /** The message after enriching a card closes by itself after this many seconds (0 = stays). */
 export const ankiNoticeSeconds$ = writableNumberLocalStorageSubject()('ankiNoticeSeconds', 5);

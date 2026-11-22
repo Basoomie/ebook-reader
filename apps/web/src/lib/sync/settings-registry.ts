@@ -91,7 +91,6 @@ export const SETTINGS_REGISTRY: Record<string, SettingSpec> = {
   highlightLastColor: d('Number'),
   highlightRefindChars: d('Number'),
   highlightBarAnySelection: d('Boolean'),
-  showReturnMarker: d('Boolean'),
   confirmClose: d('Boolean'),
   manualBookmark: d('Boolean'),
   autoBookmark: d('Boolean'),
@@ -133,7 +132,6 @@ export const SETTINGS_REGISTRY: Record<string, SettingSpec> = {
   readAloudSpeed: d('Number'),
   readAloudAheadSeconds: d('Number'),
   readAloudLookupResume: d('Number'),
-  readAloudBottomBarButton: d('Boolean'),
 
   // --- statistics rules that must agree across devices (global) ---
   startDayHoursForTracker: g('Number'),
@@ -185,7 +183,6 @@ export const SETTINGS_REGISTRY: Record<string, SettingSpec> = {
   // --- lib/anki/settings.ts (WP14 "Enrich last card") ---
   ankiConnectUrl: d('String'),
   ankiConnectTimeoutSeconds: d('Number'),
-  ankiBottomBarButton: d('Boolean'),
   ankiNoticeSeconds: d('Number'),
   ankiConnectKey: l('String'), // AnkiConnect's key never leaves the device
   ankiFieldMapping: g('Object'),
@@ -202,6 +199,12 @@ export const SETTINGS_REGISTRY: Record<string, SettingSpec> = {
   ttsChapterPauseMs: g('Number'),
   ttsDialoguePauseMs: g('Number'), // Season 2 Phase 12 session 4: between narration and dialogue
   speakerUnsureBelow: g('Number'), // Season 2 Phase 12 session 5: quotes to check (percent)
+
+  // --- lib/reader-toolbar/settings.ts (per device, reader toolbars session 1). The old
+  // bottom-bar switches ankiBottomBarButton, readAloudBottomBarButton and showReturnMarker
+  // moved into readerBottomBar (unlisted now: their old values, if any, are local). ---
+  readerToolbar: d('Array'),
+  readerBottomBar: d('Array'),
 
   // --- lib/home/settings.ts (per device, WP7b) ---
   appOpenTarget: d('String'),

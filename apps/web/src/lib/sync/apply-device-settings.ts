@@ -14,6 +14,8 @@ import '$lib/anki/settings';
 import '$lib/audio/tts-settings';
 // Season 2 Phase 12 session 3: read-aloud's per-device settings.
 import '$lib/read-aloud/settings';
+// Reader toolbars session 1: the top bar and bottom bar lists.
+import '$lib/reader-toolbar/settings';
 import '$lib/whispersync/lib/stores';
 import { liveStorageSettings } from '$lib/data/internal/writable-storage-subject';
 import { localStorage } from '$lib/data/window/local-storage';
