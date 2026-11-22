@@ -15,15 +15,8 @@
   export let mergeTo = mergeEntries.MANAGE;
   export let disableRouteNavigation = false;
   /**
-   * Entries shown only in the collapsed menu (below `sm`), above the usual
-   * ones: header controls that are hidden on narrow screens to make room.
-   * Their labels are dispatched like any other entry.
-   */
-  export let compactOnlyItems: { label: string; title: string }[] = [];
-  /**
-   * Where the collapsed menu opens. The reader passes `bottom-end` and no fallbacks, so
-   * Popper's flip never picks the side: on the user's phone it judged the centred menu to
-   * fit although it ran past the right edge (2026-11-14; not reproduced on the PC).
+   * Where the collapsed menu opens. (The reader's top bar has its own menu since reader
+   * toolbars session 1: lib/components/book-reader/book-reader-header.svelte.)
    */
   export let placement: Placement = 'bottom';
   export let fallbackPlacements: Placement[] = ['bottom-end', 'bottom-start'];
@@ -31,8 +24,6 @@
   const dispatch = createEventDispatcher<{ action: string }>();
 
   const actionItems = items.filter((item) => item.routeId !== $page.route.id);
-
-  $: compactItems = [...compactOnlyItems, ...actionItems];
 
   let menuElm: Popover;
 
@@ -90,7 +81,7 @@
         style="max-height: calc(100vh - 4rem); max-height: calc(100dvh - 4rem)"
         slot="content"
       >
-        {#each compactItems as actionItem (actionItem.label)}
+        {#each actionItems as actionItem (actionItem.label)}
           <div
             tabindex="0"
             role="button"

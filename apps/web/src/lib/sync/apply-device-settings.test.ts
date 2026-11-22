@@ -6,9 +6,20 @@
 
 import 'fake-indexeddb/auto';
 // Load the store first, like the app does (store.ts and database.service.ts import each other).
-import { einkMode$, fontSize$, lastBlurredTrackerItems$, theme$ } from '$lib/data/store';
+import {
+  einkMode$,
+  fontSize$,
+  lastBlurredTrackerItems$,
+  readerBottomBar$,
+  readerToolbar$,
+  showReturnMarker$,
+  theme$
+} from '$lib/data/store';
+import { get } from 'svelte/store';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { ankiConnectKey$ } from '$lib/anki/settings';
+import { ankiBottomBarButton$, ankiConnectKey$ } from '$lib/anki/settings';
+import { readAloudBottomBarButton$ } from '$lib/read-aloud/settings';
+import { BOTTOM_DEFAULT, TOP_DEFAULT, resolveTopBar } from '$lib/reader-toolbar/toolbar-layout';
 import { liveStorageSettings } from '$lib/data/internal/writable-storage-subject';
 import { localStorage } from '$lib/data/window/local-storage';
 import { homeRows$ } from '$lib/home/settings';
@@ -27,7 +38,9 @@ const KEYS = [
   'ttu-whispersync-action-list-of-footer',
   'ankiConnectKey',
   'ttu-whispersync-anki-key',
-  'startDayHoursForTracker'
+  'startDayHoursForTracker',
+  'readerToolbar',
+  'readerBottomBar'
 ];
 
 beforeEach(() => {
@@ -103,6 +116,39 @@ describe('applyDeviceSettings', () => {
     applyDeviceSettings({ fontSize: '24', einkMode: null });
     expect(applyDeviceSettings({ fontSize: '24', einkMode: null })).toEqual([]);
     expect(applyDeviceSettings({ fontSize: '25', einkMode: null })).toEqual(['fontSize']);
+  });
+
+  it('copies both toolbar lists exactly, and the old bottom-bar switches follow (session 1)', () => {
+    const toolbar = JSON.stringify([
+      { id: 'home', place: 'bar' },
+      { id: 'toc', place: 'menu' },
+      { id: 'menu', place: 'bar' }
+    ]);
+    const bottom = JSON.stringify([
+      { id: 'audiobook', shown: true },
+      { id: 'anki', shown: true },
+      { id: 'readAloud', shown: true },
+      { id: 'returnMarker', shown: true }
+    ]);
+    const changed = applyDeviceSettings({ readerToolbar: toolbar, readerBottomBar: bottom });
+    expect(changed.sort()).toEqual(['readerBottomBar', 'readerToolbar']);
+    expect(localStorage.getItem('readerToolbar')).toBe(toolbar);
+    expect(localStorage.getItem('readerBottomBar')).toBe(bottom);
+    expect(resolveTopBar(readerToolbar$.getValue()).slice(0, 3)).toEqual([
+      { id: 'home', place: 'bar' },
+      { id: 'toc', place: 'menu' },
+      { id: 'menu', place: 'bar' }
+    ]);
+    expect(get(ankiBottomBarButton$)).toBe(true);
+    expect(get(readAloudBottomBarButton$)).toBe(true);
+    expect(get(showReturnMarker$)).toBe(true);
+
+    // A device that never set them: the defaults, nothing stored.
+    applyDeviceSettings({ readerToolbar: null, readerBottomBar: null });
+    expect(readerToolbar$.getValue()).toEqual(TOP_DEFAULT);
+    expect(readerBottomBar$.getValue()).toEqual(BOTTOM_DEFAULT);
+    expect(localStorage.getItem('readerBottomBar') ?? null).toBeNull();
+    expect(get(ankiBottomBarButton$)).toBe(false);
   });
 
   it('never writes the AnkiConnect keys or a shared setting, whatever it is given', () => {
