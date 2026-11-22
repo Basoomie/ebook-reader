@@ -157,7 +157,12 @@ export function titleKey(s: string): string {
 
 /** Whether a title has words of its own after its last volume number (a volume's subtitle). */
 export function subtitleAfterNumber(s: string): boolean {
-  const t = queryTitle(nfkc(s).replace(/【[^】]*】/gu, ' '));
+  // A bracketed imprint at the end is not a subtitle, listed or not (「…～クリスと迷宮の秘密～3
+  // （サーガフォレスト）」: gate 4 at stop 1; the subtitle before the number is the series').
+  const t = queryTitle(nfkc(s).replace(/【[^】]*】/gu, ' ')).replace(
+    /\s*[(（][^()（）]*[)）]\s*$/u,
+    '',
+  );
   const m = [...t.matchAll(/\p{Nd}+(?:\.\p{Nd}+)?/gu)].pop();
   if (!m || m.index === undefined) return false;
   return norm(t.slice(m.index + m[0].length)).length >= 2;
