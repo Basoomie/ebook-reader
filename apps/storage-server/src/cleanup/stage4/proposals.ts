@@ -545,7 +545,13 @@ export function proposeStage4(input: ProposalInput): Stage4Proposal[] {
       (newSeries.name !== null && newSeries.name !== oldSeries.name && spelling !== undefined))
   ) {
     seriesProposed = true;
-    const auto = so ? fse.auto && !so.review : fse.auto && (newSeries.name === null || fix.auto);
+    // A series stage 4 wrote is never removed automatically: removing it means the evidence it
+    // was written from changed (series-order stop 2: 31 books whose pick changed would have lost
+    // ハリー・ポッター #6, 源氏物語 #42, 十津川警部シリーズ #56…). It goes to review.
+    const removesWritten = newSeries.name === null && !!writtenName;
+    const auto =
+      !removesWritten &&
+      (so ? fse.auto && !so.review : fse.auto && (newSeries.name === null || fix.auto));
     const unconfirmed = so
       ? fse.unconfirmed || so.guess
       : fse.unconfirmed || (newSeries.name !== null && fix.unconfirmed);
@@ -568,14 +574,16 @@ export function proposeStage4(input: ProposalInput): Stage4Proposal[] {
                 ? 'ranobedb'
                 : 'rules',
           ),
-          reason: so
-            ? (so.review ??
-              (fse.unconfirmed || !fse.auto ? fse.reason : so.guess ? so.reason : null))
-            : auto && !unconfirmed
-              ? null
-              : fse.unconfirmed || !fse.auto
-                ? fse.reason
-                : fix.reason,
+          reason: removesWritten
+            ? 'Would remove a series the cleanup wrote'
+            : so
+              ? (so.review ??
+                (fse.unconfirmed || !fse.auto ? fse.reason : so.guess ? so.reason : null))
+              : auto && !unconfirmed
+                ? null
+                : fse.unconfirmed || !fse.auto
+                  ? fse.reason
+                  : fix.reason,
           evidence:
             so || spelling
               ? {
