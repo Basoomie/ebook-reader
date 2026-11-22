@@ -469,22 +469,6 @@ describe('wp20g: a run end to end', () => {
     await steps();
     const o = outcomes();
 
-    if (process.env.WP20G_DEBUG)
-      console.log(
-        JSON.stringify(
-          {
-            o,
-            run: env.service.arrivals.currentRun(),
-            state: env.service.arrivals.state(),
-            logs: env.logs.slice(-30),
-            runs: env.cleanupDb
-              .prepare('SELECT id, state, phase, error FROM calibre_arrival_runs')
-              .all(),
-          },
-          null,
-          1,
-        ),
-      );
     expect(o['Discord/same-as-A.epub']).toBe('identical');
     expect(o['Discord/B again.epub']).toBe('duplicate');
     expect([o['Discord/C.epub'], o['Discord/C copy.epub']].sort()).toEqual(['identical', 'new']);
@@ -535,25 +519,6 @@ describe('wp20g: a run end to end', () => {
     }
     const o = outcomes();
 
-    if (process.env.WP20G_DEBUG)
-      console.log(
-        JSON.stringify(
-          {
-            o,
-            run: env.service.arrivals.currentRun()?.p,
-            state: env.service.arrivals.state(),
-            logs: env.logs.slice(-20),
-            runs: env.cleanupDb
-              .prepare('SELECT id, state, phase, error FROM calibre_arrival_runs')
-              .all(),
-            batches: env.cleanupDb.prepare('SELECT * FROM calibre_arrival_batches').all(),
-            items: env.cleanupDb.prepare('SELECT * FROM calibre_arrival_batch_items').all(),
-            pairs: env.cleanupDb.prepare('SELECT * FROM calibre_arrival_pairs').all(),
-          },
-          null,
-          1,
-        ),
-      );
     expect(o['_extracted/pack.zip/inner/D.epub']).toBe('added');
     expect(Object.values(o).filter((x) => x === 'added')).toHaveLength(2);
     // The run's books went through stages 1-3 and stage 2's proposals; its write is a stage-2
@@ -595,6 +560,15 @@ describe('wp20g: a run end to end', () => {
       )
       .get(H) as { calibre_id: number; analysis_id: string } | undefined;
     expect(p?.calibre_id).toBe(H);
+    // The same copy is also same-text, but stage 3 leaves out what stage 1 removes (the cleanup's
+    // own order): one proposal, never a second that would find the book gone and pause stage 3.
+    expect(
+      env.cleanupDb
+        .prepare(
+          `SELECT COUNT(*) AS n FROM proposed_changes WHERE stage = 3 AND calibre_id = ? AND analysis_id LIKE 'arrivals:%'`,
+        )
+        .get(H),
+    ).toEqual({ n: 0 });
     expect(
       env.cleanupDb.prepare(`SELECT origin FROM calibre_known_books WHERE calibre_id = ?`).get(H),
     ).toEqual({ origin: 'hand' });

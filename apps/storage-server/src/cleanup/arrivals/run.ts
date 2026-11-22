@@ -1695,6 +1695,20 @@ export class BookArrivals {
       }
       return f?.sha256 ? { ...b, sha256: f.sha256, size: f.size, mtimeMs: f.mtime_ms } : null;
     };
+    // The copies stage 1 removes in this run are not stage 3's books, as in the cleanup's own
+    // order (stage 3 analyses the library after stage 1's removals): proposing them again would
+    // find them gone at the removal and pause stage 3.
+    const goneBy1 = new Set(
+      (
+        this.db
+          .prepare(
+            `SELECT calibre_id FROM proposed_changes
+             WHERE stage = 1 AND library_id = ? AND analysis_id = ? AND class = 'auto' AND field = 'book'
+               AND state IN ('proposed', 'queued', 'applied')`,
+          )
+          .all(libraryId, pd.analysisId) as { calibre_id: number }[]
+      ).map((r) => r.calibre_id),
+    );
     const ok = await this.withDisk(
       p,
       async () => {
@@ -1733,6 +1747,7 @@ export class BookArrivals {
           const kept = added ? books.get(added.calibreId) : null;
           const old = books.get(x.calibreId);
           if (!kept || !old || old.uuid !== x.uuid) continue;
+          if (goneBy1.has(old.calibreId) || goneBy1.has(kept.calibreId)) continue;
           if (hasReaderData(pd, old.uuid)) {
             this.addReview(
               run.id,
@@ -1750,7 +1765,10 @@ export class BookArrivals {
           if (a && k) proposeStage3Removal(pd, a, k, x.pair);
         }
         // Books added by hand: compared with the library as stage 3 compares every book.
-        const hand = p.scope.hand.map((id) => books.get(id)).filter((b): b is SnapshotBook => !!b);
+        const hand = p.scope.hand
+          .filter((id) => !goneBy1.has(id))
+          .map((id) => books.get(id))
+          .filter((b): b is SnapshotBook => !!b);
         if (!hand.length) return true;
         const cd = this.compareDeps(libraryId, libDir, books);
         const pacer = new SourcePacer(getSettings(this.db).pacing.readMbPerSecond * 1024 * 1024);
@@ -1783,7 +1801,7 @@ export class BookArrivals {
           const k = news.has(m.pair.a) ? m.pair.a : m.pair.b;
           const other = k === m.pair.a ? m.pair.b : m.pair.a;
           const v = await judgePair(cd, k, other, m.m, news, quality);
-          if (v.keep === null) continue;
+          if (v.keep === null || goneBy1.has(other)) continue;
           const removed = books.get(v.keep === 'new' ? other : k);
           const kept = books.get(v.keep === 'new' ? k : other);
           if (!removed || !kept) continue;
