@@ -13,6 +13,7 @@ import {
   omnibusLast,
   orderSeries,
   subSeriesNumber,
+  arcOf,
   printedNumber,
   type SeriesBook,
 } from '../src/cleanup/stage4/series-order';
@@ -540,5 +541,40 @@ describe('the changed-series measurement fixes (stop 2)', () => {
     const cs = orderSeries(bs);
     expect(cs.every((c) => !c.review && c.guess)).toBe(true);
     expect(new Set(cs.map((c) => c.index)).size).toBe(2);
+  });
+});
+
+describe('arcs that number again, counted straight through (the user, 2026-11-22)', () => {
+  it('reads the arc and its volume', () => {
+    const Y = 'ようこそ実力至上主義の教室へ';
+    expect(arcOf(`${Y} ２年生編４．５ (MF文庫J)`, Y)).toEqual({ arc: '2年生編', n: 4.5 });
+    expect(arcOf(`${Y} 10 (MF文庫J)`, Y)).toEqual({ arc: '', n: 10 });
+    expect(
+      arcOf('トリニティ・ブラッド Reborn on the Mars ＶＩ 茨の宝冠', 'トリニティ・ブラッド'),
+    ).toEqual({ arc: 'rebornonthemars', n: 6 });
+    expect(arcOf('liar ～season2～ 1', 'liar')).toEqual({ arc: 'season2', n: 1 });
+    expect(arcOf('作品 新装版 3', '作品')).toEqual({ arc: '', n: 3 });
+  });
+  it('a later arc follows the one before; copies and side runs are no arc', () => {
+    const N = 'デュラララ!!';
+    const v = (t: string, i: number) =>
+      book({ name: N, title: `${N}${t}`, index: i, indexFrom: 'store' });
+    const main = [v('', 1), v('×2', 2), v('×3', 3)];
+    const sh = [v('SH', 1), v('SH×2', 2), v('SH×3', 3)];
+    const got = new Map(orderSeries([...main, ...sh]).map((c) => [c.uuid, c]));
+    expect(sh.map((b) => got.get(b.uuid)?.index)).toEqual([4, 5, 6]);
+    expect(got.get(sh[1].uuid)?.guess).toBe(true);
+    // A second edition with the volumes' own subtitles is copies, not an arc.
+    const M = '中の下!';
+    const e = (t: string, i: number) =>
+      book({ name: M, title: `${M}${t}`, index: i, indexFrom: 'store' });
+    const ed = [
+      e('1 ランク1.中の下と言われて', 1),
+      e('2 ランク2.中の中を目指して', 2),
+      e(' ランク1.中の下と言われて', 1),
+      e(' ランク2.中の中を目指して', 2),
+    ];
+    const r = new Map(orderSeries(ed).map((c) => [c.uuid, c.index]));
+    expect(ed.map((b) => r.get(b.uuid) ?? b.index)).toEqual([1, 2, 1, 2]);
   });
 });

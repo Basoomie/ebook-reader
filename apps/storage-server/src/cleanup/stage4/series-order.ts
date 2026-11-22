@@ -218,7 +218,7 @@ const NOT_VOLUME =
   /^(?:人|禁|歳|才|年|月|日|時|分|秒|億|万|千|円|%|％|回|個|つ|名|匹|頭|世紀|階|号|度|倍|色|kg|km|cm|分の)/u;
 /** Words that make a book a side book of its series (after the series name only). */
 const SIDE =
-  /外伝|番外|短編集|短編|アンソロジー|画集|ARTWORKS|設定資料|ガイドブック|ファンブック|スピンオフ|アンコール|(?<![A-Za-z])(?:SS|SP\d*|EX|IF|Another|Encore|Extra ?Story|Side ?(?:of|story)|After ?story|Re[:：]IF)(?![A-Za-z])/iu;
+  /外伝|番外|短編集|短編|アンソロジー|画集|ARTWORKS|設定資料|ガイドブック|ファンブック|スピンオフ|アンコール|サイドストーリー|(?<![A-Za-z])(?:SS|SP\d*|EX|IF|Another|Encore|Extra ?Story|Side ?(?:of|story)|After ?story|Re[:：]IF)(?![A-Za-z])/iu;
 
 /**
  * 「第二部 西方諸国編4」, 「第1部 ネオサイタマ炎上1」: a part (部) followed by the part's own
@@ -396,6 +396,56 @@ function subKey(title: string, name: string): string {
 }
 
 const COMIC = /MFC|コミック|マンガ|漫画|COMIC|Comic|comic|単話|分冊/u;
+
+/** Words of an edition, not of an arc (「新装版 3」 is volume 3 again). */
+const EDITION_WORDS =
+  /新装版|完全版|愛蔵版|文庫版|決定版|改訂版|特装版|電子版|限定版|特別版|合本版|合冊版|DL版|web版|Kindle版/iu;
+
+/**
+ * The arc a title is in and its number in that arc (the user, 2026-11-22: arcs that number
+ * again are counted straight through): the words between the series name and the volume number
+ * (「２年生編４．５」 → 2年生編 4.5, 「SH×4」 → SH 4, 「Reborn on the Mars VI」 → reborn… 6), '' for
+ * the series' own numbering. Null: the name is not in the title, or the number is an arc's own
+ * (「第２部」: a part with no volume number).
+ */
+export function arcOf(title: string, name: string): { arc: string; n: number | null } | null {
+  const rest = afterName(title, name);
+  if (rest === null) return null;
+  const r = nfkc(rest).replace(/^[\s・:：\-‐―─~～〜,、?？!！]+/u, '');
+  let head: string;
+  let num: string | null = null;
+  // English words (「Reborn on the Mars VI 茨の宝冠」): the words are the arc, a Roman numeral or a
+  // number after them its volume.
+  const ascii = /^([A-Za-z][A-Za-z ]*)(\d+(?:\.\d+)?)?/u.exec(r);
+  const words = ascii ? ascii[1].trim().split(/\s+/u) : [];
+  if (ascii && words.length >= 2 && words.some((x) => x.length >= 3)) {
+    if (ascii[2]) num = ascii[2];
+    else if (words[words.length - 1] in ROMAN) num = words.pop()!;
+    head = words.join(' ');
+  } else {
+    const t0 = r.split(/[\s(（「『【〈<～~]/u)[0];
+    const m = /(\d+(?:\.\d+)?)(?!.*\d)/u.exec(t0);
+    // 「season2～ 1」: a number right after the arc's own is the volume (the arc is season2).
+    const next = /^[\s～~〜・:：-]*(\d+(?:\.\d+)?)(?![\d.])/u.exec(r.slice(t0.length));
+    if (m && next) {
+      head = t0;
+      num = next[1];
+    } else if (!m && next && EDITION_WORDS.test(t0)) {
+      // 「新装版 3」: an edition word, then the volume.
+      head = '';
+      num = next[1];
+    } else if (m) {
+      head = t0.slice(0, m.index);
+      num = m[1];
+      if (/^\s*(?:部|章|界|巻目?)/u.test(t0.slice(m.index + m[1].length)) && /第\s*$/u.test(head))
+        return null;
+    } else head = t0;
+  }
+  head = head.replace(/[×xX#＃.・:：\-‐―─~～〜\s]+$/u, '');
+  if (EDITION_WORDS.test(head)) head = '';
+  const n = num === null ? null : /^\d/u.test(num) ? parseFloat(num) : (ROMAN[num] ?? null);
+  return { arc: squash(head), n };
+}
 
 interface Work {
   b: SeriesBook;
@@ -844,6 +894,165 @@ export function orderSeries(books: SeriesBook[]): SeriesChoice[] {
         const last = w.b.own.map(omnibusLast).find((x) => x !== null) ?? null;
         if (last !== null)
           set(w, lastPlace(last) + 0.9, `an omnibus of volumes up to ${last}`, false, null);
+      }
+    }
+  }
+
+  // Arcs that number again, counted straight through (the user, 2026-11-22): ようこそ's
+  // 2年生編 1 follows 1年生編's 11.5 as 12, デュラララ!!SH follows ×13; arcs a list interleaves
+  // (トリニティ・ブラッド's two sub-series) take the list's order. Only where books of two arcs
+  // share a number; a series whose numbers the cleanup can't change all is left to review.
+  {
+    const found = new Map<Work, { arc: string; n: number | null }>();
+    for (const w of mains)
+      if (w.index !== null) {
+        const a = arcOf(w.b.own[0] ?? w.b.title, name);
+        // A volume number (under 100, whole or .5): not 「起源8.08」.
+        if (a && (a.n === null || (a.n < 100 && (a.n * 2) % 1 === 0))) found.set(w, a);
+      }
+    // An arc is a numbered run: two books or more with their own numbers in it (a side book
+    // 「プラクティカルウォーゲーム」 or a second edition is not one: stop-2 arc check).
+    const runs = new Map<string, number>();
+    for (const a of found.values()) if (a.n !== null) runs.set(a.arc, (runs.get(a.arc) ?? 0) + 1);
+    // Copies are not an arc: an arc whose books' subtitles another arc's books have too
+    // (「中の下！ ランク1.…」 is volume 1 again, 「中の下！1 ランク1.…」).
+    // A book's own subtitle: its words after the name, numbers and the arc's name set aside
+    // (「２年生編４」 has none; 「ランク1.中の下と言われて」 has 中の下と言われて).
+    const subtitleOf = (w: Work, arc: string) => {
+      const k = squash(
+        nfkc(afterName(plain(w.b.own[0] ?? w.b.title), name) ?? '')
+          .replace(/\d+(?:\.\d+)?/gu, '')
+          .replace(/(?<![A-Za-z])[IVX]{1,5}(?![A-Za-z])/gu, ''),
+      );
+      const a = arc.replace(/\d+/gu, '');
+      return a && k.startsWith(a) ? k.slice(a.length) : k;
+    };
+    const subs = new Map<Work, string>();
+    for (const [w, a] of found) subs.set(w, subtitleOf(w, a.arc));
+    const copies = (arc: string) => {
+      const mine = [...found].filter(([, a]) => a.arc === arc).map(([w]) => subs.get(w)!);
+      const others = [...found].filter(([, a]) => a.arc !== arc).map(([w]) => subs.get(w)!);
+      const real = mine.filter((k) => k.length >= 4);
+      return (
+        real.length > 0 &&
+        real.filter((k) => others.some((o) => o.length >= 4 && (o.includes(k) || k.includes(o))))
+          .length *
+          2 >=
+          real.length
+      );
+    };
+    // An arc with a book whose number isn't known yet is left alone (its copies would split).
+    // Nor one with a book that is no plain numbered volume here (a side book, a bonus): its
+    // books would be numbered apart (魔法戦士リウイ's ファーラムの剣 2-4 were side books).
+    const unread = new Set(
+      works
+        .filter((w) => !mains.includes(w) || w.index === null)
+        .map((w) => arcOf(w.b.own[0] ?? w.b.title, name)?.arc)
+        // (Never the series' own numbering: side books sit in every long series.)
+        .filter((a): a is string => a !== undefined && a !== ''),
+    );
+    let arcs = new Map(
+      [...found].filter(
+        ([, a]) => (runs.get(a.arc) ?? 0) >= 2 && !copies(a.arc) && !unread.has(a.arc),
+      ),
+    );
+    // Side books, not an arc: books that sit between the series' own volumes in the list
+    // (グロリアスドーン's アイキャッチ 1, 2 between 4 and 5).
+    const own = [...arcs].filter(([, a]) => a.arc === '').map(([w]) => w);
+    const ownSpan = own.filter((w) => w.listOrder !== null).map((w) => w.listOrder!);
+    if (ownSpan.length >= 2) {
+      const lo = Math.min(...ownSpan);
+      const hi = Math.max(...ownSpan);
+      const inside = new Set(
+        [...arcs]
+          .filter(
+            ([w, a]) =>
+              a.arc !== '' && w.listOrder !== null && w.listOrder > lo && w.listOrder < hi,
+          )
+          .map(([, a]) => a.arc),
+      );
+      arcs = new Map([...arcs].filter(([, a]) => !inside.has(a.arc)));
+    }
+    // An arc's book without a number of its own is the arc's first volume (「デュラララ!!SH」).
+    for (const [w, a] of arcs)
+      if (a.n === null && ![...arcs].some(([o, b]) => o !== w && b.arc === a.arc && b.n === 1))
+        arcs.set(w, { arc: a.arc, n: 1 });
+    const names = new Set([...arcs.values()].map((a) => a.arc));
+    const clash = [...arcs].some(([w, a]) =>
+      [...arcs].some(([o, b]) => o !== w && b.arc !== a.arc && o.index === w.index),
+    );
+    if (names.size >= 2 && clash) {
+      const part = [...arcs.keys()];
+      const listed = part.filter((w) => w.listOrder !== null);
+      const byList =
+        listed.length === part.length &&
+        new Set(listed.map((w) => w.listOrder)).size === part.length;
+      const inList = byList ? [...part].sort((a, c) => a.listOrder! - c.listOrder!) : [];
+      // Interleaved: an arc's books are not together in the list.
+      const seen: string[] = [];
+      for (const w of inList) {
+        const a = arcs.get(w)!.arc;
+        if (seen[seen.length - 1] !== a) seen.push(a);
+      }
+      // Never where it would lose a printed .5 (ベン・トー's 箸休め 5.5), nor over the series' own
+      // numbering (an arc interleaved with it is side books, kept out above).
+      const interleaved =
+        byList &&
+        seen.length > new Set(seen).size &&
+        !names.has('') &&
+        part.every((w) => Number.isInteger(arcs.get(w)!.n ?? w.index!));
+      // Every book it renumbers is listed (the user wants each number not printed as it is seen).
+      const arcReason = 'Its arc numbers again: counted straight through in reading order';
+      if (interleaved && inList.every((w, i) => w.ours || w.index === i + 1))
+        inList.forEach((w, i) => {
+          if (w.index !== i + 1)
+            set(
+              w,
+              i + 1,
+              'the reading order (the series list; its arcs number again)',
+              true,
+              arcReason,
+            );
+        });
+      else if (!interleaved) {
+        // The arcs in order: by the list, else by first publication, else the series' own
+        // numbering first and the arcs by the number in their name (2年生編 before 3年生編).
+        const groups = new Map<string, Work[]>();
+        for (const w of part)
+          groups.set(arcs.get(w)!.arc, [...(groups.get(arcs.get(w)!.arc) ?? []), w]);
+        const first = (ws: Work[], f: (w: Work) => number | null) =>
+          Math.min(...ws.map((w) => f(w) ?? Infinity));
+        const numIn = (a: string) => {
+          const m = /\d+/u.exec(a);
+          return m ? Number(m[0]) : a === '' ? 0 : 1e6;
+        };
+        const order = [...groups].sort(
+          ([a, x], [c, y]) =>
+            first(x, (w) => w.listOrder) - first(y, (w) => w.listOrder) ||
+            first(x, (w) => w.b.date) - first(y, (w) => w.b.date) ||
+            numIn(a) - numIn(c) ||
+            (a < c ? -1 : a > c ? 1 : 0),
+        );
+        // Planned first: a number the cleanup doesn't own (Calibre's, the user's) that would
+        // change leaves the series as it is (to review); one that stays is fine.
+        const plan = new Map<Work, number>();
+        let offset = 0;
+        order.forEach(([, ws], k) => {
+          let top = offset;
+          for (const w of ws) {
+            // The first arc keeps its numbers as they are now (護樹騎士団物語 10 is 11 after its
+            // volume 7 in parts): the next arc follows them.
+            const n =
+              k === 0 ? w.index! : Math.round((offset + (arcs.get(w)!.n ?? w.index!)) * 100) / 100;
+            top = Math.max(top, n, k === 0 ? w.index! : n);
+            if (k > 0) plan.set(w, n);
+          }
+          offset = Math.floor(top);
+        });
+        if ([...plan].every(([w, n]) => w.ours || n === w.index))
+          for (const [w, n] of plan)
+            if (n !== w.index)
+              set(w, n, 'the reading order (its arc numbers again)', true, arcReason);
       }
     }
   }
