@@ -77,6 +77,19 @@ const EVENTS: EventDef[] = [
     label: 'Audiobook daily summary (books added, duplicates, waiting, review)',
     kind: 'digest',
   },
+  // WP20g: the Calibre library's new arrivals (books added by hand and the import).
+  {
+    id: 'calibre_arrivals_review',
+    section: 'cleanup',
+    label: 'New books need a look (once per run with new review items)',
+    kind: 'now',
+  },
+  {
+    id: 'calibre_arrivals_summary',
+    section: 'cleanup',
+    label: 'New books daily summary (added, copies found, not imported, AI cost)',
+    kind: 'digest',
+  },
   {
     id: 'index_refused',
     section: 'data',

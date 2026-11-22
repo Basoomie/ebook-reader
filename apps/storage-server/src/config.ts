@@ -50,6 +50,12 @@ export interface ServerConfig {
    * Optional: without them only the audiobook part of /cleanup is off.
    */
   cleanupAudio?: { torrentsDir: string; libraryDir: string; mediaDir: string | null } | null;
+  /**
+   * WP20g: the Calibre import's source folders: /mnt/disk1/data/torrents mounted read-only
+   * (CLEANUP_BOOK_SOURCES_DIR). Optional: without it books added by hand still go through
+   * stages 1-5; the import is off.
+   */
+  cleanupBookSources?: string | null;
 }
 
 export interface AudioConfig {
@@ -417,6 +423,9 @@ export function loadConfig(env: Env): LoadedConfig {
       logs: parseLogConfig(env, warnings),
       audio: parseAudioConfig(env, warnings),
       cleanupAudio: parseCleanupAudio(env, warnings),
+      cleanupBookSources: (env.CLEANUP_BOOK_SOURCES_DIR ?? '').trim()
+        ? path.resolve((env.CLEANUP_BOOK_SOURCES_DIR ?? '').trim())
+        : null,
     },
     warnings,
   };

@@ -15,6 +15,7 @@ import { authenticateApplyToken } from '../apply-tokens';
 import type { CleanupService } from '../cleanup-service';
 import type { AudioCleanupService } from './audio-cleanup-service';
 import type { LinkOpResult } from './stage6-build';
+import { BOOK_ARCHIVE_BATCH_BASE } from '../arrivals/archives';
 
 export interface LinkRouteOptions {
   service: CleanupService | null;
@@ -91,17 +92,21 @@ export function createCleanupLinkRouter(options: LinkRouteOptions): Router {
       return;
     }
     try {
+      const answer = options.audio!.linkHeartbeat({
+        sidecarId,
+        runId: str(b.runId, 100),
+        version: str(b.version, 40),
+        problem: str(b.problem, 500),
+        info:
+          typeof b.info === 'object' && b.info !== null && !Array.isArray(b.info)
+            ? (b.info as Record<string, unknown>)
+            : null,
+      }) as Record<string, unknown>;
+      // WP20g: the Calibre import's archives keep the sidecar polling quickly too.
       res.json(
-        options.audio!.linkHeartbeat({
-          sidecarId,
-          runId: str(b.runId, 100),
-          version: str(b.version, 40),
-          problem: str(b.problem, 500),
-          info:
-            typeof b.info === 'object' && b.info !== null && !Array.isArray(b.info)
-              ? (b.info as Record<string, unknown>)
-              : null,
-        }),
+        options.service?.arrivals.archivesActive()
+          ? { ...answer, active: true, pollSeconds: 1 }
+          : answer,
       );
     } catch (err) {
       sendError(res, 409, 'not_available', (err as Error).message);
@@ -109,7 +114,10 @@ export function createCleanupLinkRouter(options: LinkRouteOptions): Router {
   });
 
   router.post('/cleanup-link/claim', json, (_req, res) => {
-    res.json({ batch: options.audio!.linkClaim() });
+    // The audiobooks' batches first; then the Calibre import's archives (WP20g).
+    res.json({
+      batch: options.audio!.linkClaim() ?? options.service?.arrivals.archiveClaim() ?? null,
+    });
   });
 
   router.post('/cleanup-link/batches/:id/report', json, (req, res) => {
@@ -150,6 +158,15 @@ export function createCleanupLinkRouter(options: LinkRouteOptions): Router {
       });
     }
     try {
+      if (id >= BOOK_ARCHIVE_BATCH_BASE && options.service) {
+        res.json(
+          options.service.arrivals.archiveReport(
+            id,
+            clean as unknown as Parameters<typeof options.service.arrivals.archiveReport>[1],
+          ),
+        );
+        return;
+      }
       res.json(options.audio!.linkReport(id, clean));
     } catch (err) {
       sendError(res, 404, 'no_batch', (err as Error).message);

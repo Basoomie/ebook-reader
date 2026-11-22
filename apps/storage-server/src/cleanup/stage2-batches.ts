@@ -399,7 +399,14 @@ export class Stage2Batches {
     }
   }
 
-  async plan(libraryId: string): Promise<{ batch: BatchRow | null; reason: string | null }> {
+  /**
+   * `analysisId` (WP20g): plan the proposals of a new-arrivals run (arrivals:<run>) instead of the
+   * stage's current analysis; then only that run's own proposals (no decided ones of the library).
+   */
+  async plan(
+    libraryId: string,
+    opts: { analysisId?: string } = {},
+  ): Promise<{ batch: BatchRow | null; reason: string | null }> {
     if (this.batches.open()) return { batch: null, reason: 'A batch is being applied' };
     this.reviewSplitNames(libraryId);
     const settings = getSettings(this.db);
@@ -418,7 +425,7 @@ export class Stage2Batches {
       .prepare(
         `SELECT id, calibre_id, calibre_uuid, field, old_json, new_json, evidence_json FROM proposed_changes
          WHERE stage = ${this.stage} AND library_id = ? AND state = 'proposed' AND class = 'auto'
-           AND (analysis_id = ? OR decided_by IS NOT NULL)${
+           AND ${opts.analysisId ? 'analysis_id = ?' : '(analysis_id = ? OR decided_by IS NOT NULL)'}${
              // Stage 4: only the fields it writes (format and edition wait for stage 5), so a stage
              // with only those left says Done, not that its fields are paused.
              this.stage === 4
@@ -429,7 +436,7 @@ export class Stage2Batches {
            }
          ORDER BY calibre_id, id`,
       )
-      .all(libraryId, currentAnalysisId(this.db, this.stage)) as {
+      .all(libraryId, opts.analysisId ?? currentAnalysisId(this.db, this.stage)) as {
       id: number;
       calibre_id: number;
       calibre_uuid: string;

@@ -469,8 +469,9 @@ export class BatchService {
   async planStage1(
     libraryId: string,
     shouldStop: () => boolean = () => false,
+    analysisId?: string,
   ): Promise<{ batch: BatchRow | null; reason: string | null }> {
-    return this.planRemovals(1, libraryId, shouldStop);
+    return this.planRemovals(1, libraryId, shouldStop, analysisId);
   }
 
   /**
@@ -482,15 +483,19 @@ export class BatchService {
   async planStage3(
     libraryId: string,
     shouldStop: () => boolean = () => false,
+    analysisId?: string,
   ): Promise<{ batch: BatchRow | null; reason: string | null }> {
-    return this.planRemovals(3, libraryId, shouldStop);
+    return this.planRemovals(3, libraryId, shouldStop, analysisId);
   }
 
+  /** `analysisId` (WP20g): a new-arrivals run's removals (arrivals:<run>), not the stage's own. */
   private async planRemovals(
     stage: number,
     libraryId: string,
     shouldStop: () => boolean,
+    analysisId?: string,
   ): Promise<{ batch: BatchRow | null; reason: string | null }> {
+    const analysis = analysisId ?? currentAnalysisId(this.db, stage);
     if (this.open()) return { batch: null, reason: 'A batch is being applied' };
     if (REMOVAL_STAGES.some((st) => this.awaitingIngest(st))) {
       return {
@@ -507,7 +512,7 @@ export class BatchService {
            AND analysis_id = ?
          LIMIT 1`,
       )
-      .get(stage, libraryId, currentAnalysisId(this.db, stage));
+      .get(stage, libraryId, analysis);
     if (!any) return { batch: null, reason: null };
     const present = presentBookCount(this.deps.main, libraryId);
     const cap = Math.max(
@@ -524,7 +529,7 @@ export class BatchService {
            AND analysis_id = ?
          ORDER BY id LIMIT ?`,
       )
-      .all(stage, libraryId, currentAnalysisId(this.db, stage), cap) as {
+      .all(stage, libraryId, analysis, cap) as {
       id: number;
       calibre_id: number;
       calibre_uuid: string;

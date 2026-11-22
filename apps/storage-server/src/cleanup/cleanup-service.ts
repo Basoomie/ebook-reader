@@ -39,6 +39,7 @@ import {
 import { openLookups, paceSeconds, stage4Eta, type SiteCounts } from './stage4/eta';
 import { FetchQueue, LABELED_PRIORITY, backoffKey } from './stage4/queue';
 import { FetcherSlots, slotStateRow, type FetcherSlot } from './stage4/fetch-slots';
+import { BookArrivals } from './arrivals/run';
 import { CALIBRE_FETCH_SITES, type FetchSite } from './settings';
 import {
   BUILT_STAGES,
@@ -144,6 +145,11 @@ export interface CleanupServiceOptions {
   aiCore?: AiCore;
   /** Stand-in AI providers (tests, when no aiCore is given). */
   aiProviders?: AiCoreDeps['providers'];
+  /**
+   * WP20g: the import's source folders (CLEANUP_BOOK_SOURCES_DIR, /mnt/disk1/data/torrents read
+   * only); null = the import is off (books added by hand still go through stages 1-5).
+   */
+  bookSourcesDir?: string | null;
   log?: (m: string) => void;
   logError?: (m: string, err?: unknown) => void;
 }
@@ -195,6 +201,13 @@ export class CleanupService {
   readonly stage4Ai: Stage4Ai | null;
   /** Stage 5 (WP20f): genres and tags, after stage 4's AI check. */
   readonly stage5: Stage5 | null;
+  /** WP20g: the Calibre library's new arrivals and the import. */
+  readonly arrivals: BookArrivals;
+  private arriving: Promise<void> | null = null;
+  /** Until when the arrivals asked the reader's index to copy metadata.db at once. */
+  private arrivalsIngestUntil = 0;
+  /** The linking sidecar's last heartbeat (the audiobook cleanup tells; archives need it). */
+  private linkSeen: () => boolean = () => false;
   private analysing5: Promise<void> | null = null;
   /** Why stage 5 is not working right now. */
   waiting5: string | null = null;
@@ -344,6 +357,30 @@ export class CleanupService {
             log: this.log,
           })
         : null;
+    this.arrivals = new BookArrivals({
+      cleanup: opts.cleanup,
+      main: opts.main,
+      calibreDir: opts.calibreDir,
+      cacheDir: opts.cacheDir,
+      sourcesDir: opts.bookSourcesDir ?? null,
+      diskLock: this.diskLock,
+      batches: this.batches,
+      stage2: this.analysis2,
+      stage2Batches: this.batches.stage2,
+      stage4Batches: this.batches.stage4,
+      stage5Batches: this.batches.stage5,
+      analysis4: this.analysis4,
+      runner: this.aiRunner,
+      reader: () => this.stage3Reader(),
+      counterBuild: opts.counterBuild ?? counterBuild(),
+      targetLibrary: () => this.targetLibrary(),
+      libraryBusy: () => this.libraryBusy(),
+      wantIngest: () => {
+        this.arrivalsIngestUntil = Date.now() + 10 * 60_000;
+      },
+      linkSidecarOnline: () => this.linkSeen(),
+      log: this.log,
+    });
     // Stage 4's covers are the stores' pictures, read from the fetch cache.
     this.batches.stage4.setStoreCover((url) => {
       const r = opts.cleanup
@@ -534,11 +571,32 @@ export class CleanupService {
     await this.analysing3;
     this.analysis3?.close();
     await this.analysing4;
+    this.arrivals.stop();
+    await this.arriving;
+  }
+
+  /** WP20g: the audiobook cleanup tells whether the linking sidecar is seen. */
+  setLinkSidecarSeen(seen: () => boolean): void {
+    this.linkSeen = seen;
+  }
+
+  /**
+   * WP20g: a stage's own analysis running (an arrivals run never overlaps one: each waits), as
+   * the words for the page; null when none runs.
+   */
+  libraryBusy(): string | null {
+    if (this.analysing) return "stage 1's analysis";
+    if (this.analysing2) return "stage 2's analysis";
+    if (this.analysing3) return "stage 3's analysis";
+    if (this.analysing4) return "stage 4's analysis";
+    if (this.analysing5) return "stage 5's analysis";
+    return null;
   }
 
   /** A finished removal batch waits for the reader's index of this library (index it now). */
   wantsIngest(libraryId: string): boolean {
     try {
+      if (Date.now() < this.arrivalsIngestUntil && libraryId === this.targetLibrary()) return true;
       return REMOVAL_STAGES.some((st) => this.batches.awaitingIngest(st)?.libraryId === libraryId);
     } catch {
       return false;
@@ -832,6 +890,15 @@ export class CleanupService {
     stage = 1,
   ): Stage1Progress | Stage2Progress | Stage3Progress | Stage4Progress | Stage5Progress {
     const target = this.targetLibrary();
+    // WP20g: a new-arrivals run and a stage's own analysis never overlap.
+    const arrivalRun = this.arrivals.currentRun();
+    if (
+      arrivalRun &&
+      !['scan', 'archives', 'identify', 'compare', 'plan'].includes(arrivalRun.phase)
+    )
+      throw new Error(
+        'A new-arrivals run is working on its books; run the analysis again after it',
+      );
     if (stage === 5) {
       if (!target) throw new Error('Choose the library first');
       const p5 = this.stage5?.restart(target);
@@ -900,6 +967,27 @@ export class CleanupService {
     await this.round3(target);
     await this.round4(target);
     await this.round5(target);
+    this.runArrivals();
+  }
+
+  /** WP20g: the new arrivals' run, stepped in its own loop (never blocks a round). */
+  private runArrivals(): void {
+    if (this.arriving || this.stopped) return;
+    this.arriving = (async () => {
+      try {
+        for (;;) {
+          if (this.stopped) break;
+          const r = await this.arrivals.step();
+          if (r === 'idle') break;
+          if (r === 'wait') await new Promise((res) => setTimeout(res, 2000));
+          else await new Promise((res) => setImmediate(res));
+        }
+      } catch (err) {
+        this.logError('Cleanup: new arrivals failed:', err);
+      } finally {
+        this.arriving = null;
+      }
+    })();
   }
 
   /**
