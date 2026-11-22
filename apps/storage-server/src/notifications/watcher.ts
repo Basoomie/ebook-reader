@@ -109,6 +109,7 @@ export class NotificationWatcher {
     this.part('the cleanup helpers', () => this.helpers(settings, now));
     this.part('field pauses', () => this.fieldPauses());
     this.part('new audiobooks', () => this.arrivalRuns());
+    this.part('best guesses', () => this.stage4Guesses());
     this.part('refused changes', () => this.refusalsQuiet(settings, now));
     this.part('the AI spending limit', () => this.aiLimit());
     for (const m of this.messages) this.service.notify(m, settings);
@@ -562,6 +563,53 @@ export class NotificationWatcher {
         LINKS.cleanup,
       );
     }
+  }
+
+  /**
+   * Series-order follow-up (the user, 2026-11-22: "I should know which items were a best guess
+   * so an issue like this doesn't go unnoticed again"): the values stage 4 writes as best guesses
+   * give one digest line per check, counted from each newly applied stage-4 batch (field_undo by
+   * its batch key, then each change by its id). The first look only remembers where it is.
+   */
+  private stage4Guesses(): void {
+    const db = this.s.cleanupDb;
+    if (!db) return;
+    const last = this.service.store.getState<number>('stage4_guess_batches');
+    let batches: { id: string; finished_at: number }[];
+    try {
+      batches = db
+        .prepare(
+          `SELECT id, finished_at FROM batches
+           WHERE stage = 4 AND kind = 'apply' AND state IN ('applied', 'partial') AND finished_at > ?
+           ORDER BY finished_at`,
+        )
+        .all(last ?? 0) as typeof batches;
+    } catch {
+      return;
+    }
+    if (batches.length)
+      this.service.store.setState('stage4_guess_batches', batches[batches.length - 1].finished_at);
+    else if (last === undefined) this.service.store.setState('stage4_guess_batches', 0);
+    if (last === undefined || !batches.length) return;
+    let values = 0;
+    let numbers = 0;
+    const count = db.prepare(
+      `SELECT p.field AS field, COUNT(*) AS n FROM field_undo f JOIN proposed_changes p ON p.id = f.change_id
+       WHERE f.batch_id = ? AND json_extract(p.evidence_json, '$.unconfirmed') = 1 GROUP BY p.field`,
+    );
+    for (const b of batches)
+      for (const r of count.all(b.id) as { field: string; n: number }[]) {
+        values += r.n;
+        if (r.field === 'series') numbers += r.n;
+      }
+    if (values === 0) return;
+    this.service.addDigestLine(
+      'cleanup_best_guesses',
+      `Calibre cleanup stage 4: ${values} ${plural(values, 'value', 'values')} written as best guesses${
+        numbers ? ` (${numbers} series ${plural(numbers, 'number', 'numbers')})` : ''
+      }: listed under Best guesses`,
+      LINKS.cleanup,
+    );
   }
 
   /**

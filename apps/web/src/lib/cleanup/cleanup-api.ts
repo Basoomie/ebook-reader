@@ -274,7 +274,7 @@ export interface Stage4AiGateGroup {
   fields: Record<string, Stage4AiGateField>;
 }
 export interface Stage4AiStatus {
-  phase: 'evidence' | 'models' | 'decide' | 'spelling' | 'gate' | 'done';
+  phase: 'evidence' | 'models' | 'decide' | 'spelling' | 'series' | 'gate' | 'done';
   /** The running phase: how far, and the seconds left (null: not measured yet). */
   bar?: { phase: string; done: number; total: number; secondsLeft: number | null } | null;
   items: number;
@@ -292,6 +292,8 @@ export interface Stage4AiStatus {
   costUsd: number | null;
   invented: number;
   flaggedAgainstRules: Record<string, number> | null;
+  /** The series step (series-order follow-up). */
+  seriesOrder?: Stage4SeriesOrder | null;
   gate: {
     passed: boolean;
     below: string[];
@@ -350,6 +352,46 @@ export interface Stage4Proposal {
   source: string;
   reason: string | null;
   evidence: Record<string, unknown>;
+}
+
+export interface Stage4SeriesChecks {
+  series: number;
+  multi: number;
+  collisions: number;
+  collisionsUnmarked: number;
+  missing: number;
+  missingUnmarked: number;
+  guesses: number;
+  reviews: number;
+  examples: string[];
+}
+export interface Stage4SeriesOrder {
+  series: number;
+  choices: number;
+  changed: number;
+  guesses: number;
+  reviews: number;
+  checks: Stage4SeriesChecks | null;
+}
+/** A book of a series in the Best guesses list (the series is shown whole, in order). */
+export interface Stage4GuessBook {
+  calibreId: number;
+  title: string;
+  index: number | null;
+  guess: boolean;
+  reason: string | null;
+  review: string | null;
+  from: string;
+  fields: { field: string; reason: string | null }[];
+}
+export interface Stage4GuessSeries {
+  series: string;
+  books: Stage4GuessBook[];
+}
+export interface Stage4GuessOther {
+  calibreId: number;
+  title: string;
+  fields: { field: string; value: unknown; reason: string | null }[];
 }
 
 export interface AuthorReading {
@@ -2024,6 +2066,26 @@ export class CleanupApi {
     return this.request('GET', `/cleanup/stage4/proposals?${q}`) as Promise<{
       total: number;
       items: Stage4Proposal[];
+    }>;
+  }
+
+  /** The Best guesses list: series (each whole, in order) or books outside a series. */
+  stage4GuessSeries(
+    offset = 0,
+    limit = 20
+  ): Promise<{ total: number; series: Stage4GuessSeries[] }> {
+    const q = new URLSearchParams({ kind: 'series', offset: String(offset), limit: String(limit) });
+    return this.request('GET', `/cleanup/stage4/guesses?${q}`) as Promise<{
+      total: number;
+      series: Stage4GuessSeries[];
+    }>;
+  }
+
+  stage4GuessOther(offset = 0, limit = 20): Promise<{ total: number; books: Stage4GuessOther[] }> {
+    const q = new URLSearchParams({ kind: 'other', offset: String(offset), limit: String(limit) });
+    return this.request('GET', `/cleanup/stage4/guesses?${q}`) as Promise<{
+      total: number;
+      books: Stage4GuessOther[];
     }>;
   }
 

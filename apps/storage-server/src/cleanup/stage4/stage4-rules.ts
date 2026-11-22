@@ -30,8 +30,10 @@ import {
  * 2 (WP20e, the stage-4 On preparation): BookWalker's series keeps a closing wave dash that
  * pairs with an opening one; the AI step then decides every book again from the stored answers
  * and gives each series one spelling.
+ * 3 (series-order follow-up, 2026-11-22): the order of each series (series-order.ts) after the
+ * spelling; every book is decided again from the stored answers.
  */
-export const STAGE4_RULES_VERSION = 2;
+export const STAGE4_RULES_VERSION = 3;
 
 /** The gold labels' names for the kinds. */
 export type Kind = 'full' | 'sample' | 'bonus' | 'special edition' | 'omnibus';
