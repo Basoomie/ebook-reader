@@ -3,7 +3,6 @@
     faChevronLeft,
     faChevronRight,
     faClose,
-    faLayerGroup,
     faRepeat
   } from '@fortawesome/free-solid-svg-icons';
   import { ReadingGoalFrequency } from '$lib/components/book-reader/book-reading-tracker/book-reading-tracker';
@@ -84,10 +83,6 @@
   let selectedStreak = HeatmapStreakType.NONE;
   let selectedStreakDates = new Set<string>();
 
-  $: heatmapLabel = `Reading ${
-    heatmapType === HeatmapType.STATISTICS ? '' : 'Goals '
-  }Data for ${heatmapYear}`;
-
   $: dayLabels = [
     ...daysOfWeekShort.slice($statsWeekStart$),
     ...($statsWeekStart$ ? daysOfWeekShort.slice(0, $statsWeekStart$) : [])
@@ -116,7 +111,7 @@
       colorRanges.push(
         {
           limit: 100,
-          color: `#${heatmapMaxValueColor}`
+          color: 'var(--c-heat-4)'
         },
         ...getColorRanges(1, 100, 100)
       );
@@ -792,7 +787,7 @@
       } else {
         colorRangeslist.push({
           limit: minimumValue,
-          color: `#${heatmapMaxValueColor}`
+          color: 'var(--c-heat-4)'
         });
       }
     }
@@ -809,27 +804,12 @@
     maxValue: number,
     value: number
   ) {
+    // 2026-11-22 redesign: four shades of the page's own colour (light, dark and E-ink
+    // each have theirs, `--c-heat-1…4` below) instead of fixed greens. Same ranges as before.
+    void colorStart;
+    void colorEnd;
     const colorRatio = limitToRange(0, 1, value / (maxValue - minValue));
-    const r = Math.ceil(
-      parseInt(colorStart.substring(0, 2), 16) * (1 - colorRatio) +
-        parseInt(colorEnd.substring(0, 2), 16) * colorRatio
-    );
-    const g = Math.ceil(
-      parseInt(colorStart.substring(2, 4), 16) * (1 - colorRatio) +
-        parseInt(colorEnd.substring(2, 4), 16) * colorRatio
-    );
-    const b = Math.ceil(
-      parseInt(colorStart.substring(4, 6), 16) * (1 - colorRatio) +
-        parseInt(colorEnd.substring(4, 6), 16) * colorRatio
-    );
-
-    return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
-  }
-
-  function toHex(valueToConvert: number | string) {
-    const value = valueToConvert.toString(16);
-
-    return value.length === 1 ? `0${value}` : value;
+    return `var(--c-heat-${Math.min(4, 1 + Math.floor(colorRatio * 4))})`;
   }
 
   function getCompletedReadingGoalsLabel(
@@ -1083,19 +1063,23 @@
 
   $: typeLabel = heatmapType === HeatmapType.STATISTICS ? 'day' : 'goal';
 
-  $: daysReadLabel = `Days read ${mapAggregationlabel}:`;
+  // 2026-11-22 redesign: the year or "All time" is the choice above the calendar, so the
+  // labels under it are short.
+  $: void mapAggregationlabel;
 
-  $: readingGoalsCompletedLabel = `100% completed ${mapAggregationlabel}:`;
+  $: daysReadLabel = 'Days read';
+
+  $: readingGoalsCompletedLabel = '100% completed';
 
   $: longestStreaksLabel = currentHeatmapData
-    ? `Longest ${pluralize(currentHeatmapData.longestStreaks.length, 'Streak', false)} ${mapAggregationlabel}:`
+    ? `Longest ${pluralize(currentHeatmapData.longestStreaks.length, 'streak', false)}`
     : '';
 
   $: longestStreaksDuration = currentHeatmapData?.longestStreaks[0]?.duration || 0;
 
   $: longestStreaksCount =
     currentHeatmapData && longestStreaksDuration
-      ? ` (${pluralize(currentHeatmapData.longestStreaks.length, 'Time')})`
+      ? ` (${pluralize(currentHeatmapData.longestStreaks.length, 'time')})`
       : '';
 
   $: longestStreaksDays = `${longestStreaksDuration} ${pluralize(
@@ -1104,7 +1088,7 @@
     false
   )}`;
 
-  $: currentStreakLabel = `Current Streak ${mapAggregationlabel}:`;
+  $: currentStreakLabel = 'Current streak';
 
   $: currentStreakDays = currentHeatmapData
     ? pluralize(currentHeatmapData.currentStreak.duration, typeLabel)
@@ -1112,31 +1096,45 @@
 </script>
 
 {$resizeHandler$ ?? ''}
-<div class="mb-4 flex justify-center">
-  {heatmapLabel}
-  <button
-    title="Return to current Year"
-    class="mx-2 min-h-[3rem] min-w-[3rem] hover:text-red-500"
-    on:click={() => changeHeatmapYear(today.getFullYear() - heatmapYear)}
-  >
-    <Fa icon={faRepeat} />
-  </button>
-  <button
-    title="Switch (Streak) Data between 'All Time' and 'Current Year'"
-    class="min-h-[3rem] min-w-[3rem] text-lg hover:text-red-500"
-    on:click={() =>
-      (heatmapAggregration =
-        heatmapAggregration === HeatmapDataAggregration.ALL_TIME
-          ? HeatmapDataAggregration.YEAR
-          : HeatmapDataAggregration.ALL_TIME)}
-  >
-    <Fa icon={faLayerGroup} />
-  </button>
+<!-- 2026-11-22 redesign: the year (‹ › at the sides change it), back to this year, and
+     whether the figures under the calendar count this year or all time. -->
+<div class="c-heat flex flex-wrap items-center justify-between gap-2 pb-3">
+  <div class="flex items-center gap-2">
+    <span class="font-mincho text-lg font-bold" data-testid="stats-heatmap-year">{heatmapYear}</span
+    >
+    {#if heatmapYear !== today.getFullYear()}
+      <button
+        type="button"
+        class="c-btn c-btn-ghost c-btn-sm gap-2 px-2"
+        title="Back to {today.getFullYear()}"
+        on:click={() => changeHeatmapYear(today.getFullYear() - heatmapYear)}
+      >
+        <Fa icon={faRepeat} />
+        {today.getFullYear()}
+      </button>
+    {/if}
+  </div>
+  <div class="c-stats-seg" role="group" aria-label="Figures under the calendar">
+    <button
+      type="button"
+      aria-pressed={heatmapAggregration !== HeatmapDataAggregration.ALL_TIME}
+      on:click={() => (heatmapAggregration = HeatmapDataAggregration.YEAR)}
+    >
+      {heatmapYear}
+    </button>
+    <button
+      type="button"
+      aria-pressed={heatmapAggregration === HeatmapDataAggregration.ALL_TIME}
+      on:click={() => (heatmapAggregration = HeatmapDataAggregration.ALL_TIME)}
+    >
+      All time
+    </button>
+  </div>
 </div>
-<div class="flex justify-between">
+<div class="c-heat flex justify-between">
   <button
     title="Move Backwards"
-    class="min-h-[3rem] min-w-[2rem] hover:text-red-500"
+    class="c-btn c-btn-ghost c-btn-icon c-btn-sm shrink-0 self-center"
     on:click={() => {
       if (heatmapElement.scrollLeft === 0) {
         changeHeatmapYear(-1);
@@ -1175,14 +1173,14 @@
       style:grid-row={'1/1'}
       style:grid-column={`1/3`}
       style:height={`${dayElementSize * 2}px`}
-      style:background-color={'var(--background-color)'}
+      style:background-color={'var(--c-raised)'}
     />
     {#each dayLabels as dayLabel, index (dayLabel)}
       <div
         class="sticky left-0 text-xs sm:text-sm"
         style:grid-row={`${index + 2}/${index + 2}`}
         style:grid-column={`1/3`}
-        style:background-color={'var(--background-color)'}
+        style:background-color={'var(--c-raised)'}
       >
         {dayLabel}
       </div>
@@ -1191,12 +1189,12 @@
       <div
         tabindex="0"
         role="cell"
-        class="justify-self-center fadeIn"
+        class="c-heat-day justify-self-center rounded-sm fadeIn"
         class:cursor-pointer={heatmapDay.isCurrentYear}
-        class:bg-slate-300={heatmapDay.isCurrentYear}
-        class:bg-slate-200={!heatmapDay.isCurrentYear}
-        class:border-amber-500={isSelectedDay(heatmapDay.dateString)}
-        class:border-red-500={heatmapDay.dateString === todayKey}
+        class:c-heat-in={heatmapDay.isCurrentYear}
+        class:c-heat-out={!heatmapDay.isCurrentYear}
+        class:c-heat-picked={isSelectedDay(heatmapDay.dateString)}
+        class:c-heat-today={heatmapDay.dateString === todayKey}
         class:highlight={selectedStreakDates.has(heatmapDay.dateString)}
         style:animation-delay={`${3 * heatmapDay.heatmapColumn}ms`}
         style:height={`${dayElementSize}px`}
@@ -1249,7 +1247,7 @@
   </div>
   <button
     title="Move Forwards"
-    class="min-h-[3rem] min-w-[2rem] hover:text-red-500"
+    class="c-btn c-btn-ghost c-btn-icon c-btn-sm shrink-0 self-center"
     on:click={() => {
       const scrollWidth =
         heatmapElement.scrollWidth - heatmapElement.scrollLeft - heatmapDayMargins;
@@ -1268,152 +1266,160 @@
   </button>
 </div>
 {#if currentHeatmapData}
-  <div class="hidden grid-cols-3 items-center justify-center mt-4 text-center text-sm sm:grid">
+  <!-- 2026-11-22 redesign: three figures in one row at every width (it was two layouts);
+       tapping a streak still marks its days on the calendar. -->
+  <div class="c-heat-figures" data-testid="stats-heatmap-figures">
     {#if checkIsStatisticsHeatmapData(currentHeatmapData)}
-      <div>{daysReadLabel}</div>
+      <div class="c-heat-figure">
+        <span class="c-heat-value">{currentHeatmapData.daysRead}</span>
+        <span class="c-heat-label">{daysReadLabel}</span>
+      </div>
     {:else}
       <button
-        title="Highlight completed Reading Goals"
-        class="min-h-[3rem]"
+        type="button"
+        class="c-heat-figure"
+        title="Mark completed reading goals"
         on:click={() =>
           highlightStreaks(currentHeatmapData.streaks, HeatmapStreakType.READING_GOALS_COMPLETED)}
       >
-        {readingGoalsCompletedLabel}
-      </button>
-    {/if}
-    <div>
-      <button
-        title="Highlight Streak"
-        class="min-h-[3rem]"
-        on:click={() =>
-          highlightStreaks(currentHeatmapData.longestStreaks, HeatmapStreakType.LONGEST)}
-      >
-        {longestStreaksLabel}
-      </button>
-    </div>
-    <div>
-      <button
-        title="Highlight Streak"
-        class="min-h-[3rem]"
-        on:click={() =>
-          highlightStreaks(
-            currentHeatmapData.currentStreak.duration ? [currentHeatmapData.currentStreak] : [],
-            HeatmapStreakType.CURRENT
-          )}
-      >
-        {currentStreakLabel}
-      </button>
-    </div>
-    {#if checkIsStatisticsHeatmapData(currentHeatmapData)}
-      <div>{currentHeatmapData.daysRead}</div>
-    {:else}
-      <button
-        title="Highlight completed Reading Goals"
-        class="min-h-[3rem]"
-        on:click={() =>
-          highlightStreaks(currentHeatmapData.streaks, HeatmapStreakType.READING_GOALS_COMPLETED)}
-      >
-        {currentHeatmapData.completedReadingGoals}
-      </button>
-    {/if}
-    <div>
-      <button
-        title="Highlight Streak"
-        class="min-h-[3rem]"
-        on:click={() =>
-          highlightStreaks(currentHeatmapData.longestStreaks, HeatmapStreakType.LONGEST)}
-      >
-        {longestStreaksDays}{longestStreaksCount}
-      </button>
-    </div>
-    <div>
-      <button
-        title="Highlight Streak"
-        class="min-h-[3rem]"
-        on:click={() =>
-          highlightStreaks(
-            currentHeatmapData.currentStreak.duration ? [currentHeatmapData.currentStreak] : [],
-            HeatmapStreakType.CURRENT
-          )}
-      >
-        {currentStreakDays}
-      </button>
-    </div>
-  </div>
-  <div class="grid grid-cols-[auto_auto] items-center gap-y-2 mt-4 text-xs sm:hidden">
-    {#if checkIsStatisticsHeatmapData(currentHeatmapData)}
-      <div>{daysReadLabel}</div>
-      <div>{currentHeatmapData.daysRead}</div>
-    {:else}
-      <button
-        title="Highlight completed Reading Goals"
-        class="min-h-[3rem] text-left"
-        on:click={() =>
-          highlightStreaks(currentHeatmapData.streaks, HeatmapStreakType.READING_GOALS_COMPLETED)}
-      >
-        {readingGoalsCompletedLabel}
-      </button>
-      <button
-        title="Highlight completed Reading Goals"
-        class="min-h-[3rem] text-left"
-        on:click={() =>
-          highlightStreaks(currentHeatmapData.streaks, HeatmapStreakType.READING_GOALS_COMPLETED)}
-      >
-        {currentHeatmapData.completedReadingGoals}
+        <span class="c-heat-value">{currentHeatmapData.completedReadingGoals}</span>
+        <span class="c-heat-label">{readingGoalsCompletedLabel}</span>
       </button>
     {/if}
     <button
-      title="Highlight Streak"
-      class="min-h-[3rem] text-left"
+      type="button"
+      class="c-heat-figure"
+      title="Mark the longest streak on the calendar"
+      aria-pressed={selectedStreak === HeatmapStreakType.LONGEST}
       on:click={() =>
         highlightStreaks(currentHeatmapData.longestStreaks, HeatmapStreakType.LONGEST)}
     >
-      {longestStreaksLabel}
+      <span class="c-heat-value">{longestStreaksDays}{longestStreaksCount}</span>
+      <span class="c-heat-label">{longestStreaksLabel}</span>
     </button>
     <button
-      title="Highlight Streak"
-      class="min-h-[3rem] text-left"
+      type="button"
+      class="c-heat-figure"
+      title="Mark the current streak on the calendar"
+      aria-pressed={selectedStreak === HeatmapStreakType.CURRENT}
       on:click={() =>
-        highlightStreaks(currentHeatmapData.longestStreaks, HeatmapStreakType.LONGEST)}
+        highlightStreaks(
+          currentHeatmapData.currentStreak.duration ? [currentHeatmapData.currentStreak] : [],
+          HeatmapStreakType.CURRENT
+        )}
     >
-      {longestStreaksDays}{longestStreaksCount}
+      <span class="c-heat-value">{currentStreakDays}</span>
+      <span class="c-heat-label">{currentStreakLabel}</span>
     </button>
-    <div>
-      <button
-        title="Highlight Streak"
-        class="min-h-[3rem]"
-        on:click={() =>
-          highlightStreaks(
-            currentHeatmapData.currentStreak.duration ? [currentHeatmapData.currentStreak] : [],
-            HeatmapStreakType.CURRENT
-          )}
-      >
-        {currentStreakLabel}
-      </button>
-    </div>
-    <div>
-      <button
-        title="Highlight Streak"
-        class="min-h-[3rem]"
-        on:click={() =>
-          highlightStreaks(
-            currentHeatmapData.currentStreak.duration ? [currentHeatmapData.currentStreak] : [],
-            HeatmapStreakType.CURRENT
-          )}
-      >
-        {currentStreakDays}
-      </button>
-    </div>
   </div>
 {/if}
 
 <style>
+  /* 2026-11-22 redesign: the calendar in the page's own colours (light, dark, E-ink). */
+  .c-heat {
+    --c-heat-1: #c9d4ea;
+    --c-heat-2: #93a9d6;
+    --c-heat-3: #5a7cbe;
+    --c-heat-4: #2b4c9b;
+  }
+
+  :global(html.catalogue-dark) .c-heat {
+    --c-heat-1: #4a4636;
+    --c-heat-2: #7d6a45;
+    --c-heat-3: #b39a68;
+    --c-heat-4: #d9be8c;
+  }
+
+  :global(html.eink) .c-heat {
+    --c-heat-1: #d4d4d4;
+    --c-heat-2: #969696;
+    --c-heat-3: #555;
+    --c-heat-4: #000;
+  }
+
+  .c-heat-day {
+    border: 1px solid transparent;
+  }
+
+  .c-heat-in {
+    background-color: var(--c-tint);
+  }
+
+  .c-heat-out {
+    background-color: transparent;
+    border-color: var(--c-line);
+  }
+
+  .c-heat-today {
+    border-color: var(--c-seal) !important;
+  }
+
+  .c-heat-picked {
+    border-color: var(--c-gold) !important;
+  }
+
+  :global(html.eink) .c-heat-in {
+    border-color: #000;
+  }
+
+  .c-heat-figures {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    margin-top: 0.75rem;
+    border-top: 1px solid var(--c-line);
+  }
+
+  .c-heat-figure {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.125rem;
+    min-height: 3rem;
+    padding: 0.625rem 0.75rem 0.25rem 0;
+    text-align: left;
+  }
+
+  .c-heat-figure + .c-heat-figure {
+    padding-left: 0.75rem;
+    border-left: 1px solid var(--c-line);
+  }
+
+  button.c-heat-figure:focus-visible {
+    outline: 2px solid var(--c-link);
+    outline-offset: -2px;
+  }
+
+  @media (hover: hover) {
+    :global(html:not(.eink)) button.c-heat-figure:hover .c-heat-value {
+      text-decoration: underline;
+      text-underline-offset: 3px;
+    }
+  }
+
+  .c-heat-value {
+    font-family: 'Shippori Mincho', 'Noto Serif JP', serif;
+    font-size: 1.0625rem;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    overflow-wrap: anywhere;
+  }
+
+  .c-heat-label {
+    font-size: 0.75rem;
+    color: var(--c-muted);
+  }
+
   .highlight {
-    box-shadow: 0px 1px 5px 1px black;
+    box-shadow: 0 0 0 2px var(--c-ink);
+  }
+
+  :global(html.eink) .highlight {
+    box-shadow: none;
+    outline: 2px solid #000;
   }
 
   @media (min-width: 1024px) {
-    .fadeIn {
+    :global(html:not(.eink)) .fadeIn {
       animation: fadeIn 0.1s ease-in backwards;
     }
 
@@ -1424,6 +1430,12 @@
       100% {
         transform: scale3d(1, 1, 1);
       }
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .fadeIn {
+      animation: none !important;
     }
   }
 </style>
