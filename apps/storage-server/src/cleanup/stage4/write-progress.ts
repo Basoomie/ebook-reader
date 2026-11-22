@@ -17,8 +17,13 @@ const PACE_BATCHES = 5;
 const PACE_WINDOW_MS = 2 * 3600_000;
 
 /**
- * Changes written per second over the last finished batches, from the first one's claim to the
- * last one's finish (the planning between batches counts); null with fewer than one batch.
+ * Changes written per second over the last finished batches: each batch's own time plus the
+ * planning between batches; null with fewer than one batch.
+ *
+ * A wait between two batches longer than the longest of those batches is a pause (a restart, a
+ * stage waiting for another, Off and On again), not planning: it counts as the usual wait
+ * between the other batches. Before (WP20f On, 2026-11-22) one 17-minute restart in the window
+ * made 2 hours of writing show as 6.
  */
 export function writePace(batches: WriteBatchRow[], now: number): number | null {
   const done = batches
@@ -27,12 +32,18 @@ export function writePace(batches: WriteBatchRow[], now: number): number | null 
         b.claimedAt !== null && b.finishedAt !== null && now - b.finishedAt <= PACE_WINDOW_MS,
     )
     .sort((a, b) => b.finishedAt - a.finishedAt)
-    .slice(0, PACE_BATCHES);
+    .slice(0, PACE_BATCHES)
+    .reverse();
   if (!done.length) return null;
-  const from = Math.min(...done.map((b) => b.claimedAt));
-  const to = Math.max(...done.map((b) => b.finishedAt));
+  const own = done.map((b) => Math.max(0, b.finishedAt - b.claimedAt));
+  const longest = Math.max(...own);
+  const gaps = done.slice(1).map((b, i) => Math.max(0, b.claimedAt - done[i].finishedAt));
+  const usual = gaps.filter((g) => g <= longest).sort((a, b) => a - b);
+  const typical = usual.length ? usual[Math.floor(usual.length / 2)] : 0;
+  const ms =
+    own.reduce((a, b) => a + b, 0) + gaps.reduce((a, g) => a + (g <= longest ? g : typical), 0);
   const items = done.reduce((a, b) => a + b.items, 0);
-  return to > from && items > 0 ? (items * 1000) / (to - from) : null;
+  return ms > 0 && items > 0 ? (items * 1000) / ms : null;
 }
 
 export interface Stage4Write {

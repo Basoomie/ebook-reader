@@ -576,6 +576,27 @@ describe('stage 5 from evidence to proposals', () => {
     expect(p.counts!.removals).toMatchObject({ 'metadata-processed': 1, Manga: 1 });
     // The bar: done.
     expect(s5.bar()).toBeNull();
+    // The propose phase's bar counts books, not the cursor (a Calibre id: the live run showed
+    // "61,282 of 53,247").
+    const saved = s5.progress()!;
+    updateStage(db, 5, {
+      progress: {
+        ...saved,
+        phase: 'propose',
+        cursor: 61_282,
+        total: 53_247,
+        proposed: 1_000,
+        phaseStartedAt: now - 60_000,
+        phaseStartDone: 0,
+      } as unknown as Record<string, unknown>,
+    });
+    expect(s5.bar(now)).toEqual({
+      phase: 'propose',
+      done: 1_000,
+      total: 53_247,
+      secondsLeft: Math.round((52_247 * 60_000) / 1_000 / 1000),
+    });
+    updateStage(db, 5, { progress: saved as unknown as Record<string, unknown> });
     // Nothing asked again after a rules change; decided and proposed again.
     const calls = standin.calls.length;
     updateSettings(db, { customTags: [...CUSTOM, 'Manga'] });
@@ -826,6 +847,56 @@ describe('stage 5 On: the tags written through the field-write path', () => {
       ].sort(),
     );
     expect(tagsOf(ids.B)).toEqual(['ln']);
+  });
+
+  it('a book written twice (stage 5 decided again) counts once in the books written', async () => {
+    await env.service.batches.stage5.plan(env.libraryId());
+    const w = worker();
+    await runBatch(w);
+    type St = {
+      write: { changes: { done: number; total: number }; books: { done: number } } | null;
+    };
+    // Counted in full the first time.
+    expect(
+      (env.service.stage5Status(env.libraryId(), Date.now() + 60_000) as St).write,
+    ).toMatchObject({ changes: { done: 2, total: 2 }, books: { done: 2 } });
+    // Decided again after stage 4 changed: book A gets one more tag in a second change.
+    const a = env.cleanupDb
+      .prepare(`SELECT calibre_uuid FROM proposed_changes WHERE stage = 5 AND calibre_id = ?`)
+      .get(ids.A) as { calibre_uuid: string };
+    env.cleanupDb
+      .prepare(
+        `INSERT INTO proposed_changes (stage, library_id, calibre_id, calibre_uuid, field, old_json, new_json, source,
+           evidence_json, class, state, analysis_id, created_at, updated_at)
+         VALUES (5, ?, ?, ?, 'tags', ?, ?, 'stage5', '{}', 'auto', 'proposed', 'a5', 2, 2)`,
+      )
+      .run(
+        env.libraryId(),
+        ids.A,
+        a.calibre_uuid,
+        JSON.stringify(tagsOf(ids.A)),
+        JSON.stringify({ add: ['恋愛'], remove: [] }),
+      );
+    await env.service.batches.stage5.plan(env.libraryId());
+    await runBatch(w);
+    expect(tagsOf(ids.A)).toContain('恋愛');
+    // Then per finished batch: the second batch's book was written before.
+    expect(
+      (env.service.stage5Status(env.libraryId(), Date.now() + 120_000) as St).write,
+    ).toMatchObject({ changes: { done: 3, total: 3 }, books: { done: 2 } });
+    // Undone: counted in full again (book A's first write stays, its second is undone).
+    const second = (
+      env.cleanupDb
+        .prepare(
+          `SELECT id FROM batches WHERE stage = 5 AND kind = 'apply' ORDER BY created_at DESC`,
+        )
+        .get() as { id: string }
+    ).id;
+    env.service.batches.undo(second);
+    await runBatch(w);
+    expect(
+      (env.service.stage5Status(env.libraryId(), Date.now() + 180_000) as St).write,
+    ).toMatchObject({ changes: { done: 2 }, books: { done: 2 } });
   });
 
   it('a sidecar older than 1.2.0 never gets a stage-5 batch', async () => {

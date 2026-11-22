@@ -199,8 +199,12 @@ export class CleanupService {
   /** Why stage 5 is not working right now. */
   waiting5: string | null = null;
   private status5Cache: { at: number; value: unknown } | null = null;
-  /** Books written per finished stage-5 batch (counted once each). */
-  private batchBooks5 = new Map<string, number>();
+  /** Stage 5's books written (each once) and the finished batches already counted. */
+  private batchBooks5: { analysisId: string | null; counted: Set<string>; books: number } = {
+    analysisId: null,
+    counted: new Set(),
+    books: 0,
+  };
   private analysing4: Promise<void> | null = null;
   /** Why stage 4 is not working right now. */
   waiting4: string | null = null;
@@ -1031,22 +1035,43 @@ export class CleanupService {
          WHERE stage = 5 AND kind = 'apply' AND state IN ('applied', 'partial') ORDER BY created_at DESC`,
       )
       .all() as (WriteBatchRow & { id: string })[];
-    let doneBooks = 0;
-    for (const bt of finished) {
-      let k = this.batchBooks5.get(bt.id);
-      if (k === undefined) {
-        k = (
-          this.db
-            .prepare(
-              `SELECT COUNT(*) AS n FROM batch_items i JOIN proposed_changes p ON p.id = i.change_id
-               WHERE i.batch_id = ? AND p.state = 'applied' AND p.analysis_id = ?`,
-            )
-            .get(bt.id, analysisId) as { n: number }
-        ).n;
-        this.batchBooks5.set(bt.id, k);
-      }
-      doneBooks += k;
+    // Books written, each once: a book written again after stage 5 decided again (a newer
+    // proposal) is not counted twice (the 2026-11-22 run showed 53,258 books for 53,229).
+    // Counted in full once (355 ms on the live 53,258 rows; also when a batch was undone), then
+    // per finished batch, only its books not written before (at most 80 ms a batch). Counting
+    // every batch that way at once after a restart held the server 2.5 s.
+    const c = this.batchBooks5;
+    const ids = new Set(finished.map((b) => b.id));
+    if (c.analysisId !== analysisId || [...c.counted].some((id) => !ids.has(id))) {
+      c.analysisId = analysisId;
+      c.counted = ids;
+      c.books = (
+        this.db
+          .prepare(
+            `SELECT COUNT(DISTINCT calibre_uuid) AS n FROM proposed_changes INDEXED BY proposed_changes_counts
+             WHERE stage = 5 AND library_id = ? AND state = 'applied' AND field = 'tags' AND analysis_id = ?`,
+          )
+          .get(target, analysisId) as { n: number }
+      ).n;
     }
+    for (const bt of finished) {
+      if (c.counted.has(bt.id)) continue;
+      c.counted.add(bt.id);
+      c.books += (
+        this.db
+          .prepare(
+            `SELECT COUNT(*) AS n FROM batch_items i JOIN proposed_changes p ON p.id = i.change_id
+             WHERE i.batch_id = ? AND p.state = 'applied' AND p.analysis_id = ?
+               AND NOT EXISTS (
+                 SELECT 1 FROM proposed_changes q INDEXED BY proposed_changes_book
+                 WHERE q.library_id = p.library_id AND q.calibre_uuid = p.calibre_uuid
+                   AND q.id < p.id AND q.stage = 5 AND q.field = 'tags' AND q.state = 'applied'
+                   AND q.analysis_id = p.analysis_id)`,
+          )
+          .get(bt.id, analysisId) as { n: number }
+      ).n;
+    }
+    const doneBooks = c.books;
     return stage4Write(
       {
         doneChanges,

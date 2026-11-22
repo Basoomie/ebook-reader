@@ -876,6 +876,65 @@ html.catalogue.eink .mdc-elevation--z24 button.border-current:not(:disabled):act
   .s-item-actions {
     @apply flex flex-wrap items-center gap-2;
   }
+
+  /* The Stats page's cards (2026-11-22 redesign): a raised card with a head row (title on
+     the left, its controls on the right) and connected buttons for 2-6 choices. */
+  .c-stats-card {
+    background-color: var(--c-raised);
+    border: var(--c-border-width) solid var(--c-line);
+    border-radius: 0.625rem;
+    min-width: 0;
+  }
+
+  .c-stats-card-head {
+    @apply flex flex-wrap items-center justify-between gap-x-3 gap-y-2 px-4 py-3 sm:px-5;
+    border-bottom: 1px solid var(--c-line);
+  }
+
+  .c-stats-seg {
+    display: inline-flex;
+    max-width: 100%;
+    overflow-x: auto;
+    scrollbar-width: none;
+    border: var(--c-border-width) solid var(--c-sec-border);
+    border-radius: 0.5rem;
+    background-color: var(--c-sec-bg);
+  }
+
+  .c-stats-seg::-webkit-scrollbar {
+    display: none;
+  }
+
+  .c-stats-seg > button {
+    flex: 1 0 auto;
+    min-height: var(--c-btn-h-sm);
+    padding: 0 0.75rem;
+    color: var(--c-sec-ink);
+    font-size: 0.8125rem;
+    font-weight: 500;
+    white-space: nowrap;
+  }
+
+  .c-stats-seg > button + button {
+    border-left: var(--c-border-width) solid var(--c-sec-border);
+  }
+
+  .c-stats-seg > button[aria-pressed='true'] {
+    background-color: var(--c-sel-bg);
+    color: var(--c-sel-ink);
+    font-weight: 600;
+  }
+
+  @media (hover: hover) {
+    .c-stats-seg > button:not([aria-pressed='true']):not(:disabled):hover {
+      background-color: var(--c-tint);
+    }
+  }
+
+  .c-stats-seg > button:focus-visible {
+    outline: 2px solid var(--c-link);
+    outline-offset: -3px;
+  }
 }
 
 /* WP10c: matches of the last in-book search on the page you jumped to (CSS Custom

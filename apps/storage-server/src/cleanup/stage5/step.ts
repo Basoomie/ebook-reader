@@ -150,6 +150,8 @@ export interface Stage5Progress {
   counts: Stage5Counts | null;
   phaseStartedAt?: number;
   phaseStartDone?: number;
+  /** Books the propose phase has worked through (the cursor is a Calibre id, not a count). */
+  proposed?: number;
   modelsStart?: { at: number; done: Record<string, number> } | null;
   error: string | null;
   times: Record<string, { ms: number; items: number }>;
@@ -250,6 +252,7 @@ export class Stage5 {
     p.cursor = 0;
     p.phaseStartedAt = Date.now();
     p.phaseStartDone = phase === 'decide' ? p.decided : 0;
+    p.proposed = 0;
     p.modelsStart =
       phase === 'models' ? { at: Date.now(), done: this.doneByModel(p.analysisId) } : null;
     this.save(p, phase === 'done' ? (p.error ? 'failed' : 'ready') : 'analysing');
@@ -389,9 +392,9 @@ export class Stage5 {
     if (p.phase === 'propose')
       return {
         phase: p.phase,
-        done: p.cursor,
+        done: Math.min(p.proposed ?? 0, p.total),
         total: p.total,
-        secondsLeft: since(p.cursor, p.total),
+        secondsLeft: since(Math.min(p.proposed ?? 0, p.total), p.total),
       };
     return { phase: p.phase, done: 0, total: 0, secondsLeft: null };
   }
@@ -1008,6 +1011,7 @@ export class Stage5 {
       }
     })();
     p.cursor = rows[rows.length - 1].calibreId;
+    p.proposed = (p.proposed ?? 0) + n;
     if (shouldStop()) return { finished: false, items: n };
     await new Promise((r) => setImmediate(r));
     return { finished: false, items: n };

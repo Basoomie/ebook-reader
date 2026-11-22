@@ -131,6 +131,27 @@ export function endGoalCopy(goal: string, removesCompletely: boolean): ConfirmCo
   };
 }
 
+/**
+ * Delete a reading session (the reading log's ⋯ menu, 2026-11-22). `when`: its day and
+ * clock times; `numbers`: its time and characters, as the log shows them.
+ */
+export function deleteSessionCopy(q: {
+  title: string;
+  when: string;
+  numbers: string;
+}): ConfirmCopy {
+  return {
+    title: 'Delete this reading session?',
+    message: [
+      `${quoted(q.title)}, ${q.when} (${q.numbers}).`,
+      'It is removed from the reading log and from every total, chart and goal, on every device.',
+      'To keep it listed without counting it, use Leave out of the totals instead.'
+    ],
+    confirmLabel: 'Delete session',
+    irreversible: true
+  };
+}
+
 // ---- Library and collections -----------------------------------------------------------
 
 export function removeFromCollectionCopy(options: {

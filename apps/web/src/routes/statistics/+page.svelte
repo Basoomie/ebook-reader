@@ -5,12 +5,14 @@
   import AppBottomBar from '$lib/components/app-nav/app-bottom-bar.svelte';
   import AppHeader from '$lib/components/app-nav/app-header.svelte';
   import CataloguePageHeader from '$lib/components/catalogue-page-header.svelte';
-  import { canLoadWhenVisible, loadWhenVisible } from '$lib/components/load-when-visible';
-  import { libraryAutoLoad$ } from '$lib/library/settings';
+  import DropdownMenu from '$lib/components/dropdown-menu.svelte';
+  import SearchPicker, { type PickerOption } from '$lib/components/notes/search-picker.svelte';
   import { HeatmapType } from '$lib/components/statistics/statistics-heatmap/statistics-heatmap';
   import StatisticsHeatmap from '$lib/components/statistics/statistics-heatmap/statistics-heatmap.svelte';
+  import StatsBooksTable from '$lib/components/stats/stats-books-table.svelte';
   import StatsGoals from '$lib/components/stats/stats-goals.svelte';
   import StatsPeriodChart from '$lib/components/stats/stats-period-chart.svelte';
+  import StatsReadingLog from '$lib/components/stats/stats-reading-log.svelte';
   import {
     changeLine,
     chartMeasureFromParam,
@@ -42,13 +44,9 @@
   import { getDateKey } from '$lib/functions/statistic-util';
   import type { CatalogLibrary } from '$lib/library/types';
   import { BEFORE_DEVICE_TRACKING, type StatEntry } from '$lib/stats/aggregate';
-  import {
-    formatClock,
-    formatDay,
-    formatDuration,
-    formatNumber,
-    parseCount
-  } from '$lib/stats/stats-format';
+  import { formatClock, formatDay, formatDuration, formatNumber } from '$lib/stats/stats-format';
+  import { confirmDestructive } from '$lib/confirm/confirm';
+  import { deleteSessionCopy } from '$lib/confirm/confirm-copy';
   import {
     customPeriod,
     isDayKey,
@@ -74,6 +72,8 @@
   } from '$lib/stats/stats-view';
   import type { ReadThrough } from '$lib/sync/book-state';
   import { statsApi } from '$lib/sync/sync-service';
+  import { faFilter, faShareFromSquare, faXmark } from '@fortawesome/free-solid-svg-icons';
+  import Fa from 'svelte-fa';
   import { onDestroy, onMount } from 'svelte';
 
   /**
@@ -82,15 +82,17 @@
    * tracking), so it works offline and updates after a sync. Period and filters live in
    * the address (?period=week:2026-11-09&device=&lib=&book=). Titles and libraries come
    * from the library server (books removed from Calibre included), else from this device.
-   * Plain for e-ink: 48 px bordered controls, no transitions, Load more.
+   *
+   * 2026-11-22 redesign (UI only): one bar for the period and Filters that stays at the top
+   * while scrolling; filters in a panel (Book and Device are search pickers, as on the Notes
+   * page) with removable chips; the totals as tiles; the chart beside Goals on wide screens;
+   * Save image and the TMW copies in a Share menu; Books as a sortable, paged table; the
+   * days as a folding reading log in pages of 7, a session's actions in its ⋯ menu.
    */
 
-  const DAYS_PER_PAGE = 14;
-  // WP19b: the catalogue look (app.scss: buttons, fields and selects alike).
-  const control = 'c-ctl';
-  /** A filled button: its own classes, never combined with `control` (bg-white would win). */
-  const primary = 'c-btn c-btn-primary px-3';
   const stats = statsApi();
+  const menuItem = 'c-btn c-btn-ghost w-full justify-start px-3 text-left';
+  const chip = 'c-chip gap-2 px-3';
 
   let entries: StatEntry[] = [];
   let readThroughs = new Map<string, ReadThrough[]>();
@@ -101,13 +103,10 @@
   let libraries: CatalogLibrary[] | null = null;
   let infoError = '';
   let loaded = false;
-  let shownDays = DAYS_PER_PAGE;
-  // WP19a: more days load near the end ("Load more while scrolling", per device).
-  $: autoLoad = browser && $libraryAutoLoad$ && canLoadWhenVisible();
   let customFrom = '';
   let customTo = '';
   let showCustom = false;
-  let editing: { id: string; minutes: string; chars: string; error: string } | null = null;
+  let filtersOpen = false;
   let actionError = '';
   let tmwText = '';
   let tmwNote = '';
@@ -137,9 +136,17 @@
     comparison && comparison.state !== 'future'
       ? periodChart(view, comparison, measure, todayKey)
       : null;
-  $: shownDayRows = view.days.slice(0, shownDays);
   $: deviceChoices = devicesIn(entries, namesWithThisDevice(deviceNames, thisDeviceId));
   $: bookChoices = bookChoiceList(entries, readThroughs, books);
+  $: bookOptions = bookChoices.map((b) => ({ id: b.id, label: b.title }) as PickerOption);
+  $: deviceOptions = deviceChoices.map((d) => ({ id: d.id, label: d.name }) as PickerOption);
+  $: deviceName = filter.device
+    ? (deviceChoices.find((d) => d.id === filter.device)?.name ?? 'One device')
+    : '';
+  $: libraryName = filter.library
+    ? (libraries?.find((l) => l.id === filter.library)?.name ?? 'One library')
+    : '';
+  $: filterCount = [filter.device, filter.library, filter.book].filter(Boolean).length;
   $: heatmapData = view.heatmapRows.map(
     (row): BooksDbStatistic => ({
       ...row,
@@ -153,6 +160,8 @@
   $: heatmapTitles = new Map(view.heatmapRows.map((row) => [row.title, true]));
   $: currentYear = todayKey.slice(0, 4);
   $: label = periodLabel(period);
+  // The reading log starts again (newest day open, page 1) for another period or filter.
+  $: logKey = `${periodToParam(period)}|${filter.device}|${filter.library}|${filter.book}`;
 
   onMount(async () => {
     void stats.syncSoon();
@@ -227,6 +236,39 @@
     'daysRead'
   ];
 
+  /** The tiles, in order: their label, test id and shown value. */
+  const TILES: { key: SummaryKey; label: string; id: string }[] = [
+    { key: 'seconds', label: 'Reading time', id: 'time' },
+    { key: 'chars', label: 'Characters', id: 'chars' },
+    { key: 'speed', label: 'Speed', id: 'speed' },
+    { key: 'booksCompleted', label: 'Books completed', id: 'completed' },
+    { key: 'lookups', label: 'Dictionary lookups', id: 'lookups' },
+    { key: 'daysRead', label: 'Days read', id: 'days' }
+  ];
+
+  function tileValue(key: SummaryKey, summary: StatsSummary): string {
+    switch (key) {
+      case 'seconds':
+        return formatDuration(summary.seconds);
+      case 'chars':
+        return formatNumber(summary.chars);
+      case 'speed':
+        return summary.speed ? `${formatNumber(summary.speed)} / h` : '–';
+      case 'lookups':
+        return formatNumber(summary.lookups);
+      default:
+        return String(summary[key]);
+    }
+  }
+
+  /** ▲ / ▼ / – for a change line ("+7,527 (+71%) vs …", "−3 min …", "No change …"). */
+  function trend(line: string | null | undefined): 'up' | 'down' | 'flat' {
+    if (!line) return 'flat';
+    if (line.startsWith('+')) return 'up';
+    if (line.startsWith('−') || line.startsWith('-')) return 'down';
+    return 'flat';
+  }
+
   /**
    * Each tile's change vs the previous period's same days (or whole period when over),
    * and the previous period's whole total while the period is running.
@@ -266,8 +308,6 @@
     if (f.library) query.set('lib', f.library);
     if (f.book) query.set('book', f.book);
     if (m !== 'chars') query.set('measure', m);
-    shownDays = DAYS_PER_PAGE;
-    editing = null;
     tmwText = '';
     tmwNote = '';
     void goto(`${pagePath}/statistics?${query.toString()}`, {
@@ -300,7 +340,7 @@
     navigate({ period: customPeriod(customFrom, customTo) });
   }
 
-  function setFilter(key: keyof StatsFilter, value: string) {
+  function setFilter(key: keyof StatsFilter, value: string | null) {
     navigate({ filter: { ...filter, [key]: value || null } });
   }
 
@@ -320,34 +360,13 @@
     return entry.startedAt ? `${formatClock(entry.startedAt)}–${formatClock(entry.endedAt)}` : '';
   }
 
-  function startEdit(entry: StatEntry) {
+  async function correct(entry: StatEntry, value: { seconds: number; chars: number }) {
     actionError = '';
-    editing = {
-      id: entry.id,
-      minutes: String(Math.round((entry.seconds / 60) * 10) / 10),
-      chars: String(entry.chars),
-      error: ''
-    };
-  }
-
-  async function saveEdit(entry: StatEntry) {
-    if (!editing) return;
-    const minutes = Number(editing.minutes.trim().replace(',', '.'));
-    const chars = parseCount(editing.chars);
-    if (!Number.isFinite(minutes) || minutes < 0 || chars === null) {
-      editing = { ...editing, error: 'Enter minutes and characters as numbers of 0 or more.' };
-      return;
-    }
-    const seconds = entry.source === 'completion' ? 0 : Math.round(minutes * 60);
-    if (!(await stats.correctSession(entry.id, { seconds, chars }))) {
+    if (!(await stats.correctSession(entry.id, value))) {
       actionError = 'The correction could not be saved.';
-      return;
+      return false;
     }
-    editing = null;
-  }
-
-  function cancelOnEscape(ev: KeyboardEvent) {
-    if (ev.key === 'Escape') editing = null;
+    return true;
   }
 
   async function exclude(entry: StatEntry) {
@@ -358,6 +377,20 @@
   async function clearFix(entry: StatEntry) {
     actionError = '';
     if (!(await stats.clearFix(entry.id))) actionError = 'The session could not be changed.';
+  }
+
+  async function removeSession(entry: StatEntry) {
+    actionError = '';
+    const clock = entryNote(entry);
+    const confirmed = await confirmDestructive(
+      deleteSessionCopy({
+        title: bookTitle(entry.bookId),
+        when: `${formatDay(entry.day, currentYear)}${clock ? `, ${clock}` : ''}`,
+        numbers: `${formatDuration(entry.seconds)} · ${formatNumber(entry.chars)} characters`
+      })
+    );
+    if (!confirmed) return;
+    if (!(await stats.deleteSession(entry.id))) actionError = 'The session could not be deleted.';
   }
 
   async function copyTmw(what: 'chars' | 'minutes') {
@@ -441,142 +474,260 @@
 <AppHeader title="Stats" />
 
 <div class="{pxScreen} pb-24 pt-16 xl:pt-14" data-testid="stats-page">
-  <CataloguePageHeader jp="読書記録" title="Stats" />
-  {#if loaded}
-    <StatsGoals
-      {stats}
-      {goals}
-      {entries}
-      {readThroughs}
-      {books}
-      {todayKey}
-      {weekStart}
-      speedMinMinutes={$speedGoalMinMinutes$}
-    />
-  {/if}
-  <!-- Period -->
-  <div class="flex flex-wrap items-center gap-2 pt-3" role="group" aria-label="Period">
-    {#each PERIOD_KINDS as choice (choice.kind)}
-      <button
-        class="c-ctl min-w-[3rem]"
-        aria-pressed={period.kind === choice.kind}
-        data-testid="stats-period-{choice.kind}"
-        on:click={() => choosePeriod(choice.kind)}
+  <CataloguePageHeader jp="読書記録" title="Stats">
+    {#if loaded}
+      <DropdownMenu
+        buttonClass="c-btn c-btn-secondary c-btn-sm gap-2 px-3 text-sm"
+        align="right"
+        panelWidth="w-64"
+        label="Share"
+        testid="stats-share"
+        let:close
       >
-        {choice.label}
-      </button>
-    {/each}
-    <button
-      class="c-ctl"
-      aria-pressed={period.kind === 'custom'}
-      aria-expanded={showCustom}
-      data-testid="stats-period-custom"
-      on:click={openCustom}
-    >
-      Dates…
-    </button>
-  </div>
-  {#if showCustom}
-    <form
-      class="flex flex-wrap items-end gap-2 pt-2"
-      data-testid="stats-custom-range"
-      on:submit|preventDefault={applyCustom}
-    >
-      <label class="flex flex-col text-sm">
-        From
-        <input class={control} type="date" bind:value={customFrom} />
-      </label>
-      <label class="flex flex-col text-sm">
-        To
-        <input class={control} type="date" bind:value={customTo} />
-      </label>
-      <button class={primary} type="submit">Show</button>
-    </form>
+        <span slot="button" class="flex items-center gap-2">
+          <Fa icon={faShareFromSquare} />
+          {imageBusy ? 'Making the image…' : 'Share'}
+        </span>
+        <div class="flex flex-col gap-1">
+          <button
+            type="button"
+            class={menuItem}
+            data-testid="stats-save-image"
+            disabled={imageBusy}
+            on:click={() => {
+              close();
+              void saveImage();
+            }}
+          >
+            Save as image
+          </button>
+          <p class="px-3 pt-2 text-xs text-c-muted">For your TMW log</p>
+          <button
+            type="button"
+            class={menuItem}
+            data-testid="stats-tmw-chars"
+            on:click={() => {
+              close();
+              void copyTmw('chars');
+            }}
+          >
+            Copy characters
+          </button>
+          <button
+            type="button"
+            class={menuItem}
+            data-testid="stats-tmw-minutes"
+            on:click={() => {
+              close();
+              void copyTmw('minutes');
+            }}
+          >
+            Copy minutes
+          </button>
+        </div>
+      </DropdownMenu>
+    {/if}
+  </CataloguePageHeader>
+
+  {#if tmwNote || imageNote}
+    <div class="flex flex-wrap items-center gap-3 pb-2 text-sm">
+      {#if tmwNote}
+        <span role="status">{tmwNote}</span>
+      {/if}
+      {#if imageNote}
+        <span role="status" data-testid="stats-image-note">{imageNote}</span>
+      {/if}
+    </div>
   {/if}
-  <div class="flex items-center gap-2 pt-2">
-    <button
-      class="{control} min-w-[3rem]"
-      title="Previous"
-      aria-label="Previous period"
-      disabled={period.kind === 'all'}
-      class:opacity-40={period.kind === 'all'}
-      data-testid="stats-prev"
-      on:click={() => navigate({ period: stepPeriod(period, -1, weekStart) })}
+  {#if tmwText}
+    <textarea
+      class="c-input mb-3 w-full p-2 font-mono text-sm"
+      rows="6"
+      readonly
+      data-testid="stats-tmw-text"
+      use:selectAll>{tmwText}</textarea
     >
-      ‹
-    </button>
-    <h2 class="flex-1 text-center font-mincho text-xl font-bold" data-testid="stats-period-label">
-      {label}
-    </h2>
+  {/if}
+
+  <!-- The period and Filters: one bar that stays under the header while scrolling. -->
+  <div class="c-period-bar" data-testid="stats-period-bar">
+    <div class="c-stats-seg c-period-kinds" role="group" aria-label="Period">
+      {#each PERIOD_KINDS as choice (choice.kind)}
+        <button
+          type="button"
+          aria-pressed={period.kind === choice.kind}
+          data-testid="stats-period-{choice.kind}"
+          on:click={() => choosePeriod(choice.kind)}
+        >
+          {choice.label}
+        </button>
+      {/each}
+      <button
+        type="button"
+        aria-pressed={period.kind === 'custom'}
+        aria-expanded={showCustom}
+        data-testid="stats-period-custom"
+        on:click={openCustom}
+      >
+        Dates…
+      </button>
+    </div>
+    <div class="c-stepper">
+      <button
+        type="button"
+        class="c-btn c-btn-secondary c-btn-icon c-btn-sm"
+        title="Previous"
+        aria-label="Previous period"
+        disabled={period.kind === 'all'}
+        data-testid="stats-prev"
+        on:click={() => navigate({ period: stepPeriod(period, -1, weekStart) })}
+      >
+        ‹
+      </button>
+      <h2 class="c-period-label" data-testid="stats-period-label">{label}</h2>
+      <button
+        type="button"
+        class="c-btn c-btn-secondary c-btn-icon c-btn-sm"
+        title="Next"
+        aria-label="Next period"
+        disabled={period.kind === 'all'}
+        data-testid="stats-next"
+        on:click={() => navigate({ period: stepPeriod(period, 1, weekStart) })}
+      >
+        ›
+      </button>
+    </div>
     <button
-      class="{control} min-w-[3rem]"
-      title="Next"
-      aria-label="Next period"
-      disabled={period.kind === 'all'}
-      class:opacity-40={period.kind === 'all'}
-      data-testid="stats-next"
-      on:click={() => navigate({ period: stepPeriod(period, 1, weekStart) })}
+      type="button"
+      class="c-btn c-btn-secondary c-btn-sm min-w-[var(--c-btn-h-sm)] gap-2 px-3 text-sm"
+      title="Filters"
+      aria-label="Filters"
+      aria-expanded={filtersOpen}
+      aria-controls="stats-filters"
+      data-testid="stats-filters-toggle"
+      on:click={() => (filtersOpen = !filtersOpen)}
     >
-      ›
+      <!-- Phones: the icon only, so the period and Filters fit on one row. -->
+      <Fa icon={faFilter} />
+      <span class="hidden sm:inline">Filters</span>{#if filterCount}<span
+          class="c-count-badge"
+          data-testid="stats-filter-count">{filterCount}</span
+        >{/if}
     </button>
   </div>
 
-  <!-- Filters -->
-  <div class="flex flex-wrap items-end gap-2 pt-3">
-    <label class="flex w-full flex-col text-sm sm:w-auto">
-      Device
-      <select
-        class="{control} max-w-full sm:max-w-[16rem]"
-        data-testid="stats-filter-device"
-        on:change={(ev) => setFilter('device', ev.currentTarget.value)}
-      >
-        <!-- Selected per option: the options arrive after the address is read. -->
-        <option value="" selected={!filter.device}>All devices</option>
-        {#each deviceChoices as device (device.id)}
-          <option value={device.id} selected={device.id === filter.device}>{device.name}</option>
-        {/each}
-      </select>
-    </label>
-    {#if libraries && libraries.length > 1}
-      <label class="flex w-full flex-col text-sm sm:w-auto">
-        Library
-        <select
-          class="{control} max-w-full sm:max-w-[16rem]"
-          data-testid="stats-filter-library"
-          on:change={(ev) => setFilter('library', ev.currentTarget.value)}
-        >
-          <option value="" selected={!filter.library}>All libraries</option>
-          {#each libraries as library (library.id)}
-            <option value={library.id} selected={library.id === filter.library}>
-              {library.name}
-            </option>
-          {/each}
-        </select>
+  {#if showCustom}
+    <form
+      class="c-stats-card mt-3 flex flex-wrap items-end gap-3 px-4 py-3 sm:px-5"
+      data-testid="stats-custom-range"
+      on:submit|preventDefault={applyCustom}
+    >
+      <label class="flex flex-col gap-1 text-sm text-c-muted">
+        From
+        <input class="c-input" type="date" bind:value={customFrom} />
       </label>
-    {/if}
-    <label class="flex w-full flex-col text-sm sm:w-auto">
-      Book
-      <select
-        class="{control} max-w-full sm:max-w-[18rem]"
-        data-testid="stats-filter-book"
-        on:change={(ev) => setFilter('book', ev.currentTarget.value)}
-      >
-        <option value="" selected={!filter.book}>All books</option>
-        {#each bookChoices as book (book.id)}
-          <option value={book.id} selected={book.id === filter.book}>{book.title}</option>
-        {/each}
-      </select>
-    </label>
-    {#if filter.device || filter.library || filter.book}
+      <label class="flex flex-col gap-1 text-sm text-c-muted">
+        To
+        <input class="c-input" type="date" bind:value={customTo} />
+      </label>
+      <button class="c-btn c-btn-primary px-4" type="submit">Show</button>
+    </form>
+  {/if}
+
+  {#if filtersOpen}
+    <div
+      id="stats-filters"
+      class="c-stats-card mt-3 grid gap-3 p-3 sm:grid-cols-2 sm:p-4 lg:grid-cols-3"
+      data-testid="stats-filters"
+    >
+      <SearchPicker
+        label="Book"
+        allLabel="All books"
+        placeholder="Type a title"
+        options={bookOptions}
+        value={filter.book}
+        valueLabel={filter.book ? bookTitle(filter.book) : ''}
+        testid="stats-filter-book"
+        on:change={(e) => setFilter('book', e.detail)}
+      />
+      <SearchPicker
+        label="Device"
+        allLabel="All devices"
+        placeholder="Type a device name"
+        options={deviceOptions}
+        value={filter.device}
+        valueLabel={deviceName}
+        testid="stats-filter-device"
+        on:change={(e) => setFilter('device', e.detail)}
+      />
+      {#if libraries && libraries.length > 1}
+        <div class="flex flex-col gap-1">
+          <span class="text-xs font-medium uppercase tracking-wider text-c-muted">Library</span>
+          <div
+            class="flex flex-wrap gap-2"
+            role="group"
+            aria-label="Library"
+            data-testid="stats-filter-library"
+          >
+            <button
+              type="button"
+              class="c-chip"
+              aria-pressed={!filter.library}
+              on:click={() => setFilter('library', null)}
+            >
+              All libraries
+            </button>
+            {#each libraries as library (library.id)}
+              <button
+                type="button"
+                class="c-chip"
+                aria-pressed={filter.library === library.id}
+                on:click={() => setFilter('library', library.id)}
+              >
+                {library.name}
+              </button>
+            {/each}
+          </div>
+        </div>
+      {/if}
+    </div>
+  {/if}
+
+  {#if filterCount}
+    <div
+      class="flex flex-wrap items-center gap-2 pt-3"
+      role="group"
+      aria-label="Filters on"
+      data-testid="stats-chips"
+    >
+      {#if filter.book}
+        <button type="button" class={chip} on:click={() => setFilter('book', null)}>
+          <span class="max-w-[16rem] truncate">Book: {bookTitle(filter.book)}</span>
+          <Fa icon={faXmark} /><span class="sr-only">Remove</span>
+        </button>
+      {/if}
+      {#if filter.device}
+        <button type="button" class={chip} on:click={() => setFilter('device', null)}>
+          <span class="max-w-[14rem] truncate">Device: {deviceName}</span>
+          <Fa icon={faXmark} /><span class="sr-only">Remove</span>
+        </button>
+      {/if}
+      {#if filter.library}
+        <button type="button" class={chip} on:click={() => setFilter('library', null)}>
+          <span class="max-w-[14rem] truncate">Library: {libraryName}</span>
+          <Fa icon={faXmark} /><span class="sr-only">Remove</span>
+        </button>
+      {/if}
       <button
-        class="c-link min-h-[3rem] px-2"
+        type="button"
+        class="c-btn c-btn-ghost c-btn-sm px-2 text-sm"
         data-testid="stats-filter-clear"
         on:click={() => navigate({ filter: { device: null, library: null, book: null } })}
       >
         Show all
       </button>
-    {/if}
-  </div>
+    </div>
+  {/if}
   {#if infoError}
     <p class="c-notice" role="alert" data-testid="stats-info-error">{infoError}</p>
   {/if}
@@ -585,382 +736,339 @@
     <p class="py-6 text-c-muted">Loading…</p>
   {:else}
     <!-- Totals -->
-    <dl
-      class="grid grid-cols-2 gap-2 pt-4 sm:grid-cols-3"
-      data-testid="stats-summary"
-      aria-label="Totals for {label}"
-    >
-      <div class="c-tile rounded p-4">
-        <dt class="text-xs font-medium uppercase tracking-wider text-c-muted">Reading time</dt>
-        <dd class="font-mincho text-2xl font-bold" data-testid="stats-total-time">
-          {formatDuration(view.summary.seconds)}
-        </dd>
-        {#if changes.seconds?.change}
-          <dd class="pt-1 text-xs" data-testid="stats-change-time">{changes.seconds.change}</dd>
-        {/if}
-        {#if changes.seconds?.whole}
-          <dd class="text-xs text-c-muted" data-testid="stats-whole-time">
-            {changes.seconds.whole}
+    <dl class="c-tiles" data-testid="stats-summary" aria-label="Totals for {label}">
+      {#each TILES as tile (tile.key)}
+        <div class="c-tile-box">
+          <dt class="text-xs font-semibold uppercase tracking-wider text-c-muted">{tile.label}</dt>
+          <dd class="c-tile-value" data-testid="stats-total-{tile.id}">
+            {tileValue(tile.key, view.summary)}
           </dd>
-        {/if}
-      </div>
-      <div class="c-tile rounded p-4">
-        <dt class="text-xs font-medium uppercase tracking-wider text-c-muted">Characters</dt>
-        <dd class="font-mincho text-2xl font-bold" data-testid="stats-total-chars">
-          {formatNumber(view.summary.chars)}
-        </dd>
-        {#if changes.chars?.change}
-          <dd class="pt-1 text-xs" data-testid="stats-change-chars">{changes.chars.change}</dd>
-        {/if}
-        {#if changes.chars?.whole}
-          <dd class="text-xs text-c-muted" data-testid="stats-whole-chars">
-            {changes.chars.whole}
-          </dd>
-        {/if}
-      </div>
-      <div class="c-tile rounded p-4">
-        <dt class="text-xs font-medium uppercase tracking-wider text-c-muted">Speed</dt>
-        <dd class="font-mincho text-2xl font-bold" data-testid="stats-total-speed">
-          {view.summary.speed ? `${formatNumber(view.summary.speed)} / h` : '–'}
-        </dd>
-        {#if changes.speed?.change}
-          <dd class="pt-1 text-xs" data-testid="stats-change-speed">{changes.speed.change}</dd>
-        {/if}
-        {#if changes.speed?.whole}
-          <dd class="text-xs text-c-muted" data-testid="stats-whole-speed">
-            {changes.speed.whole}
-          </dd>
-        {/if}
-      </div>
-      <div class="c-tile rounded p-4">
-        <dt class="text-xs font-medium uppercase tracking-wider text-c-muted">Books completed</dt>
-        <dd class="font-mincho text-2xl font-bold" data-testid="stats-total-completed">
-          {view.summary.booksCompleted}
-        </dd>
-        {#if changes.booksCompleted?.change}
-          <dd class="pt-1 text-xs" data-testid="stats-change-completed">
-            {changes.booksCompleted.change}
-          </dd>
-        {/if}
-        {#if changes.booksCompleted?.whole}
-          <dd class="text-xs text-c-muted" data-testid="stats-whole-completed">
-            {changes.booksCompleted.whole}
-          </dd>
-        {/if}
-      </div>
-      <div class="c-tile rounded p-4">
-        <dt class="text-xs font-medium uppercase tracking-wider text-c-muted">
-          Dictionary lookups
-        </dt>
-        <dd class="font-mincho text-2xl font-bold" data-testid="stats-total-lookups">
-          {formatNumber(view.summary.lookups)}
-        </dd>
-        {#if changes.lookups?.change}
-          <dd class="pt-1 text-xs" data-testid="stats-change-lookups">{changes.lookups.change}</dd>
-        {/if}
-        {#if changes.lookups?.whole}
-          <dd class="text-xs text-c-muted" data-testid="stats-whole-lookups">
-            {changes.lookups.whole}
-          </dd>
-        {/if}
-      </div>
-      <div class="c-tile rounded p-4">
-        <dt class="text-xs font-medium uppercase tracking-wider text-c-muted">Days read</dt>
-        <dd class="font-mincho text-2xl font-bold" data-testid="stats-total-days">
-          {view.summary.daysRead}
-        </dd>
-        {#if changes.daysRead?.change}
-          <dd class="pt-1 text-xs" data-testid="stats-change-days">{changes.daysRead.change}</dd>
-        {/if}
-        {#if changes.daysRead?.whole}
-          <dd class="text-xs text-c-muted" data-testid="stats-whole-days">
-            {changes.daysRead.whole}
-          </dd>
-        {/if}
-      </div>
+          {#if changes[tile.key]?.change}
+            <dd
+              class="c-change c-change-{trend(changes[tile.key]?.change)}"
+              data-testid="stats-change-{tile.id}"
+            >
+              <span aria-hidden="true"
+                >{trend(changes[tile.key]?.change) === 'up'
+                  ? '▲'
+                  : trend(changes[tile.key]?.change) === 'down'
+                    ? '▼'
+                    : '–'}</span
+              >
+              <span>{changes[tile.key]?.change}</span>
+            </dd>
+          {/if}
+          {#if changes[tile.key]?.whole}
+            <dd class="pt-0.5 text-xs text-c-muted" data-testid="stats-whole-{tile.id}">
+              {changes[tile.key]?.whole}
+            </dd>
+          {/if}
+        </div>
+      {/each}
     </dl>
     {#if view.summary.manualChars}
-      <p class="pt-2 text-sm" data-testid="stats-manual-note">
+      <p class="pt-2 text-sm text-c-muted" data-testid="stats-manual-note">
         Characters include {formatNumber(view.summary.manualChars)} from books marked completed by hand
         (no time, so not in the speed).
       </p>
     {/if}
     {#if filter.device}
-      <p class="pt-2 text-sm">
+      <p class="pt-2 text-sm text-c-muted">
         Books completed counts every device: a completion isn't tied to one device.
       </p>
     {/if}
 
-    <!-- Phase 11: this week, month or year beside the one before it -->
-    {#if comparison && chart}
-      <StatsPeriodChart
-        {chart}
-        {comparison}
-        {measure}
-        today={todayKey}
-        on:measure={(ev) => navigate({ measure: ev.detail })}
+    <!-- Phase 11: this week, month or year beside the one before it; WP12c goals. -->
+    <div class="c-duo">
+      {#if comparison && chart}
+        <StatsPeriodChart
+          {chart}
+          {comparison}
+          {measure}
+          today={todayKey}
+          on:measure={(ev) => navigate({ measure: ev.detail })}
+        />
+      {:else if comparison?.state === 'future'}
+        <p
+          class="c-stats-card px-4 py-5 text-sm text-c-muted sm:px-5"
+          data-testid="stats-chart-future"
+        >
+          This {comparison.kind} hasn't started yet.
+        </p>
+      {/if}
+      <StatsGoals
+        {stats}
+        {goals}
+        {entries}
+        {readThroughs}
+        {books}
+        {todayKey}
+        {weekStart}
+        speedMinMinutes={$speedGoalMinMinutes$}
       />
-    {:else if comparison?.state === 'future'}
-      <p class="pt-4 text-sm" data-testid="stats-chart-future">
-        This {comparison.kind} hasn't started yet.
-      </p>
-    {/if}
-
-    <!-- Copy for TMW -->
-    <div class="flex flex-wrap items-center gap-2 pt-3">
-      <button
-        class={primary}
-        data-testid="stats-save-image"
-        disabled={imageBusy}
-        on:click={saveImage}
-      >
-        {imageBusy ? 'Making the image…' : 'Save image'}
-      </button>
-      <button class={control} data-testid="stats-tmw-chars" on:click={() => copyTmw('chars')}>
-        Copy characters (TMW)
-      </button>
-      <button class={control} data-testid="stats-tmw-minutes" on:click={() => copyTmw('minutes')}>
-        Copy minutes (TMW)
-      </button>
-      {#if tmwNote}
-        <span class="text-sm" role="status">{tmwNote}</span>
-      {/if}
-      {#if imageNote}
-        <span class="text-sm" role="status" data-testid="stats-image-note">{imageNote}</span>
-      {/if}
     </div>
-    {#if tmwText}
-      <textarea
-        class="c-input mt-2 w-full p-2 font-mono text-sm"
-        rows="6"
-        readonly
-        data-testid="stats-tmw-text"
-        use:selectAll>{tmwText}</textarea
-      >
-    {/if}
 
     {#if !entries.length && !readThroughs.size}
-      <p class="py-6" data-testid="stats-empty">
+      <p class="c-stats-card mt-8 px-4 py-6 text-center sm:px-5" data-testid="stats-empty">
         No reading recorded yet. Turn on the tracker in a book; sessions from every device show
         here.
       </p>
     {:else}
-      <!-- Heatmap (all time, filters applied) -->
+      <!-- Calendar (all time, filters applied) -->
       {#if heatmapData.length}
-        <section class="pt-6" data-testid="stats-heatmap">
-          <StatisticsHeatmap
-            statisticsData={heatmapData}
-            readingGoals={[]}
-            statisticsTitleFilters={heatmapTitles}
-            {today}
-            {todayKey}
-            selectedFrom={period.from ?? ''}
-            selectedTo={period.to ?? ''}
-            heatmapType={HeatmapType.STATISTICS}
-            bind:heatmapAggregration={$lastReadingDataHeatmapAggregationMode$}
-          />
+        <section class="pt-8" data-testid="stats-heatmap" aria-labelledby="stats-heatmap-title">
+          <div class="c-sec-head">
+            <h2 id="stats-heatmap-title" class="font-mincho text-xl font-bold sm:text-2xl">
+              Calendar
+            </h2>
+            <span class="text-sm text-c-muted">Every day you read, with the filters applied</span>
+          </div>
+          <div class="c-stats-card px-3 py-4 sm:px-5">
+            <StatisticsHeatmap
+              statisticsData={heatmapData}
+              readingGoals={[]}
+              statisticsTitleFilters={heatmapTitles}
+              {today}
+              {todayKey}
+              selectedFrom={period.from ?? ''}
+              selectedTo={period.to ?? ''}
+              heatmapType={HeatmapType.STATISTICS}
+              bind:heatmapAggregration={$lastReadingDataHeatmapAggregationMode$}
+            />
+          </div>
         </section>
       {/if}
 
       <!-- Books -->
-      <section class="pt-6" data-testid="stats-books">
-        <div class="flex items-center gap-4 pb-3">
-          <h2 class="font-mincho text-2xl font-bold">Books</h2>
-          <span class="c-section-rule" />
+      <section class="pt-8" data-testid="stats-books" aria-labelledby="stats-books-title">
+        <div class="c-sec-head">
+          <h2 id="stats-books-title" class="font-mincho text-xl font-bold sm:text-2xl">Books</h2>
+          {#if view.books.length}
+            <span class="text-sm text-c-muted">
+              {view.books.length.toLocaleString('en-US')} read in this period · tap a title to see only
+              that book
+            </span>
+          {/if}
         </div>
         {#if view.books.length}
-          <div class="overflow-x-auto">
-            <table class="w-full text-left text-sm">
-              <thead>
-                <tr class="border-b-2 border-c-strong text-c-muted">
-                  <th class="py-2 pr-2">Book</th>
-                  <th class="py-2 pr-2 text-right">Time</th>
-                  <th class="py-2 pr-2 text-right">Characters</th>
-                  <th class="py-2 pr-2 text-right">Speed</th>
-                  <th class="py-2 text-right">Lookups</th>
-                </tr>
-              </thead>
-              <tbody>
-                {#each view.books as row (row.bookId)}
-                  <tr class="border-b border-c-line" data-testid="stats-book-row">
-                    <td class="py-2 pr-2">
-                      <button
-                        class="c-link min-h-[3rem] text-left font-medium"
-                        title="Show only this book"
-                        on:click={() => setFilter('book', row.bookId)}
-                      >
-                        {row.title}
-                      </button>
-                      {#if row.missing}
-                        <span class="block text-xs">No longer in the library</span>
-                      {/if}
-                      {#if row.completed}
-                        <span class="block text-xs" data-testid="stats-book-completed">
-                          {row.manual ? 'Marked completed' : 'Completed'}
-                        </span>
-                      {/if}
-                    </td>
-                    <td class="py-2 pr-2 text-right">{formatDuration(row.seconds)}</td>
-                    <td class="py-2 pr-2 text-right">{formatNumber(row.chars)}</td>
-                    <td class="py-2 pr-2 text-right">
-                      {row.speed ? formatNumber(row.speed) : '–'}
-                    </td>
-                    <td class="py-2 text-right">{formatNumber(row.lookups)}</td>
-                  </tr>
-                {/each}
-              </tbody>
-            </table>
-          </div>
+          <StatsBooksTable rows={view.books} {books} on:pick={(e) => setFilter('book', e.detail)} />
         {:else}
-          <p class="text-sm">No reading in this period.</p>
+          <p class="c-stats-card px-4 py-5 text-sm text-c-muted sm:px-5">
+            No reading in this period.
+          </p>
         {/if}
       </section>
 
-      <!-- Days and sessions -->
-      <section class="pt-6" data-testid="stats-days">
-        <div class="flex items-center gap-4 pb-3">
-          <h2 class="font-mincho text-2xl font-bold">Days</h2>
-          <span class="c-section-rule" />
+      <!-- Reading log (days and sessions) -->
+      <section class="pt-8" data-testid="stats-days" aria-labelledby="stats-days-title">
+        <div class="c-sec-head">
+          <h2 id="stats-days-title" class="font-mincho text-xl font-bold sm:text-2xl">
+            Reading log
+          </h2>
+          <span class="text-sm text-c-muted">
+            Each day's sessions; open a day to correct, leave out or delete one
+          </span>
         </div>
         {#if actionError}
-          <p class="pb-2 text-sm" role="alert">{actionError}</p>
+          <p class="pb-2 text-sm font-semibold" role="alert">{actionError}</p>
         {/if}
-        {#each shownDayRows as day (day.day)}
-          <div class="border-t border-c-line py-3" data-testid="stats-day" data-day={day.day}>
-            <div class="flex flex-wrap items-baseline justify-between gap-x-4">
-              <h3 class="font-mincho font-bold">{formatDay(day.day, currentYear)}</h3>
-              <span class="text-sm">
-                {formatDuration(day.totals.seconds)} · {formatNumber(day.totals.chars)} characters
-                {#if day.totals.lookups}· {formatNumber(day.totals.lookups)} lookups{/if}
-              </span>
-            </div>
-            <ul class="pt-1">
-              {#each day.entries as entry (entry.id)}
-                <li
-                  class="flex flex-wrap items-center gap-x-3 gap-y-1 py-2"
-                  data-testid="stats-entry"
-                  data-entry-id={entry.id}
-                  data-excluded={entry.excluded ? '1' : '0'}
-                >
-                  <div class="min-w-0 flex-1">
-                    <div class="truncate">{bookTitle(entry.bookId)}</div>
-                    <div class="text-xs">
-                      {deviceLabel(entry)}{entryNote(entry) ? ` · ${entryNote(entry)}` : ''}
-                    </div>
-                  </div>
-                  <div
-                    class="text-sm"
-                    class:line-through={entry.excluded}
-                    data-testid="stats-entry-numbers"
-                  >
-                    {formatDuration(entry.seconds)} · {formatNumber(entry.chars)} characters
-                    {#if entry.lookups}· {entry.lookups} lookups{/if}
-                    {#if entry.recorded}
-                      <span class="block text-xs" data-testid="stats-entry-corrected">
-                        Corrected (recorded {formatDuration(entry.recorded.seconds)} · {formatNumber(
-                          entry.recorded.chars
-                        )})
-                      </span>
-                    {/if}
-                    {#if entry.excluded}
-                      <span class="block text-xs">Left out of the totals</span>
-                    {/if}
-                  </div>
-                  {#if entry.source !== 'frozen'}
-                    <div class="flex flex-wrap gap-2">
-                      {#if entry.excluded || entry.recorded}
-                        <button
-                          class={control}
-                          data-testid="stats-entry-restore"
-                          on:click={() => clearFix(entry)}
-                        >
-                          {entry.excluded ? 'Count again' : 'Undo correction'}
-                        </button>
-                      {/if}
-                      {#if !entry.excluded}
-                        <button
-                          class={control}
-                          data-testid="stats-entry-exclude"
-                          on:click={() => exclude(entry)}
-                        >
-                          Leave out
-                        </button>
-                        <button
-                          class={control}
-                          data-testid="stats-entry-correct"
-                          on:click={() => startEdit(entry)}
-                        >
-                          Correct…
-                        </button>
-                      {/if}
-                    </div>
-                  {/if}
-                </li>
-                {#if editing && editing.id === entry.id}
-                  <li>
-                    <form
-                      class="flex flex-wrap items-end gap-2 pb-3"
-                      data-testid="stats-correct-form"
-                      on:submit|preventDefault={() => saveEdit(entry)}
-                    >
-                      {#if entry.source !== 'completion'}
-                        <label class="flex flex-col text-sm">
-                          Minutes
-                          <input
-                            class="{control} w-28"
-                            inputmode="decimal"
-                            bind:value={editing.minutes}
-                            on:keydown={cancelOnEscape}
-                            data-testid="stats-correct-minutes"
-                          />
-                        </label>
-                      {/if}
-                      <label class="flex flex-col text-sm">
-                        Characters
-                        <input
-                          class="{control} w-36"
-                          inputmode="numeric"
-                          bind:value={editing.chars}
-                          on:keydown={cancelOnEscape}
-                          data-testid="stats-correct-chars"
-                        />
-                      </label>
-                      <button class={primary} type="submit">Save</button>
-                      <button class={control} type="button" on:click={() => (editing = null)}>
-                        Cancel
-                      </button>
-                      {#if editing.error}
-                        <p class="w-full text-sm" role="alert">{editing.error}</p>
-                      {/if}
-                    </form>
-                  </li>
-                {/if}
-              {/each}
-            </ul>
-          </div>
-        {:else}
-          <p class="text-sm">No reading in this period.</p>
-        {/each}
-        <!-- WP19a: more days near the end (the Library's "Load more while scrolling"). -->
-        <div
-          use:loadWhenVisible={{
-            enabled: autoLoad && view.days.length > shownDays,
-            onVisible: () => (shownDays += DAYS_PER_PAGE)
-          }}
-          data-testid="stats-days-sentinel"
-        />
-        {#if view.days.length > shownDays && !autoLoad}
-          <button
-            class="{control} mt-2 w-full"
-            data-testid="stats-days-more"
-            on:click={() => (shownDays += DAYS_PER_PAGE)}
-          >
-            Load more days
-          </button>
-        {/if}
+        {#key logKey}
+          <StatsReadingLog
+            days={view.days}
+            {currentYear}
+            {bookTitle}
+            {deviceLabel}
+            {entryNote}
+            {correct}
+            {exclude}
+            {clearFix}
+            remove={removeSession}
+          />
+        {/key}
       </section>
     {/if}
   {/if}
 </div>
 
 <AppBottomBar />
+
+<style>
+  /* Under the fixed header (48 px; 40 px from 1280 px) while the page scrolls. */
+  .c-period-bar {
+    position: sticky;
+    top: 3rem;
+    z-index: 20;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem 0.625rem;
+    margin: 0 -1rem;
+    padding: 0.5rem 1rem;
+    background-color: var(--c-bg);
+    border-bottom: 1px solid var(--c-gold);
+  }
+
+  @media (min-width: 768px) {
+    .c-period-bar {
+      margin: 0 -2rem;
+      padding: 0.5rem 2rem;
+    }
+  }
+
+  @media (min-width: 1280px) {
+    .c-period-bar {
+      top: 2.5rem;
+    }
+  }
+
+  /* Phones: the period choices fill the first row; the stepper and Filters share the next. */
+  .c-period-kinds {
+    flex: 1 1 100%;
+  }
+
+  @media (min-width: 768px) {
+    .c-period-kinds {
+      flex: 0 1 auto;
+    }
+  }
+
+  .c-stepper {
+    display: flex;
+    flex: 1 1 auto;
+    min-width: 0;
+    align-items: center;
+    gap: 0.25rem;
+  }
+
+  @media (min-width: 768px) {
+    .c-stepper {
+      flex: 0 1 auto;
+      margin-left: auto;
+    }
+  }
+
+  .c-period-label {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    text-align: center;
+    font-family: 'Shippori Mincho', 'Noto Serif JP', serif;
+    font-size: 1.125rem;
+    font-weight: 700;
+  }
+
+  @media (min-width: 768px) {
+    .c-period-label {
+      min-width: 11rem;
+    }
+  }
+
+  .c-count-badge {
+    display: inline-flex;
+    min-width: 1.25rem;
+    height: 1.25rem;
+    align-items: center;
+    justify-content: center;
+    padding: 0 0.3rem;
+    border-radius: 999px;
+    background-color: var(--c-sel-bg);
+    color: var(--c-sel-ink);
+    font-size: 0.75rem;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .c-tiles {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.625rem;
+    padding-top: 1rem;
+  }
+
+  @media (min-width: 768px) {
+    .c-tiles {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+  }
+
+  .c-tile-box {
+    min-width: 0;
+    padding: 0.75rem 0.875rem;
+    border-radius: 0.625rem;
+    background-color: var(--c-raised);
+    border: var(--c-border-width) solid var(--c-line);
+  }
+
+  .c-tile-value {
+    padding-top: 0.25rem;
+    font-family: 'Shippori Mincho', 'Noto Serif JP', serif;
+    font-size: 1.5rem;
+    font-weight: 700;
+    line-height: 1.2;
+    font-variant-numeric: tabular-nums;
+    overflow-wrap: anywhere;
+  }
+
+  @media (min-width: 640px) {
+    .c-tile-value {
+      font-size: 1.75rem;
+    }
+  }
+
+  .c-change {
+    display: flex;
+    gap: 0.25rem;
+    padding-top: 0.25rem;
+    font-size: 0.75rem;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Green and red that stay at 4.5:1 on the tiles; E-ink keeps the ▲/▼ only. */
+  .c-change-up {
+    color: #1f6b3a;
+  }
+
+  .c-change-down {
+    color: #a3301b;
+  }
+
+  .c-change-flat {
+    color: var(--c-muted);
+  }
+
+  :global(html.catalogue-dark) .c-change-up {
+    color: #8fd3a6;
+  }
+
+  :global(html.catalogue-dark) .c-change-down {
+    color: #ee9a84;
+  }
+
+  :global(html.eink) .c-change-up,
+  :global(html.eink) .c-change-down {
+    color: #000;
+  }
+
+  /* The chart beside Goals from 1280 px; stacked below. */
+  .c-duo {
+    display: grid;
+    gap: 1rem;
+    padding-top: 2rem;
+    align-items: start;
+  }
+
+  @media (min-width: 1280px) {
+    .c-duo {
+      grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr);
+    }
+  }
+
+  .c-sec-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.25rem 0.75rem;
+    padding-bottom: 0.75rem;
+  }
+</style>

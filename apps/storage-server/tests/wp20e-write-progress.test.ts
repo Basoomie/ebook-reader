@@ -22,6 +22,24 @@ describe('stage 4 On progress', () => {
     expect(writePace([], now)).toBeNull();
   });
 
+  it('leaves a pause between batches out of the pace (WP20f: 2 h shown as 6 h)', () => {
+    // Five batches of 500, each 90 s with 30 s of planning between, but a 17-minute restart
+    // after the second: the restart counts as the usual 30 s.
+    const b = [
+      batch(1590, 1500, 500),
+      batch(1470, 1380, 500),
+      batch(360, 270, 500), // 1,020 s after the one before: a pause
+      batch(240, 150, 500),
+      batch(120, 30, 500),
+    ];
+    expect(writePace(b, now)).toBeCloseTo(2500 / (5 * 90 + 4 * 30), 5);
+    // Only pauses between batches: each batch's own time alone.
+    expect(writePace([batch(3000, 2910, 500), batch(900, 810, 500)], now)).toBeCloseTo(
+      1000 / 180,
+      5,
+    );
+  });
+
   it('gives the time left from the changes left at that pace', () => {
     const b = [batch(200, 100, 1000), batch(100, 0, 1000)];
     expect(

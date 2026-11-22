@@ -80,6 +80,8 @@ export function statEntriesFromRecords(records: LocalRecord[]): StatEntry[] {
       const seconds = source === 'completion' ? 0 : count(d.seconds);
       const chars = count(d.chars);
       const fix = fixes.get(r.id);
+      // Deleted on the Stats page: the session stays stored but is shown and counted nowhere.
+      if (fix?.deleted === true) continue;
       const corrected = !!fix && (typeof fix.seconds === 'number' || typeof fix.chars === 'number');
       out.push({
         id: r.id,

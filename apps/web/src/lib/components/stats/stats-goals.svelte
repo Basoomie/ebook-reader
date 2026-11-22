@@ -24,6 +24,7 @@
   import type { StatsApi } from '$lib/sync/sync-service';
   import { confirmDestructive } from '$lib/confirm/confirm';
   import { endGoalCopy } from '$lib/confirm/confirm-copy';
+  import DropdownMenu from '$lib/components/dropdown-menu.svelte';
 
   /**
    * WP12c: reading goals on the Stats page. Several goals can be active; each shows the
@@ -40,11 +41,6 @@
   export let todayKey: string;
   export let weekStart: number;
   export let speedMinMinutes: number;
-
-  // WP19b: the catalogue look (app.scss).
-  const control = 'c-ctl';
-  /** A filled button: its own classes, never combined with `control` (bg-white would win). */
-  const primary = 'c-btn c-btn-primary px-3';
 
   let editing: {
     goal: StatGoal | null;
@@ -164,67 +160,77 @@
   function unitOf(metric: GoalMetric): string {
     return GOAL_METRICS.find((m) => m.metric === metric)?.unit ?? '';
   }
+
+  const menuItem = 'c-btn c-btn-ghost w-full justify-start px-3 text-left';
 </script>
 
-<section class="pt-4" data-testid="stats-goals">
-  <div class="flex flex-wrap items-center justify-between gap-2 pb-2">
-    <h2 class="font-mincho text-2xl font-bold">Goals</h2>
+<!-- 2026-11-22 redesign: one card; a goal's Change… and End goal sit in its ⋯ menu. -->
+<section class="c-stats-card" data-testid="stats-goals" aria-labelledby="stats-goals-title">
+  <div class="c-stats-card-head">
+    <h2 id="stats-goals-title" class="font-mincho text-lg font-bold sm:text-xl">Goals</h2>
     {#if !editing}
-      <button class={control} data-testid="stats-goal-add" on:click={startAdd}>Add goal</button>
+      <button
+        type="button"
+        class="c-btn c-btn-secondary c-btn-sm px-3"
+        data-testid="stats-goal-add"
+        on:click={startAdd}
+      >
+        + Add goal
+      </button>
     {/if}
   </div>
   {#if saveError}
-    <p class="pb-2 text-sm" role="alert">{saveError}</p>
+    <p class="px-4 pt-3 text-sm font-semibold sm:px-5" role="alert">{saveError}</p>
   {/if}
   {#if editing}
     <form
-      class="flex flex-wrap items-end gap-2 pb-3"
+      class="grid gap-3 border-b border-c-line px-4 py-4 sm:px-5"
       data-testid="stats-goal-form"
       on:submit|preventDefault={save}
     >
-      <label class="flex flex-col text-sm">
-        Goal
-        <select
-          class={control}
-          bind:value={editing.metric}
-          data-testid="stats-goal-metric"
-          on:keydown={cancelOnEscape}
-        >
-          {#each GOAL_METRICS as m (m.metric)}
-            <option value={m.metric}>{m.label}</option>
-          {/each}
-        </select>
-      </label>
-      <label class="flex flex-col text-sm">
-        Every
-        <select
-          class={control}
-          bind:value={editing.period}
-          data-testid="stats-goal-period"
-          on:keydown={cancelOnEscape}
-        >
-          {#each GOAL_PERIODS as p (p.period)}
-            <option value={p.period}>{p.label}</option>
-          {/each}
-        </select>
-      </label>
-      <label class="flex flex-col text-sm">
-        Target ({unitOf(editing.metric)})
-        <input
-          class="{control} w-36"
-          inputmode="numeric"
-          bind:value={editing.target}
-          data-testid="stats-goal-target"
-          on:keydown={cancelOnEscape}
-        />
-      </label>
-      <button class={primary} type="submit">Save</button>
-      <button class={control} type="button" on:click={() => (editing = null)}>Cancel</button>
+      <div class="grid gap-3 sm:grid-cols-3">
+        <label class="flex flex-col gap-1 text-sm text-c-muted">
+          Goal
+          <select
+            class="c-input w-full"
+            bind:value={editing.metric}
+            data-testid="stats-goal-metric"
+            on:keydown={cancelOnEscape}
+          >
+            {#each GOAL_METRICS as m (m.metric)}
+              <option value={m.metric}>{m.label}</option>
+            {/each}
+          </select>
+        </label>
+        <label class="flex flex-col gap-1 text-sm text-c-muted">
+          Every
+          <select
+            class="c-input w-full"
+            bind:value={editing.period}
+            data-testid="stats-goal-period"
+            on:keydown={cancelOnEscape}
+          >
+            {#each GOAL_PERIODS as p (p.period)}
+              <option value={p.period}>{p.label}</option>
+            {/each}
+          </select>
+        </label>
+        <label class="flex flex-col gap-1 text-sm text-c-muted">
+          Target ({unitOf(editing.metric)})
+          <input
+            class="c-input w-full"
+            inputmode="numeric"
+            bind:value={editing.target}
+            data-testid="stats-goal-target"
+            on:keydown={cancelOnEscape}
+          />
+        </label>
+      </div>
       {#if editing.error}
-        <p class="w-full text-sm" role="alert">{editing.error}</p>
+        <p class="text-sm font-semibold" role="alert">{editing.error}</p>
       {/if}
       {#if editing.goal}
-        <p class="w-full text-xs">
+        <p class="text-xs text-c-muted">
           Earlier {editing.goal.period === 'day'
             ? 'days'
             : editing.goal.period === 'week'
@@ -232,42 +238,73 @@
               : 'months'} keep the target they had.
         </p>
       {/if}
+      <div class="flex flex-wrap gap-2">
+        <button class="c-btn c-btn-primary px-4" type="submit">Save</button>
+        <button class="c-btn c-btn-secondary px-4" type="button" on:click={() => (editing = null)}>
+          Cancel
+        </button>
+      </div>
     </form>
   {/if}
   {#if !rows.length && !editing}
-    <p class="text-sm" data-testid="stats-goals-empty">
-      No goals yet. Goals count reading on every device.
+    <p class="px-4 py-5 text-center text-sm text-c-muted sm:px-5" data-testid="stats-goals-empty">
+      No goals yet. A goal counts reading on every device, by day, week or month.
     </p>
   {/if}
   {#each rows as row (row.goal.id)}
-    <div class="border-t border-c-line py-3" data-testid="stats-goal" data-goal-id={row.goal.id}>
-      <div class="flex flex-wrap items-center justify-between gap-2">
-        <h3 class="font-mincho font-bold" data-testid="stats-goal-title">{goalTitle(row.goal)}</h3>
-        <div class="flex gap-2">
-          <button
-            class={control}
-            data-testid="stats-goal-change"
-            on:click={() => startEdit(row.goal)}
-          >
-            Change…
-          </button>
-          <button class={control} data-testid="stats-goal-end" on:click={() => end(row.goal)}>
-            End goal
-          </button>
-        </div>
+    <div class="c-goal px-4 py-3 sm:px-5" data-testid="stats-goal" data-goal-id={row.goal.id}>
+      <div class="flex items-start gap-2">
+        <h3 class="min-w-0 flex-1 pt-2 font-semibold" data-testid="stats-goal-title">
+          {goalTitle(row.goal)}
+        </h3>
+        <DropdownMenu
+          buttonClass="c-btn c-btn-ghost c-btn-icon c-btn-sm"
+          align="right"
+          panelWidth="w-48"
+          label="Goal: {goalTitle(row.goal)}"
+          testid="stats-goal-menu"
+          let:close
+        >
+          <span slot="button" aria-label="Goal options">⋯</span>
+          <div class="flex flex-col gap-1">
+            <button
+              type="button"
+              class={menuItem}
+              data-testid="stats-goal-change"
+              on:click={() => {
+                close();
+                startEdit(row.goal);
+              }}
+            >
+              Change…
+            </button>
+            <button
+              type="button"
+              class={menuItem}
+              data-testid="stats-goal-end"
+              on:click={() => {
+                close();
+                void end(row.goal);
+              }}
+            >
+              End goal…
+            </button>
+          </div>
+        </DropdownMenu>
       </div>
-      <p class="pt-1 text-sm" data-testid="stats-goal-current">
-        {periodLabel(current(row).period)}: {currentText(row, speedMinMinutes)}
-      </p>
       <div
-        class="c-progress mt-1 h-3 w-full overflow-hidden rounded-full bg-c-track"
+        class="c-progress mt-1 h-2.5 w-full overflow-hidden rounded-full bg-c-track"
         role="progressbar"
+        aria-label={goalTitle(row.goal)}
         aria-valuemin="0"
         aria-valuemax="100"
         aria-valuenow={percent(row)}
       >
-        <div class="h-full bg-c-fill" style:width="{percent(row)}%" />
+        <div class="h-full rounded-full bg-c-fill" style:width="{percent(row)}%" />
       </div>
+      <p class="pt-1.5 text-sm" data-testid="stats-goal-current">
+        {periodLabel(current(row).period)}: {currentText(row, speedMinMinutes)}
+      </p>
       <ol
         class="flex flex-wrap gap-1 pt-2"
         aria-label="Last 12 periods"
@@ -275,8 +312,8 @@
       >
         {#each row.history as h (h.period.from)}
           <li
-            class="flex h-7 w-7 items-center justify-center rounded border border-current text-sm"
-            class:font-bold={h.state === 'met'}
+            class="c-goal-mark flex h-6 w-6 items-center justify-center rounded text-xs"
+            class:c-goal-met={h.state === 'met'}
             title="{periodLabel(h.period)}: {stateLabel(h.state)}"
             aria-label="{periodLabel(h.period)}: {stateLabel(h.state)}"
             data-state={h.state}
@@ -288,3 +325,25 @@
     </div>
   {/each}
 </section>
+
+<style>
+  .c-goal + .c-goal {
+    border-top: 1px solid var(--c-line);
+  }
+
+  .c-goal-mark {
+    border: var(--c-border-width) solid var(--c-line-strong);
+    color: var(--c-muted);
+  }
+
+  .c-goal-met {
+    background-color: var(--c-fill);
+    border-color: var(--c-fill);
+    color: var(--c-raised);
+    font-weight: 700;
+  }
+
+  :global(html.eink) .c-progress {
+    outline: 1px solid #000;
+  }
+</style>
