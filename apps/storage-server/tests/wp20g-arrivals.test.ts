@@ -814,7 +814,9 @@ describe('wp20g: the queries at the catalog’s end size (lessons 3-4)', () => {
          WHERE k.library_id = ? AND k.origin = 'hand' AND k.run_id IS NOT NULL AND r.mode = 'analyse'`;
       const p = plan(sql, 'L');
       expect(p, sql).toMatch(/SEARCH k USING INDEX calibre_known_books_waiting/);
-      expect(p, sql).not.toMatch(/SCAN r(?! USING)/);
+      // Driven from the runs (one row a day: a year is 365) into the known books' index; the
+      // known books themselves (60,000 here) are never scanned.
+      expect(p, sql).not.toMatch(/SCAN k( |$)/);
       const t = performance.now();
       db.prepare(sql).all('L');
       expect(performance.now() - t, sql).toBeLessThan(400);
