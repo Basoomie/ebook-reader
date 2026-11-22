@@ -62,7 +62,7 @@ function timeoutSeconds(): number {
   return Math.max(0, Number(libraryRequestTimeoutSeconds$.getValue()) || 0);
 }
 
-async function libraryApi(): Promise<LibraryApi | null> {
+export async function libraryApi(): Promise<LibraryApi | null> {
   const connection = await getLibraryStore().getConnection();
   return connection
     ? new LibraryApi(connection.serverUrl, connection.token, timeoutSeconds())
@@ -103,7 +103,7 @@ export function localStores(db: IDBPDatabase<any>): LocalStores {
 }
 
 /** The server calls of one book's whispersync sync (`signal` cancels them). */
-function syncDeps(
+export function syncDeps(
   engine: SyncDeps['engine'],
   local: LocalStores,
   api: LibraryApi,
@@ -150,6 +150,33 @@ export async function syncWhispersyncForNewCopy(
   } catch (error) {
     warn(`new copy: ${(error as Error)?.message ?? error}`);
   }
+}
+
+/**
+ * The book's confirmed subtitle file as whispersync gets it: the copy downloaded with the
+ * book's audio, else the server's (then also kept with that copy), or null. Shared by the
+ * reader and the book page's Match.
+ */
+export async function subtitleFileFor(
+  answer: LinkAnswer,
+  api: LibraryApi | null,
+  copy: AudioCopy | null
+): Promise<File | null> {
+  const choice = chooseSubtitle(answer, copy);
+  if (choice === 'copy' && copy?.subtitle) {
+    return new File([copy.subtitle.blob], copy.subtitle.name, {
+      type: copy.subtitle.blob.type || 'text/plain'
+    });
+  }
+  // Only a confirmed subtitle file that is still there is fetched.
+  if (choice !== 'server' || !answer.ok || !answer.link || !api) return null;
+  const link = answer.link;
+  const file = await api.linkedSubtitleFile(link.bookId);
+  if (file && shouldKeepSubtitle(link, copy)) {
+    // The downloaded audio keeps the subtitles it plays with, for offline use.
+    await keepSubtitle(copy!, link.subtitleRelPath!, file);
+  }
+  return file;
 }
 
 function changedAnything(result: SyncResult): boolean {
@@ -267,21 +294,7 @@ export function createReaderWhispersync(options: {
     async subtitleFile() {
       try {
         const [{ answer, api }, copy] = await Promise.all([linkAnswer(), downloaded()]);
-        const choice = chooseSubtitle(answer, copy);
-        if (choice === 'copy' && copy?.subtitle) {
-          return new File([copy.subtitle.blob], copy.subtitle.name, {
-            type: copy.subtitle.blob.type || 'text/plain'
-          });
-        }
-        // Only a confirmed subtitle file that is still there is fetched.
-        if (choice !== 'server' || !answer.ok || !answer.link || !api) return null;
-        const link = answer.link;
-        const file = await api.linkedSubtitleFile(link.bookId);
-        if (file && shouldKeepSubtitle(link, copy)) {
-          // The downloaded audio keeps the subtitles it plays with, for offline use.
-          await keepSubtitle(copy!, link.subtitleRelPath!, file);
-        }
-        return file;
+        return await subtitleFileFor(answer, api, copy);
       } catch (error) {
         warn(`linked subtitles: ${(error as Error)?.message ?? error}`);
         return null;

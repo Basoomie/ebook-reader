@@ -764,7 +764,15 @@
     {/if}
 
     {#if api}
-      <AudioLinkSection {api} bookId={book.id} bookOnDevice={onDeviceHere} bind:link={audioLink} />
+      <AudioLinkSection
+        {api}
+        bookId={book.id}
+        {book}
+        {store}
+        {libraries}
+        bind:bookOnDevice={onDeviceHere}
+        bind:link={audioLink}
+      />
     {/if}
 
     {#if series.length > 1 && book.series}

@@ -59,6 +59,7 @@
 		parseHTML,
 		toTimeString,
 	} from '../lib/util';
+	import { resetRow } from '../lib/match';
 	import {
 		mdiBookMusic,
 		mdiCancel,
@@ -700,10 +701,8 @@
 		const { elementHtml, htmlBackup, lastBookModified } = $bookData$;
 
 		try {
-			$bookData$.elementHtml = htmlBackup!;
-			$bookData$.lastBookModified = Date.now();
-
-			delete $bookData$.htmlBackup;
+			// ttsu: the same row as the book page's Reset match (lib/match.ts resetRow).
+			$bookData$ = resetRow($bookData$, Date.now());
 
 			await $booksDB$.put('data', $bookData$);
 			// ttsu WP15c: Reset match applies on every device.
