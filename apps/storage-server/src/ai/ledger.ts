@@ -19,12 +19,17 @@ export interface SpendRow {
   at: number;
 }
 
-/** Records a paid request (once per source and ref). */
-export function recordSpend(db: Database.Database, r: SpendRow): void {
-  db.prepare(
-    `INSERT INTO ai_spend (source, ref, feature, stage, provider, model, mode, cost_usd, at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(source, ref) DO NOTHING`,
-  ).run(r.source, r.ref, r.feature, r.stage, r.provider, r.model, r.mode, r.costUsd, r.at);
+/** Records a paid request (once per source and ref). True when it was new. */
+export function recordSpend(db: Database.Database, r: SpendRow): boolean {
+  return (
+    db
+      .prepare(
+        `INSERT INTO ai_spend (source, ref, feature, stage, provider, model, mode, cost_usd, at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(source, ref) DO NOTHING`,
+      )
+      .run(r.source, r.ref, r.feature, r.stage, r.provider, r.model, r.mode, r.costUsd, r.at)
+      .changes > 0
+  );
 }
 
 /** Records many rows in one transaction; returns how many were new. */

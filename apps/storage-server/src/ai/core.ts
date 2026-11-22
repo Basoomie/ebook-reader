@@ -88,6 +88,13 @@ export class AiCore {
   private roomListeners = new Set<() => void>();
   private timer: NodeJS.Timeout | null = null;
   private lastMonth: string | null = null;
+  private spentCache: {
+    key: string;
+    zone: string;
+    start: number;
+    end: number;
+    usd: number;
+  } | null = null;
 
   constructor(private readonly deps: AiCoreDeps) {
     this.secrets = new AiSecretStore(deps.db, deps.dbDir);
@@ -272,12 +279,31 @@ export class AiCore {
   }
 
   /** This month's spending, what is held, and the limit. */
+  /**
+   * This month's total, kept in memory: summing the month's ledger rows took 69 ms at the live
+   * size (122,479 paid questions, 2026-11-21), and every step of every stage asks it. Read once
+   * per month and time zone; each new row this process records adds to it.
+   */
+  private spentThisMonth(m: { key: string; start: number; end: number }): number {
+    const zone = this.timeZone();
+    const c = this.spentCache;
+    if (c && c.key === m.key && c.zone === zone) return c.usd;
+    const usd = spentBetween(this.db, m.start, m.end);
+    this.spentCache = { key: m.key, zone, start: m.start, end: m.end, usd };
+    return usd;
+  }
+
+  /** Rows were written to the ledger without `record` (the ledger repair): read it again. */
+  invalidateSpend(): void {
+    this.spentCache = null;
+  }
+
   room(): RoomState {
     const m = this.month();
     let flight = 0;
     for (const v of this.inFlight.values()) flight += v;
     return {
-      spentUsd: spentBetween(this.db, m.start, m.end),
+      spentUsd: this.spentThisMonth(m),
       reservedUsd: heldUsd(this.db) + flight,
       limitUsd: this.settings().spendLimitUsd,
       month: m.key,
@@ -301,7 +327,8 @@ export class AiCore {
 
   /** Records a paid request in the ledger. */
   record(row: SpendRow): void {
-    recordSpend(this.db, row);
+    const c = this.spentCache;
+    if (recordSpend(this.db, row) && c && row.at >= c.start && row.at < c.end) c.usd += row.costUsd;
   }
 
   // -------------------------------------------------------------------------------------------

@@ -358,6 +358,21 @@ describe('the month in the configured time zone', () => {
       ['2026-10', 50],
     ]);
     expect(db.prepare('SELECT COUNT(*) AS n FROM ai_spend').get()).toEqual({ n: 3 });
+    // The month's total is kept in memory (the sum took 69 ms at the live size): a row this
+    // process records adds to it, a row from last month doesn't, the same row twice counts once.
+    expect(core.room().spentUsd).toBe(5);
+    row(4, '2026-11-25T12:00:00Z', 1);
+    row(4, '2026-11-25T12:00:00Z', 1);
+    row(5, '2026-10-02T12:00:00Z', 7);
+    expect(core.room().spentUsd).toBe(6);
+    // Rows written around it (the ledger repair) are read again once it is told.
+    db.prepare(
+      `INSERT INTO ai_spend (source, ref, feature, stage, provider, model, mode, cost_usd, at)
+       VALUES ('t', 9, 'x', 's', 'openai', 'm', NULL, 2, ?)`,
+    ).run(Date.parse('2026-11-26T00:00:00Z'));
+    expect(core.room().spentUsd).toBe(6);
+    core.invalidateSpend();
+    expect(core.room().spentUsd).toBe(8);
   });
 });
 

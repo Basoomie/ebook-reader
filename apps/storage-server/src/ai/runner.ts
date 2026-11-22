@@ -188,7 +188,10 @@ export class AiRunner {
         at: r.answered_at ?? r.created_at,
       })),
     );
-    if (n) this.deps.log?.(`AI: ${n} paid answers added to the spending record`);
+    if (n) {
+      this.core.invalidateSpend();
+      this.deps.log?.(`AI: ${n} paid answers added to the spending record`);
+    }
   }
 
   /** The holds of this queue's batches still at a provider. */
