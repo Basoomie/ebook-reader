@@ -404,21 +404,34 @@ export class Stage4Ai {
   undoneBooks(): string[] {
     const p = this.stage4();
     if (!p) return [];
+    // Per field (stop 3 of the series order, 2026-11-22): a test batch's book whose other
+    // fields the first On wrote, or that has a review item, still has an undone field to write
+    // (11 of the 20 test books were left out when any other row counted). A field is left out
+    // only when a newer row handles it: proposed or queued, or applied after it was undone.
     const undone = this.db
       .prepare(
-        `SELECT DISTINCT calibre_uuid FROM proposed_changes INDEXED BY proposed_changes_counts
-         WHERE stage = 4 AND library_id = ? AND state = 'undone' AND analysis_id = ?`,
+        `SELECT calibre_uuid, field, created_at FROM proposed_changes INDEXED BY proposed_changes_counts
+         WHERE stage = 4 AND library_id = ? AND state = 'undone' AND analysis_id = ?
+           AND field NOT IN ('format', 'kind')`,
       )
-      .all(p.libraryId, p.analysisId) as { calibre_uuid: string }[];
-    const other = this.db.prepare(
+      .all(p.libraryId, p.analysisId) as {
+      calibre_uuid: string;
+      field: string;
+      created_at: number;
+    }[];
+    const handled = this.db.prepare(
       `SELECT 1 FROM proposed_changes INDEXED BY proposed_changes_book
-       WHERE library_id = ? AND calibre_uuid = ? AND stage = 4 AND analysis_id = ?
-         AND state IN ('proposed', 'queued', 'applied') AND field NOT IN ('format', 'kind') LIMIT 1`,
+       WHERE library_id = ? AND calibre_uuid = ? AND stage = 4 AND analysis_id = ? AND field = ?
+         AND (state IN ('proposed', 'queued') OR (state = 'applied' AND created_at > ?)) LIMIT 1`,
     );
-    return undone
-      .map((r) => r.calibre_uuid)
-      .filter((u) => !other.get(p.libraryId, u, p.analysisId))
-      .sort();
+    const books = new Set<string>();
+    for (const r of undone)
+      if (
+        !books.has(r.calibre_uuid) &&
+        !handled.get(p.libraryId, r.calibre_uuid, p.analysisId, r.field, r.created_at)
+      )
+        books.add(r.calibre_uuid);
+    return [...books].sort();
   }
 
   /** Proposes those books again from their stored decisions (no AI call). Returns how many. */
