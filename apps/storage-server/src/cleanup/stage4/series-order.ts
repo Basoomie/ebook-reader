@@ -1100,6 +1100,11 @@ export function orderSeries(books: SeriesBook[]): SeriesChoice[] {
         seen.length > new Set(seen).size &&
         !names.has('') &&
         part.every((w) => Number.isInteger(arcs.get(w)!.n ?? w.index!));
+      // Sure only where every numbered main volume of the series is in the arcs: a renumbering
+      // that leaves other numbered volumes out would move them off their numbers by date
+      // (それならブッダにきいてみよう's 教育編 4, ライフハック編 5: rehearsal of the "order is sure"
+      // rule, 2026-11-22). A volume with no number takes none from them (ようこそ's Art Works).
+      const whole = mains.every((w) => w.index === null || arcs.has(w));
       // Every book it renumbers is listed (the user wants each number not printed as it is seen).
       const arcReason = 'Its arc numbers again: counted straight through in reading order';
       if (interleaved && inList.every((w, i) => w.ours || w.index === i + 1))
@@ -1109,7 +1114,8 @@ export function orderSeries(books: SeriesBook[]): SeriesChoice[] {
               w,
               i + 1,
               'the reading order (the series list; its arcs number again)',
-              true,
+              // Sure: the series list holds every book (the user: "write when order is sure").
+              !whole,
               arcReason,
             );
         });
@@ -1132,6 +1138,15 @@ export function orderSeries(books: SeriesBook[]): SeriesChoice[] {
             numIn(a) - numIn(c) ||
             (a < c ? -1 : a > c ? 1 : 0),
         );
+        // The arcs' order is sure (the user, 2026-11-22: "write when order is sure") when the
+        // series list holds every book with each arc together, or when the order is the one the
+        // arcs' own numbers give (the series' own numbering first, then 2年生編, 3年生編…). From
+        // first-publication dates alone it is a best guess (to review).
+        const contiguous = byList && seen.length === new Set(seen).size;
+        const byNumbers =
+          order.every(([a]) => numIn(a) < 1e6) &&
+          order.every(([a], k) => k === 0 || numIn(order[k - 1][0]) < numIn(a));
+        const sure = whole && (contiguous || byNumbers);
         // Planned first: a number the cleanup doesn't own (Calibre's, the user's) that would
         // change leaves the series as it is (to review); one that stays is fine.
         const plan = new Map<Work, number>();
@@ -1155,7 +1170,15 @@ export function orderSeries(books: SeriesBook[]): SeriesChoice[] {
         if ([...plan].every(([w, n]) => w.ours || n === w.index))
           for (const [w, n] of plan)
             if (n !== w.index)
-              set(w, n, 'the reading order (its arc numbers again)', true, arcReason);
+              set(
+                w,
+                n,
+                sure
+                  ? `the reading order (its arc numbers again; ${contiguous ? 'the series list' : "the arcs' own numbers"})`
+                  : 'the reading order (its arc numbers again)',
+                !sure,
+                arcReason,
+              );
       }
     }
   }

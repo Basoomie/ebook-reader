@@ -548,11 +548,11 @@ describe('stage 4: online sources (Preview)', () => {
     expect(b.title).toMatchObject({ value: 'ふしぎな本', source: 'amazon-search' });
     expect(b.format.value).toBe('novel');
     expect(b.description).toMatchObject({ value: '不思議な本の話。', source: 'amazon(search)' });
-    // NDL doesn't know the name: a generated reading, marked for spot checks.
+    // NDL doesn't know the name: a generated reading is a guess, listed for review (2026-11-22).
     expect(b.author_sort).toMatchObject({
       value: 'スズキ, イチロウ',
       source: 'generated',
-      reason: 'Generated reading: listed for spot checks',
+      class: 'review',
     });
     // The searched Amazon match passed acceptance (title, author, format; no series): its ASIN is kept.
     expect(b.identifiers).toMatchObject({ value: { amazon_jp: 'B0TESTBBB2' }, class: 'auto' });

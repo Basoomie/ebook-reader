@@ -120,6 +120,18 @@ describe('statEntriesFromRecords and totals', () => {
     expect(totalsOf(undone)).toMatchObject({ seconds: 3000, chars: 7000 });
   });
 
+  it('leaves a deleted session out of the entries and every total', () => {
+    const s1 = session(A, '2026-11-12', 2400, 1000);
+    const s2 = session(A, '2026-11-12', 600, 6000);
+    const entries = statEntriesFromRecords([
+      s1,
+      s2,
+      record('stat-session-fix', s2.id, { deleted: true })
+    ]);
+    expect(entries.map((e) => e.id)).toEqual([s1.id]);
+    expect(totalsOf(entries)).toMatchObject({ seconds: 2400, chars: 1000, entries: 1 });
+  });
+
   it('counts completion characters but never time or speed', () => {
     const entries = statEntriesFromRecords([
       session(A, '2026-11-12', 3600, 30000),

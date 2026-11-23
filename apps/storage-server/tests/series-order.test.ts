@@ -566,6 +566,7 @@ describe('arcs that number again, counted straight through (the user, 2026-11-22
     const sh = [v('SH', 1), v('SH×2', 2), v('SH×3', 3)];
     const got = new Map(orderSeries([...main, ...sh]).map((c) => [c.uuid, c]));
     expect(sh.map((b) => got.get(b.uuid)?.index)).toEqual([4, 5, 6]);
+    // Nothing makes the arcs' order sure (no list, an arc name without a number): a best guess.
     expect(got.get(sh[1].uuid)?.guess).toBe(true);
     // A second edition with the volumes' own subtitles is copies, not an arc.
     const M = '中の下!';
@@ -579,6 +580,59 @@ describe('arcs that number again, counted straight through (the user, 2026-11-22
     ];
     const r = new Map(orderSeries(ed).map((c) => [c.uuid, c.index]));
     expect(ed.map((b) => r.get(b.uuid) ?? b.index)).toEqual([1, 2, 1, 2]);
+  });
+  // The user, 2026-11-22: "write when order is sure".
+  it("the order is sure from the arcs' own numbers: written, not a guess", () => {
+    const Y = 'ようこそ実力至上主義の教室へ';
+    const v = (t: string, i: number, date: number) =>
+      book({ name: Y, title: `${Y} ${t}`, index: i, indexFrom: 'store', date });
+    const one = [v('1', 1, 20150101), v('2', 2, 20150601), v('3', 3, 20160101)];
+    const two = [v('２年生編１', 1, 20200101), v('２年生編２', 2, 20200601)];
+    const got = new Map(orderSeries([...one, ...two]).map((c) => [c.uuid, c]));
+    expect(two.map((b) => got.get(b.uuid)?.index)).toEqual([4, 5]);
+    expect(two.every((b) => got.get(b.uuid)?.guess === false)).toBe(true);
+    // A main volume outside the arcs (no arc, no number of its own): the order isn't sure.
+    const other = book({ name: Y, title: `${Y} 教育編`, index: 4, indexFrom: 'store' });
+    const g2 = new Map(orderSeries([...one, ...two, other]).map((c) => [c.uuid, c]));
+    expect(two.every((b) => g2.get(b.uuid)?.guess !== false)).toBe(true);
+    // One with no number takes none from them: still sure.
+    const art = book({ name: Y, title: `${Y} 終・1年生編BOX Art Works`, index: null });
+    const g3 = new Map(orderSeries([...one, ...two, art]).map((c) => [c.uuid, c]));
+    expect(two.map((b) => g3.get(b.uuid)?.index)).toEqual([4, 5]);
+    expect(two.every((b) => g3.get(b.uuid)?.guess === false)).toBe(true);
+  });
+  it('the order is sure from the series list holding every book: written', () => {
+    const N = 'デュラララ!!';
+    const v = (t: string, i: number, place: number) =>
+      book({
+        name: N,
+        title: `${N}${t}`,
+        index: i,
+        indexFrom: 'store',
+        lists: {
+          amazon: null,
+          amazonTotal: null,
+          ranobedb: place,
+          ranobedbType: 'main',
+          amazonList: null,
+          ranobedbList: 'R1',
+        },
+      });
+    const main = [v('', 1, 1), v('×2', 2, 2), v('×3', 3, 3)];
+    const sh = [v('SH', 1, 4), v('SH×2', 2, 5), v('SH×3', 3, 6)];
+    const got = new Map(orderSeries([...main, ...sh]).map((c) => [c.uuid, c]));
+    expect(sh.map((b) => got.get(b.uuid)?.index)).toEqual([4, 5, 6]);
+    expect(sh.every((b) => got.get(b.uuid)?.guess === false)).toBe(true);
+  });
+  it('the order from first-publication dates only: a best guess', () => {
+    const N = '作品';
+    const v = (t: string, i: number, date: number) =>
+      book({ name: N, title: `${N}${t}`, index: i, indexFrom: 'store', date });
+    const a = [v('1', 1, 20100101), v('2', 2, 20110101)];
+    const b = [v('新章1', 1, 20120101), v('新章2', 2, 20130101)];
+    const got = new Map(orderSeries([...a, ...b]).map((c) => [c.uuid, c]));
+    expect(b.map((x) => got.get(x.uuid)?.index)).toEqual([3, 4]);
+    expect(b.every((x) => got.get(x.uuid)?.guess === true)).toBe(true);
   });
 });
 

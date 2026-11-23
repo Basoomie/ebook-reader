@@ -44,7 +44,9 @@
   import { getDateKey } from '$lib/functions/statistic-util';
   import type { CatalogLibrary } from '$lib/library/types';
   import { BEFORE_DEVICE_TRACKING, type StatEntry } from '$lib/stats/aggregate';
-  import { formatClock, formatDuration, formatNumber } from '$lib/stats/stats-format';
+  import { formatClock, formatDay, formatDuration, formatNumber } from '$lib/stats/stats-format';
+  import { confirmDestructive } from '$lib/confirm/confirm';
+  import { deleteSessionCopy } from '$lib/confirm/confirm-copy';
   import {
     customPeriod,
     isDayKey,
@@ -375,6 +377,20 @@
   async function clearFix(entry: StatEntry) {
     actionError = '';
     if (!(await stats.clearFix(entry.id))) actionError = 'The session could not be changed.';
+  }
+
+  async function removeSession(entry: StatEntry) {
+    actionError = '';
+    const clock = entryNote(entry);
+    const confirmed = await confirmDestructive(
+      deleteSessionCopy({
+        title: bookTitle(entry.bookId),
+        when: `${formatDay(entry.day, currentYear)}${clock ? `, ${clock}` : ''}`,
+        numbers: `${formatDuration(entry.seconds)} · ${formatNumber(entry.chars)} characters`
+      })
+    );
+    if (!confirmed) return;
+    if (!(await stats.deleteSession(entry.id))) actionError = 'The session could not be deleted.';
   }
 
   async function copyTmw(what: 'chars' | 'minutes') {
@@ -850,7 +866,7 @@
             Reading log
           </h2>
           <span class="text-sm text-c-muted">
-            Each day's sessions; open a day to correct one or leave it out
+            Each day's sessions; open a day to correct, leave out or delete one
           </span>
         </div>
         {#if actionError}
@@ -866,6 +882,7 @@
             {correct}
             {exclude}
             {clearFix}
+            remove={removeSession}
           />
         {/key}
       </section>

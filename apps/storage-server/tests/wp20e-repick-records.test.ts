@@ -11,7 +11,7 @@ import {
   replaces,
   type BookFacts,
 } from '../src/cleanup/stage4/record-judge';
-import { emptyValue, onlySpacing } from '../src/cleanup/stage4/proposals';
+import { emptyValue, onlySpacing, sameText } from '../src/cleanup/stage4/proposals';
 
 const c = (titles: string[]) => titles.map((t, i) => [`k${i}`, t] as [string, string]);
 const pick = (
@@ -203,5 +203,18 @@ describe('a best guess never overwrites a value Calibre has', () => {
     expect(emptyValue({ name: '流血女神伝', index: 1 })).toBe(false);
     expect(emptyValue(['ディケンズ'])).toBe(false);
     expect(emptyValue('タイトル')).toBe(false);
+  });
+});
+
+describe('the same description is no change', () => {
+  it('equal once markup and spacing are set aside, or with a lead line added', () => {
+    const body =
+      'ある日ディオスたちが起きると、赤ちゃんが目の前に。しかもディオスをパパなんて呼んでくる。';
+    expect(sameText(`<p>${body}</p>`, body)).toBe(true);
+    expect(sameText(body, `神獣ちゃんとドキドキ子育て生活！ ${body}`)).toBe(true);
+    expect(
+      sameText(body, '魔王VSスライム、世界の常識を叩き潰せ！ 魔王種へと進化を遂げたスライム。'),
+    ).toBe(false);
+    expect(sameText(null, body)).toBe(false);
   });
 });

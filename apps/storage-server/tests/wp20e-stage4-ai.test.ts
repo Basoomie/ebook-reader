@@ -367,7 +367,7 @@ describe('proposals from the decided values', () => {
     reason: flagged ? 'The models disagree' : null,
   });
 
-  it('writes an unconfirmed guess as automatic, marked unconfirmed', () => {
+  it('lists an unconfirmed guess for review, never written (the user, 2026-11-22)', () => {
     const ps = proposeStage4(
       input({
         asked: true,
@@ -376,9 +376,10 @@ describe('proposals from the decided values', () => {
       }),
     );
     const il = ps.find((p) => p.field === 'illustrator')!;
-    expect(il).toMatchObject({ class: 'auto', new: ['別の人'], source: 'ai:secondary_guess' });
+    // "must not introduce any new bugs or incorrect fields": also into an empty field.
+    expect(il).toMatchObject({ class: 'review', new: ['別の人'], source: 'ai:secondary_guess' });
     expect(il.evidence).toMatchObject({ unconfirmed: true });
-    expect(il.reason).toMatch(/^Unconfirmed/);
+    expect(il.reason).toBe('A best guess: listed, not written');
     expect(ps.find((p) => p.field === 'format')).toMatchObject({
       class: 'auto',
       new: 'novel',

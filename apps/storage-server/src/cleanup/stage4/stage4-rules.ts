@@ -39,8 +39,16 @@ import {
  * 6 (the stop-3 hold, 2026-11-22): a best guess never overwrites a value Calibre has, the
  * description's spacing, author readings for the authors written, BookWalker's manga editions
  * never a text book's record; decided again from the stored answers.
+ * 7 (the live Preview of the stop-3 hold, 2026-11-22): a value the cleanup wrote and Calibre still
+ * holds is not changed automatically (to review), the same description text is no change, absence
+ * removes no value, the Google run's description rule never clears a written one.
+ * 8 (the rehearsal of 2026-11-22): a best guess is never written (also into an empty field), a
+ * generated author reading is a guess, a written author reading is kept, a company is no author,
+ * the series order's store title only where it adds just the number; arcs that number again are
+ * counted straight through automatically only where their order is sure (the series list, or the
+ * arcs' own numbers), from dates alone a best guess (the user, 2026-11-22).
  */
-export const STAGE4_RULES_VERSION = 6;
+export const STAGE4_RULES_VERSION = 8;
 
 /** The gold labels' names for the kinds. */
 export type Kind = 'full' | 'sample' | 'bonus' | 'special edition' | 'omnibus';

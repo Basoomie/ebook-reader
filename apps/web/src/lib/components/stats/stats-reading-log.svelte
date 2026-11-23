@@ -8,7 +8,7 @@
   /**
    * The Stats page's reading log (2026-11-22 redesign; was "Days"): one row per day with its
    * totals and number of sessions, opened to show the sessions. The newest day is open.
-   * Each session's actions (Correct…, Leave out, Count again, Undo correction) are in its
+   * Each session's actions (Correct…, Leave out, Count again, Undo correction, Delete…) are in its
    * ⋯ menu; correcting opens the form under the session. Seven days a page, so the page
    * never grows with the period. The page keeps the rules: it saves and leaves out.
    */
@@ -30,6 +30,8 @@
   ) => Promise<boolean>;
   export let exclude: (entry: StatEntry) => void;
   export let clearFix: (entry: StatEntry) => void;
+  /** Asks, then deletes the session from the log and every total. */
+  export let remove: (entry: StatEntry) => void;
 
   const PER_PAGE = 7;
   const menuItem = 'c-btn c-btn-ghost w-full justify-start px-3 text-left';
@@ -206,6 +208,18 @@
                         Leave out of the totals
                       </button>
                     {/if}
+                    <button
+                      type="button"
+                      class="{menuItem} c-danger"
+                      data-testid="stats-entry-delete"
+                      on:click={() => {
+                        close();
+                        if (editing?.id === entry.id) editing = null;
+                        remove(entry);
+                      }}
+                    >
+                      Delete…
+                    </button>
                   </div>
                 </DropdownMenu>
               {:else}
@@ -392,6 +406,10 @@
     text-align: right;
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
+  }
+
+  .c-danger {
+    color: var(--c-seal);
   }
 
   .c-out .c-figures > span:first-child {
