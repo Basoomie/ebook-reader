@@ -16,6 +16,7 @@ import {
   bookTextFromScript,
   cleanWritten,
   isCountedChar,
+  namesIn,
   passageAt,
   QuoteIndex,
   RubyIndex,
@@ -909,6 +910,9 @@ describe('the fixed engine', () => {
       { t: '竜ヶ峰', r: 'りゅうがみね' },
       { t: '帝人', r: 'みかど' },
     ]);
+    // A single kanji gets a reading only as the whole heading (next to kana it may read
+    // differently: 白い結婚 is しろい, though the book may give 白 the ruby はく elsewhere).
+    expect(r.pieces('凛ちゃん')).toBeNull();
     // A one-character piece is used only for a run of one kanji.
     expect(r.pieces('凛')).toEqual([{ t: '凛', r: 'りん' }]);
     expect(r.pieces('門田')).toBeNull();
@@ -962,6 +966,38 @@ describe('the fixed engine', () => {
     );
     expect(cleanWritten('First.\\nSecond（sonnet:1:0）', 'en', false)).toBe('First. Second');
     expect(cleanWritten('段落一。\\n\\n段落二。', 'ja', true)).toBe('段落一。\n\n段落二。');
+  });
+
+  it('a heading with its other names in brackets passes when each name is in the book', () => {
+    expect(namesIn('フェル(フェルディア)')).toEqual(['フェル', 'フェルディア']);
+    expect(namesIn('紅龍師団・黒龍師団')).toEqual(['紅龍師団', '黒龍師団']);
+    expect(namesIn('白い結婚／ワルプルギスの夜')).toEqual(['白い結婚', 'ワルプルギスの夜']);
+    const script = scriptOf([
+      { title: '一章', paragraphs: [['フェルディアは働く。', 'フェルと呼ばれる。']] },
+    ]);
+    const w = { cites: ['a:0:0'], quote_from: '', show_quote: false };
+    const out = checkWritten(
+      {
+        overview: { text: '話。', cites: [] },
+        chapters: [],
+        characters: [
+          { ...w, name: 'フェル(フェルディア)', text: '少女。' },
+          { ...w, name: 'フェル(ナギ)', text: '別人。' },
+        ],
+        also_mentioned: [],
+        relationships: [],
+        terms: [],
+        threads: [],
+      },
+      [item('a:0:0', 0, '働く', 'フェルディアは働く', 0)],
+      bookTextFromScript(script),
+      new QuoteIndex(script),
+      { lang: 'ja', title: 't', models: [], madeAt: 0 },
+    );
+    expect(out.summary.sections[1].groups[0].items.map((i) => i.heading)).toEqual([
+      'フェル(フェルディア)',
+    ]);
+    expect(out.droppedItems[0].why).toBe('not in the book: ナギ');
   });
 
   it('the written summary carries the readings of Characters, Terms and Relationships headings', () => {

@@ -12,7 +12,7 @@
  *    from a cited item, and every name in a heading is written in this book.
  */
 import type { BookText, QuoteIndex, RubyIndex } from './book-text';
-import { cleanWritten, passageAt } from './book-text';
+import { cleanWritten, namesIn, passageAt } from './book-text';
 import type {
   ChapterEvidence,
   ExtractAnswer,
@@ -298,7 +298,7 @@ export function checkWritten(
       dropped.push({ section, text: w.text, why: 'cites no checked item' });
       return null;
     }
-    const missing = names.filter((n) => !index.hasName(n));
+    const missing = names.flatMap(namesIn).filter((n) => !index.hasName(n));
     if (missing.length) {
       dropped.push({ section, text: w.text, why: `not in the book: ${missing.join(', ')}` });
       return null;

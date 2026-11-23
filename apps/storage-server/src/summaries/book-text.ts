@@ -208,7 +208,9 @@ export class RubyIndex {
       let j = i;
       while (j < chars.length && KANJI.test(chars[j])) j++;
       const run = chars.slice(i, j);
-      const covered = this.cover(run);
+      // A single kanji takes a reading only when it is the whole heading: next to kana it may be
+      // read differently from where the book gives its ruby (白い結婚 is しろい, not 白貂's はく).
+      const covered = run.length === 1 && chars.length > 1 ? null : this.cover(run);
       if (covered) {
         out.push(...covered);
         any = true;
@@ -253,4 +255,17 @@ export function cleanWritten(text: string, lang: string, paragraphs: boolean): s
     ? t.replace(/[ \t]*\n[ \t]*/g, '\n').replace(/\n{3,}/g, '\n\n')
     : t.replace(/\s*\n+\s*/g, lang === 'ja' ? '' : ' ');
   return t.trim();
+}
+
+/**
+ * The names a heading is made of, each to be found in the book: a heading may give a name with
+ * its other names in brackets or side by side (フェル(フェルディア), 紅龍師団・黒龍師団,
+ * 白い結婚／ワルプルギスの夜). The parts of a real name are in the book too, so splitting at ・
+ * never rejects one.
+ */
+export function namesIn(heading: string): string[] {
+  return heading
+    .split(/[()（）［］[\]／/・、,，＆&]+/)
+    .map((p) => p.trim())
+    .filter(Boolean);
 }
