@@ -297,6 +297,17 @@ export function sameTime(a: string | null | undefined, b: string | null | undefi
     : (a ?? null) === (b ?? null);
 }
 
+/** Whether a folder is there (a name too long for the disk, or none: false). */
+async function folderExists(dir: string): Promise<boolean> {
+  try {
+    return (await fs.promises.stat(dir)).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+export const NO_FOLDER_REASON =
+  "The book has no folder in Calibre's library (a record without files)";
 export const SPLIT_NAME_REASON = 'A name contains &, which Calibre splits into two names';
 export const LONG_NAME_REASON = "Too long for a folder name in Calibre's library";
 export const PROPOSED_TWICE_REASON = 'The same change was proposed twice; it is written once';
@@ -539,7 +550,8 @@ export class Stage2Batches {
         const reason = await this.planCheck(book, r, ev, libDir, extras);
         if (reason) {
           skip.push({ id: r.id, reason });
-          changed = true;
+          // A record without files is no change in Calibre (never pauses the stage).
+          if (reason !== NO_FOLDER_REASON) changed = true;
           if (r.field === 'title') titleSkipped = true;
         } else kept.push(r.id);
       }
@@ -754,6 +766,10 @@ export class Stage2Batches {
     // A title fitted for Calibre's names (from Calibre's own title) doesn't read the file either.
     const fromCalibre = r.field === 'title' && (ev as { titleFit?: boolean }).titleFit === true;
     if (!book.filePath && !fromCalibre) return 'The book has no EPUB in Calibre any more';
+    // Calibre renames the book's folder with the title: a record whose folder was never made
+    // (its name was too long at the import: 11 records without files) is left alone.
+    if (fromCalibre && !(await folderExists(resolveInside(libDir, book.path))))
+      return NO_FOLDER_REASON;
     const old = JSON.parse(r.old_json) as unknown;
     const ex = extras?.get(book.calibreId);
     const current: Current = {

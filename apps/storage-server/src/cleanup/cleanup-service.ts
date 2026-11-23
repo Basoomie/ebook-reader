@@ -24,6 +24,7 @@ import { STAGE3_WAITING_SQL, Stage3Analysis, type PairRow, type Stage3Progress }
 import { Stage3Worker, type Stage3Reader } from '../counts/book-text-worker';
 import { oneTimePassesDone, Stage4Analysis, type Stage4Progress } from './stage4/analysis';
 import { listOtherGuesses, listSeriesGuesses } from './stage4/series-order-store';
+import { listTitleFits } from './title-fits';
 import { Stage4Ai } from './stage4/ai-step';
 import { Stage5, type Stage5Progress } from './stage5/step';
 import { BY_ID as STAGE5_TERMS } from './stage5/vocab';
@@ -1628,6 +1629,13 @@ export class CleanupService {
     return kind === 'series'
       ? listSeriesGuesses(this.db, target, offset, limit)
       : listOtherGuesses(this.db, target, offset, limit);
+  }
+
+  /** The titles shortened or cut to fit Calibre's folder names (cleanup.db v26), newest first. */
+  titleFits(offset: number, limit: number) {
+    const target = this.targetLibrary();
+    if (!target) return { total: 0, items: [] };
+    return listTitleFits(this.db, this.opts.main, target, offset, limit);
   }
 
   stage4Readings(state: string | null, offset: number) {

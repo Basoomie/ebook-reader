@@ -955,6 +955,26 @@ describe('stage 5 On: the tags written through the field-write path', () => {
       ]);
     });
 
+    it('a record whose folder was never made (no files) is left alone', async () => {
+      const rel = (
+        new Database(path.join(env.lib.dir, 'metadata.db'), { readonly: true })
+          .prepare('SELECT path FROM books WHERE id = ?')
+          .get(ids.D) as { path: string }
+      ).path;
+      fs.rmSync(path.join(env.lib.dir, ...rel.split('/')), { recursive: true, force: true });
+      tagsChange(ids.D);
+      await env.service.batches.stage5.plan(env.libraryId());
+      const rows = rowsOf(ids.D);
+      expect(rows.find((r) => r.field === 'title')).toMatchObject({
+        state: 'skipped',
+        review_reason: "The book has no folder in Calibre's library (a record without files)",
+      });
+      expect(rows.find((r) => r.field === 'tags')).toMatchObject({
+        class: 'review',
+        state: 'proposed',
+      });
+    });
+
     it('a first author too long on its own: nothing fitted, the changes wait (bad data)', async () => {
       tagsChange(ids.E);
       await env.service.batches.stage5.plan(env.libraryId());

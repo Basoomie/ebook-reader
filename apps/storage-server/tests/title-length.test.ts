@@ -1,4 +1,6 @@
+import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
+import { CLEANUP_MIGRATIONS } from '../src/cleanup/cleanup-db';
 import { calibreNameBytes, NAME_MAX_BYTES } from '../src/cleanup/calibre-names';
 import { cutTitle, fitTitle, removeRepeat, UNKNOWN_ID } from '../src/cleanup/title-fit';
 
@@ -129,5 +131,114 @@ describe('removeRepeat', () => {
     expect(removeRepeat('エロマンガ先生(4) エロマンガ先生VSエロマンガ先生G')).toBe(
       'エロマンガ先生(4) エロマンガ先生VSエロマンガ先生G',
     );
+  });
+});
+
+describe('cleanup.db v26: the list of shortened titles and the holds opened again', () => {
+  // The migrations up to 25 by hand (the AI move's own check aside), then 26 on held rows.
+  const db = new Database(':memory:');
+  for (const m of CLEANUP_MIGRATIONS.filter((x) => x.version <= 25)) db.exec(m.sql);
+  const put = db.prepare(
+    `INSERT INTO proposed_changes (stage, library_id, calibre_id, calibre_uuid, field, old_json, new_json,
+       source, evidence_json, class, review_reason, state, created_at, updated_at)
+     VALUES (?, 'lib', ?, ?, ?, '"old"', ?, 's', ?, ?, ?, 'proposed', 1, 1)`,
+  );
+  const LONG = "Too long for a folder name in Calibre's library";
+  const held = {
+    s2: Number(
+      put.run(2, 1, 'u1', 'title', '"t"', '{}', 'review', `${LONG} (288 bytes)`).lastInsertRowid,
+    ),
+    s5: Number(put.run(5, 2, 'u2', 'tags', '{}', '{}', 'review', LONG).lastInsertRowid),
+    s4: Number(put.run(4, 3, 'u3', 'title', '"t"', '{}', 'review', LONG).lastInsertRowid),
+    other: Number(
+      put.run(2, 4, 'u4', 'title', '"t"', '{}', 'review', 'Calibre has its own title')
+        .lastInsertRowid,
+    ),
+  };
+  db.exec(CLEANUP_MIGRATIONS.find((x) => x.version === 26)!.sql);
+  const cls = (id: number) =>
+    db.prepare('SELECT class, review_reason FROM proposed_changes WHERE id = ?').get(id);
+
+  it('opens again the holds that were automatic before (stages 2 and 5), never stage 4 or others', () => {
+    expect(cls(held.s2)).toEqual({ class: 'auto', review_reason: null });
+    expect(cls(held.s5)).toEqual({ class: 'auto', review_reason: null });
+    expect(cls(held.s4)).toEqual({ class: 'review', review_reason: LONG });
+    expect(cls(held.other)).toEqual({
+      class: 'review',
+      review_reason: 'Calibre has its own title',
+    });
+  });
+
+  it('lists every shortened or cut title change from its evidence, kept in step by triggers', () => {
+    const fit = (step: string) =>
+      JSON.stringify({ fit: { from: '長い題名', step, rules: ['wave-subtitle'] } });
+    const id = Number(
+      put.run(4, 9, 'u9', 'title', '"短い題名"', fit('shortened'), 'auto', null).lastInsertRowid,
+    );
+    put.run(4, 10, 'u10', 'title', '"整えた題名"', fit('cleaned'), 'auto', null);
+    put.run(4, 11, 'u11', 'authors', '["a"]', fit('cut'), 'auto', null);
+    const list = () =>
+      db
+        .prepare('SELECT change_id, calibre_id, original, written, step FROM calibre_title_fits')
+        .all();
+    expect(list()).toEqual([
+      {
+        change_id: id,
+        calibre_id: 9,
+        original: '長い題名',
+        written: '短い題名',
+        step: 'shortened',
+      },
+    ]);
+    db.prepare(
+      `UPDATE proposed_changes SET new_json = '"短い…"', evidence_json = ? WHERE id = ?`,
+    ).run(fit('cut'), id);
+    expect(list()).toEqual([
+      { change_id: id, calibre_id: 9, original: '長い題名', written: '短い…', step: 'cut' },
+    ]);
+    db.prepare(`UPDATE proposed_changes SET evidence_json = '{}' WHERE id = ?`).run(id);
+    expect(list()).toEqual([]);
+    db.prepare(`UPDATE proposed_changes SET evidence_json = ? WHERE id = ?`).run(fit('cut'), id);
+    db.prepare('DELETE FROM proposed_changes WHERE id = ?').run(id);
+    expect(list()).toEqual([]);
+  });
+});
+
+describe('the new queries read indexes (lessons 3-4)', () => {
+  const db = new Database(':memory:');
+  for (const m of CLEANUP_MIGRATIONS) db.exec(m.sql);
+  const plan = (sql: string) =>
+    (db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all() as { detail: string }[])
+      .map((r) => r.detail)
+      .join(' | ');
+  it('the list, the triggers, the planner and the passes', () => {
+    const list = plan(
+      `SELECT f.id FROM calibre_title_fits f
+       LEFT JOIN proposed_changes p ON p.id = f.change_id
+       LEFT JOIN calibre_arrival_files a ON a.id = f.arrival_file_id
+       WHERE f.library_id = 'l' ORDER BY f.id DESC LIMIT 20`,
+    );
+    expect(list).not.toMatch(/SCAN (p|a)\b/u);
+    expect(plan(`DELETE FROM calibre_title_fits WHERE change_id = 1`)).toMatch(/USING INDEX/u);
+    expect(
+      plan(
+        `SELECT id FROM proposed_changes INDEXED BY proposed_changes_book
+         WHERE library_id = 'l' AND calibre_uuid = 'u' AND stage = 5 AND field = 'title'
+           AND state = 'proposed' AND source = 'title-fit' LIMIT 1`,
+      ),
+    ).toMatch(/proposed_changes_book/u);
+    expect(
+      plan(
+        `SELECT DISTINCT calibre_uuid FROM proposed_changes
+         WHERE stage = 4 AND library_id = 'l' AND state = 'proposed' AND class = 'review'
+           AND decided_by IS NULL AND review_reason LIKE 'Too long for a folder name%'`,
+      ),
+    ).not.toMatch(/SCAN proposed_changes\b(?! USING)/u);
+    expect(
+      plan(
+        `SELECT 1 FROM calibre_arrival_batch_items i JOIN calibre_arrival_files f ON f.id = i.file_id
+         WHERE i.batch_id = 1 AND json_extract(f.facts_json, '$.addTitle') IS NOT NULL LIMIT 1`,
+      ),
+    ).not.toMatch(/SCAN (i|f)\b(?! USING)/u);
   });
 });
