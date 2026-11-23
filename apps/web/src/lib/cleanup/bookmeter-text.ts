@@ -72,6 +72,16 @@ export interface BookmeterStatus {
   spotPassed: boolean;
   /** Why Bookmeter can't be asked now (paused, backing off), else null. */
   siteWait: string | null;
+  /** The AI check's batches still at a provider (missing on an older server). */
+  aiBatches?: {
+    model: string;
+    provider: string;
+    requests: number;
+    submittedAt: number;
+    providerStatus: string | null;
+    stalled: boolean;
+  }[];
+  batchStallMinutes?: number;
 }
 
 export interface BookmeterMatch {
@@ -203,6 +213,30 @@ export function bookmeterLines(s: BookmeterStatus | null): string[] {
       `Labeled books: ${n(p.labeled.matches)} new matches; ${n(p.labeled.flagged.length)} flagged by the checker for a look.`
     );
   return out;
+}
+
+const PROVIDERS: Record<string, string> = { openai: 'OpenAI', anthropic: 'Anthropic' };
+
+/**
+ * What the AI check waits for while questions sit in a batch at a provider: a batch answers all
+ * at once, and one that answers nothing in the set time is cancelled and its questions asked one
+ * call each. The bar shows no time left for them (the rate of the other answers says nothing).
+ */
+export function aiBatchLines(s: BookmeterStatus | null, now = Date.now()): string[] {
+  if (!s || s.progress.phase !== 'ai') return [];
+  const stall = s.batchStallMinutes ?? 30;
+  return (s.aiBatches ?? []).map((b) => {
+    const who = PROVIDERS[b.provider] ?? b.provider;
+    const since = new Date(b.submittedAt).toLocaleTimeString([], {
+      hour: 'numeric',
+      minute: '2-digit'
+    });
+    const min = Math.max(0, Math.round((now - b.submittedAt) / 60_000));
+    const head = `${b.model}'s batch of ${n(b.requests)} questions at ${who}, sent at ${since} (${n(min)} min ago)`;
+    return b.stalled
+      ? `${head}: nothing answered in ${n(stall)} min, so it is being cancelled; once ${who} confirms, its questions are asked one call each.`
+      : `${head}: waiting for its answers. If it answers nothing in ${n(stall)} min, it is cancelled and its questions are asked one call each.`;
+  });
 }
 
 /** The spot check's line. */

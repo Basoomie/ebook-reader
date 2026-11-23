@@ -304,6 +304,22 @@ describe('More Bookmeter coverage: pure parts', () => {
     expect(r.ids).toMatchObject({ isbn: '9780000000000', bookwalker: 'old', bookmeter: '123' });
   });
 
+  it('times only the questions outside batches; none while only a batch at a provider is left', () => {
+    const p = emptyBmProgress(1, LIB);
+    p.phase = 'ai';
+    p.ai.rate = { at: T0, done: 0 };
+    const ai = { queued: 0, sent: 500, answered: 13256, blocked: 0, invalid: 0, failed: 0 };
+    const base = { openSearches: 0, openQ1: 0, openStores: 0, intervalSeconds: 5 };
+    // Found live: the 500 left were one batch at OpenAI; the old bar said "about 1 min left".
+    expect(bookmeterBar(p, T0 + 16 * 60_000, { ...base, ai })?.leftMs).toBeGreaterThan(0);
+    expect(bookmeterBar(p, T0 + 16 * 60_000, { ...base, ai, aiInBatches: 500 })?.leftMs).toBeNull();
+    // 1,000 asked one call each besides the batch: timed at the measured rate.
+    const more = { ...ai, queued: 1000 };
+    expect(bookmeterBar(p, T0 + 16 * 60_000, { ...base, ai: more, aiInBatches: 500 })?.leftMs).toBe(
+      ((16 * 60_000) / 13256) * 1000,
+    );
+  });
+
   it("counts the store lists' time at Bookmeter's pace until 30 answers are measured", () => {
     const p = emptyBmProgress(1, LIB);
     p.phase = 'stores';

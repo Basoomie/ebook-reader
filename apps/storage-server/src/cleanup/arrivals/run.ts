@@ -343,6 +343,16 @@ const yieldNow = () => new Promise<void>((r) => setImmediate(r));
 const EARLY_MAX_BOOKS = 7;
 
 /**
+ * The compare's reading and measuring keep every reader process busy for up to this long under
+ * one hold of the disk lock (a new book starts as soon as one finishes), then let the books in
+ * flight finish; they stop sooner when another job waits for the disk. Batches of a fixed count
+ * left the processes idle while each batch's slowest book finished (WP20g stop 2: 120-640 % CPU).
+ */
+const STREAM_MS = 5 * 60_000;
+/** How often the bar's progress is saved while the reading or measuring goes on. */
+const PROGRESS_SAVE_MS = 15_000;
+
+/**
  * Runs `fn` on the items with up to `limit` in flight, the next item as soon as one finishes
  * (stage 3's pipeline, not groups that wait for their slowest). False when stopped on the way;
  * a job that throws makes the whole call throw.
@@ -1601,9 +1611,21 @@ export class BookArrivals {
     // Several books in flight across the reader processes, as stage 3 reads them (textWorkers ×
     // 2; WP20g stop 2: one at a time used one of six processes).
     const inFlight = Math.max(1, settings.duplicates.textWorkers) * 2;
+    // No new book once the stream's time is up, another job waits for the disk, or the run stops.
+    const streamEnd = Date.now() + STREAM_MS;
+    const endStream = () =>
+      shouldStop() ||
+      Date.now() > streamEnd ||
+      this.deps.diskLock.state().waiting.some((w) => w.owner !== DISK_OWNER);
+    let savedAt = Date.now();
+    const saveNow = () => {
+      if (Date.now() - savedAt < PROGRESS_SAVE_MS) return;
+      savedAt = Date.now();
+      this.save(run.id, p);
+    };
 
     if (cmp.stage === 'text') {
-      const part = rows(`AND json_extract(facts_json, '$.text') IS NULL`, inFlight * 8);
+      const part = rows(`AND json_extract(facts_json, '$.text') IS NULL`, inFlight * 40);
       if (!part.length) {
         stage('pairs', 0, 0);
         return 'more';
@@ -1626,7 +1648,7 @@ export class BookArrivals {
       p.waiting = `Reading the new books and measuring them against the library (${c.done.toLocaleString('en-US')} of ${c.total.toLocaleString('en-US')})`;
       const qCache = new Map<number, Quality | null>();
       const ok = await slice(() =>
-        inPool(part, inFlight, shouldStop, async (f) => {
+        inPool(part, inFlight, endStream, async (f) => {
           const old = facts(f);
           const t = await readNewText(
             cd,
@@ -1664,9 +1686,11 @@ export class BookArrivals {
           // Kept as each book is read (a restart reads only the books not kept yet).
           setFacts.run(JSON.stringify(old), f.id);
           c.done++;
+          saveNow();
         }),
       );
-      if (ok === null || ok === false) return 'wait';
+      // false: the stream ended (its time, another job's turn at the disk, or a stop).
+      if (ok === null || shouldStop()) return 'wait';
       return 'more';
     }
 
@@ -1714,7 +1738,7 @@ export class BookArrivals {
       const part = rows(
         `AND json_array_length(facts_json, '$.cands') > 0
            AND json_extract(facts_json, '$.measured') IS NULL`,
-        inFlight * 4,
+        inFlight * 40,
       );
       if (!part.length) {
         stage('decide', 0, countNew(`AND json_extract(facts_json, '$.compared') IS NULL`));
@@ -1726,7 +1750,7 @@ export class BookArrivals {
       );
       const qCache = new Map<number, Quality | null>();
       const ok = await slice(() =>
-        inPool(part, inFlight, shouldStop, async (f) => {
+        inPool(part, inFlight, endStream, async (f) => {
           const news = new Map<number, NewText>([[-f.id, newText(f)]]);
           const covered = new Set(facts(f).covered ?? []);
           const cands = (facts(f).cands ?? []).filter((o) => !covered.has(o));
@@ -1766,9 +1790,11 @@ export class BookArrivals {
             setFacts.run(JSON.stringify(own), f.id);
           })();
           c.done++;
+          saveNow();
         }),
       );
-      if (ok === null || ok === false) return 'wait';
+      // false: the stream ended (its time, another job's turn at the disk, or a stop).
+      if (ok === null || shouldStop()) return 'wait';
       return 'more';
     }
 
