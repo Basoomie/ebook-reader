@@ -2051,17 +2051,26 @@ export class Stage4Analysis {
     const decision = decideStage4(record);
     const applied = new Map<string, unknown>();
     const appliedLastModified = new Map<string, string | null>();
+    // The values written as a best guess (the first On wrote the models' unconfirmed values): a
+    // confirmed value may replace them (2026-11-23: (仮)花嫁's volume 3 written 2 and volume 8
+    // written with no number were kept by the rules-9 guard on written values).
+    const appliedGuess = new Set<string>();
     for (const a of this.db
       .prepare(
-        'SELECT field, value_json, last_modified_after FROM applied_values WHERE library_id = ? AND calibre_uuid = ?',
+        `SELECT a.field, a.value_json, a.last_modified_after,
+           json_extract(c.evidence_json, '$.unconfirmed') AS guess
+         FROM applied_values a LEFT JOIN proposed_changes c ON c.id = a.change_id
+         WHERE a.library_id = ? AND a.calibre_uuid = ?`,
       )
       .all(p.libraryId, uuid) as {
       field: string;
       value_json: string;
       last_modified_after: string | null;
+      guess: number | null;
     }[]) {
       applied.set(a.field, JSON.parse(a.value_json));
       appliedLastModified.set(a.field, a.last_modified_after);
+      if (a.guess) appliedGuess.add(a.field);
     }
     // Every name the proposals ask for: the final authors too, which may be the models' (a book
     // whose authors stage 4 changed got no reading: 487 books, among them 西尾維新's whose Calibre
@@ -2097,6 +2106,7 @@ export class Stage4Analysis {
       cover,
       applied,
       appliedLastModified,
+      appliedGuess,
       calibreCover,
       ai: ai === undefined ? storedAiValues(this.db, `${p.libraryId}:${uuid}`) : ai,
       spelling: this.snapshot ? spellingLookup(this.snapshot.names) : undefined,

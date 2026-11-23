@@ -113,6 +113,8 @@ export interface ProposalInput {
   ai?: (Stage4AiValues & { asked: boolean }) | null;
   /** Calibre's last_modified right after the cleanup's write, by field. */
   appliedLastModified?: Map<string, string | null>;
+  /** The fields whose written value was a best guess (unconfirmed when written). */
+  appliedGuess?: Set<string>;
   /**
    * Calibre's cover as it is now, read from its cover.jpg; only needed when the cleanup wrote
    * this book's cover (applied 'cover'). Undefined = not read: the cover counts as changed.
@@ -299,7 +301,10 @@ export function proposeStage4(input: ProposalInput): Stage4Proposal[] {
       asWritten &&
       WRITTEN_KEPT.has(p.field) &&
       !(p.field === 'title' && p.source === 'series-order') &&
-      !(p.evidence as { notesOut?: unknown } | undefined)?.notesOut
+      !(p.evidence as { notesOut?: unknown } | undefined)?.notesOut &&
+      // A best guess the cleanup wrote may be replaced by a confirmed value (a guess stays
+      // review by the rule below).
+      !input.appliedGuess?.has(appliedField)
     ) {
       p.class = 'review';
       p.reason = 'Would replace a value the cleanup wrote';
@@ -614,7 +619,9 @@ export function proposeStage4(input: ProposalInput): Stage4Proposal[] {
       /^the reading order/u.test(so.from) &&
       decidedN !== null &&
       decidedN === oldSeries.index;
+    // A number written as a best guess is not kept against a confirmed one ((仮)花嫁 3 and 8).
     const writtenIndex =
+      !input.appliedGuess?.has('series') &&
       input.applied.has('series') &&
       stillAsWritten('series', input.applied.get('series'), oldSeries) &&
       oldSeries.index !== null;

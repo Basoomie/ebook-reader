@@ -208,8 +208,10 @@ const seriesOf = (
   so: Partial<SeriesChoice> & { index: number | null; from: string },
   applied: Map<string, unknown> = new Map(),
   title?: string,
+  appliedGuess?: Set<string>,
 ) =>
   proposeStage4({
+    appliedGuess,
     book: title ? { ...book(null), title } : book(null),
     extras: { comments: null, ...calibre } as never,
     record,
@@ -294,5 +296,43 @@ describe('a volume number printed plainly after the series name', () => {
       '闇の皇太子19 光と闇のロマンス',
     );
     expect(p?.class).toBe('auto');
+  });
+});
+
+describe('a value the cleanup wrote as a best guess (2026-11-23, (仮)花嫁)', () => {
+  const name = '(仮)花嫁のやんごとなき事情';
+  it('a number written as a guess is replaced by a confirmed one', () => {
+    const p = seriesOf(
+      { series: name, seriesIndex: 2 },
+      { se: name, ix: 3 },
+      { index: 3, from: "its store record's title" },
+      new Map([['series', { name, index: 2 }]]),
+      undefined,
+      new Set(['series']),
+    );
+    expect(p).toMatchObject({ class: 'auto', new: { index: 3 } });
+  });
+  it('a number written as confirmed stays (review)', () => {
+    const p = seriesOf(
+      { series: name, seriesIndex: 2 },
+      { se: name, ix: 3 },
+      { index: 3, from: "its store record's title" },
+      new Map([['series', { name, index: 2 }]]),
+    );
+    expect(p).toMatchObject({
+      class: 'review',
+      reason: 'Would replace a number the cleanup wrote',
+    });
+  });
+  it('one source only is still review, guess written or not', () => {
+    const p = seriesOf(
+      { series: name, seriesIndex: 2 },
+      { se: name, ix: 2 },
+      { index: 9, from: 'its own title' },
+      new Map([['series', { name, index: 2 }]]),
+      undefined,
+      new Set(['series']),
+    );
+    expect(p?.class).toBe('review');
   });
 });
