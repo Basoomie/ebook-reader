@@ -110,6 +110,9 @@ describe('the new arrivals card', () => {
       added: 0
     };
     expect(pairLine(p)).toMatch(/First run not done/);
+    expect(pairLine({ ...p, waiting: 98572, settleMinutes: 30 })).toBe(
+      'First run not done yet: 98,572 files wait until they have been unchanged for 30 minutes; a run looks at them then by itself (a Preview).'
+    );
     expect(pairLine({ ...p, firstDoneAt: 1, wouldAdd: 120 })).toMatch(/120 books would be added/);
     expect(pairLine({ ...p, firstDoneAt: 1, approvedAt: 2, added: 5 })).toMatch(/5 added/);
   });

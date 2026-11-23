@@ -21,6 +21,7 @@ import {
   entryStream,
   extractArgs,
   listArchive,
+  bookEntries,
   listSevenZip,
   sevenEntryStream,
   type ArchiveEntry
@@ -33,7 +34,10 @@ import { LinkWriter, WriteRefused, type PlannedSource } from './writer';
  * 1.4.0 (WP20g): the Calibre import's archives under a book source folder (book_list,
  * book_extract; split sets through 7-Zip).
  */
-export const VERSION = '1.4.0';
+export const VERSION = '1.4.1';
+
+/** A book archive's listing the server refused as too large (WP20g stop 2). */
+const TOO_LARGE = "The archive's list of files is too large to send";
 const HEARTBEAT_MS = 30_000;
 
 interface BatchOp {
@@ -118,6 +122,8 @@ export interface OpResult {
   removed?: boolean;
   /** list batches: the archive's entries, its names' encoding, or why it can't be read. */
   entries?: ArchiveEntry[];
+  /** book_list (1.4.1): the entries left out (not books). */
+  others?: number;
   encoding?: 'utf8' | 'cp932';
   listProblem?: string | null;
   bytes?: number;
@@ -408,10 +414,12 @@ export class LinkWorker {
         if (/\.001$/i.test(src.rel)) {
           const file = await this.writer.bookArchivePath(root, src, this.volumesOf(op));
           const l = await listSevenZip(this.config.sevenZip, file);
+          const b = bookEntries(l.entries);
           results.push({
             id: op.id,
             ok: true,
-            entries: l.entries,
+            entries: b.entries,
+            others: b.others,
             encoding: l.encoding,
             listProblem: l.problem
           });
@@ -420,10 +428,12 @@ export class LinkWorker {
         const handle = await this.writer.openBookArchive(root, src);
         try {
           const l = await listArchive(this.config.bsdtar, handle, this.config.archiveCharset);
+          const b = bookEntries(l.entries);
           results.push({
             id: op.id,
             ok: true,
-            entries: l.entries,
+            entries: b.entries,
+            others: b.others,
             encoding: l.encoding,
             listProblem: l.problem
           });
@@ -591,6 +601,21 @@ export class LinkWorker {
         const m = (err as Error).message;
         // The server no longer knows the batch (a new plan): nothing to report to.
         if (/answered 4(04|09)/.test(m)) return;
+        // Too large for the server: trying again never helps (WP20g stop 2). A book archive's
+        // listing is reported as a problem of that archive; anything else is left to its lease.
+        if (/answered 413/.test(m)) {
+          if (batch.kind === 'book_list' && !results.some((r) => r.listProblem === TOO_LARGE)) {
+            results = results.map((r) => ({
+              id: r.id,
+              ok: true,
+              entries: [],
+              listProblem: TOO_LARGE
+            }));
+            continue;
+          }
+          this.log(`report of batch ${batch.id} is too large for the server; left to its lease`);
+          return;
+        }
         this.log(`report of batch ${batch.id} failed (${m}); trying again in ${wait / 1000} s`);
         if (this.stopped) return;
         await sleep(wait);

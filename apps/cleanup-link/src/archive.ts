@@ -29,6 +29,27 @@ export interface ArchiveListing {
   problem: string | null;
 }
 
+/**
+ * WP20g: the entries of a book archive the server keeps: EPUBs, the other book formats and
+ * files without an extension (the server's catalog.ts classifyName; a test keeps the two
+ * lists the same). An archive of tens of thousands of pictures sends a short list (stop 2 on
+ * the NAS: a listing over the server's 4 MB limit stopped the import's archives).
+ */
+const BOOK_ENTRY =
+  /\.(epub|azw|azw3|azw4|mobi|prc|kfx|kpf|pdf|cbz|cbr|cb7|djvu|djv|fb2|lit|lrf|pdb)$/i;
+
+export function bookEntries(entries: ArchiveEntry[]): { entries: ArchiveEntry[]; others: number } {
+  const out: ArchiveEntry[] = [];
+  let others = 0;
+  for (const e of entries) {
+    if (e.kind !== 'file') continue;
+    const base = e.name.slice(e.name.lastIndexOf('/') + 1);
+    if (BOOK_ENTRY.test(base) || base.lastIndexOf('.') <= 0) out.push(e);
+    else others++;
+  }
+  return { entries: out, others };
+}
+
 export interface ToolRun {
   code: number | null;
   stdout: Buffer;

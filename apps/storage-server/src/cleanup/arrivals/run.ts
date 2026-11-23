@@ -166,6 +166,8 @@ export interface RunProgress {
   s5: Stage5PassProgress | null;
   jGate: JGate | null;
   /** Batches the run planned per stage (ids), and what they wrote. */
+  /** Why a run started besides its trigger: 'settle' (files waiting to settle have settled). */
+  followUp?: string;
   writes: Record<
     string,
     {
@@ -303,6 +305,8 @@ export class BookArrivals {
   private stopRequested = false;
   private readonly log: (m: string) => void;
 
+  private settleCheckedAt = 0;
+
   constructor(private readonly deps: ArrivalsDeps) {
     this.log = deps.log ?? (() => {});
     this.addBatches = new ArrivalBatches(deps.cleanup);
@@ -401,6 +405,12 @@ export class BookArrivals {
       .get(pairKey) as { first_done_at: number | null } | undefined;
     if (!p) throw new Error('No such source folder');
     if (!p.first_done_at) throw new Error('Its first run (the Preview) has not finished yet');
+    // Every file must have been looked at (a first run marked done too early: WP20g stop 2).
+    const waiting = this.waitingFiles(pairKey);
+    if (waiting > 0)
+      throw new Error(
+        `Its first run (the Preview) has not looked at ${waiting} files yet: they wait to settle`,
+      );
     this.db
       .prepare('UPDATE calibre_arrival_pairs SET approved_at = ? WHERE pair_key = ?')
       .run(Date.now(), pairKey);
@@ -503,6 +513,7 @@ export class BookArrivals {
       arrivalsQuietEnd: a.quietEnd,
     };
     let trigger: RunRow['trigger'] | null = null;
+    let followUp: string | null = null;
     if (s.run_now) trigger = 'now';
     else if (scheduledRunDue(now, sched, s.last_scheduled_day, this.zone())) trigger = 'schedule';
     else if (
@@ -510,6 +521,15 @@ export class BookArrivals {
       this.handSettled(target, now).length > 0
     )
       trigger = 'hand';
+    // Files waiting to settle that have settled since: a follow-up run looks at them now instead
+    // of at the next day's run (checked at most once a minute).
+    else if (now - this.settleCheckedAt >= 60_000) {
+      this.settleCheckedAt = now;
+      if (this.settledWaiting(now)) {
+        trigger = 'now';
+        followUp = 'settle';
+      }
+    }
     if (s.hand_checked_at === null || now - s.hand_checked_at >= a.handCheckMinutes * 60_000)
       this.setState({ hand_checked_at: now });
     if (!trigger) return null;
@@ -518,6 +538,7 @@ export class BookArrivals {
     const mode = s.mode === 'on' ? 'on' : 'analyse';
     const p = emptyProgress();
     p.libraryId = target;
+    if (followUp) p.followUp = followUp;
     const id = Number(
       this.db
         .prepare(
@@ -531,7 +552,9 @@ export class BookArrivals {
       run_now: 0,
       ...(trigger === 'schedule' ? { last_scheduled_day: clockNow(now, this.zone()).day } : {}),
     });
-    this.log(`New arrivals: run ${id} started (${trigger}, ${mode === 'on' ? 'On' : 'Preview'})`);
+    this.log(
+      `New arrivals: run ${id} started (${followUp ? 'files settled' : trigger}, ${mode === 'on' ? 'On' : 'Preview'})`,
+    );
     return id;
   }
 
@@ -976,6 +999,20 @@ export class BookArrivals {
          WHERE pair_key IN (${ph}) AND kind IN ('archive', 'volume') AND outcome = 'pending' AND gone_at IS NULL`,
       )
       .run(run.id, now, ...keys);
+    // Files not settled yet wait, all at once (a folder's first look sees every file for the first
+    // time: WP20g stop 2, 98,572 EPUBs): "seen for the first time" or "changed lately".
+    if (p.phaseStartDone === 1) {
+      this.db
+        .prepare(
+          `UPDATE calibre_arrival_files SET outcome = 'waiting', run_id = ?, decided_at = ?,
+             detail = CASE WHEN mtime_ms > ? THEN 'Changed in the last minutes (waits to settle)'
+               ELSE 'Seen for the first time (looked at once unchanged for the settle time)' END
+           WHERE outcome = 'pending' AND pair_key IN (${ph}) AND kind = 'epub' AND gone_at IS NULL
+             AND (first_seen_at > ? OR mtime_ms > ?)`,
+        )
+        .run(run.id, now, now - settleMs, ...keys, now - settleMs, now - settleMs);
+      p.phaseStartDone = 2;
+    }
     const pending = this.db
       .prepare(
         `SELECT id, pair_key, rel_path, size, mtime_ms, first_seen_at, archive_id, outcome FROM calibre_arrival_files
@@ -1013,10 +1050,12 @@ export class BookArrivals {
           now,
           f.id,
         );
-    if (!todo.length) {
+    if (!pending.length) {
       this.next(run.id, p, 'compare');
       return 'more';
     }
+    // A slice with nothing settled: on to the next slice (they were marked with this run).
+    if (!todo.length) return 'more';
     if (c.total === 0) {
       const t = this.db
         .prepare(
@@ -1471,15 +1510,62 @@ export class BookArrivals {
   private planStep(run: RunRow & { p: RunProgress }, p: RunProgress): void {
     const now = Date.now();
     for (const pair of p.pairs) {
-      if (pair.firstRun) {
+      const row = this.db
+        .prepare('SELECT approved_at FROM calibre_arrival_pairs WHERE pair_key = ?')
+        .get(pair.key) as { approved_at: number | null } | undefined;
+      if (row?.approved_at != null) continue;
+      // A folder's first run (its Preview) is done only once every file in it was looked at:
+      // files still waiting to settle keep it open, and "Add these" is offered only then (WP20g
+      // stop 2: the first look marked 98,572 EPUBs as waiting).
+      const waiting = this.waitingFiles(pair.key);
+      if (waiting > 0) {
         this.db
           .prepare(
-            `UPDATE calibre_arrival_pairs SET first_run_id = COALESCE(first_run_id, ?), first_done_at = COALESCE(first_done_at, ?)
+            `UPDATE calibre_arrival_pairs SET first_run_id = COALESCE(first_run_id, ?), first_done_at = NULL
              WHERE pair_key = ?`,
           )
-          .run(run.id, now, pair.key);
+          .run(run.id, pair.key);
+        continue;
       }
+      this.db
+        .prepare(
+          `UPDATE calibre_arrival_pairs SET first_run_id = COALESCE(first_run_id, ?), first_done_at = COALESCE(first_done_at, ?)
+           WHERE pair_key = ?`,
+        )
+        .run(run.id, now, pair.key);
     }
+  }
+
+  /** A folder's books and archives not looked at yet (waiting to settle, or not read yet). */
+  waitingFiles(pairKey: string): number {
+    return (
+      this.db
+        .prepare(
+          `SELECT COUNT(*) AS n FROM calibre_arrival_files INDEXED BY calibre_arrival_files_outcome
+           WHERE outcome IN ('pending', 'waiting') AND pair_key = ? AND gone_at IS NULL
+             AND kind IN ('epub', 'archive', 'volume')`,
+        )
+        .get(pairKey) as { n: number }
+    ).n;
+  }
+
+  /**
+   * Whether some file of a folder set up now, waiting to settle, has settled (a follow-up run
+   * looks at it; a folder no longer set up never starts one).
+   */
+  private settledWaiting(now: number): boolean {
+    const a = getSettings(this.db).arrivals;
+    const keys = a.pairs.map((x) => `${x.id}|${x.source}`);
+    if (!keys.length) return false;
+    const settleMs = a.settleMinutes * 60_000;
+    return !!this.db
+      .prepare(
+        `SELECT 1 FROM calibre_arrival_files INDEXED BY calibre_arrival_files_outcome
+         WHERE outcome IN ('pending', 'waiting') AND pair_key IN (${keys.map(() => '?').join(', ')})
+           AND gone_at IS NULL AND kind IN ('epub', 'archive', 'volume')
+           AND first_seen_at <= ? AND mtime_ms <= ? LIMIT 1`,
+      )
+      .get(...keys, now - settleMs, now - settleMs);
   }
 
   /** The files a run adds: new and better copies of pairs whose first run was approved. */
