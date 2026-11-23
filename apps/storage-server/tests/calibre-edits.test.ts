@@ -419,6 +419,24 @@ describe('the user’s edits through the apply sidecar', () => {
     expect(env.db.prepare('SELECT COUNT(*) n FROM calibre_field_changes').get()).toEqual({ n: 0 });
   });
 
+  it('a second save before the library shows the first starts from what the user saved', async () => {
+    const id = book(ids.A);
+    await request(env.app)
+      .post(`/api/v1/books/${id}/calibre-edit`)
+      .set(auth(user))
+      .send({ values: { rating: 9 } })
+      .expect(200);
+    // Not written or indexed yet: the form shows 9 and Clear is a change.
+    const form = await request(env.app).get(`/api/v1/books/${id}/calibre-edit`).set(auth(user));
+    expect(form.body.values.rating).toBe(9);
+    const clear = await request(env.app)
+      .post(`/api/v1/books/${id}/calibre-edit`)
+      .set(auth(user))
+      .send({ values: { rating: null } })
+      .expect(200);
+    expect(clear.body.changed).toEqual(['rating']);
+  });
+
   it('refuses a title too long for Calibre’s folders and a name with "&"', async () => {
     const id = book(ids.A);
     const long = await request(env.app)

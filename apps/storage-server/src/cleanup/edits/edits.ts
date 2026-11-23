@@ -20,6 +20,7 @@ import path from 'path';
 import type { BatchService } from '../batches';
 import { EDIT_SIDECAR_VERSION, EDIT_STAGE } from '../field-stages';
 import { parseCalibreDate } from '../../calibre/ingest';
+import { getIndexState } from '../../calibre/libraries';
 import { bookOfUuid, bookRef, catalogValues, seriesBooks, type BookRef } from './catalog';
 import { decidePair, librarySeries, notSameAs, seriesPairsOf, type SeriesPair } from './series';
 import {
@@ -289,7 +290,7 @@ export class EditService {
     extra: { undoOf?: string; coverFrom?: string },
   ): EditPlan {
     const ref = this.ref(bookId);
-    const current = catalogValues(this.deps.main, bookId);
+    const current = this.currentValues(bookId);
     if (!current) throw new EditError(404, 'not_found', 'No such book');
     const values: Partial<EditValues> = {};
     const rows: EditPlan['rows'] = [];
@@ -472,7 +473,7 @@ export class EditService {
     const rows = this.db
       .prepare(
         `SELECT p.id, p.field, p.new_json, p.state, p.review_reason, p.created_at,
-                b.state AS batch_state, f.last_modified_after
+                b.state AS batch_state, f.last_modified_after, f.created_at AS written_at
          FROM proposed_changes p INDEXED BY proposed_changes_book
          LEFT JOIN batches b ON b.id = p.batch_id
          LEFT JOIN field_undo f ON f.change_id = p.id
@@ -489,7 +490,11 @@ export class EditService {
       created_at: number;
       batch_state: string | null;
       last_modified_after: string | null;
+      written_at: number | null;
     }[];
+    // Shown: the index copied metadata.db after the write was recorded, and its record of the
+    // book is at least as new as Calibre's after the write (to the second).
+    const indexedAt = getIndexState(this.deps.main, ref.libraryId).snapshotAt ?? 0;
     const seen = new Set<string>();
     const out: FieldStatus[] = [];
     for (const r of rows) {
@@ -499,7 +504,11 @@ export class EditService {
       if (r.state === 'applied') {
         const after = parseCalibreDate(r.last_modified_after);
         state =
-          after !== null && ref.lastModified !== null && ref.lastModified + 1000 >= after
+          after !== null &&
+          ref.lastModified !== null &&
+          ref.lastModified + 1000 >= after &&
+          r.written_at !== null &&
+          indexedAt > r.written_at
             ? 'shown'
             : 'written';
       } else if (r.state === 'skipped' || r.state === 'undone') state = 'not_written';
@@ -517,6 +526,22 @@ export class EditService {
     return out;
   }
 
+  /**
+   * The book's values as the user last saved them: the library's index, with each field's edit
+   * that is saved but not shown there yet (written, or still to be written) laid over it. The
+   * index catches up within about 1-11 minutes; until then a form opened again starts from what
+   * the user saved (and a save compares with that), not from the older index.
+   */
+  currentValues(bookId: string): EditValues | null {
+    const values = catalogValues(this.deps.main, bookId);
+    if (!values) return null;
+    for (const s of this.status(bookId)) {
+      if (s.field === 'cover' || !['waiting', 'writing', 'written'].includes(s.state)) continue;
+      (values as unknown as Record<string, unknown>)[s.field] = s.value;
+    }
+    return values;
+  }
+
   /** What the edit form needs beyond the book's values. */
   form(bookId: string): {
     calibreId: number;
@@ -528,7 +553,7 @@ export class EditService {
     writer: { ready: boolean; wait: string | null };
   } {
     const ref = this.ref(bookId);
-    const values = catalogValues(this.deps.main, bookId)!;
+    const values = this.currentValues(bookId)!;
     return {
       calibreId: ref.calibreId,
       hasCover: ref.hasCover,
