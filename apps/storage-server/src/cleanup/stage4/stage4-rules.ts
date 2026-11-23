@@ -50,8 +50,12 @@ import {
  * 9 (the live Preview of rules 8, 2026-11-22): author readings without NDL's notes (a profession,
  * "pub. 2013", "1886- 薬剤師"); a written value that only loses them is corrected; a name whose
  * namesakes NDL reads differently is a best guess.
+ * 10 (2026-11-23, (仮)花嫁 still out of order after rules 9): a series number the cleanup wrote as
+ * a best guess yields to a confirmed one (titles, authors and illustrators keep rules 7: their
+ * confirmed values measured worse); after a write, the series step proposes again a book whose
+ * review proposal disagrees with its choice, and no title only loses its volume number.
  */
-export const STAGE4_RULES_VERSION = 9;
+export const STAGE4_RULES_VERSION = 10;
 
 /** The gold labels' names for the kinds. */
 export type Kind = 'full' | 'sample' | 'bonus' | 'special edition' | 'omnibus';

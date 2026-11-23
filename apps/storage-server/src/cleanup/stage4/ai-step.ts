@@ -249,6 +249,8 @@ export class Stage4Ai {
     groups: SeriesBook[][];
     changed: string[];
     checks: SeriesChecks;
+    /** Open series proposals for review (their number): proposed again when the choice differs. */
+    open: Map<string, number | null>;
   } | null = null;
 
   /** The books the spelling phase proposes again, in uuid order (rebuilt after a restart). */
@@ -862,6 +864,21 @@ export class Stage4Ai {
         .filter(([, a]) => a.name)
         .map(([u]) => u)
         .sort();
+      // A series proposal left for review by the decide phase (the models' number, before the
+      // series step chose) is stale when the choice differs: after stop 3 wrote ようこそ 2年生編1
+      // as 12, the step chose 12 again (Calibre's), so the book wasn't proposed again and the
+      // decide phase's "1" stayed in review (33 books, 2026-11-23).
+      const open = new Map<string, number | null>();
+      for (const r of this.db
+        .prepare(
+          `SELECT calibre_uuid, new_json FROM proposed_changes INDEXED BY proposed_changes_counts
+           WHERE stage = 4 AND library_id = ? AND state = 'proposed' AND field = 'series'
+             AND class = 'review'`,
+        )
+        .all(p.libraryId) as { calibre_uuid: string; new_json: string }[]) {
+        const v = JSON.parse(r.new_json) as { index?: number | null } | null;
+        open.set(r.calibre_uuid, v?.index ?? null);
+      }
       this.seriesRun = {
         key: runKey,
         uuids,
@@ -870,6 +887,7 @@ export class Stage4Ai {
         groups: [],
         changed: [],
         checks: emptyChecks(),
+        open,
       };
       ai.seriesOrder = {
         part: 'facts',
@@ -949,7 +967,8 @@ export class Stage4Ai {
             c.index !== b.index ||
             c.title !== undefined ||
             c.review !== undefined ||
-            (c.guess && a.proposed)
+            (c.guess && a.proposed) ||
+            (run.open.has(b.uuid) && run.open.get(b.uuid) !== c.index)
           )
             run.changed.push(b.uuid);
         }
