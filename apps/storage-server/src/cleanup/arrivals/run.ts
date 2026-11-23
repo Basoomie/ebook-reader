@@ -257,6 +257,11 @@ export interface ArrivalsDeps {
   wantIngest: (libraryId: string) => void;
   /** Whether the linking sidecar has been seen lately (archives wait for it). */
   linkSidecarOnline: () => boolean;
+  /**
+   * The user's fields of a copy that a better new copy replaces are copied onto it (calibre
+   * metadata editing): returns the edit's batch, or null.
+   */
+  carry?: (libraryId: string, fromUuid: string, toUuid: string) => string | null;
   /** The source folders must be mounted read-only (tests on a writable temp folder: false). */
   requireReadOnlySources?: boolean;
   /** The safety checks (stage 0) every write waits for, as the stages' own writes do. */
@@ -1016,6 +1021,9 @@ export class BookArrivals {
       libraryId,
       libDir,
       analysisId: arrivalAnalysisId(runId),
+      carry: this.deps.carry
+        ? (from: string, to: string) => this.deps.carry!(libraryId, from, to)
+        : undefined,
     };
   }
 

@@ -1313,6 +1313,41 @@ export const MIGRATIONS: { version: number; name: string; sql: string }[] = [
         WHERE reindex_requested_at IS NULL;
     `,
   },
+  {
+    version: 31,
+    name: 'rating, languages and the fields Calibre changed',
+    // Calibre metadata editing (tier 3 item 2): the book page shows the rating and the edit form
+    // the languages, so the catalog keeps both (rating as Calibre stores it, 0-10 in half stars;
+    // languages as a JSON list of codes). They have their own small change hash (meta2_hash) so
+    // the first index after this migration updates only these two columns, never the whole
+    // catalog (item 1's full rewrite blocked the NAS for seconds per batch). cover_sig is the
+    // size and mtime of the book's cover.jpg, read for books whose record changed.
+    // calibre_field_changes: what the index saw change per field (old and new as stored here),
+    // for books it already had; the cleanup service attributes each row (the user's edit, the
+    // cleanup's write, or changed in Calibre's own program) and deletes it. Kept in ttsu.db, in
+    // the ingest's own transaction, so a restart loses none.
+    sql: `
+      ALTER TABLE books ADD COLUMN rating INTEGER;
+      ALTER TABLE books ADD COLUMN languages TEXT;
+      ALTER TABLE book_sources ADD COLUMN meta2_hash TEXT;
+      ALTER TABLE book_sources ADD COLUMN cover_sig TEXT;
+      CREATE TABLE calibre_field_changes (
+        id            INTEGER PRIMARY KEY,
+        library_id    TEXT NOT NULL,
+        calibre_uuid  TEXT NOT NULL,
+        calibre_id    INTEGER NOT NULL,
+        book_id       TEXT NOT NULL,
+        field         TEXT NOT NULL,
+        old_json      TEXT NOT NULL,
+        new_json      TEXT NOT NULL,
+        last_modified INTEGER,
+        before_modified INTEGER,
+        seen_at       INTEGER NOT NULL
+      );
+      UPDATE library_index_state SET reindex_requested_at = 1
+        WHERE reindex_requested_at IS NULL;
+    `,
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

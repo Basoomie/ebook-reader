@@ -30,7 +30,7 @@ import {
   updateIndexState,
 } from './libraries';
 import { hasJournal, snapshotMetadataDb, SnapshotSkipped } from './snapshot';
-import { isWritable, listSubfolders, METADATA_DB, statFile } from './source-fs';
+import { isWritable, listSubfolders, METADATA_DB, resolveInside, statFile } from './source-fs';
 
 export const SNAPSHOT_DIRNAME = 'calibre';
 
@@ -60,9 +60,24 @@ export interface IndexerOptions {
    * batch): a busy metadata.db is copied at once instead of after the longest settle wait.
    */
   wantsIngest?: (libraryId: string) => boolean;
+  /** After an index that queued field changes (calibre_field_changes): the cleanup sorts them out. */
+  onFieldChanges?: (libraryId: string) => void;
   log?: (message: string) => void;
   logError?: (message: string, err?: unknown) => void;
 }
+
+/** A cover's size and mtime ("size:mtimeMs"), read only; null when it can't be read. */
+export async function coverSigOf(libDir: string, bookPath: string): Promise<string | null> {
+  try {
+    const st = await statFile(resolveInside(libDir, `${bookPath}/cover.jpg`));
+    return st ? `${st.size}:${Math.round(st.mtimeMs)}` : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Covers read per poll by the background pass that records each cover's size and mtime. */
+export const COVER_SIGS_PER_POLL = 300;
 
 export function snapshotFile(cacheDir: string, libraryId: string): string {
   return path.join(cacheDir, SNAPSHOT_DIRNAME, `${libraryId}.db`);
@@ -174,6 +189,9 @@ export class CalibreIndexer {
           if (this.stopped) break;
           if (!lib.enabled || !lib.available) continue;
           await this.checkLibrary(lib);
+          await this.fillCoverSigs(lib).catch((err) =>
+            this.logError('Calibre indexer: reading covers failed:', err),
+          );
         }
       } catch (err) {
         this.logError('Calibre indexer: poll failed:', err);
@@ -206,6 +224,38 @@ export class CalibreIndexer {
     this.lastProblem.set(libraryId, message);
     if (isError) this.logError(`Calibre: ${message}`, err);
     else this.log(`Calibre: ${message}`);
+  }
+
+  /**
+   * The covers' size and mtime, a few hundred books per poll (read only, one stat each): the
+   * baseline the index compares a changed book's cover with ("Changed in Calibre"). Books whose
+   * record changes get theirs during the ingest; this fills in the rest once, slowly.
+   */
+  async fillCoverSigs(lib: Library, limit = COVER_SIGS_PER_POLL): Promise<number> {
+    if (this.stopped) return 0;
+    const rows = this.db
+      .prepare(
+        `SELECT id, calibre_path FROM book_sources
+         WHERE library_id = ? AND kind = 'calibre' AND missing_at IS NULL AND has_cover = 1
+           AND cover_sig IS NULL AND calibre_path IS NOT NULL
+         LIMIT ?`,
+      )
+      .all(lib.id, limit) as { id: string; calibre_path: string }[];
+    if (rows.length === 0) return 0;
+    const libDir = path.join(this.root, lib.folder);
+    const sigs: [string, string][] = [];
+    for (const r of rows) {
+      if (this.stopped) break;
+      // A cover that can't be read is marked so it isn't asked for again every poll.
+      sigs.push([r.id, (await coverSigOf(libDir, r.calibre_path)) ?? 'none']);
+    }
+    const set = this.db.prepare(
+      'UPDATE book_sources SET cover_sig = ? WHERE id = ? AND cover_sig IS NULL',
+    );
+    this.db.transaction(() => {
+      for (const [id, sig] of sigs) set.run(sig, id);
+    })();
+    return sigs.length;
   }
 
   async checkLibrary(lib: Library): Promise<void> {
@@ -270,10 +320,12 @@ export class CalibreIndexer {
 
       const before = getIndexState(this.db, target.id);
       updateIndexState(this.db, target.id, { status: 'ingesting', snapshotAt: Date.now() });
+      const libDir = path.join(this.root, lib.folder);
       const result = await ingestSnapshot(this.db, dest, {
         libraryId: target.id,
         maxMissingPercent: this.config.maxMissingPercent,
         allowMassMissing: before.allowMassMissing || state.allowMassMissing,
+        coverSig: (bookPath) => coverSigOf(libDir, bookPath),
       });
 
       const now = Date.now();
@@ -307,6 +359,11 @@ export class CalibreIndexer {
           `${result.missingMarked} newly missing, ${result.skippedNoUuid} without UUID skipped)`,
       );
       if (result.massMissingWarning) this.log(`Calibre: ${label}: ${result.massMissingWarning}`);
+      try {
+        this.opts.onFieldChanges?.(target.id);
+      } catch (err) {
+        this.logError('Calibre indexer: the field-change hook failed:', err);
+      }
     } catch (err) {
       const message = (err as Error).message ?? String(err);
       if (err instanceof SnapshotSkipped) {

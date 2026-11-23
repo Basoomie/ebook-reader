@@ -29,6 +29,11 @@ export interface PassDeps {
   libDir: string;
   /** The run's analysis id (arrivals:<run>). */
   analysisId: string;
+  /**
+   * Copies the fields that are the user's on a copy about to be removed onto the copy that
+   * stays (calibre metadata editing); returns the edit's batch, or null when there is none.
+   */
+  carry?: (fromUuid: string, toUuid: string) => string | null;
 }
 
 /** Whether a Calibre book's reader book holds reader data (handoff.ts' test). */
@@ -285,11 +290,20 @@ export function proposeStage3Removal(
 ): void {
   const settings = getSettings(deps.cleanup);
   const now = Date.now();
+  // The user's fields of the copy that goes are written onto the copy that stays first (the
+  // removal waits for that write: planRemovals).
+  let carriedBatch: string | null = null;
+  let carryError: string | null = null;
+  try {
+    carriedBatch = deps.carry?.(removed.uuid, kept.uuid) ?? null;
+  } catch (err) {
+    carryError = `Your edited fields couldn't be copied onto the new copy: ${(err as Error).message}`;
+  }
   deps.cleanup
     .prepare(
       `INSERT INTO proposed_changes (stage, library_id, calibre_id, calibre_uuid, field, old_json,
-         new_json, source, evidence_json, class, state, analysis_id, created_at, updated_at)
-       VALUES (3, ?, ?, ?, 'book', '"present"', '"removed"', 'stage3:text', ?, 'auto', 'proposed', ?, ?, ?)`,
+         new_json, source, evidence_json, class, review_reason, state, analysis_id, created_at, updated_at)
+       VALUES (3, ?, ?, ?, 'book', '"present"', '"removed"', 'stage3:text', ?, ?, ?, 'proposed', ?, ?, ?)`,
     )
     .run(
       deps.libraryId,
@@ -300,6 +314,7 @@ export function proposeStage3Removal(
         title: removed.title,
         arrival: true,
         pair,
+        ...(carriedBatch ? { carriedBatch } : {}),
         kept: {
           calibreId: kept.calibreId,
           uuid: kept.uuid,
@@ -329,6 +344,8 @@ export function proposeStage3Removal(
           readerData: hasReaderData(deps, removed.uuid),
         },
       }),
+      carryError ? 'review' : 'auto',
+      carryError,
       deps.analysisId,
       now,
       now,

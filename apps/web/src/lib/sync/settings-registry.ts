@@ -212,6 +212,11 @@ export const SETTINGS_REGISTRY: Record<string, SettingSpec> = {
   bookLinksMoreAs: d('String'),
   bookLinksSearch: d('Boolean'),
 
+  // --- lib/calibre-edit/settings.ts (per device: Calibre metadata editing, Settings > Library) ---
+  bookEditAs: d('String'),
+  seriesEditAs: d('String'),
+  bookRatingEmpty: d('String'),
+
   // --- lib/home/settings.ts (per device, WP7b) ---
   appOpenTarget: d('String'),
   homeRows: d('Array'),

@@ -2264,6 +2264,88 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
     // its run marks it done when nothing in it waits, and runs that start after that add.
     sql: `UPDATE calibre_arrival_pairs SET first_done_at = NULL WHERE approved_at IS NULL;`,
   },
+  {
+    version: 29,
+    name: 'the user’s edits from the reader: fields that are the user’s, changes seen in Calibre',
+    // Calibre metadata editing (tier 3 item 2). Edits are field batches of their own stage (10)
+    // in proposed_changes / batches / field_undo like the cleanup's. user_fields: every field
+    // the user edited, confirmed, put back, or changed in Calibre's own program; no cleanup pass
+    // changes it again. calibre_seen_changes: the history's "Changed in Calibre" entries (and
+    // the books a case-only rename of a shared name changed with an edit). series_pair_decisions:
+    // "Not the same series" (and merges) for the series editor's suggested pair.
+    sql: `
+      CREATE TABLE user_fields (
+        library_id    TEXT NOT NULL,
+        calibre_uuid  TEXT NOT NULL,
+        field         TEXT NOT NULL,
+        value_json    TEXT CHECK (value_json IS NULL OR json_valid(value_json)),
+        source        TEXT NOT NULL CHECK (source IN
+                        ('edit', 'confirm', 'undo', 'calibre', 'carried', 'shared_rename')),
+        since         INTEGER NOT NULL,
+        change_id     INTEGER,
+        PRIMARY KEY (library_id, calibre_uuid, field)
+      ) WITHOUT ROWID;
+      CREATE TABLE calibre_seen_changes (
+        id              INTEGER PRIMARY KEY,
+        library_id      TEXT NOT NULL,
+        calibre_uuid    TEXT NOT NULL,
+        calibre_id      INTEGER NOT NULL,
+        field           TEXT NOT NULL,
+        old_json        TEXT NOT NULL CHECK (json_valid(old_json)),
+        new_json        TEXT NOT NULL CHECK (json_valid(new_json)),
+        kind            TEXT NOT NULL CHECK (kind IN ('calibre', 'shared_rename', 'confirm')),
+        cause_change_id INTEGER,
+        cause_title     TEXT,
+        seen_at         INTEGER NOT NULL
+      );
+      CREATE INDEX calibre_seen_changes_book ON calibre_seen_changes (library_id, calibre_uuid, field);
+      CREATE TABLE series_pair_decisions (
+        library_id  TEXT NOT NULL,
+        name_a      TEXT NOT NULL,
+        name_b      TEXT NOT NULL,
+        decision    TEXT NOT NULL CHECK (decision IN ('different', 'merged')),
+        decided_at  INTEGER NOT NULL,
+        PRIMARY KEY (library_id, name_a, name_b)
+      ) WITHOUT ROWID;
+      CREATE INDEX undo_records_kept ON undo_records (library_id, kept_uuid);
+      CREATE INDEX batches_open ON batches (state, stage, created_at);
+
+      -- No cleanup pass proposes a field that is the user's: a proposal made for one is set
+      -- aside at once (any stage, new arrivals included), and a field that becomes the user's
+      -- sets aside the open proposals for it. A title write also writes the title sort and an
+      -- author write the author sort, a series write its number: those count too. The batch
+      -- planner and the sidecar's verify check again (stage2-batches.ts).
+      CREATE TRIGGER proposed_changes_yours AFTER INSERT ON proposed_changes
+      WHEN NEW.stage <> 10 AND NEW.state = 'proposed' AND EXISTS (
+        SELECT 1 FROM user_fields u
+        WHERE u.library_id = NEW.library_id AND u.calibre_uuid = NEW.calibre_uuid
+          AND (u.field = NEW.field
+            OR (NEW.field = 'title' AND u.field = 'sort')
+            OR (NEW.field = 'authors' AND u.field = 'author_sort')
+            OR (NEW.field = 'series' AND u.field = 'series_index')))
+      BEGIN
+        UPDATE proposed_changes SET state = 'skipped',
+          review_reason = 'Yours: you edited or confirmed this field (the cleanup never changes it)'
+        WHERE id = NEW.id;
+      END;
+      -- A field changed in Calibre's own program is set aside by the batch planner instead (it
+      -- counts as "changed in Calibre since the analysis" there, so a mass change still pauses
+      -- the stage: WP20 lessons 1).
+      CREATE TRIGGER user_fields_yours AFTER INSERT ON user_fields
+      WHEN NEW.source <> 'calibre'
+      BEGIN
+        UPDATE proposed_changes SET state = 'skipped',
+          review_reason = 'Yours: you edited or confirmed this field (the cleanup never changes it)',
+          updated_at = NEW.since
+        WHERE library_id = NEW.library_id AND calibre_uuid = NEW.calibre_uuid
+          AND stage <> 10 AND state = 'proposed'
+          AND (field = NEW.field
+            OR (field = 'title' AND NEW.field = 'sort')
+            OR (field = 'authors' AND NEW.field = 'author_sort')
+            OR (field = 'series' AND NEW.field = 'series_index'));
+      END;
+    `,
+  },
 ];
 
 export const CLEANUP_SCHEMA_VERSION = CLEANUP_MIGRATIONS[CLEANUP_MIGRATIONS.length - 1].version;

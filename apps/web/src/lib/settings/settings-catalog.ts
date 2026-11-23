@@ -141,6 +141,14 @@ export const SETTINGS_SECTIONS: CatalogSection[] = [
     keywords: 'store stores links external amazon bookwalker order'
   },
   {
+    id: 'library-editing',
+    tab: 'Library',
+    jp: '編集',
+    title: 'Editing',
+    description: 'Editing a Calibre book’s details from the reader.',
+    keywords: 'edit series tags calibre metadata'
+  },
+  {
     id: 'data-downloads',
     tab: 'Library',
     jp: '保存',
@@ -913,6 +921,36 @@ export const SETTINGS_CATALOG: CatalogSetting[] = [
     description:
       'When a store has no saved id for the book, link to a search for its title and author (marked with a magnifier). Off: that store isn’t shown for the book.',
     keywords: 'links store search magnifier'
+  },
+  {
+    id: 'book-edit-as',
+    section: 'library-book-page',
+    title: 'Book form opens as',
+    description:
+      'The pencil on a Calibre book’s page opens its edit form in a side panel or a modal.',
+    keywords: 'edit details pencil form side panel modal calibre'
+  },
+  {
+    id: 'book-rating-empty',
+    section: 'library-book-page',
+    title: 'A book without a rating',
+    description: 'The line under the byline: hidden, or “No rating”.',
+    keywords: 'rating stars no rating'
+  },
+  {
+    id: 'series-edit-as',
+    section: 'library-editing',
+    title: 'Series editor opens as',
+    description: 'Edit series (on a series page) in a side panel or a modal. This device only.',
+    keywords: 'edit series rename numbers side panel modal'
+  },
+  {
+    id: 'tags-you-can-pick',
+    section: 'library-editing',
+    title: 'Tags you can pick',
+    description:
+      'The tags the edit form offers, and the list the cleanup’s tagging of new books picks from. Changing this list writes nothing to your books: they keep the tags they have. One list for every device.',
+    keywords: 'tags genres list vocabulary your tags cleanup new books'
   },
   {
     id: 'epub-fixes',

@@ -1013,13 +1013,18 @@ describe('set_fields arguments', () => {
     expect(a).not.toContain('pw');
     // Stage 5 (WP20f) adds exactly tags (the whole list the server worked out).
     expect(buildArgs('set_fields', login, ['5', 'tags:a,b'])).toContain('tags:a,b');
-    expect(() => buildArgs('set_fields', login, ['5', 'rating:1'])).toThrow(/can't set rating/);
+    // The user's edits from the reader (1.5.0) add exactly the published date and the rating.
+    expect(
+      buildArgs('set_fields', login, ['5', 'rating:4.5', 'pubdate:2020-01-01T12:00:00+00:00']),
+    ).toContain('rating:4.5');
+    expect(() => buildArgs('set_fields', login, ['5', 'timestamp:2020-01-01'])).toThrow(
+      /can't set timestamp/,
+    );
     // Stage 4 (WP20e) adds exactly series, series_index and comments.
     expect(() =>
       buildArgs('set_fields', login, ['5', 'series:S', 'series_index:1.5', 'comments:あらすじ']),
     ).not.toThrow();
-    expect(() => buildArgs('set_fields', login, ['5', 'rating:5'])).toThrow();
-    expect(() => buildArgs('set_fields', login, ['5', 'pubdate:2020-01-01'])).toThrow();
+    expect(() => buildArgs('set_fields', login, ['5', 'formats:x'])).toThrow();
     expect(() => buildArgs('set_fields', login, ['5', 'title:a', 'title:b'])).toThrow(/twice/);
     expect(() => buildArgs('set_fields', login, ['5', 'title:'])).toThrow(/empty/);
     expect(() => buildArgs('set_fields', login, ['5', 'cover:relative.jpg'])).toThrow(/absolute/);

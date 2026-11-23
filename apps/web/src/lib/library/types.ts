@@ -102,6 +102,10 @@ export interface CatalogBookDetail extends CatalogBook {
    * uploads). Missing from older servers and older offline copies.
    */
   identifiers?: Record<string, string>;
+  /** Calibre's rating, 1-10 half stars (9 = four and a half); null or missing without one. */
+  rating?: number | null;
+  /** Calibre's language codes ("jpn"). Missing from older servers. */
+  languages?: string[];
 }
 
 export interface CatalogPage {

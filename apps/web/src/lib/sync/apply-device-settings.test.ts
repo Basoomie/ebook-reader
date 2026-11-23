@@ -33,6 +33,8 @@ import {
   bookLinksSearch$
 } from '$lib/book-links/settings';
 import { settings$ } from '$lib/whispersync/lib/stores';
+// Calibre metadata editing's per-device settings, loaded as the book page and Settings load them.
+import '$lib/calibre-edit/settings';
 import { applyDeviceSettings } from './apply-device-settings';
 import { keysWithScope } from './settings-registry';
 

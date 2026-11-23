@@ -13,6 +13,10 @@ import { snapshotFile } from '../calibre/indexer';
 import { getIndexState, getLibrary, listLibraries } from '../calibre/libraries';
 import { COUNTER_BUNDLE, readCounterInfo } from '../counts/counter-bundle';
 import { BatchService, REMOVAL_STAGES } from './batches';
+import { EditService } from './edits/edits';
+import { ChangeAttribution } from './edits/attribution';
+import { readFileSync } from 'fs';
+import { resolveInside } from '../calibre/source-fs';
 import { DISK_OWNERS, DiskLock } from './disk-lock';
 import { presentBookCount } from './handoff';
 import { SecretStore } from './secrets';
@@ -206,6 +210,11 @@ export class CleanupService {
   readonly stage5: Stage5 | null;
   /** WP20g: the Calibre library's new arrivals and the import. */
   readonly arrivals: BookArrivals;
+  /** Calibre metadata editing from the reader: the user's edits, their history and Undo. */
+  readonly edits: EditService;
+  /** What the reader's index saw change in Calibre, sorted out (whose change it was). */
+  readonly attribution: ChangeAttribution;
+  private attributing: Promise<void> | null = null;
   private arriving: Promise<void> | null = null;
   /** Until when the arrivals asked the reader's index to copy metadata.db at once. */
   private arrivalsIngestUntil = 0;
@@ -360,6 +369,24 @@ export class CleanupService {
             log: this.log,
           })
         : null;
+    this.edits = new EditService({
+      cleanup: opts.cleanup,
+      main: opts.main,
+      batches: this.batches,
+      cacheDir: opts.cacheDir,
+    });
+    this.edits.readCover = (libraryId, bookPath) => {
+      const lib = getLibrary(opts.main, libraryId);
+      if (!lib || !opts.calibreDir || !bookPath) return null;
+      try {
+        return readFileSync(
+          resolveInside(path.join(opts.calibreDir, lib.folder), `${bookPath}/cover.jpg`),
+        );
+      } catch {
+        return null;
+      }
+    };
+    this.attribution = new ChangeAttribution({ cleanup: opts.cleanup, main: opts.main });
     this.arrivals = new BookArrivals({
       cleanup: opts.cleanup,
       main: opts.main,
@@ -382,6 +409,7 @@ export class CleanupService {
         this.arrivalsIngestUntil = Date.now() + 10 * 60_000;
       },
       linkSidecarOnline: () => this.linkSeen(),
+      carry: (libraryId, from, to) => this.edits.carry(libraryId, from, to),
       requireReadOnlySources: opts.bookSourcesReadOnly,
       checksPass: () => this.checksPass(),
       log: this.log,
@@ -552,6 +580,11 @@ export class CleanupService {
     }
     (this.reader3 as Stage3Worker).resize?.(dup.textWorkers);
     return this.reader3;
+  }
+
+  /** The reader's database (ttsu.db). */
+  get main(): Database.Database {
+    return this.opts.main;
   }
 
   get db(): Database.Database {
@@ -966,6 +999,7 @@ export class CleanupService {
   private async round(): Promise<void> {
     this.batches.expireLeases();
     this.batches.checkIngested();
+    this.sortChanges();
     const target = this.targetLibrary();
     await this.round1(target);
     await this.round2(target);
@@ -973,6 +1007,40 @@ export class CleanupService {
     await this.round4(target);
     await this.round5(target);
     this.runArrivals();
+  }
+
+  /**
+   * What the reader's index saw change in Calibre, sorted out in chunks of 500 that yield to the
+   * event loop between them (never blocks a request for long). Called after every index and on
+   * every round while rows wait (a change of a book in an unfinished batch waits for it).
+   */
+  sortChanges(): void {
+    if (this.attributing || this.stopped) return;
+    let pending = false;
+    try {
+      pending = this.attribution.pending();
+    } catch (err) {
+      this.logError('Cleanup: reading the changes the index saw failed:', err);
+      return;
+    }
+    if (!pending) return;
+    this.attributing = (async () => {
+      try {
+        for (let i = 0; i < 200 && !this.stopped; i++) {
+          const r = this.attribution.drain(500);
+          if (r.calibre > 0 || r.renames > 0)
+            this.log(
+              `Cleanup: ${r.calibre} field(s) changed in Calibre itself, ${r.renames} renamed with an edit: now the user's`,
+            );
+          if (r.processed === 0) break;
+          await new Promise((res) => setImmediate(res));
+        }
+      } catch (err) {
+        this.logError('Cleanup: sorting out the changes the index saw failed:', err);
+      } finally {
+        this.attributing = null;
+      }
+    })();
   }
 
   /** WP20g: the new arrivals' run, stepped in its own loop (never blocks a round). */

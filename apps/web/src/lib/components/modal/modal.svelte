@@ -50,6 +50,12 @@
   export let panelClass = '';
   /** A selector inside the modal to focus when it opens; otherwise the modal itself. */
   export let initialFocus = '';
+  /**
+   * 'side': a side panel along the right edge, full height (the book edit form, the history and
+   * the series editor when the device's setting says so); a sheet from the bottom on phones
+   * like every modal. Everything else (Esc, ✕, outside click, unsaved changes) is the same.
+   */
+  export let placement: 'center' | 'side' = 'center';
 
   const dispatch = createEventDispatcher<{ close: DismissReason | 'discard' }>();
   const id = `modal-${Math.random().toString(36).slice(2, 10)}`;
@@ -129,6 +135,7 @@
 
 <div
   class="c-modal-layer"
+  class:c-modal-layer-side={placement === 'side'}
   class:c-modal-surface-inherit={surface === 'inherit'}
   style:z-index={zIndex}
   on:pointerdown|capture={(ev) => (downTarget = ev.target)}
@@ -147,6 +154,7 @@
   <section
     bind:this={panel}
     class="c-modal c-modal-{size} {panelClass}"
+    class:c-modal-side={placement === 'side'}
     {role}
     aria-modal="true"
     aria-labelledby="{id}-title"
