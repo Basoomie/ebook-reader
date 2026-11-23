@@ -20,7 +20,9 @@ import { ArrivalBatches } from '../src/cleanup/arrivals/add-batches';
 import { entrySkip } from '../src/cleanup/arrivals/archives';
 import { classifyName, settled, sniffFormat, walkSource } from '../src/cleanup/arrivals/catalog';
 import { stage2Pass } from '../src/cleanup/arrivals/stage-passes';
+import { ArrivalStage5, emptyStage5Pass } from '../src/cleanup/arrivals/stage5-pass';
 import { runBar } from '../src/cleanup/arrivals/views';
+import { STAGE5_SPEC } from '../src/cleanup/stage5/prompt';
 import { initCleanupDatabase } from '../src/cleanup/cleanup-db';
 import type { Stage2Analysis } from '../src/cleanup/stage2';
 import { pauseField, resumeField } from '../src/cleanup/stage2-gate';
@@ -230,6 +232,85 @@ describe('wp20g: the catalog walk', () => {
     const t = await walkSource(db, 'p', root);
     expect(t!.errors.join(' ')).toMatch(/empty/);
     expect(rows().filter((r) => r.gone_at === null).length).toBeGreaterThan(0);
+    db.close();
+  });
+});
+
+describe('wp20g: new books’ genres and tags', () => {
+  it('asks the stronger pair (Sonnet AND Sol by default), not the library’s two', async () => {
+    const dir = tmp();
+    const state = initCleanupDatabase(dir);
+    if (!state.ok) throw new Error(state.error);
+    const db = state.db;
+    expect(STAGE5_SPEC.tasks.upgradePrimary).toBe('stage5.upgradePrimary');
+    expect(STAGE5_SPEC.tasks.upgradeSecondary).toBe('stage5.upgradeSecondary');
+    expect(getSettings(db).models['stage5.upgradePrimary']).toBe('claude-sonnet-5-5');
+    expect(getSettings(db).models['stage5.upgradeSecondary']).toBe('gpt-6.1-sol');
+    // A stand-in runner: the evidence kept, the roles asked recorded, an answer per role.
+    const items = new Map<string, { evidence: unknown; hash: string }>();
+    const asked: string[] = [];
+    const answer = (genres: string[]) => ({
+      state: 'answered',
+      answer: { genres, subjects: [], tags: [], anime: false, manga: false, dropped: 0 },
+    });
+    const answers: Record<string, unknown> = {
+      primary: answer(['mystery']),
+      secondary: answer(['mystery']),
+      upgradePrimary: answer(['romance', 'comedy']),
+      upgradeSecondary: answer(['romance']),
+    };
+    const runner = {
+      putItems: (_: unknown, xs: { key: string; evidence: unknown }[]) => {
+        for (const x of xs) items.set(x.key, { evidence: x.evidence, hash: 'h' });
+        return xs.length;
+      },
+      enqueue: (_: unknown, role: string) => asked.push(role),
+      step: async () => ({ pending: 0, sent: 0, answered: 0, wait: null }),
+      evidenceOf: (_: unknown, k: string) => items.get(k) ?? null,
+      answerOf: (_: unknown, role: string) => answers[role] ?? null,
+    };
+    const book = { calibreId: 7, uuid: 'u7', title: '本', authors: ['作者'] };
+    const rec = {
+      calibre: { cal_title: '本', cal_authors: '作者' },
+      file: { opf_title: '本', front_text: '本文' },
+      amazon: null,
+      bookwalker: null,
+      ranobedb: null,
+    };
+    const analysis = {
+      aiInputs: () => ({
+        book,
+        base: rec,
+        record: rec,
+        decision: {
+          trace: { amazonIdentified: false, ranobedbIdentified: false, cleaned: {} },
+          amazonRejected: false,
+        },
+      }),
+      extrasOf: () => null,
+      loadSnapshot: () => ({ books: new Map() }),
+    };
+    const pass = new ArrivalStage5({
+      db,
+      runner: runner as unknown as ConstructorParameters<typeof ArrivalStage5>[0]['runner'],
+      analysis: analysis as unknown as ConstructorParameters<typeof ArrivalStage5>[0]['analysis'],
+    });
+    const view = { libraryId: 'L', analysisId: 'arrivals:1' } as unknown as Parameters<
+      ArrivalStage5['step']
+    >[0];
+    const prog = emptyStage5Pass();
+    for (let i = 0; i < 6 && prog.phase !== 'done'; i++)
+      await pass.step(view, prog, ['u7'], () => false);
+    expect(prog.phase).toBe('done');
+    expect([...new Set(asked)].sort()).toEqual(['upgradePrimary', 'upgradeSecondary']);
+    const v = db
+      .prepare(
+        `SELECT value_json, design FROM ai_values WHERE stage = 'calibre5' AND item_key = 'L:u7'`,
+      )
+      .get() as { value_json: string; design: string };
+    expect(v.design).toBe('J');
+    // Only what both stronger models gave (romance), never the first two's answers.
+    expect(Object.keys(JSON.parse(v.value_json).terms)).toEqual(['romance']);
     db.close();
   });
 });

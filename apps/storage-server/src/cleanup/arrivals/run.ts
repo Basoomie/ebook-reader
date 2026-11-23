@@ -2292,9 +2292,9 @@ export class BookArrivals {
         ? {
             books: toAdd,
             // Measured per book: E $0.00067 (plan section 6), J's stronger pair on 44 % of the
-            // labeled books at $0.0105 each (WP20g stop 1: Sonnet by batch, Sol one call each),
-            // stage 5 $0.00057 (WP20f stop 1).
-            aiUsd: Math.round(toAdd * (0.00067 + 0.44 * 0.0105 + 0.00057) * 100) / 100,
+            // labeled books at $0.0105 each, stage 5 with Sonnet AND Sol $0.0051 (WP20g stop 1:
+            // Sonnet by batch, Sol one call each).
+            aiUsd: Math.round(toAdd * (0.00067 + 0.44 * 0.0105 + 0.0051) * 100) / 100,
             // About 1.5 s per add, 1 s per book of the stages' writes, Amazon's ~3,600 answers a
             // day at about 0.9 per book (lessons 4): the lookups decide.
             seconds: Math.round(toAdd * 1.5 + toAdd * 1 + (toAdd * 0.9 * 86400) / 3600),

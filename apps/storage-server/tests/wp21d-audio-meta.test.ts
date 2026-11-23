@@ -534,6 +534,9 @@ describe('stage 5 through the service', () => {
       ['calibre4', ['stage4.primary', 'stage4.secondary']],
       // WP20f: Calibre stage 5's genre and tag step.
       ['calibre5', ['stage5.primary', 'stage5.secondary']],
+      // WP20g: the new Calibre books' second look (J) and their genres and tags.
+      ['calibre4.upgrade', ['stage4.upgradePrimary', 'stage4.upgradeSecondary']],
+      ['calibre5.arrivals', ['stage5.upgradePrimary', 'stage5.upgradeSecondary']],
     ]);
     // Check models is Settings > AI's (the shared layer); the cleanup's tasks show its result.
     const check = await api(request(e.app).post('/api/v1/ai/models/check'));

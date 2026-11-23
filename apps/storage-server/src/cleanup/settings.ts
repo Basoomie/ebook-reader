@@ -433,6 +433,9 @@ export const MODEL_TASKS = [
   'stage4.upgradeSecondary',
   'stage5.primary',
   'stage5.secondary',
+  // WP20g: new books' genres and tags (chosen by the user after stop 1: Sonnet AND Sol).
+  'stage5.upgradePrimary',
+  'stage5.upgradeSecondary',
   // The audiobook cleanup's stage 5 (WP21d).
   'audio5.primary',
   'audio5.secondary',
@@ -452,6 +455,8 @@ export const DEFAULT_SETTINGS: CleanupSettings = {
     'stage4.upgradeSecondary': 'gpt-6.1-sol',
     'stage5.primary': 'claude-haiku-5-5',
     'stage5.secondary': 'gpt-6-luna',
+    'stage5.upgradePrimary': 'claude-sonnet-5-5',
+    'stage5.upgradeSecondary': 'gpt-6.1-sol',
     'audio5.primary': 'claude-haiku-5-5',
     'audio5.secondary': 'gpt-6-luna',
     'audio5.upgradePrimary': 'claude-sonnet-5-5',

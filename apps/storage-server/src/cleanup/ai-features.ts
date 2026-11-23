@@ -25,4 +25,8 @@ export const CLEANUP_AI_TASK_NAMES: Record<string, string> = {
   'stage4.secondary': 'Calibre online sources (stage 4), second model',
   'stage5.primary': 'Calibre genres and tags (stage 5), first model',
   'stage5.secondary': 'Calibre genres and tags (stage 5), second model',
+  'stage4.upgradePrimary': 'New Calibre books: the second look (setup J), first stronger model',
+  'stage4.upgradeSecondary': 'New Calibre books: the second look (setup J), second stronger model',
+  'stage5.upgradePrimary': 'New Calibre books: genres and tags, first model',
+  'stage5.upgradeSecondary': 'New Calibre books: genres and tags, second model',
 };

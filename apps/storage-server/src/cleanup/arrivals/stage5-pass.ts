@@ -1,8 +1,10 @@
 /**
  * Stage 5 (genres and tags) on a new-arrivals run's books (WP20g): per book, as decided for the
  * library (2026-11-21), with stage 5's own code: the evidence from stage 4's stored sources
- * (stage5Evidence), Haiku AND Luna asked (until the user chooses otherwise after stop 1's
- * measurement of Sonnet AND Sol), each book's own terms (ownTerms: both models, its own RanobeDB
+ * (stage5Evidence), the stronger pair asked (Sonnet AND Sol by default, the user's choice after
+ * stop 1's measurement on the genre test's labels: tags found 74 % -> 90 % at 97 % right; the
+ * tasks stage5.upgradePrimary/Secondary, Settings > AI), each book's own terms (ownTerms: both
+ * models, its own RanobeDB
  * match, the store rules), and one `tags` change per book (tagChange: a custom tag never removed,
  * a tag the user removed never added again), proposed under the run's analysis id. A set the
  * library's stage-5 gate holds back (genres or tags) is held for the arrivals too.
@@ -106,8 +108,8 @@ export class ArrivalStage5 {
       }
       runner.putItems(STAGE5_SPEC, items, STAGE5_EVIDENCE_VERSION);
       prog.keys = items.map((i) => i.key);
-      runner.enqueue(STAGE5_SPEC, 'primary', prog.keys, runId);
-      runner.enqueue(STAGE5_SPEC, 'secondary', prog.keys, runId);
+      runner.enqueue(STAGE5_SPEC, 'upgradePrimary', prog.keys, runId);
+      runner.enqueue(STAGE5_SPEC, 'upgradeSecondary', prog.keys, runId);
       prog.phase = 'models';
       return 'more';
     }
@@ -128,8 +130,8 @@ export class ArrivalStage5 {
       for (const k of prog.keys) {
         const ev = runner.evidenceOf<Stage5Item>(STAGE5_SPEC, k);
         if (!ev) continue;
-        const a = runner.answerOf(STAGE5_SPEC, 'primary', k);
-        const b = runner.answerOf(STAGE5_SPEC, 'secondary', k);
+        const a = runner.answerOf(STAGE5_SPEC, 'upgradePrimary', k);
+        const b = runner.answerOf(STAGE5_SPEC, 'upgradeSecondary', k);
         const pa = a?.state === 'answered' ? (a.answer as Stage5Answer) : null;
         const pb = b?.state === 'answered' ? (b.answer as Stage5Answer) : null;
         const own = ownTerms({
@@ -155,7 +157,8 @@ export class ArrivalStage5 {
         });
         prog.decided++;
       }
-      writeDecisions(this.db, 'calibre5', out, 'E', Date.now());
+      // The arrivals' setup J; for stage 5 the stronger pair alone (the user's choice).
+      writeDecisions(this.db, 'calibre5', out, 'J', Date.now());
       prog.phase = 'propose';
       return 'more';
     }
