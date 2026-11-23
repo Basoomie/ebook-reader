@@ -809,8 +809,8 @@ export function turnOnOnlineSourcesCopy(counts: {
     message: [
       'From now on this runs on its own, in batches: titles, authors with their readings, illustrators, series and numbers, descriptions, store links and covers are written where the rules are sure or both AI models agree.',
       typeof counts.unconfirmed === 'number' && counts.unconfirmed > 0
-        ? `${counts.unconfirmed.toLocaleString('en-US')} values are the best guess where the sources or the models don’t agree; they are written too and stay marked “unconfirmed” in the list.`
-        : 'Where the sources or the models don’t agree, the best guess is written and stays marked “unconfirmed” in the list.',
+        ? `${counts.unconfirmed.toLocaleString('en-US')} values are the best guess where the sources or the models don’t agree; they are not written: they wait in Review with the suggestion.`
+        : 'Where the sources or the models don’t agree, the best guess is not written: it waits in Review with the suggestion.',
       'Calibre moves a book’s folder when its title or first author changes; the reader follows. A value you change in Calibre afterwards is left alone. Format and edition are not written (stage 5 makes them tags). Each batch can be undone on this page; a cover added where Calibre had none stays.'
     ],
     confirmLabel: 'Turn on and write'

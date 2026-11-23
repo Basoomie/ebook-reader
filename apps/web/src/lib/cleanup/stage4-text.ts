@@ -20,7 +20,7 @@ export const STAGE4_MODE_HINTS: Record<StageMode, string> = {
   off: 'Nothing runs.',
   analyse:
     'Looks every book up online through the VPN and lists what it would change, with where each value came from; nothing in Calibre is changed.',
-  on: 'Writes the confirmed values and the best guesses into Calibre in batches, after the AI check; format and edition wait for stage 5.'
+  on: 'Writes the confirmed values into Calibre in batches, after the AI check; best guesses wait in Review; format and edition wait for stage 5.'
 };
 
 const AI_PHASES: Record<string, string> = {
