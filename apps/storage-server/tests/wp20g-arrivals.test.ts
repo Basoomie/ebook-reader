@@ -1156,6 +1156,133 @@ describe('wp20g: the settle time on a folder’s first look', () => {
   }, 300_000);
 });
 
+describe('wp20g: Stop, Off, and a stopped run’s comparison', () => {
+  // WP20g stop 2 on the NAS: Stop restarted a run at once (the day's scheduled run was due), a
+  // run went on while Off, and a stopped run's books were left uncompared.
+  let env: CleanupEnv;
+  const N = 30;
+
+  beforeAll(async () => {
+    const sources = tmp();
+    const src = path.join(sources, 'books', 'japanese');
+    fs.mkdirSync(src, { recursive: true });
+    const made = await makeCleanupEnv({
+      service: {
+        stage3Reader: new InProcessReader(bundle, IMPORT),
+        counterBuild: 'test',
+        bookSourcesDir: sources,
+        bookSourcesReadOnly: false,
+      },
+    });
+    env = made.env;
+    await env.lib.addBook({
+      title: 'L',
+      authors: ['作者'],
+      epub: makeTextEpub({ title: 'L', chapters: chaptersOf(95) }),
+    });
+    await made.setup();
+    updateSettings(env.cleanupDb, {
+      arrivals: {
+        ...getSettings(env.cleanupDb).arrivals,
+        pairs: [{ id: 'ja', source: 'books/japanese', libraryId: env.libraryId() }],
+        settleMinutes: 0,
+        handCheckMinutes: 0,
+        // The day's run is due whenever the test runs.
+        time: '00:00',
+        quietStart: '00:00',
+        quietEnd: '00:00',
+      },
+    });
+    env.cleanupDb.prepare(`UPDATE stages SET mode = 'analyse' WHERE stage BETWEEN 1 AND 5`).run();
+    for (let i = 0; i < N; i++)
+      fs.writeFileSync(
+        path.join(src, `book ${i}.epub`),
+        makeTextEpub({ title: `S${i}`, chapters: chaptersOf(300 + i) }),
+      );
+  }, 180_000);
+
+  afterAll(async () => {
+    await env?.close();
+  });
+
+  const a = () => env.service.arrivals;
+  const toText = async (min: number) => {
+    for (let i = 0; i < 400; i++) {
+      const run = a().currentRun();
+      if (run?.p.cmp?.stage === 'text' && (run.p.counts.compare?.done ?? 0) >= min) return run;
+      await a().step();
+    }
+    throw new Error('the run never reached the text stage');
+  };
+  const drive = async () => {
+    for (let i = 0; i < 2000; i++) {
+      for (let j = 0; j < 600 && env.service.libraryBusy(); j++)
+        await new Promise((r) => setTimeout(r, 50));
+      const r = await a().step();
+      if (r === 'idle' && !a().currentRun()) return;
+      if (r === 'wait') await new Promise((res) => setTimeout(res, 20));
+    }
+  };
+  const textKept = () =>
+    (
+      env.cleanupDb
+        .prepare(
+          `SELECT COUNT(*) AS n FROM calibre_arrival_files WHERE json_extract(facts_json, '$.text') IS NOT NULL`,
+        )
+        .get() as { n: number }
+    ).n;
+
+  it('Stop: nothing starts again by itself, though the day’s run was due', async () => {
+    a().setMode('analyse');
+    // The day's scheduled run starts it.
+    expect(a().maybeStart()).not.toBeNull();
+    const run = await toText(10);
+    a().stopRun();
+    expect(a().currentRun()).toBeNull();
+    // Neither the due scheduled run nor a follow-up starts now (also a minute later).
+    expect(a().maybeStart()).toBeNull();
+    expect(a().maybeStart(Date.now() + 61_000)).toBeNull();
+    expect(
+      env.cleanupDb.prepare('SELECT state FROM calibre_arrival_runs WHERE id = ?').get(run.id),
+    ).toEqual({ state: 'stopped' });
+  }, 300_000);
+
+  it('the next run compares what the stopped run left, keeping the text it had read', async () => {
+    const kept = textKept();
+    expect(kept).toBeGreaterThanOrEqual(10);
+    a().requestRun();
+    await drive();
+    const rows = env.cleanupDb
+      .prepare(
+        `SELECT outcome, json_extract(facts_json, '$.compared') AS compared FROM calibre_arrival_files WHERE kind = 'epub'`,
+      )
+      .all() as { outcome: string; compared: number | null }[];
+    expect(rows).toHaveLength(N);
+    expect(rows.every((r) => r.outcome === 'new' && r.compared)).toBe(true);
+    expect(textKept()).toBe(N);
+    expect(
+      env.cleanupDb.prepare('SELECT first_done_at FROM calibre_arrival_pairs').get(),
+    ).not.toEqual({ first_done_at: null });
+  }, 300_000);
+
+  it('Off stops the run that is going, and none goes on while Off', async () => {
+    a().setMode('analyse');
+    a().requestRun();
+    await a().step();
+    const run = a().currentRun()!;
+    expect(run).not.toBeNull();
+    a().setMode('off');
+    expect(a().currentRun()).toBeNull();
+    expect(await a().step()).toBe('idle');
+    expect(a().currentRun()).toBeNull();
+    expect(
+      env.cleanupDb
+        .prepare('SELECT state, error FROM calibre_arrival_runs WHERE id = ?')
+        .get(run.id),
+    ).toEqual({ state: 'stopped', error: 'Stopped: new arrivals set Off' });
+  }, 300_000);
+});
+
 describe('wp20g: better copies', () => {
   let env: CleanupEnv;
   let apply: string;

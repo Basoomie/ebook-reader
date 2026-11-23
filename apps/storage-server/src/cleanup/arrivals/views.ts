@@ -112,7 +112,16 @@ export function arrivalsStatus(a: BookArrivals, db: Database.Database, now = Dat
       firstRunId: row?.first_run_id ?? null,
       // Done once every file was looked at; runs that start after it add when On.
       firstDoneAt: row?.first_done_at ?? null,
-      wouldAdd: n(['new', 'better']),
+      // Compared books only (a stopped run can leave new books not compared yet).
+      wouldAdd: (
+        db
+          .prepare(
+            `SELECT COUNT(*) AS n FROM calibre_arrival_files INDEXED BY calibre_arrival_files_outcome
+             WHERE outcome IN ('new', 'better') AND pair_key = ? AND gone_at IS NULL
+               AND json_extract(facts_json, '$.compared') IS NOT NULL`,
+          )
+          .get(key) as { n: number }
+      ).n,
       added: n(['added']),
       // Books and archives not looked at yet (waiting to settle): a first run is done without any.
       waiting,

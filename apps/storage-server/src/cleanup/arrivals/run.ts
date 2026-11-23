@@ -406,7 +406,12 @@ export class BookArrivals {
 
   setMode(mode: 'off' | 'analyse' | 'on'): void {
     this.setState({ mode });
-    if (mode === 'off') this.stopRequested = true;
+    if (mode === 'off') {
+      // Off stops the run that is going too (WP20g stop 2: it went on while Off).
+      this.stopRequested = true;
+      const run = this.currentRun();
+      if (run) this.finish(run.id, run.p, 'stopped', 'Stopped: new arrivals set Off');
+    }
   }
 
   requestRun(): void {
@@ -422,6 +427,27 @@ export class BookArrivals {
     if (!run) return;
     this.stopRequested = true;
     this.finish(run.id, run.p, 'stopped', 'Stopped on the page');
+    // Nothing starts again by itself (WP20g stop 2: a scheduled run that was due started at
+    // once): the due scheduled run counts as done; follow-ups wait for the next run.
+    const a = getSettings(this.db).arrivals;
+    const now = Date.now();
+    if (
+      scheduledRunDue(
+        now,
+        { arrivalsTime: a.time, arrivalsQuietStart: a.quietStart, arrivalsQuietEnd: a.quietEnd },
+        this.state().last_scheduled_day,
+        this.zone(),
+      )
+    )
+      this.setState({ last_scheduled_day: clockNow(now, this.zone()).day });
+  }
+
+  /** The latest run was stopped (on the page or by Off): only a scheduled run or Run now next. */
+  private lastStopped(): boolean {
+    const r = this.db
+      .prepare('SELECT state FROM calibre_arrival_runs ORDER BY id DESC LIMIT 1')
+      .get() as { state: string } | undefined;
+    return r?.state === 'stopped';
   }
 
   resume(): void {
@@ -534,13 +560,14 @@ export class BookArrivals {
     if (s.run_now) trigger = 'now';
     else if (scheduledRunDue(now, sched, s.last_scheduled_day, this.zone())) trigger = 'schedule';
     else if (
+      !this.lastStopped() &&
       (s.hand_checked_at === null || now - s.hand_checked_at >= a.handCheckMinutes * 60_000) &&
       this.handSettled(target, now).length > 0
     )
       trigger = 'hand';
     // Files waiting to settle that have settled since: a follow-up run looks at them now instead
     // of at the next day's run (checked at most once a minute).
-    else if (now - this.settleCheckedAt >= 60_000) {
+    else if (!this.lastStopped() && now - this.settleCheckedAt >= 60_000) {
       this.settleCheckedAt = now;
       if (this.settledWaiting(now)) {
         trigger = 'now';
@@ -672,6 +699,12 @@ export class BookArrivals {
     this.stopRequested = false;
     const shouldStop = () => this.stopRequested;
     let run = this.currentRun();
+    // No run goes on while Off (a run started before Off was set is stopped here too).
+    if (run && this.state().mode === 'off') {
+      this.finish(run.id, run.p, 'stopped', 'Stopped: new arrivals set Off');
+      this.stepping = false;
+      return 'idle';
+    }
     try {
       if (!run) {
         const id = this.maybeStart();
@@ -1345,18 +1378,20 @@ export class BookArrivals {
         .prepare(
           `SELECT id, pair_key, rel_path, size, sha256, facts_json FROM calibre_arrival_files
            INDEXED BY calibre_arrival_files_outcome
-           WHERE outcome = 'new' AND pair_key IN (${ph}) AND run_id = ? AND gone_at IS NULL ${where}
+           WHERE outcome = 'new' AND pair_key IN (${ph}) AND gone_at IS NULL
+             AND json_extract(facts_json, '$.compared') IS NULL ${where}
            ORDER BY id LIMIT ${limit}`,
         )
-        .all(...keys, run.id, ...args) as Row[];
+        .all(...keys, ...args) as Row[];
     const countNew = (where = '') =>
       (
         this.db
           .prepare(
             `SELECT COUNT(*) AS n FROM calibre_arrival_files INDEXED BY calibre_arrival_files_outcome
-             WHERE outcome = 'new' AND pair_key IN (${ph}) AND run_id = ? AND gone_at IS NULL ${where}`,
+             WHERE outcome = 'new' AND pair_key IN (${ph}) AND gone_at IS NULL
+             AND json_extract(facts_json, '$.compared') IS NULL ${where}`,
           )
-          .get(...keys, run.id) as { n: number }
+          .get(...keys) as { n: number }
       ).n;
     const newText = (r: Row): NewText => {
       const t = facts(r).text!;
@@ -1399,9 +1434,10 @@ export class BookArrivals {
         const dupes = this.db
           .prepare(
             `SELECT id, sha256 FROM calibre_arrival_files INDEXED BY calibre_arrival_files_outcome
-             WHERE outcome = 'new' AND pair_key IN (${ph}) AND run_id = ? AND gone_at IS NULL ORDER BY id`,
+             WHERE outcome = 'new' AND pair_key IN (${ph}) AND gone_at IS NULL
+             AND json_extract(facts_json, '$.compared') IS NULL ORDER BY id`,
           )
-          .all(...keys, run.id) as { id: number; sha256: string }[];
+          .all(...keys) as { id: number; sha256: string }[];
         const first = new Map<string, number>();
         const now = Date.now();
         this.db.transaction(() => {
@@ -1794,7 +1830,7 @@ export class BookArrivals {
       this.db
         .prepare(
           `SELECT id FROM calibre_arrival_files WHERE outcome IN ('new', 'better') AND pair_key IN (${ph})
-             AND gone_at IS NULL AND id NOT IN (SELECT file_id FROM calibre_arrival_batch_items i
+             AND gone_at IS NULL AND json_extract(facts_json, '$.compared') IS NOT NULL AND id NOT IN (SELECT file_id FROM calibre_arrival_batch_items i
                JOIN calibre_arrival_batches b ON b.id = i.batch_id WHERE b.kind = 'add' AND i.state <> 'failed')
            ORDER BY id`,
         )
