@@ -10,6 +10,12 @@
  */
 import type Database from 'better-sqlite3';
 import { DEFAULT_DUPLICATE_SETTINGS, type DuplicateSettings } from './stage3-rules';
+import {
+  DEFAULT_TAG_LIST,
+  TagListError,
+  validTagList,
+  type TagListSetting,
+} from './stage5/tag-list';
 
 export interface PacingSettings {
   /** How fast an analysis reads book files (MB/s); 0 = no limit. */
@@ -49,6 +55,11 @@ export interface GateSettings {
    * <DB_DIR>/cleanup/reference-sample/audio/labels.json.
    */
   audiobookPairsFile: string;
+  /**
+   * Audiobooks stage 8 (WP21g): the labeled audiobook-ebook pairs (ebook-pairs.json); empty =
+   * <DB_DIR>/cleanup/reference-sample/audio/ebook-pairs.json.
+   */
+  audiobookEbookPairsFile: string;
   /**
    * Audiobooks stage 5 (WP21d): a field's automatic values (the rules', or both models agreeing)
    * must be right on the labeled books at least this often (%).
@@ -230,6 +241,15 @@ export interface AudiobookSettings {
    * while these stay a Preview until approved (user, 2026-11-21): off | analyse (Preview) | on.
    */
   libraryChanges: 'off' | 'analyse' | 'on';
+  /**
+   * Stage 8 (WP21g): an audiobook's title and its Calibre book's agree at this pair share (or
+   * one inside the other), as stage 4's title check (`titlesAgree`).
+   */
+  ebookTitleScore: number;
+  /** Stage 8: one title inside the other counts only from this many characters (cleaned)... */
+  ebookTitleMinChars: number;
+  /** ...and this share of the longer title's characters (0-1). */
+  ebookTitleMinShare: number;
 }
 
 /** One source folder whose EPUBs the import adds to a Calibre library (WP20g, plan section 11). */
@@ -399,6 +419,8 @@ export interface CleanupSettings {
   pacing: PacingSettings;
   /** The user's own Calibre tags (a trailing * matches any ending). */
   customTags: string[];
+  /** "Tags you can pick" (Settings › Library › Editing): the vocabulary's changes. */
+  tagList: TagListSetting;
   gate: GateSettings;
   /** A field pauses when its share of review results is this many points above the labeled books'. */
   reviewAlarmPercent: number;
@@ -470,6 +492,7 @@ export const DEFAULT_SETTINGS: CleanupSettings = {
     lookupChunk: 25,
   },
   customTags: ['PeepoHappyBooks', 'alpindale', 'TMW-collection-*'],
+  tagList: DEFAULT_TAG_LIST,
   gate: {
     defaultPercent: 95,
     fieldPercent: { title: 85 },
@@ -479,6 +502,7 @@ export const DEFAULT_SETTINGS: CleanupSettings = {
     labeledBooksFile: '',
     duplicatePairsFile: '',
     audiobookPairsFile: '',
+    audiobookEbookPairsFile: '',
     audiobookMetaPercent: 95,
     genreLabelsFile: '',
     stage5: { genresRight: 95, tagsRight: 95, genresFound: 85, tagsFound: 70 },
@@ -552,6 +576,10 @@ export const DEFAULT_SETTINGS: CleanupSettings = {
     arrivalsAbsNudge: false,
     extractLeaseSeconds: 1800,
     libraryChanges: 'analyse',
+    // Stage 8 (WP21g): stage 4's title check and its guard (measured at stop 1).
+    ebookTitleScore: 0.9,
+    ebookTitleMinChars: 3,
+    ebookTitleMinShare: 0.25,
   },
   ai: {
     labeledOnly: false,
@@ -1060,6 +1088,20 @@ function validate(key: Key, value: unknown, current: CleanupSettings): unknown {
             throw new Error('Changes to books in the library: off, Preview or On');
           return m;
         })(),
+        ebookTitleScore: num('Ebook pairs: titles agree at a score of', v.ebookTitleScore, 0.3, 1),
+        ebookTitleMinChars: num(
+          'Ebook pairs: a title inside another counts from (characters)',
+          v.ebookTitleMinChars,
+          1,
+          20,
+          true,
+        ),
+        ebookTitleMinShare: num(
+          'Ebook pairs: a title inside another counts from (share of the longer)',
+          v.ebookTitleMinShare,
+          0,
+          1,
+        ),
       };
     }
     case 'ai': {
@@ -1241,6 +1283,14 @@ function validate(key: Key, value: unknown, current: CleanupSettings): unknown {
         lookupChunk: num('Books per Calibre look-up', v.lookupChunk, 1, 100, true),
       };
     }
+    case 'tagList': {
+      try {
+        return validTagList(value);
+      } catch (err) {
+        if (err instanceof TagListError) throw new SettingsError(err.message);
+        throw err;
+      }
+    }
     case 'customTags': {
       if (!Array.isArray(value) || value.length > 100) {
         throw new SettingsError('Custom tags must be a list of at most 100 tags');
@@ -1273,6 +1323,11 @@ function validate(key: Key, value: unknown, current: CleanupSettings): unknown {
         labeledBooksFile: text('Labeled books file', v.labeledBooksFile, 1000),
         duplicatePairsFile: text('Measured duplicate pairs file', v.duplicatePairsFile, 1000),
         audiobookPairsFile: text('Labeled audiobook pairs file', v.audiobookPairsFile, 1000),
+        audiobookEbookPairsFile: text(
+          'Labeled audiobook-ebook pairs file',
+          v.audiobookEbookPairsFile ?? '',
+          1000,
+        ),
         audiobookMetaPercent: num(
           'Audiobook metadata: bar per field (%)',
           v.audiobookMetaPercent,

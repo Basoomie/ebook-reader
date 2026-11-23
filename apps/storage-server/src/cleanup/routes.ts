@@ -145,6 +145,19 @@ export function createCleanupApplyRouter(options: CleanupOptions): Router {
     }),
   );
 
+  // 1.5.0: the user's edits from the reader, asked for between the chunks of a running batch.
+  router.post(
+    '/cleanup-apply/edits/claim',
+    asyncHandler(async (_req, res) => {
+      const service = serviceOr503(options);
+      if (!service.sidecarConfig()?.libraryId) {
+        res.json({ batch: null, wait: null });
+        return;
+      }
+      res.json(await service.batches.claim(Date.now(), { editsOnly: true }));
+    }),
+  );
+
   router.get('/cleanup-apply/batches/:id/metadata-snapshot', (req, res) => {
     const service = serviceOr503(options);
     let file: string;
@@ -660,6 +673,37 @@ function addAudioRoutes(router: Router, options: CleanupOptions): void {
     res.json({ ok: true });
   });
 
+  // Stage 8 (WP21g): the pairs with the Calibre ebooks (lists, CSV) and your review choices:
+  // field 'pair' (a Calibre id, or null for "no ebook") or 'series' ('calibre' | 'none').
+  router.get('/cleanup/audio/ebooks', (req, res) => {
+    const audio = audioOr503(options);
+    try {
+      res.json(audio.ebooks(String(req.query.list ?? 'auto'), page(req)));
+    } catch (err) {
+      throw new ApiError(400, 'bad_request', (err as Error).message);
+    }
+  });
+
+  router.get('/cleanup/audio/ebooks/pairs.csv', (_req, res) => {
+    const audio = audioOr503(options);
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="audiobooks-ebook-pairs.csv"');
+    res.send(audio.ebooksCsv());
+  });
+
+  router.post('/cleanup/audio/ebooks/choice', (req, res) => {
+    const audio = audioOr503(options);
+    const body = (req.body ?? {}) as { unit?: unknown; field?: unknown; value?: unknown };
+    if (typeof body.unit !== 'string' || typeof body.field !== 'string' || !('value' in body))
+      throw new ApiError(400, 'bad_request', 'unit, field and value are needed');
+    try {
+      audio.ebookChoice(body.unit, body.field, body.value);
+    } catch (err) {
+      throw new ApiError(400, 'bad_request', (err as Error).message);
+    }
+    res.json({ ok: true });
+  });
+
   router.post('/cleanup/audio/arrivals/resume', (_req, res) => {
     const audio = audioOr503(options);
     try {
@@ -1023,6 +1067,72 @@ export function createCleanupRouter(options: CleanupOptions): Router {
     );
   });
 
+  // ---- More Bookmeter coverage (step 2): the pass over stage 4's stored answers ----
+
+  const bookmeterOr503 = () => {
+    const service = serviceOr503(options);
+    if (!service.bookmeter) throw new ApiError(503, 'no_calibre', 'No Calibre library is set up');
+    return { service, pass: service.bookmeter };
+  };
+
+  router.get('/cleanup/bookmeter', (_req, res) => {
+    const { service } = bookmeterOr503();
+    res.json(service.bookmeterStatus(service.targetLibrary()));
+  });
+
+  router.put('/cleanup/bookmeter/mode', (req, res) => {
+    const { service, pass } = bookmeterOr503();
+    const mode = (req.body as { mode?: unknown } | undefined)?.mode;
+    if (mode !== 'off' && mode !== 'analyse' && mode !== 'on')
+      throw new ApiError(400, 'bad_mode', 'mode must be off, analyse or on');
+    try {
+      pass.setMode(mode);
+    } catch (err) {
+      throw new ApiError(409, 'not_now', (err as Error).message);
+    }
+    service.bookmeterChanged();
+    res.json(service.bookmeterStatus(service.targetLibrary()));
+  });
+
+  router.get('/cleanup/bookmeter/matches', (req, res) => {
+    const { service, pass } = bookmeterOr503();
+    const lib = service.targetLibrary();
+    const q = req.query as Record<string, string | undefined>;
+    const offset = Math.max(0, Number(q.offset ?? 0) || 0);
+    const limit = Math.min(100, Math.max(1, Number(q.limit ?? 20) || 20));
+    const source =
+      q.source === 'rules' || q.source === 'ai' || q.source === 'second' ? q.source : null;
+    if (!lib) {
+      res.json({ total: 0, items: [] });
+      return;
+    }
+    res.json(pass.listMatches(lib, pass.state().progress.run, source, offset, limit));
+  });
+
+  router.get('/cleanup/bookmeter/spot', (_req, res) => {
+    const { service, pass } = bookmeterOr503();
+    const lib = service.targetLibrary();
+    res.json({
+      items: lib ? pass.listSpot(lib, pass.state().progress.run) : [],
+      counts: pass.spotCounts(),
+      passed: pass.spotPassed(),
+    });
+  });
+
+  router.put('/cleanup/bookmeter/spot/:uuid', (req, res) => {
+    const { service, pass } = bookmeterOr503();
+    const v = (req.body as { verdict?: unknown } | undefined)?.verdict;
+    if (v !== 'right' && v !== 'wrong' && v !== null)
+      throw new ApiError(400, 'bad_verdict', 'verdict must be right, wrong or null');
+    try {
+      pass.setVerdict(String(req.params.uuid), v);
+    } catch (err) {
+      throw new ApiError(409, 'not_now', (err as Error).message);
+    }
+    service.bookmeterChanged();
+    res.json({ counts: pass.spotCounts(), passed: pass.spotPassed() });
+  });
+
   // ---- WP20g: the Calibre library's new arrivals ----
 
   router.get('/cleanup/arrivals', (_req, res) => {
@@ -1061,18 +1171,6 @@ export function createCleanupRouter(options: CleanupOptions): Router {
     const service = serviceOr503(options);
     service.arrivals.resume();
     void service.tick();
-    res.json(arrivalsStatus(service.arrivals, service.db));
-  });
-
-  router.post('/cleanup/arrivals/pairs/approve', (req, res) => {
-    const service = serviceOr503(options);
-    const key = (req.body as { key?: unknown } | undefined)?.key;
-    if (typeof key !== 'string') throw new ApiError(400, 'bad_pair', 'key is required');
-    try {
-      service.arrivals.approvePair(key);
-    } catch (err) {
-      throw new ApiError(409, 'not_now', (err as Error).message);
-    }
     res.json(arrivalsStatus(service.arrivals, service.db));
   });
 
@@ -1130,6 +1228,14 @@ export function createCleanupRouter(options: CleanupOptions): Router {
     const offset = Math.max(0, Number(q.offset ?? 0) || 0);
     const limit = Math.min(100, Math.max(1, Number(q.limit ?? 20) || 20));
     res.json(service.stage4Guesses(q.kind === 'other' ? 'other' : 'series', offset, limit));
+  });
+
+  router.get('/cleanup/titles/shortened', (req, res) => {
+    const service = serviceOr503(options);
+    const q = req.query as Record<string, string | undefined>;
+    const offset = Math.max(0, Number(q.offset ?? 0) || 0);
+    const limit = Math.min(100, Math.max(1, Number(q.limit ?? 20) || 20));
+    res.json(service.titleFits(offset, limit));
   });
 
   router.get('/cleanup/stage4/readings', (req, res) => {

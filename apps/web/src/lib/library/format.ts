@@ -57,6 +57,23 @@ export function authorHref(pagePath: string, name: string, library = ''): string
   return `${pagePath}/library?${params.toString()}`;
 }
 
+/**
+ * The search term for one illustrator's books: `illustrator:"<name>"` (quoted, so a name with
+ * commas or spaces stays one value). The query language has no escape for a quote, so a name
+ * that contains one is matched by a pattern of the name instead (the same books).
+ */
+export function illustratorQuery(name: string): string {
+  if (!name.includes('"')) return `illustrator:"${name}"`;
+  return `illustrator:/${name.replace(/[\\^$.*+?()[\]{}|/]/g, '\\$&')}/`;
+}
+
+/** The Library filtered by a search, keeping the picked library when there is one. */
+export function libraryQueryHref(pagePath: string, query: string, library = ''): string {
+  const params = new URLSearchParams({ q: query });
+  if (library) params.set('lib', library);
+  return `${pagePath}/library?${params.toString()}`;
+}
+
 /** WP19c: a catalog book's details page. */
 export function bookDetailsHref(pagePath: string, bookId: string): string {
   return `${pagePath}/library/book?id=${encodeURIComponent(bookId)}`;

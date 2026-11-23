@@ -31,7 +31,6 @@
   import { bytesText, n } from '$lib/cleanup/cleanup-text';
   import { confirmDestructive } from '$lib/confirm/confirm';
   import {
-    booksArrivalsApproveCopy,
     booksArrivalsOnCopy,
     booksArrivalsRunNowCopy,
     booksArrivalsUndoCopy
@@ -119,11 +118,6 @@
     )
       return;
     await act(() => api.arrivalsRunNow());
-  }
-
-  async function approve(key: string, source: string, books: number) {
-    if (!(await confirmDestructive(booksArrivalsApproveCopy(source, books)))) return;
-    await act(() => api.arrivalsApprove(key));
   }
 
   async function load(id: string, offset = 0) {
@@ -251,15 +245,7 @@
     {#if nextRunText(status)}<p class="text-sm text-c-muted">{nextRunText(status)}</p>{/if}
     {#each status.pairs as p (p.key)}
       <div class="flex flex-wrap items-center gap-2 text-sm" data-testid="arrivals-pair">
-        <span><b>{p.source}</b>: {pairLine(p)}</span>
-        {#if p.firstDoneAt !== null && p.approvedAt === null}
-          <button
-            class="c-btn c-btn-secondary c-btn-sm"
-            disabled={busy}
-            on:click={() => approve(p.key, p.source, p.wouldAdd)}
-            data-testid="arrivals-approve">Add these</button
-          >
-        {/if}
+        <span><b>{p.source}</b>: {pairLine(p, status.mode)}</span>
       </div>
     {:else}
       {#if status.mode !== 'off'}

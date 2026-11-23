@@ -553,6 +553,7 @@ export class Stage2Analysis {
               group: prop.group,
               reason: prop.reason,
               extra: prop.extra ?? null,
+              ...(prop.fit ? { fit: prop.fit } : {}),
               lastModified: book.lastModified,
               epub: { path: ev.path, size: ev.size, mtimeMs: ev.mtimeMs },
               cover:

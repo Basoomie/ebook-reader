@@ -168,7 +168,12 @@ export function termId(raw: unknown, allowed: ReadonlySet<string>): string | nul
   if (allowed.has(s)) return s;
   const bare = s.replace(/\s*[(（][^)）]*[)）]\s*$/, '').trim();
   for (const id of allowed) {
-    const t = BY_ID.get(id)!;
+    // A tag added to "Tags you can pick" has its label as its id (matched above).
+    const t = BY_ID.get(id);
+    if (!t) {
+      if (id === bare) return id;
+      continue;
+    }
     if (t.ja === s || t.ja === bare || t.id === bare.toLowerCase()) return id;
   }
   return null;

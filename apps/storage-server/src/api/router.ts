@@ -58,6 +58,10 @@ import {
 } from '../audio/read-aloud-routes';
 import { createAttachmentRouter, type AttachmentOptions } from '../attachments/routes';
 import { createAiRouter } from '../ai/routes';
+import { createSummaryTestRouter } from '../summaries/test-routes';
+import type { SummaryTestService } from '../summaries/test-service';
+import type { SummaryService } from '../summaries/service';
+import { createSummaryRouter } from '../summaries/routes';
 import type { AiCore } from '../ai/core';
 import { createNotificationsRouter } from '../notifications/routes';
 import type { NotificationService } from '../notifications/service';
@@ -66,6 +70,7 @@ import {
   createCleanupApplyRouter,
   createCleanupRouter,
 } from '../cleanup/routes';
+import { createEditRouter } from '../cleanup/edits/edit-routes';
 
 export interface PairingOptions {
   /** Failed pairing attempts allowed per minute (all clients together). */
@@ -122,6 +127,10 @@ export interface ApiOptions {
   notifications?: NotificationService | null;
   /** The shared AI layer (Settings > AI); default: the cleanup's (tests). */
   ai?: AiCore | null;
+  /** Book summaries session 2: the accuracy test (only on the PC's test copy). */
+  summariesTest?: SummaryTestService | null;
+  /** Book summaries (session 3). Without it their routes answer 503. */
+  summaries?: SummaryService | null;
 }
 
 export interface FontOptions {
@@ -158,6 +167,8 @@ export function createApiRouter({
   cleanup = { service: null, error: 'not configured' },
   notifications = null,
   ai,
+  summariesTest = null,
+  summaries = null,
 }: ApiOptions): Router {
   const router = express.Router();
   // Pushes can carry many records; everything else keeps the small default limit.
@@ -267,10 +278,16 @@ export function createApiRouter({
     router.use(createAudioClipRouter(db, audio));
     // The /cleanup page (WP20a).
     router.use(createCleanupRouter(cleanup));
+    // Calibre metadata editing from the reader (written by the cleanup's sidecar).
+    router.use(createEditRouter(cleanup));
     // Settings > Notifications (N1).
     router.use(createNotificationsRouter(notifications));
     // Settings > AI: the shared AI layer (works without cleanup.db).
     router.use(createAiRouter(ai === undefined ? (cleanup.service?.aiCore ?? null) : ai));
+    // Book summaries session 2: the accuracy test (only with SUMMARIES_TEST=1).
+    router.use(createSummaryTestRouter(summariesTest, ai ?? null));
+    // Book summaries (session 3).
+    router.use(createSummaryRouter(summaries));
     // Uploads (WP7b): a separate source adapter, mounted only when it is on.
     if (catalog.uploads) {
       router.use(
@@ -279,6 +296,8 @@ export function createApiRouter({
     }
 
     const syncStore = new SyncStore(db, { maxClockSkewMs: sync.maxClockSkewSeconds * 1000 });
+    // The summaries tell every device about a book's summary through a record of their own.
+    summaries?.attachSync(syncStore);
     if (seedDefaults) {
       try {
         for (const userId of seedPlannedCollections(db, syncStore)) {
@@ -295,6 +314,8 @@ export function createApiRouter({
         onRefused: notifications
           ? (i) => notifications.syncRefused(i.deviceId, i.deviceName, i.refused)
           : undefined,
+        // A book's first completion makes its summary (book summaries session 3).
+        onApplied: summaries ? (i) => summaries.onSyncApplied(i.userId, i.applied) : undefined,
       }),
     );
     // Settings > Diagnostics (Season 2 §7): read-only.

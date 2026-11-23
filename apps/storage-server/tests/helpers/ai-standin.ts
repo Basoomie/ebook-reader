@@ -16,6 +16,119 @@ function send(res, status, body, headers = {}) {
   res.end(text);
 }
 
+/** A server-sent events reply (the SDKs' streaming). */
+function sse(res, events) {
+  res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
+  for (const e of events)
+    res.write(
+      e.event
+        ? `event: ${e.event}
+data: ${JSON.stringify(e.data)}
+
+`
+        : `data: ${e.data}
+
+`,
+    );
+  res.end();
+}
+
+/** Anthropic's stream events for a finished message. */
+function anthropicEvents(m) {
+  const ev = (event, data) => ({ event, data: { type: event, ...data } });
+  const out = [
+    ev('message_start', {
+      message: { ...m, content: [], stop_reason: null, usage: { ...m.usage, output_tokens: 0 } },
+    }),
+  ];
+  m.content.forEach((b, index) => {
+    out.push(ev('content_block_start', { index, content_block: { type: 'text', text: '' } }));
+    const t = b.text;
+    const half = Math.ceil(t.length / 2);
+    for (const part of [t.slice(0, half), t.slice(half)])
+      if (part)
+        out.push(ev('content_block_delta', { index, delta: { type: 'text_delta', text: part } }));
+    out.push(ev('content_block_stop', { index }));
+  });
+  out.push(
+    ev('message_delta', {
+      delta: { stop_reason: m.stop_reason, stop_sequence: null },
+      usage: { output_tokens: m.usage.output_tokens },
+    }),
+  );
+  out.push(ev('message_stop', {}));
+  return out;
+}
+
+/** OpenAI's stream chunks for a finished completion (usage in a last chunk). */
+function openaiChunks(c) {
+  const ch = c.choices[0];
+  const base = { id: c.id, object: 'chat.completion.chunk', created: c.created, model: c.model };
+  const content = ch.message.content ?? '';
+  const half = Math.ceil(content.length / 2);
+  const out = [];
+  for (const part of [content.slice(0, half), content.slice(half)])
+    if (part)
+      out.push({
+        data: JSON.stringify({
+          ...base,
+          choices: [{ index: 0, delta: { content: part }, finish_reason: null }],
+        }),
+      });
+  if (ch.message.refusal)
+    out.push({
+      data: JSON.stringify({
+        ...base,
+        choices: [{ index: 0, delta: { refusal: ch.message.refusal }, finish_reason: null }],
+      }),
+    });
+  out.push({
+    data: JSON.stringify({
+      ...base,
+      choices: [{ index: 0, delta: {}, finish_reason: ch.finish_reason }],
+    }),
+  });
+  out.push({ data: JSON.stringify({ ...base, choices: [], usage: c.usage }) });
+  out.push({ data: '[DONE]' });
+  return out;
+}
+
+/** The Responses API's stream events for a finished completion (book summaries' long GPT calls). */
+function responsesEvents(c) {
+  const ch = c.choices[0];
+  const text = ch.message.content ?? '';
+  const content = ch.message.refusal
+    ? [{ type: 'refusal', refusal: ch.message.refusal }]
+    : [{ type: 'output_text', text, annotations: [] }];
+  const filtered = ch.finish_reason === 'content_filter';
+  const response = {
+    id: `resp_${c.id}`,
+    object: 'response',
+    status: filtered ? 'incomplete' : 'completed',
+    incomplete_details: filtered ? { reason: 'content_filter' } : null,
+    model: c.model,
+    output: [
+      { type: 'reasoning', id: 'rs_1', summary: [] },
+      { type: 'message', id: 'msg_1', role: 'assistant', content },
+    ],
+    usage: {
+      input_tokens: c.usage.prompt_tokens,
+      output_tokens: c.usage.completion_tokens,
+      input_tokens_details: { cached_tokens: 0 },
+    },
+  };
+  const ev = (type, extra = {}) => ({ event: type, data: { type, ...extra } });
+  const half = Math.ceil(text.length / 2);
+  return [
+    ev('response.created', { response: { ...response, status: 'in_progress', output: [] } }),
+    ev('response.reasoning_summary_text.delta', { delta: 'thinking' }),
+    ...[text.slice(0, half), text.slice(half)]
+      .filter(Boolean)
+      .map((d) => ev('response.output_text.delta', { delta: d })),
+    ev(filtered ? 'response.incomplete' : 'response.completed', { response }),
+  ];
+}
+
 function readBody(req) {
   return new Promise((resolve) => {
     const chunks = [];
@@ -173,6 +286,7 @@ export async function startAiStandin(opts: any = {}): Promise<any> {
               type: 'error',
               error: { type: r.error.code ?? 'api_error', message: 'stand-in error' },
             });
+          if (b.stream) return sse(res, anthropicEvents(r.message));
           return send(res, 200, r.message);
         }
         if (req.method === 'POST' && ap === '/v1/messages/batches') {
@@ -359,7 +473,26 @@ export async function startAiStandin(opts: any = {}): Promise<any> {
               code: r.error.code ?? null,
             },
           });
+        if (b.stream) return sse(res, openaiChunks(r.completion));
         return send(res, 200, r.completion);
+      }
+      if (req.method === 'POST' && op === '/v1/responses') {
+        const b = json();
+        const user = b.input?.find?.((m) => m.role === 'user')?.content ?? '';
+        calls.push({ path: op, provider: 'openai', model: b.model, user, body: b });
+        const r = openaiCompletion(b.model, [
+          { role: 'system', content: b.instructions ?? '' },
+          { role: 'user', content: user },
+        ]);
+        if (r.error)
+          return send(res, r.error.status, {
+            error: {
+              message: 'stand-in error',
+              type: 'invalid_request_error',
+              code: r.error.code ?? null,
+            },
+          });
+        return sse(res, responsesEvents(r.completion));
       }
       if (req.method === 'POST' && op === '/v1/files') {
         const text = multipartFile(raw, req.headers['content-type']);

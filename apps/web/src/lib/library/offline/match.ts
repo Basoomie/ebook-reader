@@ -15,7 +15,7 @@ import type { BookState } from '$lib/sync/book-state';
  * - text and `=` compare folded text (NFKC, then lower case; the server's fold.ts), so
  *   full-width and half-width letters and digits match alike; /patterns/ (Unicode mode,
  *   optional i) run on the original text;
- * - plain text: the title, the series name or any author name (not tags);
+ * - plain text: the title, the series name or any author or illustrator name (not tags);
  * - chars: books without a count never match, negated or not;
  * - status: no record = unread; favorite: no record = not a favorite;
  * - on:device: the books this device stores (offline, every listed book);
@@ -60,11 +60,14 @@ function anyMatcher(value: string | null | undefined, matchers: readonly Matcher
   return matchers.some((m) => matchesText(value, m));
 }
 
-/** The names a book has for a grouping field (authors and tags without repeats). */
+/** The names a book has for a text field (authors, illustrators and tags without repeats). */
 export function fieldNames(book: CatalogBook, field: TextField): string[] {
   switch (field) {
     case 'author':
       return [...new Set(book.authors.map((a) => a.name))];
+    case 'illustrator':
+      // Absent on copies made before the server sent illustrators: no names.
+      return [...new Set(book.illustrators ?? [])];
     case 'series':
       return book.series ? [book.series.name] : [];
     case 'tag':
@@ -82,7 +85,8 @@ function termMatches(book: CatalogBook, term: QueryTerm, ctx: MatchContext): boo
       return (
         matchesText(book.title, term.matcher) ||
         fieldMatches(book, 'series', [term.matcher]) ||
-        fieldMatches(book, 'author', [term.matcher])
+        fieldMatches(book, 'author', [term.matcher]) ||
+        fieldMatches(book, 'illustrator', [term.matcher])
       );
     case 'field':
       return fieldMatches(book, term.field, term.matchers);

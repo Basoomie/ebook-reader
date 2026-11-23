@@ -138,14 +138,16 @@
     GroupTile,
     UploadInfo
   } from '$lib/library/types';
-  import type { BookState } from '$lib/sync/book-state';
+  import { finishedReadThroughs, type BookState } from '$lib/sync/book-state';
   import type { LocalRecord } from '$lib/sync/sync-db';
   import {
     bookStateApi,
     collectionsApi,
+    getSyncEngine,
     libraryViewApi,
     notifySyncConnectionChanged
   } from '$lib/sync/sync-service';
+  import { bulkSummaryPlan, skipAutomaticSummaries } from '$lib/summaries/summary-sync';
   import {
     faArrowUpFromBracket,
     faArrowsUpDown,
@@ -158,6 +160,9 @@
     faThumbtack
   } from '@fortawesome/free-solid-svg-icons';
   import { onDestroy, onMount, tick } from 'svelte';
+  import SeriesEdit from '$lib/components/calibre-edit/series-edit.svelte';
+  import { CalibreEditApi } from '$lib/calibre-edit/api';
+  import { seriesEditAs$ } from '$lib/calibre-edit/settings';
   import Fa from 'svelte-fa';
 
   /**
@@ -211,6 +216,9 @@
    * by the offline catalog (this device's books) until "Try again" or the network returns.
    */
   let offline = false;
+  /** The series editor (Calibre metadata editing): open on this series page. */
+  let seriesEditOpen = false;
+  let seriesSaved = false;
 
   /** Who answers the lists: the server, or the offline catalog while offline. */
   function source(): LibraryApi | OfflineCatalog | undefined {
@@ -366,6 +374,9 @@
     .filter((l) => !appliedLibrary || l.id === appliedLibrary)
     .reduce((n, l) => n + (l.counts ? l.counts.pending + l.counts.errors : 0), 0);
   $: bookIds = books.map((b) => b.id);
+  /** A series page (not "No series"): Edit series opens its editor (Calibre metadata editing). */
+  $: seriesEditName =
+    group && group.by === 'series' && group.name !== null && connection ? group.name : null;
   /** The open tag, author or series (not "No series"): its cover rule in the header. */
   $: headerRule =
     group && group.name !== null ? { target: group.by as BlurRuleTarget, name: group.name } : null;
@@ -926,21 +937,37 @@
         return;
       }
     } else if (change.kind === 'status' && change.status === 'completed') {
-      const finishedOn = await ask<string | null | undefined>(MarkCompletedDialog, {
-        count: ids.length
-      });
-      if (finishedOn === undefined) return;
       let completed: CatalogBook[];
       try {
-        // Completing needs each book's character count.
+        // Completing needs each book's character count (and the summary line its plan).
         completed = await selectedBooks(ids);
       } catch (error) {
         showMessage('Not saved', describe(error));
         return;
       }
+      // Book summaries: the books whose first completion this is get one (asked first).
+      const engine = await getSyncEngine();
+      const plan = await bulkSummaryPlan(
+        engine,
+        completed.map((b) => ({ id: b.id, charCount: b.charCount })),
+        (id) => {
+          const s = states.get(id);
+          return !!s && (s.status === 'completed' || finishedReadThroughs(s) > 0);
+        }
+      );
+      const answer = await ask<{ finishedOn: string | null; makeSummaries: boolean } | undefined>(
+        MarkCompletedDialog,
+        {
+          count: ids.length,
+          summaries: plan.books.length ? { count: plan.books.length, usd: plan.usd } : null
+        }
+      );
+      if (answer === undefined) return;
+      if (plan.books.length && !answer.makeSummaries)
+        await skipAutomaticSummaries(engine, plan.books);
       failed = await bookState.markCompleted(
         completed.map((b) => ({ bookId: b.id, charCount: b.charCount })),
-        finishedOn
+        answer.finishedOn
       );
     } else if (change.kind === 'status') {
       // Unread takes part-read books back to the start: ask first when any is part-read.
@@ -2009,7 +2036,7 @@
             {:else if group.name === null}
               <p class="text-sm text-c-muted">Books that are not part of a series.</p>
             {/if}
-            {#if pinTarget || headerRule}
+            {#if pinTarget || headerRule || seriesEditName}
               <div class="flex flex-wrap gap-2">
                 {#if pinTarget}
                   <button
@@ -2037,7 +2064,27 @@
                     {HEADER_RULE_LABEL[headerRule.target]}
                   </button>
                 {/if}
+                {#if seriesEditName}
+                  <!-- Calibre metadata editing: the series editor (design 2026-11-23). -->
+                  <button
+                    class="c-btn c-btn-secondary c-btn-sm px-3 text-sm"
+                    disabled={offline}
+                    title={offline
+                      ? 'Editing needs the library server, which can’t be reached right now'
+                      : undefined}
+                    data-testid="series-edit-open"
+                    on:click={() => (seriesEditOpen = true)}
+                  >
+                    <Fa icon={faPen} />
+                    Edit series
+                  </button>
+                {/if}
               </div>
+            {/if}
+            {#if seriesSaved}
+              <p class="text-sm text-c-muted" role="status" data-testid="series-edit-saved">
+                Saved · waiting for the library to show it (about 1–11 minutes)
+              </p>
             {/if}
           </div>
         {/if}
@@ -2573,5 +2620,15 @@
     title={opening.book.title}
     stage={opening.stage}
     on:cancel={() => opening?.controller.abort()}
+  />
+{/if}
+
+{#if seriesEditOpen && seriesEditName && connection}
+  <SeriesEdit
+    api={new CalibreEditApi(connection.serverUrl, connection.token)}
+    name={seriesEditName}
+    placement={$seriesEditAs$ === 'modal' ? 'center' : 'side'}
+    on:close={() => (seriesEditOpen = false)}
+    on:saved={() => (seriesSaved = true)}
   />
 {/if}

@@ -5,7 +5,15 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { formatGroupChars, groupCount, groupTitle, seriesNumber } from './format';
+import {
+  formatGroupChars,
+  groupCount,
+  groupTitle,
+  illustratorQuery,
+  libraryQueryHref,
+  seriesNumber
+} from './format';
+import { parseQuery } from './query/parse';
 import { boxesOverlap, boxFrom, rangeIds, toggled, withAll } from './selection';
 
 const n = (v: number) => v.toLocaleString();
@@ -56,5 +64,39 @@ describe('selection', () => {
     expect([...toggled(old, 'a')]).toEqual([]);
     expect([...withAll(old, ['b'])]).toEqual(['a', 'b']);
     expect([...old]).toEqual(['a']);
+  });
+});
+
+describe('illustrator links', () => {
+  const parsedValue = (q: string) => {
+    const r = parseQuery(q);
+    if (!r.ok || r.query.terms.length !== 1) throw new Error(q);
+    const t = r.query.terms[0];
+    if (t.type !== 'field' || t.field !== 'illustrator' || t.matchers.length !== 1) {
+      throw new Error(q);
+    }
+    return t.matchers[0];
+  };
+
+  it('quotes the name, so commas and spaces stay one value', () => {
+    expect(illustratorQuery('あずーる')).toBe('illustrator:"あずーる"');
+    expect(parsedValue(illustratorQuery('Smith, John'))).toEqual({
+      kind: 'text',
+      value: 'Smith, John',
+      exact: false
+    });
+    expect(parsedValue(illustratorQuery('七尾 ゆき')).kind).toBe('text');
+  });
+
+  it('matches a name with a quote by a pattern of it', () => {
+    const m = parsedValue(illustratorQuery('A "B" (c)'));
+    expect(m.kind).toBe('regex');
+    if (m.kind === 'regex') expect(new RegExp(m.source, 'u').test('A "B" (c)')).toBe(true);
+  });
+
+  it('opens the Library with the search, keeping a picked library', () => {
+    const q = 'illustrator:"あずーる"';
+    expect(libraryQueryHref('/app', q)).toBe(`/app/library?${new URLSearchParams({ q })}`);
+    expect(libraryQueryHref('', 'x', 'L1')).toBe('/library?q=x&lib=L1');
   });
 });

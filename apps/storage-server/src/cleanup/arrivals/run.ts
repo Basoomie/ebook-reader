@@ -8,12 +8,13 @@
  *   scan      each source folder walked (read only), the catalog brought up to date
  *   archives  zip/rar/7z and split sets listed and their EPUBs unpacked into _extracted/ by the
  *             linking sidecar (in Preview too)
- *   identify  each new settled EPUB hashed and read (title and authors as its OPF says them; an
- *             EPUB the reader's import can't open is "Not imported"); other formats listed
+ *   identify  each new settled EPUB read (title and authors as its OPF says them; an EPUB the
+ *             reader's import can't open is "Not imported"); other formats listed. Hashed only
+ *             when its size is one of a file you removed (else when compare or an add needs it)
  *   compare   each against the library: identical files (stage 1's file_facts), the same text
  *             (compare.ts: stage 3's reader, index and rules), the better copy (stage 3's order)
  *   plan      what would be added. Preview ends its import here; a folder's first run is a
- *             Preview whatever the mode, and adds only after "Add these"
+ *             Preview whatever the mode; runs that start after it add when the card is On
  *   add       (On) add batches through the apply sidecar (calibredb add)
  *   index     the reader's index shows the added books; each added EPUB checked against its file
  *   stages    the run's books (added now, and books added by hand in Calibre once settled)
@@ -53,6 +54,7 @@ import type { Stage2Analysis } from '../stage2';
 import type { Stage2Batches } from '../stage2-batches';
 import type { BatchService } from '../batches';
 import { calibreNameBytes, NAME_MAX_BYTES } from '../stage2-rules';
+import { fitTitle, UNKNOWN_ID } from '../title-fit';
 import { getStage } from '../stages';
 import type { Stage4Analysis, Stage4Progress } from '../stage4/analysis';
 import { arrivalAnalysisId } from '../stage4/analysis';
@@ -61,6 +63,7 @@ import { ArrivalBatches } from './add-batches';
 import { BookArchives } from './archives';
 import { classifyName, settled, sniffFormat, walkSource } from './catalog';
 import {
+  buildLibraryLookup,
   candidatePairsOf,
   dropNewSketches,
   judgePair,
@@ -146,6 +149,41 @@ export interface PhaseCount {
   bytesTotal?: number;
 }
 
+/** The compare phase's stages (each resumable from the catalog). */
+export type CompareStage = 'library' | 'identical' | 'text' | 'pairs' | 'measure' | 'decide';
+
+/** What the compare phase keeps in a new file's catalog row (facts_json). */
+export interface CompareFacts {
+  title?: string | null;
+  text?: {
+    chars: number;
+    importChars: number;
+    kind: NewText['kind'];
+    marker: string | null;
+    imageOnly: boolean;
+    error: string | null;
+    ruby: number;
+    toc: number;
+    samples: number;
+    fileTitle: string | null;
+    vertical: boolean | null;
+    imageEntries: number;
+  };
+  /** Candidate pairs this book owns (the other copy's key). */
+  cands?: number[];
+  /**
+   * Library pairs measured while the book was read (the library lookup): the library books
+   * measured and their verdicts. Only those the whole index proposes count (`covered`).
+   */
+  early?: { measured: number[]; verdicts: MeasuredPair[] };
+  /** The candidates whose verdict came from `early` (not measured again). */
+  covered?: number[];
+  verdicts?: MeasuredPair[];
+  measured?: boolean;
+  compared?: boolean;
+  [k: string]: unknown;
+}
+
 export interface RunProgress {
   phase: RunPhase;
   phaseStartedAt: number;
@@ -154,12 +192,14 @@ export interface RunProgress {
   times: Record<string, number>;
   counts: Partial<Record<RunPhase, PhaseCount>>;
   waiting: string | null;
-  pairs: { key: string; source: string; libraryId: string; firstRun: boolean; approved: boolean }[];
+  pairs: { key: string; source: string; libraryId: string; firstRun: boolean }[];
   libraryId: string | null;
   /** The run's books (Calibre ids) by where they came from. */
   scope: { import: number[]; hand: number[] };
   /** Pairs measured in compare: file id -> the library copy it lost to or beat. */
   betterOf: Record<string, { calibreId: number; uuid: string; pair: Record<string, unknown> }>;
+  /** The compare phase's stage and its own start (the bar's pace). */
+  cmp?: { stage: CompareStage; cursor: number; startedAt: number; startDone: number };
   reviews: number;
   stage4: Stage4Progress | null;
   ai: ArrivalAiProgress | null;
@@ -225,6 +265,11 @@ export interface ArrivalsDeps {
   wantIngest: (libraryId: string) => void;
   /** Whether the linking sidecar has been seen lately (archives wait for it). */
   linkSidecarOnline: () => boolean;
+  /**
+   * The user's fields of a copy that a better new copy replaces are copied onto it (calibre
+   * metadata editing): returns the edit's batch, or null.
+   */
+  carry?: (libraryId: string, fromUuid: string, toUuid: string) => string | null;
   /** The source folders must be mounted read-only (tests on a writable temp folder: false). */
   requireReadOnlySources?: boolean;
   /** The safety checks (stage 0) every write waits for, as the stages' own writes do. */
@@ -293,6 +338,46 @@ function emptyProgress(): RunProgress {
 
 const yieldNow = () => new Promise<void>((r) => setImmediate(r));
 
+/** Library books measured with a new book while its text is read (the rest wait for the
+ * measure stage; a compare request reads at most 8 books, the new one included). */
+const EARLY_MAX_BOOKS = 7;
+
+/**
+ * The compare's reading and measuring keep every reader process busy for up to this long under
+ * one hold of the disk lock (a new book starts as soon as one finishes), then let the books in
+ * flight finish; they stop sooner when another job waits for the disk. Batches of a fixed count
+ * left the processes idle while each batch's slowest book finished (WP20g stop 2: 120-640 % CPU).
+ */
+const STREAM_MS = 5 * 60_000;
+/** How often the bar's progress is saved while the reading or measuring goes on. */
+const PROGRESS_SAVE_MS = 15_000;
+
+/**
+ * Runs `fn` on the items with up to `limit` in flight, the next item as soon as one finishes
+ * (stage 3's pipeline, not groups that wait for their slowest). False when stopped on the way;
+ * a job that throws makes the whole call throw.
+ */
+export async function inPool<T>(
+  items: T[],
+  limit: number,
+  shouldStop: () => boolean,
+  fn: (item: T) => Promise<void>,
+): Promise<boolean> {
+  let next = 0;
+  let stopped = false;
+  const lane = async () => {
+    while (next < items.length) {
+      if (shouldStop()) {
+        stopped = true;
+        return;
+      }
+      await fn(items[next++]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, lane));
+  return !stopped;
+}
+
 /** A run without new books goes from one write to the next (the stages have no books). */
 const NEXT_WRITE = { write2: 'write4', write4: 'write5', write5: 'check' } as const;
 
@@ -306,6 +391,12 @@ export class BookArrivals {
   private readonly log: (m: string) => void;
 
   private settleCheckedAt = 0;
+  /** The compare stage's pace was started in this process. */
+  /** The library lookup file this process built, per run (null: the reader has none). */
+  private lookup: { run: number; file: string | null } | null = null;
+  /** The sizes two or more new files share (the identical stage's hash-on-need), per run. */
+  private sharedSizes: { run: number; sizes: Set<number> } | null = null;
+  private cmpPaced = false;
 
   constructor(private readonly deps: ArrivalsDeps) {
     this.log = deps.log ?? (() => {});
@@ -326,6 +417,13 @@ export class BookArrivals {
       // An arrival view of stage 4 is saved in the run, never over the library's progress.
       deps.analysis4.setArrivalSink((p) => this.saveStage4View(p));
     }
+  }
+  /** The Calibre library a source folder pair adds to. */
+  private pairLibrary(pairKey: string): string {
+    const r = this.db
+      .prepare('SELECT library_id FROM calibre_arrival_pairs WHERE pair_key = ?')
+      .get(pairKey) as { library_id: string } | undefined;
+    return r?.library_id ?? '';
   }
 
   private get db(): Database.Database {
@@ -367,7 +465,12 @@ export class BookArrivals {
 
   setMode(mode: 'off' | 'analyse' | 'on'): void {
     this.setState({ mode });
-    if (mode === 'off') this.stopRequested = true;
+    if (mode === 'off') {
+      // Off stops the run that is going too (WP20g stop 2: it went on while Off).
+      this.stopRequested = true;
+      const run = this.currentRun();
+      if (run) this.finish(run.id, run.p, 'stopped', 'Stopped: new arrivals set Off');
+    }
   }
 
   requestRun(): void {
@@ -383,6 +486,27 @@ export class BookArrivals {
     if (!run) return;
     this.stopRequested = true;
     this.finish(run.id, run.p, 'stopped', 'Stopped on the page');
+    // Nothing starts again by itself (WP20g stop 2: a scheduled run that was due started at
+    // once): the due scheduled run counts as done; follow-ups wait for the next run.
+    const a = getSettings(this.db).arrivals;
+    const now = Date.now();
+    if (
+      scheduledRunDue(
+        now,
+        { arrivalsTime: a.time, arrivalsQuietStart: a.quietStart, arrivalsQuietEnd: a.quietEnd },
+        this.state().last_scheduled_day,
+        this.zone(),
+      )
+    )
+      this.setState({ last_scheduled_day: clockNow(now, this.zone()).day });
+  }
+
+  /** The latest run was stopped (on the page or by Off): only a scheduled run or Run now next. */
+  private lastStopped(): boolean {
+    const r = this.db
+      .prepare('SELECT state FROM calibre_arrival_runs ORDER BY id DESC LIMIT 1')
+      .get() as { state: string } | undefined;
+    return r?.state === 'stopped';
   }
 
   resume(): void {
@@ -396,24 +520,6 @@ export class BookArrivals {
       paused_at: Date.now(),
     });
     this.log(`New arrivals paused (${reason}): ${detail}`);
-  }
-
-  /** A pair's first run has been through its Preview: its adds are allowed from now on. */
-  approvePair(pairKey: string): void {
-    const p = this.db
-      .prepare('SELECT first_done_at FROM calibre_arrival_pairs WHERE pair_key = ?')
-      .get(pairKey) as { first_done_at: number | null } | undefined;
-    if (!p) throw new Error('No such source folder');
-    if (!p.first_done_at) throw new Error('Its first run (the Preview) has not finished yet');
-    // Every file must have been looked at (a first run marked done too early: WP20g stop 2).
-    const waiting = this.waitingFiles(pairKey);
-    if (waiting > 0)
-      throw new Error(
-        `Its first run (the Preview) has not looked at ${waiting} files yet: they wait to settle`,
-      );
-    this.db
-      .prepare('UPDATE calibre_arrival_pairs SET approved_at = ? WHERE pair_key = ?')
-      .run(Date.now(), pairKey);
   }
 
   /** The pairs as set, each recorded on first sight (a changed folder is a new pair). */
@@ -431,10 +537,7 @@ export class BookArrivals {
         .run(key, p.id, p.source, p.libraryId, now);
       const r = this.db
         .prepare('SELECT * FROM calibre_arrival_pairs WHERE pair_key = ?')
-        .get(key) as {
-        first_done_at: number | null;
-        approved_at: number | null;
-      };
+        .get(key) as { first_done_at: number | null };
       // Stages 1-5 run in the library the cleanup cleans: a pair into another library waits for
       // the English follow-up (plan section 11).
       if (p.libraryId !== target) continue;
@@ -443,7 +546,6 @@ export class BookArrivals {
         source: p.source,
         libraryId: p.libraryId,
         firstRun: r.first_done_at === null,
-        approved: r.approved_at !== null,
       });
     }
     return out;
@@ -517,13 +619,14 @@ export class BookArrivals {
     if (s.run_now) trigger = 'now';
     else if (scheduledRunDue(now, sched, s.last_scheduled_day, this.zone())) trigger = 'schedule';
     else if (
+      !this.lastStopped() &&
       (s.hand_checked_at === null || now - s.hand_checked_at >= a.handCheckMinutes * 60_000) &&
       this.handSettled(target, now).length > 0
     )
       trigger = 'hand';
     // Files waiting to settle that have settled since: a follow-up run looks at them now instead
     // of at the next day's run (checked at most once a minute).
-    else if (now - this.settleCheckedAt >= 60_000) {
+    else if (!this.lastStopped() && now - this.settleCheckedAt >= 60_000) {
       this.settleCheckedAt = now;
       if (this.settledWaiting(now)) {
         trigger = 'now';
@@ -655,6 +758,12 @@ export class BookArrivals {
     this.stopRequested = false;
     const shouldStop = () => this.stopRequested;
     let run = this.currentRun();
+    // No run goes on while Off (a run started before Off was set is stopped here too).
+    if (run && this.state().mode === 'off') {
+      this.finish(run.id, run.p, 'stopped', 'Stopped: new arrivals set Off');
+      this.stepping = false;
+      return 'idle';
+    }
     try {
       if (!run) {
         const id = this.maybeStart();
@@ -819,7 +928,7 @@ export class BookArrivals {
         return 'more';
       }
       case 'add':
-        return this.addStep(run, p, libraryId);
+        return this.addStep(run, p, libraryId, shouldStop);
       case 'index':
         return this.indexStep(run, p, libraryId, libDir);
       case 'stage1': {
@@ -936,6 +1045,9 @@ export class BookArrivals {
       libraryId,
       libDir,
       analysisId: arrivalAnalysisId(runId),
+      carry: this.deps.carry
+        ? (from: string, to: string) => this.deps.carry!(libraryId, from, to)
+        : undefined,
     };
   }
 
@@ -1059,24 +1171,24 @@ export class BookArrivals {
     if (c.total === 0) {
       const t = this.db
         .prepare(
-          `SELECT COUNT(*) AS n, COALESCE(SUM(size), 0) AS b FROM calibre_arrival_files
+          `SELECT COUNT(*) AS n FROM calibre_arrival_files
            WHERE outcome = 'pending' AND pair_key IN (${ph}) AND kind = 'epub' AND gone_at IS NULL`,
         )
-        .get(...keys) as { n: number; b: number };
+        .get(...keys) as { n: number };
+      // Counted by files: the OPF is read, not the whole file.
       c.total = t.n;
-      c.bytesTotal = t.b;
-      c.bytesDone = 0;
     }
     const pacer = new SourcePacer(settings.pacing.readMbPerSecond * 1024 * 1024);
-    const removed = new Set(
-      (
-        this.db
-          .prepare(
-            `SELECT sha256 FROM calibre_arrival_files WHERE outcome = 'removed_by_you' AND sha256 IS NOT NULL`,
-          )
-          .all() as { sha256: string }[]
-      ).map((r) => r.sha256),
-    );
+    // Files you removed, by size: only a file of one of these sizes is hashed here (the rest
+    // are hashed when the comparison or an add needs it; WP20g stop 2: hashing every file read
+    // 988 GB for nothing).
+    const removed = new Map<number, Set<string>>();
+    for (const r of this.db
+      .prepare(
+        `SELECT size, sha256 FROM calibre_arrival_files WHERE outcome = 'removed_by_you' AND sha256 IS NOT NULL`,
+      )
+      .all() as { size: number; sha256: string }[])
+      removed.set(r.size, (removed.get(r.size) ?? new Set()).add(r.sha256));
     const res = await this.withDisk(
       p,
       async () => {
@@ -1098,11 +1210,13 @@ export class BookArrivals {
             );
             continue;
           }
-          const h = await hashSource(file, pacer, shouldStop);
-          if (!h) return false;
+          let h: { sha256: string } | null = null;
+          if (removed.has(f.size)) {
+            h = await hashSource(file, pacer, shouldStop);
+            if (!h) return false;
+          }
           c.done++;
-          c.bytesDone = (c.bytesDone ?? 0) + f.size;
-          if (removed.has(h.sha256)) {
+          if (h && removed.get(f.size)!.has(h.sha256)) {
             set.run(
               'removed_by_you',
               h.sha256,
@@ -1115,7 +1229,13 @@ export class BookArrivals {
             );
             continue;
           }
-          let facts: { title: string | null; authors: string[]; nameBytes: number } | null = null;
+          let facts: {
+            title: string | null;
+            authors: string[];
+            nameBytes: number;
+            addTitle?: string;
+            fit?: { step: string; rules: string[] };
+          } | null = null;
           let problem: string | null = null;
           try {
             const meta = await readFileMetadata(file, { text: false, cover: false });
@@ -1127,21 +1247,64 @@ export class BookArrivals {
             facts = {
               title,
               authors,
-              nameBytes: calibreNameBytes(9_999_999, title, authors[0] ?? 'Unknown'),
+              nameBytes: calibreNameBytes(UNKNOWN_ID, title, authors[0] ?? 'Unknown'),
             };
+            // Names Calibre's import would make too long for the disk (it would keep a record
+            // without the file): the title the add gives instead, fitted (title-fit.ts). A title
+            // that fits is added as the file has it (user, 2026-11-22).
+            if (facts.nameBytes > NAME_MAX_BYTES) {
+              const fit = fitTitle(title, {
+                calibreId: UNKNOWN_ID,
+                firstAuthor: authors[0] ?? 'Unknown',
+                authors,
+              });
+              if (fit.step !== 'none' && fit.step !== 'author_too_long') {
+                facts.addTitle = fit.title;
+                facts.fit = { step: fit.step, rules: fit.rules };
+                facts.nameBytes = fit.bytesAfter;
+              }
+            }
           } catch (err) {
             problem = `The reader can't open it: ${(err as Error).message}`.slice(0, 300);
           }
           if (problem || !facts) {
-            set.run('unreadable', h.sha256, Date.now(), problem, null, run.id, Date.now(), f.id);
+            set.run(
+              'unreadable',
+              h?.sha256 ?? null,
+              h ? Date.now() : null,
+              problem,
+              null,
+              run.id,
+              Date.now(),
+              f.id,
+            );
             continue;
           }
+          if (facts.fit && (facts.fit.step === 'shortened' || facts.fit.step === 'cut')) {
+            this.db
+              .prepare(
+                `INSERT OR REPLACE INTO calibre_title_fits (arrival_file_id, library_id, stage, original,
+                   written, step, rules_json, created_at, updated_at)
+                 VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?)`,
+              )
+              .run(
+                f.id,
+                this.pairLibrary(f.pair_key),
+                facts.title ?? '',
+                facts.addTitle,
+                facts.fit.step,
+                JSON.stringify(facts.fit.rules),
+                Date.now(),
+                Date.now(),
+              );
+          }
           if (facts.nameBytes > NAME_MAX_BYTES) {
+            // Only a first author too long on its own is left (bad data): held, as before.
             set.run(
               'too_long',
-              h.sha256,
-              Date.now(),
-              "Too long for a folder name in Calibre's library",
+              h?.sha256 ?? null,
+              h ? Date.now() : null,
+              "The first author is too long for a folder name in Calibre's library",
               JSON.stringify(facts),
               run.id,
               Date.now(),
@@ -1154,15 +1317,15 @@ export class BookArrivals {
           }
           set.run(
             'pending',
-            h.sha256,
-            Date.now(),
+            h?.sha256 ?? null,
+            h ? Date.now() : null,
             null,
             JSON.stringify(facts),
             run.id,
             Date.now(),
             f.id,
           );
-          // Read: handed to compare from here (outcome 'pending' with a hash).
+          // Read: handed to compare from here.
           this.db
             .prepare(`UPDATE calibre_arrival_files SET outcome = 'new' WHERE id = ?`)
             .run(f.id);
@@ -1227,6 +1390,43 @@ export class BookArrivals {
 
   // ---------------------------------------------------------------- compare
 
+  /** A copy's quality facts for judgePair (new books from their file, library books stage 3's). */
+  private qualityOf(
+    cd: CompareDeps,
+    news: Map<number, NewText>,
+    qCache: Map<number, Quality | null>,
+    srcPacer: SourcePacer,
+  ): (k: number) => Promise<Quality | null> {
+    return async (k: number) => {
+      if (qCache.has(k)) return qCache.get(k)!;
+      const n = news.get(k);
+      const q = n
+        ? await qualityOfFile(n.file, {
+            calibreId: k,
+            chars: n.chars,
+            ruby: n.ruby,
+            tocEntries: n.toc,
+            customTags: 0,
+            addedAt: Date.now(),
+            pacer: srcPacer,
+          })
+        : await libraryQuality(cd, k, srcPacer);
+      qCache.set(k, q);
+      return q;
+    };
+  }
+
+  /**
+   * The new EPUBs compared with the library, in slices that keep their results in the catalog
+   * (facts_json), so a restart goes on where it stopped and the bar counts every book (WP20g
+   * stop 2: 98,572 EPUBs, one uninterrupted call that counted nothing until its end). Stages:
+   *   library    library books stages 1 and 3 never read (ensureLibraryFacts)
+   *   identical  identical to a library EPUB (stage 1's hashes), then identical among themselves
+   *   text       each new book's text and sketch (stage 3's reader), kept as facts.text
+   *   pairs      the candidate index over every sketch; each pair kept with one of its new books
+   *   measure    each new book's pairs measured and judged; verdicts kept with the new books
+   *   decide     each new book's outcome from its verdicts
+   */
   private async compareStep(
     run: RunRow & { p: RunProgress },
     p: RunProgress,
@@ -1240,221 +1440,450 @@ export class BookArrivals {
       return 'more';
     }
     const ph = keys.map(() => '?').join(', ');
-    const files = this.db
-      .prepare(
-        `SELECT id, pair_key, rel_path, size, mtime_ms, sha256, facts_json FROM calibre_arrival_files
-         INDEXED BY calibre_arrival_files_outcome
-         WHERE outcome = 'new' AND pair_key IN (${ph}) AND run_id = ? AND gone_at IS NULL ORDER BY id`,
-      )
-      .all(...keys, run.id) as {
-      id: number;
-      pair_key: string;
-      rel_path: string;
-      size: number;
-      mtime_ms: number;
-      sha256: string;
-      facts_json: string | null;
-    }[];
+    p.cmp ??= { stage: 'library', cursor: 0, startedAt: Date.now(), startDone: 0 };
+    const cmp = p.cmp;
     const c = this.count(p, 'compare');
-    c.total = files.length;
-    if (!files.length) {
-      this.next(run.id, p, 'plan');
-      return 'more';
+    // The bar's pace from this stage's start in this process (a restart begins a new pace).
+    if (!this.cmpPaced) {
+      cmp.startedAt = Date.now();
+      cmp.startDone = c.done;
+      this.cmpPaced = true;
     }
+    const stage = (next: CompareStage, done: number, total: number) => {
+      Object.assign(cmp, { stage: next, cursor: 0, startedAt: Date.now(), startDone: done });
+      c.done = done;
+      c.total = total;
+    };
     const books = this.snapshotBooks(libraryId);
     const cd = this.compareDeps(libraryId, libDir, books);
     const pd = this.passDeps(run.id, libraryId, libDir);
     const settings = getSettings(this.db);
-    const libPacer = new Pacer(settings.pacing.readMbPerSecond * 1024 * 1024);
     const srcPacer = new SourcePacer(settings.pacing.readMbPerSecond * 1024 * 1024);
-    const set = this.db.prepare(
-      `UPDATE calibre_arrival_files SET outcome = ?, detail = ?, calibre_id = ?, calibre_uuid = ?,
-         facts_json = COALESCE(?, facts_json), decided_at = ? WHERE id = ?`,
+    type Row = {
+      id: number;
+      pair_key: string;
+      rel_path: string;
+      size: number;
+      sha256: string | null;
+      facts_json: string | null;
+    };
+    const facts = (r: { facts_json: string | null }) =>
+      (r.facts_json ? JSON.parse(r.facts_json) : {}) as CompareFacts;
+    const setFacts = this.db.prepare(
+      'UPDATE calibre_arrival_files SET facts_json = ? WHERE id = ?',
     );
-    const done = await this.withDisk(
-      p,
-      async () => {
-        // 0. Library books stage 1 or 3 never read (added since their analyses): their file
-        // facts and text first, as those stages would have read them.
-        if (!(await this.ensureLibraryFacts(cd, pd, books, srcPacer, shouldStop))) return false;
-        // 1. Identical to a library EPUB (stage 1's facts, hashed now where unknown).
-        const left: typeof files = [];
-        for (const f of files) {
+    const rows = (where: string, limit: number, ...args: unknown[]) =>
+      this.db
+        .prepare(
+          `SELECT id, pair_key, rel_path, size, sha256, facts_json FROM calibre_arrival_files
+           INDEXED BY calibre_arrival_files_outcome
+           WHERE outcome = 'new' AND pair_key IN (${ph}) AND gone_at IS NULL
+             AND json_extract(facts_json, '$.compared') IS NULL ${where}
+           ORDER BY id LIMIT ${limit}`,
+        )
+        .all(...keys, ...args) as Row[];
+    const countNew = (where = '') =>
+      (
+        this.db
+          .prepare(
+            `SELECT COUNT(*) AS n FROM calibre_arrival_files INDEXED BY calibre_arrival_files_outcome
+             WHERE outcome = 'new' AND pair_key IN (${ph}) AND gone_at IS NULL
+             AND json_extract(facts_json, '$.compared') IS NULL ${where}`,
+          )
+          .get(...keys) as { n: number }
+      ).n;
+    const newText = (r: Row): NewText => {
+      const t = facts(r).text!;
+      return {
+        key: -r.id,
+        file: this.sourcePath(r.pair_key, r.rel_path),
+        chars: t.chars,
+        importChars: t.importChars,
+        kind: t.kind,
+        marker: t.marker,
+        imageOnly: t.imageOnly,
+        ruby: t.ruby,
+        toc: t.toc,
+        vertical: t.vertical,
+        imageEntries: [],
+        fileTitle: t.fileTitle,
+        samples: t.samples,
+        error: t.error,
+      };
+    };
+    const slice = async <T>(fn: () => Promise<T>) => this.withDisk(p, fn, shouldStop);
+
+    if (cmp.stage === 'library') {
+      p.waiting = 'Reading library books stages 1 and 3 have not read yet';
+      const ok = await slice(() => this.ensureLibraryFacts(cd, pd, books, srcPacer, shouldStop));
+      if (ok === null || ok === false) return 'wait';
+      stage('identical', 0, countNew());
+      return 'more';
+    }
+
+    if (cmp.stage === 'identical') {
+      const libPacer = new Pacer(settings.pacing.readMbPerSecond * 1024 * 1024);
+      const set = this.db.prepare(
+        `UPDATE calibre_arrival_files SET outcome = 'identical', detail = ?, calibre_id = ?, calibre_uuid = ?,
+           decided_at = ? WHERE id = ?`,
+      );
+      const part = rows('AND id > ?', 200, cmp.cursor);
+      // A file needs its SHA-256 only when a library EPUB or another new file has its size. The
+      // new files' shared sizes are read once per run and process (one pass over the new files,
+      // not one per file).
+      if (this.sharedSizes?.run !== run.id)
+        this.sharedSizes = {
+          run: run.id,
+          sizes: new Set(
+            (
+              this.db
+                .prepare(
+                  `SELECT size FROM calibre_arrival_files INDEXED BY calibre_arrival_files_outcome
+                   WHERE outcome = 'new' AND pair_key IN (${ph}) AND gone_at IS NULL
+                     AND json_extract(facts_json, '$.compared') IS NULL
+                   GROUP BY size HAVING COUNT(*) > 1`,
+                )
+                .all(...keys) as { size: number }[]
+            ).map((r) => r.size),
+          ),
+        };
+      const shared = this.sharedSizes.sizes;
+      const setSha = this.db.prepare(
+        'UPDATE calibre_arrival_files SET sha256 = ?, hashed_at = ? WHERE id = ?',
+      );
+      if (!part.length) {
+        // Identical among themselves: the first of each SHA-256 stays.
+        const dupes = this.db
+          .prepare(
+            `SELECT id, sha256 FROM calibre_arrival_files INDEXED BY calibre_arrival_files_outcome
+             WHERE outcome = 'new' AND pair_key IN (${ph}) AND gone_at IS NULL AND sha256 IS NOT NULL
+             AND json_extract(facts_json, '$.compared') IS NULL ORDER BY id`,
+          )
+          .all(...keys) as { id: number; sha256: string }[];
+        const first = new Map<string, number>();
+        const now = Date.now();
+        this.db.transaction(() => {
+          for (const d of dupes) {
+            const f = first.get(d.sha256);
+            if (f === undefined) first.set(d.sha256, d.id);
+            else set.run(`The same file as ${f} in this run`, null, null, now, d.id);
+          }
+        })();
+        stage('text', countNew(`AND json_extract(facts_json, '$.text') IS NOT NULL`), countNew());
+        return 'more';
+      }
+      p.waiting = 'Looking for identical copies in the library';
+      const ok = await slice(async () => {
+        for (const f of part) {
           if (shouldStop()) return false;
           const same = await libraryHashesOfSize(pd, books, f.size, libPacer, shouldStop);
-          const hit = same.find((x) => x.sha256 === f.sha256);
-          if (hit) {
-            const b = books.get(hit.calibreId)!;
+          if (shouldStop()) return false;
+          let sha = f.sha256;
+          if (!sha && (same.length || shared.has(f.size))) {
+            const file = this.sourcePath(f.pair_key, f.rel_path);
+            const st = await lstatSource(file);
+            const h =
+              st && st.size === f.size ? await hashSource(file, srcPacer, shouldStop) : null;
+            if (!h && shouldStop()) return false;
+            if (h) {
+              sha = h.sha256;
+              setSha.run(sha, Date.now(), f.id);
+            }
+          }
+          const hit = sha ? same.find((x) => x.sha256 === sha) : undefined;
+          if (hit)
             set.run(
-              'identical',
               `The same file as Calibre book ${hit.calibreId}`,
               hit.calibreId,
-              b.uuid,
-              null,
+              books.get(hit.calibreId)!.uuid,
               Date.now(),
               f.id,
             );
-            c.done++;
-          } else left.push(f);
+          cmp.cursor = f.id;
+          c.done++;
         }
-        // 2. Identical among themselves: the first stays.
-        const bySha = new Map<string, number>();
-        const rest: typeof files = [];
-        for (const f of left) {
-          const first = bySha.get(f.sha256);
-          if (first !== undefined) {
-            set.run(
-              'identical',
-              `The same file as ${first} in this run`,
-              null,
-              null,
-              null,
-              Date.now(),
-              f.id,
-            );
-            c.done++;
-          } else {
-            bySha.set(f.sha256, f.id);
-            rest.push(f);
-          }
+        return true;
+      });
+      if (ok === null || ok === false) return 'wait';
+      return 'more';
+    }
+
+    // Several books in flight across the reader processes, as stage 3 reads them (textWorkers ×
+    // 2; WP20g stop 2: one at a time used one of six processes).
+    const inFlight = Math.max(1, settings.duplicates.textWorkers) * 2;
+    // No new book once the stream's time is up, another job waits for the disk, or the run stops.
+    const streamEnd = Date.now() + STREAM_MS;
+    const endStream = () =>
+      shouldStop() ||
+      Date.now() > streamEnd ||
+      this.deps.diskLock.state().waiting.some((w) => w.owner !== DISK_OWNER);
+    let savedAt = Date.now();
+    const saveNow = () => {
+      if (Date.now() - savedAt < PROGRESS_SAVE_MS) return;
+      savedAt = Date.now();
+      this.save(run.id, p);
+    };
+
+    if (cmp.stage === 'text') {
+      const part = rows(`AND json_extract(facts_json, '$.text') IS NULL`, inFlight * 40);
+      if (!part.length) {
+        stage('pairs', 0, 0);
+        return 'more';
+      }
+      // The library's lookup, once per run and process (a reader process reads it from the
+      // file): each book is measured against its library candidates while its text is open.
+      if (this.lookup?.run !== run.id) {
+        p.waiting = 'Preparing the lookup of the library books';
+        const file = path.join(cd.cacheDir, `arrivals-lookup-${libraryId}`);
+        let built: { books: number } | null = null;
+        try {
+          built = await buildLibraryLookup(cd, file);
+        } catch (err) {
+          this.log?.(`new arrivals: no library lookup (${(err as Error).message})`);
         }
-        // 3. The same text (stage 3's reader, index and rules).
-        const news = new Map<number, NewText>();
-        for (const f of rest) {
-          if (shouldStop()) return false;
-          const facts = f.facts_json ? (JSON.parse(f.facts_json) as { title?: string | null }) : {};
+        this.lookup = { run: run.id, file: built ? file : null };
+        return 'more';
+      }
+      const lookupFile = this.lookup.file;
+      p.waiting = `Reading the new books and measuring them against the library (${c.done.toLocaleString('en-US')} of ${c.total.toLocaleString('en-US')})`;
+      const qCache = new Map<number, Quality | null>();
+      const ok = await slice(() =>
+        inPool(part, inFlight, endStream, async (f) => {
+          const old = facts(f);
           const t = await readNewText(
             cd,
             -f.id,
             this.sourcePath(f.pair_key, f.rel_path),
-            [facts.title ?? null],
+            [old.title ?? null],
             srcPacer,
+            lookupFile ? { index: lookupFile, maxBooks: EARLY_MAX_BOOKS } : null,
           );
-          news.set(-f.id, t);
-        }
-        const pairs = await candidatePairsOf(cd, [...news.values()]);
-        const measured = await measurePairs(cd, news, pairs);
-        const qCache = new Map<number, Quality | null>();
-        const quality = async (k: number) => {
-          if (qCache.has(k)) return qCache.get(k)!;
-          let q: Quality | null;
-          const n = news.get(k);
-          if (n) {
-            q = await qualityOfFile(n.file, {
-              calibreId: k,
-              chars: n.chars,
-              ruby: n.ruby,
-              tocEntries: n.toc,
-              customTags: 0,
-              addedAt: Date.now(),
-              pacer: srcPacer,
-            });
-          } else q = await libraryQuality(cd, k, srcPacer);
-          qCache.set(k, q);
-          return q;
-        };
-        const verdicts = new Map<number, MeasuredPair[]>();
-        for (const m of measured) {
-          if (!m.m) continue;
-          const keysNew = [m.pair.a, m.pair.b].filter((k) => news.has(k));
-          for (const k of keysNew) {
-            const other = k === m.pair.a ? m.pair.b : m.pair.a;
-            const v = await judgePair(cd, k, other, m.m, news, quality);
-            verdicts.set(k, [...(verdicts.get(k) ?? []), v]);
+          old.text = {
+            chars: t.chars,
+            importChars: t.importChars,
+            kind: t.kind,
+            marker: t.marker,
+            imageOnly: t.imageOnly,
+            error: t.error,
+            ruby: t.ruby,
+            toc: t.toc,
+            samples: t.samples,
+            fileTitle: t.fileTitle,
+            vertical: t.vertical,
+            imageEntries: t.imageEntries.length,
+          };
+          if (t.early && !t.error) {
+            // Judged as the measure stage judges a library pair (the same functions, the book
+            // as the measure stage builds it from these facts).
+            const own = newText({ ...f, facts_json: JSON.stringify(old) });
+            const news = new Map<number, NewText>([[-f.id, own]]);
+            const quality = this.qualityOf(cd, news, qCache, srcPacer);
+            const verdicts: MeasuredPair[] = [];
+            for (const m of t.early.pairs)
+              verdicts.push(await judgePair(cd, -f.id, m.b, m, news, quality));
+            old.early = { measured: t.early.pairs.map((m) => m.b), verdicts };
           }
-        }
-        for (const f of rest) {
-          const key = -f.id;
-          const t = news.get(key)!;
-          const vs = verdicts.get(key) ?? [];
-          const factsPlus = JSON.stringify({
-            ...(f.facts_json ? JSON.parse(f.facts_json) : {}),
-            text: {
-              chars: t.chars,
-              kind: t.kind,
-              imageOnly: t.imageOnly,
-              error: t.error,
-              ruby: t.ruby,
-              toc: t.toc,
-              samples: t.samples,
-              fileTitle: t.fileTitle,
-              vertical: t.vertical,
-              imageEntries: t.imageEntries.length,
-              marker: t.marker,
-              importChars: t.importChars,
-            },
-          });
-          const lostTo = vs.find((v) => v.keep === 'other');
-          const beat = vs.filter((v) => v.keep === 'new' && v.otherKey > 0);
-          if (lostTo) {
-            const isLib = lostTo.otherKey > 0;
-            const b = isLib ? books.get(lostTo.otherKey) : null;
-            set.run(
-              'duplicate',
-              isLib
-                ? `The same text as Calibre book ${lostTo.otherKey}, which is as good or better (${lostTo.reason})`
-                : `The same text as ${-lostTo.otherKey} in this run, which is better`,
-              isLib ? lostTo.otherKey : null,
-              b?.uuid ?? null,
-              factsPlus,
-              Date.now(),
-              f.id,
-            );
-          } else if (beat.length) {
-            const target = beat[0];
-            const b = books.get(target.otherKey)!;
-            const pair = {
-              aInB: target.aInB,
-              bInA: target.bInA,
-              cls: target.cls,
-              rule: target.rule,
-              reason: target.reason,
-              best: target.best,
-            };
-            if (hasReaderData(pd, b.uuid)) {
-              set.run(
-                'better_review',
-                `Better than Calibre book ${target.otherKey}, which has your reading data`,
-                target.otherKey,
-                b.uuid,
-                factsPlus,
-                Date.now(),
-                f.id,
-              );
-              this.addReview(
-                run.id,
-                `better:${f.id}:${b.uuid}`,
-                'better_copy',
-                f.id,
-                target.otherKey,
-                b.uuid,
-                { pair, title: b.title },
-              );
-            } else {
-              // The pair stays with the file: the run that adds it (maybe a later one) proposes
-              // the older copy's removal from it.
-              set.run(
-                'better',
-                `Better than Calibre book ${target.otherKey} (${target.reason}); added, then the older copy is removed`,
-                target.otherKey,
-                b.uuid,
-                JSON.stringify({ ...JSON.parse(factsPlus), better: pair }),
-                Date.now(),
-                f.id,
-              );
-              p.betterOf[String(f.id)] = { calibreId: target.otherKey, uuid: b.uuid, pair };
-            }
-          } else {
-            set.run('new', null, null, null, factsPlus, Date.now(), f.id);
-          }
+          // Kept as each book is read (a restart reads only the books not kept yet).
+          setFacts.run(JSON.stringify(old), f.id);
           c.done++;
+          saveNow();
+        }),
+      );
+      // false: the stream ended (its time, another job's turn at the disk, or a stop).
+      if (ok === null || shouldStop()) return 'wait';
+      return 'more';
+    }
+
+    if (cmp.stage === 'pairs') {
+      p.waiting = 'Finding the library books with the same text';
+      const all = rows('', 1_000_000);
+      const news = all.map(newText);
+      const pairs = await candidatePairsOf(cd, news);
+      // Each pair kept with one new book (the first new key), measured once.
+      const own = new Map<number, number[]>();
+      for (const pr of pairs) {
+        const owner = pr.a < 0 ? pr.a : pr.b;
+        const other = owner === pr.a ? pr.b : pr.a;
+        own.set(owner, [...(own.get(owner) ?? []), other]);
+      }
+      // A library pair measured while the book was read counts only when the whole index
+      // proposes it (the lookup finds at least those, sometimes more); the rest is measured in
+      // the measure stage as before. A book with every pair covered is measured already.
+      this.db.transaction(() => {
+        for (const r of all) {
+          const fx = facts(r);
+          const cands = own.get(-r.id) ?? [];
+          const early = new Set(fx.early?.measured ?? []);
+          const covered = cands.filter((o) => o > 0 && early.has(o));
+          const inCovered = new Set(covered);
+          fx.cands = cands;
+          fx.covered = covered;
+          fx.verdicts = (fx.early?.verdicts ?? []).filter((v) => inCovered.has(v.otherKey));
+          if (cands.length > 0 && covered.length === cands.length) fx.measured = true;
+          else delete fx.measured;
+          setFacts.run(JSON.stringify(fx), r.id);
         }
-        return true;
-      },
-      shouldStop,
+      })();
+      stage(
+        'measure',
+        0,
+        countNew(
+          `AND json_array_length(facts_json, '$.cands') > 0 AND json_extract(facts_json, '$.measured') IS NULL`,
+        ),
+      );
+      return 'more';
+    }
+
+    if (cmp.stage === 'measure') {
+      const part = rows(
+        `AND json_array_length(facts_json, '$.cands') > 0
+           AND json_extract(facts_json, '$.measured') IS NULL`,
+        inFlight * 40,
+      );
+      if (!part.length) {
+        stage('decide', 0, countNew(`AND json_extract(facts_json, '$.compared') IS NULL`));
+        return 'more';
+      }
+      p.waiting = `Measuring the pairs with the same text (${c.done.toLocaleString('en-US')} of ${c.total.toLocaleString('en-US')} books)`;
+      const byId = this.db.prepare(
+        `SELECT id, pair_key, rel_path, size, sha256, facts_json FROM calibre_arrival_files WHERE id = ?`,
+      );
+      const qCache = new Map<number, Quality | null>();
+      const ok = await slice(() =>
+        inPool(part, inFlight, endStream, async (f) => {
+          const news = new Map<number, NewText>([[-f.id, newText(f)]]);
+          const covered = new Set(facts(f).covered ?? []);
+          const cands = (facts(f).cands ?? []).filter((o) => !covered.has(o));
+          for (const o of cands)
+            if (o < 0) {
+              const r = byId.get(-o) as Row | undefined;
+              if (r && facts(r).text) news.set(o, newText(r));
+            }
+          const measured = await measurePairs(
+            cd,
+            news,
+            cands.filter((o) => o > 0 || news.has(o)).map((o) => ({ a: -f.id, b: o })),
+          );
+          const quality = this.qualityOf(cd, news, qCache, srcPacer);
+          const add = new Map<number, MeasuredPair[]>();
+          for (const m of measured) {
+            if (!m.m) continue;
+            for (const k of [m.pair.a, m.pair.b].filter((x) => news.has(x))) {
+              const other = k === m.pair.a ? m.pair.b : m.pair.a;
+              add.set(k, [
+                ...(add.get(k) ?? []),
+                await judgePair(cd, k, other, m.m, news, quality),
+              ]);
+            }
+          }
+          // The verdicts and this book's "measured" mark in one transaction: books finish out of
+          // order, and a restart measures again only the books not marked (never twice).
+          this.db.transaction(() => {
+            for (const [k, vs] of add) {
+              const r = byId.get(-k) as Row;
+              const fx = facts(r);
+              fx.verdicts = [...(fx.verdicts ?? []), ...vs];
+              setFacts.run(JSON.stringify(fx), r.id);
+            }
+            const own = facts(byId.get(f.id) as Row);
+            own.measured = true;
+            setFacts.run(JSON.stringify(own), f.id);
+          })();
+          c.done++;
+          saveNow();
+        }),
+      );
+      // false: the stream ended (its time, another job's turn at the disk, or a stop).
+      if (ok === null || shouldStop()) return 'wait';
+      return 'more';
+    }
+
+    // decide
+    const part = rows(`AND json_extract(facts_json, '$.compared') IS NULL`, 500);
+    if (!part.length) {
+      p.cmp = undefined;
+      this.next(run.id, p, 'plan');
+      return 'more';
+    }
+    p.waiting = `Deciding each new book (${c.done.toLocaleString('en-US')} of ${c.total.toLocaleString('en-US')})`;
+    const set = this.db.prepare(
+      `UPDATE calibre_arrival_files SET outcome = ?, detail = ?, calibre_id = ?, calibre_uuid = ?,
+         facts_json = ?, decided_at = ? WHERE id = ?`,
     );
-    if (done === null || done === false) return 'wait';
-    this.next(run.id, p, 'plan');
+    for (const f of part) {
+      const fx = facts(f);
+      const vs = fx.verdicts ?? [];
+      fx.compared = true;
+      const factsPlus = JSON.stringify(fx);
+      const lostTo = vs.find((v) => v.keep === 'other');
+      const beat = vs.filter((v) => v.keep === 'new' && v.otherKey > 0);
+      if (lostTo) {
+        const isLib = lostTo.otherKey > 0;
+        const b = isLib ? books.get(lostTo.otherKey) : null;
+        set.run(
+          'duplicate',
+          isLib
+            ? `The same text as Calibre book ${lostTo.otherKey}, which is as good or better (${lostTo.reason})`
+            : `The same text as ${-lostTo.otherKey} in this run, which is better`,
+          isLib ? lostTo.otherKey : null,
+          b?.uuid ?? null,
+          factsPlus,
+          Date.now(),
+          f.id,
+        );
+      } else if (beat.length && books.get(beat[0].otherKey)) {
+        const target = beat[0];
+        const b = books.get(target.otherKey)!;
+        const pair = {
+          aInB: target.aInB,
+          bInA: target.bInA,
+          cls: target.cls,
+          rule: target.rule,
+          reason: target.reason,
+          best: target.best,
+        };
+        if (hasReaderData(pd, b.uuid)) {
+          set.run(
+            'better_review',
+            `Better than Calibre book ${target.otherKey}, which has your reading data`,
+            target.otherKey,
+            b.uuid,
+            factsPlus,
+            Date.now(),
+            f.id,
+          );
+          this.addReview(
+            run.id,
+            `better:${f.id}:${b.uuid}`,
+            'better_copy',
+            f.id,
+            target.otherKey,
+            b.uuid,
+            {
+              pair,
+              title: b.title,
+            },
+          );
+        } else {
+          // The pair stays with the file: the run that adds it (maybe a later one) proposes
+          // the older copy's removal from it.
+          set.run(
+            'better',
+            `Better than Calibre book ${target.otherKey} (${target.reason}); added, then the older copy is removed`,
+            target.otherKey,
+            b.uuid,
+            JSON.stringify({ ...fx, better: pair }),
+            Date.now(),
+            f.id,
+          );
+          p.betterOf[String(f.id)] = { calibreId: target.otherKey, uuid: b.uuid, pair };
+        }
+      } else {
+        set.run('new', null, null, null, factsPlus, Date.now(), f.id);
+      }
+      c.done++;
+    }
+    await yieldNow();
     return 'more';
   }
 
@@ -1510,26 +1939,25 @@ export class BookArrivals {
   private planStep(run: RunRow & { p: RunProgress }, p: RunProgress): void {
     const now = Date.now();
     for (const pair of p.pairs) {
+      // A folder's first run (its Preview) is done once every file in it was looked at; from
+      // then on it stays done (files a later download leaves waiting don't undo it). Runs that
+      // start after that add from the folder when the card is On (WP20g stop 2: the first look
+      // marked 98,572 EPUBs as waiting; "Add these" removed by the user, On is the go-ahead).
       const row = this.db
-        .prepare('SELECT approved_at FROM calibre_arrival_pairs WHERE pair_key = ?')
-        .get(pair.key) as { approved_at: number | null } | undefined;
-      if (row?.approved_at != null) continue;
-      // A folder's first run (its Preview) is done only once every file in it was looked at:
-      // files still waiting to settle keep it open, and "Add these" is offered only then (WP20g
-      // stop 2: the first look marked 98,572 EPUBs as waiting).
-      const waiting = this.waitingFiles(pair.key);
-      if (waiting > 0) {
+        .prepare('SELECT first_done_at FROM calibre_arrival_pairs WHERE pair_key = ?')
+        .get(pair.key) as { first_done_at: number | null } | undefined;
+      if (row?.first_done_at != null) continue;
+      if (this.waitingFiles(pair.key) > 0) {
         this.db
           .prepare(
-            `UPDATE calibre_arrival_pairs SET first_run_id = COALESCE(first_run_id, ?), first_done_at = NULL
-             WHERE pair_key = ?`,
+            'UPDATE calibre_arrival_pairs SET first_run_id = COALESCE(first_run_id, ?) WHERE pair_key = ?',
           )
           .run(run.id, pair.key);
         continue;
       }
       this.db
         .prepare(
-          `UPDATE calibre_arrival_pairs SET first_run_id = COALESCE(first_run_id, ?), first_done_at = COALESCE(first_done_at, ?)
+          `UPDATE calibre_arrival_pairs SET first_run_id = COALESCE(first_run_id, ?), first_done_at = ?
            WHERE pair_key = ?`,
         )
         .run(run.id, now, pair.key);
@@ -1568,30 +1996,30 @@ export class BookArrivals {
       .get(...keys, now - settleMs, now - settleMs);
   }
 
-  /** The files a run adds: new and better copies of pairs whose first run was approved. */
-  private filesToAdd(_run: RunRow & { p: RunProgress }, p: RunProgress): number[] {
-    // Only from folders whose first run (a Preview) you approved with "Add these".
-    const approved = p.pairs
+  /**
+   * The files a run adds: new and better copies of folders whose first run (a Preview) finished
+   * before this run started; a folder's first run never adds, whatever the mode.
+   */
+  private filesToAdd(run: RunRow & { p: RunProgress }, p: RunProgress): number[] {
+    const ready = p.pairs
       .map((x) => x.key)
-      .filter(
-        (k) =>
-          (
-            this.db
-              .prepare('SELECT approved_at FROM calibre_arrival_pairs WHERE pair_key = ?')
-              .get(k) as { approved_at: number | null } | undefined
-          )?.approved_at != null,
-      );
-    if (!approved.length) return [];
-    const ph = approved.map(() => '?').join(', ');
+      .filter((k) => {
+        const r = this.db
+          .prepare('SELECT first_done_at FROM calibre_arrival_pairs WHERE pair_key = ?')
+          .get(k) as { first_done_at: number | null } | undefined;
+        return r?.first_done_at != null && r.first_done_at < run.started_at;
+      });
+    if (!ready.length) return [];
+    const ph = ready.map(() => '?').join(', ');
     return (
       this.db
         .prepare(
           `SELECT id FROM calibre_arrival_files WHERE outcome IN ('new', 'better') AND pair_key IN (${ph})
-             AND gone_at IS NULL AND id NOT IN (SELECT file_id FROM calibre_arrival_batch_items i
+             AND gone_at IS NULL AND json_extract(facts_json, '$.compared') IS NOT NULL AND id NOT IN (SELECT file_id FROM calibre_arrival_batch_items i
                JOIN calibre_arrival_batches b ON b.id = i.batch_id WHERE b.kind = 'add' AND i.state <> 'failed')
            ORDER BY id`,
         )
-        .all(...approved) as { id: number }[]
+        .all(...ready) as { id: number }[]
     ).map((r) => r.id);
   }
 
@@ -1605,15 +2033,74 @@ export class BookArrivals {
     return false;
   }
 
-  private addStep(
+  private async addStep(
     run: RunRow & { p: RunProgress },
     p: RunProgress,
     libraryId: string,
-  ): 'more' | 'wait' {
+    shouldStop: () => boolean,
+  ): Promise<'more' | 'wait'> {
     const c = this.count(p, 'add');
     if (c.total === 0 && this.checksWait(p)) return 'wait';
     if (c.total === 0 && !this.addBatches.busy(run.id)) {
-      const ids = this.filesToAdd(run, p);
+      let ids = this.filesToAdd(run, p);
+      if (!ids.length) {
+        this.next(run.id, p, 'index');
+        return 'more';
+      }
+      // A book is hashed when it is added (the sidecar checks the copy it is sent against it,
+      // and the check step the library's copy), in slices under the disk lock.
+      const unhashed = this.db
+        .prepare(
+          `SELECT id, pair_key, rel_path, size, mtime_ms, archive_id FROM calibre_arrival_files
+           WHERE id IN (SELECT value FROM json_each(?)) AND sha256 IS NULL ORDER BY id LIMIT 50`,
+        )
+        .all(JSON.stringify(ids)) as {
+        id: number;
+        pair_key: string;
+        rel_path: string;
+        size: number;
+        mtime_ms: number;
+        archive_id: number | null;
+      }[];
+      if (unhashed.length) {
+        p.waiting = 'Reading the books to add';
+        const pacer = new SourcePacer(getSettings(this.db).pacing.readMbPerSecond * 1024 * 1024);
+        const setSha = this.db.prepare(
+          'UPDATE calibre_arrival_files SET sha256 = ?, hashed_at = ? WHERE id = ?',
+        );
+        const changed = this.db.prepare(
+          `UPDATE calibre_arrival_files SET outcome = 'waiting', detail = 'Changed since it was seen',
+             run_id = ?, decided_at = ? WHERE id = ?`,
+        );
+        const ok = await this.withDisk(
+          p,
+          async () => {
+            for (const f of unhashed) {
+              if (shouldStop()) return false;
+              const file = this.sourcePath(f.pair_key, f.rel_path);
+              const st = await lstatSource(file);
+              // As identify: an unpacked file's mtime is when the sidecar wrote it.
+              if (
+                !st ||
+                st.size !== f.size ||
+                (f.archive_id === null && st.mtimeMs !== f.mtime_ms)
+              ) {
+                // Looked at again (identify, compare) by the next run.
+                changed.run(run.id, Date.now(), f.id);
+                continue;
+              }
+              const h = await hashSource(file, pacer, shouldStop);
+              if (!h) return false;
+              setSha.run(h.sha256, Date.now(), f.id);
+            }
+            return true;
+          },
+          shouldStop,
+        );
+        if (ok === null || ok === false) return 'wait';
+        return 'more';
+      }
+      ids = this.filesToAdd(run, p);
       if (!ids.length) {
         this.next(run.id, p, 'index');
         return 'more';

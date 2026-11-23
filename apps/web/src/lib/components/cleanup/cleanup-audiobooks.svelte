@@ -85,6 +85,8 @@
   import CleanupAudioSwitch from './cleanup-audio-switch.svelte';
   import CleanupAudioArrivals from './cleanup-audio-arrivals.svelte';
   import CleanupAudioArrivalsLists from './cleanup-audio-arrivals-lists.svelte';
+  import CleanupAudioEbooks from './cleanup-audio-ebooks.svelte';
+  import CleanupAudioEbooksLists from './cleanup-audio-ebooks-lists.svelte';
   import {
     diskBusy,
     gateSummary,
@@ -162,6 +164,9 @@
   $: stage7 = status?.stages.find((s) => s.stage === 7) ?? null;
   $: run7 = status?.stage7?.available ? (status.stage7.run ?? null) : null;
   $: analysis7 = run7 ? `${run7.runId}:${run7.phase}` : '';
+  $: stage8 = status?.stages.find((s) => s.stage === 8) ?? null;
+  $: p8 = status?.stage8?.available ? status.stage8.progress : null;
+  $: pass8 = p8 ? `${p8.runId ?? ''}:${p8.phase}:${p8.finishedAt ?? ''}` : '';
   /** While a run waits for stages 1-5, the bar of the one that is working. */
   $: activeStage = [1, 2, 3, 4, 5].find(
     (k) => status?.stages.find((s) => s.stage === k)?.state === 'analysing'
@@ -804,7 +809,30 @@
         onStatus={(next) => (status = next)}
       />
     {/if}
+
+    {#if stage8 && status.stage8?.available}
+      <CleanupAudioEbooks
+        {api}
+        {status}
+        stage={stage8}
+        detailsOpen={detailsOpen[8]}
+        onToggle={(e) => toggleDetails(8, e)}
+        onStatus={(next) => (status = next)}
+      />
+    {/if}
   </section>
+
+  {#if stage8 && p8}
+    <CleanupSection
+      id="audio-ebooks"
+      jp="電子書籍"
+      title="Calibre ebooks"
+      summary={p8.counts.review ? `${n(p8.counts.review)} pairs to review` : ''}
+      testid="audio-ebooks-section"
+    >
+      <CleanupAudioEbooksLists {api} pass={pass8} />
+    </CleanupSection>
+  {/if}
 
   {#if stage7 && run7}
     <CleanupSection

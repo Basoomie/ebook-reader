@@ -29,6 +29,8 @@
   import Stage4Card from '$lib/components/cleanup/cleanup-stage4.svelte';
   import Stage5Card from '$lib/components/cleanup/cleanup-stage5.svelte';
   import ArrivalsCard from '$lib/components/cleanup/cleanup-arrivals.svelte';
+  import BookmeterCard from '$lib/components/cleanup/cleanup-bookmeter.svelte';
+  import TitleFits from '$lib/components/cleanup/cleanup-title-fits.svelte';
   import CleanupDetails from '$lib/components/cleanup/cleanup-details.svelte';
   import {
     checksSummary,
@@ -773,6 +775,9 @@
             on:changed={refresh}
           />
         {/if}
+        {#if stage4 && api}
+          <BookmeterCard {api} />
+        {/if}
         {#if stage5 && api}
           <Stage5Card
             {api}
@@ -989,6 +994,17 @@
           testid="cleanup-stage3"
         >
           <Stage3Lists {api} on:changed={refresh} />
+        </CleanupSection>
+      {/if}
+
+      {#if api}
+        <CleanupSection
+          id="title-fits"
+          jp="題名の短縮"
+          title="Shortened titles"
+          testid="cleanup-title-fits"
+        >
+          <TitleFits {api} />
         </CleanupSection>
       {/if}
 

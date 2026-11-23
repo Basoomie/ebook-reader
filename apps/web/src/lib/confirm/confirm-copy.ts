@@ -235,7 +235,7 @@ export function largeDownloadCopy(opts: {
       `${opts.count.toLocaleString('en-US')} ${opts.what}, ${opts.size} in all. ${
         opts.zip ? 'They arrive as one ZIP file.' : 'Each file is saved on its own.'
       }`,
-      'You can change the size that asks first in Settings > Data > Downloading books.'
+      'You can change the size that asks first in Settings > Library > Downloading books.'
     ],
     confirmLabel: `Download ${opts.size}`,
     danger: false
@@ -713,6 +713,20 @@ export function resetToolbarCopy(bar: 'top' | 'bottom'): ConfirmCopy {
   };
 }
 
+/** Settings > Library > Links: Reset to default. */
+export function resetLinksCopy(): ConfirmCopy {
+  return {
+    title: 'Reset the links to their default?',
+    message: [
+      'Put the links back in their default order and places on this device.',
+      'Other devices keep their own links.'
+    ],
+    confirmLabel: 'Reset',
+    // Nothing is deleted: the plain filled button (as Reset of the toolbars).
+    danger: false
+  };
+}
+
 // ---- Library cleanup (WP20a) ----------------------------------------------------------
 
 /** Turning stage 1 on: from then on it removes identical copies from Calibre on its own. */
@@ -949,13 +963,26 @@ export function arrivalsOnCopy(lastPlan: string | null): ConfirmCopy {
   };
 }
 
+/** WP21g: audiobook stage 8 (genres, tags and series from the Calibre ebooks) switched On. */
+export function ebooksOnCopy(preview: string | null): ConfirmCopy {
+  return {
+    title: 'Give the paired audiobooks their ebooks’ genres, tags and series?',
+    message: [
+      ...(preview ? [preview] : []),
+      'From the next daily run (or Run now), each audiobook paired with its Calibre volume gets that ebook’s genres and tags in Audiobookshelf, and the series where the audiobook has none from a store; a book that gains a series moves into its series folder (its reader links follow), but never while someone has listening progress or a bookmark on it. Your own Audiobookshelf edits stay yours. Calibre is only read. Takes effect only while Settings > Audiobooks > Changes to books already in the library is On.'
+    ],
+    confirmLabel: 'Switch it On',
+    irreversible: false
+  };
+}
+
 /** WP20g: the Calibre library's new arrivals switched On. */
 export function booksArrivalsOnCopy(lastRun: string | null): ConfirmCopy {
   return {
     title: 'Add new books to Calibre and run them through stages 1-5?',
     message: [
       ...(lastRun ? [lastRun] : []),
-      'From the next run on (daily, Run now, or a book you add in Calibre), new EPUBs from the source folders that are not copies of library books are added to Calibre with calibredb add (copies; nothing under /torrents changes but _extracted/), and every new book goes through stages 1-5 with their changes written. A folder adds only after its first run’s Preview and your “Add these”. Each batch can be undone.'
+      'From the next run on (daily, Run now, or a book you add in Calibre), new EPUBs from the source folders that are not copies of library books are added to Calibre with calibredb add (copies; nothing under /torrents changes but _extracted/), and every new book goes through stages 1-5 with their changes written. A folder adds only after its first run (a Preview of every file in it) has finished. Each batch can be undone.'
     ],
     confirmLabel: 'Switch it On',
     irreversible: false
@@ -968,22 +995,10 @@ export function booksArrivalsRunNowCopy(mode: 'analyse' | 'on'): ConfirmCopy {
     title: 'Run the new arrivals now?',
     message: [
       mode === 'on'
-        ? 'The source folders are checked, new books are added to Calibre (from folders you approved) and go through stages 1-5, their changes written.'
+        ? 'The source folders are checked, new books are added to Calibre (from folders whose first run has finished) and go through stages 1-5, their changes written.'
         : 'Preview: the source folders are checked and new books compared with the library; nothing is added or written.'
     ],
     confirmLabel: 'Run now',
-    irreversible: false
-  };
-}
-
-/** WP20g: a source folder's first run approved. */
-export function booksArrivalsApproveCopy(source: string, books: number): ConfirmCopy {
-  return {
-    title: `Add the ${books} new books from ${source}?`,
-    message: [
-      'They are added at the next run (On, daily or Run now), each checked again just before it is added; copies of library books found since are not added. After this, only new files in the folder are looked at.'
-    ],
-    confirmLabel: 'Add these',
     irreversible: false
   };
 }
@@ -1085,5 +1100,72 @@ export function removeCleanupSecretCopy(label: string): ConfirmCopy {
     message: ['The library cleanup can’t use it until you enter it again.'],
     confirmLabel: `Remove ${label}`,
     irreversible: true
+  };
+}
+
+// ---- Calibre metadata editing (tier 3 item 2) ----------------------------------------------
+
+/** Undo of one entry in a book's history of changes: names the field and the value it goes back to. */
+export function undoChangeCopy(field: string, value: string): ConfirmCopy {
+  return {
+    title: 'Undo this change?',
+    message: [
+      `${field} goes back to: ${value}`,
+      'This writes to Calibre. The value then counts as yours, so the cleanup won’t change it again.'
+    ],
+    confirmLabel: 'Undo',
+    // Nothing is deleted: the earlier value is written back (and can be undone in turn).
+    danger: false
+  };
+}
+
+/** Settings › Library › Tags you can pick: taking a tag off the list. */
+export function removeTagFromListCopy(tag: string): ConfirmCopy {
+  return {
+    title: `Remove ${quoted(tag)} from the list?`,
+    message: ['You won’t be able to pick it any more. Books that have it keep it.'],
+    confirmLabel: 'Remove'
+  };
+}
+
+/** Settings › Library › Tags you can pick: back to the default list. */
+export function resetTagListCopy(): ConfirmCopy {
+  return {
+    title: 'Put the list back to the default?',
+    message: ['Your books don’t change: they keep the tags they have.'],
+    confirmLabel: 'Reset',
+    danger: false
+  };
+}
+
+/**
+ * A save that changes only the case of a name other books share: Calibre renames it for every
+ * book that has it (asked first; design follow-up decided 2026-11-23).
+ */
+export function sharedRenameCopy(
+  renames: { from: string; to: string; books: number }[]
+): ConfirmCopy {
+  const list = Array.isArray(renames) ? renames : [];
+  return {
+    title: list.length === 1 ? 'Rename it for every book?' : 'Rename them for every book?',
+    message: [
+      ...list.map((r) => `${quoted(r.from)} becomes ${quoted(r.to)} on ${books(r.books)} more.`),
+      'Calibre keeps one spelling of a name for all its books. On those books the name then counts as yours too.'
+    ],
+    confirmLabel: 'Save and rename',
+    danger: false
+  };
+}
+
+/** More Bookmeter coverage: On writes the new matches' store links to Calibre. */
+export function bookmeterOnCopy(books: number): ConfirmCopy {
+  return {
+    title: 'Write the new Bookmeter store links to Calibre?',
+    message: [
+      `${books.toLocaleString()} books get their Bookmeter id and the store ids from its store list (ISBN, Rakuten, honto, ebookjapan, U-NEXT, BOOK☆WALKER, Natively) added to their identifiers. An id Calibre already has is never replaced, and store links you edited are never touched.`,
+      'They are written in batches through stage 4; each batch can be undone from the batches list.'
+    ],
+    confirmLabel: 'Switch it On',
+    irreversible: false
   };
 }

@@ -930,7 +930,8 @@ export class AudioStage5 {
       let batchQueued = 0;
       let batchOpen = 0;
       for (const g of groups) {
-        if (modeOf(s, g.model) === 'direct' || g.mode === 'direct')
+        // One call each (flex too: calls at the batch price).
+        if (modeOf(s, g.model) !== 'batch' || g.mode === 'direct')
           direct.set(g.model, (direct.get(g.model) ?? 0) + g.n);
         else if (g.state === 'queued') batchQueued += g.n;
         else batchOpen += g.n;

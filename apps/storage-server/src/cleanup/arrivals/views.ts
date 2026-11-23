@@ -40,11 +40,14 @@ export interface Bar {
 /** The running phase's bar and its time left (from what this phase measured since it started). */
 export function runBar(p: RunProgress, now = Date.now()): Bar {
   const c = p.counts[p.phase] ?? { done: 0, total: 0 };
-  const elapsed = now - p.phaseStartedAt;
+  // The compare phase's stages each count on their own: the pace from the stage's start.
+  const sub = p.phase === 'compare' && p.cmp ? p.cmp : null;
+  const elapsed = now - (sub ? sub.startedAt : p.phaseStartedAt);
   const byBytes = c.bytesTotal !== undefined && c.bytesTotal > 0;
   const done = byBytes ? (c.bytesDone ?? 0) : c.done;
   const total = byBytes ? c.bytesTotal! : c.total;
-  const rate = done > 0 && elapsed > 0 ? done / elapsed : 0;
+  const fresh = done - (sub ? sub.startDone : 0);
+  const rate = fresh > 0 && elapsed > 0 ? fresh / elapsed : 0;
   return {
     phase: p.phase,
     index: RUN_PHASES.indexOf(p.phase),
@@ -81,7 +84,7 @@ export function arrivalsStatus(a: BookArrivals, db: Database.Database, now = Dat
   const pairs = settings.arrivals.pairs.map((pr) => {
     const key = `${pr.id}|${pr.source}`;
     const row = db.prepare('SELECT * FROM calibre_arrival_pairs WHERE pair_key = ?').get(key) as
-      | { first_run_id: number | null; first_done_at: number | null; approved_at: number | null }
+      | { first_run_id: number | null; first_done_at: number | null }
       | undefined;
     const n = (outcomes: string[]) =>
       (
@@ -107,10 +110,18 @@ export function arrivalsStatus(a: BookArrivals, db: Database.Database, now = Dat
       source: pr.source,
       libraryId: pr.libraryId,
       firstRunId: row?.first_run_id ?? null,
-      // A first run is done only once every file was looked at (before approval).
-      firstDoneAt: row?.approved_at == null && waiting > 0 ? null : (row?.first_done_at ?? null),
-      approvedAt: row?.approved_at ?? null,
-      wouldAdd: n(['new', 'better']),
+      // Done once every file was looked at; runs that start after it add when On.
+      firstDoneAt: row?.first_done_at ?? null,
+      // Compared books only (a stopped run can leave new books not compared yet).
+      wouldAdd: (
+        db
+          .prepare(
+            `SELECT COUNT(*) AS n FROM calibre_arrival_files INDEXED BY calibre_arrival_files_outcome
+             WHERE outcome IN ('new', 'better') AND pair_key = ? AND gone_at IS NULL
+               AND json_extract(facts_json, '$.compared') IS NOT NULL`,
+          )
+          .get(key) as { n: number }
+      ).n,
       added: n(['added']),
       // Books and archives not looked at yet (waiting to settle): a first run is done without any.
       waiting,

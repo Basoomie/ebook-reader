@@ -18,6 +18,7 @@ import type { SidecarConfig } from '../../cleanup-apply/src/config';
 import { Worker } from '../../cleanup-apply/src/worker';
 import { updateStage } from '../src/cleanup/stages';
 import { stillAsWritten } from '../src/cleanup/stage4/proposals';
+import { calibreNameBytes, NAME_MAX_BYTES } from '../src/cleanup/calibre-names';
 import { makeJpeg } from './helpers/calibre-fixture';
 import { type CleanupEnv, makeCleanupEnv } from './helpers/cleanup-env';
 import { makeTempDir } from './helpers/spawn-server';
@@ -271,18 +272,21 @@ describe('stage 4 On: written through the field-write path', () => {
     expect(fs.readFileSync(path.join(folder, 'cover.jpg')).equals(storeCover)).toBe(true);
     // Review items and the fields stage 5 carries stay out.
     expect(calibreRecord(env.lib, ids.S2)!.title).toBe('別の本');
-    expect(calibreRecord(env.lib, ids.S3)!.title).toBe('短い題名');
-    expect(comments(ids.S3)).toBeNull();
-    const long = env.cleanupDb
-      .prepare(
-        `SELECT field, class, review_reason FROM proposed_changes WHERE calibre_id = ? ORDER BY field`,
-      )
-      .all(ids.S3) as { field: string; class: string; review_reason: string }[];
+    // A title too long for Calibre's names is cut to fit (2026-11-22), written with the other
+    // fields, and listed as shortened.
+    const s3 = calibreRecord(env.lib, ids.S3)!;
+    expect(s3.title.endsWith('…')).toBe(true);
+    expect(calibreNameBytes(ids.S3, s3.title, s3.authors[0] ?? 'Unknown')).toBeLessThanOrEqual(
+      NAME_MAX_BYTES,
+    );
+    expect(comments(ids.S3)).toBe('あらすじ');
     expect(
-      long.every((x) => x.class === 'review' && /Too long for a folder name/.test(x.review_reason)),
-    ).toBe(true);
+      env.cleanupDb
+        .prepare('SELECT original, written, step FROM calibre_title_fits WHERE calibre_id = ?')
+        .all(ids.S3),
+    ).toEqual([{ original: '長'.repeat(100), written: s3.title, step: 'cut' }]);
     const calls = setCalls();
-    expect(calls).toHaveLength(1);
+    expect(calls).toHaveLength(2);
     expect(calls[0].some((a) => /^(format|kind|tags):/.test(a))).toBe(false);
     expect(calls[0].filter((a) => a.startsWith('author_sort:'))).toEqual(['author_sort:サクシャ']);
     const states = env.cleanupDb
@@ -308,7 +312,7 @@ describe('stage 4 On: written through the field-write path', () => {
         batches: number;
       } | null;
     };
-    expect(st.write).toMatchObject({ books: { done: 1 }, batches: 1 });
+    expect(st.write).toMatchObject({ books: { done: 2 }, batches: 1 });
     expect(st.write!.changes.done).toBeGreaterThan(0);
     expect(st.write!.changes.done).toBe(st.write!.changes.total);
     // Recorded so that a later check tells Calibre's own value from a user's change.

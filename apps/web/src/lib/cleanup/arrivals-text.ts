@@ -48,7 +48,6 @@ export interface ArrivalsPair {
   libraryId: string;
   firstRunId: number | null;
   firstDoneAt: number | null;
-  approvedAt: number | null;
   wouldAdd: number;
   added: number;
   /** Books and archives not looked at yet (waiting to settle); older servers leave it out. */
@@ -249,15 +248,16 @@ export function arrivalsReportLines(s: ArrivalsStatus | null): string[] {
 }
 
 /** A source folder's first-run state in words. */
-export function pairLine(p: ArrivalsPair): string {
+export function pairLine(p: ArrivalsPair, mode: ArrivalsMode = 'analyse'): string {
   if (p.firstDoneAt === null) {
     if (p.waiting)
       return `First run not done yet: ${n(p.waiting)} files wait until they have been unchanged for ${n(p.settleMinutes ?? 30)} minutes; a run looks at them then by itself (a Preview).`;
     return 'First run not done yet: it checks every file (a Preview).';
   }
-  if (p.approvedAt === null)
-    return `First run done: ${n(p.wouldAdd)} books would be added. Look at the lists, then “Add these”.`;
-  return `${n(p.added)} added so far; ${n(p.wouldAdd)} waiting to be added at the next run.`;
+  // No "Add these" (user, 2026-11-23): On is the go-ahead; runs after the first one add.
+  if (mode !== 'on')
+    return `First run done: ${n(p.wouldAdd)} books would be added once New arrivals is On${p.added ? ` (${n(p.added)} added so far)` : ''}.`;
+  return `${n(p.added)} added so far; ${n(p.wouldAdd)} to be added at the next run.`;
 }
 
 /** The next scheduled run in the schedule's own time zone. */

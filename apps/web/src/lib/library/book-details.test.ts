@@ -71,6 +71,16 @@ describe('book details', () => {
     expect(labels).not.toContain('Series');
     expect(labels).not.toContain('Publisher');
     expect(detailRows(upload, '').find((r) => r.label === 'Library')?.value).toBe('Uploaded');
+    // Calibre's #illustrator: a 画 Illustrator row right after the Author row.
+    const illustrated = { ...book, illustrators: ['あずーる', 'BB'] };
+    const rows = detailRows(illustrated, '');
+    expect(rows.slice(1, 3)).toEqual([
+      { jp: '著者', label: 'Author', value: '水瀬 葵, 七尾 ゆき' },
+      { jp: '画', label: 'Illustrator', value: 'あずーる, BB' }
+    ]);
+    expect(detailRows({ ...book, illustrators: [] }, '').map((r) => r.label)).not.toContain(
+      'Illustrator'
+    );
     const counting = { ...book, charCount: null, charCountStatus: 'pending' as const };
     expect(detailRows(counting, '').find((r) => r.label === 'Length')?.value).toBe('Counting…');
   });

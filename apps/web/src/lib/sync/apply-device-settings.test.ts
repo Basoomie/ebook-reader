@@ -25,7 +25,16 @@ import {
 import { liveStorageSettings } from '$lib/data/internal/writable-storage-subject';
 import { localStorage } from '$lib/data/window/local-storage';
 import { homeRows$ } from '$lib/home/settings';
+import { LINKS_DEFAULT, resolveLinks } from '$lib/book-links/link-layout';
+import {
+  bookLinks$,
+  bookLinksMoreAs$,
+  bookLinksPlacement$,
+  bookLinksSearch$
+} from '$lib/book-links/settings';
 import { settings$ } from '$lib/whispersync/lib/stores';
+// Calibre metadata editing's per-device settings, loaded as the book page and Settings load them.
+import '$lib/calibre-edit/settings';
 import { applyDeviceSettings } from './apply-device-settings';
 import { keysWithScope } from './settings-registry';
 
@@ -42,7 +51,11 @@ const KEYS = [
   'ttu-whispersync-anki-key',
   'startDayHoursForTracker',
   'readerToolbar',
-  'readerBottomBar'
+  'readerBottomBar',
+  'bookLinks',
+  'bookLinksPlacement',
+  'bookLinksMoreAs',
+  'bookLinksSearch'
 ];
 
 beforeEach(() => {
@@ -153,6 +166,44 @@ describe('applyDeviceSettings', () => {
     expect(readerBottomBar$.getValue()).toEqual(BOTTOM_DEFAULT);
     expect(localStorage.getItem('readerBottomBar') ?? null).toBeNull();
     expect(shown('readAloud')).toBe(false);
+  });
+
+  it('copies the book page’s links list and its three settings', () => {
+    const list = JSON.stringify([
+      { id: 'unext', place: 'button' },
+      { id: 'amazon', place: 'hidden' }
+    ]);
+    const changed = applyDeviceSettings({
+      bookLinks: list,
+      bookLinksPlacement: 'panel',
+      bookLinksMoreAs: 'modal',
+      bookLinksSearch: '0'
+    });
+    expect(changed.sort()).toEqual([
+      'bookLinks',
+      'bookLinksMoreAs',
+      'bookLinksPlacement',
+      'bookLinksSearch'
+    ]);
+    expect(localStorage.getItem('bookLinks')).toBe(list);
+    expect(resolveLinks(bookLinks$.getValue()).slice(0, 2)).toEqual([
+      { id: 'unext', place: 'button' },
+      { id: 'amazon', place: 'hidden' }
+    ]);
+    expect(bookLinksPlacement$.getValue()).toBe('panel');
+    expect(bookLinksMoreAs$.getValue()).toBe('modal');
+    expect(bookLinksSearch$.getValue()).toBe(false);
+
+    applyDeviceSettings({
+      bookLinks: null,
+      bookLinksPlacement: null,
+      bookLinksMoreAs: null,
+      bookLinksSearch: null
+    });
+    expect(bookLinks$.getValue()).toEqual(LINKS_DEFAULT);
+    expect(bookLinksPlacement$.getValue()).toBe('section');
+    expect(bookLinksMoreAs$.getValue()).toBe('dropdown');
+    expect(bookLinksSearch$.getValue()).toBe(true);
   });
 
   it('never writes the AnkiConnect keys or a shared setting, whatever it is given', () => {

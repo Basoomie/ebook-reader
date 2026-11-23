@@ -1,7 +1,11 @@
 import type { CatalogOptions } from './api/catalog-routes';
 import { AiCore } from './ai/core';
+import { startSummaryTest } from './summaries/test-start';
+import { startSummaries } from './summaries/start';
 import { createApp } from './app';
-import { CalibreIndexer } from './calibre/indexer';
+import { CalibreIndexer, snapshotFile } from './calibre/indexer';
+import { getLibrary } from './calibre/libraries';
+import path from 'path';
 import { SearchRunner } from './catalog/search-runner';
 import { CharCountService } from './counts/count-service';
 import { ThumbnailService } from './thumbnails/thumbnails';
@@ -41,6 +45,7 @@ import { AudioCleanupService } from './cleanup/audio/audio-cleanup-service';
 import { switchReader } from './cleanup/audio/switch-reader';
 import {
   audioLabelsReader,
+  ebookLabelsReader,
   readerAudioState,
   readerWrittenFiles,
 } from './cleanup/audio-stage3-inputs';
@@ -181,6 +186,22 @@ if (database.ok && cleanupDb?.ok) {
         faadPath: (process.env.FAAD_PATH ?? '').trim() || 'faad',
       },
       readLabels: audioLabelsReader(cleanupDb.db, config.dbDir),
+      // Stage 8 (WP21g): the Calibre cleanup's target library, read only (the indexer's snapshot
+      // copy; its folder under CALIBRE_DIR for the covers).
+      calibre:
+        config.calibre.dir && config.calibre.cacheDir
+          ? () => {
+              const id = cleanup?.targetLibrary() ?? null;
+              const lib = id ? getLibrary(database.db, id) : null;
+              if (!id || !lib) return null;
+              return {
+                libraryId: id,
+                snapshotFile: snapshotFile(config.calibre.cacheDir!, id),
+                libraryDir: path.join(config.calibre.dir!, lib.folder),
+              };
+            }
+          : undefined,
+      readEbookLabels: ebookLabelsReader(cleanupDb.db, config.dbDir),
       // One AI runner for every cleanup stage that asks the models (WP20e).
       aiRunner: cleanup.aiRunner,
       readerWrittenFiles: config.cleanupAudio
@@ -249,6 +270,8 @@ if (database.ok && config.calibre.dir) {
       counts,
       holdIngest: (libraryId) => cleanup?.holdsIngest(libraryId) ?? false,
       wantsIngest: (libraryId) => cleanup?.wantsIngest(libraryId) ?? false,
+      // Calibre metadata editing: what the index saw change, sorted out (whose change it was).
+      onFieldChanges: () => cleanup?.sortChanges(),
     });
     catalog.indexer = indexer.status;
     catalog.thumbnails = thumbnails;
@@ -503,6 +526,43 @@ if (notifications && database.ok) {
   onAudioStagePaused(() => notifier.poke());
 }
 
+// Book summaries session 2: the accuracy test, only on the PC's test copy (SUMMARIES_TEST=1).
+const summariesTest =
+  process.env.SUMMARIES_TEST === '1' && database.ok && aiCore && tts
+    ? startSummaryTest({ db: database.db, dbDir: config.dbDir, core: aiCore, tts })
+    : null;
+
+// Book summaries (session 3): on wherever the AI layer is.
+const summaries =
+  database.ok && aiCore
+    ? startSummaries({
+        db: database.db,
+        dbDir: config.dbDir,
+        core: aiCore,
+        calibreDir: config.calibre.dir,
+        uploads: uploadStore,
+        importOptions: countImportOptions(config.counts),
+        maxSentence: config.audio.tts.maxSentence,
+        scriptTimeoutSeconds: config.audio.tts.scriptTimeoutSeconds,
+        notifications,
+      })
+    : null;
+let summariesSnapshots: SnapshotScheduler | null = null;
+if (summaries) {
+  try {
+    summariesSnapshots = scheduleSnapshots({
+      db: summaries.store.db,
+      dir: snapshotDir(config.dbDir),
+      time: config.snapshotTime,
+      keep: config.snapshotKeep,
+      prefix: 'summaries',
+      onResult: (ok, error) => notifications?.snapshotResult('summaries', ok, error),
+    });
+  } catch (err) {
+    console.error('Error: could not schedule summaries.db snapshots:', err);
+  }
+}
+
 const app = createApp({
   config,
   database,
@@ -534,6 +594,8 @@ const app = createApp({
   cleanup: cleanupOptions,
   notifications,
   ai: aiCore,
+  summariesTest,
+  summaries,
 });
 cleanup?.start();
 cleanupOptions.audio?.start();
@@ -559,6 +621,8 @@ function shutdown(signal: string): void {
   console.log(`${signal} received, shutting down`);
   snapshots?.stop();
   cleanupSnapshots?.stop();
+  summariesSnapshots?.stop();
+  void summaries?.stop();
   aiCore?.stop();
   void notifications?.stop();
   void cleanup?.stop();

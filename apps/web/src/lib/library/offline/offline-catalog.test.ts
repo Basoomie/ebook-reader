@@ -131,6 +131,24 @@ describe('offline search terms', () => {
     expect(matchesQuery(b, q('series:=月と灯台'), ctx())).toBe(true);
   });
 
+  it('matches illustrators: the illustrator: field and plain text', () => {
+    const drawn = book('i', {
+      title: '本',
+      authors: [{ name: '著者', sort: null }],
+      illustrators: ['あずーる', 'ＢＢ画伯']
+    });
+    expect(matchesQuery(drawn, q('illustrator:bb画伯'), ctx())).toBe(true);
+    expect(matchesQuery(drawn, q('illustrator:="あずーる"'), ctx())).toBe(true);
+    expect(matchesQuery(drawn, q('illustrator:著者'), ctx())).toBe(false);
+    expect(matchesQuery(drawn, q('author:あずーる'), ctx())).toBe(false);
+    expect(matchesQuery(drawn, q('あずーる'), ctx())).toBe(true);
+    expect(matchesQuery(drawn, q('-illustrator:あずーる'), ctx())).toBe(false);
+    // A copy stored before illustrators were sent has none.
+    const old = book('o', { illustrators: undefined });
+    expect(matchesQuery(old, q('illustrator:x'), ctx())).toBe(false);
+    expect(matchesQuery(old, q('-illustrator:x'), ctx())).toBe(true);
+  });
+
   it('patterns run on the original text', () => {
     expect(matchesQuery(b, q('/ＧＪ/'), ctx())).toBe(true);
     expect(matchesQuery(b, q('/gj/i'), ctx())).toBe(false);

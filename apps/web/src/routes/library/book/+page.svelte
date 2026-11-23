@@ -34,6 +34,7 @@
   import AddToCollectionDialog from '$lib/components/collections/add-to-collection-dialog.svelte';
   import AudioLinkSection from '$lib/components/audio/audio-link-section.svelte';
   import BookDownloadMenu from '$lib/components/library/book-download-menu.svelte';
+  import BookLinks from '$lib/components/library/book-links.svelte';
   import BookIllustrations from '$lib/components/library/book-illustrations.svelte';
   import BookStateDialog from '$lib/components/library/book-state-dialog.svelte';
   import CoverImage from '$lib/components/library/cover-image.svelte';
@@ -60,7 +61,13 @@
   import type { Collection, CollectionItem } from '$lib/collections/collections';
   import { coverGrid } from '$lib/library/cover-size';
   import { descriptionParagraphs } from '$lib/library/description';
-  import { authorHref, formatSeriesIndex } from '$lib/library/format';
+  import {
+    authorHref,
+    formatSeriesIndex,
+    illustratorQuery,
+    libraryQueryHref
+  } from '$lib/library/format';
+  import { bookLinksPlacement$ } from '$lib/book-links/settings';
   import { getLibraryStore, type LibraryConnection } from '$lib/library/library-db';
   import type { OpenStage } from '$lib/library/open-calibre-book';
   import { openCatalogBook } from '$lib/library/open-from-catalog';
@@ -92,6 +99,17 @@
   import type { LocalRecord } from '$lib/sync/sync-db';
   import { bookStateApi, collectionsApi, libraryViewApi, notesApi } from '$lib/sync/sync-service';
   import { onDestroy, onMount } from 'svelte';
+  import BookEditForm from '$lib/components/calibre-edit/book-edit-form.svelte';
+  import BookHistoryPanel from '$lib/components/calibre-edit/book-history-panel.svelte';
+  import SeriesEdit from '$lib/components/calibre-edit/series-edit.svelte';
+  import RatingStars from '$lib/components/calibre-edit/rating-stars.svelte';
+  import { CalibreEditApi } from '$lib/calibre-edit/api';
+  import { bookEditAs$, bookRatingEmpty$, seriesEditAs$ } from '$lib/calibre-edit/settings';
+  import { editableBook, notWritten, stillWaiting, withSaved } from '$lib/calibre-edit/overlay';
+  import { fieldLabel } from '$lib/calibre-edit/format';
+  import type { EditValues, FieldStatus } from '$lib/calibre-edit/types';
+  import { serverReachability } from '$lib/library/offline/reachability';
+  import { faClockRotateLeft, faPen } from '@fortawesome/free-solid-svg-icons';
 
   /** Books per "Series" / "Also by" row. */
   const ROW_BOOKS = 12;
@@ -139,12 +157,29 @@
   let stopListeners: (() => void)[] = [];
   let destroyed = false;
   let loadController: AbortController | undefined;
+  /** Calibre metadata editing (tier 3 item 2): the client, the open panels, a saved edit. */
+  let editApi: CalibreEditApi | undefined;
+  let editing = false;
+  let historyOpen = false;
+  let seriesEditing: string | null = null;
+  /** The values just saved, shown at once until the library has them. */
+  let saved: Partial<EditValues> | null = null;
+  let savedCover: string | null = null;
+  let editStatus: FieldStatus[] = [];
+  let editPoll: ReturnType<typeof setInterval> | undefined;
 
   $: state = book ? states.get(book.id) : undefined;
-  $: paragraphs = descriptionParagraphs(book?.description);
+  // The page shows a saved edit at once (design: until the library shows it).
+  $: shown = book ? withSaved(book, saved) : null;
+  $: canEdit = editableBook(book);
+  $: editOffline = offline || serverReachability.knownUnreachable();
+  $: waitingForLibrary = !!saved && stillWaiting(editStatus);
+  $: refused = notWritten(editStatus);
+  $: showRating = !!shown && (!!shown.rating || $bookRatingEmpty$ === 'show');
+  $: paragraphs = descriptionParagraphs(shown?.description);
   $: longDescription = paragraphs.join('').length > 220 || paragraphs.length > 3;
-  $: rows = book
-    ? detailRows(book, libraries.find((l) => l.id === book?.libraryId)?.name ?? '')
+  $: rows = shown
+    ? detailRows(shown, libraries.find((l) => l.id === shown?.libraryId)?.name ?? '')
     : [];
   $: progressLabel = book
     ? bookProgressLabel(book.id, state, positions.get(book.id) ?? [], book.charCount)
@@ -178,8 +213,14 @@
   $: gridLayout = coverGrid($libraryCoverSize$);
   // Season 2 §6: the device's setting (anything unknown counts as the default).
   $: illustrationsAt = $bookIllustrationsPosition$ === 'cover' ? 'cover' : 'description';
-  $: seriesLabel = book?.series
-    ? `${book.series.name}${book.series.index !== null ? ` · 第${formatSeriesIndex(book.series.index)}巻` : ''}`
+  // Where the links go (Settings > Library, per device; anything unknown is the default).
+  $: linksAt =
+    $bookLinksPlacement$ === 'buttons' || $bookLinksPlacement$ === 'panel'
+      ? $bookLinksPlacement$
+      : 'section';
+  $: illustrators = shown?.illustrators ?? [];
+  $: seriesLabel = shown?.series
+    ? `${shown.series.name}${shown.series.index !== null ? ` · 第${formatSeriesIndex(shown.series.index)}巻` : ''}`
     : '';
 
   onMount(async () => {
@@ -204,6 +245,7 @@
     const timeout = Math.max(0, Number($libraryRequestTimeoutSeconds$) || 0);
     const a = new LibraryApi(connection.serverUrl, connection.token, timeout);
     api = a;
+    editApi = new CalibreEditApi(connection.serverUrl, connection.token, timeout || 30);
     freshOfflineCatalog();
     // No network, or the server didn't answer a moment ago (another page): the copy on
     // this device at once, and the server is asked again in the background.
@@ -254,6 +296,8 @@
   }
 
   onDestroy(() => {
+    clearInterval(editPoll);
+    if (savedCover) URL.revokeObjectURL(savedCover);
     destroyed = true;
     stopListeners.forEach((off) => off());
     loadController?.abort();
@@ -301,6 +345,7 @@
       return;
     }
     if (id === bookId && book) return;
+    if (id !== bookId) forgetSaved();
     bookId = id;
     loadController?.abort();
     const controller = new AbortController();
@@ -479,6 +524,47 @@
     revealed = new Set([...revealed, b.id]);
   }
 
+  /** After a save: the new values at once, then the library's state every 10 s until shown. */
+  function onSaved(values: Partial<EditValues>, cover: string | null) {
+    saved = { ...(saved ?? {}), ...values };
+    if (cover) {
+      if (savedCover) URL.revokeObjectURL(savedCover);
+      savedCover = cover;
+    }
+    editStatus = [];
+    void pollEdits();
+    clearInterval(editPoll);
+    editPoll = setInterval(() => void pollEdits(), 10_000);
+  }
+
+  async function pollEdits() {
+    if (!editApi || !bookId) return;
+    try {
+      editStatus = (await editApi.status(bookId)).status;
+    } catch {
+      return; // asked again on the next tick
+    }
+    if (!stillWaiting(editStatus)) {
+      clearInterval(editPoll);
+      // The library shows it now: read the book again (the saved values come from it).
+      const id = bookId;
+      const fresh = await api?.book(id).catch(() => null);
+      if (fresh && id === bookId) {
+        book = fresh;
+        void saveOfflineDetail(fresh);
+        if (!refused.length) forgetSaved();
+      }
+    }
+  }
+
+  function forgetSaved() {
+    clearInterval(editPoll);
+    saved = null;
+    editStatus = [];
+    if (savedCover) URL.revokeObjectURL(savedCover);
+    savedCover = null;
+  }
+
   function libraryHref(tab: string, name: string) {
     return `${pagePath}/library?${new URLSearchParams({ tab, group: name }).toString()}`;
   }
@@ -534,7 +620,7 @@
           data-testid="details-cover"
           on:click={() => (book && coverBlurred ? reveal(book) : illustrations?.openCover())}
         >
-          <CoverImage src={thumb(book)} blurred={coverBlurred} />
+          <CoverImage src={savedCover ?? thumb(book)} blurred={coverBlurred} />
           {#if book.series?.index !== null && book.series?.index !== undefined}
             <span class="c-dribbon">{formatSeriesIndex(book.series.index)}</span>
           {/if}
@@ -564,16 +650,46 @@
           class="break-words font-mincho text-3xl font-bold leading-snug sm:text-[2.4rem]"
           data-testid="details-title"
         >
-          {book.title}
+          {shown?.title ?? book.title}
         </h1>
-        {#if book.authors.length}
-          <div class="-my-2 text-[15px]">
-            {#each book.authors as author, i (i)}<a
+        {#if (shown ?? book).authors.length || illustrators.length}
+          <!-- The byline: "<author>, illustrated by <illustrator>"; each illustrator opens the
+               Library filtered by illustrator:"<name>". -->
+          <div class="-my-2 text-[15px]" data-testid="details-byline">
+            {#each (shown ?? book).authors as author, i (i)}<a
                 class="c-link inline-flex min-h-[2.75rem] items-center"
                 href={authorHref(pagePath, author.name)}
                 data-testid="details-author">{author.name}</a
-              >{i < book.authors.length - 1 ? ', ' : ''}{/each}
+              >{i < (shown ?? book).authors.length - 1
+                ? ', '
+                : ''}{/each}{#if illustrators.length}<span class="text-c-muted"
+                >{(shown ?? book).authors.length ? ', illustrated by ' : 'Illustrated by '}</span
+              >{#each illustrators as name, i (i)}<a
+                  class="c-link inline-flex min-h-[2.75rem] items-center"
+                  href={libraryQueryHref(pagePath, illustratorQuery(name))}
+                  title="Opens the illustrator's books"
+                  data-testid="details-illustrator">{name}</a
+                >{i < illustrators.length - 1 ? ', ' : ''}{/each}{/if}
           </div>
+        {/if}
+        {#if showRating && shown}
+          <!-- The rating, under the byline (design 2026-11-23); a book without one follows the
+               device's setting (hidden by default). -->
+          <div class="-mt-1" data-testid="details-rating">
+            <RatingStars rating={shown.rating ?? null} testid="details-rating-stars" />
+          </div>
+        {/if}
+        {#if waitingForLibrary}
+          <p class="text-sm text-c-muted" role="status" data-testid="details-edit-waiting">
+            Saved · waiting for the library to show it (about 1–11 minutes)
+          </p>
+        {/if}
+        {#if refused.length}
+          <p class="c-notice text-sm" role="alert" data-testid="details-edit-refused">
+            Not written to Calibre: {refused
+              .map((r) => `${fieldLabel(r.field)} (${r.reason ?? 'no reason given'})`)
+              .join('; ')}
+          </p>
         {/if}
         {#if book.missing}
           <p class="c-notice font-medium" data-testid="details-missing">
@@ -652,7 +768,7 @@
                 <span class="c-count c-dtile-count" aria-hidden="true">{highlights}</span>
               </a>
             {/if}
-            {#if onDeviceHere}
+            {#if onDeviceHere || canEdit}
               <DropdownMenu
                 buttonClass="c-btn c-btn-secondary c-dtile c-dmore"
                 rootClass="c-dtile-wrap"
@@ -667,22 +783,43 @@
                   <span class="c-dshort">More</span>
                   <span class="sr-only">More actions</span>
                 </span>
-                <button
-                  type="button"
-                  class="c-btn c-btn-ghost w-full justify-start gap-3 px-3 text-left text-c-seal"
-                  data-testid="details-remove-device"
-                  on:click={() => {
-                    close();
-                    if (book) void removeFromDevice(book);
-                  }}
-                >
-                  <Fa icon={faTrashCan} />
-                  Remove from this device
-                </button>
+                {#if canEdit}
+                  <button
+                    type="button"
+                    class="c-btn c-btn-ghost w-full justify-start gap-3 px-3 text-left"
+                    disabled={editOffline}
+                    title={editOffline ? 'The history needs the library server' : undefined}
+                    data-testid="details-history"
+                    on:click={() => {
+                      close();
+                      historyOpen = true;
+                    }}
+                  >
+                    <Fa icon={faClockRotateLeft} />
+                    History of changes
+                  </button>
+                {/if}
+                {#if onDeviceHere}
+                  <button
+                    type="button"
+                    class="c-btn c-btn-ghost w-full justify-start gap-3 px-3 text-left text-c-seal"
+                    data-testid="details-remove-device"
+                    on:click={() => {
+                      close();
+                      if (book) void removeFromDevice(book);
+                    }}
+                  >
+                    <Fa icon={faTrashCan} />
+                    Remove from this device
+                  </button>
+                {/if}
               </DropdownMenu>
             {/if}
           </div>
         </div>
+        {#if linksAt === 'buttons'}
+          <BookLinks {book} variant="buttons" />
+        {/if}
       </div>
 
       {#if paragraphs.length}
@@ -715,41 +852,68 @@
         </section>
       {/if}
 
-      <section class="c-dinfo c-dpanel min-w-0 rounded px-6 py-5" aria-labelledby="details-about">
-        <div class="flex items-baseline justify-between">
-          <h2 id="details-about" class="flex items-baseline gap-3">
-            <span class="font-mincho text-lg font-bold text-c-label">書誌</span>
-            <span class="text-sm text-c-muted">About this book</span>
-          </h2>
-          <span class="c-seal" aria-hidden="true">蔵<br />書</span>
-        </div>
-        <dl class="mt-3 grid grid-cols-[7rem_minmax(0,1fr)]" data-testid="details-rows">
-          {#each rows as row (row.label)}
-            <dt class="c-drow py-2.5 text-xs text-c-muted">
-              <span class="font-mincho font-bold text-c-label">{row.jp}</span>
-              {row.label}
-            </dt>
-            <dd class="c-drow break-words py-2.5 text-sm">{row.value}</dd>
-          {/each}
-        </dl>
-        {#if book.tags.length}
-          <div class="mt-4 flex flex-col gap-2">
-            <span class="text-xs text-c-muted">
-              <span class="font-mincho font-bold text-c-label">分類</span> Tags
-            </span>
-            <div class="flex flex-wrap gap-2">
-              {#each book.tags as tag (tag)}
-                <a
-                  class="c-chip c-chip-sm"
-                  href={libraryHref('tags', tag)}
-                  data-testid="details-tag">{tag}</a
-                >
-              {/each}
-            </div>
+      <div class="c-dinfo min-w-0">
+        <section class="c-dpanel min-w-0 rounded px-6 py-5" aria-labelledby="details-about">
+          <div class="flex items-baseline justify-between">
+            <h2 id="details-about" class="flex items-baseline gap-3">
+              <span class="font-mincho text-lg font-bold text-c-label">書誌</span>
+              <span class="text-sm text-c-muted">About this book</span>
+            </h2>
+            {#if canEdit}
+              <!-- The pencil in place of the 蔵書 seal (design 2026-11-23): no visible border,
+                   only a light hover; greyed out while the server can't be reached. -->
+              <button
+                type="button"
+                class="c-dpencil"
+                aria-label="Edit details"
+                title={editOffline
+                  ? 'Editing needs the library server, which can’t be reached right now'
+                  : 'Edit details'}
+                disabled={editOffline}
+                data-testid="details-edit"
+                on:click={() => (editing = true)}
+              >
+                <Fa icon={faPen} />
+              </button>
+            {:else}
+              <span class="c-seal" aria-hidden="true">蔵<br />書</span>
+            {/if}
           </div>
+          <dl class="mt-3 grid grid-cols-[7rem_minmax(0,1fr)]" data-testid="details-rows">
+            {#each rows as row (row.label)}
+              <dt class="c-drow py-2.5 text-xs text-c-muted">
+                <span class="font-mincho font-bold text-c-label">{row.jp}</span>
+                {row.label}
+              </dt>
+              <dd class="c-drow break-words py-2.5 text-sm">{row.value}</dd>
+            {/each}
+          </dl>
+          {#if (shown ?? book).tags.length}
+            <div class="mt-4 flex flex-col gap-2">
+              <span class="text-xs text-c-muted">
+                <span class="font-mincho font-bold text-c-label">分類</span> Tags
+              </span>
+              <div class="flex flex-wrap gap-2">
+                {#each (shown ?? book).tags as tag (tag)}
+                  <a
+                    class="c-chip c-chip-sm"
+                    href={libraryHref('tags', tag)}
+                    data-testid="details-tag">{tag}</a
+                  >
+                {/each}
+              </div>
+            </div>
+          {/if}
+        </section>
+        {#if linksAt === 'panel'}
+          <BookLinks {book} variant="panel" />
         {/if}
-      </section>
+      </div>
     </div>
+
+    {#if linksAt === 'section'}
+      <BookLinks {book} variant="section" />
+    {/if}
 
     {#if illustrationsAt === 'description'}
       <BookIllustrations
@@ -872,7 +1036,73 @@
   />
 {/if}
 
+{#if editing && book && editApi}
+  <BookEditForm
+    api={editApi}
+    library={api}
+    bookId={book.id}
+    title={shown?.title ?? book.title}
+    libraryName={libraries.find((l) => l.id === book?.libraryId)?.name ?? ''}
+    coverThumb={savedCover ?? thumb(book)}
+    placement={$bookEditAs$ === 'modal' ? 'center' : 'side'}
+    on:close={() => (editing = false)}
+    on:saved={(e) => onSaved(e.detail.values, e.detail.cover)}
+    on:series={() => {
+      editing = false;
+      seriesEditing = shown?.series?.name ?? null;
+    }}
+  />
+{/if}
+
+{#if historyOpen && book && editApi}
+  <BookHistoryPanel
+    api={editApi}
+    bookId={book.id}
+    title={shown?.title ?? book.title}
+    on:close={() => (historyOpen = false)}
+    on:undone={() => onSaved({}, null)}
+  />
+{/if}
+
+{#if seriesEditing && book && editApi}
+  <SeriesEdit
+    api={editApi}
+    name={seriesEditing}
+    libraryId={book.libraryId}
+    placement={$seriesEditAs$ === 'modal' ? 'center' : 'side'}
+    on:close={() => (seriesEditing = null)}
+    on:saved={() => onSaved({}, null)}
+  />
+{/if}
+
 <style>
+  /* The pencil in place of the 蔵書 seal: no visible border, a light hover (design 2026-11-23). */
+  .c-dpencil {
+    display: inline-grid;
+    place-items: center;
+    width: 2.75rem;
+    height: 2.75rem;
+    margin: -0.5rem -0.5rem -0.5rem 0;
+    border-radius: 999px;
+    color: var(--c-label);
+  }
+
+  @media (hover: hover) {
+    .c-dpencil:not(:disabled):hover {
+      background-color: var(--c-tint);
+    }
+  }
+
+  .c-dpencil:focus-visible {
+    outline: 2px solid var(--c-link);
+    outline-offset: -2px;
+  }
+
+  .c-dpencil:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
   /* Cover | title and buttons | About this book; the description spans under the first two. */
   .c-dgrid {
     display: grid;

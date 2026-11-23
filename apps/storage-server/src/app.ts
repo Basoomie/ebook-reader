@@ -9,6 +9,8 @@ import type { AudioOptions } from './audio/routes';
 import type { CleanupOptions } from './cleanup/routes';
 import type { AiCore } from './ai/core';
 import type { NotificationService } from './notifications/service';
+import type { SummaryService } from './summaries/service';
+import type { SummaryTestService } from './summaries/test-service';
 
 export interface AppOptions {
   config: ServerConfig;
@@ -29,6 +31,10 @@ export interface AppOptions {
   notifications?: NotificationService | null;
   /** The shared AI layer (Settings > AI; default: the cleanup's, tests). */
   ai?: AiCore | null;
+  /** Book summaries session 2: the accuracy test (only on the PC's test copy). */
+  summariesTest?: SummaryTestService | null;
+  /** Book summaries (session 3). Without it their routes answer 503. */
+  summaries?: SummaryService | null;
 }
 
 export function createApp({
@@ -43,6 +49,8 @@ export function createApp({
   cleanup,
   notifications,
   ai,
+  summariesTest,
+  summaries,
 }: AppOptions): Express {
   const app = express();
 
@@ -93,6 +101,8 @@ export function createApp({
       cleanup,
       notifications,
       ai,
+      summariesTest,
+      summaries,
     }),
   );
 

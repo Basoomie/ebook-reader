@@ -70,6 +70,7 @@ import {
   type ArrivalBatch,
   type ArrivalOpResult,
 } from './stage7-arrivals';
+import { AudioStage8, type CalibreTarget } from './stage8-ebooks';
 
 /** A clip can't be cut now (a Calibre job uses the disk): try again in a moment. */
 export class AudioBusyError extends Error {}
@@ -102,6 +103,12 @@ export interface AudioCleanupOptions {
    * models), on the shared AI layer (src/ai/).
    */
   aiRunner: AiRunner;
+  /**
+   * Stage 8 (WP21g): the Calibre library it pairs with (the cleanup's target library: its
+   * snapshot copy and folder, read only), or null; and its gate's labels.
+   */
+  calibre?: () => CalibreTarget | null;
+  readEbookLabels?: () => { text: string | null; error: string | null };
   log?: (m: string) => void;
   logError?: (m: string, err?: unknown) => void;
 }
@@ -191,6 +198,8 @@ export class AudioCleanupService {
   private running7: Promise<void> | null = null;
   /** Stage 7 (WP21f-1): the daily new arrivals (after the switch). */
   readonly stage7: AudioStage7 | null;
+  /** Stage 8 (WP21g): the second pass from the Calibre ebooks (a phase of stage 7's run). */
+  readonly stage8: AudioStage8 | null;
   private snapshotting: Promise<void> | null = null;
   private stopped = false;
   waiting1: string | null = null;
@@ -259,8 +268,18 @@ export class AudioCleanupService {
       designs: (stage4Id) => this.stage7?.designsFor(stage4Id) ?? new Map(),
       log: this.log,
     });
+    this.stage8 = opts.calibre
+      ? new AudioStage8({
+          db: opts.db,
+          lock: opts.lock,
+          calibre: opts.calibre,
+          readLabels: opts.readEbookLabels,
+          log: this.log,
+        })
+      : null;
     this.stage7 = opts.roots
       ? new AudioStage7({
+          stage8: this.stage8,
           db: opts.db,
           aiSettings: () => opts.aiRunner.settings(),
           roots: {
@@ -1094,6 +1113,21 @@ export class AudioCleanupService {
     this.stage7.changes.choose(bookId, field, choice);
   }
 
+  /** Stage 8's lists, review choices and CSV. */
+  ebooks(list: string, opts: { offset?: number; limit?: number } = {}) {
+    if (!this.stage8) return { total: 0, items: [] };
+    return this.stage8.list(list, opts);
+  }
+
+  ebookChoice(unitKey: string, field: string, value: unknown): void {
+    if (!this.stage8) throw new Error('Stage 8 is not set up');
+    this.stage8.choose(unitKey, field, value);
+  }
+
+  ebooksCsv(): string {
+    return this.stage8?.csv() ?? '';
+  }
+
   arrivalsDecide(reviewId: number, decision: string): void {
     if (!this.stage7) throw new Error('The audiobook folders are not set up');
     this.stage7.decide(reviewId, decision);
@@ -1136,6 +1170,23 @@ export class AudioCleanupService {
 
   async setMode(stage: number, mode: AudioStageMode): Promise<void> {
     if (!AUDIO_ANALYSIS_STAGES.includes(stage)) throw new Error('No such stage');
+    if (stage === 8) {
+      // Stage 8 (WP21g) runs inside stage 7's daily run; On only once its gate passed.
+      if (!this.stage8) throw new Error('The Calibre library is not set up for stage 8');
+      if (mode === 'on') {
+        const g = this.stage8.progress()?.gate;
+        if (!g?.passed)
+          throw new Error(
+            "Stage 8's gate on the labeled recordings has not passed yet: run it in Preview first",
+          );
+        this.log(
+          'Audiobooks stage 8: switched On (paired books get their genres, tags and series)',
+        );
+      }
+      setAudioStageMode(this.db, stage, mode);
+      void this.tick();
+      return;
+    }
     if (stage === 7) {
       if (!this.stage7) throw new Error('The audiobook folders are not set up');
       if (mode === 'on') {
@@ -1169,6 +1220,14 @@ export class AudioCleanupService {
   /** "Run the analysis again" (keeps the hashes and health of unchanged files). */
   reanalyse(stage: number): void {
     this.log(`Audiobooks stage ${stage}: run the analysis again (asked from the page)`);
+    if (stage === 8) {
+      // Stage 8 runs inside stage 7's run: its "Run now" is stage 7's.
+      if (!this.stage7 || !this.stage8) throw new Error('Stage 8 is not set up');
+      this.stage8.begin(null);
+      this.stage7.requestRun();
+      void this.tick();
+      return;
+    }
     if (stage === 7) {
       // Stage 7's "Run now".
       if (!this.stage7) throw new Error('The audiobook folders are not set up');
@@ -1322,6 +1381,7 @@ export class AudioCleanupService {
         ? { available: true, waiting: this.waiting6, ...this.stage6.status() }
         : { available: false, waiting: this.waiting6 },
       stage7: this.stage7 ? { available: true, ...this.stage7.status() } : { available: false },
+      stage8: this.stage8 ? { available: true, ...this.stage8.status() } : { available: false },
       switch: this.switcher
         ? { available: true, ...this.switcher.status(), covers: this.covers?.status() ?? null }
         : { available: false },

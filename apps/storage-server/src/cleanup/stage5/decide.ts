@@ -156,14 +156,26 @@ export function tagChange(
   current: readonly string[],
   customTags: readonly string[],
   addedBefore: readonly string[] = [],
+  /**
+   * New books: "Tags you can pick" (tag-list.ts): a term's label, or null when it isn't on the
+   * list (left out); a format's label likewise. Without it, stage 5's own vocabulary.
+   */
+  list?: { label: (id: string) => string | null; format: (f: Format) => string | null },
 ): TagChange {
   const have = new Set(current.map((t) => t.toLowerCase()));
   const removedByUser = new Set(
     addedBefore.map((t) => t.toLowerCase()).filter((t) => !have.has(t)),
   );
   const labels = new Set<string>();
-  if (ids) for (const id of ids) labels.add(label(id));
-  if (ids && format && FORMAT_TAGS[format]) labels.add(FORMAT_TAGS[format].ja);
+  if (ids)
+    for (const id of ids) {
+      const l = list ? list.label(id) : label(id);
+      if (l) labels.add(l);
+    }
+  if (ids && format) {
+    const fl = list ? list.format(format) : (FORMAT_TAGS[format]?.ja ?? null);
+    if (fl) labels.add(fl);
+  }
   const add = [...labels]
     .filter((l) => !have.has(l.toLowerCase()) && !removedByUser.has(l.toLowerCase()))
     .sort();

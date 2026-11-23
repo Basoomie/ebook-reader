@@ -120,3 +120,28 @@ export function isChatModel(model: string): boolean {
     model,
   );
 }
+
+/**
+ * OpenAI models that offer Flex processing (`service_tier: "flex"`): one call each at the Batch
+ * API's prices, answered when OpenAI has capacity (a 429 "Resource Unavailable" otherwise, not
+ * charged). From the Flex table of OpenAI's pricing page and its Flex guide (checked 2026-11-23):
+ * Flex is a beta being wound down (no date yet) and is not added to newer models (not on GPT-6.2).
+ * Only the models listed there by name are here.
+ */
+export const FLEX_MODELS: readonly string[] = [
+  'gpt-6-astra',
+  'gpt-6.1-sol',
+  'gpt-6.1-terra',
+  'gpt-6-luna',
+  'gpt-6-sol',
+  'gpt-5.6-sol',
+  'gpt-5.6-terra',
+  'gpt-5.6-luna',
+  'gpt-5.5',
+  'gpt-5.4',
+  'o3',
+];
+
+export function offersFlex(model: string): boolean {
+  return FLEX_MODELS.includes(model);
+}

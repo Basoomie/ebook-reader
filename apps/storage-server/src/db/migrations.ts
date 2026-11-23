@@ -1281,6 +1281,73 @@ export const MIGRATIONS: { version: number; name: string; sql: string }[] = [
       );
     `,
   },
+  {
+    version: 30,
+    name: 'illustrators and identifiers',
+    // Calibre metadata on the book page: Calibre's #illustrator column (several names, in
+    // Calibre's order; searched like authors, so a folded copy) and its identifiers (the store
+    // and book-site ids the links use). The ingest fills them: every book's change hash covers
+    // the new fields, so the first index after this migration rewrites every Calibre book once
+    // (in batches with yields); the request below starts that index at the first poll instead
+    // of waiting for Calibre to change metadata.db. Uploaded books have neither.
+    sql: `
+      CREATE TABLE illustrators (
+        id         INTEGER PRIMARY KEY,
+        name       TEXT NOT NULL UNIQUE,
+        name_fold  TEXT
+      );
+      CREATE TABLE book_illustrators (
+        book_id         TEXT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+        illustrator_id  INTEGER NOT NULL REFERENCES illustrators(id),
+        position        INTEGER NOT NULL,
+        PRIMARY KEY (book_id, position)
+      );
+      CREATE INDEX book_illustrators_illustrator ON book_illustrators (illustrator_id);
+      CREATE TABLE book_identifiers (
+        book_id  TEXT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+        type     TEXT NOT NULL,
+        value    TEXT NOT NULL,
+        PRIMARY KEY (book_id, type)
+      );
+      UPDATE library_index_state SET reindex_requested_at = 1
+        WHERE reindex_requested_at IS NULL;
+    `,
+  },
+  {
+    version: 31,
+    name: 'rating, languages and the fields Calibre changed',
+    // Calibre metadata editing (tier 3 item 2): the book page shows the rating and the edit form
+    // the languages, so the catalog keeps both (rating as Calibre stores it, 0-10 in half stars;
+    // languages as a JSON list of codes). They have their own small change hash (meta2_hash) so
+    // the first index after this migration updates only these two columns, never the whole
+    // catalog (item 1's full rewrite blocked the NAS for seconds per batch). cover_sig is the
+    // size and mtime of the book's cover.jpg, read for books whose record changed.
+    // calibre_field_changes: what the index saw change per field (old and new as stored here),
+    // for books it already had; the cleanup service attributes each row (the user's edit, the
+    // cleanup's write, or changed in Calibre's own program) and deletes it. Kept in ttsu.db, in
+    // the ingest's own transaction, so a restart loses none.
+    sql: `
+      ALTER TABLE books ADD COLUMN rating INTEGER;
+      ALTER TABLE books ADD COLUMN languages TEXT;
+      ALTER TABLE book_sources ADD COLUMN meta2_hash TEXT;
+      ALTER TABLE book_sources ADD COLUMN cover_sig TEXT;
+      CREATE TABLE calibre_field_changes (
+        id            INTEGER PRIMARY KEY,
+        library_id    TEXT NOT NULL,
+        calibre_uuid  TEXT NOT NULL,
+        calibre_id    INTEGER NOT NULL,
+        book_id       TEXT NOT NULL,
+        field         TEXT NOT NULL,
+        old_json      TEXT NOT NULL,
+        new_json      TEXT NOT NULL,
+        last_modified INTEGER,
+        before_modified INTEGER,
+        seen_at       INTEGER NOT NULL
+      );
+      UPDATE library_index_state SET reindex_requested_at = 1
+        WHERE reindex_requested_at IS NULL;
+    `,
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

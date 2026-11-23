@@ -13,6 +13,10 @@ import { snapshotFile } from '../calibre/indexer';
 import { getIndexState, getLibrary, listLibraries } from '../calibre/libraries';
 import { COUNTER_BUNDLE, readCounterInfo } from '../counts/counter-bundle';
 import { BatchService, REMOVAL_STAGES } from './batches';
+import { EditService } from './edits/edits';
+import { ChangeAttribution } from './edits/attribution';
+import { readFileSync } from 'fs';
+import { resolveInside } from '../calibre/source-fs';
 import { DISK_OWNERS, DiskLock } from './disk-lock';
 import { presentBookCount } from './handoff';
 import { SecretStore } from './secrets';
@@ -24,6 +28,7 @@ import { STAGE3_WAITING_SQL, Stage3Analysis, type PairRow, type Stage3Progress }
 import { Stage3Worker, type Stage3Reader } from '../counts/book-text-worker';
 import { oneTimePassesDone, Stage4Analysis, type Stage4Progress } from './stage4/analysis';
 import { listOtherGuesses, listSeriesGuesses } from './stage4/series-order-store';
+import { listTitleFits } from './title-fits';
 import { Stage4Ai } from './stage4/ai-step';
 import { Stage5, type Stage5Progress } from './stage5/step';
 import { BY_ID as STAGE5_TERMS } from './stage5/vocab';
@@ -40,6 +45,12 @@ import { openLookups, paceSeconds, stage4Eta, type SiteCounts } from './stage4/e
 import { FetchQueue, LABELED_PRIORITY, backoffKey } from './stage4/queue';
 import { FetcherSlots, slotStateRow, type FetcherSlot } from './stage4/fetch-slots';
 import { BookArrivals } from './arrivals/run';
+import {
+  BookmeterMore,
+  bookmeterAnalysisId,
+  bookmeterBar,
+  stage4Finished,
+} from './stage4/bookmeter-more';
 import { CALIBRE_FETCH_SITES, type FetchSite } from './settings';
 import {
   BUILT_STAGES,
@@ -205,6 +216,15 @@ export class CleanupService {
   readonly stage5: Stage5 | null;
   /** WP20g: the Calibre library's new arrivals and the import. */
   readonly arrivals: BookArrivals;
+  /** More Bookmeter coverage, step 2: the pass over stage 4's stored Bookmeter answers. */
+  readonly bookmeter: BookmeterMore | null;
+  private bookmeterRunning: Promise<void> | null = null;
+  private bookmeterCache: { at: number; value: unknown } | null = null;
+  /** Calibre metadata editing from the reader: the user's edits, their history and Undo. */
+  readonly edits: EditService;
+  /** What the reader's index saw change in Calibre, sorted out (whose change it was). */
+  readonly attribution: ChangeAttribution;
+  private attributing: Promise<void> | null = null;
   private arriving: Promise<void> | null = null;
   /** Until when the arrivals asked the reader's index to copy metadata.db at once. */
   private arrivalsIngestUntil = 0;
@@ -359,6 +379,24 @@ export class CleanupService {
             log: this.log,
           })
         : null;
+    this.edits = new EditService({
+      cleanup: opts.cleanup,
+      main: opts.main,
+      batches: this.batches,
+      cacheDir: opts.cacheDir,
+    });
+    this.edits.readCover = (libraryId, bookPath) => {
+      const lib = getLibrary(opts.main, libraryId);
+      if (!lib || !opts.calibreDir || !bookPath) return null;
+      try {
+        return readFileSync(
+          resolveInside(path.join(opts.calibreDir, lib.folder), `${bookPath}/cover.jpg`),
+        );
+      } catch {
+        return null;
+      }
+    };
+    this.attribution = new ChangeAttribution({ cleanup: opts.cleanup, main: opts.main });
     this.arrivals = new BookArrivals({
       cleanup: opts.cleanup,
       main: opts.main,
@@ -381,10 +419,26 @@ export class CleanupService {
         this.arrivalsIngestUntil = Date.now() + 10 * 60_000;
       },
       linkSidecarOnline: () => this.linkSeen(),
+      carry: (libraryId, from, to) => this.edits.carry(libraryId, from, to),
       requireReadOnlySources: opts.bookSourcesReadOnly,
       checksPass: () => this.checksPass(),
       log: this.log,
     });
+    this.bookmeter =
+      this.analysis4 && this.stage4Ai
+        ? new BookmeterMore({
+            db: opts.cleanup,
+            analysis: this.analysis4,
+            queue: this.fetchQueue,
+            runner: this.aiRunner,
+            batches: this.batches.stage4,
+            targetLibrary: () => this.targetLibrary(),
+            stage4Done: () => stage4Finished(this.db, this.stage4Ai?.isDone() ?? false),
+            writeWait: (lib) => this.bookmeterWriteWait(lib),
+            referenceFile: () => this.analysis4?.referenceFile() ?? null,
+            log: this.log,
+          })
+        : null;
     // Stage 4's covers are the stores' pictures, read from the fetch cache.
     this.batches.stage4.setStoreCover((url) => {
       const r = opts.cleanup
@@ -410,6 +464,8 @@ export class CleanupService {
         this.logError('Cleanup: an answer listener failed:', err);
       }
     }
+    // More Bookmeter coverage's pass waits on its own answers.
+    this.runBookmeter();
     if (this.stopped || this.analysing4) return;
     try {
       this.round4(this.targetLibrary());
@@ -551,6 +607,11 @@ export class CleanupService {
     }
     (this.reader3 as Stage3Worker).resize?.(dup.textWorkers);
     return this.reader3;
+  }
+
+  /** The reader's database (ttsu.db). */
+  get main(): Database.Database {
+    return this.opts.main;
   }
 
   get db(): Database.Database {
@@ -965,6 +1026,7 @@ export class CleanupService {
   private async round(): Promise<void> {
     this.batches.expireLeases();
     this.batches.checkIngested();
+    this.sortChanges();
     const target = this.targetLibrary();
     await this.round1(target);
     await this.round2(target);
@@ -972,6 +1034,134 @@ export class CleanupService {
     await this.round4(target);
     await this.round5(target);
     this.runArrivals();
+    this.runBookmeter();
+  }
+
+  /**
+   * More Bookmeter coverage: its pass, stepped in its own loop like the new arrivals (never
+   * blocks a round; each step works about 25 ms). Woken by the 5 s round and by answers.
+   */
+  runBookmeter(): void {
+    if (this.bookmeterRunning || this.stopped || !this.bookmeter) return;
+    const pass = this.bookmeter;
+    this.bookmeterRunning = (async () => {
+      try {
+        for (let i = 0; i < 100_000; i++) {
+          if (this.stopped) break;
+          const r = await pass.step(() => this.stopped);
+          if (r === 'idle' || r === 'wait') break;
+          await new Promise((res) => setImmediate(res));
+        }
+      } catch (err) {
+        this.logError('Cleanup: More Bookmeter matches failed:', err);
+      } finally {
+        this.bookmeterRunning = null;
+      }
+    })();
+  }
+
+  /** Why the pass's write must wait now (as stage 4 On's own: apply4), else null. */
+  private bookmeterWriteWait(target: string): string | null {
+    if (getStage(this.db, 4).pauseReason) return 'Stage 4 is paused';
+    if (this.batches.open()) return 'A batch is being applied';
+    for (const [s, left] of [
+      [1, () => this.remaining(target)],
+      [2, () => this.remaining2(target)],
+      [3, () => this.remaining3(target)],
+    ] as [number, () => number][]) {
+      if (getStage(this.db, s).mode === 'on' && left() > 0)
+        return `Waiting for stage ${s} to finish writing`;
+    }
+    const checks = this.checksPass();
+    if (!checks.ok) return `Waiting for the safety checks: ${checks.failing.join('; ')}`;
+    return null;
+  }
+
+  /**
+   * More Bookmeter coverage's card: mode, phase, bars with the time left (from what is open, at
+   * the pace measured in this run: WP20 lessons 4), counts. Cached 30 s (the counts read the
+   * pass's covering index and the proposals' count index).
+   */
+  bookmeterStatus(target: string | null, now = Date.now()): unknown {
+    const pass = this.bookmeter;
+    if (!pass) return null;
+    if (this.bookmeterCache && now - this.bookmeterCache.at < 30_000)
+      return this.bookmeterCache.value;
+    const st = pass.state();
+    const p = st.progress;
+    const lib = target;
+    const interval = getSettings(this.db).fetch.sites.bookmeter.intervalSeconds;
+    const runId = bookmeterAnalysisId(p.run);
+    const aiBatches = p.phase === 'ai' ? pass.openAiBatches() : [];
+    const bar = bookmeterBar(p, now, {
+      ai: this.aiRunner.counts('bookmeter-near', runId),
+      aiInBatches: aiBatches.reduce((a, b) => a + b.requests, 0),
+      openSearches: pass.openRequests(['q1', 'q2']),
+      openQ1: pass.openRequests(['q1']),
+      openStores: pass.openRequests(['stores']),
+      intervalSeconds: interval,
+    });
+    const value = {
+      mode: st.mode,
+      pausedReason: st.pausedReason,
+      pausedDetail: st.pausedDetail,
+      stage4Done: stage4Finished(this.db, this.stage4Ai?.isDone() ?? false),
+      progress: p,
+      bar,
+      books: lib ? pass.bookCounts(lib) : {},
+      proposals: lib ? pass.proposalCounts(lib, p.run) : {},
+      spot: pass.spotCounts(),
+      spotPassed: pass.spotPassed(),
+      aiBatches,
+      batchStallMinutes: this.aiRunner.settings().batchStallMinutes,
+      // OpenAI's batches have their own limit (book summaries session 3).
+      batchStallMinutesOpenai: this.aiRunner.settings().batchStallMinutesOpenai,
+      siteWait: ((b) => (b && b.reason !== 'pace' ? b.reason : null))(
+        this.fetchQueue.blocked('bookmeter', now),
+      ),
+    };
+    this.bookmeterCache = { at: now, value };
+    return value;
+  }
+
+  /** Drops the card's cached status (after the user's change on the page). */
+  bookmeterChanged(): void {
+    this.bookmeterCache = null;
+    this.runBookmeter();
+  }
+
+  /**
+   * What the reader's index saw change in Calibre, sorted out in chunks of 500 that yield to the
+   * event loop between them (never blocks a request for long). Called after every index and on
+   * every round while rows wait (a change of a book in an unfinished batch waits for it).
+   */
+  sortChanges(): void {
+    if (this.attributing || this.stopped) return;
+    let pending = false;
+    try {
+      pending = this.attribution.pending();
+    } catch (err) {
+      this.logError('Cleanup: reading the changes the index saw failed:', err);
+      return;
+    }
+    if (!pending) return;
+    this.attributing = (async () => {
+      try {
+        for (let i = 0; i < 200 && !this.stopped; i++) {
+          const r = this.attribution.drain(500);
+          if (r.calibre > 0 || r.renames > 0)
+            this.log(
+              `Cleanup: ${r.calibre} field(s) changed in Calibre itself, ${r.renames} renamed with an edit: now the user's`,
+            );
+          if (r.processed === 0) break;
+          await new Promise((res) => setImmediate(res));
+        }
+      } catch (err) {
+        this.logError('Cleanup: sorting out the changes the index saw failed:', err);
+      } finally {
+        this.attributing = null;
+      }
+    })();
   }
 
   /** WP20g: the new arrivals' run, stepped in its own loop (never blocks a round). */
@@ -1628,6 +1818,13 @@ export class CleanupService {
     return kind === 'series'
       ? listSeriesGuesses(this.db, target, offset, limit)
       : listOtherGuesses(this.db, target, offset, limit);
+  }
+
+  /** The titles shortened or cut to fit Calibre's folder names (cleanup.db v26), newest first. */
+  titleFits(offset: number, limit: number) {
+    const target = this.targetLibrary();
+    if (!target) return { total: 0, items: [] };
+    return listTitleFits(this.db, this.opts.main, target, offset, limit);
   }
 
   stage4Readings(state: string | null, offset: number) {

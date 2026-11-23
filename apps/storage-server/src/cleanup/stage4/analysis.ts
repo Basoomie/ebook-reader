@@ -201,6 +201,11 @@ export interface Stage4Progress {
    * ambiguous (READINGS_VERSION; the live Preview of 2026-11-22).
    */
   readingNotes?: { phase: 'done'; version: number; changed: number; ambiguous: number };
+  /**
+   * The books held for "Too long for a folder name" proposed again with titles fitted for
+   * Calibre's names (TITLE_FIT_VERSION; 2026-11-22): their hold replaced the class they had.
+   */
+  titleFit?: { phase: 'done'; version: number; books: number };
   /** Books the final pass has proposed again (for its time left). */
   finalDone?: number;
   /** Each step's answers and the new requests they led to (stage4/eta.ts, the time left). */
@@ -404,6 +409,7 @@ export function emptyStage4Progress(libraryId: string, now = Date.now()): Stage4
       version: REPICK_VERSION,
     },
     readingNotes: { phase: 'done', version: READINGS_VERSION, changed: 0, ambiguous: 0 },
+    titleFit: { phase: 'done', version: TITLE_FIT_VERSION, books: 0 },
   };
 }
 
@@ -485,9 +491,13 @@ export function oneTimePassesDone(p: Stage4Progress): boolean {
     p.bookmeterEditions?.phase === 'done' &&
     p.repick?.phase === 'done' &&
     (p.repick.version ?? 1) >= REPICK_VERSION &&
-    (p.readingNotes?.version ?? 0) >= READINGS_VERSION
+    (p.readingNotes?.version ?? 0) >= READINGS_VERSION &&
+    (p.titleFit?.version ?? 0) >= TITLE_FIT_VERSION
   );
 }
+
+/** The fitted titles' one-time pass (titleFitStep). 1: titles too long fitted, not held. */
+export const TITLE_FIT_VERSION = 1;
 
 /** The stored NDL readings' one-time pass (readingNotesStep). 1: notes left out, ambiguity. */
 export const READINGS_VERSION = 1;
@@ -795,7 +805,8 @@ export class Stage4Analysis {
       if (p.bookmeterEditions?.phase !== 'done') await this.bookmeterEditionsStep(p);
       else if (p.repick?.phase !== 'done' || (p.repick.version ?? 1) < REPICK_VERSION)
         await this.repickStep(p);
-      else this.readingNotesStep(p);
+      else if ((p.readingNotes?.version ?? 0) < READINGS_VERSION) this.readingNotesStep(p);
+      else await this.titleFitStep(p);
       this.save(p, p.phase === 'done' ? 'ready' : 'analysing');
       return p.phase === 'done' && oneTimePassesDone(p);
     }
@@ -1754,11 +1765,10 @@ export class Stage4Analysis {
     const rec = this.record(book, ref, ev);
     const d = decideStage4(rec);
     if (ev.bookmeter.hits && ev.bookmeter.accepted === undefined) {
-      const acc = acceptBookmeter(ev.bookmeter.hits, {
-        title: d.values.t,
-        authors: d.values.au,
-        own: bookmeterOwnTexts(book, ref, d, rec.amazon?.product?.title),
-      });
+      const acc = acceptBookmeter(
+        ev.bookmeter.hits,
+        bookmeterBook(book, ref, d, rec.amazon?.product?.title),
+      );
       ev.bookmeter.accepted = acc.hit ? { id: acc.hit.id, reason: acc.reason } : null;
       ev.bookmeter.reason = acc.reason;
       if (acc.hit) {
@@ -1843,6 +1853,8 @@ export class Stage4Analysis {
              WHERE id = ? AND state = 'queued'`,
           ).run(now, now, id);
           db.prepare('UPDATE fetch_waiters SET ready = 1 WHERE request_id = ?').run(id);
+          // More Bookmeter coverage's own waiters (bookmeter-more.ts).
+          db.prepare('UPDATE bookmeter_more_waiters SET ready = 1 WHERE request_id = ?').run(id);
         }
       })();
     }
@@ -2498,6 +2510,43 @@ export class Stage4Analysis {
 
   // ------------------------------------------------------------ Natively
 
+  /**
+   * More Bookmeter coverage, step 2 (bookmeter-more.ts): one book's stored Bookmeter answer and
+   * what acceptBookmeter compares it with, from stage 4's own decision. Read only; null when the
+   * book, its file facts or its online evidence are gone. The caller loads the snapshot first.
+   */
+  bookmeterFacts(libraryId: string, uuid: string): BookmeterFacts | null {
+    const book = this.book(uuid);
+    const ref = book ? this.loadRef(libraryId, uuid)?.file : null;
+    const ev = book && ref ? this.loadOnline(libraryId, uuid) : null;
+    if (!book || !ref || !ev) return null;
+    const rec = this.record(book, ref, ev);
+    const d = decideStage4(rec);
+    return {
+      book,
+      input: bookmeterBook(book, ref, d, rec.amazon?.product?.title),
+      kind: d.values.kind ?? null,
+      queryTitle: queryTitle(ref.opf_title || book.title),
+      bookmeter: ev.bookmeter,
+      searchRequest: ev.requests['bookmeter-search'] ?? null,
+      asin:
+        (d.trace.amazonIdentified ? ((ev.amazon.product?.asin as string | null) ?? null) : null) ??
+        book.identifiers.amazon_jp ??
+        null,
+    };
+  }
+
+  /** The reader's snapshot record of a book (loads the snapshot when it changed). */
+  snapshotBook(libraryId: string, uuid: string): Stage2Book | null {
+    this.loadSnapshot(libraryId);
+    return this.book(uuid);
+  }
+
+  /** Natively's id for an ASIN or an ISBN-13 (stage 4's own lookup, from the sitemap's pages). */
+  nativelyId(asin: string | null, isbn13: string | null): string | null {
+    return this.nativelyFor(asin, isbn13);
+  }
+
   private nativelyFor(asin: string | null, isbn13: string | null): string | null {
     if (asin) {
       const r = this.db
@@ -2828,6 +2877,29 @@ export class Stage4Analysis {
    * at On); an ambiguous name keeps the reading it had. The fetch cache answers; a name whose
    * answer is gone keeps its row.
    */
+  /**
+   * Once (TITLE_FIT_VERSION): every book with a proposal held for "Too long for a folder name"
+   * (the user hasn't decided) is proposed again from its stored answers, so its title is fitted
+   * for Calibre's names (title-fit.ts) and its other fields keep the classes the rules give them.
+   */
+  private async titleFitStep(p: Stage4Progress): Promise<void> {
+    const t = performance.now();
+    const rows = this.db
+      .prepare(
+        `SELECT DISTINCT calibre_uuid FROM proposed_changes
+         WHERE stage = 4 AND library_id = ? AND state = 'proposed' AND class = 'review'
+           AND decided_by IS NULL AND review_reason LIKE 'Too long for a folder name%'`,
+      )
+      .all(p.libraryId) as { calibre_uuid: string }[];
+    if (rows.length) this.loadSnapshot(p.libraryId);
+    for (const r of rows) await this.proposeBook(p, r.calibre_uuid);
+    p.titleFit = { phase: 'done', version: TITLE_FIT_VERSION, books: rows.length };
+    this.log(
+      `Stage 4: ${rows.length} books held for a name too long for Calibre's folders proposed again with fitted titles`,
+    );
+    addTime(p, 'title fit', performance.now() - t);
+  }
+
   private readingNotesStep(p: Stage4Progress): void {
     const t = performance.now();
     const db = this.db;
@@ -2901,11 +2973,10 @@ export class Stage4Analysis {
       if (!book || !ref || !ev?.bookmeter.hits) continue;
       const rec = this.record(book, ref, ev);
       const d = decideStage4(rec);
-      const acc = acceptBookmeter(ev.bookmeter.hits, {
-        title: d.values.t,
-        authors: d.values.au,
-        own: bookmeterOwnTexts(book, ref, d, rec.amazon?.product?.title),
-      });
+      const acc = acceptBookmeter(
+        ev.bookmeter.hits,
+        bookmeterBook(book, ref, d, rec.amazon?.product?.title),
+      );
       if ((acc.hit?.id ?? null) === (ev.bookmeter.accepted?.id ?? null)) continue;
       r0.changed++;
       ev.bookmeter.accepted = acc.hit ? { id: acc.hit.id, reason: acc.reason } : null;
@@ -3361,6 +3432,46 @@ ${f?.colophon_text ?? ''}`,
     updateStage(this.db, STAGE, { precision });
     return precision;
   }
+}
+
+/** One book's Bookmeter facts for the step-2 pass (Stage4Analysis.bookmeterFacts). */
+export interface BookmeterFacts {
+  book: Stage2Book;
+  input: ReturnType<typeof bookmeterBook>;
+  /** Stage 4's decided edition kind (full, sample, bonus, special edition, omnibus). */
+  kind: string | null;
+  /** The search's own query (plan(): the file's title, else Calibre's). */
+  queryTitle: string;
+  bookmeter: OnlineEvidence['bookmeter'];
+  /** The stored search's request id (fetch_requests). */
+  searchRequest: number | null;
+  /** The ASIN stage 4 identified (Natively's lookup, as proposalsFor). */
+  asin: string | null;
+}
+
+/**
+ * acceptBookmeter's inputs for one book: stage 4's decided title and authors, the book's own
+ * texts, and the chosen rules' inputs (More Bookmeter coverage, step 2: the decided series, number
+ * and format, Calibre's title for the volume guard), as step 1 measured them.
+ */
+export function bookmeterBook(
+  book: { title: string },
+  ref: { opf_title?: string | null; front_text?: string | null; colophon_text?: string | null },
+  d: ReturnType<typeof decideStage4>,
+  amazonTitle?: string | null,
+): Parameters<typeof acceptBookmeter>[1] {
+  return {
+    title: d.values.t,
+    authors: d.values.au,
+    own: bookmeterOwnTexts(book, ref, d, amazonTitle),
+    chosen: {
+      series: d.values.se ?? null,
+      ix: typeof d.values.ix === 'number' ? d.values.ix : null,
+      fmt: d.values.fmt ?? null,
+      calTitle: book.title,
+      opfTitle: ref.opf_title ?? null,
+    },
+  };
 }
 
 /** The texts that are the book's own for Bookmeter's edition check (acceptBookmeter). */

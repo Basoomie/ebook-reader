@@ -20,6 +20,7 @@
 
   const GLYPHS: Record<SettingsTab, string> = {
     Reader: '読',
+    Library: '書',
     Data: '蔵',
     Statistics: '計',
     Audiobooks: '音',
