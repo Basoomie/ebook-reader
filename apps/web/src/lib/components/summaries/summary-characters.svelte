@@ -194,6 +194,10 @@
     border-top: 0;
     padding-top: 0;
   }
+  /* 48 px on touch and E-ink, like the buttons. */
+  .chips .c-chip {
+    min-height: var(--c-btn-h);
+  }
   .chips {
     display: flex;
     gap: 0.5rem;

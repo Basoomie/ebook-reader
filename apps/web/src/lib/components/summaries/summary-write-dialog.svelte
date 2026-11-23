@@ -177,16 +177,14 @@
               on:input={(e) => set(k, i, 'text', val(e))}
               data-testid="summary-write-text"
             />
-            <button
-              type="button"
-              class="c-btn c-btn-ghost c-btn-sm self-end"
-              on:click={() => drop(k, i)}>Remove</button
+            <button type="button" class="c-btn c-btn-ghost self-end" on:click={() => drop(k, i)}
+              >Remove</button
             >
           </div>
         {/each}
         <button
           type="button"
-          class="c-btn c-btn-secondary c-btn-sm mt-2"
+          class="c-btn c-btn-secondary mt-2"
           data-testid="summary-write-add-{k}"
           on:click={() => add(k)}>Add to {label(k)}</button
         >

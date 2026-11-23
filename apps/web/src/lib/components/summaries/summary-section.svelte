@@ -473,7 +473,7 @@
       {#if view}
         <button
           type="button"
-          class="c-btn c-btn-sm {editing ? 'c-btn-primary' : 'c-btn-secondary'}"
+          class="c-btn {editing ? 'c-btn-primary' : 'c-btn-secondary'}"
           disabled={serverDown || busy}
           data-testid="summary-edit"
           on:click={toggleEdit}>{editing ? 'Done' : 'Edit'}</button
@@ -481,7 +481,7 @@
       {/if}
       {#if !serverDown}
         <DropdownMenu
-          buttonClass="c-btn c-btn-secondary c-btn-sm"
+          buttonClass="c-btn c-btn-secondary"
           align="right"
           label={view ? 'Replace the summary' : 'Add a summary'}
           testid="summary-replace"
@@ -516,7 +516,7 @@
           </div>
         </DropdownMenu>
         <DropdownMenu
-          buttonClass="c-btn c-btn-secondary c-btn-sm c-btn-icon"
+          buttonClass="c-btn c-btn-secondary c-btn-icon"
           align="right"
           label="More summary actions"
           testid="summary-more"
@@ -561,6 +561,10 @@
     align-items: center;
     gap: 0.5rem 1rem;
     margin-top: 0.75rem;
+  }
+  /* 48 px on touch and E-ink (the user's rule for this feature), like the buttons. */
+  .langs .c-chip {
+    min-height: var(--c-btn-h);
   }
   .langs {
     display: flex;

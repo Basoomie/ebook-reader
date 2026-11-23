@@ -48,3 +48,10 @@
     >
   {/each}
 </div>
+
+<style>
+  /* 48 px on touch and E-ink, like the buttons. */
+  button {
+    min-height: var(--c-btn-h);
+  }
+</style>

@@ -173,6 +173,7 @@ interface JobRow {
 
 /** A running job's step, as the book page shows it (session 4). */
 export type JobPhase = 'reading' | 'checking' | 'writing' | 'translating';
+const PHASE_ORDER: JobPhase[] = ['reading', 'checking', 'writing', 'translating'];
 
 /** The step a question's stage belongs to (null: not one of the job's steps). */
 export function phaseOfStage(stage: string): JobPhase | null {
@@ -769,7 +770,11 @@ export class SummaryService {
       onAsk: (a) => {
         list.push(a);
         const phase = phaseOfStage(a.stage);
-        if (phase && this.phases.get(j.id) !== phase) {
+        const was = this.phases.get(j.id);
+        // Only forward: a late follow-up of the reading step (an empty chapter asked again
+        // while items are checked) doesn't take the bar back. A new setup (the route's next)
+        // starts again from its own first question (runMake clears the step).
+        if (phase && (!was || PHASE_ORDER.indexOf(phase) > PHASE_ORDER.indexOf(was))) {
           this.phases.set(j.id, phase);
           // The devices' record shows the step (only making jobs are in it).
           if (j.kind !== 'translate') this.publish(j.book_id);
@@ -806,6 +811,7 @@ export class SummaryService {
     const route = JSON.parse(j.route_json ?? '[]') as RouteSetup[];
     const attempts = JSON.parse(j.attempts_json) as JobView['attempts'];
     for (let step = j.step; step < route.length; step++) {
+      this.phases.delete(j.id);
       if (this.stopping) return;
       const r = route[step];
       const label = setupLabel(r);

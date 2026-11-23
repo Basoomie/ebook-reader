@@ -82,14 +82,14 @@
   <span class="tools">
     <button
       type="button"
-      class="c-btn c-btn-ghost c-btn-sm"
+      class="c-btn c-btn-ghost"
       data-testid="summary-item-change"
       on:click={() => (mode = 'change')}>Change</button
     >
     {#if remove}
       <button
         type="button"
-        class="c-btn c-btn-ghost c-btn-sm text-c-seal"
+        class="c-btn c-btn-ghost text-c-seal"
         data-testid="summary-item-delete"
         on:click={() => (mode = 'delete')}>Delete</button
       >

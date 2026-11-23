@@ -112,12 +112,12 @@
   </label>
   {#if error}<p class="text-sm" role="alert">{error}</p>{/if}
   <div class="flex flex-wrap justify-end gap-2">
-    <button type="button" class="c-btn c-btn-ghost c-btn-sm" on:click={() => dispatch('cancel')}
+    <button type="button" class="c-btn c-btn-ghost" on:click={() => dispatch('cancel')}
       >Cancel</button
     >
     <button
       type="submit"
-      class="c-btn c-btn-primary c-btn-sm"
+      class="c-btn c-btn-primary"
       disabled={!ready || busy}
       aria-busy={busy}
       data-testid="summary-form-save">{busy ? 'Saving…' : saveLabel}</button

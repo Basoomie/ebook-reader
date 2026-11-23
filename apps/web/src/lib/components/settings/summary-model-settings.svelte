@@ -131,21 +131,21 @@
             <span class="flex gap-1">
               <button
                 type="button"
-                class="c-btn c-btn-ghost c-btn-sm c-btn-icon"
+                class="c-btn c-btn-ghost c-btn-icon"
                 aria-label="Move up"
                 disabled={i === 0}
                 on:click={() => move(i, -1)}>↑</button
               >
               <button
                 type="button"
-                class="c-btn c-btn-ghost c-btn-sm c-btn-icon"
+                class="c-btn c-btn-ghost c-btn-icon"
                 aria-label="Move down"
                 disabled={i === draft.route.length - 1}
                 on:click={() => move(i, 1)}>↓</button
               >
               <button
                 type="button"
-                class="c-btn c-btn-ghost c-btn-sm"
+                class="c-btn c-btn-ghost"
                 disabled={draft.route.length <= 1}
                 data-testid="summary-setup-remove"
                 on:click={() => draft && change({ route: removeSetup(draft.route, i) })}
@@ -200,7 +200,7 @@
     {#if draft.route.length < MAX_SETUPS}
       <button
         type="button"
-        class="c-btn c-btn-secondary c-btn-sm"
+        class="c-btn c-btn-secondary"
         data-testid="summary-setup-add"
         on:click={() => draft && change({ route: addSetup(draft.route, models[0] ?? '') })}
         >Add a setup</button
@@ -247,13 +247,13 @@
     <div class="flex items-center justify-end gap-3">
       {#if savedNote}<span class="text-sm text-c-muted" role="status">{savedNote}</span>{/if}
       {#if dirty}
-        <button type="button" class="c-btn c-btn-ghost c-btn-sm" on:click={() => (draft = saved)}
+        <button type="button" class="c-btn c-btn-ghost" on:click={() => (draft = saved)}
           >Undo changes</button
         >
       {/if}
       <button
         type="button"
-        class="c-btn c-btn-primary c-btn-sm"
+        class="c-btn c-btn-primary"
         disabled={!dirty || !!problem || busy}
         aria-busy={busy}
         data-testid="summary-models-save"

@@ -313,7 +313,7 @@
       {:else}
         <button
           type="button"
-          class="c-btn c-btn-secondary c-btn-sm mt-3"
+          class="c-btn c-btn-secondary mt-3"
           data-testid="summary-add-{section.key}"
           on:click={() => (adding = section.key)}
           >{section.key === 'overview' ? 'Add an overview' : `Add to ${tabLabel}`}</button

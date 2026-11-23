@@ -103,7 +103,7 @@
     <div class="pt-2">
       <button
         type="button"
-        class="c-btn c-btn-ghost c-btn-sm c-btn-flush-start"
+        class="c-btn c-btn-ghost c-btn-flush-start"
         data-testid="summary-version-back"
         on:click={() => (viewing = null)}>← All versions</button
       >
@@ -133,20 +133,20 @@
           <div class="flex flex-wrap gap-1">
             <button
               type="button"
-              class="c-btn c-btn-secondary c-btn-sm"
+              class="c-btn c-btn-secondary"
               data-testid="summary-version-view"
               on:click={() => view(v)}>View</button
             >
             {#if v.state !== 'current'}
               <button
                 type="button"
-                class="c-btn c-btn-secondary c-btn-sm"
+                class="c-btn c-btn-secondary"
                 data-testid="summary-version-restore"
                 on:click={() => (confirming = { id: v.id, what: 'restore' })}>Restore</button
               >
               <button
                 type="button"
-                class="c-btn c-btn-ghost c-btn-sm text-c-seal"
+                class="c-btn c-btn-ghost text-c-seal"
                 data-testid="summary-version-delete"
                 on:click={() => (confirming = { id: v.id, what: 'delete' })}>Delete</button
               >
