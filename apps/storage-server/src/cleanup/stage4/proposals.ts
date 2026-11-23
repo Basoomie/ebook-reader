@@ -303,10 +303,7 @@ export function proposeStage4(input: ProposalInput): Stage4Proposal[] {
       asWritten &&
       WRITTEN_KEPT.has(p.field) &&
       !(p.field === 'title' && p.source === 'series-order') &&
-      !(p.evidence as { notesOut?: unknown } | undefined)?.notesOut &&
-      // A best guess the cleanup wrote may be replaced by a confirmed value (a guess stays
-      // review by the rule below).
-      !input.appliedGuess?.has(appliedField)
+      !(p.evidence as { notesOut?: unknown } | undefined)?.notesOut
     ) {
       p.class = 'review';
       p.reason = 'Would replace a value the cleanup wrote';
@@ -449,7 +446,22 @@ export function proposeStage4(input: ProposalInput): Stage4Proposal[] {
       ? { fit: { from, step: f.step, rules: f.rules } }
       : {};
 
-  if (title && fitted && (N(fitted) !== N(book.title) || fitted !== book.title)) {
+  // A title that only loses the volume number Calibre's title has is never proposed (the user's
+  // decision 4: the store's printed form keeps its number). The series step takes out a number
+  // no source prints itself, through its own title. After stop 3 wrote 「解剖探偵 1」, deciding
+  // again proposed 「解剖探偵」 for 111 books (the step no longer gives a title it doesn't change).
+  const digits = (t: string) => (t.normalize('NFKC').match(/[0-9]/gu) ?? []).length;
+  const onlyNumberLost =
+    !soTitle &&
+    !!fitted &&
+    onlyNumberAdded(fitted, book.title) &&
+    digits(book.title) > digits(fitted);
+  if (
+    title &&
+    fitted &&
+    !onlyNumberLost &&
+    (N(fitted) !== N(book.title) || fitted !== book.title)
+  ) {
     let cls: 'auto' | 'review' = ft.auto ? 'auto' : 'review';
     let reason = ft.reason;
     // A first author too long on its own: its own reason (never the planner's "Too long for a
