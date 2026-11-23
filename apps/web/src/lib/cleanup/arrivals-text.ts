@@ -51,6 +51,9 @@ export interface ArrivalsPair {
   approvedAt: number | null;
   wouldAdd: number;
   added: number;
+  /** Books and archives not looked at yet (waiting to settle); older servers leave it out. */
+  waiting?: number;
+  settleMinutes?: number;
 }
 
 export interface ArrivalsStatus {
@@ -247,7 +250,11 @@ export function arrivalsReportLines(s: ArrivalsStatus | null): string[] {
 
 /** A source folder's first-run state in words. */
 export function pairLine(p: ArrivalsPair): string {
-  if (p.firstDoneAt === null) return 'First run not done yet: it checks every file (a Preview).';
+  if (p.firstDoneAt === null) {
+    if (p.waiting)
+      return `First run not done yet: ${n(p.waiting)} files wait until they have been unchanged for ${n(p.settleMinutes ?? 30)} minutes; a run looks at them then by itself (a Preview).`;
+    return 'First run not done yet: it checks every file (a Preview).';
+  }
   if (p.approvedAt === null)
     return `First run done: ${n(p.wouldAdd)} books would be added. Look at the lists, then “Add these”.`;
   return `${n(p.added)} added so far; ${n(p.wouldAdd)} waiting to be added at the next run.`;

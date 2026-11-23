@@ -16,6 +16,7 @@ import path from 'path';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildArgs } from '../../cleanup-apply/src/calibredb';
+import { clockNow } from '../src/cleanup/audio/arrivals-schedule';
 import { ArrivalBatches } from '../src/cleanup/arrivals/add-batches';
 import { entrySkip } from '../src/cleanup/arrivals/archives';
 import { classifyName, settled, sniffFormat, walkSource } from '../src/cleanup/arrivals/catalog';
@@ -747,6 +748,12 @@ describe('wp20g: a run end to end', () => {
     env.service.arrivals.stopRun();
   }, 300_000);
 
+  /** Run now, after any run that started by itself (a background tick) has ended. */
+  const requestWhenFree = async () => {
+    for (let i = 0; i < 20 && env.service.arrivals.currentRun(); i++) await steps();
+    env.service.arrivals.requestRun();
+  };
+
   it('a change its paused field holds is reported, and a later run writes it once resumed', async () => {
     env.service.arrivals.stopRun();
     // The On test's stage-2 batch was never applied (no sidecar here): out of the way, as a
@@ -772,7 +779,7 @@ describe('wp20g: a run end to end', () => {
       makeTextEpub({ title: '[作者] F の本', chapters: chaptersOf(41) }),
     );
     env.service.arrivals.setMode('on');
-    env.service.arrivals.requestRun();
+    await requestWhenFree();
     // The stage batches as the apply sidecar would leave them (its stage-2 steps: WP20b).
     const applyOpen = () => {
       const open = env.cleanupDb
@@ -809,7 +816,7 @@ describe('wp20g: a run end to end', () => {
     env.service.arrivals.stopRun();
     // Resumed: the next run has no new book, and writes what the first one held.
     resumeField(env.cleanupDb, 2, 'title');
-    env.service.arrivals.requestRun();
+    await requestWhenFree();
     await steps();
     const later = env.service.arrivals.currentRun()!;
     expect(later.id).toBeGreaterThan(first.id);
@@ -871,6 +878,20 @@ describe('wp20g: the queries at the catalog’s end size (lessons 3-4)', () => {
         .map((r) => r.detail)
         .join(' | ');
     const hot: [string, unknown[]][] = [
+      // The follow-up run's check (once a minute) and each folder's files waiting (the card).
+      [
+        `SELECT 1 FROM calibre_arrival_files INDEXED BY calibre_arrival_files_outcome
+         WHERE outcome IN ('pending', 'waiting') AND pair_key IN (?)
+           AND gone_at IS NULL AND kind IN ('epub', 'archive', 'volume')
+           AND first_seen_at <= ? AND mtime_ms <= ? LIMIT 1`,
+        ['a|books/japanese', 0, 0],
+      ],
+      [
+        `SELECT COUNT(*) AS n FROM calibre_arrival_files INDEXED BY calibre_arrival_files_outcome
+         WHERE outcome IN ('pending', 'waiting') AND pair_key = ? AND gone_at IS NULL
+           AND kind IN ('epub', 'archive', 'volume')`,
+        ['a|books/japanese'],
+      ],
       // The card's status (polled every 5 s): each folder's counts.
       [
         `SELECT COUNT(*) AS n FROM calibre_arrival_files INDEXED BY calibre_arrival_files_outcome
@@ -939,6 +960,143 @@ describe('wp20g: the queries at the catalog’s end size (lessons 3-4)', () => {
     }
     db.close();
   }, 120_000);
+});
+
+describe('wp20g: the settle time on a folder’s first look', () => {
+  // As on the NAS (stop 2): the settle time is 30 minutes and every file is seen for the first
+  // time, more than one slice of them (50).
+  let env: CleanupEnv;
+  let src: string;
+  const auth = (t: string) => ({ Authorization: `Bearer ${t}` });
+  const N = 60;
+
+  beforeAll(async () => {
+    const sources = tmp();
+    src = path.join(sources, 'books', 'japanese');
+    fs.mkdirSync(src, { recursive: true });
+    const made = await makeCleanupEnv({
+      service: {
+        stage3Reader: new InProcessReader(bundle, IMPORT),
+        counterBuild: 'test',
+        bookSourcesDir: sources,
+        bookSourcesReadOnly: false,
+      },
+    });
+    env = made.env;
+    await env.lib.addBook({
+      title: 'L',
+      authors: ['作者'],
+      epub: makeTextEpub({ title: 'L', chapters: chaptersOf(90) }),
+    });
+    await made.setup();
+    updateSettings(env.cleanupDb, {
+      arrivals: {
+        ...getSettings(env.cleanupDb).arrivals,
+        pairs: [{ id: 'ja', source: 'books/japanese', libraryId: env.libraryId() }],
+        settleMinutes: 30,
+        handCheckMinutes: 0,
+      },
+    });
+    env.cleanupDb.prepare(`UPDATE stages SET mode = 'analyse' WHERE stage BETWEEN 1 AND 5`).run();
+    // Files downloaded long ago (an hour), seen now for the first time.
+    const old = new Date(Date.now() - 3_600_000);
+    for (let i = 0; i < N; i++) {
+      const f = path.join(src, `book ${i}.epub`);
+      fs.writeFileSync(f, makeTextEpub({ title: `B${i}`, chapters: chaptersOf(200 + i) }));
+      fs.utimesSync(f, old, old);
+    }
+  }, 180_000);
+
+  afterAll(async () => {
+    await env?.close();
+  });
+
+  const drive = async () => {
+    for (let i = 0; i < 2000; i++) {
+      for (let j = 0; j < 600 && env.service.libraryBusy(); j++)
+        await new Promise((r) => setTimeout(r, 50));
+      const r = await env.service.arrivals.step();
+      if (r === 'idle' && !env.service.arrivals.currentRun()) return;
+      if (r === 'wait') await new Promise((res) => setTimeout(res, 20));
+    }
+  };
+  const counts = () =>
+    Object.fromEntries(
+      (
+        env.cleanupDb
+          .prepare(
+            `SELECT outcome, COUNT(*) AS n FROM calibre_arrival_files WHERE kind = 'epub' GROUP BY outcome`,
+          )
+          .all() as { outcome: string; n: number }[]
+      ).map((r) => [r.outcome, r.n]),
+    );
+
+  it('the first look waits for every file; nothing is approvable until they settle', async () => {
+    env.service.arrivals.setMode('analyse');
+    env.service.arrivals.requestRun();
+    await drive();
+    // Every file waits (not only the first slice of 50), seen for the first time.
+    expect(counts()).toEqual({ waiting: N });
+    expect(
+      env.cleanupDb
+        .prepare(
+          `SELECT COUNT(*) AS n FROM calibre_arrival_files WHERE detail LIKE 'Seen for the first time%'`,
+        )
+        .get(),
+    ).toEqual({ n: N });
+    // The folder's first run is not done: no "Add these".
+    const st = await request(env.app)
+      .get('/api/v1/cleanup/arrivals')
+      .set(auth(env.userToken()))
+      .expect(200);
+    expect(st.body.pairs[0]).toMatchObject({ firstDoneAt: null, waiting: N, settleMinutes: 30 });
+    await request(env.app)
+      .post('/api/v1/cleanup/arrivals/pairs/approve')
+      .set(auth(env.userToken()))
+      .send({ key: st.body.pairs[0].key })
+      .expect(409);
+    // A folder an earlier build marked done too early (the NAS after stop 2's first run): still
+    // not done while files wait, and "Add these" is refused.
+    env.cleanupDb.prepare('UPDATE calibre_arrival_pairs SET first_done_at = ?').run(Date.now());
+    const st2 = await request(env.app)
+      .get('/api/v1/cleanup/arrivals')
+      .set(auth(env.userToken()))
+      .expect(200);
+    expect(st2.body.pairs[0].firstDoneAt).toBeNull();
+    const refused = await request(env.app)
+      .post('/api/v1/cleanup/arrivals/pairs/approve')
+      .set(auth(env.userToken()))
+      .send({ key: st.body.pairs[0].key });
+    expect(refused.status).toBe(409);
+    expect(JSON.stringify(refused.body)).toMatch(/has not looked at 60 files yet/);
+  }, 300_000);
+
+  it('once they settled, a follow-up run looks at them by itself and the first run is done', async () => {
+    // Half an hour later.
+    env.cleanupDb
+      .prepare(`UPDATE calibre_arrival_files SET first_seen_at = first_seen_at - 1860000`)
+      .run();
+    // Today's scheduled run already ran (it would look at them too, and comes first).
+    const later = Date.now() + 61_000;
+    env.cleanupDb
+      .prepare('UPDATE calibre_arrivals_state SET last_scheduled_day = ?')
+      .run(clockNow(later, env.service.arrivals.zone()).day);
+    const id = env.service.arrivals.maybeStart(later);
+    expect(id).not.toBeNull();
+    await drive();
+    expect(counts()).toEqual({ new: N });
+    const st = await request(env.app)
+      .get('/api/v1/cleanup/arrivals')
+      .set(auth(env.userToken()))
+      .expect(200);
+    expect(st.body.pairs[0].firstDoneAt).not.toBeNull();
+    expect(st.body.pairs[0].wouldAdd).toBe(N);
+    const runs = await request(env.app)
+      .get('/api/v1/cleanup/arrivals/lists/runs')
+      .set(auth(env.userToken()))
+      .expect(200);
+    expect(runs.body.items[0].trigger).toBe('files settled');
+  }, 300_000);
 });
 
 describe('wp20g: better copies', () => {

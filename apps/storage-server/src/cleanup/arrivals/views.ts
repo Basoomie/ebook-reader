@@ -92,16 +92,29 @@ export function arrivalsStatus(a: BookArrivals, db: Database.Database, now = Dat
           )
           .get(...outcomes, key) as { n: number }
       ).n;
+    const waiting = (
+      db
+        .prepare(
+          `SELECT COUNT(*) AS n FROM calibre_arrival_files INDEXED BY calibre_arrival_files_outcome
+           WHERE outcome IN ('pending', 'waiting') AND pair_key = ? AND gone_at IS NULL
+             AND kind IN ('epub', 'archive', 'volume')`,
+        )
+        .get(key) as { n: number }
+    ).n;
     return {
       key,
       id: pr.id,
       source: pr.source,
       libraryId: pr.libraryId,
       firstRunId: row?.first_run_id ?? null,
-      firstDoneAt: row?.first_done_at ?? null,
+      // A first run is done only once every file was looked at (before approval).
+      firstDoneAt: row?.approved_at == null && waiting > 0 ? null : (row?.first_done_at ?? null),
       approvedAt: row?.approved_at ?? null,
       wouldAdd: n(['new', 'better']),
       added: n(['added']),
+      // Books and archives not looked at yet (waiting to settle): a first run is done without any.
+      waiting,
+      settleMinutes: settings.arrivals.settleMinutes,
     };
   });
   const reviews = (
@@ -235,7 +248,8 @@ export function arrivalsList(
     const items = (
       db
         .prepare(
-          `SELECT id, trigger, mode, state, phase, started_at, finished_at, report_json, error
+          `SELECT id, CASE WHEN json_extract(progress_json, '$.followUp') = 'settle' THEN 'files settled'
+             ELSE trigger END AS trigger, mode, state, phase, started_at, finished_at, report_json, error
            FROM calibre_arrival_runs ORDER BY id DESC LIMIT ? OFFSET ?`,
         )
         .all(lim, off) as { report_json: string | null }[]
