@@ -235,7 +235,7 @@ export function largeDownloadCopy(opts: {
       `${opts.count.toLocaleString('en-US')} ${opts.what}, ${opts.size} in all. ${
         opts.zip ? 'They arrive as one ZIP file.' : 'Each file is saved on its own.'
       }`,
-      'You can change the size that asks first in Settings > Data > Downloading books.'
+      'You can change the size that asks first in Settings > Library > Downloading books.'
     ],
     confirmLabel: `Download ${opts.size}`,
     danger: false
@@ -709,6 +709,20 @@ export function resetToolbarCopy(bar: 'top' | 'bottom'): ConfirmCopy {
     ],
     confirmLabel: 'Reset',
     // Nothing is deleted: the plain filled button.
+    danger: false
+  };
+}
+
+/** Settings > Library > Links: Reset to default. */
+export function resetLinksCopy(): ConfirmCopy {
+  return {
+    title: 'Reset the links to their default?',
+    message: [
+      'Put the links back in their default order and places on this device.',
+      'Other devices keep their own links.'
+    ],
+    confirmLabel: 'Reset',
+    // Nothing is deleted: the plain filled button (as Reset of the toolbars).
     danger: false
   };
 }

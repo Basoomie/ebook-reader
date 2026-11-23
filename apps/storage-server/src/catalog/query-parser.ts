@@ -8,7 +8,7 @@
 import path from 'path';
 
 export type QueryStatus = 'unread' | 'reading' | 'completed' | 'dropped';
-export type TextField = 'author' | 'series' | 'tag';
+export type TextField = 'author' | 'illustrator' | 'series' | 'tag';
 
 export type Matcher =
   | { kind: 'text'; value: string; exact: boolean }

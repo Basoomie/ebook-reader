@@ -16,6 +16,7 @@ import { listUsers } from '../src/db/users';
 import { addUploadedBook } from '../src/uploads/catalog-write';
 import { calibreDate, CalibreRoot, FixtureBook } from './helpers/calibre-fixture';
 import { enableLibrary, IndexerEnv, makeIndexerEnv } from './helpers/indexer-env';
+import { addStage2Tables, setStage2Fields } from './helpers/stage2-fixture';
 
 const envs: IndexerEnv[] = [];
 afterEach(async () => {
@@ -229,6 +230,11 @@ describe('folded copies', () => {
 
   it('are written by the indexer, updated with a new title and filled when missing', async () => {
     const c = await env();
+    // Calibre's #illustrator names are folded too (searched like authors).
+    addStage2Tables(c.lib);
+    setStage2Fields(c.lib, c.calibreIds[0], { illustrators: ['ＢＢ画伯'] });
+    c.e.db.prepare('UPDATE library_index_state SET reindex_requested_at = 1').run();
+    await c.e.indexer.tick();
     for (const { table, column, fold } of FOLDED_COLUMNS) {
       const rows = c.e.db.prepare(`SELECT ${column} AS v, ${fold} AS f FROM ${table}`).all() as {
         v: string;

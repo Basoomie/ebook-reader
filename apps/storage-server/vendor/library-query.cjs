@@ -2,7 +2,7 @@
  * GENERATED FILE, DO NOT EDIT. The storage server library search parser, bundled from
  * the web app (apps/web/src/lib/library/query/server-entry.ts).
  * Rebuild with `pnpm build:server-query` in apps/web after changing that code.
- * build: 30ebcf081efd380b
+ * build: d928387bc9ad8792
  */
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
@@ -53,8 +53,18 @@ var QueryError = class extends Error {
     this.end = end;
   }
 };
-var FIELDS = ["author", "series", "tag", "chars", "status", "favorite", "on"];
-var FIELD_RE = /^(author|series|tag|chars|status|favorite|on)[:：]/i;
+var FIELDS = [
+  "author",
+  "illustrator",
+  "series",
+  "tag",
+  "chars",
+  "status",
+  "favorite",
+  "on"
+];
+var FIELD_RE = /^(author|illustrator|series|tag|chars|status|favorite|on)[:：]/i;
+var FIELD_LOOKAHEAD = Math.max(...FIELDS.map((f) => f.length)) + 1;
 function isSpace(ch) {
   return ch !== void 0 && /\s/.test(ch);
 }
@@ -286,7 +296,7 @@ function parseTerm(s) {
     s.pos += 1;
     if (s.done || isSpace(s.peek())) return null;
   }
-  const fieldMatch = FIELD_RE.exec(s.text.slice(s.pos, s.pos + 9));
+  const fieldMatch = FIELD_RE.exec(s.text.slice(s.pos, s.pos + FIELD_LOOKAHEAD));
   if (fieldMatch) {
     s.pos += fieldMatch[0].length;
     return parseField(s, fieldMatch[1].toLowerCase(), negated, start);

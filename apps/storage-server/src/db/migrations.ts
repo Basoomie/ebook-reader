@@ -1281,6 +1281,38 @@ export const MIGRATIONS: { version: number; name: string; sql: string }[] = [
       );
     `,
   },
+  {
+    version: 30,
+    name: 'illustrators and identifiers',
+    // Calibre metadata on the book page: Calibre's #illustrator column (several names, in
+    // Calibre's order; searched like authors, so a folded copy) and its identifiers (the store
+    // and book-site ids the links use). The ingest fills them: every book's change hash covers
+    // the new fields, so the first index after this migration rewrites every Calibre book once
+    // (in batches with yields); the request below starts that index at the first poll instead
+    // of waiting for Calibre to change metadata.db. Uploaded books have neither.
+    sql: `
+      CREATE TABLE illustrators (
+        id         INTEGER PRIMARY KEY,
+        name       TEXT NOT NULL UNIQUE,
+        name_fold  TEXT
+      );
+      CREATE TABLE book_illustrators (
+        book_id         TEXT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+        illustrator_id  INTEGER NOT NULL REFERENCES illustrators(id),
+        position        INTEGER NOT NULL,
+        PRIMARY KEY (book_id, position)
+      );
+      CREATE INDEX book_illustrators_illustrator ON book_illustrators (illustrator_id);
+      CREATE TABLE book_identifiers (
+        book_id  TEXT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+        type     TEXT NOT NULL,
+        value    TEXT NOT NULL,
+        PRIMARY KEY (book_id, type)
+      );
+      UPDATE library_index_state SET reindex_requested_at = 1
+        WHERE reindex_requested_at IS NULL;
+    `,
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

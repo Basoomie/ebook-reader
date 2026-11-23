@@ -51,6 +51,8 @@ export interface BookSummary {
   authorSort: string | null;
   series: { name: string; index: number | null } | null;
   tags: string[];
+  /** Calibre's #illustrator names in Calibre's order; [] for uploads and books without one. */
+  illustrators: string[];
   publisher: string | null;
   publishedAt: number | null;
   addedAt: number;
@@ -79,6 +81,8 @@ export interface BookSourceView {
 export interface BookDetail extends BookSummary {
   description: string | null;
   sources: BookSourceView[];
+  /** Calibre's identifiers, type (lower case) -> value; {} for uploads. The book page's links. */
+  identifiers: Record<string, string>;
 }
 
 export const DEFAULT_PAGE_SIZE = 50;
@@ -205,6 +209,17 @@ function attachLists(
     list.push(t.name);
     tags.set(t.book_id, list);
   }
+  const illustrators = new Map<string, string[]>();
+  for (const i of db
+    .prepare(
+      `SELECT bi.book_id, i.name FROM book_illustrators bi JOIN illustrators i ON i.id = bi.illustrator_id
+       WHERE bi.book_id IN (${inList}) ORDER BY bi.book_id, bi.position`,
+    )
+    .all(...ids) as { book_id: string; name: string }[]) {
+    const list = illustrators.get(i.book_id) ?? [];
+    list.push(i.name);
+    illustrators.set(i.book_id, list);
+  }
   const key = getOrCreateSecret(db, THUMBNAIL_URL_SECRET);
   return rows.map((r) => ({
     id: r.id,
@@ -215,6 +230,7 @@ function attachLists(
     authorSort: r.author_sort,
     series: r.series_name ? { name: r.series_name, index: r.series_index } : null,
     tags: tags.get(r.id) ?? [],
+    illustrators: illustrators.get(r.id) ?? [],
     publisher: r.publisher,
     publishedAt: r.published_at,
     addedAt: r.added_at,
@@ -571,7 +587,13 @@ export function getBookFor(
     fileSize: s.file_size,
     missingAt: s.missing_at,
   }));
-  return { ...summary, description: row.description, sources };
+  const identifiers: Record<string, string> = {};
+  for (const i of db
+    .prepare('SELECT type, value FROM book_identifiers WHERE book_id = ? ORDER BY type')
+    .all(bookId) as { type: string; value: string }[]) {
+    identifiers[i.type] = i.value;
+  }
+  return { ...summary, description: row.description, sources, identifiers };
 }
 
 export interface BookFileLocation {

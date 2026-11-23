@@ -26,6 +26,10 @@ export interface CalibreBook {
   series: { name: string; sort: string | null } | null;
   seriesIndex: number | null;
   tags: string[];
+  /** Calibre's #illustrator column (several names, in Calibre's order); [] without the column. */
+  illustrators: string[];
+  /** Calibre's identifiers, type lower-cased -> value (amazon_jp, bookwalker, isbn, ...). */
+  identifiers: Record<string, string>;
   description: string | null;
   publisher: string | null;
   publishedAt: number | null;
@@ -122,12 +126,45 @@ function groupBy<T extends { book: number }>(rows: T[]): Map<number, T[]> {
   return map;
 }
 
+/** Calibre's identifiers as type (lower-cased) -> value; empty types or values are skipped. */
+function identifierMap(rows: { type: string; val: string }[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const row of rows) {
+    const type = cleanText(row.type)?.toLowerCase();
+    const val = cleanText(row.val);
+    if (type && val && !(type in out)) out[type] = val;
+  }
+  return out;
+}
+
 /** Reads EPUB books from a Calibre metadata.db snapshot, in batches ordered by Calibre id. */
 export class CalibreReader {
   private readonly db: Database.Database;
+  /** The #illustrator column's tables, found by label (the id differs per library), or null. */
+  private readonly illustratorTables: { value: string; link: string } | null;
+  private readonly hasIdentifiers: boolean;
 
   constructor(snapshotFile: string) {
     this.db = new Database(snapshotFile, { readonly: true, fileMustExist: true });
+    this.illustratorTables = this.findIllustratorColumn();
+    this.hasIdentifiers = this.tableExists('identifiers');
+  }
+
+  private tableExists(name: string): boolean {
+    return !!this.db
+      .prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`)
+      .get(name);
+  }
+
+  private findIllustratorColumn(): { value: string; link: string } | null {
+    if (!this.tableExists('custom_columns')) return null;
+    const col = this.db
+      .prepare(`SELECT id FROM custom_columns WHERE label = 'illustrator'`)
+      .get() as { id: number } | undefined;
+    if (!col || !Number.isInteger(col.id)) return null;
+    const value = `custom_column_${col.id}`;
+    const link = `books_custom_column_${col.id}_link`;
+    return this.tableExists(value) && this.tableExists(link) ? { value, link } : null;
   }
 
   close(): void {
@@ -202,6 +239,27 @@ export class CalibreReader {
       }[],
     );
 
+    const illustrators = this.illustratorTables
+      ? groupBy(
+          this.db
+            .prepare(
+              `SELECT l.book, v.value FROM ${this.illustratorTables.link} l
+               JOIN ${this.illustratorTables.value} v ON v.id = l.value
+               WHERE l.book IN (${inList}) ORDER BY l.book, l.id`,
+            )
+            .all(...ids) as { book: number; value: string }[],
+        )
+      : new Map<number, { book: number; value: string }[]>();
+    const identifiers = this.hasIdentifiers
+      ? groupBy(
+          this.db
+            .prepare(
+              `SELECT book, type, val FROM identifiers WHERE book IN (${inList}) ORDER BY book, type`,
+            )
+            .all(...ids) as { book: number; type: string; val: string }[],
+        )
+      : new Map<number, { book: number; type: string; val: string }[]>();
+
     return rows.map((r): CalibreBook => {
       const s = series.get(r.id)?.[0];
       const lastModified = parseCalibreDate(r.last_modified);
@@ -218,6 +276,14 @@ export class CalibreReader {
         series: s ? { name: s.name, sort: cleanText(s.sort) } : null,
         seriesIndex: s ? (r.series_index ?? 1) : null,
         tags: (tags.get(r.id) ?? []).map((t) => t.name),
+        illustrators: [
+          ...new Set(
+            (illustrators.get(r.id) ?? [])
+              .map((v) => cleanText(authorName(v.value)))
+              .filter((v): v is string => v !== null),
+          ),
+        ],
+        identifiers: identifierMap(identifiers.get(r.id) ?? []),
         description: cleanText(comments.get(r.id)?.[0]?.text),
         publisher: cleanText(publishers.get(r.id)?.[0]?.name),
         publishedAt: parseCalibreDate(r.pubdate),
@@ -312,6 +378,19 @@ export async function ingestSnapshot(
   );
   const clearTags = db.prepare('DELETE FROM book_tags WHERE book_id = ?');
   const linkTag = db.prepare('INSERT OR IGNORE INTO book_tags (book_id, tag_id) VALUES (?, ?)');
+  const upsertIllustrator = db.prepare(
+    `INSERT INTO illustrators (name, name_fold) VALUES (?, ?)
+     ON CONFLICT(name) DO UPDATE SET name_fold = excluded.name_fold
+     RETURNING id`,
+  );
+  const clearIllustrators = db.prepare('DELETE FROM book_illustrators WHERE book_id = ?');
+  const linkIllustrator = db.prepare(
+    'INSERT INTO book_illustrators (book_id, illustrator_id, position) VALUES (?, ?, ?)',
+  );
+  const clearIdentifiers = db.prepare('DELETE FROM book_identifiers WHERE book_id = ?');
+  const insertIdentifier = db.prepare(
+    'INSERT OR REPLACE INTO book_identifiers (book_id, type, value) VALUES (?, ?, ?)',
+  );
 
   const result: IngestResult = {
     total: 0,
@@ -392,6 +471,15 @@ export async function ingestSnapshot(
       const { id } = upsertTag.get(tag, foldForSearch(tag)) as { id: number };
       linkTag.run(bookId, id);
     }
+    clearIllustrators.run(bookId);
+    book.illustrators.forEach((name, position) => {
+      const { id } = upsertIllustrator.get(name, foldForSearch(name)) as { id: number };
+      linkIllustrator.run(bookId, id, position);
+    });
+    clearIdentifiers.run(bookId);
+    for (const [type, value] of Object.entries(book.identifiers)) {
+      insertIdentifier.run(bookId, type, value);
+    }
   };
 
   const reader = new CalibreReader(snapshotFile);
@@ -445,6 +533,9 @@ export async function ingestSnapshot(
   db.transaction(() => {
     db.prepare('DELETE FROM authors WHERE id NOT IN (SELECT author_id FROM book_authors)').run();
     db.prepare('DELETE FROM tags WHERE id NOT IN (SELECT tag_id FROM book_tags)').run();
+    db.prepare(
+      'DELETE FROM illustrators WHERE id NOT IN (SELECT illustrator_id FROM book_illustrators)',
+    ).run();
     db.prepare(
       'DELETE FROM series WHERE id NOT IN (SELECT series_id FROM books WHERE series_id IS NOT NULL)',
     ).run();

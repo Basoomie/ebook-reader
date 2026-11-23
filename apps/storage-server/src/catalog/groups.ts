@@ -57,6 +57,8 @@ export interface GroupTile {
   tags: string[];
   title: string;
   authors: string[];
+  /** Calibre's #illustrator names (an illustrator: search in a smart collection). */
+  illustrators: string[];
   series: string | null;
   charCount: number | null;
 }
@@ -69,6 +71,7 @@ export function tileOfSummary(summary: BookSummary): GroupTile {
     tags: summary.tags,
     title: summary.title,
     authors: [...new Set(summary.authors.map((a) => a.name))],
+    illustrators: [...new Set(summary.illustrators)],
     series: summary.series?.name ?? null,
     charCount: summary.charCount,
   };

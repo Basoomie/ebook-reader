@@ -17,7 +17,7 @@ import { foldForSearch } from './fold';
 import type { Matcher, ParsedQuery, QueryStatus, QueryTerm, TextField } from './query-parser';
 
 /**
- * Up to this many books, an author: or tag: filter lets SQLite start from those books
+ * Up to this many books, an author:, illustrator: or tag: filter lets SQLite start from those books
  * (and sort them); above it SQLite walks all books in date order and stops at the page.
  * Measured on the real library (WP7a): starting from the ~20k "Unknown" books took
  * ~225 ms, walking takes ~30 ms; for a handful of books starting from them takes ~1 ms
@@ -32,7 +32,7 @@ export const SMALL_SET = 2000;
  */
 function linkCount(
   db: Database.Database | undefined,
-  field: 'author' | 'tag',
+  field: 'author' | 'illustrator' | 'tag',
   matchers: Matcher[],
 ): number {
   if (!db || matchers.some((m) => m.kind === 'regex')) return Infinity;
@@ -40,7 +40,9 @@ function linkCount(
   const sql =
     field === 'author'
       ? `SELECT COUNT(*) AS n FROM book_authors WHERE author_id IN (SELECT id FROM authors WHERE ${name.sql})`
-      : `SELECT COUNT(*) AS n FROM book_tags WHERE tag_id IN (SELECT id FROM tags WHERE ${name.sql})`;
+      : field === 'illustrator'
+        ? `SELECT COUNT(*) AS n FROM book_illustrators WHERE illustrator_id IN (SELECT id FROM illustrators WHERE ${name.sql})`
+        : `SELECT COUNT(*) AS n FROM book_tags WHERE tag_id IN (SELECT id FROM tags WHERE ${name.sql})`;
   return (db.prepare(sql).get(...name.params) as { n: number }).n;
 }
 
@@ -91,6 +93,12 @@ function fieldSql(field: TextField, matchers: Matcher[], db?: Database.Database)
                         WHERE ba.author_id IN (SELECT id FROM authors WHERE ${name.sql}))`,
         params: name.params,
       };
+    case 'illustrator':
+      return {
+        sql: `${setPrefix(linkCount(db, 'illustrator', matchers))}b.id IN (SELECT bi.book_id FROM book_illustrators bi
+                        WHERE bi.illustrator_id IN (SELECT id FROM illustrators WHERE ${name.sql}))`,
+        params: name.params,
+      };
     case 'series':
       return {
         sql: `IFNULL(b.series_id IN (SELECT id FROM series WHERE ${name.sql}), 0)`,
@@ -105,14 +113,15 @@ function fieldSql(field: TextField, matchers: Matcher[], db?: Database.Database)
   }
 }
 
-/** Plain text and bare patterns: the title, any author name or the series name. */
+/** Plain text and bare patterns: the title, any author or illustrator name, or the series name. */
 function anySql(m: Matcher): SqlCondition {
   const title = matcherSql('b.title', m);
   const series = fieldSql('series', [m]);
   const author = fieldSql('author', [m]);
+  const illustrator = fieldSql('illustrator', [m]);
   return {
-    sql: `(${title.sql} OR ${series.sql} OR ${author.sql})`,
-    params: [...title.params, ...series.params, ...author.params],
+    sql: `(${title.sql} OR ${series.sql} OR ${author.sql} OR ${illustrator.sql})`,
+    params: [...title.params, ...series.params, ...author.params, ...illustrator.params],
   };
 }
 
