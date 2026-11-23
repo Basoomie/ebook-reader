@@ -96,6 +96,16 @@ export function createSummaryTestRouter(
     }),
   );
 
+  // Which setup's summaries are the earlier volumes' background (key backgroundSetup).
+  router.put('/summaries-test/state', (req, res) => {
+    const b = req.body as { key?: string; value?: string | null };
+    if (b.key !== 'backgroundSetup') throw new ApiError(400, 'bad_request', 'unknown key');
+    if (b.value !== null && !((b.value as string) in SETUP_LABELS))
+      throw new ApiError(400, 'bad_request', 'unknown setup');
+    svc.setState(b.key, b.value ?? null);
+    res.json({ ok: true });
+  });
+
   router.post('/summaries-test/items/copy', (req, res) => {
     const b = req.body as { run?: string; ref?: string; fromRun?: string; fromRef?: string };
     try {

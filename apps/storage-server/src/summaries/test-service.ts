@@ -218,7 +218,7 @@ export class SummaryTestService {
     return this.books().find((b) => b.key === key) ?? null;
   }
 
-  private async input(b: TestBook, background: boolean) {
+  private async input(b: TestBook, background: boolean, round = 'round1') {
     if (!b.readerId) throw new Error(`${b.title}: not in the test copy's library`);
     const script = await this.deps.scriptOf(b.readerId);
     let bg: string | null = null;
@@ -229,7 +229,7 @@ export class SummaryTestService {
       );
       const vols: { title: string; summary: Summary }[] = [];
       for (const e of earlier) {
-        const s = this.bestSummary(e.key);
+        const s = this.bestSummary(e.key, round);
         if (!s) throw new Error(`${b.title}: no summary of the earlier volume ${e.title} yet`);
         vols.push({ title: e.title, summary: s });
       }
@@ -239,15 +239,15 @@ export class SummaryTestService {
   }
 
   /** The background volumes' summary: the chosen setup's (the newest finished run). */
-  private bestSummary(bookKey: string): Summary | null {
+  private bestSummary(bookKey: string, round: string): Summary | null {
     const r = this.db
       .prepare(
         `SELECT s.summary_json FROM test_summaries s JOIN test_runs r ON r.id = s.run_id
          WHERE r.book_key = ? AND r.background = 0 AND r.state = 'done' AND s.lang = 'ja'
            AND r.setup = COALESCE((SELECT value FROM test_state WHERE key = 'backgroundSetup'), r.setup)
-         ORDER BY r.ended_at DESC LIMIT 1`,
+         ORDER BY (r.round = ?) DESC, r.ended_at DESC LIMIT 1`,
       )
-      .get(bookKey) as { summary_json: string } | undefined;
+      .get(bookKey, round) as { summary_json: string } | undefined;
     return r ? (JSON.parse(r.summary_json) as Summary) : null;
   }
 
@@ -293,7 +293,7 @@ export class SummaryTestService {
   private async execute(id: string, b: TestBook, setup: SetupId, background: boolean) {
     const started = this.now();
     try {
-      const inp = await this.input(b, background);
+      const inp = await this.input(b, background, this.run(id)?.round ?? 'round1');
       let summary: Summary;
       let metrics: RunMetrics;
       if (setup === 'local') {
