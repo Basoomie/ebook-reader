@@ -82,6 +82,8 @@ export interface BookmeterStatus {
     stalled: boolean;
   }[];
   batchStallMinutes?: number;
+  /** OpenAI's batches' own stall limit (min). */
+  batchStallMinutesOpenai?: number;
 }
 
 export interface BookmeterMatch {
@@ -227,6 +229,7 @@ export function aiBatchLines(s: BookmeterStatus | null, now = Date.now()): strin
   const stall = s.batchStallMinutes ?? 30;
   return (s.aiBatches ?? []).map((b) => {
     const who = PROVIDERS[b.provider] ?? b.provider;
+    const limit = b.provider === 'openai' ? (s.batchStallMinutesOpenai ?? stall) : stall;
     const since = new Date(b.submittedAt).toLocaleTimeString([], {
       hour: 'numeric',
       minute: '2-digit'
@@ -234,8 +237,8 @@ export function aiBatchLines(s: BookmeterStatus | null, now = Date.now()): strin
     const min = Math.max(0, Math.round((now - b.submittedAt) / 60_000));
     const head = `${b.model}'s batch of ${n(b.requests)} questions at ${who}, sent at ${since} (${n(min)} min ago)`;
     return b.stalled
-      ? `${head}: nothing answered in ${n(stall)} min, so it is being cancelled; once ${who} confirms, its questions are asked one call each.`
-      : `${head}: waiting for its answers. If it answers nothing in ${n(stall)} min, it is cancelled and its questions are asked one call each.`;
+      ? `${head}: nothing answered in ${n(limit)} min, so it is being cancelled; once ${who} confirms, its questions are asked one call each.`
+      : `${head}: waiting for its answers. If it answers nothing in ${n(limit)} min, it is cancelled and its questions are asked one call each.`;
   });
 }
 

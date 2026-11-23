@@ -1114,6 +1114,8 @@ export class CleanupService {
       spotPassed: pass.spotPassed(),
       aiBatches,
       batchStallMinutes: this.aiRunner.settings().batchStallMinutes,
+      // OpenAI's batches have their own limit (book summaries session 3).
+      batchStallMinutesOpenai: this.aiRunner.settings().batchStallMinutesOpenai,
       siteWait: ((b) => (b && b.reason !== 'pace' ? b.reason : null))(
         this.fetchQueue.blocked('bookmeter', now),
       ),

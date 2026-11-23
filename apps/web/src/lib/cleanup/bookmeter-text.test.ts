@@ -119,6 +119,11 @@ describe('More Bookmeter matches: the card text', () => {
     expect(aiBatchLines(s, at + 5 * 60_000)[0]).toContain(
       'If it answers nothing in 30 min, it is cancelled'
     );
+    // OpenAI's batches have their own limit (book summaries session 3).
+    s.batchStallMinutesOpenai = 180;
+    expect(aiBatchLines(s, at + 5 * 60_000)[0]).toContain(
+      'If it answers nothing in 180 min, it is cancelled'
+    );
   });
 
   it('names the source of a match and the ids it adds', () => {
