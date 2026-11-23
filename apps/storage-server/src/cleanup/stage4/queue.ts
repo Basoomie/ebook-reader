@@ -531,6 +531,9 @@ export class FetchQueue {
             now,
             bkey,
           );
+        // WP20 lessons 4: a pause tells someone (the log here, the notifications' alert).
+        if (inRow >= s.challengePauseAfter && !row.paused_reason)
+          this.log(`fetch: ${bkey} paused after ${inRow} refusals in a row`);
         // A challenge is asked again; it doesn't count toward giving up.
         next = { state: 'queued', nextAt: now + secs * 1000, attempts: req.attempts };
       } else {
@@ -588,6 +591,8 @@ export class FetchQueue {
         this.db.prepare('UPDATE fetch_waiters SET ready = 1 WHERE request_id = ?').run(id);
         // The audiobook cleanup's lookups (WP21c) wait in their own table.
         this.db.prepare('UPDATE audio_fetch_waiters SET ready = 1 WHERE request_id = ?').run(id);
+        // More Bookmeter coverage (stage4/bookmeter-more.ts) waits in its own table too.
+        this.db.prepare('UPDATE bookmeter_more_waiters SET ready = 1 WHERE request_id = ?').run(id);
       }
       return next.state;
     })();
@@ -676,9 +681,13 @@ export class FetchQueue {
       const ready = this.db.prepare(
         'UPDATE audio_fetch_waiters SET ready = 1 WHERE request_id = ?',
       );
+      const readyBm = this.db.prepare(
+        'UPDATE bookmeter_more_waiters SET ready = 1 WHERE request_id = ?',
+      );
       for (const id of ids) {
         fail.run(now, now, id);
         ready.run(id);
+        readyBm.run(id);
       }
     })();
     return ids;

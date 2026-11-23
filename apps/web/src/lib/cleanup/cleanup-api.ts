@@ -5,6 +5,12 @@
  */
 
 import type { ArrivalsStatus } from './arrivals-text';
+import type {
+  BookmeterMatch,
+  BookmeterMode,
+  BookmeterSource,
+  BookmeterStatus
+} from './bookmeter-text';
 import { errorFrom, send, type RequestOptions } from '$lib/library/api';
 
 /** The /cleanup page's client for /api/v1/cleanup/* (WP20a). */
@@ -2614,5 +2620,49 @@ export class CleanupApi {
     return this.request('GET', `/cleanup/spot-check?stage=${stage}`) as Promise<{
       items: Proposal[];
     }>;
+  }
+
+  // ---------------------------------------------------------------- More Bookmeter coverage
+
+  bookmeter(): Promise<BookmeterStatus> {
+    return this.request('GET', '/cleanup/bookmeter') as Promise<BookmeterStatus>;
+  }
+
+  setBookmeterMode(mode: BookmeterMode): Promise<BookmeterStatus> {
+    return this.request('PUT', '/cleanup/bookmeter/mode', { mode }) as Promise<BookmeterStatus>;
+  }
+
+  bookmeterMatches(
+    source: BookmeterSource | null,
+    offset = 0,
+    limit = 20
+  ): Promise<{ total: number; items: BookmeterMatch[] }> {
+    const q = new URLSearchParams({ offset: String(offset), limit: String(limit) });
+    if (source) q.set('source', source);
+    return this.request('GET', `/cleanup/bookmeter/matches?${q}`) as Promise<{
+      total: number;
+      items: BookmeterMatch[];
+    }>;
+  }
+
+  bookmeterSpot(): Promise<{
+    items: BookmeterMatch[];
+    counts: BookmeterStatus['spot'];
+    passed: boolean;
+  }> {
+    return this.request('GET', '/cleanup/bookmeter/spot') as Promise<{
+      items: BookmeterMatch[];
+      counts: BookmeterStatus['spot'];
+      passed: boolean;
+    }>;
+  }
+
+  setBookmeterVerdict(
+    uuid: string,
+    verdict: 'right' | 'wrong' | null
+  ): Promise<{ counts: BookmeterStatus['spot']; passed: boolean }> {
+    return this.request('PUT', `/cleanup/bookmeter/spot/${encodeURIComponent(uuid)}`, {
+      verdict
+    }) as Promise<{ counts: BookmeterStatus['spot']; passed: boolean }>;
   }
 }

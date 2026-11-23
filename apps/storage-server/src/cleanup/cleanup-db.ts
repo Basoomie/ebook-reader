@@ -2346,6 +2346,66 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
       END;
     `,
   },
+  {
+    version: 30,
+    name: 'More Bookmeter coverage: the pass over the stored answers, its requests and spot check',
+    // More Bookmeter coverage, step 2 (bookmeter-coverage.md; stage4/bookmeter-more.ts). One pass
+    // with its own Off/Preview/On (the stages table holds stages 0-5 only). bookmeter_more_books:
+    // the books without a match the chosen rules decided (matched: waits for its store list;
+    // ready: can be proposed; near: waits for the AI check; second: waits for the second search).
+    // bookmeter_more_waiters: the pass's own waiters on the fetch queue, made ready by the queue
+    // like the audiobook cleanup's (stage 4's lookups take every ready row of fetch_waiters).
+    // bookmeter_more_spot: the 50-book spot check before On and the user's verdicts.
+    sql: `
+      CREATE TABLE bookmeter_more_state (
+        id            INTEGER PRIMARY KEY CHECK (id = 1),
+        library_id    TEXT,
+        mode          TEXT NOT NULL DEFAULT 'off' CHECK (mode IN ('off', 'analyse', 'on')),
+        progress_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(progress_json)),
+        paused_reason TEXT,
+        paused_detail TEXT,
+        updated_at    INTEGER NOT NULL
+      );
+      INSERT INTO bookmeter_more_state (id, updated_at) VALUES (1, 0);
+      CREATE TABLE bookmeter_more_books (
+        library_id    TEXT NOT NULL,
+        calibre_uuid  TEXT NOT NULL,
+        calibre_id    INTEGER NOT NULL,
+        labeled       INTEGER NOT NULL DEFAULT 0,
+        state         TEXT NOT NULL CHECK (state IN ('near', 'second', 'none', 'matched', 'ready')),
+        source        TEXT CHECK (source IN ('rules', 'ai', 'second')),
+        hit_json      TEXT CHECK (hit_json IS NULL OR json_valid(hit_json)),
+        failed_check  TEXT,
+        query_step    TEXT CHECK (query_step IN ('q1', 'q2', 'done')),
+        stores_json   TEXT CHECK (stores_json IS NULL OR json_valid(stores_json)),
+        stores_failed INTEGER NOT NULL DEFAULT 0,
+        updated_at    INTEGER NOT NULL,
+        PRIMARY KEY (library_id, calibre_uuid)
+      ) WITHOUT ROWID;
+      CREATE INDEX bookmeter_more_books_state
+        ON bookmeter_more_books (library_id, state, source, labeled);
+      CREATE TABLE bookmeter_more_waiters (
+        request_id    INTEGER NOT NULL,
+        library_id    TEXT NOT NULL,
+        calibre_uuid  TEXT NOT NULL,
+        step          TEXT NOT NULL CHECK (step IN ('q1', 'q2', 'stores')),
+        ready         INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (request_id, library_id, calibre_uuid, step)
+      ) WITHOUT ROWID;
+      CREATE INDEX bookmeter_more_waiters_ready ON bookmeter_more_waiters (ready, request_id) WHERE ready = 1;
+      CREATE INDEX bookmeter_more_waiters_book ON bookmeter_more_waiters (library_id, calibre_uuid);
+      CREATE INDEX bookmeter_more_waiters_step ON bookmeter_more_waiters (step, ready);
+      CREATE TABLE bookmeter_more_spot (
+        library_id    TEXT NOT NULL,
+        calibre_uuid  TEXT NOT NULL,
+        position      INTEGER NOT NULL,
+        source        TEXT NOT NULL CHECK (source IN ('rules', 'ai', 'second')),
+        verdict       TEXT CHECK (verdict IN ('right', 'wrong')),
+        decided_at    INTEGER,
+        PRIMARY KEY (library_id, calibre_uuid)
+      ) WITHOUT ROWID;
+    `,
+  },
 ];
 
 export const CLEANUP_SCHEMA_VERSION = CLEANUP_MIGRATIONS[CLEANUP_MIGRATIONS.length - 1].version;

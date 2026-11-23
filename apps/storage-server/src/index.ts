@@ -1,5 +1,6 @@
 import type { CatalogOptions } from './api/catalog-routes';
 import { AiCore } from './ai/core';
+import { startSummaryTest } from './summaries/test-start';
 import { createApp } from './app';
 import { CalibreIndexer, snapshotFile } from './calibre/indexer';
 import { getLibrary } from './calibre/libraries';
@@ -524,6 +525,12 @@ if (notifications && database.ok) {
   onAudioStagePaused(() => notifier.poke());
 }
 
+// Book summaries session 2: the accuracy test, only on the PC's test copy (SUMMARIES_TEST=1).
+const summariesTest =
+  process.env.SUMMARIES_TEST === '1' && database.ok && aiCore && tts
+    ? startSummaryTest({ db: database.db, dbDir: config.dbDir, core: aiCore, tts })
+    : null;
+
 const app = createApp({
   config,
   database,
@@ -555,6 +562,7 @@ const app = createApp({
   cleanup: cleanupOptions,
   notifications,
   ai: aiCore,
+  summariesTest,
 });
 cleanup?.start();
 cleanupOptions.audio?.start();

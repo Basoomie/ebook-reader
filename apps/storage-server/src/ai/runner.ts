@@ -624,12 +624,16 @@ export class AiRunner {
   private callInput<E>(spec: AiStageSpec<E>, row: ReqRow, s: AiSettings): CallInput | null {
     const ev = this.evidenceOf(spec, row.item_key);
     if (!ev) return null;
+    const o = spec.request;
     return {
       model: row.model,
       system: spec.system,
       user: spec.userText(ev.evidence),
       schema: s.structuredOutputs ? { name: spec.schemaName, schema: spec.schema } : null,
-      maxTokens: s.maxTokens,
+      maxTokens: o?.maxTokens ?? s.maxTokens,
+      ...(o?.effort ? { effort: o.effort } : {}),
+      ...(o?.maxTokens ? { outputLimit: o.maxTokens } : {}),
+      ...(o?.stream ? { stream: true } : {}),
     };
   }
 
@@ -641,9 +645,14 @@ export class AiRunner {
     batch: boolean,
     s: AiSettings,
     recent?: RecentUsage[],
+    spec?: AiStageSpec<never>,
   ) {
+    const est = spec?.request
+      ? { stage: spec.stage, expectedOutputTokens: spec.request.expectedOutputTokens }
+      : undefined;
     const one =
-      expectedListCost(this.db, s, model, promptChars, recent) * (batch ? s.batchPriceFactor : 1);
+      expectedListCost(this.db, s, model, promptChars, recent, est) *
+      (batch ? s.batchPriceFactor : 1);
     // This month's spending of every feature, their batches' holds and calls in flight.
     const r = this.core.room();
     const room = (s.spendLimitUsd ?? 0) - r.spentUsd - r.reservedUsd;
@@ -685,7 +694,7 @@ export class AiRunner {
     if (!inputs.length) return { sent: 0, answered: 0, wait: null };
     const avgChars =
       inputs.reduce((a, x) => a + x.call.system.length + x.call.user.length, 0) / inputs.length;
-    const f = this.fits(model, inputs.length, avgChars, true, s, recent);
+    const f = this.fits(model, inputs.length, avgChars, true, s, recent, spec);
     if (f.fit === 0) return { sent: 0, answered: 0, wait: this.limitWait(f.one) };
     let take = inputs.slice(0, f.fit);
     let queueWait: AiWait | null = null;
@@ -848,7 +857,7 @@ export class AiRunner {
     if (!calls.length) return { sent: 0, answered: 0, wait: null };
     const avgChars =
       calls.reduce((a, x) => a + x.call.system.length + x.call.user.length, 0) / calls.length;
-    const f = this.fits(model, calls.length, avgChars, false, s);
+    const f = this.fits(model, calls.length, avgChars, false, s, undefined, spec);
     if (f.fit === 0) {
       // Room held by calls in flight comes back when they are recorded: no pause for it.
       if (this.core.callsInFlight() > 0) return { sent: 0, answered: 0, wait: null };
@@ -905,7 +914,10 @@ export class AiRunner {
         attempts++;
         this.db.prepare('UPDATE ai_requests SET attempts = ? WHERE id = ?').run(attempts, row.id);
         try {
-          const res = await client.call(call, s.requestTimeoutSeconds * 1000);
+          const res = await client.call(
+            call,
+            (spec.request?.timeoutSeconds ?? s.requestTimeoutSeconds) * 1000,
+          );
           this.record(spec, row.id, model, res, false, s);
           ended();
           return;

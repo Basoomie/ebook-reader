@@ -1156,3 +1156,16 @@ export function sharedRenameCopy(
     danger: false
   };
 }
+
+/** More Bookmeter coverage: On writes the new matches' store links to Calibre. */
+export function bookmeterOnCopy(books: number): ConfirmCopy {
+  return {
+    title: 'Write the new Bookmeter store links to Calibre?',
+    message: [
+      `${books.toLocaleString()} books get their Bookmeter id and the store ids from its store list (ISBN, Rakuten, honto, ebookjapan, U-NEXT, BOOK☆WALKER, Natively) added to their identifiers. An id Calibre already has is never replaced, and store links you edited are never touched.`,
+      'They are written in batches through stage 4; each batch can be undone from the batches list.'
+    ],
+    confirmLabel: 'Switch it On',
+    irreversible: false
+  };
+}

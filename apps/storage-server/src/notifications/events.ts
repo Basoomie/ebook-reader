@@ -64,6 +64,26 @@ const EVENTS: EventDef[] = [
     label: 'Values written to Calibre as best guesses (listed under Best guesses)',
     kind: 'digest',
   },
+  // A fetch site paused after refusals in a row (WP20 lessons 4: every pause tells someone).
+  {
+    id: 'fetch_site_paused',
+    section: 'cleanup',
+    label: 'A site the cleanup fetches from paused after refusals',
+    kind: 'now',
+  },
+  // More Bookmeter coverage (step 2): its spot check before On, and a line per finished step.
+  {
+    id: 'bookmeter_spot_ready',
+    section: 'cleanup',
+    label: 'More Bookmeter matches: the spot check is ready for you',
+    kind: 'now',
+  },
+  {
+    id: 'bookmeter_summary',
+    section: 'cleanup',
+    label: 'More Bookmeter matches: each finished step',
+    kind: 'digest',
+  },
   // WP21f-1: the audiobook cleanup's daily new arrivals (stage 7).
   {
     id: 'audio_arrivals_review',
