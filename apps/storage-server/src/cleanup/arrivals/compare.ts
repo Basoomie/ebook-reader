@@ -84,6 +84,57 @@ export interface CompareDeps {
 const BOOKS_PER_COMPARE = 8;
 const MIN_RUN = 100;
 const MIN_CONTEXT = 500;
+/** The candidate index's thresholds (the whole index and the per-book lookup use the same). */
+const MIN_SHARED = 2;
+const MIN_ESTIMATE = 0.05;
+
+/** A book's library pairs measured while its text was read (textMeasure). */
+export interface EarlyMeasure {
+  /** Every library candidate the lookup found. */
+  candidates: number[];
+  /** The pairs measured (a = the new book, b = a library book). */
+  pairs: ComparedPair[];
+}
+
+/**
+ * The library's lookup file for measuring each new book against its library candidates while
+ * its text is read (WP20g: a book is then read once, not again in the measure stage). The same
+ * library books the whole index takes (stage 3's, read, not image-only); written by a reader
+ * process to `out` (.bin and .json). Null when the reader has no lookup (a stand-in).
+ */
+export async function buildLibraryLookup(
+  deps: CompareDeps,
+  out: string,
+): Promise<{ books: number } | null> {
+  if (!deps.reader.libIndex || !deps.reader.textMeasure) return null;
+  const books = presentLibrary(deps).map((id) => ({
+    id,
+    file: resolveInside(deps.libDir, deps.books.get(id)!.filePath) as string,
+  }));
+  openCache(deps).pragma('wal_checkpoint(PASSIVE)');
+  const r = await deps.reader.libIndex({
+    cacheFile: stage3CacheFile(deps.cacheDir),
+    libraryId: deps.libraryId,
+    books,
+    out,
+  });
+  if (!r.ok) throw new Error(`The library lookup failed: ${r.message}`);
+  return { books: r.data.books };
+}
+
+/** The library books the candidate index takes: stage 3 read them, not image-only, in Calibre. */
+function presentLibrary(deps: CompareDeps): number[] {
+  return (
+    deps.cleanup
+      .prepare(
+        `SELECT calibre_id FROM text_facts WHERE library_id = ? AND error IS NULL
+           AND image_only = 0 AND samples > 0`,
+      )
+      .all(deps.libraryId) as { calibre_id: number }[]
+  )
+    .map((r) => r.calibre_id)
+    .filter((id) => deps.books.has(id));
+}
 
 /**
  * Reads one new book (text, sketch, edition kind, layout) with the reader processes, as stage 3's
@@ -95,7 +146,8 @@ export async function readNewText(
   file: string,
   titles: (string | null)[],
   pacer: SourcePacer,
-): Promise<NewText> {
+  early?: { index: string; maxBooks: number } | null,
+): Promise<NewText & { early?: EarlyMeasure }> {
   const s = getSettings(deps.cleanup).duplicates;
   let fileTitle: string | null = null;
   let imageEntries: string[] = [];
@@ -126,9 +178,33 @@ export async function readNewText(
     samples: 0,
     error: null,
   };
-  const out = await deps.reader.text(file);
+  // With the library's lookup: the book read and its library candidates measured in one
+  // request; any failure there reads the book alone, as without it (the book's own outcome is
+  // the text request's).
+  let measured: EarlyMeasure | undefined;
+  let libBytes = 0;
+  let out: Awaited<ReturnType<typeof deps.reader.text>> | null = null;
+  if (early && deps.reader.textMeasure) {
+    const r = await deps.reader.textMeasure({
+      file,
+      key,
+      index: early.index,
+      commonBooks: s.commonWindowBooks,
+      minShared: MIN_SHARED,
+      minEstimate: MIN_ESTIMATE,
+      maxBooks: early.maxBooks,
+      minRun: MIN_RUN,
+      minContext: MIN_CONTEXT,
+    });
+    if (r.ok) {
+      out = { ok: true, data: r.data.text };
+      measured = { candidates: r.data.candidates, pairs: r.data.pairs };
+      libBytes = r.data.libraryBytesRead;
+    } else if (r.stopped) out = r;
+  }
+  if (!out) out = await deps.reader.text(file);
   if (!out.ok) return { ...base, error: `${out.code}: ${out.message}`.slice(0, 500) };
-  await pacer.take(out.data.bytesRead + counted.bytes);
+  await pacer.take(out.data.bytesRead + libBytes + counted.bytes);
   const sketch = Uint32Array.from(out.data.sketch);
   const cache = openCache(deps);
   cache
@@ -147,6 +223,7 @@ export async function readNewText(
     ruby: out.data.ruby,
     toc: out.data.tocEntries,
     samples: sketch.length,
+    ...(measured ? { early: measured } : {}),
   };
 }
 
@@ -196,16 +273,7 @@ export async function candidatePairsOf(
   news: NewText[],
 ): Promise<{ a: number; b: number }[]> {
   const s = getSettings(deps.cleanup).duplicates;
-  const present = (
-    deps.cleanup
-      .prepare(
-        `SELECT calibre_id FROM text_facts WHERE library_id = ? AND error IS NULL
-           AND image_only = 0 AND samples > 0`,
-      )
-      .all(deps.libraryId) as { calibre_id: number }[]
-  )
-    .map((r) => r.calibre_id)
-    .filter((id) => deps.books.has(id));
+  const present = presentLibrary(deps);
   const newKeys = new Set(
     news.filter((n) => !n.error && !n.imageOnly && n.samples > 0).map((n) => n.key),
   );
@@ -217,8 +285,8 @@ export async function candidatePairsOf(
     libraryId: deps.libraryId,
     ids,
     commonBooks: s.commonWindowBooks,
-    minShared: 2,
-    minEstimate: 0.05,
+    minShared: MIN_SHARED,
+    minEstimate: MIN_ESTIMATE,
   });
   if (!out.ok) throw new Error(`The candidate index failed: ${out.message}`);
   return out.data.pairs

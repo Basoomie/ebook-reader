@@ -63,6 +63,7 @@ import { ArrivalBatches } from './add-batches';
 import { BookArchives } from './archives';
 import { classifyName, settled, sniffFormat, walkSource } from './catalog';
 import {
+  buildLibraryLookup,
   candidatePairsOf,
   dropNewSketches,
   judgePair,
@@ -170,6 +171,13 @@ export interface CompareFacts {
   };
   /** Candidate pairs this book owns (the other copy's key). */
   cands?: number[];
+  /**
+   * Library pairs measured while the book was read (the library lookup): the library books
+   * measured and their verdicts. Only those the whole index proposes count (`covered`).
+   */
+  early?: { measured: number[]; verdicts: MeasuredPair[] };
+  /** The candidates whose verdict came from `early` (not measured again). */
+  covered?: number[];
   verdicts?: MeasuredPair[];
   measured?: boolean;
   compared?: boolean;
@@ -330,6 +338,10 @@ function emptyProgress(): RunProgress {
 
 const yieldNow = () => new Promise<void>((r) => setImmediate(r));
 
+/** Library books measured with a new book while its text is read (the rest wait for the
+ * measure stage; a compare request reads at most 8 books, the new one included). */
+const EARLY_MAX_BOOKS = 7;
+
 /**
  * Runs `fn` on the items with up to `limit` in flight, the next item as soon as one finishes
  * (stage 3's pipeline, not groups that wait for their slowest). False when stopped on the way;
@@ -370,6 +382,8 @@ export class BookArrivals {
 
   private settleCheckedAt = 0;
   /** The compare stage's pace was started in this process. */
+  /** The library lookup file this process built, per run (null: the reader has none). */
+  private lookup: { run: number; file: string | null } | null = null;
   /** The sizes two or more new files share (the identical stage's hash-on-need), per run. */
   private sharedSizes: { run: number; sizes: Set<number> } | null = null;
   private cmpPaced = false;
@@ -1366,6 +1380,32 @@ export class BookArrivals {
 
   // ---------------------------------------------------------------- compare
 
+  /** A copy's quality facts for judgePair (new books from their file, library books stage 3's). */
+  private qualityOf(
+    cd: CompareDeps,
+    news: Map<number, NewText>,
+    qCache: Map<number, Quality | null>,
+    srcPacer: SourcePacer,
+  ): (k: number) => Promise<Quality | null> {
+    return async (k: number) => {
+      if (qCache.has(k)) return qCache.get(k)!;
+      const n = news.get(k);
+      const q = n
+        ? await qualityOfFile(n.file, {
+            calibreId: k,
+            chars: n.chars,
+            ruby: n.ruby,
+            tocEntries: n.toc,
+            customTags: 0,
+            addedAt: Date.now(),
+            pacer: srcPacer,
+          })
+        : await libraryQuality(cd, k, srcPacer);
+      qCache.set(k, q);
+      return q;
+    };
+  }
+
   /**
    * The new EPUBs compared with the library, in slices that keep their results in the catalog
    * (facts_json), so a restart goes on where it stopped and the bar counts every book (WP20g
@@ -1568,7 +1608,23 @@ export class BookArrivals {
         stage('pairs', 0, 0);
         return 'more';
       }
-      p.waiting = `Reading the new books' text (${c.done.toLocaleString('en-US')} of ${c.total.toLocaleString('en-US')})`;
+      // The library's lookup, once per run and process (a reader process reads it from the
+      // file): each book is measured against its library candidates while its text is open.
+      if (this.lookup?.run !== run.id) {
+        p.waiting = 'Preparing the lookup of the library books';
+        const file = path.join(cd.cacheDir, `arrivals-lookup-${libraryId}`);
+        let built: { books: number } | null = null;
+        try {
+          built = await buildLibraryLookup(cd, file);
+        } catch (err) {
+          this.log?.(`new arrivals: no library lookup (${(err as Error).message})`);
+        }
+        this.lookup = { run: run.id, file: built ? file : null };
+        return 'more';
+      }
+      const lookupFile = this.lookup.file;
+      p.waiting = `Reading the new books and measuring them against the library (${c.done.toLocaleString('en-US')} of ${c.total.toLocaleString('en-US')})`;
+      const qCache = new Map<number, Quality | null>();
       const ok = await slice(() =>
         inPool(part, inFlight, shouldStop, async (f) => {
           const old = facts(f);
@@ -1578,6 +1634,7 @@ export class BookArrivals {
             this.sourcePath(f.pair_key, f.rel_path),
             [old.title ?? null],
             srcPacer,
+            lookupFile ? { index: lookupFile, maxBooks: EARLY_MAX_BOOKS } : null,
           );
           old.text = {
             chars: t.chars,
@@ -1593,6 +1650,17 @@ export class BookArrivals {
             vertical: t.vertical,
             imageEntries: t.imageEntries.length,
           };
+          if (t.early && !t.error) {
+            // Judged as the measure stage judges a library pair (the same functions, the book
+            // as the measure stage builds it from these facts).
+            const own = newText({ ...f, facts_json: JSON.stringify(old) });
+            const news = new Map<number, NewText>([[-f.id, own]]);
+            const quality = this.qualityOf(cd, news, qCache, srcPacer);
+            const verdicts: MeasuredPair[] = [];
+            for (const m of t.early.pairs)
+              verdicts.push(await judgePair(cd, -f.id, m.b, m, news, quality));
+            old.early = { measured: t.early.pairs.map((m) => m.b), verdicts };
+          }
           // Kept as each book is read (a restart reads only the books not kept yet).
           setFacts.run(JSON.stringify(old), f.id);
           c.done++;
@@ -1614,11 +1682,21 @@ export class BookArrivals {
         const other = owner === pr.a ? pr.b : pr.a;
         own.set(owner, [...(own.get(owner) ?? []), other]);
       }
+      // A library pair measured while the book was read counts only when the whole index
+      // proposes it (the lookup finds at least those, sometimes more); the rest is measured in
+      // the measure stage as before. A book with every pair covered is measured already.
       this.db.transaction(() => {
         for (const r of all) {
           const fx = facts(r);
-          fx.cands = own.get(-r.id) ?? [];
-          fx.verdicts = [];
+          const cands = own.get(-r.id) ?? [];
+          const early = new Set(fx.early?.measured ?? []);
+          const covered = cands.filter((o) => o > 0 && early.has(o));
+          const inCovered = new Set(covered);
+          fx.cands = cands;
+          fx.covered = covered;
+          fx.verdicts = (fx.early?.verdicts ?? []).filter((v) => inCovered.has(v.otherKey));
+          if (cands.length > 0 && covered.length === cands.length) fx.measured = true;
+          else delete fx.measured;
           setFacts.run(JSON.stringify(fx), r.id);
         }
       })();
@@ -1650,7 +1728,8 @@ export class BookArrivals {
       const ok = await slice(() =>
         inPool(part, inFlight, shouldStop, async (f) => {
           const news = new Map<number, NewText>([[-f.id, newText(f)]]);
-          const cands = facts(f).cands ?? [];
+          const covered = new Set(facts(f).covered ?? []);
+          const cands = (facts(f).cands ?? []).filter((o) => !covered.has(o));
           for (const o of cands)
             if (o < 0) {
               const r = byId.get(-o) as Row | undefined;
@@ -1661,23 +1740,7 @@ export class BookArrivals {
             news,
             cands.filter((o) => o > 0 || news.has(o)).map((o) => ({ a: -f.id, b: o })),
           );
-          const quality = async (k: number) => {
-            if (qCache.has(k)) return qCache.get(k)!;
-            const n = news.get(k);
-            const q = n
-              ? await qualityOfFile(n.file, {
-                  calibreId: k,
-                  chars: n.chars,
-                  ruby: n.ruby,
-                  tocEntries: n.toc,
-                  customTags: 0,
-                  addedAt: Date.now(),
-                  pacer: srcPacer,
-                })
-              : await libraryQuality(cd, k, srcPacer);
-            qCache.set(k, q);
-            return q;
-          };
+          const quality = this.qualityOf(cd, news, qCache, srcPacer);
           const add = new Map<number, MeasuredPair[]>();
           for (const m of measured) {
             if (!m.m) continue;
