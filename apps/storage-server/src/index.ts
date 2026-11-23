@@ -268,6 +268,8 @@ if (database.ok && config.calibre.dir) {
       counts,
       holdIngest: (libraryId) => cleanup?.holdsIngest(libraryId) ?? false,
       wantsIngest: (libraryId) => cleanup?.wantsIngest(libraryId) ?? false,
+      // Calibre metadata editing: what the index saw change, sorted out (whose change it was).
+      onFieldChanges: () => cleanup?.sortChanges(),
     });
     catalog.indexer = indexer.status;
     catalog.thumbnails = thumbnails;

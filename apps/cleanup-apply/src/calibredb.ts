@@ -65,7 +65,10 @@ export const SET_FIELDS = [
   'series',
   'series_index',
   'comments',
-  'tags'
+  'tags',
+  // The user's edits from the reader (calibre metadata editing): published date and rating.
+  'pubdate',
+  'rating'
 ] as const;
 
 /** A title for `add --title`: one line, no control characters, not an option, not too long. */

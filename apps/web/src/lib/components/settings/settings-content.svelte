@@ -46,6 +46,8 @@
     bookLinksPlacement$,
     bookLinksSearch$
   } from '$lib/book-links/settings';
+  import TagListSettings from '$lib/components/calibre-edit/tag-list-settings.svelte';
+  import { bookEditAs$, bookRatingEmpty$, seriesEditAs$ } from '$lib/calibre-edit/settings';
   import { NOT_OVER_HTTP } from '$lib/diagnostics/diagnostics-text';
   import { canPersistStorage } from '$lib/functions/secure-context';
   import {
@@ -337,6 +339,15 @@
   const optionsForLinksMoreAs: ToggleOption<string>[] = [
     { id: 'dropdown', text: 'Dropdown' },
     { id: 'modal', text: 'Modal' }
+  ];
+  // Settings > Library: how the edit form and the series editor open (per device).
+  const optionsForEditAs: ToggleOption<string>[] = [
+    { id: 'panel', text: 'Side panel' },
+    { id: 'modal', text: 'Modal' }
+  ];
+  const optionsForRatingEmpty: ToggleOption<string>[] = [
+    { id: 'hide', text: 'Hide the line' },
+    { id: 'show', text: 'Show “No rating”' }
   ];
 
   const optionsForVerticalTextOrientation: ToggleOption<VerticalTextOrientation>[] = [
@@ -1018,9 +1029,39 @@
           testid="links-search"
         />
       </SettingRow>
+      <SettingRow id="book-edit-as" let:labelId>
+        <SettingChoice
+          options={optionsForEditAs}
+          bind:value={$bookEditAs$}
+          labelledby={labelId}
+          testid="book-edit-as"
+        />
+      </SettingRow>
+      <SettingRow id="book-rating-empty" let:labelId>
+        <SettingChoice
+          options={optionsForRatingEmpty}
+          bind:value={$bookRatingEmpty$}
+          labelledby={labelId}
+          testid="book-rating-empty"
+        />
+      </SettingRow>
     </SettingsGroup>
     <SettingsGroup id="library-links" card={false}>
       <BookLinksSettings />
+    </SettingsGroup>
+    <!-- Calibre metadata editing (design 2026-11-23): after Links. -->
+    <SettingsGroup id="library-editing">
+      <SettingRow id="series-edit-as" let:labelId>
+        <SettingChoice
+          options={optionsForEditAs}
+          bind:value={$seriesEditAs$}
+          labelledby={labelId}
+          testid="series-edit-as"
+        />
+      </SettingRow>
+      <SettingRow id="tags-you-can-pick" layout="stack">
+        {#if browser}<TagListSettings />{/if}
+      </SettingRow>
     </SettingsGroup>
     <SettingsGroup id="data-downloads">
       <SettingRow id="bulk-download-mode" let:labelId>

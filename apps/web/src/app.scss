@@ -1510,6 +1510,37 @@ html.reader-dark .c-modal-backdrop {
   }
 }
 
+/* A side panel (placement="side"): the same frame along the right edge, full height, from
+   640 px; a sheet from the bottom on phones like every modal. */
+@media (min-width: 640px) {
+  .c-modal-layer-side {
+    justify-content: flex-end;
+    align-items: stretch;
+    padding: 0;
+  }
+
+  .c-modal-side {
+    max-width: min(40rem, 100%);
+    max-height: none;
+    height: 100%;
+    border-radius: 0;
+    border-width: 0 0 0 var(--c-border-width);
+    animation: c-side-in 0.18s ease-out;
+  }
+}
+
+@keyframes c-side-in {
+  from {
+    transform: translateX(2rem);
+    opacity: 0;
+  }
+
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .c-modal {
     animation: none;

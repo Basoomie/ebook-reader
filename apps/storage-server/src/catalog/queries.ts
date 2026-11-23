@@ -83,6 +83,10 @@ export interface BookDetail extends BookSummary {
   sources: BookSourceView[];
   /** Calibre's identifiers, type (lower case) -> value; {} for uploads. The book page's links. */
   identifiers: Record<string, string>;
+  /** Calibre's rating, 1-10 half stars (9 = four and a half); null without one. */
+  rating: number | null;
+  /** Calibre's language codes ("jpn"); [] when unknown. */
+  languages: string[];
 }
 
 export const DEFAULT_PAGE_SIZE = 50;
@@ -593,7 +597,17 @@ export function getBookFor(
     .all(bookId) as { type: string; value: string }[]) {
     identifiers[i.type] = i.value;
   }
-  return { ...summary, description: row.description, sources, identifiers };
+  const extra = db.prepare('SELECT rating, languages FROM books WHERE id = ?').get(bookId) as
+    | { rating: number | null; languages: string | null }
+    | undefined;
+  return {
+    ...summary,
+    description: row.description,
+    sources,
+    identifiers,
+    rating: extra?.rating && extra.rating > 0 ? extra.rating : null,
+    languages: extra?.languages ? (JSON.parse(extra.languages) as string[]) : [],
+  };
 }
 
 export interface BookFileLocation {

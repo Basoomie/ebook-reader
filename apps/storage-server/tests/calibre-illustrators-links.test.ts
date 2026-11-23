@@ -88,7 +88,7 @@ describe('migration 30: illustrators and identifiers', () => {
       `INSERT INTO libraries (id, folder, name, discovered_at, updated_at) VALUES ('L', 'a', 'a', ?, ?)`,
     ).run(now, now);
     db.prepare(`INSERT INTO library_index_state (library_id) VALUES ('L')`).run();
-    expect(migrate(db)).toBe(30);
+    expect(migrate(db)).toBeGreaterThanOrEqual(30);
     expect(db.prepare('SELECT reindex_requested_at AS r FROM library_index_state').get()).toEqual({
       r: 1,
     });

@@ -71,6 +71,8 @@ export interface VerifyAnswer {
   cover: boolean;
   saveOldCover: boolean;
   oldCoverPath: string | null;
+  /** 1.5.0: the user's Undo of a cover: the earlier picture's path in the quarantine. */
+  coverFrom?: string | null;
   items: { itemId: number; field: string; state: ItemState; detail: string | null }[];
 }
 
@@ -197,6 +199,11 @@ export class ServerApi {
 
   claim(): Promise<{ batch: Batch | null; wait: string | null }> {
     return this.call('POST', '/claim', {});
+  }
+
+  /** 1.5.0: the user's next edit from the reader, asked for between chunks of another batch. */
+  claimEdit(): Promise<{ batch: Batch | null; wait: string | null }> {
+    return this.call('POST', '/edits/claim', {});
   }
 
   progress(batchId: string): Promise<unknown> {

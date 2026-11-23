@@ -41,3 +41,26 @@ export async function currentCalibreEpub(
     return null;
   }
 }
+
+/**
+ * A book's title sort as Calibre holds it now (read-only, one query by UUID; null when it can't
+ * be read). calibredb can't list the sort through the content server (its --template is
+ * refused for remote libraries, calibre 9.18), so the user's edit of the sort is checked here.
+ */
+export function liveTitleSort(libraryDir: string, calibreUuid: string): string | null {
+  try {
+    const db = openSourceDatabase(path.join(libraryDir, METADATA_DB));
+    try {
+      // A short wait for Calibre's write lock (milliseconds), never a long block.
+      db.pragma('busy_timeout = 1000');
+      const r = db.prepare('SELECT sort FROM books WHERE uuid = ?').get(calibreUuid) as
+        | { sort: string | null }
+        | undefined;
+      return r ? (r.sort ?? '') : null;
+    } finally {
+      db.close();
+    }
+  } catch {
+    return null;
+  }
+}
