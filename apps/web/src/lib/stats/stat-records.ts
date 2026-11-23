@@ -12,8 +12,9 @@
  *                      updated while open and sealed with `closed: true`. The only
  *                      source of reading time and characters from WP12 on.
  * - `stat-session-fix` id = the session's id. A correction any device may make:
- *                      `{excluded: true}` or replacement `seconds` / `chars`.
- * - `stat-day`         id <bookId>:<YYYY-MM-DD>. Frozen: the per-day rows from
+ *                      `{excluded: true}` or replacement `seconds` / `chars`;
+ *                      `{deleted: true}` hides the session everywhere (Delete).
+ * - `stat-day`        id <bookId>:<YYYY-MM-DD>. Frozen: the per-day rows from
  *                      before device tracking. Read only; devices never write them.
  */
 
@@ -40,6 +41,8 @@ export interface StatSessionData {
 
 export interface StatSessionFixData {
   excluded?: true;
+  /** Deleted on the Stats page: shown nowhere and counted nowhere. */
+  deleted?: true;
   seconds?: number;
   chars?: number;
 }

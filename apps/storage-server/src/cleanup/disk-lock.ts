@@ -142,10 +142,13 @@ export const DISK_OWNERS = {
   calibre2: 'Calibre stage 2 (metadata from the files)',
   calibre3: 'Calibre stage 3 (content duplicates)',
   calibre4: 'Calibre stage 4 (reading the files for the online lookups)',
+  calibreArrivals: 'Calibre new arrivals (reading new files and books)',
+  calibreArrivalsArchives: 'Calibre new arrivals (unpacking archives)',
   audio1: 'Audiobooks stage 1 (identity)',
   audio3: 'Audiobooks stage 3 (reading copies to compare them frame by frame)',
   audio4: 'Audiobooks stage 4 (reading audio to compare with store samples and other recordings)',
   audio6: 'Audiobooks stage 6 (building japanese-new)',
   audio6switch: 'Audiobooks stage 6 (the switch to the new library)',
   audio7: 'Audiobooks stage 7 (new arrivals: unpacking archives and adding books)',
+  audio8: 'Audiobooks stage 8 (reading the Calibre covers of paired ebooks)',
 } as const;

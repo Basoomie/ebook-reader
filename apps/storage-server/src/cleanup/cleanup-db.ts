@@ -1759,6 +1759,653 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
         WHERE state <> 'submitted' AND files_deleted_at IS NULL;
     `,
   },
+  {
+    version: 22,
+    name: 'audiobook library changes: what we wrote and when, what Audiobookshelf made of it, your fields',
+    // Audiobook cleanup leftovers, item 6 (approved by the user 2026-11-21): a field whose
+    // metadata.json value differs from what we wrote is yours only when no evidence says
+    // Audiobookshelf changed it. Per ledger book: when we last wrote metadata.json (or changed
+    // its folder or links) and in which run; the file just before that write; the file as
+    // Audiobookshelf left it after its scan of that write (`seen`, proven by time: the file's
+    // last change at the item's import or at a library scan we asked for). Fields once yours stay
+    // yours (a later write never takes them back) until you choose the cleanup's value. A change
+    // records the file it read, the fields where Audiobookshelf kept an older value (review) and
+    // the fields to set through Audiobookshelf's edit call (your "Use the cleanup's" on those).
+    sql: `
+      ALTER TABLE audio_library_books ADD COLUMN written_at INTEGER;
+      ALTER TABLE audio_library_books ADD COLUMN written_run INTEGER;
+      ALTER TABLE audio_library_books ADD COLUMN before BLOB;
+      ALTER TABLE audio_library_books ADD COLUMN seen BLOB;
+      ALTER TABLE audio_library_books ADD COLUMN seen_at INTEGER;
+      ALTER TABLE audio_library_books ADD COLUMN seen_state TEXT
+        CHECK (seen_state IS NULL OR seen_state IN ('seen', 'unproven'));
+      ALTER TABLE audio_library_books ADD COLUMN seen_detail TEXT;
+      CREATE INDEX audio_library_books_seen ON audio_library_books (area, seen_state);
+
+      CREATE TABLE audio_library_owners (
+        book_id   INTEGER NOT NULL REFERENCES audio_library_books(id),
+        field     TEXT NOT NULL,
+        since     INTEGER NOT NULL,
+        run_id    INTEGER,
+        evidence  TEXT NOT NULL,
+        PRIMARY KEY (book_id, field)
+      );
+
+      ALTER TABLE audio_library_changes ADD COLUMN metadata_read BLOB;
+      ALTER TABLE audio_library_changes ADD COLUMN abs_kept_json TEXT NOT NULL DEFAULT '[]'
+        CHECK (json_valid(abs_kept_json));
+      ALTER TABLE audio_library_changes ADD COLUMN abs_set_json TEXT NOT NULL DEFAULT '[]'
+        CHECK (json_valid(abs_set_json));
+    `,
+  },
+  {
+    version: 23,
+    name: 'stage 4: the order of each series, and best guesses listed',
+    // Series-order follow-up (plan approved 2026-11-22): the series step's choice per book of a
+    // series (stage4/series-order.ts): its number, where the number came from, whether it is a
+    // best guess and why, a title with its number, and a problem for review. Every book of a
+    // series has a row (src 'calibre' for books stage 4 doesn't change), so the Best guesses
+    // list shows each series whole, in order. The other fields' best guesses (the models' flagged
+    // values) are listed through v13's ai_values_flagged.
+    sql: `
+      CREATE TABLE stage4_series_order (
+        library_id    TEXT NOT NULL,
+        calibre_uuid  TEXT NOT NULL,
+        calibre_id    INTEGER NOT NULL,
+        series        TEXT NOT NULL,
+        series_key    TEXT NOT NULL,
+        idx           REAL,
+        src           TEXT NOT NULL,
+        guess         INTEGER NOT NULL DEFAULT 0,
+        reason        TEXT,
+        title         TEXT,
+        title_src     TEXT,
+        review        TEXT,
+        run_at        INTEGER NOT NULL,
+        PRIMARY KEY (library_id, calibre_uuid)
+      );
+      CREATE INDEX stage4_series_order_series ON stage4_series_order (library_id, series_key, idx);
+      CREATE INDEX stage4_series_order_flagged ON stage4_series_order (library_id, series_key)
+        WHERE guess = 1 OR review IS NOT NULL;
+    `,
+  },
+  {
+    version: 24,
+    name: 'the Calibre library new arrivals and the import from the torrents folders (WP20g)',
+    // WP20g (plan approved 2026-11-22): books added by hand in Calibre and EPUBs imported from
+    // source folders go through stages 1-5 with the cleanup's own rules (src/cleanup/arrivals/).
+    //
+    // calibre_arrivals_state  one row: the arrivals' mode (off / Preview / On), pause, schedule
+    //                         and the baseline of books present before the first run.
+    // calibre_arrival_pairs   a source folder -> library pair as first seen (a changed folder is
+    //                         a new pair): its first run (every file checked, a Preview); runs
+    //                         that start after it add when On (approved_at unused since v26).
+    // calibre_arrival_runs    one row per run (schedule, Run now, books added by hand).
+    // calibre_arrival_files   the catalog: one row per file version seen in a source folder (a
+    //                         file whose size or mtime changes is a new row), each looked at once,
+    //                         with its outcome and the book it was added as or duplicates.
+    // calibre_arrival_archives / _entries  archives (and split sets) listed and unpacked under
+    //                         <source folder>/_extracted/ by the linking sidecar.
+    // calibre_known_books     every Calibre book the arrivals know (the baseline at the first
+    //                         run, books added by the import, books added by hand, books Undo
+    //                         brought back): a book not here is new.
+    // calibre_arrival_books   the books of a run that go through stages 1-5 (the scope).
+    // calibre_arrival_batches / _items  add batches for the apply sidecar (calibredb add) and
+    //                         their Undo (export to the quarantine, then Calibre's trash).
+    // calibre_arrival_reviews review items with a stable key (a better copy of a book with
+    //                         reader data, an archive that can't be read, an add that failed).
+    sql: `
+      CREATE TABLE calibre_arrivals_state (
+        id                  INTEGER PRIMARY KEY CHECK (id = 1),
+        mode                TEXT NOT NULL DEFAULT 'off' CHECK (mode IN ('off', 'analyse', 'on')),
+        pause_reason        TEXT,
+        pause_detail        TEXT,
+        paused_at           INTEGER,
+        last_scheduled_day  TEXT,
+        run_now             INTEGER NOT NULL DEFAULT 0,
+        current_run         INTEGER,
+        baseline_at         INTEGER,
+        snapshot_seen       TEXT,
+        hand_checked_at     INTEGER,
+        updated_at          INTEGER NOT NULL
+      );
+      INSERT INTO calibre_arrivals_state (id, updated_at) VALUES (1, 0);
+
+      CREATE TABLE calibre_arrival_pairs (
+        pair_key      TEXT PRIMARY KEY,
+        pair_id       TEXT NOT NULL,
+        source        TEXT NOT NULL,
+        library_id    TEXT NOT NULL,
+        first_run_id  INTEGER,
+        first_done_at INTEGER,
+        approved_at   INTEGER,
+        created_at    INTEGER NOT NULL
+      );
+
+      CREATE TABLE calibre_arrival_runs (
+        id             INTEGER PRIMARY KEY,
+        trigger        TEXT NOT NULL CHECK (trigger IN ('schedule', 'now', 'hand')),
+        mode           TEXT NOT NULL CHECK (mode IN ('analyse', 'on')),
+        state          TEXT NOT NULL CHECK (state IN ('running', 'done', 'failed', 'stopped')),
+        phase          TEXT NOT NULL,
+        started_at     INTEGER NOT NULL,
+        finished_at    INTEGER,
+        progress_json  TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(progress_json)),
+        report_json    TEXT CHECK (report_json IS NULL OR json_valid(report_json)),
+        error          TEXT
+      );
+      CREATE INDEX calibre_arrival_runs_state ON calibre_arrival_runs (state, id);
+
+      CREATE TABLE calibre_arrival_archives (
+        id            INTEGER PRIMARY KEY,
+        pair_key      TEXT NOT NULL,
+        rel_path      TEXT NOT NULL,
+        volumes_json  TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(volumes_json)),
+        size          INTEGER NOT NULL,
+        mtime_ms      INTEGER NOT NULL,
+        dev           INTEGER,
+        ino           INTEGER,
+        state         TEXT NOT NULL DEFAULT 'new' CHECK (state IN ('new', 'waiting', 'listed',
+                        'unpacked', 'no_books', 'password', 'not_archive', 'names', 'failed')),
+        encoding      TEXT,
+        detail        TEXT,
+        books         INTEGER NOT NULL DEFAULT 0,
+        listed_at     INTEGER,
+        unpacked_at   INTEGER,
+        updated_at    INTEGER NOT NULL,
+        UNIQUE (pair_key, rel_path)
+      );
+      CREATE INDEX calibre_arrival_archives_state ON calibre_arrival_archives (state, id);
+
+      CREATE TABLE calibre_arrival_archive_entries (
+        archive_id  INTEGER NOT NULL REFERENCES calibre_arrival_archives(id),
+        name        TEXT NOT NULL,
+        size        INTEGER NOT NULL,
+        dst         TEXT NOT NULL,
+        state       TEXT NOT NULL CHECK (state IN ('planned', 'done', 'skipped', 'failed')),
+        detail      TEXT,
+        updated_at  INTEGER NOT NULL,
+        PRIMARY KEY (archive_id, name)
+      );
+      CREATE INDEX calibre_arrival_archive_entries_state
+        ON calibre_arrival_archive_entries (state, archive_id);
+
+      CREATE TABLE calibre_arrival_files (
+        id             INTEGER PRIMARY KEY,
+        pair_key       TEXT NOT NULL,
+        rel_path       TEXT NOT NULL,
+        size           INTEGER NOT NULL,
+        mtime_ms       INTEGER NOT NULL,
+        dev            INTEGER,
+        ino            INTEGER,
+        first_seen_at  INTEGER NOT NULL,
+        seen_at        INTEGER NOT NULL,
+        gone_at        INTEGER,
+        kind           TEXT NOT NULL CHECK (kind IN ('epub', 'book', 'archive', 'volume',
+                         'partial', 'other')),
+        format         TEXT,
+        archive_id     INTEGER REFERENCES calibre_arrival_archives(id),
+        sha256         TEXT,
+        hashed_at      INTEGER,
+        outcome        TEXT NOT NULL DEFAULT 'pending' CHECK (outcome IN ('pending', 'waiting',
+                         'downloading', 'new', 'added', 'identical', 'duplicate', 'better',
+                         'better_review', 'not_imported', 'unreadable', 'too_long', 'skipped',
+                         'removed_by_you', 'undone', 'failed')),
+        detail         TEXT,
+        calibre_id     INTEGER,
+        calibre_uuid   TEXT,
+        run_id         INTEGER,
+        decided_at     INTEGER,
+        facts_json     TEXT CHECK (facts_json IS NULL OR json_valid(facts_json)),
+        UNIQUE (pair_key, rel_path, size, mtime_ms)
+      );
+      CREATE INDEX calibre_arrival_files_path ON calibre_arrival_files (pair_key, rel_path);
+      CREATE INDEX calibre_arrival_files_outcome ON calibre_arrival_files (outcome, pair_key, id);
+      CREATE INDEX calibre_arrival_files_sha ON calibre_arrival_files (sha256) WHERE sha256 IS NOT NULL;
+      CREATE INDEX calibre_arrival_files_book ON calibre_arrival_files (calibre_uuid)
+        WHERE calibre_uuid IS NOT NULL;
+      CREATE INDEX calibre_arrival_files_run ON calibre_arrival_files (run_id, outcome);
+
+      CREATE TABLE calibre_known_books (
+        library_id   TEXT NOT NULL,
+        calibre_id   INTEGER NOT NULL,
+        calibre_uuid TEXT NOT NULL,
+        origin       TEXT NOT NULL CHECK (origin IN ('baseline', 'import', 'hand', 'undo')),
+        file_id      INTEGER,
+        added_at     INTEGER NOT NULL,
+        settled_at   INTEGER,
+        run_id       INTEGER,
+        gone_at      INTEGER,
+        PRIMARY KEY (library_id, calibre_id)
+      );
+      CREATE INDEX calibre_known_books_uuid ON calibre_known_books (calibre_uuid);
+      CREATE INDEX calibre_known_books_waiting ON calibre_known_books (library_id, origin, run_id);
+
+      CREATE TABLE calibre_arrival_books (
+        run_id        INTEGER NOT NULL REFERENCES calibre_arrival_runs(id),
+        library_id    TEXT NOT NULL,
+        calibre_id    INTEGER NOT NULL,
+        calibre_uuid  TEXT NOT NULL,
+        origin        TEXT NOT NULL CHECK (origin IN ('import', 'hand')),
+        file_id       INTEGER,
+        state         TEXT NOT NULL DEFAULT 'open',
+        detail        TEXT,
+        PRIMARY KEY (run_id, calibre_id)
+      );
+      CREATE INDEX calibre_arrival_books_book ON calibre_arrival_books (library_id, calibre_uuid);
+
+      CREATE TABLE calibre_arrival_batches (
+        id                INTEGER PRIMARY KEY,
+        run_id            INTEGER,
+        library_id        TEXT NOT NULL,
+        kind              TEXT NOT NULL CHECK (kind IN ('add', 'undo_add')),
+        state             TEXT NOT NULL CHECK (state IN ('planned', 'claimed', 'done', 'failed',
+                            'undone')),
+        undo_of           INTEGER REFERENCES calibre_arrival_batches(id),
+        item_count        INTEGER NOT NULL,
+        lease_expires_at  INTEGER,
+        attempts          INTEGER NOT NULL DEFAULT 0,
+        created_at        INTEGER NOT NULL,
+        claimed_at        INTEGER,
+        finished_at       INTEGER,
+        error             TEXT,
+        updated_at        INTEGER NOT NULL
+      );
+      CREATE INDEX calibre_arrival_batches_state ON calibre_arrival_batches (state, id);
+
+      CREATE TABLE calibre_arrival_batch_items (
+        id              INTEGER PRIMARY KEY,
+        batch_id        INTEGER NOT NULL REFERENCES calibre_arrival_batches(id),
+        file_id         INTEGER NOT NULL REFERENCES calibre_arrival_files(id),
+        position        INTEGER NOT NULL,
+        state           TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'fetched',
+                          'added', 'exported', 'removed', 'failed', 'skipped')),
+        max_id_before   INTEGER,
+        calibre_id      INTEGER,
+        calibre_uuid    TEXT,
+        quarantine_dir  TEXT,
+        detail          TEXT,
+        updated_at      INTEGER NOT NULL,
+        UNIQUE (batch_id, file_id)
+      );
+      CREATE INDEX calibre_arrival_batch_items_file ON calibre_arrival_batch_items (file_id);
+
+      CREATE TABLE calibre_arrival_reviews (
+        id          INTEGER PRIMARY KEY,
+        review_key  TEXT NOT NULL UNIQUE,
+        kind        TEXT NOT NULL CHECK (kind IN ('better_copy', 'archive', 'add_failed',
+                      'too_long')),
+        file_id     INTEGER,
+        calibre_id  INTEGER,
+        calibre_uuid TEXT,
+        detail_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(detail_json)),
+        run_id      INTEGER,
+        created_at  INTEGER NOT NULL,
+        decision    TEXT,
+        decided_at  INTEGER,
+        applied_at  INTEGER
+      );
+      CREATE INDEX calibre_arrival_reviews_open ON calibre_arrival_reviews (decision, id);
+    `,
+  },
+  {
+    version: 25,
+    name: "stage 4: author readings without NDL's notes",
+    // The live Preview of 2026-11-22 found NDL's notes in written author_sort values ("アオキ,
+    // クニコ, トウゲイカ", "ワタナベ, マサカズ, pub. 2013"). Stage 4 reads the stored answers again
+    // (READINGS_VERSION) and keeps the reading as it was stored before in `noted`, so a value the
+    // cleanup wrote with the notes is corrected at On.
+    sql: `ALTER TABLE author_readings ADD COLUMN noted TEXT;`,
+  },
+  {
+    version: 26,
+    name: 'titles too long for a Calibre folder: fitted, and the list of shortened titles',
+    // Decided with the user 2026-11-22: a title whose Calibre folder or file name would pass 255
+    // bytes is cleaned, shortened or cut (title-fit.ts) instead of being held for review. Every
+    // title change that was shortened or cut is listed (calibre_title_fits), filled from the
+    // proposal's own evidence ($.fit) by triggers, so every stage's proposals land on the list;
+    // a new arrival's add is listed by the run (arrival_file_id). Cleaned-only titles are not
+    // listed. One-time: the holds that were automatic before are open again (stage 2's and 5's
+    // proposals held for the name; the arrivals' files held as too long). Stage 4's held books
+    // are decided again by stage 4's own one-time pass (TITLE_FIT_VERSION): its hold replaced
+    // the class they had, so they are not simply made automatic here.
+    sql: `
+      CREATE TABLE calibre_title_fits (
+        id              INTEGER PRIMARY KEY,
+        change_id       INTEGER UNIQUE,
+        arrival_file_id INTEGER UNIQUE,
+        library_id      TEXT NOT NULL,
+        calibre_id      INTEGER,
+        calibre_uuid    TEXT,
+        stage           INTEGER NOT NULL,
+        original        TEXT NOT NULL,
+        written         TEXT NOT NULL,
+        step            TEXT NOT NULL CHECK (step IN ('shortened', 'cut')),
+        rules_json      TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(rules_json)),
+        created_at      INTEGER NOT NULL,
+        updated_at      INTEGER NOT NULL
+      );
+      CREATE INDEX calibre_title_fits_book ON calibre_title_fits (library_id, calibre_uuid);
+
+      CREATE TRIGGER calibre_title_fits_insert AFTER INSERT ON proposed_changes
+      WHEN NEW.field = 'title' AND json_extract(NEW.evidence_json, '$.fit.step') IN ('shortened', 'cut')
+      BEGIN
+        INSERT OR REPLACE INTO calibre_title_fits (change_id, library_id, calibre_id, calibre_uuid,
+          stage, original, written, step, rules_json, created_at, updated_at)
+        VALUES (NEW.id, NEW.library_id, NEW.calibre_id, NEW.calibre_uuid, NEW.stage,
+          json_extract(NEW.evidence_json, '$.fit.from'), json_extract(NEW.new_json, '$'),
+          json_extract(NEW.evidence_json, '$.fit.step'),
+          COALESCE(json_extract(NEW.evidence_json, '$.fit.rules'), '[]'),
+          NEW.created_at, NEW.updated_at);
+      END;
+
+      CREATE TRIGGER calibre_title_fits_update AFTER UPDATE OF new_json, evidence_json ON proposed_changes
+      WHEN NEW.field = 'title'
+      BEGIN
+        DELETE FROM calibre_title_fits WHERE change_id = NEW.id
+          AND COALESCE(json_extract(NEW.evidence_json, '$.fit.step'), '') NOT IN ('shortened', 'cut');
+        INSERT OR REPLACE INTO calibre_title_fits (change_id, library_id, calibre_id, calibre_uuid,
+          stage, original, written, step, rules_json, created_at, updated_at)
+        SELECT NEW.id, NEW.library_id, NEW.calibre_id, NEW.calibre_uuid, NEW.stage,
+          json_extract(NEW.evidence_json, '$.fit.from'), json_extract(NEW.new_json, '$'),
+          json_extract(NEW.evidence_json, '$.fit.step'),
+          COALESCE(json_extract(NEW.evidence_json, '$.fit.rules'), '[]'),
+          NEW.created_at, NEW.updated_at
+        WHERE json_extract(NEW.evidence_json, '$.fit.step') IN ('shortened', 'cut');
+      END;
+
+      CREATE TRIGGER calibre_title_fits_delete AFTER DELETE ON proposed_changes
+      WHEN OLD.field = 'title'
+      BEGIN
+        DELETE FROM calibre_title_fits WHERE change_id = OLD.id;
+      END;
+
+      UPDATE proposed_changes SET class = 'auto', review_reason = NULL
+      WHERE stage IN (2, 5) AND state = 'proposed' AND class = 'review' AND decided_by IS NULL
+        AND review_reason LIKE 'Too long for a folder name%';
+
+      UPDATE calibre_arrival_files SET outcome = 'pending', detail = NULL
+      WHERE outcome = 'too_long' AND gone_at IS NULL;
+      DELETE FROM calibre_arrival_reviews WHERE kind = 'too_long' AND decision IS NULL;
+    `,
+  },
+  {
+    version: 27,
+    name: 'audiobooks stage 8: the second pass from the Calibre ebooks',
+    // Stage 8 (src/cleanup/audio/stage8-ebooks.ts, WP21g): each audiobook recording (stage 5's
+    // units; AI books, radio clips and drama CDs left out) paired with its exact Calibre volume by
+    // cleaned title, author and printed volume. From the pair: genres and tags for ABS, a series
+    // where the audiobook has none from a store, and (cleanup.db only) the ebook's author
+    // readings, cover reference and description. Calibre is only read (the indexer's snapshot
+    // copy); ABS is changed only through stage 7's library changes.
+    sql: `
+      INSERT INTO audio_stages (stage, updated_at) VALUES (8, 0);
+
+      -- One row per recording (stage 5's unit key). class: auto (paired) | review | none
+      -- (no Calibre book passes) | excluded (AI, radio, drama CD). calibre_id: the pair (auto),
+      -- or the best candidate (review). audio_hash: the audiobook facts the pairing read (a change
+      -- pairs it again); ebook_fp: the paired ebook's fingerprint when decided.
+      CREATE TABLE audio_ebook_pairs (
+        unit_key        TEXT PRIMARY KEY,
+        library_id      TEXT,
+        calibre_id      INTEGER,
+        class           TEXT NOT NULL CHECK (class IN ('auto', 'review', 'none', 'excluded')),
+        kind            TEXT NOT NULL,
+        audio_title     TEXT NOT NULL,
+        audio_authors   TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(audio_authors)),
+        reason          TEXT,
+        checks_json     TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(checks_json)),
+        candidates_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(candidates_json)),
+        audio_hash      TEXT NOT NULL,
+        ebook_fp        TEXT,
+        rules_version   INTEGER NOT NULL,
+        first_review_run INTEGER,
+        decided_at      INTEGER NOT NULL
+      );
+      CREATE INDEX audio_ebook_pairs_class ON audio_ebook_pairs (class, unit_key);
+      CREATE INDEX audio_ebook_pairs_calibre ON audio_ebook_pairs (calibre_id);
+
+      -- Your review choices, never overwritten by the stage. field 'pair': value = the Calibre
+      -- id ("this ebook") or null ("no ebook"); a chosen ebook that is gone goes back to review.
+      -- field 'series': value = "calibre" (use the ebook's series) or "none" (no series).
+      CREATE TABLE audio_ebook_choices (
+        unit_key    TEXT NOT NULL,
+        field       TEXT NOT NULL CHECK (field IN ('pair', 'series')),
+        value_json  TEXT NOT NULL CHECK (json_valid(value_json)),
+        chosen_at   INTEGER NOT NULL,
+        PRIMARY KEY (unit_key, field)
+      );
+
+      -- The ebooks that are paired or a review candidate: what stage 8 read from Calibre. fp =
+      -- sha1 of the fields used (a change is noticed even when last_modified is not updated).
+      -- Readings, the description and the cover reference are kept here only (decided: ABS keeps
+      -- the audiobook's own).
+      CREATE TABLE audio_ebook_books (
+        library_id      TEXT NOT NULL,
+        calibre_id      INTEGER NOT NULL,
+        uuid            TEXT,
+        fp              TEXT NOT NULL,
+        last_modified   TEXT,
+        title           TEXT NOT NULL,
+        authors_json    TEXT NOT NULL CHECK (json_valid(authors_json)),
+        author_sort     TEXT,
+        series          TEXT,
+        series_index    REAL,
+        terms_json      TEXT NOT NULL CHECK (json_valid(terms_json)),
+        description     TEXT,
+        cover_json      TEXT CHECK (cover_json IS NULL OR json_valid(cover_json)),
+        read_at         INTEGER NOT NULL,
+        PRIMARY KEY (library_id, calibre_id)
+      );
+
+      -- The values a pair gives a recording (fields genres, tags, series), as the build and the
+      -- library changes use them when stage 8 is On.
+      CREATE TABLE audio_ebook_values (
+        unit_key    TEXT NOT NULL,
+        field       TEXT NOT NULL CHECK (field IN ('genres', 'tags', 'series')),
+        value_json  TEXT NOT NULL CHECK (json_valid(value_json)),
+        calibre_id  INTEGER NOT NULL,
+        decided_at  INTEGER NOT NULL,
+        PRIMARY KEY (unit_key, field)
+      );
+
+      -- Every Calibre id seen with its last_modified (new and changed ebooks are found against
+      -- it), and the snapshot it was read from.
+      CREATE TABLE audio_ebook_known (
+        library_id      TEXT NOT NULL,
+        calibre_id      INTEGER NOT NULL,
+        fp              TEXT NOT NULL,
+        PRIMARY KEY (library_id, calibre_id)
+      );
+
+      -- The series stage 8 would give a recording, and why it doesn't (review: "series"; info:
+      -- a store series that differs from Calibre's). kind: fill | review | disagree.
+      CREATE TABLE audio_ebook_series (
+        unit_key    TEXT PRIMARY KEY,
+        kind        TEXT NOT NULL CHECK (kind IN ('fill', 'review', 'disagree')),
+        calibre_id  INTEGER NOT NULL,
+        calibre_series TEXT NOT NULL,
+        calibre_index  REAL,
+        written_name   TEXT,
+        reason      TEXT,
+        current_json TEXT,
+        decided_at  INTEGER NOT NULL
+      );
+      CREATE INDEX audio_ebook_series_kind ON audio_ebook_series (kind, unit_key);
+
+      -- Stage 8's Preview: what the library changes would do with its values (books already in
+      -- the library), from the last Preview run.
+      CREATE TABLE audio_ebook_preview (
+        book_id     INTEGER PRIMARY KEY,
+        unit_key    TEXT,
+        folder_from TEXT NOT NULL,
+        folder_to   TEXT,
+        fields_json TEXT NOT NULL CHECK (json_valid(fields_json)),
+        reviews_json TEXT NOT NULL CHECK (json_valid(reviews_json)),
+        run_id      INTEGER,
+        created_at  INTEGER NOT NULL
+      );
+      CREATE TABLE audio_ebook_state (
+        library_id      TEXT PRIMARY KEY,
+        snapshot_mtime  REAL,
+        snapshot_size   INTEGER,
+        audio_key       TEXT,
+        rules_version   INTEGER,
+        updated_at      INTEGER NOT NULL
+      );
+    `,
+  },
+  {
+    version: 28,
+    name: 'new arrivals: a folder adds once its first run has finished (no "Add these")',
+    // WP20g stop 2: the first look at books/japanese was marked done while every file still
+    // waited to settle (an earlier build), and "Add these" is removed (user, 2026-11-23: On is
+    // the go-ahead). A folder whose first run was marked done without an approval is not done:
+    // its run marks it done when nothing in it waits, and runs that start after that add.
+    sql: `UPDATE calibre_arrival_pairs SET first_done_at = NULL WHERE approved_at IS NULL;`,
+  },
+  {
+    version: 29,
+    name: 'the user’s edits from the reader: fields that are the user’s, changes seen in Calibre',
+    // Calibre metadata editing (tier 3 item 2). Edits are field batches of their own stage (10)
+    // in proposed_changes / batches / field_undo like the cleanup's. user_fields: every field
+    // the user edited, confirmed, put back, or changed in Calibre's own program; no cleanup pass
+    // changes it again. calibre_seen_changes: the history's "Changed in Calibre" entries (and
+    // the books a case-only rename of a shared name changed with an edit). series_pair_decisions:
+    // "Not the same series" (and merges) for the series editor's suggested pair.
+    sql: `
+      CREATE TABLE user_fields (
+        library_id    TEXT NOT NULL,
+        calibre_uuid  TEXT NOT NULL,
+        field         TEXT NOT NULL,
+        value_json    TEXT CHECK (value_json IS NULL OR json_valid(value_json)),
+        source        TEXT NOT NULL CHECK (source IN
+                        ('edit', 'confirm', 'undo', 'calibre', 'carried', 'shared_rename')),
+        since         INTEGER NOT NULL,
+        change_id     INTEGER,
+        PRIMARY KEY (library_id, calibre_uuid, field)
+      ) WITHOUT ROWID;
+      CREATE TABLE calibre_seen_changes (
+        id              INTEGER PRIMARY KEY,
+        library_id      TEXT NOT NULL,
+        calibre_uuid    TEXT NOT NULL,
+        calibre_id      INTEGER NOT NULL,
+        field           TEXT NOT NULL,
+        old_json        TEXT NOT NULL CHECK (json_valid(old_json)),
+        new_json        TEXT NOT NULL CHECK (json_valid(new_json)),
+        kind            TEXT NOT NULL CHECK (kind IN ('calibre', 'shared_rename', 'confirm')),
+        cause_change_id INTEGER,
+        cause_title     TEXT,
+        seen_at         INTEGER NOT NULL
+      );
+      CREATE INDEX calibre_seen_changes_book ON calibre_seen_changes (library_id, calibre_uuid, field);
+      CREATE TABLE series_pair_decisions (
+        library_id  TEXT NOT NULL,
+        name_a      TEXT NOT NULL,
+        name_b      TEXT NOT NULL,
+        decision    TEXT NOT NULL CHECK (decision IN ('different', 'merged')),
+        decided_at  INTEGER NOT NULL,
+        PRIMARY KEY (library_id, name_a, name_b)
+      ) WITHOUT ROWID;
+      CREATE INDEX undo_records_kept ON undo_records (library_id, kept_uuid);
+      CREATE INDEX batches_open ON batches (state, stage, created_at);
+
+      -- No cleanup pass proposes a field that is the user's: a proposal made for one is set
+      -- aside at once (any stage, new arrivals included), and a field that becomes the user's
+      -- sets aside the open proposals for it. A title write also writes the title sort and an
+      -- author write the author sort, a series write its number: those count too. The batch
+      -- planner and the sidecar's verify check again (stage2-batches.ts).
+      CREATE TRIGGER proposed_changes_yours AFTER INSERT ON proposed_changes
+      WHEN NEW.stage <> 10 AND NEW.state = 'proposed' AND EXISTS (
+        SELECT 1 FROM user_fields u
+        WHERE u.library_id = NEW.library_id AND u.calibre_uuid = NEW.calibre_uuid
+          AND (u.field = NEW.field
+            OR (NEW.field = 'title' AND u.field = 'sort')
+            OR (NEW.field = 'authors' AND u.field = 'author_sort')
+            OR (NEW.field = 'series' AND u.field = 'series_index')))
+      BEGIN
+        UPDATE proposed_changes SET state = 'skipped',
+          review_reason = 'Yours: you edited or confirmed this field (the cleanup never changes it)'
+        WHERE id = NEW.id;
+      END;
+      -- A field changed in Calibre's own program is set aside by the batch planner instead (it
+      -- counts as "changed in Calibre since the analysis" there, so a mass change still pauses
+      -- the stage: WP20 lessons 1).
+      CREATE TRIGGER user_fields_yours AFTER INSERT ON user_fields
+      WHEN NEW.source <> 'calibre'
+      BEGIN
+        UPDATE proposed_changes SET state = 'skipped',
+          review_reason = 'Yours: you edited or confirmed this field (the cleanup never changes it)',
+          updated_at = NEW.since
+        WHERE library_id = NEW.library_id AND calibre_uuid = NEW.calibre_uuid
+          AND stage <> 10 AND state = 'proposed'
+          AND (field = NEW.field
+            OR (field = 'title' AND NEW.field = 'sort')
+            OR (field = 'authors' AND NEW.field = 'author_sort')
+            OR (field = 'series' AND NEW.field = 'series_index'));
+      END;
+    `,
+  },
+  {
+    version: 30,
+    name: 'More Bookmeter coverage: the pass over the stored answers, its requests and spot check',
+    // More Bookmeter coverage, step 2 (bookmeter-coverage.md; stage4/bookmeter-more.ts). One pass
+    // with its own Off/Preview/On (the stages table holds stages 0-5 only). bookmeter_more_books:
+    // the books without a match the chosen rules decided (matched: waits for its store list;
+    // ready: can be proposed; near: waits for the AI check; second: waits for the second search).
+    // bookmeter_more_waiters: the pass's own waiters on the fetch queue, made ready by the queue
+    // like the audiobook cleanup's (stage 4's lookups take every ready row of fetch_waiters).
+    // bookmeter_more_spot: the 50-book spot check before On and the user's verdicts.
+    sql: `
+      CREATE TABLE bookmeter_more_state (
+        id            INTEGER PRIMARY KEY CHECK (id = 1),
+        library_id    TEXT,
+        mode          TEXT NOT NULL DEFAULT 'off' CHECK (mode IN ('off', 'analyse', 'on')),
+        progress_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(progress_json)),
+        paused_reason TEXT,
+        paused_detail TEXT,
+        updated_at    INTEGER NOT NULL
+      );
+      INSERT INTO bookmeter_more_state (id, updated_at) VALUES (1, 0);
+      CREATE TABLE bookmeter_more_books (
+        library_id    TEXT NOT NULL,
+        calibre_uuid  TEXT NOT NULL,
+        calibre_id    INTEGER NOT NULL,
+        labeled       INTEGER NOT NULL DEFAULT 0,
+        state         TEXT NOT NULL CHECK (state IN ('near', 'second', 'none', 'matched', 'ready')),
+        source        TEXT CHECK (source IN ('rules', 'ai', 'second')),
+        hit_json      TEXT CHECK (hit_json IS NULL OR json_valid(hit_json)),
+        failed_check  TEXT,
+        query_step    TEXT CHECK (query_step IN ('q1', 'q2', 'done')),
+        stores_json   TEXT CHECK (stores_json IS NULL OR json_valid(stores_json)),
+        stores_failed INTEGER NOT NULL DEFAULT 0,
+        updated_at    INTEGER NOT NULL,
+        PRIMARY KEY (library_id, calibre_uuid)
+      ) WITHOUT ROWID;
+      CREATE INDEX bookmeter_more_books_state
+        ON bookmeter_more_books (library_id, state, source, labeled);
+      CREATE TABLE bookmeter_more_waiters (
+        request_id    INTEGER NOT NULL,
+        library_id    TEXT NOT NULL,
+        calibre_uuid  TEXT NOT NULL,
+        step          TEXT NOT NULL CHECK (step IN ('q1', 'q2', 'stores')),
+        ready         INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (request_id, library_id, calibre_uuid, step)
+      ) WITHOUT ROWID;
+      CREATE INDEX bookmeter_more_waiters_ready ON bookmeter_more_waiters (ready, request_id) WHERE ready = 1;
+      CREATE INDEX bookmeter_more_waiters_book ON bookmeter_more_waiters (library_id, calibre_uuid);
+      CREATE INDEX bookmeter_more_waiters_step ON bookmeter_more_waiters (step, ready);
+      CREATE TABLE bookmeter_more_spot (
+        library_id    TEXT NOT NULL,
+        calibre_uuid  TEXT NOT NULL,
+        position      INTEGER NOT NULL,
+        source        TEXT NOT NULL CHECK (source IN ('rules', 'ai', 'second')),
+        verdict       TEXT CHECK (verdict IN ('right', 'wrong')),
+        decided_at    INTEGER,
+        PRIMARY KEY (library_id, calibre_uuid)
+      ) WITHOUT ROWID;
+    `,
+  },
 ];
 
 export const CLEANUP_SCHEMA_VERSION = CLEANUP_MIGRATIONS[CLEANUP_MIGRATIONS.length - 1].version;

@@ -10,6 +10,12 @@
  */
 import type Database from 'better-sqlite3';
 import { DEFAULT_DUPLICATE_SETTINGS, type DuplicateSettings } from './stage3-rules';
+import {
+  DEFAULT_TAG_LIST,
+  TagListError,
+  validTagList,
+  type TagListSetting,
+} from './stage5/tag-list';
 
 export interface PacingSettings {
   /** How fast an analysis reads book files (MB/s); 0 = no limit. */
@@ -49,6 +55,11 @@ export interface GateSettings {
    * <DB_DIR>/cleanup/reference-sample/audio/labels.json.
    */
   audiobookPairsFile: string;
+  /**
+   * Audiobooks stage 8 (WP21g): the labeled audiobook-ebook pairs (ebook-pairs.json); empty =
+   * <DB_DIR>/cleanup/reference-sample/audio/ebook-pairs.json.
+   */
+  audiobookEbookPairsFile: string;
   /**
    * Audiobooks stage 5 (WP21d): a field's automatic values (the rules', or both models agreeing)
    * must be right on the labeled books at least this often (%).
@@ -210,6 +221,13 @@ export interface AudiobookSettings {
   /** Stage 7: how long to wait for Audiobookshelf to show a new book (minutes). */
   arrivalsAbsWaitMinutes: number;
   /**
+   * Library changes (item 6): a book's metadata.json counts as Audiobookshelf's version of our
+   * write when its last change came within this many seconds after Audiobookshelf's own scan of
+   * the book (its import, or a library scan the cleanup asked for). Measured: 0.1 s on a scratch
+   * ABS 2.37.1, 32 s on the live library's scan of 4,787 books.
+   */
+  librarySeenSlackSeconds: number;
+  /**
    * Stage 7: when Audiobookshelf hasn't shown a new book after the wait, tell it the new folder
    * (its watcher API, one folder; no setting is changed). Off until stop 3 shows it is needed
    * (user, 2026-11-20).
@@ -223,6 +241,46 @@ export interface AudiobookSettings {
    * while these stay a Preview until approved (user, 2026-11-21): off | analyse (Preview) | on.
    */
   libraryChanges: 'off' | 'analyse' | 'on';
+  /**
+   * Stage 8 (WP21g): an audiobook's title and its Calibre book's agree at this pair share (or
+   * one inside the other), as stage 4's title check (`titlesAgree`).
+   */
+  ebookTitleScore: number;
+  /** Stage 8: one title inside the other counts only from this many characters (cleaned)... */
+  ebookTitleMinChars: number;
+  /** ...and this share of the longer title's characters (0-1). */
+  ebookTitleMinShare: number;
+}
+
+/** One source folder whose EPUBs the import adds to a Calibre library (WP20g, plan section 11). */
+export interface ArrivalPair {
+  /** Stable id (the pair's lists and first-run state keep it; a changed folder is a new pair). */
+  id: string;
+  /** The folder under the sources mount (CLEANUP_BOOK_SOURCES_DIR), "/"-separated, e.g. books/japanese. */
+  source: string;
+  /** The reader library (id) the books are added to. */
+  libraryId: string;
+}
+
+/**
+ * The Calibre library's new arrivals (WP20g): books added by hand in Calibre and the daily import
+ * from the torrents folders. Both go through stages 1-5 with the cleanup's own rules.
+ */
+export interface BookArrivalSettings {
+  pairs: ArrivalPair[];
+  /** The daily run (the server's time zone unless one is set), never inside the no-run window. */
+  time: string;
+  quietStart: string;
+  quietEnd: string;
+  timeZone: string;
+  /** A file counts once its size and modified time have not changed for this long. */
+  settleMinutes: number;
+  /** A book added by hand in Calibre waits until unchanged this long, then a run starts. */
+  handCheckMinutes: number;
+  /** Files added to Calibre per add batch (one calibredb add each). */
+  addBatchSize: number;
+  /** Seconds the sidecar may hold an add batch (extended by every report). */
+  addLeaseSeconds: number;
 }
 
 /**
@@ -246,6 +304,11 @@ export interface CleanupAiSettings {
    * or a stronger one (the new arrivals decided with J). Off: they are skipped.
    */
   upgradeIncludeDecided: boolean;
+  /**
+   * WP20g: the setup the Calibre library's new arrivals are decided with (default J: E, then
+   * Sonnet + Sol decide every field E left open or flagged; plan section 6 and 10).
+   */
+  booksArrivalsDesign: 'E' | 'F' | 'J';
 }
 
 /** The shortest interval a site can be set to (seconds; Sudachi runs locally and has none). */
@@ -356,6 +419,8 @@ export interface CleanupSettings {
   pacing: PacingSettings;
   /** The user's own Calibre tags (a trailing * matches any ending). */
   customTags: string[];
+  /** "Tags you can pick" (Settings › Library › Editing): the vocabulary's changes. */
+  tagList: TagListSetting;
   gate: GateSettings;
   /** A field pauses when its share of review results is this many points above the labeled books'. */
   reviewAlarmPercent: number;
@@ -378,6 +443,8 @@ export interface CleanupSettings {
   fetch: FetchSettings;
   /** The cleanup's own AI choices (WP21d; the shared provider settings are in src/ai/). */
   ai: CleanupAiSettings;
+  /** The Calibre library's new arrivals and the import (WP20g). */
+  arrivals: BookArrivalSettings;
   backup: BackupRecord;
 }
 
@@ -388,6 +455,9 @@ export const MODEL_TASKS = [
   'stage4.upgradeSecondary',
   'stage5.primary',
   'stage5.secondary',
+  // WP20g: new books' genres and tags (chosen by the user after stop 1: Sonnet AND Sol).
+  'stage5.upgradePrimary',
+  'stage5.upgradeSecondary',
   // The audiobook cleanup's stage 5 (WP21d).
   'audio5.primary',
   'audio5.secondary',
@@ -407,6 +477,8 @@ export const DEFAULT_SETTINGS: CleanupSettings = {
     'stage4.upgradeSecondary': 'gpt-6.1-sol',
     'stage5.primary': 'claude-haiku-5-5',
     'stage5.secondary': 'gpt-6-luna',
+    'stage5.upgradePrimary': 'claude-sonnet-5-5',
+    'stage5.upgradeSecondary': 'gpt-6.1-sol',
     'audio5.primary': 'claude-haiku-5-5',
     'audio5.secondary': 'gpt-6-luna',
     'audio5.upgradePrimary': 'claude-sonnet-5-5',
@@ -420,6 +492,7 @@ export const DEFAULT_SETTINGS: CleanupSettings = {
     lookupChunk: 25,
   },
   customTags: ['PeepoHappyBooks', 'alpindale', 'TMW-collection-*'],
+  tagList: DEFAULT_TAG_LIST,
   gate: {
     defaultPercent: 95,
     fieldPercent: { title: 85 },
@@ -429,6 +502,7 @@ export const DEFAULT_SETTINGS: CleanupSettings = {
     labeledBooksFile: '',
     duplicatePairsFile: '',
     audiobookPairsFile: '',
+    audiobookEbookPairsFile: '',
     audiobookMetaPercent: 95,
     genreLabelsFile: '',
     stage5: { genresRight: 95, tagsRight: 95, genresFound: 85, tagsFound: 70 },
@@ -498,14 +572,33 @@ export const DEFAULT_SETTINGS: CleanupSettings = {
     arrivalsTimeZone: '',
     arrivalsSettleMinutes: 30,
     arrivalsAbsWaitMinutes: 30,
+    librarySeenSlackSeconds: 600,
     arrivalsAbsNudge: false,
     extractLeaseSeconds: 1800,
     libraryChanges: 'analyse',
+    // Stage 8 (WP21g): stage 4's title check and its guard (measured at stop 1).
+    ebookTitleScore: 0.9,
+    ebookTitleMinChars: 3,
+    ebookTitleMinShare: 0.25,
   },
   ai: {
     labeledOnly: false,
     arrivalsDesign: 'J',
     upgradeIncludeDecided: false,
+    booksArrivalsDesign: 'J',
+  },
+  arrivals: {
+    // The first pair as decided 2026-11-17 (torrents/books/japanese -> japanese-library); the
+    // library is filled in from the cleanup's own library when the pair is first shown.
+    pairs: [],
+    time: '05:00',
+    quietStart: '23:30',
+    quietEnd: '00:30',
+    timeZone: '',
+    settleMinutes: 30,
+    handCheckMinutes: 60,
+    addBatchSize: 50,
+    addLeaseSeconds: 300,
   },
   fetch: {
     // Paces of plan section 6 (Bookmeter and Natively as BookWalker; the cover images as decided
@@ -747,6 +840,43 @@ function folderList(value: unknown): string[] {
   return [...new Set(out)];
 }
 
+/**
+ * The import's source folders (WP20g): relative to the sources mount, no "." or "..", never the
+ * audiobooks' torrents, no folder inside another pair's, at most 20.
+ */
+export function arrivalPairs(value: unknown): ArrivalPair[] {
+  if (!Array.isArray(value) || value.length > 20)
+    throw new SettingsError('Source folders must be a list of at most 20');
+  const out: ArrivalPair[] = [];
+  for (const raw of value) {
+    if (!isObj(raw)) throw new SettingsError('Each source folder needs a folder and a library');
+    const id = text('Source folder id', raw.id ?? '', 40);
+    if (!/^[A-Za-z0-9_-]{1,40}$/.test(id))
+      throw new SettingsError('Source folder id: letters, digits, - and _ only');
+    const source = text('Source folder', raw.source, 500)
+      .replace(/\\/g, '/')
+      .replace(/^\/+|\/+$/g, '');
+    if (source === '') throw new SettingsError('Source folder: choose a folder');
+    if (source.split('/').some((x) => x === '..' || x === '.' || x === ''))
+      throw new SettingsError(`Source folder ${source}: no "." or ".." parts`);
+    if (/^audiobooks(\/|$)/i.test(source))
+      throw new SettingsError('Source folder: the audiobooks have their own cleanup');
+    if (source.split('/').includes('_extracted'))
+      throw new SettingsError('Source folder: _extracted is the import’s own output');
+    const libraryId = text('Library of a source folder', raw.libraryId, 100);
+    if (libraryId === '') throw new SettingsError(`Source folder ${source}: choose a library`);
+    for (const o of out) {
+      if (o.id === id) throw new SettingsError(`Two source folders have the id ${id}`);
+      const a = o.source.toLowerCase() + '/';
+      const b = source.toLowerCase() + '/';
+      if (a.startsWith(b) || b.startsWith(a))
+        throw new SettingsError(`Source folders ${o.source} and ${source} overlap`);
+    }
+    out.push({ id, source, libraryId });
+  }
+  return out;
+}
+
 /** Audiobookshelf's address: http(s), no query, fragment or login; '' = not set. */
 function absAddress(value: unknown): string {
   const v = text('Audiobookshelf address', value);
@@ -938,6 +1068,12 @@ function validate(key: Key, value: unknown, current: CleanupSettings): unknown {
           0,
           1440,
         ),
+        librarySeenSlackSeconds: num(
+          "Seconds after Audiobookshelf's scan that its rewrite of metadata.json may come",
+          v.librarySeenSlackSeconds,
+          1,
+          3600,
+        ),
         arrivalsAbsNudge: bool('Tell Audiobookshelf the new folder', v.arrivalsAbsNudge),
         extractLeaseSeconds: num(
           'Seconds to unpack one archive entry',
@@ -952,6 +1088,20 @@ function validate(key: Key, value: unknown, current: CleanupSettings): unknown {
             throw new Error('Changes to books in the library: off, Preview or On');
           return m;
         })(),
+        ebookTitleScore: num('Ebook pairs: titles agree at a score of', v.ebookTitleScore, 0.3, 1),
+        ebookTitleMinChars: num(
+          'Ebook pairs: a title inside another counts from (characters)',
+          v.ebookTitleMinChars,
+          1,
+          20,
+          true,
+        ),
+        ebookTitleMinShare: num(
+          'Ebook pairs: a title inside another counts from (share of the longer)',
+          v.ebookTitleMinShare,
+          0,
+          1,
+        ),
       };
     }
     case 'ai': {
@@ -967,7 +1117,34 @@ function validate(key: Key, value: unknown, current: CleanupSettings): unknown {
                 throw new SettingsError('The new arrivals’ AI setup must be E, F or J');
               })(),
         upgradeIncludeDecided: v.upgradeIncludeDecided === true,
+        booksArrivalsDesign:
+          v.booksArrivalsDesign === 'E' ||
+          v.booksArrivalsDesign === 'F' ||
+          v.booksArrivalsDesign === 'J'
+            ? v.booksArrivalsDesign
+            : (() => {
+                throw new SettingsError('The books’ new arrivals’ AI setup must be E, F or J');
+              })(),
       };
+    }
+    case 'arrivals': {
+      const v = group('New arrivals', value, current.arrivals);
+      return {
+        pairs: arrivalPairs(v.pairs),
+        time: clock('Time of the daily run', v.time),
+        quietStart: clock('No run from', v.quietStart),
+        quietEnd: clock('No run until', v.quietEnd),
+        timeZone: zone('Time zone of the daily run', v.timeZone),
+        settleMinutes: num('A file counts once unchanged for (minutes)', v.settleMinutes, 0, 10080),
+        handCheckMinutes: num(
+          'A book added in Calibre waits until unchanged for (minutes)',
+          v.handCheckMinutes,
+          0,
+          10080,
+        ),
+        addBatchSize: num('Books added per batch', v.addBatchSize, 1, 500, true),
+        addLeaseSeconds: num('Seconds per add batch', v.addLeaseSeconds, 30, 3600, true),
+      } satisfies BookArrivalSettings;
     }
     case 'fetch': {
       const v = group('Online sources', value, current.fetch);
@@ -1106,6 +1283,14 @@ function validate(key: Key, value: unknown, current: CleanupSettings): unknown {
         lookupChunk: num('Books per Calibre look-up', v.lookupChunk, 1, 100, true),
       };
     }
+    case 'tagList': {
+      try {
+        return validTagList(value);
+      } catch (err) {
+        if (err instanceof TagListError) throw new SettingsError(err.message);
+        throw err;
+      }
+    }
     case 'customTags': {
       if (!Array.isArray(value) || value.length > 100) {
         throw new SettingsError('Custom tags must be a list of at most 100 tags');
@@ -1138,6 +1323,11 @@ function validate(key: Key, value: unknown, current: CleanupSettings): unknown {
         labeledBooksFile: text('Labeled books file', v.labeledBooksFile, 1000),
         duplicatePairsFile: text('Measured duplicate pairs file', v.duplicatePairsFile, 1000),
         audiobookPairsFile: text('Labeled audiobook pairs file', v.audiobookPairsFile, 1000),
+        audiobookEbookPairsFile: text(
+          'Labeled audiobook-ebook pairs file',
+          v.audiobookEbookPairsFile ?? '',
+          1000,
+        ),
         audiobookMetaPercent: num(
           'Audiobook metadata: bar per field (%)',
           v.audiobookMetaPercent,

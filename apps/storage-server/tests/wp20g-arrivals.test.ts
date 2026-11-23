@@ -1,0 +1,1691 @@
+/**
+ * WP20g: the Calibre library's new arrivals and the import from the torrents folders.
+ *
+ * Unit: file kinds and formats, the settle rule, the pairs' settings, archive entries, the add
+ * batches (lease, steps, never added twice, Undo), the sidecar's add allowlist, J for stage 4.
+ * End to end on a synthetic library with a temp source folder (the reader's real import code
+ * in-process): a Preview run (identical file, same text, a new book, an archive's EPUB, other
+ * formats, a download in progress), the first run's approval, On with the sidecar's steps
+ * played through its routes, the run's books through stages 1-2, a book added by hand that is a
+ * copy, and a book you removed never added again.
+ */
+import { createHash } from 'crypto';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import request from 'supertest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { buildArgs } from '../../cleanup-apply/src/calibredb';
+import { clockNow } from '../src/cleanup/audio/arrivals-schedule';
+import { ArrivalBatches } from '../src/cleanup/arrivals/add-batches';
+import { entrySkip } from '../src/cleanup/arrivals/archives';
+import { classifyName, settled, sniffFormat, walkSource } from '../src/cleanup/arrivals/catalog';
+import { inPool, type CompareFacts } from '../src/cleanup/arrivals/run';
+import { stage2Pass } from '../src/cleanup/arrivals/stage-passes';
+import { ArrivalStage5, emptyStage5Pass } from '../src/cleanup/arrivals/stage5-pass';
+import { runBar } from '../src/cleanup/arrivals/views';
+import { STAGE5_SPEC } from '../src/cleanup/stage5/prompt';
+import { buildLookup, candidatePairs, lookupCandidates } from '../src/cleanup/stage3-index';
+import { sortedUnique } from '../src/cleanup/stage3-sketch';
+import { initCleanupDatabase } from '../src/cleanup/cleanup-db';
+import type { Stage2Analysis } from '../src/cleanup/stage2';
+import { pauseField, resumeField } from '../src/cleanup/stage2-gate';
+import { arrivalPairs, getSettings, SettingsError, updateSettings } from '../src/cleanup/settings';
+import { stage4NeedsUpgrade } from '../src/cleanup/stage4/ai-decide';
+import { COUNTER_BUNDLE } from '../src/counts/counter-bundle';
+import { InProcessReader, type Stage3Reader } from '../src/counts/book-text-worker';
+import type { BookTextModule } from '../src/cleanup/stage3-work';
+import { healthyHeartbeat, makeCleanupEnv, type CleanupEnv } from './helpers/cleanup-env';
+import { makeZip } from './helpers/epub-fixture';
+import { chaptersOf, fakeText, makeTextEpub } from './helpers/stage3-fixture';
+
+const IMPORT = { importHTMLFixMode: 'Off', restrictImportFixToAnchor: true };
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const bundle = require(COUNTER_BUNDLE) as BookTextModule;
+const sha = (b: Buffer) => createHash('sha256').update(b).digest('hex');
+const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'ttsu-wp20g-'));
+
+describe('wp20g: files and formats', () => {
+  it('tells EPUBs, other book formats, archives, volumes, downloads and the rest apart', () => {
+    expect(classifyName('a/b/c.epub').kind).toBe('epub');
+    expect(classifyName('x.kepub.EPUB').kind).toBe('epub');
+    expect(classifyName('x.azw3')).toMatchObject({ kind: 'book', format: 'AZW3' });
+    expect(classifyName('x.pdf')).toMatchObject({ kind: 'book', format: 'PDF' });
+    expect(classifyName('x.cbz').kind).toBe('book');
+    expect(classifyName('Kindle/B00ABC')).toMatchObject({ kind: 'book', sniff: true });
+    expect(classifyName('a.zip').kind).toBe('archive');
+    expect(classifyName('a.rar').kind).toBe('archive');
+    expect(classifyName('a.7z.001')).toMatchObject({ kind: 'archive', format: 'split set' });
+    expect(classifyName('a.7z.002').kind).toBe('volume');
+    expect(classifyName('a.epub.!qB').kind).toBe('partial');
+    expect(classifyName('a.epub.part').kind).toBe('partial');
+    expect(classifyName('a.parts').kind).toBe('partial');
+    expect(classifyName('a.mp3').kind).toBe('other');
+    expect(classifyName('a.opf').kind).toBe('other');
+    expect(classifyName('deck.anki').kind).toBe('other');
+  });
+
+  it('reads the format of a file without an extension from its first bytes', () => {
+    const mobi = Buffer.alloc(80);
+    mobi.write('BOOKMOBI', 60, 'latin1');
+    expect(sniffFormat(mobi)).toBe('no extension (MOBI by content)');
+    expect(sniffFormat(Buffer.from('%PDF-1.4'))).toBe('no extension (PDF by content)');
+    const epub = makeTextEpub({ title: 'x', chapters: ['あ'.repeat(10)] });
+    expect(sniffFormat(epub.subarray(0, 68))).toBe('no extension (EPUB by content)');
+    expect(sniffFormat(Buffer.from('hello'))).toBe('no extension');
+    expect(sniffFormat(null)).toBe('no extension (empty)');
+  });
+
+  it('counts a file once its size and mtime were unchanged for the settle time', () => {
+    const now = 10_000_000;
+    expect(
+      settled({ first_seen_at: now - 31 * 60_000, mtime_ms: now - 40 * 60_000 }, now, 30 * 60_000),
+    ).toBe(true);
+    // Seen long ago but modified a minute ago (a new version would be seen first).
+    expect(
+      settled({ first_seen_at: now - 60 * 60_000, mtime_ms: now - 60_000 }, now, 30 * 60_000),
+    ).toBe(false);
+    // An old file first seen just now.
+    expect(settled({ first_seen_at: now - 60_000, mtime_ms: now - 9e6 }, now, 30 * 60_000)).toBe(
+      false,
+    );
+  });
+
+  it('never unpacks unsafe or hidden archive entries', () => {
+    expect(entrySkip('a/b.epub')).toBeNull();
+    expect(entrySkip('../b.epub')).toBe('leaves the folder');
+    expect(entrySkip('/etc/b.epub')).toBe('absolute path');
+    expect(entrySkip('__MACOSX/._b.epub')).toBe('macOS extra');
+    expect(entrySkip('.hidden/b.epub')).toBe('hidden');
+  });
+
+  it('checks the source folders set in the settings', () => {
+    expect(arrivalPairs([{ id: 'ja', source: 'books\\japanese/', libraryId: 'L' }])).toEqual([
+      { id: 'ja', source: 'books/japanese', libraryId: 'L' },
+    ]);
+    expect(() =>
+      arrivalPairs([{ id: 'a', source: 'audiobooks/japanese', libraryId: 'L' }]),
+    ).toThrow(SettingsError);
+    expect(() => arrivalPairs([{ id: 'a', source: 'books/../x', libraryId: 'L' }])).toThrow(
+      SettingsError,
+    );
+    expect(() => arrivalPairs([{ id: 'a', source: 'books/_extracted', libraryId: 'L' }])).toThrow(
+      SettingsError,
+    );
+    expect(() =>
+      arrivalPairs([
+        { id: 'a', source: 'books', libraryId: 'L' },
+        { id: 'b', source: 'books/japanese', libraryId: 'L' },
+      ]),
+    ).toThrow(/overlap/);
+    expect(() => arrivalPairs([{ id: 'a b', source: 'books', libraryId: 'L' }])).toThrow(
+      SettingsError,
+    );
+  });
+
+  it('the apply sidecar adds only one arrival EPUB from its own folder (or Undo’s re-add)', () => {
+    const login = {
+      contentServerUrl: 'http://c:8083',
+      libraryId: 'lib',
+      username: 'u',
+      password: 'p',
+    };
+    expect(
+      buildArgs('add', login, ['--duplicates', '/tmp/ttsu-arrivals/ttsu-arrival-12/b.epub']),
+    ).toContain('/tmp/ttsu-arrivals/ttsu-arrival-12/b.epub');
+    expect(() => buildArgs('add', login, ['--duplicates', '/tmp/other/b.epub'])).toThrow();
+    expect(() => buildArgs('add', login, ['/tmp/ttsu-arrivals/ttsu-arrival-12/b.epub'])).toThrow();
+    expect(() =>
+      buildArgs('add', login, [
+        '--duplicates',
+        '/tmp/ttsu-arrivals/ttsu-arrival-12/b.epub',
+        '/x.epub',
+      ]),
+    ).toThrow();
+    expect(() =>
+      buildArgs('add', login, ['-m', 'ignore', '/tmp/ttsu-arrivals/ttsu-arrival-1/b.epub']),
+    ).toThrow();
+    expect(() =>
+      buildArgs('add', login, ['--duplicates', '--one-book-per-directory', '/quarantine/x/12']),
+    ).not.toThrow();
+    // 1.4.0: a title the server fitted for Calibre's names, one plain line, before the file.
+    const file = '/tmp/ttsu-arrivals/ttsu-arrival-12/b.epub';
+    expect(buildArgs('add', login, ['--duplicates', '--title', '左遷された王子2', file])).toEqual(
+      expect.arrayContaining(['--title', '左遷された王子2', file]),
+    );
+    for (const bad of ['', '-m', '--automerge', String.fromCharCode(97, 10, 98), 'x'.repeat(301)])
+      expect(() => buildArgs('add', login, ['--duplicates', '--title', bad, file]), bad).toThrow();
+    expect(() =>
+      buildArgs('add', login, ['--duplicates', '--title', 'T', '/tmp/other/b.epub']),
+    ).toThrow();
+  });
+
+  it('J asks the stronger pair where E left a field open or flagged', () => {
+    const f = (source: string, flagged = false) => ({
+      decision: { value: 'x', source, flagged, reason: null },
+      rules: { value: 'x', auto: true },
+      primary: 'x',
+      secondary: 'x',
+    });
+    const all = (o: Record<string, unknown>) =>
+      ({
+        t: f('rules'),
+        au: f('rules'),
+        il: f('rules'),
+        se: f('rules'),
+        ix: f('rules'),
+        fmt: f('rules'),
+        amazonIsBook: false,
+        invented: 0,
+        ...o,
+      }) as never;
+    expect(stage4NeedsUpgrade(all({}), 'J')).toBe(false);
+    expect(stage4NeedsUpgrade(all({ se: f('both_models') }), 'J')).toBe(true);
+    expect(stage4NeedsUpgrade(all({ se: f('both_models') }), 'F')).toBe(false);
+    expect(stage4NeedsUpgrade(all({ il: f('secondary_guess', true) }), 'F')).toBe(true);
+  });
+
+  it('the run bar measures the time left from the phase’s own pace', () => {
+    const now = 1_000_000;
+    const bar = runBar(
+      {
+        phase: 'identify',
+        phaseStartedAt: now - 60_000,
+        phaseStartDone: 0,
+        counts: { identify: { done: 10, total: 40, bytesDone: 100, bytesTotal: 400 } },
+      } as never,
+      now,
+    );
+    expect(bar.secondsLeft).toBe(180);
+    expect(bar.done).toBe(10);
+  });
+});
+
+describe('wp20g: the catalog walk', () => {
+  it('records every file once, a changed file as a new version, partial downloads unopened', async () => {
+    const dir = tmp();
+    const state = initCleanupDatabase(dir);
+    if (!state.ok) throw new Error(state.error);
+    const db = state.db;
+    const root = path.join(dir, 'src');
+    fs.mkdirSync(path.join(root, 'a', '_extracted', 'x.zip'), { recursive: true });
+    fs.mkdirSync(path.join(root, '.hidden'));
+    fs.writeFileSync(path.join(root, 'a', 'one.epub'), 'epub-1');
+    fs.writeFileSync(path.join(root, 'a', 'two.azw3'), 'azw');
+    fs.writeFileSync(path.join(root, 'a', 'three.epub.!qB'), 'part');
+    fs.writeFileSync(path.join(root, 'a', 'song.mp3'), 'mp3');
+    fs.writeFileSync(path.join(root, 'a', '_extracted', 'x.zip', 'in.epub'), 'not walked');
+    fs.writeFileSync(path.join(root, '.hidden', 'h.epub'), 'not walked');
+    const t1 = await walkSource(db, 'p', root);
+    expect(t1!.files).toBe(4);
+    const rows = () =>
+      db
+        .prepare('SELECT rel_path, kind, outcome, gone_at FROM calibre_arrival_files ORDER BY id')
+        .all() as { rel_path: string; kind: string; outcome: string; gone_at: number | null }[];
+    expect(rows().map((r) => [r.rel_path, r.kind, r.outcome])).toEqual(
+      [
+        ['a/one.epub', 'epub', 'pending'],
+        ['a/song.mp3', 'other', 'skipped'],
+        ['a/three.epub.!qB', 'partial', 'downloading'],
+        ['a/two.azw3', 'book', 'pending'],
+      ].sort((x, y) => (x[0] < y[0] ? -1 : 1)) as never,
+    );
+    // Seen again unchanged: no new row. Changed: a new version, the old one gone.
+    await walkSource(db, 'p', root);
+    expect(rows()).toHaveLength(4);
+    fs.writeFileSync(path.join(root, 'a', 'one.epub'), 'epub-1 changed');
+    await walkSource(db, 'p', root);
+    const one = rows().filter((r) => r.rel_path === 'a/one.epub');
+    expect(one).toHaveLength(2);
+    expect(one.filter((r) => r.gone_at === null)).toHaveLength(1);
+    // A file that is gone is marked gone; an empty folder (an unmounted share) marks nothing.
+    fs.rmSync(path.join(root, 'a', 'song.mp3'));
+    await walkSource(db, 'p', root);
+    expect(rows().find((r) => r.rel_path === 'a/song.mp3')!.gone_at).not.toBeNull();
+    fs.rmSync(path.join(root, 'a'), { recursive: true });
+    const t = await walkSource(db, 'p', root);
+    expect(t!.errors.join(' ')).toMatch(/empty/);
+    expect(rows().filter((r) => r.gone_at === null).length).toBeGreaterThan(0);
+    db.close();
+  });
+});
+
+describe('wp20g: new books’ genres and tags', () => {
+  it('asks the stronger pair (Sonnet AND Sol by default), not the library’s two', async () => {
+    const dir = tmp();
+    const state = initCleanupDatabase(dir);
+    if (!state.ok) throw new Error(state.error);
+    const db = state.db;
+    expect(STAGE5_SPEC.tasks.upgradePrimary).toBe('stage5.upgradePrimary');
+    expect(STAGE5_SPEC.tasks.upgradeSecondary).toBe('stage5.upgradeSecondary');
+    expect(getSettings(db).models['stage5.upgradePrimary']).toBe('claude-sonnet-5-5');
+    expect(getSettings(db).models['stage5.upgradeSecondary']).toBe('gpt-6.1-sol');
+    // A stand-in runner: the evidence kept, the roles asked recorded, an answer per role.
+    const items = new Map<string, { evidence: unknown; hash: string }>();
+    const asked: string[] = [];
+    const answer = (genres: string[]) => ({
+      state: 'answered',
+      answer: { genres, subjects: [], tags: [], anime: false, manga: false, dropped: 0 },
+    });
+    const answers: Record<string, unknown> = {
+      primary: answer(['mystery']),
+      secondary: answer(['mystery']),
+      upgradePrimary: answer(['romance', 'comedy']),
+      upgradeSecondary: answer(['romance']),
+    };
+    const runner = {
+      putItems: (_: unknown, xs: { key: string; evidence: unknown }[]) => {
+        for (const x of xs) items.set(x.key, { evidence: x.evidence, hash: 'h' });
+        return xs.length;
+      },
+      enqueue: (_: unknown, role: string) => asked.push(role),
+      step: async () => ({ pending: 0, sent: 0, answered: 0, wait: null }),
+      evidenceOf: (_: unknown, k: string) => items.get(k) ?? null,
+      answerOf: (_: unknown, role: string) => answers[role] ?? null,
+    };
+    const book = { calibreId: 7, uuid: 'u7', title: '本', authors: ['作者'] };
+    const rec = {
+      calibre: { cal_title: '本', cal_authors: '作者' },
+      file: { opf_title: '本', front_text: '本文' },
+      amazon: null,
+      bookwalker: null,
+      ranobedb: null,
+    };
+    const analysis = {
+      aiInputs: () => ({
+        book,
+        base: rec,
+        record: rec,
+        decision: {
+          trace: { amazonIdentified: false, ranobedbIdentified: false, cleaned: {} },
+          amazonRejected: false,
+        },
+      }),
+      extrasOf: () => null,
+      loadSnapshot: () => ({ books: new Map() }),
+    };
+    const pass = new ArrivalStage5({
+      db,
+      runner: runner as unknown as ConstructorParameters<typeof ArrivalStage5>[0]['runner'],
+      analysis: analysis as unknown as ConstructorParameters<typeof ArrivalStage5>[0]['analysis'],
+    });
+    const view = { libraryId: 'L', analysisId: 'arrivals:1' } as unknown as Parameters<
+      ArrivalStage5['step']
+    >[0];
+    const prog = emptyStage5Pass();
+    for (let i = 0; i < 6 && prog.phase !== 'done'; i++)
+      await pass.step(view, prog, ['u7'], () => false);
+    expect(prog.phase).toBe('done');
+    expect([...new Set(asked)].sort()).toEqual(['upgradePrimary', 'upgradeSecondary']);
+    const v = db
+      .prepare(
+        `SELECT value_json, design FROM ai_values WHERE stage = 'calibre5' AND item_key = 'L:u7'`,
+      )
+      .get() as { value_json: string; design: string };
+    expect(v.design).toBe('J');
+    // Only what both stronger models gave (romance), never the first two's answers.
+    expect(Object.keys(JSON.parse(v.value_json).terms)).toEqual(['romance']);
+    db.close();
+  });
+});
+
+describe('wp20g: add batches', () => {
+  it('hands out one batch, records each step, never hands out an add that was sent', () => {
+    const dir = tmp();
+    const state = initCleanupDatabase(dir);
+    if (!state.ok) throw new Error(state.error);
+    const db = state.db;
+    const ins = db.prepare(
+      `INSERT INTO calibre_arrival_files (pair_key, rel_path, size, mtime_ms, first_seen_at, seen_at, kind, sha256, outcome, facts_json)
+       VALUES ('p', ?, 10, 1, 1, 1, 'epub', ?, 'new', '{"title":"T"}')`,
+    );
+    const f1 = Number(ins.run('a.epub', 'a'.repeat(64)).lastInsertRowid);
+    const f2 = Number(ins.run('b.epub', 'b'.repeat(64)).lastInsertRowid);
+    const b = new ArrivalBatches(db);
+    const [id] = b.planAdds(1, 'L', [f1, f2]);
+    const c = b.claim(1000)!;
+    expect(c.id).toBe(id);
+    expect(c.items.map((i) => i.name)).toEqual(['a.epub', 'b.epub']);
+    expect(b.claim(1001)).toBeNull();
+    const [i1, i2] = c.items;
+    expect(b.fileOf(i1.itemId).fileId).toBe(f1);
+    b.report(i1.itemId, { step: 'fetched' }, 1002);
+    b.report(i1.itemId, { step: 'adding' }, 1003);
+    expect(() => b.fileOf(i1.itemId)).toThrow(/being added/);
+    expect(() => b.report(i1.itemId, { step: 'added' }, 1004)).toThrow(/id and uuid/);
+    b.report(i1.itemId, { step: 'added', calibreId: 7, uuid: 'u7' }, 1005);
+    // An ended item stays as it ended.
+    expect(b.report(i1.itemId, { step: 'failed' }, 1006).state).toBe('added');
+    b.finish(id, null, 1007);
+    expect(b.counts(1)).toEqual({ added: 1, failed: 1 });
+    expect(i2.itemId).toBeGreaterThan(0);
+    const u = b.planUndo(id, 2000);
+    const cu = b.claim(2001)!;
+    expect(cu.id).toBe(u);
+    expect(cu.kind).toBe('undo_add');
+    expect(cu.items.map((i) => i.calibreId)).toEqual([7]);
+    // The Undo's book out of Calibre: its file is undone at once.
+    db.prepare(`UPDATE calibre_arrival_files SET outcome = 'added' WHERE id = ?`).run(f1);
+    b.report(cu.items[0].itemId, { step: 'exported' }, 2002);
+    b.report(cu.items[0].itemId, { step: 'removed' }, 2003);
+    expect(db.prepare('SELECT outcome FROM calibre_arrival_files WHERE id = ?').get(f1)).toEqual({
+      outcome: 'undone',
+    });
+    db.close();
+  });
+});
+
+describe('wp20g: a run end to end', () => {
+  let env: CleanupEnv;
+  let sources: string;
+  let src: string;
+  const L: Record<string, number> = {};
+  const uuidOf = (id: number) =>
+    (env.lib.open().prepare('SELECT uuid FROM books WHERE id = ?').get(id) as { uuid: string })
+      .uuid;
+  const auth = (t: string) => ({ Authorization: `Bearer ${t}` });
+  let apply: string;
+  const A = makeTextEpub({ title: 'A', chapters: chaptersOf(11) });
+  const B = makeTextEpub({ title: 'B', chapters: chaptersOf(12) });
+  const Bcopy = makeTextEpub({ title: 'B 新装版', chapters: chaptersOf(12) });
+  const C = makeTextEpub({ title: 'C', chapters: chaptersOf(13) });
+  const D = makeTextEpub({ title: 'D', chapters: chaptersOf(14) });
+
+  /** The stages' own analyses (a route's tick starts them) finish before the run goes on. */
+  const settle = async () => {
+    for (let i = 0; i < 600 && env.service.libraryBusy(); i++)
+      await new Promise((r) => setTimeout(r, 50));
+  };
+  const steps = async (max = 200, archives = true) => {
+    for (let i = 0; i < max; i++) {
+      await settle();
+      if (archives) await playArchives();
+      const r = await env.service.arrivals.step();
+      if (r === 'idle') return;
+      if (r === 'wait') {
+        const run = env.service.arrivals.currentRun();
+        if (run?.p.phase !== 'archives') return;
+      }
+    }
+  };
+
+  /** The linking sidecar's part: list the archive, unpack its EPUB (here, into the temp folder). */
+  const playArchives = async () => {
+    env.cleanupDb
+      .prepare(
+        `INSERT INTO link_sidecar_status (id, version, last_seen_at) VALUES (1, '1.4.0', ?)
+         ON CONFLICT(id) DO UPDATE SET version = '1.4.0', last_seen_at = excluded.last_seen_at`,
+      )
+      .run(Date.now());
+    for (let i = 0; i < 10; i++) {
+      const b = env.service.arrivals.archiveClaim() as {
+        id: number;
+        kind: string;
+        ops: { root: string; dst: string; entry?: { name: string; size: number } | null }[];
+      } | null;
+      if (!b) return;
+      const op = b.ops[0];
+      if (b.kind === 'book_list') {
+        env.service.arrivals.archiveReport(b.id, [
+          {
+            id: b.id,
+            ok: true,
+            entries: [
+              { name: 'inner/D.epub', kind: 'file', size: D.length },
+              { name: 'inner/notes.pdf', kind: 'file', size: 5 },
+              { name: '__MACOSX/._D.epub', kind: 'file', size: 3 },
+            ],
+            encoding: 'utf8',
+          },
+        ]);
+      } else {
+        const out = path.join(sources, op.root, op.dst);
+        fs.mkdirSync(path.dirname(out), { recursive: true });
+        fs.writeFileSync(out, D);
+        const t = fs.statSync(path.join(sources, op.root, 'pack.zip')).mtime;
+        fs.utimesSync(out, t, t);
+        env.service.arrivals.archiveReport(b.id, [{ id: b.id, ok: true, bytes: D.length }]);
+      }
+    }
+  };
+
+  /** The apply sidecar's part of an add batch, through its routes. */
+  const playAdds = async () => {
+    for (;;) {
+      const claim = await request(env.app)
+        .post('/api/v1/cleanup-apply/arrivals/claim')
+        .set(auth(apply))
+        .send({});
+      const batch = claim.body.batch as {
+        id: number;
+        items: { itemId: number; title: string; sha256: string }[];
+      } | null;
+      if (!batch) return;
+      for (const it of batch.items) {
+        const file = await request(env.app)
+          .get(`/api/v1/cleanup-apply/arrivals/items/${it.itemId}/file`)
+          .set(auth(apply))
+          .buffer(true)
+          .parse((res, cb) => {
+            const parts: Buffer[] = [];
+            res.on('data', (c: Buffer) => parts.push(c));
+            res.on('end', () => cb(null, Buffer.concat(parts)));
+          });
+        expect(file.status).toBe(200);
+        const bytes = file.body as Buffer;
+        expect(sha(bytes)).toBe(it.sha256);
+        await request(env.app)
+          .post(`/api/v1/cleanup-apply/arrivals/items/${it.itemId}`)
+          .set(auth(apply))
+          .send({ step: 'fetched' });
+        await request(env.app)
+          .post(`/api/v1/cleanup-apply/arrivals/items/${it.itemId}`)
+          .set(auth(apply))
+          .send({ step: 'adding' });
+        const id = await env.lib.addBook({ title: it.title, authors: ['作者'], epub: bytes });
+        await request(env.app)
+          .post(`/api/v1/cleanup-apply/arrivals/items/${it.itemId}`)
+          .set(auth(apply))
+          .send({ step: 'added', calibreId: id, uuid: uuidOf(id) });
+      }
+      await request(env.app)
+        .post(`/api/v1/cleanup-apply/arrivals/batches/${batch.id}/finish`)
+        .set(auth(apply))
+        .send({});
+    }
+  };
+
+  const outcomes = () =>
+    Object.fromEntries(
+      (
+        env.cleanupDb
+          .prepare(
+            'SELECT rel_path, outcome FROM calibre_arrival_files WHERE gone_at IS NULL ORDER BY rel_path',
+          )
+          .all() as { rel_path: string; outcome: string }[]
+      ).map((r) => [r.rel_path, r.outcome]),
+    );
+
+  beforeAll(async () => {
+    sources = tmp();
+    src = path.join(sources, 'books', 'japanese');
+    fs.mkdirSync(path.join(src, 'Discord'), { recursive: true });
+    const made = await makeCleanupEnv({
+      service: {
+        stage3Reader: new InProcessReader(bundle, IMPORT),
+        counterBuild: 'test',
+        bookSourcesDir: sources,
+        bookSourcesReadOnly: false,
+      },
+    });
+    env = made.env;
+    L.A = await env.lib.addBook({ title: 'A', authors: ['作者'], epub: A });
+    L.B = await env.lib.addBook({ title: 'B', authors: ['作者'], epub: B });
+    await made.setup();
+    apply = env.applyToken();
+    const user = env.userToken();
+    await request(env.app)
+      .put('/api/v1/cleanup/settings')
+      .set(auth(user))
+      .send({
+        contentServerUrl: 'http://calibre:8081',
+        calibreLibraryId: 'japanese-library',
+        calibreUsername: 'u',
+      })
+      .expect(200);
+    await request(env.app)
+      .put('/api/v1/cleanup/secrets/calibrePassword')
+      .set(auth(user))
+      .send({ value: 'pw' })
+      .expect(200);
+    await request(env.app)
+      .post('/api/v1/cleanup-apply/heartbeat')
+      .set(auth(apply))
+      .send(healthyHeartbeat())
+      .expect(200);
+    updateSettings(env.cleanupDb, {
+      arrivals: {
+        ...getSettings(env.cleanupDb).arrivals,
+        pairs: [{ id: 'ja', source: 'books/japanese', libraryId: env.libraryId() }],
+        settleMinutes: 0,
+        handCheckMinutes: 0,
+      },
+      ai: { ...getSettings(env.cleanupDb).ai, booksArrivalsDesign: 'E' },
+    });
+    // Stages 1-5 in Preview (the run waits for a stage that is Off).
+    env.cleanupDb.prepare(`UPDATE stages SET mode = 'analyse' WHERE stage BETWEEN 1 AND 5`).run();
+    fs.writeFileSync(path.join(src, 'Discord', 'same-as-A.epub'), A);
+    fs.writeFileSync(path.join(src, 'Discord', 'B again.epub'), Bcopy);
+    fs.writeFileSync(path.join(src, 'Discord', 'C.epub'), C);
+    fs.writeFileSync(path.join(src, 'Discord', 'C copy.epub'), C);
+    fs.writeFileSync(path.join(src, 'Discord', 'kindle.azw3'), 'azw3');
+    fs.writeFileSync(path.join(src, 'Discord', 'song.mp3'), 'mp3');
+    fs.writeFileSync(path.join(src, 'Discord', 'E.epub.!qB'), 'downloading');
+    fs.writeFileSync(path.join(src, 'pack.zip'), makeZip([{ name: 'inner/D.epub', data: D }]));
+  }, 120_000);
+
+  afterAll(async () => {
+    await env?.close();
+  });
+
+  it('Preview: checks every file, compares it with the library, adds nothing', async () => {
+    env.service.arrivals.setMode('analyse');
+    env.service.arrivals.requestRun();
+    await steps();
+    const o = outcomes();
+
+    expect(o['Discord/same-as-A.epub']).toBe('identical');
+    expect(o['Discord/B again.epub']).toBe('duplicate');
+    expect([o['Discord/C.epub'], o['Discord/C copy.epub']].sort()).toEqual(['identical', 'new']);
+    expect(o['Discord/kindle.azw3']).toBe('not_imported');
+    expect(o['Discord/song.mp3']).toBe('skipped');
+    expect(o['Discord/E.epub.!qB']).toBe('downloading');
+    expect(o['_extracted/pack.zip/inner/D.epub']).toBe('new');
+    expect(o['_extracted/pack.zip/inner/notes.pdf']).toBe('not_imported');
+    const identical = env.cleanupDb
+      .prepare(
+        `SELECT calibre_id FROM calibre_arrival_files WHERE rel_path = 'Discord/same-as-A.epub'`,
+      )
+      .get() as { calibre_id: number };
+    expect(identical.calibre_id).toBe(L.A);
+    // Hashed only where a copy can be found by its bytes (a library EPUB or another new file of
+    // the same size); a file of its own size is not read whole until it is added.
+    const sha = (rel: string) =>
+      (
+        env.cleanupDb
+          .prepare(`SELECT sha256 FROM calibre_arrival_files WHERE rel_path = ?`)
+          .get(rel) as { sha256: string | null }
+      ).sha256;
+    expect(sha('Discord/same-as-A.epub')).toMatch(/^[0-9a-f]{64}$/);
+    expect(sha('Discord/C.epub')).toMatch(/^[0-9a-f]{64}$/);
+    expect(sha('Discord/C copy.epub')).toMatch(/^[0-9a-f]{64}$/);
+    expect(sha('_extracted/pack.zip/inner/D.epub')).toBeNull();
+    // Nothing added; the last run's report has the estimate for On.
+    expect(
+      env.cleanupDb.prepare('SELECT COUNT(*) AS n FROM calibre_arrival_batches').get(),
+    ).toEqual({ n: 0 });
+    const last = (await request(env.app).get('/api/v1/cleanup/arrivals').set(auth(env.userToken())))
+      .body;
+    expect(last.last.state).toBe('done');
+    expect(last.last.report.estimate.books).toBe(2);
+    expect(last.pairs[0].firstDoneAt).not.toBeNull();
+    // The Not imported list as CSV.
+    const csv = await request(env.app)
+      .get('/api/v1/cleanup/arrivals/not-imported.csv')
+      .set(auth(env.userToken()));
+    expect(csv.text).toContain('kindle.azw3');
+  }, 180_000);
+
+  it('once the folder’s first run (the Preview) is done, an On run adds the new books', async () => {
+    // No "Add these" (user, 2026-11-23): the Preview above was the folder's first run.
+    expect(
+      env.cleanupDb.prepare('SELECT first_done_at FROM calibre_arrival_pairs').get(),
+    ).not.toEqual({ first_done_at: null });
+    env.service.arrivals.setMode('on');
+    env.service.arrivals.requestRun();
+    for (let round = 0; round < 6; round++) {
+      await steps();
+      await playAdds();
+      await env.index();
+    }
+    const o = outcomes();
+
+    expect(o['_extracted/pack.zip/inner/D.epub']).toBe('added');
+    // Hashed when it was added (the sidecar's copy is checked against it).
+    expect(
+      env.cleanupDb
+        .prepare(`SELECT sha256 FROM calibre_arrival_files WHERE rel_path = ?`)
+        .get('_extracted/pack.zip/inner/D.epub'),
+    ).toEqual({ sha256: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    expect(Object.values(o).filter((x) => x === 'added')).toHaveLength(2);
+    // The run's books went through stages 1-3 and stage 2's proposals; its write is a stage-2
+    // batch of exactly the run's books (the apply sidecar's stage-2 steps are tested in WP20b).
+    const run = env.service.arrivals.currentRun()!;
+    expect(run.p.phase).toBe('write2');
+    const added = new Set(run.p.scope.import);
+    const s2 = env.cleanupDb
+      .prepare(
+        `SELECT DISTINCT p.calibre_id FROM batch_items i JOIN proposed_changes p ON p.id = i.change_id
+         WHERE p.stage = 2 AND p.analysis_id = ?`,
+      )
+      .all(`arrivals:${run.id}`) as { calibre_id: number }[];
+    expect(s2.length).toBeGreaterThan(0);
+    for (const r of s2) expect(added.has(r.calibre_id)).toBe(true);
+    await request(env.app)
+      .post('/api/v1/cleanup/arrivals/stop')
+      .set(auth(env.userToken()))
+      .expect(200);
+    expect(env.service.arrivals.currentRun()).toBeNull();
+    // Known books: the import's two.
+    expect(
+      env.cleanupDb
+        .prepare(`SELECT COUNT(*) AS n FROM calibre_known_books WHERE origin = 'import'`)
+        .get(),
+    ).toEqual({ n: 2 });
+  }, 300_000);
+
+  it('a book added by hand that is a copy of a library book is proposed for removal (stage 1)', async () => {
+    const H = await env.lib.addBook({ title: 'A (hand)', authors: ['作者'], epub: A });
+    await env.index();
+    // The run waits out the settle time (0 here), then takes it in.
+    env.service.arrivals.setMode('analyse');
+    env.service.arrivals.requestRun();
+    await steps();
+    const p = env.cleanupDb
+      .prepare(
+        `SELECT calibre_id, analysis_id FROM proposed_changes WHERE stage = 1 AND calibre_id = ? AND analysis_id LIKE 'arrivals:%'`,
+      )
+      .get(H) as { calibre_id: number; analysis_id: string } | undefined;
+    expect(p?.calibre_id).toBe(H);
+    // The same copy is also same-text, but stage 3 leaves out what stage 1 removes (the cleanup's
+    // own order): one proposal, never a second that would find the book gone and pause stage 3.
+    expect(
+      env.cleanupDb
+        .prepare(
+          `SELECT COUNT(*) AS n FROM proposed_changes WHERE stage = 3 AND calibre_id = ? AND analysis_id LIKE 'arrivals:%'`,
+        )
+        .get(H),
+    ).toEqual({ n: 0 });
+    expect(
+      env.cleanupDb.prepare(`SELECT origin FROM calibre_known_books WHERE calibre_id = ?`).get(H),
+    ).toEqual({ origin: 'hand' });
+    // Stage 4 waits for its own analysis (no fetch container here): the run is stopped.
+    env.service.arrivals.stopRun();
+  }, 300_000);
+
+  it('stage 2 proposes for a book added after its own analysis read the library', async () => {
+    // On the server a finished stage-2 analysis keeps the snapshot it read (here a route's tick
+    // restarts it, which hid this): the arrival pass reads the library as it is now.
+    const a2 = (env.service as unknown as { analysis2: Stage2Analysis }).analysis2;
+    a2.loadSnapshot(env.libraryId());
+    const id = await env.lib.addBook({
+      title: '[作者] 新しい本',
+      authors: ['作者'],
+      epub: makeTextEpub({ title: '[作者] 新しい本', chapters: chaptersOf(31) }),
+    });
+    await env.index();
+    const deps = {
+      cleanup: env.cleanupDb,
+      main: env.db,
+      libraryId: env.libraryId(),
+      libDir: path.join(env.root.dir, 'japanese-library'),
+      analysisId: 'arrivals:9999',
+    };
+    expect(await stage2Pass(deps, a2, [uuidOf(id)], () => false)).toBeGreaterThan(0);
+    expect(
+      env.cleanupDb
+        .prepare(
+          `SELECT new_json FROM proposed_changes WHERE analysis_id = 'arrivals:9999' AND field = 'title'`,
+        )
+        .get(),
+    ).toEqual({ new_json: JSON.stringify('新しい本') });
+    env.cleanupDb.prepare(`DELETE FROM proposed_changes WHERE analysis_id = 'arrivals:9999'`).run();
+  }, 120_000);
+
+  it('a book you removed from Calibre is never added again', async () => {
+    const added = env.cleanupDb
+      .prepare(
+        `SELECT id, calibre_id, sha256 FROM calibre_arrival_files WHERE outcome = 'added' LIMIT 1`,
+      )
+      .get() as { id: number; calibre_id: number; sha256: string };
+    env.lib.removeBook(added.calibre_id);
+    await env.index();
+    // The same file under another name arrives later.
+    const again = env.cleanupDb
+      .prepare('SELECT rel_path FROM calibre_arrival_files WHERE id = ?')
+      .get(added.id) as {
+      rel_path: string;
+    };
+    const bytes = fs.readFileSync(path.join(src, again.rel_path));
+    fs.writeFileSync(path.join(src, 'Discord', 'renamed copy.epub'), bytes);
+    env.service.arrivals.setMode('analyse');
+    env.service.arrivals.requestRun();
+    await steps();
+    const o = outcomes();
+    expect(o[again.rel_path]).toBe('removed_by_you');
+    expect(o['Discord/renamed copy.epub']).toBe('removed_by_you');
+  }, 300_000);
+
+  it('a pair already decided in stage 3’s review stays as decided', async () => {
+    env.service.arrivals.stopRun();
+    const H = await env.lib.addBook({ title: 'B (hand)', authors: ['作者'], epub: Bcopy });
+    await env.index();
+    env.cleanupDb
+      .prepare(
+        `INSERT INTO pair_decisions (library_id, a_uuid, b_uuid, decision, decided_at) VALUES (?, ?, ?, 'keep_both', 1)`,
+      )
+      .run(env.libraryId(), uuidOf(L.B), uuidOf(H));
+    env.service.arrivals.setMode('analyse');
+    env.service.arrivals.requestRun();
+    await steps();
+    const run = env.cleanupDb
+      .prepare('SELECT MAX(run_id) AS id FROM calibre_known_books WHERE calibre_id = ?')
+      .get(H) as { id: number | null };
+    expect(run.id).not.toBeNull();
+    expect(
+      env.cleanupDb
+        .prepare(
+          `SELECT COUNT(*) AS n FROM proposed_changes WHERE stage = 3 AND analysis_id = ?
+             AND calibre_uuid IN (?, ?)`,
+        )
+        .get(`arrivals:${run.id}`, uuidOf(L.B), uuidOf(H)),
+    ).toEqual({ n: 0 });
+    env.service.arrivals.stopRun();
+  }, 300_000);
+
+  /** Run now, after any run that started by itself (a background tick) has ended. */
+  const requestWhenFree = async () => {
+    for (let i = 0; i < 20 && env.service.arrivals.currentRun(); i++) await steps();
+    env.service.arrivals.requestRun();
+  };
+
+  it('a change its paused field holds is reported, and a later run writes it once resumed', async () => {
+    env.service.arrivals.stopRun();
+    // The On test's stage-2 batch was never applied (no sidecar here): out of the way, as a
+    // failed one, so the adds are handed out.
+    env.cleanupDb
+      .prepare(`UPDATE batches SET state = 'failed' WHERE state IN ('planned', 'claimed')`)
+      .run();
+    // The books added by hand that earlier Preview tests only showed would be this On run's too
+    // (taken in again): out of the library, so this test is about one held change.
+    env.service.arrivals.setMode('analyse');
+    expect(env.service.arrivals.handSettled(env.libraryId())).toHaveLength(0);
+    env.service.arrivals.setMode('on');
+    expect(env.service.arrivals.handSettled(env.libraryId()).length).toBeGreaterThan(0);
+    env.service.arrivals.stopRun();
+    for (const r of env.cleanupDb
+      .prepare(`SELECT calibre_id FROM calibre_known_books WHERE origin = 'hand'`)
+      .all() as { calibre_id: number }[])
+      env.lib.removeBook(r.calibre_id);
+    await env.index();
+    pauseField(env.cleanupDb, 2, 'title', 'library_changed', 'test');
+    fs.writeFileSync(
+      path.join(src, 'Discord', 'F.epub'),
+      makeTextEpub({ title: '[作者] F の本', chapters: chaptersOf(41) }),
+    );
+    env.service.arrivals.setMode('on');
+    await requestWhenFree();
+    // The stage batches as the apply sidecar would leave them (its stage-2 steps: WP20b).
+    const applyOpen = () => {
+      const open = env.cleanupDb
+        .prepare(`SELECT id FROM batches WHERE state IN ('planned', 'claimed')`)
+        .all() as { id: string }[];
+      for (const b of open) {
+        env.cleanupDb
+          .prepare(
+            `UPDATE proposed_changes SET state = 'applied' WHERE batch_id = ? AND state = 'queued'`,
+          )
+          .run(b.id);
+        env.cleanupDb.prepare(`UPDATE batches SET state = 'applied' WHERE id = ?`).run(b.id);
+      }
+    };
+    for (let round = 0; round < 8; round++) {
+      await steps();
+      await playAdds();
+      applyOpen();
+      await env.index();
+    }
+    const first = env.service.arrivals.currentRun()!;
+    expect(outcomes()['Discord/F.epub']).toBe('added');
+    expect(first.p.phase).not.toMatch(
+      /^(scan|archives|identify|compare|plan|add|index|stage[123]|removals|write2)$/,
+    );
+    expect(first.p.writes.s2?.held).toBeGreaterThan(0);
+    expect(first.p.writes.s2?.heldWhy).toMatch(/paused/i);
+    const held = env.cleanupDb
+      .prepare(
+        `SELECT state FROM proposed_changes WHERE stage = 2 AND field = 'title' AND analysis_id = ?`,
+      )
+      .get(`arrivals:${first.id}`) as { state: string };
+    expect(held.state).toBe('proposed');
+    env.service.arrivals.stopRun();
+    // Resumed: the next run has no new book, and writes what the first one held.
+    resumeField(env.cleanupDb, 2, 'title');
+    await requestWhenFree();
+    await steps();
+    const later = env.service.arrivals.currentRun()!;
+    expect(later.id).toBeGreaterThan(first.id);
+    expect(later.p.phase).toBe('write2');
+    expect(
+      env.cleanupDb
+        .prepare(
+          `SELECT COUNT(*) AS n FROM batch_items i JOIN proposed_changes p ON p.id = i.change_id
+           WHERE p.stage = 2 AND p.field = 'title' AND p.analysis_id = ?`,
+        )
+        .get(`arrivals:${first.id}`),
+    ).toEqual({ n: 1 });
+    env.service.arrivals.stopRun();
+  }, 300_000);
+
+  it('a file whose title is too long for Calibre is added with the fitted title (sidecar 1.4.0)', async () => {
+    env.service.arrivals.stopRun();
+    env.cleanupDb
+      .prepare(`UPDATE batches SET state = 'failed' WHERE state IN ('planned', 'claimed')`)
+      .run();
+    const LONG =
+      '左遷された無能王子は実力を隠したい2 ～二度転生した最強賢者、今世では楽したいので手を抜いてたら、王家を追放された。今更帰ってこいと言われても遅い、領民に実力がバレて、実家に帰してくれないから……～';
+    const E = makeTextEpub({ title: LONG, chapters: chaptersOf(15) });
+    fs.writeFileSync(path.join(src, 'Discord', 'long.epub'), E);
+    // A sidecar older than 1.4.0 never gets the add (it can't give it the title).
+    env.cleanupDb.prepare(`UPDATE sidecar_status SET version = '1.3.0' WHERE id = 1`).run();
+    env.service.arrivals.setMode('on');
+    await requestWhenFree();
+    for (let round = 0; round < 3; round++) await steps();
+    const row = env.cleanupDb
+      .prepare(`SELECT id, outcome, facts_json FROM calibre_arrival_files WHERE rel_path = ?`)
+      .get('Discord/long.epub') as { id: number; outcome: string; facts_json: string };
+    expect(row.outcome).not.toBe('too_long');
+    const facts = JSON.parse(row.facts_json) as { title: string; addTitle: string };
+    expect(facts).toMatchObject({ title: LONG, addTitle: '左遷された無能王子は実力を隠したい2' });
+    expect(
+      env.cleanupDb
+        .prepare('SELECT original, written, step FROM calibre_title_fits WHERE arrival_file_id = ?')
+        .get(row.id),
+    ).toEqual({
+      original: LONG,
+      written: '左遷された無能王子は実力を隠したい2',
+      step: 'shortened',
+    });
+    const old = await request(env.app)
+      .post('/api/v1/cleanup-apply/arrivals/claim')
+      .set(auth(apply))
+      .send({});
+    expect(old.body.batch).toBeNull();
+    env.cleanupDb.prepare(`UPDATE sidecar_status SET version = '1.4.0' WHERE id = 1`).run();
+    const claim = await request(env.app)
+      .post('/api/v1/cleanup-apply/arrivals/claim')
+      .set(auth(apply))
+      .send({});
+    const item = (claim.body.batch.items as { title: string; addTitle: string | null }[])[0];
+    expect(item).toMatchObject({
+      title: '左遷された無能王子は実力を隠したい2',
+      addTitle: '左遷された無能王子は実力を隠したい2',
+    });
+    env.service.arrivals.stopRun();
+  }, 300_000);
+});
+
+describe('wp20g: the queries at the catalog’s end size (lessons 3-4)', () => {
+  it('every polled or per-run query reads an index (300,000 files, a year of runs)', async () => {
+    const dir = tmp();
+    const state = initCleanupDatabase(dir);
+    if (!state.ok) throw new Error(state.error);
+    const db = state.db;
+    const outcomes = [
+      'skipped',
+      'identical',
+      'duplicate',
+      'not_imported',
+      'added',
+      'new',
+      'waiting',
+    ];
+    const ins = db.prepare(
+      `INSERT INTO calibre_arrival_files (pair_key, rel_path, size, mtime_ms, first_seen_at, seen_at, kind,
+         format, outcome, sha256, calibre_id, calibre_uuid, run_id)
+       VALUES (?, ?, ?, 1, 1, 1, 'epub', 'EPUB', ?, ?, ?, ?, ?)`,
+    );
+    db.transaction(() => {
+      for (let i = 0; i < 300_000; i++) {
+        const o = outcomes[i % outcomes.length];
+        ins.run(
+          i % 3 === 0 ? 'b|books/other' : 'a|books/japanese',
+          `f/${i}.epub`,
+          1000 + (i % 5000),
+          o,
+          i % 2 ? i.toString(16).padStart(64, '0') : null,
+          o === 'added' ? i : null,
+          o === 'added' ? `u${i}` : null,
+          1 + (i % 365),
+        );
+      }
+      const run = db.prepare(
+        `INSERT INTO calibre_arrival_runs (trigger, mode, state, phase, started_at, progress_json) VALUES ('schedule', 'on', 'done', 'done', ?, '{}')`,
+      );
+      for (let i = 0; i < 365; i++) run.run(i);
+    })();
+    db.exec('ANALYZE');
+    const plan = (sql: string, ...args: unknown[]) =>
+      (db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...args) as { detail: string }[])
+        .map((r) => r.detail)
+        .join(' | ');
+    const hot: [string, unknown[]][] = [
+      // The follow-up run's check (once a minute) and each folder's files waiting (the card).
+      [
+        `SELECT 1 FROM calibre_arrival_files INDEXED BY calibre_arrival_files_outcome
+         WHERE outcome IN ('pending', 'waiting') AND pair_key IN (?)
+           AND gone_at IS NULL AND kind IN ('epub', 'archive', 'volume')
+           AND first_seen_at <= ? AND mtime_ms <= ? LIMIT 1`,
+        ['a|books/japanese', 0, 0],
+      ],
+      [
+        `SELECT COUNT(*) AS n FROM calibre_arrival_files INDEXED BY calibre_arrival_files_outcome
+         WHERE outcome IN ('pending', 'waiting') AND pair_key = ? AND gone_at IS NULL
+           AND kind IN ('epub', 'archive', 'volume')`,
+        ['a|books/japanese'],
+      ],
+      // The card's status (polled every 5 s): each folder's counts.
+      [
+        `SELECT COUNT(*) AS n FROM calibre_arrival_files INDEXED BY calibre_arrival_files_outcome
+         WHERE outcome IN (?, ?) AND pair_key = ? AND gone_at IS NULL`,
+        ['new', 'better', 'a|books/japanese'],
+      ],
+      // A folded list's page and count.
+      [
+        `SELECT id FROM calibre_arrival_files INDEXED BY calibre_arrival_files_outcome
+         WHERE outcome IN (?) AND gone_at IS NULL ORDER BY outcome, pair_key, id LIMIT 25 OFFSET 0`,
+        ['not_imported'],
+      ],
+      // The walk's look-up of a path's latest version (once per file).
+      [
+        `SELECT id, size, mtime_ms FROM calibre_arrival_files
+         WHERE pair_key = ? AND rel_path = ? AND archive_id IS NULL AND gone_at IS NULL ORDER BY id DESC LIMIT 1`,
+        ['a|books/japanese', 'f/1.epub'],
+      ],
+      // identify's next slice, the report, removed-by-you.
+      [
+        `SELECT id FROM calibre_arrival_files INDEXED BY calibre_arrival_files_outcome
+         WHERE outcome IN ('pending', 'waiting') AND pair_key IN (?) AND kind = 'epub' AND gone_at IS NULL
+           AND NOT (outcome = 'waiting' AND run_id IS ?) ORDER BY id LIMIT 50`,
+        ['a|books/japanese', 5],
+      ],
+      [
+        `SELECT outcome, COUNT(*) FROM calibre_arrival_files INDEXED BY calibre_arrival_files_run WHERE run_id = ? GROUP BY outcome`,
+        [5],
+      ],
+      [
+        `SELECT id FROM calibre_arrival_files INDEXED BY calibre_arrival_files_outcome WHERE outcome = 'added'`,
+        [],
+      ],
+      [`SELECT sha256 FROM calibre_arrival_files WHERE sha256 = ?`, ['0'.repeat(64)]],
+    ];
+    // The books added by hand a Preview run only showed (a year of them), for the first On run.
+    {
+      const k = db.prepare(
+        `INSERT INTO calibre_known_books (library_id, calibre_id, calibre_uuid, origin, added_at, run_id)
+         VALUES ('L', ?, ?, ?, 1, ?)`,
+      );
+      db.transaction(() => {
+        for (let i = 0; i < 60_000; i++)
+          k.run(i, `k${i}`, i < 5000 ? 'hand' : 'baseline', i < 5000 ? 1 + (i % 365) : null);
+      })();
+      db.exec('ANALYZE');
+      const sql = `SELECT k.calibre_id, k.added_at FROM calibre_known_books k INDEXED BY calibre_known_books_waiting
+         JOIN calibre_arrival_runs r ON r.id = k.run_id
+         WHERE k.library_id = ? AND k.origin = 'hand' AND k.run_id IS NOT NULL AND r.mode = 'analyse'`;
+      const p = plan(sql, 'L');
+      expect(p, sql).toMatch(/SEARCH k USING INDEX calibre_known_books_waiting/);
+      // Driven from the runs (one row a day: a year is 365) into the known books' index; the
+      // known books themselves (60,000 here) are never scanned.
+      expect(p, sql).not.toMatch(/SCAN k( |$)/);
+      const t = performance.now();
+      db.prepare(sql).all('L');
+      expect(performance.now() - t, sql).toBeLessThan(400);
+    }
+    for (const [sql, args] of hot) {
+      const p = plan(sql, ...args);
+      expect(p, sql).not.toMatch(/SCAN calibre_arrival_files(?! USING)/);
+      const t = performance.now();
+      db.prepare(sql).all(...args);
+      // A list page may count many rows by its index; never seconds (lessons 3).
+      expect(performance.now() - t, sql).toBeLessThan(400);
+    }
+    db.close();
+  }, 120_000);
+});
+
+describe('wp20g: the settle time on a folder’s first look', () => {
+  // As on the NAS (stop 2): the settle time is 30 minutes and every file is seen for the first
+  // time, more than one slice of them (50).
+  let env: CleanupEnv;
+  let src: string;
+  const auth = (t: string) => ({ Authorization: `Bearer ${t}` });
+  const N = 60;
+
+  beforeAll(async () => {
+    const sources = tmp();
+    src = path.join(sources, 'books', 'japanese');
+    fs.mkdirSync(src, { recursive: true });
+    const made = await makeCleanupEnv({
+      service: {
+        stage3Reader: new InProcessReader(bundle, IMPORT),
+        counterBuild: 'test',
+        bookSourcesDir: sources,
+        bookSourcesReadOnly: false,
+      },
+    });
+    env = made.env;
+    await env.lib.addBook({
+      title: 'L',
+      authors: ['作者'],
+      epub: makeTextEpub({ title: 'L', chapters: chaptersOf(90) }),
+    });
+    await made.setup();
+    updateSettings(env.cleanupDb, {
+      arrivals: {
+        ...getSettings(env.cleanupDb).arrivals,
+        pairs: [{ id: 'ja', source: 'books/japanese', libraryId: env.libraryId() }],
+        settleMinutes: 30,
+        handCheckMinutes: 0,
+      },
+    });
+    env.cleanupDb.prepare(`UPDATE stages SET mode = 'analyse' WHERE stage BETWEEN 1 AND 5`).run();
+    // Files downloaded long ago (an hour), seen now for the first time.
+    const old = new Date(Date.now() - 3_600_000);
+    for (let i = 0; i < N; i++) {
+      const f = path.join(src, `book ${i}.epub`);
+      fs.writeFileSync(f, makeTextEpub({ title: `B${i}`, chapters: chaptersOf(200 + i) }));
+      fs.utimesSync(f, old, old);
+    }
+  }, 180_000);
+
+  afterAll(async () => {
+    await env?.close();
+  });
+
+  const drive = async () => {
+    for (let i = 0; i < 2000; i++) {
+      for (let j = 0; j < 600 && env.service.libraryBusy(); j++)
+        await new Promise((r) => setTimeout(r, 50));
+      const r = await env.service.arrivals.step();
+      if (r === 'idle' && !env.service.arrivals.currentRun()) return;
+      if (r === 'wait') await new Promise((res) => setTimeout(res, 20));
+    }
+  };
+  const counts = () =>
+    Object.fromEntries(
+      (
+        env.cleanupDb
+          .prepare(
+            `SELECT outcome, COUNT(*) AS n FROM calibre_arrival_files WHERE kind = 'epub' GROUP BY outcome`,
+          )
+          .all() as { outcome: string; n: number }[]
+      ).map((r) => [r.outcome, r.n]),
+    );
+
+  it('the first look waits for every file; nothing is approvable until they settle', async () => {
+    env.service.arrivals.setMode('analyse');
+    env.service.arrivals.requestRun();
+    await drive();
+    // Every file waits (not only the first slice of 50), seen for the first time.
+    expect(counts()).toEqual({ waiting: N });
+    expect(
+      env.cleanupDb
+        .prepare(
+          `SELECT COUNT(*) AS n FROM calibre_arrival_files WHERE detail LIKE 'Seen for the first time%'`,
+        )
+        .get(),
+    ).toEqual({ n: N });
+    // The folder's first run is not done while its files wait.
+    const st = await request(env.app)
+      .get('/api/v1/cleanup/arrivals')
+      .set(auth(env.userToken()))
+      .expect(200);
+    expect(st.body.pairs[0]).toMatchObject({ firstDoneAt: null, waiting: N, settleMinutes: 30 });
+  }, 300_000);
+
+  it('once they settled, a follow-up run looks at them by itself and the first run is done', async () => {
+    // Half an hour later.
+    env.cleanupDb
+      .prepare(`UPDATE calibre_arrival_files SET first_seen_at = first_seen_at - 1860000`)
+      .run();
+    // Today's scheduled run already ran (it would look at them too, and comes first).
+    const later = Date.now() + 61_000;
+    env.cleanupDb
+      .prepare('UPDATE calibre_arrivals_state SET last_scheduled_day = ?')
+      .run(clockNow(later, env.service.arrivals.zone()).day);
+    // On: the follow-up still belongs to the folder's first run, which never adds.
+    env.service.arrivals.setMode('on');
+    env.service.arrivals.stopRun();
+    const id = env.service.arrivals.maybeStart(later);
+    expect(id).not.toBeNull();
+    // Part way through reading the texts: every book read so far is kept in its catalog row (a
+    // restart goes on from there), and the bar counts them with a time left.
+    for (let i = 0; i < 400; i++) {
+      const run = env.service.arrivals.currentRun()!;
+      if (run.p.cmp?.stage === 'text' && (run.p.counts.compare?.done ?? 0) >= 20) break;
+      await env.service.arrivals.step();
+    }
+    const mid = env.service.arrivals.currentRun()!;
+    expect(mid.p.cmp?.stage).toBe('text');
+    const kept = env.cleanupDb
+      .prepare(
+        `SELECT COUNT(*) AS n FROM calibre_arrival_files WHERE json_extract(facts_json, '$.text') IS NOT NULL`,
+      )
+      .get() as { n: number };
+    expect(kept.n).toBe(mid.p.counts.compare!.done);
+    const bar = runBar(mid.p, Date.now() + 1000);
+    expect(bar).toMatchObject({ phase: 'compare', total: N });
+    expect(bar.secondsLeft).not.toBeNull();
+    await drive();
+    expect(counts()).toEqual({ new: N });
+    const st = await request(env.app)
+      .get('/api/v1/cleanup/arrivals')
+      .set(auth(env.userToken()))
+      .expect(200);
+    expect(st.body.pairs[0].firstDoneAt).not.toBeNull();
+    expect(st.body.pairs[0].wouldAdd).toBe(N);
+    // Nothing was added by the first run, though the card was On.
+    expect(
+      env.cleanupDb.prepare('SELECT COUNT(*) AS n FROM calibre_arrival_batches').get(),
+    ).toEqual({ n: 0 });
+    const runs = await request(env.app)
+      .get('/api/v1/cleanup/arrivals/lists/runs')
+      .set(auth(env.userToken()))
+      .expect(200);
+    expect(runs.body.items[0].trigger).toBe('files settled');
+  }, 300_000);
+});
+
+describe('wp20g: Stop, Off, and a stopped run’s comparison', () => {
+  // WP20g stop 2 on the NAS: Stop restarted a run at once (the day's scheduled run was due), a
+  // run went on while Off, and a stopped run's books were left uncompared.
+  let env: CleanupEnv;
+  const N = 30;
+
+  beforeAll(async () => {
+    const sources = tmp();
+    const src = path.join(sources, 'books', 'japanese');
+    fs.mkdirSync(src, { recursive: true });
+    const made = await makeCleanupEnv({
+      service: {
+        stage3Reader: new InProcessReader(bundle, IMPORT),
+        counterBuild: 'test',
+        bookSourcesDir: sources,
+        bookSourcesReadOnly: false,
+      },
+    });
+    env = made.env;
+    await env.lib.addBook({
+      title: 'L',
+      authors: ['作者'],
+      epub: makeTextEpub({ title: 'L', chapters: chaptersOf(95) }),
+    });
+    await made.setup();
+    updateSettings(env.cleanupDb, {
+      arrivals: {
+        ...getSettings(env.cleanupDb).arrivals,
+        pairs: [{ id: 'ja', source: 'books/japanese', libraryId: env.libraryId() }],
+        settleMinutes: 0,
+        handCheckMinutes: 0,
+        // The day's run is due whenever the test runs.
+        time: '00:00',
+        quietStart: '00:00',
+        quietEnd: '00:00',
+      },
+    });
+    env.cleanupDb.prepare(`UPDATE stages SET mode = 'analyse' WHERE stage BETWEEN 1 AND 5`).run();
+    for (let i = 0; i < N; i++)
+      fs.writeFileSync(
+        path.join(src, `book ${i}.epub`),
+        makeTextEpub({ title: `S${i}`, chapters: chaptersOf(300 + i) }),
+      );
+  }, 180_000);
+
+  afterAll(async () => {
+    await env?.close();
+  });
+
+  const a = () => env.service.arrivals;
+  const toText = async (min: number) => {
+    for (let i = 0; i < 400; i++) {
+      const run = a().currentRun();
+      if (run?.p.cmp?.stage === 'text' && (run.p.counts.compare?.done ?? 0) >= min) return run;
+      await a().step();
+    }
+    throw new Error('the run never reached the text stage');
+  };
+  const drive = async () => {
+    for (let i = 0; i < 2000; i++) {
+      for (let j = 0; j < 600 && env.service.libraryBusy(); j++)
+        await new Promise((r) => setTimeout(r, 50));
+      const r = await a().step();
+      if (r === 'idle' && !a().currentRun()) return;
+      if (r === 'wait') await new Promise((res) => setTimeout(res, 20));
+    }
+  };
+  const textKept = () =>
+    (
+      env.cleanupDb
+        .prepare(
+          `SELECT COUNT(*) AS n FROM calibre_arrival_files WHERE json_extract(facts_json, '$.text') IS NOT NULL`,
+        )
+        .get() as { n: number }
+    ).n;
+
+  it('Stop: nothing starts again by itself, though the day’s run was due', async () => {
+    a().setMode('analyse');
+    // The day's scheduled run starts it.
+    expect(a().maybeStart()).not.toBeNull();
+    const run = await toText(10);
+    a().stopRun();
+    expect(a().currentRun()).toBeNull();
+    // Neither the due scheduled run nor a follow-up starts now (also a minute later).
+    expect(a().maybeStart()).toBeNull();
+    expect(a().maybeStart(Date.now() + 61_000)).toBeNull();
+    expect(
+      env.cleanupDb.prepare('SELECT state FROM calibre_arrival_runs WHERE id = ?').get(run.id),
+    ).toEqual({ state: 'stopped' });
+  }, 300_000);
+
+  it('the next run compares what the stopped run left, keeping the text it had read', async () => {
+    const kept = textKept();
+    expect(kept).toBeGreaterThanOrEqual(10);
+    a().requestRun();
+    await drive();
+    const rows = env.cleanupDb
+      .prepare(
+        `SELECT outcome, json_extract(facts_json, '$.compared') AS compared FROM calibre_arrival_files WHERE kind = 'epub'`,
+      )
+      .all() as { outcome: string; compared: number | null }[];
+    expect(rows).toHaveLength(N);
+    expect(rows.every((r) => r.outcome === 'new' && r.compared)).toBe(true);
+    expect(textKept()).toBe(N);
+    expect(
+      env.cleanupDb.prepare('SELECT first_done_at FROM calibre_arrival_pairs').get(),
+    ).not.toEqual({ first_done_at: null });
+  }, 300_000);
+
+  it('Off stops the run that is going, and none goes on while Off', async () => {
+    a().setMode('analyse');
+    a().requestRun();
+    await a().step();
+    const run = a().currentRun()!;
+    expect(run).not.toBeNull();
+    a().setMode('off');
+    expect(a().currentRun()).toBeNull();
+    expect(await a().step()).toBe('idle');
+    expect(a().currentRun()).toBeNull();
+    expect(
+      env.cleanupDb
+        .prepare('SELECT state, error FROM calibre_arrival_runs WHERE id = ?')
+        .get(run.id),
+    ).toEqual({ state: 'stopped', error: 'Stopped: new arrivals set Off' });
+  }, 300_000);
+});
+
+describe('wp20g: better copies', () => {
+  let env: CleanupEnv;
+  let apply: string;
+  const auth = (t: string) => ({ Authorization: `Bearer ${t}` });
+  const E = makeTextEpub({ title: 'E', chapters: chaptersOf(15) });
+  const F = makeTextEpub({ title: 'F', chapters: chaptersOf(16) });
+  // The same books with a short extra story (under a quarter): stage 3 keeps the copy with it.
+  const Eplus = makeTextEpub({ title: 'E', chapters: [...chaptersOf(15), fakeText(77, 3000)] });
+  const Fplus = makeTextEpub({ title: 'F', chapters: [...chaptersOf(16), fakeText(78, 3000)] });
+  let ids: Record<string, number> = {};
+  const uuidOf = (id: number) =>
+    (env.lib.open().prepare('SELECT uuid FROM books WHERE id = ?').get(id) as { uuid: string })
+      .uuid;
+
+  beforeAll(async () => {
+    const sources = tmp();
+    const src = path.join(sources, 'books', 'japanese');
+    fs.mkdirSync(src, { recursive: true });
+    const made = await makeCleanupEnv({
+      service: {
+        stage3Reader: new InProcessReader(bundle, IMPORT),
+        counterBuild: 'test',
+        bookSourcesDir: sources,
+        bookSourcesReadOnly: false,
+      },
+    });
+    env = made.env;
+    ids = {
+      E: await env.lib.addBook({ title: 'E', authors: ['作者'], epub: E }),
+      F: await env.lib.addBook({ title: 'F', authors: ['作者'], epub: F }),
+    };
+    await made.setup();
+    apply = env.applyToken();
+    const user = env.userToken();
+    await request(env.app)
+      .put('/api/v1/cleanup/settings')
+      .set(auth(user))
+      .send({
+        contentServerUrl: 'http://calibre:8081',
+        calibreLibraryId: 'japanese-library',
+        calibreUsername: 'u',
+      })
+      .expect(200);
+    await request(env.app)
+      .put('/api/v1/cleanup/secrets/calibrePassword')
+      .set(auth(user))
+      .send({ value: 'pw' })
+      .expect(200);
+    await request(env.app)
+      .post('/api/v1/cleanup-apply/heartbeat')
+      .set(auth(apply))
+      .send(healthyHeartbeat())
+      .expect(200);
+    updateSettings(env.cleanupDb, {
+      arrivals: {
+        ...getSettings(env.cleanupDb).arrivals,
+        pairs: [{ id: 'ja', source: 'books/japanese', libraryId: env.libraryId() }],
+        settleMinutes: 0,
+        handCheckMinutes: 0,
+      },
+    });
+    env.cleanupDb.prepare(`UPDATE stages SET mode = 'analyse' WHERE stage BETWEEN 1 AND 5`).run();
+    // E has reading data in the reader; F has none.
+    env.addReaderData(env.readerBook(uuidOf(ids.E))!.bookId);
+    fs.writeFileSync(path.join(src, 'E plus.epub'), Eplus);
+    fs.writeFileSync(path.join(src, 'F plus.epub'), Fplus);
+  }, 120_000);
+
+  afterAll(async () => {
+    await env?.close();
+  });
+
+  const run = async () => {
+    for (let i = 0; i < 300; i++) {
+      for (let j = 0; j < 600 && env.service.libraryBusy(); j++)
+        await new Promise((r) => setTimeout(r, 50));
+      const r = await env.service.arrivals.step();
+      if (r !== 'more') return;
+    }
+  };
+  const outcome = (rel: string) =>
+    env.cleanupDb
+      .prepare(
+        'SELECT outcome, calibre_id FROM calibre_arrival_files WHERE rel_path = ? AND gone_at IS NULL',
+      )
+      .get(rel) as {
+      outcome: string;
+      calibre_id: number | null;
+    };
+
+  it('a better copy of a book with reading data goes to review; of one without, it is added and the old copy goes', async () => {
+    env.service.arrivals.setMode('analyse');
+    env.service.arrivals.requestRun();
+    await run();
+    expect(outcome('E plus.epub')).toEqual({ outcome: 'better_review', calibre_id: ids.E });
+    expect(outcome('F plus.epub')).toEqual({ outcome: 'better', calibre_id: ids.F });
+    const review = env.cleanupDb
+      .prepare(`SELECT kind, calibre_id FROM calibre_arrival_reviews`)
+      .all();
+    expect(review).toEqual([{ kind: 'better_copy', calibre_id: ids.E }]);
+    // On: F plus is added; stage 3 proposes the older F's removal under the run's id.
+    env.service.arrivals.setMode('on');
+    env.service.arrivals.requestRun();
+    for (let round = 0; round < 6; round++) {
+      await run();
+      const claim = await request(env.app)
+        .post('/api/v1/cleanup-apply/arrivals/claim')
+        .set(auth(apply))
+        .send({});
+      const batch = claim.body.batch as {
+        id: number;
+        items: { itemId: number; title: string }[];
+      } | null;
+      if (batch) {
+        for (const it of batch.items) {
+          const id = await env.lib.addBook({ title: it.title, authors: ['作者'], epub: Fplus });
+          await request(env.app)
+            .post(`/api/v1/cleanup-apply/arrivals/items/${it.itemId}`)
+            .set(auth(apply))
+            .send({ step: 'adding' });
+          await request(env.app)
+            .post(`/api/v1/cleanup-apply/arrivals/items/${it.itemId}`)
+            .set(auth(apply))
+            .send({ step: 'added', calibreId: id, uuid: uuidOf(id) });
+        }
+        await request(env.app)
+          .post(`/api/v1/cleanup-apply/arrivals/batches/${batch.id}/finish`)
+          .set(auth(apply))
+          .send({});
+      }
+      await env.index();
+    }
+    const p = env.cleanupDb
+      .prepare(
+        `SELECT calibre_id, json_extract(evidence_json, '$.kept.calibreId') AS kept FROM proposed_changes
+         WHERE stage = 3 AND analysis_id LIKE 'arrivals:%'`,
+      )
+      .all() as { calibre_id: number; kept: number }[];
+    expect(p.map((x) => x.calibre_id)).toEqual([ids.F]);
+    expect(p[0].kept).not.toBe(ids.F);
+    env.service.arrivals.stopRun();
+  }, 300_000);
+});
+
+describe('wp20g: the compare step keeps several books in flight', () => {
+  it('runs up to the limit at once, the next as one finishes, and stops when asked', async () => {
+    let now = 0;
+    let most = 0;
+    const done: number[] = [];
+    const items = Array.from({ length: 30 }, (_, i) => i);
+    const ok = await inPool(
+      items,
+      12,
+      () => false,
+      async (i) => {
+        now++;
+        most = Math.max(most, now);
+        await new Promise((r) => setTimeout(r, (i % 5) * 3));
+        done.push(i);
+        now--;
+      },
+    );
+    expect(ok).toBe(true);
+    expect(most).toBe(12);
+    expect(done.sort((a, b) => a - b)).toEqual(items);
+    // Stopped: no new item starts; the ones in flight finish.
+    let started = 0;
+    const stopped = await inPool(
+      items,
+      4,
+      () => started >= 6,
+      async () => {
+        started++;
+        await new Promise((r) => setTimeout(r, 2));
+      },
+    );
+    expect(stopped).toBe(false);
+    expect(started).toBeLessThan(10);
+    // A job that throws makes the call throw.
+    await expect(
+      inPool(
+        [1, 2, 3],
+        2,
+        () => false,
+        async (i) => {
+          if (i === 2) throw new Error('boom');
+        },
+      ),
+    ).rejects.toThrow('boom');
+  });
+});
+
+describe('wp20g: library pairs measured while each book is read', () => {
+  // The same Preview twice: with the library lookup (each new book measured against its library
+  // candidates in the request that reads it) and without (every pair in the measure stage). The
+  // results must be the same.
+  const library = {
+    A: chaptersOf(21),
+    B: chaptersOf(22),
+    C: chaptersOf(23),
+    D: chaptersOf(24),
+  };
+  const sources: Record<string, Buffer> = {
+    // The same text in another file (a different rip): a duplicate of A.
+    'A rip.epub': makeTextEpub({ title: 'A (rip)', chapters: library.A }),
+    // B with a short extra story: the better copy (B has no reading data).
+    'B plus.epub': makeTextEpub({ title: 'B', chapters: [...library.B, fakeText(91, 3000)] }),
+    // Most of C: the library's copy has everything it has.
+    'C part.epub': makeTextEpub({ title: 'C', chapters: library.C.slice(0, 5) }),
+    // Two new copies of a book the library lacks: one of them stays.
+    'N one.epub': makeTextEpub({ title: 'N', chapters: chaptersOf(25) }),
+    'N two.epub': makeTextEpub({ title: 'N (2)', chapters: chaptersOf(25) }),
+    // C's text again with N's: a pair with both a library and a new book.
+    'C and N.epub': makeTextEpub({ title: 'CN', chapters: [...library.C, ...chaptersOf(25)] }),
+    'U.epub': makeTextEpub({ title: 'U', chapters: chaptersOf(26) }),
+  };
+  const auth = (t: string) => ({ Authorization: `Bearer ${t}` });
+
+  const preview = async (reader: Stage3Reader) => {
+    const root = tmp();
+    const src = path.join(root, 'books', 'japanese');
+    fs.mkdirSync(src, { recursive: true });
+    const made = await makeCleanupEnv({
+      service: {
+        stage3Reader: reader,
+        counterBuild: 'test',
+        bookSourcesDir: root,
+        bookSourcesReadOnly: false,
+      },
+    });
+    const env = made.env;
+    try {
+      const names = new Map<number, string>();
+      for (const [t, chapters] of Object.entries(library))
+        names.set(
+          await env.lib.addBook({
+            title: t,
+            authors: ['作者'],
+            epub: makeTextEpub({ title: t, chapters }),
+          }),
+          t,
+        );
+      await made.setup();
+      const user = env.userToken();
+      await request(env.app)
+        .put('/api/v1/cleanup/settings')
+        .set(auth(user))
+        .send({
+          contentServerUrl: 'http://calibre:8081',
+          calibreLibraryId: 'japanese-library',
+          calibreUsername: 'u',
+        })
+        .expect(200);
+      await request(env.app)
+        .put('/api/v1/cleanup/secrets/calibrePassword')
+        .set(auth(user))
+        .send({ value: 'pw' })
+        .expect(200);
+      await request(env.app)
+        .post('/api/v1/cleanup-apply/heartbeat')
+        .set(auth(env.applyToken()))
+        .send(healthyHeartbeat())
+        .expect(200);
+      updateSettings(env.cleanupDb, {
+        arrivals: {
+          ...getSettings(env.cleanupDb).arrivals,
+          pairs: [{ id: 'ja', source: 'books/japanese', libraryId: env.libraryId() }],
+          settleMinutes: 0,
+          handCheckMinutes: 0,
+        },
+      });
+      env.cleanupDb.prepare(`UPDATE stages SET mode = 'analyse' WHERE stage BETWEEN 1 AND 5`).run();
+      for (const [name, bytes] of Object.entries(sources))
+        fs.writeFileSync(path.join(src, name), bytes);
+      env.service.arrivals.setMode('analyse');
+      env.service.arrivals.requestRun();
+      for (let i = 0; i < 400; i++) {
+        for (let j = 0; j < 600 && env.service.libraryBusy(); j++)
+          await new Promise((r) => setTimeout(r, 50));
+        if ((await env.service.arrivals.step()) !== 'more') break;
+      }
+      const rows = env.cleanupDb
+        .prepare(
+          `SELECT id, rel_path, outcome, calibre_id, facts_json FROM calibre_arrival_files
+           WHERE kind = 'epub' ORDER BY rel_path`,
+        )
+        .all() as {
+        id: number;
+        rel_path: string;
+        outcome: string;
+        calibre_id: number | null;
+        facts_json: string;
+      }[];
+      const nameOf = (k: number) =>
+        k < 0 ? rows.find((r) => r.id === -k)!.rel_path : names.get(k)!;
+      let early = 0;
+      let covered = 0;
+      const out = rows.map((r) => {
+        const fx = JSON.parse(r.facts_json) as CompareFacts;
+        early += fx.early?.measured.length ?? 0;
+        covered += fx.covered?.length ?? 0;
+        return {
+          file: r.rel_path,
+          outcome: r.outcome,
+          book: r.calibre_id === null ? null : names.get(r.calibre_id),
+          cands: (fx.cands ?? []).map(nameOf).sort(),
+          verdicts: (fx.verdicts ?? [])
+            .map((v) => ({
+              other: nameOf(v.otherKey),
+              aInB: v.aInB,
+              bInA: v.bInA,
+              cls: v.cls,
+              rule: v.rule,
+              keep: v.keep,
+            }))
+            .sort((x, y) => x.other.localeCompare(y.other)),
+        };
+      });
+      return { out, early, covered };
+    } finally {
+      await env.close();
+    }
+  };
+
+  it('gives the same outcomes, pairs and verdicts as measuring every pair afterwards', async () => {
+    const withLookup = await preview(new InProcessReader(bundle, IMPORT));
+    const plain = new InProcessReader(bundle, IMPORT);
+    const without = await preview({
+      text: (f) => plain.text(f),
+      compare: (b, p, e) => plain.compare(b, p, e),
+      index: (r) => plain.index(r),
+      close: () => {},
+    });
+    // The lookup was used, and covered library pairs (not every one is a candidate).
+    expect(withLookup.early).toBeGreaterThan(0);
+    expect(withLookup.covered).toBeGreaterThan(0);
+    expect(without.early).toBe(0);
+    expect(withLookup.out).toEqual(without.out);
+    // And the outcomes are what stage 3's rules give.
+    const o = Object.fromEntries(withLookup.out.map((r) => [r.file, [r.outcome, r.book]]));
+    expect(o['A rip.epub']).toEqual(['duplicate', 'A']);
+    expect(o['B plus.epub']).toEqual(['better', 'B']);
+    expect(o['C part.epub']).toEqual(['duplicate', 'C']);
+    expect(o['U.epub']).toEqual(['new', null]);
+    expect([o['N one.epub'][0], o['N two.epub'][0]].sort()).toEqual(['duplicate', 'new']);
+  }, 600_000);
+});
+
+describe('wp20g: the per-book library lookup', () => {
+  it('finds every library pair the whole index finds (random sketches, common samples)', () => {
+    let seed = 7;
+    const rand = (n: number) => {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+      return seed % n;
+    };
+    const sketch = (pool: number, size: number) =>
+      sortedUnique(Uint32Array.from({ length: size }, () => rand(pool)));
+    let checked = 0;
+    for (let round = 0; round < 20; round++) {
+      // A small sample pool, so many samples are common and many pairs share some.
+      const pool = 400 + rand(800);
+      const lib = Array.from({ length: 40 }, (_, i) => ({
+        calibreId: i + 1,
+        sketch: sketch(pool, 20 + rand(80)),
+      }));
+      const news = Array.from({ length: 15 }, (_, i) => ({
+        calibreId: -(i + 1),
+        sketch: sketch(pool, 20 + rand(80)),
+      }));
+      const opts = { commonBooks: 3 + rand(12), minShared: 2, minEstimate: 0.05 };
+      const whole = candidatePairs([...news, ...lib], opts).pairs;
+      const lookup = buildLookup(lib);
+      for (const n of news) {
+        const found = new Set(lookupCandidates(lookup, n.sketch, opts).map((c) => c.b));
+        const needed = whole
+          .filter((p) => (p.a === n.calibreId && p.b > 0) || (p.b === n.calibreId && p.a > 0))
+          .map((p) => (p.a === n.calibreId ? p.b : p.a));
+        checked += needed.length;
+        for (const id of needed) expect(found.has(id)).toBe(true);
+      }
+    }
+    // Enough pairs to mean something.
+    expect(checked).toBeGreaterThan(100);
+  });
+});

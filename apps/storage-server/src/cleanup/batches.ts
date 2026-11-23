@@ -25,7 +25,8 @@
  * in its edits like any edit made in Calibre (the index only checks them afterwards).
  */
 import type Database from 'better-sqlite3';
-import { isFieldStage } from './field-stages';
+import { EDIT_SIDECAR_VERSION, EDIT_STAGE, isFieldStage } from './field-stages';
+import { releaseUnwritten } from './edits/yours';
 import { createHash, randomUUID } from 'crypto';
 import fs from 'fs/promises';
 import path from 'path';
@@ -44,6 +45,7 @@ import {
 import { getSettings, isCustomTag } from './settings';
 import { hashSourceFile, Pacer, readSnapshotBooks, readSnapshotPresence } from './stage1';
 import {
+  EDIT_LIST_FIELDS,
   LIST_FIELDS,
   STAGE2_TERMINAL_APPLY,
   Stage2Batches,
@@ -288,10 +290,18 @@ export class BatchService {
   readonly stage4: Stage2Batches;
   /** Stage 5's writes (WP20f): the tags, the same path with one change per book. */
   readonly stage5: Stage2Batches;
+  /** The user's edits from the reader (calibre metadata editing): the same path again. */
+  readonly edits: Stage2Batches;
 
-  /** The field-write path of a stage (2, 4 or 5). */
+  /** The field-write path of a stage (2, 4, 5 or the user's edits). */
   fieldWriter(stage: number): Stage2Batches {
-    return stage === 5 ? this.stage5 : stage === 4 ? this.stage4 : this.stage2;
+    return stage === EDIT_STAGE
+      ? this.edits
+      : stage === 5
+        ? this.stage5
+        : stage === 4
+          ? this.stage4
+          : this.stage2;
   }
 
   /** The field-write path of a batch, by its id. */
@@ -304,6 +314,7 @@ export class BatchService {
     this.stage2 = new Stage2Batches(this, deps);
     this.stage4 = new Stage2Batches(this, deps, 4);
     this.stage5 = new Stage2Batches(this, deps, 5);
+    this.edits = new Stage2Batches(this, deps, EDIT_STAGE);
   }
 
   private get db() {
@@ -469,8 +480,9 @@ export class BatchService {
   async planStage1(
     libraryId: string,
     shouldStop: () => boolean = () => false,
+    analysisId?: string,
   ): Promise<{ batch: BatchRow | null; reason: string | null }> {
-    return this.planRemovals(1, libraryId, shouldStop);
+    return this.planRemovals(1, libraryId, shouldStop, analysisId);
   }
 
   /**
@@ -482,15 +494,19 @@ export class BatchService {
   async planStage3(
     libraryId: string,
     shouldStop: () => boolean = () => false,
+    analysisId?: string,
   ): Promise<{ batch: BatchRow | null; reason: string | null }> {
-    return this.planRemovals(3, libraryId, shouldStop);
+    return this.planRemovals(3, libraryId, shouldStop, analysisId);
   }
 
+  /** `analysisId` (WP20g): a new-arrivals run's removals (arrivals:<run>), not the stage's own. */
   private async planRemovals(
     stage: number,
     libraryId: string,
     shouldStop: () => boolean,
+    analysisId?: string,
   ): Promise<{ batch: BatchRow | null; reason: string | null }> {
+    const analysis = analysisId ?? currentAnalysisId(this.db, stage);
     if (this.open()) return { batch: null, reason: 'A batch is being applied' };
     if (REMOVAL_STAGES.some((st) => this.awaitingIngest(st))) {
       return {
@@ -507,7 +523,7 @@ export class BatchService {
            AND analysis_id = ?
          LIMIT 1`,
       )
-      .get(stage, libraryId, currentAnalysisId(this.db, stage));
+      .get(stage, libraryId, analysis);
     if (!any) return { batch: null, reason: null };
     const present = presentBookCount(this.deps.main, libraryId);
     const cap = Math.max(
@@ -524,13 +540,37 @@ export class BatchService {
            AND analysis_id = ?
          ORDER BY id LIMIT ?`,
       )
-      .all(stage, libraryId, currentAnalysisId(this.db, stage), cap) as {
+      .all(stage, libraryId, analysis, cap) as {
       id: number;
       calibre_id: number;
       calibre_uuid: string;
       evidence_json: string;
     }[];
     if (candidates.length === 0) return { batch: null, reason: null };
+    // A copy whose user's fields are being copied onto the copy that stays waits for that write
+    // (calibre metadata editing); if it wasn't written, the removal goes to review.
+    const carryWaits = (c: { id: number; evidence_json: string }): boolean => {
+      const id = (JSON.parse(c.evidence_json) as { carriedBatch?: string }).carriedBatch;
+      if (!id) return false;
+      const b = this.get(id);
+      if (!b || b.state === 'planned' || b.state === 'claimed') return true;
+      if (b.state !== 'applied') {
+        this.db
+          .prepare(
+            `UPDATE proposed_changes SET class = 'review', review_reason = ?, updated_at = ? WHERE id = ?`,
+          )
+          .run(
+            "Your edited fields couldn't all be copied onto the copy that stays",
+            Date.now(),
+            c.id,
+          );
+        return true;
+      }
+      return false;
+    };
+    const ready = candidates.filter((c) => !carryWaits(c));
+    if (ready.length === 0) return { batch: null, reason: 'Waiting for your fields to be copied' };
+    candidates.splice(0, candidates.length, ...ready);
 
     const verdict = await this.verifyRemovals(stage, libraryId, candidates, shouldStop);
     if (verdict.stopped) return { batch: null, reason: null };
@@ -767,6 +807,10 @@ export class BatchService {
          VALUES (?, ?, ?, 'pending', ?)`,
       );
       changeIds.forEach((cid, i) => item.run(id, cid, i, now));
+      // The user's edits need no metadata.db copy first (a whole-library copy takes from seconds
+      // to minutes on the NAS): each field's undo record keeps what Calibre had.
+      if (stage === EDIT_STAGE)
+        this.db.prepare('UPDATE batches SET snapshot_saved = 1 WHERE id = ?').run(id);
       if (kind === 'apply') {
         const queue = this.db.prepare(
           `UPDATE proposed_changes SET state = 'queued', batch_id = ?, updated_at = ? WHERE id = ?`,
@@ -783,13 +827,30 @@ export class BatchService {
    * verified metadata.db snapshot (taken before any write). Returns null when there is none,
    * or when the snapshot can't be made right now (Calibre is writing): asked again later.
    */
-  async claim(now = Date.now()): Promise<{ batch: SidecarBatch | null; wait: string | null }> {
+  async claim(
+    now = Date.now(),
+    opts: { editsOnly?: boolean } = {},
+  ): Promise<{ batch: SidecarBatch | null; wait: string | null }> {
     this.expireLeases(now);
+    // The user's edits from the reader go ahead of every queued cleanup batch (decided with the
+    // user 2026-11-23); between the chunks of a running batch the sidecar asks for edits only.
     const raw = this.db
-      .prepare(`SELECT * FROM batches WHERE state = 'planned' ORDER BY created_at LIMIT 1`)
+      .prepare(
+        opts.editsOnly
+          ? `SELECT * FROM batches WHERE state = 'planned' AND stage = ${EDIT_STAGE}
+             ORDER BY created_at LIMIT 1`
+          : `SELECT * FROM batches WHERE state = 'planned'
+             ORDER BY (stage = ${EDIT_STAGE}) DESC, created_at LIMIT 1`,
+      )
       .get() as RawBatch | undefined;
     if (!raw) return { batch: null, wait: null };
     const batch = toBatch(raw);
+    if (batch.stage === EDIT_STAGE && !this.sidecarAtLeast(EDIT_SIDECAR_VERSION)) {
+      return {
+        batch: null,
+        wait: `The cleanup sidecar is older than ${EDIT_SIDECAR_VERSION}: rebuild ttsu-cleanup-apply before your edits are written`,
+      };
+    }
     if (batch.stage === 4 || batch.stage === 5) {
       // A sidecar before 1.1.0 knows stage 4's batches as removals (WP20e); one before 1.2.0
       // can't write tags as a field (WP20f): neither ever gets such a batch.
@@ -835,6 +896,19 @@ export class BatchService {
     if (view.kind === 'undo' && isRemovalStage(view.stage))
       await this.markCalibreTrash(view, batch.libraryId);
     return { batch: view, wait: null };
+  }
+
+  /** Whether the sidecar's last heartbeat named this version or a newer one. */
+  sidecarAtLeast(version: string): boolean {
+    const sc = this.db.prepare('SELECT version FROM sidecar_status WHERE id = 1').get() as
+      | { version: string | null }
+      | undefined;
+    const have = (sc?.version ?? '0.0.0').split('.').map((x) => parseInt(x, 10) || 0);
+    const want = version.split('.').map((x) => parseInt(x, 10) || 0);
+    for (let i = 0; i < 3; i++) {
+      if ((have[i] ?? 0) !== (want[i] ?? 0)) return (have[i] ?? 0) > (want[i] ?? 0);
+    }
+    return true;
   }
 
   /** Undo: which of the batch's books Calibre's trash folder still holds (read-only). */
@@ -921,7 +995,7 @@ export class BatchService {
         items: [],
         books: this.fieldWriter(batch.stage).sidecarBooks(batch),
         chunkSize: settings.pacing.lookupChunk,
-        listFields: LIST_FIELDS,
+        listFields: batch.stage === EDIT_STAGE ? EDIT_LIST_FIELDS : LIST_FIELDS,
       };
     }
     const rows = this.db
@@ -1289,7 +1363,20 @@ export class BatchService {
             batchId,
           );
       }
-      if (batch.kind === 'apply') {
+      if (batch.kind === 'apply' && batch.stage === EDIT_STAGE) {
+        // The user's edit is never planned again by itself: what wasn't written is listed as
+        // not written (the book page shows it; the user can save it again).
+        this.db
+          .prepare(
+            `UPDATE proposed_changes SET state = 'skipped', review_reason = ?, updated_at = ?
+             WHERE batch_id = ? AND state = 'queued'`,
+          )
+          .run(
+            `Not written: ${error ? `the write stopped (${error.slice(0, 200)})` : 'the write stopped'}`,
+            now,
+            batchId,
+          );
+      } else if (batch.kind === 'apply') {
         // Items the sidecar never reached go back to the proposals.
         this.db
           .prepare(
@@ -1316,7 +1403,12 @@ export class BatchService {
       }
     })();
     const failedLimit = getSettings(this.db).failedPausePercent;
-    if (
+    if (batch.stage === EDIT_STAGE) {
+      // An edit that failed is shown on its book page; it pauses no cleanup stage. A field the
+      // save made the user's and that wasn't written is theirs no more.
+      releaseUnwritten(this.db, batchId);
+      if (failed > 0) this.deps.log?.(`Cleanup: ${failed} field(s) of edit ${batchId} failed`);
+    } else if (
       failed > 0 &&
       batch.kind === 'apply' &&
       !error &&

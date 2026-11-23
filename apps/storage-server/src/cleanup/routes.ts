@@ -24,6 +24,9 @@ import {
   type DupDecision,
 } from './audio/audio-cleanup-service';
 import { isSecretName } from './secrets';
+import { ArrivalBatchError } from './arrivals/add-batches';
+import { streamSource } from './arrivals/sources-fs';
+import { arrivalsList, arrivalsStatus, notImportedCsv } from './arrivals/views';
 import { getSettings, SettingsError, updateSettings } from './settings';
 import {
   CURRENT_PROPOSALS_SQL,
@@ -43,6 +46,7 @@ export interface CleanupOptions {
 
 function rethrow(err: unknown): never {
   if (err instanceof BatchError) throw new ApiError(err.status, err.code, err.message);
+  if (err instanceof ArrivalBatchError) throw new ApiError(err.status, err.code, err.message);
   if (err instanceof SettingsError) throw new ApiError(400, 'invalid_setting', err.message);
   throw err;
 }
@@ -138,6 +142,19 @@ export function createCleanupApplyRouter(options: CleanupOptions): Router {
         return;
       }
       res.json(await service.batches.claim());
+    }),
+  );
+
+  // 1.5.0: the user's edits from the reader, asked for between the chunks of a running batch.
+  router.post(
+    '/cleanup-apply/edits/claim',
+    asyncHandler(async (_req, res) => {
+      const service = serviceOr503(options);
+      if (!service.sidecarConfig()?.libraryId) {
+        res.json({ batch: null, wait: null });
+        return;
+      }
+      res.json(await service.batches.claim(Date.now(), { editsOnly: true }));
     }),
   );
 
@@ -290,6 +307,70 @@ export function createCleanupApplyRouter(options: CleanupOptions): Router {
       );
       void service.tick();
       res.json({ batch });
+    } catch (err) {
+      rethrow(err);
+    }
+  });
+
+  // WP20g: the import's add batches (the sidecar's arrivals.ts).
+  router.post('/cleanup-apply/arrivals/claim', (_req, res) => {
+    const service = serviceOr503(options);
+    const login = service.sidecarConfig();
+    // A cleanup batch goes first; an add batch never runs beside one.
+    if (!login?.libraryId || service.batches.open()) {
+      res.json({ batch: null });
+      return;
+    }
+    res.json({ batch: service.arrivals.addBatches.claim() });
+  });
+
+  router.post('/cleanup-apply/arrivals/items/:id', (req, res) => {
+    const service = serviceOr503(options);
+    const id = Number(req.params.id);
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    try {
+      res.json(
+        service.arrivals.addBatches.report(id, {
+          step: typeof b.step === 'string' ? b.step : '',
+          calibreId: typeof b.calibreId === 'number' ? b.calibreId : undefined,
+          uuid: typeof b.uuid === 'string' ? b.uuid.slice(0, 100) : undefined,
+          quarantineDir:
+            typeof b.quarantineDir === 'string' ? b.quarantineDir.slice(0, 1000) : undefined,
+          detail: typeof b.detail === 'string' ? b.detail.slice(0, 1000) : undefined,
+        }),
+      );
+      void service.tick();
+    } catch (err) {
+      rethrow(err);
+    }
+  });
+
+  // The file to add, read only from the sources mount; the sidecar checks its SHA-256.
+  router.get('/cleanup-apply/arrivals/items/:id/file', (req, res) => {
+    const service = serviceOr503(options);
+    try {
+      const f = service.arrivals.fileForItem(Number(req.params.id));
+      res.setHeader('Content-Type', 'application/epub+zip');
+      res.setHeader('Content-Length', String(f.size));
+      res.setHeader('X-File-Sha256', f.sha256);
+      const stream = streamSource(f.path);
+      stream.on('error', (err) => res.destroy(err));
+      stream.pipe(res);
+    } catch (err) {
+      rethrow(err);
+    }
+  });
+
+  router.post('/cleanup-apply/arrivals/batches/:id/finish', (req, res) => {
+    const service = serviceOr503(options);
+    const error = (req.body as { error?: unknown } | undefined)?.error;
+    try {
+      service.arrivals.addBatches.finish(
+        Number(req.params.id),
+        typeof error === 'string' ? error.slice(0, 2000) : null,
+      );
+      void service.tick();
+      res.json({ ok: true });
     } catch (err) {
       rethrow(err);
     }
@@ -592,6 +673,37 @@ function addAudioRoutes(router: Router, options: CleanupOptions): void {
     res.json({ ok: true });
   });
 
+  // Stage 8 (WP21g): the pairs with the Calibre ebooks (lists, CSV) and your review choices:
+  // field 'pair' (a Calibre id, or null for "no ebook") or 'series' ('calibre' | 'none').
+  router.get('/cleanup/audio/ebooks', (req, res) => {
+    const audio = audioOr503(options);
+    try {
+      res.json(audio.ebooks(String(req.query.list ?? 'auto'), page(req)));
+    } catch (err) {
+      throw new ApiError(400, 'bad_request', (err as Error).message);
+    }
+  });
+
+  router.get('/cleanup/audio/ebooks/pairs.csv', (_req, res) => {
+    const audio = audioOr503(options);
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="audiobooks-ebook-pairs.csv"');
+    res.send(audio.ebooksCsv());
+  });
+
+  router.post('/cleanup/audio/ebooks/choice', (req, res) => {
+    const audio = audioOr503(options);
+    const body = (req.body ?? {}) as { unit?: unknown; field?: unknown; value?: unknown };
+    if (typeof body.unit !== 'string' || typeof body.field !== 'string' || !('value' in body))
+      throw new ApiError(400, 'bad_request', 'unit, field and value are needed');
+    try {
+      audio.ebookChoice(body.unit, body.field, body.value);
+    } catch (err) {
+      throw new ApiError(400, 'bad_request', (err as Error).message);
+    }
+    res.json({ ok: true });
+  });
+
   router.post('/cleanup/audio/arrivals/resume', (_req, res) => {
     const audio = audioOr503(options);
     try {
@@ -718,22 +830,30 @@ export function createCleanupRouter(options: CleanupOptions): Router {
     }
   });
 
-  router.put('/cleanup/secrets/:name', (req, res) => {
-    const service = serviceOr503(options);
-    const name = req.params.name;
-    if (!isSecretName(name)) throw new ApiError(404, 'not_found', 'No such secret');
-    const value = (req.body as { value?: unknown } | undefined)?.value;
-    if (typeof value !== 'string' || value.trim() === '') {
-      throw new ApiError(400, 'bad_request', 'value must be non-empty text');
-    }
-    try {
-      service.secrets.put(name, value);
-    } catch (err) {
-      throw new ApiError(400, 'bad_request', (err as Error).message);
-    }
-    // Never echoes the value back.
-    res.json({ secrets: service.secrets.info() });
-  });
+  router.put(
+    '/cleanup/secrets/:name',
+    asyncHandler(async (req, res) => {
+      const service = serviceOr503(options);
+      const name = req.params.name;
+      if (!isSecretName(name)) throw new ApiError(404, 'not_found', 'No such secret');
+      const value = (req.body as { value?: unknown } | undefined)?.value;
+      if (typeof value !== 'string' || value.trim() === '') {
+        throw new ApiError(400, 'bad_request', 'value must be non-empty text');
+      }
+      // Audiobookshelf's key is asked about first: a value it refuses never replaces a working key.
+      if (name === 'absApiKey' && options.audio) {
+        const refusal = await options.audio.absKeyRefusal(value);
+        if (refusal) throw new ApiError(400, 'abs_key_refused', refusal);
+      }
+      try {
+        service.secrets.put(name, value);
+      } catch (err) {
+        throw new ApiError(400, 'bad_request', (err as Error).message);
+      }
+      // Never echoes the value back.
+      res.json({ secrets: service.secrets.info() });
+    }),
+  );
 
   router.delete('/cleanup/secrets/:name', (req, res) => {
     const service = serviceOr503(options);
@@ -945,6 +1065,177 @@ export function createCleanupRouter(options: CleanupOptions): Router {
         limit,
       }),
     );
+  });
+
+  // ---- More Bookmeter coverage (step 2): the pass over stage 4's stored answers ----
+
+  const bookmeterOr503 = () => {
+    const service = serviceOr503(options);
+    if (!service.bookmeter) throw new ApiError(503, 'no_calibre', 'No Calibre library is set up');
+    return { service, pass: service.bookmeter };
+  };
+
+  router.get('/cleanup/bookmeter', (_req, res) => {
+    const { service } = bookmeterOr503();
+    res.json(service.bookmeterStatus(service.targetLibrary()));
+  });
+
+  router.put('/cleanup/bookmeter/mode', (req, res) => {
+    const { service, pass } = bookmeterOr503();
+    const mode = (req.body as { mode?: unknown } | undefined)?.mode;
+    if (mode !== 'off' && mode !== 'analyse' && mode !== 'on')
+      throw new ApiError(400, 'bad_mode', 'mode must be off, analyse or on');
+    try {
+      pass.setMode(mode);
+    } catch (err) {
+      throw new ApiError(409, 'not_now', (err as Error).message);
+    }
+    service.bookmeterChanged();
+    res.json(service.bookmeterStatus(service.targetLibrary()));
+  });
+
+  router.get('/cleanup/bookmeter/matches', (req, res) => {
+    const { service, pass } = bookmeterOr503();
+    const lib = service.targetLibrary();
+    const q = req.query as Record<string, string | undefined>;
+    const offset = Math.max(0, Number(q.offset ?? 0) || 0);
+    const limit = Math.min(100, Math.max(1, Number(q.limit ?? 20) || 20));
+    const source =
+      q.source === 'rules' || q.source === 'ai' || q.source === 'second' ? q.source : null;
+    if (!lib) {
+      res.json({ total: 0, items: [] });
+      return;
+    }
+    res.json(pass.listMatches(lib, pass.state().progress.run, source, offset, limit));
+  });
+
+  router.get('/cleanup/bookmeter/spot', (_req, res) => {
+    const { service, pass } = bookmeterOr503();
+    const lib = service.targetLibrary();
+    res.json({
+      items: lib ? pass.listSpot(lib, pass.state().progress.run) : [],
+      counts: pass.spotCounts(),
+      passed: pass.spotPassed(),
+    });
+  });
+
+  router.put('/cleanup/bookmeter/spot/:uuid', (req, res) => {
+    const { service, pass } = bookmeterOr503();
+    const v = (req.body as { verdict?: unknown } | undefined)?.verdict;
+    if (v !== 'right' && v !== 'wrong' && v !== null)
+      throw new ApiError(400, 'bad_verdict', 'verdict must be right, wrong or null');
+    try {
+      pass.setVerdict(String(req.params.uuid), v);
+    } catch (err) {
+      throw new ApiError(409, 'not_now', (err as Error).message);
+    }
+    service.bookmeterChanged();
+    res.json({ counts: pass.spotCounts(), passed: pass.spotPassed() });
+  });
+
+  // ---- WP20g: the Calibre library's new arrivals ----
+
+  router.get('/cleanup/arrivals', (_req, res) => {
+    const service = serviceOr503(options);
+    res.json(arrivalsStatus(service.arrivals, service.db));
+  });
+
+  router.put('/cleanup/arrivals/mode', (req, res) => {
+    const service = serviceOr503(options);
+    const mode = (req.body as { mode?: unknown } | undefined)?.mode;
+    if (mode !== 'off' && mode !== 'analyse' && mode !== 'on')
+      throw new ApiError(400, 'bad_mode', 'mode must be off, analyse or on');
+    service.arrivals.setMode(mode);
+    void service.tick();
+    res.json(arrivalsStatus(service.arrivals, service.db));
+  });
+
+  router.post('/cleanup/arrivals/run-now', (_req, res) => {
+    const service = serviceOr503(options);
+    try {
+      service.arrivals.requestRun();
+    } catch (err) {
+      throw new ApiError(409, 'not_now', (err as Error).message);
+    }
+    void service.tick();
+    res.json(arrivalsStatus(service.arrivals, service.db));
+  });
+
+  router.post('/cleanup/arrivals/stop', (_req, res) => {
+    const service = serviceOr503(options);
+    service.arrivals.stopRun();
+    res.json(arrivalsStatus(service.arrivals, service.db));
+  });
+
+  router.post('/cleanup/arrivals/resume', (_req, res) => {
+    const service = serviceOr503(options);
+    service.arrivals.resume();
+    void service.tick();
+    res.json(arrivalsStatus(service.arrivals, service.db));
+  });
+
+  router.get('/cleanup/arrivals/lists/:list', (req, res) => {
+    const service = serviceOr503(options);
+    const q = req.query as Record<string, string | undefined>;
+    try {
+      res.json(
+        arrivalsList(
+          service.db,
+          req.params.list,
+          Number(q.offset ?? 0) || 0,
+          Number(q.limit ?? 50) || 50,
+        ),
+      );
+    } catch (err) {
+      throw new ApiError(404, 'no_list', (err as Error).message);
+    }
+  });
+
+  router.get('/cleanup/arrivals/not-imported.csv', (_req, res) => {
+    const service = serviceOr503(options);
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="not-imported.csv"');
+    res.send('\ufeff' + notImportedCsv(service.db));
+  });
+
+  router.post('/cleanup/arrivals/reviews/:id', (req, res) => {
+    const service = serviceOr503(options);
+    const decision = (req.body as { decision?: unknown } | undefined)?.decision;
+    if (typeof decision !== 'string')
+      throw new ApiError(400, 'bad_decision', 'decision is required');
+    try {
+      service.arrivals.decide(Number(req.params.id), decision);
+    } catch (err) {
+      throw new ApiError(400, 'bad_decision', (err as Error).message);
+    }
+    res.json({ ok: true });
+  });
+
+  router.post('/cleanup/arrivals/batches/:id/undo', (req, res) => {
+    const service = serviceOr503(options);
+    try {
+      const id = service.arrivals.addBatches.planUndo(Number(req.params.id));
+      void service.tick();
+      res.json({ undo: id });
+    } catch (err) {
+      rethrow(err);
+    }
+  });
+
+  router.get('/cleanup/stage4/guesses', (req, res) => {
+    const service = serviceOr503(options);
+    const q = req.query as Record<string, string | undefined>;
+    const offset = Math.max(0, Number(q.offset ?? 0) || 0);
+    const limit = Math.min(100, Math.max(1, Number(q.limit ?? 20) || 20));
+    res.json(service.stage4Guesses(q.kind === 'other' ? 'other' : 'series', offset, limit));
+  });
+
+  router.get('/cleanup/titles/shortened', (req, res) => {
+    const service = serviceOr503(options);
+    const q = req.query as Record<string, string | undefined>;
+    const offset = Math.max(0, Number(q.offset ?? 0) || 0);
+    const limit = Math.min(100, Math.max(1, Number(q.limit ?? 20) || 20));
+    res.json(service.titleFits(offset, limit));
   });
 
   router.get('/cleanup/stage4/readings', (req, res) => {

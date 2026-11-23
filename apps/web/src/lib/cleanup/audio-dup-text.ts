@@ -201,11 +201,16 @@ export function dupLines(counts: Record<string, number> | null | undefined): str
     );
   if (c(counts, 'damaged_groups'))
     lines.push(`${count(c(counts, 'damaged_groups'), 'group has', 'groups have')} a damaged copy.`);
-  if (c(counts, 'decodes.ffmpeg.errors') || c(counts, 'decodes.faad.errors')) {
+  const few = c(counts, 'decodes.fewBadFrames');
+  if (few)
     lines.push(
-      `Played all the way through: ${n(c(counts, 'decodes.ffmpeg.errors'))} with errors in ffmpeg, of which ${n(c(counts, 'decodes.faad.errors'))} also failed in the second player (faad2).`
+      `Played all the way through: ${count(few, 'file has', 'files have')} a few bad frames at the very start or end and ${few === 1 ? 'plays' : 'play'} normally (not damaged).`
     );
-  }
+  const undecodable = c(counts, 'decodes.undecodable');
+  if (undecodable)
+    lines.push(
+      `${count(undecodable, 'file uses', 'files use')} xHE-AAC, which this ffmpeg can’t decode, so ${undecodable === 1 ? 'it wasn’t' : 'they weren’t'} played through.`
+    );
   return lines;
 }
 
@@ -242,9 +247,10 @@ export function copyFacts(c: AudioDupCopy): string {
 
 export function damageLine(c: AudioDupCopy): string | null {
   if (c.damage === 'damaged') return `Damaged: ${c.damageDetail ?? ''}`.trim();
-  if (c.damage === 'suspect')
-    return `Possibly damaged (not confirmed by a second player): ${c.damageDetail ?? ''}`.trim();
-  if (c.damage === 'ok') return 'Played all the way through without errors.';
+  if (c.damage === 'ok')
+    return c.damageDetail
+      ? `Played all the way through, plays normally: ${c.damageDetail}`
+      : 'Played all the way through without errors.';
   return null;
 }
 

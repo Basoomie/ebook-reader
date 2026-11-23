@@ -167,6 +167,15 @@ export async function startAiStandin(opts: any = {}): Promise<any> {
     const model = r?.params?.model ?? r?.body?.model;
     return (opts.stallModels ?? []).includes(model);
   };
+  /**
+   * OpenAI batches that fail as a whole: failBatch({ model, n }) -> null | { code, message },
+   * asked when the batch is created (read then: adjustable), answered at its first poll as
+   * status "failed" with the error in batch.errors (2026-11-22: the enqueued-token limit).
+   * With `errorFile: true` the error goes to an error file instead of the list.
+   */
+  const failOf = (model, n) => opts.failBatch?.({ model, n }) ?? null;
+  /** Anthropic batches refused when created: refuseBatch({ model, n }) -> null | { status, type, message }. */
+  const refuseOf = (model, n) => opts.refuseBatch?.({ model, n }) ?? null;
   const calls = [];
   const batches = new Map();
   const files = new Map();
@@ -282,6 +291,14 @@ export async function startAiStandin(opts: any = {}): Promise<any> {
         }
         if (req.method === 'POST' && ap === '/v1/messages/batches') {
           const b = json();
+          const refused = refuseOf(b.requests[0]?.params?.model, b.requests.length);
+          if (refused) {
+            calls.push({ path: ap, provider: 'anthropic', refused: true, n: b.requests.length });
+            return send(res, refused.status, {
+              type: 'error',
+              error: { type: refused.type ?? 'rate_limit_error', message: refused.message },
+            });
+          }
           const id = `msgbatch_${++seq}`;
           calls.push({ path: ap, provider: 'anthropic', batch: id, n: b.requests.length, body: b });
           batches.set(id, {
@@ -506,6 +523,7 @@ export async function startAiStandin(opts: any = {}): Promise<any> {
           polls: 0,
           created: Date.now(),
           input: b.input_file_id,
+          fail: failOf(lines[0]?.body?.model, lines.length),
         });
         return send(res, 200, {
           id,
@@ -551,6 +569,40 @@ export async function startAiStandin(opts: any = {}): Promise<any> {
             request_counts: { total: bt.requests.length, completed: 0, failed: 0 },
             created_at: 1,
           });
+        if (bt.fail) {
+          let errorFile = null;
+          if (bt.fail.errorFile) {
+            errorFile = bt.errorFile ?? `file-${++seq}`;
+            bt.errorFile = errorFile;
+            files.set(
+              errorFile,
+              JSON.stringify({
+                id: 'e1',
+                custom_id: bt.requests[0]?.custom_id,
+                response: null,
+                error: { code: bt.fail.code, message: bt.fail.message },
+              }) + '\n',
+            );
+          }
+          return send(res, 200, {
+            id: ob[1],
+            object: 'batch',
+            endpoint: '/v1/chat/completions',
+            completion_window: '24h',
+            input_file_id: bt.input ?? null,
+            status: 'failed',
+            output_file_id: null,
+            error_file_id: errorFile,
+            errors: bt.fail.errorFile
+              ? undefined
+              : {
+                  object: 'list',
+                  data: [{ code: bt.fail.code, message: bt.fail.message, param: null, line: null }],
+                },
+            request_counts: { total: 0, completed: 0, failed: 0 },
+            created_at: 1,
+          });
+        }
         const ended = !stalls(bt) && bt.polls > pollsBeforeEnd();
         if (ended && !bt.output) {
           const out = bt.requests.map((r) => {

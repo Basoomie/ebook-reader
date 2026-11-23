@@ -35,6 +35,9 @@ import type { WritingMode } from './writing-mode';
 import { writableSetLocalStorageSubject } from './internal/writable-set-local-storage-subject';
 import { writableStringLocalStorageSubject } from './internal/writable-string-local-storage-subject';
 
+// Reader toolbars session 1: the two per-device lists (see lib/reader-toolbar/settings.ts).
+export { readerBottomBar$, readerToolbar$ } from '$lib/reader-toolbar/settings';
+
 export const theme$ = writableStringLocalStorageSubject()('theme', 'light-theme');
 export const customThemes$ = writableObjectLocalStorageSubject<Record<string, CustomTheme>>()(
   'customThemes',
@@ -200,9 +203,6 @@ export const highlightBarAnySelection$ = writableBooleanLocalStorageSubject()(
   'highlightBarAnySelection',
   false
 );
-
-/** WP11b: the bottom bar shows where you were reading before a jump (opt-in per device). */
-export const showReturnMarker$ = writableBooleanLocalStorageSubject()('showReturnMarker', false);
 
 export const confirmClose$ = writableBooleanLocalStorageSubject()('confirmClose', false);
 

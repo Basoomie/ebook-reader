@@ -12,6 +12,7 @@
     merge,
     NEVER,
     of,
+    scan,
     share,
     shareReplay,
     skip,
@@ -112,7 +113,7 @@
     highlightLastColor$,
     highlightRefindChars$,
     highlightBarAnySelection$,
-    showReturnMarker$,
+    readerBottomBar$,
     pacerMode$,
     pacerSpeed$,
     pacerTurnPages$,
@@ -151,7 +152,6 @@
   import type { ReadAloudFollow } from '$lib/read-aloud/follow';
   import {
     readAloudAheadSeconds$,
-    readAloudBottomBarButton$,
     readAloudLookupResume$,
     readAloudSpeed$,
     stepSpeed as stepReadAloudSpeed,
@@ -242,6 +242,11 @@
   import { readableToObservable } from '$lib/functions/rxjs/readable-to-observable';
   import { reduceToEmptyString } from '$lib/functions/rxjs/reduce-to-empty-string';
   import { takeWhenBrowser } from '$lib/functions/rxjs/take-when-browser';
+  import {
+    keyboardMayBeOpen,
+    nextReaderSize,
+    type ViewSize
+  } from '$lib/functions/on-screen-keyboard';
   import { tapDom } from '$lib/functions/rxjs/tap-dom';
   import { longPressHandler } from '$lib/functions/long-press-handler';
   import { clickOutside } from '$lib/functions/use-click-outside';
@@ -281,7 +286,8 @@
   } from '$lib/stats/on-track';
   import { goalTitle } from '$lib/stats/goals';
   import { getDateKey } from '$lib/functions/statistic-util';
-  import { ankiAutoEnrich$, ankiBottomBarButton$, ankiNoticeSeconds$ } from '$lib/anki/settings';
+  import { ankiAutoEnrich$, ankiNoticeSeconds$ } from '$lib/anki/settings';
+  import { resolveBottomBar } from '$lib/reader-toolbar/toolbar-layout';
   import type { LookupCapture, LookupSentence } from '$lib/anki/lookup-capture';
   import type { AutoEnricher, NewCard } from '$lib/anki/auto-enrich';
   import type { ReaderEnrichContext, ReaderEnrichOutcome } from '$lib/anki/reader-enrich';
@@ -603,16 +609,29 @@
     visualViewport ? fromEvent(visualViewport, 'resize') : of()
   ).pipe(share());
 
-  const containerViewportWidth$ = resize$.pipe(
+  // The on-screen keyboard makes the visible area shorter: the book keeps its size while a
+  // text box is focused on a touch device (on-screen-keyboard.ts), so it doesn't re-lay out.
+  const containerViewportSize$ = resize$.pipe(
     startWith(0),
-    map(() => visualViewport?.width || 0),
+    map(() => ({ width: visualViewport?.width || 0, height: visualViewport?.height || 0 })),
+    scan(
+      (prev: ViewSize | undefined, current) =>
+        nextReaderSize(prev, current, keyboardMayBeOpen(window)),
+      undefined
+    ),
+    filter((size): size is ViewSize => !!size),
+    shareReplay({ refCount: true, bufferSize: 1 }),
     takeWhenBrowser()
   );
 
-  const containerViewportHeight$ = resize$.pipe(
-    startWith(0),
-    map(() => visualViewport?.height || 0),
-    takeWhenBrowser()
+  const containerViewportWidth$ = containerViewportSize$.pipe(
+    map((size) => size.width),
+    distinctUntilChanged()
+  );
+
+  const containerViewportHeight$ = containerViewportSize$.pipe(
+    map((size) => size.height),
+    distinctUntilChanged()
   );
 
   // WP10d: E-ink mode shows the book in pure black on white, whatever the theme.
@@ -1666,6 +1685,13 @@
   let stopReadAloudWatch: (() => void) | undefined;
 
   $: readAloudActive = readAloudView.phase !== 'idle';
+
+  /**
+   * Reader toolbars session 1: the bottom bar's left side in this device's order. Each
+   * button shows when its entry is shown AND its own condition holds (as before); read-aloud
+   * also shows while it runs. The right side (progress, on-track dot) isn't part of it.
+   */
+  $: bottomBarEntries = resolveBottomBar($readerBottomBar$);
 
   $: readAloudPlaying =
     readAloudView.phase === 'playing' ||
@@ -3267,13 +3293,30 @@
     return bookId;
   }
 
-  async function bookmarkPage() {
+  /** "Save my place" by hand (the bar's button, the B key): the bar closes, as before. */
+  function bookmarkPage() {
+    return savePlace(true);
+  }
+
+  /**
+   * Reader toolbars session 2: the automatic save ("Save my place automatically", a few
+   * seconds after a page turn or scroll) never closes the bar. It used to share
+   * bookmarkPage's `showHeader = false`, so on the PC a wheel turn under the open bar shut it
+   * 3 s later while the pointer was still on its buttons (known-bugs.md, the critical one).
+   */
+  function autoSavePlace() {
+    return savePlace(false);
+  }
+
+  async function savePlace(closeBar: boolean) {
     const bookId = getBookIdSync();
     if (!bookId || !bookmarkManager) return;
 
     let data: BooksDbBookmarkData;
 
-    showHeader = false;
+    if (closeBar) {
+      showHeader = false;
+    }
 
     if (isPaginated) {
       const userSelectedRange = $selectionToBookmarkEnabled$
@@ -4095,7 +4138,7 @@
       bind:customReadingPointScrollOffset
       bind:customReadingPointRange
       bind:showCustomReadingPoint
-      on:bookmark={bookmarkPage}
+      on:bookmark={autoSavePlace}
       on:trackerPause={() => pauseTracker(true)}
       on:positionRestored={onPositionRestored}
     />
@@ -4313,121 +4356,134 @@
   on:keyup={dummyFn}
 >
   <div class="flex h-full">
-    {#if showTrackerIcon}
-      <div
-        role="button"
-        title="Tap to pause or resume the Tracker, long-press to open the Tracker Menu"
-        class="flex h-full w-8 items-center justify-center text-sm sm:text-lg"
-        class:text-red-500={$isTrackerPaused$}
-        class:animate-pulse={frozenPosition > -1}
-        use:longPressHandler={{
-          onTap: toggleTrackerManually,
-          onLongPress: openTrackerMenu,
-          getDuration: () => $trackerLongPressTime$
-        }}
-      >
-        <Fa icon={$isTrackerPaused$ ? faPlay : faPause} />
-      </div>
-    {/if}
-    {#if $ankiBottomBarButton$}
-      <!-- WP14: one tap to enrich the last Anki card (opt-in per device). -->
-      <div
-        tabindex="0"
-        role="button"
-        title="Enrich the last Anki card (E)"
-        aria-label="Enrich the last Anki card"
-        class="flex h-full min-w-[2.5rem] items-center justify-center text-sm sm:text-lg"
-        class:animate-pulse={ankiBusy}
-        data-testid="footer-anki"
-        on:click|stopPropagation={() => void enrichAnkiCard()}
-        on:keyup={dummyFn}
-      >
-        <Fa icon={faNoteSticky} />
-      </div>
-    {/if}
-    {#if $pacerMode$ !== 'off' && pacerSupported}
-      <!-- Season 2 pacer: shown only while a pacer mode is picked (off by default). -->
-      <div
-        tabindex="0"
-        role="button"
-        title="Pacer: start or pause (S)"
-        aria-label={pacerState.running ? 'Pause the pacer' : 'Start the pacer'}
-        class="flex h-full min-w-[3rem] items-center justify-center gap-1 text-sm sm:text-lg"
-        data-testid="footer-pacer"
-        data-running={pacerState.running ? '1' : '0'}
-        on:click|stopPropagation={() => void togglePacer()}
-        on:keyup={dummyFn}
-      >
-        <Fa icon={faGaugeHigh} />
-        <Fa icon={pacerState.running ? faPause : faPlay} size="xs" />
-      </div>
-    {/if}
-    {#if $readAloudBottomBarButton$ || readAloudActive}
-      <!-- Season 2 Phase 12 session 3: read-aloud (opt-in per device; shown while it is on). -->
-      <div
-        tabindex="0"
-        role="button"
-        title="Read aloud: play or pause (V)"
-        aria-label={readAloudPlaying ? 'Pause read-aloud' : 'Read aloud'}
-        class="flex h-full min-w-[3rem] items-center justify-center gap-1 text-sm sm:text-lg"
-        class:animate-pulse={readAloudView.phase === 'waiting' ||
-          readAloudView.phase === 'preparing'}
-        data-testid="footer-read-aloud"
-        data-phase={readAloudView.phase}
-        on:click|stopPropagation={() => void toggleReadAloud()}
-        on:keyup={dummyFn}
-      >
-        <Fa icon={faVolumeHigh} />
-        <Fa icon={readAloudPlaying ? faPause : faPlay} size="xs" />
-      </div>
-      {#if readAloudActive && !readAloudFollowing}
-        <div
-          tabindex="0"
-          role="button"
-          title="Back to the sentence being read"
-          class="flex h-full items-center px-2 text-xs sm:text-sm"
-          data-testid="footer-read-aloud-back"
-          on:click|stopPropagation={() => readAloudFollow?.back()}
-          on:keyup={dummyFn}
-        >
-          ↩ Voice
+    {#each bottomBarEntries as entry (entry.id)}
+      {#if entry.id === 'tracker'}
+        {#if entry.shown && showTrackerIcon}
+          <div
+            role="button"
+            title="Tap to pause or resume the Tracker, long-press to open the Tracker Menu"
+            class="flex h-full w-8 items-center justify-center text-sm sm:text-lg"
+            class:text-red-500={$isTrackerPaused$}
+            class:animate-pulse={frozenPosition > -1}
+            use:longPressHandler={{
+              onTap: toggleTrackerManually,
+              onLongPress: openTrackerMenu,
+              getDuration: () => $trackerLongPressTime$
+            }}
+          >
+            <Fa icon={$isTrackerPaused$ ? faPlay : faPause} />
+          </div>
+        {/if}
+      {:else if entry.id === 'anki'}
+        {#if entry.shown}
+          <!-- WP14: one tap to enrich the last Anki card (opt-in per device). -->
+          <div
+            tabindex="0"
+            role="button"
+            title="Enrich the last Anki card (E)"
+            aria-label="Enrich the last Anki card"
+            class="flex h-full min-w-[2.5rem] items-center justify-center text-sm sm:text-lg"
+            class:animate-pulse={ankiBusy}
+            data-testid="footer-anki"
+            on:click|stopPropagation={() => void enrichAnkiCard()}
+            on:keyup={dummyFn}
+          >
+            <Fa icon={faNoteSticky} />
+          </div>
+        {/if}
+      {:else if entry.id === 'pacer'}
+        {#if entry.shown && $pacerMode$ !== 'off' && pacerSupported}
+          <!-- Season 2 pacer: shown only while a pacer mode is picked (off by default). -->
+          <div
+            tabindex="0"
+            role="button"
+            title="Pacer: start or pause (S)"
+            aria-label={pacerState.running ? 'Pause the pacer' : 'Start the pacer'}
+            class="flex h-full min-w-[3rem] items-center justify-center gap-1 text-sm sm:text-lg"
+            data-testid="footer-pacer"
+            data-running={pacerState.running ? '1' : '0'}
+            on:click|stopPropagation={() => void togglePacer()}
+            on:keyup={dummyFn}
+          >
+            <Fa icon={faGaugeHigh} />
+            <Fa icon={pacerState.running ? faPause : faPlay} size="xs" />
+          </div>
+        {/if}
+      {:else if entry.id === 'readAloud'}
+        {#if entry.shown || readAloudActive}
+          <!-- Season 2 Phase 12 session 3: read-aloud (opt-in per device; shown while it is on). -->
+          <div
+            tabindex="0"
+            role="button"
+            title="Read aloud: play or pause (V)"
+            aria-label={readAloudPlaying ? 'Pause read-aloud' : 'Read aloud'}
+            class="flex h-full min-w-[3rem] items-center justify-center gap-1 text-sm sm:text-lg"
+            class:animate-pulse={readAloudView.phase === 'waiting' ||
+              readAloudView.phase === 'preparing'}
+            data-testid="footer-read-aloud"
+            data-phase={readAloudView.phase}
+            on:click|stopPropagation={() => void toggleReadAloud()}
+            on:keyup={dummyFn}
+          >
+            <Fa icon={faVolumeHigh} />
+            <Fa icon={readAloudPlaying ? faPause : faPlay} size="xs" />
+          </div>
+          {#if readAloudActive && !readAloudFollowing}
+            <div
+              tabindex="0"
+              role="button"
+              title="Back to the sentence being read"
+              class="flex h-full items-center px-2 text-xs sm:text-sm"
+              data-testid="footer-read-aloud-back"
+              on:click|stopPropagation={() => readAloudFollow?.back()}
+              on:keyup={dummyFn}
+            >
+              ↩ Voice
+            </div>
+          {/if}
+        {/if}
+      {:else if entry.id === 'returnMarker'}
+        {#if entry.shown && returnMarkerPos !== undefined && !returnMarkerOnScreen && bookCharCount}
+          <!-- WP11b: where you were reading before jumping (opt-in per device). -->
+          <div
+            tabindex="0"
+            role="button"
+            title="Back to where you were reading"
+            class="flex h-full items-center px-2 text-xs sm:text-sm"
+            data-testid="footer-return-marker"
+            on:click|stopPropagation={returnToMarker}
+            on:keyup={dummyFn}
+          >
+            ↩ {((returnMarkerPos / bookCharCount) * 100).toFixed(1)}%
+          </div>
+        {/if}
+      {:else if entry.id === 'audiobook'}
+        <!-- Hidden, the audiobook's bar part takes no room and can't be seen, but whispersync
+             stays mounted: its keys, playback, side menu and dialogs work as before. -->
+        <div class="flex h-full" class:ttu-bar-hidden={!entry.shown} data-bottom-id="audiobook">
+          <div
+            bind:this={whisperContainerEl}
+            class="h-full"
+            on:click|stopPropagation
+            on:keyup={dummyFn}
+            role="none"
+          >
+            {#if $rawBookData$ && bookContentEl && readerDb && whispersync && whispersyncReady}
+              <AudioBookMenu
+                componentContainerElement={whisperContainerEl}
+                bookContentElement={bookContentEl}
+                currentBookId={$rawBookData$.id}
+                readerDatabase={readerDb}
+                externalElementHtml={$rawBookData$.elementHtml}
+                externalBlobs={$rawBookData$.blobs}
+                externalBookData={$rawBookData$}
+                linkedAudio={whispersync.linkedAudio}
+              />
+            {/if}
+          </div>
         </div>
       {/if}
-    {/if}
-    {#if $showReturnMarker$ && returnMarkerPos !== undefined && !returnMarkerOnScreen && bookCharCount}
-      <!-- WP11b: where you were reading before jumping (opt-in per device). -->
-      <div
-        tabindex="0"
-        role="button"
-        title="Back to where you were reading"
-        class="flex h-full items-center px-2 text-xs sm:text-sm"
-        data-testid="footer-return-marker"
-        on:click|stopPropagation={returnToMarker}
-        on:keyup={dummyFn}
-      >
-        ↩ {((returnMarkerPos / bookCharCount) * 100).toFixed(1)}%
-      </div>
-    {/if}
-    <div
-      bind:this={whisperContainerEl}
-      class="h-full"
-      on:click|stopPropagation
-      on:keyup={dummyFn}
-      role="none"
-    >
-      {#if $rawBookData$ && bookContentEl && readerDb && whispersync && whispersyncReady}
-        <AudioBookMenu
-          componentContainerElement={whisperContainerEl}
-          bookContentElement={bookContentEl}
-          currentBookId={$rawBookData$.id}
-          readerDatabase={readerDb}
-          externalElementHtml={$rawBookData$.elementHtml}
-          externalBlobs={$rawBookData$.blobs}
-          externalBookData={$rawBookData$}
-          linkedAudio={whispersync.linkedAudio}
-        />
-      {/if}
-    </div>
+    {/each}
   </div>
   {#if showFooter && bookCharCount}
     <!-- prettier-ignore -->
@@ -4519,6 +4575,20 @@
 
   :global(#ttu-page-footer.ttu-zen .ttu-whispersync-container),
   :global(#ttu-page-footer.ttu-zen .ttu-whispersync-dialog) {
+    visibility: visible;
+  }
+
+  /*
+   * Reader toolbars session 1: the audiobook entry set to hidden. Its bar part takes no room
+   * and can't be seen or tapped; whispersync's side menu, dialogs and line menu still show.
+   */
+  .ttu-bar-hidden {
+    width: 0;
+    visibility: hidden;
+  }
+
+  .ttu-bar-hidden :global(.ttu-whispersync-container),
+  .ttu-bar-hidden :global(.ttu-whispersync-dialog) {
     visibility: visible;
   }
 </style>

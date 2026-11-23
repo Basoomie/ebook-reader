@@ -16,6 +16,7 @@ import {
   readSettings as readNotificationSettings,
   serverTimeZone,
 } from '../notifications/settings';
+import { afterFailure, BATCH_HEALTH_KEY, held, type ModelBatchHealth } from './batch-health';
 import { firstSpendAt, heldUsd, recordSpend, spentBetween, spentByFeature } from './ledger';
 import type { SpendRow } from './ledger';
 import { monthOf } from './month';
@@ -542,6 +543,126 @@ export class AiCore {
     const key = this.month().key;
     if (this.lastMonth !== null && this.lastMonth !== key) this.tellRoom();
     this.lastMonth = key;
+  }
+
+  // -------------------------------------------------------------------------------------------
+  // batches a provider refused (batch-health.ts)
+
+  /** Every model whose batches failed lately, by model id. */
+  batchHealth(): Record<string, ModelBatchHealth> {
+    return this.state<Record<string, ModelBatchHealth>>(BATCH_HEALTH_KEY, {});
+  }
+
+  private saveBatchHealth(model: string, h: ModelBatchHealth | null): void {
+    const all = this.batchHealth();
+    if (h) all[model] = h;
+    else delete all[model];
+    this.setState(BATCH_HEALTH_KEY, all);
+  }
+
+  /** A clock time in the Notifications time zone ("9:40 AM"). */
+  private timeText(ms: number): string {
+    return new Intl.DateTimeFormat('en-US', {
+      timeZone: this.timeZone(),
+      hour: 'numeric',
+      minute: '2-digit',
+    }).format(new Date(ms));
+  }
+
+  /** A batch of the model failed as a whole (or its provider refused to take it). */
+  batchFailed(f: {
+    provider: Provider;
+    model: string;
+    reason: string;
+    capacity: boolean;
+    open: number;
+  }): ModelBatchHealth {
+    const cur = this.batchHealth()[f.model] ?? null;
+    const h = afterFailure(cur, { ...f, at: this.now() }, this.settings());
+    this.saveBatchHealth(f.model, h);
+    const next = h.pausedSince !== null ? 'batches paused, next try' : 'next batch';
+    const end = h.waitForEnd ? ' once one of its batches has ended' : '';
+    this.log(
+      `AI: ${f.provider} refused a ${f.model} batch (${f.reason}); ${h.failures} in a row, ${next} at ${this.timeText(h.nextAt)}${end}`,
+    );
+    return h;
+  }
+
+  /** A batch of the model ended at the provider: its queue has room again. */
+  batchEnded(model: string): void {
+    const h = this.batchHealth()[model];
+    if (h?.waitForEnd) this.saveBatchHealth(model, { ...h, waitForEnd: false });
+  }
+
+  /**
+   * The provider accepted a batch of the model sent at `submittedAt` (in progress or later):
+   * the failures end with one sent after the last of them.
+   */
+  batchAccepted(model: string, submittedAt: number): void {
+    const h = this.batchHealth()[model];
+    if (!h || submittedAt < h.failedAt) return;
+    this.saveBatchHealth(model, null);
+    this.log(`AI: ${h.provider} accepted a ${model} batch again after ${h.failures} failed`);
+  }
+
+  /** Settings > AI "Try now": the model's next batch may go at once. False: nothing held. */
+  tryBatchesNow(model: string): boolean {
+    const h = this.batchHealth()[model];
+    if (!h) return false;
+    this.saveBatchHealth(model, { ...h, nextAt: this.now(), waitForEnd: false, fallbackRun: null });
+    this.log(`AI: ${model}: a batch is tried now (Settings > AI)`);
+    return true;
+  }
+
+  /**
+   * What stands in the way of the model's next batch in a run: a wait (no batch now), or the
+   * fallback (its questions asked one call each; the wait is the page's words). Null: send.
+   */
+  batchHold(model: string, runId: string): { wait: AiWait; direct: boolean } | null {
+    const h = this.batchHealth()[model];
+    if (!h) return null;
+    const s = this.settings();
+    if (
+      h.pausedSince !== null &&
+      s.batchFailFallback === 'direct' &&
+      (h.fallbackRun === null || h.fallbackRun === runId)
+    ) {
+      if (h.fallbackRun === null) {
+        this.saveBatchHealth(model, { ...h, fallbackRun: runId });
+        this.log(
+          `AI: ${model}'s batches keep failing: its questions are asked one call each for the rest of this run`,
+        );
+      }
+      return { wait: this.batchWait(h, true), direct: true };
+    }
+    if (!held(h, this.now(), s)) return null;
+    return { wait: this.batchWait(h, false), direct: false };
+  }
+
+  /** The model's failing batches as the page words them (Settings > AI), null when none. */
+  batchFailingWait(model: string): AiWait | null {
+    const h = this.batchHealth()[model];
+    if (!h) return null;
+    const s = this.settings();
+    return this.batchWait(
+      h,
+      h.pausedSince !== null && s.batchFailFallback === 'direct' && h.fallbackRun !== null,
+    );
+  }
+
+  private batchWait(h: ModelBatchHealth, fallback: boolean): AiWait {
+    return {
+      kind: 'batch_failing',
+      provider: h.provider,
+      model: h.model,
+      failures: h.failures,
+      paused: h.pausedSince !== null,
+      reason: h.reason,
+      nextAt: h.nextAt,
+      nextAtText: this.timeText(h.nextAt),
+      waitForEnd: h.waitForEnd,
+      fallback,
+    };
   }
 
   // -------------------------------------------------------------------------------------------

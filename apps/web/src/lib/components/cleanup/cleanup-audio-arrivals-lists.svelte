@@ -160,11 +160,32 @@
                   >Use the cleanup’s ({fieldLabel(c.field)})</button
                 >
               {/each}
+              {#each change(it).absKept ?? [] as c (c.field)}
+                <button
+                  class="c-btn c-btn-ghost"
+                  on:click={() => choose(change(it).bookId, c.field, 'mine')}
+                  data-testid="library-choice-keep-abs"
+                  >Keep Audiobookshelf’s ({fieldLabel(c.field)})</button
+                >
+                <button
+                  class="c-btn c-btn-ghost"
+                  on:click={() => choose(change(it).bookId, c.field, 'ours')}
+                  data-testid="library-choice-ours-abs"
+                  >Use the cleanup’s ({fieldLabel(c.field)})</button
+                >
+              {/each}
               {#if change(it).renamesHeld}
                 <button
                   class="c-btn c-btn-ghost"
                   on:click={() => choose(change(it).bookId, 'rename', 'now')}
                   data-testid="library-choice-rename">Rename now (the place moves)</button
+                >
+              {/if}
+              {#if (change(it).reviews ?? []).some((r) => r.kind === 'ebook_series_listening')}
+                <button
+                  class="c-btn c-btn-ghost"
+                  on:click={() => choose(change(it).bookId, 'move', 'now')}
+                  data-testid="library-choice-move">Move now (into its series folder)</button
                 >
               {/if}
             </span>

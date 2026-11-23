@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { keyboardMayBeOpen } from '$lib/functions/on-screen-keyboard';
   import { browser } from '$app/environment';
   import {
     nextChapter$,
@@ -804,7 +805,8 @@
 <svelte:window
   on:scroll={onScroll}
   on:resize={() => {
-    if (autoPositionOnResize) {
+    // The on-screen keyboard's resize isn't one (on-screen-keyboard.ts).
+    if (autoPositionOnResize && !keyboardMayBeOpen(window)) {
       isResizeScroll = true;
     }
   }}

@@ -180,6 +180,22 @@ html:not(.catalogue):not(.eink):not(.reader-dark) .c-reader-notice {
   color: var(--c-ink);
   border-color: var(--c-line);
   box-shadow: var(--c-pop-shadow);
+  /* Scrolling it to an end never scrolls the page or pulls it to refresh. */
+  overscroll-behavior: contain;
+}
+
+/* While the on-screen keyboard is up (only then are these set): the panel ends on top of it
+   and fits in what is still visible (lib/functions/on-screen-keyboard.ts). */
+html[style*='--c-kb-inset'] .c-reader-panel {
+  bottom: var(--c-kb-inset, 0);
+  max-height: min(65vh, calc(100vh - var(--c-kb-inset, 0px) - var(--c-vv-top, 0px) - 1rem));
+}
+
+@media (min-width: 768px) {
+  html[style*='--c-kb-inset'] .c-reader-panel {
+    top: var(--c-vv-top, 0);
+    max-height: none;
+  }
 }
 
 .c-reader-panel select {
@@ -860,6 +876,65 @@ html.catalogue.eink .mdc-elevation--z24 button.border-current:not(:disabled):act
   .s-item-actions {
     @apply flex flex-wrap items-center gap-2;
   }
+
+  /* The Stats page's cards (2026-11-22 redesign): a raised card with a head row (title on
+     the left, its controls on the right) and connected buttons for 2-6 choices. */
+  .c-stats-card {
+    background-color: var(--c-raised);
+    border: var(--c-border-width) solid var(--c-line);
+    border-radius: 0.625rem;
+    min-width: 0;
+  }
+
+  .c-stats-card-head {
+    @apply flex flex-wrap items-center justify-between gap-x-3 gap-y-2 px-4 py-3 sm:px-5;
+    border-bottom: 1px solid var(--c-line);
+  }
+
+  .c-stats-seg {
+    display: inline-flex;
+    max-width: 100%;
+    overflow-x: auto;
+    scrollbar-width: none;
+    border: var(--c-border-width) solid var(--c-sec-border);
+    border-radius: 0.5rem;
+    background-color: var(--c-sec-bg);
+  }
+
+  .c-stats-seg::-webkit-scrollbar {
+    display: none;
+  }
+
+  .c-stats-seg > button {
+    flex: 1 0 auto;
+    min-height: var(--c-btn-h-sm);
+    padding: 0 0.75rem;
+    color: var(--c-sec-ink);
+    font-size: 0.8125rem;
+    font-weight: 500;
+    white-space: nowrap;
+  }
+
+  .c-stats-seg > button + button {
+    border-left: var(--c-border-width) solid var(--c-sec-border);
+  }
+
+  .c-stats-seg > button[aria-pressed='true'] {
+    background-color: var(--c-sel-bg);
+    color: var(--c-sel-ink);
+    font-weight: 600;
+  }
+
+  @media (hover: hover) {
+    .c-stats-seg > button:not([aria-pressed='true']):not(:disabled):hover {
+      background-color: var(--c-tint);
+    }
+  }
+
+  .c-stats-seg > button:focus-visible {
+    outline: 2px solid var(--c-link);
+    outline-offset: -3px;
+  }
 }
 
 /* WP10c: matches of the last in-book search on the page you jumped to (CSS Custom
@@ -1337,6 +1412,10 @@ body.ttu-reader-body {
    downwards instead of jumping. */
 .c-modal-layer {
   @apply fixed inset-0 flex items-start justify-center p-6;
+  /* While the on-screen keyboard is up the layer covers only the part still visible, so a
+     sheet sits on top of the keyboard (lib/functions/on-screen-keyboard.ts). */
+  top: var(--c-vv-top, 0);
+  bottom: var(--c-kb-inset, 0);
   padding-top: min(10vh, 5rem);
   z-index: 50;
   writing-mode: horizontal-tb;
@@ -1357,6 +1436,8 @@ html.reader-dark .c-modal-backdrop {
   @apply relative flex w-full flex-col font-sans text-base;
   max-height: calc(100vh - min(10vh, 5rem) - 1.5rem);
   max-height: calc(100dvh - min(10vh, 5rem) - 1.5rem);
+  /* Never taller than the layer (shorter while the keyboard is up). */
+  max-height: min(calc(100dvh - min(10vh, 5rem) - 1.5rem), 100%);
   line-height: 1.5;
   background-color: var(--c-raised);
   color: var(--c-ink);
@@ -1422,9 +1503,41 @@ html.reader-dark .c-modal-backdrop {
     max-width: none;
     max-height: 92vh;
     max-height: 92dvh;
+    max-height: min(92dvh, 92%);
     border-radius: 1rem 1rem 0 0;
     border-bottom-width: 0;
     animation: c-sheet-in 0.18s ease-out;
+  }
+}
+
+/* A side panel (placement="side"): the same frame along the right edge, full height, from
+   640 px; a sheet from the bottom on phones like every modal. */
+@media (min-width: 640px) {
+  .c-modal-layer-side {
+    justify-content: flex-end;
+    align-items: stretch;
+    padding: 0;
+  }
+
+  .c-modal-side {
+    max-width: min(40rem, 100%);
+    max-height: none;
+    height: 100%;
+    border-radius: 0;
+    border-width: 0 0 0 var(--c-border-width);
+    animation: c-side-in 0.18s ease-out;
+  }
+}
+
+@keyframes c-side-in {
+  from {
+    transform: translateX(2rem);
+    opacity: 0;
+  }
+
+  to {
+    transform: none;
+    opacity: 1;
   }
 }
 

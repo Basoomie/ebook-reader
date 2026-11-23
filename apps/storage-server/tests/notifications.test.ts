@@ -598,6 +598,44 @@ describe('the cleanup', () => {
         '- Calibre cleanup stage 2: "title" resumed · [Open](http://192.168.1.5:3080/cleanup)',
     ]);
   });
+
+  it('values stage 4 writes as best guesses are one digest line per check', async () => {
+    const e = await makeEnv();
+    await withDiscord(e);
+    await e.round(); // the first look only remembers where it is
+    const t = e.clock.t;
+    e.cdb
+      .prepare(
+        `INSERT INTO batches (id, stage, library_id, kind, state, item_count, created_at, finished_at, updated_at)
+         VALUES ('b1', 4, 'L', 'apply', 'applied', 3, ?, ?, ?)`,
+      )
+      .run(t, t + 1, t);
+    const ins = e.cdb.prepare(
+      `INSERT INTO proposed_changes (id, stage, library_id, calibre_id, calibre_uuid, field, old_json, new_json,
+         source, evidence_json, class, state, batch_id, created_at, updated_at)
+       VALUES (?, 4, 'L', 1, 'u', ?, '1', '2', 'x', ?, 'auto', 'applied', 'b1', ?, ?)`,
+    );
+    const undo = e.cdb.prepare(
+      `INSERT INTO field_undo (batch_id, change_id, library_id, calibre_id, calibre_uuid, field, old_json, new_json, created_at)
+       VALUES ('b1', ?, 'L', 1, 'u', ?, '1', '2', ?)`,
+    );
+    for (const [id, field, ev] of [
+      [1, 'series', '{"unconfirmed":true}'],
+      [2, 'title', '{"unconfirmed":true}'],
+      [3, 'authors', '{}'],
+    ] as const) {
+      ins.run(id, field, ev, t, t);
+      undo.run(id, field, t);
+    }
+    await e.round();
+    await e.round(); // counted once
+    e.svc.sendDigest();
+    await e.svc.sendDue();
+    expect(e.discord.messages).toEqual([
+      '### ッツ Reader: daily summary\n' +
+        '- Calibre cleanup stage 4: 2 values written as best guesses (1 series number): listed under Best guesses · [Open](http://192.168.1.5:3080/cleanup)',
+    ]);
+  });
 });
 
 describe('library and data', () => {
@@ -902,5 +940,54 @@ describe('message forms (Discord markdown, plain email)', () => {
       'ッツ Reader: daily summary\n' +
         '• Subtitles finished: my_book (http://192.168.1.5:3080/library/book?id=b1)',
     );
+  });
+});
+
+describe('WP21g: audiobook stage 8 in the daily run', () => {
+  const report = (ebooks: Record<string, unknown> | null) =>
+    JSON.stringify({ added: 0, planned: 0, newReview: 0, outcomes: {}, ebooks });
+  const eb = (over: Record<string, unknown> = {}) => ({
+    mode: 'on',
+    reason: 'Calibre changed',
+    counts: { auto: 2373, review: 154, none: 2205, excluded: 175 },
+    values: { genres: 2307, tags: 2354, series: 63, seriesReview: 33 },
+    preview: null,
+    gate: { passed: true, labels: 235, wrong: 0 },
+    newReview: 0,
+    error: null,
+    ...over,
+  });
+  const addRun = (e: Env, mode: string, rep: string) =>
+    e.cdb
+      .prepare(
+        `INSERT INTO audio_arrival_runs (trigger, mode, state, phase, started_at, finished_at, progress_json, report_json)
+         VALUES ('schedule', ?, 'done', 'done', 1, 2, '{}', ?)`,
+      )
+      .run(mode, rep);
+
+  it('a digest line per run that looked; one alert only when it found new review items', async () => {
+    const e = await makeEnv();
+    await withDiscord(e);
+    addRun(e, 'on', report(eb({ newReview: 3 })));
+    addRun(
+      e,
+      'on',
+      report(eb({ reason: 'Nothing changed in Calibre or in the recordings since the last pass' })),
+    );
+    addRun(
+      e,
+      'analyse',
+      report(eb({ mode: 'analyse', preview: { changes: 2320, moves: 54, held: 0 } })),
+    );
+    addRun(e, 'on', report(null));
+    await e.round();
+    const lines = e.svc.store.digestLines().filter((l) => l.event === 'audio_ebooks_summary');
+    expect(lines.map((l) => l.text)).toEqual([
+      'Audiobooks and their Calibre ebooks: 2373 paired, 154 to review (3 new)',
+      'Audiobooks and their Calibre ebooks: 2373 paired, 154 to review, Preview: 2320 books would change, 54 would move',
+    ]);
+    const alerts = e.discord.messages.filter((m) => m.includes('Calibre ebooks'));
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]).toContain('3 recordings to look at');
   });
 });

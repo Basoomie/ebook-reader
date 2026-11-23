@@ -7,7 +7,7 @@
  * (a full-width space becomes a normal one).
  *
  * The folded copies live only in the reader's own database: books.title_fold and
- * authors/series/tags.name_fold, written by the catalog writers and filled by
+ * authors/series/tags/illustrators.name_fold, written by the catalog writers and filled by
  * fillSearchFolds() when a database is opened. Displayed text never uses them.
  * /regex/ patterns run on the original text.
  */
@@ -23,6 +23,7 @@ export const FOLDED_COLUMNS = [
   { table: 'authors', column: 'name', fold: 'name_fold' },
   { table: 'series', column: 'name', fold: 'name_fold' },
   { table: 'tags', column: 'name', fold: 'name_fold' },
+  { table: 'illustrators', column: 'name', fold: 'name_fold' },
 ] as const;
 
 /**

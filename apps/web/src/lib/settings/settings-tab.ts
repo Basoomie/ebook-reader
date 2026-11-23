@@ -11,6 +11,7 @@
 
 export const SETTINGS_TABS = [
   'Reader',
+  'Library',
   'Data',
   'Statistics',
   'Audiobooks',

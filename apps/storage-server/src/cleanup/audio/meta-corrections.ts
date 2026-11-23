@@ -8,8 +8,8 @@
 export interface Correction {
   /** The store record the recording was matched to. */
   record: string;
-  field: 'authors' | 'narrators' | 'multi_narr';
-  value: string[] | boolean;
+  field: 'authors' | 'narrators' | 'multi_narr' | 'series';
+  value: string[] | boolean | { name: string; position: number | null; label: string | null }[];
 }
 
 /** Approved by the user, 2026-11-20 (evidence in decisions.md, "WP21d follow-up"). */
@@ -35,4 +35,17 @@ export const CORRECTIONS: Correction[] = [
   // 君の話: 岡井 カツノリ listed under two spellings, one person.
   { record: 'audible:B0HHY712SG', field: 'narrators', value: ['岡井カツノリ'] },
   { record: 'audible:B0HHY712SG', field: 'multi_narr', value: false },
+  // ST 警視庁科学特捜班 黄の調査ファイル (audiobook.jp 269786, which gives no number): ST シリーズ
+  // #6 (ST 1-3, then 青 4, 赤 5, 黄 6), as Audiobookshelf kept it after the cleanup wrote it
+  // without one (user, 2026-11-21: "#6 is right"; audiobook cleanup leftovers, item 6).
+  // 色シリーズ first, as decided: the book's folder follows the first series with a number, so
+  // it stays in 色シリーズ/Vol 3 (STシリーズ first would move it next to the Audible edition).
+  {
+    record: 'audiobookjp:269786',
+    field: 'series',
+    value: [
+      { name: '色シリーズ', position: 3, label: null },
+      { name: 'STシリーズ', position: 6, label: null },
+    ],
+  },
 ];

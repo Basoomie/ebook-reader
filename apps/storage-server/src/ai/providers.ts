@@ -139,6 +139,41 @@ export interface BatchStatus {
   failed: boolean;
   /** Requests the provider has finished so far (answered or errored). */
   done: number;
+  /**
+   * A failed batch: the provider's own reason (code and message, shortened), e.g. OpenAI's
+   * "token_limit_exceeded: Enqueued token limit reached for …". Null when it gave none.
+   */
+  reason?: string | null;
+  /**
+   * A failed batch refused for the provider's capacity (its queue or rate limit), not for what
+   * was sent: its questions keep their tries and wait for room.
+   */
+  capacity?: boolean;
+}
+
+/**
+ * True when a batch was refused for the provider's capacity (its enqueued-token or request
+ * limit, a rate limit, overloaded), not for our content. A spent quota or billing limit is not
+ * capacity: waiting does not end it (as statusError).
+ */
+export function isCapacityFailure(
+  code: string | null | undefined,
+  message: string | null | undefined,
+): boolean {
+  const c = (code ?? '').toLowerCase();
+  const m = message ?? '';
+  if (/quota|billing/i.test(c) || /quota|billing/i.test(m)) return false;
+  if (/_limit_exceeded$|^rate_limit|^overloaded/.test(c)) return true;
+  return /enqueued token limit|rate limit|too many requests|overloaded|try again once/i.test(m);
+}
+
+/** "code: message" of a provider's error, shortened. */
+export function reasonText(
+  code: string | null | undefined,
+  message: string | null | undefined,
+): string {
+  const t = [code, message].filter((x) => x && String(x).trim()).join(': ');
+  return (t || 'no reason given').slice(0, 300);
 }
 
 export interface ProviderClient {
@@ -663,14 +698,54 @@ export class OpenAiProvider implements ProviderClient {
       // An expired or cancelled batch still has the answers it finished (its output file);
       // only a failed one (its input refused) has none.
       const c = b.request_counts;
-      return {
+      const out: BatchStatus = {
         ended,
         status: b.status,
         failed: b.status === 'failed',
         done: c ? c.completed + c.failed : 0,
       };
+      if (out.failed) {
+        // The batch's own refusal (validation, the enqueued-token limit), else the first lines
+        // of its error file (2026-11-22: 926 gpt-6-luna batches failed and only "failed" was kept).
+        let errs: { code?: string; message?: string }[] = (b.errors?.data ?? []).map((e) => ({
+          code: e.code,
+          message: e.message,
+        }));
+        if (!errs.length && b.error_file_id) errs = await this.errorLines(b.error_file_id);
+        out.reason = errs.length
+          ? reasonText(errs[0].code, errs[0].message) +
+            (errs.length > 1 ? ` (+${errs.length - 1} more)` : '')
+          : null;
+        out.capacity = errs.length > 0 && errs.every((e) => isCapacityFailure(e.code, e.message));
+      }
+      return out;
     } catch (err) {
       throw this.wrap(err);
+    }
+  }
+
+  /** The first errors of a batch's error file (a failed batch's reason when it has no list). */
+  private async errorLines(fileId: string): Promise<{ code?: string; message?: string }[]> {
+    try {
+      const res = await this.client.files.content(fileId);
+      const text = await res.text();
+      const out: { code?: string; message?: string }[] = [];
+      for (const l of text.split('\n').slice(0, 20)) {
+        if (!l.trim()) continue;
+        try {
+          const line = JSON.parse(l) as {
+            error?: { code?: string; message?: string } | null;
+            response?: { body?: { error?: { code?: string; message?: string } } } | null;
+          };
+          const e = line.response?.body?.error ?? line.error;
+          if (e) out.push({ code: e.code, message: e.message });
+        } catch {
+          /* not a JSON line */
+        }
+      }
+      return out;
+    } catch {
+      return [];
     }
   }
 

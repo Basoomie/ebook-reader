@@ -37,6 +37,12 @@
  *                              torrents/audiobooks/japanese/_extracted/ (the only new place in the
  *                              torrents besides _from-library); the archive is only read.
  *
+ * WP20g (the Calibre library's import; decided with the user 2026-11-17), create-only:
+ *   extractBookEntry(root, archive, volumes, dst, size, tag, open)  one archive entry (an EPUB)
+ *                              unpacked into a new file under `<book source folder>/_extracted/`,
+ *                              the source folder under torrents/ and never torrents/audiobooks;
+ *                              the archive (and a split set's volumes) only read.
+ *
  * Nothing else: no other rename, move or delete (the build's one other removal is this module's
  * own temporary `.ttsu-link-<n>.partial` file, which never has another name), no chmod or chown of
  * a link (that would change the torrent's file), nothing in the Calibre libraries or anywhere else
@@ -83,6 +89,8 @@ export const INVENTORY_DIR = ['_inventory', 'old-copy-script'] as const;
 export const ARRIVAL_ROOTS: readonly string[] = ['japanese', 'japanese-generated'];
 /** WP21f-1: the only new folder in the torrents: archives are unpacked under it. */
 export const EXTRACTED = '_extracted';
+/** WP20g: the archives of a book source folder (zip, rar, 7z, and a split set's first volume). */
+export const BOOK_ARCHIVE = /\.(zip|rar|7z|001)$/i;
 /** WP21f-2: the library root whose book folders and links may be renamed (no other root). */
 export const LIBRARY_ROOT = 'japanese';
 /**
@@ -238,11 +246,14 @@ function movePath(p: string): string[] {
 export class LinkWriter {
   readonly torrents: string;
   readonly media: string;
+  /** The /mnt/disk1/data mount (WP20g: the book source folders are under its torrents/). */
+  private readonly data: string;
   private readonly dirMode: number;
   private readonly fileMode: number;
 
   constructor(opts: WriterOptions) {
     const data = path.resolve(opts.dataDir);
+    this.data = data;
     this.torrents = path.join(data, 'torrents', 'audiobooks', 'japanese');
     this.media = path.join(data, 'media', 'audiobooks');
     this.dirMode = opts.dirMode ?? 0o777;
@@ -291,7 +302,10 @@ export class LinkWriter {
   }
 
   /** The torrent file the plan names, checked: a regular file, unchanged since stage 1. */
-  async source(src: PlannedSource): Promise<{ file: string | Buffer; dev: bigint; ino: bigint }> {
+  async source(
+    src: PlannedSource,
+    base: string = this.torrents
+  ): Promise<{ file: string | Buffer; dev: bigint; ino: bigint }> {
     const parts =
       src.raw !== null
         ? Buffer.from(src.raw, 'hex').toString('latin1').split('/')
@@ -300,9 +314,9 @@ export class LinkWriter {
       throw new WriteRefused(`Not an allowed source: ${JSON.stringify(src.rel)}`);
     const file =
       src.raw !== null
-        ? Buffer.concat([Buffer.from(this.torrents + '/'), Buffer.from(src.raw, 'hex')])
-        : path.join(this.torrents, ...parts);
-    const torrentsReal = await fs.realpath(this.torrents);
+        ? Buffer.concat([Buffer.from(base + '/'), Buffer.from(src.raw, 'hex')])
+        : path.join(base, ...parts);
+    const torrentsReal = await fs.realpath(base);
     const dir =
       typeof file === 'string' ? path.dirname(file) : file.subarray(0, file.lastIndexOf(0x2f));
     const dirReal = (await fs.realpath(dir).catch(() => null)) as string | null;
@@ -439,8 +453,8 @@ export class LinkWriter {
   }
 
   /** A folder path under the torrents (made one level at a time), each a real folder there. */
-  private async torrentFolders(parts: string[]): Promise<string> {
-    let cur = this.torrents;
+  private async torrentFolders(parts: string[], base: string = this.torrents): Promise<string> {
+    let cur = base;
     for (const p of parts) {
       cur = path.join(cur, p);
       try {
@@ -451,8 +465,8 @@ export class LinkWriter {
       }
       const c = await fs.lstat(cur);
       if (c.isSymbolicLink() || !c.isDirectory())
-        throw new WriteRefused(`Not a real folder: ${path.relative(this.torrents, cur)}`);
-      await this.inside(this.torrents, cur, 'the torrents');
+        throw new WriteRefused(`Not a real folder: ${path.relative(base, cur)}`);
+      await this.inside(base, cur, 'the torrents');
     }
     return cur;
   }
@@ -820,14 +834,38 @@ export class LinkWriter {
       kill: () => void;
     }
   ): Promise<{ existed: boolean; bytes: number }> {
+    return this.extractUnder(this.torrents, archive, [], dst, size, tag, (h) => open(h));
+  }
+
+  /**
+   * The body of extractEntry and extractBookEntry: `base` the torrents folder the archive and the
+   * new file are in, `volumes` a split set's other volumes (checked unchanged before and after).
+   */
+  private async extractUnder(
+    base: string,
+    archive: PlannedSource,
+    volumes: PlannedSource[],
+    dst: string,
+    size: number,
+    tag: number,
+    open: (
+      handle: FileHandle,
+      file: string | Buffer
+    ) => {
+      stream: NodeJS.ReadableStream;
+      done: Promise<{ code: number | null; stderr: string }>;
+      kill: () => void;
+    }
+  ): Promise<{ existed: boolean; bytes: number }> {
     const parts = dst.split('/');
     if (parts[0] !== EXTRACTED || parts.length < 3)
       throw new WriteRefused(`Not inside ${EXTRACTED}: ${dst}`);
     for (const p of parts) checkName(p);
     if (!Number.isSafeInteger(size) || size < 0) throw new WriteRefused('Bad entry size');
     if (!Number.isSafeInteger(tag) || tag < 0) throw new WriteRefused('Bad temporary name');
-    const s = await this.source(archive);
-    const dir = await this.torrentFolders(parts.slice(0, -1));
+    const s = await this.source(archive, base);
+    for (const v of volumes) await this.source(v, base);
+    const dir = await this.torrentFolders(parts.slice(0, -1), base);
     const abs = path.join(dir, parts[parts.length - 1]);
     const there = await fs.lstat(abs).catch(() => null);
     if (there) {
@@ -849,7 +887,7 @@ export class LinkWriter {
         this.fileMode
       );
       try {
-        const run = open(input);
+        const run = open(input, s.file);
         let tooLong = false;
         let streamError: unknown = null;
         try {
@@ -880,6 +918,7 @@ export class LinkWriter {
       const again = await fs.lstat(s.file, { bigint: true });
       if (again.ino !== s.ino || again.dev !== s.dev || Number(again.size) !== archive.size)
         throw new WriteRefused(`The archive changed while it was read: ${archive.rel}`);
+      for (const v of volumes) await this.source(v, base);
       try {
         await fs.link(temp, abs);
       } catch (err) {
@@ -891,6 +930,74 @@ export class LinkWriter {
       await fs.unlink(temp).catch(() => undefined);
     }
     return { existed: false, bytes };
+  }
+
+  // ---- WP20g: the Calibre library's import (archives under a book source folder) -------------
+
+  /**
+   * A book source folder (a pair of the import, relative to /data/torrents): every part an
+   * allowed name, never the audiobooks' torrents, never inside _extracted. Only archives in it
+   * are read and only its own `_extracted/` gets new files.
+   */
+  bookRoot(root: string): string {
+    if (typeof root !== 'string' || root === '')
+      throw new WriteRefused('A source folder is needed');
+    const parts = root.split('/');
+    for (const p of parts) checkName(p);
+    if (parts[0].toLowerCase() === 'audiobooks')
+      throw new WriteRefused(`Not a book source folder: ${root}`);
+    if (parts.includes(EXTRACTED)) throw new WriteRefused(`Not a book source folder: ${root}`);
+    return path.join(this.data, 'torrents', ...parts);
+  }
+
+  /** An archive (or a split set's .001) under a book source folder, opened read only. */
+  async openBookArchive(root: string, src: PlannedSource): Promise<FileHandle> {
+    if (!BOOK_ARCHIVE.test(src.rel)) throw new WriteRefused(`Not an archive: ${src.rel}`);
+    const s = await this.source(src, this.bookRoot(root));
+    return fs.open(s.file, constants.O_RDONLY);
+  }
+
+  /**
+   * The checked path of a planned archive under a book source folder, and its volumes checked
+   * unchanged (7-Zip reads a split set by its first volume's name and finds the others itself).
+   */
+  async bookArchivePath(
+    root: string,
+    src: PlannedSource,
+    volumes: PlannedSource[] = []
+  ): Promise<string | Buffer> {
+    if (!BOOK_ARCHIVE.test(src.rel)) throw new WriteRefused(`Not an archive: ${src.rel}`);
+    const base = this.bookRoot(root);
+    for (const v of volumes) await this.source(v, base);
+    return (await this.source(src, base)).file;
+  }
+
+  /**
+   * One archive entry unpacked into `<book source folder>/_extracted/<dst>`, as extractEntry does
+   * for the audiobooks (new temporary file with O_EXCL, size checked, synced, linked into place,
+   * never over a name, the archive and a split set's volumes checked unchanged before and after).
+   */
+  async extractBookEntry(
+    root: string,
+    archive: PlannedSource,
+    volumes: PlannedSource[],
+    dst: string,
+    size: number,
+    tag: number,
+    open: (
+      handle: FileHandle,
+      file: string | Buffer
+    ) => {
+      stream: NodeJS.ReadableStream;
+      done: Promise<{ code: number | null; stderr: string }>;
+      kill: () => void;
+    }
+  ): Promise<{ existed: boolean; bytes: number }> {
+    if (!BOOK_ARCHIVE.test(archive.rel)) throw new WriteRefused(`Not an archive: ${archive.rel}`);
+    if (volumes.length > 999) throw new WriteRefused('Too many volumes');
+    for (const v of volumes)
+      if (!/\.\d{3}$/.test(v.rel)) throw new WriteRefused(`Not a volume: ${v.rel}`);
+    return this.extractUnder(this.bookRoot(root), archive, volumes, dst, size, tag, open);
   }
 
   // ---- WP21f-2: changes to books already in the library -------------------------------------
@@ -964,16 +1071,24 @@ export class LinkWriter {
    * volume number or title): `from` must be the planned folder (inode), a book; `to` must not
    * exist. Missing parents of `to` are made; an existing parent that holds a file (a book) is
    * never used. Never across to another root, never over an existing name. `to` may be this
-   * module's temporary name `.ttsu-move-<n>` in the same parent (a cycle of renames). `to`
-   * already the planned folder and `from` gone counts as done.
+   * module's temporary name `.ttsu-move-<n>` in the same parent (a cycle of renames); a folder
+   * under a temporary name goes on only within that parent: to a sibling, or into a new folder
+   * there (1.4.2, WP21g: a book whose series is named as itself, 作者/本 → 作者/.ttsu-move-1 →
+   * 作者/本/Vol 1 - 本). `to` already the planned folder and `from` gone counts as done.
    */
   async renameBookFolder(from: string, to: string, ino: number): Promise<{ existed: boolean }> {
     const fparts = movePath(from);
     const tparts = movePath(to);
     const temp = (ps: string[]) => MOVE_TEMP.test(ps[ps.length - 1]);
+    const parentOf = (ps: string[]) => ps.slice(0, -1).join('/');
     if (
-      (temp(fparts) || temp(tparts)) &&
-      fparts.slice(0, -1).join('/') !== tparts.slice(0, -1).join('/')
+      (temp(tparts) && parentOf(fparts) !== parentOf(tparts)) ||
+      (temp(fparts) &&
+        !temp(tparts) &&
+        !(
+          tparts.length > fparts.length - 1 &&
+          tparts.slice(0, fparts.length - 1).join('/') === parentOf(fparts)
+        ))
     )
       throw new WriteRefused(`A temporary name stays in the same folder: ${from} -> ${to}`);
     if (fparts.length < 3 || tparts.length < 3)

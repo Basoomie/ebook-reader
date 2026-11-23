@@ -10,6 +10,7 @@
   import { Action, executeAction, persistSubtitles } from '../lib/actions';
   import type { BooksDB, BooksDBData } from '../lib/db';
   import {
+    persistedSubtitles as persistedSubtitlesFrom,
     setAudioContext,
     setSubtitleContext,
     updateAudio,
@@ -76,9 +77,7 @@
     getLineCSSSelector,
     getSubtitleIdFromElement,
     parseHTML,
-    toTimeStamp,
-    toTimeString,
-    between
+    toTimeString
   } from '../lib/util';
   import Match from './Match.svelte';
   import {
@@ -748,40 +747,13 @@
     }
 
     try {
-      const persistedSubtitles = new Map<string, Subtitle>();
-      const subtitlesGlobalStartPadding = $subtitlesGlobalStartPadding$ / 1000;
-      const subtitlesGlobalEndPadding = $subtitlesGlobalEndPadding$ / 1000;
-
-      for (
-        let index = 0, { length } = $extensionData$.subtitleData.subtitles;
-        index < length;
-        index += 1
-      ) {
-        const subtitle = $extensionData$.subtitleData.subtitles[index];
-        const startSeconds = Math.max(
-          0,
-          subtitle.adjustedStartSeconds ??
-            subtitle.originalStartSeconds + subtitlesGlobalStartPadding
-        );
-        const endSeconds = $duration$
-          ? between(
-              0,
-              $duration$,
-              subtitle.adjustedEndSeconds ?? subtitle.originalEndSeconds + subtitlesGlobalEndPadding
-            )
-          : Math.max(
-              0,
-              subtitle.adjustedEndSeconds ?? subtitle.originalEndSeconds + subtitlesGlobalEndPadding
-            );
-
-        persistedSubtitles.set(subtitle.id, {
-          ...subtitle,
-          startSeconds,
-          startTime: toTimeStamp(startSeconds),
-          endSeconds,
-          endTime: toTimeStamp(endSeconds)
-        });
-      }
+      // ttsu: the same lines as the book page's Match (lib/files.ts persistedSubtitles).
+      const persistedSubtitles = persistedSubtitlesFrom(
+        $extensionData$.subtitleData.subtitles,
+        $subtitlesGlobalStartPadding$,
+        $subtitlesGlobalEndPadding$,
+        $duration$
+      );
 
       const dummyBlob = new Blob([''], { type: 'application/x-subrip;charset=utf-8' });
 

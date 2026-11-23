@@ -42,6 +42,7 @@ export function detailRows(book: CatalogBookDetail, libraryName: string): Detail
   const rows: DetailRow[] = [
     { jp: '書名', label: 'Title', value: book.title },
     { jp: '著者', label: 'Author', value: book.authors.map((a) => a.name).join(', ') },
+    { jp: '画', label: 'Illustrator', value: (book.illustrators ?? []).join(', ') },
     {
       jp: '叢書',
       label: 'Series',

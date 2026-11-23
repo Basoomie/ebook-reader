@@ -33,6 +33,8 @@ ALLOWED_FIELDS = {
     '#illustrator', 'cover', 'tags',
     # stage 4 (WP20e)
     'series', 'series_index', 'comments',
+    # the user's edits from the reader (1.5.0)
+    'pubdate', 'rating',
 }
 GLOBAL = {'--with-library', '--library-path', '--username', '--password', '--timeout'}
 CONTEXTS = {}

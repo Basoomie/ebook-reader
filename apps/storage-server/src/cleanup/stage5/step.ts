@@ -18,7 +18,7 @@ import type Database from 'better-sqlite3';
 import { createHash, randomUUID } from 'crypto';
 import path from 'path';
 import type { AiRunner } from '../../ai/runner';
-import { waitNeedsUser, waitText } from '../../ai/waits';
+import { waitIsNote, waitNeedsUser, waitText } from '../../ai/waits';
 import { runSpend } from '../../ai/spend';
 import { writeDecisions } from '../ai-decide/values';
 import { recordMarks } from '../marks';
@@ -150,6 +150,8 @@ export interface Stage5Progress {
   counts: Stage5Counts | null;
   phaseStartedAt?: number;
   phaseStartDone?: number;
+  /** Books the propose phase has worked through (the cursor is a Calibre id, not a count). */
+  proposed?: number;
   modelsStart?: { at: number; done: Record<string, number> } | null;
   error: string | null;
   times: Record<string, { ms: number; items: number }>;
@@ -250,6 +252,7 @@ export class Stage5 {
     p.cursor = 0;
     p.phaseStartedAt = Date.now();
     p.phaseStartDone = phase === 'decide' ? p.decided : 0;
+    p.proposed = 0;
     p.modelsStart =
       phase === 'models' ? { at: Date.now(), done: this.doneByModel(p.analysisId) } : null;
     this.save(p, phase === 'done' ? (p.error ? 'failed' : 'ready') : 'analysing');
@@ -389,9 +392,9 @@ export class Stage5 {
     if (p.phase === 'propose')
       return {
         phase: p.phase,
-        done: p.cursor,
+        done: Math.min(p.proposed ?? 0, p.total),
         total: p.total,
-        secondsLeft: since(p.cursor, p.total),
+        secondsLeft: since(Math.min(p.proposed ?? 0, p.total), p.total),
       };
     return { phase: p.phase, done: 0, total: 0, secondsLeft: null };
   }
@@ -712,7 +715,9 @@ export class Stage5 {
         pauseStage(this.db, STAGE, 'ai', p.wait);
         this.deps.log?.(`Stage 5: ${p.wait}`);
       }
-      return r.pending === 0 && !waitNeedsUser(r.wait) ? 'done' : 'wait';
+      if (r.pending === 0 && !waitNeedsUser(r.wait)) return 'done';
+      // A note on one model's batches: the rest goes on at its own pace.
+      return waitIsNote(r.wait) && (r.sent > 0 || r.answered > 0) ? 'more' : 'wait';
     }
     p.wait = null;
     if (getStage(this.db, STAGE).pauseReason === 'ai') resumeStage(this.db, STAGE);
@@ -1006,6 +1011,7 @@ export class Stage5 {
       }
     })();
     p.cursor = rows[rows.length - 1].calibreId;
+    p.proposed = (p.proposed ?? 0) + n;
     if (shouldStop()) return { finished: false, items: n };
     await new Promise((r) => setImmediate(r));
     return { finished: false, items: n };

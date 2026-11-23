@@ -65,8 +65,22 @@ export const SET_FIELDS = [
   'series',
   'series_index',
   'comments',
-  'tags'
+  'tags',
+  // The user's edits from the reader (calibre metadata editing): published date and rating.
+  'pubdate',
+  'rating'
 ] as const;
+
+/** A title for `add --title`: one line, no control characters, not an option, not too long. */
+export function isPlainTitle(t: string | undefined): boolean {
+  return (
+    typeof t === 'string' &&
+    t.trim() !== '' &&
+    !t.startsWith('-') &&
+    [...t].length <= 300 &&
+    ![...t].some((c) => c.charCodeAt(0) < 0x20 || c.charCodeAt(0) === 0x7f)
+  );
+}
 
 /** Options never allowed, whatever the subcommand. */
 const FORBIDDEN_ARGS = ['--permanent', '--library-path', '--automerge', '-m'];
@@ -166,8 +180,31 @@ export function buildArgs(
       }
       return ['trash', 'restore', ...remote, args.join(',')];
     }
-    case 'add':
+    case 'add': {
+      // Exactly one of two forms (WP20g): Undo's re-add of a quarantined export
+      // (--duplicates --one-book-per-directory <folder>), and the import's add of one EPUB from
+      // this sidecar's own temporary folder (--duplicates <…/ttsu-arrival-<item>/<name>.epub>).
+      // Never -m/--automerge (FORBIDDEN_ARGS), never several files or a folder of files.
+      const readd =
+        args.length === 3 &&
+        args[0] === '--duplicates' &&
+        args[1] === '--one-book-per-directory' &&
+        /^(\/|[A-Za-z]:[\\/])/.test(args[2]);
+      const arrivalFile = (f: string | undefined) =>
+        !!f && /^(\/|[A-Za-z]:[\\/]).*[\\/]ttsu-arrival-\d+[\\/][^\\/]+\.epub$/i.test(f);
+      const arrival = args.length === 2 && args[0] === '--duplicates' && arrivalFile(args[1]);
+      // 1.4.0: the same add with the title the server fitted for Calibre's folder names (the
+      // file's own would make a name the disk refuses: Calibre keeps the record without the file).
+      const arrivalTitled =
+        args.length === 4 &&
+        args[0] === '--duplicates' &&
+        args[1] === '--title' &&
+        isPlainTitle(args[2]) &&
+        arrivalFile(args[3]);
+      if (!readd && !arrival && !arrivalTitled)
+        throw new Error('add takes a quarantined folder or one arrival EPUB');
       return ['add', ...remote, ...args];
+    }
     case 'set_tags': {
       // Exactly: <book id> <the whole tag list, comma separated>. Nothing but the tags field.
       const [id, tags, ...rest] = args;

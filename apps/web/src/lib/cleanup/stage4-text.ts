@@ -20,7 +20,7 @@ export const STAGE4_MODE_HINTS: Record<StageMode, string> = {
   off: 'Nothing runs.',
   analyse:
     'Looks every book up online through the VPN and lists what it would change, with where each value came from; nothing in Calibre is changed.',
-  on: 'Writes the confirmed values and the best guesses into Calibre in batches, after the AI check; format and edition wait for stage 5.'
+  on: 'Writes the confirmed values into Calibre in batches, after the AI check; best guesses wait in Review; format and edition wait for stage 5.'
 };
 
 const AI_PHASES: Record<string, string> = {
@@ -28,6 +28,7 @@ const AI_PHASES: Record<string, string> = {
   models: 'asking both models',
   decide: 'deciding every field',
   spelling: 'giving each series one spelling',
+  series: 'putting each series in order',
   gate: 'checking the labeled books',
   done: 'done'
 };
@@ -37,6 +38,7 @@ const AI_BAR_LABELS: Record<string, string> = {
   models: 'Asking both models',
   decide: 'Deciding every field',
   spelling: 'Giving each series one spelling',
+  series: 'Putting each series in order',
   gate: 'Checking the labeled books'
 };
 
@@ -77,7 +79,14 @@ export function writtenLine(
 export function aiBar(ai: Stage4AiStatus | null | undefined): ProgressBar | null {
   const b = ai?.bar;
   if (!ai || !b || ai.phase === 'done') return null;
-  const what = b.phase === 'models' ? 'answers in' : 'books';
+  // The series step counts reading the books, ordering each series and the proposals together,
+  // and the gate the labeled books and its counting steps: steps, not books.
+  const what =
+    b.phase === 'models'
+      ? 'answers in'
+      : b.phase === 'series' || b.phase === 'gate'
+        ? 'steps'
+        : 'books';
   return {
     label: b.total
       ? `${AI_BAR_LABELS[b.phase] ?? b.phase}: ${n(b.done)} of ${n(b.total)} ${what}`
@@ -178,8 +187,44 @@ export const SOURCE_NAMES: Record<string, string> = {
   ndl: 'Web NDL Authorities',
   generated: 'Generated (spot check)',
   rules: 'The rules',
-  spelling: 'The series’ spelling on most books'
+  spelling: 'The series’ spelling on most books',
+  'series-order': 'The order of the series'
 };
+
+/** The AI check's names for the fields a best guess is in. */
+export const GUESS_FIELDS: Record<string, string> = {
+  t: 'Title',
+  au: 'Authors',
+  il: 'Illustrators',
+  fmt: 'Format',
+  se: 'Series',
+  ix: 'Number'
+};
+
+/** A series number as Calibre shows it (no number shows as 1). */
+export function seriesNumberText(index: number | null): string {
+  if (index === null) return 'no number (Calibre shows 1)';
+  return String(Math.round(index * 100) / 100);
+}
+
+/** The series step in one line: what it put in order, and what to look at. */
+export function seriesOrderLine(
+  so:
+    | {
+        series: number;
+        changed: number;
+        guesses: number;
+        reviews: number;
+      }
+    | null
+    | undefined
+): string | null {
+  if (!so) return null;
+  const parts = [`Series order: ${n(so.series)} series`, `${n(so.changed)} books changed`];
+  parts.push(`${n(so.guesses)} best guesses`);
+  if (so.reviews) parts.push(`${n(so.reviews)} for review`);
+  return parts.join(' · ');
+}
 
 export function sourceName(source: string): string {
   if (SOURCE_NAMES[source]) return SOURCE_NAMES[source];
@@ -251,6 +296,30 @@ export function booksLine(status: Stage4Status): string {
   if (open) parts.push(`${n(open)} waiting for the sites`);
   if (by(['error'])) parts.push(`${n(by(['error']))} couldn’t be read`);
   return parts.join(' · ');
+}
+
+/**
+ * The lookups' progress bar (books looked up of every book that can be read, with the time left
+ * for the whole Preview): while any book waits for the sites. The lookups never had a bar, only
+ * booksLine (the user, 2026-11-22: "why do I not see the progress?").
+ */
+export function lookupBar(status: Stage4Status): ProgressBar | null {
+  const by = (states: string[]) =>
+    status.books.filter((b) => states.includes(b.state)).reduce((a, b) => a + b.n, 0);
+  const total = status.read?.total ?? by(['read', 'waiting', 'ready', 'proposed', 'error']);
+  const open = by(['read', 'waiting', 'ready']);
+  const unreadable = by(['error']);
+  const all = total - unreadable;
+  if (!total || !open || all <= 0) return null;
+  const done = by(['proposed']);
+  const parts = [`Looking up: ${n(done)} of ${n(all)} books`, `${n(open)} waiting for the sites`];
+  if (unreadable) parts.push(`${n(unreadable)} couldn’t be read`);
+  const t = status.timeLeft?.total;
+  return {
+    label: parts.join(' · '),
+    fraction: Math.min(1, done / all),
+    eta: t !== null && t !== undefined && t > 0 ? `${etaText(t * 1000)} (estimate)` : null
+  };
 }
 
 /** The whole Preview's time left: the reading, the slowest site, then the final pass. */

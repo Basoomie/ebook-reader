@@ -48,7 +48,11 @@ function parseSnapshotDate(name: string, prefix: SnapshotPrefix): Date | null {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
-/** Snapshot files in `dir`, newest first. Ignores anything not named like a snapshot. */
+/**
+ * Snapshot files in `dir`, newest first. Ignores anything not named like a snapshot.
+ * A folder that doesn't exist yet holds none: Windows answers ENOENT for a path that runs
+ * through a file, Linux ENOTDIR, so both read as "no folder yet".
+ */
 export async function listSnapshots(
   dir: string,
   prefix: SnapshotPrefix = 'ttsu',
@@ -57,7 +61,7 @@ export async function listSnapshots(
   try {
     names = await fs.readdir(dir);
   } catch (err: any) {
-    if (err.code === 'ENOENT') return [];
+    if (err.code === 'ENOENT' || err.code === 'ENOTDIR') return [];
     throw err;
   }
   return names

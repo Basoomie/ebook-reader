@@ -7,6 +7,7 @@
 import fs from 'fs';
 import { Readable } from 'stream';
 import { pipeline } from 'stream/promises';
+import { arrivalApi } from './arrivals';
 
 export interface CalibreLogin {
   contentServerUrl: string;
@@ -70,6 +71,8 @@ export interface VerifyAnswer {
   cover: boolean;
   saveOldCover: boolean;
   oldCoverPath: string | null;
+  /** 1.5.0: the user's Undo of a cover: the earlier picture's path in the quarantine. */
+  coverFrom?: string | null;
   items: { itemId: number; field: string; state: ItemState; detail: string | null }[];
 }
 
@@ -155,6 +158,16 @@ export class ServerApi {
     this.base = `${serverUrl.replace(/\/+$/, '')}/api/v1/cleanup-apply`;
   }
 
+  /** WP20g: the arrivals' add batches (arrivals.ts). */
+  readonly arrivals = arrivalApi(
+    (method, p, body) => this.call(method, p, body),
+    (p) =>
+      this.fetchImpl(`${this.base}${p}`, {
+        headers: { Authorization: `Bearer ${this.token}` },
+        signal: AbortSignal.timeout(Math.max(this.timeoutMs, 600_000))
+      })
+  );
+
   private async call<T>(method: string, path: string, body?: unknown): Promise<T> {
     const res = await this.fetchImpl(`${this.base}${path}`, {
       method,
@@ -186,6 +199,11 @@ export class ServerApi {
 
   claim(): Promise<{ batch: Batch | null; wait: string | null }> {
     return this.call('POST', '/claim', {});
+  }
+
+  /** 1.5.0: the user's next edit from the reader, asked for between chunks of another batch. */
+  claimEdit(): Promise<{ batch: Batch | null; wait: string | null }> {
+    return this.call('POST', '/edits/claim', {});
   }
 
   progress(batchId: string): Promise<unknown> {

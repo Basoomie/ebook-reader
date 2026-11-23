@@ -30,8 +30,28 @@ import {
  * 2 (WP20e, the stage-4 On preparation): BookWalker's series keeps a closing wave dash that
  * pairs with an opening one; the AI step then decides every book again from the stored answers
  * and gives each series one spelling.
+ * 3 (series-order follow-up, 2026-11-22): the order of each series (series-order.ts) after the
+ * spelling; every book is decided again from the stored answers.
+ * 4 (the changed-series measurements, 2026-11-22): store list places, arcs counted straight
+ * through, the second batch's fixes; decided again from the stored answers.
+ * 5 (the live run of 2026-11-22): sub-series the models each numbered from 1 follow the list as
+ * 1, 2, 3… (惑星ハシエラ); decided again from the stored answers.
+ * 6 (the stop-3 hold, 2026-11-22): a best guess never overwrites a value Calibre has, the
+ * description's spacing, author readings for the authors written, BookWalker's manga editions
+ * never a text book's record; decided again from the stored answers.
+ * 7 (the live Preview of the stop-3 hold, 2026-11-22): a value the cleanup wrote and Calibre still
+ * holds is not changed automatically (to review), the same description text is no change, absence
+ * removes no value, the Google run's description rule never clears a written one.
+ * 8 (the rehearsal of 2026-11-22): a best guess is never written (also into an empty field), a
+ * generated author reading is a guess, a written author reading is kept, a company is no author,
+ * the series order's store title only where it adds just the number; arcs that number again are
+ * counted straight through automatically only where their order is sure (the series list, or the
+ * arcs' own numbers), from dates alone a best guess (the user, 2026-11-22).
+ * 9 (the live Preview of rules 8, 2026-11-22): author readings without NDL's notes (a profession,
+ * "pub. 2013", "1886- 薬剤師"); a written value that only loses them is corrected; a name whose
+ * namesakes NDL reads differently is a best guess.
  */
-export const STAGE4_RULES_VERSION = 2;
+export const STAGE4_RULES_VERSION = 9;
 
 /** The gold labels' names for the kinds. */
 export type Kind = 'full' | 'sample' | 'bonus' | 'special edition' | 'omnibus';

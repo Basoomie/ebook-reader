@@ -75,6 +75,16 @@ describe('pruneSnapshots / listSnapshots', () => {
     expect(await listSnapshots(dir)).toEqual([]);
     expect(await pruneSnapshots(dir, 3)).toEqual([]);
   });
+
+  it('reads a folder under a file as no folder yet (ENOTDIR on Linux, ENOENT on Windows)', async () => {
+    const file = path.join(makeTempDir('snap'), 'a-file');
+    fs.writeFileSync(file, 'x');
+    const dir = path.join(file, 'snapshots');
+    expect(await listSnapshots(dir)).toEqual([]);
+    expect(await listSnapshots(dir, 'cleanup')).toEqual([]);
+    // A folder that can't be listed for another reason still throws.
+    await expect(listSnapshots('\0bad')).rejects.toThrow();
+  });
 });
 
 describe('nextRunAt', () => {

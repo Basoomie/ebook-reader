@@ -4,7 +4,6 @@
  * All rights reserved.
  */
 
-import { writableBooleanLocalStorageSubject } from '$lib/data/internal/writable-boolean-local-storage-subject';
 import { writableNumberLocalStorageSubject } from '$lib/data/internal/writable-number-local-storage-subject';
 
 /**
@@ -27,12 +26,6 @@ export const readAloudAheadSeconds$ = writableNumberLocalStorageSubject()(
 export const readAloudLookupResume$ = writableNumberLocalStorageSubject()(
   'readAloudLookupResume',
   1
-);
-
-/** A read-aloud button in the reader's bottom bar (it also shows while read-aloud is on). */
-export const readAloudBottomBarButton$ = writableBooleanLocalStorageSubject()(
-  'readAloudBottomBarButton',
-  false
 );
 
 export const SPEED_MIN = 0.5;

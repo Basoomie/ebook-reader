@@ -37,7 +37,9 @@ import { ARRIVAL_AREA_FOLDERS, type ExistingTree } from './arrivals-plan';
 import { insideRoot, lstatEntry, readSmall } from './audio-source-fs';
 import type { PlannedBook } from './build-plan';
 import { keptAsBuilt } from './library-keep';
+import { AbsSetFields, SETTABLE, type Settable } from './abs-set-fields';
 import {
+  absKeptSomething,
   leftBehind,
   libraryFolder,
   orderMoves,
@@ -48,8 +50,10 @@ import {
 } from './library-plan';
 import type { SwitchReader } from './stage6-switch';
 
+/** Library changes' batch ids: from 3e9 (cleanup.db v20's seed row), below the book archives' 4e9. */
 export const LIBRARY_BATCH_BASE = 3_000_000_000;
-export const LIBRARY_SIDECAR_VERSION = '1.3.0';
+/** 1.4.2: a folder under a temporary name may go into a new folder of its parent (WP21g). */
+export const LIBRARY_SIDECAR_VERSION = '1.4.2';
 const OWNER = DISK_OWNERS.audio7;
 const HOLD_MS = 2000;
 const SLICE = 200;
@@ -62,6 +66,7 @@ const READER_ROOTS: Record<string, string> = {
 
 export type ChangesPhase =
   | 'sync'
+  | 'seen'
   | 'plan'
   | 'read'
   | 'preflight'
@@ -91,6 +96,19 @@ export interface ChangesProgress {
   ledger: number;
   /** Books whose plan differs from what was built (read before deciding). */
   candidates: number;
+  /**
+   * What Audiobookshelf made of our last write, per book not known yet (item 6): proven by time
+   * (`seen`), not provable (`unproven`: a differing field stays yours), not in ABS yet (asked
+   * again next run); `skipped` says why the step didn't run (ABS not set up).
+   */
+  seen?: {
+    checked: number;
+    proven: number;
+    unproven: number;
+    notInAbs: number;
+    cursor: number;
+    skipped: string | null;
+  };
   counts: {
     changes: number;
     metadata: number;
@@ -104,6 +122,8 @@ export interface ChangesProgress {
     reviews: number;
     kept: number;
     userFields: number;
+    /** Fields where Audiobookshelf kept an older value (to look at; item 6). */
+    absKept?: number;
   };
   apply: {
     total: number;
@@ -125,6 +145,8 @@ export interface ChangesProgress {
     notYet: number;
     /** Books whose emptied fields were cleared through ABS's edit call (missing before B1's fix). */
     cleared?: number;
+    /** Books whose kept older values were set to the cleanup's through ABS's edit call (item 6). */
+    set?: number;
     problems: string[];
     error: string | null;
   };
@@ -201,6 +223,7 @@ const emptyCounts = (): ChangesProgress['counts'] => ({
   reviews: 0,
   kept: 0,
   userFields: 0,
+  absKept: 0,
 });
 
 export class LibraryChanges {
@@ -214,6 +237,11 @@ export class LibraryChanges {
     candidates: LedgerBook[];
     plans: Map<number, PlannedBook>;
     tree: ExistingTree;
+  } | null = null;
+  /** The seen step's ABS items and our library scans (rebuilt after a restart). */
+  private seenWork: {
+    items: Map<string, { id: string; addedAt: number | null }> | null;
+    scans: number[];
   } | null = null;
 
   constructor(private readonly deps: ChangesDeps) {
@@ -372,15 +400,254 @@ export class LibraryChanges {
           now,
         ).changes;
       }
+      this.backfillWritten();
     })();
     return n;
   }
 
+  /**
+   * When we last wrote each book's metadata.json, in which run, and the file just before that
+   * write (item 6), for rows that don't know it yet: new books (their build's or arrival's
+   * metadata operation) and books from before cleanup.db v22 (the last applied change that wrote
+   * metadata.json; the file before it is what we wrote before: the build's bytes or the change
+   * before it).
+   */
+  private backfillWritten(): void {
+    const db = this.db;
+    const rows = db
+      .prepare(
+        `SELECT id, folder, origin_ref FROM audio_library_books WHERE written_at IS NULL ORDER BY id`,
+      )
+      .all() as { id: number; folder: string; origin_ref: string }[];
+    if (!rows.length) return;
+    // Stage 6's build wrote it; the 5 library-only books' by the switch (its from_library step).
+    const buildAt = db.prepare(
+      `SELECT COALESCE(
+         (SELECT MAX(done_at) FROM audio_build_ops WHERE book_id = @id AND kind = 'metadata'),
+         (SELECT MAX(done_at) FROM audio_switch_ops WHERE book_id = @id AND kind = 'metadata' AND state = 'done')
+       ) AS t`,
+    );
+    const buildBytes = db.prepare('SELECT metadata FROM audio_build_books WHERE id = ?');
+    const arrival = db.prepare(
+      'SELECT run_id, folder, metadata FROM audio_arrival_books WHERE id = ?',
+    );
+    const arrivalAt = db.prepare(
+      `SELECT MAX(done_at) AS t FROM audio_arrival_ops WHERE run_id = ? AND book_folder = ? AND kind = 'metadata'`,
+    );
+    const writes = db.prepare(
+      `SELECT c.run_id, c.metadata_new,
+              (SELECT MAX(o.done_at) FROM audio_library_ops o WHERE o.change_id = c.id AND o.kind = 'replace_metadata' AND o.state = 'done') AS t
+         FROM audio_library_changes c
+        WHERE c.book_id = ? AND c.state = 'applied' AND c.metadata_new IS NOT NULL ORDER BY c.run_id`,
+    );
+    const put = db.prepare(
+      'UPDATE audio_library_books SET written_at = ?, written_run = ?, before = ? WHERE id = ?',
+    );
+    for (const r of rows) {
+      const kind = r.origin_ref.slice(0, 2);
+      const ref = Number(r.origin_ref.slice(2));
+      let at: number | null = null;
+      let origin: Buffer | null = null;
+      if (kind === 'b:') {
+        at = (buildAt.get({ id: ref }) as { t: number | null }).t;
+        origin = (buildBytes.get(ref) as { metadata: Buffer } | undefined)?.metadata ?? null;
+      } else {
+        const a = arrival.get(ref) as
+          | { run_id: number; folder: string; metadata: Buffer }
+          | undefined;
+        if (a) {
+          at = (arrivalAt.get(a.run_id, a.folder) as { t: number | null }).t;
+          origin = a.metadata;
+        }
+      }
+      const history: { bytes: Buffer | null; at: number | null; run: number | null }[] = [
+        { bytes: origin, at, run: null },
+      ];
+      for (const w of writes.all(r.id) as {
+        run_id: number;
+        metadata_new: Buffer;
+        t: number | null;
+      }[])
+        history.push({ bytes: w.metadata_new, at: w.t, run: w.run_id });
+      const last = history[history.length - 1];
+      const before = history.length > 1 ? history[history.length - 2].bytes : null;
+      // An unknown time stays unknown (0): the seen step then needs Audiobookshelf's import of
+      // the book as the evidence (taking "now" made a file look older than our write).
+      put.run(last.at ?? 0, last.run, before, r.id);
+    }
+  }
+
+  /**
+   * What Audiobookshelf made of our last write, for each book of japanese/ that doesn't know it
+   * yet (item 6): the book's metadata.json now counts as Audiobookshelf's version of our write
+   * only when its last change came with Audiobookshelf's own scan of the book after our write:
+   * the item's import (`addedAt`) or a library scan we asked for (a run's `scannedAt`), within
+   * `librarySeenSlackSeconds` (proven on a scratch ABS 2.37.1: it rewrites metadata.json within
+   * 0.1 s of the item's scan; the live library scan of 4,787 books rewrote ST 黄's 32 s after we
+   * asked). Otherwise it is not provable and a differing field stays yours. A book ABS doesn't
+   * show yet is asked again at the next run. Read only; waits while Calibre uses the disk.
+   */
+  private async seenStep(c: ChangesProgress): Promise<'more' | 'wait'> {
+    c.seen ??= { checked: 0, proven: 0, unproven: 0, notInAbs: 0, cursor: 0, skipped: null };
+    const s = c.seen;
+    const media = this.deps.media;
+    const client = this.absClient();
+    if (!client || !media) {
+      s.skipped = !client
+        ? 'Audiobookshelf is not set up (address and API key): what it made of our writes is not known, so a differing field stays yours'
+        : 'The library view is not mounted';
+      this.setPhase(c, 'plan');
+      return 'more';
+    }
+    if (this.deps.lock.calibreBusy()) {
+      this.waitFor(c, 'Waiting while the Calibre cleanup uses the disk');
+      return 'wait';
+    }
+    this.waitFor(c, null);
+    const w = (this.seenWork ??= { items: null, scans: [] });
+    if (!w.items) {
+      const lib = await this.absLibrary(client);
+      if (!lib) {
+        s.skipped = 'Audiobookshelf has no library on …/japanese';
+        this.setPhase(c, 'plan');
+        return 'more';
+      }
+      w.items = await this.absItemTimes(client, lib.id);
+      w.scans = (
+        this.db.prepare('SELECT progress_json FROM audio_arrival_runs').all() as {
+          progress_json: string;
+        }[]
+      )
+        .map((r) => {
+          try {
+            return (JSON.parse(r.progress_json) as { changes?: { abs?: { scannedAt?: number } } })
+              .changes?.abs?.scannedAt;
+          } catch {
+            return undefined;
+          }
+        })
+        .filter((t): t is number => typeof t === 'number');
+    }
+    const rows = this.db
+      .prepare(
+        `SELECT id, folder, written_at FROM audio_library_books
+          WHERE area = 'main' AND seen_state IS NULL AND id > ? ORDER BY id LIMIT ?`,
+      )
+      .all(s.cursor, SLICE) as { id: number; folder: string; written_at: number | null }[];
+    if (c.total === 0)
+      c.total = (
+        this.db
+          .prepare(
+            `SELECT COUNT(*) AS n FROM audio_library_books WHERE area = 'main' AND seen_state IS NULL`,
+          )
+          .get() as { n: number }
+      ).n;
+    const slack = getSettings(this.db).audiobooks.librarySeenSlackSeconds * 1000;
+    const TOL = 2000;
+    const put = this.db.prepare(
+      'UPDATE audio_library_books SET seen = ?, seen_at = ?, seen_state = ?, seen_detail = ? WHERE id = ?',
+    );
+    const iso = (t: number) => new Date(t).toISOString().replace(/\.\d+Z$/, 'Z');
+    for (const r of rows) {
+      s.cursor = r.id;
+      s.checked++;
+      c.done++;
+      const item = w.items.get(r.folder.slice('japanese/'.length));
+      if (!item) {
+        s.notInAbs++;
+        continue;
+      }
+      const file = insideRoot(media, `${r.folder}/metadata.json`);
+      const st = await lstatEntry(file);
+      const bytes = st?.isFile ? await readSmall(file, 1024 * 1024) : null;
+      if (!st || !bytes) {
+        put.run(null, null, 'unproven', 'Its metadata.json could not be read', r.id);
+        s.unproven++;
+        continue;
+      }
+      const m = st.mtimeMs;
+      const wrote = r.written_at ?? 0;
+      const anchors = [
+        ...(item.addedAt !== null ? [{ at: item.addedAt, what: "Audiobookshelf's import" }] : []),
+        ...w.scans.map((t) => ({ at: t, what: 'a library scan of the cleanup' })),
+      ].filter((a) => a.at >= wrote - TOL);
+      let hit =
+        m >= wrote - TOL ? anchors.find((a) => m >= a.at - TOL && m <= a.at + slack) : undefined;
+      if (!hit && m >= wrote - TOL) {
+        // The item's own last scan (a scan Audiobookshelf ran itself, after an arrival: the 5
+        // library-only books rewritten 0.3-0.6 s after their lastScan on 2026-11-21), one GET.
+        const full = await client
+          .get<{
+            lastScan?: number | null;
+          }>(`/items/${encodeURIComponent(item.id)}?expanded=1`)
+          .catch(() => null);
+        const last = typeof full?.lastScan === 'number' ? full.lastScan : null;
+        if (last !== null && last >= wrote - TOL && m >= last - TOL && m <= last + slack)
+          hit = { at: last, what: "Audiobookshelf's scan of the book" };
+      }
+      if (hit) {
+        put.run(
+          bytes,
+          Math.round(m),
+          'seen',
+          `metadata.json last changed ${iso(m)}, in ${hit.what} of ${iso(hit.at)}`,
+          r.id,
+        );
+        s.proven++;
+      } else {
+        put.run(
+          null,
+          Math.round(m),
+          'unproven',
+          `metadata.json last changed ${iso(m)}, not in Audiobookshelf's scan after the cleanup's write of ${iso(wrote)}`,
+          r.id,
+        );
+        s.unproven++;
+      }
+    }
+    if (rows.length === SLICE) return 'more';
+    this.seenWork = null;
+    this.setPhase(c, 'plan', s.checked);
+    return 'more';
+  }
+
+  /** relPath -> the item's import time (addedAt) of every item of the library (GET only). */
+  private async absItemTimes(
+    client: AbsClient,
+    libraryId: string,
+  ): Promise<Map<string, { id: string; addedAt: number | null }>> {
+    const out = new Map<string, { id: string; addedAt: number | null }>();
+    for (let page = 0; page < 1000; page++) {
+      const r = await client.get<{
+        results?: { id: string; relPath?: string; addedAt?: number }[];
+      }>(`/libraries/${encodeURIComponent(libraryId)}/items?limit=500&page=${page}&minified=1`);
+      const rs = r?.results ?? [];
+      for (const it of rs)
+        if (it.relPath)
+          out.set(it.relPath.replace(/\\/g, '/'), {
+            id: it.id,
+            addedAt: typeof it.addedAt === 'number' ? it.addedAt : null,
+          });
+      if (rs.length < 500) break;
+    }
+    return out;
+  }
+
   private ledger(): (LedgerBook & { unitKey: string | null })[] {
+    const owners = new Map<number, Set<string>>();
+    for (const o of this.db.prepare('SELECT book_id, field FROM audio_library_owners').all() as {
+      book_id: number;
+      field: string;
+    }[]) {
+      const set = owners.get(o.book_id) ?? new Set<string>();
+      set.add(o.field);
+      owners.set(o.book_id, set);
+    }
     return (
       this.db
         .prepare(
-          `SELECT id, folder, base_folder, area, unit_key, files_json, metadata, decided, folder_ino FROM audio_library_books ORDER BY id`,
+          `SELECT id, folder, base_folder, area, unit_key, files_json, metadata, decided, folder_ino,
+                  before, CASE WHEN seen_state = 'seen' THEN seen END AS seen FROM audio_library_books ORDER BY id`,
         )
         .all() as {
         id: number;
@@ -392,8 +659,13 @@ export class LibraryChanges {
         metadata: Buffer;
         decided: Buffer;
         folder_ino: number | null;
+        before: Buffer | null;
+        seen: Buffer | null;
       }[]
     ).map((r) => ({
+      before: r.before,
+      seen: r.seen,
+      yours: owners.get(r.id) ?? new Set<string>(),
       id: r.id,
       folder: r.folder,
       baseFolder: r.base_folder,
@@ -426,8 +698,10 @@ export class LibraryChanges {
           c.ledger = (
             this.db.prepare('SELECT COUNT(*) AS n FROM audio_library_books').get() as { n: number }
           ).n;
-          this.setPhase(c, 'plan', c.ledger);
+          this.setPhase(c, 'seen', c.ledger);
           return 'more';
+        case 'seen':
+          return await this.seenStep(c);
         case 'plan':
           return await this.planStep(runId, c);
         case 'read':
@@ -498,7 +772,8 @@ export class LibraryChanges {
       const differs =
         !cur.metadata.equals(b.decided) ||
         libraryFolder(cur.baseFolder) !== b.baseFolder ||
-        cur.files.some((f) => !b.files.some((x) => x.name === f.dst.slice(prefix.length)));
+        cur.files.some((f) => !b.files.some((x) => x.name === f.dst.slice(prefix.length))) ||
+        absKeptSomething(b);
       if (differs) candidates.push(b);
     }
     this.work = { runId, candidates, plans: planOf, tree: await this.deps.tree() };
@@ -604,6 +879,116 @@ export class LibraryChanges {
     ).n;
     this.setPhase(c, ops ? 'preflight' : 'done', changes.length);
     return 'more';
+  }
+
+  /**
+   * WP21g: stage 8's Preview. What the library changes would do with stage 8's values (`withPlans`)
+   * for the books whose plan they change (against `withoutPlans`): each book's metadata.json now
+   * (read only, waiting while Calibre uses the disk), what ABS has (GET only), then the same pure
+   * planner. Nothing is recorded or written.
+   */
+  async dryRun(
+    withPlans: PlannedBook[],
+    withoutPlans: PlannedBook[],
+    onProgress: (done: number, total: number, waiting: string | null) => void = () => undefined,
+  ): Promise<{ changes: PlannedChange[]; books: Map<number, LedgerBook> }> {
+    this.syncLedger();
+    const media = this.deps.media;
+    if (!media) throw new Error('The library view (CLEANUP_AUDIO_MEDIA_DIR) is not mounted');
+    const inoOf = this.db.prepare('SELECT ino FROM audio_files WHERE id = ?');
+    const libIno = this.db.prepare(
+      `SELECT ino FROM audio_files WHERE root = 'library' AND rel_path = ? AND gone_at IS NULL`,
+    );
+    const byIno = (plans: PlannedBook[]) => {
+      const m = new Map<number, PlannedBook>();
+      for (const b of plans)
+        for (const f of b.files) {
+          const r = inoOf.get(f.fileId) as { ino: number } | undefined;
+          if (r) m.set(r.ino, b);
+        }
+      return m;
+    };
+    const withIno = byIno(withPlans);
+    const withoutIno = byIno(withoutPlans);
+    const candidates: LedgerBook[] = [];
+    const planOf = new Map<number, PlannedBook>();
+    for (const b of this.ledger()) {
+      let cur: PlannedBook | undefined;
+      let base: PlannedBook | undefined;
+      for (const f of b.files) {
+        const rel = b.folder.startsWith('japanese/')
+          ? `${b.folder.slice('japanese/'.length)}/${f.name}`
+          : null;
+        const ino =
+          (rel ? (libIno.get(rel) as { ino: number } | undefined)?.ino : undefined) ??
+          (inoOf.get(f.fileId) as { ino: number } | undefined)?.ino;
+        if (ino !== undefined) {
+          f.ino = ino;
+          cur ??= withIno.get(ino);
+          base ??= withoutIno.get(ino);
+        }
+      }
+      if (!cur || !base) continue;
+      if (cur.metadata.equals(base.metadata) && cur.baseFolder === base.baseFolder) continue;
+      candidates.push(b);
+      planOf.set(b.id, cur);
+    }
+    const disk = new Map<number, Buffer | null>();
+    for (let i = 0; i < candidates.length; ) {
+      if (this.deps.lock.calibreBusy()) {
+        onProgress(i, candidates.length, 'Waiting while the Calibre cleanup uses the disk');
+        await new Promise((r) => setTimeout(r, 2000));
+        continue;
+      }
+      for (const b of candidates.slice(i, i + SLICE)) {
+        disk.set(
+          b.id,
+          await readSmall(insideRoot(media, `${b.folder}/metadata.json`), 1024 * 1024),
+        );
+        const st = await lstatEntry(insideRoot(media, b.folder));
+        b.folderIno = st && st.isDir ? st.ino : null;
+      }
+      i = Math.min(candidates.length, i + SLICE);
+      onProgress(i, candidates.length, null);
+      await new Promise((r) => setImmediate(r));
+    }
+    const abs = await this.absStates(candidates, this.start('analyse'));
+    const choices = this.db.prepare(
+      'SELECT field, choice FROM audio_library_choices WHERE book_id = ?',
+    );
+    const rels = this.db.prepare('SELECT rel_path FROM audio_files WHERE id = ?');
+    const tagsOf = this.db.prepare('SELECT tags_json FROM audio_file_health WHERE file_id = ?');
+    const changes = planLibraryChanges({
+      fileTags: (b) => {
+        const r = b.files[0]
+          ? (tagsOf.get(b.files[0].fileId) as { tags_json: string | null } | undefined)
+          : undefined;
+        try {
+          return r?.tags_json ? (JSON.parse(r.tags_json) as Record<string, string>) : null;
+        } catch {
+          return null;
+        }
+      },
+      books: candidates,
+      current: (b) => planOf.get(b.id) ?? null,
+      disk: (b) => disk.get(b.id) ?? null,
+      abs: (b) => abs.get(b.id) ?? null,
+      keep: (b) =>
+        keptAsBuilt(
+          b.files
+            .map((f) => (rels.get(f.fileId) as { rel_path: string } | undefined)?.rel_path)
+            .filter((x): x is string => !!x),
+        ),
+      tree: await this.deps.tree(),
+      choices: (b) =>
+        Object.fromEntries(
+          (choices.all(b.id) as { field: string; choice: string }[]).map((r) => [
+            r.field,
+            r.choice,
+          ]),
+        ),
+    });
+    return { changes, books: new Map(candidates.map((b) => [b.id, b])) };
   }
 
   /** ABS's item, progress and bookmarks of the candidate books (GET only). Null per book: not asked. */
@@ -732,8 +1117,9 @@ export class LibraryChanges {
       db.prepare('DELETE FROM audio_library_links WHERE run_id = ?').run(runId);
       const putChange = db.prepare(
         `INSERT INTO audio_library_changes (run_id, book_id, state, folder_from, folder_to, base_to, fields_json, user_fields_json,
-           conflicts_json, renames_json, renames_held, reviews_json, skipped, metadata_new, decided_new, metadata_sha_read, abs_item_id, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           conflicts_json, renames_json, renames_held, reviews_json, skipped, metadata_new, decided_new, metadata_sha_read, abs_item_id, created_at,
+           metadata_read, abs_kept_json, abs_set_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       );
       let seq = 0;
       const putOp = db.prepare(
@@ -769,6 +1155,9 @@ export class LibraryChanges {
             ch.metadataShaRead,
             abs.get(ch.bookId)?.itemId ?? null,
             now,
+            ch.metadataNew ? ch.metadataRead : null,
+            JSON.stringify(ch.absKept),
+            JSON.stringify(ch.absSet),
           ).lastInsertRowid,
         );
         if (ch.skipped) {
@@ -778,6 +1167,7 @@ export class LibraryChanges {
         counts.changes++;
         counts.reviews += ch.reviews.length ? 1 : 0;
         counts.userFields += ch.userFields.length;
+        counts.absKept = (counts.absKept ?? 0) + ch.absKept.length;
         if (!ch.renamesHeld)
           for (const r of ch.renames) {
             putOp.run(
@@ -1223,7 +1613,10 @@ export class LibraryChanges {
         .run(runId);
     }
     c.remap = { changed: links.length, resolveBefore: 0, resolveAfter: 0 };
-    this.setPhase(c, this.needsHold(runId) ? 'rescan' : 'abs_scan', links.length);
+    // Without a move or rename there is no hold and no rescan, but the ledger is still updated
+    // (release) before ABS's scan: a run that only wrote metadata.json skipped both before
+    // (found 2026-11-21, item 6).
+    this.setPhase(c, this.needsHold(runId) ? 'rescan' : 'release', links.length);
     return 'more';
   }
 
@@ -1272,9 +1665,21 @@ export class LibraryChanges {
   private updateLedger(runId: number): void {
     const db = this.db;
     const now = this.now();
+    const choiceOf = db.prepare(
+      'SELECT choice FROM audio_library_choices WHERE book_id = ? AND field = ?',
+    );
+    const own = db.prepare(
+      `INSERT INTO audio_library_owners (book_id, field, since, run_id, evidence) VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT (book_id, field) DO NOTHING`,
+    );
+    const disown = db.prepare('DELETE FROM audio_library_owners WHERE book_id = ? AND field = ?');
+    const unchoose = db.prepare(
+      'DELETE FROM audio_library_choices WHERE book_id = ? AND field = ?',
+    );
     for (const ch of db
       .prepare(
-        `SELECT id, book_id, folder_to, base_to, renames_json, renames_held, metadata_new, decided_new FROM audio_library_changes WHERE run_id = ? AND state = 'planned'`,
+        `SELECT id, book_id, folder_to, base_to, renames_json, renames_held, metadata_new, decided_new,
+                metadata_read, fields_json, user_fields_json FROM audio_library_changes WHERE run_id = ? AND state = 'planned'`,
       )
       .all(runId) as {
       id: number;
@@ -1285,6 +1690,9 @@ export class LibraryChanges {
       renames_held: number;
       metadata_new: Buffer | null;
       decided_new: Buffer | null;
+      metadata_read: Buffer | null;
+      fields_json: string;
+      user_fields_json: string;
     }[]) {
       const open = (
         db
@@ -1321,6 +1729,44 @@ export class LibraryChanges {
         now,
         ch.book_id,
       );
+      if (ch.metadata_new) {
+        // When we wrote and the file before it (item 6); what ABS makes of it is proven again by
+        // the next run's seen step (its scan of this write is the evidence).
+        const at = (
+          db
+            .prepare(
+              `SELECT MAX(done_at) AS t FROM audio_library_ops WHERE change_id = ? AND kind = 'replace_metadata'`,
+            )
+            .get(ch.id) as { t: number | null }
+        ).t;
+        db.prepare(
+          `UPDATE audio_library_books SET written_at = ?, written_run = ?, before = ?, seen = NULL, seen_at = NULL,
+             seen_state = NULL, seen_detail = NULL WHERE id = ?`,
+        ).run(at ?? now, runId, ch.metadata_read, ch.book_id);
+        // Your fields, kept by this write, stay yours at every later write (a field once yours is
+        // never taken back: the ledger alone would read it as ours next time).
+        for (const f of JSON.parse(ch.user_fields_json) as string[]) {
+          const chose = (choiceOf.get(ch.book_id, f) as { choice: string } | undefined)?.choice;
+          own.run(
+            ch.book_id,
+            f,
+            now,
+            runId,
+            chose === 'mine'
+              ? 'You chose to keep this value in Audiobookshelf'
+              : 'Its metadata.json value differed from what the cleanup wrote, with no sign that Audiobookshelf changed it',
+          );
+        }
+        // A field you gave back to the cleanup ("Use the cleanup's") is ours again; the choice is
+        // spent, so a later edit of yours counts as yours again.
+        for (const f of JSON.parse(ch.fields_json) as { field: string }[])
+          if (
+            (choiceOf.get(ch.book_id, f.field) as { choice: string } | undefined)?.choice === 'ours'
+          ) {
+            disown.run(ch.book_id, f.field);
+            unchoose.run(ch.book_id, f.field);
+          }
+      }
       db.prepare(`UPDATE audio_library_changes SET state = 'applied' WHERE id = ?`).run(ch.id);
     }
     db.prepare(
@@ -1479,6 +1925,36 @@ export class LibraryChanges {
           problems.push(`${r.folder_to ?? r.folder_from}: ${(err as Error).message}`);
         }
       }
+      // The fields where ABS kept an older value and you chose the cleanup's (item 6): set
+      // through its edit call to the values just written, then read back.
+      const setter = new AbsSetFields({ ...a, fetchImpl: this.deps.fetchImpl });
+      const setOf = this.db.prepare(
+        'SELECT abs_set_json, metadata_new FROM audio_library_changes WHERE id = ?',
+      );
+      for (const r of rows) {
+        const id = items.get((r.folder_to ?? r.folder_from).slice('japanese/'.length));
+        const s = setOf.get(r.id) as { abs_set_json: string; metadata_new: Buffer | null };
+        const fields = (JSON.parse(s.abs_set_json) as string[]).filter((x): x is Settable =>
+          (SETTABLE as readonly string[]).includes(x),
+        );
+        if (!id || !fields.length || !s.metadata_new) continue;
+        try {
+          await setter.set(id, s.metadata_new, fields);
+          c.abs.set = (c.abs.set ?? 0) + 1;
+          const now = await client.get<{
+            media?: { metadata?: Record<string, unknown>; tags?: unknown[] };
+          }>(`/items/${encodeURIComponent(id)}`);
+          const shown = absShown(now?.media?.metadata ?? {}, now?.media?.tags ?? []);
+          const want = JSON.parse(s.metadata_new.toString('utf8')) as Record<string, unknown>;
+          const off = fields.filter((f) => !sameValue(f, shown[f], want[f]));
+          if (off.length)
+            problems.push(
+              `${r.folder_to ?? r.folder_from}: Audiobookshelf still shows another ${off.join(', ')}`,
+            );
+        } catch (err) {
+          problems.push(`${r.folder_to ?? r.folder_from}: ${(err as Error).message}`);
+        }
+      }
     }
     // Progress and bookmarks of every changed book's item as before the changes.
     const before = rows[0]?.abs_before_json
@@ -1534,6 +2010,23 @@ export class LibraryChanges {
       sha256: string | null;
     }[];
     if (!ops.length) return null;
+    // The preflight sees a move from a temporary name (a cycle, or a book moving into its own
+    // folder) as the folder that becomes it: the same folder, which doesn't exist under that name
+    // until the run moves it aside.
+    const asideOf = new Map<string, string>();
+    if (pre)
+      for (const r of this.db
+        .prepare(
+          `SELECT src_rel, dst FROM audio_library_ops WHERE run_id = ? AND kind = 'move_book' AND src_rel IS NOT NULL`,
+        )
+        .all(runId) as { src_rel: string; dst: string }[])
+        asideOf.set(r.dst, r.src_rel);
+    const preSrc = (rel: string | null) => {
+      let cur = rel;
+      for (let k = 0; cur !== null && k < 10 && /\/\.ttsu-move-\d+$/.test(cur); k++)
+        cur = asideOf.get(cur) ?? cur;
+      return cur;
+    };
     const now = this.now();
     const id = Number(
       this.db
@@ -1563,7 +2056,7 @@ export class LibraryChanges {
         kind: o.kind,
         book: o.book,
         dst: o.dst,
-        src: o.src_rel !== null ? { rel: o.src_rel, raw: null } : null,
+        src: o.src_rel !== null ? { rel: pre ? preSrc(o.src_rel)! : o.src_rel, raw: null } : null,
         size: o.size,
         mtimeMs: o.mtime_ms,
         dev: o.dev,
@@ -1619,8 +2112,10 @@ export class LibraryChanges {
   choose(bookId: number, field: string, choice: string): void {
     const ok =
       (field === 'rename' && choice === 'now') ||
+      (field === 'move' && choice === 'now') ||
       (/^[a-zA-Z]{1,40}$/.test(field) &&
         field !== 'rename' &&
+        field !== 'move' &&
         (choice === 'mine' || choice === 'ours'));
     if (!ok) throw new Error('Not a choice');
     this.db
@@ -1670,7 +2165,7 @@ export class LibraryChanges {
       db
         .prepare(
           `SELECT id, book_id, state, folder_from, folder_to, fields_json, user_fields_json, conflicts_json, renames_json,
-             renames_held, reviews_json, skipped FROM audio_library_changes WHERE run_id = ? ${cond} ORDER BY folder_from LIMIT ? OFFSET ?`,
+             renames_held, reviews_json, skipped, abs_kept_json FROM audio_library_changes WHERE run_id = ? ${cond} ORDER BY folder_from LIMIT ? OFFSET ?`,
         )
         .all(runId, limit, offset) as Record<string, unknown>[]
     ).map((r) => ({
@@ -1682,6 +2177,7 @@ export class LibraryChanges {
       fields: JSON.parse(r.fields_json as string),
       userFields: JSON.parse(r.user_fields_json as string),
       conflicts: JSON.parse(r.conflicts_json as string),
+      absKept: JSON.parse((r.abs_kept_json as string | null) ?? '[]'),
       renames: JSON.parse(r.renames_json as string),
       renamesHeld: r.renames_held === 1,
       reviews: JSON.parse(r.reviews_json as string),
@@ -1689,6 +2185,30 @@ export class LibraryChanges {
     }));
     return { total, items };
   }
+}
+
+/** An ABS item's media metadata in metadata.json's form (series `Name #6`, authors as names). */
+export function absShown(m: Record<string, unknown>, tags: unknown[]): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...m, tags };
+  if (Array.isArray(m.series))
+    out.series = (m.series as { name?: string; sequence?: string | null }[]).map((s) =>
+      s.sequence ? `${s.name} #${s.sequence}` : (s.name ?? ''),
+    );
+  if (Array.isArray(m.authors))
+    out.authors = (m.authors as { name?: string }[]).map((x) =>
+      typeof x === 'string' ? x : (x.name ?? ''),
+    );
+  return out;
+}
+
+/** One field's two values, compared as the planner does (lists of names in any order). */
+export function sameValue(_field: string, a: unknown, b: unknown): boolean {
+  const n = (v: unknown) => {
+    if (v === undefined || v === '') v = null;
+    if (Array.isArray(v)) return JSON.stringify([...v].map(String).sort());
+    return JSON.stringify(v);
+  };
+  return n(a) === n(b);
 }
 
 /** The library-relative name of a stage-6 path under media/audiobooks (for tests and reports). */

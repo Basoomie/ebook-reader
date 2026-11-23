@@ -12,8 +12,12 @@ import type {
   CompareResult,
   IndexRequest,
   IndexResult,
+  LibIndexRequest,
+  LibIndexResult,
   Stage3ChildMessage,
   Stage3Request,
+  TextMeasureRequest,
+  TextMeasureResult,
   TextResult,
 } from './book-text-child';
 import { doWork, type BookTextModule } from '../cleanup/stage3-work';
@@ -31,6 +35,12 @@ export interface Stage3Reader {
     extra: { minRun: number; minContext: number },
   ): Promise<Outcome<CompareResult>>;
   index(req: Omit<IndexRequest, 'id' | 'type'>): Promise<Outcome<IndexResult>>;
+  /** The library's lookup file for textMeasure (new arrivals; a stand-in may not have it). */
+  libIndex?(req: Omit<LibIndexRequest, 'id' | 'type'>): Promise<Outcome<LibIndexResult>>;
+  /** One book read and measured against its library candidates in one request. */
+  textMeasure?(
+    req: Omit<TextMeasureRequest, 'id' | 'type' | 'options'>,
+  ): Promise<Outcome<TextMeasureResult>>;
   close(): void;
 }
 
@@ -297,6 +307,33 @@ export class Stage3Worker implements Stage3Reader {
     }
   }
 
+  async libIndex(req: Omit<LibIndexRequest, 'id' | 'type'>): Promise<Outcome<LibIndexResult>> {
+    const r = await this.acquire();
+    try {
+      return await r.request<LibIndexResult>(
+        (id) => ({ id, type: 'libIndex', ...req }),
+        INDEX_TIMEOUT_MS,
+      );
+    } finally {
+      this.release(r);
+    }
+  }
+
+  async textMeasure(
+    req: Omit<TextMeasureRequest, 'id' | 'type' | 'options'>,
+  ): Promise<Outcome<TextMeasureResult>> {
+    const r = await this.acquire();
+    try {
+      // The book and each library book it reads get the per-book time.
+      return await r.request<TextMeasureResult>(
+        (id) => ({ id, type: 'textMeasure', options: this.opts.importOptions, ...req }),
+        this.opts.timeoutMs() * (1 + Math.max(0, req.maxBooks)),
+      );
+    } finally {
+      this.release(r);
+    }
+  }
+
   close(): void {
     this.closed = true;
     for (const r of this.readers) r.close();
@@ -341,6 +378,16 @@ export class InProcessReader implements Stage3Reader {
 
   index(req: Omit<IndexRequest, 'id' | 'type'>): Promise<Outcome<IndexResult>> {
     return this.run({ id: 0, type: 'index', ...req });
+  }
+
+  libIndex(req: Omit<LibIndexRequest, 'id' | 'type'>): Promise<Outcome<LibIndexResult>> {
+    return this.run({ id: 0, type: 'libIndex', ...req });
+  }
+
+  textMeasure(
+    req: Omit<TextMeasureRequest, 'id' | 'type' | 'options'>,
+  ): Promise<Outcome<TextMeasureResult>> {
+    return this.run({ id: 0, type: 'textMeasure', options: this.importOptions, ...req });
   }
 
   close(): void {}

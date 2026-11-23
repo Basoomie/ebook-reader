@@ -1227,6 +1227,13 @@ export function statsApi() {
     excludeSession(sessionId: string): Promise<boolean> {
       return putFix(sessionId, { excluded: true });
     },
+    /**
+     * Deletes a session from every list and total, on every device. The session record
+     * itself is never changed (sessions are never deleted): a fix hides it.
+     */
+    deleteSession(sessionId: string): Promise<boolean> {
+      return putFix(sessionId, { deleted: true });
+    },
     /** Replaces a session's numbers (undo: clearFix). */
     correctSession(sessionId: string, numbers: { seconds: number; chars: number }) {
       return putFix(sessionId, {

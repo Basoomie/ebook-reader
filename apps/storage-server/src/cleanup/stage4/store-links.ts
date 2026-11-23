@@ -19,12 +19,20 @@ import { N, NA, nfkc, pyStrip } from '../title-rules';
 import { decodeIgnore, textOf, unescapeHtml } from './ref-text';
 import { clean } from './rules-v3';
 import { nums, pyQuote } from './pick';
+import { chosenDecision, type ChosenBook } from './bookmeter-rules';
 
 // ---------------------------------------------------------------- Bookmeter
 
 export interface BookmeterHit {
   id: string;
+  /**
+   * The whole title: the cover picture's alt text (Bookmeter's list cuts long titles at about 22
+   * characters with "…"; More Bookmeter coverage, step 2), else the list's text. Results stored
+   * before step 2 hold the list's text here and have no listTitle.
+   */
   title: string;
+  /** The list's own text (cut when long); set by the parser since step 2. */
+  listTitle?: string;
   authors: string[];
   pages: number | null;
 }
@@ -35,9 +43,15 @@ export interface BookmeterHit {
  * of them asked again with type=japanese, 15 found the exact book first). Its requests use
  * BOOKMETER_SEARCH_KEY so an answer from the old index is never reused.
  */
-export function bookmeterSearchUrl(title: string): string {
-  return `https://bookmeter.com/search?author=&keyword=${pyQuote(title)}&partial=true&sort=recommended&type=japanese`;
+export function bookmeterSearchUrl(title: string, author?: string | null): string {
+  // More Bookmeter coverage's second search (Q2): the first author in Bookmeter's own author
+  // field, as step 1 asked it (encodeURIComponent; the keyword keeps pyQuote).
+  const au = author ? encodeURIComponent(author) : '';
+  return `https://bookmeter.com/search?author=${au}&keyword=${pyQuote(title)}&partial=true&sort=recommended&type=japanese`;
 }
+
+/** The queue key of More Bookmeter coverage's Q2 search (the author field filled). */
+export const BOOKMETER_AUTHOR_SEARCH_KEY = 'search-jp-au:';
 
 /** The queue key of a Bookmeter search (type=japanese); the old index's were `search:<title>`. */
 export const BOOKMETER_SEARCH_KEY = 'search-jp:';
@@ -58,6 +72,11 @@ export function parseBookmeterSearch(body: Buffer | string): BookmeterHit[] {
   for (const li of h.split('<li class="group__book">').slice(1)) {
     const t = /<div class="detail__title"><a href="\/books\/(\d+)">([\s\S]*?)<\/a>/.exec(li);
     if (!t) continue;
+    // The same item's cover picture carries the whole title (on the 777,100 stored results:
+    // present for every one, still cut for 116).
+    const alt = /<a href="\/books\/(\d+)"><img alt="([^"]*)"/.exec(li);
+    const whole = alt && alt[1] === t[1] ? unescapeHtml(alt[2]).trim() : '';
+    const listTitle = textOf(t[2]);
     const authorsBlock = /<ul class="detail__authors">([\s\S]*?)<\/ul>/.exec(li)?.[1] ?? '';
     const authors = [...authorsBlock.matchAll(/<a[^>]*>([^<]*)<\/a>/g)].map((m) =>
       pyStrip(unescapeHtml(m[1])),
@@ -65,7 +84,8 @@ export function parseBookmeterSearch(body: Buffer | string): BookmeterHit[] {
     const pages = /<div class="detail__page">(\d+)<\/div>/.exec(li);
     out.push({
       id: t[1],
-      title: textOf(t[2]),
+      title: whole || listTitle,
+      listTitle,
       authors: authors.filter((a) => a !== ''),
       pages: pages ? parseInt(pages[1], 10) : null,
     });
@@ -151,6 +171,10 @@ export function editionNotes(title: string): string[] {
     );
 }
 
+/** The reason of a match the chosen rules accepted (acceptBookmeter's second tier). */
+export const WHOLE_TITLE_REASON =
+  'the whole titles agree (labels, series brackets and a trailing series name set aside), an author and the volume';
+
 /**
  * Match acceptance for Bookmeter (plan section 6): the title, an author and the volume must all
  * agree with the book's decided values. Bookmeter's titles carry the label ("(GAノベル)"), so
@@ -159,28 +183,54 @@ export function editionNotes(title: string): string[] {
  * rejected, and the next hit is tried. The book's own texts are its titles (file, Calibre), the
  * title of the Amazon record the rules identified, and the file's first and last pages (the
  * colophon prints the edition: 【大活字シリーズ】悪の説得術 is that edition's own e-book).
+ *
+ * More Bookmeter coverage, step 2 (user, 2026-11-23): this first tier runs on the list's own text
+ * (`listTitle`, or `title` for results stored before step 2), so a book decides exactly as before
+ * and today's matches stay. When it accepts nothing and `chosen` is given, the second tier runs
+ * the rules the user chose (bookmeter-rules.ts CHOSEN_RULES) on the whole titles.
  */
 export function acceptBookmeter(
   hits: BookmeterHit[],
-  book: { title: string; authors: string[]; own?: (string | null | undefined)[] },
+  book: {
+    title: string;
+    authors: string[];
+    own?: (string | null | undefined)[];
+    /** The chosen rules' other inputs (stage 4's decided series and format, Calibre's title). */
+    chosen?: Omit<ChosenBook, 'title' | 'authors'>;
+  },
 ): { hit: BookmeterHit; reason: string } | { hit: null; reason: string } {
   const own = (book.own ?? [book.title])
     .filter((t): t is string => typeof t === 'string')
     .map((t) => nfkc(t));
+  const edOk = (title: string) => !editionNotes(title).some((n) => !own.some((t) => t.includes(n)));
   let edition = false;
   const want = N(clean(book.title)) ?? '';
   if (!want) return { hit: null, reason: 'no title to compare' };
   const authors = new Set(book.authors.map((a) => NA(a)));
   const wantNums = [...nums(book.title)].sort().join(',');
   for (const h of hits) {
-    if ((N(clean(h.title)) ?? '') !== want) continue;
+    const listed = h.listTitle ?? h.title;
+    if ((N(clean(listed)) ?? '') !== want) continue;
     if (!h.authors.some((a) => authors.has(NA(a)))) continue;
-    if ([...nums(h.title)].sort().join(',') !== wantNums) continue;
-    if (editionNotes(h.title).some((n) => !own.some((t) => t.includes(n)))) {
+    if ([...nums(listed)].sort().join(',') !== wantNums) continue;
+    if (!edOk(listed)) {
       edition = true;
       continue;
     }
     return { hit: h, reason: 'title, author and volume agree' };
+  }
+  if (book.chosen && hits.length) {
+    const r = chosenDecision(
+      hits.map((h) => ({
+        ...h,
+        title: h.listTitle ?? h.title,
+        full: h.listTitle !== undefined ? h.title : null,
+      })),
+      { ...book.chosen, title: book.title, authors: book.authors },
+      edOk,
+    );
+    const hit = r.hit ? hits.find((h) => h.id === r.hit!.id) : undefined;
+    if (hit) return { hit, reason: WHOLE_TITLE_REASON };
   }
   return {
     hit: null,
@@ -323,17 +373,71 @@ export function ndlYomi(yomi: string): string {
 }
 
 /**
+ * The reading of the name itself from one NDL row: NDL's label and reading have the same parts
+ * ("青木, 邦子, 陶芸家" / "アオキ, クニコ, トウゲイカ"), and the parts after the name are notes
+ * telling namesakes apart (a profession, "pub. 2013", "1886- 薬剤師"; the live Preview of
+ * 2026-11-22 found them written into author_sort). The name's parts are the label's first parts
+ * that spell the name; without such a label, the parts with a year and those after the second.
+ */
+export function ndlNameReading(row: NdlRow, name: string): string {
+  // Notes in brackets at the end ("堤 (家)" / "ツツミ (ケ)", "角川書店 (2003年)"), unless the
+  // name ends with one.
+  const paren = /\s*[(（][^()（）]*[)）]\s*$/u;
+  let label = row.label.trim();
+  let yomi = row.yomi.trim();
+  while (!paren.test(nfkc(name)) && paren.test(label) && paren.test(yomi)) {
+    label = label.replace(paren, '');
+    yomi = yomi.replace(paren, '');
+  }
+  // The reading's first k parts as NDL wrote them (its spacing kept).
+  const commas = [...yomi.matchAll(/\s*,\s*/gu)];
+  const cut = (k: number) => pyStrip(k > commas.length ? yomi : yomi.slice(0, commas[k - 1].index));
+  const parts = label.split(/\s*,\s*/u);
+  const squash = (t: string) => nfkc(t).replace(/[\s・･,、]/gu, '');
+  const want = squash(name);
+  if (parts.length === commas.length + 1)
+    for (let k = 1; k <= parts.length; k++)
+      if (squash(parts.slice(0, k).join('')) === want) return cut(k);
+  const second = commas.length
+    ? yomi.slice(commas[0].index! + commas[0][0].length).split(/\s*,\s*/u)[0]
+    : '';
+  return cut(second && !/[0-9]|pub\./u.test(second) ? 2 : 1);
+}
+
+/**
  * The reading for one name from NDL's rows (ndl:transcription @ja-Kana, "ナツメ, ソウセキ,
- * 1867-1916" -> "ナツメ, ソウセキ"). Several authorities with different readings = ambiguous (the
- * 2026-11-13 test found 7 namesakes, all with the same reading).
+ * 1867-1916" -> "ナツメ, ソウセキ"; notes after the name are left out). Namesakes read
+ * differently = ambiguous, a best guess (渡部正和: ワタナベ for one, ワタベ for another): the
+ * reading of the authority with no note first (the name's main entry), else the most common one;
+ * `prefer` (the reading chosen before) when it is one of them. `forms`: each reading as it was
+ * stored before notes were left out (ndlYomi), with the name's own reading.
  */
 export function ndlReading(
   rows: NdlRow[],
   name: string,
-): { reading: string; authority: string; ambiguous: boolean } | null {
+  prefer?: string | null,
+): {
+  reading: string;
+  authority: string;
+  ambiguous: boolean;
+  forms: [string, string][];
+} | null {
   const mine = rows.filter((r) => nfkc(r.name) === nfkc(name));
   if (!mine.length) return null;
-  const key = (y: string) => ndlYomi(y).replace(/[,\s、]/g, '');
-  const readings = new Set(mine.map((r) => key(r.yomi)));
-  return { reading: ndlYomi(mine[0].yomi), authority: mine[0].auth, ambiguous: readings.size > 1 };
+  const key = (y: string) => y.replace(/[,\s、]/gu, '');
+  const read = mine.map((r) => ({ r, reading: ndlNameReading(r, name) }));
+  const counts = new Map<string, number>();
+  for (const x of read) counts.set(key(x.reading), (counts.get(key(x.reading)) ?? 0) + 1);
+  const plain = read.find((x) => key(x.r.label) !== '' && key(x.r.label) === key(nfkc(name)));
+  const common = [...read].sort(
+    (a, b) => (counts.get(key(b.reading)) ?? 0) - (counts.get(key(a.reading)) ?? 0),
+  )[0];
+  const kept = prefer ? read.find((x) => key(x.reading) === key(prefer)) : undefined;
+  const pick = kept ?? plain ?? common;
+  return {
+    reading: pick.reading,
+    authority: pick.r.auth,
+    ambiguous: counts.size > 1,
+    forms: read.map((x) => [ndlYomi(x.r.yomi), x.reading]),
+  };
 }

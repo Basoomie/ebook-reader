@@ -17,6 +17,8 @@
  */
 import type Database from 'better-sqlite3';
 import { AI_LIMIT_EVENT } from '../ai/limit-event';
+import { AI_BATCHES_EVENT } from '../ai/batch-event';
+import { BATCH_HEALTH_KEY, type ModelBatchHealth } from '../ai/batch-health';
 import { AUDIO_STAGE_NAMES } from '../cleanup/audio/audio-stages';
 import { STAGE_NAMES } from '../cleanup/stages';
 import {
@@ -71,6 +73,17 @@ interface ArrivalReport {
   planned: number;
   newReview: number;
   outcomes?: Record<string, number>;
+  /** WP21g: stage 8's pass in the run (cleanup/audio/stage8-ebooks.ts `runReport`). */
+  ebooks?: {
+    mode: string;
+    reason: string | null;
+    counts: { auto: number; review: number; none: number; excluded: number };
+    values: { genres: number; tags: number; series: number; seriesReview: number };
+    preview: { changes: number; moves: number; held: number } | null;
+    gate: { passed: boolean } | null;
+    newReview: number;
+    error: string | null;
+  } | null;
 }
 
 interface FinishedRow {
@@ -109,8 +122,13 @@ export class NotificationWatcher {
     this.part('the cleanup helpers', () => this.helpers(settings, now));
     this.part('field pauses', () => this.fieldPauses());
     this.part('new audiobooks', () => this.arrivalRuns());
+    this.part('new books', () => this.bookArrivalRuns());
+    this.part('best guesses', () => this.stage4Guesses());
+    this.part('fetch sites', () => this.fetchSitePauses());
+    this.part('more Bookmeter matches', () => this.bookmeterPass());
     this.part('refused changes', () => this.refusalsQuiet(settings, now));
     this.part('the AI spending limit', () => this.aiLimit());
+    this.part('failing AI batches', () => this.aiBatches());
     for (const m of this.messages) this.service.notify(m, settings);
   }
 
@@ -364,6 +382,32 @@ export class NotificationWatcher {
     this.service.clearOthers(AI_LIMIT_EVENT, active);
   }
 
+  /**
+   * Models whose batches the provider keeps refusing (ttsu.db ai_state batchHealth): one alert
+   * per model while its batches are paused; "Resolved" once a batch is accepted again.
+   */
+  private aiBatches(): void {
+    const row = this.s.db
+      .prepare('SELECT value_json FROM ai_state WHERE key = ?')
+      .get(BATCH_HEALTH_KEY) as { value_json: string } | undefined;
+    const all = row ? (JSON.parse(row.value_json) as Record<string, ModelBatchHealth>) : {};
+    const active = new Set<string>();
+    for (const h of Object.values(all)) {
+      if (h.pausedSince === null) continue;
+      const key = `${AI_BATCHES_EVENT}:${h.model}`;
+      active.add(key);
+      const who = h.provider === 'anthropic' ? 'Anthropic' : 'OpenAI';
+      const summary = `${who} refused ${h.failures} ${h.model} batches in a row: its batches are paused`;
+      if (this.service.observe(key, AI_BATCHES_EVENT, { waitMs: 0, summary, detail: h.reason }))
+        this.messages.push({
+          event: AI_BATCHES_EVENT,
+          lines: [summary, clip(h.reason, 200)],
+          link: LINKS.ai,
+        });
+    }
+    this.service.clearOthers(AI_BATCHES_EVENT, active);
+  }
+
   // ---- the cleanup ----
 
   private stages(indexAlert: Message | null): void {
@@ -385,6 +429,44 @@ export class NotificationWatcher {
       ) {
         alerts.push(r);
       }
+    }
+    // WP20g: the Calibre new arrivals' pause (its own row), one alert per pause.
+    try {
+      const a = db
+        .prepare('SELECT pause_reason, pause_detail FROM calibre_arrivals_state WHERE id = 1')
+        .get() as { pause_reason: string | null; pause_detail: string | null } | undefined;
+      if (a?.pause_reason) {
+        const key = 'stage_paused:arrivals';
+        active.add(key);
+        const summary = `Calibre new arrivals paused: ${stagePauseText(a.pause_reason)}`;
+        if (
+          this.service.observe(key, 'stage_paused', { waitMs: 0, summary, detail: a.pause_detail })
+        )
+          this.messages.push({
+            event: 'stage_paused',
+            lines: [summary, clip(a.pause_detail ?? '', 200)],
+            link: LINKS.cleanup,
+          });
+      }
+    } catch {
+      // cleanup.db before WP20g
+    }
+    // More Bookmeter coverage's pass (its own row), one alert per pause.
+    try {
+      const b = db
+        .prepare('SELECT paused_reason, paused_detail FROM bookmeter_more_state WHERE id = 1')
+        .get() as { paused_reason: string | null; paused_detail: string | null } | undefined;
+      if (b?.paused_reason) {
+        const key = 'stage_paused:bookmeter';
+        active.add(key);
+        const summary = `More Bookmeter matches paused: ${b.paused_detail ?? stagePauseText(b.paused_reason)}`;
+        if (
+          this.service.observe(key, 'stage_paused', { waitMs: 0, summary, detail: b.paused_detail })
+        )
+          this.messages.push({ event: 'stage_paused', lines: [summary], link: LINKS.cleanup });
+      }
+    } catch {
+      // cleanup.db before More Bookmeter coverage
     }
     this.service.clearOthers('stage_paused', active);
 
@@ -517,10 +599,106 @@ export class NotificationWatcher {
     } catch {
       audio = undefined;
     }
-    if ((!st || st.mode === 'off') && (!audio || audio.mode === 'off')) return false;
+    let bm: { mode: string } | undefined;
+    try {
+      bm = db.prepare('SELECT mode FROM bookmeter_more_state WHERE id = 1').get() as
+        | { mode: string }
+        | undefined;
+    } catch {
+      bm = undefined;
+    }
+    if (
+      (!st || st.mode === 'off') &&
+      (!audio || audio.mode === 'off') &&
+      (!bm || bm.mode === 'off')
+    )
+      return false;
     return !!db
       .prepare("SELECT 1 FROM fetch_requests WHERE state IN ('queued', 'leased') LIMIT 1")
       .get();
+  }
+
+  /**
+   * A fetch site paused after refusals in a row (queue.ts): one alert per pause (WP20 lessons 4:
+   * the 2026-11-20 fetcher pause told nobody for three hours).
+   */
+  private fetchSitePauses(): void {
+    const db = this.s.cleanupDb;
+    if (!db) return;
+    const rows = db
+      .prepare('SELECT site, paused_reason FROM fetch_sites WHERE paused_reason IS NOT NULL')
+      .all() as { site: string; paused_reason: string }[];
+    const active = new Set<string>();
+    for (const r of rows) {
+      const key = `fetch_site_paused:${r.site}`;
+      active.add(key);
+      const summary = `The cleanup's fetching from ${r.site} paused: ${r.paused_reason}`;
+      if (this.service.observe(key, 'fetch_site_paused', { waitMs: 0, summary }))
+        this.messages.push({
+          event: 'fetch_site_paused',
+          lines: [summary, 'Resume it on /cleanup (stage 4, the sites).'],
+          link: LINKS.cleanup,
+        });
+    }
+    this.service.clearOthers('fetch_site_paused', active);
+  }
+
+  /**
+   * More Bookmeter coverage: one alert when the spot check is ready (stop 3: the user marks the
+   * 50 books), and a digest line per finished step.
+   */
+  private bookmeterPass(): void {
+    const db = this.s.cleanupDb;
+    if (!db) return;
+    let row: { mode: string; progress_json: string } | undefined;
+    try {
+      row = db
+        .prepare('SELECT mode, progress_json FROM bookmeter_more_state WHERE id = 1')
+        .get() as { mode: string; progress_json: string } | undefined;
+    } catch {
+      return; // cleanup.db before More Bookmeter coverage
+    }
+    if (!row) return;
+    const p = JSON.parse(row.progress_json) as {
+      phase?: string;
+      spot?: { drawnAt: number | null; size: number };
+      counts?: { rules?: number; near?: number; second?: number };
+      ai?: { accepted?: number };
+      second?: { found?: number };
+      stores?: { answered?: number; failed?: number };
+      propose?: { proposed?: number };
+    };
+    const open = db
+      .prepare('SELECT COUNT(*) AS n FROM bookmeter_more_spot WHERE verdict IS NULL')
+      .get() as { n: number };
+    if (p.phase === 'spot' && p.spot?.drawnAt && open.n > 0) {
+      const summary = `More Bookmeter matches: the spot check of ${p.spot.size} books is ready`;
+      if (this.service.observe('bookmeter_spot', 'bookmeter_spot_ready', { waitMs: 0, summary }))
+        this.messages.push({
+          event: 'bookmeter_spot_ready',
+          lines: [summary, 'Mark each one Right or Wrong; On needs at most 1 wrong.'],
+          link: LINKS.cleanup,
+        });
+    } else this.service.clear('bookmeter_spot');
+    const last = this.service.store.getState<string>('bookmeter_phase');
+    const phase = p.phase ?? 'match';
+    if (last === phase) return;
+    this.service.store.setState('bookmeter_phase', phase);
+    if (last === undefined || row.mode === 'off') return;
+    const text: Record<string, string> = {
+      ai: `the stored answers decided again: ${p.counts?.rules ?? 0} new matches by the rules, ${p.counts?.near ?? 0} near misses for the AI check, ${p.counts?.second ?? 0} books for the second search`,
+      second: `the AI check accepted ${p.ai?.accepted ?? 0}`,
+      stores: `the second search found ${p.second?.found ?? 0}`,
+      propose: `store lists read: ${p.stores?.answered ?? 0} (${p.stores?.failed ?? 0} failed)`,
+      spot: `${p.propose?.proposed ?? 0} books proposed`,
+      done: 'written to Calibre',
+    };
+    if (text[phase])
+      this.service.addDigestLine(
+        'bookmeter_summary',
+        `More Bookmeter matches: ${text[phase]}`,
+        LINKS.cleanup,
+      );
   }
 
   /** Automatic field pauses of stages 2 and 4: a digest line when one starts or ends. */
@@ -562,6 +740,53 @@ export class NotificationWatcher {
         LINKS.cleanup,
       );
     }
+  }
+
+  /**
+   * Series-order follow-up (the user, 2026-11-22: "I should know which items were a best guess
+   * so an issue like this doesn't go unnoticed again"): the values stage 4 writes as best guesses
+   * give one digest line per check, counted from each newly applied stage-4 batch (field_undo by
+   * its batch key, then each change by its id). The first look only remembers where it is.
+   */
+  private stage4Guesses(): void {
+    const db = this.s.cleanupDb;
+    if (!db) return;
+    const last = this.service.store.getState<number>('stage4_guess_batches');
+    let batches: { id: string; finished_at: number }[];
+    try {
+      batches = db
+        .prepare(
+          `SELECT id, finished_at FROM batches
+           WHERE stage = 4 AND kind = 'apply' AND state IN ('applied', 'partial') AND finished_at > ?
+           ORDER BY finished_at`,
+        )
+        .all(last ?? 0) as typeof batches;
+    } catch {
+      return;
+    }
+    if (batches.length)
+      this.service.store.setState('stage4_guess_batches', batches[batches.length - 1].finished_at);
+    else if (last === undefined) this.service.store.setState('stage4_guess_batches', 0);
+    if (last === undefined || !batches.length) return;
+    let values = 0;
+    let numbers = 0;
+    const count = db.prepare(
+      `SELECT p.field AS field, COUNT(*) AS n FROM field_undo f JOIN proposed_changes p ON p.id = f.change_id
+       WHERE f.batch_id = ? AND json_extract(p.evidence_json, '$.unconfirmed') = 1 GROUP BY p.field`,
+    );
+    for (const b of batches)
+      for (const r of count.all(b.id) as { field: string; n: number }[]) {
+        values += r.n;
+        if (r.field === 'series') numbers += r.n;
+      }
+    if (values === 0) return;
+    this.service.addDigestLine(
+      'cleanup_best_guesses',
+      `Calibre cleanup stage 4: ${values} ${plural(values, 'value', 'values')} written as best guesses${
+        numbers ? ` (${numbers} series ${plural(numbers, 'number', 'numbers')})` : ''
+      }: listed under Best guesses`,
+      LINKS.cleanup,
+    );
   }
 
   /**
@@ -612,6 +837,105 @@ export class NotificationWatcher {
             r.mode === 'on' ? `${rep.added} added in this run` : 'Preview run: nothing was added',
           ],
           link: LINKS.audioCleanup,
+        });
+      const eb = rep.ebooks;
+      if (eb && !eb.error) {
+        // A pass that found nothing changed says nothing in the digest.
+        const looked = !/^Nothing changed/.test(eb.reason ?? '');
+        if (looked || eb.newReview > 0) {
+          const ebParts = [
+            `${eb.counts.auto} paired`,
+            `${eb.counts.review} to review${eb.newReview ? ` (${eb.newReview} new)` : ''}`,
+            eb.mode === 'on'
+              ? null
+              : eb.preview
+                ? `Preview: ${eb.preview.changes} ${plural(eb.preview.changes, 'book', 'books')} would change, ${eb.preview.moves} would move`
+                : 'Preview',
+            eb.gate && !eb.gate.passed ? 'the labeled check failed' : null,
+          ].filter((x): x is string => x !== null);
+          this.service.addDigestLine(
+            'audio_ebooks_summary',
+            `Audiobooks and their Calibre ebooks: ${ebParts.join(', ')}`,
+            LINKS.audioCleanup,
+          );
+        }
+        if (eb.newReview > 0)
+          this.messages.push({
+            event: 'audio_ebooks_review',
+            lines: [
+              `Audiobooks and their Calibre ebooks: ${eb.newReview} ${plural(eb.newReview, 'recording', 'recordings')} to look at (which ebook is the volume)`,
+              eb.mode === 'on'
+                ? 'Their genres and tags wait for your choice'
+                : 'Preview run: nothing was written',
+            ],
+            link: LINKS.audioCleanup,
+          });
+      }
+    }
+  }
+
+  /**
+   * WP20g: each finished run of the Calibre library's new arrivals gives one digest line and,
+   * when it found new review items, one alert. The first look only remembers the last run.
+   */
+  private bookArrivalRuns(): void {
+    const db = this.s.cleanupDb;
+    if (!db) return;
+    let rows: { id: number; mode: string; report_json: string | null }[];
+    try {
+      rows = db
+        .prepare(
+          `SELECT id, mode, report_json FROM calibre_arrival_runs WHERE state = 'done' AND id > ? ORDER BY id`,
+        )
+        .all(this.service.store.getState<number>('book_arrival_runs') ?? 0) as typeof rows;
+    } catch {
+      return; // cleanup.db before WP20g
+    }
+    const first = this.service.store.getState<number>('book_arrival_runs') === undefined;
+    if (rows.length) this.service.store.setState('book_arrival_runs', rows[rows.length - 1].id);
+    else if (first) this.service.store.setState('book_arrival_runs', 0);
+    if (first) return;
+    for (const r of rows) {
+      const rep = r.report_json
+        ? (JSON.parse(r.report_json) as {
+            added: number;
+            hand: number;
+            outcomes: Record<string, number>;
+            newReview: number;
+            aiCost: number;
+            bestGuesses: number;
+            estimate: { books: number } | null;
+          })
+        : null;
+      if (!rep) continue;
+      const o = rep.outcomes ?? {};
+      const copies = (o.identical ?? 0) + (o.duplicate ?? 0);
+      const notImported = (o.not_imported ?? 0) + (o.unreadable ?? 0);
+      const parts = [
+        r.mode === 'on'
+          ? `${rep.added} added`
+          : `${rep.estimate?.books ?? 0} would be added (Preview)`,
+        rep.hand ? `${rep.hand} added in Calibre checked` : null,
+        copies ? `${copies} copies of library books not added` : null,
+        notImported ? `${notImported} not imported` : null,
+        rep.bestGuesses ? `${rep.bestGuesses} series numbers best guesses` : null,
+        rep.aiCost ? `AI $${rep.aiCost.toFixed(2)}` : null,
+        rep.newReview ? `${rep.newReview} new to look at` : null,
+      ].filter((x): x is string => x !== null);
+      if (parts.length === 1 && rep.added === 0 && !rep.estimate?.books) continue;
+      this.service.addDigestLine(
+        'calibre_arrivals_summary',
+        `New books: ${parts.join(', ')}`,
+        LINKS.cleanup,
+      );
+      if (rep.newReview > 0)
+        this.messages.push({
+          event: 'calibre_arrivals_review',
+          lines: [
+            `New books: ${rep.newReview} ${plural(rep.newReview, 'item', 'items')} to look at (better copies, archives, adds that failed)`,
+            r.mode === 'on' ? `${rep.added} added in this run` : 'Preview run: nothing was added',
+          ],
+          link: LINKS.cleanup,
         });
     }
   }

@@ -18,6 +18,8 @@
     CleanupApi,
     CleanupStage,
     Stage4Gate,
+    Stage4GuessOther,
+    Stage4GuessSeries,
     Stage4Proposal,
     Stage4Status,
     StageMode
@@ -36,14 +38,19 @@
     writtenLine,
     aiLine,
     booksLine,
+    lookupBar,
     fieldCounts,
     gateRows,
     nativelyLine,
     readingsLine,
     siteLine,
     sourceName,
-    valueText
+    valueText,
+    GUESS_FIELDS,
+    seriesNumberText,
+    seriesOrderLine
   } from '$lib/cleanup/stage4-text';
+  import ListPager from '$lib/components/list-pager.svelte';
   import { formatWhen } from '$lib/notes/notes-format';
   import CleanupDetails from './cleanup-details.svelte';
   import { stage4GateSummary, stage4SitesNeedingYou } from '$lib/cleanup/cleanup-card-text';
@@ -60,6 +67,7 @@
   $: aiDone = status?.ai?.phase === 'done' && !status.ai.error;
   $: aiProgress = aiBar(status?.ai);
   $: writeProgress = writeBar(status?.write, stage.mode);
+  $: lookupProgress = status ? lookupBar(status) : null;
   $: written = writtenLine(status?.write, stage.mode);
   $: unconfirmedTotal = (status?.unconfirmed ?? []).reduce((a, u) => a + u.n, 0);
 
@@ -137,6 +145,39 @@
       listError = (err as Error).message;
     } finally {
       loading = false;
+    }
+  }
+
+  // Best guesses (series-order follow-up): every value written as a best guess, so none goes
+  // unnoticed: series whole and in order, then books outside a series.
+  const GUESS_PAGE = 20;
+  let guessKind: 'series' | 'other' = 'series';
+  let guessPage = 1;
+  let guessTotal = 0;
+  let guessSeries: Stage4GuessSeries[] = [];
+  let guessOther: Stage4GuessOther[] = [];
+  let guessLoading = false;
+  let guessError = '';
+  $: guessPages = Math.max(1, Math.ceil(guessTotal / GUESS_PAGE));
+  $: seriesLine = seriesOrderLine(status?.ai?.seriesOrder);
+  async function loadGuesses() {
+    guessLoading = true;
+    guessError = '';
+    try {
+      const offset = (guessPage - 1) * GUESS_PAGE;
+      if (guessKind === 'series') {
+        const r = await api.stage4GuessSeries(offset, GUESS_PAGE);
+        guessSeries = r.series;
+        guessTotal = r.total;
+      } else {
+        const r = await api.stage4GuessOther(offset, GUESS_PAGE);
+        guessOther = r.books;
+        guessTotal = r.total;
+      }
+    } catch (err) {
+      guessError = (err as Error).message;
+    } finally {
+      guessLoading = false;
     }
   }
 
@@ -219,7 +260,28 @@
           The fetch container is not running: nothing is looked up until it is back.
         </p>
       {/if}
-      {#if booksLine(status)}
+      {#if lookupProgress}
+        <div class="flex flex-col gap-1" data-testid="cleanup-stage-4-lookup-progress">
+          <div class="flex flex-wrap justify-between gap-x-4 text-sm">
+            <span>{lookupProgress.label}</span>
+            <span
+              >{Math.floor(lookupProgress.fraction * 100)} %{lookupProgress.eta
+                ? ` · ${lookupProgress.eta}`
+                : ''}</span
+            >
+          </div>
+          <div
+            class="c-progress h-2 overflow-hidden rounded-full bg-c-track"
+            role="progressbar"
+            aria-label={lookupProgress.label}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={Math.floor(lookupProgress.fraction * 100)}
+          >
+            <div class="h-full bg-c-fill" style="width: {lookupProgress.fraction * 100}%" />
+          </div>
+        </div>
+      {:else if booksLine(status)}
         <p class="text-sm" data-testid="cleanup-stage-4-books">{booksLine(status)}</p>
       {/if}
       <!-- A site that needs you (paused, or requests given up) shows outside the fold. -->
@@ -395,6 +457,90 @@
         </div>
       {/if}
     </CleanupDetails>
+    {#if seriesLine}
+      <p class="text-sm" data-testid="cleanup-stage-4-series-order">{seriesLine}</p>
+    {/if}
+    <details
+      class="flex flex-col gap-2"
+      data-testid="cleanup-stage-4-guesses"
+      on:toggle={(e) => e.currentTarget.open && loadGuesses()}
+    >
+      <summary class="cursor-pointer text-sm font-medium">Best guesses</summary>
+      <p class="mt-2 text-sm text-c-muted">
+        Values no source confirms. Best guesses are no longer written: they wait in Review (those an
+        earlier run wrote stay marked). Series are shown whole, in their order, with each guessed
+        number marked.
+      </p>
+      <label class="flex flex-col text-sm"
+        >Show
+        <select
+          class="c-input"
+          bind:value={guessKind}
+          on:change={() => ((guessPage = 1), loadGuesses())}
+          data-testid="cleanup-stage-4-guesses-kind"
+        >
+          <option value="series">Series</option>
+          <option value="other">Books outside a series</option>
+        </select>
+      </label>
+      {#if guessError}<p class="text-sm" role="alert">{guessError}</p>{/if}
+      <p class="text-sm text-c-muted">
+        {guessLoading
+          ? 'Loading…'
+          : guessKind === 'series'
+            ? `${n(guessTotal)} series`
+            : `${n(guessTotal)} books`}
+      </p>
+      {#if guessKind === 'series'}
+        <ul class="flex flex-col gap-3 text-sm" data-testid="cleanup-stage-4-guesses-series">
+          {#each guessSeries as s (s.series)}
+            <li class="flex flex-col gap-1 border-b pb-2" style="border-color: var(--c-line)">
+              <span class="font-medium">{s.series}</span>
+              <ol class="flex flex-col gap-0.5">
+                {#each s.books as b (b.calibreId)}
+                  <li class={b.guess || b.review ? '' : 'text-c-muted'}>
+                    <span class="tabular-nums">{seriesNumberText(b.index)}</span> · {b.title ||
+                      `Calibre ${b.calibreId}`}
+                    {#if b.review}<span class="font-medium">
+                        · For review: {b.review}</span
+                      >{:else if b.guess}<span class="font-medium">
+                        · Best guess{b.reason ? `: ${b.reason}` : ''}</span
+                      >{/if}
+                    {#each b.fields as f (f.field)}
+                      <span>{` · ${GUESS_FIELDS[f.field] ?? f.field} is a best guess`}</span>
+                    {/each}
+                  </li>
+                {/each}
+              </ol>
+            </li>
+          {/each}
+        </ul>
+      {:else}
+        <ul class="flex flex-col gap-2 text-sm" data-testid="cleanup-stage-4-guesses-other">
+          {#each guessOther as b (b.calibreId)}
+            <li class="flex flex-col gap-0.5 border-b py-2" style="border-color: var(--c-line)">
+              <span class="font-medium">{b.title || `Calibre ${b.calibreId}`}</span>
+              {#each b.fields as f (f.field)}
+                <span
+                  >{GUESS_FIELDS[f.field] ?? f.field}: {valueText(f.value)}{f.reason
+                    ? ` · ${f.reason}`
+                    : ''}</span
+                >
+              {/each}
+            </li>
+          {/each}
+        </ul>
+      {/if}
+      {#if guessPages > 1}
+        <ListPager
+          page={guessPage}
+          pages={guessPages}
+          label="Best guesses"
+          testid="cleanup-stage-4-guesses"
+          on:go={(e) => ((guessPage = e.detail), loadGuesses())}
+        />
+      {/if}
+    </details>
     <details
       class="flex flex-col gap-2"
       data-testid="cleanup-stage-4-list"

@@ -39,6 +39,15 @@
   import DiagnosticsPanel from '$lib/components/settings/diagnostics-panel.svelte';
   import NotificationsPanel from '$lib/components/settings/notifications-panel.svelte';
   import AiPanel from '$lib/components/settings/ai-panel.svelte';
+  import ToolbarSettings from '$lib/components/settings/toolbar-settings.svelte';
+  import BookLinksSettings from '$lib/components/settings/book-links-settings.svelte';
+  import {
+    bookLinksMoreAs$,
+    bookLinksPlacement$,
+    bookLinksSearch$
+  } from '$lib/book-links/settings';
+  import TagListSettings from '$lib/components/calibre-edit/tag-list-settings.svelte';
+  import { bookEditAs$, bookRatingEmpty$, seriesEditAs$ } from '$lib/calibre-edit/settings';
   import { NOT_OVER_HTTP } from '$lib/diagnostics/diagnostics-text';
   import { canPersistStorage } from '$lib/functions/secure-context';
   import {
@@ -47,11 +56,7 @@
     libraryDownloadConfirmGb$,
     libraryLook$
   } from '$lib/library/settings';
-  import {
-    readAloudAheadSeconds$,
-    readAloudBottomBarButton$,
-    readAloudLookupResume$
-  } from '$lib/read-aloud/settings';
+  import { readAloudAheadSeconds$, readAloudLookupResume$ } from '$lib/read-aloud/settings';
   import { customFontNames$ } from '$lib/fonts/server-fonts-browser';
   import { BlurMode } from '$lib/data/blur-mode';
   import { dialogManager } from '$lib/data/dialog-manager';
@@ -198,7 +203,6 @@
   export let jumpHistoryLimit: number;
   export let highlightRefindChars: number;
   export let highlightBarAnySelection: boolean;
-  export let showReturnMarker: boolean;
 
   export let positionPromptMinChars: number;
 
@@ -324,6 +328,26 @@
   const optionsForIllustrationsPosition: ToggleOption<string>[] = [
     { id: 'description', text: 'Under the description' },
     { id: 'cover', text: 'Under the cover' }
+  ];
+
+  // Settings > Library > Book page: where a Calibre book's links go, and how More opens.
+  const optionsForLinksPlacement: ToggleOption<string>[] = [
+    { id: 'buttons', text: 'Under the buttons' },
+    { id: 'panel', text: 'Own panel' },
+    { id: 'section', text: 'Full-width section' }
+  ];
+  const optionsForLinksMoreAs: ToggleOption<string>[] = [
+    { id: 'dropdown', text: 'Dropdown' },
+    { id: 'modal', text: 'Modal' }
+  ];
+  // Settings > Library: how the edit form and the series editor open (per device).
+  const optionsForEditAs: ToggleOption<string>[] = [
+    { id: 'panel', text: 'Side panel' },
+    { id: 'modal', text: 'Modal' }
+  ];
+  const optionsForRatingEmpty: ToggleOption<string>[] = [
+    { id: 'hide', text: 'Hide the line' },
+    { id: 'show', text: 'Show “No rating”' }
   ];
 
   const optionsForVerticalTextOrientation: ToggleOption<VerticalTextOrientation>[] = [
@@ -518,13 +542,6 @@
         </svelte:fragment>
         <SettingSwitch bind:checked={$einkMode$} labelledby={labelId} />
       </SettingRow>
-      <SettingRow id="library-look" let:labelId>
-        <SettingChoice
-          options={optionsForLibraryLook}
-          bind:value={$libraryLook$}
-          labelledby={labelId}
-        />
-      </SettingRow>
       {#if wakeLockSupported}
         <SettingRow id="wake-lock" layout="inline" let:labelId>
           <SettingSwitch bind:checked={enableReaderWakeLock} labelledby={labelId} />
@@ -715,6 +732,11 @@
       </SettingRow>
     </SettingsGroup>
 
+    <!-- Reader toolbars session 2: this device's top bar and bottom bar buttons. -->
+    <SettingsGroup id="reader-toolbars" card={false}>
+      <ToolbarSettings />
+    </SettingsGroup>
+
     <SettingsGroup id="reader-bar">
       <SettingRow id="show-chars" layout="inline" let:labelId>
         <SettingSwitch bind:checked={showCharacterCounter} labelledby={labelId} />
@@ -727,9 +749,6 @@
       </SettingRow>
       <SettingRow id="show-chapter-percent" layout="inline" let:labelId>
         <SettingSwitch bind:checked={showFooterChapterPercentage} labelledby={labelId} />
-      </SettingRow>
-      <SettingRow id="return-marker" layout="inline" let:labelId>
-        <SettingSwitch bind:checked={showReturnMarker} labelledby={labelId} />
       </SettingRow>
     </SettingsGroup>
 
@@ -884,13 +903,6 @@
           />
         </SettingRow>
       {/if}
-      <SettingRow id="illustrations-position" let:labelId>
-        <SettingChoice
-          options={optionsForIllustrationsPosition}
-          bind:value={$bookIllustrationsPosition$}
-          labelledby={labelId}
-        />
-      </SettingRow>
     </SettingsGroup>
 
     <!-- Season 2 pacer: the rarely changed settings (mode and speed are in the reader). -->
@@ -946,13 +958,6 @@
 
     <!-- Season 2 Phase 12 session 3: read-aloud's rarely changed settings (play and speed are in the reader). -->
     <SettingsGroup id="reader-readaloud">
-      <SettingRow id="read-aloud-button" layout="inline" let:labelId>
-        <SettingSwitch
-          bind:checked={$readAloudBottomBarButton$}
-          labelledby={labelId}
-          testid="settings-read-aloud-button"
-        />
-      </SettingRow>
       <SettingRow id="read-aloud-ahead" let:labelId>
         <SettingField unit="seconds">
           <input
@@ -976,6 +981,109 @@
             data-testid="settings-read-aloud-lookup-resume"
             value={$readAloudLookupResume$}
             on:change={(e) => readAloudLookupResume$.next(nonNegative(e, 1))}
+          />
+        </SettingField>
+      </SettingRow>
+    </SettingsGroup>
+  {:else if activeSettings === 'Library'}
+    <!-- Settings > Library (calibre-metadata-display.md): Library look (moved from Reader >
+         Theme and display), the book page (the illustrations, moved from Reader > Images, and
+         the links), the Links list, and Downloading books (moved from Data). Same keys. -->
+    <SettingsGroup id="library-appearance">
+      <SettingRow id="library-look" let:labelId>
+        <SettingChoice
+          options={optionsForLibraryLook}
+          bind:value={$libraryLook$}
+          labelledby={labelId}
+        />
+      </SettingRow>
+    </SettingsGroup>
+    <SettingsGroup id="library-book-page">
+      <SettingRow id="illustrations-position" let:labelId>
+        <SettingChoice
+          options={optionsForIllustrationsPosition}
+          bind:value={$bookIllustrationsPosition$}
+          labelledby={labelId}
+        />
+      </SettingRow>
+      <SettingRow id="links-placement" let:labelId>
+        <SettingChoice
+          options={optionsForLinksPlacement}
+          bind:value={$bookLinksPlacement$}
+          labelledby={labelId}
+          testid="links-placement"
+        />
+      </SettingRow>
+      <SettingRow id="links-more-as" let:labelId>
+        <SettingChoice
+          options={optionsForLinksMoreAs}
+          bind:value={$bookLinksMoreAs$}
+          labelledby={labelId}
+          testid="links-more-as"
+        />
+      </SettingRow>
+      <SettingRow id="links-search" layout="inline" let:labelId>
+        <SettingSwitch
+          bind:checked={$bookLinksSearch$}
+          labelledby={labelId}
+          testid="links-search"
+        />
+      </SettingRow>
+      <SettingRow id="book-edit-as" let:labelId>
+        <SettingChoice
+          options={optionsForEditAs}
+          bind:value={$bookEditAs$}
+          labelledby={labelId}
+          testid="book-edit-as"
+        />
+      </SettingRow>
+      <SettingRow id="book-rating-empty" let:labelId>
+        <SettingChoice
+          options={optionsForRatingEmpty}
+          bind:value={$bookRatingEmpty$}
+          labelledby={labelId}
+          testid="book-rating-empty"
+        />
+      </SettingRow>
+    </SettingsGroup>
+    <SettingsGroup id="library-links" card={false}>
+      <BookLinksSettings />
+    </SettingsGroup>
+    <!-- Calibre metadata editing (design 2026-11-23): after Links. -->
+    <SettingsGroup id="library-editing">
+      <SettingRow id="series-edit-as" let:labelId>
+        <SettingChoice
+          options={optionsForEditAs}
+          bind:value={$seriesEditAs$}
+          labelledby={labelId}
+          testid="series-edit-as"
+        />
+      </SettingRow>
+      <SettingRow id="tags-you-can-pick" layout="stack">
+        {#if browser}<TagListSettings />{/if}
+      </SettingRow>
+    </SettingsGroup>
+    <SettingsGroup id="data-downloads">
+      <SettingRow id="bulk-download-mode" let:labelId>
+        <SettingChoice
+          options={[
+            { id: 'zip', text: 'One ZIP file' },
+            { id: 'files', text: 'Separate files' }
+          ]}
+          bind:value={$libraryBulkDownloadMode$}
+          labelledby={labelId}
+          testid="bulk-download-mode"
+        />
+      </SettingRow>
+      <SettingRow id="download-confirm-size" let:labelId>
+        <SettingField unit="GB">
+          <input
+            type="number"
+            min="0"
+            step="0.5"
+            aria-labelledby={labelId}
+            data-testid="download-confirm-size"
+            bind:value={$libraryDownloadConfirmGb$}
           />
         </SettingField>
       </SettingRow>
@@ -1022,31 +1130,6 @@
           </p>
         </SettingRow>
       {/if}
-    </SettingsGroup>
-    <SettingsGroup id="data-downloads">
-      <SettingRow id="bulk-download-mode" let:labelId>
-        <SettingChoice
-          options={[
-            { id: 'zip', text: 'One ZIP file' },
-            { id: 'files', text: 'Separate files' }
-          ]}
-          bind:value={$libraryBulkDownloadMode$}
-          labelledby={labelId}
-          testid="bulk-download-mode"
-        />
-      </SettingRow>
-      <SettingRow id="download-confirm-size" let:labelId>
-        <SettingField unit="GB">
-          <input
-            type="number"
-            min="0"
-            step="0.5"
-            aria-labelledby={labelId}
-            data-testid="download-confirm-size"
-            bind:value={$libraryDownloadConfirmGb$}
-          />
-        </SettingField>
-      </SettingRow>
     </SettingsGroup>
     <SettingsGroup id="data-import">
       <SettingRow id="epub-fixes" description={importHTMLFixModeTooltip} let:labelId>

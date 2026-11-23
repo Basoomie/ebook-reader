@@ -207,8 +207,9 @@
 
     <h4 class="mt-6 font-mincho text-base font-bold">Merge into one file</h4>
     <p class="text-sm text-c-muted">
-      Tick the files to join and put them in order. Each file becomes a chapter of a new file saved
-      next to them; the originals are not changed.
+      Tick the files to join and put them in order. They become one new file saved next to them that
+      keeps each file's chapters (a file without chapters becomes one chapter); the originals are
+      not changed.
     </p>
     <ol
       class="mt-2 max-h-[24rem] divide-y divide-dashed divide-c-line overflow-y-auto pr-1"

@@ -129,6 +129,16 @@ export function queryTitle(t: string | null | undefined): string {
 }
 
 export const COMIC = /MFC|コミック|マンガ|漫画|COMIC|Comic|comic|ｺﾐｯｸ/u;
+
+/** Words of another edition (an omnibus, a re-issue, single chapters): not the book itself. */
+export const EDITION =
+  /完全版|新装版|合本版|合本|愛蔵版|特装版|決定版|改訂版|増補版|分冊版|単話版|単話|マイクロ/u;
+
+/** A result carrying an edition mark the query doesn't (【合本版】 for the volume). */
+export function otherEdition(qtitle: string, title: string): boolean {
+  const m = EDITION.exec(nfkc(title));
+  return !!m && !nfkc(qtitle).includes(m[0]);
+}
 export const EXTRA =
   /購入特典|特典SS|ショートストーリー|試し読み|無料|お試し|Prelude|特装版|special edition/iu;
 
@@ -141,13 +151,77 @@ export type Pick = [string, string];
 export const BUNDLED_BONUS =
   /【[^】]*(?:特典SS付き?|特典SS付|特典ショートストーリー(?:つき|付き?))[^】]*】/gu;
 
-/** ref4 pick_by_volume(): comic editions last for text books, then the volume, then similarity. */
+/**
+ * A title with its volume number, store markers (【…】), imprint and punctuation set aside: two
+ * volumes of one series that share a subtitle compare equal (「事情3 ～離婚できずに新婚旅行～
+ * (ビーズログ文庫)」 and the file's 「事情～離婚できずに新婚旅行!?～」).
+ */
+export function titleKey(s: string): string {
+  // Only volume-like numbers go (as nums(): under 500): 「Another 2001（下）」 is another book.
+  const t = queryTitle(nfkc(s).replace(/【[^】]*】/gu, ' ')).replace(
+    /\p{Nd}+(?:\.\p{Nd}+)?/gu,
+    (m) => (parseFloat(asciiDigits(m)) < 500 ? '' : m),
+  );
+  return norm(t);
+}
+
+/** Whether a title has words of its own after its last volume number (a volume's subtitle). */
+export function subtitleAfterNumber(s: string): boolean {
+  // A bracketed imprint at the end is not a subtitle, listed or not (「…～クリスと迷宮の秘密～3
+  // （サーガフォレスト）」: gate 4 at stop 1; the subtitle before the number is the series').
+  const t = queryTitle(nfkc(s).replace(/【[^】]*】/gu, ' ')).replace(
+    /\s*[(（][^()（）]*[)）]\s*$/u,
+    '',
+  );
+  const m = [...t.matchAll(/\p{Nd}+(?:\.\p{Nd}+)?/gu)].pop();
+  if (!m || m.index === undefined) return false;
+  return norm(t.slice(m.index + m[0].length)).length >= 2;
+}
+
+/**
+ * Whether a result's title is the query's (both as titleKey gives them): equal, or with only a
+ * series name Amazon puts after it: words that end in シリーズ or repeat the title's own
+ * (「青春ブタ野郎はゆめみる少女の夢を見ない 青春ブタ野郎シリーズ (電撃文庫)」; 「ハリー・ポッターと謎のプリンス
+ * ハリー・ポッタ (Harry Potter)」, whose last bracket is the store's note). Other words after it are
+ * another book (「夜行堂奇譚 参 下」, 「… ［Colorful］」).
+ */
+export function titleMatch(qkey: string, title: string): boolean {
+  if (!qkey) return false;
+  for (const k of [titleKey(title), titleKey(title.replace(/\s*[(（][^()（）]*[)）]\s*$/u, ''))]) {
+    if (k === qkey) return true;
+    if (!k.startsWith(qkey)) continue;
+    const rest = k.slice(qkey.length);
+    if (rest.endsWith(norm('シリーズ')) || qkey.includes(rest)) return true;
+  }
+  return false;
+}
+
+/**
+ * ref4 pick_by_volume(): comic editions last for text books, then the volume, then similarity.
+ *
+ * Series-order follow-up (2026-11-22, measured on the live copy: 437 books): a query without a
+ * number ranked volume 1 or an unnumbered result above the result that IS the book, so a
+ * volume whose file title has no number (「(仮)花嫁のやんごとなき事情～離婚できずに新婚旅行!?～」,
+ * volume 3) took volume 1's record even when Amazon listed volume 3 first. Now, for such a
+ * query, a result whose title equals the query's once the number, imprint and punctuation are
+ * set aside (titleKey) comes first; "volume 1 or unnumbered" only breaks ties among those (a
+ * shared subtitle: 「時魔術士の強くてニューゲーム ～…～」 and its 「２ ～…～」). A query with a number
+ * picks as before.
+ */
 export function pickByVolume<T extends [unknown, string]>(
   qtitle: string,
   cands: T[],
   textBook = true,
+  /**
+   * The results are volumes (a series list, Amazon's or RanobeDB's results): a numbered query
+   * takes only one with its number. BookWalker's search mixes series (no number of their own)
+   * and book pages: a test per result (its book pages are volumes).
+   */
+  volumes: boolean | ((c: T) => boolean) = true,
 ): T | null {
+  const isVolume = typeof volumes === 'function' ? volumes : () => volumes;
   const qn = nums(qtitle);
+  const qkey = qn.size ? '' : titleKey(qtitle);
   let list = cands;
   if (!EXTRA.test(nfkc(qtitle))) {
     const plain = list.filter((c) => !EXTRA.test(nfkc(c[1])));
@@ -158,21 +232,61 @@ export function pickByVolume<T extends [unknown, string]>(
       ? plain
       : list.filter((c) => !EXTRA.test(nfkc(c[1]).replace(BUNDLED_BONUS, '')));
   }
+  // A numbered result counts as the book only when its own subtitle follows the number (「事情3
+  // ～離婚できずに新婚旅行～」; not 「…楽しくなりました２」, whose title is the series name) and no
+  // other volume among the results shares that subtitle (「時魔術士の…２ ～過去に戻って…～」 shares
+  // volume 1's: then only volume 1 or an unnumbered result counts).
+  // The query's title, the same once a series name Amazon puts after it is set aside: words that
+  // end in シリーズ or repeat the title's own (「青春ブタ野郎はゆめみる少女の夢を見ない 青春ブタ野郎シリーズ
+  // (電撃文庫)」 is the book; the bare 「…夢を見ない」 an empty page of another format, which the live
+  // run of 2026-11-22 took; 「ハリー・ポッターと謎のプリンス ハリー・ポッタ」). Other words after it are
+  // another book (「夜行堂奇譚 参 下」, 「… ［Colorful］」). Among equals the store's own order decides.
+  const titleOf = (t: string) => titleMatch(qkey, t);
+  const keyNums = new Map<string, Set<string>>();
+  if (qkey)
+    for (const c of list) {
+      if (!titleOf(c[1])) continue;
+      const s = keyNums.get(qkey) ?? new Set<string>();
+      s.add([...nums(c[1])].sort().join(','));
+      keyNums.set(qkey, s);
+    }
+  const sameTitle = (c: T, tn: Set<number>) => {
+    if (!qkey || !titleOf(c[1])) return 0;
+    // Volume 1 only by itself: 「冰剣の…２～…～（１）」 (a manga's first part of novel 2) is not.
+    if (!tn.size || (tn.size === 1 && tn.has(1))) return 1;
+    if ((keyNums.get(qkey)?.size ?? 0) > 1) return 0;
+    return subtitleAfterNumber(c[1]) ? 1 : 0;
+  };
   let best: T | null = null;
-  let bestKey: [number, number, number] | null = null;
+  let bestKey: number[] | null = null;
+  const better = (a: number[], b: number[]) => {
+    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return a[i] > b[i];
+    return false;
+  };
   for (const c of list) {
-    const fmt = textBook && COMIC.test(nfkc(c[1])) ? 0 : 1;
+    // Comic editions last for text books, other editions (合本版, 完全版) before them.
+    const fmt = textBook && COMIC.test(nfkc(c[1])) ? 0 : otherEdition(qtitle, c[1]) ? 1 : 2;
     const tn = nums(c[1]);
+    // A query with a volume number takes only a result with that number (or, for volume 1, an
+    // unnumbered one): never a guide book or another volume because the right one is missing
+    // from the results (the live run of 2026-11-22: 「…異世界生活6」 took 「Re：zeropedia」,
+    // 「スマートフォンとともに。2」 took 29).
+    if (isVolume(c) && qn.size && ![...qn].some((x) => tn.has(x)) && !(qn.has(1) && !tn.size))
+      continue;
     let vol: number;
-    if (qn.size) vol = [...qn].some((x) => tn.has(x)) ? 2 : tn.size ? 0 : 1;
+    // Every number of the query before some of them (「11月3日～11月7日生まれ」 is not 「11月13日～…」).
+    if (qn.size)
+      vol = [...qn].every((x) => tn.has(x))
+        ? 3
+        : [...qn].some((x) => tn.has(x))
+          ? 2
+          : tn.size
+            ? 0
+            : 1;
     else vol = !tn.size || tn.has(1) ? 2 : 0;
-    const key: [number, number, number] = [fmt, vol, sim(qtitle, c[1])];
-    if (
-      !bestKey ||
-      key[0] > bestKey[0] ||
-      (key[0] === bestKey[0] &&
-        (key[1] > bestKey[1] || (key[1] === bestKey[1] && key[2] > bestKey[2])))
-    ) {
+    const same = sameTitle(c, tn);
+    const key = [fmt, same, vol, sim(qtitle, c[1])];
+    if (!bestKey || better(key, bestKey)) {
       best = c;
       bestKey = key;
     }

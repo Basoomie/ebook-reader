@@ -137,6 +137,38 @@ describe('offline copies', () => {
     expect(stored.get('a')?.thumbnail).toBe(before?.thumbnail);
   });
 
+  it('keeps the detail’s identifiers, and fetches a copy stored without them once', async () => {
+    const { server, stored, deps } = setup(['a']);
+    server.books.set('a', summary('a'));
+    server.book = async (id: string): Promise<CatalogBookDetail> => {
+      server.details.push(id);
+      return {
+        ...server.books.get(id)!,
+        description: 'd',
+        sources: [],
+        identifiers: { honto: '1' }
+      };
+    };
+    // A copy from before (no identifiers): its detail is fetched again.
+    stored.set('a', {
+      bookId: 'a',
+      book: { ...summary('a'), description: 'old', sources: [] },
+      hasDetail: true,
+      thumbnail: null,
+      thumbnailOf: '/api/v1/books/a/thumbnail?v=1',
+      hidden: false,
+      savedAt: 1
+    });
+    expect((await refreshCopies(server, deps)).details).toBe(1);
+    expect(stored.get('a')?.book.identifiers).toEqual({ honto: '1' });
+    // Then only when the summary changes; the identifiers are kept meanwhile.
+    expect((await refreshCopies(server, deps)).details).toBe(0);
+    expect(stored.get('a')?.book.identifiers).toEqual({ honto: '1' });
+    server.books.set('a', summary('a', { illustrators: ['あずーる'] }));
+    expect((await refreshCopies(server, deps)).details).toBe(1);
+    expect(stored.get('a')?.book.illustrators).toEqual(['あずーる']);
+  });
+
   it('a details answer keeps the cover only for the same thumbnail', () => {
     const blob = new Blob(['x']);
     const old: OfflineCopy = {

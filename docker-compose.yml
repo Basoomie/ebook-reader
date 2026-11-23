@@ -142,6 +142,9 @@ services:
   #   docker exec ttsu-storage node dist/cli.js token link "link sidecar"
   # ttsu-storage also needs a read-only view of media/audiobooks from /mnt/disk1 for stage 6's
   # check (CLEANUP_AUDIO_MEDIA_DIR, beside CLEANUP_AUDIO_TORRENTS_DIR / CLEANUP_AUDIO_LIBRARY_DIR).
+  # WP20g: ttsu-storage also reads the Calibre new arrivals' source folders read-only from disk1
+  # (CLEANUP_BOOK_SOURCES_DIR=/cleanup-sources, from /mnt/disk1/data/torrents); this sidecar
+  # (1.4.0) unpacks their book archives only under <source folder>/_extracted/.
   ttsu-cleanup-link:
     build:
       context: ./apps/cleanup-link

@@ -20,6 +20,7 @@ import {
   aiGateRows,
   aiLine,
   booksLine,
+  lookupBar,
   duration,
   gateRows,
   readingLine,
@@ -136,6 +137,18 @@ describe('stage 4 wording', () => {
     expect(readingLine(reading)).toBe(
       'Reading the files: 2,002 of 52,164 · 9.3 books a second · about 1 h 30 min left'
     );
+    // The lookups' bar: books looked up of every book that can be read, the whole Preview's time.
+    expect(lookupBar(reading)).toEqual({
+      label: 'Looking up: 1,600 of 52,162 books · 400 waiting for the sites · 2 couldn’t be read',
+      fraction: 1600 / 52162,
+      eta: expect.stringContaining('(estimate)')
+    });
+    expect(
+      lookupBar({
+        ...status,
+        books: [{ state: 'proposed', labeled: 0, n: 10 }]
+      } as unknown as Stage4Status)
+    ).toBeNull();
     expect(timeLeftLine(reading)).toBe(
       'Time left for the whole Preview: about 7 days 23 h · the slowest site is BOOK☆WALKER, about 7 days 23 h · then the final pass, about 15 min · 50,162 books not started yet at requests per book from the reference run until the labeled books are done; shared series pages make it an upper bound · what the open lookups ask next counted at most until measured'
     );
@@ -319,6 +332,18 @@ describe("the AI check's progress bar (WP20e follow-up)", () => {
       aiBar({ ...base, bar: { phase: 'decide', done: 0, total: 52120, secondsLeft: null } })?.eta
     ).toBeNull();
     expect(aiBar({ ...base, phase: 'done', bar: null })).toBeNull();
+  });
+  it('counts steps for the series order and the gate, books for deciding', () => {
+    expect(
+      aiBar({ ...base, bar: { phase: 'series', done: 41810, total: 83620, secondsLeft: null } })
+        ?.label
+    ).toBe('Putting each series in order: 41,810 of 83,620 steps');
+    expect(
+      aiBar({ ...base, bar: { phase: 'gate', done: 300, total: 794, secondsLeft: 2 } })?.label
+    ).toBe('Checking the labeled books: 300 of 794 steps');
+    expect(
+      aiBar({ ...base, bar: { phase: 'decide', done: 10, total: 52120, secondsLeft: null } })?.label
+    ).toBe('Deciding every field: 10 of 52,120 books');
   });
 });
 

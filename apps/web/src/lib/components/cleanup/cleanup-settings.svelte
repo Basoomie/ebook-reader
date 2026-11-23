@@ -120,6 +120,8 @@
   let secrets: Record<SecretName, SecretInfo> | null = null;
   let loadError = '';
   let saveError = '';
+  /** Why Audiobookshelf's key was not saved (the server asks Audiobookshelf first). */
+  let absKeyError = '';
   let saved = false;
   let saving = false;
   let secretValues: Record<SecretName, string> = {
@@ -167,6 +169,7 @@
 
   function setSecretValue(name: SecretName, value: string) {
     secretValues = { ...secretValues, [name]: value };
+    if (name === 'absApiKey') absKeyError = '';
     saved = false;
   }
 
@@ -181,6 +184,7 @@
     if (!settings) return;
     saving = true;
     saveError = '';
+    absKeyError = '';
     saved = false;
     try {
       const answer = await api.saveSettings({
@@ -278,6 +282,9 @@
                       arrivalsTimeZone: settings.audiobooks.arrivalsTimeZone ?? '',
                       arrivalsSettleMinutes: Number(settings.audiobooks.arrivalsSettleMinutes),
                       arrivalsAbsWaitMinutes: Number(settings.audiobooks.arrivalsAbsWaitMinutes),
+                      librarySeenSlackSeconds: Number(
+                        settings.audiobooks.librarySeenSlackSeconds ?? 600
+                      ),
                       arrivalsAbsNudge: settings.audiobooks.arrivalsAbsNudge === true,
                       libraryChanges: settings.audiobooks.libraryChanges ?? 'analyse',
                       extractLeaseSeconds: Number(settings.audiobooks.extractLeaseSeconds)
@@ -318,7 +325,25 @@
               }
             }
           : {}),
-        ...(settings.ai ? { ai: { ...settings.ai } } : {})
+        ...(settings.ai ? { ai: { ...settings.ai } } : {}),
+        // WP20g: only when the server knows them.
+        ...(settings.arrivals
+          ? {
+              arrivals: {
+                pairs: settings.arrivals.pairs
+                  .map((p) => ({ id: p.id, source: p.source.trim(), libraryId: p.libraryId }))
+                  .filter((p) => p.source !== ''),
+                time: settings.arrivals.time,
+                quietStart: settings.arrivals.quietStart,
+                quietEnd: settings.arrivals.quietEnd,
+                timeZone: settings.arrivals.timeZone ?? '',
+                settleMinutes: Number(settings.arrivals.settleMinutes),
+                handCheckMinutes: Number(settings.arrivals.handCheckMinutes),
+                addBatchSize: Number(settings.arrivals.addBatchSize),
+                addLeaseSeconds: Number(settings.arrivals.addLeaseSeconds)
+              }
+            }
+          : {})
       });
       settings = answer.settings;
       titleBar = settings.gate.fieldPercent.title ?? '';
@@ -331,7 +356,12 @@
       for (const name of Object.keys(secretValues) as SecretName[]) {
         const value = secretValues[name];
         if (!value.trim()) continue;
-        secrets = (await api.saveSecret(name, value)).secrets;
+        try {
+          secrets = (await api.saveSecret(name, value)).secrets;
+        } catch (err) {
+          if (name === 'absApiKey') absKeyError = (err as Error).message;
+          throw err;
+        }
         secretValues = { ...secretValues, [name]: '' };
       }
       saved = true;
@@ -368,7 +398,7 @@
   <p class="c-notice" role="alert">{loadError}</p>
 {:else if settings && secrets}
   <form class="flex flex-col gap-10" on:submit|preventDefault={save} data-testid="cleanup-settings">
-    <fieldset class="grid gap-4 sm:grid-cols-2">
+    <fieldset class="grid min-w-0 grid-cols-1 gap-4 sm:grid-cols-2">
       <legend class={legend}>Calibre content server</legend>
       <label class="{field} sm:col-span-2">
         <span class={label}>Address</span>
@@ -422,7 +452,10 @@
     </fieldset>
 
     {#if settings.audiobooks}
-      <fieldset class="grid gap-4 sm:grid-cols-2" data-testid="cleanup-audiobooks-settings">
+      <fieldset
+        class="grid min-w-0 grid-cols-1 gap-4 sm:grid-cols-2"
+        data-testid="cleanup-audiobooks-settings"
+      >
         <legend class={legend}>Audiobooks</legend>
         <label class="{field} sm:col-span-2">
           <span class={label}>Audiobookshelf address</span>
@@ -460,6 +493,11 @@
               >
             {/if}
           </span>
+          {#if absKeyError}
+            <span class="font-bold" role="alert" data-testid="cleanup-abs-key-error"
+              >{absKeyError}</span
+            >
+          {/if}
           <span class="text-c-muted">
             Make the key in Audiobookshelf (Settings › API Keys) for an admin user, so every user’s
             listening progress can be read. Audiobookshelf is only read, never changed.
@@ -721,7 +759,7 @@
             <label class="flex flex-col gap-1">
               <span class="font-medium">Changes to books already in the library</span>
               <select
-                class="c-input"
+                class="c-input w-full min-w-0"
                 bind:value={settings.audiobooks.libraryChanges}
                 data-testid="cleanup-audio-libraryChanges"
               >
@@ -735,6 +773,26 @@
                 Audiobookshelf stay yours), a book moves when its author, series, volume or title
                 changes, and files the reader wrote get their original name under the torrents.
                 Preview lists every change; On makes them, while stage 7 is On too.</span
+              >
+            </label>
+            <label class={field}>
+              <span class={label}
+                >Seconds after Audiobookshelf’s scan that its rewrite of metadata.json may come</span
+              >
+              <input
+                class="c-input"
+                type="number"
+                min="1"
+                max="3600"
+                step="1"
+                bind:value={settings.audiobooks.librarySeenSlackSeconds}
+                data-testid="cleanup-audio-librarySeenSlackSeconds"
+              />
+              <span class="text-c-muted"
+                >A value in a book’s metadata.json that differs from the cleanup’s counts as
+                Audiobookshelf’s own (its form of the value, or an older value it kept) only when
+                the file last changed this soon after Audiobookshelf scanned the book; otherwise it
+                counts as yours and is never overwritten.</span
               >
             </label>
           {/if}
@@ -756,7 +814,10 @@
     {/if}
 
     {#if settings.fetch}
-      <fieldset class="grid min-w-0 gap-4 sm:grid-cols-2" data-testid="cleanup-fetch-settings">
+      <fieldset
+        class="grid min-w-0 grid-cols-1 gap-4 sm:grid-cols-2"
+        data-testid="cleanup-fetch-settings"
+      >
         <legend class={legend}>Online sources (stage 4)</legend>
         <p class="text-sm text-c-muted sm:col-span-2">
           The fetch container asks each site at most once per its seconds (from the start of one
@@ -975,11 +1036,170 @@
       </fieldset>
     {/if}
 
-    <fieldset class="grid gap-4 sm:grid-cols-2">
+    {#if settings.arrivals}
+      <fieldset
+        class="grid min-w-0 grid-cols-1 gap-4 sm:grid-cols-2"
+        data-testid="cleanup-arrivals-settings"
+      >
+        <legend class={legend}>New arrivals (books)</legend>
+        <p class="text-c-muted sm:col-span-2">
+          Source folders whose EPUBs are added to Calibre (under the server's source folders mount,
+          e.g. books/japanese). Changing a folder makes it a new one: its first run is a Preview
+          again. Only Japanese rules exist, so every folder is treated as Japanese; stages 1-5 run
+          in the library the cleanup cleans (another library waits for the English follow-up).
+        </p>
+        {#each settings.arrivals.pairs as pair, i (pair.id)}
+          <div
+            class="flex min-w-0 flex-wrap items-end gap-2 sm:col-span-2"
+            data-testid="cleanup-arrivals-pair"
+          >
+            <label class="{field} min-w-0 flex-1">
+              <span class={label}>Source folder</span>
+              <input
+                class="c-input"
+                type="text"
+                placeholder="books/japanese"
+                bind:value={pair.source}
+                data-testid="cleanup-arrivals-source"
+              />
+            </label>
+            <label class="{field} min-w-0 flex-1">
+              <span class={label}>Calibre library</span>
+              <select class="c-input w-full min-w-0" bind:value={pair.libraryId}>
+                {#each libraries as lib (lib.id)}
+                  <option value={lib.id}>{lib.name} ({lib.folder || 'root'})</option>
+                {/each}
+              </select>
+            </label>
+            <button
+              type="button"
+              class="c-btn c-btn-ghost"
+              on:click={() => {
+                if (settings?.arrivals)
+                  settings = {
+                    ...settings,
+                    arrivals: {
+                      ...settings.arrivals,
+                      pairs: settings.arrivals.pairs.filter((_, j) => j !== i)
+                    }
+                  };
+              }}>Remove</button
+            >
+          </div>
+        {/each}
+        <div class="sm:col-span-2">
+          <button
+            type="button"
+            class="c-btn c-btn-secondary c-btn-sm"
+            data-testid="cleanup-arrivals-add-pair"
+            on:click={() => {
+              if (!settings?.arrivals) return;
+              const lib =
+                settings.targetLibraryId ??
+                libraries.find((l) => l.folder === 'japanese-library')?.id ??
+                libraries[0]?.id ??
+                '';
+              settings = {
+                ...settings,
+                arrivals: {
+                  ...settings.arrivals,
+                  pairs: [
+                    ...settings.arrivals.pairs,
+                    {
+                      id: `p${Date.now().toString(36)}`,
+                      source: settings.arrivals.pairs.length ? '' : 'books/japanese',
+                      libraryId: lib
+                    }
+                  ]
+                }
+              };
+            }}>Add a source folder</button
+          >
+        </div>
+        <label class={field}>
+          <span class={label}>Time of the daily run</span>
+          <input
+            class="c-input"
+            type="time"
+            bind:value={settings.arrivals.time}
+            data-testid="cleanup-arrivals-time"
+          />
+        </label>
+        <label class={field}>
+          <span class={label}>Time zone of these times (blank: the server's)</span>
+          <input
+            class="c-input"
+            type="text"
+            placeholder="America/Los_Angeles"
+            bind:value={settings.arrivals.timeZone}
+            data-testid="cleanup-arrivals-timeZone"
+          />
+        </label>
+        <label class={field}>
+          <span class={label}>No run from (backup window)</span>
+          <input class="c-input" type="time" bind:value={settings.arrivals.quietStart} />
+        </label>
+        <label class={field}>
+          <span class={label}>No run until</span>
+          <input class="c-input" type="time" bind:value={settings.arrivals.quietEnd} />
+        </label>
+        <label class={field}>
+          <span class={label}>A file counts once unchanged for (minutes)</span>
+          <input
+            class="c-input"
+            type="number"
+            min="0"
+            max="10080"
+            step="1"
+            bind:value={settings.arrivals.settleMinutes}
+            data-testid="cleanup-arrivals-settle"
+          />
+        </label>
+        <label class={field}>
+          <span class={label}>A book added in Calibre waits until unchanged for (minutes)</span>
+          <input
+            class="c-input"
+            type="number"
+            min="0"
+            max="10080"
+            step="1"
+            bind:value={settings.arrivals.handCheckMinutes}
+          />
+        </label>
+        <label class={field}>
+          <span class={label}>Books added per batch</span>
+          <input
+            class="c-input"
+            type="number"
+            min="1"
+            max="500"
+            step="1"
+            bind:value={settings.arrivals.addBatchSize}
+          />
+        </label>
+        <label class={field}>
+          <span class={label}>Seconds per add batch</span>
+          <input
+            class="c-input"
+            type="number"
+            min="30"
+            max="3600"
+            step="1"
+            bind:value={settings.arrivals.addLeaseSeconds}
+          />
+        </label>
+      </fieldset>
+    {/if}
+
+    <fieldset class="grid min-w-0 grid-cols-1 gap-4 sm:grid-cols-2">
       <legend class={legend}>Library</legend>
       <label class={field}>
         <span class={label}>Library to clean</span>
-        <select class="c-input" bind:value={settings.targetLibraryId} data-testid="cleanup-target">
+        <select
+          class="c-input w-full min-w-0"
+          bind:value={settings.targetLibraryId}
+          data-testid="cleanup-target"
+        >
           <option value={null}>The library in “japanese-library”</option>
           {#each libraries as lib (lib.id)}
             <option value={lib.id}>{lib.name} ({lib.folder || 'root'})</option>
@@ -989,7 +1209,11 @@
       <div class={field} data-testid="cleanup-server-library">
         <span class={label}>On the content server</span>
         {#if needsServerLibrary && calibre}
-          <select class="c-input" bind:value={serverLibrary} data-testid="cleanup-library-id">
+          <select
+            class="c-input w-full min-w-0"
+            bind:value={serverLibrary}
+            data-testid="cleanup-library-id"
+          >
             <option value="">Choose…</option>
             {#each calibre.libraries as id (id)}
               <option value={id}>{id}</option>
@@ -1007,7 +1231,7 @@
       </div>
     </fieldset>
 
-    <fieldset class="grid gap-4 sm:grid-cols-2">
+    <fieldset class="grid min-w-0 grid-cols-1 gap-4 sm:grid-cols-2">
       <legend class={legend}>Your tags</legend>
       <label class="{field} sm:col-span-2">
         <span class={label}
@@ -1025,7 +1249,7 @@
       </label>
     </fieldset>
 
-    <fieldset class="grid gap-4 sm:grid-cols-2" data-testid="cleanup-pacing">
+    <fieldset class="grid min-w-0 grid-cols-1 gap-4 sm:grid-cols-2" data-testid="cleanup-pacing">
       <legend class={legend}>Pace (all stages)</legend>
       <label class={field}>
         <span class={label}>Reading speed for book files (MB/s, 0 = no limit)</span>
@@ -1084,7 +1308,7 @@
       </label>
     </fieldset>
 
-    <fieldset class="grid gap-4 sm:grid-cols-2" data-testid="cleanup-checks">
+    <fieldset class="grid min-w-0 grid-cols-1 gap-4 sm:grid-cols-2" data-testid="cleanup-checks">
       <legend class={legend}>Checks (all stages)</legend>
       <label class={field}>
         <span class={label}>A field must be right on the labeled books at least (%)</span>
@@ -1180,7 +1404,7 @@
       </label>
     </fieldset>
 
-    <fieldset class="grid gap-4 sm:grid-cols-2" data-testid="cleanup-covers">
+    <fieldset class="grid min-w-0 grid-cols-1 gap-4 sm:grid-cols-2" data-testid="cleanup-covers">
       <legend class={legend}>Covers</legend>
       <label class={field}>
         <span class={label}>Covers passed on unchanged up to (MB)</span>
@@ -1229,7 +1453,10 @@
     </fieldset>
 
     {#if settings.duplicates}
-      <fieldset class="grid gap-4 sm:grid-cols-2" data-testid="cleanup-duplicates">
+      <fieldset
+        class="grid min-w-0 grid-cols-1 gap-4 sm:grid-cols-2"
+        data-testid="cleanup-duplicates"
+      >
         <legend class={legend}>Same text in other files (stage 3)</legend>
         <label class={field}>
           <span class={label}>Same text when both copies share at least (0-1)</span>
@@ -1361,7 +1588,7 @@
     {/if}
 
     {#if settings.ai}
-      <fieldset class="grid gap-4 sm:grid-cols-2" data-testid="cleanup-ai">
+      <fieldset class="grid min-w-0 grid-cols-1 gap-4 sm:grid-cols-2" data-testid="cleanup-ai">
         <legend class={legend}>AI</legend>
         <p class="text-sm text-c-muted sm:col-span-2">
           The AI keys, the models' prices, batches or one call each, Test batch and the one monthly
@@ -1387,11 +1614,26 @@
             ></span
           >
         </label>
+        {#if settings.ai.booksArrivalsDesign !== undefined}
+          <label class={field}>
+            <span class={label}>New books (Calibre): AI setup</span>
+            <select
+              class="c-input w-full min-w-0"
+              bind:value={settings.ai.booksArrivalsDesign}
+              data-testid="cleanup-ai-books-arrivals-design"
+            >
+              <option value="J">J: both models, then two stronger models look again</option>
+              <option value="F">F: stronger models look again only at the unconfirmed values</option
+              >
+              <option value="E">E: both models only (as the library)</option>
+            </select>
+          </label>
+        {/if}
         {#if settings.ai.arrivalsDesign !== undefined}
           <label class={field}>
             <span class={label}>New audiobooks: AI setup</span>
             <select
-              class="c-input"
+              class="c-input w-full min-w-0"
               bind:value={settings.ai.arrivalsDesign}
               data-testid="cleanup-ai-arrivals-design"
             >
@@ -1419,7 +1661,7 @@
         {/if}
       </fieldset>
 
-      <fieldset class="flex flex-col gap-4" data-testid="cleanup-ai-models">
+      <fieldset class="flex min-w-0 flex-col gap-4" data-testid="cleanup-ai-models">
         <legend class={legend}>Models in use</legend>
         <p class="text-sm text-c-muted">
           The steps that ask AI models today, and which model each uses. A model's price, whether it

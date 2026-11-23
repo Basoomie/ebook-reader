@@ -115,6 +115,24 @@ describe('parseQuery: author, series and tag', () => {
     ]);
   });
 
+  it('reads illustrator: like author: (the longest field name)', () => {
+    expect(shapes('illustrator:あずーる Illustrator:="Smith, John",/^B/ -illustrator：x')).toEqual([
+      { type: 'field', field: 'illustrator', negated: false, matchers: [text('あずーる')] },
+      {
+        type: 'field',
+        field: 'illustrator',
+        negated: false,
+        matchers: [text('Smith, John', true), { kind: 'regex', source: '^B', ignoreCase: false }]
+      },
+      { type: 'field', field: 'illustrator', negated: true, matchers: [text('x')] }
+    ]);
+    expect(error('illustrator:').message).toMatch(/illustrator: needs a value/);
+    // A longer unknown word with a colon stays plain text.
+    expect(shapes('illustrators:x')).toEqual([
+      { type: 'any', negated: false, matcher: text('illustrators:x') }
+    ]);
+  });
+
   it('accepts a full-width colon after a known field', () => {
     expect(shapes('tag：ライトノベル')).toEqual([
       { type: 'field', field: 'tag', negated: false, matchers: [text('ライトノベル')] }

@@ -24,6 +24,7 @@ import { AI_MOVE_MARKER } from '../src/cleanup/ai-move';
 import {
   CLEANUP_MIGRATIONS,
   cleanupSchemaVersion,
+  CLEANUP_SCHEMA_VERSION,
   initCleanupDatabase,
 } from '../src/cleanup/cleanup-db';
 import { getSettings } from '../src/cleanup/settings';
@@ -173,7 +174,7 @@ describe('the one-time move out of cleanup.db', () => {
     cleanup.close();
     const st = initCleanupDatabase(dir, { mainDb: main, log: () => undefined });
     if (!st.ok) throw new Error(st.error);
-    expect(cleanupSchemaVersion(st.db)).toBe(21);
+    expect(cleanupSchemaVersion(st.db)).toBe(CLEANUP_SCHEMA_VERSION);
     // Rollback copies of both, each a whole database at its pre-move state.
     const copies = fs
       .readdirSync(path.join(dir, 'snapshots'))
@@ -229,6 +230,8 @@ describe('the one-time move out of cleanup.db', () => {
       labeledOnly: true,
       arrivalsDesign: 'J',
       upgradeIncludeDecided: false,
+      // WP20g: the new Calibre books' setup (its default; not in the moved settings).
+      booksArrivalsDesign: 'J',
     });
     for (const t of ['ai_model_checks', 'ai_batch_tests'])
       expect(st.db.prepare(`SELECT 1 FROM sqlite_master WHERE name = ?`).get(t)).toBeUndefined();
@@ -294,7 +297,7 @@ describe('the one-time move out of cleanup.db', () => {
     if (!main.ok) throw new Error(main.error);
     const st = initCleanupDatabase(dir, { mainDb: main.db });
     if (!st.ok) throw new Error(st.error);
-    expect(cleanupSchemaVersion(st.db)).toBe(21);
+    expect(cleanupSchemaVersion(st.db)).toBe(CLEANUP_SCHEMA_VERSION);
     expect(fs.existsSync(path.join(dir, 'snapshots'))).toBe(false);
     st.db.close();
   });
@@ -864,5 +867,49 @@ describe("the providers' list prices, built in", () => {
     ]);
     expect(core.settings().prices).toEqual({});
     await request(app).delete('/api/v1/ai/models/claude-opus-5.5').set(auth).expect(409);
+  });
+});
+
+describe('evidence built again (series-order follow-up, stop 2)', () => {
+  it('drops questions never sent at the old evidence, keeps sent ones and old answers', () => {
+    const { core } = makeAiCore({ keys: { read: () => 'key' }, providers: () => quickProvider() });
+    const f = otherFeature(core, 'summaries');
+    const rows = () =>
+      f.db
+        .prepare(
+          `SELECT item_key, evidence_hash, state FROM ai_requests WHERE stage = ? ORDER BY item_key, id`,
+        )
+        .all(f.spec.stage) as { item_key: string; evidence_hash: string; state: string }[];
+    const put = (k0: string, k1: string) =>
+      f.runner.putItems(
+        f.spec,
+        [
+          { key: 'k0', evidence: { title: k0 }, labeled: false },
+          { key: 'k1', evidence: { title: k1 }, labeled: false },
+        ],
+        1,
+      );
+    put('a', 'a');
+    f.runner.enqueue(f.spec, 'secondary', ['k0', 'k1'], 'r');
+    // k0's question was answered; k1's is at the provider.
+    f.db
+      .prepare(
+        `UPDATE ai_requests SET state = 'answered', answer_json = '{}' WHERE item_key = 'k0'`,
+      )
+      .run();
+    f.db.prepare(`UPDATE ai_requests SET state = 'sent' WHERE item_key = 'k1'`).run();
+    const [a0, a1] = rows();
+    // The evidence changes: each gets a question at the new evidence.
+    put('b', 'b');
+    expect(f.runner.enqueue(f.spec, 'secondary', ['k0', 'k1'], 'r')).toBe(2);
+    // And back (built again the right way): the question queued at "b" is never sent, the
+    // answer at "a" stands, the question at the provider stays.
+    put('a', 'a');
+    expect(f.runner.enqueue(f.spec, 'secondary', ['k0', 'k1'], 'r')).toBe(0);
+    expect(rows()).toEqual([
+      { item_key: 'k0', evidence_hash: a0.evidence_hash, state: 'answered' },
+      { item_key: 'k1', evidence_hash: a1.evidence_hash, state: 'sent' },
+    ]);
+    expect(f.runner.answerOf(f.spec, 'secondary', 'k0')?.state).toBe('answered');
   });
 });

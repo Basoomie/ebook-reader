@@ -4,6 +4,13 @@
  * All rights reserved.
  */
 
+import type { ArrivalsStatus } from './arrivals-text';
+import type {
+  BookmeterMatch,
+  BookmeterMode,
+  BookmeterSource,
+  BookmeterStatus
+} from './bookmeter-text';
 import { errorFrom, send, type RequestOptions } from '$lib/library/api';
 
 /** The /cleanup page's client for /api/v1/cleanup/* (WP20a). */
@@ -274,7 +281,7 @@ export interface Stage4AiGateGroup {
   fields: Record<string, Stage4AiGateField>;
 }
 export interface Stage4AiStatus {
-  phase: 'evidence' | 'models' | 'decide' | 'spelling' | 'gate' | 'done';
+  phase: 'evidence' | 'models' | 'decide' | 'spelling' | 'series' | 'gate' | 'done';
   /** The running phase: how far, and the seconds left (null: not measured yet). */
   bar?: { phase: string; done: number; total: number; secondsLeft: number | null } | null;
   items: number;
@@ -292,6 +299,8 @@ export interface Stage4AiStatus {
   costUsd: number | null;
   invented: number;
   flaggedAgainstRules: Record<string, number> | null;
+  /** The series step (series-order follow-up). */
+  seriesOrder?: Stage4SeriesOrder | null;
   gate: {
     passed: boolean;
     below: string[];
@@ -350,6 +359,60 @@ export interface Stage4Proposal {
   source: string;
   reason: string | null;
   evidence: Record<string, unknown>;
+}
+
+export interface Stage4SeriesChecks {
+  series: number;
+  multi: number;
+  collisions: number;
+  collisionsUnmarked: number;
+  missing: number;
+  missingUnmarked: number;
+  guesses: number;
+  reviews: number;
+  examples: string[];
+}
+export interface Stage4SeriesOrder {
+  series: number;
+  choices: number;
+  changed: number;
+  guesses: number;
+  reviews: number;
+  checks: Stage4SeriesChecks | null;
+}
+/** A book of a series in the Best guesses list (the series is shown whole, in order). */
+export interface Stage4GuessBook {
+  calibreId: number;
+  title: string;
+  index: number | null;
+  guess: boolean;
+  reason: string | null;
+  review: string | null;
+  from: string;
+  fields: { field: string; reason: string | null }[];
+}
+export interface Stage4GuessSeries {
+  series: string;
+  books: Stage4GuessBook[];
+}
+/** A title shortened or cut to fit Calibre's folder names (cleanup.db v26). */
+export interface TitleFit {
+  id: number;
+  calibreId: number | null;
+  /** 2, 4 or 5: the stage whose change it is; 0: a new arrival's add. */
+  stage: number;
+  original: string;
+  written: string;
+  step: 'shortened' | 'cut';
+  rules: string[];
+  state: string;
+  /** Calibre's title now, when the book is in Calibre. */
+  now: string | null;
+}
+export interface Stage4GuessOther {
+  calibreId: number;
+  title: string;
+  fields: { field: string; value: unknown; reason: string | null }[];
 }
 
 export interface AuthorReading {
@@ -606,7 +669,29 @@ export interface CleanupSettings {
   fetch?: FetchSettings;
   /** The AI models (WP21d); missing on an older server. */
   ai?: AiSettings;
+  /** WP20g: the Calibre library's new arrivals and the import; missing on an older server. */
+  arrivals?: BookArrivalSettings;
   backup: { path: string; verifiedOn: string; confirmedAt: number | null };
+}
+
+/** WP20g: one source folder (under the sources mount) whose EPUBs are added to a library. */
+export interface ArrivalPairSetting {
+  id: string;
+  source: string;
+  libraryId: string;
+}
+
+/** WP20g: the new arrivals' settings. */
+export interface BookArrivalSettings {
+  pairs: ArrivalPairSetting[];
+  time: string;
+  quietStart: string;
+  quietEnd: string;
+  timeZone: string;
+  settleMinutes: number;
+  handCheckMinutes: number;
+  addBatchSize: number;
+  addLeaseSeconds: number;
 }
 
 export interface FetchSettings {
@@ -678,6 +763,7 @@ export interface AudiobookSettings {
   arrivalsTimeZone?: string;
   arrivalsSettleMinutes?: number;
   arrivalsAbsWaitMinutes?: number;
+  librarySeenSlackSeconds?: number;
   arrivalsAbsNudge?: boolean;
   /** WP21f-2: changes to books already in the library: off, Preview (analyse) or On. */
   libraryChanges?: 'off' | 'analyse' | 'on';
@@ -934,7 +1020,85 @@ export interface AudioStatus {
   switch?: AudioSwitchStatus;
   /** WP21f-1: the daily new arrivals. */
   stage7?: AudioStage7Status;
+  /** WP21g: the second pass from the Calibre ebooks (missing on an older server). */
+  stage8?: AudioStage8Status;
 }
+
+// ---------------------------------------------------------------- audiobooks stage 8 (WP21g)
+
+export type Stage8Phase =
+  | 'check'
+  | 'read'
+  | 'recordings'
+  | 'pair'
+  | 'values'
+  | 'covers'
+  | 'gate'
+  | 'preview'
+  | 'done';
+
+export interface EbookGate {
+  passed: boolean;
+  labels: number;
+  notFound: string[];
+  kinds: Record<
+    string,
+    {
+      withEbook: number;
+      found: number;
+      right: number;
+      wrong: number;
+      none: number;
+      noneRight: number;
+      review: number;
+    }
+  >;
+  wrong: { id: string; title: string; got: number | null; want: number[] | null }[];
+  error: string | null;
+}
+
+export interface AudioStage8Progress {
+  runId: number | null;
+  phase: Stage8Phase;
+  startedAt: number;
+  phaseStartedAt: number;
+  finishedAt: number | null;
+  done: number;
+  total: number;
+  reason: string | null;
+  ebooks: { total: number; new: number; changed: number; removed: number };
+  counts: Record<'auto' | 'review' | 'none' | 'excluded', number>;
+  bySource: Record<string, Record<string, number>>;
+  values: {
+    genres: number;
+    tags: number;
+    series: number;
+    seriesReview: number;
+    seriesDisagree: number;
+    noTerms: number;
+  };
+  covers: { read: number; missing: number; waitMs: number };
+  gate: EbookGate | null;
+  preview: {
+    changes: number;
+    metadata: number;
+    moves: number;
+    held: number;
+    reviews: number;
+    at: number;
+  } | null;
+  waiting: string | null;
+  error: string | null;
+}
+
+export type AudioStage8Status =
+  | { available: false }
+  | {
+      available: true;
+      mode: AudioStageMode | 'on';
+      progress: AudioStage8Progress | null;
+      calibre: boolean;
+    };
 
 // ---------------------------------------------------------------- audiobooks stage 7 (WP21f-1)
 
@@ -981,6 +1145,16 @@ export interface LibraryChangesProgress {
     reviews: number;
     kept: number;
     userFields: number;
+    absKept?: number;
+  };
+  /** What Audiobookshelf made of the cleanup's writes (proven by time), per book not known yet. */
+  seen?: {
+    checked: number;
+    proven: number;
+    unproven: number;
+    notInAbs: number;
+    cursor: number;
+    skipped: string | null;
   };
   apply: {
     total: number;
@@ -1001,6 +1175,7 @@ export interface LibraryChangesProgress {
     verified: number;
     notYet: number;
     cleared?: number;
+    set?: number;
     problems: string[];
     error: string | null;
   };
@@ -1017,6 +1192,8 @@ export interface LibraryChangeItem {
   fields: { field: string; from: unknown; to: unknown; mine?: unknown }[];
   userFields: string[];
   conflicts: { field: string; from: unknown; to: unknown; mine?: unknown }[];
+  /** Fields where Audiobookshelf kept an older value: `mine` is its value (item 6). */
+  absKept?: { field: string; from: unknown; to: unknown; mine?: unknown }[];
   renames: { from: string; to: string }[];
   renamesHeld: boolean;
   reviews: { kind: string; text: string }[];
@@ -1108,6 +1285,7 @@ export interface AudioStage7Report {
         | 'mode'
         | 'ledger'
         | 'candidates'
+        | 'seen'
         | 'counts'
         | 'apply'
         | 'snapshot'
@@ -1400,6 +1578,8 @@ export interface AiSettings {
   labeledOnly: boolean;
   /** WP21f-1: the new arrivals' AI setup (default J); missing on an older server. */
   arrivalsDesign?: 'E' | 'F' | 'J';
+  /** WP20g: the Calibre library's new arrivals' AI setup (default J); missing on an older server. */
+  booksArrivalsDesign?: 'E' | 'F' | 'J';
   /** WP21f-1: an upgrade also re-checks values already decided by that setup or a stronger one. */
   upgradeIncludeDecided?: boolean;
 }
@@ -2012,6 +2192,35 @@ export class CleanupApi {
     }>;
   }
 
+  /** The titles shortened or cut to fit Calibre's folder names, newest first. */
+  titleFits(offset = 0, limit = 20): Promise<{ total: number; items: TitleFit[] }> {
+    const q = new URLSearchParams({ offset: String(offset), limit: String(limit) });
+    return this.request('GET', `/cleanup/titles/shortened?${q}`) as Promise<{
+      total: number;
+      items: TitleFit[];
+    }>;
+  }
+
+  /** The Best guesses list: series (each whole, in order) or books outside a series. */
+  stage4GuessSeries(
+    offset = 0,
+    limit = 20
+  ): Promise<{ total: number; series: Stage4GuessSeries[] }> {
+    const q = new URLSearchParams({ kind: 'series', offset: String(offset), limit: String(limit) });
+    return this.request('GET', `/cleanup/stage4/guesses?${q}`) as Promise<{
+      total: number;
+      series: Stage4GuessSeries[];
+    }>;
+  }
+
+  stage4GuessOther(offset = 0, limit = 20): Promise<{ total: number; books: Stage4GuessOther[] }> {
+    const q = new URLSearchParams({ kind: 'other', offset: String(offset), limit: String(limit) });
+    return this.request('GET', `/cleanup/stage4/guesses?${q}`) as Promise<{
+      total: number;
+      books: Stage4GuessOther[];
+    }>;
+  }
+
   stage4Readings(state = '', offset = 0): Promise<{ total: number; items: AuthorReading[] }> {
     const q = new URLSearchParams({ offset: String(offset) });
     if (state) q.set('state', state);
@@ -2262,6 +2471,44 @@ export class CleanupApi {
     return response.blob();
   }
 
+  // ---------------------------------------------------------------- stage 8 (WP21g)
+
+  audioEbooks(
+    list: string,
+    offset = 0,
+    limit = 50
+  ): Promise<{ total: number; items: Record<string, unknown>[] }> {
+    const q = new URLSearchParams({ list, offset: String(offset), limit: String(limit) });
+    return this.request('GET', `/cleanup/audio/ebooks?${q}`) as Promise<{
+      total: number;
+      items: Record<string, unknown>[];
+    }>;
+  }
+
+  /** A review choice: field 'pair' (a Calibre id, or null: no ebook) or 'series'. */
+  audioEbookChoice(
+    unit: string,
+    field: 'pair' | 'series',
+    value: number | null | 'calibre' | 'none'
+  ): Promise<{ ok: boolean }> {
+    return this.request('POST', '/cleanup/audio/ebooks/choice', {
+      unit,
+      field,
+      value
+    }) as Promise<{ ok: boolean }>;
+  }
+
+  async audioEbooksFile(): Promise<Blob> {
+    const response = await send(
+      this.fetchImpl,
+      `${this.serverUrl}/api/v1/cleanup/audio/ebooks/pairs.csv`,
+      { method: 'GET', headers: { Authorization: `Bearer ${this.token}` } },
+      { timeoutSeconds: this.timeoutSeconds }
+    );
+    if (!response.ok) throw await errorFrom(response);
+    return response.blob();
+  }
+
   // ---------------------------------------------------------------- the switch (WP21e-2)
 
   audioSwitchStart(action: SwitchAction): Promise<AudioStatus> {
@@ -2309,9 +2556,113 @@ export class CleanupApi {
     return this.request('GET', '/cleanup/ai/status') as Promise<AiStatus>;
   }
 
+  // ---------------------------------------------------------------- new arrivals (WP20g)
+
+  arrivals(): Promise<ArrivalsStatus> {
+    return this.request('GET', '/cleanup/arrivals') as Promise<ArrivalsStatus>;
+  }
+
+  setArrivalsMode(mode: 'off' | 'analyse' | 'on'): Promise<ArrivalsStatus> {
+    return this.request('PUT', '/cleanup/arrivals/mode', { mode }) as Promise<ArrivalsStatus>;
+  }
+
+  arrivalsRunNow(): Promise<ArrivalsStatus> {
+    return this.request('POST', '/cleanup/arrivals/run-now', {}) as Promise<ArrivalsStatus>;
+  }
+
+  arrivalsStop(): Promise<ArrivalsStatus> {
+    return this.request('POST', '/cleanup/arrivals/stop', {}) as Promise<ArrivalsStatus>;
+  }
+
+  arrivalsResume(): Promise<ArrivalsStatus> {
+    return this.request('POST', '/cleanup/arrivals/resume', {}) as Promise<ArrivalsStatus>;
+  }
+
+  arrivalsList(
+    list: string,
+    offset = 0,
+    limit = 50
+  ): Promise<{ total: number; items: Record<string, unknown>[] }> {
+    const q = new URLSearchParams({ offset: String(offset), limit: String(limit) });
+    return this.request(
+      'GET',
+      `/cleanup/arrivals/lists/${encodeURIComponent(list)}?${q}`
+    ) as Promise<{
+      total: number;
+      items: Record<string, unknown>[];
+    }>;
+  }
+
+  arrivalsDecide(reviewId: number, decision: string): Promise<{ ok: boolean }> {
+    return this.request('POST', `/cleanup/arrivals/reviews/${reviewId}`, {
+      decision
+    }) as Promise<{ ok: boolean }>;
+  }
+
+  arrivalsUndo(batchId: number): Promise<{ undo: number }> {
+    return this.request('POST', `/cleanup/arrivals/batches/${batchId}/undo`, {}) as Promise<{
+      undo: number;
+    }>;
+  }
+
+  async arrivalsNotImportedFile(): Promise<Blob> {
+    const response = await send(
+      this.fetchImpl,
+      `${this.serverUrl}/api/v1/cleanup/arrivals/not-imported.csv`,
+      { method: 'GET', headers: { Authorization: `Bearer ${this.token}` } },
+      { timeoutSeconds: this.timeoutSeconds }
+    );
+    if (!response.ok) throw await errorFrom(response);
+    return response.blob();
+  }
+
   spotCheck(stage = 1): Promise<{ items: Proposal[] }> {
     return this.request('GET', `/cleanup/spot-check?stage=${stage}`) as Promise<{
       items: Proposal[];
     }>;
+  }
+
+  // ---------------------------------------------------------------- More Bookmeter coverage
+
+  bookmeter(): Promise<BookmeterStatus> {
+    return this.request('GET', '/cleanup/bookmeter') as Promise<BookmeterStatus>;
+  }
+
+  setBookmeterMode(mode: BookmeterMode): Promise<BookmeterStatus> {
+    return this.request('PUT', '/cleanup/bookmeter/mode', { mode }) as Promise<BookmeterStatus>;
+  }
+
+  bookmeterMatches(
+    source: BookmeterSource | null,
+    offset = 0,
+    limit = 20
+  ): Promise<{ total: number; items: BookmeterMatch[] }> {
+    const q = new URLSearchParams({ offset: String(offset), limit: String(limit) });
+    if (source) q.set('source', source);
+    return this.request('GET', `/cleanup/bookmeter/matches?${q}`) as Promise<{
+      total: number;
+      items: BookmeterMatch[];
+    }>;
+  }
+
+  bookmeterSpot(): Promise<{
+    items: BookmeterMatch[];
+    counts: BookmeterStatus['spot'];
+    passed: boolean;
+  }> {
+    return this.request('GET', '/cleanup/bookmeter/spot') as Promise<{
+      items: BookmeterMatch[];
+      counts: BookmeterStatus['spot'];
+      passed: boolean;
+    }>;
+  }
+
+  setBookmeterVerdict(
+    uuid: string,
+    verdict: 'right' | 'wrong' | null
+  ): Promise<{ counts: BookmeterStatus['spot']; passed: boolean }> {
+    return this.request('PUT', `/cleanup/bookmeter/spot/${encodeURIComponent(uuid)}`, {
+      verdict
+    }) as Promise<{ counts: BookmeterStatus['spot']; passed: boolean }>;
   }
 }

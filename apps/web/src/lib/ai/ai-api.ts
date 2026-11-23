@@ -31,6 +31,16 @@ export interface AiSettings {
   spendLimitUsd: number | null;
   modes: Record<string, 'batch' | 'direct'>;
   batchStallMinutes: number;
+  /** After a failed batch: the wait before the next (min), doubled per failure up to the max. */
+  batchFailWaitMinutes: number;
+  batchFailMaxWaitMinutes: number;
+  /** Failed batches in a row that pause the model's batches (with an alert). */
+  batchFailPauseAfter: number;
+  /** While paused: wait, or ask one call each for the rest of the run. */
+  batchFailFallback: 'wait' | 'direct';
+  /** Most estimated prompt tokens per model in batches at its provider (0 = no cap). */
+  batchQueueTokensDefault: number;
+  batchQueueTokens: Record<string, number>;
   connectAttemptMs: number;
   batchTurnaroundMinutes: number;
   directWorkers: number;
@@ -78,6 +88,17 @@ export interface AiStatus {
     inUse: string[];
     mode: 'batch' | 'direct';
     offered: boolean | null;
+    /** Most estimated prompt tokens in batches at the provider (0 = no cap). */
+    batchQueueTokens: number;
+    /** Batches the provider refused lately, with the page's words (null: none). */
+    batchFailing: {
+      failures: number;
+      paused: boolean;
+      reason: string;
+      nextAt: number;
+      fallback: boolean;
+      text: string;
+    } | null;
   }[];
   /** When the built-in prices were taken from the providers' price pages. */
   pricesChecked: string;
@@ -172,6 +193,11 @@ export class AiApi {
   /** Takes a model off the list (refused while a feature uses it). */
   deleteModel(model: string): Promise<AiStatus> {
     return this.request('DELETE', `/ai/models/${encodeURIComponent(model)}`);
+  }
+
+  /** A model whose batches failed: its next batch now. */
+  retryBatches(model: string): Promise<AiStatus> {
+    return this.request('POST', `/ai/models/${encodeURIComponent(model)}/batch-retry`);
   }
 
   testBatch(model: string): Promise<AiStatus> {

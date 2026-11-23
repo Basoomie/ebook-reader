@@ -10,6 +10,8 @@
  *   stage1b   stage 1 again when anything was unpacked (the new files join the walk)
  *   stages    stages 2-5 run again (stage 2 is started; 3-5 follow by themselves; every gate is
  *             scored again: a failed gate stops the run before anything is linked)
+ *   ebooks    stage 8 (WP21g): the recordings paired with their Calibre ebooks (stage8-ebooks.ts);
+ *             its values join the plan and the library changes only when stage 8 is On
  *   classify  every recording against the library by inode (arrivals-classify.ts)
  *   plan      the new books (stage 6's plan; folders against the library as it is: arrivals-plan.ts).
  *             Preview ends here.
@@ -63,6 +65,7 @@ import {
   type LibraryOpResult,
 } from './library-changes';
 import type { SwitchReader } from './stage6-switch';
+import { STAGE8, type AudioStage8, type Stage8Progress } from './stage8-ebooks';
 
 export const STAGE7 = 7;
 /** Batch ids of stage 7 start here (never a build's or the switch's). */
@@ -77,6 +80,7 @@ export type Stage7Phase =
   | 'archives'
   | 'stage1b'
   | 'stages'
+  | 'ebooks'
   | 'classify'
   | 'plan'
   | 'walk_before'
@@ -173,6 +177,8 @@ export interface Stage7Deps {
   /** Audiobookshelf, or null when it isn't set up. */
   abs: () => { baseUrl: string; apiKey: string; timeoutMs: number } | null;
   fetchImpl?: typeof fetch;
+  /** Stage 8 (WP21g): the pairs with the Calibre ebooks (absent: no Calibre library). */
+  stage8?: AudioStage8 | null;
   /** The server's time zone (tests); default: the process's. */
   timeZone?: string;
   now?: () => number;
@@ -384,7 +390,7 @@ export class AudioStage7 {
       fetchImpl: deps.fetchImpl,
       reader: () => this.reader,
       tree: () => this.existingTree(),
-      plan: () => this.currentPlan(),
+      plan: () => this.currentPlan(this.deps.stage8?.overlay() ?? null),
       sidecarVersion: () => {
         const r = deps.db
           .prepare('SELECT version, last_seen_at FROM link_sidecar_status WHERE id = 1')
@@ -401,13 +407,17 @@ export class AudioStage7 {
     this.reader = reader;
   }
 
-  /** Every unit's plan now (stage 6's plan code on the current analysis). */
-  private async currentPlan() {
+  /**
+   * Every unit's plan now (stage 6's plan code on the current analysis), with stage 8's values
+   * when given (On: the overlay; its Preview: its values).
+   */
+  private async currentPlan(ebook: Map<string, Record<string, unknown>> | null = null) {
     const { ids } = stageIds(this.db);
     if (!ids) throw new Error('Stages 1-5 are not done');
     const inputs = await loadPlanInputs(this.db, ids, {
       readerWritten: [],
       libraryFolder: ARRIVAL_AREA_FOLDERS.main,
+      ebook,
     });
     return (await planBuildSliced(inputs)).books.filter(
       (b) => b.state === 'build' || b.state === 'pending',
@@ -642,6 +652,8 @@ export class AudioStage7 {
           return await this.archivesStep(p, stop);
         case 'stages':
           return this.stagesStep(p);
+        case 'ebooks':
+          return await this.ebooksStep(p, stop);
         case 'classify':
           await this.classifyStep(p, stop);
           return 'more';
@@ -881,6 +893,84 @@ export class AudioStage7 {
     }
   }
 
+  // stage 8 ------------------------------------------------------------------------------------
+
+  /**
+   * Stage 8 (WP21g) inside the run: its pass (one stat when nothing changed), then the plan. A
+   * failed gate stops the run only when stage 8 is On (its values would be written); in Preview
+   * stage 8 pauses and the run goes on without its values.
+   */
+  private async ebooksStep(p: Stage7Progress, stop: () => boolean): Promise<'wait' | 'more'> {
+    const s8 = this.deps.stage8;
+    const st = getAudioStage(this.db, STAGE8);
+    if (!s8 || st.mode === 'off' || st.pauseReason) {
+      this.setPhase(p, 'classify');
+      return 'more';
+    }
+    const prog = s8.progress();
+    if (!prog || prog.runId !== p.runId) s8.begin(p.runId);
+    const r = await s8.step(stop, () => this.ebookPreview(p));
+    if (r === 'done') {
+      this.setPhase(p, 'classify');
+      return 'more';
+    }
+    if (typeof r === 'object') {
+      if (s8.mode() === 'on') throw new Stage7Stop('ebook_gate', r.stop);
+      pauseAudioStage(this.db, STAGE8, 'failed', r.stop);
+      this.setPhase(p, 'classify');
+      return 'more';
+    }
+    p.waiting = s8.progress()?.waiting ?? null;
+    this.save(p);
+    return r;
+  }
+
+  /** Stage 8's Preview: the library changes its values would make (nothing written). */
+  private async ebookPreview(p: Stage7Progress): Promise<Stage8Progress['preview']> {
+    const s8 = this.deps.stage8!;
+    if (!this.deps.roots.media) return null;
+    const without = await this.currentPlan(null);
+    const withV = await this.currentPlan(s8.values());
+    const r = await this.changes.dryRun(withV, without, (done, total, waiting) => {
+      const prog = s8.progress();
+      if (prog) {
+        prog.done = done;
+        prog.total = total;
+        prog.waiting = waiting;
+        updateAudioStage(this.db, STAGE8, { progress: prog as unknown as Record<string, unknown> });
+      }
+      p.waiting = waiting;
+    });
+    const unitOf = this.db.prepare('SELECT unit_key FROM audio_library_books WHERE id = ?');
+    const counts = { changes: 0, metadata: 0, moves: 0, held: 0, reviews: 0, at: this.now() };
+    this.db.transaction(() => {
+      this.db.prepare('DELETE FROM audio_ebook_preview').run();
+      const put = this.db.prepare(
+        `INSERT INTO audio_ebook_preview (book_id, unit_key, folder_from, folder_to, fields_json, reviews_json, run_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      );
+      for (const ch of r.changes) {
+        if (ch.skipped) continue;
+        counts.changes++;
+        if (ch.metadataNew) counts.metadata++;
+        if (ch.folderTo) counts.moves++;
+        if (ch.reviews.some((x) => x.kind === 'ebook_series_listening')) counts.held++;
+        if (ch.reviews.length) counts.reviews++;
+        put.run(
+          ch.bookId,
+          (unitOf.get(ch.bookId) as { unit_key: string | null } | undefined)?.unit_key ?? null,
+          ch.folderFrom,
+          ch.folderTo,
+          JSON.stringify([...ch.fields, ...ch.conflicts.map((c) => ({ ...c, conflict: true }))]),
+          JSON.stringify(ch.reviews),
+          p.runId,
+          counts.at,
+        );
+      }
+    })();
+    return counts;
+  }
+
   // stages 2-5 --------------------------------------------------------------------------------
 
   private stagesStep(p: Stage7Progress): 'wait' | 'more' {
@@ -915,7 +1005,7 @@ export class AudioStage7 {
         'gate',
         `Stage ${gates.failed.join(', ')}'s gate on the labeled books did not pass: nothing is added`,
       );
-    this.setPhase(p, 'classify');
+    this.setPhase(p, 'ebooks');
     return 'more';
   }
 
@@ -1175,12 +1265,15 @@ export class AudioStage7 {
         bookDirs: new Set(),
         narrators: new Map(),
       }).counts;
+      // Nothing new: the report still shows ABS's item count before and after the run.
+      if (p.mode === 'on') p.abs.before = await this.absItemCount(p).catch(() => null);
       this.setPhase(p, 'changes');
       return;
     }
     const inputs = await loadPlanInputs(db, ids, {
       readerWritten: [],
       libraryFolder: ARRIVAL_AREA_FOLDERS.main,
+      ebook: this.deps.stage8?.overlay() ?? null,
     });
     const full = await planBuildSliced(inputs);
     const chosen = full.books.filter((b) => linkCopies.has(b.copyKey) && b.state === 'build');
@@ -1282,8 +1375,11 @@ export class AudioStage7 {
     }
     // Preview ends with the plan; On builds (when there is anything to build).
     if (p.mode !== 'on') this.setPhase(p, 'changes', kept.length);
-    else if (p.build.total === 0) this.setPhase(p, 'changes', 0);
-    else {
+    else if (p.build.total === 0) {
+      // Nothing to build: the report still shows ABS's item count before and after the run.
+      p.abs.before = await this.absItemCount(p).catch(() => null);
+      this.setPhase(p, 'changes', 0);
+    } else {
       p.abs.before = await this.absItemCount(p).catch(() => null);
       this.setPhase(p, 'walk_before', kept.length);
     }
@@ -1650,9 +1746,15 @@ export class AudioStage7 {
       abs_item_id: string | null;
     }[];
     const client = this.absClient();
-    if (!books.length || !client) {
-      if (books.length && !client)
-        p.abs.error = 'Audiobookshelf is not set up (address and API key)';
+    if (!client) {
+      p.abs.error = 'Audiobookshelf is not set up (address and API key)';
+      this.setPhase(p, 'report');
+      return 'more';
+    }
+    if (!books.length) {
+      // No new book to look for: only the item count after the run (the library changes may
+      // have scanned it).
+      p.abs.after = await this.absItemCount(p).catch(() => null);
       this.setPhase(p, 'report');
       return 'more';
     }
@@ -1827,6 +1929,7 @@ export class AudioStage7 {
             mode: p.changes.mode,
             ledger: p.changes.ledger,
             candidates: p.changes.candidates,
+            seen: p.changes.seen,
             counts: p.changes.counts,
             apply: p.changes.apply,
             snapshot: p.changes.snapshot,
@@ -1836,6 +1939,8 @@ export class AudioStage7 {
             error: p.changes.error,
           }
         : null,
+      // WP21g: stage 8's pass in this run (null when it is Off or did not run).
+      ebooks: this.deps.stage8?.runReport(p.runId) ?? null,
     };
     db.prepare('UPDATE audio_arrival_runs SET report_json = ? WHERE id = ?').run(
       JSON.stringify(report),

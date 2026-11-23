@@ -94,8 +94,8 @@ export function coverFileName(title: string | undefined, type: string): string {
 }
 
 /**
- * The linked subtitle file's own name. Taken from the link: the server's
- * Content-Disposition isn't readable across origins (CORS doesn't expose it).
+ * The linked subtitle file's own name, taken from the link (known before the
+ * file is fetched; the server's Content-Disposition gives the same name).
  */
 export function subtitleFileName(link: AudioLink | null): string {
   const name = link?.subtitle?.name || link?.subtitleRelPath?.split('/').pop();

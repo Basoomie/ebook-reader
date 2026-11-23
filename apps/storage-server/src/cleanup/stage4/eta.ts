@@ -22,6 +22,7 @@
  * they share one slot.
  */
 import type Database from 'better-sqlite3';
+import { gunzipSync } from 'zlib';
 import type { FetchSite } from '../settings';
 
 /** Requests per book in the reference run (source-probe/out3/log.jsonl, 800 books). */
@@ -312,28 +313,64 @@ export function stage4Eta(i: EtaInput): EtaResult {
  */
 export function openLookups(db: Database.Database): OpenLookups {
   const sites = [...new Set(Object.values(STEP_SITE))];
-  const rows: { uuid: string; step: string }[] = [];
+  const rows: { lib: string; uuid: string; step: string }[] = [];
   const open = db.prepare(
-    `SELECT w.calibre_uuid AS uuid, w.step FROM fetch_requests r
+    `SELECT w.library_id AS lib, w.calibre_uuid AS uuid, w.step FROM fetch_requests r
      JOIN fetch_waiters w ON w.request_id = r.id
      WHERE r.site = ? AND r.state IN ('queued', 'leased')`,
   );
-  for (const site of sites) rows.push(...(open.all(site) as { uuid: string; step: string }[]));
+  for (const site of sites)
+    rows.push(...(open.all(site) as { lib: string; uuid: string; step: string }[]));
   rows.push(
     ...(db
-      .prepare('SELECT calibre_uuid AS uuid, step FROM fetch_waiters WHERE ready = 1')
-      .all() as { uuid: string; step: string }[]),
+      .prepare(
+        'SELECT library_id AS lib, calibre_uuid AS uuid, step FROM fetch_waiters WHERE ready = 1',
+      )
+      .all() as { lib: string; uuid: string; step: string }[]),
   );
   const steps: Record<string, number> = {};
   const undecided = new Set<string>();
   const coreOpen = new Set<string>();
+  const decided = amazonDecided(db);
   for (const r of rows) {
     if (!STEP_SITE[r.step]) continue;
     steps[r.step] = (steps[r.step] ?? 0) + 1;
-    if (/^(bookwalker|ranobedb)-/.test(r.step)) undecided.add(r.uuid);
+    // A book whose Amazon lookup was asked already (or that BookWalker settles in Amazon's
+    // place) has no Amazon decision to come (the second pick pass reopened 7,362 books for their
+    // BookWalker records: counting each one's Amazon decision made the time left 10 h, 2026-11-22).
+    if (/^(bookwalker|ranobedb)-/.test(r.step) && !decided(r.lib, r.uuid)) undecided.add(r.uuid);
     if (CORE_STEP.test(r.step)) coreOpen.add(r.uuid);
   }
   return { steps, undecided: undecided.size, coreOpen: coreOpen.size };
+}
+
+/** Books known to have their Amazon decision behind them (it never comes back undecided). */
+const amazonDone = new Set<string>();
+
+/** Whether a book's Amazon lookup was asked already or BookWalker settles it (read once per book). */
+function amazonDecided(db: Database.Database): (lib: string, uuid: string) => boolean {
+  // By the primary key (library, book, kind): one row each.
+  const stmt = db.prepare(
+    "SELECT data FROM evidence_records WHERE library_id = ? AND calibre_uuid = ? AND kind = 'online'",
+  );
+  return (lib, uuid) => {
+    if (amazonDone.has(uuid)) return true;
+    const row = stmt.get(lib, uuid) as { data: Buffer } | undefined;
+    if (!row) return false;
+    let ev: { amazon?: { asked?: boolean; standin?: string } } | null = null;
+    try {
+      ev = JSON.parse(gunzipSync(row.data).toString('utf8'));
+    } catch {
+      try {
+        ev = JSON.parse(row.data.toString('utf8'));
+      } catch {
+        ev = null;
+      }
+    }
+    const done = !!(ev?.amazon?.asked || ev?.amazon?.standin);
+    if (done) amazonDone.add(uuid);
+    return done;
+  };
 }
 
 /** The core sites' steps: a book with one open hasn't reached its store list and cover yet. */

@@ -59,6 +59,8 @@ describe('CORS with an explicit origin list', () => {
       expect(res.headers['access-control-expose-headers']).toContain('Content-Range');
       expect(res.headers['access-control-expose-headers']).toContain('ETag');
       expect(res.headers['access-control-expose-headers']).toContain('Accept-Ranges');
+      // The linked subtitle file's name (GET /books/:id/subtitle-file).
+      expect(res.headers['access-control-expose-headers']).toContain('Content-Disposition');
     });
 
     it(`${route.name}: gives other origins no Access-Control-Allow-Origin`, async () => {

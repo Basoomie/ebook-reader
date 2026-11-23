@@ -79,6 +79,7 @@ export interface BlurBook {
   tags: readonly string[];
   title?: string;
   authors?: readonly { name: string }[];
+  illustrators?: readonly string[];
   series?: { name: string } | null;
   charCount?: number | null;
 }
@@ -90,6 +91,7 @@ export function tileBlurBook(tile: GroupTile): BlurBook {
     tags: tile.tags,
     title: tile.title,
     authors: tile.authors?.map((name) => ({ name })),
+    illustrators: tile.illustrators,
     series: tile.series ? { name: tile.series } : null,
     charCount: tile.charCount
   };
@@ -168,13 +170,14 @@ export function collectionMembership(input: {
   };
 }
 
-/** The fields the matcher reads (title, authors, series, tags, length, id). */
+/** The fields the matcher reads (title, authors, illustrators, series, tags, length, id). */
 function asCatalogBook(book: BlurBook): CatalogBook {
   return {
     id: book.id,
     libraryId: '',
     title: book.title ?? '',
     authors: (book.authors ?? []).map((a) => ({ name: a.name, sort: null })),
+    illustrators: [...(book.illustrators ?? [])],
     series: book.series ? { name: book.series.name, index: null } : null,
     tags: [...book.tags],
     addedAt: 0,

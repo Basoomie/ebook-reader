@@ -26,6 +26,10 @@ export interface CalibreBook {
   series: { name: string; sort: string | null } | null;
   seriesIndex: number | null;
   tags: string[];
+  /** Calibre's #illustrator column (several names, in Calibre's order); [] without the column. */
+  illustrators: string[];
+  /** Calibre's identifiers, type lower-cased -> value (amazon_jp, bookwalker, isbn, ...). */
+  identifiers: Record<string, string>;
   description: string | null;
   publisher: string | null;
   publishedAt: number | null;
@@ -35,6 +39,13 @@ export interface CalibreBook {
   filePath: string;
   fileSize: number | null;
   hasCover: boolean;
+  /**
+   * Calibre's rating, 0-10 (half stars; 9 = four and a half), null without one. Kept out of
+   * metaHash (meta2Hash covers it) so adding it never rewrote the whole catalog.
+   */
+  rating?: number | null;
+  /** Calibre's language codes in its order ("jpn"); kept out of metaHash like the rating. */
+  languages?: string[];
 }
 
 export interface IngestOptions {
@@ -43,6 +54,11 @@ export interface IngestOptions {
   allowMassMissing: boolean;
   batchSize?: number;
   now?: number;
+  /**
+   * The size and mtime of a book's cover.jpg ("size:mtimeMs"), read for books whose record
+   * changed (the "changed in Calibre" check for covers); null when it can't be read.
+   */
+  coverSig?: (bookPath: string) => Promise<string | null>;
 }
 
 export interface IngestResult {
@@ -122,12 +138,50 @@ function groupBy<T extends { book: number }>(rows: T[]): Map<number, T[]> {
   return map;
 }
 
+/** Calibre's identifiers as type (lower-cased) -> value; empty types or values are skipped. */
+function identifierMap(rows: { type: string; val: string }[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const row of rows) {
+    const type = cleanText(row.type)?.toLowerCase();
+    const val = cleanText(row.val);
+    if (type && val && !(type in out)) out[type] = val;
+  }
+  return out;
+}
+
 /** Reads EPUB books from a Calibre metadata.db snapshot, in batches ordered by Calibre id. */
 export class CalibreReader {
   private readonly db: Database.Database;
+  /** The #illustrator column's tables, found by label (the id differs per library), or null. */
+  private readonly illustratorTables: { value: string; link: string } | null;
+  private readonly hasIdentifiers: boolean;
 
   constructor(snapshotFile: string) {
     this.db = new Database(snapshotFile, { readonly: true, fileMustExist: true });
+    this.illustratorTables = this.findIllustratorColumn();
+    this.hasIdentifiers = this.tableExists('identifiers');
+    this.hasRatings = this.tableExists('books_ratings_link') && this.tableExists('ratings');
+    this.hasLanguages = this.tableExists('books_languages_link') && this.tableExists('languages');
+  }
+
+  private readonly hasRatings: boolean;
+  private readonly hasLanguages: boolean;
+
+  private tableExists(name: string): boolean {
+    return !!this.db
+      .prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`)
+      .get(name);
+  }
+
+  private findIllustratorColumn(): { value: string; link: string } | null {
+    if (!this.tableExists('custom_columns')) return null;
+    const col = this.db
+      .prepare(`SELECT id FROM custom_columns WHERE label = 'illustrator'`)
+      .get() as { id: number } | undefined;
+    if (!col || !Number.isInteger(col.id)) return null;
+    const value = `custom_column_${col.id}`;
+    const link = `books_custom_column_${col.id}_link`;
+    return this.tableExists(value) && this.tableExists(link) ? { value, link } : null;
   }
 
   close(): void {
@@ -202,8 +256,52 @@ export class CalibreReader {
       }[],
     );
 
+    const illustrators = this.illustratorTables
+      ? groupBy(
+          this.db
+            .prepare(
+              `SELECT l.book, v.value FROM ${this.illustratorTables.link} l
+               JOIN ${this.illustratorTables.value} v ON v.id = l.value
+               WHERE l.book IN (${inList}) ORDER BY l.book, l.id`,
+            )
+            .all(...ids) as { book: number; value: string }[],
+        )
+      : new Map<number, { book: number; value: string }[]>();
+    const identifiers = this.hasIdentifiers
+      ? groupBy(
+          this.db
+            .prepare(
+              `SELECT book, type, val FROM identifiers WHERE book IN (${inList}) ORDER BY book, type`,
+            )
+            .all(...ids) as { book: number; type: string; val: string }[],
+        )
+      : new Map<number, { book: number; type: string; val: string }[]>();
+
+    const ratings = this.hasRatings
+      ? groupBy(
+          this.db
+            .prepare(
+              `SELECT l.book, r.rating FROM books_ratings_link l JOIN ratings r ON r.id = l.rating
+               WHERE l.book IN (${inList})`,
+            )
+            .all(...ids) as { book: number; rating: number | null }[],
+        )
+      : new Map<number, { book: number; rating: number | null }[]>();
+    const languages = this.hasLanguages
+      ? groupBy(
+          this.db
+            .prepare(
+              `SELECT l.book, g.lang_code FROM books_languages_link l
+               JOIN languages g ON g.id = l.lang_code
+               WHERE l.book IN (${inList}) ORDER BY l.book, l.item_order`,
+            )
+            .all(...ids) as { book: number; lang_code: string }[],
+        )
+      : new Map<number, { book: number; lang_code: string }[]>();
+
     return rows.map((r): CalibreBook => {
       const s = series.get(r.id)?.[0];
+      const rating = ratings.get(r.id)?.[0]?.rating ?? null;
       const lastModified = parseCalibreDate(r.last_modified);
       return {
         calibreId: r.id,
@@ -218,6 +316,14 @@ export class CalibreReader {
         series: s ? { name: s.name, sort: cleanText(s.sort) } : null,
         seriesIndex: s ? (r.series_index ?? 1) : null,
         tags: (tags.get(r.id) ?? []).map((t) => t.name),
+        illustrators: [
+          ...new Set(
+            (illustrators.get(r.id) ?? [])
+              .map((v) => cleanText(authorName(v.value)))
+              .filter((v): v is string => v !== null),
+          ),
+        ],
+        identifiers: identifierMap(identifiers.get(r.id) ?? []),
         description: cleanText(comments.get(r.id)?.[0]?.text),
         publisher: cleanText(publishers.get(r.id)?.[0]?.name),
         publishedAt: parseCalibreDate(r.pubdate),
@@ -227,13 +333,97 @@ export class CalibreReader {
         filePath: `${r.path}/${r.file_name}.epub`,
         fileSize: r.file_size,
         hasCover: r.has_cover === 1,
+        rating: typeof rating === 'number' && rating > 0 ? Math.min(10, Math.round(rating)) : null,
+        languages: (languages.get(r.id) ?? [])
+          .map((l) => cleanText(l.lang_code))
+          .filter((l): l is string => l !== null),
       };
     });
   }
 }
 
+/** The record's change hash, without the rating and languages (meta2Hash: migration 31). */
 export function metaHash(book: CalibreBook): string {
-  return createHash('sha1').update(JSON.stringify(book)).digest('hex');
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const { rating, languages, ...rest } = book;
+  return createHash('sha1').update(JSON.stringify(rest)).digest('hex');
+}
+
+/** The rating and the languages: a change hash of their own (migration 31). */
+export function meta2Hash(book: CalibreBook): string {
+  return createHash('sha1')
+    .update(JSON.stringify([book.rating ?? null, book.languages ?? []]))
+    .digest('hex');
+}
+
+/** A field the index saw change in Calibre (old and new as the catalog stores them). */
+export interface FieldChange {
+  field: string;
+  old: unknown;
+  new: unknown;
+}
+
+/** What the catalog holds of a book before the index writes Calibre's record over it. */
+export interface StoredFields {
+  title: string;
+  titleSort: string | null;
+  authorSort: string | null;
+  authors: string[];
+  illustrators: string[];
+  series: string | null;
+  seriesIndex: number | null;
+  publisher: string | null;
+  publishedAt: number | null;
+  description: string | null;
+  tags: string[];
+  identifiers: Record<string, string>;
+  /** undefined: not stored yet (the first index after migration 31). */
+  rating?: number | null;
+  languages?: string[];
+  coverSig?: string | null;
+}
+
+const sameJson = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+const sortedIds = (m: Record<string, string>) =>
+  Object.fromEntries(Object.entries(m).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
+
+/**
+ * The fields that differ between what the catalog holds of a book and Calibre's record now,
+ * named as the cleanup's proposals name them (title, sort, authors, author_sort, illustrator,
+ * series, series_index, publisher, pubdate, description, tags, identifiers, rating, languages,
+ * cover). Tags compare as a set, identifiers as a map; a field not stored yet never counts.
+ */
+export function diffBook(
+  old: StoredFields,
+  now: CalibreBook,
+  coverSig: string | null | undefined,
+): FieldChange[] {
+  const out: FieldChange[] = [];
+  const add = (field: string, a: unknown, b: unknown) => {
+    if (!sameJson(a, b)) out.push({ field, old: a, new: b });
+  };
+  add('title', old.title, now.title);
+  add('sort', old.titleSort, now.titleSort);
+  add(
+    'authors',
+    old.authors,
+    now.authors.map((a) => a.name),
+  );
+  add('author_sort', old.authorSort, now.authorSort);
+  add('illustrator', old.illustrators, now.illustrators);
+  add('series', old.series, now.series?.name ?? null);
+  if (old.series !== null && now.series !== null)
+    add('series_index', old.seriesIndex, now.seriesIndex);
+  add('publisher', old.publisher, now.publisher);
+  add('pubdate', old.publishedAt, now.publishedAt);
+  add('description', old.description, now.description);
+  add('tags', [...old.tags].sort(), [...now.tags].sort());
+  add('identifiers', sortedIds(old.identifiers), sortedIds(now.identifiers));
+  if (old.rating !== undefined) add('rating', old.rating, now.rating ?? null);
+  if (old.languages !== undefined) add('languages', old.languages, now.languages ?? []);
+  if (old.coverSig && coverSig && old.coverSig !== 'none' && old.coverSig !== coverSig)
+    out.push({ field: 'cover', old: old.coverSig, new: coverSig });
+  return out;
 }
 
 const yieldToEventLoop = () => new Promise<void>((resolve) => setImmediate(resolve));
@@ -261,9 +451,41 @@ export async function ingestSnapshot(
   ).n;
 
   const findSource = db.prepare(
-    `SELECT id, book_id, meta_hash, missing_at FROM book_sources
+    `SELECT id, book_id, meta_hash, meta2_hash, cover_sig, has_cover, calibre_last_modified, missing_at FROM book_sources
      WHERE library_id = ? AND kind = 'calibre' AND calibre_uuid = ?`,
   );
+  // Migration 31: the rating and languages, with their own hash (a light update when only they
+  // changed or were never stored), and what changed per field for books already indexed.
+  const updateMeta2 = db.prepare(
+    `UPDATE books SET rating = @rating, languages = @languages WHERE id = @bookId`,
+  );
+  const updateMeta2Source = db.prepare(
+    `UPDATE book_sources SET meta2_hash = @meta2, cover_sig = COALESCE(@coverSig, cover_sig)
+     WHERE id = @id`,
+  );
+  const oldBook = db.prepare(
+    `SELECT b.title, b.title_sort, b.author_sort, s.name AS series, b.series_index, b.publisher,
+            b.published_at, b.description, b.rating, b.languages
+     FROM books b LEFT JOIN series s ON s.id = b.series_id WHERE b.id = ?`,
+  );
+  const oldAuthors = db.prepare(
+    `SELECT a.name FROM book_authors l JOIN authors a ON a.id = l.author_id
+     WHERE l.book_id = ? ORDER BY l.position`,
+  );
+  const oldTags = db.prepare(
+    'SELECT t.name FROM book_tags l JOIN tags t ON t.id = l.tag_id WHERE l.book_id = ?',
+  );
+  const oldIllustrators = db.prepare(
+    `SELECT i.name FROM book_illustrators l JOIN illustrators i ON i.id = l.illustrator_id
+     WHERE l.book_id = ? ORDER BY l.position`,
+  );
+  const oldIdentifiers = db.prepare('SELECT type, value FROM book_identifiers WHERE book_id = ?');
+  const queueChange = db.prepare(
+    `INSERT INTO calibre_field_changes (library_id, calibre_uuid, calibre_id, book_id, field,
+       old_json, new_json, last_modified, before_modified, seen_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  );
+  const coverSigs = new Map<string, string | null>();
   const insertBook = db.prepare(
     `INSERT INTO books (id, library_id, title, title_fold, title_sort, author_sort, series_id,
        series_index, description, publisher, published_at, added_at, created_at, updated_at)
@@ -312,6 +534,19 @@ export async function ingestSnapshot(
   );
   const clearTags = db.prepare('DELETE FROM book_tags WHERE book_id = ?');
   const linkTag = db.prepare('INSERT OR IGNORE INTO book_tags (book_id, tag_id) VALUES (?, ?)');
+  const upsertIllustrator = db.prepare(
+    `INSERT INTO illustrators (name, name_fold) VALUES (?, ?)
+     ON CONFLICT(name) DO UPDATE SET name_fold = excluded.name_fold
+     RETURNING id`,
+  );
+  const clearIllustrators = db.prepare('DELETE FROM book_illustrators WHERE book_id = ?');
+  const linkIllustrator = db.prepare(
+    'INSERT INTO book_illustrators (book_id, illustrator_id, position) VALUES (?, ?, ?)',
+  );
+  const clearIdentifiers = db.prepare('DELETE FROM book_identifiers WHERE book_id = ?');
+  const insertIdentifier = db.prepare(
+    'INSERT OR REPLACE INTO book_identifiers (book_id, type, value) VALUES (?, ?, ?)',
+  );
 
   const result: IngestResult = {
     total: 0,
@@ -326,15 +561,102 @@ export async function ingestSnapshot(
   };
   const seen = new Set<string>();
 
+  type Existing = {
+    id: string;
+    book_id: string;
+    meta_hash: string | null;
+    meta2_hash: string | null;
+    cover_sig: string | null;
+    has_cover: number | null;
+    calibre_last_modified: number | null;
+    missing_at: number | null;
+  };
+
+  const recordChanges = (existing: Existing, book: CalibreBook) => {
+    const ob = oldBook.get(existing.book_id) as
+      | {
+          title: string;
+          title_sort: string | null;
+          author_sort: string | null;
+          series: string | null;
+          series_index: number | null;
+          publisher: string | null;
+          published_at: number | null;
+          description: string | null;
+          rating: number | null;
+          languages: string | null;
+        }
+      | undefined;
+    if (!ob) return;
+    const known = existing.meta2_hash !== null;
+    const changes = diffBook(
+      {
+        title: ob.title,
+        titleSort: ob.title_sort,
+        authorSort: ob.author_sort,
+        authors: (oldAuthors.all(existing.book_id) as { name: string }[]).map((a) => a.name),
+        illustrators: (oldIllustrators.all(existing.book_id) as { name: string }[]).map(
+          (a) => a.name,
+        ),
+        series: ob.series,
+        seriesIndex: ob.series ? ob.series_index : null,
+        publisher: ob.publisher,
+        publishedAt: ob.published_at,
+        description: ob.description,
+        tags: (oldTags.all(existing.book_id) as { name: string }[]).map((t) => t.name),
+        identifiers: Object.fromEntries(
+          (oldIdentifiers.all(existing.book_id) as { type: string; value: string }[]).map((r) => [
+            r.type,
+            r.value,
+          ]),
+        ),
+        rating: known ? ob.rating : undefined,
+        languages: known ? (JSON.parse(ob.languages ?? '[]') as string[]) : undefined,
+        // A cover added or taken away counts too ('nocover' on either side).
+        coverSig: existing.has_cover === 1 ? existing.cover_sig : 'nocover',
+      },
+      book,
+      book.hasCover ? coverSigs.get(book.uuid) : 'nocover',
+    );
+    for (const c of changes) {
+      queueChange.run(
+        libraryId,
+        book.uuid,
+        book.calibreId,
+        existing.book_id,
+        c.field,
+        JSON.stringify(c.old ?? null),
+        JSON.stringify(c.new ?? null),
+        book.lastModified,
+        existing.calibre_last_modified,
+        now,
+      );
+    }
+  };
+
   const writeBook = (book: CalibreBook) => {
     const hash = metaHash(book);
-    const existing = findSource.get(libraryId, book.uuid) as
-      | { id: string; book_id: string; meta_hash: string | null; missing_at: number | null }
-      | undefined;
+    const hash2 = meta2Hash(book);
+    const existing = findSource.get(libraryId, book.uuid) as Existing | undefined;
+    const meta2Params = {
+      rating: book.rating ?? null,
+      languages: JSON.stringify(book.languages ?? []),
+    };
     if (existing && existing.meta_hash === hash && existing.missing_at === null) {
+      if (existing.meta2_hash !== hash2) {
+        // Only the rating or the languages changed (or were never stored: migration 31).
+        if (existing.meta2_hash !== null) recordChanges(existing, book);
+        updateMeta2.run({ ...meta2Params, bookId: existing.book_id });
+        updateMeta2Source.run({ meta2: hash2, coverSig: null, id: existing.id });
+        result.updated++;
+        return;
+      }
       result.unchanged++;
       return;
     }
+    // What changed per field, for a book the catalog already has (never a new book or one
+    // coming back from missing: nothing was changed there, it appeared).
+    if (existing && existing.missing_at === null) recordChanges(existing, book);
 
     const seriesId = book.series
       ? (
@@ -392,6 +714,22 @@ export async function ingestSnapshot(
       const { id } = upsertTag.get(tag, foldForSearch(tag)) as { id: number };
       linkTag.run(bookId, id);
     }
+    clearIllustrators.run(bookId);
+    book.illustrators.forEach((name, position) => {
+      const { id } = upsertIllustrator.get(name, foldForSearch(name)) as { id: number };
+      linkIllustrator.run(bookId, id, position);
+    });
+    clearIdentifiers.run(bookId);
+    for (const [type, value] of Object.entries(book.identifiers)) {
+      insertIdentifier.run(bookId, type, value);
+    }
+    updateMeta2.run({ ...meta2Params, bookId });
+    const sourceId = existing?.id ?? (findSource.get(libraryId, book.uuid) as Existing).id;
+    updateMeta2Source.run({
+      meta2: hash2,
+      coverSig: coverSigs.get(book.uuid) ?? null,
+      id: sourceId,
+    });
   };
 
   const reader = new CalibreReader(snapshotFile);
@@ -401,6 +739,22 @@ export async function ingestSnapshot(
     for (;;) {
       const batch = reader.readBatch(afterId, batchSize);
       if (batch.length === 0) break;
+      // Covers: their size and mtime, read only for books whose record changed (a cover changed
+      // in Calibre changes its last_modified); the rest get theirs from the indexer's slow
+      // background pass (fillCoverSigs), never all at once here.
+      coverSigs.clear();
+      if (opts.coverSig) {
+        const want = db.transaction(() =>
+          batch.filter((b) => {
+            if (!b.hasCover) return false;
+            const e = findSource.get(libraryId, b.uuid) as Existing | undefined;
+            return !e || e.meta_hash !== metaHash(b);
+          }),
+        )();
+        for (const b of want) {
+          coverSigs.set(b.uuid, await opts.coverSig(b.path).catch(() => null));
+        }
+      }
       db.transaction(() => {
         for (const book of batch) {
           seen.add(book.uuid);
@@ -445,6 +799,9 @@ export async function ingestSnapshot(
   db.transaction(() => {
     db.prepare('DELETE FROM authors WHERE id NOT IN (SELECT author_id FROM book_authors)').run();
     db.prepare('DELETE FROM tags WHERE id NOT IN (SELECT tag_id FROM book_tags)').run();
+    db.prepare(
+      'DELETE FROM illustrators WHERE id NOT IN (SELECT illustrator_id FROM book_illustrators)',
+    ).run();
     db.prepare(
       'DELETE FROM series WHERE id NOT IN (SELECT series_id FROM books WHERE series_id IS NOT NULL)',
     ).run();

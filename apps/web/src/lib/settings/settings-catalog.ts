@@ -4,6 +4,10 @@
  * All rights reserved.
  */
 
+import { BOTTOM_IDS, TOP_IDS } from '$lib/reader-toolbar/toolbar-layout';
+import { BOTTOM_LABELS, TOP_LABELS } from '$lib/reader-toolbar/toolbar-labels';
+import { LINK_LABELS } from '$lib/book-links/link-labels';
+import { BOOK_LINKS } from '$lib/book-links/links';
 import type { SettingsTab } from './settings-tab';
 
 /**
@@ -41,7 +45,7 @@ export const SETTINGS_SECTIONS: CatalogSection[] = [
     tab: 'Reader',
     jp: '外観',
     title: 'Theme and display',
-    description: 'How books and the library look on this device.'
+    description: 'How books look on this device.'
   },
   {
     id: 'reader-fonts',
@@ -65,12 +69,21 @@ export const SETTINGS_SECTIONS: CatalogSection[] = [
     description: 'Taps, swipes, the mouse and the wheel.'
   },
   {
+    id: 'reader-toolbars',
+    tab: 'Reader',
+    jp: '道具',
+    title: 'Toolbars',
+    description:
+      'Which buttons the reader’s top bar and bottom bar show on this device, and in what order. Keys work whether or not their button is shown.',
+    keywords: 'toolbar top bar bottom bar buttons menu order header footer'
+  },
+  {
     id: 'reader-bar',
     tab: 'Reader',
     jp: '表示',
     title: 'Bottom bar',
     description:
-      'What the reader’s bottom bar shows. Time left and the goals dot are under Statistics.'
+      'The progress text at the right of the reader’s bottom bar. Its buttons are under Toolbars; time left and the goals dot are under Statistics.'
   },
   {
     id: 'reader-place',
@@ -103,6 +116,45 @@ export const SETTINGS_SECTIONS: CatalogSection[] = [
     description:
       'Play and speed are set inside a book: open the menu at the top and tap Read aloud (key V).'
   },
+  // Library (calibre-metadata-display.md): Look, Book page, Links, Downloading books.
+  {
+    id: 'library-appearance',
+    tab: 'Library',
+    jp: '外観',
+    title: 'Look',
+    keywords: 'library theme'
+  },
+  {
+    id: 'library-book-page',
+    tab: 'Library',
+    jp: '書誌',
+    title: 'Book page',
+    description: 'This device only.'
+  },
+  {
+    id: 'library-links',
+    tab: 'Library',
+    jp: '外部リンク',
+    title: 'Links',
+    description:
+      'This device only. Button: on the page. Menu: under More, in this order. Drag or use ↑ / ↓ to reorder.',
+    keywords: 'store stores links external amazon bookwalker order'
+  },
+  {
+    id: 'library-editing',
+    tab: 'Library',
+    jp: '編集',
+    title: 'Editing',
+    description: 'Editing a Calibre book’s details from the reader.',
+    keywords: 'edit series tags calibre metadata'
+  },
+  {
+    id: 'data-downloads',
+    tab: 'Library',
+    jp: '保存',
+    title: 'Downloading books',
+    description: 'Downloading several books at once with Select in the Library.'
+  },
   // Data
   {
     id: 'data-server',
@@ -121,13 +173,6 @@ export const SETTINGS_SECTIONS: CatalogSection[] = [
       'Places, highlights, notes, statistics and settings shared with your other devices.'
   },
   { id: 'data-device', tab: 'Data', jp: 'この端末', title: 'This device' },
-  {
-    id: 'data-downloads',
-    tab: 'Data',
-    jp: '保存',
-    title: 'Downloading books',
-    description: 'Downloading several books at once with Select in the Library.'
-  },
   { id: 'data-import', tab: 'Data', jp: '取込', title: 'Importing books' },
   {
     id: 'data-tools',
@@ -421,7 +466,7 @@ export const SETTINGS_CATALOG: CatalogSetting[] = [
   },
   {
     id: 'library-look',
-    section: 'reader-theme',
+    section: 'library-appearance',
     title: 'Library look',
     description:
       'Light or dark for Home, Library, Collections, Notes and Stats. “Like the book” turns dark when the book’s theme is dark (also when it follows the device). E-ink always wins.',
@@ -597,14 +642,6 @@ export const SETTINGS_CATALOG: CatalogSetting[] = [
     title: 'Percentage of the chapter',
     keywords: 'footer chapter'
   },
-  {
-    id: 'return-marker',
-    section: 'reader-bar',
-    title: 'Way back after a jump',
-    description:
-      'After a jump (search, contents, a highlight or bookmark), the bottom bar shows where you were reading; tap it to go back.',
-    keywords: 'return marker'
-  },
   // Reader › Your place
   {
     id: 'auto-save',
@@ -729,7 +766,7 @@ export const SETTINGS_CATALOG: CatalogSetting[] = [
   },
   {
     id: 'illustrations-position',
-    section: 'reader-images',
+    section: 'library-book-page',
     title: 'Illustrations on the book page',
     description:
       'This device only: where a book’s page in the Library shows its illustrations. Hidden pictures follow Hide spoiler images.'
@@ -763,14 +800,7 @@ export const SETTINGS_CATALOG: CatalogSetting[] = [
     description:
       'On a page with only an illustration, turns the page after this long (when the pacer turns pages by itself).'
   },
-  // Reader › Read aloud
-  {
-    id: 'read-aloud-button',
-    section: 'reader-readaloud',
-    title: 'Read-aloud button in the bottom bar',
-    description:
-      'This device only. Play or pause from the reader’s bottom bar; it also shows while read-aloud is on.'
-  },
+  // Reader › Read aloud (its bottom-bar button is under Reader › Toolbars)
   {
     id: 'read-aloud-ahead',
     section: 'reader-readaloud',
@@ -868,6 +898,59 @@ export const SETTINGS_CATALOG: CatalogSetting[] = [
     title: 'Ask before downloads larger than',
     description: '0: never ask.',
     keywords: 'size confirm gb warning'
+  },
+  // Library › Book page: the links (calibre-metadata-display.md)
+  {
+    id: 'links-placement',
+    section: 'library-book-page',
+    title: 'Where the links go',
+    description: 'Store and book-site links on a Calibre book’s page.',
+    keywords: 'links store placement section panel buttons'
+  },
+  {
+    id: 'links-more-as',
+    section: 'library-book-page',
+    title: 'More opens as',
+    description: 'How the More button shows the links set to Menu.',
+    keywords: 'links store dropdown modal menu'
+  },
+  {
+    id: 'links-search',
+    section: 'library-book-page',
+    title: 'Search links',
+    description:
+      'When a store has no saved id for the book, link to a search for its title and author (marked with a magnifier). Off: that store isn’t shown for the book.',
+    keywords: 'links store search magnifier'
+  },
+  {
+    id: 'book-edit-as',
+    section: 'library-book-page',
+    title: 'Book form opens as',
+    description:
+      'The pencil on a Calibre book’s page opens its edit form in a side panel or a modal.',
+    keywords: 'edit details pencil form side panel modal calibre'
+  },
+  {
+    id: 'book-rating-empty',
+    section: 'library-book-page',
+    title: 'A book without a rating',
+    description: 'The line under the byline: hidden, or “No rating”.',
+    keywords: 'rating stars no rating'
+  },
+  {
+    id: 'series-edit-as',
+    section: 'library-editing',
+    title: 'Series editor opens as',
+    description: 'Edit series (on a series page) in a side panel or a modal. This device only.',
+    keywords: 'edit series rename numbers side panel modal'
+  },
+  {
+    id: 'tags-you-can-pick',
+    section: 'library-editing',
+    title: 'Tags you can pick',
+    description:
+      'The tags the edit form offers, and the list the cleanup’s tagging of new books picks from. Changing this list writes nothing to your books: they keep the tags they have. One list for every device.',
+    keywords: 'tags genres list vocabulary your tags cleanup new books'
   },
   {
     id: 'epub-fixes',
@@ -1176,12 +1259,6 @@ export const SETTINGS_CATALOG: CatalogSetting[] = [
   },
   { id: 'anki-note-type', section: 'anki-fields', title: 'Note type' },
   {
-    id: 'anki-bottom-bar',
-    section: 'anki-reader',
-    title: 'Anki button in the bottom bar',
-    description: 'Enrich from the reader’s bottom bar. Also in the menu at the top, or the E key.'
-  },
-  {
     id: 'anki-notice-seconds',
     section: 'anki-reader',
     title: 'Close the message after',
@@ -1220,6 +1297,42 @@ export const SETTINGS_CATALOG: CatalogSetting[] = [
     title: 'Cancel a batch with no answers after',
     description:
       "If a provider hasn't answered anything in a batch by then, the batch is cancelled and its questions are asked one call each. 0 = wait as long as the provider takes (up to 24 hours)."
+  },
+  {
+    id: 'ai-fail-wait',
+    section: 'ai-advanced',
+    title: 'Wait after a failed batch',
+    description:
+      'When a provider refuses a whole batch, that model sends no batch for this long, twice as long after each further failure in a row.',
+    keywords: 'backoff refused batch'
+  },
+  {
+    id: 'ai-fail-max-wait',
+    section: 'ai-advanced',
+    title: 'Longest wait between failing batches',
+    description: 'Also how often a model whose batches are paused tries one batch.'
+  },
+  {
+    id: 'ai-fail-pause',
+    section: 'ai-advanced',
+    title: 'Pause batches after failures in a row',
+    description:
+      "Then the model's batches are paused and a notification goes out; it ends once a batch is accepted again."
+  },
+  {
+    id: 'ai-fail-fallback',
+    section: 'ai-advanced',
+    title: 'While batches are paused',
+    description:
+      "Wait (the model's questions wait for its batches), or ask its questions one call each for the rest of the run, at full price. The model's own setting is not changed."
+  },
+  {
+    id: 'ai-queue-default',
+    section: 'ai-advanced',
+    title: 'Batch queue cap per model',
+    description:
+      "The most estimated prompt tokens one model may have in batches at its provider, unless its row says otherwise. Your account's real limit is on the provider's Limits page (OpenAI: enqueued tokens per model). 0 = no cap.",
+    keywords: 'enqueued tokens limit'
   },
   {
     id: 'ai-turnaround',
@@ -1319,7 +1432,34 @@ export const SETTINGS_CATALOG: CatalogSetting[] = [
   // Diagnostics
   { id: 'diag-refresh', section: 'diag-device', title: 'Refresh', keywords: 'as of' },
   { id: 'diag-open-problems', section: 'diag-notify', title: 'Open problems' },
-  { id: 'diag-sent', section: 'diag-notify', title: 'Sent messages', keywords: 'log failed' }
+  { id: 'diag-sent', section: 'diag-notify', title: 'Sent messages', keywords: 'log failed' },
+
+  // Reader › Toolbars (reader toolbars session 2): one row per entry of each bar, with the
+  // screen's own words (toolbar-labels.ts). The bottom bar's Anki, Read aloud and return
+  // marker rows replace the old switches; their old titles are keywords, so old searches land.
+  ...TOP_IDS.map((id) => ({
+    id: `toolbar-top-${id}`,
+    section: 'reader-toolbars',
+    title: TOP_LABELS[id].name,
+    description: TOP_LABELS[id].description,
+    keywords: `top bar toolbar ${TOP_LABELS[id].keywords ?? ''}`.trim()
+  })),
+  ...BOTTOM_IDS.map((id) => ({
+    id: `toolbar-bottom-${id}`,
+    section: 'reader-toolbars',
+    title: BOTTOM_LABELS[id].name,
+    description: BOTTOM_LABELS[id].description,
+    keywords: `bottom bar toolbar footer ${BOTTOM_LABELS[id].keywords ?? ''}`.trim()
+  })),
+
+  // Library › Links: one row per link, with the screen's own words (link-labels.ts).
+  ...BOOK_LINKS.map((link) => ({
+    id: `book-link-${link.id}`,
+    section: 'library-links',
+    title: link.name,
+    description: LINK_LABELS[link.id].description,
+    keywords: `link store ${LINK_LABELS[link.id].keywords ?? ''}`.trim()
+  }))
 ];
 
 const SECTION_BY_ID = new Map(SETTINGS_SECTIONS.map((s) => [s.id, s]));

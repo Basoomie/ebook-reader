@@ -298,13 +298,28 @@ function setFields(fields) {
     'series',
     'series_index',
     'comments',
+    // Stage 5 (WP20f), also with other fields in one call (a title fitted for Calibre's names).
+    'tags',
+    // The user's edits from the reader (sidecar 1.5.0).
+    'pubdate',
+    'rating',
   ];
   for (const n of names) if (!allowed.includes(n)) fail(`Unknown field: ${n}`);
   const oldTitle = b.title;
   const oldFirst = authorsOf(id)[0];
   for (const [k, v] of kv) {
     if (k === 'title') db.prepare('UPDATE books SET title = ? WHERE id = ?').run(v, id);
-    else if (k === 'sort') db.prepare('UPDATE books SET sort = ? WHERE id = ?').run(v, id);
+    else if (k === 'tags') {
+      db.prepare('DELETE FROM books_tags_link WHERE book = ?').run(id);
+      for (const t of v
+        .split(',')
+        .map((x) => x.trim())
+        .filter(Boolean)) {
+        db.prepare('INSERT OR IGNORE INTO tags (name) VALUES (?)').run(t);
+        const tag = db.prepare('SELECT id FROM tags WHERE name = ?').get(t);
+        db.prepare('INSERT INTO books_tags_link (book, tag) VALUES (?, ?)').run(id, tag.id);
+      }
+    } else if (k === 'sort') db.prepare('UPDATE books SET sort = ? WHERE id = ?').run(v, id);
     else if (k === 'authors') {
       const list = v
         .split('&')
@@ -409,6 +424,29 @@ function setFields(fields) {
     } else if (k === 'comments') {
       db.prepare('DELETE FROM comments WHERE book = ?').run(id);
       if (v !== '') db.prepare('INSERT INTO comments (book, text) VALUES (?, ?)').run(id, v);
+    } else if (k === 'pubdate') {
+      // Real calibre 9.18 (checked 2026-11-23): an exact time with its zone is stored in UTC;
+      // empty is Calibre's undefined date.
+      const t = v === '' ? null : Date.parse(v);
+      if (v !== '' && !Number.isFinite(t)) fail(`Not a date: ${v}`);
+      const text =
+        t === null
+          ? '0101-01-01 00:00:00+00:00'
+          : new Date(t)
+              .toISOString()
+              .replace('T', ' ')
+              .replace(/\.\d{3}Z$/, '+00:00');
+      db.prepare('UPDATE books SET pubdate = ? WHERE id = ?').run(text, id);
+    } else if (k === 'rating') {
+      // Stars (4.5 is stored as 9); 0 takes the rating off (real calibre 9.18).
+      const n = Number(v);
+      if (!Number.isFinite(n)) fail(`Not a number: ${v}`);
+      db.prepare('DELETE FROM books_ratings_link WHERE book = ?').run(id);
+      if (n > 0) {
+        db.prepare('INSERT OR IGNORE INTO ratings (rating) VALUES (?)').run(Math.round(n * 2));
+        const r = db.prepare('SELECT id FROM ratings WHERE rating = ?').get(Math.round(n * 2));
+        db.prepare('INSERT INTO books_ratings_link (book, rating) VALUES (?, ?)').run(id, r.id);
+      }
     } else if (k === 'cover') {
       if (!fs.existsSync(v)) fail(`No such file: ${v}`);
       const folder = path.join(lib, ...bookRow(id).path.split('/'));
@@ -483,6 +521,18 @@ switch (sub) {
       };
       const p = publisherOf(b.id);
       if (p !== null) row.publisher = p;
+      // The user's edits read the published date, the rating (absent when none) and the title
+      // sort through --template "{sort}" (real calibre 9.18 can't list the sort as a field).
+      row.pubdate = iso(b.pubdate || '0101-01-01 00:00:00+00:00');
+      if (hasTable('books_ratings_link')) {
+        const r = db
+          .prepare(
+            'SELECT r.rating FROM books_ratings_link l JOIN ratings r ON r.id = l.rating WHERE l.book = ?',
+          )
+          .get(b.id);
+        if (r && r.rating > 0) row.rating = r.rating;
+      }
+      if (opt('--template') === '{sort}') row.template = b.sort;
       return row;
     });
     process.stdout.write(JSON.stringify(out));

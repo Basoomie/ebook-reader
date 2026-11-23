@@ -6,12 +6,13 @@
   const dispatch = createEventDispatcher<{ close: void }>();
 
   const rows: [string, string][] = [
-    ['薬屋 外伝', 'Words in the title, an author or the series (all of them)'],
+    ['薬屋 外伝', 'Words in the title, an author, an illustrator or the series (all of them)'],
     ['"Jane Doe"', 'Words that belong together'],
     ['author:日向', 'Author name contains the text'],
+    ['illustrator:しのとうこ', 'Illustrator name contains the text'],
     ['series:薬屋', 'Series name contains the text'],
     ['tag:SF', 'Tag contains the text'],
-    ['tag:=SF', 'Exactly this tag (= works for author: and series: too)'],
+    ['tag:=SF', 'Exactly this tag (= works for author:, illustrator: and series: too)'],
     ['tag:SF tag:BL', 'Books with both tags'],
     ['tag:SF,BL', 'Books with either tag'],
     ['chars:<150000', 'Fewer than 150,000 characters (also >, <=, >=, 50k-150k)'],

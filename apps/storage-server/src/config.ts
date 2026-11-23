@@ -50,6 +50,12 @@ export interface ServerConfig {
    * Optional: without them only the audiobook part of /cleanup is off.
    */
   cleanupAudio?: { torrentsDir: string; libraryDir: string; mediaDir: string | null } | null;
+  /**
+   * WP20g: the Calibre import's source folders: /mnt/disk1/data/torrents mounted read-only
+   * (CLEANUP_BOOK_SOURCES_DIR). Optional: without it books added by hand still go through
+   * stages 1-5; the import is off.
+   */
+  cleanupBookSources?: string | null;
 }
 
 export interface AudioConfig {
@@ -187,6 +193,11 @@ export interface AudioMergeConfig {
   minFreeMb: number;
   /** A merge that makes no progress this long is stopped (minutes). */
   stallMinutes: number;
+  /**
+   * The check after a merge: how far (ms) a chapter of the merged file may start from where
+   * it was written (the chapter list is otherwise compared exactly).
+   */
+  chapterToleranceMs: number;
   /** Owner, group and mode given to new files; null = left as created. */
   fileUid: number | null;
   fileGid: number | null;
@@ -199,6 +210,7 @@ export const DEFAULT_AUDIO_MERGE: AudioMergeConfig = {
   bitrate: '128k',
   minFreeMb: 2048,
   stallMinutes: 10,
+  chapterToleranceMs: 5,
   fileUid: null,
   fileGid: null,
   fileMode: null,
@@ -411,6 +423,9 @@ export function loadConfig(env: Env): LoadedConfig {
       logs: parseLogConfig(env, warnings),
       audio: parseAudioConfig(env, warnings),
       cleanupAudio: parseCleanupAudio(env, warnings),
+      cleanupBookSources: (env.CLEANUP_BOOK_SOURCES_DIR ?? '').trim()
+        ? path.resolve((env.CLEANUP_BOOK_SOURCES_DIR ?? '').trim())
+        : null,
     },
     warnings,
   };
@@ -777,6 +792,15 @@ export function parseAudioConfig(env: Env, warnings: string[]): AudioConfig {
         m.stallMinutes,
         0.05,
         24 * 60,
+        false,
+        warnings,
+      ),
+      chapterToleranceMs: parseNumber(
+        'AUDIO_MERGE_CHAPTER_TOLERANCE_MS',
+        env.AUDIO_MERGE_CHAPTER_TOLERANCE_MS,
+        m.chapterToleranceMs,
+        0,
+        60_000,
         false,
         warnings,
       ),

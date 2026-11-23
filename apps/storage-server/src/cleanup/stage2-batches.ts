@@ -23,6 +23,7 @@ import fs from 'fs';
 import path from 'path';
 import { snapshotFile } from '../calibre/indexer';
 import { parseCalibreDate } from '../calibre/ingest';
+import { liveTitleSort } from '../calibre/live-lookup';
 import { getLibrary } from '../calibre/libraries';
 import { readSourceFile, resolveInside, statFile } from '../calibre/source-fs';
 import { BatchError, type BatchRow, type BatchService, type ItemState } from './batches';
@@ -33,8 +34,11 @@ import { listFieldPauses } from './stage2-gate';
 import { titleSort } from './title-rules';
 import { illustratorIsNames, readStage2Snapshot, type Stage2Book } from './stage2-snapshot';
 import { readStage4Extras, type Stage4Extras } from './stage4/snapshot4';
-import { NAME_MAX_BYTES, calibreNameBytes } from './stage2-rules';
+import { LONG_AUTHOR_REASON, NAME_MAX_BYTES, calibreNameBytes } from './stage2-rules';
+import { fitTitle } from './title-fit';
 import { currentAnalysisId, pauseStage } from './stages';
+import { EDIT_STAGE } from './field-stages';
+import { aiYoursAfterWrite } from './edits/yours';
 import { applyTagChange, sameTags, undoTagChange, type TagChange } from './stage5/decide';
 
 export const STAGE2_TERMINAL_APPLY: ItemState[] = ['written', 'failed', 'skipped'];
@@ -56,11 +60,21 @@ export interface ListedBook {
   series_index?: unknown;
   comments?: unknown;
   tags?: unknown;
+  pubdate?: unknown;
+  rating?: unknown;
+  /** The title sort, through `--template {sort}` (it can't be listed as a field). */
+  template?: unknown;
 }
 
 /** Also series, series_index and comments (stage 4, WP20e) and tags (stage 5, WP20f). */
 export const LIST_FIELDS =
   'uuid,title,authors,author_sort,identifiers,publisher,languages,cover,last_modified,*illustrator,series,series_index,comments,tags';
+
+/**
+ * The user's edits also read the published date and the rating (1.5.0). The title sort can't be
+ * listed through the content server: it is read from the live metadata.db (withLiveSort).
+ */
+export const EDIT_LIST_FIELDS = `${LIST_FIELDS},pubdate,rating`;
 
 interface Current {
   uuid: string | null;
@@ -77,6 +91,10 @@ interface Current {
   seriesIndex?: number | null;
   comments?: string;
   tags?: string[];
+  /** Only when listed (the user's edits): the title sort, published date (ms) and rating (0-10). */
+  titleSort?: string;
+  pubdate?: number | null;
+  rating?: number | null;
 }
 
 const strList = (v: unknown): string[] =>
@@ -119,7 +137,24 @@ export function parseListed(b: ListedBook): Current {
           : null,
     comments: typeof b.comments === 'string' ? b.comments : '',
     tags: strList(b.tags),
+    ...(typeof b.template === 'string' ? { titleSort: b.template } : {}),
+    ...('pubdate' in b ? { pubdate: parseCalibreDate(b.pubdate ?? null) } : {}),
+    ...('pubdate' in b || 'rating' in b ? { rating: listedRating(b.rating) } : {}),
   };
+}
+
+/** Calibre's rating as `list` shows it (0-10; absent or 0 = none). */
+function listedRating(v: unknown): number | null {
+  const n = typeof v === 'number' ? v : typeof v === 'string' ? Number(v) : NaN;
+  return Number.isFinite(n) && n > 0 ? Math.min(10, Math.round(n)) : null;
+}
+
+const tagKey = (l: string[]) => [...new Set(l.map((x) => x.toLowerCase()))].sort().join('|');
+
+/** A published date as calibredb takes it (an exact time with its zone; '' = none). */
+export function calibreDate(ms: number | null): string {
+  if (ms === null) return '';
+  return new Date(ms).toISOString().replace(/\.\d{3}Z$/, '+00:00');
 }
 
 const lowerList = (l: string[]) => l.map((x) => x.toLowerCase());
@@ -174,6 +209,23 @@ export function fieldEquals(
       return (current.comments ?? '').trim() === ((value as string | null) ?? '').trim();
     case 'author_sort':
       return (current.authorSort ?? '') === ((value as string | null) ?? '');
+    // The user's edits (calibre metadata editing).
+    case 'sort':
+      return current.titleSort !== undefined && current.titleSort === ((value as string) ?? '');
+    case 'pubdate': {
+      // Compared to the second; no date is Calibre's undefined date (null).
+      if (current.pubdate === undefined) return false;
+      const v = typeof value === 'number' ? Math.floor(value / 1000) : null;
+      const c = current.pubdate === null ? null : Math.floor(current.pubdate / 1000);
+      return c === v;
+    }
+    case 'rating':
+      return (
+        current.rating !== undefined &&
+        (current.rating ?? null) === (typeof value === 'number' && value > 0 ? value : null)
+      );
+    case 'tags':
+      return tagKey(current.tags ?? []) === tagKey(Array.isArray(value) ? (value as string[]) : []);
     default:
       return false;
   }
@@ -220,6 +272,15 @@ export function fieldArgs(
       return [`comments:${(value as string | null) ?? ''}`];
     case 'author_sort':
       return [`author_sort:${(value as string | null) ?? ''}`];
+    case 'sort':
+      return [`sort:${(value as string | null) ?? ''}`];
+    case 'pubdate':
+      return [`pubdate:${calibreDate(typeof value === 'number' ? value : null)}`];
+    case 'rating':
+      // calibredb takes stars (4.5 is stored as 9); 0 takes the rating off (calibre 9.18).
+      return [`rating:${typeof value === 'number' && value > 0 ? value / 2 : 0}`];
+    case 'tags':
+      return [`tags:${((value as string[] | null) ?? []).join(',')}`];
     default:
       throw new BatchError(500, 'bad_field', `No such field: ${field}`);
   }
@@ -266,6 +327,11 @@ export interface VerifyAnswer {
   /** apply: save Calibre's current cover into the quarantine before writing. */
   saveOldCover: boolean;
   oldCoverPath: string | null;
+  /**
+   * apply (the user's Undo of a cover, sidecar 1.5.0): write this picture from the quarantine
+   * instead of downloading one.
+   */
+  coverFrom?: string | null;
   /** Per field: write / done / skip and why. */
   items: { itemId: number; field: string; state: ItemState; detail: string | null }[];
 }
@@ -281,6 +347,56 @@ export interface WrittenReport {
 
 const EDITED = 'Changed in Calibre since the analysis (left as it is)';
 const EDITED_AFTER = 'Changed in Calibre since the cleanup wrote it (left as it is)';
+/** The user's edit: Calibre no longer had the value the form showed. */
+export const EDITED_FORM = 'Changed in Calibre since you opened the form (left as it is)';
+/** A field that is the user's (edited, confirmed or changed in Calibre's own program). */
+export const YOURS_REASON =
+  'Yours: you edited or confirmed this field (the cleanup never changes it)';
+
+/**
+ * The user's fields a cleanup write of `field` would change: a title write also writes the title
+ * sort, an author write the author sort, a series write its number.
+ */
+export function fieldsWritten(field: string): string[] {
+  switch (field) {
+    case 'title':
+      return ['title', 'sort'];
+    case 'authors':
+      return ['authors', 'author_sort'];
+    case 'series':
+      return ['series', 'series_index'];
+    default:
+      return [field];
+  }
+}
+
+/** Whether a cleanup write of `field` would change a field that is the user's. */
+export function isYours(
+  db: Database.Database,
+  libraryId: string,
+  uuid: string,
+  field: string,
+): boolean {
+  return yoursRow(db, libraryId, uuid, field) !== null;
+}
+
+/** The user's field a cleanup write of `field` would change (the latest), or null. */
+export function yoursRow(
+  db: Database.Database,
+  libraryId: string,
+  uuid: string,
+  field: string,
+): { source: string; since: number } | null {
+  const keys = fieldsWritten(field);
+  return (
+    (db
+      .prepare(
+        `SELECT source, since FROM user_fields WHERE library_id = ? AND calibre_uuid = ?
+           AND field IN (${keys.map(() => '?').join(', ')}) ORDER BY since DESC LIMIT 1`,
+      )
+      .get(libraryId, uuid, ...keys) as { source: string; since: number } | undefined) ?? null
+  );
+}
 
 /**
  * Calibre's times: the snapshot says "2026-11-14 13:57:11.479076+00:00", `list` says ISO, and
@@ -296,6 +412,26 @@ export function sameTime(a: string | null | undefined, b: string | null | undefi
     : (a ?? null) === (b ?? null);
 }
 
+/** When the reader last copied Calibre's metadata.db (0 when there is no copy). */
+function snapshotTime(file: string): number {
+  try {
+    return fs.statSync(file).mtimeMs;
+  } catch {
+    return 0;
+  }
+}
+
+/** Whether a folder is there (a name too long for the disk, or none: false). */
+async function folderExists(dir: string): Promise<boolean> {
+  try {
+    return (await fs.promises.stat(dir)).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+export const NO_FOLDER_REASON =
+  "The book has no folder in Calibre's library (a record without files)";
 export const SPLIT_NAME_REASON = 'A name contains &, which Calibre splits into two names';
 export const LONG_NAME_REASON = "Too long for a folder name in Calibre's library";
 export const PROPOSED_TWICE_REASON = 'The same change was proposed twice; it is written once';
@@ -339,7 +475,7 @@ export class Stage2Batches {
       cacheDir: string;
     },
     /** 2: the files' metadata; 4: the online sources (WP20e); 5: genres and tags (WP20f). */
-    readonly stage: 2 | 4 | 5 = 2,
+    readonly stage: 2 | 4 | 5 | 10 = 2,
   ) {}
 
   /** Stage 4: where the store covers are read (the fetch queue's cached answers). */
@@ -399,9 +535,17 @@ export class Stage2Batches {
     }
   }
 
-  async plan(libraryId: string): Promise<{ batch: BatchRow | null; reason: string | null }> {
+  /**
+   * `analysisId` (WP20g): plan the proposals of a new-arrivals run (arrivals:<run>) instead of the
+   * stage's current analysis; then only that run's own proposals (no decided ones of the library).
+   */
+  async plan(
+    libraryId: string,
+    opts: { analysisId?: string } = {},
+  ): Promise<{ batch: BatchRow | null; reason: string | null }> {
     if (this.batches.open()) return { batch: null, reason: 'A batch is being applied' };
     this.reviewSplitNames(libraryId);
+    this.liftNameHolds(libraryId);
     const settings = getSettings(this.db);
     const paused = new Set(
       listFieldPauses(this.db, this.stage).flatMap((p) =>
@@ -416,9 +560,9 @@ export class Stage2Batches {
           : null;
     const rows = this.db
       .prepare(
-        `SELECT id, calibre_id, calibre_uuid, field, old_json, new_json, evidence_json FROM proposed_changes
+        `SELECT id, calibre_id, calibre_uuid, field, old_json, new_json, evidence_json, created_at FROM proposed_changes
          WHERE stage = ${this.stage} AND library_id = ? AND state = 'proposed' AND class = 'auto'
-           AND (analysis_id = ? OR decided_by IS NOT NULL)${
+           AND ${opts.analysisId ? 'analysis_id = ?' : '(analysis_id = ? OR decided_by IS NOT NULL)'}${
              // Stage 4: only the fields it writes (format and edition wait for stage 5), so a stage
              // with only those left says Done, not that its fields are paused.
              this.stage === 4
@@ -429,7 +573,7 @@ export class Stage2Batches {
            }
          ORDER BY calibre_id, id`,
       )
-      .all(libraryId, currentAnalysisId(this.db, this.stage)) as {
+      .all(libraryId, opts.analysisId ?? currentAnalysisId(this.db, this.stage)) as {
       id: number;
       calibre_id: number;
       calibre_uuid: string;
@@ -437,6 +581,7 @@ export class Stage2Batches {
       old_json: string;
       new_json: string;
       evidence_json: string;
+      created_at?: number;
     }[];
     // Counted only when something is left: this plan runs every round while other stages
     // apply, and the count reads 60,000+ rows (it blocked the server between stage 3's batches).
@@ -508,24 +653,60 @@ export class Stage2Batches {
     const byUuid = new Map([...snap.books.values()].map((b) => [b.uuid, b]));
     // Stage 4 also checks series, number and description against Calibre now.
     const extras = this.stage === 4 ? readStage4Extras(snapFile) : null;
-    // Every write makes Calibre rebuild the folder and file names (lessons 2): stages 4 and 5.
-    if (this.stage === 4 || this.stage === 5) this.reviewLongNames(byBook, byUuid);
+    // Every write makes Calibre rebuild the folder and file names (lessons 2): a title too long
+    // for them is fitted now, with Calibre's current values, in every stage's batch.
+    const needsTitle = this.fitLongNames(
+      libraryId,
+      opts.analysisId ?? currentAnalysisId(this.db, this.stage),
+      byBook,
+      byUuid,
+      snapshotTime(snapFile),
+    );
     const libDir = this.libDir(libraryId);
     const skip: { id: number; reason: string }[] = [];
     const keep: number[] = [];
+    const hold: number[] = [];
     let changedBooks = 0;
     for (const [uuid, items] of byBook) {
       const book = byUuid.get(uuid);
       let changed = false;
+      const kept: number[] = [];
+      let titleSkipped = false;
       for (const r of items) {
         const ev = JSON.parse(r.evidence_json) as Evidence2;
+        // A field that is the user's is never written by the cleanup. One changed in Calibre's
+        // own program after the analysis is what it always was here: "changed in Calibre since
+        // the analysis", counted for the pause (a mass change under a stage pauses it, lessons
+        // 1); after a new analysis it is set aside as theirs when proposed.
+        const yours = yoursRow(this.db, libraryId, uuid, r.field);
+        if (yours) {
+          const sinceAnalysis = yours.source === 'calibre' && yours.since >= (r.created_at ?? 0);
+          skip.push({ id: r.id, reason: sinceAnalysis ? EDITED : YOURS_REASON });
+          if (sinceAnalysis) changed = true;
+          if (r.field === 'title') titleSkipped = true;
+          continue;
+        }
         const reason = await this.planCheck(book, r, ev, libDir, extras);
         if (reason) {
           skip.push({ id: r.id, reason });
-          changed = true;
-        } else keep.push(r.id);
+          // A record without files is no change in Calibre (never pauses the stage).
+          if (reason !== NO_FOLDER_REASON) changed = true;
+          if (r.field === 'title') titleSkipped = true;
+        } else kept.push(r.id);
       }
+      // The fitted title is what lets the other fields be written at all: without it, they wait.
+      if (titleSkipped && needsTitle.has(uuid)) hold.push(...kept);
+      else keep.push(...kept);
       if (changed) changedBooks += 1;
+    }
+    if (hold.length > 0) {
+      const mark = this.db.prepare(
+        `UPDATE proposed_changes SET class = 'review', review_reason = ?, updated_at = ? WHERE id = ?`,
+      );
+      const now = Date.now();
+      this.db.transaction(() => {
+        for (const id of hold) mark.run(LONG_NAME_REASON, now, id);
+      })();
     }
     const share = (100 * changedBooks) / Math.max(cap, byBook.size);
     if (changedBooks > 0 && share > settings.libraryChangedPausePercent) {
@@ -554,35 +735,220 @@ export class Stage2Batches {
     };
   }
 
+  /** The snapshot time liftNameHolds last looked at (it reads the snapshot only when it changed). */
+  private nameHoldsCheckedAt = -1;
+
   /**
-   * Stage 4: every write makes Calibre rebuild the book's folder and file names from its title
-   * and first author (lessons 2), so a book whose names would not fit in 255 bytes after this
-   * batch gets none of its fields written: they go to review with the reason, checked now with
-   * Calibre's current values, not only when they were proposed.
+   * Only the planner's own holds carry this reason (they were automatic when held); a best guess
+   * (evidence "unconfirmed") is never lifted, whatever its reason says (live 2026-11-22: a stage-4
+   * best guess whose reason the old proposal-time hold had replaced was lifted and written).
+   * A change held for "Too long for a folder name" goes back to automatic once the book's names
+   * fit in Calibre as it is now (another stage wrote a shorter title: found live 2026-11-22, the
+   * stage-5 tags of 6 books held while stage 2's titles were being written). A held title change
+   * goes back only when its own value fits. Your decisions are never touched. Reads the reader's
+   * snapshot only when there are such holds and the snapshot changed since the last look.
    */
-  private reviewLongNames(
-    byBook: Map<string, { id: number; field: string; new_json: string }[]>,
+  private liftNameHolds(libraryId: string): void {
+    const held = this.db
+      .prepare(
+        `SELECT id, calibre_uuid, field, new_json FROM proposed_changes
+         WHERE stage = ? AND state = 'proposed' AND class = 'review' AND library_id = ?
+           AND review_reason = ? AND decided_by IS NULL
+           AND COALESCE(json_extract(evidence_json, '$.unconfirmed'), 0) = 0`,
+      )
+      .all(this.stage, libraryId, LONG_NAME_REASON) as {
+      id: number;
+      calibre_uuid: string;
+      field: string;
+      new_json: string;
+    }[];
+    if (held.length === 0) return;
+    const snapFile = snapshotFile(this.deps.cacheDir, libraryId);
+    const at = snapshotTime(snapFile);
+    if (at === this.nameHoldsCheckedAt) return;
+    this.nameHoldsCheckedAt = at;
+    const snap = readStage2Snapshot(snapFile);
+    const byUuid = new Map([...snap.books.values()].map((b) => [b.uuid, b]));
+    const lift = this.db.prepare(
+      `UPDATE proposed_changes SET class = 'auto', review_reason = NULL, updated_at = ? WHERE id = ?`,
+    );
+    const now = Date.now();
+    this.db.transaction(() => {
+      for (const r of held) {
+        const book = byUuid.get(r.calibre_uuid);
+        if (!book) continue;
+        const first = book.authors[0] ?? 'Unknown';
+        const title = r.field === 'title' ? (JSON.parse(r.new_json) as string) : book.title;
+        if (calibreNameBytes(book.calibreId, title, first) <= NAME_MAX_BYTES) lift.run(now, r.id);
+      }
+    })();
+  }
+
+  /**
+   * Every write makes Calibre rebuild the book's folder and file names from its title and first
+   * author (lessons 2). Checked now with Calibre's current values: when the names would not fit
+   * in 255 bytes, the title is fitted (title-fit.ts; decided with the user 2026-11-22): the
+   * batch's own title change gets the fitted value, or a title change fitted from Calibre's own
+   * title joins the batch (any stage; the only field such a change writes besides the sort).
+   * Review instead, as before, when a first author is too long on its own (bad data; an author
+   * change alone goes to review and the book goes on with Calibre's author), or when Calibre's
+   * title is one the user set after the cleanup wrote one (their correction is never replaced).
+   * Returns the books whose other fields need that title written with them.
+   */
+  private fitLongNames(
+    libraryId: string,
+    analysisId: string | null,
+    byBook: Map<
+      string,
+      {
+        id: number;
+        calibre_id: number;
+        calibre_uuid: string;
+        field: string;
+        old_json: string;
+        new_json: string;
+        evidence_json: string;
+      }[]
+    >,
     byUuid: Map<string, Stage2Book>,
-  ): void {
+    /** When the reader last copied Calibre's metadata.db (the snapshot's mtime). */
+    snapshotAt = Number.POSITIVE_INFINITY,
+  ): Set<string> {
+    const needs = new Set<string>();
     const now = Date.now();
     const mark = this.db.prepare(
       `UPDATE proposed_changes SET class = 'review', review_reason = ?, updated_at = ? WHERE id = ?`,
     );
+    const setTitle = this.db.prepare(
+      `UPDATE proposed_changes SET new_json = ?, evidence_json = ?, updated_at = ? WHERE id = ?`,
+    );
+    const ownTitle = this.db.prepare(
+      `SELECT value_json, applied_at FROM applied_values WHERE library_id = ? AND calibre_uuid = ? AND field = 'title'`,
+    );
+    const openFit = this.db.prepare(
+      `SELECT id FROM proposed_changes INDEXED BY proposed_changes_book
+       WHERE library_id = ? AND calibre_uuid = ? AND stage = ? AND field = 'title'
+         AND state = 'proposed' AND source = 'title-fit' LIMIT 1`,
+    );
+    const insert = this.db.prepare(
+      `INSERT INTO proposed_changes (stage, library_id, calibre_id, calibre_uuid, field, old_json, new_json,
+         source, evidence_json, class, review_reason, state, analysis_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, 'title', ?, ?, 'title-fit', ?, 'auto', NULL, 'proposed', ?, ?, ?)`,
+    );
+    const STEPS = ['cleaned', 'shortened', 'cut'];
     for (const [uuid, items] of [...byBook]) {
       const book = byUuid.get(uuid);
       if (!book) continue;
       const t = items.find((x) => x.field === 'title');
       const a = items.find((x) => x.field === 'authors');
       const title = t ? (JSON.parse(t.new_json) as string) : book.title;
-      const first = a
-        ? ((JSON.parse(a.new_json) as string[])[0] ?? 'Unknown')
-        : (book.authors[0] ?? 'Unknown');
+      const calFirst = book.authors[0] ?? 'Unknown';
+      let first = a ? ((JSON.parse(a.new_json) as string[])[0] ?? 'Unknown') : calFirst;
       if (calibreNameBytes(book.calibreId, title, first) <= NAME_MAX_BYTES) continue;
-      this.db.transaction(() => {
-        for (const x of items) mark.run(LONG_NAME_REASON, now, x.id);
-      })();
-      byBook.delete(uuid);
+      const holdAll = () => {
+        this.db.transaction(() => {
+          for (const x of items) mark.run(LONG_NAME_REASON, now, x.id);
+        })();
+        byBook.delete(uuid);
+      };
+      if (calibreNameBytes(book.calibreId, '', first) > NAME_MAX_BYTES) {
+        if (!a || calibreNameBytes(book.calibreId, '', calFirst) > NAME_MAX_BYTES) {
+          holdAll();
+          continue;
+        }
+        mark.run(LONG_AUTHOR_REASON, now, a.id);
+        items.splice(items.indexOf(a), 1);
+        first = calFirst;
+        if (calibreNameBytes(book.calibreId, title, first) <= NAME_MAX_BYTES) continue;
+      }
+      const authors = [
+        ...new Set([...book.authors, ...(a ? (JSON.parse(a.new_json) as string[]) : [])]),
+      ];
+      const f = fitTitle(title, { calibreId: book.calibreId, firstAuthor: first, authors });
+      if (f.step === 'none' || f.step === 'author_too_long') {
+        holdAll();
+        continue;
+      }
+      if (t) {
+        const ev = JSON.parse(t.evidence_json) as Evidence2 & {
+          fit?: { from: string; step: string; rules: string[] };
+        };
+        const step =
+          ev.fit && STEPS.indexOf(ev.fit.step) > STEPS.indexOf(f.step) ? ev.fit.step : f.step;
+        ev.fit = {
+          from: ev.fit?.from ?? title,
+          step,
+          rules: [...(ev.fit?.rules ?? []), ...f.rules],
+        };
+        if (ev.extra?.sort) ev.extra.sort = { ...ev.extra.sort, new: titleSort(f.title) };
+        t.new_json = JSON.stringify(f.title);
+        t.evidence_json = JSON.stringify(ev);
+        setTitle.run(t.new_json, t.evidence_json, now, t.id);
+        needs.add(uuid);
+        continue;
+      }
+      // Calibre's own title. One the user set after the cleanup wrote a title is theirs.
+      const own = ownTitle.get(libraryId, uuid) as
+        | { value_json: string; applied_at: number }
+        | undefined;
+      if (own && (JSON.parse(own.value_json) as string) !== book.title) {
+        // Written by the cleanup after the reader last copied Calibre (another stage's batch a
+        // moment ago, found live 2026-11-22): the copy is behind, not your edit. Left for a
+        // later round, once the reader's index has the title.
+        if (own.applied_at > snapshotAt) {
+          byBook.delete(uuid);
+          continue;
+        }
+        holdAll();
+        continue;
+      }
+      const ev = {
+        title: book.title,
+        authors: book.authors,
+        lastModified: book.lastModified,
+        titleFit: true,
+        reason: null,
+        fit: { from: book.title, step: f.step, rules: f.rules },
+        extra: { sort: { old: book.titleSort, new: titleSort(f.title) } },
+      };
+      const row = {
+        calibre_id: book.calibreId,
+        calibre_uuid: uuid,
+        field: 'title',
+        old_json: JSON.stringify(book.title),
+        new_json: JSON.stringify(f.title),
+        evidence_json: JSON.stringify(ev),
+      };
+      const open = openFit.get(libraryId, uuid, this.stage) as { id: number } | undefined;
+      let id: number;
+      if (open) {
+        id = open.id;
+        this.db
+          .prepare(
+            `UPDATE proposed_changes SET old_json = ?, new_json = ?, evidence_json = ?, class = 'auto',
+               review_reason = NULL, updated_at = ? WHERE id = ?`,
+          )
+          .run(row.old_json, row.new_json, row.evidence_json, now, id);
+      } else {
+        id = Number(
+          insert.run(
+            this.stage,
+            libraryId,
+            book.calibreId,
+            uuid,
+            row.old_json,
+            row.new_json,
+            row.evidence_json,
+            analysisId,
+            now,
+            now,
+          ).lastInsertRowid,
+        );
+      }
+      items.unshift({ id, ...row });
+      needs.add(uuid);
     }
+    return needs;
   }
 
   private async planCheck(
@@ -596,7 +962,13 @@ export class Stage2Batches {
     // Stage 5's tags: a change applied to what Calibre holds at the write (a tag added since
     // stays), also on books without an EPUB (removals only): nothing to compare here.
     if (r.field === 'tags') return null;
-    if (!book.filePath) return 'The book has no EPUB in Calibre any more';
+    // A title fitted for Calibre's names (from Calibre's own title) doesn't read the file either.
+    const fromCalibre = r.field === 'title' && (ev as { titleFit?: boolean }).titleFit === true;
+    if (!book.filePath && !fromCalibre) return 'The book has no EPUB in Calibre any more';
+    // Calibre renames the book's folder with the title: a record whose folder was never made
+    // (its name was too long at the import: 11 records without files) is left alone.
+    if (fromCalibre && !(await folderExists(resolveInside(libDir, book.path))))
+      return NO_FOLDER_REASON;
     const old = JSON.parse(r.old_json) as unknown;
     const ex = extras?.get(book.calibreId);
     const current: Current = {
@@ -765,6 +1137,24 @@ export class Stage2Batches {
     return { batch, rows };
   }
 
+  /**
+   * The user's edit of the title sort: Calibre's sort read from its live metadata.db (read only),
+   * since calibredb can't list it through the content server (calibre 9.18 refuses --template
+   * for a remote library; found in the real-calibre e2e).
+   */
+  private withLiveSort(batch: BatchRow, current: Current, rows: ItemRow[]): Current {
+    if (this.stage !== EDIT_STAGE || !rows.some((r) => r.field === 'sort')) return current;
+    if (!current.uuid) return current;
+    let dir: string;
+    try {
+      dir = this.libDir(batch.libraryId);
+    } catch {
+      return current;
+    }
+    const sort = liveTitleSort(dir, current.uuid);
+    return sort === null ? current : { ...current, titleSort: sort };
+  }
+
   /** The sidecar shows what Calibre has now; the server says what to write. */
   verify(
     batchId: string,
@@ -774,7 +1164,7 @@ export class Stage2Batches {
     now = Date.now(),
   ): VerifyAnswer {
     const { batch, rows } = this.requireBook(batchId, calibreId);
-    const current = listed ? parseListed(listed) : null;
+    const current = listed ? this.withLiveSort(batch, parseListed(listed), rows) : null;
     const answer: VerifyAnswer = {
       action: 'none',
       fields: [],
@@ -831,7 +1221,33 @@ export class Stage2Batches {
     const oldV = JSON.parse(r.old_json) as unknown;
     const newV = JSON.parse(r.new_json) as unknown;
     const seen = { lastModified: cur.lastModified, hasCover: cur.hasCover };
-    if (r.field === 'tags') {
+    const edit = this.stage === EDIT_STAGE;
+    if (!edit && isYours(this.db, batch.libraryId, r.calibre_uuid, r.field)) {
+      // Became the user's after the batch was planned (an edit written between two chunks).
+      this.setItem(r.item_id, 'skipped', YOURS_REASON, null, now);
+      this.skipChange(r.change_id, YOURS_REASON, now);
+      return push('skipped', YOURS_REASON);
+    }
+    if (r.field === 'cover' && edit) {
+      // The user's own picture: written whatever cover Calibre has now (their explicit choice);
+      // Calibre's current cover is kept in the quarantine first, for Undo.
+      const before =
+        r.state === 'verified'
+          ? (JSON.parse(r.stage2_json ?? '{}') as { lastModified?: string | null })
+          : null;
+      if (before && cur.hasCover && !sameTime(cur.lastModified, before.lastModified)) {
+        this.written(batch, r, cur, oldCoverPath, now);
+        return push('written', null);
+      }
+      this.setItem(r.item_id, 'verified', null, { ...seen, oldValue: cur.hasCover }, now);
+      answer.cover = true;
+      answer.saveOldCover = cur.hasCover;
+      // Undo of a cover: the earlier picture from the sidecar's quarantine (1.5.0).
+      const q = (ev as { cover?: { quarantine?: string } }).cover?.quarantine;
+      if (q) answer.coverFrom = q;
+      return push('verified', null);
+    }
+    if (r.field === 'tags' && !edit) {
       // Stage 5 (WP20f): the change is applied to the tags Calibre holds now, so a tag added in
       // Calibre since the proposal stays; a custom tag is never removed.
       const before = cur.tags ?? [];
@@ -890,12 +1306,25 @@ export class Stage2Batches {
     }
     const matched = this.matchingOld(r.calibre_uuid, r.field, cur, oldV);
     if (!matched) {
-      this.setItem(r.item_id, 'skipped', EDITED, null, now);
-      this.skipChange(r.change_id, EDITED, now);
-      return push('skipped', EDITED);
+      const why = edit ? EDITED_FORM : EDITED;
+      this.setItem(r.item_id, 'skipped', why, null, now);
+      this.skipChange(r.change_id, why, now);
+      return push('skipped', why);
     }
     const extra = Object.fromEntries(Object.entries(ev.extra ?? {}).map(([k, v]) => [k, v.new]));
-    if (this.stage === 4) {
+    if (edit) {
+      // calibredb takes a field once per write: a sort edited with its title goes with the
+      // title (as the reading goes with the authors just below).
+      if (r.field === 'sort' && open('title')) {
+        this.setItem(r.item_id, 'verified', null, { ...seen, oldValue: matched.value }, now);
+        return push('verified', null);
+      }
+      if (r.field === 'title') {
+        const s = open('sort');
+        if (s) extra.sort = JSON.parse(s.new_json) as string;
+      }
+    }
+    if (this.stage === 4 || edit) {
       // calibredb takes a field once per write: the reading goes with the authors (sent empty
       // without one, so Calibre computes its own instead of keeping a stale sort: lessons 2).
       if (r.field === 'author_sort' && open('authors')) {
@@ -963,6 +1392,19 @@ export class Stage2Batches {
         ([k, v]) => [k, v.old],
       ),
     );
+    // A title fitted for Calibre's names: the original would make a name the disk refuses (the
+    // rename fails and leaves the book half-written, lessons 2), so it stays, like a cover the
+    // content server can't remove; the book's other fields are put back.
+    if (
+      r.field === 'title' &&
+      typeof oldV === 'string' &&
+      calibreNameBytes(r.calibre_id, oldV, cur.authors[0] ?? 'Unknown') > NAME_MAX_BYTES
+    ) {
+      const detail =
+        "The shortened title stays: the original is too long for Calibre's folder names";
+      this.restored(batch, r, cur, detail, now);
+      return push('restored', detail);
+    }
     if (r.field === 'cover') {
       if (!rec.old_cover_path) {
         const detail =
@@ -1035,7 +1477,9 @@ export class Stage2Batches {
   /** After the write: what Calibre shows decides each field. */
   writtenReport(batchId: string, calibreId: number, report: WrittenReport, now = Date.now()) {
     const { batch, rows } = this.requireBook(batchId, calibreId);
-    const current = report.current ? parseListed(report.current) : null;
+    const current = report.current
+      ? this.withLiveSort(batch, parseListed(report.current), rows)
+      : null;
     const pending: string[] = [];
     const out: { itemId: number; field: string; state: ItemState }[] = [];
     this.db.transaction(() => {
@@ -1050,7 +1494,12 @@ export class Stage2Batches {
           target?: string[];
         };
         let ok = false;
-        if (current && current.uuid === r.calibre_uuid && r.field === 'tags') {
+        if (
+          current &&
+          current.uuid === r.calibre_uuid &&
+          r.field === 'tags' &&
+          this.stage !== EDIT_STAGE
+        ) {
           const want = batch.kind === 'apply' ? before.final : before.target;
           ok = !!want && sameTags(current.tags ?? [], want);
         } else if (current && current.uuid === r.calibre_uuid) {
@@ -1113,6 +1562,7 @@ export class Stage2Batches {
     oldCoverPath: string | null,
     now: number,
   ) {
+    if (this.stage === EDIT_STAGE) return this.writtenEdit(batch, r, current, oldCoverPath, now);
     const ev = JSON.parse(r.evidence_json) as Evidence2;
     // The value Calibre had when the sidecar verified the book (normally the analysed one).
     const seen = JSON.parse(r.stage2_json ?? '{}') as { oldValue?: unknown; final?: string[] };
@@ -1191,6 +1641,58 @@ export class Stage2Batches {
       .run(now, now, r.change_id);
   }
 
+  /**
+   * The user's edit is written: its undo record (the value Calibre had at the write) and the
+   * change marked applied. Never an applied value: those are the cleanup's own writes (a value
+   * the user set is theirs in user_fields, from the moment they saved).
+   */
+  private writtenEdit(
+    batch: BatchRow,
+    r: ItemRow,
+    current: Current,
+    oldCoverPath: string | null,
+    now: number,
+  ) {
+    const ev = JSON.parse(r.evidence_json) as Evidence2;
+    const seen = JSON.parse(r.stage2_json ?? '{}') as { oldValue?: unknown };
+    const oldJson = 'oldValue' in seen ? JSON.stringify(seen.oldValue ?? null) : r.old_json;
+    this.db
+      .prepare(
+        `INSERT OR IGNORE INTO field_undo (batch_id, change_id, library_id, calibre_id, calibre_uuid, field,
+           old_json, new_json, extra_json, last_modified_after, old_cover_path, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        batch.id,
+        r.change_id,
+        batch.libraryId,
+        r.calibre_id,
+        r.calibre_uuid,
+        r.field,
+        oldJson,
+        r.new_json,
+        JSON.stringify(ev.extra ?? {}),
+        current.lastModified,
+        r.field === 'cover' ? oldCoverPath : null,
+        now,
+      );
+    this.setItem(r.item_id, 'written', null, null, now);
+    this.db
+      .prepare(
+        `UPDATE proposed_changes SET state = 'applied', decided_at = ?, updated_at = ? WHERE id = ?`,
+      )
+      .run(now, now, r.change_id);
+    if (r.field !== 'cover')
+      aiYoursAfterWrite(
+        this.db,
+        { libraryId: batch.libraryId, uuid: r.calibre_uuid },
+        r.field,
+        JSON.parse(oldJson) as unknown,
+        JSON.parse(r.new_json) as unknown,
+        now,
+      );
+  }
+
   private restored(
     batch: BatchRow,
     r: ItemRow,
@@ -1224,6 +1726,20 @@ export class Stage2Batches {
     const r = rows.find((x) => x.field === 'cover');
     if (!r || batch.kind !== 'apply')
       throw new BatchError(404, 'not_found', 'No cover for this book in this batch');
+    if (this.stage === EDIT_STAGE) {
+      // The user's picture, kept in the server's cache when they saved (uploaded, dropped or one
+      // of the book's illustrations), made ready for Calibre as every cover is.
+      const c = (JSON.parse(r.evidence_json) as { cover?: { file?: string } }).cover;
+      const bytes = c?.file ? await fs.promises.readFile(c.file).catch(() => null) : null;
+      if (!bytes)
+        throw new BatchError(409, 'cover_gone', 'The picture is not in the cache any more');
+      const se = getSettings(this.db).covers;
+      const outE = await coverForCalibre(bytes, {
+        maxBytes: se.maxMb * 1024 * 1024,
+        maxSide: se.maxSide,
+      });
+      return { bytes: outE.bytes, ext: outE.ext, sha256: outE.sha256 };
+    }
     if (this.stage === 4) {
       const url = (JSON.parse(r.new_json) as { url?: string } | null)?.url;
       const bytes = url && this.storeCover ? this.storeCover(url) : null;

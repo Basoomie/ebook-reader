@@ -28,8 +28,10 @@ import {
   NAME_MAX_BYTES,
   calibreNameBytes,
   isProcessed,
+  LONG_AUTHOR_REASON,
   type SpellingLookup,
 } from '../stage2-rules';
+import { fitTitle, type TitleFit } from '../title-fit';
 import type { Stage2Book } from '../stage2-snapshot';
 import { sameTime } from '../stage2-batches';
 import { chooseDescription, cleanDescription, type RemovedLine } from './desc';
@@ -58,7 +60,8 @@ const garbled = (v: unknown): boolean =>
         ? looksLikeMojibake((v as { name: string }).name)
         : false;
 import type { StoreIds } from './store-links';
-import { spellingOf } from './series-spelling';
+import { seriesKey, spellingOf } from './series-spelling';
+import { plainVolume, type SeriesChoice } from './series-order';
 import type { Stage4Extras } from './snapshot4';
 
 export const STAGE4_FIELDS = [
@@ -104,7 +107,7 @@ export interface ProposalInput {
   bookmeter: { id: string; stores: StoreIds } | null;
   natively: string | null;
   /** Reading per author name: NDL's, or a generated one. */
-  readings: Map<string, { reading: string; source: 'ndl' | 'generated' }>;
+  readings: Map<string, AuthorReading>;
   cover: CoverCheck | null;
   /** The values the cleanup wrote earlier (applied_values), by field. */
   applied: Map<string, unknown>;
@@ -120,6 +123,11 @@ export interface ProposalInput {
   spelling?: SpellingLookup;
   /** The chosen spelling per series key (series-spelling.ts); none = names as decided. */
   seriesSpelling?: ReadonlyMap<string, string> | null;
+  /**
+   * The series step's choice for this book (series-order.ts, stage4_series_order): its number,
+   * a title with its number, a best guess with its reason, or a problem for review.
+   */
+  seriesOrder?: SeriesChoice | null;
   sameDistance: number;
   smallCoverPx: number;
 }
@@ -230,7 +238,12 @@ export function stillAsWritten(
     case 'series': {
       const a = (written ?? {}) as { name?: string | null; index?: number | null };
       const b = (current ?? {}) as { name?: string | null; index?: number | null };
-      return (a.name ?? null) === (b.name ?? null) && (a.index ?? null) === (b.index ?? null);
+      if ((a.name ?? null) !== (b.name ?? null)) return false;
+      // Calibre stores a series written with no number as number 1 (series-order stop 2:
+      // (仮)花嫁 vol 8, written with none, went to review as "changed in Calibre").
+      const ai = a.index ?? null;
+      const bi = b.index ?? null;
+      return ai === bi || (ai === null && a.name != null && bi === 1);
     }
     default:
       return JSON.stringify(written ?? null) === JSON.stringify(current ?? null);
@@ -244,13 +257,77 @@ export function proposeStage4(input: ProposalInput): Stage4Proposal[] {
   const v = d.values;
   const src = sourceOf(d, record);
 
+  const coverNow = {
+    hasCover: book.hasCover,
+    now: input.calibreCover,
+    fileDhash: input.cover?.fileDhash ?? null,
+    sameDistance: input.sameDistance,
+    lastModified: book.lastModified,
+  };
   const push = (p: Stage4Proposal, current: unknown, appliedField = p.field) => {
     if (JSON.stringify(p.old) === JSON.stringify(p.new)) return;
+    // Written already and still as written: not proposed again. A cover's "before" is only "has
+    // a cover", never the value written (series-order stop 1: deciding again proposed all 1,290
+    // written covers once more).
+    const asWritten =
+      input.applied.has(appliedField) &&
+      stillAsWritten(appliedField, input.applied.get(appliedField), current, {
+        ...coverNow,
+        writtenLastModified: input.appliedLastModified?.get(appliedField) ?? null,
+      });
+    if (asWritten) {
+      if (JSON.stringify(input.applied.get(appliedField)) === JSON.stringify(p.new)) return;
+      // A cover is stored as the file written: the same store picture as Calibre's cover now.
+      const d =
+        p.field === 'cover' && input.calibreCover
+          ? hammingHex(input.cover?.storeDhash ?? null, input.calibreCover.dhash)
+          : null;
+      if (d !== null && d <= input.sameDistance) return;
+    }
     // Garbled text (a file read in the wrong encoding) never goes into Calibre (lessons 2),
     // whichever source gave it: the AI's fallback to the rules' guess found one (WP20e stop 1).
     if (p.class === 'auto' && GARBLE_FIELDS.has(p.field) && garbled(p.new)) {
       p.class = 'review';
       p.reason = 'The value is garbled (wrong text encoding)';
+    }
+    // A value the cleanup wrote and Calibre still holds is not changed automatically by deciding
+    // again (the user, 2026-11-22: "must not overwrite a correct field with an incorrect one"):
+    // the live Preview proposed 979 written descriptions replaced, most by another wording of the
+    // same text or another source's equally plausible one, and authors and illustrators that
+    // changed with the models' answers. To review, with the suggestion. The series order's own
+    // numbers and titles (measured on the labeled series) stay automatic.
+    if (
+      p.class === 'auto' &&
+      asWritten &&
+      WRITTEN_KEPT.has(p.field) &&
+      !(p.field === 'title' && p.source === 'series-order') &&
+      !(p.evidence as { notesOut?: unknown } | undefined)?.notesOut
+    ) {
+      p.class = 'review';
+      p.reason = 'Would replace a value the cleanup wrote';
+    }
+    // Absence is no evidence: a value Calibre has is never removed automatically (the live Preview
+    // of 2026-11-22: illustrators removed because a store page lists none, or because the models'
+    // answer changed when asked again: 安倍吉俊 for 僕らはどこにも開かない). The Google run's
+    // descriptions are the agreed exception.
+    if (
+      p.class === 'auto' &&
+      emptyValue(p.new) &&
+      !emptyValue(current) &&
+      !(p.field === 'description' && p.source === 'rules')
+    ) {
+      p.class = 'review';
+      p.reason = 'Would remove the value Calibre has';
+    }
+    // A best guess is never written automatically (the user, 2026-11-22: "must not introduce any
+    // new bugs or incorrect fields, and especially must not overwrite a correct field with an
+    // incorrect one"; the live Preview's guessed series numbers made 10 right numbers of the
+    // labeled books wrong). It is listed for review with its suggestion, also for an empty field.
+    if (p.class === 'auto' && (p.evidence as { unconfirmed?: unknown } | undefined)?.unconfirmed) {
+      p.class = 'review';
+      p.reason = emptyValue(current)
+        ? 'A best guess: listed, not written'
+        : 'A best guess would replace the value Calibre has';
     }
     if (
       p.class === 'auto' &&
@@ -317,8 +394,12 @@ export function proposeStage4(input: ProposalInput): Stage4Proposal[] {
   // Title
   const ft = field<string>('t', v.t, d.auto.t, 'The online sources do not confirm the title');
   const amazonTitle = record.amazon?.product?.title ?? null;
-  const title =
-    ft.ai && ft.ai.source !== 'rules'
+  // The series step's title (the store's form with the volume number, or the file's own when
+  // the models added a number no source prints).
+  const soTitle = input.seriesOrder?.title ?? null;
+  const title = soTitle
+    ? soTitle
+    : ft.ai && ft.ai.source !== 'rules'
       ? ft.value
         ? pyStrip(lightNormalize(ft.value))
         : null
@@ -344,32 +425,90 @@ export function proposeStage4(input: ProposalInput): Stage4Proposal[] {
     .map((a) => spell('author', normalizeName(a)))
     .filter((a) => a !== '');
   const firstAuthor = authors[0] ?? book.authors[0] ?? 'Unknown';
-  const tooLong =
-    calibreNameBytes(book.calibreId, title ?? book.title, firstAuthor) > NAME_MAX_BYTES;
+  // Calibre's names too long for the disk (lessons 2): the title is fitted (cleaned, shortened or
+  // cut; title-fit.ts), only when too long (user, 2026-11-22). A first author too long on its own
+  // is bad data: review, as before.
+  const tooLong = calibreNameBytes(book.calibreId, '', firstAuthor) > NAME_MAX_BYTES;
+  const fitOf = (t: string) =>
+    tooLong
+      ? null
+      : fitTitle(t, {
+          calibreId: book.calibreId,
+          firstAuthor,
+          authors: [...new Set([...authors, ...book.authors])],
+        });
+  const titleFit = title ? fitOf(title) : null;
+  const fitted = titleFit && titleFit.step !== 'none' ? titleFit.title : title;
+  const fitNote = (f: TitleFit | null, from: string) =>
+    f && f.step !== 'none' && f.step !== 'author_too_long'
+      ? { fit: { from, step: f.step, rules: f.rules } }
+      : {};
 
-  if (title && (N(title) !== N(book.title) || title !== book.title)) {
+  if (title && fitted && (N(fitted) !== N(book.title) || fitted !== book.title)) {
     let cls: 'auto' | 'review' = ft.auto ? 'auto' : 'review';
     let reason = ft.reason;
-    if (tooLong) {
+    // A first author too long on its own: its own reason (never the planner's "Too long for a
+    // folder name", which lifts once the names fit: it replaced a best guess's reason once, live
+    // 2026-11-22, and the guess was written).
+    if (tooLong && calibreNameBytes(book.calibreId, title, firstAuthor) > NAME_MAX_BYTES) {
       cls = 'review';
-      reason = "Too long for a folder name in Calibre's library";
+      reason = LONG_AUTHOR_REASON;
     }
+    if (soTitle && !tooLong) {
+      // Only the number added: other words a store's title brings are no part of the decision.
+      if (onlyNumberAdded(book.title, soTitle)) {
+        cls = 'auto';
+        reason = null;
+      } else {
+        cls = 'review';
+        reason = "The store's title adds more than the volume number";
+      }
+    }
+    const titleProposal: Stage4Proposal = {
+      field: 'title',
+      old: book.title,
+      new: fitted,
+      class: cls,
+      source: soTitle ? 'series-order' : srcOf(ft, ft.auto && !ft.unconfirmed ? src : 'file'),
+      reason,
+    };
+    const withFit = (x: Stage4Proposal): Stage4Proposal =>
+      titleFit && titleFit.step !== 'none'
+        ? { ...x, evidence: { ...(x.evidence ?? {}), ...fitNote(titleFit, title) } }
+        : x;
     push(
-      withAi(
-        {
-          field: 'title',
-          old: book.title,
-          new: title,
-          class: cls,
-          source: srcOf(ft, ft.auto && !ft.unconfirmed ? src : 'file'),
-          reason,
-        },
-        ft,
+      withFit(
+        soTitle
+          ? {
+              ...titleProposal,
+              evidence: { seriesOrder: { title: input.seriesOrder?.titleFrom ?? null } },
+            }
+          : withAi(titleProposal, ft),
       ),
       book.title,
     );
+  } else {
+    // No title change, but Calibre's own title makes names the disk refuses (with the first author
+    // decided here): Calibre's title fitted, so the book's other fields can be written at all.
+    const own = fitOf(book.title);
+    if (own && own.step !== 'none' && own.title !== book.title) {
+      push(
+        {
+          field: 'title',
+          old: book.title,
+          new: own.title,
+          class: 'auto',
+          source: 'title-fit',
+          reason: null,
+          evidence: fitNote(own, book.title),
+        },
+        book.title,
+      );
+    }
   }
 
+  // The authors Calibre holds after the write: the decided ones only when written automatically.
+  let authorsAfter = book.authors;
   if (authors.length && !sameNames(authors, book.authors)) {
     let cls: 'auto' | 'review' = fau.auto ? 'auto' : 'review';
     let reason = fau.reason;
@@ -378,8 +517,12 @@ export function proposeStage4(input: ProposalInput): Stage4Proposal[] {
       reason = 'A name holds "&", which Calibre splits into two names';
     } else if (tooLong) {
       cls = 'review';
-      reason = "Too long for a folder name in Calibre's library";
+      reason = LONG_AUTHOR_REASON;
+    } else if (authors.some((a) => COMPANY.test(a))) {
+      cls = 'review';
+      reason = "A company's name, not a person's";
     }
+    if (cls === 'auto') authorsAfter = authors;
     push(
       withAi(
         {
@@ -460,10 +603,34 @@ export function proposeStage4(input: ProposalInput): Stage4Proposal[] {
     n && input.seriesSpelling && fse.ai?.source !== 'user'
       ? spellingOf(input.seriesSpelling, n)
       : n;
-  const series = respell(decidedSeries);
-  const spelling =
-    series !== decidedSeries ? { spelling: { asDecided: decidedSeries } } : undefined;
-  const index = fix.value?.n ?? null;
+  const oldName = extras?.series ?? null;
+  // A series name stage 4 wrote and Calibre still holds keeps its spelling when the decision
+  // names the same series: only its number may change (series-order stop 2: index-only changes
+  // counted with the decided spelling flipped the one-spelling choice of 21 series and respelled
+  // 346 books, 〈Infinite Dendrogram〉 to <Infinite Dendrogram>, ！ to !).
+  const writtenName =
+    oldName &&
+    fse.ai?.source !== 'user' &&
+    input.applied.has('series') &&
+    stillAsWritten('series', input.applied.get('series'), {
+      name: oldName,
+      index: extras?.seriesIndex ?? null,
+    }) &&
+    ((input.applied.get('series') ?? {}) as { name?: string | null }).name === oldName
+      ? oldName
+      : null;
+  const keepWritten =
+    !!writtenName && !!decidedSeries && seriesKey(decidedSeries) === seriesKey(writtenName);
+  const series = keepWritten ? writtenName : respell(decidedSeries);
+  const spelling = keepWritten
+    ? { spelling: { asDecided: writtenName } }
+    : series !== decidedSeries
+      ? { spelling: { asDecided: decidedSeries } }
+      : undefined;
+  // The series step's choice (series-order.ts): the number from what the series' sources print,
+  // a best guess marked with its reason, or a problem for review.
+  const so = series ? (input.seriesOrder ?? null) : null;
+  const index = so ? so.index : (fix.value?.n ?? null);
   const oldSeries = { name: extras?.series ?? null, index: extras?.seriesIndex ?? null };
   const newSeries = { name: series, index: series ? index : null };
   let seriesProposed = false;
@@ -474,8 +641,51 @@ export function proposeStage4(input: ProposalInput): Stage4Proposal[] {
       (newSeries.name !== null && newSeries.name !== oldSeries.name && spelling !== undefined))
   ) {
     seriesProposed = true;
-    const auto = fse.auto && (newSeries.name === null || fix.auto);
-    const unconfirmed = fse.unconfirmed || (newSeries.name !== null && fix.unconfirmed);
+    // A series stage 4 wrote is never removed automatically: removing it means the evidence it
+    // was written from changed (series-order stop 2: 31 books whose pick changed would have lost
+    // ハリー・ポッター #6, 源氏物語 #42, 十津川警部シリーズ #56…). It goes to review.
+    const removesWritten = newSeries.name === null && !!writtenName;
+    // A number the series step gives that the book's own decided number (store, rules, models)
+    // doesn't (the live Preview of rules 8, 2026-11-22: numbers read from a subtitle, 「文豪
+    // ストレイドッグス 55Minutes」 4 -> 55, 「…社畜勇者(28)…」 1 -> 28; 「ひめゆり1,2,3」 3.9 -> 1;
+    // 「テイマーさん… 2」 2 -> 1 as a first volume): one source only, to review. The user's
+    // conventions over the series' agreed numbers stay automatic: volumes in parts and arcs
+    // counted straight through, where the book's decided number is the one Calibre has. A number
+    // the cleanup wrote is changed only by those conventions (rules 7; 本好きの下剋上 第五部 IX
+    // written 30, the models asked again said 9).
+    const decidedN = fix.value?.n ?? null;
+    const convention =
+      !!so &&
+      /^the reading order/u.test(so.from) &&
+      decidedN !== null &&
+      decidedN === oldSeries.index;
+    const writtenIndex =
+      input.applied.has('series') &&
+      stillAsWritten('series', input.applied.get('series'), oldSeries) &&
+      oldSeries.index !== null;
+    // A title that prints the number plainly after the name is a source of its own (「闇の皇太子
+    // 19 光と闇のロマンス」: Calibre 18.5): measured right on 25 of 26 labeled books.
+    const titlePrints =
+      !!so &&
+      so.from === 'its own title' &&
+      newSeries.index !== null &&
+      [input.book.title, d.values.t].some(
+        (t) => typeof t === 'string' && plainVolume(t, series!) === newSeries.index,
+      );
+    const loneNumber =
+      !!so &&
+      newSeries.index !== oldSeries.index &&
+      (oldSeries.name !== null || newSeries.index !== null) &&
+      !convention &&
+      !titlePrints &&
+      (newSeries.index !== decidedN || writtenIndex);
+    const auto =
+      !removesWritten &&
+      !loneNumber &&
+      (so ? fse.auto && !so.review : fse.auto && (newSeries.name === null || fix.auto));
+    const unconfirmed = so
+      ? fse.unconfirmed || so.guess
+      : fse.unconfirmed || (newSeries.name !== null && fix.unconfirmed);
     const both = {
       unconfirmed,
       ai: fse.ai || fix.ai ? { series: fse.ai, number: fix.ai } : null,
@@ -495,9 +705,31 @@ export function proposeStage4(input: ProposalInput): Stage4Proposal[] {
                 ? 'ranobedb'
                 : 'rules',
           ),
-          reason:
-            auto && !unconfirmed ? null : fse.unconfirmed || !fse.auto ? fse.reason : fix.reason,
-          evidence: spelling,
+          reason: removesWritten
+            ? 'Would remove a series the cleanup wrote'
+            : loneNumber && !so?.review && !so?.guess && !fse.unconfirmed
+              ? writtenIndex && newSeries.index === decidedN
+                ? 'Would replace a number the cleanup wrote'
+                : `The series order gives ${newSeries.index ?? 'no number'}; the book's own sources give ${decidedN ?? 'none'}`
+              : so
+                ? (so.review ??
+                  (fse.unconfirmed || !fse.auto ? fse.reason : so.guess ? so.reason : null))
+                : auto && !unconfirmed
+                  ? null
+                  : fse.unconfirmed || !fse.auto
+                    ? fse.reason
+                    : fix.reason,
+          evidence:
+            so || spelling
+              ? {
+                  ...(spelling ?? {}),
+                  ...(so
+                    ? {
+                        seriesOrder: { from: so.from, ...(so.reason ? { reason: so.reason } : {}) },
+                      }
+                    : {}),
+                }
+              : undefined,
         },
         both,
       ),
@@ -507,7 +739,13 @@ export function proposeStage4(input: ProposalInput): Stage4Proposal[] {
   // Calibre's own name kept (no change proposed) but spelled another way than the series' chosen
   // spelling: only the spelling changes, the number stays.
   const chosenNow = respell(oldSeries.name);
-  if (!seriesProposed && oldSeries.name && chosenNow && chosenNow !== oldSeries.name) {
+  if (
+    !seriesProposed &&
+    !writtenName &&
+    oldSeries.name &&
+    chosenNow &&
+    chosenNow !== oldSeries.name
+  ) {
     push(
       {
         field: 'series',
@@ -566,7 +804,11 @@ export function proposeStage4(input: ProposalInput): Stage4Proposal[] {
   );
   if (text) {
     const cleaned = cleanDescription(text);
-    if (cleaned.text !== (extras?.comments ?? '')) {
+    if (
+      cleaned.text !== (extras?.comments ?? '') &&
+      !onlySpacing(extras?.comments, cleaned.text) &&
+      !sameText(extras?.comments, cleaned.text)
+    ) {
       push(
         {
           field: 'description',
@@ -583,7 +825,14 @@ export function proposeStage4(input: ProposalInput): Stage4Proposal[] {
         'description',
       );
     }
-  } else if (isProcessed(book.tags, book.marks) && extras?.comments) {
+  } else if (
+    isProcessed(book.tags, book.marks) &&
+    extras?.comments &&
+    // Only the Google run's description: never on a book the cleanup wrote one for (the live
+    // Preview of 2026-11-22 would have cleared 16 that stage 4 wrote from Amazon, after the
+    // models were asked again and disagreed about Amazon's record).
+    !input.applied.has('description')
+  ) {
     push(
       {
         field: 'description',
@@ -680,11 +929,26 @@ export function proposeStage4(input: ProposalInput): Stage4Proposal[] {
   }
 
   // Author readings (author_sort), credited to Web NDL Authorities; generated ones marked.
-  const names = authors.length ? authors : book.authors;
+  // Of the authors Calibre holds after the write (a reading for authors left to review would not
+  // match the names Calibre shows).
+  const names = authorsAfter;
   const parts = names.map((n) => input.readings.get(n) ?? input.readings.get(nfkc(n)));
   if (names.length && parts.every((p) => p)) {
     const sort = parts.map((p) => p!.reading).join(' & ');
     const generated = parts.some((p) => p!.source === 'generated');
+    // Namesakes NDL reads differently (渡部正和: ワタナベ, ワタベ): which one is meant is a guess.
+    const ambiguous = parts.some((p) => p!.ambiguous);
+    // Calibre's value with NDL's notes left out and nothing else changed ("アオキ, クニコ,
+    // トウゲイカ" written by stage 4 before READINGS_VERSION 1): a correction, written however
+    // sure the reading is (the reading itself stays as it is).
+    const noted = new Map(parts.filter((p) => p!.noted).map((p) => [p!.noted!, p!.reading]));
+    const notesOut =
+      noted.size > 0 &&
+      book.authorSort !== null &&
+      book.authorSort
+        .split(' & ')
+        .map((x) => noted.get(x) ?? x)
+        .join(' & ') === sort;
     if (sort !== book.authorSort) {
       push(
         {
@@ -693,12 +957,99 @@ export function proposeStage4(input: ProposalInput): Stage4Proposal[] {
           new: sort,
           class: 'auto',
           source: generated ? 'generated' : 'ndl',
-          reason: generated ? 'Generated reading: listed for spot checks' : null,
-          evidence: { credit: 'Web NDL Authorities', names },
+          reason: notesOut
+            ? null
+            : generated
+              ? 'Generated reading: listed for spot checks'
+              : ambiguous
+                ? 'Namesakes are read differently: listed, not written'
+                : null,
+          // A generated reading is a guess (植西聰 would be 「ウエニシ, ソウ」; it is Akira).
+          evidence: {
+            credit: 'Web NDL Authorities',
+            names,
+            ...(notesOut
+              ? { notesOut: true }
+              : generated || ambiguous
+                ? { unconfirmed: true }
+                : {}),
+          },
         },
         book.authorSort,
       );
     }
   }
   return out;
+}
+
+/**
+ * A description that differs from Calibre's only by its spacing, without more paragraph breaks:
+ * no change (the live run of 2026-11-22 proposed 180 such, most taking the breaks away: the same
+ * store text formatted another way by another source).
+ */
+export function onlySpacing(now: string | null | undefined, next: string): boolean {
+  if (!now) return false;
+  const bare = (s: string) => s.replace(/\s+/gu, '');
+  if (bare(now) !== bare(next)) return false;
+  const breaks = (s: string) => (s.match(/\n/gu) ?? []).length;
+  return breaks(next) <= breaks(now);
+}
+
+/** A field without a value in Calibre (a series without its name counts as none). */
+export function emptyValue(v: unknown): boolean {
+  if (v === null || v === undefined || v === '') return true;
+  if (Array.isArray(v)) return v.length === 0;
+  if (typeof v === 'object') {
+    const o = v as Record<string, unknown>;
+    if ('name' in o && 'index' in o) return !o.name;
+    return Object.keys(o).length === 0;
+  }
+  return false;
+}
+
+/** Fields a value the cleanup wrote is kept in when deciding again (to review instead). */
+const WRITTEN_KEPT = new Set(['description', 'authors', 'illustrator', 'title', 'author_sort']);
+
+/** A company, not a person (「フランク出版」 as the author of a book Calibre had as Unknown). */
+const COMPANY = /出版|書房|株式会社|有限会社|\(株\)|（株）/u;
+
+/**
+ * Whether a store's title with the volume number only adds that number to the title Calibre has
+ * (「グラノール王国遊撃隊 紅玉の涙と奇跡の翼」 -> 「グラノール王国遊撃隊2 …」); not one that brings other words
+ * (「城の絵図面」 -> 「城の絵図面: 銭形平次捕物全集第62話 (銭形倶楽部)」, 「講談名作文庫17 寛永三馬術」).
+ */
+export function onlyNumberAdded(now: string, next: string): boolean {
+  const bare = (t: string) =>
+    t
+      .normalize('NFKC')
+      .replace(/[0-9０-９]+(?:\.[0-9]+)?|[(（][0-9]+[)）]|巻|第/gu, '')
+      .replace(/[\s、。,.:：!！?？「」『』…・\-—―~～()（）［］[\]]/gu, '');
+  return bare(now) === bare(next) && bare(now).length > 0;
+}
+
+/**
+ * The same description: equal once markup, spacing and punctuation are set aside, or one holding
+ * the other whole (a store adding a lead line: 「神獣ちゃんとドキドキ子育て生活！ ある日…」). No change.
+ */
+export function sameText(now: string | null | undefined, next: string): boolean {
+  if (!now) return false;
+  const bare = (t: string) =>
+    t
+      .normalize('NFKC')
+      .replace(/<[^>]+>/gu, '')
+      .replace(/[\s、。,.!！?？「」『』…・\-—―~～☆★]/gu, '');
+  const a = bare(now);
+  const b = bare(next);
+  if (!a || !b) return false;
+  return a === b || (a.length >= 40 && b.includes(a)) || (b.length >= 40 && a.includes(b));
+}
+
+/** An author's reading for author_sort (ReadingLookup in analysis.ts). */
+export interface AuthorReading {
+  reading: string;
+  source: 'ndl' | 'generated';
+  /** Namesakes in NDL read the name differently: a best guess. */
+  ambiguous?: boolean;
+  /** The reading as stored before NDL's notes were left out (READINGS_VERSION 1). */
+  noted?: string | null;
 }

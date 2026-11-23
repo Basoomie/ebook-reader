@@ -68,6 +68,7 @@ import {
   createCleanupApplyRouter,
   createCleanupRouter,
 } from '../cleanup/routes';
+import { createEditRouter } from '../cleanup/edits/edit-routes';
 
 export interface PairingOptions {
   /** Failed pairing attempts allowed per minute (all clients together). */
@@ -272,6 +273,8 @@ export function createApiRouter({
     router.use(createAudioClipRouter(db, audio));
     // The /cleanup page (WP20a).
     router.use(createCleanupRouter(cleanup));
+    // Calibre metadata editing from the reader (written by the cleanup's sidecar).
+    router.use(createEditRouter(cleanup));
     // Settings > Notifications (N1).
     router.use(createNotificationsRouter(notifications));
     // Settings > AI: the shared AI layer (works without cleanup.db).

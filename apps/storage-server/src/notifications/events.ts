@@ -57,6 +57,33 @@ const EVENTS: EventDef[] = [
     label: 'A field paused or resumed by the accuracy checks',
     kind: 'digest',
   },
+  // Series-order follow-up: every value written as a best guess is counted in the digest.
+  {
+    id: 'cleanup_best_guesses',
+    section: 'cleanup',
+    label: 'Values written to Calibre as best guesses (listed under Best guesses)',
+    kind: 'digest',
+  },
+  // A fetch site paused after refusals in a row (WP20 lessons 4: every pause tells someone).
+  {
+    id: 'fetch_site_paused',
+    section: 'cleanup',
+    label: 'A site the cleanup fetches from paused after refusals',
+    kind: 'now',
+  },
+  // More Bookmeter coverage (step 2): its spot check before On, and a line per finished step.
+  {
+    id: 'bookmeter_spot_ready',
+    section: 'cleanup',
+    label: 'More Bookmeter matches: the spot check is ready for you',
+    kind: 'now',
+  },
+  {
+    id: 'bookmeter_summary',
+    section: 'cleanup',
+    label: 'More Bookmeter matches: each finished step',
+    kind: 'digest',
+  },
   // WP21f-1: the audiobook cleanup's daily new arrivals (stage 7).
   {
     id: 'audio_arrivals_review',
@@ -68,6 +95,32 @@ const EVENTS: EventDef[] = [
     id: 'audio_arrivals_summary',
     section: 'cleanup',
     label: 'Audiobook daily summary (books added, duplicates, waiting, review)',
+    kind: 'digest',
+  },
+  // WP21g: audiobook stage 8, the pairs with the Calibre ebooks (in stage 7's daily run).
+  {
+    id: 'audio_ebooks_review',
+    section: 'cleanup',
+    label: 'Audiobooks whose Calibre ebook needs a look (once per daily run with new review items)',
+    kind: 'now',
+  },
+  {
+    id: 'audio_ebooks_summary',
+    section: 'cleanup',
+    label: 'Audiobooks and their Calibre ebooks in the daily summary (paired, to review, changes)',
+    kind: 'digest',
+  },
+  // WP20g: the Calibre library's new arrivals (books added by hand and the import).
+  {
+    id: 'calibre_arrivals_review',
+    section: 'cleanup',
+    label: 'New books need a look (once per run with new review items)',
+    kind: 'now',
+  },
+  {
+    id: 'calibre_arrivals_summary',
+    section: 'cleanup',
+    label: 'New books daily summary (added, copies found, not imported, AI cost)',
     kind: 'digest',
   },
   {

@@ -10,7 +10,9 @@ import {
   type BookTextModule,
   type CompareResult,
   type IndexResult,
+  type LibIndexResult,
   type Stage3Request,
+  type TextMeasureResult,
   type TextResult,
 } from '../cleanup/stage3-work';
 
@@ -21,7 +23,11 @@ export type {
   ExtraSummary,
   IndexRequest,
   IndexResult,
+  LibIndexRequest,
+  LibIndexResult,
   Stage3Request,
+  TextMeasureRequest,
+  TextMeasureResult,
   TextRequest,
   TextResult,
 } from '../cleanup/stage3-work';
@@ -29,7 +35,12 @@ export type {
 export type Stage3ChildMessage =
   | { type: 'ready' }
   | { type: 'fatal'; message: string }
-  | { type: 'result'; id: number; ok: true; data: TextResult | CompareResult | IndexResult }
+  | {
+      type: 'result';
+      id: number;
+      ok: true;
+      data: TextResult | CompareResult | IndexResult | LibIndexResult | TextMeasureResult;
+    }
   | { type: 'result'; id: number; ok: false; code: string; message: string };
 
 function send(message: Stage3ChildMessage): void {
