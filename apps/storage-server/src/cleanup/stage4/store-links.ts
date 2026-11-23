@@ -19,12 +19,20 @@ import { N, NA, nfkc, pyStrip } from '../title-rules';
 import { decodeIgnore, textOf, unescapeHtml } from './ref-text';
 import { clean } from './rules-v3';
 import { nums, pyQuote } from './pick';
+import { chosenDecision, type ChosenBook } from './bookmeter-rules';
 
 // ---------------------------------------------------------------- Bookmeter
 
 export interface BookmeterHit {
   id: string;
+  /**
+   * The whole title: the cover picture's alt text (Bookmeter's list cuts long titles at about 22
+   * characters with "…"; More Bookmeter coverage, step 2), else the list's text. Results stored
+   * before step 2 hold the list's text here and have no listTitle.
+   */
   title: string;
+  /** The list's own text (cut when long); set by the parser since step 2. */
+  listTitle?: string;
   authors: string[];
   pages: number | null;
 }
@@ -35,9 +43,15 @@ export interface BookmeterHit {
  * of them asked again with type=japanese, 15 found the exact book first). Its requests use
  * BOOKMETER_SEARCH_KEY so an answer from the old index is never reused.
  */
-export function bookmeterSearchUrl(title: string): string {
-  return `https://bookmeter.com/search?author=&keyword=${pyQuote(title)}&partial=true&sort=recommended&type=japanese`;
+export function bookmeterSearchUrl(title: string, author?: string | null): string {
+  // More Bookmeter coverage's second search (Q2): the first author in Bookmeter's own author
+  // field, as step 1 asked it (encodeURIComponent; the keyword keeps pyQuote).
+  const au = author ? encodeURIComponent(author) : '';
+  return `https://bookmeter.com/search?author=${au}&keyword=${pyQuote(title)}&partial=true&sort=recommended&type=japanese`;
 }
+
+/** The queue key of More Bookmeter coverage's Q2 search (the author field filled). */
+export const BOOKMETER_AUTHOR_SEARCH_KEY = 'search-jp-au:';
 
 /** The queue key of a Bookmeter search (type=japanese); the old index's were `search:<title>`. */
 export const BOOKMETER_SEARCH_KEY = 'search-jp:';
@@ -58,6 +72,11 @@ export function parseBookmeterSearch(body: Buffer | string): BookmeterHit[] {
   for (const li of h.split('<li class="group__book">').slice(1)) {
     const t = /<div class="detail__title"><a href="\/books\/(\d+)">([\s\S]*?)<\/a>/.exec(li);
     if (!t) continue;
+    // The same item's cover picture carries the whole title (on the 777,100 stored results:
+    // present for every one, still cut for 116).
+    const alt = /<a href="\/books\/(\d+)"><img alt="([^"]*)"/.exec(li);
+    const whole = alt && alt[1] === t[1] ? unescapeHtml(alt[2]).trim() : '';
+    const listTitle = textOf(t[2]);
     const authorsBlock = /<ul class="detail__authors">([\s\S]*?)<\/ul>/.exec(li)?.[1] ?? '';
     const authors = [...authorsBlock.matchAll(/<a[^>]*>([^<]*)<\/a>/g)].map((m) =>
       pyStrip(unescapeHtml(m[1])),
@@ -65,7 +84,8 @@ export function parseBookmeterSearch(body: Buffer | string): BookmeterHit[] {
     const pages = /<div class="detail__page">(\d+)<\/div>/.exec(li);
     out.push({
       id: t[1],
-      title: textOf(t[2]),
+      title: whole || listTitle,
+      listTitle,
       authors: authors.filter((a) => a !== ''),
       pages: pages ? parseInt(pages[1], 10) : null,
     });
@@ -151,6 +171,10 @@ export function editionNotes(title: string): string[] {
     );
 }
 
+/** The reason of a match the chosen rules accepted (acceptBookmeter's second tier). */
+export const WHOLE_TITLE_REASON =
+  'the whole titles agree (labels, series brackets and a trailing series name set aside), an author and the volume';
+
 /**
  * Match acceptance for Bookmeter (plan section 6): the title, an author and the volume must all
  * agree with the book's decided values. Bookmeter's titles carry the label ("(GAノベル)"), so
@@ -159,28 +183,54 @@ export function editionNotes(title: string): string[] {
  * rejected, and the next hit is tried. The book's own texts are its titles (file, Calibre), the
  * title of the Amazon record the rules identified, and the file's first and last pages (the
  * colophon prints the edition: 【大活字シリーズ】悪の説得術 is that edition's own e-book).
+ *
+ * More Bookmeter coverage, step 2 (user, 2026-11-23): this first tier runs on the list's own text
+ * (`listTitle`, or `title` for results stored before step 2), so a book decides exactly as before
+ * and today's matches stay. When it accepts nothing and `chosen` is given, the second tier runs
+ * the rules the user chose (bookmeter-rules.ts CHOSEN_RULES) on the whole titles.
  */
 export function acceptBookmeter(
   hits: BookmeterHit[],
-  book: { title: string; authors: string[]; own?: (string | null | undefined)[] },
+  book: {
+    title: string;
+    authors: string[];
+    own?: (string | null | undefined)[];
+    /** The chosen rules' other inputs (stage 4's decided series and format, Calibre's title). */
+    chosen?: Omit<ChosenBook, 'title' | 'authors'>;
+  },
 ): { hit: BookmeterHit; reason: string } | { hit: null; reason: string } {
   const own = (book.own ?? [book.title])
     .filter((t): t is string => typeof t === 'string')
     .map((t) => nfkc(t));
+  const edOk = (title: string) => !editionNotes(title).some((n) => !own.some((t) => t.includes(n)));
   let edition = false;
   const want = N(clean(book.title)) ?? '';
   if (!want) return { hit: null, reason: 'no title to compare' };
   const authors = new Set(book.authors.map((a) => NA(a)));
   const wantNums = [...nums(book.title)].sort().join(',');
   for (const h of hits) {
-    if ((N(clean(h.title)) ?? '') !== want) continue;
+    const listed = h.listTitle ?? h.title;
+    if ((N(clean(listed)) ?? '') !== want) continue;
     if (!h.authors.some((a) => authors.has(NA(a)))) continue;
-    if ([...nums(h.title)].sort().join(',') !== wantNums) continue;
-    if (editionNotes(h.title).some((n) => !own.some((t) => t.includes(n)))) {
+    if ([...nums(listed)].sort().join(',') !== wantNums) continue;
+    if (!edOk(listed)) {
       edition = true;
       continue;
     }
     return { hit: h, reason: 'title, author and volume agree' };
+  }
+  if (book.chosen && hits.length) {
+    const r = chosenDecision(
+      hits.map((h) => ({
+        ...h,
+        title: h.listTitle ?? h.title,
+        full: h.listTitle !== undefined ? h.title : null,
+      })),
+      { ...book.chosen, title: book.title, authors: book.authors },
+      edOk,
+    );
+    const hit = r.hit ? hits.find((h) => h.id === r.hit!.id) : undefined;
+    if (hit) return { hit, reason: WHOLE_TITLE_REASON };
   }
   return {
     hit: null,

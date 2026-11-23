@@ -1067,6 +1067,72 @@ export function createCleanupRouter(options: CleanupOptions): Router {
     );
   });
 
+  // ---- More Bookmeter coverage (step 2): the pass over stage 4's stored answers ----
+
+  const bookmeterOr503 = () => {
+    const service = serviceOr503(options);
+    if (!service.bookmeter) throw new ApiError(503, 'no_calibre', 'No Calibre library is set up');
+    return { service, pass: service.bookmeter };
+  };
+
+  router.get('/cleanup/bookmeter', (_req, res) => {
+    const { service } = bookmeterOr503();
+    res.json(service.bookmeterStatus(service.targetLibrary()));
+  });
+
+  router.put('/cleanup/bookmeter/mode', (req, res) => {
+    const { service, pass } = bookmeterOr503();
+    const mode = (req.body as { mode?: unknown } | undefined)?.mode;
+    if (mode !== 'off' && mode !== 'analyse' && mode !== 'on')
+      throw new ApiError(400, 'bad_mode', 'mode must be off, analyse or on');
+    try {
+      pass.setMode(mode);
+    } catch (err) {
+      throw new ApiError(409, 'not_now', (err as Error).message);
+    }
+    service.bookmeterChanged();
+    res.json(service.bookmeterStatus(service.targetLibrary()));
+  });
+
+  router.get('/cleanup/bookmeter/matches', (req, res) => {
+    const { service, pass } = bookmeterOr503();
+    const lib = service.targetLibrary();
+    const q = req.query as Record<string, string | undefined>;
+    const offset = Math.max(0, Number(q.offset ?? 0) || 0);
+    const limit = Math.min(100, Math.max(1, Number(q.limit ?? 20) || 20));
+    const source =
+      q.source === 'rules' || q.source === 'ai' || q.source === 'second' ? q.source : null;
+    if (!lib) {
+      res.json({ total: 0, items: [] });
+      return;
+    }
+    res.json(pass.listMatches(lib, pass.state().progress.run, source, offset, limit));
+  });
+
+  router.get('/cleanup/bookmeter/spot', (_req, res) => {
+    const { service, pass } = bookmeterOr503();
+    const lib = service.targetLibrary();
+    res.json({
+      items: lib ? pass.listSpot(lib, pass.state().progress.run) : [],
+      counts: pass.spotCounts(),
+      passed: pass.spotPassed(),
+    });
+  });
+
+  router.put('/cleanup/bookmeter/spot/:uuid', (req, res) => {
+    const { service, pass } = bookmeterOr503();
+    const v = (req.body as { verdict?: unknown } | undefined)?.verdict;
+    if (v !== 'right' && v !== 'wrong' && v !== null)
+      throw new ApiError(400, 'bad_verdict', 'verdict must be right, wrong or null');
+    try {
+      pass.setVerdict(String(req.params.uuid), v);
+    } catch (err) {
+      throw new ApiError(409, 'not_now', (err as Error).message);
+    }
+    service.bookmeterChanged();
+    res.json({ counts: pass.spotCounts(), passed: pass.spotPassed() });
+  });
+
   // ---- WP20g: the Calibre library's new arrivals ----
 
   router.get('/cleanup/arrivals', (_req, res) => {
