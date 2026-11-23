@@ -10,7 +10,9 @@ import fs from 'fs';
 import path from 'path';
 import { Readable } from 'stream';
 import { describe, expect, it } from 'vitest';
+import { BOOK_FORMATS, classifyName } from '../src/cleanup/arrivals/catalog';
 import {
+  bookEntries,
   entryStream,
   extractArgs,
   listArchive,
@@ -18,6 +20,7 @@ import {
   parseSevenListing,
   sevenEntryStream,
 } from '../../cleanup-link/src/archive';
+import { LinkWorker } from '../../cleanup-link/src/worker';
 import { BOOK_ARCHIVE, LinkWriter, WriteRefused } from '../../cleanup-link/src/writer';
 import { makeZip } from './helpers/epub-fixture';
 import { makeTempDir } from './helpers/spawn-server';
@@ -260,6 +263,70 @@ describe('wp20g: the linking sidecar’s book archives', () => {
       );
       // Only the folder's _extracted/ is new.
       expect(fs.readdirSync(root).sort()).toEqual(['_extracted', 's.zip.001', 's.zip.002']);
+    });
+  });
+});
+
+describe('wp20g: book archive listings the server can take (1.4.1)', () => {
+  it('sends only the entries the server keeps, the same formats as its catalog', () => {
+    const names = [
+      ...Object.keys(BOOK_FORMATS).map((x) => `a/book.${x}`),
+      'a/book.epub',
+      'a/B00NOEXT',
+      'a/scan001.png',
+      'a/track.mp3',
+      'a/notes.txt',
+      'a/cover.JPG',
+    ];
+    const entries = names.map((name) => ({ name, kind: 'file' as const, size: 1 }));
+    const b = bookEntries([...entries, { name: 'a/', kind: 'dir', size: 0 }]);
+    const server = names.filter((n) => ['epub', 'book'].includes(classifyName(n).kind));
+    expect(b.entries.map((e) => e.name).sort()).toEqual(server.sort());
+    expect(b.others).toBe(4);
+  });
+
+  it('a listing the server refuses as too large becomes one problem report, not a loop', async () => {
+    const bodies: unknown[] = [];
+    const fakeFetch = (async (_url: string, init: { body: string }) => {
+      bodies.push(JSON.parse(init.body));
+      const tooLarge = bodies.length === 1;
+      return new Response(tooLarge ? '{"error":{"code":"too_large"}}' : '{"ok":true}', {
+        status: tooLarge ? 413 : 200,
+      });
+    }) as unknown as typeof fetch;
+    const worker = new LinkWorker(
+      {
+        serverUrl: 'http://x',
+        token: 'ttsu_x',
+        dataDir: makeTempDir('wp20g-link-413'),
+        dirMode: 0o777,
+        fileMode: 0o666,
+        serverTimeoutSeconds: 5,
+        bsdtar: 'bsdtar',
+        archiveCharset: 'CP932',
+      },
+      () => undefined,
+      fakeFetch,
+    );
+    const many = Array.from({ length: 3 }, (_, i) => ({
+      name: `x${i}.epub`,
+      kind: 'file',
+      size: 1,
+    }));
+    await (worker as unknown as { report(b: unknown, r: unknown[]): Promise<void> }).report(
+      { id: 7, kind: 'book_list', ops: [] },
+      [{ id: 1, ok: true, entries: many }],
+    );
+    expect(bodies).toHaveLength(2);
+    expect(bodies[1]).toEqual({
+      results: [
+        {
+          id: 1,
+          ok: true,
+          entries: [],
+          listProblem: "The archive's list of files is too large to send",
+        },
+      ],
     });
   });
 });

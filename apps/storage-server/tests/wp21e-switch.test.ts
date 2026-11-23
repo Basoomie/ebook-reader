@@ -513,11 +513,17 @@ describe('the linking sidecar’s switch abilities (writer.ts)', () => {
       // WP21f-1: the new arrivals (new books' folders, links and metadata.json under japanese/
       // and japanese-generated/; archive entries under the torrents' _extracted/).
       'arrivalParent',
+      // WP20g: the Calibre import's book archives (read under a book source folder of the
+      // torrents, never audiobooks/; entries written only under that folder's _extracted/).
+      'bookArchivePath',
+      'bookRoot',
       'checkBook',
       'constructor',
       'copyInventory',
       'deleteOld',
+      'extractBookEntry',
       'extractEntry',
+      'extractUnder',
       'inside',
       // WP21f-2: changes to books in the library (metadata.json replaced, a book folder or a
       // link renamed in japanese/, an emptied folder removed, a reader-written file's name
@@ -530,6 +536,7 @@ describe('the linking sidecar’s switch abilities (writer.ts)', () => {
       'makeArrivalFolder',
       'makeFolder',
       'openArchive',
+      'openBookArchive',
       'realFolders',
       'removeEmptyFolder',
       'renameBookFile',
@@ -569,15 +576,22 @@ describe('the linking sidecar’s switch abilities (writer.ts)', () => {
       body('renameRoot').indexOf('fs.rename('),
     );
     // Removals: the build's temporary file (twice in writeMetadata, twice in
-    // writeArrivalMetadata, twice in extractEntry: its own `.ttsu-*-<n>.partial` names) and
+    // writeArrivalMetadata, twice in extractUnder: its own `.ttsu-*-<n>.partial` names; WP20g:
+    // extractEntry and extractBookEntry both unpack through extractUnder) and
     // deleteOld's one file; the one rmdir is deleteOld's (an empty folder), after its
     // japanese-old check.
     expect(count(/fs\.unlink\(/g)).toBe(8);
     expect(count(/fs\.unlink\(/g, body('replaceBookMetadata'))).toBe(1);
     expect(count(/fs\.unlink\(/g, body('writeMetadata'))).toBe(2);
     expect(count(/fs\.unlink\(/g, body('writeArrivalMetadata'))).toBe(2);
-    expect(count(/fs\.unlink\(/g, body('extractEntry'))).toBe(2);
-    for (const m of ['writeArrivalMetadata', 'extractEntry', 'replaceBookMetadata'])
+    expect(count(/fs\.unlink\(/g, body('extractUnder'))).toBe(2);
+    // WP20g: both unpack only through extractUnder (the torrents' audiobooks, a book root).
+    expect(body('extractEntry')).toMatch(/return this\.extractUnder\(this\.torrents,/);
+    expect(body('extractBookEntry')).toMatch(/return this\.extractUnder\(this\.bookRoot\(root\),/);
+    for (const m of ['extractEntry', 'extractBookEntry']) {
+      expect(count(/fs\.(link|unlink|open|mkdir|rename)\(/g, body(m)), m).toBe(0);
+    }
+    for (const m of ['writeArrivalMetadata', 'extractUnder', 'replaceBookMetadata'])
       for (const line of body(m)
         .split('\n')
         .filter((l) => l.includes('fs.unlink(')))
@@ -614,12 +628,14 @@ describe('the linking sidecar’s switch abilities (writer.ts)', () => {
     expect(body('makeArrivalFolder').indexOf('arrivalDestination(')).toBeLessThan(
       body('makeArrivalFolder').indexOf('fs.mkdir('),
     );
-    expect(body('extractEntry').indexOf('EXTRACTED')).toBeLessThan(
-      body('extractEntry').indexOf('fs.link('),
+    expect(body('extractUnder').indexOf('EXTRACTED')).toBeLessThan(
+      body('extractUnder').indexOf('fs.link('),
     );
     expect(count(/fs\.mkdir\(/g)).toBe(5);
     expect(count(/fs\.mkdir\(/g, body('renameBookFolder'))).toBe(1);
-    expect(count(/fs\.open\(/g)).toBe(7);
+    // WP20g: openBookArchive opens a book archive read-only (as openArchive does).
+    expect(count(/fs\.open\(/g)).toBe(8);
+    expect(body('openBookArchive')).toMatch(/fs\.open\(s\.file, constants\.O_RDONLY\)/);
     expect(writer).not.toMatch(/\b(symlink|copyFile|rm\(|rmSync|truncate|utimes|chown)\b/);
     // chmod only on what it made: new folders and its own new files.
     expect(count(/chmod\(/g)).toBe(10);

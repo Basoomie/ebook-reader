@@ -26,7 +26,7 @@ export const EXTRACTED = '_extracted';
 /** Downloads still in progress (decided 2026-11-17: never read). */
 const PARTIAL = /\.(parts|part|!qb)$/i;
 /** Ebook and document formats: listed under "Not imported" (decided 2026-11-17). */
-const BOOK_FORMATS: Record<string, string> = {
+export const BOOK_FORMATS: Record<string, string> = {
   azw: 'AZW',
   azw3: 'AZW3',
   azw4: 'AZW4',

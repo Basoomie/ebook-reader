@@ -703,7 +703,8 @@ describe('the writer (the only code that writes audiobook files)', () => {
       /changed \(size\)/,
     );
     await refused(
-      w.linkFile({ ...src, ino: src.ino + 1 }, 'japanese-new/x.m4b'),
+      // A different inode (not ino + 1: NTFS inodes above 2^53 round to the same number).
+      w.linkFile({ ...src, ino: src.ino === 7 ? 8 : 7 }, 'japanese-new/x.m4b'),
       /changed \(inode\)/,
     );
     await refused(w.linkFile({ ...src, rel: 'A/none.m4b' }, 'japanese-new/x.m4b'), /missing/);
