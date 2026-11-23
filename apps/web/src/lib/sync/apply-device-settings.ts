@@ -16,6 +16,8 @@ import '$lib/audio/tts-settings';
 import '$lib/read-aloud/settings';
 // Reader toolbars session 1: the top bar and bottom bar lists.
 import '$lib/reader-toolbar/settings';
+// Calibre metadata on the book page: the links list and its three settings.
+import '$lib/book-links/settings';
 import '$lib/whispersync/lib/stores';
 import { liveStorageSettings } from '$lib/data/internal/writable-storage-subject';
 import { localStorage } from '$lib/data/window/local-storage';

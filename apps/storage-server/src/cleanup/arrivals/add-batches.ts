@@ -29,6 +29,8 @@ export interface ClaimedItem {
   size: number;
   sha256: string;
   title: string;
+  /** The title the add gives Calibre instead of the file's, when the file's makes names too long. */
+  addTitle: string | null;
   calibreId: number | null;
   uuid: string | null;
 }
@@ -38,6 +40,15 @@ export interface ClaimedBatch {
   kind: 'add' | 'undo_add';
   leaseSeconds: number;
   items: ClaimedItem[];
+}
+
+/** Whether the apply sidecar last seen is at least major.minor (sidecar_status). */
+export function sidecarAtLeast(db: Database.Database, major: number, minor: number): boolean {
+  const sc = db.prepare('SELECT version FROM sidecar_status WHERE id = 1').get() as
+    | { version: string | null }
+    | undefined;
+  const [a, b] = (sc?.version ?? '0.0.0').split('.').map((x) => parseInt(x, 10) || 0);
+  return a > major || (a === major && b >= minor);
 }
 
 const STEPS = new Set(['fetched', 'adding', 'added', 'exported', 'removed', 'failed']);
@@ -125,6 +136,17 @@ export class ArrivalBatches {
       )
       .get(now) as { id: number; kind: 'add' | 'undo_add' } | undefined;
     if (!b) return null;
+    // A sidecar before 1.4.0 can't give the add a title (a fitted one for a name too long):
+    // such a batch waits for the rebuilt sidecar (a plain add would leave a record without a file).
+    if (b.kind === 'add' && !sidecarAtLeast(this.db, 1, 4)) {
+      const titled = this.db
+        .prepare(
+          `SELECT 1 FROM calibre_arrival_batch_items i JOIN calibre_arrival_files f ON f.id = i.file_id
+           WHERE i.batch_id = ? AND json_extract(f.facts_json, '$.addTitle') IS NOT NULL LIMIT 1`,
+        )
+        .get(b.id);
+      if (titled) return null;
+    }
     this.db
       .prepare(
         `UPDATE calibre_arrival_batches SET state = 'claimed', claimed_at = COALESCE(claimed_at, ?),
@@ -154,7 +176,9 @@ export class ArrivalBatches {
       kind: b.kind,
       leaseSeconds: lease,
       items: items.map((i) => {
-        const facts = i.facts_json ? (JSON.parse(i.facts_json) as { title?: string | null }) : {};
+        const facts = i.facts_json
+          ? (JSON.parse(i.facts_json) as { title?: string | null; addTitle?: string | null })
+          : {};
         const name = i.rel_path.slice(i.rel_path.lastIndexOf('/') + 1);
         return {
           itemId: i.itemId,
@@ -163,7 +187,8 @@ export class ArrivalBatches {
           name,
           size: i.size,
           sha256: i.sha256 ?? '',
-          title: facts.title || name.replace(/\.epub$/i, ''),
+          title: facts.addTitle || facts.title || name.replace(/\.epub$/i, ''),
+          addTitle: facts.addTitle || null,
           calibreId: i.calibreId,
           uuid: i.uuid,
         };

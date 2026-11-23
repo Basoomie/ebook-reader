@@ -1,7 +1,9 @@
 import type { CatalogOptions } from './api/catalog-routes';
 import { AiCore } from './ai/core';
 import { createApp } from './app';
-import { CalibreIndexer } from './calibre/indexer';
+import { CalibreIndexer, snapshotFile } from './calibre/indexer';
+import { getLibrary } from './calibre/libraries';
+import path from 'path';
 import { SearchRunner } from './catalog/search-runner';
 import { CharCountService } from './counts/count-service';
 import { ThumbnailService } from './thumbnails/thumbnails';
@@ -41,6 +43,7 @@ import { AudioCleanupService } from './cleanup/audio/audio-cleanup-service';
 import { switchReader } from './cleanup/audio/switch-reader';
 import {
   audioLabelsReader,
+  ebookLabelsReader,
   readerAudioState,
   readerWrittenFiles,
 } from './cleanup/audio-stage3-inputs';
@@ -181,6 +184,22 @@ if (database.ok && cleanupDb?.ok) {
         faadPath: (process.env.FAAD_PATH ?? '').trim() || 'faad',
       },
       readLabels: audioLabelsReader(cleanupDb.db, config.dbDir),
+      // Stage 8 (WP21g): the Calibre cleanup's target library, read only (the indexer's snapshot
+      // copy; its folder under CALIBRE_DIR for the covers).
+      calibre:
+        config.calibre.dir && config.calibre.cacheDir
+          ? () => {
+              const id = cleanup?.targetLibrary() ?? null;
+              const lib = id ? getLibrary(database.db, id) : null;
+              if (!id || !lib) return null;
+              return {
+                libraryId: id,
+                snapshotFile: snapshotFile(config.calibre.cacheDir!, id),
+                libraryDir: path.join(config.calibre.dir!, lib.folder),
+              };
+            }
+          : undefined,
+      readEbookLabels: ebookLabelsReader(cleanupDb.db, config.dbDir),
       // One AI runner for every cleanup stage that asks the models (WP20e).
       aiRunner: cleanup.aiRunner,
       readerWrittenFiles: config.cleanupAudio

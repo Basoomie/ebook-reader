@@ -53,6 +53,7 @@ import type { Stage2Analysis } from '../stage2';
 import type { Stage2Batches } from '../stage2-batches';
 import type { BatchService } from '../batches';
 import { calibreNameBytes, NAME_MAX_BYTES } from '../stage2-rules';
+import { fitTitle, UNKNOWN_ID } from '../title-fit';
 import { getStage } from '../stages';
 import type { Stage4Analysis, Stage4Progress } from '../stage4/analysis';
 import { arrivalAnalysisId } from '../stage4/analysis';
@@ -357,6 +358,13 @@ export class BookArrivals {
       // An arrival view of stage 4 is saved in the run, never over the library's progress.
       deps.analysis4.setArrivalSink((p) => this.saveStage4View(p));
     }
+  }
+  /** The Calibre library a source folder pair adds to. */
+  private pairLibrary(pairKey: string): string {
+    const r = this.db
+      .prepare('SELECT library_id FROM calibre_arrival_pairs WHERE pair_key = ?')
+      .get(pairKey) as { library_id: string } | undefined;
+    return r?.library_id ?? '';
   }
 
   private get db(): Database.Database {
@@ -1124,7 +1132,13 @@ export class BookArrivals {
             );
             continue;
           }
-          let facts: { title: string | null; authors: string[]; nameBytes: number } | null = null;
+          let facts: {
+            title: string | null;
+            authors: string[];
+            nameBytes: number;
+            addTitle?: string;
+            fit?: { step: string; rules: string[] };
+          } | null = null;
           let problem: string | null = null;
           try {
             const meta = await readFileMetadata(file, { text: false, cover: false });
@@ -1136,8 +1150,23 @@ export class BookArrivals {
             facts = {
               title,
               authors,
-              nameBytes: calibreNameBytes(9_999_999, title, authors[0] ?? 'Unknown'),
+              nameBytes: calibreNameBytes(UNKNOWN_ID, title, authors[0] ?? 'Unknown'),
             };
+            // Names Calibre's import would make too long for the disk (it would keep a record
+            // without the file): the title the add gives instead, fitted (title-fit.ts). A title
+            // that fits is added as the file has it (user, 2026-11-22).
+            if (facts.nameBytes > NAME_MAX_BYTES) {
+              const fit = fitTitle(title, {
+                calibreId: UNKNOWN_ID,
+                firstAuthor: authors[0] ?? 'Unknown',
+                authors,
+              });
+              if (fit.step !== 'none' && fit.step !== 'author_too_long') {
+                facts.addTitle = fit.title;
+                facts.fit = { step: fit.step, rules: fit.rules };
+                facts.nameBytes = fit.bytesAfter;
+              }
+            }
           } catch (err) {
             problem = `The reader can't open it: ${(err as Error).message}`.slice(0, 300);
           }
@@ -1145,12 +1174,31 @@ export class BookArrivals {
             set.run('unreadable', h.sha256, Date.now(), problem, null, run.id, Date.now(), f.id);
             continue;
           }
+          if (facts.fit && (facts.fit.step === 'shortened' || facts.fit.step === 'cut')) {
+            this.db
+              .prepare(
+                `INSERT OR REPLACE INTO calibre_title_fits (arrival_file_id, library_id, stage, original,
+                   written, step, rules_json, created_at, updated_at)
+                 VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?)`,
+              )
+              .run(
+                f.id,
+                this.pairLibrary(f.pair_key),
+                facts.title ?? '',
+                facts.addTitle,
+                facts.fit.step,
+                JSON.stringify(facts.fit.rules),
+                Date.now(),
+                Date.now(),
+              );
+          }
           if (facts.nameBytes > NAME_MAX_BYTES) {
+            // Only a first author too long on its own is left (bad data): held, as before.
             set.run(
               'too_long',
               h.sha256,
               Date.now(),
-              "Too long for a folder name in Calibre's library",
+              "The first author is too long for a folder name in Calibre's library",
               JSON.stringify(facts),
               run.id,
               Date.now(),

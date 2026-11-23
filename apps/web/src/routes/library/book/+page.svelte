@@ -34,6 +34,7 @@
   import AddToCollectionDialog from '$lib/components/collections/add-to-collection-dialog.svelte';
   import AudioLinkSection from '$lib/components/audio/audio-link-section.svelte';
   import BookDownloadMenu from '$lib/components/library/book-download-menu.svelte';
+  import BookLinks from '$lib/components/library/book-links.svelte';
   import BookIllustrations from '$lib/components/library/book-illustrations.svelte';
   import BookStateDialog from '$lib/components/library/book-state-dialog.svelte';
   import CoverImage from '$lib/components/library/cover-image.svelte';
@@ -60,7 +61,13 @@
   import type { Collection, CollectionItem } from '$lib/collections/collections';
   import { coverGrid } from '$lib/library/cover-size';
   import { descriptionParagraphs } from '$lib/library/description';
-  import { authorHref, formatSeriesIndex } from '$lib/library/format';
+  import {
+    authorHref,
+    formatSeriesIndex,
+    illustratorQuery,
+    libraryQueryHref
+  } from '$lib/library/format';
+  import { bookLinksPlacement$ } from '$lib/book-links/settings';
   import { getLibraryStore, type LibraryConnection } from '$lib/library/library-db';
   import type { OpenStage } from '$lib/library/open-calibre-book';
   import { openCatalogBook } from '$lib/library/open-from-catalog';
@@ -178,6 +185,12 @@
   $: gridLayout = coverGrid($libraryCoverSize$);
   // Season 2 §6: the device's setting (anything unknown counts as the default).
   $: illustrationsAt = $bookIllustrationsPosition$ === 'cover' ? 'cover' : 'description';
+  // Where the links go (Settings > Library, per device; anything unknown is the default).
+  $: linksAt =
+    $bookLinksPlacement$ === 'buttons' || $bookLinksPlacement$ === 'panel'
+      ? $bookLinksPlacement$
+      : 'section';
+  $: illustrators = book?.illustrators ?? [];
   $: seriesLabel = book?.series
     ? `${book.series.name}${book.series.index !== null ? ` · 第${formatSeriesIndex(book.series.index)}巻` : ''}`
     : '';
@@ -566,13 +579,23 @@
         >
           {book.title}
         </h1>
-        {#if book.authors.length}
-          <div class="-my-2 text-[15px]">
+        {#if book.authors.length || illustrators.length}
+          <!-- The byline: "<author>, illustrated by <illustrator>"; each illustrator opens the
+               Library filtered by illustrator:"<name>". -->
+          <div class="-my-2 text-[15px]" data-testid="details-byline">
             {#each book.authors as author, i (i)}<a
                 class="c-link inline-flex min-h-[2.75rem] items-center"
                 href={authorHref(pagePath, author.name)}
                 data-testid="details-author">{author.name}</a
-              >{i < book.authors.length - 1 ? ', ' : ''}{/each}
+              >{i < book.authors.length - 1 ? ', ' : ''}{/each}{#if illustrators.length}<span
+                class="text-c-muted"
+                >{book.authors.length ? ', illustrated by ' : 'Illustrated by '}</span
+              >{#each illustrators as name, i (i)}<a
+                  class="c-link inline-flex min-h-[2.75rem] items-center"
+                  href={libraryQueryHref(pagePath, illustratorQuery(name))}
+                  title="Opens the illustrator's books"
+                  data-testid="details-illustrator">{name}</a
+                >{i < illustrators.length - 1 ? ', ' : ''}{/each}{/if}
           </div>
         {/if}
         {#if book.missing}
@@ -683,6 +706,9 @@
             {/if}
           </div>
         </div>
+        {#if linksAt === 'buttons'}
+          <BookLinks {book} variant="buttons" />
+        {/if}
       </div>
 
       {#if paragraphs.length}
@@ -715,41 +741,50 @@
         </section>
       {/if}
 
-      <section class="c-dinfo c-dpanel min-w-0 rounded px-6 py-5" aria-labelledby="details-about">
-        <div class="flex items-baseline justify-between">
-          <h2 id="details-about" class="flex items-baseline gap-3">
-            <span class="font-mincho text-lg font-bold text-c-label">書誌</span>
-            <span class="text-sm text-c-muted">About this book</span>
-          </h2>
-          <span class="c-seal" aria-hidden="true">蔵<br />書</span>
-        </div>
-        <dl class="mt-3 grid grid-cols-[7rem_minmax(0,1fr)]" data-testid="details-rows">
-          {#each rows as row (row.label)}
-            <dt class="c-drow py-2.5 text-xs text-c-muted">
-              <span class="font-mincho font-bold text-c-label">{row.jp}</span>
-              {row.label}
-            </dt>
-            <dd class="c-drow break-words py-2.5 text-sm">{row.value}</dd>
-          {/each}
-        </dl>
-        {#if book.tags.length}
-          <div class="mt-4 flex flex-col gap-2">
-            <span class="text-xs text-c-muted">
-              <span class="font-mincho font-bold text-c-label">分類</span> Tags
-            </span>
-            <div class="flex flex-wrap gap-2">
-              {#each book.tags as tag (tag)}
-                <a
-                  class="c-chip c-chip-sm"
-                  href={libraryHref('tags', tag)}
-                  data-testid="details-tag">{tag}</a
-                >
-              {/each}
-            </div>
+      <div class="c-dinfo min-w-0">
+        <section class="c-dpanel min-w-0 rounded px-6 py-5" aria-labelledby="details-about">
+          <div class="flex items-baseline justify-between">
+            <h2 id="details-about" class="flex items-baseline gap-3">
+              <span class="font-mincho text-lg font-bold text-c-label">書誌</span>
+              <span class="text-sm text-c-muted">About this book</span>
+            </h2>
+            <span class="c-seal" aria-hidden="true">蔵<br />書</span>
           </div>
+          <dl class="mt-3 grid grid-cols-[7rem_minmax(0,1fr)]" data-testid="details-rows">
+            {#each rows as row (row.label)}
+              <dt class="c-drow py-2.5 text-xs text-c-muted">
+                <span class="font-mincho font-bold text-c-label">{row.jp}</span>
+                {row.label}
+              </dt>
+              <dd class="c-drow break-words py-2.5 text-sm">{row.value}</dd>
+            {/each}
+          </dl>
+          {#if book.tags.length}
+            <div class="mt-4 flex flex-col gap-2">
+              <span class="text-xs text-c-muted">
+                <span class="font-mincho font-bold text-c-label">分類</span> Tags
+              </span>
+              <div class="flex flex-wrap gap-2">
+                {#each book.tags as tag (tag)}
+                  <a
+                    class="c-chip c-chip-sm"
+                    href={libraryHref('tags', tag)}
+                    data-testid="details-tag">{tag}</a
+                  >
+                {/each}
+              </div>
+            </div>
+          {/if}
+        </section>
+        {#if linksAt === 'panel'}
+          <BookLinks {book} variant="panel" />
         {/if}
-      </section>
+      </div>
     </div>
+
+    {#if linksAt === 'section'}
+      <BookLinks {book} variant="section" />
+    {/if}
 
     {#if illustrationsAt === 'description'}
       <BookIllustrations

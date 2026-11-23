@@ -107,6 +107,7 @@ function tileOf(book: CatalogBook): GroupTile {
     tags: book.tags,
     title: book.title,
     authors: [...new Set(book.authors.map((a) => a.name))],
+    illustrators: [...new Set(book.illustrators ?? [])],
     series: book.series?.name ?? null,
     charCount: book.charCount
   };

@@ -235,7 +235,7 @@ export function largeDownloadCopy(opts: {
       `${opts.count.toLocaleString('en-US')} ${opts.what}, ${opts.size} in all. ${
         opts.zip ? 'They arrive as one ZIP file.' : 'Each file is saved on its own.'
       }`,
-      'You can change the size that asks first in Settings > Data > Downloading books.'
+      'You can change the size that asks first in Settings > Library > Downloading books.'
     ],
     confirmLabel: `Download ${opts.size}`,
     danger: false
@@ -713,6 +713,20 @@ export function resetToolbarCopy(bar: 'top' | 'bottom'): ConfirmCopy {
   };
 }
 
+/** Settings > Library > Links: Reset to default. */
+export function resetLinksCopy(): ConfirmCopy {
+  return {
+    title: 'Reset the links to their default?',
+    message: [
+      'Put the links back in their default order and places on this device.',
+      'Other devices keep their own links.'
+    ],
+    confirmLabel: 'Reset',
+    // Nothing is deleted: the plain filled button (as Reset of the toolbars).
+    danger: false
+  };
+}
+
 // ---- Library cleanup (WP20a) ----------------------------------------------------------
 
 /** Turning stage 1 on: from then on it removes identical copies from Calibre on its own. */
@@ -809,8 +823,8 @@ export function turnOnOnlineSourcesCopy(counts: {
     message: [
       'From now on this runs on its own, in batches: titles, authors with their readings, illustrators, series and numbers, descriptions, store links and covers are written where the rules are sure or both AI models agree.',
       typeof counts.unconfirmed === 'number' && counts.unconfirmed > 0
-        ? `${counts.unconfirmed.toLocaleString('en-US')} values are the best guess where the sources or the models don’t agree; they are written too and stay marked “unconfirmed” in the list.`
-        : 'Where the sources or the models don’t agree, the best guess is written and stays marked “unconfirmed” in the list.',
+        ? `${counts.unconfirmed.toLocaleString('en-US')} values are the best guess where the sources or the models don’t agree; they are not written: they wait in Review with the suggestion.`
+        : 'Where the sources or the models don’t agree, the best guess is not written: it waits in Review with the suggestion.',
       'Calibre moves a book’s folder when its title or first author changes; the reader follows. A value you change in Calibre afterwards is left alone. Format and edition are not written (stage 5 makes them tags). Each batch can be undone on this page; a cover added where Calibre had none stays.'
     ],
     confirmLabel: 'Turn on and write'
@@ -943,6 +957,19 @@ export function arrivalsOnCopy(lastPlan: string | null): ConfirmCopy {
     message: [
       ...(lastPlan ? [lastPlan] : []),
       'From the next run on (daily, or Run now), the linking sidecar adds each new book to media/audiobooks/japanese as new folders with hard links to the torrents’ files and its metadata.json. Audiobookshelf then shows them. Books already in the library change only when Settings > Audiobooks > Changes to books already in the library is On.'
+    ],
+    confirmLabel: 'Switch it On',
+    irreversible: false
+  };
+}
+
+/** WP21g: audiobook stage 8 (genres, tags and series from the Calibre ebooks) switched On. */
+export function ebooksOnCopy(preview: string | null): ConfirmCopy {
+  return {
+    title: 'Give the paired audiobooks their ebooks’ genres, tags and series?',
+    message: [
+      ...(preview ? [preview] : []),
+      'From the next daily run (or Run now), each audiobook paired with its Calibre volume gets that ebook’s genres and tags in Audiobookshelf, and the series where the audiobook has none from a store; a book that gains a series moves into its series folder (its reader links follow), but never while someone has listening progress or a bookmark on it. Your own Audiobookshelf edits stay yours. Calibre is only read. Takes effect only while Settings > Audiobooks > Changes to books already in the library is On.'
     ],
     confirmLabel: 'Switch it On',
     irreversible: false

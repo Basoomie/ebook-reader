@@ -25,7 +25,11 @@ import { writeDecisions, setUserValue } from '../src/cleanup/ai-decide/values';
 import { initCleanupDatabase } from '../src/cleanup/cleanup-db';
 import type { Stage2Book } from '../src/cleanup/stage2-snapshot';
 import { makeTempDir } from './helpers/spawn-server';
-import { READINGS_VERSION, REPICK_VERSION } from '../src/cleanup/stage4/analysis';
+import {
+  READINGS_VERSION,
+  REPICK_VERSION,
+  TITLE_FIT_VERSION,
+} from '../src/cleanup/stage4/analysis';
 
 describe('changed in Calibre after the cleanup wrote it', () => {
   const cover = (o: Record<string, unknown>) => ({
@@ -597,6 +601,7 @@ describe('asking the given-up questions again (WP20e stop 2)', () => {
       bookmeterEditions: { phase: 'done' },
       repick: { phase: 'done', version: REPICK_VERSION },
       readingNotes: { phase: 'done', version: READINGS_VERSION },
+      titleFit: { phase: 'done', version: TITLE_FIT_VERSION, books: 0 },
       ai,
     };
     const runner = cleanupRunner(db, makeAiCore().core);
@@ -618,5 +623,112 @@ describe('asking the given-up questions again (WP20e stop 2)', () => {
     Object.assign(ai, { phase: 'done', decided: 3 });
     expect(step.askAgain()).toBe(0);
     expect(ai.phase).toBe('done');
+  });
+});
+
+describe("the test batches' undone books (series-order stop 3)", () => {
+  it('writes an undone field unless a newer row handles that field', async () => {
+    const { Stage4Ai } = await import('../src/cleanup/stage4/ai-step');
+    const s = initCleanupDatabase(makeTempDir('wp20e-undone'));
+    if (!s.ok) throw new Error(s.error);
+    const db = s.db;
+    const ins = db.prepare(
+      `INSERT INTO proposed_changes (stage, library_id, calibre_id, calibre_uuid, field, old_json, new_json, source,
+         evidence_json, class, review_reason, state, analysis_id, created_at, updated_at)
+       VALUES (4, 'lib', 1, ?, ?, 'null', '"x"', 'ndl', '{}', ?, NULL, ?, 'run1', ?, ?)`,
+    );
+    // Every field undone.
+    ins.run('all-undone', 'series', 'auto', 'undone', 10, 10);
+    // Other fields written by the first On, one field undone by a test batch: written too.
+    ins.run('one-undone', 'series', 'auto', 'applied', 1, 1);
+    ins.run('one-undone', 'author_sort', 'auto', 'undone', 10, 10);
+    // A review item on another field: the undone one is written too.
+    ins.run('with-review', 'illustrator', 'review', 'proposed', 10, 10);
+    ins.run('with-review', 'authors', 'auto', 'undone', 10, 10);
+    // Handled: proposed again, or written again after the undo.
+    ins.run('again', 'series', 'auto', 'undone', 10, 10);
+    ins.run('again', 'series', 'auto', 'proposed', 20, 20);
+    ins.run('rewritten', 'series', 'auto', 'undone', 10, 10);
+    ins.run('rewritten', 'series', 'auto', 'applied', 20, 20);
+    // Decided again after the undo, that field with no change (the same text in Calibre).
+    ins.run('no-change', 'description', 'auto', 'undone', 10, 10);
+    ins.run('no-change', 'series', 'auto', 'applied', 20, 20);
+    const progress = { libraryId: 'lib', analysisId: 'run1', phase: 'done' };
+    const step = new Stage4Ai({
+      db,
+      runner: cleanupRunner(db, makeAiCore().core),
+      analysis: { progress: () => progress } as never,
+    });
+    expect(step.undoneBooks()).toEqual(['all-undone', 'one-undone', 'with-review']);
+  });
+});
+
+describe("the AI check's gate in steps (its progress bar)", () => {
+  it('reads the labeled books in chunks, then counts, with done and total on the bar', async () => {
+    const { Stage4Ai, STAGE4_EVIDENCE_BUILD } = await import('../src/cleanup/stage4/ai-step');
+    const s = initCleanupDatabase(makeTempDir('wp20e-gatebar'));
+    if (!s.ok) throw new Error(s.error);
+    const db = s.db;
+    const ai: Record<string, unknown> = {
+      analysisId: 'run1',
+      rulesFinishedAt: 5,
+      phase: 'gate',
+      evidenceBuild: STAGE4_EVIDENCE_BUILD,
+      cursor: 0,
+      items: 250,
+      decided: 250,
+      gate: null,
+      times: {},
+      phaseStartedAt: Date.now(),
+      phaseStartDone: 0,
+    };
+    const progress = {
+      libraryId: 'lib',
+      analysisId: 'run1',
+      phase: 'done',
+      finishedAt: 5,
+      bookmeterEditions: { phase: 'done' },
+      repick: { phase: 'done', version: REPICK_VERSION },
+      readingNotes: { phase: 'done', version: READINGS_VERSION },
+      titleFit: { phase: 'done', version: TITLE_FIT_VERSION, books: 0 },
+      ai,
+    };
+    const labeled = Array.from({ length: 250 }, (_, i) => ({
+      gid: `g${i}`,
+      uuid: `u${i}`,
+      gold: {},
+    }));
+    let reads = 0;
+    const step = new Stage4Ai({
+      db,
+      runner: cleanupRunner(db, makeAiCore().core),
+      analysis: {
+        progress: () => progress,
+        labeledBooks: () => {
+          reads++;
+          return labeled;
+        },
+      } as never,
+    });
+    const results: string[] = [];
+    const bars: [number, number][] = [];
+    for (let i = 0; i < 10 && ai.phase === 'gate'; i++) {
+      results.push(await step.step(() => false));
+      const b = step.bar();
+      if (b) bars.push([b.done, b.total]);
+    }
+    expect(results).toEqual(['more', 'more', 'more', 'more', 'more', 'more', 'done']);
+    expect(bars).toEqual([
+      [100, 254],
+      [200, 254],
+      [250, 254],
+      [251, 254],
+      [252, 254],
+      [253, 254],
+    ]);
+    expect(ai.phase).toBe('done');
+    expect(ai.gate).toMatchObject({ books: expect.any(Number) });
+    // The labeled books are read once per gate.
+    expect(reads).toBe(1);
   });
 });

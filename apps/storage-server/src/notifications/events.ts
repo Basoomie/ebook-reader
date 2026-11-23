@@ -77,6 +77,19 @@ const EVENTS: EventDef[] = [
     label: 'Audiobook daily summary (books added, duplicates, waiting, review)',
     kind: 'digest',
   },
+  // WP21g: audiobook stage 8, the pairs with the Calibre ebooks (in stage 7's daily run).
+  {
+    id: 'audio_ebooks_review',
+    section: 'cleanup',
+    label: 'Audiobooks whose Calibre ebook needs a look (once per daily run with new review items)',
+    kind: 'now',
+  },
+  {
+    id: 'audio_ebooks_summary',
+    section: 'cleanup',
+    label: 'Audiobooks and their Calibre ebooks in the daily summary (paired, to review, changes)',
+    kind: 'digest',
+  },
   // WP20g: the Calibre library's new arrivals (books added by hand and the import).
   {
     id: 'calibre_arrivals_review',

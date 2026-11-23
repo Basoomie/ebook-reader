@@ -410,6 +410,7 @@ export async function stage2Pass(
             group: prop.group,
             reason: prop.reason,
             extra: prop.extra ?? null,
+            ...(prop.fit ? { fit: prop.fit } : {}),
             lastModified: book.lastModified,
             arrival: true,
             epub: { path: ev.path, size: ev.size, mtimeMs: ev.mtimeMs },

@@ -16,6 +16,8 @@ describe('settings tabs in the address', () => {
     expect(tabFromQuery('diagnostics')).toBe('Diagnostics');
     expect(tabFromQuery('notifications')).toBe('Notifications');
     expect(tabFromQuery('ai')).toBe('AI');
+    expect(tabFromQuery('library')).toBe('Library');
+    expect(SETTINGS_TABS.indexOf('Library')).toBe(SETTINGS_TABS.indexOf('Reader') + 1);
     expect(tabFromQuery(null)).toBe('Reader');
     expect(tabFromQuery('')).toBe('Reader');
     expect(tabFromQuery('nonsense')).toBe('Reader');

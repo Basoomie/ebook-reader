@@ -50,6 +50,11 @@ export interface GateSettings {
    */
   audiobookPairsFile: string;
   /**
+   * Audiobooks stage 8 (WP21g): the labeled audiobook-ebook pairs (ebook-pairs.json); empty =
+   * <DB_DIR>/cleanup/reference-sample/audio/ebook-pairs.json.
+   */
+  audiobookEbookPairsFile: string;
+  /**
    * Audiobooks stage 5 (WP21d): a field's automatic values (the rules', or both models agreeing)
    * must be right on the labeled books at least this often (%).
    */
@@ -230,6 +235,15 @@ export interface AudiobookSettings {
    * while these stay a Preview until approved (user, 2026-11-21): off | analyse (Preview) | on.
    */
   libraryChanges: 'off' | 'analyse' | 'on';
+  /**
+   * Stage 8 (WP21g): an audiobook's title and its Calibre book's agree at this pair share (or
+   * one inside the other), as stage 4's title check (`titlesAgree`).
+   */
+  ebookTitleScore: number;
+  /** Stage 8: one title inside the other counts only from this many characters (cleaned)... */
+  ebookTitleMinChars: number;
+  /** ...and this share of the longer title's characters (0-1). */
+  ebookTitleMinShare: number;
 }
 
 /** One source folder whose EPUBs the import adds to a Calibre library (WP20g, plan section 11). */
@@ -479,6 +493,7 @@ export const DEFAULT_SETTINGS: CleanupSettings = {
     labeledBooksFile: '',
     duplicatePairsFile: '',
     audiobookPairsFile: '',
+    audiobookEbookPairsFile: '',
     audiobookMetaPercent: 95,
     genreLabelsFile: '',
     stage5: { genresRight: 95, tagsRight: 95, genresFound: 85, tagsFound: 70 },
@@ -552,6 +567,10 @@ export const DEFAULT_SETTINGS: CleanupSettings = {
     arrivalsAbsNudge: false,
     extractLeaseSeconds: 1800,
     libraryChanges: 'analyse',
+    // Stage 8 (WP21g): stage 4's title check and its guard (measured at stop 1).
+    ebookTitleScore: 0.9,
+    ebookTitleMinChars: 3,
+    ebookTitleMinShare: 0.25,
   },
   ai: {
     labeledOnly: false,
@@ -1060,6 +1079,20 @@ function validate(key: Key, value: unknown, current: CleanupSettings): unknown {
             throw new Error('Changes to books in the library: off, Preview or On');
           return m;
         })(),
+        ebookTitleScore: num('Ebook pairs: titles agree at a score of', v.ebookTitleScore, 0.3, 1),
+        ebookTitleMinChars: num(
+          'Ebook pairs: a title inside another counts from (characters)',
+          v.ebookTitleMinChars,
+          1,
+          20,
+          true,
+        ),
+        ebookTitleMinShare: num(
+          'Ebook pairs: a title inside another counts from (share of the longer)',
+          v.ebookTitleMinShare,
+          0,
+          1,
+        ),
       };
     }
     case 'ai': {
@@ -1273,6 +1306,11 @@ function validate(key: Key, value: unknown, current: CleanupSettings): unknown {
         labeledBooksFile: text('Labeled books file', v.labeledBooksFile, 1000),
         duplicatePairsFile: text('Measured duplicate pairs file', v.duplicatePairsFile, 1000),
         audiobookPairsFile: text('Labeled audiobook pairs file', v.audiobookPairsFile, 1000),
+        audiobookEbookPairsFile: text(
+          'Labeled audiobook-ebook pairs file',
+          v.audiobookEbookPairsFile ?? '',
+          1000,
+        ),
         audiobookMetaPercent: num(
           'Audiobook metadata: bar per field (%)',
           v.audiobookMetaPercent,

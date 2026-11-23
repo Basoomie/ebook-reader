@@ -17,8 +17,14 @@ import type Database from 'better-sqlite3';
 import path from 'path';
 import { classifyName, EXTRACTED } from './catalog';
 
-/** Ids of the import's archive batches (the audiobooks' arrival batches are from 2e9). */
-export const BOOK_ARCHIVE_BATCH_BASE = 3_000_000_000;
+/**
+ * Ids of the import's archive batches: from 4e9, above every other batch the linking sidecar is
+ * handed (the audiobooks' switch from 1e9, arrivals from 2e9, library changes from 3e9). They were
+ * from 3e9 too, so the report route took the library changes' reports for archive batches, refused
+ * them ("No such batch"), and a library-changes run never got past its preflight (found in WP21g's
+ * e2e, 2026-11-23).
+ */
+export const BOOK_ARCHIVE_BATCH_BASE = 4_000_000_000;
 const LEASE_MS = 30 * 60 * 1000;
 
 export interface ArchiveRow {

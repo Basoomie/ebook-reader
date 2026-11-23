@@ -145,6 +145,16 @@ describe('wp20g: files and formats', () => {
     expect(() =>
       buildArgs('add', login, ['--duplicates', '--one-book-per-directory', '/quarantine/x/12']),
     ).not.toThrow();
+    // 1.4.0: a title the server fitted for Calibre's names, one plain line, before the file.
+    const file = '/tmp/ttsu-arrivals/ttsu-arrival-12/b.epub';
+    expect(buildArgs('add', login, ['--duplicates', '--title', '左遷された王子2', file])).toEqual(
+      expect.arrayContaining(['--title', '左遷された王子2', file]),
+    );
+    for (const bad of ['', '-m', '--automerge', String.fromCharCode(97, 10, 98), 'x'.repeat(301)])
+      expect(() => buildArgs('add', login, ['--duplicates', '--title', bad, file]), bad).toThrow();
+    expect(() =>
+      buildArgs('add', login, ['--duplicates', '--title', 'T', '/tmp/other/b.epub']),
+    ).toThrow();
   });
 
   it('J asks the stronger pair where E left a field open or flagged', () => {
@@ -823,6 +833,53 @@ describe('wp20g: a run end to end', () => {
         )
         .get(`arrivals:${first.id}`),
     ).toEqual({ n: 1 });
+    env.service.arrivals.stopRun();
+  }, 300_000);
+
+  it('a file whose title is too long for Calibre is added with the fitted title (sidecar 1.4.0)', async () => {
+    env.service.arrivals.stopRun();
+    env.cleanupDb
+      .prepare(`UPDATE batches SET state = 'failed' WHERE state IN ('planned', 'claimed')`)
+      .run();
+    const LONG =
+      '左遷された無能王子は実力を隠したい2 ～二度転生した最強賢者、今世では楽したいので手を抜いてたら、王家を追放された。今更帰ってこいと言われても遅い、領民に実力がバレて、実家に帰してくれないから……～';
+    const E = makeTextEpub({ title: LONG, chapters: chaptersOf(15) });
+    fs.writeFileSync(path.join(src, 'Discord', 'long.epub'), E);
+    // A sidecar older than 1.4.0 never gets the add (it can't give it the title).
+    env.cleanupDb.prepare(`UPDATE sidecar_status SET version = '1.3.0' WHERE id = 1`).run();
+    env.service.arrivals.setMode('on');
+    await requestWhenFree();
+    for (let round = 0; round < 3; round++) await steps();
+    const row = env.cleanupDb
+      .prepare(`SELECT id, outcome, facts_json FROM calibre_arrival_files WHERE rel_path = ?`)
+      .get('Discord/long.epub') as { id: number; outcome: string; facts_json: string };
+    expect(row.outcome).not.toBe('too_long');
+    const facts = JSON.parse(row.facts_json) as { title: string; addTitle: string };
+    expect(facts).toMatchObject({ title: LONG, addTitle: '左遷された無能王子は実力を隠したい2' });
+    expect(
+      env.cleanupDb
+        .prepare('SELECT original, written, step FROM calibre_title_fits WHERE arrival_file_id = ?')
+        .get(row.id),
+    ).toEqual({
+      original: LONG,
+      written: '左遷された無能王子は実力を隠したい2',
+      step: 'shortened',
+    });
+    const old = await request(env.app)
+      .post('/api/v1/cleanup-apply/arrivals/claim')
+      .set(auth(apply))
+      .send({});
+    expect(old.body.batch).toBeNull();
+    env.cleanupDb.prepare(`UPDATE sidecar_status SET version = '1.4.0' WHERE id = 1`).run();
+    const claim = await request(env.app)
+      .post('/api/v1/cleanup-apply/arrivals/claim')
+      .set(auth(apply))
+      .send({});
+    const item = (claim.body.batch.items as { title: string; addTitle: string | null }[])[0];
+    expect(item).toMatchObject({
+      title: '左遷された無能王子は実力を隠したい2',
+      addTitle: '左遷された無能王子は実力を隠したい2',
+    });
     env.service.arrivals.stopRun();
   }, 300_000);
 });

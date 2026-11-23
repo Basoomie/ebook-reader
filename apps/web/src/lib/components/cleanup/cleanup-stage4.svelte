@@ -467,8 +467,9 @@
     >
       <summary class="cursor-pointer text-sm font-medium">Best guesses</summary>
       <p class="mt-2 text-sm text-c-muted">
-        Values no source confirms, written as the best guess. Series are shown whole, in their
-        order, with each guessed number marked.
+        Values no source confirms. Best guesses are no longer written: they wait in Review (those an
+        earlier run wrote stay marked). Series are shown whole, in their order, with each guessed
+        number marked.
       </p>
       <label class="flex flex-col text-sm"
         >Show

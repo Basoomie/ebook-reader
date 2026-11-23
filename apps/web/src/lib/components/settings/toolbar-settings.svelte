@@ -170,6 +170,12 @@
     const list = target.bar === 'top' ? topList : bottomList;
     const row = list?.querySelector<HTMLElement>(`[data-toolbar-row="${target.id}"]`);
     if (!row) return;
+    // Moved with Alt+↑ / Alt+↓: the row itself keeps the focus, so the next press moves it again
+    // (it went to the ↑ button, whose keys the row ignores).
+    if (target.what === 'row') {
+      if (document.activeElement !== row) row.focus({ preventScroll: true });
+      return;
+    }
     const wanted = row.querySelector<HTMLButtonElement>(`[data-move="${target.what}"]`);
     const other = row.querySelector<HTMLButtonElement>(
       `[data-move="${target.what === 'up' ? 'down' : 'up'}"]`

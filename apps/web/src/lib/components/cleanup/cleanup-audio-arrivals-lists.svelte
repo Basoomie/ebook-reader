@@ -181,6 +181,13 @@
                   data-testid="library-choice-rename">Rename now (the place moves)</button
                 >
               {/if}
+              {#if (change(it).reviews ?? []).some((r) => r.kind === 'ebook_series_listening')}
+                <button
+                  class="c-btn c-btn-ghost"
+                  on:click={() => choose(change(it).bookId, 'move', 'now')}
+                  data-testid="library-choice-move">Move now (into its series folder)</button
+                >
+              {/if}
             </span>
           {/if}
         {:else if list === 'library_reader'}

@@ -236,8 +236,11 @@ function numberInsideName(t: string, name: string): string | null {
 /** Words after a number that make it something other than a volume (16人, 18禁, 2001年). */
 const NOT_VOLUME =
   /^(?:人|禁|歳|才|年|月|日|時|分|秒|億|万|千|円|%|％|回|個|つ|名|匹|頭|世紀|階|号|度|倍|色|kg|km|cm|分の)/u;
-/** Words that make a book a side book of its series (after the series name only). */
-const SIDE =
+/**
+ * Words that make a book a side book of its series (after the series name only). Also read by
+ * audiobook stage 8 (ebook-pair.ts): a side book is never paired with a main volume.
+ */
+export const SIDE =
   /外伝|番外|別巻|短編集|短編|アンソロジー|画集|ARTWORKS|設定資料|ガイドブック|ファンブック|スピンオフ|アンコール|サイドストーリー|(?<![A-Za-z])(?:SSP|SS|SP\d*|EX|IF|Another|Encore|Extra ?Story|Side ?(?:of|story)|After ?story|Re[:：]IF)(?![A-Za-z])/iu;
 
 /**

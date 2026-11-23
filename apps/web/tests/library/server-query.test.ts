@@ -22,7 +22,8 @@ const SAMPLES = [
   '/^薬屋/i series:=外伝 favorite:yes',
   'status:foo',
   '/(/',
-  '"Doe, Jane" Re:ゼロ'
+  '"Doe, Jane" Re:ゼロ',
+  'illustrator:"Smith, John",あずーる -illustrator：=x'
 ];
 
 describe('server query parser bundle', () => {
