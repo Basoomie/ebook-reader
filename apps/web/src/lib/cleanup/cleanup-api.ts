@@ -1000,7 +1000,84 @@ export interface AudioStatus {
   switch?: AudioSwitchStatus;
   /** WP21f-1: the daily new arrivals. */
   stage7?: AudioStage7Status;
+  /** WP21g: the second pass from the Calibre ebooks (missing on an older server). */
+  stage8?: AudioStage8Status;
 }
+
+// ---------------------------------------------------------------- audiobooks stage 8 (WP21g)
+
+export type Stage8Phase =
+  | 'check'
+  | 'read'
+  | 'pair'
+  | 'values'
+  | 'covers'
+  | 'gate'
+  | 'preview'
+  | 'done';
+
+export interface EbookGate {
+  passed: boolean;
+  labels: number;
+  notFound: string[];
+  kinds: Record<
+    string,
+    {
+      withEbook: number;
+      found: number;
+      right: number;
+      wrong: number;
+      none: number;
+      noneRight: number;
+      review: number;
+    }
+  >;
+  wrong: { id: string; title: string; got: number | null; want: number[] | null }[];
+  error: string | null;
+}
+
+export interface AudioStage8Progress {
+  runId: number | null;
+  phase: Stage8Phase;
+  startedAt: number;
+  phaseStartedAt: number;
+  finishedAt: number | null;
+  done: number;
+  total: number;
+  reason: string | null;
+  ebooks: { total: number; new: number; changed: number; removed: number };
+  counts: Record<'auto' | 'review' | 'none' | 'excluded', number>;
+  bySource: Record<string, Record<string, number>>;
+  values: {
+    genres: number;
+    tags: number;
+    series: number;
+    seriesReview: number;
+    seriesDisagree: number;
+    noTerms: number;
+  };
+  covers: { read: number; missing: number; waitMs: number };
+  gate: EbookGate | null;
+  preview: {
+    changes: number;
+    metadata: number;
+    moves: number;
+    held: number;
+    reviews: number;
+    at: number;
+  } | null;
+  waiting: string | null;
+  error: string | null;
+}
+
+export type AudioStage8Status =
+  | { available: false }
+  | {
+      available: true;
+      mode: AudioStageMode | 'on';
+      progress: AudioStage8Progress | null;
+      calibre: boolean;
+    };
 
 // ---------------------------------------------------------------- audiobooks stage 7 (WP21f-1)
 
@@ -2357,6 +2434,44 @@ export class CleanupApi {
     const response = await send(
       this.fetchImpl,
       `${this.serverUrl}/api/v1/cleanup/audio/arrivals/plan.csv`,
+      { method: 'GET', headers: { Authorization: `Bearer ${this.token}` } },
+      { timeoutSeconds: this.timeoutSeconds }
+    );
+    if (!response.ok) throw await errorFrom(response);
+    return response.blob();
+  }
+
+  // ---------------------------------------------------------------- stage 8 (WP21g)
+
+  audioEbooks(
+    list: string,
+    offset = 0,
+    limit = 50
+  ): Promise<{ total: number; items: Record<string, unknown>[] }> {
+    const q = new URLSearchParams({ list, offset: String(offset), limit: String(limit) });
+    return this.request('GET', `/cleanup/audio/ebooks?${q}`) as Promise<{
+      total: number;
+      items: Record<string, unknown>[];
+    }>;
+  }
+
+  /** A review choice: field 'pair' (a Calibre id, or null: no ebook) or 'series'. */
+  audioEbookChoice(
+    unit: string,
+    field: 'pair' | 'series',
+    value: number | null | 'calibre' | 'none'
+  ): Promise<{ ok: boolean }> {
+    return this.request('POST', '/cleanup/audio/ebooks/choice', {
+      unit,
+      field,
+      value
+    }) as Promise<{ ok: boolean }>;
+  }
+
+  async audioEbooksFile(): Promise<Blob> {
+    const response = await send(
+      this.fetchImpl,
+      `${this.serverUrl}/api/v1/cleanup/audio/ebooks/pairs.csv`,
       { method: 'GET', headers: { Authorization: `Bearer ${this.token}` } },
       { timeoutSeconds: this.timeoutSeconds }
     );

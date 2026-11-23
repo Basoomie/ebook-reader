@@ -879,6 +879,116 @@ export class LibraryChanges {
     return 'more';
   }
 
+  /**
+   * WP21g: stage 8's Preview. What the library changes would do with stage 8's values (`withPlans`)
+   * for the books whose plan they change (against `withoutPlans`): each book's metadata.json now
+   * (read only, waiting while Calibre uses the disk), what ABS has (GET only), then the same pure
+   * planner. Nothing is recorded or written.
+   */
+  async dryRun(
+    withPlans: PlannedBook[],
+    withoutPlans: PlannedBook[],
+    onProgress: (done: number, total: number, waiting: string | null) => void = () => undefined,
+  ): Promise<{ changes: PlannedChange[]; books: Map<number, LedgerBook> }> {
+    this.syncLedger();
+    const media = this.deps.media;
+    if (!media) throw new Error('The library view (CLEANUP_AUDIO_MEDIA_DIR) is not mounted');
+    const inoOf = this.db.prepare('SELECT ino FROM audio_files WHERE id = ?');
+    const libIno = this.db.prepare(
+      `SELECT ino FROM audio_files WHERE root = 'library' AND rel_path = ? AND gone_at IS NULL`,
+    );
+    const byIno = (plans: PlannedBook[]) => {
+      const m = new Map<number, PlannedBook>();
+      for (const b of plans)
+        for (const f of b.files) {
+          const r = inoOf.get(f.fileId) as { ino: number } | undefined;
+          if (r) m.set(r.ino, b);
+        }
+      return m;
+    };
+    const withIno = byIno(withPlans);
+    const withoutIno = byIno(withoutPlans);
+    const candidates: LedgerBook[] = [];
+    const planOf = new Map<number, PlannedBook>();
+    for (const b of this.ledger()) {
+      let cur: PlannedBook | undefined;
+      let base: PlannedBook | undefined;
+      for (const f of b.files) {
+        const rel = b.folder.startsWith('japanese/')
+          ? `${b.folder.slice('japanese/'.length)}/${f.name}`
+          : null;
+        const ino =
+          (rel ? (libIno.get(rel) as { ino: number } | undefined)?.ino : undefined) ??
+          (inoOf.get(f.fileId) as { ino: number } | undefined)?.ino;
+        if (ino !== undefined) {
+          f.ino = ino;
+          cur ??= withIno.get(ino);
+          base ??= withoutIno.get(ino);
+        }
+      }
+      if (!cur || !base) continue;
+      if (cur.metadata.equals(base.metadata) && cur.baseFolder === base.baseFolder) continue;
+      candidates.push(b);
+      planOf.set(b.id, cur);
+    }
+    const disk = new Map<number, Buffer | null>();
+    for (let i = 0; i < candidates.length; ) {
+      if (this.deps.lock.calibreBusy()) {
+        onProgress(i, candidates.length, 'Waiting while the Calibre cleanup uses the disk');
+        await new Promise((r) => setTimeout(r, 2000));
+        continue;
+      }
+      for (const b of candidates.slice(i, i + SLICE)) {
+        disk.set(
+          b.id,
+          await readSmall(insideRoot(media, `${b.folder}/metadata.json`), 1024 * 1024),
+        );
+        const st = await lstatEntry(insideRoot(media, b.folder));
+        b.folderIno = st && st.isDir ? st.ino : null;
+      }
+      i = Math.min(candidates.length, i + SLICE);
+      onProgress(i, candidates.length, null);
+      await new Promise((r) => setImmediate(r));
+    }
+    const abs = await this.absStates(candidates, this.start('analyse'));
+    const choices = this.db.prepare(
+      'SELECT field, choice FROM audio_library_choices WHERE book_id = ?',
+    );
+    const rels = this.db.prepare('SELECT rel_path FROM audio_files WHERE id = ?');
+    const tagsOf = this.db.prepare('SELECT tags_json FROM audio_file_health WHERE file_id = ?');
+    const changes = planLibraryChanges({
+      fileTags: (b) => {
+        const r = b.files[0]
+          ? (tagsOf.get(b.files[0].fileId) as { tags_json: string | null } | undefined)
+          : undefined;
+        try {
+          return r?.tags_json ? (JSON.parse(r.tags_json) as Record<string, string>) : null;
+        } catch {
+          return null;
+        }
+      },
+      books: candidates,
+      current: (b) => planOf.get(b.id) ?? null,
+      disk: (b) => disk.get(b.id) ?? null,
+      abs: (b) => abs.get(b.id) ?? null,
+      keep: (b) =>
+        keptAsBuilt(
+          b.files
+            .map((f) => (rels.get(f.fileId) as { rel_path: string } | undefined)?.rel_path)
+            .filter((x): x is string => !!x),
+        ),
+      tree: await this.deps.tree(),
+      choices: (b) =>
+        Object.fromEntries(
+          (choices.all(b.id) as { field: string; choice: string }[]).map((r) => [
+            r.field,
+            r.choice,
+          ]),
+        ),
+    });
+    return { changes, books: new Map(candidates.map((b) => [b.id, b])) };
+  }
+
   /** ABS's item, progress and bookmarks of the candidate books (GET only). Null per book: not asked. */
   private async absStates(
     books: LedgerBook[],

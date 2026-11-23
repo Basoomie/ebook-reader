@@ -209,10 +209,16 @@ export function ownNumbers(a: string, b: string): { a: number[]; b: number[] } {
   const y = oy.toLowerCase();
   let i = 0;
   while (i < x.length && i < y.length && x[i] === y[i]) i++;
-  // Back off out of a number (and a Roman numeral) the prefix would cut.
-  const num = /[0-9ivxl.一二三四五六七八九十]/i;
-  const inNumber = (s: string, k: number) => k < s.length && num.test(s[k]);
-  while (i > 0 && num.test(x[i - 1]) && (inNumber(x, i) || inNumber(y, i))) i--;
+  // Back off out of a number the prefix would cut, within one kind of numeral (digits, Roman
+  // numerals, kanji numerals): 「X 1」 / 「X 11」 back off to 「X」, never into the X.
+  const kinds = [/[0-9.]/, /[ivxl]/i, /[一二三四五六七八九十]/];
+  const kind = kinds.find(
+    (k) =>
+      i > 0 &&
+      k.test(x[i - 1]) &&
+      ((i < x.length && k.test(x[i])) || (i < y.length && k.test(y[i]))),
+  );
+  if (kind) while (i > 0 && kind.test(x[i - 1])) i--;
   // A kanji numeral at the end is read only after a space (nums()); keep a space before it.
   return { a: volumeNums(' ' + ox.slice(i)), b: volumeNums(' ' + oy.slice(i)) };
 }

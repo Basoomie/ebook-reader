@@ -1602,7 +1602,13 @@ describe('the two ABS calls the library changes make', () => {
         authors: [{ name: '今野敏' }],
       },
     });
-    expect(() => setBody(Buffer.from('{}'), ['genres' as never])).toThrow(/Not a field/);
+    // WP21g: genres are ours too (stage 8), set as a list; any other field still is not.
+    expect(
+      setBody(Buffer.from(JSON.stringify({ genres: ['ファンタジー', '恋愛'] })), ['genres']),
+    ).toEqual({
+      metadata: { genres: ['ファンタジー', '恋愛'] },
+    });
+    expect(() => setBody(Buffer.from('{}'), ['isbn' as never])).toThrow(/Not a field/);
     const importers: string[] = [];
     const walk = (d: string) => {
       for (const e of fs.readdirSync(d, { withFileTypes: true })) {

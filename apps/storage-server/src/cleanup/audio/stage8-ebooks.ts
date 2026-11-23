@@ -49,6 +49,12 @@ const OWNER = DISK_OWNERS.audio8;
 const PAGE = 2000;
 const SLICE = 300;
 const COVERS_PER_TURN = 25;
+/**
+ * A pair whose ebook left Calibre: review, its values kept until you choose (decided at the plan:
+ * no automatic change back).
+ */
+export const LOST =
+  'Its Calibre book is not in the library any more: the values stay until you choose';
 
 // ---------------------------------------------------------------------------------------------
 // The recordings
@@ -360,6 +366,7 @@ export class AudioStage8 {
     queue: string[];
     facts: Map<string, UnitFacts> | null;
     touched: Set<number>;
+    removed: Set<number>;
   } | null = null;
 
   constructor(private readonly deps: Stage8Deps) {
@@ -571,6 +578,7 @@ export class AudioStage8 {
       queue: [],
       facts: null,
       touched: new Set(),
+      removed: new Set(),
     };
     this.setPhase(p, 'read');
     return 'more';
@@ -590,6 +598,7 @@ export class AudioStage8 {
         queue: [],
         facts: null,
         touched: new Set(),
+        removed: new Set(),
       };
       p.done = 0;
     }
@@ -638,6 +647,7 @@ export class AudioStage8 {
         if (!w.books.has(id)) {
           removed++;
           touched.add(id);
+          w.removed.add(id);
           del.run(cal.libraryId, id);
         }
     })();
@@ -751,7 +761,7 @@ export class AudioStage8 {
       "SELECT value_json FROM audio_ebook_choices WHERE unit_key = ? AND field = 'pair'",
     );
     const old = this.db.prepare(
-      'SELECT class, first_review_run FROM audio_ebook_pairs WHERE unit_key = ?',
+      'SELECT class, first_review_run, calibre_id, reason FROM audio_ebook_pairs WHERE unit_key = ?',
     );
     const put = this.db.prepare(
       `INSERT INTO audio_ebook_pairs (unit_key, library_id, calibre_id, class, kind, audio_title, audio_authors, reason,
@@ -785,7 +795,24 @@ export class AudioStage8 {
               reason: `The ebook you chose (${id}) is not in Calibre any more`,
             };
         }
-        const prev = old.get(key) as { class: string; first_review_run: number | null } | undefined;
+        const prev = old.get(key) as
+          | {
+              class: string;
+              first_review_run: number | null;
+              calibre_id: number | null;
+              reason: string | null;
+            }
+          | undefined;
+        // Its ebook left Calibre: review, its values kept (no automatic change back).
+        if (
+          !c &&
+          prev &&
+          prev.calibre_id !== null &&
+          ((prev.class === 'auto' && w.removed.has(prev.calibre_id)) || prev.reason === LOST) &&
+          !w.books.has(prev.calibre_id) &&
+          r.class !== 'auto'
+        )
+          r = { ...r, class: 'review', calibreId: prev.calibre_id, reason: LOST };
         const firstReview =
           r.class === 'review'
             ? prev?.class === 'review'
@@ -929,8 +956,23 @@ export class AudioStage8 {
          read_at = excluded.read_at`,
     );
     const filled = new Map<string, Set<number>>();
+    // Values of pairs whose ebook left Calibre stay as they were (LOST).
+    const lostValues = this.db
+      .prepare(
+        `SELECT v.unit_key, v.field, v.value_json, v.calibre_id, v.decided_at FROM audio_ebook_values v
+         JOIN audio_ebook_pairs p ON p.unit_key = v.unit_key WHERE p.class = 'review' AND p.reason = ?`,
+      )
+      .all(LOST) as {
+      unit_key: string;
+      field: string;
+      value_json: string;
+      calibre_id: number;
+      decided_at: number;
+    }[];
     this.db.transaction(() => {
       this.db.prepare('DELETE FROM audio_ebook_values').run();
+      for (const r of lostValues)
+        putValue.run(r.unit_key, r.field, r.value_json, r.calibre_id, r.decided_at);
       this.db.prepare('DELETE FROM audio_ebook_series').run();
       const keep = new Set<number>();
       for (const pr of pairs) {

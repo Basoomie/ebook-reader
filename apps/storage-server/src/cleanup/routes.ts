@@ -660,6 +660,37 @@ function addAudioRoutes(router: Router, options: CleanupOptions): void {
     res.json({ ok: true });
   });
 
+  // Stage 8 (WP21g): the pairs with the Calibre ebooks (lists, CSV) and your review choices:
+  // field 'pair' (a Calibre id, or null for "no ebook") or 'series' ('calibre' | 'none').
+  router.get('/cleanup/audio/ebooks', (req, res) => {
+    const audio = audioOr503(options);
+    try {
+      res.json(audio.ebooks(String(req.query.list ?? 'auto'), page(req)));
+    } catch (err) {
+      throw new ApiError(400, 'bad_request', (err as Error).message);
+    }
+  });
+
+  router.get('/cleanup/audio/ebooks/pairs.csv', (_req, res) => {
+    const audio = audioOr503(options);
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="audiobooks-ebook-pairs.csv"');
+    res.send(audio.ebooksCsv());
+  });
+
+  router.post('/cleanup/audio/ebooks/choice', (req, res) => {
+    const audio = audioOr503(options);
+    const body = (req.body ?? {}) as { unit?: unknown; field?: unknown; value?: unknown };
+    if (typeof body.unit !== 'string' || typeof body.field !== 'string' || !('value' in body))
+      throw new ApiError(400, 'bad_request', 'unit, field and value are needed');
+    try {
+      audio.ebookChoice(body.unit, body.field, body.value);
+    } catch (err) {
+      throw new ApiError(400, 'bad_request', (err as Error).message);
+    }
+    res.json({ ok: true });
+  });
+
   router.post('/cleanup/audio/arrivals/resume', (_req, res) => {
     const audio = audioOr503(options);
     try {

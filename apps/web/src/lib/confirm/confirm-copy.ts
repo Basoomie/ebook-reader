@@ -949,6 +949,19 @@ export function arrivalsOnCopy(lastPlan: string | null): ConfirmCopy {
   };
 }
 
+/** WP21g: audiobook stage 8 (genres, tags and series from the Calibre ebooks) switched On. */
+export function ebooksOnCopy(preview: string | null): ConfirmCopy {
+  return {
+    title: 'Give the paired audiobooks their ebooks’ genres, tags and series?',
+    message: [
+      ...(preview ? [preview] : []),
+      'From the next daily run (or Run now), each audiobook paired with its Calibre volume gets that ebook’s genres and tags in Audiobookshelf, and the series where the audiobook has none from a store; a book that gains a series moves into its series folder (its reader links follow), but never while someone has listening progress or a bookmark on it. Your own Audiobookshelf edits stay yours. Calibre is only read. Takes effect only while Settings > Audiobooks > Changes to books already in the library is On.'
+    ],
+    confirmLabel: 'Switch it On',
+    irreversible: false
+  };
+}
+
 /** WP20g: the Calibre library's new arrivals switched On. */
 export function booksArrivalsOnCopy(lastRun: string | null): ConfirmCopy {
   return {

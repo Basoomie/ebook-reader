@@ -29,6 +29,7 @@ const PHASES: Record<string, string> = {
   archives: 'Archives: listing and unpacking',
   stage1b: 'Stage 1 again (the unpacked files)',
   stages: 'Stages 2-5 run again',
+  ebooks: 'Stage 8: pairing with the Calibre ebooks',
   classify: 'Sorting the recordings (new, in the library, copies)',
   plan: 'Planning the new books',
   walk_before: 'Listing the torrents and the library (before)',
@@ -393,6 +394,7 @@ const FIELD_LABEL: Record<string, string> = {
   description: 'Description',
   asin: 'ASIN',
   tags: 'Tags',
+  genres: 'Genres',
   language: 'Language'
 };
 
