@@ -20,17 +20,20 @@ import { clockNow } from '../src/cleanup/audio/arrivals-schedule';
 import { ArrivalBatches } from '../src/cleanup/arrivals/add-batches';
 import { entrySkip } from '../src/cleanup/arrivals/archives';
 import { classifyName, settled, sniffFormat, walkSource } from '../src/cleanup/arrivals/catalog';
+import { inPool, type CompareFacts } from '../src/cleanup/arrivals/run';
 import { stage2Pass } from '../src/cleanup/arrivals/stage-passes';
 import { ArrivalStage5, emptyStage5Pass } from '../src/cleanup/arrivals/stage5-pass';
 import { runBar } from '../src/cleanup/arrivals/views';
 import { STAGE5_SPEC } from '../src/cleanup/stage5/prompt';
+import { buildLookup, candidatePairs, lookupCandidates } from '../src/cleanup/stage3-index';
+import { sortedUnique } from '../src/cleanup/stage3-sketch';
 import { initCleanupDatabase } from '../src/cleanup/cleanup-db';
 import type { Stage2Analysis } from '../src/cleanup/stage2';
 import { pauseField, resumeField } from '../src/cleanup/stage2-gate';
 import { arrivalPairs, getSettings, SettingsError, updateSettings } from '../src/cleanup/settings';
 import { stage4NeedsUpgrade } from '../src/cleanup/stage4/ai-decide';
 import { COUNTER_BUNDLE } from '../src/counts/counter-bundle';
-import { InProcessReader } from '../src/counts/book-text-worker';
+import { InProcessReader, type Stage3Reader } from '../src/counts/book-text-worker';
 import type { BookTextModule } from '../src/cleanup/stage3-work';
 import { healthyHeartbeat, makeCleanupEnv, type CleanupEnv } from './helpers/cleanup-env';
 import { makeZip } from './helpers/epub-fixture';
@@ -585,6 +588,18 @@ describe('wp20g: a run end to end', () => {
       )
       .get() as { calibre_id: number };
     expect(identical.calibre_id).toBe(L.A);
+    // Hashed only where a copy can be found by its bytes (a library EPUB or another new file of
+    // the same size); a file of its own size is not read whole until it is added.
+    const sha = (rel: string) =>
+      (
+        env.cleanupDb
+          .prepare(`SELECT sha256 FROM calibre_arrival_files WHERE rel_path = ?`)
+          .get(rel) as { sha256: string | null }
+      ).sha256;
+    expect(sha('Discord/same-as-A.epub')).toMatch(/^[0-9a-f]{64}$/);
+    expect(sha('Discord/C.epub')).toMatch(/^[0-9a-f]{64}$/);
+    expect(sha('Discord/C copy.epub')).toMatch(/^[0-9a-f]{64}$/);
+    expect(sha('_extracted/pack.zip/inner/D.epub')).toBeNull();
     // Nothing added; the last run's report has the estimate for On.
     expect(
       env.cleanupDb.prepare('SELECT COUNT(*) AS n FROM calibre_arrival_batches').get(),
@@ -616,6 +631,12 @@ describe('wp20g: a run end to end', () => {
     const o = outcomes();
 
     expect(o['_extracted/pack.zip/inner/D.epub']).toBe('added');
+    // Hashed when it was added (the sidecar's copy is checked against it).
+    expect(
+      env.cleanupDb
+        .prepare(`SELECT sha256 FROM calibre_arrival_files WHERE rel_path = ?`)
+        .get('_extracted/pack.zip/inner/D.epub'),
+    ).toEqual({ sha256: expect.stringMatching(/^[0-9a-f]{64}$/) });
     expect(Object.values(o).filter((x) => x === 'added')).toHaveLength(2);
     // The run's books went through stages 1-3 and stage 2's proposals; its write is a stage-2
     // batch of exactly the run's books (the apply sidecar's stage-2 steps are tested in WP20b).
@@ -1425,4 +1446,246 @@ describe('wp20g: better copies', () => {
     expect(p[0].kept).not.toBe(ids.F);
     env.service.arrivals.stopRun();
   }, 300_000);
+});
+
+describe('wp20g: the compare step keeps several books in flight', () => {
+  it('runs up to the limit at once, the next as one finishes, and stops when asked', async () => {
+    let now = 0;
+    let most = 0;
+    const done: number[] = [];
+    const items = Array.from({ length: 30 }, (_, i) => i);
+    const ok = await inPool(
+      items,
+      12,
+      () => false,
+      async (i) => {
+        now++;
+        most = Math.max(most, now);
+        await new Promise((r) => setTimeout(r, (i % 5) * 3));
+        done.push(i);
+        now--;
+      },
+    );
+    expect(ok).toBe(true);
+    expect(most).toBe(12);
+    expect(done.sort((a, b) => a - b)).toEqual(items);
+    // Stopped: no new item starts; the ones in flight finish.
+    let started = 0;
+    const stopped = await inPool(
+      items,
+      4,
+      () => started >= 6,
+      async () => {
+        started++;
+        await new Promise((r) => setTimeout(r, 2));
+      },
+    );
+    expect(stopped).toBe(false);
+    expect(started).toBeLessThan(10);
+    // A job that throws makes the call throw.
+    await expect(
+      inPool(
+        [1, 2, 3],
+        2,
+        () => false,
+        async (i) => {
+          if (i === 2) throw new Error('boom');
+        },
+      ),
+    ).rejects.toThrow('boom');
+  });
+});
+
+describe('wp20g: library pairs measured while each book is read', () => {
+  // The same Preview twice: with the library lookup (each new book measured against its library
+  // candidates in the request that reads it) and without (every pair in the measure stage). The
+  // results must be the same.
+  const library = {
+    A: chaptersOf(21),
+    B: chaptersOf(22),
+    C: chaptersOf(23),
+    D: chaptersOf(24),
+  };
+  const sources: Record<string, Buffer> = {
+    // The same text in another file (a different rip): a duplicate of A.
+    'A rip.epub': makeTextEpub({ title: 'A (rip)', chapters: library.A }),
+    // B with a short extra story: the better copy (B has no reading data).
+    'B plus.epub': makeTextEpub({ title: 'B', chapters: [...library.B, fakeText(91, 3000)] }),
+    // Most of C: the library's copy has everything it has.
+    'C part.epub': makeTextEpub({ title: 'C', chapters: library.C.slice(0, 5) }),
+    // Two new copies of a book the library lacks: one of them stays.
+    'N one.epub': makeTextEpub({ title: 'N', chapters: chaptersOf(25) }),
+    'N two.epub': makeTextEpub({ title: 'N (2)', chapters: chaptersOf(25) }),
+    // C's text again with N's: a pair with both a library and a new book.
+    'C and N.epub': makeTextEpub({ title: 'CN', chapters: [...library.C, ...chaptersOf(25)] }),
+    'U.epub': makeTextEpub({ title: 'U', chapters: chaptersOf(26) }),
+  };
+  const auth = (t: string) => ({ Authorization: `Bearer ${t}` });
+
+  const preview = async (reader: Stage3Reader) => {
+    const root = tmp();
+    const src = path.join(root, 'books', 'japanese');
+    fs.mkdirSync(src, { recursive: true });
+    const made = await makeCleanupEnv({
+      service: {
+        stage3Reader: reader,
+        counterBuild: 'test',
+        bookSourcesDir: root,
+        bookSourcesReadOnly: false,
+      },
+    });
+    const env = made.env;
+    try {
+      const names = new Map<number, string>();
+      for (const [t, chapters] of Object.entries(library))
+        names.set(
+          await env.lib.addBook({
+            title: t,
+            authors: ['作者'],
+            epub: makeTextEpub({ title: t, chapters }),
+          }),
+          t,
+        );
+      await made.setup();
+      const user = env.userToken();
+      await request(env.app)
+        .put('/api/v1/cleanup/settings')
+        .set(auth(user))
+        .send({
+          contentServerUrl: 'http://calibre:8081',
+          calibreLibraryId: 'japanese-library',
+          calibreUsername: 'u',
+        })
+        .expect(200);
+      await request(env.app)
+        .put('/api/v1/cleanup/secrets/calibrePassword')
+        .set(auth(user))
+        .send({ value: 'pw' })
+        .expect(200);
+      await request(env.app)
+        .post('/api/v1/cleanup-apply/heartbeat')
+        .set(auth(env.applyToken()))
+        .send(healthyHeartbeat())
+        .expect(200);
+      updateSettings(env.cleanupDb, {
+        arrivals: {
+          ...getSettings(env.cleanupDb).arrivals,
+          pairs: [{ id: 'ja', source: 'books/japanese', libraryId: env.libraryId() }],
+          settleMinutes: 0,
+          handCheckMinutes: 0,
+        },
+      });
+      env.cleanupDb.prepare(`UPDATE stages SET mode = 'analyse' WHERE stage BETWEEN 1 AND 5`).run();
+      for (const [name, bytes] of Object.entries(sources))
+        fs.writeFileSync(path.join(src, name), bytes);
+      env.service.arrivals.setMode('analyse');
+      env.service.arrivals.requestRun();
+      for (let i = 0; i < 400; i++) {
+        for (let j = 0; j < 600 && env.service.libraryBusy(); j++)
+          await new Promise((r) => setTimeout(r, 50));
+        if ((await env.service.arrivals.step()) !== 'more') break;
+      }
+      const rows = env.cleanupDb
+        .prepare(
+          `SELECT id, rel_path, outcome, calibre_id, facts_json FROM calibre_arrival_files
+           WHERE kind = 'epub' ORDER BY rel_path`,
+        )
+        .all() as {
+        id: number;
+        rel_path: string;
+        outcome: string;
+        calibre_id: number | null;
+        facts_json: string;
+      }[];
+      const nameOf = (k: number) =>
+        k < 0 ? rows.find((r) => r.id === -k)!.rel_path : names.get(k)!;
+      let early = 0;
+      let covered = 0;
+      const out = rows.map((r) => {
+        const fx = JSON.parse(r.facts_json) as CompareFacts;
+        early += fx.early?.measured.length ?? 0;
+        covered += fx.covered?.length ?? 0;
+        return {
+          file: r.rel_path,
+          outcome: r.outcome,
+          book: r.calibre_id === null ? null : names.get(r.calibre_id),
+          cands: (fx.cands ?? []).map(nameOf).sort(),
+          verdicts: (fx.verdicts ?? [])
+            .map((v) => ({
+              other: nameOf(v.otherKey),
+              aInB: v.aInB,
+              bInA: v.bInA,
+              cls: v.cls,
+              rule: v.rule,
+              keep: v.keep,
+            }))
+            .sort((x, y) => x.other.localeCompare(y.other)),
+        };
+      });
+      return { out, early, covered };
+    } finally {
+      await env.close();
+    }
+  };
+
+  it('gives the same outcomes, pairs and verdicts as measuring every pair afterwards', async () => {
+    const withLookup = await preview(new InProcessReader(bundle, IMPORT));
+    const plain = new InProcessReader(bundle, IMPORT);
+    const without = await preview({
+      text: (f) => plain.text(f),
+      compare: (b, p, e) => plain.compare(b, p, e),
+      index: (r) => plain.index(r),
+      close: () => {},
+    });
+    // The lookup was used, and covered library pairs (not every one is a candidate).
+    expect(withLookup.early).toBeGreaterThan(0);
+    expect(withLookup.covered).toBeGreaterThan(0);
+    expect(without.early).toBe(0);
+    expect(withLookup.out).toEqual(without.out);
+    // And the outcomes are what stage 3's rules give.
+    const o = Object.fromEntries(withLookup.out.map((r) => [r.file, [r.outcome, r.book]]));
+    expect(o['A rip.epub']).toEqual(['duplicate', 'A']);
+    expect(o['B plus.epub']).toEqual(['better', 'B']);
+    expect(o['C part.epub']).toEqual(['duplicate', 'C']);
+    expect(o['U.epub']).toEqual(['new', null]);
+    expect([o['N one.epub'][0], o['N two.epub'][0]].sort()).toEqual(['duplicate', 'new']);
+  }, 600_000);
+});
+
+describe('wp20g: the per-book library lookup', () => {
+  it('finds every library pair the whole index finds (random sketches, common samples)', () => {
+    let seed = 7;
+    const rand = (n: number) => {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+      return seed % n;
+    };
+    const sketch = (pool: number, size: number) =>
+      sortedUnique(Uint32Array.from({ length: size }, () => rand(pool)));
+    let checked = 0;
+    for (let round = 0; round < 20; round++) {
+      // A small sample pool, so many samples are common and many pairs share some.
+      const pool = 400 + rand(800);
+      const lib = Array.from({ length: 40 }, (_, i) => ({
+        calibreId: i + 1,
+        sketch: sketch(pool, 20 + rand(80)),
+      }));
+      const news = Array.from({ length: 15 }, (_, i) => ({
+        calibreId: -(i + 1),
+        sketch: sketch(pool, 20 + rand(80)),
+      }));
+      const opts = { commonBooks: 3 + rand(12), minShared: 2, minEstimate: 0.05 };
+      const whole = candidatePairs([...news, ...lib], opts).pairs;
+      const lookup = buildLookup(lib);
+      for (const n of news) {
+        const found = new Set(lookupCandidates(lookup, n.sketch, opts).map((c) => c.b));
+        const needed = whole
+          .filter((p) => (p.a === n.calibreId && p.b > 0) || (p.b === n.calibreId && p.a > 0))
+          .map((p) => (p.a === n.calibreId ? p.b : p.a));
+        checked += needed.length;
+        for (const id of needed) expect(found.has(id)).toBe(true);
+      }
+    }
+    // Enough pairs to mean something.
+    expect(checked).toBeGreaterThan(100);
+  });
 });

@@ -143,3 +143,78 @@ export function candidatePairs(
     },
   };
 }
+
+/**
+ * The library's sketches as one sorted posting list, for looking up one book at a time (the new
+ * arrivals read a book and measure its library candidates while its text is open; WP20g).
+ */
+export interface LibraryLookup {
+  /** sample * 2^17 + book index, sorted. */
+  postings: Float64Array;
+  /** Book index -> Calibre id, and the book's sketch length. */
+  ids: Int32Array;
+  lens: Int32Array;
+}
+
+export function buildLookup(books: SketchedBook[]): LibraryLookup {
+  if (books.length >= BOOK_BITS) throw new Error(`Too many books for the index (${books.length})`);
+  let total = 0;
+  for (const b of books) total += b.sketch.length;
+  const postings = new Float64Array(total);
+  let n = 0;
+  books.forEach((b, i) => {
+    for (let k = 0; k < b.sketch.length; k++) postings[n++] = b.sketch[k] * BOOK_BITS + i;
+  });
+  postings.sort();
+  return {
+    postings,
+    ids: Int32Array.from(books.map((b) => b.calibreId)),
+    lens: Int32Array.from(books.map((b) => b.sketch.length)),
+  };
+}
+
+/**
+ * The library books one new book (its sketch) is a candidate pair with. Never fewer than the
+ * whole index finds for this book among these library books (candidatePairs over the library
+ * and every new book): a sample counts here unless the library books with it plus this book are
+ * already more than `commonBooks`, and the whole index has at least those books in that sample's
+ * bucket, so every sample it counts is counted here, and the same thresholds apply to counts and
+ * estimates at least as large. Extra pairs found here are measured but only kept when the whole
+ * index proposes them too (arrivals/run.ts).
+ */
+export function lookupCandidates(
+  lookup: LibraryLookup,
+  sketch: Uint32Array,
+  { commonBooks, minShared = 2, minEstimate = 0.05 }: IndexOptions,
+): CandidatePair[] {
+  const { postings } = lookup;
+  const shared = new Map<number, number>();
+  for (let k = 0; k < sketch.length; k++) {
+    const lo = sketch[k] * BOOK_BITS;
+    const hi = lo + BOOK_BITS;
+    // First posting >= lo.
+    let a = 0;
+    let b = postings.length;
+    while (a < b) {
+      const m = (a + b) >>> 1;
+      if (postings[m] < lo) a = m + 1;
+      else b = m;
+    }
+    let end = a;
+    while (end < postings.length && postings[end] < hi) end++;
+    if (end === a || end - a + 1 > commonBooks) continue;
+    for (let x = a; x < end; x++) {
+      const i = postings[x] - lo;
+      shared.set(i, (shared.get(i) ?? 0) + 1);
+    }
+  }
+  const out: CandidatePair[] = [];
+  for (const [i, count] of shared) {
+    if (count < minShared) continue;
+    const estAInB = sketch.length ? count / sketch.length : 0;
+    const estBInA = lookup.lens[i] ? count / lookup.lens[i] : 0;
+    if (Math.max(estAInB, estBInA) < minEstimate) continue;
+    out.push({ a: 0, b: lookup.ids[i], shared: count, estAInB, estBInA });
+  }
+  return out.sort((x, y) => y.shared - x.shared || x.b - y.b);
+}
