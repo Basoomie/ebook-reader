@@ -258,6 +258,28 @@ export class SummaryService {
   /** The sync store the "book-summary" records are written through (built by the API router). */
   attachSync(sync: SyncStore): void {
     this.sync = sync;
+    this.publishStale();
+  }
+
+  private lastSweep = 0;
+
+  /**
+   * Every book with a summary or a note gets its record as it is now (written only when it
+   * changed): summaries stored outside the server (the one-time import's CLI) reach the devices.
+   */
+  publishStale(): void {
+    this.lastSweep = this.now();
+    if (!this.sync) return;
+    try {
+      const ids = this.db
+        .prepare(
+          `SELECT book_id FROM summaries UNION SELECT book_id FROM summary_books WHERE outcome IS NOT NULL`,
+        )
+        .all() as { book_id: string }[];
+      for (const { book_id } of ids) this.publish(book_id);
+    } catch (err) {
+      this.deps.log?.(`Summaries: the records: ${(err as Error).message}`);
+    }
   }
 
   // ------------------------------------------------------------------------------------------
@@ -515,6 +537,7 @@ export class SummaryService {
     if (this.pumping || this.stopping) return;
     this.pumping = true;
     try {
+      if (this.now() - this.lastSweep >= 10 * 60_000) this.publishStale();
       this.startJobs();
       await this.pump();
     } catch (err) {

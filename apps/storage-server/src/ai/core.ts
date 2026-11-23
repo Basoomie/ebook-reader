@@ -22,7 +22,7 @@ import type { SpendRow } from './ledger';
 import { monthOf } from './month';
 import { makeProvider, providerOf, type CallResult, type ProviderClient } from './providers';
 import { AiSecretStore, KEY_NAME, type AiKeyReader } from './secrets';
-import { BUILT_IN_PRICES, isChatModel } from './prices';
+import { BUILT_IN_PRICES, isChatModel, offersFlex } from './prices';
 import {
   AiSettingsError,
   readAiSettings,
@@ -272,6 +272,63 @@ export class AiCore {
     const settings = updateAiSettings(this.db, { models: [...s.models, id] }, this.now());
     this.log(`AI: ${id} added after a test request (${ms} ms, $${costUsd.toFixed(5)})`);
     return { settings, ms, costUsd };
+  }
+
+  /**
+   * One tiny request with OpenAI's Flex processing (book summaries session 3, `cli ai flex-test`):
+   * whether OpenAI takes it at the flex tier for this model and key, and what it reports. Its
+   * cost is counted as Settings' own, at the price of the tier OpenAI reports.
+   */
+  async flexTest(model: string): Promise<{
+    tier: string | null;
+    ms: number;
+    costUsd: number;
+    refusedForCapacity: boolean;
+  }> {
+    const s = this.settings();
+    const id = model.trim();
+    if (!offersFlex(id)) throw new AiSettingsError(`${id} does not offer flex processing`);
+    const client = this.client('openai');
+    if (!client) throw new AiSettingsError('Save the OpenAI API key first');
+    const price = priceOf(s, id);
+    if (!price) throw new AiSettingsError(`The app doesn't know ${id}'s price`);
+    if (s.spendLimitUsd === null) throw new AiSettingsError('Set a monthly spending limit first');
+    const t0 = Date.now();
+    let res: CallResult;
+    try {
+      res = await client.call(
+        {
+          model: id,
+          system: 'You answer with one JSON object and nothing else.',
+          user: 'Reply with {"ok": true}.',
+          schema: null,
+          maxTokens: 2000,
+          serviceTier: 'flex',
+        },
+        15 * 60_000,
+      );
+    } catch (err) {
+      if ((err as { flexUnavailable?: boolean }).flexUnavailable)
+        return { tier: null, ms: Date.now() - t0, costUsd: 0, refusedForCapacity: true };
+      throw new AiSettingsError(`The flex request to ${id} failed: ${(err as Error).message}`);
+    }
+    const ms = Date.now() - t0;
+    const flex = res.tier === 'flex';
+    const costUsd = costOf(price, res.usage, flex, s.batchPriceFactor);
+    const seq = this.state('modelTestSeq', 0) + 1;
+    this.setState('modelTestSeq', seq);
+    this.record({
+      source: SETTINGS_SOURCE,
+      ref: -seq,
+      feature: SETTINGS_FEATURE,
+      stage: 'flex-test',
+      provider: 'openai',
+      model: id,
+      mode: flex ? 'flex' : 'direct',
+      costUsd,
+      at: this.now(),
+    });
+    return { tier: res.tier ?? null, ms, costUsd, refusedForCapacity: false };
   }
 
   /** Saves provider settings; a raised limit lets waiting features go on at once. */

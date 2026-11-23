@@ -1,0 +1,95 @@
+{
+  "about": "Book summaries session 3: the corrections of the items the accuracy test flagged (test_item_checks verdict 'mistake'; no item of the imported runs was marked by the user), each checked against the book by Claude (2026-11-23) before the one-time import. Stored as ordinary items, not as edited by the user.",
+  "corrections": [
+    {
+      "run": "hanayome1|mixed|bg0|v4",
+      "ref": "ch7.1",
+      "action": "replace",
+      "text": "フェルはクロウに教わった応急処置を思い出し、消し炭を自分で嚙み砕いて口移しで与える。飲むための水は信用できないので、自分の口は花瓶の水でゆすぐ。",
+      "flag": "Small wrong detail: Fel rinses her own mouth with the vase water after giving him the charcoal (she doesn't trust the drinking water); she doesn't make him rinse.",
+      "book": "５章: 「嚙み砕いた炭を流し込む。続けて、花瓶の水で口をゆすぐ。飲むための水は信用できない。」"
+    },
+    {
+      "run": "hanayome1|mixed|bg0|v4",
+      "ref": "rel2",
+      "action": "replace",
+      "text": "六年前の聖燭祭の夜、熱を出した孤児院の幼い仲間を助けてくれる貴族を探して倒れていた十一歳のフェルを、お忍びのシレイネが馬車を降りて助け起こし、馬車に乗せてくれた。毎春鈴蘭を贈る恩人で、フェルはその恩から影武者を続け、話し相手として刺繡や五弦琴も教わった。フェルは早く名前を返さないとと案じている。",
+      "flag": "Embellished: 「孤児院を援助」 isn't in the book. Sireine stopped her carriage for the collapsed 11-year-old Fel and helped the sick orphan; nothing says she supported the orphanage.",
+      "book": "フェルがクロウに鈴蘭の話をする章: 援助をしてくれる貴族を探して夜の王都を走り回ったフェルを、お忍びのシレイネ姫が「馬車を駆け降り、手ずから助け起こし」「馬車に乗せてくれた」。「孤児院を援助」は2巻にしか出てこない（2巻の人物紹介では正しい）。"
+    },
+    {
+      "run": "hanayome2|mixed|bg1|v5",
+      "ref": "ch7.11",
+      "action": "replace",
+      "text": "ガウェインは将来は怖い義母（姑）になると冗談を言い、眠るフェルの白い喉に見えた赤い痕は何かとクロウに詰め寄る。",
+      "flag": "Wrong person: the red mark is on Fel's throat (Clovis left it); Gawain asks Clovis about 「白い喉笛に、赤い痕」.",
+      "book": "５章: 「ちらっと見えてしまったんですのよねえ。…………白い喉笛に、赤い痕。あれ、何でしょうねえ？」 フェルはそばのベッドで眠っている。"
+    },
+    {
+      "run": "hanayome2|mixed|bg1|v5",
+      "ref": "char0",
+      "action": "replace-text",
+      "from": "趣味は五弦琴。",
+      "to": "城では『シレイネ姫』の趣味である五弦琴も弾く。",
+      "flag": "The 五弦琴 is 『シレイネ姫』の趣味 that Fel plays in her role; it isn't Fel's own hobby.",
+      "book": "「自室で『シレイネ姫』の趣味である五弦琴を搔き鳴らしつつ」"
+    },
+    {
+      "run": "sw09|mixed|bg1|v5",
+      "ref": "ch14.1",
+      "action": "replace",
+      "text": "アイザックはクロックフォード公爵邸近くの墓地で「アイザック・ウォーカー」の名が刻まれた本物のフェリクスの墓に初めて参り、挑戦をしに行くと誓う。墓には一輪の薔薇が供えられていて、アイザックはその贈り主が第三王子付き秘書官のブリジットだと察し、摘んできた野の花をその横に添える。",
+      "flag": "Incomplete: アイザック recognizes who left the rose: 「彼女も来ていたのか」, the third prince's secretary, i.e. ブリジット.",
+      "book": "【十二章】: 「その花の贈り主に、アイザックは心当たりがあった。（彼女も来ていたのか）第三王子付き秘書官として、多忙の身だろうに。」 ブリジットが第三王子付き秘書官であることはこの巻の序盤に書かれている。"
+    },
+    {
+      "run": "sw09|mixed|bg1|v5",
+      "ref": "ch3.7",
+      "action": "replace",
+      "text": "モニカは、生徒会長は本物のフェリクスの名誉を残すことだけに固執し大罪人として死ぬつもりだと語る。アルバートは、自分とエリアーヌの婚約が強引に進められたのは、レーンブルグ公爵とクロックフォード公爵が第三王子の自分を国王候補として擁立するためだったと考える。",
+      "flag": "Made stronger: アルバート says only that the dukes want him as a candidate for king; invading the Empire is the narrator's guess about the duke, not アルバート's words.",
+      "book": "【一章】: 「二人で第三王子の僕を国王候補として擁立するつもりなのだろう。婚約はそのためのお膳立てだ」 帝国に攻め込むのは地の文の推測。"
+    },
+    {
+      "run": "sw09|mixed|bg1|v5",
+      "ref": "thread3",
+      "action": "delete",
+      "flag": "Not open: the book points to ブリジット (アイザック recognizes the third prince's secretary).",
+      "book": "The answer is now in ch14.1."
+    },
+    {
+      "run": "watanare2|mixed|bg1|v5",
+      "ref": "ch3.2",
+      "action": "replace",
+      "text": "れな子は紗月の母を姉と間違える。紗月は、母が夜の仕事をしていることを語る。冷え性の母に手編みの靴下を贈っていたことを知られ、紗月はマザコンと後ろ指を差されると落ち込む。",
+      "flag": "Misplaced: 紗月 tells that her father has been gone since she can remember during the third game in chapter 4, not at the apartment.",
+      "book": "第四章の三戦目: 「母さんはあの通りだし、父は物心ついた頃からいなかったから」 (moved to ch5.6, which tells that story)."
+    },
+    {
+      "run": "watanare2|mixed|bg1|v5",
+      "ref": "ch5.6",
+      "action": "replace-text",
+      "from": "真唯は本心を知って感謝する。",
+      "to": "真唯は本心を知って感謝する。紗月は、父は物心ついた頃からいなかったことも明かす。",
+      "flag": "(the fact moved out of ch3.2)",
+      "book": "第四章の三戦目: 「父は物心ついた頃からいなかったから」"
+    },
+    {
+      "run": "watanare2|mixed|bg1|v5",
+      "ref": "ch5.3",
+      "action": "replace",
+      "text": "二戦目、真唯が話術で紗月を揺さぶって倒すが、勝ち誇る真唯をれな子が撃ち抜いて勝ち、れな子もマッチポイントになる。",
+      "flag": "Wrong: in game 2 真唯 shoots 紗月 (紗月さんがキルされた… また真唯が勝った?); れな子 then shoots 真唯.",
+      "book": "第四章: 「紗月さんがキルされた。そんな、また真唯が勝った？」「そうドヤ顔で気持ちよくなっている真唯を、わたしの銃弾が撃ち抜いた。」「これでわたしもマッチポイントだ。」"
+    },
+    {
+      "run": "watanare2|mixed|bg1|v5",
+      "ref": "char8",
+      "action": "replace-text",
+      "from": "真唯の担任を自ら引き受けた。",
+      "to": "噂では、誰もやりたがらなかった真唯の担任を、ひとりだけ手を挙げて引き受けたという。",
+      "flag": "Made stronger: that she volunteered to be 真唯's homeroom teacher is a rumor in the book (噂によると).",
+      "book": "第四章: 「噂によると、…王塚真唯の担任を誰もやりたがらない中で、みちる先生だけが『あ、じゃあ広崎やりますよ』と手を挙げたらしい。」"
+    }
+  ]
+}

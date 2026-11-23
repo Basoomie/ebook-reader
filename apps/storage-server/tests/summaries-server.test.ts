@@ -27,6 +27,7 @@ import { initDatabase } from '../src/db/database';
 import { createToken } from '../src/db/tokens';
 import { listUsers } from '../src/db/users';
 import { isCountedChar } from '../src/summaries/book-text';
+import { importSummaries, type ImportEntry } from '../src/summaries/import';
 import { NoTextError, SummaryService } from '../src/summaries/service';
 import { OPUS, SOL, SONNET } from '../src/summaries/settings';
 import { modelForTask } from '../src/summaries/specs';
@@ -777,13 +778,152 @@ describe('the user’s actions', () => {
     expect(own.body.summary.origin).toBe('user');
     await drain(e);
     const v = e.svc.store.versions(e.books.solo);
-    expect(v.map((x) => [x.state, x.origin])).toEqual(
-      [
-        ['earlier', 'ai'],
-        ['current', 'user'],
-      ].sort((a, b) => (a[0] < b[0] ? 1 : -1)) as never,
-    );
+    expect(v.map((x) => `${x.state}/${x.origin}`).sort()).toEqual(['current/user', 'earlier/ai']);
     expect(e.svc.store.currentMeta(e.books.solo)!.origin).toBe('user');
+  });
+});
+
+describe('the one-time import of the accuracy test', () => {
+  const entry = (o: Partial<ImportEntry> = {}): ImportEntry => ({
+    key: 'v1',
+    run: 'v1|mixed|bg0|v4',
+    title: '潮騒のナギ　１',
+    series: '潮騒',
+    volume: 1,
+    characters: BOOK.characters,
+    background: false,
+    round: 'v4',
+    madeAt: Date.UTC(2026, 10, 23, 17),
+    summary: {
+      lang: 'ja',
+      bookTitle: '潮騒のナギ 1',
+      models: [SONNET, SOL, OPUS],
+      madeAt: Date.UTC(2026, 10, 23, 17),
+      alsoMentioned: [],
+      sections: [
+        {
+          key: 'overview',
+          groups: [
+            {
+              items: [
+                {
+                  ref: 'overview',
+                  text: '概要。',
+                  cites: [],
+                  quote: null,
+                  position: null,
+                  showQuote: false,
+                },
+              ],
+            },
+          ],
+        },
+        {
+          key: 'chapters',
+          groups: [
+            {
+              chapter: 1,
+              items: [
+                {
+                  ref: 'ch1.0',
+                  text: '明かす。',
+                  cites: [],
+                  quote: '潮呪を受けた一族の最後の一人',
+                  position: 999,
+                  showQuote: true,
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    },
+    ...o,
+  });
+
+  it('matches the library’s book (not a removed copy), finds the quotes again and stores it as an import', async () => {
+    const e = setup();
+    const t = e.clock.t;
+    // The kept copy has a file; a removed copy with the same title and text is marked missing.
+    const removed = randomUUID();
+    e.main
+      .prepare(
+        `INSERT INTO books (id, library_id, title, series_id, series_index, char_count, added_at, created_at, updated_at)
+         VALUES (?, 'lib1', '潮騒のナギ 1', 1, 1, ?, ?, ?, ?)`,
+      )
+      .run(removed, BOOK.characters, t, t, t);
+    const src = e.main.prepare(
+      `INSERT INTO book_sources (id, book_id, library_id, kind, calibre_uuid, file_path, missing_at, created_at, updated_at)
+       VALUES (?, ?, 'lib1', 'calibre', ?, ?, ?, ?, ?)`,
+    );
+    src.run(randomUUID(), e.books.v1, randomUUID(), 'a/v1.epub', null, t, t);
+    src.run(randomUUID(), removed, randomUUID(), 'b/v1.epub', t, t, t);
+    const run = (apply: boolean, file = { version: 1 as const, summaries: [entry()] }) =>
+      importSummaries({ main: e.main, sdb: e.sdb, file, apply, readScript: async () => BOOK });
+    const dry = await run(false);
+    expect(dry.ok).toBe(true);
+    expect(dry.lines[0]).toMatchObject({
+      bookId: e.books.v1,
+      how: 'title',
+      quotes: 1,
+      moved: 1,
+      problem: null,
+    });
+    expect(e.svc.store.currentMeta(e.books.v1)).toBeNull();
+    const done = await run(true);
+    expect(done.stored).toBe(1);
+    const m = e.svc.store.currentMeta(e.books.v1)!;
+    expect(m).toMatchObject({
+      origin: 'import',
+      setup: 'mixed',
+      background: false,
+      madeAt: Date.UTC(2026, 10, 23, 17),
+    });
+    expect(m.note).toBe('accuracy test v4 (v1|mixed|bg0|v4)');
+    const item = e.svc.store.view(m.id)!.sections[1].groups[0].items[0];
+    expect(item).toMatchObject({
+      editedByUser: false,
+      position: BOOK.chapters[1].sentences[0].position + 'カイトは自分が'.length,
+    });
+    // The server's sweep tells the devices.
+    e.svc.publishStale();
+    const rec = e.sync.getRecord(listUsers(e.main)[0].id, 'book-summary', e.books.v1)!;
+    expect((rec.data as { summary: { origin: string } }).summary.origin).toBe('import');
+  });
+
+  it('stores nothing when a book is not found, its text differs or a quote is missing', async () => {
+    const e = setup();
+    const t = e.clock.t;
+    e.main
+      .prepare(
+        `INSERT INTO book_sources (id, book_id, library_id, kind, calibre_uuid, file_path, created_at, updated_at)
+         VALUES (?, ?, 'lib1', 'calibre', ?, 'x.epub', ?, ?)`,
+      )
+      .run(randomUUID(), e.books.v1, randomUUID(), t, t);
+    const bad = entry();
+    bad.summary.sections[1].groups[0].items[0].quote = 'この文は本のどこにもない文章です';
+    const r = await importSummaries({
+      main: e.main,
+      sdb: e.sdb,
+      file: {
+        version: 1,
+        summaries: [
+          entry({ key: 'gone', title: '無い本', series: null, volume: null }),
+          entry({ key: 'other', characters: 5 }),
+          bad,
+        ],
+      },
+      apply: true,
+      readScript: async () => BOOK,
+    });
+    expect(r.ok).toBe(false);
+    expect(r.stored).toBe(0);
+    expect(r.lines.map((l) => l.problem)).toEqual([
+      'no book with this title (or series and volume) and text',
+      expect.stringContaining('the title matches but not the text'),
+      '1 quotes not found in the book',
+    ]);
+    expect(e.svc.store.currentMeta(e.books.v1)).toBeNull();
   });
 });
 
