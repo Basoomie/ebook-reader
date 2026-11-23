@@ -46,6 +46,7 @@ import {
 import {
   EXTRACT_CHAPTER_SPEC,
   EXTRACT_SPEC,
+  LABEL_SPEC,
   MATCH_SPEC,
   modelOfRole,
   SUPPORT_CHAPTER_SPEC,
@@ -56,6 +57,7 @@ import {
 } from './specs';
 import {
   EditError,
+  itemDigest,
   SummaryStore,
   userSummary,
   type ItemInput,
@@ -68,13 +70,49 @@ import type { Summary } from './types';
 /** The steps a summary's jobs ask (the test's claims and groups are not part of it). */
 export const JOB_SPECS = [
   EXTRACT_SPEC,
+  LABEL_SPEC,
   EXTRACT_CHAPTER_SPEC,
   MATCH_SPEC,
   SUPPORT_SPEC,
   SUPPORT_CHAPTER_SPEC,
   WRITE_SPEC,
   TRANSLATE_SPEC,
+  LABEL_SPEC,
 ] as AiStageSpec<unknown, ModelRole>[];
+
+/**
+ * `cli summaries label --apply` sets this in summary_state; the running server then labels the
+ * relationships of the current summaries written before labels existed (session 4), once.
+ */
+export const LABELS_REQUESTED = 'labels_requested';
+
+/** The relationships a summary still needs labels for, and a rough cost (dry run). */
+export function labelPlan(
+  store: SummaryStore,
+  price: { inputPerMTok: number; outputPerMTok: number } | null,
+): {
+  summaries: { summaryId: number; bookId: string; title: string; items: number }[];
+  usd: number | null;
+} {
+  let input = 0;
+  let output = 0;
+  const out: { summaryId: number; bookId: string; title: string; items: number }[] = [];
+  for (const u of store.unlabelled()) {
+    const items = store
+      .items(u.summaryId)
+      .filter((i) => i.section === 'relationships' && !i.label && i.between);
+    if (!items.length) continue;
+    const m = store.metaById(u.summaryId);
+    out.push({ ...u, title: m?.bookTitle ?? u.bookId, items: items.length });
+    // The framework's estimate: 1.2 tokens per character, plus the instructions; ~20 out each.
+    input += 400 + items.reduce((n, i) => n + (i.text.length + 40) * 1.2, 0);
+    output += 20 * items.length;
+  }
+  return {
+    summaries: out,
+    usd: price ? (input * price.inputPerMTok + output * price.outputPerMTok) / 1e6 : null,
+  };
+}
 
 export const BOOK_SUMMARY_KIND = 'book-summary';
 export const SUMMARY_SKIP_KIND = 'summary-skip';
@@ -133,6 +171,19 @@ interface JobRow {
   ended_at: number | null;
 }
 
+/** A running job's step, as the book page shows it (session 4). */
+export type JobPhase = 'reading' | 'checking' | 'writing' | 'translating';
+
+/** The step a question's stage belongs to (null: not one of the job's steps). */
+export function phaseOfStage(stage: string): JobPhase | null {
+  if (stage === 'sum.extract' || stage === 'sum.extract-chapter') return 'reading';
+  if (stage === 'sum.match' || stage === 'sum.support' || stage === 'sum.support-chapter')
+    return 'checking';
+  if (stage === 'sum.write') return 'writing';
+  if (stage === 'sum.translate') return 'translating';
+  return null;
+}
+
 export interface JobView {
   id: number;
   bookId: string;
@@ -141,6 +192,8 @@ export interface JobView {
   state: JobState;
   /** The setup being tried (making a summary). */
   setup: string | null;
+  /** A running job's step. */
+  phase: JobPhase | null;
   attempts: { setup: string; reason: string; at: number }[];
   waiting: string | null;
   /** Waiting for an earlier volume of its series. */
@@ -206,6 +259,8 @@ export class SummaryService {
   private stopping = false;
   private pumping = false;
   private readonly asked = new Map<number, Asked[]>();
+  /** Each running job's step (session 4's progress): from the stage of its last question. */
+  private readonly phases = new Map<number, JobPhase>();
   /** The jobs a pass found waiting for an earlier volume. */
   private afterVolume = new Set<number>();
 
@@ -539,6 +594,7 @@ export class SummaryService {
     try {
       if (this.now() - this.lastSweep >= 10 * 60_000) this.publishStale();
       this.startJobs();
+      this.startLabels();
       await this.pump();
     } catch (err) {
       this.deps.log?.(`Summaries: ${(err as Error).message}`);
@@ -569,6 +625,76 @@ export class SummaryService {
       this.launch(j);
     }
     this.afterVolume = after;
+  }
+
+  private labelling: Promise<void> | null = null;
+
+  /** Starts the one-time labelling when `cli summaries label --apply` asked for it. */
+  private startLabels(): void {
+    if (this.labelling) return;
+    const req = this.db
+      .prepare('SELECT value FROM summary_state WHERE key = ?')
+      .get(LABELS_REQUESTED) as { value: string } | undefined;
+    if (!req) return;
+    this.labelling = this.runLabels()
+      .catch((err) => this.deps.log?.(`Summaries: labels: ${(err as Error).message}`))
+      .finally(() => {
+        this.labelling = null;
+      });
+  }
+
+  /**
+   * Labels every current summary's relationships that have none: one small question per summary
+   * (the translator's model), stored as the summary's own (not the user's); then the saved
+   * languages translate those items again and the devices get the change.
+   */
+  private async runLabels(): Promise<void> {
+    const s = this.settings();
+    let done = 0;
+    let failed = 0;
+    for (const u of this.store.unlabelled()) {
+      if (this.stopping) return;
+      const items = this.store
+        .items(u.summaryId)
+        .filter((i) => i.section === 'relationships' && !i.label && i.between);
+      const m = this.store.metaById(u.summaryId);
+      if (!items.length || !m) continue;
+      const runId = `sumlabel:${u.summaryId}`;
+      this.deps.runner.askAgain(LABEL_SPEC.stage, runId);
+      const h = this.openRun(runId);
+      try {
+        const key = `labels:${u.summaryId}|${digest(items.map((i) => itemDigest(i)))}`;
+        const a = await ask(
+          { runner: this.deps.runner, pump: h, runId },
+          LABEL_SPEC,
+          s.translator,
+          key,
+          {
+            title: m.bookTitle,
+            lang: m.lang,
+            items: items.map((i) => ({ ref: i.ref, between: i.between!, text: i.text })),
+          },
+        );
+        if (a.state !== 'answered' || !a.answer)
+          throw new Unusable(LABEL_SPEC.stage, a.model, a.state);
+        const got = (a.answer as { items: { ref: string; label: string }[] }).items;
+        const n = this.store.setLabels(u.summaryId, new Map(got.map((x) => [x.ref, x.label])));
+        if (n) {
+          done++;
+          this.translateSaved(u.bookId);
+          this.publish(u.bookId);
+        }
+      } catch (err) {
+        if (this.stopping && !h.abandoned) return;
+        failed++;
+        this.deps.log?.(`Summaries: labels of ${u.bookId}: ${(err as Error).message}`);
+        if (h.abandoned) this.deps.runner.withdraw(runId);
+      } finally {
+        this.closeRun(h);
+      }
+    }
+    this.db.prepare('DELETE FROM summary_state WHERE key = ?').run(LABELS_REQUESTED);
+    this.deps.log?.(`Summaries: labels: ${done} summaries labelled, ${failed} failed`);
   }
 
   private launch(j: JobRow): void {
@@ -633,10 +759,23 @@ export class SummaryService {
     this.runs.delete(h.runId);
   }
 
-  private engineDeps(jobId: number, h: RunHandle): EngineDeps {
-    const list = this.asked.get(jobId) ?? [];
-    this.asked.set(jobId, list);
-    return { runner: this.deps.runner, pump: h, runId: h.runId, onAsk: (a) => list.push(a) };
+  private engineDeps(j: JobRow, h: RunHandle): EngineDeps {
+    const list = this.asked.get(j.id) ?? [];
+    this.asked.set(j.id, list);
+    return {
+      runner: this.deps.runner,
+      pump: h,
+      runId: h.runId,
+      onAsk: (a) => {
+        list.push(a);
+        const phase = phaseOfStage(a.stage);
+        if (phase && this.phases.get(j.id) !== phase) {
+          this.phases.set(j.id, phase);
+          // The devices' record shows the step (only making jobs are in it).
+          if (j.kind !== 'translate') this.publish(j.book_id);
+        }
+      },
+    };
   }
 
   /** Makes a summary along the route (an automatic or a Regenerate job). */
@@ -677,7 +816,7 @@ export class SummaryService {
       const h = this.openRun(runId);
       try {
         const res = await runSetup(
-          this.engineDeps(j.id, h),
+          this.engineDeps(j, h),
           input,
           {
             extract: r.finders,
@@ -739,6 +878,7 @@ export class SummaryService {
     this.setOutcome(b.id, 'made', null);
     this.deps.notifications?.clear(`${SUMMARY_FAILED_EVENT}:${b.id}`);
     this.asked.delete(j.id);
+    this.phases.delete(j.id);
     if (!keepTheirs) this.translateSaved(b.id);
     this.publish(b.id);
     this.deps.log?.(`Summaries: ${b.title}: made by ${label} (summary ${id}, $${cost.toFixed(2)})`);
@@ -764,6 +904,7 @@ export class SummaryService {
     });
     this.setOutcome(j.book_id, 'failed', note.slice(0, 1000));
     this.asked.delete(j.id);
+    this.phases.delete(j.id);
     this.publish(j.book_id);
     const n = this.deps.notifications;
     if (n) {
@@ -809,23 +950,29 @@ export class SummaryService {
     const h = this.openRun(runId);
     try {
       const key = `summary:${m.id}|${j.lang}|${digest(needs.map((x) => x.digest))}`;
-      const a = await ask(this.engineDeps(j.id, h), TRANSLATE_SPEC, s.translator, key, {
+      const a = await ask(this.engineDeps(j, h), TRANSLATE_SPEC, s.translator, key, {
         from: m.lang,
         to: j.lang,
         title: m.bookTitle,
-        items: needs.map((x) => ({ ref: x.ref, heading: x.heading, text: x.text })),
+        items: needs.map((x) => ({
+          ref: x.ref,
+          heading: x.heading,
+          label: x.label,
+          text: x.text,
+        })),
       });
       if (a.state !== 'answered' || !a.answer)
         throw new Unusable(TRANSLATE_SPEC.stage, a.model, a.state);
       const got = new Map(
-        (a.answer as { items: { ref: string; heading: string; text: string }[] }).items.map((x) => [
-          x.ref,
-          x,
-        ]),
+        (
+          a.answer as { items: { ref: string; heading: string; label?: string; text: string }[] }
+        ).items.map((x) => [x.ref, x]),
       );
       const made = needs.flatMap((x) => {
         const t = got.get(x.ref);
-        return t ? [{ ref: x.ref, heading: t.heading, text: t.text, digest: x.digest }] : [];
+        return t
+          ? [{ ref: x.ref, heading: t.heading, label: t.label, text: t.text, digest: x.digest }]
+          : [];
       });
       this.store.saveTranslations(m.id, j.lang, modelOfRole(s.translator), made);
       this.setJob(j.id, {
@@ -851,6 +998,7 @@ export class SummaryService {
     } finally {
       this.closeRun(h);
       this.asked.delete(j.id);
+      this.phases.delete(j.id);
     }
   }
 
@@ -890,10 +1038,12 @@ export class SummaryService {
       .get(bookId) as { outcome: string | null; note: string | null } | undefined;
     const job = this.db
       .prepare(
-        `SELECT state FROM summary_jobs WHERE book_id = ? AND kind IN ('auto', 'regenerate')
+        `SELECT id, state, started_at FROM summary_jobs WHERE book_id = ? AND kind IN ('auto', 'regenerate')
            AND state IN ('queued', 'running') ORDER BY id DESC LIMIT 1`,
       )
-      .get(bookId) as { state: 'queued' | 'running' } | undefined;
+      .get(bookId) as
+      | { id: number; state: 'queued' | 'running'; started_at: number | null }
+      | undefined;
     let summary: Record<string, unknown> | null = null;
     if (m) {
       const langs: Record<string, string> = {};
@@ -916,6 +1066,9 @@ export class SummaryService {
     return {
       summary,
       making: job?.state ?? null,
+      // Session 4's progress: the running job's step and when it started.
+      phase: job?.state === 'running' ? (this.phases.get(job.id) ?? 'reading') : null,
+      since: job?.state === 'running' ? (job.started_at ?? null) : null,
       outcome: st?.outcome ?? null,
       note: st?.outcome === 'made' ? null : (st?.note ?? null),
     };
@@ -1103,6 +1256,10 @@ export class SummaryService {
         lang: j.lang,
         state: j.state,
         setup: route[j.step] ? setupLabel(route[j.step]) : null,
+        phase:
+          j.state === 'running'
+            ? (this.phases.get(j.id) ?? (j.kind === 'translate' ? 'translating' : 'reading'))
+            : null,
         attempts: JSON.parse(j.attempts_json) as JobView['attempts'],
         waiting: h?.wait ? waitText(h.wait) : null,
         afterVolume: this.afterVolume.has(j.id),

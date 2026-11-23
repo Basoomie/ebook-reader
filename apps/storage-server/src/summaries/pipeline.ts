@@ -405,6 +405,7 @@ export function checkWritten(
     answer.relationships.map((w, i) =>
       make('relationships', `rel${i}`, w, [w.a, w.b], {
         between: [w.a, w.b],
+        ...(w.label?.trim() ? { label: w.label.trim().slice(0, 40) } : {}),
         ...(ruby && (ruby.pieces(w.a) || ruby.pieces(w.b))
           ? { betweenRuby: [ruby.pieces(w.a), ruby.pieces(w.b)] as SummaryItem['betweenRuby'] }
           : {}),
@@ -449,10 +450,11 @@ export function checkWritten(
 /** What the translation step gets: each item's text and heading (relationships "A / B"). */
 export function translationItems(
   s: Summary,
-): { ref: string; heading: string | null; text: string }[] {
+): { ref: string; heading: string | null; label: string | null; text: string }[] {
   return summaryItems(s).map(({ item }) => ({
     ref: item.ref,
     heading: item.heading ?? (item.between ? `${item.between[0]} / ${item.between[1]}` : null),
+    label: item.label ?? null,
     text: item.text,
   }));
 }
@@ -472,7 +474,7 @@ export function summaryItems(s: Summary): { section: string; item: SummaryItem }
 export function applyTranslation(
   s: Summary,
   lang: string,
-  items: { ref: string; heading: string; text: string }[],
+  items: { ref: string; heading: string; label?: string; text: string }[],
 ): { summary: Summary; missing: string[] } {
   const by = new Map(items.map((x) => [x.ref, x]));
   const missing: string[] = [];
@@ -498,7 +500,8 @@ export function applyTranslation(
         const { ruby: _r, betweenRuby: _b, ...rest } = it;
         void _r;
         void _b;
-        return { ...rest, text: t.text, heading, between };
+        const label = it.label ? t.label?.trim() || it.label : undefined;
+        return { ...rest, text: t.text, heading, between, ...(label ? { label } : {}) };
       }),
     })),
   }));

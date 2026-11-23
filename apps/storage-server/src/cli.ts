@@ -50,6 +50,10 @@ import { importSummaries, type ImportFile } from './summaries/import';
 import { AiCore } from './ai/core';
 import { bookEpub } from './summaries/start';
 import { openSummariesDb, summariesDbPath } from './summaries/summaries-db';
+import { LABELS_REQUESTED, labelPlan } from './summaries/service';
+import { readSummarySettings } from './summaries/settings';
+import { SummaryStore } from './summaries/store';
+import { BUILT_IN_PRICES } from './ai/prices';
 import { FontStore } from './fonts/font-store';
 import { FontService } from './fonts/service';
 import {
@@ -153,6 +157,46 @@ async function summariesImportCommand(rest: string[], env: NodeJS.ProcessEnv): P
   }
 }
 
+/**
+ * `cli summaries label [--apply]` (session 4): the relationships of current summaries written
+ * before labels existed, and a rough cost; --apply asks the running server to label them once
+ * (it starts within a minute and logs what it did; the devices get the labels as usual).
+ */
+function summariesLabelCommand(rest: string[], env: NodeJS.ProcessEnv): number {
+  const apply = rest.includes('--apply');
+  const dbDir = path.resolve(env.DB_DIR ?? '/db');
+  const sdb = openSummariesDb(summariesDbPath(dbDir));
+  try {
+    const store = new SummaryStore(sdb);
+    const model = readSummarySettings(sdb).translator;
+    const plan = labelPlan(store, BUILT_IN_PRICES[model] ?? null);
+    for (const s of plan.summaries)
+      console.log(`  ${s.title}: ${s.items} relationship${s.items === 1 ? '' : 's'}`);
+    const n = plan.summaries.reduce((a, s) => a + s.items, 0);
+    if (!n) {
+      console.log('Every relationship of the current summaries has a label.');
+      return 0;
+    }
+    const cost =
+      plan.usd === null ? 'cost unknown' : `about $${Math.max(plan.usd, 0.01).toFixed(2)}`;
+    if (!apply) {
+      console.log(
+        `${n} relationships in ${plan.summaries.length} summaries need a label (${model}, ${cost}, plus re-translating those items in the saved languages). Run again with --apply to label them.`,
+      );
+      return 0;
+    }
+    sdb
+      .prepare('INSERT OR REPLACE INTO summary_state (key, value) VALUES (?, ?)')
+      .run(LABELS_REQUESTED, String(Date.now()));
+    console.log(
+      `Asked the server to label ${n} relationships in ${plan.summaries.length} summaries (${cost}). It starts within a minute; its log says when it is done.`,
+    );
+    return 0;
+  } finally {
+    sdb.close();
+  }
+}
+
 /** `cli ai flex-test <model>`: whether OpenAI answers the model at the flex tier (a fraction of a cent). */
 async function aiFlexTestCommand(model: string, env: NodeJS.ProcessEnv): Promise<number> {
   const dbDir = path.resolve(env.DB_DIR ?? '/db');
@@ -223,6 +267,8 @@ const USAGE = `Usage:
                                              OpenAI reports and its cost (counted as Settings' own)
   cli summaries import <file> [--apply]      Book summaries: the accuracy test's summaries, matched to
                                              the library's books (a dry run without --apply)
+  cli summaries label [--apply]              Book summaries: relationships written before labels
+                                             existed and the cost; --apply has the server label them
   cli cleanup status                         The library cleanup's stages, batches and sidecar tokens
   cli cleanup revoke <token-id>              Revoke a cleanup sidecar token
   cli cleanup decide 3 <file>                Record the review's decisions on stage 3 pairs (marked as
@@ -1041,6 +1087,7 @@ export function main(argv: string[], env: Record<string, string | undefined>): v
   }
   // Book summaries session 3: the one-time import of the accuracy test's summaries.
   if (group === 'summaries') {
+    if (command === 'label') process.exit(summariesLabelCommand(rest, env));
     if (command !== 'import' || !rest[0]) fail(USAGE);
     void summariesImportCommand(rest, env).then(
       (code) => process.exit(code),

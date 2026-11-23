@@ -45,6 +45,8 @@ export interface SummaryItem {
   heading?: string;
   /** Relationships: the two people. */
   between?: [string, string];
+  /** Relationships: one or two words naming it (the diagram's line label; session 4). */
+  label?: string;
   /** The heading with the book's own furigana (Characters and Terms), when the book has it. */
   ruby?: { t: string; r?: string }[];
   /** Relationships: each person's name with the book's furigana, when the book has it. */

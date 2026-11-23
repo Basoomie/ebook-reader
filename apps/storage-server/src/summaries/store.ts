@@ -93,6 +93,7 @@ interface ItemRow {
   ref: string;
   heading: string | null;
   between_json: string | null;
+  label: string | null;
   ruby_json: string | null;
   between_ruby_json: string | null;
   text: string;
@@ -135,6 +136,7 @@ function item(r: ItemRow): StoredItem {
     text: r.text,
     ...(r.heading !== null ? { heading: r.heading } : {}),
     ...(r.between_json ? { between: JSON.parse(r.between_json) as [string, string] } : {}),
+    ...(r.label ? { label: r.label } : {}),
     ...(r.ruby_json ? { ruby: JSON.parse(r.ruby_json) as SummaryItem['ruby'] } : {}),
     ...(r.between_ruby_json
       ? { betweenRuby: JSON.parse(r.between_ruby_json) as SummaryItem['betweenRuby'] }
@@ -148,16 +150,39 @@ function item(r: ItemRow): StoredItem {
   };
 }
 
-/** What a translation is made from: an item's heading, people and text. */
+/**
+ * What a translation is made from: an item's heading, people, label and text. The label counts
+ * only when there is one, so translations made before labels existed stay valid.
+ */
 export function itemDigest(x: {
   heading?: string | null;
   between?: [string, string] | null;
+  label?: string | null;
   text: string;
 }): string {
+  const label = x.label ? `\u0001${x.label}` : '';
   return createHash('sha1')
-    .update(`${x.heading ?? ''}\u0001${x.between ? x.between.join('\u0002') : ''}\u0001${x.text}`)
+    .update(
+      `${x.heading ?? ''}\u0001${x.between ? x.between.join('\u0002') : ''}\u0001${x.text}${label}`,
+    )
     .digest('hex')
     .slice(0, 16);
+}
+
+/** A relationship's label as stored: one line, at most 40 characters; empty → null. */
+export function cleanLabel(v: unknown): string | null {
+  if (typeof v !== 'string') return null;
+  const t = v.replace(/\s+/g, ' ').trim();
+  return t ? t.slice(0, 40) : null;
+}
+
+/** An item a translation still needs (relationships: heading "A / B"). */
+export interface TranslationNeed {
+  ref: string;
+  heading: string | null;
+  label: string | null;
+  text: string;
+  digest: string;
 }
 
 /** The "also mentioned" line as one translatable item. */
@@ -178,6 +203,8 @@ export interface ItemInput {
   text: string;
   heading?: string | null;
   between?: [string, string] | null;
+  /** Relationships: one or two words naming it (optional). */
+  label?: string | null;
   /** Chapter by chapter: the chapter the item belongs to. */
   chapter?: number | null;
   chapterTitle?: string | null;
@@ -296,6 +323,7 @@ export class SummaryStore {
                   : it.between,
               }
             : {}),
+          ...(it.label ? { label: tr.label ?? it.label } : {}),
         };
       });
       const a = t.get(ALSO_REF);
@@ -334,17 +362,24 @@ export class SummaryStore {
     lang: string,
   ): Map<
     string,
-    { heading: string | null; between_json: string | null; text: string; source_digest: string }
+    {
+      heading: string | null;
+      between_json: string | null;
+      label: string | null;
+      text: string;
+      source_digest: string;
+    }
   > {
     const rows = this.db
       .prepare(
-        `SELECT ref, heading, between_json, text, source_digest FROM summary_translations
+        `SELECT ref, heading, between_json, label, text, source_digest FROM summary_translations
          WHERE summary_id = ? AND lang = ?`,
       )
       .all(summaryId, lang) as {
       ref: string;
       heading: string | null;
       between_json: string | null;
+      label: string | null;
       text: string;
       source_digest: string;
     }[];
@@ -355,12 +390,9 @@ export class SummaryStore {
    * The items a translation still needs (missing, or made from an item since changed), and the
    * ones it has that no longer exist (deleted items), which are dropped.
    */
-  translationNeeds(
-    summaryId: number,
-    lang: string,
-  ): { ref: string; heading: string | null; text: string; digest: string }[] {
+  translationNeeds(summaryId: number, lang: string): TranslationNeed[] {
     const have = this.translations(summaryId, lang);
-    const out: { ref: string; heading: string | null; text: string; digest: string }[] = [];
+    const out: TranslationNeed[] = [];
     const refs = new Set<string>();
     for (const it of this.items(summaryId)) {
       refs.add(it.ref);
@@ -369,6 +401,7 @@ export class SummaryStore {
       out.push({
         ref: it.ref,
         heading: it.heading ?? (it.between ? `${it.between[0]} / ${it.between[1]}` : null),
+        label: it.label ?? null,
         text: it.text,
         digest,
       });
@@ -378,7 +411,7 @@ export class SummaryStore {
       refs.add(ALSO_REF);
       const digest = itemDigest({ text: also.join('\n') });
       if (have.get(ALSO_REF)?.source_digest !== digest)
-        out.push({ ref: ALSO_REF, heading: null, text: also.join('\n'), digest });
+        out.push({ ref: ALSO_REF, heading: null, label: null, text: also.join('\n'), digest });
     }
     const gone = [...have.keys()].filter((r) => !refs.has(r));
     if (gone.length) {
@@ -395,21 +428,21 @@ export class SummaryStore {
     summaryId: number,
     lang: string,
     model: string,
-    made: { ref: string; heading: string; text: string; digest: string }[],
+    made: { ref: string; heading: string; label?: string; text: string; digest: string }[],
   ): void {
     const items = new Map(this.items(summaryId).map((i) => [i.ref, i]));
     const up = this.db.prepare(
-      `INSERT INTO summary_translations (summary_id, lang, ref, heading, between_json, text, source_digest, model, made_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO summary_translations (summary_id, lang, ref, heading, between_json, text, source_digest, model, made_at, label)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(summary_id, lang, ref) DO UPDATE SET heading = excluded.heading,
-         between_json = excluded.between_json, text = excluded.text,
+         between_json = excluded.between_json, text = excluded.text, label = excluded.label,
          source_digest = excluded.source_digest, model = excluded.model, made_at = excluded.made_at`,
     );
     const now = this.now();
     this.db.transaction(() => {
       for (const t of made) {
         if (t.ref === ALSO_REF) {
-          up.run(summaryId, lang, t.ref, null, null, t.text, t.digest, model, now);
+          up.run(summaryId, lang, t.ref, null, null, t.text, t.digest, model, now, null);
           continue;
         }
         const it = items.get(t.ref);
@@ -438,6 +471,7 @@ export class SummaryStore {
           t.digest,
           model,
           now,
+          it.label ? (cleanLabel(t.label) ?? it.label) : null,
         );
       }
     })();
@@ -508,8 +542,8 @@ export class SummaryStore {
     const ins = this.db.prepare(
       `INSERT INTO summary_items (summary_id, section, ord, chapter, chapter_title, ref, heading,
          between_json, ruby_json, between_ruby_json, text, cites_json, quote, position, show_quote,
-         edited_by_user, added_by_user, edited_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+         edited_by_user, added_by_user, edited_at, label)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
     );
     const seen = new Set<string>();
     let ord = 0;
@@ -538,6 +572,7 @@ export class SummaryStore {
             it.showQuote && it.quote ? 1 : 0,
             byUser ? 1 : 0,
             byUser ? this.now() : null,
+            it.between ? cleanLabel(it.label) : null,
           );
         }
     }
@@ -587,15 +622,22 @@ export class SummaryStore {
         betweenRubyJson = null;
       }
     }
-    if (text === row.text && heading === row.heading && betweenJson === row.between_json)
+    let label = row.label;
+    if (input.label !== undefined && row.between_json) label = cleanLabel(input.label);
+    if (
+      text === row.text &&
+      heading === row.heading &&
+      betweenJson === row.between_json &&
+      label === row.label
+    )
       return item(row);
     this.db.transaction(() => {
       this.db
         .prepare(
           `UPDATE summary_items SET text = ?, heading = ?, ruby_json = ?, between_json = ?,
-             between_ruby_json = ?, edited_by_user = 1, edited_at = ? WHERE id = ?`,
+             between_ruby_json = ?, label = ?, edited_by_user = 1, edited_at = ? WHERE id = ?`,
         )
-        .run(text, heading, rubyJson, betweenJson, betweenRubyJson, this.now(), itemId);
+        .run(text, heading, rubyJson, betweenJson, betweenRubyJson, label, this.now(), itemId);
       this.touch(m.id);
     })();
     return item(this.db.prepare('SELECT * FROM summary_items WHERE id = ?').get(itemId) as ItemRow);
@@ -630,6 +672,7 @@ export class SummaryStore {
     const now = this.now();
     let heading: string | null = null;
     let between: [string, string] | null = null;
+    let label: string | null = null;
     if (section === 'characters' || section === 'terms') {
       heading = cleanOptional(input.heading, 'heading');
       if (!heading) throw new EditError(400, 'invalid', 'Characters and terms need a heading');
@@ -639,6 +682,7 @@ export class SummaryStore {
       if (!Array.isArray(b) || b.length !== 2)
         throw new EditError(400, 'invalid', 'A relationship is between two people');
       between = [cleanText(b[0], 'name').slice(0, 200), cleanText(b[1], 'name').slice(0, 200)];
+      label = cleanLabel(input.label);
     }
     if (section === 'overview') {
       const has = this.db
@@ -680,8 +724,8 @@ export class SummaryStore {
       const r = this.db
         .prepare(
           `INSERT INTO summary_items (summary_id, section, ord, chapter, chapter_title, ref, heading,
-             between_json, text, cites_json, show_quote, added_by_user, edited_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', 0, 1, ?)`,
+             between_json, text, cites_json, show_quote, added_by_user, edited_at, label)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', 0, 1, ?, ?)`,
         )
         .run(
           m.id,
@@ -694,11 +738,44 @@ export class SummaryStore {
           between ? JSON.stringify(between) : null,
           text,
           now,
+          label,
         );
       this.touch(m.id);
       return Number(r.lastInsertRowid);
     })();
     return item(this.db.prepare('SELECT * FROM summary_items WHERE id = ?').get(id) as ItemRow);
+  }
+
+  /**
+   * Labels for relationships written before labels existed (`cli summaries label`): only items
+   * without one are changed, they are not marked as the user's, and the summary's edit date
+   * stays as it was. Returns how many were set.
+   */
+  setLabels(summaryId: number, labels: Map<string, string>): number {
+    const up = this.db.prepare(
+      `UPDATE summary_items SET label = ? WHERE summary_id = ? AND ref = ?
+         AND section = 'relationships' AND label IS NULL`,
+    );
+    let n = 0;
+    this.db.transaction(() => {
+      for (const [ref, raw] of labels) {
+        const l = cleanLabel(raw);
+        if (l) n += up.run(l, summaryId, ref).changes;
+      }
+    })();
+    return n;
+  }
+
+  /** The current summaries that have a relationship without a label. */
+  unlabelled(): { summaryId: number; bookId: string }[] {
+    return this.db
+      .prepare(
+        `SELECT DISTINCT s.id AS summaryId, s.book_id AS bookId FROM summaries s
+           JOIN summary_items i ON i.summary_id = s.id
+           WHERE s.state = 'current' AND i.section = 'relationships' AND i.label IS NULL
+           ORDER BY s.id`,
+      )
+      .all() as { summaryId: number; bookId: string }[];
   }
 
   /** The current summary becomes an earlier version (Delete: it can be restored). */
@@ -802,6 +879,8 @@ export function userSummary(
         if (!Array.isArray(b) || b.length !== 2)
           throw new EditError(400, 'invalid', 'A relationship is between two people');
         it.between = [cleanText(b[0], 'name').slice(0, 200), cleanText(b[1], 'name').slice(0, 200)];
+        const l = cleanLabel(x.label);
+        if (l) it.label = l;
       }
       if (key === 'chapters') {
         const ch = typeof x.chapter === 'number' && Number.isInteger(x.chapter) ? x.chapter : 0;
