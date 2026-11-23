@@ -23,6 +23,7 @@ import fs from 'fs';
 import path from 'path';
 import { snapshotFile } from '../calibre/indexer';
 import { parseCalibreDate } from '../calibre/ingest';
+import { liveTitleSort } from '../calibre/live-lookup';
 import { getLibrary } from '../calibre/libraries';
 import { readSourceFile, resolveInside, statFile } from '../calibre/source-fs';
 import { BatchError, type BatchRow, type BatchService, type ItemState } from './batches';
@@ -69,8 +70,11 @@ export interface ListedBook {
 export const LIST_FIELDS =
   'uuid,title,authors,author_sort,identifiers,publisher,languages,cover,last_modified,*illustrator,series,series_index,comments,tags';
 
-/** The user's edits also read the published date, the rating and the title sort (1.5.0). */
-export const EDIT_LIST_FIELDS = `${LIST_FIELDS},pubdate,rating,template`;
+/**
+ * The user's edits also read the published date and the rating (1.5.0). The title sort can't be
+ * listed through the content server: it is read from the live metadata.db (withLiveSort).
+ */
+export const EDIT_LIST_FIELDS = `${LIST_FIELDS},pubdate,rating`;
 
 interface Current {
   uuid: string | null;
@@ -1133,6 +1137,24 @@ export class Stage2Batches {
     return { batch, rows };
   }
 
+  /**
+   * The user's edit of the title sort: Calibre's sort read from its live metadata.db (read only),
+   * since calibredb can't list it through the content server (calibre 9.18 refuses --template
+   * for a remote library; found in the real-calibre e2e).
+   */
+  private withLiveSort(batch: BatchRow, current: Current, rows: ItemRow[]): Current {
+    if (this.stage !== EDIT_STAGE || !rows.some((r) => r.field === 'sort')) return current;
+    if (!current.uuid) return current;
+    let dir: string;
+    try {
+      dir = this.libDir(batch.libraryId);
+    } catch {
+      return current;
+    }
+    const sort = liveTitleSort(dir, current.uuid);
+    return sort === null ? current : { ...current, titleSort: sort };
+  }
+
   /** The sidecar shows what Calibre has now; the server says what to write. */
   verify(
     batchId: string,
@@ -1142,7 +1164,7 @@ export class Stage2Batches {
     now = Date.now(),
   ): VerifyAnswer {
     const { batch, rows } = this.requireBook(batchId, calibreId);
-    const current = listed ? parseListed(listed) : null;
+    const current = listed ? this.withLiveSort(batch, parseListed(listed), rows) : null;
     const answer: VerifyAnswer = {
       action: 'none',
       fields: [],
@@ -1455,7 +1477,9 @@ export class Stage2Batches {
   /** After the write: what Calibre shows decides each field. */
   writtenReport(batchId: string, calibreId: number, report: WrittenReport, now = Date.now()) {
     const { batch, rows } = this.requireBook(batchId, calibreId);
-    const current = report.current ? parseListed(report.current) : null;
+    const current = report.current
+      ? this.withLiveSort(batch, parseListed(report.current), rows)
+      : null;
     const pending: string[] = [];
     const out: { itemId: number; field: string; state: ItemState }[] = [];
     this.db.transaction(() => {

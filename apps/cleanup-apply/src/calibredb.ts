@@ -463,8 +463,6 @@ export class Calibredb {
       calibreIds.map((id) => `id:=${id}`).join(' or '),
       '--fields',
       fields,
-      // The title sort can't be listed as a field; the template {sort} shows it (calibre 9.18).
-      ...(fields.split(',').includes('template') ? ['--template', '{sort}'] : []),
       '--for-machine',
       '--limit',
       String(calibreIds.length + 10)
