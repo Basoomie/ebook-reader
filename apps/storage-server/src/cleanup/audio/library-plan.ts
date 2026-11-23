@@ -602,9 +602,17 @@ export function orderMoves(
   const steps: { from: string; to: string; ino: number }[] = [];
   const pending = moves.map((m) => ({ ...m }));
   const occupied = new Set(pending.map((m) => m.from));
+  // A target is free when no folder still there is it or one of its parents: a book folder never
+  // gets another book (or itself, 月の歌 → 月の歌/Vol 1 - 月の歌: WP21g's e2e) inside it.
+  const blocked = (to: string) => {
+    const parts = to.split('/');
+    for (let k = parts.length; k > 0; k--)
+      if (occupied.has(parts.slice(0, k).join('/'))) return true;
+    return false;
+  };
   let temp = 0;
   while (pending.length) {
-    const i = pending.findIndex((m) => !occupied.has(m.to));
+    const i = pending.findIndex((m) => !blocked(m.to));
     if (i >= 0) {
       const m = pending.splice(i, 1)[0];
       steps.push(m);
@@ -612,8 +620,8 @@ export function orderMoves(
       occupied.add(m.to);
       continue;
     }
-    // A cycle: move the first one aside.
-    const m = pending[0];
+    // A cycle, or a book moving into its own folder: move it aside first.
+    const m = pending.find((x) => x.to.startsWith(`${x.from}/`)) ?? pending[0];
     const parent = m.from.split('/').slice(0, -1).join('/');
     const aside = `${parent}/.ttsu-move-${++temp}`;
     steps.push({ from: m.from, to: aside, ino: m.ino });

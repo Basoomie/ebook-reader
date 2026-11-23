@@ -31,7 +31,12 @@ import {
   type CalibreTarget,
 } from '../src/cleanup/audio/stage8-ebooks';
 import { absMetadata, bookValues } from '../src/cleanup/audio/build-metadata';
-import { fieldState, planLibraryChanges, type LedgerBook } from '../src/cleanup/audio/library-plan';
+import {
+  fieldState,
+  orderMoves,
+  planLibraryChanges,
+  type LedgerBook,
+} from '../src/cleanup/audio/library-plan';
 import type { PlannedBook } from '../src/cleanup/audio/build-plan';
 import { initCleanupDatabase } from '../src/cleanup/cleanup-db';
 import { DiskLock } from '../src/cleanup/disk-lock';
@@ -1012,5 +1017,28 @@ describe("the linking sidecar's reports reach the batch's own owner (found in WP
     // The archives' ids (the base plus up to 1e8 from the clock) never reach a library batch's.
     expect(BOOK_ARCHIVE_BATCH_BASE).toBeGreaterThanOrEqual(LIBRARY_BATCH_BASE + 1e9);
     expect(BOOK_ARCHIVE_BATCH_BASE + 1e8 + 1e6).toBeLessThan(2 ** 32);
+  });
+});
+
+describe("a book that gains a series named as itself (found in WP21g's e2e)", () => {
+  it('moves aside first, never into its own folder; nor does another book move into a folder still there', () => {
+    expect(
+      orderMoves([
+        { from: 'japanese/作者S/月の歌', to: 'japanese/作者S/月の歌/Vol 1 - 月の歌', ino: 1 },
+      ]),
+    ).toEqual([
+      { from: 'japanese/作者S/月の歌', to: 'japanese/作者S/.ttsu-move-1', ino: 1 },
+      { from: 'japanese/作者S/.ttsu-move-1', to: 'japanese/作者S/月の歌/Vol 1 - 月の歌', ino: 1 },
+    ]);
+    // 月の歌 2 waits until 月の歌 itself has moved out of the folder its target is inside.
+    const steps = orderMoves([
+      { from: 'japanese/作者S/月の歌 2', to: 'japanese/作者S/月の歌/Vol 2 - 月の歌 2', ino: 2 },
+      { from: 'japanese/作者S/月の歌', to: 'japanese/作者S/月の歌/Vol 1 - 月の歌', ino: 1 },
+    ]);
+    expect(steps.map((m) => `${m.from} → ${m.to}`)).toEqual([
+      'japanese/作者S/月の歌 → japanese/作者S/.ttsu-move-1',
+      'japanese/作者S/月の歌 2 → japanese/作者S/月の歌/Vol 2 - 月の歌 2',
+      'japanese/作者S/.ttsu-move-1 → japanese/作者S/月の歌/Vol 1 - 月の歌',
+    ]);
   });
 });
