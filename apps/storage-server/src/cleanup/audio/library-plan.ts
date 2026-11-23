@@ -101,7 +101,8 @@ export type ReviewKind =
   | 'rename_progress'
   | 'ai_path'
   | 'move_edited'
-  | 'abs_unknown';
+  | 'abs_unknown'
+  | 'ebook_series_listening';
 
 export interface PlannedChange {
   bookId: number;
@@ -157,11 +158,12 @@ export interface LibraryPlanInput {
 }
 
 /**
- * The fields stage 5 decides and metadata.json carries. The others (genres, subtitle, isbn, …)
- * we always leave as ABS has them: never written, never counted as yours.
+ * The fields stage 5 (and stage 8: genres, WP21g) decides and metadata.json carries. The others
+ * (subtitle, isbn, …) we always leave as ABS has them: never written, never counted as yours.
  */
 const OUR_FIELDS = new Set([
   'tags',
+  'genres',
   'title',
   'authors',
   'narrators',
@@ -216,6 +218,19 @@ function absFilled(field: string, value: unknown, tags: Record<string, string> |
       return k(value) !== '' && (k(value) === k(tags.album) || k(value) === k(tags.title));
     case 'language':
       return true;
+    case 'genres': {
+      // ABS takes the file's genre tag as one genre ("文学・フィクション・ライトノベル, ライトノベル(ラノベ)":
+      // 4,719 of the 4,724 books with genres in the survey of 2026-11-22).
+      if (!Array.isArray(value) || !value.length) return false;
+      const split = (l: unknown[]) =>
+        l
+          .flatMap((x) => (typeof x === 'string' ? x.split(/[,、，/／;；]/) : []))
+          .map((x) => x.normalize('NFKC').trim())
+          .filter(Boolean)
+          .sort()
+          .join('|');
+      return split(value) !== '' && split(value) === split([tags.genre ?? '']);
+    }
     default:
       return false;
   }
@@ -337,6 +352,11 @@ function without(tree: ExistingTree, folder: string): ExistingTree {
   };
 }
 
+/** Nobody has progress (unfinished) or a bookmark on the book, as ABS says. */
+function moveSafe(abs: AbsBookState | null): boolean {
+  return abs !== null && (!abs.found || (!abs.inProgress && !abs.finished && abs.bookmarks === 0));
+}
+
 export function planLibraryChanges(input: LibraryPlanInput): PlannedChange[] {
   const out: PlannedChange[] = [];
   // The library as the planned moves leave it (two books never take the same new name).
@@ -438,6 +458,17 @@ export function planLibraryChanges(input: LibraryPlanInput): PlannedChange[] {
         result[field] = disk[field];
         continue;
       }
+      if (
+        field === 'genres' &&
+        !weChange &&
+        isEmpty(ours[field]) &&
+        (state === 'abs_fill' || state === 'abs_form')
+      ) {
+        // No genres of ours (no exact ebook, WP21g): ABS's fill from the file's genre tag stays,
+        // as it did before genres were ours.
+        result[field] = disk[field];
+        continue;
+      }
       // Not edited: the file holds what we wrote; ours now goes there when it differs from it.
       result[field] = ours[field];
       if (weChange || norm(field, last[field]) !== norm(field, ours[field])) {
@@ -468,6 +499,13 @@ export function planLibraryChanges(input: LibraryPlanInput): PlannedChange[] {
         change.reviews.push({
           kind: 'move_edited',
           text: `The decided path is ${baseNow}, but you edited ${edited.join(', ')} in Audiobookshelf: the folder stays`,
+        });
+      else if (cur.values.seriesFromEbook && !moveSafe(input.abs(b)) && choices.move !== 'now')
+        // WP21g (decided 2026-11-22): a move the ebook's series causes is never made while anyone
+        // has progress or a bookmark on the book (or ABS can't be asked): review.
+        change.reviews.push({
+          kind: 'ebook_series_listening',
+          text: `It gains the series of its Calibre book and would move to ${baseNow}, but ${input.abs(b) === null ? "Audiobookshelf couldn't be asked whether anyone is listening to it" : 'someone has listening progress or a bookmark on it'}: it moves when you choose "Move now"`,
         });
       else {
         const placed = planArrivals([cur], without(work, b.folder)).books[0];
@@ -564,9 +602,17 @@ export function orderMoves(
   const steps: { from: string; to: string; ino: number }[] = [];
   const pending = moves.map((m) => ({ ...m }));
   const occupied = new Set(pending.map((m) => m.from));
+  // A target is free when no folder still there is it or one of its parents: a book folder never
+  // gets another book (or itself, 月の歌 → 月の歌/Vol 1 - 月の歌: WP21g's e2e) inside it.
+  const blocked = (to: string) => {
+    const parts = to.split('/');
+    for (let k = parts.length; k > 0; k--)
+      if (occupied.has(parts.slice(0, k).join('/'))) return true;
+    return false;
+  };
   let temp = 0;
   while (pending.length) {
-    const i = pending.findIndex((m) => !occupied.has(m.to));
+    const i = pending.findIndex((m) => !blocked(m.to));
     if (i >= 0) {
       const m = pending.splice(i, 1)[0];
       steps.push(m);
@@ -574,8 +620,8 @@ export function orderMoves(
       occupied.add(m.to);
       continue;
     }
-    // A cycle: move the first one aside.
-    const m = pending[0];
+    // A cycle, or a book moving into its own folder: move it aside first.
+    const m = pending.find((x) => x.to.startsWith(`${x.from}/`)) ?? pending[0];
     const parent = m.from.split('/').slice(0, -1).join('/');
     const aside = `${parent}/.ttsu-move-${++temp}`;
     steps.push({ from: m.from, to: aside, ino: m.ino });

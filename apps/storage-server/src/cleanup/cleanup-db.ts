@@ -2129,6 +2129,132 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
       DELETE FROM calibre_arrival_reviews WHERE kind = 'too_long' AND decision IS NULL;
     `,
   },
+  {
+    version: 27,
+    name: 'audiobooks stage 8: the second pass from the Calibre ebooks',
+    // Stage 8 (src/cleanup/audio/stage8-ebooks.ts, WP21g): each audiobook recording (stage 5's
+    // units; AI books, radio clips and drama CDs left out) paired with its exact Calibre volume by
+    // cleaned title, author and printed volume. From the pair: genres and tags for ABS, a series
+    // where the audiobook has none from a store, and (cleanup.db only) the ebook's author
+    // readings, cover reference and description. Calibre is only read (the indexer's snapshot
+    // copy); ABS is changed only through stage 7's library changes.
+    sql: `
+      INSERT INTO audio_stages (stage, updated_at) VALUES (8, 0);
+
+      -- One row per recording (stage 5's unit key). class: auto (paired) | review | none
+      -- (no Calibre book passes) | excluded (AI, radio, drama CD). calibre_id: the pair (auto),
+      -- or the best candidate (review). audio_hash: the audiobook facts the pairing read (a change
+      -- pairs it again); ebook_fp: the paired ebook's fingerprint when decided.
+      CREATE TABLE audio_ebook_pairs (
+        unit_key        TEXT PRIMARY KEY,
+        library_id      TEXT,
+        calibre_id      INTEGER,
+        class           TEXT NOT NULL CHECK (class IN ('auto', 'review', 'none', 'excluded')),
+        kind            TEXT NOT NULL,
+        audio_title     TEXT NOT NULL,
+        audio_authors   TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(audio_authors)),
+        reason          TEXT,
+        checks_json     TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(checks_json)),
+        candidates_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(candidates_json)),
+        audio_hash      TEXT NOT NULL,
+        ebook_fp        TEXT,
+        rules_version   INTEGER NOT NULL,
+        first_review_run INTEGER,
+        decided_at      INTEGER NOT NULL
+      );
+      CREATE INDEX audio_ebook_pairs_class ON audio_ebook_pairs (class, unit_key);
+      CREATE INDEX audio_ebook_pairs_calibre ON audio_ebook_pairs (calibre_id);
+
+      -- Your review choices, never overwritten by the stage. field 'pair': value = the Calibre
+      -- id ("this ebook") or null ("no ebook"); a chosen ebook that is gone goes back to review.
+      -- field 'series': value = "calibre" (use the ebook's series) or "none" (no series).
+      CREATE TABLE audio_ebook_choices (
+        unit_key    TEXT NOT NULL,
+        field       TEXT NOT NULL CHECK (field IN ('pair', 'series')),
+        value_json  TEXT NOT NULL CHECK (json_valid(value_json)),
+        chosen_at   INTEGER NOT NULL,
+        PRIMARY KEY (unit_key, field)
+      );
+
+      -- The ebooks that are paired or a review candidate: what stage 8 read from Calibre. fp =
+      -- sha1 of the fields used (a change is noticed even when last_modified is not updated).
+      -- Readings, the description and the cover reference are kept here only (decided: ABS keeps
+      -- the audiobook's own).
+      CREATE TABLE audio_ebook_books (
+        library_id      TEXT NOT NULL,
+        calibre_id      INTEGER NOT NULL,
+        uuid            TEXT,
+        fp              TEXT NOT NULL,
+        last_modified   TEXT,
+        title           TEXT NOT NULL,
+        authors_json    TEXT NOT NULL CHECK (json_valid(authors_json)),
+        author_sort     TEXT,
+        series          TEXT,
+        series_index    REAL,
+        terms_json      TEXT NOT NULL CHECK (json_valid(terms_json)),
+        description     TEXT,
+        cover_json      TEXT CHECK (cover_json IS NULL OR json_valid(cover_json)),
+        read_at         INTEGER NOT NULL,
+        PRIMARY KEY (library_id, calibre_id)
+      );
+
+      -- The values a pair gives a recording (fields genres, tags, series), as the build and the
+      -- library changes use them when stage 8 is On.
+      CREATE TABLE audio_ebook_values (
+        unit_key    TEXT NOT NULL,
+        field       TEXT NOT NULL CHECK (field IN ('genres', 'tags', 'series')),
+        value_json  TEXT NOT NULL CHECK (json_valid(value_json)),
+        calibre_id  INTEGER NOT NULL,
+        decided_at  INTEGER NOT NULL,
+        PRIMARY KEY (unit_key, field)
+      );
+
+      -- Every Calibre id seen with its last_modified (new and changed ebooks are found against
+      -- it), and the snapshot it was read from.
+      CREATE TABLE audio_ebook_known (
+        library_id      TEXT NOT NULL,
+        calibre_id      INTEGER NOT NULL,
+        fp              TEXT NOT NULL,
+        PRIMARY KEY (library_id, calibre_id)
+      );
+
+      -- The series stage 8 would give a recording, and why it doesn't (review: "series"; info:
+      -- a store series that differs from Calibre's). kind: fill | review | disagree.
+      CREATE TABLE audio_ebook_series (
+        unit_key    TEXT PRIMARY KEY,
+        kind        TEXT NOT NULL CHECK (kind IN ('fill', 'review', 'disagree')),
+        calibre_id  INTEGER NOT NULL,
+        calibre_series TEXT NOT NULL,
+        calibre_index  REAL,
+        written_name   TEXT,
+        reason      TEXT,
+        current_json TEXT,
+        decided_at  INTEGER NOT NULL
+      );
+      CREATE INDEX audio_ebook_series_kind ON audio_ebook_series (kind, unit_key);
+
+      -- Stage 8's Preview: what the library changes would do with its values (books already in
+      -- the library), from the last Preview run.
+      CREATE TABLE audio_ebook_preview (
+        book_id     INTEGER PRIMARY KEY,
+        unit_key    TEXT,
+        folder_from TEXT NOT NULL,
+        folder_to   TEXT,
+        fields_json TEXT NOT NULL CHECK (json_valid(fields_json)),
+        reviews_json TEXT NOT NULL CHECK (json_valid(reviews_json)),
+        run_id      INTEGER,
+        created_at  INTEGER NOT NULL
+      );
+      CREATE TABLE audio_ebook_state (
+        library_id      TEXT PRIMARY KEY,
+        snapshot_mtime  REAL,
+        snapshot_size   INTEGER,
+        audio_key       TEXT,
+        rules_version   INTEGER,
+        updated_at      INTEGER NOT NULL
+      );
+    `,
+  },
 ];
 
 export const CLEANUP_SCHEMA_VERSION = CLEANUP_MIGRATIONS[CLEANUP_MIGRATIONS.length - 1].version;

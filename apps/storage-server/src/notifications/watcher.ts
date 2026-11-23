@@ -73,6 +73,17 @@ interface ArrivalReport {
   planned: number;
   newReview: number;
   outcomes?: Record<string, number>;
+  /** WP21g: stage 8's pass in the run (cleanup/audio/stage8-ebooks.ts `runReport`). */
+  ebooks?: {
+    mode: string;
+    reason: string | null;
+    counts: { auto: number; review: number; none: number; excluded: number };
+    values: { genres: number; tags: number; series: number; seriesReview: number };
+    preview: { changes: number; moves: number; held: number } | null;
+    gate: { passed: boolean } | null;
+    newReview: number;
+    error: string | null;
+  } | null;
 }
 
 interface FinishedRow {
@@ -712,6 +723,39 @@ export class NotificationWatcher {
           ],
           link: LINKS.audioCleanup,
         });
+      const eb = rep.ebooks;
+      if (eb && !eb.error) {
+        // A pass that found nothing changed says nothing in the digest.
+        const looked = !/^Nothing changed/.test(eb.reason ?? '');
+        if (looked || eb.newReview > 0) {
+          const ebParts = [
+            `${eb.counts.auto} paired`,
+            `${eb.counts.review} to review${eb.newReview ? ` (${eb.newReview} new)` : ''}`,
+            eb.mode === 'on'
+              ? null
+              : eb.preview
+                ? `Preview: ${eb.preview.changes} ${plural(eb.preview.changes, 'book', 'books')} would change, ${eb.preview.moves} would move`
+                : 'Preview',
+            eb.gate && !eb.gate.passed ? 'the labeled check failed' : null,
+          ].filter((x): x is string => x !== null);
+          this.service.addDigestLine(
+            'audio_ebooks_summary',
+            `Audiobooks and their Calibre ebooks: ${ebParts.join(', ')}`,
+            LINKS.audioCleanup,
+          );
+        }
+        if (eb.newReview > 0)
+          this.messages.push({
+            event: 'audio_ebooks_review',
+            lines: [
+              `Audiobooks and their Calibre ebooks: ${eb.newReview} ${plural(eb.newReview, 'recording', 'recordings')} to look at (which ebook is the volume)`,
+              eb.mode === 'on'
+                ? 'Their genres and tags wait for your choice'
+                : 'Preview run: nothing was written',
+            ],
+            link: LINKS.audioCleanup,
+          });
+      }
     }
   }
 

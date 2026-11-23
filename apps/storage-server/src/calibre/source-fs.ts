@@ -10,7 +10,7 @@
  * to run when the mount is writable (see isWritable).
  */
 import Database from 'better-sqlite3';
-import { constants, createReadStream, ReadStream } from 'fs';
+import { constants, createReadStream, ReadStream, statSync } from 'fs';
 import fs from 'fs/promises';
 import path from 'path';
 import { isInside } from '../db/database';
@@ -26,6 +26,18 @@ export interface SourceStat {
 export async function statFile(file: string): Promise<SourceStat | null> {
   try {
     const st = await fs.stat(file);
+    if (!st.isFile()) return null;
+    return { mtimeMs: Math.floor(st.mtimeMs), size: st.size };
+  } catch (err: any) {
+    if (err.code === 'ENOENT' || err.code === 'ENOTDIR') return null;
+    throw err;
+  }
+}
+
+/** stat of a file, synchronously (one look, e.g. a snapshot copy's identity), or null. */
+export function statFileSync(file: string): SourceStat | null {
+  try {
+    const st = statSync(file);
     if (!st.isFile()) return null;
     return { mtimeMs: Math.floor(st.mtimeMs), size: st.size };
   } catch (err: any) {

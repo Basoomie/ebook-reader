@@ -50,8 +50,10 @@ import {
 } from './library-plan';
 import type { SwitchReader } from './stage6-switch';
 
+/** Library changes' batch ids: from 3e9 (cleanup.db v20's seed row), below the book archives' 4e9. */
 export const LIBRARY_BATCH_BASE = 3_000_000_000;
-export const LIBRARY_SIDECAR_VERSION = '1.3.0';
+/** 1.4.2: a folder under a temporary name may go into a new folder of its parent (WP21g). */
+export const LIBRARY_SIDECAR_VERSION = '1.4.2';
 const OWNER = DISK_OWNERS.audio7;
 const HOLD_MS = 2000;
 const SLICE = 200;
@@ -877,6 +879,116 @@ export class LibraryChanges {
     ).n;
     this.setPhase(c, ops ? 'preflight' : 'done', changes.length);
     return 'more';
+  }
+
+  /**
+   * WP21g: stage 8's Preview. What the library changes would do with stage 8's values (`withPlans`)
+   * for the books whose plan they change (against `withoutPlans`): each book's metadata.json now
+   * (read only, waiting while Calibre uses the disk), what ABS has (GET only), then the same pure
+   * planner. Nothing is recorded or written.
+   */
+  async dryRun(
+    withPlans: PlannedBook[],
+    withoutPlans: PlannedBook[],
+    onProgress: (done: number, total: number, waiting: string | null) => void = () => undefined,
+  ): Promise<{ changes: PlannedChange[]; books: Map<number, LedgerBook> }> {
+    this.syncLedger();
+    const media = this.deps.media;
+    if (!media) throw new Error('The library view (CLEANUP_AUDIO_MEDIA_DIR) is not mounted');
+    const inoOf = this.db.prepare('SELECT ino FROM audio_files WHERE id = ?');
+    const libIno = this.db.prepare(
+      `SELECT ino FROM audio_files WHERE root = 'library' AND rel_path = ? AND gone_at IS NULL`,
+    );
+    const byIno = (plans: PlannedBook[]) => {
+      const m = new Map<number, PlannedBook>();
+      for (const b of plans)
+        for (const f of b.files) {
+          const r = inoOf.get(f.fileId) as { ino: number } | undefined;
+          if (r) m.set(r.ino, b);
+        }
+      return m;
+    };
+    const withIno = byIno(withPlans);
+    const withoutIno = byIno(withoutPlans);
+    const candidates: LedgerBook[] = [];
+    const planOf = new Map<number, PlannedBook>();
+    for (const b of this.ledger()) {
+      let cur: PlannedBook | undefined;
+      let base: PlannedBook | undefined;
+      for (const f of b.files) {
+        const rel = b.folder.startsWith('japanese/')
+          ? `${b.folder.slice('japanese/'.length)}/${f.name}`
+          : null;
+        const ino =
+          (rel ? (libIno.get(rel) as { ino: number } | undefined)?.ino : undefined) ??
+          (inoOf.get(f.fileId) as { ino: number } | undefined)?.ino;
+        if (ino !== undefined) {
+          f.ino = ino;
+          cur ??= withIno.get(ino);
+          base ??= withoutIno.get(ino);
+        }
+      }
+      if (!cur || !base) continue;
+      if (cur.metadata.equals(base.metadata) && cur.baseFolder === base.baseFolder) continue;
+      candidates.push(b);
+      planOf.set(b.id, cur);
+    }
+    const disk = new Map<number, Buffer | null>();
+    for (let i = 0; i < candidates.length; ) {
+      if (this.deps.lock.calibreBusy()) {
+        onProgress(i, candidates.length, 'Waiting while the Calibre cleanup uses the disk');
+        await new Promise((r) => setTimeout(r, 2000));
+        continue;
+      }
+      for (const b of candidates.slice(i, i + SLICE)) {
+        disk.set(
+          b.id,
+          await readSmall(insideRoot(media, `${b.folder}/metadata.json`), 1024 * 1024),
+        );
+        const st = await lstatEntry(insideRoot(media, b.folder));
+        b.folderIno = st && st.isDir ? st.ino : null;
+      }
+      i = Math.min(candidates.length, i + SLICE);
+      onProgress(i, candidates.length, null);
+      await new Promise((r) => setImmediate(r));
+    }
+    const abs = await this.absStates(candidates, this.start('analyse'));
+    const choices = this.db.prepare(
+      'SELECT field, choice FROM audio_library_choices WHERE book_id = ?',
+    );
+    const rels = this.db.prepare('SELECT rel_path FROM audio_files WHERE id = ?');
+    const tagsOf = this.db.prepare('SELECT tags_json FROM audio_file_health WHERE file_id = ?');
+    const changes = planLibraryChanges({
+      fileTags: (b) => {
+        const r = b.files[0]
+          ? (tagsOf.get(b.files[0].fileId) as { tags_json: string | null } | undefined)
+          : undefined;
+        try {
+          return r?.tags_json ? (JSON.parse(r.tags_json) as Record<string, string>) : null;
+        } catch {
+          return null;
+        }
+      },
+      books: candidates,
+      current: (b) => planOf.get(b.id) ?? null,
+      disk: (b) => disk.get(b.id) ?? null,
+      abs: (b) => abs.get(b.id) ?? null,
+      keep: (b) =>
+        keptAsBuilt(
+          b.files
+            .map((f) => (rels.get(f.fileId) as { rel_path: string } | undefined)?.rel_path)
+            .filter((x): x is string => !!x),
+        ),
+      tree: await this.deps.tree(),
+      choices: (b) =>
+        Object.fromEntries(
+          (choices.all(b.id) as { field: string; choice: string }[]).map((r) => [
+            r.field,
+            r.choice,
+          ]),
+        ),
+    });
+    return { changes, books: new Map(candidates.map((b) => [b.id, b])) };
   }
 
   /** ABS's item, progress and bookmarks of the candidate books (GET only). Null per book: not asked. */
@@ -1898,6 +2010,23 @@ export class LibraryChanges {
       sha256: string | null;
     }[];
     if (!ops.length) return null;
+    // The preflight sees a move from a temporary name (a cycle, or a book moving into its own
+    // folder) as the folder that becomes it: the same folder, which doesn't exist under that name
+    // until the run moves it aside.
+    const asideOf = new Map<string, string>();
+    if (pre)
+      for (const r of this.db
+        .prepare(
+          `SELECT src_rel, dst FROM audio_library_ops WHERE run_id = ? AND kind = 'move_book' AND src_rel IS NOT NULL`,
+        )
+        .all(runId) as { src_rel: string; dst: string }[])
+        asideOf.set(r.dst, r.src_rel);
+    const preSrc = (rel: string | null) => {
+      let cur = rel;
+      for (let k = 0; cur !== null && k < 10 && /\/\.ttsu-move-\d+$/.test(cur); k++)
+        cur = asideOf.get(cur) ?? cur;
+      return cur;
+    };
     const now = this.now();
     const id = Number(
       this.db
@@ -1927,7 +2056,7 @@ export class LibraryChanges {
         kind: o.kind,
         book: o.book,
         dst: o.dst,
-        src: o.src_rel !== null ? { rel: o.src_rel, raw: null } : null,
+        src: o.src_rel !== null ? { rel: pre ? preSrc(o.src_rel)! : o.src_rel, raw: null } : null,
         size: o.size,
         mtimeMs: o.mtime_ms,
         dev: o.dev,
@@ -1983,8 +2112,10 @@ export class LibraryChanges {
   choose(bookId: number, field: string, choice: string): void {
     const ok =
       (field === 'rename' && choice === 'now') ||
+      (field === 'move' && choice === 'now') ||
       (/^[a-zA-Z]{1,40}$/.test(field) &&
         field !== 'rename' &&
+        field !== 'move' &&
         (choice === 'mine' || choice === 'ours'));
     if (!ok) throw new Error('Not a choice');
     this.db

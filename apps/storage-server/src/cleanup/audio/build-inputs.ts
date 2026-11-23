@@ -126,7 +126,15 @@ async function paged<T>(db: Database.Database, sql: string, args: unknown[] = []
 export async function loadPlanInputs(
   db: Database.Database,
   ids: StageIds,
-  opts: { readerWritten: string[]; libraryFolder: string },
+  opts: {
+    readerWritten: string[];
+    libraryFolder: string;
+    /**
+     * WP21g: stage 8's values (genres, ebook_tags, series with series_from), merged into stage 5's
+     * when stage 8 is On (or for its Preview); null or absent: stage 5's alone.
+     */
+    ebook?: Map<string, Record<string, unknown>> | null;
+  },
 ): Promise<PlanInputs> {
   // Files (every current file of both roots: audio and PDFs are used).
   const files = new Map<number, PlanFile>();
@@ -237,6 +245,8 @@ export async function loadPlanInputs(
     v[r.field] = r.value_json === null ? null : (JSON.parse(r.value_json) as unknown);
     values.set(r.item_key, v);
   }
+  for (const [unit, extra] of opts.ebook ?? [])
+    values.set(unit, { ...(values.get(unit) ?? {}), ...extra });
   const copyKeysOf = new Map<string, string[]>();
   for (const r of (await paged(
     db,

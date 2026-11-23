@@ -30,6 +30,7 @@ export const CLEARABLE = [
   'description',
   'asin',
   'language',
+  'genres',
 ] as const;
 export type Clearable = (typeof CLEARABLE)[number];
 
@@ -48,7 +49,7 @@ export class AbsClearFields {
     if (fields.some((f) => !CLEARABLE.includes(f)))
       throw new AbsError('Not a field to clear', null);
     if (fields.length === 0 && !tags) return;
-    const list = new Set<Clearable>(['authors', 'narrators', 'series']);
+    const list = new Set<Clearable>(['authors', 'narrators', 'series', 'genres']);
     const metadata: Record<string, null | []> = {};
     for (const f of fields) metadata[f] = list.has(f) ? [] : null;
     const body: { metadata: Record<string, null | []>; tags?: [] } = { metadata };

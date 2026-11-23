@@ -2,7 +2,8 @@
  * The audiobook cleanup's stages (WP21a): 0 = the Audiobookshelf snapshot (taken on request),
  * 1 = identity, 2 = books and file health, 3 = duplicates (WP21b), 4 = online sources (WP21c),
  * 5 = metadata decisions (WP21d), 6 = building japanese-new (WP21e-1), 7 = the daily new arrivals
- * (WP21f-1; On adds new books to the library).
+ * (WP21f-1; On adds new books to the library), 8 = the second pass from the Calibre ebooks (WP21g;
+ * a phase of stage 7's run; On gives the paired books their genres, tags and series).
  * Stages 1-5 are Off (default) or Preview (`analyse`: analysis only); On is refused. Stage 6 can
  * also be On (WP21e-1): it then builds the new library next to the live one (hard links only;
  * the service checks its conditions first).
@@ -20,12 +21,13 @@ export const AUDIO_STAGE_NAMES: Record<number, string> = {
   5: 'Metadata (rules and AI setup E)',
   6: 'Build the new library (japanese-new)',
   7: 'New arrivals (daily)',
+  8: 'Calibre ebooks: genres, tags and series (second pass)',
 };
 
 /** Stages with a mode in this build (stage 0 is taken on request). */
-export const AUDIO_ANALYSIS_STAGES: readonly number[] = [1, 2, 3, 4, 5, 6, 7];
-/** Stages that can be switched On (WP21e-1: the build; WP21f-1: the new arrivals). */
-export const AUDIO_ON_STAGES: readonly number[] = [6, 7];
+export const AUDIO_ANALYSIS_STAGES: readonly number[] = [1, 2, 3, 4, 5, 6, 7, 8];
+/** Stages that can be switched On (WP21e-1: the build; WP21f-1: the new arrivals; WP21g). */
+export const AUDIO_ON_STAGES: readonly number[] = [6, 7, 8];
 
 export interface AudioStageRow {
   stage: number;
