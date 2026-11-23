@@ -124,6 +124,10 @@ export const STAGE2_DDL = `
     link TEXT NOT NULL DEFAULT '', UNIQUE(lang_code));
   CREATE TABLE IF NOT EXISTS books_languages_link ( id INTEGER PRIMARY KEY, book INTEGER NOT NULL,
     lang_code INTEGER NOT NULL, item_order INTEGER NOT NULL DEFAULT 0, UNIQUE(book, lang_code));
+  CREATE TABLE IF NOT EXISTS ratings ( id INTEGER PRIMARY KEY, rating INTEGER CHECK(rating > -1 AND rating < 11),
+    link TEXT NOT NULL DEFAULT '', UNIQUE (rating));
+  CREATE TABLE IF NOT EXISTS books_ratings_link ( id INTEGER PRIMARY KEY, book INTEGER NOT NULL,
+    rating INTEGER NOT NULL, UNIQUE(book, rating));
   CREATE TABLE IF NOT EXISTS custom_columns ( id INTEGER PRIMARY KEY AUTOINCREMENT, label TEXT NOT NULL,
     name TEXT NOT NULL, datatype TEXT NOT NULL, mark_for_delete BOOL DEFAULT 0 NOT NULL,
     editable BOOL DEFAULT 1 NOT NULL, display TEXT DEFAULT '{}' NOT NULL, is_multiple BOOL DEFAULT 0 NOT NULL,

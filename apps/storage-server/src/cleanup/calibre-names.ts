@@ -12,7 +12,10 @@ const CALIBRE_PATH_LIMIT = 100;
 const CALIBRE_EXT_LEN = 14;
 
 const cut = (s: string, n: number) => [...s].slice(0, n).join('');
-const bytes = (s: string) => Buffer.byteLength(s, 'utf8');
+// TextEncoder rather than Buffer: the web app's copy (lib/calibre-edit/names.ts) is the same
+// code, checked against this one by a parity test.
+const encoder = new TextEncoder();
+const bytes = (s: string) => encoder.encode(s).length;
 
 /**
  * The longest name Calibre would make for a book with this title and first author

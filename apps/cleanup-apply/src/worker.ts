@@ -51,11 +51,18 @@ import { ArrivalWorker } from './arrivals';
  * 1.1.0 (WP20e): stage 4 batches write fields as stage 2's do (series, series_index, comments).
  * 1.2.0 (WP20f): stage 5 batches write the tags the same way.
  * 1.3.0 (WP20g): the import's add batches and their Undo (arrivals.ts).
+ * 1.5.0 (calibre metadata editing): the user's edits from the reader (stage 10) are field batches
+ * like stage 2's, with the published date and rating; asked for between chunks of any other
+ * batch so an edit never waits for a whole cleanup batch.
  */
-export const SIDECAR_VERSION = '1.4.0';
+export const SIDECAR_VERSION = '1.5.0';
+
+/** The user's edits from the reader (the server's EDIT_STAGE). */
+export const EDIT_STAGE = 10;
 
 /** The stages whose batches write fields per book (verify / written), not remove copies. */
-const fieldStage = (stage: number) => stage === 2 || stage === 4 || stage === 5;
+const fieldStage = (stage: number) =>
+  stage === 2 || stage === 4 || stage === 5 || stage === EDIT_STAGE;
 /** calibredb's `trash restore` exists from this version on. */
 export const TRASH_RESTORE_VERSION = '9.18.0';
 /** Heartbeats while a check or a batch runs (the server calls a sidecar silent for 90 s offline). */
@@ -179,6 +186,8 @@ export class Worker {
     return this.steps ? this.steps.time(name, fn) : fn();
   }
   private pollMs = 15000;
+  /** True while an edit batch is being written (no edit is asked for inside another). */
+  private inEdit = false;
   private readonly retryMinMs: number;
   private readonly retryMaxMs: number;
   private readonly fetchImpl: typeof fetch;
@@ -284,6 +293,26 @@ export class Worker {
     }
     await this.processBatch(batch);
     return 'batch';
+  }
+
+  /**
+   * The user's edits from the reader go ahead of the cleanup (decided with the user 2026-11-23):
+   * between chunks of a field batch and between items of a removal batch, the sidecar asks for
+   * an edit, writes it whole, then goes on. The running batch's lease is kept alive meanwhile.
+   * A server that doesn't know the route (older) or any error just means no edit now.
+   */
+  async editsBetween(): Promise<void> {
+    if (this.inEdit || this.stopped) return;
+    for (let n = 0; n < 20 && !this.stopped; n++) {
+      let next: Batch | null = null;
+      try {
+        next = (await this.api.claimEdit()).batch;
+      } catch {
+        return;
+      }
+      if (!next) return;
+      await this.processBatch(next);
+    }
   }
 
   private heartbeatBody() {
@@ -443,6 +472,28 @@ export class Worker {
   }
 
   async processBatch(batch: Batch): Promise<void> {
+    const edit = batch.stage === EDIT_STAGE;
+    if (edit) return this.processEdit(batch);
+    return this.processAny(batch);
+  }
+
+  /** An edit batch, never nested: no edit is asked for while one is written. */
+  private async processEdit(batch: Batch): Promise<void> {
+    const was = this.inEdit;
+    const steps = this.steps;
+    const onCall = this.calibredb.onCall;
+    this.inEdit = true;
+    try {
+      await this.processAny(batch);
+    } finally {
+      // The batch it was written between goes on with its own step timing.
+      this.inEdit = was;
+      this.steps = steps;
+      this.calibredb.onCall = onCall;
+    }
+  }
+
+  private async processAny(batch: Batch): Promise<void> {
     this.log.info(`Batch ${batch.id} (${batch.kind}, ${batch.items.length} items)`);
     const lease = setInterval(
       () => {
@@ -502,6 +553,7 @@ export class Worker {
           await this.report(batch, item, { step: 'failed', detail: message });
         }
         if (this.itemDelayMs > 0) await this.step('pause', () => sleep(this.itemDelayMs));
+        await this.editsBetween();
         timed += 1;
         if (timed >= 25) logTiming();
       }
@@ -569,6 +621,7 @@ export class Worker {
       }
       if (attempted.length === 0) {
         this.steps = null;
+        if (batch.stage !== EDIT_STAGE) await this.editsBetween();
         continue;
       }
       const after = await this.step('calibre list after', () =>
@@ -586,6 +639,7 @@ export class Worker {
       }
       this.log.info(`Timing: ${this.steps.summary(chunk.length)}`);
       this.steps = null;
+      if (batch.stage !== EDIT_STAGE) await this.editsBetween();
     }
   }
 
@@ -637,7 +691,12 @@ export class Worker {
             coverSkipped = `Calibre's old cover couldn't be kept in the quarantine: ${shorten((err as Error).message, 300)}`;
           }
         }
-        if (!coverSkipped) {
+        if (!coverSkipped && answer.coverFrom) {
+          // 1.5.0: the user's Undo of a cover puts back Calibre's earlier picture from the
+          // quarantine (setFields checks the path is inside it).
+          if (await exists(answer.coverFrom)) fields.push(`cover:${answer.coverFrom}`);
+          else coverSkipped = 'The earlier picture is not in the quarantine any more';
+        } else if (!coverSkipped) {
           const base = path.join(this.opts.config.coverTmpDir, `${batch.id}-${book.calibreId}`);
           try {
             // Only this sidecar writes its temp folder: a leftover from a stop is replaced.

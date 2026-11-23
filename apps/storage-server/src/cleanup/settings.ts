@@ -10,6 +10,12 @@
  */
 import type Database from 'better-sqlite3';
 import { DEFAULT_DUPLICATE_SETTINGS, type DuplicateSettings } from './stage3-rules';
+import {
+  DEFAULT_TAG_LIST,
+  TagListError,
+  validTagList,
+  type TagListSetting,
+} from './stage5/tag-list';
 
 export interface PacingSettings {
   /** How fast an analysis reads book files (MB/s); 0 = no limit. */
@@ -413,6 +419,8 @@ export interface CleanupSettings {
   pacing: PacingSettings;
   /** The user's own Calibre tags (a trailing * matches any ending). */
   customTags: string[];
+  /** "Tags you can pick" (Settings › Library › Editing): the vocabulary's changes. */
+  tagList: TagListSetting;
   gate: GateSettings;
   /** A field pauses when its share of review results is this many points above the labeled books'. */
   reviewAlarmPercent: number;
@@ -484,6 +492,7 @@ export const DEFAULT_SETTINGS: CleanupSettings = {
     lookupChunk: 25,
   },
   customTags: ['PeepoHappyBooks', 'alpindale', 'TMW-collection-*'],
+  tagList: DEFAULT_TAG_LIST,
   gate: {
     defaultPercent: 95,
     fieldPercent: { title: 85 },
@@ -1273,6 +1282,14 @@ function validate(key: Key, value: unknown, current: CleanupSettings): unknown {
         ),
         lookupChunk: num('Books per Calibre look-up', v.lookupChunk, 1, 100, true),
       };
+    }
+    case 'tagList': {
+      try {
+        return validTagList(value);
+      } catch (err) {
+        if (err instanceof TagListError) throw new SettingsError(err.message);
+        throw err;
+      }
     }
     case 'customTags': {
       if (!Array.isArray(value) || value.length > 100) {

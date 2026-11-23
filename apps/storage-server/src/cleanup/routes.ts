@@ -145,6 +145,19 @@ export function createCleanupApplyRouter(options: CleanupOptions): Router {
     }),
   );
 
+  // 1.5.0: the user's edits from the reader, asked for between the chunks of a running batch.
+  router.post(
+    '/cleanup-apply/edits/claim',
+    asyncHandler(async (_req, res) => {
+      const service = serviceOr503(options);
+      if (!service.sidecarConfig()?.libraryId) {
+        res.json({ batch: null, wait: null });
+        return;
+      }
+      res.json(await service.batches.claim(Date.now(), { editsOnly: true }));
+    }),
+  );
+
   router.get('/cleanup-apply/batches/:id/metadata-snapshot', (req, res) => {
     const service = serviceOr503(options);
     let file: string;

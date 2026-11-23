@@ -19,6 +19,7 @@ import {
   termId,
   type Term,
 } from './vocab';
+import type { Vocab } from './tag-list';
 
 /** Raised whenever the prompt, the evidence text or the schema changes. */
 export const STAGE5_PROMPT_VERSION = 'calibre5-v1';
@@ -28,20 +29,24 @@ export const STAGE5_EVIDENCE_VERSION = 1;
 const list = (terms: readonly Term[]) =>
   terms.map((t) => `  ${t.id}: ${t.ja}${t.hint ? ` (${t.hint})` : ''}`).join('\n');
 
-export const STAGE5_SYSTEM = `You classify ONE Japanese book for a personal library's filters. You get its title, authors, format, the publisher's
+export const stage5System = (
+  genres: readonly Term[],
+  subjects: readonly Term[],
+  tags: readonly Term[],
+): string => `You classify ONE Japanese book for a personal library's filters. You get its title, authors, format, the publisher's
 description (synopsis) and store categories, or the opening text when there is no description.
 
 Choose only ids from these lists. Pick every genre and tag that clearly applies, none that are doubtful. Base it on the
 evidence given; do not rely on what you may remember about the title unless the evidence agrees.
 
 Fiction genres (several allowed; for novels, light novels and manga):
-${list(GENRES)}
+${list(genres)}
 
 Nonfiction subjects (several allowed; for nonfiction only):
-${list(SUBJECTS)}
+${list(subjects)}
 
 Tags (several allowed; fiction only):
-${list(TAGS)}
+${list(tags)}
 
 Adaptations: set anime_adaptation / manga_adaptation to true ONLY when the description, the store notes or the
 categories say so (アニメ化, TVアニメ, コミカライズ, 漫画化 …); otherwise false. Never guess.
@@ -50,7 +55,13 @@ Answer with ONLY this JSON object:
 {"genres": [ids], "nonfiction_subjects": [ids], "tags": [ids], "anime_adaptation": bool, "manga_adaptation": bool,
  "confidence": "high"|"low", "basis": "description"|"opening_text"|"title_only"}`;
 
-export const STAGE5_SCHEMA: Record<string, unknown> = {
+export const STAGE5_SYSTEM = stage5System(GENRES, SUBJECTS, TAGS);
+
+export const stage5Schema = (
+  genres: readonly Term[],
+  subjects: readonly Term[],
+  tags: readonly Term[],
+): Record<string, unknown> => ({
   type: 'object',
   additionalProperties: false,
   required: [
@@ -63,18 +74,20 @@ export const STAGE5_SCHEMA: Record<string, unknown> = {
     'basis',
   ],
   properties: {
-    genres: { type: 'array', items: { type: 'string', enum: GENRES.map((t) => t.id) } },
+    genres: { type: 'array', items: { type: 'string', enum: genres.map((t) => t.id) } },
     nonfiction_subjects: {
       type: 'array',
-      items: { type: 'string', enum: SUBJECTS.map((t) => t.id) },
+      items: { type: 'string', enum: subjects.map((t) => t.id) },
     },
-    tags: { type: 'array', items: { type: 'string', enum: TAGS.map((t) => t.id) } },
+    tags: { type: 'array', items: { type: 'string', enum: tags.map((t) => t.id) } },
     anime_adaptation: { type: 'boolean' },
     manga_adaptation: { type: 'boolean' },
     confidence: { type: 'string', enum: ['high', 'low'] },
     basis: { type: 'string', enum: ['description', 'opening_text', 'title_only'] },
   },
-};
+});
+
+export const STAGE5_SCHEMA: Record<string, unknown> = stage5Schema(GENRES, SUBJECTS, TAGS);
 
 /** What a model is shown about one book (kept in ai_items). */
 export interface Stage5Evidence {
@@ -130,6 +143,15 @@ function ids(raw: unknown, allowed: ReadonlySet<string>, out: { dropped: number 
  * it belongs: the test scored genres and subjects together.
  */
 export function parseStage5Answer(raw: unknown): Stage5Answer | null {
+  return parseWith(raw, GENRE_IDS, SUBJECT_IDS, TAG_IDS);
+}
+
+function parseWith(
+  raw: unknown,
+  GENRE_IDS: ReadonlySet<string>,
+  SUBJECT_IDS: ReadonlySet<string>,
+  TAG_IDS: ReadonlySet<string>,
+): Stage5Answer | null {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
   const a = raw as Record<string, unknown>;
   if (!Array.isArray(a.genres) && !Array.isArray(a.tags) && !Array.isArray(a.nonfiction_subjects))
@@ -166,3 +188,23 @@ export const STAGE5_SPEC: AiStageSpec<Stage5Evidence> = {
   // Ids are never in the evidence text: no never-invent check (the vocabulary is closed instead).
   evidenceText: () => '',
 };
+
+/**
+ * New books' question with "Tags you can pick" (Settings › Library › Editing; design 2026-11-23,
+ * option a: tags added to the list are used right away). The list as it is by default asks
+ * exactly the library's question (same version, same stored answers); a changed list is its own
+ * version of the question, for the arrivals only (the library's stage 5 never uses it).
+ */
+export function stage5SpecFor(vocab: Vocab): AiStageSpec<Stage5Evidence> {
+  if (vocab.isDefault) return STAGE5_SPEC;
+  const g = new Set(vocab.genres.map((t) => t.id));
+  const su = new Set(vocab.subjects.map((t) => t.id));
+  const t = new Set(vocab.tags.map((x) => x.id));
+  return {
+    ...STAGE5_SPEC,
+    promptVersion: `${STAGE5_PROMPT_VERSION}-list-${vocab.hash}`,
+    system: stage5System(vocab.genres, vocab.subjects, vocab.tags),
+    schema: stage5Schema(vocab.genres, vocab.subjects, vocab.tags),
+    parseAnswer: (raw: unknown) => parseWith(raw, g, su, t),
+  };
+}

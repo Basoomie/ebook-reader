@@ -21,8 +21,8 @@ import type { Stage4Analysis, Stage4Progress } from '../stage4/analysis';
 import type { Format } from '../stage4/rules-v3';
 import { STAGE5_RULES_VERSION, byKind, ownTerms, tagChange, type OwnTerms } from '../stage5/decide';
 import { adaptationText, stage5Evidence, type Stage5Item } from '../stage5/evidence';
-import { STAGE5_EVIDENCE_VERSION, STAGE5_SPEC, type Stage5Answer } from '../stage5/prompt';
-import { BY_ID } from '../stage5/vocab';
+import { STAGE5_EVIDENCE_VERSION, stage5SpecFor, type Stage5Answer } from '../stage5/prompt';
+import { effectiveVocab } from '../stage5/tag-list';
 
 const OWN_FIELD = 'own';
 const FORMATS = new Set(['light novel', 'novel', 'nonfiction', 'manga', 'image-only']);
@@ -37,6 +37,8 @@ export interface Stage5PassProgress {
   proposed: number;
   wait: string | null;
   cost: number;
+  /** The "Tags you can pick" list the models were asked with (its hash). */
+  listHash?: string;
 }
 
 export function emptyStage5Pass(): Stage5PassProgress {
@@ -83,6 +85,16 @@ export class ArrivalStage5 {
   ): Promise<'more' | 'wait' | 'done'> {
     const runner = this.deps.runner;
     const runId = view.analysisId;
+    // "Tags you can pick" (Settings › Library › Editing): new books are asked with the list as it
+    // is now (tags added to it are used right away; the user's own tags never).
+    const vocab = effectiveVocab(getSettings(this.db).tagList);
+    const STAGE5_SPEC = stage5SpecFor(vocab);
+    if (prog.phase === 'models' && prog.listHash !== undefined && prog.listHash !== vocab.hash) {
+      // The list changed while the models were asked: asked again with the list as it is now.
+      runner.enqueue(STAGE5_SPEC, 'upgradePrimary', prog.keys, runId);
+      runner.enqueue(STAGE5_SPEC, 'upgradeSecondary', prog.keys, runId);
+    }
+    prog.listHash = vocab.hash;
     const key = (u: string) => `${view.libraryId}:${u}`;
     if (prog.phase === 'evidence') {
       const formats = this.formats(view);
@@ -173,6 +185,7 @@ export class ArrivalStage5 {
   /** One `tags` change per book from its own terms (read back: a user value wins). */
   private propose(view: Stage4Progress, uuids: string[]): number {
     const settings = getSettings(this.db);
+    const vocab = effectiveVocab(settings.tagList);
     const snap = this.deps.analysis.loadSnapshot(view.libraryId);
     const byUuid = new Map([...snap.books.values()].map((b) => [b.uuid, b]));
     const formats = this.formats(view);
@@ -205,7 +218,8 @@ export class ArrivalStage5 {
         const own = r ? (JSON.parse(r.value_json) as OwnTerms) : null;
         const ids = own
           ? Object.keys(own.terms).filter((id) => {
-              const k = BY_ID.get(id)?.kind;
+              const k = vocab.byId.get(id)?.kind;
+              if (!k) return false;
               if (held.genres && (k === 'genre' || k === 'subject')) return false;
               if (held.tags && k === 'tag') return false;
               return true;
@@ -214,7 +228,10 @@ export class ArrivalStage5 {
         const a = appliedTags.get(view.libraryId, uuid) as { value_json: string } | undefined;
         const added = a ? ((JSON.parse(a.value_json) as { added?: string[] }).added ?? []) : [];
         const format = formats.get(uuid) ?? null;
-        const ch = tagChange(ids, format, b.tags, settings.customTags, added);
+        const ch = tagChange(ids, format, b.tags, settings.customTags, added, {
+          label: (id) => vocab.byId.get(id)?.ja ?? null,
+          format: (fm) => vocab.formats[fm]?.ja ?? null,
+        });
         del.run(view.libraryId, uuid, view.analysisId);
         if (!ch.add.length && !ch.remove.length) continue;
         const sources: Record<string, unknown> = {};

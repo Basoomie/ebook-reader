@@ -65,7 +65,10 @@ export const SET_FIELDS = [
   'series',
   'series_index',
   'comments',
-  'tags'
+  'tags',
+  // The user's edits from the reader (calibre metadata editing): published date and rating.
+  'pubdate',
+  'rating'
 ] as const;
 
 /** A title for `add --title`: one line, no control characters, not an option, not too long. */
@@ -460,6 +463,8 @@ export class Calibredb {
       calibreIds.map((id) => `id:=${id}`).join(' or '),
       '--fields',
       fields,
+      // The title sort can't be listed as a field; the template {sort} shows it (calibre 9.18).
+      ...(fields.split(',').includes('template') ? ['--template', '{sort}'] : []),
       '--for-machine',
       '--limit',
       String(calibreIds.length + 10)
