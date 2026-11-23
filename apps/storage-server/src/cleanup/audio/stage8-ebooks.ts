@@ -919,16 +919,21 @@ export class AudioStage8 {
       spelling.set(k, names);
     }
     // Every position a series already has (stage 5's values): a filled number never takes one.
-    const taken = new Map<string, Set<number>>();
+    // (series -> position -> the recordings holding it; a recording never collides with itself)
+    const taken = new Map<string, Map<number, Set<string>>>();
     for (const [unit, sr] of seriesRows) {
       if (!w.facts.has(unit)) continue;
       for (const s of sr.value ?? [])
         if (s.position !== null) {
-          const set = taken.get(titleForm(s.name)) ?? new Set<number>();
-          set.add(s.position);
-          taken.set(titleForm(s.name), set);
+          const m = taken.get(titleForm(s.name)) ?? new Map<number, Set<string>>();
+          const who = m.get(s.position) ?? new Set<string>();
+          who.add(unit);
+          m.set(s.position, who);
+          taken.set(titleForm(s.name), m);
         }
     }
+    const takenByOther = (name: string, pos: number, unit: string) =>
+      [...(taken.get(titleForm(name))?.get(pos) ?? [])].some((u) => u !== unit);
     const values = {
       genres: 0,
       tags: 0,
@@ -1034,7 +1039,18 @@ export class AudioStage8 {
           continue;
         }
         const names = spelling.get(titleForm(e.series));
-        const name = names && names.size ? [...names].sort((a, b) => b[1] - a[1])[0][0] : e.series;
+        // The spelling the recording's own (guessed) series already has when it names the same series
+        // (RDGレッドデータガール for Calibre's レッドデータガール): its folder stays.
+        const ek = titleForm(e.series);
+        const own = (sr?.value ?? []).find((x) => {
+          const k = titleForm(x.name);
+          return k.length >= 2 && (k.includes(ek) || ek.includes(k));
+        });
+        const name = own
+          ? own.name
+          : names && names.size
+            ? [...names].sort((a, b) => b[1] - a[1])[0][0]
+            : e.series;
         const choice = seriesChoice.get(pr.unit_key);
         if (choice === 'none') continue;
         const pos = e.index;
@@ -1044,7 +1060,7 @@ export class AudioStage8 {
             why = `Calibre's series 「${e.series}」 is not named in the recording's title`;
           else if (
             pos !== null &&
-            (taken.get(titleForm(name))?.has(pos) || filled.get(titleForm(name))?.has(pos))
+            (takenByOther(name, pos, pr.unit_key) || filled.get(titleForm(name))?.has(pos))
           )
             why = `Another recording is already #${pos} of 「${name}」`;
         }
