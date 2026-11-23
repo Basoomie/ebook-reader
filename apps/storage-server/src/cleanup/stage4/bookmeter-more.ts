@@ -1353,6 +1353,39 @@ export class BookmeterMore {
     ).n;
   }
 
+  /** The AI check's batches still at a provider (the card says what it waits for). */
+  openAiBatches(): {
+    model: string;
+    provider: string;
+    requests: number;
+    submittedAt: number;
+    providerStatus: string | null;
+    stalled: boolean;
+  }[] {
+    return (
+      this.db
+        .prepare(
+          `SELECT model, provider, requests, submitted_at, provider_status, error FROM ai_batches
+           WHERE state = 'submitted' AND stage = ? ORDER BY submitted_at`,
+        )
+        .all(STAGE_KEY) as {
+        model: string;
+        provider: string;
+        requests: number;
+        submitted_at: number;
+        provider_status: string | null;
+        error: string | null;
+      }[]
+    ).map((b) => ({
+      model: b.model,
+      provider: b.provider,
+      requests: b.requests,
+      submittedAt: b.submitted_at,
+      providerStatus: b.provider_status,
+      stalled: (b.error ?? '').startsWith('stalled'),
+    }));
+  }
+
   /** Is there work in the queue that only this pass waits on (the fetch helper's alert). */
   hasFetchWork(): boolean {
     return !!this.db.prepare('SELECT 1 FROM bookmeter_more_waiters WHERE ready = 0 LIMIT 1').get();
@@ -1537,6 +1570,8 @@ export function bookmeterBar(
       invalid: number;
       failed: number;
     };
+    /** Questions in batches still at a provider (their answers come all at once, or never). */
+    aiInBatches?: number;
     openSearches: number;
     openQ1: number;
     openStores: number;
@@ -1567,11 +1602,16 @@ export function bookmeterBar(
       const total = done + x.ai.queued + x.ai.sent;
       const n = p.ai.rate ? done - p.ai.rate.done : 0;
       const ok = !!p.ai.rate && n >= MIN_MEASURED;
+      // A batch at a provider answers all at once (or, stalled, is cancelled and asked again
+      // one call each): the measured rate says nothing about it, so only the questions outside
+      // batches are timed, and none while only batches are left (found live 2026-11-23: "about
+      // 1 min left" for 40 min while gpt-6-luna's batch of 500 sat at OpenAI).
+      const rest = Math.max(0, total - done - (x.aiInBatches ?? 0));
       return {
         phase: 'ai',
         done,
         total,
-        leftMs: ok ? (since(p.ai.rate!.at) / n) * (total - done) : null,
+        leftMs: ok && rest > 0 ? (since(p.ai.rate!.at) / n) * rest : null,
         measured: ok,
       };
     }
