@@ -650,6 +650,9 @@ describe("the test batches' undone books (series-order stop 3)", () => {
     ins.run('again', 'series', 'auto', 'proposed', 20, 20);
     ins.run('rewritten', 'series', 'auto', 'undone', 10, 10);
     ins.run('rewritten', 'series', 'auto', 'applied', 20, 20);
+    // Decided again after the undo, that field with no change (the same text in Calibre).
+    ins.run('no-change', 'description', 'auto', 'undone', 10, 10);
+    ins.run('no-change', 'series', 'auto', 'applied', 20, 20);
     const progress = { libraryId: 'lib', analysisId: 'run1', phase: 'done' };
     const step = new Stage4Ai({
       db,
@@ -657,5 +660,74 @@ describe("the test batches' undone books (series-order stop 3)", () => {
       analysis: { progress: () => progress } as never,
     });
     expect(step.undoneBooks()).toEqual(['all-undone', 'one-undone', 'with-review']);
+  });
+});
+
+describe("the AI check's gate in steps (its progress bar)", () => {
+  it('reads the labeled books in chunks, then counts, with done and total on the bar', async () => {
+    const { Stage4Ai, STAGE4_EVIDENCE_BUILD } = await import('../src/cleanup/stage4/ai-step');
+    const s = initCleanupDatabase(makeTempDir('wp20e-gatebar'));
+    if (!s.ok) throw new Error(s.error);
+    const db = s.db;
+    const ai: Record<string, unknown> = {
+      analysisId: 'run1',
+      rulesFinishedAt: 5,
+      phase: 'gate',
+      evidenceBuild: STAGE4_EVIDENCE_BUILD,
+      cursor: 0,
+      items: 250,
+      decided: 250,
+      gate: null,
+      times: {},
+      phaseStartedAt: Date.now(),
+      phaseStartDone: 0,
+    };
+    const progress = {
+      libraryId: 'lib',
+      analysisId: 'run1',
+      phase: 'done',
+      finishedAt: 5,
+      bookmeterEditions: { phase: 'done' },
+      repick: { phase: 'done', version: REPICK_VERSION },
+      readingNotes: { phase: 'done', version: READINGS_VERSION },
+      ai,
+    };
+    const labeled = Array.from({ length: 250 }, (_, i) => ({
+      gid: `g${i}`,
+      uuid: `u${i}`,
+      gold: {},
+    }));
+    let reads = 0;
+    const step = new Stage4Ai({
+      db,
+      runner: cleanupRunner(db, makeAiCore().core),
+      analysis: {
+        progress: () => progress,
+        labeledBooks: () => {
+          reads++;
+          return labeled;
+        },
+      } as never,
+    });
+    const results: string[] = [];
+    const bars: [number, number][] = [];
+    for (let i = 0; i < 10 && ai.phase === 'gate'; i++) {
+      results.push(await step.step(() => false));
+      const b = step.bar();
+      if (b) bars.push([b.done, b.total]);
+    }
+    expect(results).toEqual(['more', 'more', 'more', 'more', 'more', 'more', 'done']);
+    expect(bars).toEqual([
+      [100, 254],
+      [200, 254],
+      [250, 254],
+      [251, 254],
+      [252, 254],
+      [253, 254],
+    ]);
+    expect(ai.phase).toBe('done');
+    expect(ai.gate).toMatchObject({ books: expect.any(Number) });
+    // The labeled books are read once per gate.
+    expect(reads).toBe(1);
   });
 });

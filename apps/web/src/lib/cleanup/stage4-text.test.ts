@@ -333,6 +333,18 @@ describe("the AI check's progress bar (WP20e follow-up)", () => {
     ).toBeNull();
     expect(aiBar({ ...base, phase: 'done', bar: null })).toBeNull();
   });
+  it('counts steps for the series order and the gate, books for deciding', () => {
+    expect(
+      aiBar({ ...base, bar: { phase: 'series', done: 41810, total: 83620, secondsLeft: null } })
+        ?.label
+    ).toBe('Putting each series in order: 41,810 of 83,620 steps');
+    expect(
+      aiBar({ ...base, bar: { phase: 'gate', done: 300, total: 794, secondsLeft: 2 } })?.label
+    ).toBe('Checking the labeled books: 300 of 794 steps');
+    expect(
+      aiBar({ ...base, bar: { phase: 'decide', done: 10, total: 52120, secondsLeft: null } })?.label
+    ).toBe('Deciding every field: 10 of 52,120 books');
+  });
 });
 
 describe("stage 4 On's progress bar (WP20e)", () => {

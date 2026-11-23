@@ -52,6 +52,9 @@ import {
 import { clearSeriesOrder, writeSeriesOrder, type SeriesOrderRow } from './series-order-store';
 
 const STAGE = 4;
+/** Labeled books the gate reads per step, and its counting steps after them (its bar). */
+const GATE_CHUNK = 100;
+const GATE_TAIL = 4;
 const SLICE = 50;
 /** The longest stretch the step keeps the server (lessons 3: a blocking step froze it). */
 const YIELD_MS = 30;
@@ -140,6 +143,8 @@ export interface Stage4AiProgress {
   seriesSpelling?: { at: number; names: Record<string, string> } | null;
   /** The spelling phase: series with more than one spelling, and books proposed again. */
   spelling?: { series: number; books: number; total: number } | null;
+  /** The gate's labeled books (its bar: these, then GATE_TAIL counting steps; `cursor`). */
+  gateTotal?: number;
   /** The series step (series-order follow-up). */
   seriesOrder?: SeriesOrderProgress | null;
   error: string | null;
@@ -211,6 +216,12 @@ export function emptyStage4Ai(analysisId: string, now = Date.now()): Stage4AiPro
 }
 
 export class Stage4Ai {
+  /** The gate's labeled books and their values, gathered over its steps (one run). */
+  private gateBooks: {
+    run: string;
+    labeled: ReturnType<Stage4Analysis['labeledBooks']>;
+    books: Parameters<typeof scoreAiGate>[0];
+  } | null = null;
   /** The analysis' proposed books in calibre_id order (see books()). */
   private list: {
     key: string;
@@ -346,6 +357,12 @@ export class Stage4Ai {
       const done = so?.done ?? 0;
       return { phase: ai.phase, done, total: Math.round(total), secondsLeft: since(done, total) };
     }
+    if (ai.phase === 'gate') {
+      // The labeled books in chunks, then the counting steps (2026-11-22: the gate was one
+      // ~2 s step, the bar showed 0 of 0 and the server waited).
+      const total = ai.gateTotal ? ai.gateTotal + GATE_TAIL : 0;
+      return { phase: ai.phase, done: ai.cursor, total, secondsLeft: since(ai.cursor, total) };
+    }
     if (ai.phase === 'models') {
       const models = this.byModel(ai.analysisId);
       let done = 0;
@@ -407,7 +424,9 @@ export class Stage4Ai {
     // Per field (stop 3 of the series order, 2026-11-22): a test batch's book whose other
     // fields the first On wrote, or that has a review item, still has an undone field to write
     // (11 of the 20 test books were left out when any other row counted). A field is left out
-    // only when a newer row handles it: proposed or queued, or applied after it was undone.
+    // only when a newer row handles it: proposed or queued, or applied after it was undone; or
+    // when the book was decided again after the undo and gave that field no change (2096, 2107:
+    // Calibre's description holds the same text; the card said "2 books were left out").
     const undone = this.db
       .prepare(
         `SELECT calibre_uuid, field, created_at FROM proposed_changes INDEXED BY proposed_changes_counts
@@ -424,11 +443,17 @@ export class Stage4Ai {
        WHERE library_id = ? AND calibre_uuid = ? AND stage = 4 AND analysis_id = ? AND field = ?
          AND (state IN ('proposed', 'queued') OR (state = 'applied' AND created_at > ?)) LIMIT 1`,
     );
+    const decidedAgain = this.db.prepare(
+      `SELECT 1 FROM proposed_changes INDEXED BY proposed_changes_book
+       WHERE library_id = ? AND calibre_uuid = ? AND stage = 4 AND analysis_id = ?
+         AND state <> 'undone' AND created_at > ? LIMIT 1`,
+    );
     const books = new Set<string>();
     for (const r of undone)
       if (
         !books.has(r.calibre_uuid) &&
-        !handled.get(p.libraryId, r.calibre_uuid, p.analysisId, r.field, r.created_at)
+        !handled.get(p.libraryId, r.calibre_uuid, p.analysisId, r.field, r.created_at) &&
+        !decidedAgain.get(p.libraryId, r.calibre_uuid, p.analysisId, r.created_at)
       )
         books.add(r.calibre_uuid);
     return [...books].sort();
@@ -567,8 +592,13 @@ export class Stage4Ai {
         return 'more';
       }
       if (ai.phase === 'gate') {
-        this.gateStep(p, ai);
-        this.time(ai, 'gate', Date.now() - t0, ai.gate?.books ?? 0);
+        const before = ai.cursor;
+        const finished = this.gateStep(p, ai);
+        this.time(ai, 'gate', Date.now() - t0, ai.cursor - before);
+        if (!finished) {
+          this.save(ai);
+          return 'more';
+        }
         ai.finishedAt = Date.now();
         this.next(ai, 'done');
         this.deps.log?.(
@@ -957,56 +987,90 @@ export class Stage4Ai {
     return { finished: so.cursor >= run.changed.length, items: n };
   }
 
-  private gateStep(p: Stage4Progress, ai: Stage4AiProgress): void {
-    const settings = getSettings(this.db);
-    const books = this.deps.analysis.labeledBooks(p).map((b) => ({
-      gid: b.gid,
-      gold: b.gold,
-      ai: storedAiValues(this.db, this.itemKey(p.libraryId, b.uuid)),
-    }));
-    const g = scoreAiGate(books);
-    const below: string[] = [];
-    if (g.books > 0) {
-      for (const f of SCORED_FIELDS) {
-        const name = FIELD_NAMES[f];
-        const s = g.all.fields[f];
-        const bar = stage4Bar(settings, name);
-        if (s.autoPercent !== null && s.auto >= settings.gate.minBooks && s.autoPercent < bar) {
-          below.push(name);
-          pauseField(
-            this.db,
-            STAGE,
-            name,
-            'gate',
-            `${s.autoPercent.toFixed(1)} % right on the labeled books after the AI check (bar ${bar} %)`,
-          );
-        } else resumeField(this.db, STAGE, name);
-      }
+  /**
+   * The gate in steps (its bar): the labeled books' stored values in chunks of GATE_CHUNK, then
+   * the score with the fields' pauses and the value counts, the best guesses, the cost. True when
+   * done. The books gathered are kept in memory; after a restart the gate starts over.
+   */
+  private gateStep(p: Stage4Progress, ai: Stage4AiProgress): boolean {
+    const run = `${ai.analysisId}:${ai.rulesFinishedAt}`;
+    if (ai.cursor === 0 || this.gateBooks?.run !== run) {
+      ai.cursor = 0;
+      this.gateBooks = { run, labeled: this.deps.analysis.labeledBooks(p), books: [] };
+      ai.gateTotal = this.gateBooks.labeled.length;
     }
-    ai.gate = { ...g, at: Date.now(), passed: g.books > 0 && below.length === 0, below };
-    ai.counts = valueCounts(this.db, 'calibre4');
-    const flagged: Record<string, number> = {};
-    for (const r of this.db
-      .prepare(
-        `SELECT field, COUNT(*) AS n FROM ai_values WHERE stage = 'calibre4' AND flagged = 1 AND rules_auto = 1
-         GROUP BY field`,
-      )
-      .all() as { field: string; n: number }[])
-      flagged[r.field] = r.n;
-    ai.flaggedAgainstRules = flagged;
-    // The best guesses that are written at On: flagged values of books both models answered.
-    const unconfirmed: Record<string, number> = {};
-    for (const r of this.db
-      .prepare(
-        `SELECT v.field, COUNT(*) AS n FROM ai_values v
-         JOIN ai_values a ON a.stage = v.stage AND a.item_key = v.item_key AND a.field = 'asked'
-         WHERE v.stage = 'calibre4' AND v.flagged = 1 AND a.value_json = 'true' GROUP BY v.field`,
-      )
-      .all() as { field: string; n: number }[])
-      unconfirmed[r.field] = r.n;
-    // The series numbers' best guesses are the series step's (it decides every number again).
-    if (ai.seriesOrder) unconfirmed.ix = ai.seriesOrder.guesses;
-    ai.unconfirmed = unconfirmed;
+    const g0 = this.gateBooks;
+    const total = g0.labeled.length;
+    if (ai.cursor < total) {
+      for (const b of g0.labeled.slice(ai.cursor, ai.cursor + GATE_CHUNK))
+        g0.books.push({
+          gid: b.gid,
+          gold: b.gold,
+          ai: storedAiValues(this.db, this.itemKey(p.libraryId, b.uuid)),
+        });
+      ai.cursor = Math.min(total, ai.cursor + GATE_CHUNK);
+      return false;
+    }
+    const tail = ai.cursor - total;
+    if (tail === 0) {
+      const settings = getSettings(this.db);
+      const g = scoreAiGate(g0.books);
+      const below: string[] = [];
+      if (g.books > 0) {
+        for (const f of SCORED_FIELDS) {
+          const name = FIELD_NAMES[f];
+          const s = g.all.fields[f];
+          const bar = stage4Bar(settings, name);
+          if (s.autoPercent !== null && s.auto >= settings.gate.minBooks && s.autoPercent < bar) {
+            below.push(name);
+            pauseField(
+              this.db,
+              STAGE,
+              name,
+              'gate',
+              `${s.autoPercent.toFixed(1)} % right on the labeled books after the AI check (bar ${bar} %)`,
+            );
+          } else resumeField(this.db, STAGE, name);
+        }
+      }
+      ai.gate = { ...g, at: Date.now(), passed: g.books > 0 && below.length === 0, below };
+      ai.counts = valueCounts(this.db, 'calibre4');
+      ai.cursor++;
+      return false;
+    }
+    if (tail === 1) {
+      const flagged: Record<string, number> = {};
+      for (const r of this.db
+        .prepare(
+          `SELECT field, COUNT(*) AS n FROM ai_values WHERE stage = 'calibre4' AND flagged = 1 AND rules_auto = 1
+           GROUP BY field`,
+        )
+        .all() as { field: string; n: number }[])
+        flagged[r.field] = r.n;
+      ai.flaggedAgainstRules = flagged;
+      ai.cursor++;
+      return false;
+    }
+    if (tail === 2) {
+      // The best guesses: flagged values of books both models answered.
+      const unconfirmed: Record<string, number> = {};
+      for (const r of this.db
+        .prepare(
+          `SELECT v.field, COUNT(*) AS n FROM ai_values v
+           JOIN ai_values a ON a.stage = v.stage AND a.item_key = v.item_key AND a.field = 'asked'
+           WHERE v.stage = 'calibre4' AND v.flagged = 1 AND a.value_json = 'true' GROUP BY v.field`,
+        )
+        .all() as { field: string; n: number }[])
+        unconfirmed[r.field] = r.n;
+      // The series numbers' best guesses are the series step's (it decides every number again).
+      if (ai.seriesOrder) unconfirmed.ix = ai.seriesOrder.guesses;
+      ai.unconfirmed = unconfirmed;
+      ai.cursor++;
+      return false;
+    }
     ai.cost = runSpend(this.db, 'calibre4', ai.analysisId) as Stage4AiProgress['cost'];
+    ai.cursor++;
+    this.gateBooks = null;
+    return true;
   }
 }

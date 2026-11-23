@@ -79,7 +79,14 @@ export function writtenLine(
 export function aiBar(ai: Stage4AiStatus | null | undefined): ProgressBar | null {
   const b = ai?.bar;
   if (!ai || !b || ai.phase === 'done') return null;
-  const what = b.phase === 'models' ? 'answers in' : 'books';
+  // The series step counts reading the books, ordering each series and the proposals together,
+  // and the gate the labeled books and its counting steps: steps, not books.
+  const what =
+    b.phase === 'models'
+      ? 'answers in'
+      : b.phase === 'series' || b.phase === 'gate'
+        ? 'steps'
+        : 'books';
   return {
     label: b.total
       ? `${AI_BAR_LABELS[b.phase] ?? b.phase}: ${n(b.done)} of ${n(b.total)} ${what}`
