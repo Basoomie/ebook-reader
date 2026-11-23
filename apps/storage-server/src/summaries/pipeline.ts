@@ -293,6 +293,23 @@ export function writeEvidence(
   };
 }
 
+/** A word part counts on its own when it is 2+ characters or one kanji (never a lone kana). */
+const WORD_PART = /^(?:.{2,}|\p{Script=Han})$/u;
+
+/**
+ * Whether a heading's name is the book's own. Most are printed as they are. A character the book
+ * never names is headed by the role it gives them, built from its words (れな子の妹, 浄室の女性,
+ * 村人たち): that passes when every part joined by の or と is in the book, each part a word of
+ * its own (2+ characters or one kanji), so an invented name still fails (さとみ is not さ + み).
+ */
+export function inBook(name: string, index: QuoteIndex): boolean {
+  if (index.hasName(name)) return true;
+  const plain = name.replace(/(?:たち|達)$/u, '');
+  if (plain !== name && plain.length >= 2 && index.hasName(plain)) return true;
+  const parts = plain.split(/[のと]/u);
+  return parts.length >= 2 && parts.every((p) => WORD_PART.test(p) && index.hasName(p));
+}
+
 export interface WrittenCheck {
   summary: Summary;
   dropped: number;
@@ -323,7 +340,7 @@ export function checkWritten(
       dropped.push({ section, text: w.text, why: 'cites no checked item' });
       return null;
     }
-    const missing = names.flatMap(namesIn).filter((n) => !index.hasName(n));
+    const missing = names.flatMap(namesIn).filter((n) => !inBook(n, index));
     if (missing.length) {
       dropped.push({ section, text: w.text, why: `not in the book: ${missing.join(', ')}` });
       return null;
@@ -411,7 +428,7 @@ export function checkWritten(
     answer.threads.map((w, i) => make('threads', `thread${i}`, w, [], {})),
   );
   const alsoMentioned = answer.also_mentioned.filter((n) => {
-    if (index.hasName(n)) return true;
+    if (namesIn(n).every((p) => inBook(p, index))) return true;
     dropped.push({ section: 'also_mentioned', text: n, why: 'not in the book' });
     return false;
   });

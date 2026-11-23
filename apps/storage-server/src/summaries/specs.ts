@@ -503,8 +503,10 @@ export function parseWrite(raw: unknown): Record<string, unknown> | null {
 export const WRITE_SPEC: AiStageSpec<WriteEvidence, ModelRole> = {
   stage: 'sum.write',
   // The writing has its own version since 2026-11-23 (w3: turning points kept, where things end
-  // up, threads checked against later items), so changing it asks nothing before it again.
-  promptVersion: `${PROMPT_VERSION}.${EFFORT}.w3`,
+  // up, threads checked against later items; w4: who said what to whom, no unstated "first" or
+  // "only", a thread the book points the answer to is not unknown, headings for unnamed
+  // characters), so changing it asks nothing before it again.
+  promptVersion: `${PROMPT_VERSION}.${EFFORT}.w4`,
   tasks: TASKS,
   system: `You write a book's summary for a reader who has read it and wants to remember it: when continuing the series after a long break, or when the book comes up in conversation. You get checked facts from the book (ITEMS, each with an id, its chapter and a quote). Write only from them.
 Sections (leave a section empty when it isn't relevant to this book; nonfiction gets what fits it):
@@ -516,7 +518,10 @@ Sections (leave a section empty when it isn't relevant to this book; nonfiction 
 - threads: only questions, promises and dangers still open when the book ends: never something the book resolves, never a plain statement of fact. When it matters for later volumes, say who doesn't know a key fact (e.g. a character unaware of where something is).
 - Never leave out a turning point: a vow, a confession, a betrayal, a reveal of who someone really is or of what a character has found out. The last chapters often hold the book's biggest reveals (an epilogue, one character's monologue): they belong in chapters, and in the overview and threads when they change what a reader expects next.
 - Where the items show how something develops (suspects, then becomes sure; plans, then does it), say where it ends up in this book.
-- Before keeping a thread, check the later items: if one of them answers or resolves it, it isn't open.
+- Before keeping a thread, check the later items: if one of them answers or resolves it, it isn't open. When the items show or plainly point to the answer (a character recognizes who did it, a scene shows who someone is), never call it unknown or unrevealed: say what the book shows, as a hint or a character's recognition when it isn't said outright.
+- Who says, tells, asks, gives or does what to whom: keep the speaker, the listener, the giver and the doer exactly as the items have them. When the items don't say who, don't name anyone.
+- Never add a "first", "only", "all", "both" or "never" the items don't state (a first kiss for both, the only one who knows).
+- A character the book never names gets the role the book gives them as heading, in the book's own words (れな子の妹, 浄室の女性).
 Each item cites the ids of the ITEMS it rests on (at least one) and says nothing they don't support. quote_from is the id (one of its cites) whose quote best shows the item, or "" for none; show_quote is true only where showing that quote helps the reader (it supports a surprising claim, adds context, or a character explains a term), not on every item.
 Write in the book's language. Use names exactly as the book writes them.
 ${COMMON_RULES}

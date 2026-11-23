@@ -37,6 +37,7 @@ import {
   cleanPairs,
   crossChecked,
   emptyChapters,
+  inBook,
 } from '../src/summaries/pipeline';
 import { modelForTask, MODELS } from '../src/summaries/specs';
 import { openSummariesDb } from '../src/summaries/summaries-db';
@@ -1103,6 +1104,54 @@ describe('the fixed engine', () => {
       'フェル(フェルディア)',
     ]);
     expect(out.droppedItems[0].why).toBe('not in the book: ナギ');
+  });
+
+  it('a character the book never names keeps the role the book gives as heading; invented names still fail', () => {
+    const script = scriptOf([
+      {
+        title: '一章',
+        paragraphs: [
+          ['れな子の部屋に妹が来た。', '浄室にいる女性は笑った。', '村人達は草を刈った。'],
+          ['母は言った。', 'さとみ'],
+        ],
+      },
+    ]);
+    const idx = new QuoteIndex(script);
+    for (const ok of ['れな子の妹', '浄室の女性', '村人たち', '村人達', 'れな子の母'])
+      expect(inBook(ok, idx), ok).toBe(true);
+    // An invented name, a lone kana part, a name the book doesn't have: all still fail.
+    for (const bad of ['ナギの妹', 'さとの', 'れな子の叔父', 'たち'])
+      expect(inBook(bad, idx), bad).toBe(false);
+    const w = { cites: ['a:0:0'], quote_from: '', show_quote: false };
+    const out = checkWritten(
+      {
+        overview: { text: '話。', cites: [] },
+        chapters: [],
+        characters: [
+          { ...w, name: 'れな子の妹', text: '妹。' },
+          { ...w, name: 'ナギの母', text: '母。' },
+        ],
+        also_mentioned: ['れな子の母', '浄室の女性（シレイネ）'],
+        relationships: [{ ...w, a: 'れな子', b: '村人たち', text: '近所。' }],
+        terms: [],
+        threads: [],
+      },
+      [item('a:0:0', 0, '妹が来た', 'れな子の部屋に妹が来た', 0)],
+      bookTextFromScript(script),
+      idx,
+      { lang: 'ja', title: 't', models: [], madeAt: 0 },
+    );
+    const heads = out.summary.sections.flatMap((s) => s.groups.flatMap((g) => g.items));
+    expect(heads.map((i) => i.heading ?? i.between?.join('/'))).toEqual([
+      undefined,
+      'れな子の妹',
+      'れな子/村人たち',
+    ]);
+    expect(out.summary.alsoMentioned).toEqual(['れな子の母']);
+    expect(out.droppedItems.map((d) => d.why)).toEqual([
+      'not in the book: ナギの母',
+      'not in the book',
+    ]);
   });
 
   it('the written summary carries the readings of Characters, Terms and Relationships headings', () => {
