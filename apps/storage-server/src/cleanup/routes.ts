@@ -1064,18 +1064,6 @@ export function createCleanupRouter(options: CleanupOptions): Router {
     res.json(arrivalsStatus(service.arrivals, service.db));
   });
 
-  router.post('/cleanup/arrivals/pairs/approve', (req, res) => {
-    const service = serviceOr503(options);
-    const key = (req.body as { key?: unknown } | undefined)?.key;
-    if (typeof key !== 'string') throw new ApiError(400, 'bad_pair', 'key is required');
-    try {
-      service.arrivals.approvePair(key);
-    } catch (err) {
-      throw new ApiError(409, 'not_now', (err as Error).message);
-    }
-    res.json(arrivalsStatus(service.arrivals, service.db));
-  });
-
   router.get('/cleanup/arrivals/lists/:list', (req, res) => {
     const service = serviceOr503(options);
     const q = req.query as Record<string, string | undefined>;

@@ -97,7 +97,7 @@ describe('the new arrivals card', () => {
     expect(lines.join('\n')).toContain('2 books already in Calibre would get another number');
   });
 
-  it('a source folder adds only after its first run and your “Add these”', () => {
+  it('a source folder adds only after its first run, once On (no “Add these”)', () => {
     const p = {
       key: 'ja|books/japanese',
       id: 'ja',
@@ -105,7 +105,6 @@ describe('the new arrivals card', () => {
       libraryId: 'L',
       firstRunId: null,
       firstDoneAt: null,
-      approvedAt: null,
       wouldAdd: 0,
       added: 0
     };
@@ -113,7 +112,9 @@ describe('the new arrivals card', () => {
     expect(pairLine({ ...p, waiting: 98572, settleMinutes: 30 })).toBe(
       'First run not done yet: 98,572 files wait until they have been unchanged for 30 minutes; a run looks at them then by itself (a Preview).'
     );
-    expect(pairLine({ ...p, firstDoneAt: 1, wouldAdd: 120 })).toMatch(/120 books would be added/);
-    expect(pairLine({ ...p, firstDoneAt: 1, approvedAt: 2, added: 5 })).toMatch(/5 added/);
+    expect(pairLine({ ...p, firstDoneAt: 1, wouldAdd: 120 })).toBe(
+      'First run done: 120 books would be added once New arrivals is On.'
+    );
+    expect(pairLine({ ...p, firstDoneAt: 1, added: 5 }, 'on')).toMatch(/5 added so far/);
   });
 });

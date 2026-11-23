@@ -2433,12 +2433,6 @@ export class CleanupApi {
     return this.request('POST', '/cleanup/arrivals/resume', {}) as Promise<ArrivalsStatus>;
   }
 
-  arrivalsApprove(key: string): Promise<ArrivalsStatus> {
-    return this.request('POST', '/cleanup/arrivals/pairs/approve', {
-      key
-    }) as Promise<ArrivalsStatus>;
-  }
-
   arrivalsList(
     list: string,
     offset = 0,

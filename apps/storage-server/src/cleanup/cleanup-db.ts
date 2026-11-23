@@ -1838,8 +1838,8 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
     // calibre_arrivals_state  one row: the arrivals' mode (off / Preview / On), pause, schedule
     //                         and the baseline of books present before the first run.
     // calibre_arrival_pairs   a source folder -> library pair as first seen (a changed folder is
-    //                         a new pair): its first run (every file checked, a Preview) and
-    //                         whether its first run's adds were approved ("Add these").
+    //                         a new pair): its first run (every file checked, a Preview); runs
+    //                         that start after it add when On (approved_at unused since v26).
     // calibre_arrival_runs    one row per run (schedule, Run now, books added by hand).
     // calibre_arrival_files   the catalog: one row per file version seen in a source folder (a
     //                         file whose size or mtime changes is a new row), each looked at once,
@@ -2056,6 +2056,15 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
     // (READINGS_VERSION) and keeps the reading as it was stored before in `noted`, so a value the
     // cleanup wrote with the notes is corrected at On.
     sql: `ALTER TABLE author_readings ADD COLUMN noted TEXT;`,
+  },
+  {
+    version: 26,
+    name: 'new arrivals: a folder adds once its first run has finished (no "Add these")',
+    // WP20g stop 2: the first look at books/japanese was marked done while every file still
+    // waited to settle (an earlier build), and "Add these" is removed (user, 2026-11-23: On is
+    // the go-ahead). A folder whose first run was marked done without an approval is not done:
+    // its run marks it done when nothing in it waits, and runs that start after that add.
+    sql: `UPDATE calibre_arrival_pairs SET first_done_at = NULL WHERE approved_at IS NULL;`,
   },
 ];
 

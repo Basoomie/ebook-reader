@@ -591,18 +591,12 @@ describe('wp20g: a run end to end', () => {
     expect(csv.text).toContain('kindle.azw3');
   }, 180_000);
 
-  it('On before the first run is approved adds nothing; after "Add these" it adds the new books', async () => {
-    env.service.arrivals.setMode('on');
-    env.service.arrivals.requestRun();
-    await steps();
+  it('once the folder’s first run (the Preview) is done, an On run adds the new books', async () => {
+    // No "Add these" (user, 2026-11-23): the Preview above was the folder's first run.
     expect(
-      env.cleanupDb.prepare('SELECT COUNT(*) AS n FROM calibre_arrival_batches').get(),
-    ).toEqual({ n: 0 });
-    const key = 'ja|books/japanese';
-    await request(env.app)
-      .post('/api/v1/cleanup/arrivals/pairs/approve')
-      .set(auth(env.userToken()))
-      .send({ key });
+      env.cleanupDb.prepare('SELECT first_done_at FROM calibre_arrival_pairs').get(),
+    ).not.toEqual({ first_done_at: null });
+    env.service.arrivals.setMode('on');
     env.service.arrivals.requestRun();
     for (let round = 0; round < 6; round++) {
       await steps();
@@ -1044,31 +1038,12 @@ describe('wp20g: the settle time on a folder’s first look', () => {
         )
         .get(),
     ).toEqual({ n: N });
-    // The folder's first run is not done: no "Add these".
+    // The folder's first run is not done while its files wait.
     const st = await request(env.app)
       .get('/api/v1/cleanup/arrivals')
       .set(auth(env.userToken()))
       .expect(200);
     expect(st.body.pairs[0]).toMatchObject({ firstDoneAt: null, waiting: N, settleMinutes: 30 });
-    await request(env.app)
-      .post('/api/v1/cleanup/arrivals/pairs/approve')
-      .set(auth(env.userToken()))
-      .send({ key: st.body.pairs[0].key })
-      .expect(409);
-    // A folder an earlier build marked done too early (the NAS after stop 2's first run): still
-    // not done while files wait, and "Add these" is refused.
-    env.cleanupDb.prepare('UPDATE calibre_arrival_pairs SET first_done_at = ?').run(Date.now());
-    const st2 = await request(env.app)
-      .get('/api/v1/cleanup/arrivals')
-      .set(auth(env.userToken()))
-      .expect(200);
-    expect(st2.body.pairs[0].firstDoneAt).toBeNull();
-    const refused = await request(env.app)
-      .post('/api/v1/cleanup/arrivals/pairs/approve')
-      .set(auth(env.userToken()))
-      .send({ key: st.body.pairs[0].key });
-    expect(refused.status).toBe(409);
-    expect(JSON.stringify(refused.body)).toMatch(/has not looked at 60 files yet/);
   }, 300_000);
 
   it('once they settled, a follow-up run looks at them by itself and the first run is done', async () => {
@@ -1081,8 +1056,29 @@ describe('wp20g: the settle time on a folder’s first look', () => {
     env.cleanupDb
       .prepare('UPDATE calibre_arrivals_state SET last_scheduled_day = ?')
       .run(clockNow(later, env.service.arrivals.zone()).day);
+    // On: the follow-up still belongs to the folder's first run, which never adds.
+    env.service.arrivals.setMode('on');
+    env.service.arrivals.stopRun();
     const id = env.service.arrivals.maybeStart(later);
     expect(id).not.toBeNull();
+    // Part way through reading the texts: every book read so far is kept in its catalog row (a
+    // restart goes on from there), and the bar counts them with a time left.
+    for (let i = 0; i < 400; i++) {
+      const run = env.service.arrivals.currentRun()!;
+      if (run.p.cmp?.stage === 'text' && (run.p.counts.compare?.done ?? 0) >= 20) break;
+      await env.service.arrivals.step();
+    }
+    const mid = env.service.arrivals.currentRun()!;
+    expect(mid.p.cmp?.stage).toBe('text');
+    const kept = env.cleanupDb
+      .prepare(
+        `SELECT COUNT(*) AS n FROM calibre_arrival_files WHERE json_extract(facts_json, '$.text') IS NOT NULL`,
+      )
+      .get() as { n: number };
+    expect(kept.n).toBe(mid.p.counts.compare!.done);
+    const bar = runBar(mid.p, Date.now() + 1000);
+    expect(bar).toMatchObject({ phase: 'compare', total: N });
+    expect(bar.secondsLeft).not.toBeNull();
     await drive();
     expect(counts()).toEqual({ new: N });
     const st = await request(env.app)
@@ -1091,6 +1087,10 @@ describe('wp20g: the settle time on a folder’s first look', () => {
       .expect(200);
     expect(st.body.pairs[0].firstDoneAt).not.toBeNull();
     expect(st.body.pairs[0].wouldAdd).toBe(N);
+    // Nothing was added by the first run, though the card was On.
+    expect(
+      env.cleanupDb.prepare('SELECT COUNT(*) AS n FROM calibre_arrival_batches').get(),
+    ).toEqual({ n: 0 });
     const runs = await request(env.app)
       .get('/api/v1/cleanup/arrivals/lists/runs')
       .set(auth(env.userToken()))
@@ -1200,7 +1200,6 @@ describe('wp20g: better copies', () => {
       .all();
     expect(review).toEqual([{ kind: 'better_copy', calibre_id: ids.E }]);
     // On: F plus is added; stage 3 proposes the older F's removal under the run's id.
-    env.service.arrivals.approvePair('ja|books/japanese');
     env.service.arrivals.setMode('on');
     env.service.arrivals.requestRun();
     for (let round = 0; round < 6; round++) {
