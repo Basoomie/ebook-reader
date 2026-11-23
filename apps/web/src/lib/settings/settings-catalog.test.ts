@@ -91,11 +91,13 @@ describe('Reader › Toolbars (reader toolbars session 2)', () => {
 });
 
 describe('Settings › Library (calibre-metadata-display.md)', () => {
-  it('has Look, Book page, Links and Downloading books, in that order', () => {
+  it('has Look, Book page, Links, Editing and Downloading books, in that order', () => {
     expect(SETTINGS_SECTIONS.filter((s) => s.tab === 'Library').map((s) => s.title)).toEqual([
       'Look',
       'Book page',
       'Links',
+      // Calibre metadata editing (design 2026-11-23): a new section after Links.
+      'Editing',
       'Downloading books'
     ]);
   });

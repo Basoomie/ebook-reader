@@ -1102,3 +1102,57 @@ export function removeCleanupSecretCopy(label: string): ConfirmCopy {
     irreversible: true
   };
 }
+
+// ---- Calibre metadata editing (tier 3 item 2) ----------------------------------------------
+
+/** Undo of one entry in a book's history of changes: names the field and the value it goes back to. */
+export function undoChangeCopy(field: string, value: string): ConfirmCopy {
+  return {
+    title: 'Undo this change?',
+    message: [
+      `${field} goes back to: ${value}`,
+      'This writes to Calibre. The value then counts as yours, so the cleanup won’t change it again.'
+    ],
+    confirmLabel: 'Undo',
+    // Nothing is deleted: the earlier value is written back (and can be undone in turn).
+    danger: false
+  };
+}
+
+/** Settings › Library › Tags you can pick: taking a tag off the list. */
+export function removeTagFromListCopy(tag: string): ConfirmCopy {
+  return {
+    title: `Remove ${quoted(tag)} from the list?`,
+    message: ['You won’t be able to pick it any more. Books that have it keep it.'],
+    confirmLabel: 'Remove'
+  };
+}
+
+/** Settings › Library › Tags you can pick: back to the default list. */
+export function resetTagListCopy(): ConfirmCopy {
+  return {
+    title: 'Put the list back to the default?',
+    message: ['Your books don’t change: they keep the tags they have.'],
+    confirmLabel: 'Reset',
+    danger: false
+  };
+}
+
+/**
+ * A save that changes only the case of a name other books share: Calibre renames it for every
+ * book that has it (asked first; design follow-up decided 2026-11-23).
+ */
+export function sharedRenameCopy(
+  renames: { from: string; to: string; books: number }[]
+): ConfirmCopy {
+  const list = Array.isArray(renames) ? renames : [];
+  return {
+    title: list.length === 1 ? 'Rename it for every book?' : 'Rename them for every book?',
+    message: [
+      ...list.map((r) => `${quoted(r.from)} becomes ${quoted(r.to)} on ${books(r.books)} more.`),
+      'Calibre keeps one spelling of a name for all its books. On those books the name then counts as yours too.'
+    ],
+    confirmLabel: 'Save and rename',
+    danger: false
+  };
+}
