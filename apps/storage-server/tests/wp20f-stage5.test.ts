@@ -975,6 +975,56 @@ describe('stage 5 On: the tags written through the field-write path', () => {
       });
     });
 
+    // Found live 2026-11-22: stage 2 wrote the fitted title a moment before stage 5 planned; the
+    // reader's copy of Calibre still had the long one, so the tags were held as "your edit".
+    const setTitleInCalibre = (id: number, title: string) => {
+      const db = new Database(path.join(env.lib.dir, 'metadata.db'));
+      try {
+        db.prepare('UPDATE books SET title = ? WHERE id = ?').run(title, id);
+      } finally {
+        db.close();
+      }
+    };
+    const writtenByCleanup = (id: number, title: string, at: number) =>
+      env.cleanupDb
+        .prepare(
+          `INSERT OR REPLACE INTO applied_values (library_id, calibre_uuid, field, value_json, source, applied_at)
+           VALUES (?, ?, 'title', ?, 'stage2', ?)`,
+        )
+        .run(env.libraryId(), uuidOf(id), JSON.stringify(title), at);
+
+    it("a title another stage wrote after the reader's last copy waits for the copy, never a hold", async () => {
+      writtenByCleanup(ids.C, SHORT_C, Date.now() + 60_000);
+      tagsChange(ids.C);
+      const plan = await env.service.batches.stage5.plan(env.libraryId());
+      expect(plan.batch).toBeNull();
+      expect(rowsOf(ids.C)).toEqual([
+        expect.objectContaining({ field: 'tags', class: 'auto', state: 'proposed' }),
+      ]);
+      // The reader takes the title in: the tags go alone (the names fit now).
+      setTitleInCalibre(ids.C, SHORT_C);
+      await env.index();
+      const later = await env.service.batches.stage5.plan(env.libraryId());
+      expect(later.batch).not.toBeNull();
+      expect(rowsOf(ids.C)).toEqual([expect.objectContaining({ field: 'tags', state: 'queued' })]);
+    });
+
+    it('a change held for the name goes back to automatic once the names fit', async () => {
+      tagsChange(ids.C);
+      env.cleanupDb
+        .prepare(
+          `UPDATE proposed_changes SET class = 'review', review_reason = ? WHERE stage = 5 AND calibre_id = ?`,
+        )
+        .run("Too long for a folder name in Calibre's library", ids.C);
+      setTitleInCalibre(ids.C, SHORT_C);
+      await env.index();
+      const plan = await env.service.batches.stage5.plan(env.libraryId());
+      expect(plan.batch).not.toBeNull();
+      expect(rowsOf(ids.C)).toEqual([
+        expect.objectContaining({ field: 'tags', class: 'auto', state: 'queued' }),
+      ]);
+    });
+
     it('a first author too long on its own: nothing fitted, the changes wait (bad data)', async () => {
       tagsChange(ids.E);
       await env.service.batches.stage5.plan(env.libraryId());

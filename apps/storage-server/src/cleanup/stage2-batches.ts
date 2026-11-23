@@ -297,6 +297,15 @@ export function sameTime(a: string | null | undefined, b: string | null | undefi
     : (a ?? null) === (b ?? null);
 }
 
+/** When the reader last copied Calibre's metadata.db (0 when there is no copy). */
+function snapshotTime(file: string): number {
+  try {
+    return fs.statSync(file).mtimeMs;
+  } catch {
+    return 0;
+  }
+}
+
 /** Whether a folder is there (a name too long for the disk, or none: false). */
 async function folderExists(dir: string): Promise<boolean> {
   try {
@@ -421,6 +430,7 @@ export class Stage2Batches {
   ): Promise<{ batch: BatchRow | null; reason: string | null }> {
     if (this.batches.open()) return { batch: null, reason: 'A batch is being applied' };
     this.reviewSplitNames(libraryId);
+    this.liftNameHolds(libraryId);
     const settings = getSettings(this.db);
     const paused = new Set(
       listFieldPauses(this.db, this.stage).flatMap((p) =>
@@ -534,6 +544,7 @@ export class Stage2Batches {
       opts.analysisId ?? currentAnalysisId(this.db, this.stage),
       byBook,
       byUuid,
+      snapshotTime(snapFile),
     );
     const libDir = this.libDir(libraryId);
     const skip: { id: number; reason: string }[] = [];
@@ -596,6 +607,51 @@ export class Stage2Batches {
     };
   }
 
+  /** The snapshot time liftNameHolds last looked at (it reads the snapshot only when it changed). */
+  private nameHoldsCheckedAt = -1;
+
+  /**
+   * A change held for "Too long for a folder name" goes back to automatic once the book's names
+   * fit in Calibre as it is now (another stage wrote a shorter title: found live 2026-11-22, the
+   * stage-5 tags of 6 books held while stage 2's titles were being written). A held title change
+   * goes back only when its own value fits. Your decisions are never touched. Reads the reader's
+   * snapshot only when there are such holds and the snapshot changed since the last look.
+   */
+  private liftNameHolds(libraryId: string): void {
+    const held = this.db
+      .prepare(
+        `SELECT id, calibre_uuid, field, new_json FROM proposed_changes
+         WHERE stage = ? AND state = 'proposed' AND class = 'review' AND library_id = ?
+           AND review_reason = ? AND decided_by IS NULL`,
+      )
+      .all(this.stage, libraryId, LONG_NAME_REASON) as {
+      id: number;
+      calibre_uuid: string;
+      field: string;
+      new_json: string;
+    }[];
+    if (held.length === 0) return;
+    const snapFile = snapshotFile(this.deps.cacheDir, libraryId);
+    const at = snapshotTime(snapFile);
+    if (at === this.nameHoldsCheckedAt) return;
+    this.nameHoldsCheckedAt = at;
+    const snap = readStage2Snapshot(snapFile);
+    const byUuid = new Map([...snap.books.values()].map((b) => [b.uuid, b]));
+    const lift = this.db.prepare(
+      `UPDATE proposed_changes SET class = 'auto', review_reason = NULL, updated_at = ? WHERE id = ?`,
+    );
+    const now = Date.now();
+    this.db.transaction(() => {
+      for (const r of held) {
+        const book = byUuid.get(r.calibre_uuid);
+        if (!book) continue;
+        const first = book.authors[0] ?? 'Unknown';
+        const title = r.field === 'title' ? (JSON.parse(r.new_json) as string) : book.title;
+        if (calibreNameBytes(book.calibreId, title, first) <= NAME_MAX_BYTES) lift.run(now, r.id);
+      }
+    })();
+  }
+
   /**
    * Every write makes Calibre rebuild the book's folder and file names from its title and first
    * author (lessons 2). Checked now with Calibre's current values: when the names would not fit
@@ -623,6 +679,8 @@ export class Stage2Batches {
       }[]
     >,
     byUuid: Map<string, Stage2Book>,
+    /** When the reader last copied Calibre's metadata.db (the snapshot's mtime). */
+    snapshotAt = Number.POSITIVE_INFINITY,
   ): Set<string> {
     const needs = new Set<string>();
     const now = Date.now();
@@ -633,7 +691,7 @@ export class Stage2Batches {
       `UPDATE proposed_changes SET new_json = ?, evidence_json = ?, updated_at = ? WHERE id = ?`,
     );
     const ownTitle = this.db.prepare(
-      `SELECT value_json FROM applied_values WHERE library_id = ? AND calibre_uuid = ? AND field = 'title'`,
+      `SELECT value_json, applied_at FROM applied_values WHERE library_id = ? AND calibre_uuid = ? AND field = 'title'`,
     );
     const openFit = this.db.prepare(
       `SELECT id FROM proposed_changes INDEXED BY proposed_changes_book
@@ -698,8 +756,17 @@ export class Stage2Batches {
         continue;
       }
       // Calibre's own title. One the user set after the cleanup wrote a title is theirs.
-      const own = ownTitle.get(libraryId, uuid) as { value_json: string } | undefined;
+      const own = ownTitle.get(libraryId, uuid) as
+        | { value_json: string; applied_at: number }
+        | undefined;
       if (own && (JSON.parse(own.value_json) as string) !== book.title) {
+        // Written by the cleanup after the reader last copied Calibre (another stage's batch a
+        // moment ago, found live 2026-11-22): the copy is behind, not your edit. Left for a
+        // later round, once the reader's index has the title.
+        if (own.applied_at > snapshotAt) {
+          byBook.delete(uuid);
+          continue;
+        }
         holdAll();
         continue;
       }

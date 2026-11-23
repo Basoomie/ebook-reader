@@ -222,6 +222,13 @@ describe('the new queries read indexes (lessons 3-4)', () => {
     expect(plan(`DELETE FROM calibre_title_fits WHERE change_id = 1`)).toMatch(/USING INDEX/u);
     expect(
       plan(
+        `SELECT id, calibre_uuid, field, new_json FROM proposed_changes
+         WHERE stage = 5 AND state = 'proposed' AND class = 'review' AND library_id = 'l'
+           AND review_reason = 'x' AND decided_by IS NULL`,
+      ),
+    ).toMatch(/USING INDEX proposed_changes_stage|USING INDEX proposed_changes_counts/u);
+    expect(
+      plan(
         `SELECT id FROM proposed_changes INDEXED BY proposed_changes_book
          WHERE library_id = 'l' AND calibre_uuid = 'u' AND stage = 5 AND field = 'title'
            AND state = 'proposed' AND source = 'title-fit' LIMIT 1`,
