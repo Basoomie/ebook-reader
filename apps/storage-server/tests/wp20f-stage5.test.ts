@@ -618,6 +618,10 @@ describe('stage 5 from evidence to proposals', () => {
 // The write: the real sidecar and the stand-in calibredb.
 
 const FAKE = path.resolve(__dirname, 'fixtures', 'wp20a', 'fake-calibredb.cjs');
+// Held books: 17789's form (a ～subtitle～ after the volume number), and 38199's author.
+const SHORT_C = '左遷された無能王子は実力を隠したい2';
+const LONG_C = `${SHORT_C} ～二度転生した最強賢者、今世では楽したいので手を抜いてたら、王家を追放された。今更帰ってこいと言われても遅い、領民に実力がバレて、実家に帰してくれないから……～`;
+const LONG_AUTHOR = 'ハルヒと出会ってから俺はすっかり忘れた言葉だが'.repeat(6);
 const PASSWORD = 'calibre-test-password';
 const quiet = { info: () => {}, error: () => {} };
 const auth = (t: string) => ({ Authorization: `Bearer ${t}` });
@@ -646,6 +650,10 @@ describe('stage 5 On: the tags written through the field-write path', () => {
         tags: ['PeepoHappyBooks', 'Young Adult Fiction', 'metadata-processed'],
       }),
       B: await env.lib.addBook({ title: '本 B', authors: ['作者'], tags: ['ln'] }),
+      // Calibre titles too long for the disk's 255-byte names (held books, 2026-11-22).
+      C: await env.lib.addBook({ title: LONG_C, authors: ['作者'], tags: ['ln'] }),
+      D: await env.lib.addBook({ title: LONG_C, authors: ['作者'], tags: ['ln'] }),
+      E: await env.lib.addBook({ title: '短い本', authors: [LONG_AUTHOR], tags: ['ln'] }),
     };
     for (let i = 0; i < 20; i++)
       await env.lib.addBook({ title: `棚の本 ${i}`, authors: ['棚の作者'] });
@@ -847,6 +855,111 @@ describe('stage 5 On: the tags written through the field-write path', () => {
       ].sort(),
     );
     expect(tagsOf(ids.B)).toEqual(['ln']);
+  });
+
+  describe("titles too long for Calibre's names (2026-11-22)", () => {
+    const uuidOf = (id: number) =>
+      (
+        new Database(path.join(env.lib.dir, 'metadata.db'), { readonly: true })
+          .prepare('SELECT uuid FROM books WHERE id = ?')
+          .get(id) as { uuid: string }
+      ).uuid;
+    const titleOf = (id: number) =>
+      (
+        new Database(path.join(env.lib.dir, 'metadata.db'), { readonly: true })
+          .prepare('SELECT title FROM books WHERE id = ?')
+          .get(id) as { title: string }
+      ).title;
+    const tagsChange = (id: number) => {
+      // Only this book in the batch (the cap takes two books).
+      env.cleanupDb
+        .prepare(`DELETE FROM proposed_changes WHERE stage = 5 AND calibre_id IN (?, ?)`)
+        .run(ids.A, ids.B);
+      env.cleanupDb
+        .prepare(
+          `INSERT INTO proposed_changes (stage, library_id, calibre_id, calibre_uuid, field, old_json, new_json, source,
+             evidence_json, class, state, analysis_id, created_at, updated_at)
+           VALUES (5, ?, ?, ?, 'tags', '["ln"]', '{"add":["ファンタジー"],"remove":["ln"]}', 'stage5', '{}', 'auto', 'proposed', 'a5', 1, 1)`,
+        )
+        .run(env.libraryId(), id, uuidOf(id));
+    };
+    const rowsOf = (id: number) =>
+      env.cleanupDb
+        .prepare(
+          `SELECT field, source, class, state, review_reason, new_json FROM proposed_changes WHERE calibre_id = ? ORDER BY field`,
+        )
+        .all(id) as {
+        field: string;
+        source: string;
+        class: string;
+        state: string;
+        review_reason: string | null;
+        new_json: string;
+      }[];
+
+    it("Calibre's own title is fitted into the batch, written with the tags; Undo keeps the fitted title", async () => {
+      tagsChange(ids.C);
+      const plan = await env.service.batches.stage5.plan(env.libraryId());
+      expect(plan.batch).not.toBeNull();
+      const title = rowsOf(ids.C).find((r) => r.field === 'title')!;
+      expect(title).toMatchObject({ source: 'title-fit', class: 'auto', state: 'queued' });
+      expect(JSON.parse(title.new_json)).toBe(SHORT_C);
+      const w = worker();
+      await runBatch(w);
+      expect(titleOf(ids.C)).toBe(SHORT_C);
+      expect(tagsOf(ids.C)).toEqual(['ファンタジー']);
+      expect(
+        env.cleanupDb
+          .prepare(
+            'SELECT stage, original, written, step FROM calibre_title_fits WHERE calibre_id = ?',
+          )
+          .all(ids.C),
+      ).toEqual([{ stage: 5, original: LONG_C, written: SHORT_C, step: 'shortened' }]);
+      const batchId = (
+        env.cleanupDb
+          .prepare(`SELECT id FROM batches WHERE stage = 5 AND kind = 'apply'`)
+          .get() as {
+          id: string;
+        }
+      ).id;
+      env.service.batches.undo(batchId);
+      await runBatch(w);
+      // The tags go back; the title stays fitted (the original would make a name the disk refuses).
+      expect(tagsOf(ids.C)).toEqual(['ln']);
+      expect(titleOf(ids.C)).toBe(SHORT_C);
+      expect(
+        env.cleanupDb
+          .prepare(
+            `SELECT restore_detail FROM field_undo WHERE calibre_id = ? AND restored_at IS NOT NULL`,
+          )
+          .all(ids.C)
+          .map((x) => (x as { restore_detail: string | null }).restore_detail),
+      ).toContain("The shortened title stays: the original is too long for Calibre's folder names");
+    });
+
+    it("a title you set after the cleanup wrote one is never fitted: the book's changes wait", async () => {
+      env.cleanupDb
+        .prepare(
+          `INSERT INTO applied_values (library_id, calibre_uuid, field, value_json, source, applied_at)
+           VALUES (?, ?, 'title', ?, 'stage4', 1)`,
+        )
+        .run(env.libraryId(), uuidOf(ids.D), JSON.stringify(SHORT_C));
+      tagsChange(ids.D);
+      await env.service.batches.stage5.plan(env.libraryId());
+      expect(rowsOf(ids.D)).toEqual([
+        expect.objectContaining({
+          field: 'tags',
+          class: 'review',
+          review_reason: "Too long for a folder name in Calibre's library",
+        }),
+      ]);
+    });
+
+    it('a first author too long on its own: nothing fitted, the changes wait (bad data)', async () => {
+      tagsChange(ids.E);
+      await env.service.batches.stage5.plan(env.libraryId());
+      expect(rowsOf(ids.E)).toEqual([expect.objectContaining({ field: 'tags', class: 'review' })]);
+    });
   });
 
   it('a book written twice (stage 5 decided again) counts once in the books written', async () => {

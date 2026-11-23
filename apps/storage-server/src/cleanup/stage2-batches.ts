@@ -33,7 +33,8 @@ import { listFieldPauses } from './stage2-gate';
 import { titleSort } from './title-rules';
 import { illustratorIsNames, readStage2Snapshot, type Stage2Book } from './stage2-snapshot';
 import { readStage4Extras, type Stage4Extras } from './stage4/snapshot4';
-import { NAME_MAX_BYTES, calibreNameBytes } from './stage2-rules';
+import { LONG_AUTHOR_REASON, NAME_MAX_BYTES, calibreNameBytes } from './stage2-rules';
+import { fitTitle } from './title-fit';
 import { currentAnalysisId, pauseStage } from './stages';
 import { applyTagChange, sameTags, undoTagChange, type TagChange } from './stage5/decide';
 
@@ -515,24 +516,46 @@ export class Stage2Batches {
     const byUuid = new Map([...snap.books.values()].map((b) => [b.uuid, b]));
     // Stage 4 also checks series, number and description against Calibre now.
     const extras = this.stage === 4 ? readStage4Extras(snapFile) : null;
-    // Every write makes Calibre rebuild the folder and file names (lessons 2): stages 4 and 5.
-    if (this.stage === 4 || this.stage === 5) this.reviewLongNames(byBook, byUuid);
+    // Every write makes Calibre rebuild the folder and file names (lessons 2): a title too long
+    // for them is fitted now, with Calibre's current values, in every stage's batch.
+    const needsTitle = this.fitLongNames(
+      libraryId,
+      opts.analysisId ?? currentAnalysisId(this.db, this.stage),
+      byBook,
+      byUuid,
+    );
     const libDir = this.libDir(libraryId);
     const skip: { id: number; reason: string }[] = [];
     const keep: number[] = [];
+    const hold: number[] = [];
     let changedBooks = 0;
     for (const [uuid, items] of byBook) {
       const book = byUuid.get(uuid);
       let changed = false;
+      const kept: number[] = [];
+      let titleSkipped = false;
       for (const r of items) {
         const ev = JSON.parse(r.evidence_json) as Evidence2;
         const reason = await this.planCheck(book, r, ev, libDir, extras);
         if (reason) {
           skip.push({ id: r.id, reason });
           changed = true;
-        } else keep.push(r.id);
+          if (r.field === 'title') titleSkipped = true;
+        } else kept.push(r.id);
       }
+      // The fitted title is what lets the other fields be written at all: without it, they wait.
+      if (titleSkipped && needsTitle.has(uuid)) hold.push(...kept);
+      else keep.push(...kept);
       if (changed) changedBooks += 1;
+    }
+    if (hold.length > 0) {
+      const mark = this.db.prepare(
+        `UPDATE proposed_changes SET class = 'review', review_reason = ?, updated_at = ? WHERE id = ?`,
+      );
+      const now = Date.now();
+      this.db.transaction(() => {
+        for (const id of hold) mark.run(LONG_NAME_REASON, now, id);
+      })();
     }
     const share = (100 * changedBooks) / Math.max(cap, byBook.size);
     if (changedBooks > 0 && share > settings.libraryChangedPausePercent) {
@@ -562,34 +585,159 @@ export class Stage2Batches {
   }
 
   /**
-   * Stage 4: every write makes Calibre rebuild the book's folder and file names from its title
-   * and first author (lessons 2), so a book whose names would not fit in 255 bytes after this
-   * batch gets none of its fields written: they go to review with the reason, checked now with
-   * Calibre's current values, not only when they were proposed.
+   * Every write makes Calibre rebuild the book's folder and file names from its title and first
+   * author (lessons 2). Checked now with Calibre's current values: when the names would not fit
+   * in 255 bytes, the title is fitted (title-fit.ts; decided with the user 2026-11-22): the
+   * batch's own title change gets the fitted value, or a title change fitted from Calibre's own
+   * title joins the batch (any stage; the only field such a change writes besides the sort).
+   * Review instead, as before, when a first author is too long on its own (bad data; an author
+   * change alone goes to review and the book goes on with Calibre's author), or when Calibre's
+   * title is one the user set after the cleanup wrote one (their correction is never replaced).
+   * Returns the books whose other fields need that title written with them.
    */
-  private reviewLongNames(
-    byBook: Map<string, { id: number; field: string; new_json: string }[]>,
+  private fitLongNames(
+    libraryId: string,
+    analysisId: string | null,
+    byBook: Map<
+      string,
+      {
+        id: number;
+        calibre_id: number;
+        calibre_uuid: string;
+        field: string;
+        old_json: string;
+        new_json: string;
+        evidence_json: string;
+      }[]
+    >,
     byUuid: Map<string, Stage2Book>,
-  ): void {
+  ): Set<string> {
+    const needs = new Set<string>();
     const now = Date.now();
     const mark = this.db.prepare(
       `UPDATE proposed_changes SET class = 'review', review_reason = ?, updated_at = ? WHERE id = ?`,
     );
+    const setTitle = this.db.prepare(
+      `UPDATE proposed_changes SET new_json = ?, evidence_json = ?, updated_at = ? WHERE id = ?`,
+    );
+    const ownTitle = this.db.prepare(
+      `SELECT value_json FROM applied_values WHERE library_id = ? AND calibre_uuid = ? AND field = 'title'`,
+    );
+    const openFit = this.db.prepare(
+      `SELECT id FROM proposed_changes INDEXED BY proposed_changes_book
+       WHERE library_id = ? AND calibre_uuid = ? AND stage = ? AND field = 'title'
+         AND state = 'proposed' AND source = 'title-fit' LIMIT 1`,
+    );
+    const insert = this.db.prepare(
+      `INSERT INTO proposed_changes (stage, library_id, calibre_id, calibre_uuid, field, old_json, new_json,
+         source, evidence_json, class, review_reason, state, analysis_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, 'title', ?, ?, 'title-fit', ?, 'auto', NULL, 'proposed', ?, ?, ?)`,
+    );
+    const STEPS = ['cleaned', 'shortened', 'cut'];
     for (const [uuid, items] of [...byBook]) {
       const book = byUuid.get(uuid);
       if (!book) continue;
       const t = items.find((x) => x.field === 'title');
       const a = items.find((x) => x.field === 'authors');
       const title = t ? (JSON.parse(t.new_json) as string) : book.title;
-      const first = a
-        ? ((JSON.parse(a.new_json) as string[])[0] ?? 'Unknown')
-        : (book.authors[0] ?? 'Unknown');
+      const calFirst = book.authors[0] ?? 'Unknown';
+      let first = a ? ((JSON.parse(a.new_json) as string[])[0] ?? 'Unknown') : calFirst;
       if (calibreNameBytes(book.calibreId, title, first) <= NAME_MAX_BYTES) continue;
-      this.db.transaction(() => {
-        for (const x of items) mark.run(LONG_NAME_REASON, now, x.id);
-      })();
-      byBook.delete(uuid);
+      const holdAll = () => {
+        this.db.transaction(() => {
+          for (const x of items) mark.run(LONG_NAME_REASON, now, x.id);
+        })();
+        byBook.delete(uuid);
+      };
+      if (calibreNameBytes(book.calibreId, '', first) > NAME_MAX_BYTES) {
+        if (!a || calibreNameBytes(book.calibreId, '', calFirst) > NAME_MAX_BYTES) {
+          holdAll();
+          continue;
+        }
+        mark.run(LONG_AUTHOR_REASON, now, a.id);
+        items.splice(items.indexOf(a), 1);
+        first = calFirst;
+        if (calibreNameBytes(book.calibreId, title, first) <= NAME_MAX_BYTES) continue;
+      }
+      const authors = [
+        ...new Set([...book.authors, ...(a ? (JSON.parse(a.new_json) as string[]) : [])]),
+      ];
+      const f = fitTitle(title, { calibreId: book.calibreId, firstAuthor: first, authors });
+      if (f.step === 'none' || f.step === 'author_too_long') {
+        holdAll();
+        continue;
+      }
+      if (t) {
+        const ev = JSON.parse(t.evidence_json) as Evidence2 & {
+          fit?: { from: string; step: string; rules: string[] };
+        };
+        const step =
+          ev.fit && STEPS.indexOf(ev.fit.step) > STEPS.indexOf(f.step) ? ev.fit.step : f.step;
+        ev.fit = {
+          from: ev.fit?.from ?? title,
+          step,
+          rules: [...(ev.fit?.rules ?? []), ...f.rules],
+        };
+        if (ev.extra?.sort) ev.extra.sort = { ...ev.extra.sort, new: titleSort(f.title) };
+        t.new_json = JSON.stringify(f.title);
+        t.evidence_json = JSON.stringify(ev);
+        setTitle.run(t.new_json, t.evidence_json, now, t.id);
+        needs.add(uuid);
+        continue;
+      }
+      // Calibre's own title. One the user set after the cleanup wrote a title is theirs.
+      const own = ownTitle.get(libraryId, uuid) as { value_json: string } | undefined;
+      if (own && (JSON.parse(own.value_json) as string) !== book.title) {
+        holdAll();
+        continue;
+      }
+      const ev = {
+        title: book.title,
+        authors: book.authors,
+        lastModified: book.lastModified,
+        titleFit: true,
+        reason: null,
+        fit: { from: book.title, step: f.step, rules: f.rules },
+        extra: { sort: { old: book.titleSort, new: titleSort(f.title) } },
+      };
+      const row = {
+        calibre_id: book.calibreId,
+        calibre_uuid: uuid,
+        field: 'title',
+        old_json: JSON.stringify(book.title),
+        new_json: JSON.stringify(f.title),
+        evidence_json: JSON.stringify(ev),
+      };
+      const open = openFit.get(libraryId, uuid, this.stage) as { id: number } | undefined;
+      let id: number;
+      if (open) {
+        id = open.id;
+        this.db
+          .prepare(
+            `UPDATE proposed_changes SET old_json = ?, new_json = ?, evidence_json = ?, class = 'auto',
+               review_reason = NULL, updated_at = ? WHERE id = ?`,
+          )
+          .run(row.old_json, row.new_json, row.evidence_json, now, id);
+      } else {
+        id = Number(
+          insert.run(
+            this.stage,
+            libraryId,
+            book.calibreId,
+            uuid,
+            row.old_json,
+            row.new_json,
+            row.evidence_json,
+            analysisId,
+            now,
+            now,
+          ).lastInsertRowid,
+        );
+      }
+      items.unshift({ id, ...row });
+      needs.add(uuid);
     }
+    return needs;
   }
 
   private async planCheck(
@@ -603,7 +751,9 @@ export class Stage2Batches {
     // Stage 5's tags: a change applied to what Calibre holds at the write (a tag added since
     // stays), also on books without an EPUB (removals only): nothing to compare here.
     if (r.field === 'tags') return null;
-    if (!book.filePath) return 'The book has no EPUB in Calibre any more';
+    // A title fitted for Calibre's names (from Calibre's own title) doesn't read the file either.
+    const fromCalibre = r.field === 'title' && (ev as { titleFit?: boolean }).titleFit === true;
+    if (!book.filePath && !fromCalibre) return 'The book has no EPUB in Calibre any more';
     const old = JSON.parse(r.old_json) as unknown;
     const ex = extras?.get(book.calibreId);
     const current: Current = {
@@ -970,6 +1120,19 @@ export class Stage2Batches {
         ([k, v]) => [k, v.old],
       ),
     );
+    // A title fitted for Calibre's names: the original would make a name the disk refuses (the
+    // rename fails and leaves the book half-written, lessons 2), so it stays, like a cover the
+    // content server can't remove; the book's other fields are put back.
+    if (
+      r.field === 'title' &&
+      typeof oldV === 'string' &&
+      calibreNameBytes(r.calibre_id, oldV, cur.authors[0] ?? 'Unknown') > NAME_MAX_BYTES
+    ) {
+      const detail =
+        "The shortened title stays: the original is too long for Calibre's folder names";
+      this.restored(batch, r, cur, detail, now);
+      return push('restored', detail);
+    }
     if (r.field === 'cover') {
       if (!rec.old_cover_path) {
         const detail =

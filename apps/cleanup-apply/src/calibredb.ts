@@ -68,6 +68,17 @@ export const SET_FIELDS = [
   'tags'
 ] as const;
 
+/** A title for `add --title`: one line, no control characters, not an option, not too long. */
+export function isPlainTitle(t: string | undefined): boolean {
+  return (
+    typeof t === 'string' &&
+    t.trim() !== '' &&
+    !t.startsWith('-') &&
+    [...t].length <= 300 &&
+    ![...t].some((c) => c.charCodeAt(0) < 0x20 || c.charCodeAt(0) === 0x7f)
+  );
+}
+
 /** Options never allowed, whatever the subcommand. */
 const FORBIDDEN_ARGS = ['--permanent', '--library-path', '--automerge', '-m'];
 
@@ -176,11 +187,19 @@ export function buildArgs(
         args[0] === '--duplicates' &&
         args[1] === '--one-book-per-directory' &&
         /^(\/|[A-Za-z]:[\\/])/.test(args[2]);
-      const arrival =
-        args.length === 2 &&
+      const arrivalFile = (f: string | undefined) =>
+        !!f && /^(\/|[A-Za-z]:[\\/]).*[\\/]ttsu-arrival-\d+[\\/][^\\/]+\.epub$/i.test(f);
+      const arrival = args.length === 2 && args[0] === '--duplicates' && arrivalFile(args[1]);
+      // 1.4.0: the same add with the title the server fitted for Calibre's folder names (the
+      // file's own would make a name the disk refuses: Calibre keeps the record without the file).
+      const arrivalTitled =
+        args.length === 4 &&
         args[0] === '--duplicates' &&
-        /^(\/|[A-Za-z]:[\\/]).*[\\/]ttsu-arrival-\d+[\\/][^\\/]+\.epub$/i.test(args[1]);
-      if (!readd && !arrival) throw new Error('add takes a quarantined folder or one arrival EPUB');
+        args[1] === '--title' &&
+        isPlainTitle(args[2]) &&
+        arrivalFile(args[3]);
+      if (!readd && !arrival && !arrivalTitled)
+        throw new Error('add takes a quarantined folder or one arrival EPUB');
       return ['add', ...remote, ...args];
     }
     case 'set_tags': {
