@@ -1140,17 +1140,19 @@ export class AudioStage8 {
           const k = titleForm(x.name);
           return k.length >= 2 && (k.includes(ek) || ek.includes(k));
         });
-        const name = own
-          ? own.name
-          : names && names.size
-            ? [...names].sort((a, b) => b[1] - a[1])[0][0]
-            : e.series;
+        // The other recordings' spelling only when this title names it too: theirs can be a
+        // sub-series (とある飛空士への恋歌 under Calibre's 飛空士シリーズ), never this book's.
+        const top = names && names.size ? [...names].sort((a, b) => b[1] - a[1])[0][0] : null;
+        const sibling = top !== null && titleNamesSeries(f.title, top) ? top : null;
+        const name = own ? own.name : (sibling ?? e.series);
         const choice = seriesChoice.get(pr.unit_key);
         if (choice === 'none') continue;
         const pos = e.index;
         let why: string | null = null;
         if (choice !== 'calibre') {
-          if (!titleNamesSeries(f.title, e.series) && !titleNamesSeries(f.title, name))
+          if (!own && top !== null && sibling === null && titleForm(top) !== ek)
+            why = `Other recordings of Calibre's series 「${e.series}」 carry 「${top}」, which this title doesn't name`;
+          else if (!titleNamesSeries(f.title, e.series) && !titleNamesSeries(f.title, name))
             why = `Calibre's series 「${e.series}」 is not named in the recording's title`;
           else if (
             pos !== null &&

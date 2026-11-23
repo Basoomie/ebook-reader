@@ -849,6 +849,60 @@ describe('WP21g stage 8 passes', () => {
     });
   });
 
+  it("the other recordings' series name only when this title names it (とある飛空士への追憶); else review, and your choice takes Calibre's", async () => {
+    const { db, snap, s8 } = setup();
+    makeCalibre(snap, [
+      {
+        id: 1,
+        title: 'とある飛空士への恋歌2',
+        authors: ['犬村小六'],
+        series: '飛空士シリーズ',
+        index: 3,
+        tags: ['ライトノベル'],
+      },
+      {
+        id: 2,
+        title: 'とある飛空士への追憶',
+        authors: ['犬村小六'],
+        series: '飛空士シリーズ',
+        index: 1,
+        tags: ['ライトノベル'],
+      },
+    ]);
+    seedStage5(db, [
+      {
+        key: 'u1',
+        title: 'とある飛空士への恋歌2',
+        authors: ['犬村小六'],
+        series: ser('とある飛空士への恋歌', 2),
+        seriesRules: ser('とある飛空士への恋歌', 2),
+      },
+      {
+        key: 'u2',
+        title: 'とある飛空士への追憶',
+        authors: ['犬村小六'],
+        series: null,
+        seriesSource: 'unknown',
+      },
+    ]);
+    setAudioStageMode(db, 8, 'analyse');
+    await runPass(s8, 1);
+    expect(s8.values().get('u2')?.series).toBeUndefined();
+    expect(s8.list('series-review').items).toMatchObject([
+      {
+        unitKey: 'u2',
+        name: '飛空士シリーズ',
+        reason: expect.stringMatching(/carry 「とある飛空士への恋歌」/),
+      },
+    ]);
+    s8.choose('u2', 'series', 'calibre');
+    await runPass(s8, 2);
+    expect(s8.values().get('u2')).toMatchObject({
+      series: ser('飛空士シリーズ', 1),
+      series_from: 'ebook',
+    });
+  });
+
   it('the overlay only when On and the gate passed; the gate stops an On pass', async () => {
     const { db, snap, s8, labels } = setup();
     makeCalibre(snap, [
