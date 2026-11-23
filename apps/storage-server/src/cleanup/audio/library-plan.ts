@@ -458,6 +458,17 @@ export function planLibraryChanges(input: LibraryPlanInput): PlannedChange[] {
         result[field] = disk[field];
         continue;
       }
+      if (
+        field === 'genres' &&
+        !weChange &&
+        isEmpty(ours[field]) &&
+        (state === 'abs_fill' || state === 'abs_form')
+      ) {
+        // No genres of ours (no exact ebook, WP21g): ABS's fill from the file's genre tag stays,
+        // as it did before genres were ours.
+        result[field] = disk[field];
+        continue;
+      }
       // Not edited: the file holds what we wrote; ours now goes there when it differs from it.
       result[field] = ours[field];
       if (weChange || norm(field, last[field]) !== norm(field, ours[field])) {

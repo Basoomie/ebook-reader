@@ -1729,14 +1729,18 @@ describe('ABS’s own fills are not your edits (the live Preview on a copy, 芥�
     expect(JSON.parse(c.metadataNew!.toString('utf8')).publisher).toBe('あなたの出版社');
   });
 
-  it('fields we never decide (genres, isbn, …) stay as ABS has them and are never yours', () => {
-    const disk = { ...built, genres: ['文学'], isbn: '978-4' };
+  it('fields we never decide (isbn, …) stay as ABS has them and are never yours', () => {
+    const disk = { ...built, isbn: '978-4' };
     const [c] = plan(disk, null);
     expect(c.userFields).toEqual([]);
-    expect(JSON.parse(c.metadataNew!.toString('utf8'))).toMatchObject({
-      genres: ['文学'],
-      isbn: '978-4',
-    });
+    expect(JSON.parse(c.metadataNew!.toString('utf8'))).toMatchObject({ isbn: '978-4' });
+  });
+
+  it('genres are ours since WP21g: a value that is not the file’s genre tag is yours and kept', () => {
+    const disk = { ...built, genres: ['文学'] };
+    const [c] = plan(disk, { genre: '朗読' });
+    expect(c.userFields).toEqual(['genres']);
+    expect(JSON.parse(c.metadataNew!.toString('utf8')).genres).toEqual(['文学']);
   });
 });
 

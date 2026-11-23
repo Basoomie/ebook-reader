@@ -5,7 +5,7 @@
  */
 import Database from 'better-sqlite3';
 import { createHash } from 'crypto';
-import { statSync } from 'fs';
+import { statFileSync } from '../../calibre/source-fs';
 import type { EbookFacts } from './ebook-pair';
 
 export interface EbookBook extends EbookFacts {
@@ -33,8 +33,7 @@ const SEP = '\u001f';
 /** The snapshot file's identity now (one stat). */
 export function snapshotIdentity(file: string): { mtimeMs: number; size: number } | null {
   try {
-    const st = statSync(file);
-    return { mtimeMs: st.mtimeMs, size: st.size };
+    return statFileSync(file);
   } catch {
     return null;
   }

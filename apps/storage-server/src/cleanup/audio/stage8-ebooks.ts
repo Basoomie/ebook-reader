@@ -23,8 +23,7 @@
  */
 import Database from 'better-sqlite3';
 import { createHash } from 'crypto';
-import fs from 'fs';
-import path from 'path';
+import { readSourceFile, resolveInside, statFile } from '../../calibre/source-fs';
 import { gunzipSync } from 'zlib';
 import { DISK_OWNERS, type DiskLock } from '../disk-lock';
 import { getSettings } from '../settings';
@@ -1169,14 +1168,14 @@ export class AudioStage8 {
         const e = w.books.get(r.calibre_id);
         let cover: Record<string, unknown> = { path: null, missing: true };
         if (e?.hasCover) {
-          const rel = path.posix.join(e.path.split(path.sep).join('/'), 'cover.jpg');
-          const file = path.join(cal.libraryDir, rel);
-          if (!path.resolve(file).startsWith(path.resolve(cal.libraryDir) + path.sep))
-            throw new Error('A cover path outside the library');
+          const rel = `${e.path}/cover.jpg`; // Calibre's book paths use '/'
+          // Calibre's own file, read only (calibre/source-fs.ts; it refuses a path that leaves the library).
+          const file = resolveInside(cal.libraryDir, rel);
           try {
-            const st = await fs.promises.stat(file);
+            const st = await statFile(file);
+            if (!st) throw new Error('no cover file');
             const sha = createHash('sha256')
-              .update(await fs.promises.readFile(file))
+              .update(await readSourceFile(file))
               .digest('hex');
             cover = { path: rel, size: st.size, mtimeMs: st.mtimeMs, sha256: sha };
             p.covers.read++;
