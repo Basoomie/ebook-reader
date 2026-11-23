@@ -59,7 +59,7 @@ const garbled = (v: unknown): boolean =>
         : false;
 import type { StoreIds } from './store-links';
 import { seriesKey, spellingOf } from './series-spelling';
-import type { SeriesChoice } from './series-order';
+import { plainVolume, type SeriesChoice } from './series-order';
 import type { Stage4Extras } from './snapshot4';
 
 export const STAGE4_FIELDS = [
@@ -105,7 +105,7 @@ export interface ProposalInput {
   bookmeter: { id: string; stores: StoreIds } | null;
   natively: string | null;
   /** Reading per author name: NDL's, or a generated one. */
-  readings: Map<string, { reading: string; source: 'ndl' | 'generated' }>;
+  readings: Map<string, AuthorReading>;
   cover: CoverCheck | null;
   /** The values the cleanup wrote earlier (applied_values), by field. */
   applied: Map<string, unknown>;
@@ -298,7 +298,8 @@ export function proposeStage4(input: ProposalInput): Stage4Proposal[] {
       p.class === 'auto' &&
       asWritten &&
       WRITTEN_KEPT.has(p.field) &&
-      !(p.field === 'title' && p.source === 'series-order')
+      !(p.field === 'title' && p.source === 'series-order') &&
+      !(p.evidence as { notesOut?: unknown } | undefined)?.notesOut
     ) {
       p.class = 'review';
       p.reason = 'Would replace a value the cleanup wrote';
@@ -599,8 +600,43 @@ export function proposeStage4(input: ProposalInput): Stage4Proposal[] {
     // was written from changed (series-order stop 2: 31 books whose pick changed would have lost
     // ハリー・ポッター #6, 源氏物語 #42, 十津川警部シリーズ #56…). It goes to review.
     const removesWritten = newSeries.name === null && !!writtenName;
+    // A number the series step gives that the book's own decided number (store, rules, models)
+    // doesn't (the live Preview of rules 8, 2026-11-22: numbers read from a subtitle, 「文豪
+    // ストレイドッグス 55Minutes」 4 -> 55, 「…社畜勇者(28)…」 1 -> 28; 「ひめゆり1,2,3」 3.9 -> 1;
+    // 「テイマーさん… 2」 2 -> 1 as a first volume): one source only, to review. The user's
+    // conventions over the series' agreed numbers stay automatic: volumes in parts and arcs
+    // counted straight through, where the book's decided number is the one Calibre has. A number
+    // the cleanup wrote is changed only by those conventions (rules 7; 本好きの下剋上 第五部 IX
+    // written 30, the models asked again said 9).
+    const decidedN = fix.value?.n ?? null;
+    const convention =
+      !!so &&
+      /^the reading order/u.test(so.from) &&
+      decidedN !== null &&
+      decidedN === oldSeries.index;
+    const writtenIndex =
+      input.applied.has('series') &&
+      stillAsWritten('series', input.applied.get('series'), oldSeries) &&
+      oldSeries.index !== null;
+    // A title that prints the number plainly after the name is a source of its own (「闇の皇太子
+    // 19 光と闇のロマンス」: Calibre 18.5): measured right on 25 of 26 labeled books.
+    const titlePrints =
+      !!so &&
+      so.from === 'its own title' &&
+      newSeries.index !== null &&
+      [input.book.title, d.values.t].some(
+        (t) => typeof t === 'string' && plainVolume(t, series!) === newSeries.index,
+      );
+    const loneNumber =
+      !!so &&
+      newSeries.index !== oldSeries.index &&
+      (oldSeries.name !== null || newSeries.index !== null) &&
+      !convention &&
+      !titlePrints &&
+      (newSeries.index !== decidedN || writtenIndex);
     const auto =
       !removesWritten &&
+      !loneNumber &&
       (so ? fse.auto && !so.review : fse.auto && (newSeries.name === null || fix.auto));
     const unconfirmed = so
       ? fse.unconfirmed || so.guess
@@ -626,14 +662,18 @@ export function proposeStage4(input: ProposalInput): Stage4Proposal[] {
           ),
           reason: removesWritten
             ? 'Would remove a series the cleanup wrote'
-            : so
-              ? (so.review ??
-                (fse.unconfirmed || !fse.auto ? fse.reason : so.guess ? so.reason : null))
-              : auto && !unconfirmed
-                ? null
-                : fse.unconfirmed || !fse.auto
-                  ? fse.reason
-                  : fix.reason,
+            : loneNumber && !so?.review && !so?.guess && !fse.unconfirmed
+              ? writtenIndex && newSeries.index === decidedN
+                ? 'Would replace a number the cleanup wrote'
+                : `The series order gives ${newSeries.index ?? 'no number'}; the book's own sources give ${decidedN ?? 'none'}`
+              : so
+                ? (so.review ??
+                  (fse.unconfirmed || !fse.auto ? fse.reason : so.guess ? so.reason : null))
+                : auto && !unconfirmed
+                  ? null
+                  : fse.unconfirmed || !fse.auto
+                    ? fse.reason
+                    : fix.reason,
           evidence:
             so || spelling
               ? {
@@ -851,6 +891,19 @@ export function proposeStage4(input: ProposalInput): Stage4Proposal[] {
   if (names.length && parts.every((p) => p)) {
     const sort = parts.map((p) => p!.reading).join(' & ');
     const generated = parts.some((p) => p!.source === 'generated');
+    // Namesakes NDL reads differently (渡部正和: ワタナベ, ワタベ): which one is meant is a guess.
+    const ambiguous = parts.some((p) => p!.ambiguous);
+    // Calibre's value with NDL's notes left out and nothing else changed ("アオキ, クニコ,
+    // トウゲイカ" written by stage 4 before READINGS_VERSION 1): a correction, written however
+    // sure the reading is (the reading itself stays as it is).
+    const noted = new Map(parts.filter((p) => p!.noted).map((p) => [p!.noted!, p!.reading]));
+    const notesOut =
+      noted.size > 0 &&
+      book.authorSort !== null &&
+      book.authorSort
+        .split(' & ')
+        .map((x) => noted.get(x) ?? x)
+        .join(' & ') === sort;
     if (sort !== book.authorSort) {
       push(
         {
@@ -859,12 +912,22 @@ export function proposeStage4(input: ProposalInput): Stage4Proposal[] {
           new: sort,
           class: 'auto',
           source: generated ? 'generated' : 'ndl',
-          reason: generated ? 'Generated reading: listed for spot checks' : null,
+          reason: notesOut
+            ? null
+            : generated
+              ? 'Generated reading: listed for spot checks'
+              : ambiguous
+                ? 'Namesakes are read differently: listed, not written'
+                : null,
           // A generated reading is a guess (植西聰 would be 「ウエニシ, ソウ」; it is Akira).
           evidence: {
             credit: 'Web NDL Authorities',
             names,
-            ...(generated ? { unconfirmed: true } : {}),
+            ...(notesOut
+              ? { notesOut: true }
+              : generated || ambiguous
+                ? { unconfirmed: true }
+                : {}),
           },
         },
         book.authorSort,
@@ -934,4 +997,14 @@ export function sameText(now: string | null | undefined, next: string): boolean 
   const b = bare(next);
   if (!a || !b) return false;
   return a === b || (a.length >= 40 && b.includes(a)) || (b.length >= 40 && a.includes(b));
+}
+
+/** An author's reading for author_sort (ReadingLookup in analysis.ts). */
+export interface AuthorReading {
+  reading: string;
+  source: 'ndl' | 'generated';
+  /** Namesakes in NDL read the name differently: a best guess. */
+  ambiguous?: boolean;
+  /** The reading as stored before NDL's notes were left out (READINGS_VERSION 1). */
+  noted?: string | null;
 }

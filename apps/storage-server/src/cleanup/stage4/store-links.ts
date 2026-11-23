@@ -323,17 +323,71 @@ export function ndlYomi(yomi: string): string {
 }
 
 /**
+ * The reading of the name itself from one NDL row: NDL's label and reading have the same parts
+ * ("青木, 邦子, 陶芸家" / "アオキ, クニコ, トウゲイカ"), and the parts after the name are notes
+ * telling namesakes apart (a profession, "pub. 2013", "1886- 薬剤師"; the live Preview of
+ * 2026-11-22 found them written into author_sort). The name's parts are the label's first parts
+ * that spell the name; without such a label, the parts with a year and those after the second.
+ */
+export function ndlNameReading(row: NdlRow, name: string): string {
+  // Notes in brackets at the end ("堤 (家)" / "ツツミ (ケ)", "角川書店 (2003年)"), unless the
+  // name ends with one.
+  const paren = /\s*[(（][^()（）]*[)）]\s*$/u;
+  let label = row.label.trim();
+  let yomi = row.yomi.trim();
+  while (!paren.test(nfkc(name)) && paren.test(label) && paren.test(yomi)) {
+    label = label.replace(paren, '');
+    yomi = yomi.replace(paren, '');
+  }
+  // The reading's first k parts as NDL wrote them (its spacing kept).
+  const commas = [...yomi.matchAll(/\s*,\s*/gu)];
+  const cut = (k: number) => pyStrip(k > commas.length ? yomi : yomi.slice(0, commas[k - 1].index));
+  const parts = label.split(/\s*,\s*/u);
+  const squash = (t: string) => nfkc(t).replace(/[\s・･,、]/gu, '');
+  const want = squash(name);
+  if (parts.length === commas.length + 1)
+    for (let k = 1; k <= parts.length; k++)
+      if (squash(parts.slice(0, k).join('')) === want) return cut(k);
+  const second = commas.length
+    ? yomi.slice(commas[0].index! + commas[0][0].length).split(/\s*,\s*/u)[0]
+    : '';
+  return cut(second && !/[0-9]|pub\./u.test(second) ? 2 : 1);
+}
+
+/**
  * The reading for one name from NDL's rows (ndl:transcription @ja-Kana, "ナツメ, ソウセキ,
- * 1867-1916" -> "ナツメ, ソウセキ"). Several authorities with different readings = ambiguous (the
- * 2026-11-13 test found 7 namesakes, all with the same reading).
+ * 1867-1916" -> "ナツメ, ソウセキ"; notes after the name are left out). Namesakes read
+ * differently = ambiguous, a best guess (渡部正和: ワタナベ for one, ワタベ for another): the
+ * reading of the authority with no note first (the name's main entry), else the most common one;
+ * `prefer` (the reading chosen before) when it is one of them. `forms`: each reading as it was
+ * stored before notes were left out (ndlYomi), with the name's own reading.
  */
 export function ndlReading(
   rows: NdlRow[],
   name: string,
-): { reading: string; authority: string; ambiguous: boolean } | null {
+  prefer?: string | null,
+): {
+  reading: string;
+  authority: string;
+  ambiguous: boolean;
+  forms: [string, string][];
+} | null {
   const mine = rows.filter((r) => nfkc(r.name) === nfkc(name));
   if (!mine.length) return null;
-  const key = (y: string) => ndlYomi(y).replace(/[,\s、]/g, '');
-  const readings = new Set(mine.map((r) => key(r.yomi)));
-  return { reading: ndlYomi(mine[0].yomi), authority: mine[0].auth, ambiguous: readings.size > 1 };
+  const key = (y: string) => y.replace(/[,\s、]/gu, '');
+  const read = mine.map((r) => ({ r, reading: ndlNameReading(r, name) }));
+  const counts = new Map<string, number>();
+  for (const x of read) counts.set(key(x.reading), (counts.get(key(x.reading)) ?? 0) + 1);
+  const plain = read.find((x) => key(x.r.label) !== '' && key(x.r.label) === key(nfkc(name)));
+  const common = [...read].sort(
+    (a, b) => (counts.get(key(b.reading)) ?? 0) - (counts.get(key(a.reading)) ?? 0),
+  )[0];
+  const kept = prefer ? read.find((x) => key(x.reading) === key(prefer)) : undefined;
+  const pick = kept ?? plain ?? common;
+  return {
+    reading: pick.reading,
+    authority: pick.r.auth,
+    ambiguous: counts.size > 1,
+    forms: read.map((x) => [ndlYomi(x.r.yomi), x.reading]),
+  };
 }

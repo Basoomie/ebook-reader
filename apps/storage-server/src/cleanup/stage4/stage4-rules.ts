@@ -47,8 +47,11 @@ import {
  * the series order's store title only where it adds just the number; arcs that number again are
  * counted straight through automatically only where their order is sure (the series list, or the
  * arcs' own numbers), from dates alone a best guess (the user, 2026-11-22).
+ * 9 (the live Preview of rules 8, 2026-11-22): author readings without NDL's notes (a profession,
+ * "pub. 2013", "1886- 薬剤師"); a written value that only loses them is corrected; a name whose
+ * namesakes NDL reads differently is a best guess.
  */
-export const STAGE4_RULES_VERSION = 8;
+export const STAGE4_RULES_VERSION = 9;
 
 /** The gold labels' names for the kinds. */
 export type Kind = 'full' | 'sample' | 'bonus' | 'special edition' | 'omnibus';
