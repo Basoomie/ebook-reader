@@ -1025,6 +1025,22 @@ describe('stage 5 On: the tags written through the field-write path', () => {
       ]);
     });
 
+    it('a held best guess is never lifted, whatever its reason says (live 2026-11-22, 54322)', async () => {
+      tagsChange(ids.C);
+      env.cleanupDb
+        .prepare(
+          `UPDATE proposed_changes SET class = 'review', review_reason = ?, evidence_json = '{"unconfirmed":true}'
+           WHERE stage = 5 AND calibre_id = ?`,
+        )
+        .run("Too long for a folder name in Calibre's library", ids.C);
+      setTitleInCalibre(ids.C, SHORT_C);
+      await env.index();
+      await env.service.batches.stage5.plan(env.libraryId());
+      expect(rowsOf(ids.C)).toEqual([
+        expect.objectContaining({ field: 'tags', class: 'review', state: 'proposed' }),
+      ]);
+    });
+
     it('a first author too long on its own: nothing fitted, the changes wait (bad data)', async () => {
       tagsChange(ids.E);
       await env.service.batches.stage5.plan(env.libraryId());

@@ -611,6 +611,9 @@ export class Stage2Batches {
   private nameHoldsCheckedAt = -1;
 
   /**
+   * Only the planner's own holds carry this reason (they were automatic when held); a best guess
+   * (evidence "unconfirmed") is never lifted, whatever its reason says (live 2026-11-22: a stage-4
+   * best guess whose reason the old proposal-time hold had replaced was lifted and written).
    * A change held for "Too long for a folder name" goes back to automatic once the book's names
    * fit in Calibre as it is now (another stage wrote a shorter title: found live 2026-11-22, the
    * stage-5 tags of 6 books held while stage 2's titles were being written). A held title change
@@ -622,7 +625,8 @@ export class Stage2Batches {
       .prepare(
         `SELECT id, calibre_uuid, field, new_json FROM proposed_changes
          WHERE stage = ? AND state = 'proposed' AND class = 'review' AND library_id = ?
-           AND review_reason = ? AND decided_by IS NULL`,
+           AND review_reason = ? AND decided_by IS NULL
+           AND COALESCE(json_extract(evidence_json, '$.unconfirmed'), 0) = 0`,
       )
       .all(this.stage, libraryId, LONG_NAME_REASON) as {
       id: number;

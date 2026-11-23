@@ -447,9 +447,12 @@ export function proposeStage4(input: ProposalInput): Stage4Proposal[] {
   if (title && fitted && (N(fitted) !== N(book.title) || fitted !== book.title)) {
     let cls: 'auto' | 'review' = ft.auto ? 'auto' : 'review';
     let reason = ft.reason;
+    // A first author too long on its own: its own reason (never the planner's "Too long for a
+    // folder name", which lifts once the names fit: it replaced a best guess's reason once, live
+    // 2026-11-22, and the guess was written).
     if (tooLong && calibreNameBytes(book.calibreId, title, firstAuthor) > NAME_MAX_BYTES) {
       cls = 'review';
-      reason = "Too long for a folder name in Calibre's library";
+      reason = LONG_AUTHOR_REASON;
     }
     if (soTitle && !tooLong) {
       // Only the number added: other words a store's title brings are no part of the decision.
