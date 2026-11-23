@@ -43,6 +43,37 @@ export function audioLabelsReader(
   };
 }
 
+export const EBOOK_LABELS_FILENAME = 'ebook-pairs.json';
+
+/** Stage 8 (WP21g): the labeled audiobook-ebook pairs (the gate's file). */
+export function ebookLabelsReader(
+  cleanupDb: Database.Database,
+  dbDir: string | null,
+): () => { text: string | null; error: string | null } {
+  return () => {
+    const configured = getSettings(cleanupDb).gate.audiobookEbookPairsFile;
+    const file =
+      configured ||
+      (dbDir
+        ? path.join(dbDir, 'cleanup', 'reference-sample', 'audio', EBOOK_LABELS_FILENAME)
+        : '');
+    if (!file)
+      return { text: null, error: 'No database folder: the labeled ebook pairs can’t be found' };
+    try {
+      return { text: fs.readFileSync(file, 'utf8'), error: null };
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      return {
+        text: null,
+        error:
+          code === 'ENOENT'
+            ? `The labeled ebook pairs are not there: ${file}`
+            : `${file}: ${(err as Error).message}`,
+      };
+    }
+  };
+}
+
 /**
  * Library paths (relative to the cleanup's library root, e.g. `作者/本/本 (merged).m4b`) of
  * audio files the reader wrote. The reader's paths are relative to AUDIOBOOKS_DIR

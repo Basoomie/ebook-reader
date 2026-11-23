@@ -101,7 +101,8 @@ export type ReviewKind =
   | 'rename_progress'
   | 'ai_path'
   | 'move_edited'
-  | 'abs_unknown';
+  | 'abs_unknown'
+  | 'ebook_series_listening';
 
 export interface PlannedChange {
   bookId: number;
@@ -157,11 +158,12 @@ export interface LibraryPlanInput {
 }
 
 /**
- * The fields stage 5 decides and metadata.json carries. The others (genres, subtitle, isbn, …)
- * we always leave as ABS has them: never written, never counted as yours.
+ * The fields stage 5 (and stage 8: genres, WP21g) decides and metadata.json carries. The others
+ * (subtitle, isbn, …) we always leave as ABS has them: never written, never counted as yours.
  */
 const OUR_FIELDS = new Set([
   'tags',
+  'genres',
   'title',
   'authors',
   'narrators',
@@ -216,6 +218,19 @@ function absFilled(field: string, value: unknown, tags: Record<string, string> |
       return k(value) !== '' && (k(value) === k(tags.album) || k(value) === k(tags.title));
     case 'language':
       return true;
+    case 'genres': {
+      // ABS takes the file's genre tag as one genre ("文学・フィクション・ライトノベル, ライトノベル(ラノベ)":
+      // 4,719 of the 4,724 books with genres in the survey of 2026-11-22).
+      if (!Array.isArray(value) || !value.length) return false;
+      const split = (l: unknown[]) =>
+        l
+          .flatMap((x) => (typeof x === 'string' ? x.split(/[,、，/／;；]/) : []))
+          .map((x) => x.normalize('NFKC').trim())
+          .filter(Boolean)
+          .sort()
+          .join('|');
+      return split(value) !== '' && split(value) === split([tags.genre ?? '']);
+    }
     default:
       return false;
   }
@@ -335,6 +350,11 @@ function without(tree: ExistingTree, folder: string): ExistingTree {
     bookDirs: new Set([...tree.bookDirs].filter(keep)),
     narrators: new Map([...tree.narrators].filter(([d]) => keep(d))),
   };
+}
+
+/** Nobody has progress (unfinished) or a bookmark on the book, as ABS says. */
+function moveSafe(abs: AbsBookState | null): boolean {
+  return abs !== null && (!abs.found || (!abs.inProgress && !abs.finished && abs.bookmarks === 0));
 }
 
 export function planLibraryChanges(input: LibraryPlanInput): PlannedChange[] {
@@ -468,6 +488,13 @@ export function planLibraryChanges(input: LibraryPlanInput): PlannedChange[] {
         change.reviews.push({
           kind: 'move_edited',
           text: `The decided path is ${baseNow}, but you edited ${edited.join(', ')} in Audiobookshelf: the folder stays`,
+        });
+      else if (cur.values.seriesFromEbook && !moveSafe(input.abs(b)) && choices.move !== 'now')
+        // WP21g (decided 2026-11-22): a move the ebook's series causes is never made while anyone
+        // has progress or a bookmark on the book (or ABS can't be asked): review.
+        change.reviews.push({
+          kind: 'ebook_series_listening',
+          text: `It gains the series of its Calibre book and would move to ${baseNow}, but ${input.abs(b) === null ? "Audiobookshelf couldn't be asked whether anyone is listening to it" : 'someone has listening progress or a bookmark on it'}: it moves when you choose "Move now"`,
         });
       else {
         const placed = planArrivals([cur], without(work, b.folder)).books[0];

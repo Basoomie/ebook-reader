@@ -34,6 +34,7 @@ export const SETTABLE = [
   'asin',
   'language',
   'tags',
+  'genres',
 ] as const;
 export type Settable = (typeof SETTABLE)[number];
 
@@ -63,6 +64,7 @@ export function setBody(
     else if (f === 'series') metadata.series = strings(v).map(seriesEntry);
     else if (f === 'authors') metadata.authors = strings(v).map((name) => ({ name }));
     else if (f === 'narrators') metadata.narrators = strings(v);
+    else if (f === 'genres') metadata.genres = strings(v);
     else metadata[f] = typeof v === 'string' && v !== '' ? v : null;
   }
   return tags === undefined ? { metadata } : { metadata, tags };

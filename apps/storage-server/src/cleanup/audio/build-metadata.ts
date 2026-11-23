@@ -8,7 +8,9 @@
  *   guess; an unknown one is null / [].
  * - No `chapters` key: ABS reads the chapters from the files (checked on a scratch ABS).
  * - Only Audible ids go into `asin`; kikubon and audiobook.jp ids stay in cleanup.db.
- * - Tags: ドラマCD and 複数ナレーター (design section 5). Genres come with the second pass.
+ * - Tags: ドラマCD and 複数ナレーター (design section 5); with stage 8 (WP21g) the paired ebook's
+ *   story tags, adaptations and format come first. Genres: the paired ebook's genres and subjects
+ *   (stage 8), else none.
  * - The subtitle stays empty (decided 2026-11-17); covers are left to ABS (embedded art).
  */
 import type { SeriesEntry } from './meta-rules';
@@ -32,6 +34,12 @@ export interface BookValues {
   /** The prefixed store id (audible:…, kikubon:…, audiobookjp:…). */
   storeId: string | null;
   description: string | null;
+  /** Stage 8 (WP21g): the paired ebook's genres and subjects (Japanese labels), else []. */
+  genres: string[];
+  /** Stage 8: the paired ebook's story tags, adaptations and format, else []. */
+  ebookTags: string[];
+  /** Stage 8: the series is the paired ebook's (a move it causes waits while anyone listens). */
+  seriesFromEbook: boolean;
 }
 
 const str = (v: unknown): string | null =>
@@ -70,6 +78,9 @@ export function bookValues(values: Record<string, unknown>, fallbackTitle: strin
     language: str(values.language),
     storeId: str(values.store_id) ?? str(values.record),
     description: str(values.description),
+    genres: strs(values.genres),
+    ebookTags: strs(values.ebook_tags),
+    seriesFromEbook: values.series_from === 'ebook',
   };
 }
 
@@ -87,9 +98,9 @@ export function asinOf(storeId: string | null): string | null {
 
 /** The metadata.json object, keys in ABS's own order. */
 export function absMetadata(v: BookValues): Record<string, unknown> {
-  const tags: string[] = [];
-  if (v.drama) tags.push(TAG_DRAMA);
-  if (v.multiNarrator) tags.push(TAG_MULTI_NARRATOR);
+  const tags: string[] = [...(v.ebookTags ?? [])];
+  if (v.drama && !tags.includes(TAG_DRAMA)) tags.push(TAG_DRAMA);
+  if (v.multiNarrator && !tags.includes(TAG_MULTI_NARRATOR)) tags.push(TAG_MULTI_NARRATOR);
   return {
     tags,
     title: v.title,
@@ -97,7 +108,7 @@ export function absMetadata(v: BookValues): Record<string, unknown> {
     authors: v.authors,
     narrators: v.narrators,
     series: (v.series ?? []).map(absSeries),
-    genres: [],
+    genres: [...(v.genres ?? [])],
     publishedYear: v.year === null ? null : String(v.year),
     publishedDate: null,
     publisher: v.publisher,

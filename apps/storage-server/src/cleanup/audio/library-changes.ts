@@ -1983,8 +1983,10 @@ export class LibraryChanges {
   choose(bookId: number, field: string, choice: string): void {
     const ok =
       (field === 'rename' && choice === 'now') ||
+      (field === 'move' && choice === 'now') ||
       (/^[a-zA-Z]{1,40}$/.test(field) &&
         field !== 'rename' &&
+        field !== 'move' &&
         (choice === 'mine' || choice === 'ours'));
     if (!ok) throw new Error('Not a choice');
     this.db
