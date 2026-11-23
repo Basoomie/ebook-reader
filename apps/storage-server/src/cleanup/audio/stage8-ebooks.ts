@@ -489,38 +489,44 @@ export class AudioStage8 {
     return out;
   }
 
-  /** The key of everything the pass reads besides Calibre (a change pairs again). */
+  /**
+   * The key of everything the pass reads besides Calibre (a change pairs again): stage 5's
+   * recordings, their decided values the pairing and the series rule read (with their sources),
+   * each recording's evidence hash, your choices and the settings. Its content, never stage 5's
+   * analysis id: stage 7's daily run decides stage 5 again every day (WP21g e2e: the daily check
+   * read Calibre every day). Indexed reads only, no evidence unpacked.
+   */
   private audioKey(): string {
-    const s5 = getAudioStage(this.db, 5).progress as {
-      analysisId?: string;
-      rulesKey?: string;
-      askKey?: string;
-      finishedAt?: number;
-    };
-    const c = this.db
-      .prepare('SELECT COUNT(*) AS n, MAX(chosen_at) AS t FROM audio_ebook_choices')
-      .get() as {
-      n: number;
-      t: number | null;
-    };
+    const h = createHash('sha1');
     const st = getSettings(this.db).audiobooks;
-    return createHash('sha1')
-      .update(
-        JSON.stringify([
-          EBOOK_RULES_VERSION,
-          s5.analysisId,
-          s5.rulesKey,
-          s5.askKey,
-          s5.finishedAt,
-          c.n,
-          c.t,
-          st.ebookTitleScore,
-          st.ebookTitleMinChars,
-          st.ebookTitleMinShare,
-        ]),
-      )
-      .digest('hex')
-      .slice(0, 16);
+    h.update(
+      JSON.stringify([
+        EBOOK_RULES_VERSION,
+        st.ebookTitleScore,
+        st.ebookTitleMinChars,
+        st.ebookTitleMinShare,
+      ]),
+    );
+    const rows = (sql: string, ...args: unknown[]) => {
+      h.update('');
+      for (const r of this.db
+        .prepare(sql)
+        .raw()
+        .iterate(...args) as Iterable<unknown[]>)
+        h.update(JSON.stringify(r));
+    };
+    rows(
+      'SELECT unit_key, kind, name FROM audio_meta_units WHERE analysis_id = ? ORDER BY unit_key',
+      stage5Analysis(this.db) ?? '',
+    );
+    rows(
+      `SELECT item_key, field, value_json, source, rules_json FROM ai_values WHERE stage = 'audio5'
+         AND field IN ('title', 'authors', 'series', 'drama', 'record', 'store_id')
+       ORDER BY item_key, field`,
+    );
+    rows(`SELECT item_key, evidence_hash FROM ai_items WHERE stage = 'audio5' ORDER BY item_key`);
+    rows('SELECT unit_key, field, value_json FROM audio_ebook_choices ORDER BY unit_key, field');
+    return h.digest('hex').slice(0, 16);
   }
 
   /** Starts a pass for a stage-7 run (the run calls step() until 'done'). */

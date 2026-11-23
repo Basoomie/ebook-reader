@@ -1042,3 +1042,41 @@ describe("a book that gains a series named as itself (found in WP21g's e2e)", ()
     ]);
   });
 });
+
+describe("the daily check is one look when nothing changed (found in WP21g's e2e)", () => {
+  it('stage 5 decided again with the same values (a new analysis) is not a change; a changed value is', async () => {
+    const dir = makeTempDir('wp21g-key');
+    cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const s = initCleanupDatabase(dir);
+    if (!s.ok) throw new Error(s.error);
+    const db = s.db;
+    cleanups.push(() => db.close());
+    const snap = path.join(dir, 'snapshot.db');
+    makeCalibre(snap, [{ id: 1, title: '乳と卵', authors: ['川上未映子'], tags: ['小説'] }]);
+    const s8 = new AudioStage8({
+      db,
+      lock: new DiskLock(),
+      calibre: () => ({ libraryId: 'lib1', snapshotFile: snap, libraryDir: dir }),
+      readLabels: () => ({ text: JSON.stringify({ books: [] }), error: null }),
+    });
+    seedStage5(db, [{ key: 'u1', title: '乳と卵', authors: ['川上未映子'] }]);
+    setAudioStageMode(db, 8, 'analyse');
+    await runPass(s8, 1);
+    expect(s8.values().get('u1')?.genres).toBeUndefined();
+    // Stage 7's next daily run: stage 5 decided again, the same values under a new analysis.
+    db.prepare(
+      "INSERT INTO audio_meta_units (analysis_id, unit_key, name, kind, state, updated_at) SELECT 'a5b', unit_key, name, kind, state, updated_at + 1 FROM audio_meta_units WHERE analysis_id = 'a5'",
+    ).run();
+    db.prepare('UPDATE audio_stages SET progress_json = ? WHERE stage = 5').run(
+      JSON.stringify({ analysisId: 'a5b', stage4Id: 'a4b', phase: 'done', finishedAt: Date.now() }),
+    );
+    await runPass(s8, 2);
+    expect(s8.progress()!.reason).toMatch(/Nothing changed/);
+    // A value changed: paired again.
+    db.prepare(
+      "UPDATE ai_values SET value_json = '\"乳と卵 新装版\"' WHERE stage = 'audio5' AND item_key = 'u1' AND field = 'title'",
+    ).run();
+    await runPass(s8, 3);
+    expect(s8.progress()!.reason).toMatch(/recordings/);
+  });
+});
