@@ -923,6 +923,79 @@ describe('the fixed engine', () => {
     expect(r.pieces('帝人くん')).toEqual([{ t: '帝人', r: 'みかど' }, { t: 'くん' }]);
   });
 
+  it('reads a word’s furigana where the book prints it, kanji by kanji too', () => {
+    const s = (text: string, ruby: [string, string, number?][], position: number) => ({
+      text,
+      reading: text,
+      position,
+      paragraphEnd: true,
+      ruby: ruby.map(([base, rt, from]) => {
+        const start = text.indexOf(base, from ?? 0);
+        return { start, end: start + base.length, rt };
+      }),
+    });
+    const script: BookScript = {
+      version: 3,
+      characters: 40,
+      chapters: [
+        {
+          index: 0,
+          title: '一章',
+          startCharacter: 0,
+          characters: 40,
+          sentences: [
+            s(
+              '王都は北邦の瑪瑙と呼ばれる。',
+              [
+                ['北', 'ほつ'],
+                ['邦', 'ぽう'],
+                ['瑪', 'め'],
+                ['瑙', 'のう'],
+              ],
+              0,
+            ),
+            s(
+              '白貂の毛。白い結婚まで待つ。',
+              [
+                ['白', 'はく'],
+                ['貂', 'てん'],
+                ['白', 'しろ', 5],
+                ['結', 'けつ'],
+                ['婚', 'こん'],
+              ],
+              10,
+            ),
+            s('白金と白銀。', [['白', 'はく']], 20),
+          ],
+        },
+      ],
+    };
+    const r = new RubyIndex(script);
+    expect(r.pieces('北邦の瑪瑙')).toEqual([
+      { t: '北', r: 'ほつ' },
+      { t: '邦', r: 'ぽう' },
+      { t: 'の' },
+      { t: '瑪', r: 'め' },
+      { t: '瑙', r: 'のう' },
+    ]);
+    // 白 is read where 白い結婚 is printed (しろ), not where the book gives 白 elsewhere (はく).
+    expect(r.pieces('白い結婚')).toEqual([
+      { t: '白', r: 'しろ' },
+      { t: 'い' },
+      { t: '結', r: 'けつ' },
+      { t: '婚', r: 'こん' },
+    ]);
+    // Each name of a heading on its own; the separators stay as they are.
+    expect(
+      r
+        .pieces('白い結婚／北邦の瑪瑙')
+        ?.map((p) => p.t)
+        .join(''),
+    ).toBe('白い結婚／北邦の瑪瑙');
+    // A word the book prints only without ruby on every kanji gets none from this.
+    expect(r.pieces('白銀')).toBeNull();
+  });
+
   it('the real import gives readings from its own ruby', async () => {
     const dir = makeTempDir('sum-ruby');
     const xhtml = (body: string) =>

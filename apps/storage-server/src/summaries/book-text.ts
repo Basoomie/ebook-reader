@@ -151,6 +151,9 @@ export function placeOf(book: BookText, position: number): { chapter: number; pe
 export type RubyPiece = { t: string; r?: string };
 
 const KANJI = /[\p{Unified_Ideograph}々〆ヶ]/u;
+/** What separates the names in a heading (フェル(フェルディア), 紅龍師団・黒龍師団, …). */
+const NAME_SEPARATORS = /([()（）［］[\]／/・、,，＆&]+)/;
+const NAME_SEPARATORS_ONE = /^[()（）［］[\]／/・、,，＆&]+$/;
 
 /**
  * The book's furigana (ruby) by the text it sits on, from the reader's import. A name or term
@@ -161,10 +164,16 @@ const KANJI = /[\p{Unified_Ideograph}々〆ヶ]/u;
 export class RubyIndex {
   private readonly readings = new Map<string, Map<string, number>>();
   private longest = 0;
+  /** Sentences with ruby, to read a word's furigana where the book prints that word. */
+  private readonly withRuby: {
+    text: string;
+    ruby: { start: number; end: number; rt: string }[];
+  }[] = [];
 
   constructor(script: BookScript) {
     for (const c of script.chapters)
-      for (const s of c.sentences)
+      for (const s of c.sentences) {
+        if (s.ruby?.length) this.withRuby.push({ text: s.text, ruby: s.ruby });
         for (const r of s.ruby ?? []) {
           const base = s.text.slice(r.start, r.end);
           if (!base || !r.rt || !KANJI.test(base)) continue;
@@ -173,6 +182,79 @@ export class RubyIndex {
           this.readings.set(base, m);
           this.longest = Math.max(this.longest, [...base].length);
         }
+      }
+  }
+
+  /**
+   * The furigana of a word where the book prints it: every kanji of the word under ruby that
+   * lies inside the word (books that give ruby kanji by kanji, 北(ほつ)邦(ぽう)の瑪(め)瑙(のう),
+   * included). Where the book prints it with different readings, the most frequent wins.
+   */
+  private inPlace(word: string): RubyPiece[] | null {
+    if (!KANJI.test(word)) return null;
+    const found = new Map<string, { pieces: RubyPiece[]; n: number }>();
+    for (const s of this.withRuby) {
+      for (let at = s.text.indexOf(word); at >= 0; at = s.text.indexOf(word, at + 1)) {
+        const end = at + word.length;
+        const spans = s.ruby
+          .filter((r) => r.start >= at && r.end <= end && r.rt)
+          .sort((a, b) => a.start - b.start);
+        const covered = new Set<number>();
+        for (const r of spans) for (let k = r.start; k < r.end; k++) covered.add(k);
+        let whole = true;
+        for (let k = at; k < end; k++) if (KANJI.test(s.text[k]) && !covered.has(k)) whole = false;
+        if (!whole) continue;
+        const pieces: RubyPiece[] = [];
+        let k = at;
+        for (const r of spans) {
+          if (r.start > k) pieces.push({ t: s.text.slice(k, r.start) });
+          pieces.push({ t: s.text.slice(r.start, r.end), r: r.rt });
+          k = r.end;
+        }
+        if (k < end) pieces.push({ t: s.text.slice(k, end) });
+        const key = JSON.stringify(pieces);
+        const f = found.get(key) ?? { pieces, n: 0 };
+        f.n++;
+        found.set(key, f);
+      }
+    }
+    let best: { pieces: RubyPiece[]; n: number } | null = null;
+    for (const [, f] of [...found.entries()].sort((a, b) => (a[0] < b[0] ? -1 : 1)))
+      if (!best || f.n > best.n) best = f;
+    return best?.pieces ?? null;
+  }
+
+  /**
+   * A heading split into pieces with readings, or null when no piece has one. Each name in the
+   * heading (namesIn) is read where the book prints it; failing that, from ruby the book gives the
+   * same text elsewhere.
+   */
+  pieces(heading: string): RubyPiece[] | null {
+    const out: RubyPiece[] = [];
+    let any = false;
+    const plain = (t: string) => {
+      const last = out[out.length - 1];
+      if (last && last.r === undefined) last.t += t;
+      else out.push({ t });
+    };
+    for (const part of heading.split(NAME_SEPARATORS)) {
+      if (!part) continue;
+      if (NAME_SEPARATORS_ONE.test(part)) {
+        plain(part);
+        continue;
+      }
+      const p = this.inPlace(part) ?? this.fromBases(part);
+      if (!p) {
+        plain(part);
+        continue;
+      }
+      any = true;
+      for (const x of p) {
+        if (x.r === undefined) plain(x.t);
+        else out.push(x);
+      }
+    }
+    return any ? out : null;
   }
 
   /** The reading the book gives `base` most often, or null. */
@@ -189,8 +271,8 @@ export class RubyIndex {
     return best;
   }
 
-  /** A heading split into pieces with readings, or null when no piece has one. */
-  pieces(text: string): RubyPiece[] | null {
+  /** A text split into pieces with readings from ruby the book gives that text anywhere. */
+  private fromBases(text: string): RubyPiece[] | null {
     const chars = [...text];
     const out: RubyPiece[] = [];
     const plain = (t: string) => {
@@ -265,7 +347,8 @@ export function cleanWritten(text: string, lang: string, paragraphs: boolean): s
  */
 export function namesIn(heading: string): string[] {
   return heading
-    .split(/[()（）［］[\]／/・、,，＆&]+/)
+    .split(NAME_SEPARATORS)
+    .filter((p) => !NAME_SEPARATORS_ONE.test(p))
     .map((p) => p.trim())
     .filter(Boolean);
 }
