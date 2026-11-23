@@ -27,11 +27,14 @@
         : ''}</span
     >
   </span>
-  <span class="text-c-muted">
-    Stage 4 decided: {m.book.title ?? ''} · {m.book.authors.join(', ')}{series
-      ? ` · ${series}`
-      : ''}{m.book.format ? ` · ${m.book.format}` : ''}
-  </span>
+  {#if m.book.title}
+    <span class="text-c-muted">
+      Stage 4 decided: {m.book.title} · {m.book.authors.join(', ')}{series ? ` · ${series}` : ''}{m
+        .book.format
+        ? ` · ${m.book.format}`
+        : ''}
+    </span>
+  {/if}
   <span>
     Bookmeter:
     <a class="underline" href={m.result.url} target="_blank" rel="noopener noreferrer"

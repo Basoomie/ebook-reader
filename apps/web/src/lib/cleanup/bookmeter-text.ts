@@ -228,5 +228,8 @@ export function sourceText(m: BookmeterMatch): string {
 export function addedText(m: BookmeterMatch): string {
   const a = m.proposal?.added ?? {};
   const keys = Object.keys(a);
-  return keys.length ? keys.map((k) => `${k} ${a[k]}`).join(', ') : 'nothing to add';
+  if (keys.length) return keys.map((k) => `${k} ${a[k]}`).join(', ');
+  return m.proposal
+    ? 'nothing to add'
+    : 'nothing (store links you edited, or nothing new for this book)';
 }

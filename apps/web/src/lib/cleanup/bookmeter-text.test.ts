@@ -101,6 +101,8 @@ describe('More Bookmeter matches: the card text', () => {
     } as unknown as BookmeterMatch;
     expect(sourceText(m)).toBe('the second search (title and author)');
     expect(addedText(m)).toBe('bookmeter 44, isbn 978');
-    expect(addedText({ ...m, proposal: null })).toBe('nothing to add');
+    expect(addedText({ ...m, proposal: null })).toBe(
+      'nothing (store links you edited, or nothing new for this book)'
+    );
   });
 });
