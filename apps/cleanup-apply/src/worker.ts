@@ -52,7 +52,7 @@ import { ArrivalWorker } from './arrivals';
  * 1.2.0 (WP20f): stage 5 batches write the tags the same way.
  * 1.3.0 (WP20g): the import's add batches and their Undo (arrivals.ts).
  */
-export const SIDECAR_VERSION = '1.3.0';
+export const SIDECAR_VERSION = '1.4.0';
 
 /** The stages whose batches write fields per book (verify / written), not remove copies. */
 const fieldStage = (stage: number) => stage === 2 || stage === 4 || stage === 5;

@@ -2059,6 +2059,78 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
   },
   {
     version: 26,
+    name: 'titles too long for a Calibre folder: fitted, and the list of shortened titles',
+    // Decided with the user 2026-11-22: a title whose Calibre folder or file name would pass 255
+    // bytes is cleaned, shortened or cut (title-fit.ts) instead of being held for review. Every
+    // title change that was shortened or cut is listed (calibre_title_fits), filled from the
+    // proposal's own evidence ($.fit) by triggers, so every stage's proposals land on the list;
+    // a new arrival's add is listed by the run (arrival_file_id). Cleaned-only titles are not
+    // listed. One-time: the holds that were automatic before are open again (stage 2's and 5's
+    // proposals held for the name; the arrivals' files held as too long). Stage 4's held books
+    // are decided again by stage 4's own one-time pass (TITLE_FIT_VERSION): its hold replaced
+    // the class they had, so they are not simply made automatic here.
+    sql: `
+      CREATE TABLE calibre_title_fits (
+        id              INTEGER PRIMARY KEY,
+        change_id       INTEGER UNIQUE,
+        arrival_file_id INTEGER UNIQUE,
+        library_id      TEXT NOT NULL,
+        calibre_id      INTEGER,
+        calibre_uuid    TEXT,
+        stage           INTEGER NOT NULL,
+        original        TEXT NOT NULL,
+        written         TEXT NOT NULL,
+        step            TEXT NOT NULL CHECK (step IN ('shortened', 'cut')),
+        rules_json      TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(rules_json)),
+        created_at      INTEGER NOT NULL,
+        updated_at      INTEGER NOT NULL
+      );
+      CREATE INDEX calibre_title_fits_book ON calibre_title_fits (library_id, calibre_uuid);
+
+      CREATE TRIGGER calibre_title_fits_insert AFTER INSERT ON proposed_changes
+      WHEN NEW.field = 'title' AND json_extract(NEW.evidence_json, '$.fit.step') IN ('shortened', 'cut')
+      BEGIN
+        INSERT OR REPLACE INTO calibre_title_fits (change_id, library_id, calibre_id, calibre_uuid,
+          stage, original, written, step, rules_json, created_at, updated_at)
+        VALUES (NEW.id, NEW.library_id, NEW.calibre_id, NEW.calibre_uuid, NEW.stage,
+          json_extract(NEW.evidence_json, '$.fit.from'), json_extract(NEW.new_json, '$'),
+          json_extract(NEW.evidence_json, '$.fit.step'),
+          COALESCE(json_extract(NEW.evidence_json, '$.fit.rules'), '[]'),
+          NEW.created_at, NEW.updated_at);
+      END;
+
+      CREATE TRIGGER calibre_title_fits_update AFTER UPDATE OF new_json, evidence_json ON proposed_changes
+      WHEN NEW.field = 'title'
+      BEGIN
+        DELETE FROM calibre_title_fits WHERE change_id = NEW.id
+          AND COALESCE(json_extract(NEW.evidence_json, '$.fit.step'), '') NOT IN ('shortened', 'cut');
+        INSERT OR REPLACE INTO calibre_title_fits (change_id, library_id, calibre_id, calibre_uuid,
+          stage, original, written, step, rules_json, created_at, updated_at)
+        SELECT NEW.id, NEW.library_id, NEW.calibre_id, NEW.calibre_uuid, NEW.stage,
+          json_extract(NEW.evidence_json, '$.fit.from'), json_extract(NEW.new_json, '$'),
+          json_extract(NEW.evidence_json, '$.fit.step'),
+          COALESCE(json_extract(NEW.evidence_json, '$.fit.rules'), '[]'),
+          NEW.created_at, NEW.updated_at
+        WHERE json_extract(NEW.evidence_json, '$.fit.step') IN ('shortened', 'cut');
+      END;
+
+      CREATE TRIGGER calibre_title_fits_delete AFTER DELETE ON proposed_changes
+      WHEN OLD.field = 'title'
+      BEGIN
+        DELETE FROM calibre_title_fits WHERE change_id = OLD.id;
+      END;
+
+      UPDATE proposed_changes SET class = 'auto', review_reason = NULL
+      WHERE stage IN (2, 5) AND state = 'proposed' AND class = 'review' AND decided_by IS NULL
+        AND review_reason LIKE 'Too long for a folder name%';
+
+      UPDATE calibre_arrival_files SET outcome = 'pending', detail = NULL
+      WHERE outcome = 'too_long' AND gone_at IS NULL;
+      DELETE FROM calibre_arrival_reviews WHERE kind = 'too_long' AND decision IS NULL;
+    `,
+  },
+  {
+    version: 27,
     name: 'audiobooks stage 8: the second pass from the Calibre ebooks',
     // Stage 8 (src/cleanup/audio/stage8-ebooks.ts, WP21g): each audiobook recording (stage 5's
     // units; AI books, radio clips and drama CDs left out) paired with its exact Calibre volume by

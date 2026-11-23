@@ -35,6 +35,8 @@ export interface ArrivalItem {
   size: number;
   sha256: string;
   title: string;
+  /** add (1.4.0): the title Calibre gets instead of the file's (its names would be too long). */
+  addTitle?: string | null;
   /** undo_add: the book to take out again. */
   calibreId: number | null;
   uuid: string | null;
@@ -199,7 +201,11 @@ export class ArrivalWorker {
       await this.o.api.reportArrival(item.itemId, { step: 'adding' });
       let book: { id: number; uuid: string } | null = null;
       try {
-        const r = await this.o.calibredb.ok('add', login, ['--duplicates', tmp]);
+        const r = await this.o.calibredb.ok(
+          'add',
+          login,
+          item.addTitle ? ['--duplicates', '--title', item.addTitle, tmp] : ['--duplicates', tmp]
+        );
         const m = /Added book ids?:\s*([\d,\s]+)/i.exec(r.stdout);
         const id = m ? Number(m[1].split(',')[0].trim()) : NaN;
         book = Number.isInteger(id) ? await this.o.calibredb.book(login, id) : null;

@@ -14,8 +14,8 @@
  *   query   := term (whitespace term)*        whitespace includes U+3000
  *   term    := ["-"] (filter | regex | text)  terms combine with AND; "-" negates
  *   filter  := field (":" | "：") value       field names ignore case
- *   field   := author | series | tag | chars | status | favorite | on
- *   author/series/tag value := ["="] item ("," item)*   "=" exact; "," = any of
+ *   field   := author | illustrator | series | tag | chars | status | favorite | on
+ *   author/illustrator/series/tag value := ["="] item ("," item)*   "=" exact; "," = any of
  *   item    := "quoted" | /regex/[i] | bare  (a quoted item is never split at commas)
  *   chars   := [<|<=|>|>=|=] N  |  N-N       N: digits, "," or "_" separators, "k" = 1000
  *   status  := unread|reading|completed|dropped ("," = any of)
@@ -42,7 +42,7 @@ export const QUERY_LIMITS = {
 export const QUERY_STATUSES = ['unread', 'reading', 'completed', 'dropped'] as const;
 export type QueryStatus = (typeof QUERY_STATUSES)[number];
 
-export type TextField = 'author' | 'series' | 'tag';
+export type TextField = 'author' | 'illustrator' | 'series' | 'tag';
 
 export type Matcher =
   | { kind: 'text'; value: string; exact: boolean }
@@ -56,9 +56,9 @@ interface TermBase {
 }
 
 export type QueryTerm =
-  /** Plain text or a bare /regex/: title, any author name or the series name. */
+  /** Plain text or a bare /regex/: title, any author or illustrator name or the series name. */
   | (TermBase & { type: 'any'; matcher: Matcher })
-  /** author: / series: / tag: with one or more alternatives (any of them). */
+  /** author: / illustrator: / series: / tag: with one or more alternatives (any of them). */
   | (TermBase & { type: 'field'; field: TextField; matchers: Matcher[] })
   /** chars: inclusive bounds; null = open. */
   | (TermBase & { type: 'chars'; min: number | null; max: number | null })
@@ -91,10 +91,21 @@ class QueryError extends Error {
   }
 }
 
-const FIELDS = ['author', 'series', 'tag', 'chars', 'status', 'favorite', 'on'] as const;
+const FIELDS = [
+  'author',
+  'illustrator',
+  'series',
+  'tag',
+  'chars',
+  'status',
+  'favorite',
+  'on'
+] as const;
 type Field = (typeof FIELDS)[number];
 
-const FIELD_RE = /^(author|series|tag|chars|status|favorite|on)[:：]/i;
+const FIELD_RE = /^(author|illustrator|series|tag|chars|status|favorite|on)[:：]/i;
+/** Characters FIELD_RE needs to see: the longest field name and its colon. */
+const FIELD_LOOKAHEAD = Math.max(...FIELDS.map((f) => f.length)) + 1;
 
 function isSpace(ch: string | undefined): boolean {
   return ch !== undefined && /\s/.test(ch);
@@ -356,7 +367,7 @@ function parseTerm(s: Scanner): QueryTerm | null {
     s.pos += 1;
     if (s.done || isSpace(s.peek())) return null;
   }
-  const fieldMatch = FIELD_RE.exec(s.text.slice(s.pos, s.pos + 9));
+  const fieldMatch = FIELD_RE.exec(s.text.slice(s.pos, s.pos + FIELD_LOOKAHEAD));
   if (fieldMatch) {
     s.pos += fieldMatch[0].length;
     return parseField(s, fieldMatch[1].toLowerCase() as Field, negated, start);

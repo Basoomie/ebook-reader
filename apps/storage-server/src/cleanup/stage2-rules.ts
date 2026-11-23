@@ -19,6 +19,10 @@ import {
   repeatsItself,
   titleSort,
 } from './title-rules';
+import { NAME_MAX_BYTES, calibreNameBytes } from './calibre-names';
+import { fitTitle } from './title-fit';
+
+export { NAME_MAX_BYTES, calibreNameBytes };
 
 export const STAGE2_FIELDS = [
   'title',
@@ -113,6 +117,15 @@ export interface FieldProposal {
   reason: string | null;
   /** Extra values written with this field (title: sort; authors: author_sort). */
   extra?: Record<string, { old: unknown; new: unknown }>;
+  /** A title too long for Calibre's names, fitted (title-fit.ts): what it was and how. */
+  fit?: TitleFitNote;
+}
+
+/** How a title too long for Calibre's names was fitted (kept with the proposal's evidence). */
+export interface TitleFitNote {
+  from: string;
+  step: 'cleaned' | 'shortened' | 'cut';
+  rules: string[];
 }
 
 /** Existing spelling of a shared name (author, publisher, #illustrator), matched ignoring case. */
@@ -231,8 +244,7 @@ function titleProposals(cal: CalibreFacts, file: FileFacts): FieldProposal[] {
   let fileProblem: string | null = null;
   if (looksLikeMojibake(raw)) fileProblem = "The file's title is garbled (wrong text encoding)";
   else if (fileClean === '') fileProblem = 'The file has no title';
-  else if (repeatsItself(fileClean))
-    fileProblem = "The file's title says itself twice (series name added)";
+  else if (repeatsItself(fileClean)) fileProblem = REPEAT_REASON;
 
   if (group === 'unknown' || group === 'processed') {
     if (fileProblem) {
@@ -481,55 +493,87 @@ function illustratorProposal(
   };
 }
 
-/**
- * The longest file or folder name the NAS's disks accept, in bytes (Linux NAME_MAX). Calibre
- * doesn't check it: a title or first author that makes a longer name is refused by the disk
- * ("File name too long", seen on the NAS 2026-11-14), after Calibre already took the title.
- */
-export const NAME_MAX_BYTES = 255;
-/** calibre's PATH_LIMIT on Linux (db/backend.py). */
-const CALIBRE_PATH_LIMIT = 100;
-/** calibre reserves room for the longest format name (ORIGINAL_EPUB). */
-const CALIBRE_EXT_LEN = 14;
-
-const cut = (s: string, n: number) => [...s].slice(0, n).join('');
-const bytes = (s: string) => Buffer.byteLength(s, 'utf8');
+export const REPEAT_REASON = "The file's title says itself twice (series name added)";
+export const LONG_AUTHOR_REASON =
+  "The first author alone is too long for a folder name in Calibre's library";
 
 /**
- * The longest name Calibre would make for a book with this title and first author
- * (construct_path_name / construct_file_name of calibre 9.18), in bytes. Worst case: the
- * NAS's Calibre keeps Japanese characters in names (3 bytes each); one that transliterates
- * makes shorter ones.
+ * Every write makes Calibre rename the book's folder and file from its title and first author
+ * (lessons 2). When those names would be too long for the disk, the title is fitted (cleaned,
+ * shortened or cut: title-fit.ts) instead of going to review: the title change stage 2 proposes,
+ * or Calibre's own title when stage 2 proposes none. A title that fits is never touched (user,
+ * 2026-11-22). A first author too long on its own is bad data: that author change goes to review,
+ * and with Calibre's own first author too long nothing is fitted (review, as before).
  */
-export function calibreNameBytes(calibreId: number, title: string, firstAuthor: string): number {
-  const idPart = ` (${calibreId})`;
-  const l = CALIBRE_PATH_LIMIT - Math.floor(idPart.length / 2) - 2;
-  const folder = cut(title.trimStart(), l).trimEnd() + idPart;
-  const authorFolder = cut(firstAuthor, l).replace(/[ .]+$/u, '');
-  const l2 = Math.floor((CALIBRE_PATH_LIMIT - CALIBRE_EXT_LEN - 2) / 2);
-  const file = `${cut(title.trimStart(), l2).trimEnd()} - ${cut(firstAuthor, l2)}.original_epub`;
-  return Math.max(bytes(folder), bytes(authorFolder), bytes(file));
-}
-
-/**
- * A title or authors change makes Calibre rename the book's folder and file: one whose new
- * name the disk would refuse goes to review instead (the title first, then the authors).
- */
-function keepNamesShort(cal: CalibreFacts, out: FieldProposal[], calibreId: number): void {
-  const tooLong = () => {
-    const title = valueAfterAuto('title', cal, out) as string;
-    const authors = valueAfterAuto('authors', cal, out) as string[];
-    return calibreNameBytes(calibreId, title, authors[0] ?? 'Unknown');
-  };
-  for (const field of ['title', 'authors'] as const) {
-    const n = tooLong();
-    if (n <= NAME_MAX_BYTES) return;
+function keepNamesShort(
+  cal: CalibreFacts,
+  file: FileFacts,
+  out: FieldProposal[],
+  calibreId: number,
+): void {
+  const first = () => (valueAfterAuto('authors', cal, out) as string[])[0] ?? 'Unknown';
+  const bytes = () =>
+    calibreNameBytes(calibreId, valueAfterAuto('title', cal, out) as string, first());
+  const anyLong = out.some(
+    (p) =>
+      p.field === 'title' && calibreNameBytes(calibreId, p.new as string, first()) > NAME_MAX_BYTES,
+  );
+  if (bytes() <= NAME_MAX_BYTES && !anyLong) return;
+  const longReason = (n: number) =>
+    `Too long for a folder name in Calibre's library (${n} bytes; the disk takes ${NAME_MAX_BYTES})`;
+  if (calibreNameBytes(calibreId, '', first()) > NAME_MAX_BYTES) {
     for (const p of out) {
-      if (p.field !== field || p.class !== 'auto') continue;
+      if (p.field !== 'authors' || p.class !== 'auto') continue;
       p.class = 'review';
-      p.reason = `Too long for a folder name in Calibre's library (${n} bytes; the disk takes ${NAME_MAX_BYTES})`;
+      p.reason = LONG_AUTHOR_REASON;
     }
   }
+  const author = first();
+  if (calibreNameBytes(calibreId, '', author) > NAME_MAX_BYTES) {
+    const n = bytes();
+    for (const p of out) {
+      if (p.field !== 'title' || p.class !== 'auto') continue;
+      p.class = 'review';
+      p.reason = longReason(n);
+    }
+    return;
+  }
+  const authors = [...new Set([...fileAuthors(file), ...cal.authors])];
+  const fit = (p: FieldProposal) => {
+    const from = p.new as string;
+    const f = fitTitle(from, { calibreId, firstAuthor: author, authors });
+    if (f.step === 'none' || f.step === 'author_too_long') return f;
+    p.new = f.title;
+    p.extra = { ...(p.extra ?? {}), sort: { old: cal.titleSort, new: titleSort(f.title) } };
+    p.fit = { from, step: f.step, rules: f.rules };
+    return f;
+  };
+  // Every title change whose value is too long carries the fitted value (one in review too, so
+  // that approving it writes a title the disk takes); a title said twice that the fit made whole
+  // is no longer a problem.
+  for (const p of out) {
+    if (p.field !== 'title') continue;
+    if (calibreNameBytes(calibreId, p.new as string, author) <= NAME_MAX_BYTES) continue;
+    const f = fit(p);
+    if (p.class === 'review' && p.reason === REPEAT_REASON && f.rules.includes('repeat')) {
+      p.class = 'auto';
+      p.reason = null;
+    }
+  }
+  if (bytes() <= NAME_MAX_BYTES) return;
+  // No automatic title change: Calibre's own title is fitted.
+  const own: FieldProposal = {
+    field: 'title',
+    old: cal.title,
+    new: cal.title,
+    class: 'auto',
+    source: 'normalize',
+    group: titleGroup(cal, file),
+    reason: null,
+    extra: { sort: { old: cal.titleSort, new: titleSort(cal.title) } },
+  };
+  fit(own);
+  if (own.new !== cal.title) out.push(own);
 }
 
 /** Every change stage 2 proposes for one book. */
@@ -557,7 +601,7 @@ export function proposeStage2(
   ]) {
     if (p) out.push(p);
   }
-  keepNamesShort(cal, out, o.calibreId);
+  keepNamesShort(cal, file, out, o.calibreId);
   return out;
 }
 

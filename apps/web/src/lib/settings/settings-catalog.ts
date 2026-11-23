@@ -6,6 +6,8 @@
 
 import { BOTTOM_IDS, TOP_IDS } from '$lib/reader-toolbar/toolbar-layout';
 import { BOTTOM_LABELS, TOP_LABELS } from '$lib/reader-toolbar/toolbar-labels';
+import { LINK_LABELS } from '$lib/book-links/link-labels';
+import { BOOK_LINKS } from '$lib/book-links/links';
 import type { SettingsTab } from './settings-tab';
 
 /**
@@ -43,7 +45,7 @@ export const SETTINGS_SECTIONS: CatalogSection[] = [
     tab: 'Reader',
     jp: '外観',
     title: 'Theme and display',
-    description: 'How books and the library look on this device.'
+    description: 'How books look on this device.'
   },
   {
     id: 'reader-fonts',
@@ -114,6 +116,37 @@ export const SETTINGS_SECTIONS: CatalogSection[] = [
     description:
       'Play and speed are set inside a book: open the menu at the top and tap Read aloud (key V).'
   },
+  // Library (calibre-metadata-display.md): Look, Book page, Links, Downloading books.
+  {
+    id: 'library-appearance',
+    tab: 'Library',
+    jp: '外観',
+    title: 'Look',
+    keywords: 'library theme'
+  },
+  {
+    id: 'library-book-page',
+    tab: 'Library',
+    jp: '書誌',
+    title: 'Book page',
+    description: 'This device only.'
+  },
+  {
+    id: 'library-links',
+    tab: 'Library',
+    jp: '外部リンク',
+    title: 'Links',
+    description:
+      'This device only. Button: on the page. Menu: under More, in this order. Drag or use ↑ / ↓ to reorder.',
+    keywords: 'store stores links external amazon bookwalker order'
+  },
+  {
+    id: 'data-downloads',
+    tab: 'Library',
+    jp: '保存',
+    title: 'Downloading books',
+    description: 'Downloading several books at once with Select in the Library.'
+  },
   // Data
   {
     id: 'data-server',
@@ -132,13 +165,6 @@ export const SETTINGS_SECTIONS: CatalogSection[] = [
       'Places, highlights, notes, statistics and settings shared with your other devices.'
   },
   { id: 'data-device', tab: 'Data', jp: 'この端末', title: 'This device' },
-  {
-    id: 'data-downloads',
-    tab: 'Data',
-    jp: '保存',
-    title: 'Downloading books',
-    description: 'Downloading several books at once with Select in the Library.'
-  },
   { id: 'data-import', tab: 'Data', jp: '取込', title: 'Importing books' },
   {
     id: 'data-tools',
@@ -432,7 +458,7 @@ export const SETTINGS_CATALOG: CatalogSetting[] = [
   },
   {
     id: 'library-look',
-    section: 'reader-theme',
+    section: 'library-appearance',
     title: 'Library look',
     description:
       'Light or dark for Home, Library, Collections, Notes and Stats. “Like the book” turns dark when the book’s theme is dark (also when it follows the device). E-ink always wins.',
@@ -732,7 +758,7 @@ export const SETTINGS_CATALOG: CatalogSetting[] = [
   },
   {
     id: 'illustrations-position',
-    section: 'reader-images',
+    section: 'library-book-page',
     title: 'Illustrations on the book page',
     description:
       'This device only: where a book’s page in the Library shows its illustrations. Hidden pictures follow Hide spoiler images.'
@@ -864,6 +890,29 @@ export const SETTINGS_CATALOG: CatalogSetting[] = [
     title: 'Ask before downloads larger than',
     description: '0: never ask.',
     keywords: 'size confirm gb warning'
+  },
+  // Library › Book page: the links (calibre-metadata-display.md)
+  {
+    id: 'links-placement',
+    section: 'library-book-page',
+    title: 'Where the links go',
+    description: 'Store and book-site links on a Calibre book’s page.',
+    keywords: 'links store placement section panel buttons'
+  },
+  {
+    id: 'links-more-as',
+    section: 'library-book-page',
+    title: 'More opens as',
+    description: 'How the More button shows the links set to Menu.',
+    keywords: 'links store dropdown modal menu'
+  },
+  {
+    id: 'links-search',
+    section: 'library-book-page',
+    title: 'Search links',
+    description:
+      'When a store has no saved id for the book, link to a search for its title and author (marked with a magnifier). Off: that store isn’t shown for the book.',
+    keywords: 'links store search magnifier'
   },
   {
     id: 'epub-fixes',
@@ -1363,6 +1412,15 @@ export const SETTINGS_CATALOG: CatalogSetting[] = [
     title: BOTTOM_LABELS[id].name,
     description: BOTTOM_LABELS[id].description,
     keywords: `bottom bar toolbar footer ${BOTTOM_LABELS[id].keywords ?? ''}`.trim()
+  })),
+
+  // Library › Links: one row per link, with the screen's own words (link-labels.ts).
+  ...BOOK_LINKS.map((link) => ({
+    id: `book-link-${link.id}`,
+    section: 'library-links',
+    title: link.name,
+    description: LINK_LABELS[link.id].description,
+    keywords: `link store ${LINK_LABELS[link.id].keywords ?? ''}`.trim()
   }))
 ];
 

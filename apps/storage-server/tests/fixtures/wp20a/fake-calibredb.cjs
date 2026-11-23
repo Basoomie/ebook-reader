@@ -298,13 +298,25 @@ function setFields(fields) {
     'series',
     'series_index',
     'comments',
+    // Stage 5 (WP20f), also with other fields in one call (a title fitted for Calibre's names).
+    'tags',
   ];
   for (const n of names) if (!allowed.includes(n)) fail(`Unknown field: ${n}`);
   const oldTitle = b.title;
   const oldFirst = authorsOf(id)[0];
   for (const [k, v] of kv) {
     if (k === 'title') db.prepare('UPDATE books SET title = ? WHERE id = ?').run(v, id);
-    else if (k === 'sort') db.prepare('UPDATE books SET sort = ? WHERE id = ?').run(v, id);
+    else if (k === 'tags') {
+      db.prepare('DELETE FROM books_tags_link WHERE book = ?').run(id);
+      for (const t of v
+        .split(',')
+        .map((x) => x.trim())
+        .filter(Boolean)) {
+        db.prepare('INSERT OR IGNORE INTO tags (name) VALUES (?)').run(t);
+        const tag = db.prepare('SELECT id FROM tags WHERE name = ?').get(t);
+        db.prepare('INSERT INTO books_tags_link (book, tag) VALUES (?, ?)').run(id, tag.id);
+      }
+    } else if (k === 'sort') db.prepare('UPDATE books SET sort = ? WHERE id = ?').run(v, id);
     else if (k === 'authors') {
       const list = v
         .split('&')

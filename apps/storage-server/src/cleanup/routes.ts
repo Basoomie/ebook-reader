@@ -1163,6 +1163,14 @@ export function createCleanupRouter(options: CleanupOptions): Router {
     res.json(service.stage4Guesses(q.kind === 'other' ? 'other' : 'series', offset, limit));
   });
 
+  router.get('/cleanup/titles/shortened', (req, res) => {
+    const service = serviceOr503(options);
+    const q = req.query as Record<string, string | undefined>;
+    const offset = Math.max(0, Number(q.offset ?? 0) || 0);
+    const limit = Math.min(100, Math.max(1, Number(q.limit ?? 20) || 20));
+    res.json(service.titleFits(offset, limit));
+  });
+
   router.get('/cleanup/stage4/readings', (req, res) => {
     const service = serviceOr503(options);
     const q = req.query as Record<string, string | undefined>;

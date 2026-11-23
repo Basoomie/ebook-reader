@@ -53,9 +53,10 @@ export interface RefreshResult {
 
 const LOOKUP_CHUNK = 200;
 
-/** The summary's fields as sent by the server (description and sources left out). */
+/** The summary's fields as sent by the server (the detail's description, sources and
+ * identifiers left out). */
 export function summaryOf(book: CatalogBookDetail | CatalogBook): CatalogBook {
-  const { description: _d, sources: _s, ...rest } = book as CatalogBookDetail;
+  const { description: _d, sources: _s, identifiers: _i, ...rest } = book as CatalogBookDetail;
   return rest;
 }
 
@@ -126,14 +127,31 @@ export async function refreshCopies(api: CopyApi, deps: RefreshDeps): Promise<Re
         continue;
       }
       let book: CatalogBookDetail = old?.hasDetail
-        ? { ...current, description: old.book.description, sources: old.book.sources }
+        ? {
+            ...current,
+            description: old.book.description,
+            sources: old.book.sources,
+            identifiers: old.book.identifiers
+          }
         : { ...current, description: null, sources: [] };
       let hasDetail = old?.hasDetail ?? false;
-      const changed = !old || !old.hasDetail || old.hidden || !sameSummary(old.book, current);
+      // A copy stored before the detail carried identifiers (the book page's links) fetches
+      // its detail once more; afterwards it has them ({} from a server that sends none).
+      const changed =
+        !old ||
+        !old.hasDetail ||
+        old.hidden ||
+        old.book.identifiers === undefined ||
+        !sameSummary(old.book, current);
       if (changed) {
         try {
           const detail = await api.book(id);
-          book = { ...current, description: detail.description ?? null, sources: detail.sources };
+          book = {
+            ...current,
+            description: detail.description ?? null,
+            sources: detail.sources,
+            identifiers: detail.identifiers ?? {}
+          };
           hasDetail = true;
           result.details += 1;
         } catch (error) {

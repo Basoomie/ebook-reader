@@ -389,6 +389,20 @@ export interface Stage4GuessSeries {
   series: string;
   books: Stage4GuessBook[];
 }
+/** A title shortened or cut to fit Calibre's folder names (cleanup.db v26). */
+export interface TitleFit {
+  id: number;
+  calibreId: number | null;
+  /** 2, 4 or 5: the stage whose change it is; 0: a new arrival's add. */
+  stage: number;
+  original: string;
+  written: string;
+  step: 'shortened' | 'cut';
+  rules: string[];
+  state: string;
+  /** Calibre's title now, when the book is in Calibre. */
+  now: string | null;
+}
 export interface Stage4GuessOther {
   calibreId: number;
   title: string;
@@ -2169,6 +2183,15 @@ export class CleanupApi {
     return this.request('GET', `/cleanup/stage4/proposals?${q}`) as Promise<{
       total: number;
       items: Stage4Proposal[];
+    }>;
+  }
+
+  /** The titles shortened or cut to fit Calibre's folder names, newest first. */
+  titleFits(offset = 0, limit = 20): Promise<{ total: number; items: TitleFit[] }> {
+    const q = new URLSearchParams({ offset: String(offset), limit: String(limit) });
+    return this.request('GET', `/cleanup/titles/shortened?${q}`) as Promise<{
+      total: number;
+      items: TitleFit[];
     }>;
   }
 
