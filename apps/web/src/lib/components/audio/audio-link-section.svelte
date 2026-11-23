@@ -15,8 +15,9 @@
    * - Subtitles: the subtitle file; open, its chooser and "Make subtitles on your PC" (WP16).
    * - Text-to-speech: the book's TTS voice (Season 2 Phase 12), "Make an audiobook with this
    *   voice" (WP17), Characters and Pronunciation fixes.
-   * A closed row shows a short summary and the status of its running jobs. The next thing to
-   * choose opens by itself (the audiobook, then its subtitles: WP15b's separate subtitle step).
+   * A closed row shows a short summary and the status of its running jobs. Every row starts
+   * closed (user, 2026-11-23); after a choice the next thing to choose opens by itself (the
+   * audiobook, then its subtitles: WP15b's separate subtitle step).
    *
    * WP15b rules kept: nothing is linked until "Use this"; replacing and removing ask first;
    * the link is the same on every device. Loads after the page and never blocks it; its
@@ -231,7 +232,8 @@
       return;
     }
     loaded = true;
-    if (audioEnabled) await openNext();
+    // The section starts closed (user, 2026-11-23); the next step still opens by itself after
+    // a choice made here (openNext from save and a finished merge).
   }
 
   /** The book's TTS voice, for the Text-to-speech row (absent: the row is left out). */
