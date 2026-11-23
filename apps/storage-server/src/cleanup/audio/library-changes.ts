@@ -52,7 +52,8 @@ import type { SwitchReader } from './stage6-switch';
 
 /** Library changes' batch ids: from 3e9 (cleanup.db v20's seed row), below the book archives' 4e9. */
 export const LIBRARY_BATCH_BASE = 3_000_000_000;
-export const LIBRARY_SIDECAR_VERSION = '1.3.0';
+/** 1.4.2: a folder under a temporary name may go into a new folder of its parent (WP21g). */
+export const LIBRARY_SIDECAR_VERSION = '1.4.2';
 const OWNER = DISK_OWNERS.audio7;
 const HOLD_MS = 2000;
 const SLICE = 200;
@@ -2009,6 +2010,23 @@ export class LibraryChanges {
       sha256: string | null;
     }[];
     if (!ops.length) return null;
+    // The preflight sees a move from a temporary name (a cycle, or a book moving into its own
+    // folder) as the folder that becomes it: the same folder, which doesn't exist under that name
+    // until the run moves it aside.
+    const asideOf = new Map<string, string>();
+    if (pre)
+      for (const r of this.db
+        .prepare(
+          `SELECT src_rel, dst FROM audio_library_ops WHERE run_id = ? AND kind = 'move_book' AND src_rel IS NOT NULL`,
+        )
+        .all(runId) as { src_rel: string; dst: string }[])
+        asideOf.set(r.dst, r.src_rel);
+    const preSrc = (rel: string | null) => {
+      let cur = rel;
+      for (let k = 0; cur !== null && k < 10 && /\/\.ttsu-move-\d+$/.test(cur); k++)
+        cur = asideOf.get(cur) ?? cur;
+      return cur;
+    };
     const now = this.now();
     const id = Number(
       this.db
@@ -2038,7 +2056,7 @@ export class LibraryChanges {
         kind: o.kind,
         book: o.book,
         dst: o.dst,
-        src: o.src_rel !== null ? { rel: o.src_rel, raw: null } : null,
+        src: o.src_rel !== null ? { rel: pre ? preSrc(o.src_rel)! : o.src_rel, raw: null } : null,
         size: o.size,
         mtimeMs: o.mtime_ms,
         dev: o.dev,

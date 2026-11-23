@@ -34,7 +34,7 @@ import { LinkWriter, WriteRefused, type PlannedSource } from './writer';
  * 1.4.0 (WP20g): the Calibre import's archives under a book source folder (book_list,
  * book_extract; split sets through 7-Zip).
  */
-export const VERSION = '1.4.1';
+export const VERSION = '1.4.2';
 
 /** A book archive's listing the server refused as too large (WP20g stop 2). */
 const TOO_LARGE = "The archive's list of files is too large to send";

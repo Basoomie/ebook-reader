@@ -1071,16 +1071,24 @@ export class LinkWriter {
    * volume number or title): `from` must be the planned folder (inode), a book; `to` must not
    * exist. Missing parents of `to` are made; an existing parent that holds a file (a book) is
    * never used. Never across to another root, never over an existing name. `to` may be this
-   * module's temporary name `.ttsu-move-<n>` in the same parent (a cycle of renames). `to`
-   * already the planned folder and `from` gone counts as done.
+   * module's temporary name `.ttsu-move-<n>` in the same parent (a cycle of renames); a folder
+   * under a temporary name goes on only within that parent: to a sibling, or into a new folder
+   * there (1.4.2, WP21g: a book whose series is named as itself, 作者/本 → 作者/.ttsu-move-1 →
+   * 作者/本/Vol 1 - 本). `to` already the planned folder and `from` gone counts as done.
    */
   async renameBookFolder(from: string, to: string, ino: number): Promise<{ existed: boolean }> {
     const fparts = movePath(from);
     const tparts = movePath(to);
     const temp = (ps: string[]) => MOVE_TEMP.test(ps[ps.length - 1]);
+    const parentOf = (ps: string[]) => ps.slice(0, -1).join('/');
     if (
-      (temp(fparts) || temp(tparts)) &&
-      fparts.slice(0, -1).join('/') !== tparts.slice(0, -1).join('/')
+      (temp(tparts) && parentOf(fparts) !== parentOf(tparts)) ||
+      (temp(fparts) &&
+        !temp(tparts) &&
+        !(
+          tparts.length > fparts.length - 1 &&
+          tparts.slice(0, fparts.length - 1).join('/') === parentOf(fparts)
+        ))
     )
       throw new WriteRefused(`A temporary name stays in the same folder: ${from} -> ${to}`);
     if (fparts.length < 3 || tparts.length < 3)

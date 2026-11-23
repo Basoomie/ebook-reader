@@ -527,6 +527,30 @@ describe('the linking sidecar’s WP21f-2 abilities (tree proofs and refusals)',
         ino,
       ),
     ).toEqual({ existed: false });
+    // 1.4.2 (WP21g): from a temporary name into a new folder of the same parent (a book whose
+    // series is named as itself); never out of that parent.
+    expect(
+      await d.writer.renameBookFolder(
+        'japanese/新しい作者/本B',
+        'japanese/新しい作者/.ttsu-move-2',
+        ino,
+      ),
+    ).toEqual({ existed: false });
+    await expect(
+      d.writer.renameBookFolder(
+        'japanese/新しい作者/.ttsu-move-2',
+        'japanese/作者/本B/Vol 1 - 本B',
+        ino,
+      ),
+    ).rejects.toThrow(/same folder/);
+    expect(
+      await d.writer.renameBookFolder(
+        'japanese/新しい作者/.ttsu-move-2',
+        'japanese/新しい作者/本B/Vol 1 - 本B',
+        ino,
+      ),
+    ).toEqual({ existed: false });
+    expect(d.ino(path.join(d.lib, '新しい作者', '本B', 'Vol 1 - 本B'))).toBe(ino);
     expect(d.tree(d.torrents)).toEqual(torrents);
   });
 
@@ -925,7 +949,7 @@ describe(
       },
     };
 
-    async function setup(opts: { absRewrites?: boolean } = {}) {
+    async function setup(opts: { absRewrites?: boolean; pSeriesSelf?: boolean } = {}) {
       const dir = makeTempDir('wp21f2-run');
       const data = path.join(dir, 'data');
       const roots = {
@@ -995,13 +1019,25 @@ describe(
             copies: ['cA'],
             values: { ...V.A, series: [] },
           },
-          { key: 'uP', kind: 'record', name: '本P', copies: ['cP'], values: V.P },
+          {
+            key: 'uP',
+            kind: 'record',
+            name: '本P',
+            copies: ['cP'],
+            // WP21g: a series named as the book itself (it moves into its own folder).
+            values: opts.pSeriesSelf
+              ? { ...V.P, series: [{ name: '本P', position: 1, label: null }] }
+              : V.P,
+          },
           {
             key: 'uC',
             kind: 'record',
             name: '本C',
             copies: ['cC'],
-            values: { ...V.C, publisher: '新しい出版社' },
+            values: {
+              ...V.C,
+              publisher: '新しい出版社',
+            },
           },
         ],
         libraryCopies: {},
@@ -1156,6 +1192,7 @@ describe(
           });
         if (u.pathname === '/api/libraries/lib1/scan' && method === 'POST') {
           items[0].relPath = '作者/本A';
+          if (opts.pSeriesSelf) items[1].relPath = '作者/本P/Vol 1 - 本P';
           // As ABS 2.37.1 does: its scan rewrites every book's metadata.json (its own form).
           if (opts.absRewrites)
             for (const it of items) {
@@ -1204,7 +1241,7 @@ describe(
         reader: () => reader,
         tree: () => stage7.existingTree(),
         plan: () => stage7.currentPlan(),
-        sidecarVersion: () => ({ version: '1.3.0', lastSeen: Date.now() }),
+        sidecarVersion: () => ({ version: '1.4.2', lastSeen: Date.now() }),
       });
       const worker = new LinkWorker(
         {
@@ -1274,6 +1311,28 @@ describe(
       walk(root);
       return out;
     };
+
+    it('WP21g: a book whose series is named as itself moves into its own folder (aside first, the preflight passes)', async () => {
+      const t = await setup({ pSeriesSelf: true });
+      const c0 = path.join(t.roots.library, '作者', '本P');
+      const ino = fs.lstatSync(c0).ino;
+      const c = await drive(t, 'on', 1);
+      expect(c.error).toBeNull();
+      expect(c.preflightProblems).toEqual([]);
+      const to = path.join(c0, 'Vol 1 - 本P');
+      expect(fs.lstatSync(to).ino).toBe(ino);
+      expect(fs.readdirSync(c0)).toEqual(['Vol 1 - 本P']);
+      expect(fs.readdirSync(to).sort()).toEqual([
+        '01 タイトル.mp3',
+        '02 ～１敗目～ 本編.mp3',
+        'metadata.json',
+      ]);
+      expect(
+        fs
+          .readdirSync(path.join(t.roots.library, '作者'))
+          .filter((n) => n.startsWith('.ttsu-move')),
+      ).toEqual([]);
+    });
 
     it('Preview plans every change and writes nothing; On makes them, remaps the link, and ABS keeps the items', async () => {
       const t = await setup();
