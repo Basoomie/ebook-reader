@@ -253,6 +253,31 @@ export const SUMMARIES_MIGRATIONS: { version: number; name: string; sql: string 
       );
     `,
   },
+  {
+    version: 7,
+    name: "the accuracy test: Claude's check of each item against the book, and tab grades",
+    sql: `
+      -- Decided with the user 2026-11-22: Claude checks every item's facts against the book;
+      -- the user reads only what Claude flags, plus spot checks of what Claude found right
+      -- (spot = 1), and grades each tab of each summary against the others.
+      CREATE TABLE test_item_checks (
+        run_id      TEXT NOT NULL REFERENCES test_runs(id),
+        ref         TEXT NOT NULL,
+        verdict     TEXT NOT NULL CHECK (verdict IN ('right', 'mistake', 'not_needed', 'unsure')),
+        reason      TEXT,
+        spot        INTEGER NOT NULL DEFAULT 0,
+        checked_at  INTEGER NOT NULL,
+        PRIMARY KEY (run_id, ref)
+      );
+      CREATE TABLE test_tab_grades (
+        run_id     TEXT NOT NULL REFERENCES test_runs(id),
+        section    TEXT NOT NULL,
+        grade      TEXT NOT NULL CHECK (grade IN ('best', 'good', 'weak')),
+        graded_at  INTEGER NOT NULL,
+        PRIMARY KEY (run_id, section)
+      );
+    `,
+  },
 ];
 
 export const SUMMARIES_SCHEMA_VERSION =

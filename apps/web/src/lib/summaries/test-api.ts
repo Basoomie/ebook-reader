@@ -16,6 +16,7 @@ export interface TestRun {
   bookKey: string;
   setup: string;
   background: boolean;
+  round: string;
   state: 'running' | 'done' | 'refused' | 'failed';
   phase: string | null;
   error: string | null;
@@ -105,11 +106,38 @@ export interface ItemRun {
     unmarked: number;
     notes: number;
     copied: number;
+    /** Claude's check against the book: items found right, items flagged. */
+    claudeRight: number;
+    claudeFlagged: number;
+    /** Items waiting for your mark (flagged, not checked, or spot checks). */
+    needsYou: number;
+    spotChecks: number;
+    spotMarked: number;
+    spotAgreed: number;
   };
+  /** The refs waiting for your mark. */
+  needsYou: string[];
+  /** Claude's check of each item against the book, by ref (spot: you mark it too). */
+  checks: Record<string, ItemCheck>;
+  /** Your grade of each tab against the other setups' same tab. */
+  grades: Record<string, TabGrade>;
   /** The user's notes on this summary. */
   notes: { id: number; text: string; section: string | null }[];
   metrics: Record<string, unknown> | null;
 }
+
+export interface ItemCheck {
+  verdict: ItemMark;
+  reason: string | null;
+  spot: boolean;
+}
+
+export type TabGrade = 'best' | 'good' | 'weak';
+export const TAB_GRADES: { value: TabGrade; label: string }[] = [
+  { value: 'best', label: 'Best' },
+  { value: 'good', label: 'Good' },
+  { value: 'weak', label: 'Weak' }
+];
 
 export interface ItemJudging {
   book: TestBook;
@@ -177,6 +205,9 @@ export class SummaryTestApi {
   }
   markItem(run: string, ref: string, mark: ItemMark | null) {
     return this.call('PUT', '/items/mark', { run, ref, mark });
+  }
+  gradeTab(run: string, section: string, grade: TabGrade | null) {
+    return this.call('PUT', '/grades', { run, section, grade });
   }
   mark(group: number, mark: ClaimGroup['mark'], note: string | null = null) {
     return this.call('PUT', `/marks/${group}`, { mark, note });

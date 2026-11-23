@@ -12,7 +12,7 @@
 import type { AiEffort, AiStageSpec } from '../ai/types';
 import { ITEM_KINDS, type ItemKind } from './types';
 
-export const PROMPT_VERSION = 's2.1';
+export const PROMPT_VERSION = 's2.2';
 const EFFORT: AiEffort = 'high';
 
 /** The models of the test (checked against the providers' lists, 2026-11-21). */
@@ -39,7 +39,12 @@ export function roleOf(model: string): ModelRole {
 const COMMON_RULES = `Rules:
 - Use only this book's text. Never add anything from other volumes, adaptations, reviews or general knowledge, even if you know the series.
 - Write names, places and invented terms exactly as the book writes them.
-- Every item must matter for remembering this book: something a reader would need after a long break, or when the book comes up in conversation. Skip filler. There is no target number or length; never pad and never leave out something important.`;
+- Every item must matter for remembering this book: something a reader would need after a long break, or when the book comes up in conversation. Skip filler. There is no target number or length; never pad and never leave out something important.
+- Say who does what: name the person behind every action (who took it, who gave it to whom, who did it to whom).
+- Keep the detail that gives an event its meaning (how, why, to whom), not only that it happened. Never make a detail stronger, weaker or different than the book has it.
+- A character's guess, belief, plan or rumor is written as theirs ("X thinks…", "X plans…"), never as a fact.
+- Each item reads on its own: no "there", "that place" or "it" pointing at something the item doesn't name.
+- Plain text: no line breaks, no ids or brackets with ids inside the text.`;
 
 const QUOTE_RULE = `- Each item has a quote: a short passage copied exactly, character for character, from the book (one continuous passage, about 10 to 60 characters, no ellipsis, no changes, no furigana in brackets). The quote must show what the item says.`;
 
@@ -54,7 +59,8 @@ export interface ExtractEvidence {
   background: string | null;
 }
 
-const KIND_TEXT = `Kinds: event (what happens), character (what a character learns, decides, reveals about themselves or becomes), relationship (how two characters stand or how that changes), reveal (a fact the book discloses: a secret, an identity, how something works), term (an invented word or name of a thing, group or place, and what it means), thread (a question, promise or danger still open at the end of the book).`;
+const KIND_TEXT = `Kinds: event (what happens), character (who a character is and what changes for them: looks, age, personality, role or job, the names others call them and the names they go by, including online handles, and what they learn, decide, reveal or become), relationship (how two characters are connected and how they stand: family, classmates, living together, how each sees the other, and how that changes), reveal (a fact the book discloses: a secret, an identity, how something works), term (a word of this book's own world, and what it means: an invented word, or the name of a group, organization, company, place, power or rule of the story; not ordinary words or real-world things the book only mentions), thread (a question, promise or danger still open at the very end of the book, one the book does not answer later on).
+- For every character who matters, include what the book says about their looks, age, personality and role, and every name they go by (nicknames, how others call them, online handles), each as its own character item, when the book says it. An online handle or alias belongs to the person behind it once the book reveals who that is.`;
 
 function backgroundBlock(bg: string | null): string {
   return bg ? `\n\nBACKGROUND (earlier volumes; for who is who only, never a source):\n${bg}` : '';
@@ -467,12 +473,12 @@ export const WRITE_SPEC: AiStageSpec<WriteEvidence, ModelRole> = {
   tasks: TASKS,
   system: `You write a book's summary for a reader who has read it and wants to remember it: when continuing the series after a long break, or when the book comes up in conversation. You get checked facts from the book (ITEMS, each with an id, its chapter and a quote). Write only from them.
 Sections (leave a section empty when it isn't relevant to this book; nonfiction gets what fits it):
-- overview: the book in a few sentences: what it is about and how it ends.
-- chapters: per chapter, what happens, as short items in order.
-- characters: one entry per character a reader needs to follow the book: who they are and what changed for them in this book. No fixed fields; say what matters for that character. Characters who are only mentioned go into also_mentioned as names only.
-- relationships: only relationships that matter (they drive the plot or the feeling of scenes): who, why it matters, how it changed in this book.
-- terms: invented words, groups, places or rules a reader must know, and what they mean.
-- threads: questions, promises and dangers still open at the end.
+- overview: the book in a few sentences: the setting, the main characters, what happens from the beginning through the middle to the end, and how it ends. The main line only, no small details.
+- chapters: per chapter, what happens, as short items in order. Complete: every event of the chapter that matters, with who did it and the detail that gives it its meaning. A small scene gets one short item at most.
+- characters: one entry per character a reader needs to follow the book, the most important first. The entry is about the person: looks, age, personality, role, and every name they go by (nicknames, online handles: a handle goes into its owner's entry, never an entry of its own once the book reveals the owner), then only the few story facts that define them. Their story belongs in chapters and their ties in relationships: don't retell those here. No fixed fields; say what the items give for that character. Characters who are only mentioned go into also_mentioned as names only.
+- relationships: only relationships that matter (they drive the plot or the feeling of scenes). How the two are connected (family, classmates, living together, ...), how each sees the other, and how it changed in this book. Don't repeat what a character entry already says.
+- terms: words of this book's own world a reader must know (invented words, groups, organizations, companies, places, powers, rules of the story), and what they mean. Not ordinary words, not real-world things the book only mentions, not characters (a handle or alias goes into its owner's character entry).
+- threads: only questions, promises and dangers still open when the book ends: never something the book resolves, never a plain statement of fact. When it matters for later volumes, say who doesn't know a key fact (e.g. a character unaware of where something is).
 Each item cites the ids of the ITEMS it rests on (at least one) and says nothing they don't support. quote_from is the id (one of its cites) whose quote best shows the item, or "" for none; show_quote is true only where showing that quote helps the reader (it supports a surprising claim, adds context, or a character explains a term), not on every item.
 Write in the book's language. Use names exactly as the book writes them.
 ${COMMON_RULES}

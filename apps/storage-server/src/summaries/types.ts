@@ -45,6 +45,10 @@ export interface SummaryItem {
   heading?: string;
   /** Relationships: the two people. */
   between?: [string, string];
+  /** The heading with the book's own furigana (Characters and Terms), when the book has it. */
+  ruby?: { t: string; r?: string }[];
+  /** Relationships: each person's name with the book's furigana, when the book has it. */
+  betweenRuby?: [{ t: string; r?: string }[] | null, { t: string; r?: string }[] | null];
   /** The checked items it rests on. */
   cites: string[];
   /** The evidence quote (from a cited item) and where it is; shown only when `showQuote`. */

@@ -12,7 +12,7 @@ import type { AiRunner } from '../ai/runner';
 import type { AiStageSpec, StoredAnswer } from '../ai/types';
 import type { AiWait } from '../ai/waits';
 import type { BookScript } from '../audio/book-script';
-import { bookTextFromScript, QuoteIndex, type BookText } from './book-text';
+import { bookTextFromScript, QuoteIndex, RubyIndex, type BookText } from './book-text';
 import {
   applyTranslation,
   chapterEvidence,
@@ -49,7 +49,7 @@ import type { CheckedItem, Summary } from './types';
 export const EVIDENCE_VERSION = 1;
 
 /** The setups compared in the accuracy test (book-summaries.md "Step A"). */
-export type CloudSetup = 'two' | 'opus';
+export type CloudSetup = 'two' | 'opus' | 'mixed';
 export const SETUPS: Record<
   CloudSetup,
   { label: string; extract: ModelRole[]; writer: ModelRole; matcher: ModelRole | null }
@@ -61,6 +61,14 @@ export const SETUPS: Record<
     matcher: 'sonnet',
   },
   opus: { label: 'Opus 5.5 alone', extract: ['opus'], writer: 'opus', matcher: null },
+  // Asked for by the user at stop 1 (2026-11-22): Sonnet + Sol find and cross-check the items
+  // (the same answers as setup "two"), Opus writes from them.
+  mixed: {
+    label: 'Sonnet + Sol, written by Opus',
+    extract: ['sonnet', 'sol'],
+    writer: 'opus',
+    matcher: 'sonnet',
+  },
 };
 
 export class Refused extends Error {
@@ -201,8 +209,12 @@ export interface BookInput {
   background: string | null;
 }
 
-export function prepared(b: BookInput): { book: BookText; index: QuoteIndex } {
-  return { book: bookTextFromScript(b.script), index: new QuoteIndex(b.script) };
+export function prepared(b: BookInput): { book: BookText; index: QuoteIndex; ruby: RubyIndex } {
+  return {
+    book: bookTextFromScript(b.script),
+    index: new QuoteIndex(b.script),
+    ruby: new RubyIndex(b.script),
+  };
 }
 
 /** One model's extraction: the whole book, then the chapters it left empty, then the quote check. */
@@ -277,7 +289,7 @@ export async function runCloudSetup(
   now: () => number = Date.now,
 ): Promise<{ summary: Summary; report: RunReport }> {
   const conf = SETUPS[setup];
-  const { book, index } = prepared(b);
+  const { book, index, ruby } = prepared(b);
   const bg = b.background ? 'bg1' : 'bg0';
   const refusals: RunReport['refusals'] = [];
   const extracted: Record<string, ExtractCheck> = {};
@@ -306,7 +318,7 @@ export async function runCloudSetup(
       d,
       MATCH_SPEC,
       conf.matcher!,
-      `${b.key}|${bg}|${setup}`,
+      `${b.key}|${bg}|${ra}+${rb}`,
       matchEvidence(b.title, A, B),
     );
     const pairs = cleanPairs(
@@ -345,7 +357,10 @@ export async function runCloudSetup(
     cross = crossChecked(A, [], [], v);
   }
 
-  const writer = roles.includes(conf.writer) ? conf.writer : roles[0];
+  // The writer is the setup's (a writer that isn't one of the finders writes from their items);
+  // when the writer is a finder that refused, the other finder writes.
+  const writer =
+    conf.extract.includes(conf.writer) && !roles.includes(conf.writer) ? roles[0] : conf.writer;
   const w = await ask(
     d,
     WRITE_SPEC,
@@ -355,12 +370,14 @@ export async function runCloudSetup(
   );
   const answer = usable(w, WRITE_SPEC.stage) as unknown as WriteAnswer;
   const models = [...new Set([...roles.map((r) => MODELS[r]), MODELS[writer]])];
-  const checked = checkWritten(answer, cross.items, book, index, {
-    lang: b.lang,
-    title: b.title,
-    models,
-    madeAt: now(),
-  });
+  const checked = checkWritten(
+    answer,
+    cross.items,
+    book,
+    index,
+    { lang: b.lang, title: b.title, models, madeAt: now() },
+    ruby,
+  );
   return {
     summary: checked.summary,
     report: {

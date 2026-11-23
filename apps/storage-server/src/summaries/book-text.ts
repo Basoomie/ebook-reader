@@ -146,3 +146,111 @@ export function placeOf(book: BookText, position: number): { chapter: number; pe
     percent: book.characters ? Math.round((position / book.characters) * 100) : 0,
   };
 }
+
+/** A heading with the book's own furigana: each piece of text with its reading, if any. */
+export type RubyPiece = { t: string; r?: string };
+
+const KANJI = /[\p{Unified_Ideograph}々〆ヶ]/u;
+
+/**
+ * The book's furigana (ruby) by the text it sits on, from the reader's import. A name or term
+ * gets its reading only from here, never from a model: each run of kanji in it must be covered
+ * whole by ruby the book has (pieces of two or more characters, or the whole run), else that run
+ * keeps no reading. Where the book gives one text several readings, the most frequent wins.
+ */
+export class RubyIndex {
+  private readonly readings = new Map<string, Map<string, number>>();
+  private longest = 0;
+
+  constructor(script: BookScript) {
+    for (const c of script.chapters)
+      for (const s of c.sentences)
+        for (const r of s.ruby ?? []) {
+          const base = s.text.slice(r.start, r.end);
+          if (!base || !r.rt || !KANJI.test(base)) continue;
+          const m = this.readings.get(base) ?? new Map<string, number>();
+          m.set(r.rt, (m.get(r.rt) ?? 0) + 1);
+          this.readings.set(base, m);
+          this.longest = Math.max(this.longest, [...base].length);
+        }
+  }
+
+  /** The reading the book gives `base` most often, or null. */
+  readingOf(base: string): string | null {
+    const m = this.readings.get(base);
+    if (!m) return null;
+    let best: string | null = null;
+    let n = 0;
+    for (const [rt, c] of [...m.entries()].sort((a, b) => (a[0] < b[0] ? -1 : 1)))
+      if (c > n) {
+        best = rt;
+        n = c;
+      }
+    return best;
+  }
+
+  /** A heading split into pieces with readings, or null when no piece has one. */
+  pieces(text: string): RubyPiece[] | null {
+    const chars = [...text];
+    const out: RubyPiece[] = [];
+    const plain = (t: string) => {
+      const last = out[out.length - 1];
+      if (last && last.r === undefined) last.t += t;
+      else out.push({ t });
+    };
+    let i = 0;
+    let any = false;
+    while (i < chars.length) {
+      if (!KANJI.test(chars[i])) {
+        plain(chars[i++]);
+        continue;
+      }
+      let j = i;
+      while (j < chars.length && KANJI.test(chars[j])) j++;
+      const run = chars.slice(i, j);
+      const covered = this.cover(run);
+      if (covered) {
+        out.push(...covered);
+        any = true;
+      } else plain(run.join(''));
+      i = j;
+    }
+    return any ? out : null;
+  }
+
+  /** A run of kanji covered whole by the book's ruby, longest pieces first. */
+  private cover(run: string[]): RubyPiece[] | null {
+    const whole = this.readingOf(run.join(''));
+    if (whole) return [{ t: run.join(''), r: whole }];
+    const out: RubyPiece[] = [];
+    let i = 0;
+    while (i < run.length) {
+      let hit: RubyPiece | null = null;
+      for (let len = Math.min(this.longest, run.length - i); len >= 2; len--) {
+        const base = run.slice(i, i + len).join('');
+        const r = this.readingOf(base);
+        if (r) {
+          hit = { t: base, r };
+          break;
+        }
+      }
+      if (!hit) return null;
+      out.push(hit);
+      i += [...hit.t].length;
+    }
+    return out;
+  }
+}
+
+/**
+ * A written text as the app shows it: a literal "\n" a model wrote turns into a line break, ids a
+ * model put into the text go, and only the overview keeps paragraphs (other items are one line).
+ */
+export function cleanWritten(text: string, lang: string, paragraphs: boolean): string {
+  let t = text.replace(/\\n/g, '\n');
+  t = t.replace(/\s*[（(]\s*(?:(?:sonnet|sol|opus|gemma):\d+:\d+\s*[,、，]?\s*)+[)）]/g, '');
+  t = paragraphs
+    ? t.replace(/[ \t]*\n[ \t]*/g, '\n').replace(/\n{3,}/g, '\n\n')
+    : t.replace(/\s*\n+\s*/g, lang === 'ja' ? '' : ' ');
+  return t.trim();
+}

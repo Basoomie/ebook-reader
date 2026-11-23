@@ -112,6 +112,30 @@ export function createSummaryTestRouter(
     }
   });
 
+  router.put('/summaries-test/checks', (req, res) => {
+    const b = req.body as {
+      run?: string;
+      checks?: { ref: string; verdict: string; reason?: string | null }[];
+    };
+    try {
+      res.json(svc.setChecks(need(b.run, 'run'), need(b.checks, 'checks') as never));
+    } catch (e) {
+      throw new ApiError(400, 'bad_request', (e as Error).message);
+    }
+  });
+
+  router.put('/summaries-test/grades', (req, res) => {
+    const b = req.body as { run?: string; section?: string; grade?: string | null };
+    if (b.grade !== null && !['best', 'good', 'weak'].includes(b.grade as string))
+      throw new ApiError(400, 'bad_request', 'grade must be best, good, weak or null');
+    try {
+      svc.gradeTab(need(b.run, 'run'), need(b.section, 'section'), (b.grade ?? null) as never);
+    } catch (e) {
+      throw new ApiError(404, 'not_found', (e as Error).message);
+    }
+    res.json({ ok: true });
+  });
+
   router.put('/summaries-test/items/mark', (req, res) => {
     const b = req.body as { run?: string; ref?: string; mark?: string | null };
     if (b.mark !== null && !['right', 'mistake', 'not_needed', 'unsure'].includes(b.mark as string))

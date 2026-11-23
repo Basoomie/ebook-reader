@@ -7,6 +7,7 @@
  * every model request goes through the shared AI layer (its spending against the test copy's
  * own monthly limit, set to the test's $30).
  */
+import { createHash } from 'crypto';
 import type Database from 'better-sqlite3';
 import type { AiRunner } from '../ai/runner';
 import type { BookScript } from '../audio/book-script';
@@ -34,8 +35,16 @@ export type ItemMark = 'right' | 'mistake' | 'not_needed' | 'unsure';
 export const SETUP_LABELS: Record<SetupId, string> = {
   two: SETUPS.two.label,
   opus: SETUPS.opus.label,
+  mixed: SETUPS.mixed.label,
   local: 'gemma-4-26B-A4B on the PC',
 };
+/** The order setups are listed in. */
+const SETUP_ORDER: SetupId[] = ['two', 'mixed', 'opus', 'local'];
+/** Rounds whose runs are judged on their own (others: every run of the book). */
+const ROUNDS = ['round1', 'v2'];
+/** Spot checks per summary: items Claude found right that the user marks too. */
+export const SPOT_CHECKS = 10;
+export type TabGrade = 'best' | 'good' | 'weak';
 
 export interface TestBook {
   key: string;
@@ -113,8 +122,15 @@ export const RUN_ID = 'summaries-test';
 const PHASES = ['extract', 'check', 'write', 'done'] as const;
 const PHASE_AT: Record<string, number> = { extract: 0, check: 0.65, write: 0.8, done: 1 };
 
-export function runIdOf(bookKey: string, setup: SetupId, background: boolean): string {
-  return `${bookKey}|${setup}|${background ? 'bg1' : 'bg0'}`;
+/** A run's id; runs of a later round (the fixed engine, "v2") keep the round in it. */
+export function runIdOf(
+  bookKey: string,
+  setup: SetupId,
+  background: boolean,
+  round = 'round1',
+): string {
+  const base = `${bookKey}|${setup}|${background ? 'bg1' : 'bg0'}`;
+  return round === 'round1' ? base : `${base}|${round}`;
 }
 
 export class SummaryTestService {
@@ -242,7 +258,7 @@ export class SummaryTestService {
     const b = this.book(bookKey);
     if (!b) throw new Error(`no test book ${bookKey}`);
     if (setup === 'local' && !this.deps.local) throw new Error('the local model is not set up');
-    const id = runIdOf(bookKey, setup, background);
+    const id = runIdOf(bookKey, setup, background, round);
     const cur = this.run(id);
     if (cur?.state === 'running' && this.running.has(id)) return cur;
     this.db
@@ -823,10 +839,14 @@ export class SummaryTestService {
       (r) =>
         r.bookKey === bookKey &&
         r.state === 'done' &&
-        (scope === 'round1' ? r.round === 'round1' : true),
+        (ROUNDS.includes(scope) ? r.round === scope : true),
     );
     const marksOf = this.db.prepare('SELECT ref, mark FROM test_item_marks WHERE run_id = ?');
     const copiesOf = this.db.prepare('SELECT ref, from_run FROM test_item_copies WHERE run_id = ?');
+    const checksOf = this.db.prepare(
+      'SELECT ref, verdict, reason, spot FROM test_item_checks WHERE run_id = ?',
+    );
+    const gradesOf = this.db.prepare('SELECT section, grade FROM test_tab_grades WHERE run_id = ?');
     const labelOf = (id: string) => {
       const r = this.runs().find((x) => x.id === id);
       return r ? `${SETUP_LABELS[r.setup]}${r.background ? ' · with earlier volumes' : ''}` : id;
@@ -854,8 +874,30 @@ export class SummaryTestService {
             .filter((c) => marks[c.ref])
             .map((c) => [c.ref, labelOf(c.from_run)]),
         ) as Record<string, string>;
+        const checks = Object.fromEntries(
+          (
+            checksOf.all(r.id) as {
+              ref: string;
+              verdict: ItemMark;
+              reason: string | null;
+              spot: number;
+            }[]
+          ).map((c) => [c.ref, { verdict: c.verdict, reason: c.reason, spot: c.spot === 1 }]),
+        ) as Record<string, { verdict: ItemMark; reason: string | null; spot: boolean }>;
+        const grades = Object.fromEntries(
+          (gradesOf.all(r.id) as { section: string; grade: TabGrade }[]).map((g) => [
+            g.section,
+            g.grade,
+          ]),
+        ) as Record<string, TabGrade>;
         const refs = summaryItems(summary).map((x) => x.item.ref);
-        const count = (m: ItemMark) => refs.filter((ref) => marks[ref] === m).length;
+        // An item's mark: yours, else Claude's check of it (a spot check waits for yours).
+        const marked = (ref: string): ItemMark | undefined =>
+          marks[ref] ?? (checks[ref] && !checks[ref].spot ? checks[ref].verdict : undefined);
+        const count = (m: ItemMark) => refs.filter((ref) => marked(ref) === m).length;
+        const spots = refs.filter((ref) => checks[ref]?.spot);
+        const needsYou = (ref: string) =>
+          !marks[ref] && (!checks[ref] || checks[ref].verdict !== 'right' || checks[ref].spot);
         return {
           id: r.id,
           setup: r.setup,
@@ -870,19 +912,31 @@ export class SummaryTestService {
             mistake: count('mistake'),
             notNeeded: count('not_needed'),
             unsure: count('unsure'),
-            unmarked: refs.filter((ref) => !marks[ref]).length,
+            unmarked: refs.filter((ref) => !marked(ref)).length,
             notes: missing.filter((m) => m.run_id === r.id).length,
             copied: refs.filter((ref) => copied[ref]).length,
+            // Claude's check: items it found right, items it flagged.
+            claudeRight: refs.filter((ref) => checks[ref]?.verdict === 'right').length,
+            claudeFlagged: refs.filter((ref) => checks[ref] && checks[ref].verdict !== 'right')
+              .length,
+            // What waits for you: no mark of yours, and Claude flagged it, didn't check it, or
+            // it is a spot check.
+            needsYou: refs.filter(needsYou).length,
+            spotChecks: spots.length,
+            spotMarked: spots.filter((ref) => marks[ref]).length,
+            spotAgreed: spots.filter((ref) => marks[ref] === 'right').length,
           },
+          needsYou: refs.filter(needsYou),
+          checks,
+          grades,
           notes: missing.filter((m) => m.run_id === r.id),
           metrics: r.metrics,
         };
       })
       .filter((x): x is NonNullable<typeof x> => x !== null);
-    const order: SetupId[] = ['two', 'opus', 'local'];
     out.sort(
       (a, b) =>
-        order.indexOf(a.setup) - order.indexOf(b.setup) ||
+        SETUP_ORDER.indexOf(a.setup) - SETUP_ORDER.indexOf(b.setup) ||
         Number(a.background) - Number(b.background),
     );
     return {
@@ -890,6 +944,67 @@ export class SummaryTestService {
       runs: out,
       missing: missing.filter((m) => m.run_id === null),
     };
+  }
+
+  /**
+   * Claude's check of a summary's items against the book (replaces earlier checks of the same
+   * items). Of the items found right, SPOT_CHECKS chosen by a hash of their ref (the same every
+   * time) are spot checks: they wait for the user's own mark.
+   */
+  setChecks(
+    runId: string,
+    checks: { ref: string; verdict: ItemMark; reason?: string | null }[],
+  ): { saved: number; spot: number } {
+    const s = this.summary(runId);
+    if (!s) throw new Error(`no summary for ${runId}`);
+    const refs = new Set(summaryItems(s).map((x) => x.item.ref));
+    for (const c of checks) {
+      if (!refs.has(c.ref)) throw new Error(`${runId} has no item ${c.ref}`);
+      if (!['right', 'mistake', 'not_needed', 'unsure'].includes(c.verdict))
+        throw new Error(`${c.ref}: verdict must be right, mistake, not_needed or unsure`);
+    }
+    const now = this.now();
+    const put = this.db.prepare(
+      `INSERT INTO test_item_checks (run_id, ref, verdict, reason, spot, checked_at) VALUES (?, ?, ?, ?, 0, ?)
+       ON CONFLICT(run_id, ref) DO UPDATE SET verdict = excluded.verdict, reason = excluded.reason, spot = 0, checked_at = excluded.checked_at`,
+    );
+    const hash = (ref: string) => createHash('sha1').update(`${runId}|${ref}`).digest('hex');
+    let spot = 0;
+    this.db.transaction(() => {
+      for (const c of checks) put.run(runId, c.ref, c.verdict, c.reason ?? null, now);
+      const right = (
+        this.db
+          .prepare(`SELECT ref FROM test_item_checks WHERE run_id = ? AND verdict = 'right'`)
+          .all(runId) as { ref: string }[]
+      )
+        .map((r) => r.ref)
+        .sort((a, b) => (hash(a) < hash(b) ? -1 : 1));
+      this.db.prepare('UPDATE test_item_checks SET spot = 0 WHERE run_id = ?').run(runId);
+      const mark = this.db.prepare(
+        'UPDATE test_item_checks SET spot = 1 WHERE run_id = ? AND ref = ?',
+      );
+      for (const ref of right.slice(0, SPOT_CHECKS)) {
+        mark.run(runId, ref);
+        spot++;
+      }
+    })();
+    return { saved: checks.length, spot };
+  }
+
+  /** The user's grade of one tab of a summary (against the other setups' same tab); null clears. */
+  gradeTab(runId: string, section: string, grade: TabGrade | null): void {
+    if (!this.run(runId)) throw new Error(`no run ${runId}`);
+    if (grade === null)
+      this.db
+        .prepare('DELETE FROM test_tab_grades WHERE run_id = ? AND section = ?')
+        .run(runId, section);
+    else
+      this.db
+        .prepare(
+          `INSERT INTO test_tab_grades (run_id, section, grade, graded_at) VALUES (?, ?, ?, ?)
+           ON CONFLICT(run_id, section) DO UPDATE SET grade = excluded.grade, graded_at = excluded.graded_at`,
+        )
+        .run(runId, section, grade, this.now());
   }
 
   // -------------------------------------------------------------------------------------------

@@ -11,8 +11,8 @@
  * 4. The written summary is checked: every item cites checked items that exist, its quote comes
  *    from a cited item, and every name in a heading is written in this book.
  */
-import type { BookText, QuoteIndex } from './book-text';
-import { passageAt } from './book-text';
+import type { BookText, QuoteIndex, RubyIndex } from './book-text';
+import { cleanWritten, passageAt } from './book-text';
 import type {
   ChapterEvidence,
   ExtractAnswer,
@@ -281,6 +281,7 @@ export function checkWritten(
   book: BookText,
   index: QuoteIndex,
   meta: { lang: string; title: string; models: string[]; madeAt: number },
+  ruby: RubyIndex | null = null,
 ): WrittenCheck {
   const byId = new Map(items.map((x) => [x.id, x]));
   const dropped: WrittenCheck['droppedItems'] = [];
@@ -292,7 +293,8 @@ export function checkWritten(
     extra: Partial<SummaryItem>,
   ): SummaryItem | null => {
     const cites = w.cites.filter((c) => byId.has(c));
-    if (!w.text || cites.length === 0) {
+    const text = cleanWritten(w.text, meta.lang, false);
+    if (!text || cites.length === 0) {
       dropped.push({ section, text: w.text, why: 'cites no checked item' });
       return null;
     }
@@ -304,7 +306,7 @@ export function checkWritten(
     const from = cites.includes(w.quote_from) ? byId.get(w.quote_from)! : null;
     return {
       ref,
-      text: w.text,
+      text,
       cites,
       quote: from ? from.quote : null,
       position: from ? from.position : null,
@@ -314,7 +316,8 @@ export function checkWritten(
   };
   const sections: SummarySection[] = [];
   const ovCites = answer.overview.cites.filter((c) => byId.has(c));
-  if (answer.overview.text)
+  const ovText = cleanWritten(answer.overview.text, meta.lang, true);
+  if (ovText)
     sections.push({
       key: 'overview',
       groups: [
@@ -322,7 +325,7 @@ export function checkWritten(
           items: [
             {
               ref: 'overview',
-              text: answer.overview.text,
+              text: ovText,
               cites: ovCites,
               quote: null,
               position: null,
@@ -349,18 +352,31 @@ export function checkWritten(
   one(
     'characters',
     answer.characters.map((w, i) =>
-      make('characters', `char${i}`, w, [w.name], { heading: w.name }),
+      make('characters', `char${i}`, w, [w.name], {
+        heading: w.name,
+        ...(ruby?.pieces(w.name) ? { ruby: ruby.pieces(w.name)! } : {}),
+      }),
     ),
   );
   one(
     'relationships',
     answer.relationships.map((w, i) =>
-      make('relationships', `rel${i}`, w, [w.a, w.b], { between: [w.a, w.b] }),
+      make('relationships', `rel${i}`, w, [w.a, w.b], {
+        between: [w.a, w.b],
+        ...(ruby && (ruby.pieces(w.a) || ruby.pieces(w.b))
+          ? { betweenRuby: [ruby.pieces(w.a), ruby.pieces(w.b)] as SummaryItem['betweenRuby'] }
+          : {}),
+      }),
     ),
   );
   one(
     'terms',
-    answer.terms.map((w, i) => make('terms', `term${i}`, w, [w.term], { heading: w.term })),
+    answer.terms.map((w, i) =>
+      make('terms', `term${i}`, w, [w.term], {
+        heading: w.term,
+        ...(ruby?.pieces(w.term) ? { ruby: ruby.pieces(w.term)! } : {}),
+      }),
+    ),
   );
   one(
     'threads',
@@ -434,7 +450,10 @@ export function applyTranslation(
         const parts = t.heading.split(' / ');
         const between: [string, string] | undefined =
           it.between && parts.length === 2 ? [parts[0].trim(), parts[1].trim()] : it.between;
-        return { ...it, text: t.text, heading, between };
+        const { ruby: _r, betweenRuby: _b, ...rest } = it;
+        void _r;
+        void _b;
+        return { ...rest, text: t.text, heading, between };
       }),
     })),
   }));

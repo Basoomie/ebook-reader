@@ -17,6 +17,7 @@
   import { readerLinkPath } from '$lib/anki/reader-link';
   import ItemMarks from './item-marks.svelte';
   import EnglishLine from './english-line.svelte';
+  import RubyHeading from './ruby-heading.svelte';
   import { pagePath } from '$lib/data/env';
   import {
     SUMMARY_TABS,
@@ -41,15 +42,29 @@
   export let copied: Record<string, string> | null = null;
   /** Judging: the English translation of each item, shown under the original (ref → line). */
   export let english: Record<string, { head: string | null; text: string }> | null = null;
+  /** Judging: Claude's check of each item against the book (ref → check). */
+  export let checks: Record<
+    string,
+    { verdict: ItemMark; reason: string | null; spot: boolean }
+  > | null = null;
+  /** Judging: show only these items (the ones waiting for you); null = every item. */
+  export let only: string[] | null = null;
 
   const dispatch = createEventDispatcher<{ mark: { ref: string; mark: ItemMark | null } }>();
-  function counted(key: SummarySectionKey, marks: Record<string, ItemMark> | null): string {
+  function counted(
+    key: SummarySectionKey,
+    marks: Record<string, ItemMark> | null,
+    only: string[] | null
+  ): string {
     if (!marks) return '';
     const refs = (summary.sections.find((s) => s.key === key)?.groups ?? []).flatMap((g) =>
       g.items.map((i) => i.ref)
     );
+    if (only) return ` · ${refs.filter((r) => only.includes(r)).length}`;
     return ` ${refs.filter((r) => marks[r]).length}/${refs.length}`;
   }
+  $: shown = (it: SummaryItem) => !only || only.includes(it.ref);
+  $: ruby = summary.lang === 'ja';
 
   $: present = SUMMARY_TABS.filter((t) => summary.sections.some((s) => s.key === t.key));
   /** The open tab (the accuracy test's page reads it for its notes). */
@@ -86,7 +101,7 @@
         data-testid="summary-tab-{t.key}"
         on:click={() => (tab = t.key)}
       >
-        {t.label}{counted(t.key, marks)}
+        {t.label}{counted(t.key, marks, only)}
       </button>
     {/each}
   </div>
@@ -94,21 +109,22 @@
   {#if section}
     <div class="mt-4" {lang} data-testid="summary-section-{section.key}">
       {#if section.key === 'overview'}
-        {#each section.groups[0]?.items ?? [] as it (it.ref)}
-          <p class="leading-relaxed" data-ref={it.ref}>{it.text}</p>
+        {#each (section.groups[0]?.items ?? []).filter(shown) as it (it.ref)}
+          <p class="overview leading-relaxed" data-ref={it.ref}>{it.text}</p>
           {#if english?.[it.ref]}<EnglishLine line={english[it.ref]} />{/if}
           {#if marks}<ItemMarks
               ref={it.ref}
               mark={marks[it.ref] ?? null}
               copiedFrom={copied?.[it.ref] ?? null}
+              check={checks?.[it.ref] ?? null}
               on:mark={(e) => dispatch('mark', e.detail)}
             />{/if}
         {/each}
       {:else if section.key === 'chapters'}
-        {#each section.groups as g (g.chapter)}
+        {#each section.groups.filter((g) => g.items.some(shown)) as g (g.chapter)}
           <h3 class="mt-4 font-bold first:mt-0">{g.title}</h3>
           <ul class="mt-1 list-disc pl-5">
-            {#each g.items as it (it.ref)}
+            {#each g.items.filter(shown) as it (it.ref)}
               <li class="mt-1" data-ref={it.ref}>
                 {it.text}
                 {#if english?.[it.ref]}<EnglishLine line={english[it.ref]} />{/if}
@@ -126,6 +142,7 @@
                     ref={it.ref}
                     mark={marks[it.ref] ?? null}
                     copiedFrom={copied?.[it.ref] ?? null}
+                    check={checks?.[it.ref] ?? null}
                     on:mark={(e) => dispatch('mark', e.detail)}
                   />{/if}
               </li>
@@ -134,9 +151,11 @@
         {/each}
       {:else if section.key === 'characters'}
         <div class="cards">
-          {#each section.groups[0]?.items ?? [] as it (it.ref)}
+          {#each (section.groups[0]?.items ?? []).filter(shown) as it (it.ref)}
             <article class="card" data-ref={it.ref} data-testid="summary-character">
-              <h3 class="font-bold">{it.heading}</h3>
+              <h3 class="font-bold">
+                <RubyHeading text={it.heading ?? ''} pieces={ruby ? it.ruby : null} />
+              </h3>
               <p class="mt-1">{it.text}</p>
               {#if english?.[it.ref]}<EnglishLine line={english[it.ref]} />{/if}
               {#if it.showQuote && it.quote}
@@ -153,6 +172,7 @@
                   ref={it.ref}
                   mark={marks[it.ref] ?? null}
                   copiedFrom={copied?.[it.ref] ?? null}
+                  check={checks?.[it.ref] ?? null}
                   on:mark={(e) => dispatch('mark', e.detail)}
                 />{/if}
             </article>
@@ -165,10 +185,18 @@
         {/if}
       {:else}
         <ul class="space-y-3">
-          {#each section.groups[0]?.items ?? [] as it (it.ref)}
+          {#each (section.groups[0]?.items ?? []).filter(shown) as it (it.ref)}
             <li data-ref={it.ref}>
-              {#if it.heading}<span class="font-bold">{it.heading}</span>{/if}
-              {#if it.between}<span class="font-bold">{it.between[0]} – {it.between[1]}</span>{/if}
+              {#if it.heading}<span class="font-bold"
+                  ><RubyHeading text={it.heading} pieces={ruby ? it.ruby : null} /></span
+                >{/if}
+              {#if it.between}<span class="font-bold"
+                  ><RubyHeading text={it.between[0]} pieces={ruby ? it.betweenRuby?.[0] : null} /> –
+                  <RubyHeading
+                    text={it.between[1]}
+                    pieces={ruby ? it.betweenRuby?.[1] : null}
+                  /></span
+                >{/if}
               <p class:mt-1={!!(it.heading || it.between)}>{it.text}</p>
               {#if english?.[it.ref]}<EnglishLine line={english[it.ref]} />{/if}
               {#if it.showQuote && it.quote}
@@ -185,6 +213,7 @@
                   ref={it.ref}
                   mark={marks[it.ref] ?? null}
                   copiedFrom={copied?.[it.ref] ?? null}
+                  check={checks?.[it.ref] ?? null}
                   on:mark={(e) => dispatch('mark', e.detail)}
                 />{/if}
             </li>
@@ -217,6 +246,9 @@
     padding: 0.75rem 1rem;
     border-radius: 10px;
     background: var(--c-surface-2, rgba(127, 127, 127, 0.08));
+  }
+  .overview {
+    white-space: pre-line;
   }
   .quote {
     margin-top: 0.35rem;

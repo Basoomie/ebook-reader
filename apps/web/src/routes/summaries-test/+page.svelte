@@ -26,7 +26,10 @@
   } from '$lib/summaries/summary-types';
   import {
     SummaryTestApi,
+    TAB_GRADES,
     type ItemJudging,
+    type ItemRun,
+    type TabGrade,
     type TestOverview,
     type TestRun
   } from '$lib/summaries/test-api';
@@ -36,6 +39,8 @@
   let judging: ItemJudging | null = null;
   let book = '';
   let runId = '';
+  /** The round judged: the first engine (round1) or the fixed one (v2). */
+  let scope = '';
   let error = '';
   let loading = true;
   let missingText = '';
@@ -47,6 +52,7 @@
     if (!browser) return;
     book = $page.url.searchParams.get('book') ?? '';
     runId = $page.url.searchParams.get('run') ?? '';
+    scope = $page.url.searchParams.get('round') ?? '';
     const t = $page.url.searchParams.get('tab');
     if (t && SUMMARY_TABS.some((x) => x.key === t)) tab = t as SummarySectionKey;
     api = await SummaryTestApi.connect();
@@ -81,7 +87,8 @@
     try {
       overview = await api.overview();
       if (!book && booksDone().length) book = booksDone()[0];
-      judging = book ? await api.items(book) : null;
+      if (!rounds().includes(scope)) scope = rounds().includes('v2') ? 'v2' : 'round1';
+      judging = book ? await api.items(book, scope) : null;
       if (judging && !judging.runs.some((r) => r.id === runId)) runId = judging.runs[0]?.id ?? '';
     } catch (e) {
       error = (e as Error).message;
@@ -90,23 +97,44 @@
     }
   }
 
+  /** The rounds the open book has finished runs of. */
+  function rounds(): string[] {
+    const set = new Set(
+      (overview?.runs ?? [])
+        .filter((r) => r.bookKey === book && r.state === 'done')
+        .map((r) => r.round)
+    );
+    return ['round1', 'v2'].filter((x) => set.has(x));
+  }
+
   function remember() {
     history.replaceState(
       history.state,
       '',
-      `?book=${encodeURIComponent(book)}&run=${encodeURIComponent(runId)}&tab=${tab}`
+      `?book=${encodeURIComponent(book)}&round=${scope}&run=${encodeURIComponent(runId)}&tab=${tab}`
     );
+  }
+
+  async function pickRound(r: string) {
+    scope = r;
+    runId = '';
+    kept = [];
+    await refresh();
+    remember();
   }
 
   async function pickBook(key: string) {
     book = key;
     runId = '';
+    scope = '';
+    kept = [];
     await refresh();
     remember();
   }
 
   function pickRun(id: string) {
     runId = id;
+    kept = [];
     remember();
   }
 
@@ -129,9 +157,11 @@
     };
     const before = current.marks[ref] ?? null;
     put(mark);
+    // An item you mark stays in view while "Only what needs you" is on.
+    if (!kept.includes(ref)) kept = [...kept, ref];
     try {
       await api.markItem(id, ref, mark);
-      const fresh = await api.items(book);
+      const fresh = await api.items(book, scope);
       if (judging) judging = { ...judging, runs: fresh.runs };
     } catch (err) {
       put(before);
@@ -142,9 +172,9 @@
   async function addMissing() {
     if (!api || !missingText.trim() || !current) return;
     try {
-      await api.addMissing(book, 'round1', missingText.trim(), current.id, tab);
+      await api.addMissing(book, scope, missingText.trim(), current.id, tab);
       missingText = '';
-      judging = await api.items(book);
+      judging = await api.items(book, scope);
     } catch (e) {
       error = (e as Error).message;
     }
@@ -161,7 +191,7 @@
     try {
       await api.updateMissing(id, editText);
       editing = null;
-      judging = await api.items(book);
+      judging = await api.items(book, scope);
     } catch (e) {
       error = (e as Error).message;
     }
@@ -170,8 +200,51 @@
   async function removeMissing(id: number) {
     if (!api) return;
     await api.removeMissing(id);
-    judging = await api.items(book);
+    judging = await api.items(book, scope);
   }
+
+  async function grade(run: ItemRun, g: TabGrade) {
+    if (!api) return;
+    const next = run.grades[tab] === g ? null : g;
+    try {
+      await api.gradeTab(run.id, tab, next);
+      judging = await api.items(book, scope);
+    } catch (e) {
+      error = (e as Error).message;
+    }
+  }
+  function gradeSummary(r: ItemRun): string {
+    const n = (g: TabGrade) => Object.values(r.grades).filter((x) => x === g).length;
+    const parts = TAB_GRADES.map((g) => (n(g.value) ? `${g.label} ${n(g.value)}` : '')).filter(
+      Boolean
+    );
+    return parts.join(' · ') || '—';
+  }
+
+  // Only the items waiting for you (flagged by Claude, not checked, spot checks), plus the ones
+  // you marked since; remembered on this device.
+  const ONLY_KEY = 'summaries-test.only';
+  let onlyNeeds = false;
+  try {
+    onlyNeeds = browser && localStorage.getItem(ONLY_KEY) === '1';
+  } catch {
+    // no storage: off
+  }
+  let kept: string[] = [];
+  function toggleOnly() {
+    onlyNeeds = !onlyNeeds;
+    kept = [];
+    try {
+      localStorage.setItem(ONLY_KEY, onlyNeeds ? '1' : '0');
+    } catch {
+      // not kept
+    }
+  }
+  $: hasChecks = !!current && Object.keys(current.checks ?? {}).length > 0;
+  $: only = onlyNeeds && current && hasChecks ? [...current.needsYou, ...kept] : null;
+
+  // Side by side: the same tab of every setup's summary, to grade them against each other.
+  let compare = false;
 
   function bookTitle(key: string): string {
     return overview?.books.find((b) => b.key === key)?.title ?? key;
@@ -244,7 +317,12 @@
     }
   }
   $: if (showEnglish && current) void loadEnglish(current.id);
+  $: if (showEnglish && compare && judging) for (const r of judging.runs) void loadEnglish(r.id);
   $: english = showEnglish && current ? (englishOf[current.id] ?? null) : null;
+  function englishFor(id: string, map: typeof englishOf) {
+    const e = map[id];
+    return showEnglish && e && e !== 'none' ? e : null;
+  }
 </script>
 
 <AppHeader title="Summary accuracy test" />
@@ -301,6 +379,22 @@
   {#if loading}
     <p class="mt-4 text-sm" role="status">Loading</p>
   {:else if judging}
+    {#if rounds().length > 1}
+      <section class="mt-4">
+        <h2 class="font-bold">Engine</h2>
+        <div class="mt-2 flex flex-wrap gap-2">
+          {#each rounds() as r (r)}
+            <button
+              type="button"
+              class="c-chip"
+              aria-pressed={scope === r}
+              data-testid="st-round"
+              on:click={() => pickRound(r)}>{r === 'v2' ? 'Fixed engine' : 'First engine'}</button
+            >
+          {/each}
+        </div>
+      </section>
+    {/if}
     <section class="mt-5 max-w-3xl">
       <h2 class="font-bold">Summary</h2>
       <div class="mt-2 flex flex-wrap gap-2">
@@ -311,22 +405,53 @@
             aria-pressed={runId === r.id}
             data-testid="st-run"
             on:click={() => pickRun(r.id)}
-            >{r.label} · {r.score.items - r.score.unmarked}/{r.score.items}</button
+            >{r.label} · {Object.keys(r.checks ?? {}).length
+              ? `${r.score.needsYou} for you`
+              : `${r.score.items - r.score.unmarked}/${r.score.items}`}</button
           >
         {/each}
       </div>
+      {#if hasChecks}
+        <p class="mt-3 text-sm text-c-muted" data-testid="st-checked-help">
+          Claude checked every item against the book. Turn on <b>Only what needs you</b> and mark
+          those: the items Claude flagged (with its reason) and 10 spot checks per summary (items
+          Claude found right, to measure its checks). Items Claude found right count as Right unless
+          you mark them. Then grade each tab against the other setups' (<b>Side by side</b>
+          shows them together) and add notes on what's missing.
+        </p>
+      {/if}
       <p class="mt-3 text-sm text-c-muted">
         Mark every item: <b>Right</b> (correct and worth keeping), <b>Has a mistake</b> (it needs a
         change: something wrong, made up, or missing), <b>Not needed</b> (vague, filler, or not
         important enough for a summary), <b>Unsure</b>. Tapping a pressed button clears it.
       </p>
-      <button
-        type="button"
-        class="c-btn c-btn-secondary c-btn-sm mt-3"
-        aria-pressed={showEnglish}
-        data-testid="st-english"
-        on:click={toggleEnglish}>English under each item</button
-      >
+      <div class="mt-3 flex flex-wrap gap-2">
+        <button
+          type="button"
+          class="c-btn c-btn-secondary c-btn-sm"
+          aria-pressed={showEnglish}
+          data-testid="st-english"
+          on:click={toggleEnglish}>English under each item</button
+        >
+        {#if hasChecks}
+          <button
+            type="button"
+            class="c-btn c-btn-secondary c-btn-sm"
+            aria-pressed={onlyNeeds}
+            data-testid="st-only"
+            on:click={toggleOnly}>Only what needs you ({current?.score.needsYou ?? 0})</button
+          >
+        {/if}
+        {#if judging.runs.length > 1}
+          <button
+            type="button"
+            class="c-btn c-btn-secondary c-btn-sm"
+            aria-pressed={compare}
+            data-testid="st-compare"
+            on:click={() => (compare = !compare)}>Side by side</button
+          >
+        {/if}
+      </div>
       {#if showEnglish && english === 'none'}
         <p class="mt-2 text-sm text-c-muted" data-testid="st-english-none">
           This summary has no English yet.
@@ -334,7 +459,36 @@
       {/if}
     </section>
 
-    {#if current}
+    {#if compare}
+      <div class="compare mt-4" data-testid="st-compare-view">
+        {#each judging.runs as r (r.id)}
+          <div class="compare-col" data-testid="st-compare-col">
+            <h3 class="font-bold">{r.label}</h3>
+            <div class="mt-1 flex flex-wrap gap-2" role="group" aria-label="Grade this tab">
+              {#each TAB_GRADES as g (g.value)}
+                <button
+                  type="button"
+                  class="c-btn c-btn-secondary c-btn-sm"
+                  aria-pressed={r.grades?.[tab] === g.value}
+                  data-testid="st-grade-{g.value}"
+                  on:click={() => grade(r, g.value)}>{g.label}</button
+                >
+              {/each}
+            </div>
+            <div class="mt-2">
+              <SummaryView
+                summary={r.summary}
+                bookId={judging.book.readerId}
+                chapters={judging.chapters}
+                characters={judging.characters}
+                english={englishFor(r.id, englishOf)}
+                bind:tab
+              />
+            </div>
+          </div>
+        {/each}
+      </div>
+    {:else if current}
       <div class="mt-4 max-w-3xl" data-testid="st-summary">
         <SummaryView
           summary={current.summary}
@@ -343,14 +497,33 @@
           characters={judging.characters}
           marks={current.marks}
           copied={current.copied}
+          checks={hasChecks ? current.checks : null}
+          {only}
           english={english && english !== 'none' ? english : null}
           bind:tab
           on:mark={onMark}
         />
       </div>
+      <section class="mt-6 max-w-3xl" data-testid="st-grade">
+        <h2 class="font-bold">Grade {tabLabel}</h2>
+        <p class="mt-1 text-sm text-c-muted">
+          Against the other setups' {tabLabel}: is {current.label}'s the best, good, or weak?
+        </p>
+        <div class="mt-2 flex flex-wrap gap-2" role="group" aria-label="Grade this tab">
+          {#each TAB_GRADES as g (g.value)}
+            <button
+              type="button"
+              class="c-btn c-btn-secondary c-btn-sm"
+              aria-pressed={current.grades?.[tab] === g.value}
+              data-testid="st-grade-{g.value}"
+              on:click={() => current && grade(current, g.value)}>{g.label}</button
+            >
+          {/each}
+        </div>
+      </section>
     {/if}
 
-    {#if current}
+    {#if current && !compare}
       <section class="mt-8 max-w-3xl" data-testid="st-missing">
         <h2 class="font-bold">Your notes on {tabLabel}</h2>
         <p class="mt-1 text-sm text-c-muted">
@@ -431,7 +604,9 @@
                 >Unsure</th
               ><th>Not marked</th><th>Cost</th><th>Time</th><th>Quotes dropped</th><th
                 >Cross-checked</th
-              ><th>Refusals</th><th>Your notes</th>
+              ><th>Refusals</th><th>Your notes</th><th>Claude: right</th><th>Claude: flagged</th><th
+                >For you</th
+              ><th>Spot checks agreed</th><th>Tab grades</th>
             </tr>
           </thead>
           <tbody>
@@ -450,6 +625,11 @@
                 <td>{metric(r.metrics, 'crossChecked')}</td>
                 <td>{refusals(r.metrics)}</td>
                 <td>{r.score.notes}</td>
+                <td>{r.score.claudeRight ?? 0}</td>
+                <td>{r.score.claudeFlagged ?? 0}</td>
+                <td>{r.score.needsYou ?? 0}</td>
+                <td>{r.score.spotMarked ? `${r.score.spotAgreed}/${r.score.spotMarked}` : '—'}</td>
+                <td>{gradeSummary(r)}</td>
               </tr>
             {/each}
           </tbody>
@@ -482,6 +662,14 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .compare {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr));
+    gap: 1.25rem;
+  }
+  .compare-col {
+    min-width: 0;
   }
   .scores th,
   .scores td {

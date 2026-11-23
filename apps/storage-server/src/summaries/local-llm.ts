@@ -257,7 +257,7 @@ export class LlamaServerEngine implements LocalEngine {
   ): Promise<{ summary: Summary; metrics: RunMetrics }> {
     const started = this.now();
     const t0 = this.timings.length;
-    const { book, index } = prepared(inp);
+    const { book, index, ruby } = prepared(inp);
     onPhase('extract');
     // 1. Extract per window.
     const whole: ExtractAnswer = { chapters: [] };
@@ -336,41 +336,62 @@ export class LlamaServerEngine implements LocalEngine {
       return out;
     };
     const budget = Math.floor((this.o.contextTokens - 3000) / 1.2) - sys.length;
+    // Each section from the items of its own kind only (2026-11-22: events made the character
+    // entries retell the plot and the threads list statements). Relationships come after the
+    // characters, between the names written there (gemma wrote sentences into the name fields).
     const sections: {
       key: 'characters' | 'relationships' | 'terms' | 'threads';
       kinds: string[];
-      schema: unknown;
+      schema: () => unknown;
+      hint: string;
     }[] = [
       {
         key: 'characters',
-        kinds: ['character', 'relationship', 'event'],
-        schema: sectionSchema({ name: { type: 'string' } }, ['name']),
+        kinds: ['character'],
+        schema: () => sectionSchema({ name: { type: 'string' } }, ['name']),
+        hint: "name is the character's name only.",
       },
       {
         key: 'relationships',
-        kinds: ['relationship', 'character'],
-        schema: sectionSchema({ a: { type: 'string' }, b: { type: 'string' } }, ['a', 'b']),
+        kinds: ['relationship'],
+        schema: () => {
+          const names = [...new Set(answer.characters.map((c) => c.name.trim()).filter(Boolean))];
+          return names.length >= 2
+            ? sectionSchema(
+                { a: { type: 'string', enum: names }, b: { type: 'string', enum: names } },
+                ['a', 'b'],
+              )
+            : null;
+        },
+        hint: "a and b are the two characters' names, exactly as the list allows.",
       },
       {
         key: 'terms',
-        kinds: ['term', 'reveal'],
-        schema: sectionSchema({ term: { type: 'string' } }, ['term']),
+        kinds: ['term'],
+        schema: () => sectionSchema({ term: { type: 'string' } }, ['term']),
+        hint: 'term is the word itself only.',
       },
-      { key: 'threads', kinds: ['thread', 'reveal', 'event'], schema: sectionSchema({}, []) },
+      {
+        key: 'threads',
+        kinds: ['thread'],
+        schema: () => sectionSchema({}, []),
+        hint: 'Only what is still open when the book ends.',
+      },
     ];
     let leftOut = 0;
     for (const s of sections) {
       const all = pick(s.kinds);
       const its = fit(all, budget);
       leftOut += all.length - its.length;
-      if (!its.length) continue;
-      const user = `BOOK: ${inp.title}\nWrite only the ${s.key} section.\n\nITEMS:\n${its.map((x) => line(x, false)).join('\n')}`;
+      const schema = s.schema();
+      if (!its.length || !schema) continue;
+      const user = `BOOK: ${inp.title}\nWrite only the ${s.key} section. ${s.hint} Plain text: no line breaks and no ids inside the text.\n\nITEMS:\n${its.map((x) => line(x, false)).join('\n')}`;
       const a = (await this.ask(
         `local.write.${s.key}`,
         inp.key,
         sys,
         user,
-        s.schema,
+        schema,
         this.room(sys.length + user.length),
       )) as { items?: never[] } | null;
       if (a?.items) (answer[s.key] as unknown[]) = a.items;
@@ -395,12 +416,14 @@ export class LlamaServerEngine implements LocalEngine {
     )) as { text?: string } | null;
     answer.overview = { text: ov?.text ?? '', cites: [] };
 
-    const checked = checkWritten(answer, items, book, index, {
-      lang: inp.lang,
-      title: inp.title,
-      models: [LOCAL_MODEL],
-      madeAt: this.now(),
-    });
+    const checked = checkWritten(
+      answer,
+      items,
+      book,
+      index,
+      { lang: inp.lang, title: inp.title, models: [LOCAL_MODEL], madeAt: this.now() },
+      ruby,
+    );
     // The stored answers' times (a run started again is answered from the store: its time stays).
     void t0;
     const mine = (

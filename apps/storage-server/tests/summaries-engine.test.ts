@@ -14,9 +14,11 @@ import { readBookScript, type BookScript } from '../src/audio/book-script';
 import { COUNTER_BUNDLE } from '../src/counts/counter-bundle';
 import {
   bookTextFromScript,
+  cleanWritten,
   isCountedChar,
   passageAt,
   QuoteIndex,
+  RubyIndex,
 } from '../src/summaries/book-text';
 import {
   askedMetrics,
@@ -37,6 +39,7 @@ import {
 } from '../src/summaries/pipeline';
 import { modelForTask, MODELS } from '../src/summaries/specs';
 import { openSummariesDb } from '../src/summaries/summaries-db';
+import { runIdOf, SPOT_CHECKS, SummaryTestService } from '../src/summaries/test-service';
 import type { CheckedItem } from '../src/summaries/types';
 import { makeAiCore } from './helpers/ai-env';
 import { write } from './helpers/audio-fixtures';
@@ -852,5 +855,248 @@ describe('the local model', () => {
     } finally {
       server.close();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// the fixed engine (2026-11-22, after the first round of judging)
+
+describe('the fixed engine', () => {
+  /** A script whose sentences carry the book's furigana (as the reader's import gives it). */
+  function rubyScript(): BookScript {
+    const s = (text: string, ruby: { base: string; rt: string }[], position: number) => ({
+      text,
+      reading: text,
+      position,
+      paragraphEnd: true,
+      ruby: ruby.map((r) => {
+        const start = text.indexOf(r.base);
+        return { start, end: start + r.base.length, rt: r.rt };
+      }),
+    });
+    return {
+      version: 3,
+      characters: 60,
+      chapters: [
+        {
+          index: 0,
+          title: '一章',
+          startCharacter: 0,
+          characters: 60,
+          sentences: [
+            s(
+              '竜ヶ峰帝人は池袋に来た。',
+              [
+                { base: '竜ヶ峰', rt: 'りゅうがみね' },
+                { base: '帝人', rt: 'みかど' },
+              ],
+              0,
+            ),
+            s('帝人は笑った。', [{ base: '帝人', rt: 'みかど' }], 12),
+            s('帝人は叫んだ。', [{ base: '帝人', rt: 'ていじん' }], 18),
+            s('門田と矢霧製薬。', [{ base: '門', rt: 'かど' }], 24),
+            s('凛は来た。', [{ base: '凛', rt: 'りん' }], 30),
+          ],
+        },
+      ],
+    };
+  }
+
+  it('a heading gets readings only from the book, each run of kanji covered whole', () => {
+    const r = new RubyIndex(rubyScript());
+    // The most frequent reading wins (みかど twice, ていじん once).
+    expect(r.pieces('竜ヶ峰帝人')).toEqual([
+      { t: '竜ヶ峰', r: 'りゅうがみね' },
+      { t: '帝人', r: 'みかど' },
+    ]);
+    // A one-character piece is used only for a run of one kanji.
+    expect(r.pieces('凛')).toEqual([{ t: '凛', r: 'りん' }]);
+    expect(r.pieces('門田')).toBeNull();
+    // No ruby in the book: no reading.
+    expect(r.pieces('矢霧製薬')).toBeNull();
+    expect(r.pieces('セルティ')).toBeNull();
+    // Kana next to a kanji run stays as it is.
+    expect(r.pieces('帝人くん')).toEqual([{ t: '帝人', r: 'みかど' }, { t: 'くん' }]);
+  });
+
+  it('the real import gives readings from its own ruby', async () => {
+    const dir = makeTempDir('sum-ruby');
+    const xhtml = (body: string) =>
+      `<?xml version="1.0" encoding="utf-8"?><html xmlns="http://www.w3.org/1999/xhtml"><head><title>x</title></head><body>${body}</body></html>`;
+    const epub = makeZip([
+      { name: 'mimetype', data: 'application/epub+zip' },
+      {
+        name: 'META-INF/container.xml',
+        data: '<?xml version="1.0"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>',
+      },
+      {
+        name: 'OEBPS/content.opf',
+        data: `<?xml version="1.0" encoding="utf-8"?><package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>試験</dc:title><dc:identifier id="id">x</dc:identifier></metadata><manifest><item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/><item id="c1" href="c1.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="c1"/></spine></package>`,
+      },
+      {
+        name: 'OEBPS/nav.xhtml',
+        data: xhtml(
+          '<nav epub:type="toc" xmlns:epub="http://www.idpf.org/2007/ops"><ol><li><a href="c1.xhtml">一章</a></li></ol></nav>',
+        ),
+      },
+      {
+        name: 'OEBPS/c1.xhtml',
+        data: xhtml(
+          '<p><ruby>汐見<rt>しおみ</rt></ruby>ナギは<ruby>潮呪<rt>ちょうじゅ</rt></ruby>を知った。</p>',
+        ),
+      },
+    ]);
+    const script = await readBookScript(write(dir, 'book.epub', epub), {
+      importOptions: { importHTMLFixMode: 'Off', restrictImportFixToAnchor: true },
+      maxSentence: 120,
+      timeoutMs: 120_000,
+    });
+    const r = new RubyIndex(script);
+    expect(r.pieces('汐見ナギ')).toEqual([{ t: '汐見', r: 'しおみ' }, { t: 'ナギ' }]);
+    expect(r.pieces('潮呪')).toEqual([{ t: '潮呪', r: 'ちょうじゅ' }]);
+  }, 180_000);
+
+  it("written text: a model's literal \\n and ids go; only the overview keeps paragraphs", () => {
+    expect(cleanWritten('一行目。\\n二行目 (gemma:3:2, gemma:5:1)。', 'ja', false)).toBe(
+      '一行目。二行目。',
+    );
+    expect(cleanWritten('First.\\nSecond（sonnet:1:0）', 'en', false)).toBe('First. Second');
+    expect(cleanWritten('段落一。\\n\\n段落二。', 'ja', true)).toBe('段落一。\n\n段落二。');
+  });
+
+  it('the written summary carries the readings of Characters, Terms and Relationships headings', () => {
+    const script = rubyScript();
+    const book = bookTextFromScript(script);
+    const idx = new QuoteIndex(script);
+    const items = [item('a:0:0', 0, '帝人が来た', '竜ヶ峰帝人は池袋に来た', 0)];
+    const w = { text: '少年。', cites: ['a:0:0'], quote_from: '', show_quote: false };
+    const out = checkWritten(
+      {
+        overview: { text: '話。', cites: [] },
+        chapters: [],
+        characters: [{ ...w, name: '竜ヶ峰帝人' }],
+        also_mentioned: [],
+        relationships: [{ ...w, a: '竜ヶ峰帝人', b: '門田' }],
+        terms: [{ ...w, term: '矢霧製薬' }],
+        threads: [],
+      },
+      items,
+      book,
+      idx,
+      { lang: 'ja', title: 't', models: [], madeAt: 0 },
+      new RubyIndex(script),
+    );
+    const [, chars, rels, terms] = out.summary.sections.map((s) => s.groups[0].items[0]);
+    expect(chars.ruby).toEqual([
+      { t: '竜ヶ峰', r: 'りゅうがみね' },
+      { t: '帝人', r: 'みかど' },
+    ]);
+    expect(rels.betweenRuby).toEqual([chars.ruby, null]);
+    expect(terms.ruby).toBeUndefined();
+    // A translation drops the readings (its headings are in the other language).
+    const t = applyTranslation(out.summary, 'en', [
+      { ref: 'char0', heading: 'Mikado Ryūgamine', text: 'A boy.' },
+    ]);
+    expect(t.summary.sections[1].groups[0].items[0].ruby).toBeUndefined();
+  });
+
+  it('the mixed setup reuses the two models’ finding and checking, and Opus writes', async () => {
+    const log: Log = { calls: [] };
+    const { runner } = env(log);
+    const pump = pumpOf(runner);
+    await runCloudSetup({ runner, pump, runId: 'r1' }, INPUT, 'two');
+    const before = log.calls.length;
+    const { summary, report } = await runCloudSetup({ runner, pump, runId: 'r1' }, INPUT, 'mixed');
+    // Only the writing is asked: everything before it is answered from the store.
+    expect(log.calls.slice(before).map((c) => [c.model, c.schema])).toEqual([
+      [MODELS.opus, 'summary'],
+    ]);
+    expect(report.cross).toMatchObject({ confirmed: 2, checked: 1, supported: 1 });
+    expect(summary.models).toEqual([MODELS.sonnet, MODELS.sol, MODELS.opus]);
+  });
+
+  it('Claude’s checks: spot checks fixed by hash, what waits for the user, tab grades', () => {
+    const log: Log = { calls: [] };
+    const { runner, db } = env(log);
+    const svc = new SummaryTestService({ db, runner, scriptOf: async () => BOOK });
+    const items = Array.from({ length: 14 }, (_, i) => ({
+      ref: `ch0.${i}`,
+      text: `出来事${i}`,
+      cites: ['x'],
+      quote: null,
+      position: null,
+      showQuote: false,
+    }));
+    const summary = {
+      lang: 'ja',
+      bookTitle: 't',
+      models: [],
+      madeAt: 0,
+      sections: [{ key: 'chapters', groups: [{ chapter: 0, title: '一章', items }] }],
+      alsoMentioned: [],
+    };
+    db.prepare(
+      `INSERT INTO test_books (key, title, file, characters, added_at) VALUES ('b', 't', 'f', 10, 0)`,
+    ).run();
+    const id = runIdOf('b', 'mixed', false, 'v2');
+    expect(id).toBe('b|mixed|bg0|v2');
+    expect(runIdOf('b', 'two', false)).toBe('b|two|bg0');
+    db.prepare(
+      `INSERT INTO test_runs (id, book_key, setup, background, round, state, started_at) VALUES (?, 'b', 'mixed', 0, 'v2', 'done', 0)`,
+    ).run(id);
+    db.prepare(
+      `INSERT INTO test_summaries (run_id, lang, summary_json, made_at) VALUES (?, 'ja', ?, 0)`,
+    ).run(id, JSON.stringify(summary));
+    const checks = items.map((it, i) => ({
+      ref: it.ref,
+      verdict: (i < 12 ? 'right' : 'mistake') as 'right' | 'mistake',
+      reason: i < 12 ? null : 'the book says otherwise',
+    }));
+    const spotRefs = () =>
+      (
+        db.prepare('SELECT ref FROM test_item_checks WHERE run_id = ? AND spot = 1').all(id) as {
+          ref: string;
+        }[]
+      )
+        .map((r) => r.ref)
+        .sort();
+    expect(svc.setChecks(id, checks)).toEqual({ saved: 14, spot: SPOT_CHECKS });
+    const spots = spotRefs();
+    svc.setChecks(id, checks);
+    expect(spotRefs()).toEqual(spots);
+    expect(() => svc.setChecks(id, [{ ref: 'nope', verdict: 'right' }])).toThrow(/no item/);
+
+    let run = svc.itemJudging('b', 'v2').runs[0];
+    // 2 flagged + 10 spot checks wait; 2 found right count as right, 2 flagged as mistakes.
+    expect(run.score).toMatchObject({
+      items: 14,
+      claudeRight: 12,
+      claudeFlagged: 2,
+      needsYou: 12,
+      right: 2,
+      mistake: 2,
+      unmarked: 10,
+      spotChecks: 10,
+      spotMarked: 0,
+    });
+    expect(svc.itemJudging('b', 'round1').runs).toEqual([]);
+    // Your mark wins over Claude's; a spot check you marked counts as agreed when Right.
+    svc.markItem(id, spots[0], 'right');
+    svc.markItem(id, spots[1], 'mistake');
+    svc.markItem(id, 'ch0.12', 'right');
+    run = svc.itemJudging('b', 'v2').runs[0];
+    expect(run.score).toMatchObject({
+      needsYou: 9,
+      spotMarked: 2,
+      spotAgreed: 1,
+      right: 4,
+      mistake: 2,
+    });
+    expect(run.needsYou).not.toContain(spots[0]);
+    svc.gradeTab(id, 'chapters', 'best');
+    svc.gradeTab(id, 'overview', 'weak');
+    svc.gradeTab(id, 'overview', null);
+    expect(svc.itemJudging('b', 'v2').runs[0].grades).toEqual({ chapters: 'best' });
+    svc.stop();
   });
 });

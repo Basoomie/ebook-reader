@@ -9,6 +9,12 @@
  * Session 2 shows it on the accuracy test's pages; session 4 on the book page.
  */
 
+/** A piece of a heading with its reading from the book's furigana (r absent: none). */
+export interface RubyPiece {
+  t: string;
+  r?: string;
+}
+
 export interface SummaryItem {
   ref: string;
   text: string;
@@ -16,6 +22,10 @@ export interface SummaryItem {
   heading?: string;
   /** Relationships: the two people. */
   between?: [string, string];
+  /** The heading with the book's own furigana (Characters and Terms), when the book has it. */
+  ruby?: RubyPiece[];
+  /** Relationships: each name with the book's furigana, when the book has it. */
+  betweenRuby?: [RubyPiece[] | null, RubyPiece[] | null];
   cites: string[];
   quote: string | null;
   position: number | null;
