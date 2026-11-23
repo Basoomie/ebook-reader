@@ -37,6 +37,12 @@ import { initCleanupDatabase } from '../src/cleanup/cleanup-db';
 import { DiskLock } from '../src/cleanup/disk-lock';
 import { setAudioStageMode } from '../src/cleanup/audio/audio-stages';
 import { makeTempDir } from './helpers/spawn-server';
+import express from 'express';
+import request from 'supertest';
+import { createCleanupLinkRouter } from '../src/cleanup/audio/link-routes';
+import { LIBRARY_BATCH_BASE } from '../src/cleanup/audio/library-changes';
+import { BOOK_ARCHIVE_BATCH_BASE } from '../src/cleanup/arrivals/archives';
+import { createApplyToken } from '../src/cleanup/apply-tokens';
 
 const cleanups: (() => void)[] = [];
 afterEach(() => {
@@ -967,5 +973,44 @@ describe('WP21g static checks', () => {
       expect(s).not.toMatch(/writeFile|appendFile|unlink|rename\(|rmSync|mkdir|copyFile|calibredb/);
       expect(s).not.toMatch(/readonly: false/);
     }
+  });
+});
+
+describe("the linking sidecar's reports reach the batch's own owner (found in WP21g's e2e)", () => {
+  it('a library-changes batch (from 3e9) goes to the audiobooks, a book archive batch (from 4e9) to the import', async () => {
+    const dir = makeTempDir('wp21g-link');
+    cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const s = initCleanupDatabase(dir);
+    if (!s.ok) throw new Error(s.error);
+    cleanups.push(() => s.db.close());
+    const { token } = createApplyToken(s.db, 'e2e link', Date.now(), 'link');
+    const audio: number[] = [];
+    const archives: number[] = [];
+    const app = express();
+    app.use(
+      '/api/v1',
+      createCleanupLinkRouter({
+        service: {
+          db: s.db,
+          arrivals: {
+            archiveReport: (id: number) => (archives.push(id), { accepted: 1 }),
+            archiveClaim: () => null,
+          },
+        } as never,
+        audio: { linkReport: (id: number) => (audio.push(id), { accepted: 1 }) } as never,
+      }),
+    );
+    const report = (id: number) =>
+      request(app)
+        .post(`/api/v1/cleanup-link/batches/${id}/report`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ results: [{ id: 1, ok: true }] });
+    expect((await report(LIBRARY_BATCH_BASE + 1)).status).toBe(200);
+    expect((await report(BOOK_ARCHIVE_BATCH_BASE + 123)).status).toBe(200);
+    expect(audio).toEqual([LIBRARY_BATCH_BASE + 1]);
+    expect(archives).toEqual([BOOK_ARCHIVE_BATCH_BASE + 123]);
+    // The archives' ids (the base plus up to 1e8 from the clock) never reach a library batch's.
+    expect(BOOK_ARCHIVE_BATCH_BASE).toBeGreaterThanOrEqual(LIBRARY_BATCH_BASE + 1e9);
+    expect(BOOK_ARCHIVE_BATCH_BASE + 1e8 + 1e6).toBeLessThan(2 ** 32);
   });
 });

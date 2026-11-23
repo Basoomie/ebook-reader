@@ -50,6 +50,7 @@ import {
 } from './library-plan';
 import type { SwitchReader } from './stage6-switch';
 
+/** Library changes' batch ids: from 3e9 (cleanup.db v20's seed row), below the book archives' 4e9. */
 export const LIBRARY_BATCH_BASE = 3_000_000_000;
 export const LIBRARY_SIDECAR_VERSION = '1.3.0';
 const OWNER = DISK_OWNERS.audio7;
