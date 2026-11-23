@@ -189,6 +189,13 @@
     vals = { ...vals, identifiers: { ...vals.identifiers, [key]: value } };
   }
 
+  // The app compiles with immutable updates: a field changes by a new values object, never by
+  // mutating one (a bind:value on vals.title changed nothing the counter or Save could see).
+  function setText(field: 'title' | 'sort' | 'author_sort' | 'description', value: string) {
+    if (!vals) return;
+    vals = { ...vals, [field]: value };
+  }
+
   function confirmField(field: string) {
     confirm = new Set([...confirm, field]);
   }
@@ -422,7 +429,8 @@
           <input
             id="edit-title"
             class="c-input w-full"
-            bind:value={vals.title}
+            value={vals.title ?? ''}
+            on:input={(e) => setText('title', e.currentTarget.value)}
             data-testid="edit-title"
           />
           <p
@@ -457,7 +465,8 @@
           <input
             id="edit-sort"
             class="c-input w-full"
-            bind:value={vals.sort}
+            value={vals.sort ?? ''}
+            on:input={(e) => setText('sort', e.currentTarget.value)}
             data-testid="edit-sort"
           />
         </div>
@@ -525,7 +534,8 @@
           <input
             id="edit-author-sort"
             class="c-input w-full"
-            bind:value={vals.author_sort}
+            value={vals.author_sort ?? ''}
+            on:input={(e) => setText('author_sort', e.currentTarget.value)}
             data-testid="edit-author-sort"
           />
         </div>
@@ -741,7 +751,8 @@
         class="c-input w-full py-2"
         rows="8"
         aria-label="Description"
-        bind:value={vals.description}
+        value={vals.description ?? ''}
+        on:input={(e) => setText('description', e.currentTarget.value)}
         data-testid="edit-description"
       />
       <p class="mt-1 text-xs text-c-muted">A blank line starts a new paragraph.</p>

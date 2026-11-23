@@ -91,6 +91,11 @@
   );
   $: pairs = (view?.pairs ?? []).filter((p) => !notSame.has(p.name) && p.name !== merge?.name);
 
+  // Immutable updates (the app's compile option): a changed row is a new row in a new list.
+  function setRow(bookId: string, patch: Partial<Row>) {
+    rows = rows.map((x) => (x.bookId === bookId ? { ...x, ...patch } : x));
+  }
+
   async function moveIn(p: SeriesPair) {
     pairBusy = true;
     try {
@@ -249,7 +254,8 @@
               <input
                 class="c-input w-full"
                 aria-label="Title of volume {r.indexText || '?'}"
-                bind:value={r.title}
+                value={r.title}
+                on:input={(e) => setRow(r.bookId, { title: e.currentTarget.value })}
                 disabled={!!r.moved}
                 data-testid="series-row-title"
               />
@@ -263,7 +269,8 @@
                 class="c-input w-full"
                 inputmode="decimal"
                 aria-label="Number of {r.title}"
-                bind:value={r.indexText}
+                value={r.indexText}
+                on:input={(e) => setRow(r.bookId, { indexText: e.currentTarget.value })}
                 disabled={!!r.moved}
                 data-testid="series-row-index"
               />
@@ -274,10 +281,7 @@
                     type="button"
                     class="c-btn c-btn-secondary c-btn-sm"
                     data-testid="series-row-confirm"
-                    on:click={() => {
-                      r.confirmed = true;
-                      rows = rows;
-                    }}>Confirm</button
+                    on:click={() => setRow(r.bookId, { confirmed: true })}>Confirm</button
                   >
                 </p>
               {:else if r.confirmed}
