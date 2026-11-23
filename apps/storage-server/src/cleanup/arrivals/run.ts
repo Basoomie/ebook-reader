@@ -8,8 +8,9 @@
  *   scan      each source folder walked (read only), the catalog brought up to date
  *   archives  zip/rar/7z and split sets listed and their EPUBs unpacked into _extracted/ by the
  *             linking sidecar (in Preview too)
- *   identify  each new settled EPUB hashed and read (title and authors as its OPF says them; an
- *             EPUB the reader's import can't open is "Not imported"); other formats listed
+ *   identify  each new settled EPUB read (title and authors as its OPF says them; an EPUB the
+ *             reader's import can't open is "Not imported"); other formats listed. Hashed only
+ *             when its size is one of a file you removed (else when compare or an add needs it)
  *   compare   each against the library: identical files (stage 1's file_facts), the same text
  *             (compare.ts: stage 3's reader, index and rules), the better copy (stage 3's order)
  *   plan      what would be added. Preview ends its import here; a folder's first run is a
@@ -170,6 +171,7 @@ export interface CompareFacts {
   /** Candidate pairs this book owns (the other copy's key). */
   cands?: number[];
   verdicts?: MeasuredPair[];
+  measured?: boolean;
   compared?: boolean;
   [k: string]: unknown;
 }
@@ -323,6 +325,32 @@ function emptyProgress(): RunProgress {
 
 const yieldNow = () => new Promise<void>((r) => setImmediate(r));
 
+/**
+ * Runs `fn` on the items with up to `limit` in flight, the next item as soon as one finishes
+ * (stage 3's pipeline, not groups that wait for their slowest). False when stopped on the way;
+ * a job that throws makes the whole call throw.
+ */
+export async function inPool<T>(
+  items: T[],
+  limit: number,
+  shouldStop: () => boolean,
+  fn: (item: T) => Promise<void>,
+): Promise<boolean> {
+  let next = 0;
+  let stopped = false;
+  const lane = async () => {
+    while (next < items.length) {
+      if (shouldStop()) {
+        stopped = true;
+        return;
+      }
+      await fn(items[next++]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, lane));
+  return !stopped;
+}
+
 /** A run without new books goes from one write to the next (the stages have no books). */
 const NEXT_WRITE = { write2: 'write4', write4: 'write5', write5: 'check' } as const;
 
@@ -337,6 +365,8 @@ export class BookArrivals {
 
   private settleCheckedAt = 0;
   /** The compare stage's pace was started in this process. */
+  /** The sizes two or more new files share (the identical stage's hash-on-need), per run. */
+  private sharedSizes: { run: number; sizes: Set<number> } | null = null;
   private cmpPaced = false;
 
   constructor(private readonly deps: ArrivalsDeps) {
@@ -869,7 +899,7 @@ export class BookArrivals {
         return 'more';
       }
       case 'add':
-        return this.addStep(run, p, libraryId);
+        return this.addStep(run, p, libraryId, shouldStop);
       case 'index':
         return this.indexStep(run, p, libraryId, libDir);
       case 'stage1': {
@@ -1109,24 +1139,24 @@ export class BookArrivals {
     if (c.total === 0) {
       const t = this.db
         .prepare(
-          `SELECT COUNT(*) AS n, COALESCE(SUM(size), 0) AS b FROM calibre_arrival_files
+          `SELECT COUNT(*) AS n FROM calibre_arrival_files
            WHERE outcome = 'pending' AND pair_key IN (${ph}) AND kind = 'epub' AND gone_at IS NULL`,
         )
-        .get(...keys) as { n: number; b: number };
+        .get(...keys) as { n: number };
+      // Counted by files: the OPF is read, not the whole file.
       c.total = t.n;
-      c.bytesTotal = t.b;
-      c.bytesDone = 0;
     }
     const pacer = new SourcePacer(settings.pacing.readMbPerSecond * 1024 * 1024);
-    const removed = new Set(
-      (
-        this.db
-          .prepare(
-            `SELECT sha256 FROM calibre_arrival_files WHERE outcome = 'removed_by_you' AND sha256 IS NOT NULL`,
-          )
-          .all() as { sha256: string }[]
-      ).map((r) => r.sha256),
-    );
+    // Files you removed, by size: only a file of one of these sizes is hashed here (the rest
+    // are hashed when the comparison or an add needs it; WP20g stop 2: hashing every file read
+    // 988 GB for nothing).
+    const removed = new Map<number, Set<string>>();
+    for (const r of this.db
+      .prepare(
+        `SELECT size, sha256 FROM calibre_arrival_files WHERE outcome = 'removed_by_you' AND sha256 IS NOT NULL`,
+      )
+      .all() as { size: number; sha256: string }[])
+      removed.set(r.size, (removed.get(r.size) ?? new Set()).add(r.sha256));
     const res = await this.withDisk(
       p,
       async () => {
@@ -1148,11 +1178,13 @@ export class BookArrivals {
             );
             continue;
           }
-          const h = await hashSource(file, pacer, shouldStop);
-          if (!h) return false;
+          let h: { sha256: string } | null = null;
+          if (removed.has(f.size)) {
+            h = await hashSource(file, pacer, shouldStop);
+            if (!h) return false;
+          }
           c.done++;
-          c.bytesDone = (c.bytesDone ?? 0) + f.size;
-          if (removed.has(h.sha256)) {
+          if (h && removed.get(f.size)!.has(h.sha256)) {
             set.run(
               'removed_by_you',
               h.sha256,
@@ -1204,7 +1236,16 @@ export class BookArrivals {
             problem = `The reader can't open it: ${(err as Error).message}`.slice(0, 300);
           }
           if (problem || !facts) {
-            set.run('unreadable', h.sha256, Date.now(), problem, null, run.id, Date.now(), f.id);
+            set.run(
+              'unreadable',
+              h?.sha256 ?? null,
+              h ? Date.now() : null,
+              problem,
+              null,
+              run.id,
+              Date.now(),
+              f.id,
+            );
             continue;
           }
           if (facts.fit && (facts.fit.step === 'shortened' || facts.fit.step === 'cut')) {
@@ -1229,8 +1270,8 @@ export class BookArrivals {
             // Only a first author too long on its own is left (bad data): held, as before.
             set.run(
               'too_long',
-              h.sha256,
-              Date.now(),
+              h?.sha256 ?? null,
+              h ? Date.now() : null,
               "The first author is too long for a folder name in Calibre's library",
               JSON.stringify(facts),
               run.id,
@@ -1244,15 +1285,15 @@ export class BookArrivals {
           }
           set.run(
             'pending',
-            h.sha256,
-            Date.now(),
+            h?.sha256 ?? null,
+            h ? Date.now() : null,
             null,
             JSON.stringify(facts),
             run.id,
             Date.now(),
             f.id,
           );
-          // Read: handed to compare from here (outcome 'pending' with a hash).
+          // Read: handed to compare from here.
           this.db
             .prepare(`UPDATE calibre_arrival_files SET outcome = 'new' WHERE id = ?`)
             .run(f.id);
@@ -1365,7 +1406,7 @@ export class BookArrivals {
       pair_key: string;
       rel_path: string;
       size: number;
-      sha256: string;
+      sha256: string | null;
       facts_json: string | null;
     };
     const facts = (r: { facts_json: string | null }) =>
@@ -1429,12 +1470,35 @@ export class BookArrivals {
            decided_at = ? WHERE id = ?`,
       );
       const part = rows('AND id > ?', 200, cmp.cursor);
+      // A file needs its SHA-256 only when a library EPUB or another new file has its size. The
+      // new files' shared sizes are read once per run and process (one pass over the new files,
+      // not one per file).
+      if (this.sharedSizes?.run !== run.id)
+        this.sharedSizes = {
+          run: run.id,
+          sizes: new Set(
+            (
+              this.db
+                .prepare(
+                  `SELECT size FROM calibre_arrival_files INDEXED BY calibre_arrival_files_outcome
+                   WHERE outcome = 'new' AND pair_key IN (${ph}) AND gone_at IS NULL
+                     AND json_extract(facts_json, '$.compared') IS NULL
+                   GROUP BY size HAVING COUNT(*) > 1`,
+                )
+                .all(...keys) as { size: number }[]
+            ).map((r) => r.size),
+          ),
+        };
+      const shared = this.sharedSizes.sizes;
+      const setSha = this.db.prepare(
+        'UPDATE calibre_arrival_files SET sha256 = ?, hashed_at = ? WHERE id = ?',
+      );
       if (!part.length) {
         // Identical among themselves: the first of each SHA-256 stays.
         const dupes = this.db
           .prepare(
             `SELECT id, sha256 FROM calibre_arrival_files INDEXED BY calibre_arrival_files_outcome
-             WHERE outcome = 'new' AND pair_key IN (${ph}) AND gone_at IS NULL
+             WHERE outcome = 'new' AND pair_key IN (${ph}) AND gone_at IS NULL AND sha256 IS NOT NULL
              AND json_extract(facts_json, '$.compared') IS NULL ORDER BY id`,
           )
           .all(...keys) as { id: number; sha256: string }[];
@@ -1455,7 +1519,20 @@ export class BookArrivals {
         for (const f of part) {
           if (shouldStop()) return false;
           const same = await libraryHashesOfSize(pd, books, f.size, libPacer, shouldStop);
-          const hit = same.find((x) => x.sha256 === f.sha256);
+          if (shouldStop()) return false;
+          let sha = f.sha256;
+          if (!sha && (same.length || shared.has(f.size))) {
+            const file = this.sourcePath(f.pair_key, f.rel_path);
+            const st = await lstatSource(file);
+            const h =
+              st && st.size === f.size ? await hashSource(file, srcPacer, shouldStop) : null;
+            if (!h && shouldStop()) return false;
+            if (h) {
+              sha = h.sha256;
+              setSha.run(sha, Date.now(), f.id);
+            }
+          }
+          const hit = sha ? same.find((x) => x.sha256 === sha) : undefined;
           if (hit)
             set.run(
               `The same file as Calibre book ${hit.calibreId}`,
@@ -1473,16 +1550,19 @@ export class BookArrivals {
       return 'more';
     }
 
+    // Several books in flight across the reader processes, as stage 3 reads them (textWorkers ×
+    // 2; WP20g stop 2: one at a time used one of six processes).
+    const inFlight = Math.max(1, settings.duplicates.textWorkers) * 2;
+
     if (cmp.stage === 'text') {
-      const part = rows(`AND json_extract(facts_json, '$.text') IS NULL`, 20);
+      const part = rows(`AND json_extract(facts_json, '$.text') IS NULL`, inFlight * 8);
       if (!part.length) {
         stage('pairs', 0, 0);
         return 'more';
       }
       p.waiting = `Reading the new books' text (${c.done.toLocaleString('en-US')} of ${c.total.toLocaleString('en-US')})`;
-      const ok = await slice(async () => {
-        for (const f of part) {
-          if (shouldStop()) return false;
+      const ok = await slice(() =>
+        inPool(part, inFlight, shouldStop, async (f) => {
           const old = facts(f);
           const t = await readNewText(
             cd,
@@ -1505,11 +1585,11 @@ export class BookArrivals {
             vertical: t.vertical,
             imageEntries: t.imageEntries.length,
           };
+          // Kept as each book is read (a restart reads only the books not kept yet).
           setFacts.run(JSON.stringify(old), f.id);
           c.done++;
-        }
-        return true;
-      });
+        }),
+      );
       if (ok === null || ok === false) return 'wait';
       return 'more';
     }
@@ -1534,15 +1614,21 @@ export class BookArrivals {
           setFacts.run(JSON.stringify(fx), r.id);
         }
       })();
-      stage('measure', 0, countNew(`AND json_array_length(facts_json, '$.cands') > 0`));
+      stage(
+        'measure',
+        0,
+        countNew(
+          `AND json_array_length(facts_json, '$.cands') > 0 AND json_extract(facts_json, '$.measured') IS NULL`,
+        ),
+      );
       return 'more';
     }
 
     if (cmp.stage === 'measure') {
       const part = rows(
-        `AND json_array_length(facts_json, '$.cands') > 0 AND id > ?`,
-        20,
-        cmp.cursor,
+        `AND json_array_length(facts_json, '$.cands') > 0
+           AND json_extract(facts_json, '$.measured') IS NULL`,
+        inFlight * 4,
       );
       if (!part.length) {
         stage('decide', 0, countNew(`AND json_extract(facts_json, '$.compared') IS NULL`));
@@ -1553,9 +1639,8 @@ export class BookArrivals {
         `SELECT id, pair_key, rel_path, size, sha256, facts_json FROM calibre_arrival_files WHERE id = ?`,
       );
       const qCache = new Map<number, Quality | null>();
-      const ok = await slice(async () => {
-        for (const f of part) {
-          if (shouldStop()) return false;
+      const ok = await slice(() =>
+        inPool(part, inFlight, shouldStop, async (f) => {
           const news = new Map<number, NewText>([[-f.id, newText(f)]]);
           const cands = facts(f).cands ?? [];
           for (const o of cands)
@@ -1596,6 +1681,8 @@ export class BookArrivals {
               ]);
             }
           }
+          // The verdicts and this book's "measured" mark in one transaction: books finish out of
+          // order, and a restart measures again only the books not marked (never twice).
           this.db.transaction(() => {
             for (const [k, vs] of add) {
               const r = byId.get(-k) as Row;
@@ -1603,12 +1690,13 @@ export class BookArrivals {
               fx.verdicts = [...(fx.verdicts ?? []), ...vs];
               setFacts.run(JSON.stringify(fx), r.id);
             }
+            const own = facts(byId.get(f.id) as Row);
+            own.measured = true;
+            setFacts.run(JSON.stringify(own), f.id);
           })();
-          cmp.cursor = f.id;
           c.done++;
-        }
-        return true;
-      });
+        }),
+      );
       if (ok === null || ok === false) return 'wait';
       return 'more';
     }
@@ -1848,15 +1936,74 @@ export class BookArrivals {
     return false;
   }
 
-  private addStep(
+  private async addStep(
     run: RunRow & { p: RunProgress },
     p: RunProgress,
     libraryId: string,
-  ): 'more' | 'wait' {
+    shouldStop: () => boolean,
+  ): Promise<'more' | 'wait'> {
     const c = this.count(p, 'add');
     if (c.total === 0 && this.checksWait(p)) return 'wait';
     if (c.total === 0 && !this.addBatches.busy(run.id)) {
-      const ids = this.filesToAdd(run, p);
+      let ids = this.filesToAdd(run, p);
+      if (!ids.length) {
+        this.next(run.id, p, 'index');
+        return 'more';
+      }
+      // A book is hashed when it is added (the sidecar checks the copy it is sent against it,
+      // and the check step the library's copy), in slices under the disk lock.
+      const unhashed = this.db
+        .prepare(
+          `SELECT id, pair_key, rel_path, size, mtime_ms, archive_id FROM calibre_arrival_files
+           WHERE id IN (SELECT value FROM json_each(?)) AND sha256 IS NULL ORDER BY id LIMIT 50`,
+        )
+        .all(JSON.stringify(ids)) as {
+        id: number;
+        pair_key: string;
+        rel_path: string;
+        size: number;
+        mtime_ms: number;
+        archive_id: number | null;
+      }[];
+      if (unhashed.length) {
+        p.waiting = 'Reading the books to add';
+        const pacer = new SourcePacer(getSettings(this.db).pacing.readMbPerSecond * 1024 * 1024);
+        const setSha = this.db.prepare(
+          'UPDATE calibre_arrival_files SET sha256 = ?, hashed_at = ? WHERE id = ?',
+        );
+        const changed = this.db.prepare(
+          `UPDATE calibre_arrival_files SET outcome = 'waiting', detail = 'Changed since it was seen',
+             run_id = ?, decided_at = ? WHERE id = ?`,
+        );
+        const ok = await this.withDisk(
+          p,
+          async () => {
+            for (const f of unhashed) {
+              if (shouldStop()) return false;
+              const file = this.sourcePath(f.pair_key, f.rel_path);
+              const st = await lstatSource(file);
+              // As identify: an unpacked file's mtime is when the sidecar wrote it.
+              if (
+                !st ||
+                st.size !== f.size ||
+                (f.archive_id === null && st.mtimeMs !== f.mtime_ms)
+              ) {
+                // Looked at again (identify, compare) by the next run.
+                changed.run(run.id, Date.now(), f.id);
+                continue;
+              }
+              const h = await hashSource(file, pacer, shouldStop);
+              if (!h) return false;
+              setSha.run(h.sha256, Date.now(), f.id);
+            }
+            return true;
+          },
+          shouldStop,
+        );
+        if (ok === null || ok === false) return 'wait';
+        return 'more';
+      }
+      ids = this.filesToAdd(run, p);
       if (!ids.length) {
         this.next(run.id, p, 'index');
         return 'more';

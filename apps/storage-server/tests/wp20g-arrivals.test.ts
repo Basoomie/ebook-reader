@@ -20,6 +20,7 @@ import { clockNow } from '../src/cleanup/audio/arrivals-schedule';
 import { ArrivalBatches } from '../src/cleanup/arrivals/add-batches';
 import { entrySkip } from '../src/cleanup/arrivals/archives';
 import { classifyName, settled, sniffFormat, walkSource } from '../src/cleanup/arrivals/catalog';
+import { inPool } from '../src/cleanup/arrivals/run';
 import { stage2Pass } from '../src/cleanup/arrivals/stage-passes';
 import { ArrivalStage5, emptyStage5Pass } from '../src/cleanup/arrivals/stage5-pass';
 import { runBar } from '../src/cleanup/arrivals/views';
@@ -585,6 +586,18 @@ describe('wp20g: a run end to end', () => {
       )
       .get() as { calibre_id: number };
     expect(identical.calibre_id).toBe(L.A);
+    // Hashed only where a copy can be found by its bytes (a library EPUB or another new file of
+    // the same size); a file of its own size is not read whole until it is added.
+    const sha = (rel: string) =>
+      (
+        env.cleanupDb
+          .prepare(`SELECT sha256 FROM calibre_arrival_files WHERE rel_path = ?`)
+          .get(rel) as { sha256: string | null }
+      ).sha256;
+    expect(sha('Discord/same-as-A.epub')).toMatch(/^[0-9a-f]{64}$/);
+    expect(sha('Discord/C.epub')).toMatch(/^[0-9a-f]{64}$/);
+    expect(sha('Discord/C copy.epub')).toMatch(/^[0-9a-f]{64}$/);
+    expect(sha('_extracted/pack.zip/inner/D.epub')).toBeNull();
     // Nothing added; the last run's report has the estimate for On.
     expect(
       env.cleanupDb.prepare('SELECT COUNT(*) AS n FROM calibre_arrival_batches').get(),
@@ -616,6 +629,12 @@ describe('wp20g: a run end to end', () => {
     const o = outcomes();
 
     expect(o['_extracted/pack.zip/inner/D.epub']).toBe('added');
+    // Hashed when it was added (the sidecar's copy is checked against it).
+    expect(
+      env.cleanupDb
+        .prepare(`SELECT sha256 FROM calibre_arrival_files WHERE rel_path = ?`)
+        .get('_extracted/pack.zip/inner/D.epub'),
+    ).toEqual({ sha256: expect.stringMatching(/^[0-9a-f]{64}$/) });
     expect(Object.values(o).filter((x) => x === 'added')).toHaveLength(2);
     // The run's books went through stages 1-3 and stage 2's proposals; its write is a stage-2
     // batch of exactly the run's books (the apply sidecar's stage-2 steps are tested in WP20b).
@@ -1425,4 +1444,52 @@ describe('wp20g: better copies', () => {
     expect(p[0].kept).not.toBe(ids.F);
     env.service.arrivals.stopRun();
   }, 300_000);
+});
+
+describe('wp20g: the compare step keeps several books in flight', () => {
+  it('runs up to the limit at once, the next as one finishes, and stops when asked', async () => {
+    let now = 0;
+    let most = 0;
+    const done: number[] = [];
+    const items = Array.from({ length: 30 }, (_, i) => i);
+    const ok = await inPool(
+      items,
+      12,
+      () => false,
+      async (i) => {
+        now++;
+        most = Math.max(most, now);
+        await new Promise((r) => setTimeout(r, (i % 5) * 3));
+        done.push(i);
+        now--;
+      },
+    );
+    expect(ok).toBe(true);
+    expect(most).toBe(12);
+    expect(done.sort((a, b) => a - b)).toEqual(items);
+    // Stopped: no new item starts; the ones in flight finish.
+    let started = 0;
+    const stopped = await inPool(
+      items,
+      4,
+      () => started >= 6,
+      async () => {
+        started++;
+        await new Promise((r) => setTimeout(r, 2));
+      },
+    );
+    expect(stopped).toBe(false);
+    expect(started).toBeLessThan(10);
+    // A job that throws makes the call throw.
+    await expect(
+      inPool(
+        [1, 2, 3],
+        2,
+        () => false,
+        async (i) => {
+          if (i === 2) throw new Error('boom');
+        },
+      ),
+    ).rejects.toThrow('boom');
+  });
 });
