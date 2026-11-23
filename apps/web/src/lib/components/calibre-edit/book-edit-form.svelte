@@ -337,12 +337,21 @@
         on:dragleave={() => (dragging = false)}
         on:drop={onDrop}
       >
-        <img
-          class="c-edit-cover"
-          src={cover?.preview ?? coverThumb}
-          alt={cover ? `New cover: ${cover.label}` : 'Current cover'}
-          data-testid="edit-cover-preview"
-        />
+        {#if cover?.preview || coverThumb}
+          <img
+            class="c-edit-cover"
+            src={cover?.preview ?? coverThumb}
+            alt={cover ? `New cover: ${cover.label}` : 'Current cover'}
+            data-testid="edit-cover-preview"
+          />
+        {:else}
+          <div
+            class="c-edit-cover grid place-items-center text-xs text-c-muted"
+            data-testid="edit-cover-preview"
+          >
+            No cover
+          </div>
+        {/if}
         <div class="flex min-w-0 flex-col gap-2">
           <p class="text-sm" data-testid="edit-cover-text">
             {dragging
