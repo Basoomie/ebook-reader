@@ -645,6 +645,9 @@ describe("the test batches' undone books (series-order stop 3)", () => {
     ins.run('again', 'series', 'auto', 'proposed', 20, 20);
     ins.run('rewritten', 'series', 'auto', 'undone', 10, 10);
     ins.run('rewritten', 'series', 'auto', 'applied', 20, 20);
+    // Decided again after the undo, that field with no change (the same text in Calibre).
+    ins.run('no-change', 'description', 'auto', 'undone', 10, 10);
+    ins.run('no-change', 'series', 'auto', 'applied', 20, 20);
     const progress = { libraryId: 'lib', analysisId: 'run1', phase: 'done' };
     const step = new Stage4Ai({
       db,

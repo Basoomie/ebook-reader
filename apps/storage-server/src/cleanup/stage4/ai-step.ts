@@ -407,7 +407,9 @@ export class Stage4Ai {
     // Per field (stop 3 of the series order, 2026-11-22): a test batch's book whose other
     // fields the first On wrote, or that has a review item, still has an undone field to write
     // (11 of the 20 test books were left out when any other row counted). A field is left out
-    // only when a newer row handles it: proposed or queued, or applied after it was undone.
+    // only when a newer row handles it: proposed or queued, or applied after it was undone; or
+    // when the book was decided again after the undo and gave that field no change (2096, 2107:
+    // Calibre's description holds the same text; the card said "2 books were left out").
     const undone = this.db
       .prepare(
         `SELECT calibre_uuid, field, created_at FROM proposed_changes INDEXED BY proposed_changes_counts
@@ -424,11 +426,17 @@ export class Stage4Ai {
        WHERE library_id = ? AND calibre_uuid = ? AND stage = 4 AND analysis_id = ? AND field = ?
          AND (state IN ('proposed', 'queued') OR (state = 'applied' AND created_at > ?)) LIMIT 1`,
     );
+    const decidedAgain = this.db.prepare(
+      `SELECT 1 FROM proposed_changes INDEXED BY proposed_changes_book
+       WHERE library_id = ? AND calibre_uuid = ? AND stage = 4 AND analysis_id = ?
+         AND state <> 'undone' AND created_at > ? LIMIT 1`,
+    );
     const books = new Set<string>();
     for (const r of undone)
       if (
         !books.has(r.calibre_uuid) &&
-        !handled.get(p.libraryId, r.calibre_uuid, p.analysisId, r.field, r.created_at)
+        !handled.get(p.libraryId, r.calibre_uuid, p.analysisId, r.field, r.created_at) &&
+        !decidedAgain.get(p.libraryId, r.calibre_uuid, p.analysisId, r.created_at)
       )
         books.add(r.calibre_uuid);
     return [...books].sort();
