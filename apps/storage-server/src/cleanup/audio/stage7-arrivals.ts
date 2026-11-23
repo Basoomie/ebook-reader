@@ -1939,6 +1939,8 @@ export class AudioStage7 {
             error: p.changes.error,
           }
         : null,
+      // WP21g: stage 8's pass in this run (null when it is Off or did not run).
+      ebooks: this.deps.stage8?.runReport(p.runId) ?? null,
     };
     db.prepare('UPDATE audio_arrival_runs SET report_json = ? WHERE id = ?').run(
       JSON.stringify(report),

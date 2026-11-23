@@ -942,3 +942,52 @@ describe('message forms (Discord markdown, plain email)', () => {
     );
   });
 });
+
+describe('WP21g: audiobook stage 8 in the daily run', () => {
+  const report = (ebooks: Record<string, unknown> | null) =>
+    JSON.stringify({ added: 0, planned: 0, newReview: 0, outcomes: {}, ebooks });
+  const eb = (over: Record<string, unknown> = {}) => ({
+    mode: 'on',
+    reason: 'Calibre changed',
+    counts: { auto: 2373, review: 154, none: 2205, excluded: 175 },
+    values: { genres: 2307, tags: 2354, series: 63, seriesReview: 33 },
+    preview: null,
+    gate: { passed: true, labels: 235, wrong: 0 },
+    newReview: 0,
+    error: null,
+    ...over,
+  });
+  const addRun = (e: Env, mode: string, rep: string) =>
+    e.cdb
+      .prepare(
+        `INSERT INTO audio_arrival_runs (trigger, mode, state, phase, started_at, finished_at, progress_json, report_json)
+         VALUES ('schedule', ?, 'done', 'done', 1, 2, '{}', ?)`,
+      )
+      .run(mode, rep);
+
+  it('a digest line per run that looked; one alert only when it found new review items', async () => {
+    const e = await makeEnv();
+    await withDiscord(e);
+    addRun(e, 'on', report(eb({ newReview: 3 })));
+    addRun(
+      e,
+      'on',
+      report(eb({ reason: 'Nothing changed in Calibre or in the recordings since the last pass' })),
+    );
+    addRun(
+      e,
+      'analyse',
+      report(eb({ mode: 'analyse', preview: { changes: 2320, moves: 54, held: 0 } })),
+    );
+    addRun(e, 'on', report(null));
+    await e.round();
+    const lines = e.svc.store.digestLines().filter((l) => l.event === 'audio_ebooks_summary');
+    expect(lines.map((l) => l.text)).toEqual([
+      'Audiobooks and their Calibre ebooks: 2373 paired, 154 to review (3 new)',
+      'Audiobooks and their Calibre ebooks: 2373 paired, 154 to review, Preview: 2320 books would change, 54 would move',
+    ]);
+    const alerts = e.discord.messages.filter((m) => m.includes('Calibre ebooks'));
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]).toContain('3 recordings to look at');
+  });
+});

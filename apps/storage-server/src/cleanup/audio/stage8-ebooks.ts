@@ -298,6 +298,20 @@ export type Stage8Phase =
   | 'preview'
   | 'done';
 
+/** Stage 8's part of a stage-7 run's report (`report_json.ebooks`). */
+export interface Stage8RunReport {
+  mode: 'off' | 'analyse' | 'on';
+  reason: string | null;
+  counts: Stage8Progress['counts'];
+  values: Stage8Progress['values'];
+  ebooks: Stage8Progress['ebooks'] | null;
+  covers: Stage8Progress['covers'];
+  preview: Stage8Progress['preview'];
+  gate: { passed: boolean; labels: number; wrong: number } | null;
+  newReview: number;
+  error: string | null;
+}
+
 export interface Stage8Progress {
   runId: number | null;
   phase: Stage8Phase;
@@ -1532,6 +1546,36 @@ export class AudioStage8 {
       );
     }
     return lines.join('\n') + '\n';
+  }
+
+  /**
+   * Stage 8's part of a stage-7 run's report (the notifications read it): null when the pass did
+   * not run in that run. `newReview`: recordings that went to review in this run.
+   */
+  runReport(runId: number | null): Stage8RunReport | null {
+    const p = this.progress();
+    if (!p || runId === null || p.runId !== runId) return null;
+    const newReview = (
+      this.db
+        .prepare(
+          "SELECT COUNT(*) AS n FROM audio_ebook_pairs WHERE class = 'review' AND first_review_run = ?",
+        )
+        .get(runId) as { n: number }
+    ).n;
+    return {
+      mode: this.mode(),
+      reason: p.reason ?? null,
+      counts: p.counts,
+      values: p.values,
+      ebooks: p.ebooks ?? null,
+      covers: p.covers,
+      preview: p.preview,
+      gate: p.gate
+        ? { passed: p.gate.passed, labels: p.gate.labels, wrong: p.gate.wrong.length }
+        : null,
+      newReview,
+      error: p.error,
+    };
   }
 
   /** The page's status line. */
