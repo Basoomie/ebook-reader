@@ -46,6 +46,7 @@ import {
   type Verdict,
   type WriteAnswer,
 } from './specs';
+import { japaneseDictionary } from './readings-dict';
 import type { CheckedItem, Summary } from './types';
 
 export const EVIDENCE_VERSION = 1;
@@ -211,11 +212,14 @@ export interface BookInput {
   background: string | null;
 }
 
-export function prepared(b: BookInput): { book: BookText; index: QuoteIndex; ruby: RubyIndex } {
+export function prepared(
+  b: BookInput,
+  dict: Awaited<ReturnType<typeof japaneseDictionary>> = null,
+): { book: BookText; index: QuoteIndex; ruby: RubyIndex } {
   return {
     book: bookTextFromScript(b.script),
     index: new QuoteIndex(b.script),
-    ruby: new RubyIndex(b.script),
+    ruby: new RubyIndex(b.script, dict),
   };
 }
 
@@ -320,7 +324,7 @@ export async function runCloudSetup(
   now: () => number = Date.now,
 ): Promise<{ summary: Summary; report: RunReport }> {
   const conf = SETUPS[setup];
-  const { book, index, ruby } = prepared(b);
+  const { book, index, ruby } = prepared(b, await japaneseDictionary());
   const bg = b.background ? 'bg1' : 'bg0';
   const refusals: RunReport['refusals'] = [];
   const extracted: Record<string, ExtractCheck> = {};

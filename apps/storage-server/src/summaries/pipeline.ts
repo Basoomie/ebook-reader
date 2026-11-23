@@ -399,7 +399,10 @@ export function checkWritten(
     answer.terms.map((w, i) =>
       make('terms', `term${i}`, w, [w.term], {
         heading: w.term,
-        ...(ruby?.pieces(w.term) ? { ruby: ruby.pieces(w.term)! } : {}),
+        // Terms may take the dictionary's reading; names never do (帝人 is みかど, not ていじん).
+        ...(ruby?.pieces(w.term, { dictionary: true })
+          ? { ruby: ruby.pieces(w.term, { dictionary: true })! }
+          : {}),
       }),
     ),
   );

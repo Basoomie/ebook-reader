@@ -13,6 +13,9 @@
  */
 import { evidenceForm } from '../ai/evidence-check';
 import type { BookScript } from '../audio/book-script';
+import { dictionaryPieces, type japaneseDictionary } from './readings-dict';
+
+type Dictionary = Awaited<ReturnType<typeof japaneseDictionary>>;
 
 /**
  * Characters the reader counts, one code point at a time: the same expression as the web
@@ -170,7 +173,13 @@ export class RubyIndex {
     ruby: { start: number; end: number; rt: string }[];
   }[] = [];
 
-  constructor(script: BookScript) {
+  /**
+   * `dict`: the offline dictionary, for words the book prints without furigana (null: none).
+   */
+  constructor(
+    script: BookScript,
+    private readonly dict: Dictionary = null,
+  ) {
     for (const c of script.chapters)
       for (const s of c.sentences) {
         if (s.ruby?.length) this.withRuby.push({ text: s.text, ruby: s.ruby });
@@ -229,7 +238,7 @@ export class RubyIndex {
    * heading (namesIn) is read where the book prints it; failing that, from ruby the book gives the
    * same text elsewhere.
    */
-  pieces(heading: string): RubyPiece[] | null {
+  pieces(heading: string, opts: { dictionary?: boolean } = {}): RubyPiece[] | null {
     const out: RubyPiece[] = [];
     let any = false;
     const plain = (t: string) => {
@@ -253,6 +262,18 @@ export class RubyIndex {
         if (x.r === undefined) plain(x.t);
         else out.push(x);
       }
+    }
+    // What the book leaves without furigana: the dictionary's reading, kanji by kanji run.
+    if (this.dict && opts.dictionary) {
+      const filled: RubyPiece[] = [];
+      for (const x of out) {
+        const d = x.r === undefined && KANJI.test(x.t) ? dictionaryPieces(this.dict, x.t) : null;
+        if (d) {
+          any = true;
+          filled.push(...d);
+        } else filled.push(x);
+      }
+      return any ? filled : null;
     }
     return any ? out : null;
   }

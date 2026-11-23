@@ -16,6 +16,7 @@ import type Database from 'better-sqlite3';
 import http from 'node:http';
 import { prepared, type BookInput } from './engine';
 import { checkExtraction, checkWritten } from './pipeline';
+import { japaneseDictionary } from './readings-dict';
 import {
   EXTRACT_CHAPTER_SPEC,
   PROMPT_VERSION,
@@ -257,7 +258,7 @@ export class LlamaServerEngine implements LocalEngine {
   ): Promise<{ summary: Summary; metrics: RunMetrics }> {
     const started = this.now();
     const t0 = this.timings.length;
-    const { book, index, ruby } = prepared(inp);
+    const { book, index, ruby } = prepared(inp, await japaneseDictionary());
     onPhase('extract');
     // 1. Extract per window.
     const whole: ExtractAnswer = { chapters: [] };

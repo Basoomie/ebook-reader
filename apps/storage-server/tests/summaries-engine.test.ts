@@ -40,6 +40,7 @@ import {
 } from '../src/summaries/pipeline';
 import { modelForTask, MODELS } from '../src/summaries/specs';
 import { openSummariesDb } from '../src/summaries/summaries-db';
+import { dictionaryPieces, japaneseDictionary } from '../src/summaries/readings-dict';
 import { runIdOf, SPOT_CHECKS, SummaryTestService } from '../src/summaries/test-service';
 import type { CheckedItem } from '../src/summaries/types';
 import { makeAiCore } from './helpers/ai-env';
@@ -1003,6 +1004,29 @@ describe('the fixed engine', () => {
     // A word the book prints only without ruby on every kanji gets none from this.
     expect(r.pieces('白銀')).toBeNull();
   });
+
+  it('the dictionary fills readings the book leaves out: whole words only, terms only', async () => {
+    const dict = await japaneseDictionary();
+    expect(dict).not.toBeNull();
+    // Real words get their reading, kana endings outside the ruby; invented parts stay plain.
+    expect(dictionaryPieces(dict!, '白い結婚')).toEqual([
+      { t: '白', r: 'しろ' },
+      { t: 'い' },
+      { t: '結婚', r: 'けっこん' },
+    ]);
+    expect(dictionaryPieces(dict!, '翠龍師団')).toEqual([
+      { t: '翠龍' },
+      { t: '師団', r: 'しだん' },
+    ]);
+    expect(dictionaryPieces(dict!, '呪毒')).toBeNull();
+    // The book's own ruby comes first; the dictionary only for terms, never for names.
+    const script = scriptOf([{ title: '一章', paragraphs: [['帝人と結婚。']] }]);
+    script.chapters[0].sentences[0].ruby = [{ start: 0, end: 2, rt: 'みかど' }];
+    const r = new RubyIndex(script, dict);
+    expect(r.pieces('帝人', { dictionary: true })).toEqual([{ t: '帝人', r: 'みかど' }]);
+    expect(r.pieces('結婚')).toBeNull();
+    expect(r.pieces('結婚', { dictionary: true })).toEqual([{ t: '結婚', r: 'けっこん' }]);
+  }, 60_000);
 
   it('the real import gives readings from its own ruby', async () => {
     const dir = makeTempDir('sum-ruby');
