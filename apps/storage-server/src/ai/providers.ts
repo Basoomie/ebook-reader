@@ -30,6 +30,13 @@ export interface CallInput {
   schema: { name: string; schema: Record<string, unknown> } | null;
   /** Claude: max_tokens (thinking included). */
   maxTokens: number;
+  /**
+   * Request options of a stage that sets them (AiStageSpec.request); absent = the request as
+   * before. `outputLimit`: GPT's max_completion_tokens; `stream`: direct calls stream.
+   */
+  effort?: import('./types').AiEffort;
+  outputLimit?: number;
+  stream?: boolean;
 }
 
 export interface Usage {
@@ -276,10 +283,17 @@ function anthropicParams(input: CallInput): Anthropic.MessageCreateParamsNonStre
     max_tokens: input.maxTokens,
     system: input.system,
     messages: [{ role: 'user', content: input.user }],
-    ...(input.schema
-      ? { output_config: { format: { type: 'json_schema', schema: input.schema.schema } } }
+    ...(input.schema || input.effort
+      ? {
+          output_config: {
+            ...(input.effort ? { effort: input.effort } : {}),
+            ...(input.schema
+              ? { format: { type: 'json_schema' as const, schema: input.schema.schema } }
+              : {}),
+          },
+        }
       : {}),
-  };
+  } as Anthropic.MessageCreateParamsNonStreaming;
 }
 
 export class AnthropicProvider implements ProviderClient {
@@ -316,6 +330,12 @@ export class AnthropicProvider implements ProviderClient {
 
   async call(input: CallInput, timeoutMs: number): Promise<CallResult> {
     try {
+      if (input.stream) {
+        const stream = this.client.messages.stream(anthropicParams(input), {
+          timeout: timeoutMs,
+        });
+        return anthropicResult(await stream.finalMessage());
+      }
       const m = await this.client.messages.create(anthropicParams(input), { timeout: timeoutMs });
       return anthropicResult(m);
     } catch (err) {
@@ -454,7 +474,86 @@ function openaiBody(input: CallInput) {
           json_schema: { name: input.schema.name, schema: input.schema.schema, strict: true },
         }
       : { type: 'json_object' as const },
+    ...(input.effort ? { reasoning_effort: input.effort } : {}),
+    ...(input.outputLimit ? { max_completion_tokens: input.outputLimit } : {}),
   };
+}
+
+/**
+ * A long GPT call (book summaries session 2): the Responses API, streamed, with reasoning
+ * summaries on. Chat Completions sends nothing while the model reasons, and whole-book requests
+ * to gpt-6.1-sol lost their connection after about 85 s of silence (2026-11-22, 8 of 8 tries);
+ * the Responses API sends progress events all through the reasoning (probe: 400+ events in 37 s,
+ * never silent). store: false (nothing kept at OpenAI beyond its abuse-monitoring logs).
+ */
+function responsesBody(input: CallInput) {
+  return {
+    model: input.model,
+    instructions: input.system,
+    input: [{ role: 'user' as const, content: input.user }],
+    stream: true as const,
+    store: false,
+    ...(input.effort ? { reasoning: { effort: input.effort, summary: 'auto' as const } } : {}),
+    ...(input.outputLimit ? { max_output_tokens: input.outputLimit } : {}),
+    text: {
+      format: input.schema
+        ? {
+            type: 'json_schema' as const,
+            name: input.schema.name,
+            schema: input.schema.schema,
+            strict: true,
+          }
+        : { type: 'json_object' as const },
+    },
+  };
+}
+
+interface ResponseLike {
+  status?: string;
+  incomplete_details?: { reason?: string } | null;
+  error?: { code?: string; message?: string } | null;
+  output?: { type?: string; content?: { type?: string; text?: string; refusal?: string }[] }[];
+  usage?: {
+    input_tokens?: number;
+    output_tokens?: number;
+    input_tokens_details?: { cached_tokens?: number };
+  } | null;
+}
+
+/** A finished response as a call result (the same rules as Chat Completions). */
+export function responsesResult(r: ResponseLike): CallResult {
+  const u = r.usage ?? {};
+  const cached = u.input_tokens_details?.cached_tokens ?? 0;
+  const usage: Usage = {
+    input: Math.max(0, (u.input_tokens ?? 0) - cached),
+    output: u.output_tokens ?? 0,
+    cacheRead: cached,
+    cacheWrite: 0,
+  };
+  const parts = (r.output ?? [])
+    .filter((o) => o.type === 'message')
+    .flatMap((o) => o.content ?? []);
+  const refusal = parts.find((p) => p.type === 'refusal')?.refusal;
+  const text = parts
+    .filter((p) => p.type === 'output_text')
+    .map((p) => p.text ?? '')
+    .join('')
+    .trim();
+  if (refusal)
+    return { kind: 'blocked', detail: `refusal: ${refusal}`.slice(0, 300), text: null, usage };
+  if (r.status === 'incomplete' && r.incomplete_details?.reason === 'content_filter')
+    return { kind: 'blocked', detail: 'content_filter', text: text || null, usage };
+  if (r.status === 'incomplete')
+    return {
+      kind: 'invalid',
+      detail: `${r.incomplete_details?.reason ?? 'incomplete'} reached`,
+      text: text || null,
+      usage,
+    };
+  const json = firstJson(text);
+  if (json === undefined)
+    return { kind: 'invalid', detail: 'no JSON object', text: text || null, usage };
+  return { kind: 'answered', text, json, usage };
 }
 
 export class OpenAiProvider implements ProviderClient {
@@ -510,9 +609,53 @@ export class OpenAiProvider implements ProviderClient {
 
   async call(input: CallInput, timeoutMs: number): Promise<CallResult> {
     try {
-      const c = await this.client.chat.completions.create(openaiBody(input), {
-        timeout: timeoutMs,
-      });
+      if (input.stream) {
+        const events = await this.client.responses.create(
+          responsesBody(input) as unknown as OpenAI.Responses.ResponseCreateParamsStreaming,
+          { timeout: timeoutMs },
+        );
+        let done: ResponseLike | null = null;
+        for await (const e of events as unknown as AsyncIterable<{
+          type: string;
+          response?: ResponseLike;
+          code?: string;
+          message?: string;
+        }>) {
+          if (
+            e.type === 'response.completed' ||
+            e.type === 'response.incomplete' ||
+            e.type === 'response.failed'
+          )
+            done = e.response ?? null;
+          else if (e.type === 'error') {
+            if (e.code && OPENAI_BLOCK_CODES.has(e.code))
+              return {
+                kind: 'blocked',
+                detail: `${e.code}: ${e.message ?? ''}`.slice(0, 300),
+                text: null,
+                usage: ZERO,
+              };
+            throw new RetryableError(`stream error: ${e.code ?? ''} ${e.message ?? ''}`.trim());
+          }
+        }
+        if (!done) throw new RetryableError('the answer stream ended without a result');
+        if (done.status === 'failed') {
+          const code = done.error?.code ?? '';
+          if (OPENAI_BLOCK_CODES.has(code))
+            return {
+              kind: 'blocked',
+              detail: `${code}: ${done.error?.message ?? ''}`.slice(0, 300),
+              text: null,
+              usage: ZERO,
+            };
+          throw new RetryableError(`failed: ${code} ${done.error?.message ?? ''}`.trim());
+        }
+        return responsesResult(done);
+      }
+      const c = await this.client.chat.completions.create(
+        openaiBody(input) as OpenAI.ChatCompletionCreateParamsNonStreaming,
+        { timeout: timeoutMs },
+      );
       return openaiResult(c as unknown as ChatCompletionLike);
     } catch (err) {
       const b = this.blocked(err);

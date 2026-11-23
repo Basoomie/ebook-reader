@@ -39,6 +39,29 @@ export interface AiStageSpec<E = unknown, R extends string = string> {
    * (`ai_limit_waiting`).
    */
   onLimit?: 'pause' | 'queue';
+  /**
+   * Per-stage request options (book summaries session 2: whole-book requests need long answers
+   * and long calls). Absent = the requests are exactly what they were before (the cleanup's).
+   */
+  request?: AiRequestOptions;
+}
+
+export type AiEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
+export interface AiRequestOptions {
+  /** Output tokens allowed (thinking included); replaces the settings' maxTokens, also for GPT. */
+  maxTokens?: number;
+  /** One call's time limit; replaces the settings' requestTimeoutSeconds. */
+  timeoutSeconds?: number;
+  /** The model's effort (Claude output_config.effort, GPT reasoning_effort). */
+  effort?: AiEffort;
+  /** Direct calls stream the answer (a long answer never sits on an idle connection). */
+  stream?: boolean;
+  /**
+   * Output tokens one answer is expected to have before this stage has answers of its own; the
+   * estimate then follows this stage's own answers (not the model's answers of every stage).
+   */
+  expectedOutputTokens?: number;
 }
 
 /** A model's stored answer for an item. */

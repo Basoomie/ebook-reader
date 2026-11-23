@@ -1139,21 +1139,36 @@ describe('wp20g: the settle time on a folder’s first look', () => {
     env.service.arrivals.stopRun();
     const id = env.service.arrivals.maybeStart(later);
     expect(id).not.toBeNull();
-    // Part way through reading the texts: every book read so far is kept in its catalog row (a
-    // restart goes on from there), and the bar counts them with a time left.
-    for (let i = 0; i < 400; i++) {
-      const run = env.service.arrivals.currentRun()!;
-      if (run.p.cmp?.stage === 'text' && (run.p.counts.compare?.done ?? 0) >= 20) break;
-      await env.service.arrivals.step();
-    }
-    const mid = env.service.arrivals.currentRun()!;
+    // Part way through reading the texts another job waits for the disk: the reading stops
+    // taking new books and hands the disk over; every book read so far is kept in its catalog row
+    // (a restart goes on from there), and the bar counts them with a time left.
+    const textKept = () =>
+      (
+        env.cleanupDb
+          .prepare(
+            `SELECT COUNT(*) AS n FROM calibre_arrival_files WHERE json_extract(facts_json, '$.text') IS NOT NULL`,
+          )
+          .get() as { n: number }
+      ).n;
+    const lock = env.service.diskLock;
+    let atTurn = -1;
+    let atTurnRun: ReturnType<typeof env.service.arrivals.currentRun> = null;
+    const other = (async () => {
+      while (textKept() < 20) await new Promise((r) => setTimeout(r, 2));
+      await lock.acquire('test-other', 'calibre');
+      // The run as it was saved when it handed the disk over.
+      atTurn = textKept();
+      atTurnRun = env.service.arrivals.currentRun();
+      lock.release('test-other');
+    })();
+    for (let i = 0; i < 400 && atTurn < 0; i++) await env.service.arrivals.step();
+    await other;
+    expect(atTurn).toBeGreaterThanOrEqual(20);
+    expect(atTurn).toBeLessThan(N);
+    const mid = atTurnRun!;
     expect(mid.p.cmp?.stage).toBe('text');
-    const kept = env.cleanupDb
-      .prepare(
-        `SELECT COUNT(*) AS n FROM calibre_arrival_files WHERE json_extract(facts_json, '$.text') IS NOT NULL`,
-      )
-      .get() as { n: number };
-    expect(kept.n).toBe(mid.p.counts.compare!.done);
+    // The books kept when it handed over are the ones the saved bar counts.
+    expect(atTurn).toBe(mid.p.counts.compare!.done);
     const bar = runBar(mid.p, Date.now() + 1000);
     expect(bar).toMatchObject({ phase: 'compare', total: N });
     expect(bar.secondsLeft).not.toBeNull();
