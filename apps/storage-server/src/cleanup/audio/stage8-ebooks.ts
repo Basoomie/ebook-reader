@@ -29,7 +29,7 @@ import { DISK_OWNERS, type DiskLock } from '../disk-lock';
 import { getSettings } from '../settings';
 import { getAudioStage, updateAudioStage } from './audio-stages';
 import {
-  buildIndex,
+  addToIndex,
   candidatesOf,
   EBOOK_RULES_VERSION,
   ebookTerms,
@@ -46,7 +46,9 @@ import type { UnitInputs } from './stage4-online';
 export const STAGE8 = 8;
 const OWNER = DISK_OWNERS.audio8;
 const PAGE = 2000;
-const SLICE = 300;
+/** Recordings whose facts one turn reads (about 0.3 ms each: one evidence record unpacked). */
+const FACTS_PER_TURN = 250;
+const SLICE = 120;
 const COVERS_PER_TURN = 25;
 /**
  * A pair whose ebook left Calibre: review, its values kept until you choose (decided at the plan:
@@ -78,14 +80,24 @@ export interface UnitFacts extends AudioFacts {
   hash: string;
 }
 
-/** Each recording's facts from stage 5 (its decided values and the store record's own title). */
-export function audioFactsAll(db: Database.Database, analysisId = stage5Analysis(db)): UnitFacts[] {
+export interface MetaUnitRow {
+  unit_key: string;
+  kind: AudioFacts['kind'];
+  name: string;
+}
+
+/** Stage 5's recordings of its current analysis. */
+export function metaUnits(db: Database.Database, analysisId = stage5Analysis(db)): MetaUnitRow[] {
   if (!analysisId) return [];
-  const units = db
+  return db
     .prepare(
       'SELECT unit_key, kind, name FROM audio_meta_units WHERE analysis_id = ? ORDER BY unit_key',
     )
-    .all(analysisId) as { unit_key: string; kind: AudioFacts['kind']; name: string }[];
+    .all(analysisId) as MetaUnitRow[];
+}
+
+/** Stage 5's decided values the pairing reads, per recording (one indexed query). */
+export function metaValues(db: Database.Database): Map<string, Record<string, unknown>> {
   const values = new Map<string, Record<string, unknown>>();
   for (const r of db
     .prepare(
@@ -97,6 +109,23 @@ export function audioFactsAll(db: Database.Database, analysisId = stage5Analysis
     v[r.field] = JSON.parse(r.value_json) as unknown;
     values.set(r.item_key, v);
   }
+  return values;
+}
+
+/** Each recording's facts from stage 5 (its decided values and the store record's own title). */
+export function audioFactsAll(db: Database.Database, analysisId = stage5Analysis(db)): UnitFacts[] {
+  return unitFacts(db, metaUnits(db, analysisId), metaValues(db));
+}
+
+/**
+ * The facts of some recordings: each one's evidence record is unpacked (gzip), about 0.3 ms a
+ * recording, so the stage reads them in turns (the `recordings` phase).
+ */
+export function unitFacts(
+  db: Database.Database,
+  units: MetaUnitRow[],
+  values: Map<string, Record<string, unknown>>,
+): UnitFacts[] {
   const ev = db.prepare(`SELECT evidence FROM ai_items WHERE stage = 'audio5' AND item_key = ?`);
   return units.map((u) => {
     const v = values.get(u.unit_key) ?? {};
@@ -261,6 +290,7 @@ export function scoreEbookGate(
 export type Stage8Phase =
   | 'check'
   | 'read'
+  | 'recordings'
   | 'pair'
   | 'values'
   | 'covers'
@@ -364,8 +394,18 @@ export class AudioStage8 {
     idx: EbookIndex | null;
     queue: string[];
     facts: Map<string, UnitFacts> | null;
+    /** The recordings phase: stage 5's recordings and values, their facts read in turns. */
+    loading: {
+      units: MetaUnitRow[];
+      values: Map<string, Record<string, unknown>>;
+      facts: Map<string, UnitFacts>;
+    } | null;
     touched: Set<number>;
     removed: Set<number>;
+    queued: boolean;
+    /** The read phase: the index built page by page; every page read (the next turn compares). */
+    building: EbookIndex | null;
+    paged: boolean;
   } | null = null;
 
   constructor(private readonly deps: Stage8Deps) {
@@ -499,6 +539,8 @@ export class AudioStage8 {
           return this.checkStep(p);
         case 'read':
           return await this.readStep(p);
+        case 'recordings':
+          return await this.recordingsStep(p);
         case 'pair':
           return await this.pairStep(p);
         case 'values':
@@ -576,6 +618,10 @@ export class AudioStage8 {
       idx: null,
       queue: [],
       facts: null,
+      loading: null,
+      queued: false,
+      building: null,
+      paged: false,
       touched: new Set(),
       removed: new Set(),
     };
@@ -596,6 +642,10 @@ export class AudioStage8 {
         idx: null,
         queue: [],
         facts: null,
+        loading: null,
+        queued: false,
+        building: null,
+        paged: false,
         touched: new Set(),
         removed: new Set(),
       };
@@ -605,16 +655,18 @@ export class AudioStage8 {
     if (p.total === 0) {
       p.total = Math.max(1, Math.ceil(this.countBooks(cal.snapshotFile) / PAGE));
     }
-    const page = readEbookPage(cal.snapshotFile, w.after, PAGE);
-    for (const b of page) w.books.set(b.id, b);
-    p.done++;
-    this.save(p);
-    await new Promise((r) => setImmediate(r));
-    if (page.length === PAGE) {
-      w.after = page[page.length - 1].id;
+    if (!w.paged) {
+      const page = readEbookPage(cal.snapshotFile, w.after, PAGE);
+      for (const b of page) w.books.set(b.id, b);
+      addToIndex((w.building ??= { byAuthor: new Map(), byTitle: new Map() }), page);
+      p.done++;
+      this.save(p);
+      await new Promise((r) => setImmediate(r));
+      if (page.length === PAGE) w.after = page[page.length - 1].id;
+      else w.paged = true;
       return 'more';
     }
-    // New, changed and removed ebooks.
+    // New, changed and removed ebooks (a turn of its own).
     const known = new Map<number, string>();
     for (const r of this.db
       .prepare('SELECT calibre_id, fp FROM audio_ebook_known WHERE library_id = ?')
@@ -652,8 +704,9 @@ export class AudioStage8 {
     })();
     p.ebooks = { total: w.books.size, new: known.size === 0 ? 0 : added, changed, removed };
     w.touched = touched;
-    w.idx = buildIndex(w.books.values());
-    this.setPhase(p, 'pair');
+    w.idx = w.building ?? { byAuthor: new Map(), byTitle: new Map() };
+    w.building = null;
+    this.setPhase(p, 'recordings');
     return 'more';
   }
 
@@ -668,15 +721,43 @@ export class AudioStage8 {
   }
 
   /** The recordings to pair again, then each one (a slice per step). */
-  private async pairStep(p: Stage8Progress): Promise<Stage8Step> {
+  /** Stage 5's recordings, their facts read FACTS_PER_TURN at a time (never one long turn). */
+  private async recordingsStep(p: Stage8Progress): Promise<Stage8Step> {
     const w = this.work;
     if (!w || !w.idx) {
       this.setPhase(p, 'check');
       return 'more';
     }
+    if (!w.loading) {
+      w.loading = { units: metaUnits(this.db), values: metaValues(this.db), facts: new Map() };
+      p.total = w.loading.units.length;
+      p.done = 0;
+      this.save(p);
+      await new Promise((r) => setImmediate(r));
+      return 'more';
+    }
+    const l = w.loading;
+    const slice = l.units.slice(p.done, p.done + FACTS_PER_TURN);
+    for (const f of unitFacts(this.db, slice, l.values)) l.facts.set(f.unitKey, f);
+    p.done += slice.length;
+    this.save(p);
+    await new Promise((r) => setImmediate(r));
+    if (p.done < l.units.length) return 'more';
+    w.facts = l.facts;
+    w.loading = null;
+    this.setPhase(p, 'pair');
+    return 'more';
+  }
+
+  private async pairStep(p: Stage8Progress): Promise<Stage8Step> {
+    const w = this.work;
+    if (!w || !w.idx || !w.facts) {
+      this.setPhase(p, 'check');
+      return 'more';
+    }
     const cal = this.deps.calibre()!;
-    if (!w.facts) {
-      w.facts = new Map(audioFactsAll(this.db).map((f) => [f.unitKey, f]));
+    if (!w.queued) {
+      w.queued = true;
       const stored = new Map<
         string,
         {

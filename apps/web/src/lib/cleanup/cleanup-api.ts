@@ -1009,6 +1009,7 @@ export interface AudioStatus {
 export type Stage8Phase =
   | 'check'
   | 'read'
+  | 'recordings'
   | 'pair'
   | 'values'
   | 'covers'

@@ -662,8 +662,12 @@ export interface EbookIndex {
 }
 
 export function buildIndex(books: Iterable<EbookFacts>): EbookIndex {
-  const byAuthor = new Map<string, EbookFacts[]>();
-  const byTitle = new Map<string, EbookFacts[]>();
+  return addToIndex({ byAuthor: new Map(), byTitle: new Map() }, books);
+}
+
+/** Adds books to an index (the stage builds it page by page as it reads Calibre). */
+export function addToIndex(idx: EbookIndex, books: Iterable<EbookFacts>): EbookIndex {
+  const { byAuthor, byTitle } = idx;
   const add = (m: Map<string, EbookFacts[]>, k: string, e: EbookFacts) => {
     if (!k) return;
     const l = m.get(k);
@@ -674,7 +678,7 @@ export function buildIndex(books: Iterable<EbookFacts>): EbookIndex {
     for (const a of new Set(e.authors.map(personKey))) add(byAuthor, a, e);
     add(byTitle, titleForm(cleaned(e.title)), e);
   }
-  return { byAuthor, byTitle };
+  return idx;
 }
 
 /** A recording's candidates: books by one of its authors, and books with exactly its title. */

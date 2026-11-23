@@ -23,6 +23,7 @@ export const MODE_LABEL_ON_8 = 'On (write)';
 const PHASES: Record<string, string> = {
   check: 'Checking whether Calibre or the recordings changed',
   read: 'Reading the Calibre library (its snapshot copy)',
+  recordings: 'Reading the recordings’ stage-5 values',
   pair: 'Pairing the recordings with their ebooks',
   values: 'Genres, tags and series of the pairs',
   covers: 'Reading the paired ebooks’ covers',
@@ -56,7 +57,7 @@ export function stage8Bar(
   const unit =
     p.phase === 'read'
       ? 'pages'
-      : p.phase === 'pair'
+      : p.phase === 'pair' || p.phase === 'recordings'
         ? 'recordings'
         : p.phase === 'covers'
           ? 'covers'
