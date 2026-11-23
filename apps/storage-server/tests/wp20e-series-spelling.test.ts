@@ -16,7 +16,7 @@ import type { Stage4Decision } from '../src/cleanup/stage4/stage4-rules';
 import type { Stage2Book } from '../src/cleanup/stage2-snapshot';
 import { initCleanupDatabase } from '../src/cleanup/cleanup-db';
 import { makeTempDir } from './helpers/spawn-server';
-import { REPICK_VERSION } from '../src/cleanup/stage4/analysis';
+import { READINGS_VERSION, REPICK_VERSION } from '../src/cleanup/stage4/analysis';
 
 describe('one spelling per series', () => {
   it('gives spellings that differ only in width, spaces, dashes or punctuation one key', () => {
@@ -252,6 +252,7 @@ describe("the AI step's spelling phase", () => {
       finishedAt: 5,
       bookmeterEditions: { phase: 'done' },
       repick: { phase: 'done', version: REPICK_VERSION },
+      readingNotes: { phase: 'done', version: READINGS_VERSION },
       ai,
     };
     const proposed: string[] = [];
@@ -310,6 +311,7 @@ describe('the evidence built again (series-order follow-up, stop 2)', () => {
       finishedAt: 5,
       bookmeterEditions: { phase: 'done' },
       repick: { phase: 'done', version: REPICK_VERSION },
+      readingNotes: { phase: 'done', version: READINGS_VERSION },
       ai,
     };
     const step = new Stage4Ai({

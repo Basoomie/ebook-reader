@@ -305,6 +305,27 @@ export function onlyNumber(rest: string): number | null {
 }
 
 /** The volume number a title prints for a series, or null. */
+/**
+ * The volume number a title prints in the plain form "<series name> <number>[ <subtitle>]": the
+ * one number in the title, right after the name, ending there (「闇の皇太子19 光と闇のロマンス」,
+ * 「丹下左膳 03 日光の巻」). Null otherwise: a number in a subtitle or glued to a word
+ * (「文豪ストレイドッグス 55Minutes」, 「借金お嬢クリス 42兆円…」, 「…社畜勇者(28)…」), several
+ * numbers (「ひめゆり1,2,3」, 「…9 新婚旅行編（2）」), a part's number (「第五部「女神の化身IX」」).
+ * Used to trust the series step's number from a title over the number Calibre has (rules 9).
+ */
+export function plainVolume(title: string, name: string): number | null {
+  const rest = afterName(title, name);
+  if (rest === null) return null;
+  const m = /^\s*(\d{1,3}(?:\.5)?|[IVX]{1,6})(?=$|[\s~～〜\-‐―—–─:：「『(（【[<〈《!?、。,])/u.exec(
+    nfkc(rest),
+  );
+  if (!m) return null;
+  const after = nfkc(rest).slice(m.index + m[0].length);
+  if (/\d|(?<![A-Za-z])[IVXivx]{1,6}(?![A-Za-z])/u.test(after)) return null;
+  const n = /^\d/u.test(m[1]) ? parseFloat(m[1]) : (ROMAN[m[1]] ?? null);
+  return n !== null && n > 0 ? n : null;
+}
+
 export function printedNumber(title: string, name: string): number | null {
   const rest = afterName(title, name);
   if (rest === null) return null;

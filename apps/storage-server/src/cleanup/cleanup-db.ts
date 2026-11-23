@@ -1829,6 +1829,15 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
         WHERE guess = 1 OR review IS NOT NULL;
     `,
   },
+  {
+    version: 24,
+    name: "stage 4: author readings without NDL's notes",
+    // The live Preview of 2026-11-22 found NDL's notes in written author_sort values ("アオキ,
+    // クニコ, トウゲイカ", "ワタナベ, マサカズ, pub. 2013"). Stage 4 reads the stored answers again
+    // (READINGS_VERSION) and keeps the reading as it was stored before in `noted`, so a value the
+    // cleanup wrote with the notes is corrected at On.
+    sql: `ALTER TABLE author_readings ADD COLUMN noted TEXT;`,
+  },
 ];
 
 export const CLEANUP_SCHEMA_VERSION = CLEANUP_MIGRATIONS[CLEANUP_MIGRATIONS.length - 1].version;

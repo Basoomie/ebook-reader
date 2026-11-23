@@ -64,7 +64,12 @@ import { bwAsAmazon, bwSettles, STANDIN, titleStem } from './bw-standin';
 import { NEXT_STEPS, type FollowUps } from './eta';
 import { ASIN_RE, pickByVolume, pyQuote, queryTitle, sim } from './pick';
 import { amazonFacts, bwFacts, isMangaRecord, replaces, type BookFacts } from './record-judge';
-import { proposeStage4, type CalibreCoverNow, type Stage4Proposal } from './proposals';
+import {
+  proposeStage4,
+  type AuthorReading,
+  type CalibreCoverNow,
+  type Stage4Proposal,
+} from './proposals';
 import { storedAiValues, type Stage4AiValues } from './ai-decide';
 import { FetchQueue, LABELED_PRIORITY } from './queue';
 import { readRefEpub, type RefFile } from './ref-epub';
@@ -178,6 +183,12 @@ export interface Stage4Progress {
     /** Books proposed again that version 2 had marked "evidence missing" (version 3). */
     healed?: number;
   };
+  /**
+   * The author readings found in NDL read again from the stored answers without NDL's notes
+   * ("アオキ, クニコ, トウゲイカ" -> "アオキ, クニコ"), and namesakes read differently marked
+   * ambiguous (READINGS_VERSION; the live Preview of 2026-11-22).
+   */
+  readingNotes?: { phase: 'done'; version: number; changed: number; ambiguous: number };
   /** Books the final pass has proposed again (for its time left). */
   finalDone?: number;
   /** Each step's answers and the new requests they led to (stage4/eta.ts, the time left). */
@@ -380,6 +391,7 @@ export function emptyStage4Progress(libraryId: string, now = Date.now()): Stage4
       reopened: 0,
       version: REPICK_VERSION,
     },
+    readingNotes: { phase: 'done', version: READINGS_VERSION, changed: 0, ambiguous: 0 },
   };
 }
 
@@ -460,9 +472,13 @@ export function oneTimePassesDone(p: Stage4Progress): boolean {
   return (
     p.bookmeterEditions?.phase === 'done' &&
     p.repick?.phase === 'done' &&
-    (p.repick.version ?? 1) >= REPICK_VERSION
+    (p.repick.version ?? 1) >= REPICK_VERSION &&
+    (p.readingNotes?.version ?? 0) >= READINGS_VERSION
   );
 }
+
+/** The stored NDL readings' one-time pass (readingNotesStep). 1: notes left out, ambiguity. */
+export const READINGS_VERSION = 1;
 
 /**
  * The fixed picker's one-time pass (repickStep). 2 (2026-11-22): a record that is the book is
@@ -643,7 +659,9 @@ export class Stage4Analysis {
     let p = this.progress();
     if (p && p.phase === 'done' && !p.error && !oneTimePassesDone(p)) {
       if (p.bookmeterEditions?.phase !== 'done') await this.bookmeterEditionsStep(p);
-      else await this.repickStep(p);
+      else if (p.repick?.phase !== 'done' || (p.repick.version ?? 1) < REPICK_VERSION)
+        await this.repickStep(p);
+      else this.readingNotesStep(p);
       this.save(p, p.phase === 'done' ? 'ready' : 'analysing');
       return p.phase === 'done' && oneTimePassesDone(p);
     }
@@ -2658,6 +2676,64 @@ export class Stage4Analysis {
    * (its store links); a book with another hit now waits for that hit's store list (the
    * analysis goes back to its lookups for those few).
    */
+  /**
+   * Once (READINGS_VERSION): every reading found in NDL read again from its stored answer, its
+   * notes left out and namesakes with another reading marked ambiguous. The reading stored before
+   * is kept in `noted` when it changed (a value the cleanup wrote with the notes is then corrected
+   * at On); an ambiguous name keeps the reading it had. The fetch cache answers; a name whose
+   * answer is gone keeps its row.
+   */
+  private readingNotesStep(p: Stage4Progress): void {
+    const t = performance.now();
+    const db = this.db;
+    const rows = db
+      .prepare(
+        `SELECT name, reading, request_id FROM author_readings
+         WHERE state = 'found' AND source = 'ndl' AND request_id IS NOT NULL ORDER BY request_id`,
+      )
+      .all() as { name: string; reading: string; request_id: number }[];
+    const byRequest = new Map<number, typeof rows>();
+    for (const r of rows) byRequest.set(r.request_id, [...(byRequest.get(r.request_id) ?? []), r]);
+    let changed = 0;
+    let ambiguous = 0;
+    const now = Date.now();
+    const update = db.prepare(
+      `UPDATE author_readings SET reading = ?, authority = ?, ambiguous = ?,
+         noted = CASE WHEN noted IS NULL AND ? <> ? THEN ? ELSE noted END, updated_at = ?
+       WHERE name = ?`,
+    );
+    for (const [id, names] of byRequest) {
+      const body = this.deps.queue.readAnswer(id);
+      const answer = body ? parseNdl(body) : null;
+      if (!answer) continue;
+      db.transaction(() => {
+        for (const r of names) {
+          const first = ndlReading(answer, r.name);
+          if (!first) continue;
+          const before = first.forms.find(([f]) => f === r.reading)?.[1] ?? r.reading;
+          const hit = ndlReading(answer, r.name, before) ?? first;
+          if (hit.ambiguous) ambiguous++;
+          if (hit.reading !== r.reading) changed++;
+          update.run(
+            hit.reading,
+            hit.authority,
+            hit.ambiguous ? 1 : 0,
+            r.reading,
+            hit.reading,
+            r.reading,
+            now,
+            r.name,
+          );
+        }
+      })();
+    }
+    p.readingNotes = { phase: 'done', version: READINGS_VERSION, changed, ambiguous };
+    this.log(
+      `Stage 4: author readings read again without NDL's notes: ${changed} changed, ${ambiguous} names read differently by namesakes (best guesses)`,
+    );
+    addTime(p, 'readings', performance.now() - t);
+  }
+
   private async bookmeterEditionsStep(p: Stage4Progress): Promise<void> {
     const r0 = (p.bookmeterEditions ??= { phase: 'books', cursor: '', changed: 0, reopened: 0 });
     if (r0.phase === 'done') return;
@@ -3159,21 +3235,25 @@ export function bookmeterOwnTexts(
 }
 
 /** An author's reading by name, looked up when asked (found or generated readings only). */
-class ReadingLookup extends Map<string, { reading: string; source: 'ndl' | 'generated' }> {
+class ReadingLookup extends Map<string, AuthorReading> {
   private readonly asked = new Set<string>();
   constructor(private readonly db: Database.Database) {
     super();
   }
-  override get(name: string): { reading: string; source: 'ndl' | 'generated' } | undefined {
+  override get(name: string): AuthorReading | undefined {
     if (!this.asked.has(name)) {
       this.asked.add(name);
       const r = this.db
-        .prepare('SELECT reading, state FROM author_readings WHERE name = ?')
-        .get(name) as { reading: string | null; state: string } | undefined;
+        .prepare('SELECT reading, state, ambiguous, noted FROM author_readings WHERE name = ?')
+        .get(name) as
+        | { reading: string | null; state: string; ambiguous: number; noted: string | null }
+        | undefined;
       if (r?.reading && (r.state === 'found' || r.state === 'generated'))
         super.set(name, {
           reading: r.reading,
           source: r.state === 'found' ? 'ndl' : 'generated',
+          ambiguous: r.state === 'found' && r.ambiguous === 1,
+          noted: r.noted,
         });
     }
     return super.get(name);

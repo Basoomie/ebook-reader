@@ -25,7 +25,7 @@ import { writeDecisions, setUserValue } from '../src/cleanup/ai-decide/values';
 import { initCleanupDatabase } from '../src/cleanup/cleanup-db';
 import type { Stage2Book } from '../src/cleanup/stage2-snapshot';
 import { makeTempDir } from './helpers/spawn-server';
-import { REPICK_VERSION } from '../src/cleanup/stage4/analysis';
+import { READINGS_VERSION, REPICK_VERSION } from '../src/cleanup/stage4/analysis';
 
 describe('changed in Calibre after the cleanup wrote it', () => {
   const cover = (o: Record<string, unknown>) => ({
@@ -596,6 +596,7 @@ describe('asking the given-up questions again (WP20e stop 2)', () => {
       finishedAt: 5,
       bookmeterEditions: { phase: 'done' },
       repick: { phase: 'done', version: REPICK_VERSION },
+      readingNotes: { phase: 'done', version: READINGS_VERSION },
       ai,
     };
     const runner = cleanupRunner(db, makeAiCore().core);
