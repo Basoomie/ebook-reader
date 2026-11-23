@@ -21,17 +21,25 @@ export const MODELS = {
   sol: 'gpt-6.1-sol',
   opus: 'claude-opus-5-5',
 } as const;
-export type ModelRole = keyof typeof MODELS;
-export const TASKS: Record<ModelRole, string> = {
-  sonnet: `summaries.${MODELS.sonnet}`,
-  sol: `summaries.${MODELS.sol}`,
-  opus: `summaries.${MODELS.opus}`,
-};
-export function modelForTask(task: string): string {
-  return task.startsWith('summaries.') ? task.slice('summaries.'.length) : '';
+/**
+ * Who is asked: the test's short names (sonnet, sol, opus) or, since session 3, any model id
+ * from the summaries' settings (the route of setups). A role's task is "summaries.<role>".
+ */
+export type ModelRole = string;
+export type TestRole = keyof typeof MODELS;
+/** The model a role names: the test's short names, else the role is the model id itself. */
+export function modelOfRole(role: ModelRole): string {
+  return Object.prototype.hasOwnProperty.call(MODELS, role) ? MODELS[role as TestRole] : role;
 }
-export function roleOf(model: string): ModelRole {
-  const r = (Object.keys(MODELS) as ModelRole[]).find((k) => MODELS[k] === model);
+/** Every role's task ("summaries.<role>"), for any role (model ids of the settings included). */
+export const TASKS: Record<ModelRole, string> = new Proxy({} as Record<ModelRole, string>, {
+  get: (_t, role) => (typeof role === 'string' ? `summaries.${role}` : undefined),
+});
+export function modelForTask(task: string): string {
+  return task.startsWith('summaries.') ? modelOfRole(task.slice('summaries.'.length)) : '';
+}
+export function roleOf(model: string): TestRole {
+  const r = (Object.keys(MODELS) as TestRole[]).find((k) => MODELS[k] === model);
   if (!r) throw new Error(`not a test model: ${model}`);
   return r;
 }

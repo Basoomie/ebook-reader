@@ -621,6 +621,8 @@ describe('AI runner', () => {
           'claude-sonnet-5-5': 'batch',
         },
         batchStallMinutes: 2,
+        // OpenAI's batches have their own limit (book summaries session 3).
+        batchStallMinutesOpenai: 2,
       });
       runner.putItems(SPEC, items(3), 1);
       runner.enqueue(SPEC, 'primary', ['k0', 'k1', 'k2'], 'r');
@@ -659,7 +661,7 @@ describe('AI runner', () => {
   it('"Test batch" shows whether and how fast a provider runs batches for a model', async () => {
     const { core, advance } = await setup({ stallModels: ['gpt-6-luna'] });
     await expect(core.testBatch('claude-haiku-5-5')).rejects.toThrow(/spending limit/);
-    core.updateSettings({ spendLimitUsd: 1, batchStallMinutes: 2 });
+    core.updateSettings({ spendLimitUsd: 1, batchStallMinutes: 2, batchStallMinutesOpenai: 2 });
     await core.testBatch('claude-haiku-5-5');
     await core.testBatch('gpt-6-luna');
     await expect(core.testBatch('gpt-6-luna')).rejects.toThrow(/already running/);

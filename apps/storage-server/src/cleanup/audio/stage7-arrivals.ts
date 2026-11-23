@@ -2436,7 +2436,8 @@ export class AudioStage7 {
     const ps = this.deps.aiSettings();
     const perItem = models.reduce((sum, m) => {
       const c = expectedListCost(this.db, ps, m, chars);
-      return sum + c * (modeOfModel(ps, m) === 'batch' ? ps.batchPriceFactor : 1);
+      // Batches and Flex calls are billed at the batch price.
+      return sum + c * (modeOfModel(ps, m) !== 'direct' ? ps.batchPriceFactor : 1);
     }, 0);
     const out: Record<'F' | 'J', { items: number; fields: number; costUsd: number | null }> = {
       F: { items: 0, fields: 0, costUsd: 0 },

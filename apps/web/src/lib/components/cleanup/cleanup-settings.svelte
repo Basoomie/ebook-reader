@@ -103,7 +103,12 @@
         : t.checked
           ? `offered by ${where} ✓`
           : `NOT offered by ${where}: check the model id`;
-    const mode = t?.mode === 'direct' ? 'one call each' : 'batches';
+    const mode =
+      t?.mode === 'direct'
+        ? 'one call each'
+        : t?.mode === 'flex'
+          ? 'flex calls (batch price)'
+          : 'batches';
     return `${price} · ${offered} · ${mode}`;
   }
 

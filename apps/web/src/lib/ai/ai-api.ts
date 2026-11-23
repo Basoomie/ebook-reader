@@ -27,10 +27,17 @@ export interface AiPrice extends AiPriceTier {
   long?: AiPriceTier;
 }
 
+/** Batches, one call each, or one call each with OpenAI's Flex (batch price). */
+export type AiMode = 'batch' | 'direct' | 'flex';
+
 export interface AiSettings {
   spendLimitUsd: number | null;
-  modes: Record<string, 'batch' | 'direct'>;
+  modes: Record<string, AiMode>;
   batchStallMinutes: number;
+  /** The same for OpenAI's batches (they take far longer). */
+  batchStallMinutesOpenai: number;
+  /** Flex: refusals for capacity before a call goes at the normal price. */
+  flexRetries: number;
   /** After a failed batch: the wait before the next (min), doubled per failure up to the max. */
   batchFailWaitMinutes: number;
   batchFailMaxWaitMinutes: number;
@@ -86,7 +93,9 @@ export interface AiStatus {
     builtIn: boolean;
     /** The features' tasks that use it (a model in use can't be deleted). */
     inUse: string[];
-    mode: 'batch' | 'direct';
+    mode: AiMode;
+    /** OpenAI's Flex processing is offered for it. */
+    flex: boolean;
     offered: boolean | null;
     /** Most estimated prompt tokens in batches at the provider (0 = no cap). */
     batchQueueTokens: number;

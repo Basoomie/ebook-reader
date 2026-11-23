@@ -1294,9 +1294,24 @@ export const SETTINGS_CATALOG: CatalogSetting[] = [
   {
     id: 'ai-stall',
     section: 'ai-advanced',
-    title: 'Cancel a batch with no answers after',
+    title: 'Cancel an Anthropic batch with no answers after',
     description:
-      "If a provider hasn't answered anything in a batch by then, the batch is cancelled and its questions are asked one call each. 0 = wait as long as the provider takes (up to 24 hours)."
+      "If Anthropic hasn't answered anything in a batch by then, the batch is cancelled and its questions are asked one call each. 0 = wait as long as the provider takes (up to 24 hours)."
+  },
+  {
+    id: 'ai-stall-openai',
+    section: 'ai-advanced',
+    title: 'Cancel an OpenAI batch with no answers after',
+    description:
+      'The same for OpenAI, whose batches often take an hour or more. 0 = wait as long as OpenAI takes (up to 24 hours).'
+  },
+  {
+    id: 'ai-flex-retries',
+    section: 'ai-advanced',
+    title: 'Flex: tries before the normal price',
+    description:
+      'A model set to Flex is asked at half price when OpenAI has room. When OpenAI refuses a call for lack of room (not charged), it is tried this many more times, then sent at the normal price.',
+    keywords: 'flex service tier'
   },
   {
     id: 'ai-fail-wait',

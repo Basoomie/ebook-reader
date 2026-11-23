@@ -26,6 +26,7 @@ import { BUILT_IN_PRICES, isChatModel } from './prices';
 import {
   AiSettingsError,
   readAiSettings,
+  stallMinutesOf,
   updateAiSettings,
   type AiPrice,
   type AiSettings,
@@ -747,7 +748,7 @@ export class AiCore {
         this.db
           .prepare('UPDATE ai_batch_tests SET checked_at = ? WHERE id = ?')
           .run(this.now(), t.id);
-        const minutes = Math.max(1, s.batchStallMinutes || 30);
+        const minutes = Math.max(1, stallMinutesOf(s, t.provider) || 30);
         if (!st.ended) {
           if (st.done === 0 && this.now() - t.submitted_at >= minutes * 60_000) {
             await client.cancelBatch(t.batch_id);

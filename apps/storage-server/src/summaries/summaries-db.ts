@@ -278,6 +278,134 @@ export const SUMMARIES_MIGRATIONS: { version: number; name: string; sql: string 
       );
     `,
   },
+  {
+    version: 8,
+    name: 'summaries on the server (session 3): versions, items, translations, jobs, books, settings',
+    sql: `
+      -- One row per version of a book's summary; one current per book (book-summaries.md
+      -- "Add, replace, edit, versions"). Earlier versions stay on the server only.
+      CREATE TABLE summaries (
+        id                   INTEGER PRIMARY KEY,
+        book_id              TEXT NOT NULL,
+        state                TEXT NOT NULL CHECK (state IN ('current', 'earlier')),
+        origin               TEXT NOT NULL CHECK (origin IN ('ai', 'user', 'import')),
+        -- The setup that made it ("mixed", "two", "opus", or the models' own label); null when
+        -- written by the user.
+        setup                TEXT,
+        models_json          TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(models_json)),
+        background           INTEGER NOT NULL DEFAULT 0,
+        lang                 TEXT NOT NULL,
+        book_title           TEXT NOT NULL,
+        also_mentioned_json  TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(also_mentioned_json)),
+        made_at              INTEGER NOT NULL,
+        created_at           INTEGER NOT NULL,
+        replaced_at          INTEGER,
+        edited_at            INTEGER,
+        job_id               INTEGER,
+        report_json          TEXT CHECK (report_json IS NULL OR json_valid(report_json)),
+        note                 TEXT
+      );
+      CREATE UNIQUE INDEX summaries_current ON summaries (book_id) WHERE state = 'current';
+      CREATE INDEX summaries_book ON summaries (book_id, created_at);
+
+      -- A summary's items (book-summaries.md "Summaries on the server"): the overview is one item.
+      CREATE TABLE summary_items (
+        id                 INTEGER PRIMARY KEY,
+        summary_id         INTEGER NOT NULL REFERENCES summaries(id) ON DELETE CASCADE,
+        section            TEXT NOT NULL CHECK (section IN
+                             ('overview', 'chapters', 'characters', 'relationships', 'terms', 'threads')),
+        ord                REAL NOT NULL,
+        chapter            INTEGER,
+        chapter_title      TEXT,
+        ref                TEXT NOT NULL,
+        heading            TEXT,
+        between_json       TEXT CHECK (between_json IS NULL OR json_valid(between_json)),
+        ruby_json          TEXT CHECK (ruby_json IS NULL OR json_valid(ruby_json)),
+        between_ruby_json  TEXT CHECK (between_ruby_json IS NULL OR json_valid(between_ruby_json)),
+        text               TEXT NOT NULL,
+        cites_json         TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(cites_json)),
+        quote              TEXT,
+        position           INTEGER,
+        show_quote         INTEGER NOT NULL DEFAULT 0,
+        -- Changed or added by the user: never overwritten by an automatic run.
+        edited_by_user     INTEGER NOT NULL DEFAULT 0,
+        added_by_user      INTEGER NOT NULL DEFAULT 0,
+        edited_at          INTEGER,
+        UNIQUE (summary_id, ref)
+      );
+      CREATE INDEX summary_items_order ON summary_items (summary_id, section, ord);
+
+      -- Translations item by item (quotes stay in the book's language). source_digest: the
+      -- original item it was made from, so after an edit only changed items are translated again.
+      CREATE TABLE summary_translations (
+        summary_id     INTEGER NOT NULL REFERENCES summaries(id) ON DELETE CASCADE,
+        lang           TEXT NOT NULL,
+        ref            TEXT NOT NULL,
+        heading        TEXT,
+        between_json   TEXT CHECK (between_json IS NULL OR json_valid(between_json)),
+        text           TEXT NOT NULL,
+        source_digest  TEXT NOT NULL,
+        model          TEXT,
+        made_at        INTEGER NOT NULL,
+        PRIMARY KEY (summary_id, lang, ref)
+      );
+
+      -- The languages a book's summary was asked for (made again for a new version).
+      CREATE TABLE summary_book_languages (
+        book_id   TEXT NOT NULL,
+        lang      TEXT NOT NULL,
+        added_at  INTEGER NOT NULL,
+        PRIMARY KEY (book_id, lang)
+      );
+
+      -- Jobs: making a summary (automatic on a first completion, or Regenerate) along the route
+      -- of setups, or translating one. step = the route's setup being tried.
+      CREATE TABLE summary_jobs (
+        id             INTEGER PRIMARY KEY,
+        book_id        TEXT NOT NULL,
+        kind           TEXT NOT NULL CHECK (kind IN ('auto', 'regenerate', 'translate')),
+        lang           TEXT,
+        summary_id     INTEGER,
+        state          TEXT NOT NULL CHECK (state IN ('queued', 'running', 'done', 'failed', 'no_text', 'cancelled')),
+        route_json     TEXT CHECK (route_json IS NULL OR json_valid(route_json)),
+        step           INTEGER NOT NULL DEFAULT 0,
+        attempts_json  TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(attempts_json)),
+        generation     INTEGER NOT NULL DEFAULT 0,
+        wait_text      TEXT,
+        error          TEXT,
+        cost_usd       REAL,
+        created_at     INTEGER NOT NULL,
+        started_at     INTEGER,
+        ended_at       INTEGER
+      );
+      CREATE INDEX summary_jobs_open ON summary_jobs (state, id) WHERE state IN ('queued', 'running');
+      CREATE INDEX summary_jobs_book ON summary_jobs (book_id, id);
+
+      -- Per book: the first completion as the summaries saw it (an automatic summary is made
+      -- only once, on the first: book-summaries.md "When a summary is made"), the regenerate
+      -- generation, and the note shown when every setup failed or the book has no text.
+      CREATE TABLE summary_books (
+        book_id           TEXT PRIMARY KEY,
+        first_completion  TEXT CHECK (first_completion IS NULL OR first_completion IN
+                            ('baseline', 'auto', 'skipped', 'had_summary', 'no_text')),
+        completed_at      INTEGER,
+        generation        INTEGER NOT NULL DEFAULT 0,
+        outcome           TEXT CHECK (outcome IS NULL OR outcome IN ('made', 'failed', 'no_text')),
+        note              TEXT,
+        note_at           INTEGER
+      );
+
+      CREATE TABLE summary_settings (
+        key         TEXT PRIMARY KEY,
+        value_json  TEXT NOT NULL CHECK (json_valid(value_json)),
+        updated_at  INTEGER NOT NULL
+      );
+      CREATE TABLE summary_state (
+        key    TEXT PRIMARY KEY,
+        value  TEXT NOT NULL
+      );
+    `,
+  },
 ];
 
 export const SUMMARIES_SCHEMA_VERSION =

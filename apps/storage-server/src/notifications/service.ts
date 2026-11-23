@@ -232,7 +232,8 @@ export class NotificationService {
         this.clear(key);
         return;
       }
-      const file = prefix === 'cleanup' ? 'cleanup.db' : 'ttsu.db';
+      const file =
+        prefix === 'cleanup' ? 'cleanup.db' : prefix === 'summaries' ? 'summaries.db' : 'ttsu.db';
       const why = clip((error as Error)?.message ?? String(error ?? ''), 160);
       const summary = `The nightly copy of ${file} failed`;
       if (this.observe(key, 'snapshot_failed', { waitMs: 0, summary, detail: why })) {

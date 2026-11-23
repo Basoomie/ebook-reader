@@ -212,6 +212,9 @@ export const SETTINGS_REGISTRY: Record<string, SettingSpec> = {
   bookLinksMoreAs: d('String'),
   bookLinksSearch: d('Boolean'),
 
+  // --- lib/summaries/settings.ts (book summaries: the languages, the same on every device) ---
+  summaryLanguages: g('Array'),
+
   // --- lib/calibre-edit/settings.ts (per device: Calibre metadata editing, Settings > Library) ---
   bookEditAs: d('String'),
   seriesEditAs: d('String'),
