@@ -690,6 +690,7 @@ describe("the AI check's gate in steps (its progress bar)", () => {
       bookmeterEditions: { phase: 'done' },
       repick: { phase: 'done', version: REPICK_VERSION },
       readingNotes: { phase: 'done', version: READINGS_VERSION },
+      titleFit: { phase: 'done', version: TITLE_FIT_VERSION, books: 0 },
       ai,
     };
     const labeled = Array.from({ length: 250 }, (_, i) => ({
