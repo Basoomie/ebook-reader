@@ -235,3 +235,100 @@ export function extractArgs(
     exactPattern(name)
   ];
 }
+
+// ---- WP20g: split sets (.001, .002 …) through 7-Zip -----------------------------------------
+//
+// bsdtar can't read a split set (it takes one file). 7-Zip (`7zz`) opens the first volume by its
+// name and finds the others beside it; it only lists (`l`) or writes one entry to its standard
+// output (`x -so`), never a file. Names: UTF-8 on the console (-sccUTF-8); a zip's names without
+// the UTF-8 flag are read as CP932 (-mcp=932), the Japanese sources' encoding.
+
+/** 7-Zip's arguments shared by listing and extracting. */
+// A fixed wrong password: an encrypted set fails ("Wrong password") instead of waiting for input.
+const SEVEN_COMMON = ['-sccUTF-8', '-mcp=932', '-bb0', '-bd', '-pttsu-no-password'];
+
+function runSeven(
+  sevenZip: string,
+  args: string[],
+  limitBytes = 64 * 1024 * 1024
+): Promise<ToolRun> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(sevenZip, args, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { PATH: process.env.PATH ?? '/usr/bin:/bin', LC_ALL: 'C.UTF-8', LANG: 'C.UTF-8' }
+    });
+    const out: Buffer[] = [];
+    let size = 0;
+    let err = '';
+    child.stdout!.on('data', (b: Buffer) => {
+      size += b.length;
+      if (size > limitBytes) child.kill('SIGKILL');
+      else out.push(b);
+    });
+    child.stderr!.on('data', (b: Buffer) => (err = (err + b.toString('utf8')).slice(-4000)));
+    child.on('error', reject);
+    child.on('close', (code) =>
+      resolve({ code: size > limitBytes ? -1 : code, stdout: Buffer.concat(out), stderr: err })
+    );
+  });
+}
+
+/** `7zz l -slt -ba` blocks ("Path = …", "Size = …", "Folder = +/-", "Attributes = …"). */
+export function parseSevenListing(text: string): ArchiveEntry[] {
+  const out: ArchiveEntry[] = [];
+  for (const block of text.split(/\r?\n\r?\n/)) {
+    const f: Record<string, string> = {};
+    for (const line of block.split(/\r?\n/)) {
+      const i = line.indexOf(' = ');
+      if (i > 0) f[line.slice(0, i)] = line.slice(i + 3);
+    }
+    if (f.Path === undefined) continue;
+    const attrs = f.Attributes ?? '';
+    const kind: ArchiveEntry['kind'] =
+      f.Folder === '+' || /^D/.test(attrs)
+        ? 'dir'
+        : /\sl[r-][w-]/.test(` ${attrs}`)
+          ? 'link'
+          : 'file';
+    const size = Number(f.Size ?? '0');
+    out.push({ name: f.Path, kind, size: Number.isFinite(size) && size >= 0 ? size : 0 });
+  }
+  return out;
+}
+
+/** Lists a split set from its first volume (a path checked by the writer). Throws on 7-Zip's error. */
+export async function listSevenZip(
+  sevenZip: string,
+  file: string | Buffer
+): Promise<ArchiveListing> {
+  const name = typeof file === 'string' ? file : file.toString('latin1');
+  const r = await runSeven(sevenZip, ['l', '-slt', '-ba', ...SEVEN_COMMON, '--', name]);
+  if (/Wrong password|Enter password|encrypted/i.test(r.stderr))
+    return { entries: [], encoding: 'utf8', problem: 'The archive needs a password' };
+  if (r.code !== 0) throw new Error(r.stderr.trim().slice(0, 500) || `7zz exit ${r.code}`);
+  return { entries: parseSevenListing(r.stdout.toString('utf8')), encoding: 'utf8', problem: null };
+}
+
+/** One entry of a split set written to 7-Zip's standard output (wildcards off: -spd). */
+export function sevenEntryStream(
+  sevenZip: string,
+  file: string | Buffer,
+  entry: string
+): {
+  stream: NodeJS.ReadableStream;
+  done: Promise<{ code: number | null; stderr: string }>;
+  kill: () => void;
+} {
+  const name = typeof file === 'string' ? file : file.toString('latin1');
+  const child = spawn(sevenZip, ['x', '-so', '-spd', ...SEVEN_COMMON, '--', name, entry], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { PATH: process.env.PATH ?? '/usr/bin:/bin', LC_ALL: 'C.UTF-8', LANG: 'C.UTF-8' }
+  });
+  let err = '';
+  child.stderr!.on('data', (b: Buffer) => (err = (err + b.toString('utf8')).slice(-4000)));
+  const done = new Promise<{ code: number | null; stderr: string }>((resolve, reject) => {
+    child.on('error', reject);
+    child.on('close', (code) => resolve({ code, stderr: err }));
+  });
+  return { stream: child.stdout!, done, kill: () => child.kill('SIGKILL') };
+}

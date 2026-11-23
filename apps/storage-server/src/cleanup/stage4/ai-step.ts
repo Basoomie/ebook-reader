@@ -18,13 +18,14 @@ import { createHash } from 'crypto';
 import type { AiRunner } from '../../ai/runner';
 import { waitIsNote, waitNeedsUser, waitText } from '../../ai/waits';
 import { runSpend } from '../../ai/spend';
-import { dropOtherItems, valueCounts, writeDecisions } from '../ai-decide/values';
+import { dropOtherItems, itemDesigns, valueCounts, writeDecisions } from '../ai-decide/values';
 import { getSettings, stage4Bar } from '../settings';
 import { pauseField, resumeField } from '../stage2-gate';
 import { getStage, pauseStage, resumeStage, updateStage } from '../stages';
 import {
   STAGE4_AI_DECIDE_VERSION,
   decideStage4Ai,
+  decideStage4AiUpgrade,
   decisionRows,
   storedAiValues,
 } from './ai-decide';
@@ -241,6 +242,9 @@ export class Stage4Ai {
 
   /** The books the spelling phase proposes again, in uuid order (rebuilt after a restart). */
   private respell: { key: string; uuids: string[] } | null = null;
+
+  /** WP20g: the design each item keeps (new arrivals decided with J), read once per decide. */
+  private designs: Map<string, string> | null = null;
 
   constructor(private readonly deps: Stage4AiDeps) {}
 
@@ -693,6 +697,9 @@ export class Stage4Ai {
       return { finished: true, items: 0 };
     }
     const now = Date.now();
+    // WP20g: a book decided with J (or F) as a new arrival keeps that design: decided again with
+    // its stronger pair's stored answers (a book without them is decided with E as before).
+    if (ai.cursor === 0 || !this.designs) this.designs = itemDesigns(this.db, 'calibre4');
     let n = 0;
     const y = new Yielder();
     for (const r of rows) {
@@ -709,9 +716,28 @@ export class Stage4Ai {
           secondary: b?.state === 'answered' ? b.answer : null,
         };
         const asked = !!answers.primary && !!answers.secondary;
-        const out = decideStage4Ai(inp.decision, answers, stage4EvidenceText(ev.evidence));
+        let out = decideStage4Ai(inp.decision, answers, stage4EvidenceText(ev.evidence));
+        let design = 'E';
+        const kept = this.designs.get(key);
+        if (kept === 'J' || kept === 'F') {
+          const sa = runner.answerOf(STAGE4_SPEC, 'upgradePrimary', key);
+          const sb = runner.answerOf(STAGE4_SPEC, 'upgradeSecondary', key);
+          if (sa?.state === 'answered' || sb?.state === 'answered') {
+            out = decideStage4AiUpgrade(
+              kept,
+              inp.decision,
+              answers,
+              {
+                primary: sa?.state === 'answered' ? sa.answer : null,
+                secondary: sb?.state === 'answered' ? sb.answer : null,
+              },
+              stage4EvidenceText(ev.evidence),
+            );
+            design = kept;
+          }
+        }
         ai.invented += out.invented;
-        writeDecisions(this.db, 'calibre4', decisionRows(key, out, ev.hash, asked), 'E', now);
+        writeDecisions(this.db, 'calibre4', decisionRows(key, out, ev.hash, asked), design, now);
         // Read back: a value the user set wins over the decision.
         await this.deps.analysis.proposeWithAi(p, r.calibre_uuid, storedAiValues(this.db, key));
       }

@@ -153,8 +153,10 @@ export const STAGE5_SPEC: AiStageSpec<Stage5Evidence> = {
   tasks: {
     primary: 'stage5.primary',
     secondary: 'stage5.secondary',
-    upgradePrimary: 'stage5.primary',
-    upgradeSecondary: 'stage5.secondary',
+    // New books (WP20g): the stronger pair, asked instead of the first two (the user's choice
+    // after stop 1's measurement on the genre test's labels).
+    upgradePrimary: 'stage5.upgradePrimary',
+    upgradeSecondary: 'stage5.upgradeSecondary',
   },
   system: STAGE5_SYSTEM,
   userText: stage5UserText,

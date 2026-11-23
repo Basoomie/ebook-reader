@@ -4,6 +4,7 @@
  * All rights reserved.
  */
 
+import type { ArrivalsStatus } from './arrivals-text';
 import { errorFrom, send, type RequestOptions } from '$lib/library/api';
 
 /** The /cleanup page's client for /api/v1/cleanup/* (WP20a). */
@@ -648,7 +649,29 @@ export interface CleanupSettings {
   fetch?: FetchSettings;
   /** The AI models (WP21d); missing on an older server. */
   ai?: AiSettings;
+  /** WP20g: the Calibre library's new arrivals and the import; missing on an older server. */
+  arrivals?: BookArrivalSettings;
   backup: { path: string; verifiedOn: string; confirmedAt: number | null };
+}
+
+/** WP20g: one source folder (under the sources mount) whose EPUBs are added to a library. */
+export interface ArrivalPairSetting {
+  id: string;
+  source: string;
+  libraryId: string;
+}
+
+/** WP20g: the new arrivals' settings. */
+export interface BookArrivalSettings {
+  pairs: ArrivalPairSetting[];
+  time: string;
+  quietStart: string;
+  quietEnd: string;
+  timeZone: string;
+  settleMinutes: number;
+  handCheckMinutes: number;
+  addBatchSize: number;
+  addLeaseSeconds: number;
 }
 
 export interface FetchSettings {
@@ -1457,6 +1480,8 @@ export interface AiSettings {
   labeledOnly: boolean;
   /** WP21f-1: the new arrivals' AI setup (default J); missing on an older server. */
   arrivalsDesign?: 'E' | 'F' | 'J';
+  /** WP20g: the Calibre library's new arrivals' AI setup (default J); missing on an older server. */
+  booksArrivalsDesign?: 'E' | 'F' | 'J';
   /** WP21f-1: an upgrade also re-checks values already decided by that setup or a stronger one. */
   upgradeIncludeDecided?: boolean;
 }
@@ -2384,6 +2409,72 @@ export class CleanupApi {
 
   aiStatus(): Promise<AiStatus> {
     return this.request('GET', '/cleanup/ai/status') as Promise<AiStatus>;
+  }
+
+  // ---------------------------------------------------------------- new arrivals (WP20g)
+
+  arrivals(): Promise<ArrivalsStatus> {
+    return this.request('GET', '/cleanup/arrivals') as Promise<ArrivalsStatus>;
+  }
+
+  setArrivalsMode(mode: 'off' | 'analyse' | 'on'): Promise<ArrivalsStatus> {
+    return this.request('PUT', '/cleanup/arrivals/mode', { mode }) as Promise<ArrivalsStatus>;
+  }
+
+  arrivalsRunNow(): Promise<ArrivalsStatus> {
+    return this.request('POST', '/cleanup/arrivals/run-now', {}) as Promise<ArrivalsStatus>;
+  }
+
+  arrivalsStop(): Promise<ArrivalsStatus> {
+    return this.request('POST', '/cleanup/arrivals/stop', {}) as Promise<ArrivalsStatus>;
+  }
+
+  arrivalsResume(): Promise<ArrivalsStatus> {
+    return this.request('POST', '/cleanup/arrivals/resume', {}) as Promise<ArrivalsStatus>;
+  }
+
+  arrivalsApprove(key: string): Promise<ArrivalsStatus> {
+    return this.request('POST', '/cleanup/arrivals/pairs/approve', {
+      key
+    }) as Promise<ArrivalsStatus>;
+  }
+
+  arrivalsList(
+    list: string,
+    offset = 0,
+    limit = 50
+  ): Promise<{ total: number; items: Record<string, unknown>[] }> {
+    const q = new URLSearchParams({ offset: String(offset), limit: String(limit) });
+    return this.request(
+      'GET',
+      `/cleanup/arrivals/lists/${encodeURIComponent(list)}?${q}`
+    ) as Promise<{
+      total: number;
+      items: Record<string, unknown>[];
+    }>;
+  }
+
+  arrivalsDecide(reviewId: number, decision: string): Promise<{ ok: boolean }> {
+    return this.request('POST', `/cleanup/arrivals/reviews/${reviewId}`, {
+      decision
+    }) as Promise<{ ok: boolean }>;
+  }
+
+  arrivalsUndo(batchId: number): Promise<{ undo: number }> {
+    return this.request('POST', `/cleanup/arrivals/batches/${batchId}/undo`, {}) as Promise<{
+      undo: number;
+    }>;
+  }
+
+  async arrivalsNotImportedFile(): Promise<Blob> {
+    const response = await send(
+      this.fetchImpl,
+      `${this.serverUrl}/api/v1/cleanup/arrivals/not-imported.csv`,
+      { method: 'GET', headers: { Authorization: `Bearer ${this.token}` } },
+      { timeoutSeconds: this.timeoutSeconds }
+    );
+    if (!response.ok) throw await errorFrom(response);
+    return response.blob();
   }
 
   spotCheck(stage = 1): Promise<{ items: Proposal[] }> {

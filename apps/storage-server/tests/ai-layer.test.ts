@@ -230,6 +230,8 @@ describe('the one-time move out of cleanup.db', () => {
       labeledOnly: true,
       arrivalsDesign: 'J',
       upgradeIncludeDecided: false,
+      // WP20g: the new Calibre books' setup (its default; not in the moved settings).
+      booksArrivalsDesign: 'J',
     });
     for (const t of ['ai_model_checks', 'ai_batch_tests'])
       expect(st.db.prepare(`SELECT 1 FROM sqlite_master WHERE name = ?`).get(t)).toBeUndefined();

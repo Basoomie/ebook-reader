@@ -40,6 +40,8 @@ export interface SidecarConfig {
   writeWaitSeconds: number;
   /** Stage 2: where a cover from the server is kept while calibredb sends it (inside the container). */
   coverTmpDir: string;
+  /** WP20g: where a file to add is kept while it is added (this sidecar's own). */
+  arrivalTmpDir: string;
   /**
    * The long-lived calibredb (calibre-debug running helper/calibredb-helper.py) for list and
    * set_metadata; null = always the calibredb program (CALIBREDB_HELPER=off).
@@ -79,6 +81,7 @@ export function loadConfig(env: Record<string, string | undefined>): SidecarConf
     waitPollSeconds: num(env, 'WAIT_POLL_SECONDS', 15),
     writeWaitSeconds: num(env, 'WRITE_WAIT_SECONDS', 600),
     coverTmpDir: env.COVER_TMP_DIR ?? '/tmp/ttsu-covers',
+    arrivalTmpDir: env.ARRIVAL_TMP_DIR ?? '/tmp/ttsu-arrivals',
     helper:
       (env.CALIBREDB_HELPER ?? '').trim().toLowerCase() === 'off'
         ? null

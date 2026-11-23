@@ -158,6 +158,8 @@ if (database.ok && cleanupDb?.ok) {
       dbDir: config.dbDir,
       countImport: countImportOptions(config.counts),
       aiCore: aiCore ?? undefined,
+      // WP20g: the Calibre import's source folders (read only); null = the import is off.
+      bookSourcesDir: config.cleanupBookSources ?? null,
     });
     cleanupOptions.service = cleanup;
     // The audiobook cleanup (WP21a): analysis only, shares the disk lock and the settings.

@@ -111,6 +111,7 @@ export class NotificationWatcher {
     this.part('the cleanup helpers', () => this.helpers(settings, now));
     this.part('field pauses', () => this.fieldPauses());
     this.part('new audiobooks', () => this.arrivalRuns());
+    this.part('new books', () => this.bookArrivalRuns());
     this.part('best guesses', () => this.stage4Guesses());
     this.part('refused changes', () => this.refusalsQuiet(settings, now));
     this.part('the AI spending limit', () => this.aiLimit());
@@ -416,6 +417,27 @@ export class NotificationWatcher {
         alerts.push(r);
       }
     }
+    // WP20g: the Calibre new arrivals' pause (its own row), one alert per pause.
+    try {
+      const a = db
+        .prepare('SELECT pause_reason, pause_detail FROM calibre_arrivals_state WHERE id = 1')
+        .get() as { pause_reason: string | null; pause_detail: string | null } | undefined;
+      if (a?.pause_reason) {
+        const key = 'stage_paused:arrivals';
+        active.add(key);
+        const summary = `Calibre new arrivals paused: ${stagePauseText(a.pause_reason)}`;
+        if (
+          this.service.observe(key, 'stage_paused', { waitMs: 0, summary, detail: a.pause_detail })
+        )
+          this.messages.push({
+            event: 'stage_paused',
+            lines: [summary, clip(a.pause_detail ?? '', 200)],
+            link: LINKS.cleanup,
+          });
+      }
+    } catch {
+      // cleanup.db before WP20g
+    }
     this.service.clearOthers('stage_paused', active);
 
     const byReason = new Map<string, typeof rows>();
@@ -689,6 +711,72 @@ export class NotificationWatcher {
             r.mode === 'on' ? `${rep.added} added in this run` : 'Preview run: nothing was added',
           ],
           link: LINKS.audioCleanup,
+        });
+    }
+  }
+
+  /**
+   * WP20g: each finished run of the Calibre library's new arrivals gives one digest line and,
+   * when it found new review items, one alert. The first look only remembers the last run.
+   */
+  private bookArrivalRuns(): void {
+    const db = this.s.cleanupDb;
+    if (!db) return;
+    let rows: { id: number; mode: string; report_json: string | null }[];
+    try {
+      rows = db
+        .prepare(
+          `SELECT id, mode, report_json FROM calibre_arrival_runs WHERE state = 'done' AND id > ? ORDER BY id`,
+        )
+        .all(this.service.store.getState<number>('book_arrival_runs') ?? 0) as typeof rows;
+    } catch {
+      return; // cleanup.db before WP20g
+    }
+    const first = this.service.store.getState<number>('book_arrival_runs') === undefined;
+    if (rows.length) this.service.store.setState('book_arrival_runs', rows[rows.length - 1].id);
+    else if (first) this.service.store.setState('book_arrival_runs', 0);
+    if (first) return;
+    for (const r of rows) {
+      const rep = r.report_json
+        ? (JSON.parse(r.report_json) as {
+            added: number;
+            hand: number;
+            outcomes: Record<string, number>;
+            newReview: number;
+            aiCost: number;
+            bestGuesses: number;
+            estimate: { books: number } | null;
+          })
+        : null;
+      if (!rep) continue;
+      const o = rep.outcomes ?? {};
+      const copies = (o.identical ?? 0) + (o.duplicate ?? 0);
+      const notImported = (o.not_imported ?? 0) + (o.unreadable ?? 0);
+      const parts = [
+        r.mode === 'on'
+          ? `${rep.added} added`
+          : `${rep.estimate?.books ?? 0} would be added (Preview)`,
+        rep.hand ? `${rep.hand} added in Calibre checked` : null,
+        copies ? `${copies} copies of library books not added` : null,
+        notImported ? `${notImported} not imported` : null,
+        rep.bestGuesses ? `${rep.bestGuesses} series numbers best guesses` : null,
+        rep.aiCost ? `AI $${rep.aiCost.toFixed(2)}` : null,
+        rep.newReview ? `${rep.newReview} new to look at` : null,
+      ].filter((x): x is string => x !== null);
+      if (parts.length === 1 && rep.added === 0 && !rep.estimate?.books) continue;
+      this.service.addDigestLine(
+        'calibre_arrivals_summary',
+        `New books: ${parts.join(', ')}`,
+        LINKS.cleanup,
+      );
+      if (rep.newReview > 0)
+        this.messages.push({
+          event: 'calibre_arrivals_review',
+          lines: [
+            `New books: ${rep.newReview} ${plural(rep.newReview, 'item', 'items')} to look at (better copies, archives, adds that failed)`,
+            r.mode === 'on' ? `${rep.added} added in this run` : 'Preview run: nothing was added',
+          ],
+          link: LINKS.cleanup,
         });
     }
   }

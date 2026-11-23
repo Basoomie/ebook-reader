@@ -1449,6 +1449,28 @@ export class AudioCleanupService {
             { task: STAGE5_SPEC.tasks.secondary, role: 'Second model' },
           ],
         },
+        {
+          // WP20g: the new books' setup J (default): E, then the stronger pair.
+          id: `${STAGE4_SPEC.stage}.upgrade`,
+          name: 'New Calibre books: the second look (setup J)',
+          about:
+            'After both online-sources models above, two stronger models look again where a value was left open or only guessed, for the books the daily new arrivals add only. A value both stronger models agree on is confirmed.',
+          models: [
+            { task: STAGE4_SPEC.tasks.upgradePrimary, role: 'First stronger model' },
+            { task: STAGE4_SPEC.tasks.upgradeSecondary, role: 'Second stronger model' },
+          ],
+        },
+        {
+          // WP20g: new books' genres and tags (Sonnet AND Sol, chosen after stop 1).
+          id: `${STAGE5_SPEC.stage}.arrivals`,
+          name: 'New Calibre books: genres and tags',
+          about:
+            'For the books the daily new arrivals add, these two models read each book instead of the two above. A genre or tag is applied only when both give it; RanobeDB and the store categories add theirs.',
+          models: [
+            { task: STAGE5_SPEC.tasks.upgradePrimary, role: 'First model' },
+            { task: STAGE5_SPEC.tasks.upgradeSecondary, role: 'Second model' },
+          ],
+        },
       ],
     };
   }

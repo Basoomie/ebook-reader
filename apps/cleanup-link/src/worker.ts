@@ -17,12 +17,23 @@ import { randomUUID } from 'crypto';
 import fs from 'fs/promises';
 import os from 'os';
 import type { LinkConfig } from './config';
-import { entryStream, extractArgs, listArchive, type ArchiveEntry } from './archive';
+import {
+  entryStream,
+  extractArgs,
+  listArchive,
+  listSevenZip,
+  sevenEntryStream,
+  type ArchiveEntry
+} from './archive';
 import { inspectLibraryOp, inspectSource, processInfo, type ProcessInfo } from './inspect';
 import { LinkWriter, WriteRefused, type PlannedSource } from './writer';
 
-/** 1.2.0 (WP21f-1): new books after the switch (arrival batches) and archives (list, extract). */
-export const VERSION = '1.3.0';
+/**
+ * 1.2.0 (WP21f-1): new books after the switch (arrival batches) and archives (list, extract).
+ * 1.4.0 (WP20g): the Calibre import's archives under a book source folder (book_list,
+ * book_extract; split sets through 7-Zip).
+ */
+export const VERSION = '1.4.0';
 const HEARTBEAT_MS = 30_000;
 
 interface BatchOp {
@@ -65,6 +76,12 @@ interface BatchOp {
   planned?: string[] | null;
   /** WP21f-1 (extract batches): the entry inside the archive (`src` is the archive). */
   entry?: { name: string; size: number; encoding: 'utf8' | 'cp932' } | null;
+  /** WP20g (book_list, book_extract): the book source folder, relative to /data/torrents. */
+  root?: string | null;
+  /** WP20g: a split set's other volumes (.002 …), each checked unchanged. */
+  volumes?:
+    | { rel: string; raw: string | null; size: number; mtimeMs: number; dev: number; ino: number }[]
+    | null;
 }
 
 interface Batch {
@@ -78,7 +95,9 @@ interface Batch {
     | 'list'
     | 'extract'
     | 'library_preflight'
-    | 'library';
+    | 'library'
+    | 'book_list'
+    | 'book_extract';
   leaseSeconds: number;
   ops: BatchOp[];
 }
@@ -211,6 +230,8 @@ export class LinkWorker {
       return results;
     }
     if (batch.kind === 'list') return this.listBatch(batch);
+    if (batch.kind === 'book_list') return this.bookListBatch(batch);
+    if (batch.kind === 'book_extract') return this.bookExtractBatch(batch);
     if (batch.kind === 'library_preflight') {
       this.info ??= await processInfo();
       for (const op of batch.ops) {
@@ -357,6 +378,104 @@ export class LinkWorker {
           entries: [],
           listProblem: (err as Error).message.slice(0, 500)
         });
+      }
+    }
+    return results;
+  }
+
+  private volumesOf(op: BatchOp): PlannedSource[] {
+    return (op.volumes ?? []).map((v) => ({
+      rel: v.rel,
+      raw: v.raw,
+      size: v.size,
+      mtimeMs: v.mtimeMs,
+      dev: v.dev,
+      ino: v.ino
+    }));
+  }
+
+  /**
+   * WP20g: archives of a book source folder listed (read only). A split set (.001) through
+   * 7-Zip by its first volume's name, any other archive through bsdtar on a read-only fd.
+   */
+  private async bookListBatch(batch: Batch): Promise<OpResult[]> {
+    const results: OpResult[] = [];
+    for (const op of batch.ops) {
+      if (this.stopped) break;
+      try {
+        const root = op.root ?? '';
+        const src = this.planned(op);
+        if (/\.001$/i.test(src.rel)) {
+          const file = await this.writer.bookArchivePath(root, src, this.volumesOf(op));
+          const l = await listSevenZip(this.config.sevenZip, file);
+          results.push({
+            id: op.id,
+            ok: true,
+            entries: l.entries,
+            encoding: l.encoding,
+            listProblem: l.problem
+          });
+          continue;
+        }
+        const handle = await this.writer.openBookArchive(root, src);
+        try {
+          const l = await listArchive(this.config.bsdtar, handle, this.config.archiveCharset);
+          results.push({
+            id: op.id,
+            ok: true,
+            entries: l.entries,
+            encoding: l.encoding,
+            listProblem: l.problem
+          });
+        } finally {
+          await handle.close();
+        }
+      } catch (err) {
+        results.push({
+          id: op.id,
+          ok: true,
+          entries: [],
+          listProblem: (err as Error).message.slice(0, 500)
+        });
+      }
+    }
+    return results;
+  }
+
+  /** WP20g: archive entries of a book source folder unpacked; stops at the first failure. */
+  private async bookExtractBatch(batch: Batch): Promise<OpResult[]> {
+    const results: OpResult[] = [];
+    for (const op of batch.ops) {
+      if (this.stopped) break;
+      try {
+        if (!op.entry) throw new WriteRefused('An entry is needed');
+        const e = op.entry;
+        const src = this.planned(op);
+        const split = /\.001$/i.test(src.rel);
+        const r = await this.writer.extractBookEntry(
+          op.root ?? '',
+          src,
+          this.volumesOf(op),
+          op.dst,
+          e.size,
+          op.id,
+          (h, file) =>
+            split
+              ? sevenEntryStream(this.config.sevenZip, file, e.name)
+              : entryStream(
+                  this.config.bsdtar,
+                  h,
+                  extractArgs(e.name, e.encoding, this.config.archiveCharset)
+                )
+        );
+        results.push({ id: op.id, ok: true, existed: r.existed, bytes: r.bytes });
+      } catch (err) {
+        results.push({
+          id: op.id,
+          ok: false,
+          error: `${op.kind} ${op.dst}: ${(err as Error).message}`.slice(0, 500)
+        });
+        break;
       }
     }
     return results;

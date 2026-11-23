@@ -14,6 +14,7 @@
  */
 import type Database from 'better-sqlite3';
 import { randomUUID } from 'crypto';
+import { statSync } from 'fs';
 import path from 'path';
 import { gunzipSync, gzipSync } from 'zlib';
 import { snapshotFile } from '../calibre/indexer';
@@ -196,6 +197,7 @@ export function proposalOptions(s: CleanupSettings, spelling?: SpellingLookup) {
 export class Stage2Analysis {
   private snapshot: Stage2Snapshot | null = null;
   private snapshotFor: string | null = null;
+  private current: { file: string; mtime: number; snap: Stage2Snapshot } | null = null;
   private spelling: SpellingLookup | null = null;
   private readPacer: Pacer | null = null;
   private readPacerBps = -1;
@@ -246,6 +248,27 @@ export class Stage2Analysis {
     attachMarks(this.deps.cleanup, libraryId, this.snapshot.books.values());
     this.snapshotFor = file;
     return this.snapshot;
+  }
+
+  /**
+   * The library as the reader's index has it now, read again whenever its snapshot file changes
+   * (the new arrivals' pass: books added since the analysis). The analysis' own snapshot stays
+   * as it was for the rest of its run.
+   */
+  currentSnapshot(libraryId: string): Stage2Snapshot {
+    const file = snapshotFile(this.deps.cacheDir, libraryId);
+    let mtime = 0;
+    try {
+      mtime = statSync(file).mtimeMs;
+    } catch {
+      mtime = 0;
+    }
+    if (this.current && this.current.file === file && this.current.mtime === mtime)
+      return this.current.snap;
+    const snap = readStage2Snapshot(file);
+    attachMarks(this.deps.cleanup, libraryId, snap.books.values());
+    this.current = { file, mtime, snap };
+    return snap;
   }
 
   /** One unit of work; true when finished (or failed). Never throws. */

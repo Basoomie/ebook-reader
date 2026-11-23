@@ -45,12 +45,14 @@ import {
 import type { SidecarConfig } from './config';
 import { CalibredbHelper } from './calibredb-helper';
 import { exists, Quarantine, sha256File } from './quarantine';
+import { ArrivalWorker } from './arrivals';
 
 /**
  * 1.1.0 (WP20e): stage 4 batches write fields as stage 2's do (series, series_index, comments).
  * 1.2.0 (WP20f): stage 5 batches write the tags the same way.
+ * 1.3.0 (WP20g): the import's add batches and their Undo (arrivals.ts).
  */
-export const SIDECAR_VERSION = '1.2.0';
+export const SIDECAR_VERSION = '1.3.0';
 
 /** The stages whose batches write fields per book (verify / written), not remove copies. */
 const fieldStage = (stage: number) => stage === 2 || stage === 4 || stage === 5;
@@ -158,6 +160,8 @@ export class Worker {
   readonly api: ServerApi;
   readonly calibredb: Calibredb;
   readonly quarantine: Quarantine;
+  /** WP20g: the import's add batches. */
+  readonly arrivals: ArrivalWorker;
   private readonly log: Logger;
   private stopped = false;
   private checks: CheckResult[] = [];
@@ -202,6 +206,16 @@ export class Worker {
           : null
       });
     this.quarantine = new Quarantine(c.quarantineDir);
+    this.arrivals = new ArrivalWorker({
+      api: this.api.arrivals,
+      calibredb: this.calibredb,
+      quarantine: this.quarantine,
+      tmpDir: c.arrivalTmpDir,
+      addWaitSeconds: c.removeWaitSeconds,
+      pollSeconds: c.waitPollSeconds,
+      isStopped: () => this.stopped,
+      log: this.log
+    });
     this.retryMinMs = opts.retryMinMs ?? 2000;
     this.retryMaxMs = opts.retryMaxMs ?? 60000;
   }
@@ -262,6 +276,9 @@ export class Worker {
     if (!this.login?.libraryId) return 'idle';
     const { batch, wait } = await this.retry(() => this.api.claim());
     if (!batch) {
+      // WP20g: the import's add batches when no cleanup batch is waiting.
+      const lib: Login = { ...this.login, libraryId: this.login.libraryId };
+      if (await this.retry(() => this.arrivals.cycle(lib))) return 'batch';
       if (wait) this.log.info(`No batch yet: ${wait}`);
       return 'idle';
     }

@@ -56,7 +56,16 @@ describe('calibredb arguments', () => {
       'trash_restore',
       'add',
     ] as const) {
-      const args = buildArgs(cmd, login, cmd === 'remove' || cmd === 'trash_restore' ? ['12'] : []);
+      const args = buildArgs(
+        cmd,
+        login,
+        cmd === 'remove' || cmd === 'trash_restore'
+          ? ['12']
+          : // WP20g: add takes exactly Undo's re-add form or one arrival EPUB.
+            cmd === 'add'
+            ? ['--duplicates', '--one-book-per-directory', '/quarantine/b/12']
+            : [],
+      );
       expect(args).toContain('--with-library');
       expect(args[args.indexOf('--with-library') + 1]).toBe('http://c:8081/#lib');
       expect(args[args.indexOf('--password') + 1]).toBe('<stdin>');

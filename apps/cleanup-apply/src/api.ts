@@ -7,6 +7,7 @@
 import fs from 'fs';
 import { Readable } from 'stream';
 import { pipeline } from 'stream/promises';
+import { arrivalApi } from './arrivals';
 
 export interface CalibreLogin {
   contentServerUrl: string;
@@ -154,6 +155,16 @@ export class ServerApi {
   ) {
     this.base = `${serverUrl.replace(/\/+$/, '')}/api/v1/cleanup-apply`;
   }
+
+  /** WP20g: the arrivals' add batches (arrivals.ts). */
+  readonly arrivals = arrivalApi(
+    (method, p, body) => this.call(method, p, body),
+    (p) =>
+      this.fetchImpl(`${this.base}${p}`, {
+        headers: { Authorization: `Bearer ${this.token}` },
+        signal: AbortSignal.timeout(Math.max(this.timeoutMs, 600_000))
+      })
+  );
 
   private async call<T>(method: string, path: string, body?: unknown): Promise<T> {
     const res = await this.fetchImpl(`${this.base}${path}`, {

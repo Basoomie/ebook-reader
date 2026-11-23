@@ -9,7 +9,7 @@
  * store bonus N.1, omnibus), which v3 leaves open. Edition kind stays with the rules.
  */
 import type Database from 'better-sqlite3';
-import { answerOf, combineE } from '../ai-decide/combine';
+import { answerOf, combineE, combineUpgrade, type UpgradeDesign } from '../ai-decide/combine';
 import type { FieldDecision, RulesValue } from '../ai-decide/types';
 import type { DecisionRow } from '../ai-decide/values';
 import { STAGE4_AI_FIELDS, type NumberValue, type SeriesValue } from './ai-prompt';
@@ -129,6 +129,69 @@ export function decideStage4Ai(
   return { ...out, amazonIsBook: pa === true && sa === true, invented };
 }
 
+/**
+ * WP20g: whether the stronger pair is asked about a book (the new arrivals' J; plan section 6:
+ * "Sonnet + Sol decide all open and flagged fields"): a field E flagged, or for J also a field
+ * the rules didn't settle (decided by both models, or by nobody). F asks only about flagged ones.
+ */
+export function stage4NeedsUpgrade(o: Stage4AiOutcome, design: UpgradeDesign): boolean {
+  return AI_FIELD_KEYS.some((f) => {
+    const x = o[f] as FieldOutcome<unknown>;
+    if (x.decision.flagged) return true;
+    return design === 'J' && x.decision.source !== 'rules';
+  });
+}
+
+/**
+ * WP20g: a book decided with F or J: E's pair (`cheap`) and the stronger pair (`strong`) per
+ * field through the framework's combineUpgrade, the never-invent check on every answer.
+ */
+export function decideStage4AiUpgrade(
+  design: UpgradeDesign,
+  d: Stage4Decision,
+  cheap: { primary: Answer; secondary: Answer },
+  strong: { primary: Answer; secondary: Answer },
+  evidenceText: string,
+): Stage4AiOutcome {
+  const rules = stage4RulesValues(d);
+  let invented = 0;
+  const one = <V>(key: keyof typeof STAGE4_AI_FIELDS, r: RulesValue<V>): FieldOutcome<V> => {
+    const field = STAGE4_AI_FIELDS[key] as unknown as Parameters<typeof answerOf<V>>[0];
+    const p = answerOf<V>(field, cheap.primary, evidenceText);
+    const s = answerOf<V>(field, cheap.secondary, evidenceText);
+    const sp = answerOf<V>(field, strong.primary, evidenceText);
+    const ss = answerOf<V>(field, strong.secondary, evidenceText);
+    invented += [p, s, sp, ss].filter((x) => x.invented).length;
+    return {
+      decision: combineUpgrade(
+        design,
+        field,
+        r,
+        { primary: p.value, secondary: s.value },
+        { primary: sp.value, secondary: ss.value },
+      ),
+      rules: r,
+      primary: p.value,
+      secondary: s.value,
+    };
+  };
+  const out = {
+    t: one('t', rules.t),
+    au: one('au', rules.au),
+    il: one('il', rules.il),
+    se: one('se', rules.se),
+    ix: one('ix', rules.ix),
+    fmt: one('fmt', rules.fmt),
+  };
+  const both = (a: Answer, b: Answer) =>
+    a?.amazon_is_this_book === true && b?.amazon_is_this_book === true;
+  return {
+    ...out,
+    amazonIsBook: both(cheap.primary, cheap.secondary) || both(strong.primary, strong.secondary),
+    invented,
+  };
+}
+
 /** The rows writeDecisions stores (one per field). */
 export function decisionRows(
   itemKey: string,
@@ -203,6 +266,19 @@ export function storedAiValues(
         flagged: !!r.flagged,
         reason: r.reason,
       };
+  }
+  return out;
+}
+
+/** WP20g: an outcome's values as storedAiValues would give them (the J gate scores them in memory). */
+export function outcomeValues(
+  o: Stage4AiOutcome,
+  asked: boolean,
+): Stage4AiValues & { asked: boolean } {
+  const out: Stage4AiValues & { asked: boolean } = { asked, amazonIsBook: o.amazonIsBook };
+  for (const f of AI_FIELD_KEYS) {
+    const d = (o[f] as FieldOutcome<unknown>).decision;
+    out[f] = { value: d.value, source: d.source, flagged: d.flagged, reason: d.reason };
   }
   return out;
 }
