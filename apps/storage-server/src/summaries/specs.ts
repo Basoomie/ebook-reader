@@ -273,11 +273,16 @@ export interface SupportEvidence {
 }
 export type Verdict = 'supported' | 'partly' | 'not_supported';
 
+const VERDICT_RULES = `Check every detail: who does what to whom, in what order, and how strongly (suspects or is sure, asks or orders, weakly or hard). supported: the text shows everything the claim says, every detail as the claim has it. partly: some of it isn't in the text you got (it may be elsewhere in the book), and nothing in the text says otherwise. not_supported: the text says otherwise about any detail, or shows none of it. Judge only from the text; don't use what you know about the book.`;
+
+// The checks have their own version since 2026-11-23 (c2: every detail checked; a claim only
+// partly shown by its passage is checked again against its whole chapter), so changing them asks
+// nothing before them again.
 export const SUPPORT_SPEC: AiStageSpec<SupportEvidence, ModelRole> = {
   stage: 'sum.support',
-  promptVersion: `${PROMPT_VERSION}.${EFFORT}`,
+  promptVersion: `${PROMPT_VERSION}.${EFFORT}.c2`,
   tasks: TASKS,
-  system: `For each claim about a book, you get a passage from that book. Does the passage support the claim? supported: the passage shows everything the claim says. partly: it shows some of it, and the rest is not in the passage. not_supported: the passage doesn't show it or says otherwise. Judge only from the passage; don't use what you know about the book.`,
+  system: `For each claim about a book, you get a passage from that book. Does the passage support the claim? ${VERDICT_RULES}`,
   userText: (e) =>
     `BOOK: ${e.title}\n\n${e.claims.map((c) => `CLAIM ${c.id}: ${c.text}\nPASSAGE:\n${c.passage}`).join('\n\n---\n\n')}`,
   schema: {
@@ -313,6 +318,34 @@ export const SUPPORT_SPEC: AiStageSpec<SupportEvidence, ModelRole> = {
       .map((v) => ({ id: v.id as string, verdict: v.verdict as Verdict }));
     return { verdicts };
   },
+  evidenceText: () => '',
+  onLimit: 'queue',
+  request: {
+    maxTokens: 32_000,
+    timeoutSeconds: 1200,
+    effort: EFFORT,
+    stream: true,
+    expectedOutputTokens: 4_000,
+  },
+};
+
+/** Claims the passage showed only partly: checked again against their whole chapter. */
+export interface ChapterSupportEvidence {
+  title: string;
+  chapter: { index: number; title: string; text: string };
+  claims: { id: string; text: string }[];
+}
+
+export const SUPPORT_CHAPTER_SPEC: AiStageSpec<ChapterSupportEvidence, ModelRole> = {
+  stage: 'sum.support-chapter',
+  promptVersion: `${PROMPT_VERSION}.${EFFORT}.c2`,
+  tasks: TASKS,
+  system: `You get one whole chapter of a book and claims about it. Does the chapter support each claim? What a claim says may be spread over the chapter. ${VERDICT_RULES}`,
+  userText: (e) =>
+    `BOOK: ${e.title}\n\n=== Chapter ${e.chapter.index}: ${e.chapter.title} ===\n${e.chapter.text}\n\nCLAIMS:\n${e.claims.map((c) => `CLAIM ${c.id}: ${c.text}`).join('\n')}`,
+  schema: SUPPORT_SPEC.schema,
+  schemaName: 'verdicts',
+  parseAnswer: SUPPORT_SPEC.parseAnswer,
   evidenceText: () => '',
   onLimit: 'queue',
   request: {
@@ -469,7 +502,9 @@ export function parseWrite(raw: unknown): Record<string, unknown> | null {
 
 export const WRITE_SPEC: AiStageSpec<WriteEvidence, ModelRole> = {
   stage: 'sum.write',
-  promptVersion: `${PROMPT_VERSION}.${EFFORT}`,
+  // The writing has its own version since 2026-11-23 (w3: turning points kept, where things end
+  // up, threads checked against later items), so changing it asks nothing before it again.
+  promptVersion: `${PROMPT_VERSION}.${EFFORT}.w3`,
   tasks: TASKS,
   system: `You write a book's summary for a reader who has read it and wants to remember it: when continuing the series after a long break, or when the book comes up in conversation. You get checked facts from the book (ITEMS, each with an id, its chapter and a quote). Write only from them.
 Sections (leave a section empty when it isn't relevant to this book; nonfiction gets what fits it):
@@ -479,6 +514,9 @@ Sections (leave a section empty when it isn't relevant to this book; nonfiction 
 - relationships: only relationships that matter (they drive the plot or the feeling of scenes). How the two are connected (family, classmates, living together, ...), how each sees the other, and how it changed in this book. Don't repeat what a character entry already says.
 - terms: words of this book's own world a reader must know (invented words, groups, organizations, companies, places, powers, rules of the story), and what they mean. Not ordinary words, not real-world things the book only mentions, not characters (a handle or alias goes into its owner's character entry).
 - threads: only questions, promises and dangers still open when the book ends: never something the book resolves, never a plain statement of fact. When it matters for later volumes, say who doesn't know a key fact (e.g. a character unaware of where something is).
+- Never leave out a turning point: a vow, a confession, a betrayal, a reveal of who someone really is or of what a character has found out. The last chapters often hold the book's biggest reveals (an epilogue, one character's monologue): they belong in chapters, and in the overview and threads when they change what a reader expects next.
+- Where the items show how something develops (suspects, then becomes sure; plans, then does it), say where it ends up in this book.
+- Before keeping a thread, check the later items: if one of them answers or resolves it, it isn't open.
 Each item cites the ids of the ITEMS it rests on (at least one) and says nothing they don't support. quote_from is the id (one of its cites) whose quote best shows the item, or "" for none; show_quote is true only where showing that quote helps the reader (it supports a surprising claim, adds context, or a character explains a term), not on every item.
 Write in the book's language. Use names exactly as the book writes them.
 ${COMMON_RULES}
@@ -676,6 +714,7 @@ export const ALL_SPECS = [
   EXTRACT_CHAPTER_SPEC,
   MATCH_SPEC,
   SUPPORT_SPEC,
+  SUPPORT_CHAPTER_SPEC,
   WRITE_SPEC,
   TRANSLATE_SPEC,
   CLAIMS_SPEC,

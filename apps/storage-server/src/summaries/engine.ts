@@ -16,6 +16,7 @@ import { bookTextFromScript, QuoteIndex, RubyIndex, type BookText } from './book
 import {
   applyTranslation,
   chapterEvidence,
+  chapterSupportEvidence,
   checkExtraction,
   checkWritten,
   cleanPairs,
@@ -35,6 +36,7 @@ import {
   EXTRACT_SPEC,
   MATCH_SPEC,
   MODELS,
+  SUPPORT_CHAPTER_SPEC,
   SUPPORT_SPEC,
   TRANSLATE_SPEC,
   WRITE_SPEC,
@@ -263,6 +265,7 @@ async function support(
   checker: ModelRole,
   label: string,
   refusals: RunReport['refusals'],
+  rechecked: Set<string> = new Set(),
 ): Promise<Map<string, Verdict>> {
   const out = new Map<string, Verdict>();
   const parts = supportEvidence(b.title, book, items);
@@ -276,6 +279,34 @@ async function support(
       if (a.state !== 'answered' || !a.answer) return;
       for (const v of (a.answer as { verdicts: { id: string; verdict: Verdict }[] }).verdicts)
         out.set(v.id, v.verdict);
+    }),
+  );
+  // A claim its passage showed only partly may rest on more of its chapter (2026-11-23: the
+  // tower vows and the final reveal were lost this way): checked again against the whole chapter.
+  const again = chapterSupportEvidence(
+    b.title,
+    book,
+    items.filter((x) => out.get(x.id) === 'partly'),
+  );
+  await Promise.all(
+    again.map(async (p) => {
+      const a = await ask(
+        d,
+        SUPPORT_CHAPTER_SPEC,
+        checker,
+        `${b.key}|${label}|${p.key}`,
+        p.evidence,
+      );
+      if (a.state === 'blocked') {
+        refusals.push({ stage: SUPPORT_CHAPTER_SPEC.stage, model: a.model });
+        return;
+      }
+      if (a.state !== 'answered' || !a.answer) return;
+      for (const v of (a.answer as { verdicts: { id: string; verdict: Verdict }[] }).verdicts)
+        if (out.get(v.id) === 'partly' && v.verdict === 'supported') {
+          out.set(v.id, 'supported');
+          rechecked.add(v.id);
+        }
     }),
   );
   return out;

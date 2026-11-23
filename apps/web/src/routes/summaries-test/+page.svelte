@@ -87,7 +87,7 @@
     try {
       overview = await api.overview();
       if (!book && booksDone().length) book = booksDone()[0];
-      if (!rounds().includes(scope)) scope = rounds().includes('v2') ? 'v2' : 'round1';
+      if (!rounds().includes(scope)) scope = rounds()[rounds().length - 1] ?? 'round1';
       judging = book ? await api.items(book, scope) : null;
       if (judging && !judging.runs.some((r) => r.id === runId)) runId = judging.runs[0]?.id ?? '';
     } catch (e) {
@@ -104,7 +104,14 @@
         .filter((r) => r.bookKey === book && r.state === 'done')
         .map((r) => r.round)
     );
-    return ['round1', 'v2'].filter((x) => set.has(x));
+    return [...set].sort((a, b) => roundOrder(a) - roundOrder(b));
+  }
+
+  function roundOrder(r: string): number {
+    return r === 'round1' ? 1 : Number(r.slice(1)) || 0;
+  }
+  function roundLabel(r: string): string {
+    return r === 'round1' ? 'First engine' : r === 'v2' ? 'Fixed engine' : `Engine ${r}`;
   }
 
   function remember() {
@@ -389,7 +396,7 @@
               class="c-chip"
               aria-pressed={scope === r}
               data-testid="st-round"
-              on:click={() => pickRound(r)}>{r === 'v2' ? 'Fixed engine' : 'First engine'}</button
+              on:click={() => pickRound(r)}>{roundLabel(r)}</button
             >
           {/each}
         </div>

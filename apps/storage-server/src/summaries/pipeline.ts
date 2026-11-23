@@ -15,6 +15,7 @@ import type { BookText, QuoteIndex, RubyIndex } from './book-text';
 import { cleanWritten, namesIn, passageAt } from './book-text';
 import type {
   ChapterEvidence,
+  ChapterSupportEvidence,
   ExtractAnswer,
   ExtractEvidence,
   MatchEvidence,
@@ -192,6 +193,30 @@ export function supportEvidence(
     }
   }
   return out;
+}
+
+/** Claims to check again against their whole chapter, one request per chapter (sorted, stable). */
+export function chapterSupportEvidence(
+  title: string,
+  book: BookText,
+  items: CheckedItem[],
+): { key: string; evidence: ChapterSupportEvidence }[] {
+  const byChapter = new Map<number, CheckedItem[]>();
+  for (const x of items) byChapter.set(x.chapter, [...(byChapter.get(x.chapter) ?? []), x]);
+  return [...byChapter.keys()]
+    .sort((a, b) => a - b)
+    .map((ch) => {
+      const c = book.chapters[ch];
+      const list = [...byChapter.get(ch)!].sort((x, y) => cmp(x.id, y.id));
+      return {
+        key: `ch${ch}`,
+        evidence: {
+          title,
+          chapter: { index: c.index, title: c.title, text: c.text },
+          claims: list.map((x) => ({ id: x.id, text: x.text })),
+        },
+      };
+    });
 }
 
 export interface CrossCheck {

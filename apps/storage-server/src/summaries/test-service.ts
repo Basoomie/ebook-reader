@@ -40,8 +40,8 @@ export const SETUP_LABELS: Record<SetupId, string> = {
 };
 /** The order setups are listed in. */
 const SETUP_ORDER: SetupId[] = ['two', 'mixed', 'opus', 'local'];
-/** Rounds whose runs are judged on their own (others: every run of the book). */
-const ROUNDS = ['round1', 'v2'];
+/** Rounds whose runs are judged on their own: round1, v2, v3, … (others: every run of the book). */
+const isRound = (scope: string) => /^(round1|v\d+)$/.test(scope);
 /** Spot checks per summary: items Claude found right that the user marks too. */
 export const SPOT_CHECKS = 10;
 export type TabGrade = 'best' | 'good' | 'weak';
@@ -837,9 +837,7 @@ export class SummaryTestService {
   itemJudging(bookKey: string, scope = 'round1') {
     const runs = this.runs().filter(
       (r) =>
-        r.bookKey === bookKey &&
-        r.state === 'done' &&
-        (ROUNDS.includes(scope) ? r.round === scope : true),
+        r.bookKey === bookKey && r.state === 'done' && (isRound(scope) ? r.round === scope : true),
     );
     const marksOf = this.db.prepare('SELECT ref, mark FROM test_item_marks WHERE run_id = ?');
     const copiesOf = this.db.prepare('SELECT ref, from_run FROM test_item_copies WHERE run_id = ?');

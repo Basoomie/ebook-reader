@@ -439,6 +439,7 @@ interface Log {
 function standIn(
   log: Log,
   refuse: { model?: string; schema?: string } = {},
+  partly: string[] = [],
 ): (p: 'anthropic' | 'openai') => ProviderClient {
   const answer = (input: CallInput): unknown => {
     const name = input.schema?.name ?? '';
@@ -507,7 +508,14 @@ function standIn(
     }
     if (name === 'verdicts') {
       const ids = [...u.matchAll(/^CLAIM (\S+):/gm)].map((m) => m[1]);
-      return { verdicts: ids.map((id) => ({ id, verdict: 'supported' })) };
+      // A passage shows the claims in `partly` only in part; their whole chapter shows them.
+      const whole = u.includes('\nCLAIMS:\n');
+      return {
+        verdicts: ids.map((id) => ({
+          id,
+          verdict: !whole && partly.includes(id) ? 'partly' : 'supported',
+        })),
+      };
     }
     if (name === 'summary') {
       const ids = [...u.matchAll(/^(\S+) \[ch (\d+)/gm)].map((m) => ({
@@ -597,11 +605,11 @@ function standIn(
 
 function env(
   log: Log,
-  opts: { refuse?: { model?: string; schema?: string }; limit?: number } = {},
+  opts: { refuse?: { model?: string; schema?: string }; limit?: number; partly?: string[] } = {},
 ) {
   const { core } = makeAiCore({
     keys: { read: () => 'key' },
-    providers: standIn(log, opts.refuse),
+    providers: standIn(log, opts.refuse, opts.partly),
   });
   core.registerFeature('summaries', 'Book summaries');
   core.updateSettings({
@@ -1107,6 +1115,18 @@ describe('the fixed engine', () => {
       { ref: 'char0', heading: 'Mikado Ryūgamine', text: 'A boy.' },
     ]);
     expect(t.summary.sections[1].groups[0].items[0].ruby).toBeUndefined();
+  });
+
+  it('a claim its passage shows only partly is checked against its whole chapter and kept', async () => {
+    const log: Log = { calls: [] };
+    const { runner } = env(log, { partly: ['sol:0:1'] });
+    const pump = pumpOf(runner);
+    const { report } = await runCloudSetup({ runner, pump, runId: 'r1' }, INPUT, 'two');
+    const checks = log.calls.filter((c) => c.schema === 'verdicts');
+    expect(checks).toHaveLength(2);
+    expect(checks[1].user).toContain('=== Chapter 0: 第一章　出会い ===');
+    expect(checks[1].user).toContain('CLAIM sol:0:1:');
+    expect(report.cross).toMatchObject({ checked: 1, supported: 1, partly: 0 });
   });
 
   it('the mixed setup reuses the two models’ finding and checking, and Opus writes', async () => {
