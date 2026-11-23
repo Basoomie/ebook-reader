@@ -84,7 +84,7 @@ Stop condition: each work package is finished on its own branch, with a summary 
 
 ## Standing rules
 
-- Never write into or near Calibre-managed ebook folders. Calibre libraries are read-only to this app: the storage server and the web app never write to them. The only writer is the cleanup apply sidecar (`ttsu-cleanup-apply`), only through the running Calibre content server via `calibredb --with-library http://…`, and only for applied cleanup batches (decided by the user for the Phase 6 cleanup, 2026-11-13).
+- Never write into or near Calibre-managed ebook folders. Calibre libraries are read-only to this app: the storage server and the web app never write to them. The only writer is the cleanup apply sidecar (`ttsu-cleanup-apply`), only through the running Calibre content server via `calibredb --with-library http://…`, and only for cleanup batches and the user's edits from the reader (decided by the user for the Phase 6 cleanup, 2026-11-13; the user's edits added with Calibre metadata editing, 2026-11-23).
 - Preserve whispersync's match/re-match/reset semantics; do not "improve" them.
 - Keep audio out of the replicator.
 - The app is served over plain http (HTTPS deferred). Feature-detect every secure-context API (service worker, `navigator.storage` persist/estimate, Web Locks, `crypto.randomUUID`, Clipboard API) and degrade gracefully; it must switch on automatically when `isSecureContext` is true.
