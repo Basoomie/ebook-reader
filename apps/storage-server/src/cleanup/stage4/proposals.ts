@@ -28,8 +28,10 @@ import {
   NAME_MAX_BYTES,
   calibreNameBytes,
   isProcessed,
+  LONG_AUTHOR_REASON,
   type SpellingLookup,
 } from '../stage2-rules';
+import { fitTitle, type TitleFit } from '../title-fit';
 import type { Stage2Book } from '../stage2-snapshot';
 import { sameTime } from '../stage2-batches';
 import { chooseDescription, cleanDescription, type RemovedLine } from './desc';
@@ -423,13 +425,29 @@ export function proposeStage4(input: ProposalInput): Stage4Proposal[] {
     .map((a) => spell('author', normalizeName(a)))
     .filter((a) => a !== '');
   const firstAuthor = authors[0] ?? book.authors[0] ?? 'Unknown';
-  const tooLong =
-    calibreNameBytes(book.calibreId, title ?? book.title, firstAuthor) > NAME_MAX_BYTES;
+  // Calibre's names too long for the disk (lessons 2): the title is fitted (cleaned, shortened or
+  // cut; title-fit.ts), only when too long (user, 2026-11-22). A first author too long on its own
+  // is bad data: review, as before.
+  const tooLong = calibreNameBytes(book.calibreId, '', firstAuthor) > NAME_MAX_BYTES;
+  const fitOf = (t: string) =>
+    tooLong
+      ? null
+      : fitTitle(t, {
+          calibreId: book.calibreId,
+          firstAuthor,
+          authors: [...new Set([...authors, ...book.authors])],
+        });
+  const titleFit = title ? fitOf(title) : null;
+  const fitted = titleFit && titleFit.step !== 'none' ? titleFit.title : title;
+  const fitNote = (f: TitleFit | null, from: string) =>
+    f && f.step !== 'none' && f.step !== 'author_too_long'
+      ? { fit: { from, step: f.step, rules: f.rules } }
+      : {};
 
-  if (title && (N(title) !== N(book.title) || title !== book.title)) {
+  if (title && fitted && (N(fitted) !== N(book.title) || fitted !== book.title)) {
     let cls: 'auto' | 'review' = ft.auto ? 'auto' : 'review';
     let reason = ft.reason;
-    if (tooLong) {
+    if (tooLong && calibreNameBytes(book.calibreId, title, firstAuthor) > NAME_MAX_BYTES) {
       cls = 'review';
       reason = "Too long for a folder name in Calibre's library";
     }
@@ -446,20 +464,44 @@ export function proposeStage4(input: ProposalInput): Stage4Proposal[] {
     const titleProposal: Stage4Proposal = {
       field: 'title',
       old: book.title,
-      new: title,
+      new: fitted,
       class: cls,
       source: soTitle ? 'series-order' : srcOf(ft, ft.auto && !ft.unconfirmed ? src : 'file'),
       reason,
     };
+    const withFit = (x: Stage4Proposal): Stage4Proposal =>
+      titleFit && titleFit.step !== 'none'
+        ? { ...x, evidence: { ...(x.evidence ?? {}), ...fitNote(titleFit, title) } }
+        : x;
     push(
-      soTitle
-        ? {
-            ...titleProposal,
-            evidence: { seriesOrder: { title: input.seriesOrder?.titleFrom ?? null } },
-          }
-        : withAi(titleProposal, ft),
+      withFit(
+        soTitle
+          ? {
+              ...titleProposal,
+              evidence: { seriesOrder: { title: input.seriesOrder?.titleFrom ?? null } },
+            }
+          : withAi(titleProposal, ft),
+      ),
       book.title,
     );
+  } else {
+    // No title change, but Calibre's own title makes names the disk refuses (with the first author
+    // decided here): Calibre's title fitted, so the book's other fields can be written at all.
+    const own = fitOf(book.title);
+    if (own && own.step !== 'none' && own.title !== book.title) {
+      push(
+        {
+          field: 'title',
+          old: book.title,
+          new: own.title,
+          class: 'auto',
+          source: 'title-fit',
+          reason: null,
+          evidence: fitNote(own, book.title),
+        },
+        book.title,
+      );
+    }
   }
 
   // The authors Calibre holds after the write: the decided ones only when written automatically.
@@ -472,7 +514,7 @@ export function proposeStage4(input: ProposalInput): Stage4Proposal[] {
       reason = 'A name holds "&", which Calibre splits into two names';
     } else if (tooLong) {
       cls = 'review';
-      reason = "Too long for a folder name in Calibre's library";
+      reason = LONG_AUTHOR_REASON;
     } else if (authors.some((a) => COMPANY.test(a))) {
       cls = 'review';
       reason = "A company's name, not a person's";

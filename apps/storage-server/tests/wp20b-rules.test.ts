@@ -389,9 +389,12 @@ describe('titles Calibre would turn into bad folder names (NAS run 2026-11-14)',
   const series =
     '恋した人は、妹の代わりに死んでくれと言った。―妹と結婚した片思い相手がなぜ今さら私のもとに？と思ったら―';
 
-  it('a file title that says itself twice (series name added) goes to review', () => {
+  it('a file title that says itself twice (series name added) and fits goes to review', () => {
+    // (The long one, 288 bytes at 8260, is fitted instead: the next tests.)
+    expect(
+      repeatsItself(cleanTitle(`${longVolume}【電子書籍限定書き下ろしSS付き】 ${series}`)),
+    ).toBe(true);
     for (const t of [
-      `${longVolume}【電子書籍限定書き下ろしSS付き】 ${series}`,
       '怪盗探偵山猫 「怪盗探偵山猫」シリーズ',
       'Another エピソードS（角川文庫版） Another',
       'おしかけメイド隊2 おしかけメイド隊シリーズ',
@@ -419,40 +422,69 @@ describe('titles Calibre would turn into bad folder names (NAS run 2026-11-14)',
     expect(calibreNameBytes(1, 'A'.repeat(300), 'B')).toBe(100);
   });
 
-  it('a title change whose folder name the disk would refuse goes to review; the other fields go on', () => {
-    // A genuinely long title (no repeat): too long once Japanese characters are kept.
+  it('a title change too long for the disk is fitted, not sent to review (2026-11-22)', () => {
+    // A genuinely long title (no repeat): too long once Japanese characters are kept, so it is
+    // cut to fit, with "…"; the other fields go on.
     const long = 'あ'.repeat(90);
     const p = proposeStage2(
       cal(),
       file({ title: long, creators: [{ name: '著者', role: 'aut' }], publishers: ['出版社'] }),
       { calibreId: 12345 },
     );
-    expect(byField(p, 'title')).toMatchObject([{ class: 'review' }]);
-    expect(byField(p, 'title')[0].reason).toContain('Too long for a folder name');
-    // Without the title the folder name fits, so the author still goes in automatically.
+    const [t] = byField(p, 'title');
+    expect(t).toMatchObject({ class: 'auto', fit: { from: long, step: 'cut' } });
+    expect((t.new as string).endsWith('…')).toBe(true);
+    expect(calibreNameBytes(12345, t.new as string, '著者')).toBeLessThanOrEqual(NAME_MAX_BYTES);
     expect(byField(p, 'authors')).toMatchObject([{ class: 'auto', new: ['著者'] }]);
     expect(byField(p, 'publisher')).toMatchObject([{ class: 'auto' }]);
-    // A short one is fine.
-    expect(
-      byField(
-        proposeStage2(cal(), file({ title: 'あ'.repeat(60) }), { calibreId: 12345 }),
-        'title',
-      ),
-    ).toMatchObject([{ class: 'auto' }]);
+    // A title that fits is never touched.
+    const [short] = byField(
+      proposeStage2(cal(), file({ title: 'あ'.repeat(60) }), { calibreId: 12345 }),
+      'title',
+    );
+    expect(short).toMatchObject({ class: 'auto', new: 'あ'.repeat(60) });
+    expect(short.fit).toBeUndefined();
   });
 
-  it("an author change that would move a too-long Calibre title's folder goes to review", () => {
+  it("an author change with a too-long Calibre title: Calibre's own title is fitted, the author goes in", () => {
     const c = cal({ title: 'い'.repeat(95), authors: ['Unknown'] });
     const p = proposeStage2(
       c,
       file({ title: 'い'.repeat(95), creators: [{ name: '著者', role: 'aut' }] }),
+      { calibreId: 7 },
+    );
+    const [t] = byField(p, 'title');
+    expect(t).toMatchObject({ class: 'auto', source: 'normalize', fit: { step: 'cut' } });
+    expect(calibreNameBytes(7, t.new as string, '著者')).toBeLessThanOrEqual(NAME_MAX_BYTES);
+    expect(byField(p, 'authors')).toMatchObject([{ class: 'auto', new: ['著者'] }]);
+  });
+
+  it('a title said twice that is too long is fitted (the repeat removed); one that fits stays in review', () => {
+    const vol =
+      '恋した人は、妹の代わりに死んでくれと言った。2―妹と結婚した片思い相手がなぜ今さら私のもとに？と思ったら―';
+    const ser =
+      '恋した人は、妹の代わりに死んでくれと言った。―妹と結婚した片思い相手がなぜ今さら私のもとに？と思ったら―';
+    const p = proposeStage2(
+      cal(),
+      file({ title: `${vol}【電子書籍限定書き下ろしSS付き】 ${ser}` }),
       {
-        calibreId: 7,
+        calibreId: 8260,
       },
     );
-    expect(byField(p, 'title')).toEqual([]);
+    expect(byField(p, 'title')).toMatchObject([{ class: 'auto', new: vol, reason: null }]);
+    const q = proposeStage2(cal(), file({ title: 'HAPPINESS HAPPINESS 3' }), { calibreId: 8260 });
+    expect(byField(q, 'title')).toMatchObject([{ class: 'review', new: 'HAPPINESS HAPPINESS 3' }]);
+  });
+
+  it('a first author too long on its own stays in review (bad data, 38199)', () => {
+    const author = 'ハルヒと出会ってから俺はすっかり忘れた言葉だが'.repeat(6);
+    const p = proposeStage2(
+      cal({ authors: ['Unknown'] }),
+      file({ title: '涼宮ハルヒの退屈', creators: [{ name: author, role: 'aut' }] }),
+      { calibreId: 38199 },
+    );
     expect(byField(p, 'authors')).toMatchObject([{ class: 'review' }]);
-    expect(byField(p, 'authors')[0].reason).toContain('Too long for a folder name');
+    expect(byField(p, 'title')).toMatchObject([{ class: 'auto', new: '涼宮ハルヒの退屈' }]);
   });
 });
 
