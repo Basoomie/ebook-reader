@@ -33,6 +33,11 @@ function getCache(): SummaryCache {
   return cache;
 }
 
+/** The summaries' API on the library server, or null when this device isn't connected. */
+export async function summaryApi(timeoutSeconds?: number): Promise<SummaryApi | null> {
+  return api(timeoutSeconds);
+}
+
 async function api(timeoutSeconds?: number): Promise<SummaryApi | null> {
   const c = await getLibraryStore().getConnection();
   if (!c) return null;

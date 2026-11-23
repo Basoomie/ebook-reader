@@ -131,6 +131,15 @@ export const SETTINGS_SECTIONS: CatalogSection[] = [
     title: 'Book page',
     description: 'This device only.'
   },
+  // Book summaries session 4: after Book page.
+  {
+    id: 'library-summaries',
+    tab: 'Library',
+    jp: 'あらすじ',
+    title: 'Summaries',
+    description: 'The summary on a book’s page.',
+    keywords: 'summary summaries recap ai'
+  },
   {
     id: 'library-links',
     tab: 'Library',
@@ -898,6 +907,44 @@ export const SETTINGS_CATALOG: CatalogSetting[] = [
     title: 'Ask before downloads larger than',
     description: '0: never ask.',
     keywords: 'size confirm gb warning'
+  },
+  // Library › Summaries (book summaries session 4)
+  {
+    id: 'summary-languages',
+    section: 'library-summaries',
+    title: 'Summary languages',
+    description:
+      'A button for each on a book’s summary, beside its own language. A language is translated the first time you choose it, then kept for offline reading.',
+    keywords: 'language translation translate english japanese'
+  },
+  {
+    id: 'summary-spoiler-blur',
+    section: 'library-summaries',
+    title: 'Spoiler blur',
+    description: 'A blurred summary shows only part of its overview until you tap Show summary.',
+    keywords: 'spoiler spoilers blur hide hidden completed'
+  },
+  {
+    id: 'summary-character-layout',
+    section: 'library-summaries',
+    title: 'Characters',
+    description: 'This device only: how the Characters tab shows the characters.',
+    keywords: 'characters layout list cards carousel'
+  },
+  {
+    id: 'summary-relationship-layout',
+    section: 'library-summaries',
+    title: 'Relationships',
+    description: 'This device only: a list, or a diagram of who is tied to whom.',
+    keywords: 'relationships layout list diagram'
+  },
+  {
+    id: 'summary-models',
+    section: 'library-summaries',
+    title: 'Models',
+    description:
+      'Which AI models make summaries, in fallback order: the first setup that works makes it. Kept on the library server.',
+    keywords: 'ai model models fallback order sonnet opus sol translator setup'
   },
   // Library › Book page: the links (calibre-metadata-display.md)
   {

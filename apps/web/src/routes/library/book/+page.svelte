@@ -33,6 +33,7 @@
   import AppHeader from '$lib/components/app-nav/app-header.svelte';
   import AddToCollectionDialog from '$lib/components/collections/add-to-collection-dialog.svelte';
   import AudioLinkSection from '$lib/components/audio/audio-link-section.svelte';
+  import SummarySection from '$lib/components/summaries/summary-section.svelte';
   import BookDownloadMenu from '$lib/components/library/book-download-menu.svelte';
   import BookLinks from '$lib/components/library/book-links.svelte';
   import BookIllustrations from '$lib/components/library/book-illustrations.svelte';
@@ -926,6 +927,8 @@
         coverThumb={thumb(book)}
       />
     {/if}
+
+    <SummarySection book={shown ?? book} status={state?.status} {offline} />
 
     {#if api}
       <AudioLinkSection
