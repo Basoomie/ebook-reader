@@ -15,7 +15,11 @@ import { Calibredb, buildArgs } from '../../cleanup-apply/src/calibredb';
 import { CalibredbHelper } from '../../cleanup-apply/src/calibredb-helper';
 import type { SidecarConfig } from '../../cleanup-apply/src/config';
 import { mayStillHappen, StepTimes, Worker, writeKind } from '../../cleanup-apply/src/worker';
-import { PROPOSED_TWICE_REASON, TWO_VALUES_REASON } from '../src/cleanup/stage2-batches';
+import {
+  PROPOSED_TWICE_REASON,
+  SPLIT_WORD_REASON,
+  TWO_VALUES_REASON,
+} from '../src/cleanup/stage2-batches';
 import { listFieldPauses } from '../src/cleanup/stage2-gate';
 import { getStage } from '../src/cleanup/stages';
 import { fingerprint, makeJpeg } from './helpers/calibre-fixture';
@@ -820,6 +824,66 @@ describe('stage 2: metadata and covers from the files', () => {
       .get(row.id) as { class: string; review_reason: string; state: string };
     expect(after).toMatchObject({ class: 'review', state: 'proposed' });
     expect(after.review_reason).toContain('Calibre splits');
+  });
+
+  it('an author change Calibre would split at "and" goes to review when the batch is planned (29728)', async () => {
+    await setMode('analyse');
+    const row = env.cleanupDb
+      .prepare(
+        `SELECT id FROM proposed_changes WHERE stage = 2 AND field = 'authors' AND class = 'auto' LIMIT 1`,
+      )
+      .get() as { id: number };
+    env.cleanupDb
+      .prepare('UPDATE proposed_changes SET new_json = ? WHERE id = ?')
+      .run(JSON.stringify(['Tôwa and Huuka Kazabana']), row.id);
+    await setMode('on');
+    await worker().cycle();
+    await env.service.tick();
+    const after = env.cleanupDb
+      .prepare('SELECT class, review_reason, state FROM proposed_changes WHERE id = ?')
+      .get(row.id) as { class: string; review_reason: string; state: string };
+    expect(after).toMatchObject({ class: 'review', state: 'proposed' });
+    expect(after.review_reason).toBe(SPLIT_WORD_REASON);
+  });
+
+  it("running the analysis again keeps a new-arrivals run's own proposals (arrivals:<run>)", async () => {
+    await setMode('analyse');
+    const lib = env.libraryId();
+    const insert = env.cleanupDb.prepare(
+      `INSERT INTO proposed_changes (stage, library_id, calibre_id, calibre_uuid, field, old_json, new_json,
+         source, evidence_json, class, review_reason, state, analysis_id, created_at, updated_at)
+       VALUES (2, ?, ?, 'arrival-uuid', 'title', '"a"', '"b"', 'file', '{}', ?, ?, ?, 'arrivals:run-1', 1, 1)`,
+    );
+    const held = Number(
+      insert.run(lib, 900001, 'auto', 'Held: the field is paused', 'skipped').lastInsertRowid,
+    );
+    const open = Number(
+      insert.run(lib, 900002, 'review', 'A review item', 'proposed').lastInsertRowid,
+    );
+    env.service.reanalyse(2);
+    for (let i = 0; i < 300 && getStage(env.cleanupDb, 2).state !== 'ready'; i++) {
+      await env.service.tick();
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    expect(getStage(env.cleanupDb, 2).state).toBe('ready');
+    const rows = env.cleanupDb
+      .prepare(
+        'SELECT id, state, review_reason FROM proposed_changes WHERE id IN (?, ?) ORDER BY id',
+      )
+      .all(held, open);
+    expect(rows).toEqual([
+      { id: held, state: 'skipped', review_reason: 'Held: the field is paused' },
+      { id: open, state: 'proposed', review_reason: 'A review item' },
+    ]);
+    // The library's own undecided proposals were replaced by the new analysis.
+    const analysisId = getStage(env.cleanupDb, 2).progress.analysisId as string;
+    const stale = env.cleanupDb
+      .prepare(
+        `SELECT COUNT(*) AS n FROM proposed_changes WHERE stage = 2 AND state = 'proposed'
+           AND decided_by IS NULL AND analysis_id <> ? AND analysis_id NOT LIKE 'arrivals:%'`,
+      )
+      .get(analysisId) as { n: number };
+    expect(stale.n).toBe(0);
   });
 
   it('a slow metadata.db copy answers "being made" in time and is never made twice for one batch', async () => {

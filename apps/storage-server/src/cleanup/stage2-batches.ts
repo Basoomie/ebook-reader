@@ -36,6 +36,7 @@ import { illustratorIsNames, readStage2Snapshot, type Stage2Book } from './stage
 import { readStage4Extras, type Stage4Extras } from './stage4/snapshot4';
 import { LONG_AUTHOR_REASON, NAME_MAX_BYTES, calibreNameBytes } from './stage2-rules';
 import { fitTitle } from './title-fit';
+import { CALIBRE_AUTHOR_WORDS } from './calibre-names';
 import { currentAnalysisId, pauseStage } from './stages';
 import { EDIT_STAGE } from './field-stages';
 import { aiYoursAfterWrite } from './edits/yours';
@@ -433,6 +434,8 @@ async function folderExists(dir: string): Promise<boolean> {
 export const NO_FOLDER_REASON =
   "The book has no folder in Calibre's library (a record without files)";
 export const SPLIT_NAME_REASON = 'A name contains &, which Calibre splits into two names';
+export const SPLIT_WORD_REASON =
+  'A name contains "and" or "with", which Calibre splits into two names';
 export const LONG_NAME_REASON = "Too long for a folder name in Calibre's library";
 export const PROPOSED_TWICE_REASON = 'The same change was proposed twice; it is written once';
 export const TWO_VALUES_REASON =
@@ -517,11 +520,15 @@ export class Stage2Batches {
    * never shows and the book fails). Such author or illustrator changes go to review.
    */
   private reviewSplitNames(libraryId: string, now = Date.now()): void {
+    // " and " / " with " too (calibre's string_to_authors), but not in your own edits: what you
+    // typed is yours (the editor handles its names itself).
+    const words = this.stage !== EDIT_STAGE;
     const rows = this.db
       .prepare(
         `SELECT id, new_json FROM proposed_changes
          WHERE stage = ${this.stage} AND library_id = ? AND state = 'proposed' AND class = 'auto'
-           AND field IN ('authors', 'illustrator') AND new_json LIKE '%&%'`,
+           AND field IN ('authors', 'illustrator')
+           AND (new_json LIKE '%&%'${words ? " OR new_json LIKE '%and%' OR new_json LIKE '%with%'" : ''})`,
       )
       .all(libraryId) as { id: number; new_json: string }[];
     const mark = this.db.prepare(
@@ -529,9 +536,11 @@ export class Stage2Batches {
     );
     for (const r of rows) {
       const v = JSON.parse(r.new_json) as unknown;
-      if (Array.isArray(v) && v.some((n) => typeof n === 'string' && n.includes('&'))) {
-        mark.run(SPLIT_NAME_REASON, now, r.id);
-      }
+      if (!Array.isArray(v)) continue;
+      const names = v.filter((n): n is string => typeof n === 'string');
+      if (names.some((n) => n.includes('&'))) mark.run(SPLIT_NAME_REASON, now, r.id);
+      else if (words && names.some((n) => CALIBRE_AUTHOR_WORDS.test(n)))
+        mark.run(SPLIT_WORD_REASON, now, r.id);
     }
   }
 

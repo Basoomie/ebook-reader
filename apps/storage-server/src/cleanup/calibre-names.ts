@@ -32,3 +32,17 @@ export function calibreNameBytes(calibreId: number, title: string, firstAuthor: 
   const file = `${cut(title.trimStart(), l2).trimEnd()} - ${cut(firstAuthor, l2)}.original_epub`;
   return Math.max(bytes(folder), bytes(authorFolder), bytes(file));
 }
+
+/**
+ * Whether Calibre would split this one name into several authors (or #illustrator names).
+ * calibre 9.18's `string_to_authors` splits on "&" and turns ",? and " / ",? with " (any case,
+ * any whitespace, full-width too) into "&" first: "Tôwa and Huuka Kazabana" becomes two names
+ * (checked on calibre 9.18, 2026-11-23; stage 2's write of book 29728 then never showed).
+ * "A, B", "Rand Paul", "Withers" and a full-width "＆" stay one name.
+ */
+export function calibreSplitsName(name: string): boolean {
+  return name.includes('&') || CALIBRE_AUTHOR_WORDS.test(name);
+}
+
+/** calibre's `_author_pat` (ebooks/metadata/__init__.py), as JavaScript. */
+export const CALIBRE_AUTHOR_WORDS = /,?\s+(?:and|with)\s+/iu;

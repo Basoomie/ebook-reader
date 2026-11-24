@@ -19,7 +19,7 @@ import {
   repeatsItself,
   titleSort,
 } from './title-rules';
-import { NAME_MAX_BYTES, calibreNameBytes } from './calibre-names';
+import { CALIBRE_AUTHOR_WORDS, NAME_MAX_BYTES, calibreNameBytes } from './calibre-names';
 import { fitTitle } from './title-fit';
 
 export { NAME_MAX_BYTES, calibreNameBytes };
@@ -316,6 +316,10 @@ function authorProposals(
   // Seen in the dry run (326 books, 1 of 5 labeled right): author and illustrator in one
   // creator, "あずみ圭/マツモトミツアキ", "原作:志倉千代丸/MAGES./Nitroplus".
   else if (/[/／、，,＆]/u.test(first)) fileProblem = "The file's author holds more than one name";
+  // Calibre turns " and " / " with " into two authors (29728 "Tôwa and Huuka Kazabana": the
+  // author and the illustrator in one creator; the write then never showed).
+  else if (CALIBRE_AUTHOR_WORDS.test(first))
+    fileProblem = `The file's author holds more than one name ("and" or "with", which Calibre splits)`;
 
   if (first === undefined) {
     normalizeOwn();

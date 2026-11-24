@@ -19,7 +19,7 @@ import path from 'path';
 import { gunzipSync, gzipSync } from 'zlib';
 import { snapshotFile } from '../calibre/indexer';
 import { getLibrary } from '../calibre/libraries';
-import { resolveInside, statFile } from '../calibre/source-fs';
+import { resolveInside, statFile, type SourceStat } from '../calibre/source-fs';
 import { calibreCoverFacts, readFileMetadata } from './file-metadata';
 import { getSettings, type CleanupSettings } from './settings';
 import { Pacer } from './stage1';
@@ -184,6 +184,11 @@ export interface Stage2Deps {
   /** DB_DIR (for the default labels file). */
   dbDir?: string | null;
   log?: (m: string) => void;
+  /**
+   * How a book's EPUB and cover.jpg are looked at (default: a read-only stat on the share). The
+   * tier-4 copy run passes a file listing made on the NAS instead of 52,000 stats over SMB.
+   */
+  stat?: (file: string) => Promise<SourceStat | null>;
 }
 
 export function proposalOptions(s: CleanupSettings, spelling?: SpellingLookup) {
@@ -313,9 +318,10 @@ export class Stage2Analysis {
   ): Promise<{ ev: FileEvidence | null; read: boolean }> {
     if (!book.filePath) return { ev: null, read: false };
     const epub = resolveInside(libDir, book.filePath);
-    const st = await statFile(epub);
+    const stat = this.deps.stat ?? statFile;
+    const st = await stat(epub);
     const coverFile = resolveInside(libDir, `${book.path}/cover.jpg`);
-    const coverSt = book.hasCover ? await statFile(coverFile) : null;
+    const coverSt = book.hasCover ? await stat(coverFile) : null;
     const old = loadEvidence(this.deps.cleanup, libraryId, book.uuid);
     const sameFile =
       old !== null &&
@@ -466,14 +472,17 @@ export class Stage2Analysis {
     if (p.proposeCursor === 0) {
       db.transaction(() => {
         // Proposals never queued (or skipped without reaching a batch) are replaced; review
-        // items the user already decided stay as they are.
+        // items the user already decided stay as they are. A new-arrivals run's own proposals
+        // (arrivals:<run>, e.g. a field its gate held) are that run's, never the library's.
         db.prepare(
           `DELETE FROM proposed_changes WHERE stage = 2 AND library_id = ? AND decided_by IS NULL
-             AND state IN ('proposed', 'skipped') AND id NOT IN (SELECT change_id FROM batch_items)`,
+             AND state IN ('proposed', 'skipped') AND id NOT IN (SELECT change_id FROM batch_items)
+             AND analysis_id NOT LIKE 'arrivals:%'`,
         ).run(p.libraryId);
         db.prepare(
           `UPDATE proposed_changes SET state = 'skipped', review_reason = 'Replaced by a new analysis',
-             updated_at = ? WHERE stage = 2 AND library_id = ? AND state = 'proposed' AND decided_by IS NULL`,
+             updated_at = ? WHERE stage = 2 AND library_id = ? AND state = 'proposed' AND decided_by IS NULL
+             AND analysis_id NOT LIKE 'arrivals:%'`,
         ).run(now, p.libraryId);
       })();
       this.spelling = spellingLookup(snap.names);

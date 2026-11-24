@@ -27,6 +27,7 @@ import {
   titleGroup,
 } from '../src/cleanup/stage2-rules';
 import { spellingLookup } from '../src/cleanup/stage2-snapshot';
+import { calibreSplitsName } from '../src/cleanup/calibre-names';
 
 const FW_SPACE = String.fromCharCode(0x3000);
 
@@ -509,5 +510,31 @@ describe('names Calibre would split (NAS run 2026-11-15)', () => {
     );
     expect(byField(p, 'authors')).toMatchObject([{ class: 'review' }]);
     expect(byField(p, 'authors')[0].reason).toContain('more than one name');
+  });
+
+  it('a file author Calibre splits at "and" / "with" goes to review (29728, calibre 9.18)', () => {
+    // calibre's string_to_authors: "Tôwa and Huuka Kazabana" -> ["Tôwa", "Huuka Kazabana"].
+    for (const name of [
+      'Tôwa and Huuka Kazabana',
+      'Usata Nonohara AND Ox',
+      'A with B',
+      'A, and B',
+    ]) {
+      const p = proposeStage2(cal(), file({ creators: [{ name, role: 'aut' }] }));
+      expect(byField(p, 'authors'), name).toMatchObject([{ class: 'review' }]);
+      expect(byField(p, 'authors')[0].reason).toContain('more than one name');
+    }
+    // One name to Calibre: written as before.
+    for (const name of ['Rand Paul', 'Withers', 'Sandy Andersen']) {
+      const p = proposeStage2(cal(), file({ creators: [{ name, role: 'aut' }] }));
+      expect(byField(p, 'authors'), name).toMatchObject([{ class: 'auto' }]);
+    }
+  });
+
+  it('calibreSplitsName follows calibre 9.18 (checked with string_to_authors)', () => {
+    const split = ['A & B', 'A AND B', 'A And B', 'A　and　B', 'A  with  B', 'Smith, and Jones'];
+    const whole = ['A, B', 'A and', 'and B', 'Rand Paul', 'A ＆ B', 'A et B', 'Withers', 'A,and B'];
+    for (const n of split) expect(calibreSplitsName(n), n).toBe(true);
+    for (const n of whole) expect(calibreSplitsName(n), n).toBe(false);
   });
 });
