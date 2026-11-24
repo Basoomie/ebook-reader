@@ -17,6 +17,7 @@ import type { BookState } from '$lib/sync/book-state';
  *   optional i) run on the original text;
  * - plain text: the title, the series name or any author or illustrator name (not tags);
  * - chars: books without a count never match, negated or not;
+ * - level: the Natively level; books without one never match, negated or not;
  * - status: no record = unread; favorite: no record = not a favorite;
  * - on:device: the books this device stores (offline, every listed book);
  * - "-" negates a term: NOT IFNULL(cond, 0), so `-series:x` keeps books without a series.
@@ -95,6 +96,11 @@ function termMatches(book: CatalogBook, term: QueryTerm, ctx: MatchContext): boo
       if (n === null || n === undefined) return false;
       return (term.min === null || n >= term.min) && (term.max === null || n <= term.max);
     }
+    case 'level': {
+      const n = book.nativelyLevel?.level;
+      if (n === null || n === undefined) return false;
+      return (term.min === null || n >= term.min) && (term.max === null || n <= term.max);
+    }
     case 'status':
       return term.values.includes(ctx.states.get(book.id)?.status ?? 'unread');
     case 'favorite':
@@ -111,6 +117,11 @@ export function termHolds(book: CatalogBook, term: QueryTerm, ctx: MatchContext)
   if (term.type === 'chars' && term.negated) {
     // A book without a count is never included, negated or not.
     const n = book.charCount;
+    return n !== null && n !== undefined && !termMatches(book, { ...term, negated: false }, ctx);
+  }
+  if (term.type === 'level' && term.negated) {
+    // A book without a level is never included, negated or not.
+    const n = book.nativelyLevel?.level;
     return n !== null && n !== undefined && !termMatches(book, { ...term, negated: false }, ctx);
   }
   const hit = termMatches(book, term, ctx);

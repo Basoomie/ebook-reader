@@ -1348,6 +1348,70 @@ export const MIGRATIONS: { version: number; name: string; sql: string }[] = [
         WHERE reindex_requested_at IS NULL;
     `,
   },
+  {
+    version: 32,
+    name: 'Natively levels',
+    // The Natively level (2026-11-24): the last level read from a book's Natively page, kept per
+    // Natively id (copies of a book share it). `level`/`temporary` are the last good answer (an
+    // error keeps them; "no level yet" and a removed page clear them); `state` says how the last
+    // read went. books.natively_level/natively_temporary mirror it for the level: filter and the
+    // Level sort (indexed like the other sorts, sort.ts); the triggers keep the mirror right when
+    // a level is saved and when the ingest rewrites a book's identifiers. natively_settings: the
+    // fetcher's settings, one JSON value laid over the defaults (natively/settings.ts).
+    sql: `
+      CREATE TABLE natively_levels (
+        natively_id  TEXT PRIMARY KEY,
+        level        INTEGER,
+        temporary    INTEGER NOT NULL DEFAULT 0,
+        state        TEXT NOT NULL CHECK (state IN ('ok', 'none', 'gone', 'error')),
+        checked_at   INTEGER NOT NULL,
+        error        TEXT,
+        fails        INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE TABLE natively_settings (
+        id    INTEGER PRIMARY KEY CHECK (id = 1),
+        json  TEXT NOT NULL
+      );
+      ALTER TABLE books ADD COLUMN natively_level INTEGER;
+      ALTER TABLE books ADD COLUMN natively_temporary INTEGER;
+      CREATE INDEX books_sort_level_asc ON books (IFNULL(natively_level, 9000000000000000), id);
+      CREATE INDEX books_sort_level_desc ON books (IFNULL(natively_level, -1), id);
+      CREATE INDEX book_identifiers_natively ON book_identifiers (value) WHERE type = 'natively';
+
+      CREATE TRIGGER natively_levels_ins AFTER INSERT ON natively_levels BEGIN
+        UPDATE books SET natively_level = NEW.level, natively_temporary = NEW.temporary
+          WHERE id IN (SELECT book_id FROM book_identifiers
+                       WHERE type = 'natively' AND value = NEW.natively_id);
+      END;
+      CREATE TRIGGER natively_levels_upd AFTER UPDATE OF level, temporary ON natively_levels BEGIN
+        UPDATE books SET natively_level = NEW.level, natively_temporary = NEW.temporary
+          WHERE id IN (SELECT book_id FROM book_identifiers
+                       WHERE type = 'natively' AND value = NEW.natively_id);
+      END;
+      CREATE TRIGGER book_identifiers_natively_ins AFTER INSERT ON book_identifiers
+        WHEN NEW.type = 'natively' BEGIN
+        UPDATE books SET
+          natively_level = (SELECT level FROM natively_levels WHERE natively_id = NEW.value),
+          natively_temporary = (SELECT temporary FROM natively_levels WHERE natively_id = NEW.value)
+          WHERE id = NEW.book_id;
+      END;
+      CREATE TRIGGER book_identifiers_natively_upd AFTER UPDATE ON book_identifiers
+        WHEN NEW.type = 'natively' OR OLD.type = 'natively' BEGIN
+        UPDATE books SET
+          natively_level = (SELECT nl.level FROM book_identifiers bi
+                            JOIN natively_levels nl ON nl.natively_id = bi.value
+                            WHERE bi.book_id = NEW.book_id AND bi.type = 'natively'),
+          natively_temporary = (SELECT nl.temporary FROM book_identifiers bi
+                                JOIN natively_levels nl ON nl.natively_id = bi.value
+                                WHERE bi.book_id = NEW.book_id AND bi.type = 'natively')
+          WHERE id = NEW.book_id;
+      END;
+      CREATE TRIGGER book_identifiers_natively_del AFTER DELETE ON book_identifiers
+        WHEN OLD.type = 'natively' BEGIN
+        UPDATE books SET natively_level = NULL, natively_temporary = NULL WHERE id = OLD.book_id;
+      END;
+    `,
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

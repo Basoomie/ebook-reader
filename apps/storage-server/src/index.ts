@@ -55,6 +55,7 @@ import { onAudioStagePaused } from './cleanup/audio/audio-stages';
 import { parseNotificationsConfig } from './notifications/config';
 import { NotificationService } from './notifications/service';
 import { NotificationWatcher } from './notifications/watcher';
+import { NativelyLevels } from './natively/levels';
 
 // Every console line is also kept (secrets removed) for the bug report (WP18).
 captureConsole(serverLogs);
@@ -234,6 +235,16 @@ if (database.ok && config.calibre.dir) {
   }
 }
 
+// The Natively level (2026-11-24): the server reads linked books' levels from Natively.
+// NATIVELY_LEVELS=0 turns it off; NATIVELY_BASE_URL points it at a stand-in (e2e).
+const natively =
+  database.ok && process.env.NATIVELY_LEVELS !== '0'
+    ? new NativelyLevels({
+        db: database.db,
+        baseUrl: process.env.NATIVELY_BASE_URL || undefined,
+      })
+    : null;
+
 if (database.ok && config.calibre.dir) {
   try {
     thumbnails = new ThumbnailService({
@@ -268,6 +279,7 @@ if (database.ok && config.calibre.dir) {
       dataRoot: config.dataRoot,
       thumbnails,
       counts,
+      natively,
       holdIngest: (libraryId) => cleanup?.holdsIngest(libraryId) ?? false,
       wantsIngest: (libraryId) => cleanup?.wantsIngest(libraryId) ?? false,
       // Calibre metadata editing: what the index saw change, sorted out (whose change it was).
@@ -596,8 +608,10 @@ const app = createApp({
   ai: aiCore,
   summariesTest,
   summaries,
+  natively,
 });
 cleanup?.start();
+natively?.start();
 cleanupOptions.audio?.start();
 notifications?.start();
 
@@ -623,6 +637,7 @@ function shutdown(signal: string): void {
   cleanupSnapshots?.stop();
   summariesSnapshots?.stop();
   void summaries?.stop();
+  void natively?.stop();
   aiCore?.stop();
   void notifications?.stop();
   void cleanup?.stop();

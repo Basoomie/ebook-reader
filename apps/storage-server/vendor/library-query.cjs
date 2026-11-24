@@ -2,7 +2,7 @@
  * GENERATED FILE, DO NOT EDIT. The storage server library search parser, bundled from
  * the web app (apps/web/src/lib/library/query/server-entry.ts).
  * Rebuild with `pnpm build:server-query` in apps/web after changing that code.
- * build: d928387bc9ad8792
+ * build: de76c76bafc012ec
  */
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
@@ -59,11 +59,12 @@ var FIELDS = [
   "series",
   "tag",
   "chars",
+  "level",
   "status",
   "favorite",
   "on"
 ];
-var FIELD_RE = /^(author|illustrator|series|tag|chars|status|favorite|on)[:：]/i;
+var FIELD_RE = /^(author|illustrator|series|tag|chars|level|status|favorite|on)[:：]/i;
 var FIELD_LOOKAHEAD = Math.max(...FIELDS.map((f) => f.length)) + 1;
 function isSpace(ch) {
   return ch !== void 0 && /\s/.test(ch);
@@ -167,7 +168,7 @@ var Scanner = class {
     return checkRegex(source, flags !== "", start, j);
   }
 };
-function parseNumber(raw) {
+function parseCharsNumber(raw) {
   const thousands = /^(\d+(?:\.\d+)?)k$/i.exec(raw);
   if (thousands) return Math.round(Number(thousands[1]) * 1e3);
   if (!/^\d[\d,_]*$/.test(raw)) return null;
@@ -175,14 +176,22 @@ function parseNumber(raw) {
   return Number.isSafeInteger(value) ? value : null;
 }
 var CHARS_HELP = "Use chars:<150000, chars:>=50k or chars:50000-150000.";
-function parseChars(raw, start, end) {
-  if (raw === "") throw new QueryError(`chars: needs a number. ${CHARS_HELP}`, start, end);
+var LEVEL_HELP = "Use level:<25, level:>=30 or level:20-29.";
+function parseLevelNumber(raw) {
+  if (!/^\d+$/.test(raw)) return null;
+  const value = Number(raw);
+  return Number.isSafeInteger(value) ? value : null;
+}
+function parseRange(raw, start, end, field = "chars") {
+  const HELP = field === "chars" ? CHARS_HELP : LEVEL_HELP;
+  const parseNumber = field === "chars" ? parseCharsNumber : parseLevelNumber;
+  if (raw === "") throw new QueryError(`${field}: needs a number. ${HELP}`, start, end);
   const range = /^([^-]+)-([^-]+)$/.exec(raw);
   if (range) {
     const low = parseNumber(range[1]);
     const high = parseNumber(range[2]);
     if (low === null || high === null) {
-      throw new QueryError(`"${raw}" isn't a number range. ${CHARS_HELP}`, start, end);
+      throw new QueryError(`"${raw}" isn't a number range. ${HELP}`, start, end);
     }
     if (low > high) {
       throw new QueryError("The first number of a range must be the smaller one.", start, end);
@@ -192,7 +201,7 @@ function parseChars(raw, start, end) {
   const compare = /^(<=|>=|<|>|=)?(.*)$/.exec(raw);
   const op = compare[1] ?? "=";
   const value = parseNumber(compare[2]);
-  if (value === null) throw new QueryError(`"${raw}" isn't a number. ${CHARS_HELP}`, start, end);
+  if (value === null) throw new QueryError(`"${raw}" isn't a number. ${HELP}`, start, end);
   switch (op) {
     case "<":
       return { min: null, max: value - 1 };
@@ -211,11 +220,13 @@ function parseWordList(raw) {
 }
 function parseField(s, field, negated, start) {
   const valueStart = s.pos;
-  if (field === "chars" || field === "status" || field === "favorite" || field === "on") {
+  if (field === "chars" || field === "level" || field === "status" || field === "favorite" || field === "on") {
     const raw = s.readBare(false);
     const end = s.pos;
     if (field === "chars")
-      return { type: "chars", negated, start, end, ...parseChars(raw, start, end) };
+      return { type: "chars", negated, start, end, ...parseRange(raw, start, end) };
+    if (field === "level")
+      return { type: "level", negated, start, end, ...parseRange(raw, start, end, "level") };
     const words = parseWordList(raw);
     if (field === "on") {
       if (words.length === 1 && words[0] === "device") {

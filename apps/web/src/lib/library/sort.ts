@@ -22,7 +22,7 @@
  * opens in its own order unless the address says otherwise.
  */
 
-export type BookSortKey = 'added' | 'title' | 'author' | 'chars' | 'published';
+export type BookSortKey = 'added' | 'title' | 'author' | 'chars' | 'published' | 'level';
 export type GroupSortKey = 'newest' | 'name' | 'count';
 export type SortDir = 'asc' | 'desc';
 
@@ -71,6 +71,12 @@ const BOOK_CHOICES: SortChoice[] = [
     label: 'Publication date',
     dirLabels: { asc: 'Oldest first', desc: 'Newest first' },
     defaultDir: 'desc'
+  },
+  {
+    key: 'level',
+    label: 'Natively level',
+    dirLabels: { asc: 'Easiest first', desc: 'Hardest first' },
+    defaultDir: 'asc'
   }
 ];
 

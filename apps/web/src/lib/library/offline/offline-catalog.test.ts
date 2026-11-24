@@ -171,6 +171,18 @@ describe('offline search terms', () => {
     expect(matchesQuery(b, q('chars:>1000'), ctx())).toBe(false);
   });
 
+  it('level: the Natively level; books without one never match, also negated', () => {
+    const none = book('n');
+    const easy = book('e', { nativelyLevel: { level: 18, temporary: true } });
+    const hard = book('h', { nativelyLevel: { level: 31, temporary: false } });
+    expect(matchesQuery(none, q('level:<40'), ctx())).toBe(false);
+    expect(matchesQuery(none, q('-level:<40'), ctx())).toBe(false);
+    expect(matchesQuery(easy, q('level:<20'), ctx())).toBe(true);
+    expect(matchesQuery(hard, q('level:<20'), ctx())).toBe(false);
+    expect(matchesQuery(hard, q('-level:<20'), ctx())).toBe(true);
+    expect(matchesQuery(hard, q('level:30-35'), ctx())).toBe(true);
+  });
+
   it('status and favorite from the local records; no record = unread', () => {
     const states = new Map([['a', state('a', { status: 'reading', favorite: true })]]);
     const other = book('o');

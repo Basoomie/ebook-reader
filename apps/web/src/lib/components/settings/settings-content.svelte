@@ -50,6 +50,7 @@
   import AiPanel from '$lib/components/settings/ai-panel.svelte';
   import ToolbarSettings from '$lib/components/settings/toolbar-settings.svelte';
   import BookLinksSettings from '$lib/components/settings/book-links-settings.svelte';
+  import NativelyLevelSettings from '$lib/components/settings/natively-level-settings.svelte';
   import {
     bookLinksMoreAs$,
     bookLinksPlacement$,
@@ -1175,6 +1176,9 @@
           labelledby={labelId}
           testid="book-rating-empty"
         />
+      </SettingRow>
+      <SettingRow id="natively-levels" shared layout="stack">
+        {#if browser}<NativelyLevelSettings />{/if}
       </SettingRow>
     </SettingsGroup>
     <!-- Book summaries session 4: after Book page. -->

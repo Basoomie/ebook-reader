@@ -14,6 +14,9 @@
    *
    * `variant`: 'section' (a full-width section below the description), 'buttons' (under the
    * book's buttons) or 'panel' (an own panel under About this book).
+   *
+   * `nativelyLevel`: the book's Natively level, shown inside its direct Natively link
+   * (placement D, 2026-11-24).
    */
   import { faChevronDown } from '@fortawesome/free-solid-svg-icons';
   import Fa from 'svelte-fa';
@@ -24,9 +27,14 @@
   import { bookLinks$, bookLinksMoreAs$, bookLinksSearch$ } from '$lib/book-links/settings';
   import BookLinkMark from './book-link-mark.svelte';
   import BookLinksMoreDialog from './book-links-more-dialog.svelte';
+  import NativelyLevelTag from './natively-level.svelte';
+  import type { NativelyLevel } from '$lib/library/types';
 
   export let book: BookForLinks;
   export let variant: 'section' | 'buttons' | 'panel' = 'section';
+  export let nativelyLevel: NativelyLevel | null | undefined = null;
+
+  $: nLevel = nativelyLevel ?? null;
 
   $: placed = bookLinks(book, resolveLinks($bookLinks$), $bookLinksSearch$ !== false);
   $: anySearch = [...placed.buttons, ...placed.menu].some((l) => l.kind === 'search');
@@ -45,7 +53,10 @@
   }
 
   function openModal() {
-    void dialogManager.open(BookLinksMoreDialog, { links: placed.menu });
+    void dialogManager.open(BookLinksMoreDialog, {
+      links: placed.menu,
+      nativelyLevel: nativelyLevel ?? null
+    });
   }
 </script>
 
@@ -92,7 +103,16 @@
           data-link={link.id}
           data-kind={link.kind}
         >
-          <span>{link.name}</span>
+          <span class="c-blink-name"
+            >{link.name}{#if nLevel && link.id === 'natively' && link.kind === 'direct'}<span
+                class="c-blink-level"
+                ><NativelyLevelTag
+                  level={nLevel}
+                  variant="inline"
+                  testid="book-link-natively-level"
+                /></span
+              >{/if}</span
+          >
           <BookLinkMark kind={link.kind} />
         </a>
       {/each}
@@ -136,7 +156,16 @@
                     data-kind={link.kind}
                     on:click={close}
                   >
-                    <span>{link.name}</span>
+                    <span class="c-blink-name"
+                      >{link.name}{#if nLevel && link.id === 'natively' && link.kind === 'direct'}<span
+                          class="c-blink-level"
+                          ><NativelyLevelTag
+                            level={nLevel}
+                            variant="inline"
+                            testid="book-link-natively-level"
+                          /></span
+                        >{/if}</span
+                    >
                     <BookLinkMark kind={link.kind} />
                   </a>
                 </li>
@@ -189,6 +218,12 @@
 
   .c-blinks-panel .c-blinks-row {
     margin-top: 0.625rem;
+  }
+
+  /* The Natively level after the name inside its link (placement D). */
+  .c-blink-level {
+    margin-left: 0.5rem;
+    color: var(--c-label);
   }
 
   /* The section's tiles: wide enough that the names line up, the mark at the right. */

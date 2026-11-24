@@ -1064,6 +1064,15 @@ export const SETTINGS_CATALOG: CatalogSetting[] = [
     description: 'The line under the byline: hidden, or “No rating”.',
     keywords: 'rating stars no rating'
   },
+  // The Natively level (2026-11-24): read by the library server, so kept there.
+  {
+    id: 'natively-levels',
+    section: 'library-book-page',
+    title: 'Natively level',
+    description:
+      'The library server reads the level of every book with a direct Natively link, and again when its page opens and the level is old. Kept on the library server.',
+    keywords: 'natively level difficulty jlpt grading level: sort'
+  },
   {
     id: 'series-edit-as',
     section: 'library-editing',

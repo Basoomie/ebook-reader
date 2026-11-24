@@ -24,7 +24,8 @@ describe('library sorts', () => {
       'title',
       'author',
       'chars',
-      'published'
+      'published',
+      'level'
     ]);
     expect(sortChoices('groups').map((c) => c.key)).toEqual(['newest', 'name', 'count']);
     expect(sortChoices('series')[0]).toMatchObject({ key: 'series', own: true });

@@ -14,10 +14,11 @@
  *   query   := term (whitespace term)*        whitespace includes U+3000
  *   term    := ["-"] (filter | regex | text)  terms combine with AND; "-" negates
  *   filter  := field (":" | "：") value       field names ignore case
- *   field   := author | illustrator | series | tag | chars | status | favorite | on
+ *   field   := author | illustrator | series | tag | chars | level | status | favorite | on
  *   author/illustrator/series/tag value := ["="] item ("," item)*   "=" exact; "," = any of
  *   item    := "quoted" | /regex/[i] | bare  (a quoted item is never split at commas)
  *   chars   := [<|<=|>|>=|=] N  |  N-N       N: digits, "," or "_" separators, "k" = 1000
+ *   level   := [<|<=|>|>=|=] N  |  N-N       the Natively level (N: digits)
  *   status  := unread|reading|completed|dropped ("," = any of)
  *   favorite:= yes|no
  *   on      := device                       the books stored on the device that searches
@@ -62,6 +63,8 @@ export type QueryTerm =
   | (TermBase & { type: 'field'; field: TextField; matchers: Matcher[] })
   /** chars: inclusive bounds; null = open. */
   | (TermBase & { type: 'chars'; min: number | null; max: number | null })
+  /** level: the Natively level, inclusive bounds; null = open. Books without one never match. */
+  | (TermBase & { type: 'level'; min: number | null; max: number | null })
   | (TermBase & { type: 'status'; values: QueryStatus[] })
   | (TermBase & { type: 'favorite'; value: boolean })
   /** on:device: the books stored on the device that asks (WP15e). */
@@ -97,13 +100,14 @@ const FIELDS = [
   'series',
   'tag',
   'chars',
+  'level',
   'status',
   'favorite',
   'on'
 ] as const;
 type Field = (typeof FIELDS)[number];
 
-const FIELD_RE = /^(author|illustrator|series|tag|chars|status|favorite|on)[:：]/i;
+const FIELD_RE = /^(author|illustrator|series|tag|chars|level|status|favorite|on)[:：]/i;
 /** Characters FIELD_RE needs to see: the longest field name and its colon. */
 const FIELD_LOOKAHEAD = Math.max(...FIELDS.map((f) => f.length)) + 1;
 
@@ -225,7 +229,7 @@ class Scanner {
   }
 }
 
-function parseNumber(raw: string): number | null {
+function parseCharsNumber(raw: string): number | null {
   const thousands = /^(\d+(?:\.\d+)?)k$/i.exec(raw);
   if (thousands) return Math.round(Number(thousands[1]) * 1000);
   if (!/^\d[\d,_]*$/.test(raw)) return null;
@@ -234,19 +238,29 @@ function parseNumber(raw: string): number | null {
 }
 
 const CHARS_HELP = 'Use chars:<150000, chars:>=50k or chars:50000-150000.';
+const LEVEL_HELP = 'Use level:<25, level:>=30 or level:20-29.';
 
-function parseChars(
+function parseLevelNumber(raw: string): number | null {
+  if (!/^\d+$/.test(raw)) return null;
+  const value = Number(raw);
+  return Number.isSafeInteger(value) ? value : null;
+}
+
+function parseRange(
   raw: string,
   start: number,
-  end: number
+  end: number,
+  field: 'chars' | 'level' = 'chars'
 ): { min: number | null; max: number | null } {
-  if (raw === '') throw new QueryError(`chars: needs a number. ${CHARS_HELP}`, start, end);
+  const HELP = field === 'chars' ? CHARS_HELP : LEVEL_HELP;
+  const parseNumber = field === 'chars' ? parseCharsNumber : parseLevelNumber;
+  if (raw === '') throw new QueryError(`${field}: needs a number. ${HELP}`, start, end);
   const range = /^([^-]+)-([^-]+)$/.exec(raw);
   if (range) {
     const low = parseNumber(range[1]);
     const high = parseNumber(range[2]);
     if (low === null || high === null) {
-      throw new QueryError(`"${raw}" isn't a number range. ${CHARS_HELP}`, start, end);
+      throw new QueryError(`"${raw}" isn't a number range. ${HELP}`, start, end);
     }
     if (low > high) {
       throw new QueryError('The first number of a range must be the smaller one.', start, end);
@@ -256,7 +270,7 @@ function parseChars(
   const compare = /^(<=|>=|<|>|=)?(.*)$/.exec(raw)!;
   const op = compare[1] ?? '=';
   const value = parseNumber(compare[2]);
-  if (value === null) throw new QueryError(`"${raw}" isn't a number. ${CHARS_HELP}`, start, end);
+  if (value === null) throw new QueryError(`"${raw}" isn't a number. ${HELP}`, start, end);
   switch (op) {
     case '<':
       return { min: null, max: value - 1 };
@@ -280,11 +294,19 @@ function parseWordList(raw: string): string[] {
 
 function parseField(s: Scanner, field: Field, negated: boolean, start: number): QueryTerm | null {
   const valueStart = s.pos;
-  if (field === 'chars' || field === 'status' || field === 'favorite' || field === 'on') {
+  if (
+    field === 'chars' ||
+    field === 'level' ||
+    field === 'status' ||
+    field === 'favorite' ||
+    field === 'on'
+  ) {
     const raw = s.readBare(false);
     const end = s.pos;
     if (field === 'chars')
-      return { type: 'chars', negated, start, end, ...parseChars(raw, start, end) };
+      return { type: 'chars', negated, start, end, ...parseRange(raw, start, end) };
+    if (field === 'level')
+      return { type: 'level', negated, start, end, ...parseRange(raw, start, end, 'level') };
     const words = parseWordList(raw);
     if (field === 'on') {
       if (words.length === 1 && words[0] === 'device') {

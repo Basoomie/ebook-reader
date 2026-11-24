@@ -202,6 +202,7 @@ describe('book sorts (GET /books?sort=&dir=)', () => {
       author: { asc: 'books_sort_author_asc', desc: 'books_sort_author_desc' },
       chars: { asc: 'books_sort_chars_asc', desc: 'books_sort_chars_desc' },
       published: { asc: 'books_sort_published_asc', desc: 'books_sort_published_desc' },
+      level: { asc: 'books_sort_level_asc', desc: 'books_sort_level_desc' },
     };
     for (const key of BOOK_SORT_KEYS) {
       for (const dir of SORT_DIRS) {
