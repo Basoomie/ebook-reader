@@ -5,6 +5,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import { etaText } from './cleanup-text';
 import {
   addedText,
   aiBatchLines,
@@ -65,6 +66,20 @@ describe('More Bookmeter matches: the card text', () => {
       eta: "about 5 h left (counted at Bookmeter's pace until measured)"
     });
     expect(bookmeterBar(status({ mode: 'off' }))).toBeNull();
+  });
+
+  it('shows the write to Calibre with its count, and the time left once measured', () => {
+    const write = (leftMs: number | null) =>
+      status({
+        mode: 'on',
+        bar: { phase: 'write', done: 1500, total: 27267, leftMs, measured: leftMs !== null }
+      });
+    expect(bookmeterBar(write(null))).toEqual({
+      label: 'Writing to Calibre (1,500 of 27,267)',
+      fraction: 1500 / 27267,
+      eta: null
+    });
+    expect(bookmeterBar(write(80 * 60_000))?.eta).toBe(etaText(80 * 60_000));
   });
 
   it('says what was found by source and what is left alone', () => {
