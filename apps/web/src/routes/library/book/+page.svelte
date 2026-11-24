@@ -34,6 +34,7 @@
   import AddToCollectionDialog from '$lib/components/collections/add-to-collection-dialog.svelte';
   import AudioLinkSection from '$lib/components/audio/audio-link-section.svelte';
   import SummarySection from '$lib/components/summaries/summary-section.svelte';
+  import BookDescription from '$lib/components/summaries/book-description.svelte';
   import BookDownloadMenu from '$lib/components/library/book-download-menu.svelte';
   import BookLinks from '$lib/components/library/book-links.svelte';
   import BookIllustrations from '$lib/components/library/book-illustrations.svelte';
@@ -150,7 +151,6 @@
   let collectionItems = new Map<string, CollectionItem[]>();
   let positions = new Map<string, LocalRecord[]>();
   let revealed = new Set<string>();
-  let descriptionOpen = false;
   /** Where Back goes: the previous page (history) when the app came from one. */
   let cameFromApp = false;
   let opening: { book: CatalogBook; stage: OpenStage | null; controller: AbortController } | null =
@@ -178,7 +178,6 @@
   $: refused = notWritten(editStatus);
   $: showRating = !!shown && (!!shown.rating || $bookRatingEmpty$ === 'show');
   $: paragraphs = descriptionParagraphs(shown?.description);
-  $: longDescription = paragraphs.join('').length > 220 || paragraphs.length > 3;
   $: rows = shown
     ? detailRows(shown, libraries.find((l) => l.id === shown?.libraryId)?.name ?? '')
     : [];
@@ -381,7 +380,6 @@
     onDeviceHere = false;
     onDeviceChecked = false;
     audioLink = null;
-    descriptionOpen = false;
     series = [];
     alsoBy = [];
     try {
@@ -853,27 +851,15 @@
           style="border-color: var(--c-gold)"
           aria-labelledby="details-desc"
         >
-          <h2 id="details-desc" class="flex items-baseline gap-3">
-            <span class="font-mincho text-lg font-bold text-c-label">内容紹介</span>
-            <span class="text-sm text-c-muted">Description</span>
-          </h2>
-          <div
-            class="mt-2 flex flex-col gap-3 text-[15px] leading-loose"
-            class:c-clamped={longDescription && !descriptionOpen}
-            data-testid="details-description"
-          >
-            {#each paragraphs as p}<p class="whitespace-pre-line">{p}</p>{/each}
-          </div>
-          {#if longDescription}
-            <button
-              class="c-link mt-1 min-h-[2.75rem] text-sm"
-              aria-expanded={descriptionOpen}
-              data-testid="details-more"
-              on:click={() => (descriptionOpen = !descriptionOpen)}
-            >
-              {descriptionOpen ? 'Less' : 'More'}
-            </button>
-          {/if}
+          <!-- The heading, text and More; session 4b: its language buttons. -->
+          <BookDescription
+            bookId={book.id}
+            description={shown?.description}
+            {paragraphs}
+            libraryLanguage={libraries.find((l) => l.id === book?.libraryId)?.language}
+            languages={shown?.languages}
+            {offline}
+          />
         </section>
       {/if}
 
@@ -1247,17 +1233,6 @@
     line-height: 1;
     text-align: center;
     clip-path: polygon(0 0, 100% 0, 100% 100%, 50% 78%, 0 100%);
-  }
-
-  /* About six lines of the description until "More". */
-  .c-clamped {
-    max-height: 12.5rem;
-    overflow: hidden;
-    mask-image: linear-gradient(to bottom, #000 70%, transparent);
-  }
-
-  :global(html.eink) .c-clamped {
-    mask-image: none;
   }
 
   /* The actions: [Read][Status]   [Add to collection][Download][Highlights][⋯], the two

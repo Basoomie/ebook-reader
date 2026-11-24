@@ -4,6 +4,7 @@
  * All rights reserved.
  */
 
+import { writableBooleanLocalStorageSubject } from '$lib/data/internal/writable-boolean-local-storage-subject';
 import { writableArrayLocalStorageSubject } from '$lib/data/internal/writable-object-local-storage-subject';
 import { writableStringLocalStorageSubject } from '$lib/data/internal/writable-string-local-storage-subject';
 
@@ -46,3 +47,23 @@ export const summaryRelationshipLayout$ =
 
 /** The language last chosen on this device's book pages ('' = the book's own). Never synced. */
 export const summaryViewLang$ = writableStringLocalStorageSubject<string>()('summaryViewLang', '');
+
+/**
+ * "Make a summary when a book is first completed", the same on every device (session 4b; on by
+ * default). Off: completing a book makes no summary (the device writes a "summary-skip" with
+ * the completion and the server checks the setting too), so turning it on again makes none for
+ * the books completed meanwhile. A summary can still be made from the book page.
+ */
+export const summaryAutoOnFirstCompletion$ = writableBooleanLocalStorageSubject()(
+  'summaryAutoOnFirstCompletion',
+  true
+);
+
+/**
+ * The language last chosen for book descriptions on this device ('' = the original), apart
+ * from the summary's (decided with the user, 2026-11-23). Never synced.
+ */
+export const descriptionViewLang$ = writableStringLocalStorageSubject<string>()(
+  'descriptionViewLang',
+  ''
+);

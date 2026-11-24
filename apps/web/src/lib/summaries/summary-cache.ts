@@ -32,16 +32,36 @@ export interface CachedSummary {
   savedAt: number;
 }
 
+/**
+ * A book description's translation on the device (session 4b). `source` is the description it
+ * was made from, exactly as the catalog gave it: the page shows the copy only while the book's
+ * description is still that text, so an old translation is never shown for a new one.
+ */
+export interface CachedDescription {
+  bookId: string;
+  lang: string;
+  digest: string;
+  source: string;
+  /** One text per paragraph, its line breaks kept. */
+  paragraphs: string[];
+  savedAt: number;
+}
+
 interface SummaryDbSchema extends DBSchema {
   summaries: { key: [string, string]; value: CachedSummary; indexes: { bookId: string } };
+  descriptions: { key: [string, string]; value: CachedDescription; indexes: { bookId: string } };
 }
 
 export function createSummaryDb(name = SUMMARY_DB_NAME) {
-  return openDB<SummaryDbSchema>(name, 1, {
+  return openDB<SummaryDbSchema>(name, 2, {
     upgrade(db, oldVersion) {
       if (oldVersion < 1) {
         const s = db.createObjectStore('summaries', { keyPath: ['bookId', 'lang'] });
         s.createIndex('bookId', 'bookId');
+      }
+      if (oldVersion < 2) {
+        const d = db.createObjectStore('descriptions', { keyPath: ['bookId', 'lang'] });
+        d.createIndex('bookId', 'bookId');
       }
     }
   });
@@ -78,6 +98,86 @@ export class SummaryCache {
   async all(): Promise<CachedSummary[]> {
     return (await this.db).getAll('summaries');
   }
+
+  // ---- session 4b: descriptions ----
+
+  async getDescription(bookId: string, lang: string): Promise<CachedDescription | undefined> {
+    return (await this.db).get('descriptions', [bookId, lang]);
+  }
+
+  async descriptionsFor(bookId: string): Promise<CachedDescription[]> {
+    return (await this.db).getAllFromIndex('descriptions', 'bookId', bookId);
+  }
+
+  async putDescription(entry: CachedDescription): Promise<void> {
+    await (await this.db).put('descriptions', entry);
+  }
+
+  async removeDescription(bookId: string, lang: string): Promise<void> {
+    await (await this.db).delete('descriptions', [bookId, lang]);
+  }
+}
+
+export interface DescriptionFetcher {
+  description(
+    bookId: string,
+    lang?: string
+  ): Promise<{ source: string | null; translation: { paragraphs: string[] } | null }>;
+}
+
+export interface DescriptionCacheLike {
+  getDescription(bookId: string, lang: string): Promise<CachedDescription | undefined>;
+  descriptionsFor(bookId: string): Promise<CachedDescription[]>;
+  putDescription(entry: CachedDescription): Promise<void>;
+  removeDescription(bookId: string, lang: string): Promise<void>;
+}
+
+/**
+ * Session 4b: the device's copies of description translations follow the records like the
+ * summaries' do: each language the record names is fetched when its digest changed, and a copy
+ * the record no longer names (the description changed, or it was never made) is dropped.
+ */
+export async function syncDescriptions(
+  records: LocalRecord[],
+  api: DescriptionFetcher,
+  cache: DescriptionCacheLike,
+  now = Date.now()
+): Promise<{ fetched: number; dropped: number; errors: string[] }> {
+  const out = { fetched: 0, dropped: 0, errors: [] as string[] };
+  for (const r of records) {
+    if (r.kind !== BOOK_SUMMARY_KIND) continue;
+    const bookId = r.id;
+    try {
+      const d = r.deletedAt === null ? (r.data as { descriptions?: unknown } | undefined) : null;
+      const raw = d?.descriptions;
+      const langs: Record<string, string> =
+        raw && typeof raw === 'object' ? (raw as Record<string, string>) : {};
+      for (const c of await cache.descriptionsFor(bookId))
+        if (langs[c.lang] !== c.digest) {
+          await cache.removeDescription(bookId, c.lang);
+          out.dropped++;
+        }
+      for (const [lang, digest] of Object.entries(langs)) {
+        if (typeof digest !== 'string') continue;
+        const have = await cache.getDescription(bookId, lang);
+        if (have && have.digest === digest) continue;
+        const got = await api.description(bookId, lang);
+        if (!got.translation || got.source === null) continue;
+        await cache.putDescription({
+          bookId,
+          lang,
+          digest,
+          source: got.source,
+          paragraphs: got.translation.paragraphs,
+          savedAt: now
+        });
+        out.fetched++;
+      }
+    } catch (err) {
+      out.errors.push(`${bookId}: ${(err as Error)?.message ?? err}`);
+    }
+  }
+  return out;
 }
 
 export interface SummaryFetcher {

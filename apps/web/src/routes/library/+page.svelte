@@ -148,6 +148,7 @@
     notifySyncConnectionChanged
   } from '$lib/sync/sync-service';
   import { bulkSummaryPlan, skipAutomaticSummaries } from '$lib/summaries/summary-sync';
+  import { summaryAutoOnFirstCompletion$ } from '$lib/summaries/settings';
   import {
     faArrowUpFromBracket,
     faArrowsUpDown,
@@ -945,16 +946,20 @@
         showMessage('Not saved', describe(error));
         return;
       }
-      // Book summaries: the books whose first completion this is get one (asked first).
+      // Book summaries: the books whose first completion this is get one (asked first). With
+      // "Make a summary when a book is first completed" off (session 4b) there is no line:
+      // markCompleted writes the books' "summary-skip" records itself.
       const engine = await getSyncEngine();
-      const plan = await bulkSummaryPlan(
-        engine,
-        completed.map((b) => ({ id: b.id, charCount: b.charCount })),
-        (id) => {
-          const s = states.get(id);
-          return !!s && (s.status === 'completed' || finishedReadThroughs(s) > 0);
-        }
-      );
+      const plan = $summaryAutoOnFirstCompletion$
+        ? await bulkSummaryPlan(
+            engine,
+            completed.map((b) => ({ id: b.id, charCount: b.charCount })),
+            (id) => {
+              const s = states.get(id);
+              return !!s && (s.status === 'completed' || finishedReadThroughs(s) > 0);
+            }
+          )
+        : { books: [], usd: null };
       const answer = await ask<{ finishedOn: string | null; makeSummaries: boolean } | undefined>(
         MarkCompletedDialog,
         {

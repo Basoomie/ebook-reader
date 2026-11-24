@@ -417,6 +417,30 @@ export const SUMMARIES_MIGRATIONS: { version: number; name: string; sql: string 
       ALTER TABLE summary_translations ADD COLUMN label TEXT;
     `,
   },
+  {
+    version: 10,
+    name: 'book summaries session 4b: book descriptions translated like summaries',
+    sql: `
+      -- One translation per book and language, of the description as it was (source_digest:
+      -- sha1 of books.description then). A description that changed is translated again the
+      -- next time that language is chosen; the old translation is never shown for new text.
+      CREATE TABLE description_translations (
+        book_id          TEXT NOT NULL,
+        lang             TEXT NOT NULL,
+        source_digest    TEXT NOT NULL,
+        paragraphs_json  TEXT CHECK (paragraphs_json IS NULL OR json_valid(paragraphs_json)),
+        state            TEXT NOT NULL CHECK (state IN ('queued', 'done', 'failed')),
+        model            TEXT,
+        error            TEXT,
+        cost_usd         REAL,
+        requested_at     INTEGER NOT NULL,
+        made_at          INTEGER,
+        PRIMARY KEY (book_id, lang)
+      );
+      CREATE INDEX description_translations_queued ON description_translations (state)
+        WHERE state = 'queued';
+    `,
+  },
 ];
 
 export const SUMMARIES_SCHEMA_VERSION =

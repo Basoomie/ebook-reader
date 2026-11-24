@@ -691,6 +691,73 @@ export const LABEL_SPEC: AiStageSpec<LabelEvidence, ModelRole> = {
 };
 
 // ---------------------------------------------------------------------------------------------
+// A book's description, translated like a summary (session 4b): its paragraphs and lines kept
+
+export interface DescriptionEvidence {
+  from: string;
+  to: string;
+  title: string;
+  /** The description as the book page shows it: paragraphs of lines. */
+  paragraphs: string[][];
+}
+
+export interface DescriptionAnswer {
+  paragraphs: string[][];
+}
+
+export const DESCRIPTION_SPEC: AiStageSpec<DescriptionEvidence, ModelRole> = {
+  stage: 'sum.translate-desc',
+  promptVersion: `${PROMPT_VERSION}.${EFFORT}.d1`,
+  tasks: TASKS,
+  system: `Translate a book's description (the publisher's text about the book). Keep its meaning exactly: add nothing, leave nothing out, explain nothing. Keep the layout: the same paragraphs in the same order, and in each paragraph one translated line for each original line, in order (a line that is only a mark or a symbol stays as it is). Names and invented terms get their usual reading or translation (romanize Japanese names in Hepburn with macrons, given order as the book uses it).`,
+  userText: (e) =>
+    `BOOK: ${e.title}\nFROM: ${e.from}\nTO: ${e.to}\n\n${e.paragraphs
+      .map(
+        (p, i) =>
+          `PARAGRAPH ${i + 1} (${p.length} ${p.length === 1 ? 'line' : 'lines'}):\n${p.join('\n')}`,
+      )
+      .join('\n\n')}`,
+  schema: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['paragraphs'],
+    properties: {
+      paragraphs: {
+        type: 'array',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['lines'],
+          properties: { lines: { type: 'array', items: { type: 'string' } } },
+        },
+      },
+    },
+  },
+  schemaName: 'description',
+  parseAnswer: (raw) => {
+    const r = raw as { paragraphs?: unknown };
+    if (!r || !Array.isArray(r.paragraphs)) return null;
+    const out: string[][] = [];
+    for (const p of r.paragraphs as unknown[]) {
+      const lines = (p as { lines?: unknown })?.lines;
+      if (!Array.isArray(lines) || lines.some((l) => typeof l !== 'string')) return null;
+      out.push((lines as string[]).map((l) => l.replace(/\s*\n\s*/g, ' ').trim()));
+    }
+    return { paragraphs: out };
+  },
+  evidenceText: () => '',
+  onLimit: 'queue',
+  request: {
+    // Asked while the user waits on the book page: one direct call (decided 2026-11-23).
+    direct: true,
+    maxTokens: 8_000,
+    timeoutSeconds: 300,
+    effort: EFFORT,
+    expectedOutputTokens: 1_500,
+  },
+};
+
+// ---------------------------------------------------------------------------------------------
 // Judging (the test only): single claims, then the same claim across setups grouped
 
 export interface ClaimsEvidence {

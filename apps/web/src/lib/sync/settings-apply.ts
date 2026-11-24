@@ -29,7 +29,11 @@ import {
   ttsParagraphPauseMs$,
   ttsSentencePauseMs$
 } from '$lib/audio/tts-settings';
-import { summaryLanguages$, summarySpoilerBlur$ } from '$lib/summaries/settings';
+import {
+  summaryAutoOnFirstCompletion$,
+  summaryLanguages$,
+  summarySpoilerBlur$
+} from '$lib/summaries/settings';
 import { parseStoredValue, SETTINGS_REGISTRY } from '$lib/sync/settings-registry';
 
 /**
@@ -58,7 +62,8 @@ export const GLOBAL_SETTING_SUBJECTS: Record<string, { next(value: never): void 
   ttsDialoguePauseMs: ttsDialoguePauseMs$,
   speakerUnsureBelow: speakerUnsureBelow$,
   summaryLanguages: summaryLanguages$,
-  summarySpoilerBlur: summarySpoilerBlur$
+  summarySpoilerBlur: summarySpoilerBlur$,
+  summaryAutoOnFirstCompletion: summaryAutoOnFirstCompletion$
 };
 
 /** Applies one global setting. null (never set on the source device) leaves this device's value. */

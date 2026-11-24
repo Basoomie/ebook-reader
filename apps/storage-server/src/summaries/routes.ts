@@ -71,6 +71,18 @@ export function createSummaryRouter(svc: SummaryService | null): Router {
       res.json(svc.get(bookId(req), lang));
     }),
   );
+  // Session 4b: the book's description in a language (translated like a summary).
+  router.get(
+    '/summaries/:bookId/description',
+    h((req, res) => res.json(svc.descriptionView(bookId(req), req.query.lang))),
+  );
+  router.post(
+    '/summaries/:bookId/description/translate',
+    h((req, res) => {
+      const v = svc.translateDescription(bookId(req), (req.body as { lang?: unknown })?.lang);
+      res.status(v.state === 'done' ? 200 : 202).json(v);
+    }),
+  );
   router.get(
     '/summaries/:bookId/jobs',
     h((req, res) => res.json({ jobs: svc.jobs(bookId(req)) })),
