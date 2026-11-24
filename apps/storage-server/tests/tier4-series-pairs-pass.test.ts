@@ -278,6 +278,20 @@ describe('series under two names: the pass', () => {
     expect(pass.list(LIB, 'decided', 0, 20).total).toBe(0);
   });
 
+  it('Analyse again removes the earlier run’s open proposals, and times each phase', async () => {
+    pass.setMode('analyse');
+    await run();
+    expect(pass.state().progress.times?.signals?.n).toBeGreaterThan(0);
+    pass.again();
+    expect(proposals()).toEqual([]);
+    await run();
+    expect(
+      db
+        .prepare(`SELECT DISTINCT analysis_id FROM proposed_changes WHERE source = 'series-pairs'`)
+        .all(),
+    ).toEqual([{ analysis_id: seriesPairsAnalysisId(2) }]);
+  });
+
   it('a merged book is never proposed again after Undo', async () => {
     pass.setMode('on');
     await run();
