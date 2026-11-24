@@ -55,10 +55,16 @@ import { ArrivalWorker } from './arrivals';
  * like stage 2's, with the published date and rating; asked for between chunks of any other
  * batch so an edit never waits for a whole cleanup batch.
  */
-export const SIDECAR_VERSION = '1.5.0';
+export const SIDECAR_VERSION = '1.6.0';
 
 /** The user's edits from the reader (the server's EDIT_STAGE). */
 export const EDIT_STAGE = 10;
+
+/**
+ * Calibre records without files (the server's EMPTY_RECORD_STAGE, 1.6.0): removed with the same
+ * `remove <one id>` as stage 1's copies, after checking the record in Calibre and saving it.
+ */
+export const EMPTY_RECORD_STAGE = 11;
 
 /** The stages whose batches write fields per book (verify / written), not remove copies. */
 const fieldStage = (stage: number) =>
@@ -542,7 +548,9 @@ export class Worker {
             : ['restored', 'failed', 'skipped'];
         if (final.includes(item.state)) continue;
         try {
-          if (batch.kind === 'apply') await this.applyItem(batch, item);
+          if (batch.kind === 'apply' && batch.stage === EMPTY_RECORD_STAGE)
+            await this.emptyRecordItem(batch, item);
+          else if (batch.kind === 'apply') await this.applyItem(batch, item);
           else await this.undoItem(batch, item, plan!);
         } catch (err) {
           if (err instanceof ServerError) throw err;
@@ -958,6 +966,99 @@ export class Worker {
       await this.report(batch, item, { step: 'removed' });
       this.log.info(
         `Removed ${item.calibreId} (duplicate of ${item.kept.calibreId}): ${item.title}`
+      );
+    }
+  }
+
+  /** Why a record without files can't be deleted now, or null (checked in Calibre itself). */
+  private async emptyRecordProblem(login: Login, item: BatchItem): Promise<string | null> {
+    const book = await this.calibredb.book(login, item.calibreId);
+    if (!book) return 'The record is no longer in Calibre';
+    if (book.uuid !== item.uuid) return 'The Calibre id now belongs to another book';
+    if (book.formats.length > 0) return 'The record has files in Calibre now';
+    const then = calibreTime(item.lastModified);
+    const now = calibreTime(book.last_modified);
+    if (then !== null && now !== null && Math.abs(now - then) > 1000)
+      return 'The record was changed in Calibre since it was listed';
+    const kept = keptCopyProblem(
+      await this.calibredb.book(login, item.kept.calibreId),
+      item.kept.uuid
+    );
+    return kept ? kept.replace('The copy to keep', 'The new book with its EPUB') : null;
+  }
+
+  /**
+   * A Calibre record without files (no formats, no folder; the server checked the folder when
+   * it handed out the batch): checked and saved whole in the quarantine (verified), its own tags
+   * added to the new book that holds its EPUB (tagged), then `remove <id>` (Calibre's trash,
+   * never --permanent; calibre keeps nothing of a record without a folder, so there is no Undo).
+   */
+  private async emptyRecordItem(batch: Batch, item: BatchItem): Promise<void> {
+    const login = this.requireLogin();
+    if (item.state === 'pending') {
+      const problem = await this.emptyRecordProblem(login, item);
+      if (problem) {
+        await this.report(batch, item, { step: 'skipped', detail: problem });
+        return;
+      }
+      const record = await this.calibredb.record(login, item.calibreId);
+      if (!record) throw new Error("Calibre didn't list the record's fields");
+      await this.quarantine.createOnce(
+        path.join(this.quarantine.batchDir(batch.id), `${item.calibreId}.json`),
+        JSON.stringify(
+          {
+            emptyRecord: { calibreId: item.calibreId, uuid: item.uuid, title: item.title },
+            record,
+            newBook: item.kept,
+            savedAt: new Date().toISOString()
+          },
+          null,
+          2
+        )
+      );
+      await this.report(batch, item, { step: 'verified' });
+    }
+    if (item.state === 'verified') {
+      if (item.addTags.length > 0) {
+        const kept = await this.calibredb.book(login, item.kept.calibreId);
+        if (!kept || kept.uuid !== item.kept.uuid) throw new Error('The new book is gone');
+        const have = new Set(kept.tags.map((t) => t.toLowerCase()));
+        const missing = item.addTags.filter((t) => !have.has(t.toLowerCase()));
+        if (missing.length > 0) {
+          await this.calibredb.setTags(login, kept.id, [...kept.tags, ...missing]);
+          const after = await this.calibredb.book(login, kept.id);
+          const now = new Set((after?.tags ?? []).map((t) => t.toLowerCase()));
+          if (!missing.every((t) => now.has(t.toLowerCase())))
+            throw new Error('Calibre did not keep the added tags');
+          this.log.info(`Added ${missing.join(', ')} to ${kept.id} (from ${item.calibreId})`);
+        }
+      }
+      await this.report(batch, item, { step: 'tagged' });
+    }
+    if (item.state === 'tagged') {
+      if (await this.calibredb.book(login, item.calibreId)) {
+        // Right before the step that can't be taken back: everything checked again.
+        const problem = await this.emptyRecordProblem(login, item);
+        if (problem) {
+          await this.report(batch, item, { step: 'skipped', detail: problem });
+          return;
+        }
+        try {
+          await this.calibredb.ok('remove', login, [String(item.calibreId)]);
+        } catch (err) {
+          // A timeout can hide a remove Calibre still does: look before calling it failed.
+          if (this.stopped) throw err;
+          this.log.info(
+            `Remove ${item.calibreId}: ${shorten((err as Error).message, 200)}; waiting to see whether Calibre removes it`
+          );
+          if (!(await this.waitUntilGone(login, item))) throw err;
+        }
+      }
+      if (await this.calibredb.book(login, item.calibreId))
+        throw new Error('Calibre still lists the record after remove');
+      await this.report(batch, item, { step: 'removed' });
+      this.log.info(
+        `Removed record ${item.calibreId} without files (its EPUB is book ${item.kept.calibreId}): ${item.title}`
       );
     }
   }

@@ -5,6 +5,7 @@
  * of it can affect reading (it only reads Calibre, and writes cleanup.db plus the
  * handoff's book_sources rows in ttsu.db).
  */
+import { EmptyRecords } from './empty-records';
 import { stage4Write, type Stage4Write, type WriteBatchRow } from './stage4/write-progress';
 import type Database from 'better-sqlite3';
 import { existsSync } from 'fs';
@@ -197,6 +198,8 @@ export class CleanupService {
   /** One disk-heavy job at a time across the Calibre and audiobook cleanups (WP21a). */
   readonly diskLock: DiskLock;
   readonly batches: BatchService;
+  /** Calibre records without files (tier 4, part 2). */
+  readonly emptyRecords: EmptyRecords;
   readonly analysis: Stage1Analysis | null;
   readonly analysis2: Stage2Analysis | null;
   readonly analysis3: Stage3Analysis | null;
@@ -315,6 +318,12 @@ export class CleanupService {
       cacheDir: opts.cacheDir,
       leaseSeconds: opts.leaseSeconds,
       log: this.log,
+    });
+    this.emptyRecords = new EmptyRecords(this.batches, {
+      cleanup: opts.cleanup,
+      main: opts.main,
+      calibreDir: opts.calibreDir,
+      cacheDir: opts.cacheDir,
     });
     this.analysis = opts.calibreDir
       ? new Stage1Analysis({
@@ -1915,6 +1924,22 @@ export class CleanupService {
     return kind === 'series'
       ? listSeriesGuesses(this.db, target, offset, limit)
       : listOtherGuesses(this.db, target, offset, limit);
+  }
+
+  /** The Calibre records without files and their state (tier 4, part 2). */
+  async listEmptyRecords() {
+    const target = this.targetLibrary();
+    if (!target) return { records: [] };
+    return { records: await this.emptyRecords.list(target) };
+  }
+
+  /** Deletes the ready records among `ids` (the user's word on the page). */
+  async deleteEmptyRecords(ids?: number[]) {
+    const target = this.targetLibrary();
+    if (!target) throw new Error('Choose the library first');
+    const batch = await this.emptyRecords.plan(target, ids);
+    void this.tick();
+    return batch;
   }
 
   /** The titles shortened or cut to fit Calibre's folder names (cleanup.db v26), newest first. */

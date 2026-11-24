@@ -403,6 +403,19 @@ export class Calibredb {
     return { ...row, formats: row.formats ?? [], tags };
   }
 
+  /** Every field of one book as `list --fields all` gives it (a record saved before a delete). */
+  async record(login: Login, calibreId: number): Promise<Record<string, unknown> | null> {
+    const r = await this.ok('list', login, [
+      '--search',
+      `id:=${calibreId}`,
+      '--fields',
+      'all',
+      '--for-machine'
+    ]);
+    const rows = JSON.parse(r.stdout || '[]') as Record<string, unknown>[];
+    return rows.find((b) => b.id === calibreId) ?? null;
+  }
+
   /** The UUIDs of those of these books that are in the library (100 ids per `list` call). */
   async presentUuids(login: Login, calibreIds: number[]): Promise<Map<number, string>> {
     const out = new Map<number, string>();

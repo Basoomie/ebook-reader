@@ -32,6 +32,7 @@
   import BookmeterCard from '$lib/components/cleanup/cleanup-bookmeter.svelte';
   import SeriesPairsCard from '$lib/components/cleanup/cleanup-series-pairs.svelte';
   import TitleFits from '$lib/components/cleanup/cleanup-title-fits.svelte';
+  import EmptyRecords from '$lib/components/cleanup/cleanup-empty-records.svelte';
   import CleanupDetails from '$lib/components/cleanup/cleanup-details.svelte';
   import {
     checksSummary,
@@ -1009,6 +1010,17 @@
           testid="cleanup-title-fits"
         >
           <TitleFits {api} />
+        </CleanupSection>
+      {/if}
+
+      {#if api}
+        <CleanupSection
+          id="empty-records"
+          jp="ファイルのない記録"
+          title="Records without files"
+          testid="cleanup-empty-records"
+        >
+          <EmptyRecords {api} on:changed={refresh} />
         </CleanupSection>
       {/if}
 

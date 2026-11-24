@@ -1296,6 +1296,34 @@ export function createCleanupRouter(options: CleanupOptions): Router {
     res.json(service.titleFits(offset, limit));
   });
 
+  // Calibre records without files (tier 4, part 2): listed, and deleted only on the user's word.
+  router.get('/cleanup/empty-records', async (_req, res, next) => {
+    try {
+      const service = serviceOr503(options);
+      res.json(await service.listEmptyRecords());
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.post('/cleanup/empty-records/delete', async (req, res, next) => {
+    try {
+      const service = serviceOr503(options);
+      const raw = (req.body ?? {}) as { ids?: unknown };
+      const ids = Array.isArray(raw.ids)
+        ? raw.ids.filter((x): x is number => Number.isInteger(x) && (x as number) > 0)
+        : undefined;
+      try {
+        const batch = await service.deleteEmptyRecords(ids);
+        res.json({ batch: batchView(service, batch.id) });
+      } catch (err) {
+        rethrow(err);
+      }
+    } catch (err) {
+      next(err);
+    }
+  });
+
   router.get('/cleanup/stage4/readings', (req, res) => {
     const service = serviceOr503(options);
     const q = req.query as Record<string, string | undefined>;

@@ -25,7 +25,13 @@
  * in its edits like any edit made in Calibre (the index only checks them afterwards).
  */
 import type Database from 'better-sqlite3';
-import { EDIT_SIDECAR_VERSION, EDIT_STAGE, isFieldStage } from './field-stages';
+import {
+  EDIT_SIDECAR_VERSION,
+  EDIT_STAGE,
+  EMPTY_RECORD_SIDECAR_VERSION,
+  EMPTY_RECORD_STAGE,
+  isFieldStage,
+} from './field-stages';
 import { releaseUnwritten } from './edits/yours';
 import { createHash, randomUUID } from 'crypto';
 import fs from 'fs/promises';
@@ -238,6 +244,16 @@ export interface BatchDeps {
 
 const TERMINAL_APPLY: ItemState[] = ['removed', 'failed', 'skipped'];
 const TERMINAL_UNDO: ItemState[] = ['restored', 'failed', 'skipped'];
+
+/**
+ * A record without files (empty-records.ts): checked and saved (verified), its own tags on the
+ * new book (tagged), removed. Nothing to export, no Undo.
+ */
+const EMPTY_RECORD_STEPS: Partial<Record<ItemState, ItemState[]>> = {
+  pending: ['verified', 'skipped', 'failed'],
+  verified: ['tagged', 'skipped', 'failed'],
+  tagged: ['removed', 'skipped', 'failed'],
+};
 
 const APPLY_STEPS: Record<ItemState, ItemState[]> = {
   pending: ['verified', 'skipped', 'failed'],
@@ -845,6 +861,13 @@ export class BatchService {
       .get() as RawBatch | undefined;
     if (!raw) return { batch: null, wait: null };
     const batch = toBatch(raw);
+    if (batch.stage === EMPTY_RECORD_STAGE && !this.sidecarAtLeast(EMPTY_RECORD_SIDECAR_VERSION)) {
+      return {
+        batch: null,
+        wait: `The cleanup sidecar is older than ${EMPTY_RECORD_SIDECAR_VERSION}: rebuild ttsu-cleanup-apply before records without files are deleted`,
+      };
+    }
+    if (batch.stage === EMPTY_RECORD_STAGE) await this.skipRecordsWithFolders(batch, now);
     if (batch.stage === EDIT_STAGE && !this.sidecarAtLeast(EDIT_SIDECAR_VERSION)) {
       return {
         batch: null,
@@ -896,6 +919,39 @@ export class BatchService {
     if (view.kind === 'undo' && isRemovalStage(view.stage))
       await this.markCalibreTrash(view, batch.libraryId);
     return { batch: view, wait: null };
+  }
+
+  /**
+   * A record without files must still have no folder when its batch is handed out (the sidecar
+   * can't see the disk; it checks the rest in Calibre). Read-only stats of the library mount.
+   */
+  private async skipRecordsWithFolders(batch: BatchRow, now: number): Promise<void> {
+    const lib = getLibrary(this.deps.main, batch.libraryId);
+    if (!lib || !this.deps.calibreDir) return;
+    const libDir = path.join(this.deps.calibreDir, lib.folder);
+    const rows = this.db
+      .prepare(
+        `SELECT i.id, i.change_id, c.old_json FROM batch_items i JOIN proposed_changes c ON c.id = i.change_id
+         WHERE i.batch_id = ? AND i.state = 'pending'`,
+      )
+      .all(batch.id) as { id: number; change_id: number; old_json: string }[];
+    for (const r of rows) {
+      const recordPath = (JSON.parse(r.old_json) as { path?: string }).path;
+      if (!recordPath || !(await folderExists(resolveInside(libDir, recordPath)))) continue;
+      const detail = 'The record has a folder in the library now; it was left alone';
+      this.db.transaction(() => {
+        this.db
+          .prepare(
+            `UPDATE batch_items SET state = 'skipped', detail = ?, updated_at = ? WHERE id = ?`,
+          )
+          .run(detail, now, r.id);
+        this.db
+          .prepare(
+            `UPDATE proposed_changes SET state = 'skipped', review_reason = ?, updated_at = ? WHERE id = ?`,
+          )
+          .run(detail, now, r.change_id);
+      })();
+    }
   }
 
   /** Whether the sidecar's last heartbeat named this version or a newer one. */
@@ -1135,8 +1191,12 @@ export class BatchService {
     if (item.state === report.step) return { state: item.state };
 
     const detail = report.detail ? String(report.detail).slice(0, 2000) : null;
+    const emptyRecord = batch.stage === EMPTY_RECORD_STAGE;
+    if (emptyRecord && batch.kind !== 'apply')
+      throw new BatchError(409, 'bad_batch', 'A record without files has no Undo');
     if (batch.kind === 'apply') {
-      if (!APPLY_STEPS[item.state].includes(report.step)) {
+      const steps = emptyRecord ? (EMPTY_RECORD_STEPS[item.state] ?? []) : APPLY_STEPS[item.state];
+      if (!steps.includes(report.step)) {
         throw new BatchError(409, 'bad_step', `Can't go from ${item.state} to ${report.step}`);
       }
       if (report.step === 'exported') {
@@ -1166,7 +1226,15 @@ export class BatchService {
             now,
             itemId,
           );
-        if (report.step === 'removed') this.recordRemoval(batch, item.change_id, itemId, now);
+        if (report.step === 'removed' && emptyRecord) {
+          // Nothing to bring back and nothing of the reader's to hand over (checked at plan).
+          this.db
+            .prepare(
+              `UPDATE proposed_changes SET state = 'applied', decided_at = ?, updated_at = ? WHERE id = ?`,
+            )
+            .run(now, now, item.change_id);
+        } else if (report.step === 'removed')
+          this.recordRemoval(batch, item.change_id, itemId, now);
         if (report.step === 'skipped' || report.step === 'failed') {
           this.db
             .prepare(
@@ -1403,7 +1471,11 @@ export class BatchService {
       }
     })();
     const failedLimit = getSettings(this.db).failedPausePercent;
-    if (batch.stage === EDIT_STAGE) {
+    if (batch.stage === EMPTY_RECORD_STAGE) {
+      // Listed on the page with its reason; no stage to pause.
+      if (failed > 0)
+        this.deps.log?.(`Cleanup: ${failed} record(s) without files not deleted (${batchId})`);
+    } else if (batch.stage === EDIT_STAGE) {
       // An edit that failed is shown on its book page; it pauses no cleanup stage. A field the
       // save made the user's and that wasn't written is theirs no more.
       releaseUnwritten(this.db, batchId);
@@ -1444,6 +1516,12 @@ export class BatchService {
     if (this.open())
       throw new BatchError(409, 'busy', 'Another batch is being applied; try again after it');
     if (isFieldStage(batch.stage)) return this.fieldWriter(batch.stage).undo(batch, now);
+    if (batch.stage === EMPTY_RECORD_STAGE)
+      throw new BatchError(
+        409,
+        'not_undoable',
+        "A record without files can't be brought back: Calibre's trash keeps nothing of it",
+      );
     const records = this.db
       .prepare(
         `SELECT change_id, removed_uuid, kept_uuid FROM undo_records

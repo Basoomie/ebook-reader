@@ -607,6 +607,12 @@ switch (sub) {
       const b = bookRow(id);
       if (!b) continue;
       const folder = path.join(lib, ...b.path.split('/'));
+      if (!fs.existsSync(folder)) {
+        // A record without a folder (calibre 9.18, checked 2026-11-23): the record goes, and
+        // nothing is put in the trash ("No entries in the trash bin" on a restore).
+        deleteRows(id);
+        continue;
+      }
       const dest = path.join(trashDir, String(id));
       fs.mkdirSync(trashDir, { recursive: true });
       fs.cpSync(folder, dest, { recursive: true });

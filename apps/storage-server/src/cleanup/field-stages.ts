@@ -12,3 +12,10 @@ export const isFieldStage = (stage: number): boolean => FIELD_STAGES.includes(st
 
 /** The sidecar version that writes the user's edits (pubdate and rating, the edit claim). */
 export const EDIT_SIDECAR_VERSION = '1.5.0';
+
+/**
+ * Deleting Calibre records without files (tier 4, part 2; empty-records.ts): a batch of its own
+ * stage, neither a field stage nor a removal stage (no export, no Undo), for sidecar 1.6.0 on.
+ */
+export const EMPTY_RECORD_STAGE = 11;
+export const EMPTY_RECORD_SIDECAR_VERSION = '1.6.0';
