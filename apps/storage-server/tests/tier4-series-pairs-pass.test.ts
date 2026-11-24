@@ -231,7 +231,8 @@ describe('series under two names: the pass', () => {
     });
     expect(st4[1]).toMatchObject({ calibre_uuid: 'u3', state: 'skipped' });
     expect(st4[1].review_reason).toMatch(/Done by the series merge/);
-    expect(p.write).toMatchObject({ closed: 1, repointed: 1 });
+    expect(p.write).toMatchObject({ closed: 1, repointed: 1, writtenAtStart: 0 });
+    expect(p.write.startedAt).toBeGreaterThan(0);
     // Recorded as the rules' merge in the one record per pair (shared with the series editor).
     expect(
       db
