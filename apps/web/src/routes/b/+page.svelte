@@ -4621,29 +4621,37 @@
   }
   .anki-row {
     display: flex;
-    gap: 0.5rem;
-    padding: 0.125rem 0;
+    gap: 0.75rem;
+    padding: 0.375rem 0;
     line-height: 1.35;
+  }
+  /* A thin line between the sections, in the notice's own text colour. */
+  .anki-row + .anki-row {
+    border-top: 1px solid var(--c-line);
   }
   .anki-label {
     flex: none;
-    min-width: 6.5rem;
+    width: 5.25rem;
     font-weight: 600;
+  }
+  .anki-card > p {
+    padding-bottom: 0.25rem;
   }
   .anki-text {
     min-width: 0;
     overflow-wrap: anywhere;
   }
+  /* The app's own tokens, so light, dark and E-ink all follow the theme. */
   .anki-added .anki-label,
   .anki-replaced .anki-label {
-    color: #6fcf8f;
+    color: var(--c-label);
   }
   .anki-kept .anki-label,
   .anki-info .anki-label,
   .anki-waiting .anki-label {
-    opacity: 0.7;
+    color: var(--c-muted);
   }
   .anki-skipped .anki-label {
-    color: #f0a35e;
+    color: var(--c-danger);
   }
 </style>

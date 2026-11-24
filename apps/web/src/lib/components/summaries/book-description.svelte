@@ -20,6 +20,7 @@
    */
   import { onDestroy, onMount } from 'svelte';
   import { logger } from '$lib/data/logger';
+  import LanguagePicker from './language-picker.svelte';
   import { isUnreachable } from '$lib/library/offline/offline-source';
   import { getSyncEngine } from '$lib/sync/sync-service';
   import { descriptionViewLang$, summaryLanguages$ } from '$lib/summaries/settings';
@@ -216,17 +217,15 @@
       {/each}
     </div>
     <!-- Phones: a small dropdown, so more languages never take more room. -->
-    <select
-      class="c-input langs-select"
-      aria-label="Description language"
-      data-testid="description-lang-select"
-      value={lang}
-      on:change={(e) => choose(e.currentTarget.value)}
-    >
-      {#each choices as c (c.lang)}
-        <option value={c.lang}>{c.label}</option>
-      {/each}
-    </select>
+    <div class="langs-select">
+      <LanguagePicker
+        {choices}
+        {lang}
+        label="Description language"
+        testid="description-lang-menu"
+        on:choose={(e) => choose(e.detail)}
+      />
+    </div>
   {/if}
 </div>
 <div
@@ -283,9 +282,6 @@
   .langs-select {
     display: none;
     margin-left: auto;
-    min-height: var(--c-btn-h);
-    width: auto;
-    max-width: 100%;
   }
   @media (max-width: 40rem) {
     .langs {
@@ -293,6 +289,11 @@
     }
     .langs-select {
       display: block;
+    }
+    /* The picker sits to the right of the heading, on the same line. */
+    .head {
+      flex-wrap: nowrap;
+      justify-content: space-between;
     }
   }
   /* About six lines of the description until "More". */

@@ -552,7 +552,7 @@ export function describeResultLines(result: EnrichResult): NoticeLine[] {
   }
 
   if (result.kept.length) {
-    lines.push({ kind: 'kept', label: 'Already there', text: result.kept.join(', ') });
+    lines.push({ kind: 'kept', label: 'Existing', text: result.kept.join(', ') });
   }
 
   for (const s of result.skipped) {
