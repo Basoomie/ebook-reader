@@ -86,7 +86,15 @@ export interface SpProgress {
   finishedAt: number | null;
   counts: Record<PairAnswer, number>;
   propose: { books: number; pairs: number; yours: number };
-  write: { batches: string[]; waiting: string | null; repointed: number; closed: number };
+  write: {
+    batches: string[];
+    waiting: string | null;
+    repointed: number;
+    closed: number;
+    /** When the first batch was planned, and how many were written then (the bar's pace). */
+    startedAt?: number | null;
+    writtenAtStart?: number;
+  };
   error: string | null;
   /** Each phase's steps: how many, the longest and the total, in ms (WP20 lessons 2-3). */
   times?: Record<string, { n: number; maxMs: number; totalMs: number }>;
@@ -618,8 +626,14 @@ export class SeriesPairs {
       p.write.waiting = wait;
       return 'wait';
     }
+    // Counted before planning (the batch may be applied before the plan returns).
+    const before = p.write.startedAt ? null : this.proposalCounts(lib);
     const r = await this.deps.batches.plan(lib, { analysisId: seriesPairsAnalysisId(p.run) });
     if (r.batch) {
+      if (before) {
+        p.write.startedAt = Date.now();
+        p.write.writtenAtStart = (before.applied ?? 0) + (before.skipped ?? 0);
+      }
       p.write.batches.push(r.batch.id);
       p.write.waiting = 'A batch is being applied';
       this.deps.log?.(`Series under two names: batch ${r.batch.id} planned`);
