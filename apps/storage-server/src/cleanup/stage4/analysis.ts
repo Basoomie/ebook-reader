@@ -81,6 +81,7 @@ import type { SpFacts, SpLibraryBook } from '../series-pairs/pass';
 import { sameTitle, type PoolEntry, type SeriesBook, type ValueFrom } from './series-order';
 import { seriesChoiceOf } from './series-order-store';
 import { N } from '../title-rules';
+import { seriesGroupKey, type LinkFacts } from './link-rules';
 import {
   MEASURED_V3,
   SCORED_FIELDS,
@@ -2665,6 +2666,135 @@ export class Stage4Analysis {
   snapshotBook(libraryId: string, uuid: string): Stage2Book | null {
     this.loadSnapshot(libraryId);
     return this.book(uuid);
+  }
+
+  /**
+   * More direct links (link-discovery.ts): one book's stored store records and lists with the
+   * values the link rules compare them with (stage 4's decided values, Calibre's values now).
+   * Read only; null when the book, its file facts or its online evidence are gone. The caller
+   * loads the snapshot first.
+   */
+  linkFacts(libraryId: string, uuid: string): LinkFacts | null {
+    const book = this.book(uuid);
+    const ref = book ? this.loadRef(libraryId, uuid)?.file : null;
+    const ev = book && ref ? this.loadOnline(libraryId, uuid) : null;
+    if (!book || !ref || !ev) return null;
+    const rec = this.record(book, ref, ev);
+    const d = decideStage4(rec);
+    const ex = this.extras?.get(book.calibreId);
+    const names = (xs: unknown): string[] =>
+      (Array.isArray(xs) ? xs : [])
+        .map((x) => (typeof x === 'string' ? x : (x as { name?: unknown })?.name))
+        .filter((x): x is string => typeof x === 'string' && x.trim() !== '');
+    const bwId = (url: string | null | undefined) =>
+      url ? (/bookwalker\.jp\/de([0-9a-f-]{36})/.exec(url)?.[1] ?? null) : null;
+    const prod = ev.amazon.product as
+      | { asin?: string | null; title?: string | null; authors?: unknown; breadcrumbs?: string[] }
+      | null
+      | undefined;
+    const rb = ev.ranobedb.book as
+      | { id?: number | null; title_orig?: string | null; staff?: { name: string; role: string }[] }
+      | null
+      | undefined;
+    const bw = ev.bookwalker.detail;
+    const bwOwn = bwId(bw?.url);
+    return {
+      uuid,
+      calibreId: book.calibreId,
+      decided: {
+        t: d.values.t,
+        au: d.values.au,
+        se: d.values.se ?? null,
+        ix: typeof d.values.ix === 'number' ? d.values.ix : null,
+        fmt: d.values.fmt ?? null,
+      },
+      calibre: {
+        title: book.title,
+        authors: book.authors,
+        series: ex?.series ?? null,
+        index: ex?.series ? (ex.seriesIndex ?? null) : null,
+        ids: book.identifiers,
+      },
+      opfTitle: ref.opf_title ?? null,
+      own: bookmeterOwnTexts(book, ref, d, rec.amazon?.product?.title)
+        .filter((t): t is string => typeof t === 'string')
+        .map((t) => nfkc(t)),
+      amazonRejected: d.amazonRejected,
+      amazon: prod?.asin
+        ? {
+            id: prod.asin,
+            title: prod.title ?? '',
+            authors: names(prod.authors),
+            roles: (Array.isArray(prod.authors) ? prod.authors : []).map(
+              (x) => (x as { role?: string } | null)?.role ?? '',
+            ),
+            breadcrumbs: prod.breadcrumbs ?? [],
+          }
+        : null,
+      amazonList: ev.amazon.search_candidates ?? [],
+      ranobedb:
+        rb?.id != null
+          ? {
+              id: String(rb.id),
+              title: rb.title_orig ?? '',
+              authors: (rb.staff ?? []).filter((s) => s.role === 'author').map((s) => s.name),
+            }
+          : null,
+      ranobedbList: (
+        (ev.ranobedb.series as { books?: { id: number; title_orig?: string | null }[] } | null)
+          ?.books ?? []
+      ).map((b) => [String(b.id), b.title_orig ?? ''] as [string, string]),
+      bookwalker:
+        bwOwn && bw
+          ? {
+              id: bwOwn,
+              title: bw.title ?? '',
+              keywords: typeof bw.keywords === 'string' ? bw.keywords : '',
+            }
+          : null,
+      bookwalkerList: (ev.bookwalker.series_candidates ?? []).flatMap(([url, title]) => {
+        const id = bwId(url);
+        return id ? [[id, title] as [string, string]] : [];
+      }),
+    };
+  }
+
+  /**
+   * More direct links: the library's Calibre series with two or more books that have stage-4
+   * answers, by the series' key, each with its books' uuids (the reader's snapshot).
+   */
+  linkSeries(libraryId: string): Map<string, string[]> {
+    const snap = this.loadSnapshot(libraryId);
+    const out = new Map<string, string[]>();
+    for (const b of snap.books.values()) {
+      const key = seriesGroupKey(this.extras?.get(b.calibreId)?.series);
+      if (!key) continue;
+      const g = out.get(key);
+      if (g) g.push(b.uuid);
+      else out.set(key, [b.uuid]);
+    }
+    for (const [k, g] of out) if (g.length < 2) out.delete(k);
+    return out;
+  }
+
+  /** More direct links: every id Calibre holds under a key, with the book that holds it. */
+  heldIds(libraryId: string, key: string): Map<string, string> {
+    const snap = this.loadSnapshot(libraryId);
+    const out = new Map<string, string>();
+    for (const b of snap.books.values())
+      if (b.identifiers[key]) out.set(b.identifiers[key], b.uuid);
+    return out;
+  }
+
+  /** A book's identifiers from the snapshot already loaded (no check for a newer one). */
+  snapshotIds(uuid: string): Record<string, string> | null {
+    return this.book(uuid)?.identifiers ?? null;
+  }
+
+  /** The snapshot's own stamp (a pass's caches follow it). */
+  snapshotStamp(libraryId: string): number {
+    this.loadSnapshot(libraryId);
+    return this.snapshotMtime;
   }
 
   /** Natively's id for an ASIN or an ISBN-13 (stage 4's own lookup, from the sitemap's pages). */

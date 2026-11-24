@@ -84,6 +84,19 @@ const EVENTS: EventDef[] = [
     label: 'More Bookmeter matches: each finished step',
     kind: 'digest',
   },
+  // More direct links: its spot check before On, and a line per finished step.
+  {
+    id: 'links_spot_ready',
+    section: 'cleanup',
+    label: 'More direct links: the spot check is ready for you',
+    kind: 'now',
+  },
+  {
+    id: 'links_summary',
+    section: 'cleanup',
+    label: 'More direct links: each finished step',
+    kind: 'digest',
+  },
   // WP21f-1: the audiobook cleanup's daily new arrivals (stage 7).
   {
     id: 'audio_arrivals_review',

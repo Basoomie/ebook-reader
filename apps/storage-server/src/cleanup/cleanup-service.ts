@@ -52,6 +52,7 @@ import {
   stage4Finished,
 } from './stage4/bookmeter-more';
 import { SeriesPairs, seriesPairsAnalysisId } from './series-pairs/pass';
+import { LinkDiscovery } from './stage4/link-discovery';
 import { CALIBRE_FETCH_SITES, type FetchSite } from './settings';
 import {
   BUILT_STAGES,
@@ -223,6 +224,10 @@ export class CleanupService {
   /** Series under a short and a full name (tier 4, Part 3): the merges and the review list. */
   readonly seriesPairs: SeriesPairs | null;
   private seriesPairsRunning: Promise<void> | null = null;
+  /** More direct links: the pass over stage 4's stored answers (link-discovery.md). */
+  readonly links: LinkDiscovery | null;
+  private linksRunning: Promise<void> | null = null;
+  private linksCache: { at: number; value: unknown } | null = null;
   private bookmeterCache: { at: number; value: unknown } | null = null;
   /** Calibre metadata editing from the reader: the user's edits, their history and Undo. */
   readonly edits: EditService;
@@ -454,6 +459,18 @@ export class CleanupService {
           batches: this.batches.stage4,
           targetLibrary: () => this.targetLibrary(),
           writeWait: (lib) => this.bookmeterWriteWait(lib),
+          log: this.log,
+        })
+      : null;
+    this.links = a4
+      ? new LinkDiscovery({
+          db: opts.cleanup,
+          analysis: a4,
+          batches: this.batches.stage4,
+          targetLibrary: () => this.targetLibrary(),
+          stage4Done: () => stage4Finished(this.db, this.stage4Ai?.isDone() ?? false),
+          writeWait: (lib) => this.bookmeterWriteWait(lib),
+          referenceFile: () => a4.referenceFile(),
           log: this.log,
         })
       : null;
@@ -1054,6 +1071,7 @@ export class CleanupService {
     this.runArrivals();
     this.runBookmeter();
     this.runSeriesPairs();
+    this.runLinks();
   }
 
   /**
@@ -1145,6 +1163,46 @@ export class CleanupService {
         this.bookmeterRunning = null;
       }
     })();
+  }
+
+  /**
+   * More direct links: its pass, stepped in its own loop like the Bookmeter pass (never blocks a
+   * round; each step works about 25 ms). Woken by the 5 s round and by the user's changes.
+   */
+  runLinks(): void {
+    if (this.linksRunning || this.stopped || !this.links) return;
+    const pass = this.links;
+    this.linksRunning = (async () => {
+      try {
+        for (let i = 0; i < 1_000_000; i++) {
+          if (this.stopped) break;
+          const r = await pass.step(() => this.stopped);
+          if (r === 'idle' || r === 'wait') break;
+          await new Promise((res) => setImmediate(res));
+        }
+      } catch (err) {
+        this.logError('Cleanup: More direct links failed:', err);
+      } finally {
+        this.linksRunning = null;
+        this.linksCache = null;
+      }
+    })();
+  }
+
+  /** More direct links' card; cached 5 s (its counts read two covering indexes). */
+  linksStatus(target: string | null, now = Date.now()): unknown {
+    const pass = this.links;
+    if (!pass) return null;
+    if (this.linksCache && now - this.linksCache.at < 5_000) return this.linksCache.value;
+    const value = pass.status(target, now);
+    this.linksCache = { at: now, value };
+    return value;
+  }
+
+  /** Drops the card's cached status (after the user's change on the page) and works at once. */
+  linksChanged(): void {
+    this.linksCache = null;
+    this.runLinks();
   }
 
   /** Why the pass's write must wait now (as stage 4 On's own: apply4), else null. */

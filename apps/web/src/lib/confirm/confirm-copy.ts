@@ -1184,6 +1184,19 @@ export function bookmeterOnCopy(books: number): ConfirmCopy {
   };
 }
 
+/** More direct links: switching it On. */
+export function linksOnCopy(books: number): ConfirmCopy {
+  return {
+    title: 'Write the new direct links to Calibre?',
+    message: [
+      `${books.toLocaleString()} ${books === 1 ? 'book gets' : 'books get'} the Amazon, RanobeDB and BOOK☆WALKER ids found for them (and the Natively id that follows from a new Amazon id) added to their identifiers. An id Calibre already has is never replaced, and store links you edited are never touched.`,
+      'They are written in batches through stage 4; each batch can be undone from the batches list.'
+    ],
+    confirmLabel: 'Switch it On',
+    irreversible: false
+  };
+}
+
 /** Series under two names: switching it On. */
 export function seriesPairsOnCopy(books: number, pairs: number): ConfirmCopy {
   return {

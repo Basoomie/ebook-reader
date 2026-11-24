@@ -126,6 +126,7 @@ export class NotificationWatcher {
     this.part('best guesses', () => this.stage4Guesses());
     this.part('fetch sites', () => this.fetchSitePauses());
     this.part('more Bookmeter matches', () => this.bookmeterPass());
+    this.part('more direct links', () => this.linksPass());
     this.part('refused changes', () => this.refusalsQuiet(settings, now));
     this.part('the AI spending limit', () => this.aiLimit());
     this.part('failing AI batches', () => this.aiBatches());
@@ -697,6 +698,61 @@ export class NotificationWatcher {
       this.service.addDigestLine(
         'bookmeter_summary',
         `More Bookmeter matches: ${text[phase]}`,
+        LINKS.cleanup,
+      );
+  }
+
+  /**
+   * More direct links: one alert when the spot check is ready (the user marks its links), and a
+   * digest line per finished step.
+   */
+  private linksPass(): void {
+    const db = this.s.cleanupDb;
+    if (!db) return;
+    let row: { mode: string; progress_json: string } | undefined;
+    try {
+      row = db
+        .prepare('SELECT mode, progress_json FROM link_discovery_state WHERE id = 1')
+        .get() as { mode: string; progress_json: string } | undefined;
+    } catch {
+      return; // cleanup.db before More direct links
+    }
+    if (!row) return;
+    const p = JSON.parse(row.progress_json) as {
+      phase?: string;
+      spot?: { drawnAt: number | null; size: number };
+      record?: { picked?: Record<string, number> };
+      series?: { picked?: Record<string, number> };
+      propose?: { proposed?: number };
+    };
+    const open = db
+      .prepare('SELECT COUNT(*) AS n FROM link_discovery_spot WHERE verdict IS NULL')
+      .get() as { n: number };
+    if (row.mode !== 'off' && p.phase === 'spot' && p.spot?.drawnAt && open.n > 0) {
+      const summary = `More direct links: the spot check of ${p.spot.size} links is ready`;
+      if (this.service.observe('links_spot', 'links_spot_ready', { waitMs: 0, summary }))
+        this.messages.push({
+          event: 'links_spot_ready',
+          lines: [summary, 'Open each link and mark it Right or Wrong; On needs none wrong.'],
+          link: LINKS.cleanup,
+        });
+    } else this.service.clear('links_spot');
+    const last = this.service.store.getState<string>('links_phase');
+    const phase = p.phase ?? 'record';
+    if (last === phase) return;
+    this.service.store.setState('links_phase', phase);
+    if (last === undefined || row.mode === 'off') return;
+    const sum = (c?: Record<string, number>) => Object.values(c ?? {}).reduce((a, b) => a + b, 0);
+    const text: Record<string, string> = {
+      series: `${sum(p.record?.picked)} links from the pages found for the books`,
+      settle: `${sum(p.series?.picked)} more links from the series' lists`,
+      spot: `${p.propose?.proposed ?? 0} books proposed`,
+      done: (p.propose?.proposed ?? 0) > 0 ? 'written to Calibre' : 'nothing new to add',
+    };
+    if (text[phase])
+      this.service.addDigestLine(
+        'links_summary',
+        `More direct links: ${text[phase]}`,
         LINKS.cleanup,
       );
   }

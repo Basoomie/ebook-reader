@@ -2471,6 +2471,58 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
       );
     `,
   },
+  {
+    version: 33,
+    name: 'more direct links: the picks from the stored answers and their spot check',
+    // More direct links (link-discovery.md; stage4/link-discovery.ts). One pass with its own
+    // Off/Preview/On over stage 4's stored answers; it fetches nothing. link_discovery_picks:
+    // one row per book and site the rules found an id for (how: the record stage 4 picked, or
+    // a series neighbour's list), with the store's title as its evidence; state ok, or why it is
+    // not proposed (clash: two books claim one id; differs: the two rules disagree; saved: the book
+    // has saved_id and the series list names another, listed for the user and never changed).
+    // link_discovery_spot: the links drawn for the spot check before On and the user's verdicts.
+    sql: `
+      CREATE TABLE link_discovery_state (
+        id            INTEGER PRIMARY KEY CHECK (id = 1),
+        library_id    TEXT,
+        mode          TEXT NOT NULL DEFAULT 'off' CHECK (mode IN ('off', 'analyse', 'on')),
+        progress_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(progress_json)),
+        paused_reason TEXT,
+        paused_detail TEXT,
+        updated_at    INTEGER NOT NULL
+      );
+      INSERT INTO link_discovery_state (id, updated_at) VALUES (1, 0);
+      CREATE TABLE link_discovery_picks (
+        library_id    TEXT NOT NULL,
+        calibre_uuid  TEXT NOT NULL,
+        site          TEXT NOT NULL CHECK (site IN ('amazon', 'ranobedb', 'bookwalker')),
+        calibre_id    INTEGER NOT NULL,
+        labeled       INTEGER NOT NULL DEFAULT 0,
+        store_id      TEXT NOT NULL,
+        store_title   TEXT NOT NULL,
+        how           TEXT NOT NULL CHECK (how IN ('record', 'series')),
+        state         TEXT NOT NULL DEFAULT 'ok' CHECK (state IN ('ok', 'clash', 'differs', 'saved')),
+        saved_id      TEXT,
+        proposed      INTEGER NOT NULL DEFAULT 0,
+        updated_at    INTEGER NOT NULL,
+        PRIMARY KEY (library_id, calibre_uuid, site)
+      ) WITHOUT ROWID;
+      CREATE INDEX link_discovery_picks_counts
+        ON link_discovery_picks (library_id, state, site, how, labeled);
+      CREATE INDEX link_discovery_picks_id
+        ON link_discovery_picks (library_id, site, store_id);
+      CREATE TABLE link_discovery_spot (
+        library_id    TEXT NOT NULL,
+        calibre_uuid  TEXT NOT NULL,
+        site          TEXT NOT NULL CHECK (site IN ('amazon', 'ranobedb', 'bookwalker')),
+        position      INTEGER NOT NULL,
+        how           TEXT NOT NULL CHECK (how IN ('record', 'series')),
+        verdict       TEXT CHECK (verdict IN ('right', 'wrong')),
+        decided_at    INTEGER,
+        PRIMARY KEY (library_id, calibre_uuid, site)
+      ) WITHOUT ROWID;
+    `,
+  },
 ];
 
 export const CLEANUP_SCHEMA_VERSION = CLEANUP_MIGRATIONS[CLEANUP_MIGRATIONS.length - 1].version;
