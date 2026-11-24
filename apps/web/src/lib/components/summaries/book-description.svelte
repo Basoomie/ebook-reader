@@ -215,6 +215,18 @@
         >
       {/each}
     </div>
+    <!-- Phones: a small dropdown, so more languages never take more room. -->
+    <select
+      class="c-input langs-select"
+      aria-label="Description language"
+      data-testid="description-lang-select"
+      value={lang}
+      on:change={(e) => choose(e.currentTarget.value)}
+    >
+      {#each choices as c (c.lang)}
+        <option value={c.lang}>{c.label}</option>
+      {/each}
+    </select>
   {/if}
 </div>
 <div
@@ -267,6 +279,21 @@
   }
   .langs .c-chip {
     min-height: var(--c-btn-h);
+  }
+  .langs-select {
+    display: none;
+    margin-left: auto;
+    min-height: var(--c-btn-h);
+    width: auto;
+    max-width: 100%;
+  }
+  @media (max-width: 40rem) {
+    .langs {
+      display: none;
+    }
+    .langs-select {
+      display: block;
+    }
   }
   /* About six lines of the description until "More". */
   .c-clamped {

@@ -520,6 +520,56 @@ export async function enrichNote(
   return result;
 }
 
+/** One row of the banner: what happened, in a few words, and to which parts of the card. */
+export interface NoticeLine {
+  kind: 'added' | 'replaced' | 'kept' | 'waiting' | 'skipped' | 'info';
+  label: string;
+  text: string;
+}
+
+/** The same result as `describeResult`, one row per outcome so it can be skimmed. */
+export function describeResultLines(result: EnrichResult): NoticeLine[] {
+  const lines: NoticeLine[] = [];
+
+  if (result.added.length) {
+    lines.push({ kind: 'added', label: 'Added', text: result.added.join(', ') });
+  }
+
+  if (result.replaced.length) {
+    lines.push({ kind: 'replaced', label: 'Replaced', text: result.replaced.join(', ') });
+  }
+
+  if (!result.added.length && !result.replaced.length && !result.waiting) {
+    lines.push({ kind: 'info', label: 'Nothing new', text: 'to add to this card' });
+  }
+
+  if (result.waiting) {
+    lines.push({
+      kind: 'waiting',
+      label: 'Waiting',
+      text: `${ROLE_LABELS.sentenceAudio} will be added ${result.waiting.wait}`
+    });
+  }
+
+  if (result.kept.length) {
+    lines.push({ kind: 'kept', label: 'Already there', text: result.kept.join(', ') });
+  }
+
+  for (const s of result.skipped) {
+    lines.push({ kind: 'skipped', label: `No ${s.what}`, text: s.reason });
+  }
+
+  if (result.unmapped) {
+    lines.push({
+      kind: 'skipped',
+      label: 'Not set up',
+      text: `no fields for the note type "${result.noteType}" (Settings > Anki)`
+    });
+  }
+
+  return lines;
+}
+
 /** The banner text for a result. */
 export function describeResult(result: EnrichResult): string {
   const name = result.word ? `「${result.word}」` : 'the last card';

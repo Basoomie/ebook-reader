@@ -312,6 +312,8 @@
   let lookupCapture: LookupCapture | undefined;
   let ankiNotice = '';
   let ankiNoticeSetup = false;
+  let ankiRows: ReaderEnrichOutcome[] = [];
+  let ankiRowsFor = '';
   let ankiBusy = false;
   let ankiNoticeTimer: ReturnType<typeof setTimeout> | undefined;
   // Phase 8: a card made with Yomitan is enriched by itself (lib/anki/auto-enrich.ts; loaded
@@ -338,6 +340,9 @@
 
   function showAnkiOutcome(outcomes: ReaderEnrichOutcome[]) {
     ankiNotice = outcomes.map((o) => o.message).join(' ');
+    // The rows are shown only while the notice still says this (any other message replaces them).
+    ankiRowsFor = ankiNotice;
+    ankiRows = outcomes.filter((o) => o.lines?.length);
     ankiNoticeSetup = outcomes.some((o) => o.unmapped);
 
     // The card was updated: the message closes by itself (problems stay until closed).
@@ -4248,7 +4253,25 @@
     role="status"
     data-testid="anki-notice"
   >
-    <span class="grow px-1" data-testid="anki-notice-text">{ankiNotice}</span>
+    {#if ankiRows.length && ankiRowsFor === ankiNotice}
+      <div class="grow px-1" data-testid="anki-notice-text">
+        {#each ankiRows as o}
+          <div class="anki-card">
+            {#if o.title}<p class="font-bold">{o.title}</p>{/if}
+            <ul>
+              {#each o.lines ?? [] as line}
+                <li class="anki-row anki-{line.kind}">
+                  <span class="anki-label">{line.label}</span>
+                  <span class="anki-text">{line.text}</span>
+                </li>
+              {/each}
+            </ul>
+          </div>
+        {/each}
+      </div>
+    {:else}
+      <span class="grow px-1" data-testid="anki-notice-text">{ankiNotice}</span>
+    {/if}
     {#if ankiNoticeSetup}
       <button
         class="c-btn c-btn-secondary c-btn-sm shrink-0 px-3"
@@ -4590,5 +4613,37 @@
   .ttu-bar-hidden :global(.ttu-whispersync-container),
   .ttu-bar-hidden :global(.ttu-whispersync-dialog) {
     visibility: visible;
+  }
+
+  /* The Anki banner: one row per outcome, a coloured label then the parts. */
+  .anki-card + .anki-card {
+    margin-top: 0.5rem;
+  }
+  .anki-row {
+    display: flex;
+    gap: 0.5rem;
+    padding: 0.125rem 0;
+    line-height: 1.35;
+  }
+  .anki-label {
+    flex: none;
+    min-width: 6.5rem;
+    font-weight: 600;
+  }
+  .anki-text {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .anki-added .anki-label,
+  .anki-replaced .anki-label {
+    color: #6fcf8f;
+  }
+  .anki-kept .anki-label,
+  .anki-info .anki-label,
+  .anki-waiting .anki-label {
+    opacity: 0.7;
+  }
+  .anki-skipped .anki-label {
+    color: #f0a35e;
   }
 </style>

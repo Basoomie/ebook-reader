@@ -372,6 +372,18 @@
               >
             {/each}
           </div>
+          <!-- Phones: a small dropdown, so more languages never take more room. -->
+          <select
+            class="c-input langs-select"
+            aria-label="Summary language"
+            data-testid="summary-lang-select"
+            value={lang}
+            on:change={(e) => chooseLanguage(e.currentTarget.value)}
+          >
+            {#each choices as c (c.lang)}
+              <option value={c.lang} disabled={editing && !c.original}>{c.label}</option>
+            {/each}
+          </select>
         {/if}
       </div>
     {/if}
@@ -574,6 +586,21 @@
     gap: 0.375rem;
     margin-left: auto;
     max-width: 100%;
+  }
+  .langs-select {
+    display: none;
+    margin-left: auto;
+    min-height: var(--c-btn-h);
+    width: auto;
+    max-width: 100%;
+  }
+  @media (max-width: 40rem) {
+    .langs {
+      display: none;
+    }
+    .langs-select {
+      display: block;
+    }
   }
   .actions {
     display: flex;
