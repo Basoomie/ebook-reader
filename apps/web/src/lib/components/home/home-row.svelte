@@ -10,7 +10,7 @@
 
 <script lang="ts">
   /**
-   * One Home row (WP7b): a title, "See all" and a horizontally scrolling strip of book
+   * One Home row (WP7b): a title with its book count, "See all" and a horizontally scrolling strip of book
    * cards (the Library's cards: blur, status, progress, "Uploaded"). WP19b: a mincho
    * heading with a gold rule; Continue reading shows its first book large ("hero") with a
    * Continue button. E-ink plain: no scroll snapping, animation or transitions; 48 px
@@ -21,7 +21,7 @@
   import { pagePath } from '$lib/data/env';
   import { coverSize } from '$lib/library/cover-size';
   import { formatBookCharCount } from '$lib/library/char-counts';
-  import { authorHref, bookDetailsHref, seriesNumber } from '$lib/library/format';
+  import { authorHref, bookDetailsHref, plural, seriesNumber } from '$lib/library/format';
   import { libraryCoverSize$ } from '$lib/library/settings';
   import type { BookState } from '$lib/sync/book-state';
   import { createEventDispatcher } from 'svelte';
@@ -29,6 +29,8 @@
   export let title: string;
   export let href: string | null = null;
   export let view: HomeRowView;
+  /** How many books the list "See all" opens has; null until counted (or if it can't be). */
+  export let count: number | null = null;
   export let emptyText = 'Nothing here yet.';
   export let thumbnailUrl: (book: CatalogBook) => string;
   export let stateOf: (book: CatalogBook) => BookState | undefined;
@@ -84,7 +86,16 @@
 
 <section class="pb-6" data-testid="home-row" data-row-title={title}>
   <div class="flex items-center gap-4 pb-3">
-    <h2 class="min-w-0 truncate font-mincho text-xl font-bold sm:text-2xl">{title}</h2>
+    <!-- A long title shortens before the count does. -->
+    <div class="flex min-w-0 items-baseline gap-2.5">
+      <h2 class="min-w-0 truncate font-mincho text-xl font-bold sm:text-2xl">{title}</h2>
+      {#if count !== null}
+        <span
+          class="shrink-0 whitespace-nowrap text-sm tabular-nums text-c-muted"
+          data-testid="home-row-count">{plural(count, 'book', 'books')}</span
+        >
+      {/if}
+    </div>
     <span class="c-section-rule" />
     {#if href}
       <a class="c-link flex min-h-[3rem] shrink-0 items-center text-sm" {href}>See all</a>

@@ -37,6 +37,7 @@
     moveRow,
     normalizeRows,
     restoreRow,
+    rowCountQuery,
     rowHref,
     rowKey,
     rowTitle,
@@ -47,7 +48,7 @@
   } from '$lib/home/rows';
   import UndoNotice from '$lib/components/confirm/undo-notice.svelte';
   import { homeRowLength$, homeRows$ } from '$lib/home/settings';
-  import { LibraryApi, LibraryApiError } from '$lib/library/api';
+  import { LibraryApi, LibraryApiError, type BookListQuery } from '$lib/library/api';
   import { existingLocalIds } from '$lib/library/browser-open-deps';
   import type { OfflineCatalog } from '$lib/library/offline/offline-catalog';
   import {
@@ -119,6 +120,10 @@
   /** Reading statistics for the hero's time left (null until read, or if they can't be). */
   let statEntries: StatEntry[] | null = null;
   let views = new Map<string, HomeRowView>();
+  /** Each row's "See all" count, by row key (kept while a row reloads). */
+  let counts = new Map<string, number>();
+  /** The latest count asked for per row: an older answer never replaces a newer one. */
+  const countAsked = new Map<string, number>();
   let editing = false;
   let ready = false;
   let stopListeners: (() => void)[] = [];
@@ -281,10 +286,15 @@
     if (!api) return;
     const asked = offline;
     if (!quiet || !views.has(key)) setView(key, { status: 'loading' });
+    const source = asked ? offlineCatalog() : api;
     try {
-      const books = await fetchRow(row, asked ? offlineCatalog() : api);
+      const { books, whole } = await fetchRow(row, source);
       if (destroyed) return;
       setView(key, { status: 'ok', books });
+      if (whole) {
+        countAsked.set(key, (countAsked.get(key) ?? 0) + 1);
+        setCount(key, books.length);
+      } else void loadCount(row, source);
       if (!asked) {
         noteReachable();
         void refreshOfflineCopies(api);
@@ -302,33 +312,67 @@
     }
   }
 
+  /**
+   * A row's books. `whole`: they are the entire list its "See all" opens (a books() page
+   * with nothing after it), so their number is the count and none needs asking for.
+   */
   async function fetchRow(
     row: HomeRowEntry,
     a: LibraryApi | OfflineCatalog
-  ): Promise<CatalogBook[]> {
+  ): Promise<{ books: CatalogBook[]; whole: boolean }> {
+    const page = async (query: BookListQuery) => {
+      const p = await a.books({ ...query, limit: rowLength });
+      return { books: p.books, whole: p.nextCursor === null };
+    };
+    const picked = async (ids: string[]) => ({
+      books: ids.length ? (await a.lookup(ids)).books : [],
+      whole: false
+    });
     switch (row.type) {
-      case 'continue': {
-        const ids = continueReadingIds(states, positions, rowLength);
-        return ids.length ? (await a.lookup(ids)).books : [];
-      }
+      case 'continue':
+        return picked(continueReadingIds(states, positions, rowLength));
       case 'recent':
-        return (await a.books({ limit: rowLength })).books;
+        return page({});
       case 'builtin': {
         const b = builtinCollection(row.ref);
-        return b ? (await a.books({ scope: b.query, limit: rowLength })).books : [];
+        return b ? page({ scope: b.query }) : { books: [], whole: true };
       }
       case 'collection': {
         const c = collectionList.find((x) => x.id === row.ref);
-        if (!c) return [];
+        if (!c) return { books: [], whole: true };
         if (c.type === 'manual') {
-          const ids = (collectionItems.get(c.id) ?? []).slice(0, rowLength).map((i) => i.bookId);
-          return ids.length ? (await a.lookup(ids)).books : [];
+          return picked((collectionItems.get(c.id) ?? []).slice(0, rowLength).map((i) => i.bookId));
         }
-        return c.query ? (await a.books({ scope: c.query, limit: rowLength })).books : [];
+        return c.query ? page({ scope: c.query }) : { books: [], whole: true };
       }
       default:
-        return (await a.books({ group: { by: row.type, name: row.ref }, limit: rowLength })).books;
+        return page({ group: { by: row.type, name: row.ref } });
     }
+  }
+
+  /**
+   * The number beside a row's "See all": how many books the list it opens has. Counting
+   * can take a moment on a big library, so the row never waits for it; on a failure the
+   * row keeps the number it had (or shows none).
+   */
+  async function loadCount(row: HomeRowEntry, a: LibraryApi | OfflineCatalog) {
+    const key = rowKey(row);
+    const collection =
+      row.type === 'collection' ? collectionList.find((c) => c.id === row.ref) : null;
+    const query = rowCountQuery(row, collection);
+    if (!query) return;
+    const asked = (countAsked.get(key) ?? 0) + 1;
+    countAsked.set(key, asked);
+    try {
+      const n = await a.count(query);
+      if (!destroyed && countAsked.get(key) === asked) setCount(key, n);
+    } catch (error) {
+      logger.warn(`Home: could not count "${key}": ${(error as Error)?.message ?? error}`);
+    }
+  }
+
+  function setCount(key: string, n: number) {
+    if (counts.get(key) !== n) counts = new Map(counts).set(key, n);
   }
 
   // ---- cards ----------------------------------------------------------------
@@ -660,6 +704,7 @@
           title={rowTitle(row, collectionName)}
           href={rowHref(row, pagePath)}
           view={views.get(rowKey(row)) ?? { status: 'loading' }}
+          count={counts.get(rowKey(row)) ?? null}
           emptyText={emptyTextFor(row)}
           {thumbnailUrl}
           {stateOf}

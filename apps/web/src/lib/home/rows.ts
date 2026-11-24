@@ -5,6 +5,8 @@
  */
 
 import { builtinCollection } from '$lib/collections/builtins';
+import type { Collection } from '$lib/collections/collections';
+import type { BookListQuery } from '$lib/library/api';
 
 /**
  * Home rows (WP7b, decided with the user): per device, customizable. Anything can be
@@ -148,5 +150,33 @@ export function rowHref(row: HomeRow, base: string): string | null {
       return q({ tab: 'authors', group: row.ref });
     case 'tag':
       return q({ tab: 'tags', group: row.ref });
+  }
+}
+
+/**
+ * The list a row's "See all" opens, as a book count (the number shown with "See all"), so
+ * the number is what the full list shows: Continue reading counts the Reading collection,
+ * Recently added the whole library. Null when there is nothing to count (a deleted
+ * collection, a smart collection without a search).
+ */
+export function rowCountQuery(
+  row: HomeRow,
+  collection?: Pick<Collection, 'id' | 'type' | 'query'> | null
+): BookListQuery | null {
+  switch (row.type) {
+    case 'continue':
+      return { scope: builtinCollection('reading')!.query };
+    case 'recent':
+      return {};
+    case 'builtin': {
+      const b = builtinCollection(row.ref);
+      return b ? { scope: b.query } : null;
+    }
+    case 'collection':
+      if (!collection || collection.id !== row.ref) return null;
+      if (collection.type === 'manual') return { collection: collection.id };
+      return collection.query ? { scope: collection.query } : null;
+    default:
+      return { group: { by: row.type, name: row.ref } };
   }
 }

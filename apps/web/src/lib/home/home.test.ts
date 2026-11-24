@@ -16,6 +16,7 @@ import {
   moveRow,
   normalizeRows,
   pinRow,
+  rowCountQuery,
   rowHref,
   restoreRow,
   rowTitle,
@@ -118,6 +119,33 @@ describe('Home rows', () => {
     expect(rowHref({ type: 'builtin', ref: 'favorites', hidden: false }, '')).toBe(
       '/library?collection=favorites&from=home'
     );
+  });
+
+  it('counts the list each row\'s "See all" opens', () => {
+    expect(rowCountQuery({ type: 'continue', hidden: false })).toEqual({
+      scope: 'status:reading'
+    });
+    expect(rowCountQuery({ type: 'recent', hidden: false })).toEqual({});
+    expect(rowCountQuery({ type: 'builtin', ref: 'favorites', hidden: false })).toEqual({
+      scope: 'favorite:yes'
+    });
+    expect(rowCountQuery({ type: 'series', ref: 'シリーズ', hidden: false })).toEqual({
+      group: { by: 'series', name: 'シリーズ' }
+    });
+    expect(rowCountQuery({ type: 'tag', ref: 'SF', hidden: false })).toEqual({
+      group: { by: 'tag', name: 'SF' }
+    });
+    const pinned: HomeRow = { type: 'collection', ref: 'c1', hidden: false };
+    expect(rowCountQuery(pinned, { id: 'c1', type: 'manual', query: null })).toEqual({
+      collection: 'c1'
+    });
+    expect(rowCountQuery(pinned, { id: 'c1', type: 'smart', query: 'tag:SF' })).toEqual({
+      scope: 'tag:SF'
+    });
+    // Nothing to count: a smart collection without a search, a deleted or other collection.
+    expect(rowCountQuery(pinned, { id: 'c1', type: 'smart', query: null })).toBeNull();
+    expect(rowCountQuery(pinned, null)).toBeNull();
+    expect(rowCountQuery(pinned, { id: 'c2', type: 'manual', query: null })).toBeNull();
   });
 });
 
