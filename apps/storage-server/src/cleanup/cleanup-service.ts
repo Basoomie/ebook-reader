@@ -1093,6 +1093,8 @@ export class CleanupService {
     const interval = getSettings(this.db).fetch.sites.bookmeter.intervalSeconds;
     const runId = bookmeterAnalysisId(p.run);
     const aiBatches = p.phase === 'ai' ? pass.openAiBatches() : [];
+    const proposals = lib ? pass.proposalCounts(lib, p.run) : {};
+    const written = (proposals.applied ?? 0) + (proposals.skipped ?? 0);
     const bar = bookmeterBar(p, now, {
       ai: pass.aiCounts(runId),
       aiInBatches: aiBatches.reduce((a, b) => a + b.requests, 0),
@@ -1100,6 +1102,14 @@ export class CleanupService {
       openQ1: pass.openRequests(['q1']),
       openStores: pass.openRequests(['stores']),
       intervalSeconds: interval,
+      write:
+        p.phase === 'write' && p.write.rebuilt
+          ? {
+              done: written,
+              total: written + (proposals.proposed ?? 0) + (proposals.queued ?? 0),
+              pace: pass.writePace(p.write.batches),
+            }
+          : undefined,
     });
     const value = {
       mode: st.mode,
@@ -1109,7 +1119,7 @@ export class CleanupService {
       progress: p,
       bar,
       books: lib ? pass.bookCounts(lib) : {},
-      proposals: lib ? pass.proposalCounts(lib, p.run) : {},
+      proposals,
       spot: pass.spotCounts(),
       spotPassed: pass.spotPassed(),
       aiBatches,

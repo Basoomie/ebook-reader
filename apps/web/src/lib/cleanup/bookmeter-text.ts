@@ -152,8 +152,11 @@ export function bookmeterBar(s: BookmeterStatus | null): ProgressBar | null {
   if (!s || !b || s.mode === 'off') return null;
   const order: BookmeterPhase[] = ['match', 'ai', 'second', 'stores', 'propose'];
   const step = order.indexOf(b.phase);
+  // The write (On) is no step of the Preview: its own bar.
   const label =
-    `Step ${step + 1} of ${order.length}: ${BOOKMETER_PHASES[b.phase]}` +
+    (step < 0
+      ? BOOKMETER_PHASES[b.phase]
+      : `Step ${step + 1} of ${order.length}: ${BOOKMETER_PHASES[b.phase]}`) +
     (b.total ? ` (${n(b.done)} of ${n(b.total)})` : b.done ? ` (${n(b.done)})` : '');
   const fraction = b.total ? Math.min(1, b.done / b.total) : 0;
   const eta =

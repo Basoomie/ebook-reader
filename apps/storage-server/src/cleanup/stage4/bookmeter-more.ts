@@ -1548,6 +1548,29 @@ export class BookmeterMore {
     return out;
   }
 
+  /**
+   * The write's pace from its last finished batches (at most 5, the waits between them included,
+   * so the time left is wall-clock; a restart long ago falls out of the window): the time from
+   * the first one's planning to the last one's end, and their items. Null before one finished.
+   */
+  writePace(batchIds: string[]): { ms: number; items: number } | null {
+    const recent = batchIds.slice(-12);
+    if (!recent.length) return null;
+    const rows = this.db
+      .prepare(
+        `SELECT created_at, finished_at, item_count FROM batches
+         WHERE id IN (${recent.map(() => '?').join(', ')}) AND finished_at IS NOT NULL
+         ORDER BY finished_at DESC LIMIT 5`,
+      )
+      .all(...recent) as { created_at: number; finished_at: number; item_count: number }[];
+    if (!rows.length) return null;
+    const first = Math.min(...rows.map((r) => r.created_at));
+    const items = rows.reduce((a, r) => a + r.item_count, 0);
+    return rows[0].finished_at > first && items > 0
+      ? { ms: rows[0].finished_at - first, items }
+      : null;
+  }
+
   /** The open requests of a phase (its waiters not answered yet). */
   openRequests(steps: ('q1' | 'q2' | 'stores')[]): number {
     const inList = steps.map(() => '?').join(', ');
@@ -1824,6 +1847,8 @@ export function bookmeterBar(
     openQ1: number;
     openStores: number;
     intervalSeconds: number;
+    /** The write: books written or skipped, all of the run's proposals, the recent batches' pace. */
+    write?: { done: number; total: number; pace: { ms: number; items: number } | null };
   },
 ): BmBar | null {
   const since = (at: number | null) => (at === null ? 0 : Math.max(0, now - at));
@@ -1882,6 +1907,18 @@ export function bookmeterBar(
         total: p.stores.asked,
         leftMs: p.stores.enqueued ? x.openStores * sp.ms : null,
         measured: sp.measured,
+      };
+    }
+    case 'write': {
+      const w = x.write;
+      if (!w) return null;
+      const ok = !!w.pace && w.pace.items >= MIN_MEASURED;
+      return {
+        phase: 'write',
+        done: w.done,
+        total: w.total,
+        leftMs: ok ? (w.pace!.ms / w.pace!.items) * Math.max(0, w.total - w.done) : null,
+        measured: ok,
       };
     }
     case 'propose':
