@@ -46,6 +46,7 @@ import type { SidecarConfig } from './config';
 import { CalibredbHelper } from './calibredb-helper';
 import { exists, Quarantine, sha256File } from './quarantine';
 import { ArrivalWorker } from './arrivals';
+import { columnShape, MOVE_STAGE, MoveWorker } from './move';
 
 /**
  * 1.1.0 (WP20e): stage 4 batches write fields as stage 2's do (series, series_index, comments).
@@ -54,8 +55,12 @@ import { ArrivalWorker } from './arrivals';
  * 1.5.0 (calibre metadata editing): the user's edits from the reader (stage 10) are field batches
  * like stage 2's, with the published date and rating; asked for between chunks of any other
  * batch so an edit never waits for a whole cleanup batch.
+ * 1.6.0 (manga part A): every batch names its own library (`calibreLibrary`; the user's edits of
+ * a moved book go to its new library), move batches (stage 11, move.ts) move books from one
+ * library to another, `#characters` and `timestamp` join set_fields, and the move's target
+ * library is checked (`move_target`: the same #illustrator and #characters as the old one).
  */
-export const SIDECAR_VERSION = '1.5.0';
+export const SIDECAR_VERSION = '1.6.0';
 
 /** The user's edits from the reader (the server's EDIT_STAGE). */
 export const EDIT_STAGE = 10;
@@ -169,6 +174,14 @@ export class Worker {
   readonly quarantine: Quarantine;
   /** WP20g: the import's add batches. */
   readonly arrivals: ArrivalWorker;
+  /** 1.6.0: moving books to another library (manga part A). */
+  readonly moves: MoveWorker;
+  /** 1.6.0: the running batch's own library (null: the login's). */
+  private batchLibrary: string | null = null;
+  /** 1.6.0: the library the move puts books in (from the server), checked with the others. */
+  private moveTarget: string | null = null;
+  /** Whether the library's #illustrator is a names column (" & " separates its values). */
+  private illustratorIsNames = true;
   private readonly log: Logger;
   private stopped = false;
   private checks: CheckResult[] = [];
@@ -224,6 +237,22 @@ export class Worker {
       pollSeconds: c.waitPollSeconds,
       isStopped: () => this.stopped,
       log: this.log
+    });
+    this.moves = new MoveWorker({
+      calibredb: this.calibredb,
+      quarantine: this.quarantine,
+      api: this.api,
+      log: this.log,
+      report: (batch, item, r) => this.report(batch, item, r),
+      pollUntil: (until, check) => this.pollUntil(until, check),
+      isStopped: () => this.stopped,
+      step: (name, fn) => this.step(name, fn),
+      illustratorNames: () => this.illustratorIsNames,
+      waits: {
+        removeWaitSeconds: c.removeWaitSeconds,
+        trashRestoreWaitSeconds: c.trashRestoreWaitSeconds,
+        writeWaitSeconds: c.writeWaitSeconds
+      }
     });
     this.retryMinMs = opts.retryMinMs ?? 2000;
     this.retryMaxMs = opts.retryMaxMs ?? 60000;
@@ -337,6 +366,7 @@ export class Worker {
   private applyAnswer(answer: HeartbeatAnswer): void {
     const changed = JSON.stringify(answer.calibre) !== JSON.stringify(this.login);
     this.login = answer.calibre;
+    this.moveTarget = answer.moveTarget ?? null;
     this.itemDelayMs = Math.max(0, answer.itemDelaySeconds * 1000);
     this.pollMs = Math.max(1000, answer.pollSeconds * 1000);
     if (changed) this.checkedAt = 0;
@@ -421,10 +451,13 @@ export class Worker {
       return out;
     }
     const lib: Login = { ...login, libraryId: login.libraryId };
+    let ownColumns: string | null = null;
     try {
       const r = await this.calibredb.ok('custom_columns', lib);
+      ownColumns = r.stdout;
       const ok = hasMultipleTextColumn(r.stdout, 'illustrator');
       const block = firstBlock(r.stdout, 'illustrator');
+      this.illustratorIsNames = columnShape(block)?.names ?? true;
       add(
         'illustrator_column',
         ok,
@@ -436,6 +469,32 @@ export class Worker {
       );
     } catch (err) {
       add('illustrator_column', false, (err as Error).message);
+    }
+    // 1.6.0: the move's target library has the same #illustrator and #characters columns.
+    if (this.moveTarget) {
+      try {
+        const there = await this.calibredb.ok('custom_columns', {
+          ...login,
+          libraryId: this.moveTarget
+        });
+        const problems: string[] = [];
+        for (const label of ['illustrator', 'characters']) {
+          const a = columnShape(ownColumns ? firstBlock(ownColumns, label) : null);
+          const b = columnShape(firstBlock(there.stdout, label));
+          if (!b) problems.push(`#${label} is missing`);
+          else if (a && JSON.stringify(a) !== JSON.stringify(b))
+            problems.push(
+              `#${label} differs (${JSON.stringify(b)} there, ${JSON.stringify(a)} here)`
+            );
+        }
+        add(
+          'move_target',
+          problems.length === 0,
+          problems.length ? `${this.moveTarget}: ${problems.join('; ')}` : this.moveTarget
+        );
+      } catch (err) {
+        add('move_target', false, `${this.moveTarget}: ${(err as Error).message}`);
+      }
     }
     // `calibredb trash restore` exists from 9.18 on. The trash isn't listed here: with
     // thousands of entries that takes minutes (it did on the NAS, 2026-11-13); Undo simply
@@ -458,7 +517,14 @@ export class Worker {
 
   private requireLogin(): Login {
     if (!this.login?.libraryId) throw new Error('No Calibre login or library yet');
-    return { ...this.login, libraryId: this.login.libraryId };
+    return { ...this.login, libraryId: this.batchLibrary ?? this.login.libraryId };
+  }
+
+  /** A move batch's target library (1.6.0). */
+  private targetLogin(batch: Batch): Login {
+    if (!this.login?.libraryId) throw new Error('No Calibre login or library yet');
+    if (!batch.targetCalibreLibrary) throw new Error('The move batch names no target library');
+    return { ...this.login, libraryId: batch.targetCalibreLibrary };
   }
 
   /** Reports a step; the next step starts only after the server's answer. */
@@ -482,19 +548,25 @@ export class Worker {
     const was = this.inEdit;
     const steps = this.steps;
     const onCall = this.calibredb.onCall;
+    const library = this.batchLibrary;
     this.inEdit = true;
     try {
       await this.processAny(batch);
     } finally {
-      // The batch it was written between goes on with its own step timing.
+      // The batch it was written between goes on with its own step timing and library.
       this.inEdit = was;
       this.steps = steps;
       this.calibredb.onCall = onCall;
+      this.batchLibrary = library;
     }
   }
 
   private async processAny(batch: Batch): Promise<void> {
-    this.log.info(`Batch ${batch.id} (${batch.kind}, ${batch.items.length} items)`);
+    // 1.6.0: the batch's own library (a server before it sends none: the login's).
+    this.batchLibrary = batch.calibreLibrary ?? null;
+    this.log.info(
+      `Batch ${batch.id} (${batch.kind}, ${batch.items.length} items${batch.calibreLibrary ? `, ${batch.calibreLibrary}${batch.targetCalibreLibrary ? ` to ${batch.targetCalibreLibrary}` : ''}` : ''})`
+    );
     const lease = setInterval(
       () => {
         void this.api.progress(batch.id).catch(() => {});
@@ -542,7 +614,18 @@ export class Worker {
             : ['restored', 'failed', 'skipped'];
         if (final.includes(item.state)) continue;
         try {
-          if (batch.kind === 'apply') await this.applyItem(batch, item);
+          if (batch.stage === MOVE_STAGE) {
+            if (batch.kind === 'apply')
+              await this.moves.applyItem(batch, item, this.requireLogin(), this.targetLogin(batch));
+            else
+              await this.moves.undoItem(
+                batch,
+                item,
+                this.requireLogin(),
+                this.targetLogin(batch),
+                plan!
+              );
+          } else if (batch.kind === 'apply') await this.applyItem(batch, item);
           else await this.undoItem(batch, item, plan!);
         } catch (err) {
           if (err instanceof ServerError) throw err;

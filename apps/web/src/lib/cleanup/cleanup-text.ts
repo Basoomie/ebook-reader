@@ -267,6 +267,7 @@ export function batchKindText(batch: CleanupBatch): string {
   if (batch.stage === 2) return 'Metadata from the files';
   if (batch.stage === 4) return 'Metadata from the online sources';
   if (batch.stage === 5) return 'Genres and tags';
+  if (batch.stage === 11) return 'Move to the manga library';
   return batch.stage === 3 ? 'Remove copies with the same text' : 'Remove identical copies';
 }
 

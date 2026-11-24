@@ -23,13 +23,31 @@
     undoCleanupBatchCopy,
     undoFileMetadataBatchCopy,
     undoOnlineSourcesBatchCopy,
-    undoGenresTagsBatchCopy
+    undoGenresTagsBatchCopy,
+    undoMoveBatchCopy
   } from '$lib/confirm/confirm-copy';
   import { formatWhen } from '$lib/notes/notes-format';
   import CopyRow from './cleanup-copy-row.svelte';
   import FieldRow from './cleanup-field-row.svelte';
 
   export let api: CleanupApi;
+
+  /** Manga part A: a move item's title (its evidence) and state, as the move card names them. */
+  function moveItemTitle(item: Proposal): string {
+    const ev = item.evidence as { title?: string } | null;
+    return ev?.title ?? `Calibre #${item.calibre_id}`;
+  }
+  const MOVE_ITEM_STATES: Record<string, string> = {
+    pending: 'Waiting',
+    verified: 'Checked',
+    exported: 'Saved to the quarantine',
+    tagged: 'Added to the manga library and checked',
+    removed: 'Moved',
+    restored: 'Moved back',
+    skipped: 'Skipped',
+    failed: 'Failed'
+  };
+  const moveItemState = (s: string) => MOVE_ITEM_STATES[s] ?? s;
   export let batches: CleanupBatch[] = [];
 
   const dispatch = createEventDispatcher<{ changed: void }>();
@@ -63,11 +81,13 @@
     const copy =
       batch.stage === 5
         ? undoGenresTagsBatchCopy(count)
-        : batch.stage === 4
-          ? undoOnlineSourcesBatchCopy(count)
-          : batch.stage === 2
-            ? undoFileMetadataBatchCopy(count)
-            : undoCleanupBatchCopy(count);
+        : batch.stage === 11
+          ? undoMoveBatchCopy(count)
+          : batch.stage === 4
+            ? undoOnlineSourcesBatchCopy(count)
+            : batch.stage === 2
+              ? undoFileMetadataBatchCopy(count)
+              : undoCleanupBatchCopy(count);
     if (!(await confirmDestructive({ ...copy, testid: 'cleanup-undo-confirm' }))) {
       return;
     }
@@ -135,6 +155,18 @@
               {#each items as item (item.id)}
                 {#if openStage === 2 || openStage === 4}
                   <FieldRow {item} state={item.state} detail={item.detail ?? null} />
+                {:else if openStage === 11}
+                  <!-- Manga part A: a moved book (its title, the state, and why it failed). -->
+                  <li
+                    class="c-tile flex flex-col gap-1 rounded p-3 text-sm"
+                    data-testid="move-item"
+                  >
+                    <span class="font-bold">{moveItemTitle(item)}</span>
+                    <span class="text-c-muted"
+                      >Calibre #{item.calibre_id} · {moveItemState(item.state)}</span
+                    >
+                    {#if item.detail}<span>{item.detail}</span>{/if}
+                  </li>
                 {:else}
                   <CopyRow {item} state={item.state} />
                 {/if}

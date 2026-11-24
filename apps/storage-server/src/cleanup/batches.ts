@@ -25,7 +25,16 @@
  * in its edits like any edit made in Calibre (the index only checks them afterwards).
  */
 import type Database from 'better-sqlite3';
-import { EDIT_SIDECAR_VERSION, EDIT_STAGE, isFieldStage } from './field-stages';
+import {
+  EDIT_SIDECAR_VERSION,
+  EDIT_STAGE,
+  isFieldStage,
+  MOVE_SIDECAR_VERSION,
+  MOVE_STAGE,
+} from './field-stages';
+import { MoveBatches } from './move/move-batches';
+import { pauseMove } from './move/state';
+import { movedFrom } from './move/rekey';
 import { releaseUnwritten } from './edits/yours';
 import { createHash, randomUUID } from 'crypto';
 import fs from 'fs/promises';
@@ -101,6 +110,8 @@ export interface BatchRow {
   finishedAt: number | null;
   ingestedAt: number | null;
   error: string | null;
+  /** Manga part A: the library a move batch moves its books to (null for every other batch). */
+  targetLibraryId: string | null;
 }
 
 interface RawBatch {
@@ -120,6 +131,7 @@ interface RawBatch {
   finished_at: number | null;
   ingested_at: number | null;
   error: string | null;
+  target_library_id?: string | null;
 }
 
 function toBatch(r: RawBatch): BatchRow {
@@ -140,6 +152,7 @@ function toBatch(r: RawBatch): BatchRow {
     finishedAt: r.finished_at,
     ingestedAt: r.ingested_at,
     error: r.error,
+    targetLibraryId: r.target_library_id ?? null,
   };
 }
 
@@ -189,6 +202,12 @@ export interface SidecarBatch {
   /** Stage 2: books per `calibredb list` read-back, and the fields to list. */
   chunkSize?: number;
   listFields?: string;
+  /**
+   * 1.6.0: the content server's id of the batch's own library (every batch: the reader's edits
+   * may be of a book of any library), and for a move batch the library the books move to.
+   */
+  calibreLibrary?: string | null;
+  targetCalibreLibrary?: string | null;
 }
 
 export interface ItemReport {
@@ -200,6 +219,9 @@ export interface ItemReport {
   method?: 'trash' | 'readd';
   calibreId?: number;
   uuid?: string;
+  /** A move's added copy: the fields the sidecar compared, and those it had to write again. */
+  fields?: Record<string, unknown>;
+  fixed?: string[];
 }
 
 interface Evidence {
@@ -234,6 +256,14 @@ export interface BatchDeps {
   cacheDir: string;
   leaseSeconds?: number;
   log?: (m: string) => void;
+  /**
+   * The content server's id of a reader library (manga part A: batches of more than one
+   * library); null when the content server doesn't list it. Without it every batch is the
+   * sidecar's one library, as before.
+   */
+  calibreLibraryOf?: (readerLibraryId: string) => string | null;
+  /** The content server's id of the cleanup's own library (the sidecar's default). */
+  defaultCalibreLibrary?: () => string | null;
 }
 
 const TERMINAL_APPLY: ItemState[] = ['removed', 'failed', 'skipped'];
@@ -292,6 +322,8 @@ export class BatchService {
   readonly stage5: Stage2Batches;
   /** The user's edits from the reader (calibre metadata editing): the same path again. */
   readonly edits: Stage2Batches;
+  /** Manga part A: moving books to another Calibre library (stage 11). */
+  readonly moves: MoveBatches;
 
   /** The field-write path of a stage (2, 4, 5 or the user's edits). */
   fieldWriter(stage: number): Stage2Batches {
@@ -315,6 +347,7 @@ export class BatchService {
     this.stage4 = new Stage2Batches(this, deps, 4);
     this.stage5 = new Stage2Batches(this, deps, 5);
     this.edits = new Stage2Batches(this, deps, EDIT_STAGE);
+    this.moves = new MoveBatches(this, deps);
   }
 
   private get db() {
@@ -344,14 +377,19 @@ export class BatchService {
     return r ? toBatch(r) : null;
   }
 
-  /** True while a claimed removal batch with a live lease works on this library (the indexer waits). */
+  /**
+   * True while a claimed removal batch with a live lease works on this library (the indexer
+   * waits); a move batch holds both its libraries (the reader's source is re-bound per book).
+   */
   holdsIngest(libraryId: string, now = Date.now()): boolean {
     const r = this.db
       .prepare(
-        `SELECT 1 FROM batches WHERE library_id = ? AND stage IN (${REMOVAL_STAGES.join(',')})
-           AND state = 'claimed' AND lease_expires_at > ? LIMIT 1`,
+        `SELECT 1 FROM batches WHERE state = 'claimed' AND lease_expires_at > ?
+           AND ((library_id = ? AND stage IN (${[...REMOVAL_STAGES, MOVE_STAGE].join(',')}))
+             OR (stage = ${MOVE_STAGE} AND target_library_id = ?))
+         LIMIT 1`,
       )
-      .get(libraryId, now);
+      .get(now, libraryId, libraryId);
     return r !== undefined;
   }
 
@@ -375,6 +413,7 @@ export class BatchService {
     this.checkIngestedStage(2, now);
     this.checkIngestedStage(3, now);
     this.checkIngestedStage(4, now);
+    this.moves.checkIngested(now);
   }
 
   private checkIngestedStage(stage: number, now: number): void {
@@ -865,6 +904,35 @@ export class BatchService {
           wait: `The cleanup sidecar is older than 1.${need}.0: rebuild ttsu-cleanup-apply before stage ${batch.stage} writes`,
         };
     }
+    // 1.6.0 (manga part A): a move batch, and any batch of another library than the sidecar's
+    // own (the reader's edits of a moved book), go only to a sidecar that uses each batch's
+    // library: an older one would write to its one library (another book with that id).
+    const calibreLibrary = this.deps.calibreLibraryOf?.(batch.libraryId) ?? null;
+    const otherLibrary =
+      this.deps.calibreLibraryOf !== undefined &&
+      calibreLibrary !== (this.deps.defaultCalibreLibrary?.() ?? null);
+    if (
+      (batch.stage === MOVE_STAGE || otherLibrary) &&
+      !this.sidecarAtLeast(MOVE_SIDECAR_VERSION)
+    ) {
+      return {
+        batch: null,
+        wait: `The cleanup sidecar is older than ${MOVE_SIDECAR_VERSION}: rebuild ttsu-cleanup-apply before batches of ${batch.stage === MOVE_STAGE ? 'the move' : 'another library'} are written`,
+      };
+    }
+    if (this.deps.calibreLibraryOf && calibreLibrary === null)
+      return {
+        batch: null,
+        wait: 'The batch’s library is not on the content server (the sidecar lists its libraries)',
+      };
+    if (batch.stage === MOVE_STAGE && batch.targetLibraryId) {
+      const target = this.deps.calibreLibraryOf?.(batch.targetLibraryId) ?? null;
+      if (!target)
+        return {
+          batch: null,
+          wait: 'The library the books move to is not on the content server',
+        };
+    }
     if (!batch.snapshotSaved) {
       // One copy per batch at a time, and the sidecar gets an answer within its request time:
       // a copy still running answers "being made" and is asked about again on the next claim.
@@ -893,7 +961,7 @@ export class BatchService {
       .run(now, now + this.leaseSeconds * 1000, now, batch.id).changes;
     if (changed !== 1) return { batch: null, wait: null };
     const view = this.sidecarView(batch.id);
-    if (view.kind === 'undo' && isRemovalStage(view.stage))
+    if (view.kind === 'undo' && (isRemovalStage(view.stage) || view.stage === MOVE_STAGE))
       await this.markCalibreTrash(view, batch.libraryId);
     return { batch: view, wait: null };
   }
@@ -981,7 +1049,30 @@ export class BatchService {
 
   sidecarView(batchId: string): SidecarBatch {
     const batch = this.get(batchId)!;
+    const libraries = this.deps.calibreLibraryOf
+      ? {
+          calibreLibrary: this.deps.calibreLibraryOf(batch.libraryId),
+          targetCalibreLibrary: batch.targetLibraryId
+            ? this.deps.calibreLibraryOf(batch.targetLibraryId)
+            : null,
+        }
+      : {};
+    return { ...this.sidecarViewOf(batch), ...libraries };
+  }
+
+  private sidecarViewOf(batch: BatchRow): SidecarBatch {
     const settings = getSettings(this.db);
+    if (batch.stage === MOVE_STAGE)
+      return this.moves.sidecarView(batch, {
+        id: batch.id,
+        kind: batch.kind,
+        stage: batch.stage,
+        createdAt: batch.createdAt,
+        leaseSeconds: this.leaseSeconds,
+        itemDelaySeconds: settings.pacing.itemDelaySeconds,
+        snapshotSha256: batch.snapshotSha256,
+        snapshotSaved: batch.snapshotSaved,
+      });
     if (isFieldStage(batch.stage)) {
       return {
         id: batch.id,
@@ -1111,6 +1202,7 @@ export class BatchService {
     now = Date.now(),
   ): { state: ItemState } {
     const batch = this.requireClaimed(batchId);
+    if (batch.stage === MOVE_STAGE) return this.moves.report(batch, itemId, report, now);
     if (isFieldStage(batch.stage)) {
       throw new BatchError(
         409,
@@ -1265,7 +1357,12 @@ export class BatchService {
     const rec = this.db
       .prepare('SELECT * FROM undo_records WHERE batch_id = ? AND change_id = ?')
       .get(batch.undoOf, changeId) as
-      | { removed_uuid: string; handoff_json: string; restored_at: number | null }
+      | {
+          removed_uuid: string;
+          kept_uuid: string;
+          handoff_json: string;
+          restored_at: number | null;
+        }
       | undefined;
     if (!rec) throw new BatchError(404, 'not_found', 'No undo record for this item');
     if (!report.method || !report.uuid || typeof report.calibreId !== 'number') {
@@ -1292,7 +1389,10 @@ export class BatchService {
           now,
         );
     }
-    reverseHandoff(this.deps.main, handoff, now);
+    // Manga part A: when the kept copy has since moved to another library, the user's data stays
+    // with the moved book (the reader book is the same; swapping back would give it to this copy).
+    if (!movedFrom(this.db, batch.libraryId, rec.kept_uuid))
+      reverseHandoff(this.deps.main, handoff, now);
     this.db
       .prepare(
         `UPDATE undo_records SET restored_at = ?, restore_method = ?, restored_calibre_id = ?,
@@ -1386,15 +1486,18 @@ export class BatchService {
           .run(now, batchId);
       }
       if (batch.kind === 'undo' && batch.undoOf) {
-        const left = (
-          this.db
-            .prepare(
-              isFieldStage(batch.stage)
-                ? `SELECT COUNT(*) AS n FROM field_undo WHERE batch_id = ? AND restored_at IS NULL`
-                : `SELECT COUNT(*) AS n FROM undo_records WHERE batch_id = ? AND restored_at IS NULL`,
-            )
-            .get(batch.undoOf) as { n: number }
-        ).n;
+        const left =
+          batch.stage === MOVE_STAGE
+            ? this.moves.leftToUndo(batch.undoOf)
+            : (
+                this.db
+                  .prepare(
+                    isFieldStage(batch.stage)
+                      ? `SELECT COUNT(*) AS n FROM field_undo WHERE batch_id = ? AND restored_at IS NULL`
+                      : `SELECT COUNT(*) AS n FROM undo_records WHERE batch_id = ? AND restored_at IS NULL`,
+                  )
+                  .get(batch.undoOf) as { n: number }
+              ).n;
         if (left === 0) {
           this.db
             .prepare(`UPDATE batches SET state = 'undone', updated_at = ? WHERE id = ?`)
@@ -1417,6 +1520,13 @@ export class BatchService {
       // A few failed items don't stop the run (decided 2026-11-15): they stay listed in the batch.
       this.deps.log?.(
         `Cleanup: ${failed} of ${states.length} items failed in batch ${batchId} (not above ${failedLimit} %): going on`,
+      );
+    } else if (failed > 0 && batch.kind === 'apply' && batch.stage === MOVE_STAGE) {
+      pauseMove(
+        this.db,
+        'batch_failed',
+        `${failed} of ${states.length} books failed in the last move batch${error ? `: ${error}` : ''}. ` +
+          'Check the batch, then resume.',
       );
     } else if (failed > 0 && batch.kind === 'apply') {
       pauseStage(
@@ -1444,6 +1554,7 @@ export class BatchService {
     if (this.open())
       throw new BatchError(409, 'busy', 'Another batch is being applied; try again after it');
     if (isFieldStage(batch.stage)) return this.fieldWriter(batch.stage).undo(batch, now);
+    if (batch.stage === MOVE_STAGE) return this.moves.undo(batch, now);
     const records = this.db
       .prepare(
         `SELECT change_id, removed_uuid, kept_uuid FROM undo_records

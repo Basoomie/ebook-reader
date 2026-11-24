@@ -52,6 +52,10 @@ import {
   stage4Finished,
 } from './stage4/bookmeter-more';
 import { SeriesPairs, seriesPairsAnalysisId } from './series-pairs/pass';
+import { MovePass } from './move/pass';
+import { moveAnalysisId } from './move/state';
+import { MOVE_SIDECAR_VERSION, MOVE_STAGE } from './field-stages';
+import { booksWithReaderData } from './handoff';
 import { CALIBRE_FETCH_SITES, type FetchSite } from './settings';
 import {
   BUILT_STAGES,
@@ -105,6 +109,11 @@ export const CHECK_LABELS: Record<string, { label: string; required: boolean }> 
   library_indexed: {
     label: "Reader's index of the library is ready (snapshot for each batch)",
     required: true,
+  },
+  // Manga part A: checked by the sidecar (1.6.0) while the move is not Off; the move waits for it.
+  move_target: {
+    label: 'The manga library is on the content server with the same #illustrator and #characters',
+    required: false,
   },
 };
 
@@ -223,6 +232,9 @@ export class CleanupService {
   /** Series under a short and a full name (tier 4, Part 3): the merges and the review list. */
   readonly seriesPairs: SeriesPairs | null;
   private seriesPairsRunning: Promise<void> | null = null;
+  /** Manga part A: moving the manga and image-only books to the manga library. */
+  readonly move: MovePass;
+  private moveRunning: Promise<void> | null = null;
   private bookmeterCache: { at: number; value: unknown } | null = null;
   /** Calibre metadata editing from the reader: the user's edits, their history and Undo. */
   readonly edits: EditService;
@@ -315,6 +327,8 @@ export class CleanupService {
       cacheDir: opts.cacheDir,
       leaseSeconds: opts.leaseSeconds,
       log: this.log,
+      calibreLibraryOf: (lib) => this.calibreLibraryOf(lib),
+      defaultCalibreLibrary: () => this.resolvedLibraryId().id,
     });
     this.analysis = opts.calibreDir
       ? new Stage1Analysis({
@@ -426,6 +440,11 @@ export class CleanupService {
       carry: (libraryId, from, to) => this.edits.carry(libraryId, from, to),
       requireReadOnlySources: opts.bookSourcesReadOnly,
       checksPass: () => this.checksPass(),
+      // Manga part A: the run's manga move in the same run (built below; read when the run gets there).
+      move: () =>
+        this.move
+          ? { pass: this.move, writeWait: (lib, target) => this.moveWriteWait(lib, target) }
+          : null,
       log: this.log,
     });
     this.bookmeter =
@@ -457,6 +476,16 @@ export class CleanupService {
           log: this.log,
         })
       : null;
+    this.move = new MovePass({
+      db: opts.cleanup,
+      main: opts.main,
+      cacheDir: opts.cacheDir,
+      batches: this.batches,
+      sourceLibrary: () => this.targetLibrary(),
+      writeWait: (lib, target) => this.moveWriteWait(lib, target),
+      withData: (ids) => booksWithReaderData(opts.main, ids),
+      log: this.log,
+    });
     // Stage 4's covers are the stores' pictures, read from the fetch cache.
     this.batches.stage4.setStoreCover((url) => {
       const r = opts.cleanup
@@ -680,6 +709,8 @@ export class CleanupService {
   wantsIngest(libraryId: string): boolean {
     try {
       if (Date.now() < this.arrivalsIngestUntil && libraryId === this.targetLibrary()) return true;
+      const move = this.batches.awaitingIngest(MOVE_STAGE);
+      if (move && (move.libraryId === libraryId || move.targetLibraryId === libraryId)) return true;
       return REMOVAL_STAGES.some((st) => this.batches.awaitingIngest(st)?.libraryId === libraryId);
     } catch {
       return false;
@@ -1054,6 +1085,150 @@ export class CleanupService {
     this.runArrivals();
     this.runBookmeter();
     this.runSeriesPairs();
+    this.runMove();
+  }
+
+  /**
+   * Manga part A: the move pass in its own loop (each step short; the select step reads the
+   * library's snapshot once). Woken by the 5 s round and by the card.
+   */
+  runMove(): void {
+    if (this.moveRunning || this.stopped) return;
+    const pass = this.move;
+    this.moveRunning = (async () => {
+      try {
+        for (let i = 0; i < 1000; i++) {
+          if (this.stopped) break;
+          const r = await pass.step(() => this.stopped);
+          if (r === 'idle' || r === 'wait') break;
+          await new Promise((res) => setImmediate(res));
+        }
+      } catch (err) {
+        this.logError('Cleanup: the move to the manga library failed:', err);
+      } finally {
+        this.moveRunning = null;
+      }
+    })();
+  }
+
+  /** After the user's change on the card: work at once. */
+  moveChanged(): void {
+    this.runMove();
+  }
+
+  /**
+   * The library the sidecar checks for the move (its columns against the cleanup's library):
+   * the content server's id of the move's target while the move is not Off.
+   */
+  moveTargetForSidecar(): string | null {
+    try {
+      if (this.move.state().mode === 'off') return null;
+      const target = this.move.targetLibrary();
+      return target ? this.calibreLibraryOf(target) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * The content server's id of a reader library: the cleanup's own library as resolved for the
+   * sidecar, any other by its folder name when the content server lists it (null otherwise).
+   */
+  calibreLibraryOf(readerLibraryId: string): string | null {
+    if (readerLibraryId === this.targetLibrary()) return this.resolvedLibraryId().id;
+    const folder = getLibrary(this.opts.main, readerLibraryId)?.folder;
+    if (folder === undefined) return null;
+    const id = libraryIdFromFolder(folder);
+    return this.calibreLibraries().includes(id) ? id : null;
+  }
+
+  /**
+   * Why the move's write must wait now: a batch open, an earlier stage still writing, the
+   * safety checks, and the move's own: the target library on the content server with the same
+   * columns (the sidecar's check), on in the reader with a language and indexed, and a sidecar
+   * that moves books (1.6.0).
+   */
+  private moveWriteWait(lib: string, target: string): string | null {
+    if (this.batches.open()) return 'A batch is being applied';
+    for (const [s, left] of [
+      [1, () => this.remaining(lib)],
+      [2, () => this.remaining2(lib)],
+      [3, () => this.remaining3(lib)],
+      [4, () => this.remaining4(lib)],
+      [5, () => this.remaining5(lib)],
+    ] as [number, () => number][]) {
+      if (getStage(this.db, s).mode === 'on' && left() > 0)
+        return `Waiting for stage ${s} to finish writing`;
+    }
+    const checks = this.checksPass();
+    if (!checks.ok) return `Waiting for the safety checks: ${checks.failing.join('; ')}`;
+    if (!this.batches.sidecarAtLeast(MOVE_SIDECAR_VERSION))
+      return `The cleanup sidecar is older than ${MOVE_SIDECAR_VERSION}: rebuild ttsu-cleanup-apply`;
+    const t = getLibrary(this.opts.main, target);
+    if (!t || !t.enabled || !t.language)
+      return `Switch the library "${t?.folder ?? target}" on in the reader, with its language, first`;
+    if (!this.calibreLibraryOf(target))
+      return `The content server doesn't list the library "${t.folder}"`;
+    const check = this.checks().find((c) => c.name === 'move_target');
+    if (!check?.ok)
+      return `The library "${t.folder}" on the content server: ${check?.detail ?? 'not checked yet'}`;
+    try {
+      if (getIndexState(this.opts.main, target).indexedAt === null)
+        return `The reader hasn't indexed "${t.folder}" yet`;
+    } catch {
+      return `The reader hasn't indexed "${t.folder}" yet`;
+    }
+    return null;
+  }
+
+  /** The move card: mode, phase, counts, the spot check, the bar with the time left. */
+  moveStatus(now = Date.now()): unknown {
+    const pass = this.move;
+    const st = pass.state();
+    const p = st.progress;
+    const lib = p.libraryId ?? this.targetLibrary();
+    const target = pass.targetLibrary();
+    const proposals = lib ? pass.proposalCounts(lib, p.run) : {};
+    const moved = lib ? pass.movedCount(lib) : 0;
+    const toMove = (proposals['auto:proposed'] ?? 0) + (proposals['auto:queued'] ?? 0);
+    const base = p.write.movedAtStart ?? moved;
+    const bar =
+      p.phase === 'write' && st.mode === 'on' && moved - base + toMove > 0
+        ? {
+            label: 'books',
+            done: moved - base,
+            total: moved - base + toMove,
+            startedAt: p.write.startedAt,
+          }
+        : null;
+    const left =
+      bar && bar.startedAt && bar.done > 0 && bar.done < bar.total
+        ? Math.round(((now - bar.startedAt) / bar.done) * (bar.total - bar.done))
+        : null;
+    const t = target ? getLibrary(this.opts.main, target) : null;
+    return {
+      mode: st.mode,
+      pausedReason: st.pausedReason,
+      pausedDetail: st.pausedDetail,
+      analysisId: moveAnalysisId(p.run),
+      progress: p,
+      bar: bar ? { ...bar, leftMs: left } : null,
+      proposals,
+      moved,
+      spot: pass.spotCounts(),
+      spotPassed: pass.spotPassed(),
+      target: t
+        ? {
+            id: t.id,
+            folder: t.folder,
+            name: t.name,
+            enabled: t.enabled,
+            language: t.language,
+            calibreLibrary: this.calibreLibraryOf(t.id),
+          }
+        : { folder: getSettings(this.db).move.targetFolder, missing: true },
+      source: lib ? { id: lib, folder: getLibrary(this.opts.main, lib)?.folder ?? null } : null,
+    };
   }
 
   /**

@@ -468,6 +468,23 @@ export class NotificationWatcher {
     } catch {
       // cleanup.db before More Bookmeter coverage
     }
+    // Manga part A: the move to the manga library (its own row), one alert per pause.
+    try {
+      const m = db
+        .prepare('SELECT paused_reason, paused_detail FROM calibre_move_state WHERE id = 1')
+        .get() as { paused_reason: string | null; paused_detail: string | null } | undefined;
+      if (m?.paused_reason) {
+        const key = 'stage_paused:move';
+        active.add(key);
+        const summary = `Moving manga to the manga library paused: ${m.paused_detail ?? stagePauseText(m.paused_reason)}`;
+        if (
+          this.service.observe(key, 'stage_paused', { waitMs: 0, summary, detail: m.paused_detail })
+        )
+          this.messages.push({ event: 'stage_paused', lines: [summary], link: LINKS.cleanup });
+      }
+    } catch {
+      // cleanup.db before manga part A
+    }
     this.service.clearOthers('stage_paused', active);
 
     const byReason = new Map<string, typeof rows>();

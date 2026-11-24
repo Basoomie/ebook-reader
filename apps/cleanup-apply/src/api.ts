@@ -21,6 +21,8 @@ export interface HeartbeatAnswer {
   calibre: CalibreLogin | null;
   itemDelaySeconds: number;
   pollSeconds: number;
+  /** 1.6.0: the library the move puts books in (its columns are checked), or null. */
+  moveTarget?: string | null;
 }
 
 export type ItemState =
@@ -53,6 +55,12 @@ export interface BatchItem {
    * library mount); null or missing when it couldn't tell.
    */
   inCalibreTrash?: boolean | null;
+  /** 1.6.0, a move item: the copy added to the new library (undo: the moved copy there). */
+  move?: {
+    added: { calibreId: number; uuid: string } | null;
+    movedCopy?: { calibreId: number; uuid: string } | null;
+    fieldsAtMove?: Record<string, unknown> | null;
+  };
 }
 
 /** Stage 2: one book of a batch, with its fields. */
@@ -96,6 +104,12 @@ export interface Batch {
   books?: Stage2Book[];
   chunkSize?: number;
   listFields?: string;
+  /**
+   * 1.6.0: the content server's id of the batch's own library (null/missing: the sidecar's
+   * login library), and for a move the library the books move to.
+   */
+  calibreLibrary?: string | null;
+  targetCalibreLibrary?: string | null;
 }
 
 export interface CheckResult {
@@ -123,6 +137,9 @@ export interface StepReport {
   method?: 'trash' | 'readd';
   calibreId?: number;
   uuid?: string;
+  /** 1.6.0, a move's added copy: the fields compared (kept for Undo) and those written again. */
+  fields?: Record<string, unknown>;
+  fixed?: string[];
 }
 
 export class ServerError extends Error {
@@ -212,6 +229,15 @@ export class ServerApi {
 
   report(batchId: string, itemId: number, report: StepReport): Promise<{ state: ItemState }> {
     return this.call('POST', `/batches/${batchId}/items/${itemId}`, report);
+  }
+
+  /** 1.6.0: the server's half of a move's check (the stored EPUB, the cover, the title sort). */
+  moveCheck(
+    batchId: string,
+    itemId: number,
+    copy: { calibreId: number; uuid: string }
+  ): Promise<{ ok: boolean; problems: string[] }> {
+    return this.call('POST', `/batches/${batchId}/items/${itemId}/move-check`, copy);
   }
 
   snapshotSaved(batchId: string, sha256: string): Promise<unknown> {

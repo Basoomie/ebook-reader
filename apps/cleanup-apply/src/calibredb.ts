@@ -68,7 +68,11 @@ export const SET_FIELDS = [
   'tags',
   // The user's edits from the reader (calibre metadata editing): published date and rating.
   'pubdate',
-  'rating'
+  'rating',
+  // Manga part A (1.6.0): a moved book's #characters and date added, written again only when the
+  // add from its export did not carry them (it does on calibre 9.18: the probe, 2026-11-24).
+  '#characters',
+  'timestamp'
 ] as const;
 
 /** A title for `add --title`: one line, no control characters, not an option, not too long. */

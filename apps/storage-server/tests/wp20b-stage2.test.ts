@@ -1189,9 +1189,16 @@ describe('set_fields arguments', () => {
     expect(
       buildArgs('set_fields', login, ['5', 'rating:4.5', 'pubdate:2020-01-01T12:00:00+00:00']),
     ).toContain('rating:4.5');
-    expect(() => buildArgs('set_fields', login, ['5', 'timestamp:2020-01-01'])).toThrow(
-      /can't set timestamp/,
-    );
+    // Manga part A (1.6.0) adds exactly #characters and the date added (a moved book's).
+    expect(
+      buildArgs('set_fields', login, [
+        '5',
+        'timestamp:2020-01-01T03:04:05+00:00',
+        '#characters:12',
+      ]),
+    ).toContain('#characters:12');
+    expect(() => buildArgs('set_fields', login, ['5', 'uuid:x'])).toThrow(/can't set uuid/);
+    expect(() => buildArgs('set_fields', login, ['5', '#other:1'])).toThrow(/can't set #other/);
     // Stage 4 (WP20e) adds exactly series, series_index and comments.
     expect(() =>
       buildArgs('set_fields', login, ['5', 'series:S', 'series_index:1.5', 'comments:あらすじ']),

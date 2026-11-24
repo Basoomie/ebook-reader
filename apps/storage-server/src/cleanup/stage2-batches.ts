@@ -38,6 +38,7 @@ import { LONG_AUTHOR_REASON, NAME_MAX_BYTES, calibreNameBytes } from './stage2-r
 import { fitTitle } from './title-fit';
 import { CALIBRE_AUTHOR_WORDS } from './calibre-names';
 import { currentAnalysisId, pauseStage } from './stages';
+import { movedFrom } from './move/rekey';
 import { EDIT_STAGE } from './field-stages';
 import { aiYoursAfterWrite } from './edits/yours';
 import { applyTagChange, sameTags, undoTagChange, type TagChange } from './stage5/decide';
@@ -1856,11 +1857,20 @@ export class Stage2Batches {
 
   /** Undo of an applied stage-2 batch (the newest batch touching those books first). */
   undo(batch: BatchRow, now = Date.now()): BatchRow {
-    const records = this.db
+    const all = this.db
       .prepare(
         `SELECT change_id, calibre_uuid FROM field_undo WHERE batch_id = ? AND restored_at IS NULL`,
       )
       .all(batch.id) as { change_id: number; calibre_uuid: string }[];
+    // Manga part A: a book that has since moved to another library is not in this batch's library
+    // any more (its Calibre id there is gone): its fields stay as they are, the others go back.
+    const records = all.filter((r) => !movedFrom(this.db, batch.libraryId, r.calibre_uuid));
+    if (records.length === 0 && all.length > 0)
+      throw new BatchError(
+        409,
+        'moved',
+        'The books of this batch have moved to another library since; their fields stay as written there',
+      );
     if (records.length === 0)
       throw new BatchError(409, 'nothing_to_undo', 'Nothing in this batch to put back');
     const uuids = new Set(records.map((r) => r.calibre_uuid));

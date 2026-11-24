@@ -445,7 +445,22 @@ export interface CleanupSettings {
   ai: CleanupAiSettings;
   /** The Calibre library's new arrivals and the import (WP20g). */
   arrivals: BookArrivalSettings;
+  /** Manga part A: moving books to another Calibre library (manga-library.md). */
+  move: MoveSettings;
   backup: BackupRecord;
+}
+
+/** Manga part A (manga-library.md, decided with the user 2026-11-23/24). */
+export interface MoveSettings {
+  /** The reader library (by its folder under the Calibre root) the books move to. */
+  targetFolder: string;
+  /** A book with any of these Calibre tags moves (case-insensitive). */
+  tags: string[];
+  /**
+   * A book whose counted characters reach this shows real text: it is held for review instead
+   * of moved (the user: 5,000, stage 4's own line between a text book and manga/image-only).
+   */
+  realTextChars: number;
 }
 
 export const MODEL_TASKS = [
@@ -600,6 +615,7 @@ export const DEFAULT_SETTINGS: CleanupSettings = {
     addBatchSize: 50,
     addLeaseSeconds: 300,
   },
+  move: { targetFolder: 'manga-library', tags: ['マンガ', '画像のみ'], realTextChars: 5000 },
   fetch: {
     // Paces of plan section 6 (Bookmeter and Natively as BookWalker; the cover images as decided
     // in the WP20d plan); Sudachi runs inside the fetch container, no network.
@@ -1145,6 +1161,34 @@ function validate(key: Key, value: unknown, current: CleanupSettings): unknown {
         addBatchSize: num('Books added per batch', v.addBatchSize, 1, 500, true),
         addLeaseSeconds: num('Seconds per add batch', v.addLeaseSeconds, 30, 3600, true),
       } satisfies BookArrivalSettings;
+    }
+    case 'move': {
+      const v = group('Moving manga', value, current.move);
+      if (
+        typeof v.targetFolder !== 'string' ||
+        !/^[^/\\]{1,200}$/.test(v.targetFolder.trim()) ||
+        v.targetFolder.trim() === '.' ||
+        v.targetFolder.trim() === '..'
+      )
+        throw new SettingsError('Moving manga: the library folder must be one folder name');
+      if (
+        !Array.isArray(v.tags) ||
+        v.tags.length === 0 ||
+        v.tags.length > 20 ||
+        !v.tags.every((t) => typeof t === 'string' && t.trim() !== '' && t.length <= 100)
+      )
+        throw new SettingsError('Moving manga: give one to 20 tags');
+      return {
+        targetFolder: v.targetFolder.trim(),
+        tags: [...new Set((v.tags as string[]).map((t) => t.trim()))],
+        realTextChars: num(
+          'A book with at least this many characters is held (real text)',
+          v.realTextChars,
+          1,
+          10_000_000,
+          true,
+        ),
+      } satisfies MoveSettings;
     }
     case 'fetch': {
       const v = group('Online sources', value, current.fetch);

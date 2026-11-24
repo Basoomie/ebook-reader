@@ -12,6 +12,7 @@ import type {
   SeriesPairsView
 } from './series-pairs-text';
 import type { ArrivalsStatus } from './arrivals-text';
+import type { MoveBook, MoveHold, MoveMode, MoveStatus } from './move-text';
 import type {
   BookmeterMatch,
   BookmeterMode,
@@ -2705,5 +2706,52 @@ export class CleanupApi {
     return this.request('POST', `/cleanup/series-pairs/pairs/${id}`, {
       choice
     }) as Promise<SeriesPair>;
+  }
+
+  // ---- Manga part A: moving the manga and image-only books to the manga library ----
+
+  move(): Promise<MoveStatus> {
+    return this.request('GET', '/cleanup/move') as Promise<MoveStatus>;
+  }
+
+  setMoveMode(mode: MoveMode): Promise<MoveStatus> {
+    return this.request('PUT', '/cleanup/move/mode', { mode }) as Promise<MoveStatus>;
+  }
+
+  moveAgain(): Promise<MoveStatus> {
+    return this.request('POST', '/cleanup/move/again') as Promise<MoveStatus>;
+  }
+
+  moveResume(): Promise<MoveStatus> {
+    return this.request('POST', '/cleanup/move/resume') as Promise<MoveStatus>;
+  }
+
+  moveHeld(
+    reason: MoveHold | null,
+    offset = 0,
+    limit = 20
+  ): Promise<{ total: number; books: MoveBook[] }> {
+    const q = new URLSearchParams({ offset: String(offset), limit: String(limit) });
+    if (reason) q.set('reason', reason);
+    return this.request('GET', `/cleanup/move/held?${q}`) as Promise<{
+      total: number;
+      books: MoveBook[];
+    }>;
+  }
+
+  chooseMove(changeId: number, choice: 'move' | 'keep'): Promise<MoveStatus> {
+    return this.request('POST', `/cleanup/move/held/${changeId}`, {
+      choice
+    }) as Promise<MoveStatus>;
+  }
+
+  moveSpot(): Promise<{ books: MoveBook[] }> {
+    return this.request('GET', '/cleanup/move/spot') as Promise<{ books: MoveBook[] }>;
+  }
+
+  setMoveVerdict(uuid: string, verdict: 'right' | 'wrong' | null): Promise<MoveStatus> {
+    return this.request('PUT', `/cleanup/move/spot/${encodeURIComponent(uuid)}`, {
+      verdict
+    }) as Promise<MoveStatus>;
   }
 }

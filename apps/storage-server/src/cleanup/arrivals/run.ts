@@ -92,6 +92,9 @@ import {
 } from './stage-passes';
 import { ArrivalStage4Ai, emptyArrivalAi, type ArrivalAiProgress, type JGate } from './stage4-ai';
 import { ArrivalStage5, emptyStage5Pass, type Stage5PassProgress } from './stage5-pass';
+import { MOVE_STAGE } from '../field-stages';
+import type { MovePass } from '../move/pass';
+import { getMoveState, moveArrivalsAnalysisId } from '../move/state';
 
 export const DISK_OWNER = 'calibreArrivals';
 /** The linking sidecar's archive batches hold the disk under their own name. */
@@ -116,6 +119,7 @@ export type RunPhase =
   | 'stage5'
   | 'write5'
   | 'check'
+  | 'move'
   | 'report'
   | 'done';
 
@@ -138,6 +142,7 @@ export const RUN_PHASES: readonly RunPhase[] = [
   'stage5',
   'write5',
   'check',
+  'move',
   'report',
   'done',
 ];
@@ -237,6 +242,18 @@ export interface RunProgress {
     }
   >;
   check: { fields: number; same: number; differ: { calibreId: number; field: string }[] } | null;
+  /**
+   * Manga part A: the run's books tagged マンガ or 画像のみ after stage 5's tags were written,
+   * moved to the manga library in the same run (its card's mode: Preview lists, On moves).
+   */
+  move?: {
+    tagged: number;
+    auto: number;
+    held: Record<string, number>;
+    batches: string[];
+    moved: number;
+    note: string | null;
+  } | null;
   cost: number;
 }
 
@@ -291,6 +308,14 @@ export interface ArrivalsDeps {
   requireReadOnlySources?: boolean;
   /** The safety checks (stage 0) every write waits for, as the stages' own writes do. */
   checksPass?: () => { ok: boolean; failing: string[] };
+  /**
+   * Manga part A: the move pass (its card's mode and target) and why its write must wait now.
+   * Without it the run has no move phase (it goes from the check to the report).
+   */
+  move?: () => {
+    pass: MovePass;
+    writeWait: (lib: string, target: string) => string | null;
+  } | null;
   log?: (m: string) => void;
 }
 
@@ -1054,6 +1079,8 @@ export class BookArrivals {
         return this.writeStep(run, p, libraryId, 5, 'check');
       case 'check':
         return this.checkStep(run, p, libraryId);
+      case 'move':
+        return this.moveStep(run, p, libraryId, shouldStop);
       case 'report': {
         this.finish(run.id, p, 'done', null);
         return 'idle';
@@ -2729,7 +2756,7 @@ export class BookArrivals {
     libraryId: string,
   ): 'more' | 'wait' {
     if (run.mode !== 'on') {
-      this.next(run.id, p, 'report');
+      this.next(run.id, p, 'move');
       return 'more';
     }
     const id = arrivalAnalysisId(run.id);
@@ -2773,8 +2800,123 @@ export class BookArrivals {
       else differ.push({ calibreId: r.calibre_id, field: r.field });
     }
     p.check = { fields: applied.length, same, differ: differ.slice(0, 200) };
-    this.next(run.id, p, 'report');
+    this.next(run.id, p, 'move');
     return 'more';
+  }
+
+  /**
+   * Manga part A: the run's books that stage 5 tagged マンガ or 画像のみ move to the manga library
+   * in this run, through the move's own rules and batches (move/pass.ts, move-batches.ts) under
+   * `move:arrivals:<run>`. The move card's mode decides: Off passes, Preview lists what would
+   * move (proposes nothing: a Preview's proposals are never written), On moves. A book the rules
+   * hold waits on the card's held list, like the library's.
+   */
+  private async moveStep(
+    run: RunRow & { p: RunProgress },
+    p: RunProgress,
+    libraryId: string,
+    shouldStop: () => boolean,
+  ): Promise<'more' | 'wait'> {
+    const mv = this.deps.move?.() ?? null;
+    const mode = mv ? getMoveState(this.db).mode : 'off';
+    const uuids = new Set(this.scopeUuids(p, libraryId));
+    const target = mv?.pass.targetLibrary() ?? null;
+    if (!mv || mode === 'off' || !target || uuids.size === 0) {
+      p.move =
+        mv && uuids.size > 0
+          ? {
+              tagged: 0,
+              auto: 0,
+              held: {},
+              batches: [],
+              moved: 0,
+              note: !target
+                ? 'The manga library is not in the reader'
+                : mode === 'off'
+                  ? 'The move is Off'
+                  : null,
+            }
+          : (p.move ?? null);
+      this.next(run.id, p, 'report');
+      return 'more';
+    }
+    if (run.mode === 'on' && p.writes.s5?.batches.length) {
+      // The tags stage 5 wrote must be in the reader's copy before the move reads them.
+      const file = snapshotFile(this.deps.cacheDir, libraryId);
+      const st = fs.existsSync(file) ? fs.statSync(file) : null;
+      const lastBatch = p.writes.s5.batches
+        .map((id) => this.deps.batches.get(id)?.finishedAt ?? 0)
+        .reduce((a, b) => Math.max(a, b), 0);
+      if (!st || st.mtimeMs < lastBatch) {
+        this.deps.wantIngest(libraryId);
+        p.waiting = "Waiting for the reader's index to copy Calibre's metadata.db after the tags";
+        return 'wait';
+      }
+    }
+    const analysisId = moveArrivalsAnalysisId(run.id);
+    if (!p.move || p.move.batches === undefined) {
+      const { decisions } = mv.pass.decide(libraryId);
+      const mine = decisions.filter((d) => uuids.has(d.candidate.uuid));
+      const held: Record<string, number> = {};
+      for (const d of mine) if (d.hold) held[d.hold] = (held[d.hold] ?? 0) + 1;
+      p.move = {
+        tagged: mine.length,
+        auto: mine.filter((d) => !d.hold).length,
+        held,
+        batches: [],
+        moved: 0,
+        note: null,
+      };
+      if (run.mode === 'on' && mode === 'on' && mine.length > 0)
+        mv.pass.propose(libraryId, target, analysisId, mine);
+    }
+    if (run.mode !== 'on' || mode !== 'on' || p.move.auto === 0) {
+      if (run.mode === 'on' && mode !== 'on' && p.move.tagged > 0)
+        p.move.note = 'The move is in Preview: these books stay until it is On';
+      this.next(run.id, p, 'report');
+      return 'more';
+    }
+    const wait = mv.writeWait(libraryId, target);
+    if (wait) {
+      p.waiting = wait;
+      return 'wait';
+    }
+    const left = (
+      this.db
+        .prepare(
+          `SELECT COUNT(*) AS n FROM proposed_changes INDEXED BY proposed_changes_move
+           WHERE stage = ${MOVE_STAGE} AND library_id = ? AND analysis_id = ? AND state IN ('proposed', 'queued')
+             AND class = 'auto'`,
+        )
+        .get(libraryId, analysisId) as { n: number }
+    ).n;
+    if (left === 0) {
+      p.move.moved = (
+        this.db
+          .prepare(
+            `SELECT COUNT(*) AS n FROM proposed_changes INDEXED BY proposed_changes_move
+             WHERE stage = ${MOVE_STAGE} AND library_id = ? AND analysis_id = ? AND state = 'applied'`,
+          )
+          .get(libraryId, analysisId) as { n: number }
+      ).n;
+      if (this.deps.batches.moves.awaitingIngest()) {
+        p.waiting = "Waiting for the reader's index to take in the move";
+        return 'wait';
+      }
+      this.next(run.id, p, 'report');
+      return 'more';
+    }
+    const { batch, reason } = await this.deps.batches.moves.plan(
+      libraryId,
+      target,
+      analysisId,
+      shouldStop,
+    );
+    if (batch) {
+      p.move.batches.push(batch.id);
+      p.waiting = 'Moving manga to the manga library';
+    } else p.waiting = reason;
+    return 'wait';
   }
 
   // ---------------------------------------------------------------- reviews and the report

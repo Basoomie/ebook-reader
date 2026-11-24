@@ -35,6 +35,9 @@ ALLOWED_FIELDS = {
     'series', 'series_index', 'comments',
     # the user's edits from the reader (1.5.0)
     'pubdate', 'rating',
+    # manga part A (1.6.0): a moved book's own columns and date added, written again only when
+    # the add from its export did not carry them
+    '#characters', 'timestamp',
 }
 GLOBAL = {'--with-library', '--library-path', '--username', '--password', '--timeout'}
 CONTEXTS = {}

@@ -23,6 +23,16 @@
  * authors as "A & B", identifiers as an object, languages and *illustrator as lists, cover as
  * 1/0, and no publisher key when there is none. FAKE_SET_TIMEOUT (after|never): set_metadata
  * answers HTTP 408; "after" writes anyway.
+ *
+ * Manga part A (1.6.0): FAKE_LIBRARIES (JSON {library id: folder}) serves several libraries,
+ * like a content server with more than one (`#-` lists them all). FAKE_ADD_FULL=1: export also
+ * writes book.fake.json (every field of the record), and an add of such a folder carries every
+ * field, as real calibre 9.18's add of an export does through the content server (its OPF:
+ * checked 2026-11-24, .tmp-e2e/manga/probe); FAKE_ADD_DROP (comma separated: series, tags,
+ * *characters, ...) leaves those out of the add. #characters is custom_column_2 (an int column:
+ * book, value), listed as *characters; the date added (timestamp) is listed and can be set.
+ * FAKE_COLUMNS_FROM_DB=1: custom_columns prints calibre 9.18's dicts from the library's own
+ * custom_columns table.
  */
 const fs = require('fs');
 const path = require('path');
@@ -30,7 +40,8 @@ const { randomUUID } = require('crypto');
 const Database = require('better-sqlite3');
 
 const argv = process.argv.slice(2);
-const lib = process.env.FAKE_CALIBRE_LIBRARY;
+const libraries = process.env.FAKE_LIBRARIES ? JSON.parse(process.env.FAKE_LIBRARIES) : null;
+let lib = process.env.FAKE_CALIBRE_LIBRARY;
 const version = process.env.FAKE_VERSION || '9.18.0';
 const libraryId = process.env.FAKE_LIBRARY_ID || 'japanese-library';
 
@@ -91,10 +102,13 @@ if (sub === 'list' && process.env.FAKE_LIST_408_FILE && !withLibrary.endsWith('#
 
 const wanted = withLibrary.split('#')[1];
 if (sub === 'list' && wanted === '-') {
-  process.stdout.write(`${libraryId}\n`);
+  process.stdout.write(libraries ? `${Object.keys(libraries).join('\n')}\n` : `${libraryId}\n`);
   process.exit(0);
 }
-if (wanted !== libraryId) fail(`No library with id: ${wanted}`);
+if (libraries) {
+  if (!libraries[wanted]) fail(`No library with id: ${wanted}`);
+  lib = libraries[wanted];
+} else if (wanted !== libraryId) fail(`No library with id: ${wanted}`);
 
 const db = new Database(path.join(lib, 'metadata.db'));
 db.pragma('journal_mode = DELETE');
@@ -157,6 +171,42 @@ function illustratorsOf(id) {
     )
     .all(id)
     .map((r) => r.value);
+}
+function charactersOf(id) {
+  if (!hasTable('custom_column_2')) return null;
+  const r = db.prepare('SELECT value FROM custom_column_2 WHERE book = ?').get(id);
+  return r ? r.value : null;
+}
+function ratingOf(id) {
+  if (!hasTable('books_ratings_link')) return null;
+  const r = db
+    .prepare(
+      'SELECT r.rating FROM books_ratings_link l JOIN ratings r ON r.id = l.rating WHERE l.book = ?',
+    )
+    .get(id);
+  return r && r.rating > 0 ? r.rating : null;
+}
+/** Every field of a record (FAKE_ADD_FULL: what the export's OPF carries). */
+function fullRecord(id) {
+  const b = bookRow(id);
+  return {
+    title: b.title,
+    sort: b.sort,
+    timestamp: b.timestamp,
+    pubdate: b.pubdate,
+    series_index: b.series_index,
+    author_sort: b.author_sort,
+    authors: authorsOf(id),
+    tags: tags(id),
+    series: seriesOf(id),
+    publisher: publisherOf(id),
+    identifiers: identifiersOf(id),
+    languages: languagesOf(id),
+    illustrators: illustratorsOf(id),
+    comments: commentsOf(id),
+    rating: ratingOf(id),
+    characters: charactersOf(id),
+  };
 }
 function iso(ts) {
   // "2026-11-09 04:00:11.251060+00:00" -> ISO like calibredb --for-machine. Real calibre 9.18
@@ -303,6 +353,9 @@ function setFields(fields) {
     // The user's edits from the reader (sidecar 1.5.0).
     'pubdate',
     'rating',
+    // Manga part A (sidecar 1.6.0): a moved book's #characters and date added.
+    '#characters',
+    'timestamp',
   ];
   for (const n of names) if (!allowed.includes(n)) fail(`Unknown field: ${n}`);
   const oldTitle = b.title;
@@ -447,6 +500,21 @@ function setFields(fields) {
         const r = db.prepare('SELECT id FROM ratings WHERE rating = ?').get(Math.round(n * 2));
         db.prepare('INSERT INTO books_ratings_link (book, rating) VALUES (?, ?)').run(id, r.id);
       }
+    } else if (k === '#characters') {
+      if (!hasTable('custom_column_2')) fail('No column #characters');
+      db.prepare('DELETE FROM custom_column_2 WHERE book = ?').run(id);
+      if (v !== '')
+        db.prepare('INSERT INTO custom_column_2 (book, value) VALUES (?, ?)').run(id, Number(v));
+    } else if (k === 'timestamp') {
+      const t = Date.parse(v);
+      if (!Number.isFinite(t)) fail(`Not a date: ${v}`);
+      db.prepare('UPDATE books SET timestamp = ? WHERE id = ?').run(
+        new Date(t)
+          .toISOString()
+          .replace('T', ' ')
+          .replace(/\.\d{3}Z$/, '+00:00'),
+        id,
+      );
     } else if (k === 'cover') {
       if (!fs.existsSync(v)) fail(`No such file: ${v}`);
       const folder = path.join(lib, ...bookRow(id).path.split('/'));
@@ -533,6 +601,9 @@ switch (sub) {
         if (r && r.rating > 0) row.rating = r.rating;
       }
       if (opt('--template') === '{sort}') row.template = b.sort;
+      row.timestamp = iso(b.timestamp || '0101-01-01 00:00:00+00:00');
+      const chars = charactersOf(b.id);
+      if (chars !== null) row['*characters'] = chars;
       return row;
     });
     process.stdout.write(JSON.stringify(out));
@@ -569,6 +640,19 @@ switch (sub) {
     break;
   }
   case 'custom_columns': {
+    if (process.env.FAKE_COLUMNS_FROM_DB === '1' && hasTable('custom_columns')) {
+      for (const c of db.prepare('SELECT * FROM custom_columns ORDER BY id').all()) {
+        const display = JSON.parse(c.display || '{}');
+        const py = (v) => (v === true ? 'True' : v === false ? 'False' : JSON.stringify(v));
+        const disp = Object.entries(display)
+          .map(([k, v]) => `'${k}': ${py(v)}`)
+          .join(', ');
+        process.stdout.write(
+          `${c.label}\n{'label': '${c.label}', 'name': '${c.name}', 'datatype': '${c.datatype}', 'is_multiple': ${c.is_multiple ? "{'cache_to_list': '|', 'ui_to_list': '&', 'list_to_ui': ' & '}" : '{}'}, 'display': {${disp}}}\n\n`,
+        );
+      }
+      break;
+    }
     if (process.env.FAKE_ILLUSTRATOR === '1') {
       process.stdout.write(
         "illustrator (1)\n  label: illustrator\n  name: Illustrator\n  datatype: text\n  is_multiple: {'cache_to_list': '|', 'ui_to_list': ',', 'list_to_ui': ', '}\n\n",
@@ -591,6 +675,8 @@ switch (sub) {
       if (fs.existsSync(path.join(folder, 'cover.jpg')))
         fs.copyFileSync(path.join(folder, 'cover.jpg'), path.join(dir, 'book.jpg'));
       fs.writeFileSync(path.join(dir, 'book.opf'), opf(b, tags(id)));
+      if (process.env.FAKE_ADD_FULL === '1')
+        fs.writeFileSync(path.join(dir, 'book.fake.json'), JSON.stringify(fullRecord(id)));
     }
     break;
   }
@@ -734,10 +820,76 @@ switch (sub) {
         'INSERT INTO data (book, format, uncompressed_size, name) VALUES (?, ?, ?, ?)',
       ).run(id, ext.toUpperCase(), fs.statSync(path.join(dir, n)).size, name);
     }
-    for (const t of subjects) {
+    const fullFile = path.join(dir, 'book.fake.json');
+    const full =
+      process.env.FAKE_ADD_FULL === '1' && fs.existsSync(fullFile)
+        ? JSON.parse(fs.readFileSync(fullFile, 'utf8'))
+        : null;
+    const drop = new Set((process.env.FAKE_ADD_DROP || '').split(',').filter(Boolean));
+    for (const t of full && !drop.has('tags') ? full.tags : full ? [] : subjects) {
       db.prepare('INSERT OR IGNORE INTO tags (name) VALUES (?)').run(t);
       const tag = db.prepare('SELECT id FROM tags WHERE name = ?').get(t);
       db.prepare('INSERT INTO books_tags_link (book, tag) VALUES (?, ?)').run(id, tag.id);
+    }
+    if (full) {
+      // Every field of the export, as real calibre 9.18 carries them from its OPF.
+      db.prepare(
+        'UPDATE books SET sort = ?, timestamp = ?, pubdate = ?, series_index = ?, author_sort = ? WHERE id = ?',
+      ).run(
+        full.sort,
+        drop.has('timestamp') ? now : full.timestamp,
+        full.pubdate,
+        full.series_index,
+        full.author_sort,
+        id,
+      );
+      for (const n of full.authors) {
+        const aid = nameId('authors', 'name', n.replace(/,/g, '|'), { sort: n });
+        db.prepare('INSERT OR IGNORE INTO books_authors_link (book, author) VALUES (?, ?)').run(
+          id,
+          aid,
+        );
+      }
+      if (full.series && !drop.has('series')) {
+        const sid = nameId('series', 'name', full.series, { sort: full.series });
+        db.prepare('INSERT INTO books_series_link (book, series) VALUES (?, ?)').run(id, sid);
+      }
+      if (full.publisher && !drop.has('publisher')) {
+        const pid = nameId('publishers', 'name', full.publisher);
+        db.prepare('INSERT INTO books_publishers_link (book, publisher) VALUES (?, ?)').run(
+          id,
+          pid,
+        );
+      }
+      if (full.comments && !drop.has('comments'))
+        db.prepare('INSERT INTO comments (book, text) VALUES (?, ?)').run(id, full.comments);
+      if (hasTable('identifiers') && !drop.has('identifiers'))
+        for (const [k, v] of Object.entries(full.identifiers))
+          db.prepare('INSERT INTO identifiers (book, type, val) VALUES (?, ?, ?)').run(id, k, v);
+      if (hasTable('books_languages_link') && !drop.has('languages'))
+        full.languages.forEach((c, order) => {
+          const lid = nameId('languages', 'lang_code', c);
+          db.prepare(
+            'INSERT INTO books_languages_link (book, lang_code, item_order) VALUES (?, ?, ?)',
+          ).run(id, lid, order);
+        });
+      if (hasTable('books_custom_column_1_link') && !drop.has('*illustrator'))
+        for (const n of full.illustrators) {
+          const vid = nameId('custom_column_1', 'value', n);
+          db.prepare(
+            'INSERT OR IGNORE INTO books_custom_column_1_link (book, value) VALUES (?, ?)',
+          ).run(id, vid);
+        }
+      if (full.rating && hasTable('books_ratings_link') && !drop.has('rating')) {
+        db.prepare('INSERT OR IGNORE INTO ratings (rating) VALUES (?)').run(full.rating);
+        const r = db.prepare('SELECT id FROM ratings WHERE rating = ?').get(full.rating);
+        db.prepare('INSERT INTO books_ratings_link (book, rating) VALUES (?, ?)').run(id, r.id);
+      }
+      if (full.characters !== null && hasTable('custom_column_2') && !drop.has('*characters'))
+        db.prepare('INSERT INTO custom_column_2 (book, value) VALUES (?, ?)').run(
+          id,
+          full.characters,
+        );
     }
     touchDb();
     // FAKE_ADD_TIMEOUT=after: the request times out (408) although the book was added.

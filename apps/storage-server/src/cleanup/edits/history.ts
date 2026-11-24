@@ -11,6 +11,7 @@ import type Database from 'better-sqlite3';
 import { EDIT_STAGE } from '../field-stages';
 import type { BookRef } from './catalog';
 import { EditError, sameValue, type EditField, type EditValues } from './fields';
+import { earlierIdentities } from '../move/rekey';
 
 export type HistoryWho = 'you' | 'cleanup' | 'calibre' | 'shared_rename' | 'confirm' | 'copied';
 
@@ -162,18 +163,26 @@ export function bookHistory(
     if (w.field === 'cover')
       out[out.length - 1].undo.to = w.old_cover_path ? { quarantine: w.old_cover_path } : null;
   }
-  const copied = db
-    .prepare(
-      `SELECT batch_id, change_id, added_tags_json, created_at, restored_at FROM undo_records
-       WHERE library_id = ? AND kept_uuid = ? AND added_tags_json <> '[]'`,
-    )
-    .all(ref.libraryId, ref.uuid) as {
-    batch_id: string;
-    change_id: number;
-    added_tags_json: string;
-    created_at: number;
-    restored_at: number | null;
-  }[];
+  // Manga part A: a moved book's writes and seen changes moved with it (move/rekey.ts); the tags
+  // copied onto it by a removal are recorded under the identity it had then.
+  const identities = [
+    { libraryId: ref.libraryId, uuid: ref.uuid },
+    ...earlierIdentities(db, ref.libraryId, ref.uuid),
+  ];
+  const copiedOf = db.prepare(
+    `SELECT batch_id, change_id, added_tags_json, created_at, restored_at FROM undo_records
+     WHERE library_id = ? AND kept_uuid = ? AND added_tags_json <> '[]'`,
+  );
+  const copied = identities.flatMap(
+    (i) =>
+      copiedOf.all(i.libraryId, i.uuid) as {
+        batch_id: string;
+        change_id: number;
+        added_tags_json: string;
+        created_at: number;
+        restored_at: number | null;
+      }[],
+  );
   for (const c of copied) {
     const added = JSON.parse(c.added_tags_json) as string[];
     const id = `t${c.batch_id}:${c.change_id}`;

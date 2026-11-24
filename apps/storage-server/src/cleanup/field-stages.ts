@@ -12,3 +12,13 @@ export const isFieldStage = (stage: number): boolean => FIELD_STAGES.includes(st
 
 /** The sidecar version that writes the user's edits (pubdate and rating, the edit claim). */
 export const EDIT_SIDECAR_VERSION = '1.5.0';
+
+/**
+ * Manga part A (manga-library.md): the batches that move books to another Calibre library
+ * (export, add there with every field, check, remove the usual way). Neither a field stage nor
+ * a removal stage: their items have their own steps (move/move-batches.ts).
+ */
+export const MOVE_STAGE = 11;
+
+/** The sidecar version that moves books and uses each batch's own library (1.6.0). */
+export const MOVE_SIDECAR_VERSION = '1.6.0';

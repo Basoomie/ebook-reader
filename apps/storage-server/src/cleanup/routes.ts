@@ -15,6 +15,7 @@ import { createReadStream } from 'fs';
 import { ApiError, asyncHandler, sendError } from '../api/errors';
 import { authenticateApplyToken } from './apply-tokens';
 import { BatchError, type ItemReport, type ItemState } from './batches';
+import { MOVE_STAGE } from './field-stages';
 import type { ListedBook, WrittenReport } from './stage2-batches';
 import { STAGE2_FIELDS } from './stage2-rules';
 import type { CleanupService } from './cleanup-service';
@@ -108,6 +109,13 @@ function parseReport(body: unknown): ItemReport {
   if (typeof b.calibreId === 'number' && Number.isInteger(b.calibreId))
     report.calibreId = b.calibreId;
   if (typeof b.uuid === 'string' && b.uuid.length <= 100) report.uuid = b.uuid;
+  // A move's added copy: the fields the sidecar compared (kept for Undo), those it wrote again.
+  if (b.fields && typeof b.fields === 'object' && !Array.isArray(b.fields)) {
+    const json = JSON.stringify(b.fields);
+    if (json.length <= 200_000) report.fields = b.fields as Record<string, unknown>;
+  }
+  if (Array.isArray(b.fixed) && b.fixed.every((f) => typeof f === 'string'))
+    report.fixed = (b.fixed as string[]).slice(0, 50).map((f) => f.slice(0, 50));
   return report;
 }
 
@@ -124,6 +132,8 @@ export function createCleanupApplyRouter(options: CleanupOptions): Router {
       calibre: service.sidecarConfig(),
       itemDelaySeconds: settings.pacing.itemDelaySeconds,
       pollSeconds: 15,
+      // 1.6.0: the library the move puts books in (the sidecar checks its columns), or null.
+      moveTarget: service.moveTargetForSidecar(),
     });
   });
 
@@ -210,6 +220,33 @@ export function createCleanupApplyRouter(options: CleanupOptions): Router {
       rethrow(err);
     }
   });
+
+  // Manga part A: the server's half of the check after a move's add (the stored EPUB, the
+  // cover and the title sort, read from the read-only library mounts).
+  router.post(
+    '/cleanup-apply/batches/:id/items/:item/move-check',
+    asyncHandler(async (req, res) => {
+      const service = serviceOr503(options);
+      const itemId = Number(req.params.item);
+      const b = (req.body ?? {}) as { calibreId?: unknown; uuid?: unknown };
+      if (
+        !Number.isInteger(itemId) ||
+        typeof b.calibreId !== 'number' ||
+        typeof b.uuid !== 'string'
+      )
+        throw new ApiError(400, 'bad_request', 'calibreId and uuid are required');
+      try {
+        res.json(
+          await service.batches.moves.checkArrived(req.params.id, itemId, {
+            calibreId: b.calibreId,
+            uuid: b.uuid.slice(0, 100),
+          }),
+        );
+      } catch (err) {
+        rethrow(err);
+      }
+    }),
+  );
 
   const bookParams = (req: Request): { batchId: string; calibreId: number } => {
     const calibreId = Number(req.params.book);
@@ -1189,6 +1226,91 @@ export function createCleanupRouter(options: CleanupOptions): Router {
     }
     service.seriesPairsChanged();
     res.json(pair);
+  });
+
+  // ---- Manga part A: moving the manga and image-only books to the manga library ----
+
+  router.get('/cleanup/move', (_req, res) => {
+    res.json(serviceOr503(options).moveStatus());
+  });
+
+  router.put('/cleanup/move/mode', (req, res) => {
+    const service = serviceOr503(options);
+    const mode = (req.body as { mode?: unknown } | undefined)?.mode;
+    if (mode !== 'off' && mode !== 'analyse' && mode !== 'on')
+      throw new ApiError(400, 'bad_mode', 'mode must be off, analyse or on');
+    try {
+      service.move.setMode(mode);
+    } catch (err) {
+      throw new ApiError(409, 'not_now', (err as Error).message);
+    }
+    service.moveChanged();
+    res.json(service.moveStatus());
+  });
+
+  router.post('/cleanup/move/again', (_req, res) => {
+    const service = serviceOr503(options);
+    if (service.batches.open() && service.batches.open()!.stage === MOVE_STAGE)
+      throw new ApiError(409, 'not_now', 'A move batch is being applied; try again after it');
+    service.move.again();
+    service.moveChanged();
+    res.json(service.moveStatus());
+  });
+
+  router.post('/cleanup/move/resume', (_req, res) => {
+    const service = serviceOr503(options);
+    service.move.resume();
+    service.moveChanged();
+    res.json(service.moveStatus());
+  });
+
+  router.get('/cleanup/move/held', (req, res) => {
+    const service = serviceOr503(options);
+    const q = req.query as Record<string, string | undefined>;
+    const p = service.move.state().progress;
+    const offset = Math.max(0, Number(q.offset ?? 0) || 0);
+    const limit = Math.min(100, Math.max(1, Number(q.limit ?? 20) || 20));
+    const reason = ['real_text', 'no_epub', 'no_count', 'too_long', 'not_in_reader'].includes(
+      q.reason ?? '',
+    )
+      ? (q.reason as Parameters<typeof service.move.heldList>[4])
+      : undefined;
+    res.json(
+      p.libraryId
+        ? service.move.heldList(p.libraryId, p.run, offset, limit, reason)
+        : { total: 0, books: [] },
+    );
+  });
+
+  router.post('/cleanup/move/held/:id', (req, res) => {
+    const service = serviceOr503(options);
+    const choice = (req.body as { choice?: unknown } | undefined)?.choice;
+    if (choice !== 'move' && choice !== 'keep')
+      throw new ApiError(400, 'bad_choice', 'choice must be move or keep');
+    try {
+      service.move.choose(Number(req.params.id), choice);
+    } catch (err) {
+      throw new ApiError(409, 'not_now', (err as Error).message);
+    }
+    service.moveChanged();
+    res.json(service.moveStatus());
+  });
+
+  router.get('/cleanup/move/spot', (_req, res) => {
+    res.json({ books: serviceOr503(options).move.spotList() });
+  });
+
+  router.put('/cleanup/move/spot/:uuid', (req, res) => {
+    const service = serviceOr503(options);
+    const verdict = (req.body as { verdict?: unknown } | undefined)?.verdict;
+    if (verdict !== 'right' && verdict !== 'wrong' && verdict !== null)
+      throw new ApiError(400, 'bad_verdict', 'verdict must be right, wrong or null');
+    try {
+      service.move.setVerdict(req.params.uuid, verdict);
+    } catch (err) {
+      throw new ApiError(409, 'not_now', (err as Error).message);
+    }
+    res.json(service.moveStatus());
   });
 
   // ---- WP20g: the Calibre library's new arrivals ----

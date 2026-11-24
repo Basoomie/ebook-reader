@@ -1197,6 +1197,35 @@ export function seriesPairsOnCopy(books: number, pairs: number): ConfirmCopy {
   };
 }
 
+/** Manga part A: switching the move to the manga library On. */
+export function moveOnCopy(books: number, withData: number, target: string): ConfirmCopy {
+  return {
+    title: `Move ${books.toLocaleString()} ${books === 1 ? 'book' : 'books'} to ${target}?`,
+    message: [
+      `Each book is added to ${target} with every field (title, authors, series, store links, tags, cover, illustrator, characters, the date added and the rest), checked there, then removed from this library the usual way: kept in the quarantine and in Calibre's trash.`,
+      withData > 0
+        ? `${withData.toLocaleString()} of them have your reading data. It stays with each book: the reader keeps the very same book.`
+        : 'The reader keeps the very same books.',
+      'Books held for review are not moved. Each batch can be undone from the batches list (the books come back here).'
+    ],
+    confirmLabel: 'Switch it On',
+    irreversible: false
+  };
+}
+
+/** Undo of a move batch: the books come back to the cleanup's library. */
+export function undoMoveBatchCopy(count: number): ConfirmCopy {
+  return {
+    title: `Move ${books(count)} back?`,
+    message: [
+      'Each book comes back here: from Calibre’s trash while it is still there, otherwise added again from the quarantine folder (then with a new Calibre id). Changes made to it in the other library since the move come with it.',
+      'Its copy in the other library is saved to the quarantine and removed there. Your reading data stays with the book.'
+    ],
+    confirmLabel: 'Undo this batch',
+    danger: false
+  };
+}
+
 // ---- Book summaries (session 4): the Summary section on the book page ------------------
 
 /** Replace ▾ › Regenerate with AI, when the book has a summary. */

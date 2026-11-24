@@ -124,6 +124,7 @@ export const PHASE_LABELS: Record<string, string> = {
   stage5: 'Stage 5: genres and tags',
   write5: 'Writing stage 5’s tags',
   check: 'Checking what was written against Calibre',
+  move: 'Moving manga to the manga library',
   report: 'Writing the report',
   done: 'Done'
 };

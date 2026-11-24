@@ -2471,6 +2471,72 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
       );
     `,
   },
+  {
+    version: 33,
+    name: 'manga part A: moving books to another Calibre library (the move stage)',
+    // manga-library.md, part A (2026-11-24). Every book tagged マンガ or 画像のみ moves from the
+    // cleanup's library to manga-library: exported, added there with every field, checked, then
+    // removed the usual way (quarantine plus Calibre's trash); the reader keeps the same book
+    // (its Calibre source is re-bound to the new library). Batches are stage 11 (MOVE_STAGE);
+    // a move batch also names its target library. calibre_moves maps every moved book's old
+    // Calibre identity to its new one: the cleanup's own state follows the book through it, and
+    // history keyed by the old identity is found through it. batch_items.move_json holds what the
+    // sidecar checked when the copy arrived (its new id and UUID, the fields compared).
+    sql: `
+      ALTER TABLE batches ADD COLUMN target_library_id TEXT;
+      ALTER TABLE batch_items ADD COLUMN move_json TEXT CHECK (move_json IS NULL OR json_valid(move_json));
+      CREATE TABLE calibre_move_state (
+        id            INTEGER PRIMARY KEY CHECK (id = 1),
+        library_id    TEXT,
+        target_id     TEXT,
+        mode          TEXT NOT NULL DEFAULT 'off' CHECK (mode IN ('off', 'analyse', 'on')),
+        progress_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(progress_json)),
+        paused_reason TEXT,
+        paused_detail TEXT,
+        updated_at    INTEGER NOT NULL
+      );
+      INSERT INTO calibre_move_state (id, updated_at) VALUES (1, 0);
+      CREATE TABLE calibre_moves (
+        id               INTEGER PRIMARY KEY,
+        change_id        INTEGER NOT NULL REFERENCES proposed_changes(id),
+        batch_id         TEXT NOT NULL REFERENCES batches(id),
+        from_library_id  TEXT NOT NULL,
+        from_calibre_id  INTEGER NOT NULL,
+        from_uuid        TEXT NOT NULL,
+        to_library_id    TEXT NOT NULL,
+        to_calibre_id    INTEGER NOT NULL,
+        to_uuid          TEXT NOT NULL,
+        source_row_id    TEXT,
+        handoff_json     TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(handoff_json)),
+        rekey_json       TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(rekey_json)),
+        fields_json      TEXT CHECK (fields_json IS NULL OR json_valid(fields_json)),
+        state            TEXT NOT NULL CHECK (state IN ('moved', 'undone')),
+        moved_at         INTEGER NOT NULL,
+        undo_batch_id    TEXT,
+        undone_at        INTEGER,
+        back_calibre_id  INTEGER,
+        back_uuid        TEXT,
+        UNIQUE (batch_id, change_id)
+      );
+      CREATE INDEX calibre_moves_from ON calibre_moves (from_library_id, from_uuid);
+      CREATE INDEX calibre_moves_to ON calibre_moves (to_library_id, to_uuid);
+      CREATE INDEX calibre_moves_change ON calibre_moves (change_id);
+      -- The 30-book spot check before On (all marked, none wrong: the user, 2026-11-24).
+      CREATE TABLE calibre_move_spot (
+        library_id    TEXT NOT NULL,
+        calibre_uuid  TEXT NOT NULL,
+        change_id     INTEGER NOT NULL,
+        position      INTEGER NOT NULL,
+        tag           TEXT NOT NULL,
+        verdict       TEXT CHECK (verdict IN ('right', 'wrong')),
+        decided_at    INTEGER,
+        PRIMARY KEY (library_id, calibre_uuid)
+      ) WITHOUT ROWID;
+      -- The move's own proposals (stage 11), read per run by the card and the planner.
+      CREATE INDEX proposed_changes_move
+        ON proposed_changes (library_id, analysis_id, state, class) WHERE stage = 11;
+    `,
+  },
 ];
 
 export const CLEANUP_SCHEMA_VERSION = CLEANUP_MIGRATIONS[CLEANUP_MIGRATIONS.length - 1].version;

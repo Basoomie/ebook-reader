@@ -655,8 +655,11 @@ export async function ingestSnapshot(
       return;
     }
     // What changed per field, for a book the catalog already has (never a new book or one
-    // coming back from missing: nothing was changed there, it appeared).
-    if (existing && existing.missing_at === null) recordChanges(existing, book);
+    // coming back from missing: nothing was changed there, it appeared). A source the cleanup
+    // re-bound from another library (manga part A: its Calibre last_modified cleared) appeared
+    // here too: its fields came along with the book, nobody changed them.
+    if (existing && existing.missing_at === null && existing.calibre_last_modified !== null)
+      recordChanges(existing, book);
 
     const seriesId = book.series
       ? (
