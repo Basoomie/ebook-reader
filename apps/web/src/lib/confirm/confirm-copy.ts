@@ -1170,6 +1170,19 @@ export function bookmeterOnCopy(books: number): ConfirmCopy {
   };
 }
 
+/** Series under two names: switching it On. */
+export function seriesPairsOnCopy(books: number, pairs: number): ConfirmCopy {
+  return {
+    title: 'Merge the series under two names in Calibre?',
+    message: [
+      `${books.toLocaleString()} books in ${pairs.toLocaleString()} pairs move into the series' kept name and keep their numbers. No merge puts two books on one number, and a series you edited is never touched.`,
+      'They are written in batches through stage 4; each batch can be undone from the batches list.'
+    ],
+    confirmLabel: 'Switch it On',
+    irreversible: false
+  };
+}
+
 // ---- Book summaries (session 4): the Summary section on the book page ------------------
 
 /** Replace ▾ › Regenerate with AI, when the book has a summary. */
