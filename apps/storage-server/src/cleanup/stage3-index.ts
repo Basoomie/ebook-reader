@@ -46,7 +46,11 @@ export interface IndexStats {
   ms: number;
 }
 
-const BOOK_BITS = 2 ** 17;
+// A posting is sample * BOOK_BITS + book index in one float64: samples are 32-bit, so up to 2^20
+// books keep every posting exact (2^52 < 2^53). 2^17 was too few for the new arrivals' index
+// (the library and 89,286 new books: 132,994; WP20g, 2026-11-24); the order, and so every
+// result, is the same for any BOOK_BITS above the number of books.
+const BOOK_BITS = 2 ** 20;
 
 export function candidatePairs(
   books: SketchedBook[],
