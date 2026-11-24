@@ -1092,7 +1092,7 @@ export class CleanupService {
     const bar =
       p.phase === 'signals' && p.pairs
         ? { label: 'pairs', done: p.done, total: p.pairs, startedAt: p.phaseStartedAt }
-        : p.phase === 'write' && written + toWrite > 0
+        : p.phase === 'write' && st.mode === 'on' && written + toWrite > 0
           ? { label: 'books', done: written, total: written + toWrite, startedAt: p.phaseStartedAt }
           : null;
     const left =

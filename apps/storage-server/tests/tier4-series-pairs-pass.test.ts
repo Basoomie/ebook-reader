@@ -256,10 +256,14 @@ describe('series under two names: the pass', () => {
     const hani = pairOf('はにとらっ！');
     // Two books would share #1: Merge is refused.
     expect(() => pass.decidePair(LIB, hani.id, 'merge')).toThrow(/share a number/);
+    // A series of yours: Merge is refused (the write would stop halfway).
+    expect(() => pass.decidePair(LIB, pairOf('半沢直樹').id, 'merge')).toThrow(/series editor/);
     const milk = pairOf('ミルク');
     const merged = pass.decidePair(LIB, milk.id, 'merge');
     expect(merged.answer).toBe('merge');
     expect(merged.decision).toMatchObject({ decision: 'merged', by: 'you' });
+    // The card's counts follow the choice (one more to merge, one fewer to decide).
+    expect(pass.state().progress.counts).toEqual({ merge: 2, separate: 1, review: 2 });
     expect(proposals().map((x) => x.calibre_uuid)).toEqual(['u3', 'u41']);
     const kept = pass.decidePair(LIB, milk.id, 'separate');
     expect(kept.answer).toBe('separate');

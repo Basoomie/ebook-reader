@@ -113,6 +113,7 @@ describe('series under two names: a pair', () => {
     expect(mergeBlocked(pair({ signals: { ...signals, collisions: 1 } }))).toMatch(
       /share a number/
     );
+    expect(mergeBlocked(pair({ answer: 'review', held: 'yours' }))).toMatch(/series editor/);
   });
 
   it('writes a book line and the series search', () => {

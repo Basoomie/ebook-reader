@@ -206,6 +206,8 @@ export function mergeBlocked(p: SeriesPair): string | null {
   if (!p.signals) return 'Not read yet';
   if (p.signals.collisions > 0)
     return 'Two books would share a number: set their numbers in the series editor first';
+  if (p.held === 'yours')
+    return 'You edited the series of a book here: merge them in the series editor';
   return null;
 }
 

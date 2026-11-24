@@ -364,6 +364,8 @@ export class SeriesPairs {
     if (d?.decision === 'merged') {
       if (s.collisions > 0)
         return { answer: 'review', rule: `decided:${d.by}`, held: 'collision', note: d.note };
+      // The write never changes a series field of yours: the merge would stop halfway.
+      if (yours) return { answer: 'review', rule: `decided:${d.by}`, held: 'yours', note: d.note };
       return { answer: 'merge', rule: `decided:${d.by}`, held: null, note: d.note };
     }
     const a = answerPair(pair, s, RULES);
@@ -801,6 +803,10 @@ export class SeriesPairs {
       throw new Error(
         'Two books would share a number under one name: set their numbers in the series editor first',
       );
+    if (choice === 'merge' && r.held === 'yours')
+      throw new Error(
+        'You edited the series of a book here, and the cleanup never changes it: merge them in the series editor',
+      );
     const [x, y] = pairKey(r.short_name, r.long_name);
     const run = this.state().progress.run;
     const aid = seriesPairsAnalysisId(run);
@@ -848,6 +854,11 @@ export class SeriesPairs {
             'UPDATE series_pairs SET answer = ?, rule = ?, held = ?, note = ?, updated_at = ? WHERE id = ?',
           )
           .run(d.answer, d.rule, d.held, d.note, now, r.id);
+        // The card's counts follow the choice.
+        const p = this.state().progress;
+        if (r.answer && p.counts[r.answer] > 0) p.counts[r.answer]--;
+        p.counts[d.answer]++;
+        saveProgress(this.db, p);
         if (d.answer === 'merge' && r.books_json)
           this.proposeMerge(lib, run, { ...r, books_json: r.books_json, rule: d.rule });
       }
