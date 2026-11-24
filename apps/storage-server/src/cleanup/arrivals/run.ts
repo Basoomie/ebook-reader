@@ -62,7 +62,9 @@ import { clockNow, nextScheduledRun, scheduledRunDue } from '../audio/arrivals-s
 import { ArrivalBatches } from './add-batches';
 import { BookArchives } from './archives';
 import { classifyName, settled, sniffFormat, walkSource } from './catalog';
+import { groupUnits, neededOthers } from './measure-plan';
 import {
+  BOOKS_PER_COMPARE,
   buildLibraryLookup,
   candidatePairsOf,
   dropNewSketches,
@@ -1432,6 +1434,7 @@ export class BookArrivals {
             customTags: 0,
             addedAt: Date.now(),
             pacer: srcPacer,
+            cache: this.db,
           })
         : await libraryQuality(cd, k, srcPacer);
       qCache.set(k, q);
@@ -1758,35 +1761,67 @@ export class BookArrivals {
     }
 
     if (cmp.stage === 'measure') {
-      const part = rows(
-        `AND json_array_length(facts_json, '$.cands') > 0
-           AND json_extract(facts_json, '$.measured') IS NULL`,
-        inFlight * 40,
+      const byId = this.db.prepare(
+        `SELECT id, pair_key, rel_path, size, sha256, facts_json FROM calibre_arrival_files WHERE id = ?`,
       );
-      if (!part.length) {
+      // Settled: a new book with a verdict that the other copy is as good or better. Its outcome
+      // is a duplicate named by its first such verdict; later verdicts only come after it
+      // (measure-plan.ts), so pairs between settled books, or of a settled book and a library
+      // book, are not measured (WP20g, 2026-11-24: 27,240 of 101,644 pairs at the start).
+      const settled = (key: number) => {
+        if (key > 0) return false;
+        const r = byId.get(-key) as Row | undefined;
+        return !!r && (facts(r).verdicts ?? []).some((v) => v.keep === 'other');
+      };
+      // The plan over every owner still to measure (read in pages, the server answering between
+      // them): owners grouped with the copies they share, so each file is read once per group.
+      // Grouped over all of them, not a page: the copies of a book are often far apart in the
+      // catalog (on the live run's 55,932 owners: 54 % of the readings against 72 % by pages).
+      const owners: { owner: number; others: number[] }[] = [];
+      const known = new Map<number, boolean>();
+      const settledNow = (key: number) => {
+        let v = known.get(key);
+        if (v === undefined) known.set(key, (v = settled(key)));
+        return v;
+      };
+      for (let after = 0; ; ) {
+        const page = rows(
+          `AND json_array_length(facts_json, '$.cands') > 0
+             AND json_extract(facts_json, '$.measured') IS NULL AND id > ?`,
+          2000,
+          after,
+        );
+        if (!page.length) break;
+        for (const f of page) {
+          const fx = facts(f);
+          const covered = new Set(fx.covered ?? []);
+          const others = (fx.cands ?? []).filter((o) => !covered.has(o));
+          owners.push({ owner: f.id, others: neededOthers(f.id, others, settledNow) });
+        }
+        after = page[page.length - 1].id;
+        await yieldNow();
+        if (shouldStop()) return 'wait';
+      }
+      if (!owners.length) {
         stage('decide', 0, countNew(`AND json_extract(facts_json, '$.compared') IS NULL`));
         return 'more';
       }
       p.waiting = `Measuring the pairs with the same text (${c.done.toLocaleString('en-US')} of ${c.total.toLocaleString('en-US')} books)`;
-      const byId = this.db.prepare(
-        `SELECT id, pair_key, rel_path, size, sha256, facts_json FROM calibre_arrival_files WHERE id = ?`,
-      );
       const qCache = new Map<number, Quality | null>();
+      const units = groupUnits(owners, BOOKS_PER_COMPARE);
       const ok = await slice(() =>
-        inPool(part, inFlight, endStream, async (f) => {
-          const news = new Map<number, NewText>([[-f.id, newText(f)]]);
-          const covered = new Set(facts(f).covered ?? []);
-          const cands = (facts(f).cands ?? []).filter((o) => !covered.has(o));
-          for (const o of cands)
-            if (o < 0) {
-              const r = byId.get(-o) as Row | undefined;
-              if (r && facts(r).text) news.set(o, newText(r));
-            }
-          const measured = await measurePairs(
-            cd,
-            news,
-            cands.filter((o) => o > 0 || news.has(o)).map((o) => ({ a: -f.id, b: o })),
-          );
+        inPool(units, inFlight, endStream, async (u) => {
+          // Settled again now: other units finish meanwhile.
+          const pairs0 = u.pairs.filter((pr) => !(settled(pr.a) && (pr.b > 0 || settled(pr.b))));
+          const news = new Map<number, NewText>();
+          for (const pr of pairs0)
+            for (const k of [pr.a, pr.b])
+              if (k < 0 && !news.has(k)) {
+                const r = byId.get(-k) as Row | undefined;
+                if (r && facts(r).text) news.set(k, newText(r));
+              }
+          const pairs = pairs0.filter((pr) => news.has(pr.a) && (pr.b > 0 || news.has(pr.b)));
+          const measured = pairs.length ? await measurePairs(cd, news, pairs) : [];
           const quality = this.qualityOf(cd, news, qCache, srcPacer);
           const add = new Map<number, MeasuredPair[]>();
           for (const m of measured) {
@@ -1799,8 +1834,8 @@ export class BookArrivals {
               ]);
             }
           }
-          // The verdicts and this book's "measured" mark in one transaction: books finish out of
-          // order, and a restart measures again only the books not marked (never twice).
+          // The verdicts and the owners' "measured" marks in one transaction: units finish out
+          // of order, and a restart measures again only the owners not marked (never twice).
           this.db.transaction(() => {
             for (const [k, vs] of add) {
               const r = byId.get(-k) as Row;
@@ -1808,11 +1843,13 @@ export class BookArrivals {
               fx.verdicts = [...(fx.verdicts ?? []), ...vs];
               setFacts.run(JSON.stringify(fx), r.id);
             }
-            const own = facts(byId.get(f.id) as Row);
-            own.measured = true;
-            setFacts.run(JSON.stringify(own), f.id);
+            for (const id of u.owners) {
+              const own = facts(byId.get(id) as Row);
+              own.measured = true;
+              setFacts.run(JSON.stringify(own), id);
+            }
           })();
-          c.done++;
+          c.done += u.owners.length;
           saveNow();
         }),
       );

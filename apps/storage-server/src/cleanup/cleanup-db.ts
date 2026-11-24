@@ -2453,6 +2453,24 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
       ALTER TABLE series_pair_decisions ADD COLUMN note TEXT;
     `,
   },
+  {
+    version: 32,
+    name: 'new arrivals: the picture facts of each file, kept once read (the quality check)',
+    // WP20g (2026-11-24): the measuring's quality check read every picture of a copy each time
+    // the copy was in a pair (158,934 checks of 93,611 files left in the live run). One row per
+    // file as read (path, size, mtime): the pictures, the cover's size and the writing
+    // direction, never the parts that change without the file (your tags, the date added).
+    // Read by primary key only (a rowid table: a book's row can be large).
+    sql: `
+      CREATE TABLE calibre_arrival_quality (
+        file        TEXT PRIMARY KEY,
+        size        INTEGER NOT NULL,
+        mtime_ms    INTEGER NOT NULL,
+        facts_json  TEXT NOT NULL CHECK (json_valid(facts_json)),
+        made_at     INTEGER NOT NULL
+      );
+    `,
+  },
 ];
 
 export const CLEANUP_SCHEMA_VERSION = CLEANUP_MIGRATIONS[CLEANUP_MIGRATIONS.length - 1].version;
