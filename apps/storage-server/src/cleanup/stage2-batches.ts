@@ -23,7 +23,7 @@ import fs from 'fs';
 import path from 'path';
 import { snapshotFile } from '../calibre/indexer';
 import { parseCalibreDate } from '../calibre/ingest';
-import { liveTitleSort } from '../calibre/live-lookup';
+import { currentCalibreEpub, liveTitleSort } from '../calibre/live-lookup';
 import { getLibrary } from '../calibre/libraries';
 import { readSourceFile, resolveInside, statFile } from '../calibre/source-fs';
 import { BatchError, type BatchRow, type BatchService, type ItemState } from './batches';
@@ -1771,9 +1771,16 @@ export class Stage2Batches {
     const ev = JSON.parse(r.evidence_json) as Evidence2;
     if (!ev.cover || !ev.epub) throw new BatchError(404, 'not_found', 'No cover facts');
     const libDir = this.libDir(batch.libraryId);
-    const bytes = await readCoverBytes(resolveInside(libDir, ev.epub.path), ev.cover.entry).catch(
-      () => null,
-    );
+    // Where the analysis read the EPUB, else where the book is now: every Calibre write can
+    // move its folder (seen 2026-11-15: 38253, 38349, 38350 lost their covers this way). The
+    // picture's SHA-256 below proves it is the analysed cover either way.
+    const read = (rel: string) =>
+      readCoverBytes(resolveInside(libDir, rel), ev.cover!.entry).catch(() => null);
+    let bytes = await read(ev.epub.path);
+    if (!bytes) {
+      const now = await currentCalibreEpub(libDir, r.calibre_uuid);
+      if (now && now !== ev.epub.path) bytes = await read(now);
+    }
     if (!bytes) throw new BatchError(409, 'cover_gone', "The EPUB's cover can't be read any more");
     if (createHash('sha256').update(bytes).digest('hex') !== ev.cover.sha256) {
       throw new BatchError(409, 'cover_changed', "The EPUB's cover changed since the analysis");
@@ -1796,13 +1803,18 @@ export class Stage2Batches {
     const book = snap.books.get(calibreId);
     if (!book || !book.hasCover)
       throw new BatchError(404, 'not_found', 'Calibre lists no cover for this book');
-    try {
-      return await readSourceFile(
-        resolveInside(this.libDir(batch.libraryId), `${book.path}/cover.jpg`),
-      );
-    } catch {
-      throw new BatchError(404, 'not_found', "Calibre's cover.jpg can't be read");
+    const libDir = this.libDir(batch.libraryId);
+    const read = (folder: string) =>
+      readSourceFile(resolveInside(libDir, `${folder}/cover.jpg`)).catch(() => null);
+    // The folder the reader's index knows, else the book's folder now (a write may have moved it).
+    let bytes = await read(book.path);
+    if (!bytes) {
+      const now = await currentCalibreEpub(libDir, book.uuid);
+      const folder = now ? path.posix.dirname(now) : null;
+      if (folder && folder !== book.path) bytes = await read(folder);
     }
+    if (!bytes) throw new BatchError(404, 'not_found', "Calibre's cover.jpg can't be read");
+    return bytes;
   }
 
   /** Taken in when the reader's index shows each written book's new last_modified. */

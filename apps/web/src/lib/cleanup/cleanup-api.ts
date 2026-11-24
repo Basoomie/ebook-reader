@@ -402,21 +402,6 @@ export interface Stage4GuessSeries {
   series: string;
   books: Stage4GuessBook[];
 }
-/** A Calibre record without files (tier 4): its state and the new book holding its EPUB. */
-export interface EmptyRecord {
-  calibreId: number;
-  uuid: string;
-  title: string;
-  authors: string[];
-  tags: string[];
-  path: string;
-  lastModified: string | null;
-  state: 'waiting' | 'ready' | 'held' | 'deleting' | 'deleted' | 'failed';
-  reason: string | null;
-  newBook: { calibreId: number; uuid: string; title: string; relPath: string } | null;
-  addTags: string[];
-  batchId: string | null;
-}
 /** A title shortened or cut to fit Calibre's folder names (cleanup.db v26). */
 export interface TitleFit {
   id: number;
@@ -2211,18 +2196,6 @@ export class CleanupApi {
     return this.request('GET', `/cleanup/stage4/proposals?${q}`) as Promise<{
       total: number;
       items: Stage4Proposal[];
-    }>;
-  }
-
-  /** The Calibre records without files (tier 4). */
-  emptyRecords(): Promise<{ records: EmptyRecord[] }> {
-    return this.request('GET', '/cleanup/empty-records') as Promise<{ records: EmptyRecord[] }>;
-  }
-
-  /** Deletes the ready records without files (all ready ones when `ids` is left out). */
-  deleteEmptyRecords(ids?: number[]): Promise<{ batch: { id: string } }> {
-    return this.request('POST', '/cleanup/empty-records/delete', ids ? { ids } : {}) as Promise<{
-      batch: { id: string };
     }>;
   }
 

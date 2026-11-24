@@ -32,8 +32,10 @@ import fs from 'fs';
 import path from 'path';
 import { SNAPSHOT_DIRNAME } from '../src/calibre/indexer';
 import { getLibrary } from '../src/calibre/libraries';
-import { statFile, type SourceStat } from '../src/calibre/source-fs';
-import { folderTooLong, recordsWithoutFiles, sameText } from '../src/cleanup/empty-records';
+import * as liveLookup from '../src/calibre/live-lookup';
+import * as sourceFs from '../src/calibre/source-fs';
+import type { SourceStat } from '../src/calibre/source-fs';
+import { NAME_MAX_BYTES } from '../src/cleanup/calibre-names';
 import { getSettings, updateSettings } from '../src/cleanup/settings';
 import { loadEvidence, saveEvidence, Stage2Analysis } from '../src/cleanup/stage2';
 import { readStage2Snapshot } from '../src/cleanup/stage2-snapshot';
@@ -52,6 +54,49 @@ const arg = (n: string) => {
   return v;
 };
 const log = (m: string) => console.log(`${new Date().toLocaleTimeString()} ${m}`);
+
+/** Title or name as compared: width, case and spaces aside. */
+const fold = (s: string) => s.normalize('NFKC').replace(/\s+/gu, '').toLowerCase();
+const sameText = (a: string, b: string) => fold(a) === fold(b);
+const encoder = new TextEncoder();
+/** A part of the record's path the disk can't take (Linux NAME_MAX): its folder was never made. */
+const folderTooLong = (p: string) =>
+  p.split('/').some((x) => encoder.encode(x).length > NAME_MAX_BYTES);
+
+/** The records without formats in a metadata.db, with their authors and tags, and the EPUB books. */
+function recordsWithoutFiles(file: string) {
+  const db = new Database(file, { readonly: true, fileMustExist: true });
+  try {
+    const rows = db
+      .prepare(
+        `SELECT b.id, b.uuid, b.title, b.path FROM books b
+         WHERE NOT EXISTS (SELECT 1 FROM data d WHERE d.book = b.id) ORDER BY b.id`,
+      )
+      .all() as { id: number; uuid: string; title: string; path: string }[];
+    const authors = db.prepare(
+      'SELECT a.name FROM authors a JOIN books_authors_link l ON l.author = a.id WHERE l.book = ? ORDER BY l.id',
+    );
+    const tags = db.prepare(
+      'SELECT t.name FROM tags t JOIN books_tags_link l ON l.tag = t.id WHERE l.book = ? ORDER BY t.name',
+    );
+    const records = rows.map((r) => ({
+      ...r,
+      authors: (authors.all(r.id) as { name: string }[]).map((x) => x.name),
+      tags: (tags.all(r.id) as { name: string }[]).map((x) => x.name),
+    }));
+    const epubBooks = new Map<number, { uuid: string; title: string }>();
+    for (const r of db
+      .prepare(
+        `SELECT b.id, b.uuid, b.title FROM books b
+         WHERE EXISTS (SELECT 1 FROM data d WHERE d.book = b.id AND d.format = 'EPUB')`,
+      )
+      .all() as { id: number; uuid: string; title: string }[])
+      epubBooks.set(r.id, { uuid: r.uuid, title: r.title });
+    return { records, epubBooks };
+  } finally {
+    db.close();
+  }
+}
 
 /** The 94 books stage 2 left unwritten (maintenance-todo.md, "Stage 2 leftovers", 2026-11-16). */
 export const UNWRITTEN_94: { id: number; why: string }[] = [
@@ -302,8 +347,26 @@ async function main() {
     if (hit) return hit;
     if (!share) return null;
     sharedStats += 1;
-    return statFile(abs);
+    return realStat(abs);
   };
+  // The analysis looks at files through source-fs's statFile: here it looks at the listing.
+  const realStat = sourceFs.statFile;
+  (sourceFs as { statFile: typeof sourceFs.statFile }).statFile = stat;
+  // A moved book is looked up by UUID in the live metadata.db; here in its snapshot copy (never
+  // the live file over SMB), the file then found in the listing.
+  const snapDb = new Database(snapFile, { readonly: true });
+  const byUuid = snapDb.prepare(
+    `SELECT b.path, d.name FROM books b JOIN data d ON d.book = b.id AND d.format = 'EPUB' WHERE b.uuid = ? LIMIT 1`,
+  );
+  let liveLookups = 0;
+  (liveLookup as { currentCalibreEpub: typeof liveLookup.currentCalibreEpub }).currentCalibreEpub =
+    async (_dir: string, uuid: string) => {
+      liveLookups += 1;
+      const r = byUuid.get(uuid) as { path: string; name: string } | undefined;
+      if (!r) return null;
+      const rel = `${r.path}/${r.name}.epub`;
+      return listing.has(rel.normalize('NFC')) ? rel : null;
+    };
 
   // The analysis, exactly as "Run the analysis again" runs it.
   const analysis = new Stage2Analysis({
@@ -313,7 +376,6 @@ async function main() {
     cacheDir,
     dbDir: work,
     log,
-    stat,
   });
   const p0 = analysis.restart(libraryId);
   log(`analysis ${p0.analysisId} started`);
@@ -336,7 +398,7 @@ async function main() {
     null;
   const pauses = listFieldPauses(db, 2);
   log(
-    `analysis done: ${p.books} books, ${p.booksWithChanges} with changes; files read ${p.filesRead}, stats over the share ${sharedStats}`,
+    `analysis done: ${p.books} books, ${p.booksWithChanges} with changes; files read ${p.filesRead}, stats over the share ${sharedStats}, lookups of moved books ${liveLookups}`,
   );
 
   // The proposals of the new analysis.

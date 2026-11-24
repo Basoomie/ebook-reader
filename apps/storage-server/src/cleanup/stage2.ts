@@ -19,7 +19,8 @@ import path from 'path';
 import { gunzipSync, gzipSync } from 'zlib';
 import { snapshotFile } from '../calibre/indexer';
 import { getLibrary } from '../calibre/libraries';
-import { resolveInside, statFile, type SourceStat } from '../calibre/source-fs';
+import { currentCalibreEpub } from '../calibre/live-lookup';
+import { resolveInside, statFile } from '../calibre/source-fs';
 import { calibreCoverFacts, readFileMetadata } from './file-metadata';
 import { getSettings, type CleanupSettings } from './settings';
 import { Pacer } from './stage1';
@@ -40,6 +41,7 @@ import {
   type FieldProposal,
   type FileFacts,
   type SpellingLookup,
+  type Stage2Field,
   authorGroup,
   proposeStage2,
   titleGroup,
@@ -184,11 +186,6 @@ export interface Stage2Deps {
   /** DB_DIR (for the default labels file). */
   dbDir?: string | null;
   log?: (m: string) => void;
-  /**
-   * How a book's EPUB and cover.jpg are looked at (default: a read-only stat on the share). The
-   * tier-4 copy run passes a file listing made on the NAS instead of 52,000 stats over SMB.
-   */
-  stat?: (file: string) => Promise<SourceStat | null>;
 }
 
 export function proposalOptions(s: CleanupSettings, spelling?: SpellingLookup) {
@@ -205,6 +202,8 @@ export class Stage2Analysis {
   private current: { file: string; mtime: number; snap: Stage2Snapshot } | null = null;
   private spelling: SpellingLookup | null = null;
   private readPacer: Pacer | null = null;
+  /** Fields a later cleanup stage wrote, with the value written (applied_values), per book. */
+  private laterValues: Map<string, Map<string, string>> | null = null;
   private readPacerBps = -1;
 
   constructor(private readonly deps: Stage2Deps) {}
@@ -225,12 +224,64 @@ export class Stage2Analysis {
     const p = emptyStage2Progress(libraryId);
     this.snapshot = null;
     this.spelling = null;
+    this.laterValues = null;
     this.save(p, 'analysing');
     return p;
   }
 
   invalidate(): void {
     this.snapshot = null;
+    this.laterValues = null;
+  }
+
+  /**
+   * The fields of this book whose value Calibre holds now was written by a later cleanup stage
+   * (any stage but stage 2: the online sources, the user's edits; Undo removes the record), so
+   * it is Calibre's own (stage2-rules.ts `owned`). Read once per analysis.
+   */
+  private ownedFields(libraryId: string, book: Stage2Book): Stage2Field[] {
+    if (!this.laterValues) {
+      const m = new Map<string, Map<string, string>>();
+      for (const r of this.deps.cleanup
+        .prepare(
+          `SELECT a.calibre_uuid, a.field, a.value_json FROM applied_values a
+           JOIN batches b ON b.id = a.batch_id
+           WHERE a.library_id = ? AND a.field IN ('title', 'authors', 'cover') AND b.stage <> 2`,
+        )
+        .iterate(libraryId) as Iterable<{
+        calibre_uuid: string;
+        field: string;
+        value_json: string;
+      }>) {
+        let f = m.get(r.calibre_uuid);
+        if (!f) m.set(r.calibre_uuid, (f = new Map()));
+        f.set(r.field, r.value_json);
+      }
+      this.laterValues = m;
+    }
+    const later = this.laterValues.get(book.uuid);
+    if (!later) return [];
+    const out: Stage2Field[] = [];
+    const title = later.get('title');
+    if (title !== undefined && JSON.parse(title) === book.title) out.push('title');
+    const authors = later.get('authors');
+    if (
+      authors !== undefined &&
+      JSON.stringify(JSON.parse(authors)) === JSON.stringify(book.authors)
+    )
+      out.push('authors');
+    // A cover a later stage wrote and Calibre still lists one (a cover you changed since is
+    // yours: user_fields keeps stage 2 off it).
+    if (later.has('cover') && book.hasCover) out.push('cover');
+    return out;
+  }
+
+  /** Calibre's facts of a book for the rules, with the fields later stages own. */
+  private calFacts(libraryId: string, book: Stage2Book, ev: FileEvidence) {
+    return {
+      ...calibreFactsOf(book, ev.cover?.facts ?? null),
+      owned: this.ownedFields(libraryId, book),
+    };
   }
 
   referenceFile(): string | null {
@@ -317,16 +368,29 @@ export class Stage2Analysis {
     book: Stage2Book,
   ): Promise<{ ev: FileEvidence | null; read: boolean }> {
     if (!book.filePath) return { ev: null, read: false };
-    const epub = resolveInside(libDir, book.filePath);
-    const stat = this.deps.stat ?? statFile;
-    const st = await stat(epub);
-    const coverFile = resolveInside(libDir, `${book.path}/cover.jpg`);
-    const coverSt = book.hasCover ? await stat(coverFile) : null;
+    // The analysis keeps one snapshot for its whole run, and any Calibre write moves a book's
+    // folder: a book not at the snapshot's path is looked for where it is now (by UUID, in the
+    // live metadata.db), never recorded as missing (seen 2026-11-15: 4,277 books were never
+    // analysed because stage-2 batches moved their folders during the analysis).
+    let filePath = book.filePath;
+    let epub = resolveInside(libDir, filePath);
+    let st = await statFile(epub);
+    if (!st) {
+      const now = await currentCalibreEpub(libDir, book.uuid);
+      if (now && now !== filePath) {
+        filePath = now;
+        epub = resolveInside(libDir, filePath);
+        st = await statFile(epub);
+      }
+    }
+    const folder = filePath === book.filePath ? book.path : path.posix.dirname(filePath);
+    const coverFile = resolveInside(libDir, `${folder}/cover.jpg`);
+    const coverSt = book.hasCover ? await statFile(coverFile) : null;
     const old = loadEvidence(this.deps.cleanup, libraryId, book.uuid);
     const sameFile =
       old !== null &&
       st !== null &&
-      old.path === book.filePath &&
+      old.path === filePath &&
       old.size === st.size &&
       old.mtimeMs === st.mtimeMs;
     const sameCover =
@@ -367,7 +431,7 @@ export class Stage2Analysis {
     }
     const ev: FileEvidence = {
       v: EVIDENCE_VERSION,
-      path: book.filePath,
+      path: filePath,
       size: st?.size ?? null,
       mtimeMs: st?.mtimeMs ?? null,
       file,
@@ -441,7 +505,9 @@ export class Stage2Analysis {
     spelling?: SpellingLookup,
   ): FieldProposal[] {
     if (!ev.file) return [];
-    return proposeStage2(calibreFactsOf(book, ev.cover?.facts ?? null), ev.file, {
+    const lib = this.progress()?.libraryId ?? null;
+    const cal = lib ? this.calFacts(lib, book, ev) : calibreFactsOf(book, ev.cover?.facts ?? null);
+    return proposeStage2(cal, ev.file, {
       ...proposalOptions(settings, spelling),
       calibreId: book.calibreId,
     });
@@ -638,7 +704,7 @@ export class Stage2Analysis {
       const ev = loadEvidence(db, p.libraryId, book.uuid);
       if (!ev?.file) continue;
       books += 1;
-      const cal = calibreFactsOf(book, ev.cover?.facts ?? null);
+      const cal = this.calFacts(p.libraryId, book, ev);
       const tg = titleGroup(cal, ev.file);
       const ag = authorGroup(cal, ev.file);
       groups.title[tg] = (groups.title[tg] ?? 0) + 1;
@@ -678,7 +744,7 @@ export class Stage2Analysis {
       out.push({
         id: goldId,
         gold: gold[goldId],
-        cal: calibreFactsOf(book, ev.cover?.facts ?? null),
+        cal: this.calFacts(p.libraryId, book, ev),
         file: ev.file,
         proposals: this.proposalsFor(book, ev, settings, spelling),
       });

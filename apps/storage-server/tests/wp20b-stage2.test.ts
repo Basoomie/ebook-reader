@@ -21,6 +21,7 @@ import {
   TWO_VALUES_REASON,
 } from '../src/cleanup/stage2-batches';
 import { listFieldPauses } from '../src/cleanup/stage2-gate';
+import { loadEvidence } from '../src/cleanup/stage2';
 import { getStage } from '../src/cleanup/stages';
 import { fingerprint, makeJpeg } from './helpers/calibre-fixture';
 import { type CleanupEnv, makeCleanupEnv } from './helpers/cleanup-env';
@@ -844,6 +845,97 @@ describe('stage 2: metadata and covers from the files', () => {
       .get(row.id) as { class: string; review_reason: string; state: string };
     expect(after).toMatchObject({ class: 'review', state: 'proposed' });
     expect(after.review_reason).toBe(SPLIT_WORD_REASON);
+  });
+
+  it("a value stage 4 wrote and Calibre still holds is Calibre's own: review, never automatic", async () => {
+    // B2 is metadata-processed (the Google run): its title and author would be taken from the
+    // file. Stage 4 wrote both since; Calibre still holds them.
+    let uuid = '';
+    env.lib.exec((db) => {
+      uuid = (db.prepare('SELECT uuid FROM books WHERE id = ?').get(ids.B2) as { uuid: string })
+        .uuid;
+    });
+    const lib = env.libraryId();
+    env.cleanupDb
+      .prepare(
+        `INSERT INTO batches (id, stage, library_id, kind, state, item_count, created_at, updated_at)
+         VALUES ('stage4-batch', 4, ?, 'apply', 'applied', 2, 1, 1)`,
+      )
+      .run(lib);
+    const put = env.cleanupDb.prepare(
+      `INSERT INTO applied_values (library_id, calibre_uuid, field, value_json, source, batch_id, applied_at)
+       VALUES (?, ?, ?, ?, 'amazon-asin', 'stage4-batch', 1)`,
+    );
+    put.run(lib, uuid, 'title', JSON.stringify('Googleの題名'));
+    put.run(lib, uuid, 'authors', JSON.stringify(['Google Author']));
+    await setMode('analyse');
+    const rows = env.cleanupDb
+      .prepare(
+        `SELECT field, class FROM proposed_changes WHERE stage = 2 AND calibre_id = ? AND field IN ('title', 'authors')
+         ORDER BY field`,
+      )
+      .all(ids.B2);
+    expect(rows).toEqual([
+      { field: 'authors', class: 'review' },
+      { field: 'title', class: 'review' },
+    ]);
+  });
+
+  it('a book whose folder moved since the snapshot is analysed where it is now, never recorded missing', async () => {
+    // The analysis keeps the snapshot it started with; Calibre moves the folder meanwhile (seen
+    // 2026-11-15: 4,277 books recorded "file_missing" while stage-2 batches moved them).
+    const from = env.lib.bookDir(ids.B1);
+    const to = path.join(env.lib.dir, 'Moved', `Book ${ids.B1} (${ids.B1})`);
+    fs.mkdirSync(path.dirname(to), { recursive: true });
+    fs.renameSync(from, to);
+    env.lib.exec((db) =>
+      db
+        .prepare('UPDATE books SET path = ? WHERE id = ?')
+        .run(`Moved/Book ${ids.B1} (${ids.B1})`, ids.B1),
+    );
+    await setMode('analyse');
+    let uuid = '';
+    env.lib.exec((db) => {
+      uuid = (db.prepare('SELECT uuid FROM books WHERE id = ?').get(ids.B1) as { uuid: string })
+        .uuid;
+    });
+    const ev = loadEvidence(env.cleanupDb, env.libraryId(), uuid)!;
+    expect(ev.error).toBeNull();
+    expect(ev.path.startsWith('Moved/')).toBe(true);
+    const fields = (
+      env.cleanupDb
+        .prepare(
+          `SELECT field FROM proposed_changes WHERE stage = 2 AND calibre_id = ? AND class = 'auto'`,
+        )
+        .all(ids.B1) as { field: string }[]
+    ).map((r) => r.field);
+    expect(fields).toEqual(expect.arrayContaining(['title', 'authors', 'cover']));
+  });
+
+  it('a book whose folder moved after the analysis still gets its cover (read from where it is now)', async () => {
+    await setMode('analyse');
+    // Calibre moves the folder (any write does: seen 2026-11-15, 38253/38349/38350 lost their
+    // covers to "The EPUB's cover can't be read any more").
+    const from = env.lib.bookDir(ids.B1);
+    const to = path.join(env.lib.dir, 'Moved', `Book ${ids.B1} (${ids.B1})`);
+    fs.mkdirSync(path.dirname(to), { recursive: true });
+    fs.renameSync(from, to);
+    env.lib.exec((db) =>
+      db
+        .prepare('UPDATE books SET path = ? WHERE id = ?')
+        .run(`Moved/Book ${ids.B1} (${ids.B1})`, ids.B1),
+    );
+    await env.index();
+    await setMode('on');
+    await runAll(worker());
+    const b1 = calibreRecord(env.lib, ids.B1)!;
+    expect(b1.hasCover).toBe(true);
+    const cover = env.cleanupDb
+      .prepare(
+        `SELECT state, review_reason FROM proposed_changes WHERE stage = 2 AND calibre_id = ? AND field = 'cover'`,
+      )
+      .get(ids.B1) as { state: string; review_reason: string | null };
+    expect(cover).toMatchObject({ state: 'applied' });
   });
 
   it("running the analysis again keeps a new-arrivals run's own proposals (arrivals:<run>)", async () => {

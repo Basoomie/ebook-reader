@@ -1015,22 +1015,6 @@ export function booksArrivalsUndoCopy(books: number): ConfirmCopy {
   };
 }
 
-/**
- * Tier 4: deleting Calibre records without files once their book is in Calibre with its EPUB.
- * Calibre's trash keeps nothing of a record without a folder (checked on calibre 9.18).
- */
-export function deleteEmptyRecordsCopy(count: number): ConfirmCopy {
-  const what = count === 1 ? 'the record' : `the ${count.toLocaleString('en-US')} records`;
-  return {
-    title: `Delete ${what} without files from Calibre?`,
-    message: [
-      'Each record has no file and no folder; its book is already in Calibre as a new book with its EPUB. Its own tags (like PeepoHappyBooks) are added to that book first.',
-      'Each record is saved in the quarantine folder before it goes. Calibre’s trash keeps nothing of a record without a folder, so this can’t be undone.'
-    ],
-    confirmLabel: count === 1 ? 'Delete the record' : 'Delete the records'
-  };
-}
-
 /** Audiobook stage 7 (WP21f-1): Run now; with the changes to books in the library (WP21f-2). */
 export function arrivalsRunNowCopy(
   mode: 'analyse' | 'on',

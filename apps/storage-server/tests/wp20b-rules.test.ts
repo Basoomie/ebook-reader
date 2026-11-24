@@ -538,3 +538,85 @@ describe('names Calibre would split (NAS run 2026-11-15)', () => {
     for (const n of whole) expect(calibreSplitsName(n), n).toBe(false);
   });
 });
+
+describe("values a later cleanup stage wrote are Calibre's own (tier 4, 2026-11-24)", () => {
+  // A new analysis would have written 179 file values back over stage 4's (4407's 100 anthology
+  // authors -> "tree編集部", 江口連 -> "Ren Eguchi"): the Google run's marks outlived its values.
+  const processed = { tags: ['metadata-processed'] };
+
+  it("a processed book: the file's title and authors go to review, never automatic, over a later stage's value", () => {
+    const c = cal({
+      ...processed,
+      title: '新世界より（下）',
+      authors: ['貴志祐介'],
+      owned: ['title', 'authors'],
+    });
+    const p = proposeStage2(
+      c,
+      file({ title: '新世界より 03', creators: [{ name: 'Yusuke Kishi', role: 'aut' }] }),
+    );
+    expect(byField(p, 'title')).toMatchObject([{ class: 'review', new: '新世界より 03' }]);
+    expect(byField(p, 'authors')).toMatchObject([{ class: 'review', new: ['Yusuke Kishi'] }]);
+    // Without the later stage's write the same book is the Google run's and takes the file's.
+    const before = proposeStage2(
+      { ...c, owned: [] },
+      file({ title: '新世界より 03', creators: [{ name: 'Yusuke Kishi', role: 'aut' }] }),
+    );
+    expect(byField(before, 'title')).toMatchObject([{ class: 'auto' }]);
+    expect(byField(before, 'authors')).toMatchObject([{ class: 'auto' }]);
+  });
+
+  it("an Unknown-author book: a title a later stage wrote goes to review; its Unknown author still takes the file's", () => {
+    const c = cal({ title: 'ストアの題名', authors: ['Unknown'], owned: ['title'] });
+    const p = proposeStage2(
+      c,
+      file({ title: 'ファイルの題名', creators: [{ name: '著者一', role: 'aut' }] }),
+    );
+    expect(byField(p, 'title')).toMatchObject([{ class: 'review' }]);
+    expect(byField(p, 'authors')).toMatchObject([{ class: 'auto', new: ['著者一'] }]);
+  });
+
+  it("a later stage's value is never normalized automatically", () => {
+    const c = cal({
+      ...processed,
+      title: 'ＮＯＶＥＬ｜題名',
+      authors: ['山田 太郎'],
+      owned: ['title', 'authors'],
+    });
+    const p = proposeStage2(
+      c,
+      file({ title: 'ＮＯＶＥＬ｜題名', creators: [{ name: '山田 太郎', role: 'aut' }] }),
+    );
+    expect(
+      p.filter((x) => (x.field === 'title' || x.field === 'authors') && x.class === 'auto'),
+    ).toEqual([]);
+  });
+
+  it("a later stage's cover isn't replaced for being another picture; a larger file cover still is", () => {
+    const cover = {
+      width: 600,
+      height: 900,
+      dhash: 'ffffffffffffffff',
+      bytes: 1,
+      mediaType: 'image/jpeg',
+    } as never;
+    const fc = (w: number, h: number) =>
+      ({
+        entry: 'c.jpg',
+        sha256: 'x',
+        width: w,
+        height: h,
+        mediaType: 'image/jpeg',
+        bytes: 1,
+        dhash: '0000000000000000',
+      }) as never;
+    const c = cal({ ...processed, hasCover: true, cover, owned: ['cover'] });
+    expect(byField(proposeStage2(c, file({ cover: fc(600, 900) })), 'cover')).toEqual([]);
+    expect(
+      byField(proposeStage2({ ...c, owned: [] }, file({ cover: fc(600, 900) })), 'cover'),
+    ).toHaveLength(1);
+    expect(byField(proposeStage2(c, file({ cover: fc(900, 1400) })), 'cover')).toMatchObject([
+      { reason: "The file's cover is larger" },
+    ]);
+  });
+});

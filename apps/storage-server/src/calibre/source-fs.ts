@@ -51,10 +51,7 @@ export async function folderExists(dir: string): Promise<boolean> {
   try {
     return (await fs.stat(dir)).isDirectory();
   } catch (err: any) {
-    // ENAMETOOLONG: a name the disk can't hold (over 255 bytes) can't be there (Linux; the
-    // records Calibre's import left without their folder, tier 4).
-    if (err.code === 'ENOENT' || err.code === 'ENOTDIR' || err.code === 'ENAMETOOLONG')
-      return false;
+    if (err.code === 'ENOENT' || err.code === 'ENOTDIR') return false;
     throw err;
   }
 }
