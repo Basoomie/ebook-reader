@@ -91,9 +91,9 @@ describe('Reader › Toolbars (reader toolbars session 2)', () => {
 });
 
 describe('Settings › Library (calibre-metadata-display.md)', () => {
-  it('has Look, Book page, Links, Editing and Downloading books, in that order', () => {
+  it('has Theme and display, Book page, Links, Editing and Downloading books, in that order', () => {
     expect(SETTINGS_SECTIONS.filter((s) => s.tab === 'Library').map((s) => s.title)).toEqual([
-      'Look',
+      'Theme and display', // was Look (library themes, 2026-11-24)
       // Search history (2026-11-24): after Look.
       'Search',
       'Book page',
@@ -110,7 +110,7 @@ describe('Settings › Library (calibre-metadata-display.md)', () => {
     expect(searchSettings('Library look')[0]).toMatchObject({
       id: 'library-look',
       tab: 'Library',
-      path: 'Library › Look'
+      path: 'Library › Theme and display'
     });
     expect(searchSettings('Illustrations on the book page')[0]).toMatchObject({
       id: 'illustrations-position',

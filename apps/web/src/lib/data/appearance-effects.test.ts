@@ -12,6 +12,7 @@ import {
   type DarkQuery
 } from './appearance-effects';
 import type { CustomTheme } from './theme-option';
+import { BUILT_IN_LIBRARY_THEMES } from '$lib/library-theme/library-themes';
 
 const colors = {
   fontColor: 'rgba(0,0,0,1)',
@@ -187,6 +188,44 @@ describe('startAppearanceEffects', () => {
     s.theme.next('light-theme');
     s.libraryLook.next('dark');
     expect(r.classes.has('catalogue-dark')).toBe(true);
+    stop();
+  });
+
+  it('puts this device’s light or dark library theme on the page (2026-11-24)', () => {
+    const own = {
+      Sepia: {
+        base: { ...BUILT_IN_LIBRARY_THEMES.light.base, page: '#eeddbb' },
+        tokens: { ...BUILT_IN_LIBRARY_THEMES.light.tokens, bg: '#eeddbb' }
+      },
+      Night: { ...BUILT_IN_LIBRARY_THEMES.dark }
+    };
+    const s = {
+      ...settings(),
+      libraryLook: new BehaviorSubject('auto'),
+      libraryThemes: new BehaviorSubject<Record<string, unknown>>(own),
+      libraryLightTheme: new BehaviorSubject(''),
+      libraryDarkTheme: new BehaviorSubject('')
+    };
+    const r = root();
+    const css: (string | null)[] = [];
+    const stop = startAppearanceEffects(s, undefined, r, undefined, (c) => css.push(c));
+    // Built-in Light: app.scss's own colours, no style element.
+    expect(r.classes.has('library-theme')).toBe(false);
+    expect(css).toEqual([]);
+    s.libraryLightTheme.next('Sepia');
+    expect(r.classes.has('library-theme')).toBe(true);
+    expect(r.classes.has('catalogue-dark')).toBe(false);
+    expect(css.at(-1)).toContain('--c-bg: #eeddbb;');
+    // Like the book on a dark book: the dark pick (dark kind).
+    s.libraryDarkTheme.next('Night');
+    s.theme.next('dark-theme');
+    expect(r.classes.has('catalogue-dark')).toBe(true);
+    expect(css.at(-1)).toContain('--c-bg: #0e1524;');
+    // The pick deleted on another device: back to the built-in Dark.
+    s.libraryThemes.next({ Sepia: own.Sepia });
+    expect(r.classes.has('library-theme')).toBe(false);
+    expect(r.classes.has('catalogue-dark')).toBe(true);
+    expect(css.at(-1)).toBeNull();
     stop();
   });
 

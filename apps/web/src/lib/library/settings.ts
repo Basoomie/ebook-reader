@@ -6,7 +6,9 @@
 
 import { writableBooleanLocalStorageSubject } from '$lib/data/internal/writable-boolean-local-storage-subject';
 import { writableNumberLocalStorageSubject } from '$lib/data/internal/writable-number-local-storage-subject';
+import { writableObjectLocalStorageSubject } from '$lib/data/internal/writable-object-local-storage-subject';
 import { writableStringLocalStorageSubject } from '$lib/data/internal/writable-string-local-storage-subject';
+import type { LibraryTheme } from '$lib/library-theme/library-themes';
 
 /** Per-device Library page settings (WP6). */
 
@@ -87,6 +89,18 @@ export const libraryCoverSize$ = writableNumberLocalStorageSubject()('libraryCov
  * or 'dark'. See lib/data/catalogue-look.ts.
  */
 export const libraryLook$ = writableStringLocalStorageSubject()('libraryLook', 'auto');
+
+/**
+ * Library themes (2026-11-24, lib/library-theme/library-themes.ts): your own themes, shared
+ * with every device, and this device's picks for the light and the dark look ('' = the
+ * built-in Light or Dark). A pick that no longer exists falls back to the built-in.
+ */
+export const libraryThemes$ = writableObjectLocalStorageSubject<Record<string, LibraryTheme>>()(
+  'libraryThemes',
+  {}
+);
+export const libraryLightTheme$ = writableStringLocalStorageSubject()('libraryLightTheme', '');
+export const libraryDarkTheme$ = writableStringLocalStorageSubject()('libraryDarkTheme', '');
 
 /**
  * Hidden covers on this device (2026-11-21, per device): 'rules' (blur what a tag, author,

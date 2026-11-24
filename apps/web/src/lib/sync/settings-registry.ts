@@ -171,6 +171,9 @@ export const SETTINGS_REGISTRY: Record<string, SettingSpec> = {
   libraryBulkDownloadMode: d('String'),
   libraryDownloadConfirmGb: d('Number'),
   libraryLook: d('String'),
+  libraryThemes: g('Object'), // your own library themes, shared like customThemes
+  libraryLightTheme: d('String'),
+  libraryDarkTheme: d('String'),
   libraryCoverBlur: d('String'),
   bookIllustrationsPosition: d('String'),
 

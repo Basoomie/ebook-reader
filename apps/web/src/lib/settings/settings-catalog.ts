@@ -121,8 +121,9 @@ export const SETTINGS_SECTIONS: CatalogSection[] = [
     id: 'library-appearance',
     tab: 'Library',
     jp: '外観',
-    title: 'Look',
-    keywords: 'library theme'
+    title: 'Theme and display',
+    description: 'How Home, Library, Collections, Notes and Stats look on this device.',
+    keywords: 'library theme look colours colors'
   },
   // Search history (2026-11-24): after Look.
   {
@@ -487,8 +488,23 @@ export const SETTINGS_CATALOG: CatalogSetting[] = [
     section: 'library-appearance',
     title: 'Library look',
     description:
-      'Light or dark for Home, Library, Collections, Notes and Stats. “Like the book” turns dark when the book’s theme is dark (also when it follows the device). E-ink always wins.',
+      'Light or dark for Home, Library, Collections, Notes and Stats, in the themes picked below. “Like the book” uses the dark one when the book’s theme is dark (also when it follows the device). The 夜/紙 button in the header (key D) switches between them. E-ink always wins.',
     keywords: 'dark'
+  },
+  {
+    id: 'library-light-theme',
+    section: 'library-appearance',
+    title: 'Light theme',
+    description:
+      'Used for Light, and for “Like the book” on a light book. Your own library themes are shared with every device; the picks are this device’s.',
+    keywords: 'colour color custom theme library'
+  },
+  {
+    id: 'library-dark-theme',
+    section: 'library-appearance',
+    title: 'Dark theme',
+    description: 'Used for Dark, and for “Like the book” on a dark book.',
+    keywords: 'colour color custom theme library night'
   },
   // Library › Search (search history, 2026-11-24)
   {

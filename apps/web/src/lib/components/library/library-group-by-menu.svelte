@@ -12,7 +12,7 @@
   import { createEventDispatcher } from 'svelte';
 
   /**
-   * A collection's Group by (2026-11-24, Sections in Settings › Library › Look): the books
+   * A collection's Group by (2026-11-24, Sections in Settings › Library › Theme and display): the books
    * under one heading per series, author or tag, or one list (null).
    */
   export let value: GroupBy | null;

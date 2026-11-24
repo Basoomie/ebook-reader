@@ -195,7 +195,7 @@
    *
    * 2026-11-24: a collection shows its books' series, authors and tags too
    * (?collection=<id>&tab=series[&group=<name>]), counted inside the collection: as the
-   * Library's tabs, or as sections under headings (Settings › Library › Look).
+   * Library's tabs, or as sections under headings (Settings › Library › Theme and display).
    */
 
   type Tab = 'all' | 'series' | 'authors' | 'tags';

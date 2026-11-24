@@ -41,6 +41,7 @@ import {
   searchHistoryLimit$,
   searchHistoryOn$
 } from '$lib/search-history/settings';
+import { libraryThemes$ } from '$lib/library/settings';
 import { parseStoredValue, SETTINGS_REGISTRY } from '$lib/sync/settings-registry';
 
 /**
@@ -50,6 +51,7 @@ import { parseStoredValue, SETTINGS_REGISTRY } from '$lib/sync/settings-registry
  */
 export const GLOBAL_SETTING_SUBJECTS: Record<string, { next(value: never): void }> = {
   customThemes: customThemes$,
+  libraryThemes: libraryThemes$,
   startDayHoursForTracker: startDayHoursForTracker$,
   statsWeekStart: statsWeekStart$,
   speedGoalMinMinutes: speedGoalMinMinutes$,

@@ -11,6 +11,13 @@
   import { WEEKDAY_NAMES } from '$lib/stats/periods';
   import { ON_TRACK_RULES } from '$lib/stats/on-track';
   import SettingsCustomTheme from '$lib/components/settings/settings-custom-theme.svelte';
+  import LibraryThemeEditor from '$lib/components/settings/library-theme-editor.svelte';
+  import {
+    BUILT_IN_LIBRARY_THEMES,
+    isBuiltInLibraryTheme,
+    libraryThemeName,
+    normalizeTheme
+  } from '$lib/library-theme/library-themes';
   import SettingsFontSelector from '$lib/components/settings/settings-font-selector.svelte';
   import {
     bottomBarTimeLeft$,
@@ -65,6 +72,9 @@
     libraryBulkDownloadMode$,
     libraryDownloadConfirmGb$,
     libraryLook$,
+    libraryThemes$,
+    libraryLightTheme$,
+    libraryDarkTheme$,
     collectionGroupsAs$
   } from '$lib/library/settings';
   import { readAloudAheadSeconds$, readAloudLookupResume$ } from '$lib/read-aloud/settings';
@@ -368,6 +378,52 @@
     { id: 'light', text: 'Light' },
     { id: 'dark', text: 'Dark' }
   ];
+
+  // Library themes (2026-11-24): built-in Light and Dark, then your own (shared).
+  $: libraryThemeOptions = [
+    ...Object.entries(BUILT_IN_LIBRARY_THEMES).map(([id, t]) => ({ id, t })),
+    ...Object.keys($libraryThemes$)
+      .sort((a, b) => a.localeCompare(b))
+      .map((id) => ({ id, t: normalizeTheme($libraryThemes$[id]) }))
+      .filter((o) => !!o.t)
+  ].map(({ id, t }) => ({
+    id,
+    style: { color: t?.tokens.ink ?? '', 'background-color': t?.tokens.bg ?? '' },
+    band: t?.tokens['header-bg']
+  }));
+  // '' (never picked) shows as the built-in; a pick that is gone too.
+  $: libraryLightPick =
+    $libraryLightTheme$ && libraryThemeOptions.some((o) => o.id === $libraryLightTheme$)
+      ? $libraryLightTheme$
+      : 'light';
+  $: libraryDarkPick =
+    $libraryDarkTheme$ && libraryThemeOptions.some((o) => o.id === $libraryDarkTheme$)
+      ? $libraryDarkTheme$
+      : 'dark';
+  const libraryThemeIsOwn = (id: string) => !isBuiltInLibraryTheme(id);
+
+  function pickLibraryTheme(slot: 'light' | 'dark', id: string) {
+    (slot === 'dark' ? libraryDarkTheme$ : libraryLightTheme$).next(id);
+  }
+
+  function openLibraryThemeEditor(slot: 'light' | 'dark', selected = '') {
+    dialogManager.dialogs$.next([{ component: LibraryThemeEditor, props: { slot, selected } }]);
+  }
+
+  async function deleteLibraryTheme(id: string) {
+    // Shared with every device, like the reader's own themes.
+    const confirmed = await confirmDestructive({
+      ...deleteThemeCopy(id),
+      testid: 'library-theme-delete-confirm',
+      confirmTestid: 'library-theme-delete-confirm-button'
+    });
+    if (!confirmed) return;
+    if ($libraryLightTheme$ === id) libraryLightTheme$.next('');
+    if ($libraryDarkTheme$ === id) libraryDarkTheme$.next('');
+    const next = { ...$libraryThemes$ };
+    delete next[id];
+    libraryThemes$.next(next);
+  }
 
   // 2026-11-24: how a collection shows its books' series, authors and tags.
   const optionsForCollectionGroupsAs: ToggleOption<string>[] = [
@@ -1084,6 +1140,36 @@
           options={optionsForLibraryLook}
           bind:value={$libraryLook$}
           labelledby={labelId}
+        />
+      </SettingRow>
+      <SettingRow id="library-light-theme" layout="stack" let:labelId>
+        <ThemePicker
+          options={libraryThemeOptions}
+          value={libraryLightPick}
+          labelledby={labelId}
+          allowNew={browser}
+          isOwn={libraryThemeIsOwn}
+          nameOf={libraryThemeName}
+          testid="library-light-theme"
+          on:pick={({ detail }) => pickLibraryTheme('light', detail)}
+          on:new={() => openLibraryThemeEditor('light')}
+          on:edit={({ detail }) => openLibraryThemeEditor('light', detail)}
+          on:delete={({ detail }) => deleteLibraryTheme(detail)}
+        />
+      </SettingRow>
+      <SettingRow id="library-dark-theme" layout="stack" let:labelId>
+        <ThemePicker
+          options={libraryThemeOptions}
+          value={libraryDarkPick}
+          labelledby={labelId}
+          allowNew={browser}
+          isOwn={libraryThemeIsOwn}
+          nameOf={libraryThemeName}
+          testid="library-dark-theme"
+          on:pick={({ detail }) => pickLibraryTheme('dark', detail)}
+          on:new={() => openLibraryThemeEditor('dark')}
+          on:edit={({ detail }) => openLibraryThemeEditor('dark', detail)}
+          on:delete={({ detail }) => deleteLibraryTheme(detail)}
         />
       </SettingRow>
       <SettingRow id="collection-groups-as" let:labelId>
