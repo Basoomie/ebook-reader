@@ -139,29 +139,82 @@ export function minutesSince(since: number | null | undefined, now: number): num
 }
 
 /**
- * What the section says while a summary is being made: the step, a bar by step, the time so
- * far and the usual time (the accuracy test measured 16–21 minutes end to end).
+ * What the section says while a summary is being made (made compact in the review of the
+ * states, user 2026-11-24): the step and, in its own small grey type, what it is waiting for, if
+ * anything, on one line with the time so far on its right; then the bar by step. No usual time
+ * and no "it goes on when you leave this page" (user).
  */
+export interface MakingProgress {
+  text: string;
+  /** "Waiting 4 min: Anthropic is busy, trying again soon." beside the step, or null. */
+  waiting: string | null;
+  value: number;
+  /** On the right of the step: the time so far ('' before it starts). */
+  time: string;
+  /** Under the bar ('' for none). */
+  note: string;
+}
 export function makingProgress(
   r: Pick<BookSummaryRecord, 'making' | 'phase' | 'since'>,
   now: number,
-  job?: Pick<SummaryJob, 'waiting' | 'afterVolume'> | null
-): { text: string; value: number; detail: string } | null {
+  job?: Pick<SummaryJob, 'waiting' | 'afterVolume' | 'waitingSince'> | null
+): MakingProgress | null {
   if (!r.making) return null;
   if (r.making === 'queued')
     return {
       text: job?.afterVolume ? 'Waiting for the summary of an earlier volume' : 'Waiting to start',
+      waiting: null,
       value: 0,
-      detail: 'Usually 15–20 minutes once it starts.'
+      time: '',
+      note: ''
     };
   const step = STEPS.find((s) => s.phase === r.phase) ?? STEPS[0];
   const mins = minutesSince(r.since, now);
-  const so = mins === null ? '' : mins < 1 ? 'Started just now · ' : `${mins} min so far · `;
+  // The wait in plain words, with how long (review of the states, 2026-11-24).
+  const waited = minutesSince(job?.waitingSince, now);
   return {
-    text: job?.waiting ? `${step.text} (waiting: ${job.waiting})` : step.text,
+    text: step.text,
+    waiting: job?.waiting ? `Waiting${waited ? ` ${waited} min` : ''}: ${job.waiting}.` : null,
     value: step.value,
-    detail: `${so}usually 15–20 minutes.`
+    time: mins === null ? '' : mins < 1 ? 'just started' : `${mins} min`,
+    note: ''
   };
+}
+
+/**
+ * The note when a summary could not be made (review of the states, user 2026-11-24): the
+ * server says each failure once with its models. One failure: one line ("No summary could be
+ * made: Claude Sonnet 5.5, GPT-6.1 Sol and Claude Opus 5.5 refused to read the book."); several:
+ * a first line and one line each. Other reasons (the book could not be read) and notes written
+ * before show as they are. No hint (the buttons are right below).
+ */
+export function failedNote(
+  note: string | null | undefined,
+  hasSummary: boolean,
+  /** The series recap says it of the story so far (session 5). */
+  kind: 'summary' | 'recap' = 'summary'
+): { title: string; lines: string[] } {
+  const all = (note ?? '').split('\n').filter((l) => l.trim());
+  const every = all[0] === 'Every setup failed.';
+  const start =
+    kind === 'recap'
+      ? hasSummary
+        ? 'The story so far could not be updated'
+        : 'No story so far could be made'
+      : hasSummary
+        ? 'The new summary could not be made'
+        : 'No summary could be made';
+  const kept = hasSummary
+    ? kind === 'recap'
+      ? ' The one you had is kept.'
+      : ' The summary you had is kept.'
+    : '';
+  // Another reason (the book could not be read): on its own line.
+  if (!every) return { title: `${start}.${kept}`, lines: all.length ? [all.join(' ')] : [] };
+  const reasons = all.slice(1);
+  if (reasons.length === 1) return { title: `${start}: ${reasons[0]}${kept}`, lines: [] };
+  if (!reasons.length) return { title: `${start}.${kept}`, lines: [] };
+  return { title: `${start}: every setup failed.${kept}`, lines: reasons };
 }
 
 /** "Open the book here · 第三章 · 41 %": the link under a shown quote. */

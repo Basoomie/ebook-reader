@@ -224,6 +224,8 @@ export const SETTINGS_REGISTRY: Record<string, SettingSpec> = {
   // description's own last language (this device only).
   summaryAutoOnFirstCompletion: g('Boolean'),
   descriptionViewLang: l('String'),
+  // Session 5: "Update the story so far automatically" (every device; the server reads it too).
+  summaryRecapAuto: g('Boolean'),
 
   // --- lib/calibre-edit/settings.ts (per device: Calibre metadata editing, Settings > Library) ---
   bookEditAs: d('String'),

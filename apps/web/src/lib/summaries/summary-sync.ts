@@ -14,14 +14,19 @@ import { DEFAULT_COST_PER_100K, localBulkPlan, type BulkPlan } from './bulk-summ
 import { SummaryApi, type BookSummaryRecord } from './summary-api';
 import {
   BOOK_SUMMARY_KIND,
+  SERIES_RECAP_KIND,
   SUMMARY_SKIP_KIND,
+  recordRecap,
   recordSummary,
   SummaryCache,
   syncDescriptions,
+  syncRecaps,
   syncSummaries,
   type CachedDescription,
+  type CachedRecap,
   type CachedSummary
 } from './summary-cache';
+import type { SeriesRecapRecord } from './summary-api';
 
 /**
  * Book summaries on this device (session 3): keeps the current summaries in step with their
@@ -55,6 +60,19 @@ let running: Promise<void> = Promise.resolve();
 /** Fetches what the records say changed (one run at a time). */
 function sync(records: LocalRecord[]): Promise<void> {
   const mine = records.filter((r) => r.kind === BOOK_SUMMARY_KIND);
+  // Session 5: the series recaps the records name, kept on the device too.
+  const recaps = records.filter((r) => r.kind === SERIES_RECAP_KIND);
+  if (recaps.length && browser)
+    running = running.then(async () => {
+      try {
+        const a = await api();
+        if (!a) return;
+        const r = await syncRecaps(recaps, a, getCache());
+        for (const e of r.errors.slice(0, 3)) logger.warn(`Summaries: story so far ${e}`);
+      } catch (err) {
+        logger.warn(`Summaries: ${(err as Error)?.message ?? err}`);
+      }
+    });
   if (!mine.length || !browser) return running;
   running = running.then(async () => {
     try {
@@ -80,6 +98,37 @@ export function startSummarySync(engine: SyncEngine): void {
     .getAll(BOOK_SUMMARY_KIND)
     .then((all) => sync(all))
     .catch((err) => logger.warn(`Summaries: ${(err as Error)?.message ?? err}`));
+  void engine
+    .getAll(SERIES_RECAP_KIND)
+    .then((all) => sync(all))
+    .catch((err) => logger.warn(`Summaries: ${(err as Error)?.message ?? err}`));
+}
+
+/** The device's copy of a series recap in a language (offline too), if it has one. */
+export async function getRecapCopy(series: string, lang: string): Promise<CachedRecap | null> {
+  try {
+    return (await getCache().getRecap(series, lang)) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Every language the device keeps a series recap in (to open offline in any of them). */
+export async function recapCopies(series: string): Promise<CachedRecap[]> {
+  try {
+    return await getCache().recapsFor(series);
+  } catch {
+    return [];
+  }
+}
+
+/** What this device knows of a series' recap (made, being made, failed). */
+export async function recapState(
+  engine: Pick<SyncEngine, 'get'>,
+  series: string
+): Promise<SeriesRecapRecord | null> {
+  const r = await engine.get(SERIES_RECAP_KIND, series);
+  return r ? recordRecap(r) : null;
 }
 
 /** The device's copy of a book's current summary in a language (offline too), if it has one. */

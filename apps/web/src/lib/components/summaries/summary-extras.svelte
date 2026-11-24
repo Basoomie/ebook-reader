@@ -11,6 +11,7 @@
    * it to be shown, with a link into the book at its place. No link without a shown quote.
    */
   import type { SummaryItem } from '$lib/summaries/summary-types';
+  import { sinceText } from '$lib/summaries/recap-page';
 
   export let item: SummaryItem;
   /** The reader link at the quote's place, or null (no book id or no position). */
@@ -20,7 +21,13 @@
   export let quoteLang = 'ja';
   /** 'mark' inside the item's paragraph, 'quote' after it (a quote is a block of its own). */
   export let part: 'mark' | 'quote' = 'mark';
+  /** The series recap (session 5): "from vol. 2" for people and terms, "since" for threads. */
+  export let sinceKind: 'from' | 'since' = 'from';
 </script>
+
+{#if part === 'mark' && item.since}
+  <span class="since" lang="en" data-testid="recap-since">{sinceText(item.since, sinceKind)}</span>
+{/if}
 
 {#if part === 'mark' && (item.editedByUser || item.addedByUser)}
   <span class="edited" data-testid="summary-edited">edited by you</span>
@@ -35,6 +42,11 @@
 {/if}
 
 <style>
+  .since {
+    margin-left: 0.5rem;
+    font-size: 0.75rem;
+    color: var(--c-muted);
+  }
   .edited {
     margin-left: 0.5rem;
     font-size: 0.75rem;

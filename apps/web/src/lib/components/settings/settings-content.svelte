@@ -29,6 +29,7 @@
   import SummaryModelSettings from '$lib/components/settings/summary-model-settings.svelte';
   import {
     summaryAutoOnFirstCompletion$,
+    summaryRecapAuto$,
     summaryCharacterLayout$,
     summaryRelationshipLayout$,
     summarySpoilerBlur$
@@ -1062,6 +1063,14 @@
           bind:checked={$summaryAutoOnFirstCompletion$}
           labelledby={labelId}
           testid="summary-auto"
+        />
+      </SettingRow>
+      <!-- Session 5: the series recap's automatic updates. -->
+      <SettingRow id="summary-recap-auto" settingKey="summaryRecapAuto" let:labelId>
+        <SettingSwitch
+          bind:checked={$summaryRecapAuto$}
+          labelledby={labelId}
+          testid="summary-recap-auto"
         />
       </SettingRow>
       <SettingRow id="summary-languages" settingKey="summaryLanguages" layout="stack">

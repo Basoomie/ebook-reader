@@ -111,6 +111,60 @@ interface StandIn {
   missing: Set<string>;
   /** Description translations answered with a line left out (session 4b), counted down. */
   descBad?: number;
+  /** Session 5: recap points (refs) the checkers answer not_supported. */
+  rejectPoints?: Set<string>;
+  /** Session 5: check answers that leave out their last verdict, counted down. */
+  dropVerdict?: number;
+  /** Session 5: added to the recap's overview (a rebuild that writes one point differently). */
+  recapOverview?: string;
+}
+
+/**
+ * Session 5: the story so far from the evidence: an overview citing everything, one plot item
+ * per volume, カイト (first in the earliest volume), the relationship, a thread from the last
+ * volume, an invented name and a cite of nothing (both left out by the checks).
+ */
+function recapAnswer(input: CallInput, s: StandIn): unknown {
+  const ids = [...input.user.matchAll(/^(v(\d+):\S+) \[/gm)].map((m) => ({
+    id: m[1],
+    v: Number(m[2]),
+  }));
+  const vols = [...new Set(ids.map((x) => x.v))];
+  const first = ids[0].id;
+  const last = ids[ids.length - 1].id;
+  return {
+    overview: {
+      text: `これまでの物語（${input.model}）。${s.recapOverview ?? ''}`,
+      cites: ids.map((x) => x.id),
+    },
+    volumes: vols.map((v) => ({
+      volume: `v${v}`,
+      items: [{ text: `第${v}巻の出来事`, cites: [ids.find((x) => x.v === v)!.id] }],
+    })),
+    characters: [
+      { name: 'カイト', text: '一族の最後の一人。', cites: [last, first] },
+      { name: 'ゼロ', text: '謎の男。', cites: [first] },
+    ],
+    also_mentioned: ['汐見ナギ', '謎の人'],
+    relationships: [
+      { a: '汐見ナギ', b: 'カイト', label: '守り手', text: 'ナギはカイトを守る。', cites: [last] },
+    ],
+    terms: [{ term: '潮呪', text: '一族の呪い。', cites: ['v9:none'] }],
+    threads: [{ text: 'カイトの一族の行方。', cites: [last] }],
+  };
+}
+
+function recapVerdicts(input: CallInput, s: StandIn): unknown {
+  const ids = [...input.user.matchAll(/^POINT (\S+):/gm)].map((m) => m[1]);
+  const out = ids.map((id) => ({
+    id,
+    verdict: s.rejectPoints?.has(id) ? 'not_supported' : 'supported',
+  }));
+  if (s.dropVerdict && out.length > 1) {
+    s.dropVerdict--;
+    out.pop();
+  }
+  return { verdicts: out };
 }
 
 function answer(input: CallInput): unknown {
@@ -244,7 +298,14 @@ function standIn(s: StandIn): (p: 'anthropic' | 'openai') => ProviderClient {
       const usage = { input: 2000, output: 500, cacheRead: 0, cacheWrite: 0 };
       if (s.refuse.has(`${input.model}|${schema}`) || s.refuse.has(`${input.model}|*`))
         return { kind: 'blocked', detail: 'refusal', text: null, usage };
-      const json = schema === 'description' ? describeAnswer(input, s) : answer(input);
+      const json =
+        schema === 'description'
+          ? describeAnswer(input, s)
+          : schema === 'story_so_far'
+            ? recapAnswer(input, s)
+            : schema === 'verdicts' && input.user.includes('\nPOINT ')
+              ? recapVerdicts(input, s)
+              : answer(input);
       return { kind: 'answered', text: JSON.stringify(json), json, usage };
     },
     submitBatch: async () => {
@@ -617,8 +678,16 @@ describe('the route of setups', () => {
     expect(e.svc.store.currentMeta(e.books.solo)).toBeNull();
     const st = e.svc.get(e.books.solo).state as { outcome: string; note: string };
     expect(st.outcome).toBe('failed');
-    expect(st.note).toMatch(/every setup failed/);
+    // In plain words, one line per setup (review of the states, 2026-11-24).
+    // Each failure once, each model named once (2026-11-24).
+    expect(st.note).toBe(
+      [
+        'Every setup failed.',
+        'Claude Sonnet 5.5, GPT-6.1 Sol and Claude Opus 5.5 refused to read the book.',
+      ].join('\n'),
+    );
     expect(e.alerts).toHaveLength(1);
+    expect(e.alerts[0].lines.slice(1)).toEqual(st.note.split('\n'));
     expect(e.alerts[0]).toMatchObject({ key: 'summary_failed' });
     // A later completion never retries; Regenerate fails again without a second alert.
     await push(e, complete(e.books.solo, 2));
@@ -1457,6 +1526,459 @@ describe('session 4b: book descriptions translated like summaries', () => {
     expect(server.descriptionParagraphs(DESC)).toEqual([
       '港町の灯台守。\n第三巻。',
       '書き下ろし短編を収録。',
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// session 5: the series recap, "story so far"
+
+/** The series 潮騒 with a third volume, every book with a catalog source (the series page's). */
+function recapSetup(o: { route?: unknown } = {}): Env {
+  return setup({
+    ...o,
+    before: (main, ids) => {
+      const t0 = Date.UTC(2026, 10, 23, 12);
+      const v3 = randomUUID();
+      ids.v3 = v3;
+      main
+        .prepare(
+          `INSERT INTO books (id, library_id, title, series_id, series_index, char_count, added_at, created_at, updated_at)
+           VALUES (?, 'lib1', '潮騒のナギ 3', 1, 3, ?, ?, ?, ?)`,
+        )
+        .run(v3, BOOK.characters, t0, t0, t0);
+      for (const id of Object.values(ids))
+        main
+          .prepare(
+            `INSERT INTO book_sources (id, book_id, kind, library_id, calibre_uuid, created_at, updated_at)
+             VALUES (?, ?, 'calibre', 'lib1', ?, ?, ?)`,
+          )
+          .run(randomUUID(), id, randomUUID(), t0, t0);
+    },
+  });
+}
+
+const recapAuto = (on: boolean) => ({
+  kind: 'setting',
+  id: 'global:summaryRecapAuto',
+  data: { value: on ? '1' : '0' },
+});
+
+const recapJobs = (e: Env) =>
+  e.sdb
+    .prepare('SELECT id, kind, state, reason, due_at, error FROM series_recap_jobs ORDER BY id')
+    .all() as {
+    id: number;
+    kind: string;
+    state: string;
+    reason: string | null;
+    due_at: number;
+    error: string | null;
+  }[];
+
+/** Runs passes until no summary or recap job is open (or `max` passes). */
+async function drainAll(e: Env, max = 400) {
+  for (let i = 0; i < max; i++) {
+    await e.svc.pass();
+    await new Promise((r) => setTimeout(r, 10));
+    const a = e.sdb
+      .prepare(`SELECT COUNT(*) AS n FROM summary_jobs WHERE state IN ('queued', 'running')`)
+      .get() as { n: number };
+    const b = e.sdb
+      .prepare(
+        `SELECT COUNT(*) AS n FROM series_recap_jobs WHERE state = 'running' OR (state = 'queued' AND due_at <= ?)`,
+      )
+      .get(e.clock.t) as { n: number };
+    if (!a.n && !b.n) return;
+  }
+}
+
+const recapCalls = (e: Env) => e.stand.calls.filter((c) => c.schema === 'story_so_far');
+const checkCalls = (e: Env) =>
+  e.stand.calls.filter((c) => c.schema === 'verdicts' && c.user.includes('\nPOINT '));
+const getRecap = async (e: Env, lang?: string) =>
+  (
+    await request(e.app)
+      .get('/api/v1/summaries/series-recap')
+      .query({ series: '潮騒', ...(lang ? { lang } : {}) })
+      .set(e.auth)
+      .expect(200)
+  ).body;
+const regenerate = (e: Env) =>
+  request(e.app)
+    .post('/api/v1/summaries/series-recap/regenerate')
+    .set(e.auth)
+    .send({ series: '潮騒' });
+
+/** Volumes 1 and 2 completed and summarized; the recap after the quiet wait. */
+async function twoVolumes(e: Env) {
+  await register(e);
+  await push(e, [...complete(e.books.v1), ...complete(e.books.v2)]);
+  await drainAll(e);
+  e.clock.t += 10 * 60_000;
+  await drainAll(e);
+}
+
+describe('session 5: the series recap ("story so far")', () => {
+  it('made after the quiet wait once two volumes have a summary; checked; the device record', async () => {
+    const e = recapSetup();
+    await register(e);
+    await push(e, complete(e.books.v1));
+    await drainAll(e);
+    // One volume with a summary: nothing is made (at least two, user 2026-11-23).
+    expect(recapJobs(e)).toHaveLength(0);
+    await push(e, complete(e.books.v2));
+    await drainAll(e);
+    // The quiet wait: queued, not started.
+    expect(recapJobs(e)).toMatchObject([{ kind: 'auto', state: 'queued', reason: 'summary made' }]);
+    expect(recapCalls(e)).toHaveLength(0);
+    e.clock.t += 10 * 60_000;
+    await drainAll(e);
+    expect(recapJobs(e)).toMatchObject([{ state: 'done' }]);
+    // Written by the first setup's writer, checked by both of its reading models.
+    expect(recapCalls(e).map((c) => c.model)).toEqual([OPUS]);
+    expect(new Set(checkCalls(e).map((c) => c.model))).toEqual(new Set([SONNET, SOL]));
+    const evidence = recapCalls(e)[0].user;
+    expect(evidence).toContain('=== v1: Vol. 1 潮騒のナギ 1 ===');
+    expect(evidence).toContain('v2:char0 [characters] カイト:');
+    const body = await getRecap(e);
+    const recap = body.recap;
+    expect(recap.volumes.map((v: { label: string }) => v.label)).toEqual(['1', '2']);
+    const sec = (k: string) =>
+      recap.sections.find((s: { key: string }) => s.key === k)?.groups as
+        | {
+            volume?: { label: string };
+            items: { heading?: string; text: string; since?: unknown }[];
+          }[]
+        | undefined;
+    expect(sec('volumes')!.map((g) => [g.volume!.label, g.items.map((i) => i.text)])).toEqual([
+      ['1', ['第1巻の出来事']],
+      ['2', ['第2巻の出来事']],
+    ]);
+    // The invented name, the unknown cite and the unknown also-mentioned are left out.
+    expect(sec('characters')![0].items.map((i) => i.heading)).toEqual(['カイト']);
+    expect(sec('characters')![0].items[0].since).toEqual({
+      label: '1',
+      title: '潮騒のナギ 1',
+      gap: false,
+    });
+    expect(sec('threads')![0].items[0].since).toMatchObject({ label: '2' });
+    expect(sec('terms')).toBeUndefined();
+    expect(recap.alsoMentioned).toEqual(['汐見ナギ']);
+    expect(body.coverage).toMatchObject({ withSummary: 2, enough: true, stale: [] });
+    // The sources of each point: the volume items it rests on.
+    const char = e.sdb
+      .prepare(`SELECT sources_json FROM series_recap_items WHERE section = 'characters'`)
+      .get() as { sources_json: string };
+    expect(JSON.parse(char.sources_json).map((s: { bookId: string }) => s.bookId)).toEqual([
+      e.books.v2,
+      e.books.v1,
+    ]);
+    // The device's record (written by the server; a device can't write it).
+    const user = listUsers(e.main)[0].id;
+    const rec = e.sync.getRecord(user, 'series-recap', '潮騒')!.data as {
+      recap: { id: number; langs: Record<string, string> };
+      making: unknown;
+    };
+    expect(rec.recap.id).toBe(recap.id);
+    expect(Object.keys(rec.recap.langs)).toEqual(['ja']);
+    expect(rec.making).toBeNull();
+    const own = await push(e, [{ kind: 'series-recap', id: '潮騒', data: {} }]);
+    expect(own[0]).toMatchObject({ status: 'rejected', error: { code: 'read_only' } });
+    // Spending goes to the summaries feature.
+    const spend = e.main
+      .prepare(
+        `SELECT DISTINCT feature FROM ai_spend WHERE stage IN ('sum.recap', 'sum.recap-check')`,
+      )
+      .all();
+    expect(spend).toEqual([{ feature: 'summaries' }]);
+  });
+
+  it('edits: one rebuild after the quiet wait; nothing asked when nothing changed; Start over never', async () => {
+    const e = recapSetup();
+    await twoVolumes(e);
+    const writes = recapCalls(e).length;
+    const m = e.svc.store.currentMeta(e.books.v1)!;
+    const items = e.svc.store.items(m.id).filter((i) => i.section === 'chapters');
+    // Two edits a minute apart: the wait moves on with each.
+    for (const [i, it] of items.slice(0, 2).entries()) {
+      await request(e.app)
+        .put(`/api/v1/summaries/${e.books.v1}/items/${it.id}`)
+        .set(e.auth)
+        .send({ text: `直した ${i}` })
+        .expect(200);
+      e.clock.t += 60_000;
+      await drainAll(e);
+    }
+    expect(recapCalls(e)).toHaveLength(writes);
+    e.clock.t += 10 * 60_000;
+    await drainAll(e);
+    expect(recapCalls(e)).toHaveLength(writes + 1);
+    expect(recapJobs(e).filter((j) => j.state === 'done')).toHaveLength(2);
+    // A Start over of volume 2 (a new open read-through, status unread): nothing.
+    await push(e, [
+      { kind: 'book-status', id: e.books.v2, data: { status: 'unread', auto: false } },
+      {
+        kind: 'read-through',
+        id: `${e.books.v2}:2`,
+        data: { ...finished(2), origin: 'start-over', finished: false, finishedOn: null },
+      },
+    ]);
+    e.clock.t += 20 * 60_000;
+    await drainAll(e);
+    expect(recapJobs(e)).toHaveLength(2);
+    expect(e.svc.recaps.coverage('潮騒').volumes).toHaveLength(2);
+    // A job whose inputs didn't change asks nothing.
+    e.svc.recaps.schedule('潮騒', 'test');
+    e.clock.t += 20 * 60_000;
+    await drainAll(e);
+    expect(recapJobs(e)[2]).toMatchObject({ state: 'done' });
+    expect(recapCalls(e)).toHaveLength(writes + 1);
+  });
+
+  it('automatic updates off: no trigger rebuilds, the note says what is not in it yet; Regenerate does', async () => {
+    const e = recapSetup();
+    await twoVolumes(e);
+    const writes = recapCalls(e).length;
+    await push(e, [recapAuto(false), autoSetting(false)]);
+    // An edit, and volume 3 completed (no summary: automatic summaries are off too).
+    const m = e.svc.store.currentMeta(e.books.v2)!;
+    const it = e.svc.store.items(m.id).find((i) => i.section === 'chapters')!;
+    await request(e.app)
+      .put(`/api/v1/summaries/${e.books.v2}/items/${it.id}`)
+      .set(e.auth)
+      .send({ text: '直した' })
+      .expect(200);
+    await push(e, complete(e.books.v3));
+    e.clock.t += 30 * 60_000;
+    await drainAll(e);
+    e.svc.publishStale();
+    await drainAll(e);
+    expect(recapCalls(e)).toHaveLength(writes);
+    const got = await getRecap(e);
+    expect(got.auto).toBe(false);
+    expect(got.coverage.volumes.map((v: { hasSummary: boolean }) => v.hasSummary)).toEqual([
+      true,
+      true,
+      false,
+    ]);
+    expect(got.coverage.stale).toEqual([
+      { bookId: e.books.v2, label: '2', title: '潮騒のナギ 2', why: 'changed' },
+      { bookId: e.books.v3, label: '3', title: '潮騒のナギ 3', why: 'not_in_recap' },
+    ]);
+    // Switching on again rebuilds nothing by itself.
+    await push(e, [recapAuto(true)]);
+    await drainAll(e);
+    expect(recapJobs(e).filter((j) => j.state === 'queued')).toHaveLength(0);
+    await push(e, [recapAuto(false)]);
+    // Regenerate: at once, also while off; volume 3 named as having no summary.
+    expect((await regenerate(e)).status).toBe(202);
+    await drainAll(e);
+    expect(recapCalls(e)).toHaveLength(writes + 1);
+    expect(recapCalls(e).at(-1)!.user).toContain('VOLUMES WITHOUT A SUMMARY');
+    expect(recapCalls(e).at(-1)!.user).toContain('v3: Vol. 3 潮騒のナギ 3');
+    const after = await getRecap(e);
+    expect(after.coverage.stale).toEqual([]);
+    const vols = after.recap.sections.find((s: { key: string }) => s.key === 'volumes').groups;
+    expect(vols.map((g: { volume: { missing: boolean } }) => g.volume.missing)).toEqual([
+      false,
+      false,
+      true,
+    ]);
+    // Regenerate again with nothing changed: asked again (a new generation).
+    expect((await regenerate(e)).status).toBe(202);
+    await drainAll(e);
+    expect(recapCalls(e)).toHaveLength(writes + 2);
+  });
+
+  it('Regenerate needs two volumes with a summary; a deleted summary takes the recap away', async () => {
+    const e = recapSetup();
+    await register(e);
+    await push(e, complete(e.books.v1));
+    await drainAll(e);
+    const r = await regenerate(e);
+    expect(r.status).toBe(409);
+    expect(r.body.error.code).toBe('too_few');
+    await push(e, complete(e.books.v2));
+    await drainAll(e);
+    e.clock.t += 10 * 60_000;
+    await drainAll(e);
+    expect(e.svc.recaps.store.current('潮騒')).not.toBeNull();
+    await request(e.app).delete(`/api/v1/summaries/${e.books.v1}`).set(e.auth).expect(204);
+    e.clock.t += 10 * 60_000;
+    await drainAll(e);
+    expect(e.svc.recaps.store.current('潮騒')).toBeNull();
+    expect(recapJobs(e).at(-1)).toMatchObject({ state: 'cancelled' });
+  });
+
+  it('the route: a refusing writer moves on; a rejected point is left out; every setup failing alerts once', async () => {
+    const e = recapSetup();
+    e.stand.refuse.add(`${OPUS}|story_so_far`);
+    e.stand.rejectPoints = new Set(['thread0']);
+    e.stand.dropVerdict = 1;
+    await twoVolumes(e);
+    expect(recapCalls(e).map((c) => c.model)).toEqual([OPUS, SONNET]);
+    const m = e.svc.recaps.store.current('潮騒')!;
+    expect(m.setup).toBe('two');
+    const v = e.svc.recaps.store.view(m.id)!;
+    expect(v.sections.find((s) => s.key === 'threads')).toBeUndefined();
+    expect(v.sections.find((s) => s.key === 'overview')).toBeDefined();
+    // The verdict left out was asked again on its own.
+    const again = checkCalls(e).filter((c) => (c.user.match(/^POINT /gm) ?? []).length === 1);
+    expect(again.length).toBeGreaterThanOrEqual(1);
+    // Every writer refusing: the note and one alert.
+    e.stand.refuse.add(`${SONNET}|story_so_far`);
+    expect((await regenerate(e)).status).toBe(202);
+    await drainAll(e);
+    expect(recapJobs(e).at(-1)).toMatchObject({ state: 'failed' });
+    const user = listUsers(e.main)[0].id;
+    const rec = e.sync.getRecord(user, 'series-recap', '潮騒')!.data as {
+      outcome: string;
+      note: string;
+      recap: unknown;
+    };
+    expect(rec.outcome).toBe('failed');
+    // In plain words, each failure once (review of the states, 2026-11-24).
+    expect(rec.note).toBe(
+      'Every setup failed.\nClaude Opus 5.5 and Claude Sonnet 5.5 refused to write the story so far.',
+    );
+    // The recap made before stays.
+    expect(rec.recap).not.toBeNull();
+    expect(e.alerts.filter((a) => a.lines[0].includes('story so far'))).toHaveLength(1);
+  });
+
+  it('a language: translated point by point with the original in brackets; again after a rebuild', async () => {
+    const e = recapSetup();
+    await twoVolumes(e);
+    await request(e.app)
+      .post('/api/v1/summaries/series-recap/translate')
+      .set(e.auth)
+      .send({ series: '潮騒', lang: 'en' })
+      .expect(202);
+    await drainAll(e);
+    const en = (await getRecap(e, 'en')).recap;
+    expect(en.viewLang).toBe('en');
+    expect(en.untranslated).toEqual([]);
+    const char = en.sections.find((s: { key: string }) => s.key === 'characters').groups[0]
+      .items[0];
+    expect(char).toMatchObject({ heading: 'EN カイト (カイト)', text: 'EN 一族の最後の一人。' });
+    expect(char.ruby).toBeUndefined();
+    // A rebuild: the saved language is translated again by itself (the same points: answered
+    // from the stored translation, nothing asked again).
+    const before = e.stand.calls.filter((c) => c.schema === 'translation').length;
+    const oldId = en.id;
+    expect((await regenerate(e)).status).toBe(202);
+    await drainAll(e);
+    const en2 = (await getRecap(e, 'en')).recap;
+    expect(en2.id).not.toBe(oldId);
+    expect(en2.untranslated).toEqual([]);
+    expect(e.stand.calls.filter((c) => c.schema === 'translation').length).toBe(before);
+    // A rebuild that writes one point differently: only that point is asked.
+    e.stand.recapOverview = '（改）';
+    expect((await regenerate(e)).status).toBe(202);
+    await drainAll(e);
+    expect((await getRecap(e, 'en')).recap.untranslated).toEqual([]);
+    const last = e.stand.calls.filter((c) => c.schema === 'translation');
+    expect(last.length).toBe(before + 1);
+    expect(
+      [...last.at(-1)!.user.matchAll(/^(\S+)(?: HEADING: .*)?\nTEXT:/gm)].map((m) => m[1]),
+    ).toEqual(['overview']);
+    const user = listUsers(e.main)[0].id;
+    const rec = e.sync.getRecord(user, 'series-recap', '潮騒')!.data as {
+      recap: { langs: Record<string, string> };
+    };
+    expect(Object.keys(rec.recap.langs)).toEqual(['ja', 'en']);
+  });
+
+  it('the series changing (order, an undone completion) rebuilds at the 10-minute check', async () => {
+    const e = recapSetup();
+    await twoVolumes(e);
+    const writes = recapCalls(e).length;
+    // Calibre gives volume 1 another number: the order changes.
+    e.main.prepare('UPDATE books SET series_index = 2.5 WHERE id = ?').run(e.books.v1);
+    expect(e.svc.recaps.coverage('潮騒').volumes.map((v) => v.label)).toEqual(['2', '2.5']);
+    e.svc.publishStale();
+    expect(recapJobs(e).at(-1)).toMatchObject({ state: 'queued', reason: 'series changed' });
+    e.clock.t += 10 * 60_000;
+    await drainAll(e);
+    expect(recapCalls(e)).toHaveLength(writes + 1);
+    // Volume 2.5's completion undone: coverage ends at volume 2, fewer than two: the recap goes.
+    await push(e, [
+      { kind: 'read-through', id: `${e.books.v1}:1`, deletedAt: e.clock.t + 1000 },
+      { kind: 'book-status', id: e.books.v1, data: { status: 'reading', auto: false } },
+    ]);
+    expect(e.svc.recaps.coverage('潮騒').volumes.map((v) => v.label)).toEqual(['2']);
+    e.clock.t += 10 * 60_000;
+    await drainAll(e);
+    expect(e.svc.recaps.store.current('潮騒')).toBeNull();
+  });
+
+  it('cli summaries recaps: the plan; --apply has the server make the missing ones', async () => {
+    const e = recapSetup();
+    await register(e);
+    await push(e, [recapAuto(false)]);
+    await push(e, [...complete(e.books.v1), ...complete(e.books.v2)]);
+    await drainAll(e);
+    expect(e.svc.recaps.store.current('潮騒')).toBeNull();
+    const plan = e.svc.recaps.plan();
+    expect(plan).toMatchObject([{ series: '潮騒', volumes: 2, has: false }]);
+    expect(plan[0].characters).toBeGreaterThan(50);
+    e.sdb
+      .prepare('INSERT INTO summary_state (key, value) VALUES (?, ?)')
+      .run('recaps_requested', JSON.stringify(['潮騒']));
+    await drainAll(e);
+    expect(e.svc.recaps.store.current('潮騒')).not.toBeNull();
+  });
+
+  it('the coverage query uses the sync records index', () => {
+    const e = recapSetup();
+    const plan = e.main
+      .prepare(
+        `EXPLAIN QUERY PLAN SELECT 1 FROM sync_records WHERE user_id IN (SELECT id FROM users)
+           AND book_id = ? AND kind IN ('read-through', 'book-status') AND deleted_at IS NULL`,
+      )
+      .all('x') as { detail: string }[];
+    expect(plan.map((p) => p.detail).join('\n')).toMatch(/USING INDEX sync_records_book/);
+  });
+});
+
+describe('review of the states (2026-11-24)', () => {
+  it('a wait in plain words for the book page, without the provider error', async () => {
+    const { plainWait } = await import('../src/summaries/service');
+    expect(
+      plainWait({
+        kind: 'provider_busy',
+        provider: 'anthropic',
+        until: 0,
+        error: '529 {"type":"error"}',
+      }),
+    ).toBe('Anthropic is busy, trying again soon');
+    expect(plainWait({ kind: 'auth_failed', provider: 'openai', error: '401 bad key' })).toBe(
+      'OpenAI refused the API key (Settings › AI)',
+    );
+  });
+});
+
+describe('review of the states: a failed setup in plain words (2026-11-24)', () => {
+  it('names the models and the step, each failure once', async () => {
+    const { plainFailure, failureLines } = await import('../src/summaries/service');
+    const { Refused, Unusable } = await import('../src/summaries/engine');
+    const h = { abandoned: false, wait: null };
+    const busy = {
+      abandoned: true,
+      wait: { kind: 'provider_busy' as const, provider: 'openai' as const, until: 0, error: 'x' },
+    };
+    expect(
+      failureLines([
+        plainFailure(new Refused('sum.write', OPUS), h, 60),
+        plainFailure(new Unusable('sum.support', SOL, 'invalid'), h, 60),
+        plainFailure(new Refused('sum.write', SONNET), h, 60),
+        plainFailure(new Error('stopped'), busy, 60),
+      ]),
+    ).toEqual([
+      'Claude Opus 5.5 and Claude Sonnet 5.5 refused to write the summary.',
+      'GPT-6.1 Sol gave no usable answer when asked to check the notes.',
+      'Nothing could be sent for 60 min: OpenAI is busy, trying again soon.',
     ]);
   });
 });

@@ -33,6 +33,11 @@ export interface SummarySettings {
    * the accuracy test's measured $1.30 (mixed setup, effort high, Sol direct).
    */
   costPer100kChars: number;
+  /**
+   * The series recap ("story so far", session 5) is rebuilt once no volume summary of its
+   * series changed for this long, so several edits make one rebuild (0: at once).
+   */
+  recapDelayMinutes: number;
 }
 
 export const SONNET = 'claude-sonnet-5-5';
@@ -49,6 +54,7 @@ export const DEFAULT_SUMMARY_SETTINGS: SummarySettings = {
   fallbackAfterMinutes: 60,
   parallelBooks: 2,
   costPer100kChars: 1.3,
+  recapDelayMinutes: 10,
 };
 
 export class SummarySettingsError extends Error {}
@@ -106,6 +112,13 @@ export function validateSummarySettings(
     ),
     parallelBooks: num('Books at the same time', v.parallelBooks, 1, 10, true),
     costPer100kChars: num('Cost per 100,000 characters ($)', v.costPer100kChars, 0, 100),
+    recapDelayMinutes: num(
+      'Update the story so far after (min)',
+      v.recapDelayMinutes,
+      0,
+      1440,
+      true,
+    ),
   };
 }
 
@@ -141,6 +154,23 @@ export function updateSummarySettings(
 /** Every model the settings use (Settings > AI keeps them from being deleted). */
 export function modelsInUse(s: SummarySettings): string[] {
   return [...new Set([...s.route.flatMap((r) => [...r.finders, r.writer]), s.translator])];
+}
+
+/** "claude-opus-5-5" → "Claude Opus 5.5", "gpt-6.1-sol" → "GPT-6.1 Sol" (as the web's modelName). */
+export function modelDisplayName(id: string): string {
+  const claude = /^claude-([a-z]+)-(\d+)(?:-(\d+))?$/.exec(id);
+  if (claude)
+    return `Claude ${claude[1][0].toUpperCase()}${claude[1].slice(1)} ${claude[2]}${claude[3] ? `.${claude[3]}` : ''}`;
+  const gpt = /^gpt-([\d.]+)(?:-([a-z][a-z0-9-]*))?$/.exec(id);
+  if (gpt) {
+    const rest = (gpt[2] ?? '')
+      .split('-')
+      .filter(Boolean)
+      .map((w) => w[0].toUpperCase() + w.slice(1))
+      .join(' ');
+    return `GPT-${gpt[1]}${rest ? ` ${rest}` : ''}`;
+  }
+  return id;
 }
 
 /** A setup's short name: the test's names for the decided setups, else the models. */

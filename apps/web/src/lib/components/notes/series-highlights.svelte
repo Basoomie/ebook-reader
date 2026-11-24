@@ -139,7 +139,9 @@
 </script>
 
 {#if count > 0 || mine.size > 0}
-  <div class="mt-3" data-testid="series-highlights">
+  <!-- display: contents: the button sits in the series page's row of tools (session 5), the
+       list below it as before. -->
+  <div class="contents" data-testid="series-highlights">
     <button
       class="c-btn c-btn-secondary"
       aria-expanded={expanded}
@@ -149,7 +151,7 @@
       {expanded ? '▾' : '▸'} Highlights ({count})
     </button>
     {#if expanded}
-      <div class="mt-2" data-testid="series-highlights-list">
+      <div class="series-tool-panel highlights-panel" data-testid="series-highlights-list">
         <a
           class="c-link inline-flex min-h-[3rem] items-center"
           href={notesHref}

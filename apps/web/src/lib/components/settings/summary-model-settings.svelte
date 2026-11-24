@@ -231,6 +231,18 @@
         />
       </label>
       <label>
+        <span>Update the story so far after (min)</span>
+        <input
+          class="c-input"
+          type="number"
+          min="0"
+          max="1440"
+          value={draft.recapDelayMinutes ?? 10}
+          data-testid="summary-recap-delay"
+          on:change={(e) => change({ recapDelayMinutes: num(e, 0, 1440) })}
+        />
+      </label>
+      <label>
         <span>Books at the same time</span>
         <input
           class="c-input"

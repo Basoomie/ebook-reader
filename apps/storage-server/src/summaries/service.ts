@@ -21,6 +21,23 @@ import type { AiCore } from '../ai/core';
 import type { AiRunner } from '../ai/runner';
 import type { AiStageSpec } from '../ai/types';
 import { waitText, type AiWait } from '../ai/waits';
+import { RecapService } from './recap-service';
+import {
+  EVERY_SETUP_FAILED,
+  failureLines,
+  plainFailure,
+  plainWait,
+  type PlainFailure,
+} from './plain-words';
+export {
+  EVERY_SETUP_FAILED,
+  failureLines,
+  plainFailure,
+  plainWait,
+  type PlainFailure,
+} from './plain-words';
+import { RECAP_CHECK_SPEC, RECAP_SPEC } from './recap-specs';
+import { RunHandle } from './run-handle';
 import type { BookScript } from '../audio/book-script';
 import { LINKS } from '../notifications/messages';
 import { globalBoolean } from '../sync/global-setting';
@@ -83,6 +100,8 @@ export const JOB_SPECS = [
   TRANSLATE_SPEC,
   LABEL_SPEC,
   DESCRIPTION_SPEC,
+  RECAP_SPEC,
+  RECAP_CHECK_SPEC,
 ] as AiStageSpec<unknown, ModelRole>[];
 
 /**
@@ -206,8 +225,11 @@ export interface JobView {
   setup: string | null;
   /** A running job's step. */
   phase: JobPhase | null;
-  attempts: { setup: string; reason: string; at: number }[];
+  /** fail: what went wrong in plain words (the note's lines). */
+  attempts: { setup: string; reason: string; at: number; fail?: PlainFailure }[];
   waiting: string | null;
+  /** Since when it has been waiting (null: not waiting). */
+  waitingSince: number | null;
   /** Waiting for an earlier volume of its series. */
   afterVolume: boolean;
   error: string | null;
@@ -258,27 +280,6 @@ interface DescriptionRow {
 const LANG_RE = /^[a-z]{2,3}(-[A-Za-z]{2,4})?$/;
 const baseLang = (l: string) => l.toLowerCase().split('-')[0];
 
-/** One running set of questions (a job's setup, or a translation). */
-class RunHandle {
-  stopped = false;
-  abandoned = false;
-  waitSince: number | null = null;
-  wait: AiWait | null = null;
-  private wakers: (() => void)[] = [];
-  constructor(readonly runId: string) {}
-  get isStopped(): boolean {
-    return this.stopped;
-  }
-  tick(): Promise<void> {
-    return new Promise((r) => this.wakers.push(r));
-  }
-  wake(): void {
-    const w = this.wakers;
-    this.wakers = [];
-    for (const f of w) f();
-  }
-}
-
 /** Waits that never count toward trying the next setup: the spending limit only queues. */
 function countsAsFailing(w: AiWait | null): boolean {
   return !!w && !['limit_reached', 'no_limit', 'batch_queue_full'].includes(w.kind);
@@ -306,12 +307,39 @@ export class SummaryService {
   private readonly phases = new Map<number, JobPhase>();
   /** The jobs a pass found waiting for an earlier volume. */
   private afterVolume = new Set<number>();
+  /** The series recaps, "story so far" (session 5). */
+  readonly recaps: RecapService;
 
   constructor(private readonly deps: SummaryServiceDeps) {
     this.db = deps.db;
     this.main = deps.main;
     this.now = deps.now ?? Date.now;
     this.store = new SummaryStore(deps.db, this.now);
+    this.recaps = new RecapService({
+      db: this.db,
+      main: this.main,
+      runner: deps.runner,
+      store: this.store,
+      now: () => this.now(),
+      log: deps.log,
+      notifications: deps.notifications ?? null,
+      settings: () => this.settings(),
+      openRun: (id) => this.openRun(id),
+      closeRun: (h) => this.closeRun(h),
+      stopping: () => this.stopping,
+      writeRecord: (kind, id, data) => this.writeRecord(kind, id, data),
+      openBookJobs: () =>
+        new Set(
+          (
+            this.db
+              .prepare(
+                `SELECT book_id FROM summary_jobs WHERE kind IN ('auto', 'regenerate')
+                   AND state IN ('queued', 'running')`,
+              )
+              .all() as { book_id: string }[]
+          ).map((r) => r.book_id),
+        ),
+    });
   }
 
   settings(): SummarySettings {
@@ -337,8 +365,10 @@ export class SummaryService {
       return out;
     });
     this.baseline();
+    this.recaps.baseline();
     // A restart: jobs that were running go on from their stored answers.
     this.db.prepare(`UPDATE summary_jobs SET state = 'queued' WHERE state = 'running'`).run();
+    this.recaps.resume();
     this.timer = setInterval(() => void this.pass(), this.deps.intervalMs ?? 2000);
     this.timer.unref?.();
   }
@@ -351,6 +381,7 @@ export class SummaryService {
       h.wake();
     }
     await Promise.allSettled([...this.active.values()]);
+    await this.recaps.settled();
   }
 
   /** The sync store the "book-summary" records are written through (built by the API router). */
@@ -379,6 +410,7 @@ export class SummaryService {
     } catch (err) {
       this.deps.log?.(`Summaries: the records: ${(err as Error).message}`);
     }
+    this.recaps.sweep();
   }
 
   // ------------------------------------------------------------------------------------------
@@ -511,6 +543,8 @@ export class SummaryService {
         this.deps.log?.(`Summaries: the completion of ${bookId}: ${(err as Error).message}`);
       }
     }
+    // The story so far: a volume with a summary completed for the first time joins it.
+    this.recaps.onCompletions(books);
   }
 
   private firstCompletion(userId: string, bookId: string): void {
@@ -642,6 +676,7 @@ export class SummaryService {
     try {
       if (this.now() - this.lastSweep >= 10 * 60_000) this.publishStale();
       this.startJobs();
+      this.recaps.startJobs();
       this.startLabels();
       this.startDescriptions();
       await this.pump();
@@ -784,6 +819,8 @@ export class SummaryService {
     for (const h of handles) {
       const w = waits.get(h);
       h.wait = w?.wait ?? null;
+      if (!h.wait || (w && w.sent > 0)) h.waitFrom = null;
+      else h.waitFrom ??= now;
       if (!w || w.sent > 0 || !countsAsFailing(w.wait)) h.waitSince = null;
       else {
         h.waitSince ??= now;
@@ -892,7 +929,12 @@ export class SummaryService {
               ? err.message
               : `error: ${(err as Error).message}`;
         if (h.abandoned) this.deps.runner.withdraw(runId);
-        attempts.push({ setup: label, reason: reason.slice(0, 400), at: this.now() });
+        attempts.push({
+          setup: label,
+          reason: reason.slice(0, 400),
+          at: this.now(),
+          fail: plainFailure(err, h, this.settings().fallbackAfterMinutes),
+        });
         this.setJob(j.id, { attempts_json: JSON.stringify(attempts) });
         this.deps.log?.(`Summaries: ${b.title}: setup ${label} failed: ${reason}`);
       } finally {
@@ -933,7 +975,10 @@ export class SummaryService {
     this.deps.notifications?.clear(`${SUMMARY_FAILED_EVENT}:${b.id}`);
     this.asked.delete(j.id);
     this.phases.delete(j.id);
-    if (!keepTheirs) this.translateSaved(b.id);
+    if (!keepTheirs) {
+      this.translateSaved(b.id);
+      this.recaps.noteSummaryChange(b.id, 'summary made');
+    }
     this.publish(b.id);
     this.deps.log?.(`Summaries: ${b.title}: made by ${label} (summary ${id}, $${cost.toFixed(2)})`);
   }
@@ -947,9 +992,16 @@ export class SummaryService {
   /** Every setup failed (or the book can't be read): the note on the book and one alert. */
   private finishFailed(j: JobRow, attempts: JobView['attempts'], why: string | null): void {
     const cost = this.cost(j.id);
+    // In plain words, each failure once with its models (review of the states, user
+    // 2026-11-24); the book page shows "No summary could be made" with these lines.
     const note =
       why ??
-      `No summary: every setup failed (${attempts.map((a) => `${a.setup}: ${a.reason}`).join('; ')})`;
+      [
+        EVERY_SETUP_FAILED,
+        ...failureLines(
+          attempts.map((a) => a.fail ?? { what: `${a.setup}: ${a.reason}.`, models: [] }),
+        ),
+      ].join('\n');
     this.setJob(j.id, {
       state: 'failed',
       ended_at: this.now(),
@@ -974,7 +1026,13 @@ export class SummaryService {
         ) {
           n.notify({
             event: SUMMARY_FAILED_EVENT,
-            lines: [summary, note.slice(0, 200)],
+            lines: [
+              summary,
+              ...note
+                .split('\n')
+                .slice(0, 7)
+                .map((l) => l.slice(0, 200)),
+            ],
             link: LINKS.book(j.book_id),
           });
           n.poke();
@@ -1132,22 +1190,26 @@ export class SummaryService {
 
   /** Writes the book's "book-summary" record for every user (devices pull it). */
   publish(bookId: string): void {
-    if (!this.sync) return;
     try {
-      const data = this.recordData(bookId);
-      for (const userId of this.users()) {
-        const device = this.serverDevice(userId);
-        const prev = this.sync.getRecord(userId, BOOK_SUMMARY_KIND, bookId);
-        if (prev && JSON.stringify(prev.data) === JSON.stringify(data) && prev.deletedAt === null)
-          continue;
-        const at = Math.max(this.now(), (prev?.updatedAt ?? 0) + 1);
-        const change: SyncChange = { kind: BOOK_SUMMARY_KIND, id: bookId, updatedAt: at, data };
-        const r = this.sync.writeAs(userId, device, change, at);
-        if (r.status !== 'applied' && r.status !== 'duplicate')
-          this.deps.log?.(`Summaries: the record of ${bookId}: ${JSON.stringify(r)}`);
-      }
+      this.writeRecord(BOOK_SUMMARY_KIND, bookId, this.recordData(bookId));
     } catch (err) {
       this.deps.log?.(`Summaries: the record of ${bookId}: ${(err as Error).message}`);
+    }
+  }
+
+  /** A server record for every user, written only when it changed ("book-summary", "series-recap"). */
+  private writeRecord(kind: string, id: string, data: Record<string, unknown>): void {
+    if (!this.sync) return;
+    for (const userId of this.users()) {
+      const device = this.serverDevice(userId);
+      const prev = this.sync.getRecord(userId, kind, id);
+      if (prev && JSON.stringify(prev.data) === JSON.stringify(data) && prev.deletedAt === null)
+        continue;
+      const at = Math.max(this.now(), (prev?.updatedAt ?? 0) + 1);
+      const change: SyncChange = { kind, id, updatedAt: at, data };
+      const r = this.sync.writeAs(userId, device, change, at);
+      if (r.status !== 'applied' && r.status !== 'duplicate')
+        this.deps.log?.(`Summaries: the record ${kind} ${id}: ${JSON.stringify(r)}`);
     }
   }
 
@@ -1182,12 +1244,14 @@ export class SummaryService {
     this.setOutcome(bookId, 'made', null);
     this.translateSaved(bookId);
     this.publish(bookId);
+    this.recaps.noteSummaryChange(bookId, 'summary written');
     return this.store.view(id)!;
   }
 
   private edited(bookId: string): void {
     this.translateSaved(bookId);
     this.publish(bookId);
+    this.recaps.noteSummaryChange(bookId, 'summary edited');
   }
 
   editItem(bookId: string, itemId: number, input: Partial<ItemInput>) {
@@ -1218,6 +1282,7 @@ export class SummaryService {
   deleteCurrent(bookId: string): void {
     this.store.retireCurrent(bookId);
     this.publish(bookId);
+    this.recaps.noteSummaryChange(bookId, 'summary deleted');
   }
 
   restore(bookId: string, summaryId: number): void {
@@ -1225,6 +1290,7 @@ export class SummaryService {
     this.setOutcome(bookId, 'made', null);
     this.translateSaved(bookId);
     this.publish(bookId);
+    this.recaps.noteSummaryChange(bookId, 'summary restored');
   }
 
   deleteVersion(bookId: string, summaryId: number): void {
@@ -1317,7 +1383,8 @@ export class SummaryService {
             ? (this.phases.get(j.id) ?? (j.kind === 'translate' ? 'translating' : 'reading'))
             : null,
         attempts: JSON.parse(j.attempts_json) as JobView['attempts'],
-        waiting: h?.wait ? waitText(h.wait) : null,
+        waiting: h?.wait ? plainWait(h.wait) : null,
+        waitingSince: h?.wait ? h.waitFrom : null,
         afterVolume: this.afterVolume.has(j.id),
         error: j.error,
         costUsd: j.cost_usd,

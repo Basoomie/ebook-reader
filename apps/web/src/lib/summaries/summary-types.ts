@@ -39,11 +39,26 @@ export interface SummaryItem {
   /** Changed or added by the user: "edited by you" (session 4). */
   editedByUser?: boolean;
   addedByUser?: boolean;
+  /**
+   * The series recap (session 5): the volume a character, term or thread first appears in;
+   * gap: an earlier covered volume has no summary ("in the summaries from vol. 2").
+   */
+  since?: { label: string | null; title: string; gap: boolean };
+}
+
+/** The series recap's Volume by volume: the volume a group is (session 5). */
+export interface SummaryGroupVolume {
+  bookId: string;
+  label: string | null;
+  title: string;
+  /** No summary when the recap was made. */
+  missing: boolean;
 }
 
 export type SummarySectionKey =
   | 'overview'
   | 'chapters'
+  | 'volumes'
   | 'characters'
   | 'relationships'
   | 'terms'
@@ -51,7 +66,13 @@ export type SummarySectionKey =
 
 export interface SummarySection {
   key: SummarySectionKey;
-  groups: { chapter?: number; title?: string; items: SummaryItem[] }[];
+  groups: {
+    chapter?: number;
+    title?: string;
+    /** The series recap's Volume by volume (session 5). */
+    volume?: SummaryGroupVolume;
+    items: SummaryItem[];
+  }[];
 }
 
 export interface Summary {
@@ -69,6 +90,8 @@ export interface Summary {
 export const SUMMARY_TABS: { key: SummarySectionKey; label: string }[] = [
   { key: 'overview', label: 'Overview' },
   { key: 'chapters', label: 'Chapter by chapter' },
+  // The series recap (session 5); a book summary never has it.
+  { key: 'volumes', label: 'Volume by volume' },
   { key: 'characters', label: 'Characters' },
   { key: 'relationships', label: 'Relationships' },
   { key: 'terms', label: 'Terms' },

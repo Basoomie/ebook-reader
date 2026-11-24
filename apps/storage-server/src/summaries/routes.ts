@@ -59,6 +59,35 @@ export function createSummaryRouter(svc: SummaryService | null): Router {
     '/summaries/jobs',
     h((_req, res) => res.json({ jobs: svc.jobs() })),
   );
+  // Session 5: the series recap ("story so far"), by series name.
+  const seriesName = (v: unknown): string => {
+    if (typeof v !== 'string' || !v.trim() || v.length > 300)
+      throw new ApiError(400, 'invalid', 'series must be a series name');
+    return v;
+  };
+  router.get(
+    '/summaries/series-recap',
+    h((req, res) => {
+      const lang = typeof req.query.lang === 'string' ? req.query.lang : undefined;
+      res.json(svc.recaps.get(seriesName(req.query.series), lang));
+    }),
+  );
+  router.post(
+    '/summaries/series-recap/regenerate',
+    h((req, res) =>
+      res.status(202).json({
+        job: svc.recaps.regenerate(seriesName((req.body as { series?: unknown })?.series)),
+      }),
+    ),
+  );
+  router.post(
+    '/summaries/series-recap/translate',
+    h((req, res) => {
+      const b = (req.body ?? {}) as { series?: unknown; lang?: unknown };
+      svc.recaps.translate(seriesName(b.series), b.lang);
+      res.status(202).end();
+    }),
+  );
   router.post(
     '/summaries/estimate',
     h((req, res) => res.json(svc.estimate((req.body as { bookIds?: unknown })?.bookIds))),

@@ -53,6 +53,7 @@
     SummaryView as View
   } from '$lib/summaries/summary-api';
   import {
+    failedNote,
     languageChoices,
     madeLine,
     makingProgress,
@@ -106,6 +107,7 @@
   $: states = sectionState({ hasSummary: !!view, record, offline: serverDown });
   $: hidden = !!view && !revealed && !editing && summaryHidden($summarySpoilerBlur$, status);
   $: progress = record ? makingProgress(record, now, job) : null;
+  $: failed = record?.outcome === 'failed' ? failedNote(record.note, !!view) : null;
   $: translating =
     !!view &&
     lang !== bookLang &&
@@ -338,7 +340,9 @@
       (a) =>
         section === 'overview'
           ? a.editOverview(book.id, input.text)
-          : a.addItem(book.id, section, input),
+          : section === 'volumes'
+            ? Promise.reject(new Error('a book summary has no volumes'))
+            : a.addItem(book.id, section, input),
       'Not added'
     );
 
@@ -377,30 +381,38 @@
     {/if}
 
     {#if states.includes('making') && progress}
+      <!-- Compact (review of the states, 2026-11-24): the step with its time, the bar, one note. -->
       <div class="mt-4" data-testid="summary-making">
-        <p class="text-sm" role="status" aria-live="polite">
-          {view ? 'A new summary is being made.' : 'The summary is being made.'}
-          {progress.text}
-        </p>
+        <div class="making-head">
+          <p class="text-sm" role="status" aria-live="polite">
+            {view ? `New summary · ${progress.text}` : progress.text}{#if progress.waiting}<span
+                class="waiting text-xs text-c-muted"
+                data-testid="summary-waiting">{progress.waiting}</span
+              >{/if}
+          </p>
+          <span class="text-xs text-c-muted">{progress.time}</span>
+        </div>
         <div
-          class="c-mbar mt-2"
+          class="c-mbar mt-1"
           role="progressbar"
+          aria-label="Summary progress"
           aria-valuemin="0"
           aria-valuemax="100"
           aria-valuenow={progress.value}
         >
           <div style="width: {progress.value}%" />
         </div>
-        <p class="mt-1 text-xs text-c-muted">
-          {progress.detail} It goes on when you leave this page.
-        </p>
+        {#if progress.note}
+          <p class="mt-1 text-xs text-c-muted" data-testid="summary-making-note">{progress.note}</p>
+        {/if}
       </div>
     {/if}
-    {#if states.includes('failed')}
-      <p class="c-notice mt-4" role="status" data-testid="summary-failed">
-        {view ? 'The new summary could not be made.' : 'No summary could be made.'}
-        {record?.note ?? ''}
-      </p>
+    {#if states.includes('failed') && failed}
+      <!-- In plain words, one line per setup (review of the states, 2026-11-24). -->
+      <div class="c-notice mt-4" role="status" data-testid="summary-failed">
+        <p>{failed.title}</p>
+        {#each failed.lines as l}<p class="mt-1">{l}</p>{/each}
+      </div>
     {/if}
     {#if states.includes('no_text')}
       <p class="mt-4 text-c-muted" data-testid="summary-no-text">No text to summarize.</p>
@@ -408,8 +420,8 @@
     {#if states.includes('none')}
       <p class="mt-4 text-c-muted" data-testid="summary-none">
         {$summaryAutoOnFirstCompletion$
-          ? 'No summary yet. One is made when you first complete the book, or add one below.'
-          : 'No summary yet. Add one below.'}
+          ? 'No summary yet. One is made when you first complete the book.'
+          : 'No summary yet.'}
       </p>
     {/if}
     {#if states.includes('offline_none')}
@@ -623,6 +635,16 @@
     padding: 0.125rem 0.5rem;
     border-radius: 6px;
     background: var(--c-raised);
+  }
+  .waiting {
+    margin-left: 0.75rem;
+  }
+  .making-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0 1rem;
   }
   .c-mbar {
     height: 0.75rem;

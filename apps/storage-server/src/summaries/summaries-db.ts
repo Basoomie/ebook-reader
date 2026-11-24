@@ -441,6 +441,116 @@ export const SUMMARIES_MIGRATIONS: { version: number; name: string; sql: string 
         WHERE state = 'queued';
     `,
   },
+  {
+    version: 11,
+    name: 'book summaries session 5: the series recap (story so far)',
+    sql: `
+      -- One recap per series (by its name; ttsu.db series.name is unique), written only from
+      -- the covered volumes' current summary items. No versions: a rebuild replaces it.
+      -- volumes_json: the covered volumes as built (n, bookId, title, label, summaryId, digest).
+      CREATE TABLE series_recaps (
+        -- AUTOINCREMENT: a rebuilt recap never gets its predecessor's id (the devices' copies).
+        id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+        series               TEXT NOT NULL UNIQUE,
+        lang                 TEXT NOT NULL,
+        volumes_json         TEXT NOT NULL CHECK (json_valid(volumes_json)),
+        setup                TEXT,
+        models_json          TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(models_json)),
+        also_mentioned_json  TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(also_mentioned_json)),
+        inputs_digest        TEXT NOT NULL,
+        generation           INTEGER NOT NULL DEFAULT 0,
+        made_at              INTEGER NOT NULL,
+        job_id               INTEGER,
+        report_json          TEXT CHECK (report_json IS NULL OR json_valid(report_json))
+      );
+
+      -- A recap's points; sources_json: the volume summary items each rests on
+      -- ([{ bookId, summaryId, ref }]), so a later volume's item can win over an earlier one.
+      -- since: the covered volume (n) a character, term or thread first appears in.
+      CREATE TABLE series_recap_items (
+        id                 INTEGER PRIMARY KEY,
+        recap_id           INTEGER NOT NULL REFERENCES series_recaps(id) ON DELETE CASCADE,
+        section            TEXT NOT NULL CHECK (section IN
+                             ('overview', 'volumes', 'characters', 'relationships', 'terms', 'threads')),
+        ord                INTEGER NOT NULL,
+        volume             INTEGER,
+        ref                TEXT NOT NULL,
+        heading            TEXT,
+        between_json       TEXT CHECK (between_json IS NULL OR json_valid(between_json)),
+        label              TEXT,
+        ruby_json          TEXT CHECK (ruby_json IS NULL OR json_valid(ruby_json)),
+        between_ruby_json  TEXT CHECK (between_ruby_json IS NULL OR json_valid(between_ruby_json)),
+        text               TEXT NOT NULL,
+        sources_json       TEXT NOT NULL CHECK (json_valid(sources_json)),
+        since              INTEGER,
+        UNIQUE (recap_id, ref)
+      );
+      CREATE INDEX series_recap_items_order ON series_recap_items (recap_id, ord);
+
+      CREATE TABLE series_recap_translations (
+        recap_id       INTEGER NOT NULL REFERENCES series_recaps(id) ON DELETE CASCADE,
+        lang           TEXT NOT NULL,
+        ref            TEXT NOT NULL,
+        heading        TEXT,
+        between_json   TEXT CHECK (between_json IS NULL OR json_valid(between_json)),
+        label          TEXT,
+        text           TEXT NOT NULL,
+        source_digest  TEXT NOT NULL,
+        model          TEXT,
+        made_at        INTEGER NOT NULL,
+        PRIMARY KEY (recap_id, lang, ref)
+      );
+
+      CREATE TABLE series_recap_languages (
+        series    TEXT NOT NULL,
+        lang      TEXT NOT NULL,
+        added_at  INTEGER NOT NULL,
+        PRIMARY KEY (series, lang)
+      );
+
+      -- Jobs: making a recap (auto: after the quiet wait; manual: the panel's button or the CLI)
+      -- along the route of setups, or translating one. due_at: when it may start.
+      CREATE TABLE series_recap_jobs (
+        id             INTEGER PRIMARY KEY,
+        series         TEXT NOT NULL,
+        kind           TEXT NOT NULL CHECK (kind IN ('auto', 'manual', 'translate')),
+        lang           TEXT,
+        recap_id       INTEGER,
+        state          TEXT NOT NULL CHECK (state IN ('queued', 'running', 'done', 'failed', 'cancelled')),
+        reason         TEXT,
+        due_at         INTEGER NOT NULL,
+        route_json     TEXT CHECK (route_json IS NULL OR json_valid(route_json)),
+        step           INTEGER NOT NULL DEFAULT 0,
+        attempts_json  TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(attempts_json)),
+        generation     INTEGER NOT NULL DEFAULT 0,
+        inputs_digest  TEXT,
+        error          TEXT,
+        cost_usd       REAL,
+        created_at     INTEGER NOT NULL,
+        started_at     INTEGER,
+        ended_at       INTEGER
+      );
+      CREATE INDEX series_recap_jobs_open ON series_recap_jobs (state, due_at)
+        WHERE state IN ('queued', 'running');
+      CREATE INDEX series_recap_jobs_series ON series_recap_jobs (series, id);
+
+      -- Per series: the Regenerate generation and the note when every setup failed.
+      CREATE TABLE series_recap_state (
+        series      TEXT PRIMARY KEY,
+        generation  INTEGER NOT NULL DEFAULT 0,
+        outcome     TEXT CHECK (outcome IS NULL OR outcome IN ('made', 'failed')),
+        note        TEXT,
+        note_at     INTEGER
+      );
+
+      -- The books the recaps know as completed at least once (so a first completion is seen once,
+      -- and an undone one is seen too). Filled once at the first start (no recap is made then).
+      CREATE TABLE series_recap_completed (
+        book_id  TEXT PRIMARY KEY,
+        at       INTEGER NOT NULL
+      );
+    `,
+  },
 ];
 
 export const SUMMARIES_SCHEMA_VERSION =

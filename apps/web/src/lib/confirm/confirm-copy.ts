@@ -1185,6 +1185,19 @@ export function regenerateSummaryCopy(title: string): ConfirmCopy {
   };
 }
 
+/** The series page's story so far: Regenerate replaces it (it has no earlier versions). */
+export function regenerateRecapCopy(series: string): ConfirmCopy {
+  return {
+    title: `Make the story so far of ${quoted(series)} again?`,
+    message: [
+      'The AI writes it again from the volumes’ summaries as they are now. It takes a few minutes and is charged to the AI spending of this month.',
+      'The story so far you have now is replaced: it has no earlier versions. Volume summaries are not changed.'
+    ],
+    confirmLabel: 'Regenerate',
+    danger: false
+  };
+}
+
 /** Replace ▾ › Write my own: saving it over the book's summary. */
 export function replaceSummaryWithOwnCopy(title: string): ConfirmCopy {
   return {

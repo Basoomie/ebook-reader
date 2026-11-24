@@ -18,6 +18,8 @@
   import { pagePath } from '$lib/data/env';
   import type { SummaryItemInput } from '$lib/summaries/summary-api';
   import { quoteLinkText } from '$lib/summaries/summary-page';
+  import { volumeHeading } from '$lib/summaries/recap-page';
+  import { bookDetailsHref } from '$lib/library/format';
   import type { SummaryCharacterLayout, SummaryRelationshipLayout } from '$lib/summaries/settings';
   import {
     SUMMARY_TABS,
@@ -99,7 +101,9 @@
 
   $: hasChapters = summary.sections.some((s) => s.key === 'chapters');
   $: present = SUMMARY_TABS.filter((t) =>
-    editing ? t.key !== 'chapters' || hasChapters : summary.sections.some((s) => s.key === t.key)
+    editing
+      ? t.key !== 'volumes' && (t.key !== 'chapters' || hasChapters)
+      : summary.sections.some((s) => s.key === t.key)
   );
   /** The open tab (the accuracy test's page reads it for its notes). */
   export let tab: SummarySectionKey = 'overview';
@@ -220,6 +224,40 @@
           {/each}
         </ul>
       {/each}
+    {:else if section.key === 'volumes'}
+      <!-- The series recap (session 5): each covered volume, linked to its book page; a volume
+           without a summary says so (the recap never fills it). -->
+      {#each section.groups as g, i (g.volume?.bookId ?? i)}
+        <div class="volume" data-testid="recap-volume">
+          <h3 class="vol-head font-bold">
+            <span>{g.volume ? volumeHeading(g.volume) : (g.title ?? '')}</span>
+            {#if g.volume}
+              <a
+                class="c-link vol-link"
+                lang="en"
+                href={bookDetailsHref(pagePath, g.volume.bookId)}
+                data-testid="recap-volume-link">Book page</a
+              >
+            {/if}
+          </h3>
+          {#if g.volume?.missing}
+            <p
+              class="mt-1 text-sm italic text-c-muted"
+              lang="en"
+              data-testid="recap-volume-missing"
+            >
+              No summary yet.
+            </p>
+          {/if}
+          {#if g.items.length}
+            <ul class="mt-1 list-disc pl-5">
+              {#each g.items as it (it.ref)}
+                <li class="mt-1" data-ref={it.ref}>{it.text}</li>
+              {/each}
+            </ul>
+          {/if}
+        </div>
+      {/each}
     {:else if section.key === 'characters' && !plain}
       <SummaryCharacters
         items={flat}
@@ -261,7 +299,10 @@
                   >{/if}
               </h3>{/if}
             <p class:mt-1={!!(it.heading || it.between)} class="leading-relaxed">
-              {it.text}<SummaryExtras item={it} />
+              {it.text}<SummaryExtras
+                item={it}
+                sinceKind={section.key === 'threads' ? 'since' : 'from'}
+              />
             </p>
             {#if editing}<SummaryItemEdit
                 item={it}
@@ -354,6 +395,22 @@
   }
   .rows > li + li {
     margin-top: 0.75rem;
+  }
+  .volume + .volume {
+    margin-top: 1.25rem;
+  }
+  .vol-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.25rem 0.75rem;
+  }
+  .vol-link {
+    display: inline-flex;
+    align-items: center;
+    min-height: var(--c-btn-h);
+    font-size: 0.875rem;
+    font-weight: 400;
   }
   .overview {
     white-space: pre-line;

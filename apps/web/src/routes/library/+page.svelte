@@ -1,5 +1,6 @@
 <script lang="ts">
   import SeriesHighlights from '$lib/components/notes/series-highlights.svelte';
+  import SeriesRecap from '$lib/components/summaries/series-recap.svelte';
   import { setPendingJump, type PendingJump } from '$lib/notes/pending-jump';
   import { afterNavigate, beforeNavigate, goto } from '$app/navigation';
   import { saveListSnapshot, takeListSnapshot } from '$lib/library/list-snapshot';
@@ -2153,23 +2154,28 @@
     {#if group && group.by === 'series' && group.name !== null && groupInfo?.bookIds}
       <!-- Keyed: another series starts collapsed. -->
       {#key group.name}
-        <SeriesHighlights
-          api={offline && api ? offlineCatalog() : api}
-          seriesName={group.name}
-          bookIds={groupInfo.bookIds}
-          eink={$einkMode$}
-          on:open={(ev) =>
-            open(
-              ev.detail.book,
-              ev.detail.highlight
-                ? {
-                    bookId: ev.detail.book.id,
-                    highlightId: ev.detail.highlight.id,
-                    position: ev.detail.highlight.start
-                  }
-                : undefined
-            )}
-        />
+        <!-- Session 5: "▸ Story so far" beside "▸ Highlights", both closed; their panels open
+             below the row, the story so far first. -->
+        <div class="series-tools mt-3" data-testid="series-tools">
+          <SeriesRecap series={group.name} statusOf={(id) => states.get(id)?.status} {offline} />
+          <SeriesHighlights
+            api={offline && api ? offlineCatalog() : api}
+            seriesName={group.name}
+            bookIds={groupInfo.bookIds}
+            eink={$einkMode$}
+            on:open={(ev) =>
+              open(
+                ev.detail.book,
+                ev.detail.highlight
+                  ? {
+                      bookId: ev.detail.book.id,
+                      highlightId: ev.detail.highlight.id,
+                      position: ev.detail.highlight.start
+                    }
+                  : undefined
+              )}
+          />
+        </div>
       {/key}
     {/if}
 
@@ -2637,3 +2643,22 @@
     on:saved={() => (seriesSaved = true)}
   />
 {/if}
+
+<style>
+  /* Session 5: the series page's tools: the toggles in one row, their open panels below it
+     (the story so far first, above the volumes). */
+  .series-tools {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 0.5rem;
+  }
+  .series-tools :global(.series-tool-panel) {
+    flex-basis: 100%;
+    min-width: 0;
+    order: 2;
+  }
+  .series-tools :global(.series-tool-panel.recap) {
+    order: 1;
+  }
+</style>

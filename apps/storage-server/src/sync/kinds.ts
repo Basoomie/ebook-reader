@@ -1235,6 +1235,27 @@ const bookSummaryKind: KindSpec = {
 };
 
 /**
+ * kind "series-recap" (book summaries session 5): id = the series name, lww. What every device
+ * knows of a series' "story so far": { series, recap: { id, lang, madeAt, volumes, langs } | null,
+ * making, phase, since, due, outcome, note }. Written only by the summaries' server device; the
+ * recap itself is fetched over REST (/api/v1/summaries/series-recap?series=).
+ */
+const seriesRecapKind: KindSpec = {
+  policy: () => 'lww',
+  deletable: false,
+  validate(id, data, _deleted, ctx) {
+    if (!id.trim()) throw new RecordError('invalid_id', 'ids are the series name');
+    const own = ctx.db
+      .prepare(
+        `SELECT 1 FROM user_seeds WHERE user_id = ? AND name = 'summaries-device' AND device_id = ?`,
+      )
+      .get(ctx.userId, ctx.deviceId);
+    if (!own) throw new RecordError('read_only', 'Series recaps are written by the server');
+    return { bookId: null, data: requireObject(data) };
+  },
+};
+
+/**
  * kind "summary-skip" (book summaries session 3): id = the book id, lww, data {}. Written by a
  * device when the bulk "Mark completed" was told not to make summaries, before the completions
  * (the same push): the server then makes no automatic summary for the book's first completion.
@@ -1316,4 +1337,5 @@ export const DEFAULT_KINDS: KindRegistry = {
   [DEVICE_BOOKS_KIND]: deviceBooksKind,
   'book-summary': bookSummaryKind,
   'summary-skip': summarySkipKind,
+  'series-recap': seriesRecapKind,
 };

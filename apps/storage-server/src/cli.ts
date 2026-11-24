@@ -53,6 +53,7 @@ import { openSummariesDb, summariesDbPath } from './summaries/summaries-db';
 import { LABELS_REQUESTED, labelPlan } from './summaries/service';
 import { readSummarySettings } from './summaries/settings';
 import { SummaryStore } from './summaries/store';
+import { RecapService, RECAPS_REQUESTED } from './summaries/recap-service';
 import { BUILT_IN_PRICES } from './ai/prices';
 import { FontStore } from './fonts/font-store';
 import { FontService } from './fonts/service';
@@ -197,6 +198,89 @@ function summariesLabelCommand(rest: string[], env: NodeJS.ProcessEnv): number {
   }
 }
 
+/**
+ * `cli summaries recaps [--series <name>] [--apply]` (session 5): the series a "story so far"
+ * could be made for now (two or more completed volumes with a summary) and a rough cost; --apply
+ * asks the running server to make those that have none (a series that has one is remade with the
+ * panel's Regenerate). Nothing is asked without --apply.
+ */
+function summariesRecapsCommand(rest: string[], env: NodeJS.ProcessEnv): number {
+  const apply = rest.includes('--apply');
+  const si = rest.indexOf('--series');
+  const only = si >= 0 ? rest[si + 1] : undefined;
+  if (si >= 0 && !only) fail('--series needs a series name');
+  const dbDir = path.resolve(env.DB_DIR ?? '/db');
+  const state = initDatabase(dbDir, path.resolve(env.DATA_DIR ?? '/data'));
+  if (!state.ok) fail(`Database unavailable: ${state.error}`);
+  const sdb = openSummariesDb(summariesDbPath(dbDir));
+  try {
+    const store = new SummaryStore(sdb);
+    const settings = readSummarySettings(sdb);
+    const recaps = new RecapService({
+      db: sdb,
+      main: state.db,
+      runner: null as never,
+      store,
+      now: Date.now,
+      settings: () => settings,
+      openRun: () => {
+        throw new Error('not here');
+      },
+      closeRun: () => undefined,
+      stopping: () => false,
+      writeRecord: () => undefined,
+      openBookJobs: () => new Set(),
+    });
+    const plan = recaps.plan(only);
+    // The first setup's writer and checkers at list price: 1.2 tokens per character plus the
+    // instructions; about a sixth as much written as read; each checker reads about as much.
+    const first = settings.route[0];
+    const wp = BUILT_IN_PRICES[first.writer] ?? null;
+    let usd = 0;
+    let known = !!wp;
+    const todo = plan.filter((p) => !p.has);
+    for (const p of todo) {
+      const inTok = 1500 + p.characters * 1.2;
+      const outTok = Math.min(64_000, inTok / 6);
+      if (wp) usd += (inTok * wp.inputPerMTok + outTok * wp.outputPerMTok) / 1e6;
+      for (const c of new Set(first.finders)) {
+        const cp = BUILT_IN_PRICES[c];
+        if (!cp) known = false;
+        else usd += (inTok * cp.inputPerMTok + 4000 * cp.outputPerMTok) / 1e6;
+      }
+    }
+    for (const p of plan)
+      console.log(
+        `  ${p.series}: ${p.volumes} volumes with a summary, ${p.characters.toLocaleString('en')} characters${p.has ? ' (has a story so far)' : ''}`,
+      );
+    if (!todo.length) {
+      console.log(
+        plan.length
+          ? 'Every series that can have a story so far has one.'
+          : 'No series has two completed volumes with a summary.',
+      );
+      return 0;
+    }
+    const cost = known ? `about $${Math.max(usd, 0.01).toFixed(2)} at list price` : 'cost unknown';
+    if (!apply) {
+      console.log(
+        `${todo.length} series would get a story so far (${cost}, before batch discounts; plus translating into the saved languages). Run again with --apply to make them.`,
+      );
+      return 0;
+    }
+    sdb
+      .prepare('INSERT OR REPLACE INTO summary_state (key, value) VALUES (?, ?)')
+      .run(RECAPS_REQUESTED, JSON.stringify(todo.map((p) => p.series)));
+    console.log(
+      `Asked the server to make the story so far of ${todo.length} series (${cost}). It starts within a minute; its log says when each is done.`,
+    );
+    return 0;
+  } finally {
+    sdb.close();
+    state.db.close();
+  }
+}
+
 /** `cli ai flex-test <model>`: whether OpenAI answers the model at the flex tier (a fraction of a cent). */
 async function aiFlexTestCommand(model: string, env: NodeJS.ProcessEnv): Promise<number> {
   const dbDir = path.resolve(env.DB_DIR ?? '/db');
@@ -269,6 +353,9 @@ const USAGE = `Usage:
                                              the library's books (a dry run without --apply)
   cli summaries label [--apply]              Book summaries: relationships written before labels
                                              existed and the cost; --apply has the server label them
+  cli summaries recaps [--series <name>] [--apply]
+                                             Book summaries: the series that can have a story so far,
+                                             and the cost; --apply has the server make the missing ones
   cli cleanup status                         The library cleanup's stages, batches and sidecar tokens
   cli cleanup revoke <token-id>              Revoke a cleanup sidecar token
   cli cleanup decide 3 <file>                Record the review's decisions on stage 3 pairs (marked as
@@ -1088,6 +1175,7 @@ export function main(argv: string[], env: Record<string, string | undefined>): v
   // Book summaries session 3: the one-time import of the accuracy test's summaries.
   if (group === 'summaries') {
     if (command === 'label') process.exit(summariesLabelCommand(rest, env));
+    if (command === 'recaps') process.exit(summariesRecapsCommand(rest, env));
     if (command !== 'import' || !rest[0]) fail(USAGE);
     void summariesImportCommand(rest, env).then(
       (code) => process.exit(code),

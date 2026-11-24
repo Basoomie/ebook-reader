@@ -60,6 +60,13 @@ export const summaryAutoOnFirstCompletion$ = writableBooleanLocalStorageSubject(
 );
 
 /**
+ * "Update the story so far automatically", the same on every device (session 5; on by default;
+ * the server reads it too). Off: no change rebuilds a series recap by itself; the series page's
+ * Regenerate still does.
+ */
+export const summaryRecapAuto$ = writableBooleanLocalStorageSubject()('summaryRecapAuto', true);
+
+/**
  * The language last chosen for book descriptions on this device ('' = the original), apart
  * from the summary's (decided with the user, 2026-11-23). Never synced.
  */

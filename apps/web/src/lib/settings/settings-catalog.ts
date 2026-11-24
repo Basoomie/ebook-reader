@@ -917,6 +917,15 @@ export const SETTINGS_CATALOG: CatalogSetting[] = [
       'Off: completing a book makes no summary, and turning this back on makes none for the books completed meanwhile. You can still make one from the book page.',
     keywords: 'automatic auto completed complete finish generate ai cost'
   },
+  // Book summaries session 5: the series recap.
+  {
+    id: 'summary-recap-auto',
+    section: 'library-summaries',
+    title: 'Update the story so far automatically',
+    description:
+      'A series’ story so far is made again when a volume summary changes or a volume with a summary is completed. Off: only its Regenerate button on the series page updates it.',
+    keywords: 'story so far recap series previously automatic update rebuild ai cost'
+  },
   {
     id: 'summary-languages',
     section: 'library-summaries',

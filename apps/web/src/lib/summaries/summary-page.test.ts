@@ -9,6 +9,7 @@ import { dragAxis, swipeStep, wrapIndex } from './carousel';
 import { layoutDiagram } from './relationship-diagram';
 import { SummaryApi } from './summary-api';
 import {
+  failedNote,
   languageChoices,
   madeLine,
   makingProgress,
@@ -114,10 +115,58 @@ describe('the states', () => {
       { making: 'running', phase: 'checking', since: NOV23 - 6 * 60_000 },
       NOV23
     );
-    expect(p).toMatchObject({ value: 50, detail: '6 min so far · usually 15–20 minutes.' });
+    expect(p).toMatchObject({
+      value: 50,
+      time: '6 min',
+      note: ''
+    });
     expect(p?.text).toMatch(/^Step 2 of 3/);
     // An older server without the step: the first.
     expect(makingProgress({ making: 'running' }, NOV23)?.text).toMatch(/^Step 1 of 3/);
+    // A wait: plain words on a line of their own, with how long (review, 2026-11-24).
+    const w = makingProgress({ making: 'running', phase: 'reading' }, NOV23, {
+      waiting: 'Anthropic is busy, trying again soon',
+      waitingSince: NOV23 - 4 * 60_000,
+      afterVolume: false
+    });
+    expect(w?.text).toBe('Step 1 of 3: reading the book');
+    expect(w?.waiting).toBe('Waiting 4 min: Anthropic is busy, trying again soon.');
+    expect(w?.note).toBe('');
+    expect(
+      makingProgress({ making: 'running' }, NOV23, {
+        waiting: 'Anthropic is busy, trying again soon',
+        waitingSince: NOV23,
+        afterVolume: false
+      })?.waiting
+    ).toBe('Waiting: Anthropic is busy, trying again soon.');
+  });
+
+  it('the failed note: each failure once, one line when there is one', () => {
+    const one = [
+      'Every setup failed.',
+      'Claude Sonnet 5.5, GPT-6.1 Sol and Claude Opus 5.5 refused to read the book.'
+    ].join('\n');
+    expect(failedNote(one, false)).toEqual({
+      title:
+        'No summary could be made: Claude Sonnet 5.5, GPT-6.1 Sol and Claude Opus 5.5 refused to read the book.',
+      lines: []
+    });
+    const two = [
+      'Every setup failed.',
+      'Claude Opus 5.5 refused to write the summary.',
+      'Nothing could be sent for 60 min: OpenAI is busy, trying again soon.'
+    ].join('\n');
+    expect(failedNote(two, true)).toEqual({
+      title: 'The new summary could not be made: every setup failed. The summary you had is kept.',
+      lines: [
+        'Claude Opus 5.5 refused to write the summary.',
+        'Nothing could be sent for 60 min: OpenAI is busy, trying again soon.'
+      ]
+    });
+    expect(failedNote('The book could not be read: no file', false)).toEqual({
+      title: 'No summary could be made.',
+      lines: ['The book could not be read: no file']
+    });
   });
 
   it('decides what the section shows', () => {

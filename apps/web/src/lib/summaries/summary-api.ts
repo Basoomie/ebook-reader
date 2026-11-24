@@ -151,6 +151,8 @@ export interface SummaryJob {
   phase?: SummaryPhase | null;
   attempts: { setup: string; reason: string; at: number }[];
   waiting: string | null;
+  /** Since when it has been waiting (review of the states, 2026-11-24). */
+  waitingSince?: number | null;
   afterVolume: boolean;
   error: string | null;
   costUsd: number | null;
@@ -170,6 +172,107 @@ export interface SummaryServerSettings {
   fallbackAfterMinutes: number;
   parallelBooks: number;
   costPer100kChars: number;
+  /** Session 5: the story so far is rebuilt this long after the last change (0: at once). */
+  recapDelayMinutes?: number;
+}
+
+// ---- session 5: the series recap ("story so far") ----
+
+export type RecapSectionKey =
+  | 'overview'
+  | 'volumes'
+  | 'characters'
+  | 'relationships'
+  | 'terms'
+  | 'threads';
+
+/** A covered volume as the recap was built (missing: it had no summary then). */
+export interface RecapVolume {
+  n: number;
+  bookId: string;
+  label: string | null;
+  title: string;
+  missing: boolean;
+}
+
+export interface RecapItemView {
+  ref: string;
+  text: string;
+  heading?: string;
+  between?: [string, string];
+  label?: string;
+  ruby?: RubyPiece[];
+  betweenRuby?: [RubyPiece[] | null, RubyPiece[] | null];
+  /** Where it first appears; gap: an earlier covered volume has no summary. */
+  since?: { label: string | null; title: string; gap: boolean };
+  cites: string[];
+  quote: null;
+  position: null;
+  showQuote: false;
+}
+
+export interface RecapView {
+  id: number;
+  series: string;
+  lang: string;
+  viewLang: string;
+  madeAt: number;
+  setup: string | null;
+  models: string[];
+  volumes: RecapVolume[];
+  sections: {
+    key: RecapSectionKey;
+    groups: { volume?: RecapVolume; items: RecapItemView[] }[];
+  }[];
+  alsoMentioned: string[];
+  untranslated: string[];
+  languages: string[];
+}
+
+export type RecapStaleWhy =
+  | 'not_in_recap'
+  | 'left'
+  | 'summary_added'
+  | 'summary_deleted'
+  | 'changed';
+
+/** What the recap covers now (the series as it is), and what it doesn't have yet. */
+export interface RecapCoverage {
+  volumes: { bookId: string; label: string | null; title: string; hasSummary: boolean }[];
+  withSummary: number;
+  enough: boolean;
+  stale: { bookId: string; label: string | null; title: string; why: RecapStaleWhy }[];
+  orderChanged: boolean;
+}
+
+export type RecapPhase = 'writing' | 'checking' | 'translating';
+
+/** What every device knows of a series' recap (the "series-recap" record). */
+export interface SeriesRecapRecord {
+  series: string;
+  recap: {
+    id: number;
+    lang: string;
+    madeAt: number;
+    volumes: string[];
+    langs: Record<string, string>;
+  } | null;
+  making: 'queued' | 'running' | null;
+  phase: RecapPhase | null;
+  since: number | null;
+  /** A queued rebuild starts then (the quiet wait). */
+  due: number | null;
+  outcome: 'made' | 'failed' | null;
+  note: string | null;
+}
+
+export interface RecapResponse {
+  series: string;
+  recap: RecapView | null;
+  coverage: RecapCoverage;
+  state: SeriesRecapRecord;
+  /** "Update the story so far automatically" as the server reads it. */
+  auto: boolean;
 }
 
 /** What the user types for an item (Edit, Add, Write my own). */
@@ -317,6 +420,21 @@ export class SummaryApi {
 
   jobs(bookId: string): Promise<{ jobs: SummaryJob[] }> {
     return this.request('GET', `${this.book(bookId)}/jobs`);
+  }
+
+  // ---- session 5: the series recap ----
+
+  recap(series: string, lang?: string): Promise<RecapResponse> {
+    const q = `series=${encodeURIComponent(series)}${lang ? `&lang=${encodeURIComponent(lang)}` : ''}`;
+    return this.request('GET', `/summaries/series-recap?${q}`);
+  }
+
+  regenerateRecap(series: string): Promise<{ job: number }> {
+    return this.request('POST', '/summaries/series-recap/regenerate', { series });
+  }
+
+  translateRecap(series: string, lang: string): Promise<void> {
+    return this.request('POST', '/summaries/series-recap/translate', { series, lang });
   }
 
   settings(): Promise<{ settings: SummaryServerSettings; costPer100kChars: number }> {

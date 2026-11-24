@@ -42,7 +42,7 @@
     chapter: string;
   }
   const blank = (): Row => ({ text: '', heading: '', a: '', b: '', label: '', chapter: '' });
-  type Key = Exclude<SummarySectionKey, 'overview'>;
+  type Key = Exclude<SummarySectionKey, 'overview' | 'volumes'>;
   const KEYS: Key[] = ['chapters', 'characters', 'relationships', 'terms', 'threads'];
   const label = (k: SummarySectionKey) => SUMMARY_TABS.find((t) => t.key === k)?.label ?? k;
 
