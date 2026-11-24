@@ -10,7 +10,7 @@
  *   kept or undone is never proposed again) still see what was done;
  * - applied_values (which value the cleanup wrote), user_fields (your fields stay yours),
  *   calibre_marks, evidence_records, stage4_books, stage4_series_order, calibre_title_fits,
- *   calibre_seen_changes, the More Bookmeter pass's rows;
+ *   calibre_seen_changes, the More Bookmeter pass's rows, the More direct links pass's picks and spot check;
  * - the AI layer's items, requests, values and designs of the Calibre stages (item key
  *   "<library>:<uuid>"), so no answer is asked or paid for again and your values still win.
  *
@@ -39,6 +39,8 @@ const WITH_ID = [
   'calibre_title_fits',
   'calibre_seen_changes',
   'bookmeter_more_books',
+  // More direct links (stage4/link-discovery.ts, cleanup.db v33): the picks per book and site.
+  'link_discovery_picks',
 ];
 /** Tables keyed by (library_id, calibre_uuid) without a calibre_id. */
 const WITHOUT_ID = [
@@ -48,6 +50,7 @@ const WITHOUT_ID = [
   'evidence_records',
   'bookmeter_more_waiters',
   'bookmeter_more_spot',
+  'link_discovery_spot',
 ];
 
 /**

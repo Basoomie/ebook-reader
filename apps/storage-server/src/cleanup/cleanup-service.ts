@@ -56,6 +56,7 @@ import { MovePass } from './move/pass';
 import { moveAnalysisId } from './move/state';
 import { MOVE_SIDECAR_VERSION, MOVE_STAGE } from './field-stages';
 import { booksWithReaderData } from './handoff';
+import { LinkDiscovery } from './stage4/link-discovery';
 import { CALIBRE_FETCH_SITES, type FetchSite } from './settings';
 import {
   BUILT_STAGES,
@@ -235,6 +236,10 @@ export class CleanupService {
   /** Manga part A: moving the manga and image-only books to the manga library. */
   readonly move: MovePass;
   private moveRunning: Promise<void> | null = null;
+  /** More direct links: the pass over stage 4's stored answers (link-discovery.md). */
+  readonly links: LinkDiscovery | null;
+  private linksRunning: Promise<void> | null = null;
+  private linksCache: { at: number; value: unknown } | null = null;
   private bookmeterCache: { at: number; value: unknown } | null = null;
   /** Calibre metadata editing from the reader: the user's edits, their history and Undo. */
   readonly edits: EditService;
@@ -486,6 +491,18 @@ export class CleanupService {
       withData: (ids) => booksWithReaderData(opts.main, ids),
       log: this.log,
     });
+    this.links = a4
+      ? new LinkDiscovery({
+          db: opts.cleanup,
+          analysis: a4,
+          batches: this.batches.stage4,
+          targetLibrary: () => this.targetLibrary(),
+          stage4Done: () => stage4Finished(this.db, this.stage4Ai?.isDone() ?? false),
+          writeWait: (lib) => this.bookmeterWriteWait(lib),
+          referenceFile: () => a4.referenceFile(),
+          log: this.log,
+        })
+      : null;
     // Stage 4's covers are the stores' pictures, read from the fetch cache.
     this.batches.stage4.setStoreCover((url) => {
       const r = opts.cleanup
@@ -1086,6 +1103,7 @@ export class CleanupService {
     this.runBookmeter();
     this.runSeriesPairs();
     this.runMove();
+    this.runLinks();
   }
 
   /**
@@ -1320,6 +1338,46 @@ export class CleanupService {
         this.bookmeterRunning = null;
       }
     })();
+  }
+
+  /**
+   * More direct links: its pass, stepped in its own loop like the Bookmeter pass (never blocks a
+   * round; each step works about 25 ms). Woken by the 5 s round and by the user's changes.
+   */
+  runLinks(): void {
+    if (this.linksRunning || this.stopped || !this.links) return;
+    const pass = this.links;
+    this.linksRunning = (async () => {
+      try {
+        for (let i = 0; i < 1_000_000; i++) {
+          if (this.stopped) break;
+          const r = await pass.step(() => this.stopped);
+          if (r === 'idle' || r === 'wait') break;
+          await new Promise((res) => setImmediate(res));
+        }
+      } catch (err) {
+        this.logError('Cleanup: More direct links failed:', err);
+      } finally {
+        this.linksRunning = null;
+        this.linksCache = null;
+      }
+    })();
+  }
+
+  /** More direct links' card; cached 5 s (its counts read two covering indexes). */
+  linksStatus(target: string | null, now = Date.now()): unknown {
+    const pass = this.links;
+    if (!pass) return null;
+    if (this.linksCache && now - this.linksCache.at < 5_000) return this.linksCache.value;
+    const value = pass.status(target, now);
+    this.linksCache = { at: now, value };
+    return value;
+  }
+
+  /** Drops the card's cached status (after the user's change on the page) and works at once. */
+  linksChanged(): void {
+    this.linksCache = null;
+    this.runLinks();
   }
 
   /** Why the pass's write must wait now (as stage 4 On's own: apply4), else null. */

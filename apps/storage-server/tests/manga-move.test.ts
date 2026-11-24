@@ -606,7 +606,16 @@ describe('moving books to the manga library', () => {
       db.prepare(
         `INSERT INTO ai_item_designs (stage, item_key, design, set_at) VALUES (?, ?, 'E', 1)`,
       ).run(st, `${lib}:old`);
+    db.prepare(
+      `INSERT INTO link_discovery_picks (library_id, calibre_uuid, site, calibre_id, store_id, store_title, how, updated_at)
+       VALUES (?, 'old', 'amazon', 1, 'B0X', 't', 'record', 1)`,
+    ).run(lib);
+    db.prepare(
+      `INSERT INTO link_discovery_spot (library_id, calibre_uuid, site, position, how) VALUES (?, 'old', 'amazon', 0, 'record')`,
+    ).run(lib);
     const n = rekeyCleanupState(db, from, to, ['S']);
+    expect(n.link_discovery_picks).toBe(1);
+    expect(n.link_discovery_spot).toBe(1);
     expect(n.stage4_series_order).toBe(1);
     expect(n.calibre_marks).toBe(1);
     expect(n.ai_item_designs).toBe(CALIBRE_AI_STAGES.length);

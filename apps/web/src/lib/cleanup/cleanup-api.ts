@@ -19,6 +19,7 @@ import type {
   BookmeterSource,
   BookmeterStatus
 } from './bookmeter-text';
+import type { LinkItem, LinkSite, LinkState, LinksMode, LinksStatus } from './links-text';
 import { errorFrom, send, type RequestOptions } from '$lib/library/api';
 
 /** The /cleanup page's client for /api/v1/cleanup/* (WP20a). */
@@ -2672,6 +2673,54 @@ export class CleanupApi {
     return this.request('PUT', `/cleanup/bookmeter/spot/${encodeURIComponent(uuid)}`, {
       verdict
     }) as Promise<{ counts: BookmeterStatus['spot']; passed: boolean }>;
+  }
+
+  // ---------------------------------------------------------------- More direct links
+
+  links(): Promise<LinksStatus> {
+    return this.request('GET', '/cleanup/links') as Promise<LinksStatus>;
+  }
+
+  setLinksMode(mode: LinksMode): Promise<LinksStatus> {
+    return this.request('PUT', '/cleanup/links/mode', { mode }) as Promise<LinksStatus>;
+  }
+
+  linksAgain(): Promise<LinksStatus> {
+    return this.request('POST', '/cleanup/links/again', {}) as Promise<LinksStatus>;
+  }
+
+  linksList(
+    state: LinkState,
+    site: LinkSite | null,
+    offset: number,
+    limit: number
+  ): Promise<{ total: number; items: LinkItem[] }> {
+    const q = new URLSearchParams({ state, offset: String(offset), limit: String(limit) });
+    if (site) q.set('site', site);
+    return this.request('GET', `/cleanup/links/list?${q}`) as Promise<{
+      total: number;
+      items: LinkItem[];
+    }>;
+  }
+
+  linksSpot(): Promise<{ items: LinkItem[]; counts: LinksStatus['spot']; passed: boolean }> {
+    return this.request('GET', '/cleanup/links/spot') as Promise<{
+      items: LinkItem[];
+      counts: LinksStatus['spot'];
+      passed: boolean;
+    }>;
+  }
+
+  setLinksVerdict(
+    uuid: string,
+    site: LinkSite,
+    verdict: 'right' | 'wrong' | null
+  ): Promise<{ counts: LinksStatus['spot']; passed: boolean }> {
+    return this.request(
+      'PUT',
+      `/cleanup/links/spot/${encodeURIComponent(uuid)}/${encodeURIComponent(site)}`,
+      { verdict }
+    ) as Promise<{ counts: LinksStatus['spot']; passed: boolean }>;
   }
 
   // ---------------------------------------------------------------- Series under two names
